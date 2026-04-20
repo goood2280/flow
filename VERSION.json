@@ -1,7 +1,22 @@
 {
-  "version": "8.4.6",
+  "version": "8.4.7",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.4.7",
+      "date": "2026-04-21",
+      "title": "SplitTable KNOB step_id 역산 + v8.4.6 세션 토큰 regression 일괄 복구 + ML 탭 정리",
+      "tag": "feat",
+      "changes": [
+        "SplitTable KNOB 행에 func_step(step_id) 부제 추가. 예) `GATE_PPID` 아래 `GATE_PATTERN (AA200030/AA200040/AA200050) + PC_ETCH (AA200100/AA200110)`. 한 knob 이 여러 func_step 결합이면 + 로 조인.",
+        "신규 엔드포인트 GET /api/splittable/knob-meta?product=X — feature_name → {groups:[{func_step,step_ids,ppid,operator,rule_order,category}], label} 반환.",
+        "Base CSV 2종 스키마 확정 + 샘플 재생성: step_matching.csv(step_id,func_step), knob_ppid.csv(feature_name,function_step,rule_order,ppid,operator,category,use). ML_TABLE 의 KNOB 컬럼명과 feature_name 매칭.",
+        "v8.4.6 세션 토큰 regression 복구 — 13개 페이지가 로컬 sf()=raw fetch 를 써서 X-Session-Token 이 안 붙던 문제. main.jsx 에서 window.fetch 를 글로벌 monkey-patch 로 감싸 /api/* 에 토큰 자동 주입 + 401 시 세션 만료 이벤트. 모든 페이지 일괄 해결 + 미래 안전.",
+        "증상 해소: Admin 데이터 루트 패널 HTTP 401 사라지고 현재 effective 기본 경로 (DB/Base/Wafer-map) 정상 표시. FileBrowser DB/Base/제품 사이드바 재렌더. FB 설정 AWS Configure 무한로딩 해소.",
+        "ML 분석 탭을 nav 에서 제거. 홈 하단 '앞으로 할 것 (planned)' 섹션 신설 — ET Time / ML 분석 예고 카드 (대시보드는 일반 탭에 존재).",
+        "config.js: FEATURE_VERSIONS 에서 ml 항목 정리, PLANNED_FEATURES export 추가."
+      ]
+    },
     {
       "version": "8.4.6",
       "date": "2026-04-21",
