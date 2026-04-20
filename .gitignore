@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+venv/
+.venv/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+.parcel-cache/
+*.log
+npm-debug.log*
+
+# Data — 절대 커밋 금지 (30-50GB 규모 가능, PII/공정 데이터)
+data/
+!data/.gitkeep
+scripts/_req_*.json
+scripts/_t_*.json
+*.parquet
+*.csv
+!frontend/src/**/*.csv
+!frontend/public/**/*.csv
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Credentials / secrets
+.env
+.env.*
+*.pem
+*.key
+aws_config.json
+holweb-data/
+backend/__pycache__/
+
+# Test artifacts
+test_xlsx.xlsx
+_root_map.json

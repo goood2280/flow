@@ -1,0 +1,566 @@
+import { useState, useEffect, useRef } from "react";
+import Loading from "../components/Loading";
+const API="/api/splittable";
+const sf=(url,o)=>fetch(url,o).then(r=>{if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});
+// Excel-like pastel colors (bg + dark text)
+const CELL_COLORS=[
+  {bg:"#C6EFCE",fg:"#006100"},  // green
+  {bg:"#FFEB9C",fg:"#9C5700"},  // yellow
+  {bg:"#FBE5D6",fg:"#BF4E00"},  // orange
+  {bg:"#BDD7EE",fg:"#1F4E79"},  // blue
+  {bg:"#E2BFEE",fg:"#7030A0"},  // purple
+  {bg:"#B4DED4",fg:"#0B5345"},  // teal
+  {bg:"#F4CCCC",fg:"#75194C"},  // pink
+];
+const COLOR_PREFIXES=["KNOB","MASK"];
+
+export default function My_SplitTable({user}){
+  const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState("");
+  const[lotId,setLotId]=useState("");const[waferIds,setWaferIds]=useState("");
+  const[lotSuggestions,setLotSuggestions]=useState([]);const[showLotDrop,setShowLotDrop]=useState(false);const[lotFilter,setLotFilter]=useState("");
+  // v8.4.3: fab_lot_id 검색도 지원 — root_lot_id 대체 키로 사용 가능.
+  const[fabLotId,setFabLotId]=useState("");const[fabSuggestions,setFabSuggestions]=useState([]);const[showFabDrop,setShowFabDrop]=useState(false);
+  const[prefixes,setPrefixes]=useState([]);const[selPrefixes,setSelPrefixes]=useState(["KNOB"]);
+  const[customs,setCustoms]=useState([]);const[selCustom,setSelCustom]=useState("");const[isCustomMode,setIsCustomMode]=useState(false);
+  const[viewMode,setViewMode]=useState("all");
+  const[data,setData]=useState(null);const[loading,setLoading]=useState(false);
+  const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});
+  const[showConfirm,setShowConfirm]=useState(false);
+  // dbl-click inline edit: {cellKey, value, suggestions, param}
+  const[activeCell,setActiveCell]=useState(null);
+  const[colValCache,setColValCache]=useState({});
+  const[tab,setTab]=useState("view");const[history,setHistory]=useState([]);const[histAll,setHistAll]=useState(false);
+  const[colSearch,setColSearch]=useState("");const[customCols,setCustomCols]=useState([]);const[customName,setCustomName]=useState("");
+  const[showSettings,setShowSettings]=useState(false);const[newPrefix,setNewPrefix]=useState("");
+  const[precision,setPrecision]=useState({});const[precisionDraft,setPrecisionDraft]=useState({});
+  const[enabledSources,setEnabledSources]=useState(null); // null = loading, Set of product names
+  // v8.4.4: product 별 lot_id 컬럼 override (soft-landing)
+  const[lotOverrides,setLotOverrides]=useState({});
+  // v8.4.4: fab_source 후보 (FileBrowser/Dashboard 와 동일 source 리스트)
+  const[fabSourceOptions,setFabSourceOptions]=useState([]);
+  useEffect(()=>{sf("/api/dashboard/products").then(d=>setFabSourceOptions((d.products||[]).map(p=>({value:p.root&&p.product?`${p.root}/${p.product}`:(p.file||p.label||""),label:p.label||""})).filter(o=>o.value))).catch(()=>{});},[]);
+  const isAdmin=user?.role==="admin";
+  const lotRef=useRef(null);
+  // v4.1: Features tab state — drives /splittable/features (wide ET⋈INLINE) and
+  // /splittable/uniques (catalog for KNOB/MASK/product/ppid filters + feature names).
+  const[features,setFeatures]=useState(null);const[featuresLoading,setFeaturesLoading]=useState(false);
+  const[uniques,setUniques]=useState(null);
+  const[featProd,setFeatProd]=useState("");const[featPpid,setFeatPpid]=useState("");
+  const[featKnob,setFeatKnob]=useState("");const[featKnobVal,setFeatKnobVal]=useState("");
+  const[featMask,setFeatMask]=useState("");
+  const[selFeatCols,setSelFeatCols]=useState([]);const[mlPlan,setMlPlan]=useState(null);
+
+  const reloadCustoms=()=>sf(API+"/customs").then(d=>setCustoms(d.customs||[]));
+  // v4.1: Features loader — wide ET⋈INLINE sample (default 200 rows, 40 cols).
+  const loadFeatures=()=>{setFeaturesLoading(true);
+    sf(API+"/features?rows=200&cols=40").then(d=>{setFeatures(d);setFeaturesLoading(false);})
+      .catch(e=>{alert(e.message);setFeaturesLoading(false);});};
+  // v4.1: Uniques catalog — _uniques.json as-is. Runs once alongside products.
+  const loadUniques=()=>sf(API+"/uniques").then(d=>setUniques(d.uniques||{})).catch(()=>setUniques({}));
+  const loadSourceConfig=()=>sf(API+"/source-config").then(d=>{if(d.enabled?.length)setEnabledSources(new Set(d.enabled));if(d.lot_overrides)setLotOverrides(d.lot_overrides);}).catch(()=>{});
+  const saveSourceConfig=(enabled)=>{sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:[...enabled]})}).catch(()=>{});};
+  useEffect(()=>{
+    Promise.all([sf(API+"/products"),sf(API+"/source-config").catch(()=>({enabled:[]})),sf(API+"/prefixes")])
+      .then(([prodRes,srcRes,prefRes])=>{
+        const prods=prodRes.products||[];setProducts(prods);
+        const enabled=srcRes.enabled?.length?new Set(srcRes.enabled):null;
+        setEnabledSources(enabled);
+        // Set initial product to first visible source
+        const visible=enabled?prods.filter(p=>enabled.has(p.name)):prods;
+        if(visible.length)setSelProd(visible[0].name);else if(prods.length)setSelProd(prods[0].name);
+        setPrefixes(prefRes.prefixes||[]);
+      });
+    reloadCustoms();
+    loadUniques();
+    sf(API+"/precision").then(d=>{setPrecision(d.precision||{});setPrecisionDraft(d.precision||{});}).catch(()=>{});
+  },[]);
+  const visibleProducts=enabledSources&&enabledSources.size>0?products.filter(p=>enabledSources.has(p.name)):enabledSources?[]:products;
+  // When enabledSources or products change, ensure selProd is in visible list
+  useEffect(()=>{
+    if(enabledSources&&selProd&&!enabledSources.has(selProd)){
+      if(visibleProducts.length)setSelProd(visibleProducts[0].name);
+    }
+  },[enabledSources,products]);
+  useEffect(()=>{if(selProd)sf(API+"/lot-ids?product="+selProd).then(d=>setLotSuggestions(d.lot_ids||[])).catch(()=>{});},[selProd]);
+  // fab_lot_id 후보도 fetch (lot-candidates 엔드포인트 사용)
+  useEffect(()=>{if(selProd)sf(API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=fab_lot_id&limit=500").then(d=>setFabSuggestions(d.candidates||[])).catch(()=>{});},[selProd]);
+  useEffect(()=>{const h=e=>{if(lotRef.current&&!lotRef.current.contains(e.target))setShowLotDrop(false);};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
+
+  const prefixParam=isCustomMode?"":selPrefixes.join(",");
+  // diff 모드는 클라이언트에서 즉시 필터 → 항상 "all" 로 fetch
+  const loadView=()=>{if(!selProd||(!lotId.trim()&&!fabLotId.trim()))return;setLoading(true);
+    let url=API+"/view?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+"&view_mode=all";
+    if(fabLotId.trim())url+="&fab_lot_id="+encodeURIComponent(fabLotId.trim());
+    if(isCustomMode&&selCustom)url+="&custom_name="+encodeURIComponent(selCustom);
+    sf(url).then(d=>{setData(d);if(d.precision)setPrecision(d.precision);setLoading(false);setPendingPlans({});}).catch(e=>{alert(e.message);setLoading(false);});};
+  const doSearch=()=>loadView();
+  const loadHistory=(all)=>{let url=API+"/history?product="+encodeURIComponent(selProd)+"&limit=500";if(!all&&lotId.trim())url+="&root_lot_id="+encodeURIComponent(lotId);sf(url).then(d=>setHistory(d.history||[]));};
+  const savePlans=()=>{if(!Object.keys(pendingPlans).length)return;
+    sf(API+"/plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,plans:pendingPlans,username:user?.username||"",root_lot_id:lotId})})
+      .then(()=>{setShowConfirm(false);setEditing(false);loadView();}).catch(e=>alert(e.message));};
+  const deletePlan=(ck)=>{if(!confirm("Delete?"))return;sf(API+"/plan/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,cell_keys:[ck],username:user?.username||""})}).then(loadView);};
+
+  const saveCustom=()=>{if(!customName.trim()||!customCols.length)return;
+    sf(API+"/customs/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:customName,username:user?.username||"",columns:customCols})})
+      .then(()=>{reloadCustoms();setSelCustom(customName);setIsCustomMode(true);});};
+  const deleteCustom=(name)=>{if(!confirm("Delete '"+name+"'?"))return;
+    sf(API+"/customs/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,username:user?.username||""})})
+      .then(()=>{reloadCustoms();if(selCustom===name)setSelCustom("");}).catch(e=>alert(e.message));};
+  const selectCustomSet=(c)=>{setSelCustom(c.name);setCustomCols(c.columns||[]);setCustomName(c.name);};
+
+  const togglePrefix=(p)=>{if(isCustomMode){setIsCustomMode(false);setSelCustom("");setSelPrefixes([p]);return;}
+    setSelPrefixes(prev=>prev.includes(p)?prev.filter(x=>x!==p).length?prev.filter(x=>x!==p):[p]:[...prev,p]);};
+  const addPrefix=()=>{if(!newPrefix.trim())return;const np=newPrefix.trim().toUpperCase();
+    sf(API+"/prefixes/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prefixes:[...prefixes,np]})}).then(()=>{setPrefixes(prev=>[...prev,np]);setNewPrefix("");});};
+  const savePrecision=()=>{
+    sf(API+"/precision/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({precision:precisionDraft})})
+      .then(d=>{setPrecision(d.precision||{});setPrecisionDraft(d.precision||{});})
+      .catch(e=>alert(e.message));
+  };
+  const removePrefix=(p)=>{if(!confirm("Remove "+p+"?"))return;const next=prefixes.filter(x=>x!==p);
+    sf(API+"/prefixes/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prefixes:next})}).then(()=>setPrefixes(next));};
+
+  const formatCell=(val,paramName)=>{
+    // Apply prefix-based decimal precision to numeric values.
+    // Non-numeric values pass through unchanged.
+    if(val===null||val===undefined||val==="")return val;
+    const s=String(val);
+    if(s==="None"||s==="null"||s==="NaN")return val;
+    const num=Number(s);
+    if(!isFinite(num)||isNaN(num))return val;
+    const pn=(paramName||"").toUpperCase();
+    // Find which prefix this param matches (prefix followed by underscore)
+    for(const pfx of Object.keys(precision||{})){
+      if(pn.startsWith(pfx.toUpperCase()+"_")){
+        const n=precision[pfx];
+        if(typeof n==="number"&&n>=0&&n<=10)return num.toFixed(n);
+      }
+    }
+    return val;
+  };
+  const getCellBg=(val,uniqueMap,paramName)=>{
+    if(!val||val==="None"||val==="null"||val===null)return{};
+    const pn=(paramName||"").toUpperCase();
+    const shouldColor=COLOR_PREFIXES.some(p=>pn.startsWith(p+"_"));
+    if(!shouldColor)return{};
+    const strVal=String(val);
+    const idx=uniqueMap[strVal];
+    if(idx!==undefined){const c=CELL_COLORS[idx%CELL_COLORS.length];return{background:c.bg,color:c.fg};}
+    return{};};
+  // v8.4.5: plan 이 actual 과 같은 값이면 팔레트 bg 그대로 + 이탤릭 + 핀 + 주황 테두리.
+  // 다른 값(mismatch) 이면 빨간 좌측 테두리 + 연한 빨강 bg.
+  // plan-only (actual 없음) 이면 plan 값의 팔레트 bg (색상 맞춰짐) + 이탤릭 + 주황 테두리.
+  const getCellPlanStyle=(cell)=>{if(!cell)return{};
+    if(cell.plan&&cell.actual){
+      if(String(cell.plan)===String(cell.actual))return{}; // match = normal (값이 같아서 별도 강조 불필요)
+      return{borderLeft:"3px solid #ef4444",background:"#fef2f2"}; // MISMATCH = 빨강
+    }
+    if(cell.plan)return{borderLeft:"3px solid #f97316",fontStyle:"italic",fontWeight:700}; // plan-only: bg 는 getCellBg 가 plan 값 기준으로 처리
+    return{};};
+
+  const allCols=data?.all_columns||[];
+  const filteredCols=colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols.slice(0,100);
+  const filteredLots=lotFilter?lotSuggestions.filter(l=>l.toLowerCase().includes(lotFilter.toLowerCase())):lotSuggestions;
+  const S={padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none"};
+  const chipS=(active)=>({padding:"3px 8px",borderRadius:4,fontSize:10,cursor:"pointer",fontWeight:active?700:400,background:active?"var(--accent-glow)":"var(--bg-hover)",color:active?"var(--accent)":"var(--text-secondary)",border:active?"1px solid var(--accent)":"1px solid transparent"});
+
+  return(<div style={{display:"flex",height:"calc(100vh - 48px)",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
+    {/* Sidebar */}
+    <div style={{width:250,minWidth:250,borderRight:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",flexDirection:"column",overflow:"auto",position:"relative"}}>
+      <div style={{padding:"12px 14px",borderBottom:"1px solid var(--border)",fontSize:12,fontWeight:700,color:"var(--text-secondary)",textTransform:"uppercase"}}>Split Table</div>
+      <div style={{padding:"8px 12px"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Product</div>
+        <select value={selProd} onChange={e=>setSelProd(e.target.value)} style={{...S,width:"100%"}}>{visibleProducts.map(p=><option key={p.name} value={p.name}>{p.name}</option>)}</select></div>
+      {/* Lot ID dropdown */}
+      <div style={{padding:"4px 12px"}} ref={lotRef}>
+        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Root Lot ID</div>
+        <input value={lotId} onChange={e=>{setLotId(e.target.value);setLotFilter(e.target.value);setShowLotDrop(true);}}
+          onFocus={()=>setShowLotDrop(true)} placeholder="Enter or select..."
+          style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&(setShowLotDrop(false),doSearch())}/>
+        {showLotDrop&&filteredLots.length>0&&<div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
+          {filteredLots.slice(0,50).map(l=><div key={l} onClick={()=>{setLotId(l);setShowLotDrop(false);}}
+            style={{padding:"6px 10px",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--border)",color:"var(--text-primary)"}}
+            onMouseEnter={e=>e.currentTarget.style.background="var(--bg-hover)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{l}</div>)}
+        </div>}
+      </div>
+      {/* v8.4.3: fab_lot_id 검색 — root_lot_id 대신 FAB 쪽 ID 로 조회 */}
+      <div style={{padding:"4px 12px"}}>
+        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Fab Lot ID (alt)</div>
+        <input value={fabLotId} onChange={e=>{setFabLotId(e.target.value);setShowFabDrop(true);}}
+          onFocus={()=>setShowFabDrop(true)} onBlur={()=>setTimeout(()=>setShowFabDrop(false),150)}
+          placeholder="root_lot_id 대신 사용" style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&(setShowFabDrop(false),doSearch())}/>
+        {showFabDrop&&fabSuggestions.length>0&&(fabLotId?fabSuggestions.filter(f=>f.toLowerCase().includes(fabLotId.toLowerCase())):fabSuggestions).length>0&&
+          <div style={{maxHeight:160,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
+            {(fabLotId?fabSuggestions.filter(f=>f.toLowerCase().includes(fabLotId.toLowerCase())):fabSuggestions).slice(0,50).map(f=><div key={f} onMouseDown={()=>{setFabLotId(f);setShowFabDrop(false);}}
+              style={{padding:"6px 10px",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--border)",color:"var(--text-primary)"}}
+              onMouseEnter={e=>e.currentTarget.style.background="var(--bg-hover)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{f}</div>)}
+          </div>}
+      </div>
+      <div style={{padding:"4px 12px"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Wafer IDs (optional)</div>
+        <input value={waferIds} onChange={e=>setWaferIds(e.target.value)} placeholder="e.g. 1,2,3" style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&doSearch()}/></div>
+      <div style={{padding:"6px 12px"}}><button onClick={doSearch} style={{width:"100%",padding:"7px 0",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer"}}>Search</button></div>
+      {/* Prefix multi-select */}
+      <div style={{padding:"8px 12px",borderTop:"1px solid var(--border)"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Prefix</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+          {prefixes.map(p=><span key={p} onClick={()=>togglePrefix(p)} style={chipS(selPrefixes.includes(p)&&!isCustomMode)}>{p}</span>)}
+          <span onClick={()=>{setIsCustomMode(true);setSelPrefixes([]);}} style={chipS(isCustomMode)}>CUSTOM</span>
+        </div></div>
+      {/* Custom mode */}
+      {isCustomMode&&<div style={{padding:"8px 12px",borderTop:"1px solid var(--border)",flex:1,overflow:"auto"}}>
+        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Custom Sets</div>
+        {customs.map(c=><div key={c.name} style={{display:"flex",alignItems:"center",gap:4,padding:"3px 6px",borderRadius:4,marginBottom:2,background:selCustom===c.name?"var(--accent-glow)":"transparent",cursor:"pointer"}}
+          onClick={()=>selectCustomSet(c)}>
+          <span style={{flex:1,fontSize:11,color:selCustom===c.name?"var(--accent)":"var(--text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.name}</span>
+          <span style={{fontSize:8,color:"var(--text-secondary)",flexShrink:0}}>{c.updated?.slice(5,10)||c.created?.slice(5,10)||""}</span>
+          {(c.username===user?.username||isAdmin)&&<span onClick={e=>{e.stopPropagation();deleteCustom(c.name);}} style={{fontSize:9,color:"#ef4444",cursor:"pointer",flexShrink:0}} title="Delete">✕</span>}
+        </div>)}
+        <div style={{marginTop:6,fontSize:10,color:"var(--text-secondary)"}}>Create / Edit:</div>
+        <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="Search columns..." style={{...S,width:"100%",fontSize:10,marginBottom:4,marginTop:4}}/>
+        <div style={{maxHeight:120,overflow:"auto"}}>
+          {filteredCols.map(c=><div key={c} onClick={()=>{if(!customCols.includes(c))setCustomCols([...customCols,c]);else setCustomCols(customCols.filter(x=>x!==c));}} style={{fontSize:10,padding:"2px 6px",cursor:"pointer",color:customCols.includes(c)?"var(--accent)":"var(--text-secondary)"}}>{customCols.includes(c)?"✓ ":""}{c}</div>)}
+        </div>
+        {customCols.length>0&&<div style={{marginTop:4}}>
+          <div style={{fontSize:9,color:"var(--text-secondary)"}}>{customCols.length} selected</div>
+          <div style={{display:"flex",gap:4,marginTop:4}}>
+            <input value={customName} onChange={e=>setCustomName(e.target.value)} placeholder="Set name" style={{...S,flex:1,fontSize:10}}/>
+            <button onClick={saveCustom} style={{padding:"3px 8px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:10,cursor:"pointer"}}>Save</button>
+          </div>
+          <div style={{fontSize:8,color:"var(--text-secondary)",marginTop:2}}>Same name = overwrite</div>
+        </div>}
+      </div>}
+      {/* Settings gear */}
+      {isAdmin&&<div>
+        <div onClick={()=>setShowSettings(!showSettings)} style={{position:"fixed",bottom:16,left:16,width:40,height:40,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,boxShadow:"0 2px 8px rgba(0,0,0,0.3)",fontSize:18}} title="Admin settings">⚙️</div>
+        {showSettings&&<><div style={{position:"fixed",inset:0,zIndex:98}} onClick={()=>setShowSettings(false)}/><div style={{position:"fixed",bottom:48,left:16,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:10,padding:16,width:280,maxHeight:"70vh",overflow:"auto",zIndex:99,boxShadow:"0 8px 30px rgba(0,0,0,0.5)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <span style={{fontSize:12,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>Split Table Settings</span>
+            <span onClick={()=>setShowSettings(false)} style={{cursor:"pointer",color:"var(--text-secondary)",fontSize:16}}>✕</span>
+          </div>
+          {/* Source visibility checkboxes */}
+          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:6,fontWeight:600}}>Visible Sources (check to show to users)</div>
+          {products.map(p=>{const checked=!enabledSources||enabledSources.has(p.name);return(
+            <label key={p.name} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--border)"}}>
+              <input type="checkbox" checked={checked} onChange={()=>{
+                const next=new Set(enabledSources||products.map(x=>x.name));
+                if(next.has(p.name))next.delete(p.name);else next.add(p.name);
+                setEnabledSources(next);saveSourceConfig(next);
+              }} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
+              <span style={{fontFamily:"monospace",flex:1}}>{p.name}</span>
+              <span style={{fontSize:9,color:"var(--text-secondary)"}}>{p.type||"parquet"}</span>
+            </label>);})}
+          <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:4,marginBottom:10}}>
+            {enabledSources?enabledSources.size:products.length} of {products.length} visible to users
+          </div>
+          {/* Prefix management */}
+          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontWeight:600}}>Prefix Management</div>
+          {prefixes.map(p=><div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"3px 0",fontSize:11}}>
+            <span style={{fontFamily:"monospace"}}>{p}</span><span onClick={()=>removePrefix(p)} style={{color:"#ef4444",cursor:"pointer",fontSize:10}}>✕</span>
+          </div>)}
+          <div style={{display:"flex",gap:4,marginTop:6}}>
+            <input value={newPrefix} onChange={e=>setNewPrefix(e.target.value)} placeholder="New prefix" style={{...S,flex:1,fontSize:10}} onKeyDown={e=>e.key==="Enter"&&addPrefix()}/>
+            <button onClick={addPrefix} style={{padding:"3px 8px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:10,cursor:"pointer"}}>+</button>
+          </div>
+          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontWeight:600,marginTop:10}}>Decimal Precision (per prefix)</div>
+          <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:6}}>숫자 셀을 몇째 자리까지 표시할지 (0-10, 기본 INLINE/VM = 2)</div>
+          {[...new Set([...Object.keys(precisionDraft||{}),...prefixes,"INLINE","VM"])].map(pfx=>{
+            const v=precisionDraft[pfx];
+            return(<div key={pfx} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0",fontSize:11}}>
+              <span style={{fontFamily:"monospace",flex:1}}>{pfx}</span>
+              <input type="number" min={0} max={10} value={v==null?"":v} placeholder="none"
+                onChange={e=>{
+                  const val=e.target.value;
+                  const next={...precisionDraft};
+                  if(val===""||val==null)delete next[pfx];
+                  else next[pfx]=Math.max(0,Math.min(10,Number(val)||0));
+                  setPrecisionDraft(next);
+                }}
+                style={{width:60,padding:"3px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace"}}/>
+            </div>);
+          })}
+          <button onClick={savePrecision} style={{marginTop:6,padding:"4px 10px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,cursor:"pointer",fontWeight:600}}>Save Precision</button>
+
+          {/* v8.4.4: root/fab_lot_id 컬럼 오버라이드 (선택된 product 기준, soft-landing) */}
+          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontWeight:600,marginTop:10}}>Lot ID 컬럼 오버라이드 ({selProd||"product 선택 필요"})</div>
+          <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:6}}>비우면 자동 감지. 입력 시 지정 컬럼 사용.</div>
+          {selProd&&(()=>{const ov=(lotOverrides&&lotOverrides[selProd])||{};const setOv=(k,v)=>{const n={...lotOverrides,[selProd]:{...ov,[k]:v}};setLotOverrides(n);};
+            return(<div style={{display:"flex",flexDirection:"column",gap:4}}>
+              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>root_col</span><input value={ov.root_col||""} onChange={e=>setOv("root_col",e.target.value)} placeholder="root_lot_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
+              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>wf_col</span><input value={ov.wf_col||""} onChange={e=>setOv("wf_col",e.target.value)} placeholder="wafer_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
+              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>fab_col</span><input value={ov.fab_col||""} onChange={e=>setOv("fab_col",e.target.value)} placeholder="fab_lot_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
+              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>fab_source</span>
+                <select value={ov.fab_source||""} onChange={e=>setOv("fab_source",e.target.value)} style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}>
+                  <option value="">— 없음 (ML_TABLE 내장 사용) —</option>
+                  {fabSourceOptions.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </label>
+              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>ts_col</span><input value={ov.ts_col||""} onChange={e=>setOv("ts_col",e.target.value)} placeholder="out_ts (최신기준)" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
+              <button onClick={()=>{sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:[...(enabledSources||new Set())],lot_overrides:lotOverrides||{}})}).then(()=>{loadView&&loadView();});}} style={{marginTop:4,padding:"4px 10px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,cursor:"pointer",fontWeight:600}}>Save Overrides</button>
+            </div>);
+          })()}
+
+          <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:10,marginBottom:10,lineHeight:1.5}}>
+            Color-coded: {COLOR_PREFIXES.join(", ")}
+          </div>
+          <button onClick={()=>setShowSettings(false)} style={{width:"100%",padding:"8px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:600,fontSize:11,cursor:"pointer"}}>Save & Close</button>
+        </div></>}
+      </div>}
+    </div>
+    {/* Main */}
+    <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      <div style={{padding:"8px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <span style={{fontSize:13,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{selProd}</span>
+        {lotId&&<span style={{fontSize:11,color:"var(--text-secondary)"}}>| {lotId}</span>}
+        <span style={{fontSize:10,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"2px 8px",borderRadius:4}}>
+          {isCustomMode?"CUSTOM"+(selCustom?": "+selCustom:""):selPrefixes.join("+")}</span>
+        <div style={{marginLeft:"auto",display:"flex",gap:4,alignItems:"center"}}>
+          {/* v8.4.3: Features 탭 제거 — ML_TABLE_PROD* 가 source 이므로 별도 features 뷰 불필요. */}
+          {[{k:"view",l:"View"},{k:"history",l:"History"}].map(({k,l})=><span key={k} className={"splittable-tab splittable-tab-"+k} data-active={tab===k?"1":"0"} onClick={()=>{setTab(k);if(k==="history")loadHistory(histAll);}} style={{padding:"4px 10px",borderRadius:4,fontSize:11,cursor:"pointer",background:tab===k?"var(--accent-glow)":"transparent",color:tab===k?"var(--accent)":"var(--text-secondary)",fontWeight:tab===k?600:400}}>{l}</span>)}
+          <span style={{width:1,height:16,background:"var(--border)"}}/>
+          {["all","diff"].map(m=><span key={m} onClick={()=>setViewMode(m)} style={{padding:"4px 10px",borderRadius:4,fontSize:11,cursor:"pointer",background:viewMode===m?"var(--accent-glow)":"transparent",color:viewMode===m?"var(--accent)":"var(--text-secondary)",fontWeight:viewMode===m?600:400}}>{m}</span>)}
+          <span style={{width:1,height:16,background:"var(--border)"}}/>
+          {editing?<>
+            <button onClick={()=>{if(Object.keys(pendingPlans).length>0)setShowConfirm(true);else setEditing(false);}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"#22c55e",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>Save ({Object.keys(pendingPlans).length})</button>
+            <button onClick={()=>{setEditing(false);setPendingPlans({});}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>Cancel</button>
+          </>:<>
+            <button onClick={()=>{const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&transposed=true&username="+encodeURIComponent(user?.username||"");window.open(url);}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>⬇ CSV</button>
+            <button onClick={()=>{const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&username="+encodeURIComponent(user?.username||"");window.open(url);}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"#10b981",fontSize:11,cursor:"pointer"}} title="XLSX (fab_lot_id 병합)">⬇ XLSX</button>
+            <button onClick={()=>setEditing(true)} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>Edit</button>
+          </>}
+        </div>
+      </div>
+      {loading?<div style={{padding:40,textAlign:"center"}}><Loading text="Loading..."/></div>
+      :data?.msg&&!data?.rows?.length?<div style={{padding:60,textAlign:"center",color:"var(--text-secondary)",fontSize:13}}>{data.msg}</div>
+      :tab==="view"&&data?.rows?.length?(()=>{
+        // 클라이언트 diff 필터: viewMode==='diff' 이면 non-null unique 값 >= 2 인 행만
+        const displayRows = viewMode==="diff"
+          ? data.rows.filter(r=>{const vs=Object.values(r._cells||{}).map(c=>c?.actual).filter(v=>v!=null&&v!==""&&v!=="None"&&v!=="null");return new Set(vs).size>=2;})
+          : data.rows;
+        return <div style={{flex:1,overflow:"auto",background:"var(--bg-card)"}}>
+        <table style={{borderCollapse:"collapse",fontSize:11,background:"var(--bg-card)",tableLayout:"fixed",width:288+(data.headers?.length||1)*115}}>
+          <colgroup>
+            <col style={{width:288}}/>
+            {data.headers?.map((_,i)=><col key={i} style={{width:115}}/>)}
+          </colgroup>
+          <thead>
+            {data.root_lot_id&&<tr style={{height:28}}><th style={{boxSizing:"border-box",height:28,padding:0,background:"var(--bg-tertiary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",position:"sticky",top:0,left:0,zIndex:5}}></th>
+              <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:28,textAlign:"center",padding:"0 8px",lineHeight:"27px",fontWeight:700,fontSize:12,color:"var(--accent)",background:"var(--bg-tertiary)",borderBottom:"1px solid #555",position:"sticky",top:0,zIndex:4,fontFamily:"monospace"}}>{data.root_lot_id}{viewMode==="diff"?<span style={{marginLeft:8,fontSize:10,color:"var(--text-secondary)",fontWeight:400}}>(diff: {displayRows.length}/{data.rows.length})</span>:null}</th></tr>}
+            {data.header_groups?.length>0&&<tr style={{height:24}}>
+              <th style={{boxSizing:"border-box",height:24,padding:0,background:"var(--bg-tertiary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",position:"sticky",top:data.root_lot_id?28:0,left:0,zIndex:5}}></th>
+              {data.header_groups.map((g,gi)=><th key={gi} colSpan={g.span} style={{boxSizing:"border-box",height:24,textAlign:"center",padding:"0 6px",fontWeight:700,fontSize:10,color:"#fbbf24",background:"var(--bg-tertiary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",position:"sticky",top:data.root_lot_id?28:0,zIndex:4,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={g.label}>{g.label}</th>)}
+            </tr>}
+            <tr>
+            <th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:10,color:"var(--accent)",borderBottom:"2px solid #555",borderRight:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:data.root_lot_id?(data.header_groups?.length>0?52:27):(data.header_groups?.length>0?24:0),left:0,zIndex:5,minWidth:260}}>Parameter</th>
+            {data.headers?.map((h,i)=><th key={i} style={{textAlign:"center",padding:"6px 8px",fontWeight:600,fontSize:10,color:"var(--text-secondary)",borderBottom:"2px solid #555",borderRight:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:data.root_lot_id?(data.header_groups?.length>0?52:27):(data.header_groups?.length>0?24:0),zIndex:3,whiteSpace:"normal",wordBreak:"break-word",minWidth:100}}>{h}</th>)}
+          </tr></thead>
+          <tbody>{displayRows.map((row,ri)=>{
+            const cells=row._cells||{};
+            // v8.4.5: plan 값도 uniqMap 에 포함 — 같은 값이면 같은 팔레트 색상
+            const allVals=Object.values(cells).map(c=>c?.actual||c?.plan).filter(v=>v&&v!=="None"&&v!=="null");
+            const uniqVals=[...new Set(allVals)];const uniqMap={};uniqVals.forEach((v,i)=>{uniqMap[v]=i;});
+            return(<tr key={ri}>
+              <td style={{padding:"6px 10px",fontWeight:600,fontSize:11,color:"var(--text-primary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-secondary)",position:"sticky",left:0,zIndex:2,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35}} title={row._param}>{row._param?.replace(/^[A-Z]+_/,"")}</td>
+              {data.headers?.map((_,ci)=>{
+                const cell=cells[String(ci)];if(!cell)return<td key={ci} style={{borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-card)"}}></td>;
+                const bgStyle=getCellBg(cell.actual||cell.plan,uniqMap,row._param);const planStyle=getCellPlanStyle(cell);
+                const canPlan=cell.can_plan!==false; // default true for backward compat
+                const baseStyle={background:"var(--bg-card)",color:"var(--text-primary)"};
+                const canEdit=canPlan&&!cell.actual;
+                const style={...baseStyle,...bgStyle,...planStyle,padding:"4px 8px",borderBottom:"1px solid #555",borderRight:"1px solid #555",textAlign:"center",fontSize:11,cursor:canEdit?"pointer":"default",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35};
+                const hasPlan=cell.plan&&!cell.actual;
+                const isMismatch=cell.mismatch||false;
+                const display=formatCell(cell.actual,row._param)||"";
+                const openEdit=()=>{if(!canEdit)return;
+                  // 자동으로 editing 모드 진입 (dbl-click 시 Edit 버튼 클릭 없이도 작동)
+                  if(!editing)setEditing(true);
+                  setActiveCell({key:cell.key,param:row._param,value:pendingPlans[cell.key]||""});
+                  // suggestion 캐시 확인 후 없으면 fetch
+                  if(!colValCache[row._param]){
+                    sf(API+"/column-values?product="+encodeURIComponent(selProd)+"&col="+encodeURIComponent(row._param)+"&limit=200")
+                      .then(d=>setColValCache(m=>({...m,[row._param]:d.values||[]}))).catch(()=>{});
+                  }
+                };
+                return(<td key={ci} style={style}
+                  onClick={()=>{if(editing&&canEdit)openEdit();}}
+                  onDoubleClick={()=>{if(canEdit)openEdit();}}
+                  onContextMenu={e=>{if(cell.plan){e.preventDefault();deletePlan(cell.key);}}}>
+                  {pendingPlans[cell.key]?<span style={{color:"#ea580c",fontWeight:700,fontStyle:"italic"}}>{"📌 "}{pendingPlans[cell.key]}</span>
+                  :isMismatch?<span style={{color:"#dc2626",fontWeight:700}}>{"✗ "}{formatCell(cell.actual,row._param)}<span style={{fontSize:9,color:"#ef4444"}}>{" (≠"+cell.plan+")"}</span></span>
+                  :hasPlan?<span style={{fontStyle:"italic",fontWeight:700}}>{"📌 "}{cell.plan}</span>
+                  :display}
+                </td>);})}
+            </tr>);})}</tbody>
+        </table></div>;
+      })()
+      :tab==="history"?<div style={{flex:1,overflow:"auto",padding:16}}>
+        <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"center"}}>
+          <span onClick={()=>{setHistAll(false);loadHistory(false);}} style={{fontSize:11,cursor:"pointer",padding:"4px 10px",borderRadius:4,...(!histAll?{background:"var(--accent-glow)",color:"var(--accent)",fontWeight:600}:{color:"var(--text-secondary)"})}}>This Lot</span>
+          <span onClick={()=>{setHistAll(true);loadHistory(true);}} style={{fontSize:11,cursor:"pointer",padding:"4px 10px",borderRadius:4,...(histAll?{background:"var(--accent-glow)",color:"var(--accent)",fontWeight:600}:{color:"var(--text-secondary)"})}}>All History</span>
+          {isAdmin&&<button onClick={()=>window.open(API+"/history-csv?product="+encodeURIComponent(selProd))} style={{marginLeft:"auto",padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>⬇ History CSV</button>}
+        </div>
+        {history.length===0?<div style={{textAlign:"center",padding:40,color:"var(--text-secondary)"}}>No history</div>
+        :<table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+          <thead><tr>{["Time","User","Root Lot","Wafer","Column","Action","Old","New"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 10px",borderBottom:"2px solid var(--border)",color:"var(--text-secondary)",fontSize:11}}>{h}</th>)}</tr></thead>
+          <tbody>{[...history].reverse().map((h,i)=>{const parts=h.cell?.split("|")||[];const lotPart=parts[0]||"";const wfPart=parts[1]||"";const colPart=parts[2]||h.cell||"";
+            return(<tr key={i}>
+            <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{h.time?.slice(0,16)}</td>
+            <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)"}}>{h.user}</td>
+            <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10,color:"var(--accent)"}}>{lotPart}</td>
+            <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10}}>{wfPart}</td>
+            <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10,maxWidth:140,overflow:"hidden",textOverflow:"ellipsis"}} title={colPart}>{colPart}</td>
+            <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)"}}><span style={{fontSize:10,padding:"1px 5px",borderRadius:3,background:h.action==="set"?"#f9731622":"#ef444422",color:h.action==="set"?"#f97316":"#ef4444"}}>{h.action}</span></td>
+            <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{h.old||"-"}</td>
+            <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",color:"#22c55e"}}>{h.new||"-"}</td>
+          </tr>);})}</tbody></table>}
+      </div>:tab==="features"?(()=>{
+        // v4.1: Features tab — wide ET⋈INLINE table with KNOB/MASK/product/ppid filters.
+        // Feature names are sourced from _uniques.json (dvc_features + inline_features)
+        // so "TC_NS_X" (canonical) and any alias form cannot diverge.
+        const u=uniques||{};
+        const prodOpts=Array.isArray(u.products)?u.products:[];
+        const ppidOpts=featProd&&u.ppids&&u.ppids[featProd]?u.ppids[featProd]:[];
+        const knobOpts=u.knobs&&typeof u.knobs==="object"?Object.keys(u.knobs):[];
+        const knobValOpts=featKnob&&u.knobs&&Array.isArray(u.knobs[featKnob])?u.knobs[featKnob]:[];
+        const maskOpts=u.masks&&Array.isArray(u.masks.reticles)?u.masks.reticles:(u.masks&&Array.isArray(u.masks.photo_steps)?u.masks.photo_steps:[]);
+        const dvcNames=Array.isArray(u.dvc_features)?u.dvc_features.map(f=>f.name).filter(Boolean):[];
+        const inlineNames=Array.isArray(u.inline_features)?u.inline_features.map(f=>f.name).filter(Boolean):[];
+        const featureNames=[...dvcNames,...inlineNames];
+        const sampleRows=features?.sample||[];
+        // Client-side filter by selected values (best-effort; exact column name
+        // depends on the feature-table schema — the filter is additive).
+        const filterRow=(r)=>{
+          if(featProd&&r.product!=null&&String(r.product)!==featProd)return false;
+          if(featPpid&&r.ppid!=null&&String(r.ppid)!==featPpid)return false;
+          if(featKnob&&featKnobVal&&r[featKnob]!=null&&String(r[featKnob])!==featKnobVal)return false;
+          return true;
+        };
+        const filtered=sampleRows.filter(filterRow);
+        const cols=features?.columns||[];
+        const toggleFeat=(n)=>setSelFeatCols(prev=>prev.includes(n)?prev.filter(x=>x!==n):[...prev,n]);
+        const buildPlan=()=>{
+          const plan={
+            created:new Date().toISOString(),
+            product:featProd||null,ppid:featPpid||null,
+            filters:{knob:featKnob?{name:featKnob,value:featKnobVal||null}:null,mask:featMask||null},
+            features:[...selFeatCols],
+            source:{endpoint:API+"/features",rows:features?.total_rows||null,cols:features?.total_cols||null},
+          };
+          setMlPlan(plan);
+        };
+        return(<div className="splittable-features" style={{flex:1,overflow:"auto",padding:16}}>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:12}}>
+            <button className="splittable-load-features" onClick={loadFeatures} disabled={featuresLoading}
+              style={{padding:"6px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:12,fontWeight:600,cursor:featuresLoading?"default":"pointer",opacity:featuresLoading?0.5:1}}>
+              {featuresLoading?"Loading…":"Load features"}
+            </button>
+            {features&&<span style={{fontSize:11,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6}}>
+              {features.total_rows?.toLocaleString()}행 × {features.total_cols}열 | 표시 {sampleRows.length} | join: {features.join}
+            </span>}
+            {uniques&&<span style={{fontSize:10,color:"var(--text-secondary)"}}>uniques: {Object.keys(uniques).length} keys</span>}
+          </div>
+          {/* Filter row */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:8,marginBottom:12,padding:10,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6}}>
+            <label style={{fontSize:10,color:"var(--text-secondary)"}}>제품 (product)
+              <select className="splittable-feat-product" value={featProd} onChange={e=>{setFeatProd(e.target.value);setFeatPpid("");}} style={{...S,width:"100%",marginTop:4}}>
+                <option value="">— 전체 —</option>
+                {prodOpts.map(p=><option key={p} value={p}>{p}</option>)}
+              </select>
+            </label>
+            <label style={{fontSize:10,color:"var(--text-secondary)"}}>PPID
+              <select className="splittable-feat-ppid" value={featPpid} onChange={e=>setFeatPpid(e.target.value)} disabled={!featProd} style={{...S,width:"100%",marginTop:4,opacity:featProd?1:0.5}}>
+                <option value="">— 전체 —</option>
+                {ppidOpts.map(p=><option key={p} value={p}>{p}</option>)}
+              </select>
+            </label>
+            <label style={{fontSize:10,color:"var(--text-secondary)"}}>KNOB
+              <select className="splittable-feat-knob" value={featKnob} onChange={e=>{setFeatKnob(e.target.value);setFeatKnobVal("");}} style={{...S,width:"100%",marginTop:4}}>
+                <option value="">— 선택 —</option>
+                {knobOpts.map(k=><option key={k} value={k}>{k}</option>)}
+              </select>
+            </label>
+            <label style={{fontSize:10,color:"var(--text-secondary)"}}>KNOB 값
+              <select className="splittable-feat-knob-val" value={featKnobVal} onChange={e=>setFeatKnobVal(e.target.value)} disabled={!featKnob} style={{...S,width:"100%",marginTop:4,opacity:featKnob?1:0.5}}>
+                <option value="">— 전체 —</option>
+                {knobValOpts.map(v=><option key={String(v)} value={String(v)}>{String(v)}</option>)}
+              </select>
+            </label>
+            <label style={{fontSize:10,color:"var(--text-secondary)"}}>MASK
+              <select className="splittable-feat-mask" value={featMask} onChange={e=>setFeatMask(e.target.value)} style={{...S,width:"100%",marginTop:4}}>
+                <option value="">— 전체 —</option>
+                {maskOpts.map(m=><option key={m} value={m}>{m}</option>)}
+              </select>
+            </label>
+          </div>
+          {/* Feature picker */}
+          {featureNames.length>0&&<div style={{padding:10,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6,marginBottom:12}}>
+            <div style={{fontSize:11,fontWeight:600,color:"var(--accent)",marginBottom:6}}>Feature 선택 ({selFeatCols.length}/{featureNames.length}) — _uniques.json 기반</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:4,maxHeight:140,overflow:"auto"}}>
+              {featureNames.map(n=>{const on=selFeatCols.includes(n);return(
+                <span key={n} className="splittable-feature-chip" data-selected={on?"1":"0"} onClick={()=>toggleFeat(n)}
+                  style={{padding:"3px 8px",borderRadius:4,fontSize:10,cursor:"pointer",fontFamily:"monospace",fontWeight:on?700:400,
+                    background:on?"var(--accent-glow)":"var(--bg-hover)",color:on?"var(--accent)":"var(--text-secondary)",
+                    border:"1px solid "+(on?"var(--accent)":"transparent")}}>{n}</span>
+              );})}
+            </div>
+            <div style={{display:"flex",gap:6,marginTop:8,alignItems:"center"}}>
+              <button className="splittable-build-plan" onClick={buildPlan} disabled={!selFeatCols.length}
+                style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:selFeatCols.length?"pointer":"default",opacity:selFeatCols.length?1:0.5}}>
+                ML plan 생성
+              </button>
+              {selFeatCols.length>0&&<button onClick={()=>{setSelFeatCols([]);setMlPlan(null);}} style={{padding:"4px 10px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>초기화</button>}
+              {mlPlan&&<span style={{fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>plan: {mlPlan.features.length} features • {mlPlan.created.slice(11,19)}</span>}
+            </div>
+            {mlPlan&&<pre className="splittable-ml-plan" style={{margin:"8px 0 0",padding:8,background:"var(--bg-primary)",border:"1px solid var(--border)",borderRadius:4,fontSize:10,fontFamily:"monospace",color:"var(--text-secondary)",maxHeight:140,overflow:"auto",whiteSpace:"pre-wrap"}}>{JSON.stringify(mlPlan,null,2)}</pre>}
+          </div>}
+          {/* Features table */}
+          {featuresLoading?<div style={{padding:40,textAlign:"center"}}><Loading text="Loading features..."/></div>
+          :!features?<div style={{padding:40,textAlign:"center",color:"var(--text-secondary)",fontSize:12}}>상단의 <b>Load features</b> 버튼으로 ET⋈INLINE wide form 을 불러오세요.</div>
+          :<div className="splittable-features-table" style={{overflow:"auto",maxHeight:"calc(100vh - 440px)",background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6}}>
+            <table style={{borderCollapse:"collapse",fontSize:11,width:"max-content",minWidth:"100%"}}>
+              <thead><tr>
+                <th style={{padding:"6px 8px",textAlign:"left",fontSize:10,fontWeight:700,color:"var(--text-secondary)",borderBottom:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:1}}>#</th>
+                {cols.map(c=><th key={c} data-col={c} style={{padding:"6px 8px",textAlign:"left",fontSize:10,fontWeight:700,color:selFeatCols.includes(c)?"var(--accent)":"var(--text-secondary)",borderBottom:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:1,whiteSpace:"nowrap",cursor:"pointer"}} onClick={()=>toggleFeat(c)} title="클릭 → feature select 토글">{c}</th>)}
+              </tr></thead>
+              <tbody>{filtered.slice(0,200).map((r,i)=>(<tr key={i}>
+                <td style={{padding:"4px 8px",borderBottom:"1px solid #555",color:"#64748b",fontSize:10}}>{i+1}</td>
+                {cols.map(c=><td key={c} style={{padding:"4px 8px",borderBottom:"1px solid #555",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:11,background:selFeatCols.includes(c)?"var(--accent-glow)":"transparent"}} title={String(r[c]==null?"":r[c])}>
+                  {r[c]===null||r[c]===undefined?<span style={{color:"#64748b"}}>null</span>:String(r[c])}
+                </td>)}
+              </tr>))}</tbody>
+            </table>
+            {filtered.length===0&&<div style={{padding:20,textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>필터와 일치하는 행이 없습니다.</div>}
+          </div>}
+        </div>);
+      })():null}
+    </div>
+    {activeCell&&(()=>{const sugg=colValCache[activeCell.param]||[];const commit=(v)=>{const t=(v??"").trim();if(t)setPendingPlans(p=>({...p,[activeCell.key]:t}));setActiveCell(null);};
+      return <div style={{position:"fixed",inset:0,zIndex:9998,background:"rgba(0,0,0,0.55)",display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setActiveCell(null)}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"var(--bg-secondary)",borderRadius:10,padding:18,width:360,border:"1px solid var(--border)"}}>
+          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontFamily:"monospace"}}>{activeCell.key.split("|").slice(0,2).join(" · ")}</div>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:10,color:"var(--accent)",fontFamily:"monospace"}}>{activeCell.param}</div>
+          <input autoFocus value={activeCell.value} onChange={e=>setActiveCell(c=>({...c,value:e.target.value}))}
+            onKeyDown={e=>{if(e.key==="Enter")commit(activeCell.value);else if(e.key==="Escape")setActiveCell(null);}}
+            list={`cv-${activeCell.key}`}
+            placeholder="값 입력 또는 아래 리스트 선택"
+            style={{width:"100%",padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:12,fontFamily:"monospace",boxSizing:"border-box"}}/>
+          <datalist id={`cv-${activeCell.key}`}>{sugg.map(v=><option key={v} value={v}/>)}</datalist>
+          <div style={{marginTop:10,maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)"}}>
+            {sugg.length===0?<div style={{padding:"10px 12px",fontSize:11,color:"var(--text-secondary)"}}>{colValCache[activeCell.param]===undefined?"로딩…":"suggestion 없음"}</div>
+             :sugg.slice(0,100).map((v,i)=><div key={i} onClick={()=>commit(v)} style={{padding:"6px 10px",fontSize:11,fontFamily:"monospace",cursor:"pointer",borderBottom:i<sugg.length-1?"1px solid var(--border)":"none"}} onMouseEnter={e=>e.currentTarget.style.background="var(--accent-glow)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{v}</div>)}
+          </div>
+          {sugg.length>0&&<div style={{fontSize:10,color:"var(--text-secondary)",marginTop:6}}>{sugg.length} 개 (전체 데이터셋 unique + plan 포함)</div>}
+          <div style={{display:"flex",gap:8,marginTop:12}}>
+            <button onClick={()=>commit(activeCell.value)} style={{flex:1,padding:"8px 12px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:600,cursor:"pointer",fontSize:12}}>Apply</button>
+            <button onClick={()=>setActiveCell(null)} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:12}}>Cancel</button>
+          </div>
+        </div>
+      </div>;})()}
+    {showConfirm&&<div style={{position:"fixed",inset:0,zIndex:9999,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setShowConfirm(false)}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"var(--bg-secondary)",borderRadius:12,padding:24,width:400,border:"1px solid var(--border)",maxHeight:"80vh",overflow:"auto"}}>
+        <div style={{fontSize:16,fontWeight:700,marginBottom:12}}>Confirm Changes</div>
+        <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:16}}>{Object.keys(pendingPlans).length} cells will be updated</div>
+        {Object.entries(pendingPlans).map(([k,v])=>(<div key={k} style={{fontSize:11,padding:"4px 0",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between"}}><span style={{fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis"}}>{k.split("|").pop()}</span><span style={{color:"#f97316",fontWeight:600}}>{v}</span></div>))}
+        <div style={{display:"flex",gap:8,marginTop:16}}>
+          <button onClick={savePlans} style={{flex:1,padding:10,borderRadius:6,border:"none",background:"#22c55e",color:"#fff",fontWeight:600,cursor:"pointer"}}>Confirm</button>
+          <button onClick={()=>setShowConfirm(false)} style={{padding:"10px 20px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>Cancel</button>
+        </div></div></div>}
+  </div>);
+}

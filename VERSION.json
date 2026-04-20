@@ -1,0 +1,217 @@
+{
+  "version": "8.4.5",
+  "codename": "flow",
+  "changelog": [
+    {
+      "version": "8.4.5",
+      "date": "2026-04-20",
+      "title": "flow — Contact Hub + XLSX 컬러/자연정렬 + TableMap 버전관리 + FB 톱니 컨텍스트",
+      "tag": "feat",
+      "changes": [
+        "Contact 통합 — 우상단 ✉ 아이콘 + 모달 (내 문의 · 공지 · 받은 문의 · 공지 작성). 홈 상단 3일 TTL 공지 배너. /api/messages/* 재사용.",
+        "SplitTable XLSX/CSV 다운로드에 fab_lot_id 그룹 병합(XLSX), UI 와 동일 7색 팔레트 (KNOB/MASK만), 자연정렬 (prefix 뒤 숫자 기준), plan 이탤릭+컬러 배경, 미스매치 좌측 빨간 테두리. downloaded_at 행 추가.",
+        "SplitTable 톱니 — product 별 root/wf/fab_col/fab_source/ts_col override (soft-landing, 미설정 시 자동 감지). fab_source 는 FileBrowser DB 목록 드롭다운.",
+        "SplitTable 빈셀 dbl-click → 즉시 edit + 전체 데이터셋 unique 값 + plan 값 union suggestion list. /api/splittable/column-values 신규.",
+        "SplitTable fab_lot_id 그룹 헤더행 + 동일 fab_lot wafer 자동 인접 정렬. diff 뷰모드 클라이언트 즉시 필터. 테스트 시연용 split fixtures (`ensure_diff_fixtures.py`) 적용.",
+        "root_lot_id 포맷: 5-char (A0001). fab_lot_id: {root}{LETTER}.{N} (A0001B.1). ML_TABLE KNOB lot-dominant + split fixtures (plan vs actual diff 시연 현실화).",
+        "TableMap — display_name 필드 (그래프 라벨 ≠ 물리 파일명). 저장 위치 DB → Base 로 (Dashboard 소스에 즉시 노출). `/tables/import` (Base/DB 파일 → TableMap 자동 스키마 추론). 버전 30개 cap + rollback + audit (username/action/timestamp).",
+        "Dashboard 데이터 소스 드롭다운에 Base 파일 노출 + 아이콘 prefix 제거. base_file source_type 의 columns fetch 분기 추가 (source_type 파라미터). Fitting line 렌더러 — polynomial deg 1-4 + R² 라벨.",
+        "FileBrowser — Base 탭 '적용' 버튼 동작 (컬럼 projection 즉시 반영). 우하단 톱니를 페이지 컨텍스트로 분리: FB 에서는 AWS Configure / S3 Sync (양방향, push/pull) / 로그 / 주기 설정. 그 외 페이지는 기존 admin_settings.",
+        "Admin Catalog — 클릭 시 crash 수정 (MatchingPanel/ProductPanel/S3Panel 의 useEffect deps 에서 undefined user 제거).",
+        "flow 브랜드 로고 — Outfit 900 / #FF5E00 'flow.' 타이포 (다크 도트). 로그인/홈/nav 공통.",
+        "CSV 다운로드 UTF-8 BOM prefix (csv_response 공통 적용) — Excel 한글 깨짐 해결."
+      ]
+    },
+    {
+      "version": "8.4.4",
+      "date": "2026-04-20",
+      "title": "flow — Lot 포맷 전환 + SplitTable UX 강화 + Dashboard Base 연동 (superseded by 8.4.5)",
+      "tag": "feat",
+      "changes": [
+        "root_lot_id 5자 / fab_lot_id {root}{L}.{N} 포맷 마이그레이션 (migrate_lot_format.py).",
+        "SplitTable fab_lot_id 그룹 헤더 + diff 클라이언트 필터 + 빈셀 dbl-click edit.",
+        "Dashboard Base 소스 연동 / flow 브랜드 로고 / CSV BOM."
+      ]
+    },
+    {
+      "version": "8.4.3",
+      "date": "2026-04-20",
+      "title": "flow Platform — 단위기능 페이지 철학 + OOM lazy scan + ML_TABLE pivot",
+      "tag": "feat",
+      "changes": [
+        "FileBrowser DB 목록 화이트리스트 strict 적용: FAB/INLINE/ET/QTIME/VM/EDS 6개만 노출. 아이콘/레벨 배지 제거.",
+        "ML_TABLE_PRODA/B parquet 생성 (KNOB/MASK/FAB categorical + INLINE sparse + VM numeric dense + KNOB 일부 null for plan test).",
+        "Base 정리 — features_et_wafer / inline_agg / rulebook 등 모두 제거, ML_TABLE_PROD* 만 유지.",
+        "Base 신규 데이터셋 추가: speed.csv / ET_DVC.csv / pred.csv (root_lot_id+wafer_id 키 공유).",
+        "SplitTable ML_TABLE pivot — Features 탭 제거, `/lot-candidates` autocomplete 엔드포인트, fab_lot_id 검색 지원.",
+        "Admin 에서 AWS 설정 탭 제거 (단위기능 페이지 철학 — FileBrowser 톱니로 이관).",
+        "Dashboard LEFT JOIN 섹션 위치: 차트 설정 중간에서 데이터 소스 바로 아래로 이동.",
+        "Dashboard joined 컬럼을 X/Y/색상/집계/시간/SQL필터 모든 ColInput 에서 선택 가능 (suffix 자동).",
+        "Dashboard 고급 설정에 Fitting Line (on/off + 차수 1~4 + R² 표시) UI 추가.",
+        "FileBrowser OOM 방지 — root-parquet-view / base-file-view / view 모두 lazy scan + projection/head pushdown. 10GB+ parquet 도 head 만 로드.",
+        "VERSION.json fetch 에 cache:'no-store' — HTTP 캐시로 구버전 고정되던 버그 해결."
+      ]
+    },
+    {
+      "version": "8.4.2",
+      "date": "2026-04-20",
+      "title": "flow 브랜딩 — 도트 타이핑 + 엔터 + clean wordmark",
+      "tag": "feat",
+      "changes": [
+        "로그인 화면 4-phase auto 애니메이션: >FLOW 도트 타이핑 → 블링크 hold → 엔터 펄스 (scale+glow 서지) → clean sans-serif 'flow' brand logo 로 전환.",
+        "PixelGlyph 각 cell 사이 gap 추가 — Claude Code 같은 distinct 도트 느낌.",
+        "BrandLogo: FlowWordmark (Pretendard 900, 타이트 tracking, orange glow) 를 홈·nav·로그인 locked 에서 공유.",
+        "모든 브랜드 텍스트 'FabCanvas.ai' → 'flow' 로 교체 (title / nav / home CLI / footer / 마스코트 flow-i).",
+        "데이터 브라우저 LOTS / wafer_maps 사이드바 숨김."
+      ]
+    },
+    {
+      "version": "8.4.0",
+      "date": "2026-04-20",
+      "title": "flow 리브랜딩 초안 (후속 8.4.2 에서 확정)",
+      "tag": "feat",
+      "changes": [
+        "FabCanvas.ai → flow 리브랜딩 착수. lowercase pixel glyph 'flow'.",
+        "홈 터미널 헤더 'fabcanvas@ai' → 'flow'. 마스코트 라벨 FAB-i → flow-i.",
+        "VERSION codename 'FabCanvas' → 'flow'."
+      ]
+    },
+    {
+      "version": "8.3.0",
+      "date": "2026-04-19",
+      "title": "FabCanvas — 브랜드 통합 (HOL_WEB → FabCanvas.ai)",
+      "tag": "feat",
+      "changes": [
+        "Login 타이핑 애니메이션: 다중 시퀀스 (>HOL_ → >AI_TF_ → >OMNIS_) 제거, 단일 >FabCanvas_ 로 단순화. 지우기/재타이핑 없이 한 번 타이핑 후 고정",
+        "Login PF 픽셀 폰트 딕셔너리에 mixed-case 글리프 추가: C / a / b / n / v / s (6-wide × 7-tall 유지)",
+        "Login 카드 하단 버전 라벨: 'v8.2.0' → 'FabCanvas.ai · v8.3.0'",
+        "Matrix Rain pool 문자열에서 HOLLINE 제거, FABCANVAS 삽입",
+        "브라우저 타이틀 'HOL WEB' → 'FabCanvas.ai' (frontend/index.html)",
+        "App.jsx nav 좌상단 브랜드: '> HOL_WEB' → '> FabCanvas.ai', ErrorBoundary 로그 태그 동일 변경",
+        "Home 터미널 헤더 프롬프트 'hol@fab-data' → 'fabcanvas@ai', 'HOL-i' 로고 라벨 → 'FAB-i'",
+        "Admin Monitor 탭 농부 애니메이션: HOL_FARM/holFarm → FARM_ANIM/fabFarm, 'HOL-i is farming…' → 'FAB-i is farming…'",
+        "DevGuide Architecture 섹션 'HOL WEB =' → 'FabCanvas.ai ='",
+        "backend/app.py: FastAPI title/docstring/paths 로그 HOL WEB → FabCanvas.ai (logger name 'holweb' 은 기존 로그 필터 호환 위해 유지)",
+        "backend/core/paths.py docstring: 브랜드 교체 + env var 이름 HOL_APP_ROOT/HOL_DATA_ROOT/HOL_DB_ROOT/HOL_PROD 는 legacy prefix 유지 명시 (prod 배포/유저 쉘 설정 호환)",
+        "localStorage 키 prefix (hol_user / hol_dark / hol_home_version_v1) 및 seed admin 크리덴셜 (hol / hol12345!) 은 기존 유저 초기화 방지 위해 유지"
+      ]
+    },
+    {
+      "version": "8.2.0",
+      "date": "2026-04-17",
+      "title": "Sequence — 로그인 타이핑 시퀀스 + Notification 실시간 동기화",
+      "tag": "feat",
+      "changes": [
+        "Login: 픽셀 폰트 타이핑 애니메이션을 다중 시퀀스로 재작성 — >HOL_ 타이핑 → 지우기 → >AI_TF_ 타이핑 → 지우기 → >OMNIS_ 타이핑 후 고정. PF 딕셔너리에 A/I/T/F/M/N/S 글리프 추가",
+        "Login: 로그인 카드가 이제 페이지 진입 즉시 표시 (formIn 초기값 true) — 이전에는 타이핑 완료 후 fade-in",
+        "Login: 버전 라벨 v4.0.0 → v8.2.0",
+        "Notification 동기화 버그 수정 — 우상단 종(Bell)과 Admin/User의 Notifications 탭이 서로 독립 폴링해서 한쪽에서 읽음 처리해도 다른쪽은 최대 30초 지연되던 문제",
+        "App.jsx: 종 poll useEffect 에 window.addEventListener(hol:notif-refresh) 리스너 추가. BellDropdown.dismissSel mark-read 성공 시 CustomEvent 발행",
+        "My_Admin.jsx: markRead 성공 시 CustomEvent 발행. load 재사용용 useEffect 리스너 추가로 종에서 읽어도 즉시 반영",
+        "결과: 종↔Admin Notifications 탭 양방향 즉시 동기화. 한쪽에서 읽음 처리하면 다른쪽도 바로 지워짐"
+      ]
+    },
+    {
+      "version": "8.1.8",
+      "date": "2026-04-17",
+      "title": "Excel-Bright — TableMap 밝기 대폭 개선 + 엑셀스타일 편집 + DB루트 CSV 저장",
+      "tag": "feat",
+      "changes": [
+        "TableMap Graph: 캔버스 배경에 grid dot 패턴 + 오렌지/퍼플 톤 그라디언트 추가, 노드 fill opacity 13%→33% (2.5배 밝아짐), 그룹 박스 4%→15% (6배), DB 실린더 9%/19%→33%/50%",
+        "TableMap Graph: 노드 내부 텍스트 흰색 + text-shadow 로 진한 배경 위 가독성 확보, stroke 0.5~1px 두껍게",
+        "TableMap TableEditor: 하단 데이터 테이블을 엑셀 스타일로 재작성 — 흰색 시트 배경, sticky 헤더 (스크롤해도 컬럼명 고정), 좌측 sticky 행번호 컬럼 (#1/#2…), 전체 cell grid lines (엑셀 격자), 홀짝 줄무늬 (#fff/#f9fafb), 컬럼 min-width 120px",
+        "TableMap TableEditor: Tab/Shift+Tab = 다음/이전 칼럼 이동, Enter = 다음 행 (마지막 행이면 자동 +Row), 현재 포커스 셀은 주황 outline + 연한 배경 강조",
+        "TableMap TableEditor: 빈 테이블 안내 문구 추가 (No rows. Click +Row or paste Excel data)",
+        "dbmap.py _write_db_csv(): 테이블 저장 시 PATHS.db_root/<name>.csv 에 RFC 4180 형식 CSV 로 영구 저장 — Admin AWS 동기화 안 걸어도 FileBrowser 에서 바로 root CSV 로 보임",
+        "dbmap.py save_table: 이름 변경 감지 시 이전 CSV 파일 삭제 후 새 이름으로 재생성 (dangling 파일 방지)",
+        "dbmap.py delete_table: 아카이브 후 DB 루트 CSV 도 함께 제거 (JSON 원본은 archive 에 보존)",
+        "TableMap saveTable 핸들러: 응답의 csv_path 를 토스트로 표시 (📄 <name>.csv saved to DB root)"
+      ]
+    },
+    {
+      "version": "8.1.7",
+      "date": "2026-04-17",
+      "title": "Home-Fast — 홈 로딩 블로킹 제거",
+      "tag": "improve",
+      "changes": [
+        "My_Home: /api/filebrowser/roots 호출 제거 — 결과가 JSX 에 렌더되지 않는 데드 코드였음. DB 디렉토리 스캔 + parquet_count 계산 때문에 홈이 가장 오래 걸리는 엔드포인트를 기다리고 있었던 주 병목",
+        "My_Home: Promise.all + loading gate 제거 → 첫 진입부터 카드/changelog/HOL-i 가 즉시 렌더. version.json 은 독립 useEffect 로 비동기 로드 (돌아오는 즉시 헤더 업데이트)",
+        "My_Home: localStorage (hol_home_version_v1) 에 version 캐시 → 2회차 방문부터는 'v...' flash 없이 이전 버전으로 즉각 표시 후 최신값으로 자연스러운 교체",
+        "stats state + Loading 컴포넌트 import 제거 (unused)"
+      ]
+    },
+    {
+      "version": "8.1.6",
+      "date": "2026-04-17",
+      "title": "Messages — User↔Admin 1:1 + Admin→All 공지사항 + Home 팝업",
+      "tag": "feat",
+      "changes": [
+        "신규 Messages 탭 (✉️) — 모든 유저에게 기본 노출. 공지사항 + 1:1 Admin 문의 서브탭.",
+        "backend/routers/messages.py 신규 — /api/messages/{thread,send,unread,mark_read,notices,notice_read} + /admin/{threads,thread,reply,mark_read,unread,notices,notice_create,notice_delete}",
+        "저장소: {data_root}/messages/threads/<user>.json (1:1 스레드), {data_root}/messages/notices.json (broadcast 공지)",
+        "Admin → Messages 탭: Inbox (1:1 스레드 목록 · unread 배지) + 공지사항 관리 (생성/삭제 · 읽음 카운트)",
+        "유저 Home: 세션당 1회 unread 팝업 (Admin 답장 + 새 공지사항 요약 + Messages 탭 이동 버튼)",
+        "유저 Home: 기존 'Contact Admin' FAB 제거 → Messages 탭으로 통합",
+        "App.jsx: nav 의 Messages 탭에 실시간 unread 배지 (45초 폴링 · tab 전환 시 즉시 갱신)",
+        "기존 bell 알림 시스템과 병행 — 유저 send 시 admin 에게, admin reply/notice_create 시 해당 유저(들) 에게 send_notify 자동 호출",
+        "Admin 탭 'Message' 서브탭 제거 (기능이 새 Messages 로 대체됨)",
+        "config.js TABS 에 messages 등록, canAccess 에서 messages 는 home 과 동일하게 always-on 처리"
+      ]
+    },
+    {
+      "version": "8.1.5",
+      "date": "2026-04-17",
+      "title": "Options — Dashboard null 제외 / Admin 톱니 refresh / Tracker 카테고리 색상",
+      "tag": "feat",
+      "changes": [
+        "Dashboard: ChartConfig 에 exclude_null 필드 추가 (default True). 모든 차트에서 x_col / y_expr 의 null, (null), NaN, 빈문자열 값 제외. Chart Config > Advanced 섹션 체크박스로 개별 차트 단위 on/off 가능",
+        "Dashboard: auto-refresh 주기가 하드코딩 10분 → 전역 설정값 (admin 조절) 로 변경",
+        "App.jsx: 화면 우하단에 admin 전용 톱니 버튼 추가 — dashboard refresh/BG interval (1~240분) 조절, settings.json 저장",
+        "admin.py: GET/POST /api/admin/settings 엔드포인트 추가",
+        "Tracker: 카테고리 저장 포맷 [{name, color}] 로 upgrade, legacy str 리스트 자동 호환",
+        "Tracker: Admin > Categories 탭 색상 picker, 이슈 리스트/Gantt/chip 지정 색상 반영",
+        "setup_v8 재편성: gzip+base64 사용, 피처 단위 part 그룹핑 (11 parts, v8.1.x 업데이트 시 meta + 1~2 feature part 만 변경됨)"
+      ]
+    },
+    {
+      "version": "8.1.4",
+      "date": "2026-04-17",
+      "title": "Crash-Hunt — TableMap Add crash / AWS guards / Monitor safety / endpoint_url fallback",
+      "tag": "fix",
+      "changes": [
+        "TableMap: + Table / + Group 버튼 crash 수정 — setEditingTable({}) 가 useState 의 ||fallback 을 안 타서 form.columns 가 undefined 되던 버그. spread 기반 기본값 merge 로 교체",
+        "Admin AWS Config: data.profiles 가 배열 아닐 때 crash 방지 가드 (.map / .some / index access)",
+        "Monitor: fetch 실패 시 console.warn + HTTP status 전파, unmount 시 setState 방지 (race condition 완화)",
+        "Monitor: checked_at 타입 체크 — 문자열 아닐 때 .slice() 호출 금지",
+        "FileBrowser S3 Sync: item 의 endpoint_url 이 비어있으면 ~/.aws/config 의 default profile endpoint_url 을 자동으로 --endpoint-url 로 사용 (Admin AWS Config 에 한 번 등록해두면 재사용)"
+      ]
+    },
+    {
+      "version": "8.1.3",
+      "date": "2026-04-17",
+      "title": "Polish Pack — SplitTable gap / TableMap GUIDE / Tracker category / ErrorBoundary",
+      "tag": "fix",
+      "changes": [
+        "SplitTable: root_lot_id 와 wafer_id sticky header 사이 1px gap 제거 (top 28→27)",
+        "TableMap: GUIDE 라벨 빨간색+크게, 4줄로 명확히 (Dbl-click / Drag / Ctrl+Drag / Scroll)",
+        "Tracker: catColor() 해시 기반 카테고리 색상 추가 — 이슈 앞 신호등 = 카테고리 색",
+        "Tracker: 이슈 리스트에 [CATEGORY] chip prefix 표시",
+        "Tracker: 검색 필터에 category 포함",
+        "Tracker: Gantt 차트 bar 색상 = 카테고리 색 (카테고리 없으면 priority 색)",
+        "Tracker: Gantt 제목 클릭 시 해당 이슈 상세 뷰로 이동 + List 탭 전환",
+        "App.jsx: ErrorBoundary 추가 — 페이지에서 JS 에러 발생 시 흰색 튕김 대신 에러 메시지 + Retry 버튼 표시"
+      ]
+    },
+    {
+      "version": "8.1.2",
+      "date": "2026-04-17",
+      "title": "Dashboard 컬럼 드롭다운 스크롤 + FileBrowser 파일 skip 방어",
+      "tag": "fix",
+      "changes": [
+        "Dashboard: ColInput 드롭다운 maxHeight 160→320, overflow hidden→auto — 스크롤 가능해서 7개 제한 해소",
+        "Dashboard: ColInput slice 30→500 — 많은 컬럼 테이블에서도 대부분 노출",
+        "FileBrowser /roots: 명시적 파일 skip (not d.is_dir(): continue) 방어 강화 — DB 섹션에 파일 절대 안 나오도록"
+      ]
+    }
+  ]
+}
