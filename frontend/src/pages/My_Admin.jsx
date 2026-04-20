@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import Loading from "../components/Loading";
 import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
-const sf=(url,o)=>fetch(url,o).then(r=>{if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});
+import { sf } from "../lib/api";
 const ALL_TABS=["filebrowser","dashboard","splittable","tracker","tablemap","ml","devguide","dashboard_chart"];
 
 function Gauge({label,pct,used,total,unit="GB"}){
