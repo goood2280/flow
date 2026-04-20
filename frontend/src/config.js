@@ -1,6 +1,6 @@
 export const FEATURE_VERSIONS = {
   filebrowser: "8.0.4", splittable: "8.0.4", dashboard: "8.0.4",
-  tracker: "7.0", tablemap: "4.1", ettime: "4.1",
+  tracker: "7.0", tablemap: "4.1",
   admin: "8.1.6", devguide: "4.0", ml: "7.0",
   messages: "8.1.6",
   home: "8.1.6",

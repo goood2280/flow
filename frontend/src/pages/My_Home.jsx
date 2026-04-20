@@ -23,7 +23,6 @@ const FEATURE_GUIDES={
   splittable:{icon:"🗂️",title:"스플릿 테이블",steps:["Product 선택 → Root Lot + Wafer IDs 입력 → 검색","Plan 입력 모드: 편집 클릭 후 셀 클릭하여 계획값 입력","셀 색: 회색(없음) / 주황(plan만) / 파스텔(actual) / 초록(match) / 빨강(mismatch)","이력 탭에서 변경 이력 확인"]},
   dashboard:{icon:"📊",title:"대시보드",steps:["데이터 소스 선택 (DB / Root Parquet / Product)","차트 타입: scatter / line / bar / pie / binning","X/Y 컬럼 선택 + 필터 SQL 입력","Days 옵션으로 기간 제한, binning 은 bin_count/bin_width 조정"]},
   tracker:{icon:"📋",title:"트래커",steps:["이슈 게시판 — 제목 + 본문 + 이미지 업로드","Lot/Wafer 범위 지정 (Excel 붙여넣기 지원)","댓글 + 중첩 답글 + 이미지","Gantt 뷰로 전체 진행 현황 확인"]},
-  ettime:{icon:"⏱️",title:"ET Time",steps:["장비별 경과시간 분석","Equipment → Step 선택","시간 구간 설정 후 차트 확인"]},
   tablemap:{icon:"🗺️",title:"테이블 맵",steps:["DB 간 관계 그래프 조회","노드 더블클릭 → 상세 정보","관계선 drag-drop 으로 편집"]},
   devguide:{icon:"📖",title:"개발 가이드",steps:["아키텍처 다이어그램","API 엔드포인트 문서","Gotchas / 코드 규칙"]},
 };
@@ -59,7 +58,6 @@ export default function My_Home({onNavigate,user}){
     {key:"splittable", icon:"🗂️",title:"스플릿 테이블",desc:"Plan vs actual, 공유 추적",tag:fv.splittable?"v"+fv.splittable:""},
     {key:"dashboard",  icon:"📊",title:"대시보드",desc:"동적 차트, 산점도, 추세",tag:fv.dashboard?"v"+fv.dashboard:""},
     {key:"tracker",    icon:"📋",title:"트래커",desc:"이슈 게시판, Lot/Wafer 추적",tag:fv.tracker?"v"+fv.tracker:""},
-    {key:"ettime",     icon:"⏱️",title:"ET Time",desc:"장비 경과시간 분석",tag:fv.ettime?"v"+fv.ettime:""},
     {key:"tablemap",   icon:"🗺️",title:"테이블 맵",desc:"DB 관계 그래프",tag:fv.tablemap?"v"+fv.tablemap:"",adminOnly:true},
     {key:"admin",      icon:"⚙️",title:"관리자",desc:"사용자, 권한, 모니터",tag:fv.admin?"v"+fv.admin:"",adminOnly:true},
     {key:"devguide",   icon:"📖",title:"개발 가이드",desc:"아키텍처, API 레퍼런스",tag:fv.devguide?"v"+fv.devguide:""},

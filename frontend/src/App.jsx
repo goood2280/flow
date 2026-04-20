@@ -8,7 +8,6 @@ import My_SplitTable from "./pages/My_SplitTable";
 import My_Dashboard from "./pages/My_Dashboard";
 import My_Tracker from "./pages/My_Tracker";
 import My_TableMap from "./pages/My_TableMap";
-import My_ETTime from "./pages/My_ETTime";
 import My_ML from "./pages/My_ML";
 import ComingSoon from "./components/ComingSoon";
 import Modal from "./components/Modal";
@@ -37,7 +36,7 @@ class ErrorBoundary extends Component {
 const PAGE_MAP = {
   home: My_Home, filebrowser: My_FileBrowser, splittable: My_SplitTable,
   dashboard: My_Dashboard, tracker: My_Tracker, tablemap: My_TableMap,
-  ettime: My_ETTime, ml: My_ML, devguide: My_DevGuide, admin: My_Admin,
+  ml: My_ML, devguide: My_DevGuide, admin: My_Admin,
 };
 
 const darkV = {"--bg-primary":"#1a1a1a","--bg-secondary":"#262626","--bg-card":"#2a2a2a","--bg-hover":"#333",
