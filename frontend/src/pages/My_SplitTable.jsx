@@ -31,6 +31,12 @@ export default function My_SplitTable({user}){
   const[colValCache,setColValCache]=useState({});
   // v8.4.7: KNOB feature_name → {label, groups}. 제품 바뀌면 재fetch.
   const[knobMeta,setKnobMeta]=useState({});
+  // v8.4.9-b: Notes (wafer 태그 + param 메모). lot 단위로 fetch.
+  const[notes,setNotes]=useState([]);
+  const[notesOpen,setNotesOpen]=useState(false);
+  const[noteFilter,setNoteFilter]=useState(null); // {scope, key} or null = all
+  const[noteDraft,setNoteDraft]=useState("");
+  const[noteDraftScope,setNoteDraftScope]=useState(null);  // {scope, product, root_lot_id, wafer_id, param}
   const[tab,setTab]=useState("view");const[history,setHistory]=useState([]);const[histAll,setHistAll]=useState(false);
   const[colSearch,setColSearch]=useState("");const[customCols,setCustomCols]=useState([]);const[customName,setCustomName]=useState("");
   const[showSettings,setShowSettings]=useState(false);const[newPrefix,setNewPrefix]=useState("");
@@ -99,7 +105,21 @@ export default function My_SplitTable({user}){
     let url=API+"/view?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+"&view_mode=all";
     if(fabLotId.trim())url+="&fab_lot_id="+encodeURIComponent(fabLotId.trim());
     if(isCustomMode&&selCustom)url+="&custom_name="+encodeURIComponent(selCustom);
-    sf(url).then(d=>{setData(d);if(d.precision)setPrecision(d.precision);setLoading(false);setPendingPlans({});}).catch(e=>{alert(e.message);setLoading(false);});};
+    sf(url).then(d=>{setData(d);if(d.precision)setPrecision(d.precision);setLoading(false);setPendingPlans({});reloadNotes();}).catch(e=>{alert(e.message);setLoading(false);});};
+  // v8.4.9-b: Notes reload — 로트가 정해지면 해당 로트 범위로 가져옴.
+  const reloadNotes=()=>{const prod=selProd, lot=lotId;if(!prod||!lot){setNotes([]);return;}
+    sf(API+"/notes?product="+encodeURIComponent(prod)+"&root_lot_id="+encodeURIComponent(lot))
+      .then(d=>setNotes(d.notes||[])).catch(()=>setNotes([]));};
+  const addNote=()=>{const txt=(noteDraft||"").trim();const sc=noteDraftScope;if(!txt||!sc)return;
+    sf(API+"/notes/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...sc,text:txt,username:user?.username||""})})
+      .then(()=>{setNoteDraft("");reloadNotes();}).catch(e=>alert("노트 저장 실패: "+e.message));};
+  const deleteNote=(id)=>{if(!confirm("삭제?"))return;
+    sf(API+"/notes/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,username:user?.username||""})})
+      .then(()=>reloadNotes()).catch(e=>alert("삭제 실패: "+e.message));};
+  const notesForWafer=(wid)=>notes.filter(n=>n.scope==="wafer"&&n.key===`${selProd}__${lotId}__W${wid}`);
+  const notesForParam=(param)=>notes.filter(n=>n.scope==="param"&&n.key.endsWith(`__${param}`)&&n.key.startsWith(`${selProd}__${lotId}__W`));
+  // v8.4.9-c: 특정 (wafer × param) 셀용 메모 — 행/열 교차 단위.
+  const notesForCell=(wid,param)=>notes.filter(n=>n.scope==="param"&&n.key===`${selProd}__${lotId}__W${wid}__${param}`);
   const doSearch=()=>loadView();
   const loadHistory=(all)=>{let url=API+"/history?product="+encodeURIComponent(selProd)+"&limit=500";if(!all&&lotId.trim())url+="&root_lot_id="+encodeURIComponent(lotId);sf(url).then(d=>setHistory(d.history||[]));};
   const savePlans=()=>{if(!Object.keys(pendingPlans).length)return;
@@ -172,6 +192,8 @@ export default function My_SplitTable({user}){
   const chipS=(active)=>({padding:"3px 8px",borderRadius:4,fontSize:10,cursor:"pointer",fontWeight:active?700:400,background:active?"var(--accent-glow)":"var(--bg-hover)",color:active?"var(--accent)":"var(--text-secondary)",border:active?"1px solid var(--accent)":"1px solid transparent"});
 
   return(<div style={{display:"flex",height:"calc(100vh - 48px)",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
+    {/* v8.4.9-c: 셀 hover 시 빈 💬+ 배지 페이드인 */}
+    <style>{`.stm-cell:hover .stm-note-btn{opacity:1 !important;}`}</style>
     {/* Sidebar */}
     <div style={{width:250,minWidth:250,borderRight:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",flexDirection:"column",overflow:"auto",position:"relative"}}>
       <div style={{padding:"12px 14px",borderBottom:"1px solid var(--border)",fontSize:12,fontWeight:700,color:"var(--text-secondary)",textTransform:"uppercase"}}>Split Table</div>
@@ -332,6 +354,8 @@ export default function My_SplitTable({user}){
             <button onClick={()=>{const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>alert("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>⬇ CSV</button>
             <button onClick={()=>{const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.xlsx`).catch(e=>alert("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"#10b981",fontSize:11,cursor:"pointer"}} title="XLSX (fab_lot_id 병합)">⬇ XLSX</button>
             <button onClick={()=>setEditing(true)} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>Edit</button>
+            {/* v8.4.9-b: 노트 드로어 토글 */}
+            <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 파라미터 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid #3b82f6",background:"transparent",color:"#3b82f6",fontSize:11,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"#3b82f6",color:"#fff",fontSize:9,fontWeight:700}}>{notes.length}</span>}</button>
           </>}
         </div>
       </div>
@@ -357,7 +381,10 @@ export default function My_SplitTable({user}){
             </tr>}
             <tr>
             <th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:10,color:"var(--accent)",borderBottom:"2px solid #555",borderRight:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:data.root_lot_id?(data.header_groups?.length>0?52:27):(data.header_groups?.length>0?24:0),left:0,zIndex:5,minWidth:260}}>Parameter</th>
-            {data.headers?.map((h,i)=><th key={i} style={{textAlign:"center",padding:"6px 8px",fontWeight:600,fontSize:10,color:"var(--text-secondary)",borderBottom:"2px solid #555",borderRight:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:data.root_lot_id?(data.header_groups?.length>0?52:27):(data.header_groups?.length>0?24:0),zIndex:3,whiteSpace:"normal",wordBreak:"break-word",minWidth:100}}>{h}</th>)}
+            {data.headers?.map((h,i)=>{const wid=String(h).replace(/^#/,"");const wn=notesForWafer(wid).length;return(<th key={i} style={{textAlign:"center",padding:"6px 8px",fontWeight:600,fontSize:10,color:"var(--text-secondary)",borderBottom:"2px solid #555",borderRight:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:data.root_lot_id?(data.header_groups?.length>0?52:27):(data.header_groups?.length>0?24:0),zIndex:3,whiteSpace:"normal",wordBreak:"break-word",minWidth:100,cursor:"pointer"}} title={wn>0?`wafer ${h} — ${wn}개 태그 · 클릭해서 보기`:`wafer ${h} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"wafer",key:`${selProd}__${lotId}__W${wid}`});setNoteDraftScope({scope:"wafer",product:selProd,root_lot_id:lotId,wafer_id:wid});setNotesOpen(true);}}>
+              <div>{h}</div>
+              {wn>0&&<span style={{display:"inline-block",marginTop:2,padding:"0 6px",borderRadius:10,background:"#3b82f6",color:"#fff",fontSize:9,fontWeight:700}}>🏷 {wn}</span>}
+            </th>);})}
           </tr></thead>
           <tbody>{displayRows.map((row,ri)=>{
             const cells=row._cells||{};
@@ -387,12 +414,16 @@ export default function My_SplitTable({user}){
                 )}
               </td>
               {data.headers?.map((_,ci)=>{
-                const cell=cells[String(ci)];if(!cell)return<td key={ci} style={{borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-card)"}}></td>;
+                const cell=cells[String(ci)];const wid=String(data.headers[ci]??"").replace(/^#/,"");
+                const cellNoteCount=notesForCell(wid,row._param).length;
+                if(!cell)return(<td key={ci} style={{borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-card)",position:"relative"}}>
+                  {cellNoteCount>0&&<span onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={`${cellNoteCount}개 메모`} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:9,padding:"0 5px",borderRadius:7,background:"#8b5cf6",color:"#fff",fontWeight:700,lineHeight:"14px"}}>💬 {cellNoteCount}</span>}
+                </td>);
                 const bgStyle=getCellBg(cell.actual||cell.plan,uniqMap,row._param);const planStyle=getCellPlanStyle(cell);
                 const canPlan=cell.can_plan!==false; // default true for backward compat
                 const baseStyle={background:"var(--bg-card)",color:"var(--text-primary)"};
                 const canEdit=canPlan&&!cell.actual;
-                const style={...baseStyle,...bgStyle,...planStyle,padding:"4px 8px",borderBottom:"1px solid #555",borderRight:"1px solid #555",textAlign:"center",fontSize:11,cursor:canEdit?"pointer":"default",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35};
+                const style={...baseStyle,...bgStyle,...planStyle,padding:"4px 8px",borderBottom:"1px solid #555",borderRight:"1px solid #555",textAlign:"center",fontSize:11,cursor:canEdit?"pointer":"default",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,position:"relative"};
                 const hasPlan=cell.plan&&!cell.actual;
                 const isMismatch=cell.mismatch||false;
                 const display=formatCell(cell.actual,row._param)||"";
@@ -406,7 +437,7 @@ export default function My_SplitTable({user}){
                       .then(d=>setColValCache(m=>({...m,[row._param]:d.values||[]}))).catch(()=>{});
                   }
                 };
-                return(<td key={ci} style={style}
+                return(<td key={ci} className="stm-cell" style={style}
                   onClick={()=>{if(editing&&canEdit)openEdit();}}
                   onDoubleClick={()=>{if(canEdit)openEdit();}}
                   onContextMenu={e=>{if(cell.plan){e.preventDefault();deletePlan(cell.key);}}}>
@@ -414,6 +445,8 @@ export default function My_SplitTable({user}){
                   :isMismatch?<span style={{color:"#dc2626",fontWeight:700}}>{"✗ "}{formatCell(cell.actual,row._param)}<span style={{fontSize:9,color:"#ef4444"}}>{" (≠"+cell.plan+")"}</span></span>
                   :hasPlan?<span style={{fontStyle:"italic",fontWeight:700}}>{"📌 "}{cell.plan}</span>
                   :display}
+                  {/* v8.4.9-c: per-cell 메모 배지. 메모가 있으면 항상 표시, 없으면 hover 시에만 + 아이콘 노출. */}
+                  <span className="stm-note-btn" onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={cellNoteCount>0?`${cellNoteCount}개 메모`:"메모 추가"} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:9,padding:"0 5px",borderRadius:7,background:cellNoteCount>0?"#8b5cf6":"rgba(139,92,246,0.25)",color:cellNoteCount>0?"#fff":"#8b5cf6",fontWeight:700,lineHeight:"14px",opacity:cellNoteCount>0?1:0,transition:"opacity 0.15s"}}>💬{cellNoteCount>0?" "+cellNoteCount:"+"}</span>
                 </td>);})}
             </tr>);})}</tbody>
         </table></div>;
@@ -590,5 +623,62 @@ export default function My_SplitTable({user}){
           <button onClick={savePlans} style={{flex:1,padding:10,borderRadius:6,border:"none",background:"#22c55e",color:"#fff",fontWeight:600,cursor:"pointer"}}>Confirm</button>
           <button onClick={()=>setShowConfirm(false)} style={{padding:"10px 20px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>Cancel</button>
         </div></div></div>}
+
+    {/* v8.4.9-b: Notes 드로어 — 오른쪽 side drawer. wafer 태그 / param 메모 통합 뷰. */}
+    {notesOpen && (()=>{
+      const filtered=(!noteFilter)?notes
+        :noteFilter.scope==="wafer"?notes.filter(n=>n.key===noteFilter.key)
+        :noteFilter.scope==="cell"?notes.filter(n=>n.scope==="param"&&n.key===`${selProd}__${lotId}__W${noteFilter.wafer_id}__${noteFilter.param}`)
+        :notes.filter(n=>n.scope==="param"&&n.key.endsWith(`__${noteFilter.param}`));
+      // 헤더 라벨
+      const title=!noteFilter?"노트 (전체)"
+        :noteFilter.scope==="wafer"?`wafer #${noteFilter.key.split("__W").pop()} 태그`
+        :noteFilter.scope==="cell"?`W${noteFilter.wafer_id} × ${noteFilter.param} 메모`
+        :`${noteFilter.param} 메모 (lot ${lotId})`;
+      return(<div style={{position:"fixed",top:0,right:0,bottom:0,width:420,background:"var(--bg-secondary)",borderLeft:"1px solid var(--border)",zIndex:2000,display:"flex",flexDirection:"column",boxShadow:"-4px 0 16px rgba(0,0,0,0.35)"}}>
+        <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{fontSize:13,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>📝 {title}</div>
+          <span onClick={()=>{setNotesOpen(false);setNoteDraft("");setNoteFilter(null);setNoteDraftScope(null);}} style={{cursor:"pointer",fontSize:18,color:"var(--text-secondary)"}}>✕</span>
+        </div>
+        {!noteFilter&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",display:"flex",gap:6,fontSize:10,color:"var(--text-secondary)"}}>
+          <span>전체 {notes.length}개 · wafer 태그 {notes.filter(n=>n.scope==="wafer").length} · param 메모 {notes.filter(n=>n.scope==="param").length}</span>
+        </div>}
+        <div style={{flex:1,overflow:"auto",padding:"10px 16px",display:"flex",flexDirection:"column",gap:8}}>
+          {filtered.length===0&&<div style={{padding:24,textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>기록된 노트 없음</div>}
+          {filtered.map(n=>{
+            // key 파싱: {product}__{root}__W{wid}  or  ...__W{wid}__{param}
+            const parts=(n.key||"").split("__");
+            const wid=(parts[2]||"").replace(/^W/,"");
+            const param=n.scope==="param"?parts[3]||"":"";
+            return(<div key={n.id} style={{padding:"8px 10px",borderRadius:6,background:"var(--bg-card)",border:"1px solid var(--border)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4,gap:6}}>
+                <span style={{fontSize:9,fontWeight:700,padding:"1px 6px",borderRadius:8,background:n.scope==="wafer"?"#3b82f6":"#8b5cf6",color:"#fff"}}>{n.scope==="wafer"?`🏷 W${wid}`:`💬 ${param}`}</span>
+                <span style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace"}}>{n.username} · {(n.created_at||"").replace("T"," ").slice(0,16)}</span>
+              </div>
+              <div style={{fontSize:12,whiteSpace:"pre-wrap",lineHeight:1.5}}>{n.text}</div>
+              {(n.username===(user?.username||"")||isAdmin)&&<div style={{marginTop:4,textAlign:"right"}}>
+                <span onClick={()=>deleteNote(n.id)} style={{cursor:"pointer",fontSize:9,color:"#ef4444"}}>삭제</span>
+              </div>}
+            </div>);
+          })}
+        </div>
+        {noteDraftScope&&<div style={{padding:"10px 16px",borderTop:"1px solid var(--border)",display:"flex",flexDirection:"column",gap:6}}>
+          <div style={{fontSize:10,color:"var(--text-secondary)"}}>
+            대상:{" "}<span style={{color:noteDraftScope.scope==="wafer"?"#3b82f6":"#8b5cf6",fontWeight:700}}>{noteDraftScope.scope==="wafer"?`🏷 W${noteDraftScope.wafer_id}`:`💬 ${noteDraftScope.param}`}</span>
+            {noteDraftScope.scope==="param"&&<span style={{marginLeft:6}}>wafer:
+              <input value={noteDraftScope.wafer_id} onChange={e=>setNoteDraftScope({...noteDraftScope,wafer_id:e.target.value})} placeholder="wafer_id" style={{marginLeft:4,width:60,padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:10}}/>
+            </span>}
+          </div>
+          <textarea value={noteDraft} onChange={e=>setNoteDraft(e.target.value)} placeholder="새 노트 내용…" rows={3}
+            style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,resize:"vertical",fontFamily:"inherit"}}/>
+          <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
+            <button onClick={addNote} disabled={!noteDraft.trim()||(noteDraftScope.scope==="param"&&!noteDraftScope.wafer_id)} style={{padding:"5px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:(noteDraft.trim()&&(noteDraftScope.scope!=="param"||noteDraftScope.wafer_id))?"pointer":"not-allowed",opacity:(noteDraft.trim()&&(noteDraftScope.scope!=="param"||noteDraftScope.wafer_id))?1:0.5}}>저장</button>
+          </div>
+        </div>}
+        {!noteDraftScope&&<div style={{padding:"10px 16px",borderTop:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)"}}>
+          상단 wafer 헤더 또는 좌측 parameter 행의 💬 아이콘을 클릭해 노트를 추가하세요.
+        </div>}
+      </div>);
+    })()}
   </div>);
 }

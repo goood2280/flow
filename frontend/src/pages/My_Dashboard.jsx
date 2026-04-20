@@ -1050,7 +1050,7 @@ export default function My_Dashboard({ user }) {
 
   if (loading) return <div style={{ padding: 40, textAlign: "center" }}><Loading text="로딩 중..." /></div>;
   return (<SelectionContext.Provider value={{ marks, toggle: toggleMark, clear: clearMarks }}>
-  <div style={{ padding: "24px 32px", background: "var(--bg-primary)", minHeight: "calc(100vh - 48px)", color: "var(--text-primary)", maxWidth: 1400, margin: "0 auto" }}>
+  <div style={{ padding: "16px 18px", background: "var(--bg-primary)", minHeight: "calc(100vh - 48px)", color: "var(--text-primary)", maxWidth: "none", margin: 0 }}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 8 }}>
       <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "monospace", color: "var(--accent)" }}>{">"} 대시보드</div>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
