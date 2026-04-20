@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import Loading from "../components/Loading";
 import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
-import { sf } from "../lib/api";
+import { sf, dl } from "../lib/api";
 const ALL_TABS=["filebrowser","dashboard","splittable","tracker","tablemap","ml","devguide","dashboard_chart"];
 
 function Gauge({label,pct,used,total,unit="GB"}){
@@ -386,7 +386,7 @@ function MatchingPanel(){
       sf("/api/match/area-rollup").then(setRollup).catch(()=>setRollup(null));
     }
   };
-  const download=(name)=>{window.open("/api/catalog/matching/download?name="+name,"_blank");};
+  const download=(name)=>{dl("/api/catalog/matching/download?name="+encodeURIComponent(name), `${name}.csv`).catch(e=>alert("다운로드 실패: "+e.message));};
   const setAreaEdit=(i,v)=>setEdits(e=>({...e,[i]:v||null}));
   const hasAreaCol=sel==="matching_step"&&preview&&(preview.columns.includes("area")||preview.rows.some(r=>"area" in r));
   const saveAreas=()=>{

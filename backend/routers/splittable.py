@@ -44,6 +44,11 @@ PLAN_DIR.mkdir(parents=True, exist_ok=True)
 PREFIX_CFG = PLAN_DIR / "prefix_config.json"
 DEFAULT_PREFIXES = ["KNOB", "MASK", "INLINE", "VM", "FAB"]
 PLAN_ALLOWED_PREFIXES = ["KNOB", "MASK", "FAB"]  # Only these can have plan values
+# v8.4.9: 엑셀 메모/태그 저장소 — wafer 단위(tag) + parameter 단위(memo) 공용.
+#   scope="wafer": target_key = "{product}__{root_lot_id}__W{wafer_id}"
+#   scope="param": target_key = "{product}__{root_lot_id}__W{wafer_id}__{param}"
+# 각 항목은 {id, text, username, created_at} 를 보관하고 작성자/관리자만 삭제 가능.
+NOTES_FILE = PLAN_DIR / "notes.json"
 
 
 def _load_prefixes():
