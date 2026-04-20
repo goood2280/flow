@@ -70,6 +70,11 @@ class ChartConfig(BaseModel):
     # Each join: {source_type, root, product, file, left_on:[...], right_on:[...], suffix:"_j1"}
     # Applied sequentially; missing right-side columns that collide with left are suffixed.
     joins: list = []
+    # v8.4.8: Layout fields — group (filter chips 용) + grid span.
+    # width 1..4 = 가로 열수, height 1..3 = 세로 행수. Legacy 차트는 (1,1).
+    group: str = ""
+    width: int = 1
+    height: int = 1
 
 
 def _charts():
@@ -77,7 +82,8 @@ def _charts():
 
 
 def _new_id():
-    return f"chart_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+    # v8.4.8: microseconds 포함 (시드 스크립트에서 같은 초에 여러 개 POST 하면 충돌해서 덮어씌워지던 버그)
+    return f"chart_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
 
 
 # ──────────────────────────────────────────────────────────────────

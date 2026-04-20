@@ -1003,12 +1003,50 @@ export default function My_Dashboard({ user }) {
   const doRefresh = () => { setRefreshing(true); sf(API + "/refresh", { method: "POST" }).then(() => setTimeout(() => { load(); setRefreshing(false); }, 3000)).catch(() => setRefreshing(false)); };
 
   const [expanded, setExpanded] = useState(null); // chart id for fullscreen view
-
-  // Filter charts by visibility
-  const visibleCharts = charts.filter(c => {
-    if (c.visible_to === "admin" && !isAdmin) return false;
-    return true;
+  // v8.4.8: Group visibility + size resize + marks→filter chart
+  const [hiddenGroups, setHiddenGroups] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("flow_dash_hidden_groups") || "[]")); }
+    catch { return new Set(); }
   });
+  const toggleGroup = (g) => setHiddenGroups(prev => {
+    const s = new Set(prev); s.has(g) ? s.delete(g) : s.add(g);
+    localStorage.setItem("flow_dash_hidden_groups", JSON.stringify([...s]));
+    return s;
+  });
+  const resizeChart = (c, w, h) => sf(API + "/charts/save", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...c, width: w, height: h })
+  }).then(load).catch(e => alert(e.message));
+
+  // Filter charts by visibility + group hide
+  const visibleByVis = charts.filter(c => !(c.visible_to === "admin" && !isAdmin));
+  const groupCounts = {};
+  visibleByVis.forEach(c => { const g = c.group || "기타"; groupCounts[g] = (groupCounts[g] || 0) + 1; });
+  const groupNames = Object.keys(groupCounts).sort();
+  const visibleCharts = visibleByVis.filter(c => !hiddenGroups.has(c.group || "기타"));
+
+  // Marks → new chart filter (사용자 요구: 마킹한 것으로 옆에 차트 만들기)
+  const makeFilteredChart = () => {
+    if (!marks.size) return;
+    const first = visibleCharts[0] || {};
+    const key = first.selection_key || "LOT_WF";
+    const quoted = [...marks].slice(0, 60).map(v => `'${String(v).replace(/'/g, "''")}'`).join(",");
+    setEditing({
+      title: `[필터] ${key} ${marks.size}개`,
+      source_type: first.source_type || "base_file",
+      root: first.root || "",
+      product: first.product || "",
+      file: first.file || "",
+      chart_type: "scatter",
+      x_col: first.x_col || "",
+      y_expr: first.y_expr || "",
+      color_col: first.color_col || "",
+      filter_expr: `${key} IN (${quoted})`,
+      selection_key: key,
+      group: first.group || "",
+      width: 2, height: 1,
+    });
+  };
 
   if (loading) return <div style={{ padding: 40, textAlign: "center" }}><Loading text="로딩 중..." /></div>;
   return (<SelectionContext.Provider value={{ marks, toggle: toggleMark, clear: clearMarks }}>
@@ -1019,7 +1057,8 @@ export default function My_Dashboard({ user }) {
         {marks.size > 0 && (
           <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "4px 10px", borderRadius: 20, background: "var(--accent-glow)", border: "1px solid var(--accent)" }}>
             <span style={{ fontSize: 11, fontFamily: "monospace", color: "var(--accent)", fontWeight: 700 }}>★ {marks.size} 개 표시됨</span>
-            <span style={{ fontSize: 9, color: "var(--text-secondary)", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{[...marks].slice(0, 3).join(", ")}{marks.size > 3 ? ` +${marks.size - 3}` : ""}</span>
+            <span style={{ fontSize: 9, color: "var(--text-secondary)", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{[...marks].slice(0, 3).join(", ")}{marks.size > 3 ? ` +${marks.size - 3}` : ""}</span>
+            {canEdit && <span onClick={makeFilteredChart} title="표시된 항목으로 필터링된 새 차트 생성" style={{ cursor: "pointer", fontSize: 10, color: "#fff", padding: "2px 8px", background: "var(--accent)", borderRadius: 4, fontWeight: 700 }}>→ 필터 차트</span>}
             <span onClick={clearMarks} style={{ cursor: "pointer", fontSize: 12, color: "var(--text-secondary)", marginLeft: 4 }}>✕</span>
           </div>
         )}
@@ -1028,15 +1067,40 @@ export default function My_Dashboard({ user }) {
       </div>
     </div>
     {editing !== null && <ChartEditor cfg={editing} onSave={saveChart} onClose={() => setEditing(null)} isAdmin={isAdmin} />}
+
+    {/* v8.4.8: 그룹 필터 칩 (그룹이 1개 이상이면 노출). 클릭해서 숨김/표시 토글. */}
+    {groupNames.length > 1 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12, alignItems: "center" }}>
+      <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", marginRight: 4 }}>그룹:</span>
+      {groupNames.map(g => {
+        const hidden = hiddenGroups.has(g);
+        return <span key={g} onClick={() => toggleGroup(g)} style={{
+          cursor: "pointer", padding: "3px 10px", borderRadius: 12, fontSize: 11, fontFamily: "monospace",
+          border: "1px solid " + (hidden ? "var(--border)" : "var(--accent)"),
+          background: hidden ? "transparent" : "var(--accent-glow)",
+          color: hidden ? "var(--text-secondary)" : "var(--accent)",
+          fontWeight: hidden ? 400 : 700, opacity: hidden ? 0.6 : 1,
+        }} title={hidden ? `${g} 표시` : `${g} 숨기기`}>
+          {hidden ? "○" : "●"} {g} <span style={{ fontSize: 9, opacity: 0.7 }}>({groupCounts[g]})</span>
+        </span>;
+      })}
+      {hiddenGroups.size > 0 && <span onClick={() => { setHiddenGroups(new Set()); localStorage.setItem("flow_dash_hidden_groups", "[]"); }}
+        style={{ cursor: "pointer", fontSize: 10, color: "var(--accent)", marginLeft: 8 }}>모두 표시</span>}
+    </div>}
+
     {visibleCharts.length === 0 && !editing && <div style={{ textAlign: "center", padding: 60, color: "var(--text-secondary)" }}>차트 없음.{canEdit ? " + 차트 추가 를 클릭하세요." : ""}</div>}
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(340px,1fr))", gap: 12, overflow: "hidden", gridAutoRows: "minmax(320px, auto)" }}>
-      {visibleCharts.map(c => { const snap = snapshots[c.id]; const isAdminChart = c.visible_to === "admin"; const isUserChart = c.visible_to === "all";
-        const borderColor = isAdminChart ? "rgba(168,85,247,0.3)" : "1px solid var(--border)";
+    {/* v8.4.8: 12-column CSS grid. 각 차트가 width(1..4) × height(1..3) span. */}
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 12, overflow: "hidden", gridAutoRows: "minmax(280px, auto)" }}>
+      {visibleCharts.map(c => { const snap = snapshots[c.id]; const isAdminChart = c.visible_to === "admin";
         const bgColor = isAdminChart ? "rgba(168,85,247,0.04)" : "transparent";
-        return (<div key={c.id} className="chart-card" style={{ position: "relative", background: bgColor, borderRadius: 8, border: isAdminChart ? "1.5px dashed rgba(168,85,247,0.4)" : "1px solid var(--border)" }} onDoubleClick={() => setExpanded(c.id)}>
+        const w = Math.max(1, Math.min(4, c.width || 1));
+        const h = Math.max(1, Math.min(3, c.height || 1));
+        // 12-col grid: width 1=3cols(S), 2=6cols(M), 3=9cols(L), 4=12cols(XL). 모바일에서는 auto-min 으로 접힘.
+        const colSpan = { 1: "span 4", 2: "span 6", 3: "span 9", 4: "span 12" }[w] || "span 4";
+        const rowSpan = "span " + h;
+        return (<div key={c.id} className="chart-card" style={{ position: "relative", background: bgColor, borderRadius: 8, border: isAdminChart ? "1.5px dashed rgba(168,85,247,0.4)" : "1px solid var(--border)", gridColumn: colSpan, gridRow: rowSpan, minWidth: 280 }} onDoubleClick={() => setExpanded(c.id)}>
         <ChartCanvas cfg={{ ...c, _spc: snap?.spc, _oos: snap?.oos_count, _heatmap_meta: snap?.heatmap_meta, table_columns: snap?.table_columns, cross_cols: snap?.cross_cols, cross_rows: snap?.cross_rows, cross_method: snap?.cross_method, cross_val_col: snap?.cross_val_col }} points={snap?.points} computedAt={snap?.computed_at} />
         <div style={{ fontSize: 10, color: "var(--text-secondary)", padding: "4px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span>{c.file || `${c.root}/${c.product}`} | {c.x_col}{c.y_expr ? " vs " + c.y_expr : ""}{c.color_col ? " by " + c.color_col : ""}</span>
+          <span>{c.group && <span style={{ color: "var(--accent)", fontWeight: 700, marginRight: 6 }}>[{c.group}]</span>}{c.file || `${c.root}/${c.product}`} | {c.x_col}{c.y_expr ? " vs " + c.y_expr : ""}{c.color_col ? " by " + c.color_col : ""}</span>
           <span style={{ display: "flex", gap: 4, alignItems: "center" }}>
             {snap?.error && <span style={{ color: "#ef4444" }} title={snap.error}>오류</span>}
             {isAdmin && (isAdminChart
@@ -1044,7 +1108,17 @@ export default function My_Dashboard({ user }) {
               : <span style={{ fontSize: 8, fontWeight: 700, color: "#22c55e", background: "#22c55e11", padding: "1px 5px", borderRadius: 3, border: "1px solid #22c55e33" }}>사용자</span>)}
           </span>
         </div>
-        <div className="chart-actions" style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 4 }}>
+        <div className="chart-actions" style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 4, alignItems: "center" }}>
+          {/* v8.4.8: 크기 피커 — S/M/L/XL (width) × 1/2/3 (height) */}
+          {canEdit && <span onClick={e => e.stopPropagation()} style={{ display: "inline-flex", gap: 2, padding: "2px 4px", background: "rgba(0,0,0,0.55)", borderRadius: 4 }} title="크기 조절">
+            {[[1,"S"],[2,"M"],[3,"L"],[4,"XL"]].map(([wv, wl]) => (
+              <span key={wv} onClick={() => resizeChart(c, wv, h)} style={{ cursor: "pointer", fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 3, color: w === wv ? "#fff" : "#aaa", background: w === wv ? "var(--accent)" : "transparent" }}>{wl}</span>
+            ))}
+            <span style={{ width: 1, background: "#444", margin: "2px 2px" }} />
+            {[1,2,3].map(hv => (
+              <span key={hv} onClick={() => resizeChart(c, w, hv)} style={{ cursor: "pointer", fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 3, color: h === hv ? "#fff" : "#aaa", background: h === hv ? "#3b82f6" : "transparent" }}>{hv}</span>
+            ))}
+          </span>}
           <span onClick={(e) => { e.stopPropagation(); setExpanded(c.id); }} style={{ cursor: "pointer", fontSize: 11, color: "#fff", padding: "3px 8px", background: "var(--accent)", borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>확대</span>
           {canEdit && <>
             <span onClick={(e) => { e.stopPropagation(); setEditing(c); }} style={{ cursor: "pointer", fontSize: 11, color: "#fff", padding: "3px 8px", background: "#3b82f6", borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>편집</span>
