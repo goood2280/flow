@@ -390,6 +390,117 @@ def get_prefixes():
     return {"prefixes": _load_prefixes()}
 
 
+# ── KNOB metadata (v8.4.7) ───────────────────────────────────────────
+# Reverse-lookup helper used by SplitTable UI:
+#   knob_ppid.csv:      feature_name, function_step, rule_order, ppid, operator, category, use
+#   step_matching.csv:  step_id, func_step
+# For each KNOB feature_name (product-scoped), we group the knob_ppid rules in
+# rule_order, expand each function_step back to its matching step_ids, and
+# produce both a structured `groups` payload and a ready-to-render `label`:
+#   GATE_PATTERN (AA200030/AA200040/AA200050) + PC_ETCH (AA200100/AA200110)
+# Combine operator for `label` follows knob_ppid.operator (empty = terminator).
+def _load_csv_rows(fp: Path) -> list[dict]:
+    if not fp.is_file():
+        return []
+    try:
+        with open(fp, "r", encoding="utf-8") as f:
+            return list(csv_mod.DictReader(f))
+    except Exception:
+        return []
+
+
+def _build_knob_meta(product: str = "") -> dict:
+    base = _base_root()
+    matching = _load_csv_rows(base / "step_matching.csv")
+    knob_rules = _load_csv_rows(base / "knob_ppid.csv")
+
+    # func_step → [step_id, ...] (ordered, dedup)
+    step_map: dict[str, list[str]] = {}
+    for r in matching:
+        # product 컬럼이 있으면 필터, 없으면 공용 매핑으로 취급
+        if product and r.get("product") and r.get("product") != product:
+            continue
+        fs = (r.get("func_step") or "").strip()
+        sid = (r.get("step_id") or r.get("raw_step_id") or "").strip()
+        if not fs or not sid:
+            continue
+        lst = step_map.setdefault(fs, [])
+        if sid not in lst:
+            lst.append(sid)
+
+    # feature_name → groups (sorted by rule_order)
+    feats: dict[str, list[dict]] = {}
+    for r in knob_rules:
+        if (r.get("use") or "Y").strip().upper() == "N":
+            continue
+        if product and r.get("product") and r.get("product") != product:
+            continue
+        fname = (r.get("feature_name") or "").strip()
+        fstep = (r.get("function_step") or "").strip()
+        if not fname or not fstep:
+            continue
+        try:
+            order = int(r.get("rule_order") or 0)
+        except Exception:
+            order = 0
+        feats.setdefault(fname, []).append({
+            "func_step": fstep,
+            "rule_order": order,
+            "ppid": (r.get("ppid") or "").strip(),
+            "operator": (r.get("operator") or "").strip(),
+            "category": (r.get("category") or "").strip(),
+            "step_ids": list(step_map.get(fstep, [])),
+        })
+
+    # Sort each feature's groups by rule_order + build a human label
+    out: dict[str, dict] = {}
+    for fname, groups in feats.items():
+        groups.sort(key=lambda g: g["rule_order"])
+        parts: list[str] = []
+        for i, g in enumerate(groups):
+            sids = g["step_ids"]
+            if len(sids) == 0:
+                seg = g["func_step"]
+            elif len(sids) == 1:
+                seg = f"{g['func_step']} ({sids[0]})"
+            else:
+                seg = f"{g['func_step']} ({'/'.join(sids)})"
+            parts.append(seg)
+            # operator 은 "다음 그룹과의 결합 연산자" — 마지막 그룹은 종결자라 무시
+            if i < len(groups) - 1:
+                op = (g.get("operator") or "+").strip() or "+"
+                parts.append(f" {op} ")
+        out[fname] = {
+            "groups": groups,
+            "label": "".join(parts),
+        }
+    return out
+
+
+@router.get("/knob-meta")
+def knob_meta(product: str = Query("")):
+    """v8.4.7: KNOB feature_name → func_step(step_id) 역산 맵.
+
+    응답 스키마:
+      {
+        "features": {
+          "KNOB_GATE_PPID": {
+            "groups": [
+              {"func_step":"GATE_PATTERN","step_ids":["AA200030","AA200040","AA200050"],
+               "ppid":"PP_GATE_01","operator":"+","rule_order":1,"category":"gate"},
+              {"func_step":"PC_ETCH","step_ids":["AA200100","AA200110"],
+               "ppid":"PP_PC_01","operator":"","rule_order":2,"category":"gate"}
+            ],
+            "label": "GATE_PATTERN (AA200030/AA200040/AA200050) + PC_ETCH (AA200100/AA200110)"
+          },
+          ...
+        }
+      }
+    product 필터는 선택 — Base CSV 에 product 컬럼이 있으면 적용, 없으면 공용 룰로 취급.
+    """
+    return {"features": _build_knob_meta(product)}
+
+
 class PrefixSaveReq(BaseModel):
     prefixes: List[str]
 

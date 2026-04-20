@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import Loading from "../components/Loading";
+import { sf } from "../lib/api";
 const API="/api/splittable";
-const sf=(url,o)=>fetch(url,o).then(r=>{if(!r.ok)throw new Error("HTTP "+r.status);return r.json();});
 // Excel-like pastel colors (bg + dark text)
 const CELL_COLORS=[
   {bg:"#C6EFCE",fg:"#006100"},  // green
@@ -29,6 +29,8 @@ export default function My_SplitTable({user}){
   // dbl-click inline edit: {cellKey, value, suggestions, param}
   const[activeCell,setActiveCell]=useState(null);
   const[colValCache,setColValCache]=useState({});
+  // v8.4.7: KNOB feature_name → {label, groups}. 제품 바뀌면 재fetch.
+  const[knobMeta,setKnobMeta]=useState({});
   const[tab,setTab]=useState("view");const[history,setHistory]=useState([]);const[histAll,setHistAll]=useState(false);
   const[colSearch,setColSearch]=useState("");const[customCols,setCustomCols]=useState([]);const[customName,setCustomName]=useState("");
   const[showSettings,setShowSettings]=useState(false);const[newPrefix,setNewPrefix]=useState("");
@@ -60,7 +62,7 @@ export default function My_SplitTable({user}){
   const loadSourceConfig=()=>sf(API+"/source-config").then(d=>{if(d.enabled?.length)setEnabledSources(new Set(d.enabled));if(d.lot_overrides)setLotOverrides(d.lot_overrides);}).catch(()=>{});
   const saveSourceConfig=(enabled)=>{sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:[...enabled]})}).catch(()=>{});};
   useEffect(()=>{
-    Promise.all([sf(API+"/products"),sf(API+"/source-config").catch(()=>({enabled:[]})),sf(API+"/prefixes")])
+    Promise.all([sf(API+"/products").catch(()=>({products:[]})),sf(API+"/source-config").catch(()=>({enabled:[]})),sf(API+"/prefixes").catch(()=>({prefixes:[]}))])
       .then(([prodRes,srcRes,prefRes])=>{
         const prods=prodRes.products||[];setProducts(prods);
         const enabled=srcRes.enabled?.length?new Set(srcRes.enabled):null;
@@ -82,6 +84,11 @@ export default function My_SplitTable({user}){
     }
   },[enabledSources,products]);
   useEffect(()=>{if(selProd)sf(API+"/lot-ids?product="+selProd).then(d=>setLotSuggestions(d.lot_ids||[])).catch(()=>{});},[selProd]);
+  // v8.4.7: 제품 바뀔 때 KNOB meta 재fetch.
+  useEffect(()=>{if(!selProd){setKnobMeta({});return;}
+    sf(API+"/knob-meta?product="+encodeURIComponent(selProd))
+      .then(d=>setKnobMeta(d.features||{})).catch(()=>setKnobMeta({}));
+  },[selProd]);
   // fab_lot_id 후보도 fetch (lot-candidates 엔드포인트 사용)
   useEffect(()=>{if(selProd)sf(API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=fab_lot_id&limit=500").then(d=>setFabSuggestions(d.candidates||[])).catch(()=>{});},[selProd]);
   useEffect(()=>{const h=e=>{if(lotRef.current&&!lotRef.current.contains(e.target))setShowLotDrop(false);};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
@@ -357,7 +364,15 @@ export default function My_SplitTable({user}){
             const allVals=Object.values(cells).map(c=>c?.actual||c?.plan).filter(v=>v&&v!=="None"&&v!=="null");
             const uniqVals=[...new Set(allVals)];const uniqMap={};uniqVals.forEach((v,i)=>{uniqMap[v]=i;});
             return(<tr key={ri}>
-              <td style={{padding:"6px 10px",fontWeight:600,fontSize:11,color:"var(--text-primary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-secondary)",position:"sticky",left:0,zIndex:2,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35}} title={row._param}>{row._param?.replace(/^[A-Z]+_/,"")}</td>
+              <td style={{padding:"6px 10px",fontWeight:600,fontSize:11,color:"var(--text-primary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-secondary)",position:"sticky",left:0,zIndex:2,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35}} title={(knobMeta[row._param]?.label)?(row._param+" — "+knobMeta[row._param].label):row._param}>
+                <div>{row._param?.replace(/^[A-Z]+_/,"")}</div>
+                {/* v8.4.7: KNOB 컬럼이면 아래에 func_step(step_id) 역산 부제 표시. 없으면 생략. */}
+                {knobMeta[row._param]?.label && (
+                  <div style={{fontSize:9,fontWeight:400,color:"#fbbf24",lineHeight:1.3,marginTop:2,fontFamily:"monospace"}}>
+                    {knobMeta[row._param].label}
+                  </div>
+                )}
+              </td>
               {data.headers?.map((_,ci)=>{
                 const cell=cells[String(ci)];if(!cell)return<td key={ci} style={{borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-card)"}}></td>;
                 const bgStyle=getCellBg(cell.actual||cell.plan,uniqMap,row._param);const planStyle=getCellPlanStyle(cell);

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FEATURE_VERSIONS } from "../config";
+import { FEATURE_VERSIONS, PLANNED_FEATURES } from "../config";
 import BrandLogo from "../components/BrandLogo";
 const B="#ea580c",M="#f97316",L="#fb923c",D="#9a3412",BK="#171717",W="#fff7ed",PK="#fda4af",G="#fbbf24";
 
@@ -87,6 +87,24 @@ export default function My_Home({onNavigate,user}){
       {visibleCards.map(c=><Card key={c.key} icon={c.icon} title={c.title} desc={c.desc} tag={c.tag} onClick={()=>nav(c.key)}/>)}
     </div>:<div style={{padding:"40px 20px",textAlign:"center",color:"var(--text-secondary)",fontSize:13,marginBottom:32}}>
       사용 가능한 탭이 없습니다. 관리자에게 권한을 요청해주세요.
+    </div>}
+
+    {/* v8.4.7: 앞으로 할 것 — 탭에 올리지 않고 홈에서 예고만 */}
+    {PLANNED_FEATURES && PLANNED_FEATURES.length>0 && <div style={{background:"var(--bg-secondary,#262626)",borderRadius:12,border:"1px dashed var(--border,#333)",overflow:"hidden",marginBottom:24}}>
+      <div style={{padding:"12px 20px",borderBottom:"1px dashed var(--border,#333)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span style={{fontSize:12,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:"var(--text-secondary)"}}>{">"} 앞으로 할 것 (planned)</span>
+        <span style={{fontSize:10,color:"var(--text-secondary)"}}>아직 활성화되지 않은 기능</span>
+      </div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:10,padding:14}}>
+        {PLANNED_FEATURES.map(p=>(<div key={p.key} style={{flex:"1 1 220px",padding:"10px 14px",borderRadius:8,border:"1px dashed var(--border,#444)",background:"var(--bg-card,#2a2a2a)",opacity:0.75}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+            <span style={{fontSize:16}}>{p.icon}</span>
+            <span style={{fontSize:13,fontWeight:700}}>{p.label}</span>
+            <span style={{marginLeft:"auto",fontSize:9,fontWeight:700,padding:"1px 6px",borderRadius:3,background:"#44444488",color:"var(--text-secondary)"}}>계획</span>
+          </div>
+          <div style={{fontSize:11,color:"var(--text-secondary)",lineHeight:1.5}}>{p.desc}</div>
+        </div>))}
+      </div>
     </div>}
 
     {/* Admin: changelog | User: feature guide */}
