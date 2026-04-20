@@ -16,7 +16,7 @@ v4.1 (2026-04-19, adapter-engineer slice):
 """
 import json, datetime, io, csv as csv_mod
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from typing import List
 import polars as pl
@@ -145,6 +145,125 @@ def _select_columns(all_data_cols, custom_name: str, prefix: str, max_fallback: 
         if sel:
             return sel
     return all_data_cols[:max_fallback]
+
+
+# ── Notes (v8.4.9-b): 검색된 wafer 태그 + 파라미터 메모 ───────────────
+# 스키마: {data_root}/splittable/notes.json
+#   { "entries": [
+#       { "id": "n_xxxxxx",
+#         "scope": "wafer" | "param",
+#         "key":  "{product}__{root_lot_id}__W{wafer_id}"
+#               | "{product}__{root_lot_id}__W{wafer_id}__{param_name}",
+#         "text": "...",
+#         "username": "hol",
+#         "created_at": "2026-04-21T10:00:00" }
+#     ] }
+# 작성자 또는 admin 만 삭제 가능. 수정은 지원하지 않음 (메모 히스토리 유지).
+def _load_notes() -> list:
+    data = load_json(NOTES_FILE, {"entries": []})
+    if isinstance(data, dict):
+        return data.get("entries", [])
+    return data if isinstance(data, list) else []
+
+
+def _save_notes(entries: list) -> None:
+    save_json(NOTES_FILE, {"entries": entries})
+
+
+def _new_note_id() -> str:
+    import secrets as _secrets
+    return "n_" + _secrets.token_hex(5)
+
+
+def _notes_key_wafer(product: str, root_lot_id: str, wafer_id) -> str:
+    return f"{product}__{root_lot_id}__W{wafer_id}"
+
+
+def _notes_key_param(product: str, root_lot_id: str, wafer_id, param: str) -> str:
+    return f"{product}__{root_lot_id}__W{wafer_id}__{param}"
+
+
+def _notes_lot_prefix(product: str, root_lot_id: str) -> str:
+    return f"{product}__{root_lot_id}__"
+
+
+class NoteSaveReq(BaseModel):
+    scope: str                 # "wafer" | "param"
+    product: str = ""
+    root_lot_id: str = ""
+    wafer_id: str = ""
+    param: str = ""            # scope == "param" 일 때 사용
+    text: str
+    username: str = ""
+
+
+class NoteDeleteReq(BaseModel):
+    id: str
+    username: str = ""
+
+
+@router.get("/notes")
+def list_notes(product: str = Query(""), root_lot_id: str = Query(""), username: str = Query("")):
+    """필터: product + root_lot_id 가 주어지면 해당 로트 범위로 한정. 둘 다 비면 전체."""
+    entries = _load_notes()
+    if product and root_lot_id:
+        pfx = _notes_lot_prefix(product, root_lot_id)
+        entries = [e for e in entries if str(e.get("key", "")).startswith(pfx)]
+    # 최신순
+    entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
+    return {"notes": entries, "total": len(entries)}
+
+
+@router.post("/notes/save")
+def save_note(req: NoteSaveReq, request: Request):
+    from core.auth import current_user as _cu
+    me = _cu(request)
+    username = me.get("username") or req.username or "anonymous"
+    scope = (req.scope or "").strip()
+    if scope not in ("wafer", "param"):
+        raise HTTPException(400, "scope must be 'wafer' or 'param'")
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "empty text")
+    if len(text) > 2000:
+        raise HTTPException(400, "text too long (max 2000 chars)")
+    if not req.product or not req.root_lot_id or not str(req.wafer_id or "").strip():
+        raise HTTPException(400, "product/root_lot_id/wafer_id required")
+    if scope == "wafer":
+        key = _notes_key_wafer(req.product, req.root_lot_id, req.wafer_id)
+    else:
+        if not req.param:
+            raise HTTPException(400, "param required for scope='param'")
+        key = _notes_key_param(req.product, req.root_lot_id, req.wafer_id, req.param)
+    entry = {
+        "id": _new_note_id(),
+        "scope": scope,
+        "key": key,
+        "text": text,
+        "username": username,
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    entries = _load_notes()
+    entries.append(entry)
+    _save_notes(entries)
+    return {"ok": True, "entry": entry}
+
+
+@router.post("/notes/delete")
+def delete_note(req: NoteDeleteReq, request: Request):
+    from core.auth import current_user as _cu
+    me = _cu(request)
+    username = me.get("username") or ""
+    role = me.get("role") or ""
+    entries = _load_notes()
+    target = next((e for e in entries if e.get("id") == req.id), None)
+    if not target:
+        raise HTTPException(404, "note not found")
+    if role != "admin" and target.get("username") != username:
+        raise HTTPException(403, "only author or admin can delete")
+    entries = [e for e in entries if e.get("id") != req.id]
+    _save_notes(entries)
+    return {"ok": True}
 
 
 # ── Products / schema ──
