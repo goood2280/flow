@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import Loading from "../components/Loading";
+import { sf } from "../lib/api";
 const API="/api/dbmap";
-const sf=(url,o)=>fetch(url,o).then(r=>{if(!r.ok)return r.json().then(d=>{throw new Error(d.detail||"HTTP "+r.status);});return r.json();});
 
 const NODE_COLORS={table:"#f97316",group:"#a855f7",db_ref:"#3b82f6"};
 // Table type colors (overrides default table color based on table_type)

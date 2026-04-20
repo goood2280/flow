@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import Loading from "../components/Loading";
 import AwsPanel from "../components/AwsPanel";
+import { sf } from "../lib/api";
 const API="/api/filebrowser";
-const sf=(url,o)=>fetch(url,o).then(r=>{if(!r.ok)throw new Error("HTTP "+r.status);const ct=r.headers.get("content-type")||"";return ct.includes("json")?r.json():r;});
 function formatSize(b){if(!b)return"-";if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB";}
 
 export default function My_FileBrowser({user}){
