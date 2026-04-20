@@ -547,7 +547,9 @@ export default function App() {
       <NoticeBanner user={user} />
       {Page ? <ErrorBoundary key={tab}><Page onNavigate={nav} user={user} /></ErrorBoundary> : <ComingSoon name={tabInfo?.label || tab} />}
       {showPw && <PwModal user={user} onClose={()=>setShowPw(false)} />}
-      {user?.role === "admin" && tab !== "filebrowser" && tab !== "home" && <AdminSettingsGear user={user} currentTab={tab} />}
+      {/* v8.4.9: floating 오렌지 톱니 전면 제거.
+          각 페이지는 자체 in-page ⚙️ 아이콘(예: SplitTable 상단 prefix 관리)을 가짐.
+          관리자 전역 설정(dashboard refresh, data_roots 등)은 관리자 탭의 해당 서브탭으로 이미 이관됨. */}
     </div>
   );
 }

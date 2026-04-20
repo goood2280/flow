@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import Loading from "../components/Loading";
-import { sf } from "../lib/api";
+import { sf, dl } from "../lib/api";
 const API="/api/splittable";
 // Excel-like pastel colors (bg + dark text)
 const CELL_COLORS=[
@@ -328,8 +328,9 @@ export default function My_SplitTable({user}){
             <button onClick={()=>{if(Object.keys(pendingPlans).length>0)setShowConfirm(true);else setEditing(false);}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"#22c55e",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>Save ({Object.keys(pendingPlans).length})</button>
             <button onClick={()=>{setEditing(false);setPendingPlans({});}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>Cancel</button>
           </>:<>
-            <button onClick={()=>{const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&transposed=true&username="+encodeURIComponent(user?.username||"");window.open(url);}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>⬇ CSV</button>
-            <button onClick={()=>{const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&username="+encodeURIComponent(user?.username||"");window.open(url);}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"#10b981",fontSize:11,cursor:"pointer"}} title="XLSX (fab_lot_id 병합)">⬇ XLSX</button>
+            {/* v8.4.9: window.open → dl() — 새 탭은 토큰 헤더가 안 붙어 401. blob 다운로드로 전환. */}
+            <button onClick={()=>{const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>alert("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>⬇ CSV</button>
+            <button onClick={()=>{const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.xlsx`).catch(e=>alert("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"#10b981",fontSize:11,cursor:"pointer"}} title="XLSX (fab_lot_id 병합)">⬇ XLSX</button>
             <button onClick={()=>setEditing(true)} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>Edit</button>
           </>}
         </div>
@@ -366,10 +367,22 @@ export default function My_SplitTable({user}){
             return(<tr key={ri}>
               <td style={{padding:"6px 10px",fontWeight:600,fontSize:11,color:"var(--text-primary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-secondary)",position:"sticky",left:0,zIndex:2,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35}} title={(knobMeta[row._param]?.label)?(row._param+" — "+knobMeta[row._param].label):row._param}>
                 <div>{row._param?.replace(/^[A-Z]+_/,"")}</div>
-                {/* v8.4.7: KNOB 컬럼이면 아래에 func_step(step_id) 역산 부제 표시. 없으면 생략. */}
-                {knobMeta[row._param]?.label && (
-                  <div style={{fontSize:9,fontWeight:400,color:"#fbbf24",lineHeight:1.3,marginTop:2,fontFamily:"monospace"}}>
-                    {knobMeta[row._param].label}
+                {/* v8.4.9: + 결합이면 줄바꿈. step_id 는 파란 pill 로 대비 강화. */}
+                {Array.isArray(knobMeta[row._param]?.groups) && knobMeta[row._param].groups.length > 0 && (
+                  <div style={{fontSize:10,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace"}}>
+                    {knobMeta[row._param].groups.map((g, gi) => (
+                      <div key={gi} style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4,marginTop:gi>0?2:0}}>
+                        {gi > 0 && <span style={{color:"#ef4444",fontWeight:800,fontSize:12,marginRight:2}}>+</span>}
+                        <span style={{color:"#fbbf24",fontWeight:700}}>{g.func_step}</span>
+                        {Array.isArray(g.step_ids) && g.step_ids.length > 0 && (
+                          <span style={{display:"inline-flex",flexWrap:"wrap",gap:3}}>
+                            {g.step_ids.map((sid, si) => (
+                              <span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.18)",border:"1px solid rgba(96,165,250,0.5)",color:"#93c5fd",fontWeight:700,fontSize:10,letterSpacing:0.3}}>{sid}</span>
+                            ))}
+                          </span>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </td>
@@ -409,7 +422,7 @@ export default function My_SplitTable({user}){
         <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"center"}}>
           <span onClick={()=>{setHistAll(false);loadHistory(false);}} style={{fontSize:11,cursor:"pointer",padding:"4px 10px",borderRadius:4,...(!histAll?{background:"var(--accent-glow)",color:"var(--accent)",fontWeight:600}:{color:"var(--text-secondary)"})}}>This Lot</span>
           <span onClick={()=>{setHistAll(true);loadHistory(true);}} style={{fontSize:11,cursor:"pointer",padding:"4px 10px",borderRadius:4,...(histAll?{background:"var(--accent-glow)",color:"var(--accent)",fontWeight:600}:{color:"var(--text-secondary)"})}}>All History</span>
-          {isAdmin&&<button onClick={()=>window.open(API+"/history-csv?product="+encodeURIComponent(selProd))} style={{marginLeft:"auto",padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>⬇ History CSV</button>}
+          {isAdmin&&<button onClick={()=>dl(API+"/history-csv?product="+encodeURIComponent(selProd), `splittable_history_${selProd}.csv`).catch(e=>alert("이력 CSV 다운로드 실패: "+e.message))} style={{marginLeft:"auto",padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>⬇ History CSV</button>}
         </div>
         {history.length===0?<div style={{textAlign:"center",padding:40,color:"var(--text-secondary)"}}>No history</div>
         :<table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
