@@ -1,7 +1,21 @@
 {
-  "version": "8.4.7",
+  "version": "8.5.0",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.5.0",
+      "date": "2026-04-21",
+      "title": "User 그룹 필터 — Dashboard/Tracker 가시성 + 관심 LOT 워치리스트",
+      "tag": "feat",
+      "changes": [
+        "신규 라우터 groups.py — /api/groups/{list,mine,create,update,delete,members/add,members/remove,lots/add,lots/remove,audit}. 스키마 {id,name,owner,members[],watched_lots[],created,updated}. owner/admin 만 수정, 멤버는 watchlist 편집 가능.",
+        "Dashboard ChartConfig 에 group_ids:list 필드 추가. GET /api/dashboard/charts 는 요청 유저 그룹과 교집합만 반환 (admin 은 전체). 빈 group_ids = public.",
+        "Tracker 이슈에 group_ids 필드 + GET /api/tracker/issues 동일 가시성 필터. admin bypass.",
+        "Admin → 그룹 서브탭 신규 — 그룹 CRUD + 멤버 추가/제거 + 관심 LOT_WF (watched_lots) 편집 UI.",
+        "Dashboard 차트 에디터 / Tracker 이슈 에디터에 그룹 가시성 다중선택 chip UI 추가 (모든 유저).",
+        "감사 로그 groups_audit.jsonl — actor/action/group_id/detail/timestamp. /api/groups/audit (admin)."
+      ]
+    },
     {
       "version": "8.4.7",
       "date": "2026-04-21",

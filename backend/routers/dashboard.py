@@ -4,7 +4,7 @@ Charts are pre-computed every 10 min by a daemon thread; frontend fetches snapsh
 v6: spec lines (USL/LSL/Target), SPC control limits (UCL/LCL/CL), OOS alerts.
 """
 import datetime, threading, time, logging, statistics
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from typing import Optional
 import polars as pl
@@ -75,6 +75,9 @@ class ChartConfig(BaseModel):
     group: str = ""
     width: int = 1
     height: int = 1
+    # v8.5.0: User group visibility. 비어있으면 public (모든 유저). 값이 있으면
+    # 해당 그룹 멤버만 볼 수 있음. admin 은 항상 전체.
+    group_ids: list = []
 
 
 def _charts():
@@ -719,8 +722,16 @@ _scheduler.start()
 # API Endpoints
 # ──────────────────────────────────────────────────────────────────
 @router.get("/charts")
-def get_charts():
-    return {"charts": _charts()}
+def get_charts(request: Request):
+    """v8.5.0: group_ids visibility 필터. admin 은 전체, 일반 유저는 자기 그룹 매칭만."""
+    from core.auth import current_user
+    from routers.groups import filter_by_visibility
+    me = current_user(request)
+    charts = _charts()
+    filtered = filter_by_visibility(
+        charts, me["username"], me.get("role", "user"), key="group_ids"
+    )
+    return {"charts": filtered}
 
 
 @router.get("/products")

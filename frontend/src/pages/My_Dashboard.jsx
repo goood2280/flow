@@ -709,14 +709,17 @@ function ColInput({ label, value, onChange, columns, placeholder, guide }) {
 
 /* ═══ Chart Editor ═══ */
 function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
-  const [form, setForm] = useState(cfg || { title: "", source_type: "", root: "", product: "", file: "", x_col: "", y_expr: "", time_col: "", days: null, chart_type: "scatter", filter_expr: "", agg_col: "", agg_method: "", color_col: "", x_label: "", y_label: "", bin_count: 10, bin_width: null, visible_to: "all", no_schedule: false, exclude_null: true, point_size: 3, opacity: 0.7, sort_x: false, limit_points: null, joins: [] });
+  const [form, setForm] = useState(cfg || { title: "", source_type: "", root: "", product: "", file: "", x_col: "", y_expr: "", time_col: "", days: null, chart_type: "scatter", filter_expr: "", agg_col: "", agg_method: "", color_col: "", x_label: "", y_label: "", bin_count: 10, bin_width: null, visible_to: "all", no_schedule: false, exclude_null: true, point_size: 3, opacity: 0.7, sort_x: false, limit_points: null, joins: [], group_ids: [] });
   const [sources, setSources] = useState([]); const [columns, setColumns] = useState([]);
   // v8.4.3: JOIN 된 소스별 컬럼 캐시. 키는 join 인덱스, 값은 컬럼명 배열.
   const [joinColumns, setJoinColumns] = useState({});
   const [preview, setPreview] = useState(null); const [prevLoading, setPrevLoading] = useState(false);
   const [showAdv, setShowAdv] = useState(false);
+  // v8.5.0: 내가 속한 그룹 목록 (관리자는 전체).
+  const [myGroups, setMyGroups] = useState([]);
   const u = (k, v) => setForm({ ...form, [k]: v });
   useEffect(() => { sf(API + "/products").then(d => setSources(d.products || [])).catch(() => { }); }, []);
+  useEffect(() => { sf("/api/groups/list").then(d => setMyGroups(d.groups || [])).catch(() => setMyGroups([])); }, []);
   useEffect(() => {
     if (form.source_type === "base_file" && form.file) sf(API + "/columns?source_type=base_file&file=" + encodeURIComponent(form.file)).then(d => setColumns(d.columns || [])).catch(() => setColumns([]));
     else if (form.source_type === "root_parquet" && form.file) sf(API + "/columns?file=" + encodeURIComponent(form.file)).then(d => setColumns(d.columns || [])).catch(() => setColumns([]));
@@ -937,6 +940,23 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, opacity: form.fit_line_enabled ? 1 : 0.5 }}>
             <input type="checkbox" disabled={!form.fit_line_enabled} checked={form.fit_line_show_r2 || false} onChange={e => u("fit_line_show_r2", e.target.checked)} style={{ accentColor: "var(--accent)" }} />R² 표시</label>
         </div>
+        {/* v8.5.0: 그룹 가시성 (모든 유저) */}
+        <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4, marginTop: 8, fontWeight: 600 }}>그룹 가시성 (비어있으면 공개)</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {myGroups.length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>가입된 그룹 없음</span>}
+          {myGroups.map(g => {
+            const on = (form.group_ids || []).includes(g.id);
+            return <label key={g.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, padding: "3px 8px", borderRadius: 999, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)22" : "transparent", cursor: "pointer" }}>
+              <input type="checkbox" checked={on} onChange={e => {
+                const s = new Set(form.group_ids || []);
+                if (e.target.checked) s.add(g.id); else s.delete(g.id);
+                u("group_ids", Array.from(s));
+              }} style={{ accentColor: "var(--accent)" }} />
+              {g.name}
+            </label>;
+          })}
+        </div>
+
         {isAdmin && <>
           <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4, marginTop: 8, fontWeight: 600 }}>관리자 옵션</div>
           <div style={{ display: "flex", gap: 12 }}>
