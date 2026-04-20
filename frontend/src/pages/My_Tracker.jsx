@@ -171,7 +171,10 @@ function IssueForm({ onSubmit, onClose, user }) {
   const [title, setTitle] = useState(""); const [desc, setDesc] = useState(""); const [priority, setPriority] = useState("normal");
   const [lots, setLots] = useState([]); const [links, setLinks] = useState([""]);
   const [category, setCategory] = useState(""); const [cats, setCats] = useState([]);
+  // v8.5.0: group visibility
+  const [myGroups, setMyGroups] = useState([]); const [groupIds, setGroupIds] = useState([]);
   useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#64748b" } : c))).catch(() => { }); }, []);
+  useEffect(() => { sf("/api/groups/list").then(d => setMyGroups(d.groups || [])).catch(() => setMyGroups([])); }, []);
   const S = { width: "100%", padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, outline: "none" };
   return (
     <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 20, marginBottom: 20 }}>
@@ -204,8 +207,26 @@ function IssueForm({ onSubmit, onClose, user }) {
       <div style={{ marginBottom: 12 }}>
         <LotTable lots={lots} setLots={setLots} readOnly={false} />
       </div>
+      {/* v8.5.0: 그룹 가시성 */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 4 }}>그룹 가시성 (비어있으면 공개)</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {myGroups.length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>가입된 그룹 없음</span>}
+          {myGroups.map(g => {
+            const on = groupIds.includes(g.id);
+            return <label key={g.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, padding: "3px 8px", borderRadius: 999, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)22" : "transparent", cursor: "pointer" }}>
+              <input type="checkbox" checked={on} onChange={e => {
+                const s = new Set(groupIds);
+                if (e.target.checked) s.add(g.id); else s.delete(g.id);
+                setGroupIds(Array.from(s));
+              }} style={{ accentColor: "var(--accent)" }} />
+              {g.name}
+            </label>;
+          })}
+        </div>
+      </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={() => { if (!title.trim()) return; onSubmit({ title, description: desc, priority, category, images: [], lots, links: links.filter(l => l.trim()) }); }}
+        <button onClick={() => { if (!title.trim()) return; onSubmit({ title, description: desc, priority, category, images: [], lots, links: links.filter(l => l.trim()), group_ids: groupIds }); }}
           style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 600, cursor: "pointer" }}>생성</button>
         <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>취소</button>
       </div>

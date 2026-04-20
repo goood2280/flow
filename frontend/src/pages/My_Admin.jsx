@@ -63,7 +63,7 @@ export default function My_Admin({user}){
 
   // Tabs differ by role
   // v8.4.3 단위기능 페이지 철학: AWS 설정은 FileBrowser 톱니로 이관 예정 (제거).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["logs","로그"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["groups","그룹"],["logs","로그"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
   const userTabs=[["notifs","알림"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
 
@@ -197,6 +197,9 @@ export default function My_Admin({user}){
           <div style={{fontSize:10,fontFamily:"monospace"}}>{[...resLog].reverse().slice(0,50).map((r,i)=><div key={i} style={{padding:"2px 0",color:"var(--text-secondary)"}}>{r.timestamp?.slice(11,19)} CPU:{r.cpu}% Mem:{r.mem}%</div>)}</div>
         </div>}
       </div>}
+
+      {/* Groups (admin only) — v8.5.0 */}
+      {tab==="groups"&&isAdmin&&<GroupsPanel allUsers={users}/>}
 
       {/* Categories (admin only) */}
       {tab==="categories"&&isAdmin&&<CategoryPanel/>}
@@ -841,6 +844,121 @@ function AWSPanel({user}){
         • Secret 은 기본적으로 마스킹 표시. '편집' 눌러야 변경 가능<br/>
         • 저장 후 파일 브라우저의 S3 Sync 항목이 이 자격증명으로 실행됨<br/>
         • Per-item endpoint 가 필요하면 파일 브라우저 → S3 Sync 모달의 Endpoint URL 필드 사용
+      </div>
+    </div>
+  );
+}
+
+// ── Groups Panel (v8.5.0) ──
+function GroupsPanel({allUsers}){
+  const [groups,setGroups]=useState([]);
+  const [sel,setSel]=useState(null);
+  const [newName,setNewName]=useState("");
+  const [newLot,setNewLot]=useState("");
+  const [msg,setMsg]=useState("");
+  const load=()=>sf("/api/groups/list").then(d=>setGroups(d.groups||[])).catch(e=>setMsg(e.message));
+  useEffect(load,[]);
+  const create=()=>{
+    const n=newName.trim();if(!n)return;
+    sf("/api/groups/create",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name:n,members:[],watched_lots:[]})})
+      .then(()=>{setNewName("");setMsg("생성 완료");load();}).catch(e=>setMsg(e.message));
+  };
+  const del=(id)=>{if(!confirm("삭제하시겠습니까?"))return;
+    sf("/api/groups/delete?id="+encodeURIComponent(id),{method:"POST"})
+      .then(()=>{setSel(null);load();}).catch(e=>setMsg(e.message));};
+  const addMember=(id,u)=>sf("/api/groups/members/add?id="+encodeURIComponent(id),
+    {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u})})
+    .then(load);
+  const rmMember=(id,u)=>sf("/api/groups/members/remove?id="+encodeURIComponent(id),
+    {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u})})
+    .then(load);
+  const addLot=(id)=>{const v=newLot.trim();if(!v)return;
+    sf("/api/groups/lots/add?id="+encodeURIComponent(id),
+      {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({lot_id:v})})
+      .then(()=>{setNewLot("");load();});};
+  const rmLot=(id,l)=>sf("/api/groups/lots/remove?id="+encodeURIComponent(id),
+    {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({lot_id:l})})
+    .then(load);
+
+  const cur=groups.find(g=>g.id===sel);
+  const availableUsers=(allUsers||[]).map(u=>u.username).filter(u=>u&&!(cur?.members||[]).includes(u));
+
+  return(
+    <div style={{display:"grid",gridTemplateColumns:"300px 1fr",gap:16}}>
+      {/* List */}
+      <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:12}}>
+        <div style={{fontSize:13,fontWeight:600,marginBottom:10}}>그룹 목록 ({groups.length})</div>
+        <div style={{display:"flex",gap:6,marginBottom:10}}>
+          <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="새 그룹 이름"
+            style={{flex:1,padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12}}/>
+          <button onClick={create} style={{padding:"6px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:12,cursor:"pointer"}}>생성</button>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:400,overflow:"auto"}}>
+          {groups.map(g=>(
+            <div key={g.id} onClick={()=>setSel(g.id)}
+              style={{padding:"8px 10px",borderRadius:6,cursor:"pointer",
+                background:sel===g.id?"var(--bg-tertiary)":"transparent",
+                border:"1px solid "+(sel===g.id?"var(--accent)":"transparent")}}>
+              <div style={{fontSize:12,fontWeight:600}}>{g.name}</div>
+              <div style={{fontSize:10,color:"var(--text-secondary)"}}>
+                owner: {g.owner} · members: {(g.members||[]).length} · lots: {(g.watched_lots||[]).length}
+              </div>
+            </div>
+          ))}
+          {groups.length===0&&<div style={{fontSize:11,color:"var(--text-secondary)",padding:"20px 0",textAlign:"center"}}>그룹 없음</div>}
+        </div>
+        {msg&&<div style={{marginTop:10,fontSize:11,color:"var(--accent)"}}>{msg}</div>}
+      </div>
+
+      {/* Detail */}
+      <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+        {!cur&&<div style={{fontSize:12,color:"var(--text-secondary)"}}>좌측에서 그룹을 선택하세요.</div>}
+        {cur&&<>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+            <div style={{fontSize:16,fontWeight:700}}>{cur.name}</div>
+            <div style={{flex:1,fontSize:10,color:"var(--text-secondary)"}}>owner: {cur.owner} · id: {cur.id}</div>
+            <button onClick={()=>del(cur.id)} style={{padding:"5px 10px",borderRadius:4,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",fontSize:11,cursor:"pointer"}}>그룹 삭제</button>
+          </div>
+
+          <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>멤버 ({(cur.members||[]).length})</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+            {(cur.members||[]).map(m=>(
+              <span key={m} style={{padding:"3px 10px",borderRadius:999,background:"var(--bg-tertiary)",fontSize:11,display:"inline-flex",alignItems:"center",gap:6}}>
+                {m}
+                {m!==cur.owner&&<button onClick={()=>rmMember(cur.id,m)} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11,padding:0}}>×</button>}
+              </span>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:6,marginBottom:16}}>
+            <select onChange={e=>{if(e.target.value){addMember(cur.id,e.target.value);e.target.value="";}}}
+              style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12}}>
+              <option value="">+ 멤버 추가…</option>
+              {availableUsers.map(u=><option key={u} value={u}>{u}</option>)}
+            </select>
+          </div>
+
+          <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>관심 LOT_WF ({(cur.watched_lots||[]).length})</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+            {(cur.watched_lots||[]).map(l=>(
+              <span key={l} style={{padding:"3px 10px",borderRadius:999,background:"var(--bg-tertiary)",fontSize:11,display:"inline-flex",alignItems:"center",gap:6,fontFamily:"monospace"}}>
+                {l}
+                <button onClick={()=>rmLot(cur.id,l)} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11,padding:0}}>×</button>
+              </span>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:6}}>
+            <input value={newLot} onChange={e=>setNewLot(e.target.value)} placeholder="lot_id (예: A0001B.1)"
+              style={{flex:1,padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,fontFamily:"monospace"}}/>
+            <button onClick={()=>addLot(cur.id)} style={{padding:"6px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,cursor:"pointer"}}>추가</button>
+          </div>
+
+          <div style={{marginTop:16,padding:10,background:"var(--bg-primary)",borderRadius:6,fontSize:10,color:"var(--text-secondary)",lineHeight:1.6}}>
+            • 이 그룹에 속한 유저는 Dashboard/Tracker 에서 이 그룹에 연결된 차트·이슈만 공유함.<br/>
+            • admin 은 모든 그룹과 콘텐츠를 볼 수 있음.<br/>
+            • 관심 LOT_WF 목록은 향후 SplitTable/Dashboard 의 필터로 활용됨.
+          </div>
+        </>}
       </div>
     </div>
   );

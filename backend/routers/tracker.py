@@ -1,11 +1,12 @@
 """routers/tracker.py v4.1.0 — Issue board + inline images in description + lot/wafer table"""
 import datetime, uuid, base64, re
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from core.paths import PATHS
 from core.utils import load_json, save_json
+from core.auth import current_user
 
 router = APIRouter(prefix="/api/tracker", tags=["tracker"])
 TRACKER_DIR = PATHS.data_root / "tracker"
@@ -123,6 +124,8 @@ class IssueCreate(BaseModel):
     images: List[str] = []
     lots: List[dict] = []
     links: List[str] = []
+    # v8.5.0: group 가시성. 빈 배열 = public, 채워지면 해당 그룹 멤버만 조회.
+    group_ids: List[str] = []
 
 class IssueUpdate(BaseModel):
     issue_id: str
@@ -132,6 +135,7 @@ class IssueUpdate(BaseModel):
     priority: Optional[str] = None
     category: Optional[str] = None
     username: str = ""
+    group_ids: Optional[List[str]] = None
 
 class CommentReq(BaseModel):
     issue_id: str
@@ -179,10 +183,14 @@ def save_categories(cats: list):
 
 
 @router.get("/issues")
-def list_issues(status: str = Query(""), limit: int = Query(200)):
+def list_issues(request: Request, status: str = Query(""), limit: int = Query(200)):
+    """v8.5.0: group_ids 가시성 필터. admin 은 전체 열람."""
+    from routers.groups import filter_by_visibility
+    me = current_user(request)
     issues = _load()
     if status:
         issues = [i for i in issues if i.get("status") == status]
+    issues = filter_by_visibility(issues, me["username"], me.get("role", "user"), key="group_ids")
     out = []
     for iss in issues[-limit:]:
         out.append({
@@ -194,6 +202,7 @@ def list_issues(status: str = Query(""), limit: int = Query(200)):
             "closed_at": iss.get("closed_at"),
             "lot_count": len(iss.get("lots", [])),
             "comment_count": len(iss.get("comments", [])),
+            "group_ids": iss.get("group_ids") or [],
         })
     return {"issues": list(reversed(out))}
 
@@ -228,6 +237,7 @@ def create_issue(req: IssueCreate):
         "category": req.category or "", "links": req.links or [],
         "created": now.isoformat(), "closed_at": None,
         "images": img_names, "lots": lots, "comments": [],
+        "group_ids": list(req.group_ids or []),
     }
     issues.append(issue)
     _save(issues)
@@ -257,6 +267,8 @@ def update_issue(req: IssueUpdate):
         iss["priority"] = req.priority
     if req.category is not None:
         iss["category"] = req.category
+    if req.group_ids is not None:
+        iss["group_ids"] = list(req.group_ids)
     _save(issues)
     return {"ok": True}
 
