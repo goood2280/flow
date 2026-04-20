@@ -1,5 +1,34 @@
-// lib/api.js v4.0.0 — shared fetch, download, and query-string helpers.
-// Pages import { sf, postJson, dl, qs } from '../lib/api' to stop redefining them.
+// lib/api.js v8.4.6 — shared fetch, download, and query-string helpers.
+// v8.4.6: 모든 fetch 에 X-Session-Token 자동 주입 + 401 → 글로벌 로그아웃 이벤트.
+//   - 토큰은 localStorage.hol_user.token 에 저장 (로그인 응답에서 발급).
+//   - 401 수신 시 localStorage 정리 후 window 에 `flow:session-expired` 디스패치.
+//     App.jsx 가 이를 수신해 로그인 화면으로 되돌림.
+//   - 모든 API 호출은 idle 타이머 reset 트리거 — window 에 `flow:activity` 발행.
+
+function _getToken() {
+  try {
+    const raw = localStorage.getItem("hol_user");
+    if (!raw) return "";
+    const o = JSON.parse(raw);
+    return (o && o.token) || "";
+  } catch (_) { return ""; }
+}
+
+function _withAuthHeaders(opts) {
+  const h = new Headers((opts && opts.headers) || {});
+  const tk = _getToken();
+  if (tk && !h.has("X-Session-Token")) h.set("X-Session-Token", tk);
+  return { ...(opts || {}), headers: h };
+}
+
+function _onAuthFailure() {
+  try { localStorage.removeItem("hol_user"); } catch (_) {}
+  try { window.dispatchEvent(new CustomEvent("flow:session-expired")); } catch (_) {}
+}
+
+function _touchActivity() {
+  try { window.dispatchEvent(new CustomEvent("flow:activity")); } catch (_) {}
+}
 
 export function qs(params) {
   const parts = [];
@@ -11,7 +40,13 @@ export function qs(params) {
 }
 
 export function sf(url, opts) {
-  return fetch(url, opts).then(async (r) => {
+  const _isApi = typeof url === "string" && url.startsWith("/api/");
+  if (_isApi) _touchActivity();
+  return fetch(url, _withAuthHeaders(opts)).then(async (r) => {
+    if (r.status === 401 && _isApi) {
+      _onAuthFailure();
+      throw new Error("Session expired — please log in again");
+    }
     if (!r.ok) {
       let detail = "HTTP " + r.status;
       try {
@@ -38,7 +73,13 @@ export function postJson(url, body) {
 
 // Stream a URL to a file download. Returns promise resolving once triggered.
 export function dl(url, filename) {
-  return fetch(url).then(async (r) => {
+  const _isApi = typeof url === "string" && url.startsWith("/api/");
+  if (_isApi) _touchActivity();
+  return fetch(url, _withAuthHeaders()).then(async (r) => {
+    if (r.status === 401 && _isApi) {
+      _onAuthFailure();
+      throw new Error("Session expired");
+    }
     if (!r.ok) {
       let detail = "Download failed";
       try {
@@ -57,7 +98,7 @@ export function dl(url, filename) {
   });
 }
 
-// Log user activity (fire-and-forget).
+// Log user activity (fire-and-forget). v8.4.6: username 은 서버에서 토큰으로 덮어씀 — 여기서는 참고용.
 export function logActivity(username, action, detail) {
   postJson("/api/admin/log", { username, action, detail: detail || "" }).catch(() => {});
 }

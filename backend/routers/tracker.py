@@ -291,10 +291,24 @@ def bulk_lots(req: LotBulkReq):
 
 @router.get("/image")
 def get_image(name: str = Query(...)):
-    fp = IMG_DIR / name
+    # v8.4.6: traversal 방어 — IMG_DIR 밖 파일 다운로드 차단, 디렉터리 컴포넌트 제거
+    from pathlib import Path as _P
+    safe_name = _P(name).name  # 슬래시·백슬래시·.. 제거
+    fp = (IMG_DIR / safe_name).resolve()
+    try:
+        fp.relative_to(IMG_DIR.resolve())
+    except ValueError:
+        raise HTTPException(400, "Invalid path")
     if not fp.is_file():
         raise HTTPException(404)
-    return FileResponse(str(fp))
+    # MIME 명시로 sniffing 기반 XSS 방어 (L3)
+    ext = fp.suffix.lower()
+    media = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+    }.get(ext, "application/octet-stream")
+    return FileResponse(str(fp), media_type=media,
+                        headers={"X-Content-Type-Options": "nosniff"})
 
 
 @router.post("/delete")

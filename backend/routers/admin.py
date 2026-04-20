@@ -1,7 +1,15 @@
-"""routers/admin.py v6.1.0 - Admin: users/permissions/logs/notify/downloads + batch dismiss + global settings + data_roots (v830)"""
-import os
+"""routers/admin.py v8.4.6 - Admin: users/permissions/logs/notify/downloads + batch dismiss + global settings + data_roots.
+
+v8.4.6 보안 패치:
+  - 모든 admin 전용 엔드포인트에 Depends(require_admin) 추가 → curl 로 role 우회 불가.
+  - /users 응답에서 password_hash 제거.
+  - /reset-password 는 임시 랜덤 비번 발급 (응답엔 포함하고 호출자에게 전달 책임).
+  - /my-notifications · /user-tabs · /log 은 본인 또는 admin 만 접근 (verify_owner).
+  - /settings 의 data_roots 는 admin 요청에만 노출 (일반 유저는 숨김).
+"""
+import os, secrets
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends, Request
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 from core.paths import PATHS
@@ -11,8 +19,27 @@ from core.notify import (
     dismiss_notification, dismiss_by_ids, mark_read_by_ids,
 )
 from routers.auth import read_users, write_users
+from core.auth import require_admin, current_user, verify_owner
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+def _is_admin(username: str) -> bool:
+    """다른 라우터(filebrowser, splittable 등) 가 import 해서 씀. Back-compat."""
+    if not username:
+        return False
+    try:
+        for u in read_users():
+            if u.get("username") == username and u.get("role") == "admin":
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _scrub_user(u: dict) -> dict:
+    """응답 직렬화 시 password_hash 제거."""
+    return {k: v for k, v in u.items() if k != "password_hash"}
 DL_LOG = PATHS.download_log
 ACTIVITY_LOG = PATHS.activity_log
 SETTINGS_FILE = PATHS.data_root / "settings.json"
@@ -107,12 +134,13 @@ class MarkReadReq(BaseModel):
 
 # ── Users ──
 @router.get("/users")
-def list_users():
-    return {"users": read_users()}
+def list_users(_admin=Depends(require_admin)):
+    """v8.4.6: admin only. password_hash 는 응답에서 제거."""
+    return {"users": [_scrub_user(u) for u in read_users()]}
 
 
 @router.post("/approve")
-def approve_user(req: ApproveReq):
+def approve_user(req: ApproveReq, _admin=Depends(require_admin)):
     users = read_users()
     for u in users:
         if u["username"] == req.username:
@@ -127,36 +155,43 @@ def approve_user(req: ApproveReq):
 
 
 @router.post("/reject")
-def reject_user(req: ApproveReq):
+def reject_user(req: ApproveReq, _admin=Depends(require_admin)):
     users = [u for u in read_users() if u["username"] != req.username]
     write_users(users)
     return {"ok": True}
 
 
 @router.post("/reset-password")
-def reset_password(req: ApproveReq):
-    from routers.auth import hash_pw
+def reset_password(req: ApproveReq, _admin=Depends(require_admin)):
+    """v8.4.6: 임시 랜덤 비번 (12자) 발급. 기존 '1111' 하드코딩 제거.
+    응답에 평문 포함 — admin 이 해당 유저에게 별도 채널로 전달 책임."""
+    from core.auth import hash_password, revoke_user_tokens
     users = read_users()
     for u in users:
         if u["username"] == req.username:
-            u["password_hash"] = hash_pw("1111")
+            new_pw = secrets.token_urlsafe(9)  # ≈12 chars
+            u["password_hash"] = hash_password(new_pw)
             write_users(users)
+            revoke_user_tokens(req.username)  # 기존 세션 강제 로그아웃
             send_notify(req.username, "Password Reset",
-                        "Your password has been reset to default.", "info")
-            return {"ok": True, "new_password": "1111"}
+                        "Your password has been reset by admin. "
+                        "Contact admin to receive the new temporary password.", "info")
+            return {"ok": True, "new_password": new_pw}
     raise HTTPException(404)
 
 
 @router.post("/delete-user")
-def delete_user(req: ApproveReq):
+def delete_user(req: ApproveReq, _admin=Depends(require_admin)):
+    from core.auth import revoke_user_tokens
     users = [u for u in read_users() if u["username"] != req.username]
     write_users(users)
+    revoke_user_tokens(req.username)
     return {"ok": True}
 
 
 # ── Permissions ──
 @router.post("/set-tabs")
-def set_tabs(req: PermReq):
+def set_tabs(req: PermReq, _admin=Depends(require_admin)):
     users = read_users()
     for u in users:
         if u["username"] == req.username:
@@ -167,7 +202,9 @@ def set_tabs(req: PermReq):
 
 
 @router.get("/user-tabs")
-def get_user_tabs(username: str = Query(...)):
+def get_user_tabs(request: Request, username: str = Query(...)):
+    """v8.4.6: 본인 또는 admin 만."""
+    verify_owner(request, username)
     for u in read_users():
         if u["username"] == username:
             if u.get("role") == "admin":
@@ -178,7 +215,7 @@ def get_user_tabs(username: str = Query(...)):
 
 # ── Messaging ──
 @router.post("/send-message")
-def send_message(req: MessageReq):
+def send_message(req: MessageReq, _admin=Depends(require_admin)):
     send_notify(req.to_user, "Message from Admin", req.message, "message")
     return {"ok": True}
 
@@ -189,8 +226,9 @@ class InquiryReq(BaseModel):
 
 
 @router.post("/send-inquiry")
-def send_inquiry(req: InquiryReq):
-    """User sends inquiry to all admins."""
+def send_inquiry(req: InquiryReq, request: Request):
+    """User sends inquiry to all admins. 본인 이름으로만 보낼 수 있음."""
+    verify_owner(request, req.username)
     send_to_admins(
         f"Inquiry from {req.username}",
         req.message,
@@ -202,7 +240,7 @@ def send_inquiry(req: InquiryReq):
 
 
 @router.post("/broadcast")
-def broadcast(req: MessageReq):
+def broadcast(req: MessageReq, _admin=Depends(require_admin)):
     for u in read_users():
         if u["status"] == "approved":
             send_notify(u["username"], "Broadcast", req.message, "message")
@@ -211,62 +249,76 @@ def broadcast(req: MessageReq):
 
 # ── Notifications ──
 @router.get("/my-notifications")
-def my_notifications(username: str = Query(...)):
+def my_notifications(request: Request, username: str = Query(...)):
+    verify_owner(request, username)
     notifs = get_notifications(username, unread_only=True)
     return {"notifications": notifs, "count": len(notifs)}
 
 
 @router.get("/all-notifications")
-def all_notifications(username: str = Query(...)):
+def all_notifications(request: Request, username: str = Query(...)):
+    verify_owner(request, username)
     return {"notifications": get_notifications(username)}
 
 
 @router.post("/mark-read")
-def mark_read(req: ApproveReq):
+def mark_read(req: ApproveReq, request: Request):
+    verify_owner(request, req.username)
     mark_all_read(req.username)
     return {"ok": True}
 
 
 @router.post("/dismiss")
-def dismiss(req: DismissReq):
+def dismiss(req: DismissReq, request: Request):
+    verify_owner(request, req.username)
     dismiss_notification(req.username, req.index)
     return {"ok": True}
 
 
 @router.post("/dismiss-batch")
-def dismiss_batch(req: BatchDismissReq):
+def dismiss_batch(req: BatchDismissReq, request: Request):
+    verify_owner(request, req.username)
     dismiss_by_ids(req.username, req.ids)
     return {"ok": True}
 
 
 @router.post("/mark-read-batch")
-def mark_read_batch(req: MarkReadReq):
+def mark_read_batch(req: MarkReadReq, request: Request):
+    verify_owner(request, req.username)
     mark_read_by_ids(req.username, req.ids)
     return {"ok": True}
 
 
 # ── Activity Logging ──
 @router.post("/log")
-def write_log(entry: LogEntry):
-    jsonl_append(ACTIVITY_LOG, entry.dict())
+def write_log(entry: LogEntry, request: Request):
+    """v8.4.6: entry.username 은 세션 소유자로 강제 (spoof 방지)."""
+    me = current_user(request)
+    data = entry.dict()
+    data["username"] = me["username"]
+    jsonl_append(ACTIVITY_LOG, data)
     return {"ok": True}
 
 
 @router.get("/logs")
-def get_logs(limit: int = 200, username: str = ""):
+def get_logs(request: Request, limit: int = 200, username: str = ""):
+    """v8.4.6: 전체 로그 열람은 admin. 본인 로그는 누구나."""
+    me = current_user(request)
+    if me.get("role") != "admin":
+        username = me["username"]
     f = (lambda e: e.get("username") == username) if username else None
     return {"logs": jsonl_read(ACTIVITY_LOG, limit, f)}
 
 
 # ── Download History ──
 @router.get("/download-history")
-def download_history(limit: int = Query(200)):
+def download_history(limit: int = Query(200), _admin=Depends(require_admin)):
     return {"logs": jsonl_read(DL_LOG, limit)}
 
 
 # ── Global Settings (v8.1.5) ──
 @router.get("/settings")
-def get_settings():
+def get_settings(request: Request):
     """Readable by anyone — UI (Dashboard) needs to read refresh interval.
 
     v8.3.0: also returns a `data_roots` block with effective paths and the
@@ -274,28 +326,29 @@ def get_settings():
     effective paths come from core.roots resolver if available (Agent A); if
     the resolver is missing we fall back to env vars + PATHS defaults.
     """
+    me = current_user(request)
     data = load_json(SETTINGS_FILE, {})
     merged = {**DEFAULT_SETTINGS, **(data if isinstance(data, dict) else {})}
-    # Effective data_roots (soft-landing). Never raise — settings GET must
-    # stay readable even if roots.py is broken.
-    try:
-        eff = _resolver_snapshot()
-        merged["data_roots"] = {
-            "db_root":        eff.get("db_root", ""),
-            "base_root":      eff.get("base_root", ""),
-            "wafer_map_root": eff.get("wafer_map_root", ""),
-            "sources": {
-                "db_root":        _data_root_source("db_root"),
-                "base_root":      _data_root_source("base_root"),
-                "wafer_map_root": _data_root_source("wafer_map_root"),
-            },
-        }
-    except Exception as e:
-        merged["data_roots"] = {
-            "db_root": "", "base_root": "", "wafer_map_root": "",
-            "sources": {"db_root": "default", "base_root": "default", "wafer_map_root": "default"},
-            "error": f"resolver unavailable: {e}",
-        }
+    # v8.4.6: data_roots (내부 파일시스템 경로) 는 admin 에게만 노출.
+    if me.get("role") == "admin":
+        try:
+            eff = _resolver_snapshot()
+            merged["data_roots"] = {
+                "db_root":        eff.get("db_root", ""),
+                "base_root":      eff.get("base_root", ""),
+                "wafer_map_root": eff.get("wafer_map_root", ""),
+                "sources": {
+                    "db_root":        _data_root_source("db_root"),
+                    "base_root":      _data_root_source("base_root"),
+                    "wafer_map_root": _data_root_source("wafer_map_root"),
+                },
+            }
+        except Exception as e:
+            merged["data_roots"] = {
+                "db_root": "", "base_root": "", "wafer_map_root": "",
+                "sources": {"db_root": "default", "base_root": "default", "wafer_map_root": "default"},
+                "error": f"resolver unavailable: {e}",
+            }
     return merged
 
 
@@ -312,7 +365,7 @@ class SettingsSaveReq(BaseModel):
 
 
 @router.post("/settings/save")
-def save_settings(req: SettingsSaveReq):
+def save_settings(req: SettingsSaveReq, _admin=Depends(require_admin)):
     """Admin-only via UI gating; backend saves whatever is sent (schema-validated).
 
     Two stores:

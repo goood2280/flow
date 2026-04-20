@@ -9,7 +9,7 @@ v8.4.4 change:
     바로 확인 가능.
   - display_name 필드 지원 — UI 표시 전용, 물리 파일명과 분리 저장.
 """
-import datetime, subprocess, shlex
+import datetime  # v8.4.6: subprocess/shlex 제거 — aws_cmd RCE 경로 차단
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional
@@ -173,22 +173,16 @@ class TableReq(BaseModel):
 
 
 def _run_aws_sync(tbl_id: str, rows, columns, aws_cmd: str) -> str:
-    """Execute AWS sync if aws_cmd is set. Returns result text."""
-    if not aws_cmd.strip() or not rows:
-        return ""
-    try:
-        tmpf = DBMAP_DIR / f"_tmp_{tbl_id}.csv"
-        cols = [c["name"] for c in columns]
-        lines = [",".join(cols)]
-        for r in rows:
-            lines.append(",".join(str(r.get(c, "")) for c in cols))
-        tmpf.write_text("\n".join(lines), "utf-8")
-        cmd = aws_cmd.replace("{{file}}", str(tmpf))
-        result = subprocess.run(shlex.split(cmd), capture_output=True, text=True, timeout=60)
-        tmpf.unlink(missing_ok=True)
-        return result.stdout + result.stderr
-    except Exception as e:
-        return f"AWS error: {e}"
+    """v8.4.6 보안 패치: 사용자 입력 임의 명령 실행(RCE) 제거.
+
+    기존 구현은 TableReq.aws_cmd (사용자 문자열) 을 shlex.split 후 subprocess.run 에
+    그대로 넘겨 임의 명령 실행이 가능했음. S3 동기화는 `routers/s3_ingest.py` 의
+    whitelist 된 aws CLI 플로우로 이관됨. 이 함수는 no-op 으로 유지해 기존
+    호출부는 그대로 동작하게 함.
+    """
+    if aws_cmd and aws_cmd.strip():
+        return "aws_cmd is disabled in v8.4.6 — use FileBrowser → S3 Sync."
+    return ""
 
 
 VERSION_CAP = 30  # v8.4.4: per-table rolling version history cap

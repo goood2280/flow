@@ -1,7 +1,29 @@
 {
-  "version": "8.4.5",
+  "version": "8.4.6",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.4.6",
+      "date": "2026-04-21",
+      "title": "Security — 세션 토큰 + 인증 미들웨어 + 경로/RCE 차단 + 4h idle 서버 측 enforcement",
+      "tag": "security",
+      "changes": [
+        "모든 /api/* 는 세션 토큰(X-Session-Token) 필수. 미들웨어에서 401. 로그인/등록/reset-request/logout 만 exempt.",
+        "로그인 응답에 token 포함. 4h idle 시 서버 측 토큰 자동 만료 + FE useIdleLogout 이 flow:activity/session-expired 이벤트로 동기화.",
+        "비밀번호 해시 SHA-256 (무염) → PBKDF2-HMAC-SHA256 (per-user salt). 레거시 해시는 첫 로그인 시 자동 업그레이드.",
+        "GET /api/admin/users 응답에서 password_hash 제거. admin 전용 엔드포인트 전부 Depends(require_admin) 추가 (approve/reject/reset-password/delete-user/set-tabs/broadcast/send-message/settings/save 등).",
+        "messages /api/messages/(admin/)* 와 /api/session/* 에 verify_owner() — 타 유저 스레드/세션 spoof 차단.",
+        "filebrowser /root-parquet-view · /download-csv 와 tracker /image path traversal 방어 (resolve + relative_to).",
+        "dbmap aws_cmd 기반 임의 명령 실행(RCE) 경로 제거. S3 는 whitelist 된 FileBrowser S3 Sync 로 일원화.",
+        "FastAPI /docs · /redoc · /openapi.json 비활성 — API 스펙 무인증 노출 차단.",
+        "보안 헤더 미들웨어: X-Content-Type-Options: nosniff, X-Frame-Options: SAMEORIGIN, Referrer-Policy: same-origin.",
+        "Seed admin 비밀번호 FABCANVAS_ADMIN_PW / HOL_ADMIN_PW env 우선. 기본값 fallback 시 로그 경고.",
+        "/api/admin/reset-password 가 임시 랜덤 비번 (12자 token_urlsafe) 발급 + 해당 유저 세션 전체 revoke.",
+        "/api/auth/change-password 는 세션 토큰 소유자 본인 비번만 변경 가능 (username body 제거).",
+        "GET /api/admin/settings data_roots 섹션은 admin 에게만 노출 (일반 유저는 경로 정보 없음).",
+        "register username sanitize: CR/LF/콤마/따옴표 금지 (CSV 인젝션 방어). password 최소 4자."
+      ]
+    },
     {
       "version": "8.4.5",
       "date": "2026-04-20",

@@ -47,13 +47,20 @@ const lightV = {"--bg-primary":"#fafafa","--bg-secondary":"#fff","--bg-card":"#f
   "--accent":"#ea580c","--accent-dim":"#c2410c","--accent-glow":"rgba(234,88,12,0.1)"};
 
 function useIdleLogout(onLogout, timeoutMs = 4 * 3600 * 1000) {
+  // v8.4.6: 마지막 활동 = 클릭 / 키입력 / 스크롤 / 터치 + API 호출 (api.js 의 flow:activity 이벤트).
+  // 4시간 무활동 시 onLogout 호출 (프론트 localStorage 정리 + /api/auth/logout 으로 토큰 revoke).
   const timer = useRef(null);
   useEffect(() => {
     const reset = () => { clearTimeout(timer.current); timer.current = setTimeout(onLogout, timeoutMs); };
-    const events = ["mousedown","keydown","scroll","touchstart"];
-    events.forEach(e => window.addEventListener(e, reset));
+    const winEvents = ["mousedown","keydown","scroll","touchstart"];
+    winEvents.forEach(e => window.addEventListener(e, reset));
+    window.addEventListener("flow:activity", reset);
     reset();
-    return () => { clearTimeout(timer.current); events.forEach(e => window.removeEventListener(e, reset)); };
+    return () => {
+      clearTimeout(timer.current);
+      winEvents.forEach(e => window.removeEventListener(e, reset));
+      window.removeEventListener("flow:activity", reset);
+    };
   }, [onLogout, timeoutMs]);
 }
 
@@ -438,13 +445,29 @@ export default function App() {
   const [userTabs, setUserTabs] = useState("__all__");
   const [showPw, setShowPw] = useState(false);
 
-  const handleLogout = () => { setUser(null); localStorage.removeItem("hol_user"); };
+  const handleLogout = () => {
+    // v8.4.6: 서버 토큰도 revoke (best-effort).
+    try { postJson("/api/auth/logout", {}).catch(() => {}); } catch (_) {}
+    setUser(null);
+    localStorage.removeItem("hol_user");
+  };
   useIdleLogout(handleLogout);
 
   useEffect(() => {
     const s = localStorage.getItem("hol_user");
-    if (s) setUser(JSON.parse(s));
+    if (s) {
+      try {
+        const parsed = JSON.parse(s);
+        // v8.4.6: 저장된 세션에 토큰이 없으면(구버전) 강제 로그아웃 → 로그인 유도
+        if (parsed && parsed.token) setUser(parsed);
+        else localStorage.removeItem("hol_user");
+      } catch (_) { localStorage.removeItem("hol_user"); }
+    }
     setDark(localStorage.getItem("hol_dark") !== "false");
+    // v8.4.6: api.js 의 401 핸들러에서 발행되는 session-expired 수신 → 로그인 페이지로
+    const onExpire = () => { setUser(null); };
+    window.addEventListener("flow:session-expired", onExpire);
+    return () => window.removeEventListener("flow:session-expired", onExpire);
   }, []);
   useEffect(() => {
     Object.entries(dark?darkV:lightV).forEach(([k,v])=>document.documentElement.style.setProperty(k,v));

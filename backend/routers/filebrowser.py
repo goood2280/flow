@@ -422,7 +422,13 @@ def root_parquets():
 def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       rows: int = Query(200), cols: int = Query(10),
                       select_cols: str = Query("")):
-    fp = PATHS.db_root / file
+    # v8.4.6: path traversal 방어 — db_root 밖 파일 접근 차단
+    db_root = PATHS.db_root
+    fp = (db_root / file).resolve()
+    try:
+        fp.relative_to(db_root.resolve())
+    except ValueError:
+        raise HTTPException(400, "Path escapes DB root")
     if not fp.is_file():
         raise HTTPException(404)
     try:
@@ -457,7 +463,13 @@ def download_csv(root: str = Query(""), product: str = Query(""),
     to the download — matching what engineers actually need, not raw VALUE."""
     try:
         if file:
-            fp = PATHS.db_root / file
+            # v8.4.6: traversal 방어
+            db_root = PATHS.db_root
+            fp = (db_root / file).resolve()
+            try:
+                fp.relative_to(db_root.resolve())
+            except ValueError:
+                raise HTTPException(400, "Path escapes DB root")
             if not fp.is_file():
                 raise HTTPException(404)
             df = read_one_file(fp)

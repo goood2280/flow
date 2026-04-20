@@ -17,13 +17,14 @@ Notice schema:
   {id, author, title, body, created_at, read_by: [usernames...]}
 """
 import datetime, uuid
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from typing import List, Optional
 from core.paths import PATHS
 from core.utils import load_json, save_json
 from core.notify import send_notify, send_to_admins
 from routers.auth import read_users
+from core.auth import verify_owner, require_admin  # v8.4.6 owner/admin checks
 
 router = APIRouter(prefix="/api/messages", tags=["messages"])
 
@@ -157,12 +158,14 @@ class NoticeDeleteReq(BaseModel):
 
 # ─── User endpoints ───
 @router.get("/thread")
-def get_thread(username: str = Query(...)):
+def get_thread(request: Request, username: str = Query(...)):
+    verify_owner(request, username)
     return _load_thread(username)
 
 
 @router.post("/send")
-def user_send(req: SendReq):
+def user_send(req: SendReq, request: Request):
+    verify_owner(request, req.username)
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(400, "Empty message")
@@ -187,7 +190,8 @@ def user_send(req: SendReq):
 
 
 @router.get("/unread")
-def unread_count(username: str = Query(...)):
+def unread_count(request: Request, username: str = Query(...)):
+    verify_owner(request, username)
     """Unread summary for user — used for nav badge and home popup."""
     t = _load_thread(username)
     thread_n = _thread_unread_for_user(t)
@@ -230,7 +234,8 @@ def unread_count(username: str = Query(...)):
 
 
 @router.post("/mark_read")
-def user_mark_read(req: UserOnlyReq):
+def user_mark_read(req: UserOnlyReq, request: Request):
+    verify_owner(request, req.username)
     t = _load_thread(req.username)
     t["last_read_by_user"] = _now()
     _save_thread(req.username, t)
@@ -255,7 +260,8 @@ def list_notices(username: str = Query("")):
 
 
 @router.post("/notice_read")
-def notice_read(req: NoticeReadReq):
+def notice_read(req: NoticeReadReq, request: Request):
+    verify_owner(request, req.username)
     notices = _load_notices()
     target = set(req.ids) if req.ids else None
     for n in notices:
@@ -271,7 +277,8 @@ def notice_read(req: NoticeReadReq):
 
 # ─── Admin endpoints ───
 @router.get("/admin/threads")
-def admin_threads(admin: str = Query(...)):
+def admin_threads(request: Request, admin: str = Query(...)):
+    verify_owner(request, admin)
     if not _is_admin(admin):
         raise HTTPException(403, "Admin only")
     out = []
@@ -303,14 +310,16 @@ def admin_threads(admin: str = Query(...)):
 
 
 @router.get("/admin/thread")
-def admin_get_thread(admin: str = Query(...), user: str = Query(...)):
+def admin_get_thread(request: Request, admin: str = Query(...), user: str = Query(...)):
+    verify_owner(request, admin)
     if not _is_admin(admin):
         raise HTTPException(403, "Admin only")
     return _load_thread(user)
 
 
 @router.post("/admin/reply")
-def admin_reply(req: AdminReplyReq):
+def admin_reply(req: AdminReplyReq, request: Request):
+    verify_owner(request, req.admin)
     if not _is_admin(req.admin):
         raise HTTPException(403, "Admin only")
     text = (req.text or "").strip()
@@ -337,7 +346,8 @@ def admin_reply(req: AdminReplyReq):
 
 
 @router.post("/admin/mark_read")
-def admin_mark_read(req: AdminThreadReq):
+def admin_mark_read(req: AdminThreadReq, request: Request):
+    verify_owner(request, req.admin)
     if not _is_admin(req.admin):
         raise HTTPException(403, "Admin only")
     t = _load_thread(req.to_user)
@@ -347,8 +357,9 @@ def admin_mark_read(req: AdminThreadReq):
 
 
 @router.get("/admin/unread")
-def admin_unread(admin: str = Query(...)):
+def admin_unread(request: Request, admin: str = Query(...)):
     """Total unread replies across all threads, for admin dashboard."""
+    verify_owner(request, admin)
     if not _is_admin(admin):
         raise HTTPException(403, "Admin only")
     total = 0
@@ -360,7 +371,8 @@ def admin_unread(admin: str = Query(...)):
 
 
 @router.get("/admin/notices")
-def admin_list_notices(admin: str = Query(...)):
+def admin_list_notices(request: Request, admin: str = Query(...)):
+    verify_owner(request, admin)
     if not _is_admin(admin):
         raise HTTPException(403, "Admin only")
     notices = _load_notices()
@@ -380,7 +392,8 @@ def admin_list_notices(admin: str = Query(...)):
 
 
 @router.post("/admin/notice_create")
-def admin_notice_create(req: NoticeCreateReq):
+def admin_notice_create(req: NoticeCreateReq, request: Request):
+    verify_owner(request, req.author)
     if not _is_admin(req.author):
         raise HTTPException(403, "Admin only")
     title = (req.title or "").strip()[:200]
@@ -414,7 +427,8 @@ def admin_notice_create(req: NoticeCreateReq):
 
 
 @router.post("/admin/notice_delete")
-def admin_notice_delete(req: NoticeDeleteReq):
+def admin_notice_delete(req: NoticeDeleteReq, request: Request):
+    verify_owner(request, req.admin)
     if not _is_admin(req.admin):
         raise HTTPException(403, "Admin only")
     notices = [n for n in _load_notices() if n.get("id") != req.id]

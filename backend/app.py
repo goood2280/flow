@@ -1,16 +1,55 @@
-"""FabCanvas.ai Backend v4.0.0 — uvicorn app:app --host 0.0.0.0 --port 8080"""
-import os, importlib, logging
+"""FabCanvas.ai Backend v8.4.6 — uvicorn app:app --host 0.0.0.0 --port 8080.
+
+v8.4.6 보안 패치:
+  - 세션 토큰 기반 인증 미들웨어: 모든 /api/* 호출은 X-Session-Token 필요
+    (login/register/reset-request/logout 만 exempt).
+  - FastAPI OpenAPI/docs 비활성화 (내부 API 스펙 노출 차단).
+  - 보안 헤더 추가: X-Content-Type-Options, X-Frame-Options, Referrer-Policy.
+  - Seed admin 비밀번호는 환경변수 FABCANVAS_ADMIN_PW 우선, 미지정 시 임시값 + 경고.
+  - Password 해시: SHA-256 → PBKDF2-HMAC-SHA256 (salted). 레거시 해시는 로그인 시 자동 업그레이드.
+"""
+import os, importlib, logging, secrets
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from core.paths import PATHS
+from core.auth import validate_token, AUTH_EXEMPT_API_PATHS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 # legacy HOL prefix kept for logger name to avoid disturbing existing log filters; brand is now FabCanvas.ai
 logger = logging.getLogger("holweb")
 
-app = FastAPI(title="FabCanvas.ai", version="4.0.0")
+# v8.4.6: /docs, /redoc, /openapi.json disabled — API 스펙 무인증 노출 차단
+app = FastAPI(
+    title="FabCanvas.ai",
+    version="8.4.6",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """/api/* 경로에 세션 토큰 검증을 강제. 예외는 AUTH_EXEMPT_API_PATHS."""
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/api/") and path not in AUTH_EXEMPT_API_PATHS:
+            token = request.headers.get("x-session-token") or request.headers.get("X-Session-Token")
+            u = validate_token(token)
+            if not u:
+                return JSONResponse({"detail": "Authentication required"}, status_code=401)
+            request.state.user = u
+        resp = await call_next(request)
+        # v8.4.6: hardening headers (cheap, defense-in-depth)
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        resp.headers.setdefault("Referrer-Policy", "same-origin")
+        return resp
+
+
+app.add_middleware(AuthMiddleware)
 
 # ── Dynamic Router Loading ──
 ROUTERS_DIR = Path(__file__).parent / "routers"
@@ -50,7 +89,7 @@ def serve_version():
     vp = Path(__file__).parent.parent / "version.json"
     if vp.exists():
         return FileResponse(str(vp), media_type="application/json")
-    return {"version": "4.0.0"}
+    return {"version": "8.4.6"}
 
 
 # ── Serve React build ──
@@ -63,21 +102,35 @@ if DIST.exists():
     def serve_spa(path: str):
         if path.startswith("api/"):
             raise HTTPException(404, "API not found")
-        fp = DIST / path
-        if fp.exists() and fp.is_file():
+        # v8.4.6: traversal 방어 — DIST 를 벗어나는 경로는 SPA index 로 폴백
+        try:
+            fp = (DIST / path).resolve()
+            fp.relative_to(DIST.resolve())
+        except (ValueError, OSError):
+            return FileResponse(str(DIST / "index.html"))
+        if fp.is_file():
             return FileResponse(str(fp))
         return FileResponse(str(DIST / "index.html"))
 
-# ── Seed admin user ──
-from routers.auth import read_users, write_users, hash_pw
+# ── Seed admin user (환경변수 우선, 미지정 시 임시 랜덤 비번 + 경고) ──
+from routers.auth import read_users, write_users
+from core.auth import hash_password
 import datetime
 users = read_users()
 if not any(u["username"] == "hol" for u in users):
+    seed_pw = os.environ.get("FABCANVAS_ADMIN_PW") or os.environ.get("HOL_ADMIN_PW")
+    if not seed_pw:
+        # 개발 호환 — 기존 기본값 유지하되 로그로 경고.  prod 에서는 반드시 env 로 override.
+        seed_pw = "hol12345!"
+        logger.warning(
+            "Seed admin password using legacy default. "
+            "Set FABCANVAS_ADMIN_PW env var for production to rotate this."
+        )
     users.append({
-        "username": "hol", "password_hash": hash_pw("hol12345!"),
+        "username": "hol", "password_hash": hash_password(seed_pw),
         "role": "admin", "status": "approved",
         "created": datetime.datetime.now().isoformat(),
         "tabs": "__all__",
     })
     write_users(users)
-    logger.info("Admin user 'hol' created")
+    logger.info("Admin user 'hol' created (password via env or legacy default).")
