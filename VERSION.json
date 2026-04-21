@@ -1,7 +1,24 @@
 {
-  "version": "8.8.6",
+  "version": "8.8.7",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.7",
+      "date": "2026-04-21",
+      "title": "hive DB 대시보드 차트 에러 수정 · 인폼 제품 카탈로그 3-way unified · fab_source 드롭다운 현재 적용값 표시 · VM meta product 필터 · Rulebook CRUD BE · ET root flat 레이아웃",
+      "tag": "feat+fix",
+      "changes": [
+        "**dashboard/columns UnboundLocalError 수정** — `PATHS` 임포트가 `base_file` 분기 안에만 있어 `1.RAWDATA_DB_*` hive 소스 선택 시 `cannot access local variable 'PATHS'` 발생 → 함수 진입부로 올림. Unexpected token 'I' JSON parse 에러 해소.",
+        "**인폼 제품 카탈로그 3-way unified** — 새 인폼 폼 드롭다운 옵션이 `constants.products ∪ products ∪ Object.keys(productContacts)` 정렬로 노출. 담당자 패널에서만 등록한 제품도 자동으로 드롭다운에 표시.",
+        "**담당자 추가 시 카탈로그 자동 등록** — `saveContact` / `runBulkAdd` 모두 제품이 `constants.products` 에 없으면 `/products/add` 자동 호출. 담당자·제품 싱크 무결성 보장.",
+        "**SplitTable fab_source 드롭다운 현재 적용값 표시** — fab_source / fab_col / ts_col 인풋의 placeholder 가 override resolve 결과(`mlMatch.override`)의 실제 적용값을 보여줌. fab_source select 는 `현재 적용: <경로> (자동/매뉴얼)` 우측 표기 + 첫 옵션에 `비움 (자동 매칭: <path>)` 명시. orphan `mlOnly` state 제거.",
+        "**VM meta product 필터 + feature_name 매핑** — `_build_vm_meta(product)` 가 `vm_matching.csv` 의 `feature_name, product` 컬럼 지원. product 필터링 + feature_name 기반 매핑. 레거시 step_desc-only 스키마는 step_desc 를 feature_name 대체 사용.",
+        "**SplitTable Rulebook CRUD BE** — `/api/splittable/rulebook?kind=knob_ppid|step_matching&product=` GET + `/rulebook/save` POST (admin only). product 스코프 저장 시 해당 제품 행만 교체, 비어있으면 전체 교체. FE 톱니 패널에 admin 편집 버튼 링크 (modal 은 v8.8.8 에서).",
+        "**ET root flat 레이아웃 지원** — 사내 실 데이터 구조 `1.RAWDATA_DB_ET/PRODA/PRODA_YYYY-MM-DD.parquet` (hive 파티션 아님). `_build_fab_root.py` 의 root_specs 에 `layout=\"flat\"` 추가 — flat 이면 파일명에 ISO 날짜 포함 + 파일 내 `date` 컬럼 주입. `_scan_fab_source` 의 rglob 은 이미 flat/hive 모두 지원.",
+        "**`_build_fab_root.py` Base 없어도 동작** — 기존 Fab self-sufficient 로 인식, 1.RAWDATA_DB_* 만 재생성. step_matching/knob_ppid product 컬럼 자동 부여 통합.",
+        "**fab_lot_id 변경 대응 설계 가이드** — root_lot_id = primary key, fab_lot_id = 현재 alias. hive ts_col desc unique keep=first 로 최신 매핑 조회. 인폼/Tracker 저장 시점 fab_lot_id 스냅샷 필드는 v8.8.8 에서 추가 예정."
+      ]
+    },
     {
       "version": "8.8.6",
       "date": "2026-04-21",

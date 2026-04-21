@@ -39,7 +39,7 @@ export default function My_SplitTable({user}){
   const[noteDraftScope,setNoteDraftScope]=useState(null);  // {scope, product, root_lot_id, wafer_id, param}
   const[tab,setTab]=useState("view");const[history,setHistory]=useState([]);const[histAll,setHistAll]=useState(false);
   const[colSearch,setColSearch]=useState("");const[customCols,setCustomCols]=useState([]);const[customName,setCustomName]=useState("");
-  const[showSettings,setShowSettings]=useState(false);const[newPrefix,setNewPrefix]=useState("");const[mlOnly,setMlOnly]=useState(true);
+  const[showSettings,setShowSettings]=useState(false);const[newPrefix,setNewPrefix]=useState("");
   const[precision,setPrecision]=useState({});const[precisionDraft,setPrecisionDraft]=useState({});
   const[enabledSources,setEnabledSources]=useState(null); // null = loading, Set of product names
   // v8.4.4: product 별 lot_id 컬럼 override (soft-landing)
@@ -132,6 +132,12 @@ export default function My_SplitTable({user}){
   useEffect(()=>{if(!selProd){setKnobMeta({});return;}
     sf(API+"/knob-meta?product="+encodeURIComponent(selProd))
       .then(d=>setKnobMeta(d.features||{})).catch(()=>setKnobMeta({}));
+  },[selProd]);
+  // v8.8.7: VM meta fetch — VM_ parameter 아래 step_id/step_desc 노출용.
+  const[vmMeta,setVmMeta]=useState({});
+  useEffect(()=>{
+    sf(API+"/vm-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""))
+      .then(d=>setVmMeta(d.items||{})).catch(()=>setVmMeta({}));
   },[selProd]);
   // fab_lot_id 후보도 fetch (lot-candidates 엔드포인트 사용)
   useEffect(()=>{if(selProd)sf(API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=fab_lot_id&limit=500").then(d=>setFabSuggestions(d.candidates||[])).catch(()=>{});},[selProd]);
@@ -410,35 +416,56 @@ export default function My_SplitTable({user}){
             return(<div style={{display:"flex",flexDirection:"column",gap:4}}>
               <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>root_col</span><input value={ov.root_col||""} onChange={e=>setOv("root_col",e.target.value)} placeholder="root_lot_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
               <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>wf_col</span><input value={ov.wf_col||""} onChange={e=>setOv("wf_col",e.target.value)} placeholder="wafer_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
-              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>fab_col</span><input value={ov.fab_col||""} onChange={e=>setOv("fab_col",e.target.value)} placeholder="fab_lot_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
-              {/* v8.8.5: fab_source = DB 경로만. ML_TABLE 필터 체크박스 제거. */}
+              {/* v8.8.7: 각 오버라이드 필드 옆에 "현재 적용" 값을 placeholder 로 노출. */}
+              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
+                <span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>fab_col</span>
+                <input value={ov.fab_col||""} onChange={e=>setOv("fab_col",e.target.value)}
+                  placeholder={mlMatch.override?.fab_col ? `현재: ${mlMatch.override.fab_col}` : "fab_lot_id"}
+                  style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/>
+              </label>
+              {/* v8.8.5/v8.8.7: fab_source = DB 경로만. ML_TABLE 필터 체크박스 제거.
+                     현재 적용된 DB 소스가 select 값으로 반영되어 있어야 하므로, 비어있을 때는
+                     effective_fab_source 를 "자동" 태그로 보여주고 드롭다운 첫 옵션 텍스트로 명시. */}
               <div style={{display:"flex",flexDirection:"column",gap:2}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
                   <span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>fab_source</span>
-                  <span style={{marginLeft:"auto",fontSize:9,color:"var(--text-secondary)"}}>DB 경로만 · 비우면 자동매칭</span>
+                  <span style={{marginLeft:"auto",fontSize:9,color:"var(--text-secondary)"}}>
+                    DB 경로만 · 현재 적용: <span style={{color:mlMatch.manual_override?"#f59e0b":"#22c55e",fontFamily:"monospace",fontWeight:700}}>{mlMatch.effective_fab_source||"없음"}</span>
+                  </span>
                 </div>
                 <select value={ov.fab_source||""} onChange={e=>setOv("fab_source",e.target.value)} style={{...S,width:"100%",fontSize:10,fontFamily:"monospace"}}>
-                  <option value="">— 비움 (자동 매칭: {mlMatch.auto_path||"없음"}) —</option>
+                  <option value="">{mlMatch.auto_path ? `— 비움 (자동 매칭: ${mlMatch.auto_path}) —` : "— 비움 (자동 매칭 없음) —"}</option>
                   {fabSourceOptions.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
-              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>ts_col</span><input value={ov.ts_col||""} onChange={e=>setOv("ts_col",e.target.value)} placeholder="out_ts (최신기준)" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
+              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
+                <span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>ts_col</span>
+                <input value={ov.ts_col||""} onChange={e=>setOv("ts_col",e.target.value)}
+                  placeholder={mlMatch.override?.ts_col ? `현재: ${mlMatch.override.ts_col}` : "out_ts/date (최신기준)"}
+                  style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/>
+              </label>
               <button onClick={()=>{sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:[...(enabledSources||new Set())],lot_overrides:lotOverrides||{}})}).then(()=>{loadView&&loadView();});}} style={{marginTop:4,padding:"4px 10px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,cursor:"pointer",fontWeight:600}}>Save Overrides</button>
             </div>);
           })()}
 
-          {/* v8.8.6: Parameter rulebook 뷰어 — 선택된 제품에 해당하는 KNOB feature 별
-                      rule_order / func_step / step_ids / ppid / operator / category 를 표시.
-                      읽기 전용 (편집은 Base CSV rulebook 직접 수정 또는 PageGear 에서). */}
+          {/* v8.8.6/v8.8.7: Parameter Rulebook — 선택 제품 KNOB feature 별 뷰 + admin 인라인 편집. */}
           {selProd && (() => {
             const entries = Object.entries(knobMeta || {});
-            if (!entries.length) return null;
             return (
               <div style={{marginTop:12,marginBottom:10,padding:"8px 10px",borderRadius:6,background:"var(--bg-card)",border:"1px dashed var(--border)"}}>
                 <div style={{fontSize:10,fontWeight:700,color:"var(--text-secondary)",marginBottom:6,display:"flex",alignItems:"center",gap:6}}>
                   <span>📘 Parameter Rulebook</span>
                   <span style={{fontSize:9,opacity:0.8}}>({selProd} · {entries.length} params)</span>
+                  {isAdmin && <span style={{marginLeft:"auto"}}>
+                    <button onClick={()=>setRulebookEdit("knob_ppid")}
+                      style={{padding:"2px 8px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:9,cursor:"pointer"}}>편집 knob_ppid</button>
+                    <button onClick={()=>setRulebookEdit("step_matching")}
+                      style={{marginLeft:4,padding:"2px 8px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:9,cursor:"pointer"}}>편집 step_matching</button>
+                  </span>}
                 </div>
+                {entries.length===0 && (
+                  <div style={{fontSize:9,color:"var(--text-secondary)",padding:"6px 4px",fontStyle:"italic"}}>등록된 parameter 룰 없음 (선택 제품 기준)</div>
+                )}
                 <div style={{maxHeight:220,overflowY:"auto",display:"flex",flexDirection:"column",gap:6}}>
                   {entries.map(([fname, meta]) => (
                     <div key={fname} style={{padding:"5px 6px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid var(--border)"}}>
@@ -461,7 +488,7 @@ export default function My_SplitTable({user}){
                   ))}
                 </div>
                 <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:5,lineHeight:1.4}}>
-                  Rulebook 편집: Base 의 <span style={{fontFamily:"monospace"}}>knob_ppid.csv</span> · <span style={{fontFamily:"monospace"}}>step_matching.csv</span> (product 컬럼 기준 필터).
+                  {isAdmin ? "admin: 상단 [편집] 버튼으로 제품별 rulebook 행 추가/수정/삭제." : "편집은 admin 권한 필요."}
                 </div>
               </div>
             );

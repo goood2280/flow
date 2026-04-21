@@ -967,7 +967,17 @@ export default function My_Inform({ user }) {
       ? "/api/informs/product-contacts/update?id=" + encodeURIComponent(id)
       : "/api/informs/product-contacts";
     postJson(url, { product, name, role, email, phone, note })
-      .then(() => { setEditContact(null); loadProductContacts(); })
+      .then(() => {
+        // v8.8.7: 담당자가 붙은 제품은 카탈로그에도 자동 등록 (이미 있으면 no-op).
+        //   이렇게 하면 새 인폼 폼 드롭다운에 바로 노출됨 (이전엔 productContacts 키에만 존재해서 누락).
+        if (!(constants.products || []).includes(product)) {
+          postJson(API + "/products/add", { product })
+            .then(d => setConstants(c => ({ ...c, products: d.products || c.products })))
+            .catch(() => {});
+        }
+        setEditContact(null);
+        loadProductContacts();
+      })
       .catch(e => alert("저장 실패: " + (e.message || e)));
   };
   const deleteContact = (product, id) => {
@@ -996,6 +1006,12 @@ export default function My_Inform({ user }) {
     })
       .then(r => {
         setBulkBusy(false);
+        // v8.8.7: bulk add 도 동일 — 제품이 카탈로그에 없으면 자동 등록.
+        if (!(constants.products || []).includes(bulkPickProduct)) {
+          postJson(API + "/products/add", { product: bulkPickProduct })
+            .then(d => setConstants(c => ({ ...c, products: d.products || c.products })))
+            .catch(() => {});
+        }
         const msg = `추가 ${r.added?.length || 0}명 / 스킵 ${r.skipped?.length || 0}명 (중복/차단).`;
         alert(msg);
         setBulkPickProduct("");
@@ -1695,12 +1711,13 @@ export default function My_Inform({ user }) {
                   }}
                   style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }}>
                   <option value="">-- 제품 선택 --</option>
-                  {/* v8.8.3 bugfix: 카탈로그(constants.products) + 실제 사용 제품(products state) 병합.
-                      카탈로그가 비어있어도 기존 인폼 레코드에서 집계된 제품이 드롭다운에 표시됨. */}
+                  {/* v8.8.3 / v8.8.7: 카탈로그 + 실제 사용 제품 + 담당자 등록 제품 unified.
+                      담당자 패널에서만 제품을 만든 경우에도 여기 드롭다운에 바로 노출되도록 한다. */}
                   {Array.from(new Set([
                     ...(constants.products || []),
                     ...(products || []).map(p => (typeof p === "string" ? p : p.product)).filter(Boolean),
-                  ])).map(p => <option key={p} value={p}>{p}</option>)}
+                    ...Object.keys(productContacts || {}),
+                  ])).sort().map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
                 {/* v8.8.3: 제품 등록/제거를 admin 제한 해제 — 사이드바 카탈로그와 동일 권한. */}
                 <button type="button"
