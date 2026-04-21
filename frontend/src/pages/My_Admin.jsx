@@ -1,8 +1,33 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Component } from "react";
 import Loading from "../components/Loading";
 import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
 import { sf, dl } from "../lib/api";
 const ALL_TABS=["filebrowser","dashboard","splittable","tracker","tablemap","ml","devguide","dashboard_chart"];
+// v8.7.5: u.tabs 는 string 이지만 legacy json 에서 array 로 저장된 기록이 있을 수 있어
+// "r.split is not a function" 방지를 위해 정규화 헬퍼를 둔다.
+function _tabsToArray(v){
+  if(Array.isArray(v))return v.filter(Boolean).map(String);
+  if(typeof v==="string"&&v)return v.split(",").map(s=>s.trim()).filter(Boolean);
+  return ["filebrowser","dashboard","splittable"];
+}
+
+// v8.7.5: Admin 탭 전환 시 서브 패널에서 던진 에러가 페이지 전체를 마비시키지 않도록.
+class TabBoundary extends Component{
+  constructor(p){super(p);this.state={err:null};}
+  static getDerivedStateFromError(e){return{err:e};}
+  componentDidCatch(err,info){try{console.error("[admin tab boundary]",this.props.tabKey,err,info);}catch(_){}}
+  componentDidUpdate(prev){if(prev.tabKey!==this.props.tabKey&&this.state.err)this.setState({err:null});}
+  render(){
+    if(this.state.err){
+      return(<div style={{padding:"20px 24px",background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.4)",borderRadius:8,color:"#ef4444",fontSize:12}}>
+        <div style={{fontWeight:700,marginBottom:6}}>⚠ 이 탭을 렌더하는 도중 오류가 발생했습니다.</div>
+        <div style={{fontFamily:"monospace",fontSize:11,marginBottom:8,opacity:0.9}}>{String(this.state.err?.message||this.state.err)}</div>
+        <button onClick={()=>this.setState({err:null})} style={{padding:"5px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",cursor:"pointer"}}>재시도</button>
+      </div>);
+    }
+    return this.props.children;
+  }
+}
 
 function Gauge({label,pct,used,total,unit="GB"}){
   const color=pct>85?"#ef4444":pct>60?"#fbbf24":"#22c55e";
@@ -86,6 +111,7 @@ export default function My_Admin({user}){
         {tabs.map(([k,l])=>(
           <div key={k} style={tS(tab===k)} onClick={()=>{setTab(k);if(k==="downloads")loadDl();if(k==="monitor")loadSys();}}>{l}</div>))}
       </div>
+      <TabBoundary tabKey={tab}>
 
       {/* Users (admin only) */}
       {tab==="users"&&isAdmin&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto"}}>
@@ -103,7 +129,7 @@ export default function My_Admin({user}){
               {u.status==="pending"&&<><span onClick={()=>action("/api/admin/approve",{username:u.username})} style={{color:"#22c55e",cursor:"pointer",marginRight:12,fontSize:12}}>승인</span><span onClick={()=>action("/api/admin/reject",{username:u.username})} style={{color:"#ef4444",cursor:"pointer",fontSize:12}}>거절</span></>}
               {u.status==="approved"&&u.role!=="admin"&&<><span onClick={()=>action("/api/admin/reset-password",{username:u.username})} style={{color:"var(--accent)",cursor:"pointer",fontSize:12,marginRight:8}}>비밀번호 초기화(1111)</span>
               <span onClick={()=>{if(confirm("삭제하시겠습니까?"))action("/api/admin/delete-user",{username:u.username});}} style={{color:"#ef4444",cursor:"pointer",fontSize:12,marginRight:8}}>삭제</span>
-              <span onClick={()=>{setEditPerm(u.username);setPermTabs((u.tabs||"filebrowser,dashboard,splittable").split(",").filter(Boolean));setTab("perms");}} style={{color:"#3b82f6",cursor:"pointer",fontSize:12}}>권한</span></>}
+              <span onClick={()=>{setEditPerm(u.username);setPermTabs(_tabsToArray(u.tabs));setTab("perms");}} style={{color:"#3b82f6",cursor:"pointer",fontSize:12}}>권한</span></>}
             </td></tr>)}</tbody>
         </table></div>}
 
@@ -118,7 +144,7 @@ export default function My_Admin({user}){
               <th style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:11,color:"var(--text-secondary)"}}></th>
             </tr></thead>
             <tbody>{users.filter(u=>u.role!=="admin"&&u.status==="approved").map((u,i)=>{
-              const ut=(u.tabs||"filebrowser,dashboard,splittable").split(",").filter(Boolean);
+              const ut=_tabsToArray(u.tabs);
               return(<tr key={i}>
                 <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontWeight:600,position:"sticky",left:0,background:"var(--bg-secondary)",zIndex:1}}>{u.username}</td>
                 {ALL_TABS.map(t=><td key={t} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
@@ -274,6 +300,7 @@ export default function My_Admin({user}){
 
       {/* v8.7.2: Mail API (admin only) */}
       {tab==="mail_cfg"&&isAdmin&&<MailCfgPanel/>}
+      </TabBoundary>
     </div>);
 }
 
@@ -1281,20 +1308,22 @@ function InformConfigPanel(){
   const rmReason=(r)=>{if(!confirm(`사유 '${r}' 삭제?`))return;
     saveAll({modules:cfg.modules,reasons:(cfg.reasons||[]).filter(x=>x!==r)});};
 
-  const Section=({title,items,onRemove,addValue,onAddChange,onAdd,placeholder})=>(
+  // v8.7.5: Section 을 inline 컴포넌트로 두면 매 렌더마다 새 reference 라 input focus 가 날아감.
+  // 여기서는 간단하게 JSX 로 inline 하게 두 블록을 렌더한다.
+  const renderSection=(title,items,onRemove,addValue,onAddChange,onAdd,placeholder)=>(
     <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
-      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>{title} ({items.length})</div>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>{title} ({(items||[]).length})</div>
       <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
-        {items.map(m=>(
+        {(items||[]).map(m=>(
           <span key={m} style={{padding:"4px 12px",borderRadius:999,background:"var(--accent)22",color:"var(--accent)",fontSize:11,fontWeight:600,display:"inline-flex",alignItems:"center",gap:6}}>
             {m}
             <button onClick={()=>onRemove(m)} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11,padding:0}}>×</button>
           </span>
         ))}
-        {items.length===0&&<span style={{fontSize:11,color:"var(--text-secondary)"}}>없음</span>}
+        {(items||[]).length===0&&<span style={{fontSize:11,color:"var(--text-secondary)"}}>없음</span>}
       </div>
       <div style={{display:"flex",gap:6}}>
-        <input value={addValue} onChange={e=>onAddChange(e.target.value)} placeholder={placeholder}
+        <input value={addValue||""} onChange={e=>onAddChange(e.target.value)} placeholder={placeholder}
           onKeyDown={e=>{if(e.key==="Enter")onAdd();}}
           style={{flex:1,padding:"6px 10px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12}}/>
         <button onClick={onAdd} style={{padding:"6px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer"}}>+추가</button>
@@ -1302,10 +1331,8 @@ function InformConfigPanel(){
     </div>
   );
   return(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,maxWidth:1000}}>
-    <Section title="모듈 옵션" items={cfg.modules||[]} onRemove={rmMod}
-      addValue={newMod} onAddChange={setNewMod} onAdd={addMod} placeholder="예: NEW_MOD"/>
-    <Section title="사유 옵션" items={cfg.reasons||[]} onRemove={rmReason}
-      addValue={newReason} onAddChange={setNewReason} onAdd={addReason} placeholder="예: 신뢰성 이슈"/>
+    {renderSection("모듈 옵션",cfg.modules||[],rmMod,newMod,setNewMod,addMod,"예: NEW_MOD")}
+    {renderSection("사유 옵션",cfg.reasons||[],rmReason,newReason,setNewReason,addReason,"예: 신뢰성 이슈")}
     {msg&&<div style={{gridColumn:"span 2",fontSize:11,color:"var(--accent)"}}>{msg}</div>}
     <div style={{gridColumn:"span 2",padding:12,background:"var(--bg-primary)",borderRadius:6,fontSize:11,color:"var(--text-secondary)",lineHeight:1.6}}>
       • 여기서 편집한 옵션은 인폼 작성/답글 드롭다운, 그룹 담당 모듈 선택, 대시보드 모듈 필터에 반영됩니다.<br/>
@@ -1313,12 +1340,16 @@ function InformConfigPanel(){
       • 기본값(GATE/STI/PC/MOL/…, 재측정/장비 이상/…)은 비워지면 자동 복구됩니다.
     </div>
   </div>);
-}
+};
 
 // ── Base CSV Editor Panel (v8.5.2) ──
 const BASE_CSVS = [
   {key:"step_matching",label:"step_matching.csv"},
   {key:"knob_ppid",label:"knob_ppid.csv"},
+  // v8.7.5: INLINE prefix 항목 매칭용.
+  {key:"inline_matching",label:"inline_matching.csv"},
+  // v8.7.5: VM_ prefix 항목 매칭용.
+  {key:"vm_matching",label:"vm_matching.csv"},
 ];
 function BaseCsvPanel(){
   const [cur,setCur]=useState("step_matching");

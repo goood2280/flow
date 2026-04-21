@@ -29,15 +29,34 @@ export default function S3StatusLight({ compact = false }) {
   const c = COLORS[light] || COLORS.none;
   const blink = light === "red";
   const ringStyle = blink ? { animation: "s3blink 1.4s ease-in-out infinite" } : {};
+  // v8.7.5: 다운로드(pull)/업로드(push) 각각의 최근 상태를 별도 표시.
+  const downKey = data?.download_light || light;
+  const upKey = data?.upload_light || "none";
+  const downColor = (COLORS[downKey] || COLORS.none).bg;
+  const upColor = (COLORS[upKey] || COLORS.none).bg;
+  const downLabel = (COLORS[downKey] || COLORS.none).label;
+  const upLabel = (COLORS[upKey] || COLORS.none).label;
   return (
     <span style={{ position: "relative", display: "inline-flex", alignItems: "center", gap: 6 }}
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       title={c.label + (data?.message ? " — " + data.message : "")}>
       <style>{`@keyframes s3blink { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.45;transform:scale(0.85)} }`}</style>
-      <span style={{
-        width: 10, height: 10, borderRadius: "50%", background: c.bg,
-        boxShadow: `0 0 6px ${c.bg}`, flexShrink: 0, ...ringStyle,
-      }} />
+      {/* Download light */}
+      <span style={{ display:"inline-flex", alignItems:"center", gap:2 }} title={"↓ 다운로드 — " + downLabel}>
+        <span style={{
+          width: 9, height: 9, borderRadius: "50%", background: downColor,
+          boxShadow: `0 0 5px ${downColor}`, flexShrink: 0, ...(downKey==="red"?ringStyle:{}),
+        }} />
+        <span style={{fontSize:9,color:downColor,fontWeight:700,fontFamily:"monospace"}}>↓</span>
+      </span>
+      {/* Upload light */}
+      <span style={{ display:"inline-flex", alignItems:"center", gap:2 }} title={"↑ 업로드 — " + upLabel}>
+        <span style={{
+          width: 9, height: 9, borderRadius: "50%", background: upColor,
+          boxShadow: `0 0 5px ${upColor}`, flexShrink: 0, ...(upKey==="red"?ringStyle:{}),
+        }} />
+        <span style={{fontSize:9,color:upColor,fontWeight:700,fontFamily:"monospace"}}>↑</span>
+      </span>
       {!compact && (
         <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", fontWeight: 600 }}>
           {c.label}

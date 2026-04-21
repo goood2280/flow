@@ -150,36 +150,58 @@ def base_files():
     """
     base_root = PATHS.base_root
     files, dirs = [], []
-    if not base_root.is_dir():
-        return {"files": [], "dirs": [], "path": str(base_root), "exists": False}
-    for f in sorted(base_root.iterdir(), key=lambda p: (not p.is_file(), p.name.lower())):
-        try:
-            stat = f.stat()
-        except OSError:
-            continue
-        if f.is_file():
-            ext = f.suffix.lower()
-            if ext not in BASE_EXTENSIONS:
+    if base_root.is_dir():
+        for f in sorted(base_root.iterdir(), key=lambda p: (not p.is_file(), p.name.lower())):
+            try:
+                stat = f.stat()
+            except OSError:
+                continue
+            if f.is_file():
+                ext = f.suffix.lower()
+                if ext not in BASE_EXTENSIONS:
+                    continue
+                files.append({
+                    "name": f.name,
+                    "path": f.name,
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                    "ext": ext.lstrip("."),
+                    "kind": "file",
+                    "source": "base_root",
+                })
+            elif f.is_dir():
+                data_files = _glob_data_files(f)
+                dirs.append({
+                    "name": f.name,
+                    "path": f.name,
+                    "kind": "dir",
+                    "parquet_count": len(data_files),
+                })
+    # v8.7.5: DB 루트에 있는 단일 CSV 는 "Base" 로 분류 (물리적 위치와 무관하게 의미적 Base).
+    db_root = PATHS.db_root
+    if db_root.is_dir():
+        for f in sorted(db_root.iterdir()):
+            if not f.is_file():
+                continue
+            if f.suffix.lower() != ".csv":
+                continue
+            try:
+                stat = f.stat()
+            except OSError:
                 continue
             files.append({
                 "name": f.name,
                 "path": f.name,
                 "size": stat.st_size,
                 "modified": stat.st_mtime,
-                "ext": ext.lstrip("."),
+                "ext": "csv",
                 "kind": "file",
-                # 빠른 메타 — parquet/csv rowcount 은 load 시 제공 (여기서는 skip)
+                "source": "db_root",
             })
-        elif f.is_dir():
-            # Nested dirs may exist for future Base sub-scopes; expose name only.
-            data_files = _glob_data_files(f)
-            dirs.append({
-                "name": f.name,
-                "path": f.name,
-                "kind": "dir",
-                "parquet_count": len(data_files),
-            })
-    return {"files": files, "dirs": dirs, "path": str(base_root), "exists": True}
+    files.sort(key=lambda x: x["name"].lower())
+    return {"files": files, "dirs": dirs,
+            "path": str(base_root) if base_root.is_dir() else "",
+            "exists": base_root.is_dir() or any(x["source"] == "db_root" for x in files)}
 
 
 @router.get("/base-file-view")
@@ -192,16 +214,27 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     files are returned as-is (truncated to first 2KB preview + full size) so
     `_uniques.json` can be inspected.
     """
-    # Guard against path traversal — only direct children or nested descendants
-    # that stay under base_root are allowed.
+    # Guard against path traversal — allow base_root, and also db_root-level CSVs
+    # (v8.7.5: CSV 단일 파일은 Base 로 분류되므로 여기서도 읽을 수 있어야 함).
     base_root = PATHS.base_root
-    fp = (base_root / file).resolve()
-    try:
-        fp.relative_to(base_root.resolve())
-    except ValueError:
-        raise HTTPException(400, "Path escapes Base root")
-    if not fp.is_file():
-        raise HTTPException(404, f"File not found in Base root: {file}")
+    db_root = PATHS.db_root
+    fp = None
+    for candidate_root in (base_root, db_root):
+        if not candidate_root.is_dir():
+            continue
+        cand = (candidate_root / file).resolve()
+        try:
+            cand.relative_to(candidate_root.resolve())
+        except ValueError:
+            continue
+        if cand.is_file():
+            # db_root 에서는 CSV 만 Base 취급 (parquet 은 루트 Parquet 섹션으로).
+            if candidate_root == db_root and cand.suffix.lower() != ".csv":
+                continue
+            fp = cand
+            break
+    if fp is None:
+        raise HTTPException(404, f"File not found in Base or DB root: {file}")
 
     ext = fp.suffix.lower()
     if ext == ".json":
@@ -409,7 +442,8 @@ def root_parquets():
     if not DB_BASE.exists():
         return {"files": []}
     for f in sorted(DB_BASE.iterdir()):
-        if f.is_file() and f.suffix in DATA_EXTENSIONS:
+        # v8.7.5: CSV 단일 파일은 Base 로 분류 (base-files 에서 제공) — 여기서는 parquet 만.
+        if f.is_file() and f.suffix in DATA_EXTENSIONS and f.suffix.lower() != ".csv":
             stat = f.stat()
             result.append({
                 "name": f.name, "size": stat.st_size,

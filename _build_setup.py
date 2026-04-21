@@ -32,6 +32,7 @@ INCLUDE_FILES = [
     'VERSION.json',
     'app.py',
     'backend/app.py',
+    'backend/requirements.txt',
     'frontend/index.html',
     'frontend/package.json',
     'frontend/vite.config.js',

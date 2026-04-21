@@ -247,14 +247,17 @@ export default function My_Meeting({ user }) {
     const m = selectedSession.minutes || {};
     setMinutesDraft({
       body: m.body || "",
-      decisions: (m.decisions || []).slice(),
+      // v8.7.5: decisions — 기존 문자열도 포용하도록 객체로 정규화
+      decisions: (m.decisions || []).map(d => typeof d === "string" ? { text: d, due: "" } : { ...d }),
       action_items: (m.action_items || []).map(a => ({ ...a })),
     });
     setEditingMinutes(true);
   };
-  const addDecision = () => setMinutesDraft(d => ({ ...d, decisions: [...d.decisions, ""] }));
-  const updDecision = (i, v) => setMinutesDraft(d => { const n = d.decisions.slice(); n[i] = v; return { ...d, decisions: n }; });
+  // v8.7.5: decisions 는 {id, text, due, calendar_*} 객체. 편집 시 text 만 다룸.
+  const addDecision = () => setMinutesDraft(d => ({ ...d, decisions: [...d.decisions, { text: "", due: "" }] }));
+  const updDecision = (i, k, v) => setMinutesDraft(d => { const n = d.decisions.slice(); const prev = typeof n[i] === "string" ? { text: n[i] } : { ...n[i] }; prev[k] = v; n[i] = prev; return { ...d, decisions: n }; });
   const delDecision = (i) => setMinutesDraft(d => ({ ...d, decisions: d.decisions.filter((_, j) => j !== i) }));
+  const decText = (d) => typeof d === "string" ? d : (d?.text || "");
   const addAction = () => setMinutesDraft(d => ({ ...d, action_items: [...d.action_items, { text: "", owner: "", due: "" }] }));
   const updAction = (i, k, v) => setMinutesDraft(d => { const n = d.action_items.slice(); n[i] = { ...n[i], [k]: v }; return { ...d, action_items: n }; });
   const delAction = (i) => setMinutesDraft(d => ({ ...d, action_items: d.action_items.filter((_, j) => j !== i) }));
@@ -267,6 +270,26 @@ export default function My_Meeting({ user }) {
       action_items: minutesDraft.action_items,
     }).then(() => { setEditingMinutes(false); setMinutesDraft(null); reload(); })
       .catch(e => alert(e.message || "저장 실패"));
+  };
+
+  // v8.7.5: 결정사항 단위 달력 push/unpush
+  const pushDecision = (d) => {
+    if (!selected || !selectedSession || !d?.id) {
+      alert("결정사항을 먼저 저장해야 달력에 등록할 수 있습니다.");
+      return;
+    }
+    const due = d.due || (selectedSession.scheduled_at ? selectedSession.scheduled_at.slice(0, 10) : "");
+    postJson(`${API}/decision/push`, {
+      meeting_id: selected.id, session_id: selectedSession.id,
+      decision_id: d.id, due,
+    }).then(() => reload()).catch(e => alert(e.message || "달력 등록 실패"));
+  };
+  const unpushDecision = (d) => {
+    if (!selected || !selectedSession || !d?.id) return;
+    if (!confirm("결정사항의 달력 등록을 해제할까요?")) return;
+    postJson(`${API}/decision/unpush`, {
+      meeting_id: selected.id, session_id: selectedSession.id, decision_id: d.id,
+    }).then(() => reload()).catch(e => alert(e.message || "해제 실패"));
   };
 
   const pushAction = (ai) => {
@@ -566,9 +589,37 @@ export default function My_Meeting({ user }) {
                     {(selectedSession.minutes.decisions || []).length > 0 && (
                       <div>
                         <div style={lbl}>⚡ 결정사항 ({selectedSession.minutes.decisions.length})</div>
-                        <ol style={{ marginTop: 4, paddingLeft: 22, fontSize: 12, lineHeight: 1.7 }}>
-                          {selectedSession.minutes.decisions.map((d, i) => <li key={i} style={{ color: "var(--text-primary)" }}>{d}</li>)}
-                        </ol>
+                        <table style={{ width: "100%", marginTop: 4, fontSize: 11, borderCollapse: "collapse" }}>
+                          <thead>
+                            <tr style={{ background: "var(--bg-card)" }}>
+                              <th style={th}>내용</th>
+                              <th style={{ ...th, width: 100 }}>마감</th>
+                              <th style={{ ...th, width: 180 }}>📅 달력</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(selectedSession.minutes.decisions || []).map((d, i) => {
+                              const obj = typeof d === "string" ? { id: "", text: d } : d;
+                              return (
+                                <tr key={obj.id || i}>
+                                  <td style={td}>{obj.text}</td>
+                                  <td style={td}>{obj.due || "—"}</td>
+                                  <td style={td}>
+                                    {obj.calendar_pushed ? (
+                                      <div style={{ fontSize: 10, lineHeight: 1.4 }}>
+                                        <span style={{ color: "#22c55e", fontWeight: 600 }}>✓ 등록됨</span>
+                                        <div style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{obj.calendar_pushed_by} · {dtPretty(obj.calendar_pushed_at)}</div>
+                                        <span onClick={() => unpushDecision(obj)} style={delLink}>해제</span>
+                                      </div>
+                                    ) : (
+                                      <button onClick={() => pushDecision(obj)} style={btnTiny} disabled={!obj.id}>📅 달력 등록</button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </div>
                     )}
                     {(selectedSession.minutes.action_items || []).length > 0 && (
@@ -624,12 +675,16 @@ export default function My_Meeting({ user }) {
                         <span style={lbl}>⚡ 결정사항</span>
                         <button onClick={addDecision} style={btnTiny}>+ 추가</button>
                       </div>
-                      {minutesDraft.decisions.map((d, i) => (
-                        <div key={i} style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                          <input value={d} onChange={e => updDecision(i, e.target.value)} placeholder={`결정사항 #${i + 1}`} style={{ ...inp, flex: 1 }} />
-                          <button onClick={() => delDecision(i)} style={btnTinyDanger}>×</button>
-                        </div>
-                      ))}
+                      {minutesDraft.decisions.map((d, i) => {
+                        const obj = typeof d === "string" ? { text: d, due: "" } : d;
+                        return (
+                          <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 130px auto", gap: 6, marginTop: 4 }}>
+                            <input value={obj.text} onChange={e => updDecision(i, "text", e.target.value)} placeholder={`결정사항 #${i + 1}`} style={inp} />
+                            <input value={obj.due || ""} onChange={e => updDecision(i, "due", e.target.value)} placeholder="마감 (YYYY-MM-DD · 선택)" style={inp} />
+                            <button onClick={() => delDecision(i)} style={btnTinyDanger}>×</button>
+                          </div>
+                        );
+                      })}
                     </div>
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>

@@ -835,9 +835,54 @@ export default function My_TableMap({user}){
     window.addEventListener("keydown",h);return()=>window.removeEventListener("keydown",h);
   },[selectedNode,isAdmin]);
   const[editRel,setEditRel]=useState(null);const[relForm,setRelForm]=useState({from_col:"",to_col:"",description:""});
+  const[autoMatchInfo,setAutoMatchInfo]=useState(null); // {pairs, skipped} after run
+  // v8.7.5: 노드 kind 에 따른 컬럼 목록 fetch. case-insensitive 교집합으로 자동 매칭.
+  const _fetchNodeColumns=async(node)=>{
+    if(!node)return[];
+    try{
+      if(node.kind==="table"){
+        const d=await sf(API+"/tables/"+node.ref_id);
+        return(d.columns||[]).map(c=>c.name||"").filter(Boolean);
+      }
+      if(node.kind==="group"){
+        const d=await sf(API+"/groups/"+node.ref_id);
+        return(d.columns||[]).map(c=>c.name||"").filter(Boolean);
+      }
+      if(node.kind==="db_ref"){
+        const d=await sf(API+"/db-ref/info?node_id="+node.id);
+        return d.columns||[];
+      }
+    }catch(_){}
+    return[];
+  };
+  const autoMatchRelation=async()=>{
+    if(!editRel)return;
+    const fromN=config.nodes.find(n=>n.id===editRel.from_id);
+    const toN=config.nodes.find(n=>n.id===editRel.to_id);
+    const [fc,tc]=await Promise.all([_fetchNodeColumns(fromN),_fetchNodeColumns(toN)]);
+    // Map: lowerCaseName -> actual (preserve dest case)
+    const toMap=new Map();(tc||[]).forEach(c=>{if(c)toMap.set(String(c).toLowerCase(),c);});
+    const fromCols=[],toCols=[];
+    (fc||[]).forEach(c=>{
+      const key=String(c||"").toLowerCase();
+      if(key&&toMap.has(key)){fromCols.push(c);toCols.push(toMap.get(key));}
+    });
+    // 기존 값이 있으면 병합 (중복 제거)
+    const existFrom=(relForm.from_col||"").split(/[,\s]+/).filter(Boolean);
+    const existTo=(relForm.to_col||"").split(/[,\s]+/).filter(Boolean);
+    const lowerExist=new Set(existFrom.map(x=>x.toLowerCase()));
+    fromCols.forEach((c,i)=>{
+      if(!lowerExist.has(c.toLowerCase())){existFrom.push(c);existTo.push(toCols[i]);}
+    });
+    setRelForm(f=>({...f,from_col:existFrom.join(", "),to_col:existTo.join(", ")}));
+    setAutoMatchInfo({matched:fromCols.length,fromTotal:fc.length,toTotal:tc.length});
+  };
   const onAddRelation=(from,to)=>{
     setEditRel({id:"",from_id:from.id,to_id:to.id,from_name:from.name,to_name:to.name});
     setRelForm({from_col:"",to_col:"",description:""});
+    setAutoMatchInfo(null);
+    // 자동 매칭을 시도 — 결과가 있으면 미리 채워준다.
+    setTimeout(()=>{autoMatchRelation();},50);
   };
   const onEditRelation=(r)=>{
     const fromN=config.nodes.find(n=>n.id===r.from);const toN=config.nodes.find(n=>n.id===r.to);
@@ -965,10 +1010,31 @@ export default function My_TableMap({user}){
           <span onClick={()=>setEditRel(null)} style={{cursor:"pointer",fontSize:18}}>✕</span>
         </div>
         <div style={{fontSize:12,marginBottom:12,color:"var(--text-secondary)"}}><strong style={{color:"var(--accent)"}}>{editRel.from_name}</strong> → <strong style={{color:"var(--accent)"}}>{editRel.to_name}</strong></div>
-        <div style={{marginBottom:8}}><div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:3}}>소스 컬럼 <span style={{fontSize:9,color:"var(--text-secondary)"}}>(다중은 쉼표로 구분)</span></div>
+        {/* v8.7.5: 자동 매칭 컨트롤 */}
+        <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,padding:"6px 10px",borderRadius:5,background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.3)"}}>
+          <button onClick={autoMatchRelation} style={{padding:"4px 12px",borderRadius:5,border:"1px solid #22c55e",background:"transparent",color:"#22c55e",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔍 자동 매칭</button>
+          <span style={{fontSize:10,color:"var(--text-secondary)"}}>양쪽 테이블 컬럼명 case-insensitive 비교</span>
+          {autoMatchInfo&&<span style={{fontSize:10,marginLeft:"auto",color:autoMatchInfo.matched>0?"#22c55e":"var(--text-secondary)",fontFamily:"monospace"}}>{autoMatchInfo.matched}개 매칭 ({autoMatchInfo.fromTotal}↔{autoMatchInfo.toTotal})</span>}
+        </div>
+        <div style={{marginBottom:8}}><div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:3}}>소스 컬럼 <span style={{fontSize:9,color:"var(--text-secondary)"}}>(다중은 쉼표로 구분 · X 버튼으로 제거)</span></div>
           <input value={relForm.from_col} onChange={e=>setRelForm({...relForm,from_col:e.target.value})} placeholder="예: ROOT_LOT_ID, WAFER_ID" style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",fontFamily:"monospace"}}/></div>
         <div style={{marginBottom:8}}><div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:3}}>타겟 컬럼 <span style={{fontSize:9,color:"var(--text-secondary)"}}>(소스와 동일한 순서)</span></div>
           <input value={relForm.to_col} onChange={e=>setRelForm({...relForm,to_col:e.target.value})} placeholder="예: ROOT_LOT_ID, WAFER_ID" style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",fontFamily:"monospace"}}/></div>
+        {/* 매칭된 쌍을 chip 으로 보여주고 X 로 제거 가능하게 */}
+        {(()=>{const fc=(relForm.from_col||"").split(/[,\s]+/).filter(Boolean);const tc=(relForm.to_col||"").split(/[,\s]+/).filter(Boolean);const pairs=fc.map((f,i)=>[f,tc[i]||"?"]);
+          if(!pairs.length)return null;
+          return(<div style={{marginBottom:10,display:"flex",flexWrap:"wrap",gap:4}}>
+            {pairs.map(([f,t],i)=>(
+              <span key={i} style={{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:999,background:"var(--bg-card)",border:"1px solid var(--border)",fontSize:10,fontFamily:"monospace"}}>
+                <span>{f}</span><span style={{color:"var(--text-secondary)"}}>↔</span><span>{t}</span>
+                <span onClick={()=>{
+                  const nfc=fc.filter((_,j)=>j!==i).join(", ");
+                  const ntc=tc.filter((_,j)=>j!==i).join(", ");
+                  setRelForm(f=>({...f,from_col:nfc,to_col:ntc}));
+                }} style={{cursor:"pointer",color:"#ef4444",marginLeft:2,fontWeight:700}}>×</span>
+              </span>
+            ))}
+          </div>);})()}
         <div style={{marginBottom:12}}><div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:3}}>설명</div>
           <input value={relForm.description} onChange={e=>setRelForm({...relForm,description:e.target.value})} placeholder="예: Lot 이력 추적" style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none"}}/></div>
         <div style={{display:"flex",gap:8}}>

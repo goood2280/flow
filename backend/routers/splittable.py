@@ -317,7 +317,16 @@ def list_products():
                                      "root": "Base", "type": "parquet"})
     except Exception:
         pass
-    return {"products": products}
+    # v8.7.5: dedup — 같은 (name, root) 조합이 여러 경로에서 잡힐 수 있음.
+    seen = set()
+    dedup = []
+    for p in products:
+        key = (p.get("name") or "", p.get("root") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(p)
+    return {"products": dedup}
 
 
 @router.get("/schema")
@@ -600,6 +609,49 @@ def _build_knob_meta(product: str = "") -> dict:
             "label": "".join(parts),
         }
     return out
+
+
+# v8.7.5: INLINE / VM_ prefix 매칭 메타 헬퍼 — SplitTable UI 가 sub-label 로 사용.
+def _build_inline_meta() -> dict:
+    """inline_matching.csv (step_id,item_id,item_desc) → {item_id: {...}}."""
+    base = _base_root()
+    rows = _load_csv_rows(base / "inline_matching.csv")
+    out: dict[str, dict] = {}
+    for r in rows:
+        iid = (r.get("item_id") or "").strip()
+        sid = (r.get("step_id") or "").strip()
+        desc = (r.get("item_desc") or "").strip()
+        if not iid:
+            continue
+        out[iid] = {"step_id": sid, "item_id": iid, "item_desc": desc,
+                    "label": desc or iid, "sub": f"{sid}/{iid}" if sid else iid}
+    return out
+
+
+def _build_vm_meta() -> dict:
+    """vm_matching.csv (step_desc,step_id) → {step_desc: {...}}."""
+    base = _base_root()
+    rows = _load_csv_rows(base / "vm_matching.csv")
+    out: dict[str, dict] = {}
+    for r in rows:
+        sd = (r.get("step_desc") or "").strip()
+        sid = (r.get("step_id") or "").strip()
+        if not sd:
+            continue
+        out[sd] = {"step_desc": sd, "step_id": sid, "label": sd, "sub": sid}
+    return out
+
+
+@router.get("/inline-meta")
+def inline_meta():
+    """v8.7.5: INLINE prefix 항목 매칭 메타."""
+    return {"items": _build_inline_meta()}
+
+
+@router.get("/vm-meta")
+def vm_meta():
+    """v8.7.5: VM_ prefix 항목 매칭 메타."""
+    return {"items": _build_vm_meta()}
 
 
 @router.get("/knob-meta")

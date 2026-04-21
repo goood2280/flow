@@ -218,25 +218,27 @@ export default function My_Calendar({ user }) {
                       opacity: inMonth ? 1 : 0.45,
                       position: "relative",
                     }}>
-                      {isToday && (
-                        <span title="오늘" style={{
-                          position: "absolute", top: 3, right: 3, zIndex: 3,
-                          background: "var(--accent)", color: "#fff",
-                          padding: "2px 7px", borderRadius: 999,
-                          fontSize: 9, fontWeight: 800, letterSpacing: 0.3,
-                          lineHeight: 1.3,
-                          boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
-                          fontFamily: "monospace",
-                          whiteSpace: "nowrap",
-                          pointerEvents: "none",
-                        }}>📍 TODAY</span>
-                      )}
+                      {/* v8.7.5: 잘림 방지 — TODAY 라벨을 day 숫자와 한 줄로 배치. */}
                       <div style={{
+                        display: "flex", alignItems: "center", gap: 6,
                         fontSize: isToday ? 13 : 11, fontWeight: isToday ? 800 : 500,
                         color: isToday ? "var(--accent)" : (d.getDay() === 0 ? "#ef4444" : d.getDay() === 6 ? "#3b82f6" : "var(--text-primary)"),
                         fontFamily: "monospace",
                         textShadow: isToday ? "0 0 6px rgba(255,94,0,0.4)" : "none",
-                      }}>{d.getDate()}</div>
+                        whiteSpace: "nowrap",
+                      }}>
+                        <span>{d.getDate()}</span>
+                        {isToday && (
+                          <span title="오늘" style={{
+                            background: "var(--accent)", color: "#fff",
+                            padding: "1px 6px", borderRadius: 999,
+                            fontSize: 9, fontWeight: 700, letterSpacing: 0.3,
+                            lineHeight: 1.4,
+                            fontFamily: "monospace",
+                            boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+                          }}>TODAY</span>
+                        )}
+                      </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
                         {evs.slice(0, 4).map(e => (
                           <div key={e.id} onClick={ev => { ev.stopPropagation(); openEdit(e); }} style={{

@@ -103,6 +103,46 @@ def mirror_action_item_status(meeting_id: str, session_id: str,
         _save(items)
 
 
+def _new_did() -> str:
+    return f"dec_{uuid.uuid4().hex[:8]}"
+
+
+def _ensure_decision_objects(dlist: list) -> list:
+    """v8.7.5: decisions 가 문자열/객체 혼재할 때 객체 list 로 정규화."""
+    out = []
+    seen = set()
+    for d in (dlist or []):
+        if isinstance(d, str):
+            s = d.strip()
+            if not s:
+                continue
+            did = _new_did()
+            while did in seen:
+                did = _new_did()
+            seen.add(did)
+            out.append({"id": did, "text": s, "due": "",
+                        "calendar_pushed": False, "calendar_event_id": "",
+                        "calendar_pushed_by": "", "calendar_pushed_at": ""})
+        elif isinstance(d, dict):
+            s = (d.get("text") or "").strip()
+            if not s:
+                continue
+            did = d.get("id") or _new_did()
+            while did in seen:
+                did = _new_did()
+            seen.add(did)
+            out.append({
+                "id": did,
+                "text": s,
+                "due": (d.get("due") or "").strip(),
+                "calendar_pushed": bool(d.get("calendar_pushed")),
+                "calendar_event_id": d.get("calendar_event_id") or "",
+                "calendar_pushed_by": d.get("calendar_pushed_by") or "",
+                "calendar_pushed_at": d.get("calendar_pushed_at") or "",
+            })
+    return out
+
+
 def _ensure_action_item_ids(ai_list: list) -> list:
     """각 action_item 에 안정적인 id 부여 — calendar sync 의 키."""
     out = []
@@ -197,11 +237,29 @@ def _migrate_entry(m: dict) -> dict:
     return m2
 
 
+def _normalize_minutes(minutes):
+    if not isinstance(minutes, dict):
+        return minutes
+    # Decisions: string → object list.
+    if "decisions" in minutes:
+        minutes["decisions"] = _ensure_decision_objects(minutes.get("decisions") or [])
+    return minutes
+
+
 def _load() -> list:
     data = load_json(MEET_FILE, [])
     if not isinstance(data, list):
         return []
-    return [_migrate_entry(dict(m)) for m in data if isinstance(m, dict)]
+    out = []
+    for m in data:
+        if not isinstance(m, dict):
+            continue
+        entry = _migrate_entry(dict(m))
+        for s in (entry.get("sessions") or []):
+            if s.get("minutes"):
+                s["minutes"] = _normalize_minutes(s["minutes"])
+        out.append(entry)
+    return out
 
 
 def _save(items: list) -> None:
@@ -343,7 +401,8 @@ class MinutesSave(BaseModel):
     meeting_id: str
     session_id: str
     body: Optional[str] = ""
-    decisions: Optional[List[str]] = None
+    # v8.7.5: 문자열 또는 {id,text,due} 객체 list 둘 다 수용.
+    decisions: Optional[List] = None
     action_items: Optional[List[ActionItem]] = None
 
 
@@ -724,7 +783,28 @@ def save_minutes(req: MinutesSave, request: Request):
     if sidx < 0:
         raise HTTPException(404, "session not found")
     now = _now()
-    decisions = [str(x).strip() for x in (req.decisions or []) if str(x).strip()]
+    # v8.7.5: decisions 는 {id,text,due} 객체 list 로 유지. 기존 calendar 상태 보존.
+    prev_dec = ((s.get("minutes") or {}).get("decisions")) or []
+    prev_dec_by_id = {d.get("id"): d for d in prev_dec if isinstance(d, dict) and d.get("id")}
+    new_dec = _ensure_decision_objects(req.decisions or [])
+    # inherit calendar_pushed state from prev by id
+    for d in new_dec:
+        pv = prev_dec_by_id.get(d["id"]) or {}
+        if pv:
+            d["calendar_pushed"] = bool(pv.get("calendar_pushed"))
+            d["calendar_event_id"] = pv.get("calendar_event_id") or ""
+            d["calendar_pushed_by"] = pv.get("calendar_pushed_by") or ""
+            d["calendar_pushed_at"] = pv.get("calendar_pushed_at") or ""
+    # decisions removed by this save → unpush calendar events
+    kept_dids = {d["id"] for d in new_dec}
+    for old in prev_dec:
+        if isinstance(old, dict) and old.get("id") not in kept_dids and old.get("calendar_pushed"):
+            try:
+                from routers.calendar import unpush_action_item
+                unpush_action_item(m["id"], s["id"], old["id"])
+            except Exception:
+                pass
+    decisions = new_dec
     ai_clean = []
     for ai in (req.action_items or []):
         text = (ai.text or "").strip() if hasattr(ai, "text") else ""
@@ -832,6 +912,97 @@ def push_action(req: ActionPushReq, request: Request):
            detail=f"meeting={m['id']} session={s['id']} ai={ai['id']} event={ev['id']}",
            tab="meetings")
     return {"ok": True, "meeting": m, "session": s, "event": ev}
+
+
+# ── decision ↔ calendar push/unpush (v8.7.5) ─────────────
+class DecisionPushReq(BaseModel):
+    meeting_id: str
+    session_id: str
+    decision_id: str
+    due: Optional[str] = ""  # YYYY-MM-DD; if empty, fallback to session scheduled_at or today
+
+
+@router.post("/decision/push")
+def push_decision(req: DecisionPushReq, request: Request):
+    me = current_user(request)
+    items = _load()
+    midx, m = _find(items, req.meeting_id)
+    if midx < 0 or not m:
+        raise HTTPException(404, "meeting not found")
+    sidx, s = _find_session(m, req.session_id)
+    if sidx < 0:
+        raise HTTPException(404, "session not found")
+    minutes = s.get("minutes") or {}
+    dec_list = minutes.get("decisions") or []
+    # 다시 한 번 객체화 (문자열 형태로 저장된 legacy 대비)
+    dec_list = _ensure_decision_objects(dec_list)
+    target = next((d for d in dec_list if d.get("id") == req.decision_id), None)
+    if target is None:
+        raise HTTPException(404, "decision not found")
+    due = (req.due or target.get("due") or "").strip()
+    if not due:
+        # fallback: session scheduled_at (date 부분) 또는 오늘
+        sa = (s.get("scheduled_at") or "")[:10]
+        due = sa or datetime.date.today().isoformat()
+    from routers.calendar import push_action_item
+    # action_item 과 동일한 함수 재사용 — id 는 decision_id 를 그대로 사용.
+    synthetic = {"id": target["id"], "text": "[결정] " + (target.get("text") or ""),
+                 "owner": "", "due": due}
+    ev = push_action_item(m, s, synthetic, actor=me["username"],
+                          meeting_category=m.get("category") or "")
+    if not ev:
+        raise HTTPException(400, "calendar event could not be created")
+    target["calendar_pushed"] = True
+    target["calendar_event_id"] = ev["id"]
+    target["calendar_pushed_by"] = me["username"]
+    target["calendar_pushed_at"] = _now()
+    target["due"] = due
+    # replace in list
+    dec_list = [target if d.get("id") == target["id"] else d for d in dec_list]
+    minutes["decisions"] = dec_list
+    s["minutes"] = minutes
+    s["updated_at"] = _now()
+    m["sessions"][sidx] = s
+    m["updated_at"] = s["updated_at"]
+    items[midx] = m
+    _save(items)
+    _audit(request, "meetings:decision_push",
+           detail=f"meeting={m['id']} session={s['id']} dec={target['id']}",
+           tab="meetings")
+    return {"ok": True, "meeting": m, "session": s, "event": ev}
+
+
+@router.post("/decision/unpush")
+def unpush_decision(req: DecisionPushReq, request: Request):
+    me = current_user(request)
+    items = _load()
+    midx, m = _find(items, req.meeting_id)
+    if midx < 0 or not m:
+        raise HTTPException(404, "meeting not found")
+    sidx, s = _find_session(m, req.session_id)
+    if sidx < 0:
+        raise HTTPException(404, "session not found")
+    minutes = s.get("minutes") or {}
+    dec_list = _ensure_decision_objects(minutes.get("decisions") or [])
+    target = next((d for d in dec_list if d.get("id") == req.decision_id), None)
+    if target is None:
+        raise HTTPException(404, "decision not found")
+    from routers.calendar import unpush_action_item
+    unpush_action_item(m["id"], s["id"], target["id"])
+    target["calendar_pushed"] = False
+    target["calendar_event_id"] = ""
+    dec_list = [target if d.get("id") == target["id"] else d for d in dec_list]
+    minutes["decisions"] = dec_list
+    s["minutes"] = minutes
+    s["updated_at"] = _now()
+    m["sessions"][sidx] = s
+    m["updated_at"] = s["updated_at"]
+    items[midx] = m
+    _save(items)
+    _audit(request, "meetings:decision_unpush",
+           detail=f"meeting={m['id']} session={s['id']} dec={target['id']}",
+           tab="meetings")
+    return {"ok": True, "meeting": m, "session": s}
 
 
 @router.post("/action/unpush")
