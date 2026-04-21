@@ -139,6 +139,19 @@ export default function My_SplitTable({user}){
     sf(API+"/vm-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""))
       .then(d=>setVmMeta(d.items||{})).catch(()=>setVmMeta({}));
   },[selProd]);
+  // v8.8.10: Rulebook 컬럼 매핑 schema — admin 이 역할→실제컬럼명 조정 가능.
+  const[rbSchema,setRbSchema]=useState({schema:{},defaults:{}});
+  const[rbEditKind,setRbEditKind]=useState(null);   // "knob_ppid"|"step_matching"|"inline_matching"|"vm_matching"|null
+  const[rbDraftMap,setRbDraftMap]=useState({});
+  const reloadRbSchema=()=>sf(API+"/rulebook/schema").then(d=>setRbSchema({schema:d.schema||{},defaults:d.defaults||{}})).catch(()=>{});
+  useEffect(reloadRbSchema,[]);
+  const openSchemaEditor=(kind)=>{setRbEditKind(kind);setRbDraftMap({...(rbSchema.schema?.[kind]||rbSchema.defaults?.[kind]||{})});};
+  const saveSchemaEdit=()=>{if(!rbEditKind)return;
+    sf(API+"/rulebook/schema/save",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({kind:rbEditKind,mapping:rbDraftMap,username:user?.username||""})})
+      .then(()=>{setRbEditKind(null);reloadRbSchema();loadView&&loadView();})
+      .catch(e=>alert("저장 실패: "+e.message));
+  };
   // fab_lot_id 후보도 fetch (lot-candidates 엔드포인트 사용)
   useEffect(()=>{if(selProd)sf(API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=fab_lot_id&limit=500").then(d=>setFabSuggestions(d.candidates||[])).catch(()=>{});},[selProd]);
   useEffect(()=>{const h=e=>{if(lotRef.current&&!lotRef.current.contains(e.target))setShowLotDrop(false);};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
@@ -461,10 +474,15 @@ export default function My_SplitTable({user}){
                 <span style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace"}}>
                   → {files.join(" + ")}
                 </span>
-                {isAdmin && (editKinds||[]).map(k =>
-                  <button key={k} onClick={()=>setRulebookEdit&&setRulebookEdit(k)}
-                    style={{padding:"1px 6px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:9,cursor:"pointer"}}>편집 {k}</button>
-                )}
+                {isAdmin && (editKinds||[]).map(k => (
+                  <span key={k} style={{display:"inline-flex",gap:2}}>
+                    <button onClick={()=>setRulebookEdit&&setRulebookEdit(k)}
+                      style={{padding:"1px 6px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:9,cursor:"pointer"}}>편집 {k}</button>
+                    <button onClick={()=>openSchemaEditor(k)}
+                      title={`${k} 의 역할→실제 컬럼명 매핑 조정 (soft-landing)`}
+                      style={{padding:"1px 6px",borderRadius:3,border:"1px dashed var(--text-secondary)",background:"transparent",color:"var(--text-secondary)",fontSize:9,cursor:"pointer"}}>🔧 컬럼</button>
+                  </span>
+                ))}
               </div>
             );
 
@@ -962,5 +980,45 @@ export default function My_SplitTable({user}){
         </div>}
       </div>);
     })()}
+
+    {/* v8.8.10: Rulebook 컬럼 매핑 편집 modal — 역할 → 실제 CSV 컬럼명 조정. soft-landing. */}
+    {rbEditKind && (
+      <div onClick={()=>setRbEditKind(null)}
+           style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:3000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div onClick={e=>e.stopPropagation()}
+             style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:10,padding:18,width:500,maxWidth:"92vw",color:"var(--text-primary)"}}>
+          <div style={{display:"flex",alignItems:"center",marginBottom:10}}>
+            <div style={{fontSize:13,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>🔧 컬럼 매핑 — {rbEditKind}</div>
+            <span style={{flex:1}}/>
+            <span onClick={()=>setRbEditKind(null)} style={{cursor:"pointer",fontSize:16}}>✕</span>
+          </div>
+          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.5}}>
+            역할 → 실제 CSV 컬럼명. 사내 CSV 의 헤더가 다르면 여기만 조정해도 연결 유지됨.
+            입력 안 한 값은 기본값으로 저장.
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {Object.entries(rbSchema.defaults?.[rbEditKind] || {}).map(([role, dfl]) => (
+              <label key={role} style={{display:"flex",alignItems:"center",gap:8,fontSize:11}}>
+                <span style={{width:140,color:"var(--text-secondary)",fontFamily:"monospace"}}>{role}</span>
+                <input value={rbDraftMap[role] ?? dfl}
+                  onChange={e=>setRbDraftMap(m=>({...m,[role]:e.target.value}))}
+                  style={{flex:1,padding:"5px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace"}} />
+                <span style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace",opacity:0.7,width:120,textAlign:"right"}}>기본: {dfl}</span>
+              </label>
+            ))}
+          </div>
+          <div style={{display:"flex",justifyContent:"flex-end",gap:6,marginTop:14}}>
+            <button onClick={()=>{
+              // 기본값으로 리셋
+              setRbDraftMap({...(rbSchema.defaults?.[rbEditKind]||{})});
+            }} style={{padding:"6px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>기본값 복원</button>
+            <button onClick={()=>setRbEditKind(null)}
+              style={{padding:"6px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>취소</button>
+            <button onClick={saveSchemaEdit}
+              style={{padding:"6px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>저장</button>
+          </div>
+        </div>
+      </div>
+    )}
   </div>);
 }

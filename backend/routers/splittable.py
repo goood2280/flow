@@ -688,15 +688,19 @@ def _build_knob_meta(product: str = "") -> dict:
     base = _base_root()
     matching = _load_csv_rows(base / "step_matching.csv")
     knob_rules = _load_csv_rows(base / "knob_ppid.csv")
+    # v8.8.10: 역할→컬럼명 매핑 soft-landing. 사내 CSV 의 컬럼 이름이 달라도 schema 만 바꾸면 됨.
+    sm = _sch("step_matching")
+    km = _sch("knob_ppid")
 
     # func_step → [step_id, ...] (ordered, dedup)
     step_map: dict[str, list[str]] = {}
     for r in matching:
         # product 컬럼이 있으면 필터, 없으면 공용 매핑으로 취급
-        if product and r.get("product") and r.get("product") != product:
+        p_col = sm.get("product_col", "product")
+        if product and r.get(p_col) and r.get(p_col) != product:
             continue
-        fs = (r.get("func_step") or "").strip()
-        sid = (r.get("step_id") or r.get("raw_step_id") or "").strip()
+        fs = (r.get(sm.get("func_step_col", "func_step")) or "").strip()
+        sid = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
         if not fs or not sid:
             continue
         lst = step_map.setdefault(fs, [])
@@ -706,24 +710,26 @@ def _build_knob_meta(product: str = "") -> dict:
     # feature_name → groups (sorted by rule_order)
     feats: dict[str, list[dict]] = {}
     for r in knob_rules:
-        if (r.get("use") or "Y").strip().upper() == "N":
+        use_val = (r.get(km.get("use_col", "use")) or "Y").strip().upper()
+        if use_val == "N":
             continue
-        if product and r.get("product") and r.get("product") != product:
+        p_col = km.get("product_col", "product")
+        if product and r.get(p_col) and r.get(p_col) != product:
             continue
-        fname = (r.get("feature_name") or "").strip()
-        fstep = (r.get("function_step") or "").strip()
+        fname = (r.get(km.get("feature_col", "feature_name")) or "").strip()
+        fstep = (r.get(km.get("func_step_col", "function_step")) or "").strip()
         if not fname or not fstep:
             continue
         try:
-            order = int(r.get("rule_order") or 0)
+            order = int(r.get(km.get("rule_order_col", "rule_order")) or 0)
         except Exception:
             order = 0
         feats.setdefault(fname, []).append({
             "func_step": fstep,
             "rule_order": order,
-            "ppid": (r.get("ppid") or "").strip(),
-            "operator": (r.get("operator") or "").strip(),
-            "category": (r.get("category") or "").strip(),
+            "ppid": (r.get(km.get("ppid_col", "ppid")) or "").strip(),
+            "operator": (r.get(km.get("operator_col", "operator")) or "").strip(),
+            "category": (r.get(km.get("category_col", "category")) or "").strip(),
             "step_ids": list(step_map.get(fstep, [])),
         })
 
@@ -752,16 +758,20 @@ def _build_knob_meta(product: str = "") -> dict:
     return out
 
 
-# v8.7.5: INLINE / VM_ prefix 매칭 메타 헬퍼 — SplitTable UI 가 sub-label 로 사용.
-def _build_inline_meta() -> dict:
-    """inline_matching.csv (step_id,item_id,item_desc) → {item_id: {...}}."""
+# v8.7.5/v8.8.10: INLINE / VM_ prefix 매칭 메타 — schema 매핑 기반.
+def _build_inline_meta(product: str = "") -> dict:
+    """inline_matching.csv (schema: item_id_col/step_id_col/item_desc_col/product_col)."""
     base = _base_root()
     rows = _load_csv_rows(base / "inline_matching.csv")
+    im = _sch("inline_matching")
     out: dict[str, dict] = {}
     for r in rows:
-        iid = (r.get("item_id") or "").strip()
-        sid = (r.get("step_id") or "").strip()
-        desc = (r.get("item_desc") or "").strip()
+        p_col = im.get("product_col", "product")
+        if product and r.get(p_col) and r.get(p_col) != product:
+            continue
+        iid = (r.get(im.get("item_id_col", "item_id")) or "").strip()
+        sid = (r.get(im.get("step_id_col", "step_id")) or "").strip()
+        desc = (r.get(im.get("item_desc_col", "item_desc")) or "").strip()
         if not iid:
             continue
         out[iid] = {"step_id": sid, "item_id": iid, "item_desc": desc,
@@ -770,20 +780,18 @@ def _build_inline_meta() -> dict:
 
 
 def _build_vm_meta(product: str = "") -> dict:
-    """v8.8.7: vm_matching.csv 확장 스키마 지원.
-       {feature_name, step_desc, step_id, product?} → {feature_name: {step_desc, step_id, label, sub}}.
-       product 가 있으면 해당 제품 + 공용 행만 반환.
-       레거시 (step_desc, step_id) 만 있는 파일은 step_desc 를 feature_name 대체로 사용.
-    """
+    """v8.8.7/v8.8.10: vm_matching.csv 컬럼 매핑 schema 기반."""
     base = _base_root()
     rows = _load_csv_rows(base / "vm_matching.csv")
+    vm = _sch("vm_matching")
     out: dict[str, dict] = {}
     for r in rows:
-        if product and r.get("product") and r.get("product") != product:
+        p_col = vm.get("product_col", "product")
+        if product and r.get(p_col) and r.get(p_col) != product:
             continue
-        fname = (r.get("feature_name") or r.get("step_desc") or "").strip()
-        sd = (r.get("step_desc") or "").strip()
-        sid = (r.get("step_id") or "").strip()
+        fname = (r.get(vm.get("feature_col", "feature_name")) or r.get(vm.get("step_desc_col", "step_desc")) or "").strip()
+        sd = (r.get(vm.get("step_desc_col", "step_desc")) or "").strip()
+        sid = (r.get(vm.get("step_id_col", "step_id")) or "").strip()
         if not fname:
             continue
         out[fname] = {"step_desc": sd, "step_id": sid, "label": sd or fname, "sub": sid}
@@ -800,6 +808,103 @@ def inline_meta():
 def vm_meta(product: str = Query("")):
     """v8.7.5/v8.8.7: VM_ prefix 항목 매칭 메타. product 필터 추가."""
     return {"items": _build_vm_meta(product)}
+
+
+# v8.8.10: Rulebook "컬럼 역할 → 실제 컬럼명" 매핑 저장소 (soft-landing).
+#   사내 CSV 의 컬럼 이름이 기본값과 다를 때 admin 이 여기서 매핑만 바꾸면 _build_knob_meta /
+#   _build_vm_meta / _build_inline_meta 가 그대로 동작. rulebook 파일 자체는 손대지 않음.
+RULEBOOK_SCHEMA_FILE = PLAN_DIR / "rulebook_schema.json"
+_DEFAULT_RULEBOOK_SCHEMA = {
+    "knob_ppid": {
+        "feature_col":    "feature_name",
+        "func_step_col":  "function_step",
+        "rule_order_col": "rule_order",
+        "ppid_col":       "ppid",
+        "operator_col":   "operator",
+        "category_col":   "category",
+        "use_col":        "use",
+        "product_col":    "product",
+    },
+    "step_matching": {
+        "step_id_col":   "step_id",
+        "func_step_col": "func_step",
+        "product_col":   "product",
+    },
+    "inline_matching": {
+        "step_id_col":   "step_id",
+        "item_id_col":   "item_id",
+        "item_desc_col": "item_desc",
+        "product_col":   "product",
+    },
+    "vm_matching": {
+        "feature_col":   "feature_name",
+        "step_desc_col": "step_desc",
+        "step_id_col":   "step_id",
+        "product_col":   "product",
+    },
+}
+
+
+def _load_rulebook_schema() -> dict:
+    try:
+        data = load_json(RULEBOOK_SCHEMA_FILE, {})
+    except Exception:
+        data = {}
+    # merge with defaults so missing keys fall back.
+    out = {}
+    for k, defmap in _DEFAULT_RULEBOOK_SCHEMA.items():
+        cur = (data or {}).get(k) if isinstance(data, dict) else {}
+        cur = cur if isinstance(cur, dict) else {}
+        out[k] = {**defmap, **{kk: (vv or defmap.get(kk, "")) for kk, vv in cur.items() if isinstance(kk, str)}}
+    return out
+
+
+def _save_rulebook_schema(schema: dict) -> None:
+    save_json(RULEBOOK_SCHEMA_FILE, schema, indent=2)
+
+
+def _sch(kind: str) -> dict:
+    return _load_rulebook_schema().get(kind, _DEFAULT_RULEBOOK_SCHEMA.get(kind, {}))
+
+
+@router.get("/rulebook/schema")
+def get_rulebook_schema():
+    """현재 역할→컬럼명 매핑 + 기본값 같이 반환. FE 에서 diff 표시 가능."""
+    return {"schema": _load_rulebook_schema(), "defaults": _DEFAULT_RULEBOOK_SCHEMA}
+
+
+class RulebookSchemaReq(BaseModel):
+    kind: str
+    mapping: dict
+    username: str = ""
+
+
+@router.post("/rulebook/schema/save")
+def save_rulebook_schema(req: RulebookSchemaReq, request: Request):
+    try:
+        from core.auth import current_user
+        me = current_user(request)
+        if (me.get("role") or "") != "admin":
+            raise HTTPException(403, "Admin only")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(403, "Auth required")
+    if req.kind not in _DEFAULT_RULEBOOK_SCHEMA:
+        raise HTTPException(400, f"unknown rulebook: {req.kind}")
+    cur = _load_rulebook_schema()
+    defm = _DEFAULT_RULEBOOK_SCHEMA[req.kind]
+    new_map = {}
+    for role, _dfl in defm.items():
+        v = (req.mapping or {}).get(role, _dfl)
+        v = str(v or "").strip() or _dfl
+        new_map[role] = v
+    cur[req.kind] = new_map
+    _save_rulebook_schema(cur)
+    _audit_user(req.username or (me.get("username") if isinstance(me, dict) else ""),
+                "splittable:rulebook_schema_save",
+                detail=f"kind={req.kind} mapping={new_map}")
+    return {"ok": True, "kind": req.kind, "mapping": new_map}
 
 
 # v8.8.7: Rulebook (knob_ppid.csv + step_matching.csv) admin 인라인 편집 CRUD.

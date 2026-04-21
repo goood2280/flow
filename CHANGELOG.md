@@ -1,3 +1,12 @@
+## v8.8.10 — 2026-04-21
+
+Rulebook 컬럼 매핑 soft-landing + 인폼 Lot autocomplete + 스냅샷 로딩 버그 fix.
+
+- **Rulebook schema 저장소** — `/api/splittable/rulebook/schema` GET/save (admin). 각 kind 역할→실제 CSV 컬럼명. 사내 CSV 헤더가 달라도 여기만 수정하면 연결 유지.
+- **FE 컬럼 매핑 modal** — 섹션별 🔧 버튼 → 역할 리스트 + 기본값 복원/취소/저장.
+- **인폼 Lot autocomplete** — SplitTable `/lot-candidates` 의 root_lot_id+fab_lot_id 병합 → datalist. 사내에서 `/product-lots` 실패해도 정상.
+- **스냅샷 로딩 영구 bug fix** — early return 에서 `setEmbedFetching(false)` 누락 해소.
+
 ## v8.8.9 — 2026-04-21
 
 톱니 Rulebook 섹션 KNOB/INLINE/VM 분리 + 연결 방식 설명 + inline/vm rulebook CRUD.
