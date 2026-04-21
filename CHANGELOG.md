@@ -1,3 +1,21 @@
+## v8.8.4 — 2026-04-21
+
+S3 신호등 화살표 원 안 각인 · Tracker 이미지 붙여넣기 토큰 복구 · 인폼 제품 카탈로그 CRUD 통일 · 공용 메일그룹 인폼 노출+관리 z-index · 변경점 액션 담당자 제목 명시 · SplitTable 오버라이드 근본 재정리(ML_TABLE 한정+자동 매칭+ts 최신 join) + wafer 숫자정렬.
+
+- **S3 신호등 화살표를 원 안에** — 14px 원 + 내부 흰색 ↓(다운)/↑(업) + 우측 작은 라벨. 한눈에 방향 판별.
+- **Tracker 이미지 붙여넣기 깨짐 수정** — BE `_QUERY_TOKEN_PREFIXES` 에 `/api/tracker/image` 추가 + FE `withTrackerImageAuth()` 가 description_html 의 tracker image URL 에 `&t=` 자동 부착. 인폼 패턴과 동일.
+- **인폼 제품 카탈로그 CRUD + 소스 통일** — 새 인폼 폼과 제품별 담당자 패널이 동일 unified 리스트 사용. 담당자 패널에 🗑 제거 + `+제품` 이 `/products/add` 로 카탈로그 즉시 등록. `+` 버튼 admin 제한 해제, `−` 제거 버튼 추가.
+- **인폼 메일 그룹 드롭다운 + 관리 z-index** — `/api/informs/mail-groups` + `/api/mail-groups/list` 병합 표시 (`[공용]` prefix). MailDialog 내부 `관리` 버튼 + 서브모달 z-index 10001. Meeting MailGroupsEditor z-index 도 10001 로 통일.
+- **변경점 액션 담당자 제목 명시** — calendar push_action_item title 앞에 `[담당:홍길동] ` prefix (owner 있을 때).
+- **SplitTable 오버라이드 근본 재정리** —
+  - `/products` 가 Base 의 `ML_TABLE_*.parquet` 만 반환 (DB hive/legacy 제거).
+  - `_scan_product` 가 매뉴얼 override 없을 때 `ML_TABLE_<PROD>` → DB 상위폴더(FAB 우선) `<PROD>/` 자동 매칭.
+  - ts_col / fab_col 자동 추론 — `out_ts/ts/timestamp/...`, `fab_lot_id/lot_id/...`.
+  - 핵심: join keys 별로 ts_col desc 정렬 후 `unique(..., keep="first")` → 최신 레코드만 left-join.
+  - `/ml-table-match` 가 auto_path / effective_fab_source / manual_override 동봉 → FE 톱니 패널에 자동 매칭 상태 카드 표시.
+  - wafer_id 정렬 숫자-aware (view/CSV/XLSX) — `"10" < "2"` 문자열 오정렬 제거.
+- **이월 (v8.8.5)** — SplitTable paste 세트 BE 공유 + CUSTOM 탭 / SplitTable 태그 FE 드로어 / 회의록 WebSocket 동시편집 (세 건 모두 신규 엔드포인트/프로토콜/대형 UI — 별도 배치).
+
 ## v8.8.3 — 2026-04-21
 
 자동백업 최대 5개 · PageGear 전 탭 40px 우하단 통일 · FileBrowser Base 단일파일 admin 삭제 · 인폼 댓글/이력 엔드포인트 · 회의 공개범위 FE picker(patcher) · SplitTable/회의 동시편집 이월.

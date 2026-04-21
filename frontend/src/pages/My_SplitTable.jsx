@@ -75,12 +75,14 @@ export default function My_SplitTable({user}){
       setFabSourceOptions(out.filter(o=>{if(seen.has(o.value)) return false;seen.add(o.value);return true;}));
     });
   },[]);
-  // v8.7.8: ML_TABLE auto-match — selProd 에서 파생 제품명 → 상위폴더 매칭 후보
-  const[mlMatch,setMlMatch]=useState({pro:"",matches:[]});
-  useEffect(()=>{if(!selProd){setMlMatch({pro:"",matches:[]});return;}
+  // v8.7.8: ML_TABLE auto-match — selProd 에서 파생 제품명 → 상위폴더 매칭 후보.
+  // v8.8.3: auto_path / effective_fab_source / manual_override 도 받아서 상태 표시에 사용.
+  const[mlMatch,setMlMatch]=useState({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false});
+  useEffect(()=>{if(!selProd){setMlMatch({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false});return;}
     sf(API+"/ml-table-match?product="+encodeURIComponent(selProd))
-      .then(d=>setMlMatch({pro:d.derived_product||"",matches:d.matches||[]})).catch(()=>setMlMatch({pro:"",matches:[]}));
-  },[selProd]);
+      .then(d=>setMlMatch({pro:d.derived_product||"",matches:d.matches||[],auto_path:d.auto_path||"",effective_fab_source:d.effective_fab_source||"",manual_override:!!d.manual_override}))
+      .catch(()=>setMlMatch({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false}));
+  },[selProd,lotOverrides]);
   const isAdmin=user?.role==="admin";
   const lotRef=useRef(null);
   // v4.1: Features tab state — drives /splittable/features (wide ET⋈INLINE) and
@@ -366,6 +368,18 @@ export default function My_SplitTable({user}){
           {/* v8.4.4: root/fab_lot_id 컬럼 오버라이드 (선택된 product 기준, soft-landing) */}
           <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontWeight:600,marginTop:10}}>Lot ID 컬럼 오버라이드 ({selProd||"product 선택 필요"})</div>
           <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:6}}>비우면 자동 감지. 입력 시 지정 컬럼 사용.</div>
+          {/* v8.8.3: 자동 매칭 상태 표시 — ML_TABLE_<PROD> → DB/<root>/<PROD> 자동 매칭 결과.
+                      매뉴얼 fab_source 비워두면 이 경로가 자동 사용됨. */}
+          {selProd&&mlMatch&&(mlMatch.effective_fab_source||mlMatch.auto_path||(mlMatch.matches&&mlMatch.matches.length>0))&&(
+            <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:8,padding:"6px 8px",background:"var(--bg-card)",borderRadius:4,border:"1px dashed var(--border)",lineHeight:1.5}}>
+              <div><b>자동 매칭</b>: ML_TABLE_{mlMatch.pro||"?"} → <span style={{color:"var(--accent)",fontFamily:"monospace"}}>{mlMatch.auto_path||"(매칭 없음)"}</span></div>
+              <div>실제 사용: <span style={{color:mlMatch.manual_override?"#f59e0b":"#22c55e",fontFamily:"monospace"}}>{mlMatch.effective_fab_source||"(오버라이드 off)"}</span> {mlMatch.manual_override?"(매뉴얼)":"(자동)"}</div>
+              {mlMatch.matches&&mlMatch.matches.length>1&&(
+                <div>후보: {mlMatch.matches.map(m=>m.path).join(", ")}</div>
+              )}
+              <div style={{marginTop:3,color:"var(--text-secondary)"}}>ts_col 기준 최신 레코드만 join — 매뉴얼 오버라이드가 비어있으면 자동 매칭 경로 사용.</div>
+            </div>
+          )}
           {selProd&&(()=>{const ov=(lotOverrides&&lotOverrides[selProd])||{};const setOv=(k,v)=>{const n={...lotOverrides,[selProd]:{...ov,[k]:v}};setLotOverrides(n);};
             return(<div style={{display:"flex",flexDirection:"column",gap:4}}>
               <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>root_col</span><input value={ov.root_col||""} onChange={e=>setOv("root_col",e.target.value)} placeholder="root_lot_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
