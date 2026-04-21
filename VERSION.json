@@ -1,7 +1,27 @@
 {
-  "version": "8.8.4",
+  "version": "8.8.5",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.5",
+      "date": "2026-04-21",
+      "title": "사내 실 DB 구조 대응 — `1.RAWDATA_DB*` prefix + hive 파티션(date=) + base/db 통합 루트 + 오버라이드 resolve 상태 UI 노출 + Dashboard 중복 제거 + Tracker LotTable 빈행+버튼 + 개별 버전 배지 제거 + 그룹 admin 허용 + 담당모듈 UI 제거 + 파일탐색기 admin 이중 체크",
+      "tag": "feat+fix",
+      "changes": [
+        "**DB 상위폴더 인식 확장** — `_list_db_roots()` 헬퍼로 `1.RAWDATA_DB*` prefix + 레거시 FAB/INLINE/ET/EDS 짧은 이름 모두 인식. FAB 힌트 우선. `/fab-roots`, `/ml-table-match`, `_auto_derive_fab_source` 공통.",
+        "**hive 파티션 로딩** — `pl.scan_parquet(..., hive_partitioning=True)` 로 `date=YYYYMMDD` 가 컬럼으로 노출. 구버전 polars 는 TypeError 후 폴백.",
+        "**ts_col 자동 추론에 `date` 최우선** — 파일 내 timestamp 없어도 hive 파티션 키만으로 최신도 판정 가능.",
+        "**오버라이드 resolve meta 풀세트** — `_resolve_override_meta(product)` 가 {enabled, manual_override, fab_source, fab_col, ts_col, join_keys, scanned_files, scanned_count, row_count, sample_fab_values, error} 반환. `/api/splittable/ml-table-match` 와 `/view` 응답 양쪽에 동봉. FE 톱니 카드가 scan 된 파일 목록·fab_col·ts_col·row_count·sample fab_lot_id·에러 메시지 까지 상세 노출.",
+        "**SplitTable 상단 fab_source 배지** — view 결과에 따라 View 헤더에 `🔗 1.RAWDATA_DB_FAB/PRODA · fab_lot_id@date (자동)` 배지. hover 시 scan 상세. 에러 시 `⚠ fab_source off`.",
+        "**fab_source 드롭다운 재구성** — ML_TABLE_*.parquet(모 테이블) 후보에서 제거. DB 경로(`[DB 루트]`/`[DB]`) + TableMap 만 노출. '`ML_TABLE만 보기`' 체크박스 제거. 빈 선택 시 placeholder 에 자동매칭 경로 표시.",
+        "**테스트 데이터 `data/Fab/`** — `_build_fab_root.py` 로 ML_TABLE_*.parquet + `1.RAWDATA_DB_FAB/<PROD>/date=YYYYMMDD/part_0.parquet` (2개 date 파티션, V1/V2). `admin_settings.data_roots.db=.base=data/Fab`. 검증: 스캔 결과 fab_lot_id 가 `_V2` (최신 파티션) 로 결정 — ts_col=date desc + unique keep=first 동작 확인.",
+        "**Dashboard 데이터소스 중복 제거** — `find_all_sources()` 가 `base_root == db_root` 인 경우 루트 단일파일을 한 번만 `base_file` 로 등록. `1.RAWDATA_DB*` 하위 제품도 whitelist 우회해 인덱싱. file-only dedup 로 `ML_TABLE_*.parquet` 이 `root_parquet` + `base_file` 로 중복 뜨던 현상 제거.",
+        "**Tracker LotTable UX — 빈행 + 버튼** — 외부 `+ 행 추가` 버튼 제거, 테이블 맨 아래에 항상 보이는 빈 행 (클릭 또는 + 버튼 셀 누르면 addRow). 데이터 0건일 때도 표 형태 유지 + placeholder 문구.",
+        "**홈화면 카드별 개별 버전 배지 제거** — `FEATURE_VERSIONS = {}` 빈 객체로 전환, ALL_CARDS 에서 `tag` 필드 삭제. 통합 버전(`v8.8.5`) 만 상단에 노출.",
+        "**그룹 멤버 admin 허용 + 담당모듈 UI 제거** — `_is_blocked_member()` 에서 admin role 제외 규칙 제거 (사내 admin 계정도 이메일 보유). `test` substring 만 block. My_Admin 그룹 편집 패널의 `담당 모듈` 셀렉션(GATE/STI/PC/...) 섹션 제거 — 불필요.",
+        "**파일탐색기 단일파일 삭제 admin 이중체크** — `/base-file/delete` 에 session token 기반 `current_user().role == admin` 1차 + body.username 기반 `_is_admin()` 2차. spoofable body 단독 의존 제거."
+      ]
+    },
     {
       "version": "8.8.4",
       "date": "2026-04-21",

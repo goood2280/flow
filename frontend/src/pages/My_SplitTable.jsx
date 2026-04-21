@@ -47,20 +47,21 @@ export default function My_SplitTable({user}){
   // v8.4.4: fab_source 후보 (FileBrowser/Dashboard 와 동일 source 리스트)
   const[fabSourceOptions,setFabSourceOptions]=useState([]);
   // v8.7.8: fab_source 후보 = DB 상위폴더 (FAB/INLINE/ET/EDS) + Base 단일파일 + DB 제품 디렉토리 + TableMap.
-  // 상위폴더 옵션은 ML_TABLE_<PROD> 제품명에서 <PROD> 를 추출해 동일 폴더 아래 제품으로 자동 매칭됨.
+  // v8.8.5: fab_source = DB 에서 고르는 값. ML_TABLE_*.parquet(모 테이블) 은 후보에서 제외.
+  //   옵션 구성:
+  //     - 상위폴더(루트) 옵션: `root:<1.RAWDATA_DB_xxx>` — 해당 루트 아래 모든 제품 hive parquet 합집합.
+  //     - 제품폴더 옵션: `<1.RAWDATA_DB_xxx>/<PROD>` — `/fab-roots` 가 반환한 각 root 의 products 를 펼침.
+  //     - TableMap 옵션: `tablemap:<id>` — 사용자 정의.
   useEffect(()=>{
     const out=[];
     const fabRoots=sf(API+"/fab-roots").then(d=>{
       for(const r of (d.roots||[])){
-        out.push({value:`root:${r.name}`,label:`[상위폴더] ${r.name} · ${r.products.length}개 제품`,source_type:"db_root",is_root:true,products:r.products});
-      }
-    }).catch(()=>{});
-    const dash=sf("/api/dashboard/products").then(d=>{
-      for(const p of (d.products||[])){
-        const v=p.root&&p.product?`${p.root}/${p.product}`:(p.file||p.label||"");
-        if(!v) continue;
-        const tag=p.source_type==="base_file"?"Base":p.root?`DB/${p.root}`:"DB";
-        out.push({value:v,label:`[${tag}] ${p.label||v}`,source_type:p.source_type||""});
+        // root 전체
+        out.push({value:`root:${r.name}`,label:`[DB 루트] ${r.name} · ${r.products.length}개 제품`,source_type:"db_root",is_root:true,products:r.products});
+        // 제품별 경로도 명시적 옵션으로 추가 (사용자가 특정 제품만 bind 하고 싶을 때).
+        for(const p of r.products){
+          out.push({value:`${r.name}/${p}`,label:`[DB] ${r.name}/${p}`,source_type:"db_product"});
+        }
       }
     }).catch(()=>{});
     const tmap=sf("/api/dbmap/tables").then(d=>{
@@ -70,18 +71,19 @@ export default function My_SplitTable({user}){
         out.push({value:`tablemap:${t.id}`,label:`[TableMap] ${name}`,source_type:"tablemap"});
       }
     }).catch(()=>{});
-    Promise.all([fabRoots,dash,tmap]).then(()=>{
+    Promise.all([fabRoots,tmap]).then(()=>{
       const seen=new Set();
       setFabSourceOptions(out.filter(o=>{if(seen.has(o.value)) return false;seen.add(o.value);return true;}));
     });
   },[]);
   // v8.7.8: ML_TABLE auto-match — selProd 에서 파생 제품명 → 상위폴더 매칭 후보.
   // v8.8.3: auto_path / effective_fab_source / manual_override 도 받아서 상태 표시에 사용.
-  const[mlMatch,setMlMatch]=useState({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false});
-  useEffect(()=>{if(!selProd){setMlMatch({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false});return;}
+  // v8.8.5: override resolve meta(ts_col/fab_col/scanned_files/row_count/sample/error) 까지 풀세트.
+  const[mlMatch,setMlMatch]=useState({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false,override:null});
+  useEffect(()=>{if(!selProd){setMlMatch({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false,override:null});return;}
     sf(API+"/ml-table-match?product="+encodeURIComponent(selProd))
-      .then(d=>setMlMatch({pro:d.derived_product||"",matches:d.matches||[],auto_path:d.auto_path||"",effective_fab_source:d.effective_fab_source||"",manual_override:!!d.manual_override}))
-      .catch(()=>setMlMatch({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false}));
+      .then(d=>setMlMatch({pro:d.derived_product||"",matches:d.matches||[],auto_path:d.auto_path||"",effective_fab_source:d.effective_fab_source||"",manual_override:!!d.manual_override,override:d.override||null}))
+      .catch(()=>setMlMatch({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false,override:null}));
   },[selProd,lotOverrides]);
   const isAdmin=user?.role==="admin";
   const lotRef=useRef(null);
@@ -368,15 +370,39 @@ export default function My_SplitTable({user}){
           {/* v8.4.4: root/fab_lot_id 컬럼 오버라이드 (선택된 product 기준, soft-landing) */}
           <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontWeight:600,marginTop:10}}>Lot ID 컬럼 오버라이드 ({selProd||"product 선택 필요"})</div>
           <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:6}}>비우면 자동 감지. 입력 시 지정 컬럼 사용.</div>
-          {/* v8.8.3: 자동 매칭 상태 표시 — ML_TABLE_<PROD> → DB/<root>/<PROD> 자동 매칭 결과.
-                      매뉴얼 fab_source 비워두면 이 경로가 자동 사용됨. */}
-          {selProd&&mlMatch&&(mlMatch.effective_fab_source||mlMatch.auto_path||(mlMatch.matches&&mlMatch.matches.length>0))&&(
+          {/* v8.8.3/v8.8.5: 현재 적용 중인 오버라이드 resolve 상태 카드.
+                자동/매뉴얼 구분 + scan 된 파일/ts_col/fab_col/row count/sample fab_lot_id + 에러 메시지. */}
+          {selProd&&mlMatch&&(mlMatch.effective_fab_source||mlMatch.auto_path||(mlMatch.matches&&mlMatch.matches.length>0)||mlMatch.override)&&(
             <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:8,padding:"6px 8px",background:"var(--bg-card)",borderRadius:4,border:"1px dashed var(--border)",lineHeight:1.5}}>
-              <div><b>자동 매칭</b>: ML_TABLE_{mlMatch.pro||"?"} → <span style={{color:"var(--accent)",fontFamily:"monospace"}}>{mlMatch.auto_path||"(매칭 없음)"}</span></div>
-              <div>실제 사용: <span style={{color:mlMatch.manual_override?"#f59e0b":"#22c55e",fontFamily:"monospace"}}>{mlMatch.effective_fab_source||"(오버라이드 off)"}</span> {mlMatch.manual_override?"(매뉴얼)":"(자동)"}</div>
+              <div><b>모 테이블</b>: <span style={{color:"var(--accent)",fontFamily:"monospace"}}>{selProd}</span> (ML_TABLE_{mlMatch.pro||"?"})</div>
+              <div><b>자동 매칭</b>: <span style={{color:"var(--accent)",fontFamily:"monospace"}}>{mlMatch.auto_path||"(없음)"}</span></div>
+              <div>실제 fab_source: <span style={{color:mlMatch.manual_override?"#f59e0b":"#22c55e",fontFamily:"monospace"}}>{mlMatch.effective_fab_source||"(오버라이드 off)"}</span> {mlMatch.manual_override?"(매뉴얼)":"(자동)"}</div>
               {mlMatch.matches&&mlMatch.matches.length>1&&(
                 <div>후보: {mlMatch.matches.map(m=>m.path).join(", ")}</div>
               )}
+              {mlMatch.override&&(<>
+                {mlMatch.override.error ? (
+                  <div style={{marginTop:4,color:"#ef4444",fontWeight:700}}>⚠ {mlMatch.override.error}</div>
+                ) : mlMatch.override.enabled && (
+                  <div style={{marginTop:4,padding:"4px 6px",borderRadius:3,background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.4)"}}>
+                    <div>✓ 조인 활성</div>
+                    <div>join_keys: <span style={{fontFamily:"monospace",color:"var(--accent)"}}>[{(mlMatch.override.join_keys||[]).join(", ")}]</span></div>
+                    <div>fab_col: <span style={{fontFamily:"monospace",color:"var(--accent)"}}>{mlMatch.override.fab_col}</span> · ts_col: <span style={{fontFamily:"monospace",color:"var(--accent)"}}>{mlMatch.override.ts_col||"(없음 — keep=last 폴백)"}</span></div>
+                    <div>파일: <span style={{fontFamily:"monospace"}}>{mlMatch.override.scanned_count||0}개</span> · 행수: <span style={{fontFamily:"monospace"}}>{mlMatch.override.row_count}</span></div>
+                    {(mlMatch.override.scanned_files||[]).length>0&&(
+                      <details style={{marginTop:2}}>
+                        <summary style={{cursor:"pointer",fontSize:9}}>스캔 파일 {mlMatch.override.scanned_count}개 {mlMatch.override.scanned_count>20?"(상위 20만 표시)":""}</summary>
+                        <ul style={{margin:"2px 0 0 14px",padding:0,fontFamily:"monospace",fontSize:8,color:"var(--text-secondary)"}}>
+                          {(mlMatch.override.scanned_files||[]).map((f,i)=><li key={i}>{f}</li>)}
+                        </ul>
+                      </details>
+                    )}
+                    {(mlMatch.override.sample_fab_values||[]).length>0&&(
+                      <div>sample {mlMatch.override.fab_col} (ts desc): <span style={{fontFamily:"monospace",color:"#f59e0b"}}>{(mlMatch.override.sample_fab_values||[]).slice(0,3).join(", ")}</span></div>
+                    )}
+                  </div>
+                )}
+              </>)}
               <div style={{marginTop:3,color:"var(--text-secondary)"}}>ts_col 기준 최신 레코드만 join — 매뉴얼 오버라이드가 비어있으면 자동 매칭 경로 사용.</div>
             </div>
           )}
@@ -385,17 +411,15 @@ export default function My_SplitTable({user}){
               <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>root_col</span><input value={ov.root_col||""} onChange={e=>setOv("root_col",e.target.value)} placeholder="root_lot_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
               <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>wf_col</span><input value={ov.wf_col||""} onChange={e=>setOv("wf_col",e.target.value)} placeholder="wafer_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
               <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>fab_col</span><input value={ov.fab_col||""} onChange={e=>setOv("fab_col",e.target.value)} placeholder="fab_lot_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
+              {/* v8.8.5: fab_source = DB 경로만. ML_TABLE 필터 체크박스 제거. */}
               <div style={{display:"flex",flexDirection:"column",gap:2}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
                   <span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>fab_source</span>
-                  <label style={{display:"flex",alignItems:"center",gap:4,marginLeft:"auto",fontSize:9,color:"var(--text-secondary)",cursor:"pointer",userSelect:"none"}}>
-                    <input type="checkbox" checked={mlOnly} onChange={e=>setMlOnly(e.target.checked)} style={{width:11,height:11,accentColor:"var(--accent)"}}/>
-                    ML_TABLE만 보기
-                  </label>
+                  <span style={{marginLeft:"auto",fontSize:9,color:"var(--text-secondary)"}}>DB 경로만 · 비우면 자동매칭</span>
                 </div>
                 <select value={ov.fab_source||""} onChange={e=>setOv("fab_source",e.target.value)} style={{...S,width:"100%",fontSize:10,fontFamily:"monospace"}}>
-                  <option value="">— 없음 (ML_TABLE 내장 사용) —</option>
-                  {fabSourceOptions.filter(o=>!mlOnly||o.value.toUpperCase().includes("ML_TABLE")).map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                  <option value="">— 비움 (자동 매칭: {mlMatch.auto_path||"없음"}) —</option>
+                  {fabSourceOptions.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
               <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>ts_col</span><input value={ov.ts_col||""} onChange={e=>setOv("ts_col",e.target.value)} placeholder="out_ts (최신기준)" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
@@ -417,6 +441,16 @@ export default function My_SplitTable({user}){
         {lotId&&<span style={{fontSize:11,color:"var(--text-secondary)"}}>| {lotId}</span>}
         <span style={{fontSize:10,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"2px 8px",borderRadius:4}}>
           {isCustomMode?"CUSTOM"+(selCustom?": "+selCustom:""):selPrefixes.join("+")}</span>
+        {/* v8.8.5: 상단 fab_source 배지 — Fab Lot ID 가 어디서 join 되어 왔는지 한눈에 확인. */}
+        {data?.override && (()=>{const ov=data.override;
+          if(ov.error){return <span title={ov.error} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"rgba(239,68,68,0.15)",color:"#ef4444",border:"1px solid #ef4444",cursor:"help"}}>⚠ fab_source off</span>;}
+          if(!ov.enabled){return null;}
+          const sfx=ov.manual_override?"매뉴얼":"자동";
+          const title=`fab_source: ${ov.fab_source}\nfab_col: ${ov.fab_col} · ts_col: ${ov.ts_col||"(없음)"}\njoin_keys: [${(ov.join_keys||[]).join(", ")}]\nscanned: ${ov.scanned_count}파일 / ${ov.row_count}행`;
+          return <span title={title} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"rgba(34,197,94,0.12)",color:"#16a34a",border:"1px solid #22c55e",fontFamily:"monospace",cursor:"help"}}>
+            🔗 {ov.fab_source} · {ov.fab_col}@{ov.ts_col||"last"} ({sfx})
+          </span>;
+        })()}
         <div style={{marginLeft:"auto",display:"flex",gap:4,alignItems:"center"}}>
           {/* v8.4.3: Features 탭 제거 — ML_TABLE_PROD* 가 source 이므로 별도 features 뷰 불필요. */}
           {[{k:"view",l:"View"},{k:"history",l:"History"}].map(({k,l})=><span key={k} className={"splittable-tab splittable-tab-"+k} data-active={tab===k?"1":"0"} onClick={()=>{setTab(k);if(k==="history")loadHistory(histAll);}} style={{padding:"4px 10px",borderRadius:4,fontSize:11,cursor:"pointer",background:tab===k?"var(--accent-glow)":"transparent",color:tab===k?"var(--accent)":"var(--text-secondary)",fontWeight:tab===k?600:400}}>{l}</span>)}

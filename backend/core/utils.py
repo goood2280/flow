@@ -436,9 +436,16 @@ def find_all_sources(apply_whitelist: bool = True):
     for admin table-map which needs to see everything).
     """
     DB_BASE = PATHS.db_root
+    BASE = PATHS.base_root
     sources = []
     if not DB_BASE.exists():
         return sources
+    # v8.8.5: 사내 실환경 = base_root == db_root. 동일 경로면 루트 레벨 파일을 한 번만 스캔.
+    same_root = False
+    try:
+        same_root = (BASE.exists() and DB_BASE.resolve() == BASE.resolve())
+    except Exception:
+        same_root = False
     # Lazy import to avoid cycle
     try:
         from core.domain import is_visible_root, is_visible_file, canonical_name, DB_REGISTRY
@@ -447,41 +454,51 @@ def find_all_sources(apply_whitelist: bool = True):
         is_visible_file = lambda n: True
         canonical_name = lambda n: n
         DB_REGISTRY = {}
-    # Root-level files (parquet + CSV)
+    # Root-level files (parquet + CSV) — base/db 공통.
+    # v8.8.5: same_root 면 `source_type=base_file` 하나로 통일 (파일탐색기 표시 일관).
     for f in sorted(DB_BASE.iterdir()):
         if f.is_file() and f.suffix in DATA_EXTENSIONS:
             if apply_whitelist and not is_visible_file(f.name):
                 continue
-            sources.append({
-                "source_type": "root_parquet", "root": "", "product": "",
-                "file": f.name, "label": f.name,
-            })
-    # Base root files (single-file parquet/csv — ML_TABLE_*, speed.csv, etc.)
-    try:
-        BASE = PATHS.base_root
-        if BASE.exists():
-            for f in sorted(BASE.iterdir()):
-                if f.is_file() and f.suffix in DATA_EXTENSIONS:
-                    # Skip internal/hidden artifacts
-                    if f.name.startswith("_") or f.name.startswith("."):
-                        continue
-                    sources.append({
-                        "source_type": "base_file", "root": "", "product": "",
-                        "file": f.name, "canonical": "BASE", "level": "base",
-                        "label": f"Base/{f.name}",
-                    })
-    except Exception:
-        pass
-    # Nested product directories
+            if f.name.startswith("_") or f.name.startswith("."):
+                continue
+            if same_root:
+                sources.append({
+                    "source_type": "base_file", "root": "", "product": "",
+                    "file": f.name, "canonical": "BASE", "level": "base",
+                    "label": f.name,
+                })
+            else:
+                sources.append({
+                    "source_type": "root_parquet", "root": "", "product": "",
+                    "file": f.name, "label": f.name,
+                })
+    # Base root files — base 가 db 와 다른 경우에만 별도 스캔.
+    if not same_root:
+        try:
+            if BASE.exists():
+                for f in sorted(BASE.iterdir()):
+                    if f.is_file() and f.suffix in DATA_EXTENSIONS:
+                        if f.name.startswith("_") or f.name.startswith("."):
+                            continue
+                        sources.append({
+                            "source_type": "base_file", "root": "", "product": "",
+                            "file": f.name, "canonical": "BASE", "level": "base",
+                            "label": f"Base/{f.name}",
+                        })
+        except Exception:
+            pass
+    # Nested product directories — v8.8.5: `1.RAWDATA_DB*` prefix 도 whitelist 우회.
     for root_dir in sorted(DB_BASE.iterdir()):
         if not root_dir.is_dir():
             continue
-        if apply_whitelist and not is_visible_root(root_dir.name):
+        is_rawdata = root_dir.name.startswith("1.RAWDATA_DB")
+        if apply_whitelist and not is_rawdata and not is_visible_root(root_dir.name):
             continue
         for prod_dir in sorted(root_dir.iterdir()):
             if prod_dir.is_dir() and any(_glob_data_files(prod_dir)):
                 st = detect_structure(prod_dir)
-                canon = canonical_name(root_dir.name)
+                canon = canonical_name(root_dir.name) if not is_rawdata else root_dir.name
                 level = DB_REGISTRY.get(canon, {}).get("level", "")
                 lvl_suffix = f" [{level}]" if level and level != "wide" else ""
                 sources.append({
@@ -489,14 +506,21 @@ def find_all_sources(apply_whitelist: bool = True):
                     "file": "", "canonical": canon, "level": level,
                     "label": f"{canon}/{prod_dir.name}{lvl_suffix}",
                 })
-    # v8.7.5: dedup on (source_type, root, product, file, label) to avoid duplicate entries
-    # showing up in Product / fab_source dropdowns (seen when Base + DB duplicates).
+    # dedup — (source_type, root, product, file, label) 완전 일치만 제거.
+    # v8.8.5: 추가로 (file, same_root) 기반 strict dedup — ML_TABLE_*.parquet 같은 게 base_file + root_parquet 로 동시 들어오던 문제 원천 차단.
     seen = set()
     dedup = []
+    seen_files = set()   # file-only dedup
     for s in sources:
         key = (s.get("source_type"), s.get("root") or "", s.get("product") or "", s.get("file") or "", s.get("label") or "")
         if key in seen:
             continue
+        fn = s.get("file") or ""
+        # 파일명만 있고 root/product 없는 루트 단일 파일은 중복 안 되도록 file-only 로 체크.
+        if fn and not s.get("root") and not s.get("product"):
+            if fn in seen_files:
+                continue
+            seen_files.add(fn)
         seen.add(key)
         dedup.append(s)
     return dedup

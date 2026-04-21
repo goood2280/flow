@@ -131,14 +131,14 @@ function LotTable({ lots, setLots, readOnly }) {
     background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, outline: "none",
   };
 
+  // v8.8.5: 빈 상태 플레이스홀더 행 대신, 항상 테이블 형태 유지 + 맨 아래 [+ 행추가] 빈 행.
+  //   - readOnly 가 아닐 때: 데이터 행들 아래에 "+ 버튼만 있는 빈 셀 행" 하나 (여기 클릭 = addRow).
+  //   - 외부 상단 `+ 행 추가` 버튼은 제거 — 테이블 안 한 곳에서만 추가.
   return (
     <div onPaste={!readOnly ? handlePaste : undefined}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
         <span style={{ fontSize: 12, fontWeight: 600 }}>Lot / Wafer ({lots.length})</span>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          {!readOnly && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>Excel 붙여넣기 지원 (Ctrl+V)</span>}
-          {!readOnly && <button onClick={addRow} style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 10, cursor: "pointer" }}>+ 행 추가</button>}
-        </div>
+        {!readOnly && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>Excel 붙여넣기 지원 (Ctrl+V) · 빈행 + 버튼으로 행 추가</span>}
       </div>
       <div style={{ maxHeight: 240, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -167,9 +167,19 @@ function LotTable({ lots, setLots, readOnly }) {
                 </>}
               </tr>
             ))}
-            {lots.length === 0 && <tr><td colSpan={readOnly ? 5 : 4} style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>
-              {readOnly ? "Lot/Wafer 데이터 없음" : "Excel 에서 붙여넣기 (LOT_ID \\t WAFER_ID \\t COMMENT) 또는 + 행 추가"}
-            </td></tr>}
+            {/* v8.8.5: 빈행 + 버튼 — readOnly 가 아닐 때만 항상 노출 (데이터 없어도 표 형태 유지). */}
+            {!readOnly && (
+              <tr onClick={addRow} style={{ cursor: "pointer" }}
+                  title="클릭 또는 + 로 행 추가 · Excel TSV 붙여넣기 지원">
+                <td colSpan={3} style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 11, background: "var(--bg-tertiary)", opacity: 0.7 }}>
+                  {lots.length === 0 ? "Excel 붙여넣기 (LOT_ID \t WAFER_ID \t COMMENT) 또는 + 로 행 추가" : "(빈 행)"}
+                </td>
+                <td style={{ ...cellStyle, textAlign: "center", background: "var(--bg-tertiary)" }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, borderRadius: "50%", background: "var(--accent)", color: "#fff", fontSize: 13, fontWeight: 700, lineHeight: 1 }}>+</span>
+                </td>
+              </tr>
+            )}
+            {readOnly && lots.length === 0 && <tr><td colSpan={5} style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>Lot/Wafer 데이터 없음</td></tr>}
           </tbody>
         </table>
       </div>

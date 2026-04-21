@@ -1281,7 +1281,7 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
                 {canEdit&&<button onClick={()=>rmMember(cur.id,m)} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11,padding:0}}>×</button>}
               </span>
             ))}
-            {(cur.members||[]).length===0&&<span style={{fontSize:10,color:"var(--text-secondary)",fontStyle:"italic"}}>멤버 없음 (생성자도 자동 포함되지 않습니다)</span>}
+            {(cur.members||[]).length===0&&<span style={{fontSize:10,color:"var(--text-secondary)",fontStyle:"italic"}}>멤버 없음 — 아래 + 멤버 추가 에서 선택</span>}
           </div>
           {canEdit&&<div style={{display:"flex",gap:6,marginBottom:16}}>
             <select onChange={e=>{if(e.target.value){addMember(cur.id,e.target.value);e.target.value="";}}}
@@ -1289,27 +1289,16 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
               <option value="">+ 멤버 추가…</option>
               {availableUsers.map(u=><option key={u} value={u}>{u}</option>)}
             </select>
-            <span style={{fontSize:10,color:"var(--text-secondary)",alignSelf:"center"}}>admin/test 계정은 자동 제외</span>
+            <span style={{fontSize:10,color:"var(--text-secondary)",alignSelf:"center"}}>test 계정만 자동 제외</span>
           </div>}
 
-          <div style={{fontSize:12,fontWeight:600,marginBottom:6,marginTop:6}}>담당 모듈 ({(cur.modules||[]).length})</div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
-            {MODULES.map(m=>{
-              const on=(cur.modules||[]).includes(m);
-              return <span key={m} onClick={()=>toggleModule(cur.id,m,cur.modules)}
-                style={{padding:"4px 12px",borderRadius:999,fontSize:11,fontWeight:on?700:500,cursor:"pointer",
-                  background:on?"var(--accent)22":"var(--bg-tertiary)",
-                  color:on?"var(--accent)":"var(--text-secondary)",
-                  border:"1px solid "+(on?"var(--accent)":"var(--border)")}}>{m}</span>;
-            })}
-          </div>
+          {/* v8.8.5: 담당 모듈 UI 제거 — 불필요. 그룹은 단순 멤버 풀로 사용. */}
 
           <div style={{marginTop:16,padding:10,background:"var(--bg-primary)",borderRadius:6,fontSize:10,color:"var(--text-secondary)",lineHeight:1.6}}>
             • 이 그룹에 속한 유저는 Dashboard/Tracker 에서 이 그룹에 연결된 차트·이슈만 공유함.<br/>
             • admin 은 모든 그룹과 콘텐츠를 볼 수 있음 (전체 담당).<br/>
-            • <b>담당 모듈</b>은 인폼 로그의 "내 모듈" 필터 대상 — 멤버 유저가 해당 모듈 인폼을 받아보게 됨.<br/>
             • <b>설명</b>은 그룹의 목적·소속 부서 등 자유 텍스트. 리스트 보조 텍스트로 노출됨.<br/>
-            • <b>v8.8.3</b> admin/test 계정은 멤버 풀에서 자동 제외 · 생성자는 자동 가입되지 않음 (명시적으로 추가해야 함).
+            • <b>v8.8.5</b> admin 도 멤버 풀에 포함 (사내 계정은 이메일 보유) · test substring 계정만 제외 · 생성자는 자동 가입되지 않음 (명시적으로 추가).
           </div>
         </>}
       </div>
