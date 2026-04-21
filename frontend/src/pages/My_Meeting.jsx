@@ -298,12 +298,15 @@ export default function My_Meeting({ user }) {
   };
 
   // v8.7.5: 결정사항 단위 달력 push/unpush
+  // v8.7.6: 결정사항은 별도 마감일을 받지 않음 — 무조건 해당 회의 세션 날짜로 달력에 등록.
   const pushDecision = (d) => {
     if (!selected || !selectedSession || !d?.id) {
       alert("결정사항을 먼저 저장해야 달력에 등록할 수 있습니다.");
       return;
     }
-    const due = d.due || (selectedSession.scheduled_at ? selectedSession.scheduled_at.slice(0, 10) : "");
+    const due = selectedSession.scheduled_at
+      ? selectedSession.scheduled_at.slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
     postJson(`${API}/decision/push`, {
       meeting_id: selected.id, session_id: selectedSession.id,
       decision_id: d.id, due,
@@ -631,8 +634,7 @@ export default function My_Meeting({ user }) {
                           <thead>
                             <tr style={{ background: "var(--bg-card)" }}>
                               <th style={th}>내용</th>
-                              <th style={{ ...th, width: 100 }}>마감</th>
-                              <th style={{ ...th, width: 180 }}>📅 달력</th>
+                              <th style={{ ...th, width: 180 }}>📅 달력 (회의 일자로 등록)</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -641,7 +643,6 @@ export default function My_Meeting({ user }) {
                               return (
                                 <tr key={obj.id || i}>
                                   <td style={td}>{obj.text}</td>
-                                  <td style={td}>{obj.due || "—"}</td>
                                   <td style={td}>
                                     {obj.calendar_pushed ? (
                                       <div style={{ fontSize: 10, lineHeight: 1.4 }}>
@@ -716,13 +717,15 @@ export default function My_Meeting({ user }) {
                       {minutesDraft.decisions.map((d, i) => {
                         const obj = typeof d === "string" ? { text: d, due: "" } : d;
                         return (
-                          <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 130px auto", gap: 6, marginTop: 4 }}>
+                          <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, marginTop: 4 }}>
                             <input value={obj.text} onChange={e => updDecision(i, "text", e.target.value)} placeholder={`결정사항 #${i + 1}`} style={inp} />
-                            <input value={obj.due || ""} onChange={e => updDecision(i, "due", e.target.value)} placeholder="마감 (YYYY-MM-DD · 선택)" style={inp} />
                             <button onClick={() => delDecision(i)} style={btnTinyDanger}>×</button>
                           </div>
                         );
                       })}
+                      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>
+                        * 결정사항에는 별도 마감일이 없으며 달력 등록 시 회의 세션 날짜로 자동 기록됩니다.
+                      </div>
                     </div>
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -895,11 +898,14 @@ function ActionItemsGantt({ meetings, onPickMeeting }) {
       const ais = (s.minutes?.action_items) || [];
       for (const a of ais) {
         if (!a.due) continue;
+        // v8.7.6: 간트 시작일 = 회의(세션) 날짜, 끝 = 액션아이템 데드라인.
+        const sessionDate = (s.scheduled_at || s.created_at || "").slice(0, 10)
+                          || (m.created_at || "").slice(0, 10);
         rows.push({
           meeting_id: m.id,
           meeting_title: m.title,
           session_idx: s.idx,
-          start: (s.scheduled_at || s.created_at || "").slice(0, 10) || (m.created_at || "").slice(0, 10),
+          start: sessionDate,
           end: a.due.slice(0, 10),
           text: a.text,
           owner: a.owner || "",
