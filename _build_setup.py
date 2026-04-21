@@ -148,13 +148,21 @@ VERSION_META = {json.dumps(version, ensure_ascii=False)}
 
 
 def _write(rel: str, gz_b64: str) -> None:
-    # v8.7.6: holweb-data 보존 — DB 루트 상위의 holweb-data 경로는 절대 덮어쓰지 않음.
-    # 파이프라인: backend/frontend 를 지우고 setup.py 재실행해도 data/, holweb-data/,
-    # 외부 경로(예: /config/work/sharedworkspace/holweb-data) 의 기존 데이터는 안전.
+    # v8.8.0: 사용자 데이터 보존 가드 강화.
+    # 보존 대상 (덮어쓰기 금지):
+    #   - data/ 트리 전체 (users.csv, groups.json, mail_groups, admin_settings,
+    #     informs/product_contacts.json, meetings, splittable/notes.json, dashboard,
+    #     tracker, ml, …)
+    #   - holweb-data/ 트리 전체 (사내 운영 데이터 디렉토리)
+    #   - 경로 어디에든 holweb-data 세그먼트가 들어 있으면 보호
+    #   - users.csv / *.csv 형태로 data 하위 어디에 있든 보호 (defense in depth)
     rel_posix = rel.replace("\\\\", "/").lstrip("./")
+    parts = [p for p in rel_posix.split("/") if p]
     for guard in ("data/", "holweb-data/"):
         if rel_posix.startswith(guard) or rel_posix.rstrip("/") == guard.rstrip("/"):
             return
+    if "holweb-data" in parts or "data" in parts[:1]:
+        return
     data = gzip.decompress(base64.b64decode(gz_b64))
     dst = ROOT / rel
     try:
@@ -164,6 +172,16 @@ def _write(rel: str, gz_b64: str) -> None:
         return
     except Exception:
         pass
+    # 추가 가드: 외부 prod 데이터 루트가 환경변수로 지정된 경우 그 안쪽도 보호.
+    for env_key in ("HOL_DATA_ROOT", "FABCANVAS_DATA_ROOT"):
+        env_val = os.environ.get(env_key)
+        if env_val:
+            try:
+                root_resolved = Path(env_val).resolve()
+                if str(dst.resolve()).startswith(str(root_resolved)):
+                    return
+            except Exception:
+                pass
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(data)
 

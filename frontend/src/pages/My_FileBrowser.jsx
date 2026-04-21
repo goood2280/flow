@@ -444,7 +444,7 @@ export default function My_FileBrowser({user}){
             {/* Tabs */}
             <div style={{display:"flex",gap:4,padding:"8px 12px",borderBottom:"1px solid var(--border)",background:"var(--bg-primary)"}}>
               {[{k:"items",l:"항목 ("+s3Items.length+")"},{k:"add",l:"+ 추가"},{k:"history",l:"이력"},{k:"aws",l:"AWS 설정"}].map(t=>(
-                <span key={t.k} onClick={()=>{setS3Tab(t.k);if(t.k==="add")setS3Form({id:"",kind:"db",target:"",s3_url:"",command:"sync",extra_args:"",endpoint_url:"",profile:"",interval_min:0,enabled:true});}} style={{padding:"5px 12px",borderRadius:5,fontSize:11,cursor:"pointer",fontWeight:s3Tab===t.k?700:500,background:s3Tab===t.k?"var(--accent-glow)":"transparent",color:s3Tab===t.k?"var(--accent)":"var(--text-secondary)"}}>{t.l}</span>
+                <span key={t.k} onClick={()=>{setS3Tab(t.k);if(t.k==="add")setS3Form({id:"",kind:"db",target:"",s3_url:"",command:"sync",direction:"download",extra_args:"",endpoint_url:"",profile:"",interval_min:0,enabled:true});}} style={{padding:"5px 12px",borderRadius:5,fontSize:11,cursor:"pointer",fontWeight:s3Tab===t.k?700:500,background:s3Tab===t.k?"var(--accent-glow)":"transparent",color:s3Tab===t.k?"var(--accent)":"var(--text-secondary)"}}>{t.l}</span>
               ))}
             </div>
             <div style={{flex:1,overflow:"auto",padding:"12px 16px"}}>
@@ -453,7 +453,7 @@ export default function My_FileBrowser({user}){
                 {s3Items.length===0?<div style={{padding:30,textAlign:"center",color:"var(--text-secondary)",fontSize:12}}>설정된 S3 동기화 항목이 없습니다. <b>+ 추가</b> 를 클릭해 생성하세요.</div>
                 :<table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
                   <thead><tr style={{background:"var(--bg-secondary)"}}>
-                    {["","타겟","종류","S3 URL","명령","주기","다음","마지막","동작"].map(h=>(
+                    {["","타겟","종류","방향","S3 URL","명령","주기","다음","마지막","동작"].map(h=>(
                       <th key={h} style={{padding:"6px 8px",textAlign:"left",fontSize:10,fontWeight:700,color:"var(--text-secondary)",borderBottom:"1px solid #555",whiteSpace:"nowrap"}}>{h}</th>
                     ))}
                   </tr></thead>
@@ -466,6 +466,7 @@ export default function My_FileBrowser({user}){
                         <td style={{padding:"6px 8px"}}><span style={{fontSize:9,padding:"2px 6px",borderRadius:3,background:badge.bg,color:badge.c,fontWeight:700,fontFamily:"monospace"}}>{badge.t}</span></td>
                         <td style={{padding:"6px 8px",fontFamily:"monospace",fontWeight:600}}>{it.target}</td>
                         <td style={{padding:"6px 8px",fontSize:10,color:"var(--text-secondary)"}}>{it.kind}</td>
+                        <td style={{padding:"6px 8px",fontSize:10,fontWeight:700,color:(it.direction||"download")==="upload"?"#f59e0b":"#3b82f6"}}>{(it.direction||"download")==="upload"?"⬆ 업":"⬇ 다"}</td>
                         <td style={{padding:"6px 8px",fontFamily:"monospace",fontSize:10,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={it.s3_url}>{it.s3_url}</td>
                         <td style={{padding:"6px 8px",fontSize:10}}>{it.command}</td>
                         <td style={{padding:"6px 8px",fontSize:10}}>{Number(it.interval_min)>0?it.interval_min+"분":"수동"}</td>
@@ -509,6 +510,16 @@ export default function My_FileBrowser({user}){
                       return(<span key={c} onClick={()=>!disabled&&setS3Form(f=>({...f,command:c}))} style={{padding:"4px 10px",borderRadius:4,fontSize:11,cursor:disabled?"not-allowed":"pointer",opacity:disabled?0.4:1,fontWeight:s3Form.command===c?700:500,background:s3Form.command===c?"var(--accent-glow)":"var(--bg-hover)",color:s3Form.command===c?"var(--accent)":"var(--text-secondary)",border:"1px solid "+(s3Form.command===c?"var(--accent)":"var(--border)")}}>{c}</span>);
                     })}
                   </div>
+                  {/* v8.8.0: 동기화 방향 선택 */}
+                  <label>방향</label>
+                  <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                    <div style={{display:"flex",gap:6}}>
+                      {[{k:"download",l:"⬇ 다운로드 (S3 → 로컬)"},{k:"upload",l:"⬆ 업로드 (로컬 → S3)"}].map(d=>(
+                        <span key={d.k} onClick={()=>setS3Form(f=>({...f,direction:d.k}))} style={{padding:"4px 10px",borderRadius:4,fontSize:11,cursor:"pointer",fontWeight:(s3Form.direction||"download")===d.k?700:500,background:(s3Form.direction||"download")===d.k?"var(--accent-glow)":"var(--bg-hover)",color:(s3Form.direction||"download")===d.k?"var(--accent)":"var(--text-secondary)",border:"1px solid "+((s3Form.direction||"download")===d.k?"var(--accent)":"var(--border)")}}>{d.l}</span>
+                      ))}
+                    </div>
+                    <span style={{fontSize:9,color:"var(--text-secondary)"}}>업로드 선택 시 로컬 타겟이 src, S3 URL 이 dst 가 됩니다. cp + 디렉토리는 자동 --recursive.</span>
+                  </div>
                   <label>엔드포인트 URL</label>
                   <input value={s3Form.endpoint_url||""} onChange={e=>setS3Form(f=>({...f,endpoint_url:e.target.value}))} placeholder="(선택) https://s3.internal.company:9000" style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace"}}/>
                   <label>AWS 키(프로필)</label>
@@ -530,8 +541,10 @@ export default function My_FileBrowser({user}){
                   <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}><input type="checkbox" checked={s3Form.enabled!==false} onChange={e=>setS3Form(f=>({...f,enabled:e.target.checked}))} style={{width:14,height:14,accentColor:"var(--accent)"}}/><span style={{fontSize:11}}>예약 + 수동 실행</span></label>
                 </div>
                 <div style={{marginTop:14,padding:10,background:"var(--bg-secondary)",borderRadius:6,fontSize:10,fontFamily:"monospace",color:"var(--text-secondary)",lineHeight:1.5}}>
-                  <div style={{color:"var(--accent)",fontWeight:700,marginBottom:4}}># 미리보기 (dry):</div>
-                  aws s3 {s3Form.command} {s3Form.s3_url||"s3://..."} {"{DB_BASE}/"+(s3Form.target||"TARGET")} {s3Form.endpoint_url?"--endpoint-url "+s3Form.endpoint_url+" ":""}{s3Form.profile?"--profile "+s3Form.profile+" ":""}{s3Form.extra_args}
+                  <div style={{color:"var(--accent)",fontWeight:700,marginBottom:4}}># 미리보기 (dry · 방향: {(s3Form.direction||"download")==="upload"?"⬆ 업로드":"⬇ 다운로드"}):</div>
+                  {(s3Form.direction||"download")==="upload"
+                    ? <>aws s3 {s3Form.command} {"{DB_BASE}/"+(s3Form.target||"TARGET")} {s3Form.s3_url||"s3://..."} {s3Form.endpoint_url?"--endpoint-url "+s3Form.endpoint_url+" ":""}{s3Form.profile?"--profile "+s3Form.profile+" ":""}{s3Form.extra_args}</>
+                    : <>aws s3 {s3Form.command} {s3Form.s3_url||"s3://..."} {"{DB_BASE}/"+(s3Form.target||"TARGET")} {s3Form.endpoint_url?"--endpoint-url "+s3Form.endpoint_url+" ":""}{s3Form.profile?"--profile "+s3Form.profile+" ":""}{s3Form.extra_args}</>}
                 </div>
                 <div style={{display:"flex",gap:8,marginTop:16}}>
                   <button onClick={()=>s3Save(s3Form)} style={{padding:"8px 18px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer"}}>저장</button>

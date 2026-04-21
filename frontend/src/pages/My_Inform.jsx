@@ -413,6 +413,10 @@ function MailDialog({ root, user, onClose }) {
           <span onClick={onClose} style={{ cursor: "pointer", fontSize: 18 }}>✕</span>
         </div>
         <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>Admin 설정의 메일 API 로 multipart POST. 수신자 총 <b style={{ color: "var(--accent)" }}>{totalEmails}명</b> · Inform <code>{root.id}</code></div>
+        {/* v8.8.0: 메일은 시스템(Admin from_addr) 으로 발송되지만 본문에 실제 요청자(나) ID 자동 명시. 제품 담당자(/api/informs/product-contacts) 도 본문 자동 첨부. */}
+        <div style={{ fontSize: 10, padding: "6px 10px", marginBottom: 10, borderRadius: 4, background: "rgba(59,130,246,0.10)", border: "1px solid rgba(59,130,246,0.5)", color: "#1d4ed8" }}>
+          📨 발송계정: 시스템(Admin) · <b>본문에 발송 요청자 ID “{user?.username || "?"}” 자동 명시</b> · 제품 담당자(있으면) 본문에 자동 첨부됨.
+        </div>
 
         {/* Module recipient groups */}
         {Object.keys(groups).length > 0 && <div style={{ marginBottom: 10 }}>
@@ -603,6 +607,48 @@ function PlanSummaryCard({ thread }) {
   );
 }
 
+/* v8.8.0: SplitTable 노트 카드 — root_lot_id 키로 fetch 한 wafer/param/lot/param_global 노트 표시 */
+function SplitNotesCard({ notes, root_lot_id }) {
+  if (!notes || notes.length === 0) return null;
+  const wafers = notes.filter(n => n.scope === "wafer");
+  const params = notes.filter(n => n.scope === "param");
+  const lots   = notes.filter(n => n.scope === "lot");
+  const pgs    = notes.filter(n => n.scope === "param_global");
+  const renderRow = (n, kind, color) => {
+    const parts = (n.key || "").split("__");
+    let label = "";
+    if (n.scope === "wafer") label = `🏷 W${(parts[2] || "").replace(/^W/, "")}`;
+    else if (n.scope === "param") label = `💬 W${(parts[2] || "").replace(/^W/, "")} × ${parts[3] || ""}`;
+    else if (n.scope === "lot") label = `📌 LOT ${parts[2] || ""}`;
+    else if (n.scope === "param_global") label = `🌐 ${parts[2] || ""} (전역)`;
+    return (
+      <div key={n.id} style={{ padding: "6px 10px", marginBottom: 4, borderRadius: 5, background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3, gap: 6 }}>
+          <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: color, color: "#fff" }}>{label}</span>
+          <span style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+            {n.username} · {(n.created_at || "").replace("T", " ").slice(0, 16)}
+          </span>
+        </div>
+        <div style={{ fontSize: 11, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{n.text}</div>
+      </div>
+    );
+  };
+  return (
+    <div style={{ background: "#3b82f611", border: "1px solid #3b82f666", borderRadius: 8, padding: 10, marginBottom: 10 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: "#1d4ed8", marginBottom: 6 }}>
+        📝 SplitTable 노트 — root_lot_id <span style={{ fontFamily: "monospace" }}>{root_lot_id}</span> ({notes.length}건)
+        <span style={{ fontSize: 10, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
+          wafer {wafers.length} · param {params.length} · lot {lots.length} · 전역 {pgs.length}
+        </span>
+      </div>
+      {wafers.map(n => renderRow(n, "wafer", "#3b82f6"))}
+      {params.map(n => renderRow(n, "param", "#8b5cf6"))}
+      {lots.map(n => renderRow(n, "lot", "#0ea5e9"))}
+      {pgs.map(n => renderRow(n, "param_global", "#14b8a6"))}
+    </div>
+  );
+}
+
 /* v8.7.8: Lot drill-down 모듈별 요약 테이블
    각 모듈에 대해 (등록됨, 메일 전송됨) 을 체크/미체크로 한눈에 */
 function LotModuleSummary({ thread, modules }) {
@@ -638,13 +684,21 @@ function LotModuleSummary({ thread, modules }) {
     <div style={{ marginBottom: 14, padding: 12, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
       <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8, fontFamily: "monospace", color: "var(--accent)" }}>📋 모듈별 진행 요약</div>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%", tableLayout: "fixed" }}>
+          {/* v8.8.0: 3개 데이터 열 너비 균등 (등록 / 메일 / 담당자 확인). */}
+          <colgroup>
+            <col style={{ width: "18%" }} />
+            <col style={{ width: "27%" }} />
+            <col style={{ width: "27%" }} />
+            <col style={{ width: "20%" }} />
+            <col style={{ width: "8%" }} />
+          </colgroup>
           <thead>
             <tr style={{ background: "var(--bg-tertiary)" }}>
               <th style={{ ...cellBase, textAlign: "left", fontWeight: 700 }}>모듈</th>
-              <th style={{ ...cellBase, textAlign: "center", fontWeight: 700 }}>인폼</th>
-              <th style={{ ...cellBase, textAlign: "left", fontWeight: 700 }}>메일 (최근)</th>
-              <th style={{ ...cellBase, textAlign: "left", fontWeight: 700 }}>담당자 확인</th>
+              <th style={{ ...cellBase, textAlign: "center", fontWeight: 700 }}>등록</th>
+              <th style={{ ...cellBase, textAlign: "center", fontWeight: 700 }}>메일</th>
+              <th style={{ ...cellBase, textAlign: "center", fontWeight: 700 }}>담당자 확인</th>
               <th style={{ ...cellBase, textAlign: "center", fontWeight: 700 }}>건수</th>
             </tr>
           </thead>
@@ -712,6 +766,14 @@ export default function My_Inform({ user }) {
 
   const [moduleFilter, setModuleFilter] = useState([]);  // admin 대시보드식 모듈 필터
 
+  // v8.8.0: SplitTable 노트 — Lot 뷰 하단에 표시 (root_lot_id 키).
+  const [splitNotes, setSplitNotes] = useState([]);
+
+  // v8.8.0: 제품별 담당자 (product_contacts). 사이드바 폴더블 + 메일 본문에 자동 첨부.
+  const [productContacts, setProductContacts] = useState({}); // { product: [contacts] }
+  const [openContactProducts, setOpenContactProducts] = useState({}); // { product: bool }
+  const [editContact, setEditContact] = useState(null); // {product, id?, name, role, email, phone, note}
+
   const isAdmin = user?.role === "admin";
 
   /* Load constants + my modules */
@@ -755,6 +817,45 @@ export default function My_Inform({ user }) {
       setThread([]); setLotWafers([]);
     }
   }, [mode, selectedWafer, selectedLot, selectedProduct]);
+
+  // v8.8.0: Lot 뷰 진입 시 SplitTable 노트 로드 (root_lot_id 키).
+  useEffect(() => {
+    if (mode === "lot" && selectedLot && thread.length > 0) {
+      const prod = (thread.find(x => x.product) || {}).product || "";
+      if (!prod) { setSplitNotes([]); return; }
+      sf("/api/splittable/notes?product=" + encodeURIComponent(prod) + "&root_lot_id=" + encodeURIComponent(selectedLot))
+        .then(d => setSplitNotes(d.notes || []))
+        .catch(() => setSplitNotes([]));
+    } else {
+      setSplitNotes([]);
+    }
+  }, [mode, selectedLot, thread]);
+
+  // v8.8.0: 사이드바에 표시할 제품 담당자 — 모든 product 한꺼번에 로드.
+  const loadProductContacts = () => {
+    sf("/api/informs/product-contacts")
+      .then(d => setProductContacts(d.products || {}))
+      .catch(() => setProductContacts({}));
+  };
+  useEffect(() => { loadProductContacts(); }, []);
+
+  const saveContact = () => {
+    if (!editContact) return;
+    const { id, product, name, role, email, phone, note } = editContact;
+    if (!product || !name) { alert("product/name 필수"); return; }
+    const url = id
+      ? "/api/informs/product-contacts/update?id=" + encodeURIComponent(id)
+      : "/api/informs/product-contacts";
+    postJson(url, { product, name, role, email, phone, note })
+      .then(() => { setEditContact(null); loadProductContacts(); })
+      .catch(e => alert("저장 실패: " + (e.message || e)));
+  };
+  const deleteContact = (product, id) => {
+    if (!confirm("담당자를 삭제하시겠어요?")) return;
+    postJson("/api/informs/product-contacts/delete?id=" + encodeURIComponent(id) + "&product=" + encodeURIComponent(product), {})
+      .then(() => loadProductContacts())
+      .catch(e => alert("삭제 실패: " + (e.message || e)));
+  };
 
   const refreshAll = () => {
     loadSidebar();
@@ -805,7 +906,8 @@ export default function My_Inform({ user }) {
     }).catch(e => setMsg(e.message));
   };
 
-  // v8.7.9: 본문 textarea 에 이미지 Ctrl+V 붙여넣기 → 자동 업로드 + createImages 에 추가.
+  // v8.8.0: 본문 textarea 에 이미지 Ctrl+V 붙여넣기 → 업로드 후 본문에 markdown 으로 즉시 inline 삽입.
+  // (별도 첨부 카드 X. images 배열에도 추가해 메일 첨부 후보로 유지.)
   const handleBodyPaste = async (e) => {
     const items = (e.clipboardData && e.clipboardData.items) || [];
     const imgs = [];
@@ -818,19 +920,29 @@ export default function My_Inform({ user }) {
     if (!imgs.length) return;
     e.preventDefault();
     setUploadingMain(true);
+    const ta = e.currentTarget;
+    const start = ta.selectionStart ?? (form.text || "").length;
+    const end   = ta.selectionEnd   ?? start;
+    let inserted = "";
     const out = [];
     for (const f of imgs) {
       try {
         const fd = new FormData();
-        // 붙여넣기된 파일은 보통 image.png 같은 generic name — 타임스탬프 붙여서 구분.
         const ext = (f.type || "image/png").split("/")[1] || "png";
         const named = new File([f], `paste_${Date.now()}.${ext}`, { type: f.type });
         fd.append("file", named);
         const res = await sf("/api/informs/upload", { method: "POST", body: fd });
         out.push({ filename: res.filename, url: res.url, size: res.size });
+        inserted += `\n![${res.filename}](${res.url})\n`;
       } catch (err) { alert("붙여넣기 업로드 실패: " + err.message); }
     }
-    setCreateImages(prev => [...prev, ...out]);
+    // 본문 inline 삽입 (커서 위치 보존).
+    setForm(f => {
+      const cur = f.text || "";
+      const next = cur.slice(0, start) + inserted + cur.slice(end);
+      return { ...f, text: next };
+    });
+    if (out.length) setCreateImages(prev => [...prev, ...out]);
     setUploadingMain(false);
   };
 
@@ -850,20 +962,30 @@ export default function My_Inform({ user }) {
     setUploadingMain(false);
   };
 
-  // SplitTable 에서 현재 product 의 plan 스냅샷을 본문에 임베드.
+  // v8.8.0: SplitTable 에서 현재 product 의 plan 스냅샷을 본문에 임베드.
+  // 빈 history 인 경우 명시적으로 알림 + paste 폴백 제안.
   const embedFromSplitTable = async () => {
     const prod = (form.product || "").trim();
     if (!prod) { alert("product 를 먼저 입력하세요."); return; }
     setEmbedFetching(true);
     try {
       const hist = await sf("/api/splittable/history?product=" + encodeURIComponent(prod) + "&limit=100");
-      const rows = (hist.history || []).slice(-50).map(h => [
+      const all = (hist.history || []);
+      const rows = all.slice(-50).map(h => [
         (h.time || "").replace("T", " ").slice(0, 19),
         h.user || "", h.action || "", h.cell || "",
         h.old === null || h.old === undefined ? "" : String(h.old),
         h.new === null || h.new === undefined ? "" : String(h.new),
         h.root_lot_id || "",
       ]);
+      if (rows.length === 0) {
+        // 폴백: 빈 history 면 paste 모드로 전환 — 사용자가 직접 표 데이터 붙여넣기.
+        const want = window.confirm(
+          `'${prod}' 의 SplitTable 히스토리가 비어 있습니다.\n\n대신 표 데이터를 직접 붙여넣을까요?\n(Excel/SplitTable 셀 영역을 복사한 뒤 OK → 붙여넣기 모달이 열립니다)`
+        );
+        if (want) setPasteOpen(true);
+        return;
+      }
       setForm(f => ({
         ...f, attach_embed: true,
         embed: {
@@ -876,6 +998,42 @@ export default function My_Inform({ user }) {
     } catch (e) {
       alert("SplitTable 가져오기 실패: " + e.message);
     } finally { setEmbedFetching(false); }
+  };
+
+  // v8.8.0: TSV/CSV paste → embed_table 변환. 첫 줄 = 컬럼.
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteSetName, setPasteSetName] = useState("");
+  const applyPasteAsEmbed = () => {
+    const txt = (pasteText || "").trim();
+    if (!txt) { alert("표 데이터를 먼저 붙여넣으세요"); return; }
+    const lines = txt.split(/\r?\n/).filter(l => l.length);
+    if (lines.length < 2) { alert("최소 2줄 (헤더 + 1행) 이 필요합니다"); return; }
+    const sep = lines[0].includes("\t") ? "\t" : (lines[0].includes(",") ? "," : "\t");
+    const cols = lines[0].split(sep);
+    const rows = lines.slice(1).map(l => l.split(sep));
+    setForm(f => ({
+      ...f, attach_embed: true,
+      embed: {
+        source: pasteSetName.trim() || `paste/${(form.product || "manual")}`,
+        columns: cols, rows,
+        note: `${rows.length} rows pasted${pasteSetName.trim() ? ` (set: ${pasteSetName.trim()})` : ""}`,
+      },
+    }));
+    // 향후 재사용을 위해 set 으로 저장 (로컬스토리지 — 가벼운 공유).
+    if (pasteSetName.trim()) {
+      try {
+        const KEY = "flow_paste_sets_v1";
+        const cur = JSON.parse(localStorage.getItem(KEY) || "[]");
+        const next = [{ name: pasteSetName.trim(), product: form.product || "", columns: cols, rows, saved_at: new Date().toISOString() },
+                      ...cur.filter(s => s.name !== pasteSetName.trim())].slice(0, 50);
+        localStorage.setItem(KEY, JSON.stringify(next));
+      } catch {}
+    }
+    setPasteOpen(false); setPasteText(""); setPasteSetName("");
+  };
+  const loadPasteSets = () => {
+    try { return JSON.parse(localStorage.getItem("flow_paste_sets_v1") || "[]"); } catch { return []; }
   };
 
   const reply = (parentId, body) => {
@@ -1033,7 +1191,7 @@ export default function My_Inform({ user }) {
           {modeButton("all",     "전체",    "최근 루트 인폼 (역할 필터 적용)")}
           {modeButton("product", "제품",  "제품 → Lot → Wafer drill-down")}
           {modeButton("lot",     "Lot",    "LOT 으로 전체 인폼 검색")}
-          {modeButton("gantt",   "간트",    "데드라인 간트 차트")}
+          {modeButton("gantt",   "이력 타임라인", "시간순 이력 타임라인 (등록·확인·메일·댓글)")}
           {/* v8.7.8: wafer 모드 제거 — product/lot drill-down 으로 통합. */}
         </div>
 
@@ -1076,7 +1234,142 @@ export default function My_Inform({ user }) {
             </div>
           ))}
         </div>
+
+        {/* v8.8.0: 제품별 담당자 — 사이드바 하단 폴더블. 모든 유저가 +추가/수정/삭제 가능. */}
+        <div style={{ borderTop: "2px solid var(--border)", maxHeight: 320, overflowY: "auto", background: "var(--bg-tertiary)" }}>
+          <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>👥 제품별 담당자</span>
+            <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{Object.keys(productContacts || {}).length} 제품</span>
+          </div>
+          {Object.keys(productContacts || {}).length === 0 && (
+            <div style={{ padding: 14, fontSize: 11, color: "var(--text-secondary)", textAlign: "center" }}>
+              담당자 등록 없음 — 아래 + 로 추가
+            </div>
+          )}
+          {Object.keys(productContacts || {}).sort().map(prod => {
+            const arr = productContacts[prod] || [];
+            const open = !!openContactProducts[prod];
+            return (
+              <div key={prod} style={{ borderBottom: "1px solid var(--border)" }}>
+                <div style={{ padding: "6px 10px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer", background: open ? "var(--bg-secondary)" : "transparent" }}
+                     onClick={() => setOpenContactProducts(o => ({ ...o, [prod]: !o[prod] }))}>
+                  <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{open ? "▼" : "▶"}</span>
+                  <span style={{ flex: 1, fontSize: 12, fontWeight: 600, fontFamily: "monospace" }}>{prod}</span>
+                  <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{arr.length}</span>
+                  <span onClick={(e) => { e.stopPropagation(); setEditContact({ product: prod, name: "", role: "", email: "", phone: "", note: "" }); }}
+                        title="담당자 추가"
+                        style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "var(--accent)", color: "#fff", fontWeight: 700, cursor: "pointer" }}>+</span>
+                </div>
+                {open && arr.map(c => (
+                  <div key={c.id} style={{ padding: "5px 14px 5px 24px", display: "flex", flexDirection: "column", borderTop: "1px dashed var(--border)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600 }}>{c.name}</span>
+                      {c.role && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 6, background: "var(--accent)22", color: "var(--accent)", fontWeight: 700 }}>{c.role}</span>}
+                      <span style={{ flex: 1 }} />
+                      <span onClick={() => setEditContact({ id: c.id, product: prod, name: c.name, role: c.role || "", email: c.email || "", phone: c.phone || "", note: c.note || "" })}
+                            style={{ fontSize: 9, color: "var(--text-secondary)", cursor: "pointer" }}>수정</span>
+                      <span onClick={() => deleteContact(prod, c.id)}
+                            style={{ fontSize: 9, color: "#ef4444", cursor: "pointer" }}>삭제</span>
+                    </div>
+                    {(c.email || c.phone) && (
+                      <div style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace", marginTop: 1 }}>
+                        {c.email}{c.email && c.phone ? " · " : ""}{c.phone}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+          <div style={{ padding: 8, display: "flex", gap: 6 }}>
+            <input id="__pc_new_prod" placeholder="신규 제품명"
+              style={{ flex: 1, minWidth: 0, padding: "5px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace" }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  const v = e.target.value.trim();
+                  if (v) { setEditContact({ product: v, name: "", role: "", email: "", phone: "", note: "" }); e.target.value = ""; }
+                }
+              }} />
+            <button onClick={() => {
+              const inp = document.getElementById("__pc_new_prod");
+              const v = (inp?.value || "").trim();
+              if (v) { setEditContact({ product: v, name: "", role: "", email: "", phone: "", note: "" }); if (inp) inp.value = ""; }
+            }} style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 10, fontWeight: 600, cursor: "pointer" }}>+제품</button>
+          </div>
+        </div>
       </div>
+
+      {/* v8.8.0: 담당자 추가/수정 모달 */}
+      {/* v8.8.0: 표 붙여넣기 모달 — TSV/CSV → embed_table */}
+      {pasteOpen && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 3100, display: "flex", alignItems: "center", justifyContent: "center" }}
+             onClick={() => setPasteOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()}
+               style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18, width: 640, maxWidth: "94vw" }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📋 표 붙여넣기 (TSV/CSV)</div>
+            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>
+              Excel/SplitTable 셀 영역을 복사한 뒤 아래에 Ctrl+V. 첫 줄이 컬럼명. 세트명을 지정하면 LocalStorage 에 저장되어 다음에 재사용 가능.
+            </div>
+            {loadPasteSets().length > 0 && (
+              <div style={{ marginBottom: 8, padding: 8, background: "var(--bg-card)", borderRadius: 6, fontSize: 11 }}>
+                <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>저장된 세트 ({loadPasteSets().length})</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                  {loadPasteSets().map(s => (
+                    <span key={s.name} onClick={() => {
+                      setForm(f => ({ ...f, attach_embed: true, embed: { source: s.name, columns: s.columns, rows: s.rows, note: `${s.rows.length} rows reused` } }));
+                      setPasteOpen(false);
+                    }}
+                    style={{ padding: "3px 10px", borderRadius: 999, fontSize: 10, cursor: "pointer", background: "var(--accent-glow)", color: "var(--accent)", fontWeight: 600 }}
+                    title={`${s.product || ""} · ${s.rows.length} rows · ${s.saved_at?.slice(0,16)}`}>{s.name}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            <input value={pasteSetName} onChange={e => setPasteSetName(e.target.value)}
+              placeholder="세트 이름 (선택, 비우면 1회용)"
+              style={{ width: "100%", padding: "6px 10px", marginBottom: 6, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, boxSizing: "border-box" }} />
+            <textarea value={pasteText} onChange={e => setPasteText(e.target.value)}
+              placeholder="여기에 Ctrl+V (첫 줄 = 헤더, 탭 또는 콤마 구분)"
+              rows={10}
+              style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }} />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
+              <button onClick={() => { setPasteOpen(false); setPasteText(""); setPasteSetName(""); }}
+                style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 12, cursor: "pointer" }}>취소</button>
+              <button onClick={applyPasteAsEmbed}
+                style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>본문에 첨부</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {editContact && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3000 }}
+             onClick={() => setEditContact(null)}>
+          <div onClick={(e) => e.stopPropagation()}
+               style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18, width: 380, maxWidth: "92vw" }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, fontFamily: "monospace" }}>
+              {editContact.id ? "✏ 담당자 수정" : "+ 담당자 추가"} <span style={{ color: "var(--accent)" }}>· {editContact.product}</span>
+            </div>
+            {[
+              ["name", "이름 (필수)"],
+              ["role", "역할 (예: PIE, 측정)"],
+              ["email", "이메일"],
+              ["phone", "전화"],
+              ["note", "메모"],
+            ].map(([k, ph]) => (
+              <input key={k} placeholder={ph}
+                value={editContact[k] || ""}
+                onChange={(e) => setEditContact({ ...editContact, [k]: e.target.value })}
+                style={{ display: "block", width: "100%", padding: "8px 10px", marginBottom: 8, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, boxSizing: "border-box" }} />
+            ))}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setEditContact(null)}
+                style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 12, cursor: "pointer" }}>취소</button>
+              <button onClick={saveContact}
+                style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>저장</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main */}
       <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
@@ -1112,17 +1405,19 @@ export default function My_Inform({ user }) {
               placeholder="인폼 내용 (배경, 영향, 조치 요청 등) — Ctrl+V 로 이미지도 바로 붙여넣을 수 있어요"
               style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, resize: "vertical", boxSizing: "border-box", lineHeight: 1.5 }} />
             <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <label style={{ fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", padding: "4px 10px", borderRadius: 4, border: "1px dashed var(--border)" }}>
-                📎 이미지 첨부
-                <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                  onChange={e => { uploadMain(e.target.files); e.target.value = ""; }} />
-              </label>
+              {/* v8.8.0: 별도 이미지 첨부 버튼 제거 — Ctrl+V 로 본문에 inline 삽입됨. */}
+              <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>이미지: 본문에 <b>Ctrl+V</b> 로 바로 붙여넣기 (markdown 으로 inline 삽입)</span>
               {uploadingMain && <span style={{ fontSize: 10, color: "var(--accent)" }}>업로드중…</span>}
               <button type="button" onClick={embedFromSplitTable}
                 disabled={embedFetching || !form.product}
-                title={!form.product ? "product 를 먼저 입력하세요" : "현재 product SplitTable 이력을 본문에 첨부"}
+                title={!form.product ? "product 를 먼저 입력하세요" : "현재 product SplitTable 이력을 본문에 첨부 (없으면 paste 폴백)"}
                 style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, cursor: (embedFetching || !form.product) ? "default" : "pointer", opacity: (!form.product) ? 0.5 : 1 }}>
                 🔗 SplitTable 에서 가져오기
+              </button>
+              <button type="button" onClick={() => setPasteOpen(true)}
+                title="표 데이터를 붙여넣어서 본문에 첨부 (TSV/CSV). 세트 이름 지정 시 재사용 가능."
+                style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, cursor: "pointer" }}>
+                📋 표 붙여넣기
               </button>
               {embedFetching && <span style={{ fontSize: 10, color: "var(--accent)" }}>로딩…</span>}
               {form.attach_embed && form.embed.rows.length > 0 && (
@@ -1308,6 +1603,7 @@ export default function My_Inform({ user }) {
             )}
             <LotModuleSummary thread={thread} modules={constants.modules} />
             <PlanSummaryCard thread={thread} />
+            <SplitNotesCard notes={splitNotes} root_lot_id={selectedLot} />
             {(() => {
               const grouped = {};
               for (const r of applyModFilter(rootsSorted)) {
@@ -1373,6 +1669,8 @@ export default function My_Inform({ user }) {
    이벤트: 인폼 등록 / 담당자 확인 / 메일 발송 / 댓글 / 수정(status_history 기타).
 */
 function TimelineLog({ thread, onOpen }) {
+  // v8.8.0: Lot 검색 필터 + root_lot prefix 매칭.
+  const [lotQ, setLotQ] = useState("");
   const events = useMemo(() => {
     const evs = [];
     for (const x of (thread || [])) {
@@ -1439,14 +1737,28 @@ function TimelineLog({ thread, onOpen }) {
     return evs;
   }, [thread]);
 
-  if (!events.length) {
-    return <div style={{ padding: 60, textAlign: "center", color: "var(--text-secondary)" }}>이력 없음.</div>;
-  }
+  const filtered = useMemo(() => {
+    const q = (lotQ || "").trim().toLowerCase();
+    if (!q) return events;
+    return events.filter(e => {
+      const lot = (e.lot || "").toLowerCase();
+      const root = (e.node?.root_lot_id || "").toLowerCase();
+      return lot.includes(q) || root.includes(q) || lot.startsWith(q);
+    });
+  }, [events, lotQ]);
+
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-secondary)", padding: 10, fontFamily: "monospace" }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>📜 이력 타임라인 ({events.length}건)</div>
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 8 }}>작성 / 수정 / 이행(확인·완료) — 누가 언제 무엇을 했는지 시간순.</div>
-      {events.map((e, i) => {
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "var(--accent)" }}>📜 이력 타임라인 ({filtered.length}{lotQ ? ` / ${events.length}` : ""}건)</span>
+        <input value={lotQ} onChange={e => setLotQ(e.target.value)}
+          placeholder="🔎 Lot 검색 (root_lot_id 또는 fab_lot_id 부분일치)"
+          style={{ flex: 1, minWidth: 220, padding: "5px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
+        {lotQ && <span onClick={() => setLotQ("")} style={{ cursor: "pointer", color: "#ef4444", fontSize: 11 }}>✕ 초기화</span>}
+      </div>
+      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 8 }}>작성 / 수정 / 이행(확인·완료) — 누가 언제 무엇을 했는지 시간순. Lot 입력 시 해당 Lot 만 필터링.</div>
+      {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>{lotQ ? `'${lotQ}' 매칭 이력 없음.` : "이력 없음."}</div>}
+      {filtered.map((e, i) => {
         const mc = moduleColor(e.module);
         const kindColor = e.kind === "인폼" ? "#3b82f6"
           : e.kind === "담당자확인" ? "#22c55e"

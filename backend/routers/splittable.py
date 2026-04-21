@@ -914,11 +914,93 @@ def delete_custom(req: CustomDeleteReq):
     return {"ok": True}
 
 
+def _scan_fab_source(fab_source: str):
+    """v8.8.0: fab_source 가 가리키는 DB 경로를 LazyFrame 으로 스캔.
+    - "FAB/PRODA" 같은 디렉토리면 그 아래 모든 *.parquet 을 union 으로 스캔 (hive flat 호환).
+    - 단일 .parquet/.csv 파일이면 그 파일을 스캔.
+    실패 시 None 반환 (조용히 폴백).
+    """
+    if not fab_source:
+        return None
+    db_base = _db_base()
+    base_root = _base_root()
+    fp = None
+    for root in (db_base, base_root):
+        if not root or not root.exists():
+            continue
+        cand = root / fab_source
+        if cand.exists():
+            fp = cand
+            break
+        for ext in (".parquet", ".csv"):
+            cand2 = root / f"{fab_source}{ext}"
+            if cand2.exists():
+                fp = cand2
+                break
+        if fp:
+            break
+    if not fp:
+        return None
+    try:
+        if fp.is_dir():
+            parquets = sorted(fp.rglob("*.parquet"))
+            if not parquets:
+                return None
+            return _cast_cats_lazy(pl.scan_parquet([str(p) for p in parquets]))
+        if fp.suffix == ".csv":
+            return _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
+        return _cast_cats_lazy(pl.scan_parquet(str(fp)))
+    except Exception:
+        return None
+
+
 def _scan_product(product: str):
     fp = _product_path(product)
     if fp.suffix == ".csv":
-        return _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
-    return _cast_cats_lazy(pl.scan_parquet(str(fp)))
+        lf = _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
+    else:
+        lf = _cast_cats_lazy(pl.scan_parquet(str(fp)))
+
+    # v8.8.0: lot_overrides[product].fab_source 가 지정되어 있으면 left-join 으로 fab 컬럼 보강.
+    # 주 ML_TABLE_<PROD> 에는 없는 fab_lot_id 등을 외부 소스(FAB/PRODA hive 등) 에서 끌어옴.
+    try:
+        cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
+        ov = (cfg.get("lot_overrides") or {}).get(product) or {}
+        fab_source = (ov.get("fab_source") or "").strip()
+        if not fab_source:
+            return lf
+        fab_lf = _scan_fab_source(fab_source)
+        if fab_lf is None:
+            return lf
+        main_names = set(lf.collect_schema().names())
+        fab_names = set(fab_lf.collect_schema().names())
+        join_keys = ov.get("join_keys") or []
+        if isinstance(join_keys, str):
+            join_keys = [k.strip() for k in join_keys.split(",") if k.strip()]
+        if not join_keys:
+            # fallback: pick natural common keys (root_lot_id / wafer_id / product)
+            for cand in ("root_lot_id", "wafer_id", "lot_id", "product"):
+                if cand in main_names and cand in fab_names:
+                    join_keys.append(cand)
+        join_keys = [k for k in join_keys if k in main_names and k in fab_names]
+        if not join_keys:
+            return lf
+        # Bring only useful columns: fab_col + join keys + ts_col (optional). Avoid wide explosion.
+        fab_col = (ov.get("fab_col") or "fab_lot_id").strip()
+        wanted = list(dict.fromkeys(join_keys + [fab_col] + ([ov.get("ts_col")] if ov.get("ts_col") else [])))
+        wanted = [c for c in wanted if c in fab_names]
+        fab_proj = fab_lf.select(wanted)
+        # Cast join keys to Utf8 on both sides for safety.
+        fab_proj = fab_proj.with_columns([pl.col(k).cast(_STR, strict=False) for k in join_keys])
+        lf = lf.with_columns([pl.col(k).cast(_STR, strict=False) for k in join_keys])
+        # Drop fab_col on main side so left-join introduces fresh values.
+        if fab_col in main_names and fab_col != "":
+            lf = lf.drop(fab_col)
+        lf = lf.join(fab_proj.unique(subset=join_keys, keep="last"),
+                     on=join_keys, how="left")
+        return lf
+    except Exception:
+        return lf
 
 @router.get("/lot-ids")
 def get_lot_ids(product: str = Query(...), limit: int = Query(200)):

@@ -214,8 +214,16 @@ def _build_cmd(item: Dict[str, Any]):
         prefix += ["--profile", profile]
 
     extra = _validate_extra_args(item.get("extra_args", ""))
-    # Build: aws s3 <cmd> <src> <dst> --endpoint-url URL --profile P <extra>
-    args = ["aws", "s3", cmd_sub, item["s3_url"], str(local)] + prefix + extra
+    # v8.8.0: direction. "download" = s3 → local (기본). "upload" = local → s3.
+    direction = (item.get("direction") or "download").lower()
+    if direction == "upload":
+        if cmd_sub == "cp" and local.is_dir():
+            extra = list(extra)
+            if "--recursive" not in extra:
+                extra.append("--recursive")
+        args = ["aws", "s3", cmd_sub, str(local), item["s3_url"]] + prefix + extra
+    else:
+        args = ["aws", "s3", cmd_sub, item["s3_url"], str(local)] + prefix + extra
     return args, local
 
 
@@ -263,6 +271,7 @@ def _run_item_blocking(item_id: str):
                    last_duration_sec=dur)
     jsonl_append(HISTORY_FILE, {
         "id": item_id, "target": item.get("target"), "kind": item.get("kind"),
+        "direction": (item.get("direction") or "download").lower(),
         "status": status, "exit_code": exit_code, "duration_sec": dur,
         "cmd": " ".join(args),
     })
@@ -375,6 +384,8 @@ class SaveReq(BaseModel):
     endpoint_url: str = ""
     # v8.7.9: per-item AWS profile (credentials/key) — fed as `--profile <name>`.
     profile: str = ""
+    # v8.8.0: 동기화 방향. "download" = S3 → local (기본), "upload" = local → S3.
+    direction: str = "download"
     interval_min: int = 0
     enabled: bool = True
 
@@ -398,6 +409,9 @@ def save_item(req: SaveReq):
     if not ID_RE.match(item_id):
         raise HTTPException(400, f"invalid id: {item_id}")
 
+    direction = (req.direction or "download").strip().lower()
+    if direction not in {"download", "upload"}:
+        raise HTTPException(400, f"invalid direction: {direction!r} (must be 'download' or 'upload')")
     new_item = {
         "id": item_id,
         "kind": req.kind, "target": req.target,
@@ -405,6 +419,7 @@ def save_item(req: SaveReq):
         "extra_args": req.extra_args,
         "endpoint_url": (req.endpoint_url or "").strip(),
         "profile": (req.profile or "").strip(),
+        "direction": direction,
         "interval_min": max(0, int(req.interval_min)),
         "enabled": bool(req.enabled),
     }
