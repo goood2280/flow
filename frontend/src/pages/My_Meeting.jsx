@@ -955,7 +955,8 @@ export default function My_Meeting({ user }) {
               <span style={lbl}>제목 *</span>
               <input value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })} placeholder="회의 제목" style={inp} autoFocus />
               <span style={lbl}>주관자</span>
-              <input value={draft.owner} onChange={e => setDraft({ ...draft, owner: e.target.value })} placeholder={`기본: ${me}`} style={inp} />
+              {/* v8.8.12: 주관자 기본값을 로그인 유저로 즉시 채움 (placeholder 대신). */}
+              <input value={draft.owner || me} onChange={e => setDraft({ ...draft, owner: e.target.value })} placeholder={`기본: ${me}`} style={inp} />
               <span style={lbl}>1차 일시</span>
               <input type="datetime-local" value={draft.first_scheduled_at} onChange={e => setDraft({ ...draft, first_scheduled_at: e.target.value })} style={inp} />
               <span style={lbl}>카테고리</span>

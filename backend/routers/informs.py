@@ -775,21 +775,76 @@ def auto_log_splittable_change(author: str, product: str, lot_id: str,
 
 @router.post("/delete")
 def delete_inform(request: Request, id: str = Query(...)):
-    """작성자 본인만 삭제. 자식 있으면 무결성 차단."""
+    """v8.8.12: 공동편집 정책 확장 — 원작성자 / admin / 동일 모듈 담당자 모두 삭제 가능.
+    자식 있으면 무결성 차단."""
     me = current_user(request)
     items = _load_upgraded()
     target = _find(items, id)
     if not target:
         raise HTTPException(404)
-    if target.get("author") != me["username"]:
-        raise HTTPException(403, "작성자 본인만 삭제 가능합니다.")
+    role = me.get("role", "user")
+    my_mods = user_modules(me["username"], role)
+    allowed = (
+        target.get("author") == me["username"]
+        or role == "admin"
+        or _can_moderate(target, me["username"], role, my_mods)
+    )
+    if not allowed:
+        raise HTTPException(403, "삭제 권한이 없습니다 (작성자/admin/모듈담당자).")
     has_child = any(x.get("parent_id") == id for x in items)
     if has_child:
         raise HTTPException(400, "답글이 달린 글은 삭제할 수 없습니다.")
     items = [x for x in items if x.get("id") != id]
     _save(items)
-    _audit(request, "inform:delete", detail=f"id={id}", tab="inform")
+    _audit(request, "inform:delete", detail=f"id={id} by={me['username']}", tab="inform")
     return {"ok": True}
+
+
+class InformEditReq(BaseModel):
+    text: Optional[str] = None
+    module: Optional[str] = None
+    reason: Optional[str] = None
+    # wafer_id / lot_id / product 는 변경 불가 (스레드/매칭 깨짐 방지).
+
+
+@router.post("/edit")
+def edit_inform(req: InformEditReq, request: Request, id: str = Query(...)):
+    """v8.8.12: 등록된 인폼의 본문/모듈/사유를 **다른 유저도** 수정 가능. 변경 전후 값을 edit_history 에 저장."""
+    me = current_user(request)
+    items = _load_upgraded()
+    target = _find(items, id)
+    if not target:
+        raise HTTPException(404)
+    now = datetime.datetime.now().isoformat()
+    hist = target.get("edit_history") or []
+    changed = []
+    if req.text is not None and (req.text or "").strip() != (target.get("text") or ""):
+        before = target.get("text") or ""
+        target["text"] = (req.text or "").strip()
+        hist.append({"at": now, "actor": me["username"], "field": "text",
+                     "before": before[:400], "after": target["text"][:400],
+                     "kind": "edit"})
+        changed.append("text")
+    if req.module is not None and (req.module or "").strip() != (target.get("module") or ""):
+        before = target.get("module") or ""
+        target["module"] = (req.module or "").strip()
+        hist.append({"at": now, "actor": me["username"], "field": "module",
+                     "before": before, "after": target["module"], "kind": "edit"})
+        changed.append("module")
+    if req.reason is not None and (req.reason or "").strip() != (target.get("reason") or ""):
+        before = target.get("reason") or ""
+        target["reason"] = (req.reason or "").strip()
+        hist.append({"at": now, "actor": me["username"], "field": "reason",
+                     "before": before, "after": target["reason"], "kind": "edit"})
+        changed.append("reason")
+    if not changed:
+        return {"ok": True, "noop": True}
+    target["edit_history"] = hist[-200:]
+    target["updated_at"] = now
+    _save(items)
+    _audit(request, "inform:edit",
+           detail=f"id={id} by={me['username']} fields={','.join(changed)}", tab="inform")
+    return {"ok": True, "changed": changed}
 
 
 @router.post("/check")
