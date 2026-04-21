@@ -29,8 +29,18 @@ VERSION = {"version": "8.6.4", "codename": "flow", "changelog": [{"version": "8.
 
 
 def _write(rel: str, gz_b64: str) -> None:
+    # v8.7.0: HARD GUARD — data/ 이하는 절대 덮어쓰지 않는다. setup 재실행/업그레이드 시
+    # 기존 인폼/트래커/달력/유저/세션 데이터 보존.
+    rel_posix = rel.replace("\\", "/").lstrip("./")
+    if rel_posix.startswith("data/") or rel_posix == "data":
+        return
     data = gzip.decompress(base64.b64decode(gz_b64))
     dst = ROOT / rel
+    try:
+        dst.resolve().relative_to((ROOT / "data").resolve())
+        return
+    except Exception:
+        pass
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(data)
 

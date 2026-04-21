@@ -1,7 +1,12 @@
-"""routers/groups.py v8.5.0 — User groups for Dashboard/Tracker visibility + LOT watch.
+"""routers/groups.py v8.7.0 — User groups for Dashboard/Tracker visibility + LOT watch + module 담당.
 
 스키마 ({data_root}/groups/groups.json):
-  [{id, name, owner, members:[username], watched_lots:[lot_id], created, updated}]
+  [{id, name, owner, members:[username], watched_lots:[lot_id],
+    modules:[module_name], created, updated}]
+
+v8.7.0 추가:
+  - modules: 이 그룹이 담당하는 공정 모듈 (GATE/STI/PC/MOL/BEOL/ET/EDS/...).
+  - user_modules(username, role): 해당 유저가 담당하는 모듈 set. 인폼 모듈별 필터용.
 
 규약:
   - admin 은 모든 그룹 조회/수정 가능.
@@ -89,6 +94,20 @@ def user_group_ids(username: str, role: str) -> set:
     }
 
 
+def user_modules(username: str, role: str) -> set:
+    """해당 유저가 담당하는 공정 모듈 set. admin 은 sentinel '__all__' 반환 (전체 담당)."""
+    if role == "admin":
+        return {"__all__"}
+    groups = _load()
+    mods: set = set()
+    for g in groups:
+        if g.get("owner") == username or username in (g.get("members") or []):
+            for m in (g.get("modules") or []):
+                if m:
+                    mods.add(m)
+    return mods
+
+
 def filter_by_visibility(items: list, username: str, role: str, key: str = "group_ids") -> list:
     """item.group_ids 가 비어있으면 public (통과). 값이 있으면 유저 그룹과 교집합 필요.
     admin 은 항상 전부 통과."""
@@ -111,12 +130,18 @@ class GroupCreate(BaseModel):
     name: str
     members: List[str] = []
     watched_lots: List[str] = []
+    modules: List[str] = []
 
 
 class GroupUpdate(BaseModel):
     name: Optional[str] = None
     members: Optional[List[str]] = None
     watched_lots: Optional[List[str]] = None
+    modules: Optional[List[str]] = None
+
+
+class ModulesReq(BaseModel):
+    modules: List[str]
 
 
 class MemberReq(BaseModel):
@@ -170,6 +195,7 @@ def create_group(req: GroupCreate, request: Request):
         "owner": me["username"],
         "members": members,
         "watched_lots": sorted(set(req.watched_lots or [])),
+        "modules": sorted(set(req.modules or [])),
         "created": now,
         "updated": now,
     }
@@ -200,10 +226,41 @@ def update_group(req: GroupUpdate, request: Request, id: str = Query(...)):
         g["members"] = sorted(set([g.get("owner", me["username"])] + list(req.members)))
     if req.watched_lots is not None:
         g["watched_lots"] = sorted(set(req.watched_lots))
+    if req.modules is not None:
+        g["modules"] = sorted({m.strip() for m in req.modules if m and m.strip()})
     g["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
     _save(groups)
     _audit(me["username"], "update", id, g.get("name", ""))
     return {"ok": True, "group": g}
+
+
+@router.post("/modules/set")
+def set_modules(req: ModulesReq, request: Request, id: str = Query(...)):
+    """그룹 담당 모듈 일괄 설정 (owner/admin)."""
+    me = current_user(request)
+    groups = _load()
+    g = _find(groups, id)
+    if not g:
+        raise HTTPException(404)
+    if not _can_edit(g, me["username"], me.get("role", "user")):
+        raise HTTPException(403)
+    g["modules"] = sorted({m.strip() for m in (req.modules or []) if m and m.strip()})
+    g["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
+    _save(groups)
+    _audit(me["username"], "modules_set", id, ",".join(g["modules"]))
+    return {"ok": True, "modules": g["modules"]}
+
+
+@router.get("/my-modules")
+def get_my_modules(request: Request):
+    """현재 유저가 담당하는 모듈 list. admin 은 '__all__' sentinel."""
+    me = current_user(request)
+    mods = user_modules(me["username"], me.get("role", "user"))
+    all_rounder = "__all__" in mods or me.get("role") == "admin"
+    return {
+        "modules": [] if all_rounder else sorted(mods),
+        "all_rounder": all_rounder,
+    }
 
 
 @router.post("/delete")

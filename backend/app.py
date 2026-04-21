@@ -83,6 +83,13 @@ logger.info(f"  app_root  = {PATHS.app_root}")
 logger.info(f"  data_root = {PATHS.data_root}")
 logger.info(f"  db_root   = {PATHS.db_root}")
 
+# v8.7.0: 자동 백업 스케줄러 — data_root 스냅샷을 주기적으로 zip.
+try:
+    from core.backup import start_scheduler as _bk_start
+    _bk_start()
+except Exception as _bk_e:
+    logger.warning(f"backup scheduler init failed: {_bk_e}")
+
 
 @app.get("/version.json")
 def serve_version():
