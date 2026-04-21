@@ -23,7 +23,7 @@ if(typeof document!=="undefined"&&!document.getElementById("tm-styles")){
 }
 
 // ─── Graph view with zoom/pan ───────────────────────────
-function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelation,onSavePosition,onNodeRightClick,selectedNodeId,onEditRelation}){
+function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelation,onSavePosition,onNodeRightClick,selectedNodeId,onEditRelation,lineageEdges,showLineage}){
   const[drag,setDrag]=useState(null);const[relStart,setRelStart]=useState(null);
   const[relDrag,setRelDrag]=useState(null); // {fromNode, mx, my} for relation drag
   const[hoverNode,setHoverNode]=useState(null);
@@ -111,8 +111,12 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
     </div>
     <svg ref={svgRef} width="100%" height="100%" onWheel={onWheel} onMouseDown={onBgMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} style={{cursor:panning?"grabbing":drag?"grabbing":"default"}}>
       <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
-      <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)" opacity="0.8"/></marker></defs>
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)" opacity="0.8"/></marker>
+        <marker id="arrow-lineage" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#06b6d4" opacity="0.85"/></marker>
+      </defs>
 
       {/* Group bounding boxes with member tables rendered inside */}
       {groupNodes.map(gn=>{
@@ -222,6 +226,34 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
             <circle cx={9} cy={9} r={9} fill="var(--bg-card,#2a2a2a)" stroke="var(--accent)" strokeWidth={1} opacity={0.9}/>
             <text x={9} y={13} textAnchor="middle" fill="var(--accent)" fontSize={10}>✏</text>
           </g>
+        </g>);
+      })}
+
+      {/* v8.6.3 Lineage overlay — inferred dataflow arrows (dashed cyan).
+          declared 는 위 relations 블록과 중복이므로 inferred 만 표시. */}
+      {showLineage && (lineageEdges||[]).filter(e=>e.kind==="inferred").map((e,i)=>{
+        const a=nodeById(e.from_id);const b=nodeById(e.to_id);if(!a||!b)return null;
+        const getBox=(n)=>{
+          const p=getNodePos(n);
+          if(n.kind==="group"){
+            const grp=(groups||[]).find(g=>g.id===n.ref_id);
+            const mc=grp?(groupMembers[grp.id]||[]).length:0;
+            const cols=Math.min(mc,3)||1;const rows=Math.ceil(mc/cols)||1;
+            const bw=Math.max(NW+PAD*2,cols*(NW+8)-8+PAD*2);
+            const bh=28+rows*(NH+8)-8+PAD*2;
+            return{cx:p.x+bw/2,cy:p.y+bh/2,hw:bw/2,hh:bh/2};
+          }
+          return{cx:p.x+NW/2,cy:p.y+NH/2,hw:NW/2,hh:NH/2};
+        };
+        const ba=getBox(a),bb=getBox(b);
+        const dx=bb.cx-ba.cx,dy=bb.cy-ba.cy,len=Math.sqrt(dx*dx+dy*dy)||1;
+        const ax1=ba.cx+ba.hw*(dx/len)*0.95,ay1=ba.cy+ba.hh*(dy/len)*0.95;
+        const bx1=bb.cx-bb.hw*(dx/len)*0.95,by1=bb.cy-bb.hh*(dy/len)*0.95;
+        const mx=(ax1+bx1)/2,my=(ay1+by1)/2;
+        return(<g key={"lin_"+i} style={{pointerEvents:"none"}}>
+          <line x1={ax1} y1={ay1} x2={bx1} y2={by1} stroke="#06b6d4" strokeWidth={1.6} strokeOpacity={0.75} strokeDasharray="6,4" markerEnd="url(#arrow-lineage)"/>
+          <rect x={mx-(e.reason.length*3.2)} y={my-7} width={e.reason.length*6.4} height={14} rx={3} fill="rgba(6,182,212,0.15)" stroke="#06b6d4" strokeOpacity={0.5}/>
+          <text x={mx} y={my+3} textAnchor="middle" fill="#06b6d4" fontSize={9} fontWeight={700} style={{fontFamily:"monospace"}}>{e.reason}</text>
         </g>);
       })}
 
@@ -544,12 +576,18 @@ export default function My_TableMap({user}){
   const[view,setView]=useState("graph");
   const[editingRelation,setEditingRelation]=useState(null);
   const isAdmin=user?.role==="admin";
+  // v8.6.3: lineage overlay (ET/INLINE/EDS → ML_TABLE)
+  const[showLineage,setShowLineage]=useState(false);
+  const[lineageData,setLineageData]=useState({edges:[],stats:{}});
+  const loadLineage=()=>sf(API+"/lineage").then(d=>setLineageData(d||{edges:[],stats:{}})).catch(()=>setLineageData({edges:[],stats:{}}));
+  useEffect(()=>{if(showLineage)loadLineage();},[showLineage]);
 
   const loadAll=()=>{
     sf(API+"/config").then(setConfig).catch(()=>{});
     sf(API+"/tables").then(d=>setTables(d.tables||[])).catch(()=>{});
     sf(API+"/groups").then(d=>setGroups(d.groups||[])).catch(()=>{});
     sf(API+"/db-sources").then(d=>setDbSources(d.sources||[])).catch(()=>{});
+    if(showLineage)loadLineage();
   };
   useEffect(loadAll,[]);
 
@@ -602,9 +640,10 @@ export default function My_TableMap({user}){
   return(<div style={{padding:"20px 28px",background:"var(--bg-primary)",minHeight:"calc(100vh - 48px)",color:"var(--text-primary)"}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
       <div style={{fontSize:16,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>{">"} table map</div>
-      <div style={{display:"flex",gap:4}}>
+      <div style={{display:"flex",gap:4,alignItems:"center"}}>
         {[["graph","그래프"],["manage","관리"]].map(([k,l])=>(
           <span key={k} onClick={()=>setView(k)} style={{padding:"4px 12px",borderRadius:4,fontSize:11,cursor:"pointer",fontWeight:view===k?600:400,background:view===k?"var(--accent-glow)":"transparent",color:view===k?"var(--accent)":"var(--text-secondary)"}}>{l}</span>))}
+        {view==="graph"&&<span onClick={()=>setShowLineage(s=>!s)} title="ET/INLINE/EDS → ML_TABLE 데이터 흐름 추론 (cyan dashed)" style={{padding:"4px 12px",borderRadius:4,fontSize:11,cursor:"pointer",fontWeight:showLineage?600:400,background:showLineage?"rgba(6,182,212,0.18)":"transparent",color:showLineage?"#06b6d4":"var(--text-secondary)",border:showLineage?"1px solid #06b6d4":"1px solid transparent",marginLeft:6}}>🔄 계보{showLineage&&lineageData.stats?` (${lineageData.stats.inferred||0})`:""}</span>}
       </div>
       {isAdmin&&<div style={{display:"flex",gap:6}}>
         <button onClick={()=>setEditingTable({})} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,cursor:"pointer"}}>+ 테이블</button>
@@ -618,7 +657,11 @@ export default function My_TableMap({user}){
     {view==="graph"&&<GraphView config={config} groups={groups} tables={tables} onNodeClick={onNodeClick} onNodeDblClick={onNodeDblClick} onAddRelation={onAddRelation} onSavePosition={savePosition}
       selectedNodeId={selectedNode?.id}
       onEditRelation={onEditRelation}
+      lineageEdges={lineageData.edges} showLineage={showLineage}
       onNodeRightClick={(e,node)=>{if(node.kind==="db_ref"&&isAdmin){if(confirm(`DB 참조 "${node.name}" 를 제거할까요?`)){deleteDbRef(node.id);setSelectedNode(null);}}}}/>}
+    {view==="graph"&&showLineage&&<div style={{marginTop:8,padding:"6px 10px",background:"rgba(6,182,212,0.08)",border:"1px solid rgba(6,182,212,0.3)",borderRadius:6,fontSize:11,color:"var(--text-secondary)",fontFamily:"monospace"}}>
+      🔄 계보 — declared {lineageData.stats?.declared||0} · inferred {lineageData.stats?.inferred||0} · ML 타겟 {lineageData.stats?.ml_targets||0} · 소스 {lineageData.stats?.sources||0}. 추론된 흐름은 cyan 점선으로 표시 (ET/INLINE/EDS/KNOB/MASK/FAB/VM 노드 → ML_TABLE_PROD* 노드).
+    </div>}
     {/* DB ref detail modal */}
     {dbInfo&&<div className="tm-overlay" onClick={()=>{setDbInfo(null);setSelectedNode(null);}}>
       <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:"90%",maxWidth:600,maxHeight:"85vh",overflow:"auto"}}>

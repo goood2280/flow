@@ -671,3 +671,100 @@ def import_table(req: ImportReq):
         username=req.username,
     )
     return save_table(tr)
+
+
+# ── Data Lineage (v8.6.3) ─────────────────────────────────────────────
+# 명시적 relations 외에, 노드 이름 휴리스틱으로 dataflow 를 추론한다.
+# 핵심 룰: ML_TABLE_PROD* 는 ET / INLINE / EDS / KNOB / MASK / FAB / VM 소스로부터 파생.
+#
+# 노드 매칭 (대소문자 무시):
+#   - upstream(=소스): 노드 이름에 ET / INLINE / EDS / KNOB / MASK / FAB / VM 가 포함.
+#   - downstream(=피처): 노드 이름이 ML_TABLE 로 시작 (예: ML_TABLE_PRODA).
+# 동일 product suffix (예: A, B) 가 있으면 우선 매칭한다.
+
+UPSTREAM_TOKENS = ["ET", "INLINE", "EDS", "KNOB", "MASK", "FAB", "VM"]
+
+
+def _classify_node(name: str) -> dict:
+    """이름에서 token / ml_table 여부 / product suffix 를 추출."""
+    n = (name or "").upper()
+    is_ml = n.startswith("ML_TABLE") or "ML_TABLE_" in n
+    tokens = [t for t in UPSTREAM_TOKENS if t in n]
+    # Product suffix: ML_TABLE_PRODA → 'A' / ML_TABLE_PRODB → 'B'
+    prod = ""
+    if is_ml:
+        idx = n.find("PROD")
+        if idx >= 0 and idx + 4 < len(n):
+            tail = n[idx + 4:]
+            # 첫 영문자 1~2글자만 (PRODAA → 'AA')
+            buf = ""
+            for ch in tail:
+                if ch.isalpha() and len(buf) < 2:
+                    buf += ch
+                else:
+                    break
+            prod = buf
+    return {"is_ml": is_ml, "tokens": tokens, "prod": prod}
+
+
+@router.get("/lineage")
+def get_lineage():
+    """추론된 dataflow + 명시적 relations 통합. UI 가 그대로 그리면 됨.
+
+    응답:
+      {
+        "edges": [
+          {"from_id": "...", "to_id": "...", "kind": "declared"|"inferred", "reason": "..."},
+          ...
+        ],
+        "stats": {"declared": N, "inferred": M, "ml_targets": K, "sources": L}
+      }
+    """
+    cfg = _load_config()
+    nodes = cfg.get("nodes", []) or []
+    relations = cfg.get("relations", []) or []
+    edges = []
+
+    # 1) Declared relations 그대로
+    for r in relations:
+        if r.get("from") and r.get("to"):
+            edges.append({
+                "from_id": r["from"], "to_id": r["to"], "kind": "declared",
+                "reason": (r.get("description") or "수동 등록 관계"),
+            })
+
+    # 2) Inferred — name 휴리스틱
+    classified = [{**_classify_node(n.get("physical_name") or n.get("name") or ""), "node": n}
+                  for n in nodes]
+    ml_nodes = [c for c in classified if c["is_ml"]]
+    src_nodes = [c for c in classified if c["tokens"] and not c["is_ml"]]
+
+    seen = {(e["from_id"], e["to_id"]) for e in edges}
+    inferred_count = 0
+    for ml in ml_nodes:
+        for src in src_nodes:
+            # 매칭: src 의 token 이 ml 의 token (제외 ML_TABLE) 과 겹치면 OK.
+            # ml token 은 의미가 약하므로(이름에 ET 같은 키워드가 우연히 들어갈 수 있음) src 기준만 사용.
+            token = src["tokens"][0]
+            edge = (src["node"]["id"], ml["node"]["id"])
+            if edge in seen:
+                continue
+            seen.add(edge)
+            reason = f"{token} → ML_TABLE"
+            if ml["prod"]:
+                reason += f" (PROD{ml['prod']})"
+            edges.append({
+                "from_id": src["node"]["id"], "to_id": ml["node"]["id"],
+                "kind": "inferred", "reason": reason,
+            })
+            inferred_count += 1
+
+    return {
+        "edges": edges,
+        "stats": {
+            "declared": len(relations),
+            "inferred": inferred_count,
+            "ml_targets": len(ml_nodes),
+            "sources": len(src_nodes),
+        },
+    }
