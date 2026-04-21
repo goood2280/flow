@@ -1131,20 +1131,21 @@ export default function My_Inform({ user }) {
   useEffect(() => {
     const prod = (form.product || "").trim();
     const lot  = (form.lot_id || "").trim();
-    if (!creating) return;
+    if (!creating) { setEmbedFetching(false); return; }
     if (!prod || !lot) {
-      // attach 해제
+      // attach 해제 + 로딩 플래그 리셋 (이전 버그: 로딩이 영원히 떠있던 것 해소).
+      setEmbedFetching(false);
       setForm(f => (f.attach_embed && f.embed?.source?.startsWith?.("SplitTable/"))
         ? { ...f, attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" } }
         : f);
       return;
     }
-    // ML_TABLE_ prefix 가 아니면 붙여서 조회 (사내 제품명은 보통 PROD 로 등록, ML_TABLE_PROD 가 실 테이블).
+    // ML_TABLE_ prefix 가 아니면 붙여서 조회.
     const mlProd = prod.startsWith("ML_TABLE_") ? prod : `ML_TABLE_${prod}`;
     const root5 = lot.slice(0, 5);
-    setEmbedFetching(true);
     // debounce
     const handle = setTimeout(() => {
+      setEmbedFetching(true);
       sf(`/api/splittable/view?product=${encodeURIComponent(mlProd)}&root_lot_id=${encodeURIComponent(root5)}&fab_lot_id=${encodeURIComponent(lot)}&prefix=ALL&view_mode=all`)
         .then(d => {
           if (!d || !d.rows || d.rows.length === 0) {
@@ -1154,7 +1155,6 @@ export default function My_Inform({ user }) {
               : f);
             return;
           }
-          // 컬럼 = 파라미터 이름 + lot/wafer 헤더. Rows = param 별 actual(+plan) 값들.
           const headers = d.headers || [];
           const cols = ["parameter", ...headers];
           const rows = (d.rows || []).map(r => {
@@ -1179,8 +1179,33 @@ export default function My_Inform({ user }) {
         })
         .catch(() => { setEmbedFetching(false); });
     }, 400);
-    return () => clearTimeout(handle);
+    return () => { clearTimeout(handle); setEmbedFetching(false); };
   }, [form.product, form.lot_id, creating]);
+
+  // v8.8.10: SplitTable 의 lot-candidates 로 root_lot_id + fab_lot_id 후보 fetch → Lot 드롭다운 소스.
+  //   기존 /product-lots (RAWDATA_DB 폴더 스캔) 은 사내 실환경에서 빈 결과 자주 발생 → SplitTable 기반 primary.
+  const [lotOptions, setLotOptions] = useState([]);  // [{value, type:"root"|"fab"}]
+  useEffect(() => {
+    const prod = (form.product || "").trim();
+    if (!prod) { setLotOptions([]); return; }
+    const mlProd = prod.startsWith("ML_TABLE_") ? prod : `ML_TABLE_${prod}`;
+    Promise.all([
+      sf(`/api/splittable/lot-candidates?product=${encodeURIComponent(mlProd)}&col=root_lot_id&limit=200`).catch(() => ({ candidates: [] })),
+      sf(`/api/splittable/lot-candidates?product=${encodeURIComponent(mlProd)}&col=fab_lot_id&limit=500`).catch(() => ({ candidates: [] })),
+    ]).then(([rr, fr]) => {
+      const out = [];
+      const seen = new Set();
+      for (const v of (rr.candidates || [])) {
+        const s = String(v || "").trim();
+        if (s && !seen.has(s)) { seen.add(s); out.push({ value: s, type: "root" }); }
+      }
+      for (const v of (fr.candidates || [])) {
+        const s = String(v || "").trim();
+        if (s && !seen.has(s)) { seen.add(s); out.push({ value: s, type: "fab" }); }
+      }
+      setLotOptions(out);
+    });
+  }, [form.product]);
 
   // v8.8.0: SplitTable 에서 현재 product 의 plan 스냅샷을 본문에 임베드.
   // 빈 history 인 경우 명시적으로 알림 + paste 폴백 제안.
@@ -1806,18 +1831,20 @@ export default function My_Inform({ user }) {
                     style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 11, cursor: "pointer" }}>−</button>
                 )}
               </div>
+              {/* v8.8.10: Lot 입력 = SplitTable lot-candidates (root_lot_id + fab_lot_id) 기반 datalist autocomplete.
+                     수동 입력도 가능하되 후보에서 선택하면 그 값 그대로 들어감. fab_lot_id 선택 시 자동 SplitTable 스냅샷 로직이 바로 동작. */}
               <div style={{ display: "flex", gap: 6 }}>
-                {((productLots.product === form.product) && (productLots.lots || []).length > 0) ? (
-                  <select value={form.lot_id} onChange={e => setForm({ ...form, lot_id: e.target.value })}
-                    style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }}>
-                    <option value="">-- Lot 선택 ({productLots.lots.length}건) --</option>
-                    {productLots.lots.map(l => <option key={l} value={l}>{l}</option>)}
-                  </select>
-                ) : (
-                  <input value={form.lot_id} onChange={e => setForm({ ...form, lot_id: e.target.value })}
-                    placeholder={form.product ? "Lot (DB 스캔 실패 · 직접 입력)" : "Lot (제품 먼저 선택)"}
-                    style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
-                )}
+                <input list={`lotopts_${form.product||"none"}`}
+                  value={form.lot_id} onChange={e => setForm({ ...form, lot_id: e.target.value })}
+                  placeholder={form.product
+                    ? (lotOptions.length > 0
+                        ? `Lot 선택 또는 입력 (${lotOptions.length}건 후보 — root_lot_id / fab_lot_id)`
+                        : "Lot 직접 입력 (해당 제품 DB 매칭 없음)")
+                    : "Lot (제품 먼저 선택)"}
+                  style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
+                <datalist id={`lotopts_${form.product||"none"}`}>
+                  {lotOptions.map(o => <option key={o.type+":"+o.value} value={o.value}>{o.type === "fab" ? "[fab] " : "[root] "}{o.value}</option>)}
+                </datalist>
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>

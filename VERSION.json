@@ -1,7 +1,19 @@
 {
-  "version": "8.8.9",
+  "version": "8.8.10",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.10",
+      "date": "2026-04-21",
+      "title": "Rulebook 컬럼 매핑 soft-landing (역할→실제CSV컬럼명) · 인폼 Lot autocomplete (SplitTable lot-candidates) · 스냅샷 로딩 영구표시 버그 수정",
+      "tag": "feat+fix",
+      "changes": [
+        "**Rulebook 컬럼 매핑 schema 저장소** — `data/splittable/rulebook_schema.json` + `/api/splittable/rulebook/schema` GET + `/rulebook/schema/save` POST (admin only). 각 kind (knob_ppid/step_matching/inline_matching/vm_matching) 별 역할→실제 컬럼명 매핑. 기본값은 표준 스키마, 사내 CSV 컬럼명이 달라도 여기만 수정하면 `_build_knob_meta` / `_build_vm_meta` / `_build_inline_meta` 가 그대로 동작 (soft-landing).",
+        "**FE 컬럼 매핑 편집 modal** — 각 Rulebook 섹션의 `🔧 컬럼` 버튼 클릭 시 modal 오픈. 역할 리스트 + 현재/기본값 입력. [기본값 복원] / [취소] / [저장]. 저장 후 자동 loadView.",
+        "**인폼 Lot autocomplete** — SplitTable `/lot-candidates` 에서 root_lot_id + fab_lot_id 후보 병합 → HTML5 datalist 로 자동완성. 사내 실환경에서 `/product-lots` 폴더 스캔 실패해도 SplitTable 기반으로 정상 동작. fab_lot_id 선택 시 바로 스냅샷 자동 첨부 플로우 발동.",
+        "**SplitTable 스냅샷 로딩 영구표시 버그 수정** — `useEffect` early return 시 `setEmbedFetching(false)` 누락 → `SplitTable 스냅샷 로딩…` 이 영원히 뜨던 버그. cleanup + early return 양쪽에서 로딩 플래그 리셋."
+      ]
+    },
     {
       "version": "8.8.9",
       "date": "2026-04-21",
