@@ -723,13 +723,17 @@ _scheduler.start()
 # ──────────────────────────────────────────────────────────────────
 @router.get("/charts")
 def get_charts(request: Request):
-    """v8.5.0: group_ids visibility 필터. admin 은 전체, 일반 유저는 자기 그룹 매칭만."""
+    """v8.5.0: group_ids visibility 필터. admin 은 전체, 일반 유저는 자기 그룹 매칭만.
+    v8.8.0: visible_to == "admin" 차트는 admin 외 차단. visible_to == "groups" 는 group_ids 와 동일하게 group 교집합 필요."""
     from core.auth import current_user
     from routers.groups import filter_by_visibility
     me = current_user(request)
+    role = me.get("role", "user")
     charts = _charts()
+    if role != "admin":
+        charts = [c for c in charts if (c.get("visible_to") or "all") != "admin"]
     filtered = filter_by_visibility(
-        charts, me["username"], me.get("role", "user"), key="group_ids"
+        charts, me["username"], role, key="group_ids"
     )
     return {"charts": filtered}
 

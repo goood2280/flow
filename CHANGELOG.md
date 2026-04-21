@@ -2,6 +2,34 @@
 
 주요 변경점만 간략히. 세부 내역은 `VERSION.json` 의 changelog 배열 참고.
 
+## v8.8.0 — 2026-04-21
+
+**인폼 메일 대개편 (시스템 발송 + 발송자 명시 + 제품 담당자 자동 첨부) · 대시보드 공개범위 그룹·X/Y UX · S3 sync 양방향 · SplitTable fab_source join · setup.py 데이터 보존 강화**
+
+- **인폼 메일 — 시스템(Admin) 계정 발송 + 본문에 발송 요청자(현재 유저) ID 자동 명시.** `_build_html_body(sender_username=...)` 추가. MailDialog 상단 안내 배너로 "발송계정: 시스템 / 발송 요청자: {나}" 표기.
+- **인폼 메일 본문 — 제품별 담당자 자동 첨부.** `/api/informs/product-contacts` (CRUD). target.product 의 담당자 표가 본문 끝에 자동.
+- **인폼 사이드바 — 제품별 담당자 폴더블 패널.** 좌측 하단 "👥 제품별 담당자". 모든 로그인 유저가 +추가/수정/삭제 (감사 기록).
+- **인폼 Lot 뷰 — SplitTable 노트 카드 (root_lot_id 키).** wafer/param/lot/param_global 노트가 인폼 Lot 페이지 상단에 자동 노출.
+- **인폼 신규 — Ctrl+V 이미지 본문 inline 삽입 + 별도 첨부 버튼 제거.** markdown `![](url)` 로 즉시 본문에 들어감. Mail 첨부 후보로도 유지.
+- **인폼 — SplitTable 가져오기 빈 응답 시 paste 모드 폴백.** 📋 "표 붙여넣기" 모달. 첫 줄 = 컬럼. 세트명 지정 시 LocalStorage 에 저장 → 재사용 가능 (Inform/SplitTable 양쪽 후속 공유 예정).
+- **인폼 Lot drill-down UI 개선.** 모듈별 진행 요약 테이블 컬럼 "인폼" → "등록", 3개 데이터 열 균등 너비 (colgroup).
+- **간트 → 이력 타임라인 명칭 통일 + Lot 검색 바.** 사이드바 모드 버튼명, TimelineLog 헤더에 🔎 Lot 검색 입력.
+- **대시보드 X/Y 컬럼 선택 UX.** 컬럼 미로드 상태에서도 입력이 항상 노출 + 노란 배너 가이드 + 컬럼 개수 표기.
+- **대시보드 공개범위 — 모두 / 관리자 / 특정 그룹.** visible_to=='groups' + 그룹 칩 다중 선택. BE 가 admin 차트 + group_ids 필터.
+- **S3 동기화 방향 선택 (업로드/다운로드).** SaveReq.direction 추가. _build_cmd 가 upload 면 src/dst 스왑. 항목 테이블에 ⬇/⬆ 컬럼.
+- **SplitTable column override — fab_source left-join 실제 적용.** `_scan_product` 가 `lot_overrides[product].fab_source` 의 DB 폴더(예: FAB/PRODA hive flat) 를 union 스캔, join_keys 로 left-join 해 fab_lot_id 보강. ML_TABLE_<PROD> 단독 스캔으로 fab_lot_id 가 비어 보이던 문제 해소.
+- **setup.py 데이터 보존 가드 강화.** `_write` 가 `data/`, `holweb-data/` 외에도 경로 어디든 holweb-data 세그먼트 차단, HOL_DATA_ROOT/FABCANVAS_DATA_ROOT 절대 경로 안쪽 차단. users.csv·groups.json·mail_groups·admin_settings·product_contacts·meetings·splittable/notes 등이 재배포로 덮어써지는 사고를 다층 방지.
+
+**이월 (v8.8.1+)**
+
+1. RootHeader 컴팩트 — 확인완료/메일 배지를 카드 우측 한 줄에 묶기.
+2. 회의록 WebSocket/SSE 동시편집 (본문·아젠다).
+3. 회의·달력 공개범위 그룹 (mail_groups 재활용).
+4. SplitTable 태그 FE 드로어 — lot + param_global scope (BE 완료, FE 만 남음).
+5. 인폼 댓글/수정 이력 전용 엔드포인트.
+6. SplitTable 측 paste 세트 공유 UI (현재 LocalStorage → 백엔드 공유 저장으로).
+7. 회의록 동시편집 / 댓글 / 수정 이력.
+
 ## v8.7.9 — 2026-04-21
 
 **달력 auto-sync bugfix · 회의별 고유색 · S3 타겟 다단계/프로파일 · 인폼 대개편(2단계 플로우 · 타임라인 · Ctrl+V · root_lot)**

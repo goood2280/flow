@@ -760,6 +760,106 @@ def set_deadline(req: DeadlineReq, request: Request, id: str = Query(...)):
     return {"ok": True, "inform": target}
 
 
+# ── v8.8.0: 제품별 담당자 (product contacts) ───────────────────────
+# 좌측 사이드바 + 메일 본문 자동 삽입용. 모든 로그인 유저가 CRUD 가능.
+PRODUCT_CONTACTS_FILE = INFORMS_DIR / "product_contacts.json"
+
+
+def _load_product_contacts() -> dict:
+    data = load_json(PRODUCT_CONTACTS_FILE, {"products": {}})
+    if isinstance(data, dict) and isinstance(data.get("products"), dict):
+        return data
+    return {"products": {}}
+
+
+def _save_product_contacts(data: dict) -> None:
+    save_json(PRODUCT_CONTACTS_FILE, data)
+
+
+def _new_contact_id() -> str:
+    import secrets as _secrets
+    return "pc_" + _secrets.token_hex(5)
+
+
+class ProductContactReq(BaseModel):
+    product: str
+    name: str
+    role: str = ""           # 직책/역할 (예: "PIE", "측정")
+    email: str = ""
+    phone: str = ""
+    note: str = ""
+
+
+@router.get("/product-contacts")
+def list_product_contacts(product: str = Query("")):
+    data = _load_product_contacts()
+    products = data.get("products") or {}
+    if product:
+        return {"product": product, "contacts": products.get(product, [])}
+    return {"products": products}
+
+
+@router.post("/product-contacts")
+def add_product_contact(req: ProductContactReq, request: Request):
+    me = current_user(request)
+    prod = (req.product or "").strip()
+    name = (req.name or "").strip()
+    if not prod or not name:
+        raise HTTPException(400, "product/name required")
+    data = _load_product_contacts()
+    products = data.setdefault("products", {})
+    contact = {
+        "id": _new_contact_id(),
+        "name": name,
+        "role": (req.role or "").strip(),
+        "email": (req.email or "").strip(),
+        "phone": (req.phone or "").strip(),
+        "note": (req.note or "").strip(),
+        "added_by": me.get("username", ""),
+        "added_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    products.setdefault(prod, []).append(contact)
+    _save_product_contacts(data)
+    _audit(request, "inform:product-contact-add", detail=f"product={prod} name={name}", tab="inform")
+    return {"ok": True, "contact": contact}
+
+
+@router.post("/product-contacts/update")
+def update_product_contact(req: ProductContactReq, request: Request, id: str = Query(...)):
+    me = current_user(request)
+    prod = (req.product or "").strip()
+    if not prod:
+        raise HTTPException(400, "product required")
+    data = _load_product_contacts()
+    arr = data.get("products", {}).get(prod) or []
+    target = next((c for c in arr if c.get("id") == id), None)
+    if not target:
+        raise HTTPException(404, "contact not found")
+    target["name"] = (req.name or target.get("name", "")).strip()
+    target["role"] = (req.role or "").strip()
+    target["email"] = (req.email or "").strip()
+    target["phone"] = (req.phone or "").strip()
+    target["note"] = (req.note or "").strip()
+    target["updated_by"] = me.get("username", "")
+    target["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+    _save_product_contacts(data)
+    return {"ok": True, "contact": target}
+
+
+@router.post("/product-contacts/delete")
+def delete_product_contact(request: Request, id: str = Query(...), product: str = Query(...)):
+    _ = current_user(request)
+    data = _load_product_contacts()
+    arr = data.get("products", {}).get(product) or []
+    new_arr = [c for c in arr if c.get("id") != id]
+    if len(new_arr) == len(arr):
+        raise HTTPException(404, "contact not found")
+    data["products"][product] = new_arr
+    _save_product_contacts(data)
+    _audit(request, "inform:product-contact-del", detail=f"product={product} id={id}", tab="inform")
+    return {"ok": True}
+
+
 # ── v8.7.2: Mail relay ─────────────────────────────────────────────
 ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
 
@@ -891,8 +991,13 @@ def _thread_html(items: list, root_id: str) -> str:
     return "\n".join(parts)
 
 
-def _build_html_body(root: dict, thread_html: str, extra_prose: str) -> str:
-    """최상위 루트 메타 + 사용자 prose + 스레드 HTML 을 한 문서로."""
+def _build_html_body(root: dict, thread_html: str, extra_prose: str,
+                     sender_username: str = "", product_contacts: Optional[list] = None) -> str:
+    """최상위 루트 메타 + 사용자 prose + 스레드 HTML 을 한 문서로.
+
+    v8.8.0: 메일은 Admin 계정으로 발송되더라도 본문에 실제 요청자(sender_username) 를
+    명시. 또한 해당 product 의 담당자 그룹(product_contacts) 이 있으면 표로 첨부.
+    """
     esc = _html.escape
     meta_rows = []
     for k, label in [("module", "모듈"), ("reason", "사유"), ("product", "제품"),
@@ -913,14 +1018,49 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str) -> str:
             f"<div style='margin:12px 0;padding:10px 12px;background:#fffbeb;border-left:4px solid #f59e0b;"
             f"border-radius:4px;font-size:13px;color:#78350f;'>{safe}</div>"
         )
+    sender_block = ""
+    if sender_username:
+        sender_block = (
+            f"<div style='margin:0 0 10px 0;padding:8px 12px;background:#eff6ff;border-left:4px solid #3b82f6;"
+            f"border-radius:4px;font-size:12px;color:#1e3a8a;'>"
+            f"📨 발송 요청자: <b>{esc(sender_username)}</b> "
+            f"<span style='color:#64748b;font-size:11px;'>(메일은 시스템 계정으로 전송되었으나 작성/요청자는 위 사용자입니다)</span>"
+            f"</div>"
+        )
+    contacts_block = ""
+    if product_contacts:
+        rows = []
+        for c in product_contacts:
+            rows.append(
+                "<tr>"
+                f"<td style='padding:4px 10px;font-size:12px;color:#1f2937;font-weight:600;'>{esc(c.get('name',''))}</td>"
+                f"<td style='padding:4px 10px;font-size:11px;color:#6b7280;'>{esc(c.get('role',''))}</td>"
+                f"<td style='padding:4px 10px;font-size:11px;color:#1f2937;font-family:monospace;'>{esc(c.get('email',''))}</td>"
+                f"<td style='padding:4px 10px;font-size:11px;color:#6b7280;'>{esc(c.get('phone',''))}</td>"
+                "</tr>"
+            )
+        contacts_block = (
+            f"<h3 style='font-size:13px;margin:18px 0 6px 0;color:#374151;'>제품 담당자 — {esc(root.get('product',''))}</h3>"
+            "<table style='border-collapse:collapse;border:1px solid #d1d5db;width:100%;max-width:720px;'>"
+            "<thead><tr style='background:#f3f4f6;'>"
+            "<th style='padding:4px 10px;font-size:11px;color:#374151;text-align:left;'>이름</th>"
+            "<th style='padding:4px 10px;font-size:11px;color:#374151;text-align:left;'>역할</th>"
+            "<th style='padding:4px 10px;font-size:11px;color:#374151;text-align:left;'>이메일</th>"
+            "<th style='padding:4px 10px;font-size:11px;color:#374151;text-align:left;'>연락처</th>"
+            "</tr></thead><tbody>"
+            + "".join(rows)
+            + "</tbody></table>"
+        )
     return (
         "<div style='font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1f2937;max-width:720px;'>"
         f"<h2 style='font-size:16px;margin:0 0 6px 0;color:#ea580c;'>flow · 인폼 공유</h2>"
         f"<div style='font-size:11px;color:#6b7280;margin-bottom:10px;'>Inform ID <code>{esc(root.get('id',''))}</code></div>"
+        f"{sender_block}"
         f"{meta_tbl}"
         f"{prose_block}"
         f"<h3 style='font-size:13px;margin:14px 0 6px 0;color:#374151;'>스레드</h3>"
         f"{thread_html}"
+        f"{contacts_block}"
         "<hr style='border:none;border-top:1px solid #e5e7eb;margin:18px 0 8px 0;'/>"
         "<div style='font-size:10px;color:#9ca3af;'>Sent by flow · 자동 전송된 메일입니다.</div>"
         "</div>"
@@ -1051,7 +1191,12 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
     subject = (req.subject or "").strip() or f"[flow 인폼] {target.get('module','')} · {target.get('lot_id') or target.get('wafer_id') or ''}".strip()
     # HTML body (content)
     thread_html = _thread_html(items, inform_id) if req.include_thread else ""
-    html_body = _build_html_body(target, thread_html, (req.body or ""))
+    # v8.8.0: sender = 실제 요청 유저(me), 제품 담당자 자동 첨부.
+    pc_data = _load_product_contacts()
+    pc_list = (pc_data.get("products") or {}).get(target.get("product", ""), []) or []
+    html_body = _build_html_body(target, thread_html, (req.body or ""),
+                                 sender_username=me.get("username", ""),
+                                 product_contacts=pc_list)
     content_bytes_len = len(html_body.encode("utf-8"))
     if content_bytes_len > MAIL_CONTENT_MAX:
         raise HTTPException(400, f"메일 본문이 2MB 한도를 초과했습니다 ({content_bytes_len // 1024}KB). 스레드 첨부를 끄거나 본문을 줄여주세요.")

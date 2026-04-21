@@ -1,7 +1,29 @@
 {
-  "version": "8.7.9",
+  "version": "8.8.0",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.0",
+      "date": "2026-04-21",
+      "title": "인폼 메일 대개편(시스템 발송+발송자 명시+제품담당자 자동 첨부) + 대시보드 공개범위 그룹·X/Y UX + S3 sync 양방향 + SplitTable fab_source join + setup.py 데이터 보존 강화",
+      "tag": "feat+fix",
+      "changes": [
+        "**인폼 메일 \u2014 시스템(Admin) 계정 발송 + 본문에 발송 요청자(=현재 유저) ID 자동 명시** — `_build_html_body(sender_username=...)` 추가. MailDialog 상단에 \"발송계정: 시스템 / 발송 요청자: {나}\" 안내 배너. Admin 설정 from_addr 와 무관하게 본문에서 실제 작성자가 누구인지 식별 가능.",
+        "**인폼 메일 본문 \u2014 제품별 담당자 자동 첨부** — `/api/informs/product-contacts` (GET/POST/update/delete) 신규. `data/informs/product_contacts.json` 에 product 별 [{name,role,email,phone,note}] 저장. 메일 발송 시 target.product 의 담당자 표가 본문 끝에 자동 부착.",
+        "**인폼 사이드바 \u2014 제품별 담당자 폴더블 패널** — 좌측 하단에 \"👥 제품별 담당자\" 섹션. 제품명 ▶/▼ 토글 + 옆 + 추가 버튼. 모든 로그인 유저가 추가/수정/삭제 가능 (감사 로그 남김). 신규 제품 입력 박스 + Enter 로 즉시 추가 모달.",
+        "**인폼 Lot 뷰 \u2014 SplitTable 노트 카드 (root_lot_id 키)** — `mode=='lot'` 진입 시 thread 의 product 로 `/api/splittable/notes?product=...&root_lot_id=...` 호출 → `SplitNotesCard` 가 wafer/param/lot/param_global 노트를 한 카드에 색상별 노출. 인폼·SplitTable 노트 사이 정보 분절 해소.",
+        "**대시보드 X/Y 컬럼 선택 UX 명확화** — 컬럼 미로드 상태에서도 X/Y/Filter 입력이 항상 노출되며, 상단에 \"위 소스를 선택하세요\" 노란 배너 + 입력 placeholder 가 가이드 메시지. 라벨에 컬럼 개수 표기.",
+        "**대시보드 공개범위 — 모두 / 관리자 전용 / 특정 그룹** — visible_to=='groups' 옵션 추가, 그룹 칩 다중 선택. 백엔드 `/charts` 가 admin 차트는 admin 외 차단 + group_ids 교집합 필터 (이미 v8.5.0 부터 부분 적용된 로직 + visible_to=='admin' 가드 보강).",
+        "**S3 동기화 방향 선택 (업로드/다운로드)** — SaveReq.direction (\"download\" | \"upload\") 추가. _build_cmd 에서 upload 면 src/dst 스왑 + cp 디렉토리 자동 --recursive. 항목 테이블에 ⬇/⬆ 컬럼, ADD 폼에 토글, dry preview 도 방향 반영. 기존 항목은 download 로 호환.",
+        "**SplitTable column override \u2014 fab_source left-join 실제 적용** — `_scan_product` 가 `lot_overrides[product].fab_source` 를 읽어 해당 DB 폴더(예: FAB/PRODA hive flat) 의 parquet 들을 union 스캔, join_keys (없으면 root_lot_id/wafer_id/lot_id/product 자동) 로 left-join 후 fab_col(default fab_lot_id) 을 보강. 그동안 ML_TABLE_<PROD> 만 스캔되어 fab_lot_id 가 비어 보이던 문제 해소.",
+        "**setup.py 데이터 보존 가드 강화** — `_write` 가 `data/`, `holweb-data/` 외에도 경로 어디에든 holweb-data 세그먼트가 있으면 차단, HOL_DATA_ROOT/FABCANVAS_DATA_ROOT 환경변수가 가리키는 절대 경로 안쪽도 차단. 사용자 데이터(users.csv, groups.json, mail_groups, admin_settings, product_contacts, meetings, splittable/notes 등) 가 재배포로 덮어써지는 사고를 다층 방지.",
+        "**인폼 신규 product-contacts 도메인 추가** — informs.py 에 `_load_product_contacts/_save_product_contacts` + Pydantic ProductContactReq + 4 endpoint (list/add/update/delete) + `_build_html_body(product_contacts=...)` 인자.",
+        "**인폼 신규 작성 — Ctrl+V 이미지 본문 inline + 첨부 버튼 제거** — 붙여넣은 이미지가 markdown `![](url)` 로 본문 textarea 에 즉시 삽입. 별도 이미지 첨부 카드/버튼 제거 (메일 첨부 후보로는 createImages 에 그대로 유지).",
+        "**인폼 — 표 붙여넣기 모달 + LocalStorage 세트 재사용** — 📋 버튼으로 TSV/CSV 직접 paste → embed_table 변환. 세트명 지정 시 LocalStorage 에 저장, 다음 인폼에서 칩 클릭으로 즉시 재사용.",
+        "**인폼 Lot drill-down — 컬럼명 인폼→등록, 3 데이터 컬럼 균등 너비 (colgroup table-layout fixed).**",
+        "**모드 라벨 통일 — '간트' → '이력 타임라인'**, TimelineLog 에 🔎 Lot 검색 입력 추가 (root_lot_id / fab_lot_id 부분일치)."
+      ]
+    },
     {
       "version": "8.7.9",
       "date": "2026-04-21",

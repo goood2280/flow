@@ -842,22 +842,26 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
         </div>);
       })}
     </div>
-    {columns.length > 0 && <>
-      <ColInput label="X 컬럼 (검색/수식)" value={form.x_col} onChange={v => u("x_col", v)} columns={allColumns} placeholder="컬럼 검색 또는 수식 (가이드 ▶)" guide={yG} />
-      {!isPieOrBin && <>
-        <ColInput label="Y 컬럼 (여러 개는 쉼표 구분)" value={form.y_expr} onChange={v => u("y_expr", v)} columns={allColumns} placeholder="col1 또는 col1,col2" guide={yG} />
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <div style={{ flex: 1 }}><ColInput label="색상 / 그룹" value={form.color_col} onChange={v => u("color_col", v)} columns={allColumns} placeholder="범주형 컬럼" /></div>
-          <div style={{ flex: 1 }}><ColInput label="집계 컬럼" value={form.agg_col} onChange={v => u("agg_col", v)} columns={allColumns} placeholder="그룹화 컬럼" /></div>
-        </div>
-        {form.agg_col && <div style={{ marginBottom: 8 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>집계 방법</div>
-          <select value={form.agg_method || ""} onChange={e => u("agg_method", e.target.value)} style={S}>
-            <option value="">없음 (raw)</option><option value="mean">평균</option><option value="sum">합계</option><option value="count">개수</option><option value="min">최소</option><option value="max">최대</option>
-          </select></div>}
-        <ColInput label="시간 컬럼" value={form.time_col} onChange={v => u("time_col", v)} columns={allColumns} placeholder="시간 범위 필터용" />
-      </>}
-      <ColInput label="SQL 필터" value={form.filter_expr} onChange={v => u("filter_expr", v)} columns={allColumns} placeholder="예: col == 'value'" guide={sqlG} />
+    {/* v8.8.0: X/Y 등 컬럼 선택 UI — 소스 미선택 시에도 항상 노출(비활성+힌트). 컬럼 로딩 표시. */}
+    {columns.length === 0 && (
+      <div style={{ padding: "8px 10px", marginBottom: 8, borderRadius: 6, background: "rgba(245,158,11,0.12)", border: "1px dashed rgba(245,158,11,0.5)", color: "#92400e", fontSize: 11 }}>
+        ⚠ 위 <b>소스 선택</b> 후에 컬럼이 로드됩니다 (선택해도 컬럼이 비어있다면 해당 parquet 가 비어있거나 권한이 없는 경우).
+      </div>
+    )}
+    <ColInput label={`X 컬럼 (검색/수식) ${columns.length === 0 ? " — 소스 선택 후 사용 가능" : ` · 컬럼 ${allColumns.length}개`}`} value={form.x_col} onChange={v => u("x_col", v)} columns={allColumns} placeholder={columns.length === 0 ? "먼저 위에서 소스를 선택하세요" : "컬럼 검색 또는 수식 (가이드 ▶)"} guide={yG} />
+    {!isPieOrBin && <>
+      <ColInput label="Y 컬럼 (여러 개는 쉼표 구분)" value={form.y_expr} onChange={v => u("y_expr", v)} columns={allColumns} placeholder={columns.length === 0 ? "먼저 위에서 소스를 선택하세요" : "col1 또는 col1,col2"} guide={yG} />
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1 }}><ColInput label="색상 / 그룹" value={form.color_col} onChange={v => u("color_col", v)} columns={allColumns} placeholder="범주형 컬럼" /></div>
+        <div style={{ flex: 1 }}><ColInput label="집계 컬럼" value={form.agg_col} onChange={v => u("agg_col", v)} columns={allColumns} placeholder="그룹화 컬럼" /></div>
+      </div>
+      {form.agg_col && <div style={{ marginBottom: 8 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>집계 방법</div>
+        <select value={form.agg_method || ""} onChange={e => u("agg_method", e.target.value)} style={S}>
+          <option value="">없음 (raw)</option><option value="mean">평균</option><option value="sum">합계</option><option value="count">개수</option><option value="min">최소</option><option value="max">최대</option>
+        </select></div>}
+      <ColInput label="시간 컬럼" value={form.time_col} onChange={v => u("time_col", v)} columns={allColumns} placeholder="시간 범위 필터용" />
     </>}
+    <ColInput label="SQL 필터" value={form.filter_expr} onChange={v => u("filter_expr", v)} columns={allColumns} placeholder="예: col == 'value'" guide={sqlG} />
     <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
       <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>X 라벨</div><input value={form.x_label || ""} onChange={e => u("x_label", e.target.value)} style={S} /></div>
       <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>Y 라벨</div><input value={form.y_label || ""} onChange={e => u("y_label", e.target.value)} style={S} /></div>
@@ -959,15 +963,47 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
         </div>
 
         {isAdmin && <>
-          <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4, marginTop: 8, fontWeight: 600 }}>관리자 옵션</div>
-          <div style={{ display: "flex", gap: 12 }}>
+          <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4, marginTop: 8, fontWeight: 600 }}>관리자 옵션 — 공개범위</div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
             <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
-              <select value={form.visible_to || "all"} onChange={e => u("visible_to", e.target.value)} style={{ ...S, width: "auto", fontSize: 10 }}>
-                <option value="all">모두에게 표시</option><option value="admin">관리자 전용</option>
-              </select></label>
+              <select value={form.visible_to || "all"} onChange={e => {
+                const v = e.target.value;
+                u("visible_to", v);
+                if (v !== "groups") u("group_ids", []);
+              }} style={{ ...S, width: "auto", fontSize: 10 }}>
+                <option value="all">모두에게 표시</option>
+                <option value="admin">관리자 전용</option>
+                <option value="groups">특정 그룹에게만</option>
+              </select>
+            </label>
             <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
               <input type="checkbox" checked={form.no_schedule || false} onChange={e => u("no_schedule", e.target.checked)} style={{ accentColor: "var(--accent)" }} />자동 새로고침 제외</label>
           </div>
+          {(form.visible_to === "groups") && (
+            <div style={{ marginTop: 8, padding: 8, borderRadius: 6, background: "var(--bg-primary)", border: "1px solid var(--border)" }}>
+              <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>
+                선택한 그룹 멤버에게만 노출 ({(form.group_ids || []).length} 그룹 선택). 비워두면 admin 외엔 안 보입니다.
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {(myGroups || []).length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>등록된 그룹이 없습니다 (Admin → 그룹 관리)</span>}
+                {(myGroups || []).map(g => {
+                  const id = g.id || g.group_id || g.name;
+                  const sel = (form.group_ids || []).includes(id);
+                  return (
+                    <span key={id} onClick={() => {
+                      const cur = form.group_ids || [];
+                      u("group_ids", sel ? cur.filter(x => x !== id) : [...cur, id]);
+                    }} style={{
+                      padding: "3px 10px", borderRadius: 999, fontSize: 10, cursor: "pointer", fontWeight: 600,
+                      background: sel ? "var(--accent)" : "var(--bg-card)",
+                      color: sel ? "#fff" : "var(--text-secondary)",
+                      border: "1px solid " + (sel ? "var(--accent)" : "var(--border)"),
+                    }}>{g.name || id}</span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </>}
       </div>}
     </div>
