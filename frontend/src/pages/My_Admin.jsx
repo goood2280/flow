@@ -76,7 +76,7 @@ export default function My_Admin({user}){
 
   // Tabs differ by role
   // v8.4.3 단위기능 페이지 철학: AWS 설정은 FileBrowser 톱니로 이관 예정 (제거).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["groups","그룹"],["inform_cfg","인폼 설정"],["base_csv","Base CSV"],["logs","Admin Log"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["groups","그룹"],["inform_cfg","인폼 설정"],["mail_cfg","메일 API"],["base_csv","Base CSV"],["logs","Admin Log"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
   const userTabs=[["notifs","알림"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
 
@@ -90,9 +90,12 @@ export default function My_Admin({user}){
       {/* Users (admin only) */}
       {tab==="users"&&isAdmin&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-          <thead><tr>{["사용자","역할","상태","탭","작업"].map(h=><th key={h} style={{textAlign:"left",padding:"10px 14px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:11,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
+          <thead><tr>{["사용자","이메일","역할","상태","탭","작업"].map(h=><th key={h} style={{textAlign:"left",padding:"10px 14px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:11,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
           <tbody>{users.map((u,i)=><tr key={i}>
             <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}>{u.username}</td>
+            <td style={{padding:"6px 14px",borderBottom:"1px solid var(--border)",fontSize:11}}>
+              <EmailInlineEdit u={u} onSave={(em)=>sf("/api/admin/set-email",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.username,email:em})}).then(load).catch(e=>alert(e.message))}/>
+            </td>
             <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}>{u.role}</td>
             <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}><span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:u.status==="approved"?"#05966922":"#f5920b22",color:u.status==="approved"?"#22c55e":"#f59e0b"}}>{u.status}</span></td>
             <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",fontSize:11,color:"var(--text-secondary)",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}}>{u.tabs||"default"}</td>
@@ -268,7 +271,130 @@ export default function My_Admin({user}){
 
       {/* Data Roots (admin only) — v8.3.0: soft-landing env abstraction */}
       {tab==="data_roots"&&isAdmin&&<DataRootsPanel/>}
+
+      {/* v8.7.2: Mail API (admin only) */}
+      {tab==="mail_cfg"&&isAdmin&&<MailCfgPanel/>}
     </div>);
+}
+
+// ── v8.7.2: Inline email editor for the Users table ──
+function EmailInlineEdit({u,onSave}){
+  const[val,setVal]=useState(u.email||"");
+  const[edit,setEdit]=useState(false);
+  useEffect(()=>{setVal(u.email||"");},[u.email]);
+  if(!edit){
+    return(<span onClick={()=>setEdit(true)} style={{cursor:"pointer",color:val?"var(--text-primary)":"var(--text-secondary)",fontFamily:"monospace",textDecoration:"underline dotted",textDecorationColor:"var(--border)"}}>{val||"— set —"}</span>);
+  }
+  return(<span>
+    <input autoFocus value={val} onChange={e=>setVal(e.target.value)}
+      onKeyDown={e=>{if(e.key==="Enter"){onSave(val.trim());setEdit(false);}else if(e.key==="Escape"){setVal(u.email||"");setEdit(false);}}}
+      placeholder="name@company.com"
+      style={{padding:"3px 6px",borderRadius:3,border:"1px solid var(--accent)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",minWidth:200}}/>
+    <span onClick={()=>{onSave(val.trim());setEdit(false);}} style={{marginLeft:6,cursor:"pointer",color:"#22c55e",fontSize:11}}>✔</span>
+    <span onClick={()=>{setVal(u.email||"");setEdit(false);}} style={{marginLeft:4,cursor:"pointer",color:"#ef4444",fontSize:11}}>✕</span>
+  </span>);
+}
+
+// ── v8.7.2: 사내 메일 API 연동 설정 패널 ──
+function MailCfgPanel(){
+  const[cfg,setCfg]=useState({api_url:"",headers:{},from_addr:"",status_code:"",extra_data:{},recipient_groups:{},enabled:false});
+  const[headersText,setHeadersText]=useState("{}");
+  const[extraText,setExtraText]=useState("{}");
+  const[newGroupName,setNewGroupName]=useState("");
+  const[msg,setMsg]=useState("");
+  const[busy,setBusy]=useState(false);
+  const reload=()=>{
+    sf("/api/admin/settings").then(d=>{
+      const m=d.mail||{};
+      setCfg({api_url:m.api_url||"",headers:m.headers||{},from_addr:m.from_addr||"",status_code:m.status_code||"",extra_data:m.extra_data||{},recipient_groups:m.recipient_groups||{},enabled:!!m.enabled});
+      setHeadersText(JSON.stringify(m.headers||{},null,2));
+      setExtraText(JSON.stringify(m.extra_data||{},null,2));
+    }).catch(()=>{});
+  };
+  useEffect(reload,[]);
+  const save=()=>{
+    let hdrs={},ed={};
+    try{hdrs=JSON.parse(headersText||"{}");if(typeof hdrs!=="object"||Array.isArray(hdrs))throw new Error("headers must be object");}
+    catch(e){setMsg("헤더 JSON 파싱 오류: "+e.message);return;}
+    try{ed=JSON.parse(extraText||"{}");if(typeof ed!=="object"||Array.isArray(ed))throw new Error("extra_data must be object");}
+    catch(e){setMsg("추가 data JSON 파싱 오류: "+e.message);return;}
+    setBusy(true);setMsg("");
+    sf("/api/admin/settings").then(cur=>{
+      return sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+        dashboard_refresh_minutes:cur.dashboard_refresh_minutes||10,
+        dashboard_bg_refresh_minutes:cur.dashboard_bg_refresh_minutes||10,
+        mail:{api_url:cfg.api_url,headers:hdrs,from_addr:cfg.from_addr,status_code:cfg.status_code,extra_data:ed,recipient_groups:cfg.recipient_groups,enabled:cfg.enabled},
+      })});
+    }).then(()=>{setMsg("✔ 저장됨");setBusy(false);reload();}).catch(e=>{setMsg("오류: "+e.message);setBusy(false);});
+  };
+
+  const addGroup=()=>{
+    const n=newGroupName.trim();if(!n)return;
+    if(cfg.recipient_groups[n]){setMsg(`그룹 '${n}' 이미 존재`);return;}
+    setCfg({...cfg,recipient_groups:{...cfg.recipient_groups,[n]:[]}});
+    setNewGroupName("");
+  };
+  const delGroup=(n)=>{const rg={...cfg.recipient_groups};delete rg[n];setCfg({...cfg,recipient_groups:rg});};
+  const updateGroupEmails=(n,text)=>{
+    const list=text.split(/[\n,;]+/).map(s=>s.trim()).filter(Boolean);
+    setCfg({...cfg,recipient_groups:{...cfg.recipient_groups,[n]:list}});
+  };
+
+  const L={fontSize:11,color:"var(--text-secondary)",marginBottom:4,marginTop:10,fontWeight:600};
+  const I={width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",fontFamily:"'Segoe UI',Arial,sans-serif"};
+  return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:900}}>
+    <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>✉ 메일 API 설정</div>
+    <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.6}}>
+      인폼 상세 → <b>메일 보내기</b> 에서 호출되는 사내 메일 API. 지정 URL 에 multipart/form-data 로 POST 합니다.<br/>
+      form field <code>data</code> = <code>{`{content, receiverList:[{email,recipientType,seq}], senderMailaddress, statusCode, title, ...extra_data}`}</code>, <code>files</code> 는 첨부 (10MB 한도, 본문 2MB 한도).<br/>
+      URL 에 <code>dry-run</code> 입력 시 실제 전송 없이 payload preview 반환.
+    </div>
+    <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,marginBottom:6}}>
+      <input type="checkbox" checked={!!cfg.enabled} onChange={e=>setCfg({...cfg,enabled:e.target.checked})}/>
+      메일 기능 활성화
+    </label>
+    <div style={L}>API URL</div>
+    <input value={cfg.api_url} onChange={e=>setCfg({...cfg,api_url:e.target.value})} placeholder="https://mail.internal/api/send  (또는 'dry-run')" style={I}/>
+    <div style={{display:"flex",gap:10}}>
+      <div style={{flex:2}}>
+        <div style={L}>senderMailaddress (기본 발신자)</div>
+        <input value={cfg.from_addr} onChange={e=>setCfg({...cfg,from_addr:e.target.value})} placeholder="flow-noreply@company.com" style={I}/>
+      </div>
+      <div style={{flex:1}}>
+        <div style={L}>statusCode 기본값</div>
+        <input value={cfg.status_code} onChange={e=>setCfg({...cfg,status_code:e.target.value})} placeholder="예: NORMAL" style={I}/>
+      </div>
+    </div>
+    <div style={L}>커스텀 헤더 (JSON)</div>
+    <textarea value={headersText} onChange={e=>setHeadersText(e.target.value)} rows={4} placeholder='{"Authorization":"Bearer xxx","X-Api-Key":"..."}' style={{...I,fontFamily:"monospace",resize:"vertical"}}/>
+    <div style={L}>추가 data 필드 (JSON, payload 에 병합)</div>
+    <textarea value={extraText} onChange={e=>setExtraText(e.target.value)} rows={4} placeholder='{"reply_to":"noreply@flow.local","category":"INFORM"}' style={{...I,fontFamily:"monospace",resize:"vertical",fontSize:11}}/>
+
+    {/* Recipient groups */}
+    <div style={{marginTop:18,padding:12,background:"var(--bg-card)",borderRadius:6,border:"1px solid var(--border)"}}>
+      <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>📮 모듈 수신자 그룹 <span style={{fontWeight:400,fontSize:10,color:"var(--text-secondary)"}}>(그룹 이름 → 이메일 주소 리스트)</span></div>
+      <div style={{display:"flex",gap:6,marginBottom:8}}>
+        <input value={newGroupName} onChange={e=>setNewGroupName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addGroup();}} placeholder="예: GATE 담당" style={{...I,flex:1}}/>
+        <button onClick={addGroup} style={{padding:"8px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>+ 그룹 추가</button>
+      </div>
+      {Object.keys(cfg.recipient_groups||{}).length===0&&<div style={{fontSize:10,color:"var(--text-secondary)",padding:8,textAlign:"center"}}>아직 그룹이 없습니다.</div>}
+      {Object.entries(cfg.recipient_groups||{}).map(([gname,emails])=>(
+        <div key={gname} style={{marginBottom:8,padding:8,border:"1px solid var(--border)",borderRadius:4,background:"var(--bg-primary)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+            <b style={{fontSize:12,color:"var(--accent)"}}>{gname}</b>
+            <span style={{fontSize:10,color:"var(--text-secondary)"}}>({(emails||[]).length}명)</span>
+            <span onClick={()=>delGroup(gname)} style={{marginLeft:"auto",cursor:"pointer",color:"#ef4444",fontSize:10}}>✕ 그룹 삭제</span>
+          </div>
+          <textarea value={(emails||[]).join("\n")} onChange={e=>updateGroupEmails(gname,e.target.value)} rows={3} placeholder="이메일 1개씩 (줄바꿈 또는 콤마/세미콜론 구분)" style={{...I,fontFamily:"monospace",fontSize:11,resize:"vertical"}}/>
+        </div>
+      ))}
+    </div>
+
+    <div style={{marginTop:14,display:"flex",gap:8,alignItems:"center"}}>
+      <button onClick={save} disabled={busy} style={{padding:"8px 18px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:600,cursor:busy?"wait":"pointer"}}>{busy?"저장 중…":"저장"}</button>
+      {msg&&<span style={{fontSize:11,color:msg.startsWith("오류")?"#ef4444":"#22c55e"}}>{msg}</span>}
+    </div>
+  </div>);
 }
 
 // ── Data Roots Panel (v8.3.0 + backup v8.7.0) ──

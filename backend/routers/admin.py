@@ -184,6 +184,27 @@ def reset_password(req: ApproveReq, request: Request, _admin=Depends(require_adm
     raise HTTPException(404)
 
 
+class EmailReq(BaseModel):
+    username: str
+    email: str = ""
+
+
+@router.post("/set-email")
+def set_email(req: EmailReq, request: Request, _admin=Depends(require_admin)):
+    """v8.7.2: admin sets/clears a user's email (used for 인폼 메일 수신자)."""
+    email = (req.email or "").strip()
+    if email and "@" not in email:
+        raise HTTPException(400, "Invalid email format")
+    users = read_users()
+    for u in users:
+        if u["username"] == req.username:
+            u["email"] = email
+            write_users(users)
+            _audit(request, "admin:set-email", detail=f"user={req.username} email={email or '(clear)'}", tab="admin")
+            return {"ok": True}
+    raise HTTPException(404)
+
+
 @router.post("/delete-user")
 def delete_user(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
     from core.auth import revoke_user_tokens
@@ -372,6 +393,15 @@ def get_settings(request: Request):
             merged["backup"] = _bk_get()
         except Exception:
             merged["backup"] = None
+        # v8.7.2: 메일 API 설정 admin 에게 노출
+        try:
+            _adm = _load_admin_settings()
+            merged["mail"] = _adm.get("mail") or {
+                "api_url": "", "headers": {}, "from_addr": "", "status_code": "",
+                "extra_data": {}, "recipient_groups": {}, "enabled": False,
+            }
+        except Exception:
+            merged["mail"] = None
     # v8.4.6: data_roots (내부 파일시스템 경로) 는 admin 에게만 노출.
     if me.get("role") == "admin":
         try:
@@ -408,11 +438,23 @@ class BackupCfgReq(BaseModel):
     enabled: Optional[bool] = None
 
 
+class MailCfgReq(BaseModel):
+    # v8.7.2: 사내 메일 API 연동 설정.
+    api_url: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None      # {"Authorization":"...", ...}
+    from_addr: Optional[str] = None               # → senderMailaddress
+    status_code: Optional[str] = None             # → statusCode (default for sends)
+    extra_data: Optional[Dict[str, Any]] = None   # merged into outgoing `data` block
+    recipient_groups: Optional[Dict[str, List[str]]] = None  # {"group": ["email1", ...]}
+    enabled: Optional[bool] = None
+
+
 class SettingsSaveReq(BaseModel):
     dashboard_refresh_minutes: int = 10
     dashboard_bg_refresh_minutes: int = 10
     data_roots: Optional[DataRootsReq] = None
     backup: Optional[BackupCfgReq] = None
+    mail: Optional[MailCfgReq] = None
 
 
 @router.post("/settings/save")
@@ -426,6 +468,7 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
     data = req.dict(exclude_none=False)
     dr_in = data.pop("data_roots", None)
     bk_in = data.pop("backup", None)
+    mail_in = data.pop("mail", None)
     # Clamp to sane bounds: 1..240 minutes
     for k in ("dashboard_refresh_minutes", "dashboard_bg_refresh_minutes"):
         v = data.get(k, 10)
@@ -465,8 +508,34 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         except Exception:
             pass
 
+    # v8.7.2: 메일 API 설정 저장 — admin_settings.json.mail
+    if mail_in is not None:
+        current = _load_admin_settings()
+        mail_cur = dict(current.get("mail") or {})
+        for k in ("api_url", "from_addr", "status_code"):
+            if mail_in.get(k) is not None:
+                mail_cur[k] = str(mail_in.get(k) or "").strip()
+        if mail_in.get("headers") is not None:
+            hdrs = mail_in.get("headers") or {}
+            mail_cur["headers"] = {str(k): str(v) for k, v in hdrs.items() if k}
+        if mail_in.get("extra_data") is not None:
+            ed = mail_in.get("extra_data") or {}
+            mail_cur["extra_data"] = ed if isinstance(ed, dict) else {}
+        if mail_in.get("recipient_groups") is not None:
+            rg = mail_in.get("recipient_groups") or {}
+            clean: Dict[str, List[str]] = {}
+            for gname, emails in rg.items():
+                if not gname or not isinstance(emails, list):
+                    continue
+                clean[str(gname)] = [str(e).strip() for e in emails if str(e).strip() and "@" in str(e)]
+            mail_cur["recipient_groups"] = clean
+        if mail_in.get("enabled") is not None:
+            mail_cur["enabled"] = bool(mail_in.get("enabled"))
+        current["mail"] = mail_cur
+        _save_admin_settings(current)
+
     _audit(request, "admin:settings-save",
-           detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'}",
+           detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'} mail={'yes' if mail_in else 'no'}",
            tab="admin")
     return {"ok": True, "settings": data, "data_roots": (_resolver_snapshot() if dr_in is not None else None)}
 

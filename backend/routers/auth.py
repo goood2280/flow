@@ -15,7 +15,7 @@ from core.audit import record_user as _audit_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-FIELDS = ["username","password_hash","role","status","created","tabs"]
+FIELDS = ["username","password_hash","role","status","created","tabs","email"]
 
 class LoginReq(BaseModel):
     username: str

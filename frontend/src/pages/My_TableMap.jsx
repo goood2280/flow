@@ -309,11 +309,15 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
 
 // ─── Table Editor ──────────────────────────────────────
 function TableEditor({table,groups,onSave,onDelete,onClose,user}){
-  const[form,setForm]=useState({id:"",name:"",display_name:"",group_id:"",table_type:"data",columns:[{name:"",type:"string"}],rows:[],description:"",aws_cmd:"",...(table&&Object.keys(table).length?table:{})});
+  // v8.7.2: 기본 columns 는 빈 배열 — 과거엔 [{name:"",type:"string"}] 이 들어가
+  // "이름없음" 유령 컬럼이 먼저 생기는 UX 버그가 있었다.
+  const[form,setForm]=useState({id:"",name:"",display_name:"",group_id:"",table_type:"data",columns:[],rows:[],description:"",aws_cmd:"",validation:{enabled:false,sort:{column:"",order:""},columns:{}},...(table&&Object.keys(table).length?table:{})});
   const[versions,setVersions]=useState([]);
   const[previewVer,setPreviewVer]=useState(null); // v8.4.5: 현재 미리보기 중인 버전 이름
+  const[showValidation,setShowValidation]=useState(false);
+  const[saveErrors,setSaveErrors]=useState([]); // v8.7.2: 저장 실패 시 서버/클라 검증 오류
   const isAdmin=user?.role==="admin";
-  const u=(k,v)=>setForm({...form,[k]:v});
+  const u=(k,v)=>setForm(f=>({...f,[k]:v}));
   useEffect(()=>{if(form.id)sf(API+"/versions/"+form.id).then(d=>setVersions(d.versions||[])).catch(()=>{});},[form.id]);
   // If group_id, lock columns (inherit)
   const groupCols=form.group_id?(groups.find(g=>g.id===form.group_id)?.columns||[]):null;
@@ -321,16 +325,105 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
 
   const addRow=()=>{const empty={};effectiveCols.forEach(c=>empty[c.name]="");u("rows",[...(form.rows||[]),empty]);};
   const delRow=(i)=>u("rows",form.rows.filter((_,j)=>j!==i));
-  const updateCell=(i,col,val)=>{const rows=[...form.rows];rows[i]={...rows[i],[col]:val};u("rows",rows);};
+  const updateCell=(i,col,val)=>{const rows=[...(form.rows||[])];rows[i]={...rows[i],[col]:val};u("rows",rows);};
 
-  const addCol=()=>u("columns",[...form.columns,{name:"",type:"string"}]);
-  const updateCol=(i,k,v)=>{const cols=[...form.columns];cols[i]={...cols[i],[k]:v};u("columns",cols);};
-  const delCol=(i)=>u("columns",form.columns.filter((_,j)=>j!==i));
+  const addCol=()=>u("columns",[...(form.columns||[]),{name:"",type:"string"}]);
+  const updateCol=(i,k,v)=>{const cols=[...(form.columns||[])];cols[i]={...cols[i],[k]:v};u("columns",cols);};
+  const delCol=(i)=>u("columns",(form.columns||[]).filter((_,j)=>j!==i));
+
+  // ── v8.7.2: Cell selection & copy ───────────────────────────────
+  // selection = {r1,c1,r2,c2} (inclusive); anchor stored on mousedown.
+  const[selection,setSelection]=useState(null);
+  const dragAnchor=useRef(null);
+  const inSel=(r,c)=>{
+    if(!selection)return false;
+    const r1=Math.min(selection.r1,selection.r2), r2=Math.max(selection.r1,selection.r2);
+    const c1=Math.min(selection.c1,selection.c2), c2=Math.max(selection.c1,selection.c2);
+    return r>=r1&&r<=r2&&c>=c1&&c<=c2;
+  };
+  const startSel=(r,c,shift)=>{
+    if(shift&&selection){setSelection(s=>({...s,r2:r,c2:c}));}
+    else{dragAnchor.current={r,c};setSelection({r1:r,c1:c,r2:r,c2:c});}
+  };
+  const extendSel=(r,c)=>{
+    if(dragAnchor.current==null)return;
+    const a=dragAnchor.current;
+    setSelection({r1:a.r,c1:a.c,r2:r,c2:c});
+  };
+  useEffect(()=>{
+    const up=()=>{dragAnchor.current=null;};
+    const key=(e)=>{
+      if(!selection)return;
+      // Ctrl/Cmd+C while cells are selected
+      if((e.ctrlKey||e.metaKey)&&(e.key==="c"||e.key==="C")){
+        const r1=Math.min(selection.r1,selection.r2), r2=Math.max(selection.r1,selection.r2);
+        const c1=Math.min(selection.c1,selection.c2), c2=Math.max(selection.c1,selection.c2);
+        const lines=[];
+        for(let r=r1;r<=r2;r++){
+          const parts=[];
+          for(let c=c1;c<=c2;c++){
+            const col=effectiveCols[c]; if(!col){parts.push("");continue;}
+            parts.push((form.rows?.[r]?.[col.name])??"");
+          }
+          lines.push(parts.join("\t"));
+        }
+        const tsv=lines.join("\n");
+        try{navigator.clipboard.writeText(tsv);}catch{
+          const ta=document.createElement("textarea");ta.value=tsv;document.body.appendChild(ta);ta.select();document.execCommand("copy");ta.remove();
+        }
+        // Small visual hint
+        const sel=r2-r1+1,selC=c2-c1+1;
+        const tip=document.createElement("div");
+        tip.textContent=`✔ 복사됨 (${sel}행 × ${selC}열)`;
+        tip.style.cssText="position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;padding:8px 16px;border-radius:6px;z-index:99999;font-size:12px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,0.4)";
+        document.body.appendChild(tip);setTimeout(()=>tip.remove(),1400);
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("mouseup",up);
+    window.addEventListener("keydown",key);
+    return()=>{window.removeEventListener("mouseup",up);window.removeEventListener("keydown",key);};
+  },[selection,effectiveCols,form.rows]);
+
+  // ── v8.7.2: Client-side validation before save ─────────────────
+  const runValidation=()=>{
+    const v=form.validation||{};
+    if(!v.enabled)return [];
+    const colsCfg=v.columns||{};
+    const errs=[];
+    const rx={};
+    Object.entries(colsCfg).forEach(([cn,rule])=>{
+      if(rule?.regex){try{rx[cn]=new RegExp(rule.regex);}catch(e){errs.push(`컬럼 '${cn}' 정규식 오류: ${e.message}`);}}
+    });
+    if(errs.length)return errs;
+    (form.rows||[]).forEach((row,i)=>{
+      const rn=i+1;
+      Object.entries(colsCfg).forEach(([cn,rule])=>{
+        const val=(row?.[cn]??"")+""; const sv=val.trim();
+        if(rule.required&&sv===""){errs.push(`${rn}행 · '${cn}': 필수 값이 비어있습니다.`);return;}
+        if(sv==="")return;
+        const enumVals=(rule.enum||[]).filter(Boolean);
+        if(enumVals.length&&!enumVals.map(String).includes(sv))errs.push(`${rn}행 · '${cn}': 허용되지 않은 값 '${sv}' (허용: ${enumVals.join(", ")}).`);
+        if(rx[cn]&&!rx[cn].test(sv))errs.push(`${rn}행 · '${cn}': 정규식 '${rule.regex}' 불일치 ('${sv}').`);
+      });
+    });
+    return errs.slice(0,50);
+  };
 
   const doSave=()=>{
+    setSaveErrors([]);
     if(!form.name.trim()){alert("이름을 입력하세요");return;}
-    const payload={...form,username:user?.username||""};
-    onSave(payload);
+    // Strip blank-name columns before send (UI ghost column guard)
+    const cleanCols=(form.columns||[]).filter(c=>(c.name||"").trim());
+    const errs=runValidation();
+    if(errs.length){setSaveErrors(errs);return;}
+    const payload={...form,columns:cleanCols,username:user?.username||""};
+    Promise.resolve(onSave(payload)).catch((e)=>{
+      // Server-side validation detail
+      const msgs=e?.detail?.messages||e?.data?.detail?.messages||e?.messages;
+      if(Array.isArray(msgs))setSaveErrors(msgs);
+      else if(e?.message)setSaveErrors([e.message]);
+    });
   };
   const loadVersion=(v)=>{
     sf(API+"/version-content?table_id="+form.id+"&version="+v)
@@ -392,18 +485,100 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
       {/* Columns */}
       <div style={{marginBottom:8}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div style={{fontSize:12,fontWeight:600}}>컬럼 {groupCols?"(그룹에서 상속)":""}</div>
+          <div style={{fontSize:12,fontWeight:600}}>컬럼 {groupCols?"(그룹에서 상속)":""} <span style={{fontSize:9,color:"var(--text-secondary)",fontWeight:400}}>· Tab=다음 필드</span></div>
           {!groupCols&&<button onClick={addCol} style={{padding:"3px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:10,cursor:"pointer"}}>+ 컬럼 추가</button>}
         </div>
-        {effectiveCols.map((c,i)=>(<div key={i} style={{display:"flex",gap:6,marginTop:4}}>
-          <input value={c.name} onChange={e=>updateCol(i,"name",e.target.value)} disabled={!!groupCols} placeholder="컬럼명" style={{...S,flex:2}}/>
-          <select value={c.type} onChange={e=>updateCol(i,"type",e.target.value)} disabled={!!groupCols} style={{...S,flex:1}}>
-            <option value="string">string</option><option value="int">int</option><option value="float">float</option><option value="bool">bool</option>
-          </select>
-          <input value={c.desc||""} onChange={e=>updateCol(i,"desc",e.target.value)} disabled={!!groupCols} placeholder="설명" style={{...S,flex:2}}/>
-          {!groupCols&&<span onClick={()=>delCol(i)} style={{padding:"4px 8px",color:"#ef4444",cursor:"pointer"}}>✕</span>}
-        </div>))}
+        {/* v8.7.2: Tab navigation across column name/type/desc inputs */}
+        {effectiveCols.map((c,i)=>{
+          const colKD=(field)=>(e)=>{
+            if(e.key!=="Tab")return;
+            const order=["name","type","desc"];
+            const idx=order.indexOf(field);
+            let nf=e.shiftKey?idx-1:idx+1, nr=i;
+            if(nf>=order.length){nf=0;nr=i+1;}
+            else if(nf<0){nf=order.length-1;nr=i-1;}
+            if(nr<0||nr>=effectiveCols.length)return;
+            const sel=document.querySelector(`[data-tmcol="${nr}-${order[nf]}"]`);
+            if(sel){e.preventDefault();sel.focus();sel.select?.();}
+          };
+          return(<div key={i} style={{display:"flex",gap:6,marginTop:4}}>
+            <input value={c.name} data-tmcol={`${i}-name`} onChange={e=>updateCol(i,"name",e.target.value)} onKeyDown={colKD("name")} disabled={!!groupCols} placeholder="컬럼명" style={{...S,flex:2}}/>
+            <select value={c.type} data-tmcol={`${i}-type`} onChange={e=>updateCol(i,"type",e.target.value)} onKeyDown={colKD("type")} disabled={!!groupCols} style={{...S,flex:1}}>
+              <option value="string">string</option><option value="int">int</option><option value="float">float</option><option value="bool">bool</option>
+            </select>
+            <input value={c.desc||""} data-tmcol={`${i}-desc`} onChange={e=>updateCol(i,"desc",e.target.value)} onKeyDown={colKD("desc")} disabled={!!groupCols} placeholder="설명" style={{...S,flex:2}}/>
+            {!groupCols&&<span onClick={()=>delCol(i)} style={{padding:"4px 8px",color:"#ef4444",cursor:"pointer"}}>✕</span>}
+          </div>);
+        })}
+        {effectiveCols.length===0&&!groupCols&&<div style={{marginTop:6,padding:10,fontSize:11,color:"var(--text-secondary)",textAlign:"center",background:"var(--bg-tertiary)",borderRadius:4,border:"1px dashed var(--border)"}}>컬럼이 없습니다. <b>+ 컬럼 추가</b> 를 클릭하세요.</div>}
       </div>
+
+      {/* v8.7.2: Validation / Sort rules */}
+      {!groupCols&&<div style={{marginBottom:8,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)"}}>
+        <div onClick={()=>setShowValidation(s=>!s)} style={{padding:"6px 10px",cursor:"pointer",display:"flex",alignItems:"center",gap:6,fontSize:12,fontWeight:600,userSelect:"none"}}>
+          <span style={{fontSize:10,color:"var(--text-secondary)"}}>{showValidation?"▼":"▶"}</span>
+          <span>🛡 검증 & 정렬 규칙</span>
+          {form.validation?.enabled&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:10,background:"rgba(16,185,129,0.15)",color:"#10b981",fontWeight:700}}>ENABLED</span>}
+          <label style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:4,fontSize:10,color:"var(--text-secondary)",fontWeight:400}} onClick={e=>e.stopPropagation()}>
+            <input type="checkbox" checked={!!form.validation?.enabled} onChange={e=>u("validation",{...(form.validation||{}),enabled:e.target.checked})}/>
+            켜기
+          </label>
+        </div>
+        {showValidation&&<div style={{padding:"4px 10px 10px",borderTop:"1px solid var(--border)"}}>
+          {/* Sort */}
+          <div style={{display:"flex",gap:6,alignItems:"center",marginTop:8}}>
+            <div style={{fontSize:10,color:"var(--text-secondary)",minWidth:70}}>정렬 기준</div>
+            <select value={form.validation?.sort?.column||""} onChange={e=>u("validation",{...(form.validation||{}),sort:{...(form.validation?.sort||{}),column:e.target.value}})} style={{...S,flex:1}}>
+              <option value="">-- 정렬 없음 --</option>
+              {effectiveCols.filter(c=>c.name).map(c=><option key={c.name} value={c.name}>{c.name}</option>)}
+            </select>
+            <select value={form.validation?.sort?.order||""} onChange={e=>u("validation",{...(form.validation||{}),sort:{...(form.validation?.sort||{}),order:e.target.value}})} style={{...S,flex:1}}>
+              <option value="">-- 방향 --</option>
+              <option value="asc">오름차순 (숫자/사전)</option>
+              <option value="desc">내림차순 (숫자/사전)</option>
+              <option value="natural_asc">자연정렬 오름차순 (A1, A2, A10)</option>
+              <option value="natural_desc">자연정렬 내림차순</option>
+            </select>
+          </div>
+          {/* Per-column rules */}
+          <div style={{fontSize:10,color:"var(--text-secondary)",marginTop:10,marginBottom:4}}>컬럼별 제약 <span style={{fontSize:9}}>· 필수 / enum (콤마 구분) / 정규식</span></div>
+          <div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:4}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead><tr>
+                {["컬럼","필수","허용값 (enum)","정규식"].map(h=><th key={h} style={{textAlign:"left",padding:"4px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:10}}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {effectiveCols.filter(c=>c.name).map(c=>{
+                  const rule=form.validation?.columns?.[c.name]||{};
+                  const setRule=(k,v)=>u("validation",{...(form.validation||{}),columns:{...(form.validation?.columns||{}),[c.name]:{...rule,[k]:v}}});
+                  return(<tr key={c.name}>
+                    <td style={{padding:"3px 6px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontWeight:600}}>{c.name}</td>
+                    <td style={{padding:"3px 6px",borderBottom:"1px solid var(--border)",textAlign:"center"}}>
+                      <input type="checkbox" checked={!!rule.required} onChange={e=>setRule("required",e.target.checked)}/>
+                    </td>
+                    <td style={{padding:"3px 6px",borderBottom:"1px solid var(--border)"}}>
+                      <input value={(rule.enum||[]).join(", ")} onChange={e=>setRule("enum",e.target.value.split(",").map(s=>s.trim()).filter(Boolean))} placeholder="예: PASS, FAIL, HOLD" style={{...S,padding:"3px 6px",fontSize:10}}/>
+                    </td>
+                    <td style={{padding:"3px 6px",borderBottom:"1px solid var(--border)"}}>
+                      <input value={rule.regex||""} onChange={e=>setRule("regex",e.target.value)} placeholder="예: ^[A-Z]{2}\\d+$" style={{...S,padding:"3px 6px",fontSize:10,fontFamily:"monospace"}}/>
+                    </td>
+                  </tr>);
+                })}
+                {effectiveCols.filter(c=>c.name).length===0&&<tr><td colSpan={4} style={{padding:12,textAlign:"center",color:"var(--text-secondary)",fontSize:10}}>컬럼을 먼저 정의하세요.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div style={{fontSize:10,color:"var(--text-secondary)",marginTop:6,lineHeight:1.5}}>
+            저장 시 <b style={{color:"var(--accent)"}}>검증 → 정렬</b> 순서로 적용됩니다. 검증 실패 시 저장 차단 + 오류 메시지 노출.
+          </div>
+        </div>}
+      </div>}
+      {/* v8.7.2: Save errors */}
+      {saveErrors.length>0&&<div style={{marginBottom:8,padding:"8px 10px",background:"rgba(239,68,68,0.08)",border:"1px solid #ef4444",borderRadius:6,fontSize:11,color:"#ef4444",maxHeight:140,overflow:"auto"}}>
+        <div style={{fontWeight:700,marginBottom:4}}>⚠ 검증 실패 — 저장되지 않았습니다 ({saveErrors.length}건)</div>
+        {saveErrors.slice(0,20).map((m,i)=><div key={i} style={{fontFamily:"monospace",fontSize:10}}>• {m}</div>)}
+        {saveErrors.length>20&&<div style={{fontSize:10}}>... 외 {saveErrors.length-20}건</div>}
+      </div>}
 
       {/* Rows */}
       <div style={{marginBottom:8}}>
@@ -441,9 +616,25 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
             <tbody>
               {(form.rows||[]).map((r,i)=>(
                 <tr key={i}>
-                  <td style={{position:"sticky",left:0,zIndex:1,width:44,minWidth:44,padding:"0 4px",background:"#f3f4f6",color:"#6b7280",fontSize:10,fontWeight:600,border:"1px solid #d1d5db",textAlign:"center"}}>{i+1}</td>
-                  {effectiveCols.map((c,ci)=>(
-                    <td key={c.name} style={{padding:0,border:"1px solid #d1d5db",background:i%2===0?"#fff":"#f9fafb"}}>
+                  <td style={{position:"sticky",left:0,zIndex:1,width:44,minWidth:44,padding:"0 4px",background:"#f3f4f6",color:"#6b7280",fontSize:10,fontWeight:600,border:"1px solid #d1d5db",textAlign:"center",cursor:"pointer",userSelect:"none"}}
+                    onMouseDown={(e)=>{
+                      // Row-number click selects the full row; drag extends.
+                      e.preventDefault();
+                      startSel(i,0,e.shiftKey);
+                      setSelection(s=>({r1:e.shiftKey&&s?s.r1:i,c1:0,r2:i,c2:effectiveCols.length-1}));
+                      dragAnchor.current={r:i,c:0,rowMode:true};
+                    }}
+                    onMouseEnter={()=>{if(dragAnchor.current?.rowMode){setSelection(s=>({...(s||{r1:dragAnchor.current.r,c1:0}),r2:i,c2:effectiveCols.length-1}));}}}
+                  >{i+1}</td>
+                  {effectiveCols.map((c,ci)=>{
+                    const selected=inSel(i,ci);
+                    return(<td key={c.name||ci}
+                      onMouseDown={(e)=>{
+                        if(e.shiftKey){e.preventDefault();startSel(i,ci,true);}
+                        else{startSel(i,ci,false);}
+                      }}
+                      onMouseEnter={()=>{if(dragAnchor.current&&!dragAnchor.current.rowMode)extendSel(i,ci);}}
+                      style={{padding:0,border:"1px solid #d1d5db",background:selected?"#dbeafe":(i%2===0?"#fff":"#f9fafb"),boxShadow:selected?"inset 0 0 0 1px #3b82f6":"none",position:"relative"}}>
                       <input
                         value={r[c.name]||""}
                         data-r={i} data-c={ci}
@@ -456,9 +647,12 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
                             let nr=i, nci=nc;
                             if(nc>=total){nr=i+1;nci=0;}
                             else if(nc<0){nr=i-1;nci=total-1;}
-                            if(nr<0||nr>=(form.rows||[]).length)return;
-                            const nxt=document.querySelector(`input[data-r="${nr}"][data-c="${nci}"]`);
-                            if(nxt){nxt.focus();nxt.select?.();}
+                            if(nr<0)return;
+                            if(nr>=(form.rows||[]).length){addRow();}
+                            setTimeout(()=>{
+                              const nxt=document.querySelector(`input[data-r="${nr}"][data-c="${nci}"]`);
+                              if(nxt){nxt.focus();nxt.select?.();}
+                            },nr>=(form.rows||[]).length?10:0);
                           } else if(e.key==="Enter"){
                             e.preventDefault();
                             if(i+1>=(form.rows||[]).length){addRow();}
@@ -468,19 +662,28 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
                             },10);
                           }
                         }}
-                        onFocus={e=>{e.target.style.outline="2px solid #f97316";e.target.style.outlineOffset="-2px";e.target.style.background="#fff7ed";}}
+                        onFocus={e=>{e.target.style.outline="2px solid #f97316";e.target.style.outlineOffset="-2px";e.target.style.background="#fff7ed";setSelection({r1:i,c1:ci,r2:i,c2:ci});}}
                         onBlur={e=>{e.target.style.outline="none";e.target.style.background="transparent";}}
                         style={{width:"100%",padding:"5px 8px",border:"none",background:"transparent",color:"#111827",fontSize:12,fontWeight:500,outline:"none",fontFamily:"'Consolas','Courier New',monospace",boxSizing:"border-box"}}
                       />
-                    </td>
-                  ))}
+                    </td>);
+                  })}
                   <td style={{width:32,minWidth:32,padding:"2px 4px",textAlign:"center",border:"1px solid #d1d5db",background:i%2===0?"#fff":"#f9fafb"}}>
                     <span onClick={()=>delRow(i)} title="행 삭제" style={{cursor:"pointer",color:"#ef4444",fontSize:12,fontWeight:700}}>✕</span>
                   </td>
                 </tr>
               ))}
-              {(form.rows||[]).length===0&&(
-                <tr><td colSpan={effectiveCols.length+2} style={{padding:"24px",textAlign:"center",color:"#9ca3af",fontSize:11,background:"#fff",border:"1px solid #d1d5db"}}>행이 없습니다. <b>+ 행 추가</b> 를 클릭하거나 엑셀에서 붙여넣으세요 (Ctrl+V).</td></tr>
+              {/* v8.7.2: 인라인 + 행 추가 버튼 */}
+              {effectiveCols.length>0&&<tr>
+                <td colSpan={effectiveCols.length+2} style={{padding:0,border:"1px dashed #d1d5db",background:"#f9fafb"}}>
+                  <div onClick={addRow} title="행 추가" style={{cursor:"pointer",padding:"6px",textAlign:"center",color:"#6b7280",fontSize:11,fontWeight:600,userSelect:"none",transition:"background 0.15s"}}
+                    onMouseEnter={e=>{e.currentTarget.style.background="#e0f2fe";e.currentTarget.style.color="#3b82f6";}}
+                    onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color="#6b7280";}}
+                  >＋ 행 추가</div>
+                </td>
+              </tr>}
+              {(form.rows||[]).length===0&&effectiveCols.length===0&&(
+                <tr><td colSpan={2} style={{padding:"24px",textAlign:"center",color:"#9ca3af",fontSize:11,background:"#fff",border:"1px solid #d1d5db"}}>컬럼을 먼저 정의한 뒤 행을 추가하세요.</td></tr>
               )}
             </tbody>
           </table>
@@ -592,7 +795,15 @@ export default function My_TableMap({user}){
   };
   useEffect(loadAll,[]);
 
-  const saveTable=(payload)=>sf(API+"/tables/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(r=>{const msgs=[];if(r.csv_path&&!r.csv_path.startsWith("CSV write"))msgs.push("📄 "+r.csv_path.split("/").pop()+" saved to DB root (see File Browser → Root Parquets)");else if(r.csv_path)msgs.push("⚠ "+r.csv_path);if(r.aws_result)msgs.push("AWS: "+r.aws_result);if(msgs.length)alert(msgs.join("\n"));setEditingTable(null);loadAll();}).catch(e=>alert(e.message));
+  const saveTable=(payload)=>sf(API+"/tables/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(r=>{const msgs=[];if(r.csv_path&&!r.csv_path.startsWith("CSV write"))msgs.push("📄 "+r.csv_path.split("/").pop()+" saved to DB root (see File Browser → Root Parquets)");else if(r.csv_path)msgs.push("⚠ "+r.csv_path);if(r.aws_result)msgs.push("AWS: "+r.aws_result);if(msgs.length)alert(msgs.join("\n"));setEditingTable(null);loadAll();}).catch(e=>{
+    // v8.7.2: bubble up validation errors to TableEditor instead of alerting.
+    const msg=String(e?.message||"저장 실패");
+    if(msg.startsWith("VALIDATION_FAILED")){
+      const messages=msg.split("\n").slice(1).filter(Boolean);
+      const err=new Error("validation failed");err.messages=messages;throw err;
+    }
+    alert(msg);throw e;
+  });
   const deleteTable=(id)=>sf(API+"/tables/delete?table_id="+id,{method:"POST"}).then(()=>{setEditingTable(null);loadAll();}).catch(e=>alert(e.message));
   const saveGroup=(payload)=>sf(API+"/groups/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(()=>{setEditingGroup(null);loadAll();}).catch(e=>alert(e.message));
   const deleteGroup=(id)=>{if(!confirm("그룹을 삭제할까요? (아카이브됨)"))return;sf(API+"/groups/delete?group_id="+id,{method:"POST"}).then(loadAll);};

@@ -10,9 +10,10 @@ v8.4.4 change:
   - display_name 필드 지원 — UI 표시 전용, 물리 파일명과 분리 저장.
 """
 import datetime  # v8.4.6: subprocess/shlex 제거 — aws_cmd RCE 경로 차단
+import re
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from core.paths import PATHS
 from core.utils import detect_structure, load_json, save_json, safe_id
 
@@ -170,6 +171,89 @@ class TableReq(BaseModel):
     description: str = ""
     aws_cmd: str = ""
     username: str = ""
+    # v8.7.2: per-table validation & sort rules.
+    validation: Dict[str, Any] = {}
+
+
+# ── Validation / sort helpers (v8.7.2) ─────────────────────────────
+_NAT_RE = re.compile(r"(\d+)")
+
+
+def _natural_key(v) -> list:
+    s = "" if v is None else str(v)
+    parts = _NAT_RE.split(s)
+    key = []
+    for p in parts:
+        if p.isdigit():
+            key.append((1, int(p)))
+        else:
+            key.append((0, p.lower()))
+    return key
+
+
+def _apply_sort(rows: list, sort_cfg: dict) -> list:
+    if not sort_cfg:
+        return rows
+    col = (sort_cfg.get("column") or "").strip()
+    order = (sort_cfg.get("order") or "").strip()
+    if not col or not order or not rows:
+        return rows
+    natural = order.startswith("natural")
+    reverse = order in ("desc", "natural_desc")
+    try:
+        if natural:
+            return sorted(rows, key=lambda r: _natural_key(r.get(col, "")), reverse=reverse)
+        def _cmp_key(r):
+            v = r.get(col, "")
+            if v is None or v == "":
+                return (1, "")
+            try:
+                return (0, float(v))
+            except (TypeError, ValueError):
+                return (0, str(v).lower())
+        return sorted(rows, key=_cmp_key, reverse=reverse)
+    except Exception:
+        return rows
+
+
+def _validate_rows(rows: list, cols_cfg: dict) -> list:
+    errors: list = []
+    if not cols_cfg:
+        return errors
+    compiled = {}
+    for cname, rule in cols_cfg.items():
+        rx = (rule or {}).get("regex") or ""
+        if rx:
+            try:
+                compiled[cname] = re.compile(rx)
+            except re.error as e:
+                errors.append(f"컬럼 '{cname}' 정규식 오류: {e}")
+    if errors:
+        return errors
+
+    for i, row in enumerate(rows or []):
+        rn = i + 1
+        for cname, rule in cols_cfg.items():
+            rule = rule or {}
+            val = row.get(cname, "")
+            sval = "" if val is None else str(val).strip()
+            if rule.get("required") and sval == "":
+                errors.append(f"{rn}행 · '{cname}': 필수 값이 비어있습니다.")
+                continue
+            if sval == "":
+                continue
+            enum_vals = rule.get("enum") or []
+            if enum_vals:
+                allowed = [str(e) for e in enum_vals]
+                if sval not in allowed:
+                    errors.append(f"{rn}행 · '{cname}': 허용되지 않은 값 '{sval}' (허용: {', '.join(allowed)}).")
+            rx = compiled.get(cname)
+            if rx and not rx.search(sval):
+                errors.append(f"{rn}행 · '{cname}': 정규식 '{rule.get('regex')}' 불일치 ('{sval}').")
+        if len(errors) > 50:
+            errors.append("… (추가 오류 생략)")
+            break
+    return errors
 
 
 def _run_aws_sync(tbl_id: str, rows, columns, aws_cmd: str) -> str:
@@ -248,6 +332,18 @@ def save_table(req: TableReq):
         if group_cols:
             # Keep only cols explicitly named in group; blank-name entries discarded
             req.columns = [c for c in group_cols if c.get("name")]
+
+    # v8.7.2: strip blank-name columns the UI may have left behind (prevents
+    # the "이름없음" ghost column that bled into CSV headers).
+    req.columns = [c for c in (req.columns or []) if (c.get("name") or "").strip()]
+
+    # v8.7.2: apply per-table validation/sort before persisting.
+    vcfg = req.validation or {}
+    if vcfg.get("enabled"):
+        errs = _validate_rows(req.rows or [], vcfg.get("columns") or {})
+        if errs:
+            raise HTTPException(400, detail="VALIDATION_FAILED\n" + "\n".join(errs))
+        req.rows = _apply_sort(list(req.rows or []), vcfg.get("sort") or {})
 
     data = req.dict()
     data["id"] = sid
