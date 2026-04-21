@@ -1224,7 +1224,17 @@ export default function My_Inform({ user }) {
       <div style={{ width: 340, minWidth: 300, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace", color: "var(--accent)" }}>{">"} 인폼 로그</span>
-          <button onClick={() => setCreating(true)} style={{ padding: "4px 12px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>+ 신규</button>
+          <button onClick={() => {
+            // v8.8.3 bugfix: 폼 열기 전 /config 를 갱신해 product 카탈로그를 최신화.
+            sf(API + "/config").then(d => setConstants(c => ({
+              ...c,
+              modules: d.modules || c.modules,
+              reasons: d.reasons || c.reasons,
+              products: d.products || c.products,
+              raw_db_root: d.raw_db_root ?? c.raw_db_root,
+            }))).catch(() => {});
+            setCreating(true);
+          }} style={{ padding: "4px 12px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>+ 신규</button>
         </div>
 
         <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -1516,7 +1526,12 @@ export default function My_Inform({ user }) {
                   }}
                   style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }}>
                   <option value="">-- 제품 선택 --</option>
-                  {(constants.products || []).map(p => <option key={p} value={p}>{p}</option>)}
+                  {/* v8.8.3 bugfix: 카탈로그(constants.products) + 실제 사용 제품(products state) 병합.
+                      카탈로그가 비어있어도 기존 인폼 레코드에서 집계된 제품이 드롭다운에 표시됨. */}
+                  {Array.from(new Set([
+                    ...(constants.products || []),
+                    ...(products || []).map(p => (typeof p === "string" ? p : p.product)).filter(Boolean),
+                  ])).map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
                 {isAdmin && (
                   <button type="button"

@@ -500,12 +500,7 @@ export default function App() {
   }, [user]);
   const canAccess = (tabKey) => {
     if (tabKey === "home") return true;
-    // v8.5.1: inform (wafer 인폼 스레드) 는 모든 유저에게 기본 노출.
-    if (tabKey === "inform") return true;
-    // v8.6.0: calendar (변경점 달력) 도 모든 유저에게 기본 노출.
-    if (tabKey === "calendar") return true;
-    // v8.7.2: meeting (회의관리) 도 모든 유저에게 기본 노출.
-    if (tabKey === "meeting") return true;
+    // v8.8.3: inform/calendar/meeting 은 tabs 권한 체크로 통합 (하위호환: 기본 ON).
     if (userTabs === "__all__") return true;
     const t = TABS.find(t=>t.key===tabKey);
     if (t?.adminOnly && user?.role !== "admin") return false;

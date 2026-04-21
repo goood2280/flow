@@ -1,4 +1,4 @@
-/* My_Meeting.jsx v8.7.4 — 회의관리 (반복 + 차수 + 아젠다 + 달력 selective push).
+/* My_Meeting.jsx v8.8.3 — 회의관리 (반복 + 차수 + 아젠다 + 달력 selective push).
    - 좌측: 회의 목록 (status 필터 + 검색).
    - 우측 상단: 회의 메타 (제목/주관자/반복/카테고리/상태).
    - 우측 가운데: 차수(세션) 탭. "+ 차수 추가" 가능.
@@ -52,6 +52,7 @@ export default function My_Meeting({ user }) {
     title: "", owner: "", first_scheduled_at: "",
     recurrence: { type: "none", count_per_week: 1, weekday: [], note: "" },
     category: "",
+    group_ids: [],  /* v8.8.3: 공개범위 group_ids FE picker */
   });
   const [editingMeta, setEditingMeta] = useState(false);
   const [metaDraft, setMetaDraft] = useState(null);
@@ -64,8 +65,31 @@ export default function My_Meeting({ user }) {
   const isAdmin = user?.role === "admin";
   const me = user?.username || "";
 
+  // v8.8.3: 공용 메일그룹(/api/mail-groups) + 일반 그룹(/api/groups) 병합.
+  // id 충돌 방지: mail-groups → "mg:<id>", 일반 groups → "grp:<id>".
   const reloadMailGroups = () => {
-    sf("/api/mail-groups/list").then(d => setMailGroups(d.groups || [])).catch(() => {});
+    Promise.all([
+      sf("/api/mail-groups/list").catch(() => ({ groups: [] })),
+      sf("/api/groups/list").catch(() => ({ groups: [] })),
+    ]).then(([mgData, grpData]) => {
+      const mgItems = (mgData.groups || []).map(g => ({
+        ...g,
+        id: `mg:${g.id}`,
+        _source: "mail_groups",
+      }));
+      const grpItems = (grpData.groups || []).map(g => ({
+        ...g,
+        id: `grp:${g.id}`,
+        _source: "groups",
+        // groups 에는 extra_emails 없음 — 빈 배열 기본값
+        extra_emails: g.extra_emails || [],
+      }));
+      // mail-groups 우선 → 일반 groups 순서로 정렬 (이름 asc)
+      const merged = [...mgItems, ...grpItems].sort((a, b) =>
+        (a.name || "").localeCompare(b.name || "", "ko")
+      );
+      setMailGroups(merged);
+    });
   };
 
   const reload = () => {
@@ -141,12 +165,14 @@ export default function My_Meeting({ user }) {
         note: draft.recurrence.note || "",
       },
       category: draft.category || "",
+      group_ids: draft.group_ids || [],  /* v8.8.3 */
     }).then(d => {
       setCreating(false);
       setDraft({
         title: "", owner: "", first_scheduled_at: "",
         recurrence: { type: "none", count_per_week: 1, weekday: [], note: "" },
         category: "",
+        group_ids: [],  /* v8.8.3 */
       });
       reload();
       setSelectedId(d.meeting?.id || null);
@@ -163,6 +189,7 @@ export default function My_Meeting({ user }) {
       status: selected.status || "active",
       category: selected.category || "",
       recurrence: { ...(selected.recurrence || { type: "none", count_per_week: 0, weekday: [], note: "" }) },
+      group_ids: Array.isArray(selected.group_ids) ? [...selected.group_ids] : [],  /* v8.8.3 */
     });
     setEditingMeta(true);
   };
@@ -180,6 +207,7 @@ export default function My_Meeting({ user }) {
         weekday: metaDraft.recurrence.weekday || [],
         note: metaDraft.recurrence.note || "",
       },
+      group_ids: metaDraft.group_ids || [],  /* v8.8.3 */
     }).then(() => { setEditingMeta(false); setMetaDraft(null); reload(); })
       .catch(e => alert(e.message || "저장 실패"));
   };
@@ -497,6 +525,26 @@ export default function My_Meeting({ user }) {
                   <input value={metaDraft.recurrence.note}
                          onChange={e => setMetaDraft({ ...metaDraft, recurrence: { ...metaDraft.recurrence, note: e.target.value } })}
                          placeholder="추가 설명 (선택)" style={inp} />
+                  {/* v8.8.3: 공개범위 group_ids FE picker */}
+                  <span style={lbl}>공개 그룹</span>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    {(allGroups || []).length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(등록된 그룹 없음 — 모두에게 공개)</span>}
+                    {(allGroups || []).map(g => {
+                      const on = (metaDraft.group_ids || []).includes(g.id);
+                      return (
+                        <span key={g.id} onClick={() => {
+                          const cur = metaDraft.group_ids || [];
+                          const next = on ? cur.filter(x => x !== g.id) : [...cur, g.id];
+                          setMetaDraft({ ...metaDraft, group_ids: next });
+                        }} style={{ padding: "3px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
+                          {on ? "✓ " : ""}{g.name}
+                        </span>
+                      );
+                    })}
+                    {(metaDraft.group_ids || []).length === 0 && (allGroups || []).length > 0 && (
+                      <span style={{ fontSize: 10, color: "var(--text-secondary)", marginLeft: 4 }}>비워두면 모두에게 공개</span>
+                    )}
+                  </div>
                   <div />
                   <div style={{ display: "flex", gap: 6 }}>
                     <button onClick={submitEditMeta} style={btnPrimary}>저장</button>
@@ -894,6 +942,26 @@ export default function My_Meeting({ user }) {
                   })}
                 </div>
               </>)}
+              {/* v8.8.3: 공개범위 group_ids FE picker (create) */}
+              <span style={lbl}>공개 그룹</span>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {(allGroups || []).length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(등록된 그룹 없음 — 모두에게 공개)</span>}
+                {(allGroups || []).map(g => {
+                  const on = (draft.group_ids || []).includes(g.id);
+                  return (
+                    <span key={g.id} onClick={() => {
+                      const cur = draft.group_ids || [];
+                      const next = on ? cur.filter(x => x !== g.id) : [...cur, g.id];
+                      setDraft({ ...draft, group_ids: next });
+                    }} style={{ padding: "3px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
+                      {on ? "✓ " : ""}{g.name}
+                    </span>
+                  );
+                })}
+                {(draft.group_ids || []).length === 0 && (allGroups || []).length > 0 && (
+                  <span style={{ fontSize: 10, color: "var(--text-secondary)", marginLeft: 4 }}>비워두면 모두에게 공개</span>
+                )}
+              </div>
             </div>
             <div style={{ display: "flex", gap: 6, marginTop: 14, justifyContent: "flex-end" }}>
               <button onClick={() => setCreating(false)} style={btnGhost}>취소</button>
@@ -1116,14 +1184,19 @@ function ActionItemsGantt({ meetings, onPickMeeting }) {
   );
 }
 
-// v8.7.7: 공용 메일 그룹 관리 모달 (모든 유저 편집 가능).
+// v8.8.3: 공용 메일 그룹 관리 모달.
+// groups 배열은 병합된 목록 (mg:* 편집 가능 / grp:* 읽기 전용 — Groups 탭에서 관리).
 function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
   const [editId, setEditId] = useState(null);
   const [draft, setDraft] = useState({ name: "", members: [], extra_emails: "", note: "" });
   const [msg, setMsg] = useState("");
   const startCreate = () => { setEditId("__new__"); setDraft({ name: "", members: [me], extra_emails: "", note: "" }); setMsg(""); };
+  // editId 는 실제 API id (prefix 제거된 값). g.id 는 "mg:<rawId>" 형태.
   const startEdit = (g) => {
-    setEditId(g.id);
+    // grp: prefix 그룹은 이 모달에서 편집 불가 — Groups 탭에서 관리.
+    if ((g.id || "").startsWith("grp:")) { setMsg("일반 그룹은 그룹관리 탭에서 편집하세요."); return; }
+    const rawId = g.id.replace(/^mg:/, "");
+    setEditId(rawId);
     setDraft({ name: g.name || "", members: g.members || [], extra_emails: (g.extra_emails || []).join(", "), note: g.note || "" });
     setMsg("");
   };
@@ -1140,8 +1213,10 @@ function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
     }).catch(e => setMsg(e.message || "저장 실패"));
   };
   const remove = (g) => {
+    if ((g.id || "").startsWith("grp:")) { setMsg("일반 그룹은 그룹관리 탭에서 삭제하세요."); return; }
+    const rawId = g.id.replace(/^mg:/, "");
     if (!confirm(`메일 그룹 "${g.name}" 을(를) 삭제할까요?`)) return;
-    sf(`/api/mail-groups/delete?id=${encodeURIComponent(g.id)}`, { method: "POST" })
+    sf(`/api/mail-groups/delete?id=${encodeURIComponent(rawId)}`, { method: "POST" })
       .then(() => { setEditId(null); onReload(); }).catch(e => setMsg(e.message));
   };
   const inp2 = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none", boxSizing: "border-box" };
@@ -1149,12 +1224,12 @@ function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} style={{ width: 720, maxWidth: "94%", maxHeight: "86vh", overflow: "auto", padding: 18, borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
         <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
-          <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", flex: 1 }}>📮 공용 메일 그룹 관리</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", flex: 1 }}>공용 메일 그룹 관리</span>
           <button onClick={startCreate} style={{ padding: "4px 12px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, cursor: "pointer" }}>+ 새 그룹</button>
           <button onClick={onClose} style={{ marginLeft: 6, padding: "4px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 11, cursor: "pointer" }}>닫기</button>
         </div>
         <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 10 }}>
-          * 모든 유저가 생성/편집할 수 있는 공용 그룹입니다. 같은 유저가 여러 그룹에 속할 수 있습니다.
+          * 공용 메일그룹(직접 생성) + 일반 그룹(그룹관리 탭)이 함께 표시됩니다. 일반 그룹은 여기서 편집 불가.
         </div>
         {editId && (
           <div style={{ padding: 12, borderRadius: 6, background: "var(--bg-card)", border: "1px solid var(--accent)", marginBottom: 12 }}>
@@ -1186,19 +1261,33 @@ function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
             </div>
           </div>
         )}
+        {msg && !editId && <div style={{ marginBottom: 8, fontSize: 11, color: "var(--accent)" }}>{msg}</div>}
         <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6 }}>
           {(groups || []).length === 0 && <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 12 }}>아직 그룹이 없습니다. "+ 새 그룹" 으로 생성하세요.</div>}
-          {(groups || []).map(g => (
-            <div key={g.id} style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontSize: 12, fontWeight: 600, flex: 1 }}>📮 {g.name}</span>
-                <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{(g.members || []).length}명 + {(g.extra_emails || []).length}외부 · by {g.created_by}</span>
-                <span onClick={() => startEdit(g)} style={{ fontSize: 11, color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}>편집</span>
-                <span onClick={() => remove(g)} style={{ fontSize: 11, color: "#ef4444", cursor: "pointer", textDecoration: "underline" }}>삭제</span>
+          {(groups || []).map(g => {
+            const isGrp = (g.id || "").startsWith("grp:");
+            return (
+              <div key={g.id} style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)", opacity: isGrp ? 0.85 : 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, flex: 1 }}>
+                    {isGrp ? "[그룹]" : "[메일그룹]"} {g.name}
+                  </span>
+                  <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                    {(g.members || []).length}명{!isGrp && ` + ${(g.extra_emails || []).length}외부`}
+                    {!isGrp && g.created_by ? ` · by ${g.created_by}` : ""}
+                  </span>
+                  {isGrp
+                    ? <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>그룹관리 탭</span>
+                    : <>
+                        <span onClick={() => startEdit(g)} style={{ fontSize: 11, color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}>편집</span>
+                        <span onClick={() => remove(g)} style={{ fontSize: 11, color: "#ef4444", cursor: "pointer", textDecoration: "underline" }}>삭제</span>
+                      </>
+                  }
+                </div>
+                {g.note && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 2 }}>{g.note}</div>}
               </div>
-              {g.note && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 2 }}>{g.note}</div>}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

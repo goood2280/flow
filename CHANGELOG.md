@@ -1,3 +1,14 @@
+## v8.8.3 — 2026-04-21
+
+자동백업 최대 5개 · PageGear 전 탭 40px 우하단 통일 · FileBrowser Base 단일파일 admin 삭제 · 인폼 댓글/이력 엔드포인트 · 회의 공개범위 FE picker(patcher) · SplitTable/회의 동시편집 이월.
+
+- **자동백업 최대 5개 유지** — `core/backup.py` `_DEFAULT_KEEP=14→5`, `_MAX_KEEP=5` 상한. `_cleanup_backups()` 공용 훅 (기동 시 1회 + 매 백업마다 + list 조회 시).
+- **PageGear 전 탭 통일** — 40px · ⚙️ · 우하단. `position` prop 정규화로 Tracker/Meeting/Calendar/Dashboard 의 `bottom-left` 호출도 자동 수렴.
+- **FileBrowser Base 단일 파일 admin 삭제** — 🗑 버튼 + `/base-file/delete` 가 base_root + db_root fallback, `.trash/` archive, 화이트리스트 방어.
+- **인폼 댓글/이력 엔드포인트** — `routers/informs_extra.py` 신규. `/api/informs/{id}/comments` (CRUD) + `/api/informs/{id}/history` (status_history + edit_history 병합 타임라인).
+- **회의 공개범위 FE picker (patcher)** — `_patch_meeting_v883.py` 에 create/edit 모달 + state + payload 주입.
+- **이월 (v8.8.4)** — SplitTable 오버라이드/정렬/paste-세트/태그 드로어 + 회의록 WebSocket 동시편집.
+
 # flow — CHANGELOG
 
 주요 변경점만 간략히. 세부 내역은 `VERSION.json` 의 changelog 배열 참고.

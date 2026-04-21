@@ -129,6 +129,19 @@ export default function My_FileBrowser({user}){
     return m>=60?Math.floor(m/60)+"시간 "+(m%60)+"분":m+"분 "+s+"초";
   };
 
+  // v8.8.3: Admin Base 단일파일 원본 삭제 (archive to .trash). host_root 자동 감지.
+  const deleteBaseFile=async(name)=>{
+    if(!isAdmin){alert("Admin 만 삭제할 수 있습니다.");return;}
+    if(!window.confirm("정말 이 Base 단일 파일을 삭제하시겠습니까?\n"+name+"\n\n.trash 폴더로 이동됩니다 (복구 가능)."))return;
+    try{
+      const r=await fetch(API+"/base-file/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:name,username:user?.username||""})});
+      if(!r.ok){const d=await r.json().catch(()=>({}));alert(d.detail||"삭제 실패");return;}
+      // 리스트 즉시 반영 + 선택 상태 정리
+      setBaseFiles(prev=>prev.filter(f=>f.name!==name));
+      if(selBaseFile===name){setSelBaseFile("");setData(null);setBaseRaw(null);}
+    }catch(e){alert("삭제 실패: "+(e?.message||e));}
+  };
+
   useEffect(()=>{
     // v4.1: boot-load scopes + DB listings in parallel. Base listing is lazy
     // (loaded only when user switches scope) to keep the default cold-start fast.
@@ -203,11 +216,11 @@ export default function My_FileBrowser({user}){
     else if(mode==="base"&&selBaseFile){
       // Base JSON/md files have no SQL surface — silently ignore. Tabular
       // parquet/csv re-load with the SQL param applied server-side.
-      if(data?._kind==="json"||data?._kind==="md")return;
+      if(baseRaw)return; // json/md 는 SQL 적용 불가 — baseRaw 상태로 판단
       setLoading(true);setError("");
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:200,cols:10,
         select_cols:selectedCols.length?selectedCols.join(","):""});
-      sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
+      sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
     else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql);
   };
@@ -223,11 +236,11 @@ export default function My_FileBrowser({user}){
     // v8.4.4: Base 모드도 select_cols 적용되도록 분기 추가
     if(mode==="rootpq"&&selRootPq){loadRootPqView(selRootPq,sql,cols);}
     else if(mode==="base"&&selBaseFile){
-      if(data?._kind==="json"||data?._kind==="md")return;
+      if(baseRaw)return; // json/md 는 컬럼 선택 불가 — baseRaw 상태로 판단
       setLoading(true);setError("");setTab("data");
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:200,cols:10,
         select_cols:cols.length?cols.join(","):""});
-      sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
+      sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
     else if(selRoot&&selProd){loadHiveView(selRoot,selProd,sql,cols);}
   };
@@ -298,6 +311,13 @@ export default function My_FileBrowser({user}){
                 {/* v8.7.7: `db` 소스 태그 제거 — Base 단일 파일은 소스 구분 없이 한 번만 표시. */}
                 <span style={{fontSize:9,padding:"1px 4px",borderRadius:3,background:extColor+"22",color:extColor,fontWeight:700,fontFamily:"monospace"}}>{f.ext}</span>
                 <span style={{fontSize:9,color:"#64748b"}}>{formatSize(f.size)}</span>
+                {/* v8.8.3: Admin 전용 원본 삭제 버튼 — .trash 로 archive (복구 가능) */}
+                {isAdmin&&<span
+                  onClick={(e)=>{e.stopPropagation();deleteBaseFile(f.name);}}
+                  title={"원본 삭제 (admin) — "+f.name+" 을 .trash 로 이동"}
+                  style={{fontSize:11,lineHeight:1,padding:"1px 5px",borderRadius:3,cursor:"pointer",color:"#ef4444",border:"1px solid #ef444455",background:"transparent",flexShrink:0}}>
+                  🗑
+                </span>}
               </div>);
             })}
           </div>

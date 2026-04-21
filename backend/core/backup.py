@@ -1,4 +1,4 @@
-"""core/backup.py v8.7.4 — 데이터 자동 백업 (사용자 기록 보호).
+"""core/backup.py v8.8.3 — 데이터 자동 백업 (사용자 기록 보호).
 
 범위 (v8.7.4 재정의):
   - 가벼운 *사용자 기록* 만 백업. 대용량 DB parquet 는 **제외**.
@@ -6,7 +6,7 @@
   - 제외: `*.parquet`, `*.pyc`, `__pycache__`, `_backups`, `cache`, `tmp`, `node_modules`.
   - logs/uploads 는 포함 (운영 기록 + 인폼 이미지 보존 필요).
   - 백업 경로: admin_settings.json `backup.path` (없으면 {data_root}/_backups).
-  - 보관 정책: 최신 N 개 유지 (기본 14). 초과분 자동 삭제.
+  - 보관 정책: 최신 N 개 유지 (기본 5, 상한 5 — v8.8.3 부터 축소).
   - 주기: 서버 기동 시 1회 + 스케줄 스레드 (기본 24h). admin_settings.json
     `backup.interval_hours` 로 런타임 조절.
 """
@@ -30,8 +30,9 @@ logger = logging.getLogger("fabcanvas.backup")
 _EXCLUDE_DIR_NAMES = {"_backups", "cache", "tmp", "__pycache__", "node_modules"}
 _EXCLUDE_GLOBS = ("*.pyc", "*.parquet")
 
-# 기본 보관 개수 / 기본 주기
-_DEFAULT_KEEP = 14
+# v8.8.3: 기본 보관 개수 14 → 5, 상한도 5 로 축소 (디스크 보호).
+_DEFAULT_KEEP = 5
+_MAX_KEEP = 5
 _DEFAULT_INTERVAL_HOURS = 24
 _MIN_INTERVAL_HOURS = 1
 _MAX_INTERVAL_HOURS = 24 * 7
@@ -67,10 +68,12 @@ def _write_cfg(cfg: dict) -> None:
 def get_settings() -> dict:
     cfg = _read_cfg()
     bk = cfg.get("backup") or {}
+    raw_keep = int(bk.get("keep") or _DEFAULT_KEEP)
+    keep = max(1, min(_MAX_KEEP, raw_keep))  # v8.8.3: 상한 5 로 클램프
     return {
         "path": (bk.get("path") or "").strip(),
         "interval_hours": int(bk.get("interval_hours") or _DEFAULT_INTERVAL_HOURS),
-        "keep": int(bk.get("keep") or _DEFAULT_KEEP),
+        "keep": keep,
         "enabled": bool(bk.get("enabled", True)),
         "last": _last_backup,
     }
@@ -85,7 +88,8 @@ def set_settings(path: Optional[str] = None, interval_hours: Optional[int] = Non
     if interval_hours is not None:
         bk["interval_hours"] = max(_MIN_INTERVAL_HOURS, min(_MAX_INTERVAL_HOURS, int(interval_hours)))
     if keep is not None:
-        bk["keep"] = max(1, min(200, int(keep)))
+        # v8.8.3: 상한 5 강제.
+        bk["keep"] = max(1, min(_MAX_KEEP, int(keep)))
     if enabled is not None:
         bk["enabled"] = bool(enabled)
     cfg["backup"] = bk
@@ -172,6 +176,29 @@ def _collect_sources() -> List[Tuple[Path, str]]:
     return srcs
 
 
+def _cleanup_backups(dest_root: Path, keep: int) -> int:
+    """v8.8.3: 백업 보관 정리 — 최신 keep 개만 남기고 나머지 삭제.
+    run_backup / 스케줄러 / 수동 호출 어디서나 동일 로직 사용."""
+    try:
+        keep = max(1, min(_MAX_KEEP, int(keep or _DEFAULT_KEEP)))
+    except Exception:
+        keep = _DEFAULT_KEEP
+    if not dest_root.is_dir():
+        return 0
+    files = sorted(dest_root.glob("flow_data_*.zip"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    removed = 0
+    for old in files[keep:]:
+        try:
+            old.unlink()
+            removed += 1
+        except Exception as e:
+            logger.warning(f"backup cleanup skip {old}: {e}")
+    if removed:
+        logger.info(f"backup cleanup: removed {removed} old zip(s), keeping {keep}")
+    return removed
+
+
 def run_backup(reason: str = "manual") -> dict:
     """설정된 소스들을 zip 으로 백업. 성공/실패 state 를 _last_backup 에 기록."""
     with _state_lock:
@@ -200,15 +227,9 @@ def run_backup(reason: str = "manual") -> dict:
                         except Exception as e:
                             logger.warning(f"backup skip {fp}: {e}")
 
-            # 보관 정리
+            # v8.8.3: 보관 정리 — 공용 _cleanup_backups 훅 사용 (상한 5).
             keep = get_settings()["keep"]
-            files = sorted(dest_root.glob("flow_data_*.zip"),
-                           key=lambda p: p.stat().st_mtime, reverse=True)
-            for old in files[keep:]:
-                try:
-                    old.unlink()
-                except Exception:
-                    pass
+            _cleanup_backups(dest_root, keep)
 
             info = {
                 "ok": True,
@@ -237,6 +258,11 @@ def list_backups() -> list:
     root = _resolve_backup_root()
     if not root.is_dir():
         return []
+    # v8.8.3: 리스트 조회 시에도 기회적으로 cleanup (파일 개수가 초과하면 정리).
+    try:
+        _cleanup_backups(root, get_settings()["keep"])
+    except Exception:
+        pass
     out = []
     for p in sorted(root.glob("flow_data_*.zip"), key=lambda x: x.stat().st_mtime, reverse=True):
         try:
@@ -293,6 +319,12 @@ def start_scheduler() -> bool:
     if os.environ.get("FABCANVAS_DISABLE_BACKUP") == "1":
         logger.info("backup scheduler disabled via FABCANVAS_DISABLE_BACKUP=1")
         return False
+    # v8.8.3: 기동 시 즉시 한 번 cleanup — 이전 설치에서 쌓인 >5개 파일 정리.
+    try:
+        root = _resolve_backup_root()
+        _cleanup_backups(root, get_settings()["keep"])
+    except Exception as e:
+        logger.warning(f"initial cleanup skipped: {e}")
     t = threading.Thread(target=_scheduler_loop, name="backup-scheduler", daemon=True)
     t.start()
     _scheduler_started = True

@@ -333,7 +333,7 @@ def list_products():
         for f in sorted(db_base.iterdir()):
             if f.is_file() and f.suffix in (".parquet", ".csv"):
                 products.append({"name": f.stem, "file": f.name, "size": f.stat().st_size,
-                                 "root": "", "type": f.suffix[1:]})
+                                 "root": "", "type": f.suffix[1:], "source_type": "db_root"})
         # (2) Hive-flat: each <root>/<table>/product=<P>/ aggregates to a
         # single logical "source" entry keyed by table name.
         for root_dir in sorted(db_base.iterdir()):
@@ -349,7 +349,8 @@ def list_products():
                     if files:
                         products.append({"name": table_dir.name, "file": files[0].name,
                                          "size": sum(p.stat().st_size for p in files),
-                                         "root": root_dir.name, "type": files[0].suffix[1:]})
+                                         "root": root_dir.name, "type": files[0].suffix[1:],
+                                         "source_type": "db_hive"})
                 else:
                     size = 0
                     for part in parts:
@@ -357,15 +358,16 @@ def list_products():
                             if f.is_file():
                                 size += f.stat().st_size
                     products.append({"name": table_dir.name, "file": f"product=*/part-0.*",
-                                     "size": size, "root": root_dir.name, "type": "hive"})
-    # (3) Base-scope wide-form feature parquets.
+                                     "size": size, "root": root_dir.name, "type": "hive",
+                                     "source_type": "db_hive"})
+    # (3) Base-scope wide-form feature parquets (ML_TABLE_ 등).
     try:
         base = _base_root()
         if base.exists():
             for f in sorted(base.iterdir()):
                 if f.is_file() and f.suffix == ".parquet":
                     products.append({"name": f.stem, "file": f.name, "size": f.stat().st_size,
-                                     "root": "Base", "type": "parquet"})
+                                     "root": "Base", "type": "parquet", "source_type": "base_file"})
     except Exception:
         pass
     # v8.7.8: dedup — name 단독으로도 중복 제거 (Base 와 DB root 에 같은 parquet 이 동시 노출되는 경우).

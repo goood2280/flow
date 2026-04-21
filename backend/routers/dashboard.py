@@ -17,7 +17,8 @@ from core.utils import (
 
 logger = logging.getLogger("holweb.dashboard")
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
-DB_BASE = PATHS.db_root
+# NOTE: DB_BASE 는 삭제됨. admin 이 런타임에 db_root 를 변경해도 반영되도록
+# 각 함수 내부에서 PATHS.db_root 를 직접 참조(lazy resolve).
 CHARTS_FILE = PATHS.data_root / "dashboard_charts.json"
 SNAP_FILE = PATHS.data_root / "dashboard_snapshots.json"
 
@@ -815,25 +816,33 @@ def get_columns(root: str = Query(""), product: str = Query(""), file: str = Que
             raise HTTPException(400, "Cannot read base file")
         df = df.head(1)
         return {"columns": list(df.columns), "dtypes": {n: str(d) for n, d in df.schema.items()}}
+    # v8.8.3: lazy resolve — PATHS.db_root 를 매 호출마다 읽어 admin 런타임 변경 반영.
+    db_base = PATHS.db_root
     if file:
-        fp = DB_BASE / file
+        fp = db_base / file
         if not fp.is_file():
-            raise HTTPException(404)
+            raise HTTPException(404, f"File not found: {file} (db_root={db_base})")
         df = read_one_file(fp)
         if df is None:
-            raise HTTPException(400, "Cannot read file")
+            raise HTTPException(400, f"Cannot read file: {file}")
         df = df.head(1)
     else:
-        prod_path = DB_BASE / root / product
+        prod_path = db_base / root / product
         if not prod_path.is_dir():
-            raise HTTPException(404)
+            raise HTTPException(
+                404,
+                f"Product directory not found: {root}/{product} (db_root={db_base})"
+            )
         from core.utils import _glob_data_files
         files = _glob_data_files(prod_path)
         if not files:
-            raise HTTPException(404)
+            raise HTTPException(
+                404,
+                f"No data files found in: {root}/{product} (db_root={db_base})"
+            )
         df = read_one_file(files[0])
         if df is None:
-            raise HTTPException(400, "Cannot read data")
+            raise HTTPException(400, f"Cannot read data file: {files[0].name}")
         df = df.head(1)
     return {"columns": list(df.columns), "dtypes": {n: str(d) for n, d in df.schema.items()}}
 

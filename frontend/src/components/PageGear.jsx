@@ -1,5 +1,6 @@
-/* PageGear.jsx v8.8.1 — 페이지별 공용 톱니(⚙️) 설정 패널.
- * v8.8.1: FileBrowser 스타일에 통일 (40px · ⚙️ · 우하단 default).
+/* PageGear.jsx v8.8.3 — 페이지별 공용 톱니(⚙️) 설정 패널.
+ * v8.8.3: FileBrowser S3 ⚙️ 스타일과 100% 통일 (40px · ⚙️ emoji · 우하단 default).
+ *   - 이전 v8.8.1 은 36px + ⚙ (no emoji) 으로 파일탐색기와 어긋남. 전 탭 한 방에 수렴.
  */
 import { useEffect, useRef, useState } from "react";
 
@@ -12,11 +13,12 @@ import { useEffect, useRef, useState } from "react";
  * props:
  *   - title:   string. drawer 제목.
  *   - children:React. 패널 내용 (설정 폼).
- *   - canEdit: boolean. false 면 disabled 배지. (panel 내부가 admin-only 편집인 경우용)
- *   - position: "top-right" (default) | "bottom-right". 페이지 우상단/우하단 floating.
+ *   - canEdit: boolean. false 면 disabled 배지.
+ *   - position: "bottom-right" (default, v8.8.3 통일) | "top-right" | "bottom-left" | "inline".
  *
  * 특징:
- *   - 클릭 시 우측에 320px drawer 오픈.
+ *   - 버튼: 40 x 40, ⚙️ emoji, 보더/그림자 FileBrowser S3 gear 와 동일.
+ *   - 클릭 시 우측에 360px drawer 오픈.
  *   - ESC 또는 외부 클릭 시 닫힘.
  *   - z-index 50 (모달·dropdown 아래).
  */
@@ -32,13 +34,17 @@ export default function PageGear({ title = "설정", children, canEdit = true, p
     return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("mousedown", onClick); };
   }, [open]);
 
-  const pos = position === "inline"
+  // v8.8.3: 전 탭이 bottom-right 로 통일 (FileBrowser ⚙️ 와 일치). position prop 은
+  // 후방 호환을 위해 남겨두되, 특이 케이스(inline) 가 아니면 bottom-right 로 정규화.
+  const normalized = (position === "inline" || position === "top-right")
+    ? position
+    : "bottom-right";
+
+  const pos = normalized === "inline"
     ? { position: "relative" }
-    : position === "bottom-right"
-      ? { position: "fixed", bottom: 20, right: 20 }
-      : position === "top-right"
-        ? { position: "absolute", top: 14, right: 16 }
-        : { position: "fixed", bottom: 20, left: 20 };  // "bottom-left" default
+    : normalized === "top-right"
+      ? { position: "absolute", top: 14, right: 16 }
+      : { position: "fixed", bottom: 16, right: 16 };  // bottom-right (default)
 
   return (
     <>
@@ -48,15 +54,15 @@ export default function PageGear({ title = "설정", children, canEdit = true, p
         style={{
           ...pos,
           zIndex: 40,
-          width: 36, height: 36, borderRadius: 18,
+          width: 40, height: 40, borderRadius: "50%",
           border: "1px solid var(--border)",
           background: "var(--bg-secondary)",
           color: "var(--text-secondary)",
-          cursor: "pointer", fontSize: 16,
+          cursor: "pointer", fontSize: 18,
           display: "flex", alignItems: "center", justifyContent: "center",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
         }}
-      >⚙</button>
+      >⚙️</button>
       {open && (
         <>
           <div style={{

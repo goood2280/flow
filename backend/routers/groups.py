@@ -1,8 +1,12 @@
-"""routers/groups.py v8.8.1 — User groups for Dashboard/Tracker visibility + LOT watch + module 담당.
+"""routers/groups.py v8.8.3 — User groups for Dashboard/Tracker visibility + LOT watch + module 담당.
 
 스키마 ({data_root}/groups/groups.json):
-  [{id, name, owner, members:[username], watched_lots:[lot_id],
+  [{id, name, description, owner, members:[username], watched_lots:[lot_id],
     modules:[module_name], created, updated}]
+
+v8.8.3 변경:
+  - description(optional str) 필드 추가: 그룹 목적 자유 텍스트.
+  - 기존 레코드는 description 없어도 옵셔널 처리.
 
 v8.7.0 추가:
   - modules: 이 그룹이 담당하는 공정 모듈 (GATE/STI/PC/MOL/BEOL/ET/EDS/...).
@@ -179,6 +183,7 @@ def filter_by_visibility(items: list, username: str, role: str, key: str = "grou
 # ── Pydantic ────────────────────────────────────────────────────────
 class GroupCreate(BaseModel):
     name: str
+    description: Optional[str] = None
     members: List[str] = []
     watched_lots: List[str] = []
     modules: List[str] = []
@@ -186,6 +191,7 @@ class GroupCreate(BaseModel):
 
 class GroupUpdate(BaseModel):
     name: Optional[str] = None
+    description: Optional[str] = None
     members: Optional[List[str]] = None
     watched_lots: Optional[List[str]] = None
     modules: Optional[List[str]] = None
@@ -243,6 +249,7 @@ def create_group(req: GroupCreate, request: Request):
     g = {
         "id": gid,
         "name": name,
+        "description": (req.description or "").strip() or None,
         "owner": me["username"],
         "members": members,
         "watched_lots": sorted(set(req.watched_lots or [])),
@@ -272,6 +279,8 @@ def update_group(req: GroupUpdate, request: Request, id: str = Query(...)):
         if any(x.get("name") == name and x.get("id") != id for x in groups):
             raise HTTPException(409, "group name already exists")
         g["name"] = name
+    if req.description is not None:
+        g["description"] = req.description.strip() or None
     if req.members is not None:
         # v8.8.1: owner 자동 포함 X. admin/test 필터.
         g["members"] = sorted(set(_sanitize_members(req.members)))
