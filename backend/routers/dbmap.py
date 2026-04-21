@@ -635,12 +635,93 @@ def _list_dir(dir_path, fields=("name", "updated")):
 
 @router.get("/tables")
 def list_tables():
-    return {"tables": _list_dir(TABLES_DIR)}
+    """List TableMap tables. v8.7.6: 각 테이블에 대해 Base CSV 동명 auto-link 힌트 포함.
+    - base_csv_match: {path, rows, cols, size} | null — Base root 또는 DB root 의
+      같은 이름(csv/parquet) 파일이 있으면 자동 로드 후보로 제시.
+    """
+    items = _list_dir(TABLES_DIR)
+    # v8.7.6: Base/DB 루트 동명 파일 스캔 (case-insensitive, .csv/.parquet).
+    candidates: Dict[str, Any] = {}
+    try:
+        for root in (PATHS.base_root, PATHS.db_root):
+            if not root.exists():
+                continue
+            for fp in root.iterdir():
+                if not fp.is_file():
+                    continue
+                if fp.suffix.lower() not in (".csv", ".parquet"):
+                    continue
+                stem = fp.stem.lower()
+                candidates.setdefault(stem, {
+                    "path": str(fp), "name": fp.name,
+                    "size": fp.stat().st_size, "suffix": fp.suffix.lower(),
+                    "root": "base" if root == PATHS.base_root else "db",
+                })
+    except Exception:
+        pass
+    for it in items:
+        # table display_name 우선 → name → id 순으로 후보 키 시도
+        keys = []
+        for k in (it.get("display_name"), it.get("name"), it.get("id")):
+            if k:
+                keys.append(str(k).lower())
+        hit = None
+        for k in keys:
+            if k in candidates:
+                hit = candidates[k]; break
+        it["base_csv_match"] = hit
+    return {"tables": items}
 
 
 @router.get("/groups")
 def list_groups():
     return {"groups": _list_dir(GROUPS_DIR)}
+
+
+@router.get("/tables/{table_id}/auto-load")
+def auto_load_table_from_base(table_id: str, limit: int = Query(500, ge=1, le=5000)):
+    """v8.7.6: 같은 이름의 Base CSV / DB root 파일을 자동 로드해 TableMap 에 주입한
+    할 후보 rows 를 반환한다 (미리보기 용도). FE 가 '적용' 을 눌러야 실제 TableMap
+    JSON 에 반영되도록 안전 분리.
+    """
+    fp = TABLES_DIR / f"{safe_id(table_id)}.json"
+    if not fp.exists():
+        raise HTTPException(404, "table not found")
+    t = load_json(fp, {})
+    keys = [x for x in (t.get("display_name"), t.get("name"), t.get("id")) if x]
+    roots = [PATHS.base_root, PATHS.db_root]
+    target = None
+    for root in roots:
+        if not root.exists():
+            continue
+        for k in keys:
+            for ext in (".csv", ".parquet"):
+                cand = root / f"{k}{ext}"
+                if cand.is_file():
+                    target = cand; break
+            if target: break
+        if target: break
+    if not target:
+        raise HTTPException(404, "동명 Base/DB 파일 없음")
+    try:
+        if target.suffix.lower() == ".csv":
+            import csv as _csv
+            with open(target, "r", encoding="utf-8-sig", newline="") as f:
+                reader = _csv.reader(f)
+                cols = next(reader, []) or []
+                rows = []
+                for i, r in enumerate(reader):
+                    if i >= limit: break
+                    rows.append(list(r))
+        else:
+            import polars as _pl
+            df = _pl.scan_parquet(str(target)).head(limit).collect()
+            cols = df.columns
+            rows = [list(row) for row in df.iter_rows()]
+        return {"ok": True, "path": str(target), "columns": cols,
+                "rows": rows, "truncated": len(rows) >= limit}
+    except Exception as e:
+        raise HTTPException(500, f"로드 실패: {e}")
 
 
 # ── Versions ──

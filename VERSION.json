@@ -1,7 +1,26 @@
 {
-  "version": "8.7.5",
+  "version": "8.7.6",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.7.6",
+      "date": "2026-04-21",
+      "title": "회의 액션아이템 그룹+메일+간트 · 인폼 drill-down · TableMap auto-link · fab_source 확장 · setup 보존 · FB DB 인식 수정",
+      "tag": "feat+fix",
+      "changes": [
+        "**액션아이템 그룹 담당자 + 메일 발송** — ActionItem 에 `group_ids[]` 추가, `/minutes/save` 가 `send_mail`/`mail_to_users`/`mail_groups`/`mail_to` 수용. 저장과 동시에 아젠다+회의록+액션아이템을 HTML 로 조립해 사내 메일 API(multipart, 199명 한도, 본문 2MB, 첨부 10MB) 로 발송. Admin > 메일 API 설정 재사용.",
+        "**액션아이템 간트 차트** — My_Meeting 에 `리스트/간트` 탭. SVG 기반 가로 바 차트 — 전 회의 x 전 차수의 due 가 있는 액션아이템 타임라인. 오늘 세로선, overdue 빨강, pending/in_progress/done 색상, 월 gridline, 바 라벨은 회의 클릭 시 상세 탭으로 이동.",
+        "**인폼 제품→Lot→Wafer drill-down + 그룹 권한** — `내 모듈` 모드 제거, `제품` 모드에 lot 카드 + wafer 칩 drill-down UI. backend Inform 스키마에 `group_ids[]` 추가 + `_group_visible()` 가시성 필터. 그룹 비지정 인폼은 public.",
+        "**TableMap ↔ Base CSV 동명 auto-link** — `/api/dbmap/tables` 가 각 테이블의 display_name/name/id 와 일치하는 Base/DB root 의 csv/parquet 후보를 `base_csv_match` 로 반환. 신규 `/api/dbmap/tables/{id}/auto-load` 가 미리보기 rows 반환 (적용 분리).",
+        "**fab_source 드롭다운 확장** — SplitTable 톱니 override 에서 `[Base]` / `[DB/<root>]` / `[TableMap]` 태그로 Base 단일파일·DB 제품 디렉토리·TableMap 테이블 전부 합집합 표시. dedup 처리.",
+        "**setup.py holweb-data 보존** — `_write()` 가드에 `holweb-data/` 추가. backend/frontend 지우고 setup.py 재실행해도 data/, holweb-data/ 는 절대 덮어쓰지 않음. 외부 절대경로(FABCANVAS_DATA_ROOT 기준) 도 안전.",
+        "**[bugfix] 버전 표시** — Linux case-sensitive FS 에서 `version.json` 소문자 파일 없어서 홈이 fallback '8.7.3' 을 계속 표시하던 문제. `/version.json` 엔드포인트가 `VERSION.json` 대문자도 fallback 으로 시도.",
+        "**[bugfix] FileBrowser DB hive/flat 인식** — whitelist 바깥이어도 parquet 이 있는 디렉토리는 DB 섹션에 노출. 루트의 단일 parquet/csv 는 Base 섹션으로 통합 (이전 `root parquet` 섹션은 비어있도록 하위호환만 유지).",
+        "**[bugfix] FileBrowser 톱니 아이콘** — ⚙ → ⚙️ + 40×40 · SplitTable 톱니와 크기·fontSize 동일화.",
+        "**보안** — `_build_setup.py` INCLUDE_FILES 에서 `FabCanvas_domain.txt` 제거. `.gitignore` 에 `*domain*.txt` / `*도메인*.txt` / `FabCanvas_domain.txt` 패턴 등재. 공개 repo 에 내부 도메인 지식 재유출 차단.",
+        "이월 (v8.7.7+): SplitTable wafer/parameter 태그 시스템 — wf 태그(LOT 특정), parameter 태그(전역·영구 부착), wafer_id 그룹 필터, LOT/fab_lot_id 노트. FB/SPC 태그 오버레이 예정."
+      ]
+    },
     {
       "version": "8.7.5",
       "date": "2026-04-21",

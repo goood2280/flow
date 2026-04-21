@@ -28,7 +28,7 @@ INCLUDE_DIRS = [
 INCLUDE_FILES = [
     'README.md',
     'CHANGELOG.md',
-    'FabCanvas_domain.txt',
+    # v8.7.6: VERSION.json / CHANGELOG.md 는 반드시 포함 — 홈 화면에 최신 버전·로그 표시용.
     'VERSION.json',
     'app.py',
     'backend/app.py',
@@ -36,6 +36,8 @@ INCLUDE_FILES = [
     'frontend/index.html',
     'frontend/package.json',
     'frontend/vite.config.js',
+    # NOTE: FabCanvas_domain.txt 는 의도적으로 번들에서 제외. 내부 도메인 지식 파일로
+    # public repo 에 유출되어서는 안 됨 (.gitignore 에도 등재).
 ]
 
 EXCLUDE_PARTS = {'__pycache__', 'node_modules', 'dist', '.claude', '.git', 'reports'}
@@ -146,12 +148,17 @@ VERSION_META = {json.dumps(version, ensure_ascii=False)}
 
 
 def _write(rel: str, gz_b64: str) -> None:
+    # v8.7.6: holweb-data 보존 — DB 루트 상위의 holweb-data 경로는 절대 덮어쓰지 않음.
+    # 파이프라인: backend/frontend 를 지우고 setup.py 재실행해도 data/, holweb-data/,
+    # 외부 경로(예: /config/work/sharedworkspace/holweb-data) 의 기존 데이터는 안전.
     rel_posix = rel.replace("\\\\", "/").lstrip("./")
-    if rel_posix.startswith("data/") or rel_posix == "data":
-        return
+    for guard in ("data/", "holweb-data/"):
+        if rel_posix.startswith(guard) or rel_posix.rstrip("/") == guard.rstrip("/"):
+            return
     data = gzip.decompress(base64.b64decode(gz_b64))
     dst = ROOT / rel
     try:
+        # 사용자 데이터 루트 가드 (case: data/ 아래 절대경로 회피)
         dst_rel = dst.resolve().relative_to((ROOT / "data").resolve())
         _ = dst_rel
         return

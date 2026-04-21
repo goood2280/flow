@@ -46,7 +46,29 @@ export default function My_SplitTable({user}){
   const[lotOverrides,setLotOverrides]=useState({});
   // v8.4.4: fab_source 후보 (FileBrowser/Dashboard 와 동일 source 리스트)
   const[fabSourceOptions,setFabSourceOptions]=useState([]);
-  useEffect(()=>{sf("/api/dashboard/products").then(d=>setFabSourceOptions((d.products||[]).map(p=>({value:p.root&&p.product?`${p.root}/${p.product}`:(p.file||p.label||""),label:p.label||""})).filter(o=>o.value))).catch(()=>{});},[]);
+  // v8.7.6: fab_source 후보 = Base 단일파일 + DB 제품 디렉토리 + TableMap 테이블 합집합.
+  useEffect(()=>{
+    const out=[];
+    const dash=sf("/api/dashboard/products").then(d=>{
+      for(const p of (d.products||[])){
+        const v=p.root&&p.product?`${p.root}/${p.product}`:(p.file||p.label||"");
+        if(!v) continue;
+        const tag=p.source_type==="base_file"?"Base":p.root?`DB/${p.root}`:"DB";
+        out.push({value:v,label:`[${tag}] ${p.label||v}`,source_type:p.source_type||""});
+      }
+    }).catch(()=>{});
+    const tmap=sf("/api/dbmap/tables").then(d=>{
+      for(const t of (d.tables||[])){
+        const name=t.display_name||t.name||t.id;
+        if(!name) continue;
+        out.push({value:`tablemap:${t.id}`,label:`[TableMap] ${name}`,source_type:"tablemap"});
+      }
+    }).catch(()=>{});
+    Promise.all([dash,tmap]).then(()=>{
+      const seen=new Set();
+      setFabSourceOptions(out.filter(o=>{if(seen.has(o.value)) return false;seen.add(o.value);return true;}));
+    });
+  },[]);
   const isAdmin=user?.role==="admin";
   const lotRef=useRef(null);
   // v4.1: Features tab state — drives /splittable/features (wide ET⋈INLINE) and

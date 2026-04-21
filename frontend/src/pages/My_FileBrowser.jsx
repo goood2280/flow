@@ -430,7 +430,7 @@ export default function My_FileBrowser({user}){
       </div>
       {/* v8.7.5: Admin S3 ingest gear — PageGear 스타일 통일 · 좌하단 */}
       {isAdmin&&<>
-        <div onClick={()=>setS3Open(!s3Open)} title="S3 동기화 / AWS 설정 (admin)" style={{position:"fixed",bottom:16,left:16,width:36,height:36,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",color:"var(--text-primary)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,fontSize:16,boxShadow:"0 2px 8px rgba(0,0,0,0.25)",transition:"all 0.15s"}} onMouseEnter={e=>{e.currentTarget.style.background="var(--accent-glow)";e.currentTarget.style.color="var(--accent)";}} onMouseLeave={e=>{e.currentTarget.style.background="var(--bg-secondary)";e.currentTarget.style.color="var(--text-primary)";}}>⚙</div>
+        <div onClick={()=>setS3Open(!s3Open)} title="S3 동기화 / AWS 설정 (admin)" style={{position:"fixed",bottom:16,left:16,width:40,height:40,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,boxShadow:"0 2px 8px rgba(0,0,0,0.3)",fontSize:18}}>⚙️</div>
         {s3Open&&<>
           <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:98}} onClick={()=>{setS3Open(false);setS3Form(null);setS3Detail(null);}}/>
           <div style={{position:"fixed",top:"50%",left:"50%",transform:"translate(-50%,-50%)",width:"min(780px,94vw)",maxHeight:"86vh",background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:10,zIndex:99,display:"flex",flexDirection:"column",boxShadow:"0 16px 48px rgba(0,0,0,0.6)"}}>

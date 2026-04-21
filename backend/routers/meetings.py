@@ -159,6 +159,239 @@ def _ensure_action_item_ids(ai_list: list) -> list:
         out.append(ai)
     return out
 
+# v8.7.6: 회의록 메일 발송 (사내 메일 API relay) ──────────────
+import html as _html
+import json as _json
+import mimetypes
+import urllib.error
+import urllib.request
+from pathlib import Path as _Path
+
+MAIL_CONTENT_MAX = 2 * 1024 * 1024      # 2MB HTML body
+MAIL_ATTACH_MAX  = 10 * 1024 * 1024     # 10MB total attachments
+MAIL_MAX_RECIPIENTS = 199
+
+
+def _load_mail_cfg() -> dict:
+    from core.paths import PATHS as _P
+    cfg = load_json(_P.data_root / "admin_settings.json", {})
+    if not isinstance(cfg, dict):
+        return {}
+    m = cfg.get("mail") or {}
+    return m if isinstance(m, dict) else {}
+
+
+def _resolve_group_members_to_emails(group_ids: List[str]) -> List[str]:
+    """groups.py 의 그룹 id 리스트 → 멤버 username → email list."""
+    if not group_ids:
+        return []
+    try:
+        from routers.groups import _load as _grp_load
+        from routers.auth import read_users
+    except Exception:
+        return []
+    all_groups = {g.get("id"): g for g in _grp_load() if isinstance(g, dict)}
+    usernames: set = set()
+    for gid in group_ids:
+        g = all_groups.get(gid)
+        if not g:
+            continue
+        if g.get("owner"):
+            usernames.add(g["owner"])
+        for m in (g.get("members") or []):
+            if m:
+                usernames.add(m)
+    all_users = {u.get("username", ""): u for u in read_users()}
+    out: List[str] = []
+    for un in usernames:
+        u = all_users.get(un)
+        if u and u.get("email") and "@" in u.get("email", ""):
+            out.append(u["email"])
+    return out
+
+
+def _resolve_users_to_emails(usernames: List[str]) -> List[str]:
+    if not usernames:
+        return []
+    try:
+        from routers.auth import read_users
+    except Exception:
+        return []
+    all_users = {u.get("username", ""): u for u in read_users()}
+    out: List[str] = []
+    for un in usernames:
+        u = all_users.get(un)
+        if u and u.get("email") and "@" in u.get("email", ""):
+            out.append(u["email"])
+    return out
+
+
+def _meeting_mail_html(meeting: dict, session: dict) -> str:
+    """아젠다 + 회의록 + 액션아이템 단일 HTML 메일 본문 조립."""
+    esc = _html.escape
+    agendas = session.get("agendas") or []
+    minutes = session.get("minutes") or {}
+    decisions = minutes.get("decisions") or []
+    actions = minutes.get("action_items") or []
+    rows_ag = ""
+    for i, a in enumerate(agendas, 1):
+        link = a.get("link") or ""
+        link_html = f'<br/><a href="{esc(link)}" style="font-size:11px;color:#ea580c;">🔗 {esc(link)}</a>' if link else ""
+        rows_ag += (
+            f"<tr><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;width:26px;'>#{i}</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>"
+            f"<b>{esc(a.get('title',''))}</b>"
+            + (f"<div style='font-size:11px;color:#6b7280;margin-top:2px'>{esc(a.get('description',''))}</div>" if a.get('description') else "")
+            + link_html
+            + f"</td><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;font-family:monospace;font-size:11px;color:#374151;'>{esc(a.get('owner',''))}</td></tr>"
+        )
+    ag_tbl = (
+        "<h3 style='font-size:13px;margin:14px 0 6px;color:#374151;'>📋 아젠다</h3>"
+        "<table style='width:100%;border-collapse:collapse;border:1px solid #e5e7eb;'>"
+        "<thead><tr style='background:#f3f4f6;font-size:11px;color:#6b7280;'>"
+        "<th style='text-align:left;padding:6px 10px;'>#</th>"
+        "<th style='text-align:left;padding:6px 10px;'>제목 · 설명</th>"
+        "<th style='text-align:left;padding:6px 10px;width:100px;'>담당</th>"
+        f"</tr></thead><tbody>{rows_ag or '<tr><td colspan=3 style=padding:10px;color:#9ca3af;>(아젠다 없음)</td></tr>'}</tbody></table>"
+    )
+    body_html = ""
+    if minutes.get("body"):
+        body_lines = (minutes.get("body") or "").splitlines()
+        body_html = (
+            "<h3 style='font-size:13px;margin:14px 0 6px;color:#374151;'>📝 회의록 본문</h3>"
+            "<div style='padding:10px 12px;border:1px solid #e5e7eb;border-radius:6px;background:#fafafa;font-size:12px;line-height:1.55;'>"
+            + "<br/>".join(esc(ln) for ln in body_lines) + "</div>"
+        )
+    dec_html = ""
+    if decisions:
+        dec_rows = ""
+        for d in decisions:
+            if isinstance(d, str):
+                dec_rows += f"<li style='margin:4px 0'>{esc(d)}</li>"
+            elif isinstance(d, dict):
+                due = f" · <span style='color:#6b7280'>마감 {esc(d.get('due',''))}</span>" if d.get('due') else ""
+                dec_rows += f"<li style='margin:4px 0'>{esc(d.get('text',''))}{due}</li>"
+        dec_html = f"<h3 style='font-size:13px;margin:14px 0 6px;color:#374151;'>⚡ 결정사항</h3><ul style='margin:0;padding-left:20px;font-size:12px;'>{dec_rows}</ul>"
+    act_html = ""
+    if actions:
+        rows_a = ""
+        for a in actions:
+            rows_a += (
+                f"<tr><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{esc(a.get('text',''))}</td>"
+                f"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;font-family:monospace;font-size:11px;'>{esc(a.get('owner','') or '—')}</td>"
+                f"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;font-family:monospace;font-size:11px;'>{esc(a.get('due','') or '—')}</td></tr>"
+            )
+        act_html = (
+            "<h3 style='font-size:13px;margin:14px 0 6px;color:#374151;'>✅ 액션 아이템</h3>"
+            "<table style='width:100%;border-collapse:collapse;border:1px solid #e5e7eb;'>"
+            "<thead><tr style='background:#f3f4f6;font-size:11px;color:#6b7280;'>"
+            "<th style='text-align:left;padding:6px 10px;'>할 일</th>"
+            "<th style='text-align:left;padding:6px 10px;width:100px;'>담당</th>"
+            "<th style='text-align:left;padding:6px 10px;width:100px;'>마감</th>"
+            f"</tr></thead><tbody>{rows_a}</tbody></table>"
+        )
+    sched = session.get("scheduled_at") or ""
+    return (
+        "<div style='font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1f2937;max-width:720px;'>"
+        f"<h2 style='font-size:16px;margin:0 0 4px;color:#ea580c;'>flow · 회의록 공유</h2>"
+        f"<div style='font-size:12px;color:#6b7280;margin-bottom:8px;'>"
+        f"<b>{esc(meeting.get('title',''))}</b> · {session.get('idx','?')}차"
+        + (f" · {esc(sched).replace('T',' ')[:16]}" if sched else "")
+        + f" · 주관 {esc(meeting.get('owner','—'))}</div>"
+        + ag_tbl + body_html + dec_html + act_html
+        + "<hr style='border:none;border-top:1px solid #e5e7eb;margin:18px 0 8px 0;'/>"
+        "<div style='font-size:10px;color:#9ca3af;'>Sent by flow · 자동 전송된 메일입니다.</div>"
+        "</div>"
+    )
+
+
+def _encode_multipart(fields: Dict[str, str], files: List[tuple]) -> tuple:
+    boundary = "----flowMeeting" + uuid.uuid4().hex
+    chunks: List[bytes] = []
+    for name, value in fields.items():
+        chunks.append(f"--{boundary}\r\n".encode())
+        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n'.encode())
+        chunks.append(b"Content-Type: text/plain; charset=utf-8\r\n\r\n")
+        chunks.append(str(value).encode("utf-8"))
+        chunks.append(b"\r\n")
+    for (fname_field, filename, content, mime) in files:
+        chunks.append(f"--{boundary}\r\n".encode())
+        safe_fn = filename.replace('"', '').replace("\r", "").replace("\n", "")
+        chunks.append(
+            f'Content-Disposition: form-data; name="{fname_field}"; filename="{safe_fn}"\r\n'.encode()
+        )
+        chunks.append(f"Content-Type: {mime}\r\n\r\n".encode())
+        chunks.append(content)
+        chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode())
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def _send_minutes_mail(meeting: dict, session: dict, *,
+                        to_addrs: List[str], subject: str, actor: str) -> dict:
+    """사내 메일 API 로 회의록 HTML 전송. 설정 미비/에러 시 {ok:False, error} 반환."""
+    cfg = _load_mail_cfg()
+    if not cfg.get("enabled") or not (cfg.get("api_url") or "").strip():
+        return {"ok": False, "error": "메일 API 가 설정되지 않았습니다 (Admin > 메일 API)."}
+    uniq: List[str] = []
+    seen: set = set()
+    for em in to_addrs:
+        em = (em or "").strip()
+        if em and "@" in em and em not in seen:
+            seen.add(em)
+            uniq.append(em)
+    if not uniq:
+        return {"ok": False, "error": "수신자 이메일이 없습니다."}
+    if len(uniq) > MAIL_MAX_RECIPIENTS:
+        return {"ok": False, "error": f"수신자는 최대 {MAIL_MAX_RECIPIENTS}명까지 허용됩니다 (현재 {len(uniq)}명)."}
+    html_body = _meeting_mail_html(meeting, session)
+    if len(html_body.encode("utf-8")) > MAIL_CONTENT_MAX:
+        return {"ok": False, "error": "메일 본문이 2MB 한도를 초과했습니다."}
+    receiver_list = [{"email": em, "recipientType": "To", "seq": i + 1} for i, em in enumerate(uniq)]
+    data_obj: Dict[str, Any] = {
+        "content":           html_body,
+        "receiverList":      receiver_list,
+        "senderMailaddress": (cfg.get("from_addr") or "").strip(),
+        "statusCode":        (cfg.get("status_code") or "").strip(),
+        "title":             subject or f"[flow 회의록] {meeting.get('title','')} · {session.get('idx','')}차",
+    }
+    extra = cfg.get("extra_data") or {}
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            if k and k not in data_obj:
+                data_obj[k] = v
+    headers = {}
+    cfg_headers = cfg.get("headers") or {}
+    if isinstance(cfg_headers, dict):
+        for k, v in cfg_headers.items():
+            if k:
+                headers[str(k)] = str(v)
+    url = cfg.get("api_url").strip()
+    if url.lower() == "dry-run":
+        return {"ok": True, "dry_run": True, "to": uniq,
+                "subject": data_obj["title"], "preview_data": data_obj}
+    fields = {"data": _json.dumps(data_obj, ensure_ascii=False)}
+    body_bytes, content_type = _encode_multipart(fields, [])
+    hdrs_out = dict(headers); hdrs_out["Content-Type"] = content_type
+    try:
+        r = urllib.request.Request(url, data=body_bytes, headers=hdrs_out, method="POST")
+        with urllib.request.urlopen(r, timeout=15) as resp:
+            status = resp.status
+            text = resp.read(2048).decode("utf-8", errors="replace")
+        return {"ok": status < 400, "status": status, "response": text[:512], "to": uniq,
+                "subject": data_obj["title"]}
+    except urllib.error.HTTPError as e:
+        det = ""
+        try: det = e.read(512).decode("utf-8", errors="replace")
+        except Exception: pass
+        return {"ok": False, "error": f"메일 API HTTP {e.code}: {det[:200]}"}
+    except Exception as e:
+        return {"ok": False, "error": f"메일 전송 실패: {e}"}
+
+
+# Any 는 typing 으로 이미 import 되어 있지 않음 — meetings.py 위쪽 import 에 추가 필요.
+from typing import Any  # noqa: E402
+
 router = APIRouter(prefix="/api/meetings", tags=["meetings"])
 
 MEET_DIR = PATHS.data_root / "meetings"
@@ -395,6 +628,8 @@ class ActionItem(BaseModel):
     text: str
     owner: Optional[str] = ""
     due: Optional[str] = ""
+    # v8.7.6: 그룹 단위 담당자. owner(개인) 과 병행. 메일 발송 시 그룹 멤버 email 로 확산.
+    group_ids: Optional[List[str]] = None
 
 
 class MinutesSave(BaseModel):
@@ -404,6 +639,12 @@ class MinutesSave(BaseModel):
     # v8.7.5: 문자열 또는 {id,text,due} 객체 list 둘 다 수용.
     decisions: Optional[List] = None
     action_items: Optional[List[ActionItem]] = None
+    # v8.7.6: 저장과 동시에 사내 메일로 아젠다+회의록+액션아이템 전송
+    send_mail: Optional[bool] = False
+    mail_to_users: Optional[List[str]] = None     # username list
+    mail_groups: Optional[List[str]] = None       # admin recipient_groups names
+    mail_to: Optional[List[str]] = None           # direct email list
+    mail_subject: Optional[str] = ""
 
 
 # ── permission helpers ─────────────────────────────────────────────
@@ -810,10 +1051,12 @@ def save_minutes(req: MinutesSave, request: Request):
         text = (ai.text or "").strip() if hasattr(ai, "text") else ""
         if not text:
             continue
+        gids = getattr(ai, "group_ids", None) or []
         ai_clean.append({
             "text": text,
             "owner": (getattr(ai, "owner", "") or "").strip(),
             "due": (getattr(ai, "due", "") or "").strip(),
+            "group_ids": [str(g).strip() for g in gids if g and str(g).strip()],
         })
     # Preserve existing ids / calendar_* fields when text matches by id
     prev_ai = ((s.get("minutes") or {}).get("action_items")) or []
@@ -825,6 +1068,7 @@ def save_minutes(req: MinutesSave, request: Request):
         merged.append({
             "id": aid,
             "text": ai["text"], "owner": ai["owner"], "due": ai["due"],
+            "group_ids": ai.get("group_ids") or [],
             "status": prev.get("status", "pending"),
             "calendar_pushed": bool(prev.get("calendar_pushed")),
             "calendar_event_id": prev.get("calendar_event_id") or "",
@@ -866,7 +1110,39 @@ def save_minutes(req: MinutesSave, request: Request):
     _audit(request, "meetings:minutes",
            detail=f"meeting={m['id']} session={s['id']} decisions={len(decisions)} actions={len(merged)}",
            tab="meetings")
-    return {"ok": True, "meeting": m, "session": s}
+
+    # v8.7.6: 저장 직후 메일 발송 (옵션). action_items.group_ids 멤버·직접 유저·그룹·이메일 병합.
+    mail_result = None
+    if req.send_mail:
+        to_addrs: List[str] = []
+        for em in (req.mail_to or []):
+            if em and "@" in em:
+                to_addrs.append(em)
+        to_addrs += _resolve_users_to_emails(list(req.mail_to_users or []))
+        # ActionItem 당 group_ids 멤버 이메일도 수신자에 추가
+        gids_collected: set = set()
+        for ai in merged:
+            for gid in (ai.get("group_ids") or []):
+                gids_collected.add(gid)
+        to_addrs += _resolve_group_members_to_emails(list(gids_collected))
+        # admin 측 recipient_groups (username 또는 email list) 지원
+        cfg_rg = (_load_mail_cfg().get("recipient_groups") or {})
+        if isinstance(cfg_rg, dict):
+            for gname in (req.mail_groups or []):
+                members = cfg_rg.get(gname) or []
+                if isinstance(members, list):
+                    for em in members:
+                        em = str(em).strip()
+                        if em and "@" in em:
+                            to_addrs.append(em)
+        subject = (req.mail_subject or "").strip()
+        mail_result = _send_minutes_mail(m, s, to_addrs=to_addrs, subject=subject,
+                                          actor=me["username"])
+        _audit(request, "meetings:minutes_mail",
+               detail=f"meeting={m['id']} session={s['id']} ok={mail_result.get('ok')} n={len(to_addrs)}",
+               tab="meetings")
+
+    return {"ok": True, "meeting": m, "session": s, "mail": mail_result}
 
 
 # ── action_item ↔ calendar push/unpush ─────────────────────────

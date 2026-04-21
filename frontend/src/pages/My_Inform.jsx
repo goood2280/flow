@@ -881,11 +881,11 @@ export default function My_Inform({ user }) {
 
         <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", display: "flex", flexWrap: "wrap", gap: 4 }}>
           {modeButton("all",     "전체",    "최근 루트 인폼 (역할 필터 적용)")}
-          {modeButton("mine",    "내 모듈", myMods.all_rounder ? "전체 담당 (admin)" : (myMods.modules || []).join(",") || "모듈 미배정")}
-          {modeButton("product", "제품별",  "제품별 의뢰 목록")}
-          {modeButton("lot",     "랏별",    "LOT 으로 전체 인폼 검색")}
-          {modeButton("wafer",   "wafer",   "wafer 별 스레드")}
+          {modeButton("product", "제품",  "제품 → Lot → Wafer drill-down")}
+          {modeButton("lot",     "Lot",    "LOT 으로 전체 인폼 검색")}
+          {modeButton("wafer",   "Wafer",   "wafer 별 스레드")}
           {modeButton("gantt",   "간트",    "데드라인 간트 차트")}
+          {/* v8.7.6: '내 모듈' 제거 — 제품 drill-down 으로 흐름 단순화 */}
         </div>
 
         <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
@@ -911,7 +911,7 @@ export default function My_Inform({ user }) {
         )}
 
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {(mode === "all" || mode === "mine" || mode === "gantt") && (
+          {(mode === "all" || mode === "gantt") && (
             <div style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>
               메인 패널에서 목록을 확인하세요
             </div>
@@ -1103,13 +1103,52 @@ export default function My_Inform({ user }) {
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6, fontFamily: "monospace" }}>
               📦 {selectedProduct}
               <span style={{ fontSize: 11, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
-                — 이 제품 인폼 {rootsSorted.length}건
+                — 이 제품 인폼 {rootsSorted.length}건 · drill-down 가능
               </span>
             </div>
-            {applyModFilter(rootsSorted).map(r => (
-              <CompactRow key={r.id} root={r}
-                onOpen={() => { setSelectedWafer(r.wafer_id); setMode("wafer"); }} />
-            ))}
+            {/* v8.7.6: 제품 선택 시 Lot 리스트 drill-down */}
+            {(() => {
+              const lotMap = {};
+              for (const r of applyModFilter(rootsSorted)) {
+                const lid = r.lot_id || "(lot 미지정)";
+                (lotMap[lid] = lotMap[lid] || []).push(r);
+              }
+              const lotKeys = Object.keys(lotMap).sort();
+              if (lotKeys.length === 0) {
+                return <div style={{ padding: 20, color: "var(--text-secondary)", fontSize: 11 }}>해당 제품 인폼 없음.</div>;
+              }
+              return lotKeys.map(lid => {
+                const lotRoots = lotMap[lid];
+                const waferSet = Array.from(new Set(lotRoots.map(r => r.wafer_id).filter(Boolean))).sort();
+                return (
+                  <div key={lid} style={{ marginBottom: 12, padding: 10, borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, fontFamily: "monospace" }}>🧾 {lid}</span>
+                      <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>· {lotRoots.length} 루트 · {waferSet.length} wafer</span>
+                      <span style={{ flex: 1 }} />
+                      <span onClick={() => { setSelectedLot(lid); setMode("lot"); }}
+                            style={{ fontSize: 10, color: "var(--accent)", textDecoration: "underline", cursor: "pointer" }}>Lot 전용 뷰 ↗</span>
+                    </div>
+                    {waferSet.length > 0 && (
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+                        {waferSet.slice(0, 30).map(w => (
+                          <span key={w} onClick={() => { setSelectedWafer(w); setMode("wafer"); }}
+                                style={{ padding: "2px 8px", borderRadius: 999, fontSize: 10, fontFamily: "monospace", cursor: "pointer",
+                                         background: "var(--accent-glow)", color: "var(--accent)", border: "1px solid var(--accent)" }}>
+                            {w}
+                          </span>
+                        ))}
+                        {waferSet.length > 30 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>+{waferSet.length - 30}</span>}
+                      </div>
+                    )}
+                    {lotRoots.slice(0, 5).map(r => (
+                      <CompactRow key={r.id} root={r}
+                        onOpen={() => { setSelectedWafer(r.wafer_id); setMode("wafer"); }} />
+                    ))}
+                  </div>
+                );
+              });
+            })()}
           </>
         )}
 

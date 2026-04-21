@@ -68,6 +68,10 @@ def list_roots(all: bool = Query(False)):
     """v7.1: only canonical whitelisted DBs (FAB/VM/MASK/KNOB/INLINE/ET/YLD/ML_TABLE).
 
     Pass ?all=1 to bypass the whitelist (admin diagnostics).
+
+    v8.7.6 fix: hive/flat 파티션 구조를 가진 임의 디렉토리도 DB 섹션에 노출.
+    판단 규칙 — 디렉토리 자체 또는 하위에 parquet/csv 데이터 파일이 존재하면
+    whitelist 바깥이어도 DB 로 간주. 루트의 단일 파일은 (신규 정책) Base 섹션에서만 보여줌.
     """
     from core.utils import detect_structure
     from core.domain import is_visible_root, is_visible_file, canonical_name, DB_REGISTRY
@@ -76,30 +80,39 @@ def list_roots(all: bool = Query(False)):
     if not DB_BASE.exists():
         return {"roots": []}
     for d in sorted(DB_BASE.iterdir()):
-        # v8.1.2: explicit file skip — root-level single files go via /root-parquets only
+        # v8.1.2: explicit file skip — root-level single files go via Base only (v8.7.6).
         if not d.is_dir():
             continue
-        if not all and not is_visible_root(d.name):
-            continue
-        canon = canonical_name(d.name)
-        meta = DB_REGISTRY.get(canon, {})
+        # v8.7.6: whitelist 바깥이어도 데이터가 있으면 표시 (hive/flat 인식).
         file_count = len(_glob_data_files(d))
+        whitelisted = is_visible_root(d.name)
+        if not all and not whitelisted and file_count == 0:
+            continue
+        canon = canonical_name(d.name) if whitelisted else d.name
+        meta = DB_REGISTRY.get(canon, {}) if whitelisted else {}
         structure = "directory"
-        for sub in d.iterdir():
-            if sub.is_dir():
-                structure = detect_structure(sub)
-                break
+        try:
+            for sub in d.iterdir():
+                if sub.is_dir():
+                    structure = detect_structure(sub)
+                    break
+        except Exception:
+            pass
+        # v8.7.6: parquet 이 루트 직속에만 있어도 flat/hive 로 간주 → DB 노드로 노출
+        if structure == "directory" and file_count > 0:
+            structure = detect_structure(d) or "flat"
         result.append({
             "name": d.name,
             "canonical": canon,
             "level": meta.get("level", ""),
             "granularity": meta.get("granularity", ""),
             "icon": meta.get("icon", ""),
-            "description": meta.get("description", ""),
+            "description": meta.get("description", "") if whitelisted else "(auto-detected hive/flat)",
             "path": str(d),
             "structure": structure,
             "dir_count": sum(1 for x in d.iterdir() if x.is_dir()),
             "parquet_count": file_count,
+            "whitelisted": whitelisted,
         })
     # v8.1.1: root-level single files are now served ONLY by /root-parquets (sidebar "Root Parquets" section).
     # Keeping them here caused duplication with the DB list section.
@@ -178,12 +191,14 @@ def base_files():
                     "parquet_count": len(data_files),
                 })
     # v8.7.5: DB 루트에 있는 단일 CSV 는 "Base" 로 분류 (물리적 위치와 무관하게 의미적 Base).
+    # v8.7.6: 단일 parquet 도 동일 — 폴더(hive/flat) 구조만 DB 섹션에 노출됨.
     db_root = PATHS.db_root
     if db_root.is_dir():
         for f in sorted(db_root.iterdir()):
             if not f.is_file():
                 continue
-            if f.suffix.lower() != ".csv":
+            ext = f.suffix.lower()
+            if ext not in (".csv", ".parquet"):
                 continue
             try:
                 stat = f.stat()
@@ -194,7 +209,7 @@ def base_files():
                 "path": f.name,
                 "size": stat.st_size,
                 "modified": stat.st_mtime,
-                "ext": "csv",
+                "ext": ext.lstrip("."),
                 "kind": "file",
                 "source": "db_root",
             })
@@ -436,20 +451,11 @@ def view_product(root: str = Query(...), product: str = Query(...),
 
 @router.get("/root-parquets")
 def root_parquets():
-    """List root-level data files (parquet + CSV)."""
-    result = []
-    DB_BASE = PATHS.db_root
-    if not DB_BASE.exists():
-        return {"files": []}
-    for f in sorted(DB_BASE.iterdir()):
-        # v8.7.5: CSV 단일 파일은 Base 로 분류 (base-files 에서 제공) — 여기서는 parquet 만.
-        if f.is_file() and f.suffix in DATA_EXTENSIONS and f.suffix.lower() != ".csv":
-            stat = f.stat()
-            result.append({
-                "name": f.name, "size": stat.st_size,
-                "modified": stat.st_mtime, "path": f.name,
-            })
-    return {"files": result}
+    """List root-level data files.
+    v8.7.6 정책 변경: DB 루트의 단일 parquet 도 Base 로 분류 권장. 이 엔드포인트는
+    하위호환용으로만 유지하며 빈 배열을 반환해 UI 에서 별도 섹션이 사라지도록 한다.
+    (/api/filebrowser/base-files 가 db_root 의 단일 parquet 을 통합 노출한다.)"""
+    return {"files": []}
 
 
 @router.get("/root-parquet-view")

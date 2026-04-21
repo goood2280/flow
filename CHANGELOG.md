@@ -2,6 +2,25 @@
 
 주요 변경점만 간략히. 세부 내역은 `VERSION.json` 의 changelog 배열 참고.
 
+## v8.7.6 — 2026-04-21
+
+**v8.7.5 이월 TODO 일괄 처리 + 긴급 bugfix 라운드**
+
+- **회의 액션아이템 그룹 담당자 + 메일 발송** — `ActionItem.group_ids[]` 추가. `/api/meetings/minutes/save` 에 `send_mail` / `mail_to_users` / `mail_groups` / `mail_to` / `mail_subject` 수용. 저장과 동시에 아젠다 + 회의록 본문 + 결정사항 + 액션아이템을 HTML 한 장으로 조립해 사내 메일 API(multipart, 199명 한도, 본문 2MB) 로 발송. `_send_minutes_mail()` 이 그룹 멤버의 email 을 recursive resolve.
+- **액션아이템 간트 차트** — My_Meeting 에 `리스트 / 간트` 탭. SVG 가로 바 차트로 모든 회의·차수의 due-set 액션아이템 타임라인. 오늘 세로선 + overdue 빨강 + status 색(pending/in_progress/done) + 월 tick. 바 클릭 → 해당 회의 상세.
+- **인폼 제품 → Lot → Wafer drill-down + 그룹 권한** — `내 모듈` 모드 제거. `제품` 모드에 lot 카드 + wafer 칩 UI (lot 당 상위 5 루트 + 연결 wafer 배지). 백엔드 Inform 스키마에 `group_ids[]` + `_group_visible()` 필터. 그룹 비지정 = public.
+- **TableMap ↔ Base CSV 동명 auto-link** — `/api/dbmap/tables` 응답에 `base_csv_match: {path, name, size, root}` 필드. TableMap display_name/name/id 와 같은 Base/DB root 파일(csv/parquet) 을 탐지. `/api/dbmap/tables/{id}/auto-load` 가 실제 rows 를 미리보기로 반환 (적용은 FE 가 별도 버튼으로 분리).
+- **fab_source 드롭다운 확장** — SplitTable 톱니 override 의 fab_source 가 Base + DB 제품 디렉토리 + TableMap 테이블을 모두 합친 목록으로 변경. `[Base]` / `[DB/<root>]` / `[TableMap]` 태그로 구분 + dedup.
+- **setup.py holweb-data 보존** — `_write()` 가드에 `holweb-data/` 경로 추가. backend/frontend 지우고 setup.py 재실행해도 DB 상위 폴더인 holweb-data 의 기존 데이터(DB/Base/informs/meetings/messages/users.csv 전부) 는 절대 덮어쓰지 않음.
+- **[bugfix] 홈 버전 표시 8.7.3 고정** — Linux case-sensitive FS 환경에서 `/version.json` 핸들러가 `version.json`(소문자) 만 찾아서 실제 파일 `VERSION.json`(대문자) 을 못 읽고 하드코딩 fallback `{"version":"8.7.3"}` 을 반환하던 문제. 두 케이스 모두 시도하도록 수정.
+- **[bugfix] FileBrowser DB hive/flat 인식** — whitelist 바깥 디렉토리여도 parquet/csv 가 존재하면 DB 섹션에 auto-detect 로 노출. DB 루트의 단일 parquet/csv 는 Base 섹션으로 통합 (기존 "root parquet" 사이드바 섹션은 비도록 하위호환 유지).
+- **[bugfix] FileBrowser 톱니 스타일** — `⚙` → `⚙️`, 36×36 → 40×40, fontSize 16 → 18. SplitTable 톱니와 정확히 동일.
+- **보안** — `_build_setup.py` INCLUDE_FILES 에서 `FabCanvas_domain.txt` 제거. `.gitignore` 에 `*domain*.txt` / `*도메인*.txt` 패턴 + 명시적 파일명 등재. 내부 도메인 지식이 public repo 로 재유출되는 것 차단.
+
+**이월 (v8.7.7+)**
+
+- **SplitTable 태그 시스템** — wafer별 꼬리표(LOT 특정) + parameter별 꼬리표(전역, 해당 파라미터에 영구 부착). wafer_id 그룹 필터, LOT/fab_lot_id 노트. FE/백엔드 신규 라우터 필요.
+
 ## v8.7.5 — 2026-04-21
 
 **버그 수정 / UX 방어 라운드**
