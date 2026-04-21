@@ -1,3 +1,16 @@
+## v8.8.7 — 2026-04-21
+
+hive DB 대시보드 차트 에러 fix · 인폼 제품 3-way unified · fab_source 현재값 표시 · VM meta product 필터 · Rulebook CRUD BE · ET root flat.
+
+- **dashboard/columns PATHS UnboundLocalError** — 함수 진입부로 `PATHS` import 올림, hive `1.RAWDATA_DB_*` 차트 동작.
+- **인폼 제품 카탈로그 3-way unified** — 드롭다운 옵션 `constants ∪ products ∪ productContacts keys`. 담당자 패널 등록 제품도 즉시 노출.
+- **담당자 추가 → 카탈로그 자동 등록** — saveContact / bulkAdd 이후 `/products/add` 자동. 싱크 보장.
+- **SplitTable fab_source 현재값 표시** — placeholder 가 override resolve 결과 반영. `현재 적용: <경로> (자동/매뉴얼)`. orphan mlOnly state 제거.
+- **VM meta product 필터** — `_build_vm_meta(product)` 가 `feature_name, product` 컬럼 지원. product 필터 + feature_name 매핑.
+- **SplitTable Rulebook CRUD BE** — `/api/splittable/rulebook` GET/save (admin). product 스코프 부분 교체.
+- **ET root flat 레이아웃** — `1.RAWDATA_DB_ET/PRODA/PRODA_YYYY-MM-DD.parquet`. `_build_fab_root.py` layout="flat" 지원.
+- **_build_fab_root.py self-sufficient** — Base 없어도 Fab 만으로 재생성. product 컬럼 통합.
+
 ## v8.8.6 — 2026-04-21
 
 이월 3건 shipping + 사내 DB 실환경 맞춤.

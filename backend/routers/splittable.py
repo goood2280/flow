@@ -769,17 +769,24 @@ def _build_inline_meta() -> dict:
     return out
 
 
-def _build_vm_meta() -> dict:
-    """vm_matching.csv (step_desc,step_id) → {step_desc: {...}}."""
+def _build_vm_meta(product: str = "") -> dict:
+    """v8.8.7: vm_matching.csv 확장 스키마 지원.
+       {feature_name, step_desc, step_id, product?} → {feature_name: {step_desc, step_id, label, sub}}.
+       product 가 있으면 해당 제품 + 공용 행만 반환.
+       레거시 (step_desc, step_id) 만 있는 파일은 step_desc 를 feature_name 대체로 사용.
+    """
     base = _base_root()
     rows = _load_csv_rows(base / "vm_matching.csv")
     out: dict[str, dict] = {}
     for r in rows:
+        if product and r.get("product") and r.get("product") != product:
+            continue
+        fname = (r.get("feature_name") or r.get("step_desc") or "").strip()
         sd = (r.get("step_desc") or "").strip()
         sid = (r.get("step_id") or "").strip()
-        if not sd:
+        if not fname:
             continue
-        out[sd] = {"step_desc": sd, "step_id": sid, "label": sd, "sub": sid}
+        out[fname] = {"step_desc": sd, "step_id": sid, "label": sd or fname, "sub": sid}
     return out
 
 
@@ -790,9 +797,113 @@ def inline_meta():
 
 
 @router.get("/vm-meta")
-def vm_meta():
-    """v8.7.5: VM_ prefix 항목 매칭 메타."""
-    return {"items": _build_vm_meta()}
+def vm_meta(product: str = Query("")):
+    """v8.7.5/v8.8.7: VM_ prefix 항목 매칭 메타. product 필터 추가."""
+    return {"items": _build_vm_meta(product)}
+
+
+# v8.8.7: Rulebook (knob_ppid.csv + step_matching.csv) admin 인라인 편집 CRUD.
+#   admin 만 수정 가능. 저장 시 row 정규화 + 빈 행 제거 + 원자적 교체.
+#   스키마는 _build_knob_meta 가 읽는 컬럼과 동일해야 함.
+_RULEBOOK_FILES = {
+    "knob_ppid": {
+        "filename": "knob_ppid.csv",
+        "cols": ["feature_name", "function_step", "rule_order", "ppid",
+                 "operator", "category", "use", "product"],
+        "required": ["feature_name", "function_step", "product"],
+    },
+    "step_matching": {
+        "filename": "step_matching.csv",
+        "cols": ["step_id", "func_step", "product"],
+        "required": ["step_id", "func_step", "product"],
+    },
+}
+
+
+def _rulebook_path(kind: str) -> Path:
+    meta = _RULEBOOK_FILES.get(kind)
+    if not meta:
+        raise HTTPException(400, f"unknown rulebook: {kind}")
+    return _base_root() / meta["filename"]
+
+
+@router.get("/rulebook")
+def get_rulebook(kind: str = Query("knob_ppid"), product: str = Query("")):
+    """v8.8.7: rulebook CSV 를 JSON 으로 반환. product 주어지면 그 제품 행만 + 공용 (product 빈값)."""
+    meta = _RULEBOOK_FILES.get(kind)
+    if not meta:
+        raise HTTPException(400, f"unknown rulebook: {kind}")
+    rows = _load_csv_rows(_rulebook_path(kind))
+    if product:
+        rows = [r for r in rows if not r.get("product") or r.get("product") == product]
+    return {
+        "kind": kind, "file": meta["filename"],
+        "columns": meta["cols"], "rows": rows, "count": len(rows),
+    }
+
+
+class RulebookSaveReq(BaseModel):
+    kind: str               # "knob_ppid" | "step_matching"
+    rows: List[dict]        # 전체 대체 (혹은 product 스코프 대체)
+    product: str = ""       # 주어지면 해당 제품 rows 만 대체, 빈값이면 파일 전체 대체
+    username: str = ""
+
+
+@router.post("/rulebook/save")
+def save_rulebook(req: RulebookSaveReq, request: Request):
+    """admin 전용. product 스코프면 해당 제품 행만 교체, 아니면 파일 전체 교체."""
+    # admin check
+    try:
+        from core.auth import current_user
+        me = current_user(request)
+        if (me.get("role") or "") != "admin":
+            raise HTTPException(403, "Admin only")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(403, "Auth required")
+
+    meta = _RULEBOOK_FILES.get(req.kind)
+    if not meta:
+        raise HTTPException(400, f"unknown rulebook: {req.kind}")
+    fp = _rulebook_path(req.kind)
+    cols = meta["cols"]
+    req_cols = meta["required"]
+
+    # normalize incoming rows — drop empty, enforce required fields.
+    cleaned = []
+    for r in (req.rows or []):
+        if not isinstance(r, dict):
+            continue
+        nr = {c: str(r.get(c, "") or "").strip() for c in cols}
+        if any(not nr.get(c) for c in req_cols):
+            continue
+        cleaned.append(nr)
+
+    # merge with existing if product-scoped.
+    if req.product:
+        existing = _load_csv_rows(fp)
+        kept = [r for r in existing if r.get("product") != req.product]
+        # product 컬럼 없는 공용 행은 유지, 요청 product 의 행만 교체.
+        for c in cleaned:
+            c["product"] = req.product
+        final = kept + cleaned
+    else:
+        final = cleaned
+
+    # ensure column order
+    import io as _io
+    buf = _io.StringIO()
+    w = csv_mod.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    for r in final:
+        w.writerow({c: r.get(c, "") for c in cols})
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fp.write_text(buf.getvalue(), encoding="utf-8", newline="")
+    _audit_user(req.username or (me.get("username") if isinstance(me, dict) else ""),
+                "splittable:rulebook_save",
+                detail=f"kind={req.kind} product={req.product} rows={len(final)}")
+    return {"ok": True, "kind": req.kind, "product": req.product, "saved_rows": len(final)}
 
 
 @router.get("/knob-meta")

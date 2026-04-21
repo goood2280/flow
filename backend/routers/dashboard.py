@@ -806,8 +806,10 @@ def copy_chart(chart_id: str = Query(...)):
 @router.get("/columns")
 def get_columns(root: str = Query(""), product: str = Query(""), file: str = Query(""),
                 source_type: str = Query("")):
+    # v8.8.7: PATHS 는 함수 진입부에서 임포트 — 이전에 base_file 분기에서만 임포트 되어
+    #   hive DB 분기에서 UnboundLocalError 발생 ("cannot access local variable 'PATHS'") 하던 버그 수정.
+    from core.paths import PATHS
     if source_type == "base_file" and file:
-        from core.paths import PATHS
         fp = PATHS.base_root / file
         if not fp.is_file():
             raise HTTPException(404, f"Base file not found: {file}")
