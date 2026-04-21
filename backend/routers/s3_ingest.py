@@ -437,6 +437,66 @@ def get_schedule(username: str = Query("")):
     d = load_json(SCHEDULE_FILE, {"enabled": False, "interval_minutes": 60})
     return d
 
+
+# v8.6.4 — S3 status traffic light. 모든 유저 read-only. 미들웨어가 인증만 강제.
+# 상태 산출:
+#   green  = aws CLI 있고 + 최근 10건 모두 ok or 없음(설정 자체 없음)
+#   yellow = aws CLI 없거나 / 최근 10건 중 1건 이상 실패 / 마지막 실행이 6h 초과
+#   red    = 최근 5건 연속 실패
+#   none   = 설정도 없음 + AWS 도 없음 (회색)
+@router.get("/health")
+def s3_health():
+    history = jsonl_read(HISTORY_FILE, limit=20)
+    cfg = _load_cfg()
+    items = cfg.get("items", [])
+    aws_ok = shutil.which("aws") is not None
+    # 가장 최근 10건만 분석 (jsonl_read 는 오래된 것부터)
+    recent = history[-10:]
+    total = len(recent)
+    fails = sum(1 for e in recent if (e.get("status") or "").lower() not in ("ok", "success"))
+    last5_fail = total >= 5 and all(
+        (e.get("status") or "").lower() not in ("ok", "success") for e in recent[-5:]
+    )
+    last_ts = recent[-1].get("ts") if recent else ""
+    stale_6h = False
+    if last_ts:
+        try:
+            t = datetime.datetime.fromisoformat(last_ts.replace("Z", ""))
+            stale_6h = (datetime.datetime.now() - t).total_seconds() > 6 * 3600
+        except Exception:
+            pass
+    # decision
+    if not items and not aws_ok:
+        light = "none"
+    elif last5_fail:
+        light = "red"
+    elif (not aws_ok) or fails > 0 or stale_6h:
+        light = "yellow"
+    else:
+        light = "green"
+    msg_parts = []
+    if not aws_ok:
+        msg_parts.append("AWS CLI 미설치")
+    if fails:
+        msg_parts.append(f"최근 실패 {fails}/{total}")
+    if stale_6h:
+        msg_parts.append("최근 동기화 6h 경과")
+    if light == "green":
+        msg_parts.append("정상")
+    if not items:
+        msg_parts.append("설정 없음")
+    return {
+        "light": light,
+        "aws_available": aws_ok,
+        "items_configured": len(items),
+        "running_now": len(_RUNNING),
+        "recent_total": total,
+        "recent_failures": fails,
+        "last_synced_at": last_ts,
+        "stale_6h": stale_6h,
+        "message": " · ".join(msg_parts) or "—",
+    }
+
 class ScheduleReq(BaseModel):
     enabled: bool = False
     interval_minutes: int = 60

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Loading from "../components/Loading";
 import AwsPanel from "../components/AwsPanel";
+import S3StatusLight from "../components/S3StatusLight";
 import { sf } from "../lib/api";
 const API="/api/filebrowser";
 function formatSize(b){if(!b)return"-";if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB";}
@@ -237,7 +238,10 @@ export default function My_FileBrowser({user}){
     <div style={{display:"flex",height:"calc(100vh - 48px)",fontFamily:"'Pretendard',sans-serif",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
       {/* Sidebar */}
       <div style={{width:260,minWidth:260,borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",background:"var(--bg-secondary)"}}>
-        <div style={{padding:"14px 16px 10px",borderBottom:"1px solid var(--border)",fontSize:12,fontWeight:700,color:"var(--text-secondary)",textTransform:"uppercase",letterSpacing:"0.04em"}}>데이터 브라우저</div>
+        <div style={{padding:"14px 16px 10px",borderBottom:"1px solid var(--border)",fontSize:12,fontWeight:700,color:"var(--text-secondary)",textTransform:"uppercase",letterSpacing:"0.04em",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <span>데이터 브라우저</span>
+          <S3StatusLight compact />
+        </div>
         {/* v4.1: Scope switcher (DB / Base). Shown only when backend reports 2+ scopes. */}
         {scopes.length>=2&&<div className="filebrowser-scope-switcher" style={{display:"flex",gap:4,padding:"6px 10px",borderBottom:"1px solid var(--border)"}}>
           {scopes.map(s=>{
