@@ -1,3 +1,12 @@
+## v8.8.8 — 2026-04-21
+
+인폼 새 폼 간소화 + fab_lot_id 자동 SplitTable 스냅샷 + 최근 루트 인폼 꼬리표 + .trash 숨김.
+
+- **인폼 UI 간소화** — SplitTable 변경요청 체크박스 / 표 붙여넣기 / 가져오기 버튼 / 모듈 필터 칩 제거. fab_lot_id 만 넣으면 끝.
+- **fab_lot_id 자동 SplitTable 스냅샷** — product+lot 설정 시 debounce 400ms 후 `/splittable/view` 자동 호출 → param×wafer actual/plan 이 embed_table 로 자동 첨부. 입력 해제 시 자동 탈착.
+- **최근 루트 인폼 꼬리표 배지** — 각 CompactRow 가 해당 lot 의 splittable notes 를 집계해 `🏷 N` pill 표시. tooltip 에 샘플 3개.
+- **파일탐색기 `.trash` · 시스템 폴더 숨김** — `/roots` 가 `.`/`_` prefix 디렉터리 제외.
+
 ## v8.8.7 — 2026-04-21
 
 hive DB 대시보드 차트 에러 fix · 인폼 제품 3-way unified · fab_source 현재값 표시 · VM meta product 필터 · Rulebook CRUD BE · ET root flat.

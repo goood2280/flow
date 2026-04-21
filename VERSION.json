@@ -1,7 +1,19 @@
 {
-  "version": "8.8.7",
+  "version": "8.8.8",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.8",
+      "date": "2026-04-21",
+      "title": "인폼 새 폼 간소화 · fab_lot_id 자동 SplitTable 스냅샷 · 최근 루트 인폼 꼬리표 배지 · .trash 숨김 · filebrowser dot-prefix 폴더 필터",
+      "tag": "feat+fix",
+      "changes": [
+        "**인폼 새 폼 UI 간소화** — 'SplitTable 변경요청 포함' 체크박스 / '📋 표 붙여넣기' 버튼 / '🔗 SplitTable 에서 가져오기' 버튼 / split 수동 입력 블록 / 모듈 필터 칩 모두 제거. fab_lot_id 입력만으로 자동 처리.",
+        "**fab_lot_id 입력 시 SplitTable 자동 스냅샷 attach** — product + lot_id 가 모두 설정되면 debounce(400ms) 후 `/api/splittable/view?product=ML_TABLE_<PROD>&root_lot_id=<앞5>&fab_lot_id=<입력>&prefix=ALL` 호출 → 헤더/파라미터/actual(+plan) 을 자동 embed_table 로 form 에 첨부. 입력 해제 시 자동으로 attach 해제. 등록 버튼 누를 때 별도 액션 없이 스냅샷 포함 저장.",
+        "**최근 루트 인폼 꼬리표 배지** — CompactRow 가 mount 시 `/api/splittable/notes?product=X&root_lot_id=Y` 호출, (wafer 태그 / param 메모 / LOT 노트 / param_global) 개수 집계해 `🏷 N` pill 표시. hover tooltip 에 샘플 3개 + scope 별 카운트.",
+        "**파일탐색기 `.trash` · dot/underscore prefix 폴더 숨김** — `/api/filebrowser/roots` 가 `.` 또는 `_`/`__` 로 시작하는 디렉터리 스킵. base-file/delete archive 된 `.trash` 가 DB 섹션에 노출되던 문제 해결."
+      ]
+    },
     {
       "version": "8.8.7",
       "date": "2026-04-21",

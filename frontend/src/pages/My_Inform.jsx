@@ -1125,6 +1125,63 @@ export default function My_Inform({ user }) {
     setUploadingMain(false);
   };
 
+  // v8.8.8: product + lot_id 쌍이 유효하면 /api/splittable/view 로 현재 시점 SplitTable 스냅샷(plan 포함)
+  //   을 자동으로 fetch → form.embed 에 attach. 사용자가 "가져오기" 버튼을 누르는 단계 제거.
+  //   lot_id 변경이나 product 변경 시 재실행. 실패하면 조용히 attach 끔 (에러 배너 X).
+  useEffect(() => {
+    const prod = (form.product || "").trim();
+    const lot  = (form.lot_id || "").trim();
+    if (!creating) return;
+    if (!prod || !lot) {
+      // attach 해제
+      setForm(f => (f.attach_embed && f.embed?.source?.startsWith?.("SplitTable/"))
+        ? { ...f, attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" } }
+        : f);
+      return;
+    }
+    // ML_TABLE_ prefix 가 아니면 붙여서 조회 (사내 제품명은 보통 PROD 로 등록, ML_TABLE_PROD 가 실 테이블).
+    const mlProd = prod.startsWith("ML_TABLE_") ? prod : `ML_TABLE_${prod}`;
+    const root5 = lot.slice(0, 5);
+    setEmbedFetching(true);
+    // debounce
+    const handle = setTimeout(() => {
+      sf(`/api/splittable/view?product=${encodeURIComponent(mlProd)}&root_lot_id=${encodeURIComponent(root5)}&fab_lot_id=${encodeURIComponent(lot)}&prefix=ALL&view_mode=all`)
+        .then(d => {
+          if (!d || !d.rows || d.rows.length === 0) {
+            setEmbedFetching(false);
+            setForm(f => (f.attach_embed && f.embed?.source?.startsWith?.("SplitTable/"))
+              ? { ...f, attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" } }
+              : f);
+            return;
+          }
+          // 컬럼 = 파라미터 이름 + lot/wafer 헤더. Rows = param 별 actual(+plan) 값들.
+          const headers = d.headers || [];
+          const cols = ["parameter", ...headers];
+          const rows = (d.rows || []).map(r => {
+            const out = [r._param || ""];
+            headers.forEach((_, i) => {
+              const cell = (r._cells && r._cells[i]) || {};
+              const v = cell.actual ?? "";
+              const pv = cell.plan;
+              out.push(pv != null && pv !== "" && pv !== v ? `${v} → ${pv}` : String(v ?? ""));
+            });
+            return out;
+          });
+          setForm(f => ({
+            ...f, attach_embed: true,
+            embed: {
+              source: `SplitTable/${mlProd} @ ${lot} (auto)`,
+              columns: cols, rows,
+              note: `auto-snapshot · ${rows.length} params · fab_lot=${lot}`,
+            },
+          }));
+          setEmbedFetching(false);
+        })
+        .catch(() => { setEmbedFetching(false); });
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [form.product, form.lot_id, creating]);
+
   // v8.8.0: SplitTable 에서 현재 product 의 plan 스냅샷을 본문에 임베드.
   // 빈 history 인 경우 명시적으로 알림 + paste 폴백 제안.
   const embedFromSplitTable = async () => {
@@ -1772,11 +1829,7 @@ export default function My_Inform({ user }) {
                 style={{ padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }}>
                 <option value="">-- 사유 --</option>{constants.reasons.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
-              <label style={{ fontSize: 11, color: "var(--text-secondary)", display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input type="checkbox" checked={form.attach_split}
-                  onChange={e => setForm({ ...form, attach_split: e.target.checked })} />
-                SplitTable 변경요청 포함
-              </label>
+              {/* v8.8.8: SplitTable 변경요청 체크박스 제거 — fab_lot_id 입력 시 자동으로 SplitTable 스냅샷 attach. */}
             </div>
             <textarea value={form.text} onChange={e => setForm({ ...form, text: e.target.value })} rows={4}
               onPaste={handleBodyPaste}
@@ -1786,21 +1839,12 @@ export default function My_Inform({ user }) {
               {/* v8.8.0: 별도 이미지 첨부 버튼 제거 — Ctrl+V 로 본문에 inline 삽입됨. */}
               <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>이미지: 본문에 <b>Ctrl+V</b> 로 바로 붙여넣기 (markdown 으로 inline 삽입)</span>
               {uploadingMain && <span style={{ fontSize: 10, color: "var(--accent)" }}>업로드중…</span>}
-              <button type="button" onClick={embedFromSplitTable}
-                disabled={embedFetching || !form.product}
-                title={!form.product ? "product 를 먼저 입력하세요" : "현재 product SplitTable 이력을 본문에 첨부 (없으면 paste 폴백)"}
-                style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, cursor: (embedFetching || !form.product) ? "default" : "pointer", opacity: (!form.product) ? 0.5 : 1 }}>
-                🔗 SplitTable 에서 가져오기
-              </button>
-              <button type="button" onClick={() => setPasteOpen(true)}
-                title="표 데이터를 붙여넣어서 본문에 첨부 (TSV/CSV). 세트 이름 지정 시 재사용 가능."
-                style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, cursor: "pointer" }}>
-                📋 표 붙여넣기
-              </button>
-              {embedFetching && <span style={{ fontSize: 10, color: "var(--accent)" }}>로딩…</span>}
+              {/* v8.8.8: "SplitTable 에서 가져오기" / "표 붙여넣기" 버튼 제거.
+                         fab_lot_id 입력 시 자동 preview + 등록 시 자동 embed — 사용자가 별도 액션할 필요 없음. */}
+              {embedFetching && <span style={{ fontSize: 10, color: "var(--accent)" }}>SplitTable 스냅샷 로딩…</span>}
               {form.attach_embed && form.embed.rows.length > 0 && (
                 <span style={{ fontSize: 10, color: "#16a34a", fontWeight: 600 }}>
-                  embed: {form.embed.rows.length} rows
+                  ✓ SplitTable 자동 첨부 ({form.embed.rows.length} rows)
                   <button type="button" onClick={() => setForm(f => ({ ...f, attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" } }))}
                     style={{ marginLeft: 6, border: "none", background: "transparent", color: "#ef4444", cursor: "pointer" }}>×</button>
                 </span>
@@ -1823,22 +1867,7 @@ export default function My_Inform({ user }) {
                 <EmbedTableView embed={form.embed} />
               </div>
             )}
-            {form.attach_split && (
-              <div style={{ marginTop: 8, padding: 10, background: "var(--bg-primary)", borderRadius: 5, border: "1px dashed var(--border)" }}>
-                <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4, fontWeight: 600 }}>Split Table 변경 (예: KNOB A → B)</div>
-                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 6 }}>
-                  <input value={form.split.column} onChange={e => setForm({ ...form, split: { ...form.split, column: e.target.value } })}
-                    placeholder="column (예: KNOB/GATE_PPID)"
-                    style={{ padding: "6px 8px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace" }} />
-                  <input value={form.split.old_value} onChange={e => setForm({ ...form, split: { ...form.split, old_value: e.target.value } })}
-                    placeholder="old"
-                    style={{ padding: "6px 8px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace" }} />
-                  <input value={form.split.new_value} onChange={e => setForm({ ...form, split: { ...form.split, new_value: e.target.value } })}
-                    placeholder="new"
-                    style={{ padding: "6px 8px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace" }} />
-                </div>
-              </div>
-            )}
+            {/* v8.8.8: Split Table 변경 수동 입력 블록 제거 — fab_lot_id 기반 자동 스냅샷으로 대체. */}
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
               <button onClick={create} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 600, cursor: "pointer" }}>등록</button>
               <button onClick={() => { setCreating(false); setMsg(""); }} style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>취소</button>
@@ -1847,29 +1876,7 @@ export default function My_Inform({ user }) {
           </div>
         )}
 
-        {/* 대시보드식 모듈 필터 (admin/all-rounder 에서 활용) */}
-        {(isAdmin || myMods.all_rounder || (myMods.modules || []).length > 1) && (mode === "all" || mode === "mine" || mode === "product" || mode === "lot") && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12, alignItems: "center" }}>
-            <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, marginRight: 4 }}>모듈 필터:</span>
-            {constants.modules.map(m => {
-              const on = moduleFilter.includes(m);
-              return (
-                <span key={m} onClick={() => setModuleFilter(on ? moduleFilter.filter(x => x !== m) : [...moduleFilter, m])}
-                  style={{
-                    padding: "3px 10px", borderRadius: 999, fontSize: 10, fontWeight: on ? 700 : 500,
-                    cursor: "pointer",
-                    background: on ? "var(--accent)22" : "var(--bg-secondary)",
-                    color: on ? "var(--accent)" : "var(--text-secondary)",
-                    border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
-                  }}>{m}</span>
-              );
-            })}
-            {moduleFilter.length > 0 && (
-              <span onClick={() => setModuleFilter([])}
-                style={{ fontSize: 10, color: "#ef4444", cursor: "pointer", marginLeft: 4 }}>필터 해제</span>
-            )}
-          </div>
-        )}
+        {/* v8.8.8: 모듈 필터 칩 제거 — 모듈 개념이 인폼에서 덜 쓰여서 불필요. 향후 필요 시 사이드바로 이전. */}
 
         {/* 메인 컨텐츠 */}
         {mode === "gantt" && (
@@ -2187,6 +2194,27 @@ function TimelineLog({ thread, onOpen }) {
 /* 요약 카드 (all/mine/product 모드에서 루트 리스트용) */
 function CompactRow({ root, onOpen }) {
   const mc = moduleColor(root.module);
+  // v8.8.8: 이 root 인폼의 (product, root_lot_id) 에 달린 SplitTable notes(꼬리표) 를 요약 배지로 표시.
+  //   wafer 태그 / param 메모 / LOT 노트 / global 태그 각 카운트. 클릭 시 상세는 별도 동작 없이 hover tooltip 으로.
+  const [tagSummary, setTagSummary] = useState(null);
+  useEffect(() => {
+    const prod = root.product || "";
+    const rlot = root.root_lot_id || (root.lot_id || "").slice(0, 5);
+    if (!prod || !rlot) { setTagSummary(null); return; }
+    let alive = true;
+    sf(`/api/splittable/notes?product=${encodeURIComponent(prod)}&root_lot_id=${encodeURIComponent(rlot)}`)
+      .then(d => {
+        if (!alive) return;
+        const ns = d.notes || [];
+        const by = { wafer: 0, param: 0, lot: 0, param_global: 0 };
+        ns.forEach(n => { if (by[n.scope] != null) by[n.scope]++; });
+        const total = ns.length;
+        setTagSummary(total > 0 ? { total, by, sample: ns.slice(0, 3).map(n => n.text) } : null);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [root.product, root.root_lot_id, root.lot_id]);
+
   return (
     <div onClick={onOpen}
       style={{ padding: "10px 14px", marginBottom: 8, borderRadius: 8,
@@ -2199,7 +2227,14 @@ function CompactRow({ root, onOpen }) {
         <CheckPill node={root} />
         <AutoGenPill node={root} />
         {(root.images && root.images.length > 0) && <span title="이미지 첨부" style={{ fontSize: 10 }}>📎{root.images.length}</span>}
-        {root.embed_table && <span title="임베드" style={{ fontSize: 10 }}>🔗</span>}
+        {root.embed_table && <span title="SplitTable 스냅샷 첨부" style={{ fontSize: 10 }}>🔗</span>}
+        {/* v8.8.8: lot/wafer 꼬리표 배지 — SplitTable notes 집계. */}
+        {tagSummary && (
+          <span title={`이 lot 의 꼬리표 ${tagSummary.total}개 (wafer ${tagSummary.by.wafer} · param ${tagSummary.by.param} · lot ${tagSummary.by.lot} · global ${tagSummary.by.param_global})\n샘플: ${tagSummary.sample.join(" / ")}`}
+                style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#8b5cf6", color: "#fff", fontWeight: 700, cursor: "help" }}>
+            🏷 {tagSummary.total}
+          </span>
+        )}
         {/* v8.7.9: `[제품명] Lot` 표시. wafer_id 는 보조적으로만. */}
         <span style={{ fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>
           {root.product && <span style={{ color: "var(--accent)" }}>[{root.product}]</span>}
