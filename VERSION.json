@@ -1,7 +1,22 @@
 {
-  "version": "8.8.3",
+  "version": "8.8.4",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.4",
+      "date": "2026-04-21",
+      "title": "S3 신호등 방향 화살표 원 내부화 · Tracker 이미지 붙여넣기 토큰 복구 · 인폼 제품 카탈로그 CRUD 통일 · 공용 메일그룹 인폼 노출+관리 z-index · 변경점 액션 담당자 제목 명시 · SplitTable 오버라이드 로직 근본 재정리(ML_TABLE 한정+자동 매칭+ts 최신 join)+wafer 숫자정렬",
+      "tag": "feat+fix",
+      "changes": [
+        "**S3 신호등 화살표를 원 안에 각인** — S3StatusLight v8.8.3 : 9px 원 + 바깥 ↓↑ 텍스트 → 14px 원 안에 흰색 화살표(↓=다운, ↑=업) 각인 + 우측에 작은 '다운'/'업' 라벨. 상태 색은 원 배경, 화살표는 항상 흰색으로 대비 확보.",
+        "**이슈추적 이미지 붙여넣기 깨짐 수정** — 인폼에서 해결한 authSrc/query-token 패턴을 tracker 에 동일 적용. BE app.py `_QUERY_TOKEN_PREFIXES` 에 `/api/tracker/image` 추가 + FE My_Tracker.jsx 에 `withTrackerImageAuth()` 유틸 — dangerouslySetInnerHTML 로 렌더되는 `<img src=\"/api/tracker/image?name=...\">` 에 `&t=<세션토큰>` 자동 부착. standalone thumbnail 도 authSrc 로 감싸 일관성 확보.",
+        "**인폼 제품 카탈로그 등록/추가/제거 + 소스 통일** — (1) 새 인폼 폼과 제품별 담당자 패널이 동일 소스(카탈로그 `constants.products` ∪ 실제 인폼 레코드 ∪ 담당자 등록) 사용 — 한쪽에만 보이던 불일치 제거. (2) 담당자 패널에 제품별 🗑 (카탈로그에서 제거) + 하단 `+제품` 인풋은 더 이상 모달만 열지 않고 `/api/informs/products/add` 로 카탈로그에 즉시 등록. (3) 새 인폼 폼의 `+` 버튼을 admin 제한 해제, 선택된 제품이 카탈로그에 있으면 `−` 제거 버튼까지 노출.",
+        "**인폼 메일발송 그룹 드롭다운 + 관리 팝업 z-index** — MailDialog 가 `/api/informs/mail-groups`(admin) + `/api/mail-groups/list`(공용) 을 병합 표시 → 만들어진 그룹이 안 뜨던 문제 해결. `[공용]` 프리픽스 구분. MailDialog 내부에 `관리` 버튼 추가 → 생성/삭제 서브모달 z-index 10001 (부모 9999 위에 확실히 올라옴). Meeting 의 MailGroupsEditor 도 9999→10001 로 통일해 SendMailDialog 뒤에 깔리던 문제 동일 해결.",
+        "**변경점관리 액션에 담당자 이름 명시** — calendar.push_action_item 이 title 앞에 `[담당:홍길동] ` prefix 삽입 (owner 있을 때). 달력 바/툴팁에서 한눈에 누구의 액션인지 보임. owner 없으면 기존 title 그대로.",
+        "**SplitTable 로직 근본 재정리** — (1) `/api/splittable/products` 가 Base 디렉터리의 `ML_TABLE_*.parquet` 만 노출 — 기존의 DB hive/legacy 루트 파일 혼입 제거. (2) `_scan_product()` 가 매뉴얼 override 비어있을 때 `ML_TABLE_<PROD>` → DB 상위폴더(FAB 우선, INLINE/ET/EDS 폴백) / `<PROD>/` 자동 매칭(_auto_derive_fab_source). (3) ts_col / fab_col 도 매뉴얼 없으면 자동 추론(`out_ts`/`ts`/`timestamp`/... · `fab_lot_id`/`lot_id` 등). (4) **핵심**: join keys 별로 ts_col 기준 desc 정렬 후 `unique(..., keep=\"first\")` — 가장 최신 레코드의 fab_col 값만 left-join. ts_col 없을 때만 레거시 `keep=\"last\"` 폴백. (5) `/api/splittable/ml-table-match` 가 auto_path / effective_fab_source / manual_override 동봉 → FE 톱니 패널에 자동 매칭 상태 표시. (6) wafer_id 정렬을 `(fab_lot_id, wafer_id)` 그룹화 + wafer 를 int cast 가능하면 숫자 순, `W01`/`W10` 형식도 처리 — 문자열 정렬로 `\"10\" < \"2\"` 되던 오류 해결. view/CSV/XLSX 전역 반영.",
+        "**이월 (v8.8.5 타겟)** — (a) SplitTable paste 세트 BE 공유 + CUSTOM 탭 연동, (b) SplitTable tag FE 드로어(lot/param_global scope), (c) 회의록 WebSocket/SSE 동시편집. 세 건 모두 신규 엔드포인트/프로토콜/대형 UI 필요 — 별도 배치로 분리."
+      ]
+    },
     {
       "version": "8.8.3",
       "date": "2026-04-21",

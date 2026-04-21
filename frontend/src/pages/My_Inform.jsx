@@ -337,8 +337,11 @@ function DeadlineBadge({ deadline, onChange, canEdit }) {
 /* 루트 인폼 머리에 붙는 상태 패널 (flow 진행 + 이력) */
 function MailDialog({ root, user, onClose }) {
   // v8.7.2: 인폼 → 사내 메일 API 로 HTML 본문 전송 (multipart).
+  // v8.8.3: 공용 메일그룹(/api/mail-groups/list) 도 함께 노출 — 만들어진 그룹이 드롭다운에 안 뜨던 문제 해결.
+  //          + 새 그룹 관리 서브 모달(z-index 10001 로 메일 다이얼로그 위에 올라오게).
   const [recipients, setRecipients] = useState([]);
   const [groups, setGroups] = useState({});          // {groupName: [emails]}
+  const [publicGroups, setPublicGroups] = useState([]); // v8.8.3: 공용 메일 그룹 목록 [{id,name,members,extra_emails}]
   const [pickedUsers, setPickedUsers] = useState([]);   // usernames
   const [pickedGroups, setPickedGroups] = useState([]); // group names
   const [subject, setSubject] = useState(`[flow 인폼] ${root.module || ""} · ${root.lot_id || root.wafer_id || ""}`.trim());
@@ -351,11 +354,38 @@ function MailDialog({ root, user, onClose }) {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(null);
   const [error, setError] = useState("");
+  const [showMgr, setShowMgr] = useState(false);  // v8.8.3: 공용 메일 그룹 관리 서브모달
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupEmails, setNewGroupEmails] = useState("");
+
+  const reloadGroups = () => {
+    sf(API + "/mail-groups").then(d => setGroups(d.groups || {})).catch(() => setGroups({}));
+    sf("/api/mail-groups/list").then(d => setPublicGroups(d.groups || [])).catch(() => setPublicGroups([]));
+  };
 
   useEffect(() => {
     sf(API + "/recipients").then(d => setRecipients(d.recipients || [])).catch(() => setRecipients([]));
-    sf(API + "/mail-groups").then(d => setGroups(d.groups || {})).catch(() => setGroups({}));
+    reloadGroups();
   }, []);
+
+  // v8.8.3: admin 모듈 그룹(groups) + 공용 그룹(publicGroups) 병합.
+  // 공용 그룹은 members(username 목록) → email 로 resolve + extra_emails 합집합.
+  const resolveGroupEmails = (gname) => {
+    if (groups[gname]) return groups[gname] || [];
+    const pg = publicGroups.find(g => g.name === gname);
+    if (!pg) return [];
+    const out = new Set();
+    (pg.members || []).forEach(un => {
+      const em = recipients.find(r => r.username === un)?.email;
+      if (em && em.includes("@")) out.add(em);
+    });
+    (pg.extra_emails || []).forEach(em => { if (em && em.includes("@")) out.add(em); });
+    return Array.from(out);
+  };
+  const allGroupNames = Array.from(new Set([
+    ...Object.keys(groups || {}),
+    ...publicGroups.map(g => g.name).filter(Boolean),
+  ])).sort();
 
   // Collect attachable images from root + any thread child (if provided via root.images)
   const inlineImages = [...(root.images || [])].filter(x => x && x.url);
@@ -374,7 +404,8 @@ function MailDialog({ root, user, onClose }) {
       const em = recipients.find(r => r.username === un)?.email;
       if (em && em.includes("@")) out.add(em);
     });
-    pickedGroups.forEach(g => (groups[g] || []).forEach(em => { if (em && em.includes("@")) out.add(em); }));
+    // v8.8.3: admin 그룹 + 공용 그룹 모두 지원.
+    pickedGroups.forEach(g => resolveGroupEmails(g).forEach(em => { if (em && em.includes("@")) out.add(em); }));
     (extraEmails || "").split(/[,\s;]+/).map(s => s.trim()).filter(s => s && s.includes("@")).forEach(em => out.add(em));
     return Array.from(out);
   };
@@ -418,24 +449,100 @@ function MailDialog({ root, user, onClose }) {
           📨 발송계정: 시스템(Admin) · 본문 상단에 <b>제품 담당자</b> 라인 자동 삽입 (해당 제품에 등록된 담당자 있을 때).
         </div>
 
-        {/* Module recipient groups */}
-        {Object.keys(groups).length > 0 && <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>📮 모듈 그룹 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>({pickedGroups.length} 선택)</span></div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {Object.entries(groups).map(([gname, emails]) => {
-              const on = pickedGroups.includes(gname);
-              return (
-                <span key={gname} onClick={() => toggleGroup(gname)} style={{
-                  padding: "5px 12px", borderRadius: 999, fontSize: 11,
-                  background: on ? "var(--accent)" : "var(--bg-card)",
-                  color: on ? "#fff" : "var(--text-primary)",
-                  border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
-                  cursor: "pointer", fontWeight: 600,
-                }}>{gname} · {(emails || []).length}명</span>
-              );
-            })}
+        {/* v8.8.3: Module recipient groups — admin 그룹 + 공용 메일그룹 합집합. 만들어진 그룹도 노출. */}
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+            <span>📮 메일 그룹 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>({pickedGroups.length} 선택 · {allGroupNames.length} 가용)</span></span>
+            <span style={{ flex: 1 }} />
+            <button type="button" onClick={() => setShowMgr(true)}
+              style={{ padding: "2px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 10, cursor: "pointer" }}>관리</button>
           </div>
-        </div>}
+          {allGroupNames.length === 0 && (
+            <div style={{ fontSize: 10, color: "var(--text-secondary)", padding: 6, border: "1px dashed var(--border)", borderRadius: 4 }}>
+              등록된 메일 그룹 없음 — 우측 [관리] 로 새 그룹을 만드세요.
+            </div>
+          )}
+          {allGroupNames.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {allGroupNames.map((gname) => {
+                const on = pickedGroups.includes(gname);
+                const emails = resolveGroupEmails(gname);
+                const isPublic = !groups[gname];
+                return (
+                  <span key={gname} onClick={() => toggleGroup(gname)} style={{
+                    padding: "5px 12px", borderRadius: 999, fontSize: 11,
+                    background: on ? "var(--accent)" : "var(--bg-card)",
+                    color: on ? "#fff" : "var(--text-primary)",
+                    border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
+                    cursor: "pointer", fontWeight: 600,
+                  }} title={isPublic ? "공용 메일 그룹" : "admin 모듈 그룹"}>
+                    {isPublic ? "[공용] " : ""}{gname} · {emails.length}명
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* v8.8.3: 공용 메일 그룹 관리 서브모달 — z-index 10001 로 부모 MailDialog(9999) 위에 확실히 올라옴. */}
+        {showMgr && (
+          <div onClick={() => setShowMgr(false)}
+               style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10001, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div onClick={e => e.stopPropagation()}
+                 style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 8, padding: 16, width: "90%", maxWidth: 560, color: "var(--text-primary)" }}>
+              <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>📮 공용 메일 그룹 관리</div>
+                <span style={{ flex: 1 }} />
+                <span onClick={() => setShowMgr(false)} style={{ cursor: "pointer", fontSize: 16 }}>✕</span>
+              </div>
+              <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 8 }}>
+                모든 로그인 유저가 공용으로 사용하는 메일 그룹 (inform / meeting 공용). 이름 + 이메일 콤마/세미콜론 구분으로 입력하면 바로 생성됩니다.
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 6, marginBottom: 8 }}>
+                <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
+                  placeholder="그룹 이름" style={S} />
+                <input value={newGroupEmails} onChange={e => setNewGroupEmails(e.target.value)}
+                  placeholder="member1@x.com, member2@y.com" style={{ ...S, fontFamily: "monospace" }} />
+              </div>
+              <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                <button type="button" onClick={() => {
+                  const nm = (newGroupName || "").trim();
+                  if (!nm) { alert("그룹 이름을 입력하세요"); return; }
+                  const extras = (newGroupEmails || "").split(/[,\s;]+/).map(s => s.trim()).filter(s => s && s.includes("@"));
+                  postJson("/api/mail-groups/create", { name: nm, extra_emails: extras, members: [] })
+                    .then(() => { setNewGroupName(""); setNewGroupEmails(""); reloadGroups(); })
+                    .catch(e => alert(e.message));
+                }}
+                  style={{ padding: "6px 14px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>+ 그룹 생성</button>
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>현재 공용 그룹 ({publicGroups.length})</div>
+              <div style={{ maxHeight: 240, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" }}>
+                {publicGroups.length === 0 && (
+                  <div style={{ padding: 10, fontSize: 11, color: "var(--text-secondary)", textAlign: "center" }}>공용 그룹 없음</div>
+                )}
+                {publicGroups.map(g => (
+                  <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderBottom: "1px solid var(--border)", fontSize: 11 }}>
+                    <b style={{ fontFamily: "monospace" }}>{g.name}</b>
+                    <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                      · members {(g.members || []).length} · extras {(g.extra_emails || []).length}
+                    </span>
+                    <span style={{ flex: 1 }} />
+                    <span onClick={() => {
+                      if (!window.confirm(`그룹 "${g.name}" 삭제?`)) return;
+                      sf("/api/mail-groups/delete?id=" + encodeURIComponent(g.id), { method: "POST" })
+                        .then(() => reloadGroups())
+                        .catch(e => alert(e.message));
+                    }} style={{ cursor: "pointer", color: "#ef4444", fontSize: 10, fontWeight: 600 }}>삭제</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+                <button type="button" onClick={() => setShowMgr(false)}
+                  style={{ padding: "6px 14px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer" }}>닫기</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Individual recipient picker */}
         <div style={{ marginBottom: 10 }}>
@@ -1285,68 +1392,114 @@ export default function My_Inform({ user }) {
           ))}
         </div>
 
-        {/* v8.8.0: 제품별 담당자 — 사이드바 하단 폴더블. 모든 유저가 +추가/수정/삭제 가능. */}
-        <div style={{ borderTop: "2px solid var(--border)", maxHeight: 320, overflowY: "auto", background: "var(--bg-tertiary)" }}>
+        {/* v8.8.0: 제품별 담당자 — 사이드바 하단 폴더블. 모든 유저가 +추가/수정/삭제 가능.
+            v8.8.3: 제품 목록을 새 인폼 폼과 동일 소스(카탈로그+실제 기록+담당자 등록)로 통일.
+                    `+제품` 버튼은 단순 담당자 모달을 여는 게 아니라 /products/add 로 카탈로그에 등록
+                    → 새 인폼 폼 드롭다운에도 즉시 반영. 각 행에 `🗑` 제거 버튼 추가. */}
+        <div style={{ borderTop: "2px solid var(--border)", maxHeight: 360, overflowY: "auto", background: "var(--bg-tertiary)" }}>
           <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>👥 제품별 담당자</span>
-            <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{Object.keys(productContacts || {}).length} 제품</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>👥 제품 · 담당자</span>
+            {(() => {
+              const all = Array.from(new Set([
+                ...(constants.products || []),
+                ...(products || []).map(p => typeof p === "string" ? p : p.product).filter(Boolean),
+                ...Object.keys(productContacts || {}),
+              ]));
+              return <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{all.length} 제품</span>;
+            })()}
           </div>
-          {Object.keys(productContacts || {}).length === 0 && (
-            <div style={{ padding: 14, fontSize: 11, color: "var(--text-secondary)", textAlign: "center" }}>
-              담당자 등록 없음 — 아래 + 로 추가
-            </div>
-          )}
-          {Object.keys(productContacts || {}).sort().map(prod => {
-            const arr = productContacts[prod] || [];
-            const open = !!openContactProducts[prod];
-            return (
-              <div key={prod} style={{ borderBottom: "1px solid var(--border)" }}>
-                <div style={{ padding: "6px 10px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer", background: open ? "var(--bg-secondary)" : "transparent" }}
-                     onClick={() => setOpenContactProducts(o => ({ ...o, [prod]: !o[prod] }))}>
-                  <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{open ? "▼" : "▶"}</span>
-                  <span style={{ flex: 1, fontSize: 12, fontWeight: 600, fontFamily: "monospace" }}>{prod}</span>
-                  <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{arr.length}</span>
-                  <span onClick={(e) => { e.stopPropagation(); openBulkPick(prod); }}
-                        title="유저/그룹에서 일괄 추가"
-                        style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "#8b5cf6", color: "#fff", fontWeight: 700, cursor: "pointer" }}>👥</span>
-                  <span onClick={(e) => { e.stopPropagation(); setEditContact({ product: prod, name: "", role: "", email: "", phone: "", note: "" }); }}
-                        title="담당자 직접 추가"
-                        style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "var(--accent)", color: "#fff", fontWeight: 700, cursor: "pointer" }}>+</span>
+          {(() => {
+            const unified = Array.from(new Set([
+              ...(constants.products || []),
+              ...(products || []).map(p => typeof p === "string" ? p : p.product).filter(Boolean),
+              ...Object.keys(productContacts || {}),
+            ])).sort();
+            if (unified.length === 0) {
+              return (
+                <div style={{ padding: 14, fontSize: 11, color: "var(--text-secondary)", textAlign: "center" }}>
+                  등록된 제품 없음 — 아래 + 로 추가
                 </div>
-                {open && arr.map(c => (
-                  <div key={c.id} style={{ padding: "5px 14px 5px 24px", display: "flex", flexDirection: "column", borderTop: "1px dashed var(--border)" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      <span style={{ fontSize: 11, fontWeight: 600 }}>{c.name}</span>
-                      {c.role && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 6, background: "var(--accent)22", color: "var(--accent)", fontWeight: 700 }}>{c.role}</span>}
-                      <span style={{ flex: 1 }} />
-                      <span onClick={() => setEditContact({ id: c.id, product: prod, name: c.name, role: c.role || "", email: c.email || "", phone: c.phone || "", note: c.note || "" })}
-                            style={{ fontSize: 9, color: "var(--text-secondary)", cursor: "pointer" }}>수정</span>
-                      <span onClick={() => deleteContact(prod, c.id)}
-                            style={{ fontSize: 9, color: "#ef4444", cursor: "pointer" }}>삭제</span>
-                    </div>
-                    {(c.email || c.phone) && (
-                      <div style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace", marginTop: 1 }}>
-                        {c.email}{c.email && c.phone ? " · " : ""}{c.phone}
-                      </div>
+              );
+            }
+            return unified.map(prod => {
+              const arr = productContacts[prod] || [];
+              const open = !!openContactProducts[prod];
+              const inCatalog = (constants.products || []).includes(prod);
+              return (
+                <div key={prod} style={{ borderBottom: "1px solid var(--border)" }}>
+                  <div style={{ padding: "6px 10px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer", background: open ? "var(--bg-secondary)" : "transparent" }}
+                       onClick={() => setOpenContactProducts(o => ({ ...o, [prod]: !o[prod] }))}>
+                    <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{open ? "▼" : "▶"}</span>
+                    <span style={{ flex: 1, fontSize: 12, fontWeight: 600, fontFamily: "monospace" }}>{prod}</span>
+                    <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{arr.length}</span>
+                    <span onClick={(e) => { e.stopPropagation(); openBulkPick(prod); }}
+                          title="유저/그룹에서 일괄 추가"
+                          style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "#8b5cf6", color: "#fff", fontWeight: 700, cursor: "pointer" }}>👥</span>
+                    <span onClick={(e) => { e.stopPropagation(); setEditContact({ product: prod, name: "", role: "", email: "", phone: "", note: "" }); }}
+                          title="담당자 직접 추가"
+                          style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "var(--accent)", color: "#fff", fontWeight: 700, cursor: "pointer" }}>+</span>
+                    {inCatalog && (
+                      <span onClick={(e) => {
+                              e.stopPropagation();
+                              if (!window.confirm(`제품 카탈로그에서 "${prod}" 을(를) 제거하시겠어요?\n(등록된 담당자와 기존 인폼 레코드는 유지됩니다 — 드롭다운에서만 사라짐)`)) return;
+                              postJson(API + "/products/delete", { product: prod })
+                                .then(d => setConstants(c => ({ ...c, products: d.products || c.products })))
+                                .catch(err => alert(err.message));
+                            }}
+                            title="카탈로그에서 제거 (레코드는 유지)"
+                            style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "transparent", color: "#ef4444", fontWeight: 700, cursor: "pointer", border: "1px solid #ef4444" }}>🗑</span>
                     )}
                   </div>
-                ))}
-              </div>
-            );
-          })}
+                  {open && arr.length === 0 && (
+                    <div style={{ padding: "6px 14px 8px 24px", fontSize: 10, color: "var(--text-secondary)" }}>담당자 없음</div>
+                  )}
+                  {open && arr.map(c => (
+                    <div key={c.id} style={{ padding: "5px 14px 5px 24px", display: "flex", flexDirection: "column", borderTop: "1px dashed var(--border)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <span style={{ fontSize: 11, fontWeight: 600 }}>{c.name}</span>
+                        {c.role && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 6, background: "var(--accent)22", color: "var(--accent)", fontWeight: 700 }}>{c.role}</span>}
+                        <span style={{ flex: 1 }} />
+                        <span onClick={() => setEditContact({ id: c.id, product: prod, name: c.name, role: c.role || "", email: c.email || "", phone: c.phone || "", note: c.note || "" })}
+                              style={{ fontSize: 9, color: "var(--text-secondary)", cursor: "pointer" }}>수정</span>
+                        <span onClick={() => deleteContact(prod, c.id)}
+                              style={{ fontSize: 9, color: "#ef4444", cursor: "pointer" }}>삭제</span>
+                      </div>
+                      {(c.email || c.phone) && (
+                        <div style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace", marginTop: 1 }}>
+                          {c.email}{c.email && c.phone ? " · " : ""}{c.phone}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            });
+          })()}
           <div style={{ padding: 8, display: "flex", gap: 6 }}>
-            <input id="__pc_new_prod" placeholder="신규 제품명"
+            <input id="__pc_new_prod" placeholder="신규 제품명 (카탈로그 등록)"
               style={{ flex: 1, minWidth: 0, padding: "5px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace" }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   const v = e.target.value.trim();
-                  if (v) { setEditContact({ product: v, name: "", role: "", email: "", phone: "", note: "" }); e.target.value = ""; }
+                  if (!v) return;
+                  postJson(API + "/products/add", { product: v })
+                    .then(d => {
+                      setConstants(c => ({ ...c, products: d.products || c.products }));
+                      e.target.value = "";
+                    })
+                    .catch(err => alert(err.message));
                 }
               }} />
             <button onClick={() => {
               const inp = document.getElementById("__pc_new_prod");
               const v = (inp?.value || "").trim();
-              if (v) { setEditContact({ product: v, name: "", role: "", email: "", phone: "", note: "" }); if (inp) inp.value = ""; }
+              if (!v) return;
+              postJson(API + "/products/add", { product: v })
+                .then(d => {
+                  setConstants(c => ({ ...c, products: d.products || c.products }));
+                  if (inp) inp.value = "";
+                })
+                .catch(err => alert(err.message));
             }} style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 10, fontWeight: 600, cursor: "pointer" }}>+제품</button>
           </div>
         </div>
@@ -1533,17 +1686,34 @@ export default function My_Inform({ user }) {
                     ...(products || []).map(p => (typeof p === "string" ? p : p.product)).filter(Boolean),
                   ])).map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
-                {isAdmin && (
+                {/* v8.8.3: 제품 등록/제거를 admin 제한 해제 — 사이드바 카탈로그와 동일 권한. */}
+                <button type="button"
+                  title="제품 추가 (카탈로그 등록)"
+                  onClick={() => {
+                    const v = (prompt("새 제품명:") || "").trim();
+                    if (!v) return;
+                    postJson(API + "/products/add", { product: v })
+                      .then(d => {
+                        setConstants(c => ({ ...c, products: d.products || c.products }));
+                        setForm(f => ({ ...f, product: v }));
+                      })
+                      .catch(e => alert(e.message));
+                  }}
+                  style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 11, cursor: "pointer" }}>+</button>
+                {form.product && (constants.products || []).includes(form.product) && (
                   <button type="button"
-                    title="제품 추가 (admin)"
+                    title="선택된 제품을 카탈로그에서 제거"
                     onClick={() => {
-                      const v = (prompt("새 제품명:") || "").trim();
-                      if (!v) return;
-                      postJson(API + "/products/add", { product: v })
-                        .then(d => setConstants(c => ({ ...c, products: d.products || c.products })))
+                      const v = form.product;
+                      if (!window.confirm(`"${v}" 을(를) 카탈로그에서 제거할까요?`)) return;
+                      postJson(API + "/products/delete", { product: v })
+                        .then(d => {
+                          setConstants(c => ({ ...c, products: d.products || c.products }));
+                          setForm(f => ({ ...f, product: "" }));
+                        })
                         .catch(e => alert(e.message));
                     }}
-                    style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 11, cursor: "pointer" }}>+</button>
+                    style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 11, cursor: "pointer" }}>−</button>
                 )}
               </div>
               <div style={{ display: "flex", gap: 6 }}>

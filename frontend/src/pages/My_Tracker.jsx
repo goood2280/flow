@@ -1,8 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Loading from "../components/Loading";
 import PageGear from "../components/PageGear";
+import { authSrc, sf as apiSf } from "../lib/api";
 const API = "/api/tracker";
-const sf = (url, o) => fetch(url, o).then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+// v8.8.3: 인증 헤더 자동 주입을 위해 lib/api.sf 로 교체. legacy 시그니처 유지.
+const sf = (url, o) => apiSf(url, o);
+
+// v8.8.3: description_html 에 박힌 `/api/tracker/image?name=...` URL 에 세션 토큰(t=) 을
+// 쿼리로 덧붙여서 dangerouslySetInnerHTML 로 렌더된 <img> 도 인증을 통과하도록 한다.
+// (인폼로그에서 authSrc 로 해결한 패턴을 tracker 에 동일 적용.)
+function withTrackerImageAuth(html) {
+  if (!html || typeof html !== "string") return html;
+  return html.replace(/\/api\/tracker\/image\?name=([^"'&\s>]+)/g, (m) => authSrc(m));
+}
 
 /* ─── Inject tracker image styles once ─── */
 if(typeof document!=="undefined"&&!document.getElementById("trk-img-styles")){
@@ -402,7 +412,7 @@ export default function My_Tracker({ user }) {
             ) : (selected.description_html || selected.description) && (<>
               <style>{`.desc-view img{max-width:400px!important;border-radius:6px;display:block;margin:4px 0;}`}</style>
               <div className="desc-view" style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, lineHeight: 1.7, background: "var(--bg-card)", padding: 12, borderRadius: 8, border: "1px solid var(--border)", wordBreak: "break-word" }}
-                dangerouslySetInnerHTML={{ __html: selected.description_html || selected.description }} /></>
+                dangerouslySetInnerHTML={{ __html: withTrackerImageAuth(selected.description_html || selected.description) }} /></>
 
             )}
 
@@ -415,7 +425,7 @@ export default function My_Tracker({ user }) {
 
             {/* Standalone images (legacy) */}
             {selected.images?.length > 0 && <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-              {selected.images.map((img, i) => <img key={i} className="trk-img-thumb" src={"/api/tracker/image?name=" + img} style={{ maxWidth: 150, maxHeight: 120, borderRadius: 8, border: "1px solid var(--border)", objectFit: "cover" }} />)}
+              {selected.images.map((img, i) => <img key={i} className="trk-img-thumb" src={authSrc("/api/tracker/image?name=" + img)} style={{ maxWidth: 150, maxHeight: 120, borderRadius: 8, border: "1px solid var(--border)", objectFit: "cover" }} />)}
             </div>}
 
             {/* Related Links */}

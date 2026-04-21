@@ -1,7 +1,8 @@
-/* S3StatusLight v8.8.2 — S3 동기화 신호등. TableMap 헤더에서 공용.
+/* S3StatusLight v8.8.3 — S3 동기화 신호등. TableMap 헤더에서 공용.
    - GET /api/s3ingest/health 60s 폴링.
    - light: green/yellow/red/none → 색 + 라벨.
    - v8.8.2: 방향(다운/업) 구분을 신호등만 보고도 알 수 있도록 ⬇︎다운 / ⬆︎업 텍스트 라벨 추가 + 아이콘 크기 확대.
+   - v8.8.3: 화살표를 신호등(원) 바깥 텍스트가 아닌 원 "안"에 배치 — 다운↓/업↑ 직관화.
 */
 import { useEffect, useState } from "react";
 import { sf } from "../lib/api";
@@ -37,20 +38,27 @@ export default function S3StatusLight({ compact = false }) {
   const downLabel = (COLORS[downKey] || COLORS.none).label;
   const upLabel = (COLORS[upKey] || COLORS.none).label;
 
-  // v8.8.2: 방향별 pill — 색 + 화살표 + "다운"/"업" 텍스트 라벨을 함께 표시.
+  // v8.8.3: 방향별 pill — 신호등(원) 안에 화살표(↓/↑) 를 새겨 한눈에 방향 파악.
+  // 원을 키워(14px) 화살표가 원 내부에 완전히 들어가도록, pill 옆 텍스트는 "다운"/"업".
   const pill = (arrow, text, color, tip, isRed) => (
     <span style={{
-      display:"inline-flex", alignItems:"center", gap:3,
-      padding:"2px 7px 2px 5px", borderRadius:11,
+      display:"inline-flex", alignItems:"center", gap:4,
+      padding:"2px 7px 2px 3px", borderRadius:12,
       background: color + "1e",
       border: "1px solid " + color,
       lineHeight: 1,
     }} title={tip}>
       <span style={{
-        width: 9, height: 9, borderRadius: "50%", background: color,
-        boxShadow: `0 0 5px ${color}`, flexShrink: 0, ...(isRed?ringStyle:{}),
-      }} />
-      <span style={{fontSize:11, color, fontWeight:800, fontFamily:"monospace"}}>{arrow}</span>
+        width: 14, height: 14, borderRadius: "50%", background: color,
+        boxShadow: `0 0 5px ${color}`, flexShrink: 0,
+        display:"inline-flex", alignItems:"center", justifyContent:"center",
+        ...(isRed?ringStyle:{}),
+      }}>
+        <span style={{
+          fontSize: 10, lineHeight: 1, color: "#fff", fontWeight: 900,
+          fontFamily: "monospace", textShadow: "0 0 1px rgba(0,0,0,0.6)",
+        }}>{arrow}</span>
+      </span>
       <span style={{fontSize:10, color, fontWeight:700, letterSpacing:"-0.02em"}}>{text}</span>
     </span>
   );

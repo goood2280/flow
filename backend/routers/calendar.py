@@ -199,14 +199,22 @@ def push_action_item(meeting: dict, session: dict, action_item: dict,
 
     v8.7.9: action_item = SINGLE-DAY pin on the due date (no range bar).
     If due missing, not pushed (skip).
+    v8.8.3: title 앞에 담당자 이름을 명시 — 달력에서 한눈에 누구의 액션인지 보이게.
+            예: "[담당:홍길동] 설계 리뷰 반영" (owner 없으면 기존 title 그대로).
     """
-    title = (action_item.get("text") or "").strip()[:120]
+    raw_title = (action_item.get("text") or "").strip()
+    owner = (action_item.get("owner") or "").strip()
+    # title 길이 제한은 owner 포함 후 기준 — 최대 120자.
+    if owner:
+        title = f"[담당:{owner}] {raw_title}"[:120]
+    else:
+        title = raw_title[:120]
     due = _safe_date(action_item.get("due"))
     if not (title and due):
         return None
     body_parts = []
-    if action_item.get("owner"):
-        body_parts.append(f"담당: {action_item['owner']}")
+    if owner:
+        body_parts.append(f"담당: {owner}")
     body_parts.append(f"마감: {due}")
     body = " · ".join(body_parts)
     return _upsert_meeting_event(

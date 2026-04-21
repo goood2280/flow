@@ -37,7 +37,10 @@ app = FastAPI(
 
 # v8.7.1: 브라우저 <img>/<a download> 가 커스텀 헤더를 못 실음. 이미지 서빙 등
 # 정적 파일 엔드포인트에 한해 ?t=<token> 쿼리 파라미터 fallback 허용.
-_QUERY_TOKEN_PREFIXES = ("/api/informs/files/",)
+# v8.8.3: tracker 이슈 description 에 inline 삽입되는 이미지(`/api/tracker/image`) 도
+#         동일 fallback 을 허용 — dangerouslySetInnerHTML 로 렌더되는 `<img>` 가
+#         커스텀 헤더를 못 실어서 깨진 이미지로 나오던 문제 해결.
+_QUERY_TOKEN_PREFIXES = ("/api/informs/files/", "/api/tracker/image")
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

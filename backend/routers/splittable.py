@@ -319,73 +319,37 @@ def delete_note(req: NoteDeleteReq, request: Request):
 
 
 # ── Products / schema ──
+# v8.8.3: SplitTable 의 "제품" = 오직 Base 의 ML_TABLE_* 파일로 한정.
+#   - 기존에는 DB hive 테이블(FAB/INLINE/ET/EDS)과 레거시 루트 파일도 노출되어
+#     실제 검색 가능한 테이블셋이 혼탁했다.
+#   - 신규 요청: "검색되는 테이블셋 = ML_TABLE_~~" prefix 로 시작하는 Base 파일만.
+#   - DB 하위 제품 폴더는 /fab-roots / /ml-table-match 가 따로 노출 → 오버라이드용 소스.
 @router.get("/products")
 def list_products():
-    """Split-table source listing. Surfaces BOTH root-level single-files
-    (legacy layout) AND Hive-flat source tables (FAB/INLINE/ET/EDS/LOTS)
-    + Base-scope wide parquet features so the admin "Visible Sources"
-    panel has real rows to toggle. v8.3.x+ ships Hive-flat so the old
-    root-iterdir loop returned nothing — this expansion fixes that."""
+    """v8.8.3: Base 의 ML_TABLE_* parquet 만 노출. 다른 소스는 fab_source 자동 매칭 전용.
+    Source 가시성(enabled) 토글은 여전히 이 리스트 기준."""
     products = []
-    db_base = _db_base()
-    if db_base.exists():
-        # (1) Legacy: root-level parquet/csv files (old deployments).
-        for f in sorted(db_base.iterdir()):
-            if f.is_file() and f.suffix in (".parquet", ".csv"):
-                products.append({"name": f.stem, "file": f.name, "size": f.stat().st_size,
-                                 "root": "", "type": f.suffix[1:], "source_type": "db_root"})
-        # (2) Hive-flat: each <root>/<table>/product=<P>/ aggregates to a
-        # single logical "source" entry keyed by table name.
-        for root_dir in sorted(db_base.iterdir()):
-            if not root_dir.is_dir():
-                continue
-            for table_dir in sorted(root_dir.iterdir()):
-                if not table_dir.is_dir():
-                    continue
-                parts = list(table_dir.glob("product=*"))
-                if not parts:
-                    # Table with direct file (e.g. LOTS/lots/part-0.csv).
-                    files = [p for p in table_dir.glob("*.csv")] + [p for p in table_dir.glob("*.parquet")]
-                    if files:
-                        products.append({"name": table_dir.name, "file": files[0].name,
-                                         "size": sum(p.stat().st_size for p in files),
-                                         "root": root_dir.name, "type": files[0].suffix[1:],
-                                         "source_type": "db_hive"})
-                else:
-                    size = 0
-                    for part in parts:
-                        for f in part.glob("*"):
-                            if f.is_file():
-                                size += f.stat().st_size
-                    products.append({"name": table_dir.name, "file": f"product=*/part-0.*",
-                                     "size": size, "root": root_dir.name, "type": "hive",
-                                     "source_type": "db_hive"})
-    # (3) Base-scope wide-form feature parquets (ML_TABLE_ 등).
     try:
         base = _base_root()
         if base.exists():
             for f in sorted(base.iterdir()):
-                if f.is_file() and f.suffix == ".parquet":
-                    products.append({"name": f.stem, "file": f.name, "size": f.stat().st_size,
-                                     "root": "Base", "type": "parquet", "source_type": "base_file"})
+                if not (f.is_file() and f.suffix == ".parquet"):
+                    continue
+                if not f.stem.startswith("ML_TABLE_"):
+                    continue
+                products.append({"name": f.stem, "file": f.name, "size": f.stat().st_size,
+                                 "root": "Base", "type": "parquet", "source_type": "base_file"})
     except Exception:
         pass
-    # v8.7.8: dedup — name 단독으로도 중복 제거 (Base 와 DB root 에 같은 parquet 이 동시 노출되는 경우).
-    # 우선순위: Base > DB nested > DB root.  첫 번째 발견을 유지.
-    seen_name = set()
-    seen_combo = set()
+    # dedup 은 불필요하지만 안정성을 위해 이름 기준 중복 제거.
+    seen = set()
     dedup = []
-    priority = {"Base": 0, "": 2}  # nested (root 가 있으면) 는 1
-    products.sort(key=lambda p: priority.get(p.get("root") or "", 1))
     for p in products:
-        name = p.get("name") or ""
-        combo = (name, p.get("root") or "")
-        if name in seen_name or combo in seen_combo:
+        n = p.get("name") or ""
+        if n in seen:
             continue
-        seen_name.add(name)
-        seen_combo.add(combo)
+        seen.add(n)
         dedup.append(p)
-    # 복구: 이름 순 정렬 (표시 안정)
     dedup.sort(key=lambda p: (p.get("name") or ""))
     return {"products": dedup}
 
@@ -425,6 +389,8 @@ def list_fab_roots():
 def ml_table_match(product: str = Query(...)):
     """v8.7.8: ML_TABLE_<PROD> 에서 PROD 를 추출하고 DB 상위폴더별 매칭 후보 반환.
     Ex) product=ML_TABLE_PRODA → {"pro": "PRODA", "matches": [{"root":"FAB","product":"PRODA","path":"FAB/PRODA"}, ...]}
+    v8.8.3: 자동으로 선택된 fab_source (_auto_derive_fab_source) 와 현재 override 상태도 같이 반환 →
+            FE 가 "자동 매칭 중" / "매뉴얼 오버라이드 사용 중" 를 표시할 수 있게 한다.
     """
     pro = ""
     p = (product or "").strip()
@@ -447,7 +413,22 @@ def ml_table_match(product: str = Query(...)):
                     "product": pro,
                     "path": f"{root_dir.name}/{pro}",
                 })
-    return {"product": product, "derived_product": pro, "matches": matches}
+    auto_path = _auto_derive_fab_source(p)
+    manual_ov = {}
+    try:
+        cfg = load_json(SOURCE_CFG, {}) or {}
+        manual_ov = (cfg.get("lot_overrides") or {}).get(p) or {}
+    except Exception:
+        pass
+    effective = (manual_ov.get("fab_source") or "").strip() or auto_path
+    return {
+        "product": p,
+        "derived_product": pro,
+        "matches": matches,
+        "auto_path": auto_path,
+        "manual_override": bool(manual_ov.get("fab_source")),
+        "effective_fab_source": effective,
+    }
 
 
 @router.get("/schema")
@@ -920,6 +901,7 @@ def _scan_fab_source(fab_source: str):
     """v8.8.0: fab_source 가 가리키는 DB 경로를 LazyFrame 으로 스캔.
     - "FAB/PRODA" 같은 디렉토리면 그 아래 모든 *.parquet 을 union 으로 스캔 (hive flat 호환).
     - 단일 .parquet/.csv 파일이면 그 파일을 스캔.
+    - "root:FAB" (상위폴더만 지정) 인 경우 FAB 아래 모든 제품 폴더를 합집합 스캔.
     실패 시 None 반환 (조용히 폴백).
     """
     if not fab_source:
@@ -927,20 +909,28 @@ def _scan_fab_source(fab_source: str):
     db_base = _db_base()
     base_root = _base_root()
     fp = None
-    for root in (db_base, base_root):
-        if not root or not root.exists():
-            continue
-        cand = root / fab_source
-        if cand.exists():
-            fp = cand
-            break
-        for ext in (".parquet", ".csv"):
-            cand2 = root / f"{fab_source}{ext}"
-            if cand2.exists():
-                fp = cand2
+    # "root:FAB" 형태 — 상위폴더 아래 전체 parquet 합집합 (신규 매칭에서 쓰임).
+    if fab_source.startswith("root:"):
+        rn = fab_source[len("root:"):].strip()
+        if rn and db_base.exists():
+            cand = db_base / rn
+            if cand.is_dir():
+                fp = cand
+    if fp is None:
+        for root in (db_base, base_root):
+            if not root or not root.exists():
+                continue
+            cand = root / fab_source
+            if cand.exists():
+                fp = cand
                 break
-        if fp:
-            break
+            for ext in (".parquet", ".csv"):
+                cand2 = root / f"{fab_source}{ext}"
+                if cand2.exists():
+                    fp = cand2
+                    break
+            if fp:
+                break
     if not fp:
         return None
     try:
@@ -956,6 +946,49 @@ def _scan_fab_source(fab_source: str):
         return None
 
 
+# v8.8.3: ML_TABLE_<PROD> 에서 PROD 를 추출해 DB 상위폴더 아래 동일 제품 폴더를 자동 매칭.
+#   우선순위: FAB > 기타 상위폴더 (FAB 이 실제 fab_lot_id 를 가진 hive 소스).
+_DEFAULT_ROOT_PRIORITY = ("FAB", "INLINE", "ET", "EDS")
+
+def _auto_derive_fab_source(product: str) -> str:
+    """Return a fab_source path like "FAB/PRODA" if auto-matchable, else "".
+    ML_TABLE_ prefix 가 아니면 "" 반환 (오버라이드 off)."""
+    p = (product or "").strip()
+    if not p.startswith("ML_TABLE_"):
+        return ""
+    pro = p[len("ML_TABLE_"):].strip()
+    if not pro:
+        return ""
+    db_base = _db_base()
+    if not db_base.exists():
+        return ""
+    # 1) 상위폴더 우선순위대로 탐색.
+    for rn in _DEFAULT_ROOT_PRIORITY:
+        cand = db_base / rn / pro
+        if cand.is_dir():
+            return f"{rn}/{pro}"
+    # 2) 우선순위에 없는 다른 상위폴더라도 PROD 폴더가 있으면 채택.
+    for root_dir in sorted(db_base.iterdir()):
+        if not root_dir.is_dir():
+            continue
+        cand = root_dir / pro
+        if cand.is_dir():
+            return f"{root_dir.name}/{pro}"
+    return ""
+
+
+# v8.8.3: ts_col / fab_col 자동 추론 — 매뉴얼 override 없을 때 흔한 이름 스캔.
+_TS_COL_CANDIDATES = ("out_ts", "ts", "timestamp", "created_at", "log_ts", "event_ts", "update_ts")
+_FAB_COL_CANDIDATES = ("fab_lot_id", "lot_id", "fab_lotid", "fab_lot")
+
+def _pick_first_present(candidates, available_names):
+    av = set(available_names)
+    for c in candidates:
+        if c in av:
+            return c
+    return ""
+
+
 def _scan_product(product: str):
     fp = _product_path(product)
     if fp.suffix == ".csv":
@@ -963,19 +996,27 @@ def _scan_product(product: str):
     else:
         lf = _cast_cats_lazy(pl.scan_parquet(str(fp)))
 
-    # v8.8.0: lot_overrides[product].fab_source 가 지정되어 있으면 left-join 으로 fab 컬럼 보강.
-    # 주 ML_TABLE_<PROD> 에는 없는 fab_lot_id 등을 외부 소스(FAB/PRODA hive 등) 에서 끌어옴.
+    # v8.8.3: 오버라이드 로직 근본 재정리.
+    #   1) 매뉴얼 config(lot_overrides[product].fab_source) 가 있으면 그 값을 사용.
+    #   2) 없으면 ML_TABLE_<PROD> → DB/<root>/<PROD> 자동 매칭 시도.
+    #   3) ts_col / fab_col 도 매뉴얼 > 자동 추론 순.
+    #   4) 조인은 항상 "ts_col 기준 최신 레코드만" join keys 별로 picking 후 left-join.
     try:
         cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
         ov = (cfg.get("lot_overrides") or {}).get(product) or {}
         fab_source = (ov.get("fab_source") or "").strip()
+        auto_matched = False
+        if not fab_source:
+            fab_source = _auto_derive_fab_source(product)
+            auto_matched = bool(fab_source)
         if not fab_source:
             return lf
         fab_lf = _scan_fab_source(fab_source)
         if fab_lf is None:
             return lf
         main_names = set(lf.collect_schema().names())
-        fab_names = set(fab_lf.collect_schema().names())
+        fab_schema_names = fab_lf.collect_schema().names()
+        fab_names = set(fab_schema_names)
         join_keys = ov.get("join_keys") or []
         if isinstance(join_keys, str):
             join_keys = [k.strip() for k in join_keys.split(",") if k.strip()]
@@ -987,19 +1028,32 @@ def _scan_product(product: str):
         join_keys = [k for k in join_keys if k in main_names and k in fab_names]
         if not join_keys:
             return lf
+        # fab_col / ts_col — 매뉴얼 > 자동 추론 순.
+        fab_col = (ov.get("fab_col") or "").strip() or _pick_first_present(_FAB_COL_CANDIDATES, fab_schema_names)
+        if not fab_col:
+            fab_col = "fab_lot_id"  # 최후 기본값
+        ts_col = (ov.get("ts_col") or "").strip() or _pick_first_present(_TS_COL_CANDIDATES, fab_schema_names)
         # Bring only useful columns: fab_col + join keys + ts_col (optional). Avoid wide explosion.
-        fab_col = (ov.get("fab_col") or "fab_lot_id").strip()
-        wanted = list(dict.fromkeys(join_keys + [fab_col] + ([ov.get("ts_col")] if ov.get("ts_col") else [])))
+        wanted = list(dict.fromkeys(join_keys + [fab_col] + ([ts_col] if ts_col else [])))
         wanted = [c for c in wanted if c in fab_names]
+        if not wanted or fab_col not in wanted:
+            return lf
         fab_proj = fab_lf.select(wanted)
         # Cast join keys to Utf8 on both sides for safety.
         fab_proj = fab_proj.with_columns([pl.col(k).cast(_STR, strict=False) for k in join_keys])
         lf = lf.with_columns([pl.col(k).cast(_STR, strict=False) for k in join_keys])
+        # ── 핵심: ts_col 기준 최신 레코드만 join keys 별로 선택.
+        #   - ts_col 이 존재하면 desc 정렬 후 첫 행 유지.
+        #   - ts_col 이 없으면 keep="last" 유지 (레거시 호환).
+        if ts_col and ts_col in fab_names:
+            fab_proj = fab_proj.sort(ts_col, descending=True, nulls_last=True)
+            fab_proj = fab_proj.unique(subset=join_keys, keep="first", maintain_order=True)
+        else:
+            fab_proj = fab_proj.unique(subset=join_keys, keep="last")
         # Drop fab_col on main side so left-join introduces fresh values.
         if fab_col in main_names and fab_col != "":
             lf = lf.drop(fab_col)
-        lf = lf.join(fab_proj.unique(subset=join_keys, keep="last"),
-                     on=join_keys, how="left")
+        lf = lf.join(fab_proj, on=join_keys, how="left")
         return lf
     except Exception:
         return lf
@@ -1118,14 +1172,21 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
     try:
         lf = _scan_product(product)
         lot_col, wf_col = _detect_lot_wafer(lf, product)
-        # v8.4.4: fab_lot_col override (기본 "fab_lot_id")
+        # v8.4.4/v8.8.3: fab_lot_col — 매뉴얼 override > 자동 추론 > "fab_lot_id".
         fab_lot_col = "fab_lot_id"
         try:
+            schema_names = lf.collect_schema().names()
             _cfg = load_json(SOURCE_CFG, {}) or {}
             _ov = (_cfg.get("lot_overrides") or {}).get(product) or {}
-            _fc = _ov.get("fab_col")
-            if _fc and _fc in lf.collect_schema().names():
+            _fc = (_ov.get("fab_col") or "").strip()
+            if _fc and _fc in schema_names:
                 fab_lot_col = _fc
+            elif "fab_lot_id" not in schema_names:
+                # 자동 보강된 컬럼 이름 중 하나로 대체.
+                for c in _FAB_COL_CANDIDATES:
+                    if c in schema_names:
+                        fab_lot_col = c
+                        break
         except Exception:
             pass
 
@@ -1167,9 +1228,24 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                     if w is None: continue
                     if w not in wf2fab and f and f not in ("None", "null"):
                         wf2fab[w] = f
-            # Sort: (fab_lot_id, wafer_id) — fab_lot 미정이면 "" 로 후순위
+            # Sort: (fab_lot_id 그룹, wafer_id 숫자-aware) — fab_lot 미정이면 "~" 로 후순위.
+            # v8.8.3: wafer_id 가 문자열일 때 "10" < "2" 오작동 → 숫자 가능하면 int 로 cast 해서 secondary 키.
             wf_uniq = [w for w in dict.fromkeys(wf_raw) if w is not None and w != "None" and w != "null"]
-            wf_sorted = sorted(wf_uniq, key=lambda w: (wf2fab.get(w, "~"), w))
+            def _wf_sort_key(w):
+                primary = wf2fab.get(w, "~")
+                try:
+                    n = int(w)
+                    return (primary, 0, n)
+                except (TypeError, ValueError):
+                    s = str(w)
+                    # 선행 'W' 제거 후 숫자 시도
+                    if s.upper().startswith("W"):
+                        try:
+                            return (primary, 0, int(s[1:]))
+                        except ValueError:
+                            pass
+                    return (primary, 1, s)
+            wf_sorted = sorted(wf_uniq, key=_wf_sort_key)
             headers = [f"#{v}" for v in wf_sorted]
             wf_idx = {v: i for i, v in enumerate(wf_sorted)}
             # Build header_groups: consecutive same-fab_lot segments
@@ -1444,7 +1520,20 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
                 if w not in wf2fab and f and f not in ("None","null"):
                     wf2fab[w] = f
         wf_uniq = [w for w in dict.fromkeys(wf_vals) if w is not None and w != "None" and w != "null"]
-        wf_sorted = sorted(wf_uniq, key=lambda w: (wf2fab.get(w, "~"), w))
+        # v8.8.3: fab_lot 그룹 → wafer_id 숫자-aware 정렬 (view 와 동일 로직).
+        def _wf_sort_key2(w):
+            primary = wf2fab.get(w, "~")
+            try:
+                return (primary, 0, int(w))
+            except (TypeError, ValueError):
+                s = str(w)
+                if s.upper().startswith("W"):
+                    try:
+                        return (primary, 0, int(s[1:]))
+                    except ValueError:
+                        pass
+                return (primary, 1, s)
+        wf_sorted = sorted(wf_uniq, key=_wf_sort_key2)
         headers = [f"#{v}" for v in wf_sorted]
         fab_row = [wf2fab.get(w, "") for w in wf_sorted]
         wf_idx = {v: i for i, v in enumerate(wf_sorted)}
