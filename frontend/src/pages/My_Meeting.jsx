@@ -36,7 +36,10 @@ export default function My_Meeting({ user }) {
   const [meetings, setMeetings] = useState([]);
   const [categories, setCategories] = useState([]);
   const [allGroups, setAllGroups] = useState([]);       // v8.7.6: 그룹 담당자 선택
+  const [mailGroups, setMailGroups] = useState([]);     // v8.7.7: 공용 메일 그룹
   const [mailRecipients, setMailRecipients] = useState([]); // username+email
+  const [mgEditor, setMgEditor] = useState(false);      // v8.7.7: 메일 그룹 관리 모달
+  const [sendDialog, setSendDialog] = useState(null);   // v8.7.7: 이미 저장된 차수 재발송 다이얼로그
   const [viewMode, setViewMode] = useState("list");     // v8.7.6: list | gantt
   const [loading, setLoading] = useState(false);
   const [filterStatus, setFilterStatus] = useState("");
@@ -61,6 +64,10 @@ export default function My_Meeting({ user }) {
   const isAdmin = user?.role === "admin";
   const me = user?.username || "";
 
+  const reloadMailGroups = () => {
+    sf("/api/mail-groups/list").then(d => setMailGroups(d.groups || [])).catch(() => {});
+  };
+
   const reload = () => {
     setLoading(true);
     sf(`${API}/list${filterStatus ? `?status=${encodeURIComponent(filterStatus)}` : ""}`)
@@ -74,6 +81,7 @@ export default function My_Meeting({ user }) {
     // v8.7.6: 액션아이템 그룹 담당자용 그룹 목록 + 메일 수신자 목록
     sf("/api/groups/list").then(d => setAllGroups(d.groups || [])).catch(() => {});
     sf("/api/informs/recipients").then(d => setMailRecipients(d.recipients || [])).catch(() => {});
+    reloadMailGroups();
   }, []);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, [filterStatus]);
 
@@ -259,6 +267,7 @@ export default function My_Meeting({ user }) {
       send_mail: false,
       mail_to_users: [],
       mail_groups: [],
+      mail_group_ids: [],   // v8.7.7: 공용 메일 그룹 선택
       mail_to: "",
       mail_subject: "",
     });
@@ -286,6 +295,7 @@ export default function My_Meeting({ user }) {
       send_mail: !!minutesDraft.send_mail,
       mail_to_users: minutesDraft.mail_to_users || [],
       mail_groups: minutesDraft.mail_groups || [],
+      mail_group_ids: minutesDraft.mail_group_ids || [],
       mail_to: mailTo,
       mail_subject: minutesDraft.mail_subject || "",
     }).then(r => {
@@ -355,16 +365,7 @@ export default function My_Meeting({ user }) {
             <span style={{ flex: 1 }} />
             <button onClick={() => setCreating(true)} style={btnPrimary}>+ 새 회의</button>
           </div>
-          <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
-            {[["list", "리스트"], ["gantt", "간트"]].map(([k, label]) => (
-              <span key={k} onClick={() => setViewMode(k)} style={{
-                padding: "3px 10px", borderRadius: 4, fontSize: 10, cursor: "pointer", fontFamily: "monospace",
-                background: viewMode === k ? "var(--accent-glow)" : "var(--bg-card)",
-                color: viewMode === k ? "var(--accent)" : "var(--text-secondary)",
-                border: "1px solid " + (viewMode === k ? "var(--accent)" : "var(--border)"),
-              }}>{label}</span>
-            ))}
-          </div>
+          {/* v8.7.7: 간트 뷰 제거 — 결정사항/액션아이템은 변경점 달력에 통합 표시됨. */}
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="제목/아젠다/결정 검색..." style={inp} />
           <div style={{ marginTop: 8, display: "flex", gap: 4, flexWrap: "wrap" }}>
             {["", "active", "archived", "cancelled"].map(s => (
@@ -576,6 +577,13 @@ export default function My_Meeting({ user }) {
                           {canEditAgenda(selected, a) && <span onClick={() => startEditAgenda(a)} style={editLink}>수정</span>}
                           {canEditAgenda(selected, a) && <span onClick={() => removeAgenda(a)} style={delLink}>삭제</span>}
                         </div>
+                        {/* v8.7.7: 아젠다 등록/수정 시각 */}
+                        {(a.created_at || a.updated_at) && (
+                          <div style={{ paddingLeft: 34, fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace", marginBottom: 4 }}>
+                            {a.created_at && <>🕐 등록 {dtPretty(a.created_at)}</>}
+                            {a.updated_at && a.updated_at !== a.created_at && <> · ✎ 수정 {dtPretty(a.updated_at)}</>}
+                          </div>
+                        )}
                         {a.description && <div style={{ fontSize: 12, color: "var(--text-primary)", marginBottom: 4, whiteSpace: "pre-wrap", paddingLeft: 34 }}>{a.description}</div>}
                         {a.link && (
                           <div style={{ paddingLeft: 34 }}>
@@ -610,6 +618,12 @@ export default function My_Meeting({ user }) {
                   <span style={{ fontSize: 13, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", flex: 1 }}>📝 {selectedSession.idx}차 회의록</span>
                   {canEditMinutes(selected) && !editingMinutes && (
                     <button onClick={startEditMinutes} style={btnGhost}>{selectedSession.minutes ? "✎ 수정" : "+ 작성"}</button>
+                  )}
+                  {/* v8.7.7: 저장된 차수는 메일만 재발송 가능 */}
+                  {canEditMinutes(selected) && !editingMinutes && selectedSession.minutes && (
+                    <button onClick={() => setSendDialog({
+                      mail_group_ids: [], mail_to_users: [], mail_to: "", mail_subject: "",
+                    })} style={{ ...btnGhost, marginLeft: 6 }}>📧 메일 발송</button>
                   )}
                 </div>
                 {!editingMinutes && !selectedSession.minutes && (
@@ -795,6 +809,27 @@ export default function My_Meeting({ user }) {
                               );
                             })}
                           </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            <span style={{ ...lbl, minWidth: 68 }}>메일 그룹</span>
+                            {mailGroups.length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(그룹 없음 — 아래 "관리" 버튼)</span>}
+                            {mailGroups.map(g => {
+                              const on = (minutesDraft.mail_group_ids || []).includes(g.id);
+                              return (
+                                <span key={g.id} onClick={() => {
+                                  const cur = minutesDraft.mail_group_ids || [];
+                                  const next = on ? cur.filter(x => x !== g.id) : [...cur, g.id];
+                                  setMinutesDraft({ ...minutesDraft, mail_group_ids: next });
+                                }} title={`${(g.members || []).length}명 + ${(g.extra_emails || []).length}외부`}
+                                  style={{
+                                    padding: "2px 8px", borderRadius: 999, fontSize: 10, cursor: "pointer",
+                                    border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
+                                    background: on ? "var(--accent-glow)" : "transparent",
+                                    color: on ? "var(--accent)" : "var(--text-secondary)",
+                                  }}>📮 {g.name}</span>
+                              );
+                            })}
+                            <button onClick={() => setMgEditor(true)} style={btnTiny} type="button">관리</button>
+                          </div>
                           <input value={minutesDraft.mail_to} onChange={e => setMinutesDraft({ ...minutesDraft, mail_to: e.target.value })} placeholder="추가 이메일 (쉼표/공백 구분, 선택)" style={inp} />
                           <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>
                             * 액션아이템에 지정된 그룹 멤버의 이메일도 자동 포함됩니다.
@@ -862,6 +897,36 @@ export default function My_Meeting({ user }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* v8.7.7: 메일 그룹 관리 모달 */}
+      {mgEditor && (
+        <MailGroupsEditor
+          groups={mailGroups}
+          mailRecipients={mailRecipients}
+          me={me}
+          onClose={() => { setMgEditor(false); reloadMailGroups(); }}
+          onReload={reloadMailGroups}
+        />
+      )}
+
+      {/* v8.7.7: 저장된 차수 메일 재발송 다이얼로그 */}
+      {sendDialog && selected && selectedSession && (
+        <SendMailDialog
+          meeting={selected}
+          session={selectedSession}
+          mailGroups={mailGroups}
+          mailRecipients={mailRecipients}
+          draft={sendDialog}
+          onChange={(patch) => setSendDialog(d => ({ ...d, ...patch }))}
+          onOpenManager={() => setMgEditor(true)}
+          onClose={() => setSendDialog(null)}
+          onSent={(r) => {
+            setSendDialog(null);
+            if (r?.mail?.ok) alert(`메일 발송 완료${r.mail.dry_run ? " (dry-run)" : ""} · ${(r.mail.to || []).length}명`);
+            else alert(`메일 발송 실패: ${r?.mail?.error || "unknown"}`);
+          }}
+        />
       )}
 
       {/* PageGear — 좌하단 고정 (전 탭 통일) */}
@@ -989,6 +1054,156 @@ function ActionItemsGantt({ meetings, onPickMeeting }) {
         <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#22c55e", borderRadius: 2, display: "inline-block" }} />done</span>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#ef4444", borderRadius: 2, display: "inline-block" }} />overdue</span>
         <span style={{ color: "var(--accent)" }}>세로선 = 오늘</span>
+      </div>
+    </div>
+  );
+}
+
+// v8.7.7: 공용 메일 그룹 관리 모달 (모든 유저 편집 가능).
+function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
+  const [editId, setEditId] = useState(null);
+  const [draft, setDraft] = useState({ name: "", members: [], extra_emails: "", note: "" });
+  const [msg, setMsg] = useState("");
+  const startCreate = () => { setEditId("__new__"); setDraft({ name: "", members: [me], extra_emails: "", note: "" }); setMsg(""); };
+  const startEdit = (g) => {
+    setEditId(g.id);
+    setDraft({ name: g.name || "", members: g.members || [], extra_emails: (g.extra_emails || []).join(", "), note: g.note || "" });
+    setMsg("");
+  };
+  const toggleMember = (un) => setDraft(d => ({ ...d, members: d.members.includes(un) ? d.members.filter(x => x !== un) : [...d.members, un] }));
+  const submit = () => {
+    const name = (draft.name || "").trim();
+    if (!name) { setMsg("그룹 이름을 입력하세요"); return; }
+    const extras = (draft.extra_emails || "").split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+    const payload = { name, members: draft.members || [], extra_emails: extras, note: draft.note || "" };
+    const isNew = editId === "__new__";
+    const url = isNew ? "/api/mail-groups/create" : `/api/mail-groups/update?id=${encodeURIComponent(editId)}`;
+    postJson(url, payload).then(() => {
+      setEditId(null); setMsg(isNew ? "생성 완료" : "저장 완료"); onReload();
+    }).catch(e => setMsg(e.message || "저장 실패"));
+  };
+  const remove = (g) => {
+    if (!confirm(`메일 그룹 "${g.name}" 을(를) 삭제할까요?`)) return;
+    sf(`/api/mail-groups/delete?id=${encodeURIComponent(g.id)}`, { method: "POST" })
+      .then(() => { setEditId(null); onReload(); }).catch(e => setMsg(e.message));
+  };
+  const inp2 = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none", boxSizing: "border-box" };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ width: 720, maxWidth: "94%", maxHeight: "86vh", overflow: "auto", padding: 18, borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", flex: 1 }}>📮 공용 메일 그룹 관리</span>
+          <button onClick={startCreate} style={{ padding: "4px 12px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, cursor: "pointer" }}>+ 새 그룹</button>
+          <button onClick={onClose} style={{ marginLeft: 6, padding: "4px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 11, cursor: "pointer" }}>닫기</button>
+        </div>
+        <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 10 }}>
+          * 모든 유저가 생성/편집할 수 있는 공용 그룹입니다. 같은 유저가 여러 그룹에 속할 수 있습니다.
+        </div>
+        {editId && (
+          <div style={{ padding: 12, borderRadius: 6, background: "var(--bg-card)", border: "1px solid var(--accent)", marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{editId === "__new__" ? "새 그룹 생성" : "그룹 편집"}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 10px", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>이름</span>
+              <input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} placeholder="예: GATE 담당 팀" style={inp2} />
+              <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>메모</span>
+              <input value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} placeholder="(선택)" style={inp2} />
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 6, marginBottom: 4 }}>멤버 (클릭 토글, 이메일 미등록 유저는 제외됨)</div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxHeight: 120, overflow: "auto", padding: 4, border: "1px solid var(--border)", borderRadius: 4 }}>
+              {(mailRecipients || []).map(u => {
+                const on = (draft.members || []).includes(u.username);
+                const hasEmail = !!u.email;
+                return (
+                  <span key={u.username} onClick={() => hasEmail && toggleMember(u.username)}
+                    title={hasEmail ? u.email : "이메일 미등록"}
+                    style={{ padding: "2px 8px", borderRadius: 999, fontSize: 10, cursor: hasEmail ? "pointer" : "not-allowed", opacity: hasEmail ? 1 : 0.4, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>{u.username}</span>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 8, marginBottom: 4 }}>추가 외부 이메일 (콤마/공백/줄바꿈 구분)</div>
+            <textarea value={draft.extra_emails} onChange={e => setDraft({ ...draft, extra_emails: e.target.value })} rows={2} placeholder="vendor@partner.com, external@x.com" style={{ ...inp2, resize: "vertical", fontFamily: "monospace", fontSize: 11 }} />
+            <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center" }}>
+              <button onClick={submit} style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>저장</button>
+              <button onClick={() => setEditId(null)} style={{ padding: "6px 12px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 11, cursor: "pointer" }}>취소</button>
+              {msg && <span style={{ fontSize: 11, color: "var(--accent)" }}>{msg}</span>}
+            </div>
+          </div>
+        )}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6 }}>
+          {(groups || []).length === 0 && <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 12 }}>아직 그룹이 없습니다. "+ 새 그룹" 으로 생성하세요.</div>}
+          {(groups || []).map(g => (
+            <div key={g.id} style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, flex: 1 }}>📮 {g.name}</span>
+                <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{(g.members || []).length}명 + {(g.extra_emails || []).length}외부 · by {g.created_by}</span>
+                <span onClick={() => startEdit(g)} style={{ fontSize: 11, color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}>편집</span>
+                <span onClick={() => remove(g)} style={{ fontSize: 11, color: "#ef4444", cursor: "pointer", textDecoration: "underline" }}>삭제</span>
+              </div>
+              {g.note && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 2 }}>{g.note}</div>}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// v8.7.7: 저장된 차수 메일 재발송 (minutes 수정 없이 send-mail 만 호출).
+function SendMailDialog({ meeting, session, mailGroups, mailRecipients, draft, onChange, onOpenManager, onClose, onSent }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const submit = () => {
+    const mailTo = (draft.mail_to || "").split(/[,;\s]+/).map(s => s.trim()).filter(s => s && s.includes("@"));
+    setBusy(true); setErr("");
+    postJson("/api/meetings/session/send-mail", {
+      meeting_id: meeting.id, session_id: session.id,
+      mail_group_ids: draft.mail_group_ids || [],
+      mail_to_users: draft.mail_to_users || [],
+      mail_to: mailTo,
+      mail_subject: draft.mail_subject || "",
+    }).then(onSent).catch(e => { setErr(e.message || "발송 실패"); setBusy(false); });
+  };
+  const inp3 = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none", boxSizing: "border-box" };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ width: 620, maxWidth: "94%", padding: 18, borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📧 {session.idx}차 회의록 메일 발송</div>
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 10 }}>
+          "{meeting.title}" · {session.idx}차 의 아젠다 + 회의록 + 액션아이템을 HTML 메일로 전송합니다.
+        </div>
+        <input value={draft.mail_subject} onChange={e => onChange({ mail_subject: e.target.value })} placeholder={`메일 제목 (기본: [flow 회의록] ${meeting.title} · ${session.idx}차)`} style={inp3} />
+        <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 10, marginBottom: 4 }}>📮 메일 그룹</div>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {(mailGroups || []).length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(없음)</span>}
+          {(mailGroups || []).map(g => {
+            const on = (draft.mail_group_ids || []).includes(g.id);
+            return (
+              <span key={g.id} onClick={() => onChange({ mail_group_ids: on ? draft.mail_group_ids.filter(x => x !== g.id) : [...(draft.mail_group_ids || []), g.id] })}
+                style={{ padding: "2px 8px", borderRadius: 999, fontSize: 10, cursor: "pointer", border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>{g.name}</span>
+            );
+          })}
+          <button onClick={onOpenManager} type="button" style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 10, cursor: "pointer" }}>관리</button>
+        </div>
+        <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 10, marginBottom: 4 }}>개별 수신자 (선택)</div>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxHeight: 90, overflow: "auto" }}>
+          {(mailRecipients || []).map(u => {
+            const on = (draft.mail_to_users || []).includes(u.username);
+            const hasEmail = !!u.email;
+            return (
+              <span key={u.username} onClick={() => hasEmail && onChange({ mail_to_users: on ? draft.mail_to_users.filter(x => x !== u.username) : [...(draft.mail_to_users || []), u.username] })}
+                title={hasEmail ? u.email : "이메일 미등록"}
+                style={{ padding: "2px 8px", borderRadius: 999, fontSize: 10, cursor: hasEmail ? "pointer" : "not-allowed", opacity: hasEmail ? 1 : 0.4, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>{u.username}</span>
+            );
+          })}
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <input value={draft.mail_to} onChange={e => onChange({ mail_to: e.target.value })} placeholder="추가 이메일 (콤마/공백 구분)" style={inp3} />
+        </div>
+        {err && <div style={{ marginTop: 8, fontSize: 11, color: "#ef4444" }}>{err}</div>}
+        <div style={{ marginTop: 14, display: "flex", gap: 6, justifyContent: "flex-end" }}>
+          <button onClick={onClose} style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 12, cursor: "pointer" }} disabled={busy}>취소</button>
+          <button onClick={submit} style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: busy ? "wait" : "pointer" }} disabled={busy}>{busy ? "발송 중…" : "📧 발송"}</button>
+        </div>
       </div>
     </div>
   );

@@ -192,13 +192,18 @@ def base_files():
                 })
     # v8.7.5: DB 루트에 있는 단일 CSV 는 "Base" 로 분류 (물리적 위치와 무관하게 의미적 Base).
     # v8.7.6: 단일 parquet 도 동일 — 폴더(hive/flat) 구조만 DB 섹션에 노출됨.
+    # v8.7.7: 같은 파일명이 base_root 와 db_root 양쪽에 있으면 dedup. UI 에 소스 태그
+    # (db) 를 노출하던 것도 제거 — 사용자 입장에서 Base 단일 파일은 "한 번만" 보여야 함.
+    seen_names = {f["name"].lower() for f in files}
     db_root = PATHS.db_root
-    if db_root.is_dir():
+    if db_root.is_dir() and db_root.resolve() != base_root.resolve():
         for f in sorted(db_root.iterdir()):
             if not f.is_file():
                 continue
             ext = f.suffix.lower()
             if ext not in (".csv", ".parquet"):
+                continue
+            if f.name.lower() in seen_names:
                 continue
             try:
                 stat = f.stat()
@@ -211,12 +216,14 @@ def base_files():
                 "modified": stat.st_mtime,
                 "ext": ext.lstrip("."),
                 "kind": "file",
+                # v8.7.7: source 는 내부적으로만 유지 (preview 라우팅에 필요), UI 태그는 제거.
                 "source": "db_root",
             })
+            seen_names.add(f.name.lower())
     files.sort(key=lambda x: x["name"].lower())
     return {"files": files, "dirs": dirs,
             "path": str(base_root) if base_root.is_dir() else "",
-            "exists": base_root.is_dir() or any(x["source"] == "db_root" for x in files)}
+            "exists": base_root.is_dir() or any(x.get("source") == "db_root" for x in files)}
 
 
 @router.get("/base-file-view")
@@ -229,8 +236,9 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     files are returned as-is (truncated to first 2KB preview + full size) so
     `_uniques.json` can be inspected.
     """
-    # Guard against path traversal — allow base_root, and also db_root-level CSVs
-    # (v8.7.5: CSV 단일 파일은 Base 로 분류되므로 여기서도 읽을 수 있어야 함).
+    # Guard against path traversal — allow base_root, and also db_root-level
+    # single files (CSV/Parquet). v8.7.7: parquet 도 허용 (base-files 에 노출되므로
+    # 미리보기도 가능해야 함).
     base_root = PATHS.base_root
     db_root = PATHS.db_root
     fp = None
@@ -243,8 +251,8 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         except ValueError:
             continue
         if cand.is_file():
-            # db_root 에서는 CSV 만 Base 취급 (parquet 은 루트 Parquet 섹션으로).
-            if candidate_root == db_root and cand.suffix.lower() != ".csv":
+            # v8.7.7: db_root 도 CSV + parquet 모두 Base 단일 파일로 취급.
+            if candidate_root == db_root and cand.suffix.lower() not in (".csv", ".parquet"):
                 continue
             fp = cand
             break
