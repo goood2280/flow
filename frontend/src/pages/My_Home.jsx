@@ -53,14 +53,18 @@ export default function My_Home({onNavigate,user}){
   const userTabs=isAdmin?"__all__":(user?.tabs||"");
   const hasTab=(k)=>userTabs==="__all__"||userTabs.split(",").map(s=>s.trim()).filter(Boolean).includes(k);
 
+  // v8.7.4: TABS 순서와 동일하게 카드 정렬. 홈 카드에 inform/meeting/calendar 포함.
   const ALL_CARDS=[
-    {key:"filebrowser",icon:"📂",title:"파일 브라우저",desc:"Parquet 탐색, SQL 필터, CSV 다운로드",tag:fv.filebrowser?"v"+fv.filebrowser:""},
-    {key:"splittable", icon:"🗂️",title:"스플릿 테이블",desc:"Plan vs actual, 공유 추적",tag:fv.splittable?"v"+fv.splittable:""},
+    {key:"filebrowser",icon:"📂",title:"파일 탐색기",desc:"Parquet 탐색, SQL 필터, CSV 다운로드",tag:fv.filebrowser?"v"+fv.filebrowser:""},
     {key:"dashboard",  icon:"📊",title:"대시보드",desc:"동적 차트, 산점도, 추세",tag:fv.dashboard?"v"+fv.dashboard:""},
-    {key:"tracker",    icon:"📋",title:"트래커",desc:"이슈 게시판, Lot/Wafer 추적",tag:fv.tracker?"v"+fv.tracker:""},
+    {key:"splittable", icon:"🗂️",title:"스플릿 테이블",desc:"Plan vs actual, 공유 추적",tag:fv.splittable?"v"+fv.splittable:""},
+    {key:"tracker",    icon:"📋",title:"이슈 추적",desc:"이슈 게시판, Lot/Wafer 추적",tag:fv.tracker?"v"+fv.tracker:""},
+    {key:"inform",     icon:"📢",title:"인폼 로그",desc:"모듈 인폼 + 스레드 + 이미지",tag:fv.inform?"v"+fv.inform:""},
+    {key:"meeting",    icon:"🗓",title:"회의관리",desc:"차수·반복·아젠다·회의록",tag:fv.meeting?"v"+fv.meeting:""},
+    {key:"calendar",   icon:"📅",title:"변경점 관리",desc:"달력·카테고리·회의 연동",tag:fv.calendar?"v"+fv.calendar:""},
     {key:"tablemap",   icon:"🗺️",title:"테이블 맵",desc:"DB 관계 그래프",tag:fv.tablemap?"v"+fv.tablemap:"",adminOnly:true},
     {key:"admin",      icon:"⚙️",title:"관리자",desc:"사용자, 권한, 모니터",tag:fv.admin?"v"+fv.admin:"",adminOnly:true},
-    {key:"devguide",   icon:"📖",title:"개발 가이드",desc:"아키텍처, API 레퍼런스",tag:fv.devguide?"v"+fv.devguide:""},
+    {key:"devguide",   icon:"📖",title:"개발자 가이드",desc:"아키텍처, API 레퍼런스",tag:fv.devguide?"v"+fv.devguide:""},
   ];
   const visibleCards=ALL_CARDS.filter(c=>(!c.adminOnly||isAdmin)&&hasTab(c.key));
 
@@ -83,8 +87,8 @@ export default function My_Home({onNavigate,user}){
     </div>
 
     {/* Permission-filtered cards, centered */}
-    {visibleCards.length>0?<div style={{display:"flex",flexWrap:"wrap",gap:14,justifyContent:"center",marginBottom:32}}>
-      {visibleCards.map(c=><Card key={c.key} icon={c.icon} title={c.title} desc={c.desc} tag={c.tag} onClick={()=>nav(c.key)}/>)}
+    {visibleCards.length>0?<div style={{display:"grid",gridTemplateColumns:"repeat(4, minmax(0, 1fr))",gap:14,justifyContent:"start",marginBottom:32}}>
+      {visibleCards.map(c=><Card key={c.key} icon={c.icon} title={c.title} desc={c.desc} tag={c.tag} onClick={()=>nav(c.key)} width="100%"/>)}
     </div>:<div style={{padding:"40px 20px",textAlign:"center",color:"var(--text-secondary)",fontSize:13,marginBottom:32}}>
       사용 가능한 탭이 없습니다. 관리자에게 권한을 요청해주세요.
     </div>}

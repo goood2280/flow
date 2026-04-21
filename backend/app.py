@@ -1,4 +1,4 @@
-"""FabCanvas.ai Backend v8.4.6 — uvicorn app:app --host 0.0.0.0 --port 8080.
+"""FabCanvas.ai Backend v8.7.3 — uvicorn app:app --host 0.0.0.0 --port 8080.
 
 v8.4.6 보안 패치:
   - 세션 토큰 기반 인증 미들웨어: 모든 /api/* 호출은 X-Session-Token 필요
@@ -7,6 +7,10 @@ v8.4.6 보안 패치:
   - 보안 헤더 추가: X-Content-Type-Options, X-Frame-Options, Referrer-Policy.
   - Seed admin 비밀번호는 환경변수 FABCANVAS_ADMIN_PW 우선, 미지정 시 임시값 + 경고.
   - Password 해시: SHA-256 → PBKDF2-HMAC-SHA256 (salted). 레거시 해시는 로그인 시 자동 업그레이드.
+
+v8.7.3 hotfix:
+  - admin.py `Any` import 누락으로 admin 라우터 전체가 import-time NameError 던지던
+    치명적 버그 수정. 유저/관리자 단위기능 전수 점검 통과.
 """
 import os, importlib, logging, secrets
 from pathlib import Path
@@ -24,7 +28,7 @@ logger = logging.getLogger("holweb")
 # v8.4.6: /docs, /redoc, /openapi.json disabled — API 스펙 무인증 노출 차단
 app = FastAPI(
     title="FabCanvas.ai",
-    version="8.4.6",
+    version="8.7.3",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
@@ -103,7 +107,7 @@ def serve_version():
     vp = Path(__file__).parent.parent / "version.json"
     if vp.exists():
         return FileResponse(str(vp), media_type="application/json")
-    return {"version": "8.4.6"}
+    return {"version": "8.7.3"}
 
 
 # ── Serve React build ──

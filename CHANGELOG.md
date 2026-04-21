@@ -2,6 +2,26 @@
 
 주요 변경점만 간략히. 세부 내역은 `VERSION.json` 의 changelog 배열 참고.
 
+## v8.7.4 — 2026-04-21
+
+- **회의관리 차수(Session)** — 한 회의 아래 `1차 / 2차 / 3차 …` 를 쌓아가며 각 차수별로 독립된 scheduled_at / status / 아젠다 / 회의록. 기존 v8.7.2 데이터는 자동 마이그레이션 → 1차 세션으로 래핑. 엔드포인트 `POST /api/meetings/session/{add,update,delete}`.
+- **반복 주기(Recurrence)** — 회의 메타에 `recurrence = {type: none|weekly, count_per_week, weekday, note}` 추가. 좌측 회의 카드에 `매주 1회/주 (월)` 요약.
+- **액션아이템 → 변경점 달력 Selective Push** — 회의록 저장만으로는 달력에 안 뜨고, 각 action_item 옆 `📅 달력 등록` 버튼으로 명시 push. 등록된 달력 이벤트에 회의 카테고리 색상 + 등록 유저/시각. `POST /api/meetings/action/{push,unpush}` 신규. 회의·차수 삭제 시 연동 이벤트 cascade 제거.
+- **달력 이벤트 meeting_ref + status 추적** — events.json 에 `status: pending|in_progress|done` + `meeting_ref: {meeting_id, session_id, action_item_id}`. `/api/calendar/event/status` 로 상태 변경 시 회의록 action_item 상태에 자동 mirror.
+- **백업 범위 재정의** — `data_root` + `base_root` 두 소스. 대신 `*.parquet` 전역 제외 (대용량 DB parquet 제외). `logs/` 는 포함.
+- **PageGear 좌하단 통일** — 전 탭 설정 톱니 기본 위치 `bottom-left` fixed. Dashboard/Tracker inline → 좌하단 floating. My_Meeting / My_Calendar 에 PageGear 배치.
+- **달력 TODAY 배지 잘림 수정** — 셀 `overflow: visible` + 안쪽 좌표 (top:3,right:3) + pointerEvents:none.
+- **시드 데이터 정리** — `meetings.json` 의 hol 샘플 회의 제거.
+- **smoke 통과** — 회의 생성 → 차수 → 회의록 → action push → 달력 이벤트 → unpush/repush → 회의 삭제 → cascade 제거 전체 200 OK.
+
+다음 릴리스(v8.7.5+): 결정사항 단위 push, 액션아이템 그룹 담당자 + 메일 발송 체크, 액션아이템 간트, 인폼 제품→LOT→wafer drill-down + 그룹 권한, FileBrowser S3 신호등 양방향.
+
+## v8.7.3 — 2026-04-21
+
+- **[critical hotfix] admin 라우터 import-time NameError** — v8.7.2 에서 추가된 `MailCfgReq.extra_data: Optional[Dict[str, Any]]` 가 `Any` 를 import 하지 않아 `backend/routers/admin.py` 가 import 시점에 실패. 결과적으로 Admin 탭 (사용자/설정/Activity Log/메일 API/Base CSV/백업) 전체가 동작 불가였음. `from typing import List, Optional, Dict, Any` 로 수정.
+- **v8.7.2 단위기능 전수 점검** — 유저 10영역 (로그인/4h idle, Dashboard, Tracker, SplitTable 낙관적잠금·plan·컬럼CRUD, Inform 글·사진·댓글·데드라인·간트·모듈컬러·메일·작성자삭제, 달력 CRUD·오늘핀·동시편집, 회의관리 생성·아젠다·회의록, TableMap 유령컬럼·Tab이동·셀복사·검증·계보, S3 신호등, PageGear) + 관리자 7영역 (사용자 CRUD + password_hash 응답 스크럽, Activity Log 필터, 데이터 루트, 모듈/사유, 메일 API, Base CSV 편집기, 백업) 코드 경로 정합성 재검증. 상기 admin.py 이외 결함 없음.
+- 보안 재확인 — `/api/admin/users` 응답 password_hash 제거(`_scrub_user`), admin 엔드포인트 `Depends(require_admin)` 적용, 세션 4h idle 서버측 만료, 이미지 `/api/informs/files/` 는 token fallback 허용하되 path traversal `resolve+relative_to` 유지, `data_roots` 는 admin 에게만 노출.
+
 ## v8.7.2 — 2026-04-21
 
 - **TableMap UX 대폭 개선** — (1) 신규 테이블 생성 시 "이름없음" 유령 컬럼 제거 (초기 `columns=[]` + 저장 시 blank-name 필터). (2) 컬럼 정의 에디터에서 Tab/Shift+Tab 으로 필드 간 이동. (3) 셀 클릭 → 단일 선택, Shift+클릭·드래그로 범위 선택, 행번호 클릭으로 행 전체 선택, `Ctrl+C` → TSV 복사 (토스트 알림). (4) 테이블 바로 아래 `＋ 행 추가` 인라인 버튼 + 마지막 행에서 Tab/Enter 누르면 자동 새 행.

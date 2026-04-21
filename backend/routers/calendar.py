@@ -1,24 +1,28 @@
-"""routers/calendar.py v8.6.0 — 변경점 기록 달력.
+"""routers/calendar.py v8.7.4 — 변경점 기록 달력 + 회의 액션아이템 연동.
 
 스키마 ({data_root}/calendar/events.json):
   [{id, version, date, title, body, category, author,
+    status: "pending"|"in_progress"|"done",   # v8.7.4
+    meeting_ref: { meeting_id, session_id, action_item_id } | null,  # v8.7.4
     created_at, updated_at, history:[{ts, actor, action, before:{...}}]}]
 
-- date: ISO 'YYYY-MM-DD' (단일 날짜).
+- date: ISO 'YYYY-MM-DD'.
 - category: 자유 문자열 (FE 가 색을 입힘). 카테고리 팔레트는 별도 파일.
+- meeting_ref: meetings.py 의 `minutes.action_items` 에서 자동 생성된 경우 설정.
+  수동 생성 이벤트는 null.  meetings 쪽 변경 시 sync_meeting_session() 호출.
 - 낙관적 잠금: 저장 시 client 가 보낸 version 이 서버 version 과 일치해야 PUT 성공.
-  불일치면 409 + 최신 entry 반환.
-- 추적 관리: title/body/category/date 변경 시 history 에 직전 값 push (마지막 50개).
+- 추적 관리: title/body/category/date/status 변경 시 history 에 before 누적.
 
 Endpoints:
-  GET  /api/calendar/events?month=YYYY-MM   — 해당 월(±1주) 이벤트.
-  GET  /api/calendar/events/search?q=...    — 키워드 검색 (title/body/author).
-  GET  /api/calendar/event/{id}             — 단건 (history 포함).
-  POST /api/calendar/event                  — 생성.
-  POST /api/calendar/event/update           — 수정 (version 체크).
-  POST /api/calendar/event/delete?id=...    — 삭제 (author/admin).
-  GET  /api/calendar/categories             — 카테고리 팔레트.
-  POST /api/calendar/categories/save        — 팔레트 저장 (admin).
+  GET  /api/calendar/events?month=YYYY-MM
+  GET  /api/calendar/events/search?q=...
+  GET  /api/calendar/event/{id}
+  POST /api/calendar/event
+  POST /api/calendar/event/update
+  POST /api/calendar/event/status   {id, status}
+  POST /api/calendar/event/delete?id=...
+  GET  /api/calendar/categories
+  POST /api/calendar/categories/save
 """
 import datetime
 import uuid
@@ -48,15 +52,133 @@ DEFAULT_CATEGORIES = [
 ]
 
 HIST_CAP = 50
+VALID_EVENT_STATUS = {"pending", "in_progress", "done"}
+
+
+def _upgrade_event(e: dict) -> dict:
+    if "status" not in e:
+        e["status"] = "pending"
+    if "meeting_ref" not in e:
+        e["meeting_ref"] = None
+    return e
 
 
 def _load_events() -> list:
     data = load_json(EVENTS_FILE, [])
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    return [_upgrade_event(x) for x in data if isinstance(x, dict)]
 
 
 def _save_events(items: list) -> None:
     save_json(EVENTS_FILE, items, indent=2)
+
+
+# ── public helpers for meetings router ─────────────────────────
+def push_action_item(meeting: dict, session: dict, action_item: dict,
+                     actor: str, meeting_category: str = "") -> Optional[dict]:
+    """Push a single action_item to calendar. Returns created event dict or None.
+
+    If already pushed (an event exists with same meeting_ref), just update it.
+    Date is required (action_item.due); text becomes title; owner goes to body.
+    """
+    meeting_id = meeting.get("id") or ""
+    session_id = session.get("id") or ""
+    aid = action_item.get("id")
+    if not (meeting_id and session_id and aid):
+        return None
+    title = (action_item.get("text") or "").strip()[:120]
+    date_s = _safe_date(action_item.get("due"))
+    if not (title and date_s):
+        return None
+    cat = (meeting_category or meeting.get("category") or "회의 결정사항").strip() or "회의 결정사항"
+    body = (action_item.get("owner") and f"담당: {action_item['owner']}") or ""
+    items = _load_events()
+    now = _now_iso()
+    # existing?
+    for i, e in enumerate(items):
+        ref = e.get("meeting_ref") or {}
+        if (ref.get("meeting_id") == meeting_id and ref.get("session_id") == session_id
+                and ref.get("action_item_id") == aid):
+            before = {}
+            for fld, val in (("title", title), ("date", date_s), ("body", body), ("category", cat)):
+                if e.get(fld) != val:
+                    before[fld] = e.get(fld); e[fld] = val
+            if before:
+                e["version"] = int(e.get("version") or 1) + 1
+                e["updated_at"] = now
+                hist = e.get("history") or []
+                hist.append({"ts": now, "actor": actor, "action": "meeting_push_update", "before": before})
+                e["history"] = hist[-HIST_CAP:]
+                items[i] = e
+                _save_events(items)
+            return e
+    new_event = {
+        "id": _new_id(),
+        "version": 1,
+        "date": date_s,
+        "title": title,
+        "body": body,
+        "category": cat,
+        "author": actor,
+        "status": "pending",
+        "meeting_ref": {"meeting_id": meeting_id, "session_id": session_id, "action_item_id": aid},
+        "created_at": now,
+        "updated_at": now,
+        "history": [{"ts": now, "actor": actor, "action": "meeting_push_create", "before": {}}],
+    }
+    items.append(new_event)
+    _save_events(items)
+    return new_event
+
+
+def unpush_action_item(meeting_id: str, session_id: str, action_item_id: str) -> bool:
+    items = _load_events()
+    new_items = [e for e in items
+                 if not ((e.get("meeting_ref") or {}).get("meeting_id") == meeting_id
+                         and (e.get("meeting_ref") or {}).get("session_id") == session_id
+                         and (e.get("meeting_ref") or {}).get("action_item_id") == action_item_id)]
+    if len(new_items) != len(items):
+        _save_events(new_items)
+        return True
+    return False
+
+
+def find_pushed_event(meeting_id: str, session_id: str, action_item_id: str) -> Optional[dict]:
+    for e in _load_events():
+        ref = e.get("meeting_ref") or {}
+        if (ref.get("meeting_id") == meeting_id and ref.get("session_id") == session_id
+                and ref.get("action_item_id") == action_item_id):
+            return e
+    return None
+
+
+def remove_events_for_meeting(meeting_id: str) -> None:
+    items = _load_events()
+    new_items = [e for e in items if (e.get("meeting_ref") or {}).get("meeting_id") != meeting_id]
+    if len(new_items) != len(items):
+        _save_events(new_items)
+
+
+def remove_events_for_session(meeting_id: str, session_id: str) -> None:
+    items = _load_events()
+    new_items = []
+    removed = 0
+    for e in items:
+        ref = e.get("meeting_ref") or {}
+        if ref.get("meeting_id") == meeting_id and ref.get("session_id") == session_id:
+            removed += 1
+            continue
+        new_items.append(e)
+    if removed:
+        _save_events(new_items)
+
+
+def _safe_date(s: str) -> str:
+    try:
+        return datetime.date.fromisoformat((s or "")[:10]).isoformat()
+    except Exception:
+        return ""
 
 
 def _load_cats() -> list:
@@ -230,6 +352,47 @@ def update_event(req: EventUpdate, request: Request):
     items[idx] = cur
     _save_events(items)
     _audit(request, "calendar:update", detail=f"id={cur['id']} fields={','.join(before.keys())}", tab="calendar")
+    return {"ok": True, "event": cur}
+
+
+class EventStatusReq(BaseModel):
+    id: str
+    status: str
+
+
+@router.post("/event/status")
+def set_event_status(req: EventStatusReq, request: Request):
+    me = current_user(request)
+    st = (req.status or "").strip()
+    if st not in VALID_EVENT_STATUS:
+        raise HTTPException(400, f"Invalid status: {st}")
+    items = _load_events()
+    idx = next((i for i, x in enumerate(items) if x.get("id") == req.id), -1)
+    if idx < 0:
+        raise HTTPException(404)
+    cur = items[idx]
+    # Anyone can update status (progress tracking is collaborative).
+    if cur.get("status") == st:
+        return {"ok": True, "event": cur, "noop": True}
+    before = {"status": cur.get("status")}
+    cur["status"] = st
+    cur["version"] = int(cur.get("version") or 1) + 1
+    cur["updated_at"] = _now_iso()
+    hist = cur.get("history") or []
+    hist.append({"ts": cur["updated_at"], "actor": me["username"],
+                 "action": "status", "before": before})
+    cur["history"] = hist[-HIST_CAP:]
+    items[idx] = cur
+    _save_events(items)
+    _audit(request, "calendar:status", detail=f"id={cur['id']} -> {st}", tab="calendar")
+    # If this event is synced from a meeting action_item, mirror status back.
+    ref = cur.get("meeting_ref") or {}
+    if ref.get("meeting_id") and ref.get("session_id") and ref.get("action_item_id"):
+        try:
+            from routers.meetings import mirror_action_item_status as _mirror  # lazy import
+            _mirror(ref["meeting_id"], ref["session_id"], ref["action_item_id"], st)
+        except Exception:
+            pass
     return {"ok": True, "event": cur}
 
 

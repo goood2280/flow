@@ -1,13 +1,14 @@
-"""core/backup.py v8.7.0 — 데이터 자동 백업 (사용자 기록 보호).
+"""core/backup.py v8.7.4 — 데이터 자동 백업 (사용자 기록 보호).
 
-범위:
-  - data_root 전체를 zip 스냅샷으로 저장 (로그/캐시/업로드 제외 옵션).
+범위 (v8.7.4 재정의):
+  - 가벼운 *사용자 기록* 만 백업. 대용량 DB parquet 는 **제외**.
+  - 포함: data_root (holweb-data) 전체 + Base 루트(base CSV 등).
+  - 제외: `*.parquet`, `*.pyc`, `__pycache__`, `_backups`, `cache`, `tmp`, `node_modules`.
+  - logs/uploads 는 포함 (운영 기록 + 인폼 이미지 보존 필요).
   - 백업 경로: admin_settings.json `backup.path` (없으면 {data_root}/_backups).
   - 보관 정책: 최신 N 개 유지 (기본 14). 초과분 자동 삭제.
   - 주기: 서버 기동 시 1회 + 스케줄 스레드 (기본 24h). admin_settings.json
     `backup.interval_hours` 로 런타임 조절.
-
-의도적으로 core/paths.py 의존만 사용 (core/roots.py 는 data-root 별도 resolver).
 """
 from __future__ import annotations
 
@@ -19,15 +20,15 @@ import threading
 import time
 import zipfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from core.paths import PATHS
 
 logger = logging.getLogger("fabcanvas.backup")
 
-# 제외 규칙 — 큰 바이너리/휘발성/tmp 는 백업 대상 아님.
-_EXCLUDE_DIR_NAMES = {"_backups", "cache", "uploads", "tmp", "logs"}
-_EXCLUDE_GLOBS = ("*.log", "*.pyc")
+# 제외 규칙 — 큰 바이너리/휘발성/tmp/파이썬 캐시.  logs/uploads 는 **포함**.
+_EXCLUDE_DIR_NAMES = {"_backups", "cache", "tmp", "__pycache__", "node_modules"}
+_EXCLUDE_GLOBS = ("*.pyc", "*.parquet")
 
 # 기본 보관 개수 / 기본 주기
 _DEFAULT_KEEP = 14
@@ -101,12 +102,12 @@ def _resolve_backup_root() -> Path:
 
 
 def _iter_files(src: Path):
-    """data_root 이하 모든 파일 yield. 제외 규칙 적용."""
+    """src 이하 모든 파일 yield. 제외 규칙 적용."""
     for root, dirs, files in os.walk(src):
         # 제외 디렉토리 prune
         dirs[:] = [d for d in dirs if d not in _EXCLUDE_DIR_NAMES]
         rp = Path(root)
-        # _backups 자기 자신은 항상 제외 (설사 data_root 내부여도)
+        # _backups 자기 자신은 항상 제외 (설사 src 내부여도)
         try:
             if "_backups" in rp.relative_to(src).parts:
                 continue
@@ -118,13 +119,66 @@ def _iter_files(src: Path):
             yield rp / name
 
 
+def _collect_sources() -> List[Tuple[Path, str]]:
+    """백업할 (src, arc_prefix) 목록 반환. 중복/상/하위관계 제거."""
+    srcs: List[Tuple[Path, str]] = []
+
+    def _add(p: Path, prefix: str):
+        try:
+            rp = p.resolve()
+        except Exception:
+            return
+        if not rp.is_dir():
+            return
+        for (existing, _) in srcs:
+            try:
+                ex = existing.resolve()
+            except Exception:
+                continue
+            # 이미 포함된 경로의 하위이거나 동일하면 스킵
+            if rp == ex:
+                return
+            try:
+                rp.relative_to(ex)
+                return  # rp 는 ex 의 하위 → 이미 포함됨
+            except ValueError:
+                pass
+        srcs.append((rp, prefix))
+
+    # 1) data_root (holweb-data) — 사용자 기록 메인
+    _add(PATHS.data_root, "")
+
+    # 2) Base 루트 — admin 이 편집하는 CSV 들. parquet 는 _EXCLUDE_GLOBS 로 자동 제외.
+    #    resolve 는 core.roots 우선, 실패 시 env / PATHS default.
+    base_path: Optional[Path] = None
+    try:
+        from core.roots import base_root as _br  # type: ignore
+        p = Path(_br())
+        if p.is_dir():
+            base_path = p
+    except Exception:
+        pass
+    if base_path is None:
+        env_b = os.environ.get("FABCANVAS_BASE_ROOT") or os.environ.get("HOL_BASE_ROOT")
+        if env_b and Path(env_b).is_dir():
+            base_path = Path(env_b)
+        else:
+            cand = PATHS.app_root / "data" / "Base"
+            if cand.is_dir():
+                base_path = cand
+    if base_path is not None:
+        _add(base_path, "Base/")
+
+    return srcs
+
+
 def run_backup(reason: str = "manual") -> dict:
-    """data_root 를 zip 으로 백업. 성공/실패 state 를 _last_backup 에 기록."""
+    """설정된 소스들을 zip 으로 백업. 성공/실패 state 를 _last_backup 에 기록."""
     with _state_lock:
         try:
-            src = PATHS.data_root
-            if not src.is_dir():
-                raise RuntimeError(f"data_root not a directory: {src}")
+            sources = _collect_sources()
+            if not sources:
+                raise RuntimeError("no backup sources resolved")
             dest_root = _resolve_backup_root()
             dest_root.mkdir(parents=True, exist_ok=True)
             stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -133,16 +187,18 @@ def run_backup(reason: str = "manual") -> dict:
 
             total = 0
             with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-                for fp in _iter_files(src):
-                    try:
-                        arc = fp.relative_to(src).as_posix()
-                    except ValueError:
-                        continue
-                    try:
-                        zf.write(fp, arc)
-                        total += fp.stat().st_size
-                    except Exception as e:
-                        logger.warning(f"backup skip {fp}: {e}")
+                for (src, prefix) in sources:
+                    for fp in _iter_files(src):
+                        try:
+                            rel = fp.relative_to(src).as_posix()
+                        except ValueError:
+                            continue
+                        arc = (prefix + rel) if prefix else rel
+                        try:
+                            zf.write(fp, arc)
+                            total += fp.stat().st_size
+                        except Exception as e:
+                            logger.warning(f"backup skip {fp}: {e}")
 
             # 보관 정리
             keep = get_settings()["keep"]

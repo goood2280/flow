@@ -1,7 +1,36 @@
 {
-  "version": "8.7.2",
+  "version": "8.7.4",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.7.4",
+      "date": "2026-04-21",
+      "title": "회의 차수·반복 + 액션아이템 selective 달력 push + 백업 범위 재정의 + PageGear 좌하단 통일",
+      "tag": "feat",
+      "changes": [
+        "**회의관리 차수(Session) 도입** — 기존 meeting = {agendas, minutes} 구조를 meeting = {sessions[{idx, scheduled_at, agendas, minutes, status}]} 로 재설계. 1차/2차/3차 각각 독립 아젠다와 회의록. 기존 v8.7.2 데이터는 `_migrate_entry()` 가 자동으로 1차 세션으로 래핑. 엔드포인트 /api/meetings/session/{add,update,delete} 신규.",
+        "**반복 주기(Recurrence)** — 회의 메타에 `recurrence: {type: none|weekly, count_per_week, weekday:[0..6], note}` 추가. 생성/수정 폼에서 주당 횟수·요일 선택. 좌측 회의 카드에 반복 요약 표시.",
+        "**액션아이템 → 변경점 달력 선택적 Push** — 회의록 저장만으로는 달력에 안 뜨고, 각 action_item 옆 `📅 달력 등록` 버튼을 눌러야 푸시. 푸시된 달력 이벤트에는 등록 유저·시각 표시 + 회의의 카테고리 색상 상속. `action/push` 와 `action/unpush` 엔드포인트. 회의/차수 삭제 시 연동 이벤트 cascade 제거.",
+        "**달력 이벤트 meeting_ref + status** — events.json 스키마에 `status: pending|in_progress|done` + `meeting_ref: {meeting_id, session_id, action_item_id}` 필드 추가. 달력에서 상태 변경 시 회의록의 action_item.status 에 자동 mirror. `/api/calendar/event/status` 엔드포인트 신규.",
+        "**백업 범위 재정의** — `data_root` 전체에서 → `data_root` + `base_root` 두 소스로 확장. 대신 `*.parquet` 전역 제외 (ML_TABLE/features/wafer_maps 등 대용량 DB 데이터 제외). logs 는 **포함** (운영 기록 보존). core/backup.py `_collect_sources()` + `_EXCLUDE_GLOBS`에 parquet 추가.",
+        "**PageGear 좌하단 통일** — 모든 탭의 설정 톱니(⚙) 기본 위치를 `bottom-left` fixed 로 변경. Dashboard/Tracker 의 inline 위치도 좌하단 floating 으로 통일. My_Meeting / My_Calendar 에 PageGear 신규 배치.",
+        "**달력 TODAY 배지 잘림 수정** — 셀 `overflow: hidden` + badge `top: -8, right: -6` 음수 오프셋으로 잘리던 문제. overflow visible + 안쪽 좌표(top:3,right:3) + pointerEvents:none 으로 수정. 🎨 카테고리 버튼은 PageGear drawer 로 이관.",
+        "**시드 데이터 정리** — `data/holweb-data/meetings/meetings.json` 의 hol 기본 회의 샘플 제거 (빈 배열). 신규 설치 사용자에게 불필요한 샘플 데이터 노출 방지.",
+        "smoke test E2E 통과 — 회의 생성→차수 자동 1→회의록 저장→action push→달력 이벤트 생성→unpush→이벤트 제거→재push→회의 삭제→이벤트 cascade 제거 전 경로 200 OK.",
+        "다음 릴리스 예정 (v8.7.5~): 결정사항 단위 달력 push / 액션아이템 그룹 담당자 / 회의 메일 발송 체크 / 액션아이템 간트 뷰 / 인폼 그룹 권한 + 제품→LOT→wafer drill-down / FileBrowser S3 신호등 양방향 / 다 페이지 PageGear 컨텐츠 확장."
+      ]
+    },
+    {
+      "version": "8.7.3",
+      "date": "2026-04-21",
+      "title": "v8.7.2 단위기능 전수 점검 + admin 라우터 import-time NameError 핫픽스",
+      "tag": "fix",
+      "changes": [
+        "**[critical hotfix] admin.py 로딩 실패 수정** — v8.7.2 에서 추가된 `MailCfgReq.extra_data: Optional[Dict[str, Any]]` 가 `Any` 를 import 하지 않아 admin 라우터가 import 시점에 `NameError: name 'Any' is not defined` 로 실패하고 있었음. `from typing import List, Optional, Dict, Any` 로 수정. 증상: Admin 탭의 사용자/설정/Activity Log/메일 API/Base CSV/백업 탭 전부 동작 불가, 일반 유저도 내 프로필/권한 쿼리가 실패하던 문제.",
+        "**v8.7.2 전체 단위기능 점검** — 유저 관점 10개 영역 (로그인·4h idle, Dashboard 필터·태그, Tracker, SplitTable 낙관적잠금·plan·컬럼CRUD, Inform 글·사진·댓글·데드라인·간트·모듈컬러·메일·작성자삭제, 달력 CRUD·오늘핀·동시편집, 회의관리 생성·아젠다·회의록, TableMap 유령컬럼·Tab이동·셀복사·검증·계보, S3 신호등, PageGear) + 관리자 관점 7개 영역 (사용자 CRUD + password_hash 응답 스크럽, Activity Log 필터, 데이터 루트, 모듈/사유, 메일 API, Base CSV 편집기, 백업) 코드 경로 정합성 재검증. 상기 admin.py 외 결함 없음.",
+        "보안 재확인 — /api/admin/users 응답에서 password_hash 제거(`_scrub_user`), admin 전용 엔드포인트는 전부 `Depends(require_admin)`, 세션 4h idle 서버측 만료 + FE 활동 이벤트 sync, 이미지 /api/informs/files/ 는 query-token fallback 허용하지만 path traversal resolve + relative_to 방어 유지, data_roots 는 admin 에게만 노출."
+      ]
+    },
     {
       "version": "8.7.2",
       "date": "2026-04-21",

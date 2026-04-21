@@ -1085,8 +1085,8 @@ export default function My_Dashboard({ user }) {
         )}
         {isAdmin && <button onClick={doRefresh} disabled={refreshing} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-hover)", color: "var(--text-primary)", fontSize: 11, fontWeight: 600, cursor: refreshing ? "wait" : "pointer", opacity: refreshing ? 0.5 : 1 }}>{refreshing ? "계산 중..." : "전체 새로고침"}</button>}
         {canEdit && <button onClick={() => setEditing({})} style={{ padding: "6px 16px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ 차트 추가</button>}
-        {/* v8.5.2: 페이지 설정 톱니 통일 */}
-        <PageGear title="대시보드 설정" canEdit={isAdmin} position="inline">
+        {/* v8.7.4: 전 탭 톱니 좌하단 통일 */}
+        <PageGear title="대시보드 설정" canEdit={isAdmin} position="bottom-left">
           <DashboardSettings isAdmin={isAdmin} refreshMin={refreshMin} setRefreshMin={setRefreshMin} />
         </PageGear>
       </div>
