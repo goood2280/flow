@@ -1,7 +1,21 @@
 {
-  "version": "8.5.1",
+  "version": "8.5.2",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.5.2",
+      "date": "2026-04-21",
+      "title": "PageGear 공용 톱니 + Admin Base CSV 편집기",
+      "tag": "feat",
+      "changes": [
+        "신규 공용 컴포넌트 PageGear — 페이지별 in-page 톱니(⚙) 버튼 + 우측 drawer. position=inline/top-right/bottom-right 지원. ESC/outside-click 자동 닫힘.",
+        "Dashboard 헤더에 PageGear 주입 — 자동 새로고침 주기(분), 백그라운드 재계산 주기 설정. 일반 유저는 조회만, 편집은 admin.",
+        "Tracker 헤더에 PageGear 주입 — 카테고리 이름/색상 관리. 추가/삭제/색 변경. 편집은 admin.",
+        "Admin 에 'Base CSV' 서브탭 추가 — step_matching.csv / knob_ppid.csv 를 직접 표 편집. 행 추가/삭제/위아래 이동, unique key 중복 검증, use ∈ {Y,N,0,1}.",
+        "backend admin.py 에 /api/admin/base-csv GET/PUT 추가 — name whitelist + path traversal 방어 + 저장 시 UTF-8 BOM CSV atomic write + 활동 로그.",
+        "SplitTable/FileBrowser 기존 톱니(AWS/S3 Sync/override) 는 유지 — 이번 라운드는 Dashboard/Tracker/Admin 통일이 범위."
+      ]
+    },
     {
       "version": "8.5.1",
       "date": "2026-04-21",

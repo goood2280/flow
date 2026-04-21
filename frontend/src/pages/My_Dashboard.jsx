@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
 import Loading from "../components/Loading";
+import PageGear from "../components/PageGear";
 // Inject chart hover styles once
 if(typeof document!=="undefined"&&!document.getElementById("dash-styles")){
   const s=document.createElement("style");s.id="dash-styles";
@@ -1084,6 +1085,10 @@ export default function My_Dashboard({ user }) {
         )}
         {isAdmin && <button onClick={doRefresh} disabled={refreshing} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-hover)", color: "var(--text-primary)", fontSize: 11, fontWeight: 600, cursor: refreshing ? "wait" : "pointer", opacity: refreshing ? 0.5 : 1 }}>{refreshing ? "계산 중..." : "전체 새로고침"}</button>}
         {canEdit && <button onClick={() => setEditing({})} style={{ padding: "6px 16px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ 차트 추가</button>}
+        {/* v8.5.2: 페이지 설정 톱니 통일 */}
+        <PageGear title="대시보드 설정" canEdit={isAdmin} position="inline">
+          <DashboardSettings isAdmin={isAdmin} refreshMin={refreshMin} setRefreshMin={setRefreshMin} />
+        </PageGear>
       </div>
     </div>
     {editing !== null && <ChartEditor cfg={editing} onSave={saveChart} onClose={() => setEditing(null)} isAdmin={isAdmin} />}
@@ -1171,4 +1176,53 @@ export default function My_Dashboard({ user }) {
     })()}
   </div>
   </SelectionContext.Provider>);
+}
+
+/* ═══ v8.5.2 Dashboard Settings panel (PageGear 내부) ═══ */
+function DashboardSettings({ isAdmin, refreshMin, setRefreshMin }) {
+  const [val, setVal] = useState(refreshMin);
+  const [bgVal, setBgVal] = useState(10);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    sf("/api/admin/settings").then(s => {
+      if (typeof s.dashboard_refresh_minutes === "number") setVal(s.dashboard_refresh_minutes);
+      if (typeof s.dashboard_bg_refresh_minutes === "number") setBgVal(s.dashboard_bg_refresh_minutes);
+    }).catch(() => {});
+  }, []);
+  const save = () => {
+    setSaving(true); setMsg("");
+    sf("/api/admin/settings/save", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dashboard_refresh_minutes: Number(val) || 10, dashboard_bg_refresh_minutes: Number(bgVal) || 10 }),
+    }).then(() => { setMsg("저장 완료"); setRefreshMin(Number(val) || 10); })
+      .catch(e => setMsg(e.message))
+      .finally(() => setSaving(false));
+  };
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>자동 새로고침 주기 (분)</div>
+      <input type="number" min={1} max={240} value={val} onChange={e => setVal(e.target.value)} disabled={!isAdmin}
+        style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>프론트가 차트를 다시 불러오는 주기. 1~240분.</div>
+
+      <div style={{ fontSize: 12, fontWeight: 600, marginTop: 14, marginBottom: 6 }}>백그라운드 재계산 주기 (분)</div>
+      <input type="number" min={1} max={240} value={bgVal} onChange={e => setBgVal(e.target.value)} disabled={!isAdmin}
+        style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>백엔드가 각 차트 스냅샷을 재계산하는 주기.</div>
+
+      {isAdmin && (
+        <button onClick={save} disabled={saving}
+          style={{ marginTop: 14, width: "100%", padding: "8px 12px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 600, fontSize: 12, cursor: saving ? "wait" : "pointer" }}>
+          {saving ? "저장 중..." : "저장"}
+        </button>
+      )}
+      {msg && <div style={{ marginTop: 8, fontSize: 11, color: msg === "저장 완료" ? "#22c55e" : "#ef4444" }}>{msg}</div>}
+
+      <div style={{ marginTop: 18, padding: 10, background: "var(--bg-primary)", borderRadius: 6, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+        • 일반 유저는 값 확인만 가능 (편집은 관리자).<br/>
+        • 차트별 exclude_null / fitting line 등은 각 차트의 편집 화면에서 설정합니다.
+      </div>
+    </div>
+  );
 }
