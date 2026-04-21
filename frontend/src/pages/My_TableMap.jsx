@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import Loading from "../components/Loading";
+import S3StatusLight from "../components/S3StatusLight";
 import { sf } from "../lib/api";
 const API="/api/dbmap";
 
@@ -639,7 +640,10 @@ export default function My_TableMap({user}){
 
   return(<div style={{padding:"20px 28px",background:"var(--bg-primary)",minHeight:"calc(100vh - 48px)",color:"var(--text-primary)"}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
-      <div style={{fontSize:16,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>{">"} table map</div>
+      <div style={{fontSize:16,fontWeight:700,fontFamily:"monospace",color:"var(--accent)",display:"flex",alignItems:"center",gap:10}}>
+        <span>{">"} table map</span>
+        <S3StatusLight compact />
+      </div>
       <div style={{display:"flex",gap:4,alignItems:"center"}}>
         {[["graph","그래프"],["manage","관리"]].map(([k,l])=>(
           <span key={k} onClick={()=>setView(k)} style={{padding:"4px 12px",borderRadius:4,fontSize:11,cursor:"pointer",fontWeight:view===k?600:400,background:view===k?"var(--accent-glow)":"transparent",color:view===k?"var(--accent)":"var(--text-secondary)"}}>{l}</span>))}
