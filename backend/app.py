@@ -31,12 +31,19 @@ app = FastAPI(
 )
 
 
+# v8.7.1: 브라우저 <img>/<a download> 가 커스텀 헤더를 못 실음. 이미지 서빙 등
+# 정적 파일 엔드포인트에 한해 ?t=<token> 쿼리 파라미터 fallback 허용.
+_QUERY_TOKEN_PREFIXES = ("/api/informs/files/",)
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     """/api/* 경로에 세션 토큰 검증을 강제. 예외는 AUTH_EXEMPT_API_PATHS."""
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
         if path.startswith("/api/") and path not in AUTH_EXEMPT_API_PATHS:
             token = request.headers.get("x-session-token") or request.headers.get("X-Session-Token")
+            if not token and any(path.startswith(p) for p in _QUERY_TOKEN_PREFIXES):
+                token = request.query_params.get("t", "")
             u = validate_token(token)
             if not u:
                 return JSONResponse({"detail": "Authentication required"}, status_code=401)

@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from core.paths import PATHS
 from core.utils import load_json, save_json
 from core.auth import current_user, require_admin
+from core.audit import record as _audit
 
 router = APIRouter(prefix="/api/calendar", tags=["calendar"])
 
@@ -177,6 +178,7 @@ def create_event(req: EventCreate, request: Request):
     }
     items.append(entry)
     _save_events(items)
+    _audit(request, "calendar:create", detail=f"id={entry['id']} date={date_s} title={title[:60]}", tab="calendar")
     return {"ok": True, "event": entry}
 
 
@@ -227,6 +229,7 @@ def update_event(req: EventUpdate, request: Request):
     cur["history"] = hist[-HIST_CAP:]
     items[idx] = cur
     _save_events(items)
+    _audit(request, "calendar:update", detail=f"id={cur['id']} fields={','.join(before.keys())}", tab="calendar")
     return {"ok": True, "event": cur}
 
 
@@ -241,6 +244,7 @@ def delete_event(request: Request, id: str = Query(...)):
         raise HTTPException(403, "Only author or admin can delete")
     items = [x for x in items if x.get("id") != id]
     _save_events(items)
+    _audit(request, "calendar:delete", detail=f"id={id} title={(target.get('title') or '')[:60]}", tab="calendar")
     return {"ok": True}
 
 

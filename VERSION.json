@@ -1,7 +1,23 @@
 {
-  "version": "8.7.0",
+  "version": "8.7.1",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.7.1",
+      "date": "2026-04-21",
+      "title": "인폼 이미지 fix + 댓글 시간 + Admin Log 확장 + 달력 오늘 핀 + 인폼 데드라인/간트",
+      "tag": "feat",
+      "changes": [
+        "**[bugfix] 인폼 이미지 깨짐** — `<img>` 태그가 X-Session-Token 헤더를 실을 수 없어 /api/informs/files/* 이미지가 401 로 깨지던 문제. AuthMiddleware 가 해당 경로에 한해 `?t=<token>` 쿼리 fallback 허용 + FE `authSrc()` 헬퍼로 img/link src 에 자동 주입.",
+        "**댓글/답글 타임스탬프 강조** — 인폼 ThreadNode, Tracker 댓글 헤더에 🕐 + 모노스페이스 pill. 작성 시간이 명확히 보이도록 시각 강화.",
+        "**Admin Activity Log 확장** — 신규 `core/audit.py` 헬퍼. 로그인/로그아웃·인폼 CRUD·캘린더 CRUD·SplitTable plan·admin 사용자/설정 액션이 자동으로 activity.jsonl 에 기록. `/api/admin/logs` 에 username/action/tab 필터 추가, 신규 `/api/admin/logs/users` (distinct 유저 목록). Admin '로그' 탭이 'Admin Log' 로 재단장 — 테이블 뷰 + 유저 드롭다운 + 키워드 필터 + 새로고침.",
+        "**변경점 달력 오늘 핀** — My_Calendar 달력에서 오늘 날짜 셀을 굵은 accent 2px 테두리 + 글로우 shadow + `📍 TODAY` 핀 배지 + 볼드 날짜 숫자로 강조. 한눈에 오늘 파악 가능.",
+        "**인폼 데드라인 필드** — 루트 인폼에 `deadline` (YYYY-MM-DD). 작성 폼에서 설정, RootHeader 에 인라인 편집 배지 (작성자/모듈 담당자/admin). overdue/임박 색상 구분. `POST /api/informs/deadline?id=` 신규 + `_upgrade()` 가 기존 레코드에 빈 deadline 필드 자동 추가.",
+        "**인폼 간트 뷰** — 신규 '간트' 모드. SVG 기반 가로 바 차트로 모든 루트 인폼을 created_at→deadline 구간으로 시각화. 오늘 기준선 (accent vertical line), 월별 gridline, overdue 빨강, 데드라인 미설정은 점선 (기본 +7일 가정), 바 클릭 → wafer 상세.",
+        "**모듈별 구분색 + [사유] 태그** — `moduleColor()` 14색 팔레트 (GATE/STI/PC/MOL/BEOL/ET/EDS/S-D Epi/Spacer/Well/MASK/FAB/KNOB/기타). 루트 CompactRow 왼쪽에 5px 세로 컬러 바 + 모듈 칩 색상 반영. 본문 앞에 `[사유]` 컬러 프리픽스 tag (chip 포맷 대체).",
+        "**단일 setup.py** — 기존 `setup_vXXX.py` per-version 패턴 폐기. 루트 `setup.py` 하나에 `VERSION = \"8.7.1\"` 상수 + install-deps / build-frontend / version / sync-version 서브커맨드. CHANGELOG.md 신규 — 주요 변경만 간략 요약."
+      ]
+    },
     {
       "version": "8.7.0",
       "date": "2026-04-21",

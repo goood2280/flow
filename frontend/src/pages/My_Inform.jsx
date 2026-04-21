@@ -4,7 +4,7 @@
  * 삭제 정책: 작성자 본인만 (관리자도 불가) — 서버에서도 동일하게 강제됨.
  */
 import { useEffect, useMemo, useState } from "react";
-import { sf } from "../lib/api";
+import { sf, authSrc } from "../lib/api";
 
 const API = "/api/informs";
 
@@ -15,6 +15,33 @@ const STATUS_META = {
   completed:   { label: "완료",   color: "#22c55e", dot: "●" },
 };
 const STATUS_ORDER = ["received", "reviewing", "in_progress", "completed"];
+
+/* v8.7.1 — 모듈별 구분색 (좌측 리스트 / 루트카드 left border / Gantt bar fallback) */
+const MODULE_COLORS = {
+  GATE:   "#ef4444",
+  STI:    "#f59e0b",
+  PC:     "#eab308",
+  MOL:    "#10b981",
+  BEOL:   "#3b82f6",
+  ET:     "#8b5cf6",
+  EDS:    "#ec4899",
+  "S-D Epi": "#14b8a6",
+  Spacer: "#06b6d4",
+  Well:   "#a855f7",
+  MASK:   "#64748b",
+  FAB:    "#334155",
+  KNOB:   "#0ea5e9",
+  "기타": "#6b7280",
+};
+const FALLBACK_PALETTE = ["#6366f1", "#db2777", "#0d9488", "#c2410c", "#7c3aed", "#be123c", "#16a34a"];
+
+function moduleColor(name) {
+  if (!name) return "#6b7280";
+  if (MODULE_COLORS[name]) return MODULE_COLORS[name];
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) | 0;
+  return FALLBACK_PALETTE[Math.abs(h) % FALLBACK_PALETTE.length];
+}
 
 function StatusBadge({ status }) {
   const m = STATUS_META[status] || { label: status || "-", color: "var(--text-secondary)", dot: "·" };
@@ -56,9 +83,9 @@ function ImageGallery({ images }) {
   return (
     <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
       {images.map((im, i) => (
-        <a key={i} href={im.url} target="_blank" rel="noreferrer"
+        <a key={i} href={authSrc(im.url)} target="_blank" rel="noreferrer"
           style={{ display: "block", border: "1px solid var(--border)", borderRadius: 4, padding: 2, background: "var(--bg-primary)" }}>
-          <img src={im.url} alt={im.filename}
+          <img src={authSrc(im.url)} alt={im.filename}
             style={{ display: "block", maxHeight: 120, maxWidth: 180, objectFit: "contain" }} />
           <div style={{ fontSize: 9, color: "var(--text-secondary)", padding: "2px 4px", textAlign: "center", fontFamily: "monospace" }}>{im.filename}</div>
         </a>
@@ -139,12 +166,19 @@ function ThreadNode({
         border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginBottom: 6,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-          {node.module && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "var(--accent)22", color: "var(--accent)", fontWeight: 700 }}>{node.module}</span>}
-          {node.reason && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "var(--bg-hover)", color: "var(--text-secondary)" }}>{node.reason}</span>}
+          {node.module && (() => { const mc = moduleColor(node.module); return (
+            <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: mc + "22", color: mc, fontWeight: 700, border: "1px solid " + mc + "55" }}>{node.module}</span>
+          ); })()}
+          {node.reason && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "var(--bg-hover)", color: "var(--text-secondary)" }}>[{node.reason}]</span>}
           <CheckPill node={node} />
           <AutoGenPill node={node} />
           <span style={{ fontSize: 11, fontWeight: 600 }}>{node.author}</span>
-          <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{(node.created_at || "").replace("T", " ")}</span>
+          <span title={node.created_at || ""} style={{
+            fontSize: 10, padding: "2px 8px", borderRadius: 999,
+            background: "var(--bg-primary)", color: "var(--text-primary)",
+            border: "1px solid var(--border)", fontFamily: "monospace",
+            display: "inline-flex", alignItems: "center", gap: 4,
+          }}>🕐 {(node.created_at || "").replace("T", " ").slice(0, 16)}</span>
           <div style={{ flex: 1 }} />
           <span onClick={() => onToggleCheck(node)} style={{ fontSize: 10, color: node.checked ? "#ef4444" : "#22c55e", cursor: "pointer" }}>
             {node.checked ? "미확인으로" : "확인 체크"}
@@ -204,7 +238,7 @@ function ThreadNode({
               {uploading && <span style={{ fontSize: 10, color: "var(--accent)" }}>업로드중…</span>}
               {replyImages.map((im, i) => (
                 <span key={i} style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, background: "var(--bg-primary)", border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                  <img src={im.url} alt="" style={{ width: 24, height: 24, objectFit: "cover", borderRadius: 2 }} />
+                  <img src={authSrc(im.url)} alt="" style={{ width: 24, height: 24, objectFit: "cover", borderRadius: 2 }} />
                   <span style={{ fontFamily: "monospace" }}>{im.filename}</span>
                   <button onClick={() => setReplyImages(replyImages.filter((_, j) => j !== i))}
                     style={{ border: "none", background: "transparent", color: "#ef4444", cursor: "pointer", padding: 0 }}>×</button>
@@ -258,10 +292,51 @@ function ThreadNode({
   );
 }
 
+/* 데드라인 badge + 편집 */
+function DeadlineBadge({ deadline, onChange, canEdit }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(deadline || "");
+  useEffect(() => { setVal(deadline || ""); }, [deadline]);
+  const today = new Date().toISOString().slice(0, 10);
+  const overdue = deadline && deadline < today;
+  const near = deadline && !overdue && (new Date(deadline) - new Date(today)) / 86400000 <= 3;
+  const color = overdue ? "#ef4444" : near ? "#f59e0b" : "#3b82f6";
+  if (editing && canEdit) {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <input type="date" value={val} onChange={e => setVal(e.target.value)}
+          style={{ fontSize: 11, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)" }} />
+        <button onClick={() => { onChange(val); setEditing(false); }}
+          style={{ fontSize: 10, padding: "2px 8px", borderRadius: 3, border: "none", background: "var(--accent)", color: "#fff", cursor: "pointer" }}>저장</button>
+        {deadline && <button onClick={() => { onChange(""); setEditing(false); }}
+          style={{ fontSize: 10, padding: "2px 8px", borderRadius: 3, border: "1px solid var(--border)", background: "transparent", color: "#ef4444", cursor: "pointer" }}>해제</button>}
+        <button onClick={() => setEditing(false)}
+          style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>×</button>
+      </span>
+    );
+  }
+  if (!deadline) {
+    if (!canEdit) return null;
+    return <span onClick={() => setEditing(true)} style={{ fontSize: 10, color: "var(--text-secondary)", cursor: "pointer", padding: "2px 8px", borderRadius: 999, border: "1px dashed var(--border)" }}>🗓 데드라인 설정</span>;
+  }
+  return (
+    <span onClick={() => canEdit && setEditing(true)}
+      title={overdue ? "마감 초과" : near ? "임박" : "데드라인"}
+      style={{
+        fontSize: 10, fontWeight: 700,
+        padding: "2px 8px", borderRadius: 999,
+        background: color + "22", color, border: "1px solid " + color,
+        cursor: canEdit ? "pointer" : "default",
+        fontFamily: "monospace",
+      }}>🗓 {deadline}{overdue ? " ⚠" : near ? " ⏳" : ""}</span>
+  );
+}
+
 /* 루트 인폼 머리에 붙는 상태 패널 (flow 진행 + 이력) */
-function RootHeader({ root, onChangeStatus }) {
+function RootHeader({ root, onChangeStatus, onChangeDeadline, user }) {
   const [note, setNote] = useState("");
   const [openHist, setOpenHist] = useState(false);
+  const canEditDeadline = !!user && (user.role === "admin" || user.username === root.author);
   const hist = root.status_history || [];
   return (
     <div style={{
@@ -288,6 +363,7 @@ function RootHeader({ root, onChangeStatus }) {
           );
         })}
         <div style={{ flex: 1 }} />
+        <DeadlineBadge deadline={root.deadline} onChange={v => onChangeDeadline(root.id, v)} canEdit={canEditDeadline} />
         <input value={note} onChange={e => setNote(e.target.value)} placeholder="상태변경 메모 (optional)"
           style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)",
                    background: "var(--bg-primary)", color: "var(--text-primary)",
@@ -365,6 +441,7 @@ export default function My_Inform({ user }) {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({
     wafer_id: "", lot_id: "", product: "", module: "", reason: "", text: "",
+    deadline: "",
     attach_split: false, split: { column: "", old_value: "", new_value: "" },
     attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" },
   });
@@ -411,8 +488,8 @@ export default function My_Inform({ user }) {
     } else if (mode === "mine") {
       sf(API + "/my").then(d => { setThread(d.informs || []); setLotWafers([]); })
         .catch(() => setThread([]));
-    } else if (mode === "all") {
-      sf(API + "/recent?limit=100").then(d => { setThread(d.informs || []); setLotWafers([]); })
+    } else if (mode === "all" || mode === "gantt") {
+      sf(API + "/recent?limit=300").then(d => { setThread(d.informs || []); setLotWafers([]); })
         .catch(() => setThread([]));
     } else {
       setThread([]); setLotWafers([]);
@@ -431,7 +508,7 @@ export default function My_Inform({ user }) {
     } else if (mode === "mine") {
       sf(API + "/my").then(d => setThread(d.informs || []));
     } else {
-      sf(API + "/recent?limit=100").then(d => setThread(d.informs || []));
+      sf(API + "/recent?limit=300").then(d => setThread(d.informs || []));
     }
   };
 
@@ -443,7 +520,7 @@ export default function My_Inform({ user }) {
     const body = {
       wafer_id: wid, lot_id: form.lot_id.trim(), product: form.product.trim(),
       module: form.module, reason: form.reason, text: form.text, parent_id: null,
-      images: createImages,
+      images: createImages, deadline: (form.deadline || "").trim(),
     };
     if (form.attach_split && (form.split.column || form.split.new_value)) {
       body.splittable_change = { ...form.split, applied: false };
@@ -457,6 +534,7 @@ export default function My_Inform({ user }) {
     }).then(() => {
       setForm({
         wafer_id: "", lot_id: "", product: "", module: "", reason: "", text: "",
+        deadline: "",
         attach_split: false, split: { column: "", old_value: "", new_value: "" },
         attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" },
       });
@@ -545,6 +623,11 @@ export default function My_Inform({ user }) {
     body: JSON.stringify({ status, note: note || "" }),
   }).then(refreshAll).catch(e => alert(e.message));
 
+  const changeDeadline = (id, deadline) => sf(API + "/deadline?id=" + encodeURIComponent(id), {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deadline: deadline || "" }),
+  }).then(refreshAll).catch(e => alert(e.message));
+
   /* thread → (roots + childrenByParent) — wafer 모드는 한 wafer 전체 트리,
      lot/product 모드는 여러 루트 흐름이 섞여있을 수 있음. */
   const { rootsSorted, childrenByParent } = useMemo(() => {
@@ -619,6 +702,7 @@ export default function My_Inform({ user }) {
           {modeButton("product", "제품별",  "제품별 의뢰 목록")}
           {modeButton("lot",     "랏별",    "LOT 으로 전체 인폼 검색")}
           {modeButton("wafer",   "wafer",   "wafer 별 스레드")}
+          {modeButton("gantt",   "간트",    "데드라인 간트 차트")}
         </div>
 
         <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
@@ -644,7 +728,7 @@ export default function My_Inform({ user }) {
         )}
 
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {(mode === "all" || mode === "mine") && (
+          {(mode === "all" || mode === "mine" || mode === "gantt") && (
             <div style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>
               메인 패널에서 목록을 확인하세요
             </div>
@@ -693,6 +777,14 @@ export default function My_Inform({ user }) {
                   onChange={e => setForm({ ...form, attach_split: e.target.checked })} />
                 SplitTable 변경요청 포함
               </label>
+              <label style={{ fontSize: 11, color: "var(--text-secondary)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                🗓 데드라인
+                <input type="date" value={form.deadline}
+                  onChange={e => setForm({ ...form, deadline: e.target.value })}
+                  style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11 }} />
+                {form.deadline && <span onClick={() => setForm({ ...form, deadline: "" })}
+                  style={{ cursor: "pointer", color: "#ef4444", fontSize: 11 }}>×</span>}
+              </label>
             </div>
             <textarea value={form.text} onChange={e => setForm({ ...form, text: e.target.value })} rows={3}
               placeholder="인폼 내용 (배경, 영향, 조치 요청 등)"
@@ -723,7 +815,7 @@ export default function My_Inform({ user }) {
               <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {createImages.map((im, i) => (
                   <span key={i} style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, background: "var(--bg-primary)", border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <img src={im.url} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 2 }} />
+                    <img src={authSrc(im.url)} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 2 }} />
                     <span style={{ fontFamily: "monospace" }}>{im.filename}</span>
                     <button onClick={() => setCreateImages(createImages.filter((_, j) => j !== i))}
                       style={{ border: "none", background: "transparent", color: "#ef4444", cursor: "pointer", padding: 0 }}>×</button>
@@ -785,6 +877,16 @@ export default function My_Inform({ user }) {
         )}
 
         {/* 메인 컨텐츠 */}
+        {mode === "gantt" && (
+          <>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, color: "var(--text-secondary)" }}>📊 간트 차트 — 데드라인 타임라인</div>
+            <GanttView
+              roots={applyModFilter(rootsSorted)}
+              onOpen={(r) => { setSelectedWafer(r.wafer_id); setMode("wafer"); }}
+            />
+          </>
+        )}
+
         {mode === "all" && (
           <>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, color: "var(--text-secondary)" }}>최근 루트 인폼</div>
@@ -848,7 +950,7 @@ export default function My_Inform({ user }) {
                 <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 4, fontFamily: "monospace" }}>
                   wafer: <b style={{ color: "var(--text-primary)" }}>{r.wafer_id}</b>
                 </div>
-                <RootHeader root={r} onChangeStatus={changeStatus} />
+                <RootHeader root={r} onChangeStatus={changeStatus} onChangeDeadline={changeDeadline} user={user} />
                 <ThreadNode node={r} childrenByParent={childrenByParent}
                   onReply={reply} onDelete={del} onToggleCheck={toggleCheck}
                   user={user} depth={0} constants={constants} />
@@ -864,7 +966,7 @@ export default function My_Inform({ user }) {
             {rootsSorted.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>아직 인폼 없음.</div>}
             {rootsSorted.map(r => (
               <div key={r.id} style={{ marginBottom: 16 }}>
-                <RootHeader root={r} onChangeStatus={changeStatus} />
+                <RootHeader root={r} onChangeStatus={changeStatus} onChangeDeadline={changeDeadline} user={user} />
                 <ThreadNode node={r} childrenByParent={childrenByParent}
                   onReply={reply} onDelete={del} onToggleCheck={toggleCheck}
                   user={user} depth={0} constants={constants} />
@@ -873,7 +975,7 @@ export default function My_Inform({ user }) {
           </div>
         )}
 
-        {mode !== "all" && mode !== "mine" && !selectedKey && !creating && (
+        {mode !== "all" && mode !== "mine" && mode !== "gantt" && !selectedKey && !creating && (
           <div style={{ padding: 60, textAlign: "center", color: "var(--text-secondary)" }}>
             좌측에서 항목을 선택하거나 <span onClick={() => setCreating(true)} style={{ color: "var(--accent)", cursor: "pointer" }}>+ 신규 인폼</span> 을 등록하세요.
           </div>
@@ -883,30 +985,146 @@ export default function My_Inform({ user }) {
   );
 }
 
+/* v8.7.1 — Inform Gantt View (데드라인 시각화) */
+function GanttView({ roots, onOpen }) {
+  const withRange = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    return (roots || []).map(r => {
+      const start = new Date((r.created_at || today.toISOString()).slice(0, 10));
+      const end = r.deadline ? new Date(r.deadline) :
+        new Date(today.getTime() + 7 * 86400000);
+      return { r, start, end, synthetic: !r.deadline };
+    });
+  }, [roots]);
+
+  if (!withRange.length) {
+    return <div style={{ padding: 60, textAlign: "center", color: "var(--text-secondary)" }}>표시할 인폼 없음.</div>;
+  }
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const lo = new Date(Math.min(...withRange.map(x => x.start.getTime()), today.getTime()));
+  const hi = new Date(Math.max(...withRange.map(x => x.end.getTime()), today.getTime() + 7 * 86400000));
+  lo.setDate(lo.getDate() - 2);
+  hi.setDate(hi.getDate() + 2);
+  const totalDays = Math.max(1, Math.round((hi - lo) / 86400000));
+  const rowH = 26;
+  const barH = 18;
+  const labelW = 260;
+  const dayW = Math.max(6, Math.min(30, 900 / totalDays));
+  const chartW = totalDays * dayW;
+  const height = withRange.length * rowH + 40;
+  const svgW = labelW + chartW + 20;
+
+  const xForDate = (d) => labelW + ((d - lo) / 86400000) * dayW;
+
+  // Month ticks
+  const ticks = [];
+  let t = new Date(lo); t.setDate(1);
+  while (t <= hi) {
+    ticks.push(new Date(t));
+    t.setMonth(t.getMonth() + 1);
+  }
+
+  const todayX = xForDate(today);
+
+  return (
+    <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-secondary)", padding: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "var(--accent)" }}>📊 Inform 간트 차트</span>
+        <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{withRange.length}건 · 기간 {lo.toISOString().slice(0, 10)} ~ {hi.toISOString().slice(0, 10)}</span>
+        <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>· 바 클릭 → wafer 상세</span>
+        <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>· 점선 바 = 데드라인 미설정 (기본 +7일)</span>
+      </div>
+      <svg width={svgW} height={height} style={{ display: "block" }}>
+        {/* Month gridlines */}
+        {ticks.map((tk, i) => {
+          const x = xForDate(tk);
+          return (
+            <g key={i}>
+              <line x1={x} x2={x} y1={0} y2={height - 20} stroke="var(--border)" strokeDasharray="2,3" />
+              <text x={x + 2} y={height - 6} fontSize={9} fill="var(--text-secondary)" fontFamily="monospace">
+                {tk.getFullYear()}-{String(tk.getMonth() + 1).padStart(2, "0")}
+              </text>
+            </g>
+          );
+        })}
+        {/* Today line */}
+        <line x1={todayX} x2={todayX} y1={0} y2={height - 20} stroke="var(--accent)" strokeWidth={2} />
+        <text x={todayX + 3} y={12} fontSize={10} fill="var(--accent)" fontWeight={700} fontFamily="monospace">TODAY</text>
+
+        {/* Rows */}
+        {withRange.map((item, i) => {
+          const y = 20 + i * rowH;
+          const xs = xForDate(item.start);
+          const xe = Math.max(xs + 4, xForDate(item.end));
+          const st = item.r.flow_status || "received";
+          const stColor = (STATUS_META[st] || {}).color || "#64748b";
+          const mc = moduleColor(item.r.module);
+          const overdue = item.r.deadline && item.r.deadline < today.toISOString().slice(0, 10) && st !== "completed";
+          return (
+            <g key={item.r.id} style={{ cursor: "pointer" }} onClick={() => onOpen && onOpen(item.r)}>
+              <rect x={0} y={y - 2} width={labelW - 6} height={rowH - 4} fill={i % 2 ? "var(--bg-primary)" : "transparent"} />
+              <circle cx={8} cy={y + barH / 2} r={5} fill={mc} />
+              <text x={20} y={y + barH / 2 + 4} fontSize={11} fill="var(--text-primary)" fontFamily="monospace">
+                {(item.r.module || "-")} · {(item.r.wafer_id || "").slice(0, 18)}
+              </text>
+              <text x={20} y={y + barH / 2 - 6} fontSize={8} fill="var(--text-secondary)">
+                [{item.r.reason || "-"}] {(item.r.text || "").slice(0, 36)}
+              </text>
+              <rect x={xs} y={y} width={xe - xs} height={barH} rx={4} ry={4}
+                fill={overdue ? "#ef4444" : stColor} opacity={item.synthetic ? 0.35 : 0.75}
+                stroke={mc} strokeWidth={1.5}
+                strokeDasharray={item.synthetic ? "4,3" : "0"} />
+              <text x={xs + 4} y={y + barH / 2 + 4} fontSize={9} fill="#fff" fontWeight={700}>
+                {(STATUS_META[st] || {}).label || st}
+              </text>
+              {item.r.deadline && (
+                <text x={xe + 4} y={y + barH / 2 + 4} fontSize={9} fill={overdue ? "#ef4444" : "var(--text-secondary)"} fontFamily="monospace">
+                  🗓 {item.r.deadline}{overdue ? " ⚠" : ""}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 /* 요약 카드 (all/mine/product 모드에서 루트 리스트용) */
 function CompactRow({ root, onOpen }) {
+  const mc = moduleColor(root.module);
   return (
     <div onClick={onOpen}
       style={{ padding: "10px 14px", marginBottom: 8, borderRadius: 8,
                border: "1px solid var(--border)", background: "var(--bg-secondary)",
+               borderLeft: "5px solid " + mc,
                cursor: "pointer" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <StatusBadge status={root.flow_status || "received"} />
-        {root.module && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "var(--accent)22", color: "var(--accent)", fontWeight: 700 }}>{root.module}</span>}
-        {root.reason && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "var(--bg-hover)", color: "var(--text-secondary)" }}>{root.reason}</span>}
+        {root.module && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: mc + "22", color: mc, fontWeight: 700, border: "1px solid " + mc + "55" }}>{root.module}</span>}
         <CheckPill node={root} />
         <AutoGenPill node={root} />
         {(root.images && root.images.length > 0) && <span title="이미지 첨부" style={{ fontSize: 10 }}>📎{root.images.length}</span>}
         {root.embed_table && <span title="임베드" style={{ fontSize: 10 }}>🔗</span>}
+        {root.deadline && (
+          <span title={"데드라인 " + root.deadline} style={{
+            fontSize: 10, padding: "2px 8px", borderRadius: 999,
+            background: (root.deadline < new Date().toISOString().slice(0,10) ? "#ef4444" : "#3b82f6") + "22",
+            color: root.deadline < new Date().toISOString().slice(0,10) ? "#ef4444" : "#3b82f6",
+            fontFamily: "monospace", fontWeight: 700,
+          }}>🗓 {root.deadline}</span>
+        )}
         <span style={{ fontSize: 11, fontFamily: "monospace", fontWeight: 600 }}>{root.wafer_id}</span>
         {root.lot_id && <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>· {root.lot_id}</span>}
         {root.product && <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>· {root.product}</span>}
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{(root.created_at || "").replace("T", " ")}</span>
+        <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{(root.created_at || "").replace("T", " ").slice(0, 16)}</span>
         <span style={{ fontSize: 10, fontWeight: 600 }}>{root.author}</span>
       </div>
       <div style={{ fontSize: 12, marginTop: 4, whiteSpace: "pre-wrap", opacity: 0.95,
                     display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+        {root.reason && <span style={{ color: mc, fontWeight: 700, marginRight: 6 }}>[{root.reason}]</span>}
         {root.text}
       </div>
     </div>

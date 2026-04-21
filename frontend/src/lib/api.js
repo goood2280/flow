@@ -30,6 +30,16 @@ function _touchActivity() {
   try { window.dispatchEvent(new CustomEvent("flow:activity")); } catch (_) {}
 }
 
+// v8.7.1: 브라우저 <img>/<a download> 는 커스텀 헤더를 못 실어서 X-Session-Token
+// 를 URL 쿼리로 붙인다. 서버가 ?t=<token> fallback 을 수락하는 엔드포인트에서만 사용.
+export function authSrc(url) {
+  if (!url) return url;
+  const tk = _getToken();
+  if (!tk) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return url + sep + "t=" + encodeURIComponent(tk);
+}
+
 export function qs(params) {
   const parts = [];
   Object.entries(params || {}).forEach(([k, v]) => {

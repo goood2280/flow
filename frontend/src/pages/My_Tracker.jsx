@@ -438,9 +438,13 @@ export default function My_Tracker({ user }) {
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>댓글 ({selected.comments?.length || 0})</div>
               {selected.comments?.map((c, i) => (
                 <div key={i} style={{ padding: "10px 12px", marginBottom: 8, background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, alignItems: "center" }}>
                     <span style={{ fontSize: 12, fontWeight: 600 }}>{c.username}</span>
-                    <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{c.timestamp?.slice(0, 16)}</span>
+                    <span title={c.timestamp || ""} style={{
+                      fontSize: 10, padding: "2px 8px", borderRadius: 999,
+                      background: "var(--bg-primary)", color: "var(--text-primary)",
+                      border: "1px solid var(--border)", fontFamily: "monospace",
+                    }}>🕐 {(c.timestamp || "").replace("T", " ").slice(0, 16) || "시간 없음"}</span>
                   </div>
                   <div style={{ fontSize: 13, lineHeight: 1.6 }}>{c.text}</div>
                   {(c.lot_id || c.wafer_id) && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>{c.lot_id} / {c.wafer_id}</div>}

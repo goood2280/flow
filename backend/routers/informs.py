@@ -46,6 +46,7 @@ from pydantic import BaseModel
 from core.paths import PATHS
 from core.utils import load_json, save_json
 from core.auth import current_user, require_admin
+from core.audit import record as _audit
 from routers.groups import user_modules
 
 router = APIRouter(prefix="/api/informs", tags=["informs"])
@@ -122,6 +123,7 @@ def _upgrade(entry: dict) -> dict:
     entry.setdefault("images", [])
     entry.setdefault("embed_table", None)
     entry.setdefault("auto_generated", False)
+    entry.setdefault("deadline", "")  # v8.7.1: 이슈 마감일 (YYYY-MM-DD 또는 "")
     return entry
 
 
@@ -207,6 +209,7 @@ class InformCreate(BaseModel):
     splittable_change: Optional[SplitChange] = None
     images: List[ImageRef] = []
     embed_table: Optional[EmbedTable] = None
+    deadline: str = ""  # v8.7.1: YYYY-MM-DD, 빈 문자열이면 없음
 
 
 class ConfigReq(BaseModel):
@@ -221,6 +224,21 @@ class StatusReq(BaseModel):
 
 class CheckReq(BaseModel):
     checked: bool
+
+
+class DeadlineReq(BaseModel):
+    deadline: str = ""  # YYYY-MM-DD 또는 "" (해제)
+
+
+def _validate_deadline(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        return ""
+    try:
+        datetime.date.fromisoformat(s[:10])
+        return s[:10]
+    except Exception:
+        raise HTTPException(400, "deadline 포맷: YYYY-MM-DD")
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────
@@ -532,9 +550,12 @@ def create_inform(req: InformCreate, request: Request):
         "images": imgs,
         "embed_table": embed,
         "auto_generated": False,
+        "deadline": _validate_deadline(req.deadline) if is_root else "",
     }
     items.append(entry)
     _save(items)
+    _audit(request, "inform:reply" if req.parent_id else "inform:create",
+           detail=f"wafer={wid} module={entry['module']} lot={inherit_lot}", tab="inform")
     return {"ok": True, "inform": entry}
 
 
@@ -608,6 +629,7 @@ def delete_inform(request: Request, id: str = Query(...)):
         raise HTTPException(400, "답글이 달린 글은 삭제할 수 없습니다.")
     items = [x for x in items if x.get("id") != id]
     _save(items)
+    _audit(request, "inform:delete", detail=f"id={id}", tab="inform")
     return {"ok": True}
 
 
@@ -625,6 +647,7 @@ def check_inform(req: CheckReq, request: Request, id: str = Query(...)):
     target["checked_by"] = me["username"] if req.checked else ""
     target["checked_at"] = _now() if req.checked else ""
     _save(items)
+    _audit(request, "inform:check", detail=f"id={id} checked={target['checked']}", tab="inform")
     return {"ok": True, "inform": target}
 
 
@@ -651,6 +674,27 @@ def set_status(req: StatusReq, request: Request, id: str = Query(...)):
                  "note": (req.note or "").strip()})
     target["status_history"] = hist
     _save(items)
+    _audit(request, "inform:status", detail=f"id={id} status={st}", tab="inform")
+    return {"ok": True, "inform": target}
+
+
+@router.post("/deadline")
+def set_deadline(req: DeadlineReq, request: Request, id: str = Query(...)):
+    """루트 인폼의 마감일을 설정/해제. 작성자/모듈 담당자/admin 만 가능."""
+    me = current_user(request)
+    my_mods = user_modules(me["username"], me.get("role", "user"))
+    items = _load_upgraded()
+    target = _find(items, id)
+    if not target:
+        raise HTTPException(404)
+    if target.get("parent_id"):
+        raise HTTPException(400, "deadline 은 루트 인폼에만 설정 가능합니다.")
+    if not _can_moderate(target, me["username"], me.get("role", "user"), my_mods):
+        raise HTTPException(403, "작성자/모듈 담당자/관리자만 변경 가능합니다.")
+    dl = _validate_deadline(req.deadline)
+    target["deadline"] = dl
+    _save(items)
+    _audit(request, "inform:deadline", detail=f"id={id} deadline={dl or '(clear)'}", tab="inform")
     return {"ok": True, "inform": target}
 
 

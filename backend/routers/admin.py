@@ -20,6 +20,7 @@ from core.notify import (
 )
 from routers.auth import read_users, write_users
 from core.auth import require_admin, current_user, verify_owner
+from core.audit import record as _audit
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -140,7 +141,7 @@ def list_users(_admin=Depends(require_admin)):
 
 
 @router.post("/approve")
-def approve_user(req: ApproveReq, _admin=Depends(require_admin)):
+def approve_user(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
     users = read_users()
     for u in users:
         if u["username"] == req.username:
@@ -150,19 +151,21 @@ def approve_user(req: ApproveReq, _admin=Depends(require_admin)):
             write_users(users)
             send_notify(req.username, "Account Approved",
                         "Your account has been approved.", "info")
+            _audit(request, "admin:approve", detail=f"user={req.username}", tab="admin")
             return {"ok": True}
     raise HTTPException(404)
 
 
 @router.post("/reject")
-def reject_user(req: ApproveReq, _admin=Depends(require_admin)):
+def reject_user(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
     users = [u for u in read_users() if u["username"] != req.username]
     write_users(users)
+    _audit(request, "admin:reject", detail=f"user={req.username}", tab="admin")
     return {"ok": True}
 
 
 @router.post("/reset-password")
-def reset_password(req: ApproveReq, _admin=Depends(require_admin)):
+def reset_password(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
     """v8.4.6: 임시 랜덤 비번 (12자) 발급. 기존 '1111' 하드코딩 제거.
     응답에 평문 포함 — admin 이 해당 유저에게 별도 채널로 전달 책임."""
     from core.auth import hash_password, revoke_user_tokens
@@ -176,27 +179,30 @@ def reset_password(req: ApproveReq, _admin=Depends(require_admin)):
             send_notify(req.username, "Password Reset",
                         "Your password has been reset by admin. "
                         "Contact admin to receive the new temporary password.", "info")
+            _audit(request, "admin:reset-password", detail=f"user={req.username}", tab="admin")
             return {"ok": True, "new_password": new_pw}
     raise HTTPException(404)
 
 
 @router.post("/delete-user")
-def delete_user(req: ApproveReq, _admin=Depends(require_admin)):
+def delete_user(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
     from core.auth import revoke_user_tokens
     users = [u for u in read_users() if u["username"] != req.username]
     write_users(users)
     revoke_user_tokens(req.username)
+    _audit(request, "admin:delete-user", detail=f"user={req.username}", tab="admin")
     return {"ok": True}
 
 
 # ── Permissions ──
 @router.post("/set-tabs")
-def set_tabs(req: PermReq, _admin=Depends(require_admin)):
+def set_tabs(req: PermReq, request: Request, _admin=Depends(require_admin)):
     users = read_users()
     for u in users:
         if u["username"] == req.username:
             u["tabs"] = ",".join(req.tabs)
             write_users(users)
+            _audit(request, "admin:set-tabs", detail=f"user={req.username} tabs={u['tabs']}", tab="admin")
             return {"ok": True}
     raise HTTPException(404)
 
@@ -301,13 +307,43 @@ def write_log(entry: LogEntry, request: Request):
 
 
 @router.get("/logs")
-def get_logs(request: Request, limit: int = 200, username: str = ""):
-    """v8.4.6: 전체 로그 열람은 admin. 본인 로그는 누구나."""
+def get_logs(request: Request, limit: int = 200, username: str = "", action: str = "", tab: str = ""):
+    """v8.4.6: 전체 로그 열람은 admin. 본인 로그는 누구나.
+    v8.7.1: action/tab 키워드 부분일치 필터 추가 (admin activity log UI 용)."""
     me = current_user(request)
     if me.get("role") != "admin":
         username = me["username"]
-    f = (lambda e: e.get("username") == username) if username else None
-    return {"logs": jsonl_read(ACTIVITY_LOG, limit, f)}
+    act = (action or "").strip().lower()
+    tbf = (tab or "").strip().lower()
+
+    def _filt(e):
+        if username and e.get("username") != username:
+            return False
+        if act and act not in (e.get("action", "") or "").lower():
+            return False
+        if tbf and tbf not in (e.get("tab", "") or "").lower():
+            return False
+        return True
+
+    return {"logs": jsonl_read(ACTIVITY_LOG, limit, _filt)}
+
+
+@router.get("/logs/users")
+def get_log_users(_admin=Depends(require_admin)):
+    """Admin activity log 유저 드롭다운용: 활동 로그에 등장한 distinct username."""
+    entries = jsonl_read(ACTIVITY_LOG, limit=5000)
+    seen = {}
+    for e in entries:
+        u = e.get("username") or ""
+        if not u:
+            continue
+        s = seen.setdefault(u, {"username": u, "count": 0, "last": ""})
+        s["count"] += 1
+        ts = e.get("timestamp", "")
+        if ts > s["last"]:
+            s["last"] = ts
+    arr = sorted(seen.values(), key=lambda v: v["last"], reverse=True)
+    return {"users": arr}
 
 
 # ── Download History ──
@@ -380,7 +416,7 @@ class SettingsSaveReq(BaseModel):
 
 
 @router.post("/settings/save")
-def save_settings(req: SettingsSaveReq, _admin=Depends(require_admin)):
+def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require_admin)):
     """Admin-only via UI gating; backend saves whatever is sent (schema-validated).
 
     Two stores:
@@ -429,6 +465,9 @@ def save_settings(req: SettingsSaveReq, _admin=Depends(require_admin)):
         except Exception:
             pass
 
+    _audit(request, "admin:settings-save",
+           detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'}",
+           tab="admin")
     return {"ok": True, "settings": data, "data_roots": (_resolver_snapshot() if dr_in is not None else None)}
 
 
