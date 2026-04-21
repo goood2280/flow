@@ -511,6 +511,47 @@ def _normalize_minutes(minutes):
     return minutes
 
 
+# v8.7.9: meeting palette — each meeting locks in a color at creation time
+# (sequential round-robin). Legacy meetings get a color lazily on first load.
+MEETING_PALETTE = [
+    "#3b82f6",  # blue
+    "#10b981",  # emerald
+    "#f59e0b",  # amber
+    "#ec4899",  # pink
+    "#8b5cf6",  # violet
+    "#06b6d4",  # cyan
+    "#f97316",  # orange
+    "#22c55e",  # green
+    "#ef4444",  # red
+    "#a855f7",  # purple
+    "#eab308",  # yellow
+    "#14b8a6",  # teal
+    "#6366f1",  # indigo
+    "#d946ef",  # fuchsia
+    "#0ea5e9",  # sky
+]
+
+
+def _backfill_meeting_colors(items: list) -> bool:
+    """Assign palette color to any meeting missing one, preserving existing.
+    Returns True if any mutation happened (caller may persist)."""
+    used = [m.get("color") for m in items if isinstance(m, dict) and m.get("color")]
+    used_set = set(used)
+    # Keep creation-order stability — sort by created_at when backfilling.
+    without = [m for m in items if isinstance(m, dict) and not m.get("color")]
+    without.sort(key=lambda x: x.get("created_at") or "")
+    mutated = False
+    for m in without:
+        for i in range(len(MEETING_PALETTE)):
+            cand = MEETING_PALETTE[(len(used_set) + i) % len(MEETING_PALETTE)]
+            if cand not in used_set or len(used_set) >= len(MEETING_PALETTE):
+                m["color"] = cand
+                used_set.add(cand)
+                mutated = True
+                break
+    return mutated
+
+
 def _load() -> list:
     data = load_json(MEET_FILE, [])
     if not isinstance(data, list):
@@ -524,6 +565,12 @@ def _load() -> list:
             if s.get("minutes"):
                 s["minutes"] = _normalize_minutes(s["minutes"])
         out.append(entry)
+    # v8.7.9: lazy backfill of meeting colors.
+    if _backfill_meeting_colors(out):
+        try:
+            _save(out)
+        except Exception:
+            pass
     return out
 
 
@@ -657,6 +704,8 @@ class AgendaUpdate(BaseModel):
 
 
 class ActionItem(BaseModel):
+    # v8.7.9: id preserved across saves so calendar events stay stable.
+    id: Optional[str] = ""
     text: str
     owner: Optional[str] = ""
     due: Optional[str] = ""
@@ -756,18 +805,30 @@ def create_meeting(req: MeetingCreate, request: Request):
         "created_at": now,
         "updated_at": now,
     }
+    items = _load()
+    # v8.7.9: pick a color for this meeting from the palette — preserve existing
+    # assignments so previously-created meetings keep their color.
+    used_colors = {m.get("color") for m in items if isinstance(m, dict) and m.get("color")}
+    new_color = ""
+    for i in range(len(MEETING_PALETTE)):
+        cand = MEETING_PALETTE[(len(items) + i) % len(MEETING_PALETTE)]
+        if cand not in used_colors:
+            new_color = cand
+            break
+    if not new_color:
+        new_color = MEETING_PALETTE[len(items) % len(MEETING_PALETTE)]
     entry = {
         "id": _new_mid(),
         "title": title,
         "owner": owner,
         "recurrence": rec,
         "status": "active",
+        "color": new_color,
         "sessions": [first_session],
         "created_by": me["username"],
         "created_at": now,
         "updated_at": now,
     }
-    items = _load()
     items.append(entry)
     _save(items)
     _audit(request, "meetings:create",
@@ -1091,17 +1152,25 @@ def save_minutes(req: MinutesSave, request: Request):
             continue
         gids = getattr(ai, "group_ids", None) or []
         ai_clean.append({
+            "id": (getattr(ai, "id", "") or "").strip(),
             "text": text,
             "owner": (getattr(ai, "owner", "") or "").strip(),
             "due": (getattr(ai, "due", "") or "").strip(),
             "group_ids": [str(g).strip() for g in gids if g and str(g).strip()],
         })
-    # Preserve existing ids / calendar_* fields when text matches by id
+    # v8.7.9: Preserve ids across saves by explicit id OR text match — prevents calendar churn
     prev_ai = ((s.get("minutes") or {}).get("action_items")) or []
     prev_by_id = {a.get("id"): a for a in prev_ai if isinstance(a, dict) and a.get("id")}
+    prev_by_text = {(a.get("text") or "").strip(): a for a in prev_ai if isinstance(a, dict)}
     merged = []
     for ai in ai_clean:
-        aid = ai.get("id") or f"ai_{uuid.uuid4().hex[:8]}"
+        aid = ai.get("id") or ""
+        if not aid:
+            tmatch = prev_by_text.get(ai["text"])
+            if tmatch and tmatch.get("id"):
+                aid = tmatch["id"]
+        if not aid:
+            aid = f"ai_{uuid.uuid4().hex[:8]}"
         prev = prev_by_id.get(aid) or {}
         merged.append({
             "id": aid,
@@ -1129,22 +1198,31 @@ def save_minutes(req: MinutesSave, request: Request):
         "author": me["username"],
         "updated_at": now,
     }
-    # v8.7.8: auto-sync ALL decisions + action_items to calendar (no manual push 필요).
-    #   - decisions → single-day event on session date (filled style)
-    #   - action_items → range event from session date → due (outline style)
-    # Mark them as pushed so UI state stays consistent with existing push buttons.
-    for d in decisions:
-        d["calendar_pushed"] = True
-    for ai in merged:
-        if (ai.get("due") or "").strip():
-            ai["calendar_pushed"] = True
     s["minutes"]["decisions"] = decisions
     s["minutes"]["action_items"] = merged
+    # v8.7.9: auto-sync ALL decisions + action_items to calendar (no manual push 필요).
+    #   - decisions → single-day event on session date (filled style)
+    #   - action_items → range event from session date → due (outline style)
+    # Only mark calendar_pushed=True after successful sync; log errors loudly.
+    sync_result = {"created": 0, "updated": 0, "removed": 0, "ok": False, "error": ""}
     try:
         from routers.calendar import sync_session_to_calendar
-        sync_session_to_calendar(m, s, actor=me["username"])
-    except Exception:
-        pass
+        sync_result = sync_session_to_calendar(m, s, actor=me["username"]) or sync_result
+        sync_result["ok"] = True
+        for d in decisions:
+            d["calendar_pushed"] = True
+        for ai in merged:
+            if (ai.get("due") or "").strip():
+                ai["calendar_pushed"] = True
+    except Exception as ex:
+        import traceback
+        sync_result["ok"] = False
+        sync_result["error"] = f"{type(ex).__name__}: {ex}"
+        try:
+            print("[meetings.save_minutes] calendar sync FAILED:",
+                  sync_result["error"], traceback.format_exc()[:800], flush=True)
+        except Exception:
+            pass
     if (s.get("status") or "scheduled") not in ("completed", "cancelled"):
         s["status"] = "completed"
     s["updated_at"] = now
@@ -1189,7 +1267,7 @@ def save_minutes(req: MinutesSave, request: Request):
                detail=f"meeting={m['id']} session={s['id']} ok={mail_result.get('ok')} n={len(to_addrs)}",
                tab="meetings")
 
-    return {"ok": True, "meeting": m, "session": s, "mail": mail_result}
+    return {"ok": True, "meeting": m, "session": s, "mail": mail_result, "calendar_sync": sync_result}
 
 
 # ── action_item ↔ calendar push/unpush ─────────────────────────

@@ -190,24 +190,26 @@ export default function My_Calendar({ user }) {
   const renderOccurrence = (occ) => {
     const e = occ.event;
     const srcType = e.source_type || "manual";
-    const color = catColor(e.category);
+    // v8.7.9: meeting events use the meeting's unique palette color; manual events fall back to category color.
+    const meetingColor = (e.meeting_ref && e.meeting_ref.color) || "";
+    const color = meetingColor || catColor(e.category);
     const isAction = srcType === "meeting_action";
     const isDecision = srcType === "meeting_decision";
-    // outline vs filled
-    const fill = isAction ? "transparent" : (color + "22");
-    const border = isAction ? `2px dashed ${color}` : `1px solid ${color}`;
-    const borderLeft = isAction ? `4px dashed ${color}` : `3px solid ${color}`;
-    // edge rounding for range bars
+    // v8.7.9: actions = pin on due date (single-day), decisions = filled single-day.
     const isMid = occ.kind === "middle";
     const isEnd = occ.kind === "end";
     const isStart = occ.kind === "start";
-    const radius = (isMid) ? 0
+    const radius = isMid ? 0
       : isStart ? "3px 0 0 3px"
       : isEnd ? "0 3px 3px 0"
       : "3px";
-    const label = isStart || occ.kind === "single"
-      ? (isDecision ? "● " : isAction ? "▱ " : "") + (e.title || "")
+    const label = (isStart || occ.kind === "single")
+      ? (isDecision ? "● " : isAction ? "📍 " : "") + (e.title || "")
       : (isEnd ? "↘ " : "…");
+    // Styles
+    const fill = isAction ? color + "14" : (color + "22");
+    const border = `1px solid ${color}`;
+    const borderLeft = isAction ? `4px solid ${color}` : `3px solid ${color}`;
     return (
       <div key={e.id + "_" + occ.dayIdx} onClick={ev => { ev.stopPropagation(); openEdit(e); }} style={{
         fontSize: 10, padding: "2px 5px", borderRadius: radius,
@@ -217,8 +219,8 @@ export default function My_Calendar({ user }) {
         borderRight: (occ.kind === "single" || isEnd) ? undefined : (isMid ? "none" : undefined),
         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         color: "var(--text-primary)",
-        fontWeight: isDecision ? 600 : 400,
-        fontStyle: isAction && !isStart ? "italic" : "normal",
+        fontWeight: isDecision ? 600 : (isAction ? 500 : 400),
+        fontStyle: "normal",
         opacity: isMid ? 0.75 : 1,
       }} title={`${SOURCE_LABEL[srcType] || "이벤트"} · ${e.title}\n${e.body || ""}`}>
         {label}
@@ -241,13 +243,14 @@ export default function My_Calendar({ user }) {
           <span style={{ fontSize: 15, fontWeight: 700, minWidth: 130, textAlign: "center" }}>{view.getFullYear()}년 {view.getMonth() + 1}월</span>
           <button onClick={() => navMonth(1)} style={navBtn}>›</button>
           <button onClick={() => setView(new Date())} style={{ ...navBtn, padding: "4px 10px" }}>오늘</button>
+          <button onClick={() => { reload(); }} style={{ ...navBtn, padding: "4px 10px" }} title="회의 auto-sync 이벤트를 포함해 서버에서 다시 불러옵니다">↻ 새로고침</button>
           <select value={meetingFilter} onChange={e => setMeetingFilter(e.target.value)}
             style={{ padding: "4px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none" }}
             title="회의별 필터">
             <option value="all">전체 이벤트</option>
             <option value="manual">일반 이벤트만</option>
             {meetings.map(m => (
-              <option key={m.meeting_id} value={m.meeting_id}>🗓 {m.meeting_title || m.meeting_id} ({m.count})</option>
+              <option key={m.meeting_id} value={m.meeting_id}>{m.color ? "● " : "🗓 "}{m.meeting_title || m.meeting_id} ({m.count})</option>
             ))}
           </select>
           <div style={{ flex: 1 }} />
@@ -259,8 +262,8 @@ export default function My_Calendar({ user }) {
         </div>
         <div style={{ padding: "6px 20px", display: "flex", gap: 14, fontSize: 10, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
           <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#3b82f680", border: "1px solid #3b82f6", marginRight: 4, verticalAlign: "middle" }} /> 일반</span>
-          <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#3b82f680", border: "1px solid #3b82f6", marginRight: 4, verticalAlign: "middle" }} /> 결정사항 (filled, 회의일자)</span>
-          <span><span style={{ display: "inline-block", width: 10, height: 10, background: "transparent", border: "2px dashed #3b82f6", marginRight: 4, verticalAlign: "middle" }} /> 액션아이템 (outline, 회의~마감 구간)</span>
+          <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#3b82f680", border: "1px solid #3b82f6", marginRight: 4, verticalAlign: "middle" }} /> 결정사항 (N차 회의 결정사항, 회의일자)</span>
+          <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#3b82f620", border: "1px solid #3b82f6", borderLeft: "3px solid #3b82f6", marginRight: 4, verticalAlign: "middle" }} /> 📍 액션아이템 (마감일 단독)</span>
         </div>
 
         <div style={{ flex: 1, overflow: "auto", padding: 16 }}>

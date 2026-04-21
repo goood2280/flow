@@ -65,7 +65,10 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 # Default 모듈·사유. config.json 에 저장된 값이 있으면 그것을 우선.
 DEFAULT_MODULES = ["GATE", "STI", "PC", "MOL", "BEOL", "ET", "EDS", "S-D Epi", "Spacer", "Well", "기타"]
 DEFAULT_REASONS = ["재측정", "장비 이상", "공정 OOS", "혐의 확인", "레시피 변경", "외관 결함", "기타"]
-FLOW_STATUSES = ["received", "reviewing", "in_progress", "completed"]
+# v8.7.9: 플로우 단순화 — 접수(received) → 완료(completed) 2단계.
+# 과거 reviewing/in_progress 가 들어온 경우는 호환을 위해 수용.
+FLOW_STATUSES = ["received", "completed"]
+FLOW_STATUSES_LEGACY = ["received", "reviewing", "in_progress", "completed"]
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8 MB/이미지
 
@@ -117,6 +120,9 @@ def _find(items: list, iid: str) -> Optional[dict]:
 def _upgrade(entry: dict) -> dict:
     """Legacy v8.5.1 레코드에 v8.7.0 필드를 채워 넣는다 (in-place safe copy)."""
     entry.setdefault("lot_id", "")
+    # v8.7.9: root_lot_id = lot_id[:5] (backfill).
+    if not entry.get("root_lot_id"):
+        entry["root_lot_id"] = (entry.get("lot_id") or "")[:5]
     entry.setdefault("product", "")
     entry.setdefault("checked", False)
     entry.setdefault("checked_by", "")
@@ -222,7 +228,8 @@ class EmbedTable(BaseModel):
 
 
 class InformCreate(BaseModel):
-    wafer_id: str
+    # v8.7.9: wafer_id 선택 필드. 없으면 lot_id 로 자동 채움 (스레드 묶기 용).
+    wafer_id: str = ""
     lot_id: str = ""
     product: str = ""
     module: str = ""
@@ -232,7 +239,8 @@ class InformCreate(BaseModel):
     splittable_change: Optional[SplitChange] = None
     images: List[ImageRef] = []
     embed_table: Optional[EmbedTable] = None
-    deadline: str = ""  # v8.7.1: YYYY-MM-DD, 빈 문자열이면 없음
+    # v8.7.9: deadline 필드 폐기. 호환을 위해 스키마에 남겨 두되 저장하지 않음.
+    deadline: str = ""
     group_ids: List[str] = []  # v8.7.6: 그룹 가시성 필터. 비어 있으면 public (모듈 규칙만 적용)
 
 
@@ -405,15 +413,19 @@ def list_wafers(request: Request, limit: int = Query(500, ge=1, le=5000)):
 
 @router.get("/by-lot")
 def by_lot(request: Request, lot_id: str = Query(..., min_length=1)):
-    """해당 lot 과 연결된 모든 인폼(모든 wafer 걸쳐). admin/all-rounder 전체, 그 외 모듈 필터."""
+    """v8.7.9: 앞 5자(root_lot_id) 매칭. ABCDE 로 검색 시 ABCDE01, ABCDE02 … 전부 포함.
+    길이 > 5 인 쿼리는 root_lot = query[:5] 로 축약해 같은 groupings 를 반환.
+    """
     me = current_user(request)
     my_mods = user_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
-    hits = [x for x in items if x.get("lot_id") == lot_id]
+    root = (lot_id or "")[:5]
+    hits = [x for x in items if (x.get("root_lot_id") or (x.get("lot_id") or "")[:5]) == root]
     hits = [x for x in hits if _visible_to(x, me["username"], me.get("role", "user"), my_mods)]
     hits.sort(key=lambda x: x.get("created_at", ""))
     wafers = sorted({x.get("wafer_id") for x in hits if x.get("wafer_id")})
-    return {"informs": hits, "wafers": wafers, "count": len(hits)}
+    lots = sorted({x.get("lot_id") for x in hits if x.get("lot_id")})
+    return {"informs": hits, "wafers": wafers, "lots": lots, "root_lot_id": root, "count": len(hits)}
 
 
 @router.get("/by-product")
@@ -473,6 +485,9 @@ def list_products(request: Request):
 
 @router.get("/lots")
 def list_lots(request: Request):
+    """v8.7.9: root_lot_id 기준으로 그룹핑. 각 root 아래에 포함된 fab_lots 와 합계.
+    하위 호환: lot_id 에 root_lot_id 를 넣어 기존 FE 의 selectedLot 흐름이 그대로 동작.
+    """
     me = current_user(request)
     my_mods = user_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
@@ -483,23 +498,41 @@ def list_lots(request: Request):
             continue
         if not _visible_to(x, me["username"], me.get("role", "user"), my_mods):
             continue
-        s = seen.setdefault(l, {"lot_id": l, "count": 0, "last": "", "product": x.get("product", "")})
+        root = x.get("root_lot_id") or (l[:5] if l else "")
+        if not root:
+            continue
+        s = seen.setdefault(root, {
+            "lot_id": root,              # FE 호환: selectedLot 키
+            "root_lot_id": root,
+            "count": 0, "last": "",
+            "product": x.get("product", ""),
+            "fab_lots": set(),
+        })
         s["count"] += 1
         ts = x.get("created_at", "")
         if ts > s["last"]:
             s["last"] = ts
         if x.get("product"):
             s["product"] = x.get("product")
-    arr = sorted(seen.values(), key=lambda v: v["last"], reverse=True)
+        s["fab_lots"].add(l)
+    arr = []
+    for s in seen.values():
+        s["fab_lots"] = sorted(s["fab_lots"])
+        arr.append(s)
+    arr.sort(key=lambda v: v["last"], reverse=True)
     return {"lots": arr}
 
 
 @router.post("")
 def create_inform(req: InformCreate, request: Request):
     me = current_user(request)
+    # v8.7.9: wafer_id 는 선택. 없으면 lot_id 로 자동 채움. 둘 다 없고 parent 도 없으면 400.
     wid = (req.wafer_id or "").strip()
+    lot_for_fallback = (req.lot_id or "").strip()
     if not wid:
-        raise HTTPException(400, "wafer_id required")
+        wid = lot_for_fallback
+    if not wid and not req.parent_id:
+        raise HTTPException(400, "lot_id (또는 wafer_id) 가 필요합니다.")
     items = _load_upgraded()
 
     # parent 검증 + 상속 (lot_id / product).
@@ -551,11 +584,14 @@ def create_inform(req: InformCreate, request: Request):
 
     now = _now()
     is_root = not req.parent_id
+    # v8.7.9: root_lot_id = lot_id[:5] — lot 검색의 앞5자 그룹핑 키.
+    root_lot = (inherit_lot or "")[:5]
     entry = {
         "id": _new_id(),
         "parent_id": req.parent_id or None,
         "wafer_id": wid,
         "lot_id": inherit_lot,
+        "root_lot_id": root_lot,
         "product": inherit_product,
         "module": (req.module or "").strip(),
         "reason": (req.reason or "").strip(),
@@ -574,7 +610,7 @@ def create_inform(req: InformCreate, request: Request):
         "images": imgs,
         "embed_table": embed,
         "auto_generated": False,
-        "deadline": _validate_deadline(req.deadline) if is_root else "",
+        # v8.7.9: deadline 필드 폐기 — 저장하지 않음.
         "group_ids": [str(g).strip() for g in (req.group_ids or []) if g and str(g).strip()],
     }
     items.append(entry)
@@ -679,8 +715,9 @@ def check_inform(req: CheckReq, request: Request, id: str = Query(...)):
 @router.post("/status")
 def set_status(req: StatusReq, request: Request, id: str = Query(...)):
     st = (req.status or "").strip()
-    if st not in FLOW_STATUSES:
-        raise HTTPException(400, f"invalid status; must be one of {FLOW_STATUSES}")
+    # v8.7.9: 2단계 플로우. legacy reviewing/in_progress 는 completed 전 단계로 허용하되 권장하지 않음.
+    if st not in FLOW_STATUSES_LEGACY:
+        raise HTTPException(400, f"invalid status; must be one of {FLOW_STATUSES_LEGACY}")
     me = current_user(request)
     my_mods = user_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()

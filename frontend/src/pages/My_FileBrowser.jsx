@@ -60,6 +60,7 @@ export default function My_FileBrowser({user}){
   const[s3Tick,setS3Tick]=useState(0);
   const[s3Detail,setS3Detail]=useState(null); // show last_output_tail
   const[s3Now,setS3Now]=useState(Date.now());
+  const[s3Profiles,setS3Profiles]=useState([]); // v8.7.9 AWS profile (key) list
 
   // Poll s3 items/history while modal open
   useEffect(()=>{
@@ -68,8 +69,9 @@ export default function My_FileBrowser({user}){
     const loadItems=()=>sf("/api/s3ingest/items?username="+un).then(d=>{setS3Items(d.items||[]);setS3AwsOk(d.aws_available!==false);}).catch(()=>{});
     const loadAvail=()=>sf("/api/s3ingest/available?username="+un).then(d=>setS3Avail(d||{dbs:[],root_parquets:[]})).catch(()=>{});
     const loadHist=()=>sf("/api/s3ingest/history?username="+un+"&limit=100").then(d=>setS3Hist(d.entries||[])).catch(()=>{});
+    const loadProfiles=()=>sf("/api/s3ingest/aws-config?username="+un).then(d=>setS3Profiles((d&&d.profiles)||[])).catch(()=>setS3Profiles([]));
     loadItems();
-    if(s3Tab==="add")loadAvail();
+    if(s3Tab==="add"){loadAvail();loadProfiles();}
     if(s3Tab==="history")loadHist();
     const t=setInterval(()=>{loadItems();if(s3Tab==="history")loadHist();},5000);
     return()=>clearInterval(t);
@@ -442,7 +444,7 @@ export default function My_FileBrowser({user}){
             {/* Tabs */}
             <div style={{display:"flex",gap:4,padding:"8px 12px",borderBottom:"1px solid var(--border)",background:"var(--bg-primary)"}}>
               {[{k:"items",l:"항목 ("+s3Items.length+")"},{k:"add",l:"+ 추가"},{k:"history",l:"이력"},{k:"aws",l:"AWS 설정"}].map(t=>(
-                <span key={t.k} onClick={()=>{setS3Tab(t.k);if(t.k==="add")setS3Form({id:"",kind:"db",target:"",s3_url:"",command:"sync",extra_args:"",endpoint_url:"",interval_min:0,enabled:true});}} style={{padding:"5px 12px",borderRadius:5,fontSize:11,cursor:"pointer",fontWeight:s3Tab===t.k?700:500,background:s3Tab===t.k?"var(--accent-glow)":"transparent",color:s3Tab===t.k?"var(--accent)":"var(--text-secondary)"}}>{t.l}</span>
+                <span key={t.k} onClick={()=>{setS3Tab(t.k);if(t.k==="add")setS3Form({id:"",kind:"db",target:"",s3_url:"",command:"sync",extra_args:"",endpoint_url:"",profile:"",interval_min:0,enabled:true});}} style={{padding:"5px 12px",borderRadius:5,fontSize:11,cursor:"pointer",fontWeight:s3Tab===t.k?700:500,background:s3Tab===t.k?"var(--accent-glow)":"transparent",color:s3Tab===t.k?"var(--accent)":"var(--text-secondary)"}}>{t.l}</span>
               ))}
             </div>
             <div style={{flex:1,overflow:"auto",padding:"12px 16px"}}>
@@ -493,10 +495,11 @@ export default function My_FileBrowser({user}){
                     ))}
                   </div>
                   <label>타겟</label>
-                  <select value={s3Form.target} onChange={e=>setS3Form(f=>({...f,target:e.target.value}))} style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11}}>
-                    <option value="">— {s3Form.kind} 선택 —</option>
-                    {(s3Form.kind==="db"?s3Avail.dbs:s3Avail.root_parquets).map(x=><option key={x.name} value={x.name}>{x.name}</option>)}
-                  </select>
+                  <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                    <input list="s3-target-list" value={s3Form.target} onChange={e=>setS3Form(f=>({...f,target:e.target.value}))} placeholder={s3Form.kind==="db"?"예: DB/1.RAWDATA/제품명 (슬래시로 하위 경로 지정 가능)":"예: root_file.parquet"} style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace"}}/>
+                    <datalist id="s3-target-list">{(s3Form.kind==="db"?s3Avail.dbs:s3Avail.root_parquets).map(x=><option key={x.name} value={x.name}/>)}</datalist>
+                    <span style={{fontSize:9,color:"var(--text-secondary)"}}>DB_BASE 하위 경로. 슬래시(/)로 하위 디렉터리까지 지정 가능 — 예: <code>DB/1.RAWDATA/제품명</code></span>
+                  </div>
                   <label>S3 URL</label>
                   <input value={s3Form.s3_url} onChange={e=>setS3Form(f=>({...f,s3_url:e.target.value}))} placeholder={s3Form.kind==="db"?"s3://bucket/prefix/INLINE/":"s3://bucket/prefix/file.parquet"} style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace"}}/>
                   <label>명령</label>
@@ -508,6 +511,14 @@ export default function My_FileBrowser({user}){
                   </div>
                   <label>엔드포인트 URL</label>
                   <input value={s3Form.endpoint_url||""} onChange={e=>setS3Form(f=>({...f,endpoint_url:e.target.value}))} placeholder="(선택) https://s3.internal.company:9000" style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace"}}/>
+                  <label>AWS 키(프로필)</label>
+                  <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                    <select value={s3Form.profile||""} onChange={e=>setS3Form(f=>({...f,profile:e.target.value}))} style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace"}}>
+                      <option value="">(기본) 자격증명 자동 선택</option>
+                      {s3Profiles.map(p=><option key={p.profile} value={p.profile}>{p.profile}{p.aws_access_key_id?" · "+p.aws_access_key_id.slice(0,8)+"…":""}</option>)}
+                    </select>
+                    <span style={{fontSize:9,color:"var(--text-secondary)"}}>선택 시 <code>--profile</code>로 해당 키를 사용해 전송/다운로드. AWS 설정 탭에서 프로필 관리.</span>
+                  </div>
                   <label>추가 인자</label>
                   <input value={s3Form.extra_args} onChange={e=>setS3Form(f=>({...f,extra_args:e.target.value}))} placeholder="--exclude '*.tmp' --delete --size-only" style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace"}}/>
                   <label>주기 (분)</label>
@@ -520,7 +531,7 @@ export default function My_FileBrowser({user}){
                 </div>
                 <div style={{marginTop:14,padding:10,background:"var(--bg-secondary)",borderRadius:6,fontSize:10,fontFamily:"monospace",color:"var(--text-secondary)",lineHeight:1.5}}>
                   <div style={{color:"var(--accent)",fontWeight:700,marginBottom:4}}># 미리보기 (dry):</div>
-                  aws s3 {s3Form.command} {s3Form.s3_url||"s3://..."} {"{DB_BASE}/"+(s3Form.target||"TARGET")} {s3Form.endpoint_url?"--endpoint-url "+s3Form.endpoint_url+" ":""}{s3Form.extra_args}
+                  aws s3 {s3Form.command} {s3Form.s3_url||"s3://..."} {"{DB_BASE}/"+(s3Form.target||"TARGET")} {s3Form.endpoint_url?"--endpoint-url "+s3Form.endpoint_url+" ":""}{s3Form.profile?"--profile "+s3Form.profile+" ":""}{s3Form.extra_args}
                 </div>
                 <div style={{display:"flex",gap:8,marginTop:16}}>
                   <button onClick={()=>s3Save(s3Form)} style={{padding:"8px 18px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer"}}>저장</button>

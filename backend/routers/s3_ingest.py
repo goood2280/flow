@@ -48,7 +48,9 @@ ALLOWED_FLAG_WITH_VALUE = {
 }
 S3_URL_RE = re.compile(r"^s3://[\w\-\.]+(/[\w\-\.\/\*\?\=]*)?$")
 ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
-TARGET_RE = re.compile(r"^[a-zA-Z0-9_\-\.]{1,128}$")
+# v8.7.9: allow multi-segment paths (DB/1.RAWDATA/제품명) + Korean/Unicode letter chars.
+# Forbid absolute paths and traversal (leading '/', '..', backslashes).
+TARGET_RE = re.compile(r"^[\w\-\.][\w\-\.\/]{0,254}$", re.UNICODE)
 # Endpoint-url validation: http(s) scheme, no shell metachars
 ENDPOINT_URL_RE = re.compile(r"^https?://[\w\-\.\:/]{1,256}$")
 AWS_KEY_ID_RE = re.compile(r"^[A-Z0-9]{16,32}$")
@@ -123,6 +125,21 @@ def _validate_endpoint_url(url: str):
         raise HTTPException(400, f"invalid endpoint_url: {url!r}")
 
 
+def _validate_target(target: str):
+    """v8.7.9: target may be multi-segment (DB/1.RAWDATA/제품명). Reject traversal."""
+    if not target or not TARGET_RE.match(target):
+        raise HTTPException(400, f"invalid target: {target!r}")
+    if "\\" in target or ".." in target.split("/"):
+        raise HTTPException(400, f"target must not contain '..' or backslash: {target!r}")
+
+
+def _validate_profile(name: str):
+    if not name:
+        return
+    if not AWS_PROFILE_RE.match(name):
+        raise HTTPException(400, f"invalid profile: {name!r}")
+
+
 def _validate_extra_args(extra: str) -> List[str]:
     if not extra or not extra.strip():
         return []
@@ -153,14 +170,23 @@ def _build_cmd(item: Dict[str, Any]):
         raise HTTPException(400, f"invalid command: {cmd_sub}")
     _validate_s3_url(item.get("s3_url", ""))
     target = item.get("target", "")
-    if not TARGET_RE.match(target):
-        raise HTTPException(400, f"invalid target: {target!r}")
+    _validate_target(target)
 
     kind = item.get("kind", "db")
     if kind not in {"db", "root_parquet"}:
         raise HTTPException(400, f"invalid kind: {kind}")
 
     local = DB_BASE / target
+    # Guard against resolved traversal out of DB_BASE
+    try:
+        _real = local.resolve()
+        _base = DB_BASE.resolve()
+        if _base not in _real.parents and _real != _base:
+            raise HTTPException(400, f"target resolves outside db_root: {target!r}")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     if cmd_sub == "sync":
         if kind != "db":
             raise HTTPException(400, "'sync' is only valid for kind='db' (directory)")
@@ -181,8 +207,14 @@ def _build_cmd(item: Dict[str, Any]):
     if endpoint_url:
         prefix = ["--endpoint-url", endpoint_url]
 
+    # v8.7.9: per-item AWS profile — routes to the correct AWS key.
+    profile = (item.get("profile") or "").strip()
+    _validate_profile(profile)
+    if profile:
+        prefix += ["--profile", profile]
+
     extra = _validate_extra_args(item.get("extra_args", ""))
-    # Build: aws s3 <cmd> <src> <dst> --endpoint-url URL <extra>
+    # Build: aws s3 <cmd> <src> <dst> --endpoint-url URL --profile P <extra>
     args = ["aws", "s3", cmd_sub, item["s3_url"], str(local)] + prefix + extra
     return args, local
 
@@ -341,6 +373,8 @@ class SaveReq(BaseModel):
     command: str = "sync"
     extra_args: str = ""
     endpoint_url: str = ""
+    # v8.7.9: per-item AWS profile (credentials/key) — fed as `--profile <name>`.
+    profile: str = ""
     interval_min: int = 0
     enabled: bool = True
 
@@ -352,10 +386,10 @@ def save_item(req: SaveReq):
         raise HTTPException(400, f"invalid command: {req.command}")
     if req.kind not in {"db", "root_parquet"}:
         raise HTTPException(400, f"invalid kind: {req.kind}")
-    if not TARGET_RE.match(req.target or ""):
-        raise HTTPException(400, f"invalid target: {req.target!r}")
+    _validate_target(req.target or "")
     _validate_s3_url(req.s3_url)
     _validate_endpoint_url((req.endpoint_url or "").strip())
+    _validate_profile((req.profile or "").strip())
     _validate_extra_args(req.extra_args)
     if req.kind == "root_parquet" and req.command == "sync":
         raise HTTPException(400, "'sync' is only valid for kind='db'. Use 'cp' for root_parquet.")
@@ -370,6 +404,7 @@ def save_item(req: SaveReq):
         "s3_url": req.s3_url, "command": req.command,
         "extra_args": req.extra_args,
         "endpoint_url": (req.endpoint_url or "").strip(),
+        "profile": (req.profile or "").strip(),
         "interval_min": max(0, int(req.interval_min)),
         "enabled": bool(req.enabled),
     }
@@ -573,6 +608,10 @@ def push_item(req: PushReq):
     args = ["aws", "s3", cmd, str(src), dst]
     endpoint = (item.get("endpoint_url") or "").strip()
     if endpoint: args += ["--endpoint-url", endpoint]
+    profile = (item.get("profile") or "").strip()
+    if profile:
+        _validate_profile(profile)
+        args += ["--profile", profile]
     if src.is_dir() and cmd == "cp": args += ["--recursive"]
     # Minimal sync execution — record in history
     entry = {"id": req.id, "direction": "push", "ts": datetime.datetime.now().isoformat(),

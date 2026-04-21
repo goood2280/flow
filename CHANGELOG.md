@@ -2,6 +2,31 @@
 
 주요 변경점만 간략히. 세부 내역은 `VERSION.json` 의 changelog 배열 참고.
 
+## v8.7.9 — 2026-04-21
+
+**달력 auto-sync bugfix · 회의별 고유색 · S3 타겟 다단계/프로파일 · 인폼 대개편(2단계 플로우 · 타임라인 · Ctrl+V · root_lot)**
+
+- **[bugfix] 회의→달력 auto-sync 안 보이던 문제** — `except: pass` 가 sync 실패를 silent 하게 삼키고 있었음. 이제 실패 시 stderr 로그 + 응답 `calendar_sync.ok/error` 노출, FE 에서 alert. action_item id 가 매 저장마다 UUID 로 갈아치워지던 버그(id/text 기반 보존)도 수정.
+- **결정사항 제목 = "N차 회의 결정사항: …"** — session.idx 포함. 액션아이템은 range bar 제거, 마감일 하루에만 📍 pin.
+- **회의별 고유 색 순차 할당** — 15색 팔레트. 신규 회의만 새 색을 받고 기존 회의 색은 불변. legacy 는 첫 로드 시 created_at 순서로 백필. `meeting_ref.color` 로 달력 이벤트에 실려 FE 렌더.
+- **달력 ↻ 새로고침 + 회의 필터 색 프리뷰**.
+- **S3 타겟 다단계 경로** — `DB/1.RAWDATA/제품명` 같은 경로 허용 (Unicode + `/`). 전형적인 `..`/backslash 는 차단. FE datalist input.
+- **S3 AWS 프로필(키) 선택** — item.profile = `aws … --profile <name>`. FE 드롭다운이 aws-config 프로필 목록을 로드.
+- **인폼 플로우 2단계** — 접수(received) → 완료(completed). RootHeader 의 큰 FLOW 카드 대신 **✓ 확인 완료** 큰 버튼 하나.
+- **인폼 등록 = product + lot_id 2필드만** — wafer_id 입력 제거. lot_id 는 root/fab 어느 쪽이든. `root_lot_id = lot_id[:5]` 자동 파생.
+- **인폼 by-lot prefix-5 매칭** — `ABCDE` 검색 → `ABCDE01`, `ABCDE02` 등 앞 5자 일치 전부.
+- **인폼 데드라인 필드 완전 폐기**.
+- **인폼 본문 Ctrl+V 이미지 붙여넣기** — textarea onPaste → 자동 업로드.
+- **인폼 간트차트 → 이력 타임라인** — 한 줄씩 시간순 (등록/확인/메일/댓글). Lot prefix-5 검색과 연동.
+- **인폼 Lot drill-down 가독성** — 폰트 11 → 13, `루트/답글` 복잡 컬럼 대신 메일(최근 날짜) · 담당자 확인(완료 날짜) · 건수. CompactRow `[제품명] Lot` 포맷.
+
+**이월 (v8.8+)**
+
+1. 회의록 WebSocket/SSE 동시편집 (본문·아젠다).
+2. SplitTable 태그 FE 드로어 (param_global/lot 편집 UI + wafer_id 그룹 필터).
+3. 회의·달력 공개범위 그룹 (mail_groups 재활용) — 회의/결정/액션 가시성 제한.
+4. 인폼 댓글·수정 전용 이력 엔드포인트 (현재는 status_history + mail_history + reply 조합으로 FE 측 합성).
+
 ## v8.7.8 — 2026-04-21
 
 **달력 auto-sync + 액션 범위바 + 인폼 모듈 그룹핑 + SplitTable 태그 확장 + 카테고리 PageGear**

@@ -15,7 +15,8 @@ const STATUS_META = {
   in_progress: { label: "진행중", color: "#f59e0b", dot: "◑" },
   completed:   { label: "완료",   color: "#22c55e", dot: "●" },
 };
-const STATUS_ORDER = ["received", "reviewing", "in_progress", "completed"];
+// v8.7.9: 2단계 플로우 — 접수 → 완료. legacy 값은 값만 허용(UI 는 숨김).
+const STATUS_ORDER = ["received", "completed"];
 
 /* v8.7.1 — 모듈별 구분색 (좌측 리스트 / 루트카드 left border / Gantt bar fallback) */
 const MODULE_COLORS = {
@@ -507,58 +508,56 @@ function MailDialog({ root, user, onClose }) {
   );
 }
 
-function RootHeader({ root, onChangeStatus, onChangeDeadline, user }) {
-  const [note, setNote] = useState("");
+function RootHeader({ root, onChangeStatus, user }) {
+  // v8.7.9: FLOW 큰 카드 제거 → 접수/완료 2단계 + 크고 눈에 띄는 "확인 완료" 버튼.
   const [openHist, setOpenHist] = useState(false);
   const [openMail, setOpenMail] = useState(false);
-  const canEditDeadline = !!user && (user.role === "admin" || user.username === root.author);
   const hist = root.status_history || [];
-  const mailCount = (root.mail_history || []).length;
+  const mailHist = root.mail_history || [];
+  const mailCount = mailHist.length;
+  const lastMailAt = mailCount ? (mailHist[mailHist.length - 1].at || mailHist[mailHist.length - 1].sent_at || "") : "";
+  const isCompleted = root.flow_status === "completed";
+  const toggleDone = () => {
+    const next = isCompleted ? "received" : "completed";
+    onChangeStatus(root.id, next, "");
+  };
   return (
     <div style={{
       background: "var(--bg-secondary)", border: "1px solid var(--border)",
-      borderRadius: 8, padding: 12, marginBottom: 10,
+      borderRadius: 8, padding: "8px 12px", marginBottom: 8,
+      display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
     }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>FLOW</div>
-        {STATUS_ORDER.map((s, i) => {
-          const m = STATUS_META[s];
-          const active = root.flow_status === s;
-          return (
-            <div key={s} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <button onClick={() => onChangeStatus(root.id, s, note).then(() => setNote(""))}
-                style={{
-                  padding: "4px 10px", borderRadius: 999,
-                  border: "1px solid " + (active ? m.color : "var(--border)"),
-                  background: active ? m.color + "22" : "transparent",
-                  color: active ? m.color : "var(--text-secondary)",
-                  fontSize: 11, fontWeight: active ? 700 : 500, cursor: "pointer",
-                }}>{m.dot} {m.label}</button>
-              {i < STATUS_ORDER.length - 1 && <span style={{ color: "var(--text-secondary)", fontSize: 10 }}>→</span>}
-            </div>
-          );
-        })}
-        <div style={{ flex: 1 }} />
-        <DeadlineBadge deadline={root.deadline} onChange={v => onChangeDeadline(root.id, v)} canEdit={canEditDeadline} />
-        <input value={note} onChange={e => setNote(e.target.value)} placeholder="상태변경 메모 (optional)"
-          style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)",
-                   background: "var(--bg-primary)", color: "var(--text-primary)",
-                   fontSize: 11, width: 220 }} />
-        <span onClick={() => setOpenMail(true)}
-          title="사내 메일 API 로 이 인폼 내용 전송"
-          style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--accent)",
-                   background: "rgba(249,115,22,0.1)", color: "var(--accent)",
-                   fontSize: 10, fontWeight: 700, cursor: "pointer", userSelect: "none" }}>
-          ✉ 메일 보내기{mailCount > 0 && ` (${mailCount})`}
-        </span>
-        <span onClick={() => setOpenHist(!openHist)}
-          style={{ fontSize: 10, color: "var(--accent)", cursor: "pointer" }}>
-          이력 {hist.length > 0 && `(${hist.length})`}
-        </span>
-      </div>
+      <span style={{
+        fontSize: 11, fontWeight: 700,
+        padding: "3px 10px", borderRadius: 999,
+        background: isCompleted ? "#22c55e22" : "#64748b22",
+        color: isCompleted ? "#16a34a" : "#475569",
+      }}>{isCompleted ? "● 완료" : "○ 접수"}</span>
+      <button onClick={toggleDone}
+        title={isCompleted ? "완료 해제 (접수 상태로 되돌림)" : "담당자 확인 — 완료 처리"}
+        style={{
+          padding: "8px 16px", borderRadius: 8,
+          border: "2px solid " + (isCompleted ? "#ef4444" : "#22c55e"),
+          background: isCompleted ? "transparent" : "#22c55e",
+          color: isCompleted ? "#ef4444" : "#fff",
+          fontSize: 13, fontWeight: 800, cursor: "pointer",
+          boxShadow: isCompleted ? "none" : "0 2px 6px rgba(34,197,94,0.35)",
+        }}>{isCompleted ? "↺ 완료 해제" : "✓ 확인 완료"}</button>
+      <div style={{ flex: 1 }} />
+      <span onClick={() => setOpenMail(true)}
+        title={lastMailAt ? `최근 메일: ${(lastMailAt || "").replace("T"," ").slice(0,16)}` : "사내 메일 API 로 이 인폼 내용 전송"}
+        style={{ padding: "5px 12px", borderRadius: 5, border: "1px solid var(--accent)",
+                 background: "rgba(249,115,22,0.1)", color: "var(--accent)",
+                 fontSize: 11, fontWeight: 700, cursor: "pointer", userSelect: "none" }}>
+        ✉ 메일 {mailCount > 0 && `(${mailCount}${lastMailAt ? ` · ${(lastMailAt || "").slice(5,10)}` : ""})`}
+      </span>
+      <span onClick={() => setOpenHist(!openHist)}
+        style={{ fontSize: 10, color: "var(--accent)", cursor: "pointer" }}>
+        이력 {hist.length > 0 && `(${hist.length})`}
+      </span>
       {openMail && <MailDialog root={root} user={user} onClose={() => setOpenMail(false)} />}
       {openHist && hist.length > 0 && (
-        <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)", fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+        <div style={{ width: "100%", marginTop: 6, paddingTop: 6, borderTop: "1px dashed var(--border)", fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>
           {hist.slice().reverse().map((h, i) => (
             <div key={i} style={{ marginBottom: 2 }}>
               {(h.at || "").replace("T", " ")} · <b>{h.actor}</b> → <StatusBadge status={h.status} />
@@ -610,35 +609,67 @@ function LotModuleSummary({ thread, modules }) {
   const rows = (modules || []).map(m => {
     const entries = (thread || []).filter(e => (e.module || "") === m);
     const hasInform = entries.length > 0;
-    // mail 여부: 현재 스키마엔 mail flag 가 인폼 level 에 없음 → 댓글/상태 변경 any 존재 여부로 대체
-    const hasMail = entries.some(e => e.mail_sent || e.mail || (e.history || []).some(h => (h.action || "").includes("mail")));
-    const rootCount = entries.filter(e => !e.parent_id).length;
-    const replyCount = entries.filter(e => e.parent_id).length;
-    return { module: m, hasInform, hasMail, rootCount, replyCount };
+    // v8.7.9: 가장 최근 메일 날짜 뽑기.
+    let lastMailAt = "";
+    let mailCount = 0;
+    for (const e of entries) {
+      for (const mh of (e.mail_history || [])) {
+        const at = mh.at || mh.sent_at || mh.time || "";
+        if (!at) continue;
+        mailCount += 1;
+        if (at > lastMailAt) lastMailAt = at;
+      }
+    }
+    // 완료(담당자 확인) 여부 + 가장 최근 확인 날짜
+    let completedAt = "";
+    for (const e of entries) {
+      if (e.flow_status === "completed") {
+        const hist = (e.status_history || []).filter(h => h.status === "completed");
+        const last = hist.length ? (hist[hist.length - 1].at || "") : "";
+        if (last > completedAt) completedAt = last;
+      }
+    }
+    const count = entries.length;
+    return { module: m, hasInform, mailCount, lastMailAt, completedAt, count };
   });
   if (!rows.length) return null;
+  const cellBase = { padding: "8px 12px", borderBottom: "1px solid var(--border)" };
   return (
-    <div style={{ marginBottom: 14, padding: 10, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
-      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, fontFamily: "monospace", color: "var(--accent)" }}>📋 모듈별 진행 요약</div>
+    <div style={{ marginBottom: 14, padding: 12, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8, fontFamily: "monospace", color: "var(--accent)" }}>📋 모듈별 진행 요약</div>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", fontSize: 11, width: "100%" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%" }}>
           <thead>
             <tr style={{ background: "var(--bg-tertiary)" }}>
-              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>모듈</th>
-              <th style={{ padding: "4px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>인폼</th>
-              <th style={{ padding: "4px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>메일</th>
-              <th style={{ padding: "4px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>루트</th>
-              <th style={{ padding: "4px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>답글</th>
+              <th style={{ ...cellBase, textAlign: "left", fontWeight: 700 }}>모듈</th>
+              <th style={{ ...cellBase, textAlign: "center", fontWeight: 700 }}>인폼</th>
+              <th style={{ ...cellBase, textAlign: "left", fontWeight: 700 }}>메일 (최근)</th>
+              <th style={{ ...cellBase, textAlign: "left", fontWeight: 700 }}>담당자 확인</th>
+              <th style={{ ...cellBase, textAlign: "center", fontWeight: 700 }}>건수</th>
             </tr>
           </thead>
           <tbody>
             {rows.map(r => (
               <tr key={r.module}>
-                <td style={{ padding: "3px 8px", fontFamily: "monospace", borderBottom: "1px solid var(--border)" }}>{r.module}</td>
-                <td style={{ padding: "3px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", color: r.hasInform ? "#22c55e" : "var(--text-secondary)", fontWeight: 700 }}>{r.hasInform ? "✓" : "·"}</td>
-                <td style={{ padding: "3px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", color: r.hasMail ? "#3b82f6" : "var(--text-secondary)", fontWeight: 700 }}>{r.hasMail ? "✓" : "·"}</td>
-                <td style={{ padding: "3px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)" }}>{r.rootCount}</td>
-                <td style={{ padding: "3px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)" }}>{r.replyCount}</td>
+                <td style={{ ...cellBase, fontFamily: "monospace", fontWeight: 600 }}>{r.module}</td>
+                <td style={{ ...cellBase, textAlign: "center", color: r.hasInform ? "#22c55e" : "var(--text-secondary)", fontWeight: 700 }}>{r.hasInform ? "✓" : "·"}</td>
+                <td style={{ ...cellBase, fontFamily: "monospace" }}>
+                  {r.mailCount > 0
+                    ? <>
+                        <span style={{ color: "#3b82f6", fontWeight: 700 }}>✓ {r.mailCount}회</span>
+                        {r.lastMailAt && <span style={{ marginLeft: 8, color: "var(--text-secondary)", fontSize: 11 }}>{(r.lastMailAt || "").replace("T", " ").slice(0, 16)}</span>}
+                      </>
+                    : <span style={{ color: "var(--text-secondary)" }}>·</span>}
+                </td>
+                <td style={{ ...cellBase, fontFamily: "monospace" }}>
+                  {r.completedAt
+                    ? <>
+                        <span style={{ color: "#22c55e", fontWeight: 700 }}>✓ 완료</span>
+                        <span style={{ marginLeft: 8, color: "var(--text-secondary)", fontSize: 11 }}>{(r.completedAt || "").replace("T", " ").slice(0, 16)}</span>
+                      </>
+                    : <span style={{ color: "var(--text-secondary)" }}>·</span>}
+                </td>
+                <td style={{ ...cellBase, textAlign: "center", color: "var(--text-secondary)" }}>{r.count}</td>
               </tr>
             ))}
           </tbody>
@@ -742,14 +773,14 @@ export default function My_Inform({ user }) {
   };
 
   const create = () => {
-    const wid = (form.wafer_id || "").trim();
-    if (!wid || (!form.text.trim() && createImages.length === 0)) {
-      setMsg("wafer_id 와 내용(또는 이미지)을 입력하세요."); return;
+    const lot = (form.lot_id || "").trim();
+    if (!lot || (!form.text.trim() && createImages.length === 0)) {
+      setMsg("Lot 과 내용(또는 이미지)을 입력하세요."); return;
     }
     const body = {
-      wafer_id: wid, lot_id: form.lot_id.trim(), product: form.product.trim(),
+      wafer_id: "", lot_id: lot, product: form.product.trim(),
       module: form.module, reason: form.reason, text: form.text, parent_id: null,
-      images: createImages, deadline: (form.deadline || "").trim(),
+      images: createImages,
     };
     if (form.attach_split && (form.split.column || form.split.new_value)) {
       body.splittable_change = { ...form.split, applied: false };
@@ -763,15 +794,44 @@ export default function My_Inform({ user }) {
     }).then(() => {
       setForm({
         wafer_id: "", lot_id: "", product: "", module: "", reason: "", text: "",
-        deadline: "",
         attach_split: false, split: { column: "", old_value: "", new_value: "" },
         attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" },
       });
       setCreateImages([]);
       setCreating(false); setMsg("");
-      setMode("wafer"); setSelectedWafer(wid);
+      // v8.7.9: lot mode 로 바로 이동 (wafer mode 는 폐지).
+      setMode("lot"); setSelectedLot(lot.slice(0, 5));
       setTimeout(refreshAll, 50);
     }).catch(e => setMsg(e.message));
+  };
+
+  // v8.7.9: 본문 textarea 에 이미지 Ctrl+V 붙여넣기 → 자동 업로드 + createImages 에 추가.
+  const handleBodyPaste = async (e) => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    const imgs = [];
+    for (const it of items) {
+      if (it.kind === "file" && /^image\//.test(it.type || "")) {
+        const file = it.getAsFile();
+        if (file) imgs.push(file);
+      }
+    }
+    if (!imgs.length) return;
+    e.preventDefault();
+    setUploadingMain(true);
+    const out = [];
+    for (const f of imgs) {
+      try {
+        const fd = new FormData();
+        // 붙여넣기된 파일은 보통 image.png 같은 generic name — 타임스탬프 붙여서 구분.
+        const ext = (f.type || "image/png").split("/")[1] || "png";
+        const named = new File([f], `paste_${Date.now()}.${ext}`, { type: f.type });
+        fd.append("file", named);
+        const res = await sf("/api/informs/upload", { method: "POST", body: fd });
+        out.push({ filename: res.filename, url: res.url, size: res.size });
+      } catch (err) { alert("붙여넣기 업로드 실패: " + err.message); }
+    }
+    setCreateImages(prev => [...prev, ...out]);
+    setUploadingMain(false);
   };
 
   const uploadMain = async (fl) => {
@@ -852,10 +912,7 @@ export default function My_Inform({ user }) {
     body: JSON.stringify({ status, note: note || "" }),
   }).then(refreshAll).catch(e => alert(e.message));
 
-  const changeDeadline = (id, deadline) => sf(API + "/deadline?id=" + encodeURIComponent(id), {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ deadline: deadline || "" }),
-  }).then(refreshAll).catch(e => alert(e.message));
+  // v8.7.9: deadline 폐지. 기존 changeDeadline 은 사용되지 않아 제거.
 
   /* thread → (roots + childrenByParent) — wafer 모드는 한 wafer 전체 트리,
      lot/product 모드는 여러 루트 흐름이 섞여있을 수 있음. */
@@ -1026,15 +1083,13 @@ export default function My_Inform({ user }) {
         {creating && (
           <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18, marginBottom: 18 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>새 인폼</div>
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
-              <input value={form.wafer_id} onChange={e => setForm({ ...form, wafer_id: e.target.value })}
-                placeholder="wafer_id (예: A0001B.1-W03)"
+            {/* v8.7.9: product + lot_id 2개만. wafer_id 제거. lot_id 는 root/fab 어느 쪽이든 OK — 앞 5자가 root_lot_id. */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+              <input value={form.product} onChange={e => setForm({ ...form, product: e.target.value })}
+                placeholder="제품명 (예: PROD_A)"
                 style={{ padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
               <input value={form.lot_id} onChange={e => setForm({ ...form, lot_id: e.target.value })}
-                placeholder="lot_id (예: A0001B.1)"
-                style={{ padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
-              <input value={form.product} onChange={e => setForm({ ...form, product: e.target.value })}
-                placeholder="product (예: PROD_A)"
+                placeholder="Lot (root 또는 fab) — 앞 5자가 root_lot_id"
                 style={{ padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
             </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
@@ -1051,18 +1106,11 @@ export default function My_Inform({ user }) {
                   onChange={e => setForm({ ...form, attach_split: e.target.checked })} />
                 SplitTable 변경요청 포함
               </label>
-              <label style={{ fontSize: 11, color: "var(--text-secondary)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                🗓 데드라인
-                <input type="date" value={form.deadline}
-                  onChange={e => setForm({ ...form, deadline: e.target.value })}
-                  style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11 }} />
-                {form.deadline && <span onClick={() => setForm({ ...form, deadline: "" })}
-                  style={{ cursor: "pointer", color: "#ef4444", fontSize: 11 }}>×</span>}
-              </label>
             </div>
-            <textarea value={form.text} onChange={e => setForm({ ...form, text: e.target.value })} rows={3}
-              placeholder="인폼 내용 (배경, 영향, 조치 요청 등)"
-              style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, resize: "vertical", boxSizing: "border-box" }} />
+            <textarea value={form.text} onChange={e => setForm({ ...form, text: e.target.value })} rows={4}
+              onPaste={handleBodyPaste}
+              placeholder="인폼 내용 (배경, 영향, 조치 요청 등) — Ctrl+V 로 이미지도 바로 붙여넣을 수 있어요"
+              style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, resize: "vertical", boxSizing: "border-box", lineHeight: 1.5 }} />
             <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <label style={{ fontSize: 11, color: "var(--text-secondary)", cursor: "pointer", padding: "4px 10px", borderRadius: 4, border: "1px dashed var(--border)" }}>
                 📎 이미지 첨부
@@ -1153,10 +1201,10 @@ export default function My_Inform({ user }) {
         {/* 메인 컨텐츠 */}
         {mode === "gantt" && (
           <>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, color: "var(--text-secondary)" }}>📊 간트 차트 — 데드라인 타임라인</div>
-            <GanttView
-              roots={applyModFilter(rootsSorted)}
-              onOpen={(r) => { setSelectedWafer(r.wafer_id); setMode("wafer"); }}
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, color: "var(--text-secondary)" }}>📜 이력 타임라인 — 시간순 로그</div>
+            <TimelineLog
+              thread={thread}
+              onOpen={(r) => { setSelectedLot((r.root_lot_id || (r.lot_id || "").slice(0, 5))); setMode("lot"); }}
             />
           </>
         )}
@@ -1214,11 +1262,13 @@ export default function My_Inform({ user }) {
                 return (
                   <div key={lid} style={{ marginBottom: 12, padding: 10, borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                      <span style={{ fontSize: 12, fontWeight: 700, fontFamily: "monospace" }}>🧾 {lid}</span>
-                      <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>· {lotRoots.length} 루트 · {waferSet.length} wafer</span>
+                      <span style={{ fontSize: 13, fontWeight: 700, fontFamily: "monospace" }}>
+                        <span style={{ color: "var(--accent)" }}>[{selectedProduct}]</span> {lid}
+                      </span>
+                      <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>· {lotRoots.length}건</span>
                       <span style={{ flex: 1 }} />
-                      <span onClick={() => { setSelectedLot(lid); setMode("lot"); }}
-                            style={{ fontSize: 10, color: "var(--accent)", textDecoration: "underline", cursor: "pointer" }}>Lot 전용 뷰 ↗</span>
+                      <span onClick={() => { setSelectedLot((lid || "").slice(0, 5)); setMode("lot"); }}
+                            style={{ fontSize: 11, color: "var(--accent)", textDecoration: "underline", cursor: "pointer" }}>Lot 전용 뷰 ↗</span>
                     </div>
                     {waferSet.length > 0 && (
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
@@ -1280,7 +1330,7 @@ export default function My_Inform({ user }) {
                       <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 4, fontFamily: "monospace" }}>
                         wafer: <b style={{ color: "var(--text-primary)" }}>{r.wafer_id}</b>
                       </div>
-                      <RootHeader root={r} onChangeStatus={changeStatus} onChangeDeadline={changeDeadline} user={user} />
+                      <RootHeader root={r} onChangeStatus={changeStatus} user={user} />
                       <ThreadNode node={r} childrenByParent={childrenByParent}
                         onReply={reply} onDelete={del} onToggleCheck={toggleCheck}
                         user={user} depth={0} constants={constants} />
@@ -1299,7 +1349,7 @@ export default function My_Inform({ user }) {
             {rootsSorted.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>아직 인폼 없음.</div>}
             {rootsSorted.map(r => (
               <div key={r.id} style={{ marginBottom: 16 }}>
-                <RootHeader root={r} onChangeStatus={changeStatus} onChangeDeadline={changeDeadline} user={user} />
+                <RootHeader root={r} onChangeStatus={changeStatus} user={user} />
                 <ThreadNode node={r} childrenByParent={childrenByParent}
                   onReply={reply} onDelete={del} onToggleCheck={toggleCheck}
                   user={user} depth={0} constants={constants} />
@@ -1318,108 +1368,109 @@ export default function My_Inform({ user }) {
   );
 }
 
-/* v8.7.1 — Inform Gantt View (데드라인 시각화) */
-function GanttView({ roots, onOpen }) {
-  const withRange = useMemo(() => {
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    return (roots || []).map(r => {
-      const start = new Date((r.created_at || today.toISOString()).slice(0, 10));
-      const end = r.deadline ? new Date(r.deadline) :
-        new Date(today.getTime() + 7 * 86400000);
-      return { r, start, end, synthetic: !r.deadline };
-    });
-  }, [roots]);
+/* v8.7.9 — 시간순 이력 타임라인 (간트바 대신).
+   각 줄: [시각] 모듈 [사유] LOT · 이벤트타입 · 요약 · 작성자.
+   이벤트: 인폼 등록 / 담당자 확인 / 메일 발송 / 댓글 / 수정(status_history 기타).
+*/
+function TimelineLog({ thread, onOpen }) {
+  const events = useMemo(() => {
+    const evs = [];
+    for (const x of (thread || [])) {
+      const isRoot = !x.parent_id;
+      // 1) 등록(=루트) 또는 댓글(=비루트 첫 등장)
+      evs.push({
+        at: x.created_at || "",
+        actor: x.author || "",
+        kind: isRoot ? "인폼" : "댓글",
+        module: x.module || "",
+        reason: x.reason || "",
+        lot: x.lot_id || "",
+        product: x.product || "",
+        summary: (x.text || "").slice(0, 80),
+        node: x,
+      });
+      // 2) 상태 이력 — received(최초) 는 등록 이벤트가 이미 담당하므로 skip.
+      for (const h of (x.status_history || [])) {
+        if (!h || !h.at) continue;
+        if ((h.status === "received") && (h.note === "created" || !h.note)) continue;
+        evs.push({
+          at: h.at,
+          actor: h.actor || "",
+          kind: h.status === "completed" ? "담당자확인" : `상태:${h.status || "-"}`,
+          module: x.module || "",
+          reason: x.reason || "",
+          lot: x.lot_id || "",
+          product: x.product || "",
+          summary: h.note || "",
+          node: x,
+        });
+      }
+      // 3) 체크(구형) — status_history 에 잡히지 않은 경우 보완.
+      if (x.checked && x.checked_at) {
+        evs.push({
+          at: x.checked_at,
+          actor: x.checked_by || "",
+          kind: "체크",
+          module: x.module || "",
+          reason: x.reason || "",
+          lot: x.lot_id || "",
+          product: x.product || "",
+          summary: "",
+          node: x,
+        });
+      }
+      // 4) 메일 발송 이력
+      for (const m of (x.mail_history || [])) {
+        const at = m.at || m.sent_at || m.time || "";
+        if (!at) continue;
+        evs.push({
+          at, actor: m.actor || m.sender || "",
+          kind: "메일",
+          module: x.module || "",
+          reason: x.reason || "",
+          lot: x.lot_id || "",
+          product: x.product || "",
+          summary: m.subject ? `[${m.subject}]` : (m.to ? `→ ${Array.isArray(m.to) ? m.to.join(", ") : m.to}` : ""),
+          node: x,
+        });
+      }
+    }
+    evs.sort((a, b) => (a.at || "").localeCompare(b.at || ""));
+    return evs;
+  }, [thread]);
 
-  if (!withRange.length) {
-    return <div style={{ padding: 60, textAlign: "center", color: "var(--text-secondary)" }}>표시할 인폼 없음.</div>;
+  if (!events.length) {
+    return <div style={{ padding: 60, textAlign: "center", color: "var(--text-secondary)" }}>이력 없음.</div>;
   }
-
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const lo = new Date(Math.min(...withRange.map(x => x.start.getTime()), today.getTime()));
-  const hi = new Date(Math.max(...withRange.map(x => x.end.getTime()), today.getTime() + 7 * 86400000));
-  lo.setDate(lo.getDate() - 2);
-  hi.setDate(hi.getDate() + 2);
-  const totalDays = Math.max(1, Math.round((hi - lo) / 86400000));
-  const rowH = 26;
-  const barH = 18;
-  const labelW = 260;
-  const dayW = Math.max(6, Math.min(30, 900 / totalDays));
-  const chartW = totalDays * dayW;
-  const height = withRange.length * rowH + 40;
-  const svgW = labelW + chartW + 20;
-
-  const xForDate = (d) => labelW + ((d - lo) / 86400000) * dayW;
-
-  // Month ticks
-  const ticks = [];
-  let t = new Date(lo); t.setDate(1);
-  while (t <= hi) {
-    ticks.push(new Date(t));
-    t.setMonth(t.getMonth() + 1);
-  }
-
-  const todayX = xForDate(today);
-
   return (
-    <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-secondary)", padding: 10 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "var(--accent)" }}>📊 Inform 간트 차트</span>
-        <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{withRange.length}건 · 기간 {lo.toISOString().slice(0, 10)} ~ {hi.toISOString().slice(0, 10)}</span>
-        <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>· 바 클릭 → wafer 상세</span>
-        <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>· 점선 바 = 데드라인 미설정 (기본 +7일)</span>
-      </div>
-      <svg width={svgW} height={height} style={{ display: "block" }}>
-        {/* Month gridlines */}
-        {ticks.map((tk, i) => {
-          const x = xForDate(tk);
-          return (
-            <g key={i}>
-              <line x1={x} x2={x} y1={0} y2={height - 20} stroke="var(--border)" strokeDasharray="2,3" />
-              <text x={x + 2} y={height - 6} fontSize={9} fill="var(--text-secondary)" fontFamily="monospace">
-                {tk.getFullYear()}-{String(tk.getMonth() + 1).padStart(2, "0")}
-              </text>
-            </g>
-          );
-        })}
-        {/* Today line */}
-        <line x1={todayX} x2={todayX} y1={0} y2={height - 20} stroke="var(--accent)" strokeWidth={2} />
-        <text x={todayX + 3} y={12} fontSize={10} fill="var(--accent)" fontWeight={700} fontFamily="monospace">TODAY</text>
-
-        {/* Rows */}
-        {withRange.map((item, i) => {
-          const y = 20 + i * rowH;
-          const xs = xForDate(item.start);
-          const xe = Math.max(xs + 4, xForDate(item.end));
-          const st = item.r.flow_status || "received";
-          const stColor = (STATUS_META[st] || {}).color || "#64748b";
-          const mc = moduleColor(item.r.module);
-          const overdue = item.r.deadline && item.r.deadline < today.toISOString().slice(0, 10) && st !== "completed";
-          return (
-            <g key={item.r.id} style={{ cursor: "pointer" }} onClick={() => onOpen && onOpen(item.r)}>
-              <rect x={0} y={y - 2} width={labelW - 6} height={rowH - 4} fill={i % 2 ? "var(--bg-primary)" : "transparent"} />
-              <circle cx={8} cy={y + barH / 2} r={5} fill={mc} />
-              <text x={20} y={y + barH / 2 + 4} fontSize={11} fill="var(--text-primary)" fontFamily="monospace">
-                {(item.r.module || "-")} · {(item.r.wafer_id || "").slice(0, 18)}
-              </text>
-              <text x={20} y={y + barH / 2 - 6} fontSize={8} fill="var(--text-secondary)">
-                [{item.r.reason || "-"}] {(item.r.text || "").slice(0, 36)}
-              </text>
-              <rect x={xs} y={y} width={xe - xs} height={barH} rx={4} ry={4}
-                fill={overdue ? "#ef4444" : stColor} opacity={item.synthetic ? 0.35 : 0.75}
-                stroke={mc} strokeWidth={1.5}
-                strokeDasharray={item.synthetic ? "4,3" : "0"} />
-              <text x={xs + 4} y={y + barH / 2 + 4} fontSize={9} fill="#fff" fontWeight={700}>
-                {(STATUS_META[st] || {}).label || st}
-              </text>
-              {item.r.deadline && (
-                <text x={xe + 4} y={y + barH / 2 + 4} fontSize={9} fill={overdue ? "#ef4444" : "var(--text-secondary)"} fontFamily="monospace">
-                  🗓 {item.r.deadline}{overdue ? " ⚠" : ""}
-                </text>
-              )}
-            </g>
-          );
-        })}
-      </svg>
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-secondary)", padding: 10, fontFamily: "monospace" }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>📜 이력 타임라인 ({events.length}건)</div>
+      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 8 }}>작성 / 수정 / 이행(확인·완료) — 누가 언제 무엇을 했는지 시간순.</div>
+      {events.map((e, i) => {
+        const mc = moduleColor(e.module);
+        const kindColor = e.kind === "인폼" ? "#3b82f6"
+          : e.kind === "담당자확인" ? "#22c55e"
+          : e.kind === "메일" ? "#f59e0b"
+          : e.kind === "댓글" ? "#8b5cf6"
+          : e.kind === "체크" ? "#14b8a6"
+          : "#64748b";
+        const lotLabel = e.product && e.lot ? `[${e.product}] ${e.lot}` : (e.lot || e.product || "-");
+        return (
+          <div key={i} onClick={() => onOpen && onOpen(e.node)} style={{
+            display: "flex", gap: 10, alignItems: "center", padding: "4px 6px",
+            borderRadius: 4, cursor: "pointer", fontSize: 12, lineHeight: 1.55,
+            borderLeft: `3px solid ${mc}`, marginBottom: 2, background: i % 2 ? "var(--bg-primary)" : "transparent",
+          }}>
+            <span style={{ color: "var(--text-secondary)", minWidth: 115 }}>{(e.at || "").replace("T", " ").slice(0, 16)}</span>
+            <span style={{ minWidth: 56, color: mc, fontWeight: 700 }}>{e.module || "-"}</span>
+            <span style={{ minWidth: 88, color: "var(--text-secondary)" }}>{e.reason ? `[${e.reason}]` : ""}</span>
+            <span style={{ minWidth: 180, color: "var(--text-primary)" }}>{lotLabel}</span>
+            <span style={{ padding: "1px 8px", borderRadius: 999, background: kindColor + "22", color: kindColor, fontWeight: 700, fontSize: 11 }}>{e.kind}</span>
+            <span style={{ color: "var(--text-primary)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.summary}</span>
+            <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>· {e.actor || "-"}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1440,17 +1491,15 @@ function CompactRow({ root, onOpen }) {
         <AutoGenPill node={root} />
         {(root.images && root.images.length > 0) && <span title="이미지 첨부" style={{ fontSize: 10 }}>📎{root.images.length}</span>}
         {root.embed_table && <span title="임베드" style={{ fontSize: 10 }}>🔗</span>}
-        {root.deadline && (
-          <span title={"데드라인 " + root.deadline} style={{
-            fontSize: 10, padding: "2px 8px", borderRadius: 999,
-            background: (root.deadline < new Date().toISOString().slice(0,10) ? "#ef4444" : "#3b82f6") + "22",
-            color: root.deadline < new Date().toISOString().slice(0,10) ? "#ef4444" : "#3b82f6",
-            fontFamily: "monospace", fontWeight: 700,
-          }}>🗓 {root.deadline}</span>
+        {/* v8.7.9: `[제품명] Lot` 표시. wafer_id 는 보조적으로만. */}
+        <span style={{ fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>
+          {root.product && <span style={{ color: "var(--accent)" }}>[{root.product}]</span>}
+          {root.product && root.lot_id ? " " : ""}
+          {root.lot_id || root.wafer_id || "-"}
+        </span>
+        {root.root_lot_id && root.lot_id && root.root_lot_id !== root.lot_id && (
+          <span title="root_lot_id (앞 5자)" style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>root:{root.root_lot_id}</span>
         )}
-        <span style={{ fontSize: 11, fontFamily: "monospace", fontWeight: 600 }}>{root.wafer_id}</span>
-        {root.lot_id && <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>· {root.lot_id}</span>}
-        {root.product && <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>· {root.product}</span>}
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{(root.created_at || "").replace("T", " ").slice(0, 16)}</span>
         <span style={{ fontSize: 10, fontWeight: 600 }}>{root.author}</span>
