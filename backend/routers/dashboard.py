@@ -513,13 +513,21 @@ def _compute_chart(cfg: dict) -> dict:
                 pass
 
         # Scatter / Line / Bar
+        # v8.8.13: y_expr 에 콤마 여러 컬럼 지원 → 각 Y 를 series 로 emit, pt.series 필드 부여.
+        y_cols_raw = [s.strip() for s in (y_expr or "").split(",") if s.strip()]
+        y_cols = [c for c in y_cols_raw if c in df.columns]
+        multi_y = len(y_cols) >= 2
         sel = []
         if x_col and x_col in df.columns:
             sel.append(pl.col(x_col))
         if cc and cc in df.columns:
             sel.append(pl.col(cc).alias("color"))
-        if y_expr in df.columns:
-            sel.append(pl.col(y_expr))
+        if multi_y:
+            for yc in y_cols:
+                sel.append(pl.col(yc))
+        elif len(y_cols) == 1:
+            sel.append(pl.col(y_cols[0]))
+            y_expr = y_cols[0]
         elif y_expr:
             try:
                 sel.append(pl.sql_expr(y_expr).alias("y_val"))
@@ -528,7 +536,7 @@ def _compute_chart(cfg: dict) -> dict:
                 pass
         # v7.2: Carry selection_key column for cross-chart marking
         sel_key = cfg.get("selection_key", "LOT_WF") or ""
-        if sel_key and sel_key in df.columns and sel_key not in {x_col, cc, y_expr}:
+        if sel_key and sel_key in df.columns and sel_key not in set([x_col, cc, *y_cols, y_expr]):
             sel.append(pl.col(sel_key).alias("_mark"))
         if not sel:
             result["error"] = "No valid columns"
@@ -539,24 +547,44 @@ def _compute_chart(cfg: dict) -> dict:
 
         points = []
         for row in df.to_dicts():
-            y = row.get(y_expr)
-            if y is not None:
-                try:
-                    pt = {
-                        "x": str(row.get(x_col, "")),
-                        "y": float(y),
-                        "color": str(row.get("color", "")) if cc else None,
-                    }
-                    # Selection key (for cross-chart marking) — only attach when available
-                    m = row.get("_mark")
-                    if m is not None:
-                        pt["mark"] = str(m)
-                    points.append(pt)
-                except Exception:
-                    pass
+            if multi_y:
+                for yc in y_cols:
+                    yv = row.get(yc)
+                    if yv is None:
+                        continue
+                    try:
+                        pt = {
+                            "x": str(row.get(x_col, "")),
+                            "y": float(yv),
+                            "series": yc,  # 시리즈명 = Y 컬럼명
+                            "color": str(row.get("color", "")) if cc else None,
+                        }
+                        m = row.get("_mark")
+                        if m is not None:
+                            pt["mark"] = str(m)
+                        points.append(pt)
+                    except Exception:
+                        pass
+            else:
+                y = row.get(y_expr)
+                if y is not None:
+                    try:
+                        pt = {
+                            "x": str(row.get(x_col, "")),
+                            "y": float(y),
+                            "color": str(row.get("color", "")) if cc else None,
+                        }
+                        m = row.get("_mark")
+                        if m is not None:
+                            pt["mark"] = str(m)
+                        points.append(pt)
+                    except Exception:
+                        pass
         result["points"] = points[:MAX_POINTS]
         result["total"] = len(points)
         result["selection_key"] = sel_key
+        if multi_y:
+            result["series"] = y_cols
 
         # v6: SPC computation
         if cfg.get("enable_spc") and points:

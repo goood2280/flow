@@ -678,7 +678,8 @@ function MatchingPanel(){
   const[edits,setEdits]=useState({});const[saveMsg,setSaveMsg]=useState("");
   const[rollup,setRollup]=useState(null);
   const load=()=>sf("/api/catalog/matching/list").then(d=>setTables(d.tables||[]));
-  useEffect(load,[]);
+  // fix: arrow+Promise 를 useEffect 에 바로 넘기면 cleanup 자리에 Promise 가 들어가 unmount 시 crash ("n is not a function").
+  useEffect(()=>{load();},[]);
   // v8.2.0: Bell dismiss / external read → re-load this tab's notif list immediately
   useEffect(()=>{
     const onRefresh=()=>load();
@@ -785,7 +786,8 @@ function MatchingPanel(){
 function ProductPanel(){
   const[list,setList]=useState([]);const[sel,setSel]=useState(null);const[cfg,setCfg]=useState(null);const[raw,setRaw]=useState("");const[msg,setMsg]=useState("");
   const load=()=>sf("/api/catalog/product/list").then(d=>setList(d.products||[]));
-  useEffect(load,[]);
+  // fix: arrow+Promise → Promise 가 cleanup 에 저장되어 unmount 시 crash 방지.
+  useEffect(()=>{load();},[]);
   // v8.2.0: Bell dismiss / external read → re-load this tab's notif list immediately
   useEffect(()=>{
     const onRefresh=()=>load();
@@ -1315,7 +1317,8 @@ function InformConfigPanel(){
   const [rawRootDraft,setRawRootDraft]=useState("");
   const [msg,setMsg]=useState("");
   const load=()=>sf("/api/informs/config").then(d=>{setCfg(d);setRawRootDraft(d.raw_db_root||"");}).catch(e=>setMsg(e.message));
-  useEffect(load,[]);
+  // fix: arrow+Promise crash 회피.
+  useEffect(()=>{load();},[]);
   const saveAll=(next)=>sf("/api/informs/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(next)})
     .then(r=>{setCfg(r.config||next);setMsg("저장되었습니다.");}).catch(e=>setMsg(e.message));
   const addMod=()=>{const v=newMod.trim();if(!v)return;

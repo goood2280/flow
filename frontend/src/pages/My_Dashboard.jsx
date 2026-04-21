@@ -499,8 +499,10 @@ function ChartCanvas({ cfg, points, computedAt }) {
   }
 
   /* ── Scatter / Line / Bar / Area ── */
+  // v8.8.13: multi-Y. BE 가 각 Y 시리즈를 p.series 로 태깅 → p.color 없을 때 시리즈명으로 그룹화.
+  //   color_col 지정(categorical) 과 multi-Y 중 하나가 있으면 시리즈별 색상.
   const colorGroups = {};
-  points.forEach(p => { const c = p.color || "default"; if (!colorGroups[c]) colorGroups[c] = []; colorGroups[c].push(p); });
+  points.forEach(p => { const c = p.color || p.series || "default"; if (!colorGroups[c]) colorGroups[c] = []; colorGroups[c].push(p); });
   const groupNames = Object.keys(colorGroups);
   const hasColor = groupNames.length > 1 || (groupNames.length === 1 && groupNames[0] !== "default");
 
@@ -619,7 +621,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
       </g>}
 
       {type === "bar" ? points.map((p, i) => {
-        const bw = Math.max(2, cw / points.length * 0.7); const ci = hasColor ? groupNames.indexOf(p.color || "default") : 0;
+        const bw = Math.max(2, cw / points.length * 0.7); const ci = hasColor ? groupNames.indexOf(p.color || p.series || "default") : 0;
         return (<rect key={i} x={toX(i) - bw / 2} y={toY(p.y)} width={bw} height={Math.max(1, pad.t + ch - toY(p.y))} fill={COLORS[ci % COLORS.length]} rx={1} opacity={0.8}
           onMouseMove={e => { const r = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top, lines: [`X: ${p.x}`, `Y: ${fmt(p.y)}`, p.color ? `그룹: ${p.color}` : ""] }); }}
           style={{ cursor: "pointer" }} />);
@@ -651,7 +653,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
       : /* scatter */
         <g>
         {points.map((p, i) => {
-          const ci = hasColor ? groupNames.indexOf(p.color || "default") : 0;
+          const ci = hasColor ? groupNames.indexOf(p.color || p.series || "default") : 0;
           const extraUSL = (cfg.spec_lines||[]).filter(s=>(s.kind||"").toLowerCase()==="usl").map(s=>Number(s.value)).filter(v=>!isNaN(v));
           const extraLSL = (cfg.spec_lines||[]).filter(s=>(s.kind||"").toLowerCase()==="lsl").map(s=>Number(s.value)).filter(v=>!isNaN(v));
           const tightUSL = [cfg.usl, ...extraUSL].filter(v=>v!=null&&!isNaN(v));
@@ -667,7 +669,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
           const sw = isMarked ? 2 : (isOOS ? 1.5 : 0.5);
           return <circle key={i} cx={toX(i)} cy={toY(p.y)} r={r}
             fill={fill} opacity={op} stroke={stroke} strokeWidth={sw}
-            onMouseMove={e => { const br = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - br.left, y: e.clientY - br.top, lines: [`X: ${p.x}`, `Y: ${fmt(p.y)}`, p.color ? `그룹: ${p.color}` : "", p.mark ? `${cfg.selection_key || "mark"}: ${p.mark}` : "", isOOS ? "⚠ OOS" : "", isMarked ? "★ 표시됨" : ""].filter(Boolean) }); }}
+            onMouseMove={e => { const br = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - br.left, y: e.clientY - br.top, lines: [`X: ${p.x}`, `Y: ${fmt(p.y)}`, p.series ? `시리즈: ${p.series}` : "", p.color ? `그룹: ${p.color}` : "", p.mark ? `${cfg.selection_key || "mark"}: ${p.mark}` : "", isOOS ? "⚠ OOS" : "", isMarked ? "★ 표시됨" : ""].filter(Boolean) }); }}
             onClick={e => { e.stopPropagation(); if (p.mark) toggleMark(p.mark); }}
             style={{ cursor: p.mark ? "pointer" : "default" }} />;
         })}

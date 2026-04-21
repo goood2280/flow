@@ -2262,6 +2262,15 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     # Freeze panes at param_row+1, B
     ws.freeze_panes = f"B{param_row+1}"
 
+    # v8.8.13: 전체 그리드 테두리 보강 — 값 없는 빈 셀·헤더 셀까지 기본 border 적용.
+    # plan_border / mismatch_border 처럼 특수 스타일이 이미 들어간 셀은 건너뜀.
+    last_row = param_row + len(selected)
+    for row_cells in ws.iter_rows(min_row=1, max_row=last_row, min_col=1, max_col=last_col):
+        for c in row_cells:
+            b = c.border
+            if not (b and b.left and b.left.style):
+                c.border = border
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
