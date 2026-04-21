@@ -21,6 +21,9 @@ export default function My_Admin({user}){
   const[tab,setTab]=useState("notifs");const[dlHistory,setDlHistory]=useState([]);
   const[sys,setSys]=useState({});const[resLog,setResLog]=useState([]);const[farmStatus,setFarmStatus]=useState({});
   const[editPerm,setEditPerm]=useState(null);const[permTabs,setPermTabs]=useState([]);
+  // v8.7.1: Admin Activity Log 필터
+  const[logUsers,setLogUsers]=useState([]);
+  const[logFilter,setLogFilter]=useState({username:"",action:"",tab:""});
 
   const[inquiry,setInquiry]=useState("");
   const sendInquiry=()=>{
@@ -32,14 +35,24 @@ export default function My_Admin({user}){
     sf("/api/admin/all-notifications?username="+(user?.username||"")).then(d=>setNotifs(d.notifications||[])).catch(()=>{});
     if(isAdmin){
       sf("/api/admin/users").then(d=>setUsers(d.users||[])).catch(()=>{});
-      sf("/api/admin/logs?limit=100").then(d=>setLogs(d.logs||[])).catch(()=>{});
+      reloadLogs();
+      sf("/api/admin/logs/users").then(d=>setLogUsers(d.users||[])).catch(()=>{});
     } else {
       // User: load own logs and downloads
-      sf("/api/admin/logs?limit=100&username="+(user?.username||"")).then(d=>setLogs(d.logs||[])).catch(()=>{});
+      sf("/api/admin/logs?limit=200&username="+(user?.username||"")).then(d=>setLogs(d.logs||[])).catch(()=>{});
       loadDl();
     }
   };
+  // v8.7.1: Admin log 필터 적용 재로딩
+  const reloadLogs=()=>{
+    const q=new URLSearchParams({limit:"500"});
+    if(logFilter.username)q.set("username",logFilter.username);
+    if(logFilter.action)q.set("action",logFilter.action);
+    if(logFilter.tab)q.set("tab",logFilter.tab);
+    sf("/api/admin/logs?"+q.toString()).then(d=>setLogs(d.logs||[])).catch(()=>{});
+  };
   useEffect(load,[]);
+  useEffect(()=>{if(isAdmin&&tab==="logs")reloadLogs();},[logFilter.username,logFilter.action,logFilter.tab]);
   // v8.2.0: Bell dismiss / external read → re-load this tab's notif list immediately
   useEffect(()=>{
     const onRefresh=()=>load();
@@ -63,7 +76,7 @@ export default function My_Admin({user}){
 
   // Tabs differ by role
   // v8.4.3 단위기능 페이지 철학: AWS 설정은 FileBrowser 톱니로 이관 예정 (제거).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["groups","그룹"],["inform_cfg","인폼 설정"],["base_csv","Base CSV"],["logs","로그"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["groups","그룹"],["inform_cfg","인폼 설정"],["base_csv","Base CSV"],["logs","Admin Log"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
   const userTabs=[["notifs","알림"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
 
@@ -158,12 +171,49 @@ export default function My_Admin({user}){
         </div>
       </div>}
 
-      {/* Logs */}
-      {tab==="logs"&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16,maxHeight:500,overflowY:"auto",fontFamily:"monospace",fontSize:12}}>
-        {logs.length===0&&<div style={{color:"var(--text-secondary)"}}>로그 없음</div>}
-        {[...logs].reverse().map((l,i)=><div key={i} style={{padding:"4px 0",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",display:"flex",gap:12}}>
-          <span style={{color:"var(--accent)",minWidth:140}}>{l.timestamp?.slice(0,19)}</span>
-          <span style={{color:"var(--text-primary)",minWidth:80}}>{l.username}</span><span>{l.action}</span></div>)}</div>}
+      {/* Admin Log (v8.7.1) — 유저별/액션별 감사 로그 */}
+      {tab==="logs"&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+        {isAdmin&&<div style={{display:"flex",gap:10,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}>
+          <span style={{fontSize:12,fontWeight:700,color:"var(--accent)"}}>📋 Admin Activity Log</span>
+          <select value={logFilter.username} onChange={e=>setLogFilter({...logFilter,username:e.target.value})}
+            style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,minWidth:160}}>
+            <option value="">-- 유저 전체 --</option>
+            {logUsers.map(u=><option key={u.username} value={u.username}>{u.username} ({u.count})</option>)}
+          </select>
+          <input placeholder="action 필터 (예: inform, login)" value={logFilter.action}
+            onChange={e=>setLogFilter({...logFilter,action:e.target.value})}
+            style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,width:200}}/>
+          <input placeholder="tab 필터 (inform/calendar/...)" value={logFilter.tab}
+            onChange={e=>setLogFilter({...logFilter,tab:e.target.value})}
+            style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,width:170}}/>
+          {(logFilter.username||logFilter.action||logFilter.tab)&&
+            <button onClick={()=>setLogFilter({username:"",action:"",tab:""})}
+              style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"#ef4444",fontSize:11,cursor:"pointer"}}>× 초기화</button>}
+          <button onClick={reloadLogs}
+            style={{padding:"6px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>↻ 새로고침</button>
+          <span style={{fontSize:10,color:"var(--text-secondary)",marginLeft:"auto"}}>{logs.length}건</span>
+        </div>}
+        <div style={{maxHeight:540,overflowY:"auto",border:"1px solid var(--border)",borderRadius:6}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead style={{position:"sticky",top:0,background:"var(--bg-tertiary)",zIndex:1}}>
+              <tr>{["시간","유저","탭","동작","상세"].map(h=>
+                <th key={h} style={{textAlign:"left",padding:"8px 12px",color:"var(--text-secondary)",fontSize:11,borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {logs.length===0&&<tr><td colSpan={5} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>로그 없음</td></tr>}
+              {[...logs].reverse().map((l,i)=>(
+                <tr key={i} style={{borderBottom:"1px solid var(--border)"}}>
+                  <td style={{padding:"6px 12px",fontFamily:"monospace",fontSize:11,color:"var(--accent)",whiteSpace:"nowrap"}}>{l.timestamp?.slice(0,19)?.replace("T"," ")}</td>
+                  <td style={{padding:"6px 12px",fontWeight:600}}>{l.username||"-"}</td>
+                  <td style={{padding:"6px 12px",fontSize:11,color:"var(--text-secondary)"}}>{l.tab?<span style={{padding:"2px 8px",borderRadius:999,background:"var(--bg-hover)",fontSize:10}}>{l.tab}</span>:"-"}</td>
+                  <td style={{padding:"6px 12px",fontFamily:"monospace",fontSize:11}}>{l.action||"-"}</td>
+                  <td style={{padding:"6px 12px",fontSize:11,color:"var(--text-secondary)",fontFamily:"monospace",maxWidth:420,overflow:"hidden",textOverflow:"ellipsis"}} title={l.detail||""}>{l.detail||""}</td>
+                </tr>))}
+            </tbody>
+          </table>
+        </div>
+      </div>}
 
       {/* Downloads */}
       {tab==="downloads"&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto"}}>

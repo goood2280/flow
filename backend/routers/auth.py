@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from core.paths import PATHS
 from core.notify import send_to_admins
 from core import auth as auth_core
+from core.audit import record_user as _audit_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -86,6 +87,7 @@ def login(req: LoginReq):
         if u.get("role") == "admin":
             tabs = "__all__"
         token, expires_at = auth_core.issue_token(u["username"], u.get("role", "user"))
+        _audit_user(u["username"], "auth:login", detail=f"role={u.get('role','user')}", tab="auth")
         return {
             "ok": True,
             "username": u["username"],
@@ -100,7 +102,10 @@ def login(req: LoginReq):
 @router.post("/logout")
 def logout(request: Request):
     token = request.headers.get("x-session-token") or request.headers.get("X-Session-Token")
+    u = auth_core.validate_token(token or "")
     auth_core.revoke_token(token or "")
+    if u and u.get("username"):
+        _audit_user(u["username"], "auth:logout", tab="auth")
     return {"ok": True}
 
 

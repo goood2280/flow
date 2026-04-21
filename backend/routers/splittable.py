@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from typing import List
 import polars as pl
 from core.paths import PATHS
+from core.audit import record_user as _audit_user
 from core.utils import (
     _STR, is_cat, find_lot_wafer_cols, load_json, save_json, safe_id,
     csv_response, csv_writer_bytes,
@@ -1069,6 +1070,9 @@ def save_plan(req: PlanReq):
                 )
     except Exception:
         pass
+    _audit_user(req.username, "splittable:plan_save",
+                detail=f"product={req.product} saved={len(req.plans)} rejected={len(rejected)}",
+                tab="splittable")
     return {"ok": True, "saved": len(req.plans), "rejected": rejected}
 
 
@@ -1105,6 +1109,9 @@ def delete_plan(req: PlanDeleteReq):
             )
     except Exception:
         pass
+    _audit_user(req.username, "splittable:plan_delete",
+                detail=f"product={req.product} deleted={len(deleted)}",
+                tab="splittable")
     return {"ok": True}
 
 

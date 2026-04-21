@@ -203,16 +203,29 @@ export default function My_Calendar({ user }) {
                   const evs = eventsByDate[k] || [];
                   return (
                     <div key={i} onClick={() => openNew(k)} style={{
-                      background: inMonth ? "var(--bg-secondary)" : "var(--bg-primary)",
-                      border: isToday ? "1px solid var(--accent)" : "1px solid var(--border)",
+                      background: isToday ? "var(--accent-glow, rgba(255,94,0,0.08))" : (inMonth ? "var(--bg-secondary)" : "var(--bg-primary)"),
+                      border: isToday ? "2px solid var(--accent)" : "1px solid var(--border)",
+                      boxShadow: isToday ? "0 0 0 3px rgba(255,94,0,0.18), 0 0 12px rgba(255,94,0,0.28)" : "none",
                       borderRadius: 6, padding: 6, cursor: "pointer", overflow: "hidden",
                       display: "flex", flexDirection: "column", gap: 3,
                       opacity: inMonth ? 1 : 0.45,
+                      position: "relative",
                     }}>
+                      {isToday && (
+                        <span title="오늘" style={{
+                          position: "absolute", top: -8, right: -6, zIndex: 2,
+                          background: "var(--accent)", color: "#fff",
+                          padding: "2px 8px", borderRadius: 999,
+                          fontSize: 9, fontWeight: 800, letterSpacing: 0.4,
+                          boxShadow: "0 2px 6px rgba(0,0,0,0.3)",
+                          fontFamily: "monospace",
+                        }}>📍 TODAY</span>
+                      )}
                       <div style={{
-                        fontSize: 11, fontWeight: isToday ? 700 : 500,
+                        fontSize: isToday ? 13 : 11, fontWeight: isToday ? 800 : 500,
                         color: isToday ? "var(--accent)" : (d.getDay() === 0 ? "#ef4444" : d.getDay() === 6 ? "#3b82f6" : "var(--text-primary)"),
                         fontFamily: "monospace",
+                        textShadow: isToday ? "0 0 6px rgba(255,94,0,0.4)" : "none",
                       }}>{d.getDate()}</div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
                         {evs.slice(0, 4).map(e => (
