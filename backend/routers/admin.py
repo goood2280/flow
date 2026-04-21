@@ -577,6 +577,16 @@ BASE_CSV_SCHEMAS = {
         "columns": ["feature_name", "function_step", "rule_order", "ppid", "operator", "category", "use"],
         "unique_key": ["feature_name", "function_step", "rule_order"],
     },
+    # v8.7.5: INLINE prefix 항목 매칭 — SplitTable 에서 item_desc 로 표시.
+    "inline_matching": {
+        "columns": ["step_id", "item_id", "item_desc"],
+        "unique_key": ["step_id", "item_id"],
+    },
+    # v8.7.5: VM_ prefix 항목 매칭 — SplitTable 에서 step_id 서브텍스트로 표시.
+    "vm_matching": {
+        "columns": ["step_desc", "step_id"],
+        "unique_key": ["step_desc", "step_id"],
+    },
 }
 
 

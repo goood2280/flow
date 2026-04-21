@@ -1,7 +1,26 @@
 {
-  "version": "8.7.4",
+  "version": "8.7.5",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.7.5",
+      "date": "2026-04-21",
+      "title": "Admin 'r is not a function' 수정 + 결정사항 단위 달력 push + TableMap 자동 매칭 + Base CSV 분류 + S3 양방향 신호등",
+      "tag": "fix+feat",
+      "changes": [
+        "**Admin 탭 전환 'r is not a function' 수정** — u.tabs legacy array 대응 `_tabsToArray()` 정규화 + 탭별 `TabBoundary` 에러 바운더리로 서브패널 크래시 격리. InformConfigPanel 내부 inline Section 컴포넌트 → 함수형 renderSection 으로 교체 (focus loss/ref 불안정 해결).",
+        "**변경점 달력 TODAY 배지 잘림 최종 수정** — absolute 배지 → day 숫자와 한 줄 flex. `whiteSpace: nowrap` + 작은 9px 칩. 잘림 불가능 구조.",
+        "**FileBrowser CSV 분류 수정** — DB 루트의 단일 CSV 는 Base 로 분류. /api/filebrowser/base-files 가 base_root + db_root CSV 통합. 루트 Parquet 섹션은 CSV 제외 (parquet 전용).",
+        "**Base 단일 파일 S3 신호등 + 양방향 분리** — Base 파일 리스트에 lightDot 추가. S3StatusLight 에 download(↓)/upload(↑) 개별 도트. /api/s3ingest/health 에 `download_light` + `upload_light` 추가 (history direction 기반 pull/push).",
+        "**TableMap relation 자동 매칭** — 화살표 연결 시 양쪽 테이블 컬럼 case-insensitive 교집합을 `from_col`/`to_col` 에 자동 채움. 관계 모달 `🔍 자동 매칭` 버튼 + 매칭 쌍 chip 표시 + 개별 X 제거.",
+        "**결정사항 단위 달력 push** — `minutes.decisions` 를 `[{id, text, due, calendar_*}]` 객체로 재설계. `POST /api/meetings/decision/{push,unpush}`. 각 결정사항 행 옆 📅 버튼. legacy 문자열 decisions 는 자동 객체화.",
+        "**Dashboard X/Y 수식 가이드 강화** — 기존 ColInput 이 searchable dropdown + 자유 수식 지원. 가이드 텍스트에 멀티 Y / joined suffix / `pl.col(\"a\")/pl.col(\"b\")*100` 예시.",
+        "**Base CSV 2종 추가** — `inline_matching.csv (step_id,item_id,item_desc)` + `vm_matching.csv (step_desc,step_id)`. Admin > Base CSV 편집기 등록. `/api/splittable/{inline-meta,vm-meta}` 엔드포인트.",
+        "**SplitTable Product / fab_source 중복 제거** — find_all_sources() (core/utils.py) + /api/splittable/products 모두 return 직전 dedup. 같은 (source_type, root, product, file, label) 는 1회만 노출.",
+        "**FileBrowser 톱니 좌하단 통일** — bottom-right → bottom-left. PageGear 톤/크기/그림자로 일관성 확보.",
+        "이월 (v8.7.6+): 액션아이템 그룹 담당자 + 메일 발송 / 간트 뷰 / 인폼 drill-down + 그룹 권한 / Base CSV ↔ TableMap auto-link."
+      ]
+    },
     {
       "version": "8.7.4",
       "date": "2026-04-21",

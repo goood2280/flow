@@ -445,4 +445,14 @@ def find_all_sources(apply_whitelist: bool = True):
                     "file": "", "canonical": canon, "level": level,
                     "label": f"{canon}/{prod_dir.name}{lvl_suffix}",
                 })
-    return sources
+    # v8.7.5: dedup on (source_type, root, product, file, label) to avoid duplicate entries
+    # showing up in Product / fab_source dropdowns (seen when Base + DB duplicates).
+    seen = set()
+    dedup = []
+    for s in sources:
+        key = (s.get("source_type"), s.get("root") or "", s.get("product") or "", s.get("file") or "", s.get("label") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(s)
+    return dedup

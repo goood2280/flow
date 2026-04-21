@@ -774,7 +774,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
     && (s.root || "") === (form.root || "")
     && (s.product || "") === (form.product || "")) || {}).label || "";
   const sqlG = `col == 'value'\ncol LIKE '%pattern%'\ncol.is_in(['A','B'])\n(a > 1) & (b == 'X')`;
-  const yG = `컬럼 이름 (단순)\n멀티 Y: col1,col2\n수식: pl.col("a")/pl.col("b")`;
+  const yG = `컬럼 이름 (단순): Vth_01\n멀티 Y (쉼표): Vth_01, Ion_01\n수식: pl.col("a")/pl.col("b")*100\n  • 기본 산술 + pl.col("...") 래퍼 사용\n  • joined 컬럼은 suffix 적용된 이름 (예: Vth_01_j1)\n  • X 컬럼도 동일하게 수식 허용.`;
   const isPieOrBin = ["pie","donut","binning","pareto","treemap"].includes(form.chart_type);
   const isWaferMap = form.chart_type === "wafer_map";
 
@@ -843,7 +843,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
       })}
     </div>
     {columns.length > 0 && <>
-      <ColInput label="X 컬럼" value={form.x_col} onChange={v => u("x_col", v)} columns={allColumns} placeholder="검색하려면 입력..." />
+      <ColInput label="X 컬럼 (검색/수식)" value={form.x_col} onChange={v => u("x_col", v)} columns={allColumns} placeholder="컬럼 검색 또는 수식 (가이드 ▶)" guide={yG} />
       {!isPieOrBin && <>
         <ColInput label="Y 컬럼 (여러 개는 쉼표 구분)" value={form.y_expr} onChange={v => u("y_expr", v)} columns={allColumns} placeholder="col1 또는 col1,col2" guide={yG} />
         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>

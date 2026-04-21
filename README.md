@@ -3,7 +3,7 @@
 > **Fab data analytics + plan vs actual 추적 플랫폼.**
 > 반도체 fab (특히 개발/pilot 단계) 공정 데이터를 single-user 데스크톱 환경에서 탐색·분석·공유하기 위한 웹 앱.
 
-현재 버전: **v8.4.5** (codename `flow`)
+현재 버전: **v8.7.5** (codename `flow`)
 
 ---
 
@@ -11,29 +11,37 @@
 
 | 페이지 | 설명 |
 |---|---|
-| 📂 **파일 탐색기** | DB/Base parquet·CSV 탐색. SQL 필터. 컬럼 projection 즉시 적용. S3 양방향 sync (admin). |
-| 📊 **대시보드** | 동적 차트 (scatter/line/bar/pie/histogram/box/pareto/treemap/wafer_map/combo/heatmap/table/cross-table). LEFT JOIN 복수 소스. Fitting line (deg 1-4 + R²). USL/LSL/Target/Multi spec lines. |
-| 🗂️ **스플릿 테이블** | LOT_WF (root_lot_id + wafer_id) 축의 transposed 뷰. plan vs actual diff. **fab_lot_id 그룹 헤더행** (wafer 자동 인접 정렬). diff 클라이언트 즉시 필터. 빈 셀 dbl-click edit + 전체셋 suggestion. XLSX 내보내기 (셀 병합·컬러 팔레트·자연 정렬·plan 주황 테두리). |
+| 🏠 **홈** | 버전·changelog·Contact Bell·공지 배너 |
+| 📂 **파일 탐색기** | DB/Base parquet·CSV 탐색. SQL 필터. 컬럼 projection 즉시 적용. S3 양방향(↓/↑) 신호등. DB 루트의 단일 CSV 는 Base 로 분류. 톱니(⚙) 좌하단. |
+| 📊 **대시보드** | 동적 차트 (scatter/line/bar/pie/histogram/box/pareto/treemap/wafer_map/combo/heatmap/table/cross-table). LEFT JOIN 복수 소스 (joined 컬럼 suffix). **X/Y searchable dropdown + 자유 수식**. Fitting line (deg 1-4 + R²). USL/LSL/Target/Multi spec lines. |
+| 🗂️ **스플릿 테이블** | LOT_WF 축 transposed 뷰. plan vs actual diff. fab_lot_id 그룹 헤더행. 빈 셀 dbl-click edit. XLSX 내보내기 (셀 병합·컬러 팔레트·자연 정렬·plan 주황 테두리). KNOB · INLINE · VM_ prefix 별 서브라벨 (Base matching csv). |
 | 📋 **트래커** | 이슈 게시판 + Gantt. 카테고리별 색상. Lot/Wafer 태깅. |
-| 🔗 **테이블맵** | DB 관계 그래프 노드. 테이블 편집 (Base 루트 CSV 영구 저장). display_name 별도 (UI 라벨 vs 물리 파일명). 버전 관리 (최대 30개 + 롤백 + 감사 trail). DB/Base 파일 임포트. |
+| 🔗 **테이블맵** | DB 관계 그래프. 테이블 편집 (Base 루트 CSV 영구 저장). display_name 별도. 버전 관리 (최대 30 + 롤백 + 감사 trail). **Relation 자동 매칭** (case-insensitive 컬럼 교집합) + 매칭 pair chip 개별 제거. DB/Base 파일 임포트. |
 | 🧠 **ML 분석** | TabICL / XGBoost / LightGBM 트리거 + SHAP 결과. 공정 영역 필터 (STI/Well/PC/…). |
-| ⚙️ **관리자** | 사용자/알림/권한/로그/다운로드/모니터/데이터 루트. |
+| 📝 **인폼 로그** | wafer 단위 인폼 스레드. 모듈/사유 칩 + 이미지 첨부 + flow 상태 + SplitTable 연동 + 데드라인 + 간트. |
+| 🗓 **회의관리** | 회의 차수(1차/2차/…) + 아젠다 + 회의록. **결정사항/액션아이템 각각 📅 달력 단위 push**. 반복 주기(weekly). 카테고리 공유. |
+| 📅 **변경점 달력** | 월 grid + TODAY 강조 (잘림 방지) + 카테고리 색상 + 동시편집 version 락 + 상태(pending/in_progress/done). 회의 액션아이템/결정사항 meeting_ref 자동 동기화. |
+| ✉️ **Messages** | 1:1 유저 ↔ admin + admin 공지. 우상단 Bell 동기화. |
+| ⚙️ **관리자** | 사용자/알림/권한/그룹/인폼 설정/메일 API/Base CSV/Admin Log/다운로드/모니터/데이터 루트. 탭별 ErrorBoundary (크래시 격리). Base CSV 편집기 — step_matching / knob_ppid / **inline_matching / vm_matching**. |
 | 📖 **개발자 가이드** | 아키텍처/사용법 문서. |
 
 ### 부가 기능
 - **Contact 허브** — 우상단 ✉ 버튼. 유저 ↔ admin 1:1 문의 + admin 공지 작성 + 받은 문의함
 - **공지 배너** — nav 아래 `📢 M월 D일 …` 포맷, 3일 TTL
+- **PageGear 좌하단 통일** — 전 탭의 설정 톱니(⚙)가 좌하단 fixed 고정
 - **flow 브랜드** — Outfit 900 `flow.` 타이포. `#FF5E00` 오렌지 + `#1e293b` 다크 도트
 - **favicon** `/favicon.svg` — `f.` 로고
 - **다크/라이트 모드**
+- **세션 4h idle auto logout** — 서버측 enforcement + FE 활동 이벤트 sync
+- **자동 백업** — `data_root` + `base_root` 주기적 zip (기본 24h). parquet 제외, logs 포함.
 
 ---
 
 ## Stack
 
-- **Backend**: FastAPI · Polars · openpyxl · uvicorn
+- **Backend**: FastAPI · Polars · pyarrow · openpyxl · uvicorn · psutil · pyyaml · python-multipart
 - **Frontend**: React 18 · Vite · 순수 SVG 차트 (외부 chart lib 제로)
-- **데이터**: data/DB (Hive-partitioned parquet) + data/Base (단일 파일 ML_TABLE + 매칭 rulebook)
+- **데이터**: data/DB (Hive-partitioned parquet) + data/Base (단일 파일 ML_TABLE + 매칭 rulebook — step_matching / knob_ppid / inline_matching / vm_matching)
 
 ---
 
@@ -41,12 +49,13 @@
 
 ### 1. 의존성
 ```bash
-# Python
-pip install -r backend/requirements.txt   # 또는 FastAPI + polars + openpyxl + pyarrow
+# Python — FastAPI + polars + pyarrow + openpyxl + psutil + pyyaml + python-multipart
+pip install -r backend/requirements.txt
 
 # Frontend
 cd frontend && npm install
 ```
+(또는 `python setup.py` 한 줄로 자체-추출 번들에서 backend deps + frontend build 를 모두 설치.)
 
 ### 2. 프론트 빌드
 ```bash

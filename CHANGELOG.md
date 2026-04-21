@@ -2,6 +2,31 @@
 
 주요 변경점만 간략히. 세부 내역은 `VERSION.json` 의 changelog 배열 참고.
 
+## v8.7.5 — 2026-04-21
+
+**버그 수정 / UX 방어 라운드**
+
+- **Admin 탭 전환 "r is not a function" 에러 수정** — `u.tabs` 가 legacy 데이터에서 array 로 저장된 기록이 있어 `.split(",")` 호출이 실패하던 문제. 정규화 헬퍼 `_tabsToArray()` 도입 + 탭 전체를 `TabBoundary` 에러 바운더리로 감싸 개별 서브패널 크래시가 전체 페이지를 막지 않도록. `InformConfigPanel` 내부에 정의돼 있던 inline `Section` 컴포넌트는 매 렌더마다 reference 가 바뀌어 focus loss 를 유발하므로 `renderSection` 함수형 렌더로 교체.
+- **변경점 달력 TODAY 배지 잘림 최종 수정** — `absolute` 배지를 포기하고 day 숫자와 한 줄로 flex 배치. `whiteSpace:nowrap` + 작은 `TODAY` 칩 (fontSize 9). 절대 절대로 안 잘림.
+- **FileBrowser CSV 분류 수정** — DB 루트에 있는 단일 CSV 는 Base 로 분류 (물리적 위치와 무관하게 의미적 Base). `base-files` 엔드포인트가 db_root 의 CSV 도 포함 + `source: db_root` 태그. 루트 Parquet 섹션은 CSV 제외 (parquet 전용).
+- **Base 단일 파일 S3 신호등 + 양방향 분리** — Base 파일 리스트에 traffic-light dot 추가. `S3StatusLight` 컴포넌트가 다운로드(↓)/업로드(↑) 각각 별도 도트로 분리 표시. 백엔드 `/api/s3ingest/health` 에 `download_light`/`upload_light` 필드 추가 — history 의 `direction` (pull/push) 기반.
+- **SplitTable Product / fab_source 중복 제거** — `find_all_sources()` (core/utils.py) 와 `/api/splittable/products` 둘 다 최종 return 직전 dedup. 같은 (source_type, root, product, file, label) 조합은 1회만 노출.
+- **FileBrowser 톱니 좌하단 통일** — 기존 `bottom-right` → `bottom-left`. PageGear 와 동일한 톤/크기/그림자.
+
+**신규 기능**
+
+- **TableMap relation 자동 매칭** — 노드 간 화살표 연결 시 양쪽 테이블의 컬럼명을 case-insensitive 비교해 자동 매칭. 관계 편집 모달에 `🔍 자동 매칭` 버튼 + 매칭된 pair 를 chip 으로 보여주고 X 로 개별 제거 가능. (from_col, to_col 이 union 으로 병합됨.)
+- **결정사항 단위 달력 push** — 회의 minutes.decisions 를 `[{id,text,due,calendar_*}]` 객체로 재설계. 각 결정사항 옆 `📅 달력 등록` 버튼 개별 push. `POST /api/meetings/decision/{push,unpush}` 엔드포인트 신규. Legacy 문자열 decisions 는 자동 객체화.
+- **Dashboard X/Y 수식 입력 가이드 강화** — 기존 ColInput 자체가 searchable dropdown + 자유 수식 입력을 지원 (컬럼 선택 또는 `pl.col("a")/pl.col("b")*100` 수식 직접 타이핑). 가이드 텍스트 확장 — 멀티 Y / joined suffix / 수식 패턴 예시.
+- **Base CSV 2종 추가** — `inline_matching.csv (step_id, item_id, item_desc)` + `vm_matching.csv (step_desc, step_id)`. SplitTable KNOB 메타와 동일한 방식으로 `_build_inline_meta()` / `_build_vm_meta()` 헬퍼 + `/api/splittable/inline-meta` + `/api/splittable/vm-meta` 엔드포인트. Admin > Base CSV 편집기에서 관리.
+
+**이월 (v8.7.6+)**
+
+- 액션아이템 그룹 담당자 지정 + 회의 본문·아젠다·액션아이템을 사내 메일 API 로 발송 (체크박스).
+- 액션아이템 간트 뷰 (각 회의별 action_item 타임라인을 SVG 바 차트).
+- 인폼 "내 모듈" 제거 + 제품 → LOT → wafer drill-down 재설계 + Admin 이 그룹별 가시성 권한 설정.
+- Base CSV 파일명이 TableMap 테이블 이름과 일치 시 자동 데이터 linking.
+
 ## v8.7.4 — 2026-04-21
 
 - **회의관리 차수(Session)** — 한 회의 아래 `1차 / 2차 / 3차 …` 를 쌓아가며 각 차수별로 독립된 scheduled_at / status / 아젠다 / 회의록. 기존 v8.7.2 데이터는 자동 마이그레이션 → 1차 세션으로 래핑. 엔드포인트 `POST /api/meetings/session/{add,update,delete}`.

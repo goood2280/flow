@@ -446,11 +446,39 @@ def get_schedule(username: str = Query("")):
 #   none   = 설정도 없음 + AWS 도 없음 (회색)
 @router.get("/health")
 def s3_health():
-    history = jsonl_read(HISTORY_FILE, limit=20)
+    history = jsonl_read(HISTORY_FILE, limit=40)
     cfg = _load_cfg()
     items = cfg.get("items", [])
     aws_ok = shutil.which("aws") is not None
-    # 가장 최근 10건만 분석 (jsonl_read 는 오래된 것부터)
+
+    # v8.7.5: pull(다운로드) / push(업로드) 방향별 최근 상태 분리 계산.
+    def _compute_light(entries):
+        rec = entries[-10:]
+        t = len(rec)
+        f = sum(1 for e in rec if (e.get("status") or "").lower() not in ("ok", "success"))
+        last5f = t >= 5 and all((e.get("status") or "").lower() not in ("ok", "success") for e in rec[-5:])
+        last_ts_ = rec[-1].get("ts") if rec else ""
+        stale = False
+        if last_ts_:
+            try:
+                tm = datetime.datetime.fromisoformat(last_ts_.replace("Z", ""))
+                stale = (datetime.datetime.now() - tm).total_seconds() > 6 * 3600
+            except Exception:
+                pass
+        if not rec:
+            return "none", t, f, last_ts_, stale
+        if last5f:
+            return "red", t, f, last_ts_, stale
+        if f > 0 or stale:
+            return "yellow", t, f, last_ts_, stale
+        return "green", t, f, last_ts_, stale
+
+    pull_entries = [e for e in history if (e.get("direction") or "pull") == "pull"]
+    push_entries = [e for e in history if e.get("direction") == "push"]
+    download_light, d_total, d_fails, d_last, d_stale = _compute_light(pull_entries)
+    upload_light, u_total, u_fails, u_last, u_stale = _compute_light(push_entries)
+
+    # 기존 호환성: 전체 기준 light.
     recent = history[-10:]
     total = len(recent)
     fails = sum(1 for e in recent if (e.get("status") or "").lower() not in ("ok", "success"))
@@ -487,6 +515,14 @@ def s3_health():
         msg_parts.append("설정 없음")
     return {
         "light": light,
+        "download_light": download_light,
+        "upload_light": upload_light,
+        "download_last": d_last,
+        "upload_last": u_last,
+        "download_stale": d_stale,
+        "upload_stale": u_stale,
+        "download_failures": d_fails,
+        "upload_failures": u_fails,
         "aws_available": aws_ok,
         "items_configured": len(items),
         "running_now": len(_RUNNING),
