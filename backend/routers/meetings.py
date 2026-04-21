@@ -1129,15 +1129,22 @@ def save_minutes(req: MinutesSave, request: Request):
         "author": me["username"],
         "updated_at": now,
     }
-    # Sync text/due changes to already-pushed calendar events.
+    # v8.7.8: auto-sync ALL decisions + action_items to calendar (no manual push 필요).
+    #   - decisions → single-day event on session date (filled style)
+    #   - action_items → range event from session date → due (outline style)
+    # Mark them as pushed so UI state stays consistent with existing push buttons.
+    for d in decisions:
+        d["calendar_pushed"] = True
     for ai in merged:
-        if ai.get("calendar_pushed"):
-            try:
-                from routers.calendar import push_action_item
-                push_action_item(m, s, ai, actor=ai.get("calendar_pushed_by") or me["username"],
-                                 meeting_category=m.get("category") or "")
-            except Exception:
-                pass
+        if (ai.get("due") or "").strip():
+            ai["calendar_pushed"] = True
+    s["minutes"]["decisions"] = decisions
+    s["minutes"]["action_items"] = merged
+    try:
+        from routers.calendar import sync_session_to_calendar
+        sync_session_to_calendar(m, s, actor=me["username"])
+    except Exception:
+        pass
     if (s.get("status") or "scheduled") not in ("completed", "cancelled"):
         s["status"] = "completed"
     s["updated_at"] = now

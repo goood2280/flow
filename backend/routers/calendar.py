@@ -1,15 +1,19 @@
-"""routers/calendar.py v8.7.4 — 변경점 기록 달력 + 회의 액션아이템 연동.
+"""routers/calendar.py v8.7.8 — 변경점 기록 달력 + 회의 결정/액션아이템 auto-sync.
 
 스키마 ({data_root}/calendar/events.json):
-  [{id, version, date, title, body, category, author,
-    status: "pending"|"in_progress"|"done",   # v8.7.4
-    meeting_ref: { meeting_id, session_id, action_item_id } | null,  # v8.7.4
+  [{id, version, date, end_date?, title, body, category, author,
+    status: "pending"|"in_progress"|"done",
+    source_type: "manual"|"meeting_decision"|"meeting_action",   # v8.7.8
+    meeting_ref: { meeting_id, session_id, action_item_id, meeting_title } | null,
     created_at, updated_at, history:[{ts, actor, action, before:{...}}]}]
 
-- date: ISO 'YYYY-MM-DD'.
-- category: 자유 문자열 (FE 가 색을 입힘). 카테고리 팔레트는 별도 파일.
-- meeting_ref: meetings.py 의 `minutes.action_items` 에서 자동 생성된 경우 설정.
-  수동 생성 이벤트는 null.  meetings 쪽 변경 시 sync_meeting_session() 호출.
+- date: 시작 ISO 'YYYY-MM-DD'.
+- end_date: 선택 ISO 'YYYY-MM-DD' — 구간 이벤트(액션아이템). 없으면 date 단일.
+- source_type:
+    manual — 사용자가 달력에서 직접 만든 이벤트.
+    meeting_decision — 회의 결정사항 (FE 는 filled 스타일, 회의 일자에 단일 표시).
+    meeting_action — 회의 액션아이템 (FE 는 outline 스타일, 회의일 ~ due 구간 표시).
+- meeting_ref.meeting_title: FE 필터/라벨용. sync 시 항상 current title 로 갱신.
 - 낙관적 잠금: 저장 시 client 가 보낸 version 이 서버 version 과 일치해야 PUT 성공.
 - 추적 관리: title/body/category/date/status 변경 시 history 에 before 누적.
 
@@ -23,6 +27,7 @@ Endpoints:
   POST /api/calendar/event/delete?id=...
   GET  /api/calendar/categories
   POST /api/calendar/categories/save
+  GET  /api/calendar/meetings                 # distinct meeting refs (for 필터)
 """
 import datetime
 import uuid
@@ -60,6 +65,18 @@ def _upgrade_event(e: dict) -> dict:
         e["status"] = "pending"
     if "meeting_ref" not in e:
         e["meeting_ref"] = None
+    if "source_type" not in e:
+        ref = e.get("meeting_ref") or {}
+        if ref.get("meeting_id"):
+            # Legacy — decision push used "[결정]" prefix; action push didn't.
+            if (e.get("title") or "").startswith("[결정]"):
+                e["source_type"] = "meeting_decision"
+            else:
+                e["source_type"] = "meeting_action"
+        else:
+            e["source_type"] = "manual"
+    if "end_date" not in e:
+        e["end_date"] = ""
     return e
 
 
@@ -75,40 +92,44 @@ def _save_events(items: list) -> None:
 
 
 # ── public helpers for meetings router ─────────────────────────
-def push_action_item(meeting: dict, session: dict, action_item: dict,
-                     actor: str, meeting_category: str = "") -> Optional[dict]:
-    """Push a single action_item to calendar. Returns created event dict or None.
-
-    If already pushed (an event exists with same meeting_ref), just update it.
-    Date is required (action_item.due); text becomes title; owner goes to body.
-    """
+def _upsert_meeting_event(meeting: dict, session: dict, *,
+                          ref_item_id: str,
+                          source_type: str,
+                          title: str,
+                          date_s: str,
+                          end_date: str,
+                          body: str,
+                          actor: str,
+                          category: str) -> Optional[dict]:
     meeting_id = meeting.get("id") or ""
     session_id = session.get("id") or ""
-    aid = action_item.get("id")
-    if not (meeting_id and session_id and aid):
+    if not (meeting_id and session_id and ref_item_id and title and date_s):
         return None
-    title = (action_item.get("text") or "").strip()[:120]
-    date_s = _safe_date(action_item.get("due"))
-    if not (title and date_s):
-        return None
-    cat = (meeting_category or meeting.get("category") or "회의 결정사항").strip() or "회의 결정사항"
-    body = (action_item.get("owner") and f"담당: {action_item['owner']}") or ""
+    cat = (category or meeting.get("category") or "회의 결정사항").strip() or "회의 결정사항"
+    meeting_title = (meeting.get("title") or "").strip()[:120]
     items = _load_events()
     now = _now_iso()
-    # existing?
     for i, e in enumerate(items):
         ref = e.get("meeting_ref") or {}
         if (ref.get("meeting_id") == meeting_id and ref.get("session_id") == session_id
-                and ref.get("action_item_id") == aid):
+                and ref.get("action_item_id") == ref_item_id):
             before = {}
-            for fld, val in (("title", title), ("date", date_s), ("body", body), ("category", cat)):
+            updates = {
+                "title": title, "date": date_s, "end_date": end_date or "",
+                "body": body, "category": cat, "source_type": source_type,
+            }
+            for fld, val in updates.items():
                 if e.get(fld) != val:
                     before[fld] = e.get(fld); e[fld] = val
+            # refresh meeting_title for filter labels
+            if ref.get("meeting_title") != meeting_title:
+                ref["meeting_title"] = meeting_title
+                e["meeting_ref"] = ref
             if before:
                 e["version"] = int(e.get("version") or 1) + 1
                 e["updated_at"] = now
                 hist = e.get("history") or []
-                hist.append({"ts": now, "actor": actor, "action": "meeting_push_update", "before": before})
+                hist.append({"ts": now, "actor": actor, "action": "meeting_sync_update", "before": before})
                 e["history"] = hist[-HIST_CAP:]
                 items[i] = e
                 _save_events(items)
@@ -117,19 +138,146 @@ def push_action_item(meeting: dict, session: dict, action_item: dict,
         "id": _new_id(),
         "version": 1,
         "date": date_s,
+        "end_date": end_date or "",
         "title": title,
         "body": body,
         "category": cat,
         "author": actor,
         "status": "pending",
-        "meeting_ref": {"meeting_id": meeting_id, "session_id": session_id, "action_item_id": aid},
+        "source_type": source_type,
+        "meeting_ref": {"meeting_id": meeting_id, "session_id": session_id,
+                        "action_item_id": ref_item_id,
+                        "meeting_title": meeting_title},
         "created_at": now,
         "updated_at": now,
-        "history": [{"ts": now, "actor": actor, "action": "meeting_push_create", "before": {}}],
+        "history": [{"ts": now, "actor": actor, "action": "meeting_sync_create", "before": {}}],
     }
     items.append(new_event)
     _save_events(items)
     return new_event
+
+
+def push_action_item(meeting: dict, session: dict, action_item: dict,
+                     actor: str, meeting_category: str = "") -> Optional[dict]:
+    """Push a single action_item to calendar. Range = session date → due.
+
+    - date = session scheduled_at date (fallback: today)
+    - end_date = action_item.due
+    - If due missing, not pushed (skip).
+    """
+    title = (action_item.get("text") or "").strip()[:120]
+    due = _safe_date(action_item.get("due"))
+    if not (title and due):
+        return None
+    start = _session_date(session)
+    # If no session date, fall back to due for both.
+    if not start:
+        start = due
+    # end must be >= start
+    if end_before(start, due):
+        start, due = due, start
+    body_parts = []
+    if action_item.get("owner"):
+        body_parts.append(f"담당: {action_item['owner']}")
+    body_parts.append(f"마감: {due}")
+    body = " · ".join(body_parts)
+    return _upsert_meeting_event(
+        meeting, session,
+        ref_item_id=action_item.get("id") or "",
+        source_type="meeting_action",
+        title=title,
+        date_s=start,
+        end_date=due,
+        body=body,
+        actor=actor,
+        category=meeting_category,
+    )
+
+
+def push_decision_event(meeting: dict, session: dict, decision: dict,
+                        actor: str, meeting_category: str = "") -> Optional[dict]:
+    """Decision → single-day event on the session date."""
+    title = (decision.get("text") or "").strip()[:120]
+    if not title:
+        return None
+    date_s = _safe_date(decision.get("due")) or _session_date(session)
+    if not date_s:
+        date_s = datetime.date.today().isoformat()
+    return _upsert_meeting_event(
+        meeting, session,
+        ref_item_id=decision.get("id") or "",
+        source_type="meeting_decision",
+        title=f"[결정] {title}",
+        date_s=date_s,
+        end_date="",
+        body="",
+        actor=actor,
+        category=meeting_category,
+    )
+
+
+def _session_date(session: dict) -> str:
+    return _safe_date((session.get("scheduled_at") or "")[:10])
+
+
+def end_before(a: str, b: str) -> bool:
+    try:
+        return datetime.date.fromisoformat(b) < datetime.date.fromisoformat(a)
+    except Exception:
+        return False
+
+
+def sync_session_to_calendar(meeting: dict, session: dict, actor: str) -> dict:
+    """Replace all meeting_decision / meeting_action events for (meeting, session)
+    with the current session's decisions + action_items. Called from meetings.save_minutes.
+
+    Returns {created, updated, removed} counts.
+    """
+    meeting_id = meeting.get("id") or ""
+    session_id = session.get("id") or ""
+    if not (meeting_id and session_id):
+        return {"created": 0, "updated": 0, "removed": 0}
+    minutes = session.get("minutes") or {}
+    decisions = [d for d in (minutes.get("decisions") or []) if isinstance(d, dict) and (d.get("text") or "").strip()]
+    actions_all = [a for a in (minutes.get("action_items") or []) if isinstance(a, dict)]
+    # only actions with a due become range events
+    actions = [a for a in actions_all if (a.get("due") or "").strip() and (a.get("text") or "").strip()]
+    category = meeting.get("category") or ""
+
+    expected_ids: set = set()
+    for d in decisions:
+        expected_ids.add(d.get("id") or "")
+    for a in actions:
+        expected_ids.add(a.get("id") or "")
+
+    # Remove stale meeting_* events for this session
+    items = _load_events()
+    keep = []
+    removed = 0
+    for e in items:
+        ref = e.get("meeting_ref") or {}
+        if (ref.get("meeting_id") == meeting_id and ref.get("session_id") == session_id
+                and (e.get("source_type") or "").startswith("meeting_")):
+            if ref.get("action_item_id") not in expected_ids:
+                removed += 1
+                continue
+        keep.append(e)
+    if removed:
+        _save_events(keep)
+
+    before_count = len(_load_events())
+    created = updated = 0
+    for d in decisions:
+        ev = push_decision_event(meeting, session, d, actor=actor, meeting_category=category)
+        if ev is None:
+            continue
+        # crude created/updated differentiation: new length delta
+    for a in actions:
+        push_action_item(meeting, session, a, actor=actor, meeting_category=category)
+    after_count = len(_load_events())
+    created = max(0, after_count - before_count)
+    updated = max(0, len(decisions) + len(actions) - created)
+    return {"created": created, "updated": updated, "removed": removed}
 
 
 def unpush_action_item(meeting_id: str, session_id: str, action_item_id: str) -> bool:
@@ -214,12 +362,14 @@ class EventCreate(BaseModel):
     title: str
     body: str = ""
     category: str = ""
+    end_date: Optional[str] = ""
 
 
 class EventUpdate(BaseModel):
     id: str
     version: int
     date: Optional[str] = None
+    end_date: Optional[str] = None
     title: Optional[str] = None
     body: Optional[str] = None
     category: Optional[str] = None
@@ -231,7 +381,8 @@ class CategoriesSave(BaseModel):
 
 @router.get("/events")
 def list_events(month: Optional[str] = Query(None), all: bool = Query(False)):
-    """month=YYYY-MM → 해당 월(상하 14일 여유 포함). all=True 면 전체."""
+    """month=YYYY-MM → 해당 월(상하 14일 여유 포함). all=True 면 전체.
+    range 이벤트(end_date)도 window 와 겹치면 포함."""
     items = _load_events()
     if all or not month:
         items.sort(key=lambda x: (x.get("date", ""), x.get("created_at", "")))
@@ -247,9 +398,43 @@ def list_events(month: Optional[str] = Query(None), all: bool = Query(False)):
         next_first = datetime.date(first.year, first.month + 1, 1)
     lo = (first - datetime.timedelta(days=14)).isoformat()
     hi = (next_first + datetime.timedelta(days=14)).isoformat()
-    out = [x for x in items if lo <= (x.get("date") or "") < hi]
+    out = []
+    for x in items:
+        s = (x.get("date") or "")
+        e = (x.get("end_date") or "") or s
+        if not s:
+            continue
+        # overlap: [s, e] ∩ [lo, hi) non-empty
+        if e >= lo and s < hi:
+            out.append(x)
     out.sort(key=lambda x: (x.get("date", ""), x.get("created_at", "")))
     return {"events": out}
+
+
+@router.get("/meetings")
+def list_meeting_refs():
+    """달력에 등록된 회의별 이벤트 수 (FE 필터 드롭다운용)."""
+    items = _load_events()
+    agg: dict = {}
+    for e in items:
+        ref = e.get("meeting_ref") or {}
+        mid = ref.get("meeting_id")
+        if not mid:
+            continue
+        if mid not in agg:
+            agg[mid] = {"meeting_id": mid,
+                        "meeting_title": ref.get("meeting_title") or "",
+                        "count": 0,
+                        "decisions": 0,
+                        "actions": 0}
+        agg[mid]["count"] += 1
+        st = e.get("source_type")
+        if st == "meeting_decision":
+            agg[mid]["decisions"] += 1
+        elif st == "meeting_action":
+            agg[mid]["actions"] += 1
+    out = sorted(agg.values(), key=lambda x: (x["meeting_title"] or "", x["meeting_id"]))
+    return {"meetings": out}
 
 
 @router.get("/events/search")
@@ -286,14 +471,23 @@ def create_event(req: EventCreate, request: Request):
     date_s = _validate_date(req.date)
     items = _load_events()
     now = _now_iso()
+    end_s = ""
+    if (req.end_date or "").strip():
+        end_s = _validate_date(req.end_date)
+        if end_s < date_s:
+            date_s, end_s = end_s, date_s
     entry = {
         "id": _new_id(),
         "version": 1,
         "date": date_s,
+        "end_date": end_s,
         "title": title,
         "body": (req.body or "").strip(),
         "category": (req.category or "").strip(),
         "author": me["username"],
+        "source_type": "manual",
+        "meeting_ref": None,
+        "status": "pending",
         "created_at": now,
         "updated_at": now,
         "history": [],
@@ -327,18 +521,23 @@ def update_event(req: EventUpdate, request: Request):
     # diff & history
     before = {}
     changed = False
-    for fld in ("date", "title", "body", "category"):
+    for fld in ("date", "end_date", "title", "body", "category"):
         new_v = getattr(req, fld, None)
         if new_v is None:
             continue
         if fld == "date":
             new_v = _validate_date(new_v)
+        elif fld == "end_date":
+            new_v = _validate_date(new_v) if (new_v or "").strip() else ""
         else:
             new_v = (new_v or "").strip()
         if cur.get(fld, "") != new_v:
             before[fld] = cur.get(fld, "")
             cur[fld] = new_v
             changed = True
+    # normalize: end_date >= date
+    if cur.get("end_date") and cur.get("end_date") < cur.get("date"):
+        cur["date"], cur["end_date"] = cur["end_date"], cur["date"]
     if not changed:
         return {"ok": True, "event": cur, "noop": True}
     cur["version"] = server_v + 1

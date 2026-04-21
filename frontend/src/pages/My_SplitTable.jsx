@@ -46,9 +46,15 @@ export default function My_SplitTable({user}){
   const[lotOverrides,setLotOverrides]=useState({});
   // v8.4.4: fab_source 후보 (FileBrowser/Dashboard 와 동일 source 리스트)
   const[fabSourceOptions,setFabSourceOptions]=useState([]);
-  // v8.7.6: fab_source 후보 = Base 단일파일 + DB 제품 디렉토리 + TableMap 테이블 합집합.
+  // v8.7.8: fab_source 후보 = DB 상위폴더 (FAB/INLINE/ET/EDS) + Base 단일파일 + DB 제품 디렉토리 + TableMap.
+  // 상위폴더 옵션은 ML_TABLE_<PROD> 제품명에서 <PROD> 를 추출해 동일 폴더 아래 제품으로 자동 매칭됨.
   useEffect(()=>{
     const out=[];
+    const fabRoots=sf(API+"/fab-roots").then(d=>{
+      for(const r of (d.roots||[])){
+        out.push({value:`root:${r.name}`,label:`[상위폴더] ${r.name} · ${r.products.length}개 제품`,source_type:"db_root",is_root:true,products:r.products});
+      }
+    }).catch(()=>{});
     const dash=sf("/api/dashboard/products").then(d=>{
       for(const p of (d.products||[])){
         const v=p.root&&p.product?`${p.root}/${p.product}`:(p.file||p.label||"");
@@ -64,11 +70,17 @@ export default function My_SplitTable({user}){
         out.push({value:`tablemap:${t.id}`,label:`[TableMap] ${name}`,source_type:"tablemap"});
       }
     }).catch(()=>{});
-    Promise.all([dash,tmap]).then(()=>{
+    Promise.all([fabRoots,dash,tmap]).then(()=>{
       const seen=new Set();
       setFabSourceOptions(out.filter(o=>{if(seen.has(o.value)) return false;seen.add(o.value);return true;}));
     });
   },[]);
+  // v8.7.8: ML_TABLE auto-match — selProd 에서 파생 제품명 → 상위폴더 매칭 후보
+  const[mlMatch,setMlMatch]=useState({pro:"",matches:[]});
+  useEffect(()=>{if(!selProd){setMlMatch({pro:"",matches:[]});return;}
+    sf(API+"/ml-table-match?product="+encodeURIComponent(selProd))
+      .then(d=>setMlMatch({pro:d.derived_product||"",matches:d.matches||[]})).catch(()=>setMlMatch({pro:"",matches:[]}));
+  },[selProd]);
   const isAdmin=user?.role==="admin";
   const lotRef=useRef(null);
   // v4.1: Features tab state — drives /splittable/features (wide ET⋈INLINE) and
@@ -142,6 +154,9 @@ export default function My_SplitTable({user}){
   const notesForParam=(param)=>notes.filter(n=>n.scope==="param"&&n.key.endsWith(`__${param}`)&&n.key.startsWith(`${selProd}__${lotId}__W`));
   // v8.4.9-c: 특정 (wafer × param) 셀용 메모 — 행/열 교차 단위.
   const notesForCell=(wid,param)=>notes.filter(n=>n.scope==="param"&&n.key===`${selProd}__${lotId}__W${wid}__${param}`);
+  // v8.7.8: parameter 전역 태그 (product 내 모든 LOT 공통) + LOT 노트
+  const notesParamGlobal=(param)=>notes.filter(n=>n.scope==="param_global"&&n.key===`${selProd}__PARAM__${param}`);
+  const notesForLot=()=>notes.filter(n=>n.scope==="lot"&&n.key===`${selProd}__LOT__${lotId}`);
   const doSearch=()=>loadView();
   const loadHistory=(all)=>{let url=API+"/history?product="+encodeURIComponent(selProd)+"&limit=500";if(!all&&lotId.trim())url+="&root_lot_id="+encodeURIComponent(lotId);sf(url).then(d=>setHistory(d.history||[]));};
   const savePlans=()=>{if(!Object.keys(pendingPlans).length)return;

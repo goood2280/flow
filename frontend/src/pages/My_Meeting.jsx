@@ -743,7 +743,7 @@ export default function My_Meeting({ user }) {
                     </div>
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={lbl}>✅ 액션 아이템 (저장 후 📅 달력 등록 가능)</span>
+                        <span style={lbl}>✅ 액션 아이템 (회의록 저장 시 달력에 자동 반영 — 회의일~마감 구간)</span>
                         <button onClick={addAction} style={btnTiny}>+ 추가</button>
                       </div>
                       {minutesDraft.action_items.map((a, i) => (
@@ -751,7 +751,7 @@ export default function My_Meeting({ user }) {
                           <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 130px auto", gap: 6 }}>
                             <input value={a.text} onChange={e => updAction(i, "text", e.target.value)} placeholder="할 일" style={inp} />
                             <input value={a.owner} onChange={e => updAction(i, "owner", e.target.value)} placeholder="담당자 (username)" style={inp} />
-                            <input value={a.due} onChange={e => updAction(i, "due", e.target.value)} placeholder="마감 (YYYY-MM-DD)" style={inp} />
+                            <input type="date" value={(a.due || "").slice(0, 10)} onChange={e => updAction(i, "due", e.target.value)} placeholder="마감" style={inp} />
                             <button onClick={() => delAction(i)} style={btnTinyDanger}>×</button>
                           </div>
                           <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -931,11 +931,64 @@ export default function My_Meeting({ user }) {
 
       {/* PageGear — 좌하단 고정 (전 탭 통일) */}
       <PageGear title="회의관리 설정" canEdit={isAdmin} position="bottom-left">
-        <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-          카테고리 팔레트는 <b>변경점 달력 → ⚙ 설정</b> 에서 편집합니다.<br />
-          여기서 회의 카테고리 색은 달력 카테고리와 공유됩니다.
-        </div>
+        <MeetingCategoryEditor categories={categories} setCategories={setCategories} isAdmin={isAdmin} />
       </PageGear>
+    </div>
+  );
+}
+
+/* v8.7.8: 회의 카테고리 관리 (PageGear 내부). 달력 카테고리 endpoint 재사용. */
+function MeetingCategoryEditor({ categories, setCategories, isAdmin }) {
+  const [draft, setDraft] = useState(null);
+  const start = () => setDraft((categories || []).map(c => ({ ...c })));
+  const save = () => {
+    fetch("/api/calendar/categories/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Session-Token": localStorage.getItem("flow_session_token") || "" },
+      body: JSON.stringify({ categories: draft }),
+    }).then(r => r.json()).then(d => {
+      if (d.ok) { setCategories(d.categories || draft); setDraft(null); }
+      else alert(d.detail || "저장 실패");
+    }).catch(e => alert("저장 실패: " + e.message));
+  };
+  const move = (i, delta) => {
+    const j = i + delta; if (j < 0 || j >= draft.length) return;
+    const n = draft.slice(); [n[i], n[j]] = [n[j], n[i]]; setDraft(n);
+  };
+  if (!draft) {
+    return (
+      <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+        회의 카테고리는 달력 카테고리 팔레트와 공유됩니다.<br />
+        <button onClick={start} disabled={!isAdmin}
+          style={{ marginTop: 8, padding: "6px 12px", borderRadius: 5, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 11, cursor: isAdmin ? "pointer" : "not-allowed", fontWeight: 600, opacity: isAdmin ? 1 : 0.5 }}>
+          🎨 카테고리 편집 ({(categories || []).length})
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 6 }}>이름/색 변경 + 순서 조정 + 추가/삭제</div>
+      <div style={{ maxHeight: 300, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+        {draft.map((c, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 6px", borderBottom: "1px solid var(--border)" }}>
+            <span style={{ width: 18, fontSize: 10, color: "var(--text-secondary)" }}>{i + 1}</span>
+            <input value={c.name} onChange={e => { const n = draft.slice(); n[i] = { ...n[i], name: e.target.value }; setDraft(n); }}
+              style={{ flex: 1, padding: "3px 6px", fontSize: 11, border: "1px solid var(--border)", borderRadius: 3, background: "var(--bg-primary)", color: "var(--text-primary)" }} />
+            <input type="color" value={c.color || "#6b7280"} onChange={e => { const n = draft.slice(); n[i] = { ...n[i], color: e.target.value }; setDraft(n); }}
+              style={{ width: 32, height: 24, border: "1px solid var(--border)", borderRadius: 3, background: "transparent" }} />
+            <button onClick={() => move(i, -1)} style={{ padding: "1px 5px", fontSize: 10, border: "1px solid var(--border)", background: "transparent", borderRadius: 3, cursor: "pointer" }}>↑</button>
+            <button onClick={() => move(i, 1)} style={{ padding: "1px 5px", fontSize: 10, border: "1px solid var(--border)", background: "transparent", borderRadius: 3, cursor: "pointer" }}>↓</button>
+            <button onClick={() => setDraft(draft.filter((_, j) => j !== i))} style={{ padding: "1px 5px", fontSize: 10, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", borderRadius: 3, cursor: "pointer" }}>×</button>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+        <button onClick={() => setDraft([...draft, { name: "신규", color: "#6b7280" }])} style={{ padding: "4px 10px", fontSize: 11, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 4, cursor: "pointer" }}>+ 추가</button>
+        <div style={{ flex: 1 }} />
+        <button onClick={save} style={{ padding: "4px 12px", fontSize: 11, border: "none", background: "var(--accent)", color: "#fff", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>저장</button>
+        <button onClick={() => setDraft(null)} style={{ padding: "4px 12px", fontSize: 11, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", borderRadius: 4, cursor: "pointer" }}>취소</button>
+      </div>
     </div>
   );
 }
