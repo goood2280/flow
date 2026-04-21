@@ -1,0 +1,244 @@
+"""core/backup.py v8.7.0 — 데이터 자동 백업 (사용자 기록 보호).
+
+범위:
+  - data_root 전체를 zip 스냅샷으로 저장 (로그/캐시/업로드 제외 옵션).
+  - 백업 경로: admin_settings.json `backup.path` (없으면 {data_root}/_backups).
+  - 보관 정책: 최신 N 개 유지 (기본 14). 초과분 자동 삭제.
+  - 주기: 서버 기동 시 1회 + 스케줄 스레드 (기본 24h). admin_settings.json
+    `backup.interval_hours` 로 런타임 조절.
+
+의도적으로 core/paths.py 의존만 사용 (core/roots.py 는 data-root 별도 resolver).
+"""
+from __future__ import annotations
+
+import datetime
+import json
+import logging
+import os
+import threading
+import time
+import zipfile
+from pathlib import Path
+from typing import Optional
+
+from core.paths import PATHS
+
+logger = logging.getLogger("fabcanvas.backup")
+
+# 제외 규칙 — 큰 바이너리/휘발성/tmp 는 백업 대상 아님.
+_EXCLUDE_DIR_NAMES = {"_backups", "cache", "uploads", "tmp", "logs"}
+_EXCLUDE_GLOBS = ("*.log", "*.pyc")
+
+# 기본 보관 개수 / 기본 주기
+_DEFAULT_KEEP = 14
+_DEFAULT_INTERVAL_HOURS = 24
+_MIN_INTERVAL_HOURS = 1
+_MAX_INTERVAL_HOURS = 24 * 7
+
+_state_lock = threading.Lock()
+_last_backup: dict = {"ok": False, "path": "", "bytes": 0, "at": "", "error": ""}
+
+
+def _admin_settings_path() -> Path:
+    """core/roots.py 와 같은 위치를 바라본다 (HOL_DATA_ROOT 호환)."""
+    return PATHS.data_root / "admin_settings.json"
+
+
+def _read_cfg() -> dict:
+    p = _admin_settings_path()
+    try:
+        if p.is_file():
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f) or {}
+    except Exception:
+        return {}
+    return {}
+
+
+def _write_cfg(cfg: dict) -> None:
+    p = _admin_settings_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def get_settings() -> dict:
+    cfg = _read_cfg()
+    bk = cfg.get("backup") or {}
+    return {
+        "path": (bk.get("path") or "").strip(),
+        "interval_hours": int(bk.get("interval_hours") or _DEFAULT_INTERVAL_HOURS),
+        "keep": int(bk.get("keep") or _DEFAULT_KEEP),
+        "enabled": bool(bk.get("enabled", True)),
+        "last": _last_backup,
+    }
+
+
+def set_settings(path: Optional[str] = None, interval_hours: Optional[int] = None,
+                 keep: Optional[int] = None, enabled: Optional[bool] = None) -> dict:
+    cfg = _read_cfg()
+    bk = dict(cfg.get("backup") or {})
+    if path is not None:
+        bk["path"] = (path or "").strip()
+    if interval_hours is not None:
+        bk["interval_hours"] = max(_MIN_INTERVAL_HOURS, min(_MAX_INTERVAL_HOURS, int(interval_hours)))
+    if keep is not None:
+        bk["keep"] = max(1, min(200, int(keep)))
+    if enabled is not None:
+        bk["enabled"] = bool(enabled)
+    cfg["backup"] = bk
+    _write_cfg(cfg)
+    return get_settings()
+
+
+def _resolve_backup_root() -> Path:
+    cfg = get_settings()
+    override = cfg["path"]
+    if override:
+        return Path(override)
+    return PATHS.data_root / "_backups"
+
+
+def _iter_files(src: Path):
+    """data_root 이하 모든 파일 yield. 제외 규칙 적용."""
+    for root, dirs, files in os.walk(src):
+        # 제외 디렉토리 prune
+        dirs[:] = [d for d in dirs if d not in _EXCLUDE_DIR_NAMES]
+        rp = Path(root)
+        # _backups 자기 자신은 항상 제외 (설사 data_root 내부여도)
+        try:
+            if "_backups" in rp.relative_to(src).parts:
+                continue
+        except ValueError:
+            pass
+        for name in files:
+            if any(Path(name).match(g) for g in _EXCLUDE_GLOBS):
+                continue
+            yield rp / name
+
+
+def run_backup(reason: str = "manual") -> dict:
+    """data_root 를 zip 으로 백업. 성공/실패 state 를 _last_backup 에 기록."""
+    with _state_lock:
+        try:
+            src = PATHS.data_root
+            if not src.is_dir():
+                raise RuntimeError(f"data_root not a directory: {src}")
+            dest_root = _resolve_backup_root()
+            dest_root.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            zname = f"flow_data_{stamp}_{reason}.zip"
+            zpath = dest_root / zname
+
+            total = 0
+            with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                for fp in _iter_files(src):
+                    try:
+                        arc = fp.relative_to(src).as_posix()
+                    except ValueError:
+                        continue
+                    try:
+                        zf.write(fp, arc)
+                        total += fp.stat().st_size
+                    except Exception as e:
+                        logger.warning(f"backup skip {fp}: {e}")
+
+            # 보관 정리
+            keep = get_settings()["keep"]
+            files = sorted(dest_root.glob("flow_data_*.zip"),
+                           key=lambda p: p.stat().st_mtime, reverse=True)
+            for old in files[keep:]:
+                try:
+                    old.unlink()
+                except Exception:
+                    pass
+
+            info = {
+                "ok": True,
+                "path": str(zpath),
+                "bytes": zpath.stat().st_size,
+                "source_bytes": total,
+                "at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "reason": reason,
+                "error": "",
+            }
+            _last_backup.clear(); _last_backup.update(info)
+            logger.info(f"backup ok: {zpath} ({zpath.stat().st_size:,} bytes)")
+            return info
+        except Exception as e:
+            info = {
+                "ok": False, "path": "", "bytes": 0, "source_bytes": 0,
+                "at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "reason": reason, "error": str(e),
+            }
+            _last_backup.clear(); _last_backup.update(info)
+            logger.warning(f"backup failed: {e}")
+            return info
+
+
+def list_backups() -> list:
+    root = _resolve_backup_root()
+    if not root.is_dir():
+        return []
+    out = []
+    for p in sorted(root.glob("flow_data_*.zip"), key=lambda x: x.stat().st_mtime, reverse=True):
+        try:
+            st = p.stat()
+            out.append({
+                "filename": p.name,
+                "path": str(p),
+                "size": st.st_size,
+                "modified": datetime.datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+            })
+        except Exception:
+            continue
+    return out
+
+
+_scheduler_started = False
+_scheduler_stop = threading.Event()
+
+
+def _scheduler_loop():
+    # 서버 기동 직후 짧은 지연 후 최초 1회.
+    time.sleep(30)
+    first = True
+    while not _scheduler_stop.is_set():
+        try:
+            cfg = get_settings()
+            if not cfg["enabled"]:
+                time.sleep(600)
+                continue
+            if first:
+                run_backup(reason="startup")
+                first = False
+            # 주기 대기 (60초 단위 폴링 — 설정 변경 신속 반영)
+            remain = cfg["interval_hours"] * 3600
+            while remain > 0 and not _scheduler_stop.is_set():
+                time.sleep(min(60, remain))
+                remain -= 60
+                # 주기가 줄어들었으면 루프 재시작
+                new_iv = get_settings()["interval_hours"] * 3600
+                if new_iv < remain:
+                    remain = new_iv
+            if not _scheduler_stop.is_set() and get_settings()["enabled"]:
+                run_backup(reason="scheduled")
+        except Exception as e:
+            logger.warning(f"backup scheduler loop error: {e}")
+            time.sleep(120)
+
+
+def start_scheduler() -> bool:
+    """앱 기동 시 한 번 호출. 중복 호출 안전."""
+    global _scheduler_started
+    if _scheduler_started:
+        return False
+    if os.environ.get("FABCANVAS_DISABLE_BACKUP") == "1":
+        logger.info("backup scheduler disabled via FABCANVAS_DISABLE_BACKUP=1")
+        return False
+    t = threading.Thread(target=_scheduler_loop, name="backup-scheduler", daemon=True)
+    t.start()
+    _scheduler_started = True
+    logger.info("backup scheduler started")
+    return True

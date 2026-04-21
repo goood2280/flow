@@ -146,8 +146,21 @@ VERSION = {json.dumps(version, ensure_ascii=False)}
 
 
 def _write(rel: str, gz_b64: str) -> None:
+    # v8.7.0: HARD GUARD — never overwrite anything under data/. 기존 인폼/트래커/
+    # 달력/유저/세션 기록이 setup 재실행이나 pull 후 재설치에 의해 지워지지 않도록.
+    rel_posix = rel.replace("\\\\", "/").lstrip("./")
+    if rel_posix.startswith("data/") or rel_posix == "data":
+        return
     data = gzip.decompress(base64.b64decode(gz_b64))
     dst = ROOT / rel
+    # 존재하는 data 이하 파일은 이중 방어: 절대 덮어쓰지 않는다.
+    try:
+        dst_rel = dst.resolve().relative_to((ROOT / "data").resolve())
+        # data/ 밑으로 떨어졌으면 skip.
+        _ = dst_rel
+        return
+    except Exception:
+        pass
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(data)
 
@@ -184,6 +197,8 @@ def setup(install: bool = True, build: bool = True) -> None:
     )
 
     # 3) ensure empty data dirs exist (app will create on demand otherwise)
+    #    NOTE: mkdir(exist_ok=True) never overwrites contents. 기존 인폼/트래커/달력/유저
+    #    데이터는 건드리지 않음.
     for sub in ('data', 'data/Base', 'data/DB', 'reports'):
         (ROOT / sub).mkdir(parents=True, exist_ok=True)
 

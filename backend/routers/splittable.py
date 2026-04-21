@@ -1046,6 +1046,7 @@ def save_plan(req: PlanReq):
     data = load_json(pf, {"plans": {}, "history": []})
     data.setdefault("history", [])
     now = datetime.datetime.now().isoformat()
+    auto_entries = []
     for ck, val in req.plans.items():
         old = data["plans"].get(ck, {}).get("value")
         data["plans"][ck] = {"value": val, "user": req.username, "updated": now}
@@ -1053,8 +1054,21 @@ def save_plan(req: PlanReq):
             "cell": ck, "old": old, "new": val, "user": req.username,
             "time": now, "action": "set", "root_lot_id": req.root_lot_id,
         })
+        auto_entries.append((ck, old, val))
     data["history"] = data["history"][-1000:]
     save_json(pf, data)
+    # v8.7.0: 인폼 로그에 자동 기록 (plan 변경 별건으로 루트 인폼 생성).
+    try:
+        from routers.informs import auto_log_splittable_change
+        for ck, old, val in auto_entries:
+            if old != val:
+                auto_log_splittable_change(
+                    author=req.username, product=req.product,
+                    lot_id=req.root_lot_id, cell_key=ck,
+                    old_value=old, new_value=val, action="set",
+                )
+    except Exception:
+        pass
     return {"ok": True, "saved": len(req.plans), "rejected": rejected}
 
 
@@ -1071,6 +1085,7 @@ def delete_plan(req: PlanDeleteReq):
         raise HTTPException(404)
     data = load_json(pf, {})
     now = datetime.datetime.now().isoformat()
+    deleted = []
     for ck in req.cell_keys:
         if ck in data.get("plans", {}):
             old = data["plans"][ck].get("value")
@@ -1079,7 +1094,17 @@ def delete_plan(req: PlanDeleteReq):
                 "cell": ck, "old": old, "new": None,
                 "user": req.username, "time": now, "action": "delete",
             })
+            deleted.append((ck, old))
     save_json(pf, data)
+    try:
+        from routers.informs import auto_log_splittable_change
+        for ck, old in deleted:
+            auto_log_splittable_change(
+                author=req.username, product=req.product, lot_id="",
+                cell_key=ck, old_value=old, new_value=None, action="delete",
+            )
+    except Exception:
+        pass
     return {"ok": True}
 
 

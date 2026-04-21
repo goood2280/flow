@@ -1,7 +1,27 @@
 {
-  "version": "8.6.4",
+  "version": "8.7.0",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.7.0",
+      "date": "2026-04-21",
+      "title": "모듈 인폼 시스템 대확장 + 이미지/SplitTable 임베드 + 자동 백업 + data 보존 + data_roots 저장 버그 수정",
+      "tag": "feat",
+      "changes": [
+        "인폼 역할 뷰 — admin/all-rounder 는 lot/제품/wafer 전체 검색·열람. 일반 유저는 그룹 담당 모듈 + 자기 글만. /api/informs 에 /by-lot, /by-product, /my, /products, /lots, /modules, /config, /upload, /files/{uid}/{name}, /check, /status, /splittable 추가.",
+        "모듈 담당 관리 — Admin → 그룹 패널 '담당 모듈' 칩 토글. groups.py 에 modules 필드 + /modules/set + /my-modules + user_modules(username,role) 헬퍼. 대시보드식 모듈 필터칩으로 admin 이 단일 모듈 좁혀보기 가능.",
+        "체크·답글·삭제 — 모듈 담당자 또는 admin 이 체크(확인 완료) 토글. 답글 트리(depth cap 5). 삭제는 **작성자 본인만** (admin 도 불가, 스펙 정책 변경). 답글이 있는 글은 삭제 차단.",
+        "Flow 진행 상태 — received→reviewing→in_progress→completed 파이프 UI, status_history [{status,actor,at,note}] 누적, /api/informs/status 엔드포인트.",
+        "SplitTable 연동 — 인폼에 {column, old_value, new_value} 첨부. 스레드 상단 '■ Split Table 변경 요약' 카드. SplitTable /plan 저장/삭제 시 **자동 인폼 기록** (auto_generated 배지 ⚙자동). '🔗 SplitTable 에서 가져오기' 로 history 스냅샷을 본문에 임베드.",
+        "이미지 첨부 — POST /api/informs/upload (multipart, 8MB/이미지, PNG/JPG/GIF/WEBP/BMP 화이트리스트, uuid 하위경로, path traversal 차단). 스레드·답글에 썸네일 갤러리, 사이드 루트 리스트에 📎N 배지.",
+        "모듈/사유 Admin 관리 — Admin → '인폼 설정' 서브탭 신규. /api/informs/config 로 모듈·사유 옵션 추가/삭제. 하드코딩 제거, 기본값 fallback 유지.",
+        "신규 페이지 My_Inform v8.7 — 전체/내 모듈/제품별/랏별/wafer 5-모드, 사이드바 검색, 루트 요약 CompactRow, 상세 스레드 상태·체크·답글·삭제·이미지·임베드·모듈 필터 전부 통합.",
+        "**데이터 보존** — setup_v*.py 재실행/업그레이드 시 data/ 이하는 **절대 덮어쓰지 않음**. _write() 에 하드 가드 (rel.startswith('data/') skip + resolve relative_to 이중 검증). 인폼/트래커/달력/유저/세션 기록 안전.",
+        "**자동 백업** — 신규 core/backup.py. 서버 기동 시 1회 + 설정 주기(기본 24h)로 data_root 전체 zip 스냅샷. 백업 경로·주기·보관개수·on/off 를 Admin → 데이터 루트에서 실시간 편집. /api/admin/backup/{status,run} 엔드포인트. 보관개수 초과 자동 삭제.",
+        "**[bugfix]** 데이터 루트 저장 적용 안 됨 — admin.py 는 {data_root}/admin_settings.json 에 저장하지만 core/roots.py 는 <project>/data/admin_settings.json 을 읽고 있던 경로 불일치. core/roots.py 가 HOL_DATA_ROOT 체인과 동일 경로를 보도록 수정.",
+        "기존 보안 유지 — 모든 /api/informs/* 및 /api/groups/* 는 세션 토큰 + auth 미들웨어 경유. 이미지 업로드·서빙도 인증 필수. 작성자 검증은 세션 토큰 username 으로만 수행 (body spoof 불가)."
+      ]
+    },
     {
       "version": "8.6.4",
       "date": "2026-04-21",

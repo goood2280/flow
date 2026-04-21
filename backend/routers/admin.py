@@ -329,6 +329,13 @@ def get_settings(request: Request):
     me = current_user(request)
     data = load_json(SETTINGS_FILE, {})
     merged = {**DEFAULT_SETTINGS, **(data if isinstance(data, dict) else {})}
+    # v8.7.0: backup 설정 admin 에게 노출.
+    if me.get("role") == "admin":
+        try:
+            from core.backup import get_settings as _bk_get
+            merged["backup"] = _bk_get()
+        except Exception:
+            merged["backup"] = None
     # v8.4.6: data_roots (내부 파일시스템 경로) 는 admin 에게만 노출.
     if me.get("role") == "admin":
         try:
@@ -358,10 +365,18 @@ class DataRootsReq(BaseModel):
     wafer_map_root: Optional[str] = None
 
 
+class BackupCfgReq(BaseModel):
+    path: Optional[str] = None
+    interval_hours: Optional[int] = None
+    keep: Optional[int] = None
+    enabled: Optional[bool] = None
+
+
 class SettingsSaveReq(BaseModel):
     dashboard_refresh_minutes: int = 10
     dashboard_bg_refresh_minutes: int = 10
     data_roots: Optional[DataRootsReq] = None
+    backup: Optional[BackupCfgReq] = None
 
 
 @router.post("/settings/save")
@@ -374,6 +389,7 @@ def save_settings(req: SettingsSaveReq, _admin=Depends(require_admin)):
     """
     data = req.dict(exclude_none=False)
     dr_in = data.pop("data_roots", None)
+    bk_in = data.pop("backup", None)
     # Clamp to sane bounds: 1..240 minutes
     for k in ("dashboard_refresh_minutes", "dashboard_bg_refresh_minutes"):
         v = data.get(k, 10)
@@ -400,7 +416,40 @@ def save_settings(req: SettingsSaveReq, _admin=Depends(require_admin)):
         current["data_roots"] = dr
         _save_admin_settings(current)
 
+    # v8.7.0: backup 설정 저장.
+    if bk_in is not None:
+        try:
+            from core.backup import set_settings as _bk_set
+            _bk_set(
+                path=bk_in.get("path"),
+                interval_hours=bk_in.get("interval_hours"),
+                keep=bk_in.get("keep"),
+                enabled=bk_in.get("enabled"),
+            )
+        except Exception:
+            pass
+
     return {"ok": True, "settings": data, "data_roots": (_resolver_snapshot() if dr_in is not None else None)}
+
+
+# ── Backup (v8.7.0) ────────────────────────────────────────────────
+@router.get("/backup/status")
+def backup_status(_admin=Depends(require_admin)):
+    from core.backup import get_settings, list_backups
+    return {"settings": get_settings(), "backups": list_backups()}
+
+
+@router.post("/backup/run")
+def backup_run(_admin=Depends(require_admin)):
+    from core.backup import run_backup
+    info = run_backup(reason="manual")
+    jsonl_append(ACTIVITY_LOG, {
+        "actor": "admin", "action": "backup_run",
+        "ok": info.get("ok"), "path": info.get("path"),
+        "size": info.get("bytes"), "error": info.get("error"),
+        "time": info.get("at"),
+    })
+    return info
 
 
 # ── Base CSV editor (v8.5.2) ──

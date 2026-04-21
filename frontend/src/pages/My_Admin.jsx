@@ -63,7 +63,7 @@ export default function My_Admin({user}){
 
   // Tabs differ by role
   // v8.4.3 단위기능 페이지 철학: AWS 설정은 FileBrowser 톱니로 이관 예정 (제거).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["groups","그룹"],["base_csv","Base CSV"],["logs","로그"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["groups","그룹"],["inform_cfg","인폼 설정"],["base_csv","Base CSV"],["logs","로그"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
   const userTabs=[["notifs","알림"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
 
@@ -200,6 +200,7 @@ export default function My_Admin({user}){
 
       {/* Groups (admin only) — v8.5.0 */}
       {tab==="groups"&&isAdmin&&<GroupsPanel allUsers={users}/>}
+      {tab==="inform_cfg"&&isAdmin&&<InformConfigPanel/>}
 
       {/* Base CSV editor (admin only) — v8.5.2 */}
       {tab==="base_csv"&&isAdmin&&<BaseCsvPanel/>}
@@ -220,20 +221,43 @@ export default function My_Admin({user}){
     </div>);
 }
 
-// ── Data Roots Panel (v8.3.0) ──
+// ── Data Roots Panel (v8.3.0 + backup v8.7.0) ──
 function DataRootsPanel(){
   const[eff,setEff]=useState({db_root:"",base_root:"",wafer_map_root:"",sources:{}});
   const[form,setForm]=useState({db_root:"",base_root:"",wafer_map_root:""});
+  const[backup,setBackup]=useState({path:"",interval_hours:24,keep:14,enabled:true,last:{}});
+  const[backupList,setBackupList]=useState([]);
+  const[bkBusy,setBkBusy]=useState(false);
   const[msg,setMsg]=useState("");
   const[busy,setBusy]=useState(false);
   const reload=()=>{
     sf("/api/admin/settings").then(d=>{
       const dr=d.data_roots||{db_root:"",base_root:"",wafer_map_root:"",sources:{}};
       setEff(dr);
-      // Form stays empty — user only types to override.
+      if(d.backup)setBackup({...backup,...d.backup});
     }).catch(e=>setMsg("로드 오류: "+e.message));
+    sf("/api/admin/backup/status").then(d=>{
+      if(d.settings)setBackup(b=>({...b,...d.settings}));
+      setBackupList(d.backups||[]);
+    }).catch(()=>{});
   };
   useEffect(reload,[]);
+  const saveBackup=()=>{
+    setBkBusy(true);
+    sf("/api/admin/settings").then(cur=>sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+      dashboard_refresh_minutes:cur.dashboard_refresh_minutes??10,
+      dashboard_bg_refresh_minutes:cur.dashboard_bg_refresh_minutes??10,
+      backup:{path:backup.path||"",interval_hours:Number(backup.interval_hours)||24,keep:Number(backup.keep)||14,enabled:!!backup.enabled},
+    })})).then(()=>{setMsg("백업 설정 저장됨");reload();}).catch(e=>setMsg("저장 오류: "+e.message)).finally(()=>setBkBusy(false));
+  };
+  const runBackupNow=()=>{
+    setBkBusy(true);
+    sf("/api/admin/backup/run",{method:"POST"}).then(r=>{
+      if(r.ok)setMsg("백업 완료: "+r.path+" ("+(r.bytes||0).toLocaleString()+" bytes)");
+      else setMsg("백업 실패: "+(r.error||"unknown"));
+      reload();
+    }).catch(e=>setMsg("백업 오류: "+e.message)).finally(()=>setBkBusy(false));
+  };
   const save=()=>{
     setBusy(true);setMsg("");
     const payload={
@@ -291,7 +315,78 @@ function DataRootsPanel(){
         style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>
         새로고침
       </button>
-      {msg&&<span data-dr-msg style={{fontSize:11,color:msg.startsWith("저장되었습니다")?"#22c55e":"#ef4444"}}>{msg}</span>}
+      {msg&&<span data-dr-msg style={{fontSize:11,color:(msg.includes("완료")||msg.includes("저장"))?"#22c55e":"#ef4444"}}>{msg}</span>}
+    </div>
+
+    {/* v8.7.0: 백업 설정 */}
+    <div style={{marginTop:28,paddingTop:20,borderTop:"1px solid var(--border)"}}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>💾 자동 백업</div>
+      <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:12,lineHeight:1.5}}>
+        data/ 폴더 전체(로그/업로드/캐시 제외)를 zip 스냅샷으로 백업합니다.
+        서버 기동 시 1회 + 설정된 주기로 자동 실행. 보관개수 초과 시 오래된 백업부터 자동 삭제.
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:10,alignItems:"end"}}>
+        <div>
+          <div style={L}>백업 경로 (비워두면 data/_backups 기본)</div>
+          <input value={backup.path||""} onChange={e=>setBackup({...backup,path:e.target.value})}
+            placeholder="예: D:/flow_backups"
+            style={I}/>
+        </div>
+        <div>
+          <div style={L}>주기 (시간)</div>
+          <input type="number" min={1} max={168} value={backup.interval_hours||24}
+            onChange={e=>setBackup({...backup,interval_hours:Number(e.target.value)})} style={I}/>
+        </div>
+        <div>
+          <div style={L}>보관 개수</div>
+          <input type="number" min={1} max={200} value={backup.keep||14}
+            onChange={e=>setBackup({...backup,keep:Number(e.target.value)})} style={I}/>
+        </div>
+        <div>
+          <div style={L}>활성</div>
+          <label style={{display:"flex",alignItems:"center",gap:6,padding:"8px 0"}}>
+            <input type="checkbox" checked={!!backup.enabled} onChange={e=>setBackup({...backup,enabled:e.target.checked})}/>
+            <span style={{fontSize:11}}>스케줄러 on/off</span>
+          </label>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:8,marginTop:12,alignItems:"center",flexWrap:"wrap"}}>
+        <button onClick={saveBackup} disabled={bkBusy}
+          style={{padding:"8px 16px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:600,cursor:bkBusy?"default":"pointer",opacity:bkBusy?0.5:1}}>
+          {bkBusy?"처리 중...":"설정 저장"}
+        </button>
+        <button onClick={runBackupNow} disabled={bkBusy}
+          style={{padding:"8px 16px",borderRadius:6,border:"1px solid #22c55e",background:"transparent",color:"#22c55e",fontWeight:600,cursor:bkBusy?"default":"pointer"}}>
+          💾 지금 백업
+        </button>
+        {backup.last&&backup.last.at&&(
+          <span style={{fontSize:10,color:"var(--text-secondary)",marginLeft:6}}>
+            마지막: {(backup.last.at||"").replace("T"," ")} ·
+            {backup.last.ok?<span style={{color:"#22c55e"}}> ok ({(backup.last.bytes||0).toLocaleString()}B)</span>
+                           :<span style={{color:"#ef4444"}}> 실패 {backup.last.error}</span>}
+          </span>
+        )}
+      </div>
+      {backupList.length>0&&(
+        <div style={{marginTop:14,maxHeight:220,overflow:"auto",border:"1px solid var(--border)",borderRadius:6}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
+            <thead><tr>
+              <th style={{textAlign:"left",padding:"6px 10px",background:"var(--bg-primary)",position:"sticky",top:0}}>파일</th>
+              <th style={{textAlign:"right",padding:"6px 10px",background:"var(--bg-primary)",position:"sticky",top:0}}>크기</th>
+              <th style={{textAlign:"left",padding:"6px 10px",background:"var(--bg-primary)",position:"sticky",top:0}}>시각</th>
+            </tr></thead>
+            <tbody>
+              {backupList.map(b=>(
+                <tr key={b.filename}>
+                  <td style={{padding:"4px 10px",borderTop:"1px solid var(--border)"}} title={b.path}>{b.filename}</td>
+                  <td style={{padding:"4px 10px",borderTop:"1px solid var(--border)",textAlign:"right"}}>{(b.size||0).toLocaleString()}</td>
+                  <td style={{padding:"4px 10px",borderTop:"1px solid var(--border)"}}>{(b.modified||"").replace("T"," ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   </div>);
 }
@@ -883,6 +978,15 @@ function GroupsPanel({allUsers}){
   const rmLot=(id,l)=>sf("/api/groups/lots/remove?id="+encodeURIComponent(id),
     {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({lot_id:l})})
     .then(load);
+  const setModules=(id,mods)=>sf("/api/groups/modules/set?id="+encodeURIComponent(id),
+    {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({modules:mods})})
+    .then(load);
+  const MODULES=["GATE","STI","PC","MOL","BEOL","ET","EDS","S-D Epi","Spacer","Well","기타"];
+  const toggleModule=(id,mod,arr)=>{
+    const set=new Set(arr||[]);
+    if(set.has(mod)) set.delete(mod); else set.add(mod);
+    setModules(id,Array.from(set).sort());
+  };
 
   const cur=groups.find(g=>g.id===sel);
   const availableUsers=(allUsers||[]).map(u=>u.username).filter(u=>u&&!(cur?.members||[]).includes(u));
@@ -905,7 +1009,7 @@ function GroupsPanel({allUsers}){
                 border:"1px solid "+(sel===g.id?"var(--accent)":"transparent")}}>
               <div style={{fontSize:12,fontWeight:600}}>{g.name}</div>
               <div style={{fontSize:10,color:"var(--text-secondary)"}}>
-                owner: {g.owner} · members: {(g.members||[]).length} · lots: {(g.watched_lots||[]).length}
+                owner: {g.owner} · members: {(g.members||[]).length} · lots: {(g.watched_lots||[]).length} · modules: {(g.modules||[]).length}
               </div>
             </div>
           ))}
@@ -956,15 +1060,83 @@ function GroupsPanel({allUsers}){
             <button onClick={()=>addLot(cur.id)} style={{padding:"6px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,cursor:"pointer"}}>추가</button>
           </div>
 
+          <div style={{fontSize:12,fontWeight:600,marginBottom:6,marginTop:6}}>담당 모듈 ({(cur.modules||[]).length})</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+            {MODULES.map(m=>{
+              const on=(cur.modules||[]).includes(m);
+              return <span key={m} onClick={()=>toggleModule(cur.id,m,cur.modules)}
+                style={{padding:"4px 12px",borderRadius:999,fontSize:11,fontWeight:on?700:500,cursor:"pointer",
+                  background:on?"var(--accent)22":"var(--bg-tertiary)",
+                  color:on?"var(--accent)":"var(--text-secondary)",
+                  border:"1px solid "+(on?"var(--accent)":"var(--border)")}}>{m}</span>;
+            })}
+          </div>
+
           <div style={{marginTop:16,padding:10,background:"var(--bg-primary)",borderRadius:6,fontSize:10,color:"var(--text-secondary)",lineHeight:1.6}}>
             • 이 그룹에 속한 유저는 Dashboard/Tracker 에서 이 그룹에 연결된 차트·이슈만 공유함.<br/>
-            • admin 은 모든 그룹과 콘텐츠를 볼 수 있음.<br/>
+            • admin 은 모든 그룹과 콘텐츠를 볼 수 있음 (전체 담당).<br/>
+            • <b>담당 모듈</b>은 인폼 로그의 "내 모듈" 필터 대상 — 멤버 유저가 해당 모듈 인폼을 받아보게 됨.<br/>
             • 관심 LOT_WF 목록은 향후 SplitTable/Dashboard 의 필터로 활용됨.
           </div>
         </>}
       </div>
     </div>
   );
+}
+
+// ── Inform Config Panel (v8.7.0) — 모듈/사유 옵션 Admin 관리 ──
+function InformConfigPanel(){
+  const [cfg,setCfg]=useState({modules:[],reasons:[]});
+  const [newMod,setNewMod]=useState("");
+  const [newReason,setNewReason]=useState("");
+  const [msg,setMsg]=useState("");
+  const load=()=>sf("/api/informs/config").then(setCfg).catch(e=>setMsg(e.message));
+  useEffect(load,[]);
+  const saveAll=(next)=>sf("/api/informs/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(next)})
+    .then(r=>{setCfg(r.config||next);setMsg("저장되었습니다.");}).catch(e=>setMsg(e.message));
+  const addMod=()=>{const v=newMod.trim();if(!v)return;
+    if((cfg.modules||[]).includes(v)){setMsg("이미 존재합니다.");return;}
+    saveAll({modules:[...(cfg.modules||[]),v],reasons:cfg.reasons});setNewMod("");};
+  const rmMod=(m)=>{if(!confirm(`모듈 '${m}' 삭제?`))return;
+    saveAll({modules:(cfg.modules||[]).filter(x=>x!==m),reasons:cfg.reasons});};
+  const addReason=()=>{const v=newReason.trim();if(!v)return;
+    if((cfg.reasons||[]).includes(v)){setMsg("이미 존재합니다.");return;}
+    saveAll({modules:cfg.modules,reasons:[...(cfg.reasons||[]),v]});setNewReason("");};
+  const rmReason=(r)=>{if(!confirm(`사유 '${r}' 삭제?`))return;
+    saveAll({modules:cfg.modules,reasons:(cfg.reasons||[]).filter(x=>x!==r)});};
+
+  const Section=({title,items,onRemove,addValue,onAddChange,onAdd,placeholder})=>(
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>{title} ({items.length})</div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+        {items.map(m=>(
+          <span key={m} style={{padding:"4px 12px",borderRadius:999,background:"var(--accent)22",color:"var(--accent)",fontSize:11,fontWeight:600,display:"inline-flex",alignItems:"center",gap:6}}>
+            {m}
+            <button onClick={()=>onRemove(m)} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11,padding:0}}>×</button>
+          </span>
+        ))}
+        {items.length===0&&<span style={{fontSize:11,color:"var(--text-secondary)"}}>없음</span>}
+      </div>
+      <div style={{display:"flex",gap:6}}>
+        <input value={addValue} onChange={e=>onAddChange(e.target.value)} placeholder={placeholder}
+          onKeyDown={e=>{if(e.key==="Enter")onAdd();}}
+          style={{flex:1,padding:"6px 10px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12}}/>
+        <button onClick={onAdd} style={{padding:"6px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer"}}>+추가</button>
+      </div>
+    </div>
+  );
+  return(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,maxWidth:1000}}>
+    <Section title="모듈 옵션" items={cfg.modules||[]} onRemove={rmMod}
+      addValue={newMod} onAddChange={setNewMod} onAdd={addMod} placeholder="예: NEW_MOD"/>
+    <Section title="사유 옵션" items={cfg.reasons||[]} onRemove={rmReason}
+      addValue={newReason} onAddChange={setNewReason} onAdd={addReason} placeholder="예: 신뢰성 이슈"/>
+    {msg&&<div style={{gridColumn:"span 2",fontSize:11,color:"var(--accent)"}}>{msg}</div>}
+    <div style={{gridColumn:"span 2",padding:12,background:"var(--bg-primary)",borderRadius:6,fontSize:11,color:"var(--text-secondary)",lineHeight:1.6}}>
+      • 여기서 편집한 옵션은 인폼 작성/답글 드롭다운, 그룹 담당 모듈 선택, 대시보드 모듈 필터에 반영됩니다.<br/>
+      • 기존 인폼에 이미 저장된 값은 목록에서 빠져도 그대로 보존됩니다 (표시만 자유문자열).<br/>
+      • 기본값(GATE/STI/PC/MOL/…, 재측정/장비 이상/…)은 비워지면 자동 복구됩니다.
+    </div>
+  </div>);
 }
 
 // ── Base CSV Editor Panel (v8.5.2) ──
