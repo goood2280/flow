@@ -1,7 +1,21 @@
 {
-  "version": "8.5.0",
+  "version": "8.5.1",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.5.1",
+      "date": "2026-04-21",
+      "title": "Inform Log — wafer별 인폼 스레드 (댓글·재인폼)",
+      "tag": "feat",
+      "changes": [
+        "신규 라우터 informs.py — /api/informs (GET wafer 기준 · POST · POST /delete). /recent (최근 루트) · /wafers (인폼 기록된 wafer 목록).",
+        "스키마 {id, parent_id, wafer_id, module, reason, text, author, created_at} — parent_id 로 재인폼/댓글 트리 구성.",
+        "신규 페이지 My_Inform — 좌측 wafer 사이드바 + 우측 스레드 (트리 인덴트 depth cap 5).",
+        "모듈 드롭다운(GATE/STI/PC/MOL/BEOL/ET/EDS/S-D Epi/Spacer/Well/기타) + 사유(재측정/장비 이상/공정 OOS/혐의 확인/레시피 변경/외관 결함/기타).",
+        "자식 있는 인폼은 삭제 불가(무결성). author 또는 admin 만 leaf 삭제.",
+        "nav 에 '인폼 로그' 탭 추가 — 모든 유저 기본 노출 (home/messages 와 동일)."
+      ]
+    },
     {
       "version": "8.5.0",
       "date": "2026-04-21",

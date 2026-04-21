@@ -7,6 +7,7 @@ import My_Admin from "./pages/My_Admin";
 import My_SplitTable from "./pages/My_SplitTable";
 import My_Dashboard from "./pages/My_Dashboard";
 import My_Tracker from "./pages/My_Tracker";
+import My_Inform from "./pages/My_Inform";
 import My_TableMap from "./pages/My_TableMap";
 import My_ML from "./pages/My_ML";
 import ComingSoon from "./components/ComingSoon";
@@ -35,7 +36,7 @@ class ErrorBoundary extends Component {
 
 const PAGE_MAP = {
   home: My_Home, filebrowser: My_FileBrowser, splittable: My_SplitTable,
-  dashboard: My_Dashboard, tracker: My_Tracker, tablemap: My_TableMap,
+  dashboard: My_Dashboard, tracker: My_Tracker, inform: My_Inform, tablemap: My_TableMap,
   ml: My_ML, devguide: My_DevGuide, admin: My_Admin,
 };
 
@@ -497,6 +498,8 @@ export default function App() {
   }, [user]);
   const canAccess = (tabKey) => {
     if (tabKey === "home") return true;
+    // v8.5.1: inform (wafer 인폼 스레드) 는 모든 유저에게 기본 노출.
+    if (tabKey === "inform") return true;
     if (userTabs === "__all__") return true;
     const t = TABS.find(t=>t.key===tabKey);
     if (t?.adminOnly && user?.role !== "admin") return false;
