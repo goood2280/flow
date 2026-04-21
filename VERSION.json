@@ -1,7 +1,22 @@
 {
-  "version": "8.7.1",
+  "version": "8.7.2",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.7.2",
+      "date": "2026-04-21",
+      "title": "회의관리(Meeting) 탭 신규 + setup.py 자체-추출 번들 복원",
+      "tag": "feat",
+      "changes": [
+        "신규 라우터 meetings.py — 회의/아젠다/회의록을 한 데 묶어 관리. /api/meetings/{list, create, update, delete, agenda/add, agenda/update, agenda/delete, minutes/save} + GET /{mid}.",
+        "스키마 ({data_root}/meetings/meetings.json): {id, title, owner, scheduled_at, status(scheduled/in_progress/completed/cancelled), agendas:[{id,title,description,owner,link,...}], minutes:{body,decisions[],action_items[],author,updated_at}|null, ...}.",
+        "권한 — 회의 메타 수정/삭제: 주관자(owner) 또는 admin. 아젠다 추가: 누구나(담당자=본인). 아젠다 수정/삭제: 담당자/주관자/admin. 회의록 저장: 주관자/admin (저장 시 status auto → completed, cancelled 제외).",
+        "신규 페이지 My_Meeting — 좌측 회의 목록(상태 필터·키워드 검색·status 칩 신호등) + 우측 상세(메타·아젠다·회의록). 아젠다별 link 자동 새 탭. 결정사항/액션 아이템(담당·마감) 별도 표.",
+        "nav '회의관리' 탭 신규 — 모든 유저 기본 노출 (home/inform/calendar 와 동일).",
+        "감사 로그 — meetings:create / update / delete / agenda_* / minutes 모두 activity.jsonl 에 기록.",
+        "**setup.py 자체-추출 번들로 복원** — v8.7.1 의 단순 runner 패턴 폐기. 전체 소스 트리를 gzip+base64 로 임베드. `python setup.py` 한 줄로 어디서든 풀고 backend deps + frontend build 까지 진행, `uvicorn app:app --host 0.0.0.0 --port 8080` 으로 기동. data/ 이하는 절대 덮어쓰지 않음 (이중 가드)."
+      ]
+    },
     {
       "version": "8.7.1",
       "date": "2026-04-21",

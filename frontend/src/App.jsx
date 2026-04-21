@@ -9,6 +9,7 @@ import My_Dashboard from "./pages/My_Dashboard";
 import My_Tracker from "./pages/My_Tracker";
 import My_Inform from "./pages/My_Inform";
 import My_Calendar from "./pages/My_Calendar";
+import My_Meeting from "./pages/My_Meeting";
 import My_TableMap from "./pages/My_TableMap";
 import My_ML from "./pages/My_ML";
 import ComingSoon from "./components/ComingSoon";
@@ -37,7 +38,7 @@ class ErrorBoundary extends Component {
 
 const PAGE_MAP = {
   home: My_Home, filebrowser: My_FileBrowser, splittable: My_SplitTable,
-  dashboard: My_Dashboard, tracker: My_Tracker, inform: My_Inform, calendar: My_Calendar, tablemap: My_TableMap,
+  dashboard: My_Dashboard, tracker: My_Tracker, inform: My_Inform, calendar: My_Calendar, meeting: My_Meeting, tablemap: My_TableMap,
   ml: My_ML, devguide: My_DevGuide, admin: My_Admin,
 };
 
@@ -503,6 +504,8 @@ export default function App() {
     if (tabKey === "inform") return true;
     // v8.6.0: calendar (변경점 달력) 도 모든 유저에게 기본 노출.
     if (tabKey === "calendar") return true;
+    // v8.7.2: meeting (회의관리) 도 모든 유저에게 기본 노출.
+    if (tabKey === "meeting") return true;
     if (userTabs === "__all__") return true;
     const t = TABS.find(t=>t.key===tabKey);
     if (t?.adminOnly && user?.role !== "admin") return false;
