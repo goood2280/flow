@@ -1,7 +1,31 @@
 {
-  "version": "8.8.13",
+  "version": "8.8.14",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.14",
+      "date": "2026-04-22",
+      "title": "ML_TABLE 컬럼 리네임(rule_order+func_step) · 자연정렬 강화 · 인폼 목록 모듈 pill 재배치 · 페이지 admin 위임 · 예약 백업 · 활동 대시보드 · HR 감사 긴급 fix",
+      "tag": "feat",
+      "changes": [
+        "**SplitTable ML_TABLE 컬럼 리네임** — KNOB_* 의 경우 `knob_ppid.csv` rule_order/function_step 을 참조해 `KNOB_<rule_order:.1f>_<func_step>+<..>_<feature>` 로 컬럼 display 명을 재구성. INLINE_*/VM_* 도 step_id 기반 display rename. 원본 col 이름은 `_param` 유지 — plan/notes/knob_meta lookup 깨지지 않음. rename 은 /view `rows[*]._display` + CSV/XLSX 헤더 동시 적용.",
+        "**자연정렬 강화** — `_natural_param_key` 가 rename 된 display 이름 기준으로 정렬. 내부 tail 도 숫자/비숫자 토큰으로 분리 자연 정렬 → `KNOB_10_FOO` 뒤에 `KNOB_2_FOO` 오는 오작동 방지.",
+        "**인폼 목록 모듈 pill 재배치** — CompactRow 재설계: 좌측 96px 고정폭 컬럼에 색상 채우기 module pill + 그 아래 [reason] 꼬리표. 모듈 미정 행도 회색 placeholder 로 노출해 비어 보이지 않게. 제품 × 모듈이 한눈에 들어온다.",
+        "**페이지 admin 위임** — `admin_settings.page_admins: {page_id:[users]}`. `core.auth.require_page_admin(page_id)` dependency 추가. `/api/admin/page-admins` GET/POST + `/api/admin/my-page-admin` 으로 유저가 본인의 위임 page 목록 조회. Admin 페이지에 📋 매트릭스 UI (페이지 × 유저 체크박스).",
+        "**예약 백업** — `admin_settings.backup.scheduled_at` (ISO) + `scheduled_reason`. 백그라운드 스케줄러가 60초마다 폴링 → 시각 지나면 1회 실행 + 필드 자동 비움. `/api/admin/backup/schedule` POST({at, reason}) / 빈 at 이면 취소. Admin '백업' 탭에 주기/보관/즉시실행/예약 입력 UI.",
+        "**활동 대시보드** — `/api/admin/activity/summary?days=N` (by_user/by_action/by_tab/by_day/recent50) + `/api/admin/activity/features?days=N` (action prefix 단위 usage). Admin '활동 대시보드' 탭에 유저·액션·일자 bar + 기능별 활성 현황 카드. '어떤 기능이 활성화되어 있는지' 한눈에.",
+        "**HR 감사 긴급 fix** — 2026-04-22 HR audit 결과 반영: `eval-lead.md` 팀 로스터에서 미존재 `feature-auditor`/`industry-researcher` 제거 → 실존 `security-auditor`/`domain-researcher` 로 정정. `orchestrator.md` 브랜딩 `FabCanvas.ai → flow`. `dev-lead.md` `be-*/fe-*` 분리 에이전트 참조를 풀스택 `dev-*` 구조로 재서술."
+      ],
+      "files": [
+        "backend/routers/splittable.py",
+        "backend/routers/admin.py",
+        "backend/core/auth.py",
+        "backend/core/backup.py",
+        "frontend/src/pages/My_SplitTable.jsx",
+        "frontend/src/pages/My_Inform.jsx",
+        "frontend/src/pages/My_Admin.jsx"
+      ]
+    },
     {
       "version": "8.8.13",
       "date": "2026-04-21",
@@ -716,5 +740,6 @@
         "FileBrowser /roots: 명시적 파일 skip (not d.is_dir(): continue) 방어 강화 — DB 섹션에 파일 절대 안 나오도록"
       ]
     }
-  ]
+  ],
+  "build_date": "2026-04-22T08:33:46"
 }

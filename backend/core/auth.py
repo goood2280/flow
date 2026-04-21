@@ -169,6 +169,51 @@ def require_admin(request: Request) -> dict:
     return u
 
 
+# ── v8.8.14: Per-page admin delegation ────────────────────────────────
+# 철학: "각 페이지의 관리는 최대한 각 페이지에서 수행한다." global admin 만 할 수 있던
+# 페이지 내부 관리 작업(예: inform 카탈로그 CRUD, SplitTable prefix/override 편집,
+# TableMap 그래프 수정 등) 을 특정 유저에게 페이지 단위로 위임할 수 있게 한다.
+#
+# 저장소: admin_settings.json 의 `page_admins: { "<page_id>": ["user1", "user2"] }`.
+# page_id 는 프론트 탭 이름과 맞춘다 (informs / splittable / tablemap / dashboard /
+# meetings / calendar / tracker / ml / messages / filebrowser / spc / ettime / admin).
+# global admin 은 언제나 통과 — 이 맵에 추가로 넣을 필요 없음.
+def get_page_admins() -> dict:
+    """admin_settings.json 에서 page_admins 맵 반환. 파일 없거나 파싱 오류면 {}."""
+    try:
+        p = PATHS.data_root / "admin_settings.json"
+        if p.is_file():
+            data = json.loads(p.read_text("utf-8")) or {}
+            pa = data.get("page_admins") or {}
+            if isinstance(pa, dict):
+                return {k: list(v or []) for k, v in pa.items() if isinstance(v, list)}
+    except Exception:
+        pass
+    return {}
+
+
+def is_page_admin(username: str, page_id: str) -> bool:
+    """해당 유저가 해당 페이지의 위임 admin 인지 여부 (global admin 은 False — 별도 체크)."""
+    if not username or not page_id:
+        return False
+    pa = get_page_admins()
+    return username in (pa.get(page_id) or [])
+
+
+def require_page_admin(page_id: str):
+    """FastAPI dependency factory. global admin 이거나 해당 page_id 의 위임 admin 이면 통과.
+    사용:  _perm = Depends(require_page_admin("informs"))
+    """
+    def _dep(request: Request) -> dict:
+        u = current_user(request)
+        if u.get("role") == "admin":
+            return u
+        if is_page_admin(u.get("username", ""), page_id):
+            return u
+        raise HTTPException(403, f"Admin or delegated admin ({page_id}) only")
+    return _dep
+
+
 def verify_owner(request: Request, target_username: str) -> dict:
     """target_username 이 본인이거나 admin 이어야 함. 아니면 403."""
     u = current_user(request)

@@ -2701,43 +2701,69 @@ function CompactRow({ root, onOpen }) {
     return () => { alive = false; };
   }, [root.product, root.root_lot_id, root.lot_id]);
 
+  // v8.8.14: 레이아웃 재정비 — "어떤 제품 · 어떤 모듈" 이 한눈에 보이도록 좌측 88px 고정 컬럼으로 분리.
+  //   좌측: 모듈 pill (색상 채우기) + 그 아래 reason 꼬리표. 모듈 미정이면 회색 placeholder.
+  //   우측: 상태 pill + 첨부 icon + [제품] lot_id + 타임스탬프 + 본문 1-2줄.
+  const hasModule = !!(root.module && String(root.module).trim());
+  const modLabel = hasModule ? root.module : "미정";
+  const modFill = hasModule ? mc : "#6b7280";
+  const reasonLabel = (root.reason || "").trim();
+
   return (
     <div onClick={onOpen}
-      style={{ padding: "10px 14px", marginBottom: 8, borderRadius: 8,
+      style={{ display: "flex", padding: 0, marginBottom: 8, borderRadius: 8,
                border: "1px solid var(--border)", background: "var(--bg-secondary)",
-               borderLeft: "5px solid " + mc,
-               cursor: "pointer" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        {/* v8.8.13: '접수' StatusBadge 제거 — CheckPill(확인중/확인완료) 하나로 통합. */}
-        {root.module && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: mc + "22", color: mc, fontWeight: 700, border: "1px solid " + mc + "55" }}>{root.module}</span>}
-        <CheckPill node={root} />
-        <AutoGenPill node={root} />
-        {(root.images && root.images.length > 0) && <span title="이미지 첨부" style={{ fontSize: 10 }}>📎{root.images.length}</span>}
-        {root.embed_table && <span title="SplitTable 스냅샷 첨부" style={{ fontSize: 10 }}>🔗</span>}
-        {/* v8.8.8: lot/wafer 꼬리표 배지 — SplitTable notes 집계. */}
-        {tagSummary && (
-          <span title={`이 lot 의 꼬리표 ${tagSummary.total}개 (wafer ${tagSummary.by.wafer} · param ${tagSummary.by.param} · lot ${tagSummary.by.lot} · global ${tagSummary.by.param_global})\n샘플: ${tagSummary.sample.join(" / ")}`}
-                style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#8b5cf6", color: "#fff", fontWeight: 700, cursor: "help" }}>
-            🏷 {tagSummary.total}
-          </span>
-        )}
-        {/* v8.7.9: `[제품명] Lot` 표시. wafer_id 는 보조적으로만. */}
-        <span style={{ fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>
-          {root.product && <span style={{ color: "var(--accent)" }}>[{root.product}]</span>}
-          {root.product && root.lot_id ? " " : ""}
-          {root.lot_id || root.wafer_id || "-"}
-        </span>
-        {root.root_lot_id && root.lot_id && root.root_lot_id !== root.lot_id && (
-          <span title="root_lot_id (앞 5자)" style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>root:{root.root_lot_id}</span>
-        )}
-        <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{(root.created_at || "").replace("T", " ").slice(0, 16)}</span>
-        <span style={{ fontSize: 10, fontWeight: 600 }}>{root.author}</span>
+               borderLeft: "5px solid " + modFill,
+               cursor: "pointer", overflow: "hidden" }}>
+      {/* 좌측 모듈/사유 컬럼 — 고정폭으로 행 간 정렬 시각화 */}
+      <div style={{ flex: "0 0 96px", padding: "10px 8px 10px 10px",
+                    display: "flex", flexDirection: "column", gap: 4,
+                    alignItems: "center", justifyContent: "center",
+                    background: modFill + "0D", borderRight: "1px solid var(--border)" }}>
+        <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 999,
+                       background: modFill, color: "#fff", fontWeight: 800,
+                       letterSpacing: 0.3, whiteSpace: "nowrap",
+                       boxShadow: "0 1px 2px rgba(0,0,0,0.15)" }}>{modLabel}</span>
+        {reasonLabel
+          ? <span style={{ fontSize: 9.5, padding: "1px 6px", borderRadius: 4,
+                           background: modFill + "22", color: modFill, fontWeight: 700,
+                           textAlign: "center", lineHeight: 1.25, whiteSpace: "nowrap",
+                           maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" }}
+                  title={reasonLabel}>[{reasonLabel}]</span>
+          : <span style={{ fontSize: 9, color: "var(--text-secondary)", fontStyle: "italic" }}>(사유 미정)</span>}
       </div>
-      <div style={{ fontSize: 12, marginTop: 4, whiteSpace: "pre-wrap", opacity: 0.95,
-                    display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-        {root.reason && <span style={{ color: mc, fontWeight: 700, marginRight: 6 }}>[{root.reason}]</span>}
-        {root.text}
+      {/* 우측 본문 */}
+      <div style={{ flex: 1, padding: "10px 14px", minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {/* v8.8.13: '접수' StatusBadge 제거 — CheckPill(확인중/확인완료) 하나로 통합. */}
+          <CheckPill node={root} />
+          <AutoGenPill node={root} />
+          {(root.images && root.images.length > 0) && <span title="이미지 첨부" style={{ fontSize: 10 }}>📎{root.images.length}</span>}
+          {root.embed_table && <span title="SplitTable 스냅샷 첨부" style={{ fontSize: 10 }}>🔗</span>}
+          {/* v8.8.8: lot/wafer 꼬리표 배지 — SplitTable notes 집계. */}
+          {tagSummary && (
+            <span title={`이 lot 의 꼬리표 ${tagSummary.total}개 (wafer ${tagSummary.by.wafer} · param ${tagSummary.by.param} · lot ${tagSummary.by.lot} · global ${tagSummary.by.param_global})\n샘플: ${tagSummary.sample.join(" / ")}`}
+                  style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#8b5cf6", color: "#fff", fontWeight: 700, cursor: "help" }}>
+              🏷 {tagSummary.total}
+            </span>
+          )}
+          {/* v8.7.9: `[제품명] Lot` 표시. wafer_id 는 보조적으로만. */}
+          <span style={{ fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>
+            {root.product && <span style={{ color: "var(--accent)" }}>[{root.product}]</span>}
+            {root.product && root.lot_id ? " " : ""}
+            {root.lot_id || root.wafer_id || "-"}
+          </span>
+          {root.root_lot_id && root.lot_id && root.root_lot_id !== root.lot_id && (
+            <span title="root_lot_id (앞 5자)" style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>root:{root.root_lot_id}</span>
+          )}
+          <div style={{ flex: 1 }} />
+          <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{(root.created_at || "").replace("T", " ").slice(0, 16)}</span>
+          <span style={{ fontSize: 10, fontWeight: 600 }}>{root.author}</span>
+        </div>
+        <div style={{ fontSize: 12, marginTop: 4, whiteSpace: "pre-wrap", opacity: 0.95,
+                      display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+          {root.text}
+        </div>
       </div>
     </div>
   );

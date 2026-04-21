@@ -102,7 +102,11 @@ export default function My_Admin({user}){
 
   // Tabs differ by role
   // v8.4.3 단위기능 페이지 철학: AWS 설정은 FileBrowser 톱니로 이관 예정 (제거).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["groups","그룹"],["inform_cfg","인폼 설정"],["mail_cfg","메일 API"],["base_csv","Base CSV"],["logs","Admin Log"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
+  // v8.8.14: page_admins / backup_sched / activity_dash 3개 탭 추가.
+  //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
+  //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
+  //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["inform_cfg","인폼 설정"],["mail_cfg","메일 API"],["base_csv","Base CSV"],["logs","Admin Log"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -302,8 +306,225 @@ export default function My_Admin({user}){
 
       {/* v8.7.2: Mail API (admin only) */}
       {tab==="mail_cfg"&&isAdmin&&<MailCfgPanel/>}
+
+      {/* v8.8.14: Per-page admin delegation (admin only) */}
+      {tab==="page_admins"&&isAdmin&&<PageAdminsPanel users={users}/>}
+
+      {/* v8.8.14: Backup schedule + one-off (admin only) */}
+      {tab==="backup_sched"&&isAdmin&&<BackupSchedulePanel/>}
+
+      {/* v8.8.14: Activity dashboard (admin only) */}
+      {tab==="activity_dash"&&isAdmin&&<ActivityDashboardPanel/>}
       </TabBoundary>
     </div>);
+}
+
+// ── v8.8.14: Per-page admin delegation ──
+// 유저별로 "이 페이지의 관리 권한을 위임한다" 를 체크박스로 토글. admin 유저는 global 이라 배제.
+// 저장 즉시 /api/admin/page-admins 로 POST.
+const PAGE_IDS=[
+  ["informs","인폼"],["meetings","회의"],["calendar","달력"],["tablemap","TableMap"],
+  ["splittable","SplitTable"],["dashboard","대시보드"],["tracker","트래커"],["ml","ML"],
+  ["spc","SPC"],["ettime","ET 시간"],["filebrowser","파일탐색기"],["messages","메시지"],
+  ["wafer_map","Wafer Map"],["groups","그룹"],
+];
+
+function PageAdminsPanel({users}){
+  const [pa,setPa]=useState({});
+  const [msg,setMsg]=useState("");
+  const [busy,setBusy]=useState(false);
+  const reload=()=>sf("/api/admin/page-admins").then(d=>setPa(d.page_admins||{})).catch(e=>setMsg("로드 오류: "+e.message));
+  useEffect(reload,[]);
+  const approved=(users||[]).filter(u=>u.status==="approved"&&u.role!=="admin");
+  const toggle=(pageId,username)=>{
+    const cur=new Set(pa[pageId]||[]);
+    if(cur.has(username))cur.delete(username);else cur.add(username);
+    const next={...pa,[pageId]:Array.from(cur).sort()};
+    if(next[pageId].length===0)delete next[pageId];
+    setBusy(true);setMsg("");
+    sf("/api/admin/page-admins",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({page_id:pageId,usernames:next[pageId]||[]})})
+      .then(()=>{setPa(next);setMsg("✔ "+pageId+" 저장");setBusy(false);setTimeout(()=>setMsg(""),2000);})
+      .catch(e=>{setMsg("오류: "+e.message);setBusy(false);});
+  };
+  return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16,overflow:"auto"}}>
+    <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
+      <div style={{fontSize:14,fontWeight:700}}>페이지별 Admin 위임</div>
+      <div style={{fontSize:11,color:"var(--text-secondary)"}}>
+        체크한 유저는 해당 페이지의 관리 기능(설정/카탈로그/권한 편집 등)을 수행할 수 있습니다. global admin 은 모든 페이지에 대해 기본 허용.
+      </div>
+      {msg&&<span style={{fontSize:11,color:msg.startsWith("✔")?"#22c55e":"#ef4444",marginLeft:"auto"}}>{msg}</span>}
+      {busy&&<span style={{fontSize:11,color:"var(--text-secondary)"}}>저장 중…</span>}
+    </div>
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+      <thead><tr>
+        <th style={{position:"sticky",left:0,background:"var(--bg-tertiary)",textAlign:"left",padding:"8px 12px",borderBottom:"1px solid var(--border)",fontSize:11,color:"var(--text-secondary)",zIndex:1}}>페이지</th>
+        {approved.map(u=><th key={u.username} style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{u.username}</th>)}
+      </tr></thead>
+      <tbody>{PAGE_IDS.map(([pid,label])=>{
+        const assigned=new Set(pa[pid]||[]);
+        return(<tr key={pid}>
+          <td style={{position:"sticky",left:0,background:"var(--bg-secondary)",padding:"6px 12px",borderBottom:"1px solid var(--border)",fontWeight:600,zIndex:1}}>
+            {label} <span style={{fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace",marginLeft:6}}>{pid}</span>
+          </td>
+          {approved.map(u=>(<td key={u.username} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
+            <input type="checkbox" checked={assigned.has(u.username)} disabled={busy} onChange={()=>toggle(pid,u.username)}/>
+          </td>))}
+        </tr>);
+      })}</tbody>
+    </table>
+  </div>);
+}
+
+// ── v8.8.14: Backup 주기 설정 + 1회 예약 ──
+// interval_hours 조절 + enabled 토글 + "이 시각에 1회 백업" 예약 (서버 점검 대비).
+function BackupSchedulePanel(){
+  const [st,setSt]=useState(null);
+  const [msg,setMsg]=useState("");
+  const [form,setForm]=useState({interval_hours:24,enabled:true,keep:5});
+  const [sched,setSched]=useState({at:"",reason:"pre-maintenance"});
+  const reload=()=>sf("/api/admin/backup/status").then(d=>{
+    setSt(d);
+    const s=d.settings||{};
+    setForm({interval_hours:s.interval_hours||24,enabled:s.enabled!==false,keep:s.keep||5});
+    setSched({at:(s.scheduled_at||"").slice(0,16),reason:s.scheduled_reason||"pre-maintenance"});
+  }).catch(e=>setMsg("로드 오류: "+e.message));
+  useEffect(reload,[]);
+  const saveSettings=()=>{
+    setMsg("");
+    sf("/api/admin/settings").then(cur=>sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+      dashboard_refresh_minutes:cur.dashboard_refresh_minutes||10,
+      dashboard_bg_refresh_minutes:cur.dashboard_bg_refresh_minutes||10,
+      backup:{interval_hours:form.interval_hours,enabled:form.enabled,keep:form.keep},
+    })})).then(()=>{setMsg("✔ 저장됨");reload();}).catch(e=>setMsg("오류: "+e.message));
+  };
+  const runNow=()=>{
+    if(!confirm("지금 백업을 실행할까요? (최대 수십 MB)"))return;
+    setMsg("백업 진행 중…");
+    sf("/api/admin/backup/run",{method:"POST"}).then(r=>{setMsg(r.ok?"✔ 백업 완료: "+(r.path||""):"✗ 실패: "+(r.error||""));reload();}).catch(e=>setMsg("오류: "+e.message));
+  };
+  const schedule=()=>{
+    const at=(sched.at||"").trim();
+    if(!at){setMsg("예약 시각(YYYY-MM-DDTHH:MM)을 입력하세요.");return;}
+    sf("/api/admin/backup/schedule",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({at:at+":00",reason:sched.reason||"pre-maintenance"})})
+      .then(()=>{setMsg("✔ 예약됨: "+at);reload();}).catch(e=>setMsg("예약 오류: "+e.message));
+  };
+  const cancelSched=()=>sf("/api/admin/backup/schedule",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({at:"",reason:""})})
+    .then(()=>{setMsg("✔ 예약 취소");reload();}).catch(e=>setMsg("취소 오류: "+e.message));
+  const L={fontSize:11,color:"var(--text-secondary)",marginBottom:4,marginTop:10,fontWeight:600};
+  const I={width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none"};
+  return(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,maxWidth:1100}}>
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:14,fontWeight:700,marginBottom:8}}>자동 백업 설정</div>
+      <div style={L}>활성화</div>
+      <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12}}><input type="checkbox" checked={!!form.enabled} onChange={e=>setForm({...form,enabled:e.target.checked})}/>자동 백업 사용</label>
+      <div style={L}>주기 (시간)</div>
+      <input type="number" min={1} max={168} value={form.interval_hours} onChange={e=>setForm({...form,interval_hours:parseInt(e.target.value)||24})} style={I}/>
+      <div style={{fontSize:10,color:"var(--text-secondary)",marginTop:4}}>12 → 12시간마다, 24 → 하루 1회 (기본). 1~168 시간 범위.</div>
+      <div style={L}>보관 개수 (최대 5)</div>
+      <input type="number" min={1} max={5} value={form.keep} onChange={e=>setForm({...form,keep:parseInt(e.target.value)||5})} style={I}/>
+      <button onClick={saveSettings} style={{marginTop:14,padding:"8px 20px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:600,cursor:"pointer"}}>설정 저장</button>
+      <button onClick={runNow} style={{marginTop:14,marginLeft:8,padding:"8px 20px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",cursor:"pointer"}}>🗄 즉시 백업</button>
+    </div>
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:14,fontWeight:700,marginBottom:8}}>예약 백업 (서버 점검 대비)</div>
+      <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:10}}>지정한 시각이 지나면 백그라운드 스케줄러가 1회 백업을 실행하고 자동으로 취소됩니다. (주기 백업과 중복 실행되지 않음)</div>
+      <div style={L}>예약 시각</div>
+      <input type="datetime-local" value={sched.at} onChange={e=>setSched({...sched,at:e.target.value})} style={I}/>
+      <div style={L}>사유 (메모)</div>
+      <input value={sched.reason} onChange={e=>setSched({...sched,reason:e.target.value})} placeholder="pre-maintenance" style={I}/>
+      <div style={{display:"flex",gap:8,marginTop:14}}>
+        <button onClick={schedule} style={{padding:"8px 16px",borderRadius:6,border:"none",background:"#f59e0b",color:"#fff",fontWeight:600,cursor:"pointer"}}>⏰ 예약</button>
+        {st?.settings?.scheduled_at&&<button onClick={cancelSched} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>예약 취소</button>}
+      </div>
+      {st?.settings?.scheduled_at&&<div style={{marginTop:10,padding:"6px 10px",borderRadius:6,background:"#f59e0b22",color:"#f59e0b",fontSize:11}}>🔔 예약됨: {st.settings.scheduled_at} ({st.settings.scheduled_reason||"-"})</div>}
+    </div>
+    <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>최근 백업</div>
+      {st?.settings?.last&&<div style={{fontSize:11,color:st.settings.last.ok?"#22c55e":"#ef4444",marginBottom:8}}>
+        {st.settings.last.ok?"✔":"✗"} {st.settings.last.at} · {st.settings.last.reason||"-"} · {st.settings.last.bytes?Math.round(st.settings.last.bytes/1024)+" KB":""} {st.settings.last.error?"· "+st.settings.last.error:""}
+      </div>}
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+        <thead><tr><th style={{textAlign:"left",padding:"6px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)"}}>파일</th><th style={{textAlign:"right",padding:"6px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)"}}>크기</th><th style={{textAlign:"left",padding:"6px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)"}}>시각</th></tr></thead>
+        <tbody>{(st?.backups||[]).map(b=>(<tr key={b.filename}><td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{b.filename}</td><td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",textAlign:"right"}}>{Math.round((b.size||0)/1024).toLocaleString()} KB</td><td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{b.modified}</td></tr>))}</tbody>
+      </table>
+    </div>
+    {msg&&<div style={{gridColumn:"1 / -1",fontSize:11,color:msg.startsWith("✔")?"#22c55e":"#ef4444"}}>{msg}</div>}
+  </div>);
+}
+
+// ── v8.8.14: Activity Dashboard ──
+// 최근 N일 활동 요약 + 기능(action prefix) 별 사용 현황. admin 이 "누가 뭘 쓰는지",
+// "어떤 기능이 활성화되어 있는지" 한눈에 파악할 수 있게.
+function ActivityDashboardPanel(){
+  const [days,setDays]=useState(7);
+  const [summary,setSummary]=useState(null);
+  const [features,setFeatures]=useState(null);
+  const [err,setErr]=useState("");
+  const reload=()=>{
+    setErr("");
+    sf("/api/admin/activity/summary?days="+days).then(setSummary).catch(e=>setErr("요약 로드 오류: "+e.message));
+    sf("/api/admin/activity/features?days="+days).then(setFeatures).catch(()=>{});
+  };
+  useEffect(reload,[days]);
+  const barItem=(label,val,max,color)=>(<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+    <span style={{fontSize:11,minWidth:120,fontFamily:"monospace"}}>{label}</span>
+    <div style={{flex:1,height:14,background:"var(--bg-tertiary)",borderRadius:3,overflow:"hidden"}}>
+      <div style={{width:(max>0?(100*val/max):0)+"%",height:"100%",background:color}}/>
+    </div>
+    <span style={{fontSize:11,minWidth:50,textAlign:"right",color:"var(--text-secondary)"}}>{val}</span>
+  </div>);
+  const maxUser=summary?Math.max(0,...Object.values(summary.by_user||{})):0;
+  const maxAct=summary?Math.max(0,...Object.values(summary.by_action||{})):0;
+  const maxDay=summary?Math.max(0,...Object.values(summary.by_day||{})):0;
+  return(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+    <div style={{gridColumn:"1 / -1",display:"flex",alignItems:"center",gap:12}}>
+      <span style={{fontSize:14,fontWeight:700}}>활동 대시보드</span>
+      <span style={{fontSize:11,color:"var(--text-secondary)"}}>최근</span>
+      {[1,7,30,90].map(d=>(<span key={d} onClick={()=>setDays(d)} style={{cursor:"pointer",fontSize:11,padding:"3px 10px",borderRadius:6,background:days===d?"var(--accent-glow)":"transparent",color:days===d?"var(--accent)":"var(--text-secondary)",fontWeight:days===d?700:500,border:"1px solid "+(days===d?"var(--accent)":"var(--border)")}}>{d}일</span>))}
+      {summary&&<span style={{fontSize:11,color:"var(--text-secondary)",marginLeft:"auto"}}>총 {summary.total}건 · 기능 {features?.feature_count||0}개</span>}
+      {err&&<span style={{fontSize:11,color:"#ef4444"}}>{err}</span>}
+    </div>
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>유저별</div>
+      {summary?Object.entries(summary.by_user||{}).map(([u,v])=>barItem(u,v,maxUser,"#3b82f6")):<span style={{color:"var(--text-secondary)",fontSize:11}}>로딩…</span>}
+    </div>
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>액션별</div>
+      <div style={{maxHeight:340,overflowY:"auto"}}>
+        {summary?Object.entries(summary.by_action||{}).map(([a,v])=>barItem(a,v,maxAct,"#8b5cf6")):<span style={{color:"var(--text-secondary)",fontSize:11}}>로딩…</span>}
+      </div>
+    </div>
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>일자별</div>
+      {summary?Object.entries(summary.by_day||{}).map(([d,v])=>barItem(d,v,maxDay,"#22c55e")):<span style={{color:"var(--text-secondary)",fontSize:11}}>로딩…</span>}
+    </div>
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>기능별 활성 현황</div>
+      <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:8}}>action prefix (예: inform, splittable, admin) 기준</div>
+      <div style={{maxHeight:340,overflowY:"auto"}}>
+        {features?.features?.map(f=>(<div key={f.feature} style={{padding:"8px 10px",marginBottom:6,borderRadius:6,background:"var(--bg-tertiary)",border:"1px solid var(--border)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:12,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>{f.feature}</span>
+            <span style={{fontSize:10,color:"var(--text-secondary)"}}>{f.count}건 · 유저 {f.user_count}명</span>
+            <span style={{flex:1}}/>
+            <span style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace"}} title={`first: ${f.first_seen}\nlast: ${f.last_seen}`}>~{(f.last_seen||"").slice(0,16)}</span>
+          </div>
+          <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:3,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+            top: {Object.entries(f.top_actions||{}).map(([k,v])=>k+"("+v+")").join(" · ")}
+          </div>
+        </div>))||<span style={{color:"var(--text-secondary)",fontSize:11}}>로딩…</span>}
+      </div>
+    </div>
+    <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>최근 이벤트 (50건)</div>
+      <div style={{maxHeight:400,overflowY:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+          <thead><tr>{["시각","유저","action","tab","detail"].map(h=><th key={h} style={{textAlign:"left",padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)"}}>{h}</th>)}</tr></thead>
+          <tbody>{summary?.recent?.map((r,i)=>(<tr key={i}><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.timestamp||r.time||"").replace("T"," ").slice(0,16)}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontWeight:600}}>{r.username||r.actor}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{r.action}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{r.tab||""}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",maxWidth:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.detail}>{r.detail}</td></tr>))}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>);
 }
 
 // ── v8.7.2: Inline email editor for the Users table ──
