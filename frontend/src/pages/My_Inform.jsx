@@ -96,8 +96,110 @@ function ImageGallery({ images }) {
   );
 }
 
+// v8.8.11: SplitTable 셀 팔레트 (SplitTable 과 동일 — 공유 util 후속 추출 예정).
+const ST_CELL_COLORS = [
+  { bg: "#C6EFCE", fg: "#006100" },
+  { bg: "#FFEB9C", fg: "#9C5700" },
+  { bg: "#FBE5D6", fg: "#BF4E00" },
+  { bg: "#BDD7EE", fg: "#1F4E79" },
+  { bg: "#E2BFEE", fg: "#7030A0" },
+  { bg: "#B4DED4", fg: "#0B5345" },
+  { bg: "#F4CCCC", fg: "#75194C" },
+];
+const ST_COLOR_PREFIXES = ["KNOB", "MASK"];
+function stCellBg(val, uniq, pname) {
+  if (!val || val === "None" || val === "null") return {};
+  const pn = (pname || "").toUpperCase();
+  if (!ST_COLOR_PREFIXES.some(p => pn.startsWith(p + "_"))) return {};
+  const s = String(val);
+  const idx = uniq[pn]?.[s];
+  if (idx != null) { const c = ST_CELL_COLORS[idx % ST_CELL_COLORS.length]; return { background: c.bg, color: c.fg }; }
+  return {};
+}
+function stPlanStyle(cell) {
+  if (!cell) return {};
+  if (cell.plan && cell.actual) {
+    if (String(cell.plan) === String(cell.actual)) return {};
+    return { borderLeft: "3px solid #ef4444", background: "#fef2f2" };
+  }
+  if (cell.plan) return { borderLeft: "3px solid #f97316", fontStyle: "italic", fontWeight: 700 };
+  return {};
+}
+
 function EmbedTableView({ embed }) {
-  if (!embed || (!embed.columns?.length && !embed.rows?.length)) return null;
+  if (!embed) return null;
+  // v8.8.11: st_view(SplitTable /view 응답) 가 있으면 컬러링 + plan pin 동일 렌더.
+  const st = embed.st_view;
+  if (st && st.headers && st.rows) {
+    // uniqueMap 계산: param 별 값 → 인덱스.
+    const uniq = {};
+    for (const r of st.rows) {
+      const pn = String(r._param || "").toUpperCase();
+      if (!ST_COLOR_PREFIXES.some(p => pn.startsWith(p + "_"))) continue;
+      const seen = {};
+      Object.values(r._cells || {}).forEach(c => {
+        const v = c?.actual ?? c?.plan;
+        if (v == null || v === "") return;
+        const s = String(v);
+        if (!(s in seen)) seen[s] = Object.keys(seen).length;
+      });
+      uniq[pn] = seen;
+    }
+    return (
+      <div style={{ marginTop: 8, padding: 8, border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-primary)" }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)", marginBottom: 4 }}>
+          🔗 SplitTable {embed.source && <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>· {embed.source}</span>}
+        </div>
+        {embed.note && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
+        <div style={{ maxHeight: 320, overflow: "auto" }}>
+          <table style={{ borderCollapse: "collapse", fontSize: 10, fontFamily: "monospace" }}>
+            <thead>
+              <tr>
+                <th style={{ border: "1px solid var(--border)", padding: "2px 6px", background: "var(--bg-secondary)", textAlign: "left", position: "sticky", top: 0, left: 0, zIndex: 2, minWidth: 160 }}>parameter</th>
+                {st.headers.map((h, i) => (
+                  <th key={i} style={{ border: "1px solid var(--border)", padding: "2px 6px", background: "var(--bg-secondary)", textAlign: "center", position: "sticky", top: 0, minWidth: 70 }}>{h}</th>
+                ))}
+              </tr>
+              {(st.wafer_fab_list || []).length > 0 && (
+                <tr>
+                  <th style={{ border: "1px solid var(--border)", padding: "2px 6px", background: "var(--bg-tertiary)", fontSize: 9, color: "var(--text-secondary)", textAlign: "left", position: "sticky", top: 24, zIndex: 1 }}>fab_lot_id</th>
+                  {st.wafer_fab_list.map((f, i) => (
+                    <th key={i} style={{ border: "1px solid var(--border)", padding: "2px 6px", background: "var(--bg-tertiary)", fontSize: 9, color: "var(--text-secondary)", textAlign: "center", position: "sticky", top: 24, zIndex: 1 }}>{f || "—"}</th>
+                  ))}
+                </tr>
+              )}
+            </thead>
+            <tbody>
+              {st.rows.map((r, ri) => (
+                <tr key={ri}>
+                  <td style={{ border: "1px solid var(--border)", padding: "2px 6px", background: "var(--bg-secondary)", fontWeight: 700, position: "sticky", left: 0 }}>{r._param}</td>
+                  {st.headers.map((_, ci) => {
+                    const cell = (r._cells && r._cells[ci]) || {};
+                    const bg = stCellBg(cell.actual ?? cell.plan, uniq, r._param);
+                    const plan = stPlanStyle(cell);
+                    const isPlan = !!cell.plan;
+                    const display = (cell.actual != null && cell.actual !== "") ? String(cell.actual)
+                      : (cell.plan != null ? String(cell.plan) : "");
+                    return (
+                      <td key={ci} style={{ border: "1px solid var(--border)", padding: "2px 6px", textAlign: "center", ...bg, ...plan }}>
+                        {isPlan && <span title="plan" style={{ marginRight: 3 }}>📌</span>}
+                        {display}
+                        {isPlan && cell.plan !== cell.actual && cell.actual != null && cell.actual !== "" && (
+                          <span style={{ marginLeft: 3, color: "#f97316", fontWeight: 700 }}>→{cell.plan}</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+  // legacy 2D rows 모드
+  if ((!embed.columns?.length && !embed.rows?.length)) return null;
   const cols = embed.columns || [];
   const rows = embed.rows || [];
   return (
@@ -1128,25 +1230,42 @@ export default function My_Inform({ user }) {
   // v8.8.8: product + lot_id 쌍이 유효하면 /api/splittable/view 로 현재 시점 SplitTable 스냅샷(plan 포함)
   //   을 자동으로 fetch → form.embed 에 attach. 사용자가 "가져오기" 버튼을 누르는 단계 제거.
   //   lot_id 변경이나 product 변경 시 재실행. 실패하면 조용히 attach 끔 (에러 배너 X).
+  // v8.8.11: SplitTable prefix (KNOB/MASK/INLINE/VM/FAB/ALL) 또는 CUSTOM 프리셋 중 하나 선택.
+  //          변경 시 useEffect 가 해당 scope 로 /view 재호출.
+  const [embedPrefix, setEmbedPrefix] = useState("ALL");   // string | null (CUSTOM 모드면 null)
+  const [embedCustomName, setEmbedCustomName] = useState(""); // "" = prefix 모드
+  const [customsList, setCustomsList] = useState([]);
+
+  useEffect(() => {
+    sf("/api/splittable/customs").then(d => setCustomsList(d.customs || [])).catch(() => {});
+  }, []);
+
   useEffect(() => {
     const prod = (form.product || "").trim();
     const lot  = (form.lot_id || "").trim();
     if (!creating) { setEmbedFetching(false); return; }
     if (!prod || !lot) {
-      // attach 해제 + 로딩 플래그 리셋 (이전 버그: 로딩이 영원히 떠있던 것 해소).
       setEmbedFetching(false);
       setForm(f => (f.attach_embed && f.embed?.source?.startsWith?.("SplitTable/"))
         ? { ...f, attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" } }
         : f);
       return;
     }
-    // ML_TABLE_ prefix 가 아니면 붙여서 조회.
     const mlProd = prod.startsWith("ML_TABLE_") ? prod : `ML_TABLE_${prod}`;
     const root5 = lot.slice(0, 5);
-    // debounce
     const handle = setTimeout(() => {
       setEmbedFetching(true);
-      sf(`/api/splittable/view?product=${encodeURIComponent(mlProd)}&root_lot_id=${encodeURIComponent(root5)}&fab_lot_id=${encodeURIComponent(lot)}&prefix=ALL&view_mode=all`)
+      const params = new URLSearchParams();
+      params.set("product", mlProd);
+      params.set("root_lot_id", root5);
+      params.set("fab_lot_id", lot);
+      params.set("view_mode", "all");
+      if (embedCustomName) {
+        params.set("custom_name", embedCustomName);
+      } else {
+        params.set("prefix", embedPrefix || "ALL");
+      }
+      sf(`/api/splittable/view?${params.toString()}`)
         .then(d => {
           if (!d || !d.rows || d.rows.length === 0) {
             setEmbedFetching(false);
@@ -1155,6 +1274,8 @@ export default function My_Inform({ user }) {
               : f);
             return;
           }
+          // v8.8.11: SplitTable 원형 응답을 st_view 로 보존 — EmbedTableView 가 컬러링/plan-pin 동일 렌더.
+          // 병행해서 legacy 2D (columns/rows) 도 유지 — 구버전 렌더러 호환.
           const headers = d.headers || [];
           const cols = ["parameter", ...headers];
           const rows = (d.rows || []).map(r => {
@@ -1167,12 +1288,20 @@ export default function My_Inform({ user }) {
             });
             return out;
           });
+          const scopeLabel = embedCustomName ? `CUSTOM:${embedCustomName}` : (embedPrefix || "ALL");
           setForm(f => ({
             ...f, attach_embed: true,
             embed: {
-              source: `SplitTable/${mlProd} @ ${lot} (auto)`,
+              source: `SplitTable/${mlProd} @ ${lot} · ${scopeLabel} (auto)`,
               columns: cols, rows,
-              note: `auto-snapshot · ${rows.length} params · fab_lot=${lot}`,
+              note: `auto-snapshot · ${(d.rows || []).length} params · fab_lot=${lot} · scope=${scopeLabel}`,
+              st_view: {
+                headers,
+                rows: d.rows || [],
+                wafer_fab_list: d.wafer_fab_list || [],
+                header_groups: d.header_groups || [],
+              },
+              st_scope: { prefix: embedPrefix || "", custom_name: embedCustomName || "" },
             },
           }));
           setEmbedFetching(false);
@@ -1180,7 +1309,7 @@ export default function My_Inform({ user }) {
         .catch(() => { setEmbedFetching(false); });
     }, 400);
     return () => { clearTimeout(handle); setEmbedFetching(false); };
-  }, [form.product, form.lot_id, creating]);
+  }, [form.product, form.lot_id, creating, embedPrefix, embedCustomName]);
 
   // v8.8.10: SplitTable 의 lot-candidates 로 root_lot_id + fab_lot_id 후보 fetch → Lot 드롭다운 소스.
   //   기존 /product-lots (RAWDATA_DB 폴더 스캔) 은 사내 실환경에서 빈 결과 자주 발생 → SplitTable 기반 primary.
@@ -1862,12 +1991,30 @@ export default function My_Inform({ user }) {
               onPaste={handleBodyPaste}
               placeholder="인폼 내용 (배경, 영향, 조치 요청 등) — Ctrl+V 로 이미지도 바로 붙여넣을 수 있어요"
               style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, resize: "vertical", boxSizing: "border-box", lineHeight: 1.5 }} />
-            <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              {/* v8.8.0: 별도 이미지 첨부 버튼 제거 — Ctrl+V 로 본문에 inline 삽입됨. */}
+            {/* v8.8.11: 스냅샷 scope 선택 — prefix 칩 (KNOB/MASK/INLINE/VM/FAB/ALL) + CUSTOM 드롭다운. 선택 시 자동 재fetch. */}
+            <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 10 }}>
+              <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>SplitTable scope:</span>
+              {["ALL", "KNOB", "MASK", "INLINE", "VM", "FAB"].map(p => {
+                const active = !embedCustomName && embedPrefix === p;
+                return (
+                  <span key={p} onClick={() => { setEmbedCustomName(""); setEmbedPrefix(p); }}
+                    style={{ padding: "2px 8px", borderRadius: 999, cursor: "pointer", fontWeight: active ? 700 : 500,
+                             background: active ? "var(--accent)" : "var(--bg-card)",
+                             color: active ? "#fff" : "var(--text-primary)",
+                             border: "1px solid " + (active ? "var(--accent)" : "var(--border)") }}>{p}</span>
+                );
+              })}
+              <span style={{ color: "var(--text-secondary)", marginLeft: 6 }}>CUSTOM:</span>
+              <select value={embedCustomName} onChange={e => { setEmbedCustomName(e.target.value); if (e.target.value) setEmbedPrefix(""); }}
+                style={{ padding: "2px 6px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, fontFamily: "monospace" }}>
+                <option value="">— 없음 (prefix 사용) —</option>
+                {customsList.map(c => <option key={c.name} value={c.name}>{c.name} ({(c.columns||[]).length}col)</option>)}
+              </select>
+            </div>
+
+            <div style={{ marginTop: 6, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>이미지: 본문에 <b>Ctrl+V</b> 로 바로 붙여넣기 (markdown 으로 inline 삽입)</span>
               {uploadingMain && <span style={{ fontSize: 10, color: "var(--accent)" }}>업로드중…</span>}
-              {/* v8.8.8: "SplitTable 에서 가져오기" / "표 붙여넣기" 버튼 제거.
-                         fab_lot_id 입력 시 자동 preview + 등록 시 자동 embed — 사용자가 별도 액션할 필요 없음. */}
               {embedFetching && <span style={{ fontSize: 10, color: "var(--accent)" }}>SplitTable 스냅샷 로딩…</span>}
               {form.attach_embed && form.embed.rows.length > 0 && (
                 <span style={{ fontSize: 10, color: "#16a34a", fontWeight: 600 }}>

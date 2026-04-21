@@ -1,3 +1,13 @@
+## v8.8.11 — 2026-04-21
+
+인폼 SplitTable 자동첨부 — prefix/CUSTOM 선택 + 컬러링 동일 + plan 핀.
+
+- **scope 선택 UI** — ALL/KNOB/MASK/INLINE/VM/FAB 칩 + CUSTOM 드롭다운 (splittable/customs). 선택 시 자동 재fetch.
+- **컬러링 동일** — EmbedTableView 가 `embed.st_view` 있으면 SplitTable CELL_COLORS 팔레트로 KNOB_/MASK_ 값 컬러링.
+- **plan 📌 핀** — plan 있는 셀 앞 📌 + mismatch 시 `actual →plan` 주황 + 좌측 빨강 테두리.
+- **fab_lot_id 행** — embed 상단 두 번째 헤더에 per-wafer fab_lot_id 표시.
+- **st_view 스키마** — {headers, rows:[{_param,_cells}], wafer_fab_list, header_groups} 보존. legacy 2D 병행.
+
 ## v8.8.10 — 2026-04-21
 
 Rulebook 컬럼 매핑 soft-landing + 인폼 Lot autocomplete + 스냅샷 로딩 버그 fix.
