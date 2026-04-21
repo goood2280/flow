@@ -401,3 +401,114 @@ def save_settings(req: SettingsSaveReq, _admin=Depends(require_admin)):
         _save_admin_settings(current)
 
     return {"ok": True, "settings": data, "data_roots": (_resolver_snapshot() if dr_in is not None else None)}
+
+
+# ── Base CSV editor (v8.5.2) ──
+# Admin only. step_matching.csv / knob_ppid.csv 를 직접 표로 편집.
+import csv as _csv
+BASE_CSV_SCHEMAS = {
+    "step_matching": {
+        "columns": ["step_id", "func_step"],
+        "unique_key": ["step_id"],
+    },
+    "knob_ppid": {
+        "columns": ["feature_name", "function_step", "rule_order", "ppid", "operator", "category", "use"],
+        "unique_key": ["feature_name", "function_step", "rule_order"],
+    },
+}
+
+
+def _base_csv_path(name: str) -> Path:
+    from core.paths import PATHS
+    # v8.4.6 이슈: path traversal 방어 — name 은 whitelist 화.
+    if name not in BASE_CSV_SCHEMAS:
+        raise HTTPException(400, f"Unknown csv: {name}")
+    base = Path(str(PATHS.base_root)).resolve()
+    fp = (base / f"{name}.csv").resolve()
+    try:
+        fp.relative_to(base)
+    except ValueError:
+        raise HTTPException(400, "Invalid path")
+    return fp
+
+
+@router.get("/base-csv")
+def base_csv_get(name: str = Query(...), _admin=Depends(require_admin)):
+    fp = _base_csv_path(name)
+    schema = BASE_CSV_SCHEMAS[name]
+    rows: List[List[str]] = []
+    if fp.exists():
+        with open(fp, "r", encoding="utf-8-sig", newline="") as f:
+            reader = _csv.reader(f)
+            header = next(reader, None)
+            for r in reader:
+                # pad/trim to match schema length
+                if len(r) < len(schema["columns"]):
+                    r = r + [""] * (len(schema["columns"]) - len(r))
+                rows.append(r[: len(schema["columns"])])
+    return {
+        "name": name,
+        "columns": schema["columns"],
+        "unique_key": schema["unique_key"],
+        "rows": rows,
+    }
+
+
+class BaseCsvSaveReq(BaseModel):
+    name: str
+    rows: List[List[str]] = []
+
+
+@router.put("/base-csv")
+def base_csv_save(req: BaseCsvSaveReq, _admin=Depends(require_admin)):
+    if req.name not in BASE_CSV_SCHEMAS:
+        raise HTTPException(400, f"Unknown csv: {req.name}")
+    schema = BASE_CSV_SCHEMAS[req.name]
+    cols = schema["columns"]
+    fp = _base_csv_path(req.name)
+
+    # validation: drop empty rows + check unique key
+    cleaned: List[List[str]] = []
+    seen_keys = set()
+    for raw in req.rows:
+        r = [(x if x is not None else "").strip() for x in raw]
+        if len(r) < len(cols):
+            r = r + [""] * (len(cols) - len(r))
+        r = r[: len(cols)]
+        if all(not v for v in r):
+            continue  # skip fully-empty
+        # unique key
+        key_idx = [cols.index(k) for k in schema["unique_key"]]
+        key = tuple(r[i] for i in key_idx)
+        if any(not k for k in key):
+            raise HTTPException(400, f"unique key empty: {schema['unique_key']}")
+        if key in seen_keys:
+            raise HTTPException(400, f"duplicate unique key: {key}")
+        seen_keys.add(key)
+        # `use` 필드 검증 (knob_ppid)
+        if req.name == "knob_ppid":
+            u = r[cols.index("use")].upper()
+            if u not in ("", "Y", "N", "0", "1"):
+                raise HTTPException(400, f"invalid use value: {u}")
+            r[cols.index("use")] = u or "Y"
+        cleaned.append(r)
+
+    # atomic write (UTF-8 w/ BOM for Excel compat)
+    tmp = fp.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
+        writer = _csv.writer(f)
+        writer.writerow(cols)
+        writer.writerows(cleaned)
+    tmp.replace(fp)
+
+    # audit
+    from core.auth import current_user
+    from fastapi import Request as _Req  # noqa
+    jsonl_append(ACTIVITY_LOG, {
+        "username": "admin",
+        "action": f"base-csv:save:{req.name}",
+        "tab": "admin",
+        "detail": f"rows={len(cleaned)}",
+        "timestamp": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+    })
+    return {"ok": True, "rows_saved": len(cleaned), "path": str(fp)}

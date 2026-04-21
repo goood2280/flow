@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Loading from "../components/Loading";
+import PageGear from "../components/PageGear";
 const API = "/api/tracker";
 const sf = (url, o) => fetch(url, o).then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
 
@@ -329,9 +330,12 @@ export default function My_Tracker({ user }) {
       <div style={{ width: 400, minWidth: 350, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", background: "var(--bg-secondary)" }}>
         <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace", color: "var(--accent)" }}>{">"} 이슈 추적</span>
-          <div style={{ display: "flex", gap: 4 }}>
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
             {["list", "gantt"].map(t => <span key={t} onClick={() => setViewTab(t)} style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", fontWeight: viewTab === t ? 600 : 400, background: viewTab === t ? "var(--accent-glow)" : "transparent", color: viewTab === t ? "var(--accent)" : "var(--text-secondary)" }}>{t === "list" ? "목록" : "간트"}</span>)}
             <button onClick={() => setCreating(!creating)} style={{ padding: "4px 12px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer", marginLeft: 4 }}>+ 새 이슈</button>
+            <PageGear title="이슈 추적 설정" canEdit={isAdmin} position="inline">
+              <TrackerSettings isAdmin={isAdmin} />
+            </PageGear>
           </div>
         </div>
         <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
@@ -451,4 +455,51 @@ export default function My_Tracker({ user }) {
           </div>) : <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--text-secondary)", fontSize: 13 }}>이슈를 선택하거나 새 이슈를 생성하세요</div>}
       </div>
     </div>);
+}
+
+/* ═══ v8.5.2 Tracker Settings (PageGear 내부) ═══ */
+function TrackerSettings({ isAdmin }) {
+  const [cats, setCats] = useState([]);
+  const [name, setName] = useState("");
+  const [color, setColor] = useState("#3b82f6");
+  const [msg, setMsg] = useState("");
+  const load = () => sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#64748b" } : c)));
+  useEffect(load, []);
+  const save = (next) => sf(API + "/categories/save", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next),
+  }).then(() => { setMsg("저장 완료"); load(); }).catch(e => setMsg(e.message));
+  const add = () => { if (!name.trim()) return; const next = [...cats, { name: name.trim(), color }]; setName(""); save(next); };
+  const remove = (n) => save(cats.filter(c => c.name !== n));
+  const updColor = (n, c) => save(cats.map(x => x.name === n ? { ...x, color: c } : x));
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>카테고리 관리</div>
+      {!isAdmin && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 8 }}>편집은 관리자만 가능합니다.</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+        {cats.map(c => (
+          <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input type="color" value={c.color || "#64748b"} disabled={!isAdmin}
+              onChange={e => updColor(c.name, e.target.value)}
+              style={{ width: 28, height: 26, border: "1px solid var(--border)", borderRadius: 4, background: "transparent", cursor: isAdmin ? "pointer" : "default" }} />
+            <span style={{ flex: 1, fontSize: 12 }}>{c.name}</span>
+            {isAdmin && <span onClick={() => remove(c.name)} style={{ cursor: "pointer", color: "#ef4444", fontSize: 11 }}>삭제</span>}
+          </div>
+        ))}
+      </div>
+      {isAdmin && (
+        <div style={{ display: "flex", gap: 6 }}>
+          <input type="color" value={color} onChange={e => setColor(e.target.value)}
+            style={{ width: 28, height: 30, border: "1px solid var(--border)", borderRadius: 4, background: "transparent" }} />
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="새 카테고리 이름"
+            style={{ flex: 1, padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+          <button onClick={add} style={{ padding: "6px 12px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, cursor: "pointer" }}>추가</button>
+        </div>
+      )}
+      {msg && <div style={{ marginTop: 8, fontSize: 11, color: msg === "저장 완료" ? "#22c55e" : "#ef4444" }}>{msg}</div>}
+      <div style={{ marginTop: 16, padding: 10, background: "var(--bg-primary)", borderRadius: 6, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+        • 카테고리 색상은 이슈 리스트/간트 차트 bar/카테고리 chip 에 반영됩니다.<br/>
+        • 일반 유저는 현재 카테고리 목록만 조회 가능.
+      </div>
+    </div>
+  );
 }

@@ -63,7 +63,7 @@ export default function My_Admin({user}){
 
   // Tabs differ by role
   // v8.4.3 단위기능 페이지 철학: AWS 설정은 FileBrowser 톱니로 이관 예정 (제거).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["groups","그룹"],["logs","로그"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["groups","그룹"],["base_csv","Base CSV"],["logs","로그"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
   const userTabs=[["notifs","알림"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
 
@@ -200,6 +200,9 @@ export default function My_Admin({user}){
 
       {/* Groups (admin only) — v8.5.0 */}
       {tab==="groups"&&isAdmin&&<GroupsPanel allUsers={users}/>}
+
+      {/* Base CSV editor (admin only) — v8.5.2 */}
+      {tab==="base_csv"&&isAdmin&&<BaseCsvPanel/>}
 
       {/* Categories (admin only) */}
       {tab==="categories"&&isAdmin&&<CategoryPanel/>}
@@ -959,6 +962,116 @@ function GroupsPanel({allUsers}){
             • 관심 LOT_WF 목록은 향후 SplitTable/Dashboard 의 필터로 활용됨.
           </div>
         </>}
+      </div>
+    </div>
+  );
+}
+
+// ── Base CSV Editor Panel (v8.5.2) ──
+const BASE_CSVS = [
+  {key:"step_matching",label:"step_matching.csv"},
+  {key:"knob_ppid",label:"knob_ppid.csv"},
+];
+function BaseCsvPanel(){
+  const [cur,setCur]=useState("step_matching");
+  const [columns,setColumns]=useState([]);
+  const [uniqueKey,setUniqueKey]=useState([]);
+  const [rows,setRows]=useState([]);
+  const [msg,setMsg]=useState("");
+  const [saving,setSaving]=useState(false);
+  const [filter,setFilter]=useState("");
+  const load=(name)=>{
+    setMsg("");
+    sf("/api/admin/base-csv?name="+encodeURIComponent(name)).then(d=>{
+      setColumns(d.columns||[]);setUniqueKey(d.unique_key||[]);setRows(d.rows||[]);
+    }).catch(e=>setMsg(e.message));
+  };
+  useEffect(()=>{load(cur);},[cur]);
+  const updCell=(ri,ci,v)=>{
+    const next=rows.map((r,i)=>i===ri?r.map((x,j)=>j===ci?v:x):r);
+    setRows(next);
+  };
+  const addRow=()=>setRows([...rows,columns.map(()=>"")]);
+  const delRow=(ri)=>setRows(rows.filter((_,i)=>i!==ri));
+  const moveRow=(ri,dir)=>{
+    const ni=ri+dir;if(ni<0||ni>=rows.length)return;
+    const next=[...rows];[next[ri],next[ni]]=[next[ni],next[ri]];setRows(next);
+  };
+  const save=()=>{
+    setSaving(true);setMsg("");
+    sf("/api/admin/base-csv",{method:"PUT",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name:cur,rows})})
+      .then(d=>{setMsg(`저장 완료 (${d.rows_saved}행)`);load(cur);})
+      .catch(e=>setMsg(e.message))
+      .finally(()=>setSaving(false));
+  };
+  const filtered=filter
+    ?rows.map((r,i)=>[r,i]).filter(([r])=>r.some(v=>String(v||"").toLowerCase().includes(filter.toLowerCase())))
+    :rows.map((r,i)=>[r,i]);
+  return(
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
+        {BASE_CSVS.map(c=>(
+          <span key={c.key} onClick={()=>setCur(c.key)} style={{
+            padding:"5px 12px",borderRadius:6,cursor:"pointer",fontSize:12,fontWeight:cur===c.key?700:400,
+            background:cur===c.key?"var(--accent-glow)":"transparent",
+            color:cur===c.key?"var(--accent)":"var(--text-secondary)",
+            border:"1px solid "+(cur===c.key?"var(--accent)":"var(--border)"),
+            fontFamily:"monospace",
+          }}>{c.label}</span>
+        ))}
+        <div style={{flex:1}}/>
+        <input value={filter} onChange={e=>setFilter(e.target.value)} placeholder="필터..."
+          style={{padding:"5px 10px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,width:160}}/>
+        <button onClick={()=>load(cur)} style={{padding:"5px 10px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>↻ 재로드</button>
+      </div>
+      <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:8}}>
+        컬럼: <code>{columns.join(", ")}</code> · unique: <code>{uniqueKey.join(", ")}</code> · 총 {rows.length}행
+        {filter&&` · 필터 매칭 ${filtered.length}행`}
+      </div>
+
+      <div style={{maxHeight:500,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-primary)"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
+          <thead><tr>
+            <th style={{position:"sticky",top:0,background:"var(--bg-tertiary)",padding:"6px 8px",borderBottom:"2px solid var(--border)",width:38}}>#</th>
+            {columns.map(c=>(
+              <th key={c} style={{position:"sticky",top:0,background:"var(--bg-tertiary)",padding:"6px 8px",borderBottom:"2px solid var(--border)",textAlign:"left",color:uniqueKey.includes(c)?"var(--accent)":"var(--text-primary)"}}>{c}{uniqueKey.includes(c)?" *":""}</th>
+            ))}
+            <th style={{position:"sticky",top:0,background:"var(--bg-tertiary)",padding:"6px 8px",borderBottom:"2px solid var(--border)",width:80}}>작업</th>
+          </tr></thead>
+          <tbody>
+            {filtered.map(([r,ri])=>(
+              <tr key={ri} style={{borderBottom:"1px solid var(--border)"}}>
+                <td style={{padding:"3px 8px",color:"var(--text-secondary)"}}>{ri+1}</td>
+                {r.map((v,ci)=>(
+                  <td key={ci} style={{padding:0,borderLeft:"1px solid var(--border)"}}>
+                    <input value={v||""} onChange={e=>updCell(ri,ci,e.target.value)}
+                      style={{width:"100%",padding:"4px 8px",border:"none",background:"transparent",color:"var(--text-primary)",fontFamily:"monospace",fontSize:11,outline:"none"}}/>
+                  </td>
+                ))}
+                <td style={{padding:"2px 4px",borderLeft:"1px solid var(--border)",whiteSpace:"nowrap"}}>
+                  <span onClick={()=>moveRow(ri,-1)} style={{cursor:"pointer",color:"var(--text-secondary)",padding:"0 4px"}}>↑</span>
+                  <span onClick={()=>moveRow(ri,+1)} style={{cursor:"pointer",color:"var(--text-secondary)",padding:"0 4px"}}>↓</span>
+                  <span onClick={()=>delRow(ri)} style={{cursor:"pointer",color:"#ef4444",padding:"0 4px"}}>✕</span>
+                </td>
+              </tr>
+            ))}
+            {rows.length===0&&<tr><td colSpan={columns.length+2} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>데이터 없음. 아래 '+행 추가' 로 시작하세요.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>
+        <button onClick={addRow} style={{padding:"7px 14px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:12,cursor:"pointer"}}>+ 행 추가</button>
+        <button onClick={save} disabled={saving} style={{padding:"7px 18px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontWeight:700,fontSize:12,cursor:saving?"wait":"pointer"}}>{saving?"저장 중...":"저장"}</button>
+        {msg&&<span style={{fontSize:11,color:msg.startsWith("저장")?"#22c55e":"#ef4444"}}>{msg}</span>}
+      </div>
+
+      <div style={{marginTop:14,padding:10,background:"var(--bg-primary)",borderRadius:6,fontSize:10,color:"var(--text-secondary)",lineHeight:1.6}}>
+        • 컬럼 뒤 <b style={{color:"var(--accent)"}}>*</b> 는 unique key. 중복 시 저장 거부.<br/>
+        • step_matching: (step_id, func_step) — step_id 유니크.<br/>
+        • knob_ppid: (feature_name, function_step, rule_order, ppid, operator, category, use) — 앞 3개 복합 unique. use ∈ Y/N/0/1.<br/>
+        • 저장 시 UTF-8 BOM 포함 CSV 로 덮어씁니다 (Excel 호환). SplitTable KNOB 메타는 자동 재조회.
       </div>
     </div>
   );
