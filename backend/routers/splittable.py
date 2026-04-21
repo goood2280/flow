@@ -71,19 +71,113 @@ def _natural_param_key(name: str):
     """v8.4.4 — prefix 뒤 숫자(정수/소수) 기준 자연 정렬 키 생성.
     예: 'KNOB_12.0_ASV_FOO' → ('KNOB', 12.0, '_ASV_FOO')
     숫자가 없으면 ('KNOB', inf, rest) 순으로 후순.
+    v8.8.14: 내부 문자열 tail 도 자연 정렬(숫자/비숫자 분리)로 안정화 →
+      `KNOB_10_FOO` 뒤에 `KNOB_2_FOO` 가 오는 오작동 방지.
     """
-    if not name: return ("", float("inf"), "")
+    if not name: return ("", float("inf"), ())
     parts = name.split("_", 1)
     pfx = parts[0]
     rest = parts[1] if len(parts) > 1 else ""
+    # split rest into natural tokens (numbers → float, others → lowercased str)
+    tail: list = []
+    for tok in _NUM_RE.split(rest):
+        if tok == "":
+            continue
+        try:
+            tail.append(("n", float(tok)))
+        except Exception:
+            tail.append(("s", tok.lower()))
     m = _NUM_RE.search(rest)
     if m:
         try:
             num = float(m.group(1))
         except Exception:
             num = float("inf")
-        return (pfx, num, rest)
-    return (pfx, float("inf"), rest)
+        return (pfx, num, tuple(tail))
+    return (pfx, float("inf"), tuple(tail))
+
+
+# v8.8.14: ML_TABLE 컬럼 display rename — rule_order + func_step 을 feature 앞에
+#   끼워 넣어 SplitTable 헤더에서 "어느 공정 step 의 feature 인지" 한눈에 보이게 함.
+#   규칙:
+#     KNOB_<feature>   + knob_meta 매칭 시 → KNOB_{rule_order:.1f}_{func_step_label}_<feature>
+#     INLINE_<item_id> + inline_meta 매칭 시 → INLINE_{step_id}_<item_id>     (step_id 가 숫자일 때 자연 정렬 유리)
+#     VM_<feature>     + vm_meta   매칭 시 → VM_{step_id}_<feature>
+#     매칭 실패/메타 없음 → 원본 그대로.
+#   rule_order 가 여러 group 이면 min() 값, func_step 은 '+' 로 join (중복 제거).
+#   display 이름만 바꾸고 원본 col 이름(`_param`) 은 그대로 보존 → plan/notes/
+#   knob_meta lookup 이 깨지지 않음.
+def _safe_step_segment(s: str) -> str:
+    """func_step 값에서 공백/특수문자 제거 → 컬럼명 조각으로 안전하게."""
+    if not s:
+        return ""
+    return _re.sub(r"[^A-Za-z0-9]+", "_", str(s)).strip("_")
+
+
+def _build_col_rename_map(selected_cols: list, product: str) -> dict:
+    """raw column name → display name. 매칭 없으면 원본 반환(맵에 키 없음)."""
+    out: dict[str, str] = {}
+    try:
+        knob_meta = _build_knob_meta(product)
+    except Exception:
+        knob_meta = {}
+    try:
+        inline_meta = _build_inline_meta(product)
+    except Exception:
+        inline_meta = {}
+    try:
+        vm_meta = _build_vm_meta(product)
+    except Exception:
+        vm_meta = {}
+
+    for col in selected_cols:
+        if not col or "_" not in col:
+            continue
+        pfx, _, tail = col.partition("_")
+        pfx_u = pfx.upper()
+        # knob_meta / inline_meta / vm_meta 는 feature_name / item_id / feature_name 키로 저장되는데,
+        # 사내 CSV 는 "KNOB_FOO" 같은 prefix 포함 형태와 "FOO" 같은 prefix 없는 형태가 혼재할 수 있음.
+        # 두 가지 모두 시도 (full col → tail 순).
+        if pfx_u == "KNOB":
+            meta = knob_meta.get(col) or knob_meta.get(tail)
+            if not meta:
+                continue
+            groups = meta.get("groups") or []
+            if not groups:
+                continue
+            try:
+                rule_order = min(int(g.get("rule_order") or 0) for g in groups)
+            except Exception:
+                rule_order = 0
+            step_segs: list = []
+            seen: set = set()
+            for g in groups:
+                seg = _safe_step_segment(g.get("func_step") or "")
+                if seg and seg not in seen:
+                    seen.add(seg)
+                    step_segs.append(seg)
+            if not step_segs:
+                continue
+            step_label = "+".join(step_segs)
+            out[col] = f"KNOB_{float(rule_order):.1f}_{step_label}_{tail}"
+        elif pfx_u == "INLINE":
+            meta = inline_meta.get(col) or inline_meta.get(tail)
+            if not meta:
+                continue
+            sid = _safe_step_segment(meta.get("step_id") or "")
+            if not sid:
+                continue
+            out[col] = f"INLINE_{sid}_{tail}"
+        elif pfx_u == "VM":
+            meta = vm_meta.get(col) or vm_meta.get(tail)
+            if not meta:
+                continue
+            sid = _safe_step_segment(meta.get("step_id") or "")
+            if not sid:
+                continue
+            out[col] = f"VM_{sid}_{tail}"
+        # 그 외 prefix (FAB / MASK / ET / QTIME …) 는 rename 대상 아님.
+    return out
 
 
 def _color_for_value(val, uniq_map, palette):
@@ -1712,8 +1806,14 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
 
         all_data_cols = [c for c in df.columns if c != lot_col and c != wf_col]
         selected = _select_columns(all_data_cols, custom_name, prefix, max_fallback=50)
-        # v8.4.4: natural sort by trailing number (KNOB_12.0_... → 12.0 기준)
-        selected = sorted(selected, key=_natural_param_key)
+        # v8.8.14: rule_order + func_step 를 컬럼명에 끼워 넣어 display-rename.
+        #   원본 col 이름은 `_param` 으로 그대로 두고, 렌더용 `_display` 를 별도로 내려보냄.
+        #   정렬은 display 이름 기준으로 → `KNOB_<rule_order>_<func_step>_<feat>` 가
+        #   rule_order 숫자 기준 자연 정렬된다.
+        col_rename = _build_col_rename_map(selected, product)
+        # v8.4.4/v8.8.14: natural sort — rename 후 이름이 있으면 그걸 기준,
+        #   없으면 원본 이름 기준. KNOB_12.0_... 포맷이므로 _natural_param_key 가 rule_order 를 잡아낸다.
+        selected = sorted(selected, key=lambda c: _natural_param_key(col_rename.get(c, c)))
 
         # Wafer header list + fab_lot_id grouping (v8.4.4)
         fab_col = "fab_lot_id" if "fab_lot_id" in df.columns else None
@@ -1811,7 +1911,9 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                     mismatch = True
                 _cells[str(ci)] = {"actual": actual_str, "plan": plan, "key": ck,
                                    "can_plan": can_plan, "mismatch": mismatch}
-            rows.append({"_param": col_name, "_cells": _cells})
+            # v8.8.14: _display — rule_order + func_step 을 포함한 렌더용 이름.
+            #   없으면 원본과 동일. FE 는 _display 를 사용하고 prefix strip 후 표시.
+            rows.append({"_param": col_name, "_display": col_rename.get(col_name, col_name), "_cells": _cells})
 
         if view_mode == "diff":
             rows = [r for r in rows
@@ -2008,7 +2110,9 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
 
     all_data_cols = [c for c in df.columns if c != lot_col and c != wf_col]
     selected = _select_columns(all_data_cols, custom_name, prefix, max_fallback=200)
-    selected = sorted(selected, key=_natural_param_key)
+    # v8.8.14: display rename (rule_order + func_step) + natural sort on display name.
+    col_rename = _build_col_rename_map(selected, product)
+    selected = sorted(selected, key=lambda c: _natural_param_key(col_rename.get(c, c)))
 
     if transposed.lower() == "true" and wf_col and wf_col in df.columns:
         # Resolve wafer values (handle W01 format)
@@ -2069,7 +2173,7 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
                     ck = f"{root_lot_id}|{wk}|{col_name}"
                     pv = plans.get(ck, {}).get("value")
                     row_data[idx] = pv if pv and not sv else sv
-            writer.writerow([col_name] + row_data)
+            writer.writerow([col_rename.get(col_name, col_name)] + row_data)
         # v8.4.4: Excel 한글 깨짐 방지 — UTF-8 BOM prefix
         csv_bytes = b"\xef\xbb\xbf" + output.getvalue().encode("utf-8")
     else:
@@ -2101,7 +2205,9 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     all_data_cols = [c for c in df.columns if c != lot_col and c != wf_col]
     selected = _select_columns(all_data_cols, custom_name, prefix, max_fallback=200)
     # v8.4.4: natural sort — prefix 뒤 숫자 (정수+소수) 기준. 숫자 없으면 알파벳 순.
-    selected = sorted(selected, key=_natural_param_key)
+    # v8.8.14: display rename (rule_order + func_step) 적용 + 그 이름 기준 정렬.
+    col_rename = _build_col_rename_map(selected, product)
+    selected = sorted(selected, key=lambda c: _natural_param_key(col_rename.get(c, c)))
 
     wf_raw_int = df[wf_col].cast(pl.Int64, strict=False).to_list() if wf_col else []
     non_null = [v for v in wf_raw_int if v is not None]
@@ -2196,7 +2302,9 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
 
     for r_off, col_name in enumerate(selected):
         rr = param_row + 1 + r_off
-        ws.cell(row=rr, column=1, value=col_name).font = Font(bold=True)
+        # v8.8.14: display rename 된 이름을 표기 (원본 col_name 으로는 여전히 df 조회).
+        display_name = col_rename.get(col_name, col_name)
+        ws.cell(row=rr, column=1, value=display_name).font = Font(bold=True)
         up = (col_name or "").upper()
         should_color = any(up.startswith(p) for p in COLOR_PREFIXES)
         vals = df[col_name].to_list()

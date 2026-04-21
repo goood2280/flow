@@ -1,3 +1,15 @@
+## v8.8.14 — 2026-04-22
+
+ML_TABLE 컬럼 리네임(rule_order+func_step) · 자연정렬 강화 · 인폼 목록 모듈 pill 재배치 · 페이지 admin 위임 · 예약 백업 · 활동 대시보드 · HR 감사 긴급 fix.
+
+- **ML_TABLE 컬럼 display-rename** — KNOB/INLINE/VM 에서 `knob_ppid.csv`/`inline_matching.csv`/`vm_matching.csv` 매칭 시 `{PREFIX}_{rule_order}_{func_step_label}_{feature_tail}` 형식으로 display 이름 재구성. 원본 컬럼명은 `_param` 유지 → plan/notes/meta lookup 안전. /view + CSV/XLSX 헤더 동일 적용.
+- **자연정렬 강화** — `_natural_param_key` 가 display 이름 기준으로 정렬 + 내부 tail 도 숫자/비숫자 토큰 분리 자연 정렬.
+- **인폼 CompactRow 재설계** — 좌측 96px 고정폭 컬럼에 색상 pill + [reason] 꼬리표. 모듈 미정 행도 회색 placeholder. 제품 × 모듈이 한눈에.
+- **페이지 admin 위임** — `require_page_admin(page_id)` dependency + `admin_settings.page_admins` 저장소. `/api/admin/page-admins` GET/POST, `/api/admin/my-page-admin` 조회. Admin UI에 페이지×유저 체크박스 매트릭스.
+- **예약 백업** — `admin_settings.backup.scheduled_at` + 60초 폴링 스케줄러. `/api/admin/backup/schedule` POST. Admin '백업' 탭에서 주기/보관/즉시/예약 통합 UI.
+- **활동 대시보드** — `/api/admin/activity/summary` + `/api/admin/activity/features` 집계 엔드포인트. Admin '활동 대시보드' 탭에 by_user/by_action/by_day bar + 기능별 활성 카드.
+- **HR 감사 긴급 fix (2026-04-22)** — `eval-lead.md` 팀 로스터 정정(feature-auditor/industry-researcher 제거 → security-auditor/domain-researcher). `orchestrator.md` 브랜딩 flow. `dev-lead.md` `be-*/fe-*` 제거 → 풀스택 dev-* 구조로.
+
 ## v8.8.12 — 2026-04-21
 
 인폼 공동편집 + 담당자 패널 전제품 삭제 + 모듈별 요약 접기 + 답글 [RE] + 회의 주관자 기본값.

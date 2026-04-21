@@ -136,6 +136,13 @@ class BatchDismissReq(BaseModel):
 class MarkReadReq(BaseModel):
     username: str
     ids: List[str]
+# v8.8.14: per-page admin delegation + scheduled backup payload 스키마.
+class PageAdminsReq(BaseModel):
+    page_id: str
+    usernames: List[str] = []
+class BackupScheduleReq(BaseModel):
+    at: str = ""            # ISO datetime — 비우면 취소
+    reason: str = "pre-maintenance"
 
 
 # ── Users ──
@@ -612,16 +619,196 @@ def backup_status(_admin=Depends(require_admin)):
 
 
 @router.post("/backup/run")
-def backup_run(_admin=Depends(require_admin)):
+def backup_run(request: Request, _admin=Depends(require_admin)):
     from core.backup import run_backup
     info = run_backup(reason="manual")
-    jsonl_append(ACTIVITY_LOG, {
-        "actor": "admin", "action": "backup_run",
-        "ok": info.get("ok"), "path": info.get("path"),
-        "size": info.get("bytes"), "error": info.get("error"),
-        "time": info.get("at"),
-    })
+    _audit(request, "admin:backup-run",
+           detail=f"ok={info.get('ok')} size={info.get('bytes')} err={info.get('error','')[:80]}",
+           tab="admin")
     return info
+
+
+# ── v8.8.14: Scheduled one-off backup ──────────────────────────────────
+# 서버 점검 예정 시 admin 이 "특정 시각에 백업 실행" 을 예약. 스케줄러가 1분 단위로
+# admin_settings.backup.scheduled_at 를 폴링해서 시각이 지나면 실행하고 필드 비운다.
+@router.post("/backup/schedule")
+def backup_schedule(req: BackupScheduleReq, request: Request, _admin=Depends(require_admin)):
+    """`at` 이 비어있으면 예약 취소. ISO datetime (예: 2026-04-22T23:30:00) 필요."""
+    import datetime as _dt
+    cfg = load_json(ADMIN_SETTINGS_FILE, {})
+    bk = dict(cfg.get("backup") or {})
+    at = (req.at or "").strip()
+    if not at:
+        bk.pop("scheduled_at", None); bk.pop("scheduled_reason", None)
+        cfg["backup"] = bk
+        save_json(ADMIN_SETTINGS_FILE, cfg)
+        _audit(request, "admin:backup-schedule-cancel", tab="admin")
+        return {"ok": True, "scheduled_at": None}
+    # Parse ISO for validation (Python 3.11+; polyfill for offset)
+    try:
+        _ = _dt.datetime.fromisoformat(at.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(400, f"Invalid ISO datetime: {at!r}")
+    bk["scheduled_at"] = at
+    bk["scheduled_reason"] = (req.reason or "pre-maintenance").strip()[:40] or "pre-maintenance"
+    cfg["backup"] = bk
+    save_json(ADMIN_SETTINGS_FILE, cfg)
+    _audit(request, "admin:backup-schedule", detail=f"at={at} reason={bk['scheduled_reason']}", tab="admin")
+    return {"ok": True, "scheduled_at": at, "reason": bk["scheduled_reason"]}
+
+
+# ── v8.8.14: Per-page admin delegation ─────────────────────────────────
+@router.get("/page-admins")
+def page_admins_get(_admin=Depends(require_admin)):
+    """현재 admin_settings 의 page_admins 맵 전체. Admin UI 에서 편집용."""
+    from core.auth import get_page_admins
+    return {"page_admins": get_page_admins()}
+
+
+@router.post("/page-admins")
+def page_admins_set(req: PageAdminsReq, request: Request, _admin=Depends(require_admin)):
+    """page_id → usernames 목록을 설정 (빈 리스트면 해당 페이지 위임 제거)."""
+    page_id = (req.page_id or "").strip()
+    if not page_id:
+        raise HTTPException(400, "page_id required")
+    valid_users = {u["username"] for u in read_users() if u.get("status") == "approved"}
+    users = [u for u in (req.usernames or []) if u in valid_users]
+    data = load_json(ADMIN_SETTINGS_FILE, {})
+    pa = dict(data.get("page_admins") or {})
+    if users:
+        pa[page_id] = sorted(set(users))
+    else:
+        pa.pop(page_id, None)
+    data["page_admins"] = pa
+    save_json(ADMIN_SETTINGS_FILE, data)
+    _audit(request, "admin:page-admins-set",
+           detail=f"page={page_id} users={','.join(users) or '(clear)'}", tab="admin")
+    return {"ok": True, "page_admins": pa}
+
+
+@router.get("/my-page-admin")
+def my_page_admin(request: Request):
+    """현재 유저가 위임받은 page 목록. global admin 은 전체 True + is_global_admin=true 반환."""
+    u = current_user(request)
+    from core.auth import get_page_admins
+    pa = get_page_admins()
+    uname = u.get("username", "")
+    pages = sorted([pid for pid, lst in pa.items() if uname in (lst or [])])
+    return {
+        "username": uname,
+        "role": u.get("role", "user"),
+        "is_global_admin": u.get("role") == "admin",
+        "pages": pages,
+    }
+
+
+# ── v8.8.14: Activity dashboard — 누가 / 어떤 기능을 / 얼마나 썼는지 ──
+@router.get("/activity/summary")
+def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
+    """최근 N 일 activity.jsonl 을 집계.
+    반환:
+      - total: 총 이벤트 수
+      - by_user: { username: count } (top 20)
+      - by_action: { action: count } (top 30)
+      - by_tab:    { tab: count }
+      - by_day:    { "YYYY-MM-DD": count }
+      - recent:    최근 50건 (내림차순)
+    """
+    import datetime as _dt, collections
+    try:
+        days = max(1, min(90, int(days)))
+    except Exception:
+        days = 7
+    rows = list(jsonl_read(ACTIVITY_LOG) or [])
+    cutoff = _dt.datetime.now() - _dt.timedelta(days=days)
+    by_user = collections.Counter()
+    by_action = collections.Counter()
+    by_tab = collections.Counter()
+    by_day = collections.Counter()
+    filtered: list = []
+    for r in rows:
+        ts = (r.get("timestamp") or r.get("time") or "").strip()
+        try:
+            dt = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+        except Exception:
+            continue
+        if dt < cutoff:
+            continue
+        filtered.append(r)
+        u = (r.get("username") or r.get("actor") or "anonymous") or "anonymous"
+        by_user[u] += 1
+        a = (r.get("action") or "") or "(unknown)"
+        by_action[a] += 1
+        t = (r.get("tab") or "") or "(none)"
+        by_tab[t] += 1
+        by_day[dt.strftime("%Y-%m-%d")] += 1
+    filtered.sort(key=lambda r: r.get("timestamp") or r.get("time") or "", reverse=True)
+    return {
+        "window_days": days,
+        "total": len(filtered),
+        "by_user": dict(by_user.most_common(20)),
+        "by_action": dict(by_action.most_common(30)),
+        "by_tab": dict(by_tab.most_common()),
+        "by_day": dict(sorted(by_day.items())),
+        "recent": filtered[:50],
+    }
+
+
+@router.get("/activity/features")
+def activity_features(days: int = Query(30), _admin=Depends(require_admin)):
+    """`action` prefix 단위로 기능 사용 현황. 각 기능(=action prefix)의 first_seen /
+    last_seen / users(사용한 유저 집합) / count 를 반환. admin 이 "어떤 기능이 활성화
+    되어 있는지" 한눈에 파악하는 용도.
+    """
+    import datetime as _dt, collections
+    try:
+        days = max(1, min(365, int(days)))
+    except Exception:
+        days = 30
+    rows = list(jsonl_read(ACTIVITY_LOG) or [])
+    cutoff = _dt.datetime.now() - _dt.timedelta(days=days)
+    features: dict = {}
+    for r in rows:
+        ts = (r.get("timestamp") or r.get("time") or "").strip()
+        try:
+            dt = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+        except Exception:
+            continue
+        if dt < cutoff:
+            continue
+        a = (r.get("action") or "").strip()
+        if not a:
+            continue
+        # prefix = "domain:verb" 같이 ':' 로 구분된 앞부분 (예: inform:create / splittable:plan)
+        key = a.split(":", 1)[0] if ":" in a else a
+        ent = features.setdefault(key, {
+            "name": key, "count": 0, "users": set(),
+            "first_seen": ts, "last_seen": ts,
+            "sample_actions": collections.Counter(),
+        })
+        ent["count"] += 1
+        ent["users"].add((r.get("username") or r.get("actor") or "anonymous") or "anonymous")
+        if ts < ent["first_seen"]:
+            ent["first_seen"] = ts
+        if ts > ent["last_seen"]:
+            ent["last_seen"] = ts
+        ent["sample_actions"][a] += 1
+    out = []
+    for k, v in sorted(features.items(), key=lambda kv: -kv[1]["count"]):
+        out.append({
+            "feature": k,
+            "count": v["count"],
+            "user_count": len(v["users"]),
+            "users": sorted(v["users"])[:20],
+            "first_seen": v["first_seen"],
+            "last_seen": v["last_seen"],
+            "top_actions": dict(v["sample_actions"].most_common(5)),
+        })
+    return {"window_days": days, "features": out, "feature_count": len(out)}
 
 
 # ── Base CSV editor (v8.5.2) ──

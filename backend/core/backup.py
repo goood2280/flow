@@ -75,6 +75,9 @@ def get_settings() -> dict:
         "interval_hours": int(bk.get("interval_hours") or _DEFAULT_INTERVAL_HOURS),
         "keep": keep,
         "enabled": bool(bk.get("enabled", True)),
+        # v8.8.14: 예약된 one-off 백업 시각 (ISO) + reason. 없으면 빈 문자열.
+        "scheduled_at": (bk.get("scheduled_at") or "").strip(),
+        "scheduled_reason": (bk.get("scheduled_reason") or "").strip(),
         "last": _last_backup,
     }
 
@@ -282,6 +285,40 @@ _scheduler_started = False
 _scheduler_stop = threading.Event()
 
 
+def _check_and_run_one_off() -> bool:
+    """v8.8.14: admin_settings.backup.scheduled_at 이 현재 시각 이전이면 1회 백업 실행하고
+    필드를 비운다. 실행했으면 True.
+
+    서버 점검 예정 시각 직전에 예약 백업을 돌릴 수 있게 해줌. 스케줄러 루프가 60초마다 폴링.
+    """
+    try:
+        cfg = _read_cfg()
+        bk = dict(cfg.get("backup") or {})
+        at_s = (bk.get("scheduled_at") or "").strip()
+        if not at_s:
+            return False
+        try:
+            at_dt = datetime.datetime.fromisoformat(at_s.replace("Z", "+00:00"))
+            if at_dt.tzinfo is not None:
+                at_dt = at_dt.replace(tzinfo=None)
+        except Exception:
+            logger.warning(f"backup scheduler: invalid scheduled_at={at_s!r} — clearing")
+            bk.pop("scheduled_at", None); bk.pop("scheduled_reason", None)
+            cfg["backup"] = bk; _write_cfg(cfg)
+            return False
+        if at_dt > datetime.datetime.now():
+            return False
+        reason = (bk.get("scheduled_reason") or "pre-maintenance").strip() or "pre-maintenance"
+        # 사용 즉시 필드를 비워 중복 실행 방지.
+        bk.pop("scheduled_at", None); bk.pop("scheduled_reason", None)
+        cfg["backup"] = bk; _write_cfg(cfg)
+        run_backup(reason=reason)
+        return True
+    except Exception as e:
+        logger.warning(f"backup scheduler: one-off check failed: {e}")
+        return False
+
+
 def _scheduler_loop():
     # 서버 기동 직후 짧은 지연 후 최초 1회.
     time.sleep(30)
@@ -290,16 +327,23 @@ def _scheduler_loop():
         try:
             cfg = get_settings()
             if not cfg["enabled"]:
+                # enabled=False 여도 one-off 예약은 존중.
+                _check_and_run_one_off()
                 time.sleep(600)
                 continue
             if first:
                 run_backup(reason="startup")
                 first = False
-            # 주기 대기 (60초 단위 폴링 — 설정 변경 신속 반영)
+            # 주기 대기 (60초 단위 폴링 — 설정 변경 + scheduled_at one-off 신속 반영)
             remain = cfg["interval_hours"] * 3600
             while remain > 0 and not _scheduler_stop.is_set():
                 time.sleep(min(60, remain))
                 remain -= 60
+                # v8.8.14: 폴링 시마다 one-off 예약 체크.
+                if _check_and_run_one_off():
+                    # one-off 이 돌았으면 이번 주기는 생략 (이중 백업 방지) — remain 만료로 재진입.
+                    remain = 0
+                    break
                 # 주기가 줄어들었으면 루프 재시작
                 new_iv = get_settings()["interval_hours"] * 3600
                 if new_iv < remain:
