@@ -413,9 +413,9 @@ function MailDialog({ root, user, onClose }) {
           <span onClick={onClose} style={{ cursor: "pointer", fontSize: 18 }}>✕</span>
         </div>
         <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>Admin 설정의 메일 API 로 multipart POST. 수신자 총 <b style={{ color: "var(--accent)" }}>{totalEmails}명</b> · Inform <code>{root.id}</code></div>
-        {/* v8.8.0: 메일은 시스템(Admin from_addr) 으로 발송되지만 본문에 실제 요청자(나) ID 자동 명시. 제품 담당자(/api/informs/product-contacts) 도 본문 자동 첨부. */}
+        {/* v8.8.1: 발송자 ID 자동 명시 제거. 제품 담당자 라인만 본문 상단에 삽입. */}
         <div style={{ fontSize: 10, padding: "6px 10px", marginBottom: 10, borderRadius: 4, background: "rgba(59,130,246,0.10)", border: "1px solid rgba(59,130,246,0.5)", color: "#1d4ed8" }}>
-          📨 발송계정: 시스템(Admin) · <b>본문에 발송 요청자 ID “{user?.username || "?"}” 자동 명시</b> · 제품 담당자(있으면) 본문에 자동 첨부됨.
+          📨 발송계정: 시스템(Admin) · 본문 상단에 <b>제품 담당자</b> 라인 자동 삽입 (해당 제품에 등록된 담당자 있을 때).
         </div>
 
         {/* Module recipient groups */}
@@ -465,15 +465,10 @@ function MailDialog({ root, user, onClose }) {
           <input value={extraEmails} onChange={e => setExtraEmails(e.target.value)} placeholder="ext1@vendor.com, ext2@vendor.com" style={{ ...S, fontFamily: "monospace", fontSize: 11 }} />
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <div style={{ flex: 3 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>제목 (title)</div>
-            <input value={subject} onChange={e => setSubject(e.target.value)} style={S} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>statusCode</div>
-            <input value={statusCode} onChange={e => setStatusCode(e.target.value)} placeholder="(admin 기본값)" style={S} />
-          </div>
+        {/* v8.8.1: statusCode 등 백엔드 전용 필드는 UI 에서 제거 — admin 기본값으로 자동 주입됨. */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>제목</div>
+          <input value={subject} onChange={e => setSubject(e.target.value)} style={S} />
         </div>
         <div style={{ marginBottom: 8 }}>
           <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>본문 프로즈 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(HTML content 상단에 강조 삽입, 생략 가능)</span></div>
@@ -736,7 +731,10 @@ function LotModuleSummary({ thread, modules }) {
 
 /* ── 메인 페이지 ── */
 export default function My_Inform({ user }) {
-  const [constants, setConstants] = useState({ modules: [], reasons: [], flow_statuses: [] });
+  // v8.8.1: 설정에 products(카탈로그) + raw_db_root 추가.
+  const [constants, setConstants] = useState({ modules: [], reasons: [], flow_statuses: [], products: [], raw_db_root: "" });
+  // v8.8.1: 선택 제품의 Lot 후보 (RAWDATA_DB 에서 폴더 스캔).
+  const [productLots, setProductLots] = useState({ product: "", lots: [], source: "" });
   const [mode, setMode] = useState("all");           // all | mine | product | lot | wafer
   const [myMods, setMyMods] = useState({ modules: [], all_rounder: false });
 
@@ -778,9 +776,15 @@ export default function My_Inform({ user }) {
 
   /* Load constants + my modules */
   useEffect(() => {
-    sf(API + "/modules").then(d => setConstants({
+    // v8.8.1: /config 에서 products + raw_db_root 까지 같이 받는다.
+    sf(API + "/config").then(d => setConstants({
       modules: d.modules || [], reasons: d.reasons || [], flow_statuses: d.flow_statuses || [],
-    })).catch(() => {});
+      products: d.products || [], raw_db_root: d.raw_db_root || "",
+    })).catch(() => {
+      sf(API + "/modules").then(d => setConstants(c => ({ ...c,
+        modules: d.modules || [], reasons: d.reasons || [], flow_statuses: d.flow_statuses || [],
+      }))).catch(() => {});
+    });
     sf("/api/groups/my-modules").then(d => setMyMods({
       modules: d.modules || [], all_rounder: !!d.all_rounder,
     })).catch(() => setMyMods({ modules: [], all_rounder: !!isAdmin }));
@@ -1147,7 +1151,7 @@ export default function My_Inform({ user }) {
 
   return (
     <div style={{ display: "flex", height: "calc(100vh - 48px)", background: "var(--bg-primary)", color: "var(--text-primary)", position: "relative" }}>
-      <PageGear title="인폼 설정" canEdit={isAdmin} position="bottom-left">
+      <PageGear title="인폼 설정" canEdit={isAdmin} position="bottom-right">
         <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>
           모듈 표시 순서를 관리합니다 (Lot 뷰에서 이 순서대로 그룹핑).
         </div>
@@ -1377,13 +1381,51 @@ export default function My_Inform({ user }) {
           <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18, marginBottom: 18 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>새 인폼</div>
             {/* v8.7.9: product + lot_id 2개만. wafer_id 제거. lot_id 는 root/fab 어느 쪽이든 OK — 앞 5자가 root_lot_id. */}
+            {/* v8.8.1: 제품명은 등록된 카탈로그(선택), Lot 은 RAWDATA_DB 에서 로드(선택 + 자유입력 병행). */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-              <input value={form.product} onChange={e => setForm({ ...form, product: e.target.value })}
-                placeholder="제품명 (예: PROD_A)"
-                style={{ padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
-              <input value={form.lot_id} onChange={e => setForm({ ...form, lot_id: e.target.value })}
-                placeholder="Lot (root 또는 fab) — 앞 5자가 root_lot_id"
-                style={{ padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
+              <div style={{ display: "flex", gap: 6 }}>
+                <select value={form.product}
+                  onChange={e => {
+                    const p = e.target.value;
+                    setForm({ ...form, product: p, lot_id: "" });
+                    if (p) {
+                      sf(API + "/product-lots?product=" + encodeURIComponent(p))
+                        .then(d => setProductLots({ product: p, lots: d.lots || [], source: d.source || "" }))
+                        .catch(() => setProductLots({ product: p, lots: [], source: "" }));
+                    } else {
+                      setProductLots({ product: "", lots: [], source: "" });
+                    }
+                  }}
+                  style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }}>
+                  <option value="">-- 제품 선택 --</option>
+                  {(constants.products || []).map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+                {isAdmin && (
+                  <button type="button"
+                    title="제품 추가 (admin)"
+                    onClick={() => {
+                      const v = (prompt("새 제품명:") || "").trim();
+                      if (!v) return;
+                      postJson(API + "/products/add", { product: v })
+                        .then(d => setConstants(c => ({ ...c, products: d.products || c.products })))
+                        .catch(e => alert(e.message));
+                    }}
+                    style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 11, cursor: "pointer" }}>+</button>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                {((productLots.product === form.product) && (productLots.lots || []).length > 0) ? (
+                  <select value={form.lot_id} onChange={e => setForm({ ...form, lot_id: e.target.value })}
+                    style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }}>
+                    <option value="">-- Lot 선택 ({productLots.lots.length}건) --</option>
+                    {productLots.lots.map(l => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                ) : (
+                  <input value={form.lot_id} onChange={e => setForm({ ...form, lot_id: e.target.value })}
+                    placeholder={form.product ? "Lot (DB 스캔 실패 · 직접 입력)" : "Lot (제품 먼저 선택)"}
+                    style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
+                )}
+              </div>
             </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
               <select value={form.module} onChange={e => setForm({ ...form, module: e.target.value })}
@@ -1688,13 +1730,18 @@ function TimelineLog({ thread, onOpen }) {
         node: x,
       });
       // 2) 상태 이력 — received(최초) 는 등록 이벤트가 이미 담당하므로 skip.
+      //    v8.8.1: prev=completed → received 는 "확인 취소" 로 라벨.
       for (const h of (x.status_history || [])) {
         if (!h || !h.at) continue;
-        if ((h.status === "received") && (h.note === "created" || !h.note)) continue;
+        if ((h.status === "received") && (h.note === "created" || !h.note) && h.prev !== "completed") continue;
+        const isUnconfirm = (h.status === "received" && h.prev === "completed")
+          || (h.status === "received" && (h.note || "").startsWith("확인 취소"));
         evs.push({
           at: h.at,
           actor: h.actor || "",
-          kind: h.status === "completed" ? "담당자확인" : `상태:${h.status || "-"}`,
+          kind: h.status === "completed"
+            ? "담당자확인"
+            : (isUnconfirm ? "확인취소" : `상태:${h.status || "-"}`),
           module: x.module || "",
           reason: x.reason || "",
           lot: x.lot_id || "",
@@ -1762,6 +1809,7 @@ function TimelineLog({ thread, onOpen }) {
         const mc = moduleColor(e.module);
         const kindColor = e.kind === "인폼" ? "#3b82f6"
           : e.kind === "담당자확인" ? "#22c55e"
+          : e.kind === "확인취소" ? "#ef4444"
           : e.kind === "메일" ? "#f59e0b"
           : e.kind === "댓글" ? "#8b5cf6"
           : e.kind === "체크" ? "#14b8a6"

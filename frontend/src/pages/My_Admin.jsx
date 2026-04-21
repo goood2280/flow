@@ -102,7 +102,8 @@ export default function My_Admin({user}){
   // Tabs differ by role
   // v8.4.3 단위기능 페이지 철학: AWS 설정은 FileBrowser 톱니로 이관 예정 (제거).
   const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["groups","그룹"],["inform_cfg","인폼 설정"],["mail_cfg","메일 API"],["base_csv","Base CSV"],["logs","Admin Log"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
-  const userTabs=[["notifs","알림"],["logs","내 로그"],["downloads","내 다운로드"]];
+  // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
+  const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
 
   return(
@@ -278,7 +279,7 @@ export default function My_Admin({user}){
       </div>}
 
       {/* Groups (admin only) — v8.5.0 */}
-      {tab==="groups"&&isAdmin&&<GroupsPanel allUsers={users}/>}
+      {tab==="groups"&&<GroupsPanel allUsers={users} isAdmin={isAdmin} currentUser={user}/>}
       {tab==="inform_cfg"&&isAdmin&&<InformConfigPanel/>}
 
       {/* Base CSV editor (admin only) — v8.5.2 */}
@@ -1150,15 +1151,20 @@ function AWSPanel({user}){
   );
 }
 
-// ── Groups Panel (v8.5.0) ──
-function GroupsPanel({allUsers}){
+// ── Groups Panel (v8.8.1 — admin/test 제외, 유저도 사용) ──
+function GroupsPanel({allUsers, isAdmin, currentUser}){
   const [groups,setGroups]=useState([]);
   const [sel,setSel]=useState(null);
   const [newName,setNewName]=useState("");
   const [newLot,setNewLot]=useState("");
   const [msg,setMsg]=useState("");
+  // v8.8.1: 그룹 멤버 후보. admin/test 제외 — 모든 로그인 유저가 조회 가능.
+  const [eligible,setEligible]=useState([]);
   const load=()=>sf("/api/groups/list").then(d=>setGroups(d.groups||[])).catch(e=>setMsg(e.message));
-  useEffect(load,[]);
+  const loadEligible=()=>sf("/api/groups/eligible-users")
+    .then(d=>setEligible(d.users||[]))
+    .catch(()=>setEligible((allUsers||[]).filter(u=>u.role!=="admin"&&!/test/i.test(u.username||""))));
+  useEffect(()=>{load();loadEligible();},[]);
   const create=()=>{
     const n=newName.trim();if(!n)return;
     sf("/api/groups/create",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -1192,7 +1198,10 @@ function GroupsPanel({allUsers}){
   };
 
   const cur=groups.find(g=>g.id===sel);
-  const availableUsers=(allUsers||[]).map(u=>u.username).filter(u=>u&&!(cur?.members||[]).includes(u));
+  // v8.8.1: admin/test 제외된 후보 풀에서 이미 멤버인 사람 제외.
+  const availableUsers=(eligible||[]).map(u=>u.username).filter(u=>u&&!(cur?.members||[]).includes(u));
+  // 편집 권한 — admin 또는 owner.
+  const canEdit=cur?(isAdmin||cur.owner===(currentUser?.username||"")):false;
 
   return(
     <div style={{display:"grid",gridTemplateColumns:"300px 1fr",gap:16}}>
@@ -1228,7 +1237,7 @@ function GroupsPanel({allUsers}){
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
             <div style={{fontSize:16,fontWeight:700}}>{cur.name}</div>
             <div style={{flex:1,fontSize:10,color:"var(--text-secondary)"}}>owner: {cur.owner} · id: {cur.id}</div>
-            <button onClick={()=>del(cur.id)} style={{padding:"5px 10px",borderRadius:4,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",fontSize:11,cursor:"pointer"}}>그룹 삭제</button>
+            {canEdit&&<button onClick={()=>del(cur.id)} style={{padding:"5px 10px",borderRadius:4,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",fontSize:11,cursor:"pointer"}}>그룹 삭제</button>}
           </div>
 
           <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>멤버 ({(cur.members||[]).length})</div>
@@ -1236,17 +1245,19 @@ function GroupsPanel({allUsers}){
             {(cur.members||[]).map(m=>(
               <span key={m} style={{padding:"3px 10px",borderRadius:999,background:"var(--bg-tertiary)",fontSize:11,display:"inline-flex",alignItems:"center",gap:6}}>
                 {m}
-                {m!==cur.owner&&<button onClick={()=>rmMember(cur.id,m)} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11,padding:0}}>×</button>}
+                {canEdit&&<button onClick={()=>rmMember(cur.id,m)} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11,padding:0}}>×</button>}
               </span>
             ))}
+            {(cur.members||[]).length===0&&<span style={{fontSize:10,color:"var(--text-secondary)",fontStyle:"italic"}}>멤버 없음 (생성자도 자동 포함되지 않습니다)</span>}
           </div>
-          <div style={{display:"flex",gap:6,marginBottom:16}}>
+          {canEdit&&<div style={{display:"flex",gap:6,marginBottom:16}}>
             <select onChange={e=>{if(e.target.value){addMember(cur.id,e.target.value);e.target.value="";}}}
               style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12}}>
               <option value="">+ 멤버 추가…</option>
               {availableUsers.map(u=><option key={u} value={u}>{u}</option>)}
             </select>
-          </div>
+            <span style={{fontSize:10,color:"var(--text-secondary)",alignSelf:"center"}}>admin/test 계정은 자동 제외</span>
+          </div>}
 
           <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>관심 LOT_WF ({(cur.watched_lots||[]).length})</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
@@ -1279,7 +1290,8 @@ function GroupsPanel({allUsers}){
             • 이 그룹에 속한 유저는 Dashboard/Tracker 에서 이 그룹에 연결된 차트·이슈만 공유함.<br/>
             • admin 은 모든 그룹과 콘텐츠를 볼 수 있음 (전체 담당).<br/>
             • <b>담당 모듈</b>은 인폼 로그의 "내 모듈" 필터 대상 — 멤버 유저가 해당 모듈 인폼을 받아보게 됨.<br/>
-            • 관심 LOT_WF 목록은 향후 SplitTable/Dashboard 의 필터로 활용됨.
+            • 관심 LOT_WF 목록은 향후 SplitTable/Dashboard 의 필터로 활용됨.<br/>
+            • <b>v8.8.1</b> admin/test 계정은 멤버 풀에서 자동 제외 · 생성자는 자동 가입되지 않음 (명시적으로 추가해야 함).
           </div>
         </>}
       </div>
@@ -1287,26 +1299,34 @@ function GroupsPanel({allUsers}){
   );
 }
 
-// ── Inform Config Panel (v8.7.0) — 모듈/사유 옵션 Admin 관리 ──
+// ── Inform Config Panel (v8.8.1) — 모듈/사유/제품/DB경로 Admin 관리 ──
 function InformConfigPanel(){
-  const [cfg,setCfg]=useState({modules:[],reasons:[]});
+  const [cfg,setCfg]=useState({modules:[],reasons:[],products:[],raw_db_root:""});
   const [newMod,setNewMod]=useState("");
   const [newReason,setNewReason]=useState("");
+  const [newProduct,setNewProduct]=useState("");
+  const [rawRootDraft,setRawRootDraft]=useState("");
   const [msg,setMsg]=useState("");
-  const load=()=>sf("/api/informs/config").then(setCfg).catch(e=>setMsg(e.message));
+  const load=()=>sf("/api/informs/config").then(d=>{setCfg(d);setRawRootDraft(d.raw_db_root||"");}).catch(e=>setMsg(e.message));
   useEffect(load,[]);
   const saveAll=(next)=>sf("/api/informs/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(next)})
     .then(r=>{setCfg(r.config||next);setMsg("저장되었습니다.");}).catch(e=>setMsg(e.message));
   const addMod=()=>{const v=newMod.trim();if(!v)return;
     if((cfg.modules||[]).includes(v)){setMsg("이미 존재합니다.");return;}
-    saveAll({modules:[...(cfg.modules||[]),v],reasons:cfg.reasons});setNewMod("");};
+    saveAll({modules:[...(cfg.modules||[]),v]});setNewMod("");};
   const rmMod=(m)=>{if(!confirm(`모듈 '${m}' 삭제?`))return;
-    saveAll({modules:(cfg.modules||[]).filter(x=>x!==m),reasons:cfg.reasons});};
+    saveAll({modules:(cfg.modules||[]).filter(x=>x!==m)});};
   const addReason=()=>{const v=newReason.trim();if(!v)return;
     if((cfg.reasons||[]).includes(v)){setMsg("이미 존재합니다.");return;}
-    saveAll({modules:cfg.modules,reasons:[...(cfg.reasons||[]),v]});setNewReason("");};
+    saveAll({reasons:[...(cfg.reasons||[]),v]});setNewReason("");};
   const rmReason=(r)=>{if(!confirm(`사유 '${r}' 삭제?`))return;
-    saveAll({modules:cfg.modules,reasons:(cfg.reasons||[]).filter(x=>x!==r)});};
+    saveAll({reasons:(cfg.reasons||[]).filter(x=>x!==r)});};
+  const addProduct=()=>{const v=newProduct.trim();if(!v)return;
+    if((cfg.products||[]).includes(v)){setMsg("이미 존재합니다.");return;}
+    saveAll({products:[...(cfg.products||[]),v]});setNewProduct("");};
+  const rmProduct=(p)=>{if(!confirm(`제품 '${p}' 삭제? (기존 인폼 레코드는 유지)`))return;
+    saveAll({products:(cfg.products||[]).filter(x=>x!==p)});};
+  const saveRawRoot=()=>saveAll({raw_db_root:rawRootDraft});
 
   // v8.7.5: Section 을 inline 컴포넌트로 두면 매 렌더마다 새 reference 라 input focus 가 날아감.
   // 여기서는 간단하게 JSX 로 inline 하게 두 블록을 렌더한다.
@@ -1333,11 +1353,26 @@ function InformConfigPanel(){
   return(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,maxWidth:1000}}>
     {renderSection("모듈 옵션",cfg.modules||[],rmMod,newMod,setNewMod,addMod,"예: NEW_MOD")}
     {renderSection("사유 옵션",cfg.reasons||[],rmReason,newReason,setNewReason,addReason,"예: 신뢰성 이슈")}
+    {renderSection("제품 카탈로그",cfg.products||[],rmProduct,newProduct,setNewProduct,addProduct,"예: PROD_A")}
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>RAWDATA_DB 루트 경로</div>
+      <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:8,lineHeight:1.5}}>
+        인폼 작성 시 Lot 드롭다운은 <code>{"{root}/1.RAWDATA_DB/{product}/"}</code> 서브폴더를 스캔해 채웁니다.
+      </div>
+      <div style={{display:"flex",gap:6}}>
+        <input value={rawRootDraft} onChange={e=>setRawRootDraft(e.target.value)}
+          placeholder="예: D:/FAB_DATA 또는 /mnt/fab"
+          style={{flex:1,padding:"6px 10px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,fontFamily:"monospace"}}/>
+        <button onClick={saveRawRoot} style={{padding:"6px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer"}}>저장</button>
+      </div>
+      {cfg.raw_db_root&&<div style={{marginTop:8,fontSize:10,color:"var(--text-secondary)"}}>현재: <code>{cfg.raw_db_root}</code></div>}
+    </div>
     {msg&&<div style={{gridColumn:"span 2",fontSize:11,color:"var(--accent)"}}>{msg}</div>}
     <div style={{gridColumn:"span 2",padding:12,background:"var(--bg-primary)",borderRadius:6,fontSize:11,color:"var(--text-secondary)",lineHeight:1.6}}>
       • 여기서 편집한 옵션은 인폼 작성/답글 드롭다운, 그룹 담당 모듈 선택, 대시보드 모듈 필터에 반영됩니다.<br/>
       • 기존 인폼에 이미 저장된 값은 목록에서 빠져도 그대로 보존됩니다 (표시만 자유문자열).<br/>
-      • 기본값(GATE/STI/PC/MOL/…, 재측정/장비 이상/…)은 비워지면 자동 복구됩니다.
+      • 기본값(GATE/STI/PC/MOL/…, 재측정/장비 이상/…)은 비워지면 자동 복구됩니다.<br/>
+      • <b>v8.8.1</b> 제품 카탈로그 + RAWDATA_DB 루트 추가 — 인폼 작성 폼에서 제품·Lot 을 드롭다운으로 선택.
     </div>
   </div>);
 };

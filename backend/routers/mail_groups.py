@@ -85,15 +85,26 @@ def _clean_emails(raw) -> list:
 
 
 def _clean_members(raw) -> list:
+    """v8.8.1: admin 계정 + "test" 포함 username 은 멤버 풀에서 제외."""
     if not isinstance(raw, list):
         return []
+    # lazy import to avoid circular
+    try:
+        from routers.groups import _is_blocked_member, _load_users_by_name
+        users_by_name = _load_users_by_name()
+    except Exception:
+        _is_blocked_member = None
+        users_by_name = {}
     out = []
     seen = set()
     for u in raw:
         s = str(u).strip()
-        if s and s not in seen:
-            seen.add(s)
-            out.append(s)
+        if not s or s in seen:
+            continue
+        if _is_blocked_member and _is_blocked_member(s, users_by_name):
+            continue
+        seen.add(s)
+        out.append(s)
     return out
 
 
@@ -139,9 +150,8 @@ def create_group(req: MGCreate, request: Request):
         raise HTTPException(409, "mail group name already exists")
     now = _now()
     members = _clean_members(req.members or [])
-    # creator 가 멤버가 아니어도 되지만, 기본으로 포함 (본인 메일 받을 수 있게).
-    if me["username"] not in members:
-        members.append(me["username"])
+    # v8.8.1: 생성자 자동 포함 X (admin 이 만든 경우 메일 발송 대상이 아님).
+    # creator 가 스스로를 members 에 넣고 싶으면 명시적으로 req.members 에 포함해야 함.
     g = {
         "id": _new_gid(),
         "name": name,

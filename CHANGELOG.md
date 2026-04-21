@@ -2,6 +2,17 @@
 
 주요 변경점만 간략히. 세부 내역은 `VERSION.json` 의 changelog 배열 참고.
 
+## v8.8.1 — 2026-04-21
+
+**인폼 확인취소 이력 · 그룹 admin/test 필터 · 제품 카탈로그/Lot DB 드롭다운 · PageGear 통일 · 메일 본문 간소화**
+
+- 인폼 확인취소(completed→received) 를 이력 타임라인에 기록 (prev 필드 + 빨간 '확인취소' kind).
+- 그룹 정책 개편: admin 계정과 username 에 'test' 포함 계정은 members 풀에서 자동 제외. 일반 유저도 GroupsPanel 사용 가능 (My_Admin 에 groups 탭). 생성자 자동가입 제거. 신규 `/api/groups/eligible-users`.
+- 인폼 제품 카탈로그 + RAWDATA_DB Lot 드롭다운. config.json 에 `products`, `raw_db_root`. 신규 `/api/informs/products/add|delete` + `/api/informs/product-lots?product=` (`{root}/1.RAWDATA_DB/{product}/` 서브폴더 스캔). 작성 폼에서 제품·Lot 모두 select.
+- PageGear 아이콘 통일: ⚙️ + 40px + 우하단 default. 인폼 PageGear 우하단으로 이동.
+- 메일 본문 간소화: 발송 요청자(hol) 블럭 제거. 제품 담당자는 `제품 담당자 : 이름 <email>, ...` 한 줄로 본문 상단 삽입. MailDialog 의 statusCode 필드 숨김.
+- InformConfigPanel 확장: 제품 카탈로그 CRUD + RAWDATA_DB 루트 경로 저장 섹션.
+
 ## v8.8.0 — 2026-04-21
 
 **인폼 메일 대개편 (시스템 발송 + 발송자 명시 + 제품 담당자 자동 첨부) · 대시보드 공개범위 그룹·X/Y UX · S3 sync 양방향 · SplitTable fab_source join · setup.py 데이터 보존 강화**

@@ -1,7 +1,21 @@
 {
-  "version": "8.8.0",
+  "version": "8.8.1",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.1",
+      "date": "2026-04-21",
+      "title": "인폼 확인취소 이력 · 그룹 admin/test 필터 · 제품 카탈로그/Lot DB 드롭다운 · PageGear 통일 · 메일 본문 간소화",
+      "tag": "feat+fix",
+      "changes": [
+        "**인폼 이력 타임라인 — 확인 취소 이벤트 기록** — set_status 가 completed→received 전환 시 history entry 에 prev 필드 + note='확인 취소' 자동 라벨. TimelineLog 가 빨간색 '확인취소' kind 로 표시.",
+        "**그룹 정책 — admin/test 계정 제외 + 일반 유저도 관리 가능** — _is_blocked_member 헬퍼로 admin 역할·username 에 'test' 포함 계정은 groups.members / mail_groups.members 풀에서 자동 제외. GroupsPanel 이 My_Admin 의 일반 유저 탭에도 노출. 생성자 자동 가입 제거. 신규 /api/groups/eligible-users.",
+        "**인폼 제품 카탈로그 + RAWDATA_DB Lot 드롭다운** — config.json 에 products, raw_db_root 저장. /api/informs/products/add|delete + /api/informs/product-lots?product=. 작성 폼에서 제품·Lot 모두 select.",
+        "**PageGear 아이콘 통일** — FileBrowser 스타일(⚙️ + 40px + 우하단 default). 인폼 PageGear 를 우하단으로 이동.",
+        "**메일 본문 간소화** — 발송 요청자(hol) 블럭 제거. 제품 담당자는 '제품 담당자 : 이름 <email>, ...' 한 줄로 본문 상단 삽입. MailDialog 에서 statusCode 필드 숨김.",
+        "**InformConfigPanel 확장** — 제품 카탈로그 CRUD + RAWDATA_DB 루트 경로 저장 섹션."
+      ]
+    },
     {
       "version": "8.8.0",
       "date": "2026-04-21",

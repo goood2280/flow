@@ -1,4 +1,4 @@
-"""routers/groups.py v8.7.0 — User groups for Dashboard/Tracker visibility + LOT watch + module 담당.
+"""routers/groups.py v8.8.1 — User groups for Dashboard/Tracker visibility + LOT watch + module 담당.
 
 스키마 ({data_root}/groups/groups.json):
   [{id, name, owner, members:[username], watched_lots:[lot_id],
@@ -7,6 +7,12 @@
 v8.7.0 추가:
   - modules: 이 그룹이 담당하는 공정 모듈 (GATE/STI/PC/MOL/BEOL/ET/EDS/...).
   - user_modules(username, role): 해당 유저가 담당하는 모듈 set. 인폼 모듈별 필터용.
+
+v8.8.1 정책 변경:
+  - 일반 유저도 그룹 생성·편집 가능 (admin 전용 기능 아님).
+  - 생성자가 반드시 members 에 포함될 필요 없음 (owner 만 기록).
+  - admin 계정 및 "test" 가 포함된 username 은 members 대상에서 자동 제외
+    (admin 은 사내 이메일이 없어 메일 발송 대상이 될 수 없고, test 계정은 가상).
 
 규약:
   - admin 은 모든 그룹 조회/수정 가능.
@@ -32,6 +38,51 @@ from core.utils import load_json, save_json, jsonl_append
 from core.auth import current_user, require_admin
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
+
+
+# v8.8.1: admin/test 계정 필터.
+def _is_blocked_member(username: str, users_by_name: dict | None = None) -> bool:
+    """그룹 멤버로 들어가면 안 되는 계정인지.
+
+    - username 이 비어있음 → block.
+    - "test" substring (case-insensitive) 포함 → block.
+    - role == "admin" (users 테이블 기준) → block.
+    """
+    un = (username or "").strip()
+    if not un:
+        return True
+    if "test" in un.lower():
+        return True
+    if users_by_name is None:
+        users_by_name = _load_users_by_name()
+    u = users_by_name.get(un)
+    if u and (u.get("role") == "admin"):
+        return True
+    return False
+
+
+def _load_users_by_name() -> dict:
+    try:
+        from routers.auth import read_users
+        return {u.get("username", ""): u for u in read_users() if u.get("username")}
+    except Exception:
+        return {}
+
+
+def _sanitize_members(raw, users_by_name: dict | None = None) -> list:
+    if users_by_name is None:
+        users_by_name = _load_users_by_name()
+    out = []
+    seen = set()
+    for m in (raw or []):
+        s = str(m).strip()
+        if not s or s in seen:
+            continue
+        if _is_blocked_member(s, users_by_name):
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
 
 GROUPS_DIR = PATHS.data_root / "groups"
 GROUPS_DIR.mkdir(parents=True, exist_ok=True)
@@ -187,8 +238,8 @@ def create_group(req: GroupCreate, request: Request):
         raise HTTPException(409, "group name already exists")
     gid = f"grp_{datetime.datetime.now().strftime('%y%m%d')}_{uuid.uuid4().hex[:6]}"
     now = datetime.datetime.now().isoformat(timespec="seconds")
-    # owner 는 기본적으로 member 에 포함
-    members = sorted(set([me["username"]] + (req.members or [])))
+    # v8.8.1: 생성자 자동 포함 X — 요청된 멤버만 수용. admin/test 필터.
+    members = sorted(set(_sanitize_members(req.members or [])))
     g = {
         "id": gid,
         "name": name,
@@ -222,8 +273,8 @@ def update_group(req: GroupUpdate, request: Request, id: str = Query(...)):
             raise HTTPException(409, "group name already exists")
         g["name"] = name
     if req.members is not None:
-        # owner 는 항상 포함 (accidental-lockout 방지)
-        g["members"] = sorted(set([g.get("owner", me["username"])] + list(req.members)))
+        # v8.8.1: owner 자동 포함 X. admin/test 필터.
+        g["members"] = sorted(set(_sanitize_members(req.members)))
     if req.watched_lots is not None:
         g["watched_lots"] = sorted(set(req.watched_lots))
     if req.modules is not None:
@@ -287,9 +338,12 @@ def add_member(req: MemberReq, request: Request, id: str = Query(...)):
         raise HTTPException(404)
     if not _can_edit(g, me["username"], me.get("role", "user")):
         raise HTTPException(403)
+    users_by_name = _load_users_by_name()
+    if _is_blocked_member(req.username, users_by_name):
+        raise HTTPException(400, "admin/test 계정은 멤버로 추가할 수 없습니다.")
     members = set(g.get("members") or [])
     members.add(req.username)
-    g["members"] = sorted(members)
+    g["members"] = sorted(_sanitize_members(members, users_by_name))
     g["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
     _save(groups)
     _audit(me["username"], "member_add", id, req.username)
@@ -305,8 +359,7 @@ def remove_member(req: MemberReq, request: Request, id: str = Query(...)):
         raise HTTPException(404)
     if not _can_edit(g, me["username"], me.get("role", "user")):
         raise HTTPException(403)
-    if req.username == g.get("owner"):
-        raise HTTPException(400, "Cannot remove owner")
+    # v8.8.1: owner 자동 포함 정책 제거. 멤버는 자유롭게 제거 가능.
     g["members"] = sorted([m for m in (g.get("members") or []) if m != req.username])
     g["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
     _save(groups)
@@ -347,6 +400,26 @@ def remove_lot(req: LotReq, request: Request, id: str = Query(...)):
     _save(groups)
     _audit(me["username"], "lot_remove", id, req.lot_id)
     return {"ok": True, "watched_lots": g["watched_lots"]}
+
+
+@router.get("/eligible-users")
+def eligible_users(request: Request):
+    """v8.8.1: 그룹 멤버로 추가 가능한 username 목록.
+    admin 계정과 "test" 가 포함된 계정은 제외 (메일 발송 대상 아님).
+    로그인 유저 누구나 조회 가능 (GroupsPanel FE 용)."""
+    _me = current_user(request)
+    users_by_name = _load_users_by_name()
+    out = []
+    for un, u in users_by_name.items():
+        if _is_blocked_member(un, users_by_name):
+            continue
+        out.append({
+            "username": un,
+            "email": u.get("email", "") if isinstance(u, dict) else "",
+            "role": u.get("role", "user") if isinstance(u, dict) else "user",
+        })
+    out.sort(key=lambda x: x["username"].lower())
+    return {"users": out}
 
 
 @router.get("/audit")

@@ -1,5 +1,5 @@
-/* PageGear.jsx v8.7.4 — 페이지별 공용 톱니(⚙) 설정 패널.
- * v8.7.4: position default 를 "bottom-left" 로 변경 — 전 탭 공통.
+/* PageGear.jsx v8.8.1 — 페이지별 공용 톱니(⚙️) 설정 패널.
+ * v8.8.1: FileBrowser 스타일에 통일 (40px · ⚙️ · 우하단 default).
  */
 import { useEffect, useRef, useState } from "react";
 
@@ -20,7 +20,7 @@ import { useEffect, useRef, useState } from "react";
  *   - ESC 또는 외부 클릭 시 닫힘.
  *   - z-index 50 (모달·dropdown 아래).
  */
-export default function PageGear({ title = "설정", children, canEdit = true, position = "bottom-left" }) {
+export default function PageGear({ title = "설정", children, canEdit = true, position = "bottom-right" }) {
   const [open, setOpen] = useState(false);
   const drawerRef = useRef(null);
   useEffect(() => {
