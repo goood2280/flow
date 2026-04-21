@@ -333,11 +333,186 @@ function DeadlineBadge({ deadline, onChange, canEdit }) {
 }
 
 /* 루트 인폼 머리에 붙는 상태 패널 (flow 진행 + 이력) */
+function MailDialog({ root, user, onClose }) {
+  // v8.7.2: 인폼 → 사내 메일 API 로 HTML 본문 전송 (multipart).
+  const [recipients, setRecipients] = useState([]);
+  const [groups, setGroups] = useState({});          // {groupName: [emails]}
+  const [pickedUsers, setPickedUsers] = useState([]);   // usernames
+  const [pickedGroups, setPickedGroups] = useState([]); // group names
+  const [subject, setSubject] = useState(`[flow 인폼] ${root.module || ""} · ${root.lot_id || root.wafer_id || ""}`.trim());
+  const [body, setBody] = useState("");
+  const [statusCode, setStatusCode] = useState("");
+  const [includeThread, setIncludeThread] = useState(true);
+  const [extraEmails, setExtraEmails] = useState("");
+  const [attachments, setAttachments] = useState([]); // inform image URLs to include
+  const [filter, setFilter] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    sf(API + "/recipients").then(d => setRecipients(d.recipients || [])).catch(() => setRecipients([]));
+    sf(API + "/mail-groups").then(d => setGroups(d.groups || {})).catch(() => setGroups({}));
+  }, []);
+
+  // Collect attachable images from root + any thread child (if provided via root.images)
+  const inlineImages = [...(root.images || [])].filter(x => x && x.url);
+
+  const toggleUser = (un) => setPickedUsers(p => p.includes(un) ? p.filter(x => x !== un) : [...p, un]);
+  const toggleGroup = (g) => setPickedGroups(p => p.includes(g) ? p.filter(x => x !== g) : [...p, g]);
+  const toggleAttach = (u) => setAttachments(a => a.includes(u) ? a.filter(x => x !== u) : [...a, u]);
+  const visibleList = recipients.filter(r => {
+    if (!filter.trim()) return true;
+    const q = filter.trim().toLowerCase();
+    return r.username.toLowerCase().includes(q) || (r.email || "").toLowerCase().includes(q);
+  });
+  const computedEmails = () => {
+    const out = new Set();
+    pickedUsers.forEach(un => {
+      const em = recipients.find(r => r.username === un)?.email;
+      if (em && em.includes("@")) out.add(em);
+    });
+    pickedGroups.forEach(g => (groups[g] || []).forEach(em => { if (em && em.includes("@")) out.add(em); }));
+    (extraEmails || "").split(/[,\s;]+/).map(s => s.trim()).filter(s => s && s.includes("@")).forEach(em => out.add(em));
+    return Array.from(out);
+  };
+  const totalEmails = computedEmails().length;
+
+  const doSend = () => {
+    setError(""); setSent(null);
+    const to = computedEmails();
+    if (to.length === 0) { setError("수신자 이메일을 1명 이상 선택하세요 (그룹·유저·추가 이메일)."); return; }
+    if (to.length > 199) { setError(`수신자는 최대 199명입니다 (현재 ${to.length}명).`); return; }
+    if (!subject.trim()) { setError("제목을 입력하세요."); return; }
+    setSending(true);
+    sf(`${API}/${root.id}/send-mail`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to, to_users: pickedUsers, groups: pickedGroups,
+        subject: subject.trim(), body: body.trim(),
+        include_thread: includeThread, status_code: statusCode.trim(),
+        attachments,
+      }),
+    }).then(r => {
+      setSent({ ok: true, to: r.to || to, status: r.status, dry_run: !!r.dry_run });
+    }).catch(e => {
+      setError(e?.message || "메일 전송 실패");
+    }).finally(() => setSending(false));
+  };
+
+  const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none" };
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 10, padding: 18, width: "95%", maxWidth: 820, maxHeight: "92vh", overflow: "auto", color: "var(--text-primary)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>✉ 인폼 메일 보내기 <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-secondary)" }}>(최대 199명 · 본문 2MB · 첨부 10MB)</span></div>
+          <span onClick={onClose} style={{ cursor: "pointer", fontSize: 18 }}>✕</span>
+        </div>
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>Admin 설정의 메일 API 로 multipart POST. 수신자 총 <b style={{ color: "var(--accent)" }}>{totalEmails}명</b> · Inform <code>{root.id}</code></div>
+
+        {/* Module recipient groups */}
+        {Object.keys(groups).length > 0 && <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>📮 모듈 그룹 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>({pickedGroups.length} 선택)</span></div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {Object.entries(groups).map(([gname, emails]) => {
+              const on = pickedGroups.includes(gname);
+              return (
+                <span key={gname} onClick={() => toggleGroup(gname)} style={{
+                  padding: "5px 12px", borderRadius: 999, fontSize: 11,
+                  background: on ? "var(--accent)" : "var(--bg-card)",
+                  color: on ? "#fff" : "var(--text-primary)",
+                  border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
+                  cursor: "pointer", fontWeight: 600,
+                }}>{gname} · {(emails || []).length}명</span>
+              );
+            })}
+          </div>
+        </div>}
+
+        {/* Individual recipient picker */}
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 11, fontWeight: 600 }}>
+            <span>개별 유저 ({pickedUsers.length} 선택)</span>
+            <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="🔎 유저/이메일 검색" style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, width: 200 }} />
+          </div>
+          <div style={{ maxHeight: 140, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)" }}>
+            {visibleList.length === 0 && <div style={{ padding: 14, textAlign: "center", fontSize: 11, color: "var(--text-secondary)" }}>유저가 없습니다. Admin → 사용자 탭에서 email 을 설정해야 합니다.</div>}
+            {visibleList.map(r => {
+              const on = pickedUsers.includes(r.username);
+              const hasEmail = !!(r.email && r.email.includes("@"));
+              return (
+                <div key={r.username} onClick={() => hasEmail && toggleUser(r.username)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 11, cursor: hasEmail ? "pointer" : "not-allowed", background: on ? "rgba(59,130,246,0.12)" : "transparent", opacity: hasEmail ? 1 : 0.5, borderBottom: "1px solid var(--border)" }}>
+                  <input type="checkbox" checked={on} disabled={!hasEmail} readOnly />
+                  <span style={{ fontWeight: 600, minWidth: 100 }}>{r.username}</span>
+                  <span style={{ fontFamily: "monospace", color: hasEmail ? "var(--text-secondary)" : "#ef4444", flex: 1 }}>{r.email || "(no email)"}</span>
+                  {r.role === "admin" && <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "rgba(239,68,68,0.15)", color: "#ef4444", fontWeight: 700 }}>ADMIN</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>추가 이메일 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(콤마/공백/세미콜론 구분)</span></div>
+          <input value={extraEmails} onChange={e => setExtraEmails(e.target.value)} placeholder="ext1@vendor.com, ext2@vendor.com" style={{ ...S, fontFamily: "monospace", fontSize: 11 }} />
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 3 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>제목 (title)</div>
+            <input value={subject} onChange={e => setSubject(e.target.value)} style={S} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>statusCode</div>
+            <input value={statusCode} onChange={e => setStatusCode(e.target.value)} placeholder="(admin 기본값)" style={S} />
+          </div>
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>본문 프로즈 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(HTML content 상단에 강조 삽입, 생략 가능)</span></div>
+          <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} style={{ ...S, resize: "vertical" }} />
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>
+          <input type="checkbox" checked={includeThread} onChange={e => setIncludeThread(e.target.checked)} />
+          전체 스레드(답글 포함) HTML 로 첨부
+        </label>
+
+        {inlineImages.length > 0 && <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>📎 첨부 이미지 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(각 파일 10MB 한도 · 총합 제한)</span></div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {inlineImages.map(img => {
+              const on = attachments.includes(img.url);
+              return <span key={img.url} onClick={() => toggleAttach(img.url)} style={{
+                padding: "4px 10px", borderRadius: 4, fontSize: 10,
+                background: on ? "rgba(16,185,129,0.15)" : "var(--bg-card)",
+                color: on ? "#10b981" : "var(--text-primary)",
+                border: "1px solid " + (on ? "#10b981" : "var(--border)"),
+                cursor: "pointer",
+              }}>{on ? "✔" : "＋"} {img.filename || img.url.split("/").pop()}</span>;
+            })}
+          </div>
+        </div>}
+
+        {error && <div style={{ padding: "6px 10px", background: "rgba(239,68,68,0.1)", color: "#ef4444", border: "1px solid #ef4444", borderRadius: 4, fontSize: 11, marginBottom: 8 }}>⚠ {error}</div>}
+        {sent && <div style={{ padding: "6px 10px", background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid #10b981", borderRadius: 4, fontSize: 11, marginBottom: 8 }}>✔ 전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <button disabled={sending} onClick={doSend} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: sending ? "var(--text-secondary)" : "var(--accent)", color: "#fff", fontWeight: 600, cursor: sending ? "wait" : "pointer" }}>{sending ? "전송 중…" : `📧 ${totalEmails}명에게 전송`}</button>
+          <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>닫기</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RootHeader({ root, onChangeStatus, onChangeDeadline, user }) {
   const [note, setNote] = useState("");
   const [openHist, setOpenHist] = useState(false);
+  const [openMail, setOpenMail] = useState(false);
   const canEditDeadline = !!user && (user.role === "admin" || user.username === root.author);
   const hist = root.status_history || [];
+  const mailCount = (root.mail_history || []).length;
   return (
     <div style={{
       background: "var(--bg-secondary)", border: "1px solid var(--border)",
@@ -368,11 +543,19 @@ function RootHeader({ root, onChangeStatus, onChangeDeadline, user }) {
           style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)",
                    background: "var(--bg-primary)", color: "var(--text-primary)",
                    fontSize: 11, width: 220 }} />
+        <span onClick={() => setOpenMail(true)}
+          title="사내 메일 API 로 이 인폼 내용 전송"
+          style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--accent)",
+                   background: "rgba(249,115,22,0.1)", color: "var(--accent)",
+                   fontSize: 10, fontWeight: 700, cursor: "pointer", userSelect: "none" }}>
+          ✉ 메일 보내기{mailCount > 0 && ` (${mailCount})`}
+        </span>
         <span onClick={() => setOpenHist(!openHist)}
           style={{ fontSize: 10, color: "var(--accent)", cursor: "pointer" }}>
           이력 {hist.length > 0 && `(${hist.length})`}
         </span>
       </div>
+      {openMail && <MailDialog root={root} user={user} onClose={() => setOpenMail(false)} />}
       {openHist && hist.length > 0 && (
         <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)", fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>
           {hist.slice().reverse().map((h, i) => (

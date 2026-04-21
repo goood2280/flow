@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
-"""Builder: walks the FabCanvas.ai (flow) source tree and emits setup.py.
+"""Builder: walks the FabCanvas.ai source tree and emits setup.py as a
+self-contained installer (gzip+base64 embedded payloads).
 
-`setup.py` is the single self-extracting installer that bundles every source
-file as gzip+base64. Run it on a fresh machine to extract + install + build:
+Run from the FabCanvas.ai directory:
 
-    python setup.py                  # extract + pip install + npm build
-    python setup.py --no-install     # extract only
-    python setup.py --no-build       # extract + pip install (skip frontend build)
-    uvicorn app:app --host 0.0.0.0 --port 8080
+    python _build_setup.py
 
-This builder must be re-run whenever ANY tracked source file changes. CI is
-the eventual home for this; for now it is invoked manually before tagging.
-
-NOTE: data/ is intentionally excluded — runtime data (인폼/트래커/달력/회의/
-유저/세션 등) lives there and must never be overwritten by setup.
+Output: overwrites setup.py at the repo root. Version is read from
+VERSION.json, so bump that first.
 """
 import base64
 import gzip
@@ -23,43 +17,34 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 
-# ── Files to include ───────────────────────────────────────────────
 INCLUDE_DIRS = [
     'backend/core',
     'backend/routers',
     'frontend/src',
-    'frontend/src/components',
-    'frontend/src/pages',
-    'frontend/src/lib',
-    'frontend/src/constants',
     'frontend/public',
     'docs',
 ]
 
-# Exact file list at repo root
 INCLUDE_FILES = [
     'README.md',
     'CHANGELOG.md',
     'FabCanvas_domain.txt',
-    'app.py',                  # uvicorn shim (top-level)
+    'VERSION.json',
+    'app.py',
     'backend/app.py',
     'frontend/index.html',
     'frontend/package.json',
     'frontend/vite.config.js',
 ]
 
-# scripts/ — include only .py files, skip _req_*.json fixtures
-SCRIPTS_GLOB = 'scripts/*.py'
-
-# Patterns to exclude when walking dirs
-EXCLUDE_PARTS = {'__pycache__', 'node_modules', 'dist', '.claude', '.git'}
+EXCLUDE_PARTS = {'__pycache__', 'node_modules', 'dist', '.claude', '.git', 'reports'}
 
 
-def gather_files() -> list[Path]:
-    seen: set[Path] = set()
-    out: list[Path] = []
+def gather_files():
+    seen = set()
+    out = []
 
-    def add(p: Path):
+    def add(p):
         if p in seen or not p.is_file():
             return
         seen.add(p)
@@ -81,32 +66,32 @@ def gather_files() -> list[Path]:
                 continue
             add(p)
 
-    if (ROOT / 'scripts').is_dir():
-        for p in (ROOT / 'scripts').glob('*.py'):
+    scripts = ROOT / 'scripts'
+    if scripts.is_dir():
+        for p in scripts.glob('*.py'):
             add(p)
 
     return sorted(out)
 
 
-def encode(path: Path) -> str:
+def encode(path):
     data = path.read_bytes()
     gz = gzip.compress(data, compresslevel=9, mtime=0)
     return base64.b64encode(gz).decode('ascii')
 
 
-def format_payload(b64: str, indent: int = 8) -> str:
+def format_payload(b64, indent=8):
     lines = textwrap.wrap(b64, width=72, break_long_words=True, break_on_hyphens=False)
     sp = ' ' * indent
     return '\n'.join(f"{sp}'{ln}'" for ln in lines)
 
 
-def to_rel_posix(p: Path) -> str:
+def to_rel_posix(p):
     return p.relative_to(ROOT).as_posix()
 
 
-def build() -> str:
+def build():
     files = gather_files()
-
     version = json.loads((ROOT / 'VERSION.json').read_text(encoding='utf-8'))
 
     entries = []
@@ -114,56 +99,60 @@ def build() -> str:
         rel = to_rel_posix(p)
         b64 = encode(p)
         payload = format_payload(b64, indent=8)
-        entries.append(
-            f"    {rel!r}: (\n{payload}\n    ),"
-        )
+        entries.append(f"    {rel!r}: (\n{payload}\n    ),")
 
     files_block = "FILES = {\n" + "\n".join(entries) + "\n}\n"
 
     header = f'''#!/usr/bin/env python3
-"""flow (FabCanvas) v{version['version']} — single-file installer.
+"""FabCanvas (flow) v{version['version']} — self-contained installer.
 
-Usage on a fresh machine:
+Usage (fresh machine):
 
-    python setup.py                  # extract + pip install backend deps + npm build
-    python setup.py --no-install     # extract only (skip pip + npm)
-    python setup.py --no-build       # extract + pip install (skip frontend build)
-    python setup.py --version        # print embedded version and exit
+    python setup.py                # extract + install deps + build frontend
+    python setup.py extract        # just extract embedded sources
+    python setup.py install-deps   # pip install backend deps only
+    python setup.py build-frontend # npm install + npm run build only
+    python setup.py version        # print VERSION
+    python setup.py sync-version   # stamp VERSION onto VERSION.json
 
-After setup, start the server:
+Run the server afterwards:
 
     uvicorn app:app --host 0.0.0.0 --port 8080
 
-Login: hol / hol12345!  (override via FABCANVAS_ADMIN_PW / HOL_ADMIN_PW)
+Login: hol / hol12345!  (override with FABCANVAS_ADMIN_PW / HOL_ADMIN_PW)
 
-This file embeds {len(files)} source files as gzip+base64 blobs. Runtime data
-(data/Base, data/DB, data/meetings, data/informs, data/calendar, data/sessions
-…) is NOT included and is NEVER overwritten — populate or preserve separately.
+This file embeds {len(files)} source files as gzip+base64 blobs. Data
+(data/Base, data/DB, users.csv, informs, tracker, …) is NEVER bundled
+and never overwritten — re-running setup.py on an existing install
+preserves all user-generated data.
 """
+from __future__ import annotations
+
 import base64
 import gzip
 import json
+import os
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent
 
-VERSION = {json.dumps(version, ensure_ascii=False)}
+VERSION = "{version['version']}"
+CODENAME = "{version.get('codename', 'flow')}"
+VERSION_META = {json.dumps(version, ensure_ascii=False)}
 
 
 def _write(rel: str, gz_b64: str) -> None:
-    # HARD GUARD — never overwrite anything under data/. 기존 인폼/트래커/달력/
-    # 회의/유저/세션 기록이 setup 재실행이나 pull 후 재설치에 의해 지워지지
-    # 않도록 이중 가드 (prefix check + resolve relative_to data/).
     rel_posix = rel.replace("\\\\", "/").lstrip("./")
     if rel_posix.startswith("data/") or rel_posix == "data":
         return
     data = gzip.decompress(base64.b64decode(gz_b64))
     dst = ROOT / rel
     try:
-        dst.resolve().relative_to((ROOT / "data").resolve())
+        dst_rel = dst.resolve().relative_to((ROOT / "data").resolve())
+        _ = dst_rel
         return
     except Exception:
         pass
@@ -192,63 +181,87 @@ def _has(cmd: str) -> bool:
     return which(cmd) is not None
 
 
-def setup(install: bool = True, build: bool = True) -> None:
-    # 1) extract files
+def extract() -> int:
     for rel, payload in FILES.items():
         _write(rel, ''.join(payload) if isinstance(payload, (list, tuple)) else payload)
-
-    # 2) VERSION.json (always rewritten — source of truth on disk).
     (ROOT / 'VERSION.json').write_text(
-        json.dumps(VERSION, indent=2, ensure_ascii=False), encoding='utf-8'
+        json.dumps(VERSION_META, indent=2, ensure_ascii=False), encoding='utf-8'
     )
-
-    # 3) ensure empty data dirs exist (app will create on demand otherwise).
-    #    NOTE: mkdir(exist_ok=True) never overwrites contents.
     for sub in ('data', 'data/Base', 'data/DB', 'reports'):
         (ROOT / sub).mkdir(parents=True, exist_ok=True)
+    print(f"\\n[extract] flow v{VERSION} - {len(FILES)} files -> {ROOT}")
+    return 0
 
-    print(f"\\n[extract] flow v{VERSION['version']} ({VERSION['codename']}) - {len(FILES)} files -> {ROOT}")
 
-    if not install:
-        return
+def install_deps() -> int:
+    pkgs = [
+        'fastapi', 'uvicorn[standard]', 'pandas', 'pyarrow', 'polars', 'numpy',
+        'python-multipart', 'boto3', 'scikit-learn', 'scipy', 'openpyxl',
+    ]
+    return _run(f"{sys.executable} -m pip install " + ' '.join(shlex.quote(p) for p in pkgs), cwd=ROOT)
 
-    # 4) backend deps (pip)
-    if _has('pip') or _has('pip3'):
-        pip = 'pip' if _has('pip') else 'pip3'
-        reqs = [
-            'fastapi', 'uvicorn[standard]', 'pandas', 'pyarrow', 'polars',
-            'numpy', 'python-multipart', 'boto3', 'scikit-learn', 'scipy',
-            'openpyxl',
-        ]
-        _run(f"{pip} install " + ' '.join(shlex.quote(r) for r in reqs), cwd=ROOT)
-    else:
-        print("[pip] not found - skip backend deps")
 
-    # 5) frontend deps (npm)
+def build_frontend() -> int:
     fe = ROOT / 'frontend'
-    if _has('npm'):
-        _run('npm install', cwd=fe)
-        if build:
-            _run('npm run build', cwd=fe)
-    else:
-        print("[npm] not found - skip frontend install/build")
+    if not (fe / 'package.json').exists():
+        print('frontend/package.json not found - skipping', file=sys.stderr)
+        return 1
+    if not _has('npm'):
+        print('[npm] not found - skip frontend install/build')
+        return 0
+    rc = _run('npm install', cwd=fe)
+    if rc != 0:
+        return rc
+    return _run('npm run build', cwd=fe)
 
-    print(f"\\n[done] uvicorn app:app --host 0.0.0.0 --port 8080   (run from {ROOT})")
-    print(f"[done] open http://localhost:8080 - login: hol / hol12345!")
+
+def print_version() -> int:
+    print(f"flow (FabCanvas) v{VERSION} - codename {CODENAME}")
+    return 0
 
 
-def _print_version() -> None:
-    print(f"flow (FabCanvas) v{VERSION['version']} - codename {VERSION['codename']}")
-    print(f"  embedded files: {len(FILES)}")
+def sync_version_json() -> int:
+    vj = ROOT / 'VERSION.json'
+    vj.write_text(json.dumps(VERSION_META, indent=2, ensure_ascii=False), encoding='utf-8')
+    print(f"VERSION.json -> {VERSION}")
+    return 0
+
+
+def all_steps() -> int:
+    rc = extract() or install_deps() or build_frontend()
+    if rc == 0:
+        print(f"\\n[done] uvicorn app:app --host 0.0.0.0 --port 8080   (run from {ROOT})")
+        print(f"[done] open http://localhost:8080 - login: hol / hol12345!")
+    return rc
+
+
+COMMANDS = {
+    'extract':        extract,
+    'install-deps':   install_deps,
+    'build-frontend': build_frontend,
+    'version':        print_version,
+    'sync-version':   sync_version_json,
+    'all':            all_steps,
+}
+
+
+def main(argv):
+    if not argv:
+        return all_steps()
+    cmd = argv[0]
+    if cmd in ('-h', '--help', 'help'):
+        print(__doc__)
+        print('\\nCommands: ' + ', '.join(sorted(COMMANDS)))
+        return 0
+    fn = COMMANDS.get(cmd)
+    if not fn:
+        print(f"Unknown command: {cmd}", file=sys.stderr)
+        return 2
+    return fn()
 
 
 if __name__ == '__main__':
-    if '--version' in sys.argv or '-v' in sys.argv:
-        _print_version()
-        raise SystemExit(0)
-    install = '--no-install' not in sys.argv
-    build = '--no-build' not in sys.argv
-    setup(install=install, build=build)
+    raise SystemExit(main(sys.argv[1:]))
 '''
 
     return header + files_block + footer

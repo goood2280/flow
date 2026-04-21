@@ -33,11 +33,15 @@
   POST /api/informs/splittable?id=      — SplitTable 변경요청 attach
 """
 import datetime
+import html as _html
+import json as _json
 import mimetypes
 import re
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Depends
 from fastapi.responses import FileResponse
@@ -696,6 +700,387 @@ def set_deadline(req: DeadlineReq, request: Request, id: str = Query(...)):
     _save(items)
     _audit(request, "inform:deadline", detail=f"id={id} deadline={dl or '(clear)'}", tab="inform")
     return {"ok": True, "inform": target}
+
+
+# ── v8.7.2: Mail relay ─────────────────────────────────────────────
+ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
+
+
+def _load_mail_cfg() -> dict:
+    data = load_json(ADMIN_SETTINGS_FILE, {})
+    if not isinstance(data, dict):
+        return {}
+    m = data.get("mail") or {}
+    return m if isinstance(m, dict) else {}
+
+
+class SendMailReq(BaseModel):
+    to: List[str] = []              # resolved email addresses (fallback)
+    to_users: List[str] = []        # usernames — also resolved to emails via users.csv
+    groups: List[str] = []          # recipient group names (resolved via admin settings)
+    subject: str = ""               # → title
+    body: str = ""                  # optional extra prose prepended to HTML body
+    include_thread: bool = True     # include full thread HTML in content
+    status_code: str = ""           # per-send override; else admin default
+    attachments: List[str] = []     # inform image URLs to attach
+
+
+@router.get("/mail-groups")
+def list_mail_groups(request: Request):
+    """Admin 에 저장된 메일 수신자 그룹 (이름 → username 리스트). 로그인 유저 누구나 조회."""
+    _ = current_user(request)
+    cfg = _load_mail_cfg()
+    rg = cfg.get("recipient_groups") or {}
+    return {"groups": rg if isinstance(rg, dict) else {}}
+
+
+@router.get("/recipients")
+def list_recipients(request: Request):
+    """모든 승인 유저 + email. 인폼 메일 수신자 선택용 (로그인 유저 누구나 조회)."""
+    _ = current_user(request)  # enforce login
+    from routers.auth import read_users
+    out = []
+    for u in read_users():
+        if u.get("status") != "approved":
+            continue
+        out.append({
+            "username": u.get("username", ""),
+            "email": u.get("email", "") or "",
+            "role": u.get("role", ""),
+        })
+    return {"recipients": out}
+
+
+def _thread_text(items: list, root_id: str) -> str:
+    """작성 시각 순으로 root+children 본문을 평탄화 (plain text fallback)."""
+    root = next((x for x in items if x.get("id") == root_id), None)
+    if not root:
+        return ""
+    lines: List[str] = []
+
+    def dump(node: dict, depth: int):
+        prefix = "  " * depth
+        ts = (node.get("created_at") or "")[:16].replace("T", " ")
+        lines.append(f"{prefix}[{ts}] {node.get('author','?')} · {node.get('module','')} / {node.get('reason','')}")
+        body = (node.get("text") or "").strip()
+        for ln in body.splitlines() or [""]:
+            lines.append(f"{prefix}  {ln}")
+        kids = sorted(
+            [x for x in items if x.get("parent_id") == node.get("id")],
+            key=lambda x: x.get("created_at", ""),
+        )
+        for k in kids:
+            dump(k, depth + 1)
+
+    dump(root, 0)
+    return "\n".join(lines)
+
+
+def _thread_html(items: list, root_id: str) -> str:
+    """Render the root + its children as a nested HTML block."""
+    root = next((x for x in items if x.get("id") == root_id), None)
+    if not root:
+        return ""
+
+    def esc(s):
+        return _html.escape(str(s or ""))
+
+    parts: List[str] = []
+
+    def render(node: dict, depth: int):
+        bg = "#fff" if depth == 0 else "#fafafa"
+        border = "#f97316" if depth == 0 else "#d1d5db"
+        left_pad = 14 + depth * 14
+        ts = (node.get("created_at") or "")[:16].replace("T", " ")
+        author = esc(node.get("author", "?"))
+        module = esc(node.get("module", ""))
+        reason = esc(node.get("reason", ""))
+        status = esc(node.get("flow_status", ""))
+        body_lines = (node.get("text") or "").splitlines()
+        body_html = "<br/>".join(esc(ln) for ln in body_lines) or "<i style='color:#999'>(본문 없음)</i>"
+        sc = node.get("splittable_change") or None
+        sc_block = ""
+        if sc and (sc.get("column") or sc.get("new_value")):
+            sc_block = (
+                "<div style='margin-top:6px;padding:6px 8px;background:#fff7ed;border-left:3px solid #f97316;font-family:monospace;font-size:12px;'>"
+                f"▸ <b>{esc(sc.get('column',''))}</b>: "
+                f"<span style='color:#6b7280;text-decoration:line-through'>{esc(sc.get('old_value','-'))}</span>"
+                f" → <span style='color:#16a34a;font-weight:700'>{esc(sc.get('new_value','-'))}</span>"
+                "</div>"
+            )
+        parts.append(
+            f"<div style='margin-left:{left_pad}px;margin-bottom:8px;padding:10px 12px;"
+            f"background:{bg};border:1px solid {border};border-left:4px solid {border};"
+            f"border-radius:6px;font-family:-apple-system,Segoe UI,Arial,sans-serif;font-size:13px;color:#1f2937;'>"
+            f"<div style='font-size:11px;color:#6b7280;margin-bottom:4px;'>"
+            f"<b style='color:#1f2937'>{author}</b> · {esc(ts)} · "
+            f"<span style='color:#f97316'>{module}</span>"
+            + (f" / {reason}" if reason else "")
+            + (f" · <span style='padding:1px 6px;border-radius:10px;background:#e0f2fe;color:#0369a1;font-size:10px;'>{status}</span>" if status else "")
+            + f"</div>"
+            f"<div style='line-height:1.55'>{body_html}</div>"
+            f"{sc_block}"
+            f"</div>"
+        )
+        kids = sorted(
+            [x for x in items if x.get("parent_id") == node.get("id")],
+            key=lambda x: x.get("created_at", ""),
+        )
+        for k in kids:
+            render(k, depth + 1)
+
+    render(root, 0)
+    return "\n".join(parts)
+
+
+def _build_html_body(root: dict, thread_html: str, extra_prose: str) -> str:
+    """최상위 루트 메타 + 사용자 prose + 스레드 HTML 을 한 문서로."""
+    esc = _html.escape
+    meta_rows = []
+    for k, label in [("module", "모듈"), ("reason", "사유"), ("product", "제품"),
+                     ("lot_id", "Lot"), ("wafer_id", "Wafer"), ("deadline", "마감일"),
+                     ("flow_status", "진행상태"), ("author", "작성자")]:
+        val = root.get(k, "")
+        if not val:
+            continue
+        meta_rows.append(
+            f"<tr><td style='padding:4px 10px;font-size:11px;color:#6b7280;background:#f3f4f6;width:90px;'>{esc(label)}</td>"
+            f"<td style='padding:4px 10px;font-size:12px;color:#1f2937;font-family:monospace;'>{esc(val)}</td></tr>"
+        )
+    meta_tbl = "<table style='border-collapse:collapse;border:1px solid #d1d5db;margin:10px 0;width:100%;max-width:560px;'>" + "".join(meta_rows) + "</table>"
+    prose_block = ""
+    if extra_prose.strip():
+        safe = _html.escape(extra_prose).replace("\n", "<br/>")
+        prose_block = (
+            f"<div style='margin:12px 0;padding:10px 12px;background:#fffbeb;border-left:4px solid #f59e0b;"
+            f"border-radius:4px;font-size:13px;color:#78350f;'>{safe}</div>"
+        )
+    return (
+        "<div style='font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1f2937;max-width:720px;'>"
+        f"<h2 style='font-size:16px;margin:0 0 6px 0;color:#ea580c;'>flow · 인폼 공유</h2>"
+        f"<div style='font-size:11px;color:#6b7280;margin-bottom:10px;'>Inform ID <code>{esc(root.get('id',''))}</code></div>"
+        f"{meta_tbl}"
+        f"{prose_block}"
+        f"<h3 style='font-size:13px;margin:14px 0 6px 0;color:#374151;'>스레드</h3>"
+        f"{thread_html}"
+        "<hr style='border:none;border-top:1px solid #e5e7eb;margin:18px 0 8px 0;'/>"
+        "<div style='font-size:10px;color:#9ca3af;'>Sent by flow · 자동 전송된 메일입니다.</div>"
+        "</div>"
+    )
+
+
+def _resolve_users_to_emails(usernames: List[str]) -> List[str]:
+    if not usernames:
+        return []
+    from routers.auth import read_users
+    all_users = {u.get("username", ""): u for u in read_users()}
+    out = []
+    for un in usernames:
+        u = all_users.get(un)
+        if u and u.get("email") and "@" in u.get("email", ""):
+            out.append(u["email"])
+    return out
+
+
+MAIL_CONTENT_MAX = 2 * 1024 * 1024          # 2 MB HTML body
+MAIL_ATTACH_MAX  = 10 * 1024 * 1024         # 10 MB total attachments
+
+
+def _resolve_inform_attachment(url: str) -> Optional[Path]:
+    """Map /api/informs/files/{uid}/{name} → local UPLOADS_DIR/{uid}/{name}."""
+    if not url:
+        return None
+    m = re.match(r"^/?api/informs/files/([A-Za-z0-9_\-]+)/([^/\\?#]+)", url)
+    if not m:
+        return None
+    uid, name = m.group(1), m.group(2)
+    if ".." in name or "/" in name or "\\" in name:
+        return None
+    fp = UPLOADS_DIR / uid / name
+    try:
+        fp_res = fp.resolve()
+        root_res = UPLOADS_DIR.resolve()
+        fp_res.relative_to(root_res)  # traversal guard
+    except Exception:
+        return None
+    return fp if fp.is_file() else None
+
+
+def _encode_multipart(fields: Dict[str, str], files: List[tuple]) -> tuple:
+    """Encode form fields + files as multipart/form-data.
+    fields: {name: string_value}
+    files:  [(field_name, filename, bytes, mime)]
+    Returns (body_bytes, content_type_header).
+    """
+    boundary = "----flowInform" + uuid.uuid4().hex
+    chunks: List[bytes] = []
+    for name, value in fields.items():
+        chunks.append(f"--{boundary}\r\n".encode())
+        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n'.encode())
+        chunks.append(b"Content-Type: text/plain; charset=utf-8\r\n\r\n")
+        chunks.append(str(value).encode("utf-8"))
+        chunks.append(b"\r\n")
+    for (fname_field, filename, content, mime) in files:
+        chunks.append(f"--{boundary}\r\n".encode())
+        safe_fn = filename.replace('"', '').replace("\r", "").replace("\n", "")
+        chunks.append(
+            f'Content-Disposition: form-data; name="{fname_field}"; filename="{safe_fn}"\r\n'.encode()
+        )
+        chunks.append(f"Content-Type: {mime}\r\n\r\n".encode())
+        chunks.append(content)
+        chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode())
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+@router.post("/{inform_id}/send-mail")
+def send_mail(inform_id: str, req: SendMailReq, request: Request):
+    """인폼 HTML 본문 + 선택 수신자로 사내 메일 API 호출.
+
+    수신자 확정 순서:
+      1) req.to (이메일 직접 지정)
+      2) req.to_users (username → email 매핑)
+      3) req.groups → admin 설정 recipient_groups[group] (username 리스트) → email
+
+    Admin 설정의 mail.api_url/headers/from_addr/extra_data 를 사용. enabled=False
+    이거나 api_url 이 비어있으면 400. api_url=='dry-run' 이면 실제 전송 없이 payload
+    를 그대로 반환 (구성 검증용).
+    """
+    me = current_user(request)
+    cfg = _load_mail_cfg()
+    if not cfg.get("enabled") or not (cfg.get("api_url") or "").strip():
+        raise HTTPException(400, "메일 API 가 설정되지 않았습니다. Admin > 메일 API 에서 활성화하세요.")
+
+    items = _load_upgraded()
+    target = _find(items, inform_id)
+    if not target:
+        raise HTTPException(404, "인폼을 찾을 수 없습니다.")
+
+    # Resolve recipients. Admin-side groups store emails directly; to_users is
+    # a convenience path that looks up emails from users.csv.
+    to_addrs: List[str] = []
+    seen_addrs: set = set()
+
+    def _push(em: str):
+        em = (em or "").strip()
+        if not em or "@" not in em:
+            return
+        if em in seen_addrs:
+            return
+        seen_addrs.add(em)
+        to_addrs.append(em)
+
+    for a in (req.to or []):
+        _push(a)
+    for em in _resolve_users_to_emails(list(req.to_users or [])):
+        _push(em)
+    rg_cfg = cfg.get("recipient_groups") or {}
+    for gname in (req.groups or []):
+        members = rg_cfg.get(gname) if isinstance(rg_cfg, dict) else None
+        if isinstance(members, list):
+            for em in members:
+                _push(str(em))
+
+    if not to_addrs:
+        raise HTTPException(400, "수신자 이메일이 없습니다 (유저 email 또는 group 을 먼저 설정하세요).")
+    if len(to_addrs) > 199:
+        raise HTTPException(400, f"수신자는 최대 199명까지 지정할 수 있습니다 (현재 {len(to_addrs)}명).")
+    # receiverList object form per mail API spec.
+    receiver_list = [{"email": em, "recipientType": "To", "seq": i + 1}
+                     for i, em in enumerate(to_addrs)]
+    to_list = to_addrs  # kept for audit (plain list of emails)
+
+    subject = (req.subject or "").strip() or f"[flow 인폼] {target.get('module','')} · {target.get('lot_id') or target.get('wafer_id') or ''}".strip()
+    # HTML body (content)
+    thread_html = _thread_html(items, inform_id) if req.include_thread else ""
+    html_body = _build_html_body(target, thread_html, (req.body or ""))
+    content_bytes_len = len(html_body.encode("utf-8"))
+    if content_bytes_len > MAIL_CONTENT_MAX:
+        raise HTTPException(400, f"메일 본문이 2MB 한도를 초과했습니다 ({content_bytes_len // 1024}KB). 스레드 첨부를 끄거나 본문을 줄여주세요.")
+
+    # Collect attachments (optional)
+    attach_files: List[tuple] = []
+    attach_total = 0
+    for url_ in (req.attachments or []):
+        fp = _resolve_inform_attachment(url_)
+        if not fp:
+            continue
+        content = fp.read_bytes()
+        attach_total += len(content)
+        if attach_total > MAIL_ATTACH_MAX:
+            raise HTTPException(400, f"첨부파일 총 용량이 10MB 한도를 초과했습니다 ({attach_total // 1024}KB).")
+        mime = mimetypes.guess_type(fp.name)[0] or "application/octet-stream"
+        attach_files.append(("files", fp.name, content, mime))
+
+    # Build `data` object per spec.
+    data_obj: Dict[str, Any] = {
+        "content":           html_body,
+        "receiverList":      receiver_list,
+        "senderMailaddress": (cfg.get("from_addr") or "").strip(),
+        "statusCode":        (req.status_code or cfg.get("status_code") or "").strip(),
+        "title":             subject,
+    }
+    # Merge admin extra_data without clobbering reserved keys.
+    extra = cfg.get("extra_data") or {}
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            if k and k not in data_obj:
+                data_obj[k] = v
+
+    headers = {}
+    cfg_headers = cfg.get("headers") or {}
+    if isinstance(cfg_headers, dict):
+        for k, v in cfg_headers.items():
+            if k:
+                headers[str(k)] = str(v)
+
+    url = cfg.get("api_url").strip()
+    dry_run = url.lower() == "dry-run"
+    if dry_run:
+        result_info = {
+            "status": 200, "dry_run": True,
+            "preview_data": data_obj,
+            "preview_attachments": [{"name": f[1], "bytes": len(f[2])} for f in attach_files],
+            "preview_headers": headers,
+        }
+    else:
+        # multipart/form-data: "data" (JSON string) + "files" (repeated file parts).
+        fields = {"data": _json.dumps(data_obj, ensure_ascii=False)}
+        body_bytes, content_type = _encode_multipart(fields, attach_files)
+        hdrs_out = dict(headers)
+        hdrs_out["Content-Type"] = content_type
+        try:
+            r = urllib.request.Request(url, data=body_bytes, headers=hdrs_out, method="POST")
+            with urllib.request.urlopen(r, timeout=15) as resp:
+                status = resp.status
+                text = resp.read(2048).decode("utf-8", errors="replace")
+            result_info = {"status": status, "response": text[:512]}
+        except urllib.error.HTTPError as e:
+            detail_text = ""
+            try:
+                detail_text = e.read(512).decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            _audit(request, "inform:mail-fail", detail=f"id={inform_id} http={e.code}", tab="inform")
+            raise HTTPException(502, f"메일 API 오류: HTTP {e.code} {detail_text[:200]}")
+        except Exception as e:
+            _audit(request, "inform:mail-fail", detail=f"id={inform_id} err={e}", tab="inform")
+            raise HTTPException(502, f"메일 전송 실패: {e}")
+
+    # Best-effort audit log on the inform itself.
+    hist = target.get("mail_history") or []
+    hist.append({
+        "at": _now(),
+        "by": me.get("username", ""),
+        "to": to_list,
+        "to_users": list(req.to_users or []),
+        "groups": list(req.groups or []),
+        "subject": subject,
+    })
+    target["mail_history"] = hist[-20:]  # keep last 20
+    _save(items)
+    _audit(request, "inform:mail-send", detail=f"id={inform_id} n_to={len(to_list)} dry={dry_run}", tab="inform")
+    return {"ok": True, "to": to_list, "subject": subject, **result_info}
 
 
 @router.post("/splittable")
