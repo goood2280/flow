@@ -1,3 +1,13 @@
+## v8.8.12 — 2026-04-21
+
+인폼 공동편집 + 담당자 패널 전제품 삭제 + 모듈별 요약 접기 + 답글 [RE] + 회의 주관자 기본값.
+
+- **BE 인폼 공동편집** — `/delete` 권한 확장 (작성자/admin/모듈담당자), 신규 `/edit` endpoint + edit_history.
+- **담당자 패널 🗑 항상 노출** — catalog 없어도 삭제 가능. 담당자 전원 삭제 + products/delete 연쇄.
+- **Lot 모듈별 요약 접기** — LocalStorage 유지. 접힌 상태에 요약 stat 표시.
+- **답글 [RE] prefix** — ThreadNode reply text 앞 자동 prefix.
+- **회의 주관자 기본값** — 새 회의 모달 owner 인풋 초기값 = 로그인 유저.
+
 ## v8.8.11 — 2026-04-21
 
 인폼 SplitTable 자동첨부 — prefix/CUSTOM 선택 + 컬러링 동일 + plan 핀.

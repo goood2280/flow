@@ -368,7 +368,10 @@ function ThreadNode({
             <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
               <button onClick={() => {
                 if (!reply.text.trim() && replyImages.length === 0) return;
-                const body = { ...reply, images: replyImages };
+                // v8.8.12: 답글 text 앞에 [RE] prefix 자동 (이미 있으면 중복 안 붙임).
+                const replyText = (reply.text || "").trim();
+                const txt = replyText.startsWith("[RE]") ? replyText : (replyText ? `[RE] ${replyText}` : replyText);
+                const body = { ...reply, text: txt, images: replyImages };
                 if (attachSplit && (splitForm.column || splitForm.new_value)) {
                   body.splittable_change = { ...splitForm, applied: false };
                 }
@@ -885,10 +888,27 @@ function LotModuleSummary({ thread, modules }) {
   });
   if (!rows.length) return null;
   const cellBase = { padding: "8px 12px", borderBottom: "1px solid var(--border)" };
+  // v8.8.12: LocalStorage 기반 접기 상태 유지.
+  const COLLAPSE_KEY = "flow_inform_module_summary_collapsed";
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(COLLAPSE_KEY) === "1"; } catch { return false; }
+  });
+  const toggle = () => {
+    const nv = !collapsed;
+    setCollapsed(nv);
+    try { localStorage.setItem(COLLAPSE_KEY, nv ? "1" : "0"); } catch {}
+  };
   return (
     <div style={{ marginBottom: 14, padding: 12, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
-      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8, fontFamily: "monospace", color: "var(--accent)" }}>📋 모듈별 진행 요약</div>
-      <div style={{ overflowX: "auto" }}>
+      <div onClick={toggle}
+        style={{ fontSize: 14, fontWeight: 700, marginBottom: collapsed ? 0 : 8, fontFamily: "monospace", color: "var(--accent)", cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 6 }}>
+        <span>{collapsed ? "▶" : "▼"}</span>
+        <span>📋 모듈별 진행 요약</span>
+        {collapsed && <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 400, marginLeft: 8 }}>
+          ({rows.filter(r => r.hasInform).length} 모듈 활성 / {rows.reduce((s, r) => s + (r.count || 0), 0)} 건)
+        </span>}
+      </div>
+      {!collapsed && <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%", tableLayout: "fixed" }}>
           {/* v8.8.0: 3개 데이터 열 너비 균등 (등록 / 메일 / 담당자 확인). */}
           <colgroup>
@@ -933,7 +953,7 @@ function LotModuleSummary({ thread, modules }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -1681,17 +1701,26 @@ export default function My_Inform({ user }) {
                     <span onClick={(e) => { e.stopPropagation(); setEditContact({ product: prod, name: "", role: "", email: "", phone: "", note: "" }); }}
                           title="담당자 직접 추가"
                           style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "var(--accent)", color: "#fff", fontWeight: 700, cursor: "pointer" }}>+</span>
-                    {inCatalog && (
-                      <span onClick={(e) => {
-                              e.stopPropagation();
-                              if (!window.confirm(`제품 카탈로그에서 "${prod}" 을(를) 제거하시겠어요?\n(등록된 담당자와 기존 인폼 레코드는 유지됩니다 — 드롭다운에서만 사라짐)`)) return;
-                              postJson(API + "/products/delete", { product: prod })
-                                .then(d => setConstants(c => ({ ...c, products: d.products || c.products })))
-                                .catch(err => alert(err.message));
-                            }}
-                            title="카탈로그에서 제거 (레코드는 유지)"
-                            style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "transparent", color: "#ef4444", fontWeight: 700, cursor: "pointer", border: "1px solid #ef4444" }}>🗑</span>
-                    )}
+                    {/* v8.8.12: 삭제 버튼 항상 노출. catalog 에 있으면 /products/delete,
+                          productContacts 만 있으면 해당 제품의 contacts 를 모두 개별 삭제해 key 제거. */}
+                    <span onClick={(e) => {
+                            e.stopPropagation();
+                            if (!window.confirm(`"${prod}" 을(를) 제거하시겠어요?\n(담당자 목록 + 카탈로그 등록 모두 삭제. 기존 인폼 레코드는 유지.)`)) return;
+                            const contacts = (productContacts[prod] || []);
+                            const delContactReqs = contacts.map(c =>
+                              sf("/api/informs/product-contacts/delete?id=" + encodeURIComponent(c.id) + "&product=" + encodeURIComponent(prod), { method: "POST" }).catch(() => {})
+                            );
+                            Promise.all(delContactReqs).then(() => {
+                              if (inCatalog) {
+                                postJson(API + "/products/delete", { product: prod })
+                                  .then(d => setConstants(c => ({ ...c, products: d.products || c.products })))
+                                  .catch(() => {});
+                              }
+                              loadProductContacts();
+                            });
+                          }}
+                          title="제품 삭제 (담당자 + 카탈로그)"
+                          style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "transparent", color: "#ef4444", fontWeight: 700, cursor: "pointer", border: "1px solid #ef4444" }}>🗑</span>
                   </div>
                   {open && arr.length === 0 && (
                     <div style={{ padding: "6px 14px 8px 24px", fontSize: 10, color: "var(--text-secondary)" }}>담당자 없음</div>
