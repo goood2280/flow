@@ -684,17 +684,36 @@ class CustomSaveReq(BaseModel):
     name: str
     username: str
     columns: List[str]
+    # v8.6.1: 낙관적 잠금 — 동일 name 의 기존 커스텀이 있으면 expected_version 일치 시에만 덮어쓴다.
+    # 신규(처음 저장)면 0 또는 None.
+    expected_version: int | None = None
 
 
 @router.post("/customs/save")
 def save_custom(req: CustomSaveReq):
     fp = PLAN_DIR / f"custom_{safe_id(req.name)}.json"
     now = datetime.datetime.now().isoformat()
+    existing = load_json(fp, None) if fp.exists() else None
+    if existing:
+        cur_v = int(existing.get("version", 1))
+        # 클라가 보낸 expected_version 이 None 이면 강제 덮어쓰기 (legacy).
+        # 정수면 일치해야 함. 불일치 → conflict 응답.
+        if req.expected_version is not None and int(req.expected_version) != cur_v:
+            return {
+                "ok": False, "conflict": True,
+                "server_version": cur_v, "current": existing,
+                "detail": "Version conflict — another user has saved this custom view.",
+            }
+        new_v = cur_v + 1
+        created = existing.get("created", now)
+    else:
+        new_v = 1
+        created = now
     save_json(fp, {
         "name": req.name, "username": req.username, "columns": req.columns,
-        "created": now, "updated": now,
+        "created": created, "updated": now, "version": new_v,
     })
-    return {"ok": True}
+    return {"ok": True, "version": new_v}
 
 
 class CustomDeleteReq(BaseModel):

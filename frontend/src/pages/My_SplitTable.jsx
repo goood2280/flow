@@ -127,9 +127,26 @@ export default function My_SplitTable({user}){
       .then(()=>{setShowConfirm(false);setEditing(false);loadView();}).catch(e=>alert(e.message));};
   const deletePlan=(ck)=>{if(!confirm("Delete?"))return;sf(API+"/plan/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,cell_keys:[ck],username:user?.username||""})}).then(loadView);};
 
-  const saveCustom=()=>{if(!customName.trim()||!customCols.length)return;
-    sf(API+"/customs/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:customName,username:user?.username||"",columns:customCols})})
-      .then(()=>{reloadCustoms();setSelCustom(customName);setIsCustomMode(true);});};
+  // v8.6.1: 낙관적 잠금 — 동일 name 의 기존 custom version 을 expected_version 으로 첨부.
+  // 충돌(다른 사용자 저장) 시 conflict 응답 → confirm 으로 덮어쓸지 reload 할지 선택.
+  const saveCustom=(force)=>{if(!customName.trim()||!customCols.length)return;
+    const existing=customs.find(c=>c.name===customName);
+    const ev=force?null:(existing?(existing.version||1):0);
+    sf(API+"/customs/save",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name:customName,username:user?.username||"",columns:customCols,expected_version:ev})})
+      .then(d=>{
+        if(d&&d.conflict){
+          if(confirm("⚠ '"+customName+"' 가 다른 사용자에 의해 변경되었습니다.\n\nOK = 그래도 덮어쓰기\nCancel = 최신 데이터 불러오기")){
+            saveCustom(true);
+          } else {
+            reloadCustoms();
+            const cur=d.current||{};
+            if(cur.columns)setCustomCols(cur.columns);
+          }
+          return;
+        }
+        reloadCustoms();setSelCustom(customName);setIsCustomMode(true);
+      }).catch(e=>alert("저장 실패: "+(e.message||e)));};
   const deleteCustom=(name)=>{if(!confirm("Delete '"+name+"'?"))return;
     sf(API+"/customs/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,username:user?.username||""})})
       .then(()=>{reloadCustoms();if(selCustom===name)setSelCustom("");}).catch(e=>alert(e.message));};
