@@ -2,6 +2,12 @@
 
 주요 변경점만 간략히. 세부 내역은 `VERSION.json` 의 changelog 배열 참고.
 
+## v8.7.2 — 2026-04-21
+
+- **신규 회의관리 탭** — 회의 생성(주관자·예정 일시), 아젠다 추가(담당자·링크), 회의록(본문·결정사항·액션 아이템) 한 화면에서 관리. 좌측 회의 목록(상태 필터/검색) + 우측 상세. nav '회의관리' 탭 모든 유저 노출.
+- **신규 라우터 `meetings.py`** — `/api/meetings/{list, create, update, delete, agenda/add, agenda/update, agenda/delete, minutes/save}`. 권한: 회의 메타·회의록은 주관자/admin, 아젠다는 담당자/주관자/admin. 회의록 저장 시 status auto → completed.
+- **`setup.py` 자체-추출 번들로 복원** — v8.7.1 의 단순 runner 패턴 폐기. 전체 소스 트리를 gzip+base64 로 임베드. `python setup.py` 한 줄로 어디서든 풀고 deps + frontend build 까지 진행. data/ 보존 가드 유지.
+
 ## v8.7.1 — 2026-04-21
 
 - **인폼 이미지 깨짐 수정** — `<img>` 가 세션 토큰 헤더를 못 실어 이미지가 401 로 깨지던 문제. 이미지 서빙 엔드포인트에 한해 `?t=<token>` 쿼리 fallback 허용 + FE `authSrc()` 헬퍼.
