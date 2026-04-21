@@ -44,23 +44,14 @@ from core.auth import current_user, require_admin
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 
 
-# v8.8.1: admin/test 계정 필터.
+# v8.8.1/v8.8.5: admin 필터 해제 — admin 도 그룹 멤버로 추가 가능 (사내 이메일 있는 경우 多).
+#   v8.8.1 에선 "admin 은 사내 이메일이 없어 메일 발송 대상 아님" 가정으로 제외했으나,
+#   실사내 admin 계정은 정상 이메일 보유 → 배제하면 안 됨. test substring 만 block.
 def _is_blocked_member(username: str, users_by_name: dict | None = None) -> bool:
-    """그룹 멤버로 들어가면 안 되는 계정인지.
-
-    - username 이 비어있음 → block.
-    - "test" substring (case-insensitive) 포함 → block.
-    - role == "admin" (users 테이블 기준) → block.
-    """
     un = (username or "").strip()
     if not un:
         return True
     if "test" in un.lower():
-        return True
-    if users_by_name is None:
-        users_by_name = _load_users_by_name()
-    u = users_by_name.get(un)
-    if u and (u.get("role") == "admin"):
         return True
     return False
 

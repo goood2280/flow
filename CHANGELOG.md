@@ -1,3 +1,20 @@
+## v8.8.5 — 2026-04-21
+
+사내 실 DB 구조 대응 + 오버라이드 resolve 상태 UI + Dashboard 중복 제거 + Tracker UX + 개별 버전 배지 제거 + 그룹 admin 허용 + 담당모듈 UI 제거.
+
+- **DB 상위폴더 `1.RAWDATA_DB*` prefix 인식** — `_list_db_roots()` 공용 헬퍼 (FAB 힌트 우선). `/fab-roots`, `/ml-table-match`, `_auto_derive_fab_source` 공통.
+- **hive 파티션 (date=YYYYMMDD) 로딩** — `hive_partitioning=True` 로 파티션 컬럼 노출. 구버전 폴백.
+- **ts_col 후보에 `date` 최우선** — 파일 내 timestamp 없어도 파티션 키로 최신도 판정.
+- **오버라이드 resolve meta 풀세트** — `_resolve_override_meta()` 가 {fab_source, fab_col, ts_col, join_keys, scanned_files, row_count, sample, error} 반환. `/ml-table-match` + `/view` 응답 동봉. FE 톱니 카드 + 상단 배지로 상세 노출.
+- **SplitTable 상단 fab_source 배지** — `🔗 1.RAWDATA_DB_FAB/PRODA · fab_lot_id@date (자동)` 한눈에 확인. 에러 시 빨간 `⚠ fab_source off`.
+- **fab_source 드롭다운 재구성** — ML_TABLE(모 테이블) 제거, DB 경로 + TableMap 만. ML_TABLE만 보기 체크박스 제거. 빈 선택 시 자동매칭 경로 힌트.
+- **테스트 데이터 `data/Fab/`** — `_build_fab_root.py` 로 ML_TABLE_*.parquet + `1.RAWDATA_DB_FAB/<PROD>/date=.../part_0.parquet` (V1/V2). `admin_settings.data_roots.db=.base=.../data/Fab`. 최신만 join 검증.
+- **Dashboard 데이터소스 중복 제거** — `base_root == db_root` 상황에서 `base_file` 로 일원화. `1.RAWDATA_DB*` 하위 whitelist 우회. file-only dedup 로 ML_TABLE 이 base/root 두 번 뜨던 현상 제거.
+- **Tracker LotTable 빈행 + 버튼** — 외부 `+ 행 추가` 제거. 표 맨 아래 빈행 클릭 또는 + 셀로 추가. 항상 표 형태 유지.
+- **홈화면 개별 버전 배지 제거** — `FEATURE_VERSIONS={}` 빈 객체. 통합 v8.8.5 만 상단.
+- **그룹 admin 멤버 허용 + 담당모듈 UI 제거** — `_is_blocked_member` 가 admin 통과 (사내 admin 은 이메일 보유). test substring 만 block. My_Admin 그룹 편집의 담당 모듈 섹션 제거.
+- **파일탐색기 단일파일 삭제 admin 이중체크** — session token `role==admin` + body.username `_is_admin()` 동시 요구.
+
 ## v8.8.4 — 2026-04-21
 
 S3 신호등 화살표 원 안 각인 · Tracker 이미지 붙여넣기 토큰 복구 · 인폼 제품 카탈로그 CRUD 통일 · 공용 메일그룹 인폼 노출+관리 z-index · 변경점 액션 담당자 제목 명시 · SplitTable 오버라이드 근본 재정리(ML_TABLE 한정+자동 매칭+ts 최신 join) + wafer 숫자정렬.

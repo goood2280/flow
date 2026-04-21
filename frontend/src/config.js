@@ -1,13 +1,6 @@
-export const FEATURE_VERSIONS = {
-  filebrowser: "8.0.4", splittable: "8.0.4", dashboard: "8.0.4",
-  tracker: "7.0", tablemap: "4.1",
-  admin: "8.5.0", devguide: "4.0",
-  messages: "8.1.6",
-  home: "8.1.6",
-  inform: "8.5.1",
-  calendar: "8.6.0",
-  meeting: "8.7.2",
-};
+// v8.8.5: 단위기능별 버전 관리 중단 — VERSION.json 의 통합 버전만 유지.
+//         FEATURE_VERSIONS export 를 빈 객체로 유지해서 외부 참조가 있어도 깨지지 않도록 함.
+export const FEATURE_VERSIONS = {};
 // v8.4.7: ML 분석 탭 제거 — 아직 활성 기능 아님. 홈의 PLANNED_FEATURES 에 노출.
 // v8.5.1: Inform log 추가.
 export const TABS = [

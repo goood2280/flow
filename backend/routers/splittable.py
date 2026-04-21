@@ -354,32 +354,70 @@ def list_products():
     return {"products": dedup}
 
 
-@router.get("/fab-roots")
-def list_fab_roots():
-    """v8.7.8: DB 최상위 폴더 목록 (FAB / INLINE / ET / EDS 등). fab_source 용 상위폴더 선택용.
-    Returns: {roots: [{name, products: [...], total_size}], ...}
+# v8.8.5: 사내 실데이터 구조 대응.
+#   - base_root == db_root (동일 폴더).
+#   - 상위 DB 폴더 이름이 `1.RAWDATA_DB*` prefix (예: `1.RAWDATA_DB`, `1.RAWDATA_DB_FAB`, `1.RAWDATA_DB_INLINE`).
+#   - 제품 폴더 안은 hive 파티션: `PRODA/date=YYYYMMDD/part_*.parquet`.
+#   - 동시에 Base 단일 파일 `ML_TABLE_<PROD>.parquet` 도 같은 폴더 레벨에 있음.
+# 과거 호환: 짧은 이름 (FAB/INLINE/ET/EDS) 폴더도 계속 인식.
+_RAWDATA_PREFIX = "1.RAWDATA_DB"
+_LEGACY_SHORT_ROOTS = {"FAB", "INLINE", "ET", "EDS"}
+
+def _is_db_root_dir(p) -> bool:
+    if not p.is_dir():
+        return False
+    n = p.name
+    if n.startswith(_RAWDATA_PREFIX):
+        return True
+    if n.upper() in _LEGACY_SHORT_ROOTS:
+        return True
+    return False
+
+def _list_db_roots():
+    """사내/레거시 공통 DB 상위 폴더 후보 스캔. 반환 순서 = 우선순위.
+    - FAB 힌트(이름에 'FAB' 포함) 이 먼저, 이후 INLINE/ET/EDS, 그 외.
+    - 같은 우선군 안에서는 이름 오름차순.
     """
     db_base = _db_base()
-    out = []
     if not db_base.exists():
-        return {"roots": out}
-    for root_dir in sorted(db_base.iterdir()):
-        if not root_dir.is_dir():
-            continue
+        return []
+    cands = [p for p in db_base.iterdir() if _is_db_root_dir(p)]
+    def _rank(p):
+        up = p.name.upper()
+        if "FAB" in up: return 0
+        if "INLINE" in up: return 1
+        if "ET" in up: return 2
+        if "EDS" in up: return 3
+        return 4
+    cands.sort(key=lambda p: (_rank(p), p.name))
+    return cands
+
+
+@router.get("/fab-roots")
+def list_fab_roots():
+    """v8.7.8/v8.8.5: DB 최상위 폴더 목록. `1.RAWDATA_DB*` 접두 폴더 + 레거시 FAB/INLINE/ET/EDS 짧은 이름 모두 인식.
+    Returns: {roots: [{name, products: [...], total_size}], ...}
+    """
+    out = []
+    for root_dir in _list_db_roots():
         products = []
         total_size = 0
-        for prod_dir in sorted(root_dir.iterdir()):
-            if not prod_dir.is_dir():
-                continue
-            has_data = False
-            for f in prod_dir.rglob("*"):
-                if f.is_file() and f.suffix in (".parquet", ".csv"):
-                    has_data = True
-                    try: total_size += f.stat().st_size
-                    except Exception: pass
-                    break
-            if has_data:
-                products.append(prod_dir.name)
+        try:
+            for prod_dir in sorted(root_dir.iterdir()):
+                if not prod_dir.is_dir():
+                    continue
+                has_data = False
+                # hive 파티션 포함해서 탐색 — 하위 어디에든 parquet/csv 있으면 "제품" 으로 간주.
+                for f in prod_dir.rglob("*"):
+                    if f.is_file() and f.suffix in (".parquet", ".csv"):
+                        has_data = True
+                        try: total_size += f.stat().st_size
+                        except Exception: pass
+                        break
+                if has_data:
+                    products.append(prod_dir.name)
+        except Exception:
+            continue
         if products:
             out.append({"name": root_dir.name, "products": products, "total_size": total_size})
     return {"roots": out}
@@ -387,10 +425,9 @@ def list_fab_roots():
 
 @router.get("/ml-table-match")
 def ml_table_match(product: str = Query(...)):
-    """v8.7.8: ML_TABLE_<PROD> 에서 PROD 를 추출하고 DB 상위폴더별 매칭 후보 반환.
-    Ex) product=ML_TABLE_PRODA → {"pro": "PRODA", "matches": [{"root":"FAB","product":"PRODA","path":"FAB/PRODA"}, ...]}
-    v8.8.3: 자동으로 선택된 fab_source (_auto_derive_fab_source) 와 현재 override 상태도 같이 반환 →
-            FE 가 "자동 매칭 중" / "매뉴얼 오버라이드 사용 중" 를 표시할 수 있게 한다.
+    """v8.7.8/v8.8.5: ML_TABLE_<PROD> 에서 PROD 추출 → `1.RAWDATA_DB*` / 레거시 짧은 이름 상위폴더 내 <PROD>/ 매칭.
+    Ex) product=ML_TABLE_PRODA → {"matches": [{"root":"1.RAWDATA_DB_FAB","product":"PRODA","path":"1.RAWDATA_DB_FAB/PRODA"}, ...]}
+    v8.8.3: 자동으로 선택된 fab_source (_auto_derive_fab_source) 와 현재 override 상태도 같이 반환.
     """
     pro = ""
     p = (product or "").strip()
@@ -401,11 +438,8 @@ def ml_table_match(product: str = Query(...)):
     else:
         pro = p
     matches = []
-    db_base = _db_base()
-    if pro and db_base.exists():
-        for root_dir in sorted(db_base.iterdir()):
-            if not root_dir.is_dir():
-                continue
+    if pro:
+        for root_dir in _list_db_roots():
             sub = root_dir / pro
             if sub.is_dir():
                 matches.append({
@@ -421,6 +455,8 @@ def ml_table_match(product: str = Query(...)):
     except Exception:
         pass
     effective = (manual_ov.get("fab_source") or "").strip() or auto_path
+    # v8.8.5: 현재 적용 중인 오버라이드 resolve 세부정보. FE 에서 "어디서 읽어옴?" 에 바로 답변 가능.
+    override_meta = _resolve_override_meta(p)
     return {
         "product": p,
         "derived_product": pro,
@@ -428,6 +464,7 @@ def ml_table_match(product: str = Query(...)):
         "auto_path": auto_path,
         "manual_override": bool(manual_ov.get("fab_source")),
         "effective_fab_source": effective,
+        "override": override_meta,
     }
 
 
@@ -938,7 +975,15 @@ def _scan_fab_source(fab_source: str):
             parquets = sorted(fp.rglob("*.parquet"))
             if not parquets:
                 return None
-            return _cast_cats_lazy(pl.scan_parquet([str(p) for p in parquets]))
+            # v8.8.5: 사내 `PRODA/date=YYYYMMDD/part_*.parquet` hive 레이아웃 대응.
+            # hive_partitioning 을 켜서 경로의 `date=...` 를 컬럼으로 노출 → ts_col 자동 추론 시
+            # `date` 후보가 적중해 "가장 최신 date 의 fab_col" join 이 자동으로 동작.
+            try:
+                return _cast_cats_lazy(pl.scan_parquet([str(p) for p in parquets],
+                                                        hive_partitioning=True))
+            except TypeError:
+                # polars 구버전 — 파라미터 미지원 시 폴백 (경로 기반 파티션 컬럼 없음).
+                return _cast_cats_lazy(pl.scan_parquet([str(p) for p in parquets]))
         if fp.suffix == ".csv":
             return _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
         return _cast_cats_lazy(pl.scan_parquet(str(fp)))
@@ -946,12 +991,10 @@ def _scan_fab_source(fab_source: str):
         return None
 
 
-# v8.8.3: ML_TABLE_<PROD> 에서 PROD 를 추출해 DB 상위폴더 아래 동일 제품 폴더를 자동 매칭.
-#   우선순위: FAB > 기타 상위폴더 (FAB 이 실제 fab_lot_id 를 가진 hive 소스).
-_DEFAULT_ROOT_PRIORITY = ("FAB", "INLINE", "ET", "EDS")
-
+# v8.8.3/v8.8.5: ML_TABLE_<PROD> → DB 상위폴더 자동 매칭.
+#   `_list_db_roots()` 에 위임 — 사내 `1.RAWDATA_DB*` 접두 폴더도 인식 (FAB 힌트 우선).
 def _auto_derive_fab_source(product: str) -> str:
-    """Return a fab_source path like "FAB/PRODA" if auto-matchable, else "".
+    """Return a fab_source path like "1.RAWDATA_DB_FAB/PRODA" (or legacy "FAB/PRODA") if auto-matchable, else "".
     ML_TABLE_ prefix 가 아니면 "" 반환 (오버라이드 off)."""
     p = (product or "").strip()
     if not p.startswith("ML_TABLE_"):
@@ -959,27 +1002,147 @@ def _auto_derive_fab_source(product: str) -> str:
     pro = p[len("ML_TABLE_"):].strip()
     if not pro:
         return ""
-    db_base = _db_base()
-    if not db_base.exists():
-        return ""
-    # 1) 상위폴더 우선순위대로 탐색.
-    for rn in _DEFAULT_ROOT_PRIORITY:
-        cand = db_base / rn / pro
-        if cand.is_dir():
-            return f"{rn}/{pro}"
-    # 2) 우선순위에 없는 다른 상위폴더라도 PROD 폴더가 있으면 채택.
-    for root_dir in sorted(db_base.iterdir()):
-        if not root_dir.is_dir():
-            continue
+    for root_dir in _list_db_roots():
         cand = root_dir / pro
         if cand.is_dir():
             return f"{root_dir.name}/{pro}"
     return ""
 
 
-# v8.8.3: ts_col / fab_col 자동 추론 — 매뉴얼 override 없을 때 흔한 이름 스캔.
-_TS_COL_CANDIDATES = ("out_ts", "ts", "timestamp", "created_at", "log_ts", "event_ts", "update_ts")
+# v8.8.3/v8.8.5: ts_col / fab_col 자동 추론 — 매뉴얼 override 없을 때 흔한 이름 스캔.
+#   `date` 를 맨 앞에 추가: hive 파티션 키(`date=YYYYMMDD`) 가 scan_parquet 의 hive_partitioning 덕에
+#   컬럼으로 노출되는 경우를 최우선 취급 — 파일 안 ts 컬럼이 없어도 파티션 단위로 최신 판정 가능.
+_TS_COL_CANDIDATES = ("date", "out_ts", "ts", "timestamp", "created_at", "log_ts", "event_ts", "update_ts")
 _FAB_COL_CANDIDATES = ("fab_lot_id", "lot_id", "fab_lotid", "fab_lot")
+
+
+def _resolve_override_meta(product: str) -> dict:
+    """v8.8.5: view / ml-table-match 양쪽에서 공용. 현재 product 에 대해 적용된 오버라이드 설정 요약.
+
+    Returns (모든 필드 optional, 에러 시 error 로 이유 표기):
+      {
+        "enabled": bool,              # 조인 실제 수행 여부
+        "manual_override": bool,      # SOURCE_CFG 에 명시된 fab_source 사용 여부
+        "fab_source": str,            # 사용된 fab_source 경로 (e.g. "1.RAWDATA_DB_FAB/PRODA")
+        "fab_col": str,               # 실제 join 하는 fab 컬럼 이름
+        "ts_col": str,                # 최신도 판정에 쓰는 ts 컬럼 (빈 문자열이면 레거시 keep=last)
+        "join_keys": [str],
+        "scanned_files": [str],       # fab_source 아래 발견된 parquet 들 (최대 20)
+        "scanned_count": int,         # 실제 파일 개수
+        "row_count": int,             # fab_source LazyFrame 전체 row 수 (scanned)
+        "sample_fab_values": [str],   # head(5) 의 fab_col 값 — "어디서 읽어옴?" 답변용
+        "error": str | None,
+      }
+    """
+    meta = {
+        "enabled": False, "manual_override": False,
+        "fab_source": "", "fab_col": "", "ts_col": "",
+        "join_keys": [], "scanned_files": [], "scanned_count": 0,
+        "row_count": 0, "sample_fab_values": [], "error": None,
+    }
+    try:
+        cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
+        ov = (cfg.get("lot_overrides") or {}).get(product) or {}
+        manual = (ov.get("fab_source") or "").strip()
+        fab_source = manual or _auto_derive_fab_source(product)
+        meta["manual_override"] = bool(manual)
+        meta["fab_source"] = fab_source
+        if not fab_source:
+            if product.startswith("ML_TABLE_"):
+                meta["error"] = "자동 매칭 실패: `1.RAWDATA_DB*/<PROD>/` 폴더를 찾지 못함."
+            else:
+                meta["error"] = "ML_TABLE_ prefix 아님 — 오버라이드 off."
+            return meta
+
+        # locate fab_source folder/file to list scanned files.
+        db_base = _db_base()
+        base_root = _base_root()
+        fp = None
+        for root in (db_base, base_root):
+            if not root or not root.exists():
+                continue
+            cand = root / fab_source
+            if cand.exists():
+                fp = cand
+                break
+        if fp is None:
+            meta["error"] = f"fab_source 경로를 찾을 수 없음: {fab_source}"
+            return meta
+        if fp.is_dir():
+            parquets = sorted(fp.rglob("*.parquet"))
+            base_for_rel = fp.parent if fp.parent.exists() else fp
+            rels = []
+            for p in parquets:
+                try:
+                    rels.append(str(p.relative_to(_db_base())))
+                except Exception:
+                    try:
+                        rels.append(str(p.relative_to(_base_root())))
+                    except Exception:
+                        rels.append(str(p))
+            meta["scanned_count"] = len(parquets)
+            meta["scanned_files"] = [r.replace("\\", "/") for r in rels[:20]]
+        else:
+            meta["scanned_count"] = 1
+            try:
+                meta["scanned_files"] = [str(fp.relative_to(_db_base())).replace("\\", "/")]
+            except Exception:
+                meta["scanned_files"] = [str(fp)]
+
+        fab_lf = _scan_fab_source(fab_source)
+        if fab_lf is None:
+            meta["error"] = f"스캔 실패 (parquet 없음 또는 읽기 불가): {fab_source}"
+            return meta
+        fab_names = fab_lf.collect_schema().names()
+
+        # join keys
+        join_keys = ov.get("join_keys") or []
+        if isinstance(join_keys, str):
+            join_keys = [k.strip() for k in join_keys.split(",") if k.strip()]
+        if not join_keys:
+            try:
+                main_names = pl.scan_parquet(str(_product_path(product))).collect_schema().names()
+            except Exception:
+                main_names = []
+            for cand in ("root_lot_id", "wafer_id", "lot_id", "product"):
+                if cand in main_names and cand in fab_names:
+                    join_keys.append(cand)
+        join_keys = [k for k in join_keys if k in fab_names]
+        meta["join_keys"] = join_keys
+
+        # fab_col / ts_col 추론
+        meta["fab_col"] = (ov.get("fab_col") or "").strip() or _pick_first_present(_FAB_COL_CANDIDATES, fab_names) or "fab_lot_id"
+        meta["ts_col"] = (ov.get("ts_col") or "").strip() or _pick_first_present(_TS_COL_CANDIDATES, fab_names) or ""
+
+        if meta["fab_col"] not in fab_names:
+            meta["error"] = f"fab_col '{meta['fab_col']}' 이 소스 스키마에 없음. 소스 컬럼: {fab_names[:20]}"
+            return meta
+        if not join_keys:
+            meta["error"] = f"공통 join key 없음. 소스 컬럼: {fab_names[:20]}"
+            return meta
+
+        # row count + sample
+        try:
+            rc = fab_lf.select(pl.len()).collect()
+            meta["row_count"] = int(rc.item()) if rc.height > 0 else 0
+        except Exception as e:
+            meta["row_count"] = -1
+        try:
+            sample_cols = [c for c in (join_keys + [meta["fab_col"]] + ([meta["ts_col"]] if meta["ts_col"] else [])) if c in fab_names]
+            sample = fab_lf.select(sample_cols)
+            if meta["ts_col"] and meta["ts_col"] in fab_names:
+                sample = sample.sort(meta["ts_col"], descending=True, nulls_last=True)
+            vals = sample.head(5).collect()
+            if meta["fab_col"] in vals.columns:
+                meta["sample_fab_values"] = [
+                    ("" if v is None else str(v)) for v in vals[meta["fab_col"]].to_list()
+                ]
+        except Exception as e:
+            pass
+        meta["enabled"] = True
+    except Exception as e:
+        meta["error"] = f"resolve 중 예외: {type(e).__name__}: {e}"
+    return meta
 
 def _pick_first_present(candidates, available_names):
     av = set(available_names)
@@ -1337,6 +1500,8 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             except Exception:
                 pass
 
+        # v8.8.5: view 응답에 오버라이드 resolve 결과 동봉 — FE 상단 배지에 "어디서 읽어왔는지" 바로 표시.
+        override_meta = _resolve_override_meta(product)
         return {
             "product": product, "lot_col": lot_col, "wf_col": wf_col,
             "headers": headers, "rows": rows,
@@ -1346,6 +1511,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             "prefix": prefix or (custom_name if custom_name else ""),
             "plan_allowed_prefixes": PLAN_ALLOWED_PREFIXES,
             "mismatch_count": len(mismatches),
+            "override": override_meta,
         }
     except HTTPException:
         raise

@@ -24,7 +24,7 @@ Legacy `/roots` (no `scope` param) keeps its v7.1 shape — DB-canonical only.
 import json
 import logging
 import datetime
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 import polars as pl
 from core.paths import PATHS
@@ -579,18 +579,21 @@ class BaseDeleteReq(BaseModel):
 
 
 @router.post("/base-file/delete")
-def delete_base_file(req: BaseDeleteReq):
-    """v8.8.3 — Admin 이 Base 섹션 단일 파일(원본) 삭제.
+def delete_base_file(req: BaseDeleteReq, request: Request):
+    """v8.8.3/v8.8.5 — Admin 이 Base 섹션 단일 파일(원본) 삭제.
 
-    v8.4.5 에선 base_root 파일만 대상이었으나, v8.7.5/v8.7.7 이후 UI 는 db_root
-    루트의 단일 csv/parquet 도 Base 로 노출한다. 본 엔드포인트도 두 루트를 모두
-    탐색해 첫 매치를 삭제한다. 삭제는 archive (trash/<ts>_<name>) 로 대체되어
-    언제든 복구 가능.
+    v8.8.5: 이중 권한 체크 —
+      (1) 세션 토큰 기반 current_user().role == "admin" (spoofable 한 body.username 대신 토큰 신뢰)
+      (2) body.username 도 여전히 admin 이어야 함 (기존 계약 유지)
 
     - 화이트리스트 확장자만 허용 (parquet/csv/json/md/txt)
     - subdir escape / 숨김파일 금지
     - trash 위치: 파일이 속한 루트 하위 `.trash/`
     """
+    from core.auth import current_user
+    me = current_user(request)
+    if (me.get("role") or "") != "admin":
+        raise HTTPException(403, "Admin only (session token)")
     from routers.admin import _is_admin
     if not _is_admin(req.username):
         raise HTTPException(403, "Admin only")
