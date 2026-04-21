@@ -55,10 +55,17 @@ cd frontend && npm run build
 `frontend/dist/` 생성. 백엔드 FastAPI 가 dist 를 정적 서빙.
 
 ### 3. 실행
+프로젝트 루트(`FabCanvas.ai/`)에서:
 ```bash
-python -m uvicorn app:app --host 127.0.0.1 --port 8080 --app-dir backend
+uvicorn app:app --host 0.0.0.0 --port 8080
+```
+또는 동등하게:
+```bash
+python -m uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 → `http://localhost:8080` 접속.
+
+> 루트의 `app.py` 는 backend/app.py 를 자동으로 로드하는 shim 입니다. `--app-dir backend` 플래그 없이도 정상 기동합니다. (구 명령 `uvicorn app:app --app-dir backend` 도 그대로 동작.)
 
 기본 admin: `hol / hol12345!`
 
