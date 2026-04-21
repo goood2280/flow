@@ -7,6 +7,7 @@
 */
 import { useEffect, useMemo, useState } from "react";
 import { sf, postJson } from "../lib/api";
+import PageGear from "../components/PageGear";
 
 const API = "/api/calendar";
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -143,7 +144,13 @@ export default function My_Calendar({ user }) {
   };
 
   return (
-    <div style={{ display: "flex", height: "calc(100vh - 48px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
+    <div style={{ display: "flex", height: "calc(100vh - 48px)", background: "var(--bg-primary)", color: "var(--text-primary)", position: "relative" }}>
+      <PageGear title="변경점 달력 설정" canEdit={isAdmin} position="bottom-left">
+        <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 }}>
+          카테고리별 색상을 관리합니다. 회의관리의 회의 카테고리도 이 팔레트를 공유합니다.
+        </div>
+        <button onClick={startEditCats} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>🎨 카테고리 팔레트 편집</button>
+      </PageGear>
       {/* Left: calendar */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {/* Header */}
@@ -206,19 +213,22 @@ export default function My_Calendar({ user }) {
                       background: isToday ? "var(--accent-glow, rgba(255,94,0,0.08))" : (inMonth ? "var(--bg-secondary)" : "var(--bg-primary)"),
                       border: isToday ? "2px solid var(--accent)" : "1px solid var(--border)",
                       boxShadow: isToday ? "0 0 0 3px rgba(255,94,0,0.18), 0 0 12px rgba(255,94,0,0.28)" : "none",
-                      borderRadius: 6, padding: 6, cursor: "pointer", overflow: "hidden",
+                      borderRadius: 6, padding: 6, cursor: "pointer", overflow: "visible",
                       display: "flex", flexDirection: "column", gap: 3,
                       opacity: inMonth ? 1 : 0.45,
                       position: "relative",
                     }}>
                       {isToday && (
                         <span title="오늘" style={{
-                          position: "absolute", top: -8, right: -6, zIndex: 2,
+                          position: "absolute", top: 3, right: 3, zIndex: 3,
                           background: "var(--accent)", color: "#fff",
-                          padding: "2px 8px", borderRadius: 999,
-                          fontSize: 9, fontWeight: 800, letterSpacing: 0.4,
-                          boxShadow: "0 2px 6px rgba(0,0,0,0.3)",
+                          padding: "2px 7px", borderRadius: 999,
+                          fontSize: 9, fontWeight: 800, letterSpacing: 0.3,
+                          lineHeight: 1.3,
+                          boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
                           fontFamily: "monospace",
+                          whiteSpace: "nowrap",
+                          pointerEvents: "none",
                         }}>📍 TODAY</span>
                       )}
                       <div style={{

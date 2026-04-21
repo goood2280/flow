@@ -6,12 +6,17 @@ v8.4.6 보안 패치:
   - /reset-password 는 임시 랜덤 비번 발급 (응답엔 포함하고 호출자에게 전달 책임).
   - /my-notifications · /user-tabs · /log 은 본인 또는 admin 만 접근 (verify_owner).
   - /settings 의 data_roots 는 admin 요청에만 노출 (일반 유저는 숨김).
+
+v8.7.3 hotfix:
+  - MailCfgReq.extra_data 의 `Dict[str, Any]` 가 `Any` 미-import 로 import-time
+    NameError 를 일으켜 admin 라우터 로딩이 실패하던 문제 수정. `Any` 를 typing
+    import 에 추가.
 """
 import os, secrets
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from core.paths import PATHS
 from core.utils import jsonl_append, jsonl_read, load_json, save_json
 from core.notify import (

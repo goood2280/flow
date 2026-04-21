@@ -333,7 +333,7 @@ export default function My_Tracker({ user }) {
           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
             {["list", "gantt"].map(t => <span key={t} onClick={() => setViewTab(t)} style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", fontWeight: viewTab === t ? 600 : 400, background: viewTab === t ? "var(--accent-glow)" : "transparent", color: viewTab === t ? "var(--accent)" : "var(--text-secondary)" }}>{t === "list" ? "목록" : "간트"}</span>)}
             <button onClick={() => setCreating(!creating)} style={{ padding: "4px 12px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer", marginLeft: 4 }}>+ 새 이슈</button>
-            <PageGear title="이슈 추적 설정" canEdit={isAdmin} position="inline">
+            <PageGear title="이슈 추적 설정" canEdit={isAdmin} position="bottom-left">
               <TrackerSettings isAdmin={isAdmin} />
             </PageGear>
           </div>
