@@ -3,7 +3,7 @@
 > **Fab data analytics + plan vs actual 추적 플랫폼.**
 > 반도체 fab (특히 개발/pilot 단계) 공정 데이터를 single-user 데스크톱 환경에서 탐색·분석·공유하기 위한 웹 앱.
 
-현재 버전: **v8.7.5** (codename `flow`)
+현재 버전: **v8.8.13** (codename `flow`)
 
 ---
 
@@ -127,6 +127,8 @@ FabCanvas.ai/
 ---
 
 ## Version history
+
+**8.8.13 (2026-04-21)** — 흰화면 crash fix(useEffect+Promise 5곳), 인폼 UX 대개편(wafer 중복 제거·접수 pill 제거·4버튼 통일·module/reason 수정·답글 상속·이력 최신↑·Embed legacy 컬러링·root_lot 단독 embed), **유저별 인폼 모듈 권한**(PageGear 매트릭스 UI + `/user-modules` BE + 목록 필터), **회의록 공동 작성**(`minutes.body_appendix` append-only + `/minutes/append` + 작성자 삭제), 회의 보관탭 제거 + 📎 이슈 가져오기, 이슈 카테고리 수정 · 간트 `🔎 제목·담당자·카테고리 필터` + 담당자 회색 표시, **대시보드 멀티 Y + 시리즈별 색상**, SplitTable 테두리 보강(FE CSS + XLSX 전셀) · 태그 drawer global 제거, **TableMap** 그룹 더블클릭→멤버 생성/Delete·우클릭 삭제/드래그 편입(동명 컬럼 흡수), **계보 탭 제거 + relation 컬럼 매칭 편집 표**, DB 참조 모달 가독성.
 
 8.4.5 (2026-04-21) — Contact 허브, XLSX 팔레트/병합/자연정렬, TableMap 버전관리, SplitTable 톱니 override, diff 시연 fixture, FB 톱니 분리, 공지배너, favicon
 

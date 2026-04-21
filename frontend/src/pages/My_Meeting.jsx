@@ -59,6 +59,14 @@ export default function My_Meeting({ user }) {
   const [agendaDraft, setAgendaDraft] = useState({ title: "", description: "", link: "", owner: "" });
   const [editingAgendaId, setEditingAgendaId] = useState(null);
   const [agendaEditDraft, setAgendaEditDraft] = useState(null);
+  // v8.8.13: 이슈 가져오기 picker — 회의 group_ids 와 교집합 있는 이슈만 후보.
+  const [issuePickerOpen, setIssuePickerOpen] = useState(false);
+  const [issuePickerList, setIssuePickerList] = useState([]);
+  const [issuePickerSearch, setIssuePickerSearch] = useState("");
+  const [issuePickerBusy, setIssuePickerBusy] = useState(false);
+  // v8.8.13: 회의록 공동 작성 append.
+  const [appendText, setAppendText] = useState("");
+  const [appendBusy, setAppendBusy] = useState(false);
   const [minutesDraft, setMinutesDraft] = useState(null);
   const [editingMinutes, setEditingMinutes] = useState(false);
   // v8.8.6: SSE 내부 ref — useEffect 가 editingMinutes 상태를 stale 없이 참조.
@@ -273,6 +281,42 @@ export default function My_Meeting({ user }) {
       .catch(e => alert(e.message));
   };
 
+  // v8.8.13: 이슈 가져오기 — 회의 group_ids 와 교집합 있는 이슈만 후보로 노출.
+  //   admin 은 전체. 선택 시 title/description/owner/link 를 agendaDraft 에 채움.
+  const openIssuePicker = () => {
+    if (!selected) return;
+    setIssuePickerOpen(true); setIssuePickerBusy(true); setIssuePickerSearch("");
+    sf("/api/tracker/issues?limit=500").then(d => {
+      const meetGids = new Set((selected.group_ids || []).map(String));
+      const list = (d.issues || []).filter(iss => {
+        if (isAdmin) return true;
+        if (meetGids.size === 0) return true; // 회의가 전체공개면 이슈도 전체 후보
+        const iGids = (iss.group_ids || []).map(String);
+        if (iGids.length === 0) return true;  // 이슈가 전체공개면 후보
+        return iGids.some(g => meetGids.has(g));
+      });
+      setIssuePickerList(list); setIssuePickerBusy(false);
+    }).catch(e => { setIssuePickerBusy(false); alert("이슈 목록 로드 실패: " + (e.message || e)); });
+  };
+  const attachIssueToAgenda = (issueId) => {
+    // 상세로 description/links 채움.
+    sf(`/api/tracker/issue?issue_id=${encodeURIComponent(issueId)}`).then(d => {
+      const iss = d.issue || {};
+      // description 은 HTML 이므로 plain text 로 strip.
+      const tmp = document.createElement("div");
+      tmp.innerHTML = iss.description_html || iss.description || "";
+      const plain = (tmp.textContent || "").trim();
+      const firstLink = Array.isArray(iss.links) ? (iss.links.find(l => /^https?:\/\//i.test(l)) || iss.links[0] || "") : "";
+      setAgendaDraft({
+        title: iss.title || "",
+        description: plain,
+        link: firstLink || "",
+        owner: iss.username || "",
+      });
+      setIssuePickerOpen(false);
+    }).catch(e => alert("이슈 상세 로드 실패: " + (e.message || e)));
+  };
+
   // ── Agenda CRUD ──
   const addAgenda = () => {
     if (!selected || !selectedSession) return;
@@ -338,6 +382,29 @@ export default function My_Meeting({ user }) {
   const addAction = () => setMinutesDraft(d => ({ ...d, action_items: [...d.action_items, { text: "", owner: "", due: "" }] }));
   const updAction = (i, k, v) => setMinutesDraft(d => { const n = d.action_items.slice(); n[i] = { ...n[i], [k]: v }; return { ...d, action_items: n }; });
   const delAction = (i) => setMinutesDraft(d => ({ ...d, action_items: d.action_items.filter((_, j) => j !== i) }));
+  // v8.8.13: 본문 공동 작성 append / 삭제.
+  const submitAppend = () => {
+    if (!selected || !selectedSession) return;
+    const t = (appendText || "").trim();
+    if (!t) return;
+    setAppendBusy(true);
+    postJson(`${API}/minutes/append`, {
+      meeting_id: selected.id, session_id: selectedSession.id, text: t,
+    }).then(() => {
+      setAppendText(""); setAppendBusy(false); reload();
+    }).catch(e => {
+      setAppendBusy(false);
+      alert(e.message || "추가 실패 (그룹 멤버만 가능합니다)");
+    });
+  };
+  const deleteAppend = (appendId) => {
+    if (!selected || !selectedSession) return;
+    if (!window.confirm("이 추가글을 삭제할까요? (작성자 본인 또는 주관자만 가능)")) return;
+    postJson(`${API}/minutes/append/delete`, {
+      meeting_id: selected.id, session_id: selectedSession.id, append_id: appendId,
+    }).then(() => reload()).catch(e => alert(e.message || "삭제 실패"));
+  };
+
   const submitMinutes = () => {
     if (!selected || !selectedSession || !minutesDraft) return;
     const mailTo = (minutesDraft.mail_to || "")
@@ -429,7 +496,8 @@ export default function My_Meeting({ user }) {
           {/* v8.7.7: 간트 뷰 제거 — 결정사항/액션아이템은 변경점 달력에 통합 표시됨. */}
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="제목/아젠다/결정 검색..." style={inp} />
           <div style={{ marginTop: 8, display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {["", "active", "archived", "cancelled"].map(s => (
+            {/* v8.8.13: 보관(archived) 제거 — 전체/활성/취소 만. */}
+            {["", "active", "cancelled"].map(s => (
               <span key={s || "all"} onClick={() => setFilterStatus(s)} style={{
                 padding: "3px 10px", borderRadius: 999, fontSize: 10, cursor: "pointer", fontFamily: "monospace",
                 background: filterStatus === s ? "var(--accent-glow)" : "var(--bg-card)",
@@ -680,7 +748,14 @@ export default function My_Meeting({ user }) {
                   </div>
                 ))}
                 <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px dashed var(--border)" }}>
-                  <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6, fontFamily: "monospace" }}>+ 새 아젠다 추가 (담당자: {(agendaDraft.owner || me)})</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace", flex: 1 }}>+ 새 아젠다 추가 (담당자: {(agendaDraft.owner || me)})</div>
+                    {/* v8.8.13: 같은 그룹 이슈 불러와서 자동 채움 */}
+                    <button onClick={openIssuePicker} title="같은 그룹의 이슈에서 가져오기 (제목·설명·담당자·링크 자동 채움)"
+                      style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid #8b5cf6", background: "transparent", color: "#8b5cf6", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                      📎 이슈 가져오기
+                    </button>
+                  </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                     <input value={agendaDraft.title} onChange={e => setAgendaDraft({ ...agendaDraft, title: e.target.value })} placeholder="아젠다 제목 *" style={inp} />
                     <input value={agendaDraft.owner} onChange={e => setAgendaDraft({ ...agendaDraft, owner: e.target.value })} placeholder={`담당자 (기본: ${me})`} style={inp} />
@@ -725,8 +800,15 @@ export default function My_Meeting({ user }) {
                 </div>
                 {!editingMinutes && !selectedSession.minutes && (
                   <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>
-                    회의록 미작성. 주관자({selected.owner || "—"})가 작성합니다.
+                    회의록 미작성. 주관자({selected.owner || "—"})가 작성합니다. <b>그룹 멤버는 아래 공동 작성란으로 추가 내용을 남길 수 있습니다.</b>
                   </div>
+                )}
+                {/* v8.8.13: 공동 작성 — minutes 가 없어도 append 섹션 노출. */}
+                {!editingMinutes && (
+                  <MinutesAppendix session={selectedSession} meeting={selected} user={user}
+                    appendText={appendText} setAppendText={setAppendText}
+                    appendBusy={appendBusy} onSubmit={submitAppend} onDelete={deleteAppend}
+                    lbl={lbl} inp={inp} btnPrimary={btnPrimary} isAdmin={isAdmin} />
                 )}
                 {!editingMinutes && selectedSession.minutes && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -946,6 +1028,53 @@ export default function My_Meeting({ user }) {
         )}
       </div>
 
+      {/* v8.8.13: 이슈 가져오기 picker modal — 같은 그룹 이슈 → agendaDraft 자동 채움. */}
+      {issuePickerOpen && (
+        <div style={modalBack} onClick={() => setIssuePickerOpen(false)}>
+          <div onClick={e => e.stopPropagation()} style={{ ...modalCard, width: 640, maxWidth: "94vw" }}>
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#8b5cf6", fontFamily: "monospace", flex: 1 }}>📎 이슈에서 가져오기</div>
+              <span onClick={() => setIssuePickerOpen(false)} style={{ cursor: "pointer", fontSize: 18, color: "var(--text-secondary)" }}>✕</span>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>
+              선택하면 제목·설명·담당자·첫 번째 링크 가 아젠다 입력란에 자동 채워집니다.
+              {!isAdmin && (selected?.group_ids || []).length > 0 && <> (회의 그룹과 겹치는 이슈만)</>}
+            </div>
+            <input value={issuePickerSearch} onChange={e => setIssuePickerSearch(e.target.value)}
+              placeholder="🔎 제목/카테고리/작성자 검색"
+              style={{ ...inp, marginBottom: 8 }} />
+            <div style={{ maxHeight: 360, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
+              {issuePickerBusy && <div style={{ padding: 24, textAlign: "center", fontSize: 11, color: "var(--text-secondary)" }}>로딩…</div>}
+              {!issuePickerBusy && (() => {
+                const q = issuePickerSearch.trim().toLowerCase();
+                const filtered = q
+                  ? issuePickerList.filter(x =>
+                      (x.title || "").toLowerCase().includes(q) ||
+                      (x.category || "").toLowerCase().includes(q) ||
+                      (x.username || "").toLowerCase().includes(q))
+                  : issuePickerList;
+                if (filtered.length === 0) return <div style={{ padding: 24, textAlign: "center", fontSize: 11, color: "var(--text-secondary)" }}>이슈 없음 {q ? "(검색 조건 일치 없음)" : "(같은 그룹 이슈 없음)"}.</div>;
+                return filtered.map(iss => (
+                  <div key={iss.id} onClick={() => attachIssueToAgenda(iss.id)}
+                    style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--border)", cursor: "pointer", fontSize: 11 }}
+                    onMouseEnter={e => e.currentTarget.style.background = "rgba(139,92,246,0.08)"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <span style={{ fontFamily: "monospace", fontSize: 9, color: "var(--text-secondary)", width: 90, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{iss.id}</span>
+                    {iss.category && <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--bg-card)", color: "var(--text-secondary)", flexShrink: 0 }}>{iss.category}</span>}
+                    {iss.status && <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: iss.status === "closed" ? "#22c55e22" : "#f59e0b22", color: iss.status === "closed" ? "#16a34a" : "#c2410c", flexShrink: 0 }}>{iss.status}</span>}
+                    <span style={{ flex: 1, color: "var(--text-primary)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{iss.title || "(제목 없음)"}</span>
+                    <span style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0 }}>{iss.username}</span>
+                  </div>
+                ));
+              })()}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+              <button onClick={() => setIssuePickerOpen(false)} style={btnGhost}>닫기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Create modal */}
       {creating && (
         <div style={modalBack} onClick={() => setCreating(false)}>
@@ -1051,6 +1180,48 @@ export default function My_Meeting({ user }) {
       <PageGear title="회의관리 설정" canEdit={isAdmin} position="bottom-left">
         <MeetingCategoryEditor categories={categories} setCategories={setCategories} isAdmin={isAdmin} />
       </PageGear>
+    </div>
+  );
+}
+
+/* v8.8.13: 회의록 공동 작성 appendix — 그룹 멤버도 '추가' 가능. 삭제는 작성자 본인 또는 주관자/admin. */
+function MinutesAppendix({ session, meeting, user, appendText, setAppendText, appendBusy, onSubmit, onDelete, lbl, inp, btnPrimary, isAdmin }) {
+  const list = ((session && session.minutes && session.minutes.body_appendix) || []);
+  const me = user?.username || "";
+  const isOwner = !!meeting && meeting.owner === me;
+  return (
+    <div style={{ marginTop: list.length ? 8 : 0, padding: 10, borderRadius: 5, background: "var(--bg-card)", border: "1px dashed var(--border)" }}>
+      <div style={{ ...lbl, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+        <span>✍ 공동 작성</span>
+        <span style={{ fontSize: 9, color: "var(--text-secondary)", fontWeight: 400 }}>(그룹 멤버는 추가만 가능 · 본인 글만 삭제 · 주관자는 전체 정리)</span>
+      </div>
+      {list.length === 0 && <div style={{ fontSize: 10, color: "var(--text-secondary)", padding: "4px 2px" }}>추가된 내용 없음</div>}
+      {list.map(e => {
+        const mine = e.author === me;
+        const canDel = mine || isOwner || isAdmin;
+        return (
+          <div key={e.id} style={{ display: "flex", gap: 8, padding: "6px 4px", borderBottom: "1px dashed var(--border)" }}>
+            <div style={{ minWidth: 130, fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0, lineHeight: 1.4 }}>
+              <div style={{ fontWeight: 700, color: mine ? "var(--accent)" : "var(--text-primary)" }}>{e.author}</div>
+              <div>{(e.at || "").replace("T", " ").slice(5, 16)}</div>
+            </div>
+            <div style={{ flex: 1, fontSize: 12, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{e.text}</div>
+            {canDel && (
+              <span onClick={() => onDelete(e.id)} title="삭제"
+                style={{ cursor: "pointer", color: "#ef4444", fontSize: 11, padding: "0 4px", flexShrink: 0 }}>×</span>
+            )}
+          </div>
+        );
+      })}
+      <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
+        <textarea value={appendText} onChange={e => setAppendText(e.target.value)} rows={2}
+          placeholder="추가 내용 (로그인 유저: 그룹 멤버만 허용. 본인 글만 지울 수 있음)"
+          style={{ ...inp, flex: 1, resize: "vertical", fontFamily: "inherit" }} />
+        <button onClick={onSubmit} disabled={appendBusy || !(appendText || "").trim()}
+          style={{ ...btnPrimary, opacity: appendBusy || !(appendText || "").trim() ? 0.5 : 1, cursor: appendBusy ? "not-allowed" : "pointer", alignSelf: "flex-start" }}>
+          {appendBusy ? "추가 중…" : "+ 추가"}
+        </button>
+      </div>
     </div>
   );
 }

@@ -24,7 +24,7 @@ if(typeof document!=="undefined"&&!document.getElementById("tm-styles")){
 }
 
 // ─── Graph view with zoom/pan ───────────────────────────
-function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelation,onSavePosition,onNodeRightClick,selectedNodeId,onEditRelation,lineageEdges,showLineage}){
+function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelation,onSavePosition,onNodeRightClick,selectedNodeId,onEditRelation,lineageEdges,showLineage,onDropIntoGroup,onMemberContext}){
   const[drag,setDrag]=useState(null);const[relStart,setRelStart]=useState(null);
   const[relDrag,setRelDrag]=useState(null); // {fromNode, mx, my} for relation drag
   const[hoverNode,setHoverNode]=useState(null);
@@ -51,7 +51,38 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
       if(hoverNode&&hoverNode.id!==relDrag.fromNode.id){onAddRelation(relDrag.fromNode,hoverNode);}
       setRelDrag(null);return;
     }
-    if(drag){onSavePosition(drag.id,drag.x,drag.y);setDrag(null);}
+    if(drag){
+      // v8.8.13: drop-into-group 판정 — 드래그 중인 node 가 table 이고 그룹에 없으면,
+      //   drop 위치가 그룹 박스 내부일 때 onDropIntoGroup 호출 (공유 컬럼 흡수 편입).
+      const dragged=config.nodes.find(n=>n.id===drag.id);
+      let handled=false;
+      if(dragged && dragged.kind==="table" && onDropIntoGroup){
+        const draggedTable=(tables||[]).find(t=>t.id===dragged.ref_id);
+        const alreadyInGroup=!!(draggedTable && draggedTable.group_id);
+        if(!alreadyInGroup){
+          // 드롭된 중심점 좌표
+          const cx=drag.x+NW/2, cy=drag.y+NH/2;
+          for(const gn of (config.nodes||[])){
+            if(gn.kind!=="group") continue;
+            const gp={x:gn.x||100,y:gn.y||100};
+            const members=(tables||[]).filter(t=>t.group_id===gn.ref_id);
+            const HEADER=28,INNER_PAD=12,COL_GAP=8;
+            const cols=Math.min(members.length,3)||1;
+            const rows_count=Math.ceil(members.length/cols)||1;
+            const bw=Math.max(NW+INNER_PAD*2, cols*(NW+COL_GAP)-COL_GAP+INNER_PAD*2);
+            const bh=HEADER+rows_count*(NH+COL_GAP)-COL_GAP+INNER_PAD*2;
+            const inside=cx>=gp.x && cx<=gp.x+bw && cy>=gp.y && cy<=gp.y+(members.length?bh:70);
+            if(inside){
+              onDropIntoGroup(dragged, gn, draggedTable);
+              handled=true;
+              break;
+            }
+          }
+        }
+      }
+      if(!handled) onSavePosition(drag.id,drag.x,drag.y);
+      setDrag(null);
+    }
   };
   const onNodeMouseDown=(e,node)=>{
     e.stopPropagation();
@@ -155,6 +186,7 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
               onMouseDown={e=>{e.stopPropagation();}}
               onClick={e=>{e.stopPropagation();onNodeClick(memberNode);}}
               onDoubleClick={e=>{e.stopPropagation();if(onNodeDblClick)onNodeDblClick(memberNode);}}
+              onContextMenu={e=>{e.preventDefault();e.stopPropagation();if(onMemberContext)onMemberContext(memberNode,m);}}
               style={{cursor:"pointer"}}>
               <rect width={NW} height={NH} rx={6} fill={tColor+"55"} stroke={isSel?"#fbbf24":tColor} strokeWidth={isSel?2.5:1.5}/>
               <text x={10} y={20} fill={tColor} fontSize={12}>{tIcon}</text>
@@ -816,24 +848,103 @@ export default function My_TableMap({user}){
     setSelectedNode(node);
   };
   const onNodeDblClick=(node)=>{
-    // Double click = open editor
+    // Double click = open editor (table/db_ref) OR create member table (group).
     if(node.kind==="table"){sf(API+"/tables/"+node.ref_id).then(d=>setEditingTable(d)).catch(()=>{});}
-    else if(node.kind==="group"){sf(API+"/groups/"+node.ref_id).then(d=>setEditingGroup(d)).catch(()=>{});}
+    else if(node.kind==="group"){
+      // v8.8.13: 그룹 더블클릭 → 공유 컬럼 상속한 새 멤버 테이블 자동 생성.
+      //          /tables/save 가 group_id 세팅 시 group.columns 를 자동 상속하므로 빈 컬럼으로 POST.
+      //          편집은 그룹 헤더의 ✎ 아이콘(선택 후 사이드 패널)으로 진입.
+      const gid=node.ref_id;
+      sf(API+"/groups/"+gid).then(g=>{
+        const base=(g.name||"GROUP")+"_T";
+        // 기존 멤버 수 기반 이름 접미 숫자.
+        const existing=(tables||[]).filter(t=>t.group_id===gid);
+        let idx=existing.length+1;
+        const used=new Set(existing.map(t=>t.name||""));
+        while(used.has(base+idx)) idx++;
+        const newName=base+idx;
+        sf(API+"/tables/save",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({id:"",name:newName,group_id:gid,columns:[],rows:[],table_type:"data",username:user?.username||""})
+        }).then(()=>{loadAll();}).catch(e=>alert("멤버 테이블 생성 실패: "+(e.message||e)));
+      }).catch(e=>alert("그룹 조회 실패: "+(e.message||e)));
+    }
     else if(node.kind==="db_ref"){
       setSelectedNode(node);
       sf(API+"/db-ref/info?node_id="+node.id).then(d=>{setDbInfo(d);setDbDesc(d.description||"");}).catch(()=>{});
     }
   };
+  // v8.8.13: 그룹 편집 명시적 진입점 — 사이드 패널에서 호출.
+  const openGroupEditor=(refId)=>{sf(API+"/groups/"+refId).then(d=>setEditingGroup(d)).catch(()=>{});};
   const saveDbDesc=()=>{if(!dbInfo)return;sf(API+"/db-ref/description",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:dbInfo.node_id,description:dbDesc})}).then(()=>{setDbInfo(null);setSelectedNode(null);loadAll();}).catch(e=>alert(e.message));};
   // Delete key removes DB ref from map (not actual DB)
   useEffect(()=>{
-    const h=(e)=>{if(e.key==="Delete"&&selectedNode?.kind==="db_ref"&&isAdmin){
-      if(confirm(`맵에서 "${selectedNode.name}" 제거? (DB 데이터는 삭제되지 않습니다)`)){deleteDbRef(selectedNode.id);setSelectedNode(null);}
-    }};
+    const h=(e)=>{
+      if(e.key!=="Delete") return;
+      // 텍스트 입력 중일 땐 무시.
+      const t=e.target;
+      if(t && (t.tagName==="INPUT"||t.tagName==="TEXTAREA"||t.isContentEditable)) return;
+      if(selectedNode?.kind==="db_ref"&&isAdmin){
+        if(confirm(`맵에서 "${selectedNode.name}" 제거? (DB 데이터는 삭제되지 않습니다)`)){deleteDbRef(selectedNode.id);setSelectedNode(null);}
+      }
+      // v8.8.13: table (그룹 멤버 포함) 선택 후 Delete 로 삭제.
+      else if(selectedNode?.kind==="table"&&isAdmin){
+        if(confirm(`테이블 "${selectedNode.name}" 을(를) 삭제할까요? (아카이브됨)`)){
+          deleteTable(selectedNode.ref_id); setSelectedNode(null);
+        }
+      }
+    };
     window.addEventListener("keydown",h);return()=>window.removeEventListener("keydown",h);
   },[selectedNode,isAdmin]);
-  const[editRel,setEditRel]=useState(null);const[relForm,setRelForm]=useState({from_col:"",to_col:"",description:""});
-  const[autoMatchInfo,setAutoMatchInfo]=useState(null); // {pairs, skipped} after run
+  // v8.8.13: 일반 table 을 group box 로 drop → 동명 컬럼(case-insensitive) 기준 흡수 편입.
+  const onDropIntoGroup=async (tableNode, groupNode, draggedTable)=>{
+    try{
+      const [tbl, grp]=await Promise.all([
+        sf(API+"/tables/"+tableNode.ref_id),
+        sf(API+"/groups/"+groupNode.ref_id),
+      ]);
+      const groupCols=(grp.columns||[]).map(c=>(c.name||"").trim()).filter(Boolean);
+      const groupColsLower=new Set(groupCols.map(s=>s.toLowerCase()));
+      const tblCols=(tbl.columns||[]).map(c=>(c.name||"").trim()).filter(Boolean);
+      const matches=tblCols.filter(c=>groupColsLower.has(c.toLowerCase()));
+      const msg=matches.length>0
+        ? `그룹 "${grp.name||groupNode.name}" 에 편입합니다.\n\n일치 컬럼(${matches.length}/${groupCols.length}): ${matches.slice(0,8).join(", ")}${matches.length>8?"…":""}\n\n나머지 컬럼은 그룹 스키마로 재정의됩니다. 계속할까요?`
+        : `그룹 "${grp.name||groupNode.name}" 에 동명 컬럼이 없습니다.\n편입 시 모든 컬럼이 그룹 공유 컬럼(${groupCols.length}개)으로 재정의됩니다.\n계속할까요?`;
+      if(!confirm(msg)) return;
+      // rows 에서 case-insensitive 동명 컬럼 매핑 — 그룹 컬럼명으로 키 정규화.
+      const colMap={}; // lower → group official name
+      groupCols.forEach(c=>{colMap[c.toLowerCase()]=c;});
+      const normRows=(tbl.rows||[]).map(row=>{
+        const out={};
+        for(const k of Object.keys(row||{})){
+          const gname=colMap[(k||"").toLowerCase()];
+          if(gname) out[gname]=row[k];
+        }
+        return out;
+      });
+      await sf(API+"/tables/save",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          id: tbl.id, name: tbl.name, display_name: tbl.display_name||"",
+          group_id: groupNode.ref_id,
+          columns: [], // BE 가 group_id 감지 시 group.columns 로 덮어씀
+          rows: normRows,
+          table_type: tbl.table_type||"data",
+          description: tbl.description||"",
+          username: user?.username||"",
+        })
+      });
+      loadAll();
+    }catch(e){ alert("그룹 편입 실패: "+(e.message||e)); }
+  };
+  const onMemberContext=(memberNode, tbl)=>{
+    if(!isAdmin) return;
+    if(!confirm(`그룹 멤버 테이블 "${tbl.name}" 을(를) 삭제할까요? (아카이브됨)`)) return;
+    deleteTable(memberNode.ref_id);
+  };
+  // v8.8.13: relation 편집을 pairs 배열 기반 편집 표로 재설계.
+  //   relForm.pairs = [{from_col, to_col}, ...]. 저장 시 기존 BE 호환(from_col/to_col 콤마 문자열) 로 직렬화.
+  const[editRel,setEditRel]=useState(null);
+  const[relForm,setRelForm]=useState({pairs:[],description:""});
+  const[autoMatchInfo,setAutoMatchInfo]=useState(null); // {matched, fromTotal, toTotal}
   // v8.7.5: 노드 kind 에 따른 컬럼 목록 fetch. case-insensitive 교집합으로 자동 매칭.
   const _fetchNodeColumns=async(node)=>{
     if(!node)return[];
@@ -853,42 +964,58 @@ export default function My_TableMap({user}){
     }catch(_){}
     return[];
   };
+  // v8.8.13: 자동 매칭 — case-insensitive 로 pairs 배열 채움. 기존 pairs 와 dedup.
   const autoMatchRelation=async()=>{
     if(!editRel)return;
     const fromN=config.nodes.find(n=>n.id===editRel.from_id);
     const toN=config.nodes.find(n=>n.id===editRel.to_id);
     const [fc,tc]=await Promise.all([_fetchNodeColumns(fromN),_fetchNodeColumns(toN)]);
-    // Map: lowerCaseName -> actual (preserve dest case)
     const toMap=new Map();(tc||[]).forEach(c=>{if(c)toMap.set(String(c).toLowerCase(),c);});
-    const fromCols=[],toCols=[];
+    const newPairs=[];
     (fc||[]).forEach(c=>{
       const key=String(c||"").toLowerCase();
-      if(key&&toMap.has(key)){fromCols.push(c);toCols.push(toMap.get(key));}
+      if(key&&toMap.has(key)) newPairs.push({from_col:c,to_col:toMap.get(key)});
     });
-    // 기존 값이 있으면 병합 (중복 제거)
-    const existFrom=(relForm.from_col||"").split(/[,\s]+/).filter(Boolean);
-    const existTo=(relForm.to_col||"").split(/[,\s]+/).filter(Boolean);
-    const lowerExist=new Set(existFrom.map(x=>x.toLowerCase()));
-    fromCols.forEach((c,i)=>{
-      if(!lowerExist.has(c.toLowerCase())){existFrom.push(c);existTo.push(toCols[i]);}
+    setRelForm(f=>{
+      const existing=Array.isArray(f.pairs)?f.pairs:[];
+      const exKey=new Set(existing.map(p=>(p.from_col||"").toLowerCase()+"|"+(p.to_col||"").toLowerCase()));
+      const merged=[...existing];
+      for(const p of newPairs){
+        const k=(p.from_col||"").toLowerCase()+"|"+(p.to_col||"").toLowerCase();
+        if(!exKey.has(k)){merged.push(p);exKey.add(k);}
+      }
+      return {...f,pairs:merged};
     });
-    setRelForm(f=>({...f,from_col:existFrom.join(", "),to_col:existTo.join(", ")}));
-    setAutoMatchInfo({matched:fromCols.length,fromTotal:fc.length,toTotal:tc.length});
+    setAutoMatchInfo({matched:newPairs.length,fromTotal:fc.length,toTotal:tc.length});
+  };
+  // v8.8.13: legacy from_col/to_col 문자열(콤마 구분) 을 pairs 배열로 변환.
+  const _parsePairs=(fromStr,toStr)=>{
+    const fc=(fromStr||"").split(/[,\n]+/).map(s=>s.trim()).filter(Boolean);
+    const tc=(toStr||"").split(/[,\n]+/).map(s=>s.trim()).filter(Boolean);
+    const n=Math.max(fc.length,tc.length);
+    const out=[];
+    for(let i=0;i<n;i++) out.push({from_col:fc[i]||"",to_col:tc[i]||""});
+    return out;
   };
   const onAddRelation=(from,to)=>{
     setEditRel({id:"",from_id:from.id,to_id:to.id,from_name:from.name,to_name:to.name});
-    setRelForm({from_col:"",to_col:"",description:""});
+    setRelForm({pairs:[],description:""});
     setAutoMatchInfo(null);
-    // 자동 매칭을 시도 — 결과가 있으면 미리 채워준다.
     setTimeout(()=>{autoMatchRelation();},50);
   };
   const onEditRelation=(r)=>{
     const fromN=config.nodes.find(n=>n.id===r.from);const toN=config.nodes.find(n=>n.id===r.to);
     setEditRel({id:r.id,from_id:r.from,to_id:r.to,from_name:fromN?.name||"?",to_name:toN?.name||"?"});
-    setRelForm({from_col:r.from_col||"",to_col:r.to_col||"",description:r.description||""});
+    setRelForm({pairs:_parsePairs(r.from_col,r.to_col),description:r.description||""});
+    setAutoMatchInfo(null);
   };
   const saveRelation=()=>{
-    sf(API+"/relations/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:editRel.id||"",from_id:editRel.from_id,to_id:editRel.to_id,...relForm})}).then(()=>{setEditRel(null);loadAll();}).catch(e=>alert(e.message));
+    const pairs=(relForm.pairs||[]).filter(p=>(p.from_col||"").trim()&&(p.to_col||"").trim());
+    const from_col=pairs.map(p=>p.from_col.trim()).join(", ");
+    const to_col=pairs.map(p=>p.to_col.trim()).join(", ");
+    sf(API+"/relations/save",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id:editRel.id||"",from_id:editRel.from_id,to_id:editRel.to_id,from_col,to_col,description:relForm.description||""})
+    }).then(()=>{setEditRel(null);loadAll();}).catch(e=>alert(e.message));
   };
   const delRelation=(rid)=>sf(API+"/relations/delete?relation_id="+rid,{method:"POST"}).then(loadAll);
 
@@ -900,7 +1027,7 @@ export default function My_TableMap({user}){
       <div style={{display:"flex",gap:4,alignItems:"center"}}>
         {[["graph","그래프"],["manage","관리"]].map(([k,l])=>(
           <span key={k} onClick={()=>setView(k)} style={{padding:"4px 12px",borderRadius:4,fontSize:11,cursor:"pointer",fontWeight:view===k?600:400,background:view===k?"var(--accent-glow)":"transparent",color:view===k?"var(--accent)":"var(--text-secondary)"}}>{l}</span>))}
-        {view==="graph"&&<span onClick={()=>setShowLineage(s=>!s)} title="ET/INLINE/EDS → ML_TABLE 데이터 흐름 추론 (cyan dashed)" style={{padding:"4px 12px",borderRadius:4,fontSize:11,cursor:"pointer",fontWeight:showLineage?600:400,background:showLineage?"rgba(6,182,212,0.18)":"transparent",color:showLineage?"#06b6d4":"var(--text-secondary)",border:showLineage?"1px solid #06b6d4":"1px solid transparent",marginLeft:6}}>🔄 계보{showLineage&&lineageData.stats?` (${lineageData.stats.inferred||0})`:""}</span>}
+        {/* v8.8.13: 계보 탭 제거 — relation 편집 시 컬럼 매칭 표로 대체. */}
       </div>
       {isAdmin&&<div style={{display:"flex",gap:6}}>
         <button onClick={()=>setEditingTable({})} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,cursor:"pointer"}}>+ 테이블</button>
@@ -912,6 +1039,7 @@ export default function My_TableMap({user}){
     </div>
 
     {view==="graph"&&<GraphView config={config} groups={groups} tables={tables} onNodeClick={onNodeClick} onNodeDblClick={onNodeDblClick} onAddRelation={onAddRelation} onSavePosition={savePosition}
+      onDropIntoGroup={onDropIntoGroup} onMemberContext={onMemberContext}
       selectedNodeId={selectedNode?.id}
       onEditRelation={onEditRelation}
       lineageEdges={lineageData.edges} showLineage={showLineage}
@@ -920,9 +1048,7 @@ export default function My_TableMap({user}){
         if(!confirm(`맵에서 "${node.name||node.id}" 를 제거할까요?\n\n※ 원본 테이블/DB 파일은 영향 받지 않고 그래프 참조만 제거됩니다.`))return;
         unlinkNodeFromMap(node.id).then(()=>setSelectedNode(null));
       }}/>}
-    {view==="graph"&&showLineage&&<div style={{marginTop:8,padding:"6px 10px",background:"rgba(6,182,212,0.08)",border:"1px solid rgba(6,182,212,0.3)",borderRadius:6,fontSize:11,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-      🔄 계보 — declared {lineageData.stats?.declared||0} · inferred {lineageData.stats?.inferred||0} · ML 타겟 {lineageData.stats?.ml_targets||0} · 소스 {lineageData.stats?.sources||0}. 추론된 흐름은 cyan 점선으로 표시 (ET/INLINE/EDS/KNOB/MASK/FAB/VM 노드 → ML_TABLE_PROD* 노드).
-    </div>}
+    {/* v8.8.13: 계보 상태바 제거 */}
     {/* DB ref detail modal */}
     {dbInfo&&<div className="tm-overlay" onClick={()=>{setDbInfo(null);setSelectedNode(null);}}>
       <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:"90%",maxWidth:600,maxHeight:"85vh",overflow:"auto"}}>
@@ -1003,41 +1129,68 @@ export default function My_TableMap({user}){
       {(config.relations||[]).length===0&&<div style={{padding:40,textAlign:"center",color:"var(--text-secondary)"}}>관계가 없습니다. 그래프 뷰에서 Shift+클릭으로 노드 A 를 선택한 뒤 노드 B 를 클릭하세요.</div>}
     </div>}
 
-    {/* Relation editor modal */}
+    {/* v8.8.13: Relation editor modal — 컬럼 쌍을 표 형태로 편집. 자동 매칭은 대소문자 무시. */}
     {editRel&&<div className="tm-overlay" onClick={()=>setEditRel(null)}>
-      <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:420}}>
+      <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:560,maxWidth:"92vw"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
           <div style={{fontSize:15,fontWeight:700}}>{editRel.id?"관계 편집":"새 관계"}</div>
           <span onClick={()=>setEditRel(null)} style={{cursor:"pointer",fontSize:18}}>✕</span>
         </div>
-        <div style={{fontSize:12,marginBottom:12,color:"var(--text-secondary)"}}><strong style={{color:"var(--accent)"}}>{editRel.from_name}</strong> → <strong style={{color:"var(--accent)"}}>{editRel.to_name}</strong></div>
-        {/* v8.7.5: 자동 매칭 컨트롤 */}
+        <div style={{fontSize:12,marginBottom:12,color:"var(--text-secondary)"}}>
+          <strong style={{color:"var(--accent)"}}>{editRel.from_name}</strong> → <strong style={{color:"var(--accent)"}}>{editRel.to_name}</strong>
+        </div>
         <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,padding:"6px 10px",borderRadius:5,background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.3)"}}>
           <button onClick={autoMatchRelation} style={{padding:"4px 12px",borderRadius:5,border:"1px solid #22c55e",background:"transparent",color:"#22c55e",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔍 자동 매칭</button>
-          <span style={{fontSize:10,color:"var(--text-secondary)"}}>양쪽 테이블 컬럼명 case-insensitive 비교</span>
-          {autoMatchInfo&&<span style={{fontSize:10,marginLeft:"auto",color:autoMatchInfo.matched>0?"#22c55e":"var(--text-secondary)",fontFamily:"monospace"}}>{autoMatchInfo.matched}개 매칭 ({autoMatchInfo.fromTotal}↔{autoMatchInfo.toTotal})</span>}
+          <span style={{fontSize:10,color:"var(--text-secondary)"}}>대소문자 무시 동명 컬럼 자동 추가 (이름 같아도 다른 열이면 수정 가능)</span>
+          {autoMatchInfo&&<span style={{fontSize:10,marginLeft:"auto",color:autoMatchInfo.matched>0?"#22c55e":"var(--text-secondary)",fontFamily:"monospace"}}>+{autoMatchInfo.matched} ({autoMatchInfo.fromTotal}↔{autoMatchInfo.toTotal})</span>}
         </div>
-        <div style={{marginBottom:8}}><div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:3}}>소스 컬럼 <span style={{fontSize:9,color:"var(--text-secondary)"}}>(다중은 쉼표로 구분 · X 버튼으로 제거)</span></div>
-          <input value={relForm.from_col} onChange={e=>setRelForm({...relForm,from_col:e.target.value})} placeholder="예: ROOT_LOT_ID, WAFER_ID" style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",fontFamily:"monospace"}}/></div>
-        <div style={{marginBottom:8}}><div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:3}}>타겟 컬럼 <span style={{fontSize:9,color:"var(--text-secondary)"}}>(소스와 동일한 순서)</span></div>
-          <input value={relForm.to_col} onChange={e=>setRelForm({...relForm,to_col:e.target.value})} placeholder="예: ROOT_LOT_ID, WAFER_ID" style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",fontFamily:"monospace"}}/></div>
-        {/* 매칭된 쌍을 chip 으로 보여주고 X 로 제거 가능하게 */}
-        {(()=>{const fc=(relForm.from_col||"").split(/[,\s]+/).filter(Boolean);const tc=(relForm.to_col||"").split(/[,\s]+/).filter(Boolean);const pairs=fc.map((f,i)=>[f,tc[i]||"?"]);
-          if(!pairs.length)return null;
-          return(<div style={{marginBottom:10,display:"flex",flexWrap:"wrap",gap:4}}>
-            {pairs.map(([f,t],i)=>(
-              <span key={i} style={{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:999,background:"var(--bg-card)",border:"1px solid var(--border)",fontSize:10,fontFamily:"monospace"}}>
-                <span>{f}</span><span style={{color:"var(--text-secondary)"}}>↔</span><span>{t}</span>
-                <span onClick={()=>{
-                  const nfc=fc.filter((_,j)=>j!==i).join(", ");
-                  const ntc=tc.filter((_,j)=>j!==i).join(", ");
-                  setRelForm(f=>({...f,from_col:nfc,to_col:ntc}));
-                }} style={{cursor:"pointer",color:"#ef4444",marginLeft:2,fontWeight:700}}>×</span>
-              </span>
-            ))}
-          </div>);})()}
-        <div style={{marginBottom:12}}><div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:3}}>설명</div>
-          <input value={relForm.description} onChange={e=>setRelForm({...relForm,description:e.target.value})} placeholder="예: Lot 이력 추적" style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none"}}/></div>
+        <div style={{marginBottom:6,fontSize:11,color:"var(--text-secondary)"}}>컬럼 매핑 ({(relForm.pairs||[]).length}쌍)</div>
+        <div style={{border:"1px solid var(--border)",borderRadius:6,overflow:"hidden",marginBottom:10}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+            <thead>
+              <tr style={{background:"var(--bg-tertiary)"}}>
+                <th style={{padding:"5px 8px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>{editRel.from_name} (source)</th>
+                <th style={{padding:"5px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",width:20}}></th>
+                <th style={{padding:"5px 8px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>{editRel.to_name} (target)</th>
+                <th style={{padding:"5px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",width:30}}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(relForm.pairs||[]).length===0&&(
+                <tr><td colSpan={4} style={{padding:"14px 10px",textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>매핑 쌍이 없습니다. 🔍 자동 매칭 또는 + 행 추가 로 시작.</td></tr>
+              )}
+              {(relForm.pairs||[]).map((p,i)=>{
+                const sameLower=(p.from_col||"").toLowerCase()===(p.to_col||"").toLowerCase()&&(p.from_col||"").trim();
+                return (
+                  <tr key={i} style={{borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"4px 6px"}}>
+                      <input value={p.from_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],from_col:e.target.value};return{...f,pairs:n};})}
+                        placeholder="source col" style={{width:"100%",padding:"4px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>
+                    </td>
+                    <td style={{textAlign:"center",color:sameLower?"#22c55e":"var(--text-secondary)",fontWeight:700}}>↔</td>
+                    <td style={{padding:"4px 6px"}}>
+                      <input value={p.to_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],to_col:e.target.value};return{...f,pairs:n};})}
+                        placeholder="target col" style={{width:"100%",padding:"4px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>
+                    </td>
+                    <td style={{textAlign:"center"}}>
+                      <span onClick={()=>setRelForm(f=>({...f,pairs:(f.pairs||[]).filter((_,j)=>j!==i)}))} title="이 쌍 제거"
+                        style={{cursor:"pointer",color:"#ef4444",fontSize:14,fontWeight:700,padding:"0 6px"}}>×</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{marginBottom:10}}>
+          <button onClick={()=>setRelForm(f=>({...f,pairs:[...(f.pairs||[]),{from_col:"",to_col:""}]}))}
+            style={{padding:"4px 12px",borderRadius:4,border:"1px dashed var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>+ 행 추가</button>
+        </div>
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:3}}>설명</div>
+          <input value={relForm.description} onChange={e=>setRelForm({...relForm,description:e.target.value})} placeholder="예: Lot 이력 추적"
+            style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",boxSizing:"border-box"}}/>
+        </div>
         <div style={{display:"flex",gap:8}}>
           <button onClick={saveRelation} style={{flex:1,padding:"8px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:600,cursor:"pointer"}}>저장</button>
           {editRel.id&&<button onClick={()=>{delRelation(editRel.id);setEditRel(null);}} style={{padding:"8px 16px",borderRadius:6,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",cursor:"pointer"}}>삭제</button>}
@@ -1082,8 +1235,9 @@ export default function My_TableMap({user}){
           <span onClick={()=>setPickingDb(false)} style={{cursor:"pointer",fontSize:18}}>✕</span>
         </div>
         <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:8}}>맵 노드로 추가할 DB 소스를 선택하세요 (참조만, 실제 데이터는 변경되지 않습니다)</div>
-        {dbSources.map(s=><div key={s.label} onClick={()=>addDbRef(s)} style={{padding:"8px 12px",background:"var(--bg-card)",borderRadius:6,marginBottom:4,cursor:"pointer",fontSize:12,border:"1px solid var(--border)"}}>
-          {s.label} <span style={{fontSize:10,color:"var(--accent)"}}>[{s.source_type}]</span>
+        {/* v8.8.13: 라벨 가독성 — 흰배경 + 검정 글자 고정 (다크 테마에서도 동일). */}
+        {dbSources.map(s=><div key={s.label} onClick={()=>addDbRef(s)} style={{padding:"8px 12px",background:"#fff",color:"#111",borderRadius:6,marginBottom:4,cursor:"pointer",fontSize:12,fontWeight:600,border:"1px solid var(--border)"}}>
+          {s.label} <span style={{fontSize:10,color:"#ea580c",fontWeight:700}}>[{s.source_type}]</span>
         </div>)}
       </div></div>}
   </div>);

@@ -96,6 +96,71 @@ def _save_config(cfg: dict) -> None:
     save_json(CONFIG_FILE, cfg, indent=2)
 
 
+# v8.8.13: 유저별 인폼 모듈 조회 권한. admin_settings.json 의 `inform_user_modules` 에 저장.
+#   스키마: { username: [module, ...] }.
+#   - admin 은 항상 전체(all_rounder) — 설정값과 무관.
+#   - username 이 키에 없으면 기존 `/api/groups/my-modules` 동작 fallback.
+#   - 빈 배열은 "아무 모듈도 조회 못함" 으로 해석.
+_INFORM_USER_MODS_KEY = "inform_user_modules"
+
+
+def _inform_user_mods_path():
+    return PATHS.data_root / "admin_settings.json"
+
+
+def _read_admin_settings() -> dict:
+    p = _inform_user_mods_path()
+    try:
+        if p.is_file():
+            with open(p, "r", encoding="utf-8") as f:
+                d = _json.load(f)
+                return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+    return {}
+
+
+def _write_admin_settings(cfg: dict) -> None:
+    p = _inform_user_mods_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(_json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    import os as _os
+    _os.replace(tmp, p)
+
+
+def _get_inform_user_mods() -> dict:
+    d = _read_admin_settings()
+    um = d.get(_INFORM_USER_MODS_KEY) or {}
+    return um if isinstance(um, dict) else {}
+
+
+def _user_module_scope(username: str, role: str):
+    """인폼 목록 필터링용 모듈 scope 반환.
+      - None          : 필터 off (admin 또는 권한 설정 없음 → 기존 group 기반).
+      - set({...})    : 이 모듈들만 통과. module 비어있는 인폼은 항상 통과(legacy 보호).
+    """
+    if role == "admin":
+        return None
+    um = _get_inform_user_mods()
+    if username and username in um:
+        return set([str(m) for m in (um[username] or [])])
+    return None
+
+
+def _effective_modules(username: str, role: str) -> set:
+    """admin → {"__all__"} sentinel.
+    inform_user_modules 에 지정이 있으면 그 set 을 사용(빈 set 포함 = 아무것도 못 봄).
+    없으면 groups 기반 user_modules fallback."""
+    from routers.groups import user_modules as _um
+    if role == "admin":
+        return {"__all__"}
+    um = _get_inform_user_mods()
+    if username and username in um:
+        return set(um[username] or [])
+    return _um(username, role)
+
+
 # legacy 변수 — 다른 모듈에서 import 해도 기본값 세트로 동작.
 MODULES = list(DEFAULT_MODULES)
 REASONS = list(DEFAULT_REASONS)
@@ -344,6 +409,102 @@ def save_config_endpoint(req: ConfigReq, _admin=Depends(require_admin)):
     return {"ok": True, "config": cfg}
 
 
+# v8.8.13: 유저별 인폼 모듈 조회 권한 엔드포인트 ────────────────────────
+class UserModulesSaveReq(BaseModel):
+    username: str
+    modules: List[str] = []
+
+
+@router.get("/user-modules")
+def list_user_modules(request: Request):
+    """Admin: 인폼 탭 접근 가능한 유저 + 각자의 현재 모듈 권한.
+    인폼 탭 권한이 있는 유저(tabs 에 'inform' 또는 '__all__') 만 노출."""
+    me = current_user(request)
+    if me.get("role") != "admin":
+        raise HTTPException(403, "admin only")
+    from routers.auth import read_users
+    um = _get_inform_user_mods()
+    out = []
+    for u in read_users():
+        if u.get("status") != "approved":
+            continue
+        tabs = (u.get("tabs") or "").strip()
+        has_inform = (tabs == "__all__") or ("inform" in [t.strip() for t in tabs.split(",")])
+        if u.get("role") != "admin" and not has_inform:
+            continue
+        un = u.get("username") or ""
+        out.append({
+            "username": un,
+            "role": u.get("role", "user"),
+            "email": u.get("email") or "",
+            "modules": list(um.get(un, [])),
+            "has_setting": un in um,
+        })
+    return {"users": out}
+
+
+@router.post("/user-modules/save")
+def save_user_modules(req: UserModulesSaveReq, request: Request):
+    """Admin: 특정 유저의 인폼 모듈 조회 권한 저장. 빈 배열 = '아무 모듈도 조회 못함'."""
+    me = current_user(request)
+    if me.get("role") != "admin":
+        raise HTTPException(403, "admin only")
+    uname = (req.username or "").strip()
+    if not uname:
+        raise HTTPException(400, "username required")
+    cfg = _read_admin_settings()
+    um = dict(cfg.get(_INFORM_USER_MODS_KEY) or {})
+    mods = [str(m).strip() for m in (req.modules or []) if str(m).strip()]
+    um[uname] = list(dict.fromkeys(mods))
+    cfg[_INFORM_USER_MODS_KEY] = um
+    _write_admin_settings(cfg)
+    _audit(request, "inform:user-modules",
+           detail=f"user={uname} modules={','.join(um[uname])}", tab="inform")
+    return {"ok": True, "username": uname, "modules": um[uname]}
+
+
+@router.post("/user-modules/clear")
+def clear_user_modules(req: UserModulesSaveReq, request: Request):
+    """Admin: 특정 유저의 권한 설정 완전 제거 → group 기반 fallback 으로 복귀."""
+    me = current_user(request)
+    if me.get("role") != "admin":
+        raise HTTPException(403, "admin only")
+    uname = (req.username or "").strip()
+    if not uname:
+        raise HTTPException(400, "username required")
+    cfg = _read_admin_settings()
+    um = dict(cfg.get(_INFORM_USER_MODS_KEY) or {})
+    um.pop(uname, None)
+    cfg[_INFORM_USER_MODS_KEY] = um
+    _write_admin_settings(cfg)
+    return {"ok": True, "username": uname, "cleared": True}
+
+
+@router.get("/my-modules")
+def my_inform_modules(request: Request):
+    """현재 유저의 인폼 모듈 조회 권한.
+      - admin → all_rounder=True
+      - inform_user_modules 에 저장된 값 있으면 그걸 사용
+      - 그 외엔 /api/groups/my-modules 값으로 fallback
+    """
+    me = current_user(request)
+    uname = me.get("username") or ""
+    role = me.get("role") or "user"
+    if role == "admin":
+        return {"modules": [], "all_rounder": True, "source": "admin"}
+    um = _get_inform_user_mods()
+    if uname in um:
+        return {"modules": list(um[uname]), "all_rounder": False, "source": "inform_user_modules"}
+    # fallback: groups.user_modules 에서 compute
+    try:
+        from routers.groups import user_modules
+        mods = user_modules(uname, role) or set()
+        # "__all__" sentinel 은 admin 경로에서만 나오므로 여기선 없음.
+        return {"modules": list(mods), "all_rounder": False, "source": "groups"}
+    except Exception:
+        return {"modules": [], "all_rounder": False, "source": "fallback"}
+
+
 # v8.8.1: 제품 카탈로그 CRUD (모든 로그인 유저 — 등록된 제품 선택용).
 @router.post("/products/add")
 def add_product(req: ProductReq, request: Request):
@@ -472,7 +633,7 @@ def list_by_wafer(wafer_id: str = Query(..., min_length=1)):
 @router.get("/recent")
 def recent_roots(request: Request, limit: int = Query(50, ge=1, le=500)):
     me = current_user(request)
-    my_mods = user_modules(me["username"], me.get("role", "user"))
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
     roots = [x for x in items if not x.get("parent_id")]
     roots = [x for x in roots if _visible_to(x, me["username"], me.get("role", "user"), my_mods)]
@@ -483,7 +644,7 @@ def recent_roots(request: Request, limit: int = Query(50, ge=1, le=500)):
 @router.get("/wafers")
 def list_wafers(request: Request, limit: int = Query(500, ge=1, le=5000)):
     me = current_user(request)
-    my_mods = user_modules(me["username"], me.get("role", "user"))
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
     seen: dict = {}
     for x in items:
@@ -515,7 +676,7 @@ def by_lot(request: Request, lot_id: str = Query(..., min_length=1)):
     길이 > 5 인 쿼리는 root_lot = query[:5] 로 축약해 같은 groupings 를 반환.
     """
     me = current_user(request)
-    my_mods = user_modules(me["username"], me.get("role", "user"))
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
     root = (lot_id or "")[:5]
     hits = [x for x in items if (x.get("root_lot_id") or (x.get("lot_id") or "")[:5]) == root]
@@ -530,7 +691,7 @@ def by_lot(request: Request, lot_id: str = Query(..., min_length=1)):
 def by_product(request: Request, product: str = Query(..., min_length=1),
                limit: int = Query(500, ge=1, le=5000)):
     me = current_user(request)
-    my_mods = user_modules(me["username"], me.get("role", "user"))
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
     hits = [x for x in items if x.get("product") == product]
     hits = [x for x in hits if _visible_to(x, me["username"], me.get("role", "user"), my_mods)]
@@ -563,7 +724,7 @@ def my_informs(request: Request, limit: int = Query(200, ge=1, le=2000)):
 @router.get("/products")
 def list_products(request: Request):
     me = current_user(request)
-    my_mods = user_modules(me["username"], me.get("role", "user"))
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
     seen: dict = {}
     for x in items:
@@ -587,7 +748,7 @@ def list_lots(request: Request):
     하위 호환: lot_id 에 root_lot_id 를 넣어 기존 FE 의 selectedLot 흐름이 그대로 동작.
     """
     me = current_user(request)
-    my_mods = user_modules(me["username"], me.get("role", "user"))
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
     seen: dict = {}
     for x in items:
@@ -809,8 +970,11 @@ class InformEditReq(BaseModel):
 
 @router.post("/edit")
 def edit_inform(req: InformEditReq, request: Request, id: str = Query(...)):
-    """v8.8.12: 등록된 인폼의 본문/모듈/사유를 **다른 유저도** 수정 가능. 변경 전후 값을 edit_history 에 저장."""
+    """v8.8.12: 등록된 인폼의 본문/모듈/사유 수정.
+    v8.8.13: 수정 권한을 **admin 전용**으로 제한. 작성자 본인도 수정 불가 (답글로 추가만 가능)."""
     me = current_user(request)
+    if me.get("role") != "admin":
+        raise HTTPException(403, "수정은 관리자(admin)만 가능합니다. 내용 변경은 답글로 추가하세요.")
     items = _load_upgraded()
     target = _find(items, id)
     if not target:
@@ -850,7 +1014,7 @@ def edit_inform(req: InformEditReq, request: Request, id: str = Query(...)):
 @router.post("/check")
 def check_inform(req: CheckReq, request: Request, id: str = Query(...)):
     me = current_user(request)
-    my_mods = user_modules(me["username"], me.get("role", "user"))
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
     target = _find(items, id)
     if not target:
@@ -872,7 +1036,7 @@ def set_status(req: StatusReq, request: Request, id: str = Query(...)):
     if st not in FLOW_STATUSES_LEGACY:
         raise HTTPException(400, f"invalid status; must be one of {FLOW_STATUSES_LEGACY}")
     me = current_user(request)
-    my_mods = user_modules(me["username"], me.get("role", "user"))
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
     target = _find(items, id)
     if not target:
@@ -902,7 +1066,7 @@ def set_status(req: StatusReq, request: Request, id: str = Query(...)):
 def set_deadline(req: DeadlineReq, request: Request, id: str = Query(...)):
     """루트 인폼의 마감일을 설정/해제. 작성자/모듈 담당자/admin 만 가능."""
     me = current_user(request)
-    my_mods = user_modules(me["username"], me.get("role", "user"))
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
     target = _find(items, id)
     if not target:
@@ -1518,7 +1682,7 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
 def attach_splittable(req: SplitChange, request: Request, id: str = Query(...)):
     """해당 인폼에 SplitTable 변경요청 메타 attach (작성자/담당자/admin)."""
     me = current_user(request)
-    my_mods = user_modules(me["username"], me.get("role", "user"))
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
     target = _find(items, id)
     if not target:

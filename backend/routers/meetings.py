@@ -791,6 +791,19 @@ class ActionItem(BaseModel):
     group_ids: Optional[List[str]] = None
 
 
+class MinutesAppendReq(BaseModel):
+    # v8.8.13: 그룹 멤버 공동 작성 — 본문 append 전용 (수정/삭제 불가).
+    meeting_id: str
+    session_id: str
+    text: str
+
+
+class MinutesAppendDeleteReq(BaseModel):
+    meeting_id: str
+    session_id: str
+    append_id: str
+
+
 class MinutesSave(BaseModel):
     meeting_id: str
     session_id: str
@@ -814,6 +827,27 @@ def _is_admin(me: dict) -> bool:
 
 def _can_edit_meeting(me: dict, meeting: dict) -> bool:
     return _is_admin(me) or meeting.get("owner") == me["username"]
+
+
+def _can_append_minutes(me: dict, meeting: dict) -> bool:
+    """v8.8.13: 공동 작성 허용 — owner/admin 은 물론, 회의 공개 범위 그룹 멤버도 본문 append 가능.
+    meeting.group_ids 가 비어있으면(전체 공개) 로그인 유저 누구나 허용."""
+    if _can_edit_meeting(me, meeting):
+        return True
+    gids = meeting.get("group_ids") or []
+    if not gids:
+        return True
+    try:
+        from routers.groups import _load as _load_groups
+        uname = (me or {}).get("username") or ""
+        for g in _load_groups():
+            if g.get("id") not in gids:
+                continue
+            if g.get("owner") == uname or uname in (g.get("members") or []):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def _can_edit_agenda(me: dict, meeting: dict, agenda: dict) -> bool:
@@ -1317,12 +1351,15 @@ def save_minutes(req: MinutesSave, request: Request):
                 unpush_action_item(m["id"], s["id"], old["id"])
             except Exception:
                 pass
+    # v8.8.13: body_appendix 보존 (그룹 멤버가 공동으로 append 한 항목은 owner 저장 때도 유지).
+    prev_appendix = ((s.get("minutes") or {}).get("body_appendix")) or []
     s["minutes"] = {
         "body": (req.body or "").strip(),
         "decisions": decisions,
         "action_items": merged,
         "author": me["username"],
         "updated_at": now,
+        "body_appendix": prev_appendix,
     }
     s["minutes"]["decisions"] = decisions
     s["minutes"]["action_items"] = merged
@@ -1402,6 +1439,96 @@ def save_minutes(req: MinutesSave, request: Request):
                tab="meetings")
 
     return {"ok": True, "meeting": m, "session": s, "mail": mail_result, "calendar_sync": sync_result}
+
+
+# v8.8.13: 공동 본문 append ─────────────────────────────────────
+@router.post("/minutes/append")
+def append_minutes(req: MinutesAppendReq, request: Request):
+    """회의록 본문 append. owner/admin 또는 회의 공개 그룹 멤버 모두 가능.
+    append 된 블록은 {id, author, at, text} 로 기록되어 본문 아래에 자신의 이름과 함께 노출된다."""
+    me = current_user(request)
+    items = _load()
+    idx, m = _find(items, req.meeting_id)
+    if not m:
+        raise HTTPException(404, "meeting not found")
+    if not _can_append_minutes(me, m):
+        raise HTTPException(403, "이 회의에 본문을 추가할 권한이 없습니다 (그룹 멤버만).")
+    sidx, s = _find_session(m, req.session_id)
+    if sidx < 0:
+        raise HTTPException(404, "session not found")
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "text is required")
+    now = _now()
+    minutes = s.get("minutes") or {}
+    appendix = list(minutes.get("body_appendix") or [])
+    entry = {
+        "id": f"bap_{uuid.uuid4().hex[:8]}",
+        "author": me["username"],
+        "at": now,
+        "text": text,
+    }
+    appendix.append(entry)
+    minutes["body_appendix"] = appendix
+    # body 등 다른 필드가 없으면 기본값으로 채움 (담당자가 한 번도 저장 안 한 경우 대비).
+    if "body" not in minutes: minutes["body"] = ""
+    if "decisions" not in minutes: minutes["decisions"] = []
+    if "action_items" not in minutes: minutes["action_items"] = []
+    minutes["updated_at"] = now
+    s["minutes"] = minutes
+    s["updated_at"] = now
+    m["sessions"][sidx] = s
+    m["updated_at"] = now
+    items[idx] = m
+    _save(items)
+    _audit(request, "meetings:minutes_append",
+           detail=f"meeting={m['id']} session={s['id']} by={me['username']}",
+           tab="meetings")
+    _mtg_publish(m["id"], {
+        "type": "minutes_appended",
+        "meeting_id": m["id"], "session_id": s["id"],
+        "author": me["username"], "at": now, "append_id": entry["id"],
+    })
+    return {"ok": True, "entry": entry, "session": s}
+
+
+@router.post("/minutes/append/delete")
+def delete_minutes_append(req: MinutesAppendDeleteReq, request: Request):
+    """append 블록 삭제. owner/admin 또는 해당 블록의 작성자 본인."""
+    me = current_user(request)
+    items = _load()
+    idx, m = _find(items, req.meeting_id)
+    if not m:
+        raise HTTPException(404, "meeting not found")
+    sidx, s = _find_session(m, req.session_id)
+    if sidx < 0:
+        raise HTTPException(404, "session not found")
+    minutes = s.get("minutes") or {}
+    appendix = list(minutes.get("body_appendix") or [])
+    target = next((a for a in appendix if a.get("id") == req.append_id), None)
+    if not target:
+        raise HTTPException(404, "append entry not found")
+    is_owner_or_admin = _can_edit_meeting(me, m)
+    is_author = target.get("author") == me["username"]
+    if not (is_owner_or_admin or is_author):
+        raise HTTPException(403, "작성자 본인 또는 회의 담당자(admin)만 삭제할 수 있습니다.")
+    appendix = [a for a in appendix if a.get("id") != req.append_id]
+    minutes["body_appendix"] = appendix
+    minutes["updated_at"] = _now()
+    s["minutes"] = minutes
+    s["updated_at"] = _now()
+    m["sessions"][sidx] = s
+    items[idx] = m
+    _save(items)
+    _audit(request, "meetings:minutes_append_delete",
+           detail=f"meeting={m['id']} session={s['id']} append_id={req.append_id} by={me['username']}",
+           tab="meetings")
+    _mtg_publish(m["id"], {
+        "type": "minutes_append_deleted",
+        "meeting_id": m["id"], "session_id": s["id"],
+        "by": me["username"], "append_id": req.append_id,
+    })
+    return {"ok": True, "session": s}
 
 
 # ── action_item ↔ calendar push/unpush ─────────────────────────

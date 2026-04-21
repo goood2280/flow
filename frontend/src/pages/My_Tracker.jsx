@@ -17,12 +17,11 @@ function withTrackerImageAuth(html) {
 /* ─── Inject tracker image styles once ─── */
 if(typeof document!=="undefined"&&!document.getElementById("trk-img-styles")){
   const s=document.createElement("style");s.id="trk-img-styles";
+  // v8.8.13: hover 확대 제거 — 확대 미리보기 없이 본 이미지 크기로만 표시.
   s.textContent=`
-.desc-editor img,.desc-view img{max-width:300px!important;border-radius:6px;cursor:pointer;transition:max-width 0.2s;display:block;margin:4px 0}
+.desc-editor img,.desc-view img{max-width:300px!important;border-radius:6px;transition:max-width 0.2s;display:block;margin:4px 0}
+.desc-editor img{cursor:pointer}
 .desc-editor img:hover{outline:2px solid #f97316;outline-offset:2px}
-.desc-view img:hover{transform:scale(2);transform-origin:top left;z-index:100;position:relative;box-shadow:0 8px 30px rgba(0,0,0,0.6);transition:transform 0.2s}
-.trk-img-thumb:hover{transform:scale(2.5);transform-origin:top left;z-index:100;position:relative;box-shadow:0 8px 30px rgba(0,0,0,0.6)}
-.trk-img-thumb{transition:transform 0.2s;cursor:zoom-in}
 `;
   document.head.appendChild(s);
 }
@@ -256,26 +255,44 @@ function IssueForm({ onSubmit, onClose, user }) {
 
 /* ─── Gantt Chart ─── */
 function GanttChart({ issues, onIssueClick }) {
-  if (!issues.length) return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>이슈 없음</div>;
   // v8.1.5: look up category color from stored list; fall back to hash for orphan categories
   const [cats, setCats] = useState([]);
   useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "" } : c))).catch(() => { }); }, []);
   const hashColor = (name) => { let h = 0; for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0; return `hsl(${Math.abs(h) % 360}, 58%, 58%)`; };
   const catColor = (name) => { if (!name) return "#64748b"; const c = cats.find(x => x.name === name); return (c && c.color) || hashColor(name); };
   const now = new Date(); const [month, setMonth] = useState(now.getMonth()); const [year, setYear] = useState(now.getFullYear());
+  // v8.8.13: 간트 전용 검색 필터 (제목/담당자). 좌측 이슈 리스트 검색과 독립.
+  const [gQuery, setGQuery] = useState("");
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
   const mStart = new Date(year, month, 1); const mEnd = new Date(year, month + 1, 0, 23, 59);
-  const filtered = issues.filter(iss => { const c = new Date(iss.created || iss.timestamp); const e = iss.closed_at ? new Date(iss.closed_at) : now; return c <= mEnd && e >= mStart; });
+  const q = (gQuery || "").trim().toLowerCase();
+  const filtered = (issues || []).filter(iss => {
+    const c = new Date(iss.created || iss.timestamp); const e = iss.closed_at ? new Date(iss.closed_at) : now;
+    if (!(c <= mEnd && e >= mStart)) return false;
+    if (!q) return true;
+    return (iss.title || "").toLowerCase().includes(q)
+      || (iss.username || "").toLowerCase().includes(q)
+      || (iss.category || "").toLowerCase().includes(q);
+  });
   const prioColor = { critical: "#ef4444", high: "#f97316", normal: "#3b82f6", low: "#94a3b8" };
   const prevM = () => { if (month === 0) { setMonth(11); setYear(y => y - 1); } else setMonth(m => m - 1); };
   const nextM = () => { if (month === 11) { setMonth(0); setYear(y => y + 1); } else setMonth(m => m + 1); };
   return (<div>
-    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
       <button onClick={prevM} style={{ background: "none", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-primary)", cursor: "pointer", padding: "2px 8px" }}>◀</button>
       <span style={{ fontSize: 14, fontWeight: 700, minWidth: 120, textAlign: "center" }}>{year}.{String(month + 1).padStart(2, "0")}</span>
       <button onClick={nextM} style={{ background: "none", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-primary)", cursor: "pointer", padding: "2px 8px" }}>▶</button>
+      {/* v8.8.13: 제목 / 담당자 / 카테고리 부분일치 필터 */}
+      <input value={gQuery} onChange={e => setGQuery(e.target.value)}
+        placeholder="🔎 제목 · 담당자 · 카테고리 검색"
+        style={{ flex: 1, minWidth: 220, padding: "4px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+      {gQuery && <span onClick={() => setGQuery("")} style={{ cursor: "pointer", color: "#ef4444", fontSize: 11 }}>✕ 초기화</span>}
+      <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{filtered.length}{gQuery ? ` / ${(issues || []).length}` : ""}건</span>
     </div>
+    {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>{gQuery ? "매칭 이슈 없음" : "이슈 없음"}</div>}
+    {filtered.length > 0 && (<>
+
     <div style={{ overflow: "auto" }}>
       <table style={{ borderCollapse: "collapse", fontSize: 10, minWidth: "100%" }}>
         <thead><tr>
@@ -285,7 +302,11 @@ function GanttChart({ issues, onIssueClick }) {
         <tbody>{filtered.map(iss => {
           const created = new Date(iss.created || iss.timestamp); const ended = iss.closed_at ? new Date(iss.closed_at) : now;
           return (<tr key={iss.id}>
-            <td style={{ padding: "4px 8px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160 }} title={iss.title}><span onClick={() => onIssueClick && onIssueClick(iss.id)} style={{ fontWeight: 600, cursor: "pointer", color: "var(--accent)", textDecoration: "none" }} onMouseEnter={e=>e.currentTarget.style.textDecoration="underline"} onMouseLeave={e=>e.currentTarget.style.textDecoration="none"}>{iss.category ? `[${iss.category}] ` : ""}{iss.title}</span></td>
+            <td style={{ padding: "4px 8px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 220 }} title={`${iss.title} · 담당: ${iss.username || "-"}`}>
+              <span onClick={() => onIssueClick && onIssueClick(iss.id)} style={{ fontWeight: 600, cursor: "pointer", color: "var(--accent)", textDecoration: "none" }} onMouseEnter={e=>e.currentTarget.style.textDecoration="underline"} onMouseLeave={e=>e.currentTarget.style.textDecoration="none"}>{iss.category ? `[${iss.category}] ` : ""}{iss.title}</span>
+              {/* v8.8.13: 이슈 옆에 담당자 회색 표시 */}
+              {iss.username && <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace" }}>· {iss.username}</span>}
+            </td>
             {days.map(d => {
               const day = new Date(year, month, d);
               const inRange = day >= new Date(created.getFullYear(), created.getMonth(), created.getDate()) && day <= new Date(ended.getFullYear(), ended.getMonth(), ended.getDate());
@@ -298,6 +319,7 @@ function GanttChart({ issues, onIssueClick }) {
         })}</tbody>
       </table>
     </div>
+    </>)}
   </div>);
 }
 
@@ -307,6 +329,8 @@ export default function My_Tracker({ user }) {
   const [filter, setFilter] = useState(""); const [comment, setComment] = useState(""); const [search, setSearch] = useState("");
   const [viewTab, setViewTab] = useState("list");
   const [editMode, setEditMode] = useState(false); const [editTitle, setEditTitle] = useState(""); const [editDesc, setEditDesc] = useState(""); const [editPrio, setEditPrio] = useState("normal");
+  // v8.8.13: 수정 시 카테고리도 변경 가능하도록 state 추가.
+  const [editCategory, setEditCategory] = useState("");
   const isAdmin = user?.role === "admin";
   const statusColor = { in_progress: "#f97316", closed: "#22c55e" };
   const prioColor = { critical: "#ef4444", high: "#f97316", normal: "#3b82f6", low: "#94a3b8" };
@@ -331,10 +355,11 @@ export default function My_Tracker({ user }) {
   const addComment = () => { if (!comment.trim() || !selected) return; sf(API + "/comment", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: selected.id, username: user?.username || "", text: comment }) }).then(() => { setComment(""); loadDetail(selected.id); }); };
   const deleteIssue = () => { if (!confirm("이 이슈를 삭제할까요?")) return; sf(API + "/delete?issue_id=" + selected.id, { method: "POST" }).then(() => { setSelected(null); load(); }); };
   const canEdit = selected && (selected.username === user?.username || isAdmin);
-  const startEdit = () => { if (!canEdit) return; setEditMode(true); setEditTitle(selected.title); setEditDesc(selected.description_html || selected.description || ""); setEditPrio(selected.priority || "normal"); };
+  const startEdit = () => { if (!canEdit) return; setEditMode(true); setEditTitle(selected.title); setEditDesc(selected.description_html || selected.description || ""); setEditPrio(selected.priority || "normal"); setEditCategory(selected.category || ""); };
   const saveEdit = () => {
     if (!editTitle.trim()) return;
-    sf(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: selected.id, title: editTitle, description: editDesc, priority: editPrio }) })
+    // v8.8.13: category 도 payload 에 포함 — 이전에는 FE 에서 누락되어 수정 불가였음.
+    sf(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: selected.id, title: editTitle, description: editDesc, priority: editPrio, category: editCategory }) })
       .then(() => { setEditMode(false); loadDetail(selected.id); load(); }).catch(e => alert(e.message));
   };
 
@@ -427,16 +452,22 @@ export default function My_Tracker({ user }) {
             )}
 
             {/* Priority (edit) */}
-            {editMode && <div style={{ marginBottom: 12 }}>
-              <span style={{ fontSize: 11, color: "var(--text-secondary)", marginRight: 8 }}>우선순위:</span>
-              <select value={editPrio} onChange={e => setEditPrio(e.target.value)} style={{ padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11 }}>
-                <option value="low">낮음</option><option value="normal">보통</option><option value="high">높음</option><option value="critical">긴급</option></select>
+            {editMode && <div style={{ marginBottom: 12, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>우선순위:
+                <select value={editPrio} onChange={e => setEditPrio(e.target.value)} style={{ marginLeft: 6, padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11 }}>
+                  <option value="low">낮음</option><option value="normal">보통</option><option value="high">높음</option><option value="critical">긴급</option></select>
+              </span>
+              {/* v8.8.13: 카테고리 수정 허용 — 이전엔 FE state 누락으로 저장 시 변경 안 됨. */}
+              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>카테고리:
+                <select value={editCategory} onChange={e => setEditCategory(e.target.value)} style={{ marginLeft: 6, padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11 }}>
+                  <option value="">(없음)</option>
+                  {cats.map(c => <option key={c.name || c} value={c.name || c}>{c.name || c}</option>)}
+                </select>
+              </span>
             </div>}
 
-            {/* Standalone images (legacy) */}
-            {selected.images?.length > 0 && <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-              {selected.images.map((img, i) => <img key={i} className="trk-img-thumb" src={authSrc("/api/tracker/image?name=" + img)} style={{ maxWidth: 150, maxHeight: 120, borderRadius: 8, border: "1px solid var(--border)", objectFit: "cover" }} />)}
-            </div>}
+            {/* v8.8.13: 하단 썸네일 블록 제거 — 설명(desc_html) 내부의 inline 이미지만 노출.
+                 legacy images 배열은 더 이상 별도 표시하지 않음 (중복 방지). */}
 
             {/* Related Links */}
             {selected.links?.length > 0 && <div style={{ marginBottom: 16 }}>
@@ -488,7 +519,8 @@ function TrackerSettings({ isAdmin }) {
   const [color, setColor] = useState("#3b82f6");
   const [msg, setMsg] = useState("");
   const load = () => sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#64748b" } : c)));
-  useEffect(load, []);
+  // fix: arrow+Promise → Promise 가 cleanup 에 저장되어 unmount 시 crash 방지.
+  useEffect(() => { load(); }, []);
   const save = (next) => sf(API + "/categories/save", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next),
   }).then(() => { setMsg("저장 완료"); load(); }).catch(e => setMsg(e.message));
