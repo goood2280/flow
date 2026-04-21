@@ -2,6 +2,23 @@
 
 주요 변경점만 간략히. 세부 내역은 `VERSION.json` 의 changelog 배열 참고.
 
+## v8.8.2 — 2026-04-21
+
+**S3 신호등 방향/제품·상위상속 · 대시보드 X/Y·Left Joins 버그 · 인폼 확인취소 backfill · 제품담당자 유저·그룹 일괄 · 달력/회의 공개범위 · TableMap 500·AWS제거·우클릭제거 · openpyxl 자동설치 · RootHeader 컴팩트**
+
+- S3 신호등 방향(↓ 다운 / ↑ 업) pill 라벨 + 가독성 강화. 파일탐색기 사이드바 중복 신호등 제거.
+- 파일탐색기 제품별 S3 신호등 추가: 제품 고유 설정 없으면 상위 DB 경로의 sync 상태를 자동 상속(점 표시 + tooltip).
+- TableMap 의 S3StatusLight / AWS S3 동기화 명령 입력창 제거 → S3 관리 창구는 FileBrowser ⚙️ 로 단일화.
+- 대시보드 Left Joins 선택 유지 + X/Y 드롭다운 안정화: jLabel lookup 수정, base_file join 지원, 공통 colUrl() 빌더, 컬럼 로딩/에러 배너.
+- 인폼 확인취소(completed→received) 타임라인 backfill: `_upgrade` 에서 legacy status_history 의 prev 를 직전 상태로 채움 + 자동 '확인 취소' note. TimelineLog 인식 로직도 walking 기반으로 강화.
+- 인폼 제품 담당자 — 유저/그룹 혼합 일괄 추가: `/api/informs/product-contacts/bulk-add`. 이단 picker 모달 (유저 체크 리스트 + 그룹 체크 리스트, 일괄 role 지정). admin/test 필터 + 중복 dedup.
+- 달력 일반 이벤트 공개범위: EventCreate/Update 가 group_ids 수용, `/events` 가 가시성 필터 적용. 편집 폼에 그룹 칩 picker.
+- 회의 공개범위 그룹 (백엔드): MeetingCreate/Update 에 group_ids + `_meeting_visible()` (admin/owner/creator 상시 가시). FE UI 는 차후.
+- TableMap 저장/import HTTP 500 박멸: `save_json` default serializer (datetime/Decimal/UUID/Path/bytes/set), `save_table` try/except + traceback, polars rows 를 `_json_safe_rows` 로 사전 평탄화.
+- TableMap 노드 우클릭 → 맵에서만 제거 (`/api/dbmap/nodes/unlink`). 원본 테이블 JSON/CSV 보존, 그래프 참조만 정리.
+- openpyxl 자동 설치: setup.py extract 단계에서 import 실패 시 자동 pip install. 'python setup.py extract' 만으로 엑셀 기능 즉시 동작.
+- 인폼 RootHeader 컴팩트: 완료 pill + 확인완료/해제 버튼 + 메일 pill + 이력 링크 모두 한 줄(30px) 로 수렴.
+
 ## v8.8.1 — 2026-04-21
 
 **인폼 확인취소 이력 · 그룹 admin/test 필터 · 제품 카탈로그/Lot DB 드롭다운 · PageGear 통일 · 메일 본문 간소화**

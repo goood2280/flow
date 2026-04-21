@@ -141,6 +141,25 @@ def _upgrade(entry: dict) -> dict:
     entry.setdefault("auto_generated", False)
     entry.setdefault("deadline", "")  # v8.7.1: 이슈 마감일 (YYYY-MM-DD 또는 "")
     entry.setdefault("group_ids", [])  # v8.7.6: 그룹 가시성
+    # v8.8.2: status_history 의 `prev` 필드 backfill — legacy 엔트리는
+    # prev 가 없어 "확인 취소" 이벤트가 TimelineLog 에서 사라졌다.
+    hist = entry.get("status_history") or []
+    last_status = ""
+    dirty = False
+    for h in hist:
+        if not isinstance(h, dict):
+            continue
+        if "prev" not in h:
+            h["prev"] = last_status
+            dirty = True
+        # received 이면서 이전이 completed 였다면 자동으로 "확인 취소" note 부여.
+        if (h.get("status") == "received" and last_status == "completed"
+                and not h.get("note")):
+            h["note"] = "확인 취소"
+            dirty = True
+        last_status = h.get("status") or last_status
+    if dirty:
+        entry["status_history"] = hist
     return entry
 
 
@@ -942,6 +961,90 @@ def delete_product_contact(request: Request, id: str = Query(...), product: str 
     _save_product_contacts(data)
     _audit(request, "inform:product-contact-del", detail=f"product={product} id={id}", tab="inform")
     return {"ok": True}
+
+
+# v8.8.2: bulk add — 개별 유저 / 그룹 멤버 혼합 추가.
+class ProductContactBulkReq(BaseModel):
+    product: str
+    usernames: List[str] = []         # 개별 유저 선택 결과
+    group_ids: List[str] = []         # 선택한 그룹(들) — 멤버 전체 풀
+    role: str = ""                    # 일괄 적용할 역할 (선택)
+
+
+@router.post("/product-contacts/bulk-add")
+def bulk_add_product_contacts(req: ProductContactBulkReq, request: Request):
+    """유저 / 그룹 혼합 일괄 추가.
+
+    - usernames 에 적힌 각 유저를 contacts 로 등록.
+    - group_ids 의 모든 그룹 members 도 pool 에 합류.
+    - admin/test 계정은 서버측에서 한 번 더 필터.
+    - 이미 같은 product 에 동일 username(혹은 email) 이 등록돼 있으면 dedup.
+    """
+    me = current_user(request)
+    prod = (req.product or "").strip()
+    if not prod:
+        raise HTTPException(400, "product required")
+    from routers.groups import _is_blocked_member, _load_users_by_name, _load as _load_groups
+    users_by_name = _load_users_by_name()
+    # pool: 유니크 username 모음
+    pool: List[str] = []
+    for un in (req.usernames or []):
+        un = (un or "").strip()
+        if un and un not in pool:
+            pool.append(un)
+    if req.group_ids:
+        gids = set(req.group_ids)
+        for g in _load_groups():
+            if g.get("id") in gids:
+                for m in (g.get("members") or []):
+                    if m and m not in pool:
+                        pool.append(m)
+    # 필터 + 유저 프로필 resolve
+    data = _load_product_contacts()
+    products = data.setdefault("products", {})
+    existing = products.setdefault(prod, [])
+    existing_keys = set()
+    for c in existing:
+        uname = (c.get("source_username") or "").strip().lower()
+        email = (c.get("email") or "").strip().lower()
+        if uname:
+            existing_keys.add(("u", uname))
+        if email:
+            existing_keys.add(("e", email))
+    added: List[dict] = []
+    skipped: List[str] = []
+    for un in pool:
+        if _is_blocked_member(un, users_by_name):
+            skipped.append(un)
+            continue
+        u = users_by_name.get(un) or {}
+        email = (u.get("email") or "").strip() if isinstance(u, dict) else ""
+        name = (u.get("display_name") or u.get("name") or un) if isinstance(u, dict) else un
+        key_u = ("u", un.lower())
+        key_e = ("e", email.lower()) if email else None
+        if key_u in existing_keys or (key_e and key_e in existing_keys):
+            skipped.append(un)
+            continue
+        contact = {
+            "id": _new_contact_id(),
+            "name": name,
+            "role": (req.role or (u.get("role", "") if isinstance(u, dict) else "") or "").strip(),
+            "email": email,
+            "phone": (u.get("phone", "") if isinstance(u, dict) else "").strip(),
+            "note": "",
+            "source_username": un,
+            "added_by": me.get("username", ""),
+            "added_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        existing.append(contact)
+        added.append(contact)
+        existing_keys.add(key_u)
+        if key_e:
+            existing_keys.add(key_e)
+    _save_product_contacts(data)
+    _audit(request, "inform:product-contact-bulk",
+           detail=f"product={prod} added={len(added)} skipped={len(skipped)}", tab="inform")
+    return {"ok": True, "added": added, "skipped": skipped, "total": len(existing)}
 
 
 # ── v8.7.2: Mail relay ─────────────────────────────────────────────

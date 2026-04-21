@@ -1,7 +1,7 @@
-/* S3StatusLight v8.6.4 — S3 동기화 신호등. FileBrowser/TableMap 헤더에서 공용.
+/* S3StatusLight v8.8.2 — S3 동기화 신호등. TableMap 헤더에서 공용.
    - GET /api/s3ingest/health 60s 폴링.
    - light: green/yellow/red/none → 색 + 라벨.
-   - hover 시 상세 (마지막 동기화 시각, 실패 수, 설정 수, AWS CLI 가용성).
+   - v8.8.2: 방향(다운/업) 구분을 신호등만 보고도 알 수 있도록 ⬇︎다운 / ⬆︎업 텍스트 라벨 추가 + 아이콘 크기 확대.
 */
 import { useEffect, useState } from "react";
 import { sf } from "../lib/api";
@@ -36,27 +36,32 @@ export default function S3StatusLight({ compact = false }) {
   const upColor = (COLORS[upKey] || COLORS.none).bg;
   const downLabel = (COLORS[downKey] || COLORS.none).label;
   const upLabel = (COLORS[upKey] || COLORS.none).label;
+
+  // v8.8.2: 방향별 pill — 색 + 화살표 + "다운"/"업" 텍스트 라벨을 함께 표시.
+  const pill = (arrow, text, color, tip, isRed) => (
+    <span style={{
+      display:"inline-flex", alignItems:"center", gap:3,
+      padding:"2px 7px 2px 5px", borderRadius:11,
+      background: color + "1e",
+      border: "1px solid " + color,
+      lineHeight: 1,
+    }} title={tip}>
+      <span style={{
+        width: 9, height: 9, borderRadius: "50%", background: color,
+        boxShadow: `0 0 5px ${color}`, flexShrink: 0, ...(isRed?ringStyle:{}),
+      }} />
+      <span style={{fontSize:11, color, fontWeight:800, fontFamily:"monospace"}}>{arrow}</span>
+      <span style={{fontSize:10, color, fontWeight:700, letterSpacing:"-0.02em"}}>{text}</span>
+    </span>
+  );
+
   return (
     <span style={{ position: "relative", display: "inline-flex", alignItems: "center", gap: 6 }}
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       title={c.label + (data?.message ? " — " + data.message : "")}>
       <style>{`@keyframes s3blink { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.45;transform:scale(0.85)} }`}</style>
-      {/* Download light */}
-      <span style={{ display:"inline-flex", alignItems:"center", gap:2 }} title={"↓ 다운로드 — " + downLabel}>
-        <span style={{
-          width: 9, height: 9, borderRadius: "50%", background: downColor,
-          boxShadow: `0 0 5px ${downColor}`, flexShrink: 0, ...(downKey==="red"?ringStyle:{}),
-        }} />
-        <span style={{fontSize:9,color:downColor,fontWeight:700,fontFamily:"monospace"}}>↓</span>
-      </span>
-      {/* Upload light */}
-      <span style={{ display:"inline-flex", alignItems:"center", gap:2 }} title={"↑ 업로드 — " + upLabel}>
-        <span style={{
-          width: 9, height: 9, borderRadius: "50%", background: upColor,
-          boxShadow: `0 0 5px ${upColor}`, flexShrink: 0, ...(upKey==="red"?ringStyle:{}),
-        }} />
-        <span style={{fontSize:9,color:upColor,fontWeight:700,fontFamily:"monospace"}}>↑</span>
-      </span>
+      {pill("↓", "다운", downColor, "다운로드(S3→로컬) — " + downLabel, downKey==="red")}
+      {pill("↑", "업", upColor, "업로드(로컬→S3) — " + upLabel, upKey==="red")}
       {!compact && (
         <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", fontWeight: 600 }}>
           {c.label}

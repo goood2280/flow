@@ -714,6 +714,8 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
   const [sources, setSources] = useState([]); const [columns, setColumns] = useState([]);
   // v8.4.3: JOIN 된 소스별 컬럼 캐시. 키는 join 인덱스, 값은 컬럼명 배열.
   const [joinColumns, setJoinColumns] = useState({});
+  const [columnsLoading, setColumnsLoading] = useState(false);
+  const [columnsError, setColumnsError] = useState("");
   const [preview, setPreview] = useState(null); const [prevLoading, setPrevLoading] = useState(false);
   const [showAdv, setShowAdv] = useState(false);
   // v8.5.0: 내가 속한 그룹 목록 (관리자는 전체).
@@ -721,20 +723,34 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
   const u = (k, v) => setForm({ ...form, [k]: v });
   useEffect(() => { sf(API + "/products").then(d => setSources(d.products || [])).catch(() => { }); }, []);
   useEffect(() => { sf("/api/groups/list").then(d => setMyGroups(d.groups || [])).catch(() => setMyGroups([])); }, []);
+  // v8.8.2: /columns URL builder — base_file/root_parquet/hive 공통 진입점. 소스 타입 누락돼도 file 또는 root+product 로 fallback.
+  const colUrl = (entry) => {
+    if (!entry) return null;
+    const st = entry.source_type || "";
+    const file = entry.file || "";
+    const root = entry.root || "";
+    const product = entry.product || "";
+    if (st === "base_file" && file) return API + "/columns?source_type=base_file&file=" + encodeURIComponent(file);
+    if (st === "root_parquet" && file) return API + "/columns?file=" + encodeURIComponent(file);
+    if (root && product) return API + "/columns?root=" + encodeURIComponent(root) + "&product=" + encodeURIComponent(product);
+    // v8.8.2: fallback — source_type 은 비었지만 file 단독인 legacy 케이스.
+    if (file) return API + "/columns?file=" + encodeURIComponent(file);
+    return null;
+  };
   useEffect(() => {
-    if (form.source_type === "base_file" && form.file) sf(API + "/columns?source_type=base_file&file=" + encodeURIComponent(form.file)).then(d => setColumns(d.columns || [])).catch(() => setColumns([]));
-    else if (form.source_type === "root_parquet" && form.file) sf(API + "/columns?file=" + encodeURIComponent(form.file)).then(d => setColumns(d.columns || [])).catch(() => setColumns([]));
-    else if (form.root && form.product) sf(API + "/columns?root=" + encodeURIComponent(form.root) + "&product=" + encodeURIComponent(form.product)).then(d => setColumns(d.columns || [])).catch(() => setColumns([]));
-    else setColumns([]);
+    const url = colUrl(form);
+    if (!url) { setColumns([]); setColumnsError(""); setColumnsLoading(false); return; }
+    setColumnsLoading(true); setColumnsError("");
+    sf(url)
+      .then(d => { setColumns(d.columns || []); setColumnsLoading(false); })
+      .catch(e => { setColumns([]); setColumnsError((e && e.message) || "컬럼 로드 실패"); setColumnsLoading(false); });
   }, [form.root, form.product, form.file, form.source_type]);
   // v8.4.3: join 소스별 columns 프리페치. 소스 바뀌거나 추가될 때만 조회.
   useEffect(() => {
     (form.joins || []).forEach((j, i) => {
       if (joinColumns[i] && joinColumns[i]._for === JSON.stringify({ s: j.source_type, r: j.root, p: j.product, f: j.file })) return;
       const sig = JSON.stringify({ s: j.source_type, r: j.root, p: j.product, f: j.file });
-      let q = null;
-      if (j.source_type === "root_parquet" && j.file) q = API + "/columns?file=" + encodeURIComponent(j.file);
-      else if (j.root && j.product) q = API + "/columns?root=" + encodeURIComponent(j.root) + "&product=" + encodeURIComponent(j.product);
+      const q = colUrl(j);  // v8.8.2: base_file/fallback 지원
       if (!q) return;
       sf(q).then(d => setJoinColumns(prev => ({ ...prev, [i]: Object.assign([...(d.columns || [])], { _for: sig }) }))).catch(() => { });
     });
@@ -814,7 +830,11 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
       {(form.joins || []).map((j, i) => {
         const updJ = (k, v) => { const next = [...(form.joins || [])]; next[i] = { ...next[i], [k]: v }; u("joins", next); };
         const selJSource = (val) => { const src = sources.find(s => s.label === val); if (src) { const next = [...(form.joins||[])]; next[i] = { ...next[i], source_type: src.source_type, root: src.root, product: src.product, file: src.file }; u("joins", next); } };
-        const jLabel = j.source_type === "root_parquet" ? `📊 ${j.file}` : (j.root && j.product ? `${j.root}/${j.product}` : "");
+        // v8.8.2: jLabel 은 실제 sources label 을 찾아야 select 가 선택 상태를 유지한다. (이전엔 "📊 file" 포맷이 option value 와 불일치 → "-- 선택 --" 로 되돌아가던 버그.)
+        const jLabel = (sources.find(s => (s.source_type || "") === (j.source_type || "")
+          && (s.file || "") === (j.file || "")
+          && (s.root || "") === (j.root || "")
+          && (s.product || "") === (j.product || "")) || {}).label || "";
         return (<div key={i} style={{ marginBottom: 8, padding: 8, background: "var(--bg-secondary)", borderRadius: 5, border: "1px solid var(--border)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
             <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>#{i + 1}</span>
@@ -842,10 +862,20 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
         </div>);
       })}
     </div>
-    {/* v8.8.0: X/Y 등 컬럼 선택 UI — 소스 미선택 시에도 항상 노출(비활성+힌트). 컬럼 로딩 표시. */}
-    {columns.length === 0 && (
+    {/* v8.8.0/v8.8.2: X/Y 등 컬럼 선택 UI — 소스 미선택 시에도 항상 노출. 컬럼 로딩/에러 상태 가시화. */}
+    {columnsLoading && (
+      <div style={{ padding: "6px 10px", marginBottom: 8, borderRadius: 6, background: "rgba(59,130,246,0.10)", border: "1px dashed rgba(59,130,246,0.5)", color: "#1d4ed8", fontSize: 11 }}>
+        … 소스에서 컬럼을 불러오는 중입니다.
+      </div>
+    )}
+    {!columnsLoading && columnsError && (
+      <div style={{ padding: "6px 10px", marginBottom: 8, borderRadius: 6, background: "rgba(239,68,68,0.10)", border: "1px dashed rgba(239,68,68,0.5)", color: "#b91c1c", fontSize: 11 }}>
+        ⚠ 컬럼 로드 실패: {columnsError}
+      </div>
+    )}
+    {!columnsLoading && !columnsError && columns.length === 0 && (
       <div style={{ padding: "8px 10px", marginBottom: 8, borderRadius: 6, background: "rgba(245,158,11,0.12)", border: "1px dashed rgba(245,158,11,0.5)", color: "#92400e", fontSize: 11 }}>
-        ⚠ 위 <b>소스 선택</b> 후에 컬럼이 로드됩니다 (선택해도 컬럼이 비어있다면 해당 parquet 가 비어있거나 권한이 없는 경우).
+        ⚠ 위 <b>소스 선택</b> 후에 컬럼이 로드됩니다 (선택해도 비어있다면 해당 parquet 가 빈 파일이거나 권한이 없는 경우).
       </div>
     )}
     <ColInput label={`X 컬럼 (검색/수식) ${columns.length === 0 ? " — 소스 선택 후 사용 가능" : ` · 컬럼 ${allColumns.length}개`}`} value={form.x_col} onChange={v => u("x_col", v)} columns={allColumns} placeholder={columns.length === 0 ? "먼저 위에서 소스를 선택하세요" : "컬럼 검색 또는 수식 (가이드 ▶)"} guide={yG} />

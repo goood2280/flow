@@ -77,7 +77,40 @@ def _upgrade_event(e: dict) -> dict:
             e["source_type"] = "manual"
     if "end_date" not in e:
         e["end_date"] = ""
+    # v8.8.2: 이벤트 공개범위 — 비어있으면 전원 공개, 그룹 ID 지정 시 해당 그룹 멤버만 열람.
+    if "group_ids" not in e:
+        e["group_ids"] = []
     return e
+
+
+def _event_visible(event: dict, username: str, role: str, my_group_ids: set) -> bool:
+    """v8.8.2: group_ids 필터. admin 은 항상 가시. 본인 작성 이벤트는 항상 가시."""
+    if role == "admin":
+        return True
+    gids = event.get("group_ids") or []
+    if not gids:
+        return True
+    if event.get("author") == username:
+        return True
+    for g in gids:
+        if g in my_group_ids:
+            return True
+    return False
+
+
+def _my_group_ids(username: str, role: str) -> set:
+    if role == "admin":
+        try:
+            from routers.groups import _load as _load_groups
+            return {g.get("id") for g in _load_groups() if g.get("id")}
+        except Exception:
+            return set()
+    try:
+        from routers.groups import _load as _load_groups, _can_view
+        return {g.get("id") for g in _load_groups()
+                if g.get("id") and _can_view(g, username, role)}
+    except Exception:
+        return set()
 
 
 def _load_events() -> list:
@@ -363,6 +396,7 @@ class EventCreate(BaseModel):
     body: str = ""
     category: str = ""
     end_date: Optional[str] = ""
+    group_ids: List[str] = []        # v8.8.2: 공개범위 — 비우면 전원 공개
 
 
 class EventUpdate(BaseModel):
@@ -373,6 +407,7 @@ class EventUpdate(BaseModel):
     title: Optional[str] = None
     body: Optional[str] = None
     category: Optional[str] = None
+    group_ids: Optional[List[str]] = None   # v8.8.2
 
 
 class CategoriesSave(BaseModel):
@@ -380,10 +415,15 @@ class CategoriesSave(BaseModel):
 
 
 @router.get("/events")
-def list_events(month: Optional[str] = Query(None), all: bool = Query(False)):
+def list_events(request: Request, month: Optional[str] = Query(None), all: bool = Query(False)):
     """month=YYYY-MM → 해당 월(상하 14일 여유 포함). all=True 면 전체.
-    range 이벤트(end_date)도 window 와 겹치면 포함."""
+    range 이벤트(end_date)도 window 와 겹치면 포함.
+    v8.8.2: group_ids 기반 가시성 필터."""
+    me = current_user(request)
+    role = me.get("role", "user")
+    my_gids = _my_group_ids(me["username"], role)
     items = _load_events()
+    items = [x for x in items if _event_visible(x, me["username"], role, my_gids)]
     if all or not month:
         items.sort(key=lambda x: (x.get("date", ""), x.get("created_at", "")))
         return {"events": items}
@@ -494,6 +534,7 @@ def create_event(req: EventCreate, request: Request):
         "created_at": now,
         "updated_at": now,
         "history": [],
+        "group_ids": [str(g).strip() for g in (req.group_ids or []) if g and str(g).strip()],
     }
     items.append(entry)
     _save_events(items)
@@ -537,6 +578,13 @@ def update_event(req: EventUpdate, request: Request):
         if cur.get(fld, "") != new_v:
             before[fld] = cur.get(fld, "")
             cur[fld] = new_v
+            changed = True
+    # v8.8.2: group_ids 변경 반영.
+    if req.group_ids is not None:
+        new_gids = [str(g).strip() for g in (req.group_ids or []) if g and str(g).strip()]
+        if sorted(cur.get("group_ids") or []) != sorted(new_gids):
+            before["group_ids"] = cur.get("group_ids") or []
+            cur["group_ids"] = new_gids
             changed = True
     # normalize: end_date >= date
     if cur.get("end_date") and cur.get("end_date") < cur.get("date"):

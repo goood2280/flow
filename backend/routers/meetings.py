@@ -661,6 +661,7 @@ class MeetingCreate(BaseModel):
     first_scheduled_at: Optional[str] = ""
     recurrence: Optional[RecurrenceReq] = None
     category: Optional[str] = ""  # calendar 카테고리 (색상)
+    group_ids: Optional[List[str]] = None   # v8.8.2: 공개범위 — 비우면 전원 공개
 
 
 class MeetingUpdate(BaseModel):
@@ -670,6 +671,7 @@ class MeetingUpdate(BaseModel):
     status: Optional[str] = None
     recurrence: Optional[RecurrenceReq] = None
     category: Optional[str] = None
+    group_ids: Optional[List[str]] = None   # v8.8.2
 
 
 class SessionAdd(BaseModel):
@@ -757,12 +759,47 @@ def _next_session_idx(m: dict) -> int:
 
 
 # ── endpoints ──────────────────────────────────────────────────────
+def _meeting_visible(m: dict, username: str, role: str, my_gids: set) -> bool:
+    """v8.8.2: group_ids 기반 가시성. admin/owner/creator 는 항상 가시."""
+    if role == "admin":
+        return True
+    if m.get("owner") == username or m.get("created_by") == username:
+        return True
+    gids = m.get("group_ids") or []
+    if not gids:
+        return True
+    for g in gids:
+        if g in my_gids:
+            return True
+    return False
+
+
+def _my_meeting_group_ids(username: str, role: str) -> set:
+    if role == "admin":
+        try:
+            from routers.groups import _load as _load_groups
+            return {g.get("id") for g in _load_groups() if g.get("id")}
+        except Exception:
+            return set()
+    try:
+        from routers.groups import _load as _load_groups, _can_view
+        return {g.get("id") for g in _load_groups()
+                if g.get("id") and _can_view(g, username, role)}
+    except Exception:
+        return set()
+
+
 @router.get("/list")
 def list_meetings(
+    request: Request,
     status: Optional[str] = Query(None),
     owner: Optional[str] = Query(None),
 ):
+    me = current_user(request)
+    role = me.get("role", "user")
+    my_gids = _my_meeting_group_ids(me["username"], role)
     items = _load()
+    items = [m for m in items if _meeting_visible(m, me["username"], role, my_gids)]
     if status:
         items = [m for m in items if (m.get("status") or "active") == status]
     if owner:
@@ -777,11 +814,16 @@ def list_meetings(
 
 
 @router.get("/{mid}")
-def get_meeting(mid: str):
+def get_meeting(mid: str, request: Request):
+    me = current_user(request)
+    role = me.get("role", "user")
+    my_gids = _my_meeting_group_ids(me["username"], role)
     items = _load()
     _, m = _find(items, mid)
     if not m:
         raise HTTPException(404)
+    if not _meeting_visible(m, me["username"], role, my_gids):
+        raise HTTPException(403, "이 회의를 볼 수 없습니다.")
     return {"meeting": m}
 
 
@@ -828,6 +870,8 @@ def create_meeting(req: MeetingCreate, request: Request):
         "created_by": me["username"],
         "created_at": now,
         "updated_at": now,
+        # v8.8.2: 공개범위 그룹.
+        "group_ids": [str(g).strip() for g in (req.group_ids or []) if g and str(g).strip()],
     }
     items.append(entry)
     _save(items)
@@ -874,6 +918,12 @@ def update_meeting(req: MeetingUpdate, request: Request):
         if rec != m.get("recurrence"):
             m["recurrence"] = rec
             changed.append("recurrence")
+    # v8.8.2: group_ids 변경.
+    if req.group_ids is not None:
+        new_gids = [str(g).strip() for g in (req.group_ids or []) if g and str(g).strip()]
+        if sorted(m.get("group_ids") or []) != sorted(new_gids):
+            m["group_ids"] = new_gids
+            changed.append("group_ids")
     if not changed:
         return {"ok": True, "meeting": m, "noop": True}
     m["updated_at"] = _now()

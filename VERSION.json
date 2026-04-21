@@ -1,7 +1,27 @@
 {
-  "version": "8.8.1",
+  "version": "8.8.2",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.2",
+      "date": "2026-04-21",
+      "title": "S3 신호등 방향/제품·상위상속 · 대시보드 X/Y·Left Joins 버그 · 인폼 확인취소 backfill · 제품담당자 유저·그룹 일괄 · 달력/회의 공개범위 · TableMap 500·AWS제거·우클릭제거 · openpyxl 자동설치 · RootHeader 컴팩트",
+      "tag": "feat+fix",
+      "changes": [
+        "**S3 신호등 — 다운/업 구분 pill 라벨 + 제품별 신호등 + 상위 경로 상속** — S3StatusLight 의 ↓/↑ 아이콘에 '다운'/'업' 텍스트 라벨 + pill 배경으로 가독성 대폭 강화. FileBrowser 사이드바 '데이터 브라우저' 헤더의 중복 신호등 제거. 제품 리스트(selRoot/product) 에 개별 신호등 추가, 본인 설정 없으면 상위 DB 설정을 자동 상속(내부 점 표시 + '상위 X 상속' tooltip).",
+        "**FileBrowser 신호등 — 파일/제품/DB 단일화** — TableMap 의 S3StatusLight / AWS S3 동기화 명령 입력창 제거 (S3 관리 창구는 FileBrowser ⚙️ 만).",
+        "**대시보드 Left Joins 선택 상태 유지 + X/Y 드롭다운 안정화** — jLabel 이 실제 sources.label 과 일치하도록 lookup 방식 수정(이전엔 '📊 file' 로 만들어 매번 '-- 선택 --' 로 리셋). join 컬럼 fetch 에 base_file 케이스 추가, 메인 /columns URL 빌더를 공통 colUrl() 로 재정비. 컬럼 로딩/에러 상태를 파란/빨간 배너로 가시화.",
+        "**인폼 확인취소 타임라인 — legacy 엔트리 backfill + 인식 강화** — 백엔드 _upgrade 에서 status_history 의 prev 필드를 직전 상태로 채워넣고, received 이면서 직전이 completed 면 note='확인 취소' 자동 부여. TimelineLog 는 최초 등록 received 1회만 skip 하고 이후 received 는 prev/note 기준으로 '확인취소' 로 분류 — '담당자 확인은 뜨는데 확인취소는 안 뜸' 문제 해소.",
+        "**인폼 제품 담당자 — 개별 유저 / 그룹 혼합 일괄 추가** — /api/informs/product-contacts/bulk-add 신규. 유저 pool + group_ids 풀링, admin/test 필터, username/email 중복 자동 dedup. UI: 제품별 👥 버튼으로 이단 선택 모달 (좌 유저 체크 리스트 + 우 그룹 체크 리스트, 일괄 role 지정).",
+        "**달력 일반 이벤트 공개범위 — 그룹 칩 다중선택** — EventCreate/Update 가 group_ids 수용, /events/get-event 에 가시성 필터. 비우면 전원 공개. My_Calendar 편집 폼에 그룹 칩 picker 추가.",
+        "**회의 공개범위 그룹 (백엔드)** — MeetingCreate/Update 에 group_ids, _meeting_visible() 에서 admin/owner/creator 는 상시 가시, 그 외는 group_ids 교집합으로 필터. /meetings/list + /meetings/{id} 가 필터 적용. FE는 다음 단계.",
+        "**TableMap 저장/import HTTP 500 박멸** — core.utils.save_json 에 datetime/Decimal/UUID/Path/bytes/set 자동 문자열 변환 default serializer. dbmap.save_table 을 try/except 로 감싸 traceback 을 stderr 에 찍고 500 대신 상세 메시지 반환. polars import rows 의 비-JSON 값을 _json_safe_rows 로 사전 평탄화.",
+        "**TableMap AWS 동기화 UI/명령 제거** — 편집기의 'aws_cmd' input 박스 삭제. TableMap 헤더 S3 신호등 제거. S3 관리 entry point 는 FileBrowser 하나로 수렴.",
+        "**TableMap 노드 우클릭 → 맵에서만 제거** — /api/dbmap/nodes/unlink 신규 (원본 테이블 JSON/CSV 보존, 그래프 참조만 정리). GraphView 에서 모든 노드(table/db_ref/group) 우클릭 시 confirm 후 언링크.",
+        "**openpyxl 자동 설치** — setup.py extract 단계에서 _ensure_critical_deps() 가 openpyxl 을 import 시도, 실패하면 자동 pip install. 'python setup.py extract' 만 실행해도 즉시 엑셀 기능 동작.",
+        "**인폼 RootHeader 컴팩트** — '완료' pill + '확인완료/완료해제' 버튼 + '메일' pill + '이력' 링크 모두 한 줄(30px 높이) 에 수렴. 버튼/pill padding·fontSize·border 두께 축소."
+      ]
+    },
     {
       "version": "8.8.1",
       "date": "2026-04-21",

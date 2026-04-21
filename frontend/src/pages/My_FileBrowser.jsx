@@ -30,23 +30,45 @@ export default function My_FileBrowser({user}){
     const t=setInterval(load,30000);
     return()=>clearInterval(t);
   },[]);
-  const s3Light=(name)=>{
-    const info=s3Status&&s3Status[name];
+  // v8.8.2: path 기반 lookup — 정확 매칭 없으면 상위 경로(예: "1.RAWDATA_DB") 에서 상속.
+  // "제품명" 을 키로 넘기면 sidebar 제품 리스트 렌더. "DB/PROD" 도 지원.
+  const s3LookupPath=(path)=>{
+    if(!s3Status||!path)return null;
+    if(s3Status[path])return{info:s3Status[path],from:path,inherited:false};
+    // 상위 segment 폴백 — "a/b/c" → "a/b" → "a" 순.
+    const parts=String(path).split("/").filter(Boolean);
+    for(let i=parts.length-1;i>0;i--){
+      const anc=parts.slice(0,i).join("/");
+      if(s3Status[anc])return{info:s3Status[anc],from:anc,inherited:true};
+    }
+    return null;
+  };
+  const s3Light=(path)=>{
+    const found=s3LookupPath(path);
+    const info=found?.info;
+    const inh=found?.inherited;
+    const fromLabel=found?.from;
     const last=info?(info.last_end||info.last_start):null;
     const lastStr=last?last.slice(0,16).replace("T"," "):"-";
     const ageH=last?(Date.now()-new Date(last).getTime())/3600000:Infinity;
     const nextStr=info&&info.next_due?info.next_due.slice(0,16).replace("T"," "):(info&&info.interval_min>0?"계산중":"수동 실행만");
     if(!info)return{color:"#ef4444",tip:"S3 동기화 미설정 — File Browser 우하단 ⚙️(admin) 에서 설정하세요"};
-    if(info.is_running)return{color:"#3b82f6",tip:"S3 동기화 실행 중…\n이전 실행: "+lastStr};
+    if(info.is_running)return{color:"#3b82f6",tip:(inh?`상위 경로 '${fromLabel}' 에서 상속\n`:"")+"S3 동기화 실행 중…\n이전 실행: "+lastStr};
     const st=info.last_status||"never";
     let color,line;
     if(st==="error"){color="#ef4444";line="실패 (exit="+(info.last_exit_code??"?")+")";}
     else if(st==="ok"&&isFinite(ageH)&&ageH<=6){color="#22c55e";line="정상 (최근 "+ageH.toFixed(1)+"시간)";}
     else if(st==="ok"){color="#eab308";line="오래됨 ("+(isFinite(ageH)?Math.floor(ageH)+"시간 경과":"기록 없음")+")";}
     else{color="#ef4444";line="실행 기록 없음";}
-    return{color,tip:"S3 "+(info.kind||"")+" 동기화 — "+line+"\n마지막: "+lastStr+"\n다음: "+nextStr+(info.interval_min>0?" ("+info.interval_min+"분 주기)":"")};
+    const prefix=inh?`(상위 '${fromLabel}' 상속) `:"";
+    return{color,inherited:!!inh,tip:prefix+"S3 "+(info.kind||"")+" 동기화 — "+line+"\n마지막: "+lastStr+"\n다음: "+nextStr+(info.interval_min>0?" ("+info.interval_min+"분 주기)":"")};
   };
-  const lightDot=(name)=>{const l=s3Light(name);return(<span title={l.tip} style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:l.color,flexShrink:0,boxShadow:"0 0 4px "+l.color+"66"}}/>);};
+  // 상속 상태일 때는 내부에 점(·) 을 표시해 구분.
+  const lightDot=(name)=>{const l=s3Light(name);return(
+    <span title={l.tip} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:9,height:9,borderRadius:"50%",background:l.color,flexShrink:0,boxShadow:"0 0 4px "+l.color+"66",border:l.inherited?"1px dashed #fff8":"none"}}>
+      {l.inherited&&<span style={{width:3,height:3,borderRadius:"50%",background:"#fff",opacity:0.9}}/>}
+    </span>
+  );};
 
   // S3 ingest admin modal state
   const isAdmin=user?.role==="admin";
@@ -240,9 +262,8 @@ export default function My_FileBrowser({user}){
     <div style={{display:"flex",height:"calc(100vh - 48px)",fontFamily:"'Pretendard',sans-serif",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
       {/* Sidebar */}
       <div style={{width:260,minWidth:260,borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",background:"var(--bg-secondary)"}}>
-        <div style={{padding:"14px 16px 10px",borderBottom:"1px solid var(--border)",fontSize:12,fontWeight:700,color:"var(--text-secondary)",textTransform:"uppercase",letterSpacing:"0.04em",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{padding:"14px 16px 10px",borderBottom:"1px solid var(--border)",fontSize:12,fontWeight:700,color:"var(--text-secondary)",textTransform:"uppercase",letterSpacing:"0.04em"}}>
           <span>데이터 브라우저</span>
-          <S3StatusLight compact />
         </div>
         {/* v4.1: Scope switcher (DB / Base). Shown only when backend reports 2+ scopes. */}
         {scopes.length>=2&&<div className="filebrowser-scope-switcher" style={{display:"flex",gap:4,padding:"6px 10px",borderBottom:"1px solid var(--border)"}}>
@@ -296,9 +317,12 @@ export default function My_FileBrowser({user}){
           {products.length>0&&<div style={{flex:1,overflow:"auto",borderTop:"1px solid var(--border)",padding:"4px 8px"}}>
             <div style={{fontSize:10,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>제품</div>
             {products.map(p=>(
-              <div key={p.name} onClick={()=>{setSelectedCols([]);loadHiveView(selRoot,p.name,"");}} style={{padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:11,marginBottom:1,
+              <div key={p.name} onClick={()=>{setSelectedCols([]);loadHiveView(selRoot,p.name,"");}} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:11,marginBottom:1,
                 background:selProd===p.name?"var(--bg-hover)":"transparent",color:selProd===p.name?"var(--accent)":"var(--text-primary)"}}>
-                {p.name} <span style={{fontSize:9,color:"#64748b"}}>{p.latest_date}</span>
+                {/* v8.8.2: 제품별 S3 신호등 — 본인 설정 없으면 상위 DB 에서 상속. */}
+                {lightDot(selRoot+"/"+p.name)}
+                <span style={{flex:1}}>{p.name}</span>
+                <span style={{fontSize:9,color:"#64748b"}}>{p.latest_date}</span>
               </div>))}
           </div>}
           {rootPqs.length>0&&<div style={{borderTop:"1px solid var(--border)",padding:"4px 8px",maxHeight:200,overflow:"auto"}}>
