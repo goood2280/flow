@@ -107,6 +107,7 @@ def _upsert_meeting_event(meeting: dict, session: dict, *,
         return None
     cat = (category or meeting.get("category") or "회의 결정사항").strip() or "회의 결정사항"
     meeting_title = (meeting.get("title") or "").strip()[:120]
+    meeting_color = (meeting.get("color") or "").strip()  # v8.7.9 palette color
     items = _load_events()
     now = _now_iso()
     for i, e in enumerate(items):
@@ -121,9 +122,10 @@ def _upsert_meeting_event(meeting: dict, session: dict, *,
             for fld, val in updates.items():
                 if e.get(fld) != val:
                     before[fld] = e.get(fld); e[fld] = val
-            # refresh meeting_title for filter labels
-            if ref.get("meeting_title") != meeting_title:
+            # refresh meeting_title + color so filter labels and colors stay in sync
+            if ref.get("meeting_title") != meeting_title or ref.get("color") != meeting_color:
                 ref["meeting_title"] = meeting_title
+                ref["color"] = meeting_color
                 e["meeting_ref"] = ref
             if before:
                 e["version"] = int(e.get("version") or 1) + 1
@@ -147,7 +149,8 @@ def _upsert_meeting_event(meeting: dict, session: dict, *,
         "source_type": source_type,
         "meeting_ref": {"meeting_id": meeting_id, "session_id": session_id,
                         "action_item_id": ref_item_id,
-                        "meeting_title": meeting_title},
+                        "meeting_title": meeting_title,
+                        "color": meeting_color},
         "created_at": now,
         "updated_at": now,
         "history": [{"ts": now, "actor": actor, "action": "meeting_sync_create", "before": {}}],
@@ -159,23 +162,15 @@ def _upsert_meeting_event(meeting: dict, session: dict, *,
 
 def push_action_item(meeting: dict, session: dict, action_item: dict,
                      actor: str, meeting_category: str = "") -> Optional[dict]:
-    """Push a single action_item to calendar. Range = session date → due.
+    """Push a single action_item to calendar.
 
-    - date = session scheduled_at date (fallback: today)
-    - end_date = action_item.due
-    - If due missing, not pushed (skip).
+    v8.7.9: action_item = SINGLE-DAY pin on the due date (no range bar).
+    If due missing, not pushed (skip).
     """
     title = (action_item.get("text") or "").strip()[:120]
     due = _safe_date(action_item.get("due"))
     if not (title and due):
         return None
-    start = _session_date(session)
-    # If no session date, fall back to due for both.
-    if not start:
-        start = due
-    # end must be >= start
-    if end_before(start, due):
-        start, due = due, start
     body_parts = []
     if action_item.get("owner"):
         body_parts.append(f"담당: {action_item['owner']}")
@@ -186,8 +181,8 @@ def push_action_item(meeting: dict, session: dict, action_item: dict,
         ref_item_id=action_item.get("id") or "",
         source_type="meeting_action",
         title=title,
-        date_s=start,
-        end_date=due,
+        date_s=due,
+        end_date="",  # no range; pin on due date
         body=body,
         actor=actor,
         category=meeting_category,
@@ -196,18 +191,23 @@ def push_action_item(meeting: dict, session: dict, action_item: dict,
 
 def push_decision_event(meeting: dict, session: dict, decision: dict,
                         actor: str, meeting_category: str = "") -> Optional[dict]:
-    """Decision → single-day event on the session date."""
+    """Decision → single-day event on the session date.
+
+    v8.7.9: title = "{N}차 회의 결정사항: {text}" so the session number is visible.
+    """
     title = (decision.get("text") or "").strip()[:120]
     if not title:
         return None
     date_s = _safe_date(decision.get("due")) or _session_date(session)
     if not date_s:
         date_s = datetime.date.today().isoformat()
+    sidx = session.get("idx")
+    prefix = f"{sidx}차 회의 결정사항: " if sidx not in (None, "", 0) else "[결정] "
     return _upsert_meeting_event(
         meeting, session,
         ref_item_id=decision.get("id") or "",
         source_type="meeting_decision",
-        title=f"[결정] {title}",
+        title=f"{prefix}{title}",
         date_s=date_s,
         end_date="",
         body="",
@@ -424,9 +424,12 @@ def list_meeting_refs():
         if mid not in agg:
             agg[mid] = {"meeting_id": mid,
                         "meeting_title": ref.get("meeting_title") or "",
+                        "color": ref.get("color") or "",
                         "count": 0,
                         "decisions": 0,
                         "actions": 0}
+        elif (ref.get("color") or "") and not agg[mid].get("color"):
+            agg[mid]["color"] = ref.get("color") or ""
         agg[mid]["count"] += 1
         st = e.get("source_type")
         if st == "meeting_decision":

@@ -1,7 +1,31 @@
 {
-  "version": "8.7.8",
+  "version": "8.7.9",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.7.9",
+      "date": "2026-04-21",
+      "title": "달력 auto-sync bugfix + 회의별 고유색 + S3 타겟 다단계·프로파일 + 인폼 대개편(2단계 플로우·타임라인·Ctrl+V·root_lot)",
+      "tag": "feat+fix",
+      "changes": [
+        "**[bugfix] 회의→달력 auto-sync 실패 silent swallow 제거** — 저장 시 sync 예외를 `except: pass` 로 삼키던 코드가 decision/action 을 `calendar_pushed=True` 로만 표시하고 실제 이벤트는 안 만들던 문제. v8.7.9 는 sync 성공 시에만 pushed 플래그를 세팅하고, 실패 시 stderr 로그 + 응답 `calendar_sync.ok/error` 노출 → FE 에서 alert 표시. action_item id 가 매 저장마다 UUID 로 재발급되던 버그도 수정 (id → text → 신규 순서로 보존).",
+        "**결정사항 제목 = 'N차 회의 결정사항: …'** — 기존 `[결정]` prefix 대신 session.idx 를 제목에 포함. 달력에서 몇 차 회의 결정인지 바로 인지 가능.",
+        "**액션아이템 due-only pin** — 회의일~마감 구간 range bar 를 제거하고 마감일 하루에만 📍 pin 으로 표시. 여러 날 걸쳐 번지던 시각적 소음 제거.",
+        "**회의별 고유 색 순차 할당** — 회의 생성 시 15색 팔레트에서 미사용 색 자동 할당, 저장 후 불변. legacy 회의는 첫 로드 시 created_at 순서로 백필. 달력 이벤트 `meeting_ref.color` 에 색을 실어 보내 FE 가 카테고리 색 대신 회의별 색으로 이벤트 렌더.",
+        "**My_Calendar — ↻ 새로고침 버튼 + 회의필터 색 프리뷰** — 회의에서 돌아와서도 즉시 반영 가능. 회의 드롭다운에 색 점 표기.",
+        "**S3 타겟 다단계 경로 허용** — `TARGET_RE` 를 Unicode letter + `/` 허용으로 완화 (예: `DB/1.RAWDATA/제품명`). `..`/backslash 금지 + `resolve()` 로 db_root 밖 경로 차단. FE 는 datalist 기반 input 으로 변경 (기존 단일-레벨 select 제거).",
+        "**S3 AWS 프로필(키) 선택** — SaveReq/item 에 `profile` 필드 추가. `aws s3 <cmd> … --profile <name>` 로 선택된 키를 사용. FE \"AWS 키(프로필)\" 드롭다운이 `/aws-config` 프로필 목록을 로드. 스케줄 실행 + /push (local→S3) 모두 profile 적용.",
+        "**인폼 플로우 2단계로 단순화** — received(접수) → completed(완료). FLOW 큰 카드 대신 RootHeader 에 **✓ 확인 완료** 큰 버튼 하나(초록 2px border + shadow). 완료 시 상태 배지 + 해제 버튼으로 전환. `FLOW_STATUSES = [received, completed]` (legacy 는 호환).",
+        "**인폼 신규 등록 = product + lot_id 2필드만** — wafer_id 입력 제거. 미입력 시 서버가 lot_id 로 자동 채움. lot_id 는 root_lot_id 또는 fab_lot_id 어느 쪽이든 OK — 서버가 `root_lot_id = lot_id[:5]` 자동 파생해 저장.",
+        "**`/api/informs/by-lot` prefix-5 매칭** — `ABCDE` 로 검색하면 `ABCDE01`, `ABCDE02` … 등 앞 5자 일치하는 모든 fab_lot 인폼을 반환. 응답에 `root_lot_id`, `lots`, `wafers`, `count` 포함.",
+        "**`/api/informs/lots` root_lot_id 기준 그룹핑** — 각 root 아래 `fab_lots` 배열로 포함된 fab_lot 전부 노출. 사이드바가 root 단위로 묶여 보임.",
+        "**인폼 데드라인 필드 폐기** — 스키마/UI/API 전면 제거. `_validate_deadline` / DeadlineBadge / GanttView 의 deadline 시각화 정리. 대신 **작성날짜·수정날짜·실행(확인)날짜** 기준으로 표시.",
+        "**인폼 본문 이미지 Ctrl+V 인라인 업로드** — textarea onPaste 에서 clipboard 이미지 감지 → 자동으로 `/api/informs/upload` 호출 → createImages 에 추가. 첨부 버튼과 병행.",
+        "**인폼 간트차트 → 이력 타임라인 교체** — TimelineLog 컴포넌트 신규. 한 줄씩 시간순: `[시각] 모듈 [사유] [제품] Lot · 이벤트종류 · 요약 · 작성자`. 이벤트 = 인폼 등록 / 담당자확인(completed) / 메일 발송 / 댓글(reply). Lot 검색으로 관련 이력을 쭉 훑기 가능.",
+        "**인폼 Lot drill-down 가독성 개선** — LotModuleSummary 테이블 폰트 11 → 13, 패딩 확대. `루트/답글` 복잡 컬럼 제거, 대신 **메일(최근 날짜)** · **담당자 확인(완료 날짜)** · 건수 노출. CompactRow 는 `[제품명] Lot` 포맷 + root_lot 보조 배지.",
+        "이월 (v8.8+): (1) 회의록 WebSocket/SSE 동시편집. (2) SplitTable 태그 FE 드로어 (param_global/lot UI). (3) 회의·달력 공개범위 그룹 (mail_groups 재활용). (4) 인폼 댓글/수정 전용 이력 엔드포인트 (현재는 status_history+mail_history 조합으로 표시)."
+      ]
+    },
     {
       "version": "8.7.8",
       "date": "2026-04-21",

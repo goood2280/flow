@@ -290,7 +290,7 @@ export default function My_Meeting({ user }) {
       body: minutesDraft.body,
       decisions: minutesDraft.decisions,
       action_items: minutesDraft.action_items.map(a => ({
-        text: a.text, owner: a.owner, due: a.due, group_ids: a.group_ids || [],
+        id: a.id || "", text: a.text, owner: a.owner, due: a.due, group_ids: a.group_ids || [],
       })),
       send_mail: !!minutesDraft.send_mail,
       mail_to_users: minutesDraft.mail_to_users || [],
@@ -300,6 +300,10 @@ export default function My_Meeting({ user }) {
       mail_subject: minutesDraft.mail_subject || "",
     }).then(r => {
       setEditingMinutes(false); setMinutesDraft(null); reload();
+      // v8.7.9: surface calendar sync failure loudly — v8.7.8 silently swallowed it.
+      if (r && r.calendar_sync && r.calendar_sync.ok === false) {
+        alert(`달력 auto-sync 실패: ${r.calendar_sync.error || "unknown"}\n(결정사항·액션아이템이 달력에 반영되지 않았습니다.)`);
+      }
       if (r && r.mail) {
         if (r.mail.ok) alert(`메일 발송 완료${r.mail.dry_run ? " (dry-run)" : ""} · ${(r.mail.to || []).length}명`);
         else alert(`메일 발송 실패: ${r.mail.error || "unknown"}`);
