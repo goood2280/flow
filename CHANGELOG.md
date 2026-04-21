@@ -1,3 +1,15 @@
+## v8.8.6 — 2026-04-21
+
+이월 3건 shipping + 사내 DB 실환경 맞춤.
+
+- **SplitTable paste 세트 팀 공유 BE** — `/api/splittable/paste-sets` (GET/save/delete/to-custom). LocalStorage-only → 팀 공용 JSON. `to-custom` 으로 CUSTOM 탭 승격. FE 인폼 paste 모달이 BE 우선 + LocalStorage 폴백.
+- **SplitTable 태그 드로어 lot / param_global 확장** — scope 칩 (전체/wafer/param/lot/global) + LOT 노트/전역 태그 추가 버튼. 저장 draft 에 param 이름 인풋 분기.
+- **회의록 SSE 동시편집 MVP** — `/api/meetings/stream?meeting_id=` SSE (in-memory pub/sub). save_minutes 발행 → FE EventSource 구독 → 편집 중이면 배너 + 외부 내용 불러오기/무시 버튼, 아니면 auto-reload. `?t=` fallback 허용.
+- **step_matching.csv 제품 컬럼** — `_build_fab_root.py` 에 product col 추가 로직 통합. PRODA/PRODB 별 행 + AB100010/AB100020 은 PRODA 전용. `_build_knob_meta` 제품 필터로 해당 제품 rule 만 노출.
+- **SplitTable Rulebook 뷰어** — 톱니 패널 하단에 `/knob-meta` 결과 카드 리스트 (rule_order/func_step/operator/ppid/step_ids/category).
+- **DB 3-root 풍부화** — `1.RAWDATA_DB_FAB/INLINE/ET` × PRODA/PRODB × 2 date 파티션. prefix 별 컬럼 투영 (FAB_*/INLINE_*/ET_*).
+- **레거시 `data/DB`·`data/Base` 삭제** — `admin_settings.data_roots.db=base=data/Fab` 고정.
+
 ## v8.8.5 — 2026-04-21
 
 사내 실 DB 구조 대응 + 오버라이드 resolve 상태 UI + Dashboard 중복 제거 + Tracker UX + 개별 버전 배지 제거 + 그룹 admin 허용 + 담당모듈 UI 제거.

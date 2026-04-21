@@ -45,6 +45,8 @@ PLAN_DIR.mkdir(parents=True, exist_ok=True)
 PREFIX_CFG = PLAN_DIR / "prefix_config.json"
 DEFAULT_PREFIXES = ["KNOB", "MASK", "INLINE", "VM", "FAB"]
 PLAN_ALLOWED_PREFIXES = ["KNOB", "MASK", "FAB"]  # Only these can have plan values
+# v8.8.6: paste 세트 공유 저장소 — LocalStorage 대신 BE 에 올려 팀 공용 풀 + CUSTOM 탭 연동.
+PASTE_SETS_FILE = PLAN_DIR / "paste_sets.json"
 # v8.4.9: 엑셀 메모/태그 저장소 — wafer 단위(tag) + parameter 단위(memo) 공용.
 #   scope="wafer": target_key = "{product}__{root_lot_id}__W{wafer_id}"
 #   scope="param": target_key = "{product}__{root_lot_id}__W{wafer_id}__{param}"
@@ -858,6 +860,117 @@ def save_precision(req: PrecisionReq):
         out[k.strip().upper()] = n
     save_json(PRECISION_CFG, out)
     return {"ok": True, "precision": out}
+
+
+# ── v8.8.6: Paste sets (팀 공용 — 인폼·SplitTable paste 공유) ──────────────
+# Schema: [{id, name, product, columns:[...], rows:[[...]], username, created, updated}]
+#   - CUSTOM 탭에서 paste 세트를 직접 columns 로 취급 → as-is 뷰 (SplitTable custom 과 별개 보관).
+#   - FE 는 로컬스토리지 대신 이 엔드포인트에서 읽고 씀. 로컬 폴백은 FE 가 알아서.
+def _load_paste_sets() -> list:
+    data = load_json(PASTE_SETS_FILE, [])
+    return data if isinstance(data, list) else []
+
+def _save_paste_sets(items: list) -> None:
+    save_json(PASTE_SETS_FILE, items, indent=2)
+
+
+class PasteSetSaveReq(BaseModel):
+    name: str
+    product: str = ""
+    columns: List[str]
+    rows: List[List] = []
+    username: str = ""
+
+
+@router.get("/paste-sets")
+def list_paste_sets(product: str = Query("")):
+    """팀 공용 paste 세트 목록. product 가 주어지면 해당 product 또는 빈 product(공용) 만 반환."""
+    items = _load_paste_sets()
+    if product:
+        items = [s for s in items if not s.get("product") or s.get("product") == product]
+    # recent first
+    items = sorted(items, key=lambda s: s.get("updated", s.get("created", "")), reverse=True)
+    return {"sets": items}
+
+
+@router.post("/paste-sets/save")
+def save_paste_set(req: PasteSetSaveReq):
+    import secrets as _secrets
+    nm = (req.name or "").strip()
+    if not nm:
+        raise HTTPException(400, "name required")
+    cols = [str(c) for c in (req.columns or []) if c]
+    if not cols:
+        raise HTTPException(400, "columns required")
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    items = _load_paste_sets()
+    # upsert by (name, product) — 같은 이름·제품이면 덮어쓰기.
+    existing = next((s for s in items if s.get("name") == nm and s.get("product", "") == (req.product or "")), None)
+    if existing:
+        existing.update({
+            "columns": cols, "rows": req.rows or [], "username": req.username or existing.get("username", ""),
+            "updated": now,
+        })
+    else:
+        items.append({
+            "id": "ps_" + _secrets.token_hex(5),
+            "name": nm, "product": req.product or "",
+            "columns": cols, "rows": req.rows or [],
+            "username": req.username or "",
+            "created": now, "updated": now,
+        })
+    _save_paste_sets(items)
+    return {"ok": True, "count": len(items)}
+
+
+class PasteSetDeleteReq(BaseModel):
+    id: str = ""
+    name: str = ""
+    product: str = ""
+    username: str = ""
+
+
+@router.post("/paste-sets/delete")
+def delete_paste_set(req: PasteSetDeleteReq):
+    items = _load_paste_sets()
+    before = len(items)
+    if req.id:
+        items = [s for s in items if s.get("id") != req.id]
+    elif req.name:
+        items = [s for s in items if not (s.get("name") == req.name and s.get("product", "") == (req.product or ""))]
+    else:
+        raise HTTPException(400, "id or name required")
+    if len(items) == before:
+        raise HTTPException(404, "paste set not found")
+    _save_paste_sets(items)
+    return {"ok": True, "removed": before - len(items)}
+
+
+@router.post("/paste-sets/to-custom")
+def paste_set_to_custom(req: PasteSetDeleteReq):
+    """paste 세트의 columns 를 CUSTOM 커스텀 뷰로 승격.
+    CUSTOM 탭에서 바로 선택 가능하게 `custom_<safe_name>.json` 생성."""
+    items = _load_paste_sets()
+    src = None
+    if req.id:
+        src = next((s for s in items if s.get("id") == req.id), None)
+    elif req.name:
+        src = next((s for s in items if s.get("name") == req.name and s.get("product", "") == (req.product or "")), None)
+    if not src:
+        raise HTTPException(404, "paste set not found")
+    name = src.get("name") or "paste_custom"
+    fp = PLAN_DIR / f"custom_{safe_id(name)}.json"
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    existing = load_json(fp, None) if fp.exists() else None
+    save_json(fp, {
+        "name": name, "username": req.username or src.get("username", ""),
+        "columns": list(src.get("columns") or []),
+        "created": (existing or {}).get("created", now),
+        "updated": now,
+        "version": int((existing or {}).get("version", 0)) + 1,
+        "source": "paste-set", "paste_id": src.get("id", ""),
+    })
+    return {"ok": True, "custom_name": name}
 
 
 # ── Customs ──

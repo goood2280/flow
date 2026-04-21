@@ -1147,10 +1147,23 @@ export default function My_Inform({ user }) {
     } finally { setEmbedFetching(false); }
   };
 
-  // v8.8.0: TSV/CSV paste → embed_table 변환. 첫 줄 = 컬럼.
+  // v8.8.0/v8.8.6: TSV/CSV paste → embed_table. 첫 줄 = 컬럼.
+  //   v8.8.6: 세트 저장/조회가 팀 공용 `/api/splittable/paste-sets` 로 이전.
+  //           LocalStorage 는 fallback (서버 실패 시만).
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [pasteSetName, setPasteSetName] = useState("");
+  const [pasteSets, setPasteSets] = useState([]);
+  const reloadPasteSets = () => {
+    const prod = encodeURIComponent(form.product || "");
+    sf("/api/splittable/paste-sets?product=" + prod)
+      .then(d => setPasteSets(d.sets || []))
+      .catch(() => {
+        // fallback: localStorage legacy
+        try { setPasteSets(JSON.parse(localStorage.getItem("flow_paste_sets_v1") || "[]")); } catch {}
+      });
+  };
+  useEffect(() => { if (pasteOpen) reloadPasteSets(); }, [pasteOpen, form.product]);
   const applyPasteAsEmbed = () => {
     const txt = (pasteText || "").trim();
     if (!txt) { alert("표 데이터를 먼저 붙여넣으세요"); return; }
@@ -1167,21 +1180,24 @@ export default function My_Inform({ user }) {
         note: `${rows.length} rows pasted${pasteSetName.trim() ? ` (set: ${pasteSetName.trim()})` : ""}`,
       },
     }));
-    // 향후 재사용을 위해 set 으로 저장 (로컬스토리지 — 가벼운 공유).
+    // v8.8.6: 이름 주어지면 팀 공용 세트에 저장 (BE + LocalStorage 폴백).
     if (pasteSetName.trim()) {
-      try {
-        const KEY = "flow_paste_sets_v1";
-        const cur = JSON.parse(localStorage.getItem(KEY) || "[]");
-        const next = [{ name: pasteSetName.trim(), product: form.product || "", columns: cols, rows, saved_at: new Date().toISOString() },
-                      ...cur.filter(s => s.name !== pasteSetName.trim())].slice(0, 50);
-        localStorage.setItem(KEY, JSON.stringify(next));
-      } catch {}
+      const payload = { name: pasteSetName.trim(), product: form.product || "", columns: cols, rows, username: user?.username || "" };
+      postJson("/api/splittable/paste-sets/save", payload)
+        .catch(() => {
+          try {
+            const KEY = "flow_paste_sets_v1";
+            const cur = JSON.parse(localStorage.getItem(KEY) || "[]");
+            const next = [{ ...payload, saved_at: new Date().toISOString() },
+                          ...cur.filter(s => s.name !== pasteSetName.trim())].slice(0, 50);
+            localStorage.setItem(KEY, JSON.stringify(next));
+          } catch {}
+        });
     }
     setPasteOpen(false); setPasteText(""); setPasteSetName("");
   };
-  const loadPasteSets = () => {
-    try { return JSON.parse(localStorage.getItem("flow_paste_sets_v1") || "[]"); } catch { return []; }
-  };
+  // legacy helper (pasteSets state 가 주력이지만 일부 호출부가 함수 호출 형태 유지).
+  const loadPasteSets = () => pasteSets;
 
   const reply = (parentId, body) => {
     // parent 의 wafer/lot/product 상속은 서버가 알아서

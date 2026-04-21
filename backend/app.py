@@ -40,7 +40,9 @@ app = FastAPI(
 # v8.8.3: tracker 이슈 description 에 inline 삽입되는 이미지(`/api/tracker/image`) 도
 #         동일 fallback 을 허용 — dangerouslySetInnerHTML 로 렌더되는 `<img>` 가
 #         커스텀 헤더를 못 실어서 깨진 이미지로 나오던 문제 해결.
-_QUERY_TOKEN_PREFIXES = ("/api/informs/files/", "/api/tracker/image")
+# v8.8.6: 회의록 SSE 스트림(EventSource) 도 커스텀 헤더 불가 — `?t=` fallback 추가.
+_QUERY_TOKEN_PREFIXES = ("/api/informs/files/", "/api/tracker/image",
+                         "/api/meetings/stream")
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
