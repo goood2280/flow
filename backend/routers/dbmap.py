@@ -297,10 +297,57 @@ def _next_version_num(vdir) -> int:
         return 1
 
 
+def _json_safe_rows(rows):
+    """v8.8.2: polars import 직후 rows 에 섞인 datetime/Decimal/bytes 를 문자열로 평탄화.
+    TableMap import 경로가 _write_db_csv/save_json 에서 500 으로 폭발하던 버그 방지."""
+    import datetime as _dt
+    try:
+        from decimal import Decimal as _D
+    except Exception:
+        _D = None
+    out = []
+    for r in (rows or []):
+        if not isinstance(r, dict):
+            continue
+        nr = {}
+        for k, v in r.items():
+            if v is None or isinstance(v, (str, int, float, bool)):
+                nr[k] = v
+            elif isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
+                nr[k] = v.isoformat()
+            elif _D is not None and isinstance(v, _D):
+                nr[k] = str(v)
+            elif isinstance(v, (bytes, bytearray)):
+                try:
+                    nr[k] = v.decode("utf-8", errors="replace")
+                except Exception:
+                    nr[k] = v.hex()
+            elif isinstance(v, (list, tuple, set)):
+                nr[k] = list(v)
+            else:
+                nr[k] = str(v)
+        out.append(nr)
+    return out
+
+
 @router.post("/tables/save")
 def save_table(req: TableReq):
+    # v8.8.2: 저장 파이프라인 전체를 try/except 로 감싸서 예상치 못한 500 을 디테일 있는 400 으로 치환.
+    try:
+        return _save_table_impl(req)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"table save failed: {type(e).__name__}: {e}")
+
+
+def _save_table_impl(req: TableReq):
     sid = safe_id(req.id) if req.id else _stamp("tbl")
     fp = TABLES_DIR / f"{sid}.json"
+    # v8.8.2: 어떤 경로로 들어오든 rows 는 JSON-safe 형태로 정규화.
+    req.rows = _json_safe_rows(req.rows)
 
     # Track previous name for CSV rename cleanup
     prev_name = ""
@@ -555,6 +602,18 @@ def delete_db_ref(node_id: str = Query(...)):
     cfg = _load_config()
     cfg["nodes"] = [n for n in cfg["nodes"] if n.get("id") != node_id]
     cfg["relations"] = [r for r in cfg["relations"]
+                        if r.get("from") != node_id and r.get("to") != node_id]
+    _save_config(cfg)
+    return {"ok": True}
+
+
+@router.post("/nodes/unlink")
+def unlink_node_from_map(node_id: str = Query(...)):
+    """v8.8.2: 맵에서만 노드 제거 — 실제 테이블 파일(JSON/CSV) 은 그대로 보존.
+    table/db_ref/group 모두 지원. 관련 relations 도 정리."""
+    cfg = _load_config()
+    cfg["nodes"] = [n for n in cfg.get("nodes", []) if n.get("id") != node_id]
+    cfg["relations"] = [r for r in cfg.get("relations", [])
                         if r.get("from") != node_id and r.get("to") != node_id]
     _save_config(cfg)
     return {"ok": True}

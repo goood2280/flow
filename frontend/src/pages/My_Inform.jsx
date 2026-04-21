@@ -523,36 +523,37 @@ function RootHeader({ root, onChangeStatus, user }) {
   return (
     <div style={{
       background: "var(--bg-secondary)", border: "1px solid var(--border)",
-      borderRadius: 8, padding: "8px 12px", marginBottom: 8,
-      display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+      borderRadius: 6, padding: "4px 10px", marginBottom: 6,
+      display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minHeight: 30,
     }}>
+      {/* v8.8.2: RootHeader 컴팩트 — 한 줄 높이(30px) 유지. 버튼·메일·이력 모두 small pill. */}
       <span style={{
-        fontSize: 11, fontWeight: 700,
-        padding: "3px 10px", borderRadius: 999,
+        fontSize: 10, fontWeight: 700,
+        padding: "2px 8px", borderRadius: 999,
         background: isCompleted ? "#22c55e22" : "#64748b22",
         color: isCompleted ? "#16a34a" : "#475569",
       }}>{isCompleted ? "● 완료" : "○ 접수"}</span>
       <button onClick={toggleDone}
         title={isCompleted ? "완료 해제 (접수 상태로 되돌림)" : "담당자 확인 — 완료 처리"}
         style={{
-          padding: "8px 16px", borderRadius: 8,
-          border: "2px solid " + (isCompleted ? "#ef4444" : "#22c55e"),
+          padding: "3px 10px", borderRadius: 5,
+          border: "1px solid " + (isCompleted ? "#ef4444" : "#22c55e"),
           background: isCompleted ? "transparent" : "#22c55e",
           color: isCompleted ? "#ef4444" : "#fff",
-          fontSize: 13, fontWeight: 800, cursor: "pointer",
-          boxShadow: isCompleted ? "none" : "0 2px 6px rgba(34,197,94,0.35)",
-        }}>{isCompleted ? "↺ 완료 해제" : "✓ 확인 완료"}</button>
+          fontSize: 11, fontWeight: 700, cursor: "pointer", lineHeight: 1.3,
+        }}>{isCompleted ? "↺ 완료해제" : "✓ 확인완료"}</button>
       <div style={{ flex: 1 }} />
       <span onClick={() => setOpenMail(true)}
         title={lastMailAt ? `최근 메일: ${(lastMailAt || "").replace("T"," ").slice(0,16)}` : "사내 메일 API 로 이 인폼 내용 전송"}
-        style={{ padding: "5px 12px", borderRadius: 5, border: "1px solid var(--accent)",
+        style={{ padding: "3px 10px", borderRadius: 5, border: "1px solid var(--accent)",
                  background: "rgba(249,115,22,0.1)", color: "var(--accent)",
-                 fontSize: 11, fontWeight: 700, cursor: "pointer", userSelect: "none" }}>
-        ✉ 메일 {mailCount > 0 && `(${mailCount}${lastMailAt ? ` · ${(lastMailAt || "").slice(5,10)}` : ""})`}
+                 fontSize: 10, fontWeight: 700, cursor: "pointer", userSelect: "none", lineHeight: 1.3 }}>
+        ✉ 메일{mailCount > 0 && ` (${mailCount}${lastMailAt ? ` · ${(lastMailAt || "").slice(5,10)}` : ""})`}
       </span>
       <span onClick={() => setOpenHist(!openHist)}
-        style={{ fontSize: 10, color: "var(--accent)", cursor: "pointer" }}>
-        이력 {hist.length > 0 && `(${hist.length})`}
+        title="상태 변경 이력 토글"
+        style={{ fontSize: 10, color: "var(--accent)", cursor: "pointer", padding: "3px 6px" }}>
+        이력{hist.length > 0 && ` (${hist.length})`}
       </span>
       {openMail && <MailDialog root={root} user={user} onClose={() => setOpenMail(false)} />}
       {openHist && hist.length > 0 && (
@@ -771,6 +772,14 @@ export default function My_Inform({ user }) {
   const [productContacts, setProductContacts] = useState({}); // { product: [contacts] }
   const [openContactProducts, setOpenContactProducts] = useState({}); // { product: bool }
   const [editContact, setEditContact] = useState(null); // {product, id?, name, role, email, phone, note}
+  // v8.8.2: 유저/그룹 혼합 일괄 추가 모달 상태.
+  const [bulkPickProduct, setBulkPickProduct] = useState("");  // opened for which product
+  const [bulkEligibleUsers, setBulkEligibleUsers] = useState([]);
+  const [bulkGroups, setBulkGroups] = useState([]);
+  const [bulkSelUsers, setBulkSelUsers] = useState([]);
+  const [bulkSelGroups, setBulkSelGroups] = useState([]);
+  const [bulkRole, setBulkRole] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const isAdmin = user?.role === "admin";
 
@@ -859,6 +868,33 @@ export default function My_Inform({ user }) {
     postJson("/api/informs/product-contacts/delete?id=" + encodeURIComponent(id) + "&product=" + encodeURIComponent(product), {})
       .then(() => loadProductContacts())
       .catch(e => alert("삭제 실패: " + (e.message || e)));
+  };
+
+  // v8.8.2: 유저/그룹 혼합 일괄 추가 모달.
+  const openBulkPick = (product) => {
+    setBulkPickProduct(product);
+    setBulkSelUsers([]); setBulkSelGroups([]); setBulkRole("");
+    sf("/api/groups/eligible-users").then(d => setBulkEligibleUsers(d.users || [])).catch(() => setBulkEligibleUsers([]));
+    sf("/api/groups/list").then(d => setBulkGroups(d.groups || [])).catch(() => setBulkGroups([]));
+  };
+  const runBulkAdd = () => {
+    if (!bulkPickProduct) return;
+    if (bulkSelUsers.length === 0 && bulkSelGroups.length === 0) { alert("유저 또는 그룹을 선택하세요."); return; }
+    setBulkBusy(true);
+    postJson("/api/informs/product-contacts/bulk-add", {
+      product: bulkPickProduct,
+      usernames: bulkSelUsers,
+      group_ids: bulkSelGroups,
+      role: bulkRole,
+    })
+      .then(r => {
+        setBulkBusy(false);
+        const msg = `추가 ${r.added?.length || 0}명 / 스킵 ${r.skipped?.length || 0}명 (중복/차단).`;
+        alert(msg);
+        setBulkPickProduct("");
+        loadProductContacts();
+      })
+      .catch(e => { setBulkBusy(false); alert("추가 실패: " + (e.message || e)); });
   };
 
   const refreshAll = () => {
@@ -1260,8 +1296,11 @@ export default function My_Inform({ user }) {
                   <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{open ? "▼" : "▶"}</span>
                   <span style={{ flex: 1, fontSize: 12, fontWeight: 600, fontFamily: "monospace" }}>{prod}</span>
                   <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{arr.length}</span>
+                  <span onClick={(e) => { e.stopPropagation(); openBulkPick(prod); }}
+                        title="유저/그룹에서 일괄 추가"
+                        style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "#8b5cf6", color: "#fff", fontWeight: 700, cursor: "pointer" }}>👥</span>
                   <span onClick={(e) => { e.stopPropagation(); setEditContact({ product: prod, name: "", role: "", email: "", phone: "", note: "" }); }}
-                        title="담당자 추가"
+                        title="담당자 직접 추가"
                         style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "var(--accent)", color: "#fff", fontWeight: 700, cursor: "pointer" }}>+</span>
                 </div>
                 {open && arr.map(c => (
@@ -1341,6 +1380,85 @@ export default function My_Inform({ user }) {
                 style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 12, cursor: "pointer" }}>취소</button>
               <button onClick={applyPasteAsEmbed}
                 style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>본문에 첨부</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* v8.8.2: 유저/그룹 혼합 일괄 추가 모달 */}
+      {bulkPickProduct && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 3050, display: "flex", alignItems: "center", justifyContent: "center" }}
+             onClick={() => !bulkBusy && setBulkPickProduct("")}>
+          <div onClick={(e) => e.stopPropagation()}
+               style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18, width: 620, maxWidth: "94vw", maxHeight: "86vh", display: "flex", flexDirection: "column" }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6, fontFamily: "monospace" }}>
+              👥 일괄 담당자 추가 <span style={{ color: "var(--accent)" }}>· {bulkPickProduct}</span>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 10 }}>
+              개별 유저와 그룹을 혼합해 선택할 수 있습니다. 이미 등록된 담당자(동일 username/email) 는 자동으로 건너뜁니다. admin/test 계정은 제외됩니다.
+            </div>
+            <div style={{ display: "flex", gap: 10, flex: 1, minHeight: 280 }}>
+              {/* 유저 풀 */}
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+                <div style={{ padding: "6px 10px", fontSize: 11, fontWeight: 700, background: "var(--bg-primary)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between" }}>
+                  <span>👤 유저 ({bulkEligibleUsers.length})</span>
+                  <span style={{ color: "var(--accent)", cursor: "pointer", fontWeight: 600 }}
+                        onClick={() => setBulkSelUsers(bulkSelUsers.length === bulkEligibleUsers.length ? [] : bulkEligibleUsers.map(u => u.username))}>
+                    {bulkSelUsers.length === bulkEligibleUsers.length ? "전체 해제" : "전체 선택"}
+                  </span>
+                </div>
+                <div style={{ flex: 1, overflowY: "auto" }}>
+                  {bulkEligibleUsers.map(u => {
+                    const sel = bulkSelUsers.includes(u.username);
+                    return (
+                      <div key={u.username} onClick={() => setBulkSelUsers(sel ? bulkSelUsers.filter(x => x !== u.username) : [...bulkSelUsers, u.username])}
+                           style={{ padding: "5px 10px", fontSize: 11, cursor: "pointer", background: sel ? "var(--accent-glow)" : "transparent", borderBottom: "1px dashed var(--border)", display: "flex", alignItems: "center", gap: 6 }}>
+                        <input type="checkbox" readOnly checked={sel} />
+                        <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{u.username}</span>
+                        {u.email && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>· {u.email}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              {/* 그룹 풀 */}
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+                <div style={{ padding: "6px 10px", fontSize: 11, fontWeight: 700, background: "var(--bg-primary)", borderBottom: "1px solid var(--border)" }}>
+                  🏷 그룹 ({bulkGroups.length}) — 선택 시 해당 그룹 멤버 전체 합류
+                </div>
+                <div style={{ flex: 1, overflowY: "auto" }}>
+                  {bulkGroups.map(g => {
+                    const sel = bulkSelGroups.includes(g.id);
+                    return (
+                      <div key={g.id} onClick={() => setBulkSelGroups(sel ? bulkSelGroups.filter(x => x !== g.id) : [...bulkSelGroups, g.id])}
+                           style={{ padding: "5px 10px", fontSize: 11, cursor: "pointer", background: sel ? "var(--accent-glow)" : "transparent", borderBottom: "1px dashed var(--border)", display: "flex", alignItems: "center", gap: 6 }}>
+                        <input type="checkbox" readOnly checked={sel} />
+                        <span style={{ fontWeight: 600 }}>{g.name}</span>
+                        <span style={{ fontSize: 10, color: "var(--text-secondary)", marginLeft: "auto" }}>{(g.members || []).length}명</span>
+                      </div>
+                    );
+                  })}
+                  {bulkGroups.length === 0 && <div style={{ padding: 18, fontSize: 11, color: "var(--text-secondary)", textAlign: "center" }}>볼 수 있는 그룹 없음</div>}
+                </div>
+              </div>
+            </div>
+            <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>역할(선택):</span>
+              <input value={bulkRole} onChange={(e) => setBulkRole(e.target.value)}
+                     placeholder="예: PIE, 측정 (비우면 유저 기본 role)"
+                     style={{ flex: 1, padding: "5px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+            </div>
+            <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                선택: 유저 {bulkSelUsers.length} · 그룹 {bulkSelGroups.length}
+              </span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => !bulkBusy && setBulkPickProduct("")}
+                  style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 12, cursor: bulkBusy ? "not-allowed" : "pointer" }}>취소</button>
+                <button onClick={runBulkAdd} disabled={bulkBusy}
+                  style={{ padding: "6px 16px", borderRadius: 5, border: "none", background: bulkBusy ? "var(--border)" : "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: bulkBusy ? "not-allowed" : "pointer" }}>
+                  {bulkBusy ? "추가 중…" : "일괄 추가"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1730,12 +1848,24 @@ function TimelineLog({ thread, onOpen }) {
         node: x,
       });
       // 2) 상태 이력 — received(최초) 는 등록 이벤트가 이미 담당하므로 skip.
-      //    v8.8.1: prev=completed → received 는 "확인 취소" 로 라벨.
+      //    v8.8.2: prev=completed → received 뿐 아니라 note/직전상태 trail 로도
+      //    "확인 취소" 인식. 최초 등록 received 는 중복 피하려 한 번만 skip.
+      let seenFirstReceived = false;
+      let prevStat = "";
       for (const h of (x.status_history || [])) {
         if (!h || !h.at) continue;
-        if ((h.status === "received") && (h.note === "created" || !h.note) && h.prev !== "completed") continue;
-        const isUnconfirm = (h.status === "received" && h.prev === "completed")
-          || (h.status === "received" && (h.note || "").startsWith("확인 취소"));
+        const hPrev = h.prev ?? prevStat;  // v8.8.2: prev 누락 시 walking 으로 복원
+        const noteStr = h.note || "";
+        const isInitial = (h.status === "received") && !seenFirstReceived
+          && (noteStr === "created" || noteStr === "auto from SplitTable" || (!noteStr && hPrev === ""));
+        if (isInitial) { seenFirstReceived = true; prevStat = h.status || prevStat; continue; }
+        const isUnconfirm = h.status === "received" && (
+          hPrev === "completed"
+          || noteStr.includes("확인 취소")
+          || noteStr.includes("완료 해제")
+          || noteStr.includes("취소")
+          || noteStr.includes("해제")
+        );
         evs.push({
           at: h.at,
           actor: h.actor || "",
@@ -1746,9 +1876,10 @@ function TimelineLog({ thread, onOpen }) {
           reason: x.reason || "",
           lot: x.lot_id || "",
           product: x.product || "",
-          summary: h.note || "",
+          summary: noteStr || (isUnconfirm ? "완료 해제" : ""),
           node: x,
         });
+        prevStat = h.status || prevStat;
       }
       // 3) 체크(구형) — status_history 에 잡히지 않은 경우 보완.
       if (x.checked && x.checked_at) {

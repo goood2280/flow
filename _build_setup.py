@@ -207,6 +207,24 @@ def _has(cmd: str) -> bool:
     return which(cmd) is not None
 
 
+def _ensure_critical_deps() -> None:
+    """v8.8.2: extract 시에도 엑셀 관련 핵심 의존성은 자동 설치.
+    openpyxl 은 인폼 표 embed / SplitTable 엑셀 export 에서 즉시 사용되므로
+    pip install 을 따로 실행하지 않아도 동작해야 한다는 요구에 따른 필수 패키지.
+    이미 import 되면 skip."""
+    critical = ('openpyxl',)
+    missing = []
+    for mod in critical:
+        try:
+            __import__(mod)
+        except Exception:
+            missing.append(mod)
+    if not missing:
+        return
+    print(f"[deps] ensure critical: {', '.join(missing)}")
+    _run(f"{sys.executable} -m pip install " + ' '.join(shlex.quote(p) for p in missing), cwd=ROOT)
+
+
 def extract() -> int:
     for rel, payload in FILES.items():
         _write(rel, ''.join(payload) if isinstance(payload, (list, tuple)) else payload)
@@ -215,6 +233,8 @@ def extract() -> int:
     )
     for sub in ('data', 'data/Base', 'data/DB', 'reports'):
         (ROOT / sub).mkdir(parents=True, exist_ok=True)
+    # v8.8.2: extract 단독 실행에도 openpyxl 같은 필수 dep 는 자동으로 채워넣음.
+    _ensure_critical_deps()
     print(f"\\n[extract] flow v{VERSION} - {len(FILES)} files -> {ROOT}")
     return 0
 

@@ -306,10 +306,46 @@ def load_json(path: Path, default=None):
     return default if default is not None else {}
 
 
+def _json_default(o):
+    """v8.8.2: datetime/Decimal/UUID/Path/set 등 비-JSON 타입을 안전하게 문자열로.
+    polars import 결과 rows 에 섞여 들어오는 타입들을 커버."""
+    try:
+        import datetime as _dt
+        if isinstance(o, (_dt.datetime, _dt.date, _dt.time)):
+            return o.isoformat()
+    except Exception:
+        pass
+    try:
+        from decimal import Decimal as _D
+        if isinstance(o, _D):
+            return str(o)
+    except Exception:
+        pass
+    try:
+        import uuid as _uuid
+        if isinstance(o, _uuid.UUID):
+            return str(o)
+    except Exception:
+        pass
+    if isinstance(o, (bytes, bytearray)):
+        try:
+            return o.decode("utf-8", errors="replace")
+        except Exception:
+            return o.hex()
+    if isinstance(o, set):
+        return list(o)
+    # Path, numpy scalars, polars types, etc.
+    return str(o)
+
+
 def save_json(path: Path, data, indent: int = None):
-    """Write JSON file (utf-8, ensure_ascii=False)."""
+    """Write JSON file (utf-8, ensure_ascii=False).
+    v8.8.2: datetime/Decimal 등 비-JSON 타입도 자동 string 변환 (TableMap import 500 방지)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=indent), "utf-8")
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=indent, default=_json_default),
+        "utf-8",
+    )
 
 
 def jsonl_append(path: Path, entry: dict, add_timestamp: bool = True):

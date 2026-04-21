@@ -64,6 +64,8 @@ export default function My_Calendar({ user }) {
   const [conflict, setConflict] = useState(null);
   const [loading, setLoading] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // v8.8.2: 공개범위 그룹 선택 (일반 이벤트).
+  const [myGroups, setMyGroups] = useState([]);
 
   const monthStr = ym(view);
   const isAdmin = user?.role === "admin";
@@ -80,6 +82,7 @@ export default function My_Calendar({ user }) {
 
   useEffect(() => { reload(); }, [monthStr]);
   useEffect(() => { reloadCats(); }, []);
+  useEffect(() => { sf("/api/groups/list").then(d => setMyGroups(d.groups || [])).catch(() => setMyGroups([])); }, []);
 
   const filteredEvents = useMemo(() => {
     if (meetingFilter === "all") return events;
@@ -115,7 +118,7 @@ export default function My_Calendar({ user }) {
 
   const openNew = (date) => {
     setConflict(null); setHistoryOpen(false);
-    setSelected({ date, title: "", body: "", category: cats[0]?.name || "", end_date: "", version: 0, _new: true });
+    setSelected({ date, title: "", body: "", category: cats[0]?.name || "", end_date: "", version: 0, _new: true, group_ids: [] });
   };
   const openEdit = (e) => {
     setConflict(null); setHistoryOpen(false);
@@ -134,6 +137,7 @@ export default function My_Calendar({ user }) {
       postJson(`${API}/event`, {
         date: selected.date, end_date: selected.end_date || "",
         title: t, body: selected.body || "", category: selected.category || "",
+        group_ids: selected.group_ids || [],
       }).then(d => { setSelected(d.event); reload(); })
         .catch(e => alert(e.message || "생성 실패"));
     } else {
@@ -141,6 +145,7 @@ export default function My_Calendar({ user }) {
         id: selected.id, version: selected.version,
         date: selected.date, end_date: selected.end_date || "",
         title: t, body: selected.body || "", category: selected.category || "",
+        group_ids: selected.group_ids || [],
       }).then(d => {
         if (d.conflict) { setConflict(d.event); return; }
         setSelected(d.event); reload();
@@ -397,6 +402,42 @@ export default function My_Calendar({ user }) {
                 style={{ ...inp, resize: "vertical", fontFamily: "inherit" }}
                 disabled={!selected._new && (selected.source_type || "manual") !== "manual"} />
             </Field>
+            {/* v8.8.2: 일반 이벤트 공개범위 — 그룹 지정. 비우면 전원 공개. */}
+            {(selected._new || (selected.source_type || "manual") === "manual") && (
+              <Field label={`공개범위 · 그룹 선택 (비우면 전원 공개)`}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: 6, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 5, minHeight: 32 }}>
+                  {myGroups.length === 0 && (
+                    <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>열람 가능한 그룹이 없습니다.</span>
+                  )}
+                  {myGroups.map(g => {
+                    const gid = g.id;
+                    const sel = (selected.group_ids || []).includes(gid);
+                    return (
+                      <span key={gid}
+                            onClick={() => {
+                              const cur = selected.group_ids || [];
+                              const next = sel ? cur.filter(x => x !== gid) : [...cur, gid];
+                              setSelected({ ...selected, group_ids: next });
+                            }}
+                            style={{
+                              padding: "3px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer",
+                              background: sel ? "var(--accent)" : "var(--bg-card)",
+                              color: sel ? "#fff" : "var(--text-primary)",
+                              border: "1px solid " + (sel ? "var(--accent)" : "var(--border)"),
+                              fontWeight: sel ? 700 : 500,
+                            }}>
+                        {sel ? "● " : "○ "}{g.name}
+                      </span>
+                    );
+                  })}
+                </div>
+                {(selected.group_ids || []).length > 0 && (
+                  <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>
+                    선택한 {(selected.group_ids || []).length}개 그룹의 멤버와 본인·관리자만 열람합니다.
+                  </div>
+                )}
+              </Field>
+            )}
             {!selected._new && (
               <div style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", lineHeight: 1.7 }}>
                 <div>id: <span style={{ color: "var(--text-primary)" }}>{selected.id}</span></div>

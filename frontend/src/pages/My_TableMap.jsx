@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import Loading from "../components/Loading";
-import S3StatusLight from "../components/S3StatusLight";
+// v8.8.2: S3StatusLight 제거 — S3 상태는 File Browser 에서만 관리.
 import { sf } from "../lib/api";
 const API="/api/dbmap";
 
@@ -690,11 +690,7 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
         </div>
       </div>
 
-      {/* AWS */}
-      <div style={{marginBottom:8}}><div style={{fontSize:11,color:"var(--text-secondary)"}}>AWS S3 동기화 명령 ({"{{file}}"} 는 임시 CSV 경로)</div>
-        <input value={form.aws_cmd||""} onChange={e=>u("aws_cmd",e.target.value)} style={{...S,fontFamily:"monospace",fontSize:10}}
-          placeholder="aws s3 cp {{file}} s3://bucket/path/file.csv --endpoint-url https://..."/>
-      </div>
+      {/* v8.8.2: AWS S3 동기화 명령 UI 제거 — S3 sync 는 File Browser 에서만 관리. */}
 
       {/* Versions */}
       {versions.length>0&&<div style={{marginBottom:8}}>
@@ -809,6 +805,8 @@ export default function My_TableMap({user}){
   const deleteGroup=(id)=>{if(!confirm("그룹을 삭제할까요? (아카이브됨)"))return;sf(API+"/groups/delete?group_id="+id,{method:"POST"}).then(loadAll);};
   const addDbRef=(src)=>sf(API+"/db-ref/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(src)}).then(()=>{setPickingDb(false);loadAll();});
   const deleteDbRef=(nid)=>{if(!confirm("맵에서 DB 참조 제거? (실제 DB 는 영향 없음)"))return;sf(API+"/db-ref/delete?node_id="+nid,{method:"POST"}).then(loadAll);};
+  // v8.8.2: 맵에서만 제거 — 원본(table json/csv) 보존. table/group/db_ref 공용.
+  const unlinkNodeFromMap=(nid)=>sf(API+"/nodes/unlink?node_id="+encodeURIComponent(nid),{method:"POST"}).then(loadAll);
   const savePosition=(id,x,y)=>sf(API+"/node/position",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:id,x,y})}).then(loadAll);
   const[selectedNode,setSelectedNode]=useState(null);
   const[dbInfo,setDbInfo]=useState(null); // DB ref detail modal
@@ -898,7 +896,6 @@ export default function My_TableMap({user}){
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
       <div style={{fontSize:16,fontWeight:700,fontFamily:"monospace",color:"var(--accent)",display:"flex",alignItems:"center",gap:10}}>
         <span>{">"} table map</span>
-        <S3StatusLight compact />
       </div>
       <div style={{display:"flex",gap:4,alignItems:"center"}}>
         {[["graph","그래프"],["manage","관리"]].map(([k,l])=>(
@@ -918,7 +915,11 @@ export default function My_TableMap({user}){
       selectedNodeId={selectedNode?.id}
       onEditRelation={onEditRelation}
       lineageEdges={lineageData.edges} showLineage={showLineage}
-      onNodeRightClick={(e,node)=>{if(node.kind==="db_ref"&&isAdmin){if(confirm(`DB 참조 "${node.name}" 를 제거할까요?`)){deleteDbRef(node.id);setSelectedNode(null);}}}}/>}
+      onNodeRightClick={(e,node)=>{
+        // v8.8.2: 모든 노드(table/db_ref/group) 에 대해 "맵에서만 제거" 지원.
+        if(!confirm(`맵에서 "${node.name||node.id}" 를 제거할까요?\n\n※ 원본 테이블/DB 파일은 영향 받지 않고 그래프 참조만 제거됩니다.`))return;
+        unlinkNodeFromMap(node.id).then(()=>setSelectedNode(null));
+      }}/>}
     {view==="graph"&&showLineage&&<div style={{marginTop:8,padding:"6px 10px",background:"rgba(6,182,212,0.08)",border:"1px solid rgba(6,182,212,0.3)",borderRadius:6,fontSize:11,color:"var(--text-secondary)",fontFamily:"monospace"}}>
       🔄 계보 — declared {lineageData.stats?.declared||0} · inferred {lineageData.stats?.inferred||0} · ML 타겟 {lineageData.stats?.ml_targets||0} · 소스 {lineageData.stats?.sources||0}. 추론된 흐름은 cyan 점선으로 표시 (ET/INLINE/EDS/KNOB/MASK/FAB/VM 노드 → ML_TABLE_PROD* 노드).
     </div>}
