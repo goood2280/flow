@@ -407,6 +407,15 @@ def get_settings(request: Request):
             }
         except Exception:
             merged["mail"] = None
+        # v8.7.7: LLM 설정도 admin 에게만 노출 (unredacted — 편집을 위해).
+        try:
+            _adm2 = _load_admin_settings()
+            merged["llm"] = _adm2.get("llm") or {
+                "enabled": False, "api_url": "", "model": "",
+                "headers": {}, "format": "openai", "extra_body": {}, "timeout_s": 20,
+            }
+        except Exception:
+            merged["llm"] = None
     # v8.4.6: data_roots (내부 파일시스템 경로) 는 admin 에게만 노출.
     if me.get("role") == "admin":
         try:
@@ -454,12 +463,24 @@ class MailCfgReq(BaseModel):
     enabled: Optional[bool] = None
 
 
+class LLMCfgReq(BaseModel):
+    # v8.7.7: 사내 LLM API 선택적 어댑터 설정.  전부 optional — 저장된 값과 병합.
+    enabled: Optional[bool] = None
+    api_url: Optional[str] = None
+    model: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
+    format: Optional[str] = None              # "openai" | "raw"
+    extra_body: Optional[Dict[str, Any]] = None
+    timeout_s: Optional[int] = None
+
+
 class SettingsSaveReq(BaseModel):
     dashboard_refresh_minutes: int = 10
     dashboard_bg_refresh_minutes: int = 10
     data_roots: Optional[DataRootsReq] = None
     backup: Optional[BackupCfgReq] = None
     mail: Optional[MailCfgReq] = None
+    llm: Optional[LLMCfgReq] = None
 
 
 @router.post("/settings/save")
@@ -474,6 +495,7 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
     dr_in = data.pop("data_roots", None)
     bk_in = data.pop("backup", None)
     mail_in = data.pop("mail", None)
+    llm_in = data.pop("llm", None)
     # Clamp to sane bounds: 1..240 minutes
     for k in ("dashboard_refresh_minutes", "dashboard_bg_refresh_minutes"):
         v = data.get(k, 10)
@@ -539,8 +561,31 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         current["mail"] = mail_cur
         _save_admin_settings(current)
 
+    # v8.7.7: 사내 LLM 어댑터 설정 저장 (옵션 기능).
+    if llm_in is not None:
+        current = _load_admin_settings()
+        llm_cur = dict(current.get("llm") or {})
+        for k in ("api_url", "model", "format"):
+            if llm_in.get(k) is not None:
+                llm_cur[k] = str(llm_in.get(k) or "").strip()
+        if llm_in.get("headers") is not None:
+            hdrs = llm_in.get("headers") or {}
+            llm_cur["headers"] = {str(k): str(v) for k, v in hdrs.items() if k}
+        if llm_in.get("extra_body") is not None:
+            eb = llm_in.get("extra_body") or {}
+            llm_cur["extra_body"] = eb if isinstance(eb, dict) else {}
+        if llm_in.get("timeout_s") is not None:
+            try:
+                llm_cur["timeout_s"] = max(3, min(120, int(llm_in.get("timeout_s"))))
+            except Exception:
+                llm_cur["timeout_s"] = 20
+        if llm_in.get("enabled") is not None:
+            llm_cur["enabled"] = bool(llm_in.get("enabled"))
+        current["llm"] = llm_cur
+        _save_admin_settings(current)
+
     _audit(request, "admin:settings-save",
-           detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'} mail={'yes' if mail_in else 'no'}",
+           detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'} mail={'yes' if mail_in else 'no'} llm={'yes' if llm_in else 'no'}",
            tab="admin")
     return {"ok": True, "settings": data, "data_roots": (_resolver_snapshot() if dr_in is not None else None)}
 

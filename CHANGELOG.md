@@ -2,6 +2,29 @@
 
 주요 변경점만 간략히. 세부 내역은 `VERSION.json` 의 changelog 배열 참고.
 
+## v8.7.7 — 2026-04-21
+
+**공용 메일 그룹 · 차수 재발송 · LLM 어댑터 인프라 + 긴급 버그 패치 3건**
+
+- **공용 메일 그룹 신설** — `routers/mail_groups.py` (data_root/mail_groups.json). 모든 로그인 유저가 생성/편집/삭제 가능한 공용 그룹. 한 유저가 여러 그룹에 속할 수 있고 (N:N), `extra_emails` 로 외부(vendor/partner) 이메일도 함께 관리. 회의 메일 발송 시 체크 한 번에 전부 확산.
+- **차수 독립 메일 재발송** — `POST /api/meetings/session/send-mail` 신규. 이미 저장된 회의록을 건드리지 않고 동일 HTML 을 다시 보낼 수 있음. My_Meeting 회의록 헤더에 `📧 메일 발송` 버튼.
+- **회의록 메일 옵션에 mail_group_ids 추가** — 작성/수정 폼과 재발송 다이얼로그 모두 공용 메일 그룹 chip 선택 + 관리 모달 진입 버튼 포함. `MinutesSave` 가 `mail_group_ids[]` 수용.
+- **회의 주관자 정책 강화** — `/meetings/update` 에서 owner 변경은 **생성자(created_by) 또는 admin** 만 가능. 일반 owner 가 이양 후 되찾지 못하던 엣지 케이스 방지. 생성자는 항상 주관자 변경권 유지.
+- **아젠다 created_at/updated_at 표시** — 아젠다 카드에 🕐 등록 / ✎ 수정 시각 인라인 표시. 스키마는 기존 필드 재사용이라 마이그레이션 불필요.
+- **회의관리 간트 뷰 제거** — My_Meeting 탭의 `리스트/간트` 버튼 제거. 결정사항/액션아이템은 변경점 달력에 이미 나오므로 중복 뷰 정리. (ActionItemsGantt 코드는 유지 — 차기 달력 통합 시 재사용.)
+- **사내 LLM 어댑터 infra (옵션)** — `core/llm_adapter.py` + `routers/llm.py` 신설. admin_settings.llm 에 api_url/headers/model/format/extra_body 저장. `is_available()` / `complete(prompt, system=...)` 두 함수가 전부. 100% 옵션이라 설정 미비 시 UI 가 is_available false 로 자동 숨김. 프롬프트는 단순하게, 수동 fallback 필수.
+- **[bugfix] Admin "r is not a function"** — `App.jsx canAccess` 의 `userTabs.split(',')` 이 legacy localStorage 에 배열 저장된 경우 터지던 문제. `Array.isArray` / `typeof` 방어.
+- **[bugfix] FileBrowser Base 단일 파일 중복** — `/base-files` 가 base_root 와 db_root 의 동명 파일을 중복 반환하던 문제. 파일명 기준 dedup + UI 의 `db` 소스 태그 제거 → Base 단일 파일은 이름당 한 번만 표시.
+- **[bugfix] ML_TABLE parquet 미리보기** — `/base-file-view` 가 db_root 의 parquet 을 404 로 거부하던 규칙 제거. 이제 base-files 에 노출된 모든 CSV/Parquet 이 preview 가능.
+
+**이월 (v8.7.8+)**
+
+1. **변경점 달력 회의별 필터 + 액션 outline** — 달력에 특정 회의 드롭다운 필터. 결정사항은 filled, 액션아이템은 outline/dashed 로 시각 구분. (v8.7.4 의 status mirror 는 이미 있음.)
+2. **액션아이템 due date-picker** — 현재 자유문자열 → HTML date input.
+3. **SplitTable WF 메모** — (root_lot_id, wafer_id) 불변 키 기반 라벨/메모 저장소. fab_lot_id 는 rename 될 수 있으므로 키에서 제외.
+4. **SplitTable 태그 시스템** — wafer별 태그(LOT 특정) + parameter별 태그(전역). wafer_id 그룹 필터 + LOT 노트. FB/SPC 태그 오버레이.
+5. **SplitTable ML_TABLE → 제품 폴더 auto-match** — 테이블명에서 제품명(PRODA) 추출 → DB root 의 `*/PRODA/*` 경로 상위 폴더를 fab_source 로 자동 제안.
+
 ## v8.7.6 — 2026-04-21
 
 **v8.7.5 이월 TODO 일괄 처리 + 긴급 bugfix 라운드**

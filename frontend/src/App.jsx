@@ -509,7 +509,11 @@ export default function App() {
     if (userTabs === "__all__") return true;
     const t = TABS.find(t=>t.key===tabKey);
     if (t?.adminOnly && user?.role !== "admin") return false;
-    return userTabs.split(",").includes(tabKey);
+    // v8.7.7: userTabs 가 어떤 이유로든 array 로 들어와도 안전하게 처리 (legacy localStorage 대응).
+    const list = Array.isArray(userTabs)
+      ? userTabs
+      : (typeof userTabs === "string" ? userTabs.split(",") : []);
+    return list.includes(tabKey);
   };
 
   const nav = (k) => {

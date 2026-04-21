@@ -1,7 +1,26 @@
 {
-  "version": "8.7.6",
+  "version": "8.7.7",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.7.7",
+      "date": "2026-04-21",
+      "title": "공용 메일 그룹 · 차수 재발송 · LLM 어댑터 infra · 긴급 버그 패치 3건 · 회의/아젠다 UX",
+      "tag": "feat+fix",
+      "changes": [
+        "**신규 공용 메일 그룹** — `routers/mail_groups.py` (data_root/mail_groups.json). 모든 로그인 유저가 생성/편집/삭제 가능하며 그룹은 공유됨. 한 유저가 여러 그룹에 속할 수 있고 외부 `extra_emails` 도 함께 관리. 회의 메일 발송 시 그룹 선택 → 멤버 email + 외부 email 자동 확산.",
+        "**차수별 독립 메일 발송** — `POST /api/meetings/session/send-mail` 신규. 이미 저장된 회의록을 수정하지 않고도 동일 HTML (아젠다+본문+결정+액션) 을 다시 발송. My_Meeting 회의록 헤더에 `📧 메일 발송` 버튼 추가.",
+        "**회의 메일 다이얼로그 통합** — 회의록 작성 폼의 메일 옵션에 공용 메일 그룹 선택 chip + 관리 모달 진입 버튼. `MinutesSave` 가 `mail_group_ids[]` 수용, `_resolve_mail_group_ids_to_emails()` 로 멤버 email + extra_emails 병합.",
+        "**회의 주관자 정책 강화** — `/meetings/update` 에서 owner 변경은 **created_by (생성자) 또는 admin** 만 허용. 일반 owner 가 타인에게 이양 후 되찾지 못하는 문제 차단. 기존 생성자는 항상 주관자 변경 권한 유지.",
+        "**아젠다 타임스탬프 UI** — 아젠다 카드에 `🕐 등록` / `✎ 수정` 시각 표시. 스키마는 기존 `created_at`/`updated_at` 재사용 (backward-compatible).",
+        "**회의관리 간트 뷰 제거** — 회의 탭의 간트 뷰 진입 버튼 제거. 결정사항/액션아이템은 이미 변경점 달력에 표시되므로 중복 뷰 정리. (내부 `ActionItemsGantt` 코드는 유지, 차기 달력 통합 시 재사용 예정.)",
+        "**사내 LLM 어댑터 infra (옵션)** — `core/llm_adapter.py` 공통 헬퍼 + `routers/llm.py` (GET /api/llm/status · POST /api/llm/test). admin_settings.llm 블록 (enabled/api_url/model/headers/format/extra_body/timeout_s). 100% 옵션 — 연결 안 되면 UI 가 is_available() = false 로 숨김. 프롬프트는 단순하게, 수동 fallback 필수.",
+        "**[bugfix] Admin '\\r is not a function'** — App.jsx `canAccess` 의 `userTabs.split(',')` 이 legacy localStorage 에 배열 저장된 경우 터지던 문제. `Array.isArray` / `typeof` 방어로 동일 타입 정규화.",
+        "**[bugfix] FileBrowser Base 단일 파일 중복** — `/base-files` 가 base_root 와 db_root 의 파일을 소스 태그 없이 dedup. UI 의 `db` 소스 태그 제거 — 같은 파일이 두 번 노출되지 않음.",
+        "**[bugfix] ML_TABLE parquet 미리보기** — `/base-file-view` 가 db_root 의 parquet 을 미리보기 404 로 반환하던 문제 수정 (v8.7.6 에서 listing 엔 포함됐지만 preview 가 CSV 만 허용). 이제 csv/parquet 둘 다 정상 렌더.",
+        "이월 (v8.7.8+): (1) 변경점 달력에 회의별 필터 + 액션아이템 outline/dashed 표현. (2) 액션아이템 데드라인 date-picker. (3) SplitTable WF 메모 — (root_lot_id, wafer_id) 불변 키 기반. (4) SplitTable wafer/parameter 태그 시스템. (5) SplitTable ML_TABLE_<PROD> → DB 폴더 auto-match (/1.RAWDATA/PRODA/* 구조)."
+      ]
+    },
     {
       "version": "8.7.6",
       "date": "2026-04-21",

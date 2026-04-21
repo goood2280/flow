@@ -272,7 +272,7 @@ export default function My_FileBrowser({user}){
                 {lightDot(f.name)}
                 <span>{icon}</span>
                 <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={f.name}>{f.name}</span>
-                {f.source==="db_root"&&<span title="DB 루트에 있는 CSV (Base 로 분류)" style={{fontSize:8,padding:"1px 4px",borderRadius:3,background:"rgba(251,146,11,0.2)",color:"#fb920b",fontFamily:"monospace"}}>db</span>}
+                {/* v8.7.7: `db` 소스 태그 제거 — Base 단일 파일은 소스 구분 없이 한 번만 표시. */}
                 <span style={{fontSize:9,padding:"1px 4px",borderRadius:3,background:extColor+"22",color:extColor,fontWeight:700,fontFamily:"monospace"}}>{f.ext}</span>
                 <span style={{fontSize:9,color:"#64748b"}}>{formatSize(f.size)}</span>
               </div>);

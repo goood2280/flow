@@ -181,6 +181,38 @@ def _load_mail_cfg() -> dict:
     return m if isinstance(m, dict) else {}
 
 
+def _resolve_mail_group_ids_to_emails(mg_ids: List[str]) -> List[str]:
+    """mail_groups.py 의 메일 그룹 id 리스트 → 멤버 username → email list."""
+    if not mg_ids:
+        return []
+    try:
+        from routers.mail_groups import _load as _mg_load
+        from routers.auth import read_users
+    except Exception:
+        return []
+    groups = {g.get("id"): g for g in _mg_load() if isinstance(g, dict)}
+    usernames: set = set()
+    direct_emails: List[str] = []
+    for gid in mg_ids:
+        g = groups.get(gid)
+        if not g:
+            continue
+        for m in (g.get("members") or []):
+            if m:
+                usernames.add(m)
+        for em in (g.get("extra_emails") or []):
+            em = str(em).strip()
+            if em and "@" in em:
+                direct_emails.append(em)
+    all_users = {u.get("username", ""): u for u in read_users()}
+    out: List[str] = list(direct_emails)
+    for un in usernames:
+        u = all_users.get(un)
+        if u and u.get("email") and "@" in u.get("email", ""):
+            out.append(u["email"])
+    return out
+
+
 def _resolve_group_members_to_emails(group_ids: List[str]) -> List[str]:
     """groups.py 의 그룹 id 리스트 → 멤버 username → email list."""
     if not group_ids:
@@ -642,7 +674,8 @@ class MinutesSave(BaseModel):
     # v8.7.6: 저장과 동시에 사내 메일로 아젠다+회의록+액션아이템 전송
     send_mail: Optional[bool] = False
     mail_to_users: Optional[List[str]] = None     # username list
-    mail_groups: Optional[List[str]] = None       # admin recipient_groups names
+    mail_groups: Optional[List[str]] = None       # admin recipient_groups names (legacy)
+    mail_group_ids: Optional[List[str]] = None    # v8.7.7: mail_groups.json 의 그룹 id
     mail_to: Optional[List[str]] = None           # direct email list
     mail_subject: Optional[str] = ""
 
@@ -763,6 +796,11 @@ def update_meeting(req: MeetingUpdate, request: Request):
     if req.owner is not None:
         o = (req.owner or "").strip()
         if o and o != m.get("owner"):
+            # v8.7.7: 주관자 변경은 "만든 유저(created_by) 또는 admin" 만 가능.
+            # 이미 주관자이더라도 원 생성자가 아니면 주관자 이양 불가.
+            creator = m.get("created_by") or m.get("owner") or ""
+            if not _is_admin(me) and me["username"] != creator:
+                raise HTTPException(403, "주관자 변경은 회의 생성자 또는 admin 만 가능합니다.")
             m["owner"] = o
             changed.append("owner")
     if req.status is not None:
@@ -1125,6 +1163,8 @@ def save_minutes(req: MinutesSave, request: Request):
             for gid in (ai.get("group_ids") or []):
                 gids_collected.add(gid)
         to_addrs += _resolve_group_members_to_emails(list(gids_collected))
+        # v8.7.7: 신규 mail_groups (모든 유저 공유) 기반 수신자
+        to_addrs += _resolve_mail_group_ids_to_emails(list(req.mail_group_ids or []))
         # admin 측 recipient_groups (username 또는 email list) 지원
         cfg_rg = (_load_mail_cfg().get("recipient_groups") or {})
         if isinstance(cfg_rg, dict):
@@ -1310,3 +1350,40 @@ def unpush_action(req: ActionPushReq, request: Request):
            detail=f"meeting={m['id']} session={s['id']} ai={ai['id']}",
            tab="meetings")
     return {"ok": True, "meeting": m, "session": s}
+
+
+# v8.7.7: 차수별 독립 메일 발송 (회의록 저장 분리 — 이미 저장된 차수를 그냥 다시 보내고 싶을 때).
+class SessionSendMailReq(BaseModel):
+    meeting_id: str
+    session_id: str
+    mail_group_ids: Optional[List[str]] = None   # mail_groups.json id 목록
+    mail_to_users: Optional[List[str]] = None    # 개별 username
+    mail_to: Optional[List[str]] = None          # 직접 이메일
+    mail_subject: Optional[str] = ""
+
+
+@router.post("/session/send-mail")
+def session_send_mail(req: SessionSendMailReq, request: Request):
+    me = current_user(request)
+    items = _load()
+    midx, m = _find(items, req.meeting_id)
+    if midx < 0 or not m:
+        raise HTTPException(404, "meeting not found")
+    if not _can_edit_meeting(me, m):
+        raise HTTPException(403, "Only meeting owner or admin can send session mail")
+    sidx, s = _find_session(m, req.session_id)
+    if sidx < 0:
+        raise HTTPException(404, "session not found")
+    to_addrs: List[str] = []
+    for em in (req.mail_to or []):
+        if em and "@" in em:
+            to_addrs.append(em)
+    to_addrs += _resolve_users_to_emails(list(req.mail_to_users or []))
+    to_addrs += _resolve_mail_group_ids_to_emails(list(req.mail_group_ids or []))
+    subject = (req.mail_subject or "").strip()
+    result = _send_minutes_mail(m, s, to_addrs=to_addrs, subject=subject,
+                                actor=me["username"])
+    _audit(request, "meetings:session_send_mail",
+           detail=f"meeting={m['id']} session={s['id']} ok={result.get('ok')} n={len(to_addrs)}",
+           tab="meetings")
+    return {"ok": bool(result.get("ok")), "mail": result}
