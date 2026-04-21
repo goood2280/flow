@@ -86,6 +86,9 @@ def list_roots(all: bool = Query(False)):
         # v8.1.2: explicit file skip — root-level single files go via Base only (v8.7.6).
         if not d.is_dir():
             continue
+        # v8.8.7: 숨김/시스템 폴더 스킵 (.trash, .git, __pycache__, 밑줄 시작 관리자용 등).
+        if d.name.startswith(".") or d.name.startswith("__") or d.name.startswith("_"):
+            continue
         # v8.7.6: whitelist 바깥이어도 데이터가 있으면 표시 (hive/flat 인식).
         file_count = len(_glob_data_files(d))
         whitelisted = is_visible_root(d.name)
