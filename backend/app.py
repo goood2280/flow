@@ -104,10 +104,13 @@ except Exception as _bk_e:
 
 @app.get("/version.json")
 def serve_version():
-    vp = Path(__file__).parent.parent / "version.json"
-    if vp.exists():
-        return FileResponse(str(vp), media_type="application/json")
-    return {"version": "8.7.3"}
+    # v8.7.6: Linux case-sensitive FS 대응 — VERSION.json(대문자) / version.json(소문자) 모두 시도.
+    base = Path(__file__).parent.parent
+    for name in ("VERSION.json", "version.json"):
+        vp = base / name
+        if vp.exists():
+            return FileResponse(str(vp), media_type="application/json")
+    return {"version": "unknown"}
 
 
 # ── Serve React build ──

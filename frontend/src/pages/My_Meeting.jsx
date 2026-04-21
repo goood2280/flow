@@ -35,6 +35,9 @@ function isUrl(s) { return !!s && /^https?:\/\//i.test(s); }
 export default function My_Meeting({ user }) {
   const [meetings, setMeetings] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [allGroups, setAllGroups] = useState([]);       // v8.7.6: 그룹 담당자 선택
+  const [mailRecipients, setMailRecipients] = useState([]); // username+email
+  const [viewMode, setViewMode] = useState("list");     // v8.7.6: list | gantt
   const [loading, setLoading] = useState(false);
   const [filterStatus, setFilterStatus] = useState("");
   const [search, setSearch] = useState("");
@@ -68,6 +71,9 @@ export default function My_Meeting({ user }) {
 
   useEffect(() => {
     sf("/api/calendar/categories").then(d => setCategories(d.categories || [])).catch(() => {});
+    // v8.7.6: 액션아이템 그룹 담당자용 그룹 목록 + 메일 수신자 목록
+    sf("/api/groups/list").then(d => setAllGroups(d.groups || [])).catch(() => {});
+    sf("/api/informs/recipients").then(d => setMailRecipients(d.recipients || [])).catch(() => {});
   }, []);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, [filterStatus]);
 
@@ -247,9 +253,14 @@ export default function My_Meeting({ user }) {
     const m = selectedSession.minutes || {};
     setMinutesDraft({
       body: m.body || "",
-      // v8.7.5: decisions — 기존 문자열도 포용하도록 객체로 정규화
       decisions: (m.decisions || []).map(d => typeof d === "string" ? { text: d, due: "" } : { ...d }),
-      action_items: (m.action_items || []).map(a => ({ ...a })),
+      action_items: (m.action_items || []).map(a => ({ ...a, group_ids: a.group_ids || [] })),
+      // v8.7.6: 메일 옵션
+      send_mail: false,
+      mail_to_users: [],
+      mail_groups: [],
+      mail_to: "",
+      mail_subject: "",
     });
     setEditingMinutes(true);
   };
@@ -263,13 +274,27 @@ export default function My_Meeting({ user }) {
   const delAction = (i) => setMinutesDraft(d => ({ ...d, action_items: d.action_items.filter((_, j) => j !== i) }));
   const submitMinutes = () => {
     if (!selected || !selectedSession || !minutesDraft) return;
+    const mailTo = (minutesDraft.mail_to || "")
+      .split(/[,;\s]+/).map(s => s.trim()).filter(s => s && s.includes("@"));
     postJson(`${API}/minutes/save`, {
       meeting_id: selected.id, session_id: selectedSession.id,
       body: minutesDraft.body,
       decisions: minutesDraft.decisions,
-      action_items: minutesDraft.action_items,
-    }).then(() => { setEditingMinutes(false); setMinutesDraft(null); reload(); })
-      .catch(e => alert(e.message || "저장 실패"));
+      action_items: minutesDraft.action_items.map(a => ({
+        text: a.text, owner: a.owner, due: a.due, group_ids: a.group_ids || [],
+      })),
+      send_mail: !!minutesDraft.send_mail,
+      mail_to_users: minutesDraft.mail_to_users || [],
+      mail_groups: minutesDraft.mail_groups || [],
+      mail_to: mailTo,
+      mail_subject: minutesDraft.mail_subject || "",
+    }).then(r => {
+      setEditingMinutes(false); setMinutesDraft(null); reload();
+      if (r && r.mail) {
+        if (r.mail.ok) alert(`메일 발송 완료${r.mail.dry_run ? " (dry-run)" : ""} · ${(r.mail.to || []).length}명`);
+        else alert(`메일 발송 실패: ${r.mail.error || "unknown"}`);
+      }
+    }).catch(e => alert(e.message || "저장 실패"));
   };
 
   // v8.7.5: 결정사항 단위 달력 push/unpush
@@ -327,6 +352,16 @@ export default function My_Meeting({ user }) {
             <span style={{ flex: 1 }} />
             <button onClick={() => setCreating(true)} style={btnPrimary}>+ 새 회의</button>
           </div>
+          <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+            {[["list", "리스트"], ["gantt", "간트"]].map(([k, label]) => (
+              <span key={k} onClick={() => setViewMode(k)} style={{
+                padding: "3px 10px", borderRadius: 4, fontSize: 10, cursor: "pointer", fontFamily: "monospace",
+                background: viewMode === k ? "var(--accent-glow)" : "var(--bg-card)",
+                color: viewMode === k ? "var(--accent)" : "var(--text-secondary)",
+                border: "1px solid " + (viewMode === k ? "var(--accent)" : "var(--border)"),
+              }}>{label}</span>
+            ))}
+          </div>
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="제목/아젠다/결정 검색..." style={inp} />
           <div style={{ marginTop: 8, display: "flex", gap: 4, flexWrap: "wrap" }}>
             {["", "active", "archived", "cancelled"].map(s => (
@@ -375,12 +410,15 @@ export default function My_Meeting({ user }) {
 
       {/* Right: detail */}
       <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
-        {!selected && (
+        {viewMode === "gantt" && (
+          <ActionItemsGantt meetings={filtered} onPickMeeting={(id) => { setSelectedId(id); setViewMode("list"); }} />
+        )}
+        {viewMode === "list" && !selected && (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12 }}>
             ← 좌측에서 회의를 선택하거나 "+ 새 회의" 버튼으로 생성하세요.
           </div>
         )}
-        {selected && (
+        {viewMode === "list" && selected && (
           <div style={{ padding: 20, maxWidth: 980 }}>
             {/* Meta */}
             <div style={{ marginBottom: 14, padding: 16, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
@@ -692,16 +730,77 @@ export default function My_Meeting({ user }) {
                         <button onClick={addAction} style={btnTiny}>+ 추가</button>
                       </div>
                       {minutesDraft.action_items.map((a, i) => (
-                        <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 130px 130px auto", gap: 6, marginTop: 4 }}>
-                          <input value={a.text} onChange={e => updAction(i, "text", e.target.value)} placeholder="할 일" style={inp} />
-                          <input value={a.owner} onChange={e => updAction(i, "owner", e.target.value)} placeholder="담당자" style={inp} />
-                          <input value={a.due} onChange={e => updAction(i, "due", e.target.value)} placeholder="마감 (YYYY-MM-DD)" style={inp} />
-                          <button onClick={() => delAction(i)} style={btnTinyDanger}>×</button>
+                        <div key={i} style={{ marginTop: 6, padding: 8, border: "1px dashed var(--border)", borderRadius: 5 }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 130px auto", gap: 6 }}>
+                            <input value={a.text} onChange={e => updAction(i, "text", e.target.value)} placeholder="할 일" style={inp} />
+                            <input value={a.owner} onChange={e => updAction(i, "owner", e.target.value)} placeholder="담당자 (username)" style={inp} />
+                            <input value={a.due} onChange={e => updAction(i, "due", e.target.value)} placeholder="마감 (YYYY-MM-DD)" style={inp} />
+                            <button onClick={() => delAction(i)} style={btnTinyDanger}>×</button>
+                          </div>
+                          <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            <span style={{ ...lbl, minWidth: 68 }}>그룹 담당</span>
+                            {allGroups.length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(그룹이 없습니다 — Admin → 그룹 에서 생성)</span>}
+                            {allGroups.map(g => {
+                              const on = (a.group_ids || []).includes(g.id);
+                              return (
+                                <span key={g.id} onClick={() => {
+                                  const cur = a.group_ids || [];
+                                  const next = on ? cur.filter(x => x !== g.id) : [...cur, g.id];
+                                  updAction(i, "group_ids", next);
+                                }} style={{
+                                  padding: "2px 8px", borderRadius: 999, fontSize: 10, cursor: "pointer",
+                                  border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
+                                  background: on ? "var(--accent-glow)" : "transparent",
+                                  color: on ? "var(--accent)" : "var(--text-secondary)",
+                                }}>{g.name}</span>
+                              );
+                            })}
+                          </div>
                         </div>
                       ))}
                     </div>
+                    {/* v8.7.6: 메일 발송 옵션 */}
+                    <div style={{ marginTop: 6, padding: 10, border: "1px solid var(--accent)", borderRadius: 6, background: "var(--bg-card)" }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}>
+                        <input type="checkbox" checked={!!minutesDraft.send_mail} onChange={e => setMinutesDraft({ ...minutesDraft, send_mail: e.target.checked })} />
+                        📧 저장과 동시에 아젠다+회의록+액션아이템을 메일로 발송
+                      </label>
+                      {minutesDraft.send_mail && (
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                          <input value={minutesDraft.mail_subject} onChange={e => setMinutesDraft({ ...minutesDraft, mail_subject: e.target.value })} placeholder={`메일 제목 (기본: [flow 회의록] ${selected.title} · ${selectedSession.idx}차)`} style={inp} />
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            <span style={{ ...lbl, minWidth: 68 }}>수신 유저</span>
+                            {mailRecipients.length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(승인된 유저 없음)</span>}
+                            {mailRecipients.map(u => {
+                              const on = (minutesDraft.mail_to_users || []).includes(u.username);
+                              const hasEmail = !!u.email;
+                              return (
+                                <span key={u.username} onClick={() => {
+                                  if (!hasEmail) return;
+                                  const cur = minutesDraft.mail_to_users || [];
+                                  const next = on ? cur.filter(x => x !== u.username) : [...cur, u.username];
+                                  setMinutesDraft({ ...minutesDraft, mail_to_users: next });
+                                }} title={hasEmail ? u.email : "이메일 미등록 (Admin 에서 set-email 필요)"}
+                                  style={{
+                                    padding: "2px 8px", borderRadius: 999, fontSize: 10,
+                                    cursor: hasEmail ? "pointer" : "not-allowed",
+                                    opacity: hasEmail ? 1 : 0.5,
+                                    border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
+                                    background: on ? "var(--accent-glow)" : "transparent",
+                                    color: on ? "var(--accent)" : "var(--text-secondary)",
+                                  }}>{u.username}</span>
+                              );
+                            })}
+                          </div>
+                          <input value={minutesDraft.mail_to} onChange={e => setMinutesDraft({ ...minutesDraft, mail_to: e.target.value })} placeholder="추가 이메일 (쉼표/공백 구분, 선택)" style={inp} />
+                          <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>
+                            * 액션아이템에 지정된 그룹 멤버의 이메일도 자동 포함됩니다.
+                          </div>
+                        </div>
+                      )}
+                    </div>
                     <div style={{ display: "flex", gap: 6 }}>
-                      <button onClick={submitMinutes} style={btnPrimary}>저장 (status → 완료)</button>
+                      <button onClick={submitMinutes} style={btnPrimary}>저장 (status → 완료){minutesDraft.send_mail ? " + 메일" : ""}</button>
                       <button onClick={() => { setEditingMinutes(false); setMinutesDraft(null); }} style={btnGhost}>취소</button>
                     </div>
                   </div>
@@ -787,3 +886,104 @@ const th = { padding: "6px 8px", textAlign: "left", fontSize: 10, color: "var(--
 const td = { padding: "6px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
 const modalBack = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" };
 const modalCard = { width: 520, maxWidth: "92%", padding: 18, borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" };
+
+// v8.7.6: 액션아이템 간트 차트 (모든 회의·차수 취합). SVG 기반.
+function ActionItemsGantt({ meetings, onPickMeeting }) {
+  const rows = [];
+  for (const m of (meetings || [])) {
+    for (const s of (m.sessions || [])) {
+      const ais = (s.minutes?.action_items) || [];
+      for (const a of ais) {
+        if (!a.due) continue;
+        rows.push({
+          meeting_id: m.id,
+          meeting_title: m.title,
+          session_idx: s.idx,
+          start: (s.scheduled_at || s.created_at || "").slice(0, 10) || (m.created_at || "").slice(0, 10),
+          end: a.due.slice(0, 10),
+          text: a.text,
+          owner: a.owner || "",
+          status: a.status || "pending",
+          group_count: (a.group_ids || []).length,
+        });
+      }
+    }
+  }
+  if (rows.length === 0) {
+    return (
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12, flexDirection: "column", gap: 8 }}>
+        <div>간트 차트에 표시할 액션아이템이 없습니다.</div>
+        <div style={{ fontSize: 10 }}>액션아이템에 마감일(due) 을 설정하면 여기에 나타납니다.</div>
+      </div>
+    );
+  }
+  const toDate = s => s ? new Date(s).getTime() : Date.now();
+  const minT = Math.min(...rows.map(r => toDate(r.start || r.end)));
+  const maxT = Math.max(...rows.map(r => toDate(r.end || r.start))) + 86400000;
+  const span = Math.max(maxT - minT, 86400000 * 7);
+  const W = 1100, headerH = 30, rowH = 26, padL = 220, padR = 20;
+  const H = headerH + rows.length * rowH + 20;
+  const xOf = t => padL + ((t - minT) / span) * (W - padL - padR);
+  const today = Date.now();
+  // month ticks
+  const ticks = [];
+  const start = new Date(minT); start.setDate(1); start.setHours(0, 0, 0, 0);
+  for (let d = start.getTime(); d < maxT; ) {
+    ticks.push(d);
+    const dt = new Date(d); dt.setMonth(dt.getMonth() + 1);
+    d = dt.getTime();
+  }
+  const statusColor = (s) => s === "done" ? "#22c55e" : s === "in_progress" ? "#f59e0b" : "#3b82f6";
+  return (
+    <div style={{ padding: 16, overflow: "auto" }}>
+      <div style={{ marginBottom: 8, fontSize: 12, color: "var(--text-secondary)" }}>
+        📊 액션아이템 간트 차트 · {rows.length} items · {new Date(minT).toISOString().slice(0, 10)} ~ {new Date(maxT).toISOString().slice(0, 10)}
+      </div>
+      <svg width={W} height={H} style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 6 }}>
+        {/* month grid */}
+        {ticks.map(t => (
+          <g key={t}>
+            <line x1={xOf(t)} y1={headerH} x2={xOf(t)} y2={H} stroke="var(--border)" strokeDasharray="2,3" />
+            <text x={xOf(t) + 4} y={18} fontSize="10" fill="var(--text-secondary)" fontFamily="monospace">
+              {new Date(t).toISOString().slice(0, 7)}
+            </text>
+          </g>
+        ))}
+        {/* today line */}
+        {today >= minT && today <= maxT && (
+          <>
+            <line x1={xOf(today)} y1={headerH - 6} x2={xOf(today)} y2={H - 4} stroke="var(--accent)" strokeWidth="2" />
+            <text x={xOf(today) + 4} y={headerH - 10} fontSize="9" fill="var(--accent)" fontFamily="monospace">TODAY</text>
+          </>
+        )}
+        {/* rows */}
+        {rows.map((r, i) => {
+          const y = headerH + i * rowH + 6;
+          const x1 = xOf(toDate(r.start));
+          const x2 = Math.max(xOf(toDate(r.end)), x1 + 4);
+          const overdue = toDate(r.end) < today && r.status !== "done";
+          const fill = overdue ? "#ef4444" : statusColor(r.status);
+          return (
+            <g key={i}>
+              <text x={6} y={y + 13} fontSize="10" fill="var(--text-primary)" fontFamily="monospace" style={{ cursor: "pointer" }}
+                    onClick={() => onPickMeeting && onPickMeeting(r.meeting_id)}>
+                {(r.meeting_title || "").slice(0, 22)} · {r.session_idx}차
+              </text>
+              <rect x={x1} y={y} width={x2 - x1} height={14} rx={3} fill={fill} opacity={0.85} />
+              <text x={x1 + 4} y={y + 11} fontSize="10" fill="#fff" fontFamily="inherit">
+                {r.text.slice(0, 38)}{r.owner ? ` · ${r.owner}` : ""}{r.group_count ? ` · +${r.group_count}` : ""}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      <div style={{ marginTop: 8, fontSize: 10, color: "var(--text-secondary)", display: "flex", gap: 14 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#3b82f6", borderRadius: 2, display: "inline-block" }} />pending</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#f59e0b", borderRadius: 2, display: "inline-block" }} />in_progress</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#22c55e", borderRadius: 2, display: "inline-block" }} />done</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#ef4444", borderRadius: 2, display: "inline-block" }} />overdue</span>
+        <span style={{ color: "var(--accent)" }}>세로선 = 오늘</span>
+      </div>
+    </div>
+  );
+}

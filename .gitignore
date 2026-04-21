@@ -46,3 +46,9 @@ backend/__pycache__/
 # Test artifacts
 test_xlsx.xlsx
 _root_map.json
+
+# Domain knowledge (internal) — 절대 커밋 금지
+*domain*.txt
+*도메인*.txt
+FabCanvas_domain.txt
+FabCanvas_도메인지식_방향성_정리.txt

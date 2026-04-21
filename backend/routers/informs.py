@@ -128,7 +128,23 @@ def _upgrade(entry: dict) -> dict:
     entry.setdefault("embed_table", None)
     entry.setdefault("auto_generated", False)
     entry.setdefault("deadline", "")  # v8.7.1: 이슈 마감일 (YYYY-MM-DD 또는 "")
+    entry.setdefault("group_ids", [])  # v8.7.6: 그룹 가시성
     return entry
+
+
+def _group_visible(entry: dict, username: str, role: str) -> bool:
+    """v8.7.6: group_ids 기반 가시성. 비어 있으면 public."""
+    gids = entry.get("group_ids") or []
+    if not gids:
+        return True
+    if role == "admin":
+        return True
+    try:
+        from routers.groups import user_group_ids as _ugids
+        my = _ugids(username, role)
+    except Exception:
+        my = set()
+    return any(g in my for g in gids)
 
 
 def _load_upgraded() -> list:
@@ -145,9 +161,12 @@ def _load_upgraded() -> list:
 
 
 def _visible_to(entry: dict, username: str, role: str, my_mods: set) -> bool:
-    """admin/all-rounder 전부 통과. 그 외에는 본인이 작성했거나 모듈 담당인 경우."""
+    """admin/all-rounder 전부 통과. 그 외에는 본인이 작성했거나 모듈 담당인 경우.
+    v8.7.6: group_ids 가 설정된 인폼은 해당 그룹에 속해야만 추가로 통과."""
     if role == "admin" or "__all__" in my_mods:
         return True
+    if not _group_visible(entry, username, role):
+        return False
     if entry.get("author") == username:
         return True
     mod = entry.get("module") or ""
@@ -214,6 +233,7 @@ class InformCreate(BaseModel):
     images: List[ImageRef] = []
     embed_table: Optional[EmbedTable] = None
     deadline: str = ""  # v8.7.1: YYYY-MM-DD, 빈 문자열이면 없음
+    group_ids: List[str] = []  # v8.7.6: 그룹 가시성 필터. 비어 있으면 public (모듈 규칙만 적용)
 
 
 class ConfigReq(BaseModel):
@@ -555,6 +575,7 @@ def create_inform(req: InformCreate, request: Request):
         "embed_table": embed,
         "auto_generated": False,
         "deadline": _validate_deadline(req.deadline) if is_root else "",
+        "group_ids": [str(g).strip() for g in (req.group_ids or []) if g and str(g).strip()],
     }
     items.append(entry)
     _save(items)
