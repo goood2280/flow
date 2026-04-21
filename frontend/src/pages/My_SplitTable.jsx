@@ -427,6 +427,46 @@ export default function My_SplitTable({user}){
             </div>);
           })()}
 
+          {/* v8.8.6: Parameter rulebook 뷰어 — 선택된 제품에 해당하는 KNOB feature 별
+                      rule_order / func_step / step_ids / ppid / operator / category 를 표시.
+                      읽기 전용 (편집은 Base CSV rulebook 직접 수정 또는 PageGear 에서). */}
+          {selProd && (() => {
+            const entries = Object.entries(knobMeta || {});
+            if (!entries.length) return null;
+            return (
+              <div style={{marginTop:12,marginBottom:10,padding:"8px 10px",borderRadius:6,background:"var(--bg-card)",border:"1px dashed var(--border)"}}>
+                <div style={{fontSize:10,fontWeight:700,color:"var(--text-secondary)",marginBottom:6,display:"flex",alignItems:"center",gap:6}}>
+                  <span>📘 Parameter Rulebook</span>
+                  <span style={{fontSize:9,opacity:0.8}}>({selProd} · {entries.length} params)</span>
+                </div>
+                <div style={{maxHeight:220,overflowY:"auto",display:"flex",flexDirection:"column",gap:6}}>
+                  {entries.map(([fname, meta]) => (
+                    <div key={fname} style={{padding:"5px 6px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid var(--border)"}}>
+                      <div style={{fontFamily:"monospace",fontSize:10,color:"var(--accent)",fontWeight:700}}>{fname}</div>
+                      <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:2,lineHeight:1.45}}>
+                        {(meta.groups || []).map((g, gi) => (
+                          <div key={gi} style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:1}}>
+                            <span style={{padding:"0 4px",background:"rgba(59,130,246,0.15)",color:"#3b82f6",borderRadius:3,fontFamily:"monospace",fontWeight:700}}>#{g.rule_order}</span>
+                            <span style={{fontFamily:"monospace",fontWeight:600,color:"var(--text-primary)"}}>{g.func_step}</span>
+                            {g.operator && <span style={{opacity:0.6}}>op={g.operator}</span>}
+                            {g.ppid && <span style={{fontFamily:"monospace",opacity:0.8}}>ppid={g.ppid}</span>}
+                            {g.category && <span style={{padding:"0 4px",background:"rgba(16,185,129,0.12)",color:"#16a34a",borderRadius:3,fontSize:8}}>{g.category}</span>}
+                            <span style={{flex:"1 1 100%",marginLeft:14,fontFamily:"monospace",fontSize:9,color:"var(--text-secondary)"}}>
+                              step_ids: [{(g.step_ids || []).join(", ") || "—"}]
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:5,lineHeight:1.4}}>
+                  Rulebook 편집: Base 의 <span style={{fontFamily:"monospace"}}>knob_ppid.csv</span> · <span style={{fontFamily:"monospace"}}>step_matching.csv</span> (product 컬럼 기준 필터).
+                </div>
+              </div>
+            );
+          })()}
+
           <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:10,marginBottom:10,lineHeight:1.5}}>
             Color-coded: {COLOR_PREFIXES.join(", ")}
           </div>
@@ -735,25 +775,56 @@ export default function My_SplitTable({user}){
           <button onClick={()=>setShowConfirm(false)} style={{padding:"10px 20px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>Cancel</button>
         </div></div></div>}
 
-    {/* v8.4.9-b: Notes 드로어 — 오른쪽 side drawer. wafer 태그 / param 메모 통합 뷰. */}
+    {/* v8.4.9-b / v8.8.6: Notes 드로어 — 오른쪽 side drawer.
+         wafer 태그 / param 메모 / lot 노트 / param_global 전역 태그 통합 뷰. */}
     {notesOpen && (()=>{
       const filtered=(!noteFilter)?notes
         :noteFilter.scope==="wafer"?notes.filter(n=>n.key===noteFilter.key)
         :noteFilter.scope==="cell"?notes.filter(n=>n.scope==="param"&&n.key===`${selProd}__${lotId}__W${noteFilter.wafer_id}__${noteFilter.param}`)
+        :noteFilter.scope==="lot"?notes.filter(n=>n.scope==="lot"&&n.key===`${selProd}__LOT__${lotId}`)
+        :noteFilter.scope==="param_global"?notes.filter(n=>n.scope==="param_global"&&n.key===`${selProd}__PARAM__${noteFilter.param}`)
         :notes.filter(n=>n.scope==="param"&&n.key.endsWith(`__${noteFilter.param}`));
       // 헤더 라벨
       const title=!noteFilter?"노트 (전체)"
         :noteFilter.scope==="wafer"?`wafer #${noteFilter.key.split("__W").pop()} 태그`
         :noteFilter.scope==="cell"?`W${noteFilter.wafer_id} × ${noteFilter.param} 메모`
+        :noteFilter.scope==="lot"?`LOT ${lotId} 노트`
+        :noteFilter.scope==="param_global"?`${noteFilter.param} 전역 태그 (${selProd})`
         :`${noteFilter.param} 메모 (lot ${lotId})`;
       return(<div style={{position:"fixed",top:0,right:0,bottom:0,width:420,background:"var(--bg-secondary)",borderLeft:"1px solid var(--border)",zIndex:2000,display:"flex",flexDirection:"column",boxShadow:"-4px 0 16px rgba(0,0,0,0.35)"}}>
         <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div style={{fontSize:13,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>📝 {title}</div>
           <span onClick={()=>{setNotesOpen(false);setNoteDraft("");setNoteFilter(null);setNoteDraftScope(null);}} style={{cursor:"pointer",fontSize:18,color:"var(--text-secondary)"}}>✕</span>
         </div>
-        {!noteFilter&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",display:"flex",gap:6,fontSize:10,color:"var(--text-secondary)"}}>
-          <span>전체 {notes.length}개 · wafer 태그 {notes.filter(n=>n.scope==="wafer").length} · param 메모 {notes.filter(n=>n.scope==="param").length}</span>
-        </div>}
+        {/* v8.8.6: scope 필터 칩 — 전체 / wafer / param / lot / param_global 빠른 전환. */}
+        <div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",display:"flex",gap:4,flexWrap:"wrap",fontSize:10,color:"var(--text-secondary)"}}>
+          {[
+            {k:"all",l:`전체 ${notes.length}`,filt:null},
+            {k:"wafer",l:`🏷 wafer ${notes.filter(n=>n.scope==="wafer").length}`,filt:{scope:"__any_wafer__"}},
+            {k:"param",l:`💬 param ${notes.filter(n=>n.scope==="param").length}`,filt:{scope:"__any_param__"}},
+            {k:"lot",l:`📦 lot ${notes.filter(n=>n.scope==="lot").length}`,filt:lotId?{scope:"lot"}:null},
+            {k:"pg",l:`🌐 global ${notes.filter(n=>n.scope==="param_global").length}`,filt:{scope:"__any_param_global__"}},
+          ].map(b=>{const active=(!noteFilter&&b.k==="all")||(noteFilter&&(noteFilter.scope===b.filt?.scope||(b.k==="wafer"&&noteFilter.scope==="wafer")||(b.k==="param"&&noteFilter.scope==="param")||(b.k==="pg"&&noteFilter.scope==="param_global")));
+            return <span key={b.k} onClick={()=>{
+              if(b.k==="all"){setNoteFilter(null);setNoteDraftScope(null);return;}
+              if(b.k==="lot"&&lotId){setNoteFilter({scope:"lot"});setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId});return;}
+              if(b.k==="wafer"){setNoteFilter(null);return;} // 전체 wafer 은 all 대체
+              if(b.k==="param"){setNoteFilter(null);return;}
+              if(b.k==="pg"){setNoteFilter(null);return;}
+            }} style={{padding:"2px 8px",borderRadius:10,cursor:"pointer",background:active?"var(--accent)":"var(--bg-card)",color:active?"#fff":"var(--text-secondary)",fontWeight:active?700:500,border:"1px solid "+(active?"var(--accent)":"var(--border)")}}>{b.l}</span>;
+          })}
+        </div>
+        {/* v8.8.6: lot / param_global 직접 추가 버튼 — draft scope 가 없을 때 entry 제공. */}
+        {lotId && !noteDraftScope && (
+          <div style={{padding:"6px 16px",borderBottom:"1px dashed var(--border)",display:"flex",gap:6,fontSize:10}}>
+            <button onClick={()=>setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId})}
+              style={{padding:"3px 10px",borderRadius:4,border:"1px solid #16a34a",background:"transparent",color:"#16a34a",fontSize:10,cursor:"pointer"}}>+ LOT 노트</button>
+            <button onClick={()=>{
+              const p=prompt("전역 태그 parameter 이름:");
+              if(p&&p.trim()) setNoteDraftScope({scope:"param_global",product:selProd,param:p.trim()});
+            }} style={{padding:"3px 10px",borderRadius:4,border:"1px solid #f59e0b",background:"transparent",color:"#f59e0b",fontSize:10,cursor:"pointer"}}>+ 전역 태그</button>
+          </div>
+        )}
         <div style={{flex:1,overflow:"auto",padding:"10px 16px",display:"flex",flexDirection:"column",gap:8}}>
           {filtered.length===0&&<div style={{padding:24,textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>기록된 노트 없음</div>}
           {filtered.map(n=>{
@@ -775,15 +846,34 @@ export default function My_SplitTable({user}){
         </div>
         {noteDraftScope&&<div style={{padding:"10px 16px",borderTop:"1px solid var(--border)",display:"flex",flexDirection:"column",gap:6}}>
           <div style={{fontSize:10,color:"var(--text-secondary)"}}>
-            대상:{" "}<span style={{color:noteDraftScope.scope==="wafer"?"#3b82f6":"#8b5cf6",fontWeight:700}}>{noteDraftScope.scope==="wafer"?`🏷 W${noteDraftScope.wafer_id}`:`💬 ${noteDraftScope.param}`}</span>
+            {(() => {
+              const sc = noteDraftScope.scope;
+              const color = sc==="wafer"?"#3b82f6":sc==="param"?"#8b5cf6":sc==="lot"?"#16a34a":sc==="param_global"?"#f59e0b":"#6b7280";
+              const label = sc==="wafer"?`🏷 W${noteDraftScope.wafer_id}`
+                :sc==="param"?`💬 ${noteDraftScope.param}`
+                :sc==="lot"?`📦 LOT ${noteDraftScope.root_lot_id}`
+                :sc==="param_global"?`🌐 ${noteDraftScope.param} (global)`:sc;
+              return <>대상: <span style={{color,fontWeight:700}}>{label}</span></>;
+            })()}
             {noteDraftScope.scope==="param"&&<span style={{marginLeft:6}}>wafer:
               <input value={noteDraftScope.wafer_id} onChange={e=>setNoteDraftScope({...noteDraftScope,wafer_id:e.target.value})} placeholder="wafer_id" style={{marginLeft:4,width:60,padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:10}}/>
+            </span>}
+            {noteDraftScope.scope==="param_global"&&<span style={{marginLeft:6}}>param:
+              <input value={noteDraftScope.param||""} onChange={e=>setNoteDraftScope({...noteDraftScope,param:e.target.value})} placeholder="parameter" style={{marginLeft:4,width:120,padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:10,fontFamily:"monospace"}}/>
             </span>}
           </div>
           <textarea value={noteDraft} onChange={e=>setNoteDraft(e.target.value)} placeholder="새 노트 내용…" rows={3}
             style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,resize:"vertical",fontFamily:"inherit"}}/>
           <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
-            <button onClick={addNote} disabled={!noteDraft.trim()||(noteDraftScope.scope==="param"&&!noteDraftScope.wafer_id)} style={{padding:"5px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:(noteDraft.trim()&&(noteDraftScope.scope!=="param"||noteDraftScope.wafer_id))?"pointer":"not-allowed",opacity:(noteDraft.trim()&&(noteDraftScope.scope!=="param"||noteDraftScope.wafer_id))?1:0.5}}>저장</button>
+            {(() => {
+              const sc = noteDraftScope.scope;
+              const need = sc==="param"? !!noteDraftScope.wafer_id
+                : sc==="param_global"? !!(noteDraftScope.param||"").trim()
+                : true;
+              const canSave = !!noteDraft.trim() && need;
+              return <button onClick={addNote} disabled={!canSave}
+                style={{padding:"5px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:canSave?"pointer":"not-allowed",opacity:canSave?1:0.5}}>저장</button>;
+            })()}
           </div>
         </div>}
         {!noteDraftScope&&<div style={{padding:"10px 16px",borderTop:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)"}}>

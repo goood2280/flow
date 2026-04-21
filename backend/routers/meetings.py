@@ -52,12 +52,53 @@ import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.paths import PATHS
 from core.utils import load_json, save_json
 from core.auth import current_user
 from core.audit import record as _audit
+
+# v8.8.6: 간단한 in-memory SSE broadcast — 회의록 동시편집 MVP.
+#   pub 은 save_minutes 호출 직후. sub 은 /api/meetings/stream?meeting_id=X 로 EventSource 연결.
+#   2+ 유저가 동시 편집 시 각자가 저장하는 순간 나머지에게 "외부 저장 알림" → FE 가 재조회.
+import asyncio as _asyncio
+import json as _json
+_mtg_subscribers: dict = {}  # meeting_id → set[asyncio.Queue]
+_mtg_lock = _asyncio.Lock()
+
+async def _mtg_subscribe(meeting_id: str):
+    q: _asyncio.Queue = _asyncio.Queue(maxsize=32)
+    async with _mtg_lock:
+        _mtg_subscribers.setdefault(meeting_id, set()).add(q)
+    return q
+
+async def _mtg_unsubscribe(meeting_id: str, q):
+    async with _mtg_lock:
+        s = _mtg_subscribers.get(meeting_id) or set()
+        s.discard(q)
+        if not s and meeting_id in _mtg_subscribers:
+            _mtg_subscribers.pop(meeting_id, None)
+
+def _mtg_publish(meeting_id: str, payload: dict) -> None:
+    """sync-safe publisher — 실패해도 save 는 성공."""
+    try:
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        subs = list((_mtg_subscribers.get(meeting_id) or set()))
+        for q in subs:
+            try:
+                if loop:
+                    loop.call_soon_threadsafe(q.put_nowait, payload)
+                else:
+                    q.put_nowait(payload)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _calendar_remove_meeting(meeting_id: str) -> None:
@@ -1319,6 +1360,14 @@ def save_minutes(req: MinutesSave, request: Request):
            detail=f"meeting={m['id']} session={s['id']} decisions={len(decisions)} actions={len(merged)}",
            tab="meetings")
 
+    # v8.8.6: 동시편집 broadcast — 다른 subscribers 에게 변경 알림.
+    _mtg_publish(m["id"], {
+        "type": "minutes_saved",
+        "meeting_id": m["id"], "session_id": s["id"],
+        "author": me["username"], "at": now,
+        "decisions": len(decisions), "actions": len(merged),
+    })
+
     # v8.7.6: 저장 직후 메일 발송 (옵션). action_items.group_ids 멤버·직접 유저·그룹·이메일 병합.
     mail_result = None
     if req.send_mail:
@@ -1557,3 +1606,42 @@ def session_send_mail(req: SessionSendMailReq, request: Request):
            detail=f"meeting={m['id']} session={s['id']} ok={result.get('ok')} n={len(to_addrs)}",
            tab="meetings")
     return {"ok": bool(result.get("ok")), "mail": result}
+
+
+# v8.8.6: 회의록 동시편집 — SSE 스트림. 브라우저 EventSource 는 커스텀 헤더 불가 →
+# `?t=<session_token>` fallback 을 app.py `_QUERY_TOKEN_PREFIXES` 에서 허용함.
+@router.get("/stream")
+async def stream_minutes(request: Request, meeting_id: str = Query(...)):
+    me = current_user(request)
+    items = _load()
+    _, m = _find(items, meeting_id)
+    if not m:
+        raise HTTPException(404, "meeting not found")
+    if not _meeting_visible(m, me):
+        raise HTTPException(403, "not visible")
+
+    async def _gen():
+        q = await _mtg_subscribe(meeting_id)
+        try:
+            yield f"event: hello\ndata: {_json.dumps({'meeting_id': meeting_id, 'viewer': me['username']})}\n\n"
+            while True:
+                try:
+                    payload = await _asyncio.wait_for(q.get(), timeout=25.0)
+                    yield f"event: update\ndata: {_json.dumps(payload)}\n\n"
+                except _asyncio.TimeoutError:
+                    # keep-alive ping (25s) — proxy 중간 끊김 방지.
+                    yield "event: ping\ndata: {}\n\n"
+                if await request.is_disconnected():
+                    break
+        finally:
+            await _mtg_unsubscribe(meeting_id, q)
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )

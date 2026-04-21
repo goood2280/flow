@@ -6,7 +6,7 @@
    - 아젠다 link 클릭: 새 창(target=_blank).
    - 액션아이템 옆 📅 버튼: 달력 selective push/unpush. 등록됨 표시 + 등록 유저/시간.
 */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import PageGear from "../components/PageGear";
 import { sf, postJson } from "../lib/api";
 
@@ -61,6 +61,9 @@ export default function My_Meeting({ user }) {
   const [agendaEditDraft, setAgendaEditDraft] = useState(null);
   const [minutesDraft, setMinutesDraft] = useState(null);
   const [editingMinutes, setEditingMinutes] = useState(false);
+  // v8.8.6: SSE 내부 ref — useEffect 가 editingMinutes 상태를 stale 없이 참조.
+  const editingMinutesRef = useRef(false);
+  useEffect(() => { editingMinutesRef.current = editingMinutes; }, [editingMinutes]);
 
   const isAdmin = user?.role === "admin";
   const me = user?.username || "";
@@ -108,6 +111,32 @@ export default function My_Meeting({ user }) {
     reloadMailGroups();
   }, []);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, [filterStatus]);
+
+  // v8.8.6: 회의록 동시편집 SSE 구독 — 선택된 회의가 바뀔 때 재연결.
+  //   다른 사람이 `/minutes/save` 하면 `update` 이벤트 수신 → 현재 편집 중 아니면 자동 reload,
+  //   편집 중이면 "외부 저장 알림" 배너만 표시 + 수동 병합 유도.
+  const [externalUpdate, setExternalUpdate] = useState(null);
+  useEffect(() => {
+    if (!selectedId) return;
+    const tk = (() => {
+      try { return (JSON.parse(localStorage.getItem("hol_user") || "{}")?.token) || ""; }
+      catch { return ""; }
+    })();
+    const url = `/api/meetings/stream?meeting_id=${encodeURIComponent(selectedId)}${tk ? `&t=${encodeURIComponent(tk)}` : ""}`;
+    let es;
+    try { es = new EventSource(url); } catch { return; }
+    es.addEventListener("update", (ev) => {
+      try {
+        const d = JSON.parse(ev.data || "{}");
+        setExternalUpdate(d);
+        // 편집 중 아니면 즉시 reload
+        if (!editingMinutesRef.current) reload();
+      } catch {}
+    });
+    es.onerror = () => { /* silent — 네트워크 일시 끊김 */ };
+    return () => { try { es.close(); } catch {} };
+    /* eslint-disable-next-line */
+  }, [selectedId]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -663,6 +692,22 @@ export default function My_Meeting({ user }) {
                   </div>
                 </div>
               </div>
+
+              {/* v8.8.6: 외부 저장 알림 배너 — 편집 중 다른 유저가 저장하면 표시. */}
+              {externalUpdate && editingMinutes && (
+                <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: "rgba(245,158,11,0.12)", border: "1px solid #f59e0b", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: "#b45309", fontWeight: 700 }}>⚠ 동시편집 감지</span>
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                    {externalUpdate.author} 님이 방금 저장함 ({(externalUpdate.at || "").slice(11, 16)})
+                    · 결정 {externalUpdate.decisions}개 · 액션 {externalUpdate.actions}개
+                  </span>
+                  <span style={{ flex: 1 }} />
+                  <button onClick={() => { setExternalUpdate(null); reload(); setEditingMinutes(false); setMinutesDraft(null); }}
+                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid #f59e0b", background: "#f59e0b", color: "#fff", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>외부 내용 불러오기</button>
+                  <button onClick={() => setExternalUpdate(null)}
+                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 10, cursor: "pointer" }}>무시</button>
+                </div>
+              )}
 
               {/* Minutes */}
               <div style={{ marginBottom: 14, padding: 16, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
