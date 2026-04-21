@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Builder: walks the FabCanvas.ai source tree and emits setup_v852.py.
+"""Builder: walks the FabCanvas.ai source tree and emits setup_v864.py.
 
 Run from the FabCanvas.ai directory:
-    python _build_setup_v852.py
+    python _build_setup_v864.py
 
-Output: setup_v852.py next to this script.
+Output: setup_v864.py next to this script.
+
+v8.6.4 differences vs v8.5.2 builder:
+  - Root `app.py` shim is embedded (uvicorn app:app --host 0.0.0.0 --port 8080).
+  - Pulls in new routers (calendar.py, groups.py, informs.py) and pages
+    (My_Calendar.jsx, My_Inform.jsx) + components (S3StatusLight.jsx, PageGear.jsx)
+    automatically — anything added to the source tree is picked up by the globs.
 """
 import base64
 import gzip
@@ -31,6 +37,7 @@ INCLUDE_DIRS = [
 INCLUDE_FILES = [
     'README.md',
     'FabCanvas_domain.txt',
+    'app.py',                  # ← v8.6.x uvicorn shim (top-level)
     'backend/app.py',
     'frontend/index.html',
     'frontend/package.json',
@@ -61,13 +68,11 @@ def gather_files() -> list[Path]:
         base = ROOT / d
         if not base.is_dir():
             continue
-        # non-recursive for src subdirs — they're listed explicitly; use rglob instead
         for p in base.rglob('*'):
             if not p.is_file():
                 continue
             if any(part in EXCLUDE_PARTS for part in p.parts):
                 continue
-            # skip __init__.pyc / compiled
             if p.suffix in {'.pyc'}:
                 continue
             add(p)
@@ -99,8 +104,6 @@ def build() -> str:
 
     version = json.loads((ROOT / 'VERSION.json').read_text(encoding='utf-8'))
 
-    # Group files into parts — matching the original setup_v8 spirit but collapsed.
-    # For simplicity with v8.5.2, one big FILES dict is fine.
     entries = []
     for p in files:
         rel = to_rel_posix(p)
@@ -117,10 +120,10 @@ def build() -> str:
 
 Usage (on a fresh machine):
 
-    python setup_v852.py            # extracts sources into ./FabCanvas.ai (or . if run inside)
-    cd backend && pip install -r ../requirements.txt   # see generated file list
-    cd ../frontend && npm install && npm run build
-    cd ../backend && uvicorn app:app --host 0.0.0.0 --port 8080
+    python setup_v864.py            # extracts sources into ./FabCanvas.ai (or . if run inside)
+    pip install fastapi uvicorn[standard] pandas pyarrow numpy python-multipart boto3 scikit-learn scipy
+    cd frontend && npm install && npm run build && cd ..
+    uvicorn app:app --host 0.0.0.0 --port 8080
 
 Login: hol / hol12345!  (override with FABCANVAS_ADMIN_PW / HOL_ADMIN_PW)
 
@@ -209,8 +212,8 @@ def setup(install: bool = True, build: bool = True) -> None:
     else:
         print("[npm] not found - skip frontend install/build")
 
-    print(f"\\n[done] cd backend && uvicorn app:app --host 0.0.0.0 --port 8080")
-    print(f"[done] open http://localhost:8080 — login: hol / hol12345!")
+    print(f"\\n[done] uvicorn app:app --host 0.0.0.0 --port 8080   (run from {ROOT})")
+    print(f"[done] open http://localhost:8080 - login: hol / hol12345!")
 
 
 if __name__ == '__main__':
@@ -224,7 +227,7 @@ if __name__ == '__main__':
 
 def main():
     out = build()
-    dst = ROOT / 'setup_v852.py'
+    dst = ROOT / 'setup_v864.py'
     dst.write_text(out, encoding='utf-8')
     print(f"wrote {dst} ({dst.stat().st_size:,} bytes)")
 
