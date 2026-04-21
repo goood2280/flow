@@ -817,6 +817,19 @@ _RULEBOOK_FILES = {
         "cols": ["step_id", "func_step", "product"],
         "required": ["step_id", "func_step", "product"],
     },
+    # v8.8.9: INLINE / VM 매칭도 동일 CRUD 로 관리.
+    #   inline_matching.csv: (step_id, item_id, item_desc) — INLINE_<item_id> 가 해당 step 에서 측정됨.
+    "inline_matching": {
+        "filename": "inline_matching.csv",
+        "cols": ["step_id", "item_id", "item_desc", "product"],
+        "required": ["step_id", "item_id", "product"],
+    },
+    #   vm_matching.csv: (feature_name, step_desc, step_id) — VM_<feature_name> 이 해당 step 에서 예측됨.
+    "vm_matching": {
+        "filename": "vm_matching.csv",
+        "cols": ["feature_name", "step_desc", "step_id", "product"],
+        "required": ["feature_name", "step_id", "product"],
+    },
 }
 
 

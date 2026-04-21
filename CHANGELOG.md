@@ -1,3 +1,13 @@
+## v8.8.9 — 2026-04-21
+
+톱니 Rulebook 섹션 KNOB/INLINE/VM 분리 + 연결 방식 설명 + inline/vm rulebook CRUD.
+
+- **Rulebook 3분할** — prefix 별 박스, 테두리 색으로 구분. 각 섹션이 어떤 CSV 와 어떻게 매칭되는지 한 줄 도식 설명.
+- **KNOB** — knob_ppid + step_matching 2단 조회. feature → func_step 조합 → step_id 확장.
+- **INLINE** — inline_matching 중심, INLINE_<item_id> 컬럼 매칭 설명.
+- **VM** — vm_matching feature_name → step_id 매핑. vmMeta 피처별 pill.
+- **rulebook CRUD BE** — inline_matching, vm_matching 추가 (`/api/splittable/rulebook?kind=...`).
+
 ## v8.8.8 — 2026-04-21
 
 인폼 새 폼 간소화 + fab_lot_id 자동 SplitTable 스냅샷 + 최근 루트 인폼 꼬리표 + .trash 숨김.

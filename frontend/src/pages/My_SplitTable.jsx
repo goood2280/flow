@@ -448,47 +448,101 @@ export default function My_SplitTable({user}){
             </div>);
           })()}
 
-          {/* v8.8.6/v8.8.7: Parameter Rulebook — 선택 제품 KNOB feature 별 뷰 + admin 인라인 편집. */}
+          {/* v8.8.9: Parameter Rulebook — prefix 별 섹션 분리.
+                KNOB: knob_ppid.csv (feature→func_step 조합/연산자/ppid) + step_matching.csv (func_step→step_id 확장)
+                INLINE: inline_matching.csv (item_id/step_id/desc) — INLINE_<item_id> 가 해당 step 에서 측정
+                VM: vm_matching.csv (feature_name/step_desc/step_id) — VM_<feature_name> 이 해당 step 에서 예측
+             */}
           {selProd && (() => {
-            const entries = Object.entries(knobMeta || {});
+            const SectionHeader = ({title, files, count, editKinds}) => (
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
+                <span style={{fontSize:10,fontWeight:700,color:"var(--text-primary)"}}>{title}</span>
+                <span style={{fontSize:9,color:"var(--text-secondary)"}}>({count} params)</span>
+                <span style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace"}}>
+                  → {files.join(" + ")}
+                </span>
+                {isAdmin && (editKinds||[]).map(k =>
+                  <button key={k} onClick={()=>setRulebookEdit&&setRulebookEdit(k)}
+                    style={{padding:"1px 6px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:9,cursor:"pointer"}}>편집 {k}</button>
+                )}
+              </div>
+            );
+
+            const knobEntries = Object.entries(knobMeta || {});
+            const vmEntries = Object.entries(vmMeta || {});
+
             return (
               <div style={{marginTop:12,marginBottom:10,padding:"8px 10px",borderRadius:6,background:"var(--bg-card)",border:"1px dashed var(--border)"}}>
-                <div style={{fontSize:10,fontWeight:700,color:"var(--text-secondary)",marginBottom:6,display:"flex",alignItems:"center",gap:6}}>
-                  <span>📘 Parameter Rulebook</span>
-                  <span style={{fontSize:9,opacity:0.8}}>({selProd} · {entries.length} params)</span>
-                  {isAdmin && <span style={{marginLeft:"auto"}}>
-                    <button onClick={()=>setRulebookEdit("knob_ppid")}
-                      style={{padding:"2px 8px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:9,cursor:"pointer"}}>편집 knob_ppid</button>
-                    <button onClick={()=>setRulebookEdit("step_matching")}
-                      style={{marginLeft:4,padding:"2px 8px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:9,cursor:"pointer"}}>편집 step_matching</button>
-                  </span>}
-                </div>
-                {entries.length===0 && (
-                  <div style={{fontSize:9,color:"var(--text-secondary)",padding:"6px 4px",fontStyle:"italic"}}>등록된 parameter 룰 없음 (선택 제품 기준)</div>
-                )}
-                <div style={{maxHeight:220,overflowY:"auto",display:"flex",flexDirection:"column",gap:6}}>
-                  {entries.map(([fname, meta]) => (
-                    <div key={fname} style={{padding:"5px 6px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid var(--border)"}}>
-                      <div style={{fontFamily:"monospace",fontSize:10,color:"var(--accent)",fontWeight:700}}>{fname}</div>
-                      <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:2,lineHeight:1.45}}>
-                        {(meta.groups || []).map((g, gi) => (
-                          <div key={gi} style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:1}}>
-                            <span style={{padding:"0 4px",background:"rgba(59,130,246,0.15)",color:"#3b82f6",borderRadius:3,fontFamily:"monospace",fontWeight:700}}>#{g.rule_order}</span>
-                            <span style={{fontFamily:"monospace",fontWeight:600,color:"var(--text-primary)"}}>{g.func_step}</span>
-                            {g.operator && <span style={{opacity:0.6}}>op={g.operator}</span>}
-                            {g.ppid && <span style={{fontFamily:"monospace",opacity:0.8}}>ppid={g.ppid}</span>}
-                            {g.category && <span style={{padding:"0 4px",background:"rgba(16,185,129,0.12)",color:"#16a34a",borderRadius:3,fontSize:8}}>{g.category}</span>}
-                            <span style={{flex:"1 1 100%",marginLeft:14,fontFamily:"monospace",fontSize:9,color:"var(--text-secondary)"}}>
-                              step_ids: [{(g.step_ids || []).join(", ") || "—"}]
-                            </span>
-                          </div>
-                        ))}
+                <div style={{fontSize:11,fontWeight:700,color:"var(--accent)",marginBottom:8}}>📘 Parameter Rulebook — {selProd}</div>
+
+                {/* ── KNOB 섹션 ───────────────────────────── */}
+                <div style={{marginBottom:10,padding:"6px 8px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid rgba(251,191,36,0.3)"}}>
+                  <SectionHeader title="🔧 KNOB_*" count={knobEntries.length}
+                    files={["knob_ppid.csv", "step_matching.csv"]}
+                    editKinds={["knob_ppid","step_matching"]} />
+                  <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:4,lineHeight:1.4}}>
+                    <b>연결 방식</b>: <span style={{fontFamily:"monospace"}}>knob_ppid</span> 의 feature_name 이 ML_TABLE 의 <span style={{fontFamily:"monospace"}}>KNOB_&lt;feature&gt;</span> 컬럼과 매칭 → function_step(s) 조합 + operator 로 라벨 구성 → 각 function_step 은 <span style={{fontFamily:"monospace"}}>step_matching</span> 의 step_id 들로 확장.
+                  </div>
+                  {knobEntries.length===0 && (
+                    <div style={{fontSize:9,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 KNOB 룰 없음.</div>
+                  )}
+                  <div style={{maxHeight:160,overflowY:"auto",display:"flex",flexDirection:"column",gap:4}}>
+                    {knobEntries.map(([fname, meta]) => (
+                      <div key={fname} style={{padding:"4px 6px",borderRadius:3,background:"var(--bg-secondary)"}}>
+                        <div style={{fontFamily:"monospace",fontSize:10,color:"#fbbf24",fontWeight:700}}>{fname}</div>
+                        <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:1,lineHeight:1.4}}>
+                          {(meta.groups || []).map((g, gi) => (
+                            <div key={gi} style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:1}}>
+                              <span style={{padding:"0 3px",background:"rgba(59,130,246,0.15)",color:"#3b82f6",borderRadius:2,fontFamily:"monospace",fontWeight:700}}>#{g.rule_order}</span>
+                              <span style={{fontFamily:"monospace",fontWeight:600,color:"var(--text-primary)"}}>{g.func_step}</span>
+                              {g.operator && <span style={{opacity:0.55}}>{g.operator}</span>}
+                              {g.ppid && <span style={{fontFamily:"monospace",opacity:0.7}}>[{g.ppid}]</span>}
+                              <span style={{flex:"1 1 100%",marginLeft:12,fontFamily:"monospace",fontSize:9,color:"var(--text-secondary)"}}>
+                                → [{(g.step_ids || []).join(", ") || "—"}]
+                              </span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-                <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:5,lineHeight:1.4}}>
-                  {isAdmin ? "admin: 상단 [편집] 버튼으로 제품별 rulebook 행 추가/수정/삭제." : "편집은 admin 권한 필요."}
+
+                {/* ── INLINE 섹션 ─────────────────────────── */}
+                <div style={{marginBottom:10,padding:"6px 8px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid rgba(16,185,129,0.3)"}}>
+                  <SectionHeader title="🔬 INLINE_*" count={"?"}
+                    files={["inline_matching.csv", "(+ inline_item_map / inline_step_match / inline_subitem_pos)"]}
+                    editKinds={["inline_matching"]} />
+                  <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:4,lineHeight:1.4}}>
+                    <b>연결 방식</b>: ML_TABLE 의 <span style={{fontFamily:"monospace"}}>INLINE_&lt;item_id&gt;</span> 컬럼이 <span style={{fontFamily:"monospace"}}>inline_matching</span> 의 item_id 와 매칭 → item_desc + step_id 를 sub-label 로 부착. 상세 위치/sub-item 은 inline_subitem_pos/inline_step_match 보조.
+                  </div>
+                </div>
+
+                {/* ── VM 섹션 ─────────────────────────────── */}
+                <div style={{marginBottom:6,padding:"6px 8px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid rgba(139,92,246,0.3)"}}>
+                  <SectionHeader title="🤖 VM_*" count={vmEntries.length}
+                    files={["vm_matching.csv"]}
+                    editKinds={["vm_matching"]} />
+                  <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:4,lineHeight:1.4}}>
+                    <b>연결 방식</b>: ML_TABLE 의 <span style={{fontFamily:"monospace"}}>VM_&lt;feature_name&gt;</span> 컬럼이 <span style={{fontFamily:"monospace"}}>vm_matching</span> 의 feature_name 과 매칭 → step_desc + step_id 부착. 예측치(PREDICTED_*) 도 동일 테이블에서 매칭.
+                  </div>
+                  {vmEntries.length===0 && (
+                    <div style={{fontSize:9,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 VM 룰 없음.</div>
+                  )}
+                  <div style={{maxHeight:140,overflowY:"auto",display:"flex",flexDirection:"column",gap:3}}>
+                    {vmEntries.map(([fname, meta]) => (
+                      <div key={fname} style={{padding:"3px 6px",borderRadius:3,background:"var(--bg-secondary)",display:"flex",gap:6,fontFamily:"monospace",fontSize:9}}>
+                        <span style={{color:"#8b5cf6",fontWeight:700}}>{fname}</span>
+                        {meta.step_desc && <span style={{color:"var(--text-secondary)"}}>{meta.step_desc}</span>}
+                        <span style={{flex:1}}/>
+                        {meta.step_id && <span style={{padding:"0 4px",background:"rgba(96,165,250,0.15)",color:"#60a5fa",borderRadius:2,fontWeight:700}}>{meta.step_id}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:4,lineHeight:1.4}}>
+                  {isAdmin ? "admin: 섹션별 [편집] 버튼으로 제품별 rulebook 행 추가/수정/삭제. (편집 modal 은 별도 추가 예정)" : "편집은 admin 권한 필요. CSV 는 Base 루트에 위치."}
                 </div>
               </div>
             );
