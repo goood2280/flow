@@ -152,7 +152,8 @@ def approve_user(req: ApproveReq, request: Request, _admin=Depends(require_admin
         if u["username"] == req.username:
             u["status"] = "approved"
             if not u.get("tabs"):
-                u["tabs"] = "filebrowser,dashboard,splittable"
+                # v8.8.3: 신규 승인 시 inform/meeting/calendar 기본 포함.
+                u["tabs"] = "filebrowser,dashboard,splittable,inform,meeting,calendar"
             write_users(users)
             send_notify(req.username, "Account Approved",
                         "Your account has been approved.", "info")
@@ -235,13 +236,26 @@ def set_tabs(req: PermReq, request: Request, _admin=Depends(require_admin)):
 
 @router.get("/user-tabs")
 def get_user_tabs(request: Request, username: str = Query(...)):
-    """v8.4.6: 본인 또는 admin 만."""
+    """v8.4.6: 본인 또는 admin 만.
+    v8.8.3: inform/meeting/calendar 하위호환 — 기존 유저의 tabs 에 누락됐으면 자동 추가."""
+    # v8.8.3: 새로 추가된 탭 — 기존 유저는 기본 허용.
+    _NEW_DEFAULT_TABS = {"inform", "meeting", "calendar"}
     verify_owner(request, username)
     for u in read_users():
         if u["username"] == username:
             if u.get("role") == "admin":
                 return {"tabs": "__all__"}
-            return {"tabs": u.get("tabs", "filebrowser,dashboard,splittable")}
+            raw = u.get("tabs", "")
+            if not raw:
+                tabs_list = ["filebrowser", "dashboard", "splittable",
+                             "inform", "meeting", "calendar"]
+            else:
+                tabs_list = [t.strip() for t in raw.split(",") if t.strip()]
+                # 기존 유저가 저장된 tabs 에 신규 탭을 갖고 있지 않으면 자동 추가 (하위호환).
+                for nt in _NEW_DEFAULT_TABS:
+                    if nt not in tabs_list:
+                        tabs_list.append(nt)
+            return {"tabs": ",".join(tabs_list)}
     raise HTTPException(404)
 
 

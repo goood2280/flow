@@ -1,4 +1,4 @@
-"""routers/filebrowser.py v4.1.0 - lazy parquet + CSV + SQL, DB + Base roots.
+"""routers/filebrowser.py v4.1.1 (v8.8.3) - lazy parquet + CSV + SQL, DB + Base roots.
 
 v4.1.0 (2026-04): FabCanvas data split — in addition to the Hive-flat DB root
 (FAB/VM/MASK/KNOB/INLINE/ET/YLD/LOTS + wafer_maps/), a sibling `Base` root now
@@ -7,6 +7,9 @@ mask.csv, inline_*.csv, yld_shot_agg.csv, dvc_rulebook.csv,
 features_*.parquet, _uniques.json). The Base root is resolved via
 `core.paths.PATHS.base_root` (backed by `core.roots.get_base_root()` — supports
 FABCANVAS_BASE_ROOT env or admin_settings.data_roots.base).
+
+v8.8.3: /base-file/delete 가 db_root 의 단일 CSV/parquet(=의미적 Base 파일)까지 삭제.
+        FE 에서 Base 섹션 목록에 뜨는 파일이면 admin 이 항상 삭제할 수 있게 함.
 
 New endpoints:
   - GET /api/filebrowser/scopes        → list of active scopes (DB + Base)
@@ -574,10 +577,19 @@ class BaseDeleteReq(BaseModel):
     file: str
     username: str = ""
 
+
 @router.post("/base-file/delete")
 def delete_base_file(req: BaseDeleteReq):
-    """v8.4.5 — Admin 이 Base 루트의 파일 삭제. 화이트리스트(parquet/csv/md/json) 만 허용,
-    subdir escape 금지. Archive 로 이동 후 원본 제거 (복구 가능).
+    """v8.8.3 — Admin 이 Base 섹션 단일 파일(원본) 삭제.
+
+    v8.4.5 에선 base_root 파일만 대상이었으나, v8.7.5/v8.7.7 이후 UI 는 db_root
+    루트의 단일 csv/parquet 도 Base 로 노출한다. 본 엔드포인트도 두 루트를 모두
+    탐색해 첫 매치를 삭제한다. 삭제는 archive (trash/<ts>_<name>) 로 대체되어
+    언제든 복구 가능.
+
+    - 화이트리스트 확장자만 허용 (parquet/csv/json/md/txt)
+    - subdir escape / 숨김파일 금지
+    - trash 위치: 파일이 속한 루트 하위 `.trash/`
     """
     from routers.admin import _is_admin
     if not _is_admin(req.username):
@@ -585,20 +597,46 @@ def delete_base_file(req: BaseDeleteReq):
     name = (req.file or "").strip()
     if not name or "/" in name or "\\" in name or ".." in name or name.startswith("."):
         raise HTTPException(400, "Invalid filename")
-    base = PATHS.base_root
-    fp = base / name
-    if not fp.is_file():
+
+    allowed_ext = {".parquet", ".csv", ".json", ".md", ".txt"}
+    base_root = PATHS.base_root
+    db_root = PATHS.db_root
+
+    # v8.8.3: base_root 우선, 없으면 db_root fallback (UI 가 양쪽을 통합 노출하므로).
+    candidates = []
+    if base_root.is_dir():
+        candidates.append(base_root)
+    if db_root.is_dir() and db_root.resolve() != (base_root.resolve() if base_root.is_dir() else None):
+        candidates.append(db_root)
+
+    fp = None
+    host_root = None
+    for root_dir in candidates:
+        cand = root_dir / name
+        # 경로 escape 방어
+        try:
+            cand.resolve().relative_to(root_dir.resolve())
+        except ValueError:
+            continue
+        if cand.is_file():
+            fp = cand
+            host_root = root_dir
+            break
+
+    if fp is None or host_root is None:
         raise HTTPException(404, f"Not found: {name}")
-    if fp.suffix.lower() not in {".parquet", ".csv", ".json", ".md", ".txt"}:
+    if fp.suffix.lower() not in allowed_ext:
         raise HTTPException(400, f"Unsupported file type: {fp.suffix}")
-    # Archive to .trash/<ts>_<name>
+
+    # Archive to <host_root>/.trash/<ts>_<name>
     try:
-        trash = base / ".trash"
+        trash = host_root / ".trash"
         trash.mkdir(parents=True, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         archived = trash / f"{ts}_{name}"
         fp.rename(archived)
-        return {"ok": True, "file": name, "archived": str(archived)}
+        logger.info(f"base-file/delete: {name} → {archived} (by {req.username})")
+        return {"ok": True, "file": name, "archived": str(archived), "host": host_root.name}
     except Exception as e:
         raise HTTPException(500, f"Delete failed: {e}")
 

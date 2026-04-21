@@ -182,29 +182,64 @@ def _load_mail_cfg() -> dict:
 
 
 def _resolve_mail_group_ids_to_emails(mg_ids: List[str]) -> List[str]:
-    """mail_groups.py 의 메일 그룹 id 리스트 → 멤버 username → email list."""
+    """v8.8.3: FE 가 병합해서 보내는 id 처리.
+    - "mg:<rawId>" → mail_groups.json 에서 조회 (extra_emails 포함).
+    - "grp:<rawId>" → groups.json 에서 조회 (members 만, extra_emails 없음).
+    - prefix 없는 raw id → 하위 호환: mail_groups.json 에서 먼저 조회.
+    """
     if not mg_ids:
         return []
     try:
         from routers.mail_groups import _load as _mg_load
+        from routers.groups import _load as _grp_load
         from routers.auth import read_users
     except Exception:
         return []
-    groups = {g.get("id"): g for g in _mg_load() if isinstance(g, dict)}
+
+    mg_by_id = {g.get("id"): g for g in _mg_load() if isinstance(g, dict)}
+    grp_by_id = {g.get("id"): g for g in _grp_load() if isinstance(g, dict)}
+    all_users = {u.get("username", ""): u for u in read_users()}
+
     usernames: set = set()
     direct_emails: List[str] = []
-    for gid in mg_ids:
-        g = groups.get(gid)
-        if not g:
-            continue
-        for m in (g.get("members") or []):
-            if m:
-                usernames.add(m)
-        for em in (g.get("extra_emails") or []):
-            em = str(em).strip()
-            if em and "@" in em:
-                direct_emails.append(em)
-    all_users = {u.get("username", ""): u for u in read_users()}
+
+    for prefixed_id in mg_ids:
+        if prefixed_id.startswith("mg:"):
+            raw = prefixed_id[3:]
+            g = mg_by_id.get(raw)
+            if not g:
+                continue
+            for m in (g.get("members") or []):
+                if m:
+                    usernames.add(m)
+            for em in (g.get("extra_emails") or []):
+                em = str(em).strip()
+                if em and "@" in em:
+                    direct_emails.append(em)
+        elif prefixed_id.startswith("grp:"):
+            raw = prefixed_id[4:]
+            g = grp_by_id.get(raw)
+            if not g:
+                continue
+            # groups 에는 owner + members 를 모두 수신 대상으로 포함
+            for m in (g.get("members") or []):
+                if m:
+                    usernames.add(m)
+            if g.get("owner"):
+                usernames.add(g["owner"])
+        else:
+            # legacy: prefix 없음 → mail_groups 에서 raw id 조회
+            g = mg_by_id.get(prefixed_id)
+            if not g:
+                continue
+            for m in (g.get("members") or []):
+                if m:
+                    usernames.add(m)
+            for em in (g.get("extra_emails") or []):
+                em = str(em).strip()
+                if em and "@" in em:
+                    direct_emails.append(em)
+
     out: List[str] = list(direct_emails)
     for un in usernames:
         u = all_users.get(un)

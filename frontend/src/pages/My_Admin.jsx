@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, Component } from "react";
 import Loading from "../components/Loading";
 import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
 import { sf, dl } from "../lib/api";
-const ALL_TABS=["filebrowser","dashboard","splittable","tracker","tablemap","ml","devguide","dashboard_chart"];
+// v8.8.3: inform/meeting/calendar 권한 항목 추가.
+const ALL_TABS=["filebrowser","dashboard","splittable","tracker","tablemap","ml","devguide","dashboard_chart","inform","meeting","calendar"];
 // v8.7.5: u.tabs 는 string 이지만 legacy json 에서 array 로 저장된 기록이 있을 수 있어
 // "r.split is not a function" 방지를 위해 정규화 헬퍼를 둔다.
 function _tabsToArray(v){
@@ -1151,12 +1152,14 @@ function AWSPanel({user}){
   );
 }
 
-// ── Groups Panel (v8.8.1 — admin/test 제외, 유저도 사용) ──
+// ── Groups Panel (v8.8.3 — description 추가, 관심 WF 제거) ──
 function GroupsPanel({allUsers, isAdmin, currentUser}){
   const [groups,setGroups]=useState([]);
   const [sel,setSel]=useState(null);
   const [newName,setNewName]=useState("");
-  const [newLot,setNewLot]=useState("");
+  const [newDesc,setNewDesc]=useState("");
+  const [editDesc,setEditDesc]=useState("");
+  const [editDescSaved,setEditDescSaved]=useState(false);
   const [msg,setMsg]=useState("");
   // v8.8.1: 그룹 멤버 후보. admin/test 제외 — 모든 로그인 유저가 조회 가능.
   const [eligible,setEligible]=useState([]);
@@ -1168,8 +1171,8 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
   const create=()=>{
     const n=newName.trim();if(!n)return;
     sf("/api/groups/create",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({name:n,members:[],watched_lots:[]})})
-      .then(()=>{setNewName("");setMsg("생성 완료");load();}).catch(e=>setMsg(e.message));
+      body:JSON.stringify({name:n,description:newDesc.trim()||null,members:[]})})
+      .then(()=>{setNewName("");setNewDesc("");setMsg("생성 완료");load();}).catch(e=>setMsg(e.message));
   };
   const del=(id)=>{if(!confirm("삭제하시겠습니까?"))return;
     sf("/api/groups/delete?id="+encodeURIComponent(id),{method:"POST"})
@@ -1190,6 +1193,10 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
   const setModules=(id,mods)=>sf("/api/groups/modules/set?id="+encodeURIComponent(id),
     {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({modules:mods})})
     .then(load);
+  const saveDesc=(id,desc)=>sf("/api/groups/update?id="+encodeURIComponent(id),
+    {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({description:desc.trim()||null})})
+    .then(()=>{setEditDescSaved(true);setTimeout(()=>setEditDescSaved(false),2000);load();})
+    .catch(e=>setMsg(e.message));
   const MODULES=["GATE","STI","PC","MOL","BEOL","ET","EDS","S-D Epi","Spacer","Well","기타"];
   const toggleModule=(id,mod,arr)=>{
     const set=new Set(arr||[]);
@@ -1198,6 +1205,8 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
   };
 
   const cur=groups.find(g=>g.id===sel);
+  // 선택 그룹 변경 시 editDesc 동기화.
+  useEffect(()=>{setEditDesc(cur?.description||"");setEditDescSaved(false);},[sel,cur?.description]);
   // v8.8.1: admin/test 제외된 후보 풀에서 이미 멤버인 사람 제외.
   const availableUsers=(eligible||[]).map(u=>u.username).filter(u=>u&&!(cur?.members||[]).includes(u));
   // 편집 권한 — admin 또는 owner.
@@ -1208,9 +1217,13 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
       {/* List */}
       <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:12}}>
         <div style={{fontSize:13,fontWeight:600,marginBottom:10}}>그룹 목록 ({groups.length})</div>
-        <div style={{display:"flex",gap:6,marginBottom:10}}>
+        <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:10}}>
           <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="새 그룹 이름"
-            style={{flex:1,padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12}}/>
+            onKeyDown={e=>{if(e.key==="Enter")create();}}
+            style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12}}/>
+          <input value={newDesc} onChange={e=>setNewDesc(e.target.value)} placeholder="설명 (선택)"
+            onKeyDown={e=>{if(e.key==="Enter")create();}}
+            style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11}}/>
           <button onClick={create} style={{padding:"6px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:12,cursor:"pointer"}}>생성</button>
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:400,overflow:"auto"}}>
@@ -1220,8 +1233,9 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
                 background:sel===g.id?"var(--bg-tertiary)":"transparent",
                 border:"1px solid "+(sel===g.id?"var(--accent)":"transparent")}}>
               <div style={{fontSize:12,fontWeight:600}}>{g.name}</div>
-              <div style={{fontSize:10,color:"var(--text-secondary)"}}>
-                owner: {g.owner} · members: {(g.members||[]).length} · lots: {(g.watched_lots||[]).length} · modules: {(g.modules||[]).length}
+              {g.description&&<div style={{fontSize:10,color:"var(--text-secondary)",marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{g.description}</div>}
+              <div style={{fontSize:10,color:"var(--text-secondary)",marginTop:1}}>
+                owner: {g.owner} · members: {(g.members||[]).length} · modules: {(g.modules||[]).length}
               </div>
             </div>
           ))}
@@ -1238,6 +1252,25 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
             <div style={{fontSize:16,fontWeight:700}}>{cur.name}</div>
             <div style={{flex:1,fontSize:10,color:"var(--text-secondary)"}}>owner: {cur.owner} · id: {cur.id}</div>
             {canEdit&&<button onClick={()=>del(cur.id)} style={{padding:"5px 10px",borderRadius:4,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",fontSize:11,cursor:"pointer"}}>그룹 삭제</button>}
+          </div>
+
+          {/* 설명 */}
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:12,fontWeight:600,marginBottom:4}}>설명</div>
+            {canEdit
+              ?<div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
+                <textarea value={editDesc} onChange={e=>setEditDesc(e.target.value)} rows={2}
+                  placeholder="이 그룹의 목적을 간단히 설명하세요."
+                  style={{flex:1,padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,resize:"vertical"}}/>
+                <button onClick={()=>saveDesc(cur.id,editDesc)}
+                  style={{padding:"6px 12px",borderRadius:4,border:"none",background:editDescSaved?"#10b981":"var(--accent)",color:"#fff",fontSize:11,cursor:"pointer",whiteSpace:"nowrap"}}>
+                  {editDescSaved?"저장됨":"저장"}
+                </button>
+              </div>
+              :<div style={{fontSize:11,color:cur.description?"var(--text-primary)":"var(--text-secondary)",fontStyle:cur.description?"normal":"italic",padding:"4px 0"}}>
+                {cur.description||"설명 없음"}
+              </div>
+            }
           </div>
 
           <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>멤버 ({(cur.members||[]).length})</div>
@@ -1259,21 +1292,6 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
             <span style={{fontSize:10,color:"var(--text-secondary)",alignSelf:"center"}}>admin/test 계정은 자동 제외</span>
           </div>}
 
-          <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>관심 LOT_WF ({(cur.watched_lots||[]).length})</div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
-            {(cur.watched_lots||[]).map(l=>(
-              <span key={l} style={{padding:"3px 10px",borderRadius:999,background:"var(--bg-tertiary)",fontSize:11,display:"inline-flex",alignItems:"center",gap:6,fontFamily:"monospace"}}>
-                {l}
-                <button onClick={()=>rmLot(cur.id,l)} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11,padding:0}}>×</button>
-              </span>
-            ))}
-          </div>
-          <div style={{display:"flex",gap:6}}>
-            <input value={newLot} onChange={e=>setNewLot(e.target.value)} placeholder="lot_id (예: A0001B.1)"
-              style={{flex:1,padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,fontFamily:"monospace"}}/>
-            <button onClick={()=>addLot(cur.id)} style={{padding:"6px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,cursor:"pointer"}}>추가</button>
-          </div>
-
           <div style={{fontSize:12,fontWeight:600,marginBottom:6,marginTop:6}}>담당 모듈 ({(cur.modules||[]).length})</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
             {MODULES.map(m=>{
@@ -1290,8 +1308,8 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
             • 이 그룹에 속한 유저는 Dashboard/Tracker 에서 이 그룹에 연결된 차트·이슈만 공유함.<br/>
             • admin 은 모든 그룹과 콘텐츠를 볼 수 있음 (전체 담당).<br/>
             • <b>담당 모듈</b>은 인폼 로그의 "내 모듈" 필터 대상 — 멤버 유저가 해당 모듈 인폼을 받아보게 됨.<br/>
-            • 관심 LOT_WF 목록은 향후 SplitTable/Dashboard 의 필터로 활용됨.<br/>
-            • <b>v8.8.1</b> admin/test 계정은 멤버 풀에서 자동 제외 · 생성자는 자동 가입되지 않음 (명시적으로 추가해야 함).
+            • <b>설명</b>은 그룹의 목적·소속 부서 등 자유 텍스트. 리스트 보조 텍스트로 노출됨.<br/>
+            • <b>v8.8.3</b> admin/test 계정은 멤버 풀에서 자동 제외 · 생성자는 자동 가입되지 않음 (명시적으로 추가해야 함).
           </div>
         </>}
       </div>

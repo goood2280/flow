@@ -39,7 +39,7 @@ export default function My_SplitTable({user}){
   const[noteDraftScope,setNoteDraftScope]=useState(null);  // {scope, product, root_lot_id, wafer_id, param}
   const[tab,setTab]=useState("view");const[history,setHistory]=useState([]);const[histAll,setHistAll]=useState(false);
   const[colSearch,setColSearch]=useState("");const[customCols,setCustomCols]=useState([]);const[customName,setCustomName]=useState("");
-  const[showSettings,setShowSettings]=useState(false);const[newPrefix,setNewPrefix]=useState("");
+  const[showSettings,setShowSettings]=useState(false);const[newPrefix,setNewPrefix]=useState("");const[mlOnly,setMlOnly]=useState(true);
   const[precision,setPrecision]=useState({});const[precisionDraft,setPrecisionDraft]=useState({});
   const[enabledSources,setEnabledSources]=useState(null); // null = loading, Set of product names
   // v8.4.4: product 별 lot_id 컬럼 override (soft-landing)
@@ -318,21 +318,23 @@ export default function My_SplitTable({user}){
             <span style={{fontSize:12,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>Split Table Settings</span>
             <span onClick={()=>setShowSettings(false)} style={{cursor:"pointer",color:"var(--text-secondary)",fontSize:16}}>✕</span>
           </div>
-          {/* Source visibility checkboxes */}
+          {/* Source visibility checkboxes — Base 파일(ML_TABLE_ 등)만 표시 */}
           <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:6,fontWeight:600}}>Visible Sources (check to show to users)</div>
-          {products.map(p=>{const checked=!enabledSources||enabledSources.has(p.name);return(
-            <label key={p.name} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--border)"}}>
-              <input type="checkbox" checked={checked} onChange={()=>{
-                const next=new Set(enabledSources||products.map(x=>x.name));
-                if(next.has(p.name))next.delete(p.name);else next.add(p.name);
-                setEnabledSources(next);saveSourceConfig(next);
-              }} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
-              <span style={{fontFamily:"monospace",flex:1}}>{p.name}</span>
-              <span style={{fontSize:9,color:"var(--text-secondary)"}}>{p.type||"parquet"}</span>
-            </label>);})}
-          <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:4,marginBottom:10}}>
-            {enabledSources?enabledSources.size:products.length} of {products.length} visible to users
-          </div>
+          {(()=>{const baseProds=products.filter(p=>p.source_type==="base_file");const allBaseNames=baseProds.map(x=>x.name);return(<>
+            {baseProds.map(p=>{const checked=!enabledSources||enabledSources.has(p.name);return(
+              <label key={p.name} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--border)"}}>
+                <input type="checkbox" checked={checked} onChange={()=>{
+                  const next=new Set(enabledSources||allBaseNames);
+                  if(next.has(p.name))next.delete(p.name);else next.add(p.name);
+                  setEnabledSources(next);saveSourceConfig(next);
+                }} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
+                <span style={{fontFamily:"monospace",flex:1}}>{p.name}</span>
+                <span style={{fontSize:9,color:"var(--text-secondary)"}}>{p.type||"parquet"}</span>
+              </label>);})}
+            <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:4,marginBottom:10}}>
+              {enabledSources?[...enabledSources].filter(n=>allBaseNames.includes(n)).length:baseProds.length} of {baseProds.length} visible to users
+            </div>
+          </>)})()}
           {/* Prefix management */}
           <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontWeight:600}}>Prefix Management</div>
           {prefixes.map(p=><div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"3px 0",fontSize:11}}>
@@ -369,12 +371,19 @@ export default function My_SplitTable({user}){
               <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>root_col</span><input value={ov.root_col||""} onChange={e=>setOv("root_col",e.target.value)} placeholder="root_lot_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
               <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>wf_col</span><input value={ov.wf_col||""} onChange={e=>setOv("wf_col",e.target.value)} placeholder="wafer_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
               <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>fab_col</span><input value={ov.fab_col||""} onChange={e=>setOv("fab_col",e.target.value)} placeholder="fab_lot_id" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
-              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>fab_source</span>
-                <select value={ov.fab_source||""} onChange={e=>setOv("fab_source",e.target.value)} style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}>
+              <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
+                  <span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>fab_source</span>
+                  <label style={{display:"flex",alignItems:"center",gap:4,marginLeft:"auto",fontSize:9,color:"var(--text-secondary)",cursor:"pointer",userSelect:"none"}}>
+                    <input type="checkbox" checked={mlOnly} onChange={e=>setMlOnly(e.target.checked)} style={{width:11,height:11,accentColor:"var(--accent)"}}/>
+                    ML_TABLE만 보기
+                  </label>
+                </div>
+                <select value={ov.fab_source||""} onChange={e=>setOv("fab_source",e.target.value)} style={{...S,width:"100%",fontSize:10,fontFamily:"monospace"}}>
                   <option value="">— 없음 (ML_TABLE 내장 사용) —</option>
-                  {fabSourceOptions.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                  {fabSourceOptions.filter(o=>!mlOnly||o.value.toUpperCase().includes("ML_TABLE")).map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
-              </label>
+              </div>
               <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}><span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)"}}>ts_col</span><input value={ov.ts_col||""} onChange={e=>setOv("ts_col",e.target.value)} placeholder="out_ts (최신기준)" style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/></label>
               <button onClick={()=>{sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:[...(enabledSources||new Set())],lot_overrides:lotOverrides||{}})}).then(()=>{loadView&&loadView();});}} style={{marginTop:4,padding:"4px 10px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,cursor:"pointer",fontWeight:600}}>Save Overrides</button>
             </div>);

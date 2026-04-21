@@ -210,27 +210,35 @@ def read_source(source_type: str = "", root: str = "", product: str = "",
 # SQL / filter helpers
 # ──────────────────────────────────────────────────────────────────────────
 def apply_sql_like(df, sql_str: str):
-    """Filter df with pseudo-SQL. Supports LIKE / NOT LIKE → str.contains conversion."""
+    """Filter df with pseudo-SQL.
+
+    v8.8.3 fix: LIKE / NOT LIKE 는 pl.sql_expr 에 그대로 전달 (네이티브 지원).
+    이전 버전은 LIKE → .str.contains() 로 변환 후 sql_expr 에 넘겼으나,
+    pl.sql_expr 은 Python Polars 점(.) 메서드 문법을 해석하지 못해 빈 결과 또는
+    SQLInterfaceError 가 발생했음.
+
+    지원 구문:
+      - SQL 네이티브 (pl.sql_expr): ==, !=, >, <, >=, <=, AND(&), OR(|),
+        LIKE, NOT LIKE, IN (...), IS NULL, IS NOT NULL, BETWEEN
+      - Polars 점-메서드 fallback (eval): col.is_in([...]), col.is_not_null(),
+        col.is_null(), col.str.contains(...) — sql_expr 실패 시 시도.
+    """
     s = (sql_str or "").strip()
     if not s:
         return df
-    converted = s
-    for m in re.finditer(r"(\w+)\s+NOT\s+LIKE\s+'([^']*)'", s, re.IGNORECASE):
-        col, pat = m.group(1), m.group(2)
-        converted = converted.replace(
-            m.group(0),
-            f"~{col}.str.contains('{pat.replace('%', '.*').replace('_', '.')}')"
-        )
-    for m in re.finditer(r"(\w+)\s+LIKE\s+'([^']*)'", converted, re.IGNORECASE):
-        col, pat = m.group(1), m.group(2)
-        converted = converted.replace(
-            m.group(0),
-            f"{col}.str.contains('{pat.replace('%', '.*').replace('_', '.')}')"
-        )
+    # 1차: pl.sql_expr — LIKE/NOT LIKE/IN/IS NULL 등 SQL 구문 직접 처리.
     try:
-        return df.filter(pl.sql_expr(converted))
-    except Exception as e:
-        raise HTTPException(400, f"SQL error: {e}")
+        return df.filter(pl.sql_expr(s))
+    except Exception as sql_err:
+        pass
+    # 2차 fallback: Polars 점-메서드 표현식 (is_in, is_not_null 등).
+    # 안전한 네임스페이스에 컬럼명 → pl.col(name) 매핑만 노출.
+    try:
+        ns = {c: pl.col(c) for c in df.columns}
+        expr = eval(s, {"__builtins__": {}, "pl": pl}, ns)  # noqa: S307
+        return df.filter(expr)
+    except Exception as eval_err:
+        raise HTTPException(400, f"SQL error: {sql_err} | expr error: {eval_err}")
 
 
 def apply_time_window(df, time_col: str, days):

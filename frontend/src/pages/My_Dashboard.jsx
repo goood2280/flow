@@ -8,7 +8,8 @@ if(typeof document!=="undefined"&&!document.getElementById("dash-styles")){
   document.head.appendChild(s);
 }
 const API = "/api/dashboard";
-const sf = (url, o) => fetch(url, o).then(r => { if (!r.ok) return r.json().then(d => { throw new Error(d.detail || "HTTP " + r.status); }); return r.json(); });
+// v8.8.3: d.detail 이 배열(FastAPI validation error)일 경우 JSON 문자열화.
+const sf = (url, o) => fetch(url, o).then(r => { if (!r.ok) return r.json().then(d => { const det = d.detail; throw new Error(det ? (typeof det === "string" ? det : JSON.stringify(det)) : "HTTP " + r.status); }); return r.json(); });
 const COLORS = ["#6366f1","#f59e0b","#ec4899","#10b981","#3b82f6","#ef4444","#8b5cf6","#06b6d4","#f97316","#84cc16","#a855f7","#14b8a6","#e11d48","#0ea5e9","#d946ef"];
 const PASTEL = ["#818cf8","#fbbf24","#f472b6","#34d399","#60a5fa","#f87171","#a78bfa","#22d3ee","#fb923c","#a3e635","#c084fc","#2dd4bf","#fb7185","#38bdf8","#e879f9"];
 
@@ -870,7 +871,8 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
     )}
     {!columnsLoading && columnsError && (
       <div style={{ padding: "6px 10px", marginBottom: 8, borderRadius: 6, background: "rgba(239,68,68,0.10)", border: "1px dashed rgba(239,68,68,0.5)", color: "#b91c1c", fontSize: 11 }}>
-        ⚠ 컬럼 로드 실패: {columnsError}
+        {/* v8.8.3: columnsError 에 서버 detail 이 포함되므로 prefix 없이 그대로 표시 */}
+        ⚠ {columnsError}
       </div>
     )}
     {!columnsLoading && !columnsError && columns.length === 0 && (
