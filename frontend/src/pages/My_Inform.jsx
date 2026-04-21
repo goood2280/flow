@@ -4,7 +4,8 @@
  * 삭제 정책: 작성자 본인만 (관리자도 불가) — 서버에서도 동일하게 강제됨.
  */
 import { useEffect, useMemo, useState } from "react";
-import { sf, authSrc } from "../lib/api";
+import { sf, authSrc, postJson } from "../lib/api";
+import PageGear from "../components/PageGear";
 
 const API = "/api/informs";
 
@@ -603,6 +604,51 @@ function PlanSummaryCard({ thread }) {
   );
 }
 
+/* v8.7.8: Lot drill-down 모듈별 요약 테이블
+   각 모듈에 대해 (등록됨, 메일 전송됨) 을 체크/미체크로 한눈에 */
+function LotModuleSummary({ thread, modules }) {
+  const rows = (modules || []).map(m => {
+    const entries = (thread || []).filter(e => (e.module || "") === m);
+    const hasInform = entries.length > 0;
+    // mail 여부: 현재 스키마엔 mail flag 가 인폼 level 에 없음 → 댓글/상태 변경 any 존재 여부로 대체
+    const hasMail = entries.some(e => e.mail_sent || e.mail || (e.history || []).some(h => (h.action || "").includes("mail")));
+    const rootCount = entries.filter(e => !e.parent_id).length;
+    const replyCount = entries.filter(e => e.parent_id).length;
+    return { module: m, hasInform, hasMail, rootCount, replyCount };
+  });
+  if (!rows.length) return null;
+  return (
+    <div style={{ marginBottom: 14, padding: 10, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, fontFamily: "monospace", color: "var(--accent)" }}>📋 모듈별 진행 요약</div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 11, width: "100%" }}>
+          <thead>
+            <tr style={{ background: "var(--bg-tertiary)" }}>
+              <th style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>모듈</th>
+              <th style={{ padding: "4px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>인폼</th>
+              <th style={{ padding: "4px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>메일</th>
+              <th style={{ padding: "4px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>루트</th>
+              <th style={{ padding: "4px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>답글</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.module}>
+                <td style={{ padding: "3px 8px", fontFamily: "monospace", borderBottom: "1px solid var(--border)" }}>{r.module}</td>
+                <td style={{ padding: "3px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", color: r.hasInform ? "#22c55e" : "var(--text-secondary)", fontWeight: 700 }}>{r.hasInform ? "✓" : "·"}</td>
+                <td style={{ padding: "3px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", color: r.hasMail ? "#3b82f6" : "var(--text-secondary)", fontWeight: 700 }}>{r.hasMail ? "✓" : "·"}</td>
+                <td style={{ padding: "3px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)" }}>{r.rootCount}</td>
+                <td style={{ padding: "3px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)" }}>{r.replyCount}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+
 /* ── 메인 페이지 ── */
 export default function My_Inform({ user }) {
   const [constants, setConstants] = useState({ modules: [], reasons: [], flow_statuses: [] });
@@ -870,8 +916,55 @@ export default function My_Inform({ user }) {
       }}>{label}</button>
   );
 
+  // v8.7.8: 모듈 순서 편집 (admin → PageGear)
+  const [modDraft, setModDraft] = useState(null);
+  const saveModuleOrder = () => {
+    if (!Array.isArray(modDraft)) return;
+    postJson("/api/informs/config", { modules: modDraft })
+      .then(d => { setConstants(c => ({ ...c, modules: d.config?.modules || modDraft })); setModDraft(null); })
+      .catch(e => alert("모듈 순서 저장 실패: " + (e.message || e)));
+  };
+  const moveMod = (i, delta) => {
+    if (!Array.isArray(modDraft)) return;
+    const j = i + delta; if (j < 0 || j >= modDraft.length) return;
+    const n = modDraft.slice(); [n[i], n[j]] = [n[j], n[i]]; setModDraft(n);
+  };
+
   return (
-    <div style={{ display: "flex", height: "calc(100vh - 48px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
+    <div style={{ display: "flex", height: "calc(100vh - 48px)", background: "var(--bg-primary)", color: "var(--text-primary)", position: "relative" }}>
+      <PageGear title="인폼 설정" canEdit={isAdmin} position="bottom-left">
+        <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>
+          모듈 표시 순서를 관리합니다 (Lot 뷰에서 이 순서대로 그룹핑).
+        </div>
+        {!modDraft && (
+          <button onClick={() => setModDraft([...(constants.modules || [])])} disabled={!isAdmin}
+            style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
+            📋 모듈 순서 편집 ({(constants.modules || []).length})
+          </button>
+        )}
+        {modDraft && (
+          <div>
+            <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 6 }}>드래그 대신 ↑↓ 버튼으로 순서 조정</div>
+            <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
+              {modDraft.map((m, i) => (
+                <div key={m + i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace" }}>
+                  <span style={{ width: 20, color: "var(--text-secondary)" }}>{i + 1}</span>
+                  <span style={{ flex: 1 }}>{m}</span>
+                  <button onClick={() => moveMod(i, -1)} style={{ padding: "1px 6px", fontSize: 10, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 3, cursor: "pointer" }}>↑</button>
+                  <button onClick={() => moveMod(i, 1)} style={{ padding: "1px 6px", fontSize: 10, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 3, cursor: "pointer" }}>↓</button>
+                  <button onClick={() => setModDraft(modDraft.filter((_, j) => j !== i))} style={{ padding: "1px 6px", fontSize: 10, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", borderRadius: 3, cursor: "pointer" }}>×</button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+              <input id="__mod_add_input" placeholder="새 모듈 이름" style={{ flex: 1, minWidth: 120, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11 }}
+                onKeyDown={e => { if (e.key === "Enter") { const v = e.target.value.trim(); if (v && !modDraft.includes(v)) { setModDraft([...modDraft, v]); e.target.value = ""; } } }} />
+              <button onClick={saveModuleOrder} style={{ padding: "4px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>저장</button>
+              <button onClick={() => setModDraft(null)} style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer" }}>취소</button>
+            </div>
+          </div>
+        )}
+      </PageGear>
       {/* Sidebar */}
       <div style={{ width: 340, minWidth: 300, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -883,16 +976,14 @@ export default function My_Inform({ user }) {
           {modeButton("all",     "전체",    "최근 루트 인폼 (역할 필터 적용)")}
           {modeButton("product", "제품",  "제품 → Lot → Wafer drill-down")}
           {modeButton("lot",     "Lot",    "LOT 으로 전체 인폼 검색")}
-          {modeButton("wafer",   "Wafer",   "wafer 별 스레드")}
           {modeButton("gantt",   "간트",    "데드라인 간트 차트")}
-          {/* v8.7.6: '내 모듈' 제거 — 제품 drill-down 으로 흐름 단순화 */}
+          {/* v8.7.8: wafer 모드 제거 — product/lot drill-down 으로 통합. */}
         </div>
 
         <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
           <input value={search} onChange={e => setSearch(e.target.value)}
             placeholder={mode === "lot" ? "lot_id 검색..."
                        : mode === "product" ? "product 검색..."
-                       : mode === "wafer" ? "wafer_id/lot/product 검색..."
                        : "검색 (해당 모드에서는 미사용)"}
             style={{ width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none", boxSizing: "border-box" }} />
         </div>
@@ -1165,19 +1256,39 @@ export default function My_Inform({ user }) {
                 연결 wafer: {lotWafers.join(", ")}
               </div>
             )}
+            <LotModuleSummary thread={thread} modules={constants.modules} />
             <PlanSummaryCard thread={thread} />
-            {applyModFilter(rootsSorted).length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>해당 없음.</div>}
-            {applyModFilter(rootsSorted).map(r => (
-              <div key={r.id} style={{ marginBottom: 18, paddingBottom: 14, borderBottom: "1px dashed var(--border)" }}>
-                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 4, fontFamily: "monospace" }}>
-                  wafer: <b style={{ color: "var(--text-primary)" }}>{r.wafer_id}</b>
+            {(() => {
+              const grouped = {};
+              for (const r of applyModFilter(rootsSorted)) {
+                const m = r.module || "(미지정)";
+                (grouped[m] = grouped[m] || []).push(r);
+              }
+              const order = [...(constants.modules || []), "(미지정)"];
+              const modKeys = Object.keys(grouped).sort((a, b) => {
+                const ia = order.indexOf(a); const ib = order.indexOf(b);
+                return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+              });
+              if (modKeys.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>해당 없음.</div>;
+              return modKeys.map(mk => (
+                <div key={mk} style={{ marginBottom: 22, padding: 10, borderRadius: 8, background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, fontFamily: "monospace", color: "var(--accent)" }}>
+                    ▣ {mk} <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 500, marginLeft: 6 }}>{grouped[mk].length}건</span>
+                  </div>
+                  {grouped[mk].map(r => (
+                    <div key={r.id} style={{ marginBottom: 14, paddingBottom: 10, borderBottom: "1px dashed var(--border)" }}>
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 4, fontFamily: "monospace" }}>
+                        wafer: <b style={{ color: "var(--text-primary)" }}>{r.wafer_id}</b>
+                      </div>
+                      <RootHeader root={r} onChangeStatus={changeStatus} onChangeDeadline={changeDeadline} user={user} />
+                      <ThreadNode node={r} childrenByParent={childrenByParent}
+                        onReply={reply} onDelete={del} onToggleCheck={toggleCheck}
+                        user={user} depth={0} constants={constants} />
+                    </div>
+                  ))}
                 </div>
-                <RootHeader root={r} onChangeStatus={changeStatus} onChangeDeadline={changeDeadline} user={user} />
-                <ThreadNode node={r} childrenByParent={childrenByParent}
-                  onReply={reply} onDelete={del} onToggleCheck={toggleCheck}
-                  user={user} depth={0} constants={constants} />
-              </div>
-            ))}
+              ));
+            })()}
           </>
         )}
 

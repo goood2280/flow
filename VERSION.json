@@ -1,7 +1,29 @@
 {
-  "version": "8.7.7",
+  "version": "8.7.8",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.7.8",
+      "date": "2026-04-21",
+      "title": "달력 auto-sync + 액션 범위바 + 인폼 모듈 그룹핑 + SplitTable 태그 확장 + 카테고리 PageGear",
+      "tag": "feat",
+      "changes": [
+        "**변경점 달력 — 회의 결정/액션 auto-sync** — 회의록 저장 시 모든 결정사항·액션아이템이 자동으로 달력 이벤트로 생성 (기존의 수동 📅 push 불필요). 결정사항 = filled 스타일 · 회의 일자에 단일 dot. 액션아이템 = outline(dashed) 스타일 · 회의일~마감(due) 구간 bar 로 여러 날에 걸쳐 렌더. 회의 삭제/차수 변경 시 관련 이벤트 cascade 제거.",
+        "**달력 회의별 필터** — 헤더 드롭다운에 \"전체 · 일반 · 🗓 회의별\". 신규 엔드포인트 `GET /api/calendar/meetings` 가 distinct 회의 ref + 이벤트 카운트 반환.",
+        "**달력 이벤트 스키마 확장** — `end_date` (범위 이벤트) + `source_type: manual|meeting_decision|meeting_action` 필드 추가. legacy 이벤트는 제목 `[결정]` prefix 로 decision/action 자동 분류. 수동 이벤트도 종료일 지정 가능 (manual range).",
+        "**액션아이템 데드라인 date-picker** — 회의록 편집 UI 의 `due` 입력이 `<input type=\"date\">` 로 변경. 텍스트 타이핑 제거.",
+        "**인폼 Lot drill-down 모듈별 요약 테이블** — Lot 뷰 상단에 각 모듈의 인폼 등록/메일 여부 체크 마크 테이블. 한눈에 모듈별 진행 현황 파악.",
+        "**인폼 모듈 순서 그룹핑** — Lot 뷰에서 각 인폼이 flow 상태 바 별로 따로 크게 나오던 문제 대신, 모듈별 그룹핑 + Admin 이 지정한 순서로 정렬. 각 모듈 카드 안에 해당 모듈 인폼 여러 개가 접힌 형태로 표시.",
+        "**인폼 PageGear — 모듈 순서 편집** — Admin 이 ⚙ 톱니에서 모듈 추가/삭제/순서 조정. `POST /api/informs/config` 가 `modules` 배열을 순서대로 저장. Lot 뷰 그룹핑이 이 순서 따름.",
+        "**회의관리 PageGear — 카테고리 편집** — Admin 이 ⚙ 톱니에서 카테고리 추가/수정/색/순서/삭제 통합 관리. 달력 카테고리 팔레트와 동일 저장소 재사용 (`/api/calendar/categories`).",
+        "**인폼 Wafer 검색 모드 제거** — Wafer 전용 사이드바 모드 삭제. 제품 drill-down + Lot drill-down 으로 흐름 단순화.",
+        "**SplitTable 태그 시스템 확장** — 기존 wafer/param 스코프에 `lot` (LOT 단위 노트) · `param_global` (parameter 전역 태그 — product 내 모든 LOT 에서 보임) 스코프 추가. `/api/splittable/notes` 는 product+root_lot_id 필터 시 (wafer + param + lot + param_global) 를 자동 병합.",
+        "**SplitTable ML_TABLE → DB 폴더 auto-match** — 신규 `GET /api/splittable/ml-table-match?product=ML_TABLE_PRODA` 가 `PRODA` 를 추출해 DB 의 `FAB/PRODA`, `INLINE/PRODA` 등 매칭 후보 반환. 오버라이드 UI 가 이를 auto-suggest.",
+        "**SplitTable fab_source 상위폴더 드롭다운** — 신규 `GET /api/splittable/fab-roots` — DB 최상위 폴더 (FAB/INLINE/ET/EDS) + 그 아래 제품 리스트. fab_source 드롭다운에 `[상위폴더] FAB · 3개 제품` 형태로 노출. ML_TABLE_<P> 제품 선택 시 하위 product 자동 매칭.",
+        "**SplitTable Product 중복 제거 강화** — 같은 parquet 이 Base/DB root 양쪽에 존재할 때 Base 우선 dedup 으로 드롭다운 중복 제거. `list_products()` 가 name 단독으로도 dedup.",
+        "이월 (v8.7.9+): (1) 인폼 Lot 간트차트 (Lot 내 타임라인). (2) 인폼 job 표시 `[제품] Lot명` + fab_lot_id override. (3) 인폼 Lot 발행 시 root_lot_id 또는 fab_lot_id 로 가능 (root = fab[:5]). (4) 회의록 동시편집 (WebSocket/SSE — 본문·아젠다 동시작성). (5) SplitTable 태그 FE 드로어 — param_global/lot 편집 UI + wafer_id 그룹 필터."
+      ]
+    },
     {
       "version": "8.7.7",
       "date": "2026-04-21",

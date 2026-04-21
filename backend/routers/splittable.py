@@ -184,16 +184,34 @@ def _notes_key_param(product: str, root_lot_id: str, wafer_id, param: str) -> st
     return f"{product}__{root_lot_id}__W{wafer_id}__{param}"
 
 
+def _notes_key_lot(product: str, root_lot_id: str) -> str:
+    """v8.7.8: LOT 단위 노트 (해당 root_lot_id 전역). param 태그와 달리 lot 에 묶임."""
+    return f"{product}__LOT__{root_lot_id}"
+
+
+def _notes_key_param_global(product: str, param: str) -> str:
+    """v8.7.8: parameter 전역 태그 — product 내 모든 LOT 에서 동일 parameter 에 노출."""
+    return f"{product}__PARAM__{param}"
+
+
 def _notes_lot_prefix(product: str, root_lot_id: str) -> str:
     return f"{product}__{root_lot_id}__"
 
 
+def _notes_product_param_prefix(product: str) -> str:
+    return f"{product}__PARAM__"
+
+
+def _notes_product_lot_prefix(product: str) -> str:
+    return f"{product}__LOT__"
+
+
 class NoteSaveReq(BaseModel):
-    scope: str                 # "wafer" | "param"
+    scope: str                 # "wafer" | "param" | "lot" | "param_global"
     product: str = ""
     root_lot_id: str = ""
     wafer_id: str = ""
-    param: str = ""            # scope == "param" 일 때 사용
+    param: str = ""            # scope == "param" / "param_global" 일 때
     text: str
     username: str = ""
 
@@ -205,12 +223,35 @@ class NoteDeleteReq(BaseModel):
 
 @router.get("/notes")
 def list_notes(product: str = Query(""), root_lot_id: str = Query(""), username: str = Query("")):
-    """필터: product + root_lot_id 가 주어지면 해당 로트 범위로 한정. 둘 다 비면 전체."""
+    """필터:
+      - product+root_lot_id → (wafer + param + lot) for that lot
+        PLUS param_global for the product (전역 태그는 모든 LOT 에서 공통 노출)
+      - product only → product 전역 (param_global + lot 전체)
+      - 없으면 전체
+    """
     entries = _load_notes()
     if product and root_lot_id:
-        pfx = _notes_lot_prefix(product, root_lot_id)
-        entries = [e for e in entries if str(e.get("key", "")).startswith(pfx)]
-    # 최신순
+        lot_pfx = _notes_lot_prefix(product, root_lot_id)
+        lot_key = _notes_key_lot(product, root_lot_id)
+        pg_pfx = _notes_product_param_prefix(product)
+        def _match(e):
+            k = str(e.get("key", ""))
+            sc = e.get("scope")
+            if sc == "wafer" and k.startswith(lot_pfx):
+                return True
+            if sc == "param" and k.startswith(lot_pfx):
+                return True
+            if sc == "lot" and k == lot_key:
+                return True
+            if sc == "param_global" and k.startswith(pg_pfx):
+                return True
+            return False
+        entries = [e for e in entries if _match(e)]
+    elif product:
+        pg_pfx = _notes_product_param_prefix(product)
+        lot_pfx = _notes_product_lot_prefix(product)
+        entries = [e for e in entries
+                   if str(e.get("key", "")).startswith(pg_pfx) or str(e.get("key", "")).startswith(lot_pfx)]
     entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
     return {"notes": entries, "total": len(entries)}
 
@@ -221,21 +262,31 @@ def save_note(req: NoteSaveReq, request: Request):
     me = _cu(request)
     username = me.get("username") or req.username or "anonymous"
     scope = (req.scope or "").strip()
-    if scope not in ("wafer", "param"):
-        raise HTTPException(400, "scope must be 'wafer' or 'param'")
+    if scope not in ("wafer", "param", "lot", "param_global"):
+        raise HTTPException(400, "scope must be 'wafer'|'param'|'lot'|'param_global'")
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(400, "empty text")
     if len(text) > 2000:
         raise HTTPException(400, "text too long (max 2000 chars)")
-    if not req.product or not req.root_lot_id or not str(req.wafer_id or "").strip():
-        raise HTTPException(400, "product/root_lot_id/wafer_id required")
+    if not req.product:
+        raise HTTPException(400, "product required")
     if scope == "wafer":
+        if not req.root_lot_id or not str(req.wafer_id or "").strip():
+            raise HTTPException(400, "root_lot_id/wafer_id required for wafer scope")
         key = _notes_key_wafer(req.product, req.root_lot_id, req.wafer_id)
-    else:
-        if not req.param:
-            raise HTTPException(400, "param required for scope='param'")
+    elif scope == "param":
+        if not req.root_lot_id or not str(req.wafer_id or "").strip() or not req.param:
+            raise HTTPException(400, "root_lot_id/wafer_id/param required for param scope")
         key = _notes_key_param(req.product, req.root_lot_id, req.wafer_id, req.param)
+    elif scope == "lot":
+        if not req.root_lot_id:
+            raise HTTPException(400, "root_lot_id required for lot scope")
+        key = _notes_key_lot(req.product, req.root_lot_id)
+    else:  # param_global
+        if not req.param:
+            raise HTTPException(400, "param required for param_global scope")
+        key = _notes_key_param_global(req.product, req.param)
     entry = {
         "id": _new_note_id(),
         "scope": scope,
@@ -317,16 +368,84 @@ def list_products():
                                      "root": "Base", "type": "parquet"})
     except Exception:
         pass
-    # v8.7.5: dedup — 같은 (name, root) 조합이 여러 경로에서 잡힐 수 있음.
-    seen = set()
+    # v8.7.8: dedup — name 단독으로도 중복 제거 (Base 와 DB root 에 같은 parquet 이 동시 노출되는 경우).
+    # 우선순위: Base > DB nested > DB root.  첫 번째 발견을 유지.
+    seen_name = set()
+    seen_combo = set()
     dedup = []
+    priority = {"Base": 0, "": 2}  # nested (root 가 있으면) 는 1
+    products.sort(key=lambda p: priority.get(p.get("root") or "", 1))
     for p in products:
-        key = (p.get("name") or "", p.get("root") or "")
-        if key in seen:
+        name = p.get("name") or ""
+        combo = (name, p.get("root") or "")
+        if name in seen_name or combo in seen_combo:
             continue
-        seen.add(key)
+        seen_name.add(name)
+        seen_combo.add(combo)
         dedup.append(p)
+    # 복구: 이름 순 정렬 (표시 안정)
+    dedup.sort(key=lambda p: (p.get("name") or ""))
     return {"products": dedup}
+
+
+@router.get("/fab-roots")
+def list_fab_roots():
+    """v8.7.8: DB 최상위 폴더 목록 (FAB / INLINE / ET / EDS 등). fab_source 용 상위폴더 선택용.
+    Returns: {roots: [{name, products: [...], total_size}], ...}
+    """
+    db_base = _db_base()
+    out = []
+    if not db_base.exists():
+        return {"roots": out}
+    for root_dir in sorted(db_base.iterdir()):
+        if not root_dir.is_dir():
+            continue
+        products = []
+        total_size = 0
+        for prod_dir in sorted(root_dir.iterdir()):
+            if not prod_dir.is_dir():
+                continue
+            has_data = False
+            for f in prod_dir.rglob("*"):
+                if f.is_file() and f.suffix in (".parquet", ".csv"):
+                    has_data = True
+                    try: total_size += f.stat().st_size
+                    except Exception: pass
+                    break
+            if has_data:
+                products.append(prod_dir.name)
+        if products:
+            out.append({"name": root_dir.name, "products": products, "total_size": total_size})
+    return {"roots": out}
+
+
+@router.get("/ml-table-match")
+def ml_table_match(product: str = Query(...)):
+    """v8.7.8: ML_TABLE_<PROD> 에서 PROD 를 추출하고 DB 상위폴더별 매칭 후보 반환.
+    Ex) product=ML_TABLE_PRODA → {"pro": "PRODA", "matches": [{"root":"FAB","product":"PRODA","path":"FAB/PRODA"}, ...]}
+    """
+    pro = ""
+    p = (product or "").strip()
+    if p.startswith("ML_TABLE_"):
+        pro = p[len("ML_TABLE_"):].strip()
+    elif "_" in p:
+        pro = p.rsplit("_", 1)[-1]
+    else:
+        pro = p
+    matches = []
+    db_base = _db_base()
+    if pro and db_base.exists():
+        for root_dir in sorted(db_base.iterdir()):
+            if not root_dir.is_dir():
+                continue
+            sub = root_dir / pro
+            if sub.is_dir():
+                matches.append({
+                    "root": root_dir.name,
+                    "product": pro,
+                    "path": f"{root_dir.name}/{pro}",
+                })
+    return {"product": product, "derived_product": pro, "matches": matches}
 
 
 @router.get("/schema")

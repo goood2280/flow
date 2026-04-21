@@ -2,6 +2,31 @@
 
 주요 변경점만 간략히. 세부 내역은 `VERSION.json` 의 changelog 배열 참고.
 
+## v8.7.8 — 2026-04-21
+
+**달력 auto-sync + 액션 범위바 + 인폼 모듈 그룹핑 + SplitTable 태그 확장 + 카테고리 PageGear**
+
+- **변경점 달력 회의 auto-sync** — 회의록 저장 시 모든 결정사항+액션아이템이 자동으로 달력 이벤트로 동기화 (수동 📅 push 불필요). 결정사항 = filled 단일 dot (회의 일자) · 액션아이템 = outline(dashed) range bar (회의일~마감). 달력에서 회의 auto-sync 이벤트 수정/삭제는 회의관리에서만.
+- **달력 회의별 필터** — 헤더 드롭다운에 회의 목록 (GET /api/calendar/meetings). 전체 / 일반 이벤트 / 🗓 회의별 세 가지 뷰.
+- **달력 이벤트 스키마 확장** — end_date (범위 이벤트) · source_type (manual/meeting_decision/meeting_action). 수동 이벤트도 종료일 지정 가능.
+- **액션아이템 date-picker** — 회의록 편집에서 due 가 HTML date input.
+- **인폼 Lot 모듈별 요약 테이블 + 그룹핑** — Lot drill-down 상단에 모듈별 인폼/메일 체크 테이블. 본문은 모듈 단위로 그룹핑되어 한 카드씩 정리.
+- **인폼 PageGear 모듈 순서 편집** — Admin 이 톱니에서 모듈 추가/삭제/순서 조정. Lot 뷰 그룹핑이 이 순서 따름.
+- **회의관리 PageGear 카테고리 편집** — Admin 이 톱니에서 카테고리 이름/색/순서/추가/삭제 통합 관리. 달력 팔레트와 동일 저장소 재사용.
+- **인폼 Wafer 검색 모드 제거** — 제품/Lot drill-down 으로 흐름 단순화.
+- **SplitTable 태그 스코프 확장** — 기존 wafer/param 에 lot + param_global (전역) 추가. param_global 은 product 내 모든 LOT 에서 공통 노출.
+- **SplitTable ML_TABLE auto-match** — /ml-table-match 가 ML_TABLE_PRODA 에서 PRODA 추출 + DB root 의 하위 매칭 폴더 반환. fab_source override UI 가 이를 자동 제안.
+- **SplitTable fab_source 상위폴더 옵션** — /fab-roots 가 DB 최상위 폴더(FAB/INLINE/ET) 목록. fab_source 드롭다운에 "상위폴더" 엔트리 추가.
+- **SplitTable Product 중복 제거 강화** — Base/DB 양쪽에 있는 동명 parquet 이 Base 우선 dedup.
+
+**이월 (v8.7.9+)**
+
+1. 인폼 Lot 간트차트 (Lot 내 타임라인).
+2. 인폼 job 표시 `[제품] Lot명` + fab_lot_id override + root_lot_id = fab[:5].
+3. 인폼 Lot 발행 시 root_lot_id 또는 fab_lot_id 로 가능.
+4. 회의록 동시편집 (WebSocket/SSE — 본문과 아젠다 동시 작성).
+5. SplitTable 태그 FE 드로어 확장 — param_global / lot 편집 UI + wafer_id 그룹 필터.
+
 ## v8.7.7 — 2026-04-21
 
 **공용 메일 그룹 · 차수 재발송 · LLM 어댑터 인프라 + 긴급 버그 패치 3건**
