@@ -79,11 +79,17 @@ def _load_config() -> dict:
         data = {}
     mods = data.get("modules")
     reas = data.get("reasons")
+    prods = data.get("products")
+    raw_root = data.get("raw_db_root")
     if not isinstance(mods, list) or not mods:
         mods = list(DEFAULT_MODULES)
     if not isinstance(reas, list) or not reas:
         reas = list(DEFAULT_REASONS)
-    return {"modules": mods, "reasons": reas}
+    if not isinstance(prods, list):
+        prods = []
+    if not isinstance(raw_root, str):
+        raw_root = ""
+    return {"modules": mods, "reasons": reas, "products": prods, "raw_db_root": raw_root}
 
 
 def _save_config(cfg: dict) -> None:
@@ -247,6 +253,12 @@ class InformCreate(BaseModel):
 class ConfigReq(BaseModel):
     modules: Optional[List[str]] = None
     reasons: Optional[List[str]] = None
+    products: Optional[List[str]] = None
+    raw_db_root: Optional[str] = None
+
+
+class ProductReq(BaseModel):
+    product: str
 
 
 class StatusReq(BaseModel):
@@ -297,15 +309,82 @@ def save_config_endpoint(req: ConfigReq, _admin=Depends(require_admin)):
         cfg["modules"] = [m.strip() for m in req.modules if m and m.strip()]
     if req.reasons is not None:
         cfg["reasons"] = [r.strip() for r in req.reasons if r and r.strip()]
+    if req.products is not None:
+        cfg["products"] = [p.strip() for p in req.products if p and p.strip()]
+    if req.raw_db_root is not None:
+        cfg["raw_db_root"] = req.raw_db_root.strip()
     # de-dup 유지 순서
     cfg["modules"] = list(dict.fromkeys(cfg["modules"]))
     cfg["reasons"] = list(dict.fromkeys(cfg["reasons"]))
+    cfg["products"] = list(dict.fromkeys(cfg.get("products") or []))
     if not cfg["modules"]:
         cfg["modules"] = list(DEFAULT_MODULES)
     if not cfg["reasons"]:
         cfg["reasons"] = list(DEFAULT_REASONS)
     _save_config(cfg)
     return {"ok": True, "config": cfg}
+
+
+# v8.8.1: 제품 카탈로그 CRUD (모든 로그인 유저 — 등록된 제품 선택용).
+@router.post("/products/add")
+def add_product(req: ProductReq, request: Request):
+    me = current_user(request)
+    p = (req.product or "").strip()
+    if not p:
+        raise HTTPException(400, "product required")
+    cfg = _load_config()
+    products = list(cfg.get("products") or [])
+    if p not in products:
+        products.append(p)
+    cfg["products"] = products
+    _save_config(cfg)
+    _audit(request, "inform:product_add", detail=f"product={p} by={me['username']}", tab="inform")
+    return {"ok": True, "products": products}
+
+
+@router.post("/products/delete")
+def delete_product(req: ProductReq, request: Request):
+    """v8.8.1: 카탈로그에서 제품 삭제. admin 또는 등록자(추적불가시 admin) 권한.
+    실제 인폼 레코드(product 필드)는 건드리지 않음 — 드롭다운에서만 제외."""
+    me = current_user(request)
+    p = (req.product or "").strip()
+    if not p:
+        raise HTTPException(400, "product required")
+    cfg = _load_config()
+    before = list(cfg.get("products") or [])
+    after = [x for x in before if x != p]
+    if len(after) == len(before):
+        raise HTTPException(404, "product not in catalog")
+    cfg["products"] = after
+    _save_config(cfg)
+    _audit(request, "inform:product_delete", detail=f"product={p} by={me['username']}", tab="inform")
+    return {"ok": True, "products": after}
+
+
+@router.get("/product-lots")
+def list_product_lots(request: Request, product: str = Query(...)):
+    """v8.8.1: Admin 이 설정한 raw_db_root 에서 제품별 Lot 후보 스캔.
+    스캔 위치: {raw_db_root}/1.RAWDATA_DB/{product}/  (서브폴더 이름을 lot 으로 간주).
+    폴더가 없거나 설정 안 된 경우 빈 리스트."""
+    _ = current_user(request)
+    cfg = _load_config()
+    root = (cfg.get("raw_db_root") or "").strip()
+    product = (product or "").strip()
+    if not root or not product:
+        return {"product": product, "lots": [], "source": ""}
+    try:
+        # 표준 경로. 필요시 여러 후보 검색.
+        candidates = [
+            Path(root) / "1.RAWDATA_DB" / product,
+            Path(root) / product,
+        ]
+        target = next((c for c in candidates if c.exists() and c.is_dir()), None)
+        if not target:
+            return {"product": product, "lots": [], "source": str(candidates[0])}
+        lots = sorted({d.name for d in target.iterdir() if d.is_dir() and not d.name.startswith(".")})
+        return {"product": product, "lots": lots, "source": str(target)}
+    except Exception as e:
+        return {"product": product, "lots": [], "source": root, "error": str(e)}
 
 
 # ── Image upload / serving ────────────────────────────────────────────
@@ -728,15 +807,20 @@ def set_status(req: StatusReq, request: Request, id: str = Query(...)):
         raise HTTPException(400, "status 는 루트 인폼에만 적용됩니다.")
     if not _can_moderate(target, me["username"], me.get("role", "user"), my_mods):
         raise HTTPException(403, "모듈 담당자만 상태를 변경할 수 있습니다.")
-    if target.get("flow_status") == st:
+    prev_status = target.get("flow_status") or ""
+    if prev_status == st:
         return {"ok": True, "inform": target}
     target["flow_status"] = st
     hist = target.get("status_history") or []
-    hist.append({"status": st, "actor": me["username"], "at": _now(),
-                 "note": (req.note or "").strip()})
+    note = (req.note or "").strip()
+    # v8.8.1: 확인 취소(completed→received) 이력 라벨링.
+    if prev_status == "completed" and st == "received" and not note:
+        note = "확인 취소"
+    hist.append({"status": st, "prev": prev_status, "actor": me["username"],
+                 "at": _now(), "note": note})
     target["status_history"] = hist
     _save(items)
-    _audit(request, "inform:status", detail=f"id={id} status={st}", tab="inform")
+    _audit(request, "inform:status", detail=f"id={id} prev={prev_status} status={st}", tab="inform")
     return {"ok": True, "inform": target}
 
 
@@ -1018,49 +1102,35 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
             f"<div style='margin:12px 0;padding:10px 12px;background:#fffbeb;border-left:4px solid #f59e0b;"
             f"border-radius:4px;font-size:13px;color:#78350f;'>{safe}</div>"
         )
-    sender_block = ""
-    if sender_username:
-        sender_block = (
-            f"<div style='margin:0 0 10px 0;padding:8px 12px;background:#eff6ff;border-left:4px solid #3b82f6;"
-            f"border-radius:4px;font-size:12px;color:#1e3a8a;'>"
-            f"📨 발송 요청자: <b>{esc(sender_username)}</b> "
-            f"<span style='color:#64748b;font-size:11px;'>(메일은 시스템 계정으로 전송되었으나 작성/요청자는 위 사용자입니다)</span>"
-            f"</div>"
-        )
+    # v8.8.1: 발송 요청자(hol) 자동 명시 제거.
     contacts_block = ""
     if product_contacts:
-        rows = []
+        names = []
         for c in product_contacts:
-            rows.append(
-                "<tr>"
-                f"<td style='padding:4px 10px;font-size:12px;color:#1f2937;font-weight:600;'>{esc(c.get('name',''))}</td>"
-                f"<td style='padding:4px 10px;font-size:11px;color:#6b7280;'>{esc(c.get('role',''))}</td>"
-                f"<td style='padding:4px 10px;font-size:11px;color:#1f2937;font-family:monospace;'>{esc(c.get('email',''))}</td>"
-                f"<td style='padding:4px 10px;font-size:11px;color:#6b7280;'>{esc(c.get('phone',''))}</td>"
-                "</tr>"
+            nm = (c.get("name") or "").strip()
+            em = (c.get("email") or "").strip()
+            if nm and em:
+                names.append(f"{esc(nm)} &lt;{esc(em)}&gt;")
+            elif nm:
+                names.append(esc(nm))
+            elif em:
+                names.append(esc(em))
+        if names:
+            contacts_block = (
+                f"<div style='margin:10px 0;padding:8px 12px;background:#f0fdf4;border-left:4px solid #16a34a;"
+                f"border-radius:4px;font-size:12px;color:#14532d;'>"
+                f"<b>제품 담당자</b> : " + ", ".join(names)
+                + "</div>"
             )
-        contacts_block = (
-            f"<h3 style='font-size:13px;margin:18px 0 6px 0;color:#374151;'>제품 담당자 — {esc(root.get('product',''))}</h3>"
-            "<table style='border-collapse:collapse;border:1px solid #d1d5db;width:100%;max-width:720px;'>"
-            "<thead><tr style='background:#f3f4f6;'>"
-            "<th style='padding:4px 10px;font-size:11px;color:#374151;text-align:left;'>이름</th>"
-            "<th style='padding:4px 10px;font-size:11px;color:#374151;text-align:left;'>역할</th>"
-            "<th style='padding:4px 10px;font-size:11px;color:#374151;text-align:left;'>이메일</th>"
-            "<th style='padding:4px 10px;font-size:11px;color:#374151;text-align:left;'>연락처</th>"
-            "</tr></thead><tbody>"
-            + "".join(rows)
-            + "</tbody></table>"
-        )
     return (
         "<div style='font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1f2937;max-width:720px;'>"
         f"<h2 style='font-size:16px;margin:0 0 6px 0;color:#ea580c;'>flow · 인폼 공유</h2>"
         f"<div style='font-size:11px;color:#6b7280;margin-bottom:10px;'>Inform ID <code>{esc(root.get('id',''))}</code></div>"
-        f"{sender_block}"
         f"{meta_tbl}"
+        f"{contacts_block}"
         f"{prose_block}"
         f"<h3 style='font-size:13px;margin:14px 0 6px 0;color:#374151;'>스레드</h3>"
         f"{thread_html}"
-        f"{contacts_block}"
         "<hr style='border:none;border-top:1px solid #e5e7eb;margin:18px 0 8px 0;'/>"
         "<div style='font-size:10px;color:#9ca3af;'>Sent by flow · 자동 전송된 메일입니다.</div>"
         "</div>"
