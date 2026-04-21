@@ -1,7 +1,20 @@
 {
-  "version": "8.5.2",
+  "version": "8.6.4",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.6.4",
+      "date": "2026-04-21",
+      "title": "S3 신호등 + TableMap 데이터 계보 + 동시 편집 + 변경점 달력 (v8.6.0~v8.6.4 통합)",
+      "tag": "feat",
+      "changes": [
+        "신규 변경점 달력(My_Calendar) — 월간 그리드, 날짜별 이벤트 (제목/내용/카테고리/작성자), 카테고리별 색상(회의 결정사항/공정 변경/장비 PM/릴리즈/기타 — admin 편집), 키워드 검색, 우측 상세 패널의 변경 이력(history). nav '변경점 달력' 탭 신규.",
+        "낙관적 잠금 (Optimistic Locking) — 캘린더 이벤트 + SplitTable 커스텀 뷰 저장 시 version 필드 비교. 충돌 시 {ok:false, conflict:true, server_version, current/event} 응답 → FE 가 새로고침 또는 강제 덮어쓰기 선택.",
+        "TableMap 데이터 계보 (Lineage) — '🔄 계보' 토글. 백엔드 /api/dbmap/lineage 가 노드 이름 휴리스틱(ET/INLINE/EDS/KNOB/MASK/FAB/VM → ML_TABLE_PROD*) 으로 dataflow 추론, cyan dashed 화살표로 오버레이. declared/inferred/ml_targets/sources 카운트 stat 바.",
+        "S3 신호등 — FileBrowser '데이터 브라우저' + TableMap '> table map' 헤더에 S3 동기화 상태 점(green/yellow/red/none). hover 시 상세 카드 (설정 수, 실행 중, 최근 실패, AWS CLI 가용성, 마지막 동기화). red 일 때 펄스 애니메이션. /api/s3ingest/health 60s 폴링.",
+        "uvicorn 진입점 통일 — 루트 app.py shim 추가. 'uvicorn app:app --host 0.0.0.0 --port 8080' 단일 명령으로 어디서든 기동 (구 --app-dir 명령도 호환). README §3 단순화."
+      ]
+    },
     {
       "version": "8.5.2",
       "date": "2026-04-21",
