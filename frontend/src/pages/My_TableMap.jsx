@@ -775,7 +775,7 @@ export default function My_TableMap({user}){
     sf("/api/dbmap/tables/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       source_type:src.source_type,file:src.file||"",root:src.root||"",product:src.product||"",
       name,display_name:importForm.display_name,rows_limit:importForm.rows_limit||1000,username:user?.username||"",
-    })}).then(r=>{alert(`임포트 완료 — ${r.id} (CSV: ${r.csv_path?.split(/[\\\/]/).pop()||""})`);setShowImport(false);setImportForm({source:"",name:"",display_name:"",rows_limit:1000});load();}).catch(e=>alert(e.message));
+    })}).then(r=>{alert(`임포트 완료 — ${r.id} (CSV: ${r.csv_path?.split(/[\\\/]/).pop()||""})`);setShowImport(false);setImportForm({source:"",name:"",display_name:"",rows_limit:1000});loadAll();}).catch(e=>alert(e.message));
   };
   const[view,setView]=useState("graph");
   const[editingRelation,setEditingRelation]=useState(null);
