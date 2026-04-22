@@ -1,165 +1,81 @@
-"""routers/monitor.py v4.0.0 - System monitor + heartbeat + farming"""
-import os, time, datetime, threading
-from pathlib import Path
+"""routers/monitor.py v8.8.18 — 시스템 모니터 라우터.
+
+core/sysmon.py 에 실제 수집/부하 로직이 있고 이 라우터는 읽기 전용 API 를 노출.
+경로 정리:
+  GET /api/monitor/system     — 현재 시스템 스냅샷 (즉시 collect + 반환).
+  GET /api/monitor/history    — resource_log tail (차트용). limit 기본 288 = 1일치.
+  GET /api/monitor/state      — 유휴/부하/최근 활동 상태 스냅샷.
+  GET /api/system/stats       — alias (홈/Admin 위젯용) — state + sample + history tail(60).
+
+레거시 호환:
+  POST /api/monitor/heartbeat — 5분 주기 external cron 호환(서버에서도 자동 수집).
+  GET  /api/monitor/farm-status → state 로 리다이렉션.
+  GET  /api/monitor/resource-log → history.
+"""
 from fastapi import APIRouter, Query
-from core.paths import PATHS
-from core.utils import jsonl_append, jsonl_read, jsonl_trim, load_json, save_json
 
-router = APIRouter(prefix="/api/monitor", tags=["monitor"])
+from core import sysmon
 
-RESOURCE_LOG = PATHS.resource_log
-FARM_STATUS_FILE = PATHS.log_dir / "farm_status.json"
-RESOURCE_LOG.parent.mkdir(parents=True, exist_ok=True)
+router = APIRouter(tags=["monitor"])
 
-_prev_cpu = None
+# Two prefixes: 기존 /api/monitor/* 는 호환용, 홈 위젯은 /api/system/stats 로 호출.
+mon_router = APIRouter(prefix="/api/monitor")
+sys_router = APIRouter(prefix="/api/system")
 
 
-def _read_proc_cpu():
-    try:
-        with open("/proc/stat") as f:
-            parts = f.readline().split()
-        return [int(x) for x in parts[1:8]]
-    except Exception:
-        return [0] * 7
-
-
-def _read_memory():
-    try:
-        cg = Path("/sys/fs/cgroup")
-        usage = int((cg / "memory.current").read_text().strip())
-        try:
-            limit = int((cg / "memory.max").read_text().strip())
-        except Exception:
-            limit = usage * 2
-        return usage, limit
-    except Exception:
-        try:
-            lines = Path("/proc/meminfo").read_text()
-            total = int(lines.split("MemTotal:")[1].split()[0]) * 1024
-            avail = int(lines.split("MemAvailable:")[1].split()[0]) * 1024
-            return total - avail, total
-        except Exception:
-            return 0, 1
-
-
-def _read_disk():
-    try:
-        st = os.statvfs("/config")
-        total = st.f_blocks * st.f_frsize
-        used = (st.f_blocks - st.f_bfree) * st.f_frsize
-        return used, total
-    except Exception:
-        return 0, 1
-
-
-@router.get("/system")
+@mon_router.get("/system")
 def system_info():
-    global _prev_cpu
-    cur = _read_proc_cpu()
-    cpu_pct = 0.0
-    if _prev_cpu:
-        d = [c - p for c, p in zip(cur, _prev_cpu)]
-        total = sum(d)
-        idle = d[3] if len(d) > 3 else 0
-        cpu_pct = round((1 - idle / max(total, 1)) * 100, 1)
-    _prev_cpu = cur
-    mem_used, mem_total = _read_memory()
-    disk_used, disk_total = _read_disk()
-    return {
-        "cpu_percent": cpu_pct,
-        "memory_used_gb": round(mem_used / 1e9, 2),
-        "memory_total_gb": round(mem_total / 1e9, 2),
-        "memory_percent": round(mem_used / max(mem_total, 1) * 100, 1),
-        "disk_used_gb": round(disk_used / 1e9, 2),
-        "disk_total_gb": round(disk_total / 1e9, 2),
-        "disk_percent": round(disk_used / max(disk_total, 1) * 100, 1),
-    }
+    return sysmon.collect_once()
 
 
-@router.get("/resource-log")
-def resource_log(limit: int = Query(200)):
-    return {"logs": jsonl_read(RESOURCE_LOG, limit)}
+@mon_router.get("/history")
+def system_history(limit: int = Query(288)):
+    return {"logs": sysmon.history(limit=max(1, min(2000, int(limit or 288))))}
 
 
-def _log_resource():
-    """Append current system stats to resource log."""
-    info = system_info()
-    jsonl_append(RESOURCE_LOG, info)
-    jsonl_trim(RESOURCE_LOG, 2000)
-    info["timestamp"] = datetime.datetime.now().isoformat()
-    return info
+@mon_router.get("/state")
+def system_state():
+    return sysmon.get_state()
 
 
-def _check_need_farming():
-    """Check if all CPU & memory in last 24h stayed below 85%."""
-    cutoff = (datetime.datetime.now() - datetime.timedelta(hours=24)).isoformat()
-    entries = jsonl_read(RESOURCE_LOG, 0, lambda e: e.get("timestamp", "") >= cutoff)
-    if len(entries) < 6:
-        return False
-    for e in entries:
-        if e.get("cpu_percent", 0) > 85 or e.get("memory_percent", 0) > 85:
-            return False
-    return True
-
-
-def _do_farming():
-    """Run CPU-intensive dummy work for ~5 minutes."""
-    now = datetime.datetime.now()
-    save_json(FARM_STATUS_FILE, {
-        "farming": True, "started": now.isoformat(),
-        "estimated_end": (now + datetime.timedelta(minutes=5)).isoformat(),
-    })
-    end_time = time.time() + 300
-    while time.time() < end_time:
-        _ = sum(i * i for i in range(2_000_000))
-        big_list = [0] * 5_000_000
-        del big_list
-        time.sleep(0.1)
-    save_json(FARM_STATUS_FILE, {
-        "farming": False, "ended": datetime.datetime.now().isoformat(),
-    })
-
-
-@router.post("/heartbeat")
+@mon_router.post("/heartbeat")
 def heartbeat():
-    """Log resource + check if farming needed (call every 5 min via cron)."""
-    info = _log_resource()
-    farm_status = load_json(FARM_STATUS_FILE, {"farming": False})
+    """외부 cron 호환 — 서버도 자체 5분 주기 수집하므로 추가 샘플만 남기고 리턴."""
+    s = sysmon.collect_once()
+    return {"ok": True, "timestamp": s.get("timestamp", ""), "state": sysmon.get_state()}
 
-    now = datetime.datetime.now()
-    need_farm = False
-    last_farm_check = farm_status.get("last_check", "")
-    if last_farm_check:
-        try:
-            lc = datetime.datetime.fromisoformat(last_farm_check)
-            if (now - lc).total_seconds() >= 5 * 3600:
-                need_farm = _check_need_farming()
-        except Exception:
-            need_farm = _check_need_farming()
-    else:
-        need_farm = _check_need_farming()
 
-    farm_status["last_check"] = now.isoformat()
-    next_check = (now + datetime.timedelta(hours=5)).strftime("%Y-%m-%d %H:%M")
-    farm_status["next_check"] = next_check
+@mon_router.get("/resource-log")
+def resource_log(limit: int = Query(200)):
+    return {"logs": sysmon.history(limit=max(1, min(2000, int(limit or 200))))}
 
-    if need_farm and not farm_status.get("farming"):
-        farm_status["farming"] = True
-        farm_status["started"] = now.isoformat()
-        farm_status["estimated_end"] = (now + datetime.timedelta(minutes=5)).isoformat()
-        save_json(FARM_STATUS_FILE, farm_status)
-        threading.Thread(target=_do_farming, daemon=True).start()
-    else:
-        save_json(FARM_STATUS_FILE, farm_status)
 
+@mon_router.get("/farm-status")
+def farm_status():
+    # 레거시 이름 유지, 실제 구현은 get_state.
+    return sysmon.get_state()
+
+
+@sys_router.get("/stats")
+def stats(history_limit: int = Query(60)):
+    """FE 위젯용 통합 엔드포인트: 현재 샘플 + 상태 + 히스토리(기본 1일 = 288, 위젯은 60)."""
+    hist = sysmon.history(limit=max(1, min(2000, int(history_limit or 60))))
+    state = sysmon.get_state()
     return {
-        "ok": True, "timestamp": info["timestamp"],
-        "farming": farm_status.get("farming", False),
-        "next_check": next_check,
-        "checksum": sum(i * i for i in range(100_000)) % 9999,
+        "current": state.get("sample") or {},
+        "state": state,
+        "history": hist,
     }
 
 
-@router.get("/farm-status")
-def get_farm_status():
-    return load_json(FARM_STATUS_FILE, {"farming": False, "next_check": "unknown"})
+# Merge
+router.include_router(mon_router)
+router.include_router(sys_router)
+
+
+# 서버 기동 시 백그라운드 수집 스레드 시작. backend/app.py 에서 router 를
+# 자동 로드하는 dynamic importer 가 이 모듈을 import 할 때 실행된다.
+try:
+    sysmon.start_background()
+except Exception:
+    pass

@@ -1,0 +1,293 @@
+"""core/sysmon.py v8.8.18 — 크로스플랫폼 시스템 모니터 + 유휴 부하 정책.
+
+psutil 로 CPU / Memory / Disk 사용량을 5분 주기로 수집해 resource_log 에 append.
+최근 6시간 동안 CPU / Memory 가 **한 번도 85% 이상 찍지 않았으면** 5~10분
+가량의 더미 부하를 생성해 자원 유휴 상태를 보완한다. 사용자 활동이 감지되면
+부하 생성 스레드를 즉시 중단하고 **30분 대기** 후 다시 유휴 체크를 수행.
+
+외부에서 쓰는 API:
+  - collect_once() → dict (현재 CPU/Mem/Disk + 타임스탬프). 호출 시 resource_log 에도 append.
+  - get_state() → dict (last_sample, load_thread 상태, 최근 활동 시각 등).
+  - mark_user_activity() → 사용자 활동 감지 시 호출. load 중이면 중단 신호 설정.
+  - start_background() → 5분 주기 수집/유휴 체크 백그라운드 스레드 시작 (idempotent).
+  - history(limit=288) → resource_log tail 반환.
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import logging
+import random
+import threading
+import time
+from pathlib import Path
+from typing import List, Optional
+
+from core.paths import PATHS
+from core.utils import jsonl_append, jsonl_read, jsonl_trim
+
+logger = logging.getLogger("holweb.sysmon")
+
+try:
+    import psutil as _psutil
+except Exception:
+    _psutil = None
+
+# ── 설정 상수 ────────────────────────────────────────────────────────
+SAMPLE_INTERVAL_SEC  = 5 * 60           # 5분 주기로 수집
+HISTORY_WINDOW_HOURS = 6                # 최근 6시간 검사 창
+THRESHOLD_PCT        = 85.0             # 85% 이상이 한 번이라도 있었는지
+LOAD_MIN_SEC         = 5 * 60           # 부하 최소 5분
+LOAD_MAX_SEC         = 10 * 60          # 부하 최대 10분
+PAUSE_AFTER_USER_SEC = 30 * 60          # 사용자 활동 감지 후 30분 대기
+USER_ACTIVITY_TTL_SEC = 2 * 60          # 직전 2분 이내 활동이면 "active" 로 간주
+
+RESOURCE_LOG: Path = PATHS.resource_log
+SYSMON_STATE_FILE: Path = PATHS.log_dir / "sysmon_state.json"
+RESOURCE_LOG.parent.mkdir(parents=True, exist_ok=True)
+
+# ── 내부 상태 ────────────────────────────────────────────────────────
+_lock = threading.Lock()
+_last_user_activity: float = 0.0        # epoch seconds
+_load_thread: Optional[threading.Thread] = None
+_load_stop = threading.Event()
+_load_started_at: float = 0.0
+_load_end_at: float = 0.0
+_paused_until: float = 0.0              # 유휴 체크를 건너뛰는 마감 시각
+_bg_thread: Optional[threading.Thread] = None
+_last_sample: dict = {}
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _iso(ts: float) -> str:
+    return _dt.datetime.fromtimestamp(ts).isoformat(timespec="seconds")
+
+
+def _disk_target() -> Path:
+    """디스크 사용량 측정 기준 경로 — data_root 가 있는 드라이브/파티션."""
+    try:
+        return PATHS.data_root
+    except Exception:
+        return Path(".").resolve()
+
+
+def _collect_stats() -> dict:
+    """현재 CPU / Mem / Disk 사용량 수집. psutil 미설치면 0.0 으로 조용히 fallback."""
+    ts = _now()
+    if _psutil is None:
+        return {
+            "timestamp": _iso(ts), "ts_epoch": ts,
+            "cpu_percent": 0.0, "memory_percent": 0.0, "disk_percent": 0.0,
+            "memory_used_gb": 0.0, "memory_total_gb": 0.0,
+            "disk_used_gb": 0.0, "disk_total_gb": 0.0,
+            "psutil": False,
+        }
+    try:
+        cpu = float(_psutil.cpu_percent(interval=0.3))
+    except Exception:
+        cpu = 0.0
+    try:
+        vm = _psutil.virtual_memory()
+        mem_pct = float(vm.percent)
+        mem_used = float(vm.used) / 1e9
+        mem_total = float(vm.total) / 1e9
+    except Exception:
+        mem_pct, mem_used, mem_total = 0.0, 0.0, 0.0
+    try:
+        du = _psutil.disk_usage(str(_disk_target()))
+        disk_pct = float(du.percent)
+        disk_used = float(du.used) / 1e9
+        disk_total = float(du.total) / 1e9
+    except Exception:
+        disk_pct, disk_used, disk_total = 0.0, 0.0, 0.0
+    return {
+        "timestamp": _iso(ts), "ts_epoch": ts,
+        "cpu_percent": round(cpu, 1),
+        "memory_percent": round(mem_pct, 1),
+        "memory_used_gb": round(mem_used, 2),
+        "memory_total_gb": round(mem_total, 2),
+        "disk_percent": round(disk_pct, 1),
+        "disk_used_gb": round(disk_used, 2),
+        "disk_total_gb": round(disk_total, 2),
+        "psutil": True,
+    }
+
+
+def collect_once() -> dict:
+    """현재 상태를 읽어 resource_log 에 append 하고 반환."""
+    global _last_sample
+    s = _collect_stats()
+    try:
+        jsonl_append(RESOURCE_LOG, s)
+        jsonl_trim(RESOURCE_LOG, 8640)   # ≈ 1 month @ 5min
+    except Exception as e:
+        logger.warning(f"resource_log append failed: {e}")
+    with _lock:
+        _last_sample = dict(s)
+    return s
+
+
+def history(limit: int = 288) -> List[dict]:
+    """resource_log tail. 기본 288 = 1일치 @ 5min."""
+    try:
+        return jsonl_read(RESOURCE_LOG, limit) or []
+    except Exception:
+        return []
+
+
+def _window_peaked_above(threshold: float) -> bool:
+    """최근 HISTORY_WINDOW_HOURS 창 안에서 cpu or memory 가 threshold% 이상이었는지."""
+    cutoff = _iso(_now() - HISTORY_WINDOW_HOURS * 3600)
+    entries = jsonl_read(RESOURCE_LOG, 0, lambda e: e.get("timestamp", "") >= cutoff)
+    # 데이터가 충분치 않으면 False — 유휴 체크 skip (너무 이른 판단 방지).
+    if len(entries) < max(3, HISTORY_WINDOW_HOURS // 2):
+        return True
+    for e in entries:
+        if float(e.get("cpu_percent", 0)) >= threshold or float(e.get("memory_percent", 0)) >= threshold:
+            return True
+    return False
+
+
+def mark_user_activity() -> None:
+    """사용자 활동 감지 — 부하 중이면 중단 신호, 30분 대기 창 설정."""
+    global _last_user_activity, _paused_until
+    with _lock:
+        _last_user_activity = _now()
+        _paused_until = _last_user_activity + PAUSE_AFTER_USER_SEC
+    _load_stop.set()
+
+
+def _has_recent_user_activity() -> bool:
+    with _lock:
+        return (_now() - _last_user_activity) < USER_ACTIVITY_TTL_SEC
+
+
+def get_state() -> dict:
+    """현재 모니터 상태 스냅샷 (FE 위젯용)."""
+    with _lock:
+        sample = dict(_last_sample or {})
+        load_active = bool(_load_thread and _load_thread.is_alive())
+        end_at = _load_end_at if load_active else 0.0
+        started_at = _load_started_at if load_active else 0.0
+        paused_until = _paused_until
+        last_user = _last_user_activity
+    return {
+        "sample": sample,
+        "load_active": load_active,
+        "load_started_at": _iso(started_at) if started_at else "",
+        "load_estimated_end": _iso(end_at) if end_at else "",
+        "paused_until": _iso(paused_until) if paused_until and paused_until > _now() else "",
+        "last_user_activity": _iso(last_user) if last_user else "",
+        "recent_user_activity": _has_recent_user_activity(),
+        "psutil_available": _psutil is not None,
+        "threshold_pct": THRESHOLD_PCT,
+        "window_hours": HISTORY_WINDOW_HOURS,
+    }
+
+
+def _burn_cpu(stop_event: threading.Event, deadline: float) -> None:
+    """CPU 부하 — 단일 스레드 numpy-free 연산. stop_event 또는 deadline 까지 반복."""
+    try:
+        import numpy as _np
+        have_np = True
+    except Exception:
+        have_np = False
+
+    while not stop_event.is_set() and _now() < deadline:
+        if have_np:
+            # 적당히 CPU 를 끌어쓰는 연산 — numpy 있을 때.
+            try:
+                a = _np.random.rand(400, 400)
+                b = _np.random.rand(400, 400)
+                _ = _np.linalg.svd(a @ b, full_matrices=False)
+            except Exception:
+                have_np = False
+                continue
+        else:
+            # Pure Python fallback
+            _ = sum(i * i for i in range(500_000))
+        # 너무 과하게 못 돌게 약간의 양보.
+        if stop_event.wait(timeout=0.01):
+            return
+
+
+def _load_worker(duration_sec: int) -> None:
+    """부하 스레드 entry point — _burn_cpu 를 듀얼 쓰레드로 돌려 85% 근처까지 끌어올림."""
+    global _load_started_at, _load_end_at
+    start = _now()
+    end = start + duration_sec
+    with _lock:
+        _load_started_at = start
+        _load_end_at = end
+    logger.info(f"[sysmon] load generation start — {duration_sec}s planned")
+    _load_stop.clear()
+
+    # 보조 워커 1~2 개로 병렬 부하. psutil 이 있으면 코어수 기반으로 조절.
+    n_aux = 1
+    if _psutil is not None:
+        try:
+            n_aux = max(1, min(4, (_psutil.cpu_count(logical=False) or 2) - 1))
+        except Exception:
+            n_aux = 1
+    aux_threads: List[threading.Thread] = []
+    for _ in range(n_aux):
+        t = threading.Thread(target=_burn_cpu, args=(_load_stop, end), daemon=True)
+        t.start()
+        aux_threads.append(t)
+    # 메인에서도 함께 burn — 단일 워커가 아닌 다수 스레드가 함께 돌도록.
+    _burn_cpu(_load_stop, end)
+    for t in aux_threads:
+        t.join(timeout=2.0)
+    stopped_early = _load_stop.is_set()
+    with _lock:
+        _load_end_at = _now() if stopped_early else end
+    logger.info(f"[sysmon] load generation {'stopped' if stopped_early else 'finished'} "
+                f"after {int(_now() - start)}s")
+
+
+def _maybe_start_load() -> None:
+    """유휴 조건 만족 시 부하 스레드 시작. 이미 돌고 있거나 최근 사용자 활동이 있으면 skip."""
+    global _load_thread
+    if _load_thread and _load_thread.is_alive():
+        return
+    if _has_recent_user_activity():
+        return
+    if _paused_until > _now():
+        return
+    # 최근 6시간 안에 85% 찍은 적이 있으면 유휴가 아님.
+    if _window_peaked_above(THRESHOLD_PCT):
+        return
+    duration = random.randint(LOAD_MIN_SEC, LOAD_MAX_SEC)
+    _load_stop.clear()
+    _load_thread = threading.Thread(target=_load_worker, args=(duration,), daemon=True)
+    _load_thread.start()
+
+
+def _bg_loop() -> None:
+    """5분 주기 샘플 + 유휴 체크. 앱 기동 시 1회 즉시 샘플."""
+    try:
+        collect_once()
+    except Exception as e:
+        logger.warning(f"initial sample failed: {e}")
+    while True:
+        try:
+            time.sleep(SAMPLE_INTERVAL_SEC)
+        except Exception:
+            return
+        try:
+            collect_once()
+            _maybe_start_load()
+        except Exception as e:
+            logger.warning(f"sysmon loop error: {e}")
+
+
+def start_background() -> None:
+    """앱 기동 시 1회 호출. 이미 실행 중이면 no-op."""
+    global _bg_thread
+    if _bg_thread and _bg_thread.is_alive():
+        return
+    _bg_thread = threading.Thread(target=_bg_loop, name="sysmon-bg", daemon=True)
+    _bg_thread.start()
+    logger.info("[sysmon] background loop started")

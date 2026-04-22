@@ -248,6 +248,8 @@ _PROTECTED_BASENAMES = {{
     'activity.jsonl', 'downloads.jsonl', 'resource.jsonl',
     # v8.8.17 — 캘린더/대시보드 명시적 추가 (holweb-data 보존원칙 강화)
     'calendar.json', 'reformatter.json',
+    # v8.8.18 — 시스템 모니터 state (resource.jsonl 은 이미 위 등록).
+    'farm_status.json', 'sysmon_state.json',
 }}
 
 # v8.8.3 — 데이터 루트로 간주되는 세그먼트 (경로 어디에 있든 보호)
@@ -649,6 +651,7 @@ def install_deps() -> int:
     pkgs = [
         'fastapi', 'uvicorn[standard]', 'pandas', 'pyarrow', 'polars', 'numpy',
         'python-multipart', 'boto3', 'scikit-learn', 'scipy', 'openpyxl',
+        'psutil',   # v8.8.18: 시스템 모니터 (core/sysmon.py)
     ]
     return _run(f"{sys.executable} -m pip install " + ' '.join(shlex.quote(p) for p in pkgs), cwd=ROOT)
 

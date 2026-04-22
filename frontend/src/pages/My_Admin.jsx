@@ -545,49 +545,56 @@ function EmailInlineEdit({u,onSave}){
   </span>);
 }
 
-// ── v8.7.2: 사내 메일 API 연동 설정 패널 ──
+// ── v8.7.2/v8.8.18: 사내 메일 API 연동 설정 패널 ──
+// v8.8.18: recipient_groups 제거 (수신자는 각 페이지에서 선택). dep_ticket 단일 필드
+//          + API 전체 틀 JSON 미리보기. senderMailAddress/statusCode/url 만 남김.
 function MailCfgPanel(){
-  const[cfg,setCfg]=useState({api_url:"",headers:{},from_addr:"",status_code:"",extra_data:{},recipient_groups:{},enabled:false});
-  const[headersText,setHeadersText]=useState("{}");
-  const[extraText,setExtraText]=useState("{}");
-  const[newGroupName,setNewGroupName]=useState("");
+  const[cfg,setCfg]=useState({api_url:"",dep_ticket:"",from_addr:"",status_code:"",enabled:false});
   const[msg,setMsg]=useState("");
   const[busy,setBusy]=useState(false);
   const reload=()=>{
     sf("/api/admin/settings").then(d=>{
       const m=d.mail||{};
-      setCfg({api_url:m.api_url||"",headers:m.headers||{},from_addr:m.from_addr||"",status_code:m.status_code||"",extra_data:m.extra_data||{},recipient_groups:m.recipient_groups||{},enabled:!!m.enabled});
-      setHeadersText(JSON.stringify(m.headers||{},null,2));
-      setExtraText(JSON.stringify(m.extra_data||{},null,2));
+      // dep_ticket 필드가 없으면 headers["x-dep-ticket"] 에서 추출 (backward compat).
+      const dt=(m.dep_ticket||"").toString().trim()||((m.headers||{})["x-dep-ticket"]||"");
+      setCfg({api_url:m.api_url||"",dep_ticket:dt,from_addr:m.from_addr||"",status_code:m.status_code||"",enabled:!!m.enabled});
     }).catch(()=>{});
   };
   useEffect(reload,[]);
   const save=()=>{
-    let hdrs={},ed={};
-    try{hdrs=JSON.parse(headersText||"{}");if(typeof hdrs!=="object"||Array.isArray(hdrs))throw new Error("headers must be object");}
-    catch(e){setMsg("헤더 JSON 파싱 오류: "+e.message);return;}
-    try{ed=JSON.parse(extraText||"{}");if(typeof ed!=="object"||Array.isArray(ed))throw new Error("extra_data must be object");}
-    catch(e){setMsg("추가 data JSON 파싱 오류: "+e.message);return;}
     setBusy(true);setMsg("");
     sf("/api/admin/settings").then(cur=>{
       return sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
         dashboard_refresh_minutes:cur.dashboard_refresh_minutes||10,
         dashboard_bg_refresh_minutes:cur.dashboard_bg_refresh_minutes||10,
-        mail:{api_url:cfg.api_url,headers:hdrs,from_addr:cfg.from_addr,status_code:cfg.status_code,extra_data:ed,recipient_groups:cfg.recipient_groups,enabled:cfg.enabled},
+        mail:{
+          api_url:cfg.api_url,
+          dep_ticket:cfg.dep_ticket,
+          from_addr:cfg.from_addr,
+          status_code:cfg.status_code,
+          enabled:cfg.enabled,
+        },
       })});
     }).then(()=>{setMsg("✔ 저장됨");setBusy(false);reload();}).catch(e=>{setMsg("오류: "+e.message);setBusy(false);});
   };
 
-  const addGroup=()=>{
-    const n=newGroupName.trim();if(!n)return;
-    if(cfg.recipient_groups[n]){setMsg(`그룹 '${n}' 이미 존재`);return;}
-    setCfg({...cfg,recipient_groups:{...cfg.recipient_groups,[n]:[]}});
-    setNewGroupName("");
-  };
-  const delGroup=(n)=>{const rg={...cfg.recipient_groups};delete rg[n];setCfg({...cfg,recipient_groups:rg});};
-  const updateGroupEmails=(n,text)=>{
-    const list=text.split(/[\n,;]+/).map(s=>s.trim()).filter(Boolean);
-    setCfg({...cfg,recipient_groups:{...cfg.recipient_groups,[n]:list}});
+  // v8.8.18: API 전체 틀 preview — admin 이 저장 전에 실제 request 모양을 확인.
+  const preview={
+    url: cfg.api_url || "(설정 필요)",
+    headers: cfg.dep_ticket ? {"x-dep-ticket": cfg.dep_ticket} : {},
+    data: {
+      content: "(본문 HTML)",
+      receiverList: [
+        {email: "user1@domain.com", recipientType: "To", seq: 1},
+        {email: "user2@domain.com", recipientType: "To", seq: 2},
+      ],
+      senderMailAddress: cfg.from_addr || "(설정 필요)",
+      statusCode: cfg.status_code || "",
+      title: "(제목)",
+    },
+    files: [
+      ["file", ["attachment.xlsx", "(binary)", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]],
+    ],
   };
 
   const L={fontSize:11,color:"var(--text-secondary)",marginBottom:4,marginTop:10,fontWeight:600};
@@ -595,9 +602,10 @@ function MailCfgPanel(){
   return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:900}}>
     <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>✉ 메일 API 설정</div>
     <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.6}}>
-      인폼 상세 → <b>메일 보내기</b> 에서 호출되는 사내 메일 API. 지정 URL 에 multipart/form-data 로 POST 합니다.<br/>
-      form field <code>data</code> = <code>{`{content, receiverList:[{email,recipientType,seq}], senderMailaddress, statusCode, title, ...extra_data}`}</code>, <code>files</code> 는 첨부 (10MB 한도, 본문 2MB 한도).<br/>
-      URL 에 <code>dry-run</code> 입력 시 실제 전송 없이 payload preview 반환.
+      사내 메일 API 로 <code>multipart/form-data</code> POST 요청.
+      <code>data</code> 필드 = JSON-encoded <code>{"{content,receiverList,senderMailAddress,statusCode,title}"}</code>,
+      <code>files</code> = 첨부파일 (2MB 본문 / 10MB 첨부 한도). URL 에 <code>dry-run</code> 입력 시 실제 전송 없이 preview 만 반환.<br/>
+      <b>수신자는 각 페이지의 메일 발송 다이얼로그에서 선택</b> — Admin 에서 그룹 관리하지 않음.
     </div>
     <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,marginBottom:6}}>
       <input type="checkbox" checked={!!cfg.enabled} onChange={e=>setCfg({...cfg,enabled:e.target.checked})}/>
@@ -605,9 +613,11 @@ function MailCfgPanel(){
     </label>
     <div style={L}>API URL</div>
     <input value={cfg.api_url} onChange={e=>setCfg({...cfg,api_url:e.target.value})} placeholder="https://mail.internal/api/send  (또는 'dry-run')" style={I}/>
+    <div style={L}>x-dep-ticket <span style={{fontWeight:400,color:"var(--text-secondary)"}}>(요청 헤더에 자동 첨부)</span></div>
+    <input value={cfg.dep_ticket} onChange={e=>setCfg({...cfg,dep_ticket:e.target.value})} placeholder="사내 발급 티켓값" style={{...I,fontFamily:"monospace"}}/>
     <div style={{display:"flex",gap:10}}>
       <div style={{flex:2}}>
-        <div style={L}>senderMailaddress (기본 발신자)</div>
+        <div style={L}>senderMailAddress (기본 발신자)</div>
         <input value={cfg.from_addr} onChange={e=>setCfg({...cfg,from_addr:e.target.value})} placeholder="flow-noreply@company.com" style={I}/>
       </div>
       <div style={{flex:1}}>
@@ -615,29 +625,16 @@ function MailCfgPanel(){
         <input value={cfg.status_code} onChange={e=>setCfg({...cfg,status_code:e.target.value})} placeholder="예: NORMAL" style={I}/>
       </div>
     </div>
-    <div style={L}>커스텀 헤더 (JSON)</div>
-    <textarea value={headersText} onChange={e=>setHeadersText(e.target.value)} rows={4} placeholder='{"Authorization":"Bearer xxx","X-Api-Key":"..."}' style={{...I,fontFamily:"monospace",resize:"vertical"}}/>
-    <div style={L}>추가 data 필드 (JSON, payload 에 병합)</div>
-    <textarea value={extraText} onChange={e=>setExtraText(e.target.value)} rows={4} placeholder='{"reply_to":"noreply@flow.local","category":"INFORM"}' style={{...I,fontFamily:"monospace",resize:"vertical",fontSize:11}}/>
 
-    {/* Recipient groups */}
+    {/* v8.8.18: API 전체 틀 미리보기 */}
     <div style={{marginTop:18,padding:12,background:"var(--bg-card)",borderRadius:6,border:"1px solid var(--border)"}}>
-      <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>📮 모듈 수신자 그룹 <span style={{fontWeight:400,fontSize:10,color:"var(--text-secondary)"}}>(그룹 이름 → 이메일 주소 리스트)</span></div>
-      <div style={{display:"flex",gap:6,marginBottom:8}}>
-        <input value={newGroupName} onChange={e=>setNewGroupName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addGroup();}} placeholder="예: GATE 담당" style={{...I,flex:1}}/>
-        <button onClick={addGroup} style={{padding:"8px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>+ 그룹 추가</button>
+      <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>🔍 전체 API 틀 미리보기</div>
+      <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:6,lineHeight:1.5}}>
+        현재 저장된 설정 기반으로 실제 호출 시 전송될 request 구조. 본문/제목/수신자는 인폼·회의 등 발송 화면에서 채워집니다.
       </div>
-      {Object.keys(cfg.recipient_groups||{}).length===0&&<div style={{fontSize:10,color:"var(--text-secondary)",padding:8,textAlign:"center"}}>아직 그룹이 없습니다.</div>}
-      {Object.entries(cfg.recipient_groups||{}).map(([gname,emails])=>(
-        <div key={gname} style={{marginBottom:8,padding:8,border:"1px solid var(--border)",borderRadius:4,background:"var(--bg-primary)"}}>
-          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
-            <b style={{fontSize:12,color:"var(--accent)"}}>{gname}</b>
-            <span style={{fontSize:10,color:"var(--text-secondary)"}}>({(emails||[]).length}명)</span>
-            <span onClick={()=>delGroup(gname)} style={{marginLeft:"auto",cursor:"pointer",color:"#ef4444",fontSize:10}}>✕ 그룹 삭제</span>
-          </div>
-          <textarea value={(emails||[]).join("\n")} onChange={e=>updateGroupEmails(gname,e.target.value)} rows={3} placeholder="이메일 1개씩 (줄바꿈 또는 콤마/세미콜론 구분)" style={{...I,fontFamily:"monospace",fontSize:11,resize:"vertical"}}/>
-        </div>
-      ))}
+      <pre style={{fontSize:10,lineHeight:1.45,padding:10,background:"var(--bg-primary)",border:"1px solid var(--border)",borderRadius:4,overflow:"auto",maxHeight:360,fontFamily:"monospace",margin:0,color:"var(--text-primary)"}}>
+{JSON.stringify(preview, null, 2)}
+      </pre>
     </div>
 
     <div style={{marginTop:14,display:"flex",gap:8,alignItems:"center"}}>

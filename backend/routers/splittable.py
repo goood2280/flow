@@ -464,15 +464,18 @@ def list_products():
 #   - 상위 DB 폴더 이름이 `1.RAWDATA_DB*` prefix (예: `1.RAWDATA_DB`, `1.RAWDATA_DB_FAB`, `1.RAWDATA_DB_INLINE`).
 #   - 제품 폴더 안은 hive 파티션: `PRODA/date=YYYYMMDD/part_*.parquet`.
 #   - 동시에 Base 단일 파일 `ML_TABLE_<PROD>.parquet` 도 같은 폴더 레벨에 있음.
-# 과거 호환: 짧은 이름 (FAB/INLINE/ET/EDS) 폴더도 계속 인식.
-_RAWDATA_PREFIX = "1.RAWDATA_DB"
+# v8.8.18: `1.RAWDATA_DB` 는 exact match — `_INLINE`/`_FAB` 등 suffix 붙은 변형은
+#   별도 폴더로 취급 (override 소스로 자동 매칭하지 않음). 명시적 legacy 짧은 이름은 유지.
+#   사용자가 직접 lot_overrides[product].fab_source 로 `1.RAWDATA_DB_INLINE/<PROD>` 를
+#   지정하면 그 경로는 존중.
+_RAWDATA_EXACT = "1.RAWDATA_DB"
 _LEGACY_SHORT_ROOTS = {"FAB", "INLINE", "ET", "EDS"}
 
 def _is_db_root_dir(p) -> bool:
     if not p.is_dir():
         return False
     n = p.name
-    if n.startswith(_RAWDATA_PREFIX):
+    if n == _RAWDATA_EXACT:
         return True
     if n.upper() in _LEGACY_SHORT_ROOTS:
         return True
