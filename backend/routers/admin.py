@@ -482,6 +482,8 @@ class MailCfgReq(BaseModel):
     extra_data: Optional[Dict[str, Any]] = None   # merged into outgoing `data` block
     recipient_groups: Optional[Dict[str, List[str]]] = None  # {"group": ["email1", ...]}
     enabled: Optional[bool] = None
+    dep_ticket: Optional[str] = None              # v8.8.17: headers["x-dep-ticket"] shortcut
+    domain: Optional[str] = None                  # v8.8.19: company email domain (예: "company.co.kr") — username-only 값 뒤에 자동 합성
 
 
 class LLMCfgReq(BaseModel):
@@ -562,9 +564,13 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
     if mail_in is not None:
         current = _load_admin_settings()
         mail_cur = dict(current.get("mail") or {})
-        for k in ("api_url", "from_addr", "status_code", "dep_ticket"):
+        # v8.8.19: `domain` 추가 — username-only 값 뒤에 @domain 자동 합성.
+        for k in ("api_url", "from_addr", "status_code", "dep_ticket", "domain"):
             if mail_in.get(k) is not None:
-                mail_cur[k] = str(mail_in.get(k) or "").strip()
+                v = str(mail_in.get(k) or "").strip()
+                if k == "domain":
+                    v = v.lstrip("@")   # 허용: "company.co.kr" 또는 "@company.co.kr"
+                mail_cur[k] = v
         # headers merge + dep_ticket 자동 반영.
         hdrs_out = dict(mail_cur.get("headers") or {})
         if mail_in.get("headers") is not None:

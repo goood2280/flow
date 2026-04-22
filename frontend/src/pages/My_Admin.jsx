@@ -549,7 +549,7 @@ function EmailInlineEdit({u,onSave}){
 // v8.8.18: recipient_groups 제거 (수신자는 각 페이지에서 선택). dep_ticket 단일 필드
 //          + API 전체 틀 JSON 미리보기. senderMailAddress/statusCode/url 만 남김.
 function MailCfgPanel(){
-  const[cfg,setCfg]=useState({api_url:"",dep_ticket:"",from_addr:"",status_code:"",enabled:false});
+  const[cfg,setCfg]=useState({api_url:"",dep_ticket:"",from_addr:"",status_code:"",domain:"",enabled:false});
   const[msg,setMsg]=useState("");
   const[busy,setBusy]=useState(false);
   const reload=()=>{
@@ -557,7 +557,7 @@ function MailCfgPanel(){
       const m=d.mail||{};
       // dep_ticket 필드가 없으면 headers["x-dep-ticket"] 에서 추출 (backward compat).
       const dt=(m.dep_ticket||"").toString().trim()||((m.headers||{})["x-dep-ticket"]||"");
-      setCfg({api_url:m.api_url||"",dep_ticket:dt,from_addr:m.from_addr||"",status_code:m.status_code||"",enabled:!!m.enabled});
+      setCfg({api_url:m.api_url||"",dep_ticket:dt,from_addr:m.from_addr||"",status_code:m.status_code||"",domain:(m.domain||"").replace(/^@/,""),enabled:!!m.enabled});
     }).catch(()=>{});
   };
   useEffect(reload,[]);
@@ -572,6 +572,7 @@ function MailCfgPanel(){
           dep_ticket:cfg.dep_ticket,
           from_addr:cfg.from_addr,
           status_code:cfg.status_code,
+          domain:(cfg.domain||"").replace(/^@/,""),
           enabled:cfg.enabled,
         },
       })});
@@ -579,16 +580,19 @@ function MailCfgPanel(){
   };
 
   // v8.8.18: API 전체 틀 preview — admin 이 저장 전에 실제 request 모양을 확인.
+  // v8.8.19: domain 설정이 있으면 username-only 샘플도 합성.
+  const _dom=(cfg.domain||"").replace(/^@/,"");
+  const _combine=(un)=>_dom && !un.includes("@") ? `${un}@${_dom}` : un;
   const preview={
     url: cfg.api_url || "(설정 필요)",
     headers: cfg.dep_ticket ? {"x-dep-ticket": cfg.dep_ticket} : {},
     data: {
       content: "(본문 HTML)",
       receiverList: [
-        {email: "user1@domain.com", recipientType: "To", seq: 1},
-        {email: "user2@domain.com", recipientType: "To", seq: 2},
+        {email: _combine("user1"), recipientType: "To", seq: 1},
+        {email: _combine("user2"), recipientType: "To", seq: 2},
       ],
-      senderMailAddress: cfg.from_addr || "(설정 필요)",
+      senderMailAddress: cfg.from_addr || _combine("sender") || "(설정 필요)",
       statusCode: cfg.status_code || "",
       title: "(제목)",
     },
@@ -625,6 +629,11 @@ function MailCfgPanel(){
         <input value={cfg.status_code} onChange={e=>setCfg({...cfg,status_code:e.target.value})} placeholder="예: NORMAL" style={I}/>
       </div>
     </div>
+    {/* v8.8.19: 이메일 도메인 — username-only 값 뒤에 자동 합성. */}
+    <div style={L}>메일 도메인 <span style={{fontWeight:400,color:"var(--text-secondary)"}}>
+      (선택 — '@' 없이 도메인만. 예: <code>company.co.kr</code>. username 이 이메일 포맷이 아닐 때 <code>&lt;username&gt;@&lt;domain&gt;</code> 로 자동 조합)
+    </span></div>
+    <input value={cfg.domain} onChange={e=>setCfg({...cfg,domain:e.target.value.replace(/^@/,"")})} placeholder="company.co.kr" style={{...I,fontFamily:"monospace"}}/>
 
     {/* v8.8.18: API 전체 틀 미리보기 */}
     <div style={{marginTop:18,padding:12,background:"var(--bg-card)",borderRadius:6,border:"1px solid var(--border)"}}>

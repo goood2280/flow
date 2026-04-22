@@ -1299,6 +1299,54 @@ def delete_product_contact(request: Request, id: str = Query(...), product: str 
     return {"ok": True}
 
 
+# v8.8.19: 인폼 제품 담당자 전용 필터 — admin 역할 / `admin`·`hol`·`test` 포함
+#   username 을 제외한다. 그룹(`_is_blocked_member`) 는 v8.8.5 에서 admin 을 허용하도록
+#   완화됐지만, 인폼 제품 담당자는 "메일 수신 대상 + 시스템 계정 배제" 요건이 강해
+#   별도 규칙을 쓴다. eligible-users 엔드포인트와 bulk-add 양쪽에서 동일 기준 적용.
+_BLOCKED_UNAME_TOKENS = ("admin", "hol", "test")
+
+
+def _is_blocked_contact(username: str, user_obj: dict | None = None) -> bool:
+    un = (username or "").strip()
+    if not un:
+        return True
+    low = un.lower()
+    for tok in _BLOCKED_UNAME_TOKENS:
+        if tok in low:
+            return True
+    if isinstance(user_obj, dict):
+        role = (user_obj.get("role") or "").strip().lower()
+        if role == "admin":
+            return True
+    return False
+
+
+@router.get("/eligible-contacts")
+def eligible_contacts(request: Request):
+    """v8.8.19: 인폼 제품 담당자로 등록 가능한 유저 목록.
+    admin 역할 / admin·hol·test 포함 username 은 제외."""
+    _me = current_user(request)
+    try:
+        from routers.auth import read_users
+        users = read_users()
+    except Exception:
+        users = []
+    out = []
+    for u in users:
+        un = (u.get("username") or "").strip() if isinstance(u, dict) else ""
+        if not un:
+            continue
+        if _is_blocked_contact(un, u):
+            continue
+        out.append({
+            "username": un,
+            "email": (u.get("email") or "").strip() if isinstance(u, dict) else "",
+            "role": (u.get("role") or "user") if isinstance(u, dict) else "user",
+        })
+    out.sort(key=lambda x: x["username"].lower())
+    return {"users": out}
+
+
 # v8.8.2: bulk add — 개별 유저 / 그룹 멤버 혼합 추가.
 class ProductContactBulkReq(BaseModel):
     product: str
@@ -1320,7 +1368,7 @@ def bulk_add_product_contacts(req: ProductContactBulkReq, request: Request):
     prod = (req.product or "").strip()
     if not prod:
         raise HTTPException(400, "product required")
-    from routers.groups import _is_blocked_member, _load_users_by_name, _load as _load_groups
+    from routers.groups import _load_users_by_name, _load as _load_groups
     users_by_name = _load_users_by_name()
     # pool: 유니크 username 모음
     pool: List[str] = []
@@ -1350,10 +1398,11 @@ def bulk_add_product_contacts(req: ProductContactBulkReq, request: Request):
     added: List[dict] = []
     skipped: List[str] = []
     for un in pool:
-        if _is_blocked_member(un, users_by_name):
+        u = users_by_name.get(un) or {}
+        # v8.8.19: 인폼 담당자는 admin/hol/test 완전 차단 (_is_blocked_contact).
+        if _is_blocked_contact(un, u):
             skipped.append(un)
             continue
-        u = users_by_name.get(un) or {}
         email = (u.get("email") or "").strip() if isinstance(u, dict) else ""
         name = (u.get("display_name") or u.get("name") or un) if isinstance(u, dict) else un
         key_u = ("u", un.lower())

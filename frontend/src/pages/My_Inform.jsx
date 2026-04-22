@@ -1317,7 +1317,8 @@ export default function My_Inform({ user }) {
   const openBulkPick = (product) => {
     setBulkPickProduct(product);
     setBulkSelUsers([]); setBulkSelGroups([]); setBulkRole("");
-    sf("/api/groups/eligible-users").then(d => setBulkEligibleUsers(d.users || [])).catch(() => setBulkEligibleUsers([]));
+    // v8.8.19: 인폼 담당자 전용 필터 (/api/informs/eligible-contacts) — admin 역할 + admin/hol/test 포함 username 제외.
+    sf("/api/informs/eligible-contacts").then(d => setBulkEligibleUsers(d.users || [])).catch(() => setBulkEligibleUsers([]));
     sf("/api/groups/list").then(d => setBulkGroups(d.groups || [])).catch(() => setBulkGroups([]));
   };
   const runBulkAdd = () => {
@@ -2282,20 +2283,41 @@ export default function My_Inform({ user }) {
                     style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 11, cursor: "pointer" }}>−</button>
                 )}
               </div>
-              {/* v8.8.10: Lot 입력 = SplitTable lot-candidates (root_lot_id + fab_lot_id) 기반 datalist autocomplete.
-                     수동 입력도 가능하되 후보에서 선택하면 그 값 그대로 들어감. fab_lot_id 선택 시 자동 SplitTable 스냅샷 로직이 바로 동작. */}
-              <div style={{ display: "flex", gap: 6 }}>
-                <input list={`lotopts_${form.product||"none"}`}
-                  value={form.lot_id} onChange={e => setForm({ ...form, lot_id: e.target.value })}
-                  placeholder={form.product
-                    ? (lotOptions.length > 0
-                        ? `Lot 선택 또는 입력 (${lotOptions.length}건 후보 — root_lot_id / fab_lot_id)`
-                        : "Lot 직접 입력 (해당 제품 DB 매칭 없음)")
-                    : "Lot (제품 먼저 선택)"}
-                  style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
-                <datalist id={`lotopts_${form.product||"none"}`}>
-                  {lotOptions.map(o => <option key={o.type+":"+o.value} value={o.value}>{o.type === "fab" ? "[fab] " : "[root] "}{o.value}</option>)}
-                </datalist>
+              {/* v8.8.19: Lot 선택 = 제품 선택처럼 스크롤 드롭다운(<select>) + 직접 입력 토글.
+                     후보는 SplitTable lot-candidates (오버라이드 DB 기반 root_lot_id + fab_lot_id).
+                     - 드롭다운: 제품의 최신 lot 목록을 스크롤해서 고름 (root 는 [root], fab 는 [fab] 표기).
+                     - ✏ 직접 입력 버튼: 후보에 없는 값을 수동 입력할 때 text input 으로 전환. */}
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                {form._lotManual ? (
+                  <input value={form.lot_id} onChange={e => setForm({ ...form, lot_id: e.target.value })}
+                    placeholder="Lot 직접 입력 (root_lot_id 또는 fab_lot_id)"
+                    style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
+                ) : (
+                  <select value={form.lot_id}
+                    onChange={e => setForm({ ...form, lot_id: e.target.value })}
+                    disabled={!form.product}
+                    size={1}
+                    style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }}>
+                    <option value="">
+                      {form.product
+                        ? (lotOptions.length > 0
+                            ? `-- Lot 선택 (${lotOptions.length}건 · SplitTable DB) --`
+                            : "-- 해당 제품 DB 매칭 없음 — 직접 입력 권장 --")
+                        : "-- 제품 먼저 선택 --"}
+                    </option>
+                    {lotOptions.map(o => (
+                      <option key={o.type + ":" + o.value} value={o.value}>
+                        {o.type === "fab" ? "[fab] " : "[root] "}{o.value}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <button type="button"
+                  onClick={() => setForm(f => ({ ...f, _lotManual: !f._lotManual }))}
+                  title={form._lotManual ? "드롭다운으로 전환" : "직접 입력으로 전환"}
+                  style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer" }}>
+                  {form._lotManual ? "▼ 목록" : "✏ 직접"}
+                </button>
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
@@ -2342,22 +2364,63 @@ export default function My_Inform({ user }) {
                 🔎 Search
               </button>
             </div>
-            {/* v8.8.16: 인라인 CUSTOM 편집기 — SplitTable 사이드바와 동일 UX. */}
+            {/* v8.8.16: 인라인 CUSTOM 편집기 — SplitTable 사이드바와 동일 UX.
+                v8.8.19: SplitTable 공용 CUSTOM set 드롭다운 + 새 set 저장. 양방향 공유. */}
             {embedCustomOpen && (
               <div style={{ marginTop: 6, padding: "8px 10px", borderRadius: 5, border: "1px dashed var(--border)", background: "var(--bg-card)", fontSize: 10 }}>
+                {/* v8.8.19: SplitTable 공용 CUSTOM set 선택/저장 행 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 9, color: "var(--text-secondary)", fontWeight: 600 }}>공용 CUSTOM set:</span>
+                  <select value={embedCustomName} onChange={e => {
+                      const nm = e.target.value;
+                      setEmbedCustomName(nm);
+                      if (nm) {
+                        const found = (customsList || []).find(c => c.name === nm);
+                        if (found && Array.isArray(found.columns)) {
+                          setEmbedCustomCols(found.columns.slice());
+                        }
+                      }
+                    }}
+                    style={{ padding: "2px 6px", fontSize: 10, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 3, maxWidth: 180 }}>
+                    <option value="">-- 선택 (직접 편집) --</option>
+                    {(customsList || []).map(c => <option key={c.name} value={c.name}>{c.name} ({(c.columns||[]).length})</option>)}
+                  </select>
+                  <button type="button" disabled={!embedCustomCols.length}
+                    onClick={() => {
+                      const nm = prompt("저장할 CUSTOM set 이름:", embedCustomName || "");
+                      if (!nm) return;
+                      postJson("/api/splittable/customs/save", {
+                        name: nm, username: user?.username || "",
+                        columns: embedCustomCols, expected_version: null,
+                      }).then(r => {
+                        if (r && r.conflict) { alert("이미 같은 이름의 set 이 있고 버전이 다릅니다. 이름을 바꾸거나 다시 시도."); return; }
+                        sf("/api/splittable/customs").then(d => setCustomsList(d.customs || []));
+                        setEmbedCustomName(nm);
+                        alert(`CUSTOM set '${nm}' 저장됨. SplitTable 과 공유.`);
+                      }).catch(e => alert("저장 실패: " + (e.message || e)));
+                    }}
+                    style={{ padding: "2px 8px", fontSize: 9, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", borderRadius: 3, cursor: embedCustomCols.length ? "pointer" : "not-allowed", fontWeight: 600 }}>
+                    💾 set 저장
+                  </button>
+                </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                   <span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>
                     인라인 CUSTOM 컬럼 선택 · {embedCustomCols.length}/{embedSchemaCols.length}
                   </span>
                   <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--text-secondary)" }}>
-                    저장하지 않은 상태 — 이 인폼에만 적용됨
+                    {embedCustomName ? `set='${embedCustomName}' (SplitTable 공유)` : "저장하지 않은 상태 — 이 인폼에만 적용됨"}
                   </span>
                 </div>
                 <input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)}
                   placeholder="컬럼 검색..." style={{ width: "100%", padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, marginBottom: 4, boxSizing: "border-box" }} />
                 {(() => {
+                  // v8.8.19: PRODUCT / ROOT_LOT_ID / WAFER_ID / lot_id / fab_lot_id 는 자동 포함 기본 컬럼 → CUSTOM pool 에서 제외.
+                  const HIDDEN = new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
                   const pool = (() => { const seen = new Set(); const out = [];
-                    for (const c of [...embedSchemaCols, ...embedCustomCols]) { if (!seen.has(c)) { seen.add(c); out.push(c); } } return out; })();
+                    for (const c of [...embedSchemaCols, ...embedCustomCols]) {
+                      const key = String(c).toLowerCase();
+                      if (!seen.has(c) && !HIDDEN.has(key)) { seen.add(c); out.push(c); }
+                    } return out; })();
                   const filtered = embedCustomSearch
                     ? pool.filter(c => c.toLowerCase().includes(embedCustomSearch.toLowerCase()))
                     : pool;
