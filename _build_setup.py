@@ -57,10 +57,22 @@ v8.8.17 — **데이터 보존 재설계 (code-only replacement)**:
 import base64
 import gzip
 import json
+import sys
 import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).parent
+
+# v8.8.25: ROOT 자체가 '.claude/worktrees/<name>/' 안에 있으면 EXCLUDE_PARTS 가
+# 모든 소스 파일을 걸러버려 빈 번들이 만들어진다. 반드시 main 체크아웃에서 실행.
+if '.claude' in ROOT.parts or 'worktrees' in ROOT.parts:
+    sys.stderr.write(
+        f"ERROR: _build_setup.py must run from the main checkout, not a worktree.\n"
+        f"  ROOT = {ROOT}\n"
+        f"  .claude / worktrees segment in ROOT causes EXCLUDE_PARTS to drop every source file.\n"
+        f"  Run this script from the primary repo root instead.\n"
+    )
+    sys.exit(2)
 
 INCLUDE_DIRS = [
     'backend/core',

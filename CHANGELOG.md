@@ -1,3 +1,11 @@
+## v8.8.25 — 2026-04-22
+
+`_build_setup.py` 가 워크트리 내부(`.claude/worktrees/<name>/`)에서 실행됐을 때 `EXCLUDE_PARTS` 의 `.claude` 필터가 워크트리 경로 자체에 걸려 **모든 소스 파일이 제외**된 채로 setup.py 가 생성되던 버그를 수정. v8.8.22 setup.py = 11,845줄 / 954KB / 149 files 였던 것이 v8.8.23/24 에선 1,787줄 / 136KB / 15 files 로 축소되어 사실상 빈 installer 였다.
+
+- **`_build_setup.py` 워크트리 가드** — `ROOT.parts` 에 `.claude` 또는 `worktrees` 세그먼트가 있으면 즉시 `sys.exit(2)` + 메인 체크아웃에서 실행하라는 에러 메시지.
+- **main 체크아웃에서 setup.py 재생성** — `gather_files()` 가 90 files / 2.1MB 정상 수집 → setup.py full bundle 회복.
+- **태그 전략** — v8.8.23 / v8.8.24 태그는 그대로 두고 v8.8.25 로 핫픽스. 누구든 최신 main 을 pull 하면 정상 installer 수령.
+
 ## v8.8.24 — 2026-04-22
 
 메일 API `mailSendString` top-level form field 정합 — informs/meetings/core 공통 교정.
