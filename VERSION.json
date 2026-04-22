@@ -1,7 +1,23 @@
 {
-  "version": "8.8.17",
+  "version": "8.8.18",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.18",
+      "date": "2026-04-22",
+      "title": "Admin 메일 API UI 간소화 · 메일 파일첨부 범용 업로드 · SplitTable 1.RAWDATA_DB exact match + Save Override feedback · psutil 시스템 모니터 + 유휴 부하 정책",
+      "tag": "feat",
+      "changes": [
+        "**Admin 메일 API 설정 UI 재설계** — 수신자 그룹 관리 제거(수신자는 각 페이지에서 선택). URL / x-dep-ticket / senderMailAddress / statusCode 4필드 + 활성화 토글만 남김. 저장된 설정 기반 **전체 API 틀 JSON 미리보기** 블록(headers/data/files 구조) 추가. BE /api/admin/settings 가 `dep_ticket` 단일 필드 받으면 자동으로 headers[\"x-dep-ticket\"] 에 반영.",
+        "**메일 다이얼로그 파일첨부 범용화** — 기존 인폼 이미지 외에 xlsx/pptx/pdf/doc 등 모든 파일 타입 선택 가능. FE 파일 input → `/api/informs/upload-attachment` 업로드 → URL 을 send-mail attachments 에 push. BE 엔드포인트 신설: 실행파일(.exe/.bat/.ps1 등) 차단, 10MB 개별 한도, mime 자동 추론.",
+        "**SplitTable 1.RAWDATA_DB exact match** — `_RAWDATA_PREFIX` startswith 매칭을 `_RAWDATA_EXACT = \"1.RAWDATA_DB\"` equality 로 교체. `1.RAWDATA_DB_INLINE` / `1.RAWDATA_DB_FAB` 처럼 suffix 붙은 폴더는 자동 매칭에서 제외(별개 소스로 취급). 사용자가 `lot_overrides[product].fab_source` 에 명시 지정하면 여전히 존중.",
+        "**Save Override 즉시 반영 + 피드백** — 저장 후 (1) `/source-config` 재로드로 저장된 값을 FE state 에 동기화, (2) `/ml-table-match` 재계산으로 override 메타 업데이트, (3) `loadView()` 로 테이블 행 갱신, (4) alert 로 성공/실패 명시적 피드백.",
+        "**psutil 기반 시스템 모니터 (core/sysmon.py)** — 크로스플랫폼 CPU/Memory/Disk 5분 주기 수집(resource.jsonl, trim 8640 rows = 1개월). `/api/system/stats` 통합 엔드포인트 + `/api/monitor/system·history·state·heartbeat`. 기존 리눅스 전용 `/proc/stat` 로직 대체. requirements.txt + install_deps 에 psutil 추가.",
+        "**유휴 자원 부하 정책** — 최근 6시간 동안 CPU/Memory 가 85% 이상 찍은 적이 없으면 5~10분(랜덤) 동안 numpy SVD 기반 더미 부하 생성. 사용자 활동(AuthMiddleware 에서 `/api/*` 인증 통과 시 `mark_user_activity()` 호출) 감지 시 `_load_stop` Event set → 부하 즉시 중단 + 30분 대기 창. `/api/monitor` + `/api/system` 자체 호출은 활동 감지에서 제외(위젯 폴링 노이즈 방지).",
+        "**My_Monitor 페이지 개편** — 새 `/api/system/stats` 응답 기반. CPU/Mem/Disk 3개 게이지 + 각 지표의 **24h sparkline**(85% 빨간 선 dashed) + 유휴 부하 배너(진행/대기) + psutil 미설치 경고. 15초 auto-refresh.",
+        "**보존 대상 확장** — setup.py `_PROTECTED_BASENAMES` 에 `farm_status.json / sysmon_state.json` 추가. resource.jsonl 은 v8.8.17 에서 이미 등록됨."
+      ]
+    },
     {
       "version": "8.8.17",
       "date": "2026-04-22",

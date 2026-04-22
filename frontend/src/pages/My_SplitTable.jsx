@@ -569,7 +569,23 @@ export default function My_SplitTable({user}){
                   rows={2} style={{...S,flex:1,fontSize:10,fontFamily:"monospace",resize:"vertical"}}/>
               </label>
               <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:-2,marginLeft:86}}>콤마로 구분. 소스에 있는 것만 실제로 덮어쓰이고 join_key 는 매칭용으로 보존됨.</div>
-              <button onClick={()=>{sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:[...(enabledSources||new Set())],lot_overrides:lotOverrides||{}})}).then(()=>{loadView&&loadView();});}} style={{marginTop:4,padding:"4px 10px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,cursor:"pointer",fontWeight:600}}>Save Overrides</button>
+              <button onClick={async()=>{
+                // v8.8.18: Save Overrides — 저장 후 source-config 재로드 + ml-table-match 재계산 + view 리프레시 + 피드백 배지.
+                try {
+                  await sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:[...(enabledSources||new Set())],lot_overrides:lotOverrides||{}})});
+                  // BE 에 persist 된 값을 다시 가져와 state 동기화 (타이핑 중이던 중간값 말고 저장된 진짜 값으로).
+                  try { const sc = await sf(API+"/source-config"); if (sc && sc.lot_overrides) setLotOverrides(sc.lot_overrides); if (sc && sc.enabled) setEnabledSources(new Set(sc.enabled)); } catch(_){}
+                  // mlMatch (_resolve_override_meta) 재계산.
+                  try { const d = await sf(API+"/ml-table-match?product="+encodeURIComponent(selProd));
+                    setMlMatch({pro:d.derived_product||"",matches:d.matches||[],auto_path:d.auto_path||"",effective_fab_source:d.effective_fab_source||"",manual_override:!!d.manual_override,override:d.override||null});
+                  } catch(_){}
+                  // view 리프레시 (lot 선택돼있으면).
+                  if (loadView) loadView();
+                  alert("✔ 오버라이드 저장됨 (다음 조회부터 적용).");
+                } catch(e) {
+                  alert("저장 실패: "+ (e?.message||e));
+                }
+              }} style={{marginTop:4,padding:"4px 10px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,cursor:"pointer",fontWeight:600}}>Save Overrides</button>
             </div>);
           })()}
 

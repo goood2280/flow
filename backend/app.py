@@ -57,6 +57,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if not u:
                 return JSONResponse({"detail": "Authentication required"}, status_code=401)
             request.state.user = u
+            # v8.8.18: 사용자 활동 감지 — 인증된 API 호출이 있으면 유휴 부하 중단/유예.
+            # /monitor, /system 자체 호출은 위젯 폴링이라 제외 (로그인 유저 반응이 아님).
+            if not (path.startswith("/api/monitor") or path.startswith("/api/system")):
+                try:
+                    from core.sysmon import mark_user_activity as _mark_act
+                    _mark_act()
+                except Exception:
+                    pass
         resp = await call_next(request)
         # v8.4.6: hardening headers (cheap, defense-in-depth)
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")

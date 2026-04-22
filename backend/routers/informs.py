@@ -680,6 +680,44 @@ async def upload_image(request: Request, file: UploadFile = File(...)):
             "uploaded_by": me["username"]}
 
 
+# v8.8.18: 메일 첨부용 범용 업로드 — 이미지뿐 아니라 xlsx/pptx/pdf 등 모든 파일.
+#   인폼 메일 다이얼로그에서 사용자가 선택한 파일을 먼저 이 엔드포인트로 올려
+#   반환 URL 을 send-mail 의 attachments 에 포함. `_resolve_inform_attachment`
+#   가 동일 경로 규약(/api/informs/files/<uid>/<name>)으로 이미 해석 가능.
+_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024   # 10MB 개별 / send-mail 에서 총합 10MB 한도 재검사
+_ATTACHMENT_BLOCKED_EXTS = {".exe", ".bat", ".cmd", ".com", ".scr", ".msi",
+                             ".dll", ".vbs", ".ps1", ".sh", ".js"}
+
+
+@router.post("/upload-attachment")
+async def upload_attachment(request: Request, file: UploadFile = File(...)):
+    """메일 첨부용 범용 업로드. 실행 가능한 확장자(.exe/.bat/...)는 차단.
+    반환 URL 은 이미지 업로드와 동일 경로 규약 → 기존 send-mail attachment resolver 재사용."""
+    me = current_user(request)
+    ext = Path(file.filename or "").suffix.lower()
+    if ext in _ATTACHMENT_BLOCKED_EXTS:
+        raise HTTPException(400, f"보안상 업로드 차단된 확장자: {ext}")
+    data = await file.read()
+    if len(data) > _ATTACHMENT_MAX_BYTES:
+        raise HTTPException(413, f"파일이 너무 큽니다 (최대 {_ATTACHMENT_MAX_BYTES // (1024*1024)}MB).")
+    if not data:
+        raise HTTPException(400, "빈 파일입니다.")
+
+    uid = uuid.uuid4().hex[:12]
+    safe = _safe_filename(file.filename or ("attachment" + ext))
+    if ext and not safe.lower().endswith(ext):
+        safe += ext
+    subdir = UPLOADS_DIR / uid
+    subdir.mkdir(parents=True, exist_ok=True)
+    dst = subdir / safe
+    dst.write_bytes(data)
+
+    url = f"/api/informs/files/{uid}/{safe}"
+    mime = mimetypes.guess_type(safe)[0] or "application/octet-stream"
+    return {"ok": True, "filename": safe, "url": url, "size": len(data),
+            "mime": mime, "uploaded_by": me["username"]}
+
+
 @router.get("/files/{uid}/{name}")
 def serve_image(request: Request, uid: str, name: str):
     """업로드 이미지 서빙. path traversal 차단."""

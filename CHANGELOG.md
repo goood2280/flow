@@ -1,3 +1,16 @@
+## v8.8.18 — 2026-04-22
+
+Admin 메일 API UI 간소화 + 메일 파일첨부 범용 + SplitTable 1.RAWDATA_DB exact match + Save Override feedback + psutil 기반 시스템 모니터 + 유휴 부하 정책.
+
+- **Admin 메일 API 설정 UI 재설계** — 수신자 그룹 관리 제거(수신자는 페이지별 선택). URL/x-dep-ticket/senderMailAddress/statusCode 4필드만. 저장된 설정 기반 **전체 API 틀 JSON 미리보기** 블록 추가(headers/data/files 전체 구조).
+- **메일 파일첨부 범용화** — xlsx/pptx/pdf/doc 등 파일 종류 무관. `/api/informs/upload-attachment` 신설(.exe/.bat/.ps1 등 실행파일 차단, 10MB 한도, mime 자동 추론). MailDialog 에 파일 선택 UI + 선택된 파일 pill.
+- **SplitTable 1.RAWDATA_DB exact match** — `_is_db_root_dir` 가 `1.RAWDATA_DB` 정확 일치만 매칭. `_INLINE/_FAB` 등 suffix 변형은 자동 매칭 제외(명시 지정은 여전히 존중).
+- **Save Override 즉시 반영** — 저장 후 `/source-config` 재로드 + `/ml-table-match` 재계산 + `loadView()` + alert 피드백. 캐시 이슈 없음 확인.
+- **psutil 시스템 모니터 (core/sysmon.py)** — 크로스플랫폼 CPU/Mem/Disk 5분 주기 샘플. `/api/system/stats` + `/api/monitor/*`. 기존 /proc/stat 로직 대체. install_deps 에 psutil 추가.
+- **유휴 자원 부하 정책** — 최근 6시간 CPU/Mem 85% 미만 유지 시 5~10분 numpy SVD 더미 부하 생성. AuthMiddleware 에서 사용자 활동 감지 → 즉시 중단 + 30분 대기.
+- **My_Monitor 개편** — CPU/Mem/Disk 3개 게이지 + 24h sparkline (85% 빨간 dashed) + 유휴 부하 상태 배너 + psutil 미설치 경고.
+- **보존 대상 확장** — `farm_status.json` / `sysmon_state.json` 추가.
+
 ## v8.8.17 — 2026-04-22
 
 데이터 보존 재설계 + SplitTable hive override 확장 + 인폼 CUSTOM only + FileBrowser 첫 클릭 head 200 + 공용 메일 헬퍼.

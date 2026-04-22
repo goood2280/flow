@@ -853,6 +853,59 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
           </div>
         </div>}
 
+        {/* v8.8.18: 임의 파일 첨부 — xlsx/pptx/pdf/doc 등 자유 선택. BE 업로드 → URL 을 attachments 에 push. */}
+        <div style={{ marginBottom: 10, padding: 10, border: "1px dashed var(--border)", borderRadius: 5 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+            <span>📁 파일 첨부 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(파일 종류 무관 · 개별 10MB · 총합 10MB · .exe 등 실행파일 제외)</span></span>
+            <label style={{ marginLeft: "auto", padding: "3px 10px", borderRadius: 4, border: "1px solid var(--accent)", color: "var(--accent)", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
+              + 파일 선택
+              <input type="file" multiple style={{ display: "none" }}
+                onChange={async (e) => {
+                  const files = Array.from(e.target.files || []);
+                  e.target.value = "";
+                  for (const f of files) {
+                    if (!f) continue;
+                    if (f.size > 10 * 1024 * 1024) { setError(`'${f.name}' 10MB 초과`); continue; }
+                    try {
+                      const fd = new FormData();
+                      fd.append("file", f, f.name);
+                      const r = await fetch("/api/informs/upload-attachment", {
+                        method: "POST",
+                        headers: { "X-Session-Token": (JSON.parse(localStorage.getItem("hol_user") || "{}")).token || "" },
+                        body: fd,
+                      });
+                      if (!r.ok) { setError(`업로드 실패 ${r.status}`); continue; }
+                      const d = await r.json();
+                      if (d && d.url) setAttachments(a => a.includes(d.url) ? a : [...a, d.url]);
+                    } catch (err) { setError("업로드 오류: " + (err?.message || err)); }
+                  }
+                }} />
+            </label>
+          </div>
+          {attachments.length === 0 && (
+            <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>아직 선택된 파일이 없습니다.</div>
+          )}
+          {attachments.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {attachments.map((u) => {
+                const fname = (u.split("/").pop() || u).slice(0, 40);
+                const isInline = inlineImages.some(im => im.url === u);
+                return (
+                  <span key={u} style={{
+                    padding: "3px 8px", borderRadius: 4, fontSize: 10,
+                    background: "rgba(16,185,129,0.1)", color: "#10b981",
+                    border: "1px solid #10b981", display: "inline-flex", alignItems: "center", gap: 4,
+                  }}>
+                    {isInline ? "🖼" : "📄"} {fname}
+                    <span onClick={() => setAttachments(a => a.filter(x => x !== u))}
+                      style={{ cursor: "pointer", color: "#ef4444", fontWeight: 700 }}>×</span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         {error && <div style={{ padding: "6px 10px", background: "rgba(239,68,68,0.1)", color: "#ef4444", border: "1px solid #ef4444", borderRadius: 4, fontSize: 11, marginBottom: 8 }}>⚠ {error}</div>}
         {sent && <div style={{ padding: "6px 10px", background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid #10b981", borderRadius: 4, fontSize: 11, marginBottom: 8 }}>✔ 전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}
 
