@@ -1,7 +1,24 @@
 {
-  "version": "8.8.18",
+  "version": "8.8.19",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.19",
+      "date": "2026-04-22",
+      "title": "사내 공유 경로 자동 보존 · 인폼 담당자 admin/hol/test 필터 · SplitTable fab_source 진단 · CUSTOM set 양방향 공유 · 인폼 Lot 드롭다운 · 메일 도메인 자동 합성",
+      "tag": "feat",
+      "changes": [
+        "**사내 공유 경로 자동 감지/보존** — `/config/work/sharedworkspace` 가 존재하면 환경변수 없이도 `holweb-data` / `DB` / `Base` 를 자동으로 기본 루트로 사용 (core/paths.py + core/roots.py). setup.py `_build_setup.py` 의 `_resolve_data_roots` + `_write` L6 가드가 이 경로를 자동 보호 → 재설치 시 사용자/그룹/회의/인폼/대시보드 등 데이터가 절대 덮어쓰이지 않음. 기존에는 `/config/work/holweb-fast-api` 가 함께 있어야만 인식돼 setup.py 재실행마다 로컬 `./data/holweb-data` 로 떨어져 DB 휘발.",
+        "**인폼 제품 담당자 admin/hol/test 완전 제외** — `routers/informs._is_blocked_contact` 신설 (admin role + `admin`/`hol`/`test` 포함 username 전부 차단). 새 엔드포인트 `GET /api/informs/eligible-contacts` 추가. `bulk-add` 가 동일 필터 적용. FE `My_Inform.jsx` 일괄 추가 모달이 `/api/informs/eligible-contacts` 호출로 교체. 그룹 `_is_blocked_member` (admin 허용) 는 그대로 유지 — 담당자 필터만 더 엄격.",
+        "**SplitTable fab_source_off 진단 강화** — `_resolve_override_meta` 가 `db_root` / `base_root` / `searched_db_roots` / `tried_candidates` 를 응답에 포함. 에러 메시지에 product → pro 추론 결과 + 실제 탐색 경로 + 권장 해결법을 상세 기술. FE 배지는 `title` 툴팁 + 클릭 시 `alert` 로 전체 상세 표시(db_root/base_root/DB 최상위 후보/탐색 경로 목록).",
+        "**CUSTOM set 양방향 공유 (SplitTable ↔ 인폼)** — 이미 `/api/splittable/customs` 가 공용이었지만 v8.8.17 에서 인폼 UI 의 Saved CUSTOM 드롭다운이 제거돼 사실상 단방향이었음. 인폼 인라인 CUSTOM 편집기에 공용 set 드롭다운 + 저장(프롬프트 기반) 추가. set 선택 시 컬럼이 `embedCustomCols` 에 즉시 반영, 저장 시 SplitTable 의 `customs` API 에 기록되어 SplitTable 에서도 동일 이름으로 노출.",
+        "**CUSTOM 선택 pool 기본 컬럼 제거** — SplitTable + 인폼 양쪽 모두 `product` / `root_lot_id` / `wafer_id` / `lot_id` / `fab_lot_id` 는 자동 첨부되는 기본 컬럼이라 CUSTOM 선택 UI 에서 숨김. 사용자는 분석 대상 parameter 에만 집중.",
+        "**인폼 Lot 후보 = SplitTable override DB 기반** — `GET /api/splittable/lot-candidates` 에 `source=auto|override|mltable` 인자 추가, 기본값 `auto` 에서 ML_TABLE_ 제품이면 override fab_source (hive `1.RAWDATA_DB/<PROD>/`) 를 먼저 스캔. 인폼 Lot 드롭다운이 'DB 에 실제로 찍혀있는 최신 lot' 을 그대로 보여줌.",
+        "**인폼 Lot 입력 = 스크롤 드롭다운** — 기존 datalist autocomplete 를 `<select size=1>` 로 교체. 제품 선택처럼 드롭다운을 열어 root_lot_id/fab_lot_id 목록 전체를 스크롤해서 선택. `✏ 직접` 토글로 수동 입력 모드 전환 가능.",
+        "**Admin 메일 도메인 자동 합성** — admin_settings.mail 에 `domain` 필드 추가 (예: `company.co.kr`). `core.mail.resolve_usernames_to_emails` / `send_mail` 이 username 에 '@' 가 없으면 자동으로 `<username>@<domain>` 으로 조합해 발송. Admin UI 에 '메일 도메인' 필드 + preview JSON 도 domain 기반 샘플 표시.",
+        "**기타** — `PATHS._ensure_dirs` 가 data_root 자체도 생성 보장(공유 경로 첫 실행 시). `/api/informs/eligible-contacts` 도 role 정보 포함 응답."
+      ]
+    },
     {
       "version": "8.8.18",
       "date": "2026-04-22",

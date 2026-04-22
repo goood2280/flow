@@ -1546,26 +1546,53 @@ def _resolve_override_meta(product: str) -> dict:
         fab_source = manual or _auto_derive_fab_source(product)
         meta["manual_override"] = bool(manual)
         meta["fab_source"] = fab_source
+        # v8.8.19: 진단 정보 — 어떤 data_root/DB 에서 어떤 후보를 탐색했는지 노출.
+        db_base = _db_base()
+        base_root = _base_root()
+        meta["db_root"] = str(db_base)
+        meta["base_root"] = str(base_root)
+        meta["db_root_exists"] = bool(db_base.exists())
+        meta["searched_db_roots"] = [p.name for p in _list_db_roots()]
+
         if not fab_source:
             if product.startswith("ML_TABLE_"):
-                meta["error"] = "자동 매칭 실패: `1.RAWDATA_DB*/<PROD>/` 폴더를 찾지 못함."
+                pro = product[len("ML_TABLE_"):].strip()
+                # 실제로 탐색한 후보 경로를 모두 리스트업
+                tried = []
+                for root_dir in _list_db_roots():
+                    tried.append(f"{root_dir.name}/{pro}")
+                if not _list_db_roots():
+                    tried.append(f"(db_root 비어있거나 '1.RAWDATA_DB' 하위 제품 폴더 없음: {db_base})")
+                meta["error"] = (
+                    f"자동 매칭 실패: product='{product}' → pro='{pro}'. "
+                    f"db_root='{db_base}'. "
+                    f"후보 탐색: {tried if tried else '(없음)'}. "
+                    f"권장 해결: data_root/DB 아래 '1.RAWDATA_DB/{pro}/' 가 존재하거나, "
+                    f"수동으로 lot_overrides.{product}.fab_source 를 지정."
+                )
+                meta["tried_candidates"] = tried
             else:
                 meta["error"] = "ML_TABLE_ prefix 아님 — 오버라이드 off."
             return meta
 
         # locate fab_source folder/file to list scanned files.
-        db_base = _db_base()
-        base_root = _base_root()
         fp = None
+        tried = []
         for root in (db_base, base_root):
             if not root or not root.exists():
+                tried.append(f"{root} (not exist)" if root else "(None)")
                 continue
             cand = root / fab_source
+            tried.append(str(cand))
             if cand.exists():
                 fp = cand
                 break
         if fp is None:
-            meta["error"] = f"fab_source 경로를 찾을 수 없음: {fab_source}"
+            meta["tried_candidates"] = tried
+            meta["error"] = (
+                f"fab_source 경로를 찾을 수 없음: '{fab_source}'. "
+                f"탐색 경로: {tried}. db_root='{db_base}' base_root='{base_root}'."
+            )
             return meta
         if fp.is_dir():
             parquets = sorted(fp.rglob("*.parquet"))
@@ -1766,11 +1793,37 @@ def get_lot_candidates(
     col: str = Query("root_lot_id"),
     prefix: str = Query(""),
     limit: int = Query(30),
+    source: str = Query("auto"),   # v8.8.19: auto|override|mltable
 ):
     """Autocomplete 후보 반환. col 은 'root_lot_id' 또는 'fab_lot_id'. prefix 가
     비어있으면 최신/정렬 상위 N개, 아니면 prefix 포함 매칭을 정렬 순 top N.
+
+    v8.8.19: `source` 인자 추가.
+      - "override": ML_TABLE_<PROD> 가 아닌 오버라이드 hive fab_source (`1.RAWDATA_DB/<PROD>/`)
+          에서 직접 lot 후보를 뽑는다. 최신 date partition 의 실제 유통 lot 을 그대로 보여주어
+          인폼로그에서 "지금 DB 에 찍혀있는 그 lot" 을 고르기 쉽게 한다.
+      - "mltable": 기존 동작 (ML_TABLE_<PROD>.parquet 스캔).
+      - "auto" (기본): ML_TABLE_ 제품이면 override 가 유효할 때 override → 실패 시 mltable.
     """
-    lf = _scan_product(product)
+    use_override = False
+    lf = None
+    if source in ("override", "auto") and product.startswith("ML_TABLE_"):
+        try:
+            meta = _resolve_override_meta(product)
+            fab_source = (meta.get("fab_source") or "").strip()
+            if fab_source and not meta.get("error"):
+                fab_lf = _scan_fab_source(fab_source)
+                if fab_lf is not None:
+                    lf = fab_lf
+                    use_override = True
+        except Exception:
+            lf = None
+    if lf is None:
+        if source == "override":
+            return {"col": col, "candidates": [], "source": "override",
+                    "note": "override 비활성 또는 fab_source 없음"}
+        lf = _scan_product(product)
+
     schema_names = lf.collect_schema().names()
     # 스키마에 col 존재 여부 확인 (하이픈 변형/대소문자 차이 보정)
     if col not in schema_names:
@@ -1779,13 +1832,15 @@ def get_lot_candidates(
             lot_col, _ = _detect_lot_wafer(lf)
             col = lot_col or col
         if col not in schema_names:
-            return {"col": col, "candidates": [], "available_cols": schema_names[:20]}
+            return {"col": col, "candidates": [], "available_cols": schema_names[:20],
+                    "source": "override" if use_override else "mltable"}
 
     q = lf.select(pl.col(col).cast(_STR, strict=False).alias("v")).unique()
     if prefix.strip():
         q = q.filter(pl.col("v").str.contains(prefix.strip(), literal=True))
     rows = q.sort("v").head(limit).collect()
-    return {"col": col, "candidates": rows["v"].to_list(), "prefix": prefix}
+    return {"col": col, "candidates": rows["v"].to_list(), "prefix": prefix,
+            "source": "override" if use_override else "mltable"}
 
 
 @router.get("/column-values")

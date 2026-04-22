@@ -31,7 +31,10 @@ logger = logging.getLogger("fabcanvas.roots")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent   # → FabCanvas.ai/
 _PROD_SHARED = Path("/config/work/sharedworkspace")
 _PROD_APP    = Path("/config/work/holweb-fast-api")
-_IS_PROD     = _PROD_SHARED.exists() and _PROD_APP.exists()
+# v8.8.19: sharedworkspace 존재만으로 공유 DB/Base 기본값을 사용 — 앱 루트 (holweb-fast-api)
+#   가 없어도 동일. `_IS_PROD` 는 배포 플래그용으로 유지 (paths.py 와 일관).
+_SHARED_EXISTS = _PROD_SHARED.exists()
+_IS_PROD       = _SHARED_EXISTS and _PROD_APP.exists()
 
 # Where admin.py writes runtime overrides. core/roots.py read-only peeks.
 #
@@ -45,7 +48,8 @@ def _admin_settings_path() -> Path:
     env = os.environ.get("HOL_DATA_ROOT")
     if env:
         return Path(env) / "admin_settings.json"
-    if _IS_PROD:
+    # v8.8.19: sharedworkspace 존재만으로 공유 holweb-data 사용.
+    if _SHARED_EXISTS:
         return _PROD_SHARED / "holweb-data" / "admin_settings.json"
     return _PROJECT_ROOT / "data" / "holweb-data" / "admin_settings.json"
 
@@ -67,13 +71,14 @@ def _read_admin_setting(key: str) -> str | None:
 
 
 def _default_db_root() -> Path:
-    if _IS_PROD:
+    # v8.8.19: sharedworkspace 만 있어도 /config/work/sharedworkspace/DB 를 기본값으로.
+    if _SHARED_EXISTS:
         return _PROD_SHARED / "DB"
     return _PROJECT_ROOT / "data" / "DB"
 
 
 def _default_base_root() -> Path:
-    if _IS_PROD:
+    if _SHARED_EXISTS:
         return _PROD_SHARED / "Base"
     return _PROJECT_ROOT / "data" / "Base"
 

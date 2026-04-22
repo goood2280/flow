@@ -62,7 +62,10 @@ def _admin_settings_path() -> Path:
 
 
 def load_mail_cfg() -> dict:
-    """admin_settings.json 의 `mail` 섹션. 없으면 기본 비활성 dict."""
+    """admin_settings.json 의 `mail` 섹션. 없으면 기본 비활성 dict.
+    v8.8.19: `domain` 필드 추가 — username 이 '@' 를 포함하지 않을 때 자동으로
+      `<username>@<domain>` 으로 조합해서 이메일 발송 대상/발신자에 사용.
+    """
     p = _admin_settings_path()
     try:
         if p.is_file():
@@ -74,6 +77,7 @@ def load_mail_cfg() -> dict:
                         "enabled": bool(m.get("enabled")),
                         "api_url": str(m.get("api_url") or "").strip(),
                         "from_addr": str(m.get("from_addr") or "").strip(),
+                        "domain": str(m.get("domain") or "").strip().lstrip("@"),
                         "status_code": str(m.get("status_code") or "").strip(),
                         "headers": m.get("headers") if isinstance(m.get("headers"), dict) else {},
                         "extra_data": m.get("extra_data") if isinstance(m.get("extra_data"), dict) else {},
@@ -81,7 +85,21 @@ def load_mail_cfg() -> dict:
     except Exception as e:
         logger.warning(f"load_mail_cfg failed: {e}")
     return {"enabled": False, "api_url": "", "from_addr": "",
-            "status_code": "", "headers": {}, "extra_data": {}}
+            "domain": "", "status_code": "", "headers": {}, "extra_data": {}}
+
+
+def _apply_domain(s: str, domain: str) -> str:
+    """v8.8.19: username 에 '@' 가 없으면 `<s>@<domain>` 으로 조합. domain 비어있거나
+    이미 email 포맷이면 그대로 반환."""
+    v = (s or "").strip()
+    if not v:
+        return v
+    if "@" in v:
+        return v
+    d = (domain or "").strip().lstrip("@")
+    if not d:
+        return v
+    return f"{v}@{d}"
 
 
 def _looks_like_email(s: str) -> bool:
@@ -94,7 +112,8 @@ def _looks_like_email(s: str) -> bool:
 
 def resolve_usernames_to_emails(usernames: Iterable[str]) -> Tuple[List[str], List[str]]:
     """usernames → (emails, skipped_usernames).
-    우선순위: users.csv 의 email 필드 > username 자체(이메일 포맷) > skip.
+    우선순위: users.csv 의 email 필드 > username 자체(이메일 포맷) >
+      v8.8.19: admin 메일 설정 `domain` 이 있으면 `<username>@<domain>` 자동 조합 > skip.
     """
     out: List[str] = []
     skipped: List[str] = []
@@ -104,6 +123,11 @@ def resolve_usernames_to_emails(usernames: Iterable[str]) -> Tuple[List[str], Li
         all_users = {u.get("username", ""): u for u in read_users()}
     except Exception:
         all_users = {}
+    # v8.8.19: 도메인 fallback
+    try:
+        _domain = load_mail_cfg().get("domain", "") or ""
+    except Exception:
+        _domain = ""
     for un in usernames:
         un = (un or "").strip()
         if not un:
@@ -120,6 +144,14 @@ def resolve_usernames_to_emails(usernames: Iterable[str]) -> Tuple[List[str], Li
             if key not in seen:
                 seen.add(key); out.append(un)
             continue
+        # v8.8.19: domain fallback — 설정된 도메인이 있으면 <un>@<domain> 으로 조합.
+        if _domain:
+            combined = _apply_domain(un, _domain)
+            if _looks_like_email(combined):
+                key = combined.lower()
+                if key not in seen:
+                    seen.add(key); out.append(combined)
+                continue
         skipped.append(un)
     return out, skipped
 
@@ -218,8 +250,17 @@ def send_mail(
     receiver_list = [{"email": em, "recipientType": "To", "seq": i + 1}
                      for i, em in enumerate(emails)]
 
-    # sender: username 이 이메일 포맷이면 그대로, 아니면 admin.from_addr.
-    sender_addr = sender_username if _looks_like_email(sender_username or "") else cfg.get("from_addr", "")
+    # sender: username 이 이메일 포맷이면 그대로, 아니면 v8.8.19 의 `domain` 에 합성.
+    #   마지막 폴백으로 admin.from_addr 사용.
+    sender_addr = ""
+    if _looks_like_email(sender_username or ""):
+        sender_addr = sender_username
+    else:
+        combined = _apply_domain(sender_username or "", cfg.get("domain", ""))
+        if _looks_like_email(combined):
+            sender_addr = combined
+        else:
+            sender_addr = cfg.get("from_addr", "")
 
     # 사내 스펙: senderMailAddress (camelCase). 일부 구버전 서버는 senderMailaddress
     # 로 파싱하기도 해서 호환을 위해 양쪽 키 모두 주입.

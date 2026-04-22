@@ -331,8 +331,12 @@ export default function My_SplitTable({user}){
   const filteredCols=colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols.slice(0,100);
   // v8.8.16: CUSTOM 모드 전용 컬럼 풀 — productSchema (전체) + allCols (현재 lot) + customCols 합집합.
   //   lot 검색 전이라도 선택 가능하며, plan 전용 가상 컬럼(저장된 customCols) 도 보존.
+  // v8.8.19: PRODUCT / ROOT_LOT_ID / WAFER_ID 는 자동 붙는 기본 컬럼이라 CUSTOM 선택 pool 에서 제외.
+  const _CUSTOM_HIDDEN = new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
   const customPool=(()=>{const seen=new Set();const out=[];
-    for(const c of [...productSchema,...allCols,...customCols]){if(!seen.has(c)){seen.add(c);out.push(c);}}return out;})();
+    for(const c of [...productSchema,...allCols,...customCols]){
+      if(!seen.has(c)&&!_CUSTOM_HIDDEN.has(String(c).toLowerCase())){seen.add(c);out.push(c);}
+    }return out;})();
   const filteredCustomCols=colSearch
     ?customPool.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase()))
     :customPool;
@@ -711,7 +715,19 @@ export default function My_SplitTable({user}){
           {isCustomMode?"CUSTOM"+(selCustom?": "+selCustom:""):selPrefixes.join("+")}</span>
         {/* v8.8.5: 상단 fab_source 배지 — Fab Lot ID 가 어디서 join 되어 왔는지 한눈에 확인. */}
         {data?.override && (()=>{const ov=data.override;
-          if(ov.error){return <span title={ov.error} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"rgba(239,68,68,0.15)",color:"#ef4444",border:"1px solid #ef4444",cursor:"help"}}>⚠ fab_source off</span>;}
+          if(ov.error){
+            // v8.8.19: fab_source off 툴팁에 탐색한 경로/db_root 까지 노출 + 클릭 시 상세 표시.
+            const detail = [
+              ov.error,
+              ov.db_root ? `\n[db_root] ${ov.db_root}` : "",
+              ov.base_root ? `\n[base_root] ${ov.base_root}` : "",
+              (ov.searched_db_roots && ov.searched_db_roots.length) ? `\n[DB 최상위 후보] ${ov.searched_db_roots.join(", ")}` : "",
+              (ov.tried_candidates && ov.tried_candidates.length) ? `\n[탐색 경로]\n  - ${ov.tried_candidates.join("\n  - ")}` : ""
+            ].filter(Boolean).join("");
+            return <span title={detail}
+              onClick={()=>alert(detail)}
+              style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"rgba(239,68,68,0.15)",color:"#ef4444",border:"1px solid #ef4444",cursor:"help"}}>⚠ fab_source off (상세)</span>;
+          }
           if(!ov.enabled){return null;}
           const sfx=ov.manual_override?"매뉴얼":"자동";
           const title=`fab_source: ${ov.fab_source}\nfab_col: ${ov.fab_col} · ts_col: ${ov.ts_col||"(없음)"}\njoin_keys: [${(ov.join_keys||[]).join(", ")}]\nscanned: ${ov.scanned_count}파일 / ${ov.row_count}행`;

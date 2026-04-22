@@ -349,6 +349,19 @@ def _write(rel: str, gz_b64: str) -> None:
             except Exception:
                 pass
 
+    # L6 (v8.8.19): 사내 공유 경로 `/config/work/sharedworkspace/{{holweb-data,DB,Base}}`
+    #   환경변수 없이도 절대 덮어쓰지 않는다 — setup.py 가 공유 데이터 휘발시키는
+    #   사고 방지. 해당 경로가 실제 존재하지 않으면 아무 효과 없음 (개발 PC 무해).
+    try:
+        dst_abs = dst.resolve()
+        for _shared_sub in ("/config/work/sharedworkspace/holweb-data",
+                            "/config/work/sharedworkspace/DB",
+                            "/config/work/sharedworkspace/Base"):
+            if str(dst_abs).startswith(_shared_sub):
+                return
+    except Exception:
+        pass
+
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(data)
 
@@ -366,12 +379,24 @@ from datetime import datetime as _dt
 
 def _resolve_data_roots() -> list:
     """보호 대상 루트 디렉토리 목록 (존재하는 것만). HOL_DATA_ROOT /
-    FABCANVAS_DATA_ROOT 환경변수가 있으면 그쪽을, 없으면 ROOT/data 전체."""
+    FABCANVAS_DATA_ROOT 환경변수가 있으면 그쪽을, 없으면 ROOT/data 전체.
+
+    v8.8.19: `/config/work/sharedworkspace` 존재 시 사내 공유 경로를 자동 보호
+      (holweb-data + DB + Base). 환경변수 없어도 setup.py 가 사용자 데이터를
+      절대 덮어쓰지 않도록 보장.
+    """
     roots = []
     for env_key in ("HOL_DATA_ROOT", "FABCANVAS_DATA_ROOT"):
         v = os.environ.get(env_key)
         if v:
             p = Path(v).resolve()
+            if p.is_dir() and p not in roots:
+                roots.append(p)
+    # v8.8.19: 사내 공유 경로 자동 보호.
+    _shared = Path("/config/work/sharedworkspace")
+    if _shared.is_dir():
+        for sub in ("holweb-data", "DB", "Base"):
+            p = (_shared / sub).resolve()
             if p.is_dir() and p not in roots:
                 roots.append(p)
     for sub in ("data", "data/holweb-data", "data/Base", "data/DB", "data/Fab"):

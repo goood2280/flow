@@ -47,13 +47,24 @@ from core.roots import (
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent   # → FabCanvas.ai/
 _PROD_SHARED = Path("/config/work/sharedworkspace")
 _PROD_APP    = Path("/config/work/holweb-fast-api")
-_IS_PROD     = _PROD_SHARED.exists() and _PROD_APP.exists()
+# v8.8.19: 데이터/DB 자동 감지 완화 — `/config/work/sharedworkspace` 만 있어도
+#   사용자 데이터(users/sessions/groups/informs/meetings/calendar/dashboards/…) 를
+#   공유 경로에 저장한다. 기존엔 `/config/work/holweb-fast-api` 가 없으면 로컬
+#   `./data/holweb-data` 로 떨어져 setup.py 재실행 때마다 DB 가 휘발되는 문제가 있었음.
+#   앱 루트(`is_prod`) 판정은 여전히 둘 다 필요 — 배포 여부 플래그 semantic 유지.
+_SHARED_EXISTS = _PROD_SHARED.exists()
+_IS_PROD       = _SHARED_EXISTS and _PROD_APP.exists()
 
 
 class _Paths:
     def __init__(self):
         default_app  = str(_PROD_APP)    if _IS_PROD else str(_PROJECT_ROOT)
-        default_data = str(_PROD_SHARED / "holweb-data") if _IS_PROD else str(_PROJECT_ROOT / "data" / "holweb-data")
+        # v8.8.19: 사용자 데이터 공유 — sharedworkspace 만 있어도 holweb-data 바인딩.
+        default_data = (
+            str(_PROD_SHARED / "holweb-data")
+            if _SHARED_EXISTS
+            else str(_PROJECT_ROOT / "data" / "holweb-data")
+        )
         self.app_root  = Path(os.environ.get("HOL_APP_ROOT",  default_app))
         self.data_root = Path(os.environ.get("HOL_DATA_ROOT", default_data))
         self.is_prod   = _IS_PROD or os.environ.get("HOL_PROD") == "1"
@@ -89,6 +100,8 @@ class _Paths:
         # db_root / base_root intentionally excluded — they're read-mostly
         # sources maintained outside the app, and creating them empty would
         # mask a misconfiguration. Log dir / cache dir / upload dir are ours.
+        # v8.8.19: data_root 자체도 명시 생성 — 공유 경로 첫 실행시 보장.
+        self.data_root.mkdir(parents=True, exist_ok=True)
         for d in [self.log_dir, self.upload_dir, self.cache_dir]:
             d.mkdir(parents=True, exist_ok=True)
         # Best-effort: ensure db_root exists if it's under our project
