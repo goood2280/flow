@@ -1,7 +1,22 @@
 {
-  "version": "8.8.21",
+  "version": "8.8.22",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.22",
+      "date": "2026-04-22",
+      "title": "SplitTable/인폼 case-insensitive 매칭 · 메일 본문 SplitTable HTML 인라인 · 개별유저 picker 도메인 자동합성 · CUSTOM 15줄 확장 · S3 신호등 SVG 화살표 · Admin 권한 탭 재배치",
+      "tag": "feat",
+      "changes": [
+        "**SplitTable CI 매칭 대수술** — (a) 제품 폴더 대소문자 무시: `ML_TABLE_PRODA` → `1.RAWDATA_DB/ProdA` / `proda` / `PRODA` 어느 쪽이든 매칭(`_find_ci_child` / `_find_ci_path`). (b) **join key CI 매칭**: ML_TABLE 이 `ROOT_LOT_ID`/`WAFER_ID`(대문자), hive 원천이 `root_lot_id`/`wafer_id`(소문자) 로 달라도 같은 컬럼으로 인식 → 그동안 나오던 **\"공통 join key 없음\"** 에러 박멸. fab_lf 컬럼을 main 쪽 casing 으로 rename(`_ci_align_fab_to_main`) → `_scan_product` / `_resolve_override_meta` 양쪽 동일 로직. fab_col / ts_col / override_cols 도 `_ci_resolve_in` / `_pick_first_present_ci` 로 전부 CI.",
+        "**인폼 스냅샷/CUSTOM 에도 CI 적용** — 인폼이 `/api/splittable/view` 를 호출할 때 자동으로 혜택. 이제 대문자 ML_TABLE 컬럼명이라도 hive 원천의 `fab_lot_id` / `tkout_time` 등이 정상 조인되어 스냅샷/메일/엑셀 모두 일관된 최신값.",
+        "**인폼 메일 본문에 SplitTable 인라인 HTML 테이블** — `_build_html_body` 에 `embed_table` 파라미터 추가 + `_render_embed_table_html` 신설. `st_view`(parameter×wafer 매트릭스 + wafer_fab_list) 와 legacy 2D 양쪽 모두 스타일링된 HTML `<table>` 로 렌더 → 메일 수신자가 xlsx 열지 않고도 본문에서 바로 값 확인. plan 값은 `→` 오렌지 강조, 최대 60행 렌더(초과 시 잘림 경고). `mail-preview` / `send-mail` 둘 다 `target.embed_table` 을 전달.",
+        "**개별유저 picker '빈 리스트' 해결** — `/api/informs/recipients` 가 users.csv 의 email 필드가 비어있고 username 에 '@' 도 없는 일반 계정까지 도메인 자동합성(`<un>@<admin.mail.domain>`) 으로 `effective_email` 채움 → 사내 유저 이름만 저장된 환경에서도 picker 에 전원 노출. `admin`/`hol`/`test` 토큰/role 필터는 유지. 결과는 username 알파벳순 정렬.",
+        "**CUSTOM 프리뷰 15줄 가시권** — `EmbedTableView` maxHeight 320 → 460 (약 18~22줄 수용) 으로 확장. CUSTOM 컬럼 다수 선택 시 스크롤 없이 한눈에 비교 가능. st_view + legacy 2D 두 경로 모두 일관 적용.",
+        "**S3 신호등 화살표 SVG 전환** — 유니코드 `↓`/`↑` 텍스트 대신 흰색 stroke 2.5px SVG 화살표로 재구현(`S3StatusLight.ArrowSvg`). 18×18 원 안에 선명히 보이고 폰트/zoom/OS 의존성 없음. 다운(아래) / 업(위) 방향이 한눈에 식별.",
+        "**Admin 권한 탭 재배치** — (a) `dashboard_chart` 열 제거 (페이지 위임 탭이 동일 역할). (b) `ALL_TABS` 를 실제 nav 순서로 정렬: filebrowser→dashboard→splittable→tracker→inform→meeting→calendar→tablemap→ml→devguide(맨 뒤). (c) `PAGE_IDS` 매트릭스도 같은 순서 + 향후 페이지(spc/ettime/wafer_map) → 공용(messages/groups) 순."
+      ]
+    },
     {
       "version": "8.8.21",
       "date": "2026-04-22",

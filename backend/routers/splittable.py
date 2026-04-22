@@ -481,6 +481,69 @@ def _is_db_root_dir(p) -> bool:
         return True
     return False
 
+
+# v8.8.22: case-insensitive 제품 폴더 lookup.
+#   ML_TABLE_PRODA → DB/1.RAWDATA_DB/ProdA/ · proda/ · PRODA/ 모두 동일하게 매칭.
+#   exact match 우선, 없으면 casefold 동등 비교.
+def _find_ci_child(parent, name: str):
+    """parent 아래에서 name 과 case-insensitive 동등한 디렉토리를 반환 (없으면 None)."""
+    if not name or not parent or not parent.exists():
+        return None
+    try:
+        exact = parent / name
+        if exact.is_dir():
+            return exact
+    except Exception:
+        pass
+    try:
+        target = name.casefold()
+        for child in parent.iterdir():
+            if child.is_dir() and child.name.casefold() == target:
+                return child
+    except Exception:
+        pass
+    return None
+
+
+def _find_ci_path(root, rel: str):
+    """root 아래의 쉼표 없는 상대경로 rel 을 case-insensitive 하게 찾아 반환.
+    rel 이 '1.RAWDATA_DB/ProdA' 같이 슬래시 포함 시 각 세그먼트별로 CI 매칭 시도.
+    파일이 아닌 경우에도 마지막 세그먼트가 .parquet/.csv 일 수 있어 is_file 도 허용.
+    """
+    if not rel or not root or not root.exists():
+        return None
+    # exact first
+    try:
+        exact = root / rel
+        if exact.exists():
+            return exact
+    except Exception:
+        pass
+    parts = [p for p in rel.replace("\\", "/").split("/") if p]
+    cur = root
+    for i, seg in enumerate(parts):
+        is_last = (i == len(parts) - 1)
+        try:
+            nxt = cur / seg
+            if nxt.exists():
+                cur = nxt
+                continue
+        except Exception:
+            pass
+        target = seg.casefold()
+        found = None
+        try:
+            for child in cur.iterdir():
+                if child.name.casefold() == target:
+                    found = child
+                    break
+        except Exception:
+            return None
+        if found is None:
+            return None
+        cur = found
+    return cur
+
 def _list_db_roots():
     """사내/레거시 공통 DB 상위 폴더 후보 스캔. 반환 순서 = 우선순위.
     - FAB 힌트(이름에 'FAB' 포함) 이 먼저, 이후 INLINE/ET/EDS, 그 외.
@@ -583,12 +646,13 @@ def ml_table_match(product: str = Query(...)):
     matches = []
     if pro:
         for root_dir in _list_db_roots():
-            sub = root_dir / pro
-            if sub.is_dir():
+            # v8.8.22: case-insensitive — ProdA/proda/PRODA 모두 같은 제품으로 매칭.
+            sub = _find_ci_child(root_dir, pro)
+            if sub is not None:
                 matches.append({
                     "root": root_dir.name,
-                    "product": pro,
-                    "path": f"{root_dir.name}/{pro}",
+                    "product": sub.name,  # 실제 폴더 이름 (대소문자 반영)
+                    "path": f"{root_dir.name}/{sub.name}",
                 })
     auto_path = _auto_derive_fab_source(p)
     manual_ov = {}
@@ -1456,13 +1520,14 @@ def _scan_fab_source(fab_source: str):
         for root in (db_base, base_root):
             if not root or not root.exists():
                 continue
-            cand = root / fab_source
-            if cand.exists():
+            # v8.8.22: CI 경로 매칭 — fab_source 내 제품 폴더 대소문자 무시.
+            cand = _find_ci_path(root, fab_source)
+            if cand is not None and cand.exists():
                 fp = cand
                 break
             for ext in (".parquet", ".csv"):
-                cand2 = root / f"{fab_source}{ext}"
-                if cand2.exists():
+                cand2 = _find_ci_path(root, f"{fab_source}{ext}")
+                if cand2 is not None and cand2.exists():
                     fp = cand2
                     break
             if fp:
@@ -1505,16 +1570,16 @@ def _auto_derive_fab_source(product: str) -> str:
         return ""
     db_base = _db_base()
     for root_dir in _list_db_roots():
-        cand = root_dir / pro
-        if cand.is_dir():
-            # If root_dir is db_base itself (Case 1/3), just the product name —
-            # else scan_fab_source would try db_base/db_base.name/pro (wrong).
+        # v8.8.22: CI 매칭 — 폴더가 ProdA/proda/PRODA 중 무엇이든 인식.
+        cand = _find_ci_child(root_dir, pro)
+        if cand is not None:
+            actual = cand.name
             try:
                 if root_dir.resolve() == db_base.resolve():
-                    return pro
+                    return actual
             except Exception:
                 pass
-            return f"{root_dir.name}/{pro}"
+            return f"{root_dir.name}/{actual}"
     return ""
 
 
@@ -1523,6 +1588,57 @@ def _auto_derive_fab_source(product: str) -> str:
 #   컬럼으로 노출되는 경우를 최우선 취급 — 파일 안 ts 컬럼이 없어도 파티션 단위로 최신 판정 가능.
 _TS_COL_CANDIDATES = ("date", "out_ts", "ts", "timestamp", "created_at", "log_ts", "event_ts", "update_ts")
 _FAB_COL_CANDIDATES = ("fab_lot_id", "lot_id", "fab_lotid", "fab_lot")
+
+
+# v8.8.22: case-insensitive 컬럼 정렬.
+#   ML_TABLE 은 대문자(ROOT_LOT_ID/WAFER_ID), hive 원천은 소문자(root_lot_id/wafer_id) 로
+#   다르게 찍히는 경우가 있음. casefold 같으면 같은 컬럼으로 취급해야 join/override 가 동작.
+#   → fab_lf 의 컬럼을 main_lf 쪽 casing 으로 rename 하여 이후 로직이 그대로 exact 매칭되게.
+def _ci_align_fab_to_main(fab_lf, main_names):
+    """Rename fab_lf columns to match main_names casing when casefold is equal.
+    Returns (aligned_lf, new_fab_names_list)."""
+    if fab_lf is None:
+        return fab_lf, []
+    try:
+        fab_names = fab_lf.collect_schema().names()
+    except Exception:
+        return fab_lf, []
+    main_ci = {n.casefold(): n for n in main_names}
+    fab_set = set(fab_names)
+    rename = {}
+    used_targets = set()
+    for fn in fab_names:
+        key = fn.casefold()
+        target = main_ci.get(key)
+        if not target or target == fn:
+            continue
+        # 충돌 방지: 목표 이름이 이미 fab 에 다른 형태로 있거나, 동일 target 에 이미 매핑됐으면 skip.
+        if target in fab_set and target not in rename.values():
+            continue
+        if target in used_targets:
+            continue
+        rename[fn] = target
+        used_targets.add(target)
+    if rename:
+        try:
+            fab_lf = fab_lf.rename(rename)
+        except Exception:
+            pass
+    new_names = [rename.get(n, n) for n in fab_names]
+    return fab_lf, new_names
+
+
+def _ci_resolve_in(name: str, pool):
+    """Return the actual column name from pool matching `name` case-insensitively (exact first)."""
+    if not name:
+        return ""
+    if name in pool:
+        return name
+    target = name.casefold()
+    for n in pool:
+        if n.casefold() == target:
+            return n
+    return ""
 # v8.8.16: hive 원천에서 끌어와 ML_TABLE 값을 덮어쓸 기본 컬럼 집합.
 #   사내 `1.RAWDATA_DB*/<PROD>/date=*/*.parquet` 레이아웃에서 이 이름이 있으면 소스값으로 교체.
 #   fab_col(보통 fab_lot_id) 는 레거시 단일 필드와 병합되어 override_cols 에 합류.
@@ -1601,9 +1717,10 @@ def _resolve_override_meta(product: str) -> dict:
             if not root or not root.exists():
                 tried.append(f"{root} (not exist)" if root else "(None)")
                 continue
-            cand = root / fab_source
-            tried.append(str(cand))
-            if cand.exists():
+            # v8.8.22: CI 매칭 — 저장된 fab_source 의 대소문자와 폴더명 대소문자가 달라도 인식.
+            cand = _find_ci_path(root, fab_source)
+            tried.append(str(root / fab_source) + ("" if cand is not None and cand.exists() else "  (not found)"))
+            if cand is not None and cand.exists():
                 fp = cand
                 break
         if fp is None:
@@ -1638,26 +1755,47 @@ def _resolve_override_meta(product: str) -> dict:
         if fab_lf is None:
             meta["error"] = f"스캔 실패 (parquet 없음 또는 읽기 불가): {fab_source}"
             return meta
-        fab_names = fab_lf.collect_schema().names()
+        # v8.8.22: CI 정렬 — ML_TABLE 대문자 vs hive 소문자 컬럼 이름 차이를 흡수.
+        try:
+            main_names_list = pl.scan_parquet(str(_product_path(product))).collect_schema().names()
+        except Exception:
+            main_names_list = []
+        fab_lf, fab_schema_names = _ci_align_fab_to_main(fab_lf, main_names_list)
+        fab_names = fab_schema_names  # list after rename
+        main_names = main_names_list
 
         # join keys
         join_keys = ov.get("join_keys") or []
         if isinstance(join_keys, str):
             join_keys = [k.strip() for k in join_keys.split(",") if k.strip()]
+        # 유저가 지정한 키도 CI 로 실제 컬럼명에 매핑.
+        if join_keys:
+            mapped = []
+            for k in join_keys:
+                actual = _ci_resolve_in(k, main_names) or _ci_resolve_in(k, fab_names)
+                if actual:
+                    mapped.append(actual)
+            join_keys = mapped
         if not join_keys:
-            try:
-                main_names = pl.scan_parquet(str(_product_path(product))).collect_schema().names()
-            except Exception:
-                main_names = []
+            # CI 매칭으로 공통 키 탐색.
+            main_ci = {n.casefold(): n for n in main_names}
+            fab_ci = {n.casefold(): n for n in fab_names}
             for cand in ("root_lot_id", "wafer_id", "lot_id", "product"):
-                if cand in main_names and cand in fab_names:
-                    join_keys.append(cand)
+                c = cand.casefold()
+                if c in main_ci and c in fab_ci:
+                    join_keys.append(main_ci[c])
         join_keys = [k for k in join_keys if k in fab_names]
         meta["join_keys"] = join_keys
 
-        # fab_col / ts_col 추론
-        meta["fab_col"] = (ov.get("fab_col") or "").strip() or _pick_first_present(_FAB_COL_CANDIDATES, fab_names) or "fab_lot_id"
-        meta["ts_col"] = (ov.get("ts_col") or "").strip() or _pick_first_present(_TS_COL_CANDIDATES, fab_names) or ""
+        # fab_col / ts_col 추론 (v8.8.22: CI 매칭 — fab_lf 는 이미 main casing 으로 align 됨).
+        fc_raw = (ov.get("fab_col") or "").strip()
+        meta["fab_col"] = (_ci_resolve_in(fc_raw, fab_names) if fc_raw else "") \
+                         or _pick_first_present_ci(_FAB_COL_CANDIDATES, fab_names) \
+                         or "fab_lot_id"
+        tc_raw = (ov.get("ts_col") or "").strip()
+        meta["ts_col"] = (_ci_resolve_in(tc_raw, fab_names) if tc_raw else "") \
+                         or _pick_first_present_ci(_TS_COL_CANDIDATES, fab_names) \
+                         or ""
 
         # v8.8.16: override_cols — 기본 (_DEFAULT_OVERRIDE_COLS) + manual ov.override_cols + 레거시 fab_col 병합.
         raw_oc = ov.get("override_cols")
@@ -1668,9 +1806,14 @@ def _resolve_override_meta(product: str) -> dict:
         # 레거시 fab_col 도 합류 (중복 제거).
         if meta["fab_col"] and meta["fab_col"] not in raw_oc:
             raw_oc = list(raw_oc) + [meta["fab_col"]]
-        meta["override_cols"] = list(raw_oc)
-        meta["override_cols_present"] = [c for c in raw_oc if c in fab_names]
-        meta["override_cols_missing"] = [c for c in raw_oc if c not in fab_names]
+        # v8.8.22: CI 매칭 — 사용자가 소문자로 적었어도 실제 스키마의 casing 으로 맵핑.
+        resolved_oc = []
+        for c in raw_oc:
+            actual = _ci_resolve_in(c, fab_names)
+            resolved_oc.append(actual or c)
+        meta["override_cols"] = list(resolved_oc)
+        meta["override_cols_present"] = [c for c in resolved_oc if c in fab_names]
+        meta["override_cols_missing"] = [c for c in resolved_oc if c not in fab_names]
 
         if meta["fab_col"] not in fab_names:
             meta["error"] = f"fab_col '{meta['fab_col']}' 이 소스 스키마에 없음. 소스 컬럼: {fab_names[:20]}"
@@ -1710,6 +1853,16 @@ def _pick_first_present(candidates, available_names):
     return ""
 
 
+def _pick_first_present_ci(candidates, available_names):
+    """v8.8.22: case-insensitive 버전. 실제 스키마의 정확한 casing 을 반환."""
+    ci = {n.casefold(): n for n in available_names}
+    for c in candidates:
+        actual = ci.get(c.casefold())
+        if actual:
+            return actual
+    return ""
+
+
 def _scan_product(product: str):
     fp = _product_path(product)
     if fp.suffix == ".csv":
@@ -1738,25 +1891,43 @@ def _scan_product(product: str):
         fab_lf = _scan_fab_source(fab_source)
         if fab_lf is None:
             return lf
-        main_names = set(lf.collect_schema().names())
-        fab_schema_names = fab_lf.collect_schema().names()
+        main_names_list = lf.collect_schema().names()
+        # v8.8.22: CI 정렬 — fab_lf 컬럼명을 main 쪽 casing 으로 rename.
+        #   ex) ML_TABLE 의 ROOT_LOT_ID ↔ hive root_lot_id → join 성공.
+        fab_lf, fab_schema_names = _ci_align_fab_to_main(fab_lf, main_names_list)
+        main_names = set(main_names_list)
         fab_names = set(fab_schema_names)
         join_keys = ov.get("join_keys") or []
         if isinstance(join_keys, str):
             join_keys = [k.strip() for k in join_keys.split(",") if k.strip()]
+        # 유저가 지정한 키도 CI 로 실제 컬럼명에 매핑.
+        if join_keys:
+            mapped = []
+            for k in join_keys:
+                actual = _ci_resolve_in(k, main_names_list) or _ci_resolve_in(k, fab_schema_names)
+                if actual:
+                    mapped.append(actual)
+            join_keys = mapped
         if not join_keys:
-            # fallback: pick natural common keys (root_lot_id / wafer_id / product)
+            # fallback: pick natural common keys (root_lot_id / wafer_id / product) — CI 매칭.
+            main_ci = {n.casefold(): n for n in main_names_list}
+            fab_ci = {n.casefold(): n for n in fab_schema_names}
             for cand in ("root_lot_id", "wafer_id", "lot_id", "product"):
-                if cand in main_names and cand in fab_names:
-                    join_keys.append(cand)
+                c = cand.casefold()
+                if c in main_ci and c in fab_ci:
+                    join_keys.append(main_ci[c])
         join_keys = [k for k in join_keys if k in main_names and k in fab_names]
         if not join_keys:
             return lf
-        # fab_col / ts_col — 매뉴얼 > 자동 추론 순.
-        fab_col = (ov.get("fab_col") or "").strip() or _pick_first_present(_FAB_COL_CANDIDATES, fab_schema_names)
+        # fab_col / ts_col — 매뉴얼 > 자동 추론 순 (v8.8.22: CI 매칭).
+        fc_raw = (ov.get("fab_col") or "").strip()
+        fab_col = (_ci_resolve_in(fc_raw, fab_schema_names) if fc_raw else "") \
+                  or _pick_first_present_ci(_FAB_COL_CANDIDATES, fab_schema_names)
         if not fab_col:
             fab_col = "fab_lot_id"  # 최후 기본값
-        ts_col = (ov.get("ts_col") or "").strip() or _pick_first_present(_TS_COL_CANDIDATES, fab_schema_names)
+        tc_raw = (ov.get("ts_col") or "").strip()
+        ts_col = (_ci_resolve_in(tc_raw, fab_schema_names) if tc_raw else "") \
+                 or _pick_first_present_ci(_TS_COL_CANDIDATES, fab_schema_names)
         # v8.8.16: 다수 컬럼 오버라이드 지원 — 단일 fab_col 만 끌어오던 것을 확장.
         #   1.RAWDATA_DB hive 원천에서 root_lot_id/wafer_id/lot_id/tkout_time 등도 최신값으로 교체.
         #   manual ov.override_cols (list 또는 "a,b,c") > _DEFAULT_OVERRIDE_COLS.
@@ -1768,8 +1939,13 @@ def _scan_product(product: str):
         # 레거시 fab_col 도 항상 포함 (중복 제거).
         if fab_col and fab_col not in raw_oc:
             raw_oc = list(raw_oc) + [fab_col]
+        # v8.8.22: CI 로 실제 fab_schema casing 으로 매핑.
+        resolved_oc = []
+        for c in raw_oc:
+            actual = _ci_resolve_in(c, fab_schema_names)
+            resolved_oc.append(actual or c)
         # 실제 소스 스키마에 있는 것만 유효. join_key 는 매칭용이라 override 에서 제외 (값 유지).
-        override_cols = [c for c in dict.fromkeys(raw_oc)
+        override_cols = [c for c in dict.fromkeys(resolved_oc)
                          if c in fab_names and c not in join_keys]
         # Bring: join keys + override_cols + ts_col (optional). Avoid wide explosion.
         wanted = list(dict.fromkeys(join_keys + override_cols + ([ts_col] if ts_col else [])))

@@ -156,7 +156,8 @@ function EmbedTableView({ embed }) {
           🔗 SplitTable {embed.source && <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>· {embed.source}</span>}
         </div>
         {embed.note && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
-        <div style={{ maxHeight: 320, overflow: "auto" }}>
+        {/* v8.8.22: CUSTOM 최대 15줄까지 한 화면에 표시 — maxHeight 확장. */}
+        <div style={{ maxHeight: 460, overflow: "auto" }}>
           <table style={{ borderCollapse: "collapse", fontSize: 10, fontFamily: "monospace" }}>
             <thead>
               <tr>
@@ -241,7 +242,8 @@ function EmbedTableView({ embed }) {
           🔗 SplitTable {embed.source && <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>· {embed.source}</span>}
         </div>
         {embed.note && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
-        <div style={{ maxHeight: 320, overflow: "auto" }}>
+        {/* v8.8.22: legacy 2D 경로도 15줄 정도는 스크롤 없이 보이도록 확장. */}
+        <div style={{ maxHeight: 460, overflow: "auto" }}>
           <table style={{ borderCollapse: "collapse", fontSize: 10, fontFamily: "monospace" }}>
             <thead>
               <tr>

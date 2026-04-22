@@ -3,7 +3,10 @@ import Loading from "../components/Loading";
 import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
 import { sf, dl } from "../lib/api";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
-const ALL_TABS=["filebrowser","dashboard","splittable","tracker","tablemap","ml","devguide","dashboard_chart","inform","meeting","calendar"];
+// v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
+//   순서 = TABS(config.js) — home/admin 제외: filebrowser → dashboard → splittable → tracker →
+//   inform → meeting → calendar → tablemap → ml → devguide(맨 뒤).
+const ALL_TABS=["filebrowser","dashboard","splittable","tracker","inform","meeting","calendar","tablemap","ml","devguide"];
 // v8.7.5: u.tabs 는 string 이지만 legacy json 에서 array 로 저장된 기록이 있을 수 있어
 // "r.split is not a function" 방지를 위해 정규화 헬퍼를 둔다.
 function _tabsToArray(v){
@@ -322,11 +325,13 @@ export default function My_Admin({user}){
 // ── v8.8.14: Per-page admin delegation ──
 // 유저별로 "이 페이지의 관리 권한을 위임한다" 를 체크박스로 토글. admin 유저는 global 이라 배제.
 // 저장 즉시 /api/admin/page-admins 로 POST.
+// v8.8.22: 실제 메뉴 탭 순서에 맞춰 재배치. 활성 페이지 먼저, 향후 페이지(spc/ettime/wafer_map) 뒤, 공용(groups/messages) 맨 뒤.
 const PAGE_IDS=[
-  ["informs","인폼"],["meetings","회의"],["calendar","달력"],["tablemap","TableMap"],
-  ["splittable","SplitTable"],["dashboard","대시보드"],["tracker","트래커"],["ml","ML"],
-  ["spc","SPC"],["ettime","ET 시간"],["filebrowser","파일탐색기"],["messages","메시지"],
-  ["wafer_map","Wafer Map"],["groups","그룹"],
+  ["filebrowser","파일탐색기"],["dashboard","대시보드"],["splittable","SplitTable"],
+  ["tracker","트래커"],["informs","인폼"],["meetings","회의"],["calendar","달력"],
+  ["tablemap","TableMap"],["ml","ML"],
+  ["spc","SPC"],["ettime","ET 시간"],["wafer_map","Wafer Map"],
+  ["messages","메시지"],["groups","그룹"],
 ];
 
 function PageAdminsPanel({users}){

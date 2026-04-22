@@ -1469,18 +1469,32 @@ def list_recipients(request: Request):
     """모든 승인 유저 + email. 인폼 메일 수신자 선택용 (로그인 유저 누구나 조회).
 
     v8.8.17: username 이 곧 사내 email 인 케이스를 effective_email 로 보조 노출.
-      email 필드가 비어있어도 username 에 '@' 가 있으면 username 자체가 발송 대상.
-      admin/test 등 시스템 계정은 effective_email='' 로 노출되고 FE/BE 모두 발송에서 제외.
+    v8.8.22: admin 메일 도메인(admin_settings.mail.domain) 이 설정돼 있으면
+      `<username>@<domain>` 으로 자동 합성. users.csv 에 email 이 안 적혀 있어도
+      개별 유저가 picker 에 정상 노출되어 "리스트가 비어 있음" 문제 해결.
     """
     _ = current_user(request)  # enforce login
     from routers.auth import read_users
+    # v8.8.22: admin 메일 도메인 가져와 CI 합성.
+    try:
+        from core.mail import load_mail_cfg as _load_mcfg
+        _domain = (_load_mcfg().get("domain") or "").strip().lstrip("@")
+    except Exception:
+        _domain = ""
     out = []
     for u in read_users():
         if u.get("status") != "approved":
             continue
         un = u.get("username", "") or ""
         em = (u.get("email", "") or "").strip()
-        eff = em if em and "@" in em else (un if ("@" in un and "." in un.split("@", 1)[1]) else "")
+        if em and "@" in em:
+            eff = em
+        elif "@" in un and "." in un.split("@", 1)[1]:
+            eff = un
+        elif _domain and un:
+            eff = f"{un}@{_domain}"
+        else:
+            eff = ""
         # v8.8.21: 인폼 메일 수신자 picker 에서는 admin/hol/test 계정 + 이메일 해결 불가 계정
         #   (_is_blocked_contact 기준) 은 아예 제외. FE 가 "(no email)" 을 표시할 상황이 없어진다.
         if _is_blocked_contact(un, u):
@@ -1493,6 +1507,7 @@ def list_recipients(request: Request):
             "effective_email": eff,
             "role": u.get("role", ""),
         })
+    out.sort(key=lambda x: (x.get("username") or "").lower())
     return {"recipients": out}
 
 
@@ -1578,12 +1593,131 @@ def _thread_html(items: list, root_id: str) -> str:
     return "\n".join(parts)
 
 
+def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
+    """v8.8.22: 인폼에 붙어있는 SplitTable 스냅샷을 메일 본문 HTML 테이블로 인라인 렌더.
+    - st_view (SplitTable /view 응답) 가 있으면 parameter x wafer 매트릭스로 렌더.
+    - 없으면 legacy 2D (columns/rows) 를 그대로 렌더.
+    max_rows 초과 시 하단에 잘림 표시.
+    """
+    if not embed or not isinstance(embed, dict):
+        return ""
+    esc = _html.escape
+    source = (embed.get("source") or "").strip()
+    note = (embed.get("note") or "").strip()
+
+    # Try st_view first.
+    st = embed.get("st_view") or {}
+    rows_st = st.get("rows") or []
+    headers = st.get("headers") or []
+    wafer_fab = st.get("wafer_fab_list") or []
+
+    def _wrap(body_rows_html: str, head_cells: list[str], truncated: bool) -> str:
+        th_style = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
+                    "font-size:11px;color:#1f2937;text-align:center;font-family:monospace;")
+        td_style_first = ("border:1px solid #d1d5db;padding:4px 8px;background:#f9fafb;"
+                          "font-size:11px;font-weight:700;color:#1f2937;font-family:monospace;")
+        thead = "<tr>" + "".join(f"<th style='{th_style}'>{c}</th>" for c in head_cells) + "</tr>"
+        hdr = (
+            f"<div style='margin:12px 0 4px 0;font-size:12px;font-weight:700;color:#ea580c;'>"
+            f"🔗 SplitTable 스냅샷"
+            + (f" <span style='color:#6b7280;font-weight:500;font-size:11px;'>· {esc(source)}</span>" if source else "")
+            + "</div>"
+        )
+        note_html = f"<div style='font-size:10px;color:#6b7280;margin-bottom:4px;'>{esc(note)}</div>" if note else ""
+        trunc_html = (f"<div style='font-size:10px;color:#b91c1c;margin-top:4px;'>"
+                      f"⚠ {max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
+        return (
+            f"{hdr}{note_html}"
+            f"<div style='overflow:auto;'>"
+            f"<table style='border-collapse:collapse;font-size:11px;max-width:100%;'>"
+            f"<thead>{thead}</thead>"
+            f"<tbody>{body_rows_html}</tbody>"
+            f"</table></div>{trunc_html}"
+        )
+
+    if rows_st and headers:
+        head_cells = ["parameter"] + [esc(h or "") for h in headers]
+        if wafer_fab:
+            head_cells_row2 = ["fab_lot_id"] + [esc(f or "—") for f in wafer_fab]
+        else:
+            head_cells_row2 = []
+        truncated = len(rows_st) > max_rows
+        shown = rows_st[:max_rows]
+        body_parts = []
+        td_first = ("border:1px solid #d1d5db;padding:4px 8px;background:#f9fafb;"
+                    "font-size:11px;font-weight:700;font-family:monospace;")
+        td_cell = ("border:1px solid #d1d5db;padding:4px 8px;text-align:center;"
+                   "font-size:11px;font-family:monospace;")
+        for r in shown:
+            param = esc(str(r.get("_param", "")))
+            cells = r.get("_cells") or {}
+            tds = [f"<td style='{td_first}'>{param}</td>"]
+            for i in range(len(headers)):
+                cell = cells.get(i) or cells.get(str(i)) or {}
+                actual = cell.get("actual")
+                plan = cell.get("plan")
+                disp = "" if actual is None or actual == "" else str(actual)
+                if plan is not None and plan != "" and plan != actual:
+                    disp = f"{disp} <span style='color:#ea580c;font-weight:700'>→ {esc(str(plan))}</span>"
+                else:
+                    disp = esc(disp)
+                tds.append(f"<td style='{td_cell}'>{disp}</td>")
+            body_parts.append("<tr>" + "".join(tds) + "</tr>")
+        # Render with two header rows if wafer_fab present.
+        if head_cells_row2:
+            th_style = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
+                        "font-size:11px;color:#1f2937;text-align:center;font-family:monospace;")
+            th_style2 = ("border:1px solid #d1d5db;padding:3px 8px;background:#fafafa;"
+                         "font-size:10px;color:#6b7280;text-align:center;font-family:monospace;")
+            thead = (
+                "<tr>" + "".join(f"<th style='{th_style}'>{c}</th>" for c in head_cells) + "</tr>"
+                "<tr>" + "".join(f"<th style='{th_style2}'>{c}</th>" for c in head_cells_row2) + "</tr>"
+            )
+            hdr = (
+                f"<div style='margin:12px 0 4px 0;font-size:12px;font-weight:700;color:#ea580c;'>"
+                f"🔗 SplitTable 스냅샷"
+                + (f" <span style='color:#6b7280;font-weight:500;font-size:11px;'>· {esc(source)}</span>" if source else "")
+                + "</div>"
+            )
+            note_html = f"<div style='font-size:10px;color:#6b7280;margin-bottom:4px;'>{esc(note)}</div>" if note else ""
+            trunc_html = (f"<div style='font-size:10px;color:#b91c1c;margin-top:4px;'>"
+                          f"⚠ {max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
+            return (
+                f"{hdr}{note_html}"
+                f"<div style='overflow:auto;'>"
+                f"<table style='border-collapse:collapse;font-size:11px;max-width:100%;'>"
+                f"<thead>{thead}</thead>"
+                f"<tbody>{''.join(body_parts)}</tbody>"
+                f"</table></div>{trunc_html}"
+            )
+        return _wrap("".join(body_parts), head_cells, truncated)
+
+    # Legacy 2D path.
+    cols = embed.get("columns") or []
+    rows2d = embed.get("rows") or []
+    if not cols and not rows2d:
+        return ""
+    truncated = len(rows2d) > max_rows
+    shown = rows2d[:max_rows]
+    td_cell = ("border:1px solid #d1d5db;padding:4px 8px;font-size:11px;"
+               "font-family:monospace;")
+    body_parts = []
+    for r in shown:
+        if not isinstance(r, (list, tuple)):
+            continue
+        tds = "".join(f"<td style='{td_cell}'>{esc('' if v is None else str(v))}</td>" for v in r)
+        body_parts.append(f"<tr>{tds}</tr>")
+    return _wrap("".join(body_parts), [esc(c or "") for c in cols], truncated)
+
+
 def _build_html_body(root: dict, thread_html: str, extra_prose: str,
-                     sender_username: str = "", product_contacts: Optional[list] = None) -> str:
+                     sender_username: str = "", product_contacts: Optional[list] = None,
+                     embed_table: Optional[dict] = None) -> str:
     """최상위 루트 메타 + 사용자 prose + 스레드 HTML 을 한 문서로.
 
     v8.8.0: 메일은 Admin 계정으로 발송되더라도 본문에 실제 요청자(sender_username) 를
     명시. 또한 해당 product 의 담당자 그룹(product_contacts) 이 있으면 표로 첨부.
+    v8.8.22: embed_table 이 있으면 SplitTable 스냅샷을 HTML 테이블로 본문에 인라인 주입.
     """
     esc = _html.escape
     meta_rows = []
@@ -1625,6 +1759,7 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
                 f"<b>제품 담당자</b> : " + ", ".join(names)
                 + "</div>"
             )
+    embed_html = _render_embed_table_html(embed_table) if embed_table else ""
     return (
         "<div style='font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1f2937;max-width:720px;'>"
         f"<h2 style='font-size:16px;margin:0 0 6px 0;color:#ea580c;'>flow · 인폼 공유</h2>"
@@ -1632,6 +1767,7 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         f"{meta_tbl}"
         f"{contacts_block}"
         f"{prose_block}"
+        f"{embed_html}"
         f"<h3 style='font-size:13px;margin:14px 0 6px 0;color:#374151;'>스레드</h3>"
         f"{thread_html}"
         "<hr style='border:none;border-top:1px solid #e5e7eb;margin:18px 0 8px 0;'/>"
@@ -1731,7 +1867,8 @@ def mail_preview(inform_id: str, request: Request, body: str = Query("")):
     pc_data = _load_product_contacts()
     pc_list = (pc_data.get("products") or {}).get(target.get("product", ""), []) or []
     thread_html = _thread_html(items, inform_id)
-    html = _build_html_body(target, thread_html, body or "", product_contacts=pc_list)
+    html = _build_html_body(target, thread_html, body or "", product_contacts=pc_list,
+                             embed_table=target.get("embed_table"))
     snap = _build_inform_snapshot_xlsx(target)
     owners_line = ", ".join([(c.get("name") or c.get("email") or "").strip()
                              for c in pc_list if c.get("name") or c.get("email")])
@@ -1857,7 +1994,8 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
     pc_list = (pc_data.get("products") or {}).get(target.get("product", ""), []) or []
     html_body = _build_html_body(target, thread_html, (req.body or ""),
                                  sender_username=me.get("username", ""),
-                                 product_contacts=pc_list)
+                                 product_contacts=pc_list,
+                                 embed_table=target.get("embed_table"))
     content_bytes_len = len(html_body.encode("utf-8"))
     if content_bytes_len > MAIL_CONTENT_MAX:
         raise HTTPException(400, f"메일 본문이 2MB 한도를 초과했습니다 ({content_bytes_len // 1024}KB). 스레드 첨부를 끄거나 본문을 줄여주세요.")
