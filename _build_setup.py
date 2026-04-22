@@ -221,6 +221,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
+# v8.8.19: Windows cp949 기본 stdout 에서 em-dash/non-ASCII print 가 터지는 것을
+# 방지 — UTF-8 reconfigure (Python 3.7+). 실패해도 조용히 무시.
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 VERSION = "{version['version']}"
 CODENAME = "{version.get('codename', 'flow')}"
 VERSION_META = {json.dumps(version, ensure_ascii=False)}
@@ -419,23 +429,101 @@ def _backups_dir() -> Path:
     return d
 
 
+# v8.8.19 fix: 스냅샷 대상을 **소형 config/state 파일로 한정**.
+#   이전에는 data_root 전체(parquet/CSV 원천 포함 수 GB)를 shutil.copytree 로
+#   통째 복사 → 사내 공유 환경에서 setup.py 가 수 분~수 시간 멈춘 것처럼 보임.
+#
+# ★★★ 핵심 원칙 (v8.8.19, 사용자 지시) ★★★
+# 1) DB(`/config/work/sharedworkspace/DB`)와 Base 는 **참조만** 한다.
+# 2) DB/Base 는 스냅샷 백업 대상에서 **완전히 제외** — 복사 시도 자체 금지.
+# 3) parquet/arrow 등 bulk 원천 확장자는 어떤 경로에서도 절대 복사/업로드 금지.
+# 4) 백업 대상은 오직 **경량 설정/상태 파일**: users.csv, groups.json,
+#    config.json, informs/**, meetings/**, calendar/** 등.
+# 5) _write 가드(L0~L6)가 이미 DB/Base 쓰기를 차단 → 스냅샷은 소형 설정파일만
+#    대상으로 해도 안전.
+_SNAPSHOT_INCLUDE_EXT = {
+    '.json', '.jsonl', '.csv', '.md', '.txt', '.yaml', '.yml', '.toml', '.ini',
+}
+# parquet/bulk 확장자는 **어떤 경우에도** 복사하지 않는다 (이중 방어).
+_SNAPSHOT_FORBIDDEN_EXT = {
+    '.parquet', '.pq', '.arrow', '.feather', '.orc', '.avro',
+    '.db', '.sqlite', '.sqlite3',
+    '.zip', '.gz', '.bz2', '.xz', '.7z', '.tar',
+    '.bin', '.pkl', '.pickle', '.npy', '.npz',
+    '.mp4', '.mov', '.avi', '.mp3', '.wav',
+    '.exe', '.dll', '.so', '.dylib',
+}
+_SNAPSHOT_MAX_FILE_BYTES = 5 * 1024 * 1024   # 개별 파일 5MB 상한
+_SNAPSHOT_MAX_TOTAL_BYTES = 200 * 1024 * 1024  # 루트당 총 200MB 상한 (초과 시 중단)
+_SNAPSHOT_MAX_FILES = 20000                   # 루트당 파일 수 상한
+_SNAPSHOT_SKIP_DIRNAMES = {
+    '__pycache__', '.trash', 'uploads', 'cache', '_backups',
+    # v8.8.19: **DB 트리는 통째 배제** — parquet hive 원천은 어떤 파일도 복사 금지.
+    'DB', 'wafer_maps', 'parquet', 'Fab',
+    # NOTE: 'Base' 는 **제외하지 않음** — Base 안에는 rulebook CSV/JSON/TXT 같은
+    #   경량 설정 파일이 있고 이건 백업 대상. 대형 parquet 는 아래 확장자/크기
+    #   필터로 차단.
+}
+# 절대 경로로도 하드-코딩 배제: DB 원천 트리.
+# Base 는 path substring 배제 대상에서 제외 — 소형 파일은 백업 필요.
+_SNAPSHOT_FORBIDDEN_PATH_SUBSTR = (
+    '/config/work/sharedworkspace/DB',
+    '/config/work/sharedworkspace/wafer_maps',
+)
+
+
+def _is_forbidden_bulk_path(p: Path) -> bool:
+    """DB/wafer_maps/parquet 가 경로 어디에든 세그먼트로 있으면 True.
+    DB 원천 데이터는 어떤 방식으로도 외부 반출 금지.
+    Base 는 여기서 차단하지 않음 — 대형 parquet 는 확장자/크기 필터가 거르고,
+    Base 하위 소형 설정 파일(csv/json/txt)은 정상적으로 백업 대상.
+    """
+    try:
+        s = str(p).replace('\\\\', '/')
+    except Exception:
+        return False
+    for seg in ('DB', 'wafer_maps', 'parquet', 'Fab'):
+        if f"/{seg}/" in s or s.endswith(f"/{seg}"):
+            return True
+    for sub in _SNAPSHOT_FORBIDDEN_PATH_SUBSTR:
+        if s.startswith(sub) or f"{sub}/" in s:
+            return True
+    return False
+
+
+def _should_snapshot_file(p: Path) -> bool:
+    ext = p.suffix.lower()
+    # 이중 방어: forbidden 확장자 (parquet/arrow/pickle/zip 등) 절대 거부.
+    if ext in _SNAPSHOT_FORBIDDEN_EXT:
+        return False
+    if ext not in _SNAPSHOT_INCLUDE_EXT:
+        return False
+    if _is_forbidden_bulk_path(p):
+        return False
+    try:
+        if p.stat().st_size > _SNAPSHOT_MAX_FILE_BYTES:
+            return False
+    except Exception:
+        return False
+    return True
+
+
 def _file_hashes(root: Path) -> dict:
-    """root 아래 모든 파일의 SHA-256 해시 맵. 상대경로 key."""
+    """root 아래 스냅샷 대상 파일의 SHA-256 해시 맵. 상대경로 key.
+    v8.8.19: bulk data(parquet 등) 는 해싱 대상이 아니므로 skip.
+    """
     out = {}
     if not root.is_dir():
         return out
     for p in root.rglob("*"):
         if not p.is_file():
             continue
-        # skip huge files (>100MB) — read-mostly sources, we'll trust by mtime+size.
-        try:
-            sz = p.stat().st_size
-        except Exception:
+        # skip segments we also skipped at snapshot time
+        if any(part in _SNAPSHOT_SKIP_DIRNAMES for part in p.parts):
+            continue
+        if not _should_snapshot_file(p):
             continue
         rel = str(p.relative_to(root)).replace(os.sep, "/")
-        if sz > 100 * 1024 * 1024:
-            out[rel] = f"__size={sz}__mtime={int(p.stat().st_mtime)}"
-            continue
         h = _hashlib.sha256()
         try:
             with open(p, "rb") as f:
@@ -447,43 +535,121 @@ def _file_hashes(root: Path) -> dict:
     return out
 
 
+def _snapshot_roots() -> list:
+    """스냅샷 대상 루트 — _resolve_data_roots() 중 bulk data root 는 완전히 제외.
+
+    v8.8.19: `/config/work/sharedworkspace/DB` 같은 수 GB 원천 parquet 루트는
+    스냅샷에서 처음부터 배제 (_write L0~L6 가드가 이미 쓰기를 차단).
+    basename 뿐 아니라 절대 경로 substring 도 체크 (defense in depth).
+    """
+    out = []
+    for r in _resolve_data_roots():
+        # DB/wafer_maps/Fab/parquet 가 root 이름이면 통째 배제.
+        # Base 는 root 가 되어도 허용 — 대형 parquet 는 내부에서 확장자로 거름.
+        if r.name in {"DB", "wafer_maps", "Fab", "parquet"}:
+            print(f"[snapshot]   skip bulk data root {r}")
+            continue
+        if _is_forbidden_bulk_path(r):
+            print(f"[snapshot]   skip forbidden bulk path {r}")
+            continue
+        out.append(r)
+    return out
+
+
+def _walk_snapshot(root: Path):
+    """os.walk with dir pruning — bulk/skip 디렉토리로는 **들어가지도** 않는다.
+    yield (abs_file_path, size) tuples for files matching include filter.
+    """
+    for dirpath, dirnames, filenames in os.walk(str(root)):
+        # prune in-place so os.walk doesn't recurse into skipped dirs
+        dirnames[:] = [d for d in dirnames if d not in _SNAPSHOT_SKIP_DIRNAMES]
+        # forbidden-path prune (defense in depth against symlink/renamed dirs)
+        dp = str(dirpath).replace('\\\\', '/')
+        if any(sub in dp for sub in _SNAPSHOT_FORBIDDEN_PATH_SUBSTR):
+            dirnames[:] = []
+            continue
+        for fn in filenames:
+            p = Path(dirpath) / fn
+            if not _should_snapshot_file(p):
+                continue
+            try:
+                sz = p.stat().st_size
+            except Exception:
+                continue
+            yield p, sz
+
+
 def _snapshot_data() -> Path | None:
-    """추출 직전 data_root 스냅샷. 반환: 스냅샷 디렉토리 경로 (없으면 None)."""
-    roots = _resolve_data_roots()
+    """추출 직전 data_root 스냅샷. 반환: 스냅샷 디렉토리 경로 (없으면 None).
+
+    v8.8.19: **소형 config/state 파일만 복사** — parquet/CSV-bulk/대형 binary 는 skip.
+    루트별 진행 상황 즉시 출력 (setup.py 가 멈춰 보이지 않도록).
+    """
+    roots = _snapshot_roots()
     if not roots:
-        print("[snapshot] no data roots found - skipping")
+        print("[snapshot] no eligible data roots - skipping")
         return None
     stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
     snap = _backups_dir() / f"v{VERSION}-{stamp}"
     snap.mkdir(parents=True, exist_ok=True)
     manifest = {"version": VERSION, "created_at": stamp, "roots": {}}
-    total_files = 0
-    total_bytes = 0
+    grand_files = 0
+    grand_bytes = 0
+    t_start = _time.time()
+    print(f"[snapshot] scanning {len(roots)} root(s) for config/state files "
+          f"(ext={sorted(_SNAPSHOT_INCLUDE_EXT)}, <={_SNAPSHOT_MAX_FILE_BYTES//1024//1024}MB/file, "
+          f"<={_SNAPSHOT_MAX_TOTAL_BYTES//1024//1024}MB/root)")
     for root in roots:
+        print(f"[snapshot]   scan {root}", flush=True)
+        t0 = _time.time()
         tag = root.name or "root"
-        # disambiguate identical basenames
         dest = snap / tag
         i = 1
         while dest.exists():
             dest = snap / f"{tag}__{i}"
             i += 1
+        n_files = 0
+        n_bytes = 0
+        capped = False
         try:
-            _shutil.copytree(str(root), str(dest),
-                              ignore=_shutil.ignore_patterns("__pycache__", "*.pyc"))
-            manifest["roots"][str(root)] = str(dest.relative_to(snap))
-            for p in dest.rglob("*"):
-                if p.is_file():
-                    total_files += 1
-                    try:
-                        total_bytes += p.stat().st_size
-                    except Exception:
-                        pass
+            for src, sz in _walk_snapshot(root):
+                if n_bytes + sz > _SNAPSHOT_MAX_TOTAL_BYTES or n_files >= _SNAPSHOT_MAX_FILES:
+                    capped = True
+                    print(f"[snapshot]     ! cap reached at {n_files} files / "
+                          f"{n_bytes/1024/1024:.1f} MB - skipping remainder of {root}")
+                    break
+                try:
+                    rel = src.relative_to(root)
+                except Exception:
+                    continue
+                dst_f = dest / rel
+                try:
+                    dst_f.parent.mkdir(parents=True, exist_ok=True)
+                    _shutil.copy2(str(src), str(dst_f))
+                    n_files += 1
+                    n_bytes += sz
+                except Exception as e:
+                    print(f"[snapshot]     WARN copy {rel}: {e}")
+            if n_files > 0:
+                manifest["roots"][str(root)] = str(dest.relative_to(snap))
+            else:
+                try:
+                    if dest.is_dir() and not any(dest.rglob("*")):
+                        _shutil.rmtree(str(dest), ignore_errors=True)
+                except Exception:
+                    pass
         except Exception as e:
-            print(f"[snapshot] WARN copy failed {root}: {e}")
+            print(f"[snapshot] WARN scan failed {root}: {e}")
+        dt = _time.time() - t0
+        suffix = " (capped)" if capped else ""
+        print(f"[snapshot]     {n_files} files, {n_bytes/1024/1024:.1f} MB, "
+              f"{dt:.1f}s{suffix}", flush=True)
+        grand_files += n_files
+        grand_bytes += n_bytes
     (snap / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    mb = total_bytes / (1024 * 1024)
-    print(f"[snapshot] {total_files} files, {mb:.1f} MB -> {snap}")
+    print(f"[snapshot] total {grand_files} files, {grand_bytes/1024/1024:.1f} MB, "
+          f"{_time.time()-t_start:.1f}s -> {snap}")
     return snap
 
 
@@ -518,7 +684,7 @@ def _verify_and_restore(snap: Path | None) -> None:
         print(f"[verify] data integrity OK ({len(manifest.get('roots') or {})} roots)")
         return
     # Restore
-    print(f"[verify] !!! {len(bad)} protected files changed — restoring from {snap}")
+    print(f"[verify] !!! {len(bad)} protected files changed - restoring from {snap}")
     for orig, rel, reason in bad:
         # locate in snap
         for sub in (manifest.get("roots") or {}).values():
@@ -595,13 +761,16 @@ def list_snapshots(argv: list = None) -> int:
     return 0
 
 
-def _run(cmd: str, cwd: Path, check: bool = False) -> int:
+def _run(cmd: str, cwd: Path, check: bool = False, timeout: int | None = None) -> int:
     print(f"\\n$ ({cwd.name}) {cmd}")
     try:
-        r = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        r = subprocess.run(cmd, cwd=str(cwd), shell=True, timeout=timeout)
         if check and r.returncode != 0:
             print(f"  -> exit {r.returncode}")
         return r.returncode
+    except subprocess.TimeoutExpired:
+        print(f"  -> TIMEOUT after {timeout}s - skipping")
+        return 124
     except FileNotFoundError as e:
         print(f"  -> not found: {e}")
         return 127
@@ -627,14 +796,23 @@ def _ensure_critical_deps() -> None:
     if not missing:
         return
     print(f"[deps] ensure critical: {', '.join(missing)}")
-    _run(f"{sys.executable} -m pip install " + ' '.join(shlex.quote(p) for p in missing), cwd=ROOT)
+    # v8.8.19: 오프라인/프록시 환경에서 pip 가 무한 대기하지 않도록 timeout.
+    _run(
+        f"{sys.executable} -m pip install --disable-pip-version-check "
+        + ' '.join(shlex.quote(p) for p in missing),
+        cwd=ROOT,
+        timeout=180,
+    )
 
 
 def extract() -> int:
     # v8.8.17: 추출 직전 data_root 스냅샷 (~/.fabcanvas_backups/v<ver>-<stamp>/).
     # 스냅샷 실패/없음이면 snap=None 으로 계속 진행 — 신규 설치는 보호할 게 없음.
     snap = None
-    if os.environ.get("FABCANVAS_SKIP_SNAPSHOT") != "1":
+    if os.environ.get("FABCANVAS_SKIP_SNAPSHOT") == "1":
+        print("[snapshot] skipped (FABCANVAS_SKIP_SNAPSHOT=1)")
+    else:
+        print(f"[extract] flow v{VERSION} starting - snapshot + extract + deps")
         try:
             snap = _snapshot_data()
         except Exception as e:

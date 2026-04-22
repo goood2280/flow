@@ -45,6 +45,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
+# v8.8.19: Windows cp949 기본 stdout 에서 em-dash/non-ASCII print 가 터지는 것을
+# 방지 — UTF-8 reconfigure (Python 3.7+). 실패해도 조용히 무시.
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 VERSION = "8.8.19"
 CODENAME = "flow"
 VERSION_META = {"version": "8.8.19", "codename": "flow", "changelog": [{"version": "8.8.19", "date": "2026-04-22", "title": "사내 공유 경로 자동 보존 · 인폼 담당자 admin/hol/test 필터 · SplitTable fab_source 진단 · CUSTOM set 양방향 공유 · 인폼 Lot 드롭다운 · 메일 도메인 자동 합성", "tag": "feat", "changes": ["**사내 공유 경로 자동 감지/보존** — `/config/work/sharedworkspace` 가 존재하면 환경변수 없이도 `holweb-data` / `DB` / `Base` 를 자동으로 기본 루트로 사용 (core/paths.py + core/roots.py). setup.py `_build_setup.py` 의 `_resolve_data_roots` + `_write` L6 가드가 이 경로를 자동 보호 → 재설치 시 사용자/그룹/회의/인폼/대시보드 등 데이터가 절대 덮어쓰이지 않음. 기존에는 `/config/work/holweb-fast-api` 가 함께 있어야만 인식돼 setup.py 재실행마다 로컬 `./data/holweb-data` 로 떨어져 DB 휘발.", "**인폼 제품 담당자 admin/hol/test 완전 제외** — `routers/informs._is_blocked_contact` 신설 (admin role + `admin`/`hol`/`test` 포함 username 전부 차단). 새 엔드포인트 `GET /api/informs/eligible-contacts` 추가. `bulk-add` 가 동일 필터 적용. FE `My_Inform.jsx` 일괄 추가 모달이 `/api/informs/eligible-contacts` 호출로 교체. 그룹 `_is_blocked_member` (admin 허용) 는 그대로 유지 — 담당자 필터만 더 엄격.", "**SplitTable fab_source_off 진단 강화** — `_resolve_override_meta` 가 `db_root` / `base_root` / `searched_db_roots` / `tried_candidates` 를 응답에 포함. 에러 메시지에 product → pro 추론 결과 + 실제 탐색 경로 + 권장 해결법을 상세 기술. FE 배지는 `title` 툴팁 + 클릭 시 `alert` 로 전체 상세 표시(db_root/base_root/DB 최상위 후보/탐색 경로 목록).", "**CUSTOM set 양방향 공유 (SplitTable ↔ 인폼)** — 이미 `/api/splittable/customs` 가 공용이었지만 v8.8.17 에서 인폼 UI 의 Saved CUSTOM 드롭다운이 제거돼 사실상 단방향이었음. 인폼 인라인 CUSTOM 편집기에 공용 set 드롭다운 + 저장(프롬프트 기반) 추가. set 선택 시 컬럼이 `embedCustomCols` 에 즉시 반영, 저장 시 SplitTable 의 `customs` API 에 기록되어 SplitTable 에서도 동일 이름으로 노출.", "**CUSTOM 선택 pool 기본 컬럼 제거** — SplitTable + 인폼 양쪽 모두 `product` / `root_lot_id` / `wafer_id` / `lot_id` / `fab_lot_id` 는 자동 첨부되는 기본 컬럼이라 CUSTOM 선택 UI 에서 숨김. 사용자는 분석 대상 parameter 에만 집중.", "**인폼 Lot 후보 = SplitTable override DB 기반** — `GET /api/splittable/lot-candidates` 에 `source=auto|override|mltable` 인자 추가, 기본값 `auto` 에서 ML_TABLE_ 제품이면 override fab_source (hive `1.RAWDATA_DB/<PROD>/`) 를 먼저 스캔. 인폼 Lot 드롭다운이 'DB 에 실제로 찍혀있는 최신 lot' 을 그대로 보여줌.", "**인폼 Lot 입력 = 스크롤 드롭다운** — 기존 datalist autocomplete 를 `<select size=1>` 로 교체. 제품 선택처럼 드롭다운을 열어 root_lot_id/fab_lot_id 목록 전체를 스크롤해서 선택. `✏ 직접` 토글로 수동 입력 모드 전환 가능.", "**Admin 메일 도메인 자동 합성** — admin_settings.mail 에 `domain` 필드 추가 (예: `company.co.kr`). `core.mail.resolve_usernames_to_emails` / `send_mail` 이 username 에 '@' 가 없으면 자동으로 `<username>@<domain>` 으로 조합해 발송. Admin UI 에 '메일 도메인' 필드 + preview JSON 도 domain 기반 샘플 표시.", "**기타** — `PATHS._ensure_dirs` 가 data_root 자체도 생성 보장(공유 경로 첫 실행 시). `/api/informs/eligible-contacts` 도 role 정보 포함 응답."]}, {"version": "8.8.18", "date": "2026-04-22", "title": "Admin 메일 API UI 간소화 · 메일 파일첨부 범용 업로드 · SplitTable 1.RAWDATA_DB exact match + Save Override feedback · psutil 시스템 모니터 + 유휴 부하 정책", "tag": "feat", "changes": ["**Admin 메일 API 설정 UI 재설계** — 수신자 그룹 관리 제거(수신자는 각 페이지에서 선택). URL / x-dep-ticket / senderMailAddress / statusCode 4필드 + 활성화 토글만 남김. 저장된 설정 기반 **전체 API 틀 JSON 미리보기** 블록(headers/data/files 구조) 추가. BE /api/admin/settings 가 `dep_ticket` 단일 필드 받으면 자동으로 headers[\"x-dep-ticket\"] 에 반영.", "**메일 다이얼로그 파일첨부 범용화** — 기존 인폼 이미지 외에 xlsx/pptx/pdf/doc 등 모든 파일 타입 선택 가능. FE 파일 input → `/api/informs/upload-attachment` 업로드 → URL 을 send-mail attachments 에 push. BE 엔드포인트 신설: 실행파일(.exe/.bat/.ps1 등) 차단, 10MB 개별 한도, mime 자동 추론.", "**SplitTable 1.RAWDATA_DB exact match** — `_RAWDATA_PREFIX` startswith 매칭을 `_RAWDATA_EXACT = \"1.RAWDATA_DB\"` equality 로 교체. `1.RAWDATA_DB_INLINE` / `1.RAWDATA_DB_FAB` 처럼 suffix 붙은 폴더는 자동 매칭에서 제외(별개 소스로 취급). 사용자가 `lot_overrides[product].fab_source` 에 명시 지정하면 여전히 존중.", "**Save Override 즉시 반영 + 피드백** — 저장 후 (1) `/source-config` 재로드로 저장된 값을 FE state 에 동기화, (2) `/ml-table-match` 재계산으로 override 메타 업데이트, (3) `loadView()` 로 테이블 행 갱신, (4) alert 로 성공/실패 명시적 피드백.", "**psutil 기반 시스템 모니터 (core/sysmon.py)** — 크로스플랫폼 CPU/Memory/Disk 5분 주기 수집(resource.jsonl, trim 8640 rows = 1개월). `/api/system/stats` 통합 엔드포인트 + `/api/monitor/system·history·state·heartbeat`. 기존 리눅스 전용 `/proc/stat` 로직 대체. requirements.txt + install_deps 에 psutil 추가.", "**유휴 자원 부하 정책** — 최근 6시간 동안 CPU/Memory 가 85% 이상 찍은 적이 없으면 5~10분(랜덤) 동안 numpy SVD 기반 더미 부하 생성. 사용자 활동(AuthMiddleware 에서 `/api/*` 인증 통과 시 `mark_user_activity()` 호출) 감지 시 `_load_stop` Event set → 부하 즉시 중단 + 30분 대기 창. `/api/monitor` + `/api/system` 자체 호출은 활동 감지에서 제외(위젯 폴링 노이즈 방지).", "**My_Monitor 페이지 개편** — 새 `/api/system/stats` 응답 기반. CPU/Mem/Disk 3개 게이지 + 각 지표의 **24h sparkline**(85% 빨간 선 dashed) + 유휴 부하 배너(진행/대기) + psutil 미설치 경고. 15초 auto-refresh.", "**보존 대상 확장** — setup.py `_PROTECTED_BASENAMES` 에 `farm_status.json / sysmon_state.json` 추가. resource.jsonl 은 v8.8.17 에서 이미 등록됨."]}, {"version": "8.8.17", "date": "2026-04-22", "title": "데이터 보존 재설계 (snapshot+verify+restore) · SplitTable db_root as rawdata · 인폼 CUSTOM only scope · FileBrowser 첫 클릭 head 200 · username=email 메일 · 사유별 메일 템플릿 · 공용 메일 헬퍼 · dep_ticket · 담당자 편집 간소화 · PPT 제거", "tag": "feat", "changes": ["**setup.py 데이터 보존 재설계** — 추출 직전 data_root 전체를 `~/.fabcanvas_backups/v8.8.17-<stamp>/` 로 자동 스냅샷(shutil.copytree). 추출 후 SHA-256 diff 로 검증하고 변조된 파일은 즉시 스냅샷에서 복구. `python setup.py restore [latest|<stamp>]` + `snapshots` + `snapshot` 수동 커맨드 추가. L0 화이트리스트 가드(backend/frontend/docs/scripts/app.py/README/CHANGELOG/VERSION.json/requirements.txt 외 top-level 쓰기 금지) 추가 → 코드만 교체. _PROTECTED_BASENAMES 에 paste_sets/prefix_config/history.jsonl/status.json/resource.jsonl/calendar.json/reformatter.json 추가.", "**SplitTable hive override 확장** — `_list_db_roots` 가 db_root 자체가 `1.RAWDATA_DB*` 일 때(Case1) + db_root 바로 아래에 parquet 제품 폴더만 있을 때(Case3) 를 모두 인식. `_auto_derive_fab_source` 도 db_root 자체가 매칭 루트일 때 제품명만 반환 → `_scan_fab_source` 의 `db_base/fab_source` 해석에서 prefix 중복 방지. 이제 사용자가 DB 루트를 `1.RAWDATA_DB` / `.../1.RAWDATA_DB_FAB` / 그 상위 폴더 어느 쪽으로 지정해도 ML_TABLE_<PROD> → hive 원천 자동 매칭 + 최신 lot_id 오버라이드가 동작.", "**My_Inform SplitTable scope CUSTOM only** — 등록 폼의 ALL/KNOB/MASK/INLINE/VM/FAB prefix chip + Saved CUSTOM 드롭다운 완전 제거. 인라인 CUSTOM 빌더만 노출(SplitTable CUSTOM UX 와 동일: 전체 체크·제거·pill·검색). view fetch 는 항상 prefix=ALL 로 받아 FE 에서 embedCustomCols 필터링, 미선택은 빈 프리뷰.", "**FileBrowser 첫 클릭 head 200** — meta_only 기본 off. `loadBaseFileView/loadHiveView/loadRootPqView` 모두 첫 클릭에서 polars lazy head(200) 으로 즉시 샘플 로드. SQL 적용 / 전체 컬럼 SELECT 만 전체 스캔. JSON/MD 파일은 원래대로 원문 반환.", "**인폼 메일 수신자 해석 — username = email** — `_resolve_users_to_emails` 에서 users.csv.email 비어있어도 username 이 `a@b.c` 포맷이면 그대로 발송 대상. admin/test 등 시스템 계정은 자동 제외. `/recipients` 응답에 `effective_email` 필드 추가 (FE 표시 편의).", "**사유별 메일 제목/본문 템플릿** — informs/config.json 에 `reason_templates: {\"<reason>\": {\"subject\":\"...\", \"body\":\"...\"}}` 스키마 추가. GET/POST `/api/informs/config` 에 reason_templates 필드 반영. My_Inform PageGear 안에 `ReasonTemplatesPanel` 컴포넌트 신설(사유 chip + subject/body textarea + 변수 `{product}{lot}{wafer}{module}{reason}` 참고). 등록 폼에서 사유 선택 시 본문 자동 채움(text 비어있으면 즉시, 아니면 confirm), 메일 발송 다이얼로그 초기 subject/body 도 템플릿 기반으로 변수 치환하여 prefill.", "**공용 메일 헬퍼 backend/core/mail.py** — `send_mail(sender_username, receiver_usernames, title, content, files=None, extra_emails=None, status_code=\"\")` 간단 인터페이스. admin_settings.mail 자동 참조, username→email 해석(users.csv 우선, username 자체 email 포맷 fallback, 나머지 skip), multipart/form-data 인코딩, dry-run 지원, 응답 dict 표준화(ok/status/to/skipped/reason). 인폼·회의 등 어떤 라우터에서도 1줄 호출.", "**메일 API dep_ticket 필드** — admin_settings.mail 에 `dep_ticket` 단일 필드 지원. POST `/api/admin/settings` 가 dep_ticket 을 받으면 자동으로 headers[\"x-dep-ticket\"] 에 반영 (기존 headers dict 직접 편집도 여전히 지원). senderMailAddress / senderMailaddress 두 키 병행 주입(구버전 호환).", "**인폼 제품 담당자 편집 간소화** — 이메일/전화/메모 필드 제거. 아이디(username=사내 email id) + 역할 2필드만 노출. 기존 저장된 email/phone/note 값은 BE 에서 그대로 보존.", "**문서 정리** — `docs/FabCanvas_flow_intro.pptx` · `scripts/make_pptx.js` 삭제 (repo 용량 정리)."]}, {"version": "8.8.16", "date": "2026-04-22", "title": "SplitTable hive override 다중컬럼 · FileBrowser meta_only 지연로딩 · 회원/S3 보존 재강화 · SplitTable/인폼 CUSTOM UX · 인폼 필터 strict · 회의 메일 본문 분리 · 대시보드 scatter fit toggle · 회의 담당자 placeholder", "tag": "feat", "changes": ["SplitTable 다중 컬럼 override + FileBrowser meta_only 지연 로딩 + 회원/S3 보존 재강화 + SplitTable/인폼 CUSTOM 대개편 + 인폼 필터 strict + 회의 메일 본문 분리 + 대시보드 scatter fit + 회의 담당자 placeholder + 담당자 즉시 반영. 상세 이력은 이전 VERSION.json 참조."]}]}
@@ -10991,109 +11001,109 @@ FILES = {
         'EXOI+DOTOoIjmfewhPGx0CGAics/QwUOiP8X1VhF0bAaAAA='
     ),
     'VERSION.json': (
-        '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'
-        '0a9rb/0fZOkTzmwvAAA='
+        'H4sIAAAAAAAC/51a73PT5pb+vjP7P7yTmR0cklhAW263A50GSFv2JsCS0O1M6ViKLRMV23Il'
+        'Gcil3AngMC5JL0nrQChOaqYBEm7YmhCI2aazM/wp/RjJ/8M+57yvZDkhdMsHiCW9en+cH895'
+        'zjm6/K//IkTXBdNxLbvQ9YHoej/5fnL/v3f18v20nTELRt6kB9mcfTG8PWYUzpk5+xzuf0F3'
+        'hLgs/+w+Fz/LGB7PdWDfgYN9+97tO3Ag9tCzvBw/Da6t+tfWxdaz50GtLrbWfvPv10SwOOPf'
+        'uiv8Z+vB/XXxakMEC83WrU3hT637Uy/xVBiZvFXQxuyc5pmuJ1pz5Va5QSOHiznLGzFGc6bI'
+        'GqMp1y45aVMEj8r+1DI9P3pmeOTkkHBNTwS3Z/3GSuv2g3D19kKDtif8H2r+/Sf+1FLwI+/B'
+        'X6kGC9jDrTL/aoa7bM2tBOWn8bMZ51iGpuHF7ko5um0p8t29e98kgK3GTPBoQpNy2LtX/D5R'
+        'FbqWtgtZ65x20XbOa+6Y4ZgZ+ukWjbSp45UJgcHB4mprbt5fWRetu/M06bOJoDIvgjs3goV1'
+        'HEHokN1Fc7QPWjJ0oQn92BH+c8RwMYv/YFPtIaht0oa2mg3/WVP4Py+3bjZ5h9dWgx9XRCJt'
+        'O6ZWNLwxN1kcFz2Crx3b9ui6O0mCLhXpkZ4aLVm5TCq8oUPW87jrmK6du2CmaCMpflHHNHrq'
+        'omN52MngQToSdMEHW1hXEmpvkKykNd8Uv9/4HndWg/JS8BIHnQq3iFHa1kbT//ml1vpxGmtq'
+        'UseaPz2BUXgbk0PZT4X/XQMLwI54qXoFA3Dvv4Pb68EP9ASqEMHczWBhOknyICnfmfFvbleJ'
+        'EmzWcL0+o2hJlbTmlrd+xbYWKzTd3Kb/aJpsLZha8GFukZDoAFNLrdvf+o8qsDyBkwa/rgo9'
+        'qZF4tA6dkRb828s0X70pjh0Rrdq836gl2zYn7UtadFCvtb6v7O5Bwd1yUC/TsOBuMzQ1xy55'
+        '8HDNKmRtJ+8mU5abGs3Z6fNmJoUje0bagxqn6hC6SPCEwrHhedAfX+kamRn+pyV00boFo1wW'
+        'Jdd0CGiwWNl/AZk2luGcsJXgegUWWoU+MJL2fbMp9E8GRoQGOYab0Mycdc6Cf/epHcBeghdV'
+        'CDkp9NFS7nyfkclIoZP5wmMVOAT1qzCHpPh4QOhD46njPF3yK/cSWeLm1npZTSP8x9jPKtma'
+        '/kcLw/CCFzV2kOczwdo6DINNDfYbE1XezI+ajh6KqHWngo10CzIdGj49wQ5Vq5OBkdzbSpJb'
+        'J2Pxv6tCNuWttZXtCn4t4qXsbDZEva3GXOtuNdRp5HA2wNuxMia2R+ZEJ9czo+yCjASjQIL2'
+        'lWsaTnoMh1FDXL7rORaZglHIWAT3rkKOhVl/6jmcQ2kcmoWj/LTKEDpVwzHpWdGxM6W0x46L'
+        '3yR9/z4hYGPr2SZMCI4AaxSt6zPB9W9DYOwRWy+mg8UHkMw6Rvprc8ECFHf9alBuslNW6qxh'
+        'v9HAMuycHGqgqsp6a/oqJmhdXfcfPmGE0I2c6XjSlWCMUGA4VWu2hgEJdVgtkoUGPwue12hU'
+        'rSxa98rAD61zi/7jFf/+Qvd2Nb0p8CRiOvz9RlVFoW6lMkLsX5rKGF0a6dFILV1yPTvvStXR'
+        'TAA7oBSsCyeHyVzgkPwXEn5QroWh7cxxBt5h44KZCaNhPNSR3UPuW08bhEyEobh9/SqMcllu'
+        'Wq1BKBhiy0LTX9ikkKjma/2jGTyaJXVAz3JnfPCOkAoN1yegykSrWvbvr+J/8ncKNI357sil'
+        'WV7leuv6gsT0X1f9nzbZN8mpMkdZBkftHKEAFgsefkvDMEUwf7VXrcBvxkTMgSeSXv+p4/wq'
+        'rXx/wZ+ZB6J2jGbxUcxUeEL6eFhWgdGfJATYRdlq40XbzoURVB5ASVgpOLZYTyTT27PB498Y'
+        'i2ZnhK6chZ2O7DCVwz8rw9cXjazphBex+4QG4SV5goqXwdoyUBfnZPyJ74oOhvN1bv7M8ciA'
+        'KstbL6GSKK7SBP6LclBeEBRMYSRFwwGwI2awx1OMezQbLM3uEpOIZUkXEofjQgiRiYKatIcQ'
+        'vKJgEHMDHLEvjkCkS12i4GGj5NnfhNN9k8/xGzpHXqCrtLFeJYStxvcABLyghwceGkyN9B8Z'
+        'HEip6EnyAaOKthcjmIkx64Ip9P3J0/3/dax/pD917Ih26NTpk8c+1PRuBkV/eRPWKIKbS8H/'
+        'VJO7EU2y7D2EMWTLDICMTY3vWvOw5AqrEfAzVRc49h5B4NcOIcQT76wGS9NvkHewOOnXH0De'
+        '2Ejr6qp/f6ljfSVoSW8EEY2cBXZAYknb+WIOuuXT6IdcM2cCvV3rb+bh/R9KDA2DoCIb0oKC'
+        'tXmy+M5TArPvrJOjxYxZaxusAlEFyhxTwu0C+NkYeW6E/N9rt2BlV4P6LDD+Rn2rKaNpZZ5t'
+        'XZ6WvOgHhniwYeaTNx9sl1E/x+Y3k3wlHQ7jRGQ9q3DOTeYNKyetLmPjd0GnsM3rST6RCOYr'
+        'HwBwID+jMJ5M28nzjg66oxNX5reTYUwOqZGb8uyUSY9cFX0LoBG41JkDtxkUVt3z0R7J+sHt'
+        'gUkw0A7mrh8KR3/40SG5QWhLPQzuN3AyiBSIWQtu3E8KKQbp9GLPdnHsCY/Wg5BtXrDMi+I/'
+        'hk+eoAFCzq0cFnF0vlWdVnF0u6wxpnV9InTqU/0jnw4nU2bBLTnIAyxHhbQoI6ADkRncoki/'
+        'AD2wpSNybEua1v4pJHsmwCcB/xF9oxmZsAb1OUIhRVAlf0l2hXv+Uv640vtH6e/7fzr97bA6'
+        'ikSQ/FajHNyYBmWLZZ2taaQumxK6hb9WpYga3JmkTAja6Mx74yAkzEs4qsgbXnoMSqOoL05G'
+        '+GWamVEjfZ7eL7olj8wY9AyeNlmTLLhCxLmHuGmrBht5MYGkkoQVPJ1864R3x5EpZavPsc1x'
+        '/rb1rBwyn8o8ZReAakWrt9Yn/IerKnomosccyRpXwTvmZZ4WRiwGCVjCmdODcKNLfRmz2OdZ'
+        'IOUeLsmpTGcIXtWfycADXbrnGV7JPWpDOu9Gpt66W4PRkUIUwBAfv6aCITMMf6YWHkPZP0BX'
+        'Eko6YWtqQvnJL03sH6aGUTij3wTlXUiMmUaG0izO8bJWznSBpKvwzTYNOjIg457M2kLoUaTd'
+        'LKbkoXRiaSrl4ay2ce91kKDW++JsV1wiZ7u+ZKeX3Gm7y4ZIAPyGhG/TPNDJ6+yynWuoKBKx'
+        'RKKxnETfbdJCl3LuJa1Y9PBfJqtl7LTMwgmr62pisH+IdzLkIgq5ieCr51ahWJIpRKezl4o5'
+        '28j0GeAI6bG8WaA8NXIXGk4WQWGIjKCPEbw91mU5FEvuGAt+e0oqE94PFNbIjSSS5iVTS44a'
+        'npYsuvvpJN0qse0V+/cNgcg0av4zpAxzRCV7Rd4i+FaMjDOfN+R1u3l0lNOFj0+dHvj4+Oc6'
+        'mbHjuRctb0z4j5aCl0/oqO1hA5/3Hx0BBzjbFZ/5bJcuzK9LiPjeeEc476A1qeMnBo+fGOCw'
+        '1HH/4/4jELIM9m4pm7UuATBAmCcAq+tIX2MUVO1JOSmXHBIQDkQkgHwAIIbzjeWt5rfdMb7J'
+        '1k4EIWRg7heKF3+ZbHMxyQD9x5OcLwAL6nOqFEbkCBRgscIVsp20tBMdO1IJQoHqJnGYRsgC'
+        'VG4BAisS+7thf3L5PlkL0gnMpL3J7DKECdBMUgZMmLBGhnDIhELi3WqvSBygqfK5Pqaqfaxm'
+        'nguoGFxrKA+OKCjcEi7Cti2rVzebmOOdbpKTkfkMATrRLblZa3KaPLAJEEOA3Go8hRlj6Lvd'
+        'gpNgmQOXnyKkamTY08tKhEH9avvo2yWmokYY818TPGSB0B1383aBKoJKeMzleHR12l/8J+HD'
+        '0VNntCEzbzvj2jHLPS/eQ2ohgp83MTkHgkezCaJJJOPkV65dyPUKz7Hy4v2D7+5DFL/owqD3'
+        'w4SCe9Uo9mNdz8xrJGmq1tx4Drazw5971GDs0PJsR730amMMzBe7ebXBisK1CacaRZDTw/qf'
+        'IDCvTOIYzFQRk3UNFpnmBVnsYKacG5EbOXAuyzEZYZLeJQ8LWwWMzOVSQGEFOioMS9jfTuNl'
+        'GCY2dG+mMxqHNvkcqLwpDkITYBGcsM5VYpLlgPH+e/9GYEz5GhILclAqjVHaHzHI9/6+fx/E'
+        'n/AXa/53S93hRIVSvjguhj87Fmqc3PqXZrQVJmcxh6XIiVcT/SVvbMjKZHLmRcMJM2ol9b0y'
+        'HXu4QOqhyg8XZvKGc57ZcApgZ10AIpEdy3Jbt6qLy5EpMvQUNFXUxcAFyJZLBgTx4a6kH8Pf'
+        'qRjWI96hk5FS2LAavyU71a9H9iDtQFfsUy3OeManUrvoRLGgVg7qvzDikeYnmyTohxWgyArG'
+        '7igKDY2nhuSybe5CkaL1j7AGSzXR19my5KhKD8lQxdJz3iEg3VqbVvP1MDfCLyLjC0RNDrw7'
+        'Jlzk6udzVsHcuzdBFuG/XCaTQaQF8XbHzEz3DuLnNxp+uZIIHpUBIZqUII1SRkvRXVbfQci3'
+        'ntWTYv97wXqFk8c+x8zCe8d20ArZ4lHlg9bdOaCkOnmsc4BEemTg6MjAsdSR/uGBE/1DA8Mq'
+        'z88aTj4lSRuDAlE4xhq+KYGiXR/uxA9ButxRJONaG8I314KW3yIJ+MufTgKixkPY8Yp4sEi4'
+        'BaPojtleD5axsuM9OAKsxezexvlVoVIYrnCMi0QkY90sVdDBkceFm7aLJj37GDzzCMEmFWuQ'
+        'OamyKHFDcWDfPhoSJo6HORMNKTvNCwev1YnOhOnJZI2A/OH/0lNV8Asf3VltfcdvtXkqJzbt'
+        'IjdXCzvTnlOnRhTLf+s8I7Kf3cUb+tiLKjxbVhHK8bQzqj7of9eIYaSNwgXDTVHOVCq6mrKd'
+        'vkOwtXzxQ00VkhWpA4u5Phlc30i4Y+QeyPuL455jmsRo5IJEHYY/7e878N5BkbGyWUm61iYA'
+        'hnA3eJCgtt39BtEGRbQJrBWehfMry/WfPUfSADDDKmNwhOj4ymLEFzmqj3nfqN1+yUAXmpfb'
+        'caVH9ZNfl/xHy+1aRlIM7oOXViXTQPSjCE5VW27RJUgw4NNa1kGKTT9A6l3NTTtW0XMBYrQf'
+        '7fRA/7GhAe3op/0nPhkYPPmJ9tnA6eHjJ0+wU2o7giRQVQDc+3LmBRMu+0ODYHurSUXuMD2S'
+        'vb/fKKpTahbS1tfBhgyyBpCU6jcuorUJoppS/TsV8SU8aDFY0TqRQ0uDMxUyhhM+pKQD+YMp'
+        'b+wSvmPuytXCiMR1wB4CGnYRa7NwKWQ0XghhHhzn3hxDkZzNTSeOGq65n0A5fMVvVNkqkREu'
+        'zsvTO1+XqKoui3SKnFOtdrFCzDSc5R1Vt5QVaNmshHmlCM5BWBwcIRVn3VwD2rFPSfVV41ht'
+        'Ui0NfsmZdGOeqnKcw6VcuFjHrFyrx7TUgdHiD7gOuKCMX6qRY/yz5yrYJpnk1Gud+QMSKNXE'
+        'JreOC5EzmmQyqe3MajSqP4iw6cMCE8Htdf8m5PL4t7CWplINrlNFpWNZBObTsdLB3IK1Wmci'
+        'RIE2KupS9TOYX/LXytxTWVetb2Jgi7Ov4Q+yjxmPBRLiY6CvLEsGNex/k4TaPzio/fXEySPa'
+        'UP/wXzWZ1GmfDWk4cCjO9JhVVEWj17aKYk1jAHVyZx/IfzmtbEu2SeJ9LjXkzOeYJWzVfhB1'
+        '4dbWkSG82pAzv9ooWrncqw2CxuuUEXLhMWtSTYuyytbcE24+8K4P42CyN964B6OnREsZybaG'
+        'UdRcvdorqQsXqwGw/kt4RbVM3H6jsV3ifxA2laippZrieKsaLHY2m5Q5GX1gQZNQbqbRjU9h'
+        'FtHFaXjPqa/pUo88L1olNHY7ZziuyBl/G+d1E1i3O6roquggy68yAU2K4f8cVP1v2HIoY9mJ'
+        'Gh4YBEYKBgD1QLUoqGKlDR2Lh557MwCRsGGNi9Wmct9dOg6KA7TreNJrWUZREfuwYH6xo0FN'
+        'AzoK4er8fD+Zdi8kFS95WaaPIPjTCvK9dnWc2oTGR6PJNH974D/aUB2cWMuEy96KfybVRxH8'
+        'QQTVotoJLWXfSLRIBiq8M9+n3MEx01bRonilxzrfupnNmpS6mHL7O5oCVMPi4jjzn4X5HbnB'
+        'DpJFzaDHKxrMieQeUS4lt7DyJUOZikO0Ecc08DuF3KHIDOADcfls1yF598OzXXzplka/wm5x'
+        'dbYLEHi2q1ec7Rq1M+PtO1eu6NyEuQZGUInowCcDI9qpk8Mj28pvUQ0EG9i+frs4yXVG0caw'
+        'U8Y58xMk2QhWFd76aX51JHzzlFEwqQPy6zppszzdLsYlpLBCxFLH0egEwjMvecg6DdxXX0Hp'
+        'l1XZ6MplAO6Vy9xAvXI5j3s588pluWE6bqMJEga8iSGnShPkcrHGtNJKaB1Py8G9iQQtHTNP'
+        'VYplD+3liDxVoTssLSff3Ru1n5RVbiu2Ipki8tNxOjL4NvuW6WDYmlbffL0kBwWhDO6sSozM'
+        '5XY0ZF5H2UM2xxUcblMVw1DSbkglZBU96lz1Qt9pE2bfvuX2Ck51eumgoIVer+Ai9+ETdgE3'
+        'ISPHUD6ubknmlaIvEg+f7Trb1U0siL9lIVwpN1SufHMp+fpenFJCowny3BvhAWKwBAwJQokI'
+        'R0TwYwOq7I0hh0z51XCGDpE1cjkSCbR0bd5f5kq2e94qQm35Us6zwKs8jeyYv89iwgRKWl3p'
+        'FRlnvM8pFZgh3JvpDXP3jJX2GAOWJkCpE/Z5xTg1z9Zo4qKZ0aQtdof94lcb8hs2iU6Au9tL'
+        'gkLujw1Ipf2hwv5gqazqFbvU8akrEcvHpEv+YXtz10aDPFlSxKCgs1OhaGx7RWaab9+eEAlV'
+        'gVODpTBlH1gllNwubFd8eYf8QeJruj7RPUPdo8ALqIMPzXI/8efNYHEygQQLvIwoD4QLp+r+'
+        '/35stz3FjX3Zw/rQuDVd1XCFqB9JNeRVc2UaWa0mooxcfTUqDdSStZo7T1pzdXFAvtwmXVGx'
+        'sl2D5te0ItJEUyvYnimL0hOy2cEA1/lRwf31HWa02pRVrznQpBAUONv72Bg9KtNk+og4ZRU8'
+        'x05Sl0envF4Pk8G8cd5M0W1EKiDttSfE1BOOWbThjSv+T9+qubvfogJz8E9XYHZNzQiCl2YV'
+        'VdpWNWmTPC4DNohsVVdoFDnpvRlt+J1YxUF+hddZttE6CzTgwu2ijfpq0fUcsmw1KXm+ChEy'
+        '3vgviKdyPSX+OSvSKMpGgbMekudz53JmfIbILBFW0+aYnYPxv2WZJSY4KaqQVkYS7HmjzIQS'
+        'Ws+bZNazu8ioCMnl0vaXU52C63mj3Hp2F1vPG8VFb0b3OzpFyfATQnLZ+gOmjJSHlkW8zqGC'
+        '007jpj/4jb//BxIKtJmuLwAA'
     ),
 }
 
@@ -11147,23 +11157,101 @@ def _backups_dir() -> Path:
     return d
 
 
+# v8.8.19 fix: 스냅샷 대상을 **소형 config/state 파일로 한정**.
+#   이전에는 data_root 전체(parquet/CSV 원천 포함 수 GB)를 shutil.copytree 로
+#   통째 복사 → 사내 공유 환경에서 setup.py 가 수 분~수 시간 멈춘 것처럼 보임.
+#
+# ★★★ 핵심 원칙 (v8.8.19, 사용자 지시) ★★★
+# 1) DB(`/config/work/sharedworkspace/DB`)와 Base 는 **참조만** 한다.
+# 2) DB/Base 는 스냅샷 백업 대상에서 **완전히 제외** — 복사 시도 자체 금지.
+# 3) parquet/arrow 등 bulk 원천 확장자는 어떤 경로에서도 절대 복사/업로드 금지.
+# 4) 백업 대상은 오직 **경량 설정/상태 파일**: users.csv, groups.json,
+#    config.json, informs/**, meetings/**, calendar/** 등.
+# 5) _write 가드(L0~L6)가 이미 DB/Base 쓰기를 차단 → 스냅샷은 소형 설정파일만
+#    대상으로 해도 안전.
+_SNAPSHOT_INCLUDE_EXT = {
+    '.json', '.jsonl', '.csv', '.md', '.txt', '.yaml', '.yml', '.toml', '.ini',
+}
+# parquet/bulk 확장자는 **어떤 경우에도** 복사하지 않는다 (이중 방어).
+_SNAPSHOT_FORBIDDEN_EXT = {
+    '.parquet', '.pq', '.arrow', '.feather', '.orc', '.avro',
+    '.db', '.sqlite', '.sqlite3',
+    '.zip', '.gz', '.bz2', '.xz', '.7z', '.tar',
+    '.bin', '.pkl', '.pickle', '.npy', '.npz',
+    '.mp4', '.mov', '.avi', '.mp3', '.wav',
+    '.exe', '.dll', '.so', '.dylib',
+}
+_SNAPSHOT_MAX_FILE_BYTES = 5 * 1024 * 1024   # 개별 파일 5MB 상한
+_SNAPSHOT_MAX_TOTAL_BYTES = 200 * 1024 * 1024  # 루트당 총 200MB 상한 (초과 시 중단)
+_SNAPSHOT_MAX_FILES = 20000                   # 루트당 파일 수 상한
+_SNAPSHOT_SKIP_DIRNAMES = {
+    '__pycache__', '.trash', 'uploads', 'cache', '_backups',
+    # v8.8.19: **DB 트리는 통째 배제** — parquet hive 원천은 어떤 파일도 복사 금지.
+    'DB', 'wafer_maps', 'parquet', 'Fab',
+    # NOTE: 'Base' 는 **제외하지 않음** — Base 안에는 rulebook CSV/JSON/TXT 같은
+    #   경량 설정 파일이 있고 이건 백업 대상. 대형 parquet 는 아래 확장자/크기
+    #   필터로 차단.
+}
+# 절대 경로로도 하드-코딩 배제: DB 원천 트리.
+# Base 는 path substring 배제 대상에서 제외 — 소형 파일은 백업 필요.
+_SNAPSHOT_FORBIDDEN_PATH_SUBSTR = (
+    '/config/work/sharedworkspace/DB',
+    '/config/work/sharedworkspace/wafer_maps',
+)
+
+
+def _is_forbidden_bulk_path(p: Path) -> bool:
+    """DB/wafer_maps/parquet 가 경로 어디에든 세그먼트로 있으면 True.
+    DB 원천 데이터는 어떤 방식으로도 외부 반출 금지.
+    Base 는 여기서 차단하지 않음 — 대형 parquet 는 확장자/크기 필터가 거르고,
+    Base 하위 소형 설정 파일(csv/json/txt)은 정상적으로 백업 대상.
+    """
+    try:
+        s = str(p).replace('\\', '/')
+    except Exception:
+        return False
+    for seg in ('DB', 'wafer_maps', 'parquet', 'Fab'):
+        if f"/{seg}/" in s or s.endswith(f"/{seg}"):
+            return True
+    for sub in _SNAPSHOT_FORBIDDEN_PATH_SUBSTR:
+        if s.startswith(sub) or f"{sub}/" in s:
+            return True
+    return False
+
+
+def _should_snapshot_file(p: Path) -> bool:
+    ext = p.suffix.lower()
+    # 이중 방어: forbidden 확장자 (parquet/arrow/pickle/zip 등) 절대 거부.
+    if ext in _SNAPSHOT_FORBIDDEN_EXT:
+        return False
+    if ext not in _SNAPSHOT_INCLUDE_EXT:
+        return False
+    if _is_forbidden_bulk_path(p):
+        return False
+    try:
+        if p.stat().st_size > _SNAPSHOT_MAX_FILE_BYTES:
+            return False
+    except Exception:
+        return False
+    return True
+
+
 def _file_hashes(root: Path) -> dict:
-    """root 아래 모든 파일의 SHA-256 해시 맵. 상대경로 key."""
+    """root 아래 스냅샷 대상 파일의 SHA-256 해시 맵. 상대경로 key.
+    v8.8.19: bulk data(parquet 등) 는 해싱 대상이 아니므로 skip.
+    """
     out = {}
     if not root.is_dir():
         return out
     for p in root.rglob("*"):
         if not p.is_file():
             continue
-        # skip huge files (>100MB) — read-mostly sources, we'll trust by mtime+size.
-        try:
-            sz = p.stat().st_size
-        except Exception:
+        # skip segments we also skipped at snapshot time
+        if any(part in _SNAPSHOT_SKIP_DIRNAMES for part in p.parts):
+            continue
+        if not _should_snapshot_file(p):
             continue
         rel = str(p.relative_to(root)).replace(os.sep, "/")
-        if sz > 100 * 1024 * 1024:
-            out[rel] = f"__size={sz}__mtime={int(p.stat().st_mtime)}"
-            continue
         h = _hashlib.sha256()
         try:
             with open(p, "rb") as f:
@@ -11175,43 +11263,121 @@ def _file_hashes(root: Path) -> dict:
     return out
 
 
+def _snapshot_roots() -> list:
+    """스냅샷 대상 루트 — _resolve_data_roots() 중 bulk data root 는 완전히 제외.
+
+    v8.8.19: `/config/work/sharedworkspace/DB` 같은 수 GB 원천 parquet 루트는
+    스냅샷에서 처음부터 배제 (_write L0~L6 가드가 이미 쓰기를 차단).
+    basename 뿐 아니라 절대 경로 substring 도 체크 (defense in depth).
+    """
+    out = []
+    for r in _resolve_data_roots():
+        # DB/wafer_maps/Fab/parquet 가 root 이름이면 통째 배제.
+        # Base 는 root 가 되어도 허용 — 대형 parquet 는 내부에서 확장자로 거름.
+        if r.name in {"DB", "wafer_maps", "Fab", "parquet"}:
+            print(f"[snapshot]   skip bulk data root {r}")
+            continue
+        if _is_forbidden_bulk_path(r):
+            print(f"[snapshot]   skip forbidden bulk path {r}")
+            continue
+        out.append(r)
+    return out
+
+
+def _walk_snapshot(root: Path):
+    """os.walk with dir pruning — bulk/skip 디렉토리로는 **들어가지도** 않는다.
+    yield (abs_file_path, size) tuples for files matching include filter.
+    """
+    for dirpath, dirnames, filenames in os.walk(str(root)):
+        # prune in-place so os.walk doesn't recurse into skipped dirs
+        dirnames[:] = [d for d in dirnames if d not in _SNAPSHOT_SKIP_DIRNAMES]
+        # forbidden-path prune (defense in depth against symlink/renamed dirs)
+        dp = str(dirpath).replace('\\', '/')
+        if any(sub in dp for sub in _SNAPSHOT_FORBIDDEN_PATH_SUBSTR):
+            dirnames[:] = []
+            continue
+        for fn in filenames:
+            p = Path(dirpath) / fn
+            if not _should_snapshot_file(p):
+                continue
+            try:
+                sz = p.stat().st_size
+            except Exception:
+                continue
+            yield p, sz
+
+
 def _snapshot_data() -> Path | None:
-    """추출 직전 data_root 스냅샷. 반환: 스냅샷 디렉토리 경로 (없으면 None)."""
-    roots = _resolve_data_roots()
+    """추출 직전 data_root 스냅샷. 반환: 스냅샷 디렉토리 경로 (없으면 None).
+
+    v8.8.19: **소형 config/state 파일만 복사** — parquet/CSV-bulk/대형 binary 는 skip.
+    루트별 진행 상황 즉시 출력 (setup.py 가 멈춰 보이지 않도록).
+    """
+    roots = _snapshot_roots()
     if not roots:
-        print("[snapshot] no data roots found - skipping")
+        print("[snapshot] no eligible data roots - skipping")
         return None
     stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
     snap = _backups_dir() / f"v{VERSION}-{stamp}"
     snap.mkdir(parents=True, exist_ok=True)
     manifest = {"version": VERSION, "created_at": stamp, "roots": {}}
-    total_files = 0
-    total_bytes = 0
+    grand_files = 0
+    grand_bytes = 0
+    t_start = _time.time()
+    print(f"[snapshot] scanning {len(roots)} root(s) for config/state files "
+          f"(ext={sorted(_SNAPSHOT_INCLUDE_EXT)}, <={_SNAPSHOT_MAX_FILE_BYTES//1024//1024}MB/file, "
+          f"<={_SNAPSHOT_MAX_TOTAL_BYTES//1024//1024}MB/root)")
     for root in roots:
+        print(f"[snapshot]   scan {root}", flush=True)
+        t0 = _time.time()
         tag = root.name or "root"
-        # disambiguate identical basenames
         dest = snap / tag
         i = 1
         while dest.exists():
             dest = snap / f"{tag}__{i}"
             i += 1
+        n_files = 0
+        n_bytes = 0
+        capped = False
         try:
-            _shutil.copytree(str(root), str(dest),
-                              ignore=_shutil.ignore_patterns("__pycache__", "*.pyc"))
-            manifest["roots"][str(root)] = str(dest.relative_to(snap))
-            for p in dest.rglob("*"):
-                if p.is_file():
-                    total_files += 1
-                    try:
-                        total_bytes += p.stat().st_size
-                    except Exception:
-                        pass
+            for src, sz in _walk_snapshot(root):
+                if n_bytes + sz > _SNAPSHOT_MAX_TOTAL_BYTES or n_files >= _SNAPSHOT_MAX_FILES:
+                    capped = True
+                    print(f"[snapshot]     ! cap reached at {n_files} files / "
+                          f"{n_bytes/1024/1024:.1f} MB - skipping remainder of {root}")
+                    break
+                try:
+                    rel = src.relative_to(root)
+                except Exception:
+                    continue
+                dst_f = dest / rel
+                try:
+                    dst_f.parent.mkdir(parents=True, exist_ok=True)
+                    _shutil.copy2(str(src), str(dst_f))
+                    n_files += 1
+                    n_bytes += sz
+                except Exception as e:
+                    print(f"[snapshot]     WARN copy {rel}: {e}")
+            if n_files > 0:
+                manifest["roots"][str(root)] = str(dest.relative_to(snap))
+            else:
+                try:
+                    if dest.is_dir() and not any(dest.rglob("*")):
+                        _shutil.rmtree(str(dest), ignore_errors=True)
+                except Exception:
+                    pass
         except Exception as e:
-            print(f"[snapshot] WARN copy failed {root}: {e}")
+            print(f"[snapshot] WARN scan failed {root}: {e}")
+        dt = _time.time() - t0
+        suffix = " (capped)" if capped else ""
+        print(f"[snapshot]     {n_files} files, {n_bytes/1024/1024:.1f} MB, "
+              f"{dt:.1f}s{suffix}", flush=True)
+        grand_files += n_files
+        grand_bytes += n_bytes
     (snap / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    mb = total_bytes / (1024 * 1024)
-    print(f"[snapshot] {total_files} files, {mb:.1f} MB -> {snap}")
+    print(f"[snapshot] total {grand_files} files, {grand_bytes/1024/1024:.1f} MB, "
+          f"{_time.time()-t_start:.1f}s -> {snap}")
     return snap
 
 
@@ -11246,7 +11412,7 @@ def _verify_and_restore(snap: Path | None) -> None:
         print(f"[verify] data integrity OK ({len(manifest.get('roots') or {})} roots)")
         return
     # Restore
-    print(f"[verify] !!! {len(bad)} protected files changed — restoring from {snap}")
+    print(f"[verify] !!! {len(bad)} protected files changed - restoring from {snap}")
     for orig, rel, reason in bad:
         # locate in snap
         for sub in (manifest.get("roots") or {}).values():
@@ -11323,13 +11489,16 @@ def list_snapshots(argv: list = None) -> int:
     return 0
 
 
-def _run(cmd: str, cwd: Path, check: bool = False) -> int:
+def _run(cmd: str, cwd: Path, check: bool = False, timeout: int | None = None) -> int:
     print(f"\n$ ({cwd.name}) {cmd}")
     try:
-        r = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        r = subprocess.run(cmd, cwd=str(cwd), shell=True, timeout=timeout)
         if check and r.returncode != 0:
             print(f"  -> exit {r.returncode}")
         return r.returncode
+    except subprocess.TimeoutExpired:
+        print(f"  -> TIMEOUT after {timeout}s - skipping")
+        return 124
     except FileNotFoundError as e:
         print(f"  -> not found: {e}")
         return 127
@@ -11355,14 +11524,23 @@ def _ensure_critical_deps() -> None:
     if not missing:
         return
     print(f"[deps] ensure critical: {', '.join(missing)}")
-    _run(f"{sys.executable} -m pip install " + ' '.join(shlex.quote(p) for p in missing), cwd=ROOT)
+    # v8.8.19: 오프라인/프록시 환경에서 pip 가 무한 대기하지 않도록 timeout.
+    _run(
+        f"{sys.executable} -m pip install --disable-pip-version-check "
+        + ' '.join(shlex.quote(p) for p in missing),
+        cwd=ROOT,
+        timeout=180,
+    )
 
 
 def extract() -> int:
     # v8.8.17: 추출 직전 data_root 스냅샷 (~/.fabcanvas_backups/v<ver>-<stamp>/).
     # 스냅샷 실패/없음이면 snap=None 으로 계속 진행 — 신규 설치는 보호할 게 없음.
     snap = None
-    if os.environ.get("FABCANVAS_SKIP_SNAPSHOT") != "1":
+    if os.environ.get("FABCANVAS_SKIP_SNAPSHOT") == "1":
+        print("[snapshot] skipped (FABCANVAS_SKIP_SNAPSHOT=1)")
+    else:
+        print(f"[extract] flow v{VERSION} starting - snapshot + extract + deps")
         try:
             snap = _snapshot_data()
         except Exception as e:
