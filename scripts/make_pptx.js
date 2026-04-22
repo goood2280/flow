@@ -238,7 +238,7 @@ function baseFrame(slide, pageLabel) {
   });
 
   // 좌: 향후 계획 패널
-  const leftX = 0.6, leftY = 1.5, leftW = 6.1, leftH = 5.4;
+  const leftX = 0.6, leftY = 1.5, leftW = 6.1, leftH = 4.6;
   s.addShape('roundRect', {
     x: leftX, y: leftY, w: leftW, h: leftH,
     fill: { color: C.bgAlt }, line: { color: C.line, width: 1 },
@@ -286,7 +286,7 @@ function baseFrame(slide, pageLabel) {
   });
 
   // 우: 기대효과 패널
-  const rightX = 6.9, rightY = 1.5, rightW = 5.9, rightH = 5.4;
+  const rightX = 6.9, rightY = 1.5, rightW = 5.9, rightH = 4.6;
   s.addShape('roundRect', {
     x: rightX, y: rightY, w: rightW, h: rightH,
     fill: { color: C.bgAlt }, line: { color: C.line, width: 1 },
@@ -330,6 +330,23 @@ function baseFrame(slide, pageLabel) {
     });
   });
 
+  // Claude 협업 성과 강조 배너
+  s.addShape('roundRect', {
+    x: 0.6, y: 6.2, w: 12.2, h: 0.55,
+    fill: { color: C.primary }, line: { color: C.second, width: 1 },
+    rectRadius: 0.06,
+  });
+  s.addText([
+    { text: '⚡ ', options: { color: C.white, bold: true } },
+    { text: '총 36,757줄 · 약 196만 자', options: { color: C.white, bold: true } },
+    { text: '  ·  ', options: { color: C.highlight } },
+    { text: 'Claude AI 협업으로 약 2주 만에 구축', options: { color: C.white, bold: true } },
+    { text: '    일반 SI 외주 시 약 1억원 · 6~8개월 소요 예상', options: { color: C.highlight } },
+  ], {
+    x: 0.6, y: 6.2, w: 12.2, h: 0.55,
+    fontFace: FONT, fontSize: 12.5, align: 'center', valign: 'middle',
+  });
+
   // 하단 기술 스택 한 줄 (작게)
   s.addText([
     { text: '⚙ 기술 스택: ', options: { bold: true, color: C.highlight } },
@@ -340,8 +357,8 @@ function baseFrame(slide, pageLabel) {
     { text: 'Polars', options: { bold: true, color: C.text } },
     { text: '(고속 데이터 처리) · 사내망 전용 서비스', options: { color: C.textDim } },
   ], {
-    x: 0.6, y: 6.98, w: 12.2, h: 0.3,
-    fontFace: FONT, fontSize: 10, align: 'left', valign: 'middle',
+    x: 0.6, y: 6.82, w: 12.2, h: 0.25,
+    fontFace: FONT, fontSize: 9.5, align: 'left', valign: 'middle',
   });
 
   baseFrame(s, '03 / 03');
