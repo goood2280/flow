@@ -524,8 +524,9 @@ function ChartCanvas({ cfg, points, computedAt }) {
   const toY = (v) => pad.t + ch - (v - minY) / rangeY * ch;
 
   // v8.4.4: polynomial fit (degree 1-4) with R² — cfg.fit_line_enabled / fit_line_degree / fit_line_show_r2
+  // v8.8.16: scatter 기본값 변경 — 사용자가 체크박스를 직접 켜야만 fitting line 표시 (이전: 항상 on).
   let fitLine = null;
-  const fitEnabled = cfg.fit_line_enabled !== false && (type === "scatter" || cfg.fit_line_enabled === true);
+  const fitEnabled = cfg.fit_line_enabled === true;
   if (fitEnabled && points.length > 2) {
     const deg = Math.max(1, Math.min(4, cfg.fit_line_degree || 1));
     const xs = points.map((_, i) => i), yv = points.map(p => p.y);
@@ -676,7 +677,8 @@ function ChartCanvas({ cfg, points, computedAt }) {
         {/* Fit line with R² */}
         {fitLine && <g>
           <path d={fitLine.path} fill="none" stroke="#ef4444" strokeWidth={2} strokeDasharray={fitLine.degree===1?"8,4":undefined} opacity={0.85} />
-          {(cfg.fit_line_show_r2 !== false) && <text x={W - pad.r - 4} y={pad.t + 16} textAnchor="end" fill="#ef4444" fontSize={13} fontWeight={800} fontFamily="monospace" style={{ textShadow: "0 0 4px var(--bg-card), 0 0 4px var(--bg-card)" }}>deg={fitLine.degree} · R² = {fitLine.r2.toFixed(4)}</text>}
+          {/* v8.8.16: R² 표시도 명시적 체크 필요 (기본 off). */}
+          {(cfg.fit_line_show_r2 === true) && <text x={W - pad.r - 4} y={pad.t + 16} textAnchor="end" fill="#ef4444" fontSize={13} fontWeight={800} fontFamily="monospace" style={{ textShadow: "0 0 4px var(--bg-card), 0 0 4px var(--bg-card)" }}>deg={fitLine.degree} · R² = {fitLine.r2.toFixed(4)}</text>}
         </g>}
         </g>
       }

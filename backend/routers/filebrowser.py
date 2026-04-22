@@ -235,7 +235,8 @@ def base_files():
 @router.get("/base-file-view")
 def base_file_view(file: str = Query(...), sql: str = Query(""),
                    rows: int = Query(200), cols: int = Query(10),
-                   select_cols: str = Query("")):
+                   select_cols: str = Query(""),
+                   meta_only: bool = Query(False)):
     """v4.1: Preview a file under the Base root.
 
     Parquet/CSV use the same lazy reader path as `/root-parquet-view`; JSON
@@ -300,6 +301,15 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         full_schema_obj = lf.collect_schema()
         all_cols_full = list(full_schema_obj.names())
         schema_full = {n: str(full_schema_obj[n]) for n in all_cols_full}
+        # v8.8.16: meta_only 빠른 경로 — 스키마만 돌려주고 collect 없음.
+        if meta_only:
+            return {
+                "kind": "table", "file": file,
+                "all_columns": all_cols_full, "total_cols": len(all_cols_full),
+                "columns": all_cols_full[:cols], "dtypes": schema_full,
+                "data": [], "showing": 0, "showing_cols": [],
+                "total_rows": 0, "meta_only": True,
+            }
         if not (select_cols and select_cols.strip()) and not (sql and sql.strip()):
             lf = lf.select(all_cols_full[:cols])
         resp = _run_view_lazy(lf, sql, select_cols, rows)
@@ -407,16 +417,29 @@ def _run_view(df, sql: str, select_cols: str, rows: int):
     }
 
 
-def _run_view_lazy(lf, sql: str, select_cols: str, rows: int):
+def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = False):
     """v8.4.3 OOM-aware: lazy 스캔 + projection pushdown + head + (필요 시) SQL.
 
     - 컬럼 선택 / head 은 lazy 에서 처리 → parquet reader 에서 필요한 컬럼·행만 읽음
     - SQL 필터가 있으면 .collect() 후 apply_sql_like (projection 뒤라 메모리 작음)
     - 초기 미리보기(SQL/select 없음) 는 head 만 읽어 10GB 파일도 수백 KB 만 로드
+    - v8.8.16: meta_only=True 는 컬럼 스키마만 반환 (collect 없음) → 클릭 즉시 반응.
+              실제 행 조회는 SQL 실행 / 컬럼 선택 적용 시점으로 이연.
     """
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
     schema = {n: str(schema_obj[n]) for n in all_columns}
+
+    if meta_only:
+        # 스키마만 — 어떤 collect() 도 하지 않음. 큰 parquet/CSV 도 수 ms.
+        return {
+            "total_rows": 0, "total_cols": len(all_columns),
+            "columns": all_columns[:min(len(all_columns), 10)], "all_columns": all_columns,
+            "dtypes": schema, "showing_cols": [],
+            "selected_cols": select_cols.strip() or None,
+            "data": [], "showing": 0, "meta_only": True,
+        }
+
     # Column-projection pushdown
     if select_cols and select_cols.strip():
         sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(all_columns)]
@@ -445,16 +468,27 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int):
 @router.get("/view")
 def view_product(root: str = Query(...), product: str = Query(...),
                  sql: str = Query(""), rows: int = Query(200),
-                 select_cols: str = Query("")):
+                 select_cols: str = Query(""),
+                 meta_only: bool = Query(False)):
     # v8.4.3 OOM-aware: Hive-flat 도 lazy_read_source 로 scan. Polars 가 projection +
     # head 를 parquet reader 로 pushdown → 메모리 수 GB 제품도 안전.
+    # v8.8.16: meta_only=True 는 스키마만 — 사이드바 제품 클릭 즉시 반응.
     try:
         from core.utils import lazy_read_source
         lf = lazy_read_source(root=root, product=product)
         if lf is not None:
-            return _run_view_lazy(lf, sql, select_cols, rows)
+            return _run_view_lazy(lf, sql, select_cols, rows, meta_only=meta_only)
         # Fallback — legacy DF 경로
         df = read_source(root=root, product=product)
+        if meta_only:
+            cols_all = list(df.columns)
+            return {
+                "total_rows": 0, "total_cols": len(cols_all),
+                "columns": cols_all[:10], "all_columns": cols_all,
+                "dtypes": {n: str(d) for n, d in df.schema.items()},
+                "showing_cols": [], "selected_cols": None,
+                "data": [], "showing": 0, "meta_only": True,
+            }
         return _run_view(df, sql, select_cols, rows)
     except HTTPException:
         raise
@@ -475,7 +509,8 @@ def root_parquets():
 @router.get("/root-parquet-view")
 def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       rows: int = Query(200), cols: int = Query(10),
-                      select_cols: str = Query("")):
+                      select_cols: str = Query(""),
+                      meta_only: bool = Query(False)):
     # v8.4.6: path traversal 방어 — db_root 밖 파일 접근 차단
     db_root = PATHS.db_root
     fp = (db_root / file).resolve()
@@ -493,6 +528,14 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
         full_schema_obj = lf.collect_schema()
         all_cols_full = list(full_schema_obj.names())
         schema_full = {n: str(full_schema_obj[n]) for n in all_cols_full}
+        # v8.8.16: meta_only 빠른 경로.
+        if meta_only:
+            return {
+                "all_columns": all_cols_full, "total_cols": len(all_cols_full),
+                "columns": all_cols_full[:cols], "dtypes": schema_full,
+                "data": [], "showing": 0, "showing_cols": [],
+                "total_rows": 0, "meta_only": True,
+            }
         # 미리보기 기본: 앞쪽 N 컬럼만. SQL 또는 select_cols 가 오면 그쪽 우선.
         if not (select_cols and select_cols.strip()) and not (sql and sql.strip()):
             lf = lf.select(all_cols_full[:cols])

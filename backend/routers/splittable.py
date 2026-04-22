@@ -228,12 +228,21 @@ def _product_path(product: str):
 
 
 def _select_columns(all_data_cols, custom_name: str, prefix: str, max_fallback: int = 50):
-    """Multi-prefix ("KNOB,MASK") or ALL or custom-name based column selection."""
+    """Multi-prefix ("KNOB,MASK") or ALL or custom-name based column selection.
+
+    v8.8.16: CUSTOM 모드는 사용자가 저장한 columns 를 **그대로** 반환한다.
+      - 기존: `all_data_cols` 에 없으면 걸러내어 → 값이 null 인 컬럼이 LOT 뷰에서 사라지는 문제.
+      - 변경: custom 에 저장된 column 명을 있는 그대로 반환. view_split 이 null row 를
+              자연스럽게 생성 (컬럼이 실제 df 에 없으면 모든 셀이 None, 컬럼명은 유지).
+      - 빈 리스트면 기존 폴백 (상위 max_fallback) 유지.
+    """
     if custom_name:
         cfp = PLAN_DIR / f"custom_{custom_name}.json"
         data = load_json(cfp, {})
-        cols = [c for c in data.get("columns", []) if c in all_data_cols]
-        return cols if cols else all_data_cols[:max_fallback]
+        saved = list(data.get("columns", []) or [])
+        if saved:
+            return saved
+        return all_data_cols[:max_fallback]
     if prefix.upper() == "ALL":
         return all_data_cols[: max_fallback * 4]
     pref_list = [p.strip().upper() + "_" for p in prefix.split(",") if p.strip()]
@@ -1450,6 +1459,10 @@ def _auto_derive_fab_source(product: str) -> str:
 #   컬럼으로 노출되는 경우를 최우선 취급 — 파일 안 ts 컬럼이 없어도 파티션 단위로 최신 판정 가능.
 _TS_COL_CANDIDATES = ("date", "out_ts", "ts", "timestamp", "created_at", "log_ts", "event_ts", "update_ts")
 _FAB_COL_CANDIDATES = ("fab_lot_id", "lot_id", "fab_lotid", "fab_lot")
+# v8.8.16: hive 원천에서 끌어와 ML_TABLE 값을 덮어쓸 기본 컬럼 집합.
+#   사내 `1.RAWDATA_DB*/<PROD>/date=*/*.parquet` 레이아웃에서 이 이름이 있으면 소스값으로 교체.
+#   fab_col(보통 fab_lot_id) 는 레거시 단일 필드와 병합되어 override_cols 에 합류.
+_DEFAULT_OVERRIDE_COLS = ("root_lot_id", "wafer_id", "lot_id", "tkout_time")
 
 
 def _resolve_override_meta(product: str) -> dict:
@@ -1475,6 +1488,8 @@ def _resolve_override_meta(product: str) -> dict:
         "fab_source": "", "fab_col": "", "ts_col": "",
         "join_keys": [], "scanned_files": [], "scanned_count": 0,
         "row_count": 0, "sample_fab_values": [], "error": None,
+        # v8.8.16: hive 원천에서 끌어오기로 한 override 컬럼 목록 + 실제 스키마에 존재하는 것만.
+        "override_cols": [], "override_cols_present": [], "override_cols_missing": [],
     }
     try:
         cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
@@ -1549,6 +1564,19 @@ def _resolve_override_meta(product: str) -> dict:
         # fab_col / ts_col 추론
         meta["fab_col"] = (ov.get("fab_col") or "").strip() or _pick_first_present(_FAB_COL_CANDIDATES, fab_names) or "fab_lot_id"
         meta["ts_col"] = (ov.get("ts_col") or "").strip() or _pick_first_present(_TS_COL_CANDIDATES, fab_names) or ""
+
+        # v8.8.16: override_cols — 기본 (_DEFAULT_OVERRIDE_COLS) + manual ov.override_cols + 레거시 fab_col 병합.
+        raw_oc = ov.get("override_cols")
+        if isinstance(raw_oc, str):
+            raw_oc = [c.strip() for c in raw_oc.split(",") if c.strip()]
+        if not raw_oc:
+            raw_oc = list(_DEFAULT_OVERRIDE_COLS)
+        # 레거시 fab_col 도 합류 (중복 제거).
+        if meta["fab_col"] and meta["fab_col"] not in raw_oc:
+            raw_oc = list(raw_oc) + [meta["fab_col"]]
+        meta["override_cols"] = list(raw_oc)
+        meta["override_cols_present"] = [c for c in raw_oc if c in fab_names]
+        meta["override_cols_missing"] = [c for c in raw_oc if c not in fab_names]
 
         if meta["fab_col"] not in fab_names:
             meta["error"] = f"fab_col '{meta['fab_col']}' 이 소스 스키마에 없음. 소스 컬럼: {fab_names[:20]}"
@@ -1632,10 +1660,25 @@ def _scan_product(product: str):
         if not fab_col:
             fab_col = "fab_lot_id"  # 최후 기본값
         ts_col = (ov.get("ts_col") or "").strip() or _pick_first_present(_TS_COL_CANDIDATES, fab_schema_names)
-        # Bring only useful columns: fab_col + join keys + ts_col (optional). Avoid wide explosion.
-        wanted = list(dict.fromkeys(join_keys + [fab_col] + ([ts_col] if ts_col else [])))
+        # v8.8.16: 다수 컬럼 오버라이드 지원 — 단일 fab_col 만 끌어오던 것을 확장.
+        #   1.RAWDATA_DB hive 원천에서 root_lot_id/wafer_id/lot_id/tkout_time 등도 최신값으로 교체.
+        #   manual ov.override_cols (list 또는 "a,b,c") > _DEFAULT_OVERRIDE_COLS.
+        raw_oc = ov.get("override_cols")
+        if isinstance(raw_oc, str):
+            raw_oc = [c.strip() for c in raw_oc.split(",") if c.strip()]
+        if not raw_oc:
+            raw_oc = list(_DEFAULT_OVERRIDE_COLS)
+        # 레거시 fab_col 도 항상 포함 (중복 제거).
+        if fab_col and fab_col not in raw_oc:
+            raw_oc = list(raw_oc) + [fab_col]
+        # 실제 소스 스키마에 있는 것만 유효. join_key 는 매칭용이라 override 에서 제외 (값 유지).
+        override_cols = [c for c in dict.fromkeys(raw_oc)
+                         if c in fab_names and c not in join_keys]
+        # Bring: join keys + override_cols + ts_col (optional). Avoid wide explosion.
+        wanted = list(dict.fromkeys(join_keys + override_cols + ([ts_col] if ts_col else [])))
         wanted = [c for c in wanted if c in fab_names]
-        if not wanted or fab_col not in wanted:
+        # 쓸모 있는 컬럼이 하나도 없으면 (join_key 만으로는 override 무의미) 조용히 폴백.
+        if not override_cols:
             return lf
         fab_proj = fab_lf.select(wanted)
         # Cast join keys to Utf8 on both sides for safety.
@@ -1649,9 +1692,10 @@ def _scan_product(product: str):
             fab_proj = fab_proj.unique(subset=join_keys, keep="first", maintain_order=True)
         else:
             fab_proj = fab_proj.unique(subset=join_keys, keep="last")
-        # Drop fab_col on main side so left-join introduces fresh values.
-        if fab_col in main_names and fab_col != "":
-            lf = lf.drop(fab_col)
+        # main 에서 override 컬럼을 미리 drop 해야 left-join 결과가 소스 값으로 교체된다.
+        to_drop = [c for c in override_cols if c in main_names]
+        if to_drop:
+            lf = lf.drop(to_drop)
         lf = lf.join(fab_proj, on=join_keys, how="left")
         return lf
     except Exception:
@@ -1877,22 +1921,33 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         plans = load_json(PLAN_DIR / f"{product}.json", {}).get("plans", {})
 
         rows = []
+        df_cols_set = set(df.columns)
         for col_name in selected:
             row_vals = [None] * len(wf_sorted)
             plan_vals = [None] * len(wf_sorted)
-            try:
-                col_data = df[col_name].to_list()
-                for i, val in enumerate(col_data):
-                    key = wf_raw[i] if i < len(wf_raw) else None
-                    idx = wf_idx.get(key)
-                    if idx is not None:
-                        row_vals[idx] = val
-                        ck = f"{root_lot_id}|{key}|{col_name}"
-                        pv = plans.get(ck, {}).get("value")
-                        if pv is not None:
-                            plan_vals[idx] = pv
-            except Exception:
-                pass
+            # v8.8.16: CUSTOM 에 저장된 컬럼이 현재 df 에 없더라도 빈 행으로 표시.
+            #   (e.g. plan 전용 가상 컬럼, 다른 제품에서 저장된 컬럼 등). plan 값은 여전히 lookup.
+            if col_name in df_cols_set:
+                try:
+                    col_data = df[col_name].to_list()
+                    for i, val in enumerate(col_data):
+                        key = wf_raw[i] if i < len(wf_raw) else None
+                        idx = wf_idx.get(key)
+                        if idx is not None:
+                            row_vals[idx] = val
+                            ck = f"{root_lot_id}|{key}|{col_name}"
+                            pv = plans.get(ck, {}).get("value")
+                            if pv is not None:
+                                plan_vals[idx] = pv
+                except Exception:
+                    pass
+            else:
+                # 가상 컬럼 — plan 값만 확인.
+                for ci, wf_key in enumerate(wf_sorted):
+                    ck = f"{root_lot_id}|{wf_key}|{col_name}"
+                    pv = plans.get(ck, {}).get("value")
+                    if pv is not None:
+                        plan_vals[ci] = pv
 
             # Build _cells dict keyed by column index
             # Check if this column allows plan editing

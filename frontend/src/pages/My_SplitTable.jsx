@@ -130,6 +130,16 @@ export default function My_SplitTable({user}){
     }
   },[enabledSources,products]);
   useEffect(()=>{if(selProd)sf(API+"/lot-ids?product="+selProd).then(d=>setLotSuggestions(d.lot_ids||[])).catch(()=>{});},[selProd]);
+  // v8.8.16: 제품 전체 스키마 fetch — lot 조회와 무관하게 CUSTOM 컬럼 선택 pool 제공.
+  //   all_columns 는 현재 검색된 lot 의 df.columns 기반이라 lot 검색 전에는 비어있음.
+  //   스키마는 lot 검색 없이도 가져올 수 있어 CUSTOM 모드에서 자유롭게 컬럼을 고를 수 있다.
+  const[productSchema,setProductSchema]=useState([]);
+  useEffect(()=>{
+    if(!selProd){setProductSchema([]);return;}
+    sf(API+"/schema?product="+encodeURIComponent(selProd))
+      .then(d=>setProductSchema((d.columns||[]).map(c=>c.name||c)))
+      .catch(()=>setProductSchema([]));
+  },[selProd]);
   // v8.4.7: 제품 바뀔 때 KNOB meta 재fetch.
   useEffect(()=>{if(!selProd){setKnobMeta({});return;}
     sf(API+"/knob-meta?product="+encodeURIComponent(selProd))
@@ -319,6 +329,13 @@ export default function My_SplitTable({user}){
 
   const allCols=data?.all_columns||[];
   const filteredCols=colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols.slice(0,100);
+  // v8.8.16: CUSTOM 모드 전용 컬럼 풀 — productSchema (전체) + allCols (현재 lot) + customCols 합집합.
+  //   lot 검색 전이라도 선택 가능하며, plan 전용 가상 컬럼(저장된 customCols) 도 보존.
+  const customPool=(()=>{const seen=new Set();const out=[];
+    for(const c of [...productSchema,...allCols,...customCols]){if(!seen.has(c)){seen.add(c);out.push(c);}}return out;})();
+  const filteredCustomCols=colSearch
+    ?customPool.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase()))
+    :customPool;
   const filteredLots=lotFilter?lotSuggestions.filter(l=>l.toLowerCase().includes(lotFilter.toLowerCase())):lotSuggestions;
   const S={padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none"};
   const chipS=(active)=>({padding:"3px 8px",borderRadius:4,fontSize:10,cursor:"pointer",fontWeight:active?700:400,background:active?"var(--accent-glow)":"var(--bg-hover)",color:active?"var(--accent)":"var(--text-secondary)",border:active?"1px solid var(--accent)":"1px solid transparent"});
@@ -374,10 +391,35 @@ export default function My_SplitTable({user}){
           <span style={{fontSize:8,color:"var(--text-secondary)",flexShrink:0}}>{c.updated?.slice(5,10)||c.created?.slice(5,10)||""}</span>
           {(c.username===user?.username||isAdmin)&&<span onClick={e=>{e.stopPropagation();deleteCustom(c.name);}} style={{fontSize:9,color:"#ef4444",cursor:"pointer",flexShrink:0}} title="Delete">✕</span>}
         </div>)}
+        {/* v8.8.16: 선택된 Set 의 컬럼을 pill 로 현재 선택 상태에 노출 — 어느 컬럼이 포함됐는지 한눈에. */}
+        {selCustom&&customCols.length>0&&<div style={{marginTop:6,padding:"5px 6px",borderRadius:4,background:"var(--bg-card)",border:"1px dashed var(--border)"}}>
+          <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:3,fontWeight:600}}>'{selCustom}' 선택 컬럼 ({customCols.length})</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
+            {customCols.map(c=><span key={c} title={c}
+              style={{display:"inline-flex",alignItems:"center",gap:2,padding:"1px 5px",borderRadius:3,fontSize:9,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>
+              {c}<span onClick={()=>setCustomCols(customCols.filter(x=>x!==c))} style={{cursor:"pointer",fontSize:10,lineHeight:1,marginLeft:2,color:"#ef4444"}} title="제거">×</span>
+            </span>)}
+          </div>
+        </div>}
         <div style={{marginTop:6,fontSize:10,color:"var(--text-secondary)"}}>Create / Edit:</div>
         <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="Search columns..." style={{...S,width:"100%",fontSize:10,marginBottom:4,marginTop:4}}/>
+        {/* v8.8.16: 전체 체크/제거 + 개수 표시 */}
+        <div style={{display:"flex",gap:4,marginBottom:4,fontSize:9,alignItems:"center"}}>
+          <button onClick={()=>{const all=Array.from(new Set([...customCols,...filteredCustomCols]));setCustomCols(all);}}
+            style={{padding:"2px 8px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:9,cursor:"pointer",fontWeight:600}}>
+            ✓ 전체 체크{colSearch?` (${filteredCustomCols.length})`:""}
+          </button>
+          <button onClick={()=>{if(colSearch){const fs=new Set(filteredCustomCols);setCustomCols(customCols.filter(c=>!fs.has(c)));}else setCustomCols([]);}}
+            style={{padding:"2px 8px",borderRadius:3,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",fontSize:9,cursor:"pointer",fontWeight:600}}>
+            ✕ 전체 제거
+          </button>
+          <span style={{marginLeft:"auto",color:"var(--text-secondary)",fontSize:9}}>{customCols.length}/{customPool.length} 선택</span>
+        </div>
         <div style={{maxHeight:120,overflow:"auto"}}>
-          {filteredCols.map(c=><div key={c} onClick={()=>{if(!customCols.includes(c))setCustomCols([...customCols,c]);else setCustomCols(customCols.filter(x=>x!==c));}} style={{fontSize:10,padding:"2px 6px",cursor:"pointer",color:customCols.includes(c)?"var(--accent)":"var(--text-secondary)"}}>{customCols.includes(c)?"✓ ":""}{c}</div>)}
+          {filteredCustomCols.map(c=><div key={c} onClick={()=>{if(!customCols.includes(c))setCustomCols([...customCols,c]);else setCustomCols(customCols.filter(x=>x!==c));}} style={{fontSize:10,padding:"2px 6px",cursor:"pointer",color:customCols.includes(c)?"var(--accent)":"var(--text-secondary)"}}>{customCols.includes(c)?"✓ ":""}{c}</div>)}
+          {filteredCustomCols.length===0&&<div style={{fontSize:10,color:"var(--text-secondary)",padding:6,fontStyle:"italic"}}>
+            {productSchema.length===0?"제품 스키마 로딩 중...":"검색 결과 없음"}
+          </div>}
         </div>
         {customCols.length>0&&<div style={{marginTop:4}}>
           <div style={{fontSize:9,color:"var(--text-secondary)"}}>{customCols.length} selected</div>
@@ -462,6 +504,13 @@ export default function My_SplitTable({user}){
                     <div>✓ 조인 활성</div>
                     <div>join_keys: <span style={{fontFamily:"monospace",color:"var(--accent)"}}>[{(mlMatch.override.join_keys||[]).join(", ")}]</span></div>
                     <div>fab_col: <span style={{fontFamily:"monospace",color:"var(--accent)"}}>{mlMatch.override.fab_col}</span> · ts_col: <span style={{fontFamily:"monospace",color:"var(--accent)"}}>{mlMatch.override.ts_col||"(없음 — keep=last 폴백)"}</span></div>
+                    {/* v8.8.16: override_cols — hive 원천에서 끌어와 ML_TABLE 값을 덮어쓸 컬럼 목록. */}
+                    <div>
+                      override_cols: <span style={{fontFamily:"monospace",color:"#22c55e"}}>[{(mlMatch.override.override_cols_present||[]).join(", ")||"(없음)"}]</span>
+                      {(mlMatch.override.override_cols_missing||[]).length>0&&<>
+                        {" "}<span style={{fontFamily:"monospace",color:"#ef4444"}}>미존재: [{(mlMatch.override.override_cols_missing||[]).join(", ")}]</span>
+                      </>}
+                    </div>
                     <div>파일: <span style={{fontFamily:"monospace"}}>{mlMatch.override.scanned_count||0}개</span> · 행수: <span style={{fontFamily:"monospace"}}>{mlMatch.override.row_count}</span></div>
                     {(mlMatch.override.scanned_files||[]).length>0&&(
                       <details style={{marginTop:2}}>
@@ -512,6 +561,14 @@ export default function My_SplitTable({user}){
                   placeholder={mlMatch.override?.ts_col ? `현재: ${mlMatch.override.ts_col}` : "out_ts/date (최신기준)"}
                   style={{...S,flex:1,fontSize:10,fontFamily:"monospace"}}/>
               </label>
+              {/* v8.8.16: override_cols — hive 원천에서 끌어올 컬럼 이름들 (콤마 구분). 비우면 기본 root_lot_id/wafer_id/lot_id/tkout_time. */}
+              <label style={{display:"flex",alignItems:"flex-start",gap:6,fontSize:10}}>
+                <span style={{width:80,fontFamily:"monospace",color:"var(--text-secondary)",paddingTop:4}}>override_cols</span>
+                <textarea value={ov.override_cols||""} onChange={e=>setOv("override_cols",e.target.value)}
+                  placeholder={(mlMatch.override?.override_cols||[]).length ? `현재: ${(mlMatch.override.override_cols||[]).join(", ")}` : "root_lot_id, wafer_id, lot_id, tkout_time"}
+                  rows={2} style={{...S,flex:1,fontSize:10,fontFamily:"monospace",resize:"vertical"}}/>
+              </label>
+              <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:-2,marginLeft:86}}>콤마로 구분. 소스에 있는 것만 실제로 덮어쓰이고 join_key 는 매칭용으로 보존됨.</div>
               <button onClick={()=>{sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:[...(enabledSources||new Set())],lot_overrides:lotOverrides||{}})}).then(()=>{loadView&&loadView();});}} style={{marginTop:4,padding:"4px 10px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,cursor:"pointer",fontWeight:600}}>Save Overrides</button>
             </div>);
           })()}

@@ -166,10 +166,13 @@ export default function My_FileBrowser({user}){
   },[scope]); // eslint-disable-line
 
   // v4.1: Base-file preview loader (parquet/csv/json/md).
-  const loadBaseFileView=(file)=>{
+  // v8.8.16: 기본은 meta_only=1 — 클릭 즉시 스키마만 받아오고 실제 행 조회는
+  //   사용자가 SQL 실행 / 컬럼 SELECT 적용할 때로 이연. `full=true` 면 데이터까지.
+  const loadBaseFileView=(file,{full=false}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
-    const url=buildUrl(API+"/base-file-view",{file,rows:200,cols:10});
+    const params={file,rows:200,cols:10};if(!full)params.meta_only=1;
+    const url=buildUrl(API+"/base-file-view",params);
     sf(url).then(d=>{
       if(d.kind==="json"||d.kind==="md"){
         // Render natively: JSON is pretty-printed, md shown as raw <pre>.
@@ -197,32 +200,41 @@ export default function My_FileBrowser({user}){
     return base+"?"+q;
   };
 
-  const loadHiveView=(root,prod,sqlQ,selColsOverride)=>{
+  // v8.8.16: 첫 클릭은 meta_only — 스키마만 받아 즉시 렌더. SQL/SELECT 적용 시에만 행 조회.
+  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=false}={})=>{
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
     const sc=selColsOverride||selectedCols;
-    const url=buildUrl(API+"/view",{root,product:prod,sql:sqlQ||"",rows:200,select_cols:sc.length?sc.join(","):""});
+    const params={root,product:prod,sql:sqlQ||"",rows:200,select_cols:sc.length?sc.join(","):""};
+    const needData=full||(sqlQ&&sqlQ.trim())||sc.length;
+    if(!needData)params.meta_only=1;
+    const url=buildUrl(API+"/view",params);
     sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
-  const loadRootPqView=(file,sqlQ,selColsOverride)=>{
+  const loadRootPqView=(file,sqlQ,selColsOverride,{full=false}={})=>{
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
     const sc=selColsOverride||selectedCols;
-    const url=buildUrl(API+"/root-parquet-view",{file,sql:sqlQ||"",rows:200,cols:10,select_cols:sc.length?sc.join(","):""});
+    const params={file,sql:sqlQ||"",rows:200,cols:10,select_cols:sc.length?sc.join(","):""};
+    const needData=full||(sqlQ&&sqlQ.trim())||sc.length;
+    if(!needData)params.meta_only=1;
+    const url=buildUrl(API+"/root-parquet-view",params);
     sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
+  // v8.8.16: "실행" 클릭 = 실제 행 조회 트리거. meta_only 없이 호출 → 서버에서 collect.
   const applySql=()=>{
-    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql);
+    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql,null,{full:true});
     else if(mode==="base"&&selBaseFile){
       // Base JSON/md files have no SQL surface — silently ignore. Tabular
       // parquet/csv re-load with the SQL param applied server-side.
       if(baseRaw)return; // json/md 는 SQL 적용 불가 — baseRaw 상태로 판단
       setLoading(true);setError("");
+      // full=true 와 동일 — SQL 이 비어도 sample 행을 보여줘야 하므로 meta_only 꺼둠.
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:200,cols:10,
         select_cols:selectedCols.length?selectedCols.join(","):""});
       sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
-    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql);
+    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,null,{full:true});
   };
 
   const toggleCol=(col)=>{
@@ -413,12 +425,16 @@ export default function My_FileBrowser({user}){
             </pre>
           </div>}
           {!loading&&data&&<>
-            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
               <span style={{fontSize:14,fontWeight:600}}>{selProd||selRootPq||selBaseFile}</span>
               <span style={{fontSize:12,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6}}>
-                {data.total_rows?.toLocaleString()}행 × {data.total_cols}열 | 표시 {data.showing}
-                {data.selected_cols&&<span style={{color:"var(--accent)"}}> | {data.selected_cols.length}열 선택됨</span>}
+                {data.meta_only
+                  ?<>스키마만 로드 · {data.total_cols}열 <span style={{color:"var(--accent)",fontWeight:600}}>| SQL 실행 또는 컬럼 SELECT 적용 시 데이터 조회</span></>
+                  :<>{data.total_rows?.toLocaleString()}행 × {data.total_cols}열 | 표시 {data.showing}
+                     {data.selected_cols&&<span style={{color:"var(--accent)"}}> | {data.selected_cols.length}열 선택됨</span>}</>}
               </span>
+              {/* v8.8.16: meta_only 상태에서 전체 데이터 조회 버튼 */}
+              {data.meta_only&&<button onClick={applySql} style={{padding:"4px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:11,fontWeight:600,cursor:"pointer"}} title="SQL 없이도 행 미리보기 200건 조회">▶ 샘플 로드</button>}
             </div>
             {/* Tabs: Data + Columns */}
             <div style={{display:"flex",gap:0,borderBottom:"1px solid var(--border)",marginBottom:12}}>

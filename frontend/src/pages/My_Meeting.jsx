@@ -327,7 +327,8 @@ export default function My_Meeting({ user }) {
       title: t,
       description: agendaDraft.description,
       link: agendaDraft.link,
-      owner: (agendaDraft.owner || me).trim(),
+      // v8.8.16: 빈 채로 저장하면 BE(meetings.add_agenda) 가 세션 유저명으로 자동 채움.
+      owner: (agendaDraft.owner || "").trim(),
     }).then(() => {
       setAgendaDraft({ title: "", description: "", link: "", owner: "" });
       reload();
@@ -371,6 +372,8 @@ export default function My_Meeting({ user }) {
       mail_group_ids: [],   // v8.7.7: 공용 메일 그룹 선택
       mail_to: "",
       mail_subject: "",
+      // v8.8.16: 공동 작성 본문과 독립된 메일 전용 본문. 빈 채로 두면 메일 본문 섹션 생략.
+      mail_body: "",
       // v8.8.15: OT-lite — 편집 시작 시점의 서버 rev 스냅샷. 저장 때 base_rev 로 전송.
       base_rev: Number(m.rev || 0),
     });
@@ -426,6 +429,8 @@ export default function My_Meeting({ user }) {
       mail_subject: minutesDraft.mail_subject || "",
       // v8.8.15: OT-lite — 편집 시작 시점의 rev 을 함께 전송. 서버 rev 과 다르면 409.
       base_rev: Number(minutesDraft.base_rev || 0),
+      // v8.8.16: 메일 전용 본문 — BE 가 minutes.body 대신 이걸 사용. 빈 문자열이면 본문 섹션 생략.
+      mail_body: minutesDraft.mail_body || "",
     }).then(r => {
       setEditingMinutes(false); setMinutesDraft(null); reload();
       // v8.7.9: surface calendar sync failure loudly — v8.7.8 silently swallowed it.
@@ -785,7 +790,7 @@ export default function My_Meeting({ user }) {
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                     <input value={agendaDraft.title} onChange={e => setAgendaDraft({ ...agendaDraft, title: e.target.value })} placeholder="아젠다 제목 *" style={inp} />
-                    <input value={agendaDraft.owner} onChange={e => setAgendaDraft({ ...agendaDraft, owner: e.target.value })} placeholder={`담당자 (기본: ${me})`} style={inp} />
+                    <input value={agendaDraft.owner} onChange={e => setAgendaDraft({ ...agendaDraft, owner: e.target.value })} placeholder="담당자" style={inp} />
                   </div>
                   <textarea value={agendaDraft.description} onChange={e => setAgendaDraft({ ...agendaDraft, description: e.target.value })} rows={2} placeholder="설명 (선택)" style={{ ...inp, marginTop: 6, resize: "vertical", fontFamily: "inherit" }} />
                   <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
@@ -1046,6 +1051,30 @@ export default function My_Meeting({ user }) {
                           <input value={minutesDraft.mail_to} onChange={e => setMinutesDraft({ ...minutesDraft, mail_to: e.target.value })} placeholder="추가 이메일 (쉼표/공백 구분, 선택)" style={inp} />
                           <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>
                             * 액션아이템에 지정된 그룹 멤버의 이메일도 자동 포함됩니다.
+                          </div>
+                          {/* v8.8.16: 메일 전용 본문 — 공동 작성된 minutes.body 와 분리. 빈 채 발송하면 메일에 본문 섹션 없음. */}
+                          <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 5, border: "1px dashed var(--border)", background: "var(--bg-primary)" }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4, color: "var(--text-secondary)" }}>📝 메일 본문 (선택)</div>
+                            <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>
+                              공동 작성된 회의록 본문은 메일에 자동 첨부되지 않습니다. 아래는 참고용이고, 메일에 넣을 내용은 아래 텍스트 영역에 직접 작성하세요.
+                            </div>
+                            {minutesDraft.body && (
+                              <details style={{ marginBottom: 6 }}>
+                                <summary style={{ cursor: "pointer", fontSize: 10, color: "var(--accent)", fontWeight: 600 }}>참고: 공동 작성된 회의록 본문 (클릭하여 펼치기/접기)</summary>
+                                <pre style={{ fontSize: 10, margin: "4px 0 0", padding: "6px 8px", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 4, whiteSpace: "pre-wrap", maxHeight: 160, overflow: "auto" }}>{minutesDraft.body}</pre>
+                                <div style={{ textAlign: "right", marginTop: 4 }}>
+                                  <button type="button" onClick={() => setMinutesDraft({ ...minutesDraft, mail_body: (minutesDraft.mail_body ? minutesDraft.mail_body + "\n\n" : "") + minutesDraft.body })}
+                                    style={{ padding: "2px 8px", borderRadius: 3, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
+                                    ↓ 메일 본문에 복사
+                                  </button>
+                                </div>
+                              </details>
+                            )}
+                            <textarea value={minutesDraft.mail_body || ""}
+                              onChange={e => setMinutesDraft({ ...minutesDraft, mail_body: e.target.value })}
+                              rows={4}
+                              placeholder="메일에 넣을 본문 내용 (비워두면 아젠다/결정사항/액션아이템만 발송)"
+                              style={{ ...inp, width: "100%", resize: "vertical", fontFamily: "inherit", boxSizing: "border-box" }} />
                           </div>
                         </div>
                       )}
