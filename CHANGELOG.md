@@ -1,3 +1,13 @@
+## v8.8.15 — 2026-04-22
+
+이월 TODO 5건 완주 — Rulebook 행 CRUD · VM/INLINE sub-label · 인폼 nav 필터 · fab_lot_id 스냅샷 · 회의록 OT-lite.
+
+- **Rulebook 행 CRUD modal** — SplitTable 톱니 > Rulebook 의 `편집 <kind>` 버튼이 실제 동작. 제품 스코프 행 추가/수정/삭제 + 필수 컬럼 빨간 테두리 + product 자동 채움/잠금. 저장 시 기존 제품 행 전체 교체, 다른 제품/공용 행 보존, knob_meta/vm_meta 즉시 reload. (My_SplitTable.jsx)
+- **VM/INLINE row sub-label** — SplitTable row header 가 `VM_<feature>` 은 🤖 보라 pill(step_desc/step_id), `INLINE_<item_id>` 는 🔬 녹색 pill(item_desc/step_id) 렌더. `/api/splittable/inline-meta` product 쿼리 추가.
+- **인폼 모듈/제품 nav 필터** — My_Inform 전체 모드의 checkbox UI 를 `📁 모듈` + `📦 제품` 두 줄 pill nav 로 교체 + 필터 초기화 + 필터링 건수 표시. 제품 nav 는 현재 목록에 실제 등장한 제품만.
+- **fab_lot_id_at_save 스냅샷** — 인폼 저장 시점의 fab_lot_id 가 entry 에 고정됨. FE 는 fab_lot_id 포맷 입력 시 명시 전달, 아니면 BE `_resolve_fab_lot_snapshot` 이 ML_TABLE_<PROD>.parquet 에서 폴백 조회. CompactRow 에 🔗 pill.
+- **회의록 OT-lite** — `minutes.rev` 카운터 + `save_minutes`/`append_minutes`/`append/delete` 모두 rev 증분. `MinutesSave.base_rev` 로 optimistic concurrency check — mismatch 시 **409 minutes_rev_conflict** + current_body 반환. FE 편집 세션이 base_rev 스냅샷 + 저장 실패 시 confirm(유지/포기) + SSE 배너 rev 표시 + `내 편집 유지·rebase` 버튼.
+
 ## v8.8.14 — 2026-04-22
 
 ML_TABLE 컬럼 리네임(rule_order+func_step) · 자연정렬 강화 · 인폼 목록 모듈 pill 재배치 · 페이지 admin 위임 · 예약 백업 · 활동 대시보드 · HR 감사 긴급 fix.
