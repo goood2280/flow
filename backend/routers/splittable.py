@@ -893,9 +893,9 @@ def _build_vm_meta(product: str = "") -> dict:
 
 
 @router.get("/inline-meta")
-def inline_meta():
-    """v8.7.5: INLINE prefix 항목 매칭 메타."""
-    return {"items": _build_inline_meta()}
+def inline_meta(product: str = Query("")):
+    """v8.7.5/v8.8.15: INLINE prefix 항목 매칭 메타. product 필터 추가."""
+    return {"items": _build_inline_meta(product)}
 
 
 @router.get("/vm-meta")

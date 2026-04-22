@@ -141,6 +141,15 @@ export default function My_SplitTable({user}){
     sf(API+"/vm-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""))
       .then(d=>setVmMeta(d.items||{})).catch(()=>setVmMeta({}));
   },[selProd]);
+  // v8.8.15: INLINE meta — INLINE_<item_id> row 의 step_id sub-label 용.
+  const[inlineMetaSt,setInlineMetaSt]=useState({});
+  useEffect(()=>{
+    sf(API+"/inline-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""))
+      .then(d=>setInlineMetaSt(d.items||{})).catch(()=>setInlineMetaSt({}));
+  },[selProd]);
+  // v8.8.15: row._param → (tail 또는 full 키) 메타 lookup. BE 와 동일한 fallback 전략.
+  const vmLookup=(param)=>{if(!param)return null;const tail=param.replace(/^VM_/,"");return vmMeta[param]||vmMeta[tail]||null;};
+  const inlineLookup=(param)=>{if(!param)return null;const tail=param.replace(/^INLINE_/,"");return inlineMetaSt[param]||inlineMetaSt[tail]||null;};
   // v8.8.10: Rulebook 컬럼 매핑 schema — admin 이 역할→실제컬럼명 조정 가능.
   const[rbSchema,setRbSchema]=useState({schema:{},defaults:{}});
   const[rbEditKind,setRbEditKind]=useState(null);   // "knob_ppid"|"step_matching"|"inline_matching"|"vm_matching"|null
@@ -156,6 +165,47 @@ export default function My_SplitTable({user}){
       body:JSON.stringify({kind:rbEditKind,mapping:rbDraftMap,username:user?.username||""})})
       .then(()=>{setRbEditKind(null);reloadRbSchema();loadView&&loadView();})
       .catch(e=>alert("저장 실패: "+e.message));
+  };
+  // v8.8.15: Rulebook 행 CRUD modal — admin 이 knob_ppid/step_matching/inline_matching/vm_matching 의
+  //   제품별 행을 직접 추가/수정/삭제. BE 는 /rulebook (GET) + /rulebook/save (POST product-scoped).
+  const[rbRowKind,setRbRowKind]=useState(null);
+  const[rbRowCols,setRbRowCols]=useState([]);
+  const[rbRowReq,setRbRowReq]=useState([]);
+  const[rbRowRows,setRbRowRows]=useState([]);
+  const[rbRowSaving,setRbRowSaving]=useState(false);
+  const openRowEditor=(kind)=>{
+    if(!selProd){alert("먼저 제품을 선택하세요.");return;}
+    setRbRowKind(kind);setRbRowRows([]);setRbRowCols([]);setRbRowReq([]);
+    sf(API+"/rulebook?kind="+encodeURIComponent(kind)+"&product="+encodeURIComponent(selProd))
+      .then(d=>{
+        setRbRowCols(d.columns||[]);
+        // required 는 FE 스키마 (product는 자동 스코프)
+        const reqMap={knob_ppid:["feature_name","function_step"],step_matching:["step_id","func_step"],inline_matching:["step_id","item_id"],vm_matching:["feature_name","step_id"]};
+        setRbRowReq(reqMap[kind]||[]);
+        // 현재 제품 행만 골라 편집 대상으로. 공용(product 빈값) 행은 read-only 프리뷰 뒤에.
+        const prodRows=(d.rows||[]).filter(r=>(r.product||"")===selProd).map(r=>({...r}));
+        setRbRowRows(prodRows);
+      })
+      .catch(e=>{alert("Rulebook 로드 실패: "+e.message);setRbRowKind(null);});
+  };
+  const rbAddRow=()=>{const blank={};(rbRowCols||[]).forEach(c=>{blank[c]=c==="product"?(selProd||""):"";});setRbRowRows(rs=>[...rs,blank]);};
+  const rbUpdateCell=(i,col,v)=>{setRbRowRows(rs=>rs.map((r,idx)=>idx===i?{...r,[col]:v}:r));};
+  const rbDelRow=(i)=>{setRbRowRows(rs=>rs.filter((_,idx)=>idx!==i));};
+  const rbSaveRows=()=>{if(!rbRowKind||!selProd)return;
+    // validate required
+    const bad=rbRowRows.findIndex(r=>(rbRowReq||[]).some(c=>!String(r[c]||"").trim()));
+    if(bad>=0){alert(`행 ${bad+1}: 필수 컬럼 누락 (${rbRowReq.join(", ")})`);return;}
+    setRbRowSaving(true);
+    sf(API+"/rulebook/save",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({kind:rbRowKind,rows:rbRowRows,product:selProd,username:user?.username||""})})
+      .then(()=>{setRbRowKind(null);setRbRowRows([]);
+        // 관련 메타 재로드
+        if(rbRowKind==="knob_ppid"||rbRowKind==="step_matching"){sf(API+"/knob-meta?product="+encodeURIComponent(selProd)).then(d=>setKnobMeta(d.features||{})).catch(()=>{});}
+        if(rbRowKind==="vm_matching"){sf(API+"/vm-meta?product="+encodeURIComponent(selProd)).then(d=>setVmMeta(d.items||{})).catch(()=>{});}
+        loadView&&loadView();
+      })
+      .catch(e=>alert("저장 실패: "+e.message))
+      .finally(()=>setRbRowSaving(false));
   };
   // fab_lot_id 후보도 fetch (lot-candidates 엔드포인트 사용)
   useEffect(()=>{if(selProd)sf(API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=fab_lot_id&limit=500").then(d=>setFabSuggestions(d.candidates||[])).catch(()=>{});},[selProd]);
@@ -481,7 +531,8 @@ export default function My_SplitTable({user}){
                 </span>
                 {isAdmin && (editKinds||[]).map(k => (
                   <span key={k} style={{display:"inline-flex",gap:2}}>
-                    <button onClick={()=>setRulebookEdit&&setRulebookEdit(k)}
+                    <button onClick={()=>openRowEditor(k)}
+                      title={`${k} 의 ${selProd||"제품"} 행 추가/수정/삭제`}
                       style={{padding:"1px 6px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:9,cursor:"pointer"}}>편집 {k}</button>
                     <button onClick={()=>openSchemaEditor(k)}
                       title={`${k} 의 역할→실제 컬럼명 매핑 조정 (soft-landing)`}
@@ -565,7 +616,7 @@ export default function My_SplitTable({user}){
                 </div>
 
                 <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:4,lineHeight:1.4}}>
-                  {isAdmin ? "admin: 섹션별 [편집] 버튼으로 제품별 rulebook 행 추가/수정/삭제. (편집 modal 은 별도 추가 예정)" : "편집은 admin 권한 필요. CSV 는 Base 루트에 위치."}
+                  {isAdmin ? "admin: 섹션별 [편집] 버튼으로 제품별 rulebook 행 추가/수정/삭제. 🔧 컬럼으로 CSV 헤더 매핑 조정." : "편집은 admin 권한 필요. CSV 는 Base 루트에 위치."}
                 </div>
               </div>
             );
@@ -675,6 +726,20 @@ export default function My_SplitTable({user}){
                     ))}
                   </div>
                 )}
+                {/* v8.8.15: VM_ prefix row 의 step_id/step_desc sub-label */}
+                {(row._param||"").startsWith("VM_") && (()=>{const vm=vmLookup(row._param);if(!vm||(!vm.step_id&&!vm.step_desc))return null;return(
+                  <div style={{fontSize:10,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace",display:"flex",flexWrap:"wrap",alignItems:"center",gap:4}}>
+                    <span style={{color:"#8b5cf6",fontWeight:700}}>🤖 VM</span>
+                    {vm.step_desc && <span style={{color:"#c4b5fd"}}>{vm.step_desc}</span>}
+                    {vm.step_id && <span style={{padding:"0 6px",borderRadius:3,background:"rgba(139,92,246,0.18)",border:"1px solid rgba(139,92,246,0.5)",color:"#c4b5fd",fontWeight:700,fontSize:10,letterSpacing:0.3}}>{vm.step_id}</span>}
+                  </div>);})()}
+                {/* v8.8.15: INLINE_ prefix row 의 step_id/item_desc sub-label */}
+                {(row._param||"").startsWith("INLINE_") && (()=>{const im=inlineLookup(row._param);if(!im||(!im.step_id&&!im.item_desc))return null;return(
+                  <div style={{fontSize:10,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace",display:"flex",flexWrap:"wrap",alignItems:"center",gap:4}}>
+                    <span style={{color:"#10b981",fontWeight:700}}>🔬 INLINE</span>
+                    {im.item_desc && <span style={{color:"#6ee7b7"}}>{im.item_desc}</span>}
+                    {im.step_id && <span style={{padding:"0 6px",borderRadius:3,background:"rgba(16,185,129,0.18)",border:"1px solid rgba(16,185,129,0.5)",color:"#6ee7b7",fontWeight:700,fontSize:10,letterSpacing:0.3}}>{im.step_id}</span>}
+                  </div>);})()}
               </td>);})()}
               {data.headers?.map((_,ci)=>{
                 const cell=cells[String(ci)];const wid=String(data.headers[ci]??"").replace(/^#/,"");
@@ -1052,6 +1117,76 @@ export default function My_SplitTable({user}){
               style={{padding:"6px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>취소</button>
             <button onClick={saveSchemaEdit}
               style={{padding:"6px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>저장</button>
+          </div>
+        </div>
+      </div>
+    )}
+    {/* v8.8.15: Rulebook 행 CRUD modal — 제품 스코프 행 편집. 공용(product 빈값) 행은 여기서 건드리지 않음. */}
+    {rbRowKind && (
+      <div onClick={()=>!rbRowSaving&&setRbRowKind(null)}
+           style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:3000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div onClick={e=>e.stopPropagation()}
+             style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:10,padding:18,width:920,maxWidth:"96vw",maxHeight:"88vh",display:"flex",flexDirection:"column",color:"var(--text-primary)"}}>
+          <div style={{display:"flex",alignItems:"center",marginBottom:10,gap:8}}>
+            <div style={{fontSize:13,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>📘 Rulebook 편집 — {rbRowKind}</div>
+            <span style={{fontSize:10,padding:"2px 8px",borderRadius:10,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>product = {selProd}</span>
+            <span style={{fontSize:10,color:"var(--text-secondary)"}}>행 {rbRowRows.length}개</span>
+            <span style={{flex:1}}/>
+            <button onClick={rbAddRow} disabled={rbRowSaving}
+              style={{padding:"4px 12px",borderRadius:4,border:"1px solid #22c55e",background:"transparent",color:"#22c55e",fontSize:11,cursor:"pointer",fontWeight:600}}>+ 행 추가</button>
+            <span onClick={()=>!rbRowSaving&&setRbRowKind(null)} style={{cursor:rbRowSaving?"wait":"pointer",fontSize:16,marginLeft:4}}>✕</span>
+          </div>
+          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:8,lineHeight:1.5}}>
+            이 제품({selProd})의 행만 이 modal 에서 편집합니다. 저장 시 기존 해당 제품 행은 전체 교체되고, 다른 제품/공용 행은 보존됩니다.
+            필수 컬럼: <span style={{fontFamily:"monospace",color:"#f59e0b"}}>{(rbRowReq||[]).join(", ")}</span>
+          </div>
+          <div style={{flex:1,overflow:"auto",border:"1px solid var(--border)",borderRadius:4}}>
+            {rbRowRows.length===0 ? (
+              <div style={{padding:"30px 20px",textAlign:"center",fontSize:11,color:"var(--text-secondary)",fontStyle:"italic"}}>
+                이 제품에 등록된 행이 없습니다. 우측 상단 <b>+ 행 추가</b>로 시작하세요.
+              </div>
+            ) : (
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,fontFamily:"monospace"}}>
+                <thead style={{position:"sticky",top:0,background:"var(--bg-card)",zIndex:1}}>
+                  <tr>
+                    <th style={{padding:"6px 8px",textAlign:"left",borderBottom:"1px solid var(--border)",width:40,color:"var(--text-secondary)"}}>#</th>
+                    {(rbRowCols||[]).map(c=>(
+                      <th key={c} style={{padding:"6px 8px",textAlign:"left",borderBottom:"1px solid var(--border)",color:(rbRowReq||[]).includes(c)?"#f59e0b":"var(--text-secondary)",fontWeight:(rbRowReq||[]).includes(c)?700:500}}>
+                        {c}{(rbRowReq||[]).includes(c)&&" *"}{c==="product"&&" 🔒"}
+                      </th>
+                    ))}
+                    <th style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",width:50}}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rbRowRows.map((r,i)=>(
+                    <tr key={i} style={{borderBottom:"1px solid var(--border)"}}>
+                      <td style={{padding:"4px 8px",color:"var(--text-secondary)"}}>{i+1}</td>
+                      {(rbRowCols||[]).map(c=>(
+                        <td key={c} style={{padding:"2px 4px"}}>
+                          <input value={r[c]||""} disabled={c==="product"}
+                            onChange={e=>rbUpdateCell(i,c,e.target.value)}
+                            placeholder={(rbRowReq||[]).includes(c)?"필수":""}
+                            style={{width:"100%",padding:"4px 6px",borderRadius:3,border:`1px solid ${(rbRowReq||[]).includes(c)&&!r[c]?"#ef4444":"var(--border)"}`,background:c==="product"?"var(--bg-card)":"var(--bg-primary)",color:"var(--text-primary)",fontSize:10,fontFamily:"monospace"}}/>
+                        </td>
+                      ))}
+                      <td style={{padding:"2px 4px",textAlign:"center"}}>
+                        <button onClick={()=>rbDelRow(i)} title="행 삭제" disabled={rbRowSaving}
+                          style={{padding:"2px 8px",borderRadius:3,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",fontSize:10,cursor:"pointer"}}>🗑</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginTop:12}}>
+            <div style={{fontSize:9,color:"var(--text-secondary)"}}>* 필수 · 🔒 자동</div>
+            <span style={{flex:1}}/>
+            <button onClick={()=>!rbRowSaving&&setRbRowKind(null)} disabled={rbRowSaving}
+              style={{padding:"6px 14px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:rbRowSaving?"wait":"pointer"}}>취소</button>
+            <button onClick={rbSaveRows} disabled={rbRowSaving}
+              style={{padding:"6px 16px",borderRadius:4,border:"none",background:rbRowSaving?"var(--border)":"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:rbRowSaving?"wait":"pointer"}}>{rbRowSaving?"저장 중…":`저장 (${rbRowRows.length}행)`}</button>
           </div>
         </div>
       </div>

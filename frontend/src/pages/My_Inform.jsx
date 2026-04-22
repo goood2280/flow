@@ -1115,6 +1115,8 @@ export default function My_Inform({ user }) {
   const [msg, setMsg] = useState("");
 
   const [moduleFilter, setModuleFilter] = useState([]);  // 체크된 모듈만 표시 (빈 배열=전체)
+  // v8.8.15: 제품 필터 nav — 빈 배열 = 전체, 아니면 선택된 제품만 통과.
+  const [productFilter, setProductFilter] = useState([]);
   // v8.8.13: moduleFilter 기본 = 내 조회 권한 모든 모듈. admin 또는 all_rounder 이면 전체.
   //   myMods/constants 가 로딩되면 1회 자동 셋업. 이후엔 사용자 체크 토글이 우선.
   const [moduleFilterInit, setModuleFilterInit] = useState(false);
@@ -1309,6 +1311,11 @@ export default function My_Inform({ user }) {
     }
     if (form.attach_embed && form.embed && (form.embed.columns.length || form.embed.rows.length)) {
       body.embed_table = form.embed;
+    }
+    // v8.8.15: fab_lot_id 스냅샷 — 입력값이 fab_lot_id 포맷이면 그대로 전달. 아니면 서버가 root5 기준 resolve.
+    {
+      const isFabLot = lot.length > 5 || /[._\-/]/.test(lot);
+      if (isFabLot) body.fab_lot_id_at_save = lot;
     }
     sf(API, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1604,17 +1611,26 @@ export default function My_Inform({ user }) {
      v8.8.13: (1) '전체' 체크(= 내 권한 모든 모듈 on) 이면 패스스루 — module 없는 인폼도 모두 노출.
               (2) 부분 선택이면 체크된 모듈만. module 값이 없는/체크 외 모듈 인폼은 숨김. */
   const applyModFilter = (arr) => {
-    if (!moduleFilter || moduleFilter.length === 0) return arr;
-    const allowed = (myMods.all_rounder || isAdmin)
-      ? (constants.modules || [])
-      : (myMods.modules || []).filter(m => (constants.modules || []).includes(m));
-    const allSelected = allowed.length > 0 && allowed.every(m => moduleFilter.includes(m));
-    if (allSelected) return arr;
-    return arr.filter(x => {
-      const m = x.module || "";
-      if (!m) return false;
-      return moduleFilter.includes(m);
-    });
+    let out = arr;
+    // module filter
+    if (moduleFilter && moduleFilter.length > 0) {
+      const allowed = (myMods.all_rounder || isAdmin)
+        ? (constants.modules || [])
+        : (myMods.modules || []).filter(m => (constants.modules || []).includes(m));
+      const allSelected = allowed.length > 0 && allowed.every(m => moduleFilter.includes(m));
+      if (!allSelected) {
+        out = out.filter(x => {
+          const m = x.module || "";
+          if (!m) return false;
+          return moduleFilter.includes(m);
+        });
+      }
+    }
+    // v8.8.15: product filter — 빈 배열이면 패스스루, 아니면 product 값이 포함된 것만.
+    if (productFilter && productFilter.length > 0) {
+      out = out.filter(x => productFilter.includes(x.product || ""));
+    }
+    return out;
   };
 
   const del = (id) => {
@@ -2253,34 +2269,65 @@ export default function My_Inform({ user }) {
 
         {mode === "all" && (
           <>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>최근 인폼</div>
-              {/* v8.8.13: 모듈 필터 — 내가 가진 모듈 체크박스. 기본 모두 체크. */}
-              {(() => {
-                const allowed = (myMods.all_rounder || isAdmin) ? (constants.modules || []) : (myMods.modules || []).filter(m => (constants.modules || []).includes(m));
-                if (allowed.length === 0) return null;
-                const allOn = allowed.every(m => moduleFilter.includes(m));
-                return (
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "4px 8px", borderRadius: 6, background: "var(--bg-card)", border: "1px solid var(--border)" }}>
-                    <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 600 }}>모듈:</span>
-                    <label style={{ fontSize: 10, color: "var(--text-secondary)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 3 }}>
-                      <input type="checkbox" checked={allOn} onChange={() => setModuleFilter(allOn ? [] : [...allowed])} />
-                      전체
-                    </label>
-                    {allowed.map(m => {
-                      const on = moduleFilter.includes(m);
-                      const mc = moduleColor(m);
-                      return (
-                        <label key={m} style={{ fontSize: 10, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 3, padding: "1px 6px", borderRadius: 999, background: on ? mc + "22" : "transparent", color: on ? mc : "var(--text-secondary)", fontWeight: on ? 700 : 500, border: "1px solid " + (on ? mc + "55" : "var(--border)") }}>
-                          <input type="checkbox" checked={on} onChange={() => setModuleFilter(on ? moduleFilter.filter(x => x !== m) : [...moduleFilter, m])} />
-                          {m}
-                        </label>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
+              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                · {applyModFilter(rootsSorted).length}건
+                {(moduleFilter.length > 0 || productFilter.length > 0) && <span style={{ color: "var(--accent)", marginLeft: 4 }}>(필터됨)</span>}
+              </span>
+              {(moduleFilter.length > 0 || productFilter.length > 0) && (
+                <button onClick={() => { setModuleFilter([]); setProductFilter([]); }}
+                  style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 10, cursor: "pointer" }}>필터 초기화</button>
+              )}
             </div>
+            {/* v8.8.15: 모듈 nav 스타일 필터 — 토글 pill (checkbox 제거). */}
+            {(() => {
+              const allowed = (myMods.all_rounder || isAdmin) ? (constants.modules || []) : (myMods.modules || []).filter(m => (constants.modules || []).includes(m));
+              if (allowed.length === 0) return null;
+              const allOn = allowed.length > 0 && allowed.every(m => moduleFilter.includes(m));
+              return (
+                <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", padding: "6px 10px", borderRadius: 6, background: "var(--bg-card)", border: "1px solid var(--border)", marginBottom: 6 }}>
+                  <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 700, marginRight: 4 }}>📁 모듈</span>
+                  <button onClick={() => setModuleFilter(allOn ? [] : [...allowed])}
+                    style={{ padding: "2px 10px", borderRadius: 999, border: "1px solid " + (allOn ? "var(--accent)" : "var(--border)"), background: allOn ? "var(--accent)22" : "transparent", color: allOn ? "var(--accent)" : "var(--text-secondary)", fontSize: 10, fontWeight: allOn ? 700 : 500, cursor: "pointer" }}>
+                    전체
+                  </button>
+                  {allowed.map(m => {
+                    const on = moduleFilter.includes(m);
+                    const mc = moduleColor(m);
+                    return (
+                      <button key={m} onClick={() => setModuleFilter(on ? moduleFilter.filter(x => x !== m) : [...moduleFilter, m])}
+                        style={{ padding: "2px 10px", borderRadius: 999, border: "1px solid " + (on ? mc + "aa" : "var(--border)"), background: on ? mc + "22" : "transparent", color: on ? mc : "var(--text-secondary)", fontSize: 10, fontWeight: on ? 700 : 500, cursor: "pointer" }}>
+                        {m}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+            {/* v8.8.15: 제품 nav 스타일 필터 — 현재 목록에 등장한 제품만 pill 노출. */}
+            {(() => {
+              const presentProds = Array.from(new Set(rootsSorted.map(r => r.product || "").filter(Boolean))).sort();
+              if (presentProds.length === 0) return null;
+              return (
+                <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", padding: "6px 10px", borderRadius: 6, background: "var(--bg-card)", border: "1px solid var(--border)", marginBottom: 10 }}>
+                  <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 700, marginRight: 4 }}>📦 제품</span>
+                  <button onClick={() => setProductFilter([])}
+                    style={{ padding: "2px 10px", borderRadius: 999, border: "1px solid " + (productFilter.length === 0 ? "var(--accent)" : "var(--border)"), background: productFilter.length === 0 ? "var(--accent)22" : "transparent", color: productFilter.length === 0 ? "var(--accent)" : "var(--text-secondary)", fontSize: 10, fontWeight: productFilter.length === 0 ? 700 : 500, cursor: "pointer" }}>
+                    전체
+                  </button>
+                  {presentProds.map(p => {
+                    const on = productFilter.includes(p);
+                    return (
+                      <button key={p} onClick={() => setProductFilter(on ? productFilter.filter(x => x !== p) : [...productFilter, p])}
+                        style={{ padding: "2px 10px", borderRadius: 999, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)22" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)", fontSize: 10, fontWeight: on ? 700 : 500, cursor: "pointer", fontFamily: "monospace" }}>
+                        {p}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
             {applyModFilter(rootsSorted).length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>인폼 없음.</div>}
             {applyModFilter(rootsSorted).map(r => (
               <CompactRow key={r.id} root={r} onOpen={() => { setSelectedWafer(r.wafer_id); setMode("wafer"); }} />
@@ -2755,6 +2802,13 @@ function CompactRow({ root, onOpen }) {
           </span>
           {root.root_lot_id && root.lot_id && root.root_lot_id !== root.lot_id && (
             <span title="root_lot_id (앞 5자)" style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>root:{root.root_lot_id}</span>
+          )}
+          {/* v8.8.15: fab_lot_id 스냅샷 pill — 저장 시점의 실제 fab_lot_id. 이후 ML_TABLE 재빌드에도 불변. */}
+          {root.fab_lot_id_at_save && (
+            <span title={`저장 시점 fab_lot_id 스냅샷: ${root.fab_lot_id_at_save}`}
+              style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "rgba(34,197,94,0.12)", color: "#16a34a", border: "1px solid rgba(34,197,94,0.4)", fontFamily: "monospace", fontWeight: 700 }}>
+              🔗 {root.fab_lot_id_at_save}
+            </span>
           )}
           <div style={{ flex: 1 }} />
           <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{(root.created_at || "").replace("T", " ").slice(0, 16)}</span>

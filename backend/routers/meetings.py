@@ -818,6 +818,9 @@ class MinutesSave(BaseModel):
     mail_group_ids: Optional[List[str]] = None    # v8.7.7: mail_groups.json 의 그룹 id
     mail_to: Optional[List[str]] = None           # direct email list
     mail_subject: Optional[str] = ""
+    # v8.8.15: OT-lite — 클라이언트가 보고 있던 revision. 저장 시점 서버 rev 과 다르면 409.
+    #   FE 는 409 응답의 current_body/rev 로 머지하거나 user 에게 경고한 뒤 다시 저장.
+    base_rev: Optional[int] = None
 
 
 # ── permission helpers ─────────────────────────────────────────────
@@ -1282,6 +1285,20 @@ def save_minutes(req: MinutesSave, request: Request):
     sidx, s = _find_session(m, req.session_id)
     if sidx < 0:
         raise HTTPException(404, "session not found")
+    # v8.8.15: OT-lite revision check — 클라이언트 base_rev 이 서버 rev 과 다르면 conflict.
+    #   base_rev 가 None 이면 레거시/저장자 의도적 overwrite 로 간주하고 그대로 진행 (하위호환).
+    cur_rev = int(((s.get("minutes") or {}).get("rev")) or 0)
+    if req.base_rev is not None and int(req.base_rev) != cur_rev:
+        cur_min = s.get("minutes") or {}
+        raise HTTPException(status_code=409, detail={
+            "code": "minutes_rev_conflict",
+            "message": "다른 사용자가 회의록을 수정했습니다. 최신 내용을 불러와 재시도하세요.",
+            "server_rev": cur_rev,
+            "client_rev": int(req.base_rev or 0),
+            "current_body": cur_min.get("body") or "",
+            "current_author": cur_min.get("author") or "",
+            "current_updated_at": cur_min.get("updated_at") or "",
+        })
     now = _now()
     # v8.7.5: decisions 는 {id,text,due} 객체 list 로 유지. 기존 calendar 상태 보존.
     prev_dec = ((s.get("minutes") or {}).get("decisions")) or []
@@ -1353,6 +1370,8 @@ def save_minutes(req: MinutesSave, request: Request):
                 pass
     # v8.8.13: body_appendix 보존 (그룹 멤버가 공동으로 append 한 항목은 owner 저장 때도 유지).
     prev_appendix = ((s.get("minutes") or {}).get("body_appendix")) or []
+    # v8.8.15: rev counter 증분.
+    new_rev = cur_rev + 1
     s["minutes"] = {
         "body": (req.body or "").strip(),
         "decisions": decisions,
@@ -1360,6 +1379,7 @@ def save_minutes(req: MinutesSave, request: Request):
         "author": me["username"],
         "updated_at": now,
         "body_appendix": prev_appendix,
+        "rev": new_rev,
     }
     s["minutes"]["decisions"] = decisions
     s["minutes"]["action_items"] = merged
@@ -1398,11 +1418,13 @@ def save_minutes(req: MinutesSave, request: Request):
            tab="meetings")
 
     # v8.8.6: 동시편집 broadcast — 다른 subscribers 에게 변경 알림.
+    # v8.8.15: payload 에 rev 포함 → FE 가 자기 local rev 과 비교해 dirty 없으면 auto-refresh, 있으면 banner.
     _mtg_publish(m["id"], {
         "type": "minutes_saved",
         "meeting_id": m["id"], "session_id": s["id"],
         "author": me["username"], "at": now,
         "decisions": len(decisions), "actions": len(merged),
+        "rev": new_rev,
     })
 
     # v8.7.6: 저장 직후 메일 발송 (옵션). action_items.group_ids 멤버·직접 유저·그룹·이메일 병합.
@@ -1438,7 +1460,7 @@ def save_minutes(req: MinutesSave, request: Request):
                detail=f"meeting={m['id']} session={s['id']} ok={mail_result.get('ok')} n={len(to_addrs)}",
                tab="meetings")
 
-    return {"ok": True, "meeting": m, "session": s, "mail": mail_result, "calendar_sync": sync_result}
+    return {"ok": True, "meeting": m, "session": s, "mail": mail_result, "calendar_sync": sync_result, "rev": new_rev}
 
 
 # v8.8.13: 공동 본문 append ─────────────────────────────────────
@@ -1475,6 +1497,8 @@ def append_minutes(req: MinutesAppendReq, request: Request):
     if "decisions" not in minutes: minutes["decisions"] = []
     if "action_items" not in minutes: minutes["action_items"] = []
     minutes["updated_at"] = now
+    # v8.8.15: append 도 rev 증분 — body_appendix 변경 역시 동시편집자에게 중요 이벤트.
+    minutes["rev"] = int(minutes.get("rev") or 0) + 1
     s["minutes"] = minutes
     s["updated_at"] = now
     m["sessions"][sidx] = s
@@ -1488,6 +1512,7 @@ def append_minutes(req: MinutesAppendReq, request: Request):
         "type": "minutes_appended",
         "meeting_id": m["id"], "session_id": s["id"],
         "author": me["username"], "at": now, "append_id": entry["id"],
+        "rev": minutes["rev"],
     })
     return {"ok": True, "entry": entry, "session": s}
 
@@ -1515,6 +1540,7 @@ def delete_minutes_append(req: MinutesAppendDeleteReq, request: Request):
     appendix = [a for a in appendix if a.get("id") != req.append_id]
     minutes["body_appendix"] = appendix
     minutes["updated_at"] = _now()
+    minutes["rev"] = int(minutes.get("rev") or 0) + 1
     s["minutes"] = minutes
     s["updated_at"] = _now()
     m["sessions"][sidx] = s
@@ -1527,6 +1553,7 @@ def delete_minutes_append(req: MinutesAppendDeleteReq, request: Request):
         "type": "minutes_append_deleted",
         "meeting_id": m["id"], "session_id": s["id"],
         "by": me["username"], "append_id": req.append_id,
+        "rev": minutes["rev"],
     })
     return {"ok": True, "session": s}
 

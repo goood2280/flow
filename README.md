@@ -3,7 +3,7 @@
 > **Fab data analytics + plan vs actual 추적 플랫폼.**
 > 반도체 fab (특히 개발/pilot 단계) 공정 데이터를 single-user 데스크톱 환경에서 탐색·분석·공유하기 위한 웹 앱.
 
-현재 버전: **v8.8.14** (codename `flow`)
+현재 버전: **v8.8.15** (codename `flow`)
 
 ---
 

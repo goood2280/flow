@@ -304,6 +304,53 @@ class SplitChange(BaseModel):
     applied: bool = False
 
 
+# v8.8.15: 인폼 저장 시점의 fab_lot_id 를 ML_TABLE 에서 resolve.
+#   FE 가 명시적으로 보내지 않았을 때만 호출. splittable 의 /view 가 fab_lot_id 를 join 해 주는 로직을
+#   재구현하면 비용/결합이 크므로, 여기서는 ML_TABLE_<PRODUCT>.parquet 에서 lot_id==root_lot_id 인
+#   가장 최근 행의 fab_lot_id 하나만 싸게 조회 (실패해도 "" 반환).
+def _resolve_fab_lot_snapshot(product: str, lot_id: str, wafer_id: str) -> str:
+    try:
+        if not product or not (lot_id or wafer_id):
+            return ""
+        import polars as pl  # runtime optional
+        from core.roots import get_base_root as _get_base_root
+        base_dir = _get_base_root()
+        if not base_dir or not Path(base_dir).exists():
+            return ""
+        base_dir = Path(base_dir)
+        # product 는 "ML_TABLE_<X>" 형태이거나 순수 제품명일 수 있음.
+        stem = product if product.startswith("ML_TABLE_") else f"ML_TABLE_{product}"
+        candidates = [base_dir / f"{stem}.parquet", base_dir / f"{stem.upper()}.parquet"]
+        fp = next((c for c in candidates if c.exists()), None)
+        if not fp:
+            return ""
+        lf = pl.scan_parquet(fp)
+        names = set(lf.collect_schema().names()) if hasattr(lf, "collect_schema") else set(lf.schema.keys())
+        if "fab_lot_id" not in names:
+            return ""
+        # lot_id / wafer_id 컬럼 자동 감지 (간단 폴백)
+        lot_col = "root_lot_id" if "root_lot_id" in names else ("lot_id" if "lot_id" in names else None)
+        wf_col = "wafer_id" if "wafer_id" in names else None
+        if not lot_col and not wf_col:
+            return ""
+        key = (lot_id or "")[:5]
+        expr = None
+        if lot_col and key:
+            expr = pl.col(lot_col).cast(pl.Utf8).str.starts_with(key)
+        elif wf_col and wafer_id:
+            expr = pl.col(wf_col).cast(pl.Utf8) == str(wafer_id)
+        if expr is None:
+            return ""
+        # 최신 fab_lot_id 하나만 뽑기 (order-by 없이 임의의 첫 값 — 스냅샷 용도로 충분).
+        df = lf.filter(expr).select(pl.col("fab_lot_id").cast(pl.Utf8)).head(1).collect()
+        if df.height == 0:
+            return ""
+        v = df.item(0, 0)
+        return str(v or "").strip()
+    except Exception:
+        return ""
+
+
 class ImageRef(BaseModel):
     filename: str
     url: str
@@ -332,6 +379,9 @@ class InformCreate(BaseModel):
     # v8.7.9: deadline 필드 폐기. 호환을 위해 스키마에 남겨 두되 저장하지 않음.
     deadline: str = ""
     group_ids: List[str] = []  # v8.7.6: 그룹 가시성 필터. 비어 있으면 public (모듈 규칙만 적용)
+    # v8.8.15: 저장 시점의 fab_lot_id 스냅샷 — FE SplitTable 맥락에서 resolve 된 값.
+    #   이후 ML_TABLE 이 재빌드되어 fab_lot_id 매핑이 바뀌어도, 인폼이 가리키던 fab_lot_id 는 보존된다.
+    fab_lot_id_at_save: str = ""
 
 
 class ConfigReq(BaseModel):
@@ -871,6 +921,9 @@ def create_inform(req: InformCreate, request: Request):
         "auto_generated": False,
         # v8.7.9: deadline 필드 폐기 — 저장하지 않음.
         "group_ids": [str(g).strip() for g in (req.group_ids or []) if g and str(g).strip()],
+        # v8.8.15: fab_lot_id 스냅샷 — FE 가 SplitTable 맥락에서 resolve 해서 보내준 값.
+        #   없으면 BE 에서 resolve 시도 (product + lot_id 기준으로 ML_TABLE 의 최신 fab_lot_id 조회).
+        "fab_lot_id_at_save": (req.fab_lot_id_at_save or "").strip() or _resolve_fab_lot_snapshot(inherit_product, inherit_lot, wid),
     }
     items.append(entry)
     _save(items)

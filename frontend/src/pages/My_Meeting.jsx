@@ -371,6 +371,8 @@ export default function My_Meeting({ user }) {
       mail_group_ids: [],   // v8.7.7: 공용 메일 그룹 선택
       mail_to: "",
       mail_subject: "",
+      // v8.8.15: OT-lite — 편집 시작 시점의 서버 rev 스냅샷. 저장 때 base_rev 로 전송.
+      base_rev: Number(m.rev || 0),
     });
     setEditingMinutes(true);
   };
@@ -422,6 +424,8 @@ export default function My_Meeting({ user }) {
       mail_group_ids: minutesDraft.mail_group_ids || [],
       mail_to: mailTo,
       mail_subject: minutesDraft.mail_subject || "",
+      // v8.8.15: OT-lite — 편집 시작 시점의 rev 을 함께 전송. 서버 rev 과 다르면 409.
+      base_rev: Number(minutesDraft.base_rev || 0),
     }).then(r => {
       setEditingMinutes(false); setMinutesDraft(null); reload();
       // v8.7.9: surface calendar sync failure loudly — v8.7.8 silently swallowed it.
@@ -432,7 +436,30 @@ export default function My_Meeting({ user }) {
         if (r.mail.ok) alert(`메일 발송 완료${r.mail.dry_run ? " (dry-run)" : ""} · ${(r.mail.to || []).length}명`);
         else alert(`메일 발송 실패: ${r.mail.error || "unknown"}`);
       }
-    }).catch(e => alert(e.message || "저장 실패"));
+    }).catch(e => {
+      // v8.8.15: 409 conflict — 다른 사람이 먼저 저장. 서버 최신본 보여주고 병합 옵션 제공.
+      let detail = null;
+      try { detail = (e && e.detail) || (e && e.body && e.body.detail) || null; } catch {}
+      const msg = String(e?.message || e || "");
+      const isConflict = (e?.status === 409) || /409/.test(msg) || /minutes_rev_conflict/.test(msg);
+      if (isConflict) {
+        const cur = (detail && detail.current_body) || "";
+        const author = (detail && detail.current_author) || "다른 사용자";
+        const serverRev = (detail && detail.server_rev) || 0;
+        const keep = window.confirm(
+          `⚠ 동시편집 감지\n\n${author} 님이 먼저 저장했습니다 (rev ${serverRev}).\n\n[확인] = 내 편집을 유지하고 최신 rev 로 재시도 저장 (상대 변경 덮어쓰기)\n[취소] = 내 편집 취소하고 최신본 불러오기`
+        );
+        if (keep) {
+          // 최신 rev 으로 갱신 후 재시도
+          setMinutesDraft(d => d ? { ...d, base_rev: Number(serverRev) } : d);
+          alert("base_rev 을 최신으로 갱신했습니다. 다시 [저장] 버튼을 눌러주세요.");
+        } else {
+          setEditingMinutes(false); setMinutesDraft(null); reload();
+        }
+        return;
+      }
+      alert(msg || "저장 실패");
+    });
   };
 
   // v8.7.5: 결정사항 단위 달력 push/unpush
@@ -768,15 +795,22 @@ export default function My_Meeting({ user }) {
                 </div>
               </div>
 
-              {/* v8.8.6: 외부 저장 알림 배너 — 편집 중 다른 유저가 저장하면 표시. */}
+              {/* v8.8.6/v8.8.15: 외부 저장 알림 배너 — 편집 중 다른 유저가 저장하면 표시. rev 표시 + "유지하며 rebase" 옵션. */}
               {externalUpdate && editingMinutes && (
-                <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: "rgba(245,158,11,0.12)", border: "1px solid #f59e0b", display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: "rgba(245,158,11,0.12)", border: "1px solid #f59e0b", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span style={{ fontSize: 11, color: "#b45309", fontWeight: 700 }}>⚠ 동시편집 감지</span>
                   <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
                     {externalUpdate.author} 님이 방금 저장함 ({(externalUpdate.at || "").slice(11, 16)})
+                    {externalUpdate.rev !== undefined && <> · <span style={{ fontFamily: "monospace", color: "#b45309", fontWeight: 700 }}>rev {externalUpdate.rev}</span></>}
                     · 결정 {externalUpdate.decisions}개 · 액션 {externalUpdate.actions}개
                   </span>
                   <span style={{ flex: 1 }} />
+                  <button onClick={() => {
+                    // v8.8.15: 내 편집 유지한 채 base_rev 만 최신으로 rebase — 저장 시 정상 통과.
+                    setMinutesDraft(d => d ? { ...d, base_rev: Number(externalUpdate.rev || 0) } : d);
+                    setExternalUpdate(null);
+                  }} title="내 편집 유지 + 서버 rev 에만 맞춰 재동기화 (저장 시 상대 변경 덮어씀)"
+                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>내 편집 유지 · rebase</button>
                   <button onClick={() => { setExternalUpdate(null); reload(); setEditingMinutes(false); setMinutesDraft(null); }}
                     style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid #f59e0b", background: "#f59e0b", color: "#fff", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>외부 내용 불러오기</button>
                   <button onClick={() => setExternalUpdate(null)}
