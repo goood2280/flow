@@ -1,3 +1,18 @@
+## v8.8.17 — 2026-04-22
+
+데이터 보존 재설계 + SplitTable hive override 확장 + 인폼 CUSTOM only + FileBrowser 첫 클릭 head 200 + 공용 메일 헬퍼.
+
+- **setup.py 데이터 보존 재설계** — 추출 직전 `~/.fabcanvas_backups/v<ver>-<stamp>/` 에 data_root 전체 자동 스냅샷(shutil.copytree) + 추출 후 SHA-256 검증 + 변조 시 즉시 복구. `python setup.py restore [latest|<stamp>]` / `snapshots` / `snapshot` 수동 커맨드. L0 화이트리스트 가드(backend/frontend/docs/scripts/app.py/README/CHANGELOG/VERSION.json/requirements.txt 외 top-level 쓰기 금지). `_PROTECTED_BASENAMES` 에 paste_sets/prefix_config/history.jsonl/status.json/resource.jsonl/calendar.json/reformatter.json 추가. **원칙: 코드만 교체, holweb-data/ 는 절대 건드리지 않음.**
+- **SplitTable hive override 확장** — `_list_db_roots` Case1/Case3: db_root 자체가 `1.RAWDATA_DB*` 거나 그 아래에 parquet 제품 폴더만 있어도 인식. `_auto_derive_fab_source` 가 db_root 자체일 때 제품명만 반환(prefix 중복 방지). 이제 DB 루트를 `1.RAWDATA_DB`·`.../1.RAWDATA_DB_FAB`·상위 폴더 어느 쪽으로 지정해도 ML_TABLE_<PROD>→hive 매칭 + 최신 lot_id 오버라이드 동작.
+- **My_Inform scope CUSTOM only** — ALL/KNOB/MASK/INLINE/VM/FAB prefix chip + Saved CUSTOM 드롭다운 제거. 인라인 CUSTOM 빌더(SplitTable 과 동일 UX)만 노출. view fetch=prefix=ALL + FE 필터링. 미선택은 빈 프리뷰.
+- **FileBrowser 첫 클릭 head 200** — meta_only 기본 off. `loadBaseFileView/loadHiveView/loadRootPqView` 모두 첫 클릭에서 polars lazy head(200) 즉시 샘플 로드. JSON/MD 는 원문 반환. SQL/전체 SELECT 만 전체 스캔.
+- **인폼 메일 username=email** — `_resolve_users_to_emails` 가 users.csv.email 비면 username(이메일 포맷일 때) 자체로 폴백. admin/test 등 자동 제외. `/recipients` 에 effective_email 필드.
+- **사유별 메일 제목/본문 템플릿** — informs config 에 `reason_templates` 스키마. My_Inform PageGear 에 ReasonTemplatesPanel. 사유 선택 시 본문 자동 채움(confirm on non-empty), 발송 다이얼로그 초기값 템플릿 + `{product}{lot}{wafer}{module}{reason}` 변수 치환.
+- **공용 메일 헬퍼 backend/core/mail.py** — `send_mail(sender_username, receiver_usernames, title, content, files=None, ...)` 간단 인터페이스. admin_settings.mail 자동 참조 + username→email 해석 + multipart + dry-run + 표준 응답 dict.
+- **메일 API dep_ticket 필드** — admin_settings.mail.dep_ticket 단일 필드 → headers["x-dep-ticket"] 자동 반영. senderMailAddress/senderMailaddress 양키 주입.
+- **인폼 담당자 편집 간소화** — 아이디(username) + 역할 2필드만. 이메일/전화/메모 제거.
+- **문서 정리** — docs/FabCanvas_flow_intro.pptx · scripts/make_pptx.js 삭제.
+
 ## v8.8.15 — 2026-04-22
 
 이월 TODO 5건 완주 — Rulebook 행 CRUD · VM/INLINE sub-label · 인폼 nav 필터 · fab_lot_id 스냅샷 · 회의록 OT-lite.

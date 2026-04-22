@@ -482,20 +482,55 @@ def _list_db_roots():
     """사내/레거시 공통 DB 상위 폴더 후보 스캔. 반환 순서 = 우선순위.
     - FAB 힌트(이름에 'FAB' 포함) 이 먼저, 이후 INLINE/ET/EDS, 그 외.
     - 같은 우선군 안에서는 이름 오름차순.
+
+    v8.8.17: db_root 자체가 `1.RAWDATA_DB*` 또는 그 안에 `1.RAWDATA_DB*/` 가
+      없을 때도 작동하도록 확장.
+        1) db_base 가 바로 `1.RAWDATA_DB*` 디렉토리면 → [db_base]
+        2) db_base 아래에 `1.RAWDATA_DB*` 자식이 있으면 → 그 자식들 (기존 동작)
+        3) 위 둘 다 아니고 db_base 바로 아래에 제품 폴더(parquet 포함) 가 있으면
+           → [db_base] 자체를 rawdata 루트로 취급 (사용자가 rawdata 하위를 직접 지정한 경우).
     """
     db_base = _db_base()
     if not db_base.exists():
         return []
+    # Case 1: db_base itself is a 1.RAWDATA_DB* folder.
+    if _is_db_root_dir(db_base):
+        return [db_base]
+    # Case 2: children match
     cands = [p for p in db_base.iterdir() if _is_db_root_dir(p)]
-    def _rank(p):
-        up = p.name.upper()
-        if "FAB" in up: return 0
-        if "INLINE" in up: return 1
-        if "ET" in up: return 2
-        if "EDS" in up: return 3
-        return 4
-    cands.sort(key=lambda p: (_rank(p), p.name))
-    return cands
+    if cands:
+        def _rank(p):
+            up = p.name.upper()
+            if "FAB" in up: return 0
+            if "INLINE" in up: return 1
+            if "ET" in up: return 2
+            if "EDS" in up: return 3
+            return 4
+        cands.sort(key=lambda p: (_rank(p), p.name))
+        return cands
+    # Case 3: db_base has no 1.RAWDATA_DB* children, but has product-like subfolders
+    # (any subfolder that contains at least one parquet, possibly under hive date=* part).
+    try:
+        has_product = False
+        for sub in db_base.iterdir():
+            if not sub.is_dir():
+                continue
+            # Peek: is there any parquet under this subfolder (any depth ≤ 3)?
+            for depth in range(3):
+                pattern = "/".join(["*"] * depth) + ("/" if depth else "") + "*.parquet"
+                # fall back to simple rglob
+            found = False
+            for f in sub.rglob("*.parquet"):
+                found = True
+                break
+            if found:
+                has_product = True
+                break
+        if has_product:
+            return [db_base]
+    except Exception:
+        pass
+    return []
 
 
 @router.get("/fab-roots")
@@ -1438,6 +1473,8 @@ def _scan_fab_source(fab_source: str):
 
 # v8.8.3/v8.8.5: ML_TABLE_<PROD> → DB 상위폴더 자동 매칭.
 #   `_list_db_roots()` 에 위임 — 사내 `1.RAWDATA_DB*` 접두 폴더도 인식 (FAB 힌트 우선).
+# v8.8.17: root_dir 이 db_base 자체일 때(Case 1/3) 는 제품명만 반환 —
+#   `_scan_fab_source` 에서 `db_base / fab_source` 로 해석하므로 prefix 중복 방지.
 def _auto_derive_fab_source(product: str) -> str:
     """Return a fab_source path like "1.RAWDATA_DB_FAB/PRODA" (or legacy "FAB/PRODA") if auto-matchable, else "".
     ML_TABLE_ prefix 가 아니면 "" 반환 (오버라이드 off)."""
@@ -1447,9 +1484,17 @@ def _auto_derive_fab_source(product: str) -> str:
     pro = p[len("ML_TABLE_"):].strip()
     if not pro:
         return ""
+    db_base = _db_base()
     for root_dir in _list_db_roots():
         cand = root_dir / pro
         if cand.is_dir():
+            # If root_dir is db_base itself (Case 1/3), just the product name —
+            # else scan_fab_source would try db_base/db_base.name/pro (wrong).
+            try:
+                if root_dir.resolve() == db_base.resolve():
+                    return pro
+            except Exception:
+                pass
             return f"{root_dir.name}/{pro}"
     return ""
 
