@@ -38,9 +38,29 @@ export default function S3StatusLight({ compact = false }) {
   const downLabel = (COLORS[downKey] || COLORS.none).label;
   const upLabel = (COLORS[upKey] || COLORS.none).label;
 
-  // v8.8.3: 방향별 pill — 신호등(원) 안에 화살표(↓/↑) 를 새겨 한눈에 방향 파악.
-  // 원을 키워(14px) 화살표가 원 내부에 완전히 들어가도록, pill 옆 텍스트는 "다운"/"업".
-  const pill = (arrow, text, color, tip, isRed) => (
+  // v8.8.22: SVG 로 명시적 화살표 — 유니코드 폰트 의존성 제거.
+  //   direction="down" → 아래 화살표, "up" → 위 화살표. 흰색 stroke/fill 2.5px.
+  //   원 지름 18px, 화살표 바디 10px + 헤드, 선 굵기 2.5 → 배경 대비 확실히 보임.
+  const ArrowSvg = ({ direction }) => {
+    const isDown = direction === "down";
+    return (
+      <svg width="18" height="18" viewBox="0 0 18 18" style={{ display: "block" }}>
+        {isDown ? (
+          <g stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none">
+            <line x1="9" y1="3.5" x2="9" y2="13" />
+            <polyline points="4.5,9 9,13.5 13.5,9" />
+          </g>
+        ) : (
+          <g stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none">
+            <line x1="9" y1="14.5" x2="9" y2="5" />
+            <polyline points="4.5,9 9,4.5 13.5,9" />
+          </g>
+        )}
+      </svg>
+    );
+  };
+
+  const pill = (direction, text, color, tip, isRed) => (
     <span style={{
       display:"inline-flex", alignItems:"center", gap:4,
       padding:"2px 7px 2px 3px", borderRadius:12,
@@ -54,10 +74,7 @@ export default function S3StatusLight({ compact = false }) {
         display:"inline-flex", alignItems:"center", justifyContent:"center",
         ...(isRed?ringStyle:{}),
       }}>
-        <span style={{
-          fontSize: 13, lineHeight: 1, color: "#fff", fontWeight: 900,
-          fontFamily: "Arial, sans-serif", textShadow: "0 0 2px rgba(0,0,0,0.8)",
-        }}>{arrow}</span>
+        <ArrowSvg direction={direction} />
       </span>
       <span style={{fontSize:10, color, fontWeight:700, letterSpacing:"-0.02em"}}>{text}</span>
     </span>
@@ -68,8 +85,8 @@ export default function S3StatusLight({ compact = false }) {
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       title={c.label + (data?.message ? " — " + data.message : "")}>
       <style>{`@keyframes s3blink { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.45;transform:scale(0.85)} }`}</style>
-      {pill("↓", "다운", downColor, "다운로드(S3→로컬) — " + downLabel, downKey==="red")}
-      {pill("↑", "업", upColor, "업로드(로컬→S3) — " + upLabel, upKey==="red")}
+      {pill("down", "다운", downColor, "다운로드(S3→로컬) — " + downLabel, downKey==="red")}
+      {pill("up", "업", upColor, "업로드(로컬→S3) — " + upLabel, upKey==="red")}
       {!compact && (
         <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", fontWeight: 600 }}>
           {c.label}

@@ -1,3 +1,15 @@
+## v8.8.22 — 2026-04-22
+
+SplitTable/인폼 case-insensitive 매칭 + 메일 본문 SplitTable HTML 인라인 + 개별유저 picker 도메인 자동합성 + CUSTOM 15줄 확장 + S3 신호등 SVG 화살표 + Admin 권한 탭 재배치.
+
+- **SplitTable 제품/join key CI 매칭** — `_find_ci_child` / `_find_ci_path` 로 `ML_TABLE_PRODA` → `1.RAWDATA_DB/ProdA` / `proda` / `PRODA` 폴더 전부 매칭. `_ci_align_fab_to_main` 이 fab_lf 컬럼을 main casing 으로 rename → ML_TABLE 대문자(`ROOT_LOT_ID`/`WAFER_ID`) ↔ hive 소문자(`root_lot_id`/`wafer_id`) 조인 성공. "공통 join key 없음" 박멸. fab_col / ts_col / override_cols 전부 `_ci_resolve_in` / `_pick_first_present_ci` 로 CI.
+- **인폼 스냅샷/CUSTOM CI 동시 혜택** — `_scan_product` 1곳만 고쳐도 인폼이 호출하는 `/api/splittable/view` 도 자동으로 fab_lot_id/tkout_time 최신값을 조인해서 반환.
+- **인폼 메일 본문에 SplitTable HTML 인라인** — `_build_html_body(embed_table=…)` + `_render_embed_table_html` 신설. st_view(parameter×wafer 매트릭스) + legacy 2D 둘 다 스타일 `<table>` 로 렌더. plan 값은 `→` 오렌지 강조. 최대 60행(초과 시 경고 배너). `mail-preview` + `send-mail` 양쪽에서 `target.embed_table` 전달.
+- **개별유저 picker 빈 리스트 해결** — `/api/informs/recipients` 가 users.csv email 비어있고 username 에 '@' 없어도 `admin.mail.domain` 으로 `<un>@<domain>` 자동합성 → picker 에 전원 노출. admin/hol/test 필터는 유지, username 알파벳 정렬.
+- **CUSTOM 프리뷰 15줄+** — `EmbedTableView` maxHeight 320→460 (st_view + legacy 양쪽). 다수 컬럼 선택해도 스크롤 없이 비교 가능.
+- **S3 신호등 SVG 화살표** — 유니코드 대신 흰색 stroke 2.5px SVG 로 재구현(폰트/zoom 독립). 18×18 원 안에 선명, 다운↓/업↑ 방향 명확.
+- **Admin 권한 탭 재배치** — `ALL_TABS` 에서 `dashboard_chart` 제거 + 실제 nav 순서(filebrowser→dashboard→splittable→tracker→inform→meeting→calendar→tablemap→ml→devguide). `PAGE_IDS` 매트릭스도 동일 순서 + 향후 페이지(spc/ettime/wafer_map) → 공용(messages/groups) 순.
+
 ## v8.8.18 — 2026-04-22
 
 Admin 메일 API UI 간소화 + 메일 파일첨부 범용 + SplitTable 1.RAWDATA_DB exact match + Save Override feedback + psutil 기반 시스템 모니터 + 유휴 부하 정책.
