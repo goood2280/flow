@@ -1,21 +1,26 @@
-"""core/mail.py — v8.8.17 사내 메일 API 공통 헬퍼.
+"""core/mail.py — v8.8.24 사내 메일 API 공통 헬퍼.
 
 목적:
   - 인폼로그 / 회의관리 등 여러 라우터에서 공통으로 쓸 수 있는 간단 인터페이스.
   - admin_settings.json 의 `mail` 섹션(api_url/headers/from_addr/extra_data/status_code)
     을 자동 참조. 설정이 비어 있거나 enabled=False 이면 ok=False 로 조용히 fail.
 
-사내 메일 API 스펙 (기준):
+사내 메일 API 스펙 (v8.8.24 정합):
   POST <api_url>  (multipart/form-data)
-    data  = JSON string {
+    form field "mailSendString" = JSON string {
       "content":           <HTML body>,
       "receiverList":      [{"email": "...", "recipientType": "To", "seq": 1}, ...],
-      "senderMailaddress": <from>,
+      "senderMailAddress": <from>,
       "statusCode":        <status>,
       "title":             <subject>,
       ... admin.extra_data 병합 ...
     }
     files = 0..N 개의 바이너리 파트 (각 파트 name="files").
+
+  주의: v8.8.21~v8.8.23 에서는 form field 이름이 "data" 였고 그 값 안에
+  다시 {"mailSendString": "<json>"} 를 JSON 으로 감싸서 보냈다. 이는 잘못된
+  이중 래핑이라 서버가 mailSendString 을 못 찾는 문제가 있었다. v8.8.24 부터
+  `mailSendString` 이 **직접 top-level form field** 가 되도록 교정.
 
 사용법 (가장 흔한 1줄):
 
@@ -281,8 +286,11 @@ def send_mail(
 
     url = (cfg.get("api_url") or "").strip()
     headers = dict(cfg.get("headers") or {})
-    # v8.8.21: 사내 메일 API 규약 — data 필드 안에 `mailSendString` 키로 실제 payload 를
-    #   한 번 더 JSON 문자열로 감싸야 한다. 이전까지 flat 하게 보내던 구조를 교체.
+    # v8.8.24: 사내 메일 API 규약 정합 — `mailSendString` 은 multipart 의 **top-level
+    #   form field** 로 직접 보낸다 (값은 data_obj 를 JSON 직렬화한 문자열).
+    #   이전(v8.8.21~v8.8.23) 에는 form field 가 "data" 였고 그 안에 다시
+    #   {"mailSendString": "<json>"} 를 JSON 으로 감싸는 이중 래핑이었음 → 서버가
+    #   mailSendString 키를 최상위에서 찾지 못해 502. 여기서 교정.
     mail_send_string = _json.dumps(data_obj, ensure_ascii=False)
     if url.lower() == "dry-run":
         return {"ok": True, "status": 200, "to": emails, "skipped": skipped,
@@ -291,7 +299,7 @@ def send_mail(
                 "response": "",
                 "attachments": [{"name": f[0], "bytes": len(f[1])} for f in attach_list]}
 
-    fields = {"data": _json.dumps({"mailSendString": mail_send_string}, ensure_ascii=False)}
+    fields = {"mailSendString": mail_send_string}
     body_bytes, content_type = _encode_multipart(fields, attach_list)
     hdrs_out = {str(k): str(v) for k, v in headers.items()}
     hdrs_out["Content-Type"] = content_type

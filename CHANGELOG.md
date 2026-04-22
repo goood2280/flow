@@ -1,3 +1,10 @@
+## v8.8.24 — 2026-04-22
+
+메일 API `mailSendString` top-level form field 정합 — informs/meetings/core 공통 교정.
+
+- **메일 API multipart 구조 정합 (v8.8.21 이중 래핑 버그 수정)** — 사내 메일 API 규약은 `mailSendString` 을 multipart/form-data 의 **top-level form field** 로 직접 받는다 (값은 payload 를 JSON 직렬화한 문자열). v8.8.21~v8.8.23 구현은 form field 가 `data` 였고 그 값 안에 다시 `{"mailSendString":"<json>"}` 를 JSON 으로 감싸는 이중 래핑 → 서버가 key 를 최상위에서 못 찾아 502/누락. `backend/core/mail.py` + `backend/routers/informs.py` + `backend/routers/meetings.py` 세 경로 모두 `fields = {"mailSendString": json.dumps(data_obj)}` 로 교정.
+- **회의록 메일 sender 키 통일** — `_send_minutes_mail` 의 data_obj 가 `senderMailaddress`(legacy 소문자) 변형만 갖던 것을 `senderMailAddress`(camelCase) + legacy 소문자 양쪽 병행 주입으로 보강. core/mail.send_mail · informs.send_mail 과 필드 네이밍 통일.
+
 ## v8.8.23 — 2026-04-22
 
 SplitTable 오버라이드 컬럼 검색/필터 노출 + S3 신호등 화살표 자체 컬러 + 인폼 ML_TABLE CI 스냅샷 + 메일/이슈 그룹 = Admin 그룹 통합.

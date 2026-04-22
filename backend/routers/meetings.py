@@ -469,10 +469,13 @@ def _send_minutes_mail(meeting: dict, session: dict, *,
     if len(html_body.encode("utf-8")) > MAIL_CONTENT_MAX:
         return {"ok": False, "error": "메일 본문이 2MB 한도를 초과했습니다."}
     receiver_list = [{"email": em, "recipientType": "To", "seq": i + 1} for i, em in enumerate(uniq)]
+    _sender_addr = (cfg.get("from_addr") or "").strip()
     data_obj: Dict[str, Any] = {
         "content":           html_body,
         "receiverList":      receiver_list,
-        "senderMailaddress": (cfg.get("from_addr") or "").strip(),
+        # v8.8.24: camelCase 표준 + legacy 소문자 양쪽 주입 (core/mail.send_mail 과 통일).
+        "senderMailAddress": _sender_addr,
+        "senderMailaddress": _sender_addr,
         "statusCode":        (cfg.get("status_code") or "").strip(),
         "title":             subject or f"[flow 회의록] {meeting.get('title','')} · {session.get('idx','')}차",
     }
@@ -488,10 +491,16 @@ def _send_minutes_mail(meeting: dict, session: dict, *,
             if k:
                 headers[str(k)] = str(v)
     url = cfg.get("api_url").strip()
+    # v8.8.24: 사내 메일 API 규약 정합 — `mailSendString` 을 multipart top-level
+    #   form field 로 직접 전송. 이전에는 flat `data` 필드에 data_obj 를 그대로
+    #   보냈는데, 서버 스펙이 `mailSendString` 키를 요구해 회의록 메일이 누락되던
+    #   문제가 있었음 (informs 쪽은 v8.8.21 부터 래핑했지만 meetings 는 미적용).
+    mail_send_string = _json.dumps(data_obj, ensure_ascii=False)
     if url.lower() == "dry-run":
         return {"ok": True, "dry_run": True, "to": uniq,
-                "subject": data_obj["title"], "preview_data": data_obj}
-    fields = {"data": _json.dumps(data_obj, ensure_ascii=False)}
+                "subject": data_obj["title"], "preview_data": data_obj,
+                "preview_data_wrapped": {"mailSendString": mail_send_string}}
+    fields = {"mailSendString": mail_send_string}
     body_bytes, content_type = _encode_multipart(fields, [])
     hdrs_out = dict(headers); hdrs_out["Content-Type"] = content_type
     try:
