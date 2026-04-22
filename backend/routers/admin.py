@@ -557,15 +557,25 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
             pass
 
     # v8.7.2: 메일 API 설정 저장 — admin_settings.json.mail
+    # v8.8.17: `dep_ticket` 단일 필드 편의 — admin 이 헤더 dict 대신 티켓값 한 칸만 넣어도
+    #   headers["x-dep-ticket"] 에 자동으로 반영. 기존 headers 맵도 여전히 지원 (merge).
     if mail_in is not None:
         current = _load_admin_settings()
         mail_cur = dict(current.get("mail") or {})
-        for k in ("api_url", "from_addr", "status_code"):
+        for k in ("api_url", "from_addr", "status_code", "dep_ticket"):
             if mail_in.get(k) is not None:
                 mail_cur[k] = str(mail_in.get(k) or "").strip()
+        # headers merge + dep_ticket 자동 반영.
+        hdrs_out = dict(mail_cur.get("headers") or {})
         if mail_in.get("headers") is not None:
             hdrs = mail_in.get("headers") or {}
-            mail_cur["headers"] = {str(k): str(v) for k, v in hdrs.items() if k}
+            hdrs_out = {str(k): str(v) for k, v in hdrs.items() if k}
+        dt = str(mail_cur.get("dep_ticket") or "").strip()
+        if dt:
+            hdrs_out["x-dep-ticket"] = dt
+        elif "x-dep-ticket" in hdrs_out and mail_in.get("dep_ticket") == "":
+            hdrs_out.pop("x-dep-ticket", None)
+        mail_cur["headers"] = hdrs_out
         if mail_in.get("extra_data") is not None:
             ed = mail_in.get("extra_data") or {}
             mail_cur["extra_data"] = ed if isinstance(ed, dict) else {}

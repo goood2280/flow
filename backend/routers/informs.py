@@ -81,6 +81,8 @@ def _load_config() -> dict:
     reas = data.get("reasons")
     prods = data.get("products")
     raw_root = data.get("raw_db_root")
+    # v8.8.17: 사유별 메일 템플릿. schema: { "<reason>": {"subject": "...", "body": "..."} }
+    rt = data.get("reason_templates")
     if not isinstance(mods, list) or not mods:
         mods = list(DEFAULT_MODULES)
     if not isinstance(reas, list) or not reas:
@@ -89,7 +91,17 @@ def _load_config() -> dict:
         prods = []
     if not isinstance(raw_root, str):
         raw_root = ""
-    return {"modules": mods, "reasons": reas, "products": prods, "raw_db_root": raw_root}
+    if not isinstance(rt, dict):
+        rt = {}
+    # sanitize — drop entries where subject/body not str.
+    rt_clean = {}
+    for k, v in rt.items():
+        if isinstance(v, dict):
+            s = str(v.get("subject", "") or "")
+            b = str(v.get("body", "") or "")
+            rt_clean[str(k)] = {"subject": s, "body": b}
+    return {"modules": mods, "reasons": reas, "products": prods,
+            "raw_db_root": raw_root, "reason_templates": rt_clean}
 
 
 def _save_config(cfg: dict) -> None:
@@ -389,6 +401,8 @@ class ConfigReq(BaseModel):
     reasons: Optional[List[str]] = None
     products: Optional[List[str]] = None
     raw_db_root: Optional[str] = None
+    # v8.8.17: { "<reason>": {"subject": "...", "body": "..."} } — admin 만 편집.
+    reason_templates: Optional[dict] = None
 
 
 class ProductReq(BaseModel):
@@ -447,6 +461,18 @@ def save_config_endpoint(req: ConfigReq, _admin=Depends(require_admin)):
         cfg["products"] = [p.strip() for p in req.products if p and p.strip()]
     if req.raw_db_root is not None:
         cfg["raw_db_root"] = req.raw_db_root.strip()
+    # v8.8.17: 사유별 메일 템플릿 upsert. None = 변경 없음, {} = 전체 비움.
+    if req.reason_templates is not None:
+        rt_in = req.reason_templates or {}
+        rt_out = {}
+        if isinstance(rt_in, dict):
+            for k, v in rt_in.items():
+                if isinstance(v, dict):
+                    s = str(v.get("subject", "") or "")[:500]
+                    b = str(v.get("body", "") or "")[:10000]
+                    if s or b:
+                        rt_out[str(k)[:100]] = {"subject": s, "body": b}
+        cfg["reason_templates"] = rt_out
     # de-dup 유지 순서
     cfg["modules"] = list(dict.fromkeys(cfg["modules"]))
     cfg["reasons"] = list(dict.fromkeys(cfg["reasons"]))
@@ -1353,16 +1379,25 @@ def list_mail_groups(request: Request):
 
 @router.get("/recipients")
 def list_recipients(request: Request):
-    """모든 승인 유저 + email. 인폼 메일 수신자 선택용 (로그인 유저 누구나 조회)."""
+    """모든 승인 유저 + email. 인폼 메일 수신자 선택용 (로그인 유저 누구나 조회).
+
+    v8.8.17: username 이 곧 사내 email 인 케이스를 effective_email 로 보조 노출.
+      email 필드가 비어있어도 username 에 '@' 가 있으면 username 자체가 발송 대상.
+      admin/test 등 시스템 계정은 effective_email='' 로 노출되고 FE/BE 모두 발송에서 제외.
+    """
     _ = current_user(request)  # enforce login
     from routers.auth import read_users
     out = []
     for u in read_users():
         if u.get("status") != "approved":
             continue
+        un = u.get("username", "") or ""
+        em = (u.get("email", "") or "").strip()
+        eff = em if em and "@" in em else (un if ("@" in un and "." in un.split("@", 1)[1]) else "")
         out.append({
-            "username": u.get("username", ""),
-            "email": u.get("email", "") or "",
+            "username": un,
+            "email": em,
+            "effective_email": eff,
             "role": u.get("role", ""),
         })
     return {"recipients": out}
@@ -1513,15 +1548,28 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
 
 
 def _resolve_users_to_emails(usernames: List[str]) -> List[str]:
+    """v8.8.17: 사내 username 이 곧 사내 email 인 환경 대응.
+      우선순위:
+        1) users.csv 에 email 필드가 있고 '@' 가 포함되면 그 값.
+        2) username 자체가 '@' 를 포함하면 email 로 취급 (가입 시 사내 메일 입력 규약).
+        3) 둘 다 아니면 제외 (admin / test 등 시스템 계정 자동 스킵).
+    """
     if not usernames:
         return []
     from routers.auth import read_users
     all_users = {u.get("username", ""): u for u in read_users()}
     out = []
     for un in usernames:
-        u = all_users.get(un)
-        if u and u.get("email") and "@" in u.get("email", ""):
-            out.append(u["email"])
+        if not un:
+            continue
+        u = all_users.get(un) or {}
+        em = (u.get("email") or "").strip()
+        if em and "@" in em:
+            out.append(em)
+            continue
+        # username 자체가 이메일 포맷이면 그대로 사용.
+        if "@" in un and "." in un.split("@", 1)[1]:
+            out.append(un)
     return out
 
 

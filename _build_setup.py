@@ -11,6 +11,12 @@ VERSION.json, so bump that first.
 
 v8.8.3 — 데이터 보존 whitelist 명시화.
 v8.8.16 — 파일탐색기 S3 동기화 설정(data_root/s3_ingest/*) 누락 보완.
+v8.8.17 — **데이터 보존 재설계 (code-only replacement)**:
+  1) 추출 직전 data_root 전체를 외부 디렉토리(~/.fabcanvas_backups/)에 자동 스냅샷.
+  2) 추출 후 data_root 의 모든 파일 SHA-256 diff 검증 — 변경된 파일이 있으면
+     즉시 스냅샷에서 복구하고 loud 경고.
+  3) `python setup.py restore [latest|<timestamp>]` 커맨드로 수동 복구 가능.
+  4) _write 가드는 기존 5레이어 유지 + logging 강화.
   사용자 생성 데이터는 *절대* 번들에 포함되지 않으며, 기존 설치 위에
   setup.py 를 재실행해도 아래 경로/패턴은 덮어쓰기 되지 않습니다:
 
@@ -233,12 +239,15 @@ _PROTECTED_BASENAMES = {{
     # SplitTable / Dashboard / 인폼 state
     'notes.json', 'source_config.json', 'dashboard_snapshots.json',
     'dashboard_charts.json', 'rulebook_schema.json',
+    'paste_sets.json', 'prefix_config.json',
     # 회의/트래커/공지/이슈
     'meetings.json', 'events.json', 'notices.json', 'issues.json',
     'messages.json', 'inform_user_modules.json', 'page_admins.json',
     # S3 / 로그
-    's3_ingest_config.json', 's3_sync.json',
-    'activity.jsonl', 'downloads.jsonl',
+    's3_ingest_config.json', 's3_sync.json', 'history.jsonl', 'status.json',
+    'activity.jsonl', 'downloads.jsonl', 'resource.jsonl',
+    # v8.8.17 — 캘린더/대시보드 명시적 추가 (holweb-data 보존원칙 강화)
+    'calendar.json', 'reformatter.json',
 }}
 
 # v8.8.3 — 데이터 루트로 간주되는 세그먼트 (경로 어디에 있든 보호)
@@ -271,10 +280,19 @@ _PROTECTED_SEGMENTS = {{
 }}
 
 
+_ALLOWED_TOP_LEVEL = {{
+    'backend', 'frontend', 'docs', 'scripts',
+    'app.py', 'README.md', 'CHANGELOG.md', 'VERSION.json', 'requirements.txt',
+}}
+
+
 def _write(rel: str, gz_b64: str) -> None:
-    # v8.8.3: 사용자 데이터 보존 가드 — defense in depth.
+    # v8.8.3/v8.8.17: 사용자 데이터 보존 가드 — defense in depth.
     #
-    # 5개 레이어로 검증 (하나라도 match 하면 쓰기 skip):
+    # 원칙 (v8.8.17): setup.py 는 **코드만 교체하고 holweb-data/ 안의 어떤 파일도
+    # 건드리지 않는다**. FILES dict 는 backend/ frontend/ docs/ app.py 등 소스만 담아야 함.
+    # 6개 레이어로 검증 (하나라도 match 하면 쓰기 skip):
+    #   L0) top-level 세그먼트가 _ALLOWED_TOP_LEVEL 에 없으면 화이트리스트 위반 → skip
     #   L1) 경로 prefix 가 data/ 또는 holweb-data/ 이면 skip
     #   L2) 경로 세그먼트에 _PROTECTED_SEGMENTS 가 하나라도 있으면 skip
     #   L3) 파일명이 _PROTECTED_BASENAMES 에 있으면 skip
@@ -282,6 +300,10 @@ def _write(rel: str, gz_b64: str) -> None:
     #   L5) HOL_DATA_ROOT / FABCANVAS_{{DATA,DB,BASE,WAFER_MAP}}_ROOT 아래면 skip
     rel_posix = rel.replace("\\\\", "/").lstrip("./")
     parts = [p for p in rel_posix.split("/") if p]
+
+    # L0: 화이트리스트 — 허용 루트가 아니면 설치 대상 아님 (보수적 기본값).
+    if parts and parts[0] not in _ALLOWED_TOP_LEVEL:
+        return
 
     # L1
     for guard in ("data/", "holweb-data/"):
@@ -333,6 +355,219 @@ def _write(rel: str, gz_b64: str) -> None:
 
     footer = '''
 
+# ── v8.8.17: 데이터 보존 — 스냅샷 + 검증 + 복구 ────────────────────────────
+import hashlib as _hashlib
+import shutil as _shutil
+import time as _time
+from datetime import datetime as _dt
+
+
+def _resolve_data_roots() -> list:
+    """보호 대상 루트 디렉토리 목록 (존재하는 것만). HOL_DATA_ROOT /
+    FABCANVAS_DATA_ROOT 환경변수가 있으면 그쪽을, 없으면 ROOT/data 전체."""
+    roots = []
+    for env_key in ("HOL_DATA_ROOT", "FABCANVAS_DATA_ROOT"):
+        v = os.environ.get(env_key)
+        if v:
+            p = Path(v).resolve()
+            if p.is_dir() and p not in roots:
+                roots.append(p)
+    for sub in ("data", "data/holweb-data", "data/Base", "data/DB", "data/Fab"):
+        p = (ROOT / sub).resolve()
+        if p.is_dir() and p not in roots:
+            roots.append(p)
+    # dedupe — drop any path that is a descendant of another root.
+    uniq = []
+    for p in sorted(roots, key=lambda x: len(str(x))):
+        if not any(str(p).startswith(str(u) + os.sep) for u in uniq):
+            uniq.append(p)
+    return uniq
+
+
+def _backups_dir() -> Path:
+    """외부 백업 디렉토리 — ~/.fabcanvas_backups/ (repo 외부)."""
+    home = Path(os.path.expanduser("~"))
+    d = home / ".fabcanvas_backups"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _file_hashes(root: Path) -> dict:
+    """root 아래 모든 파일의 SHA-256 해시 맵. 상대경로 key."""
+    out = {}
+    if not root.is_dir():
+        return out
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        # skip huge files (>100MB) — read-mostly sources, we'll trust by mtime+size.
+        try:
+            sz = p.stat().st_size
+        except Exception:
+            continue
+        rel = str(p.relative_to(root)).replace(os.sep, "/")
+        if sz > 100 * 1024 * 1024:
+            out[rel] = f"__size={sz}__mtime={int(p.stat().st_mtime)}"
+            continue
+        h = _hashlib.sha256()
+        try:
+            with open(p, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            out[rel] = h.hexdigest()
+        except Exception:
+            out[rel] = "__unreadable__"
+    return out
+
+
+def _snapshot_data() -> Path | None:
+    """추출 직전 data_root 스냅샷. 반환: 스냅샷 디렉토리 경로 (없으면 None)."""
+    roots = _resolve_data_roots()
+    if not roots:
+        print("[snapshot] no data roots found - skipping")
+        return None
+    stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+    snap = _backups_dir() / f"v{VERSION}-{stamp}"
+    snap.mkdir(parents=True, exist_ok=True)
+    manifest = {"version": VERSION, "created_at": stamp, "roots": {}}
+    total_files = 0
+    total_bytes = 0
+    for root in roots:
+        tag = root.name or "root"
+        # disambiguate identical basenames
+        dest = snap / tag
+        i = 1
+        while dest.exists():
+            dest = snap / f"{tag}__{i}"
+            i += 1
+        try:
+            _shutil.copytree(str(root), str(dest),
+                              ignore=_shutil.ignore_patterns("__pycache__", "*.pyc"))
+            manifest["roots"][str(root)] = str(dest.relative_to(snap))
+            for p in dest.rglob("*"):
+                if p.is_file():
+                    total_files += 1
+                    try:
+                        total_bytes += p.stat().st_size
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[snapshot] WARN copy failed {root}: {e}")
+    (snap / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    mb = total_bytes / (1024 * 1024)
+    print(f"[snapshot] {total_files} files, {mb:.1f} MB -> {snap}")
+    return snap
+
+
+def _verify_and_restore(snap: Path | None) -> None:
+    """추출 후 data_root 가 스냅샷과 동일한지 확인. 변경된 파일이 있으면
+    스냅샷에서 즉시 복구 + loud 경고."""
+    if snap is None or not snap.is_dir():
+        return
+    manifest_path = snap / "manifest.json"
+    if not manifest_path.is_file():
+        return
+    try:
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+    except Exception:
+        return
+    bad = []
+    for original_root_str, snap_sub in (manifest.get("roots") or {}).items():
+        orig = Path(original_root_str)
+        snap_root = snap / snap_sub
+        if not snap_root.is_dir():
+            continue
+        # Spot-check: any file that existed in snapshot but is MISSING or DIFFERENT now.
+        snap_hashes = _file_hashes(snap_root)
+        now_hashes = _file_hashes(orig)
+        for rel, h_snap in snap_hashes.items():
+            h_now = now_hashes.get(rel)
+            if h_now is None:
+                bad.append((orig, rel, "MISSING"))
+            elif h_now != h_snap:
+                bad.append((orig, rel, "MODIFIED"))
+    if not bad:
+        print(f"[verify] data integrity OK ({len(manifest.get('roots') or {})} roots)")
+        return
+    # Restore
+    print(f"[verify] !!! {len(bad)} protected files changed — restoring from {snap}")
+    for orig, rel, reason in bad:
+        # locate in snap
+        for sub in (manifest.get("roots") or {}).values():
+            src = snap / sub / rel
+            if src.is_file():
+                dst = orig / rel
+                try:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    _shutil.copy2(str(src), str(dst))
+                    print(f"  [restore] {reason}: {rel}")
+                except Exception as e:
+                    print(f"  [restore] FAIL {rel}: {e}")
+                break
+    print(f"[verify] restored {len(bad)} files from snapshot")
+
+
+def restore(argv: list = None) -> int:
+    """수동 복구: `python setup.py restore [latest|<timestamp>]`."""
+    argv = argv or []
+    want = (argv[0] if argv else "latest").strip()
+    bdir = _backups_dir()
+    snaps = sorted([p for p in bdir.iterdir() if p.is_dir()], key=lambda p: p.name)
+    if not snaps:
+        print(f"[restore] no snapshots in {bdir}")
+        return 1
+    chosen = None
+    if want == "latest":
+        chosen = snaps[-1]
+    else:
+        for p in snaps:
+            if want in p.name:
+                chosen = p
+                break
+    if chosen is None:
+        print(f"[restore] no match for '{want}'. Available:")
+        for p in snaps[-10:]:
+            print(f"  - {p.name}")
+        return 1
+    mf_path = chosen / "manifest.json"
+    if not mf_path.is_file():
+        print(f"[restore] manifest missing in {chosen}")
+        return 1
+    manifest = json.loads(mf_path.read_text("utf-8"))
+    restored = 0
+    for original_root_str, snap_sub in (manifest.get("roots") or {}).items():
+        orig = Path(original_root_str)
+        snap_root = chosen / snap_sub
+        if not snap_root.is_dir():
+            continue
+        orig.mkdir(parents=True, exist_ok=True)
+        for src in snap_root.rglob("*"):
+            if not src.is_file():
+                continue
+            rel = src.relative_to(snap_root)
+            dst = orig / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _shutil.copy2(str(src), str(dst))
+            restored += 1
+    print(f"[restore] {restored} files restored from {chosen}")
+    return 0
+
+
+def list_snapshots(argv: list = None) -> int:
+    bdir = _backups_dir()
+    snaps = sorted([p for p in bdir.iterdir() if p.is_dir()], key=lambda p: p.name)
+    if not snaps:
+        print(f"[snapshots] (none) at {bdir}")
+        return 0
+    print(f"[snapshots] {bdir}:")
+    for p in snaps[-20:]:
+        sz = sum(f.stat().st_size for f in p.rglob('*') if f.is_file()) / (1024*1024)
+        n = sum(1 for f in p.rglob('*') if f.is_file())
+        print(f"  {p.name}  ({n} files, {sz:.1f} MB)")
+    return 0
+
+
 def _run(cmd: str, cwd: Path, check: bool = False) -> int:
     print(f"\\n$ ({cwd.name}) {cmd}")
     try:
@@ -369,6 +604,15 @@ def _ensure_critical_deps() -> None:
 
 
 def extract() -> int:
+    # v8.8.17: 추출 직전 data_root 스냅샷 (~/.fabcanvas_backups/v<ver>-<stamp>/).
+    # 스냅샷 실패/없음이면 snap=None 으로 계속 진행 — 신규 설치는 보호할 게 없음.
+    snap = None
+    if os.environ.get("FABCANVAS_SKIP_SNAPSHOT") != "1":
+        try:
+            snap = _snapshot_data()
+        except Exception as e:
+            print(f"[snapshot] WARN failed: {e}")
+
     skipped = 0
     written = 0
     for rel, payload in FILES.items():
@@ -389,9 +633,15 @@ def extract() -> int:
         (ROOT / sub).mkdir(parents=True, exist_ok=True)
     # v8.8.2: extract 단독 실행에도 openpyxl 같은 필수 dep 는 자동으로 채워넣음.
     _ensure_critical_deps()
+    # v8.8.17: 추출 후 data 변조 검증 — 변조된 파일은 즉시 스냅샷에서 복구.
+    try:
+        _verify_and_restore(snap)
+    except Exception as e:
+        print(f"[verify] WARN failed: {e}")
     print(f"\\n[extract] flow v{VERSION} - {len(FILES)} files processed -> {ROOT}")
-    print(f"[extract] user data preservation: data/holweb-data, data/Base, data/DB, "
-          f"HOL_DATA_ROOT, FABCANVAS_*_ROOT  (see _write guard)")
+    print(f"[extract] user data preservation: snapshot @ ~/.fabcanvas_backups/ + "
+          f"5-layer _write guard + post-extract SHA-256 verify/restore.")
+    print(f"[extract] manual restore: python setup.py restore [latest|<timestamp>]")
     return 0
 
 
@@ -444,6 +694,10 @@ COMMANDS = {
     'version':        print_version,
     'sync-version':   sync_version_json,
     'all':            all_steps,
+    # v8.8.17
+    'restore':        restore,
+    'snapshots':      list_snapshots,
+    'snapshot':       lambda: (_snapshot_data() and 0) or 0,
 }
 
 
@@ -459,6 +713,9 @@ def main(argv):
     if not fn:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         return 2
+    # restore takes extra args
+    if cmd == 'restore':
+        return restore(argv[1:])
     return fn()
 
 

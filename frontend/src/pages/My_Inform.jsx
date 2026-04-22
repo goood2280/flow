@@ -3,7 +3,7 @@
  * 보안: auth 미들웨어 + 세션 토큰 그대로. sf() 가 X-Session-Token 자동 주입.
  * 삭제 정책: 작성자 본인만 (관리자도 불가) — 서버에서도 동일하게 강제됨.
  */
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { sf, authSrc, postJson } from "../lib/api";
 import PageGear from "../components/PageGear";
 
@@ -574,17 +574,29 @@ function DeadlineBadge({ deadline, onChange, canEdit }) {
 }
 
 /* 루트 인폼 머리에 붙는 상태 패널 (flow 진행 + 이력) */
-function MailDialog({ root, user, onClose }) {
+function MailDialog({ root, user, reasonTemplates, onClose }) {
   // v8.7.2: 인폼 → 사내 메일 API 로 HTML 본문 전송 (multipart).
   // v8.8.3: 공용 메일그룹(/api/mail-groups/list) 도 함께 노출 — 만들어진 그룹이 드롭다운에 안 뜨던 문제 해결.
   //          + 새 그룹 관리 서브 모달(z-index 10001 로 메일 다이얼로그 위에 올라오게).
+  // v8.8.17: 사유별 메일 템플릿 prefill — subject/body 초기값에 치환.
   const [recipients, setRecipients] = useState([]);
   const [groups, setGroups] = useState({});          // {groupName: [emails]}
   const [publicGroups, setPublicGroups] = useState([]); // v8.8.3: 공용 메일 그룹 목록 [{id,name,members,extra_emails}]
   const [pickedUsers, setPickedUsers] = useState([]);   // usernames
   const [pickedGroups, setPickedGroups] = useState([]); // group names
-  const [subject, setSubject] = useState(`[flow 인폼] ${root.module || ""} · ${root.lot_id || root.wafer_id || ""}`.trim());
-  const [body, setBody] = useState("");
+  const _tpl = (reasonTemplates || {})[root.reason || ""] || {};
+  const _subst = (s) => (s || "")
+    .replaceAll("{product}", root.product || "")
+    .replaceAll("{lot}", root.lot_id || "")
+    .replaceAll("{wafer}", root.wafer_id || "")
+    .replaceAll("{module}", root.module || "")
+    .replaceAll("{reason}", root.reason || "");
+  const _defSubject = _tpl.subject
+    ? _subst(_tpl.subject)
+    : `[flow 인폼] ${root.module || ""} · ${root.lot_id || root.wafer_id || ""}`.trim();
+  const _defBody = _tpl.body ? _subst(_tpl.body) : "";
+  const [subject, setSubject] = useState(_defSubject);
+  const [body, setBody] = useState(_defBody);
   const [statusCode, setStatusCode] = useState("");
   const [includeThread, setIncludeThread] = useState(true);
   const [extraEmails, setExtraEmails] = useState("");
@@ -1084,7 +1096,7 @@ function LotModuleSummary({ thread, modules }) {
 /* ── 메인 페이지 ── */
 export default function My_Inform({ user }) {
   // v8.8.1: 설정에 products(카탈로그) + raw_db_root 추가.
-  const [constants, setConstants] = useState({ modules: [], reasons: [], flow_statuses: [], products: [], raw_db_root: "" });
+  const [constants, setConstants] = useState({ modules: [], reasons: [], flow_statuses: [], products: [], raw_db_root: "", reason_templates: {} });
   // v8.8.1: 선택 제품의 Lot 후보 (RAWDATA_DB 에서 폴더 스캔).
   const [productLots, setProductLots] = useState({ product: "", lots: [], source: "" });
   const [mode, setMode] = useState("all");           // all | mine | product | lot | wafer
@@ -1145,6 +1157,7 @@ export default function My_Inform({ user }) {
     sf(API + "/config").then(d => setConstants({
       modules: d.modules || [], reasons: d.reasons || [], flow_statuses: d.flow_statuses || [],
       products: d.products || [], raw_db_root: d.raw_db_root || "",
+      reason_templates: d.reason_templates || {},
     })).catch(() => {
       sf(API + "/modules").then(d => setConstants(c => ({ ...c,
         modules: d.modules || [], reasons: d.reasons || [], flow_statuses: d.flow_statuses || [],
@@ -1448,18 +1461,9 @@ export default function My_Inform({ user }) {
       params.set("root_lot_id", root5);
       if (isFabLot) params.set("fab_lot_id", lot);
       params.set("view_mode", "all");
-      // v8.8.16: inline CUSTOM cols (저장 없이 임시로 고른 컬럼들) 이 있으면
-      //   splittable /view 엔드포인트에 그대로 전달할 수 있는 방법이 없으므로,
-      //   임시 custom 이름(`__inline__`) 으로 저장 후 custom_name 으로 참조.
-      //   여기서는 서버에 저장하지 않고 그냥 ALL 로 받아와서 FE 에서 column filter 하는 방식으로 처리.
-      if (embedCustomName) {
-        params.set("custom_name", embedCustomName);
-      } else if (embedCustomCols.length > 0) {
-        // ALL 프리셋으로 받아오되, FE 에서 filter — 서버 부담이 크면 TODO: inline custom 지원.
-        params.set("prefix", "ALL");
-      } else {
-        params.set("prefix", embedPrefix || "ALL");
-      }
+      // v8.8.17: 인폼 scope 는 CUSTOM 전용 — 항상 ALL 로 서버에서 받아온 뒤
+      //   FE 에서 embedCustomCols 로 필터링한다. prefix chip / saved CUSTOM 제거.
+      params.set("prefix", "ALL");
       sf(`/api/splittable/view?${params.toString()}`)
         .then(d => {
           if (!d || !d.rows || d.rows.length === 0) {
@@ -1473,14 +1477,17 @@ export default function My_Inform({ user }) {
           // 병행해서 legacy 2D (columns/rows) 도 유지 — 구버전 렌더러 호환.
           const headers = d.headers || [];
           const cols = ["parameter", ...headers];
-          // v8.8.16: inline CUSTOM cols 가 있으면 FE 에서 해당 row 만 선별 (파라미터 이름 기준).
+          // v8.8.17: CUSTOM 모드 전용 — embedCustomCols 로 row 필터 + 빈 열 생성.
+          //   컬럼 미선택이면 빈 상태 (row=0) 로 두어 사용자가 컬럼을 고르게 유도.
           let rowsAll = d.rows || [];
-          if (!embedCustomName && embedCustomCols.length > 0) {
+          if (embedCustomCols.length > 0) {
             const keep = new Set(embedCustomCols);
             const filtered = rowsAll.filter(r => keep.has(r._param));
-            // 저장된 순서 유지 + 비어있는 행은 서버에서 못 올라온 컬럼이므로 생성.
             const byParam = new Map(filtered.map(r => [r._param, r]));
             rowsAll = embedCustomCols.map(p => byParam.get(p) || { _param: p, _cells: {} });
+          } else {
+            // 미선택 — 비어있는 프리뷰 보여서 컬럼 선택을 유도.
+            rowsAll = [];
           }
           const rows = rowsAll.map(r => {
             const out = [r._param || ""];
@@ -1492,11 +1499,9 @@ export default function My_Inform({ user }) {
             });
             return out;
           });
-          const scopeLabel = embedCustomName
-            ? `CUSTOM:${embedCustomName}`
-            : (embedCustomCols.length > 0
-                ? `CUSTOM:inline(${embedCustomCols.length})`
-                : (embedPrefix || "ALL"));
+          const scopeLabel = embedCustomCols.length > 0
+            ? `CUSTOM(${embedCustomCols.length})`
+            : "CUSTOM(미선택)";
           const lotLabel = isFabLot ? `fab_lot=${lot}` : `root_lot=${lot}`;
           setForm(f => ({
             ...f, attach_embed: true,
@@ -1510,8 +1515,7 @@ export default function My_Inform({ user }) {
                 wafer_fab_list: d.wafer_fab_list || [],
                 header_groups: d.header_groups || [],
               },
-              st_scope: { prefix: embedPrefix || "", custom_name: embedCustomName || "",
-                          inline_cols: embedCustomName ? [] : embedCustomCols },
+              st_scope: { prefix: "", custom_name: "", inline_cols: embedCustomCols },
             },
           }));
           setEmbedFetching(false);
@@ -1520,7 +1524,7 @@ export default function My_Inform({ user }) {
     }, 400);
     return () => { clearTimeout(handle); setEmbedFetching(false); };
     // v8.8.16: snapshotTick 변경 시에도 재fetch — 사용자가 Search 버튼으로 명시적 갱신.
-  }, [form.product, form.lot_id, creating, embedPrefix, embedCustomName, embedCustomCols, snapshotTick]);
+  }, [form.product, form.lot_id, creating, embedCustomCols, snapshotTick]);
 
   // v8.8.10: SplitTable 의 lot-candidates 로 root_lot_id + fab_lot_id 후보 fetch → Lot 드롭다운 소스.
   //   기존 /product-lots (RAWDATA_DB 폴더 스캔) 은 사내 실환경에서 빈 결과 자주 발생 → SplitTable 기반 primary.
@@ -1815,6 +1819,19 @@ export default function My_Inform({ user }) {
         )}
         {/* v8.8.13: admin 전용 — 유저별 인폼 모듈 조회 권한 편집. */}
         {isAdmin && <UserModulePermsPanel allModules={constants.modules || []} />}
+        {/* v8.8.17: admin 전용 — 사유별 메일 제목/본문 템플릿 편집. */}
+        {isAdmin && (
+          <ReasonTemplatesPanel
+            reasons={constants.reasons || []}
+            templates={constants.reason_templates || {}}
+            onSave={(rt) => {
+              sf(API + "/config", { method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ reason_templates: rt }) })
+                .then(d => setConstants(c => ({ ...c, reason_templates: (d.config && d.config.reason_templates) || rt })))
+                .catch(e => alert("저장 실패: " + e.message));
+            }}
+          />
+        )}
       </PageGear>
       {/* Sidebar */}
       <div style={{ width: 340, minWidth: 300, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
@@ -2130,12 +2147,11 @@ export default function My_Inform({ user }) {
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, fontFamily: "monospace" }}>
               {editContact.id ? "✏ 담당자 수정" : "+ 담당자 추가"} <span style={{ color: "var(--accent)" }}>· {editContact.product}</span>
             </div>
+            {/* v8.8.17: 아이디(username=email) + 역할 2필드로 간소화.
+                  이메일/전화/메모 제거 — username 이 곧 사내 메일이므로 이메일 컬럼 불필요. */}
             {[
-              ["name", "이름 (필수)"],
+              ["name", "아이디 (필수 · 사내 email id)"],
               ["role", "역할 (예: PIE, 측정)"],
-              ["email", "이메일"],
-              ["phone", "전화"],
-              ["note", "메모"],
             ].map(([k, ph]) => (
               <input key={k} placeholder={ph}
                 value={editContact[k] || ""}
@@ -2234,7 +2250,18 @@ export default function My_Inform({ user }) {
                 style={{ padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }}>
                 <option value="">-- 모듈 --</option>{constants.modules.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
-              <select value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })}
+              <select value={form.reason} onChange={e => {
+                  // v8.8.17: 사유 선택 시 해당 사유의 메일 템플릿을 본문/제목에 자동 채움.
+                  //   사용자가 이미 입력한 text 가 있으면 덮어쓰지 않음 (confirm).
+                  const nr = e.target.value;
+                  const tpl = (constants.reason_templates || {})[nr];
+                  const empty = !(form.text || "").trim();
+                  if (tpl && tpl.body && (empty || window.confirm(`'${nr}' 사유의 기본 본문 템플릿으로 교체할까요? (현재 입력 내용은 사라집니다)`))) {
+                    setForm({ ...form, reason: nr, text: tpl.body, mail_subject_tpl: tpl.subject || "" });
+                  } else {
+                    setForm({ ...form, reason: nr, mail_subject_tpl: (tpl && tpl.subject) || form.mail_subject_tpl || "" });
+                  }
+                }}
                 style={{ padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }}>
                 <option value="">-- 사유 --</option>{constants.reasons.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
@@ -2244,35 +2271,20 @@ export default function My_Inform({ user }) {
               onPaste={handleBodyPaste}
               placeholder="인폼 내용 (배경, 영향, 조치 요청 등) — Ctrl+V 로 이미지도 바로 붙여넣을 수 있어요"
               style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, resize: "vertical", boxSizing: "border-box", lineHeight: 1.5 }} />
-            {/* v8.8.11/v8.8.16: 스냅샷 scope 선택 — prefix chip + CUSTOM set 드롭다운 + 인라인 CUSTOM 빌더.
-                   Search 버튼으로 스냅샷 수동 갱신 (자동 재fetch 가 실패했거나 갱신이 안될 때 명시적 트리거). */}
+            {/* v8.8.17: 인폼 등록 SplitTable scope 는 CUSTOM only.
+                   - prefix chip(ALL/KNOB/MASK/INLINE/VM/FAB) + Saved CUSTOM 드롭다운 모두 제거.
+                   - 인라인 CUSTOM 빌더만 노출 — SplitTable 의 CUSTOM UX 와 동일 동작.
+                   - Search 버튼으로 스냅샷 수동 갱신. */}
             <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 10 }}>
-              <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>SplitTable scope:</span>
-              {["ALL", "KNOB", "MASK", "INLINE", "VM", "FAB"].map(p => {
-                const active = !embedCustomName && embedCustomCols.length === 0 && embedPrefix === p;
-                return (
-                  <span key={p} onClick={() => { setEmbedCustomName(""); setEmbedCustomCols([]); setEmbedPrefix(p); }}
-                    style={{ padding: "2px 8px", borderRadius: 999, cursor: "pointer", fontWeight: active ? 700 : 500,
-                             background: active ? "var(--accent)" : "var(--bg-card)",
-                             color: active ? "#fff" : "var(--text-primary)",
-                             border: "1px solid " + (active ? "var(--accent)" : "var(--border)") }}>{p}</span>
-                );
-              })}
-              <span style={{ color: "var(--text-secondary)", marginLeft: 6 }}>Saved CUSTOM:</span>
-              <select value={embedCustomName} onChange={e => {
-                  setEmbedCustomName(e.target.value);
-                  if (e.target.value) { setEmbedPrefix(""); setEmbedCustomCols([]); }
-                }}
-                style={{ padding: "2px 6px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, fontFamily: "monospace" }}>
-                <option value="">— 없음 —</option>
-                {customsList.map(c => <option key={c.name} value={c.name}>{c.name} ({(c.columns||[]).length}col)</option>)}
-              </select>
+              <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>
+                SplitTable 컬럼 선택 <span style={{ fontWeight: 400, color: "var(--text-tertiary, var(--text-secondary))" }}>(CUSTOM 모드 전용)</span>
+              </span>
               <button type="button" onClick={() => setEmbedCustomOpen(!embedCustomOpen)}
                 style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: embedCustomOpen ? "var(--accent-glow)" : "var(--bg-card)", color: embedCustomOpen ? "var(--accent)" : "var(--text-primary)", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
-                {embedCustomOpen ? "▼" : "▶"} 인라인 CUSTOM{embedCustomCols.length > 0 ? ` (${embedCustomCols.length})` : ""}
+                {embedCustomOpen ? "▼" : "▶"} 컬럼 편집{embedCustomCols.length > 0 ? ` · ${embedCustomCols.length}개 선택` : " · 미선택"}
               </button>
               <button type="button" onClick={() => setSnapshotTick(x => x + 1)}
-                title="스냅샷 재조회 — scope/lot 변경 없이도 서버에서 다시 가져옴"
+                title="스냅샷 재조회 — lot/컬럼 변경 없이도 서버에서 다시 가져옴"
                 style={{ padding: "2px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
                 🔎 Search
               </button>
@@ -2318,7 +2330,7 @@ export default function My_Inform({ user }) {
                         const on = embedCustomCols.includes(c);
                         return (<div key={c} onClick={() => {
                             if (on) setEmbedCustomCols(embedCustomCols.filter(x => x !== c));
-                            else { setEmbedCustomCols([...embedCustomCols, c]); setEmbedCustomName(""); setEmbedPrefix(""); }
+                            else setEmbedCustomCols([...embedCustomCols, c]);
                           }}
                           style={{ padding: "2px 6px", cursor: "pointer", color: on ? "var(--accent)" : "var(--text-secondary)", fontFamily: "monospace" }}>
                           {on ? "✓ " : "  "}{c}
@@ -2766,6 +2778,76 @@ function TimelineLog({ thread, onOpen }) {
 /* v8.8.13: admin 전용 — 유저별 인폼 모듈 조회 권한 편집 패널.
    PageGear 인폼 설정 하단에 표시. 체크가 하나도 없으면 "아무 모듈도 조회 못함",
    체크 해제 전 기본 상태(설정 없음)는 groups 기반으로 fallback. */
+/* v8.8.17: ReasonTemplatesPanel — admin 이 사유별로 메일 제목 + 본문 템플릿을 편집.
+   PageGear 안에서 사유 목록을 순회하며 제목/본문 2필드를 보여준다.
+   저장은 단건이 아니라 템플릿 맵 전체를 일괄 PATCH 로 POST /api/informs/config. */
+function ReasonTemplatesPanel({ reasons, templates, onSave }) {
+  const [draft, setDraft] = React.useState(() => ({ ...(templates || {}) }));
+  const [open, setOpen] = React.useState(false);
+  const [active, setActive] = React.useState("");
+  React.useEffect(() => { setDraft({ ...(templates || {}) }); }, [templates]);
+  const setField = (reason, field, v) => {
+    setDraft(d => ({ ...d, [reason]: { ...(d[reason] || { subject: "", body: "" }), [field]: v } }));
+  };
+  if (!open) {
+    const count = Object.values(draft || {}).filter(v => v && (v.subject || v.body)).length;
+    return (
+      <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
+        <button onClick={() => setOpen(true)}
+          style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
+          ✉ 사유별 메일 템플릿 편집 ({count}/{(reasons || []).length})
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
+      <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6 }}>
+        사유 선택 시 자동으로 채워지는 메일 제목/본문 템플릿. 저장 후 등록 폼에서 사유를 고르면 적용됩니다.
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+        {(reasons || []).map(r => {
+          const has = draft[r] && (draft[r].subject || draft[r].body);
+          return (
+            <span key={r} onClick={() => setActive(r)}
+              style={{ padding: "3px 8px", borderRadius: 999, cursor: "pointer", fontSize: 11,
+                background: active === r ? "var(--accent)" : (has ? "var(--accent-glow)" : "var(--bg-card)"),
+                color: active === r ? "#fff" : (has ? "var(--accent)" : "var(--text-primary)"),
+                border: "1px solid " + (active === r ? "var(--accent)" : "var(--border)") }}>
+              {has ? "● " : ""}{r}
+            </span>
+          );
+        })}
+      </div>
+      {active && (
+        <div style={{ padding: 8, border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg-card)" }}>
+          <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 2 }}>제목 템플릿</div>
+          <input value={(draft[active] || {}).subject || ""}
+            onChange={e => setField(active, "subject", e.target.value)}
+            placeholder="[인폼·장비이상] {product} · {lot}"
+            style={{ width: "100%", padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, boxSizing: "border-box", marginBottom: 6 }} />
+          <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 2 }}>본문 템플릿</div>
+          <textarea value={(draft[active] || {}).body || ""}
+            onChange={e => setField(active, "body", e.target.value)}
+            placeholder="배경:&#10;영향:&#10;조치 요청:"
+            rows={6}
+            style={{ width: "100%", padding: 6, borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, boxSizing: "border-box", fontFamily: "inherit", lineHeight: 1.4 }} />
+          <div style={{ fontSize: 9, color: "var(--text-secondary)", marginTop: 4 }}>
+            변수 참고: <code>{"{product}"}</code> <code>{"{lot}"}</code> <code>{"{module}"}</code> <code>{"{reason}"}</code> — 현재 폼에 자동 치환.
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+        <button onClick={() => onSave(draft)}
+          style={{ padding: "5px 12px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>저장</button>
+        <button onClick={() => setOpen(false)}
+          style={{ padding: "5px 12px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer" }}>닫기</button>
+      </div>
+    </div>
+  );
+}
+
+
 function UserModulePermsPanel({ allModules }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);

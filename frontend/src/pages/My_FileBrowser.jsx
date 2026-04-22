@@ -166,12 +166,14 @@ export default function My_FileBrowser({user}){
   },[scope]); // eslint-disable-line
 
   // v4.1: Base-file preview loader (parquet/csv/json/md).
-  // v8.8.16: 기본은 meta_only=1 — 클릭 즉시 스키마만 받아오고 실제 행 조회는
-  //   사용자가 SQL 실행 / 컬럼 SELECT 적용할 때로 이연. `full=true` 면 데이터까지.
+  // v8.8.17: 첫 클릭에서 head 200 rows 즉시 로드 (meta_only 기본 off).
+  //   Base 파일(JSON/md/CSV 소형)은 원본 그대로 반환되고, parquet 는
+  //   polars lazy head(200) 로 빠르게 수집. 헤비 연산(full SQL / 전체 SELECT)
+  //   만 "실행" 버튼으로 트리거. `full=true` 는 explicit 전체 스캔.
   const loadBaseFileView=(file,{full=false}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
-    const params={file,rows:200,cols:10};if(!full)params.meta_only=1;
+    const params={file,rows:200,cols:10};
     const url=buildUrl(API+"/base-file-view",params);
     sf(url).then(d=>{
       if(d.kind==="json"||d.kind==="md"){
@@ -200,13 +202,12 @@ export default function My_FileBrowser({user}){
     return base+"?"+q;
   };
 
-  // v8.8.16: 첫 클릭은 meta_only — 스키마만 받아 즉시 렌더. SQL/SELECT 적용 시에만 행 조회.
+  // v8.8.17: 첫 클릭에 head 200 rows 즉시 로드 (meta_only off).
+  //   SQL/SELECT 를 실제로 적용할 때만 full=true 로 전체 스캔.
   const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=false}={})=>{
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
     const sc=selColsOverride||selectedCols;
     const params={root,product:prod,sql:sqlQ||"",rows:200,select_cols:sc.length?sc.join(","):""};
-    const needData=full||(sqlQ&&sqlQ.trim())||sc.length;
-    if(!needData)params.meta_only=1;
     const url=buildUrl(API+"/view",params);
     sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
@@ -215,8 +216,6 @@ export default function My_FileBrowser({user}){
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
     const sc=selColsOverride||selectedCols;
     const params={file,sql:sqlQ||"",rows:200,cols:10,select_cols:sc.length?sc.join(","):""};
-    const needData=full||(sqlQ&&sqlQ.trim())||sc.length;
-    if(!needData)params.meta_only=1;
     const url=buildUrl(API+"/root-parquet-view",params);
     sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
