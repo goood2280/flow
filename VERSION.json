@@ -1,7 +1,21 @@
 {
-  "version": "8.8.19",
+  "version": "8.8.21",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.21",
+      "date": "2026-04-22",
+      "title": "SplitTable root:~~ 제거 · 인폼 메일 mailSendString 래핑 + 자동 xlsx 첨부 + 실시간 미리보기 · psutil /proc 폴백 · Admin 페이지 권한 매트릭스 (유저\u00d7페이지) · S3 신호등 화살표 확대",
+      "tag": "feat",
+      "changes": [
+        "**SplitTable fab_source `root:~~` 옵션 제거** — 제품 스코프를 넘어 데이터가 섞이던 footgun 제거. `_scan_fab_source` / `_scan_product` / `_resolve_override_meta` 모두 `root:` prefix 저장값을 무시하고 auto-derive 경로로 회귀. 저장 시점에 `_migrate_legacy_root_prefix` 로 기존 레거시 값도 청소. FE SplitTable fab_source 드롭다운에서 `[DB 루트]` 옵션 완전 제거, 첫 항목을 `(자동 매칭)` 로 교체. canonical layout: `/config/work/sharedworkspace/DB/1.RAWDATA_DB/<PROD>/`.",
+        "**인폼 메일 API mailSendString 래핑** — 사내 메일 API 규약 수정. `core/mail.send_mail` + `routers/informs.send_mail` 둘 다 multipart `data` 필드에 `{\"mailSendString\": \"<json string>\"}` 로 한 번 더 감싸 POST. dry-run 응답에 `payload_wrapped` / `preview_data_wrapped` 추가로 FE/Admin 미리보기 검증 가능.",
+        "**인폼 메일 다이얼로그 대수술** — (a) 개별 파일 첨부 UI 완전 제거. (b) 인폼 스냅샷 xlsx 자동 생성 + 첨부(`_build_inform_snapshot_xlsx` — 제품/lot/wafer/splittable_change/body 를 openpyxl 로 렌더). (c) 신규 `GET /api/informs/{id}/mail-preview` 엔드포인트 — 실제 발송될 HTML body + 제품담당자 라인 + 자동 첨부 목록 반환. FE MailDialog 가 body 입력에 debounced 바인딩 → 실시간 미리보기 패널에 최종 HTML + 수신자 + 자동 xlsx 크기 표시. (d) 유저 picker: BE 가 `admin`/`hol`/`test`/비-email 계정을 선제 필터 (`_is_blocked_contact`) → FE 는 `(no email)` 표시 제거하고 username 만 노출.",
+        "**sysmon /proc + statvfs 폴백** — psutil 미설치 사내 서버도 CPU/Mem/Disk 측정되도록 `_read_proc_cpu_percent` (`/proc/stat` 2회 차), `_read_proc_meminfo` (`MemAvailable`/`MemTotal`), `_read_proc_disk` (`os.statvfs`) 폴백 추가. `_collect_stats` 가 psutil 없을 때 자동으로 이 경로로 떨어지며 `source: \"proc_fallback\"` 필드 포함. `/api/system/stats`, `/api/monitor/system` 응답 동일 포맷 유지.",
+        "**Admin 페이지 권한 매트릭스 재설계** — 행=유저 / 열=페이지 매트릭스로 transpose. admin 역할 + `admin`/`hol` username 은 모든 페이지 자동 체크 + disabled 로 '수정 불가' 명시. 체크박스 토글 시 즉시 `/api/admin/page-admins` POST.",
+        "**S3 신호등 화살표 확대** — 원 18px / 화살표 13px Arial bold + textShadow 강화. ↓다운 / ↑업 방향이 원 내부에서 확실히 보이게."
+      ]
+    },
     {
       "version": "8.8.19",
       "date": "2026-04-22",

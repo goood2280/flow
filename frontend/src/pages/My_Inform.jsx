@@ -608,6 +608,16 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
   const [showMgr, setShowMgr] = useState(false);  // v8.8.3: 공용 메일 그룹 관리 서브모달
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupEmails, setNewGroupEmails] = useState("");
+  // v8.8.21: 실시간 메일 프리뷰 — body 바뀔 때마다 debounce 후 fetch.
+  const [preview, setPreview] = useState(null);
+  useEffect(() => {
+    if (!root?.id) return;
+    const h = setTimeout(() => {
+      sf(API + "/" + encodeURIComponent(root.id) + "/mail-preview?body=" + encodeURIComponent(body || ""))
+        .then(d => setPreview(d)).catch(() => setPreview(null));
+    }, 250);
+    return () => clearTimeout(h);
+  }, [root?.id, body]);
 
   const reloadGroups = () => {
     sf(API + "/mail-groups").then(d => setGroups(d.groups || {})).catch(() => setGroups({}));
@@ -652,7 +662,9 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
   const computedEmails = () => {
     const out = new Set();
     pickedUsers.forEach(un => {
-      const em = recipients.find(r => r.username === un)?.email;
+      // v8.8.21: username 자체가 email id 인 경우 effective_email 로 해결.
+      const r = recipients.find(r => r.username === un);
+      const em = (r?.effective_email) || r?.email;
       if (em && em.includes("@")) out.add(em);
     });
     // v8.8.3: admin 그룹 + 공용 그룹 모두 지원.
@@ -802,16 +814,15 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
             <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="🔎 유저/이메일 검색" style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, width: 200 }} />
           </div>
           <div style={{ maxHeight: 140, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)" }}>
-            {visibleList.length === 0 && <div style={{ padding: 14, textAlign: "center", fontSize: 11, color: "var(--text-secondary)" }}>유저가 없습니다. Admin → 사용자 탭에서 email 을 설정해야 합니다.</div>}
+            {visibleList.length === 0 && <div style={{ padding: 14, textAlign: "center", fontSize: 11, color: "var(--text-secondary)" }}>유저가 없습니다.</div>}
+            {/* v8.8.21: BE 가 이미 admin/hol/test/비email 계정을 필터링해서 내려주므로 FE 는 그대로 표시.
+                 username = 사내 email id 이므로 별도 email 컬럼 노출 불필요. */}
             {visibleList.map(r => {
               const on = pickedUsers.includes(r.username);
-              const hasEmail = !!(r.email && r.email.includes("@"));
               return (
-                <div key={r.username} onClick={() => hasEmail && toggleUser(r.username)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 11, cursor: hasEmail ? "pointer" : "not-allowed", background: on ? "rgba(59,130,246,0.12)" : "transparent", opacity: hasEmail ? 1 : 0.5, borderBottom: "1px solid var(--border)" }}>
-                  <input type="checkbox" checked={on} disabled={!hasEmail} readOnly />
-                  <span style={{ fontWeight: 600, minWidth: 100 }}>{r.username}</span>
-                  <span style={{ fontFamily: "monospace", color: hasEmail ? "var(--text-secondary)" : "#ef4444", flex: 1 }}>{r.email || "(no email)"}</span>
-                  {r.role === "admin" && <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "rgba(239,68,68,0.15)", color: "#ef4444", fontWeight: 700 }}>ADMIN</span>}
+                <div key={r.username} onClick={() => toggleUser(r.username)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 11, cursor: "pointer", background: on ? "rgba(59,130,246,0.12)" : "transparent", borderBottom: "1px solid var(--border)" }}>
+                  <input type="checkbox" checked={on} readOnly />
+                  <span style={{ fontWeight: 600 }}>{r.username}</span>
                 </div>
               );
             })}
@@ -831,7 +842,25 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
         <div style={{ marginBottom: 8 }}>
           <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>본문 프로즈 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(HTML content 상단에 강조 삽입, 생략 가능)</span></div>
           <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} style={{ ...S, resize: "vertical" }} />
+          {preview?.owners_line && (
+            <div style={{ marginTop: 4, fontSize: 10, color: "#16a34a", background: "rgba(16,163,74,0.08)", border: "1px solid #16a34a", borderRadius: 4, padding: "4px 8px" }}>
+              📌 자동 삽입: <b>제품담당자</b> : {preview.owners_line}
+            </div>
+          )}
         </div>
+        {/* v8.8.21: 실시간 미리보기 — 실제 보낼 HTML body, 수신자, 담당자 라인을 한눈에. */}
+        {preview?.html_body && (
+          <details style={{ marginBottom: 10, border: "1px solid var(--border)", borderRadius: 5, padding: "4px 10px", background: "var(--bg-card)" }} open>
+            <summary style={{ fontSize: 11, fontWeight: 600, cursor: "pointer", color: "var(--accent)" }}>
+              🔍 메일 미리보기 · 제목 [{subject}] · 수신자 {totalEmails}명
+            </summary>
+            <div style={{ marginTop: 6, fontSize: 10, color: "var(--text-secondary)", marginBottom: 4, fontFamily: "monospace" }}>
+              To: {computedEmails().slice(0, 8).join(", ")}{computedEmails().length > 8 ? ` (+${computedEmails().length - 8}명)` : ""}
+            </div>
+            <div style={{ maxHeight: 320, overflow: "auto", background: "#fff", color: "#000", padding: 8, border: "1px solid var(--border)", borderRadius: 4 }}
+                 dangerouslySetInnerHTML={{ __html: preview.html_body }} />
+          </details>
+        )}
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>
           <input type="checkbox" checked={includeThread} onChange={e => setIncludeThread(e.target.checked)} />
           전체 스레드(답글 포함) HTML 로 첨부
@@ -853,58 +882,19 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
           </div>
         </div>}
 
-        {/* v8.8.18: 임의 파일 첨부 — xlsx/pptx/pdf/doc 등 자유 선택. BE 업로드 → URL 을 attachments 에 push. */}
-        <div style={{ marginBottom: 10, padding: 10, border: "1px dashed var(--border)", borderRadius: 5 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
-            <span>📁 파일 첨부 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(파일 종류 무관 · 개별 10MB · 총합 10MB · .exe 등 실행파일 제외)</span></span>
-            <label style={{ marginLeft: "auto", padding: "3px 10px", borderRadius: 4, border: "1px solid var(--accent)", color: "var(--accent)", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
-              + 파일 선택
-              <input type="file" multiple style={{ display: "none" }}
-                onChange={async (e) => {
-                  const files = Array.from(e.target.files || []);
-                  e.target.value = "";
-                  for (const f of files) {
-                    if (!f) continue;
-                    if (f.size > 10 * 1024 * 1024) { setError(`'${f.name}' 10MB 초과`); continue; }
-                    try {
-                      const fd = new FormData();
-                      fd.append("file", f, f.name);
-                      const r = await fetch("/api/informs/upload-attachment", {
-                        method: "POST",
-                        headers: { "X-Session-Token": (JSON.parse(localStorage.getItem("hol_user") || "{}")).token || "" },
-                        body: fd,
-                      });
-                      if (!r.ok) { setError(`업로드 실패 ${r.status}`); continue; }
-                      const d = await r.json();
-                      if (d && d.url) setAttachments(a => a.includes(d.url) ? a : [...a, d.url]);
-                    } catch (err) { setError("업로드 오류: " + (err?.message || err)); }
-                  }
-                }} />
-            </label>
+        {/* v8.8.21: 직접 파일첨부 UI 제거 → 인폼 스냅샷 xlsx 자동 첨부로 대체.
+             인폼에 담긴 제품/lot/wafer + splittable_change + body 를 SplitTable 엑셀 형식으로
+             BE 가 렌더 → 메일 files 에 자동 포함 된다. 인라인 이미지 첨부는 그대로 유지. */}
+        {preview?.auto_attachments?.length > 0 && (
+          <div style={{ marginBottom: 10, padding: 8, borderRadius: 5, background: "rgba(16,185,129,0.08)", border: "1px solid #10b981" }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#10b981" }}>📎 자동 첨부 (SplitTable 스냅샷 xlsx)</div>
+            {preview.auto_attachments.map((a, i) => (
+              <div key={i} style={{ fontSize: 10, fontFamily: "monospace", color: "var(--text-secondary)", marginTop: 2 }}>
+                · {a.name} ({Math.round((a.bytes || 0) / 1024)} KB)
+              </div>
+            ))}
           </div>
-          {attachments.length === 0 && (
-            <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>아직 선택된 파일이 없습니다.</div>
-          )}
-          {attachments.length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-              {attachments.map((u) => {
-                const fname = (u.split("/").pop() || u).slice(0, 40);
-                const isInline = inlineImages.some(im => im.url === u);
-                return (
-                  <span key={u} style={{
-                    padding: "3px 8px", borderRadius: 4, fontSize: 10,
-                    background: "rgba(16,185,129,0.1)", color: "#10b981",
-                    border: "1px solid #10b981", display: "inline-flex", alignItems: "center", gap: 4,
-                  }}>
-                    {isInline ? "🖼" : "📄"} {fname}
-                    <span onClick={() => setAttachments(a => a.filter(x => x !== u))}
-                      style={{ cursor: "pointer", color: "#ef4444", fontWeight: 700 }}>×</span>
-                  </span>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        )}
 
         {error && <div style={{ padding: "6px 10px", background: "rgba(239,68,68,0.1)", color: "#ef4444", border: "1px solid #ef4444", borderRadius: 4, fontSize: 11, marginBottom: 8 }}>⚠ {error}</div>}
         {sent && <div style={{ padding: "6px 10px", background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid #10b981", borderRadius: 4, fontSize: 11, marginBottom: 8 }}>✔ 전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}

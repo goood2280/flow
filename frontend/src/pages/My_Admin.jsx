@@ -335,7 +335,9 @@ function PageAdminsPanel({users}){
   const [busy,setBusy]=useState(false);
   const reload=()=>sf("/api/admin/page-admins").then(d=>setPa(d.page_admins||{})).catch(e=>setMsg("로드 오류: "+e.message));
   useEffect(reload,[]);
-  const approved=(users||[]).filter(u=>u.status==="approved"&&u.role!=="admin");
+  // v8.8.21: 행=유저 / 열=페이지 매트릭스. admin 유저는 자동 전체 허용 (체크 disabled).
+  const approved=(users||[]).filter(u=>u.status==="approved");
+  const isFullAdmin=(u)=>u.role==="admin" || ["admin","hol"].includes((u.username||"").toLowerCase());
   const toggle=(pageId,username)=>{
     const cur=new Set(pa[pageId]||[]);
     if(cur.has(username))cur.delete(username);else cur.add(username);
@@ -348,27 +350,32 @@ function PageAdminsPanel({users}){
   };
   return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16,overflow:"auto"}}>
     <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
-      <div style={{fontSize:14,fontWeight:700}}>페이지별 Admin 위임</div>
+      <div style={{fontSize:14,fontWeight:700}}>페이지별 권한 매트릭스</div>
       <div style={{fontSize:11,color:"var(--text-secondary)"}}>
-        체크한 유저는 해당 페이지의 관리 기능(설정/카탈로그/권한 편집 등)을 수행할 수 있습니다. global admin 은 모든 페이지에 대해 기본 허용.
+        행=유저 · 열=페이지. 체크한 유저는 해당 페이지 관리 기능(설정/카탈로그/권한 편집) 수행 가능.
+        admin 역할 / <code>admin</code>·<code>hol</code> 계정은 자동 전체 허용 (수정 불가).
       </div>
       {msg&&<span style={{fontSize:11,color:msg.startsWith("✔")?"#22c55e":"#ef4444",marginLeft:"auto"}}>{msg}</span>}
       {busy&&<span style={{fontSize:11,color:"var(--text-secondary)"}}>저장 중…</span>}
     </div>
     <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
       <thead><tr>
-        <th style={{position:"sticky",left:0,background:"var(--bg-tertiary)",textAlign:"left",padding:"8px 12px",borderBottom:"1px solid var(--border)",fontSize:11,color:"var(--text-secondary)",zIndex:1}}>페이지</th>
-        {approved.map(u=><th key={u.username} style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{u.username}</th>)}
+        <th style={{position:"sticky",left:0,background:"var(--bg-tertiary)",textAlign:"left",padding:"8px 12px",borderBottom:"1px solid var(--border)",fontSize:11,color:"var(--text-secondary)",zIndex:1,minWidth:140}}>유저</th>
+        {PAGE_IDS.map(([pid,label])=><th key={pid} title={pid} style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{label}</th>)}
       </tr></thead>
-      <tbody>{PAGE_IDS.map(([pid,label])=>{
-        const assigned=new Set(pa[pid]||[]);
-        return(<tr key={pid}>
+      <tbody>{approved.map(u=>{
+        const full=isFullAdmin(u);
+        return(<tr key={u.username}>
           <td style={{position:"sticky",left:0,background:"var(--bg-secondary)",padding:"6px 12px",borderBottom:"1px solid var(--border)",fontWeight:600,zIndex:1}}>
-            {label} <span style={{fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace",marginLeft:6}}>{pid}</span>
+            {u.username}{full&&<span style={{marginLeft:6,fontSize:9,padding:"1px 6px",borderRadius:8,background:"rgba(239,68,68,0.15)",color:"#ef4444",fontWeight:700}}>ADMIN</span>}
           </td>
-          {approved.map(u=>(<td key={u.username} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
-            <input type="checkbox" checked={assigned.has(u.username)} disabled={busy} onChange={()=>toggle(pid,u.username)}/>
-          </td>))}
+          {PAGE_IDS.map(([pid])=>{
+            const assigned=(pa[pid]||[]).includes(u.username);
+            const checked=full||assigned;
+            return(<td key={pid} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
+              <input type="checkbox" checked={checked} disabled={busy||full} onChange={()=>toggle(pid,u.username)} title={full?"admin 자동 허용":""}/>
+            </td>);
+          })}
         </tr>);
       })}</tbody>
     </table>

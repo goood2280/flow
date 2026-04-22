@@ -73,16 +73,94 @@ def _disk_target() -> Path:
         return Path(".").resolve()
 
 
+_PROC_CPU_LAST: dict = {"idle": 0, "total": 0, "ts": 0.0}
+
+
+def _read_proc_cpu_percent() -> float:
+    """v8.8.21: psutil 없을 때 Linux /proc/stat 로 CPU 사용률 폴백.
+    2회 샘플 차이로 계산 — 첫 호출은 0 반환 후 다음 호출에서 실제 값."""
+    try:
+        with open("/proc/stat", "r") as f:
+            line = f.readline()
+        parts = line.split()
+        if parts[0] != "cpu":
+            return 0.0
+        vals = [int(x) for x in parts[1:8]]
+        idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+        total = sum(vals)
+        prev_idle = _PROC_CPU_LAST.get("idle", 0)
+        prev_total = _PROC_CPU_LAST.get("total", 0)
+        _PROC_CPU_LAST["idle"] = idle
+        _PROC_CPU_LAST["total"] = total
+        _PROC_CPU_LAST["ts"] = _now()
+        if prev_total == 0 or total <= prev_total:
+            return 0.0
+        d_idle = idle - prev_idle
+        d_total = total - prev_total
+        if d_total <= 0:
+            return 0.0
+        return max(0.0, min(100.0, 100.0 * (1.0 - d_idle / d_total)))
+    except Exception:
+        return 0.0
+
+
+def _read_proc_meminfo() -> tuple:
+    """v8.8.21: /proc/meminfo 로 mem_pct / used_gb / total_gb 반환."""
+    try:
+        info: dict = {}
+        with open("/proc/meminfo", "r") as f:
+            for ln in f:
+                k, _, v = ln.partition(":")
+                info[k.strip()] = v.strip()
+
+        def _kb(key):
+            v = info.get(key, "0 kB")
+            try:
+                return int(v.split()[0])
+            except Exception:
+                return 0
+        total_kb = _kb("MemTotal")
+        avail_kb = _kb("MemAvailable") or (_kb("MemFree") + _kb("Buffers") + _kb("Cached"))
+        used_kb = max(0, total_kb - avail_kb)
+        pct = (100.0 * used_kb / total_kb) if total_kb > 0 else 0.0
+        return round(pct, 1), round(used_kb / 1e6, 2), round(total_kb / 1e6, 2)
+    except Exception:
+        return 0.0, 0.0, 0.0
+
+
+def _read_proc_disk(path: Path) -> tuple:
+    """v8.8.21: os.statvfs 로 data_root 파티션 사용량. Linux/macOS 공통."""
+    try:
+        import os
+        st = os.statvfs(str(path))
+        total = st.f_frsize * st.f_blocks
+        free = st.f_frsize * st.f_bavail
+        used = max(0, total - free)
+        pct = (100.0 * used / total) if total > 0 else 0.0
+        return round(pct, 1), round(used / 1e9, 2), round(total / 1e9, 2)
+    except Exception:
+        return 0.0, 0.0, 0.0
+
+
 def _collect_stats() -> dict:
-    """현재 CPU / Mem / Disk 사용량 수집. psutil 미설치면 0.0 으로 조용히 fallback."""
+    """현재 CPU / Mem / Disk 사용량 수집. psutil 미설치면 /proc/statvfs 폴백."""
     ts = _now()
     if _psutil is None:
+        # v8.8.21: Linux /proc 폴백 — 사내 서버는 psutil 없을 수 있음.
+        cpu = _read_proc_cpu_percent()
+        mem_pct, mem_used, mem_total = _read_proc_meminfo()
+        disk_pct, disk_used, disk_total = _read_proc_disk(_disk_target())
         return {
             "timestamp": _iso(ts), "ts_epoch": ts,
-            "cpu_percent": 0.0, "memory_percent": 0.0, "disk_percent": 0.0,
-            "memory_used_gb": 0.0, "memory_total_gb": 0.0,
-            "disk_used_gb": 0.0, "disk_total_gb": 0.0,
+            "cpu_percent": round(cpu, 1),
+            "memory_percent": mem_pct,
+            "memory_used_gb": mem_used,
+            "memory_total_gb": mem_total,
+            "disk_percent": disk_pct,
+            "disk_used_gb": disk_used,
+            "disk_total_gb": disk_total,
             "psutil": False,
+            "source": "proc_fallback",
         }
     try:
         cpu = float(_psutil.cpu_percent(interval=0.3))

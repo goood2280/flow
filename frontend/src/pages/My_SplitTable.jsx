@@ -51,16 +51,14 @@ export default function My_SplitTable({user}){
   // v8.7.8: fab_source 후보 = DB 상위폴더 (FAB/INLINE/ET/EDS) + Base 단일파일 + DB 제품 디렉토리 + TableMap.
   // v8.8.5: fab_source = DB 에서 고르는 값. ML_TABLE_*.parquet(모 테이블) 은 후보에서 제외.
   //   옵션 구성:
-  //     - 상위폴더(루트) 옵션: `root:<1.RAWDATA_DB_xxx>` — 해당 루트 아래 모든 제품 hive parquet 합집합.
+  //     - (자동) 옵션: 빈값 — ML_TABLE_<PROD> 에서 PROD 파생 후 1.RAWDATA_DB/<PROD> 자동 매칭.
   //     - 제품폴더 옵션: `<1.RAWDATA_DB_xxx>/<PROD>` — `/fab-roots` 가 반환한 각 root 의 products 를 펼침.
   //     - TableMap 옵션: `tablemap:<id>` — 사용자 정의.
+  //   v8.8.21: `root:<name>` 옵션 제거 — 제품 스코프를 넘어 섞인 데이터로 join 되는 footgun.
   useEffect(()=>{
-    const out=[];
+    const out=[{value:"",label:"(자동 매칭) ML_TABLE_PRODA → 1.RAWDATA_DB/PRODA",source_type:"auto"}];
     const fabRoots=sf(API+"/fab-roots").then(d=>{
       for(const r of (d.roots||[])){
-        // root 전체
-        out.push({value:`root:${r.name}`,label:`[DB 루트] ${r.name} · ${r.products.length}개 제품`,source_type:"db_root",is_root:true,products:r.products});
-        // 제품별 경로도 명시적 옵션으로 추가 (사용자가 특정 제품만 bind 하고 싶을 때).
         for(const p of r.products){
           out.push({value:`${r.name}/${p}`,label:`[DB] ${r.name}/${p}`,source_type:"db_product"});
         }

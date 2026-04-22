@@ -784,11 +784,28 @@ def get_source_config():
     cfg = load_json(SOURCE_CFG, {"enabled": []})
     cfg.setdefault("enabled", [])
     cfg.setdefault("lot_overrides", {})  # v8.4.4: product-scoped {root_col, fab_col, fab_source, ts_col, join_keys}
+    # v8.8.21: 응답 단에서도 root:~~ 남은 값은 표시 안 되게 정리.
+    _migrate_legacy_root_prefix(cfg)
     return cfg
 
 class SourceConfigReq(BaseModel):
     enabled: List[str] = []
     lot_overrides: dict = {}  # v8.4.4
+
+def _migrate_legacy_root_prefix(cfg: dict) -> dict:
+    """v8.8.21: 과거 저장된 fab_source='root:~~' 를 모두 빈 문자열로 치환 → auto-derive 경로로 복귀."""
+    try:
+        lo = cfg.get("lot_overrides") or {}
+        for _p, _ov in list(lo.items()):
+            if not isinstance(_ov, dict):
+                continue
+            fs = str(_ov.get("fab_source") or "").strip()
+            if fs.startswith("root:"):
+                _ov["fab_source"] = ""
+    except Exception:
+        pass
+    return cfg
+
 
 @router.post("/source-config/save")
 def save_source_config(req: SourceConfigReq):
@@ -796,6 +813,8 @@ def save_source_config(req: SourceConfigReq):
     cur["enabled"] = req.enabled
     if req.lot_overrides:
         cur.setdefault("lot_overrides", {}).update(req.lot_overrides)
+    # v8.8.21: legacy root:~~ 삭제.
+    _migrate_legacy_root_prefix(cur)
     save_json(SOURCE_CFG, cur)
     return {"ok": True}
 
@@ -1419,23 +1438,20 @@ def delete_custom(req: CustomDeleteReq):
 
 def _scan_fab_source(fab_source: str):
     """v8.8.0: fab_source 가 가리키는 DB 경로를 LazyFrame 으로 스캔.
-    - "FAB/PRODA" 같은 디렉토리면 그 아래 모든 *.parquet 을 union 으로 스캔 (hive flat 호환).
+    - "FAB/PRODA" / "1.RAWDATA_DB/PRODA" 같은 디렉토리면 그 아래 모든 *.parquet 을 union 으로 스캔.
     - 단일 .parquet/.csv 파일이면 그 파일을 스캔.
-    - "root:FAB" (상위폴더만 지정) 인 경우 FAB 아래 모든 제품 폴더를 합집합 스캔.
+    v8.8.21: "root:<name>" legacy prefix 는 제품 scope 를 넘어서므로 더 이상 지원하지 않음.
+      저장된 값이 있어도 무시 → 호출측이 _auto_derive_fab_source 로 자동 매칭하도록 None 반환.
     실패 시 None 반환 (조용히 폴백).
     """
     if not fab_source:
         return None
+    # v8.8.21: root:~~ deprecated — 제품 스코프를 넘어 데이터 섞임 위험.
+    if fab_source.startswith("root:"):
+        return None
     db_base = _db_base()
     base_root = _base_root()
     fp = None
-    # "root:FAB" 형태 — 상위폴더 아래 전체 parquet 합집합 (신규 매칭에서 쓰임).
-    if fab_source.startswith("root:"):
-        rn = fab_source[len("root:"):].strip()
-        if rn and db_base.exists():
-            cand = db_base / rn
-            if cand.is_dir():
-                fp = cand
     if fp is None:
         for root in (db_base, base_root):
             if not root or not root.exists():
@@ -1543,6 +1559,9 @@ def _resolve_override_meta(product: str) -> dict:
         cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
         ov = (cfg.get("lot_overrides") or {}).get(product) or {}
         manual = (ov.get("fab_source") or "").strip()
+        # v8.8.21: root:~~ 는 deprecated — 저장된 값이 남아있어도 무시하고 auto-derive 로 재매칭.
+        if manual.startswith("root:"):
+            manual = ""
         fab_source = manual or _auto_derive_fab_source(product)
         meta["manual_override"] = bool(manual)
         meta["fab_source"] = fab_source
@@ -1707,6 +1726,9 @@ def _scan_product(product: str):
         cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
         ov = (cfg.get("lot_overrides") or {}).get(product) or {}
         fab_source = (ov.get("fab_source") or "").strip()
+        # v8.8.21: legacy root:~~ 무시 → auto-derive.
+        if fab_source.startswith("root:"):
+            fab_source = ""
         auto_matched = False
         if not fab_source:
             fab_source = _auto_derive_fab_source(product)
