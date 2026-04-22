@@ -1398,10 +1398,30 @@ export default function My_Inform({ user }) {
   const [embedPrefix, setEmbedPrefix] = useState("ALL");   // string | null (CUSTOM 모드면 null)
   const [embedCustomName, setEmbedCustomName] = useState(""); // "" = prefix 모드
   const [customsList, setCustomsList] = useState([]);
+  // v8.8.16: 인폼 전용 인라인 CUSTOM 편집기 — SplitTable 사이드바와 동일 UX.
+  //   embedCustomCols: 현재 편집중 컬럼 리스트 (set 선택 시 로드). embedCustomSearch: 컬럼 필터링.
+  //   embedSchemaCols: 제품 전체 스키마 (lot 없이 fetch).
+  //   embedCustomOpen: 편집기 접힘/펼침 상태.
+  //   snapshotTick: 사용자가 "Search" 버튼 누르면 증가 → useEffect 가 스냅샷 재fetch.
+  const [embedCustomCols, setEmbedCustomCols] = useState([]);
+  const [embedCustomSearch, setEmbedCustomSearch] = useState("");
+  const [embedSchemaCols, setEmbedSchemaCols] = useState([]);
+  const [embedCustomOpen, setEmbedCustomOpen] = useState(false);
+  const [snapshotTick, setSnapshotTick] = useState(0);
 
   useEffect(() => {
     sf("/api/splittable/customs").then(d => setCustomsList(d.customs || [])).catch(() => {});
   }, []);
+
+  // v8.8.16: 제품 변경 시 ML_TABLE 전체 스키마 fetch — CUSTOM 컬럼 선택 pool.
+  useEffect(() => {
+    const prod = (form.product || "").trim();
+    if (!prod) { setEmbedSchemaCols([]); return; }
+    const mlProd = prod.startsWith("ML_TABLE_") ? prod : `ML_TABLE_${prod}`;
+    sf(`/api/splittable/schema?product=${encodeURIComponent(mlProd)}`)
+      .then(d => setEmbedSchemaCols((d.columns || []).map(c => c.name || c)))
+      .catch(() => setEmbedSchemaCols([]));
+  }, [form.product]);
 
   useEffect(() => {
     const prod = (form.product || "").trim();
@@ -1428,8 +1448,15 @@ export default function My_Inform({ user }) {
       params.set("root_lot_id", root5);
       if (isFabLot) params.set("fab_lot_id", lot);
       params.set("view_mode", "all");
+      // v8.8.16: inline CUSTOM cols (저장 없이 임시로 고른 컬럼들) 이 있으면
+      //   splittable /view 엔드포인트에 그대로 전달할 수 있는 방법이 없으므로,
+      //   임시 custom 이름(`__inline__`) 으로 저장 후 custom_name 으로 참조.
+      //   여기서는 서버에 저장하지 않고 그냥 ALL 로 받아와서 FE 에서 column filter 하는 방식으로 처리.
       if (embedCustomName) {
         params.set("custom_name", embedCustomName);
+      } else if (embedCustomCols.length > 0) {
+        // ALL 프리셋으로 받아오되, FE 에서 filter — 서버 부담이 크면 TODO: inline custom 지원.
+        params.set("prefix", "ALL");
       } else {
         params.set("prefix", embedPrefix || "ALL");
       }
@@ -1446,7 +1473,16 @@ export default function My_Inform({ user }) {
           // 병행해서 legacy 2D (columns/rows) 도 유지 — 구버전 렌더러 호환.
           const headers = d.headers || [];
           const cols = ["parameter", ...headers];
-          const rows = (d.rows || []).map(r => {
+          // v8.8.16: inline CUSTOM cols 가 있으면 FE 에서 해당 row 만 선별 (파라미터 이름 기준).
+          let rowsAll = d.rows || [];
+          if (!embedCustomName && embedCustomCols.length > 0) {
+            const keep = new Set(embedCustomCols);
+            const filtered = rowsAll.filter(r => keep.has(r._param));
+            // 저장된 순서 유지 + 비어있는 행은 서버에서 못 올라온 컬럼이므로 생성.
+            const byParam = new Map(filtered.map(r => [r._param, r]));
+            rowsAll = embedCustomCols.map(p => byParam.get(p) || { _param: p, _cells: {} });
+          }
+          const rows = rowsAll.map(r => {
             const out = [r._param || ""];
             headers.forEach((_, i) => {
               const cell = (r._cells && r._cells[i]) || {};
@@ -1456,21 +1492,26 @@ export default function My_Inform({ user }) {
             });
             return out;
           });
-          const scopeLabel = embedCustomName ? `CUSTOM:${embedCustomName}` : (embedPrefix || "ALL");
+          const scopeLabel = embedCustomName
+            ? `CUSTOM:${embedCustomName}`
+            : (embedCustomCols.length > 0
+                ? `CUSTOM:inline(${embedCustomCols.length})`
+                : (embedPrefix || "ALL"));
           const lotLabel = isFabLot ? `fab_lot=${lot}` : `root_lot=${lot}`;
           setForm(f => ({
             ...f, attach_embed: true,
             embed: {
               source: `SplitTable/${mlProd} @ ${lot} · ${scopeLabel} (auto)`,
               columns: cols, rows,
-              note: `auto-snapshot · ${(d.rows || []).length} params · ${lotLabel} · scope=${scopeLabel}`,
+              note: `auto-snapshot · ${rowsAll.length} params · ${lotLabel} · scope=${scopeLabel}`,
               st_view: {
                 headers,
-                rows: d.rows || [],
+                rows: rowsAll,
                 wafer_fab_list: d.wafer_fab_list || [],
                 header_groups: d.header_groups || [],
               },
-              st_scope: { prefix: embedPrefix || "", custom_name: embedCustomName || "" },
+              st_scope: { prefix: embedPrefix || "", custom_name: embedCustomName || "",
+                          inline_cols: embedCustomName ? [] : embedCustomCols },
             },
           }));
           setEmbedFetching(false);
@@ -1478,7 +1519,8 @@ export default function My_Inform({ user }) {
         .catch(() => { setEmbedFetching(false); });
     }, 400);
     return () => { clearTimeout(handle); setEmbedFetching(false); };
-  }, [form.product, form.lot_id, creating, embedPrefix, embedCustomName]);
+    // v8.8.16: snapshotTick 변경 시에도 재fetch — 사용자가 Search 버튼으로 명시적 갱신.
+  }, [form.product, form.lot_id, creating, embedPrefix, embedCustomName, embedCustomCols, snapshotTick]);
 
   // v8.8.10: SplitTable 의 lot-candidates 로 root_lot_id + fab_lot_id 후보 fetch → Lot 드롭다운 소스.
   //   기존 /product-lots (RAWDATA_DB 폴더 스캔) 은 사내 실환경에서 빈 결과 자주 발생 → SplitTable 기반 primary.
@@ -1609,8 +1651,15 @@ export default function My_Inform({ user }) {
 
   /* 모듈 필터: rootsSorted 를 2차 필터링
      v8.8.13: (1) '전체' 체크(= 내 권한 모든 모듈 on) 이면 패스스루 — module 없는 인폼도 모두 노출.
-              (2) 부분 선택이면 체크된 모듈만. module 값이 없는/체크 외 모듈 인폼은 숨김. */
+              (2) 부분 선택이면 체크된 모듈만. module 값이 없는/체크 외 모듈 인폼은 숨김.
+     v8.8.16: 모듈/제품 필터를 **둘 다** 완전히 비우면 아무것도 표시하지 않음
+              (이전: 빈 배열 → 전체 노출 → 메일 전송/작업 실수 가능). 명시적 선택을 요구. */
   const applyModFilter = (arr) => {
+    // v8.8.16: 둘 다 비어있으면 빈 배열 반환 — 사용자가 최소 하나 이상 고르도록 유도.
+    if ((!moduleFilter || moduleFilter.length === 0)
+        && (!productFilter || productFilter.length === 0)) {
+      return [];
+    }
     let out = arr;
     // module filter
     if (moduleFilter && moduleFilter.length > 0) {
@@ -2195,26 +2244,106 @@ export default function My_Inform({ user }) {
               onPaste={handleBodyPaste}
               placeholder="인폼 내용 (배경, 영향, 조치 요청 등) — Ctrl+V 로 이미지도 바로 붙여넣을 수 있어요"
               style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, resize: "vertical", boxSizing: "border-box", lineHeight: 1.5 }} />
-            {/* v8.8.11: 스냅샷 scope 선택 — prefix 칩 (KNOB/MASK/INLINE/VM/FAB/ALL) + CUSTOM 드롭다운. 선택 시 자동 재fetch. */}
+            {/* v8.8.11/v8.8.16: 스냅샷 scope 선택 — prefix chip + CUSTOM set 드롭다운 + 인라인 CUSTOM 빌더.
+                   Search 버튼으로 스냅샷 수동 갱신 (자동 재fetch 가 실패했거나 갱신이 안될 때 명시적 트리거). */}
             <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 10 }}>
               <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>SplitTable scope:</span>
               {["ALL", "KNOB", "MASK", "INLINE", "VM", "FAB"].map(p => {
-                const active = !embedCustomName && embedPrefix === p;
+                const active = !embedCustomName && embedCustomCols.length === 0 && embedPrefix === p;
                 return (
-                  <span key={p} onClick={() => { setEmbedCustomName(""); setEmbedPrefix(p); }}
+                  <span key={p} onClick={() => { setEmbedCustomName(""); setEmbedCustomCols([]); setEmbedPrefix(p); }}
                     style={{ padding: "2px 8px", borderRadius: 999, cursor: "pointer", fontWeight: active ? 700 : 500,
                              background: active ? "var(--accent)" : "var(--bg-card)",
                              color: active ? "#fff" : "var(--text-primary)",
                              border: "1px solid " + (active ? "var(--accent)" : "var(--border)") }}>{p}</span>
                 );
               })}
-              <span style={{ color: "var(--text-secondary)", marginLeft: 6 }}>CUSTOM:</span>
-              <select value={embedCustomName} onChange={e => { setEmbedCustomName(e.target.value); if (e.target.value) setEmbedPrefix(""); }}
+              <span style={{ color: "var(--text-secondary)", marginLeft: 6 }}>Saved CUSTOM:</span>
+              <select value={embedCustomName} onChange={e => {
+                  setEmbedCustomName(e.target.value);
+                  if (e.target.value) { setEmbedPrefix(""); setEmbedCustomCols([]); }
+                }}
                 style={{ padding: "2px 6px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, fontFamily: "monospace" }}>
-                <option value="">— 없음 (prefix 사용) —</option>
+                <option value="">— 없음 —</option>
                 {customsList.map(c => <option key={c.name} value={c.name}>{c.name} ({(c.columns||[]).length}col)</option>)}
               </select>
+              <button type="button" onClick={() => setEmbedCustomOpen(!embedCustomOpen)}
+                style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: embedCustomOpen ? "var(--accent-glow)" : "var(--bg-card)", color: embedCustomOpen ? "var(--accent)" : "var(--text-primary)", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
+                {embedCustomOpen ? "▼" : "▶"} 인라인 CUSTOM{embedCustomCols.length > 0 ? ` (${embedCustomCols.length})` : ""}
+              </button>
+              <button type="button" onClick={() => setSnapshotTick(x => x + 1)}
+                title="스냅샷 재조회 — scope/lot 변경 없이도 서버에서 다시 가져옴"
+                style={{ padding: "2px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
+                🔎 Search
+              </button>
             </div>
+            {/* v8.8.16: 인라인 CUSTOM 편집기 — SplitTable 사이드바와 동일 UX. */}
+            {embedCustomOpen && (
+              <div style={{ marginTop: 6, padding: "8px 10px", borderRadius: 5, border: "1px dashed var(--border)", background: "var(--bg-card)", fontSize: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>
+                    인라인 CUSTOM 컬럼 선택 · {embedCustomCols.length}/{embedSchemaCols.length}
+                  </span>
+                  <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--text-secondary)" }}>
+                    저장하지 않은 상태 — 이 인폼에만 적용됨
+                  </span>
+                </div>
+                <input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)}
+                  placeholder="컬럼 검색..." style={{ width: "100%", padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, marginBottom: 4, boxSizing: "border-box" }} />
+                {(() => {
+                  const pool = (() => { const seen = new Set(); const out = [];
+                    for (const c of [...embedSchemaCols, ...embedCustomCols]) { if (!seen.has(c)) { seen.add(c); out.push(c); } } return out; })();
+                  const filtered = embedCustomSearch
+                    ? pool.filter(c => c.toLowerCase().includes(embedCustomSearch.toLowerCase()))
+                    : pool;
+                  return (<>
+                    <div style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
+                      <button type="button" onClick={() => setEmbedCustomCols(Array.from(new Set([...embedCustomCols, ...filtered])))}
+                        style={{ padding: "2px 8px", borderRadius: 3, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 9, cursor: "pointer", fontWeight: 600 }}>
+                        ✓ 전체 체크{embedCustomSearch ? ` (${filtered.length})` : ""}
+                      </button>
+                      <button type="button" onClick={() => {
+                          if (embedCustomSearch) { const fs = new Set(filtered); setEmbedCustomCols(embedCustomCols.filter(c => !fs.has(c))); }
+                          else setEmbedCustomCols([]);
+                        }}
+                        style={{ padding: "2px 8px", borderRadius: 3, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 9, cursor: "pointer", fontWeight: 600 }}>
+                        ✕ 전체 제거
+                      </button>
+                    </div>
+                    <div style={{ maxHeight: 140, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, padding: 2, background: "var(--bg-primary)" }}>
+                      {filtered.length === 0 && <div style={{ padding: 6, fontStyle: "italic", color: "var(--text-secondary)" }}>
+                        {embedSchemaCols.length === 0 ? "제품 스키마 로딩 중..." : "검색 결과 없음"}
+                      </div>}
+                      {filtered.map(c => {
+                        const on = embedCustomCols.includes(c);
+                        return (<div key={c} onClick={() => {
+                            if (on) setEmbedCustomCols(embedCustomCols.filter(x => x !== c));
+                            else { setEmbedCustomCols([...embedCustomCols, c]); setEmbedCustomName(""); setEmbedPrefix(""); }
+                          }}
+                          style={{ padding: "2px 6px", cursor: "pointer", color: on ? "var(--accent)" : "var(--text-secondary)", fontFamily: "monospace" }}>
+                          {on ? "✓ " : "  "}{c}
+                        </div>);
+                      })}
+                    </div>
+                  </>);
+                })()}
+                {/* 선택된 컬럼 pill 표시 */}
+                {embedCustomCols.length > 0 && (
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: 9, color: "var(--text-secondary)", marginBottom: 2, fontWeight: 600 }}>선택됨 ({embedCustomCols.length})</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                      {embedCustomCols.map(c => (
+                        <span key={c} title={c}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "1px 5px", borderRadius: 3, fontSize: 9, background: "var(--accent-glow)", color: "var(--accent)", fontFamily: "monospace" }}>
+                          {c}<span onClick={() => setEmbedCustomCols(embedCustomCols.filter(x => x !== c))}
+                            style={{ cursor: "pointer", fontSize: 10, lineHeight: 1, marginLeft: 2, color: "#ef4444" }} title="제거">×</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div style={{ marginTop: 6, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>이미지: 본문에 <b>Ctrl+V</b> 로 바로 붙여넣기 (markdown 으로 inline 삽입)</span>
@@ -2328,7 +2457,14 @@ export default function My_Inform({ user }) {
                 </div>
               );
             })()}
-            {applyModFilter(rootsSorted).length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>인폼 없음.</div>}
+            {applyModFilter(rootsSorted).length === 0 && (
+              (!moduleFilter?.length && !productFilter?.length)
+                ? <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>
+                    <div style={{ fontSize: 13, marginBottom: 6 }}>필터를 하나 이상 선택하세요.</div>
+                    <div style={{ fontSize: 11 }}>위 📁 모듈 · 📦 제품 pill 중 최소 1개 이상 체크해야 인폼이 표시됩니다.</div>
+                  </div>
+                : <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>인폼 없음.</div>
+            )}
             {applyModFilter(rootsSorted).map(r => (
               <CompactRow key={r.id} root={r} onOpen={() => { setSelectedWafer(r.wafer_id); setMode("wafer"); }} />
             ))}

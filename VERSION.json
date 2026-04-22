@@ -1,7 +1,37 @@
 {
-  "version": "8.8.15",
+  "version": "8.8.16",
   "codename": "flow",
   "changelog": [
+    {
+      "version": "8.8.16",
+      "date": "2026-04-22",
+      "title": "SplitTable hive override 다중컬럼 · FileBrowser meta_only 지연로딩 · 회원/S3 보존 재강화 · SplitTable/인폼 CUSTOM UX · 인폼 필터 strict · 회의 메일 본문 분리 · 대시보드 scatter fit toggle · 회의 담당자 placeholder",
+      "tag": "feat",
+      "changes": [
+        "**SplitTable 다중 컬럼 override** — `1.RAWDATA_DB*/<PROD>/` hive 원천에서 단일 `fab_col` 만 끌어오던 로직을 `override_cols` 리스트로 확장. 기본값 `root_lot_id, wafer_id, lot_id, tkout_time` + 레거시 `fab_col` 자동 병합. SOURCE_CFG `lot_overrides[product].override_cols` (list 또는 `a,b,c` 문자열) 로 제품별 커스터마이즈. `_scan_product` 가 override_cols 중 main 에 있는 컬럼을 drop → left-join 으로 소스값 교체, join_keys 는 매칭용으로 보존. `_resolve_override_meta` 에 `override_cols / override_cols_present / override_cols_missing` 추가 + FE 톱니 카드 / setting textarea 로 노출.",
+        "**FileBrowser meta_only 지연 로딩** — Base 파일/DB 제품 클릭 시 `meta_only=1` 로 스키마만 가져와 즉시 렌더 (대용량 parquet 도 ms). SQL 실행 / 컬럼 SELECT 적용 시에만 실제 행 조회. `_run_view_lazy(meta_only=...)` + `/base-file-view · /view · /root-parquet-view` 파라미터. FE 배지에 `스키마만 로드 · N열` + `▶ 샘플 로드` 버튼. `loadBaseFileView/loadHiveView/loadRootPqView` 에 `{full:true}` 옵션 추가.",
+        "**setup.py 재배포 시 회원/S3 보존 재강화** — `_PROTECTED_SEGMENTS` 에 `s3_ingest · reformatter · notifications · cache · data` 추가. `_PROTECTED_BASENAMES` 에 `users.json/users_cache.json/sessions.json/mail_groups.json/s3_ingest_config.json/rulebook_schema.json/inform_user_modules.json/page_admins.json` 등 확장. gather_files 단계 blocklist 도 동일하게 확장 — 회원가입 데이터·S3 동기화 설정이 재배포 시 확실히 보존.",
+        "**SplitTable CUSTOM 대개편** — (1) custom 컬럼 = ML_TABLE 전체 스키마 (lot 검색 없이 `/schema` 로 fetch) + 저장된 customCols 합집합. (2) `_select_columns` custom 분기에서 `all_data_cols` 필터 제거 — 현재 LOT 에 없는 컬럼도 선택 가능. (3) `view_split` 이 `col_name not in df.columns` 일 때도 빈 셀로 행 생성 (plan 값만 lookup). (4) 사이드바: 전체 체크/제거 버튼 + 선택된 Set 의 컬럼을 pill 로 아래 표시. 검색어 적용 시 필터링된 범위에만 체크/제거.",
+        "**인폼 인라인 CUSTOM + Search** — My_Inform 메일 발송 모달에 SplitTable 사이드바와 동일한 CUSTOM 빌더 추가 (`🔽 인라인 CUSTOM`). 전체 체크/제거 + 선택 컬럼 pill + 저장하지 않은 임시 세트로 이 인폼에만 적용. 스냅샷이 자동 재fetch 되지 않을 때 `🔎 Search` 버튼으로 수동 갱신 (`snapshotTick` state).",
+        "**인폼 필터 strict empty** — `applyModFilter` 가 moduleFilter/productFilter 둘 다 비어있을 때 **빈 배열 반환** (이전: 전체 노출). 사용자가 최소 하나 이상 pill 을 체크해야 인폼이 보이는 구조 — 메일 발송/편집 실수 방지. 빈 상태에 `필터를 하나 이상 선택하세요` 안내 카드.",
+        "**회의 메일 본문 분리** — `MinutesSave.mail_body` / `SessionSendMailReq.mail_body` 추가, `_meeting_mail_html(mail_body=...)` 이 주관자가 직접 작성한 텍스트만 렌더링. 공동 작성된 `minutes.body` 는 더 이상 메일에 자동 포함 안 됨. FE: 메일 발송 옵션 아래에 별도 textarea + 공동 작성 본문 참고 패널(접기/펼치기 + `↓ 메일 본문에 복사` 버튼). 빈 채 발송 시 메일에 본문 섹션 없이 아젠다/결정/액션만.",
+        "**대시보드 scatter fitting line 기본 off** — `fit_line_enabled === true` / `fit_line_show_r2 === true` 명시 체크만 렌더. 이전에는 scatter 타입이면 기본 on 이었음. 체크박스는 기존 UI 그대로 — 사용자가 명시적으로 켜야 1차 fit line + R² 표시.",
+        "**회의 아젠다 담당자 placeholder** — `담당자 (기본: ${me})` → `담당자` 로 변경, 빈 채로 저장하면 BE(`add_agenda`) 가 세션 유저명으로 자동 채움 (FE `(agendaDraft.owner || '').trim()`)."
+      ],
+      "files": [
+        "backend/routers/splittable.py",
+        "backend/routers/filebrowser.py",
+        "backend/routers/meetings.py",
+        "frontend/src/pages/My_SplitTable.jsx",
+        "frontend/src/pages/My_FileBrowser.jsx",
+        "frontend/src/pages/My_Inform.jsx",
+        "frontend/src/pages/My_Meeting.jsx",
+        "frontend/src/pages/My_Dashboard.jsx",
+        "_build_setup.py",
+        "setup.py",
+        "VERSION.json"
+      ]
+    },
     {
       "version": "8.8.15",
       "date": "2026-04-22",

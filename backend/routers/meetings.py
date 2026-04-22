@@ -334,8 +334,13 @@ def _resolve_users_to_emails(usernames: List[str]) -> List[str]:
     return out
 
 
-def _meeting_mail_html(meeting: dict, session: dict) -> str:
-    """아젠다 + 회의록 + 액션아이템 단일 HTML 메일 본문 조립."""
+def _meeting_mail_html(meeting: dict, session: dict, mail_body: str = "") -> str:
+    """아젠다 + (선택) 메일 본문 + 결정사항 + 액션아이템 단일 HTML 메일 조립.
+
+    v8.8.16: 공동 작성된 minutes.body 를 자동으로 끌어오던 것을 제거.
+      - 주관자가 mail_body 파라미터로 명시적으로 작성한 텍스트만 사용.
+      - mail_body 가 비면 메일 본문 섹션 자체가 생략된다 (아젠다/결정/액션만 발송).
+    """
     esc = _html.escape
     agendas = session.get("agendas") or []
     minutes = session.get("minutes") or {}
@@ -363,10 +368,13 @@ def _meeting_mail_html(meeting: dict, session: dict) -> str:
         f"</tr></thead><tbody>{rows_ag or '<tr><td colspan=3 style=padding:10px;color:#9ca3af;>(아젠다 없음)</td></tr>'}</tbody></table>"
     )
     body_html = ""
-    if minutes.get("body"):
-        body_lines = (minutes.get("body") or "").splitlines()
+    # v8.8.16: minutes.body (공동 작성) 는 더 이상 자동 포함하지 않음.
+    #   주관자가 mail_body 를 명시적으로 작성한 경우에만 본문 섹션이 메일에 들어간다.
+    mail_body_clean = (mail_body or "").strip()
+    if mail_body_clean:
+        body_lines = mail_body_clean.splitlines()
         body_html = (
-            "<h3 style='font-size:13px;margin:14px 0 6px;color:#374151;'>📝 회의록 본문</h3>"
+            "<h3 style='font-size:13px;margin:14px 0 6px;color:#374151;'>📝 메일 본문</h3>"
             "<div style='padding:10px 12px;border:1px solid #e5e7eb;border-radius:6px;background:#fafafa;font-size:12px;line-height:1.55;'>"
             + "<br/>".join(esc(ln) for ln in body_lines) + "</div>"
         )
@@ -436,8 +444,13 @@ def _encode_multipart(fields: Dict[str, str], files: List[tuple]) -> tuple:
 
 
 def _send_minutes_mail(meeting: dict, session: dict, *,
-                        to_addrs: List[str], subject: str, actor: str) -> dict:
-    """사내 메일 API 로 회의록 HTML 전송. 설정 미비/에러 시 {ok:False, error} 반환."""
+                        to_addrs: List[str], subject: str, actor: str,
+                        mail_body: str = "") -> dict:
+    """사내 메일 API 로 회의록 HTML 전송. 설정 미비/에러 시 {ok:False, error} 반환.
+
+    v8.8.16: mail_body 를 명시적으로 받아 _meeting_mail_html 에 전달.
+      호출자가 비워 두면 메일 본문 섹션 없이 아젠다/결정/액션만 포함된다.
+    """
     cfg = _load_mail_cfg()
     if not cfg.get("enabled") or not (cfg.get("api_url") or "").strip():
         return {"ok": False, "error": "메일 API 가 설정되지 않았습니다 (Admin > 메일 API)."}
@@ -452,7 +465,7 @@ def _send_minutes_mail(meeting: dict, session: dict, *,
         return {"ok": False, "error": "수신자 이메일이 없습니다."}
     if len(uniq) > MAIL_MAX_RECIPIENTS:
         return {"ok": False, "error": f"수신자는 최대 {MAIL_MAX_RECIPIENTS}명까지 허용됩니다 (현재 {len(uniq)}명)."}
-    html_body = _meeting_mail_html(meeting, session)
+    html_body = _meeting_mail_html(meeting, session, mail_body=mail_body)
     if len(html_body.encode("utf-8")) > MAIL_CONTENT_MAX:
         return {"ok": False, "error": "메일 본문이 2MB 한도를 초과했습니다."}
     receiver_list = [{"email": em, "recipientType": "To", "seq": i + 1} for i, em in enumerate(uniq)]
@@ -821,6 +834,9 @@ class MinutesSave(BaseModel):
     # v8.8.15: OT-lite — 클라이언트가 보고 있던 revision. 저장 시점 서버 rev 과 다르면 409.
     #   FE 는 409 응답의 current_body/rev 로 머지하거나 user 에게 경고한 뒤 다시 저장.
     base_rev: Optional[int] = None
+    # v8.8.16: 메일 전용 본문 — 공동 작성된 minutes.body 와 분리해 주관자가 직접 작성.
+    #   비우고 send_mail=True 면 메일에 본문 섹션 없이 아젠다/결정/액션만 나감.
+    mail_body: Optional[str] = ""
 
 
 # ── permission helpers ─────────────────────────────────────────────
@@ -1455,7 +1471,8 @@ def save_minutes(req: MinutesSave, request: Request):
                             to_addrs.append(em)
         subject = (req.mail_subject or "").strip()
         mail_result = _send_minutes_mail(m, s, to_addrs=to_addrs, subject=subject,
-                                          actor=me["username"])
+                                          actor=me["username"],
+                                          mail_body=(req.mail_body or ""))
         _audit(request, "meetings:minutes_mail",
                detail=f"meeting={m['id']} session={s['id']} ok={mail_result.get('ok')} n={len(to_addrs)}",
                tab="meetings")
@@ -1733,6 +1750,8 @@ class SessionSendMailReq(BaseModel):
     mail_to_users: Optional[List[str]] = None    # 개별 username
     mail_to: Optional[List[str]] = None          # 직접 이메일
     mail_subject: Optional[str] = ""
+    # v8.8.16: 메일 전용 본문 (공동 작성된 minutes.body 와 분리).
+    mail_body: Optional[str] = ""
 
 
 @router.post("/session/send-mail")
@@ -1755,7 +1774,8 @@ def session_send_mail(req: SessionSendMailReq, request: Request):
     to_addrs += _resolve_mail_group_ids_to_emails(list(req.mail_group_ids or []))
     subject = (req.mail_subject or "").strip()
     result = _send_minutes_mail(m, s, to_addrs=to_addrs, subject=subject,
-                                actor=me["username"])
+                                actor=me["username"],
+                                mail_body=(req.mail_body or ""))
     _audit(request, "meetings:session_send_mail",
            detail=f"meeting={m['id']} session={s['id']} ok={result.get('ok')} n={len(to_addrs)}",
            tab="meetings")

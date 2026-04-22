@@ -10,12 +10,16 @@ Output: overwrites setup.py at the repo root. Version is read from
 VERSION.json, so bump that first.
 
 v8.8.3 — 데이터 보존 whitelist 명시화.
+v8.8.16 — 파일탐색기 S3 동기화 설정(data_root/s3_ingest/*) 누락 보완.
   사용자 생성 데이터는 *절대* 번들에 포함되지 않으며, 기존 설치 위에
   setup.py 를 재실행해도 아래 경로/패턴은 덮어쓰기 되지 않습니다:
 
     1) 파일탐색기 S3 동기화 설정
-       - {data_root}/admin_settings.json  (s3_sync 섹션 포함)
-       - {data_root}/s3_sync_*.json, {data_root}/logs/s3_*.jsonl
+       - {data_root}/s3_ingest/config.json     (동기화 항목 목록 · target/s3_url/interval)
+       - {data_root}/s3_ingest/status.json     (마지막 실행 상태)
+       - {data_root}/s3_ingest/history.jsonl   (실행 이력)
+       - {data_root}/admin_settings.json       (AWS creds/프로파일 등)
+       - {data_root}/s3_sync_*.json, {data_root}/logs/s3_*.jsonl  (레거시)
     2) 가입한 사용자 목록
        - {data_root}/users.csv
        - {data_root}/sessions/*.json, {data_root}/sessions/tokens.json
@@ -110,13 +114,20 @@ def gather_files():
                 continue
             # v8.8.3: 정적 자산으로 위장한 사용자 데이터 차단
             # (예: frontend/src 안에 실수로 users.csv 를 두는 경우)
-            if p.name.lower() in {'users.csv', 'groups.json', 'admin_settings.json',
+            # v8.8.16: users 관련 변형 / S3 sync / 회의록 state 파일까지 확장.
+            if p.name.lower() in {'users.csv', 'users.json', 'users_cache.json',
+                                   'groups.json', 'admin_settings.json',
                                    'settings.json', 'shares.json', 'informs.json',
                                    'product_contacts.json', 'notes.json',
                                    'source_config.json', 'dashboard_snapshots.json',
                                    'dashboard_charts.json', 'meetings.json',
                                    'events.json', 'notices.json', 'tokens.json',
-                                   'issues.json'}:
+                                   'sessions.json', 'session_tokens.json',
+                                   'mail_groups.json', 'mail_config.json',
+                                   'rulebook_schema.json',
+                                   'inform_user_modules.json', 'page_admins.json',
+                                   's3_ingest_config.json', 's3_sync.json',
+                                   'issues.json', 'messages.json'}:
                 continue
             add(p)
 
@@ -210,34 +221,53 @@ VERSION_META = {json.dumps(version, ensure_ascii=False)}
 
 
 # v8.8.3 — 사용자 데이터 보존 whitelist (덮어쓰기 금지 파일명)
+# v8.8.16 — users 관련 변형 / S3 sync 관련 / 기타 런타임 state 파일 추가.
 _PROTECTED_BASENAMES = {{
-    'users.csv', 'groups.json', 'admin_settings.json', 'settings.json',
+    # 회원/인증
+    'users.csv', 'users.json', 'users_cache.json',
+    'tokens.json', 'sessions.json', 'session_tokens.json',
+    # 그룹/설정
+    'groups.json', 'admin_settings.json', 'settings.json',
     'shares.json', 'informs.json', 'config.json', 'product_contacts.json',
+    'mail_groups.json', 'mail_config.json',
+    # SplitTable / Dashboard / 인폼 state
     'notes.json', 'source_config.json', 'dashboard_snapshots.json',
-    'dashboard_charts.json', 'meetings.json', 'events.json', 'notices.json',
-    'tokens.json', 'issues.json',
+    'dashboard_charts.json', 'rulebook_schema.json',
+    # 회의/트래커/공지/이슈
+    'meetings.json', 'events.json', 'notices.json', 'issues.json',
+    'messages.json', 'inform_user_modules.json', 'page_admins.json',
+    # S3 / 로그
+    's3_ingest_config.json', 's3_sync.json',
+    'activity.jsonl', 'downloads.jsonl',
 }}
 
 # v8.8.3 — 데이터 루트로 간주되는 세그먼트 (경로 어디에 있든 보호)
+# v8.8.16 — s3_ingest / reformatter / notifications / cache 추가 보호.
 _PROTECTED_SEGMENTS = {{
-    'holweb-data',   # 사내 운영 데이터 디렉토리
-    'informs',       # 인폼 설정/카탈로그/담당자
-    'groups',        # 그룹 정의
-    'mail_groups',   # 메일 그룹
-    'dbmap',         # TableMap 버전/아카이브
-    'splittable',    # SplitTable 노트/설정
-    'tracker',       # 이슈 트래커
-    'calendar',      # 달력 이벤트
-    'meetings',      # 회의/아젠다/액션아이템
-    'messages',      # 쪽지/공지 스레드
-    'sessions',      # 로그인 세션/토큰
-    'uploads',       # 업로드 파일
-    'logs',          # activity/download/resource/S3 sync 로그
-    '_backups',      # 자동 백업
-    '.trash',        # Base 파일 휴지통
-    'Base',          # rulebook / parquet / 사용자 추가 CSV
-    'DB',            # Hive-flat 원천 데이터
-    'wafer_maps',    # wafer map JSON 라이브러리
+    'holweb-data',    # 사내 운영 데이터 디렉토리
+    'informs',        # 인폼 설정/카탈로그/담당자
+    'groups',         # 그룹 정의
+    'mail_groups',    # 메일 그룹
+    'dbmap',          # TableMap 버전/아카이브
+    'splittable',     # SplitTable 노트/설정
+    'tracker',        # 이슈 트래커
+    'calendar',       # 달력 이벤트
+    'meetings',       # 회의/아젠다/액션아이템
+    'messages',       # 쪽지/공지 스레드
+    'sessions',       # 로그인 세션/토큰
+    'uploads',        # 업로드 파일
+    'logs',           # activity/download/resource/S3 sync 로그
+    '_backups',       # 자동 백업
+    '.trash',         # Base 파일 휴지통
+    'Base',           # rulebook / parquet / 사용자 추가 CSV
+    'DB',             # Hive-flat 원천 데이터
+    'wafer_maps',     # wafer map JSON 라이브러리
+    # v8.8.16 — 재배포 시 초기화되던 항목들.
+    's3_ingest',      # 파일탐색기 S3 동기화 config/status/history
+    'reformatter',    # 제품별 reformatter 룰
+    'notifications',  # 사용자 알림 큐
+    'cache',          # 런타임 캐시 (초기화해도 재생성되지만 덮어쓰지 말 것)
+    'data',           # 전체 data 트리 — 어떤 경로 아래에 있든 덮어쓰기 금지 (defense-in-depth)
 }}
 
 
