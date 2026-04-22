@@ -2121,7 +2121,9 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
 
     url = cfg.get("api_url").strip()
     dry_run = url.lower() == "dry-run"
-    # v8.8.21: 사내 메일 API — data 안의 `mailSendString` 키에 실제 payload 를 문자열로 감싼다.
+    # v8.8.24: 사내 메일 API 규약 정합 — `mailSendString` 은 multipart 의 top-level
+    #   form field 로 직접 전송 (값은 data_obj 를 JSON 직렬화한 문자열). 이전
+    #   v8.8.21~v8.8.23 의 "data" → JSON({mailSendString:...}) 이중 래핑 구조 교정.
     mail_send_string = _json.dumps(data_obj, ensure_ascii=False)
     wrapped = {"mailSendString": mail_send_string}
     if dry_run:
@@ -2133,8 +2135,8 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
             "preview_headers": headers,
         }
     else:
-        # multipart/form-data: "data" (JSON string with mailSendString wrapper) + "files" parts.
-        fields = {"data": _json.dumps(wrapped, ensure_ascii=False)}
+        # multipart/form-data: "mailSendString" (JSON string) + "files" parts.
+        fields = {"mailSendString": mail_send_string}
         body_bytes, content_type = _encode_multipart(fields, attach_files)
         hdrs_out = dict(headers)
         hdrs_out["Content-Type"] = content_type
