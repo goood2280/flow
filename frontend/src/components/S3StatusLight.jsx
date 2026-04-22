@@ -3,6 +3,8 @@
    - light: green/yellow/red/none → 색 + 라벨.
    - v8.8.2: 방향(다운/업) 구분을 신호등만 보고도 알 수 있도록 ⬇︎다운 / ⬆︎업 텍스트 라벨 추가 + 아이콘 크기 확대.
    - v8.8.3: 화살표를 신호등(원) 바깥 텍스트가 아닌 원 "안"에 배치 — 다운↓/업↑ 직관화.
+   - v8.8.23: 디자인 변경 — 원형 배경 제거, 화살표 자체가 신호등 색. 업=위 화살표, 다운=아래 화살표.
+     녹색=정상 / 빨강=에러 / 회색=대기·미활성. 아이콘 크기·굵기는 기존 시각 비중 유지(22×22, stroke 3).
 */
 import { useEffect, useState } from "react";
 import { sf } from "../lib/api";
@@ -38,22 +40,28 @@ export default function S3StatusLight({ compact = false }) {
   const downLabel = (COLORS[downKey] || COLORS.none).label;
   const upLabel = (COLORS[upKey] || COLORS.none).label;
 
-  // v8.8.22: SVG 로 명시적 화살표 — 유니코드 폰트 의존성 제거.
-  //   direction="down" → 아래 화살표, "up" → 위 화살표. 흰색 stroke/fill 2.5px.
-  //   원 지름 18px, 화살표 바디 10px + 헤드, 선 굵기 2.5 → 배경 대비 확실히 보임.
-  const ArrowSvg = ({ direction }) => {
+  // v8.8.23: 원형 배경 제거 — 화살표 자체가 신호등 색.
+  //   direction="down" → 아래 화살표, "up" → 위 화살표.
+  //   stroke=color 3px, linecap/join=round, fill=none. viewBox 22x22 로 여유 여백.
+  //   red 상태는 깜빡임(애니메이션 유지). boxShadow 는 제거하고 drop-shadow filter 로 대체(색감 유지).
+  const ArrowSvg = ({ direction, color, blink }) => {
     const isDown = direction === "down";
+    const style = {
+      display: "block",
+      filter: `drop-shadow(0 0 2px ${color}66)`,
+      ...(blink ? ringStyle : {}),
+    };
     return (
-      <svg width="18" height="18" viewBox="0 0 18 18" style={{ display: "block" }}>
+      <svg width="22" height="22" viewBox="0 0 22 22" style={style}>
         {isDown ? (
-          <g stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none">
-            <line x1="9" y1="3.5" x2="9" y2="13" />
-            <polyline points="4.5,9 9,13.5 13.5,9" />
+          <g stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="none">
+            <line x1="11" y1="3.5" x2="11" y2="16" />
+            <polyline points="5,11 11,17 17,11" />
           </g>
         ) : (
-          <g stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none">
-            <line x1="9" y1="14.5" x2="9" y2="5" />
-            <polyline points="4.5,9 9,4.5 13.5,9" />
+          <g stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="none">
+            <line x1="11" y1="18.5" x2="11" y2="6" />
+            <polyline points="5,11 11,5 17,11" />
           </g>
         )}
       </svg>
@@ -63,19 +71,10 @@ export default function S3StatusLight({ compact = false }) {
   const pill = (direction, text, color, tip, isRed) => (
     <span style={{
       display:"inline-flex", alignItems:"center", gap:4,
-      padding:"2px 7px 2px 3px", borderRadius:12,
-      background: color + "1e",
-      border: "1px solid " + color,
+      padding:"1px 6px 1px 2px", borderRadius:10,
       lineHeight: 1,
     }} title={tip}>
-      <span style={{
-        width: 18, height: 18, borderRadius: "50%", background: color,
-        boxShadow: `0 0 6px ${color}`, flexShrink: 0,
-        display:"inline-flex", alignItems:"center", justifyContent:"center",
-        ...(isRed?ringStyle:{}),
-      }}>
-        <ArrowSvg direction={direction} />
-      </span>
+      <ArrowSvg direction={direction} color={color} blink={isRed} />
       <span style={{fontSize:10, color, fontWeight:700, letterSpacing:"-0.02em"}}>{text}</span>
     </span>
   );

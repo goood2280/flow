@@ -85,10 +85,157 @@ GROUPS_FILE = GROUPS_DIR / "groups.json"
 AUDIT_FILE = GROUPS_DIR / "groups_audit.jsonl"
 
 
+def _clean_emails_for_group(raw) -> list:
+    """v8.8.23: 메일 그룹 통합 — email 정규화 헬퍼 (mail_groups.py 에서 가져옴)."""
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    out = []
+    seen = set()
+    for e in raw:
+        s = str(e).strip()
+        if s and "@" in s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+_MIGRATION_DONE = False
+
+
+def _migrate_legacy_mail_groups(groups: list) -> list:
+    """v8.8.23: 레거시 `mail_groups.json` + admin_settings.json:recipient_groups 를
+    groups.json 으로 일회성 병합. 이름 기준 match — 기존 그룹이 있으면 extra_emails 만
+    보강, 없으면 새 그룹으로 추가 (owner="system").
+    마이그레이션 완료 파일은 `.migrated` suffix 로 이름 변경해 두번 돌지 않게.
+    """
+    global _MIGRATION_DONE
+    if _MIGRATION_DONE:
+        return groups
+    _MIGRATION_DONE = True
+    changed = False
+    # 1) mail_groups.json
+    legacy_fp = PATHS.data_root / "mail_groups.json"
+    if legacy_fp.exists():
+        try:
+            legacy = load_json(legacy_fp, [])
+            if isinstance(legacy, list):
+                by_name = {(g.get("name") or "").strip().lower(): g for g in groups}
+                for mg in legacy:
+                    if not isinstance(mg, dict):
+                        continue
+                    nm = (mg.get("name") or "").strip()
+                    if not nm:
+                        continue
+                    key = nm.lower()
+                    mg_members = _sanitize_members(mg.get("members") or [])
+                    mg_extras = _clean_emails_for_group(mg.get("extra_emails") or [])
+                    mg_note = (mg.get("note") or "").strip() or None
+                    if key in by_name:
+                        tgt = by_name[key]
+                        # extra_emails 병합 (dedupe)
+                        cur_ext = _clean_emails_for_group(tgt.get("extra_emails") or [])
+                        for e in mg_extras:
+                            if e not in cur_ext:
+                                cur_ext.append(e)
+                        if cur_ext != (tgt.get("extra_emails") or []):
+                            tgt["extra_emails"] = cur_ext
+                            changed = True
+                        # members 병합
+                        cur_m = set(tgt.get("members") or [])
+                        for m in mg_members:
+                            if m not in cur_m:
+                                cur_m.add(m)
+                                changed = True
+                        tgt["members"] = sorted(cur_m)
+                    else:
+                        gid = mg.get("id") or f"grp_mig_{uuid.uuid4().hex[:8]}"
+                        groups.append({
+                            "id": gid,
+                            "name": nm,
+                            "description": mg_note,
+                            "owner": mg.get("created_by") or "system",
+                            "members": sorted(set(mg_members)),
+                            "watched_lots": [],
+                            "modules": [],
+                            "extra_emails": mg_extras,
+                            "created": mg.get("created") or datetime.datetime.now().isoformat(timespec="seconds"),
+                            "updated": datetime.datetime.now().isoformat(timespec="seconds"),
+                        })
+                        by_name[key] = groups[-1]
+                        changed = True
+            # 이름 변경 — 두번 안 돌게.
+            try:
+                legacy_fp.rename(legacy_fp.with_suffix(".json.migrated"))
+            except Exception:
+                pass
+        except Exception:
+            pass
+    # 2) admin_settings.json:recipient_groups (dict: name → [usernames])
+    try:
+        adm_fp = PATHS.data_root / "admin_settings.json"
+        if adm_fp.exists():
+            adm = load_json(adm_fp, {})
+            rg = (adm.get("mail") or {}).get("recipient_groups") or adm.get("recipient_groups") or {}
+            if isinstance(rg, dict) and rg:
+                by_name = {(g.get("name") or "").strip().lower(): g for g in groups}
+                for nm, ulist in rg.items():
+                    nm = (nm or "").strip()
+                    if not nm:
+                        continue
+                    key = nm.lower()
+                    members = _sanitize_members([u for u in (ulist or []) if isinstance(u, str)])
+                    if key in by_name:
+                        tgt = by_name[key]
+                        cur_m = set(tgt.get("members") or [])
+                        for m in members:
+                            if m not in cur_m:
+                                cur_m.add(m); changed = True
+                        tgt["members"] = sorted(cur_m)
+                    else:
+                        gid = f"grp_mig_{uuid.uuid4().hex[:8]}"
+                        groups.append({
+                            "id": gid,
+                            "name": nm,
+                            "description": None,
+                            "owner": "system",
+                            "members": sorted(set(members)),
+                            "watched_lots": [],
+                            "modules": [],
+                            "extra_emails": [],
+                            "created": datetime.datetime.now().isoformat(timespec="seconds"),
+                            "updated": datetime.datetime.now().isoformat(timespec="seconds"),
+                        })
+                        by_name[key] = groups[-1]
+                        changed = True
+    except Exception:
+        pass
+    return groups if changed else groups  # caller will save if needed
+
+
 def _load() -> list:
     data = load_json(GROUPS_FILE, [])
     if not isinstance(data, list):
         return []
+    # v8.8.23: 정규화 — extra_emails 필드 보장.
+    for g in data:
+        if isinstance(g, dict):
+            g.setdefault("extra_emails", [])
+    # 최초 로드 시 레거시 병합 시도.
+    global _MIGRATION_DONE
+    if not _MIGRATION_DONE:
+        before = [dict(x) for x in data]
+        migrated = _migrate_legacy_mail_groups(data)
+        # 변경 여부 단순 검사 — 리스트 길이 or 대표 필드 비교.
+        if len(migrated) != len(before) or any(
+            (a.get("extra_emails") or []) != (b.get("extra_emails") or []) or
+            (a.get("members") or []) != (b.get("members") or [])
+            for a, b in zip(migrated, before)
+        ):
+            try:
+                save_json(GROUPS_FILE, migrated, indent=2)
+            except Exception:
+                pass
+        data = migrated
     return data
 
 
@@ -178,6 +325,8 @@ class GroupCreate(BaseModel):
     members: List[str] = []
     watched_lots: List[str] = []
     modules: List[str] = []
+    # v8.8.23: 메일 그룹 통합 — 외부 고정 수신자(email) 리스트를 그룹 레코드에 보관.
+    extra_emails: List[str] = []
 
 
 class GroupUpdate(BaseModel):
@@ -186,6 +335,7 @@ class GroupUpdate(BaseModel):
     members: Optional[List[str]] = None
     watched_lots: Optional[List[str]] = None
     modules: Optional[List[str]] = None
+    extra_emails: Optional[List[str]] = None  # v8.8.23
 
 
 class ModulesReq(BaseModel):
@@ -245,6 +395,8 @@ def create_group(req: GroupCreate, request: Request):
         "members": members,
         "watched_lots": sorted(set(req.watched_lots or [])),
         "modules": sorted(set(req.modules or [])),
+        # v8.8.23: 메일 통합 — extra_emails (외부 고정 수신자).
+        "extra_emails": _clean_emails_for_group(req.extra_emails or []),
         "created": now,
         "updated": now,
     }
@@ -279,6 +431,9 @@ def update_group(req: GroupUpdate, request: Request, id: str = Query(...)):
         g["watched_lots"] = sorted(set(req.watched_lots))
     if req.modules is not None:
         g["modules"] = sorted({m.strip() for m in req.modules if m and m.strip()})
+    # v8.8.23: extra_emails 편집 지원.
+    if req.extra_emails is not None:
+        g["extra_emails"] = _clean_emails_for_group(req.extra_emails)
     g["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
     _save(groups)
     _audit(me["username"], "update", id, g.get("name", ""))

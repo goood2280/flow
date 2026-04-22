@@ -132,11 +132,17 @@ export default function My_SplitTable({user}){
   //   all_columns 는 현재 검색된 lot 의 df.columns 기반이라 lot 검색 전에는 비어있음.
   //   스키마는 lot 검색 없이도 가져올 수 있어 CUSTOM 모드에서 자유롭게 컬럼을 고를 수 있다.
   const[productSchema,setProductSchema]=useState([]);
+  // v8.8.23: override_cols_present — 오버라이드에서 실제 join 된 컬럼 목록.
+  //   CUSTOM pool 의 `_CUSTOM_HIDDEN` 기본 숨김 목록에서 예외 처리 → 검색/필터 드롭다운에 노출.
+  const[overrideCols,setOverrideCols]=useState([]);
   useEffect(()=>{
-    if(!selProd){setProductSchema([]);return;}
+    if(!selProd){setProductSchema([]);setOverrideCols([]);return;}
     sf(API+"/schema?product="+encodeURIComponent(selProd))
-      .then(d=>setProductSchema((d.columns||[]).map(c=>c.name||c)))
-      .catch(()=>setProductSchema([]));
+      .then(d=>{
+        setProductSchema((d.columns||[]).map(c=>c.name||c));
+        setOverrideCols(Array.isArray(d.override_cols_present)?d.override_cols_present:[]);
+      })
+      .catch(()=>{setProductSchema([]);setOverrideCols([]);});
   },[selProd]);
   // v8.4.7: 제품 바뀔 때 KNOB meta 재fetch.
   useEffect(()=>{if(!selProd){setKnobMeta({});return;}
@@ -325,15 +331,32 @@ export default function My_SplitTable({user}){
     if(cell.plan)return{borderLeft:"3px solid #f97316",fontStyle:"italic",fontWeight:700}; // plan-only: bg 는 getCellBg 가 plan 값 기준으로 처리
     return{};};
 
-  const allCols=data?.all_columns||[];
+  // v8.8.23: view 응답의 all_columns 는 이미 오버라이드 조인 후 df.columns 이지만,
+  //   lot 검색 전에는 비어있어 drawer/검색 UI 에 override 컬럼이 안 보였음.
+  //   productSchema 와 overrideCols 를 union 해 어느 상태에서도 override 컬럼이 드롭될 일이 없게.
+  const allCols=(()=>{
+    const base = data?.all_columns || [];
+    const seen = new Set(base);
+    const out = [...base];
+    for(const c of [...overrideCols, ...productSchema]){
+      if(c && !seen.has(c)){ seen.add(c); out.push(c); }
+    }
+    return out;
+  })();
   const filteredCols=colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols.slice(0,100);
   // v8.8.16: CUSTOM 모드 전용 컬럼 풀 — productSchema (전체) + allCols (현재 lot) + customCols 합집합.
   //   lot 검색 전이라도 선택 가능하며, plan 전용 가상 컬럼(저장된 customCols) 도 보존.
   // v8.8.19: PRODUCT / ROOT_LOT_ID / WAFER_ID 는 자동 붙는 기본 컬럼이라 CUSTOM 선택 pool 에서 제외.
-  const _CUSTOM_HIDDEN = new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
+  // v8.8.23: 단, 오버라이드에서 hive 원천으로부터 실제 join 된 컬럼(root_lot_id / lot_id 등)은
+  //   검색/필터 대상이어야 하므로 숨김 set 에서 예외 처리. (override_cols_present 및 allCols 안에
+  //   있는 해당 이름은 CUSTOM pool 에 노출.)
+  const _CUSTOM_HIDDEN_BASE = new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
+  const _OVERRIDE_EXEMPT = new Set((overrideCols||[]).map(c=>String(c).toLowerCase()));
   const customPool=(()=>{const seen=new Set();const out=[];
-    for(const c of [...productSchema,...allCols,...customCols]){
-      if(!seen.has(c)&&!_CUSTOM_HIDDEN.has(String(c).toLowerCase())){seen.add(c);out.push(c);}
+    for(const c of [...productSchema,...allCols,...customCols,...overrideCols]){
+      const lc = String(c).toLowerCase();
+      const hidden = _CUSTOM_HIDDEN_BASE.has(lc) && !_OVERRIDE_EXEMPT.has(lc);
+      if(!seen.has(c)&&!hidden){seen.add(c);out.push(c);}
     }return out;})();
   const filteredCustomCols=colSearch
     ?customPool.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase()))

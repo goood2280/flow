@@ -1393,7 +1393,26 @@ function AWSPanel({user}){
   );
 }
 
-// ── Groups Panel (v8.8.3 — description 추가, 관심 WF 제거) ──
+// v8.8.23: Admin 그룹 패널 내부에서 extra_emails 추가용 미니 인풋.
+function ExtraEmailAdd({current,onSave}){
+  const [v,setV]=useState("");
+  const submit=()=>{
+    const s=(v||"").trim();
+    if(!s||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s)){alert("이메일 형식이 올바르지 않습니다.");return;}
+    const next=Array.from(new Set([...(current?.extra_emails||[]),s]));
+    onSave(next);
+    setV("");
+  };
+  return (<div style={{display:"flex",gap:6}}>
+    <input value={v} onChange={e=>setV(e.target.value)} placeholder="외부 이메일 추가 (e.g. vendor@company.co.kr)"
+      onKeyDown={e=>{if(e.key==="Enter")submit();}}
+      style={{flex:1,padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace"}}/>
+    <button onClick={submit} style={{padding:"6px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,cursor:"pointer"}}>추가</button>
+  </div>);
+}
+
+
+// ── Groups Panel (v8.8.3 — description 추가, 관심 WF 제거 · v8.8.23 extra_emails 통합) ──
 function GroupsPanel({allUsers, isAdmin, currentUser}){
   const [groups,setGroups]=useState([]);
   const [sel,setSel]=useState(null);
@@ -1535,10 +1554,39 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
 
           {/* v8.8.5: 담당 모듈 UI 제거 — 불필요. 그룹은 단순 멤버 풀로 사용. */}
 
+          {/* v8.8.23: 외부 고정 수신자(extra_emails) — 인폼/회의 메일 발송 시 자동 포함되는 주소. */}
+          <div style={{marginTop:16}}>
+            <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>외부 수신자 이메일 ({(cur.extra_emails||[]).length})
+              <span style={{marginLeft:8,fontSize:10,color:"var(--text-secondary)",fontWeight:400}}>
+                메일 발송 시 members 의 사내 이메일과 함께 항상 포함됩니다.
+              </span>
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:8}}>
+              {(cur.extra_emails||[]).map(e=>(
+                <span key={e} style={{padding:"3px 10px",borderRadius:999,background:"var(--bg-tertiary)",fontSize:11,display:"inline-flex",alignItems:"center",gap:6,fontFamily:"monospace"}}>
+                  {e}
+                  {canEdit&&<button onClick={()=>{
+                    const next=(cur.extra_emails||[]).filter(x=>x!==e);
+                    sf("/api/groups/update?id="+encodeURIComponent(cur.id),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extra_emails:next})})
+                      .then(load).catch(err=>setMsg(err.message));
+                  }} style={{border:"none",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11,padding:0}}>×</button>}
+                </span>
+              ))}
+              {(cur.extra_emails||[]).length===0&&<span style={{fontSize:10,color:"var(--text-secondary)",fontStyle:"italic"}}>외부 수신자 없음</span>}
+            </div>
+            {canEdit&&<ExtraEmailAdd current={cur} onSave={(next)=>
+              sf("/api/groups/update?id="+encodeURIComponent(cur.id),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({extra_emails:next})})
+                .then(load).catch(err=>setMsg(err.message))
+            }/>}
+          </div>
+
           <div style={{marginTop:16,padding:10,background:"var(--bg-primary)",borderRadius:6,fontSize:10,color:"var(--text-secondary)",lineHeight:1.6}}>
             • 이 그룹에 속한 유저는 Dashboard/Tracker 에서 이 그룹에 연결된 차트·이슈만 공유함.<br/>
             • admin 은 모든 그룹과 콘텐츠를 볼 수 있음 (전체 담당).<br/>
             • <b>설명</b>은 그룹의 목적·소속 부서 등 자유 텍스트. 리스트 보조 텍스트로 노출됨.<br/>
+            • <b>v8.8.23</b> 메일 그룹과 이슈추적 그룹이 이 Admin 그룹으로 통합됨. 여기서 만든 그룹이
+              인폼 메일 수신 드롭다운 / 이슈추적 그룹 선택 / 회의 mail_group_ids 에 모두 노출됩니다.
+              기존 <code>mail_groups.json</code> 과 <code>admin_settings:recipient_groups</code> 는 자동 병합.<br/>
             • <b>v8.8.5</b> admin 도 멤버 풀에 포함 (사내 계정은 이메일 보유) · test substring 계정만 제외 · 생성자는 자동 가입되지 않음 (명시적으로 추가).
           </div>
         </>}

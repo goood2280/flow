@@ -1,3 +1,12 @@
+## v8.8.23 — 2026-04-22
+
+SplitTable 오버라이드 컬럼 검색/필터 노출 + S3 신호등 화살표 자체 컬러 + 인폼 ML_TABLE CI 스냅샷 + 메일/이슈 그룹 = Admin 그룹 통합.
+
+- **SplitTable 오버라이드 컬럼 검색/필터 노출** — `/api/splittable/schema` 가 `_scan_product` 결과(post-join 스키마) 를 반환하고 `override_cols_present` 를 동봉. `My_SplitTable` 이 `_CUSTOM_HIDDEN_BASE` 에서 오버라이드 성공 컬럼을 `_OVERRIDE_EXEMPT` 로 예외 처리하고 `allCols` 도 overrideCols/productSchema union 으로 보강 → `root_lot_id` / `lot_id` / `fab_lot_id` 가 검색 드롭다운·CUSTOM pool 양쪽에서 정상 노출. 기존 '조인 활성' 배지는 유지.
+- **S3 신호등 화살표 자체 컬러** — `S3StatusLight` 원형 배경 제거. 화살표 자체가 신호등 색(초록/빨강/회색). 업=위 / 다운=아래. viewBox 22×22 · stroke 3 · drop-shadow filter 로 시각 비중은 기존 아이콘 유지. red 상태 애니메이션 그대로.
+- **인폼 `_resolve_fab_lot_snapshot` CI 매칭** — `fab_lot_id`/`root_lot_id`/`lot_id`/`wafer_id` 를 literal 비교하던 로직을 `_ci_resolve` / `_ci_pick_first` 헬퍼로 교체. ML_TABLE 이 대문자 컬럼으로 찍혀도 저장 시 스냅샷 정상 해결. v8.8.22 에서 SplitTable 쪽만 CI 적용된 누락 메꿈.
+- **메일 그룹 · 이슈추적 그룹 = Admin 그룹 통합** — 단일 진실원 = `groups/groups.json`. `mail_groups.json` 과 `admin_settings.json:recipient_groups` 는 `groups.py._load()` 최초 호출 시 일회성 merge(이름 기준, 원본은 `.json.migrated` rename). `/api/mail-groups/*` + `/api/informs/mail-groups` 는 groups.json 투영만 수행. groups 스키마에 `extra_emails` 필드 + Admin GroupsPanel 에 외부 수신자 관리 UI 추가.
+
 ## v8.8.22 — 2026-04-22
 
 SplitTable/인폼 case-insensitive 매칭 + 메일 본문 SplitTable HTML 인라인 + 개별유저 picker 도메인 자동합성 + CUSTOM 15줄 확장 + S3 신호등 SVG 화살표 + Admin 권한 탭 재배치.

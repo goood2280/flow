@@ -1,19 +1,20 @@
-"""routers/mail_groups.py v8.7.7 — 회의/인폼 메일 발송용 공용 메일 그룹.
+"""routers/mail_groups.py v8.8.23 — 공용 메일 그룹 = Admin 그룹 통합 어댑터.
 
-groups.py (Dashboard/Tracker/인폼 가시성) 과 구분되는 별도 스토어.  핵심 차이:
-  - 모든 로그인 유저가 생성/수정/삭제 가능 (admin 전용 아님).
-  - 한 유저가 여러 그룹에 속할 수 있음 (N:N).
-  - 그룹은 "공용" — 누가 만들었든 모든 유저가 회의 메일 발송 시 선택 가능.
-  - 멤버: {username} list + 선택적 extra_emails (팀 외부 고정 수신자).
+v8.8.23 대수술:
+  - 이제 mail_groups.json 이라는 별도 저장소를 유지하지 않는다.
+  - 모든 엔드포인트는 routers/groups.py 의 groups.json 에 위임한다.
+  - 레거시 mail_groups.json 은 groups.py 의 `_load()` 가 일회성으로 merge → rename.
+  - 스키마는 `mail_groups` 스펙({id,name,members,extra_emails,note}) 을 그대로 노출하기
+    위해 groups.py 레코드를 투영(note = description).
 
-스키마 ({data_root}/mail_groups.json):
-  [{id, name, created_by, members:[username], extra_emails:[email], note, created, updated}]
+  이 결과로 Admin "그룹" 탭에서 만든 그룹이 인폼 메일 수신 그룹 드롭다운,
+  회의 mail_group_ids 선택, 이슈추적 그룹 선택 모두에서 동일하게 노출된다.
 
 Endpoints (모두 로그인 유저):
-  GET  /api/mail-groups/list
-  POST /api/mail-groups/create
-  POST /api/mail-groups/update?id=
-  POST /api/mail-groups/delete?id=
+  GET  /api/mail-groups/list                — 공용 그룹 목록
+  POST /api/mail-groups/create              — 신규 그룹 (groups.json 에 생성)
+  POST /api/mail-groups/update?id=          — 편집
+  POST /api/mail-groups/delete?id=          — 삭제 (owner/admin)
   POST /api/mail-groups/members/add?id=
   POST /api/mail-groups/members/remove?id=
 """
@@ -26,86 +27,59 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from core.paths import PATHS
-from core.utils import load_json, save_json
 from core.auth import current_user
 from core.audit import record as _audit
 
+# groups.py 내부 도우미 직접 재사용 — 단일 진실원.
+from routers.groups import (
+    _load as _groups_load,
+    _save as _groups_save,
+    _find as _groups_find,
+    _sanitize_members,
+    _clean_emails_for_group,
+    _can_edit,
+    _is_blocked_member,
+    _load_users_by_name,
+)
 
 router = APIRouter(prefix="/api/mail-groups", tags=["mail_groups"])
-
-MG_FILE = PATHS.data_root / "mail_groups.json"
-
-
-def _load() -> list:
-    data = load_json(MG_FILE, [])
-    if not isinstance(data, list):
-        return []
-    out = []
-    for g in data:
-        if not isinstance(g, dict):
-            continue
-        g.setdefault("members", [])
-        g.setdefault("extra_emails", [])
-        g.setdefault("note", "")
-        out.append(g)
-    return out
-
-
-def _save(items: list) -> None:
-    save_json(MG_FILE, items, indent=2)
-
-
-def _find(items: list, gid: str):
-    for i, g in enumerate(items):
-        if g.get("id") == gid:
-            return i, g
-    return -1, None
-
-
-def _new_gid() -> str:
-    return f"mg_{datetime.datetime.now().strftime('%y%m%d')}_{uuid.uuid4().hex[:6]}"
 
 
 def _now() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
-def _clean_emails(raw) -> list:
-    if not isinstance(raw, list):
-        return []
-    out = []
-    seen = set()
-    for e in raw:
-        s = str(e).strip()
-        if s and "@" in s and s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out
+def _project(g: dict) -> dict:
+    """groups.json 레코드 → mail_groups 응답 shape (note = description).
+    FE 호환성 확보 — description/owner/modules 등도 함께 노출해 Admin 그룹 정보를 볼 수 있게.
+    """
+    if not isinstance(g, dict):
+        return {}
+    return {
+        "id": g.get("id", ""),
+        "name": g.get("name", ""),
+        "created_by": g.get("owner") or g.get("created_by") or "",
+        "members": list(g.get("members") or []),
+        "extra_emails": list(g.get("extra_emails") or []),
+        "note": g.get("description") or g.get("note") or "",
+        # 원본 필드도 노출 (읽기 전용).
+        "description": g.get("description") or "",
+        "modules": list(g.get("modules") or []),
+        "watched_lots": list(g.get("watched_lots") or []),
+        "owner": g.get("owner", ""),
+        "created": g.get("created") or "",
+        "updated": g.get("updated") or "",
+    }
 
 
-def _clean_members(raw) -> list:
-    """v8.8.1: admin 계정 + "test" 포함 username 은 멤버 풀에서 제외."""
-    if not isinstance(raw, list):
-        return []
-    # lazy import to avoid circular
+# v8.8.23: 하위 호환 — meetings.py 등이 `from routers.mail_groups import _load` 하던 것을
+# 깨뜨리지 않도록 동일 이름으로 groups.json 을 읽어 mail-spec 투영 리스트를 돌려준다.
+def _load() -> list:
+    """하위 호환. groups.json → mail-groups shape 투영 리스트."""
     try:
-        from routers.groups import _is_blocked_member, _load_users_by_name
-        users_by_name = _load_users_by_name()
+        return [_project(g) for g in (_groups_load() or []) if isinstance(g, dict)]
     except Exception:
-        _is_blocked_member = None
-        users_by_name = {}
-    out = []
-    seen = set()
-    for u in raw:
-        s = str(u).strip()
-        if not s or s in seen:
-            continue
-        if _is_blocked_member and _is_blocked_member(s, users_by_name):
-            continue
-        seen.add(s)
-        out.append(s)
-    return out
+        return []
 
 
 # ── Pydantic ────────────────────────────────────────────────────────
@@ -130,11 +104,14 @@ class MGMember(BaseModel):
 # ── Endpoints ───────────────────────────────────────────────────────
 @router.get("/list")
 def list_groups(request: Request):
+    """v8.8.23: 모든 그룹(groups.json) 을 mail 스펙으로 투영해 노출.
+    권한: 공용 — 로그인 유저 전원.  visibility 필터는 적용하지 않음 (메일 수신자 선택 UX).
+    """
     _ = current_user(request)
-    items = _load()
-    # sort by name asc
-    items.sort(key=lambda g: (g.get("name") or "").lower())
-    return {"groups": items}
+    items = _groups_load()
+    out = [_project(g) for g in items if isinstance(g, dict)]
+    out.sort(key=lambda g: (g.get("name") or "").lower())
+    return {"groups": out}
 
 
 @router.post("/create")
@@ -145,77 +122,88 @@ def create_group(req: MGCreate, request: Request):
         raise HTTPException(400, "name required")
     if len(name) > 80:
         raise HTTPException(400, "name too long (max 80)")
-    items = _load()
+    items = _groups_load()
     if any((g.get("name") or "").strip() == name for g in items):
-        raise HTTPException(409, "mail group name already exists")
+        raise HTTPException(409, "group name already exists")
     now = _now()
-    members = _clean_members(req.members or [])
-    # v8.8.1: 생성자 자동 포함 X (admin 이 만든 경우 메일 발송 대상이 아님).
-    # creator 가 스스로를 members 에 넣고 싶으면 명시적으로 req.members 에 포함해야 함.
+    users_by_name = _load_users_by_name()
+    members = _sanitize_members(req.members or [], users_by_name)
+    gid = f"grp_{datetime.datetime.now().strftime('%y%m%d')}_{uuid.uuid4().hex[:6]}"
     g = {
-        "id": _new_gid(),
+        "id": gid,
         "name": name,
-        "created_by": me["username"],
-        "members": members,
-        "extra_emails": _clean_emails(req.extra_emails or []),
-        "note": (req.note or "").strip()[:400],
+        "description": (req.note or "").strip()[:400] or None,
+        "owner": me["username"],
+        "members": sorted(set(members)),
+        "watched_lots": [],
+        "modules": [],
+        "extra_emails": _clean_emails_for_group(req.extra_emails or []),
         "created": now,
         "updated": now,
     }
     items.append(g)
-    _save(items)
+    _groups_save(items)
     _audit(request, "mail_groups:create",
-           detail=f"id={g['id']} name={name}", tab="mail_groups")
-    return {"ok": True, "group": g}
+           detail=f"id={g['id']} name={name} (unified→groups.json)", tab="mail_groups")
+    return {"ok": True, "group": _project(g)}
 
 
 @router.post("/update")
 def update_group(req: MGUpdate, request: Request, id: str = Query(...)):
     me = current_user(request)
-    items = _load()
-    idx, g = _find(items, id)
+    items = _groups_load()
+    g = _groups_find(items, id)
     if not g:
         raise HTTPException(404, "mail group not found")
-    # 공용 그룹 정책: 모든 유저가 편집 가능. 대신 변경자는 감사 로그에 기록.
+    # 공용 편집 허용 — 단 name/delete 는 owner/admin 만.
     changed = []
     if req.name is not None:
+        if not _can_edit(g, me["username"], me.get("role", "user")):
+            raise HTTPException(403, "Only owner or admin can rename")
         name = (req.name or "").strip()
         if not name:
             raise HTTPException(400, "name empty")
         if any((x.get("name") or "").strip() == name and x.get("id") != id for x in items):
-            raise HTTPException(409, "mail group name already exists")
+            raise HTTPException(409, "group name already exists")
         if name != g.get("name"):
             g["name"] = name
             changed.append("name")
     if req.members is not None:
-        g["members"] = _clean_members(req.members)
+        users_by_name = _load_users_by_name()
+        g["members"] = sorted(set(_sanitize_members(req.members, users_by_name)))
         changed.append("members")
     if req.extra_emails is not None:
-        g["extra_emails"] = _clean_emails(req.extra_emails)
+        g["extra_emails"] = _clean_emails_for_group(req.extra_emails)
         changed.append("extra_emails")
     if req.note is not None:
-        g["note"] = (req.note or "").strip()[:400]
+        g["description"] = (req.note or "").strip()[:400] or None
         changed.append("note")
     if not changed:
-        return {"ok": True, "group": g, "noop": True}
+        return {"ok": True, "group": _project(g), "noop": True}
     g["updated"] = _now()
-    items[idx] = g
-    _save(items)
+    # 인덱스 기반 교체 — find 는 참조이지만 명시적으로 저장.
+    for i, x in enumerate(items):
+        if x.get("id") == id:
+            items[i] = g
+            break
+    _groups_save(items)
     _audit(request, "mail_groups:update",
            detail=f"id={id} by={me['username']} fields={','.join(changed)}",
            tab="mail_groups")
-    return {"ok": True, "group": g}
+    return {"ok": True, "group": _project(g)}
 
 
 @router.post("/delete")
 def delete_group(request: Request, id: str = Query(...)):
     me = current_user(request)
-    items = _load()
-    idx, g = _find(items, id)
+    items = _groups_load()
+    g = _groups_find(items, id)
     if not g:
         raise HTTPException(404, "mail group not found")
-    items.pop(idx)
-    _save(items)
+    if not _can_edit(g, me["username"], me.get("role", "user")):
+        raise HTTPException(403, "Only owner or admin can delete")
+    items = [x for x in items if x.get("id") != id]
+    _groups_save(items)
     _audit(request, "mail_groups:delete",
            detail=f"id={id} by={me['username']} name={g.get('name','')}",
            tab="mail_groups")
@@ -228,36 +216,44 @@ def add_member(req: MGMember, request: Request, id: str = Query(...)):
     un = (req.username or "").strip()
     if not un:
         raise HTTPException(400, "username required")
-    items = _load()
-    idx, g = _find(items, id)
+    items = _groups_load()
+    g = _groups_find(items, id)
     if not g:
         raise HTTPException(404)
-    members = _clean_members(g.get("members") or [])
-    if un not in members:
-        members.append(un)
-    g["members"] = members
+    users_by_name = _load_users_by_name()
+    if _is_blocked_member(un, users_by_name):
+        raise HTTPException(400, "blocked member (test 계정 등)")
+    members = set(g.get("members") or [])
+    members.add(un)
+    g["members"] = sorted(_sanitize_members(list(members), users_by_name))
     g["updated"] = _now()
-    items[idx] = g
-    _save(items)
+    for i, x in enumerate(items):
+        if x.get("id") == id:
+            items[i] = g
+            break
+    _groups_save(items)
     _audit(request, "mail_groups:member_add",
            detail=f"id={id} username={un} by={me['username']}",
            tab="mail_groups")
-    return {"ok": True, "group": g}
+    return {"ok": True, "group": _project(g)}
 
 
 @router.post("/members/remove")
 def remove_member(req: MGMember, request: Request, id: str = Query(...)):
     me = current_user(request)
     un = (req.username or "").strip()
-    items = _load()
-    idx, g = _find(items, id)
+    items = _groups_load()
+    g = _groups_find(items, id)
     if not g:
         raise HTTPException(404)
-    g["members"] = [m for m in (g.get("members") or []) if m != un]
+    g["members"] = sorted([m for m in (g.get("members") or []) if m != un])
     g["updated"] = _now()
-    items[idx] = g
-    _save(items)
+    for i, x in enumerate(items):
+        if x.get("id") == id:
+            items[i] = g
+            break
+    _groups_save(items)
     _audit(request, "mail_groups:member_remove",
            detail=f"id={id} username={un} by={me['username']}",
            tab="mail_groups")
-    return {"ok": True, "group": g}
+    return {"ok": True, "group": _project(g)}
