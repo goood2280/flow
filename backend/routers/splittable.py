@@ -677,14 +677,36 @@ def ml_table_match(product: str = Query(...)):
 
 @router.get("/schema")
 def get_schema(product: str = Query(...)):
-    fp = _product_path(product)
-    if fp.suffix == ".csv":
-        lf = pl.scan_csv(str(fp), infer_schema_length=5000)
-    else:
-        lf = pl.scan_parquet(str(fp))
+    """v8.8.23: 오버라이드 조인을 포함한 실제 view 컬럼과 동일한 스키마를 반환.
+       기존에는 ML_TABLE 원본 parquet 컬럼만 반환 → CUSTOM 선택 pool 에 root_lot_id 등
+       오버라이드 컬럼이 들어가지 못해 검색/필터 드롭다운에서 누락. `_scan_product` 로
+       post-join LazyFrame 스키마를 계산하고, `override_cols` (실제 join 성공한 오버라이드 컬럼)
+       을 별도 필드로도 내려 FE 가 '오버라이드 제공' 뱃지를 표시할 수 있게 한다.
+    """
+    try:
+        lf = _scan_product(product)
+        schema = lf.collect_schema()
+        cols = [{"name": n, "dtype": str(d)} for n, d in schema.items()]
+    except Exception:
+        # fallback — 조인 실패해도 원본 컬럼은 반환.
+        fp = _product_path(product)
+        if fp.suffix == ".csv":
+            lf = pl.scan_csv(str(fp), infer_schema_length=5000)
+        else:
+            lf = pl.scan_parquet(str(fp))
+        cols = [{"name": n, "dtype": str(d)} for n, d in lf.schema.items()]
+    # 오버라이드에서 실제로 join 된 컬럼 목록 (FE 가 검색 pool 에서 '숨김 해제' 할 기준).
+    override_cols_present: list = []
+    try:
+        meta = _resolve_override_meta(product)
+        if meta.get("enabled"):
+            override_cols_present = list(meta.get("override_cols_present") or [])
+    except Exception:
+        pass
     return {
-        "columns": [{"name": n, "dtype": str(d)} for n, d in lf.schema.items()],
-        "total": len(lf.schema),
+        "columns": cols,
+        "total": len(cols),
+        "override_cols_present": override_cols_present,
     }
 
 

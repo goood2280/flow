@@ -316,10 +316,35 @@ class SplitChange(BaseModel):
     applied: bool = False
 
 
+# v8.8.23: CI (case-insensitive) 컬럼 해석 헬퍼 — splittable.py 와 동일 정신.
+#   ML_TABLE_<PROD> 가 대문자 (ROOT_LOT_ID / LOT_ID / FAB_LOT_ID / WAFER_ID) 로 찍히거나,
+#   hive 원천이 소문자로 찍혀도 동일 컬럼으로 인식.
+def _ci_resolve(name: str, pool) -> str:
+    """pool 에서 name 과 casefold equal 인 실제 컬럼명 반환. 없으면 '' ."""
+    if not name:
+        return ""
+    want = str(name).casefold()
+    for n in pool:
+        if str(n).casefold() == want:
+            return n
+    return ""
+
+
+def _ci_pick_first(candidates, pool) -> str:
+    """candidates 중 pool 에 CI 존재하는 첫 이름(실제 casing) 반환."""
+    for c in candidates:
+        got = _ci_resolve(c, pool)
+        if got:
+            return got
+    return ""
+
+
 # v8.8.15: 인폼 저장 시점의 fab_lot_id 를 ML_TABLE 에서 resolve.
 #   FE 가 명시적으로 보내지 않았을 때만 호출. splittable 의 /view 가 fab_lot_id 를 join 해 주는 로직을
 #   재구현하면 비용/결합이 크므로, 여기서는 ML_TABLE_<PRODUCT>.parquet 에서 lot_id==root_lot_id 인
 #   가장 최근 행의 fab_lot_id 하나만 싸게 조회 (실패해도 "" 반환).
+# v8.8.23: 컬럼명을 case-insensitive 로 매칭 — ML_TABLE 이 대문자(ROOT_LOT_ID/FAB_LOT_ID) 로
+#   찍혀도 정상 추출. 기존엔 literal 비교라 대/소문자 혼재 시 "" 반환 → fab_lot_id 누락.
 def _resolve_fab_lot_snapshot(product: str, lot_id: str, wafer_id: str) -> str:
     try:
         if not product or not (lot_id or wafer_id):
@@ -337,12 +362,13 @@ def _resolve_fab_lot_snapshot(product: str, lot_id: str, wafer_id: str) -> str:
         if not fp:
             return ""
         lf = pl.scan_parquet(fp)
-        names = set(lf.collect_schema().names()) if hasattr(lf, "collect_schema") else set(lf.schema.keys())
-        if "fab_lot_id" not in names:
+        names = list(lf.collect_schema().names()) if hasattr(lf, "collect_schema") else list(lf.schema.keys())
+        fab_col = _ci_resolve("fab_lot_id", names)
+        if not fab_col:
             return ""
-        # lot_id / wafer_id 컬럼 자동 감지 (간단 폴백)
-        lot_col = "root_lot_id" if "root_lot_id" in names else ("lot_id" if "lot_id" in names else None)
-        wf_col = "wafer_id" if "wafer_id" in names else None
+        # lot_id / wafer_id 컬럼 CI 감지 — root_lot_id 우선.
+        lot_col = _ci_pick_first(("root_lot_id", "lot_id"), names)
+        wf_col = _ci_resolve("wafer_id", names)
         if not lot_col and not wf_col:
             return ""
         key = (lot_id or "")[:5]
@@ -354,7 +380,7 @@ def _resolve_fab_lot_snapshot(product: str, lot_id: str, wafer_id: str) -> str:
         if expr is None:
             return ""
         # 최신 fab_lot_id 하나만 뽑기 (order-by 없이 임의의 첫 값 — 스냅샷 용도로 충분).
-        df = lf.filter(expr).select(pl.col("fab_lot_id").cast(pl.Utf8)).head(1).collect()
+        df = lf.filter(expr).select(pl.col(fab_col).cast(pl.Utf8)).head(1).collect()
         if df.height == 0:
             return ""
         v = df.item(0, 0)
@@ -1457,11 +1483,58 @@ class SendMailReq(BaseModel):
 
 @router.get("/mail-groups")
 def list_mail_groups(request: Request):
-    """Admin 에 저장된 메일 수신자 그룹 (이름 → username 리스트). 로그인 유저 누구나 조회."""
+    """v8.8.23: 단일 진실원 = groups.json (Admin 그룹).
+    이름 → [이메일] 리스트 포맷으로 resolve (members 의 사내 이메일 + extra_emails).
+    legacy 엔드포인트 — recipient_groups 와 동일 응답 모양을 유지해 FE 호환성 확보.
+    """
     _ = current_user(request)
-    cfg = _load_mail_cfg()
-    rg = cfg.get("recipient_groups") or {}
-    return {"groups": rg if isinstance(rg, dict) else {}}
+    try:
+        from routers.groups import _load as _groups_load
+        groups = _groups_load()
+    except Exception:
+        groups = []
+    # username → email 매핑 (users.csv + admin 도메인 자동합성).
+    try:
+        from routers.auth import read_users
+        users = read_users()
+    except Exception:
+        users = []
+    try:
+        from core.mail import load_mail_cfg as _load_mcfg
+        _domain = (_load_mcfg().get("domain") or "").strip().lstrip("@")
+    except Exception:
+        _domain = ""
+    un2em = {}
+    for u in users or []:
+        un = (u.get("username") or "").strip()
+        if not un:
+            continue
+        em = (u.get("email") or "").strip()
+        if em and "@" in em:
+            un2em[un] = em
+        elif "@" in un and "." in un.split("@", 1)[1]:
+            un2em[un] = un
+        elif _domain:
+            un2em[un] = f"{un}@{_domain}"
+    out: dict = {}
+    for g in groups or []:
+        if not isinstance(g, dict):
+            continue
+        name = (g.get("name") or "").strip()
+        if not name:
+            continue
+        emails = []
+        seen = set()
+        for un in (g.get("members") or []):
+            em = un2em.get(un, "")
+            if em and em not in seen:
+                seen.add(em); emails.append(em)
+        for em in (g.get("extra_emails") or []):
+            em = str(em).strip()
+            if em and "@" in em and em not in seen:
+                seen.add(em); emails.append(em)
+        out[name] = emails
+    return {"groups": out}
 
 
 @router.get("/recipients")
