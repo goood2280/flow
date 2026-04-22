@@ -281,12 +281,17 @@ def send_mail(
 
     url = (cfg.get("api_url") or "").strip()
     headers = dict(cfg.get("headers") or {})
+    # v8.8.21: 사내 메일 API 규약 — data 필드 안에 `mailSendString` 키로 실제 payload 를
+    #   한 번 더 JSON 문자열로 감싸야 한다. 이전까지 flat 하게 보내던 구조를 교체.
+    mail_send_string = _json.dumps(data_obj, ensure_ascii=False)
     if url.lower() == "dry-run":
         return {"ok": True, "status": 200, "to": emails, "skipped": skipped,
-                "dry_run": True, "payload": data_obj, "response": "",
+                "dry_run": True, "payload": data_obj,
+                "payload_wrapped": {"mailSendString": mail_send_string},
+                "response": "",
                 "attachments": [{"name": f[0], "bytes": len(f[1])} for f in attach_list]}
 
-    fields = {"data": _json.dumps(data_obj, ensure_ascii=False)}
+    fields = {"data": _json.dumps({"mailSendString": mail_send_string}, ensure_ascii=False)}
     body_bytes, content_type = _encode_multipart(fields, attach_list)
     hdrs_out = {str(k): str(v) for k, v in headers.items()}
     hdrs_out["Content-Type"] = content_type

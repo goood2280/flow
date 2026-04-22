@@ -1481,6 +1481,12 @@ def list_recipients(request: Request):
         un = u.get("username", "") or ""
         em = (u.get("email", "") or "").strip()
         eff = em if em and "@" in em else (un if ("@" in un and "." in un.split("@", 1)[1]) else "")
+        # v8.8.21: 인폼 메일 수신자 picker 에서는 admin/hol/test 계정 + 이메일 해결 불가 계정
+        #   (_is_blocked_contact 기준) 은 아예 제외. FE 가 "(no email)" 을 표시할 상황이 없어진다.
+        if _is_blocked_contact(un, u):
+            continue
+        if not eff:
+            continue
         out.append({
             "username": un,
             "email": em,
@@ -1664,6 +1670,81 @@ MAIL_CONTENT_MAX = 2 * 1024 * 1024          # 2 MB HTML body
 MAIL_ATTACH_MAX  = 10 * 1024 * 1024         # 10 MB total attachments
 
 
+# v8.8.21: 인폼 → SplitTable 스냅샷 xlsx 자동 첨부.
+#   사용자가 직접 파일 업로드하지 않아도, 해당 인폼에 담긴 제품/lot/wafer 스냅샷을
+#   SplitTable 엑셀 내보내기와 동일 형식으로 렌더해 첨부한다.
+def _build_inform_snapshot_xlsx(target: dict) -> Optional[tuple]:
+    """Return (filename, bytes, mime) or None if no snapshot available."""
+    try:
+        import io as _io
+        try:
+            from openpyxl import Workbook
+        except Exception:
+            return None
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Inform Snapshot"
+        ws.append(["Field", "Value"])
+        meta_keys = ("id", "product", "module", "reason", "root_lot_id", "lot_id",
+                     "wafer_id", "fab_lot_id_at_save", "flow_status", "author",
+                     "created_at", "updated_at")
+        for k in meta_keys:
+            v = target.get(k, "")
+            if v not in ("", None):
+                ws.append([k, str(v)])
+        sc = target.get("splittable_change") or {}
+        if sc:
+            ws.append([])
+            ws.append(["SplitTable Change", ""])
+            for k in ("column", "old_value", "new_value", "applied"):
+                if k in sc:
+                    ws.append([k, str(sc.get(k, ""))])
+        # body text 도 같이 싣기 (읽기 편하게).
+        body = (target.get("text") or "").strip()
+        if body:
+            ws.append([])
+            ws.append(["Body", ""])
+            for ln in body.splitlines():
+                ws.append(["", ln])
+        buf = _io.BytesIO()
+        wb.save(buf)
+        data = buf.getvalue()
+        if not data:
+            return None
+        fn = f"inform_{target.get('id','snapshot')}.xlsx"
+        return (fn, data,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except Exception:
+        return None
+
+
+@router.get("/{inform_id}/mail-preview")
+def mail_preview(inform_id: str, request: Request, body: str = Query("")):
+    """v8.8.21: FE MailDialog 용 실시간 프리뷰.
+    실제로 send-mail 이 호출할 HTML body / 수신자 그룹 해석 / 담당자 라인 / 자동 첨부 목록을 반환.
+    """
+    _ = current_user(request)
+    items = _load_upgraded()
+    target = _find(items, inform_id)
+    if not target:
+        raise HTTPException(404)
+    pc_data = _load_product_contacts()
+    pc_list = (pc_data.get("products") or {}).get(target.get("product", ""), []) or []
+    thread_html = _thread_html(items, inform_id)
+    html = _build_html_body(target, thread_html, body or "", product_contacts=pc_list)
+    snap = _build_inform_snapshot_xlsx(target)
+    owners_line = ", ".join([(c.get("name") or c.get("email") or "").strip()
+                             for c in pc_list if c.get("name") or c.get("email")])
+    return {
+        "inform_id": inform_id,
+        "product": target.get("product", ""),
+        "owners_line": owners_line,
+        "product_contacts": pc_list,
+        "html_body": html,
+        "auto_attachments": [{"name": snap[0], "bytes": len(snap[1])}] if snap else [],
+    }
+
+
 def _resolve_inform_attachment(url: str) -> Optional[Path]:
     """Map /api/informs/files/{uid}/{name} → local UPLOADS_DIR/{uid}/{name}."""
     if not url:
@@ -1784,6 +1865,13 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
     # Collect attachments (optional)
     attach_files: List[tuple] = []
     attach_total = 0
+    # v8.8.21: 인폼 스냅샷 xlsx 자동 첨부 — FE 에서 별도 업로드 불필요.
+    snap = _build_inform_snapshot_xlsx(target)
+    if snap:
+        _fn, _bytes, _mime = snap
+        attach_total += len(_bytes)
+        if attach_total <= MAIL_ATTACH_MAX:
+            attach_files.append(("files", _fn, _bytes, _mime))
     for url_ in (req.attachments or []):
         fp = _resolve_inform_attachment(url_)
         if not fp:
@@ -1796,10 +1884,13 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
         attach_files.append(("files", fp.name, content, mime))
 
     # Build `data` object per spec.
+    # v8.8.21: senderMailAddress(camelCase) 를 표준으로 쓰고 legacy 소문자 변형도 함께 주입.
+    _sender_addr = (cfg.get("from_addr") or "").strip()
     data_obj: Dict[str, Any] = {
         "content":           html_body,
         "receiverList":      receiver_list,
-        "senderMailaddress": (cfg.get("from_addr") or "").strip(),
+        "senderMailAddress": _sender_addr,
+        "senderMailaddress": _sender_addr,
         "statusCode":        (req.status_code or cfg.get("status_code") or "").strip(),
         "title":             subject,
     }
@@ -1819,16 +1910,20 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
 
     url = cfg.get("api_url").strip()
     dry_run = url.lower() == "dry-run"
+    # v8.8.21: 사내 메일 API — data 안의 `mailSendString` 키에 실제 payload 를 문자열로 감싼다.
+    mail_send_string = _json.dumps(data_obj, ensure_ascii=False)
+    wrapped = {"mailSendString": mail_send_string}
     if dry_run:
         result_info = {
             "status": 200, "dry_run": True,
             "preview_data": data_obj,
+            "preview_data_wrapped": wrapped,
             "preview_attachments": [{"name": f[1], "bytes": len(f[2])} for f in attach_files],
             "preview_headers": headers,
         }
     else:
-        # multipart/form-data: "data" (JSON string) + "files" (repeated file parts).
-        fields = {"data": _json.dumps(data_obj, ensure_ascii=False)}
+        # multipart/form-data: "data" (JSON string with mailSendString wrapper) + "files" parts.
+        fields = {"data": _json.dumps(wrapped, ensure_ascii=False)}
         body_bytes, content_type = _encode_multipart(fields, attach_files)
         hdrs_out = dict(headers)
         hdrs_out["Content-Type"] = content_type

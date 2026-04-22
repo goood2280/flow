@@ -49,14 +49,14 @@ export default function S3StatusLight({ compact = false }) {
       lineHeight: 1,
     }} title={tip}>
       <span style={{
-        width: 14, height: 14, borderRadius: "50%", background: color,
-        boxShadow: `0 0 5px ${color}`, flexShrink: 0,
+        width: 18, height: 18, borderRadius: "50%", background: color,
+        boxShadow: `0 0 6px ${color}`, flexShrink: 0,
         display:"inline-flex", alignItems:"center", justifyContent:"center",
         ...(isRed?ringStyle:{}),
       }}>
         <span style={{
-          fontSize: 10, lineHeight: 1, color: "#fff", fontWeight: 900,
-          fontFamily: "monospace", textShadow: "0 0 1px rgba(0,0,0,0.6)",
+          fontSize: 13, lineHeight: 1, color: "#fff", fontWeight: 900,
+          fontFamily: "Arial, sans-serif", textShadow: "0 0 2px rgba(0,0,0,0.8)",
         }}>{arrow}</span>
       </span>
       <span style={{fontSize:10, color, fontWeight:700, letterSpacing:"-0.02em"}}>{text}</span>
