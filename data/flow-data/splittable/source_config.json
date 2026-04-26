@@ -1,0 +1,1 @@
+{"enabled":["ML_TABLE_PRODA","ML_TABLE_PRODB"],"lot_overrides":{"ML_TABLE_PRODA":{"root_col":"root_lot_id","fab_col":"fab_lot_id","fab_source":"1.RAWDATA_DB_FAB/PRODA"},"ML_TABLE_PRODB":{"root_col":"root_lot_id","fab_col":"fab_lot_id","fab_source":"1.RAWDATA_DB_FAB/PRODB"}}}

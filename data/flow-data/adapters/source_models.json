@@ -1,0 +1,176 @@
+{
+  "version": 1,
+  "sources": {
+    "fab": {
+      "description": "FAB process/run history long table",
+      "required_columns": [
+        "product",
+        "root_lot_id",
+        "lot_id",
+        "wafer_id",
+        "step_id",
+        "tkin_time",
+        "tkout_time",
+        "item_id",
+        "value"
+      ],
+      "optional_columns": [
+        "eqp",
+        "ppid",
+        "chamber",
+        "slot_no",
+        "recipe",
+        "oper_id"
+      ],
+      "time_columns": [
+        "tkin_time",
+        "tkout_time"
+      ],
+      "step_mapping": {
+        "registry_file": "Base/matching_step.csv",
+        "source_key": ["product", "step_id"],
+        "target_key": ["function_step"],
+        "classification_columns": ["step_class", "measure_domain", "main_function_step"],
+        "supports_many_steps_per_function": true,
+        "supports_step_id_change_history": true
+      },
+      "join_keys": {
+        "lot": ["product", "root_lot_id"],
+        "wafer": ["product", "root_lot_id", "wafer_id"],
+        "run": ["product", "lot_id", "wafer_id"]
+      }
+    },
+    "inline": {
+      "description": "INLINE shot-based metrology long table",
+      "required_columns": [
+        "product",
+        "root_lot_id",
+        "lot_id",
+        "wafer_id",
+        "step_id",
+        "tkout_time",
+        "item_id",
+        "subitem_id",
+        "value"
+      ],
+      "optional_columns": [
+        "tkin_time",
+        "map_id",
+        "item_group"
+      ],
+      "time_columns": [
+        "tkout_time",
+        "tkin_time"
+      ],
+      "step_mapping": {
+        "registry_file": "Base/inline_step_match.csv",
+        "source_key": ["product", "step_id"],
+        "target_key": ["function_step"],
+        "classification_columns": ["step_class", "measure_domain", "main_function_step"],
+        "supports_many_steps_per_function": true,
+        "supports_step_id_change_history": true
+      },
+      "shot_key": ["subitem_id"],
+      "matching": {
+        "requires_matching_table": true,
+        "map_families": [
+          "INLINE_MAP_A",
+          "INLINE_MAP_B",
+          "INLINE_MAP_C",
+          "INLINE_MAP_D"
+        ],
+        "registry_file": "Base/inline_matching.csv"
+      }
+    },
+    "et": {
+      "description": "ET shot coordinate electrical test long table",
+      "storage": {
+        "kind": "db",
+        "preferred_layout": "flat",
+        "path_pattern": "1.RAWDATA_DB_ET/<PRODUCT>/<PRODUCT>_YYYYMMDD.parquet",
+        "future_layouts": [
+          "hive: 1.RAWDATA_DB_ET/<PRODUCT>/date=YYYYMMDD/part_*.parquet"
+        ]
+      },
+      "required_columns": [
+        "product",
+        "root_lot_id",
+        "lot_id",
+        "wafer_id",
+        "step_id",
+        "step_seq",
+        "tkout_time",
+        "item_id",
+        "shot_x",
+        "shot_y",
+        "value"
+      ],
+      "optional_columns": [
+        "tkin_time",
+        "request_id",
+        "request_no",
+        "measure_group_id",
+        "job_id"
+      ],
+      "time_columns": [
+        "tkout_time",
+        "tkin_time"
+      ],
+      "shot_key": ["shot_x", "shot_y"],
+      "package_key_priority": [
+        ["request_id"],
+        ["measure_group_id"],
+        ["step_id", "step_seq", "tkout_time"]
+      ]
+    },
+    "ml_table": {
+      "description": "Wafer-level derived feature table consumed by SplitTable",
+      "entity_key": [
+        "product",
+        "root_lot_id",
+        "lot_id",
+        "wafer_id"
+      ],
+      "feature_groups": {
+        "KNOB": {
+          "source": "fab",
+          "description": "Engineer-friendly derived knob converted from FAB PPID/rulebook",
+          "feature_lineage": "main_step_process_setting",
+          "rulebook_file": "Base/knob_ppid.csv",
+          "step_mapping_file": "Base/matching_step.csv",
+          "rule_semantics": [
+            "single_step_single_ppid",
+            "single_step_multi_item",
+            "multi_step_combo"
+          ]
+        },
+        "MASK": {
+          "source": "fab",
+          "feature_lineage": "main_step_context",
+          "description": "Mask/process context derived feature"
+        },
+        "FAB": {
+          "source": "fab",
+          "feature_lineage": "main_step_run_feature",
+          "description": "Direct or lightly normalized FAB feature"
+        },
+        "INLINE": {
+          "source": "inline",
+          "feature_lineage": "meas_step_metrology",
+          "description": "INLINE wafer summary feature"
+        },
+        "VM": {
+          "source": "virtual_metrology",
+          "feature_lineage": "main_step_derived_measurement_like",
+          "step_mapping_file": "Base/vm_matching.csv",
+          "description": "Predicted or modeled wafer-level feature derived from main-step equipment/process data"
+        },
+        "QTIME": {
+          "source": "fab",
+          "feature_lineage": "cross_step_elapsed_time",
+          "description": "Queue time or elapsed-time derived feature"
+        }
+      }
+    }
+  }
+}

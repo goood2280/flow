@@ -1,0 +1,37 @@
+{
+  "FAB": {
+    "required_columns": ["root_lot_id", "wafer_id", "step_id", "tkin_time", "tkout_time", "eqp_id"],
+    "optional_columns": ["lot_id", "fab_lot_id", "ppid", "chamber", "item_id", "value"],
+    "join_keys": ["root_lot_id", "wafer_id", "step_id"],
+    "time_columns": ["tkin_time", "tkout_time"],
+    "step_column": "step_id"
+  },
+  "ET": {
+    "required_columns": ["root_lot_id", "wafer_id", "step_id", "step_seq", "tkout_time", "item_id", "value"],
+    "optional_columns": ["fab_lot_id", "lot_id", "tkin_time", "shot_x", "shot_y", "eqp_id", "request_id"],
+    "join_keys": ["root_lot_id", "wafer_id", "step_id"],
+    "time_columns": ["tkin_time", "tkout_time"],
+    "step_column": "step_id"
+  },
+  "INLINE": {
+    "required_columns": ["root_lot_id", "wafer_id", "step_id", "subitem_id", "item_id", "value"],
+    "optional_columns": ["fab_lot_id", "lot_id", "tkin_time", "tkout_time", "eqp_id"],
+    "join_keys": ["root_lot_id", "wafer_id", "step_id", "subitem_id"],
+    "time_columns": ["tkin_time", "tkout_time"],
+    "step_column": "step_id"
+  },
+  "VM": {
+    "required_columns": ["root_lot_id", "wafer_id", "step_id", "item_id", "value"],
+    "optional_columns": ["fab_lot_id", "lot_id", "tkin_time", "tkout_time", "eqp_id"],
+    "join_keys": ["root_lot_id", "wafer_id", "step_id"],
+    "time_columns": ["tkin_time", "tkout_time"],
+    "step_column": "step_id"
+  },
+  "EDS": {
+    "required_columns": ["root_lot_id", "wafer_id", "shot_id", "chip_id", "value"],
+    "optional_columns": ["fab_lot_id", "step_id", "bin", "x", "y"],
+    "join_keys": ["root_lot_id", "wafer_id", "shot_id", "chip_id"],
+    "time_columns": [],
+    "step_column": "step_id"
+  }
+}

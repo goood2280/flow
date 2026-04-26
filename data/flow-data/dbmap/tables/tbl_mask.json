@@ -1,0 +1,24 @@
+{
+  "id": "tbl_mask",
+  "name": "mask",
+  "display_name": "MASK_REGISTRY",
+  "scope": "common",
+  "products": [
+    "common"
+  ],
+  "group_id": "grp_rulebook_config",
+  "table_type": "rulebook",
+  "columns": [
+    { "name": "product", "type": "string" },
+    { "name": "mask_id", "type": "string" },
+    { "name": "mask_name", "type": "string" },
+    { "name": "function_step", "type": "string" },
+    { "name": "step_id", "type": "string" }
+  ],
+  "rows": [],
+  "description": "mask/공정 단계 연결 기준 테이블",
+  "aws_cmd": "",
+  "username": "hol",
+  "validation": {},
+  "updated": "2026-04-24T19:20:00"
+}

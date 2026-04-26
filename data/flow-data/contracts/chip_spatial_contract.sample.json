@@ -1,0 +1,63 @@
+{
+  "product": "PRODUCT_A0",
+  "wafer_layout": {
+    "wafer_radius_mm": 150.0,
+    "edge_exclusion_mm": 3.0,
+    "ref_shot_x": 0,
+    "ref_shot_y": 0,
+    "ref_shot_center_x": 0.0,
+    "ref_shot_center_y": 0.0,
+    "shot_pitch_x": 28.0,
+    "shot_pitch_y": 30.0,
+    "shot_size_x": 27.2,
+    "shot_size_y": 29.2
+  },
+  "shot_indexing": {
+    "origin": "top_left",
+    "x_direction": "right",
+    "y_direction": "down",
+    "coordinate_label": "et_shot_x_y"
+  },
+  "chip_layout": {
+    "chip_cols": 3,
+    "chip_rows": 2,
+    "coord_mode": "shot_lower_left",
+    "chip_id_rule": "row_major"
+  },
+  "teg_layout": [
+    {
+      "teg_no": 101,
+      "teg_name": "TEG_TOP",
+      "teg_ll_x": 13.6,
+      "teg_ll_y": 29.6,
+      "teg_size_x": 1.2,
+      "teg_size_y": 0.6
+    },
+    {
+      "teg_no": 102,
+      "teg_name": "TEG_RIGHT",
+      "teg_ll_x": 27.6,
+      "teg_ll_y": 14.6,
+      "teg_size_x": 1.2,
+      "teg_size_y": 0.6
+    }
+  ],
+  "eds_bin_registry": [
+    {
+      "bin_no": 1,
+      "bin_group": "PASS",
+      "pass_fail": "pass"
+    },
+    {
+      "bin_no": 21,
+      "bin_group": "PC_CA_SHORT",
+      "pass_fail": "fail"
+    }
+  ],
+  "analysis_steps": {
+    "stage_1": "wafer_level_corr",
+    "stage_2": "shot_level_yield_join",
+    "stage_3": "teg_neighborhood_chip_yield",
+    "stage_4": "ml_with_spatial_features"
+  }
+}

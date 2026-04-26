@@ -1,0 +1,1 @@
+[{"name": "Monitor", "color": "hsl(210, 58%, 58%)", "source": "fab", "max_issues_per_user": 15, "mail_group_ids": [], "auto_close_step_id": ""}, {"name": "Analysis", "color": "hsl(330, 58%, 58%)", "source": "et", "max_issues_per_user": 15, "mail_group_ids": [], "auto_close_step_id": ""}]

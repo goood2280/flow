@@ -1,0 +1,22 @@
+{
+  "modules": [
+    "GATE",
+    "STI",
+    "PC",
+    "MOL",
+    "BEOL",
+    "ET",
+    "EDS",
+    "S-D Epi",
+    "Spacer",
+    "Well",
+    "기타"
+  ],
+  "reasons": [
+    "PEMS"
+  ],
+  "products": [
+    "PRODA"
+  ],
+  "raw_db_root": ""
+}

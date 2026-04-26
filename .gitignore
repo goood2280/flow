@@ -1,30 +1,79 @@
-# Python
+# Python cache / environments
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
 .Python
 *.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
 venv/
 .venv/
 
-# Node
+# Node dependencies / build output
 node_modules/
+frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+dist/
 .parcel-cache/
-*.log
 npm-debug.log*
 
-# Data — 절대 커밋 금지 (30-50GB 규모 가능, PII/공정 데이터)
-data/
-!data/.gitkeep
+# Local runtime logs / generated artifacts
+*.log
+server.log
+reports/
+.claude/
+/collab/
 scripts/_req_*.json
 scripts/_t_*.json
-*.parquet
-*.csv
-!frontend/src/**/*.csv
-!frontend/public/**/*.csv
+test_xlsx.xlsx
+_root_map.json
+_patch_*.py
+_patch_*.json
+_run_*.py
+_build_*.json
+
+# Secrets / local credentials
+.env
+.env.*
+*.pem
+*.key
+aws_config.json
+flow_domain.txt
+flow_도메인지식_방향성_정리.txt
+*도메인*.txt
+
+# Runtime data that should not live in Git.
+# Keep data/Fab and flow-data seed/config files trackable; exclude volatile state.
+data/**/__pycache__/
+data/**/*.py[cod]
+data/flow-data/_backups/
+data/flow-data/logs/
+data/flow-data/sessions/
+data/flow-data/calendar/
+data/flow-data/dbmap/archive/
+data/flow-data/et_probe_alert_state.json
+data/flow-data/et_reports/
+data/flow-data/groups/*_audit.jsonl
+data/flow-data/informs/informs.json
+data/flow-data/informs/product_contacts.json
+data/flow-data/meetings/
+data/flow-data/messages/
+data/flow-data/notifications/
+data/flow-data/shares.json
+data/flow-data/splittable/*.json
+!data/flow-data/splittable/source_config.json
+data/flow-data/tracker/images/
+data/flow-data/tracker/issues.json
+data/flow-data/tracker/scheduler_status.json
+data/flow-data/tracker/schema_migrations.jsonl
+data/flow-data/users.json
+data/flow-data/valve_watch.json
+data/flow-data/**/*.backup_*.json
+data/Fab/_backups/
+archive/
 
 # Editor / OS
 .vscode/
@@ -33,47 +82,3 @@ scripts/_t_*.json
 Thumbs.db
 *.swp
 *.swo
-
-# Credentials / secrets
-.env
-.env.*
-*.pem
-*.key
-aws_config.json
-holweb-data/
-backend/__pycache__/
-
-# Test artifacts
-test_xlsx.xlsx
-_root_map.json
-
-# Domain knowledge (internal) — 절대 커밋 금지
-*domain*.txt
-*도메인*.txt
-FabCanvas_domain.txt
-FabCanvas_도메인지식_방향성_정리.txt
-
-# v8.8.13: 리포 슬림화 — setup.py 는 self-contained 로 소스 + meta 를 내장하므로
-# 아래 부수 파일들은 별도 추적 불필요 (일회성 패치·로그·로컬 문서·로컬 설정 캐시).
-_patch_*.py
-_patch_*.json
-_run_*.py
-_build_*.json
-server.log
-reports/
-.claude/
-scripts/_*.json
-
-# v8.8.25: repo 는 setup.py / _build_setup.py / README / .gitignore 만 추적.
-# setup.py extract 로 생성되는 소스 트리는 로컬에서만 존재 — git 추적 제외.
-# (_build_setup.py 는 예외 — 빌드 스크립트 자체이므로 리포에 남는다.)
-/backend/
-/frontend/
-/docs/
-/scripts/
-/data/
-/app.py
-/VERSION.json
-/CHANGELOG.md
-/package.json
-/package-lock.json

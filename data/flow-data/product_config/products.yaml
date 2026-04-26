@@ -1,0 +1,527 @@
+products:
+  PRODA:
+    wafer_layout:
+      teg_definitions:
+      - id: NW
+        label: NW
+        dx_mm: -5.0
+        dy_mm: 5.0
+      - id: NE
+        label: NE
+        dx_mm: 5.0
+        dy_mm: 5.0
+      tegs:
+      - 'no': 1
+        name: NW
+        x: -5.0
+        y: 5.0
+        flat: 0
+      - 'no': 2
+        name: NE
+        x: 5.0
+        y: 5.0
+        flat: 0
+    product: PRODA
+  PRODA0:
+    product: PRODA0
+    process_id: A0_MAIN
+    description: Product A0 ET sample config using Flow demo product naming
+    owner: et_team
+    et_key_items:
+    - VTH
+    - IDSAT
+    - IOFF
+    - RINGOSC
+    perf_metric: VTH
+    probe_card_watch:
+      enabled: true
+      notify_admin: true
+      items:
+      - item_id: VTH
+        alias: Vth
+        step_ids:
+        - ETA100010
+        step_seqs:
+        - '1'
+        - '2'
+        spec: both
+        lsl: 0.1
+        usl: 1.0
+        severity: warn
+    wafer_layout:
+      waferRadius: 150.0
+      shotPitchX: 28.0
+      shotPitchY: 30.0
+      shotSizeX: 27.2
+      shotSizeY: 29.2
+      tegSizeX: 1.2
+      tegSizeY: 0.6
+      chipWidth: 13.2
+      chipHeight: 8.8
+      chipCols: 2
+      chipRows: 3
+      edgeExclusionMm: 3.0
+      scribePattern:
+      - positionRow: 0
+        type: full
+      - positionRow: 1
+        type: full
+      - positionRow: 2
+        type: full
+      - positionRow: 3
+        type: full
+      teg_definitions:
+      - id: TEG_TOP
+        label: TEG_TOP
+        dx_mm: 13.6
+        dy_mm: 29.6
+      - id: TEG_RIGHT
+        label: TEG_RIGHT
+        dx_mm: 27.6
+        dy_mm: 14.6
+      - id: TEG_LEFT
+        label: TEG_LEFT
+        dx_mm: -0.4
+        dy_mm: 14.6
+      - id: TEG_BOTTOM
+        label: TEG_BOTTOM
+        dx_mm: 13.6
+        dy_mm: -0.4
+      tegs:
+      - 'no': 1
+        name: TEG_TOP
+        x: 13.6
+        y: 29.6
+        flat: 0
+      - 'no': 2
+        name: TEG_RIGHT
+        x: 27.6
+        y: 14.6
+        flat: 90
+      - 'no': 3
+        name: TEG_LEFT
+        x: -0.4
+        y: 14.6
+        flat: 90
+      - 'no': 4
+        name: TEG_BOTTOM
+        x: 13.6
+        y: -0.4
+        flat: 0
+  PRODA1:
+    product: PRODA1
+    process_id: A1_MAIN
+    description: Product A1 ET sample config using Flow demo product naming
+    owner: et_team
+    et_key_items:
+    - VTH
+    - IDSAT
+    - IOFF
+    - RINGOSC
+    perf_metric: VTH
+    probe_card_watch:
+      enabled: true
+      notify_admin: true
+      items:
+      - item_id: VTH
+        alias: Vth
+        step_ids:
+        - ETA100010
+        step_seqs:
+        - '1'
+        - '2'
+        spec: both
+        lsl: 0.1
+        usl: 1.0
+        severity: warn
+    wafer_layout:
+      waferRadius: 150.0
+      shotPitchX: 28.0
+      shotPitchY: 30.0
+      shotSizeX: 27.2
+      shotSizeY: 29.2
+      tegSizeX: 1.2
+      tegSizeY: 0.6
+      chipWidth: 13.2
+      chipHeight: 8.8
+      chipCols: 2
+      chipRows: 3
+      edgeExclusionMm: 3.0
+      scribePattern:
+      - positionRow: 0
+        type: full
+      - positionRow: 1
+        type: full
+      - positionRow: 2
+        type: full
+      - positionRow: 3
+        type: full
+      teg_definitions:
+      - id: TEG_TOP
+        label: TEG_TOP
+        dx_mm: 13.6
+        dy_mm: 29.6
+      - id: TEG_RIGHT
+        label: TEG_RIGHT
+        dx_mm: 27.6
+        dy_mm: 14.6
+      - id: TEG_LEFT
+        label: TEG_LEFT
+        dx_mm: -0.4
+        dy_mm: 14.6
+      - id: TEG_BOTTOM
+        label: TEG_BOTTOM
+        dx_mm: 13.6
+        dy_mm: -0.4
+      tegs:
+      - 'no': 1
+        name: TEG_TOP
+        x: 13.6
+        y: 29.6
+        flat: 0
+      - 'no': 2
+        name: TEG_RIGHT
+        x: 27.6
+        y: 14.6
+        flat: 90
+      - 'no': 3
+        name: TEG_LEFT
+        x: -0.4
+        y: 14.6
+        flat: 90
+      - 'no': 4
+        name: TEG_BOTTOM
+        x: 13.6
+        y: -0.4
+        flat: 0
+  PRODB:
+    product: PRODB
+    process_id: B_MAIN
+    description: Product B ET sample config using Flow demo product naming
+    owner: et_team
+    et_key_items:
+    - VTH
+    - IDSAT
+    - IOFF
+    - RINGOSC
+    perf_metric: VTH
+    probe_card_watch:
+      enabled: true
+      notify_admin: true
+      items:
+      - item_id: VTH
+        alias: Vth
+        step_ids:
+        - ETA100010
+        step_seqs:
+        - '1'
+        - '2'
+        spec: both
+        lsl: 0.1
+        usl: 1.0
+        severity: warn
+    wafer_layout:
+      waferRadius: 150.0
+      shotPitchX: 28.0
+      shotPitchY: 30.0
+      shotSizeX: 27.2
+      shotSizeY: 29.2
+      tegSizeX: 1.2
+      tegSizeY: 0.6
+      chipWidth: 13.2
+      chipHeight: 8.8
+      chipCols: 2
+      chipRows: 3
+      edgeExclusionMm: 3.0
+      scribePattern:
+      - positionRow: 0
+        type: full
+      - positionRow: 1
+        type: full
+      - positionRow: 2
+        type: full
+      - positionRow: 3
+        type: full
+      teg_definitions:
+      - id: TEG_TOP
+        label: TEG_TOP
+        dx_mm: 13.6
+        dy_mm: 29.6
+      - id: TEG_RIGHT
+        label: TEG_RIGHT
+        dx_mm: 27.6
+        dy_mm: 14.6
+      - id: TEG_LEFT
+        label: TEG_LEFT
+        dx_mm: -0.4
+        dy_mm: 14.6
+      - id: TEG_BOTTOM
+        label: TEG_BOTTOM
+        dx_mm: 13.6
+        dy_mm: -0.4
+      tegs:
+      - 'no': 1
+        name: TEG_TOP
+        x: 13.6
+        y: 29.6
+        flat: 0
+      - 'no': 2
+        name: TEG_RIGHT
+        x: 27.6
+        y: 14.6
+        flat: 90
+      - 'no': 3
+        name: TEG_LEFT
+        x: -0.4
+        y: 14.6
+        flat: 90
+      - 'no': 4
+        name: TEG_BOTTOM
+        x: 13.6
+        y: -0.4
+        flat: 0
+  PRODUCT_A0:
+    product: PRODUCT_A0
+    process_id: A0_MAIN
+    description: Product A0 ET/probe-card sample config
+    owner: et_team
+    canonical_knobs:
+    - KNOB_GATE_MAIN
+    - KNOB_M1_FILL
+    canonical_inline_items:
+    - CD_POLY
+    - THK_FILM
+    et_key_items:
+    - Rc
+    - Vth_n
+    - Vth_p
+    - Ioff_n
+    yld_metric: YIELD
+    perf_metric: Rc
+    target_spec:
+      Rc:
+      - 0.7
+      - 1.3
+      - 1.0
+      Vth_n:
+      - 0.35
+      - 0.75
+      - 0.55
+    probe_card_watch:
+      enabled: true
+      notify_admin: true
+      items:
+      - item_id: PC_RES
+        alias: Probe Resistance
+        step_ids:
+        - ETA100010
+        step_seqs:
+        - '0'
+        spec: usl
+        usl: 0.22
+        severity: critical
+      - item_id: PC_OPEN
+        alias: Probe Open
+        step_ids:
+        - ETA100010
+        step_seqs:
+        - '0'
+        spec: usl
+        usl: 0.08
+        severity: critical
+      - item_id: PC_ALIGN
+        alias: Probe Align
+        step_ids:
+        - ETA100010
+        step_seqs:
+        - '0'
+        spec: both
+        lsl: -0.12
+        usl: 0.12
+        severity: warn
+    wafer_layout:
+      waferRadius: 150.0
+      wfCenterX: 0
+      wfCenterY: 0
+      refShotX: 0
+      refShotY: 0
+      refShotCenterX: 0
+      refShotCenterY: 0
+      shotPitchX: 28.0
+      shotPitchY: 30.0
+      shotSizeX: 27.2
+      shotSizeY: 29.2
+      tegSizeX: 1.2
+      tegSizeY: 0.6
+      chipWidth: 13.2
+      chipHeight: 8.8
+      chipCols: 2
+      chipRows: 3
+      offsetXMm: 0.0
+      offsetYMm: 0.0
+      edgeExclusionMm: 3.0
+      scribePattern:
+      - positionRow: 0
+        type: full
+      - positionRow: 1
+        type: full
+      - positionRow: 2
+        type: full
+      - positionRow: 3
+        type: full
+      teg_definitions:
+      - id: TEG_TOP
+        label: TEG_TOP
+        dx_mm: 13.6
+        dy_mm: 29.6
+      - id: TEG_RIGHT
+        label: TEG_RIGHT
+        dx_mm: 27.6
+        dy_mm: 14.6
+      - id: TEG_LEFT
+        label: TEG_LEFT
+        dx_mm: -0.4
+        dy_mm: 14.6
+      - id: TEG_BOTTOM
+        label: TEG_BOTTOM
+        dx_mm: 13.6
+        dy_mm: -0.4
+      tegs:
+      - 'no': 1
+        name: TEG_TOP
+        x: 13.6
+        y: 29.6
+        flat: 0
+      - 'no': 2
+        name: TEG_RIGHT
+        x: 27.6
+        y: 14.6
+        flat: 0
+      - 'no': 3
+        name: TEG_LEFT
+        x: -0.4
+        y: 14.6
+        flat: 0
+      - 'no': 4
+        name: TEG_BOTTOM
+        x: 13.6
+        y: -0.4
+        flat: 0
+  PRODUCT_A1:
+    product: PRODUCT_A1
+    process_id: A1_MAIN
+    description: Product A1 ET/probe-card sample config
+    owner: et_team
+    canonical_knobs:
+    - KNOB_GATE_MAIN
+    - KNOB_M2_STACK
+    canonical_inline_items:
+    - CD_POLY
+    - THK_FILM
+    et_key_items:
+    - Rc
+    - Vth_n
+    - Vth_p
+    - Ioff_p
+    yld_metric: YIELD
+    perf_metric: Rc
+    target_spec:
+      Rc:
+      - 0.7
+      - 1.3
+      - 1.0
+      Vth_n:
+      - 0.35
+      - 0.75
+      - 0.55
+    probe_card_watch:
+      enabled: true
+      notify_admin: true
+      items:
+      - item_id: PC_RES
+        alias: Probe Resistance
+        step_ids:
+        - ETA100020
+        step_seqs:
+        - '0'
+        spec: usl
+        usl: 0.23
+        severity: critical
+      - item_id: PC_OPEN
+        alias: Probe Open
+        step_ids:
+        - ETA100020
+        step_seqs:
+        - '0'
+        spec: usl
+        usl: 0.09
+        severity: critical
+      - item_id: PC_ALIGN
+        alias: Probe Align
+        step_ids:
+        - ETA100020
+        step_seqs:
+        - '0'
+        spec: both
+        lsl: -0.12
+        usl: 0.12
+        severity: warn
+  PRODUCT_B:
+    product: PRODUCT_B
+    process_id: B_MAIN
+    description: Product B ET/probe-card sample config
+    owner: et_team
+    canonical_knobs:
+    - KNOB_CONTACT
+    - KNOB_BACKEND
+    canonical_inline_items:
+    - CD_CONTACT
+    - THK_METAL
+    et_key_items:
+    - Rc
+    - Vth_n
+    - Vth_p
+    - lkg
+    yld_metric: YIELD
+    perf_metric: Rc
+    target_spec:
+      Rc:
+      - 0.65
+      - 1.35
+      - 1.0
+      Vth_n:
+      - 0.32
+      - 0.78
+      - 0.55
+    probe_card_watch:
+      enabled: true
+      notify_admin: true
+      items:
+      - item_id: PC_RES
+        alias: Probe Resistance
+        step_ids:
+        - ETB100010
+        step_seqs:
+        - '0'
+        spec: usl
+        usl: 0.24
+        severity: critical
+      - item_id: PC_OPEN
+        alias: Probe Open
+        step_ids:
+        - ETB100010
+        step_seqs:
+        - '0'
+        spec: usl
+        usl: 0.1
+        severity: critical
+      - item_id: PC_ALIGN
+        alias: Probe Align
+        step_ids:
+        - ETB100010
+        step_seqs:
+        - '0'
+        spec: both
+        lsl: -0.14
+        usl: 0.14
+        severity: warn

@@ -1,0 +1,24 @@
+{
+  "id": "tbl_vm_matching",
+  "name": "vm_matching",
+  "display_name": "VM_MATCHING",
+  "scope": "common",
+  "products": [
+    "common"
+  ],
+  "group_id": "grp_matching_registry",
+  "table_type": "matching",
+  "columns": [
+    { "name": "product", "type": "string" },
+    { "name": "step_id", "type": "string" },
+    { "name": "function_step", "type": "string" },
+    { "name": "module", "type": "string" },
+    { "name": "item_id", "type": "string" }
+  ],
+  "rows": [],
+  "description": "VM raw step/item을 function_step/module로 연결하는 매칭 테이블",
+  "aws_cmd": "",
+  "username": "hol",
+  "validation": {},
+  "updated": "2026-04-24T19:20:00"
+}

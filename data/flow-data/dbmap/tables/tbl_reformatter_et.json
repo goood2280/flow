@@ -1,0 +1,28 @@
+{
+  "id": "tbl_reformatter_et",
+  "name": "reformatter_et",
+  "display_name": "ET_REFORMATTER",
+  "scope": "common",
+  "products": [
+    "common"
+  ],
+  "group_id": "grp_rulebook_config",
+  "table_type": "rulebook",
+  "columns": [
+    { "name": "product", "type": "string" },
+    { "name": "report_variant", "type": "string" },
+    { "name": "point_mode", "type": "string" },
+    { "name": "rawitem_id", "type": "string" },
+    { "name": "alias", "type": "string" },
+    { "name": "alias_form", "type": "string" },
+    { "name": "python_expr", "type": "string" },
+    { "name": "spec", "type": "string" },
+    { "name": "use", "type": "bool" }
+  ],
+  "rows": [],
+  "description": "ET raw item을 alias/index/report item으로 바꾸는 reformatter 규칙",
+  "aws_cmd": "",
+  "username": "hol",
+  "validation": {},
+  "updated": "2026-04-24T19:20:00"
+}

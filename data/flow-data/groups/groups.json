@@ -1,0 +1,16 @@
+[
+  {
+    "id": "grp_260421_a14ebe",
+    "name": "TEST1",
+    "description": "TEST GROUP 입니다",
+    "owner": "hol",
+    "members": [
+      "man",
+      "man2"
+    ],
+    "watched_lots": [],
+    "modules": [],
+    "created": "2026-04-21T21:46:10",
+    "updated": "2026-04-21T21:47:06"
+  }
+]

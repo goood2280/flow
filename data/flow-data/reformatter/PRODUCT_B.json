@@ -1,0 +1,73 @@
+[
+  {
+    "name": "RC_ABS",
+    "type": "scale_abs",
+    "source_col": "value",
+    "filter": "item_id == 'Rc' AND step_id == 'ETB100010'",
+    "scale": 1.0,
+    "abs": true,
+    "offset": 0.0,
+    "no": 10,
+    "cat": "ET_RAW",
+    "rawitem_id": "Rc",
+    "alias": "Rc_abs",
+    "alias_form": "fixed3",
+    "scale_factor": 1.0,
+    "report_order": 10,
+    "y_axis": "linear",
+    "spec": "both",
+    "use": true,
+    "spec_order": 10
+  },
+  {
+    "name": "B_DC_INDEX",
+    "type": "shot_formula",
+    "item_col": "item_id",
+    "value_col": "value",
+    "group_by": ["product", "root_lot_id", "lot_id", "wafer_id", "step_id", "step_seq", "shot_x", "shot_y"],
+    "item_map": {
+      "R": "Rc",
+      "RN": "Rch",
+      "N": "Vth_n",
+      "P": "Vth_p"
+    },
+    "expr": "abs(R) + 0.5 * abs(RN) + abs(N - P)",
+    "agg": "mean",
+    "filter": "step_id == 'ETB100010'",
+    "no": 20,
+    "cat": "DC",
+    "rawitem_id": "Rc/Rch/Vth_n/Vth_p",
+    "alias": "B_DC",
+    "alias_form": "fixed4",
+    "report_order": 20,
+    "y_axis": "linear",
+    "spec": "both",
+    "use": true,
+    "spec_order": 20
+  },
+  {
+    "name": "LEAKAGE_INDEX",
+    "type": "shot_formula",
+    "item_col": "item_id",
+    "value_col": "value",
+    "group_by": ["product", "root_lot_id", "lot_id", "wafer_id", "step_id", "step_seq", "shot_x", "shot_y"],
+    "item_map": {
+      "IN": "Ioff_n",
+      "IP": "Ioff_p",
+      "LK": "lkg"
+    },
+    "expr": "abs(IN) + abs(IP) + 0.1 * abs(LK)",
+    "agg": "mean",
+    "filter": "step_id == 'ETB100010'",
+    "no": 30,
+    "cat": "LEAKAGE",
+    "rawitem_id": "Ioff_n/Ioff_p/lkg",
+    "alias": "Leak_idx",
+    "alias_form": "sci3",
+    "report_order": 30,
+    "y_axis": "log10",
+    "spec": "usl",
+    "use": true,
+    "spec_order": 30
+  }
+]

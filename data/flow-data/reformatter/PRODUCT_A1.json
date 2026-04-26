@@ -1,0 +1,71 @@
+[
+  {
+    "name": "RC_ABS",
+    "type": "scale_abs",
+    "source_col": "value",
+    "filter": "item_id == 'Rc' AND step_id == 'ETA100020'",
+    "scale": 1.0,
+    "abs": true,
+    "offset": 0.0,
+    "no": 10,
+    "cat": "ET_RAW",
+    "rawitem_id": "Rc",
+    "alias": "Rc_abs",
+    "alias_form": "fixed3",
+    "scale_factor": 1.0,
+    "report_order": 10,
+    "y_axis": "linear",
+    "spec": "both",
+    "use": true,
+    "spec_order": 10
+  },
+  {
+    "name": "M2DC_INDEX",
+    "type": "shot_formula",
+    "item_col": "item_id",
+    "value_col": "value",
+    "group_by": ["product", "root_lot_id", "lot_id", "wafer_id", "step_id", "step_seq", "shot_x", "shot_y"],
+    "item_map": {
+      "R": "Rc",
+      "N": "Vth_n",
+      "P": "Vth_p"
+    },
+    "expr": "abs(R) + abs(N - P)",
+    "agg": "mean",
+    "filter": "step_id == 'ETA100020'",
+    "no": 20,
+    "cat": "DC",
+    "rawitem_id": "Rc/Vth_n/Vth_p",
+    "alias": "M2DC",
+    "alias_form": "fixed4",
+    "report_order": 20,
+    "y_axis": "linear",
+    "spec": "both",
+    "use": true,
+    "spec_order": 20
+  },
+  {
+    "name": "ION_BALANCE",
+    "type": "shot_formula",
+    "item_col": "item_id",
+    "value_col": "value",
+    "group_by": ["product", "root_lot_id", "lot_id", "wafer_id", "step_id", "step_seq", "shot_x", "shot_y"],
+    "item_map": {
+      "N": "Ion_n",
+      "P": "Ion_p"
+    },
+    "expr": "abs(N - P)",
+    "agg": "mean",
+    "filter": "step_id == 'ETA100020'",
+    "no": 30,
+    "cat": "DRIVE",
+    "rawitem_id": "Ion_n/Ion_p",
+    "alias": "Ion_balance",
+    "alias_form": "fixed4",
+    "report_order": 30,
+    "y_axis": "linear",
+    "spec": "usl",
+    "use": true,
+    "spec_order": 30
+  }
+]

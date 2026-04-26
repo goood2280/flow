@@ -1,0 +1,27 @@
+{
+  "id": "tbl_step_matching",
+  "name": "step_matching",
+  "display_name": "STEP_MATCHING",
+  "scope": "common",
+  "products": [
+    "common"
+  ],
+  "group_id": "grp_matching_registry",
+  "table_type": "matching",
+  "columns": [
+    { "name": "product", "type": "string" },
+    { "name": "source", "type": "string" },
+    { "name": "step_id", "type": "string" },
+    { "name": "function_step", "type": "string" },
+    { "name": "module", "type": "string" },
+    { "name": "step_class", "type": "string" },
+    { "name": "is_manual", "type": "bool" },
+    { "name": "priority", "type": "int" }
+  ],
+  "rows": [],
+  "description": "FAB main/meas step를 function_step, module로 정규화하는 기준 테이블",
+  "aws_cmd": "",
+  "username": "hol",
+  "validation": {},
+  "updated": "2026-04-24T19:20:00"
+}

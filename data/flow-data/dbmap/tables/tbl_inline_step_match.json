@@ -1,0 +1,24 @@
+{
+  "id": "tbl_inline_step_match",
+  "name": "inline_step_match",
+  "display_name": "INLINE_STEP_MATCH",
+  "scope": "common",
+  "products": [
+    "common"
+  ],
+  "group_id": "grp_matching_registry",
+  "table_type": "matching",
+  "columns": [
+    { "name": "product", "type": "string" },
+    { "name": "step_id", "type": "string" },
+    { "name": "function_step", "type": "string" },
+    { "name": "module", "type": "string" },
+    { "name": "map_family", "type": "string" }
+  ],
+  "rows": [],
+  "description": "INLINE step_id를 function_step/module/map_family로 정리하는 매칭 테이블",
+  "aws_cmd": "",
+  "username": "hol",
+  "validation": {},
+  "updated": "2026-04-24T19:20:00"
+}

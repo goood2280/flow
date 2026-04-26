@@ -1,0 +1,814 @@
+{
+  "products": [
+    "PRODA0",
+    "PRODA1",
+    "PRODB"
+  ],
+  "ppids": {
+    "PRODA0": [
+      "PP_PRODA0_01",
+      "PP_PRODA0_02",
+      "PP_PRODA0_03",
+      "PP_PRODA0_04",
+      "PP_PRODA0_05",
+      "PP_PRODA0_06"
+    ],
+    "PRODA1": [
+      "PP_PRODA1_01",
+      "PP_PRODA1_02",
+      "PP_PRODA1_03",
+      "PP_PRODA1_04",
+      "PP_PRODA1_05",
+      "PP_PRODA1_06"
+    ],
+    "PRODB": [
+      "PP_PRODB_01",
+      "PP_PRODB_02",
+      "PP_PRODB_03",
+      "PP_PRODB_04",
+      "PP_PRODB_05",
+      "PP_PRODB_06"
+    ]
+  },
+  "knobs": {
+    "CHANNEL_RELEASE_TIME": [
+      "54s",
+      "60s",
+      "72s"
+    ],
+    "GATE_PROFILE": [
+      "STD",
+      "TILT_2DEG"
+    ],
+    "HKMG_WF_METAL": [
+      "TiAlC_2nm",
+      "TiN_3.5nm",
+      "TiN_3nm"
+    ],
+    "M1_CU_RECIPE": [
+      "R1",
+      "R2"
+    ],
+    "SD_EPI_BORON": [
+      "HIGH_1E20",
+      "LOW_8E19",
+      "NOM"
+    ],
+    "SPACER_LOWK_K": [
+      "k3.5",
+      "k3.9"
+    ]
+  },
+  "split_knobs": [
+    "CHANNEL_RELEASE_TIME_Split",
+    "GATE_PROFILE_Split",
+    "HKMG_WF_METAL_Split",
+    "M1_CU_RECIPE_Split",
+    "SD_EPI_BORON_Split",
+    "SPACER_LOWK_K_Split"
+  ],
+  "masks": {
+    "reticles": [
+      "RAA001",
+      "RAA002",
+      "RAA003",
+      "RAA004",
+      "RAA005",
+      "RAA006",
+      "RAA007",
+      "RAA008",
+      "RAA009",
+      "RAA010",
+      "RAA011",
+      "RAA012",
+      "RAA013",
+      "RAB001",
+      "RAB002",
+      "RAB003",
+      "RAB004",
+      "RAB005",
+      "RAB006",
+      "RAB007",
+      "RAB008",
+      "RAB009",
+      "RAB010",
+      "RAB011",
+      "RAB012",
+      "RAB013",
+      "RAC001",
+      "RAC002",
+      "RAC003",
+      "RAC004",
+      "RAC005",
+      "RAC006",
+      "RAC007",
+      "RAC008",
+      "RAC009",
+      "RAC010",
+      "RAC011",
+      "RAC012",
+      "RAC013"
+    ],
+    "photo_steps": [
+      "1.2 ACTIVE_PHOTO",
+      "10.2 M2_DUAL_DAMASCENE_ETCH",
+      "11.2 M3_DUAL_DAMASCENE_ETCH",
+      "12.1 M4_CU_DAMASCENE",
+      "13.1 M5_CU_DAMASCENE",
+      "14.1 M6_CU_DAMASCENE",
+      "2.0 NWELL_PHOTO",
+      "2.2 PWELL_PHOTO",
+      "3.2 FIN_PHOTO",
+      "4.2 DUMMY_GATE_PHOTO",
+      "8.0 CT_PHOTO",
+      "8.5 V0_PHOTO",
+      "9.2 M1_DUAL_DAMASCENE_ETCH"
+    ],
+    "mask_versions": [
+      "v1.1",
+      "v1.2",
+      "v1.3",
+      "v1.4",
+      "v2.0",
+      "v2.1",
+      "v2.2",
+      "v2.3",
+      "v2.4",
+      "v3.0",
+      "v3.1",
+      "v3.2",
+      "v3.3"
+    ],
+    "mask_vendors": [
+      "MaskVendorX",
+      "MaskVendorY",
+      "MaskVendorZ"
+    ]
+  },
+  "areas": [
+    "BEOL-M1",
+    "BEOL-M2",
+    "BEOL-M3",
+    "BEOL-M4",
+    "BEOL-M5",
+    "BEOL-M6",
+    "Gate",
+    "MOL",
+    "PC",
+    "S/D Epi",
+    "STI",
+    "Spacer",
+    "Well/VT"
+  ],
+  "canonical_steps": [
+    "1.0 STI_PAD_OX_GROW",
+    "1.1 STI_PAD_NITRIDE_DEP",
+    "1.2 STI_ACTIVE_PHOTO",
+    "1.3 STI_TRENCH_ETCH",
+    "1.4 STI_LINER_OX",
+    "1.5 STI_OX_FILL",
+    "1.6 STI_CMP",
+    "1.6M STI_CMP_THK_MEAS",
+    "10.1 M2_LOWK_ILD_DEP",
+    "10.2 M2_DUAL_DAMASCENE_ETCH",
+    "10.2M M2_OVL_M1",
+    "10.3 M2_CU_FILL_CMP",
+    "11.1 M3_LOWK_ILD_DEP",
+    "11.2 M3_DUAL_DAMASCENE_ETCH",
+    "11.2M M3_CD_OCD",
+    "11.3 M3_CU_FILL_CMP",
+    "12.1 M4_CU_DAMASCENE",
+    "12.1M M4_OVL_M3",
+    "13.1 M5_CU_DAMASCENE",
+    "13.1M M5_THK_MEAS",
+    "14.1 M6_CU_DAMASCENE",
+    "2.0 WELL_NWELL_PHOTO",
+    "2.1 WELL_NWELL_IMPLANT",
+    "2.2 WELL_PWELL_PHOTO",
+    "2.3 WELL_PWELL_IMPLANT",
+    "2.4 VTH_N_IMPLANT",
+    "2.5 VTH_P_IMPLANT",
+    "2.6 WELL_IMPLANT_ANNEAL",
+    "3.0 PC_NS_EPI_SIGE_SI_STACK",
+    "3.0M PC_NS_EPI_THK_MEAS",
+    "3.1 PC_FIN_HARDMASK_DEP",
+    "3.2 PC_FIN_PHOTO",
+    "3.3 PC_NANOSHEET_PATTERN_ETCH",
+    "3.3M PC_FIN_CD_MEAS",
+    "4.0 DUMMY_GATE_POLY_DEP",
+    "4.1 DUMMY_GATE_HARDMASK",
+    "4.2 DUMMY_GATE_PHOTO",
+    "4.3 DUMMY_GATE_ETCH",
+    "4.3M PC_DUMMY_GATE_CD_OCD",
+    "5.0 SPACER_LOWK_DEP",
+    "5.1 SPACER_ANISO_ETCH",
+    "5.1M SPACER_THK_MEAS",
+    "5.2 INNER_SPACER_SIGE_ETCH",
+    "5.3 INNER_SPACER_FILL",
+    "5.3M INNER_SPACER_OCD",
+    "6.0 SD_EPI_RECESS_ETCH",
+    "6.1 SD_EPI_NMOS_SIP",
+    "6.2 SD_EPI_PMOS_SIGEB",
+    "6.2M SD_EPI_OCD",
+    "6.3 SD_EPI_ANNEAL",
+    "7.0 MOL_ILD0_DEP",
+    "7.1 MOL_ILD0_CMP",
+    "7.2 GATE_DUMMY_PULL",
+    "7.3 GATE_CHANNEL_RELEASE_SIGE",
+    "7.3M GATE_CHANNEL_RELEASE_OCD",
+    "7.4 HKMG_HFO2_ALD",
+    "7.5 HKMG_WF_METAL_DEP",
+    "7.6 HKMG_W_FILL",
+    "7.7 HKMG_CMP",
+    "7.7M HKMG_CMP_THK",
+    "8.0 CT_PHOTO",
+    "8.1 CT_ETCH",
+    "8.1M CT_CD_OCD",
+    "8.1M2 CT_OVL_GATE",
+    "8.2 CT_SILICIDE_TI_NI",
+    "8.3 CT_W_FILL",
+    "8.4 CT_CMP",
+    "8.4M CT_RS_MEAS",
+    "8.5 MOL_V0_PHOTO",
+    "8.6 MOL_V0_ETCH_FILL",
+    "9.1 M1_LOWK_ILD_DEP",
+    "9.2 M1_DUAL_DAMASCENE_ETCH",
+    "9.2M M1_CD_OCD",
+    "9.3 M1_CU_FILL_CMP",
+    "9.3M M1_THK_MEAS"
+  ],
+  "equipments": [
+    "E01_CH1",
+    "E01_CH2",
+    "E02_CH1",
+    "E03_CH1",
+    "E03_CH2",
+    "E04_CH1",
+    "E04_CH2",
+    "E05_CH1",
+    "E06_CH1",
+    "E06_CH2",
+    "E07_CH1",
+    "E07_CH2",
+    "E08_CH1",
+    "E11_CH1",
+    "E11_CH2",
+    "E12_CH1",
+    "E12_CH2",
+    "E21_CH1",
+    "E21_CH2",
+    "E22_CH1",
+    "E31_CH1",
+    "E31_CH2",
+    "E32_CH1",
+    "E32_CH2",
+    "E33_CH1",
+    "E33_CH2",
+    "E34_CH1",
+    "E35_CH1",
+    "E36_CH1"
+  ],
+  "et_eqps": [
+    "E11",
+    "E12"
+  ],
+  "et_chambers": [
+    "CH1",
+    "CH2"
+  ],
+  "dvc_features": [
+    {
+      "name": "Rc",
+      "direction": "lower_is_better",
+      "unit": "Ω",
+      "spec_lo": "0",
+      "spec_hi": "50",
+      "target": "25",
+      "note": "접촉저항. 낮을수록 소자 성능"
+    },
+    {
+      "name": "Rch",
+      "direction": "target_centered",
+      "unit": "Ω",
+      "spec_lo": "100",
+      "spec_hi": "300",
+      "target": "200",
+      "note": "채널저항. 편차가 중요"
+    },
+    {
+      "name": "ACint",
+      "direction": "lower_is_better",
+      "unit": "fF/μm",
+      "spec_lo": "0",
+      "spec_hi": "5",
+      "target": "2",
+      "note": "기생 인터커넥트 커패시턴스"
+    },
+    {
+      "name": "AChw",
+      "direction": "context_dependent",
+      "unit": "fF",
+      "spec_lo": "-",
+      "spec_hi": "-",
+      "target": "-",
+      "note": "핫와이어 AC. 구조/목적에 따라"
+    },
+    {
+      "name": "Vth_n",
+      "direction": "target_centered",
+      "unit": "V",
+      "spec_lo": "0.18",
+      "spec_hi": "0.32",
+      "target": "0.25",
+      "note": "NFET 문턱전압"
+    },
+    {
+      "name": "Vth_p",
+      "direction": "target_centered",
+      "unit": "V",
+      "spec_lo": "-0.32",
+      "spec_hi": "-0.18",
+      "target": "-0.25",
+      "note": "PFET 문턱전압"
+    },
+    {
+      "name": "Ion_n",
+      "direction": "higher_is_better",
+      "unit": "μA/μm",
+      "spec_lo": "800",
+      "spec_hi": "-",
+      "target": "1000",
+      "note": "NFET 온전류"
+    },
+    {
+      "name": "Ion_p",
+      "direction": "higher_is_better",
+      "unit": "μA/μm",
+      "spec_lo": "700",
+      "spec_hi": "-",
+      "target": "900",
+      "note": "PFET 온전류"
+    },
+    {
+      "name": "Ioff_n",
+      "direction": "lower_is_better",
+      "unit": "nA/μm",
+      "spec_lo": "0",
+      "spec_hi": "10",
+      "target": "2",
+      "note": "NFET 오프전류"
+    },
+    {
+      "name": "Ioff_p",
+      "direction": "lower_is_better",
+      "unit": "nA/μm",
+      "spec_lo": "0",
+      "spec_hi": "10",
+      "target": "2",
+      "note": "PFET 오프전류"
+    },
+    {
+      "name": "lkg",
+      "direction": "lower_is_better",
+      "unit": "nA",
+      "spec_lo": "0",
+      "spec_hi": "100",
+      "target": "20",
+      "note": "누설전류"
+    }
+  ],
+  "inline_features": [
+    {
+      "name": "OCD_8.1M_CT_CD_OCD_mean",
+      "agg": "mean",
+      "source": "CD_CT",
+      "col_prefix": "OCD_8.1M_CT_CD_OCD"
+    },
+    {
+      "name": "OCD_8.1M_CT_CD_OCD_std",
+      "agg": "std",
+      "source": "CD_CT",
+      "col_prefix": "OCD_8.1M_CT_CD_OCD"
+    },
+    {
+      "name": "OCD_8.1M_CT_CD_OCD_p10",
+      "agg": "p10",
+      "source": "CD_CT",
+      "col_prefix": "OCD_8.1M_CT_CD_OCD"
+    },
+    {
+      "name": "OCD_8.1M_CT_CD_OCD_p90",
+      "agg": "p90",
+      "source": "CD_CT",
+      "col_prefix": "OCD_8.1M_CT_CD_OCD"
+    },
+    {
+      "name": "OCD_4.3M_PC_DUMMY_GATE_CD_OCD_mean",
+      "agg": "mean",
+      "source": "CD_DGATE",
+      "col_prefix": "OCD_4.3M_PC_DUMMY_GATE_CD_OCD"
+    },
+    {
+      "name": "OCD_4.3M_PC_DUMMY_GATE_CD_OCD_std",
+      "agg": "std",
+      "source": "CD_DGATE",
+      "col_prefix": "OCD_4.3M_PC_DUMMY_GATE_CD_OCD"
+    },
+    {
+      "name": "OCD_4.3M_PC_DUMMY_GATE_CD_OCD_p10",
+      "agg": "p10",
+      "source": "CD_DGATE",
+      "col_prefix": "OCD_4.3M_PC_DUMMY_GATE_CD_OCD"
+    },
+    {
+      "name": "OCD_4.3M_PC_DUMMY_GATE_CD_OCD_p90",
+      "agg": "p90",
+      "source": "CD_DGATE",
+      "col_prefix": "OCD_4.3M_PC_DUMMY_GATE_CD_OCD"
+    },
+    {
+      "name": "CD_3.3M_PC_FIN_CD_MEAS_mean",
+      "agg": "mean",
+      "source": "CD_FIN",
+      "col_prefix": "CD_3.3M_PC_FIN_CD_MEAS"
+    },
+    {
+      "name": "CD_3.3M_PC_FIN_CD_MEAS_std",
+      "agg": "std",
+      "source": "CD_FIN",
+      "col_prefix": "CD_3.3M_PC_FIN_CD_MEAS"
+    },
+    {
+      "name": "CD_3.3M_PC_FIN_CD_MEAS_p10",
+      "agg": "p10",
+      "source": "CD_FIN",
+      "col_prefix": "CD_3.3M_PC_FIN_CD_MEAS"
+    },
+    {
+      "name": "CD_3.3M_PC_FIN_CD_MEAS_p90",
+      "agg": "p90",
+      "source": "CD_FIN",
+      "col_prefix": "CD_3.3M_PC_FIN_CD_MEAS"
+    },
+    {
+      "name": "OCD_9.2M_M1_CD_OCD_mean",
+      "agg": "mean",
+      "source": "CD_M1",
+      "col_prefix": "OCD_9.2M_M1_CD_OCD"
+    },
+    {
+      "name": "OCD_9.2M_M1_CD_OCD_std",
+      "agg": "std",
+      "source": "CD_M1",
+      "col_prefix": "OCD_9.2M_M1_CD_OCD"
+    },
+    {
+      "name": "OCD_9.2M_M1_CD_OCD_p10",
+      "agg": "p10",
+      "source": "CD_M1",
+      "col_prefix": "OCD_9.2M_M1_CD_OCD"
+    },
+    {
+      "name": "OCD_9.2M_M1_CD_OCD_p90",
+      "agg": "p90",
+      "source": "CD_M1",
+      "col_prefix": "OCD_9.2M_M1_CD_OCD"
+    },
+    {
+      "name": "OCD_11.2M_M3_CD_OCD_mean",
+      "agg": "mean",
+      "source": "CD_M3",
+      "col_prefix": "OCD_11.2M_M3_CD_OCD"
+    },
+    {
+      "name": "OCD_11.2M_M3_CD_OCD_std",
+      "agg": "std",
+      "source": "CD_M3",
+      "col_prefix": "OCD_11.2M_M3_CD_OCD"
+    },
+    {
+      "name": "OCD_11.2M_M3_CD_OCD_p10",
+      "agg": "p10",
+      "source": "CD_M3",
+      "col_prefix": "OCD_11.2M_M3_CD_OCD"
+    },
+    {
+      "name": "OCD_11.2M_M3_CD_OCD_p90",
+      "agg": "p90",
+      "source": "CD_M3",
+      "col_prefix": "OCD_11.2M_M3_CD_OCD"
+    },
+    {
+      "name": "OCD_5.3M_INNER_SPACER_OCD_mean",
+      "agg": "mean",
+      "source": "OCD_INSPCR",
+      "col_prefix": "OCD_5.3M_INNER_SPACER_OCD"
+    },
+    {
+      "name": "OCD_5.3M_INNER_SPACER_OCD_std",
+      "agg": "std",
+      "source": "OCD_INSPCR",
+      "col_prefix": "OCD_5.3M_INNER_SPACER_OCD"
+    },
+    {
+      "name": "OCD_5.3M_INNER_SPACER_OCD_p10",
+      "agg": "p10",
+      "source": "OCD_INSPCR",
+      "col_prefix": "OCD_5.3M_INNER_SPACER_OCD"
+    },
+    {
+      "name": "OCD_5.3M_INNER_SPACER_OCD_p90",
+      "agg": "p90",
+      "source": "OCD_INSPCR",
+      "col_prefix": "OCD_5.3M_INNER_SPACER_OCD"
+    },
+    {
+      "name": "OCD_7.3M_GATE_CHANNEL_RELEASE_OCD_mean",
+      "agg": "mean",
+      "source": "OCD_NS_REL",
+      "col_prefix": "OCD_7.3M_GATE_CHANNEL_RELEASE_OCD"
+    },
+    {
+      "name": "OCD_7.3M_GATE_CHANNEL_RELEASE_OCD_std",
+      "agg": "std",
+      "source": "OCD_NS_REL",
+      "col_prefix": "OCD_7.3M_GATE_CHANNEL_RELEASE_OCD"
+    },
+    {
+      "name": "OCD_7.3M_GATE_CHANNEL_RELEASE_OCD_p10",
+      "agg": "p10",
+      "source": "OCD_NS_REL",
+      "col_prefix": "OCD_7.3M_GATE_CHANNEL_RELEASE_OCD"
+    },
+    {
+      "name": "OCD_7.3M_GATE_CHANNEL_RELEASE_OCD_p90",
+      "agg": "p90",
+      "source": "OCD_NS_REL",
+      "col_prefix": "OCD_7.3M_GATE_CHANNEL_RELEASE_OCD"
+    },
+    {
+      "name": "OCD_6.2M_SD_EPI_OCD_mean",
+      "agg": "mean",
+      "source": "OCD_SDEPI",
+      "col_prefix": "OCD_6.2M_SD_EPI_OCD"
+    },
+    {
+      "name": "OCD_6.2M_SD_EPI_OCD_std",
+      "agg": "std",
+      "source": "OCD_SDEPI",
+      "col_prefix": "OCD_6.2M_SD_EPI_OCD"
+    },
+    {
+      "name": "OCD_6.2M_SD_EPI_OCD_p10",
+      "agg": "p10",
+      "source": "OCD_SDEPI",
+      "col_prefix": "OCD_6.2M_SD_EPI_OCD"
+    },
+    {
+      "name": "OCD_6.2M_SD_EPI_OCD_p90",
+      "agg": "p90",
+      "source": "OCD_SDEPI",
+      "col_prefix": "OCD_6.2M_SD_EPI_OCD"
+    },
+    {
+      "name": "OVL_8.1M2_CT_OVL_GATE_mean",
+      "agg": "mean",
+      "source": "OVL_CT_GATE",
+      "col_prefix": "OVL_8.1M2_CT_OVL_GATE"
+    },
+    {
+      "name": "OVL_8.1M2_CT_OVL_GATE_std",
+      "agg": "std",
+      "source": "OVL_CT_GATE",
+      "col_prefix": "OVL_8.1M2_CT_OVL_GATE"
+    },
+    {
+      "name": "OVL_8.1M2_CT_OVL_GATE_p10",
+      "agg": "p10",
+      "source": "OVL_CT_GATE",
+      "col_prefix": "OVL_8.1M2_CT_OVL_GATE"
+    },
+    {
+      "name": "OVL_8.1M2_CT_OVL_GATE_p90",
+      "agg": "p90",
+      "source": "OVL_CT_GATE",
+      "col_prefix": "OVL_8.1M2_CT_OVL_GATE"
+    },
+    {
+      "name": "OVL_10.2M_M2_OVL_M1_mean",
+      "agg": "mean",
+      "source": "OVL_M2_M1",
+      "col_prefix": "OVL_10.2M_M2_OVL_M1"
+    },
+    {
+      "name": "OVL_10.2M_M2_OVL_M1_std",
+      "agg": "std",
+      "source": "OVL_M2_M1",
+      "col_prefix": "OVL_10.2M_M2_OVL_M1"
+    },
+    {
+      "name": "OVL_10.2M_M2_OVL_M1_p10",
+      "agg": "p10",
+      "source": "OVL_M2_M1",
+      "col_prefix": "OVL_10.2M_M2_OVL_M1"
+    },
+    {
+      "name": "OVL_10.2M_M2_OVL_M1_p90",
+      "agg": "p90",
+      "source": "OVL_M2_M1",
+      "col_prefix": "OVL_10.2M_M2_OVL_M1"
+    },
+    {
+      "name": "OVL_12.1M_M4_OVL_M3_mean",
+      "agg": "mean",
+      "source": "OVL_M4_M3",
+      "col_prefix": "OVL_12.1M_M4_OVL_M3"
+    },
+    {
+      "name": "OVL_12.1M_M4_OVL_M3_std",
+      "agg": "std",
+      "source": "OVL_M4_M3",
+      "col_prefix": "OVL_12.1M_M4_OVL_M3"
+    },
+    {
+      "name": "OVL_12.1M_M4_OVL_M3_p10",
+      "agg": "p10",
+      "source": "OVL_M4_M3",
+      "col_prefix": "OVL_12.1M_M4_OVL_M3"
+    },
+    {
+      "name": "OVL_12.1M_M4_OVL_M3_p90",
+      "agg": "p90",
+      "source": "OVL_M4_M3",
+      "col_prefix": "OVL_12.1M_M4_OVL_M3"
+    },
+    {
+      "name": "RS_8.4M_CT_RS_MEAS_mean",
+      "agg": "mean",
+      "source": "RS_CT",
+      "col_prefix": "RS_8.4M_CT_RS_MEAS"
+    },
+    {
+      "name": "RS_8.4M_CT_RS_MEAS_std",
+      "agg": "std",
+      "source": "RS_CT",
+      "col_prefix": "RS_8.4M_CT_RS_MEAS"
+    },
+    {
+      "name": "RS_8.4M_CT_RS_MEAS_p10",
+      "agg": "p10",
+      "source": "RS_CT",
+      "col_prefix": "RS_8.4M_CT_RS_MEAS"
+    },
+    {
+      "name": "RS_8.4M_CT_RS_MEAS_p90",
+      "agg": "p90",
+      "source": "RS_CT",
+      "col_prefix": "RS_8.4M_CT_RS_MEAS"
+    },
+    {
+      "name": "THK_7.7M_HKMG_CMP_THK_mean",
+      "agg": "mean",
+      "source": "THK_HKMG",
+      "col_prefix": "THK_7.7M_HKMG_CMP_THK"
+    },
+    {
+      "name": "THK_7.7M_HKMG_CMP_THK_std",
+      "agg": "std",
+      "source": "THK_HKMG",
+      "col_prefix": "THK_7.7M_HKMG_CMP_THK"
+    },
+    {
+      "name": "THK_7.7M_HKMG_CMP_THK_p10",
+      "agg": "p10",
+      "source": "THK_HKMG",
+      "col_prefix": "THK_7.7M_HKMG_CMP_THK"
+    },
+    {
+      "name": "THK_7.7M_HKMG_CMP_THK_p90",
+      "agg": "p90",
+      "source": "THK_HKMG",
+      "col_prefix": "THK_7.7M_HKMG_CMP_THK"
+    },
+    {
+      "name": "THK_9.3M_M1_THK_MEAS_mean",
+      "agg": "mean",
+      "source": "THK_M1",
+      "col_prefix": "THK_9.3M_M1_THK_MEAS"
+    },
+    {
+      "name": "THK_9.3M_M1_THK_MEAS_std",
+      "agg": "std",
+      "source": "THK_M1",
+      "col_prefix": "THK_9.3M_M1_THK_MEAS"
+    },
+    {
+      "name": "THK_9.3M_M1_THK_MEAS_p10",
+      "agg": "p10",
+      "source": "THK_M1",
+      "col_prefix": "THK_9.3M_M1_THK_MEAS"
+    },
+    {
+      "name": "THK_9.3M_M1_THK_MEAS_p90",
+      "agg": "p90",
+      "source": "THK_M1",
+      "col_prefix": "THK_9.3M_M1_THK_MEAS"
+    },
+    {
+      "name": "THK_13.1M_M5_THK_MEAS_mean",
+      "agg": "mean",
+      "source": "THK_M5",
+      "col_prefix": "THK_13.1M_M5_THK_MEAS"
+    },
+    {
+      "name": "THK_13.1M_M5_THK_MEAS_std",
+      "agg": "std",
+      "source": "THK_M5",
+      "col_prefix": "THK_13.1M_M5_THK_MEAS"
+    },
+    {
+      "name": "THK_13.1M_M5_THK_MEAS_p10",
+      "agg": "p10",
+      "source": "THK_M5",
+      "col_prefix": "THK_13.1M_M5_THK_MEAS"
+    },
+    {
+      "name": "THK_13.1M_M5_THK_MEAS_p90",
+      "agg": "p90",
+      "source": "THK_M5",
+      "col_prefix": "THK_13.1M_M5_THK_MEAS"
+    },
+    {
+      "name": "THK_3.0M_PC_NS_EPI_THK_MEAS_mean",
+      "agg": "mean",
+      "source": "THK_NS_STACK",
+      "col_prefix": "THK_3.0M_PC_NS_EPI_THK_MEAS"
+    },
+    {
+      "name": "THK_3.0M_PC_NS_EPI_THK_MEAS_std",
+      "agg": "std",
+      "source": "THK_NS_STACK",
+      "col_prefix": "THK_3.0M_PC_NS_EPI_THK_MEAS"
+    },
+    {
+      "name": "THK_3.0M_PC_NS_EPI_THK_MEAS_p10",
+      "agg": "p10",
+      "source": "THK_NS_STACK",
+      "col_prefix": "THK_3.0M_PC_NS_EPI_THK_MEAS"
+    },
+    {
+      "name": "THK_3.0M_PC_NS_EPI_THK_MEAS_p90",
+      "agg": "p90",
+      "source": "THK_NS_STACK",
+      "col_prefix": "THK_3.0M_PC_NS_EPI_THK_MEAS"
+    },
+    {
+      "name": "THK_5.1M_SPACER_THK_MEAS_mean",
+      "agg": "mean",
+      "source": "THK_SPACER",
+      "col_prefix": "THK_5.1M_SPACER_THK_MEAS"
+    },
+    {
+      "name": "THK_5.1M_SPACER_THK_MEAS_std",
+      "agg": "std",
+      "source": "THK_SPACER",
+      "col_prefix": "THK_5.1M_SPACER_THK_MEAS"
+    },
+    {
+      "name": "THK_5.1M_SPACER_THK_MEAS_p10",
+      "agg": "p10",
+      "source": "THK_SPACER",
+      "col_prefix": "THK_5.1M_SPACER_THK_MEAS"
+    },
+    {
+      "name": "THK_5.1M_SPACER_THK_MEAS_p90",
+      "agg": "p90",
+      "source": "THK_SPACER",
+      "col_prefix": "THK_5.1M_SPACER_THK_MEAS"
+    },
+    {
+      "name": "THK_1.6M_STI_CMP_THK_MEAS_mean",
+      "agg": "mean",
+      "source": "THK_STI_OX",
+      "col_prefix": "THK_1.6M_STI_CMP_THK_MEAS"
+    },
+    {
+      "name": "THK_1.6M_STI_CMP_THK_MEAS_std",
+      "agg": "std",
+      "source": "THK_STI_OX",
+      "col_prefix": "THK_1.6M_STI_CMP_THK_MEAS"
+    },
+    {
+      "name": "THK_1.6M_STI_CMP_THK_MEAS_p10",
+      "agg": "p10",
+      "source": "THK_STI_OX",
+      "col_prefix": "THK_1.6M_STI_CMP_THK_MEAS"
+    },
+    {
+      "name": "THK_1.6M_STI_CMP_THK_MEAS_p90",
+      "agg": "p90",
+      "source": "THK_STI_OX",
+      "col_prefix": "THK_1.6M_STI_CMP_THK_MEAS"
+    }
+  ]
+}

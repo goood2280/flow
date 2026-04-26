@@ -1,0 +1,36 @@
+{
+  "default": {
+    "roots": {
+      "db": [],
+      "base": []
+    },
+    "root_aliases": {
+      "FAB": ["1.RAWDATA_DB_FAB", "1.RAWDATA_DB"],
+      "INLINE": ["1.RAWDATA_DB_INLINE"],
+      "ET": ["1.RAWDATA_DB_ET", "ET"],
+      "EDS": ["1.RAWDATA_DB_EDS", "EDS"]
+    },
+    "column_aliases": {
+      "root_lot_id": ["ROOT_LOT_ID", "rootLotId"],
+      "lot_id": ["LOT_ID", "lotId"],
+      "wafer_id": ["WAFER_ID", "waferId"],
+      "fab_lot_id": ["FAB_LOT_ID", "fabLotId"],
+      "tkin_time": ["TKIN_TIME", "track_in_time", "trackin_time", "in_time"],
+      "time": ["TIME", "created_at", "tkout_time", "timestamp"],
+      "tkout_time": ["TKOUT_TIME", "track_out_time", "trackout_time", "out_time", "time", "timestamp"],
+      "step_id": ["STEP_ID", "func_step", "stepId"],
+      "step_seq": ["STEP_SEQ", "stepSeq", "seq_no", "measure_seq"],
+      "product": ["PRODUCT", "product_name", "PRODUCT_NAME"],
+      "eqp": ["EQP", "equipment_id", "eqp_id", "tool_id"],
+      "ppid": ["PPID", "recipe_id", "ppid_name"],
+      "chamber": ["CHAMBER", "chamber_id", "module_id"],
+      "item_id": ["ITEM_ID", "param_id", "parameter_id"],
+      "subitem_id": ["SUBITEM_ID", "sub_item_id", "shot_id", "site_id"],
+      "shot_x": ["SHOT_X", "die_x", "coord_x"],
+      "shot_y": ["SHOT_Y", "die_y", "coord_y"],
+      "value": ["VALUE", "val", "measure_value"],
+      "request_id": ["REQUEST_ID", "request_no", "job_id", "measure_group_id"],
+      "map_id": ["MAP_ID", "map_type", "map_name"]
+    }
+  }
+}

@@ -1,0 +1,156 @@
+{
+  "generated_at": "2026-04-24T18:59:03+09:00",
+  "total_archived": 18,
+  "recent": [
+    {
+      "id": "handoff_v9_F4",
+      "title": "[F4] Dashboard 실제 차트 + Fab Progress 속도·정체 가시화",
+      "summary": "사용자 제시 차트 4~6종 실구현 + 상단 KPI 카드 (7일/30일 TAT·DPML·재공·정체) + Lot row 에 속도 뱃지 (🟢빠름/⚪평균/🟠느림/🔴정체) + 정체 자재 필터. 스펙: docs/collab/F4_dashboard_full.md",
+      "resolution": "Dashboard FAB Progress 뷰를 F4 요구에 맞게 확장했다. backend/routers/dashboard.py 에 lot elapsed/progress/stuck/speed 계산을 추가하고 /api/dashboard/summary, /api/dashboard/stuck-lots endpoint 를 신설했으며, 속도 판정은 평균 step-h…",
+      "archived_at": "2026-04-24T18:59:03+09:00",
+      "priority": "p1",
+      "track": "feature_v9_1",
+      "backlog_id": "F4"
+    },
+    {
+      "id": "handoff_v9_H16",
+      "title": "[H16] QA 자동 루프 (user/admin 페르소나 + 차트 + 페이지 직관성 주기 검증)",
+      "summary": "archive N건 마다 자동 E2E QA — 2 페르소나 API 20+ 체크, 차트 응답 schema 검증, edge case 시나리오, 각 페이지 직관성/가독성 ux-reviewer agent. 결과 → qa_report.json + 이상 시 자동 reopen handoff.",
+      "resolution": "QA 자동 루프를 추가했다. scripts/e2e_qa.py 는 qa_admin/qa_user 계정을 보장한 뒤 user/admin 페르소나 API 체크, 10개 edge case, dashboard chart schema sanity, rule-based UX score를 실행하고 collab/qa_report.json 최근 10회 rolling rep…",
+      "archived_at": "2026-04-24T18:56:03+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H16"
+    },
+    {
+      "id": "handoff_v9_H13",
+      "title": "[H13] WF Layout 파라미터 시스템 (chip_radius · shot_pitch · shot/teg/chip 크기 · offset · scribe lane)",
+      "summary": "입력 파라미터만 주면 wafer/shot/die/TEG/scribe lane 이 자동 렌더. shot 안에서 chip 위아래 scribe lane 이 TEG 높이만큼 또는 TEG 반만큼(half scribe) 분할.",
+      "resolution": "WF Layout 파라미터 시스템을 product별 wafer_layout 저장 스키마로 확장했다. /api/waferlayout/grid GET/PUT에 wafer radius, shot pitch/size, teg size, chip width/height, chip rows/cols, offset, scribePattern 검증과 응답 alias(c…",
+      "archived_at": "2026-04-24T18:54:33+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H13"
+    },
+    {
+      "id": "handoff_v9_H15",
+      "title": "[H15] Home 에 '최근 변경사항' 카드 + 자동 빌드/반영 피드백 루프",
+      "summary": "매 archive 이후 자동 생성되는 release_notes.json 을 Home 에서 조회해 '최근 변경사항' 섹션 렌더. 사용자가 매 iteration 뭐 바뀌었는지 한눈에 확인 → 즉시 방향 제시 가능.",
+      "resolution": "Home 에 최근 변경사항 카드와 release notes 조회 경로를 연결했다. 백엔드는 /api/home/release-notes 로 data/flow-data/release_notes.json 내용을 인증 기반으로 반환하고 collab/.build_needed 마커 여부도 함께 내려준다. 프런트는 이를 받아 최신 변경 5건을 기본 표시하고, 각 …",
+      "archived_at": "2026-04-24T17:39:03+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H15"
+    },
+    {
+      "id": "handoff_v9_H12",
+      "title": "[H12] WF Layout 제품별 TEG 편집 UI + Edge Shot 후보 표시 (Shot View All)",
+      "summary": "제품별 TEG 좌표 편집 테이블(좌표 가이드 포함) + Shot View All 에서 선택된 TEG 기반 edge shot 후보 하이라이트. wafer 완전 포함 shot 은 edge 후보에서 제외. L10 의 실용 phase 1.",
+      "resolution": "WF Layout 의 TEG 편집과 edge shot 후보 표시를 H12 범위로 실제 연결했다. 제품별 TEG는 admin 전용 테이블에서 id/label/dx_mm/dy_mm 기준으로 편집하고 /api/waferlayout/grid 로 저장되며, 좌표 가이드 박스로 Shot 중심 원점과 축 방향을 즉시 확인할 수 있게 했다. Shot View(All) …",
+      "archived_at": "2026-04-24T17:35:33+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H12"
+    },
+    {
+      "id": "handoff_v9_H14",
+      "title": "[H14] Tracker LOT_WF 측정여부 자동 반영 + DB/base 파일 구조 확장 권한",
+      "summary": "이슈추적 Lot/Wafer 표의 '현재 step'/'ET 측정' 컬럼이 실제 값으로 자동 채워지게. 필요 시 DB 스키마·base 파일 구조 자유롭게 확장 (사용자 권한 부여). 사내 로컬 파일 세팅도 마이그레이션 스크립트로 자동 변환.",
+      "resolution": "Tracker LOT_WF row 스키마를 확장해 현재 step 과 ET 측정여부가 실제 데이터로 자동 반영되도록 정리했다. batch 전체 조회는 이제 각 row 에 대해 current_step/current_step_seq 와 et_measured/et_last_seq/et_last_time/last_checked_at 을 계산해 issue lots …",
+      "archived_at": "2026-04-24T17:29:03+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H14"
+    },
+    {
+      "id": "handoff_v9_H10",
+      "title": "[H10] WF Map chip_view edge 잘린 chip 빨간색 + shot 번호 체계 (1,1)=좌상단",
+      "summary": "현재 wafer 경계에 걸려 잘린 chip 이 회색 처리. 빨간색으로 바꿔 edge 영향 가시화. Shot 번호는 wafer 덮는 전체 shot grid 기준 좌상단이 (1,1).",
+      "resolution": "WF Layout 의 chip view 와 shot 라벨 체계를 H10 기준으로 정리했다. wafer usable 영역 밖이지만 wafer 와 교차하는 edge-cut chip 은 더 이상 버리지 않고 빨간색으로 표시해 edge 영향을 즉시 식별할 수 있게 했고, shot 번호는 usable shot 전용 ET numbering 과 분리해 retained…",
+      "archived_at": "2026-04-24T17:23:04+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H10"
+    },
+    {
+      "id": "handoff_v9_H11",
+      "title": "[H11] Tracker LOT_WF 테이블 monitor_prod 컬럼 + 전체 일괄 조회 버튼",
+      "summary": "이슈추적의 LOT_WF 테이블에 monitor_prod 컬럼 추가 (현재 step 조회용). 기존 row 별 개별 조회 버튼 제거하고 테이블 전체 일괄 조회 버튼 하나로 통합.",
+      "resolution": "Tracker LOT_WF 테이블 스키마에 nullable monitor_prod를 추가했다. readonly 상세에서는 개별 조회를 제거하고 테이블 상단의 '전체 조회' 버튼으로 일괄 조회하도록 바꿨다. batch 응답은 각 row의 snapshot과 current_step/step_seq/last_move_at를 내려주며, monitor_prod가 있…",
+      "archived_at": "2026-04-24T17:04:33+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H11"
+    },
+    {
+      "id": "handoff_v9_H9",
+      "title": "[H9] SplitTable Final Only 모드에 'This Lot All History' 옵션 추가",
+      "summary": "현재 Final Only 는 최종값만. 'This Lot All History' 토글을 추가해 선택한 lot 의 전체 측정 이력까지 보이게.",
+      "resolution": "My_SplitTable History 상단을 3개 라디오 모드로 단순화했다. Final Only를 기본값으로 두고, All은 전체 product history, This Lot All History는 현재 root_lot_id 전체 이력을 보여주며 lot 미선택 시 비활성화했다. splittable view API는 history_mode 쿼리를 수용하…",
+      "archived_at": "2026-04-24T17:00:33+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H9"
+    },
+    {
+      "id": "handoff_v9_H8",
+      "title": "[H8] Dashboard 내부 용어 숨김 (chart= 쿼리·type 표시 제거)",
+      "summary": "일반 유저 Dashboard 에 'chart=xxx' 같은 내부 key 나 type 문자열이 보이지 않게 한다. 유저는 차트 제목/설명만 인지.",
+      "resolution": "Dashboard 일반 사용자 view에서 내부 용어를 숨기도록 카드 메타와 확대 모달 텍스트를 정리했다. 차트 타입은 한글 라벨로 치환하고, 원천 파일 경로·컬럼명·raw chart_type은 관리자 전용 debug 접기 패널로만 남겼다. 공유 URL의 chart 파라미터나 내부 데이터 구조는 변경하지 않았다.",
+      "archived_at": "2026-04-24T16:57:33+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H8"
+    },
+    {
+      "id": "handoff_v9_H7",
+      "title": "[H7] FileBrowser 신호등 아이콘 재설계 (원형/화살표 색상 단순화)",
+      "summary": "현재 S3 신호등이 보기 좋지 않음. S3 설정 안됨→원형 빨간불, 다운로드→↓ 초록, 멈춤→화살표 빨간, 업로드→↑ 화살표.",
+      "resolution": "FileBrowser 공용 S3StatusLight를 단순 신호등 규칙으로 재설계했다. 설정이 없거나 AWS CLI가 없으면 빨간 원형 1개만 보이도록 바꾸고, 설정된 경우에는 다운로드/업로드를 각각 ↓/↑ 아이콘으로 렌더하며 green만 초록, red/yellow는 빨강, none은 회색 대기로 접었다. hover 상세 패널과 기존 health API …",
+      "archived_at": "2026-04-24T16:56:03+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H7"
+    },
+    {
+      "id": "handoff_v9_F1",
+      "title": "[F1] UXKit 실투입 — 4페이지 Migration (Inform/Dashboard/Admin/SplitTable)",
+      "summary": "377 hex hardcoded → UXKit primitives (statusPalette/chartPalette/Pill/TabStrip/TwoCol/EmptyState/Banner/PageHeader/TabBoundary) 로 치환. v9.1-a/b/c 병렬 1주 + v9.1-d…",
+      "resolution": "My_Dashboard.jsx는 chartPalette/statusPalette 기반으로 잔여 hex를 모두 제거했고, My_Inform.jsx와 My_Admin.jsx는 상태/경고/액션 버튼/배지를 UXKit 계열 토큰과 공통 스타일로 치환해 각 파일 목표치 아래로 낮췄다. My_SplitTable.jsx는 CELL_COLORS를 rgba 기반으로 바꾸…",
+      "archived_at": "2026-04-24T16:51:36+09:00",
+      "priority": "p2",
+      "track": "feature_v9_1",
+      "backlog_id": "F1"
+    },
+    {
+      "id": "handoff_v9_H5",
+      "title": "[H5] PRODA 중복 근본 차단 (저장 시점 dedup + 새벽 cron)",
+      "summary": "/api/informs/products/add 에 strip+casefold dedup 적용 (409 반환) + core/product_dedup.py + scheduler 03:00 cron + pytest 1건",
+      "resolution": "인폼 제품 카탈로그 추가 경로를 공통 canonical dedup 로직으로 통일하고, 동일 제품 재등록은 duplicate_product 409 로 막도록 바꿨다. FE 는 이 409 를 받아 기존 제품으로 자동 유도하고 안내 메시지를 띄운다. 또한 매일 03:00 한 번 config.products 를 정규화하는 product dedup 스케줄러와 로그…",
+      "archived_at": "2026-04-24T16:29:41+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H5"
+    },
+    {
+      "id": "handoff_v9_H6",
+      "title": "[H6] Home 가치 제안 섹션 '3가지 질문'",
+      "summary": "My_Home.jsx 최상단에 UXKit.TwoCol 기반 '3가지 질문' (Tracker/SplitTable/Inform 카드) 추가 + /api/home/summary suggested_actions 제공",
+      "resolution": "Home 상단에 가치 제안용 '3가지 질문' 섹션을 추가했다. 백엔드 /api/home/summary 가 suggested_actions 와 highlights 를 제공하고, 프런트 My_Home 이 이를 받아 Tracker, SplitTable, Inform 으로 바로 이동하는 질문형 카드 3개를 최상단에 노출한다. 기존 홈 카드 그리드는 아래에 그대로…",
+      "archived_at": "2026-04-24T16:27:34+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H6"
+    },
+    {
+      "id": "handoff_v9_H4",
+      "title": "[H4] 사이드바 애매 탭 4개 정리 (WaferLayout/Messages/TableMap/DevGuide)",
+      "summary": "WaferLayout 배너 추가 · Messages 라벨 변경 · TableMap 일반유저 숨김+Admin embed · DevGuide devguide_user 권한화",
+      "resolution": "WaferLayout 은 진입 즉시 안내 배너가 보이도록 정리했고, TableMap 은 일반 사용자 사이드바에서 숨긴 뒤 Admin 내부 서브탭에서 접근하도록 옮겼다. DevGuide 는 admin_settings.devguide_user 목록 기반으로만 일반 사용자에게 노출되도록 App 권한 게이트와 admin settings 저장 로직을 연결했다. 관…",
+      "archived_at": "2026-04-24T16:24:49+09:00",
+      "priority": "p1",
+      "track": "hotfix_v9_0_3",
+      "backlog_id": "H4"
+    }
+  ]
+}

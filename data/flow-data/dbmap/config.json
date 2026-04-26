@@ -1,0 +1,236 @@
+{
+  "nodes": [
+    {
+      "id": "grp_matching_registry",
+      "kind": "group",
+      "name": "Matching / Registry",
+      "ref_id": "grp_matching_registry",
+      "products": [
+        "common"
+      ],
+      "x": 419.942100521017,
+      "y": 466.9835076585576
+    },
+    {
+      "id": "grp_rulebook_config",
+      "kind": "group",
+      "name": "Rulebook / Config",
+      "ref_id": "grp_rulebook_config",
+      "products": [
+        "common"
+      ],
+      "x": 772.0,
+      "y": 46.0
+    },
+    {
+      "id": "grp_derived_features",
+      "kind": "group",
+      "name": "Derived / Feature Table",
+      "ref_id": "grp_derived_features",
+      "products": [
+        "common"
+      ],
+      "x": 940,
+      "y": 90
+    },
+    {
+      "id": "db_fab_proda",
+      "kind": "db_ref",
+      "name": "1.RAWDATA_DB_FAB/PRODA",
+      "source_type": "hive",
+      "path": "",
+      "root": "1.RAWDATA_DB_FAB",
+      "product": "PRODA",
+      "products": [
+        "PRODA"
+      ],
+      "x": 90.0,
+      "y": 470.0
+    },
+    {
+      "id": "db_fab_prodb",
+      "kind": "db_ref",
+      "name": "1.RAWDATA_DB_FAB/PRODB",
+      "source_type": "hive",
+      "path": "",
+      "root": "1.RAWDATA_DB_FAB",
+      "product": "PRODB",
+      "products": [
+        "PRODB"
+      ],
+      "x": 90.0,
+      "y": 560.0
+    },
+    {
+      "id": "db_inline_proda",
+      "kind": "db_ref",
+      "name": "1.RAWDATA_DB_INLINE/PRODA",
+      "source_type": "hive",
+      "path": "",
+      "root": "1.RAWDATA_DB_INLINE",
+      "product": "PRODA",
+      "products": [
+        "PRODA"
+      ],
+      "x": 440.0,
+      "y": 470.0
+    },
+    {
+      "id": "db_inline_prodb",
+      "kind": "db_ref",
+      "name": "1.RAWDATA_DB_INLINE/PRODB",
+      "source_type": "hive",
+      "path": "",
+      "root": "1.RAWDATA_DB_INLINE",
+      "product": "PRODB",
+      "products": [
+        "PRODB"
+      ],
+      "x": 440.0,
+      "y": 560.0
+    },
+    {
+      "id": "db_et_proda0",
+      "kind": "db_ref",
+      "name": "1.RAWDATA_DB_ET/PRODA0",
+      "source_type": "flat",
+      "path": "",
+      "root": "1.RAWDATA_DB_ET",
+      "product": "PRODA0",
+      "products": [
+        "PRODA0"
+      ],
+      "x": 840,
+      "y": 470
+    },
+    {
+      "id": "db_et_proda1",
+      "kind": "db_ref",
+      "name": "1.RAWDATA_DB_ET/PRODA1",
+      "source_type": "flat",
+      "path": "",
+      "root": "1.RAWDATA_DB_ET",
+      "product": "PRODA1",
+      "products": [
+        "PRODA1"
+      ],
+      "x": 840,
+      "y": 560
+    },
+    {
+      "id": "db_et_prodb",
+      "kind": "db_ref",
+      "name": "1.RAWDATA_DB_ET/PRODB",
+      "source_type": "flat",
+      "path": "",
+      "root": "1.RAWDATA_DB_ET",
+      "product": "PRODB",
+      "products": [
+        "PRODB"
+      ],
+      "x": 840,
+      "y": 650
+    }
+  ],
+  "relations": [
+    {
+      "id": "rel_fab_to_matching",
+      "from": "db_fab_proda",
+      "to": "grp_matching_registry",
+      "products": [
+        "PRODA"
+      ],
+      "from_col": "step_id ppid",
+      "to_col": "step_id function_step",
+      "description": "FAB raw step/recipe를 function_step/module registry와 연결"
+    },
+    {
+      "id": "rel_fab_to_matching_prodb",
+      "from": "db_fab_prodb",
+      "to": "grp_matching_registry",
+      "products": [
+        "PRODB"
+      ],
+      "from_col": "step_id ppid",
+      "to_col": "step_id function_step",
+      "description": "FAB raw step/recipe를 function_step/module registry와 연결"
+    },
+    {
+      "id": "rel_inline_to_matching",
+      "from": "db_inline_proda",
+      "to": "grp_matching_registry",
+      "products": [
+        "PRODA"
+      ],
+      "from_col": "step_id item_id subitem_id",
+      "to_col": "step_id function_step inline_item_id",
+      "description": "INLINE raw step/item/subitem을 shot map registry와 연결"
+    },
+    {
+      "id": "rel_inline_to_matching_prodb",
+      "from": "db_inline_prodb",
+      "to": "grp_matching_registry",
+      "products": [
+        "PRODB"
+      ],
+      "from_col": "step_id item_id subitem_id",
+      "to_col": "step_id function_step inline_item_id",
+      "description": "INLINE raw step/item/subitem을 shot map registry와 연결"
+    },
+    {
+      "id": "rel_et_to_rulebook",
+      "from": "db_et_proda0",
+      "to": "grp_rulebook_config",
+      "products": [
+        "PRODA0"
+      ],
+      "from_col": "step_id step_seq item_id",
+      "to_col": "rawitem_id alias report_variant",
+      "description": "ET raw item을 reformatter / report rulebook과 연결"
+    },
+    {
+      "id": "rel_et_to_rulebook_a1",
+      "from": "db_et_proda1",
+      "to": "grp_rulebook_config",
+      "products": [
+        "PRODA1"
+      ],
+      "from_col": "step_id step_seq item_id",
+      "to_col": "rawitem_id alias report_variant",
+      "description": "ET raw item을 reformatter / report rulebook과 연결"
+    },
+    {
+      "id": "rel_et_to_rulebook_b",
+      "from": "db_et_prodb",
+      "to": "grp_rulebook_config",
+      "products": [
+        "PRODB"
+      ],
+      "from_col": "step_id step_seq item_id",
+      "to_col": "rawitem_id alias report_variant",
+      "description": "ET raw item을 reformatter / report rulebook과 연결"
+    },
+    {
+      "id": "rel_matching_to_rulebook",
+      "from": "grp_matching_registry",
+      "to": "grp_rulebook_config",
+      "products": [
+        "common"
+      ],
+      "from_col": "function_step module step_id",
+      "to_col": "function_step module step_id",
+      "description": "step/function/module registry를 rulebook과 연결"
+    },
+    {
+      "id": "rel_rulebook_to_derived",
+      "from": "grp_rulebook_config",
+      "to": "grp_derived_features",
+      "products": [
+        "common"
+      ],
+      "from_col": "knob_name alias mask_name",
+      "to_col": "feature_name alias feature_group",
+      "description": "rulebook 결과가 ML_TABLE / ET / INLINE 파생 feature로 반영"
+    }
+  ]
+}

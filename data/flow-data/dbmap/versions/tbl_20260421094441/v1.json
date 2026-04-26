@@ -1,0 +1,24 @@
+{
+  "id": "tbl_20260421094441",
+  "name": "ET_summary",
+  "display_name": "",
+  "group_id": "",
+  "table_type": "data",
+  "columns": [
+    {
+      "name": "k",
+      "type": "string"
+    }
+  ],
+  "rows": [],
+  "description": "",
+  "aws_cmd": "",
+  "username": "hol",
+  "updated": "2026-04-21T09:44:41.372353",
+  "_audit": {
+    "username": "hol",
+    "action": "edit",
+    "saved_at": "2026-04-21T09:44:41.399335",
+    "version": 1
+  }
+}
