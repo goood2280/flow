@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Builder: walks the FabCanvas.ai source tree and emits setup.py as a
+"""Builder: walks the flow source tree and emits setup.py as a
 self-contained installer (gzip+base64 embedded payloads).
 
-Run from the FabCanvas.ai directory:
+Run from the flow/ directory:
 
     python _build_setup.py
 
@@ -12,7 +12,8 @@ VERSION.json, so bump that first.
 v8.8.3 — 데이터 보존 whitelist 명시화.
 v8.8.16 — 파일탐색기 S3 동기화 설정(data_root/s3_ingest/*) 누락 보완.
 v8.8.17 — **데이터 보존 재설계 (code-only replacement)**:
-  1) 추출 직전 data_root 전체를 외부 디렉토리(~/.fabcanvas_backups/)에 자동 스냅샷.
+  1) 추출 직전 data_root 전체를 외부 디렉토리(~/.flow_backups/)에 자동 스냅샷.
+     (백업 디렉토리 이름은 기존 사용자 환경 호환성 위해 유지 — 이전 버전 스냅샷 복구 가능.)
   2) 추출 후 data_root 의 모든 파일 SHA-256 diff 검증 — 변경된 파일이 있으면
      즉시 스냅샷에서 복구하고 loud 경고.
   3) `python setup.py restore [latest|<timestamp>]` 커맨드로 수동 복구 가능.
@@ -51,7 +52,7 @@ v8.8.17 — **데이터 보존 재설계 (code-only replacement)**:
        - {wafer_map_root} 전체
 
   {data_root} 해석 순서:
-     HOL_DATA_ROOT → FABCANVAS_DATA_ROOT → (prod auto) → ./data/holweb-data
+     FLOW_DATA_ROOT → (prod auto) → ./data/flow-data
   모두 보호. 경로 정규화로 심볼릭링크 우회도 차단.
 """
 import base64
@@ -63,18 +64,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 
-# v8.8.25: ROOT 자체가 '.claude/worktrees/<name>/' 안에 있으면 EXCLUDE_PARTS 가
+# v8.8.25: ROOT 자체가 tool worktree 안에 있으면 EXCLUDE_PARTS 가
 # 모든 소스 파일을 걸러버려 빈 번들이 만들어진다. 반드시 main 체크아웃에서 실행.
-if '.claude' in ROOT.parts or 'worktrees' in ROOT.parts:
+if 'worktrees' in ROOT.parts:
     sys.stderr.write(
         f"ERROR: _build_setup.py must run from the main checkout, not a worktree.\n"
         f"  ROOT = {ROOT}\n"
-        f"  .claude / worktrees segment in ROOT causes EXCLUDE_PARTS to drop every source file.\n"
+        f"  worktrees segment in ROOT causes EXCLUDE_PARTS to drop every source file.\n"
         f"  Run this script from the primary repo root instead.\n"
     )
     sys.exit(2)
 
 INCLUDE_DIRS = [
+    'backend/app_v2',
     'backend/core',
     'backend/routers',
     'frontend/src',
@@ -85,6 +87,8 @@ INCLUDE_DIRS = [
 INCLUDE_FILES = [
     'README.md',
     'CHANGELOG.md',
+    'package.json',
+    'package-lock.json',
     # v8.7.6: VERSION.json / CHANGELOG.md 는 반드시 포함 — 홈 화면에 최신 버전·로그 표시용.
     'VERSION.json',
     'app.py',
@@ -93,16 +97,16 @@ INCLUDE_FILES = [
     'frontend/index.html',
     'frontend/package.json',
     'frontend/vite.config.js',
-    # NOTE: FabCanvas_domain.txt 는 의도적으로 번들에서 제외. 내부 도메인 지식 파일로
-    # public repo 에 유출되어서는 안 됨 (.gitignore 에도 등재).
+    # NOTE: archive/domain_sources_* 내부 원문 도메인 노트는 번들에서 제외.
+    # 내부 도메인 지식 파일은 public repo/installer payload 에 유출되어서는 안 됨.
 ]
 
 # v8.8.3: 빌드 시에도 "사용자 데이터로 분류되는 디렉토리/파일은 절대 포함하지 않는다"
 # 를 이중 방어. INCLUDE_DIRS 밑을 rglob 하면서 아래 세그먼트 중 하나라도 있으면 skip.
 EXCLUDE_PARTS = {
-    '__pycache__', 'node_modules', 'dist', '.claude', '.git', 'reports',
+    '__pycache__', 'node_modules', 'dist', '.git', 'reports',
     # 사용자 데이터 디렉토리 — 빌드 시 번들에서 제외 (런타임엔 _write 가드도 있음)
-    'holweb-data', 'Base', 'DB', 'wafer_maps',
+    'flow-data', 'Base', 'DB', 'wafer_maps',
 }
 
 
@@ -151,7 +155,7 @@ def gather_files():
 
     scripts = ROOT / 'scripts'
     if scripts.is_dir():
-        for p in scripts.glob('*.py'):
+        for p in list(scripts.glob('*.py')) + list(scripts.glob('*.js')):
             add(p)
 
     return sorted(out)
@@ -187,7 +191,7 @@ def build():
     files_block = "FILES = {\n" + "\n".join(entries) + "\n}\n"
 
     header = f'''#!/usr/bin/env python3
-"""FabCanvas (flow) v{version['version']} — self-contained installer.
+"""flow (flow) v{version['version']} — self-contained installer.
 
 Usage (fresh machine):
 
@@ -202,19 +206,19 @@ Run the server afterwards:
 
     uvicorn app:app --host 0.0.0.0 --port 8080
 
-Login: hol / hol12345!  (override with FABCANVAS_ADMIN_PW / HOL_ADMIN_PW)
+Login: hol / hol12345!  (override with FLOW_ADMIN_PW)
 
 This file embeds {len(files)} source files as gzip+base64 blobs. Data
-(data/Base, data/DB, data/holweb-data — users.csv, groups, informs,
+(data/Base, data/DB, data/flow-data — users.csv, groups, informs,
 admin_settings, tracker, splittable, meetings, calendar, messages,
 dbmap, S3 sync config, …) is NEVER bundled and NEVER overwritten —
 re-running setup.py on an existing install preserves ALL user data.
 
 보존 whitelist (v8.8.3):
-  - data/ 트리 전체 (data/Base, data/DB, data/holweb-data)
-  - holweb-data/ 세그먼트가 포함된 모든 경로
-  - HOL_DATA_ROOT / FABCANVAS_DATA_ROOT 환경변수 아래의 모든 경로
-  - FABCANVAS_DB_ROOT / FABCANVAS_BASE_ROOT / FABCANVAS_WAFER_MAP_ROOT
+  - data/ 트리 전체 (data/Base, data/DB, data/flow-data)
+  - flow-data/ 세그먼트가 포함된 모든 경로
+  - FLOW_DATA_ROOT 환경변수 아래의 모든 경로
+  - FLOW_DB_ROOT / FLOW_WAFER_MAP_ROOT
   - 사용자 데이터 기본 파일명 (users.csv, groups.json, admin_settings.json,
     settings.json, shares.json, informs.json, product_contacts.json,
     notes.json, source_config.json, dashboard_*.json, meetings.json,
@@ -268,7 +272,7 @@ _PROTECTED_BASENAMES = {{
     # S3 / 로그
     's3_ingest_config.json', 's3_sync.json', 'history.jsonl', 'status.json',
     'activity.jsonl', 'downloads.jsonl', 'resource.jsonl',
-    # v8.8.17 — 캘린더/대시보드 명시적 추가 (holweb-data 보존원칙 강화)
+    # v8.8.17 — 캘린더/대시보드 명시적 추가 (flow-data 보존원칙 강화)
     'calendar.json', 'reformatter.json',
     # v8.8.18 — 시스템 모니터 state (resource.jsonl 은 이미 위 등록).
     'farm_status.json', 'sysmon_state.json',
@@ -277,7 +281,7 @@ _PROTECTED_BASENAMES = {{
 # v8.8.3 — 데이터 루트로 간주되는 세그먼트 (경로 어디에 있든 보호)
 # v8.8.16 — s3_ingest / reformatter / notifications / cache 추가 보호.
 _PROTECTED_SEGMENTS = {{
-    'holweb-data',    # 사내 운영 데이터 디렉토리
+    'flow-data',    # 사내 운영 데이터 디렉토리
     'informs',        # 인폼 설정/카탈로그/담당자
     'groups',         # 그룹 정의
     'mail_groups',    # 메일 그룹
@@ -313,15 +317,15 @@ _ALLOWED_TOP_LEVEL = {{
 def _write(rel: str, gz_b64: str) -> None:
     # v8.8.3/v8.8.17: 사용자 데이터 보존 가드 — defense in depth.
     #
-    # 원칙 (v8.8.17): setup.py 는 **코드만 교체하고 holweb-data/ 안의 어떤 파일도
+    # 원칙 (v8.8.17): setup.py 는 **코드만 교체하고 flow-data/ 안의 어떤 파일도
     # 건드리지 않는다**. FILES dict 는 backend/ frontend/ docs/ app.py 등 소스만 담아야 함.
     # 6개 레이어로 검증 (하나라도 match 하면 쓰기 skip):
     #   L0) top-level 세그먼트가 _ALLOWED_TOP_LEVEL 에 없으면 화이트리스트 위반 → skip
-    #   L1) 경로 prefix 가 data/ 또는 holweb-data/ 이면 skip
+    #   L1) 경로 prefix 가 data/ 또는 flow-data/ 이면 skip
     #   L2) 경로 세그먼트에 _PROTECTED_SEGMENTS 가 하나라도 있으면 skip
     #   L3) 파일명이 _PROTECTED_BASENAMES 에 있으면 skip
-    #   L4) resolve() 한 절대 경로가 ./data 또는 ./data/holweb-data 아래면 skip
-    #   L5) HOL_DATA_ROOT / FABCANVAS_{{DATA,DB,BASE,WAFER_MAP}}_ROOT 아래면 skip
+    #   L4) resolve() 한 절대 경로가 ./data 또는 ./data/flow-data 아래면 skip
+    #   L5) FLOW_DATA_ROOT / FLOW_{{DB,WAFER_MAP}}_ROOT 아래면 skip
     rel_posix = rel.replace("\\\\", "/").lstrip("./")
     parts = [p for p in rel_posix.split("/") if p]
 
@@ -330,7 +334,7 @@ def _write(rel: str, gz_b64: str) -> None:
         return
 
     # L1
-    for guard in ("data/", "holweb-data/"):
+    for guard in ("data/", "flow-data/"):
         if rel_posix.startswith(guard) or rel_posix.rstrip("/") == guard.rstrip("/"):
             return
 
@@ -349,7 +353,7 @@ def _write(rel: str, gz_b64: str) -> None:
     # L4
     try:
         dst_abs = dst.resolve()
-        for data_sub in ("data", "data/holweb-data", "data/Base", "data/DB"):
+        for data_sub in ("data", "data/flow-data", "data/Base", "data/DB"):
             try:
                 dst_abs.relative_to((ROOT / data_sub).resolve())
                 return
@@ -359,9 +363,7 @@ def _write(rel: str, gz_b64: str) -> None:
         pass
 
     # L5
-    for env_key in ("HOL_DATA_ROOT", "FABCANVAS_DATA_ROOT",
-                    "FABCANVAS_DB_ROOT", "FABCANVAS_BASE_ROOT",
-                    "FABCANVAS_WAFER_MAP_ROOT"):
+    for env_key in ("FLOW_DATA_ROOT", "FLOW_DB_ROOT", "FLOW_WAFER_MAP_ROOT"):
         env_val = os.environ.get(env_key)
         if env_val:
             try:
@@ -371,14 +373,13 @@ def _write(rel: str, gz_b64: str) -> None:
             except Exception:
                 pass
 
-    # L6 (v8.8.19): 사내 공유 경로 `/config/work/sharedworkspace/{{holweb-data,DB,Base}}`
+    # L6 (v8.8.19): 사내 공유 경로 `/config/work/sharedworkspace/{{flow-data,DB}}`
     #   환경변수 없이도 절대 덮어쓰지 않는다 — setup.py 가 공유 데이터 휘발시키는
     #   사고 방지. 해당 경로가 실제 존재하지 않으면 아무 효과 없음 (개발 PC 무해).
     try:
         dst_abs = dst.resolve()
-        for _shared_sub in ("/config/work/sharedworkspace/holweb-data",
-                            "/config/work/sharedworkspace/DB",
-                            "/config/work/sharedworkspace/Base"):
+        for _shared_sub in ("/config/work/sharedworkspace/flow-data",
+                            "/config/work/sharedworkspace/DB"):
             if str(dst_abs).startswith(_shared_sub):
                 return
     except Exception:
@@ -400,15 +401,15 @@ from datetime import datetime as _dt
 
 
 def _resolve_data_roots() -> list:
-    """보호 대상 루트 디렉토리 목록 (존재하는 것만). HOL_DATA_ROOT /
-    FABCANVAS_DATA_ROOT 환경변수가 있으면 그쪽을, 없으면 ROOT/data 전체.
+    """보호 대상 루트 디렉토리 목록 (존재하는 것만). FLOW_DATA_ROOT
+    환경변수가 있으면 그쪽을, 없으면 ROOT/data 전체.
 
     v8.8.19: `/config/work/sharedworkspace` 존재 시 사내 공유 경로를 자동 보호
-      (holweb-data + DB + Base). 환경변수 없어도 setup.py 가 사용자 데이터를
+      (flow-data + DB). 환경변수 없어도 setup.py 가 사용자 데이터를
       절대 덮어쓰지 않도록 보장.
     """
     roots = []
-    for env_key in ("HOL_DATA_ROOT", "FABCANVAS_DATA_ROOT"):
+    for env_key in ("FLOW_DATA_ROOT",):
         v = os.environ.get(env_key)
         if v:
             p = Path(v).resolve()
@@ -417,11 +418,11 @@ def _resolve_data_roots() -> list:
     # v8.8.19: 사내 공유 경로 자동 보호.
     _shared = Path("/config/work/sharedworkspace")
     if _shared.is_dir():
-        for sub in ("holweb-data", "DB", "Base"):
+        for sub in ("flow-data", "DB"):
             p = (_shared / sub).resolve()
             if p.is_dir() and p not in roots:
                 roots.append(p)
-    for sub in ("data", "data/holweb-data", "data/Base", "data/DB", "data/Fab"):
+    for sub in ("data", "data/flow-data", "data/DB", "data/Fab"):
         p = (ROOT / sub).resolve()
         if p.is_dir() and p not in roots:
             roots.append(p)
@@ -434,9 +435,11 @@ def _resolve_data_roots() -> list:
 
 
 def _backups_dir() -> Path:
-    """외부 백업 디렉토리 — ~/.fabcanvas_backups/ (repo 외부)."""
+    """외부 백업 디렉토리 — ~/.flow_backups/ (repo 외부).
+    기존 사용자 환경 호환성을 위해 이름 유지 — 폴더 리네임(2026-04-24) 후에도
+    이전 버전 스냅샷을 그대로 복구 가능하게 하려는 의도."""
     home = Path(os.path.expanduser("~"))
-    d = home / ".fabcanvas_backups"
+    d = home / ".flow_backups"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -798,7 +801,7 @@ def _ensure_critical_deps() -> None:
     openpyxl 은 인폼 표 embed / SplitTable 엑셀 export 에서 즉시 사용되므로
     pip install 을 따로 실행하지 않아도 동작해야 한다는 요구에 따른 필수 패키지.
     이미 import 되면 skip."""
-    critical = ('openpyxl',)
+    critical = ('openpyxl', 'xlsxwriter', 'xlrd')
     missing = []
     for mod in critical:
         try:
@@ -818,11 +821,11 @@ def _ensure_critical_deps() -> None:
 
 
 def extract() -> int:
-    # v8.8.17: 추출 직전 data_root 스냅샷 (~/.fabcanvas_backups/v<ver>-<stamp>/).
+    # v8.8.17: 추출 직전 data_root 스냅샷 (~/.flow_backups/v<ver>-<stamp>/).
     # 스냅샷 실패/없음이면 snap=None 으로 계속 진행 — 신규 설치는 보호할 게 없음.
     snap = None
-    if os.environ.get("FABCANVAS_SKIP_SNAPSHOT") == "1":
-        print("[snapshot] skipped (FABCANVAS_SKIP_SNAPSHOT=1)")
+    if os.environ.get("FLOW_SKIP_SNAPSHOT") == "1":
+        print("[snapshot] skipped (FLOW_SKIP_SNAPSHOT=1)")
     else:
         print(f"[extract] flow v{VERSION} starting - snapshot + extract + deps")
         try:
@@ -846,7 +849,7 @@ def extract() -> int:
     (ROOT / 'VERSION.json').write_text(
         json.dumps(VERSION_META, indent=2, ensure_ascii=False), encoding='utf-8'
     )
-    for sub in ('data', 'data/Base', 'data/DB', 'reports'):
+    for sub in ('data', 'data/flow-data', 'data/Fab', 'reports'):
         (ROOT / sub).mkdir(parents=True, exist_ok=True)
     # v8.8.2: extract 단독 실행에도 openpyxl 같은 필수 dep 는 자동으로 채워넣음.
     _ensure_critical_deps()
@@ -856,7 +859,7 @@ def extract() -> int:
     except Exception as e:
         print(f"[verify] WARN failed: {e}")
     print(f"\\n[extract] flow v{VERSION} - {len(FILES)} files processed -> {ROOT}")
-    print(f"[extract] user data preservation: snapshot @ ~/.fabcanvas_backups/ + "
+    print(f"[extract] user data preservation: snapshot @ ~/.flow_backups/ + "
           f"5-layer _write guard + post-extract SHA-256 verify/restore.")
     print(f"[extract] manual restore: python setup.py restore [latest|<timestamp>]")
     return 0
@@ -865,7 +868,8 @@ def extract() -> int:
 def install_deps() -> int:
     pkgs = [
         'fastapi', 'uvicorn[standard]', 'pandas', 'pyarrow', 'polars', 'numpy',
-        'python-multipart', 'boto3', 'scikit-learn', 'scipy', 'openpyxl',
+        'python-multipart', 'boto3', 'scikit-learn', 'scipy',
+        'openpyxl', 'xlsxwriter', 'xlrd',
         'psutil',   # v8.8.18: 시스템 모니터 (core/sysmon.py)
     ]
     return _run(f"{sys.executable} -m pip install " + ' '.join(shlex.quote(p) for p in pkgs), cwd=ROOT)
@@ -879,6 +883,10 @@ def build_frontend() -> int:
     if not _has('npm'):
         print('[npm] not found - skip frontend install/build')
         return 0
+    if (ROOT / 'package.json').exists():
+        rc = _run('npm install', cwd=ROOT)
+        if rc != 0:
+            return rc
     rc = _run('npm install', cwd=fe)
     if rc != 0:
         return rc
@@ -886,7 +894,7 @@ def build_frontend() -> int:
 
 
 def print_version() -> int:
-    print(f"flow (FabCanvas) v{VERSION} - codename {CODENAME}")
+    print(f"flow (flow) v{VERSION} - codename {CODENAME}")
     return 0
 
 
