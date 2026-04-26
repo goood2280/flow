@@ -1,0 +1,109 @@
+/* S3StatusLight v9.0.3 — FileBrowser 전용 S3 단순 신호등.
+   - 미설정/비가용: 빨간 원형 1개
+   - 다운로드: ↓ (초록/빨강)
+   - 업로드: ↑ (초록/빨강)
+   - yellow/none 는 단순화해 빨강 또는 회색 대기로 접음
+*/
+import { useEffect, useState } from "react";
+import { sf } from "../lib/api";
+
+const COLORS = {
+  green:  { bg: "#22c55e", label: "S3 정상" },
+  yellow: { bg: "#f59e0b", label: "S3 지연/주의" },
+  red:    { bg: "#ef4444", label: "S3 끊김" },
+  none:   { bg: "#6b7280", label: "S3 미설정" },
+};
+
+export default function S3StatusLight({ compact = false }) {
+  const [data, setData] = useState(null);
+  const [hover, setHover] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = () => sf("/api/s3ingest/health")
+      .then(d => { if (alive) setData(d); })
+      .catch(() => {});
+    load();
+    const t = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  const light = data?.light || "none";
+  const c = COLORS[light] || COLORS.none;
+  const blink = light === "red";
+  const ringStyle = blink ? { animation: "s3blink 1.4s ease-in-out infinite" } : {};
+  // v8.7.5: 다운로드(pull)/업로드(push) 각각의 최근 상태를 별도 표시.
+  const downKey = data?.download_light || light;
+  const upKey = data?.upload_light || "none";
+  const toneColor = (key) => key === "green" ? COLORS.green.bg : key === "none" ? COLORS.none.bg : COLORS.red.bg;
+  const downColor = toneColor(downKey);
+  const upColor = toneColor(upKey);
+  const downLabel = (COLORS[downKey] || COLORS.none).label;
+  const upLabel = (COLORS[upKey] || COLORS.none).label;
+  const unconfigured = !data || !data.aws_available || !data.items_configured || light === "none";
+
+  const Dot = ({ color, tip, shouldBlink }) => (
+    <span title={tip} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, ...(shouldBlink ? ringStyle : {}) }}>
+      <span style={{ width: 12, height: 12, borderRadius: "50%", background: color, boxShadow: `0 0 4px ${color}55` }} />
+    </span>
+  );
+
+  const ArrowGlyph = ({ glyph, color, tip, shouldBlink }) => {
+    const style = {
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      width: 18,
+      height: 18,
+      color,
+      fontSize: 18,
+      fontWeight: 800,
+      lineHeight: 1,
+      textShadow: `0 0 4px ${color}55`,
+      ...(shouldBlink ? ringStyle : {}),
+    };
+    return (
+      <span title={tip} style={style}>
+        {glyph}
+      </span>
+    );
+  };
+
+  const indicators = unconfigured
+    ? [<Dot key="dot" color={COLORS.red.bg} tip="S3 미설정 또는 AWS 미가용" shouldBlink />]
+    : [
+        <ArrowGlyph key="down" glyph="↓" color={downColor} tip={"다운로드(S3→로컬) — " + downLabel} shouldBlink={downKey !== "green" && downKey !== "none"} />,
+        <ArrowGlyph key="up" glyph="↑" color={upColor} tip={"업로드(로컬→S3) — " + upLabel} shouldBlink={upKey !== "green" && upKey !== "none"} />,
+      ];
+
+  return (
+    <span style={{ position: "relative", display: "inline-flex", alignItems: "center", gap: 6 }}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      title={c.label + (data?.message ? " — " + data.message : "")}>
+      <style>{`@keyframes s3blink { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.45;transform:scale(0.85)} }`}</style>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        {indicators}
+      </span>
+      {!compact && (
+        <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", fontWeight: 600 }}>
+          {unconfigured ? "S3 미설정" : c.label}
+        </span>
+      )}
+      {hover && data && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 1000,
+          minWidth: 240, padding: "8px 12px", borderRadius: 6,
+          background: "var(--bg-secondary)", border: "1px solid var(--border)",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.3)", fontSize: 11, color: "var(--text-primary)",
+          fontFamily: "monospace", lineHeight: 1.7,
+        }}>
+          <div style={{ fontWeight: 700, color: unconfigured ? COLORS.red.bg : c.bg, marginBottom: 4 }}>{unconfigured ? "● S3 미설정" : `● ${c.label}`}</div>
+          <div>설정 항목: <span style={{ color: "var(--accent)" }}>{data.items_configured}</span></div>
+          <div>실행 중: <span style={{ color: "var(--accent)" }}>{data.running_now}</span></div>
+          <div>최근 실패: <span style={{ color: data.recent_failures ? "#ef4444" : "var(--text-primary)" }}>{data.recent_failures}/{data.recent_total}</span></div>
+          <div>AWS CLI: <span style={{ color: data.aws_available ? "#22c55e" : "#ef4444" }}>{data.aws_available ? "사용 가능" : "미설치"}</span></div>
+          <div>마지막 동기화: <span style={{ color: "var(--text-secondary)" }}>{(data.last_synced_at || "—").replace("T", " ").slice(0, 16)}</span></div>
+          {data.stale_6h && <div style={{ color: "#f59e0b" }}>⚠ 6시간 이상 동기화 없음</div>}
+        </div>
+      )}
+    </span>
+  );
+}

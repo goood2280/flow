@@ -1,0 +1,27 @@
+{
+  "name": "flow",
+  "version": "1.0.0",
+  "description": "> **Fab data analytics + plan vs actual 추적 플랫폼.** > 반도체 fab (특히 개발/pilot 단계) 공정 데이터를 single-user 데스크톱 환경에서 탐색·분석·공유하기 위한 웹 앱.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goood2280/flow.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/goood2280/flow/issues"
+  },
+  "homepage": "https://github.com/goood2280/flow#readme",
+  "dependencies": {
+    "pptxgenjs": "^4.0.1"
+  }
+}
