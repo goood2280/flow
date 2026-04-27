@@ -54,7 +54,15 @@ class PreviewReq(BaseModel):
 def list_products():
     """List all product names that have rule files."""
     out = []
-    for fp in sorted(BASE.glob("*.json")):
+    seen: set[str] = set()
+    files = sorted(
+        [p for p in BASE.iterdir() if p.is_file() and p.suffix.lower() in (".json", ".csv")],
+        key=lambda p: (p.stem.lower(), 0 if p.suffix.lower() == ".json" else 1),
+    ) if BASE.exists() else []
+    for fp in files:
+        if fp.stem.lower() in seen:
+            continue
+        seen.add(fp.stem.lower())
         try:
             rules = load_rules(BASE, fp.stem)
             out.append({"product": fp.stem, "rule_count": len(rules),

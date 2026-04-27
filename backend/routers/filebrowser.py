@@ -310,21 +310,32 @@ def base_files():
 
     rf_dir = PATHS.data_root / "reformatter"
     if rf_dir.is_dir():
-        for f in sorted(rf_dir.glob("*.json"), key=lambda p: p.name.lower()):
+        rf_files = sorted(
+            [p for p in rf_dir.iterdir() if p.is_file() and p.suffix.lower() in (".csv", ".json")],
+            key=lambda p: (p.stem.lower(), 0 if p.suffix.lower() == ".csv" else 1),
+        )
+        seen_rf_products: set[str] = set()
+        for f in rf_files:
+            product_key = f.stem.lower()
+            if product_key in seen_rf_products:
+                continue
+            seen_rf_products.add(product_key)
             try:
                 stat = f.stat()
             except OSError:
                 continue
+            display_name = f"{f.stem}.csv"
             files.append({
-                "name": f.name,
-                "path": f"reformatter/{f.name}",
+                "name": display_name,
+                "path": f"reformatter/{display_name}",
                 "size": stat.st_size,
                 "modified": stat.st_mtime,
-                "ext": "json",
+                "ext": "csv",
                 "kind": "file",
                 "source": "reformatter",
+                "storage_ext": f.suffix.lower().lstrip("."),
                 "role": "제품 reformatter",
-                "description": "제품별 ET report index/reformatter 표",
+                "description": "제품별 ET report index/reformatter CSV",
                 "order": 80,
             })
 
@@ -368,10 +379,14 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         else:
             raise HTTPException(404, f"Product config not found: {file}")
     elif rel.parts and rel.parts[0] == "reformatter":
-        if len(rel.parts) != 2 or rel.parts[1].startswith(".") or rel.parts[1] in ("", ".", "..") or not rel.parts[1].lower().endswith(".json"):
+        suffix = Path(rel.parts[1]).suffix.lower()
+        if len(rel.parts) != 2 or rel.parts[1].startswith(".") or rel.parts[1] in ("", ".", "..") or suffix not in (".csv", ".json"):
             raise HTTPException(400, "Invalid reformatter path")
         rf_root = (PATHS.data_root / "reformatter").resolve()
-        cand = (rf_root / rel.parts[1]).resolve()
+        product = Path(rel.parts[1]).stem
+        csv_cand = (rf_root / f"{product}.csv").resolve()
+        json_cand = (rf_root / f"{product}.json").resolve()
+        cand = csv_cand if csv_cand.is_file() else json_cand
         try:
             cand.relative_to(rf_root)
         except ValueError:
@@ -379,22 +394,33 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         if cand.is_file():
             try:
                 from core.reformatter import REFORMATTER_TABLE_COLUMNS, load_rules, rules_to_reformatter_table
-                product = cand.stem
-                rows_out = rules_to_reformatter_table(load_rules(rf_root, product))
+                if cand.suffix.lower() == ".csv":
+                    df = pl.read_csv(str(cand), infer_schema_length=5000, try_parse_dates=False)
+                    rows_out = serialize_rows(df.head(max(1, min(1000, rows))).to_dicts())
+                    columns = list(df.columns)
+                    total_rows = df.height
+                    dtypes = {c: str(df.schema[c]) for c in columns}
+                else:
+                    rows_all = rules_to_reformatter_table(load_rules(rf_root, product))
+                    rows_out = rows_all[: max(1, min(1000, rows))]
+                    columns = REFORMATTER_TABLE_COLUMNS
+                    total_rows = len(rows_all)
+                    dtypes = {c: "str" for c in columns}
                 return {
                     "kind": "table",
                     "file": file,
                     "product": product,
-                    "columns": REFORMATTER_TABLE_COLUMNS,
-                    "all_columns": REFORMATTER_TABLE_COLUMNS,
-                    "total_cols": len(REFORMATTER_TABLE_COLUMNS),
-                    "data": rows_out[: max(1, min(1000, rows))],
-                    "showing": min(len(rows_out), max(1, min(1000, rows))),
-                    "showing_cols": REFORMATTER_TABLE_COLUMNS,
-                    "total_rows": len(rows_out),
-                    "dtypes": {c: "str" for c in REFORMATTER_TABLE_COLUMNS},
+                    "columns": columns,
+                    "all_columns": columns,
+                    "total_cols": len(columns),
+                    "data": rows_out,
+                    "showing": len(rows_out),
+                    "showing_cols": columns,
+                    "total_rows": total_rows,
+                    "dtypes": dtypes,
                     "source_path": str(cand),
                     "source_modified": cand.stat().st_mtime,
+                    "source_format": cand.suffix.lower().lstrip("."),
                 }
             except Exception as e:
                 raise HTTPException(400, f"Cannot read reformatter: {e}")
@@ -828,19 +854,55 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
     username = me.get("username") or "anonymous"
     try:
         if file:
-            # v8.4.6: traversal 방어
-            db_root = PATHS.db_root
-            fp = (db_root / file).resolve()
-            try:
-                fp.relative_to(db_root.resolve())
-            except ValueError:
-                raise HTTPException(400, "Path escapes DB root")
-            if not fp.is_file():
-                raise HTTPException(404)
-            df = read_one_file(fp)
-            if df is None:
-                raise HTTPException(400, f"Cannot read: {file}")
-            label = file
+            rel = Path(file)
+            if rel.parts and rel.parts[0] == "reformatter":
+                suffix = Path(rel.parts[1]).suffix.lower() if len(rel.parts) == 2 else ""
+                if len(rel.parts) != 2 or rel.parts[1].startswith(".") or suffix not in (".csv", ".json"):
+                    raise HTTPException(400, "Invalid reformatter path")
+                product_name = Path(rel.parts[1]).stem
+                rf_root = (PATHS.data_root / "reformatter").resolve()
+                csv_fp = (rf_root / f"{product_name}.csv").resolve()
+                json_fp = (rf_root / f"{product_name}.json").resolve()
+                try:
+                    (csv_fp if csv_fp.is_file() else json_fp).relative_to(rf_root)
+                except ValueError:
+                    raise HTTPException(400, "Invalid reformatter path")
+                if csv_fp.is_file():
+                    df = read_one_file(csv_fp)
+                    if df is None:
+                        raise HTTPException(400, f"Cannot read: {file}")
+                elif json_fp.is_file():
+                    from core.reformatter import REFORMATTER_TABLE_COLUMNS, load_rules, rules_to_reformatter_table
+                    rows = rules_to_reformatter_table(load_rules(rf_root, product_name))
+                    df = pl.DataFrame(rows) if rows else pl.DataFrame({c: [] for c in REFORMATTER_TABLE_COLUMNS})
+                    for c in REFORMATTER_TABLE_COLUMNS:
+                        if c not in df.columns:
+                            df = df.with_columns(pl.lit("").alias(c))
+                    df = df.select(REFORMATTER_TABLE_COLUMNS)
+                else:
+                    raise HTTPException(404, f"Reformatter not found: {file}")
+                label = f"reformatter/{product_name}.csv"
+            else:
+                # v8.4.6: traversal 방어. Base Files can originate from base_root
+                # or db_root, so resolve against both but never outside either root.
+                fp = None
+                for candidate_root in (PATHS.base_root, PATHS.db_root):
+                    if not candidate_root.is_dir():
+                        continue
+                    cand = (candidate_root / file).resolve()
+                    try:
+                        cand.relative_to(candidate_root.resolve())
+                    except ValueError:
+                        continue
+                    if cand.is_file() and cand.suffix.lower() in DATA_EXTENSIONS:
+                        fp = cand
+                        break
+                if fp is None:
+                    raise HTTPException(404)
+                df = read_one_file(fp)
+                if df is None:
+                    raise HTTPException(400, f"Cannot read: {file}")
+                label = file
         elif root and product:
             df = read_source(root=root, product=product)
             label = f"{root}/{product}"

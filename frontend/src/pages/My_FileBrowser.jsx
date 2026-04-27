@@ -312,7 +312,8 @@ export default function My_FileBrowser({user}){
   const downloadCsv=()=>{
     let url=API+"/download-csv?username="+(user?.username||"anon")+"&sql="+encodeURIComponent(sql);
     if(selectedCols.length)url+="&select_cols="+encodeURIComponent(selectedCols.join(","));
-    if(mode==="rootpq")url+="&file="+encodeURIComponent(selRootPq);
+    if(mode==="base")url+="&file="+encodeURIComponent(selBaseFile);
+    else if(mode==="rootpq")url+="&file="+encodeURIComponent(selRootPq);
     else url+="&root="+encodeURIComponent(selRoot)+"&product="+encodeURIComponent(selProd);
     fetch(url).then(r=>{if(!r.ok)return r.json().then(d=>{alert(d.detail||"다운로드 실패");throw new Error();});
       return r.blob();}).then(blob=>{const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='data.csv';a.click();}).catch(()=>{});
@@ -350,7 +351,7 @@ export default function My_FileBrowser({user}){
           {/* Root-level DB files — legacy scope key remains "Base" for compatibility. */}
           <div style={{flex:1,overflow:"auto",padding:"6px 8px"}}>
             <div style={{fontSize:10,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>운영 파일 ({baseFiles.length})</div>
-            {baseFiles.length===0&&<div style={{padding:"10px 12px",fontSize:11,color:"var(--text-secondary)"}}>표시할 ML_TABLE / 매칭 CSV / 제품 YAML / reformatter 가 없습니다.</div>}
+            {baseFiles.length===0&&<div style={{padding:"10px 12px",fontSize:11,color:"var(--text-secondary)"}}>표시할 ML_TABLE / 매칭 CSV / 제품 YAML / reformatter CSV 가 없습니다.</div>}
             {baseFiles.map(f=>{
               const fileKey=f.path||f.name;
               const isSel=selBaseFile===fileKey;
