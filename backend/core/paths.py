@@ -22,8 +22,9 @@ Production (사내 배포):
 
 Auto-detection: sharedworkspace defaults are used when this checkout is the
 production app root, FLOW_PROD=1 is explicitly set, or the app is running on a
-Linux host where the relevant /config/work/sharedworkspace/{DB,flow-data}
-directory already exists.
+Linux host where /config/work/sharedworkspace exists. On Linux, DB defaults to
+/config/work/sharedworkspace/DB; flow-data is adopted when that child directory
+already exists.
 
 Compatibility: `PATHS.db_root` / `PATHS.base_root` / `PATHS.wafer_map_root` are
 properties that call `core.roots` on each access, so runtime-edited

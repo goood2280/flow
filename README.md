@@ -105,7 +105,7 @@ python scripts/smoke_test.py    # 27개 항목, 외부 의존성 0, <5초
 - `data/flow-data/` — 사용자 데이터 루트. 설정, 세션, 캐시, 그룹, 인폼, 백업 상태 저장
 - 환경변수 override: `FLOW_DATA_ROOT`, `FLOW_DB_ROOT`, `FLOW_WAFER_MAP_ROOT`
 - `base_root` 는 `db_root` 와 동일한 호환 alias 입니다. 별도 Base 루트는 사용하지 않습니다.
-- 사내 배포 자동 감지: `/config/work/sharedworkspace/{DB,flow-data}` 존재 시 자동 바인딩
+- 사내 배포 자동 감지: Linux에서 `/config/work/sharedworkspace`가 있으면 DB는 `/config/work/sharedworkspace/DB`, `flow-data`는 `/config/work/sharedworkspace/flow-data` 존재 시 자동 바인딩
 
 ---
 
