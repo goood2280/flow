@@ -97,7 +97,8 @@ def get_config(*, redact: bool = True) -> Dict[str, Any]:
 
 
 def complete(prompt: str, *, system: Optional[str] = None,
-             timeout: Optional[int] = None) -> Dict[str, Any]:
+             timeout: Optional[int] = None,
+             auth_token: Optional[str] = None) -> Dict[str, Any]:
     """단일 프롬프트 완성.  실패 시 {"ok":False, "error":...} 반환 (절대 throw 하지 않음).
 
     사내 LLM 이 `openai` 호환이면 messages 형식으로 POST.  `raw` 면 {"prompt": ...}.
@@ -130,9 +131,15 @@ def complete(prompt: str, *, system: Optional[str] = None,
             body["model"] = model
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     hdrs = {"Content-Type": "application/json"}
+    user_token = str(auth_token or "").strip()
     for k, v in (cfg.get("headers") or {}).items():
         if k:
-            hdrs[str(k)] = str(v)
+            val = str(v)
+            if user_token and "{token}" in val:
+                val = val.replace("{token}", user_token)
+            hdrs[str(k)] = val
+    if user_token and not any(k.lower() == "authorization" for k in hdrs):
+        hdrs["Authorization"] = f"Bearer {user_token}"
     to = int(timeout or cfg.get("timeout_s") or 20)
     try:
         req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
