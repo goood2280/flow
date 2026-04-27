@@ -10,6 +10,7 @@ __pycache__/
 htmlcov/
 venv/
 .venv/
+.venv-discord/
 
 # Node dependencies / build output
 node_modules/
@@ -38,6 +39,7 @@ _build_*.json
 # Secrets / local credentials
 .env
 .env.*
+!.env.discord.example
 *.pem
 *.key
 aws_config.json

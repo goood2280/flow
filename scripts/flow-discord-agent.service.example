@@ -1,0 +1,15 @@
+[Unit]
+Description=Flow Discord local agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/d/TEST_Making_Video/semi_all/flow
+ExecStart=/usr/bin/python3 /mnt/d/TEST_Making_Video/semi_all/flow/scripts/discord_flow_agent.py --env-file /mnt/d/TEST_Making_Video/semi_all/flow/.env.discord
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
