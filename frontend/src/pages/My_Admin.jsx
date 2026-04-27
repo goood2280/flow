@@ -262,15 +262,12 @@ export default function My_Admin({user}){
       {tab==="users"&&isAdmin&&<div style={{display:"grid",gridTemplateColumns:"minmax(0,1.5fr) minmax(360px,0.9fr)",gap:16,alignItems:"start"}}>
         <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto"}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-            <thead><tr>{["이름","아이디","이메일","역할","상태","탭","작업"].map(h=><th key={h} style={{textAlign:"left",padding:"10px 14px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:11,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
+            <thead><tr>{["이름","아이디","역할","상태","탭","작업"].map(h=><th key={h} style={{textAlign:"left",padding:"10px 14px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:11,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
             <tbody>{(Array.isArray(users)?users:[]).map((u,i)=><tr key={i}>
               <td style={{padding:"6px 14px",borderBottom:"1px solid var(--border)",fontSize:12}}>
                 <NameInlineEdit u={u} onSave={(nm)=>sf("/api/admin/set-name",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.username,name:nm})}).then(load).catch(e=>alert(e.message))}/>
               </td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:12}}>{u.username}</td>
-              <td style={{padding:"6px 14px",borderBottom:"1px solid var(--border)",fontSize:11}}>
-                <EmailInlineEdit u={u} onSave={(em)=>sf("/api/admin/set-email",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.username,email:em})}).then(load).catch(e=>alert(e.message))}/>
-              </td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}>{u.role}</td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}><Pill tone={u.status==="approved"?"ok":"warn"}>{u.status}</Pill></td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",fontSize:11,color:"var(--text-secondary)",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}}>{u.tabs||"default"}</td>
@@ -294,7 +291,7 @@ export default function My_Admin({user}){
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:10}}>
               <div>
                 <div style={{fontSize:13,fontWeight:700}}>사용자 일괄 생성</div>
-                <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:4}}>엑셀에서 `name / username / role`만 복붙하면 됩니다. email은 메일 API domain 설정으로 username에서 자동 조합됩니다.</div>
+                <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:4}}>엑셀에서 `name / username / role`만 복붙하면 됩니다. 메일 주소는 메일 API domain 설정으로 username에서 자동 조합됩니다.</div>
               </div>
               <Button variant="primary" onClick={submitBulkUsers} disabled={bulkUsersBusy}>{bulkUsersBusy?"생성 중...":"일괄 생성"}</Button>
             </div>
@@ -880,26 +877,6 @@ function NameInlineEdit({u,onSave}){
   </span>);
 }
 
-// ── v8.7.2: Inline email editor for the Users table ──
-// v8.8.28: onSave 방어 + optional chaining 으로 "n is not a function" 류 차단.
-function EmailInlineEdit({u,onSave}){
-  const[val,setVal]=useState(u?.email||"");
-  const[edit,setEdit]=useState(false);
-  useEffect(()=>{setVal(u?.email||"");},[u?.email]);
-  const safeSave=(v)=>{try{(typeof onSave==="function")&&onSave(v);}catch(e){console.warn("[EmailInlineEdit] onSave threw",e);}};
-  if(!edit){
-    return(<span onClick={()=>setEdit(true)} style={{cursor:"pointer",color:val?"var(--text-primary)":"var(--text-secondary)",fontFamily:"monospace",textDecoration:"underline dotted",textDecorationColor:"var(--border)"}}>{val||"— set —"}</span>);
-  }
-  return(<span>
-    <input autoFocus value={val} onChange={e=>setVal(e.target.value)}
-      onKeyDown={e=>{if(e.key==="Enter"){safeSave(val.trim());setEdit(false);}else if(e.key==="Escape"){setVal(u?.email||"");setEdit(false);}}}
-      placeholder="name@company.com"
-      style={{padding:"3px 6px",borderRadius:3,border:"1px solid var(--accent)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",minWidth:200}}/>
-    <span onClick={()=>{safeSave(val.trim());setEdit(false);}} style={{marginLeft:6,cursor:"pointer",color:OK.fg,fontSize:11}}>✔</span>
-    <span onClick={()=>{setVal(u?.email||"");setEdit(false);}} style={{marginLeft:4,cursor:"pointer",color:BAD.fg,fontSize:11}}>✕</span>
-  </span>);
-}
-
 // ── v8.7.2/v8.8.18: 사내 메일 API 연동 설정 패널 ──
 // v8.8.18: recipient_groups 제거 (수신자는 각 페이지에서 선택). dep_ticket 단일 필드
 //          + API 전체 틀 JSON 미리보기. senderMailAddress/statusCode/url 만 남김.
@@ -1112,9 +1089,6 @@ function DataRootsPanel(){
       DB 루트는 이미 존재하는 디렉터리만 저장됩니다. 빈 값으로 저장하면 오버라이드가 제거되고 env/default 로 돌아갑니다.
     </div>
     {field("db_root","DB 루트","FLOW_DB_ROOT")}
-    <div style={{marginTop:4,padding:"10px 12px",borderRadius:8,background:"var(--bg-primary)",border:"1px dashed var(--border)",fontSize:11,color:"var(--text-secondary)",lineHeight:1.6}}>
-      Base/Wafer-map 별도 루트는 제거했습니다. 기존 호환용 source_type=base_file 은 DB 루트 최상단 파일을 읽습니다.
-    </div>
     <div style={{display:"flex",gap:8,marginTop:16,alignItems:"center"}}>
       <button data-dr-btn="save" onClick={save} disabled={busy}
         style={{padding:"8px 20px",borderRadius:6,border:"none",background:"var(--accent)",color:WHITE,fontWeight:600,cursor:busy?"default":"pointer",opacity:busy?0.5:1}}>

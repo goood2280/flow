@@ -541,6 +541,29 @@ class FlowiChatReq(BaseModel):
     max_rows: int = 12
 
 
+class FlowiVerifyReq(BaseModel):
+    token: str = ""
+
+
+@router.post("/flowi/verify")
+def flowi_verify(req: FlowiVerifyReq, request: Request):
+    _ = current_user(request)
+    token = (req.token or "").strip()
+    if not token:
+        raise HTTPException(400, "Flowi 활성화 토큰을 입력해주세요")
+    if not llm_adapter.is_available():
+        return {"ok": False, "message": "LLM 설정이 비활성화되어 있습니다.", "error": "llm unavailable"}
+    out = llm_adapter.complete(
+        "연결 확인입니다. 정상 수신했다면 확인완료 라고만 답하세요.",
+        system="Flowi 연결 확인 응답은 반드시 확인완료 한 단어로만 작성합니다.",
+        timeout=8,
+        auth_token=token,
+    )
+    if out.get("ok"):
+        return {"ok": True, "message": "확인완료"}
+    return {"ok": False, "message": "LLM 연결 확인 실패", "error": out.get("error") or "unknown"}
+
+
 @router.post("/flowi/chat")
 def flowi_chat(req: FlowiChatReq, request: Request):
     me = current_user(request)
