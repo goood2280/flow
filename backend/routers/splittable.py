@@ -166,6 +166,50 @@ def _product_aliases(product: str) -> set[str]:
     return out
 
 
+_PRODUCT_FILE_EXTS = (".parquet", ".csv")
+
+
+def _canonical_mltable_product_name(product: str, allow_bare: bool = False) -> str:
+    """Return the canonical SplitTable product id for an ML_TABLE file/name."""
+    raw = str(product or "").strip()
+    if not raw:
+        return ""
+    if raw.casefold().startswith("ml_table_"):
+        tail = raw[len("ML_TABLE_"):].strip()
+    elif allow_bare:
+        tail = raw
+    else:
+        return ""
+    return f"ML_TABLE_{tail}".upper() if tail else ""
+
+
+def _is_mltable_product_file(path: Path) -> bool:
+    return (
+        path.is_file()
+        and path.suffix.lower() in _PRODUCT_FILE_EXTS
+        and bool(_canonical_mltable_product_name(path.stem))
+    )
+
+
+def _lot_override_for(cfg: dict, product: str) -> dict:
+    """Resolve lot_overrides by product name with case-insensitive ML_TABLE matching."""
+    overrides = (cfg or {}).get("lot_overrides") or {}
+    if not isinstance(overrides, dict):
+        return {}
+    keys = [str(product or "").strip()]
+    canonical = _canonical_mltable_product_name(product, allow_bare=True)
+    if canonical:
+        keys.append(canonical)
+    for key in keys:
+        if key and isinstance(overrides.get(key), dict):
+            return overrides.get(key) or {}
+    folded = {k.casefold() for k in keys if k}
+    for key, value in overrides.items():
+        if str(key or "").casefold() in folded and isinstance(value, dict):
+            return value
+    return {}
+
+
 def _first_meta_step(meta: dict) -> str:
     """Return a representative step token for display renaming."""
     if not isinstance(meta, dict):
@@ -305,7 +349,7 @@ def _detect_lot_wafer(lf, product: str = ""):
     if product:
         try:
             cfg = load_json(SOURCE_CFG, {"lot_overrides": {}}) if SOURCE_CFG.exists() else {}
-            ov = (cfg.get("lot_overrides") or {}).get(product) or {}
+            ov = _lot_override_for(cfg, product)
             schema_names_list = lf.collect_schema().names() if hasattr(lf, "collect_schema") else list(lf.schema.keys())
             root_col = _ci_resolve_in(ov.get("root_col") or "", schema_names_list) or None
             wf_col = _ci_resolve_in(ov.get("wf_col") or "", schema_names_list) or None
@@ -322,15 +366,32 @@ def _product_path(product: str):
     """Find product file. v8.4.3 — Base scope (ML_TABLE_PRODA/B etc.) 우선,
     이후 DB 루트(legacy) 로 폴백. ML 중심 설계로 전환.
     """
+    raw = str(product or "").strip()
+    canonical = _canonical_mltable_product_name(raw, allow_bare=True)
+    names = []
+    for name in (raw, canonical):
+        if name and name not in names:
+            names.append(name)
     base_root = _base_root()
     db_base = _db_base()
     for root in (base_root, db_base):
         if not root or not root.exists():
             continue
-        for ext in (".parquet", ".csv"):
-            fp = root / f"{product}{ext}"
-            if fp.exists():
-                return fp
+        for name in names:
+            for ext in _PRODUCT_FILE_EXTS:
+                fp = root / f"{name}{ext}"
+                if fp.exists():
+                    return fp
+                ci = _find_ci_path(root, f"{name}{ext}")
+                if ci is not None and ci.is_file():
+                    return ci
+        try:
+            targets = {n.casefold() for n in names if n}
+            for fp in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+                if fp.is_file() and fp.suffix.lower() in _PRODUCT_FILE_EXTS and fp.stem.casefold() in targets:
+                    return fp
+        except Exception:
+            pass
     raise HTTPException(404, f"Product not found: {product}")
 
 
@@ -341,7 +402,7 @@ def _strip_non_authoritative_fab_fields(lf, product: str):
     failed, SplitTable should not surface a stale ML-side copy because users assume
     it came from live/real FAB lineage.  Do not synthesize it from ML_TABLE LOT_ID.
     """
-    if not product or not str(product).startswith("ML_TABLE_"):
+    if not product or not str(product).casefold().startswith("ml_table_"):
         return lf
     try:
         names = lf.collect_schema().names()
@@ -699,13 +760,11 @@ def list_products():
     try:
         base = _base_root()
         if base.exists():
-            for f in sorted(base.iterdir()):
-                if not (f.is_file() and f.suffix == ".parquet"):
+            for f in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+                if not _is_mltable_product_file(f):
                     continue
-                if not f.stem.startswith("ML_TABLE_"):
-                    continue
-                products.append({"name": f.stem, "file": f.name, "size": f.stat().st_size,
-                                 "root": "Base", "type": "parquet", "source_type": "base_file"})
+                products.append({"name": _canonical_mltable_product_name(f.stem), "file": f.name, "size": f.stat().st_size,
+                                 "root": "Base", "type": f.suffix.lower().lstrip("."), "source_type": "base_file"})
     except Exception:
         pass
     # dedup 은 불필요하지만 안정성을 위해 이름 기준 중복 제거.
@@ -864,9 +923,7 @@ def _list_db_roots():
                 pattern = "/".join(["*"] * depth) + ("/" if depth else "") + "*.parquet"
                 # fall back to simple rglob
             found = False
-            for f in sub.rglob("*.parquet"):
-                found = True
-                break
+            found = bool(_rglob_files_ci(sub, (".parquet",)))
             if found:
                 has_product = True
                 break
@@ -892,12 +949,11 @@ def list_fab_roots():
                     continue
                 has_data = False
                 # hive 파티션 포함해서 탐색 — 하위 어디에든 parquet/csv 있으면 "제품" 으로 간주.
-                for f in prod_dir.rglob("*"):
-                    if f.is_file() and f.suffix in (".parquet", ".csv"):
-                        has_data = True
-                        try: total_size += f.stat().st_size
-                        except Exception: pass
-                        break
+                for f in _rglob_files_ci(prod_dir, (".parquet", ".csv")):
+                    has_data = True
+                    try: total_size += f.stat().st_size
+                    except Exception: pass
+                    break
                 if has_data:
                     products.append(prod_dir.name)
         except Exception:
@@ -915,7 +971,7 @@ def ml_table_match(product: str = Query(...)):
     """
     pro = ""
     p = (product or "").strip()
-    if p.startswith("ML_TABLE_"):
+    if p.casefold().startswith("ml_table_"):
         pro = p[len("ML_TABLE_"):].strip()
     elif "_" in p:
         pro = p.rsplit("_", 1)[-1]
@@ -936,7 +992,7 @@ def ml_table_match(product: str = Query(...)):
     manual_ov = {}
     try:
         cfg = load_json(SOURCE_CFG, {}) or {}
-        manual_ov = (cfg.get("lot_overrides") or {}).get(p) or {}
+        manual_ov = _lot_override_for(cfg, p)
     except Exception:
         pass
     manual_fs = _normalize_fab_source_path((manual_ov.get("fab_source") or "").strip())
@@ -974,7 +1030,7 @@ def override_link_preview(
         raise HTTPException(400, "product required")
 
     derived = ""
-    if p.startswith("ML_TABLE_"):
+    if p.casefold().startswith("ml_table_"):
         derived = p[len("ML_TABLE_"):].strip()
     elif "_" in p:
         derived = p.rsplit("_", 1)[-1]
@@ -1137,7 +1193,7 @@ def override_debug(product: str = Query(...)):
     out: dict = {"product": product, "error": None}
     try:
         fp = _product_path(product)
-        if fp.suffix == ".csv":
+        if fp.suffix.lower() == ".csv":
             main_lf = _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
         else:
             main_lf = _cast_cats_lazy(pl.scan_parquet(str(fp)))
@@ -1262,7 +1318,7 @@ def get_schema(product: str = Query(...)):
     except Exception:
         # fallback — 조인 실패해도 원본 컬럼은 반환.
         fp = _product_path(product)
-        if fp.suffix == ".csv":
+        if fp.suffix.lower() == ".csv":
             lf = pl.scan_csv(str(fp), infer_schema_length=5000)
         else:
             lf = pl.scan_parquet(str(fp))
@@ -2128,8 +2184,8 @@ def infer_step_mapping(request: Request, product: str = Query(...), kind: str = 
         raise HTTPException(404, f"FAB folder not found: {fab_root}")
     if not src_root.is_dir():
         raise HTTPException(404, f"{kind.upper()} folder not found: {src_root}")
-    fab_files = sorted(fab_root.rglob("*.parquet"))[-30:]
-    src_files = sorted(src_root.rglob("*.parquet"))[-30:]
+    fab_files = _rglob_files_ci(fab_root, (".parquet",))[-30:]
+    src_files = _rglob_files_ci(src_root, (".parquet",))[-30:]
     if not fab_files or not src_files:
         raise HTTPException(404, "no parquet files")
     try:
@@ -2750,6 +2806,17 @@ def _resolve_fab_source_target(fab_source: str):
     return fp, matched
 
 
+def _rglob_files_ci(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
+    suffix_set = {s.casefold() for s in suffixes}
+    try:
+        return sorted(
+            [p for p in root.rglob("*") if p.is_file() and p.suffix.casefold() in suffix_set],
+            key=lambda p: str(p).casefold(),
+        )
+    except Exception:
+        return []
+
+
 def _scan_fab_source_raw(fab_source: str):
     """Scan a fab_source without applying the long-format compatibility adapter."""
     fp, fab_source = _resolve_fab_source_target(fab_source)
@@ -2757,7 +2824,7 @@ def _scan_fab_source_raw(fab_source: str):
         return None
     try:
         if fp.is_dir():
-            parquets = sorted(fp.rglob("*.parquet"))
+            parquets = _rglob_files_ci(fp, (".parquet",))
             if not parquets:
                 return None
             # v8.8.5: 사내 `PRODA/date=YYYYMMDD/part_*.parquet` hive 레이아웃 대응.
@@ -2769,7 +2836,7 @@ def _scan_fab_source_raw(fab_source: str):
             except TypeError:
                 # polars 구버전 — 파라미터 미지원 시 폴백 (경로 기반 파티션 컬럼 없음).
                 return _cast_cats_lazy(pl.scan_parquet([str(p) for p in parquets]))
-        if fp.suffix == ".csv":
+        if fp.suffix.lower() == ".csv":
             return _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
         return _cast_cats_lazy(pl.scan_parquet(str(fp)))
     except Exception:
@@ -2828,8 +2895,8 @@ def _scan_fab_source(fab_source: str):
 def _auto_derive_fab_source(product: str) -> str:
     """Return a fab_source path like "1.RAWDATA_DB_FAB/PRODA" (or legacy "FAB/PRODA") if auto-matchable, else "".
     ML_TABLE_ prefix 가 아니면 "" 반환 (오버라이드 off)."""
-    p = (product or "").strip()
-    if not p.startswith("ML_TABLE_"):
+    p = _canonical_mltable_product_name(product)
+    if not p:
         return ""
     pro = p[len("ML_TABLE_"):].strip()
     if not pro:
@@ -3012,8 +3079,9 @@ def _resolve_override_meta(product: str) -> dict:
         "override_cols": [], "override_cols_present": [], "override_cols_missing": [],
     }
     try:
+        product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
         cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
-        ov = (cfg.get("lot_overrides") or {}).get(product) or {}
+        ov = _lot_override_for(cfg, product)
         manual = (ov.get("fab_source") or "").strip()
         # v8.8.21: root:~~ 는 deprecated — 저장된 값이 남아있어도 무시하고 auto-derive 로 재매칭.
         if manual.startswith("root:"):
@@ -3030,7 +3098,7 @@ def _resolve_override_meta(product: str) -> dict:
         meta["searched_db_roots"] = [p.name for p in _list_db_roots()]
 
         if not fab_source:
-            if product.startswith("ML_TABLE_"):
+            if product.casefold().startswith("ml_table_"):
                 pro = product[len("ML_TABLE_"):].strip()
                 # 실제로 탐색한 후보 경로를 모두 리스트업
                 tried = []
@@ -3075,7 +3143,7 @@ def _resolve_override_meta(product: str) -> dict:
             meta["fab_source"] = resolved_fab_source
             fab_source = resolved_fab_source
         if fp.is_dir():
-            parquets = sorted(fp.rglob("*.parquet"))
+            parquets = _rglob_files_ci(fp, (".parquet",))
             base_for_rel = fp.parent if fp.parent.exists() else fp
             rels = []
             for p in parquets:
@@ -3102,7 +3170,11 @@ def _resolve_override_meta(product: str) -> dict:
             return meta
         # v8.8.22: CI 정렬 — ML_TABLE 대문자 vs hive 소문자 컬럼 이름 차이를 흡수.
         try:
-            main_names_list = pl.scan_parquet(str(_product_path(product))).collect_schema().names()
+            main_fp = _product_path(product)
+            if main_fp.suffix.lower() == ".csv":
+                main_names_list = pl.scan_csv(str(main_fp), infer_schema_length=5000).collect_schema().names()
+            else:
+                main_names_list = pl.scan_parquet(str(main_fp)).collect_schema().names()
         except Exception:
             main_names_list = []
         fab_lf, fab_schema_names = _ci_align_fab_to_main(fab_lf, main_names_list)
@@ -3271,10 +3343,10 @@ def _fab_source_context(product: str) -> dict:
     p = (product or "").strip()
     if not p:
         return {}
-    ml_product = p if p.startswith("ML_TABLE_") else f"ML_TABLE_{p}"
+    ml_product = _canonical_mltable_product_name(p, allow_bare=True)
     try:
         cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
-        ov = (cfg.get("lot_overrides") or {}).get(ml_product) or {}
+        ov = _lot_override_for(cfg, ml_product)
         fab_source = (ov.get("fab_source") or "").strip()
         if fab_source.startswith("root:"):
             fab_source = ""
@@ -3289,7 +3361,11 @@ def _fab_source_context(product: str) -> dict:
         if fab_lf is None:
             return {}
         try:
-            main_names = pl.scan_parquet(str(_product_path(ml_product))).collect_schema().names()
+            main_fp = _product_path(ml_product)
+            if main_fp.suffix.lower() == ".csv":
+                main_names = pl.scan_csv(str(main_fp), infer_schema_length=5000).collect_schema().names()
+            else:
+                main_names = pl.scan_parquet(str(main_fp)).collect_schema().names()
         except Exception:
             main_names = []
         fab_lf, fab_names = _ci_align_fab_to_main(fab_lf, main_names)
@@ -3544,8 +3620,9 @@ def _scan_product(product: str):
       - CI align 이후 fab schema 를 **재조회** 해서 rename 이 실제로 적용됐는지 확인.
       - override_cols 가 join_keys 만 남으면 경고 후 raw lf 반환.
     """
+    product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
     fp = _product_path(product)
-    if fp.suffix == ".csv":
+    if fp.suffix.lower() == ".csv":
         lf = _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
     else:
         lf = _cast_cats_lazy(pl.scan_parquet(str(fp)))
@@ -3557,7 +3634,7 @@ def _scan_product(product: str):
     #   4) 조인은 항상 "ts_col 기준 최신 레코드만" join keys 별로 picking 후 left-join.
     try:
         cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
-        ov = (cfg.get("lot_overrides") or {}).get(product) or {}
+        ov = _lot_override_for(cfg, product)
         fab_source = (ov.get("fab_source") or "").strip()
         # v8.8.21: legacy root:~~ 무시 → auto-derive.
         if fab_source.startswith("root:"):
@@ -3832,7 +3909,7 @@ def get_lot_candidates(
         }
     use_override = False
     lf = None
-    if source == "override" and product.startswith("ML_TABLE_"):
+    if source == "override" and product.casefold().startswith("ml_table_"):
         try:
             meta = _resolve_override_meta(product)
             fab_source = (meta.get("fab_source") or "").strip()
@@ -3987,7 +4064,7 @@ def _ml_product_name(product: str) -> str:
     p = str(product or "").strip()
     if not p:
         return ""
-    return p if p.startswith("ML_TABLE_") else f"ML_TABLE_{p}"
+    return _canonical_mltable_product_name(p, allow_bare=True)
 
 
 def resolve_fab_lot_snapshot(product: str, root_lot_id: str, wafer_id: str = "") -> str:
@@ -4057,7 +4134,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         try:
             schema_names = lf.collect_schema().names()
             _cfg = load_json(SOURCE_CFG, {}) or {}
-            _ov = (_cfg.get("lot_overrides") or {}).get(product) or {}
+            _ov = _lot_override_for(_cfg, product)
             _fc = (_ov.get("fab_col") or "").strip()
             if _fc and _fc in schema_names:
                 fab_lot_col = _fc
@@ -4095,6 +4172,34 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                                fab_lot_id=fab_filter_for_join, fab_lot_col=fab_lot_col)
 
         df = lf.collect()
+        if df.height == 0:
+            # Operators often paste the FAB lot value they found in File Browser
+            # into the Root Lot field. Treat that as a fab_lot_id lookup before
+            # declaring the SplitTable empty.
+            root_input = root_lot_id.strip()
+            if root_input and not fab_lot_id.strip():
+                try:
+                    fallback_lf = _scan_product(product)
+                    fallback_names = fallback_lf.collect_schema().names()
+                    fallback_fab_col = (
+                        _ci_resolve_in(fab_lot_col, fallback_names)
+                        or _pick_first_present_ci(_FAB_COL_CANDIDATES, fallback_names)
+                    )
+                    if fallback_fab_col:
+                        fallback_lf = _filter_lot_wafer(
+                            fallback_lf, lot_col, wf_col, "",
+                            wafer_ids, fab_lot_id=root_input,
+                            fab_lot_col=fallback_fab_col,
+                        )
+                        fallback_df = fallback_lf.collect()
+                        if fallback_df.height > 0:
+                            df = fallback_df
+                            fab_lot_id = root_input
+                            root_lot_id = ""
+                            _lot_warn = "입력한 Root Lot ID를 fab_lot_id로 해석해 조회했습니다."
+                except Exception as e:
+                    logger.warning("view_split fab_lot fallback 실패 (product=%s input=%s) %s: %s",
+                                   product, root_input, type(e).__name__, e)
         if df.height == 0:
             return {"product": product, "lot_col": lot_col, "wf_col": wf_col,
                     "headers": [], "rows": [], "prefixes": _load_prefixes(), "msg": "No data"}
