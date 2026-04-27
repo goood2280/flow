@@ -598,7 +598,7 @@ def get_settings(request: Request):
         try:
             merged["llm"] = adm.get("llm") or {
                 "enabled": False, "api_url": "", "model": "",
-                "headers": {}, "format": "openai", "extra_body": {}, "timeout_s": 20,
+                "admin_token": "", "headers": {}, "format": "openai", "extra_body": {}, "timeout_s": 20,
             }
         except Exception:
             merged["llm"] = None
@@ -661,6 +661,7 @@ class LLMCfgReq(BaseModel):
     enabled: Optional[bool] = None
     api_url: Optional[str] = None
     model: Optional[str] = None
+    admin_token: Optional[str] = None
     headers: Optional[Dict[str, str]] = None
     format: Optional[str] = None              # "openai" | "raw"
     extra_body: Optional[Dict[str, Any]] = None
@@ -825,7 +826,7 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
     if llm_in is not None:
         current = _load_admin_settings()
         llm_cur = dict(current.get("llm") or {})
-        for k in ("api_url", "model", "format"):
+        for k in ("api_url", "model", "format", "admin_token"):
             if llm_in.get(k) is not None:
                 llm_cur[k] = str(llm_in.get(k) or "").strip()
         if llm_in.get("headers") is not None:

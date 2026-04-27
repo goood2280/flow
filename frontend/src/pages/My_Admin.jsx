@@ -200,7 +200,7 @@ export default function My_Admin({user}){
   //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
   //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
   //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["inform_cfg","인폼 설정"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["inform_cfg","인폼 설정"],["mail_cfg","메일 API"],["llm_cfg","LLM"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -587,6 +587,9 @@ export default function My_Admin({user}){
 
       {/* v8.7.2: Mail API (admin only) */}
       {tab==="mail_cfg"&&isAdmin&&<MailCfgPanel/>}
+
+      {/* v9.0.4: Flowi LLM admin-managed token */}
+      {tab==="llm_cfg"&&isAdmin&&<LlmCfgPanel/>}
 
       {/* v8.8.14: Per-page admin delegation (admin only) */}
       {tab==="page_admins"&&isAdmin&&<PageAdminsPanel users={users}/>}
@@ -990,6 +993,112 @@ function MailCfgPanel(){
     <div style={{marginTop:14,display:"flex",gap:8,alignItems:"center"}}>
       <button onClick={save} disabled={busy} style={{padding:"8px 18px",borderRadius:6,border:"none",background:"var(--accent)",color:WHITE,fontWeight:600,cursor:busy?"wait":"pointer"}}>{busy?"저장 중…":"저장"}</button>
       {msg&&<span style={{fontSize:11,color:msg.startsWith("오류")?BAD.fg:OK.fg}}>{msg}</span>}
+    </div>
+  </div>);
+}
+
+// ── v9.0.4: Flowi LLM 설정 — admin token 을 서버 설정에 저장하고 사용자는 실행만 한다. ──
+function LlmCfgPanel(){
+  const[cfg,setCfg]=useState({enabled:false,api_url:"",model:"",admin_token:"",format:"openai",timeout_s:20});
+  const[msg,setMsg]=useState("");
+  const[busy,setBusy]=useState(false);
+  const[testBusy,setTestBusy]=useState(false);
+  const[testPrompt,setTestPrompt]=useState("연결 확인입니다. 정상 수신했다면 확인완료 라고만 답하세요.");
+  const[showToken,setShowToken]=useState(false);
+  const reload=()=>{
+    sf("/api/admin/settings").then(d=>{
+      const l=d.llm||{};
+      setCfg({
+        enabled:!!l.enabled,
+        api_url:l.api_url||"",
+        model:l.model||"",
+        admin_token:l.admin_token||"",
+        format:l.format||"openai",
+        timeout_s:Number(l.timeout_s||20),
+      });
+    }).catch(e=>setMsg("로드 오류: "+e.message));
+  };
+  useEffect(reload,[]);
+  const save=()=>{
+    setBusy(true);setMsg("");
+    sf("/api/admin/settings").then(cur=>sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+      dashboard_refresh_minutes:cur.dashboard_refresh_minutes??10,
+      dashboard_bg_refresh_minutes:cur.dashboard_bg_refresh_minutes??10,
+      llm:{
+        enabled:!!cfg.enabled,
+        api_url:cfg.api_url,
+        model:cfg.model,
+        admin_token:cfg.admin_token,
+        format:cfg.format||"openai",
+        timeout_s:Number(cfg.timeout_s)||20,
+      },
+    })})).then(()=>{setMsg("저장됨");reload();}).catch(e=>setMsg("오류: "+e.message)).finally(()=>setBusy(false));
+  };
+  const test=()=>{
+    setTestBusy(true);setMsg("");
+    sf("/api/llm/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:testPrompt||"연결 확인"})})
+      .then(d=>setMsg(d?.ok===false?"테스트 실패: "+(d.error||"unknown"):"테스트 완료: "+String(d?.text||"응답 있음").slice(0,160)))
+      .catch(e=>setMsg("테스트 오류: "+e.message))
+      .finally(()=>setTestBusy(false));
+  };
+  const L={fontSize:11,color:"var(--text-secondary)",marginBottom:4,marginTop:10,fontWeight:600};
+  const I={width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",boxSizing:"border-box"};
+  const preview={
+    enabled:!!cfg.enabled,
+    request:"POST "+(cfg.api_url||"(설정 필요)"),
+    auth:cfg.admin_token?"Authorization: Bearer <admin_token>":"admin_token 없음",
+    format:cfg.format||"openai",
+    model:cfg.model||"(default)",
+    users:"홈 Flowi 사용자는 별도 LLM token 입력 없이 서버 설정으로 실행",
+  };
+  return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:900}}>
+    <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Flowi LLM 설정</div>
+    <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.6}}>
+      Admin 이 저장한 token 을 서버에서 사용합니다. 일반 사용자는 홈 Flowi 콘솔에서 token 입력 없이 질문과 사용자 메모만 입력합니다.
+    </div>
+    <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,marginBottom:6}}>
+      <input type="checkbox" checked={!!cfg.enabled} onChange={e=>setCfg({...cfg,enabled:e.target.checked})}/>
+      LLM 기능 활성화
+    </label>
+    <div style={L}>API URL</div>
+    <input value={cfg.api_url} onChange={e=>setCfg({...cfg,api_url:e.target.value})} placeholder="https://llm.internal/v1/chat/completions" style={I}/>
+    <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:10}}>
+      <div>
+        <div style={L}>Model</div>
+        <input value={cfg.model} onChange={e=>setCfg({...cfg,model:e.target.value})} placeholder="internal-model" style={I}/>
+      </div>
+      <div>
+        <div style={L}>Format</div>
+        <select value={cfg.format||"openai"} onChange={e=>setCfg({...cfg,format:e.target.value})} style={I}>
+          <option value="openai">openai</option>
+          <option value="raw">raw</option>
+        </select>
+      </div>
+      <div>
+        <div style={L}>Timeout (sec)</div>
+        <input type="number" min={3} max={120} value={cfg.timeout_s||20} onChange={e=>setCfg({...cfg,timeout_s:Number(e.target.value)})} style={{...I,fontFamily:"monospace"}}/>
+      </div>
+    </div>
+    <div style={L}>Admin LLM Token <span style={{fontWeight:400,color:"var(--text-secondary)"}}>(Authorization Bearer 로 자동 사용)</span></div>
+    <div style={{display:"flex",gap:8}}>
+      <input type={showToken?"text":"password"} value={cfg.admin_token} onChange={e=>setCfg({...cfg,admin_token:e.target.value})} placeholder="admin token" autoComplete="off" style={{...I,fontFamily:"monospace",flex:1}}/>
+      <button type="button" onClick={()=>setShowToken(!showToken)} style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>{showToken?"숨김":"보기"}</button>
+    </div>
+    <div style={{marginTop:18,padding:12,background:"var(--bg-card)",borderRadius:6,border:"1px solid var(--border)"}}>
+      <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>요청 미리보기</div>
+      <pre style={{fontSize:10,lineHeight:1.45,padding:10,background:"var(--bg-primary)",border:"1px solid var(--border)",borderRadius:4,overflow:"auto",maxHeight:220,fontFamily:"monospace",margin:0,color:"var(--text-primary)"}}>
+{JSON.stringify(preview, null, 2)}
+      </pre>
+    </div>
+    <div style={{marginTop:14}}>
+      <div style={L}>테스트 프롬프트</div>
+      <textarea value={testPrompt} onChange={e=>setTestPrompt(e.target.value)} rows={3} style={{...I,resize:"vertical"}}/>
+    </div>
+    <div style={{marginTop:14,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+      <button onClick={save} disabled={busy} style={{padding:"8px 18px",borderRadius:6,border:"none",background:"var(--accent)",color:WHITE,fontWeight:600,cursor:busy?"wait":"pointer"}}>{busy?"저장 중...":"저장"}</button>
+      <button onClick={test} disabled={testBusy||!cfg.enabled||!cfg.api_url} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontWeight:600,cursor:testBusy?"wait":"pointer",opacity:(!cfg.enabled||!cfg.api_url)?0.45:1}}>{testBusy?"테스트 중...":"연결 테스트"}</button>
+      <button onClick={reload} disabled={busy||testBusy} style={{padding:"8px 14px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>새로고침</button>
+      {msg&&<span style={{fontSize:11,color:msg.startsWith("오류")||msg.includes("실패")?BAD.fg:OK.fg}}>{msg}</span>}
     </div>
   </div>);
 }

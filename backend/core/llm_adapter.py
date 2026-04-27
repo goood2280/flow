@@ -11,6 +11,7 @@
     "enabled":   bool,
     "api_url":   str,            # POST 대상 (예: https://llm.internal/v1/chat)
     "model":     str,            # e.g. "internal-7b"
+    "admin_token": str,           # admin-managed bearer token shared by users
     "headers":   {k: v, ...},    # 인증 헤더 등
     "format":    "openai"|"raw", # 요청 body 스키마.  default "openai" (messages:[{role,content}])
     "extra_body":{k: v, ...},    # POST body 병합 (예: {"temperature":0.2})
@@ -48,6 +49,7 @@ _DEFAULT: Dict[str, Any] = {
     "enabled": False,
     "api_url": "",
     "model": "",
+    "admin_token": "",
     "headers": {},
     "format": "openai",
     "extra_body": {},
@@ -69,6 +71,7 @@ def _raw_config() -> Dict[str, Any]:
     merged["enabled"] = bool(merged.get("enabled"))
     merged["api_url"] = str(merged.get("api_url") or "").strip()
     merged["model"] = str(merged.get("model") or "").strip()
+    merged["admin_token"] = str(merged.get("admin_token") or "").strip()
     merged["format"] = (merged.get("format") or "openai").strip() or "openai"
     try:
         merged["timeout_s"] = int(merged.get("timeout_s") or 20)
@@ -93,7 +96,13 @@ def get_config(*, redact: bool = True) -> Dict[str, Any]:
         # 헤더 값은 민감할 수 있으므로 key 는 노출하고 값은 masking.
         cfg = dict(cfg)
         cfg["headers"] = {k: ("****" if v else "") for k, v in (cfg.get("headers") or {}).items()}
+        cfg["admin_token"] = "****" if cfg.get("admin_token") else ""
     return cfg
+
+
+def has_admin_token() -> bool:
+    """True when an admin-managed token is configured."""
+    return bool(_raw_config().get("admin_token"))
 
 
 def complete(prompt: str, *, system: Optional[str] = None,
@@ -131,15 +140,20 @@ def complete(prompt: str, *, system: Optional[str] = None,
             body["model"] = model
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     hdrs = {"Content-Type": "application/json"}
-    user_token = str(auth_token or "").strip()
+    effective_token = str(auth_token or cfg.get("admin_token") or "").strip()
     for k, v in (cfg.get("headers") or {}).items():
         if k:
             val = str(v)
-            if user_token and "{token}" in val:
-                val = val.replace("{token}", user_token)
+            if effective_token and "{token}" in val:
+                val = val.replace("{token}", effective_token)
             hdrs[str(k)] = val
-    if user_token and not any(k.lower() == "authorization" for k in hdrs):
-        hdrs["Authorization"] = f"Bearer {user_token}"
+    if effective_token and cfg.get("admin_token"):
+        for k in list(hdrs.keys()):
+            if k.lower() == "authorization":
+                hdrs.pop(k, None)
+        hdrs["Authorization"] = f"Bearer {effective_token}"
+    elif effective_token and not any(k.lower() == "authorization" for k in hdrs):
+        hdrs["Authorization"] = f"Bearer {effective_token}"
     to = int(timeout or cfg.get("timeout_s") or 20)
     try:
         req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
