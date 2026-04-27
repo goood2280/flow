@@ -31,8 +31,24 @@ ET_REPORT_DIR = PATHS.data_root / "et_reports"
 PPTX_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "build_et_pptx.js"
 
 
+def _db_root() -> Path:
+    try:
+        from app_v2.shared.source_adapter import resolve_existing_root
+        return resolve_existing_root("db", PATHS.db_root)
+    except Exception:
+        return PATHS.db_root
+
+
+def _base_root() -> Path:
+    try:
+        from app_v2.shared.source_adapter import resolve_existing_root
+        return resolve_existing_root("base", PATHS.base_root)
+    except Exception:
+        return PATHS.base_root
+
+
 def _et_feature_path() -> Path:
-    for root in (PATHS.base_root, PATHS.db_root):
+    for root in (_base_root(), _db_root()):
         fp = Path(root) / ET_FEATURE_FILE
         if fp.is_file():
             return fp
@@ -41,7 +57,7 @@ def _et_feature_path() -> Path:
 
 def _matching_step_paths() -> list[Path]:
     out: list[Path] = []
-    for root in (PATHS.base_root, PATHS.db_root):
+    for root in (_base_root(), _db_root()):
         for name in STEP_MATCHING_FILES:
             fp = Path(root) / name
             if fp.is_file() and fp not in out:
@@ -90,7 +106,7 @@ def _load_et_features() -> pl.DataFrame:
 
 def _collect_raw_et(product: str) -> pl.DataFrame:
     for cand in [product, *_product_aliases(product)]:
-        lf = scan_long_et(cand, PATHS.db_root)
+        lf = scan_long_et(cand, _db_root())
         if lf is None:
             continue
         try:
@@ -1055,7 +1071,7 @@ def _safe_file_part(text: str) -> str:
 def _collect_raw_et_for_report(product: str = "") -> pl.DataFrame:
     if product:
         return _collect_raw_et(product)
-    raw_root = PATHS.db_root / "1.RAWDATA_DB_ET"
+    raw_root = _db_root() / "1.RAWDATA_DB_ET"
     frames = []
     if raw_root.is_dir():
         for prod_dir in sorted(p for p in raw_root.iterdir() if p.is_dir()):
@@ -1204,6 +1220,7 @@ def _build_et_pptx_payload(
     root_lot_id: str = "",
     fab_lot_id: str = "",
     step_id: str = "",
+    package_key: str = "",
     item_ids: list[str] | None = None,
     max_items: int = 6,
     report_variant: str = "",
@@ -1250,6 +1267,10 @@ def _build_et_pptx_payload(
                 pl.col("request_key").fill_null(""),
             ]).alias("package_key")
         )
+    if package_key and "package_key" in df.columns:
+        df = df.filter(pl.col("package_key") == str(package_key))
+        if df.is_empty():
+            raise HTTPException(404, "No ET rows matched the selected measurement package")
     for c in ("shot_x", "shot_y"):
         if c in df.columns:
             df = df.with_columns(pl.col(c).cast(pl.Float64, strict=False).alias(c))
@@ -1262,30 +1283,75 @@ def _build_et_pptx_payload(
         if not rules:
             rules = _top_item_rules(df, max_items=max_items)
     if not rules:
-        raise HTTPException(404, "No ET report indexes or item_id values available for PPTX")
+        raise HTTPException(404, "No ET score items or item_id values available for PPTX")
 
-    item_payloads = _build_item_payloads_from_rules(df, rules, max_items=max_items)
-    if not item_payloads and not item_ids:
-        item_payloads = _build_item_payloads_from_rules(df, _top_item_rules(df, max_items=max_items), max_items=max_items)
+    recent_base = (
+        df.group_by(["product", "root_lot_id", "fab_lot_id", "step_id", "package_key", "package_time", "request_key"])
+        .agg([
+            pl.len().alias("pt_count"),
+            pl.col("wafer_id").n_unique().alias("wafer_count") if "wafer_id" in df.columns else pl.lit(0).alias("wafer_count"),
+            pl.col("item_id").n_unique().alias("item_count") if "item_id" in df.columns else pl.lit(0).alias("item_count"),
+            pl.col("step_seq").drop_nulls().unique().sort().alias("step_seqs") if "step_seq" in df.columns else pl.lit([]).alias("step_seqs"),
+        ])
+        .sort("package_time", descending=True)
+        .head(max(1, min(50, int(max_items or 6))))
+    )
+    seq_points = (
+        df.group_by(["package_key", "step_seq"])
+        .agg(pl.len().alias("pt_count"))
+        .sort(["package_key", "step_seq"])
+        .to_dicts()
+    ) if "step_seq" in df.columns else []
+    pkg_seq_map: dict[str, list[dict]] = {}
+    for row in seq_points:
+        pkg = str(row.get("package_key") or "")
+        pts = int(row.get("pt_count") or 0)
+        if pkg and pts > 0:
+            pkg_seq_map.setdefault(pkg, []).append({"step_seq": str(row.get("step_seq") or "-"), "pt_count": pts})
+    recent_rows = []
+    for row in recent_base.to_dicts():
+        seqs = [str(v) for v in (row.get("step_seqs") or []) if str(v or "").strip()]
+        pkg = str(row.get("package_key") or "")
+        row["step_seq_combo"] = ", ".join(seqs) if seqs else "-"
+        row["step_seq_points"] = _seq_points_label(pkg_seq_map.get(pkg, []))
+        recent_rows.append(row)
 
-    if not item_payloads:
+    probe_watch = _probe_watch_report(df, product)
+    report_archive, report_details = _package_report_views(df, rules, recent_rows, probe_watch)
+    if not any((d.get("scoreboard") or []) for d in report_details.values()) and not item_ids:
+        fallback_rules = _top_item_rules(df, max_items=max_items)
+        report_archive, report_details = _package_report_views(df, fallback_rules, recent_rows, probe_watch)
+
+    active_package = recent_rows[0] if recent_rows else first
+    active_key = str(active_package.get("package_key") or "")
+    active_detail = report_details.get(active_key) or next(iter(report_details.values()), {})
+    scoreboard = active_detail.get("scoreboard") or []
+
+    if not scoreboard:
         raise HTTPException(404, "No numeric ET item values available for PPTX")
     meta_product = product or str(first.get("product") or "")
     meta_root = root_lot_id or str(first.get("root_lot_id") or "")
     meta_fab = fab_lot_id or str(first.get("fab_lot_id") or first.get("lot_id") or "")
     meta_step = step_id or str(first.get("step_id") or "")
     return {
-        "title": "ET Item Report",
+        "title": "ET Measurement Report",
+        "mode": "scoreboard",
         "meta": {
             "product": meta_product,
             "root_lot_id": meta_root,
             "fab_lot_id": meta_fab,
             "step_id": meta_step,
             "step_label": step_label or meta_step,
+            "package_key": active_key,
+            "package_time": active_package.get("package_time") or "",
+            "request_key": active_package.get("request_key") or "",
+            "step_seq_points": active_package.get("step_seq_points") or "",
             "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
             "row_count": int(df.height),
         },
-        "items": item_payloads,
+        "scoreboard": scoreboard,
+        "report_archive": report_archive,
+        "items": [],
     }
 
 
@@ -1294,6 +1360,7 @@ def _build_et_pptx_file(
     root_lot_id: str = "",
     fab_lot_id: str = "",
     step_id: str = "",
+    package_key: str = "",
     item_ids: list[str] | None = None,
     max_items: int = 6,
     report_variant: str = "",
@@ -1308,6 +1375,7 @@ def _build_et_pptx_file(
         root_lot_id=root_lot_id,
         fab_lot_id=fab_lot_id,
         step_id=step_id,
+        package_key=package_key,
         item_ids=item_ids,
         max_items=max_items,
         report_variant=report_variant,
@@ -1371,7 +1439,7 @@ def _package_df(df: pl.DataFrame) -> pl.DataFrame:
 
 @router.get("/products")
 def et_products():
-    raw_root = PATHS.db_root / "1.RAWDATA_DB_ET"
+    raw_root = _db_root() / "1.RAWDATA_DB_ET"
     if raw_root.is_dir():
         prods = sorted(p.name for p in raw_root.iterdir() if p.is_dir())
         if prods:
@@ -1615,6 +1683,7 @@ def et_report_pptx(
     root_lot_id: str = Query(""),
     fab_lot_id: str = Query(""),
     step_id: str = Query(""),
+    package_key: str = Query(""),
     items: str = Query("", description="comma separated item_id list"),
     max_items: int = Query(6, ge=1, le=30),
     report_variant: str = Query(""),
@@ -1627,6 +1696,7 @@ def et_report_pptx(
         root_lot_id=root_lot_id,
         fab_lot_id=fab_lot_id,
         step_id=step_id,
+        package_key=package_key,
         item_ids=item_ids or None,
         max_items=max_items,
         report_variant=report_variant,

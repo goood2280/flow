@@ -20,6 +20,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import logging
+import re
 from pathlib import Path
 from typing import Optional, Iterable
 
@@ -34,7 +35,11 @@ _STEP_META_CACHE: dict = {}
 
 def _get_db_root() -> Path:
     from core.paths import PATHS
-    return PATHS.db_root
+    try:
+        from app_v2.shared.source_adapter import resolve_existing_root
+        return resolve_existing_root("db", PATHS.db_root)
+    except Exception:
+        return PATHS.db_root
 
 
 def _settings_file() -> Path:
@@ -104,14 +109,17 @@ def list_db_source_roots() -> list[str]:
     if not db_root.is_dir():
         return []
     out = []
-    for p in sorted(db_root.iterdir(), key=lambda x: x.name.lower()):
-        if not p.is_dir():
-            continue
-        if p.name.startswith("1.RAWDATA_DB") or any(p.rglob("*.parquet")):
-            out.append(p.name)
-    for default in (FAB_ROOT, ET_ROOT):
-        if default not in out:
-            out.append(default)
+    for p in _top_level_data_roots(db_root):
+        label = _root_label(p, db_root)
+        if label and label not in out:
+            out.append(label)
+    for configured in tracker_db_sources_config().values():
+        for p in _resolve_source_root_dirs("auto", configured, allow_fallback=False):
+            label = _root_label(p, db_root)
+            if label and label not in out:
+                out.append(label)
+    if not out:
+        out.extend([FAB_ROOT, ET_ROOT])
     return out
 
 
@@ -192,6 +200,185 @@ def _source_roots(source: str, source_root: str = "") -> list[str]:
             continue
         seen.add(text)
         out.append(text)
+    return out
+
+
+def _path_has_data(root: Path) -> bool:
+    for pattern in ("*.parquet", "*.csv"):
+        try:
+            next(root.rglob(pattern))
+            return True
+        except StopIteration:
+            continue
+        except Exception:
+            return False
+    return False
+
+
+def _top_level_data_roots(db_root: Path) -> list[Path]:
+    if not db_root.is_dir():
+        return []
+    db_up = db_root.name.upper()
+    db_tokens = _name_tokens(db_up)
+    if (
+        db_up.startswith("1.RAWDATA_DB")
+        or db_up in {"FAB", "ET", "EDS", "INLINE"}
+        or {"FAB", "ET", "EDS", "INLINE"} & db_tokens
+    ) and _path_has_data(db_root):
+        return [db_root]
+    source_roots: list[Path] = []
+    data_roots: list[Path] = []
+    try:
+        for p in sorted(db_root.iterdir(), key=lambda x: x.name.lower()):
+            if not p.is_dir() or p.name.startswith((".", "_", "__")):
+                continue
+            up = p.name.upper()
+            tokens = _name_tokens(up)
+            if up.startswith("1.RAWDATA_DB") or up in {"FAB", "ET", "EDS", "INLINE"} or ({"FAB", "ET", "EDS", "INLINE"} & tokens):
+                source_roots.append(p)
+            elif _path_has_data(p):
+                data_roots.append(p)
+    except Exception:
+        return []
+    if source_roots:
+        return source_roots
+    if _path_has_data(db_root):
+        return [db_root]
+    return data_roots
+
+
+def _root_label(root: Path, db_root: Path | None = None) -> str:
+    db_root = db_root or _get_db_root()
+    try:
+        rel = root.resolve().relative_to(db_root.resolve())
+        return "." if str(rel) == "." else rel.as_posix()
+    except Exception:
+        return root.name
+
+
+def _casefold_child_path(parent: Path, rel: str) -> Path | None:
+    text = str(rel or "").strip().strip("/\\")
+    if not text or not parent.exists():
+        return None
+    exact = parent / text
+    if exact.exists():
+        return exact
+    cur = parent
+    for part in [p for p in text.replace("\\", "/").split("/") if p]:
+        target = part.casefold()
+        found = None
+        try:
+            for child in cur.iterdir():
+                if child.name.casefold() == target:
+                    found = child
+                    break
+        except Exception:
+            return None
+        if found is None:
+            return None
+        cur = found
+    return cur if cur.exists() else None
+
+
+def _resolve_named_db_child(db_root: Path, root_name: str) -> Path | None:
+    text = str(root_name or "").strip().strip("/\\")
+    if not text:
+        return None
+    p = Path(text)
+    if p.is_absolute():
+        return p if p.exists() else None
+    try:
+        from app_v2.shared.source_adapter import resolve_named_child
+        if "/" not in text and "\\" not in text:
+            resolved = resolve_named_child(db_root, text)
+            if resolved is not None and resolved.exists():
+                return resolved
+    except Exception:
+        pass
+    return _casefold_child_path(db_root, text)
+
+
+def _name_tokens(value: str) -> set[str]:
+    return {t for t in re.split(r"[^A-Z0-9]+", str(value or "").upper()) if t}
+
+
+def _source_kind(source: str = "auto", root_name: str = "") -> str:
+    src = str(source or "auto").strip().lower()
+    if src in {"fab", "monitor"}:
+        return "fab"
+    if src in {"et", "analysis"}:
+        return "et"
+    tokens = _name_tokens(root_name)
+    if "ET" in tokens or "EDS" in tokens or "ANALYSIS" in tokens:
+        return "et"
+    if "FAB" in tokens or "MONITOR" in tokens:
+        return "fab"
+    return "auto"
+
+
+def _source_root_rank(root: Path, kind: str) -> int:
+    name = root.name.upper()
+    tokens = _name_tokens(name)
+    if kind == "fab":
+        if name == FAB_ROOT.upper():
+            return 0
+        if "FAB" in tokens or "MONITOR" in tokens:
+            return 1
+        if name == "1.RAWDATA_DB":
+            return 2
+        if "RAWDATA" in tokens and not ({"ET", "EDS", "INLINE", "VM", "MASK", "YLD"} & tokens):
+            return 3
+        return 90
+    if kind == "et":
+        if name == ET_ROOT.upper():
+            return 0
+        if "ET" in tokens or "EDS" in tokens or "ANALYSIS" in tokens:
+            return 1
+        if name == "1.RAWDATA_DB":
+            return 3
+        return 90
+    if name == ET_ROOT.upper():
+        return 0
+    if name == FAB_ROOT.upper():
+        return 1
+    if name == "1.RAWDATA_DB":
+        return 2
+    if "ET" in tokens or "FAB" in tokens or "RAWDATA" in tokens:
+        return 3
+    return 80
+
+
+def _fallback_source_root_dirs(kind: str) -> list[Path]:
+    roots = _top_level_data_roots(_get_db_root())
+    ranked = [(p, _source_root_rank(p, kind)) for p in roots]
+    ranked = [(p, rank) for p, rank in ranked if rank < 90]
+    ranked.sort(key=lambda item: (item[1], item[0].name.lower()))
+    return [p for p, _rank in ranked]
+
+
+def _resolve_source_root_dirs(source: str = "auto", source_root: str = "", allow_fallback: bool = True) -> list[Path]:
+    db_root = _get_db_root()
+    out: list[Path] = []
+    seen = set()
+
+    def _add(p: Path | None) -> None:
+        if p is None or not p.is_dir():
+            return
+        key = str(p.resolve())
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(p)
+
+    for root_name in _source_roots(source, source_root):
+        _add(_resolve_named_db_child(db_root, root_name))
+
+    if out or not allow_fallback:
+        return out
+
+    kind = _source_kind(source, source_root)
+    for p in _fallback_source_root_dirs(kind):
+        _add(p)
     return out
 
 
@@ -278,12 +465,12 @@ def _apply_lot_filters(lf, schema: list[str], product: str = "", root_lot_id: st
     return lf
 
 
-def _scan_source_files(root_name: str, product: str = ""):
+def _scan_source_files(root_name: str, product: str = "", source: str = "auto"):
     try:
         import polars as pl
     except Exception:
         return None
-    files = _parquet_files(root_name, product)
+    files = _parquet_files(root_name, product, source=source)
     if not files:
         return None
     try:
@@ -298,7 +485,6 @@ def _scan_source_files(root_name: str, product: str = ""):
 def db_product_candidates(source_root: str = "", source: str = "auto", prefix: str = "",
                           limit: int = 500) -> list[str]:
     """Return product candidates visible under the selected Tracker DB root."""
-    db_root = _get_db_root()
     needle = str(prefix or "").strip().upper()
     values: list[str] = []
     seen = set()
@@ -316,20 +502,18 @@ def db_product_candidates(source_root: str = "", source: str = "auto", prefix: s
         values.append(text)
 
     for root_name in _source_roots(source, source_root):
-        root_dir = db_root / root_name
-        if not root_dir.is_dir():
-            continue
-        try:
-            for child in sorted(root_dir.iterdir(), key=lambda p: p.name.lower()):
-                if child.is_dir():
-                    _add(child.name)
-                    if len(values) >= limit:
-                        return values[:limit]
-        except Exception:
-            pass
+        for root_dir in _resolve_source_root_dirs(source, root_name):
+            try:
+                for child in sorted(root_dir.iterdir(), key=lambda p: p.name.lower()):
+                    if child.is_dir():
+                        _add(child.name)
+                        if len(values) >= limit:
+                            return values[:limit]
+            except Exception:
+                pass
         try:
             import polars as pl
-            lf = _scan_source_files(root_name, "")
+            lf = _scan_source_files(root_name, "", source=source)
             if lf is None:
                 continue
             schema = lf.collect_schema().names()
@@ -359,7 +543,7 @@ def lot_id_candidates(product: str = "", source_root: str = "", source: str = "a
     out: list[dict] = []
     seen = set()
     for root_name in _source_roots(source, source_root):
-        lf = _scan_source_files(root_name, product)
+        lf = _scan_source_files(root_name, product, source=source)
         if lf is None:
             continue
         try:
@@ -406,7 +590,7 @@ def discover_wafer_ids(product: str = "", root_lot_id: str = "", lot_id: str = "
     values = []
     seen = set()
     for root_name in _source_roots(source, source_root):
-        lf = _scan_source_files(root_name, product)
+        lf = _scan_source_files(root_name, product, source=source)
         if lf is None:
             continue
         try:
@@ -504,33 +688,50 @@ def expand_lot_row_for_wafer_selection(lot: dict, *, product: str = "", root_lot
     return out
 
 
-def _parquet_files(root_name: str, product: str = "") -> list[Path]:
-    db_root = _get_db_root()
-    root_dir = db_root / root_name
-    if not root_dir.is_dir():
+def _parquet_files(root_name: str, product: str = "", source: str = "auto") -> list[Path]:
+    root_dirs = _resolve_source_root_dirs(source, root_name)
+    if not root_dirs:
         return []
     raw = str(product or "").strip().upper()
     if raw.startswith("ML_TABLE_"):
         raw = raw[len("ML_TABLE_"):].strip()
+    files: list[Path] = []
     if raw:
-        exact = root_dir / raw
-        dirs = [exact] if exact.is_dir() else []
-        if not dirs:
-            for alias in sorted(_product_aliases(raw)):
-                d = root_dir / alias
-                if d.is_dir() and d not in dirs:
-                    dirs.append(d)
-        files: list[Path] = []
-        for d in dirs:
-            files.extend(sorted(d.rglob("*.parquet")))
-        return files
-    return sorted(root_dir.rglob("*.parquet"))
+        for root_dir in root_dirs:
+            exact = _casefold_child_path(root_dir, raw)
+            dirs = [exact] if exact is not None and exact.is_dir() else []
+            if not dirs:
+                for alias in sorted(_product_aliases(raw)):
+                    d = _casefold_child_path(root_dir, alias)
+                    if d is not None and d.is_dir() and d not in dirs:
+                        dirs.append(d)
+            for d in dirs:
+                files.extend(sorted(d.rglob("*.parquet")))
+        return _dedupe_paths(files)
+    for root_dir in root_dirs:
+        files.extend(sorted(root_dir.rglob("*.parquet")))
+    return _dedupe_paths(files)
+
+
+def _dedupe_paths(paths: Iterable[Path]) -> list[Path]:
+    out: list[Path] = []
+    seen = set()
+    for p in paths:
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
 
 
 def _step_meta_paths() -> list[Path]:
     db_root = _get_db_root()
     roots = []
     for root in (db_root, db_root / "Fab"):
+        if root not in roots:
+            roots.append(root)
+    for root in _resolve_source_root_dirs("fab", FAB_ROOT):
         if root not in roots:
             roots.append(root)
     paths = []
@@ -614,7 +815,7 @@ def latest_fab_step(product: str = "", root_lot_id: str = "", lot_id: str = "",
     except Exception:
         return {}
     root_name = str(source_root or "").strip() or FAB_ROOT
-    files = _parquet_files(root_name, product)
+    files = _parquet_files(root_name, product, source="fab")
     if not files:
         return {}
     try:
@@ -686,7 +887,7 @@ def et_packages(product: str = "", root_lot_id: str = "", lot_id: str = "",
     except Exception:
         return []
     root_name = str(source_root or "").strip() or ET_ROOT
-    files = _parquet_files(root_name, product)
+    files = _parquet_files(root_name, product, source="et")
     if not files:
         return []
     try:
@@ -916,9 +1117,6 @@ def snapshot_row_fields(snapshot: dict) -> dict:
         "last_move_at": last_move_at,
         "et_package_count": len(et),
     }
-
-
-import re
 
 
 _STEP_ID_RE = re.compile(r"^([A-Z]{2})(?:(\d{6}))?(\d{6})$")

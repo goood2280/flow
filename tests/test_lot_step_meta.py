@@ -10,9 +10,12 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from core.lot_step import (  # noqa: E402
+    _parquet_files,
+    _resolve_source_root_dirs,
     _source_roots,
     compare_to_watch,
     expand_lot_row_for_wafer_selection,
+    list_db_source_roots,
     lookup_step_meta,
     parse_wafer_selection,
     snapshot_row_fields,
@@ -82,6 +85,25 @@ def test_source_roots_use_tracker_db_source_config(monkeypatch, tmp_path):
     assert _source_roots("fab") == ["CUSTOM_FAB"]
     assert _source_roots("et") == ["CUSTOM_ET"]
     assert _source_roots("both") == ["CUSTOM_ET", "CUSTOM_FAB"]
+
+
+def test_tracker_db_roots_soft_land_to_existing_db_folder(monkeypatch, tmp_path):
+    db = tmp_path / "DB"
+    fab = db / "FAB_HISTORY" / "PRODA" / "date=20260427"
+    et = db / "ET_MEASURE" / "PRODA"
+    fab.mkdir(parents=True)
+    et.mkdir(parents=True)
+    (fab / "part.parquet").write_bytes(b"placeholder")
+    (et / "part.parquet").write_bytes(b"placeholder")
+    import core.lot_step as lot_step
+
+    monkeypatch.setattr(lot_step, "_get_db_root", lambda: db)
+
+    assert "FAB_HISTORY" in list_db_source_roots()
+    assert "ET_MEASURE" in list_db_source_roots()
+    assert _resolve_source_root_dirs("fab", "1.RAWDATA_DB_FAB")[0] == db / "FAB_HISTORY"
+    assert _resolve_source_root_dirs("et", "1.RAWDATA_DB_ET")[0] == db / "ET_MEASURE"
+    assert _parquet_files("1.RAWDATA_DB_FAB", "PRODA", source="fab") == [fab / "part.parquet"]
 
 
 def test_expand_lot_row_for_wafer_selection_splits_rows_and_resets_watch_state():

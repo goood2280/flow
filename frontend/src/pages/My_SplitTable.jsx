@@ -579,14 +579,14 @@ export default function My_SplitTable({user}){
     <style>{`.stm-cell:hover .stm-note-btn{opacity:1 !important;}`}</style>
     {/* Sidebar */}
     <div style={{width:250,minWidth:250,borderRight:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",flexDirection:"column",overflow:"auto",position:"relative"}}>
-      <div style={{padding:"12px 14px",borderBottom:"1px solid var(--border)",fontSize:12,fontWeight:700,color:"var(--text-secondary)",textTransform:"uppercase"}}>Split Table</div>
-      <div style={{padding:"8px 12px"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Product</div>
+      <div style={{padding:"12px 14px",borderBottom:"1px solid var(--border)",fontSize:12,fontWeight:700,color:"var(--text-secondary)"}}>스플릿 테이블</div>
+      <div style={{padding:"8px 12px"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>제품</div>
         <select value={selProd} onChange={e=>setSelProd(e.target.value)} style={{...S,width:"100%"}}>{visibleProducts.map(p=><option key={p.name} value={p.name}>{p.name}</option>)}</select></div>
       {/* Lot ID dropdown */}
       <div style={{padding:"4px 12px"}} ref={lotRef}>
-        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Root Lot ID</div>
+        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>루트 Lot ID</div>
         <input value={lotId} onChange={e=>{setLotId(e.target.value);setLotFilter(e.target.value);setShowLotDrop(true);}}
-          onFocus={()=>setShowLotDrop(true)} placeholder="Enter or select..."
+          onFocus={()=>setShowLotDrop(true)} placeholder="입력 또는 선택"
           style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&(setShowLotDrop(false),doSearch())}/>
         {showLotDrop&&filteredLots.length>0&&<div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
           {filteredLots.slice(0,50).map(l=><div key={l} onClick={()=>{setLotId(l);setShowLotDrop(false);}}
@@ -596,7 +596,7 @@ export default function My_SplitTable({user}){
       </div>
       {/* v8.4.3: fab_lot_id 검색 — root_lot_id 대신 FAB 쪽 ID 로 조회 */}
       <div style={{padding:"4px 12px"}}>
-        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Fab Lot ID (alt)</div>
+        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Fab Lot ID</div>
         <input value={fabLotId} onChange={e=>{setFabLotId(e.target.value);setShowFabDrop(true);}}
           onFocus={()=>setShowFabDrop(true)} onBlur={()=>setTimeout(()=>setShowFabDrop(false),150)}
           placeholder="fab_lot_id 입력" style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&(setShowFabDrop(false),doSearch())}/>
@@ -607,23 +607,23 @@ export default function My_SplitTable({user}){
               onMouseEnter={e=>e.currentTarget.style.background="var(--bg-hover)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{f}</div>)}
           </div>}
       </div>
-      <div style={{padding:"4px 12px"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Wafer IDs (optional)</div>
-        <input value={waferIds} onChange={e=>setWaferIds(e.target.value)} placeholder="e.g. 1,2,3" style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&doSearch()}/></div>
+      <div style={{padding:"4px 12px"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Wafer ID</div>
+        <input value={waferIds} onChange={e=>setWaferIds(e.target.value)} placeholder="예: 1,2,3" style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&doSearch()}/></div>
       <div style={{padding:"6px 12px"}}>
         <button onClick={doSearch} title="검색"
           style={{width:"100%",padding:"7px 0",borderRadius:5,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:12,fontWeight:600,cursor:"pointer",opacity:1}}>
-          Search
+          검색
         </button>
       </div>
       {/* Prefix multi-select */}
-      <div style={{padding:"8px 12px",borderTop:"1px solid var(--border)"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Prefix</div>
+      <div style={{padding:"8px 12px",borderTop:"1px solid var(--border)"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>컬럼 그룹</div>
         <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
           {prefixes.map(p=><span key={p} onClick={()=>togglePrefix(p)} style={chipS(selPrefixes.includes(p)&&!isCustomMode)}>{p}</span>)}
           <span onClick={()=>{setIsCustomMode(true);setSelPrefixes([]);}} style={chipS(isCustomMode)}>CUSTOM</span>
         </div></div>
       {/* Custom mode */}
       {isCustomMode&&<div style={{padding:"8px 12px",borderTop:"1px solid var(--border)",flex:1,overflow:"auto"}}>
-        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Custom Sets</div>
+        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>커스텀 세트</div>
         {customs.map(c=><div key={c.name} style={{display:"flex",alignItems:"center",gap:4,padding:"3px 6px",borderRadius:4,marginBottom:2,background:selCustom===c.name?"var(--accent-glow)":"transparent",cursor:"pointer"}}
           onClick={()=>selectCustomSet(c)}>
           <span style={{flex:1,fontSize:11,color:selCustom===c.name?"var(--accent)":"var(--text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.name}</span>
@@ -640,8 +640,8 @@ export default function My_SplitTable({user}){
             </span>)}
           </div>
         </div>}
-        <div style={{marginTop:6,fontSize:10,color:"var(--text-secondary)"}}>Create / Edit:</div>
-        <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="Search columns..." style={{...S,width:"100%",fontSize:10,marginBottom:4,marginTop:4}}/>
+        <div style={{marginTop:6,fontSize:10,color:"var(--text-secondary)"}}>생성 / 편집</div>
+        <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색" style={{...S,width:"100%",fontSize:10,marginBottom:4,marginTop:4}}/>
         {/* v8.8.16: 전체 체크/제거 + 개수 표시 */}
         <div style={{display:"flex",gap:4,marginBottom:4,fontSize:9,alignItems:"center"}}>
           <button onClick={()=>{const all=Array.from(new Set([...customCols,...filteredCustomCols]));setCustomCols(all);}}
@@ -661,12 +661,12 @@ export default function My_SplitTable({user}){
           </div>}
         </div>
         {customCols.length>0&&<div style={{marginTop:4}}>
-          <div style={{fontSize:9,color:"var(--text-secondary)"}}>{customCols.length} selected</div>
+          <div style={{fontSize:9,color:"var(--text-secondary)"}}>{customCols.length}개 선택</div>
           <div style={{display:"flex",gap:4,marginTop:4}}>
-            <input value={customName} onChange={e=>setCustomName(e.target.value)} placeholder="Set name" style={{...S,flex:1,fontSize:10}}/>
-            <button onClick={saveCustom} style={{padding:"3px 8px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:10,cursor:"pointer"}}>Save</button>
+            <input value={customName} onChange={e=>setCustomName(e.target.value)} placeholder="세트명" style={{...S,flex:1,fontSize:10}}/>
+            <button onClick={saveCustom} style={{padding:"3px 8px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:10,cursor:"pointer"}}>저장</button>
           </div>
-          <div style={{fontSize:8,color:"var(--text-secondary)",marginTop:2}}>Same name = overwrite</div>
+          <div style={{fontSize:8,color:"var(--text-secondary)",marginTop:2}}>같은 이름은 덮어쓰기</div>
         </div>}
       </div>}
       {/* Settings gear */}

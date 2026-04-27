@@ -1012,7 +1012,7 @@ export default function My_Tracker({ user }) {
       {/* Sidebar */}
       <div style={{ width: 400, minWidth: 350, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", background: "var(--bg-secondary)" }}>
         <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace", color: "var(--accent)" }}>{">"} 이슈 추적</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>이슈 추적</span>
           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
             <Pill tone="neutral">{filteredIssues.length}</Pill>
             <Button variant="primary" onClick={() => setCreating(!creating)}>+ 새 이슈</Button>

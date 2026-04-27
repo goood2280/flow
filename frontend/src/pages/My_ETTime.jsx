@@ -239,14 +239,10 @@ export default function My_ETTime() {
   const [fabLotId, setFabLotId] = useState("");
   const [stepId, setStepId] = useState("");
   const [lotSearch, setLotSearch] = useState("");
-  const [reportVariant, setReportVariant] = useState("");
-  const [pointMode, setPointMode] = useState("");
-  const [audience, setAudience] = useState("internal");
   const [report, setReport] = useState(null);
   const [lots, setLots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedPackage, setSelectedPackage] = useState("");
-  const [selectedIndex, setSelectedIndex] = useState("");
 
   useEffect(() => {
     sf(API + "/products")
@@ -264,9 +260,6 @@ export default function My_ETTime() {
       root_lot_id: rootLotId.trim(),
       fab_lot_id: fabLotId.trim(),
       step_id: stepId.trim(),
-      report_variant: reportVariant,
-      point_mode: pointMode,
-      audience,
       limit: 500,
       ...overrides,
     };
@@ -284,39 +277,24 @@ export default function My_ETTime() {
 
   useEffect(() => {
     if (product) load({ product });
-  }, [product, reportVariant, pointMode, audience]);
+  }, [product]);
 
   useEffect(() => {
     const firstPkg = report?.recent_packages?.[0]?.package_key || "";
-    const firstIdx = report?.report_pages?.[0]?.item_id || "";
     setSelectedPackage(firstPkg);
-    setSelectedIndex(firstIdx);
   }, [report?.summary?.latest_package_time, report?.summary?.packages]);
 
-  const profiles = useMemo(() => {
-    const seen = new Set();
-    return (report?.report_bundle?.profiles || []).filter((p) => {
-      const key = p.report_variant || "";
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [report?.report_bundle?.profiles]);
-
   const summary = report?.summary || {};
-  const activePage = (report?.report_pages || []).find((x) => String(x.item_id || "") === String(selectedIndex)) || report?.report_pages?.[0] || null;
-  const activeDetail = (report?.report_details || {})[selectedPackage] || null;
   const activePackage = (report?.recent_packages || []).find((x) => String(x.package_key || "") === String(selectedPackage)) || null;
+  const activeDetail = (report?.report_details || {})[selectedPackage] || null;
 
   const pptxUrl = (row = {}) => API + "/report/pptx" + qs({
     product: row.product || product,
     root_lot_id: row.root_lot_id || rootLotId.trim(),
     fab_lot_id: row.fab_lot_id || fabLotId.trim(),
     step_id: row.step_id || stepId.trim(),
-    report_variant: reportVariant,
-    point_mode: pointMode,
-    audience,
-    max_items: 20,
+    package_key: row.package_key || activePackage?.package_key || "",
+    max_items: 30,
   });
 
   if (loading && !report) {
@@ -326,10 +304,7 @@ export default function My_ETTime() {
   return (
     <div style={{ padding: "14px 16px", background: "var(--bg-primary)", minHeight: "calc(100vh - 48px)", color: "var(--text-primary)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontSize: 16, fontWeight: 800, color: "var(--accent)" }}>ET 레포트</div>
-          <div style={{ marginTop: 3, fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>{report?.source_mode || "-"}</div>
-        </div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>ET 레포트</div>
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
           <select value={product} onChange={(e) => setProduct(e.target.value)} style={{ ...ctl, minWidth: 150 }}>
             {products.map((p) => <option key={p} value={p}>{p}</option>)}
@@ -337,21 +312,6 @@ export default function My_ETTime() {
           <input value={rootLotId} onChange={(e) => setRootLotId(e.target.value)} placeholder="root_lot_id" style={ctl} />
           <input value={fabLotId} onChange={(e) => setFabLotId(e.target.value)} placeholder="fab_lot_id" style={ctl} />
           <input value={stepId} onChange={(e) => setStepId(e.target.value)} placeholder="step_id / M1DC" style={ctl} />
-          <select value={reportVariant} onChange={(e) => setReportVariant(e.target.value)} style={ctl}>
-            <option value="">전체 인덱스</option>
-            {profiles.map((p) => <option key={p.report_variant} value={p.report_variant}>{p.report_variant}</option>)}
-          </select>
-          <select value={pointMode} onChange={(e) => setPointMode(e.target.value)} style={ctl}>
-            <option value="">전체 PT</option>
-            <option value="all_pt">all_pt</option>
-            <option value="selected_pt">selected_pt</option>
-            <option value="both">both</option>
-          </select>
-          <select value={audience} onChange={(e) => setAudience(e.target.value)} style={ctl}>
-            <option value="internal">내부용</option>
-            <option value="external">외부용</option>
-            <option value="both">전체</option>
-          </select>
           <button onClick={() => load()} style={{ ...ctl, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 800, cursor: "pointer" }}>갱신</button>
           <button
             onClick={() => {
@@ -368,17 +328,15 @@ export default function My_ETTime() {
           >
             A0001 예시
           </button>
-          <button onClick={() => dl(pptxUrl(), `ET_Report_${rootLotId || product || "lot"}.pptx`).catch(() => {})} style={{ ...ctl, border: "1px solid #7c3aed", color: "#6d28d9", fontWeight: 800, cursor: "pointer" }}>PPTX</button>
+          <button onClick={() => dl(pptxUrl(activePackage || {}), `ET_Report_${rootLotId || activePackage?.root_lot_id || product || "lot"}.pptx`).catch(() => {})} style={{ ...ctl, border: "1px solid #7c3aed", color: "#6d28d9", fontWeight: 800, cursor: "pointer" }}>PPTX</button>
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(110px, 1fr))", gap: 8, marginBottom: 10 }}>
-        <Mini label="패키지" value={summary.packages || 0} />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(120px, 1fr))", gap: 8, marginBottom: 10 }}>
+        <Mini label="ET 측정이력" value={summary.packages || 0} />
         <Mini label="랏" value={summary.lots || 0} color="#2563eb" />
         <Mini label="최신 측정" value={summary.latest_package_time || "-"} color="#0f766e" />
         <Mini label="Step Seq" value={summary.seq_count || 0} color="#7c3aed" />
-        <Mini label="Probe 경고" value={summary.probe_flagged_packages || 0} color={(summary.probe_flagged_packages || 0) ? "#f97316" : "#0f766e"} />
-        <Mini label="Probe 위험" value={summary.probe_critical_packages || 0} color={(summary.probe_critical_packages || 0) ? "#dc2626" : "#0f766e"} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "320px minmax(0, 1fr)", gap: 10, alignItems: "start" }}>
@@ -409,7 +367,7 @@ export default function My_ETTime() {
         </Panel>
 
         <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
-          <Panel title="Measured ET" right={<span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{activePackage?.package_time || ""}</span>}>
+          <Panel title="ET 측정이력" right={<span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{activePackage?.package_time || ""}</span>}>
             <Table
               rows={report?.recent_packages || []}
               selected={selectedPackage}
@@ -420,13 +378,6 @@ export default function My_ETTime() {
                 setFabLotId(r.fab_lot_id || "");
                 setStepId(r.step_id || "");
                 setLotSearch(r.fab_lot_id || r.root_lot_id || "");
-                load({
-                  product: r.product || product,
-                  root_lot_id: r.root_lot_id || "",
-                  fab_lot_id: r.fab_lot_id || "",
-                  step_id: r.step_id || "",
-                  limit: 500,
-                });
               }}
               columns={[
                 { key: "product", label: "PROD", mono: true, nowrap: true },
@@ -445,46 +396,28 @@ export default function My_ETTime() {
             />
           </Panel>
 
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(230px, 0.35fr) minmax(0, 1fr)", gap: 10, alignItems: "start" }}>
-            <Panel title="Reformatter Index">
-              <div style={{ display: "grid", gap: 6, maxHeight: 430, overflow: "auto" }}>
-                {(report?.report_pages || []).map((item) => {
-                  const active = String(item.item_id || "") === String(selectedIndex);
-                  return (
-                    <button key={item.item_id} onClick={() => setSelectedIndex(item.item_id || "")} style={{ textAlign: "left", borderRadius: 8, border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`, background: active ? "var(--accent-glow)" : "var(--bg-card)", color: active ? "var(--accent)" : "var(--text-primary)", padding: "8px 9px", cursor: "pointer" }}>
-                      <div style={{ fontSize: 11, fontWeight: 800, fontFamily: "monospace" }}>{item.alias || item.item_id}</div>
-                      <div style={{ marginTop: 4, fontSize: 10, color: active ? "var(--accent)" : "var(--text-secondary)", fontFamily: "monospace" }}>{item.step_seq_points || "-"} · {item.n || 0}pt</div>
-                    </button>
-                  );
-                })}
+          <Panel
+            title="선택한 ET 측정"
+            right={activePackage && (
+              <button onClick={() => dl(pptxUrl(activePackage), `ET_Report_${activePackage.root_lot_id || "lot"}.pptx`).catch(() => {})}
+                style={{ ...ctl, padding: "4px 8px", border: "1px solid #7c3aed", color: "#6d28d9", fontWeight: 800, cursor: "pointer" }}>
+                PPTX
+              </button>
+            )}
+          >
+            {!activePackage ? (
+              <div style={{ padding: 24, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>ET 측정이력을 선택하세요</div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(120px, 1fr))", gap: 8 }}>
+                <Mini label="제품" value={activePackage.product || "-"} color="#2563eb" />
+                <Mini label="Lot" value={activePackage.fab_lot_id || activePackage.root_lot_id || "-"} color="#0f766e" />
+                <Mini label="ET 측정시간" value={activePackage.package_time || "-"} color="#7c3aed" />
+                <Mini label="Step Seq" value={activePackage.step_seq_points || activePackage.step_seq_combo || "-"} color="#f97316" />
               </div>
-            </Panel>
+            )}
+          </Panel>
 
-            <Panel title={activePage ? `${activePage.alias || activePage.item_id} Page` : "Index Page"} right={activePage && <span style={{ fontSize: 10, color: tone(activePage.spec_out_points ? "abnormal" : "ok"), fontFamily: "monospace", fontWeight: 800 }}>{activePage.spec_out_points || 0} out</span>}>
-              {!activePage ? (
-                <div style={{ padding: 24, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>report index 없음</div>
-              ) : (
-                <div style={{ display: "grid", gap: 10 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(110px, 1fr))", gap: 8 }}>
-                    <Mini label="Raw Item" value={activePage.rawitem_id || "-"} color="#2563eb" />
-                    <Mini label="Step Seq PT" value={activePage.step_seq_points || "-"} color="#7c3aed" />
-                    <Mini label="패키지" value={activePage.package_count || 0} color="#0f766e" />
-                    <Mini label="Spec" value={`${activePage.spec || "none"} [${activePage.lsl ?? "-"}, ${activePage.usl ?? "-"}]`} color={tone(activePage.spec_out_points ? "abnormal" : "ok")} />
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "220px repeat(2, minmax(0, 1fr))", gap: 10 }}>
-                    <StatsTable item={activePage} />
-                    <BoxSummary item={activePage} />
-                    <ScatterPlot title="WF Map" rows={activePage.wf_map || []} xKey="shot_x" yKey="shot_y" />
-                    <TrendPlot rows={activePage.trend || []} />
-                    <ScatterPlot title="Radius Plot" rows={activePage.radius || []} xKey="radius" yKey="value" />
-                    <CdfPlot rows={activePage.cdf || []} />
-                  </div>
-                </div>
-              )}
-            </Panel>
-          </div>
-
-          <Panel title="Report Scoreboard" right={<span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{activePackage?.step_id || ""} {activePackage?.fab_lot_id || ""}</span>}>
+          <Panel title="스코어보드" right={<span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{activePackage?.step_id || ""} {activePackage?.fab_lot_id || ""}</span>}>
             <Table
               rows={activeDetail?.scoreboard || []}
               columns={[

@@ -6,7 +6,7 @@
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { sf, authSrc, postJson, userLabel, userMatches } from "../lib/api";
 import PageGear from "../components/PageGear";
-import { PageHeader, Button, Pill, statusPalette, chartPalette } from "../components/UXKit";
+import { Button, Pill, statusPalette, chartPalette } from "../components/UXKit";
 
 const API = "/api/informs";
 const OK = statusPalette.ok;
@@ -79,6 +79,27 @@ function isFabLotInput(lot, options = []) {
   const picked = (options || []).find(o => String(o.value || "").trim() === s);
   if (picked?.type) return picked.type === "fab";
   return /[._\-/]/.test(s);
+}
+
+function emptyEmbedTable() {
+  return { source: "", columns: [], rows: [], note: "" };
+}
+
+function hasEmbedSnapshot(embed) {
+  if (!embed) return false;
+  const rows = Array.isArray(embed.rows) ? embed.rows : [];
+  const columns = Array.isArray(embed.columns) ? embed.columns : [];
+  const stRows = Array.isArray(embed.st_view?.rows) ? embed.st_view.rows : [];
+  const stHeaders = Array.isArray(embed.st_view?.headers) ? embed.st_view.headers : [];
+  return rows.length > 0 || columns.length > 0 || stRows.length > 0 || stHeaders.length > 0;
+}
+
+function embedSnapshotRowCount(embed) {
+  if (!embed) return 0;
+  const stRows = Array.isArray(embed.st_view?.rows) ? embed.st_view.rows : [];
+  if (stRows.length) return stRows.length;
+  const rows = Array.isArray(embed.rows) ? embed.rows : [];
+  return rows.length;
 }
 
 function parseDuplicateProductError(error) {
@@ -1570,7 +1591,7 @@ export default function My_Inform({ user }) {
     wafer_id: "", lot_id: "", product: "", module: "", reason: "PEMS", text: "",
     deadline: "",
     attach_split: false, split: { column: "", old_value: "", new_value: "" },
-    attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" },
+    attach_embed: false, embed: emptyEmbedTable(),
   });
   const [createImages, setCreateImages] = useState([]);
   const [uploadingMain, setUploadingMain] = useState(false);
@@ -1803,7 +1824,7 @@ export default function My_Inform({ user }) {
     if (form.attach_split && (form.split.column || form.split.new_value)) {
       body.splittable_change = { ...form.split, applied: false };
     }
-    if (form.attach_embed && form.embed && (form.embed.columns.length || form.embed.rows.length)) {
+    if (form.attach_embed && hasEmbedSnapshot(form.embed)) {
       body.embed_table = form.embed;
     }
     // v8.8.15: fab_lot_id 스냅샷 — 입력값이 fab_lot_id 포맷이면 그대로 전달. 아니면 서버가 root5 기준 resolve.
@@ -1818,7 +1839,7 @@ export default function My_Inform({ user }) {
       setForm({
         wafer_id: "", lot_id: "", product: "", module: "", reason: "PEMS", text: "",
         attach_split: false, split: { column: "", old_value: "", new_value: "" },
-        attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" },
+        attach_embed: false, embed: emptyEmbedTable(),
       });
       setCreateImages([]);
       setCreating(false); setMsg("");
@@ -1926,20 +1947,15 @@ export default function My_Inform({ user }) {
     if (!prod || !lot) {
       setEmbedFetching(false);
       setForm(f => (f.attach_embed && f.embed?.source?.startsWith?.("SplitTable/"))
-        ? { ...f, attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" } }
+        ? { ...f, attach_embed: false, embed: emptyEmbedTable() }
         : f);
       return;
     }
-    if (embedCustomCols.length === 0) {
-      setEmbedFetching(false);
-      setForm(f => ({
-        ...f,
-        attach_embed: false,
-        embed: { source: "", columns: [], rows: [], note: "" },
-      }));
-      return;
-    }
     const mlProd = prod.startsWith("ML_TABLE_") ? prod : `ML_TABLE_${prod}`;
+    const customCols = (Array.isArray(embedCustomCols) ? embedCustomCols : [])
+      .map(c => String(c || "").trim())
+      .filter(Boolean);
+    const hasCustomScope = customCols.length > 0;
     // v8.8.13: root_lot_id 단독 입력 지원.
     //   - 입력값이 fab_lot_id 포맷(영문+숫자+구분자 포함, 길이>5)이면 fab_lot_id 로,
     //     root_lot_id 포맷(짧거나 구분자 없음)이면 root_lot_id 로만 사용.
@@ -1967,7 +1983,7 @@ export default function My_Inform({ user }) {
                 columns: ["parameter"], rows: [],
                 note: d?.msg || "데이터 없음 — root_lot_id 또는 fab_lot_id 를 확인하세요.",
                 st_view: { headers: [], rows: [], wafer_fab_list: [], header_groups: [], root_lot_id: rootKey },
-                st_scope: { prefix: "", custom_name: "", inline_cols: embedCustomCols },
+                st_scope: { prefix: hasCustomScope ? "" : "ALL", custom_name: "", inline_cols: customCols },
               },
             }));
             return;
@@ -1979,14 +1995,16 @@ export default function My_Inform({ user }) {
           // v8.8.17/v8.8.33: CUSTOM 모드 — embedCustomCols 로 row 필터 + 빈 열 생성.
           //   v8.8.33: save 없이 체크만 한 컬럼도 항상 반영. 해당 컬럼의 데이터가 아직 없어도
           //     빈 행으로 보존 (`{_param: col, _cells: {}}`) — 스냅샷에 컬럼 존재가 찍혀야 이후
-          //     plan 입력이 가능하므로. 미선택이면 빈 스냅샷 ([]) 유지.
+          //     plan 입력이 가능하므로. 미선택이면 기본 ALL 스냅샷을 첨부한다.
           let rowsAll = d.rows || [];
-          if (embedCustomCols.length > 0) {
-            const keep = new Set(embedCustomCols);
+          if (hasCustomScope) {
+            const keep = new Set(customCols);
             const filtered = rowsAll.filter(r => keep.has(r._param));
             const byParam = new Map(filtered.map(r => [r._param, r]));
             // 선택 순서 유지 + 데이터 없어도 빈 행 행위.
-            rowsAll = embedCustomCols.map(p => byParam.get(p) || { _param: p, _cells: {} });
+            rowsAll = customCols.map(p => byParam.get(p) || { _param: p, _cells: {} });
+          } else {
+            rowsAll = rowsAll.slice(0, 120);
           }
           const rows = rowsAll.map(r => {
             const out = [r._param || ""];
@@ -1998,7 +2016,7 @@ export default function My_Inform({ user }) {
             });
             return out;
           });
-          const scopeLabel = `CUSTOM(${embedCustomCols.length})`;
+          const scopeLabel = hasCustomScope ? `CUSTOM(${customCols.length})` : "ALL";
           const lotLabel = isFabLot ? `fab_lot=${lot}` : `root_lot=${lot}`;
           setForm(f => ({
             ...f, attach_embed: true,
@@ -2013,7 +2031,7 @@ export default function My_Inform({ user }) {
                 header_groups: d.header_groups || [],
                 root_lot_id: d.root_lot_id || rootKey,
               },
-              st_scope: { prefix: "", custom_name: "", inline_cols: embedCustomCols },
+              st_scope: { prefix: hasCustomScope ? "" : "ALL", custom_name: "", inline_cols: customCols },
             },
           }));
           setEmbedFetching(false);
@@ -2023,6 +2041,12 @@ export default function My_Inform({ user }) {
     return () => { clearTimeout(handle); setEmbedFetching(false); };
     // v8.8.16: snapshotTick 변경 시에도 재fetch — 사용자가 Search 버튼으로 명시적 갱신.
   }, [form.product, form.lot_id, creating, embedCustomCols, snapshotTick, lotOptions]);
+
+  useEffect(() => {
+    if (!creating) return;
+    if (!(form.product || "").trim() || !(form.lot_id || "").trim()) return;
+    setSnapshotTick(x => x > 0 ? x : 1);
+  }, [creating, form.product, form.lot_id]);
 
   // v8.8.10: SplitTable 의 lot-candidates 로 root_lot_id + fab_lot_id 후보 fetch → Lot 드롭다운 소스.
   //   기존 /product-lots (RAWDATA_DB 폴더 스캔) 은 사내 실환경에서 빈 결과 자주 발생 → SplitTable 기반 primary.
@@ -2345,10 +2369,9 @@ export default function My_Inform({ user }) {
       </PageGear>
       {/* Sidebar */}
       <div style={{ width: 340, minWidth: 300, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
-        <PageHeader
-          title="인폼 로그"
-          subtitle="제품 · Lot · Wafer 단위 이력과 공유 기록을 확인합니다."
-          right={<Button variant="primary" onClick={() => {
+        <div style={{ minHeight: 34, padding: "8px 12px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, background: "var(--bg-secondary)" }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>인폼 로그</span>
+          <span style={{ marginLeft: "auto" }}><Button variant="primary" onClick={() => {
             // v8.8.3 bugfix: 폼 열기 전 /config 를 갱신해 product 카탈로그를 최신화.
             sf(API + "/config").then(d => setConstants(c => ({
               ...c,
@@ -2358,8 +2381,8 @@ export default function My_Inform({ user }) {
               raw_db_root: d.raw_db_root ?? c.raw_db_root,
             }))).catch(() => {});
             setCreating(true);
-          }}>+ 신규</Button>}
-        />
+          }}>+ 신규</Button></span>
+        </div>
 
         <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", display: "flex", flexWrap: "wrap", gap: 4 }}>
           {modeButton("all",     "전체",    "최근 루트 인폼 (역할 필터 적용)")}
@@ -2790,13 +2813,10 @@ export default function My_Inform({ user }) {
               onPaste={handleBodyPaste}
               placeholder="인폼 내용 (배경, 영향, 조치 요청 등) — Ctrl+V 로 이미지도 바로 붙여넣을 수 있어요"
               style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, resize: "vertical", boxSizing: "border-box", lineHeight: 1.5 }} />
-            {/* v8.8.17: 인폼 등록 SplitTable scope 는 CUSTOM only.
-                   - prefix chip(ALL/KNOB/MASK/INLINE/VM/FAB) + Saved CUSTOM 드롭다운 모두 제거.
-                   - 인라인 CUSTOM 빌더만 노출 — SplitTable 의 CUSTOM UX 와 동일 동작.
-                   - Search 버튼으로 스냅샷 수동 갱신. */}
+            {/* SplitTable 스냅샷: 기본은 ALL 자동 첨부, 컬럼 선택 시 CUSTOM 스코프로 축소. */}
             <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 10 }}>
               <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>
-                SplitTable 컬럼 선택 <span style={{ fontWeight: 400, color: "var(--text-tertiary, var(--text-secondary))" }}>(CUSTOM 모드 전용)</span>
+                SplitTable 스냅샷 <span style={{ fontWeight: 400, color: "var(--text-tertiary, var(--text-secondary))" }}>{embedCustomCols.length > 0 ? "CUSTOM 컬럼만 첨부" : "기본 ALL 자동 첨부"}</span>
               </span>
               <button type="button" onClick={() => setEmbedCustomOpen(!embedCustomOpen)}
                 style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: embedCustomOpen ? "var(--accent-glow)" : "var(--bg-card)", color: embedCustomOpen ? "var(--accent)" : "var(--text-primary)", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
@@ -2805,7 +2825,7 @@ export default function My_Inform({ user }) {
               <button type="button" onClick={() => setSnapshotTick(x => x + 1)}
                 title="스냅샷 재조회 — lot/컬럼 변경 없이도 서버에서 다시 가져옴"
                 style={{ padding: "2px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
-                🔎 Search
+                스냅샷 조회
               </button>
             </div>
             {/* v8.8.16: 인라인 CUSTOM 편집기 — SplitTable 사이드바와 동일 UX.
@@ -2921,10 +2941,10 @@ export default function My_Inform({ user }) {
               <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>이미지: 본문에 <b>Ctrl+V</b> 로 바로 붙여넣기 (markdown 으로 inline 삽입)</span>
               {uploadingMain && <span style={{ fontSize: 10, color: "var(--accent)" }}>업로드중…</span>}
               {embedFetching && <span style={{ fontSize: 10, color: "var(--accent)" }}>SplitTable 스냅샷 로딩…</span>}
-              {form.attach_embed && form.embed.rows.length > 0 && (
+              {form.attach_embed && hasEmbedSnapshot(form.embed) && (
                 <span style={{ fontSize: 10, color: "#16a34a", fontWeight: 600 }}>
-                  ✓ SplitTable 자동 첨부 ({form.embed.rows.length} rows)
-                  <button type="button" onClick={() => setForm(f => ({ ...f, attach_embed: false, embed: { source: "", columns: [], rows: [], note: "" } }))}
+                  ✓ SplitTable 자동 첨부 ({embedSnapshotRowCount(form.embed)} rows)
+                  <button type="button" onClick={() => setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }))}
                     style={{ marginLeft: 6, border: "none", background: "transparent", color: "#ef4444", cursor: "pointer" }}>×</button>
                 </span>
               )}
@@ -2941,7 +2961,7 @@ export default function My_Inform({ user }) {
                 ))}
               </div>
             )}
-            {form.attach_embed && form.embed && form.embed.rows.length > 0 && (
+            {form.attach_embed && hasEmbedSnapshot(form.embed) && (
               <div style={{ marginTop: 6 }}>
                 <EmbedTableView embed={form.embed} product={form.product} />
               </div>

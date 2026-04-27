@@ -34,3 +34,12 @@ def test_flowi_feature_router_prefers_tablemap_relation_terms():
 
     assert out["intent"] == "tablemap_guidance"
     assert out["action"] == "open_tablemap"
+
+
+def test_flowi_feature_router_filters_by_allowed_tabs():
+    matches = _matched_feature_entrypoints(
+        "테이블맵 relation에서 inline item과 knob 연결 보여줘",
+        allowed_keys={"splittable"},
+    )
+
+    assert not matches or matches[0]["key"] != "tablemap"

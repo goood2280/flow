@@ -19,9 +19,10 @@ from pydantic import BaseModel
 import polars as pl
 
 from core.paths import PATHS
-from core.utils import _STR
+from core.utils import _STR, load_json
 from core.auth import current_user, require_admin
 from core import llm_adapter
+from routers.auth import read_users
 
 
 router = APIRouter(prefix="/api/llm", tags=["llm"])
@@ -123,6 +124,13 @@ FLOWI_FEATURE_ALIASES = {
     "tablemap": ["table map", "tablemap", "테이블맵", "관계", "relation", "join", "column map", "컬럼"],
     "devguide": ["devguide", "개발", "api", "문서", "가이드", "architecture"],
 }
+FLOWI_DEFAULT_TABS = {
+    "filebrowser", "dashboard", "splittable", "ettime", "waferlayout",
+    "inform", "meeting", "calendar",
+}
+FLOWI_NEW_DEFAULT_TABS = {"inform", "meeting", "calendar", "ettime", "waferlayout"}
+FLOWI_ADMIN_ONLY_FEATURES = {"tablemap", "admin"}
+FLOWI_RESTRICTED_FEATURES = {"devguide": "devguide_allowed"}
 FLOWI_UNIT_ACTIONS = {
     "filebrowser": {
         "intent": "filebrowser_guidance",
@@ -237,6 +245,86 @@ def _safe_username(raw: Any) -> str:
     return username[:80]
 
 
+def _admin_settings() -> dict:
+    data = load_json(PATHS.data_root / "admin_settings.json", {})
+    return data if isinstance(data, dict) else {}
+
+
+def _tabs_for_user(username: str, role: str) -> set[str] | str:
+    if role == "admin":
+        return "__all__"
+    raw = ""
+    try:
+        for row in read_users():
+            if row.get("username") == username:
+                raw = (row.get("tabs") or "").strip()
+                role = row.get("role") or role
+                if role == "admin":
+                    return "__all__"
+                break
+    except Exception:
+        raw = ""
+    if raw == "__all__":
+        return "__all__"
+    if not raw:
+        tabs = set(FLOWI_DEFAULT_TABS)
+    else:
+        tabs = {t.strip() for t in raw.split(",") if t.strip()}
+        tabs.update(FLOWI_NEW_DEFAULT_TABS)
+    return tabs
+
+
+def _devguide_allowed(username: str, role: str, tabs: set[str] | str) -> bool:
+    if role == "admin" or tabs == "__all__":
+        return True
+    if "devguide" not in tabs:
+        return False
+    devguide_users = (_admin_settings().get("devguide_user") or [])
+    if not isinstance(devguide_users, list):
+        return False
+    return username in {str(u).strip() for u in devguide_users if str(u).strip()}
+
+
+def _allowed_flowi_feature_keys(me: dict) -> set[str]:
+    username = me.get("username") or "user"
+    role = me.get("role") or "user"
+    tabs = _tabs_for_user(username, role)
+    out: set[str] = set()
+    for item in FLOWI_FEATURE_ENTRYPOINTS:
+        key = item.get("key") or ""
+        if key in FLOWI_ADMIN_ONLY_FEATURES and role != "admin":
+            continue
+        if key in FLOWI_RESTRICTED_FEATURES and not _devguide_allowed(username, role, tabs):
+            continue
+        if tabs == "__all__" or key in tabs:
+            out.add(key)
+    return out
+
+
+def _feature_title(key: str) -> str:
+    for item in FLOWI_FEATURE_ENTRYPOINTS:
+        if item.get("key") == key:
+            return item.get("title") or key
+    return key
+
+
+def _flowi_permission_block(feature_key: str, me: dict) -> dict:
+    title = _feature_title(feature_key)
+    username = me.get("username") or "user"
+    answer = (
+        f"현재 계정({username})에는 {title} 기능 권한이 없어 Flowi가 접근할 수 없습니다.\n"
+        "관리자에게 해당 탭 권한을 요청한 뒤 다시 실행하세요."
+    )
+    return {
+        "handled": True,
+        "intent": "permission_denied",
+        "blocked": True,
+        "feature": feature_key,
+        "answer": answer,
+        "missing_permission": feature_key,
+    }
+
+
 def _user_md_path(username: str) -> Path:
     return FLOWI_USER_DIR / f"{_safe_username(username)}.md"
 
@@ -332,11 +420,17 @@ def _profile_context(username: str) -> str:
     return "\n\n".join(parts).strip()
 
 
-def _matched_feature_entrypoints(prompt: str, limit: int = 4) -> list[dict[str, str]]:
+def _matched_feature_entrypoints(
+    prompt: str,
+    limit: int = 4,
+    allowed_keys: set[str] | None = None,
+) -> list[dict[str, str]]:
     prompt_l = str(prompt or "").lower()
     toks = {_upper(t) for t in _tokens(prompt)}
     scored: list[tuple[int, dict[str, str]]] = []
     for item in FLOWI_FEATURE_ENTRYPOINTS:
+        if allowed_keys is not None and item["key"] not in allowed_keys:
+            continue
         hay = " ".join([item["key"], item["title"], item["description"], item["prompt"]]).lower()
         score = 0
         if item["key"].lower() in prompt_l or item["title"].lower() in prompt_l:
@@ -365,10 +459,24 @@ def _slot_summary(prompt: str, product: str = "") -> dict[str, Any]:
     }
 
 
-def _unit_feature_guidance(prompt: str, product: str = "", max_rows: int = 12) -> dict:
-    entries = _matched_feature_entrypoints(prompt, limit=3)
+def _unit_feature_guidance(
+    prompt: str,
+    product: str = "",
+    max_rows: int = 12,
+    allowed_keys: set[str] | None = None,
+) -> dict:
+    entries = _matched_feature_entrypoints(prompt, limit=3, allowed_keys=allowed_keys)
     if not entries:
-        entries = [FLOWI_FEATURE_ENTRYPOINTS[2], FLOWI_FEATURE_ENTRYPOINTS[7], FLOWI_FEATURE_ENTRYPOINTS[1]]
+        fallback = [FLOWI_FEATURE_ENTRYPOINTS[2], FLOWI_FEATURE_ENTRYPOINTS[7], FLOWI_FEATURE_ENTRYPOINTS[1]]
+        entries = [item for item in fallback if allowed_keys is None or item["key"] in allowed_keys]
+    if not entries:
+        return {
+            "handled": True,
+            "intent": "permission_denied",
+            "blocked": True,
+            "answer": "현재 계정으로 Flowi가 접근할 수 있는 단위기능이 없습니다. 관리자에게 탭 권한을 요청하세요.",
+            "feature_entrypoints": [],
+        }
     primary = entries[0]
     action = FLOWI_UNIT_ACTIONS.get(primary["key"], {})
     slots = _slot_summary(prompt, product)
@@ -424,9 +532,9 @@ def _unit_feature_guidance(prompt: str, product: str = "", max_rows: int = 12) -
     }
 
 
-def _feature_context(prompt: str) -> str:
-    matches = _matched_feature_entrypoints(prompt)
-    items = matches or FLOWI_FEATURE_ENTRYPOINTS[:6]
+def _feature_context(prompt: str, allowed_keys: set[str] | None = None) -> str:
+    matches = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
+    items = matches or [item for item in FLOWI_FEATURE_ENTRYPOINTS[:6] if allowed_keys is None or item["key"] in allowed_keys]
     return "\n".join(
         f"- {it['title']}({it['key']}): {it['description']} 시작 질문 예시: {it['prompt']}"
         for it in items
@@ -936,16 +1044,25 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
     }
 
 
-def _handle_flowi_query(prompt: str, product: str = "", max_rows: int = 12) -> dict:
+def _handle_flowi_query(
+    prompt: str,
+    product: str = "",
+    max_rows: int = 12,
+    allowed_keys: set[str] | None = None,
+) -> dict:
     product = _product_hint(prompt, product)
-    pre_matches = _matched_feature_entrypoints(prompt, limit=3)
-    if pre_matches and pre_matches[0].get("key") not in {"ettime"}:
-        return _unit_feature_guidance(prompt, product, max_rows=max_rows)
+    pre_matches = _matched_feature_entrypoints(prompt, limit=3, allowed_keys=allowed_keys)
+    if pre_matches and pre_matches[0].get("key") not in {"ettime", "splittable"}:
+        return _unit_feature_guidance(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys)
     for handler in (_handle_et_query, _handle_knob_query):
+        if handler is _handle_et_query and allowed_keys is not None and "ettime" not in allowed_keys:
+            continue
+        if handler is _handle_knob_query and allowed_keys is not None and "splittable" not in allowed_keys:
+            continue
         out = handler(prompt, product, max_rows)
         if out.get("handled"):
             return out
-    routed = _unit_feature_guidance(prompt, product, max_rows=max_rows)
+    routed = _unit_feature_guidance(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys)
     if routed.get("feature_entrypoints"):
         return routed
     return {
@@ -960,7 +1077,13 @@ def _handle_flowi_query(prompt: str, product: str = "", max_rows: int = 12) -> d
 
 @router.get("/status")
 def status(request: Request):
-    _ = current_user(request)
+    me = current_user(request)
+    allowed_keys = _allowed_flowi_feature_keys(me)
+    local_tools = ["unit_feature_router"] if allowed_keys else []
+    if "ettime" in allowed_keys:
+        local_tools.insert(0, "et_wafer_median")
+    if "splittable" in allowed_keys:
+        local_tools.insert(1 if local_tools and local_tools[0] == "et_wafer_median" else 0, "lot_knobs")
     cfg = llm_adapter.get_config(redact=True)
     return {
         "available": llm_adapter.is_available(),
@@ -968,10 +1091,11 @@ def status(request: Request):
         "flowi": {
             "requires_token": False,
             "admin_token_configured": llm_adapter.has_admin_token(),
-            "local_tools": ["et_wafer_median", "lot_knobs", "unit_feature_router"],
+            "local_tools": local_tools,
             "policy": FLOWI_READ_ONLY_POLICY,
-            "entrypoints": FLOWI_FEATURE_ENTRYPOINTS,
-            "unit_actions": FLOWI_UNIT_ACTIONS,
+            "allowed_features": sorted(allowed_keys),
+            "entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] in allowed_keys],
+            "unit_actions": {k: v for k, v in FLOWI_UNIT_ACTIONS.items() if k in allowed_keys},
         },
     }
 
@@ -1095,6 +1219,26 @@ def flowi_chat(req: FlowiChatReq, request: Request):
     if not prompt:
         raise HTTPException(400, "질문을 입력해주세요")
 
+    allowed_keys = _allowed_flowi_feature_keys(me)
+    all_entries = _matched_feature_entrypoints(prompt)
+    if all_entries and all_entries[0].get("key") not in allowed_keys:
+        tool = _flowi_permission_block(all_entries[0].get("key") or "", me)
+        answer = tool["answer"]
+        _append_user_event(username, "blocked_permission_request", {
+            "prompt": prompt,
+            "feature": tool.get("feature"),
+            "answer": answer,
+        })
+        return {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": True},
+            "allowed_features": sorted(allowed_keys),
+        }
+
     blocked_msg = _flowi_write_block_message(prompt)
     if blocked_msg:
         _append_user_event(username, "blocked_write_request", {"prompt": prompt, "answer": blocked_msg})
@@ -1111,11 +1255,12 @@ def flowi_chat(req: FlowiChatReq, request: Request):
                 "policy": FLOWI_READ_ONLY_POLICY,
             },
             "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": True},
+            "allowed_features": sorted(allowed_keys),
         }
 
     max_rows = max(4, min(24, int(req.max_rows or 12)))
-    tool = _handle_flowi_query(prompt, req.product, max_rows=max_rows)
-    entries = _matched_feature_entrypoints(prompt)
+    tool = _handle_flowi_query(prompt, req.product, max_rows=max_rows, allowed_keys=allowed_keys)
+    entries = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
     if entries:
         tool["feature_entrypoints"] = entries
     if not tool.get("handled") and entries:
@@ -1126,9 +1271,9 @@ def flowi_chat(req: FlowiChatReq, request: Request):
     answer = tool.get("answer") or ""
     llm_info: dict[str, Any] = {"available": llm_adapter.is_available(), "used": False}
     user_ctx = _profile_context(username)
-    feature_ctx = _feature_context(prompt)
+    feature_ctx = _feature_context(prompt, allowed_keys=allowed_keys)
 
-    if llm_adapter.is_available():
+    if llm_adapter.is_available() and not tool.get("blocked"):
         if tool.get("handled"):
             polish_prompt = (
                 "사용자 질문과 Flow 서버가 선택한 로컬 단위기능 결과를 바탕으로 한국어로 간결하게 답하세요. "
@@ -1179,4 +1324,5 @@ def flowi_chat(req: FlowiChatReq, request: Request):
         "answer": answer,
         "tool": tool,
         "llm": llm_info,
+        "allowed_features": sorted(allowed_keys),
     }

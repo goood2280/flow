@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import math
 from typing import Any
 
@@ -13,6 +14,14 @@ from core import product_config as _pc
 router = APIRouter(prefix="/api/waferlayout", tags=["waferlayout"])
 
 PC_ROOT = PATHS.data_root
+TECH_LIST_FILE = PATHS.data_root / "waferlayout" / "product_tech_lists.csv"
+TECH_LIST_FIELDS = ["product", "tech", "module", "step", "note"]
+TECH_LIST_COLUMNS = [
+    {"key": "tech", "label": "tech"},
+    {"key": "module", "label": "module"},
+    {"key": "step", "label": "step"},
+    {"key": "note", "label": "note"},
+]
 
 DEF = {
     "waferRadius": 150,
@@ -102,6 +111,59 @@ def _normalize_tegs(rows: list[dict] | None) -> list[dict]:
             "dy_mm": _num(row.get("dy_mm", row.get("y", 0.0)), 0.0),
         })
     return out
+
+
+def _row_text(row: dict, *keys: str) -> str:
+    for key in keys:
+        if row.get(key) is not None and row.get(key) != "":
+            return str(row.get(key) or "").strip()
+    return ""
+
+
+def _normalize_tech_rows(rows: list[dict] | None, product: str = "") -> list[dict]:
+    out = []
+    seen = set()
+    product = (product or "").strip()
+    for idx, row in enumerate(rows or []):
+        if not isinstance(row, dict):
+            continue
+        row_product = product or _row_text(row, "product", "PRODUCT", "제품")
+        item = {
+            "product": row_product,
+            "tech": _row_text(row, "tech", "tech_id", "technology", "테크", "테크명"),
+            "module": _row_text(row, "module", "MODULE", "모듈"),
+            "step": _row_text(row, "step", "step_id", "STEP_ID", "공정"),
+            "note": _row_text(row, "note", "description", "비고", "설명"),
+        }
+        if not row_product or not any(item[k] for k in ("tech", "module", "step", "note")):
+            continue
+        key = tuple(item[k].casefold() for k in TECH_LIST_FIELDS)
+        if key in seen:
+            continue
+        seen.add(key)
+        item["id"] = str(row.get("id") or f"tech_{idx + 1}")
+        out.append(item)
+    return out
+
+
+def _load_tech_rows() -> list[dict]:
+    if not TECH_LIST_FILE.exists():
+        return []
+    try:
+        with TECH_LIST_FILE.open("r", encoding="utf-8-sig", newline="") as f:
+            return _normalize_tech_rows(list(csv.DictReader(f) or []))
+    except Exception:
+        return []
+
+
+def _save_tech_rows(rows: list[dict]) -> None:
+    TECH_LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    normalized = _normalize_tech_rows(rows)
+    with TECH_LIST_FILE.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=TECH_LIST_FIELDS)
+        writer.writeheader()
+        for row in normalized:
+            writer.writerow({key: row.get(key, "") for key in TECH_LIST_FIELDS})
 
 
 def _shot_center(shot_x: int, shot_y: int, cfg: dict) -> tuple[float, float]:
@@ -231,6 +293,11 @@ class WaferGridReq(BaseModel):
     teg_definitions: list[dict] = []
 
 
+class TechListReq(BaseModel):
+    product: str
+    rows: list[dict] = []
+
+
 def _validate_grid(cfg: dict) -> list[str]:
     errs = []
     for key in ("waferRadius", "shotPitchX", "shotPitchY", "shotSizeX", "shotSizeY", "tegSizeX", "tegSizeY", "chipWidth", "chipHeight"):
@@ -286,6 +353,43 @@ def save_wafer_grid(req: WaferGridReq, _admin=Depends(require_admin)):
     errors = _pc.validate(config)
     _pc.save(PC_ROOT, product, config)
     return {"ok": True, "errors": errors, "product": product, "teg_definitions": teg_definitions, "wafer_layout": _load_product_wafer_layout(product)}
+
+
+@router.get("/tech-list")
+def get_tech_list(product: str = Query("")):
+    product = (product or "").strip()
+    if not product:
+        raise HTTPException(400, "product required")
+    rows = [row for row in _load_tech_rows() if str(row.get("product") or "").casefold() == product.casefold()]
+    for idx, row in enumerate(rows):
+        row["id"] = row.get("id") or f"tech_{idx + 1}"
+    return {
+        "ok": True,
+        "product": product,
+        "columns": TECH_LIST_COLUMNS,
+        "rows": rows,
+        "file": "waferlayout/product_tech_lists.csv",
+    }
+
+
+@router.put("/tech-list")
+def save_tech_list(req: TechListReq, _admin=Depends(require_admin)):
+    product = (req.product or "").strip()
+    if not product:
+        raise HTTPException(400, "product required")
+    incoming = _normalize_tech_rows(req.rows, product)
+    existing = [
+        row for row in _load_tech_rows()
+        if str(row.get("product") or "").casefold() != product.casefold()
+    ]
+    _save_tech_rows(existing + incoming)
+    return {
+        "ok": True,
+        "product": product,
+        "columns": TECH_LIST_COLUMNS,
+        "rows": incoming,
+        "file": "waferlayout/product_tech_lists.csv",
+    }
 
 
 @router.get("/edge-shots")
