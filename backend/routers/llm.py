@@ -109,6 +109,94 @@ FLOWI_FEATURE_ENTRYPOINTS = [
         "prompt": "개발 가이드에서 이 기능을 이해하려면 어떤 문서와 API를 먼저 보면 좋을지 알려줘.",
     },
 ]
+FLOWI_FEATURE_ALIASES = {
+    "filebrowser": ["files", "file browser", "파일", "파일브라우저", "파일 탐색", "csv", "parquet", "db 조회", "데이터 조회"],
+    "dashboard": ["dashboard", "대시보드", "차트", "trend", "추세", "그래프", "시각화"],
+    "splittable": ["split", "split table", "splittable", "스플릿", "스플릿테이블", "plan", "actual", "mismatch", "매칭", "불일치"],
+    "tracker": ["tracker", "트래커", "issue", "이슈", "gantt", "간트", "lot 이슈"],
+    "inform": ["inform", "인폼", "공유", "메일", "공지", "보고"],
+    "meeting": ["meeting", "회의", "아젠다", "회의록", "action item", "액션아이템"],
+    "calendar": ["calendar", "캘린더", "일정", "변경점", "change", "schedule"],
+    "ettime": ["et report", "ettime", "et 레포트", "et 리포트", "median", "wf별", "wafer별", "측정", "eta"],
+    "waferlayout": ["wafer layout", "wf layout", "layout", "레이아웃", "shot", "die", "teg"],
+    "ml": ["ml", "머신러닝", "상관", "correlation", "feature", "importance", "윈도우", "window"],
+    "tablemap": ["table map", "tablemap", "테이블맵", "관계", "relation", "join", "column map", "컬럼"],
+    "devguide": ["devguide", "개발", "api", "문서", "가이드", "architecture"],
+}
+FLOWI_UNIT_ACTIONS = {
+    "filebrowser": {
+        "intent": "filebrowser_guidance",
+        "action": "open_filebrowser",
+        "needs": ["source/root", "product or file", "optional SQL/filter"],
+        "outputs": ["table preview", "selected columns", "CSV download"],
+    },
+    "dashboard": {
+        "intent": "dashboard_guidance",
+        "action": "open_dashboard",
+        "needs": ["source", "x/y column", "optional time/filter"],
+        "outputs": ["chart", "trend/alert summary"],
+    },
+    "splittable": {
+        "intent": "splittable_guidance",
+        "action": "open_splittable",
+        "needs": ["product", "root_lot_id", "wafer_id or all", "parameter prefix such as KNOB/MASK/FAB"],
+        "outputs": ["plan vs actual matrix", "mismatch cells", "notes"],
+    },
+    "tracker": {
+        "intent": "tracker_guidance",
+        "action": "open_tracker",
+        "needs": ["issue title", "product/lot/wafer", "owner/status"],
+        "outputs": ["issue row", "comments", "Gantt status"],
+    },
+    "inform": {
+        "intent": "inform_guidance",
+        "action": "open_inform",
+        "needs": ["product", "root_lot_id", "message/reason"],
+        "outputs": ["inform thread", "split table snapshot", "mail preview"],
+    },
+    "meeting": {
+        "intent": "meeting_guidance",
+        "action": "open_meeting",
+        "needs": ["meeting topic", "participants", "action items"],
+        "outputs": ["agenda", "minutes", "action item list"],
+    },
+    "calendar": {
+        "intent": "calendar_guidance",
+        "action": "open_calendar",
+        "needs": ["event title", "date/range", "status/category"],
+        "outputs": ["change event", "linked action state"],
+    },
+    "ettime": {
+        "intent": "et_wafer_median",
+        "action": "query_et",
+        "needs": ["product", "root_lot_id or lot_id", "step_id", "item_id"],
+        "outputs": ["wafer별 median/mean/count table"],
+    },
+    "waferlayout": {
+        "intent": "waferlayout_guidance",
+        "action": "open_waferlayout",
+        "needs": ["product", "layout name or shot/chip context"],
+        "outputs": ["wafer map", "edge shot/layout checks"],
+    },
+    "ml": {
+        "intent": "ml_guidance",
+        "action": "open_ml",
+        "needs": ["source table", "target metric", "candidate features"],
+        "outputs": ["importance/correlation", "candidate process window"],
+    },
+    "tablemap": {
+        "intent": "tablemap_guidance",
+        "action": "open_tablemap",
+        "needs": ["source table/column", "target table/column"],
+        "outputs": ["relation path", "column match table"],
+    },
+    "devguide": {
+        "intent": "devguide_guidance",
+        "action": "open_devguide",
+        "needs": ["feature/API/topic"],
+        "outputs": ["doc entry", "API references"],
+    },
+}
 
 _WRITE_TERMS = (
     "수정", "변경", "바꿔", "바꾸", "저장", "삭제", "지워", "업로드", "올려",
@@ -253,6 +341,10 @@ def _matched_feature_entrypoints(prompt: str, limit: int = 4) -> list[dict[str, 
         score = 0
         if item["key"].lower() in prompt_l or item["title"].lower() in prompt_l:
             score += 4
+        for alias in FLOWI_FEATURE_ALIASES.get(item["key"], []):
+            alias_l = alias.lower()
+            if alias_l and alias_l in prompt_l:
+                score += 3 if len(alias_l) > 2 else 1
         for tok in toks:
             if tok and tok.lower() in hay:
                 score += 1
@@ -262,6 +354,74 @@ def _matched_feature_entrypoints(prompt: str, limit: int = 4) -> list[dict[str, 
         return []
     scored.sort(key=lambda x: x[0], reverse=True)
     return [dict(item) for _, item in scored[:limit]]
+
+
+def _slot_summary(prompt: str, product: str = "") -> dict[str, Any]:
+    return {
+        "product": _product_hint(prompt, product),
+        "lots": _lot_tokens(prompt),
+        "steps": _step_tokens(prompt),
+        "terms": _query_tokens(prompt)[:12],
+    }
+
+
+def _unit_feature_guidance(prompt: str, product: str = "", max_rows: int = 12) -> dict:
+    entries = _matched_feature_entrypoints(prompt, limit=3)
+    if not entries:
+        entries = [FLOWI_FEATURE_ENTRYPOINTS[2], FLOWI_FEATURE_ENTRYPOINTS[7], FLOWI_FEATURE_ENTRYPOINTS[1]]
+    primary = entries[0]
+    action = FLOWI_UNIT_ACTIONS.get(primary["key"], {})
+    slots = _slot_summary(prompt, product)
+    missing = []
+    if primary["key"] in {"splittable", "ettime"}:
+        if not slots.get("product"):
+            missing.append("product")
+        if not slots.get("lots"):
+            missing.append("root_lot_id/lot_id")
+    if primary["key"] == "ettime":
+        if not slots.get("steps"):
+            missing.append("step_id")
+        if not slots.get("terms"):
+            missing.append("item_id")
+    rows = [
+        {"field": "feature", "value": primary["title"]},
+        {"field": "action", "value": action.get("action", primary["key"])},
+        {"field": "detected_product", "value": slots.get("product") or ""},
+        {"field": "detected_lot", "value": ", ".join(slots.get("lots") or [])},
+        {"field": "detected_step", "value": ", ".join(slots.get("steps") or [])},
+        {"field": "detected_terms", "value": ", ".join(slots.get("terms") or [])},
+        {"field": "needs", "value": ", ".join(action.get("needs") or [])},
+        {"field": "outputs", "value": ", ".join(action.get("outputs") or [])},
+    ]
+    if missing:
+        rows.append({"field": "missing", "value": ", ".join(missing)})
+    answer = (
+        f"{primary['title']} 단위기능으로 처리하는 요청입니다.\n"
+        f"- 실행 경로: {action.get('action', primary['key'])}\n"
+        f"- 필요한 조건: {', '.join(action.get('needs') or [])}\n"
+        f"- 현재 감지: product={slots.get('product') or '-'}, lot={', '.join(slots.get('lots') or []) or '-'}, step={', '.join(slots.get('steps') or []) or '-'}"
+    )
+    if missing:
+        answer += f"\n- 추가로 필요: {', '.join(missing)}"
+    answer += "\nFlowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다."
+    return {
+        "handled": True,
+        "intent": action.get("intent", "unit_feature_guidance"),
+        "answer": answer,
+        "feature": primary["key"],
+        "action": action.get("action", primary["key"]),
+        "slots": slots,
+        "missing": missing,
+        "feature_entrypoints": entries,
+        "table": {
+            "kind": "flowi_action_plan",
+            "title": "Flowi unit feature routing",
+            "placement": "below",
+            "columns": [{"key": "field", "label": "FIELD"}, {"key": "value", "label": "VALUE"}],
+            "rows": rows[:max(1, max_rows)],
+            "total": len(rows),
+        },
+    }
 
 
 def _feature_context(prompt: str) -> str:
@@ -778,10 +938,16 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
 
 def _handle_flowi_query(prompt: str, product: str = "", max_rows: int = 12) -> dict:
     product = _product_hint(prompt, product)
+    pre_matches = _matched_feature_entrypoints(prompt, limit=3)
+    if pre_matches and pre_matches[0].get("key") not in {"ettime"}:
+        return _unit_feature_guidance(prompt, product, max_rows=max_rows)
     for handler in (_handle_et_query, _handle_knob_query):
         out = handler(prompt, product, max_rows)
         if out.get("handled"):
             return out
+    routed = _unit_feature_guidance(prompt, product, max_rows=max_rows)
+    if routed.get("feature_entrypoints"):
+        return routed
     return {
         "handled": False,
         "intent": "general",
@@ -802,9 +968,10 @@ def status(request: Request):
         "flowi": {
             "requires_token": False,
             "admin_token_configured": llm_adapter.has_admin_token(),
-            "local_tools": ["et_wafer_median", "lot_knobs"],
+            "local_tools": ["et_wafer_median", "lot_knobs", "unit_feature_router"],
             "policy": FLOWI_READ_ONLY_POLICY,
             "entrypoints": FLOWI_FEATURE_ENTRYPOINTS,
+            "unit_actions": FLOWI_UNIT_ACTIONS,
         },
     }
 
@@ -964,8 +1131,9 @@ def flowi_chat(req: FlowiChatReq, request: Request):
     if llm_adapter.is_available():
         if tool.get("handled"):
             polish_prompt = (
-                "사용자 질문과 로컬 데이터 질의 결과를 바탕으로 한국어로 간결하게 답하세요. "
-                "숫자와 식별자는 제공된 JSON에서만 사용하고 추측하지 마세요.\n\n"
+                "사용자 질문과 Flow 서버가 선택한 로컬 단위기능 결과를 바탕으로 한국어로 간결하게 답하세요. "
+                "숫자, 식별자, feature/action은 제공된 JSON에서만 사용하고 추측하지 마세요. "
+                "로컬 결과 JSON의 intent/action/missing/table을 우선합니다.\n\n"
                 f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
                 f"단위기능 진입점:\n{feature_ctx}\n\n"
                 f"질문: {prompt}\n"
@@ -975,6 +1143,8 @@ def flowi_chat(req: FlowiChatReq, request: Request):
             polish_prompt = (
                 "당신은 반도체 fab 데이터 Flowi assistant입니다. "
                 "사용자 정보와 단위기능 진입점 설명을 바탕으로 가장 좋은 화면/다음 행동을 먼저 추천하세요. "
+                "Roo Code/OpenCode 계열 오픈소스 모델처럼 추론 성능이 제한적일 수 있으므로, "
+                "복잡한 계획보다 필요한 조건과 다음 화면을 짧게 답하세요. "
                 "지원 범위가 불확실하면 필요한 lot/step/item 조건을 물어보세요.\n\n"
                 f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
                 f"단위기능 진입점:\n{feature_ctx}\n\n"
