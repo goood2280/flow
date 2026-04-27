@@ -114,6 +114,7 @@ Frontend 규칙:
 - API 호출은 가능한 한 `src/lib/api.js`의 helper를 사용한다.
 - 페이지 파일이 커지면 새 기능을 붙이기 전에 component/hook/helper를 먼저 뺀다.
 - 공통 UI만 `components` 또는 향후 `shared`로 올린다.
+- 동시성/번들 분리 후 shell과 각 웹 단위 기능 사용법은 [WEB_CONCURRENCY_BUNDLE_GUIDE.md](WEB_CONCURRENCY_BUNDLE_GUIDE.md)를 기준으로 설명한다.
 
 ## Data Roots
 

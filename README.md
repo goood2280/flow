@@ -16,6 +16,7 @@ Fab data analytics + plan vs actual tracking platform.
 | 지금 바로 실행 | 이 README의 [Quick Start](#quick-start) |
 | 문서 전체 입구 | [docs/README.md](docs/README.md) |
 | 구조 파악 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 동시성/번들 분리와 웹 기능 사용 | [docs/WEB_CONCURRENCY_BUNDLE_GUIDE.md](docs/WEB_CONCURRENCY_BUNDLE_GUIDE.md) |
 | 수정 반영 기준 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | 화면별 목표 | [docs/FEATURE_GOALS.md](docs/FEATURE_GOALS.md) |
 | 사내 반입/업데이트 | [docs/SOFT_LANDING_INTERNAL.md](docs/SOFT_LANDING_INTERNAL.md) |
