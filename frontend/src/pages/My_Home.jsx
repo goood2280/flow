@@ -14,7 +14,7 @@ const AD=[[7,1,M],[7,2,M],[8,1,B],[7,13,M],[7,14,M],[8,14,B]];
 const AW=[[7,1,M],[7,2,M],[8,1,B],[5,13,M],[5,14,G],[6,13,M],[6,14,B]];
 function Holli({size=72}){const[fr,setFr]=useState("idle");const t=useRef(null);useEffect(()=>{const loop=()=>{t.current=setTimeout(()=>{if(Math.random()<0.6){setFr("blink");setTimeout(()=>{setFr("idle");loop();},150);}else{setFr("wave");setTimeout(()=>{setFr("idle");loop();},600);}},1500+Math.random()*2500);};loop();return()=>clearTimeout(t.current);},[]);const px=[...BASE_PX,...(fr==="blink"?EC:EO),...(fr==="wave"?AW:AD)];return(<div style={{animation:fr==="idle"?"holBob 2s ease-in-out infinite":"none"}}><style>{`@keyframes holBob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}@keyframes holBlink{0%,100%{opacity:1}50%{opacity:0}}`}</style><svg width={size} height={size} viewBox="0 0 16 16" style={{imageRendering:"pixelated"}}>{px.map(([r,c,color],i)=><rect key={i} x={c} y={r} width={1} height={1} fill={color}/>)}</svg></div>);}
 function Cli({cmd,output,delay=0}){const[show,setShow]=useState(delay===0);const[typed,setTyped]=useState("");const[done,setDone]=useState(false);useEffect(()=>{if(delay){const t=setTimeout(()=>setShow(true),delay);return()=>clearTimeout(t);}},[delay]);useEffect(()=>{if(!show)return;let i=0;const iv=setInterval(()=>{i++;setTyped(cmd.slice(0,i));if(i>=cmd.length){clearInterval(iv);setTimeout(()=>setDone(true),100);}},30);return()=>clearInterval(iv);},[show,cmd]);if(!show)return null;return(<div style={{marginBottom:4,fontFamily:"'JetBrains Mono',monospace",fontSize:13,lineHeight:1.7}}><span style={{color:"#f97316"}}>{">"}</span><span style={{color:"#737373"}}> flow </span><span style={{color:"#e5e5e5"}}>{typed}</span>{!done&&<span style={{display:"inline-block",width:8,height:14,background:"#f97316",marginLeft:2,animation:"holBlink 0.6s step-end infinite"}}/>}{done&&output&&<div style={{color:"#a3a3a3",paddingLeft:20,fontSize:12}}>{output}</div>}</div>);}
-function WelcomeType({name}){const full=name.toUpperCase()+"_";const[len,setLen]=useState(0);const[done,setDone]=useState(false);useEffect(()=>{const t=setTimeout(()=>{let i=0;const iv=setInterval(()=>{i++;setLen(i);if(i>=full.length){clearInterval(iv);setDone(true);}},70);return()=>clearInterval(iv);},1200);return()=>clearTimeout(t);},[full]);return(<span><span style={{color:"#e5e5e5",fontWeight:700}}>{full.slice(0,len)}</span>{!done&&<span style={{display:"inline-block",width:8,height:14,background:"#f97316",marginLeft:2,animation:"holBlink 0.5s step-end infinite"}}/>}{done&&<span style={{display:"inline-block",width:8,height:14,background:"#f97316",marginLeft:2,animation:"holBlink 1s step-end infinite"}}/>}</span>);}
+function WelcomeType({name}){const full=name.toUpperCase()+"_";const[len,setLen]=useState(0);useEffect(()=>{const t=setTimeout(()=>{let i=0;const iv=setInterval(()=>{i++;setLen(i);if(i>=full.length)clearInterval(iv);},70);return()=>clearInterval(iv);},1200);return()=>clearTimeout(t);},[full]);return(<span><span style={{color:"#e5e5e5",fontWeight:700}}>{full.slice(0,len)}</span></span>);}
 function Card({icon,title,desc,tag,onClick,width=220}){return(<div onClick={onClick} onMouseEnter={e=>{e.currentTarget.style.borderColor="#f97316";e.currentTarget.style.background="#f9731610";}} onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--border,#333)";e.currentTarget.style.background="var(--bg-card,#2a2a2a)";}} style={{background:"var(--bg-card,#2a2a2a)",borderRadius:12,padding:"20px 24px",cursor:onClick?"pointer":"default",border:"1px solid var(--border,#333)",transition:"all 0.2s",position:"relative",width,boxSizing:"border-box"}}>{tag&&<span style={{position:"absolute",top:12,right:12,fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:"#f9731622",color:"#f97316",fontFamily:"monospace",textTransform:"uppercase"}}>{tag}</span>}<div style={{fontSize:28,marginBottom:10}}>{icon}</div><div style={{fontSize:14,fontWeight:700,color:"var(--text-primary,#e5e5e5)",marginBottom:6,fontFamily:"'JetBrains Mono',monospace"}}>{title}</div><div style={{fontSize:12,color:"var(--text-secondary,#a3a3a3)",lineHeight:1.6}}>{desc}</div></div>);}
 
 // Feature guide content shown to users (non-admin) instead of changelog
@@ -50,7 +50,9 @@ function FlowiConsole({onActiveChange}){
   const[verifyMsg,setVerifyMsg]=useState("");
   const[busy,setBusy]=useState(false);
   const[result,setResult]=useState(null);
+  const[lastPrompt,setLastPrompt]=useState("");
   const[err,setErr]=useState("");
+  const tokenInputRef=useRef(null);
   const promptRef=useRef(null);
 
   useEffect(()=>{if(active&&promptRef.current)setTimeout(()=>promptRef.current?.focus(),30);},[active]);
@@ -76,7 +78,7 @@ function FlowiConsole({onActiveChange}){
     const tk=(token||"").trim();
     if(!q){setErr("질문을 입력해주세요.");return;}
     if(!tk){setActive(false);setErr("Flowi 토큰을 입력하면 실행할 수 있습니다.");return;}
-    writeFlowiToken(tk);setActive(true);setBusy(true);setErr("");
+    writeFlowiToken(tk);setActive(true);setBusy(true);setErr("");setLastPrompt(q);
     postJson("/api/llm/flowi/chat",{prompt:q,token:tk,product:"",max_rows:12})
       .then(d=>setResult(d)).catch(e=>setErr(e.message||String(e))).finally(()=>setBusy(false));
   };
@@ -85,15 +87,19 @@ function FlowiConsole({onActiveChange}){
     "PRODA0 root_lot_id A10001 knob 어떻게돼",
     "PRODB root_lot_id B1000 wafer_id 12 knob M1 어떻게돼",
   ];
+  const tokenMask=token?"*".repeat(Math.min((token||"").length,24)):"";
   return(<section style={{marginTop:12,fontFamily:"'JetBrains Mono',monospace"}}>
     <form onSubmit={e=>{e.preventDefault();activate();}} style={{margin:0}}>
       <div style={{display:"flex",alignItems:"center",gap:7,minWidth:0,fontSize:13,lineHeight:1.7,flexWrap:"wrap"}}>
         <span style={{color:"#f97316"}}>{">"}</span>
         <span style={{color:"#737373",whiteSpace:"nowrap"}}>LLM TOKEN :</span>
-        <input type="password" value={token} onChange={e=>setToken(e.target.value)}
-          autoComplete="off" aria-label="LLM token"
-          style={{width:Math.max(18,Math.min(360,(token||"").length*9+18)),padding:0,border:"none",background:"transparent",color:"#e5e5e5",fontSize:13,fontFamily:"'JetBrains Mono',monospace",outline:"none",caretColor:"transparent"}}/>
-        <span style={{display:"inline-block",width:8,height:14,background:"#f97316",animation:"holBlink 1s step-end infinite",marginLeft:1}}/>
+        <span onClick={()=>tokenInputRef.current?.focus()} style={{position:"relative",display:"inline-flex",alignItems:"center",minWidth:12,minHeight:18,cursor:"text",color:"#e5e5e5"}}>
+          <input ref={tokenInputRef} type="text" value={token} onChange={e=>setToken(e.target.value)}
+            autoComplete="off" aria-label="LLM token"
+            style={{position:"absolute",inset:0,width:"100%",height:"100%",opacity:0,border:"none",background:"transparent",color:"transparent",caretColor:"transparent",outline:"none",fontSize:13,fontFamily:"'JetBrains Mono',monospace"}}/>
+          <span aria-hidden="true" style={{whiteSpace:"pre",fontSize:13,fontFamily:"'JetBrains Mono',monospace"}}>{tokenMask}</span>
+          <span aria-hidden="true" style={{display:"inline-block",width:8,height:14,background:"#f97316",animation:"holBlink 1s step-end infinite",marginLeft:tokenMask?2:0}}/>
+        </span>
         {verifying&&<span style={{fontSize:10,color:"#fbbf24",fontFamily:"monospace"}}>checking...</span>}
         {verifyMsg&&<span style={{fontSize:10,color:"#22c55e",fontFamily:"monospace"}}>{verifyMsg}</span>}
         {active&&<button type="button" onClick={clear} aria-label="clear llm token"
@@ -117,11 +123,11 @@ function FlowiConsole({onActiveChange}){
       {examples.map(ex=><button key={ex} onClick={()=>setPrompt(ex)}
         style={{padding:"4px 8px",borderRadius:5,border:"1px solid #333",background:"#151515",color:"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer",maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ex}</button>)}
     </div>}
-    <FlowiResult busy={busy} error={err} result={result}/>
+    <FlowiResult busy={busy} error={err} result={result} prompt={lastPrompt}/>
   </section>);
 }
 
-function FlowiResult({busy,error,result}){
+function FlowiResult({busy,error,result,prompt}){
   if(busy)return <div style={{marginTop:10,fontSize:12,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
   if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:12,border:"1px solid #7f1d1d"}}>{error}</div>;
   if(!result)return null;
@@ -135,6 +141,7 @@ function FlowiResult({busy,error,result}){
       {tool.intent&&<span style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
       {result.llm&&<span style={{fontSize:10,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
     </div>
+    <FlowiFeedback result={result} tool={tool} prompt={prompt}/>
     {table&&<FlowiDataTable table={table}/>}
     {rows.length>0&&<div style={{marginTop:10,overflowX:"auto"}}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
@@ -154,6 +161,31 @@ function FlowiResult({busy,error,result}){
   </div>);
 }
 const FR_TD={padding:"5px 6px",borderBottom:"1px solid #262626",color:"#d4d4d4",whiteSpace:"nowrap"};
+
+function FlowiFeedback({result,tool,prompt}){
+  const[rating,setRating]=useState("");
+  const[note,setNote]=useState("");
+  const[msg,setMsg]=useState("");
+  const send=(nextRating=rating)=>{
+    const r=nextRating||"neutral";
+    setRating(r);setMsg("");
+    postJson("/api/llm/flowi/feedback",{
+      rating:r,
+      prompt:prompt||"",
+      answer:result?.answer||"",
+      intent:tool?.intent||"",
+      note:note||"",
+    }).then(()=>setMsg("피드백 저장됨")).catch(e=>setMsg(e.message||"저장 실패"));
+  };
+  return(<div style={{marginTop:8,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+    <button type="button" onClick={()=>send("up")} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="up"?"#22c55e22":"transparent",color:rating==="up"?"#22c55e":"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>좋아요</button>
+    <button type="button" onClick={()=>send("down")} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="down"?"#ef444422":"transparent",color:rating==="down"?"#fca5a5":"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>개선 필요</button>
+    <input value={note} onChange={e=>setNote(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")send(rating||"neutral");}} placeholder="워크플로우 개선 의견"
+      style={{flex:"1 1 180px",minWidth:160,padding:"4px 7px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:10,outline:"none"}}/>
+    <button type="button" onClick={()=>send(rating||"neutral")} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>의견 저장</button>
+    {msg&&<span style={{fontSize:10,color:msg.includes("실패")?"#fca5a5":"#22c55e",fontFamily:"monospace"}}>{msg}</span>}
+  </div>);
+}
 
 function FlowiDataTable({table}){
   const cols=table.columns||[];
