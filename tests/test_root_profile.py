@@ -43,6 +43,13 @@ def test_auto_mode_keeps_local_flow_data_when_shared_flow_data_missing(monkeypat
     assert root_profile.default_data_root({"mode": "auto"}) == project / "data" / "flow-data"
 
 
+def test_auto_mode_uses_linux_shared_db_root_even_when_db_dir_missing(monkeypatch, tmp_path):
+    project, shared = _sandbox_roots(monkeypatch, tmp_path)
+
+    assert root_profile.default_db_root({"mode": "auto"}) == shared / "DB"
+    assert root_profile.default_data_root({"mode": "auto"}) == project / "data" / "flow-data"
+
+
 def test_local_mode_ignores_linux_shared_roots(monkeypatch, tmp_path):
     project, shared = _sandbox_roots(monkeypatch, tmp_path)
     (shared / "DB").mkdir()
