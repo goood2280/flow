@@ -135,7 +135,7 @@ def _category_source(category: str, default: str = "auto") -> str:
     if name:
         try:
             for c in _load_cats():
-                if isinstance(c, dict) and (c.get("name") or "") == name:
+                if isinstance(c, dict) and (c.get("name") or "").strip().lower() == low:
                     src = (c.get("source") or "").lower().strip()
                     if src in ("fab", "et", "both"):
                         return src
