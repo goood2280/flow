@@ -50,7 +50,8 @@ Rule types (declarative JSON — no arbitrary code exec by default):
 All operations use Polars expressions — no pickled code, no `eval` on user input.
 `filter` strings go through `pl.sql_expr` (same parser as Dashboard).
 
-Rules are stored per product: data/flow-data/reformatter/<product>.json
+Rules are stored per product as internal JSON, with CSV table fallback:
+data/flow-data/reformatter/<product>.json or <product>.csv
 """
 from __future__ import annotations
 import ast
@@ -148,17 +149,29 @@ def _rules_path(base_dir: Path, product: str) -> Path:
     return base_dir / f"{safe or 'DEFAULT'}.json"
 
 
+def _rules_csv_path(base_dir: Path, product: str) -> Path:
+    return _rules_path(base_dir, product).with_suffix(".csv")
+
+
 def load_rules(base_dir: Path, product: str) -> List[Dict[str, Any]]:
     fp = _rules_path(base_dir, product)
-    if not fp.exists():
+    if fp.exists():
+        try:
+            data = json.loads(fp.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                return []
+            return [normalize_rule_metadata(r) for r in data if isinstance(r, dict)]
+        except Exception as e:
+            logger.warning(f"Failed to load rules {fp}: {e}")
+            return []
+    csv_fp = _rules_csv_path(base_dir, product)
+    if not csv_fp.exists():
         return []
     try:
-        data = json.loads(fp.read_text(encoding="utf-8"))
-        if not isinstance(data, list):
-            return []
-        return [normalize_rule_metadata(r) for r in data if isinstance(r, dict)]
+        rows = pl.read_csv(str(csv_fp), infer_schema_length=5000, try_parse_dates=False).to_dicts()
+        return reformatter_table_to_rules(rows)
     except Exception as e:
-        logger.warning(f"Failed to load rules {fp}: {e}")
+        logger.warning(f"Failed to load reformatter CSV {csv_fp}: {e}")
         return []
 
 

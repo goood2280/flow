@@ -27,6 +27,23 @@ from core import llm_adapter
 router = APIRouter(prefix="/api/llm", tags=["llm"])
 logger = logging.getLogger("flow.llm.router")
 FLOWI_FEEDBACK_FILE = PATHS.data_root / "flowi_feedback.jsonl"
+FLOWI_READ_ONLY_POLICY = {
+    "read_only": True,
+    "applies_to": ["user", "admin"],
+    "blocked_targets": ["raw data DB", "Files", "DB root files", "product reformatter files"],
+}
+
+_WRITE_TERMS = (
+    "수정", "변경", "바꿔", "바꾸", "저장", "삭제", "지워", "업로드", "올려",
+    "덮어", "추가", "생성", "편집", "업데이트", "이동", "rename", "delete",
+    "update", "insert", "drop", "write", "save", "modify", "edit", "upload",
+    "create", "remove", "overwrite", "replace", "move",
+)
+_WRITE_TARGET_TERMS = (
+    "db", "database", "data root", "raw data", "source file", "files", "file",
+    "csv", "parquet", "json", "reformatter", "원 data", "원데이터", "원본",
+    "데이터", "파일", "루트", "소스", "제품별 reformatter",
+)
 
 _STOP_TOKENS = {
     "A", "AN", "THE", "ET", "WF", "WAFER", "WAFERS", "BY", "PER", "ITEM", "LOT", "LOTS",
@@ -42,6 +59,19 @@ def _text(raw: Any) -> str:
 
 def _upper(raw: Any) -> str:
     return _text(raw).upper()
+
+
+def _flowi_write_block_message(prompt: str) -> str:
+    text = str(prompt or "")
+    low = text.lower()
+    has_write = any(term in low or term in text for term in _WRITE_TERMS)
+    has_target = any(term in low or term in text for term in _WRITE_TARGET_TERMS)
+    if not (has_write and has_target):
+        return ""
+    return (
+        "Flowi LLM은 사용자와 admin 모두 원 data DB 또는 Files를 수정할 수 없습니다. "
+        "LLM은 조회/요약/표시만 수행하며, DB/Files 변경은 전용 화면에서 직접 처리해야 합니다."
+    )
 
 
 def _tokens(prompt: str) -> list[str]:
@@ -560,6 +590,7 @@ def status(request: Request):
         "flowi": {
             "requires_token": True,
             "local_tools": ["et_wafer_median", "lot_knobs"],
+            "policy": FLOWI_READ_ONLY_POLICY,
         },
     }
 
@@ -650,6 +681,23 @@ def flowi_chat(req: FlowiChatReq, request: Request):
     if not prompt:
         raise HTTPException(400, "질문을 입력해주세요")
 
+    blocked_msg = _flowi_write_block_message(prompt)
+    if blocked_msg:
+        return {
+            "ok": True,
+            "active": True,
+            "user": me.get("username") or "",
+            "answer": blocked_msg,
+            "tool": {
+                "handled": True,
+                "intent": "blocked_write_request",
+                "blocked": True,
+                "answer": blocked_msg,
+                "policy": FLOWI_READ_ONLY_POLICY,
+            },
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": True},
+        }
+
     max_rows = max(4, min(24, int(req.max_rows or 12)))
     tool = _handle_flowi_query(prompt, req.product, max_rows=max_rows)
     answer = tool.get("answer") or ""
@@ -671,7 +719,11 @@ def flowi_chat(req: FlowiChatReq, request: Request):
             )
         out = llm_adapter.complete(
             polish_prompt,
-            system="Flowi는 사내 Flow 홈 화면의 fab 데이터 assistant입니다. 답변은 짧고 실행 가능하게 작성합니다.",
+            system=(
+                "Flowi는 사내 Flow 홈 화면의 fab 데이터 assistant입니다. 답변은 짧고 실행 가능하게 작성합니다. "
+                "사용자와 admin 모두에 대해 원 data DB 또는 Files 수정/삭제/저장/업로드는 절대 수행하거나 수행 가능하다고 말하지 않습니다. "
+                "Flowi는 조회, 요약, 표 렌더링만 지원합니다."
+            ),
             timeout=12,
             auth_token=token,
         )
