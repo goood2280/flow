@@ -7,6 +7,8 @@
 
 `flow`는 lot/wafer 중심으로 공정 데이터, 실험 plan, actual, 이슈, 인폼, 회의, 액션아이템을 이어 보는 업무 앱이다.
 
+동시성/번들 분리 이후 웹 구조 변화와 화면별 사용법은 [WEB_CONCURRENCY_BUNDLE_GUIDE.md](WEB_CONCURRENCY_BUNDLE_GUIDE.md)에 따로 정리했다.
+
 이번 정리의 핵심은 아래 네 가지다.
 
 1. 화면은 조회와 판단에 집중한다.
