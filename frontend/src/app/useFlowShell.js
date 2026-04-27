@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 
 import { TABS } from "../config";
 import { logActivity, postJson, sf } from "../lib/api";
@@ -178,7 +178,7 @@ export function useFlowShell() {
   const nav = useCallback(
     (tabKey) => {
       if (!canAccess(tabKey) && tabKey !== "admin") return;
-      setTab(tabKey);
+      startTransition(() => setTab(tabKey));
       if (user) logActivity(user.username, "nav:" + tabKey);
     },
     [canAccess, user],
