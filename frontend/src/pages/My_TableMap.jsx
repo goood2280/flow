@@ -1544,69 +1544,72 @@ export default function My_TableMap({user}){
 
     {/* v8.8.13: Relation editor modal — 컬럼 쌍을 표 형태로 편집. 자동 매칭은 대소문자 무시. */}
     {editRel&&<div className="tm-overlay" onClick={()=>setEditRel(null)}>
-      <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:560,maxWidth:"92vw"}}>
+      <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:720,maxWidth:"94vw"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-          <div style={{fontSize:15,fontWeight:700}}>{editRel.id?"관계 편집":"새 관계"}</div>
+          <div style={{fontSize:15,fontWeight:700}}>{canManage?(editRel.id?"관계 편집":"새 관계"):"관계 상세"}</div>
           <span onClick={()=>setEditRel(null)} style={{cursor:"pointer",fontSize:18}}>✕</span>
         </div>
         <div style={{fontSize:12,marginBottom:12,color:"var(--text-secondary)"}}>
           <strong style={{color:"var(--accent)"}}>{editRel.from_name}</strong> → <strong style={{color:"var(--accent)"}}>{editRel.to_name}</strong>
         </div>
-        <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,padding:"6px 10px",borderRadius:5,background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.3)"}}>
+        {canManage&&<div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,padding:"6px 10px",borderRadius:5,background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.3)"}}>
           <button onClick={autoMatchRelation} style={{padding:"4px 12px",borderRadius:5,border:"1px solid #22c55e",background:"transparent",color:"#22c55e",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔍 자동 매칭</button>
           <span style={{fontSize:10,color:"var(--text-secondary)"}}>대소문자 무시 동명 컬럼 자동 추가 (이름 같아도 다른 열이면 수정 가능)</span>
           {autoMatchInfo&&<span style={{fontSize:10,marginLeft:"auto",color:autoMatchInfo.matched>0?"#22c55e":"var(--text-secondary)",fontFamily:"monospace"}}>+{autoMatchInfo.matched} ({autoMatchInfo.fromTotal}↔{autoMatchInfo.toTotal})</span>}
-        </div>
+        </div>}
         <div style={{marginBottom:6,fontSize:11,color:"var(--text-secondary)"}}>컬럼 매핑 ({(relForm.pairs||[]).length}쌍)</div>
-        <div style={{border:"1px solid var(--border)",borderRadius:6,overflow:"hidden",marginBottom:10}}>
+        <div style={{border:"1px solid var(--border)",borderRadius:6,overflow:"auto",marginBottom:10,maxHeight:360}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
             <thead>
               <tr style={{background:"var(--bg-tertiary)"}}>
-                <th style={{padding:"5px 8px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>{editRel.from_name} (source)</th>
-                <th style={{padding:"5px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",width:20}}></th>
-                <th style={{padding:"5px 8px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>{editRel.to_name} (target)</th>
-                <th style={{padding:"5px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",width:30}}></th>
+                {[..."No|Source Table|Source Column|Target Table|Target Column".split("|"),...(canManage?[]:["Status"])].map(h=><th key={h} style={{padding:"7px 8px",textAlign:h==="No"?"center":"left",borderBottom:"1px solid var(--border)",fontSize:10,color:h.includes("Column")?"var(--accent)":"var(--text-secondary)",fontFamily:"monospace",whiteSpace:"nowrap"}}>{h}</th>)}
+                {canManage&&<th style={{padding:"7px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",width:34}}></th>}
               </tr>
             </thead>
             <tbody>
               {(relForm.pairs||[]).length===0&&(
-                <tr><td colSpan={4} style={{padding:"14px 10px",textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>매핑 쌍이 없습니다. 🔍 자동 매칭 또는 + 행 추가 로 시작.</td></tr>
+                <tr><td colSpan={canManage?6:6} style={{padding:"14px 10px",textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>{canManage?"매핑 쌍이 없습니다. 자동 매칭 또는 + 행 추가 로 시작.":"매핑 쌍이 없습니다."}</td></tr>
               )}
               {(relForm.pairs||[]).map((p,i)=>{
                 const sameLower=(p.from_col||"").toLowerCase()===(p.to_col||"").toLowerCase()&&(p.from_col||"").trim();
                 return (
                   <tr key={i} style={{borderBottom:"1px solid var(--border)"}}>
-                    <td style={{padding:"4px 6px"}}>
-                      <input value={p.from_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],from_col:e.target.value};return{...f,pairs:n};})}
-                        placeholder="source col" style={{width:"100%",padding:"4px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>
+                    <td style={{padding:"6px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",width:34}}>{i+1}</td>
+                    <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",whiteSpace:"nowrap",color:"var(--text-primary)"}}>{editRel.from_name}</td>
+                    <td style={{padding:"4px 6px",borderBottom:"1px solid var(--border)",minWidth:150}}>
+                      {canManage?<input value={p.from_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],from_col:e.target.value};return{...f,pairs:n};})}
+                        placeholder="source col" style={{width:"100%",padding:"4px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>:
+                        <span style={{fontFamily:"monospace",fontWeight:800,color:"var(--accent)"}}>{p.from_col||"-"}</span>}
                     </td>
-                    <td style={{textAlign:"center",color:sameLower?"#22c55e":"var(--text-secondary)",fontWeight:700}}>↔</td>
-                    <td style={{padding:"4px 6px"}}>
-                      <input value={p.to_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],to_col:e.target.value};return{...f,pairs:n};})}
-                        placeholder="target col" style={{width:"100%",padding:"4px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>
+                    <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",whiteSpace:"nowrap",color:"var(--text-primary)"}}>{editRel.to_name}</td>
+                    <td style={{padding:"4px 6px",borderBottom:"1px solid var(--border)",minWidth:150}}>
+                      {canManage?<input value={p.to_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],to_col:e.target.value};return{...f,pairs:n};})}
+                        placeholder="target col" style={{width:"100%",padding:"4px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>:
+                        <span style={{fontFamily:"monospace",fontWeight:800,color:"var(--accent)"}}>{p.to_col||"-"}</span>}
                     </td>
-                    <td style={{textAlign:"center"}}>
+                    {canManage?<td style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>
                       <span onClick={()=>setRelForm(f=>({...f,pairs:(f.pairs||[]).filter((_,j)=>j!==i)}))} title="이 쌍 제거"
                         style={{cursor:"pointer",color:"#ef4444",fontSize:14,fontWeight:700,padding:"0 6px"}}>×</span>
-                    </td>
+                    </td>:<td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:sameLower?"#22c55e":"var(--text-secondary)",fontWeight:700,whiteSpace:"nowrap"}}>{sameLower?"same name":"mapped"}</td>}
                   </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
-        <div style={{marginBottom:10}}>
+        {canManage&&<div style={{marginBottom:10}}>
           <button onClick={()=>setRelForm(f=>({...f,pairs:[...(f.pairs||[]),{from_col:"",to_col:""}]}))}
             style={{padding:"4px 12px",borderRadius:4,border:"1px dashed var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>+ 행 추가</button>
-        </div>
+        </div>}
         <div style={{marginBottom:12}}>
           <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:3}}>설명</div>
-          <input value={relForm.description} onChange={e=>setRelForm({...relForm,description:e.target.value})} placeholder="예: Lot 이력 추적"
-            style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",boxSizing:"border-box"}}/>
+          {canManage?<input value={relForm.description} onChange={e=>setRelForm({...relForm,description:e.target.value})} placeholder="예: Lot 이력 추적"
+            style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",boxSizing:"border-box"}}/>:
+            <div style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,minHeight:16}}>{relForm.description||"-"}</div>}
         </div>
         <div style={{display:"flex",gap:8}}>
-          <button onClick={saveRelation} style={{flex:1,padding:"8px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:600,cursor:"pointer"}}>저장</button>
-          {editRel.id&&<button onClick={()=>{delRelation(editRel.id);setEditRel(null);}} style={{padding:"8px 16px",borderRadius:6,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",cursor:"pointer"}}>삭제</button>}
+          {canManage&&<button onClick={saveRelation} style={{flex:1,padding:"8px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:600,cursor:"pointer"}}>저장</button>}
+          {canManage&&editRel.id&&<button onClick={()=>{delRelation(editRel.id);setEditRel(null);}} style={{padding:"8px 16px",borderRadius:6,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",cursor:"pointer"}}>삭제</button>}
           <button onClick={()=>setEditRel(null)} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>취소</button>
         </div>
       </div>
