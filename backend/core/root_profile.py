@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -98,17 +99,34 @@ def project_is_prod_app(profile: dict | None = None) -> bool:
     return any(_same_path(PROJECT_ROOT, p) for p in prod_app_candidates(profile))
 
 
-def use_shared_defaults(profile: dict | None = None) -> bool:
+def _is_linux_host() -> bool:
+    return sys.platform.startswith("linux")
+
+
+def _shared_default_root(profile: dict | None, child: str) -> Path | None:
     profile = profile or read_profile()
     mode = _clean_mode(profile.get("mode"))
     if mode == "local":
-        return False
+        return None
     if mode == "shared":
-        return PROD_SHARED.exists()
+        return PROD_SHARED / child if PROD_SHARED.exists() else None
     if mode == "custom":
-        return False
-    return PROD_SHARED.exists() and (
-        project_is_prod_app(profile) or os.environ.get("FLOW_PROD") == "1"
+        return None
+    if not PROD_SHARED.exists():
+        return None
+    shared_child = PROD_SHARED / child
+    if project_is_prod_app(profile) or os.environ.get("FLOW_PROD") == "1":
+        return shared_child
+    if _is_linux_host() and shared_child.exists():
+        return shared_child
+    return None
+
+
+def use_shared_defaults(profile: dict | None = None) -> bool:
+    profile = profile or read_profile()
+    return (
+        _shared_default_root(profile, "DB") is not None
+        or _shared_default_root(profile, "flow-data") is not None
     )
 
 
@@ -126,8 +144,9 @@ def default_data_root(profile: dict | None = None) -> Path:
         p = Path(custom).expanduser()
         if p.exists():
             return p
-    if use_shared_defaults(profile):
-        return PROD_SHARED / "flow-data"
+    shared = _shared_default_root(profile, "flow-data")
+    if shared is not None:
+        return shared
     return local_data_root()
 
 
@@ -138,8 +157,9 @@ def default_db_root(profile: dict | None = None) -> Path:
         p = Path(custom).expanduser()
         if p.exists():
             return p
-    if use_shared_defaults(profile):
-        return PROD_SHARED / "DB"
+    shared = _shared_default_root(profile, "DB")
+    if shared is not None:
+        return shared
     for cand in (PROJECT_ROOT / "data" / "Fab", PROJECT_ROOT / "Fab", PROJECT_ROOT / "data" / "DB", PROJECT_ROOT / "DB"):
         if cand.exists():
             return cand
