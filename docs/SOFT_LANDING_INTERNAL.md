@@ -16,6 +16,8 @@ cd /config/work/flow-fast-api
 uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 
+실행 후 브라우저에서 `/runtime-roots.json`을 열면 현재 프로세스가 어떤 checkout, `data_root`, `db_root`, `base_root`를 보고 있는지 바로 확인할 수 있다.
+
 OmniHarness 실행 예:
 
 ```bash
@@ -83,6 +85,13 @@ cd frontend && npm run build
 python3 scripts/preflight_internal.py --write-probe
 ```
 
+5. 사용자가 접속하는 서버가 최신 코드인지 확인한다.
+
+```bash
+curl http://localhost:8080/version.json
+curl http://localhost:8080/runtime-roots.json
+```
+
 ## 백업과 롤백
 
 기본 백업 위치는 `data_root/_backups`다. 예를 들어 사내 기본값은:
@@ -124,4 +133,10 @@ preflight는 다음을 확인한다.
 ```bash
 python3 scripts/preflight_internal.py --write-probe
 python3 scripts/preflight_internal.py --write-probe --backup-now
+```
+
+앱 서버가 떠 있는 경우에는 일반 smoke도 같이 확인한다.
+
+```bash
+python scripts/smoke_test.py
 ```
