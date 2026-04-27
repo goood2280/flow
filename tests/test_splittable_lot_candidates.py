@@ -58,6 +58,48 @@ def test_view_accepts_fab_lot_pasted_into_root_field():
     assert "fab_lot_id" in result["lot_warn"]
 
 
+def test_view_validates_root_and_fab_scope_together():
+    result = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="A1000",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="A1001A.1",
+        custom_cols="",
+    )
+
+    assert result["root_lot_id"] == "A1000"
+    assert result["headers"]
+    assert result["rows"]
+    assert "Root Lot ID 기준" in result["lot_warn"]
+    assert all(
+        group["label"] == "—" or str(group["label"]).startswith("A1000")
+        for group in result["header_groups"]
+    )
+
+
+def test_view_keeps_matching_root_and_fab_scope_narrow():
+    result = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="A1000",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="A1000A.1",
+        custom_cols="",
+    )
+
+    assert result["root_lot_id"] == "A1000"
+    assert result["headers"]
+    assert result["header_groups"] == [{"label": "A1000A.1", "span": len(result["headers"])}]
+    assert result["lot_warn"] == ""
+
+
 def test_mltable_product_files_are_discovered_case_insensitively(tmp_path, monkeypatch):
     fp = tmp_path / "ml_table_mixed.PARQUET"
     pl.DataFrame({
