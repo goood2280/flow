@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import BrandLogo from "../components/BrandLogo";
+import { sf, postJson } from "../lib/api";
 const B="#ea580c",M="#f97316",L="#fb923c",D="#9a3412",BK="#171717",W="#fff7ed",PK="#fda4af",G="#fbbf24";
 
 // v8.3.3: PF_HOME / PixelGlyph / HomeBrandLogo extracted to shared ../components/BrandLogo.jsx.
@@ -36,6 +37,108 @@ const FEATURE_GUIDES={
 const VCACHE_KEY="hol_home_version_v1";
 function readVerCache(){try{const s=localStorage.getItem(VCACHE_KEY);return s?JSON.parse(s):null;}catch{return null;}}
 function writeVerCache(v){try{localStorage.setItem(VCACHE_KEY,JSON.stringify(v));}catch{}}
+
+const FLOWI_TOKEN_KEY="flowi_llm_token_v1";
+function readFlowiToken(){try{return sessionStorage.getItem(FLOWI_TOKEN_KEY)||"";}catch{return"";}}
+function writeFlowiToken(v){try{v?sessionStorage.setItem(FLOWI_TOKEN_KEY,v):sessionStorage.removeItem(FLOWI_TOKEN_KEY);}catch{}}
+
+function FlowiConsole(){
+  const[token,setToken]=useState(()=>readFlowiToken());
+  const[active,setActive]=useState(()=>!!readFlowiToken());
+  const[prompt,setPrompt]=useState("PRODA0 ET ETA100010 VTH median wf별 몇이야?");
+  const[product,setProduct]=useState("");
+  const[status,setStatus]=useState(null);
+  const[busy,setBusy]=useState(false);
+  const[result,setResult]=useState(null);
+  const[err,setErr]=useState("");
+
+  useEffect(()=>{sf("/api/llm/status").then(setStatus).catch(()=>setStatus({available:false,flowi:{local_tools:[]}}));},[]);
+
+  const activate=()=>{
+    const tk=(token||"").trim();
+    if(!tk){setActive(false);setErr("Flowi 토큰을 입력해주세요.");return false;}
+    writeFlowiToken(tk);setActive(true);setErr("");return true;
+  };
+  const clear=()=>{setToken("");setActive(false);writeFlowiToken("");setResult(null);setErr("");};
+  const ask=()=>{
+    const q=(prompt||"").trim();
+    const tk=(token||"").trim();
+    if(!q){setErr("질문을 입력해주세요.");return;}
+    if(!tk){setActive(false);setErr("Flowi 토큰을 입력하면 실행할 수 있습니다.");return;}
+    writeFlowiToken(tk);setActive(true);setBusy(true);setErr("");
+    postJson("/api/llm/flowi/chat",{prompt:q,token:tk,product:(product||"").trim(),max_rows:12})
+      .then(d=>setResult(d)).catch(e=>setErr(e.message||String(e))).finally(()=>setBusy(false));
+  };
+  const examples=[
+    "PRODA0 ET ETA100010 VTH median wf별 몇이야?",
+    "A1000 knob 어떻게돼",
+    "PRODB B1000 knob M1 어떻게돼",
+  ];
+  const badgeColor=active?"#22c55e":(status?.available?"#fbbf24":"#737373");
+  const badgeText=active?(status?.available?"llm active":"local active"):(status?.available?"llm ready":"token required");
+  return(<section style={{borderTop:"1px solid #2a2a2a",padding:"14px 18px 16px",background:"#101010"}}>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+      <span style={{fontSize:12,fontWeight:800,fontFamily:"'JetBrains Mono',monospace",color:"#f97316"}}>{">"} flowi.agent</span>
+      <span style={{fontSize:10,fontFamily:"monospace",color:badgeColor,border:"1px solid "+badgeColor+"66",borderRadius:999,padding:"2px 7px"}}>{badgeText}</span>
+      {status?.flowi?.local_tools?.length>0&&<span style={{fontSize:10,color:"#737373",fontFamily:"monospace"}}>{status.flowi.local_tools.join(" / ")}</span>}
+    </div>
+    <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,flexWrap:"wrap"}}>
+      <input type="password" value={token} onChange={e=>setToken(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")activate();}}
+        placeholder="Flowi LLM token" autoComplete="off"
+        style={{flex:"1 1 240px",minWidth:0,padding:"8px 10px",borderRadius:6,border:"1px solid #333",background:"#171717",color:"#e5e5e5",fontSize:12,fontFamily:"monospace",outline:"none"}}/>
+      <button onClick={activate} style={{padding:"8px 12px",borderRadius:6,border:"none",background:"#f97316",color:"#111",fontSize:12,fontWeight:800,cursor:"pointer"}}>활성화</button>
+      {active&&<button onClick={clear} style={{padding:"8px 10px",borderRadius:6,border:"1px solid #333",background:"transparent",color:"#a3a3a3",fontSize:12,cursor:"pointer"}}>끄기</button>}
+    </div>
+    <div style={{display:"flex",gap:8,alignItems:"stretch",flexWrap:"wrap"}}>
+      <textarea value={prompt} onChange={e=>setPrompt(e.target.value)} onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter")ask();}}
+        placeholder="ET ETA100010 VTH median wf별 / A1000 knob 어떻게돼"
+        rows={3}
+        style={{flex:"1 1 320px",minWidth:0,padding:"9px 10px",borderRadius:6,border:"1px solid #333",background:"#171717",color:"#e5e5e5",fontSize:13,lineHeight:1.5,resize:"vertical",outline:"none"}}/>
+      <div style={{display:"flex",flex:"0 1 140px",minWidth:120,flexDirection:"column",gap:8}}>
+        <input value={product} onChange={e=>setProduct(e.target.value)} placeholder="product"
+          style={{width:"100%",padding:"8px 10px",borderRadius:6,border:"1px solid #333",background:"#171717",color:"#e5e5e5",fontSize:12,fontFamily:"monospace",outline:"none"}}/>
+        <button onClick={ask} disabled={busy||!prompt.trim()} style={{flex:1,minHeight:44,padding:"8px 12px",borderRadius:6,border:"none",background:busy||!prompt.trim()?"#525252":"#f97316",color:"#111",fontSize:12,fontWeight:800,cursor:busy||!prompt.trim()?"default":"pointer"}}>{busy?"처리 중":"실행"}</button>
+      </div>
+    </div>
+    <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+      {examples.map(ex=><button key={ex} onClick={()=>setPrompt(ex)}
+        style={{padding:"4px 8px",borderRadius:5,border:"1px solid #333",background:"#151515",color:"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer",maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ex}</button>)}
+    </div>
+    <FlowiResult busy={busy} error={err} result={result}/>
+  </section>);
+}
+
+function FlowiResult({busy,error,result}){
+  if(busy)return <div style={{marginTop:10,fontSize:12,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
+  if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:12,border:"1px solid #7f1d1d"}}>{error}</div>;
+  if(!result)return null;
+  const tool=result.tool||{};
+  const rows=Array.isArray(tool.rows)?tool.rows:[];
+  const knobs=Array.isArray(tool.knobs)?tool.knobs:[];
+  return(<div style={{marginTop:12,borderTop:"1px solid #262626",paddingTop:10}}>
+    <div style={{whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.65,color:"#d4d4d4"}}>{result.answer||"응답이 없습니다."}</div>
+    <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+      {tool.intent&&<span style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
+      {result.llm&&<span style={{fontSize:10,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
+    </div>
+    {rows.length>0&&<div style={{marginTop:10,overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
+        <thead><tr>{["product","step","item","wf","median","mean","n"].map(h=><th key={h} style={{textAlign:"left",padding:"5px 6px",borderBottom:"1px solid #333",color:"#a3a3a3"}}>{h}</th>)}</tr></thead>
+        <tbody>{rows.slice(0,12).map((r,i)=><tr key={i}>
+          <td style={FR_TD}>{r.product||""}</td><td style={FR_TD}>{r.step_id||""}</td><td style={FR_TD}>{r.item_id||""}</td><td style={FR_TD}>{r.wafer_id||""}</td>
+          <td style={FR_TD}>{r.median??""}</td><td style={FR_TD}>{r.mean??""}</td><td style={FR_TD}>{r.count??""}</td>
+        </tr>)}</tbody>
+      </table>
+    </div>}
+    {knobs.length>0&&<div style={{marginTop:10,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:8}}>
+      {knobs.slice(0,8).map(k=><div key={k.knob} style={{border:"1px solid #333",borderRadius:6,padding:"8px 10px",background:"#151515"}}>
+        <div style={{fontSize:11,fontWeight:800,color:"#e5e5e5",marginBottom:4}}>{k.display_name||k.knob}</div>
+        {(k.values||[]).slice(0,3).map(v=><div key={String(v.value)} style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace",lineHeight:1.55}}>{String(v.value)} · {v.count}wf{Array.isArray(v.wafers)&&v.wafers.length?" · "+v.wafers.slice(0,8).join(","):""}</div>)}
+      </div>)}
+    </div>}
+  </div>);
+}
+const FR_TD={padding:"5px 6px",borderBottom:"1px solid #262626",color:"#d4d4d4",whiteSpace:"nowrap"};
 
 export default function My_Home({onNavigate,user}){
   // v8.1.7: initial value from cache → no spinner on 2nd+ visit
@@ -93,6 +196,7 @@ export default function My_Home({onNavigate,user}){
           <div style={{marginTop:6,fontFamily:"'JetBrains Mono',monospace",fontSize:13}}><span style={{color:"#f97316"}}>{">"}</span><span style={{color:"#737373"}}> WELCOME </span><WelcomeType name={user?.username||"user"}/></div>
         </div>
       </div>
+      <FlowiConsole/>
     </div>
 
     {/* Permission-filtered cards, centered */}
