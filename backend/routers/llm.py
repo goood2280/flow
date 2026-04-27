@@ -10,6 +10,7 @@ caller 주의: LLM 은 옵션. UI 는 status.available == false 면 관련 버�
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from core import llm_adapter
 
 router = APIRouter(prefix="/api/llm", tags=["llm"])
 logger = logging.getLogger("flow.llm.router")
+FLOWI_FEEDBACK_FILE = PATHS.data_root / "flowi_feedback.jsonl"
 
 _STOP_TOKENS = {
     "A", "AN", "THE", "ET", "WF", "WAFER", "WAFERS", "BY", "PER", "ITEM", "LOT", "LOTS",
@@ -586,6 +588,14 @@ class FlowiVerifyReq(BaseModel):
     token: str = ""
 
 
+class FlowiFeedbackReq(BaseModel):
+    rating: str = ""
+    prompt: str = ""
+    answer: str = ""
+    intent: str = ""
+    note: str = ""
+
+
 @router.post("/flowi/verify")
 def flowi_verify(req: FlowiVerifyReq, request: Request):
     _ = current_user(request)
@@ -603,6 +613,31 @@ def flowi_verify(req: FlowiVerifyReq, request: Request):
     if out.get("ok"):
         return {"ok": True, "message": "확인완료"}
     return {"ok": False, "message": "LLM 연결 확인 실패", "error": out.get("error") or "unknown"}
+
+
+@router.post("/flowi/feedback")
+def flowi_feedback(req: FlowiFeedbackReq, request: Request):
+    me = current_user(request)
+    rating = (req.rating or "").strip().lower()
+    if rating not in {"up", "down", "neutral"}:
+        raise HTTPException(400, "rating must be up/down/neutral")
+    rec = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "username": me.get("username") or "",
+        "rating": rating,
+        "intent": (req.intent or "").strip()[:80],
+        "prompt_excerpt": (req.prompt or "").strip()[:500],
+        "answer_excerpt": (req.answer or "").strip()[:800],
+        "note": (req.note or "").strip()[:1000],
+    }
+    try:
+        FLOWI_FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with FLOWI_FEEDBACK_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning("flowi feedback save failed: %s", e)
+        raise HTTPException(500, "피드백 저장 실패")
+    return {"ok": True}
 
 
 @router.post("/flowi/chat")
