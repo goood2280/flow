@@ -177,12 +177,22 @@ def _wafer_sort_key(v) -> tuple[int, str]:
 def _source_roots(source: str, source_root: str = "") -> list[str]:
     if str(source_root or "").strip():
         return [str(source_root or "").strip()]
+    cfg = tracker_db_sources_config()
     src = str(source or "auto").lower().strip()
     if src == "fab":
-        return [FAB_ROOT]
+        return [cfg.get("monitor") or FAB_ROOT]
     if src == "et":
-        return [ET_ROOT]
-    return [ET_ROOT, FAB_ROOT]
+        return [cfg.get("analysis") or ET_ROOT]
+    roots = [cfg.get("analysis") or ET_ROOT, cfg.get("monitor") or FAB_ROOT]
+    out = []
+    seen = set()
+    for root in roots:
+        text = str(root or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
 
 
 def _product_aliases(product: str = "") -> set[str]:

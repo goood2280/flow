@@ -166,10 +166,13 @@ function isMonitorCategory(category, roleNames = {}) {
   return String(category || "").trim().toLowerCase() === monitorName;
 }
 
-function trackerCategorySource(category, roleNames = {}) {
+function trackerCategorySource(category, roleNames = {}, cats = []) {
   const c = String(category || "").trim().toLowerCase();
   if (c === String(roleNames?.monitor || "Monitor").trim().toLowerCase()) return "fab";
   if (c === String(roleNames?.analysis || "Analysis").trim().toLowerCase()) return "et";
+  const cat = (Array.isArray(cats) ? cats : []).find(x => String(x?.name || "").trim().toLowerCase() === c);
+  const src = String(cat?.source || "").trim().toLowerCase();
+  if (["fab", "et", "both", "auto"].includes(src)) return src;
   return "fab";
 }
 
@@ -269,7 +272,7 @@ function DescEditor({ value, onChange, placeholder }) {
 //   - root_lot_id 가 5자리면 FAB 최신 step 을 root 기준으로 조회, 그 외엔 lot_id.
 //   - Monitor 는 FAB step 만, Analysis/ET 계열은 ET 측정 패키지도 함께 조회.
 //   - 특정 step 설정 + 메일 옵션 인라인 저장.
-function LotTable({ lots, setLots, readOnly, issueId, product, category, roleNames }) {
+function LotTable({ lots, setLots, readOnly, issueId, product, category, roleNames, cats }) {
   const [stepData, setStepData] = useState({});  // {rowIdx: {fab:{...}, et:[...]} }
   const [busyRow, setBusyRow] = useState(null);
   const [batchBusy, setBatchBusy] = useState(false);
@@ -352,12 +355,12 @@ function LotTable({ lots, setLots, readOnly, issueId, product, category, roleNam
   }, [readOnly, issueId, category, lots.length, batchBusy, fetchAllSteps]);
   return LotTableInner({
     lots, setLots, readOnly, issueId, product, category,
-    roleNames,
+    roleNames, cats,
     stepData, busyRow, fetchStep, fetchAllSteps, batchBusy, batchDone,
   });
 }
 
-function LotTableInner({ lots, setLots, readOnly, issueId, product, category, roleNames, stepData, busyRow, fetchStep, fetchAllSteps, batchBusy, batchDone }) {
+function LotTableInner({ lots, setLots, readOnly, issueId, product, category, roleNames, cats, stepData, busyRow, fetchStep, fetchAllSteps, batchBusy, batchDone }) {
   const [productOptions, setProductOptions] = useState([]);
   const [lotOptions, setLotOptions] = useState({});
 
@@ -474,8 +477,9 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
     boxSizing: "border-box",
     fontFamily: "monospace",
   };
-  const showEtColumn = readOnly && trackerCategorySource(category, roleNames) === "et";
-  const showStepColumn = readOnly && trackerCategorySource(category, roleNames) === "fab";
+  const categorySource = trackerCategorySource(category, roleNames, cats);
+  const showEtColumn = readOnly && (categorySource === "et" || categorySource === "both");
+  const showStepColumn = readOnly && (categorySource === "fab" || categorySource === "both" || categorySource === "auto");
   const readOnlyColSpan = 4 + (showStepColumn ? 1 : 0) + (showEtColumn ? 1 : 0) + 1 + 2;
 
   // v8.8.5: 빈 상태 플레이스홀더 행 대신, 항상 테이블 형태 유지 + 맨 아래 [+ 행추가] 빈 행.
@@ -494,7 +498,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
       target_et_step_id: watch.target_et_step_id || "",
       target_et_seqs: watch.target_et_seqs || "",
       // v9.0.0: source 는 카테고리에서 가져옴. category prop 이 "Monitor"/"Analysis" 면 자동 fab/et 결정.
-      source: isMonitorCategory(category, roleNames) ? "fab" : ((patch.source) || watch.source || trackerCategorySource(category, roleNames)),
+      source: isMonitorCategory(category, roleNames) ? "fab" : ((patch.source) || watch.source || (categorySource === "et" ? "et" : "fab")),
     };
     sf(API + "/lot-watch", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -642,7 +646,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                     {/* v9.0.0: watch source 는 category 기반 자동 결정 (Monitor→FAB, Analysis→ET).
                         사용자는 target step (FAB) 또는 자동 이력 관측 (ET) + 메일 체크만 설정. */}
                     {(() => {
-                      const effSrc = isMonitorCategory(category, roleNames) ? "fab" : (watch.source || trackerCategorySource(category, roleNames));
+                      const effSrc = isMonitorCategory(category, roleNames) ? "fab" : (watch.source || (categorySource === "et" ? "et" : "fab"));
                       const isEt = effSrc === "et";
                       return (
                         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, flexWrap: "wrap" }}>
@@ -813,7 +817,7 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
         ))}
       </div>
       <div style={{ marginBottom: 12 }}>
-        <LotTable lots={lots} setLots={setLots} readOnly={false} category={category} roleNames={roleNames} />
+        <LotTable lots={lots} setLots={setLots} readOnly={false} category={category} roleNames={roleNames} cats={cats} />
       </div>
       {/* v8.5.0: 그룹 가시성 */}
       <div style={{ marginBottom: 12 }}>
@@ -1133,7 +1137,7 @@ export default function My_Tracker({ user }) {
                   setSelected(s => s ? { ...s, lots: next } : s);
                 }
               }} readOnly={true}
-              issueId={selected.id} product={selected.product || ""} category={selected.category || ""} roleNames={roleNames} />
+              issueId={selected.id} product={selected.product || ""} category={selected.category || ""} roleNames={roleNames} cats={cats} />
             </div>}
 
             {/* Comments */}

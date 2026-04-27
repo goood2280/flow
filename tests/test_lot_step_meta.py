@@ -10,6 +10,7 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from core.lot_step import (  # noqa: E402
+    _source_roots,
     compare_to_watch,
     expand_lot_row_for_wafer_selection,
     lookup_step_meta,
@@ -66,6 +67,21 @@ def test_summarize_et_steps_omits_zero_point_seq():
 def test_parse_wafer_selection_supports_csv_and_ranges():
     assert parse_wafer_selection("1,2~4,7") == ["1", "2", "3", "4", "7"]
     assert parse_wafer_selection("4~2") == ["4", "3", "2"]
+
+
+def test_source_roots_use_tracker_db_source_config(monkeypatch, tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        '{"tracker_db_sources":{"monitor":"CUSTOM_FAB","analysis":"CUSTOM_ET"}}',
+        encoding="utf-8",
+    )
+    import core.lot_step as lot_step
+
+    monkeypatch.setattr(lot_step, "_settings_file", lambda: settings)
+
+    assert _source_roots("fab") == ["CUSTOM_FAB"]
+    assert _source_roots("et") == ["CUSTOM_ET"]
+    assert _source_roots("both") == ["CUSTOM_ET", "CUSTOM_FAB"]
 
 
 def test_expand_lot_row_for_wafer_selection_splits_rows_and_resets_watch_state():

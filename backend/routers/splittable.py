@@ -306,9 +306,9 @@ def _detect_lot_wafer(lf, product: str = ""):
         try:
             cfg = load_json(SOURCE_CFG, {"lot_overrides": {}}) if SOURCE_CFG.exists() else {}
             ov = (cfg.get("lot_overrides") or {}).get(product) or {}
-            schema_names = set(lf.collect_schema().names() if hasattr(lf, "collect_schema") else lf.schema.keys())
-            root_col = ov.get("root_col") if ov.get("root_col") in schema_names else None
-            wf_col = ov.get("wf_col") if ov.get("wf_col") in schema_names else None
+            schema_names_list = lf.collect_schema().names() if hasattr(lf, "collect_schema") else list(lf.schema.keys())
+            root_col = _ci_resolve_in(ov.get("root_col") or "", schema_names_list) or None
+            wf_col = _ci_resolve_in(ov.get("wf_col") or "", schema_names_list) or None
             if root_col or wf_col:
                 # Fill missing with auto-detect
                 auto_r, auto_w = find_lot_wafer_cols(lf.schema)
@@ -3387,6 +3387,72 @@ def _fab_history_scope(product: str, root_lot_id: str = "", fab_lot_id: str = ""
     }
 
 
+def _fab_history_root_candidates(product: str, prefix: str = "", limit: int = 500) -> dict:
+    """Return root_lot_id candidates from the configured FAB DB source.
+
+    SplitTable's editable source is ML_TABLE_*, but operators choose lots from
+    the live FAB history.  Use the configured fab_source first so the dropdown
+    follows the same DB path that /view and fab_lot_id matching use.
+    """
+    try:
+        limit = max(1, int(limit or 500))
+    except Exception:
+        limit = 500
+    ctx = _fab_source_context(product)
+    if not ctx:
+        return {"candidates": [], "source": ""}
+    root_col = ctx.get("root_col") or ""
+    if not root_col:
+        return {"candidates": [], "source": ctx.get("source", "")}
+    try:
+        q = (
+            ctx["lf"]
+            .select(pl.col(root_col).cast(_STR, strict=False).alias("v"))
+            .filter(pl.col("v").is_not_null())
+        )
+        if prefix.strip():
+            q = q.filter(_contains_literal_ci_expr("v", prefix))
+        rows = q.unique().sort("v").head(limit).collect()
+    except Exception as e:
+        logger.warning("_fab_history_root_candidates 실패 (product=%s) %s: %s",
+                       product, type(e).__name__, e)
+        return {"candidates": [], "source": ctx.get("source", "")}
+    values = []
+    seen = set()
+    for value in rows["v"].to_list() if "v" in rows.columns else []:
+        text = _clean_str(value)
+        if not text:
+            continue
+        key = text.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(text)
+    return {"candidates": values, "source": ctx.get("source", "")}
+
+
+def _merge_candidate_values(*groups, limit: int = 500) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    try:
+        limit = max(1, int(limit or 500))
+    except Exception:
+        limit = 500
+    for group in groups:
+        for value in group or []:
+            text = _clean_str(value)
+            if not text:
+                continue
+            key = text.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+            if len(out) >= limit:
+                return out
+    return out
+
+
 def _scan_product(product: str):
     """Scan ML_TABLE_<PROD>.parquet + hive override join.
 
@@ -3551,6 +3617,18 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
         logger.warning("/lot-ids: main lf 조회 실패 (product=%s) %s: %s",
                        product, type(e).__name__, e)
         lots_list = []
+    fab_roots: list[str] = []
+    fab_source = ""
+    try:
+        hist = _fab_history_root_candidates(product, limit=limit)
+        fab_roots = hist.get("candidates") or []
+        fab_source = hist.get("source") or ""
+    except Exception as e:
+        logger.warning("/lot-ids: FAB root 후보 조회 실패 (product=%s) %s: %s",
+                       product, type(e).__name__, e)
+    if fab_roots:
+        lots_list = _merge_candidate_values(fab_roots, lots_list, limit=limit)
+        fallback_used = True
     # v8.8.26: main 이 all-null 이거나 비어있으면 override fab_source 로 폴백.
     if not lots_list:
         try:
@@ -3576,7 +3654,8 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
             logger.warning("/lot-ids: override 폴백 실패 (product=%s) %s: %s",
                            product, type(e).__name__, e)
     return {"lot_col": lot_col, "lot_ids": lots_list,
-            "fallback": "override" if fallback_used else ""}
+            "fallback": "fab_source" if fallback_used else "",
+            "fab_source": fab_source}
 
 
 @router.get("/lot-candidates")
@@ -3598,6 +3677,19 @@ def get_lot_candidates(
     # v9.0.5: fab_lot_id 후보는 DB FAB 원천 이력의 정확한 root/fab 매칭만 허용.
     #   DB FAB 에 없으면 ML_TABLE LOT_ID, starts_with, 전체 후보 fallback 으로 회피하지 않는다.
     root_scope = (root_lot_id or "").strip()
+    if col.casefold() == "root_lot_id":
+        hist = _fab_history_root_candidates(product, prefix=prefix, limit=limit)
+        if hist.get("candidates"):
+            return {
+                "col": "root_lot_id",
+                "candidates": hist.get("candidates") or [],
+                "prefix": prefix,
+                "root_scope": root_scope,
+                "match_mode": "fab_history_roots",
+                "source": "fab_source_history",
+                "fab_source": hist.get("source", ""),
+                "strict": True,
+            }
     if col.casefold() in {c.casefold() for c in _FAB_COL_CANDIDATES}:
         hist = _fab_history_scope(product, root_lot_id=root_scope, prefix=prefix, limit=limit)
         return {

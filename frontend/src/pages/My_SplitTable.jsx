@@ -226,7 +226,17 @@ export default function My_SplitTable({user}){
       if(visibleProducts.length)setSelProd(visibleProducts[0].name);
     }
   },[enabledSources,products]);
-  useEffect(()=>{if(selProd)sf(API+"/lot-ids?product="+selProd).then(d=>setLotSuggestions(d.lot_ids||[])).catch(()=>{});},[selProd]);
+  useEffect(()=>{
+    if(!selProd){setLotSuggestions([]);return;}
+    const prefix=(lotId||"").trim();
+    let url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=root_lot_id&limit=500";
+    if(prefix) url+="&prefix="+encodeURIComponent(prefix);
+    sf(url)
+      .then(d=>setLotSuggestions(d.candidates||[]))
+      .catch(()=>{
+        if(!prefix) sf(API+"/lot-ids?product="+encodeURIComponent(selProd)).then(d=>setLotSuggestions(d.lot_ids||[])).catch(()=>{});
+      });
+  },[selProd,lotId]);
   // v9.0.0: 제품 변경 시 lotId/fabLotId/waferIds 초기화 — 직전 제품의 lot 이 남아 잘못된 필터링 방지.
   //   (예: PRODA 의 A1000A.1_V1 이 PRODB 로 전환 후에도 fab_lot_id 칸에 남아 있으면 B0001 root 와 어긋나는 조합 생성).
   const _prevProd = useRef(selProd);
