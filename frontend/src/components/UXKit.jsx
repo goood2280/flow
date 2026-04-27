@@ -157,7 +157,7 @@ export function PageHeader({ title, subtitle, right, style = {} }) {
       padding: "8px 14px", borderBottom: `1px solid ${c.border}`,
       background: c.bg2, minHeight: 34, ...style,
     }}>
-      {title && <span style={{ fontSize: 13, fontWeight: 800, color: c.accent }}>{uiLabel(title)}</span>}
+      {title && <span style={{ fontSize: 12, fontWeight: 700, color: c.textSub }}>{uiLabel(title)}</span>}
       {subtitle && <span style={{ fontSize: 11, color: c.textSub }}>{subtitle}</span>}
       {right != null && <span style={{ marginLeft: "auto" }}>{right}</span>}
     </div>

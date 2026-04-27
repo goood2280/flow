@@ -289,6 +289,87 @@ function addSummaryBadges(slide, item) {
   });
 }
 
+function addScoreboardSlide() {
+  const meta = payload.meta || {};
+  const rows = (payload.scoreboard || []).slice(0, 24);
+  const slide = pptx.addSlide();
+  slide.background = { color: "F8FAFC" };
+  slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.333, h: 0.55, fill: { color: COLORS.ink }, line: { color: COLORS.ink } });
+  addText(slide, payload.title || "ET Measurement Report", 0.25, 0.12, 3.0, 0.24, { fontSize: 12, bold: true, color: "FFFFFF" });
+  addText(slide, `${meta.product || "-"} · ${meta.root_lot_id || "-"} · ${meta.fab_lot_id || "-"} · ${meta.step_id || "-"}`, 3.05, 0.12, 6.8, 0.24, { fontSize: 9, color: "E2E8F0" });
+  addText(slide, meta.generated_at || "", 10.05, 0.12, 3.0, 0.24, { fontSize: 8, color: "CBD5E1", align: "right" });
+
+  addText(slide, "ET 측정이력", 0.35, 0.82, 2.3, 0.28, { fontSize: 18, bold: true });
+  addText(slide, `측정시간 ${meta.package_time || "-"}   Step Seq ${meta.step_seq_points || "-"}   Request ${meta.request_key || "-"}`, 0.35, 1.16, 9.8, 0.22, { fontSize: 9, color: COLORS.sub });
+
+  const summary = [
+    ["제품", meta.product || "-"],
+    ["Lot", meta.fab_lot_id || meta.root_lot_id || "-"],
+    ["Step", meta.step_label || meta.step_id || "-"],
+    ["Rows", meta.row_count || 0],
+  ];
+  summary.forEach((item, i) => {
+    const x = 0.35 + i * 2.25;
+    slide.addShape(pptx.ShapeType.roundRect, { x, y: 1.52, w: 2.05, h: 0.58, rectRadius: 0.04, fill: { color: "FFFFFF" }, line: { color: "E2E8F0" } });
+    addText(slide, item[0], x + 0.12, 1.63, 0.55, 0.15, { fontSize: 7, color: COLORS.sub });
+    addText(slide, item[1], x + 0.68, 1.58, 1.2, 0.22, { fontSize: 10, bold: true, color: i === 1 ? COLORS.teal : COLORS.ink, align: "right" });
+  });
+
+  const x0 = 0.35;
+  const y0 = 2.45;
+  const widths = [1.95, 1.8, 1.35, 1.0, 1.0, 1.0, 0.62, 0.78, 1.0];
+  const headers = ["Index", "Raw", "Seq/PT", "Mean", "Min", "Max", "Out", "Status", "Spec"];
+  let x = x0;
+  headers.forEach((h, i) => {
+    slide.addShape(pptx.ShapeType.rect, { x, y: y0, w: widths[i], h: 0.26, fill: { color: "E2E8F0" }, line: { color: "CBD5E1", width: 0.4 } });
+    addText(slide, h, x + 0.04, y0 + 0.05, widths[i] - 0.08, 0.13, { fontSize: 7.2, bold: true, color: COLORS.sub });
+    x += widths[i];
+  });
+  const rowH = 0.18;
+  rows.forEach((r, idx) => {
+    const yy = y0 + 0.26 + idx * rowH;
+    const fill = idx % 2 ? "FFFFFF" : "F8FAFC";
+    const vals = [
+      r.alias || "",
+      r.rawitem_id || "",
+      r.step_seq_points || "",
+      nfmt(r.mean_value),
+      nfmt(r.min_value),
+      nfmt(r.max_value),
+      String(r.spec_out_points || 0),
+      String(r.status || "").toUpperCase(),
+      `${r.spec || "none"} ${r.lsl ?? "-"}~${r.usl ?? "-"}`,
+    ];
+    x = x0;
+    vals.forEach((v, i) => {
+      const bad = i === 6 && Number(r.spec_out_points || 0) > 0;
+      const statusBad = i === 7 && ["ABNORMAL", "CRITICAL", "WARN"].includes(String(v).toUpperCase());
+      slide.addShape(pptx.ShapeType.rect, { x, y: yy, w: widths[i], h: rowH, fill: { color: fill }, line: { color: "E2E8F0", width: 0.25 } });
+      addText(slide, v, x + 0.04, yy + 0.025, widths[i] - 0.08, 0.11, {
+        fontSize: 6.4,
+        color: bad || statusBad ? COLORS.red : COLORS.ink,
+        bold: bad || statusBad || i === 0,
+        align: i >= 3 && i <= 6 ? "right" : "left",
+      });
+      x += widths[i];
+    });
+  });
+  if (!rows.length) {
+    addText(slide, "No scoreboard rows matched the selected ET measurement.", x0, y0 + 0.6, 7.0, 0.25, { fontSize: 11, color: COLORS.sub });
+  }
+}
+
+if (payload.mode === "scoreboard") {
+  addScoreboardSlide();
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  (async () => {
+    await pptx.writeFile({ fileName: output });
+  })().catch((err) => {
+    console.error(err && err.stack ? err.stack : String(err));
+    process.exit(1);
+  });
+} else {
+
 const items = payload.items || [];
 if (!items.length) {
   const slide = pptx.addSlide();
@@ -316,3 +397,4 @@ fs.mkdirSync(path.dirname(output), { recursive: true });
   console.error(err && err.stack ? err.stack : String(err));
   process.exit(1);
 });
+}

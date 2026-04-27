@@ -53,6 +53,13 @@ const DEF_TEG_ROWS = [
   { no: 104, name: "TEG_BOTTOM", x: 13.6, y: -0.4, flat: 0 },
 ];
 
+const TECH_COLUMNS = [
+  { key: "tech", label: "tech" },
+  { key: "module", label: "module" },
+  { key: "step", label: "step" },
+  { key: "note", label: "note" },
+];
+
 function num(v, d = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
@@ -289,6 +296,65 @@ function parseTegPaste(text, prevRows) {
   return rows.length ? rows : null;
 }
 
+function techHeaderKey(raw) {
+  const s = String(raw || "").trim().toLowerCase().replace(/\s+/g, "_");
+  if (["product", "제품"].includes(s)) return "product";
+  if (["tech", "tech_id", "technology", "테크", "테크명"].includes(s)) return "tech";
+  if (["module", "모듈"].includes(s)) return "module";
+  if (["step", "step_id", "공정"].includes(s)) return "step";
+  if (["note", "description", "비고", "설명"].includes(s)) return "note";
+  return "";
+}
+
+function normalizeTechRows(rows, product = "") {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row, idx) => ({
+      id: String(row?.id || `tech_${Date.now()}_${idx}`),
+      product: String(product || row?.product || ""),
+      tech: String(row?.tech || row?.tech_id || row?.technology || row?.["테크"] || ""),
+      module: String(row?.module || row?.["모듈"] || ""),
+      step: String(row?.step || row?.step_id || row?.["공정"] || ""),
+      note: String(row?.note || row?.description || row?.["비고"] || row?.["설명"] || ""),
+    }))
+    .filter((row) => row.tech.trim() || row.module.trim() || row.step.trim() || row.note.trim());
+}
+
+function parseTechPaste(text, product, prevRows = []) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return [];
+  const sep = text.includes("\t") ? "\t" : ",";
+  const split = (line) => line.split(sep).map((part) => part.trim());
+  const first = split(lines[0]);
+  const headers = first.map(techHeaderKey);
+  const hasHeader = headers.some(Boolean);
+  const body = hasHeader ? lines.slice(1) : lines;
+  const next = (prevRows || []).length;
+  const rows = body.map((line, idx) => {
+    const parts = split(line);
+    const row = { id: `tech_${Date.now()}_${next + idx}`, product };
+    if (hasHeader) {
+      headers.forEach((key, colIdx) => {
+        if (key && key !== "product") row[key] = parts[colIdx] || "";
+      });
+    } else if (parts.length >= 5) {
+      row.tech = parts[1] || "";
+      row.module = parts[2] || "";
+      row.step = parts[3] || "";
+      row.note = parts.slice(4).join(" ");
+    } else {
+      row.tech = parts[0] || "";
+      row.module = parts[1] || "";
+      row.step = parts[2] || "";
+      row.note = parts.slice(3).join(" ");
+    }
+    return row;
+  });
+  return normalizeTechRows(rows, product);
+}
+
 function Input({ label, value, onChange, type = "number" }) {
   return (
     <label style={{ display: "grid", gap: 4 }}>
@@ -321,6 +387,9 @@ export default function My_WaferLayout() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [selectedTegNos, setSelectedTegNos] = useState([]);
   const [msg, setMsg] = useState("");
+  const [techRows, setTechRows] = useState([]);
+  const [techLoading, setTechLoading] = useState(false);
+  const [techMsg, setTechMsg] = useState("");
   const applyLayout = (wl) => {
     setCfg((prev) => ({ ...prev, ...buildCfgFromSaved(wl || {}) }));
     setTegRows(normalizeTegRows(wl?.teg_definitions || wl?.tegs));
@@ -375,6 +444,17 @@ export default function My_WaferLayout() {
   }, []);
   useEffect(() => {
     if (product) loadProductLayout(product);
+  }, [product]);
+  const loadTechList = (nextProduct) => {
+    if (!nextProduct) { setTechRows([]); return; }
+    setTechLoading(true);
+    sf("/api/waferlayout/tech-list?product=" + encodeURIComponent(nextProduct))
+      .then((d) => setTechRows(normalizeTechRows(d?.rows || [], nextProduct)))
+      .catch(() => setTechRows([]))
+      .finally(() => setTechLoading(false));
+  };
+  useEffect(() => {
+    loadTechList(product);
   }, [product]);
   const data = useMemo(() => {
     const c = {
@@ -792,6 +872,38 @@ export default function My_WaferLayout() {
     e.preventDefault();
     setTegRows(rows);
   };
+  const handleTechPaste = (e) => {
+    const text = e.clipboardData?.getData("text/plain");
+    if (!text || (!text.includes("\t") && !text.includes(","))) return;
+    const rows = parseTechPaste(text, product, techRows);
+    if (!rows.length) return;
+    e.preventDefault();
+    setTechRows((prev) => normalizeTechRows([...prev, ...rows], product));
+  };
+  const updateTechRow = (idx, key, value) => {
+    setTechRows((prev) => prev.map((row, i) => i === idx ? { ...row, [key]: value, product } : row));
+  };
+  const addTechRow = () => {
+    setTechRows((prev) => [...prev, { id: `tech_${Date.now()}`, product, tech: "", module: "", step: "", note: "" }]);
+  };
+  const saveTechList = () => {
+    if (!product || !isAdmin) return;
+    setTechMsg("저장 중...");
+    sf("/api/waferlayout/tech-list", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product, rows: normalizeTechRows(techRows, product) }),
+    })
+      .then((d) => {
+        setTechRows(normalizeTechRows(d?.rows || [], product));
+        setTechMsg("tech list 저장됨");
+        setTimeout(() => setTechMsg(""), 2200);
+      })
+      .catch((e) => {
+        setTechMsg("저장 실패: " + (e?.message || "unknown"));
+        setTimeout(() => setTechMsg(""), 2600);
+      });
+  };
   const chipCsvColumns = [
     { key: "chipX", label: "chip_x" },
     { key: "chipY", label: "chip_y" },
@@ -809,12 +921,7 @@ export default function My_WaferLayout() {
   return (
     <div style={{ padding: "12px 14px", background: "var(--bg-primary)", color: "var(--text-primary)", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
-        <div>
-          <div style={{ fontSize: 16, fontWeight: 800, color: "var(--accent)" }}>웨이퍼 레이아웃</div>
-          <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-            제품별 wafer/shot/chip/TEG 배치를 한 화면에서 확인합니다. 상세 입력과 TEG 편집은 필요할 때만 엽니다.
-          </div>
-        </div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>웨이퍼 레이아웃</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <select value={product} onChange={(e) => {
             const next = e.target.value;
@@ -917,6 +1024,74 @@ export default function My_WaferLayout() {
               </div>
             )}
           </div>
+
+          {viewMode === "shot" && <div style={paneCard}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>제품별 Tech List</div>
+              <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{techRows.length} rows</span>
+            </div>
+            <div style={{ ...sheetWrap, maxHeight: 260 }} onPaste={handleTechPaste}>
+              <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+                <thead>
+                  <tr>
+                    {TECH_COLUMNS.map((col) => (
+                      <th key={col.key} style={{ ...sheetHead, borderRight: "1px solid var(--border)" }}>{col.label}</th>
+                    ))}
+                    <th style={{ ...sheetHead, borderRight: "none", width: 54 }}>삭제</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {techRows.length === 0 && (
+                    <tr>
+                      <td colSpan={TECH_COLUMNS.length + 1} style={{ padding: "14px 10px", color: "var(--text-secondary)", fontSize: 11, textAlign: "center" }}>
+                        엑셀에서 tech / module / step / note 컬럼을 복사해 붙여넣을 수 있습니다.
+                      </td>
+                    </tr>
+                  )}
+                  {techRows.map((row, idx) => (
+                    <tr key={row.id || idx}>
+                      {TECH_COLUMNS.map((col) => (
+                        <td key={col.key} style={{ ...sheetCell, minWidth: col.key === "note" ? 160 : 96 }}>
+                          <input
+                            value={row[col.key] || ""}
+                            onChange={(e) => updateTechRow(idx, col.key, e.target.value)}
+                            readOnly={!isAdmin}
+                            style={{ ...sheetInput, cursor: isAdmin ? "text" : "default" }}
+                          />
+                        </td>
+                      ))}
+                      <td style={{ ...sheetCell, width: 54, borderRight: "none", textAlign: "center", background: "rgba(248,113,113,0.06)" }}>
+                        <button
+                          disabled={!isAdmin}
+                          onClick={() => setTechRows((prev) => prev.filter((_, i) => i !== idx))}
+                          style={{ width: "100%", padding: "9px 0", border: "none", background: "transparent", cursor: isAdmin ? "pointer" : "not-allowed", color: "#dc2626", fontWeight: 700, opacity: isAdmin ? 1 : 0.4 }}
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>
+                저장 위치: flow-data/waferlayout/product_tech_lists.csv
+              </span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                {techLoading && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>loading...</span>}
+                {techMsg && <span style={{ fontSize: 10, color: techMsg.includes("실패") ? "#dc2626" : "#16a34a" }}>{techMsg}</span>}
+                <button disabled={!isAdmin} onClick={addTechRow}
+                  style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", cursor: isAdmin ? "pointer" : "not-allowed", fontSize: 10, fontWeight: 700, opacity: isAdmin ? 1 : 0.5 }}>
+                  + 행
+                </button>
+                <button disabled={!isAdmin} onClick={saveTechList}
+                  style={{ padding: "6px 10px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", cursor: isAdmin ? "pointer" : "not-allowed", fontSize: 10, fontWeight: 700, opacity: isAdmin ? 1 : 0.5 }}>
+                  저장
+                </button>
+              </div>
+            </div>
+          </div>}
 
           {showAdvanced && <div style={paneCard}>
             <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Wafer / Shot Geometry</div>

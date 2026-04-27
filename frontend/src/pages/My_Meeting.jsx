@@ -589,7 +589,7 @@ export default function My_Meeting({ user }) {
       <div style={{ width: 340, minWidth: 300, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace", color: "var(--accent)" }}>🗓 회의관리</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>회의 관리</span>
             <span style={{ flex: 1 }} />
             <button onClick={() => setCreating(true)} style={btnPrimary}>+ 새 회의</button>
           </div>

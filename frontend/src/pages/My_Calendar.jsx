@@ -244,7 +244,7 @@ export default function My_Calendar({ user }) {
       </PageGear>
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <PageHeader
-          title="> 변경점 달력"
+          title="변경점 관리"
           subtitle={`${view.getFullYear()}년 ${view.getMonth() + 1}월`}
           right={(
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
