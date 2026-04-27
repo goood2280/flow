@@ -27,11 +27,88 @@ from core import llm_adapter
 router = APIRouter(prefix="/api/llm", tags=["llm"])
 logger = logging.getLogger("flow.llm.router")
 FLOWI_FEEDBACK_FILE = PATHS.data_root / "flowi_feedback.jsonl"
+FLOWI_USER_DIR = PATHS.data_root / "flowi_users"
 FLOWI_READ_ONLY_POLICY = {
     "read_only": True,
     "applies_to": ["user", "admin"],
     "blocked_targets": ["raw data DB", "Files", "DB root files", "product reformatter files"],
 }
+FLOWI_PROFILE_START = "<!-- FLOWI_USER_NOTES_START -->"
+FLOWI_PROFILE_END = "<!-- FLOWI_USER_NOTES_END -->"
+FLOWI_FEATURE_ENTRYPOINTS = [
+    {
+        "key": "filebrowser",
+        "title": "파일 탐색기",
+        "description": "Parquet/CSV 원천 데이터를 선택하고 SQL-like 필터와 컬럼 선택으로 빠르게 샘플링합니다.",
+        "prompt": "파일 탐색기에서 내가 가진 product/lot 조건으로 어떤 DB와 필터를 먼저 보면 좋을지 알려줘.",
+    },
+    {
+        "key": "dashboard",
+        "title": "대시보드",
+        "description": "선택한 데이터 소스를 차트로 비교하고 기간, 컬럼, 필터 조건을 바꿔 추세를 봅니다.",
+        "prompt": "대시보드에서 내 담당 제품의 이상 징후를 보기 위한 차트 구성을 추천해줘.",
+    },
+    {
+        "key": "splittable",
+        "title": "스플릿 테이블",
+        "description": "Root lot/wafer 단위로 plan과 actual을 비교하고 변경 이력을 추적합니다.",
+        "prompt": "스플릿 테이블에서 plan vs actual mismatch를 빨리 확인하는 흐름을 알려줘.",
+    },
+    {
+        "key": "tracker",
+        "title": "이슈 추적",
+        "description": "Lot/Wafer 범위를 포함한 이슈, 댓글, 이미지, Gantt 진행 상태를 관리합니다.",
+        "prompt": "트래커에 lot/wafer 이슈를 남길 때 필요한 정보와 좋은 제목을 추천해줘.",
+    },
+    {
+        "key": "inform",
+        "title": "인폼 로그",
+        "description": "제품/lot 인폼을 남기고 SplitTable 스냅샷, 댓글, 메일 공유까지 연결합니다.",
+        "prompt": "인폼 로그에 공유할 내용을 내 상황에 맞게 정리해줘.",
+    },
+    {
+        "key": "meeting",
+        "title": "회의관리",
+        "description": "회의 아젠다, 회의록, 결정사항, 액션아이템을 관리하고 메일로 공유합니다.",
+        "prompt": "내 이슈를 회의 아젠다와 액션아이템으로 정리해줘.",
+    },
+    {
+        "key": "calendar",
+        "title": "변경점 관리",
+        "description": "변경 일정과 상태를 달력에서 확인하고 회의 액션과 연결합니다.",
+        "prompt": "이번 변경 건을 캘린더에 넣기 위한 제목, 기간, 상태를 추천해줘.",
+    },
+    {
+        "key": "ettime",
+        "title": "ET 레포트",
+        "description": "fab_lot_id, step, item 기준 elapsed time과 wafer별 통계를 확인합니다.",
+        "prompt": "ET 레포트에서 root_lot/step/item 조건으로 먼저 봐야 할 값을 알려줘.",
+    },
+    {
+        "key": "waferlayout",
+        "title": "WF Layout",
+        "description": "제품별 wafer shot/chip/TEG 배치와 edge shot 후보를 검토합니다.",
+        "prompt": "WF Layout에서 내 제품의 layout 검토 포인트를 체크리스트로 만들어줘.",
+    },
+    {
+        "key": "ml",
+        "title": "ML 분석",
+        "description": "Inline/ET 요약, 상관, 중요도, 공정 window 후보를 비교합니다.",
+        "prompt": "ML 분석에서 내 제품의 원인 후보를 좁히기 위한 컬럼 선택을 추천해줘.",
+    },
+    {
+        "key": "tablemap",
+        "title": "테이블 맵",
+        "description": "DB 테이블과 컬럼 관계를 그래프로 보고 연결 맥락을 확인합니다.",
+        "prompt": "테이블 맵에서 내가 찾는 lot/step/item 컬럼의 연결 경로를 어떻게 확인하면 좋을지 알려줘.",
+    },
+    {
+        "key": "devguide",
+        "title": "개발 가이드",
+        "description": "Flow 구조, API, 운영 규칙을 확인하는 가벼운 문서 진입점입니다.",
+        "prompt": "개발 가이드에서 이 기능을 이해하려면 어떤 문서와 API를 먼저 보면 좋을지 알려줘.",
+    },
+]
 
 _WRITE_TERMS = (
     "수정", "변경", "바꿔", "바꾸", "저장", "삭제", "지워", "업로드", "올려",
@@ -59,6 +136,141 @@ def _text(raw: Any) -> str:
 
 def _upper(raw: Any) -> str:
     return _text(raw).upper()
+
+
+def _md_line(raw: Any, limit: int = 600) -> str:
+    text = re.sub(r"\s+", " ", str(raw or "")).strip()
+    return text[:limit]
+
+
+def _safe_username(raw: Any) -> str:
+    username = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(raw or "user").strip())
+    username = username.strip("._-") or "user"
+    return username[:80]
+
+
+def _user_md_path(username: str) -> Path:
+    return FLOWI_USER_DIR / f"{_safe_username(username)}.md"
+
+
+def _new_user_md(username: str) -> str:
+    now = datetime.now(timezone.utc).isoformat()
+    return (
+        f"# Flowi User Context: {_safe_username(username)}\n\n"
+        f"- Created: {now}\n"
+        f"- Updated: {now}\n\n"
+        "## User Notes\n"
+        f"{FLOWI_PROFILE_START}\n"
+        "\n"
+        f"{FLOWI_PROFILE_END}\n\n"
+        "## Activity Log\n"
+    )
+
+
+def _read_user_md(username: str, *, create: bool = True) -> str:
+    path = _user_md_path(username)
+    try:
+        FLOWI_USER_DIR.mkdir(parents=True, exist_ok=True)
+        if not path.exists() and create:
+            path.write_text(_new_user_md(username), encoding="utf-8")
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning("flowi user md read failed: %s", e)
+        return ""
+
+
+def _notes_from_md(md: str) -> str:
+    if not md:
+        return ""
+    m = re.search(
+        re.escape(FLOWI_PROFILE_START) + r"\n?(.*?)\n?" + re.escape(FLOWI_PROFILE_END),
+        md,
+        flags=re.S,
+    )
+    return (m.group(1).strip() if m else "").strip()
+
+
+def _replace_user_notes(md: str, username: str, notes: str) -> str:
+    now = datetime.now(timezone.utc).isoformat()
+    if not md:
+        md = _new_user_md(username)
+    notes_block = f"{FLOWI_PROFILE_START}\n{notes.strip()}\n{FLOWI_PROFILE_END}"
+    pattern = re.escape(FLOWI_PROFILE_START) + r"\n?.*?\n?" + re.escape(FLOWI_PROFILE_END)
+    if re.search(pattern, md, flags=re.S):
+        out = re.sub(pattern, notes_block, md, flags=re.S)
+    else:
+        insert = "## User Notes\n" + notes_block + "\n\n"
+        out = md.replace("## Activity Log\n", insert + "## Activity Log\n") if "## Activity Log\n" in md else md + "\n\n" + insert
+    out = re.sub(r"- Updated: .+", f"- Updated: {now}", out, count=1)
+    if "- Updated:" not in out.split("\n\n", 1)[0]:
+        out = out.replace("\n\n", f"\n- Updated: {now}\n\n", 1)
+    return out
+
+
+def _write_user_notes(username: str, notes: str) -> str:
+    path = _user_md_path(username)
+    FLOWI_USER_DIR.mkdir(parents=True, exist_ok=True)
+    md = _replace_user_notes(_read_user_md(username), username, notes)
+    path.write_text(md, encoding="utf-8")
+    return md
+
+
+def _append_user_event(username: str, title: str, fields: dict[str, Any]) -> None:
+    try:
+        path = _user_md_path(username)
+        md = _read_user_md(username)
+        now = datetime.now(timezone.utc).isoformat()
+        lines = [f"\n### {now} - {title}"]
+        for key, val in fields.items():
+            if val is None:
+                continue
+            lines.append(f"- {key}: {_md_line(val, 900)}")
+        path.write_text(md.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    except Exception as e:
+        logger.warning("flowi user md append failed: %s", e)
+
+
+def _profile_context(username: str) -> str:
+    md = _read_user_md(username, create=False)
+    notes = _notes_from_md(md)
+    recent = md[-2500:] if md else ""
+    parts = []
+    if notes:
+        parts.append("사용자 메모:\n" + notes[:2500])
+    if recent:
+        parts.append("최근 Flowi 기록:\n" + recent)
+    return "\n\n".join(parts).strip()
+
+
+def _matched_feature_entrypoints(prompt: str, limit: int = 4) -> list[dict[str, str]]:
+    prompt_l = str(prompt or "").lower()
+    toks = {_upper(t) for t in _tokens(prompt)}
+    scored: list[tuple[int, dict[str, str]]] = []
+    for item in FLOWI_FEATURE_ENTRYPOINTS:
+        hay = " ".join([item["key"], item["title"], item["description"], item["prompt"]]).lower()
+        score = 0
+        if item["key"].lower() in prompt_l or item["title"].lower() in prompt_l:
+            score += 4
+        for tok in toks:
+            if tok and tok.lower() in hay:
+                score += 1
+        if score:
+            scored.append((score, item))
+    if not scored:
+        return []
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [dict(item) for _, item in scored[:limit]]
+
+
+def _feature_context(prompt: str) -> str:
+    matches = _matched_feature_entrypoints(prompt)
+    items = matches or FLOWI_FEATURE_ENTRYPOINTS[:6]
+    return "\n".join(
+        f"- {it['title']}({it['key']}): {it['description']} 시작 질문 예시: {it['prompt']}"
+        for it in items
+    )
 
 
 def _flowi_write_block_message(prompt: str) -> str:
@@ -588,9 +800,11 @@ def status(request: Request):
         "available": llm_adapter.is_available(),
         "config": cfg,
         "flowi": {
-            "requires_token": True,
+            "requires_token": False,
+            "admin_token_configured": llm_adapter.has_admin_token(),
             "local_tools": ["et_wafer_median", "lot_knobs"],
             "policy": FLOWI_READ_ONLY_POLICY,
+            "entrypoints": FLOWI_FEATURE_ENTRYPOINTS,
         },
     }
 
@@ -627,23 +841,52 @@ class FlowiFeedbackReq(BaseModel):
     note: str = ""
 
 
+class FlowiProfileReq(BaseModel):
+    notes: str = ""
+
+
 @router.post("/flowi/verify")
 def flowi_verify(req: FlowiVerifyReq, request: Request):
     _ = current_user(request)
-    token = (req.token or "").strip()
-    if not token:
-        raise HTTPException(400, "Flowi 활성화 토큰을 입력해주세요")
     if not llm_adapter.is_available():
         return {"ok": False, "message": "LLM 설정이 비활성화되어 있습니다.", "error": "llm unavailable"}
     out = llm_adapter.complete(
         "연결 확인입니다. 정상 수신했다면 확인완료 라고만 답하세요.",
         system="Flowi 연결 확인 응답은 반드시 확인완료 한 단어로만 작성합니다.",
         timeout=8,
-        auth_token=token,
     )
     if out.get("ok"):
         return {"ok": True, "message": "확인완료"}
     return {"ok": False, "message": "LLM 연결 확인 실패", "error": out.get("error") or "unknown"}
+
+
+@router.get("/flowi/profile")
+def flowi_profile(request: Request):
+    me = current_user(request)
+    username = me.get("username") or "user"
+    md = _read_user_md(username, create=False)
+    return {
+        "ok": True,
+        "username": username,
+        "notes": _notes_from_md(md),
+        "markdown": md,
+    }
+
+
+@router.post("/flowi/profile")
+def flowi_profile_save(req: FlowiProfileReq, request: Request):
+    me = current_user(request)
+    username = me.get("username") or "user"
+    notes = (req.notes or "").strip()
+    if len(notes) > 20000:
+        raise HTTPException(400, "사용자 메모는 20000자 이하로 입력해주세요")
+    md = _write_user_notes(username, notes)
+    _append_user_event(username, "profile_update", {"notes": notes[:500]})
+    return {
+        "ok": True,
+        "username": username,
+        "notes": _notes_from_md(md),
+    }
 
 
 @router.post("/flowi/feedback")
@@ -668,25 +911,30 @@ def flowi_feedback(req: FlowiFeedbackReq, request: Request):
     except Exception as e:
         logger.warning("flowi feedback save failed: %s", e)
         raise HTTPException(500, "피드백 저장 실패")
+    _append_user_event(me.get("username") or "user", "feedback", {
+        "rating": rating,
+        "intent": rec["intent"],
+        "note": rec["note"],
+        "prompt": rec["prompt_excerpt"],
+    })
     return {"ok": True}
 
 
 @router.post("/flowi/chat")
 def flowi_chat(req: FlowiChatReq, request: Request):
     me = current_user(request)
-    token = (req.token or "").strip()
+    username = me.get("username") or "user"
     prompt = (req.prompt or "").strip()
-    if not token:
-        raise HTTPException(400, "Flowi 활성화 토큰을 입력해주세요")
     if not prompt:
         raise HTTPException(400, "질문을 입력해주세요")
 
     blocked_msg = _flowi_write_block_message(prompt)
     if blocked_msg:
+        _append_user_event(username, "blocked_write_request", {"prompt": prompt, "answer": blocked_msg})
         return {
             "ok": True,
             "active": True,
-            "user": me.get("username") or "",
+            "user": username,
             "answer": blocked_msg,
             "tool": {
                 "handled": True,
@@ -700,32 +948,47 @@ def flowi_chat(req: FlowiChatReq, request: Request):
 
     max_rows = max(4, min(24, int(req.max_rows or 12)))
     tool = _handle_flowi_query(prompt, req.product, max_rows=max_rows)
+    entries = _matched_feature_entrypoints(prompt)
+    if entries:
+        tool["feature_entrypoints"] = entries
+    if not tool.get("handled") and entries:
+        tool["answer"] = (
+            "질문과 가장 가까운 기능 진입점입니다.\n"
+            + "\n".join(f"- {e['title']}: {e['description']}" for e in entries[:3])
+        )
     answer = tool.get("answer") or ""
     llm_info: dict[str, Any] = {"available": llm_adapter.is_available(), "used": False}
+    user_ctx = _profile_context(username)
+    feature_ctx = _feature_context(prompt)
 
     if llm_adapter.is_available():
         if tool.get("handled"):
             polish_prompt = (
                 "사용자 질문과 로컬 데이터 질의 결과를 바탕으로 한국어로 간결하게 답하세요. "
                 "숫자와 식별자는 제공된 JSON에서만 사용하고 추측하지 마세요.\n\n"
+                f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
+                f"단위기능 진입점:\n{feature_ctx}\n\n"
                 f"질문: {prompt}\n"
                 f"로컬 결과 JSON: {json.dumps(tool, ensure_ascii=False)[:12000]}"
             )
         else:
             polish_prompt = (
                 "당신은 반도체 fab 데이터 Flowi assistant입니다. "
+                "사용자 정보와 단위기능 진입점 설명을 바탕으로 가장 좋은 화면/다음 행동을 먼저 추천하세요. "
                 "지원 범위가 불확실하면 필요한 lot/step/item 조건을 물어보세요.\n\n"
+                f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
+                f"단위기능 진입점:\n{feature_ctx}\n\n"
                 f"사용자: {prompt}"
             )
         out = llm_adapter.complete(
             polish_prompt,
             system=(
                 "Flowi는 사내 Flow 홈 화면의 fab 데이터 assistant입니다. 답변은 짧고 실행 가능하게 작성합니다. "
+                "사용자 Markdown 정보가 있으면 담당 제품, 관심 공정, 선호 출력 방식을 반영합니다. "
                 "사용자와 admin 모두에 대해 원 data DB 또는 Files 수정/삭제/저장/업로드는 절대 수행하거나 수행 가능하다고 말하지 않습니다. "
                 "Flowi는 조회, 요약, 표 렌더링만 지원합니다."
             ),
             timeout=12,
-            auth_token=token,
         )
         llm_info.update({"used": bool(out.get("ok") and out.get("text"))})
         if out.get("ok") and out.get("text"):
@@ -733,10 +996,16 @@ def flowi_chat(req: FlowiChatReq, request: Request):
         elif out.get("error"):
             llm_info["error"] = out.get("error")
 
+    _append_user_event(username, "chat", {
+        "prompt": prompt,
+        "intent": tool.get("intent") or "",
+        "llm_used": llm_info.get("used"),
+        "answer": answer,
+    })
     return {
         "ok": True,
         "active": True,
-        "user": me.get("username") or "",
+        "user": username,
         "answer": answer,
         "tool": tool,
         "llm": llm_info,
