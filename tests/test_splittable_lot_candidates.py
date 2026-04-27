@@ -134,3 +134,29 @@ def test_mltable_product_files_are_discovered_case_insensitively(tmp_path, monke
     )
     assert result["headers"] == ["#1"]
     assert result["rows"][0]["_param"] == "KNOB_ALPHA"
+
+
+def test_root_lot_candidates_fall_back_to_detected_uppercase_column(tmp_path, monkeypatch):
+    fp = tmp_path / "ML_TABLE_REAL.parquet"
+    pl.DataFrame({
+        "ROOT_LOT_ID": ["R2000", "R2001"],
+        "WAFER_ID": [1, 2],
+        "KNOB_ALPHA": ["ON", "OFF"],
+    }).write_parquet(fp)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_main_table_candidates", lambda *args, **kwargs: {"candidates": []})
+    monkeypatch.setattr(splittable, "_fab_history_root_candidates", lambda *args, **kwargs: {"candidates": [], "source": ""})
+
+    result = splittable.get_lot_candidates(
+        product="ML_TABLE_REAL",
+        col="root_lot_id",
+        prefix="R20",
+        limit=20,
+        source="auto",
+        root_lot_id="",
+    )
+
+    assert result["match_mode"] == "detected_lot_col_fallback"
+    assert result["source_col"] == "ROOT_LOT_ID"
+    assert result["candidates"] == ["R2000", "R2001"]
