@@ -6,8 +6,9 @@ resolver functions exported below.
 Priority chain (first match wins):
   1. New env var:   FLOW_DB_ROOT
   2. admin_settings.json `data_roots.db` (runtime editable, optional)
-  3. Prod default: /config/work/sharedworkspace/DB when running from the prod
-     app root, or when FLOW_PROD=1 is explicitly set
+  3. Shared default: /config/work/sharedworkspace/DB when running from the prod
+     app root, when FLOW_PROD=1 is explicitly set, or on Linux when that
+     directory exists
   4. Repo default:  <PROJECT_ROOT>/data/Fab, then <PROJECT_ROOT>/data/DB
 
 `base_root` is now a compatibility alias to `db_root`. Single-file rulebooks,

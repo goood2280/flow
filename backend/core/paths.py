@@ -20,10 +20,10 @@ Production (사내 배포):
     FLOW_DATA_ROOT       = /config/work/sharedworkspace/flow-data
     FLOW_DB_ROOT         = /config/work/sharedworkspace/DB
 
-Auto-detection: sharedworkspace defaults are used only when this checkout is
-the production app root, or FLOW_PROD=1 is explicitly set. A local checkout may
-coexist with /config/work/sharedworkspace without being silently rebound to an
-old shared dataset.
+Auto-detection: sharedworkspace defaults are used when this checkout is the
+production app root, FLOW_PROD=1 is explicitly set, or the app is running on a
+Linux host where the relevant /config/work/sharedworkspace/{DB,flow-data}
+directory already exists.
 
 Compatibility: `PATHS.db_root` / `PATHS.base_root` / `PATHS.wafer_map_root` are
 properties that call `core.roots` on each access, so runtime-edited
