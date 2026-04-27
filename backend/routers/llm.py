@@ -439,6 +439,46 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
     if not selected_knobs:
         selected_knobs = knob_cols
 
+    table = None
+    detail_requested = bool(q_tokens) or any(w in prompt for w in ("다", "전체", "테이블", "표", "보여"))
+    if detail_requested and selected_knobs:
+        table_knobs = selected_knobs[:8]
+        table_cols = [c for c in (product_col, root_col, lot_col, wafer_col) if c] + table_knobs
+        rename = {}
+        if product_col:
+            rename[product_col] = "product"
+        if root_col:
+            rename[root_col] = "root_lot_id"
+        if lot_col:
+            rename[lot_col] = "lot_id"
+        if wafer_col:
+            rename[wafer_col] = "wafer_id"
+        for col in table_knobs:
+            rename[col] = col.replace("KNOB_", "", 1)
+        try:
+            tdf = df.select(table_cols).rename(rename)
+            table_rows = _sort_wafer_rows(tdf.to_dicts())[:80]
+        except Exception:
+            table_rows = []
+        table_columns = []
+        for key, label in [
+            ("product", "PRODUCT"),
+            ("root_lot_id", "ROOT_LOT_ID"),
+            ("lot_id", "LOT_ID"),
+            ("wafer_id", "WAFER_ID"),
+        ]:
+            if key in rename.values():
+                table_columns.append({"key": key, "label": label})
+        table_columns.extend({"key": col.replace("KNOB_", "", 1), "label": col.replace("KNOB_", "", 1)} for col in table_knobs)
+        table = {
+            "kind": "splittable_preview",
+            "title": f"{', '.join(lot_matches)} KNOB table",
+            "placement": "below",
+            "columns": table_columns,
+            "rows": table_rows,
+            "total": int(df.height),
+        }
+
     summaries = []
     for col in selected_knobs[: max(1, min(40, max_rows * 3))]:
         vc = (
@@ -487,6 +527,7 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
         "intent": "lot_knobs",
         "answer": answer,
         "knobs": summaries,
+        "table": table,
         "filters": {"lot": lot_matches, "product": sorted(aliases)},
     }
 
