@@ -2712,25 +2712,42 @@ def _resolve_fab_source_target(fab_source: str):
         return None, fab_source
     if fab_source.startswith("root:"):
         return None, fab_source
+    aliases = [fab_source]
+    parts = [p for p in fab_source.split("/") if p]
+    if parts:
+        head = parts[0].casefold()
+        tail = "/".join(parts[1:])
+        if head == _RAWDATA_FAB.casefold():
+            aliases.append(_RAWDATA_EXACT + (f"/{tail}" if tail else ""))
+        elif head == _RAWDATA_EXACT.casefold():
+            aliases.append(_RAWDATA_FAB + (f"/{tail}" if tail else ""))
     db_base = _db_base()
     base_root = _base_root()
     fp = None
+    matched = fab_source
     for root in (db_base, base_root):
         if not root or not root.exists():
             continue
-        # v8.8.22: CI 경로 매칭 — fab_source 내 제품 폴더 대소문자 무시.
-        cand = _find_ci_path(root, fab_source)
-        if cand is not None and cand.exists():
-            fp = cand
-            break
-        for ext in (".parquet", ".csv"):
-            cand2 = _find_ci_path(root, f"{fab_source}{ext}")
-            if cand2 is not None and cand2.exists():
-                fp = cand2
+        for rel in aliases:
+            # v8.8.22: CI 경로 매칭 — fab_source 내 제품 폴더 대소문자 무시.
+            # v9.0.6: 1.RAWDATA_DB_FAB/<PROD> 와 1.RAWDATA_DB/<PROD> 는 둘 다 FAB
+            # history 로 취급한다. 운영 환경은 exact 이름만 쓰는 경우가 있다.
+            cand = _find_ci_path(root, rel)
+            if cand is not None and cand.exists():
+                fp = cand
+                matched = rel
+                break
+            for ext in (".parquet", ".csv"):
+                cand2 = _find_ci_path(root, f"{rel}{ext}")
+                if cand2 is not None and cand2.exists():
+                    fp = cand2
+                    matched = rel
+                    break
+            if fp:
                 break
         if fp:
             break
-    return fp, fab_source
+    return fp, matched
 
 
 def _scan_fab_source_raw(fab_source: str):
@@ -3033,19 +3050,18 @@ def _resolve_override_meta(product: str) -> dict:
                 meta["error"] = "ML_TABLE_ prefix 아님 — 오버라이드 off."
             return meta
 
-        # locate fab_source folder/file to list scanned files.
-        fp = None
+        # locate fab_source folder/file to list scanned files.  The resolver also
+        # treats 1.RAWDATA_DB_FAB/<PROD> and 1.RAWDATA_DB/<PROD> as equivalent
+        # FAB-history roots for production soft landing.
+        fp, resolved_fab_source = _resolve_fab_source_target(fab_source)
         tried = []
         for root in (db_base, base_root):
             if not root or not root.exists():
                 tried.append(f"{root} (not exist)" if root else "(None)")
                 continue
-            # v8.8.22: CI 매칭 — 저장된 fab_source 의 대소문자와 폴더명 대소문자가 달라도 인식.
-            cand = _find_ci_path(root, fab_source)
-            tried.append(str(root / fab_source) + ("" if cand is not None and cand.exists() else "  (not found)"))
-            if cand is not None and cand.exists():
-                fp = cand
-                break
+            for rel in dict.fromkeys([fab_source, resolved_fab_source]):
+                if rel:
+                    tried.append(str(root / rel) + ("" if fp is not None else "  (not found)"))
         if fp is None:
             meta["tried_candidates"] = tried
             meta["error"] = (
@@ -3055,6 +3071,9 @@ def _resolve_override_meta(product: str) -> dict:
                 f"(예: '1.RAWDATA_DB_FAB/PRODA', not 'DB/1.RAWDATA_DB_FAB/PRODA')."
             )
             return meta
+        if resolved_fab_source:
+            meta["fab_source"] = resolved_fab_source
+            fab_source = resolved_fab_source
         if fp.is_dir():
             parquets = sorted(fp.rglob("*.parquet"))
             base_for_rel = fp.parent if fp.parent.exists() else fp
@@ -3263,6 +3282,9 @@ def _fab_source_context(product: str) -> dict:
             fab_source = _auto_derive_fab_source(ml_product)
         if not fab_source:
             return {}
+        _, resolved_fab_source = _resolve_fab_source_target(fab_source)
+        if resolved_fab_source:
+            fab_source = resolved_fab_source
         fab_lf = _scan_fab_source(fab_source)
         if fab_lf is None:
             return {}
@@ -3453,6 +3475,68 @@ def _merge_candidate_values(*groups, limit: int = 500) -> list[str]:
     return out
 
 
+def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str = "",
+                           limit: int = 500, root_lot_id: str = "") -> dict:
+    """Return candidates from the actual SplitTable render source.
+
+    FAB history can contain operational roots that are not present in the
+    current ML_TABLE. Those roots are useful for lineage, but they produce an
+    empty SplitTable view. Autocomplete should therefore prefer values that can
+    actually render in /view.
+    """
+    try:
+        limit = max(1, int(limit or 500))
+    except Exception:
+        limit = 500
+    try:
+        lf = _scan_product(product)
+        schema_names = lf.collect_schema().names()
+        lot_col, _ = _detect_lot_wafer(lf, product)
+        target = ""
+        if str(col or "").casefold() == "root_lot_id":
+            target = lot_col or _ci_resolve_in("root_lot_id", schema_names)
+        elif str(col or "").casefold() in {c.casefold() for c in _FAB_COL_CANDIDATES}:
+            target = (
+                _ci_resolve_in("fab_lot_id", schema_names)
+                or _ci_resolve_in("lot_id", schema_names)
+                or _pick_first_present_ci(_FAB_COL_CANDIDATES, schema_names)
+            )
+        else:
+            target = _ci_resolve_in(col, schema_names)
+        if not target or target not in schema_names:
+            return {"candidates": [], "source_col": target or col, "root_ids": []}
+
+        root_scope = _clean_str(root_lot_id)
+        if root_scope:
+            root_col = lot_col or _ci_resolve_in("root_lot_id", schema_names)
+            if root_col and root_col in schema_names:
+                lf = lf.filter(_join_key_expr(root_col) == root_scope.upper())
+
+        q = (
+            lf.select(pl.col(target).cast(_STR, strict=False).alias("v"))
+            .filter(pl.col("v").is_not_null())
+        )
+        if prefix.strip():
+            q = q.filter(_contains_literal_ci_expr("v", prefix))
+        rows = q.unique().sort("v").head(limit).collect()
+        values = []
+        seen = set()
+        for value in rows["v"].to_list() if "v" in rows.columns else []:
+            text = _clean_str(value)
+            if not text:
+                continue
+            key = text.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            values.append(text)
+        return {"candidates": values, "source_col": target, "root_ids": values if str(col or "").casefold() == "root_lot_id" else []}
+    except Exception as e:
+        logger.warning("_main_table_candidates 실패 (product=%s col=%s) %s: %s",
+                       product, col, type(e).__name__, e)
+        return {"candidates": [], "source_col": col, "root_ids": []}
+
+
 def _scan_product(product: str):
     """Scan ML_TABLE_<PROD>.parquet + hive override join.
 
@@ -3627,8 +3711,16 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
         logger.warning("/lot-ids: FAB root 후보 조회 실패 (product=%s) %s: %s",
                        product, type(e).__name__, e)
     if fab_roots:
-        lots_list = _merge_candidate_values(fab_roots, lots_list, limit=limit)
-        fallback_used = True
+        # Keep the dropdown aligned with what /view can render.  If ML_TABLE has
+        # roots, only append FAB roots that are also present there; otherwise a
+        # user can pick a valid FAB history root and still get an empty table.
+        if lots_list:
+            main_keys = {str(v).upper() for v in lots_list}
+            fab_roots = [v for v in fab_roots if str(v).upper() in main_keys]
+            lots_list = _merge_candidate_values(lots_list, fab_roots, limit=limit)
+        else:
+            lots_list = _merge_candidate_values(fab_roots, limit=limit)
+            fallback_used = True
     # v8.8.26: main 이 all-null 이거나 비어있으면 override fab_source 로 폴백.
     if not lots_list:
         try:
@@ -3678,7 +3770,25 @@ def get_lot_candidates(
     #   DB FAB 에 없으면 ML_TABLE LOT_ID, starts_with, 전체 후보 fallback 으로 회피하지 않는다.
     root_scope = (root_lot_id or "").strip()
     if col.casefold() == "root_lot_id":
+        main = _main_table_candidates(product, "root_lot_id", prefix=prefix, limit=limit)
         hist = _fab_history_root_candidates(product, prefix=prefix, limit=limit)
+        main_candidates = main.get("candidates") or []
+        hist_candidates = hist.get("candidates") or []
+        if main_candidates:
+            main_keys = {str(v).upper() for v in main_candidates}
+            hist_candidates = [v for v in hist_candidates if str(v).upper() in main_keys]
+        merged = _merge_candidate_values(main_candidates, hist_candidates, limit=limit)
+        if merged:
+            return {
+                "col": "root_lot_id",
+                "candidates": merged,
+                "prefix": prefix,
+                "root_scope": root_scope,
+                "match_mode": "splittable_roots",
+                "source": "mltable",
+                "fab_source": hist.get("source", ""),
+                "strict": False,
+            }
         if hist.get("candidates"):
             return {
                 "col": "root_lot_id",
@@ -3691,7 +3801,25 @@ def get_lot_candidates(
                 "strict": True,
             }
     if col.casefold() in {c.casefold() for c in _FAB_COL_CANDIDATES}:
+        main = _main_table_candidates(product, col, prefix=prefix, limit=limit, root_lot_id=root_scope)
         hist = _fab_history_scope(product, root_lot_id=root_scope, prefix=prefix, limit=limit)
+        main_candidates = main.get("candidates") or []
+        hist_candidates = hist.get("candidates") or []
+        if main_candidates:
+            main_keys = {str(v).upper() for v in main_candidates}
+            hist_candidates = [v for v in hist_candidates if str(v).upper() in main_keys]
+        merged = _merge_candidate_values(main_candidates, hist_candidates, limit=limit)
+        if merged:
+            return {
+                "col": col,
+                "candidates": merged,
+                "prefix": prefix,
+                "root_scope": root_scope,
+                "match_mode": "splittable_fab_lots" if root_scope else "splittable_fab_lots_all",
+                "source": "mltable",
+                "fab_source": hist.get("source", ""),
+                "strict": False,
+            }
         return {
             "col": col,
             "candidates": hist.get("candidates") or [],
@@ -3951,15 +4079,12 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         fab_filter_for_join = fab_lot_id
         if fab_lot_id.strip():
             # v9.0.5: fab_lot_id 는 DB FAB 원천에서 정확히 매칭될 때만 유효하다.
-            # 매칭되는 FAB root/wafer scope 가 없으면 ML_TABLE LOT_ID 등으로 회피하지 않는다.
+            # v9.0.6: 다만 사내/데모 파일이 이미 ML_TABLE 안에 fab/lot 값을 가진 경우도
+            # 있으므로 FAB history scope 가 없다고 즉시 종료하지 않고 coalesced /view
+            # 데이터에서 한 번 더 필터한다.
             fab_scope = _fab_history_scope(product, root_lot_id=root_lot_id,
                                            fab_lot_id=fab_lot_id, limit=5000)
             src_wafers = fab_scope.get("wafer_ids") or []
-            if not src_wafers:
-                return {"product": product, "lot_col": lot_col, "wf_col": wf_col,
-                        "headers": [], "rows": [], "prefixes": _load_prefixes(),
-                        "available_fab_lots": [],
-                        "msg": "No DB FAB match for fab_lot_id"}
             if src_wafers:
                 if not root_lot_id.strip() and fab_scope.get("root_ids"):
                     root_lot_id = fab_scope["root_ids"][0]

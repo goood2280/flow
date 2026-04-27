@@ -12,24 +12,26 @@ if str(ROOT / "backend") not in sys.path:
 from routers import splittable  # noqa: E402
 
 
-def test_root_lot_candidates_come_from_configured_fab_source():
+def test_root_lot_candidates_prefer_renderable_mltable_roots():
     result = splittable.get_lot_candidates(
         product="ML_TABLE_PRODA",
         col="root_lot_id",
-        prefix="A00",
+        prefix="A10",
         limit=20,
         source="auto",
         root_lot_id="",
     )
 
-    assert result["source"] == "fab_source_history"
+    assert result["source"] == "mltable"
     assert result["fab_source"] == "1.RAWDATA_DB_FAB/PRODA"
-    assert "A0001" in result["candidates"]
+    assert "A1000" in result["candidates"]
+    assert "A0001" not in result["candidates"]
 
 
-def test_lot_ids_merge_configured_fab_roots_before_mltable_roots():
+def test_lot_ids_do_not_suggest_fab_roots_that_cannot_render():
     result = splittable.get_lot_ids(product="ML_TABLE_PRODA", limit=20)
 
-    assert result["fallback"] == "fab_source"
+    assert result["fallback"] == ""
     assert result["fab_source"] == "1.RAWDATA_DB_FAB/PRODA"
-    assert "A0001" in result["lot_ids"]
+    assert "A1000" in result["lot_ids"]
+    assert "A0001" not in result["lot_ids"]

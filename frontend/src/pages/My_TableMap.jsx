@@ -24,36 +24,59 @@ if(typeof document!=="undefined"&&!document.getElementById("tm-styles")){
 }
 
 // ─── Graph view with zoom/pan ───────────────────────────
-function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelation,onSavePosition,onNodeRightClick,selectedNodeId,onEditRelation,lineageEdges,showLineage,onDropIntoGroup,onMemberContext}){
+function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelation,onSavePosition,onSaveRelationPosition,onNodeRightClick,selectedNodeId,onEditRelation,lineageEdges,showLineage,onDropIntoGroup,onMemberContext}){
   const[drag,setDrag]=useState(null);const[relStart,setRelStart]=useState(null);
   const[relDrag,setRelDrag]=useState(null); // {fromNode, mx, my} for relation drag
+  const[relLabelDrag,setRelLabelDrag]=useState(null);
+  const[relationOffsets,setRelationOffsets]=useState({});
   const[hoverNode,setHoverNode]=useState(null);
-  const[zoom,setZoom]=useState(1);const[pan,setPan]=useState({x:0,y:0});const[panning,setPanning]=useState(null);const[zoomDrag,setZoomDrag]=useState(null);
+  const[zoom,setZoom]=useState(1);const[pan,setPan]=useState({x:0,y:0});const[panning,setPanning]=useState(null);
   const svgRef=useRef();const containerRef=useRef();
+  const relDragMoved=useRef(false);
   const NW=150,NH=50,PAD=16;
 
   const clampZoom=(v)=>Math.max(0.2,Math.min(2,v));
-  // Wheel zoom intentionally disabled. Empty lane drag or the zoom rail controls zoom; middle-click drag pans.
+  const graphPoint=(e)=>{
+    const rect=svgRef.current.getBoundingClientRect();
+    return {x:(e.clientX-rect.left-pan.x)/zoom,y:(e.clientY-rect.top-pan.y)/zoom,rect};
+  };
   const onBgMouseDown=(e)=>{
-    if(e.button===1){setPanning({startX:e.clientX-pan.x,startY:e.clientY-pan.y});return;}
-    const isZoomSurface=e.target===svgRef.current||e.target?.dataset?.zoomBg==="1";
-    if(e.button===0&&!e.shiftKey&&isZoomSurface){
+    const isPanSurface=e.target===svgRef.current||e.target?.dataset?.zoomBg==="1";
+    if((e.button===0||e.button===1)&&!e.shiftKey&&isPanSurface){
       e.preventDefault();
-      setZoomDrag({startY:e.clientY,startZoom:zoom});
+      setPanning({startX:e.clientX-pan.x,startY:e.clientY-pan.y});
     }
   };
+  const onWheel=(e)=>{
+    e.preventDefault();
+    const {x,y,rect}=graphPoint(e);
+    const next=clampZoom(zoom*(e.deltaY<0?1.12:0.88));
+    setZoom(next);
+    setPan({x:e.clientX-rect.left-x*next,y:e.clientY-rect.top-y*next});
+  };
   const onMouseMove=(e)=>{
-    if(zoomDrag){setZoom(clampZoom(zoomDrag.startZoom+(e.clientY-zoomDrag.startY)*0.004));return;}
     if(panning){setPan({x:e.clientX-panning.startX,y:e.clientY-panning.startY});return;}
-    const rect=svgRef.current.getBoundingClientRect();
-    const mx=(e.clientX-rect.left-pan.x)/zoom, my=(e.clientY-rect.top-pan.y)/zoom;
+    const {x:mx,y:my}=graphPoint(e);
+    if(relLabelDrag){
+      const dx=relLabelDrag.startDx+(mx-relLabelDrag.startX);
+      const dy=relLabelDrag.startDy+(my-relLabelDrag.startY);
+      if(Math.abs(mx-relLabelDrag.startX)>3||Math.abs(my-relLabelDrag.startY)>3)relDragMoved.current=true;
+      setRelationOffsets(cur=>({...cur,[relLabelDrag.id]:{dx,dy}}));
+      return;
+    }
     if(relDrag){setRelDrag({...relDrag,mx,my});return;}
     if(!drag)return;
     setDrag({...drag,x:mx-drag.offsetX,y:my-drag.offsetY});
   };
   const onMouseUp=(e)=>{
-    if(zoomDrag){setZoomDrag(null);return;}
     if(panning){setPanning(null);return;}
+    if(relLabelDrag){
+      const {x,y}=graphPoint(e);
+      const off={dx:relLabelDrag.startDx+(x-relLabelDrag.startX),dy:relLabelDrag.startDy+(y-relLabelDrag.startY)};
+      setRelationOffsets(cur=>({...cur,[relLabelDrag.id]:off}));
+      if(onSaveRelationPosition)onSaveRelationPosition(relLabelDrag.id,off.dx,off.dy);
+      setRelLabelDrag(null);return;
+    }
     if(relDrag){
       // Check if released over a node
       if(hoverNode&&hoverNode.id!==relDrag.fromNode.id){onAddRelation(relDrag.fromNode,hoverNode);}
@@ -94,14 +117,21 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
   };
   const onNodeMouseDown=(e,node)=>{
     e.stopPropagation();
-    const rect=svgRef.current.getBoundingClientRect();
-    const mx=(e.clientX-rect.left-pan.x)/zoom, my=(e.clientY-rect.top-pan.y)/zoom;
+    const {x:mx,y:my}=graphPoint(e);
+    const pos=getNodePos(node);
     // Ctrl/Cmd+drag = relation (start line from node)
     if(e.ctrlKey||e.metaKey){setRelDrag({fromNode:node,mx,my});return;}
     // Shift+click = legacy relation mode (kept for compatibility)
     if(e.shiftKey){setRelStart(node);return;}
     // Default = move
-    setDrag({id:node.id,offsetX:mx-(node.x||100),offsetY:my-(node.y||100),x:node.x||100,y:node.y||100,startX:node.x||100,startY:node.y||100});
+    setDrag({id:node.id,offsetX:mx-pos.x,offsetY:my-pos.y,x:pos.x,y:pos.y,startX:pos.x,startY:pos.y});
+  };
+  const onRelationMouseDown=(e,r,baseX,baseY)=>{
+    e.stopPropagation();
+    const {x,y}=graphPoint(e);
+    const off=relationOffsets[r.id]||{dx:Number(r.label_dx||0),dy:Number(r.label_dy||0)};
+    relDragMoved.current=false;
+    setRelLabelDrag({id:r.id,startX:x,startY:y,startDx:off.dx,startDy:off.dy,baseX,baseY});
   };
   const onNodeMouseEnter=(node)=>{if(relDrag)setHoverNode(node);};
   const onNodeMouseLeave=()=>{if(relDrag)setHoverNode(null);};
@@ -165,19 +195,21 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
         autoNodeMap[n.id]={x:laneCfg.x+22,y:220+idx*84};
       });
   });
-  const getNodePos=(n)=>drag&&drag.id===n.id?{x:drag.x,y:drag.y}:(autoNodeMap[n.id]||{x:n.x||100,y:n.y||100});
+  const savedPos=(n)=>{
+    const x=Number(n?.x),y=Number(n?.y);
+    return Number.isFinite(x)&&Number.isFinite(y)?{x,y}:null;
+  };
+  const getNodePos=(n)=>drag&&drag.id===n.id?{x:drag.x,y:drag.y}:(savedPos(n)||autoNodeMap[n.id]||{x:100,y:100});
 
   return(<div ref={containerRef} style={{position:"relative",width:"100%",height:"calc(100vh - 220px)",minHeight:620,background:"radial-gradient(circle at 1px 1px, rgba(148,163,184,0.16) 1px, transparent 0) 0 0/20px 20px, var(--bg-primary)",borderRadius:10,border:"1px solid var(--border)",overflow:"hidden"}}>
     <div style={{position:"absolute",top:8,left:8,fontSize:12,color:"var(--text-primary)",zIndex:2,background:"var(--bg-card)",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",lineHeight:1.7,boxShadow:"0 2px 8px rgba(0,0,0,0.3)"}}>
       <div style={{fontSize:11,fontWeight:800,color:"#ef4444",marginBottom:4,letterSpacing:"0.05em"}}>📘 GUIDE</div>
       <div><b style={{color:"var(--accent)"}}>더블클릭</b> → 테이블/그룹 편집</div>
       <div><b style={{color:"var(--accent)"}}>노드 드래그</b> → 위치 이동</div>
+      <div><b style={{color:"var(--accent)"}}>배경 드래그</b> → 맵 이동</div>
+      <div><b style={{color:"var(--accent)"}}>마우스 휠</b> → 확대/축소</div>
       <div><b style={{color:"var(--accent)"}}>Ctrl + 드래그</b> 다른 노드로 → 관계 생성</div>
-      <div><b style={{color:"var(--accent)"}}>레인 배경 드래그</b> ↓ 확대 · ↑ 축소</div>
     </div>
-    {zoomDrag&&<div style={{position:"absolute",top:8,left:"50%",transform:"translateX(-50%)",zIndex:3,background:"var(--bg-card)",border:"1px solid var(--accent)",borderRadius:6,padding:"6px 10px",fontSize:11,color:"var(--accent)",fontFamily:"monospace",boxShadow:"0 2px 10px rgba(0,0,0,0.35)"}}>
-      drag zoom · {Math.round(zoom*100)}%
-    </div>}
     {relStart&&<div style={{position:"absolute",top:32,left:8,fontSize:11,color:"var(--accent)",zIndex:2,background:"var(--accent-glow)",padding:"4px 8px",borderRadius:4}}>
 출발 <b>{relStart.name}</b> → 대상 클릭 (<span onClick={()=>setRelStart(null)} style={{cursor:"pointer",textDecoration:"underline"}}>취소</span>)
     </div>}
@@ -188,15 +220,15 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
       <span onClick={()=>setZoom(z=>clampZoom(z-0.15))} style={{width:28,height:28,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",cursor:"pointer",fontSize:14,fontWeight:700,color:"var(--text-primary)"}}>-</span>
       <span onClick={()=>{setZoom(0.5);setPan({x:0,y:0});}} style={{height:28,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",cursor:"pointer",fontSize:10,padding:"0 8px",color:"var(--text-secondary)"}}>맞추기</span>
     </div>
-    <div onMouseDown={(e)=>{e.preventDefault();setZoomDrag({startY:e.clientY,startZoom:zoom});}} title="위/아래로 드래그해서 확대/축소"
-      style={{position:"absolute",right:12,top:48,width:42,height:118,zIndex:2,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,cursor:"ns-resize",boxShadow:"0 2px 8px rgba(0,0,0,0.25)"}}>
-      <span style={{fontSize:9,color:"var(--text-secondary)",fontWeight:700}}>DRAG</span>
+    <div title="현재 확대 비율"
+      style={{position:"absolute",right:12,top:48,width:42,height:118,zIndex:2,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,boxShadow:"0 2px 8px rgba(0,0,0,0.25)"}}>
+      <span style={{fontSize:9,color:"var(--text-secondary)",fontWeight:700}}>WHEEL</span>
       <div style={{width:4,height:58,borderRadius:3,background:"linear-gradient(180deg,var(--accent),rgba(148,163,184,0.55))",position:"relative"}}>
         <span style={{position:"absolute",left:-7,top:`${Math.max(2,Math.min(50,58-((zoom-0.2)/(2-0.2))*58))}px`,width:18,height:6,borderRadius:3,background:"#fff",border:"1px solid var(--accent)"}}/>
       </div>
       <span style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace"}}>{Math.round(zoom*100)}%</span>
     </div>
-    <svg ref={svgRef} width="100%" height="100%" onMouseDown={onBgMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} style={{cursor:zoomDrag?"ns-resize":panning?"grabbing":drag?"grabbing":"default"}}>
+    <svg ref={svgRef} width="100%" height="100%" onMouseDown={onBgMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} onWheel={onWheel} style={{cursor:panning?"grabbing":drag||relLabelDrag?"grabbing":"grab"}}>
       <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
       <defs>
         <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
@@ -219,13 +251,14 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
         const bw=Math.max(NW+INNER_PAD*2, cols*(NW+COL_GAP)-COL_GAP+INNER_PAD*2);
         const bh=HEADER+rows_count*(NH+COL_GAP)-COL_GAP+INNER_PAD*2;
 
-        return(<g key={gn.id}>
+        return(<g key={gn.id}
+          onMouseDown={e=>onNodeMouseDown(e,gn)} onClick={e=>onNodeClickHandler(e,gn)} onDoubleClick={e=>onNodeDblClickHandler(e,gn)}
+          onMouseEnter={()=>onNodeMouseEnter(gn)} onMouseLeave={onNodeMouseLeave}
+          style={{cursor:relDrag?"crosshair":"move"}}>
           {/* Group container */}
           <rect x={gp.x} y={gp.y} width={bw} height={members.length?bh:70} rx={12}
             fill="#a855f726" stroke="#a855f7" strokeWidth={2.5} strokeDasharray="6,4" opacity={0.95}
-            onMouseDown={e=>onNodeMouseDown(e,gn)} onClick={e=>onNodeClickHandler(e,gn)} onDoubleClick={e=>onNodeDblClickHandler(e,gn)}
-            onMouseEnter={()=>onNodeMouseEnter(gn)} onMouseLeave={onNodeMouseLeave}
-            style={{cursor:relDrag?"crosshair":"move"}}/>
+            />
           <text x={gp.x+INNER_PAD} y={gp.y+18} fill="#a855f7" fontSize={11} fontWeight={700}>📚 {gn.name}</text>
           <text x={gp.x+bw-INNER_PAD} y={gp.y+18} fill="#a855f766" fontSize={9} textAnchor="end">{members.length} 테이블</text>
           {groupProducts.length>0&&(
@@ -284,6 +317,8 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
         const ax1=ba.cx+ba.hw*(dx/len)*0.95,ay1=ba.cy+ba.hh*(dy/len)*0.95;
         const bx1=bb.cx-bb.hw*(dx/len)*0.95,by1=bb.cy-bb.hh*(dy/len)*0.95;
         const mx=(ax1+bx1)/2,my=(ay1+by1)/2;
+        const off=relationOffsets[r.id]||{dx:Number(r.label_dx||0),dy:Number(r.label_dy||0)};
+        const labelMx=mx+off.dx,labelMy=my+off.dy;
         const fromCols=(r.from_col||"").split(/[,\s]+/).filter(Boolean);
         const toCols=(r.to_col||"").split(/[,\s]+/).filter(Boolean);
         const pairs=Math.max(fromCols.length,toCols.length);
@@ -294,10 +329,10 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
         const isPairTable=pairs>1;
         const boxW=isPairTable?190:Math.min(220, Math.max(74, label.length*5.5 + 14));
         const boxH=isPairTable?Math.min(88, 18 + tableRows.length*14 + (pairs>4?12:0)):18;
-        const boxX=mx-boxW/2, boxY=my-boxH/2;
+        const boxX=labelMx-boxW/2, boxY=labelMy-boxH/2;
         return(<g key={r.id}>
           <line x1={ax1} y1={ay1} x2={bx1} y2={by1} stroke="var(--accent)" strokeWidth={2} strokeOpacity={0.5} markerEnd="url(#arrow)"/>
-          <g onClick={e=>{e.stopPropagation();if(onEditRelation)onEditRelation(r);}} style={{cursor:"pointer"}}>
+          <g onMouseDown={e=>onRelationMouseDown(e,r,mx,my)} onClick={e=>{e.stopPropagation();if(relDragMoved.current){relDragMoved.current=false;return;}if(onEditRelation)onEditRelation(r);}} style={{cursor:"move"}}>
             <rect x={boxX} y={boxY} width={boxW} height={boxH} rx={5}
                   fill="var(--bg-card,#1e1e1e)" stroke="var(--accent)" strokeOpacity={0.68} strokeWidth={1}/>
             {isPairTable?<>
@@ -317,7 +352,7 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
             </text>}
           </g>
           {/* Edit pencil — pushed to the right of the label box */}
-          <g transform={`translate(${boxX+boxW+4},${my-9})`} onClick={e=>{e.stopPropagation();if(onEditRelation)onEditRelation(r);}} style={{cursor:"pointer"}}>
+          <g transform={`translate(${boxX+boxW+4},${labelMy-9})`} onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(onEditRelation)onEditRelation(r);}} style={{cursor:"pointer"}}>
             <circle cx={9} cy={9} r={9} fill="var(--bg-card,#2a2a2a)" stroke="var(--accent)" strokeWidth={1} opacity={0.9}/>
             <text x={9} y={13} textAnchor="middle" fill="var(--accent)" fontSize={10}>✏</text>
           </g>
@@ -1163,6 +1198,7 @@ export default function My_TableMap({user}){
   // v8.8.2: 맵에서만 제거 — 원본(table json/csv) 보존. table/group/db_ref 공용.
   const unlinkNodeFromMap=(nid)=>sf(API+"/nodes/unlink?node_id="+encodeURIComponent(nid),{method:"POST"}).then(loadAll);
   const savePosition=(id,x,y)=>sf(API+"/node/position",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:id,x,y})}).then(loadAll);
+  const saveRelationPosition=(id,label_dx,label_dy)=>sf(API+"/relations/label-position",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation_id:id,label_dx,label_dy})}).then(loadAll);
   const[selectedNode,setSelectedNode]=useState(null);
   const[dbInfo,setDbInfo]=useState(null); // DB ref detail modal
   const[dbDesc,setDbDesc]=useState("");
@@ -1450,6 +1486,7 @@ export default function My_TableMap({user}){
     </div>
 
     {view==="graph"&&<GraphView config={filteredConfig} groups={visibleGroups} tables={visibleTables} onNodeClick={onNodeClick} onNodeDblClick={onNodeDblClick} onAddRelation={onAddRelation} onSavePosition={savePosition}
+      onSaveRelationPosition={saveRelationPosition}
       onDropIntoGroup={onDropIntoGroup} onMemberContext={onMemberContext}
       selectedNodeId={selectedNode?.id}
       onEditRelation={onEditRelation}
