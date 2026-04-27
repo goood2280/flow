@@ -91,8 +91,9 @@ function FlowiConsole({onActiveChange}){
         <span style={{color:"#f97316"}}>{">"}</span>
         <span style={{color:"#737373",whiteSpace:"nowrap"}}>LLM TOKEN :</span>
         <input type="password" value={token} onChange={e=>setToken(e.target.value)}
-          placeholder="_" autoComplete="off" aria-label="LLM token"
-          style={{flex:"1 1 180px",minWidth:120,padding:"0 0 2px",border:"none",borderBottom:"1px solid #333",background:"transparent",color:"#e5e5e5",fontSize:13,fontFamily:"'JetBrains Mono',monospace",outline:"none"}}/>
+          autoComplete="off" aria-label="LLM token"
+          style={{width:Math.max(18,Math.min(360,(token||"").length*9+18)),padding:0,border:"none",background:"transparent",color:"#e5e5e5",fontSize:13,fontFamily:"'JetBrains Mono',monospace",outline:"none",caretColor:"transparent"}}/>
+        <span style={{display:"inline-block",width:8,height:14,background:"#f97316",animation:"holBlink 1s step-end infinite",marginLeft:1}}/>
         {verifying&&<span style={{fontSize:10,color:"#fbbf24",fontFamily:"monospace"}}>checking...</span>}
         {verifyMsg&&<span style={{fontSize:10,color:"#22c55e",fontFamily:"monospace"}}>{verifyMsg}</span>}
         {active&&<button type="button" onClick={clear} aria-label="clear llm token"
@@ -125,6 +126,7 @@ function FlowiResult({busy,error,result}){
   if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:12,border:"1px solid #7f1d1d"}}>{error}</div>;
   if(!result)return null;
   const tool=result.tool||{};
+  const table=tool.table&&Array.isArray(tool.table.rows)&&Array.isArray(tool.table.columns)?tool.table:null;
   const rows=Array.isArray(tool.rows)?tool.rows:[];
   const knobs=Array.isArray(tool.knobs)?tool.knobs:[];
   return(<div style={{marginTop:12,borderTop:"1px solid #262626",paddingTop:10}}>
@@ -133,6 +135,7 @@ function FlowiResult({busy,error,result}){
       {tool.intent&&<span style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
       {result.llm&&<span style={{fontSize:10,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
     </div>
+    {table&&<FlowiDataTable table={table}/>}
     {rows.length>0&&<div style={{marginTop:10,overflowX:"auto"}}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
         <thead><tr>{["product","step","item","wf","median","mean","n"].map(h=><th key={h} style={{textAlign:"left",padding:"5px 6px",borderBottom:"1px solid #333",color:"#a3a3a3"}}>{h}</th>)}</tr></thead>
@@ -151,6 +154,25 @@ function FlowiResult({busy,error,result}){
   </div>);
 }
 const FR_TD={padding:"5px 6px",borderBottom:"1px solid #262626",color:"#d4d4d4",whiteSpace:"nowrap"};
+
+function FlowiDataTable({table}){
+  const cols=table.columns||[];
+  const rows=table.rows||[];
+  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,overflow:"hidden",background:"#121212"}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,padding:"8px 10px",borderBottom:"1px solid #2a2a2a",background:"#171717"}}>
+      <div style={{fontSize:11,fontWeight:800,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace"}}>{table.title||"Flowi table"}</div>
+      <div style={{fontSize:10,color:"#737373",fontFamily:"monospace"}}>{rows.length}{table.total&&table.total!==rows.length?` / ${table.total}`:""} rows</div>
+    </div>
+    <div style={{overflow:"auto",maxHeight:360}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
+        <thead><tr>{cols.map(c=><th key={c.key} style={{position:"sticky",top:0,zIndex:1,textAlign:"left",padding:"7px 8px",borderBottom:"1px solid #333",background:"#1f1f1f",color:"#a3a3a3",whiteSpace:"nowrap"}}>{c.label||c.key}</th>)}</tr></thead>
+        <tbody>{rows.map((r,i)=><tr key={i}>
+          {cols.map(c=><td key={c.key} style={{padding:"6px 8px",borderBottom:"1px solid #262626",color:c.key==="wafer_id"||String(c.key).includes("STI")?"#e5e5e5":"#c7c7c7",whiteSpace:"nowrap",fontWeight:String(c.key).startsWith("KNOB")||String(c.label).includes("KNOB")?800:500}}>{r[c.key]??""}</td>)}
+        </tr>)}</tbody>
+      </table>
+    </div>
+  </div>);
+}
 
 export default function My_Home({onNavigate,user}){
   // v8.1.7: initial value from cache → no spinner on 2nd+ visit
