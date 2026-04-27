@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, Component } from "react";
+import { Suspense, useState, useEffect, useRef, Component } from "react";
 import My_Login from "./pages/My_Login";
 import ComingSoon from "./components/ComingSoon";
+import Loading from "./components/Loading";
 import Modal from "./components/Modal";
 import BrandLogo from "./components/BrandLogo";
 import { PAGE_MAP } from "./app/pageRegistry";
@@ -444,7 +445,13 @@ export default function App() {
       </nav>
       <NoticeBanner user={user} />
       <div style={{flex:1,minHeight:0,overflow:tab==="dashboard"?"hidden":"auto"}}>
-        {Page ? <ErrorBoundary key={tab}><Page onNavigate={nav} user={user} /></ErrorBoundary> : <ComingSoon name={tabInfo?.label || tab} />}
+        {Page ? (
+          <ErrorBoundary key={tab}>
+            <Suspense fallback={<Loading text="페이지 로딩..." />}>
+              <Page onNavigate={nav} user={user} />
+            </Suspense>
+          </ErrorBoundary>
+        ) : <ComingSoon name={tabInfo?.label || tab} />}
       </div>
       {showPw && <PwModal user={user} onClose={()=>setShowPw(false)} />}
       {/* v8.4.9: floating 오렌지 톱니 전면 제거.

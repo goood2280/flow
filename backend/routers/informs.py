@@ -53,6 +53,7 @@ from core.utils import load_json, save_json
 from core.auth import current_user, require_admin
 from core.audit import record as _audit
 from app_v2.shared.source_adapter import resolve_column
+from app_v2.modules.informs.splittable_embed import build_splittable_embed
 from routers.groups import user_modules
 
 router = APIRouter(prefix="/api/informs", tags=["informs"])
@@ -574,6 +575,13 @@ class ConfigReq(BaseModel):
     reason_templates: Optional[dict] = None
 
 
+class SplitTableSnapshotReq(BaseModel):
+    product: str
+    lot_id: str
+    custom_cols: List[str] = []
+    is_fab_lot: Optional[bool] = None
+
+
 class ProductReq(BaseModel):
     product: str
 
@@ -659,6 +667,19 @@ def save_config_endpoint(req: ConfigReq, _admin=Depends(require_admin)):
     resp = dict(cfg)
     resp["products"] = _merged_catalog_products(resp.get("products") or [])
     return {"ok": True, "config": resp}
+
+
+@router.post("/splittable-snapshot")
+def splittable_snapshot(req: SplitTableSnapshotReq, request: Request):
+    """Build the Inform SplitTable embed via the app_v2 service layer."""
+    current_user(request)
+    embed = build_splittable_embed(
+        product=req.product,
+        lot_id=req.lot_id,
+        custom_cols=req.custom_cols,
+        is_fab_lot=req.is_fab_lot,
+    )
+    return {"ok": True, "embed": embed}
 
 
 # v8.8.13: 유저별 인폼 모듈 조회 권한 엔드포인트 ────────────────────────

@@ -1955,84 +1955,20 @@ export default function My_Inform({ user }) {
     const customCols = (Array.isArray(embedCustomCols) ? embedCustomCols : [])
       .map(c => String(c || "").trim())
       .filter(Boolean);
-    const hasCustomScope = customCols.length > 0;
-    // v8.8.13: root_lot_id 단독 입력 지원.
-    //   - 입력값이 fab_lot_id 포맷(영문+숫자+구분자 포함, 길이>5)이면 fab_lot_id 로,
-    //     root_lot_id 포맷(짧거나 구분자 없음)이면 root_lot_id 로만 사용.
-    //   - 그동안 입력값을 항상 fab_lot_id 로 붙여서 root_lot_id("A0001") 입력 시 매칭 실패 → 빈 embed.
     const isFabLot = isFabLotInput(lot, lotOptions);
-    const rootKey = isFabLot ? lot.slice(0, 5) : lot;
     const handle = setTimeout(() => {
       setEmbedFetching(true);
-      const params = new URLSearchParams();
-      params.set("product", mlProd);
-      params.set("root_lot_id", rootKey);
-      if (isFabLot) params.set("fab_lot_id", lot);
-      params.set("view_mode", "all");
-      params.set("prefix", "ALL");
-      sf(`/api/splittable/view?${params.toString()}`)
+      postJson("/api/informs/splittable-snapshot", {
+        product: mlProd,
+        lot_id: lot,
+        custom_cols: customCols,
+        is_fab_lot: isFabLot,
+      })
         .then(d => {
-          if (!d || !d.rows || d.rows.length === 0) {
-            // v9.0.1: 빈 응답이어도 attach 끄지 않고 "데이터 없음" 안내가 보이는 빈 스냅샷 유지 —
-            //   사용자에게 lot/product 가 잘못됐다는 신호를 주고, 컬럼 선택 UI 는 살림.
-            setEmbedFetching(false);
-            setForm(f => ({
-              ...f, attach_embed: true,
-              embed: {
-                source: `SplitTable/${stripMlPrefix(mlProd)} @ ${lot} (no data)`,
-                columns: ["parameter"], rows: [],
-                note: d?.msg || "데이터 없음 — root_lot_id 또는 fab_lot_id 를 확인하세요.",
-                st_view: { headers: [], rows: [], wafer_fab_list: [], header_groups: [], root_lot_id: rootKey },
-                st_scope: { prefix: hasCustomScope ? "" : "ALL", custom_name: "", inline_cols: customCols },
-              },
-            }));
-            return;
-          }
-          // v8.8.11: SplitTable 원형 응답을 st_view 로 보존 — EmbedTableView 가 컬러링/plan-pin 동일 렌더.
-          // 병행해서 legacy 2D (columns/rows) 도 유지 — 구버전 렌더러 호환.
-          const headers = d.headers || [];
-          const cols = ["parameter", ...headers];
-          // v8.8.17/v8.8.33: CUSTOM 모드 — embedCustomCols 로 row 필터 + 빈 열 생성.
-          //   v8.8.33: save 없이 체크만 한 컬럼도 항상 반영. 해당 컬럼의 데이터가 아직 없어도
-          //     빈 행으로 보존 (`{_param: col, _cells: {}}`) — 스냅샷에 컬럼 존재가 찍혀야 이후
-          //     plan 입력이 가능하므로. 미선택이면 기본 ALL 스냅샷을 첨부한다.
-          let rowsAll = d.rows || [];
-          if (hasCustomScope) {
-            const keep = new Set(customCols);
-            const filtered = rowsAll.filter(r => keep.has(r._param));
-            const byParam = new Map(filtered.map(r => [r._param, r]));
-            // 선택 순서 유지 + 데이터 없어도 빈 행 행위.
-            rowsAll = customCols.map(p => byParam.get(p) || { _param: p, _cells: {} });
-          } else {
-            rowsAll = rowsAll.slice(0, 120);
-          }
-          const rows = rowsAll.map(r => {
-            const out = [r._param || ""];
-            headers.forEach((_, i) => {
-              const cell = (r._cells && r._cells[i]) || {};
-              const v = cell.actual ?? "";
-              const pv = cell.plan;
-              out.push(pv != null && pv !== "" && pv !== v ? `${v} → ${pv}` : String(v ?? ""));
-            });
-            return out;
-          });
-          const scopeLabel = hasCustomScope ? `CUSTOM(${customCols.length})` : "ALL";
-          const lotLabel = isFabLot ? `fab_lot=${lot}` : `root_lot=${lot}`;
+          const embed = d?.embed || emptyEmbedTable();
           setForm(f => ({
             ...f, attach_embed: true,
-            embed: {
-              source: `SplitTable/${stripMlPrefix(mlProd)} @ ${lot} · ${scopeLabel}`,
-              columns: cols, rows,
-              note: `${rowsAll.length} params · ${lotLabel} · scope=${scopeLabel}`,
-              st_view: {
-                headers,
-                rows: rowsAll,
-                wafer_fab_list: d.wafer_fab_list || [],
-                header_groups: d.header_groups || [],
-                root_lot_id: d.root_lot_id || rootKey,
-              },
-              st_scope: { prefix: hasCustomScope ? "" : "ALL", custom_name: "", inline_cols: customCols },
-            },
+            embed,
           }));
           setEmbedFetching(false);
         })
