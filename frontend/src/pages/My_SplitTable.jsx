@@ -585,11 +585,11 @@ export default function My_SplitTable({user}){
       {/* Lot ID dropdown */}
       <div style={{padding:"4px 12px"}} ref={lotRef}>
         <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>루트 Lot ID</div>
-        <input value={lotId} onChange={e=>{setLotId(e.target.value);setLotFilter(e.target.value);setShowLotDrop(true);}}
+        <input value={lotId} onChange={e=>{setLotId(e.target.value);setFabLotId("");setLotFilter(e.target.value);setShowLotDrop(true);}}
           onFocus={()=>setShowLotDrop(true)} placeholder="입력 또는 선택"
           style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&(setShowLotDrop(false),doSearch())}/>
         {showLotDrop&&filteredLots.length>0&&<div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
-          {filteredLots.slice(0,50).map(l=><div key={l} onClick={()=>{setLotId(l);setShowLotDrop(false);}}
+          {filteredLots.slice(0,50).map(l=><div key={l} onClick={()=>{setLotId(l);setFabLotId("");setShowLotDrop(false);}}
             style={{padding:"6px 10px",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--border)",color:"var(--text-primary)"}}
             onMouseEnter={e=>e.currentTarget.style.background="var(--bg-hover)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{l}</div>)}
         </div>}
@@ -1221,6 +1221,7 @@ export default function My_SplitTable({user}){
           : data.rows;
         const lineageSummary = buildLineageSummary(displayRows);
         return <div style={{flex:1,overflow:"auto",background:"var(--bg-card)"}}>
+        {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:11,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
         {/* v8.8.13: 빈 셀 / knobMeta 확장 행에서 테두리 끊기는 현상 — 전체 td/th 기본 border 강제.
             inline style(borderLeft plan 등)은 specificity 가 높아 유지됨. */}
         <style>{`.splittable-grid td, .splittable-grid th { border: 1px solid #555; }`}</style>

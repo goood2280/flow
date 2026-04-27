@@ -4039,10 +4039,13 @@ def _filter_lot_wafer(lf, lot_col, wf_col, root_lot_id: str, wafer_ids: str,
     """Apply lot + (optional) wafer filter to LazyFrame. v8.4.3 — fab_lot_id
     경로 추가. root_lot_id / fab_lot_id 중 하나로 조회 가능.
     """
-    if fab_lot_id and fab_lot_id.strip() and fab_lot_col in lf.collect_schema().names():
+    root_scope = root_lot_id.strip()
+    fab_scope = fab_lot_id.strip()
+    schema_names = lf.collect_schema().names()
+    if root_scope and lot_col and lot_col in schema_names:
+        lf = lf.filter(_join_key_expr(lot_col) == root_scope.upper())
+    if fab_scope and fab_lot_col in schema_names:
         lf = lf.filter(_join_key_expr(fab_lot_col) == fab_lot_id.strip().upper())
-    elif root_lot_id.strip():
-        lf = lf.filter(_join_key_expr(lot_col) == root_lot_id.strip().upper())
     if wafer_ids.strip() and wf_col:
         wf_list = [w.strip() for w in wafer_ids.split(",") if w.strip()]
         try:
@@ -4172,6 +4175,22 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                                fab_lot_id=fab_filter_for_join, fab_lot_col=fab_lot_col)
 
         df = lf.collect()
+        if df.height == 0 and root_lot_id.strip() and fab_lot_id.strip():
+            # If the UI carries a stale Fab Lot while the operator searches a
+            # valid root lot, do not let the stale secondary field hide the
+            # renderable SplitTable rows. Root remains the primary scope.
+            try:
+                root_only_lf = _scan_product(product)
+                root_only_df = _filter_lot_wafer(
+                    root_only_lf, lot_col, wf_col, root_lot_id, wafer_ids,
+                    fab_lot_col=fab_lot_col,
+                ).collect()
+                if root_only_df.height > 0:
+                    df = root_only_df
+                    _lot_warn = "Fab Lot ID와 Root Lot ID 조합이 없어 Root Lot ID 기준으로 조회했습니다."
+            except Exception as e:
+                logger.warning("view_split root-only fallback 실패 (product=%s root=%s fab=%s) %s: %s",
+                               product, root_lot_id, fab_lot_id, type(e).__name__, e)
         if df.height == 0:
             # Operators often paste the FAB lot value they found in File Browser
             # into the Root Lot field. Treat that as a fab_lot_id lookup before
