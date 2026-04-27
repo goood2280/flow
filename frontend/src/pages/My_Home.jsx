@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import BrandLogo from "../components/BrandLogo";
-import { postJson, sf } from "../lib/api";
+import { postJson } from "../lib/api";
 const B="#ea580c",M="#f97316",L="#fb923c",D="#9a3412",BK="#171717",W="#fff7ed",PK="#fda4af",G="#fbbf24";
 
 // v8.3.3: PF_HOME / PixelGlyph / HomeBrandLogo extracted to shared ../components/BrandLogo.jsx.
@@ -32,64 +32,28 @@ const FEATURE_GUIDES={
   ml:{icon:"🧠",title:"ML 분석",steps:["소스/타깃 컬럼 선택","상관/학습 기반 중요도 확인","공정 window 및 원인 분석 확인","결과를 차트와 표로 비교"]},
   devguide:{icon:"📖",title:"개발 가이드",steps:["아키텍처 다이어그램","API 엔드포인트 문서","Gotchas / 코드 규칙"]},
 };
-const FLOWI_ENTRYPOINTS=[
-  {key:"filebrowser",title:"파일 탐색기",prompt:"파일 탐색기에서 내가 가진 product/lot 조건으로 어떤 DB와 필터를 먼저 보면 좋을지 알려줘."},
-  {key:"dashboard",title:"대시보드",prompt:"대시보드에서 내 담당 제품의 이상 징후를 보기 위한 차트 구성을 추천해줘."},
-  {key:"splittable",title:"스플릿 테이블",prompt:"스플릿 테이블에서 plan vs actual mismatch를 빨리 확인하는 흐름을 알려줘."},
-  {key:"tracker",title:"이슈 추적",prompt:"트래커에 lot/wafer 이슈를 남길 때 필요한 정보와 좋은 제목을 추천해줘."},
-  {key:"inform",title:"인폼 로그",prompt:"인폼 로그에 공유할 내용을 내 상황에 맞게 정리해줘."},
-  {key:"meeting",title:"회의관리",prompt:"내 이슈를 회의 아젠다와 액션아이템으로 정리해줘."},
-  {key:"calendar",title:"변경점 관리",prompt:"이번 변경 건을 캘린더에 넣기 위한 제목, 기간, 상태를 추천해줘."},
-  {key:"ettime",title:"ET 레포트",prompt:"ET 레포트에서 root_lot/step/item 조건으로 먼저 봐야 할 값을 알려줘."},
-  {key:"waferlayout",title:"WF Layout",prompt:"WF Layout에서 내 제품의 layout 검토 포인트를 체크리스트로 만들어줘."},
-  {key:"ml",title:"ML 분석",prompt:"ML 분석에서 내 제품의 원인 후보를 좁히기 위한 컬럼 선택을 추천해줘."},
-  {key:"tablemap",title:"테이블 맵",prompt:"테이블 맵에서 내가 찾는 lot/step/item 컬럼의 연결 경로를 어떻게 확인하면 좋을지 알려줘."},
-  {key:"devguide",title:"개발 가이드",prompt:"개발 가이드에서 이 기능을 이해하려면 어떤 문서와 API를 먼저 보면 좋을지 알려줘."},
-];
-
 // v8.1.7: localStorage cache for instant first-paint of version block
 const VCACHE_KEY="hol_home_version_v1";
 function readVerCache(){try{const s=localStorage.getItem(VCACHE_KEY);return s?JSON.parse(s):null;}catch{return null;}}
 function writeVerCache(v){try{localStorage.setItem(VCACHE_KEY,JSON.stringify(v));}catch{}}
 
-function FlowiConsole({onActiveChange,featureKeys=[]}){
+function FlowiConsole({onActiveChange}){
   const[active,setActive]=useState(false);
   const[prompt,setPrompt]=useState("");
-  const[verifying,setVerifying]=useState(false);
-  const[verifyMsg,setVerifyMsg]=useState("");
   const[busy,setBusy]=useState(false);
   const[result,setResult]=useState(null);
   const[lastPrompt,setLastPrompt]=useState("");
   const[err,setErr]=useState("");
-  const[status,setStatus]=useState(null);
-  const[notes,setNotes]=useState("");
-  const[profileMsg,setProfileMsg]=useState("");
-  const[profileBusy,setProfileBusy]=useState(false);
   const promptRef=useRef(null);
 
-  useEffect(()=>{
-    sf("/api/llm/status").then(setStatus).catch(()=>setStatus({available:false,flowi:{}}));
-    sf("/api/llm/flowi/profile").then(d=>setNotes(d.notes||"")).catch(()=>{});
-  },[]);
   useEffect(()=>{if(active&&promptRef.current)setTimeout(()=>promptRef.current?.focus(),30);},[active]);
   useEffect(()=>{if(typeof onActiveChange==="function")onActiveChange(active);},[active,onActiveChange]);
 
   const activate=()=>{
-    if(verifying)return false;
-    setVerifying(true);setErr("");setVerifyMsg("");
-    if(status&&!status.available){
-      setActive(true);setVerifyMsg("local tools");setVerifying(false);return true;
-    }
-    postJson("/api/llm/flowi/verify",{})
-      .then(d=>{
-        if(!d?.ok)throw new Error(d?.message||d?.error||"LLM 연결 확인 실패");
-        setActive(true);setVerifyMsg(d.message||"확인완료");
-      })
-      .catch(e=>{setActive(false);setVerifyMsg("");setErr((e.message||String(e))+" · local tools는 계속 사용할 수 있습니다.");})
-      .finally(()=>setVerifying(false));
+    setActive(true);setErr("");
     return true;
   };
-  const close=()=>{setActive(false);setResult(null);setErr("");setVerifyMsg("");};
+  const close=()=>{setActive(false);setResult(null);setErr("");};
   const ask=()=>{
     const q=(prompt||"").trim();
     if(!q){setErr("질문을 입력해주세요.");return;}
@@ -97,31 +61,13 @@ function FlowiConsole({onActiveChange,featureKeys=[]}){
     postJson("/api/llm/flowi/chat",{prompt:q,product:"",max_rows:12})
       .then(d=>setResult(d)).catch(e=>setErr(e.message||String(e))).finally(()=>setBusy(false));
   };
-  const saveProfile=()=>{
-    setProfileBusy(true);setProfileMsg("");
-    postJson("/api/llm/flowi/profile",{notes})
-      .then(()=>setProfileMsg("MD 저장됨"))
-      .catch(e=>setProfileMsg("저장 실패: "+(e.message||String(e))))
-      .finally(()=>setProfileBusy(false));
-  };
-  const examples=[
-    "PRODA0 root_lot_id A10001 wafer_id 07 ET ETA100010 VTH median wf별 몇이야?",
-    "PRODA0 root_lot_id A10001 knob 어떻게돼",
-    "PRODB root_lot_id B1000 wafer_id 12 knob M1 어떻게돼",
-  ];
-  const allowed=new Set((featureKeys||[]).filter(Boolean));
-  const entrypoints=FLOWI_ENTRYPOINTS.filter(e=>allowed.size===0||allowed.has(e.key));
-  const llmLabel=status?.available?"ADMIN TOKEN":"LOCAL TOOLS";
   return(<section style={{marginTop:12,fontFamily:"'JetBrains Mono',monospace"}}>
     <form onSubmit={e=>{e.preventDefault();activate();}} style={{margin:0}}>
       <div style={{display:"flex",alignItems:"center",gap:7,minWidth:0,fontSize:13,lineHeight:1.7,flexWrap:"wrap"}}>
         <span style={{color:"#f97316"}}>{">"}</span>
-        <span style={{color:"#737373",whiteSpace:"nowrap"}}>LLM :</span>
-        <span style={{fontSize:12,color:status?.available?"#22c55e":"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"1px 8px"}}>{llmLabel}</span>
-        {verifying&&<span style={{fontSize:10,color:"#fbbf24",fontFamily:"monospace"}}>checking...</span>}
-        {verifyMsg&&<span style={{fontSize:10,color:"#22c55e",fontFamily:"monospace"}}>{verifyMsg}</span>}
-        {!active&&<button type="submit" disabled={verifying} aria-label="start flowi"
-          style={{padding:"2px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#f97316",fontSize:10,fontFamily:"monospace",fontWeight:800,cursor:verifying?"default":"pointer"}}>START</button>}
+        <span style={{color:"#737373",whiteSpace:"nowrap"}}>flow-i</span>
+        {!active&&<button type="submit" aria-label="start flowi"
+          style={{padding:"2px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#f97316",fontSize:10,fontFamily:"monospace",fontWeight:800,cursor:"pointer"}}>START</button>}
         {active&&<button type="button" onClick={close} aria-label="close flowi"
           style={{padding:"1px 6px",borderRadius:5,border:"1px solid #333",background:"transparent",color:"#737373",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>CLOSE</button>}
       </div>
@@ -139,25 +85,6 @@ function FlowiConsole({onActiveChange,featureKeys=[]}){
           style={{alignSelf:"stretch",padding:"0 12px",borderRadius:8,border:"none",background:busy||!prompt.trim()?"#404040":"#f97316",color:"#111",fontSize:11,fontFamily:"monospace",fontWeight:800,cursor:busy||!prompt.trim()?"default":"pointer"}}>{busy?"RUNNING":"RUN"}</button>
       </div>
     </form>}
-    {active&&entrypoints.length>0&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
-      {entrypoints.slice(0,10).map(ep=><button key={ep.key} type="button" onClick={()=>setPrompt(ep.prompt)} title={FEATURE_GUIDES[ep.key]?.steps?.join("\n")||ep.title}
-        style={{padding:"4px 8px",borderRadius:5,border:"1px solid #333",background:"#151515",color:"#f97316",fontSize:10,fontFamily:"monospace",cursor:"pointer",maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ep.title}</button>)}
-    </div>}
-    {active&&<div style={{marginTop:8,border:"1px solid #262626",borderRadius:8,background:"#121212",padding:9}}>
-      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-        <span style={{fontSize:10,color:"#737373",fontFamily:"monospace"}}>USER MD</span>
-        <span style={{fontSize:9,color:"#525252",fontFamily:"monospace"}}>담당 제품·공정·선호 출력</span>
-        <button type="button" onClick={saveProfile} disabled={profileBusy} style={{marginLeft:"auto",padding:"2px 8px",borderRadius:5,border:"1px solid #333",background:profileBusy?"#262626":"#171717",color:"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:profileBusy?"default":"pointer"}}>{profileBusy?"SAVING":"SAVE"}</button>
-        {profileMsg&&<span style={{fontSize:10,color:profileMsg.includes("실패")?"#fca5a5":"#22c55e",fontFamily:"monospace"}}>{profileMsg}</span>}
-      </div>
-      <textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder={"예: 담당 제품 PRODA0, 관심 step ETA100010, 답변은 wafer별 표 우선"}
-        rows={3}
-        style={{width:"100%",boxSizing:"border-box",padding:"8px 10px",borderRadius:6,border:"1px solid #2a2a2a",background:"#0f0f0f",color:"#d4d4d4",fontSize:11,lineHeight:1.55,fontFamily:"'JetBrains Mono',monospace",outline:"none",resize:"vertical"}}/>
-    </div>}
-    {active&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
-      {examples.map(ex=><button key={ex} onClick={()=>setPrompt(ex)}
-        style={{padding:"4px 8px",borderRadius:5,border:"1px solid #333",background:"#151515",color:"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer",maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{ex}</button>)}
-    </div>}
     <FlowiResult busy={busy} error={err} result={result} prompt={lastPrompt}/>
   </section>);
 }
@@ -297,7 +224,7 @@ export default function My_Home({onNavigate,user}){
         <div style={{flex:1,paddingTop:4}}>
           <Cli cmd="--version" output={`v${ver} "${codename}"`}/>
           <div style={{marginTop:6,fontFamily:"'JetBrains Mono',monospace",fontSize:13}}><span style={{color:"#f97316"}}>{">"}</span><span style={{color:"#737373"}}> WELCOME </span><WelcomeType name={user?.username||"user"}/></div>
-          <FlowiConsole onActiveChange={setFlowiConnected} featureKeys={visibleCards.map(c=>c.key)}/>
+          <FlowiConsole onActiveChange={setFlowiConnected}/>
         </div>
       </div>
     </div>

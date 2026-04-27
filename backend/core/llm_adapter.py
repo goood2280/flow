@@ -36,6 +36,7 @@ import json
 import logging
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from typing import Any, Dict, Optional
 
 from core.paths import PATHS
@@ -105,6 +106,68 @@ def has_admin_token() -> bool:
     return bool(_raw_config().get("admin_token"))
 
 
+def _openai_chat_url(url: str, fmt: str) -> str:
+    """Accept either a full OpenAI-compatible endpoint or a `/v1` base URL."""
+    url = str(url or "").strip()
+    if (fmt or "openai") != "openai":
+        return url
+    clean = url.rstrip("/")
+    if clean.endswith("/v1"):
+        return clean + "/chat/completions"
+    parsed = urlparse(clean)
+    if parsed.path in ("", "/"):
+        return clean + "/v1/chat/completions"
+    return url
+
+
+def _content_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+            else:
+                parts.append(str(item or ""))
+        return "".join(parts)
+    return str(value)
+
+
+def _extract_response_text(obj: Any) -> str:
+    if not isinstance(obj, dict):
+        return _content_text(obj).strip()
+    try:
+        ch = obj.get("choices") or []
+        if ch:
+            first = ch[0] or {}
+            msg = first.get("message") or first.get("delta") or {}
+            text = _content_text(msg.get("content") if isinstance(msg, dict) else "")
+            if not text:
+                text = _content_text(first.get("text"))
+            if text:
+                return text.strip()
+    except Exception:
+        pass
+    text = _content_text(obj.get("output_text") or obj.get("text") or obj.get("response"))
+    if text:
+        return text.strip()
+    out = obj.get("output") or []
+    if isinstance(out, list):
+        parts = []
+        for item in out:
+            if not isinstance(item, dict):
+                continue
+            for content in item.get("content") or []:
+                if isinstance(content, dict):
+                    parts.append(_content_text(content.get("text") or content.get("content")))
+        if parts:
+            return "".join(parts).strip()
+    return ""
+
+
 def complete(prompt: str, *, system: Optional[str] = None,
              timeout: Optional[int] = None,
              auth_token: Optional[str] = None) -> Dict[str, Any]:
@@ -118,10 +181,10 @@ def complete(prompt: str, *, system: Optional[str] = None,
     cfg = _raw_config()
     if not cfg.get("enabled"):
         return {"ok": False, "text": "", "error": "llm disabled"}
-    url = cfg.get("api_url") or ""
+    fmt = cfg.get("format") or "openai"
+    url = _openai_chat_url(cfg.get("api_url") or "", fmt)
     if not url:
         return {"ok": False, "text": "", "error": "llm api_url missing"}
-    fmt = cfg.get("format") or "openai"
     model = cfg.get("model") or ""
     body: Dict[str, Any] = dict(cfg.get("extra_body") or {})
     if fmt == "openai":
@@ -163,17 +226,7 @@ def complete(prompt: str, *, system: Optional[str] = None,
             obj = json.loads(raw)
         except Exception:
             return {"ok": True, "text": raw, "raw": raw}
-        # openai compatibility
-        text = ""
-        try:
-            ch = (obj.get("choices") or [])
-            if ch:
-                msg = ch[0].get("message") or {}
-                text = (msg.get("content") or ch[0].get("text") or "").strip()
-        except Exception:
-            text = ""
-        if not text:
-            text = str(obj.get("text") or obj.get("response") or "")
+        text = _extract_response_text(obj)
         return {"ok": True, "text": text, "raw": obj}
     except urllib.error.HTTPError as e:
         detail = ""

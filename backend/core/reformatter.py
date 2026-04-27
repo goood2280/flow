@@ -70,6 +70,7 @@ logger = logging.getLogger("flow.reformatter")
 VALID_TYPES = {"scale_abs", "chip_combo", "shot_agg", "step_skew", "poly2_window", "bucket", "python_expr", "shot_formula"}
 VALID_AGGS = {"mean", "sum", "count", "min", "max", "median", "std", "range"}
 VALID_POINT_MODES = {"all_pt", "selected_pt", "both"}
+SHOT_FORMULA_GROUP_BY = ["product", "root_lot_id", "wafer_id", "step_id", "step_seq", "shot_x", "shot_y", "flat", "flat_zone"]
 REFORMATTER_TABLE_COLUMNS = [
     "no", "addp", "item_id", "alias", "addp_form", "abs", "scale_factor",
     "speclow", "target", "spechigh", "report_order", "y_axis", "spec_check",
@@ -125,6 +126,45 @@ def _table_bool(value, default: bool = False) -> str:
 
 def _split_item_ids(value: str) -> list[str]:
     return [x.strip() for x in re.split(r"[/,;|]+", str(value or "")) if x.strip()]
+
+
+def _formula_placeholders(expr: str) -> list[str]:
+    seen: list[str] = []
+    for raw in re.findall(r"\{([^{}]+)\}", str(expr or "")):
+        item = raw.strip()
+        if item and item not in seen:
+            seen.append(item)
+    return seen
+
+
+def _unique_expr_token(raw: str, used: set[str]) -> str:
+    base = _sanitize_expr_name(raw)
+    token = base
+    idx = 2
+    while token in used:
+        token = f"{base}_{idx}"
+        idx += 1
+    used.add(token)
+    return token
+
+
+def _normalize_addp_formula(addp_form: str, legacy_items: list[str] | None = None) -> tuple[str, dict[str, str], list[str]]:
+    """Convert `{raw item}` references into safe expression variables.
+
+    `addp` rows do not have their own real `item_id`. Raw item dependencies
+    are declared inside `addp_form`, for example `max({A}, {B})`.
+    """
+    expr = str(addp_form or "").strip()
+    items = _formula_placeholders(expr)
+    if not items and legacy_items:
+        items = [x for x in legacy_items if x]
+    used: set[str] = set()
+    item_map: dict[str, str] = {}
+    for item in items:
+        token = _unique_expr_token(item, used)
+        item_map[token] = item
+        expr = expr.replace("{" + item + "}", token)
+    return expr, item_map, items
 
 
 def _rule_name_from(alias: str, item_id: str, no: Any = "") -> str:
@@ -236,12 +276,10 @@ def rules_to_reformatter_table(rules: List[Dict[str, Any]]) -> List[Dict[str, An
     rows: list[dict[str, Any]] = []
     for raw in rules or []:
         r = normalize_rule_metadata(raw)
-        item_id = str(r.get("rawitem_id") or "").strip()
-        if not item_id and isinstance(r.get("item_map"), dict):
-            item_id = "/".join(str(v).strip() for v in r["item_map"].values() if str(v).strip())
         addp = str(r.get("addp") or "").strip().lower()
         if addp not in {"real", "addp"}:
             addp = "addp" if r.get("type") in {"shot_formula", "python_expr", "chip_combo"} else "real"
+        item_id = "" if addp == "addp" else str(r.get("rawitem_id") or "").strip()
         row = {
             "no": r.get("no", ""),
             "addp": addp,
@@ -286,7 +324,7 @@ def reformatter_table_to_rules(rows: List[Dict[str, Any]]) -> List[Dict[str, Any
             "name": _rule_name_from(alias, item_id, no),
             "no": no,
             "addp": addp,
-            "rawitem_id": item_id,
+            "rawitem_id": "" if addp == "addp" else item_id,
             "alias": alias or item_id,
             "addp_form": addp_form,
             "abs": _bool_value(row.get("abs"), False),
@@ -311,19 +349,14 @@ def reformatter_table_to_rules(rows: List[Dict[str, Any]]) -> List[Dict[str, Any
             "report_audience": "internal",
         }
         if addp == "addp":
-            items = _split_item_ids(item_id)
-            item_map = {}
-            expr = addp_form
-            for item in items:
-                token = _sanitize_expr_name(item)
-                item_map[token] = item
-                expr = expr.replace("{" + item + "}", token)
+            expr, item_map, source_items = _normalize_addp_formula(addp_form, _split_item_ids(item_id))
             base.update({
                 "type": "shot_formula",
                 "item_col": "item_id",
                 "value_col": "value",
-                "group_by": ["product", "root_lot_id", "lot_id", "fab_lot_id", "wafer_id", "step_id", "step_seq", "shot_x", "shot_y"],
+                "group_by": SHOT_FORMULA_GROUP_BY,
                 "item_map": item_map,
+                "source_item_ids": source_items,
                 "expr": expr,
                 "agg": "mean",
             })
@@ -899,10 +932,7 @@ def _apply_shot_formula(df: pl.DataFrame, rule: Dict[str, Any]) -> pl.DataFrame:
     item_col = str(rule.get("item_col") or "item_id")
     value_col = str(rule.get("value_col") or "value")
     agg = str(rule.get("agg") or "mean").strip().lower()
-    group_by = rule.get("group_by") or [
-        c for c in ("product", "root_lot_id", "lot_id", "wafer_id", "step_id", "step_seq", "shot_x", "shot_y")
-        if c in df.columns
-    ]
+    group_by = rule.get("group_by") or SHOT_FORMULA_GROUP_BY
     group_by = [g for g in group_by if g in df.columns]
     if item_col not in df.columns or value_col not in df.columns or not group_by:
         return df.with_columns(pl.lit(None, dtype=pl.Float64).alias(name))
