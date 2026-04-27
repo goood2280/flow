@@ -185,6 +185,25 @@ frontend/src/
 - `frontend/src/pages/SplitTable/_helpers.js`
 - `backend/routers/splittable.py`
 
+연결 테이블과 룰북 구조:
+
+- 위치: 모두 `db_root` 최상단 CSV가 운영 기준이다. `base_root`는 호환 alias라 같은 위치를 본다.
+- 형식: UTF-8 CSV, 첫 줄 header 필수, product 값은 제품 alias까지 고려하되 운영 파일에서는 대문자 표기를 권장한다.
+- 키: 같은 product 안에서 연결 키가 중복되면 마지막 수정자가 의도한 행을 알 수 없으므로 중복을 피한다. 공용 행이 필요한 경우 product를 비워둘 수 있다.
+- schema override: 사내 CSV 컬럼명이 다르면 `data_root/splittable/rulebook_schema.json`에 역할별 컬럼명을 저장한다. 기본 역할은 `/api/splittable/rulebook/schema`와 Admin/SplitTable 연결 규칙 화면에서 확인한다.
+
+| 파일 | 역할 | 필수 컬럼 | 선택 컬럼/규칙 |
+|---|---|---|---|
+| `step_matching.csv` | FAB step_id를 기능 공정으로 정규화 | `product`, `step_id`, `func_step` | `module`, `step_class`, `measure_domain`, `main_function_step`, `is_active`, `valid_from`, `valid_to`, `priority`, `note`. 키는 `product + step_id`. |
+| `matching_step.csv` | adapter/catalog용 raw step registry | `product`, `raw_step_id`, `canonical_step`, `step_type` | `area`, `function_step`, `step_class`, `measure_domain`, `main_function_step`. `step_type`은 보통 `main` 또는 `meas`. |
+| `knob_ppid.csv` | PPID와 기능 공정을 KNOB feature로 연결 | `product`, `ppid`, `feature_name`, `function_step` | split 축 산출에는 `knob_name`, `knob_value`를 같이 둔다. 복합 rule은 `rule_order`, `operator`, `category`, `use`를 쓰고 `use=N`은 제외한다. |
+| `inline_matching.csv` | `INLINE_<item_id>` feature를 측정 step에 연결 | `product`, `item_id`, `step_id` | `process_id`, `item_desc`, `function_step`. 한 item이 여러 step에 걸치면 행을 나눠 쓴다. |
+| `vm_matching.csv` | `VM_<feature_name>` feature를 예측/측정 step에 연결 | `product`, `feature_name`, `step_id` | `step_desc`, `function_step`. 한 feature가 여러 step에 걸치면 행을 나눠 쓴다. |
+| `inline_step_match.csv` | INLINE raw step_id를 canonical 측정 step으로 정규화 | `product`, `raw_step_id`, `canonical_step` | `step_class`, `measure_domain`, `main_function_step`를 둘 수 있다. |
+| `inline_item_map.csv` | INLINE item을 canonical item과 좌표 map으로 연결 | `product`, `item_id`, `canonical_item` | 좌표 변환까지 쓰면 `map_id`가 필요하다. step별 item명이 겹치면 `step_id`를 추가한다. |
+| `inline_subitem_pos.csv` | INLINE subitem을 ET shot 좌표로 연결 | `map_id`, `subitem_id`, `shot_x`, `shot_y` | `shot_x`, `shot_y`는 ET 좌표계 정수값이다. 기존 `item_id` 기반 파일은 `map_id=item_id` 형태로 맞춰서 사용한다. |
+| `mask.csv` | reticle_id를 MASK version/vendor로 연결 | `product`, `reticle_id`, `mask_version` | `mask_vendor`, `photo_step`. |
+
 ### Tracker
 
 용도: 개발 이슈, lot watch, category, group visibility, 메일/ET watch를 이슈 단위로 관리한다.

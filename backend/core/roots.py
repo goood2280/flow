@@ -37,6 +37,12 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent   # → flow/
 _PROFILE = root_profile.read_profile()
 _USE_SHARED_DEFAULTS = root_profile.use_shared_defaults(_PROFILE)
 _IS_PROD = _USE_SHARED_DEFAULTS
+_PROJECT_DB_ROOT_SUFFIXES = (
+    Path("data") / "Fab",
+    Path("data") / "DB",
+    Path("Fab"),
+    Path("DB"),
+)
 
 # Where admin.py writes runtime overrides. core/roots.py read-only peeks.
 #
@@ -77,6 +83,69 @@ def _default_db_root() -> Path:
     return root_profile.default_db_root(_PROFILE)
 
 
+def _windows_drive_to_wsl_path(value: str) -> Path | None:
+    raw = str(value or "").strip()
+    if len(raw) < 3 or raw[1] != ":" or raw[2] not in ("\\", "/"):
+        return None
+    drive = raw[0].lower()
+    tail = raw[3:].replace("\\", "/").lstrip("/")
+    return Path("/mnt") / drive / tail
+
+
+def _path_has_suffix(value: str, suffix: Path) -> bool:
+    parts = [p for p in str(value or "").replace("\\", "/").split("/") if p]
+    suffix_parts = list(suffix.parts)
+    if len(parts) < len(suffix_parts):
+        return False
+    return [p.casefold() for p in parts[-len(suffix_parts):]] == [
+        p.casefold() for p in suffix_parts
+    ]
+
+
+def _candidate_config_paths(value: str) -> list[Path]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    p = Path(raw).expanduser()
+    candidates: list[Path] = []
+
+    wsl_path = _windows_drive_to_wsl_path(raw)
+    if wsl_path is not None:
+        candidates.append(wsl_path)
+
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        # Relative paths in admin_settings.json are project-root relative, not
+        # process-CWD relative. Keep the raw relative candidate as a final
+        # compatibility fallback for older launch scripts.
+        candidates.extend([_PROJECT_ROOT / p, p])
+
+    # The checked-in local seed used to carry an absolute path to this checkout.
+    # If that seed is copied to another checkout, map known DB-root suffixes
+    # back onto the active project instead of warning on every resolver call.
+    for suffix in _PROJECT_DB_ROOT_SUFFIXES:
+        if _path_has_suffix(raw, suffix):
+            candidates.append(_PROJECT_ROOT / suffix)
+
+    out: list[Path] = []
+    seen: set[str] = set()
+    for cand in candidates:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cand)
+    return out
+
+
+def _resolve_existing_config_path(value: str) -> Path | None:
+    for cand in _candidate_config_paths(value):
+        if cand.exists():
+            return cand
+    return None
+
+
 def _is_admin_setting_value(key: str, value: str) -> bool:
     try:
         return (_read_admin_setting(key) or "") == (value or "")
@@ -86,10 +155,11 @@ def _is_admin_setting_value(key: str, value: str) -> bool:
 
 def _return_existing_or_default_admin_root(key: str, value: str | None, default_factory) -> Path:
     if value:
-        if _is_admin_setting_value(key, value) and not Path(value).exists():
+        resolved = _resolve_existing_config_path(value)
+        if resolved is not None:
+            return resolved
+        if _is_admin_setting_value(key, value):
             logger.warning(f"admin_settings data_roots.{key} ignored because path does not exist: {value}")
-        else:
-            return Path(value)
     return default_factory()
 
 
@@ -104,8 +174,8 @@ def get_db_root() -> Path:
         return Path(v)
     profile_db = str(root_profile.read_profile().get("db_root") or "").strip()
     if profile_db:
-        p = Path(profile_db).expanduser()
-        if p.exists():
+        p = _resolve_existing_config_path(profile_db)
+        if p is not None:
             return p
         logger.warning(f"runtime_roots db_root ignored because path does not exist: {profile_db}")
     return _return_existing_or_default_admin_root("db", _read_admin_setting("db"), _default_db_root)
@@ -132,8 +202,9 @@ def get_wafer_map_root() -> Path:
         return Path(v)
     admin_wm = _read_admin_setting("wafer_map")
     if admin_wm:
-        if Path(admin_wm).exists():
-            return Path(admin_wm)
+        resolved = _resolve_existing_config_path(admin_wm)
+        if resolved is not None:
+            return resolved
         logger.warning(f"admin_settings data_roots.wafer_map ignored because path does not exist: {admin_wm}")
     return get_db_root() / "wafer_maps"
 
