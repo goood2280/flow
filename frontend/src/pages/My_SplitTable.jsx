@@ -220,6 +220,7 @@ export default function My_SplitTable({user}){
     sf(API+"/precision").then(d=>{setPrecision(d.precision||{});setPrecisionDraft(d.precision||{});}).catch(()=>{});
   },[]);
   const visibleProducts=enabledSources&&enabledSources.size>0?products.filter(p=>enabledSources.has(p.name)):enabledSources?[]:products;
+  const normalizeLotList=(values)=>[...new Set((values||[]).map(v=>String(v||"").trim()).filter(Boolean))];
   // When enabledSources or products change, ensure selProd is in visible list
   useEffect(()=>{
     if(enabledSources&&selProd&&!enabledSources.has(selProd)){
@@ -231,11 +232,19 @@ export default function My_SplitTable({user}){
     const prefix=(lotId||"").trim();
     let url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=root_lot_id&limit=500";
     if(prefix) url+="&prefix="+encodeURIComponent(prefix);
+    const fallbackLots=()=>sf(API+"/lot-ids?product="+encodeURIComponent(selProd)+"&limit=500")
+      .then(d=>{
+        const lots=normalizeLotList(d.lot_ids||[]);
+        setLotSuggestions(prefix?lots.filter(l=>l.toLowerCase().includes(prefix.toLowerCase())):lots);
+      })
+      .catch(()=>{});
     sf(url)
-      .then(d=>setLotSuggestions(d.candidates||[]))
-      .catch(()=>{
-        if(!prefix) sf(API+"/lot-ids?product="+encodeURIComponent(selProd)).then(d=>setLotSuggestions(d.lot_ids||[])).catch(()=>{});
-      });
+      .then(d=>{
+        const candidates=normalizeLotList(d.candidates||[]);
+        if(candidates.length)setLotSuggestions(candidates);
+        else fallbackLots();
+      })
+      .catch(()=>fallbackLots());
   },[selProd,lotId]);
   // v9.0.0: 제품 변경 시 lotId/fabLotId/waferIds 초기화 — 직전 제품의 lot 이 남아 잘못된 필터링 방지.
   //   (예: PRODA 의 A1000A.1_V1 이 PRODB 로 전환 후에도 fab_lot_id 칸에 남아 있으면 B0001 root 와 어긋나는 조합 생성).
@@ -570,7 +579,7 @@ export default function My_SplitTable({user}){
   const filteredCustomCols=colSearch
     ?customPool.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase()))
     :customPool;
-  const filteredLots=lotFilter?lotSuggestions.filter(l=>l.toLowerCase().includes(lotFilter.toLowerCase())):lotSuggestions;
+  const filteredLots=lotFilter?lotSuggestions.filter(l=>String(l||"").toLowerCase().includes(lotFilter.toLowerCase())):lotSuggestions;
   const S={padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none"};
   const chipS=(active)=>({padding:"3px 8px",borderRadius:4,fontSize:10,cursor:"pointer",fontWeight:active?700:400,background:active?"var(--accent-glow)":"var(--bg-hover)",color:active?"var(--accent)":"var(--text-secondary)",border:active?"1px solid var(--accent)":"1px solid transparent"});
 

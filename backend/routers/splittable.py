@@ -3551,6 +3551,30 @@ def _merge_candidate_values(*groups, limit: int = 500) -> list[str]:
     return out
 
 
+def _candidate_values_from_frame(rows, value_col: str = "v", limit: int = 500) -> list[str]:
+    """Return clean string autocomplete values from a collected Polars frame."""
+    values: list[str] = []
+    seen: set[str] = set()
+    try:
+        limit = max(1, int(limit or 500))
+    except Exception:
+        limit = 500
+    if rows is None or value_col not in rows.columns:
+        return values
+    for value in rows[value_col].to_list():
+        text = _clean_str(value)
+        if not text:
+            continue
+        key = text.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(text)
+        if len(values) >= limit:
+            break
+    return values
+
+
 def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str = "",
                            limit: int = 500, root_lot_id: str = "") -> dict:
     """Return candidates from the actual SplitTable render source.
@@ -3595,17 +3619,7 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
         if prefix.strip():
             q = q.filter(_contains_literal_ci_expr("v", prefix))
         rows = q.unique().sort("v").head(limit).collect()
-        values = []
-        seen = set()
-        for value in rows["v"].to_list() if "v" in rows.columns else []:
-            text = _clean_str(value)
-            if not text:
-                continue
-            key = text.upper()
-            if key in seen:
-                continue
-            seen.add(key)
-            values.append(text)
+        values = _candidate_values_from_frame(rows, "v", limit)
         return {"candidates": values, "source_col": target, "root_ids": values if str(col or "").casefold() == "root_lot_id" else []}
     except Exception as e:
         logger.warning("_main_table_candidates 실패 (product=%s col=%s) %s: %s",
@@ -3769,11 +3783,10 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
     fallback_used = False
     try:
         lots = (
-            lf.select(pl.col(lot_col).cast(_STR, strict=False))
-            .unique().sort(lot_col).head(limit).collect()
+            lf.select(pl.col(lot_col).cast(_STR, strict=False).alias("v"))
+            .unique().sort("v").head(limit).collect()
         )
-        lots_list = [v for v in lots[lot_col].to_list()
-                     if v is not None and str(v).strip() not in ("", "None", "null")]
+        lots_list = _candidate_values_from_frame(lots, "v", limit)
     except Exception as e:
         logger.warning("/lot-ids: main lf 조회 실패 (product=%s) %s: %s",
                        product, type(e).__name__, e)
@@ -3814,8 +3827,7 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
                         rows = (fab_lf.select(pl.col(target).cast(_STR, strict=False)
                                               .alias("v"))
                                 .drop_nulls().unique().sort("v").head(limit).collect())
-                        lots_list = [v for v in rows["v"].to_list()
-                                     if v and str(v).strip() not in ("", "None", "null")]
+                        lots_list = _candidate_values_from_frame(rows, "v", limit)
                         if lots_list:
                             fallback_used = True
                             lot_col = target
@@ -3876,6 +3888,22 @@ def get_lot_candidates(
                 "source": "fab_source_history",
                 "fab_source": hist.get("source", ""),
                 "strict": True,
+            }
+        fallback = get_lot_ids(product=product, limit=limit)
+        fallback_candidates = _merge_candidate_values(fallback.get("lot_ids") or [], limit=limit)
+        if prefix.strip():
+            fallback_candidates = [v for v in fallback_candidates if prefix.strip().upper() in str(v).upper()]
+        if fallback_candidates:
+            return {
+                "col": "root_lot_id",
+                "candidates": fallback_candidates,
+                "prefix": prefix,
+                "root_scope": root_scope,
+                "match_mode": "detected_lot_col_fallback",
+                "source": "lot_ids",
+                "source_col": fallback.get("lot_col", ""),
+                "fab_source": fallback.get("fab_source", ""),
+                "strict": False,
             }
     if col.casefold() in {c.casefold() for c in _FAB_COL_CANDIDATES}:
         main = _main_table_candidates(product, col, prefix=prefix, limit=limit, root_lot_id=root_scope)
