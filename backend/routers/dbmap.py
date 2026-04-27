@@ -693,22 +693,45 @@ class RelationReq(BaseModel):
     from_col: str = ""
     to_col: str = ""
     description: str = ""
+    label_dx: float = 0
+    label_dy: float = 0
 
 
 @router.post("/relations/save", dependencies=[Depends(_require_tablemap_admin)])
 def save_relation(req: RelationReq):
     cfg = _load_config()
     rid = req.id or _stamp("rel")
+    existing = next((r for r in cfg.get("relations", []) if r.get("id") == rid), None)
+    label_dx = req.label_dx if (req.label_dx or not existing) else float(existing.get("label_dx") or 0)
+    label_dy = req.label_dy if (req.label_dy or not existing) else float(existing.get("label_dy") or 0)
     rel = {"id": rid, "from": req.from_id, "to": req.to_id,
            "from_col": req.from_col, "to_col": req.to_col,
-           "description": req.description}
-    existing = next((r for r in cfg.get("relations", []) if r.get("id") == rid), None)
+           "description": req.description,
+           "label_dx": label_dx, "label_dy": label_dy}
     if existing:
         existing.update(rel)
     else:
         cfg.setdefault("relations", []).append(rel)
     _save_config(cfg)
     return {"ok": True, "id": rid}
+
+
+class RelationLabelPositionReq(BaseModel):
+    relation_id: str
+    label_dx: float = 0
+    label_dy: float = 0
+
+
+@router.post("/relations/label-position", dependencies=[Depends(_require_tablemap_admin)])
+def update_relation_label_position(req: RelationLabelPositionReq):
+    cfg = _load_config()
+    for rel in cfg.get("relations", []):
+        if rel.get("id") == req.relation_id:
+            rel["label_dx"] = req.label_dx
+            rel["label_dy"] = req.label_dy
+            _save_config(cfg)
+            return {"ok": True}
+    raise HTTPException(404)
 
 
 @router.post("/relations/delete", dependencies=[Depends(_require_tablemap_admin)])
