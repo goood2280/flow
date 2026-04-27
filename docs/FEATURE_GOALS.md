@@ -9,10 +9,11 @@
 추가 기준:
 - 최근 변경, 알림, 다음 행동 추천만 둔다.
 - 복잡한 설정이나 분석 기능은 넣지 않는다.
+- Contact bell과 공지 배너는 진입 후 바로 보이되, 업무 화면을 가리지 않는다.
 
 ## FileBrowser
 
-목표: DB/Base 루트의 파일 존재, 스키마, 미리보기, S3 동기화 상태를 확인한다.
+목표: DB root의 파일 존재, root-level base/rulebook 파일, 스키마, 미리보기, S3 동기화 상태를 확인한다.
 
 추가 기준:
 - 원천 데이터 진단과 preview에 집중한다.
@@ -26,6 +27,7 @@
 - plan 저장, history, final value, drift를 명확히 유지한다.
 - notes, rulebook, product scan은 service/repository로 분리한다.
 - 화면은 matrix 작업대 역할에 집중한다.
+- Inform snapshot과 같은 root/fab/wafer 표시 구조를 유지한다.
 
 ## Dashboard
 
@@ -58,6 +60,8 @@
 - product contacts, mail modal, SplitTable embed는 각각 분리한다.
 - 첨부와 메일은 실패 가능성을 UI에 보여준다.
 - 담당자/마감/상태가 운영 기록으로 남아야 한다.
+- 모듈/사유 chip, 이미지, flow 상태, deadline, Gantt는 thread 기록과 함께 움직인다.
+- SplitTable snapshot은 SplitTable의 root/fab lot/wafer 표시와 어긋나면 안 된다.
 
 ## Meeting
 
@@ -76,6 +80,7 @@
 추가 기준:
 - calendar 자체 입력과 외부 push 항목의 출처를 구분한다.
 - 상태 변경은 원본 엔터티와 동기화되어야 한다.
+- 월 grid에서 TODAY와 동시편집 version lock 상태가 잘려 보이면 안 된다.
 
 ## ET Report / ETTime
 
@@ -116,6 +121,16 @@
 추가 기준:
 - 통계 결과는 원인으로 단정하지 않는다.
 - source, step, area, direction 신뢰도를 함께 보여준다.
+- TabICL/XGBoost/LightGBM 실행 결과는 같은 해석 프레임으로 비교한다.
+
+## Messages
+
+목표: 사용자와 admin 사이의 1:1 문의와 admin 공지를 앱 내부 운영 기록으로 남긴다.
+
+추가 기준:
+- 우상단 bell과 읽음 상태가 동기화되어야 한다.
+- 공지는 TTL과 대상 범위를 명확히 둔다.
+- 민감한 운영 설정은 Messages가 아니라 Admin에서 관리한다.
 
 ## Admin
 
@@ -125,3 +140,13 @@
 - 운영 설정은 사용자 기능과 섞지 않는다.
 - 탭 단위로 panel/component를 분리한다.
 - 권한 없는 사용자가 설정을 읽거나 바꾸지 못해야 한다.
+- Base CSV 편집기와 product YAML 관리는 변경 전후 진단을 보여준다.
+
+## DevGuide
+
+목표: 앱 내부에서 현재 구조와 주요 API를 빠르게 확인한다.
+
+추가 기준:
+- 긴 이력이나 분석 전문은 넣지 않는다.
+- 실제 실행 구조와 다른 예시는 제거한다.
+- 새 개발 기준은 `docs/DEVELOPMENT.md`와 충돌하지 않아야 한다.
