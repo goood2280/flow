@@ -9,7 +9,7 @@
   POST <api_url>  (multipart/form-data)
     form field "mailSendString" = JSON string {
       "content":           <HTML body>,
-      "receiverList":      [{"email": "...", "recipientType": "To", "seq": 1}, ...],
+      "receiverList":      [{"email": "...", "recipientType": "TO", "seq": 1}, ...],
       "senderMailAddress": <from>,
       "statusCode":        <status>,
       "title":             <subject>,
@@ -252,7 +252,7 @@ def send_mail(
                         "reason": f"첨부 총 용량이 {ATTACH_MAX // (1024*1024)}MB 초과."}
             attach_list.append(f)
 
-    receiver_list = [{"email": em, "recipientType": "To", "seq": i + 1}
+    receiver_list = [{"email": em, "recipientType": "TO", "seq": i + 1}
                      for i, em in enumerate(emails)]
 
     # sender: username 이 이메일 포맷이면 그대로, 아니면 v8.8.19 의 `domain` 에 합성.

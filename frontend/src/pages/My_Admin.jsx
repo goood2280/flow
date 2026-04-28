@@ -924,8 +924,8 @@ function MailCfgPanel(){
   const _dataObj = {
     content: "(본문 HTML)",
     receiverList: [
-      {email: _combine("user1"), recipientType: "To", seq: 1},
-      {email: _combine("user2"), recipientType: "To", seq: 2},
+      {email: _combine("user1"), recipientType: "TO", seq: 1},
+      {email: _combine("user2"), recipientType: "TO", seq: 2},
     ],
     senderMailAddress: cfg.from_addr || _combine("sender") || "(설정 필요)",
     statusCode: cfg.status_code || "",
@@ -1187,6 +1187,7 @@ function LlmCfgPanel(){
 function DataRootsPanel(){
   const[eff,setEff]=useState({db_root:"",sources:{}});
   const[form,setForm]=useState({db_root:""});
+  const[splitRefresh,setSplitRefresh]=useState(30);
   const[backup,setBackup]=useState({path:"",interval_hours:24,keep:5,enabled:true,last:{}});
   const[backupList,setBackupList]=useState([]);
   const[bkBusy,setBkBusy]=useState(false);
@@ -1196,6 +1197,7 @@ function DataRootsPanel(){
     sf("/api/admin/settings").then(d=>{
       const dr=d.data_roots||{db_root:"",sources:{}};
       setEff(dr);
+      setSplitRefresh(Math.max(30,Math.min(60,Number(d.splittable_match_refresh_minutes)||30)));
       if(d.backup)setBackup(prev=>({...prev,...d.backup}));
     }).catch(e=>setMsg("로드 오류: "+e.message));
     sf("/api/admin/backup/status").then(d=>{
@@ -1239,6 +1241,7 @@ function DataRootsPanel(){
         body:JSON.stringify({
           dashboard_refresh_minutes: cur.dashboard_refresh_minutes??10,
           dashboard_bg_refresh_minutes: cur.dashboard_bg_refresh_minutes??10,
+          splittable_match_refresh_minutes: Number(splitRefresh)||30,
           data_roots: {db_root:form.db_root||""},
         })});
     }).then(()=>{setMsg("저장되었습니다. 새 요청부터 적용됩니다.");setForm({db_root:""});reload();})
@@ -1278,6 +1281,18 @@ function DataRootsPanel(){
       DB 루트는 이미 존재하는 디렉터리만 저장됩니다. 빈 값으로 저장하면 오버라이드가 제거되고 env/default 로 돌아갑니다.
     </div>
     {field("db_root","DB 루트","FLOW_DB_ROOT")}
+    <div style={{marginTop:18,paddingTop:16,borderTop:"1px solid var(--border)"}}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>🧩 SplitTable 매칭 캐시</div>
+      <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.5}}>
+        FAB DB 를 주기적으로 스캔해 root_lot_id ↔ fab_lot_id 연결 테이블을 미리 만듭니다.
+        SplitTable 조회는 이 캐시를 먼저 사용하고, 캐시가 없을 때만 원천 DB 로 폴백합니다.
+      </div>
+      <div style={L}>갱신 주기 (분)</div>
+      <input type="number" min={30} max={60} value={splitRefresh}
+        onChange={e=>setSplitRefresh(Math.max(30,Math.min(60,Number(e.target.value)||30)))}
+        style={{...I,maxWidth:140}}/>
+      <div style={H}>30~60분 범위. 저장 후 백그라운드 스케줄러의 다음 tick부터 적용됩니다.</div>
+    </div>
     <div style={{display:"flex",gap:8,marginTop:16,alignItems:"center"}}>
       <button data-dr-btn="save" onClick={save} disabled={busy}
         style={{padding:"8px 20px",borderRadius:6,border:"none",background:"var(--accent)",color:WHITE,fontWeight:600,cursor:busy?"default":"pointer",opacity:busy?0.5:1}}>

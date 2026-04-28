@@ -14,7 +14,7 @@ v4.1 (2026-04-19, adapter-engineer slice):
       `<db_root>/_uniques.json` unchanged, for frontend feature-select
     autocomplete catalog.
 """
-import json, datetime, io, csv as csv_mod, logging, time
+import json, datetime, io, csv as csv_mod, logging, time, threading
 from pathlib import Path
 import sys
 
@@ -124,6 +124,19 @@ def _lot_lookup_cache_set(key: tuple, payload: dict) -> dict:
 
 PLAN_DIR = PATHS.data_root / "splittable"
 PLAN_DIR.mkdir(parents=True, exist_ok=True)
+MATCH_CACHE_DIR = PLAN_DIR / "match_cache"
+MATCH_CACHE_VERSION = 1
+MATCH_CACHE_REFRESH_MINUTES_DEFAULT = 30
+MATCH_CACHE_REFRESH_MINUTES_MIN = 30
+MATCH_CACHE_REFRESH_MINUTES_MAX = 60
+MATCH_CACHE_ROOT_COL = "__cache_root_lot_id"
+MATCH_CACHE_WAFER_COL = "__cache_wafer_id"
+MATCH_CACHE_FAB_COL = "__cache_fab_lot_id"
+MATCH_CACHE_TS_COL = "__cache_ts"
+_MATCH_CACHE_THREAD: threading.Thread | None = None
+_MATCH_CACHE_STARTED = False
+_MATCH_CACHE_STOP = threading.Event()
+_MATCH_CACHE_BUILD_LOCK = threading.Lock()
 PREFIX_CFG = PLAN_DIR / "prefix_config.json"
 DEFAULT_PREFIXES = ["KNOB", "MASK", "INLINE", "VM", "FAB"]
 PLAN_ALLOWED_PREFIXES = ["KNOB", "MASK", "FAB"]  # Only these can have plan values
@@ -3273,6 +3286,437 @@ _DEFAULT_OVERRIDE_COLS = (
 )
 
 
+def _match_cache_refresh_minutes() -> int:
+    data = load_json(PATHS.data_root / "settings.json", {})
+    raw = data.get("splittable_match_refresh_minutes", MATCH_CACHE_REFRESH_MINUTES_DEFAULT) if isinstance(data, dict) else MATCH_CACHE_REFRESH_MINUTES_DEFAULT
+    try:
+        value = int(raw)
+    except Exception:
+        value = MATCH_CACHE_REFRESH_MINUTES_DEFAULT
+    return max(MATCH_CACHE_REFRESH_MINUTES_MIN, min(MATCH_CACHE_REFRESH_MINUTES_MAX, value))
+
+
+def _current_fab_override(product: str) -> tuple[str, dict, str]:
+    ml_product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+    cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
+    ov = _lot_override_for(cfg, ml_product)
+    fab_source = _normalize_fab_source_path((ov.get("fab_source") or "").strip())
+    if fab_source.startswith("root:"):
+        fab_source = ""
+    if not fab_source:
+        fab_source = _auto_derive_fab_source(ml_product)
+    return ml_product, ov, fab_source
+
+
+def _match_cache_path(product: str) -> Path:
+    name = safe_id(_canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip() or "product")
+    return MATCH_CACHE_DIR / f"{name}.parquet"
+
+
+def _match_cache_meta_path(product: str) -> Path:
+    name = safe_id(_canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip() or "product")
+    return MATCH_CACHE_DIR / f"{name}.json"
+
+
+def _match_cache_config_key(product: str, ov: dict, fab_source: str) -> str:
+    keys = ("root_col", "wf_col", "wafer_col", "fab_col", "ts_col", "join_keys", "override_cols")
+    clean_ov = {k: ov.get(k) for k in keys if k in ov}
+    payload = {
+        "version": MATCH_CACHE_VERSION,
+        "product": _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip(),
+        "fab_source": _normalize_fab_source_path(fab_source),
+        "db_root": str(_db_base()),
+        "base_root": str(_base_root()),
+        "override": clean_ov,
+    }
+    try:
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        return str(payload)
+
+
+def _match_cache_current(product: str) -> dict | None:
+    ml_product, ov, fab_source = _current_fab_override(product)
+    if not ml_product or not fab_source:
+        return None
+    fp = _match_cache_path(ml_product)
+    meta_fp = _match_cache_meta_path(ml_product)
+    if not fp.is_file() or not meta_fp.is_file():
+        return None
+    meta = load_json(meta_fp, {})
+    if not isinstance(meta, dict):
+        return None
+    if meta.get("version") != MATCH_CACHE_VERSION:
+        return None
+    if meta.get("config_key") != _match_cache_config_key(ml_product, ov, fab_source):
+        return None
+    try:
+        lf = _cast_cats_lazy(_scan_parquet_compat(str(fp)))
+    except Exception as e:
+        logger.warning("SplitTable match cache scan failed (product=%s) %s: %s",
+                       ml_product, type(e).__name__, e)
+        return None
+    return {"product": ml_product, "ov": ov, "fab_source": fab_source, "path": fp, "meta": meta, "lf": lf}
+
+
+def _resolve_match_cache_columns(ov: dict, main_names_list: list[str], fab_schema_names: list[str]) -> dict:
+    main_names = set(main_names_list)
+    fab_names = set(fab_schema_names)
+    join_keys = ov.get("join_keys") or []
+    if isinstance(join_keys, str):
+        join_keys = [k.strip() for k in join_keys.split(",") if k.strip()]
+    if join_keys:
+        mapped = []
+        for k in join_keys:
+            actual = _ci_resolve_in(k, main_names_list) or _resolve_source_col_name(k, fab_schema_names)
+            if actual:
+                mapped.append(actual)
+        join_keys = mapped
+    if not join_keys:
+        join_keys = _default_override_join_keys(main_names_list, fab_schema_names)
+    join_keys = [k for k in join_keys if k in main_names and k in fab_names]
+
+    root_col = _resolve_source_col_name((ov.get("root_col") or "").strip(), fab_schema_names) \
+               or _pick_first_present_ci(("root_lot_id",), fab_schema_names)
+    wafer_col = _resolve_source_col_name((ov.get("wf_col") or ov.get("wafer_col") or "").strip(), fab_schema_names) \
+                or _pick_first_present_ci(("wafer_id", "wafer"), fab_schema_names)
+    fc_raw = (ov.get("fab_col") or "").strip()
+    fab_col = (_resolve_source_col_name(fc_raw, fab_schema_names) if fc_raw else "") \
+              or _pick_first_present_ci(_FAB_COL_CANDIDATES, fab_schema_names) \
+              or "fab_lot_id"
+    tc_raw = (ov.get("ts_col") or "").strip()
+    ts_col = (_resolve_source_col_name(tc_raw, fab_schema_names) if tc_raw else "") \
+             or _pick_ts_col(fab_schema_names)
+
+    raw_oc = ov.get("override_cols")
+    if isinstance(raw_oc, str):
+        raw_oc = [c.strip() for c in raw_oc.split(",") if c.strip()]
+    if not raw_oc:
+        raw_oc = list(_DEFAULT_OVERRIDE_COLS)
+    if fab_col and fab_col not in raw_oc:
+        raw_oc = list(raw_oc) + [fab_col]
+    resolved_oc = []
+    for c in raw_oc:
+        actual = _resolve_source_col_name(c, fab_schema_names)
+        resolved_oc.append(actual or c)
+    override_cols = [c for c in dict.fromkeys(resolved_oc)
+                     if c in fab_names and c not in join_keys]
+    return {
+        "join_keys": join_keys,
+        "root_col": root_col,
+        "wafer_col": wafer_col,
+        "fab_col": fab_col,
+        "ts_col": ts_col,
+        "override_cols": override_cols,
+    }
+
+
+def _join_fab_projection_into_main(lf, main_names: set[str], fab_proj, join_keys: list[str],
+                                   override_cols: list[str], *, fab_has_join_tmp: bool = False):
+    join_aliases = [(k, f"__join_key_{i}") for i, k in enumerate(join_keys)]
+    join_tmp_keys = [tmp for _, tmp in join_aliases]
+    if not fab_has_join_tmp:
+        fab_proj = fab_proj.with_columns([_join_key_expr(k).alias(tmp) for k, tmp in join_aliases])
+    lf = lf.with_columns([_join_key_expr(k).alias(tmp) for k, tmp in join_aliases])
+    backup_cols: list = []
+    for c in override_cols:
+        if c in main_names:
+            bk = f"__main_bk_{c}"
+            lf = lf.with_columns(pl.col(c).alias(bk))
+            backup_cols.append((c, bk))
+            lf = lf.drop(c)
+    lf = lf.join(fab_proj, on=join_tmp_keys, how="left").drop(join_tmp_keys)
+    for c, bk in backup_cols:
+        if c.casefold() == "fab_lot_id":
+            # FAB lot ids should come from the FAB DB connection table.
+            lf = lf.drop(bk)
+        else:
+            lf = lf.with_columns(pl.coalesce([pl.col(c), pl.col(bk)]).alias(c)).drop(bk)
+    return lf
+
+
+def _filter_match_cache_scope(cache_lf, root_lot_id: str = "", fab_lot_id: str = "",
+                              wafer_ids: str = ""):
+    try:
+        names = cache_lf.collect_schema().names()
+    except Exception:
+        names = []
+    root_scope = str(root_lot_id or "").strip()
+    fab_scope = str(fab_lot_id or "").strip()
+    wafer_scope = str(wafer_ids or "").strip()
+    if root_scope and MATCH_CACHE_ROOT_COL in names:
+        cache_lf = cache_lf.filter(_join_key_expr(MATCH_CACHE_ROOT_COL) == root_scope.upper())
+    if fab_scope and MATCH_CACHE_FAB_COL in names:
+        cache_lf = cache_lf.filter(_join_key_expr(MATCH_CACHE_FAB_COL) == fab_scope.upper())
+    if wafer_scope and MATCH_CACHE_WAFER_COL in names:
+        wf_list = [w.strip() for w in wafer_scope.split(",") if w.strip()]
+        try:
+            wf_ints = [int(w) for w in wf_list]
+            wf_strs = set()
+            for n in wf_ints:
+                wf_strs.update([str(n), f"{n:02d}", f"W{n}", f"W{n:02d}"])
+            cache_lf = cache_lf.filter(
+                pl.col(MATCH_CACHE_WAFER_COL).cast(_STR, strict=False).is_in(list(wf_strs))
+                | pl.col(MATCH_CACHE_WAFER_COL).cast(pl.Int64, strict=False).is_in(wf_ints)
+            )
+        except ValueError:
+            cache_lf = cache_lf.filter(pl.col(MATCH_CACHE_WAFER_COL).cast(_STR, strict=False).is_in(wf_list))
+    return cache_lf
+
+
+def _cached_fab_projection(product: str, ov: dict, fab_source: str, main_names_list: list[str],
+                           root_lot_id: str = "", fab_lot_id: str = "", wafer_ids: str = "") -> dict | None:
+    current = _match_cache_current(product)
+    if not current:
+        return None
+    meta = current["meta"]
+    if meta.get("fab_source") != _normalize_fab_source_path(fab_source):
+        return None
+    join_keys = [k for k in (meta.get("join_keys") or []) if k in main_names_list]
+    join_tmp_keys = list(meta.get("join_tmp_keys") or [])
+    if not join_keys or len(join_keys) != len(join_tmp_keys):
+        return None
+    cache_lf = _filter_match_cache_scope(current["lf"], root_lot_id=root_lot_id,
+                                         fab_lot_id=fab_lot_id, wafer_ids=wafer_ids)
+    try:
+        cache_names = cache_lf.collect_schema().names()
+    except Exception:
+        return None
+    override_cols = [c for c in (meta.get("override_cols") or []) if c in cache_names]
+    if not override_cols:
+        return None
+    keep = list(dict.fromkeys(join_tmp_keys + override_cols + ([MATCH_CACHE_TS_COL] if MATCH_CACHE_TS_COL in cache_names else [])))
+    fab_proj = cache_lf.select(keep)
+    if MATCH_CACHE_TS_COL in keep:
+        fab_proj = fab_proj.sort(MATCH_CACHE_TS_COL, descending=True, nulls_last=True)
+        fab_proj = fab_proj.unique(subset=join_tmp_keys, keep="first", maintain_order=True)
+    else:
+        fab_proj = fab_proj.unique(subset=join_tmp_keys, keep="last")
+    return {
+        "lf": fab_proj.select(list(dict.fromkeys(join_tmp_keys + override_cols))),
+        "join_keys": join_keys,
+        "join_tmp_keys": join_tmp_keys,
+        "override_cols": override_cols,
+        "meta": meta,
+    }
+
+
+def _fab_history_scope_from_cache(product: str, root_lot_id: str = "", fab_lot_id: str = "",
+                                  prefix: str = "", limit: int = 500) -> dict | None:
+    current = _match_cache_current(product)
+    if not current:
+        return None
+    cache_lf = current["lf"]
+    try:
+        names = cache_lf.collect_schema().names()
+    except Exception:
+        return None
+    if MATCH_CACHE_ROOT_COL not in names or MATCH_CACHE_FAB_COL not in names:
+        return None
+    root_scope = str(root_lot_id or "").strip()
+    fab_scope = str(fab_lot_id or "").strip()
+    q = cache_lf.select([
+        pl.col(MATCH_CACHE_ROOT_COL).cast(_STR, strict=False).alias("root"),
+        pl.col(MATCH_CACHE_FAB_COL).cast(_STR, strict=False).alias("fab"),
+        *([pl.col(MATCH_CACHE_WAFER_COL).cast(_STR, strict=False).alias("wafer")] if MATCH_CACHE_WAFER_COL in names else []),
+    ]).filter(pl.col("root").is_not_null() & pl.col("fab").is_not_null())
+    if root_scope:
+        q = q.filter(_join_key_expr("root") == root_scope.upper())
+    if fab_scope:
+        q = q.filter(_join_key_expr("fab") == fab_scope.upper())
+    elif str(prefix or "").strip():
+        q = q.filter(_contains_literal_ci_expr("fab", prefix))
+    try:
+        fabs = _limited_unique_values(q, "fab", prefix="", limit=limit,
+                                      preview_only=not bool(root_scope or fab_scope or str(prefix or "").strip()))
+        roots: list[str] = [root_scope] if root_scope else []
+        wafers: list[str] = []
+        if fab_scope and fabs:
+            meta_cols = [pl.col("root")]
+            if "wafer" in q.collect_schema().names():
+                meta_cols.append(pl.col("wafer"))
+            meta_df = q.select(meta_cols).unique().collect()
+            roots = sorted({s for s in (_clean_str(v) for v in meta_df["root"].to_list()) if s})
+            if "wafer" in meta_df.columns:
+                wafers = sorted({s for s in (_clean_str(v) for v in meta_df["wafer"].to_list()) if s}, key=_wafer_sort_key)
+    except Exception as e:
+        logger.warning("_fab_history_scope_from_cache 실패 (product=%s) %s: %s",
+                       product, type(e).__name__, e)
+        return None
+    return {
+        "candidates": fabs,
+        "root_ids": roots,
+        "wafer_ids": wafers,
+        "source": current.get("fab_source", ""),
+        "cache": True,
+    }
+
+
+def _fab_history_root_candidates_from_cache(product: str, prefix: str = "", limit: int = 500) -> dict | None:
+    current = _match_cache_current(product)
+    if not current:
+        return None
+    cache_lf = current["lf"]
+    try:
+        names = cache_lf.collect_schema().names()
+    except Exception:
+        return None
+    if MATCH_CACHE_ROOT_COL not in names:
+        return None
+    try:
+        values = _limited_unique_values(cache_lf, MATCH_CACHE_ROOT_COL, prefix=prefix, limit=limit)
+    except Exception as e:
+        logger.warning("_fab_history_root_candidates_from_cache 실패 (product=%s) %s: %s",
+                       product, type(e).__name__, e)
+        return None
+    return {"candidates": values, "source": current.get("fab_source", ""), "cache": True}
+
+
+def refresh_match_cache(product: str = "", force: bool = False) -> dict:
+    """Build persisted FAB root/fab/wafer connection tables for SplitTable."""
+    products = [product] if str(product or "").strip() else [p.get("name") for p in list_products().get("products", [])]
+    products = [p for p in products if p]
+    results: list[dict] = []
+    with _MATCH_CACHE_BUILD_LOCK:
+        MATCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        for raw_product in products:
+            ml_product, ov, fab_source = _current_fab_override(raw_product)
+            result = {"product": ml_product or raw_product, "ok": False, "skipped": False, "row_count": 0, "fab_source": fab_source}
+            try:
+                if not ml_product or not fab_source:
+                    result["reason"] = "FAB source not matched"
+                    results.append(result)
+                    continue
+                config_key = _match_cache_config_key(ml_product, ov, fab_source)
+                fp = _match_cache_path(ml_product)
+                meta_fp = _match_cache_meta_path(ml_product)
+                old_meta = load_json(meta_fp, {}) if meta_fp.is_file() else {}
+                if not force and fp.is_file() and isinstance(old_meta, dict) and old_meta.get("config_key") == config_key:
+                    age_s = time.time() - float(old_meta.get("built_epoch") or 0)
+                    if age_s < _match_cache_refresh_minutes() * 60:
+                        result.update({"ok": True, "skipped": True, "row_count": int(old_meta.get("row_count") or 0)})
+                        results.append(result)
+                        continue
+
+                main_lf = _scan_product_base(ml_product)
+                main_names_list = main_lf.collect_schema().names()
+                fab_lf = _scan_fab_source(fab_source)
+                if fab_lf is None:
+                    result["reason"] = "FAB source scan failed"
+                    results.append(result)
+                    continue
+                fab_lf, fab_schema_names = _ci_align_fab_to_main(fab_lf, main_names_list)
+                try:
+                    fab_schema_names = fab_lf.collect_schema().names()
+                except Exception:
+                    pass
+                cols = _resolve_match_cache_columns(ov, main_names_list, fab_schema_names)
+                join_keys = cols["join_keys"]
+                override_cols = cols["override_cols"]
+                if not join_keys or not override_cols:
+                    result["reason"] = "join keys or override columns missing"
+                    result["join_keys"] = join_keys
+                    result["override_cols"] = override_cols
+                    results.append(result)
+                    continue
+
+                wanted = list(dict.fromkeys(
+                    join_keys
+                    + override_cols
+                    + ([cols["ts_col"]] if cols["ts_col"] else [])
+                    + ([cols["root_col"]] if cols["root_col"] else [])
+                    + ([cols["wafer_col"]] if cols["wafer_col"] else [])
+                    + ([cols["fab_col"]] if cols["fab_col"] else [])
+                ))
+                wanted = [c for c in wanted if c in fab_schema_names]
+                q = fab_lf.select(wanted)
+                join_tmp_keys = [f"__join_key_{i}" for i, _ in enumerate(join_keys)]
+                exprs = [_join_key_expr(k).alias(tmp) for k, tmp in zip(join_keys, join_tmp_keys)]
+                if cols["root_col"] and cols["root_col"] in fab_schema_names:
+                    exprs.append(pl.col(cols["root_col"]).cast(_STR, strict=False).alias(MATCH_CACHE_ROOT_COL))
+                if cols["wafer_col"] and cols["wafer_col"] in fab_schema_names:
+                    exprs.append(pl.col(cols["wafer_col"]).cast(_STR, strict=False).alias(MATCH_CACHE_WAFER_COL))
+                if cols["fab_col"] and cols["fab_col"] in fab_schema_names:
+                    exprs.append(pl.col(cols["fab_col"]).cast(_STR, strict=False).alias(MATCH_CACHE_FAB_COL))
+                if cols["ts_col"] and cols["ts_col"] in fab_schema_names:
+                    exprs.append(pl.col(cols["ts_col"]).cast(_STR, strict=False).alias(MATCH_CACHE_TS_COL))
+                q = q.with_columns(exprs)
+                keep = list(dict.fromkeys(
+                    join_tmp_keys
+                    + [MATCH_CACHE_ROOT_COL, MATCH_CACHE_WAFER_COL, MATCH_CACHE_FAB_COL, MATCH_CACHE_TS_COL]
+                    + override_cols
+                ))
+                q_names = q.collect_schema().names()
+                keep = [c for c in keep if c in q_names]
+                q = q.select(keep)
+                for k in join_tmp_keys:
+                    q = q.filter(pl.col(k).is_not_null() & (pl.col(k) != ""))
+                unique_subset = [c for c in join_tmp_keys + [MATCH_CACHE_FAB_COL] if c in keep]
+                if MATCH_CACHE_TS_COL in keep:
+                    q = q.sort(MATCH_CACHE_TS_COL, descending=True, nulls_last=True)
+                    q = q.unique(subset=unique_subset, keep="first", maintain_order=True)
+                else:
+                    q = q.unique(subset=unique_subset, keep="last")
+                df = q.collect()
+                tmp = fp.with_suffix(fp.suffix + ".tmp")
+                df.write_parquet(tmp)
+                tmp.replace(fp)
+                meta = {
+                    "version": MATCH_CACHE_VERSION,
+                    "product": ml_product,
+                    "fab_source": _normalize_fab_source_path(fab_source),
+                    "config_key": config_key,
+                    "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "built_epoch": time.time(),
+                    "row_count": int(df.height),
+                    "join_keys": join_keys,
+                    "join_tmp_keys": join_tmp_keys,
+                    "override_cols": override_cols,
+                    "root_col": cols["root_col"],
+                    "wafer_col": cols["wafer_col"],
+                    "fab_col": cols["fab_col"],
+                    "ts_col": cols["ts_col"],
+                }
+                save_json(meta_fp, meta)
+                _LOT_LOOKUP_CACHE.clear()
+                result.update({"ok": True, "row_count": int(df.height), "join_keys": join_keys, "override_cols": override_cols})
+            except Exception as e:
+                logger.warning("SplitTable match cache build failed (product=%s) %s: %s",
+                               raw_product, type(e).__name__, e, exc_info=True)
+                result["reason"] = f"{type(e).__name__}: {e}"
+            results.append(result)
+    return {"ok": any(r.get("ok") for r in results), "products": results, "interval_minutes": _match_cache_refresh_minutes()}
+
+
+def _seconds_until_next_match_cache_tick() -> float:
+    return max(60.0, _match_cache_refresh_minutes() * 60.0)
+
+
+def _match_cache_loop() -> None:
+    while not _MATCH_CACHE_STOP.is_set():
+        try:
+            refresh_match_cache(force=False)
+        except Exception as e:
+            logger.warning("SplitTable match cache scheduler tick failed: %s", e)
+        wait_s = _seconds_until_next_match_cache_tick()
+        while wait_s > 0 and not _MATCH_CACHE_STOP.is_set():
+            step = min(wait_s, 60.0)
+            _MATCH_CACHE_STOP.wait(step)
+            wait_s -= step
+
+
+def start_match_cache_scheduler() -> bool:
+    global _MATCH_CACHE_THREAD, _MATCH_CACHE_STARTED
+    if _MATCH_CACHE_STARTED:
+        return False
+    _MATCH_CACHE_STOP.clear()
+    _MATCH_CACHE_THREAD = threading.Thread(target=_match_cache_loop, name="splittable-match-cache", daemon=True)
+    _MATCH_CACHE_THREAD.start()
+    _MATCH_CACHE_STARTED = True
+    logger.info("SplitTable match cache scheduler started (interval=%sm)", _match_cache_refresh_minutes())
+    return True
+
+
 def _resolve_override_meta(product: str, include_diagnostics: bool = True) -> dict:
     """v8.8.5: view / ml-table-match 양쪽에서 공용. 현재 product 에 대해 적용된 오버라이드 설정 요약.
 
@@ -3721,6 +4165,13 @@ def _fab_history_scope(product: str, root_lot_id: str = "", fab_lot_id: str = ""
     def finish(payload: dict) -> dict:
         return _lot_lookup_cache_set(cache_key, payload)
 
+    cached_scope = _fab_history_scope_from_cache(
+        product, root_lot_id=root_lot_id, fab_lot_id=fab_lot_id,
+        prefix=prefix, limit=limit,
+    )
+    if cached_scope is not None:
+        return finish(cached_scope)
+
     ctx = _fab_source_context(product)
     if not ctx:
         return finish({"candidates": [], "root_ids": [], "wafer_ids": [], "source": ""})
@@ -3798,6 +4249,10 @@ def _fab_history_root_candidates(product: str, prefix: str = "", limit: int = 50
 
     def finish(payload: dict) -> dict:
         return _lot_lookup_cache_set(cache_key, payload)
+
+    cached_roots = _fab_history_root_candidates_from_cache(product, prefix=prefix, limit=limit)
+    if cached_roots is not None:
+        return finish(cached_roots)
 
     ctx = _fab_source_context(product)
     if not ctx:
@@ -3967,20 +4422,8 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
     #   3) ts_col / fab_col 도 매뉴얼 > 자동 추론 순.
     #   4) 조인은 항상 "ts_col 기준 최신 레코드만" join keys 별로 picking 후 left-join.
     try:
-        cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
-        ov = _lot_override_for(cfg, product)
-        fab_source = (ov.get("fab_source") or "").strip()
-        # v8.8.21: legacy root:~~ 무시 → auto-derive.
-        if fab_source.startswith("root:"):
-            fab_source = ""
+        product, ov, fab_source = _current_fab_override(product)
         if not fab_source:
-            fab_source = _auto_derive_fab_source(product)
-        if not fab_source:
-            return _strip_non_authoritative_fab_fields(lf, product)
-        fab_lf = _scan_fab_source(fab_source)
-        if fab_lf is None:
-            logger.warning("_scan_product: _scan_fab_source 가 None (product=%s fab_source=%s)",
-                           product, fab_source)
             return _strip_non_authoritative_fab_fields(lf, product)
 
         try:
@@ -4000,6 +4443,25 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
             except Exception as e:
                 logger.warning("_scan_product: main scope filter 실패 (product=%s root=%s wafer=%s) %s: %s",
                                product, root_lot_id, wafer_ids, type(e).__name__, e)
+
+        cached = _cached_fab_projection(
+            product, ov, fab_source, main_names_list,
+            root_lot_id=root_lot_id,
+            fab_lot_id=fab_lot_id,
+            wafer_ids=wafer_ids,
+        )
+        if cached:
+            return _join_fab_projection_into_main(
+                lf, set(main_names_list), cached["lf"],
+                cached["join_keys"], cached["override_cols"],
+                fab_has_join_tmp=True,
+            )
+
+        fab_lf = _scan_fab_source(fab_source)
+        if fab_lf is None:
+            logger.warning("_scan_product: _scan_fab_source 가 None (product=%s fab_source=%s)",
+                           product, fab_source)
+            return _strip_non_authoritative_fab_fields(lf, product)
 
         # v8.8.22: CI 정렬 — fab_lf 컬럼명을 main 쪽 casing 으로 rename.
         #   ex) ML_TABLE 의 ROOT_LOT_ID ↔ hive root_lot_id → join 성공.
@@ -4084,29 +4546,10 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
             fab_proj = fab_proj.unique(subset=join_tmp_keys, keep="first", maintain_order=True)
         else:
             fab_proj = fab_proj.unique(subset=join_tmp_keys, keep="last")
-        # v9.0.1: main 에 이미 존재하는 override_cols 를 drop 하면 fab_source 에 매칭 행이
-        #   없는 row 의 fab_lot_id 가 NULL 이 되어 wafer_fab_list / available_fab_lots /
-        #   /lot-candidates root_join 이 모두 빈 결과가 됨. 사용자 시드/사내 ML_TABLE 은
-        #   이미 정확한 root↔fab 매핑을 가지고 있으므로 **main 원본을 우선**, fab_source 는
-        #   main 이 비었을 때만 보충 (coalesce(main, fab)).
-        backup_cols: list = []
-        for c in override_cols:
-            if c in main_names:
-                bk = f"__main_bk_{c}"
-                lf = lf.with_columns(pl.col(c).alias(bk))
-                backup_cols.append((c, bk))
-                lf = lf.drop(c)
-        lf = lf.join(fab_proj, on=join_tmp_keys, how="left").drop(join_tmp_keys)
-        for c, bk in backup_cols:
-            if c.casefold() == "fab_lot_id":
-                # fab_lot_id must be authoritative from DB FAB only. If the DB FAB
-                # row did not match, leave it null instead of falling back to ML_TABLE.
-                lf = lf.drop(bk)
-            else:
-                # Non-FAB operational attributes may still fall back to ML-side values
-                # when the joined FAB row is missing.
-                lf = lf.with_columns(pl.coalesce([pl.col(c), pl.col(bk)]).alias(c)).drop(bk)
-        return lf
+        return _join_fab_projection_into_main(
+            lf, main_names, fab_proj, join_keys, override_cols,
+            fab_has_join_tmp=True,
+        )
     except Exception as e:
         # v8.8.26: blanket except 유지하되 반드시 로그를 남겨 진단 가능하게.
         logger.warning("_scan_product: 예상치 못한 예외 (product=%s) %s: %s",
