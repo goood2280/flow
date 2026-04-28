@@ -160,3 +160,35 @@ def test_root_lot_candidates_fall_back_to_detected_uppercase_column(tmp_path, mo
     assert result["match_mode"] == "detected_lot_col_fallback"
     assert result["source_col"] == "ROOT_LOT_ID"
     assert result["candidates"] == ["R2000", "R2001"]
+
+
+def test_root_lot_candidate_search_reaches_beyond_empty_preview(tmp_path, monkeypatch):
+    fp = tmp_path / "ML_TABLE_BIG.parquet"
+    pl.DataFrame({
+        "root_lot_id": [f"R{i:04d}" for i in range(1200)],
+        "wafer_id": [1 for _ in range(1200)],
+        "KNOB_ALPHA": ["ON" for _ in range(1200)],
+    }).write_parquet(fp)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+
+    preview = splittable.get_lot_candidates(
+        product="ML_TABLE_BIG",
+        col="root_lot_id",
+        prefix="",
+        limit=20,
+        source="auto",
+        root_lot_id="",
+    )
+    searched = splittable.get_lot_candidates(
+        product="ML_TABLE_BIG",
+        col="root_lot_id",
+        prefix="R1199",
+        limit=20,
+        source="auto",
+        root_lot_id="",
+    )
+
+    assert len(preview["candidates"]) <= 20
+    assert "R1199" not in preview["candidates"]
+    assert searched["candidates"] == ["R1199"]

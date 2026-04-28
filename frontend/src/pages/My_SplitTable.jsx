@@ -20,6 +20,9 @@ const CELL_COLORS=[
   {bg:"rgba(244,204,204,0.95)",fg:"rgba(117,25,76,0.95)"},  // pink
 ];
 const COLOR_PREFIXES=["KNOB","MASK"];
+const CANDIDATE_PREVIEW_LIMIT=50;
+const CANDIDATE_SEARCH_LIMIT=120;
+const candidateLimit=(value)=>String(value||"").trim()?CANDIDATE_SEARCH_LIMIT:CANDIDATE_PREVIEW_LIMIT;
 
 export default function My_SplitTable({user}){
   const normFabSource=(v)=>{
@@ -230,9 +233,10 @@ export default function My_SplitTable({user}){
   useEffect(()=>{
     if(!selProd){setLotSuggestions([]);return;}
     const prefix=(lotId||"").trim();
-    let url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=root_lot_id&limit=500";
+    const limit=candidateLimit(prefix);
+    let url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=root_lot_id&limit="+limit;
     if(prefix) url+="&prefix="+encodeURIComponent(prefix);
-    const fallbackLots=()=>sf(API+"/lot-ids?product="+encodeURIComponent(selProd)+"&limit=500")
+    const fallbackLots=()=>sf(API+"/lot-ids?product="+encodeURIComponent(selProd)+"&limit="+limit)
       .then(d=>{
         const lots=normalizeLotList(d.lot_ids||[]);
         setLotSuggestions(prefix?lots.filter(l=>l.toLowerCase().includes(prefix.toLowerCase())):lots);
@@ -407,9 +411,10 @@ export default function My_SplitTable({user}){
   //   기존 'lotId.length===5' 분기는 시드 데이터에서 root/fab 앞 5자가 다른 케이스를 못 잡았음.
   useEffect(()=>{
     if(!selProd) return;
-    let url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=fab_lot_id&limit=500";
     const _r=(lotId||"").trim();
     const _f=(fabLotId||"").trim();
+    const limit=candidateLimit(_f||_r);
+    let url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=fab_lot_id&limit="+limit;
     if(_r) url+="&root_lot_id="+encodeURIComponent(_r);
     if(_f) url+="&prefix="+encodeURIComponent(_f);
     sf(url).then(d=>setFabSuggestions(d.candidates||[])).catch(()=>{});
