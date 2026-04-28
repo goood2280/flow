@@ -801,6 +801,9 @@ def _normalize_products(products: list) -> list:
 @router.post("/products/add")
 @router.put("/products/add")
 @router.patch("/products/add")
+@router.post("/product/add")
+@router.put("/product/add")
+@router.patch("/product/add")
 def add_product(req: ProductReq, request: Request):
     # v8.8.33 보안: admin 또는 page_admin('informs') 만 카탈로그 변경.
     from core.auth import is_page_admin
@@ -831,6 +834,7 @@ def add_product_collection_compat(req: ProductReq, request: Request):
 
 
 @router.get("/products/add")
+@router.get("/product/add")
 def add_product_get_compat(request: Request, product: str = Query("")):
     """Back-compat for older Inform UI builds that used a query-string add call."""
     return add_product(ProductReq(product=product), request)
