@@ -822,6 +822,14 @@ def add_product(req: ProductReq, request: Request):
     return {"ok": True, "products": products}
 
 
+@router.post("/products")
+@router.put("/products")
+@router.patch("/products")
+def add_product_collection_compat(req: ProductReq, request: Request):
+    """Compatibility for cached clients that POST to the products collection."""
+    return add_product(req, request)
+
+
 @router.get("/products/add")
 def add_product_get_compat(request: Request, product: str = Query("")):
     """Back-compat for older Inform UI builds that used a query-string add call."""

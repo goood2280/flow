@@ -39,6 +39,9 @@ router = APIRouter(prefix="/api/splittable", tags=["splittable"])
 _DISCOVERY_CACHE_TTL_SEC = 30.0
 _RGLOB_CACHE: dict[tuple[str, tuple[str, ...]], tuple[float, list[Path]]] = {}
 _DB_ROOTS_CACHE: dict[str, tuple[float, list[Path]]] = {}
+_LOT_LOOKUP_CACHE_TTL_SEC = 60.0
+_LOT_LOOKUP_CACHE_MAX = 256
+_LOT_LOOKUP_CACHE: dict[tuple, tuple[float, dict]] = {}
 
 
 def _db_base() -> Path:
@@ -49,6 +52,63 @@ def _db_base() -> Path:
 def _base_root() -> Path:
     """Resolve Base root at call time (env / admin_settings / default chain)."""
     return resolve_existing_root("base", PATHS.base_root)
+
+
+def _path_cache_sig(path: Path | None):
+    if path is None:
+        return ("", 0.0, 0)
+    try:
+        st = path.stat()
+        return (str(path.resolve()), st.st_mtime, st.st_size)
+    except Exception:
+        return (str(path), 0.0, 0)
+
+
+def _lot_lookup_cache_sig(product: str = "") -> tuple:
+    try:
+        product_sig = _path_cache_sig(_product_path(product)) if product else ("", 0.0, 0)
+    except Exception:
+        product_sig = (str(product or ""), 0.0, 0)
+    return (
+        _path_cache_sig(_db_base()),
+        _path_cache_sig(_base_root()),
+        _path_cache_sig(SOURCE_CFG if "SOURCE_CFG" in globals() else None),
+        product_sig,
+    )
+
+
+def _clone_lookup_payload(payload: dict | None) -> dict | None:
+    if payload is None:
+        return None
+    out = {}
+    for key, value in payload.items():
+        if isinstance(value, list):
+            out[key] = list(value)
+        elif isinstance(value, dict):
+            out[key] = dict(value)
+        else:
+            out[key] = value
+    return out
+
+
+def _lot_lookup_cache_get(key: tuple) -> dict | None:
+    now = time.monotonic()
+    cached = _LOT_LOOKUP_CACHE.get(key)
+    if cached and now - cached[0] < _LOT_LOOKUP_CACHE_TTL_SEC:
+        return _clone_lookup_payload(cached[1])
+    if cached:
+        _LOT_LOOKUP_CACHE.pop(key, None)
+    return None
+
+
+def _lot_lookup_cache_set(key: tuple, payload: dict) -> dict:
+    if len(_LOT_LOOKUP_CACHE) >= _LOT_LOOKUP_CACHE_MAX:
+        try:
+            _LOT_LOOKUP_CACHE.pop(next(iter(_LOT_LOOKUP_CACHE)))
+        except Exception:
+            _LOT_LOOKUP_CACHE.clear()
+    _LOT_LOOKUP_CACHE[key] = (time.monotonic(), _clone_lookup_payload(payload) or {})
+    return payload
 
 
 PLAN_DIR = PATHS.data_root / "splittable"
@@ -457,6 +517,15 @@ def _product_path(product: str):
         except Exception:
             pass
     raise HTTPException(404, f"Product not found: {product}")
+
+
+def _scan_product_base(product: str):
+    """Scan the ML_TABLE file only, without FAB override joins."""
+    product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+    fp = _product_path(product)
+    if fp.suffix.lower() == ".csv":
+        return _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
+    return _cast_cats_lazy(_scan_parquet_compat(str(fp)))
 
 
 def _strip_non_authoritative_fab_fields(lf, product: str):
@@ -3610,9 +3679,25 @@ def _fab_history_scope(product: str, root_lot_id: str = "", fab_lot_id: str = ""
         limit = int(limit)
     except Exception:
         limit = 500
+    cache_key = (
+        "fab_history_scope",
+        _lot_lookup_cache_sig(product),
+        str(product or "").strip(),
+        root_lot_id.strip(),
+        fab_lot_id.strip(),
+        prefix.strip(),
+        limit,
+    )
+    cached = _lot_lookup_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    def finish(payload: dict) -> dict:
+        return _lot_lookup_cache_set(cache_key, payload)
+
     ctx = _fab_source_context(product)
     if not ctx:
-        return {"candidates": [], "root_ids": [], "wafer_ids": [], "source": ""}
+        return finish({"candidates": [], "root_ids": [], "wafer_ids": [], "source": ""})
     root_col = ctx["root_col"]
     fab_col = ctx["fab_col"]
     wafer_col = ctx.get("wafer_col") or ""
@@ -3652,15 +3737,15 @@ def _fab_history_scope(product: str, root_lot_id: str = "", fab_lot_id: str = ""
     except Exception as e:
         logger.warning("_fab_history_scope 조회 실패 (product=%s) %s: %s",
                        product, type(e).__name__, e)
-        return {"candidates": [], "root_ids": [], "wafer_ids": [], "source": ctx.get("source", "")}
+        return finish({"candidates": [], "root_ids": [], "wafer_ids": [], "source": ctx.get("source", "")})
     if not fabs:
-        return {"candidates": [], "root_ids": [], "wafer_ids": [], "source": ctx.get("source", "")}
-    return {
+        return finish({"candidates": [], "root_ids": [], "wafer_ids": [], "source": ctx.get("source", "")})
+    return finish({
         "candidates": fabs,
         "root_ids": roots,
         "wafer_ids": wafers,
         "source": ctx.get("source", ""),
-    }
+    })
 
 
 def _fab_history_root_candidates(product: str, prefix: str = "", limit: int = 500) -> dict:
@@ -3674,19 +3759,33 @@ def _fab_history_root_candidates(product: str, prefix: str = "", limit: int = 50
         limit = max(1, int(limit or 500))
     except Exception:
         limit = 500
+    cache_key = (
+        "fab_history_root_candidates",
+        _lot_lookup_cache_sig(product),
+        str(product or "").strip(),
+        str(prefix or "").strip(),
+        limit,
+    )
+    cached = _lot_lookup_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    def finish(payload: dict) -> dict:
+        return _lot_lookup_cache_set(cache_key, payload)
+
     ctx = _fab_source_context(product)
     if not ctx:
-        return {"candidates": [], "source": ""}
+        return finish({"candidates": [], "source": ""})
     root_col = ctx.get("root_col") or ""
     if not root_col:
-        return {"candidates": [], "source": ctx.get("source", "")}
+        return finish({"candidates": [], "source": ctx.get("source", "")})
     try:
         values = _limited_unique_values(ctx["lf"], root_col, prefix=prefix, limit=limit)
     except Exception as e:
         logger.warning("_fab_history_root_candidates 실패 (product=%s) %s: %s",
                        product, type(e).__name__, e)
-        return {"candidates": [], "source": ctx.get("source", "")}
-    return {"candidates": values, "source": ctx.get("source", "")}
+        return finish({"candidates": [], "source": ctx.get("source", "")})
+    return finish({"candidates": values, "source": ctx.get("source", "")})
 
 
 def _merge_candidate_values(*groups, limit: int = 500) -> list[str]:
@@ -3776,11 +3875,24 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
         limit = max(1, int(limit or 500))
     except Exception:
         limit = 500
+    cache_key = (
+        "main_table_candidates",
+        _lot_lookup_cache_sig(product),
+        str(product or "").strip(),
+        str(col or "").strip(),
+        str(prefix or "").strip(),
+        str(root_lot_id or "").strip(),
+        limit,
+    )
+    cached = _lot_lookup_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    def finish(payload: dict) -> dict:
+        return _lot_lookup_cache_set(cache_key, payload)
+
     try:
-        lf = _scan_product(
-            product,
-            root_lot_id=root_lot_id if str(col or "").casefold() != "root_lot_id" else "",
-        )
+        lf = _scan_product_base(product)
         schema_names = lf.collect_schema().names()
         lot_col, _ = _detect_lot_wafer(lf, product)
         target = ""
@@ -3795,7 +3907,7 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
         else:
             target = _ci_resolve_in(col, schema_names)
         if not target or target not in schema_names:
-            return {"candidates": [], "source_col": target or col, "root_ids": []}
+            return finish({"candidates": [], "source_col": target or col, "root_ids": []})
 
         root_scope = _clean_str(root_lot_id)
         if root_scope:
@@ -3805,11 +3917,11 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
 
         values = _limited_unique_values(lf, target, prefix=prefix, limit=limit,
                                         preview_only=not bool(root_scope))
-        return {"candidates": values, "source_col": target, "root_ids": values if str(col or "").casefold() == "root_lot_id" else []}
+        return finish({"candidates": values, "source_col": target, "root_ids": values if str(col or "").casefold() == "root_lot_id" else []})
     except Exception as e:
         logger.warning("_main_table_candidates 실패 (product=%s col=%s) %s: %s",
                        product, col, type(e).__name__, e)
-        return {"candidates": [], "source_col": col, "root_ids": []}
+        return finish({"candidates": [], "source_col": col, "root_ids": []})
 
 
 def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
@@ -3821,11 +3933,7 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
       - override_cols 가 join_keys 만 남으면 경고 후 raw lf 반환.
     """
     product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
-    fp = _product_path(product)
-    if fp.suffix.lower() == ".csv":
-        lf = _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
-    else:
-        lf = _cast_cats_lazy(_scan_parquet_compat(str(fp)))
+    lf = _scan_product_base(product)
 
     # v8.8.3: 오버라이드 로직 근본 재정리.
     #   1) 매뉴얼 config(lot_overrides[product].fab_source) 가 있으면 그 값을 사용.
