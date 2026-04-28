@@ -288,3 +288,64 @@ def test_fab_lot_id_is_exposed_when_fab_source_uses_lot_id(tmp_path, monkeypatch
     assert "fab_lot_id" in schema_names
     assert result["header_groups"] == [{"label": "F9100A.1", "span": 2}]
     assert result["available_fab_lots"] == ["F9100A.1"]
+
+
+def test_match_cache_supplies_fab_lot_without_rescanning_source(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["R9200", "R9200"],
+        "wafer_id": [1, 2],
+        "KNOB_ALPHA": ["ON", "OFF"],
+    }).write_parquet(tmp_path / "ML_TABLE_CACHE.parquet")
+
+    fab_root = tmp_path / "1.RAWDATA_DB_FAB" / "CACHE" / "date=20240420"
+    fab_root.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["R9200", "R9200"],
+        "lot_id": ["F9200A.1", "F9200A.1"],
+        "wafer_id": [1, 2],
+        "tkout_time": ["2024-04-20T10:00:00", "2024-04-20T10:01:00"],
+    }).write_parquet(fab_root / "part_0.parquet")
+
+    cache_dir = tmp_path / "flow-data" / "splittable" / "match_cache"
+    source_cfg = tmp_path / "flow-data" / "splittable" / "source_config.json"
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "MATCH_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(splittable, "SOURCE_CFG", source_cfg)
+    splittable._LOT_LOOKUP_CACHE.clear()
+    splittable._RGLOB_CACHE.clear()
+    splittable._DB_ROOTS_CACHE.clear()
+
+    built = splittable.refresh_match_cache(product="ML_TABLE_CACHE", force=True)
+    assert built["products"][0]["ok"] is True
+    assert built["products"][0]["row_count"] == 2
+
+    def fail_scan(_source):
+        raise AssertionError("raw FAB source should not be scanned when cache exists")
+
+    monkeypatch.setattr(splittable, "_scan_fab_source", fail_scan)
+
+    result = splittable.view_split(
+        product="ML_TABLE_CACHE",
+        root_lot_id="R9200",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+    fab_candidates = splittable.get_lot_candidates(
+        product="ML_TABLE_CACHE",
+        col="fab_lot_id",
+        prefix="F9200",
+        limit=20,
+        source="auto",
+        root_lot_id="R9200",
+    )
+
+    assert result["header_groups"] == [{"label": "F9200A.1", "span": 2}]
+    assert result["available_fab_lots"] == ["F9200A.1"]
+    assert fab_candidates["candidates"] == ["F9200A.1"]
+    assert fab_candidates["fab_source"] == "1.RAWDATA_DB_FAB/CACHE"

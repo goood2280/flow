@@ -2846,7 +2846,7 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
     if len(to_addrs) > 199:
         raise HTTPException(400, f"수신자는 최대 199명까지 지정할 수 있습니다 (현재 {len(to_addrs)}명).")
     # receiverList object form per mail API spec.
-    receiver_list = [{"email": em, "recipientType": "To", "seq": i + 1}
+    receiver_list = [{"email": em, "recipientType": "TO", "seq": i + 1}
                      for i, em in enumerate(to_addrs)]
     to_list = to_addrs  # kept for audit (plain list of emails)
 

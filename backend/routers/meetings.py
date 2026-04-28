@@ -589,7 +589,7 @@ def _send_minutes_mail(meeting: dict, session: dict, *,
     html_body = _meeting_mail_html(meeting, session, mail_body=mail_body)
     if len(html_body.encode("utf-8")) > MAIL_CONTENT_MAX:
         return {"ok": False, "error": "메일 본문이 2MB 한도를 초과했습니다."}
-    receiver_list = [{"email": em, "recipientType": "To", "seq": i + 1} for i, em in enumerate(uniq)]
+    receiver_list = [{"email": em, "recipientType": "TO", "seq": i + 1} for i, em in enumerate(uniq)]
     _sender_addr = (cfg.get("from_addr") or "").strip()
     data_obj: Dict[str, Any] = {
         "content":           html_body,
