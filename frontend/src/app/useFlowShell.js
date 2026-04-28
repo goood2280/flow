@@ -103,6 +103,20 @@ export function useFlowShell() {
     localStorage.removeItem("hol_user");
   }, []);
 
+  const canAccess = useCallback(
+    (tabKey) => {
+      if (tabKey === "home") return true;
+      if (userTabs === "__all__") return true;
+      const tabConfig = TABS.find((item) => item.key === tabKey);
+      if (tabConfig?.adminOnly && user?.role !== "admin") return false;
+      if (tabConfig?.restrictedSetting && user?.role !== "admin" && !sidebarPolicy[tabConfig.restrictedSetting]) {
+        return false;
+      }
+      return toTabList(userTabs).includes(tabKey);
+    },
+    [sidebarPolicy, user?.role, userTabs],
+  );
+
   useIdleLogout(handleLogout);
 
   useEffect(() => {
@@ -197,20 +211,6 @@ export function useFlowShell() {
       window.removeEventListener("hol:notif-refresh", refreshNotifications);
     };
   }, [refreshNotifications, user]);
-
-  const canAccess = useCallback(
-    (tabKey) => {
-      if (tabKey === "home") return true;
-      if (userTabs === "__all__") return true;
-      const tabConfig = TABS.find((item) => item.key === tabKey);
-      if (tabConfig?.adminOnly && user?.role !== "admin") return false;
-      if (tabConfig?.restrictedSetting && user?.role !== "admin" && !sidebarPolicy[tabConfig.restrictedSetting]) {
-        return false;
-      }
-      return toTabList(userTabs).includes(tabKey);
-    },
-    [sidebarPolicy, user?.role, userTabs],
-  );
 
   const nav = useCallback(
     (tabKey) => {
