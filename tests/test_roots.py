@@ -42,6 +42,13 @@ def test_admin_db_root_relative_path_is_project_relative(monkeypatch, tmp_path):
     assert roots.get_db_root() == project / "data" / "Fab"
 
 
+def test_env_db_root_relative_path_is_project_relative(monkeypatch, tmp_path):
+    project = _sandbox_roots(monkeypatch, tmp_path)
+    monkeypatch.setenv("FLOW_DB_ROOT", "data/Fab")
+
+    assert roots.get_db_root() == project / "data" / "Fab"
+
+
 def test_admin_db_root_stale_checkout_path_uses_current_project(monkeypatch, tmp_path, caplog):
     project = _sandbox_roots(monkeypatch, tmp_path)
     stale = tmp_path / "old" / "flow" / "data" / "Fab"

@@ -15,6 +15,12 @@ v8.7.3 hotfix:
 import logging
 import os
 from pathlib import Path
+import sys
+
+_BACKEND_ROOT = Path(__file__).resolve().parent
+if str(_BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_ROOT))
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -81,10 +87,20 @@ def _allowed_methods_for_path(path: str, method: str) -> set[str]:
 
 def _compat_api_path(path: str) -> str:
     """Map legacy singular/plural API prefixes to their canonical routers."""
-    if path == "inform" or path.startswith("inform/"):
-        return "/api/informs" + path[len("inform"):]
-    if path == "trackers" or path.startswith("trackers/"):
-        return "/api/tracker" + path[len("trackers"):]
+    compat_prefixes = {
+        "inform": "/api/informs",
+        "meeting": "/api/meetings",
+        "trackers": "/api/tracker",
+        "issue-tracker": "/api/tracker",
+        "issue-tracking": "/api/tracker",
+    }
+    for prefix, target in compat_prefixes.items():
+        if path == prefix or path.startswith(prefix + "/"):
+            return target + path[len(prefix):]
+    if path == "issues":
+        return "/api/tracker/issues"
+    if path.startswith("issues/"):
+        return "/api/tracker/issues/" + path[len("issues/"):]
     return ""
 
 

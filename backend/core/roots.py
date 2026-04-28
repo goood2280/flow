@@ -7,8 +7,8 @@ Priority chain (first match wins):
   1. New env var:   FLOW_DB_ROOT
   2. admin_settings.json `data_roots.db` (runtime editable, optional)
   3. Shared default: /config/work/sharedworkspace/DB when running from the prod
-     app root, when FLOW_PROD=1 is explicitly set, or on Linux when
-     /config/work/sharedworkspace exists
+     app root, when FLOW_PROD=1 is explicitly set, or on Linux when that shared
+     DB child exists
   4. Repo default:  <PROJECT_ROOT>/data/Fab, then <PROJECT_ROOT>/data/DB
 
 `base_root` is now a compatibility alias to `db_root`. Single-file rulebooks,
@@ -171,7 +171,8 @@ def get_db_root() -> Path:
     """
     v = os.environ.get("FLOW_DB_ROOT")
     if v:
-        return Path(v)
+        resolved = _resolve_existing_config_path(v)
+        return resolved if resolved is not None else Path(v).expanduser()
     profile_db = str(root_profile.read_profile().get("db_root") or "").strip()
     if profile_db:
         p = _resolve_existing_config_path(profile_db)
