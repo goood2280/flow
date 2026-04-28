@@ -30,6 +30,30 @@ function _touchActivity() {
   try { window.dispatchEvent(new CustomEvent("flow:activity")); } catch (_) {}
 }
 
+function _detailText(detail) {
+  if (detail === undefined || detail === null || detail === "") return "";
+  return typeof detail === "string" ? detail : JSON.stringify(detail);
+}
+
+function _formatApiError(status, body, fallback) {
+  if (body && body.error_code === "router_load_failed") {
+    const parts = [
+      _detailText(body.detail) || ("HTTP " + status),
+      body.router_error ? "\n[router diagnostics]\n" + body.router_error : "",
+    ].filter(Boolean);
+    return parts.join("\n");
+  }
+  if (body && body.detail) return _detailText(body.detail);
+  return fallback || ("HTTP " + status);
+}
+
+function _throwApiError(status, body, fallback) {
+  const err = new Error(_formatApiError(status, body, fallback));
+  err.status = status;
+  err.body = body;
+  throw err;
+}
+
 // v8.7.1: 브라우저 <img>/<a download> 는 커스텀 헤더를 못 실어서 X-Session-Token
 // 를 URL 쿼리로 붙인다. 서버가 ?t=<token> fallback 을 수락하는 엔드포인트에서만 사용.
 export function authSrc(url) {
@@ -80,15 +104,12 @@ export function sf(url, opts) {
       throw new Error("Session expired — please log in again");
     }
     if (!r.ok) {
-      let detail = "HTTP " + r.status;
+      let body = null;
       try {
         const ct = r.headers.get("content-type") || "";
-        if (ct.includes("json")) {
-          const body = await r.json();
-          if (body && body.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-        }
+        if (ct.includes("json")) body = await r.json();
       } catch (_) {}
-      throw new Error(detail);
+      _throwApiError(r.status, body, "HTTP " + r.status);
     }
     const ct = r.headers.get("content-type") || "";
     return ct.includes("json") ? r.json() : r.text();
@@ -113,12 +134,11 @@ export function dl(url, filename) {
       throw new Error("Session expired");
     }
     if (!r.ok) {
-      let detail = "Download failed";
+      let body = null;
       try {
-        const body = await r.json();
-        if (body && body.detail) detail = body.detail;
+        body = await r.json();
       } catch (_) {}
-      throw new Error(detail);
+      _throwApiError(r.status, body, "Download failed");
     }
     const blob = await r.blob();
     const a = document.createElement("a");

@@ -11,6 +11,12 @@ import types
 from fastapi import FastAPI
 
 
+def _prepend_sys_path(path: Path) -> None:
+    raw = str(path)
+    sys.path[:] = [p for p in sys.path if p != raw]
+    sys.path.insert(0, raw)
+
+
 def _ensure_backend_import_path(routers_dir: Path) -> tuple[Path, Path]:
     """Ensure absolute imports like `core.*` and `routers.*` resolve.
 
@@ -21,10 +27,11 @@ def _ensure_backend_import_path(routers_dir: Path) -> tuple[Path, Path]:
     """
     backend_root = routers_dir.resolve().parent
     app_root = backend_root.parent
-    for path in (backend_root, app_root):
-        raw = str(path)
-        if raw not in sys.path:
-            sys.path.insert(0, raw)
+    # Keep this checkout ahead of any older install/worktree that may already
+    # be on sys.path. This matters when setup.py was copied to a new directory
+    # and uvicorn is restarted from a shell that previously imported Flow.
+    for path in (app_root, backend_root):
+        _prepend_sys_path(path)
     return backend_root, app_root
 
 
@@ -138,7 +145,13 @@ def include_router_modules(app: FastAPI, routers_dir: Path, logger) -> tuple[lis
 
     routers_dir = routers_dir.resolve()
     backend_root, app_root = _ensure_backend_import_path(routers_dir)
-    _ensure_local_package("routers", routers_dir)
+    for package_name, package_dir in (
+        ("core", backend_root / "core"),
+        ("app_v2", backend_root / "app_v2"),
+        ("routers", routers_dir),
+    ):
+        if package_dir.is_dir():
+            _ensure_local_package(package_name, package_dir)
     loaded: list[str] = []
     failed: list[tuple[str, str]] = []
     for file_path in sorted(routers_dir.glob("*.py")):

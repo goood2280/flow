@@ -19,15 +19,78 @@ import 위치(working directory)에 따라 `Could not import module 'app'` 또�
 """
 import os
 import sys
+import types
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 _BACKEND = _HERE / "backend"
 
+
+def _prepend_sys_path(path: Path) -> None:
+    raw = str(path)
+    sys.path[:] = [p for p in sys.path if p != raw]
+    sys.path.insert(0, raw)
+
+
+def _package_paths(module: object) -> list[Path]:
+    paths = getattr(module, "__path__", None)
+    if not paths:
+        return []
+    out = []
+    for raw in paths:
+        try:
+            out.append(Path(raw).resolve())
+        except OSError:
+            continue
+    return out
+
+
+def _clear_package(package_name: str) -> None:
+    for name in list(sys.modules):
+        if name == package_name or name.startswith(package_name + "."):
+            sys.modules.pop(name, None)
+
+
+def _bind_local_package(package_name: str, package_dir: Path) -> None:
+    package_dir = package_dir.resolve()
+    existing = sys.modules.get(package_name)
+    if existing is not None and package_dir in _package_paths(existing):
+        return
+    if existing is not None:
+        _clear_package(package_name)
+
+    init_file = package_dir / "__init__.py"
+    if init_file.exists():
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            package_name,
+            init_file,
+            submodule_search_locations=[str(package_dir)],
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot locate package spec for {package_name}: {init_file}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[package_name] = module
+        spec.loader.exec_module(module)
+        return
+
+    module = types.ModuleType(package_name)
+    module.__package__ = package_name
+    module.__path__ = [str(package_dir)]  # type: ignore[attr-defined]
+    sys.modules[package_name] = module
+
+
 # backend 디렉토리를 sys.path 앞에 두어 `routers.*`, `core.*` 가 import 되게 한다.
-for p in (str(_BACKEND), str(_HERE)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+for p in (_HERE, _BACKEND):
+    _prepend_sys_path(p)
+for package, package_dir in (
+    ("core", _BACKEND / "core"),
+    ("app_v2", _BACKEND / "app_v2"),
+    ("routers", _BACKEND / "routers"),
+):
+    if package_dir.is_dir():
+        _bind_local_package(package, package_dir)
 
 try:
     from core.runtime_limits import apply_runtime_limits

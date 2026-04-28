@@ -92,6 +92,11 @@ INCLUDE_FILES = [
     # v8.7.6: VERSION.json / CHANGELOG.md 는 반드시 포함 — 홈 화면에 최신 버전·로그 표시용.
     'VERSION.json',
     'app.py',
+    # Root import shims keep direct path/importlib loads stable after setup.py
+    # is copied to a fresh working directory.
+    'app_v2/__init__.py',
+    'core/__init__.py',
+    'routers/__init__.py',
     'backend/app.py',
     'backend/requirements.txt',
     'frontend/index.html',
@@ -309,7 +314,7 @@ _PROTECTED_SEGMENTS = {{
 
 
 _ALLOWED_TOP_LEVEL = {{
-    'backend', 'frontend', 'docs', 'scripts',
+    'backend', 'frontend', 'docs', 'scripts', 'app_v2', 'core', 'routers',
     'app.py', 'README.md', 'CHANGELOG.md', 'VERSION.json', 'requirements.txt',
 }}
 

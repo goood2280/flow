@@ -18,8 +18,48 @@ from pathlib import Path
 import sys
 
 _BACKEND_ROOT = Path(__file__).resolve().parent
-if str(_BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(_BACKEND_ROOT))
+_APP_ROOT = _BACKEND_ROOT.parent
+
+
+def _prepend_sys_path(path: Path) -> None:
+    raw = str(path)
+    sys.path[:] = [p for p in sys.path if p != raw]
+    sys.path.insert(0, raw)
+
+
+def _package_paths(module: object) -> list[Path]:
+    paths = getattr(module, "__path__", None)
+    if not paths:
+        return []
+    out: list[Path] = []
+    for raw in paths:
+        try:
+            out.append(Path(raw).resolve())
+        except OSError:
+            continue
+    return out
+
+
+def _clear_stale_package(package_name: str, package_dir: Path) -> None:
+    """Drop cached top-level packages from a different Flow checkout."""
+    package_dir = package_dir.resolve()
+    existing = sys.modules.get(package_name)
+    if existing is None or package_dir in _package_paths(existing):
+        return
+    for name in list(sys.modules):
+        if name == package_name or name.startswith(package_name + "."):
+            sys.modules.pop(name, None)
+
+
+for _path in (_APP_ROOT, _BACKEND_ROOT):
+    _prepend_sys_path(_path)
+for _package, _dir in (
+    ("core", _BACKEND_ROOT / "core"),
+    ("app_v2", _BACKEND_ROOT / "app_v2"),
+    ("routers", _BACKEND_ROOT / "routers"),
+):
+    if _dir.is_dir():
+        _clear_stale_package(_package, _dir)
 
 try:
     from core.runtime_limits import apply_runtime_limits
@@ -110,6 +150,34 @@ def _compat_api_path(path: str) -> str:
     return ""
 
 
+def _router_error_summary(detail: str) -> str:
+    error_type = ""
+    error = ""
+    for line in str(detail or "").splitlines():
+        if line.startswith("error_type="):
+            error_type = line.split("=", 1)[1].strip()
+        elif line.startswith("error="):
+            error = line.split("=", 1)[1].strip()
+    if error_type and error:
+        return f"{error_type}: {error}"
+    if error:
+        return error
+    lines = [line.strip() for line in str(detail or "").splitlines() if line.strip()]
+    return lines[-1] if lines else "unknown router import error"
+
+
+def _router_failure_body(router_key: str, full_path: str, detail: str) -> dict:
+    summary = _router_error_summary(detail)
+    return {
+        "detail": f"API router '{router_key}' failed to load: {summary}",
+        "path": full_path,
+        "error_code": "router_load_failed",
+        "router": router_key,
+        "router_error_summary": summary,
+        "router_error": detail,
+    }
+
+
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 def api_not_found(path: str, request: Request):
     """JSON fallback for unmatched API calls.
@@ -137,8 +205,7 @@ def api_not_found(path: str, request: Request):
     router_key = (path.split("/", 1)[0] or "").strip()
     body = {"detail": "API not found", "path": full_path}
     if router_key in failed_map:
-        body["detail"] = f"API router '{router_key}' failed to load"
-        body["router_error"] = failed_map[router_key]
+        body = _router_failure_body(router_key, full_path, failed_map[router_key])
     return JSONResponse(body, status_code=404)
 
 

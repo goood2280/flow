@@ -67,3 +67,17 @@ def test_importlib_path_loads_backend_modules_without_backend_sys_path():
     finally:
         sys.path[:] = original_sys_path
         _restore_imports(saved, ("core", "app_v2", "routers"))
+
+
+def test_setup_builder_includes_root_import_shims():
+    spec = importlib.util.spec_from_file_location("_flow_build_setup_probe", ROOT / "_build_setup.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["_flow_build_setup_probe"] = module
+    try:
+        spec.loader.exec_module(module)
+        bundled = {module.to_rel_posix(path) for path in module.gather_files()}
+    finally:
+        sys.modules.pop("_flow_build_setup_probe", None)
+
+    assert {"core/__init__.py", "routers/__init__.py", "app_v2/__init__.py"}.issubset(bundled)
