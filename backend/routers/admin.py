@@ -598,7 +598,9 @@ def get_settings(request: Request):
         try:
             merged["llm"] = adm.get("llm") or {
                 "enabled": False, "api_url": "", "model": "", "mode": "fast",
-                "admin_token": "", "headers": {}, "format": "openai", "extra_body": {}, "timeout_s": 20,
+                "admin_token": "", "provider": "generic", "auth_mode": "bearer",
+                "system_name": "", "user_id": "", "user_type": "",
+                "headers": {}, "format": "openai", "extra_body": {}, "timeout_s": 20,
             }
         except Exception:
             merged["llm"] = None
@@ -663,6 +665,11 @@ class LLMCfgReq(BaseModel):
     model: Optional[str] = None
     mode: Optional[str] = None
     admin_token: Optional[str] = None
+    provider: Optional[str] = None
+    auth_mode: Optional[str] = None
+    system_name: Optional[str] = None
+    user_id: Optional[str] = None
+    user_type: Optional[str] = None
     headers: Optional[Dict[str, str]] = None
     format: Optional[str] = None              # "openai" | "raw"
     extra_body: Optional[Dict[str, Any]] = None
@@ -827,7 +834,7 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
     if llm_in is not None:
         current = _load_admin_settings()
         llm_cur = dict(current.get("llm") or {})
-        for k in ("api_url", "model", "mode", "format", "admin_token"):
+        for k in ("api_url", "model", "mode", "format", "admin_token", "provider", "auth_mode", "system_name", "user_id", "user_type"):
             if llm_in.get(k) is not None:
                 llm_cur[k] = str(llm_in.get(k) or "").strip()
         if llm_in.get("headers") is not None:

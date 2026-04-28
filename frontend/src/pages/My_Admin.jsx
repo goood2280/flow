@@ -999,27 +999,41 @@ function MailCfgPanel(){
 
 // ── v9.0.4: Flowi LLM 설정 — admin token 을 서버 설정에 저장하고 사용자는 실행만 한다. ──
 function LlmCfgPanel(){
-  const[cfg,setCfg]=useState({enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",format:"openai",timeout_s:20});
+  const[cfg,setCfg]=useState({enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"generic",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20});
   const[msg,setMsg]=useState("");
   const[busy,setBusy]=useState(false);
   const[testBusy,setTestBusy]=useState(false);
   const[testPrompt,setTestPrompt]=useState("연결 확인입니다. 정상 수신했다면 확인완료 라고만 답하세요.");
   const[showToken,setShowToken]=useState(false);
+  const normalize=(l={})=>{
+    const provider=(l.provider||"generic").toString().trim()||"generic";
+    return {
+      enabled:!!l.enabled,
+      api_url:l.api_url||"",
+      model:l.model||"",
+      mode:l.mode||"fast",
+      admin_token:l.admin_token||"",
+      provider,
+      auth_mode:l.auth_mode||(provider==="playground"?"dep_ticket":"bearer"),
+      system_name:l.system_name||(provider==="playground"?"playground":""),
+      user_id:l.user_id||"",
+      user_type:l.user_type||"",
+      format:l.format||"openai",
+      timeout_s:Number(l.timeout_s||20),
+    };
+  };
   const reload=()=>{
-    sf("/api/admin/settings").then(d=>{
-      const l=d.llm||{};
-      setCfg({
-        enabled:!!l.enabled,
-        api_url:l.api_url||"",
-        model:l.model||"",
-        mode:l.mode||"fast",
-        admin_token:l.admin_token||"",
-        format:l.format||"openai",
-        timeout_s:Number(l.timeout_s||20),
-      });
-    }).catch(e=>setMsg("로드 오류: "+e.message));
+    sf("/api/admin/settings").then(d=>setCfg(normalize(d.llm||{}))).catch(e=>setMsg("로드 오류: "+e.message));
   };
   useEffect(reload,[]);
+  const patch=(next)=>setCfg(c=>({...c,...next}));
+  const setProvider=(provider)=>setCfg(c=>({
+    ...c,
+    provider,
+    auth_mode:provider==="playground"?"dep_ticket":(c.auth_mode==="dep_ticket"?"bearer":(c.auth_mode||"bearer")),
+    system_name:provider==="playground"?(c.system_name||"playground"):c.system_name,
+    format:provider==="playground"?"openai":c.format,
+  }));
   const save=()=>{
     setBusy(true);setMsg("");
     sf("/api/admin/settings").then(cur=>sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
@@ -1031,6 +1045,11 @@ function LlmCfgPanel(){
         model:cfg.model,
         mode:cfg.mode||"fast",
         admin_token:cfg.admin_token,
+        provider:cfg.provider||"generic",
+        auth_mode:cfg.auth_mode||(cfg.provider==="playground"?"dep_ticket":"bearer"),
+        system_name:cfg.system_name,
+        user_id:cfg.user_id,
+        user_type:cfg.user_type,
         format:cfg.format||"openai",
         timeout_s:Number(cfg.timeout_s)||20,
       },
@@ -1045,59 +1064,109 @@ function LlmCfgPanel(){
   };
   const L={fontSize:11,color:"var(--text-secondary)",marginBottom:4,marginTop:10,fontWeight:600};
   const I={width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",boxSizing:"border-box"};
+  const isPlayground=(cfg.provider||"generic")==="playground";
+  const authMode=cfg.auth_mode||(isPlayground?"dep_ticket":"bearer");
+  const previewHeaders={
+    Accept:"application/json",
+    "Content-Type":"application/json",
+    ...(authMode==="bearer"&&cfg.admin_token?{Authorization:"Bearer <admin_token>"}:{}),
+    ...(authMode==="dep_ticket"&&cfg.admin_token?{"x-dep-ticket":"<credential_key>"}:{}),
+    ...(isPlayground?{
+      "Send-System-Name":cfg.system_name||"playground",
+      "User-Id":cfg.user_id||"(입력 필요)",
+      "User-Type":cfg.user_type||"(입력 필요)",
+      "Prompt-Msg-Id":"<uuid4>",
+      "Completion-Msg-Id":"<uuid4>",
+    }:{}),
+  };
+  const previewBody=isPlayground?{
+    model:cfg.model||"(입력 필요)",
+    messages:[{role:"system",content:"You are a helpful assistant."},{role:"user",content:"..."}],
+    temperature:0.5,
+    stream:false,
+  }:{
+    ...(cfg.mode?{mode:cfg.mode}:{}),
+    ...(cfg.model?{model:cfg.model}:{}),
+    [cfg.format==="raw"?"prompt":"messages"]:cfg.format==="raw"?"...":[{role:"system",content:"..."},{role:"user",content:"..."}],
+  };
   const preview={
     enabled:!!cfg.enabled,
     request:"POST "+(cfg.api_url||"(설정 필요)"),
-    auth:cfg.admin_token?"Authorization: Bearer <admin_token>":"admin_token 없음",
-    format:cfg.format||"openai",
-    model:cfg.model||"(default)",
-    mode:cfg.mode||"fast",
+    provider:cfg.provider||"generic",
+    auth_mode:authMode,
+    headers:previewHeaders,
+    body:previewBody,
     users:"홈 Flowi 사용자는 별도 LLM token 입력 없이 서버 설정으로 실행",
   };
   return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:900}}>
     <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Flowi LLM 설정</div>
     <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.6}}>
-      Admin 이 저장한 token 을 서버에서 사용합니다. 일반 사용자는 홈 Flowi 콘솔에서 token 입력 없이 질문과 사용자 메모만 입력합니다.
+      Admin 이 저장한 credential 을 서버에서 사용합니다. 일반 사용자는 홈 Flowi 콘솔에서 질문만 입력하고, 답변과 기능별 표/추천은 홈에서 바로 확인합니다.
     </div>
     <label style={{display:"flex",alignItems:"center",gap:6,fontSize:12,marginBottom:6}}>
-      <input type="checkbox" checked={!!cfg.enabled} onChange={e=>setCfg({...cfg,enabled:e.target.checked})}/>
+      <input type="checkbox" checked={!!cfg.enabled} onChange={e=>patch({enabled:e.target.checked})}/>
       LLM 기능 활성화
     </label>
-    <div style={L}>API URL</div>
-    <input value={cfg.api_url} onChange={e=>setCfg({...cfg,api_url:e.target.value})} placeholder="https://llm.internal/v1/chat/completions" style={I}/>
-    <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:10}}>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 2fr",gap:10}}>
       <div>
-        <div style={L}>Model</div>
-        <input value={cfg.model} onChange={e=>setCfg({...cfg,model:e.target.value})} placeholder="internal-model" style={I}/>
+        <div style={L}>API Profile</div>
+        <select value={cfg.provider||"generic"} onChange={e=>setProvider(e.target.value)} style={I}>
+          <option value="generic">OpenAI 호환 / Generic</option>
+          <option value="playground">사내 Playground API</option>
+        </select>
       </div>
       <div>
+        <div style={L}>API URL</div>
+        <input value={cfg.api_url} onChange={e=>patch({api_url:e.target.value})} placeholder="https://llm.internal/v1/chat/completions" style={I}/>
+      </div>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:isPlayground?"2fr 1fr 1fr":"2fr 1fr 1fr 1fr",gap:10}}>
+      <div>
+        <div style={L}>Model</div>
+        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder="internal-model" style={I}/>
+      </div>
+      {!isPlayground&&<div>
         <div style={L}>Mode</div>
-        <select value={cfg.mode||"fast"} onChange={e=>setCfg({...cfg,mode:e.target.value})} style={I}>
+        <select value={cfg.mode||"fast"} onChange={e=>patch({mode:e.target.value})} style={I}>
           <option value="fast">fast</option>
           <option value="balanced">balanced</option>
           <option value="quality">quality</option>
         </select>
-      </div>
+      </div>}
       <div>
         <div style={L}>Format</div>
-        <select value={cfg.format||"openai"} onChange={e=>setCfg({...cfg,format:e.target.value})} style={I}>
+        <select value={cfg.format||"openai"} onChange={e=>patch({format:e.target.value})} disabled={isPlayground} style={{...I,opacity:isPlayground?0.65:1}}>
           <option value="openai">openai</option>
           <option value="raw">raw</option>
         </select>
       </div>
       <div>
         <div style={L}>Timeout (sec)</div>
-        <input type="number" min={3} max={120} value={cfg.timeout_s||20} onChange={e=>setCfg({...cfg,timeout_s:Number(e.target.value)})} style={{...I,fontFamily:"monospace"}}/>
+        <input type="number" min={3} max={120} value={cfg.timeout_s||20} onChange={e=>patch({timeout_s:Number(e.target.value)})} style={{...I,fontFamily:"monospace"}}/>
       </div>
     </div>
-    <div style={L}>Admin LLM Token <span style={{fontWeight:400,color:"var(--text-secondary)"}}>(Authorization Bearer 로 자동 사용)</span></div>
+    <div style={L}>{isPlayground?"Credential Key":"Admin LLM Token"} <span style={{fontWeight:400,color:"var(--text-secondary)"}}>({isPlayground?"x-dep-ticket 로 전송":"Authorization Bearer 로 전송"})</span></div>
     <div style={{display:"flex",gap:8}}>
-      <input type={showToken?"text":"password"} value={cfg.admin_token} onChange={e=>setCfg({...cfg,admin_token:e.target.value})} placeholder="admin token" autoComplete="off" style={{...I,fontFamily:"monospace",flex:1}}/>
+      <input type={showToken?"text":"password"} value={cfg.admin_token} onChange={e=>patch({admin_token:e.target.value})} placeholder={isPlayground?"사내 credential key":"admin token"} autoComplete="off" style={{...I,fontFamily:"monospace",flex:1}}/>
       <button type="button" onClick={()=>setShowToken(!showToken)} style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>{showToken?"숨김":"보기"}</button>
+    </div>
+    <div style={{display:isPlayground?"grid":"none",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+      <div>
+        <div style={L}>Send-System-Name</div>
+        <input value={cfg.system_name} onChange={e=>patch({system_name:e.target.value})} placeholder="playground" style={I}/>
+      </div>
+      <div>
+        <div style={L}>User-Id</div>
+        <input value={cfg.user_id} onChange={e=>patch({user_id:e.target.value})} placeholder="Knox ID" style={I}/>
+      </div>
+      <div>
+        <div style={L}>User-Type</div>
+        <input value={cfg.user_type} onChange={e=>patch({user_type:e.target.value})} placeholder="admin/user type" style={I}/>
+      </div>
     </div>
     <div style={{marginTop:18,padding:12,background:"var(--bg-card)",borderRadius:6,border:"1px solid var(--border)"}}>
       <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>요청 미리보기</div>
-      <pre style={{fontSize:10,lineHeight:1.45,padding:10,background:"var(--bg-primary)",border:"1px solid var(--border)",borderRadius:4,overflow:"auto",maxHeight:220,fontFamily:"monospace",margin:0,color:"var(--text-primary)"}}>
+      <pre style={{fontSize:10,lineHeight:1.45,padding:10,background:"var(--bg-primary)",border:"1px solid var(--border)",borderRadius:4,overflow:"auto",maxHeight:260,fontFamily:"monospace",margin:0,color:"var(--text-primary)"}}>
 {JSON.stringify(preview, null, 2)}
       </pre>
     </div>
