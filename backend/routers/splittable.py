@@ -3465,18 +3465,28 @@ def _fab_history_scope(product: str, root_lot_id: str = "", fab_lot_id: str = ""
     elif prefix.strip():
         q = q.filter(_contains_literal_ci_expr("fab", prefix))
     try:
-        df = q.unique().collect()
+        fabs = _limited_unique_values(
+            q, "fab", prefix="", limit=limit,
+            preview_only=not bool(root_scope or fab_scope or prefix.strip()),
+        )
+        roots: list[str] = [root_scope] if root_scope else []
+        wafers: list[str] = []
+        # Exact fab lookup is used by /view to infer the root and wafer scope.
+        # Keep that metadata precise, but avoid collecting it for broad previews.
+        if fab_scope and fabs:
+            meta_cols = [pl.col("root")]
+            if wafer_col:
+                meta_cols.append(pl.col("wafer"))
+            meta_df = q.select(meta_cols).unique().collect()
+            roots = sorted({s for s in (_clean_str(v) for v in meta_df["root"].to_list()) if s})
+            if "wafer" in meta_df.columns:
+                wafers = sorted({s for s in (_clean_str(v) for v in meta_df["wafer"].to_list()) if s}, key=_wafer_sort_key)
     except Exception as e:
         logger.warning("_fab_history_scope 조회 실패 (product=%s) %s: %s",
                        product, type(e).__name__, e)
         return {"candidates": [], "root_ids": [], "wafer_ids": [], "source": ctx.get("source", "")}
-    if df.height == 0:
+    if not fabs:
         return {"candidates": [], "root_ids": [], "wafer_ids": [], "source": ctx.get("source", "")}
-    roots = sorted({s for s in (_clean_str(v) for v in df["root"].to_list()) if s})
-    fabs = sorted({s for s in (_clean_str(v) for v in df["fab"].to_list()) if s})[:max(1, int(limit or 500))]
-    wafers: list[str] = []
-    if "wafer" in df.columns:
-        wafers = sorted({s for s in (_clean_str(v) for v in df["wafer"].to_list()) if s}, key=_wafer_sort_key)
     return {
         "candidates": fabs,
         "root_ids": roots,
@@ -3503,29 +3513,11 @@ def _fab_history_root_candidates(product: str, prefix: str = "", limit: int = 50
     if not root_col:
         return {"candidates": [], "source": ctx.get("source", "")}
     try:
-        q = (
-            ctx["lf"]
-            .select(pl.col(root_col).cast(_STR, strict=False).alias("v"))
-            .filter(pl.col("v").is_not_null())
-        )
-        if prefix.strip():
-            q = q.filter(_contains_literal_ci_expr("v", prefix))
-        rows = q.unique().sort("v").head(limit).collect()
+        values = _limited_unique_values(ctx["lf"], root_col, prefix=prefix, limit=limit)
     except Exception as e:
         logger.warning("_fab_history_root_candidates 실패 (product=%s) %s: %s",
                        product, type(e).__name__, e)
         return {"candidates": [], "source": ctx.get("source", "")}
-    values = []
-    seen = set()
-    for value in rows["v"].to_list() if "v" in rows.columns else []:
-        text = _clean_str(value)
-        if not text:
-            continue
-        key = text.upper()
-        if key in seen:
-            continue
-        seen.add(key)
-        values.append(text)
     return {"candidates": values, "source": ctx.get("source", "")}
 
 
@@ -3575,6 +3567,34 @@ def _candidate_values_from_frame(rows, value_col: str = "v", limit: int = 500) -
     return values
 
 
+def _limited_unique_values(lf, col: str, prefix: str = "", limit: int = 500,
+                           preview_only: bool = True) -> list[str]:
+    """Return bounded autocomplete values without scanning broad empty-prefix lists.
+
+    Empty dropdowns only need a preview.  Once a user types, prefix filtering must
+    search the full source so values outside the preview are still discoverable.
+    """
+    try:
+        limit = max(1, int(limit or 500))
+    except Exception:
+        limit = 500
+    prefix = prefix if isinstance(prefix, str) else ""
+    q = (
+        lf.select(pl.col(col).cast(_STR, strict=False).alias("v"))
+        .filter(pl.col("v").is_not_null())
+    )
+    if prefix.strip():
+        q = q.filter(_contains_literal_ci_expr("v", prefix))
+        rows = q.unique().sort("v").head(limit).collect()
+    elif not preview_only:
+        rows = q.unique().sort("v").head(limit).collect()
+    else:
+        sample_limit = max(limit, min(limit * 20, 10000))
+        rows = q.head(sample_limit).unique(maintain_order=True).head(limit).collect()
+    values = _candidate_values_from_frame(rows, "v", limit)
+    return sorted(values, key=lambda s: str(s).upper())
+
+
 def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str = "",
                            limit: int = 500, root_lot_id: str = "") -> dict:
     """Return candidates from the actual SplitTable render source.
@@ -3612,14 +3632,8 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
             if root_col and root_col in schema_names:
                 lf = lf.filter(_join_key_expr(root_col) == root_scope.upper())
 
-        q = (
-            lf.select(pl.col(target).cast(_STR, strict=False).alias("v"))
-            .filter(pl.col("v").is_not_null())
-        )
-        if prefix.strip():
-            q = q.filter(_contains_literal_ci_expr("v", prefix))
-        rows = q.unique().sort("v").head(limit).collect()
-        values = _candidate_values_from_frame(rows, "v", limit)
+        values = _limited_unique_values(lf, target, prefix=prefix, limit=limit,
+                                        preview_only=not bool(root_scope))
         return {"candidates": values, "source_col": target, "root_ids": values if str(col or "").casefold() == "root_lot_id" else []}
     except Exception as e:
         logger.warning("_main_table_candidates 실패 (product=%s col=%s) %s: %s",
@@ -3782,11 +3796,7 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
     lots_list: list = []
     fallback_used = False
     try:
-        lots = (
-            lf.select(pl.col(lot_col).cast(_STR, strict=False).alias("v"))
-            .unique().sort("v").head(limit).collect()
-        )
-        lots_list = _candidate_values_from_frame(lots, "v", limit)
+        lots_list = _limited_unique_values(lf, lot_col, limit=limit)
     except Exception as e:
         logger.warning("/lot-ids: main lf 조회 실패 (product=%s) %s: %s",
                        product, type(e).__name__, e)
@@ -3824,10 +3834,7 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
                     target = next((n for n in fab_names
                                    if n.casefold() == "root_lot_id"), None)
                     if target:
-                        rows = (fab_lf.select(pl.col(target).cast(_STR, strict=False)
-                                              .alias("v"))
-                                .drop_nulls().unique().sort("v").head(limit).collect())
-                        lots_list = _candidate_values_from_frame(rows, "v", limit)
+                        lots_list = _limited_unique_values(fab_lf, target, limit=limit)
                         if lots_list:
                             fallback_used = True
                             lot_col = target
