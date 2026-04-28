@@ -112,6 +112,33 @@ def test_seed_knowledge_is_used_by_search_graph_and_cases():
     assert any(case["case_id"] == "SEED_CASE_GAA_DIBL_SS" for case in cases["cases"])
 
 
+def test_rag_update_requires_marker_for_non_admin(tmp_path, monkeypatch):
+    monkeypatch.setattr(semi, "SEMICONDUCTOR_DIR", tmp_path)
+    monkeypatch.setattr(semi, "CUSTOM_KNOWLEDGE_FILE", tmp_path / "custom_knowledge.jsonl")
+
+    try:
+        semi.structure_rag_update_from_prompt(
+            "DIBL SS RCA 지식 저장",
+            username="u1",
+            role="user",
+            require_marker=True,
+        )
+    except ValueError as e:
+        assert "[flow-i update]" in str(e)
+    else:
+        raise AssertionError("non-admin RAG update without marker should fail")
+
+    out = semi.structure_rag_update_from_prompt(
+        "[flow-i update] DIBL SS는 GAA short Lg electrostatic RCA 후보",
+        username="u1",
+        role="user",
+        require_marker=True,
+    )
+    assert out["ok"] is True
+    assert out["saved"]["visibility"] == "private"
+    assert (tmp_path / "custom_knowledge.jsonl").exists()
+
+
 def test_reformatter_alias_proposal_keeps_teg_discriminators():
     out = semi.reformatter_alias_proposal_from_prompt(
         "PC-CB-M1 Chain item은 14x14, 13x13, 12x12 DOE TEG가 다르고 gate pitch와 Cell height를 구분해야 해",

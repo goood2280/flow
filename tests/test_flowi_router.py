@@ -219,6 +219,34 @@ def test_flowi_user_file_write_request_is_blocked(monkeypatch):
     assert "사고과정 원문" in out["trace"]["note"]
 
 
+def test_flowi_rag_update_marker_alias_is_detected(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+
+    def fake_update(prompt, username="", role="user", require_marker=False):
+        seen["prompt"] = prompt
+        seen["require_marker"] = require_marker
+        return {
+            "ok": True,
+            "saved": {"id": "CK1", "kind": "research_note", "visibility": "private"},
+            "structured": {"schema_type": "research_note", "known_canonical_candidates": [], "raw_item_tokens": [], "discriminators": []},
+            "storage": {"custom_knowledge": "custom_knowledge.jsonl"},
+        }
+
+    monkeypatch.setattr(llm_router.semi_knowledge, "structure_rag_update_from_prompt", fake_update)
+
+    out = _run_flowi_chat(
+        prompt="[flow-i update] GAA DIBL SS 판단 지식 추가",
+        product="",
+        max_rows=12,
+        me={"username": "normal_user", "role": "user"},
+    )
+
+    assert out["tool"]["intent"] == "semiconductor_rag_update"
+    assert seen["require_marker"] is True
+    assert seen["prompt"].startswith("[flow-i update]")
+
+
 def test_flowi_chat_returns_public_execution_trace(monkeypatch):
     monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(llm_router, "_profile_context", lambda _username: "")

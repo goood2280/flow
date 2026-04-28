@@ -22,6 +22,7 @@ CUSTOM_KNOWLEDGE_FILE = SEMICONDUCTOR_DIR / "custom_knowledge.jsonl"
 CODE_RCA_SEED_FILE = Path(__file__).with_name("semiconductor_rca_seed_knowledge.json")
 FLOW_DATA_SEED_DIR = SEMICONDUCTOR_DIR / "seed_knowledge"
 FLOW_DATA_RCA_SEED_FILE = FLOW_DATA_SEED_DIR / "semiconductor_rca_seed_knowledge.json"
+RAG_UPDATE_MARKER_RE = re.compile(r"^\s*\[?\s*flow-i\s+(?:rag\s+)?update\s*\]?\s*[:：-]?\s*", re.I)
 
 
 ITEM_MASTER: list[dict[str, Any]] = [
@@ -1891,6 +1892,10 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def has_rag_update_marker(prompt: str) -> bool:
+    return bool(RAG_UPDATE_MARKER_RE.match(str(prompt or "")))
+
+
 def _read_json_obj(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -2122,7 +2127,13 @@ def add_custom_knowledge(payload: dict[str, Any], username: str, role: str = "us
     return {"ok": True, "row": row}
 
 
-def structure_rag_update_from_prompt(prompt: str, username: str, role: str = "user") -> dict[str, Any]:
+def structure_rag_update_from_prompt(
+    prompt: str,
+    username: str,
+    role: str = "user",
+    *,
+    require_marker: bool = False,
+) -> dict[str, Any]:
     """Append operator/domain knowledge from a Flow-i RAG update prompt.
 
     This intentionally writes an append-only runtime record instead of editing
@@ -2130,8 +2141,9 @@ def structure_rag_update_from_prompt(prompt: str, username: str, role: str = "us
     until reviewed/promoted.
     """
     text = str(prompt or "").strip()
-    marker_re = re.compile(r"^\s*\[?\s*flow-i\s+rag\s+update\s*\]?\s*[:：-]?\s*", re.I)
-    body = marker_re.sub("", text).strip()
+    if require_marker and not has_rag_update_marker(text):
+        raise ValueError("RAG knowledge changes require [flow-i update] or [flow-i RAG Update] marker for non-admin users")
+    body = RAG_UPDATE_MARKER_RE.sub("", text).strip()
     if not body:
         raise ValueError("RAG update body is empty")
 
@@ -2168,6 +2180,47 @@ def structure_rag_update_from_prompt(prompt: str, username: str, role: str = "us
         "alias_candidates": [],
         "review_status": "needs_admin_review" if role != "admin" else "admin_added",
         "source_prompt_prefix": "[flow-i RAG Update]",
+        "accepted_prompt_prefixes": ["[flow-i update]", "[flow-i RAG Update]"],
+    }
+    if dims:
+        structured["discriminators"].append("geometry_dimension")
+        structured["focus_points"].append("Check which TEG dimension token, such as 14x14/13x13/12x12, differentiates the DOE structure.")
+    if "pitch" in lower:
+        structured["discriminators"].append("pitch")
+        structured["focus_points"].append("Identify whether the item encodes gate pitch, metal pitch, or contact pitch.")
+    if "cell height" in lower or "cell_height" in lower:
+        structured["discriminators"].append("cell_height")
+        structured["focus_points"].append("Identify whether the item encodes standard-cell height sensitivity.")
+    if "chain" in lower:
+        structured["discriminators"].append("chain_structure")
+        structured["focus_points"].append("Separate chain resistance/open-sensitive structures from Kelvin/contact/sheet monitors.")
+    if "reformatter" in lower or "alias" in lower or "별칭" in lower:
+        structured["alias_candidates"] = _unique(raw_tokens[:8])
+        structured["focus_points"].append("Before aliasing, preserve discriminator fields so similar raw items do not collapse into one meaning.")
+
+    payload = {
+        "kind": kind,
+        "visibility": "public" if role == "admin" else "private",
+        "title": (body.splitlines()[0] or "Flow-i RAG update")[:120],
+        "source": "flow-i RAG Update prompt",
+        "product": "",
+        "module": "",
+        "items": likely_items,
+        "tags": [schema_type] + likely_items[:8],
+        "content": body,
+        "structured_json": structured,
+    }
+    saved = add_custom_knowledge(payload, username=username, role=role)
+    return {
+        "ok": True,
+        "mode": "append_only_runtime_knowledge",
+        "saved": saved.get("row"),
+        "structured": structured,
+        "storage": storage_manifest()["runtime_data"],
+        "review_note": (
+            "Admin entry is public immediately. User entry is private and can be reviewed/promoted later. "
+            "Code seed is not edited by prompt."
+        ),
     }
 
 
@@ -2514,46 +2567,6 @@ def apply_teg_layout_proposal(product: str, teg_definitions: list[dict[str, Any]
         "teg_count": len(clean),
         "path": str(_pc.config_path(PATHS.data_root, product)),
         "wafer_layout": wafer_layout,
-    }
-    if dims:
-        structured["discriminators"].append("geometry_dimension")
-        structured["focus_points"].append("Check which TEG dimension token, such as 14x14/13x13/12x12, differentiates the DOE structure.")
-    if "pitch" in lower:
-        structured["discriminators"].append("pitch")
-        structured["focus_points"].append("Identify whether the item encodes gate pitch, metal pitch, or contact pitch.")
-    if "cell height" in lower or "cell_height" in lower:
-        structured["discriminators"].append("cell_height")
-        structured["focus_points"].append("Identify whether the item encodes standard-cell height sensitivity.")
-    if "chain" in lower:
-        structured["discriminators"].append("chain_structure")
-        structured["focus_points"].append("Separate chain resistance/open-sensitive structures from Kelvin/contact/sheet monitors.")
-    if "reformatter" in lower or "alias" in lower or "별칭" in lower:
-        structured["alias_candidates"] = _unique(raw_tokens[:8])
-        structured["focus_points"].append("Before aliasing, preserve discriminator fields so similar raw items do not collapse into one meaning.")
-
-    payload = {
-        "kind": kind,
-        "visibility": "public" if role == "admin" else "private",
-        "title": (body.splitlines()[0] or "Flow-i RAG update")[:120],
-        "source": "flow-i RAG Update prompt",
-        "product": "",
-        "module": "",
-        "items": likely_items,
-        "tags": [schema_type] + likely_items[:8],
-        "content": body,
-        "structured_json": structured,
-    }
-    saved = add_custom_knowledge(payload, username=username, role=role)
-    return {
-        "ok": True,
-        "mode": "append_only_runtime_knowledge",
-        "saved": saved.get("row"),
-        "structured": structured,
-        "storage": storage_manifest()["runtime_data"],
-        "review_note": (
-            "Admin entry is public immediately. User entry is private and can be reviewed/promoted later. "
-            "Code seed is not edited by prompt."
-        ),
     }
 
 

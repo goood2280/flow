@@ -2799,21 +2799,26 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
 
 
 def _is_rag_update_prompt(prompt: str) -> bool:
-    return bool(re.match(r"^\s*\[?\s*flow-i\s+rag\s+update\s*\]?", str(prompt or ""), flags=re.I))
+    return semi_knowledge.has_rag_update_marker(prompt)
 
 
 def _handle_flowi_rag_update(prompt: str, me: dict[str, Any]) -> dict[str, Any]:
     username = me.get("username") or "user"
     role = me.get("role") or "user"
     try:
-        out = semi_knowledge.structure_rag_update_from_prompt(prompt, username=username, role=role)
+        out = semi_knowledge.structure_rag_update_from_prompt(
+            prompt,
+            username=username,
+            role=role,
+            require_marker=(role != "admin"),
+        )
     except ValueError as e:
         return {
             "handled": True,
             "intent": "semiconductor_rag_update",
             "action": "append_custom_knowledge",
             "blocked": True,
-            "answer": f"RAG Update 본문이 비어 있습니다. [flow-i RAG Update] 뒤에 구조화할 item/TEG/alias/판단 지식을 적어주세요. ({e})",
+            "answer": f"RAG Update 본문이 비어 있습니다. [flow-i update] 또는 [flow-i RAG Update] 뒤에 구조화할 item/TEG/alias/판단 지식을 적어주세요. ({e})",
         }
     saved = out.get("saved") or {}
     structured = out.get("structured") or {}
