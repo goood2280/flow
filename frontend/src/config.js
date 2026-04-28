@@ -8,6 +8,7 @@ export const TABS = [
   {key:"filebrowser",label:"파일탐색기",icon:"📂",group:"data",defaultTab:true},
   {key:"dashboard",label:"대시보드",icon:"📊",group:"data",defaultTab:true},
   {key:"splittable",label:"스플릿 테이블",icon:"🗂️",group:"data",defaultTab:true},
+  {key:"diagnosis",label:"진단/RCA",icon:"🧪",group:"tool",defaultTab:true,badge:"MVP"},
   {key:"tracker",label:"이슈 추적",icon:"📋",group:"tool"},
   {key:"inform",label:"인폼 로그",icon:"📢",group:"tool"},
   {key:"meeting",label:"회의관리",icon:"🗓",group:"tool"},

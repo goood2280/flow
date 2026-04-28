@@ -37,8 +37,15 @@ SETTINGS_FILE = PATHS.data_root / "settings.json"
 
 MAX_POINTS = 5000
 FAB_PROGRESS_DEFAULT_SAMPLE_LOTS = 3
+FAB_PROGRESS_DEFAULT_REFERENCE_STEP = "AA200000"
+FAB_PROGRESS_DEFAULT_DAYS = 30
 _STEP_SIMPLE_RE = re.compile(r"^([A-Z]{2})(?:(\d{6}))?(\d{6})$")
 DASHBOARD_SECTION_DEFAULTS = {"charts": True, "progress": False, "alerts": False}
+FAB_PROGRESS_SETTINGS_DEFAULTS = {
+    "reference_step_id": FAB_PROGRESS_DEFAULT_REFERENCE_STEP,
+    "sample_lots": FAB_PROGRESS_DEFAULT_SAMPLE_LOTS,
+    "days": FAB_PROGRESS_DEFAULT_DAYS,
+}
 
 
 def _dashboard_sections_config() -> dict:
@@ -50,6 +57,25 @@ def _dashboard_sections_config() -> dict:
         **DASHBOARD_SECTION_DEFAULTS,
         **{k: bool(v) for k, v in raw.items() if k in DASHBOARD_SECTION_DEFAULTS},
     }
+
+
+def _dashboard_fab_progress_config() -> dict:
+    data = load_json(SETTINGS_FILE, {})
+    raw = data.get("dashboard_fab_progress") if isinstance(data, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+    out = dict(FAB_PROGRESS_SETTINGS_DEFAULTS)
+    ref = str(raw.get("reference_step_id") or out["reference_step_id"]).strip().upper()
+    out["reference_step_id"] = ref or FAB_PROGRESS_DEFAULT_REFERENCE_STEP
+    try:
+        out["sample_lots"] = max(1, min(50, int(raw.get("sample_lots", out["sample_lots"]))))
+    except Exception:
+        out["sample_lots"] = FAB_PROGRESS_DEFAULT_SAMPLE_LOTS
+    try:
+        out["days"] = max(1, min(365, int(raw.get("days", out["days"]))))
+    except Exception:
+        out["days"] = FAB_PROGRESS_DEFAULT_DAYS
+    return out
 
 
 def _require_dashboard_section(request: Request, section: str) -> dict:
@@ -202,9 +228,14 @@ def _load_root_knob_map(product: str, knob_col: str = "") -> dict:
 def _compute_fab_progress(product: str = "", days: int = 7, limit: int = 8,
                           target_step_id: str = "", lot_query: str = "",
                           sample_lots: int = FAB_PROGRESS_DEFAULT_SAMPLE_LOTS,
-                          knob_col: str = "", knob_value: str = "") -> dict:
+                          knob_col: str = "", knob_value: str = "",
+                          reference_step_id: str = "") -> dict:
+    fab_cfg = _dashboard_fab_progress_config()
+    if not reference_step_id:
+        reference_step_id = str(fab_cfg.get("reference_step_id") or FAB_PROGRESS_DEFAULT_REFERENCE_STEP)
+    reference_step = str(reference_step_id or "").strip().upper()
     lf = _scan_dashboard_fab_long(product)
-    sample_window = max(1, min(20, int(sample_lots or FAB_PROGRESS_DEFAULT_SAMPLE_LOTS)))
+    sample_window = max(1, min(50, int(sample_lots or FAB_PROGRESS_DEFAULT_SAMPLE_LOTS)))
     if lf is None:
         return {
             "ok": False,
@@ -559,12 +590,105 @@ def _compute_fab_progress(product: str = "", days: int = 7, limit: int = 8,
             })
         return out
 
+    def _recent_reference_samples(anchor_root: str, anchor_product: str) -> tuple[list[dict], int]:
+        candidates = []
+        for rk in by_root.keys():
+            rk_s = str(rk or "")
+            if not rk_s or rk_s == str(anchor_root or ""):
+                continue
+            timeline = _root_step_timeline(rk_s)
+            if len(timeline) < 2:
+                continue
+            row_product = _lot_product(timeline)
+            if anchor_product and row_product and row_product != anchor_product:
+                continue
+            if reference_step:
+                hits = [row for row in timeline if _norm(row.get("step_id")) == reference_step]
+                if not hits:
+                    continue
+                basis_row = hits[-1]
+            else:
+                basis_row = timeline[-1]
+            basis_dt = basis_row.get("_dt")
+            if not basis_dt:
+                continue
+            candidates.append({
+                "root_lot_id": rk_s,
+                "reference_step_id": reference_step,
+                "reference_time": basis_dt.isoformat(),
+                "_reference_dt": basis_dt,
+                "current_step_id": timeline[-1].get("step_id") if timeline else "",
+                "current_time": timeline[-1].get("time") if timeline else "",
+                "timeline": timeline,
+            })
+        candidates.sort(key=lambda r: r.get("_reference_dt") or datetime.datetime.min, reverse=True)
+        return candidates[:sample_window], len(candidates)
+
+    def _progress_points(timeline: list[dict]) -> list[dict]:
+        if not timeline:
+            return []
+        start_dt = timeline[0].get("_dt")
+        out = []
+        for idx, row in enumerate(timeline):
+            dt = row.get("_dt")
+            elapsed = ((dt - start_dt).total_seconds() / 3600.0) if start_dt and dt else 0.0
+            out.append({
+                "index": idx + 1,
+                "step_id": row.get("step_id") or "",
+                "elapsed_hours": round(max(0.0, elapsed), 2),
+                "time": row.get("time") or "",
+            })
+        return out
+
+    def _progress_chart_payload(anchor_timeline: list[dict], sample_specs: list[dict]) -> dict:
+        anchor_points = _progress_points(anchor_timeline)
+        average_points = []
+        for point in anchor_points:
+            step = _norm(point.get("step_id"))
+            vals = []
+            lots = []
+            for spec in sample_specs:
+                timeline = spec.get("timeline") or []
+                if not timeline:
+                    continue
+                start_dt = timeline[0].get("_dt")
+                hit = next((row for row in timeline if _norm(row.get("step_id")) == step), None)
+                hit_dt = hit.get("_dt") if hit else None
+                if not start_dt or not hit_dt:
+                    continue
+                elapsed = (hit_dt - start_dt).total_seconds() / 3600.0
+                if elapsed < 0:
+                    continue
+                vals.append(elapsed)
+                lots.append({
+                    "root_lot_id": spec.get("root_lot_id") or "",
+                    "elapsed_hours": round(elapsed, 2),
+                    "time": hit.get("time") or "",
+                })
+            average_points.append({
+                "index": point.get("index"),
+                "step_id": point.get("step_id"),
+                "avg_elapsed_hours": round(sum(vals) / len(vals), 2) if vals else None,
+                "median_elapsed_hours": round(statistics.median(vals), 2) if vals else None,
+                "sample_count": len(vals),
+                "lots": lots[:8],
+            })
+        return {
+            "kind": "lot_vs_reference_progress",
+            "reference_step_id": reference_step,
+            "sample_window": sample_window,
+            "anchor": anchor_points,
+            "average": average_points,
+        }
+
     def _step_speed_compare_payload() -> dict:
         if not lot_q:
             return {
                 "lot_query": lot_query,
                 "sample_window": sample_window,
+                "reference_step_id": reference_step,
                 "rows": [],
+                "progress_chart": {},
                 "target_eta": {},
                 "note": "root_lot_id 또는 fab_lot_id를 검색하면 최근 lots 평균과 비교합니다.",
             }
@@ -572,7 +696,9 @@ def _compute_fab_progress(product: str = "", days: int = 7, limit: int = 8,
             return {
                 "lot_query": lot_query,
                 "sample_window": sample_window,
+                "reference_step_id": reference_step,
                 "rows": [],
+                "progress_chart": {},
                 "target_eta": {},
                 "note": "검색한 root_lot_id/fab_lot_id와 매칭되는 FAB 이력이 없습니다.",
             }
@@ -582,25 +708,18 @@ def _compute_fab_progress(product: str = "", days: int = 7, limit: int = 8,
         anchor_timeline = _root_step_timeline(anchor_root)
         anchor_transitions = _timeline_transitions(anchor_timeline)
 
-        sample_roots = []
-        for row in sorted(wip_lots, key=lambda r: r.get("current_time") or "", reverse=True):
-            rk = str(row.get("root_lot_id") or "")
-            if not rk or rk == anchor_root:
-                continue
-            if anchor_product and _norm(row.get("product")) and _norm(row.get("product")) != anchor_product:
-                continue
-            if len(_root_step_timeline(rk)) < 2:
-                continue
-            sample_roots.append(rk)
-            if len(sample_roots) >= sample_window:
-                break
+        sample_specs, sample_pool = _recent_reference_samples(anchor_root, anchor_product)
+        sample_roots = [str(s.get("root_lot_id") or "") for s in sample_specs if s.get("root_lot_id")]
 
         sample_by_transition = {}
         sample_rows = []
-        for rk in sample_roots:
-            timeline = _root_step_timeline(rk)
+        for spec in sample_specs:
+            rk = str(spec.get("root_lot_id") or "")
+            timeline = spec.get("timeline") or []
             sample_rows.append({
                 "root_lot_id": rk,
+                "reference_step_id": reference_step,
+                "reference_time": spec.get("reference_time") or "",
                 "current_step_id": timeline[-1].get("step_id") if timeline else "",
                 "current_time": timeline[-1].get("time") if timeline else "",
             })
@@ -707,8 +826,17 @@ def _compute_fab_progress(product: str = "", days: int = 7, limit: int = 8,
             "target_product": anchor.get("product") or product or "",
             "current_step_id": anchor_timeline[-1].get("step_id") if anchor_timeline else anchor.get("current_step_id") or "",
             "current_time": anchor_timeline[-1].get("time") if anchor_timeline else anchor.get("current_time") or "",
+            "speed_unit_hours": anchor.get("speed_unit_hours"),
+            "speed_state": anchor.get("speed_state"),
+            "speed_badge": anchor.get("speed_badge"),
+            "elapsed_hours": anchor.get("elapsed_hours"),
+            "progress_steps": anchor.get("progress_steps"),
+            "progress_pct": anchor.get("progress_pct"),
+            "reference_step_id": reference_step,
             "sample_window": sample_window,
+            "sample_pool": sample_pool,
             "sample_lots": sample_rows,
+            "progress_chart": _progress_chart_payload(anchor_timeline, sample_specs),
             "rows": compare_rows,
             "target_eta": target_eta,
         }
@@ -931,6 +1059,7 @@ def _compute_fab_progress(product: str = "", days: int = 7, limit: int = 8,
             "lots": len(recent_paths),
             "transitions": len(transitions),
             "days": days,
+            "reference_step_id": reference_step,
             "avg_elapsed_hours": round(sum(float(r.get("elapsed_hours") or 0.0) for r in wip_lots) / max(1, len(wip_lots)), 2),
             "stuck_lots": sum(1 for r in wip_lots if r.get("speed_state") == "stuck"),
             "slow_lots": sum(1 for r in wip_lots if r.get("speed_state") == "slow"),
@@ -944,7 +1073,13 @@ def _compute_fab_progress(product: str = "", days: int = 7, limit: int = 8,
         "target_benchmark": target_benchmark,
         "step_speed_compare": step_speed_compare,
         "knob_progress": _knob_progress_payload(),
-        "search": {"lot_query": lot_query, "matched_lots": len(display_lots), "total_lots": len(wip_lots)},
+        "search": {
+            "lot_query": lot_query,
+            "matched_lots": len(display_lots),
+            "total_lots": len(wip_lots),
+            "reference_step_id": reference_step,
+            "sample_lots": sample_window,
+        },
     }
 
 
@@ -2330,24 +2465,27 @@ def list_products(request: Request):
 def fab_progress(
     request: Request,
     product: str = Query(""),
-    days: int = Query(7),
+    days: int = Query(0),
     limit: int = Query(8),
     target_step_id: str = Query(""),
     lot_query: str = Query(""),
-    sample_lots: int = Query(FAB_PROGRESS_DEFAULT_SAMPLE_LOTS),
+    sample_lots: int = Query(0),
+    reference_step_id: str = Query(""),
     knob_col: str = Query(""),
     knob_value: str = Query(""),
 ):
     _require_dashboard_section(request, "progress")
+    cfg = _dashboard_fab_progress_config()
     return _compute_fab_progress(
         product=product,
-        days=days,
+        days=days or int(cfg.get("days") or FAB_PROGRESS_DEFAULT_DAYS),
         limit=limit,
         target_step_id=target_step_id,
         lot_query=lot_query,
-        sample_lots=sample_lots,
+        sample_lots=sample_lots or int(cfg.get("sample_lots") or FAB_PROGRESS_DEFAULT_SAMPLE_LOTS),
         knob_col=knob_col,
         knob_value=knob_value,
+        reference_step_id=reference_step_id or str(cfg.get("reference_step_id") or FAB_PROGRESS_DEFAULT_REFERENCE_STEP),
     )
 
 

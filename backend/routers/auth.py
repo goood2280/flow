@@ -106,7 +106,7 @@ def login(req: LoginReq):
         if needs_rehash:
             u["password_hash"] = auth_core.hash_password(req.password)
             write_users(users)
-        tabs = u.get("tabs", "filebrowser,dashboard,splittable,ettime,waferlayout")
+        tabs = u.get("tabs", "filebrowser,dashboard,splittable,diagnosis,ettime,waferlayout")
         if u.get("role") == "admin":
             tabs = "__all__"
         token, expires_at = auth_core.issue_token(u["username"], u.get("role", "user"))
@@ -150,7 +150,7 @@ def register(req: RegisterReq):
         "role": "user",
         "status": "pending",
         "created": datetime.datetime.now().isoformat(),
-        "tabs": "filebrowser,dashboard,splittable,ettime,waferlayout,inform,meeting,calendar",
+        "tabs": "filebrowser,dashboard,splittable,diagnosis,ettime,waferlayout,inform,meeting,calendar",
         "name": human_name,
     })
     write_users(users)

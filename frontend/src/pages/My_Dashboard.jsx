@@ -171,9 +171,71 @@ function StepSpeedLineChart({ rows }) {
   );
 }
 
+function LotProgressOverlayChart({ chart }) {
+  const anchor = Array.isArray(chart?.anchor) ? chart.anchor : [];
+  const avg = Array.isArray(chart?.average) ? chart.average : [];
+  if (anchor.length < 2) return <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>progress chart를 만들 path가 부족합니다.</div>;
+  const W = 720, H = 250;
+  const pad = { t: 18, r: 28, b: 58, l: 58 };
+  const vals = [
+    ...anchor.map(p => Number(p.elapsed_hours)),
+    ...avg.map(p => Number(p.avg_elapsed_hours)),
+  ].filter(Number.isFinite);
+  const maxY = Math.max(1, ...vals) * 1.08;
+  const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+  const toX = (i) => pad.l + (anchor.length <= 1 ? cw / 2 : (i / (anchor.length - 1)) * cw);
+  const toY = (v) => pad.t + ch - (Number(v || 0) / maxY) * ch;
+  const lineFor = (rows, key) => rows
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => r[key] != null && Number.isFinite(Number(r[key])))
+    .map(({ r, i }, pi) => `${pi === 0 ? "M" : "L"} ${toX(i)} ${toY(r[key])}`)
+    .join(" ");
+  const labelEvery = Math.max(1, Math.ceil(anchor.length / 9));
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: "block" }}>
+      {[0, 0.25, 0.5, 0.75, 1].map((f, i) => {
+        const y = pad.t + ch * (1 - f);
+        return (
+          <g key={i}>
+            <line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--border)" strokeDasharray="3,4" />
+            <text x={pad.l - 8} y={y + 4} textAnchor="end" fill="var(--text-secondary)" fontSize={10}>{fmt(maxY * f)}h</text>
+          </g>
+        );
+      })}
+      <line x1={pad.l} y1={pad.t} x2={pad.l} y2={pad.t + ch} stroke="rgba(15,23,42,0.28)" />
+      <line x1={pad.l} y1={pad.t + ch} x2={W - pad.r} y2={pad.t + ch} stroke="rgba(15,23,42,0.28)" />
+      <path d={lineFor(anchor, "elapsed_hours")} fill="none" stroke={BLUE.fg} strokeWidth={2.5} />
+      <path d={lineFor(avg, "avg_elapsed_hours")} fill="none" stroke={TEAL.fg} strokeWidth={2.3} strokeDasharray="7,4" />
+      {anchor.map((p, i) => (
+        <g key={`${p.step_id}-${i}`}>
+          <circle cx={toX(i)} cy={toY(p.elapsed_hours)} r={3.4} fill={BLUE.fg}>
+            <title>{`${p.step_id}\n검색 랏 누적 ${fmt(p.elapsed_hours)}h\n최근 평균 ${avg[i]?.avg_elapsed_hours == null ? "-" : fmt(avg[i].avg_elapsed_hours) + "h"}\nsamples ${avg[i]?.sample_count || 0}`}</title>
+          </circle>
+          {avg[i]?.avg_elapsed_hours != null && <circle cx={toX(i)} cy={toY(avg[i].avg_elapsed_hours)} r={2.9} fill={TEAL.fg}>
+            <title>{`${p.step_id}\n최근 평균 누적 ${fmt(avg[i].avg_elapsed_hours)}h\nsamples ${avg[i].sample_count || 0}`}</title>
+          </circle>}
+          {i % labelEvery === 0 && (
+            <text x={toX(i)} y={H - pad.b + 16} textAnchor="end" fill="var(--text-secondary)" fontSize={8} fontFamily="monospace" transform={`rotate(-35,${toX(i)},${H - pad.b + 16})`}>
+              {String(p.step_id || "").slice(-6)}
+            </text>
+          )}
+        </g>
+      ))}
+      <g transform={`translate(${pad.l},${H - 18})`}>
+        <rect width="9" height="9" rx="2" fill={BLUE.fg} />
+        <text x="14" y="9" fill="var(--text-secondary)" fontSize="10" fontFamily="monospace">searched lot progress</text>
+        <line x1="146" y1="5" x2="168" y2="5" stroke={TEAL.fg} strokeWidth="2.3" strokeDasharray="7,4" />
+        <text x="174" y="9" fill="var(--text-secondary)" fontSize="10" fontFamily="monospace">reference lots average</text>
+      </g>
+    </svg>
+  );
+}
+
 function StepSpeedComparePanel({ compare, targetStepId, sampleLots }) {
   const rows = Array.isArray(compare?.rows) ? compare.rows : [];
   const eta = compare?.target_eta || {};
+  const progressChart = compare?.progress_chart || {};
+  const sampleRows = Array.isArray(compare?.sample_lots) ? compare.sample_lots : [];
   const hasTarget = !!compare?.target_root_lot_id;
   const dt = (v) => v ? new Date(v).toLocaleString() : "-";
   const etaLabel = (() => {
@@ -196,12 +258,22 @@ function StepSpeedComparePanel({ compare, targetStepId, sampleLots }) {
         <div style={{ fontSize: 11, fontWeight: 800, color: INDIGO.fg, fontFamily: "monospace" }}>
           {compare.target_root_lot_id} 속도 비교
           <span style={{ marginLeft: 8, color: "var(--text-secondary)", fontWeight: 600 }}>
-            {compare.target_fab_lot_id || "-"} · 최근 {compare.sample_window || sampleLots || 3} lots 평균
+            {compare.target_fab_lot_id || "-"} · {compare.reference_step_id || "기준 step"} 통과 최근 {sampleRows.length || compare.sample_window || sampleLots || 3} lots 평균
           </span>
         </div>
         {targetStepId && <div style={{ fontSize: 11, color: eta.status === "estimated" ? TEAL.fg : eta.status === "reached" ? OK.fg : "var(--text-secondary)", fontFamily: "monospace", fontWeight: 700 }}>{targetStepId}: {etaLabel}</div>}
       </div>
       <div style={{ padding: 12, display: "grid", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
+          <MiniStat label="검색 랏 속도(h/step)" value={fmt(compare.speed_unit_hours)} tone={compare.speed_state === "fast" ? OK.fg : compare.speed_state === "slow" || compare.speed_state === "stuck" ? WARN.fg : BLUE.fg} />
+          <MiniStat label="검색 랏 누적 TAT(h)" value={fmt(compare.elapsed_hours)} tone={INDIGO.fg} />
+          <MiniStat label="진행 step 수" value={compare.progress_steps || 0} tone={TEAL.fg} />
+          <MiniStat label="속도 기준 lots" value={`${sampleRows.length}/${compare.sample_pool ?? sampleRows.length}`} tone={PURPLE.fg} />
+        </div>
+        <div style={{ padding: "8px 10px", borderRadius: 9, border: "1px solid var(--border)", background: "rgba(15,23,42,0.025)", fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", lineHeight: 1.6 }}>
+          기준: {compare.reference_step_id || "-"} 통과 최근 {compare.sample_window || sampleLots || 3}개 랏. 검색 랏 상태: {compare.speed_badge || "-"} · 현재 {compare.current_step_id || "-"} · {compare.current_time ? dt(compare.current_time) : "-"}
+        </div>
+        <LotProgressOverlayChart chart={progressChart} />
         {rows.length === 0 ? (
           <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>비교 가능한 step transition이 없습니다.</div>
         ) : (
@@ -225,6 +297,14 @@ function StepSpeedComparePanel({ compare, targetStepId, sampleLots }) {
             </div>
           </>
         )}
+        <div style={{ borderTop: "1px solid var(--border)", paddingTop: 9 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", fontFamily: "monospace", marginBottom: 6 }}>속도 기준 랏</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {sampleRows.length === 0
+              ? <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>기준 step을 통과한 비교 랏이 없습니다.</span>
+              : sampleRows.map(r => <span key={r.root_lot_id} title={`${r.reference_step_id || ""} ${r.reference_time || ""}\ncurrent ${r.current_step_id || ""} ${r.current_time || ""}`} style={{ fontSize: 10, padding: "3px 8px", borderRadius: 999, border: "1px solid var(--border)", background: "rgba(255,255,255,0.55)", color: "var(--text-primary)", fontFamily: "monospace" }}>{r.root_lot_id}</span>)}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -281,7 +361,7 @@ function KnobProgressPanel({ data, targetStepId }) {
   );
 }
 
-function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter, product, setProduct, products, targetStepId, setTargetStepId, lotQuery, setLotQuery, progressDays, setProgressDays, sampleLots, setSampleLots, knobCol, setKnobCol, knobValue, setKnobValue }) {
+function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter, product, setProduct, products, targetStepId, setTargetStepId, lotQuery, setLotQuery, progressDays, setProgressDays, sampleLots, referenceStepId, knobCol, setKnobCol, knobValue, setKnobValue }) {
   const ok = !!data?.ok;
   const bench = data?.target_benchmark || {};
   const search = data?.search || {};
@@ -300,14 +380,14 @@ function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter,
         <div>
           <div style={{ fontSize: 13, fontWeight: 800, color: INDIGO.fg, fontFamily: "monospace" }}>FAB Progress / TAT / ETA</div>
           <div style={{ marginTop: 4, fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>
-            특정 랏이 지금 어디까지 왔는지, 최근 평균 TAT 기준으로 다음 step 또는 target step 도착시점을 봅니다.
+            제품과 lot_id를 검색하면 FAB DB 기준 진행 chart, 기준 step 통과 최근 lots 평균, target step ETA를 계산합니다.
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <select value={product} onChange={(e) => setProduct(e.target.value)} style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11 }}>
             {products.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
-          <input value={lotQuery} onChange={(e) => setLotQuery(e.target.value)} placeholder="root_lot / fab_lot" style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11, width: 150, fontFamily: "monospace" }} />
+          <input value={lotQuery} onChange={(e) => setLotQuery(e.target.value.toUpperCase())} placeholder="lot_id / root_lot / fab_lot" style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11, width: 180, fontFamily: "monospace" }} />
           <input value={targetStepId} onChange={(e) => setTargetStepId(e.target.value.toUpperCase())} placeholder="target step_id" style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11, width: 132, fontFamily: "monospace" }} />
           <input value={knobCol} onChange={(e) => { setKnobCol(e.target.value); setKnobValue(""); }} placeholder="KNOB_5.0 PC" list="dashboard-knob-cols" style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11, width: 140, fontFamily: "monospace" }} />
           <datalist id="dashboard-knob-cols">{(knobProgress.knob_options || []).map(k => <option key={k} value={k} />)}</datalist>
@@ -315,13 +395,9 @@ function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter,
             <option value="">KNOB value auto</option>
             {(knobProgress.knob_values || []).map(v => <option key={v.value} value={v.value}>{v.value} ({v.count})</option>)}
           </select>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-secondary)", fontSize: 10, fontFamily: "monospace" }}>
-            최근
-            <input type="number" min={1} max={20} value={sampleLots}
-              onChange={(e) => setSampleLots(Math.max(1, Math.min(20, Number(e.target.value) || 3)))}
-              style={{ width: 42, border: "none", outline: "none", background: "transparent", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace" }} />
-            lots
-          </label>
+          <span title="대시보드 톱니바퀴에서 admin이 기준 step과 lots 수를 조절합니다." style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "7px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-secondary)", fontSize: 10, fontFamily: "monospace", whiteSpace: "nowrap" }}>
+            기준 {referenceStepId || "AA200000"} · 최근 {sampleLots || 3} lots
+          </span>
           <select value={progressDays} onChange={(e) => setProgressDays(Number(e.target.value) || 30)} style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11 }}>
             {[7, 14, 30, 60].map((d) => <option key={d} value={d}>{d}d</option>)}
           </select>
@@ -332,7 +408,11 @@ function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter,
           </div>
         </div>
       </div>
-      {loading ? (
+      {!String(lotQuery || "").trim() ? (
+        <div style={{ padding: 18, borderRadius: 12, background: "rgba(255,255,255,0.65)", border: "1px dashed rgba(37,99,235,0.28)", fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.7, fontFamily: "monospace" }}>
+          product와 lot_id를 입력하면 FAB DB에서 해당 랏의 진행 chart를 만들고, {referenceStepId || "AA200000"} 통과 최근 {sampleLots || 3}개 랏 평균 속도와 비교합니다.
+        </div>
+      ) : loading ? (
         <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>progress loading...</div>
       ) : !ok ? (
         <div style={{ padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.65)", border: "1px dashed rgba(37,99,235,0.28)", fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.7 }}>
@@ -1701,6 +1781,12 @@ export default function My_Dashboard({ user }) {
       if (s?.dashboard_sections && typeof s.dashboard_sections === "object") {
         setDashboardSections({ ...DASHBOARD_SECTIONS_DEFAULT, ...s.dashboard_sections });
       }
+      if (s?.dashboard_fab_progress && typeof s.dashboard_fab_progress === "object") {
+        const fp = s.dashboard_fab_progress;
+        if (fp.reference_step_id) setReferenceStepId(String(fp.reference_step_id).toUpperCase());
+        if (typeof fp.sample_lots === "number") setSampleLots(Math.max(1, Math.min(50, fp.sample_lots)));
+        if (typeof fp.days === "number") setProgressDays(Math.max(1, Math.min(365, fp.days)));
+      }
     }).catch(() => {});
   }, []);
   useEffect(() => { load(); const ms = Math.max(1, refreshMin) * 60 * 1000; const iv = setInterval(load, ms); return () => clearInterval(iv); }, [refreshMin]);
@@ -1721,6 +1807,7 @@ export default function My_Dashboard({ user }) {
   const [lotQuery, setLotQuery] = useState("");
   const [progressDays, setProgressDays] = useState(30);
   const [sampleLots, setSampleLots] = useState(3);
+  const [referenceStepId, setReferenceStepId] = useState("AA200000");
   const [knobCol, setKnobCol] = useState("KNOB_5.0 PC");
   const [knobValue, setKnobValue] = useState("");
   const [fabProgress, setFabProgress] = useState(null);
@@ -1785,8 +1872,14 @@ export default function My_Dashboard({ user }) {
 
   useEffect(() => {
     if (!visibleSections.progress || !focusProduct) return;
+    if (!String(lotQuery || "").trim()) {
+      setFabProgress(null);
+      setFabSummary(null);
+      setFabLoading(false);
+      return;
+    }
     setFabLoading(true);
-    const q = new URLSearchParams({ product: focusProduct, days: String(progressDays || 30), limit: "24", sample_lots: String(sampleLots || 3) });
+    const q = new URLSearchParams({ product: focusProduct, days: String(progressDays || 30), limit: "24", sample_lots: String(sampleLots || 3), reference_step_id: referenceStepId || "AA200000" });
     if (targetStepId) q.set("target_step_id", targetStepId);
     if (lotQuery) q.set("lot_query", lotQuery);
     if (knobCol) q.set("knob_col", knobCol);
@@ -1798,7 +1891,7 @@ export default function My_Dashboard({ user }) {
       setFabProgress(progress);
       setFabSummary(summary);
     }).finally(() => setFabLoading(false));
-  }, [visibleSections.progress, focusProduct, targetStepId, lotQuery, progressDays, sampleLots, knobCol, knobValue]);
+  }, [visibleSections.progress, focusProduct, targetStepId, lotQuery, progressDays, sampleLots, referenceStepId, knobCol, knobValue]);
 
   useEffect(() => {
     if (!visibleSections.alerts) {
@@ -1858,7 +1951,10 @@ export default function My_Dashboard({ user }) {
         {/* v8.7.4: 전 탭 톱니 좌하단 통일 */}
         <PageGear title="대시보드 설정" canEdit={isAdmin} position="bottom-left">
           <DashboardSettings isAdmin={isAdmin} refreshMin={refreshMin} setRefreshMin={setRefreshMin}
-            sections={dashboardSections} setSections={setDashboardSections} />
+            sections={dashboardSections} setSections={setDashboardSections}
+            fabReferenceStep={referenceStepId} setFabReferenceStep={setReferenceStepId}
+            fabSampleLots={sampleLots} setFabSampleLots={setSampleLots}
+            fabDays={progressDays} setFabDays={setProgressDays} />
         </PageGear>
       </div>}
     />
@@ -1888,7 +1984,7 @@ export default function My_Dashboard({ user }) {
         progressDays={progressDays}
         setProgressDays={setProgressDays}
         sampleLots={sampleLots}
-        setSampleLots={setSampleLots}
+        referenceStepId={referenceStepId}
         knobCol={knobCol}
         setKnobCol={setKnobCol}
         knobValue={knobValue}
@@ -1995,10 +2091,11 @@ export default function My_Dashboard({ user }) {
 }
 
 /* ═══ v8.5.2 Dashboard Settings panel (PageGear 내부) ═══ */
-function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSections }) {
+function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSections, fabReferenceStep, setFabReferenceStep, fabSampleLots, setFabSampleLots, fabDays, setFabDays }) {
   const [val, setVal] = useState(refreshMin);
   const [bgVal, setBgVal] = useState(10);
   const [sectionDraft, setSectionDraft] = useState({ ...DASHBOARD_SECTIONS_DEFAULT, ...(sections || {}) });
+  const [fabDraft, setFabDraft] = useState({ reference_step_id: fabReferenceStep || "AA200000", sample_lots: fabSampleLots || 3, days: fabDays || 30 });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
   useEffect(() => {
@@ -2007,6 +2104,13 @@ function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSe
       if (typeof s.dashboard_bg_refresh_minutes === "number") setBgVal(s.dashboard_bg_refresh_minutes);
       if (s?.dashboard_sections && typeof s.dashboard_sections === "object") {
         setSectionDraft({ ...DASHBOARD_SECTIONS_DEFAULT, ...s.dashboard_sections });
+      }
+      if (s?.dashboard_fab_progress && typeof s.dashboard_fab_progress === "object") {
+        setFabDraft({
+          reference_step_id: String(s.dashboard_fab_progress.reference_step_id || "AA200000").toUpperCase(),
+          sample_lots: Number(s.dashboard_fab_progress.sample_lots || 3),
+          days: Number(s.dashboard_fab_progress.days || 30),
+        });
       }
     }).catch(() => {});
   }, []);
@@ -2021,11 +2125,19 @@ function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSe
         dashboard_refresh_minutes: Number(val) || 10,
         dashboard_bg_refresh_minutes: Number(bgVal) || 10,
         dashboard_sections: sectionDraft,
+        dashboard_fab_progress: {
+          reference_step_id: String(fabDraft.reference_step_id || "AA200000").trim().toUpperCase(),
+          sample_lots: Math.max(1, Math.min(50, Number(fabDraft.sample_lots) || 3)),
+          days: Math.max(1, Math.min(365, Number(fabDraft.days) || 30)),
+        },
       }),
     }).then(() => {
       setMsg("저장 완료");
       setRefreshMin(Number(val) || 10);
       setSections && setSections(sectionDraft);
+      setFabReferenceStep && setFabReferenceStep(String(fabDraft.reference_step_id || "AA200000").trim().toUpperCase());
+      setFabSampleLots && setFabSampleLots(Math.max(1, Math.min(50, Number(fabDraft.sample_lots) || 3)));
+      setFabDays && setFabDays(Math.max(1, Math.min(365, Number(fabDraft.days) || 30)));
     })
       .catch(e => setMsg(e.message))
       .finally(() => setSaving(false));
@@ -2058,6 +2170,26 @@ function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSe
         ))}
       </div>
       <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>관리자는 설정과 관계없이 모든 섹션을 볼 수 있습니다.</div>
+
+      <div style={{ fontSize: 12, fontWeight: 600, marginTop: 14, marginBottom: 6 }}>FAB Progress 검색 기준</div>
+      <div style={{ display: "grid", gap: 8 }}>
+        <label style={{ display: "grid", gap: 4, fontSize: 11, color: "var(--text-secondary)" }}>
+          기준 step_id
+          <input value={fabDraft.reference_step_id} onChange={e => setFabDraft(prev => ({ ...prev, reference_step_id: e.target.value.toUpperCase() }))} disabled={!isAdmin}
+            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
+        </label>
+        <label style={{ display: "grid", gap: 4, fontSize: 11, color: "var(--text-secondary)" }}>
+          평균 기준 최근 랏 수
+          <input type="number" min={1} max={50} value={fabDraft.sample_lots} onChange={e => setFabDraft(prev => ({ ...prev, sample_lots: e.target.value }))} disabled={!isAdmin}
+            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+        </label>
+        <label style={{ display: "grid", gap: 4, fontSize: 11, color: "var(--text-secondary)" }}>
+          FAB 검색 기간(days)
+          <input type="number" min={1} max={365} value={fabDraft.days} onChange={e => setFabDraft(prev => ({ ...prev, days: e.target.value }))} disabled={!isAdmin}
+            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+        </label>
+      </div>
+      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>검색한 lot과 비교할 기준선입니다. 예: AA200000 통과 최근 5개 랏 평균.</div>
 
       {isAdmin && (
         <button onClick={save} disabled={saving}

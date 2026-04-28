@@ -12,11 +12,13 @@ import json
 import logging
 import math
 import re
-from datetime import datetime, timezone
+import uuid
+from collections import Counter, deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 import polars as pl
 
@@ -24,12 +26,14 @@ from core.paths import PATHS
 from core.utils import _STR, load_json
 from core.auth import current_user, require_admin
 from core import llm_adapter
+from core import semiconductor_knowledge as semi_knowledge
 from routers.auth import read_users
 
 
 router = APIRouter(prefix="/api/llm", tags=["llm"])
 logger = logging.getLogger("flow.llm.router")
 FLOWI_FEEDBACK_FILE = PATHS.data_root / "flowi_feedback.jsonl"
+FLOWI_GOLDEN_FILE = PATHS.data_root / "flowi_golden_cases.jsonl"
 FLOWI_ACTIVITY_FILE = PATHS.data_root / "flowi_activity.jsonl"
 FLOWI_USER_DIR = PATHS.data_root / "flowi_users"
 FLOWI_READ_ONLY_POLICY = {
@@ -45,6 +49,19 @@ FLOWI_READ_ONLY_POLICY = {
 }
 FLOWI_PROFILE_START = "<!-- FLOWI_USER_NOTES_START -->"
 FLOWI_PROFILE_END = "<!-- FLOWI_USER_NOTES_END -->"
+FLOWI_FEEDBACK_TAXONOMY = [
+    {"key": "correct", "label": "정확함", "tone": "ok"},
+    {"key": "explanation_gap", "label": "데이터는 맞는데 설명 부족", "tone": "warn"},
+    {"key": "wrong_data_source", "label": "잘못된 DB/컬럼", "tone": "bad"},
+    {"key": "wrong_workflow", "label": "원하는 workflow가 아님", "tone": "bad"},
+    {"key": "missed_clarification", "label": "질문하고 진행했어야 함", "tone": "warn"},
+    {"key": "too_slow", "label": "너무 느림", "tone": "warn"},
+    {"key": "permission_risk", "label": "권한/보안 우려", "tone": "bad"},
+    {"key": "output_issue", "label": "표/차트/출력 문제", "tone": "warn"},
+    {"key": "hallucination", "label": "DB에 없는 값을 답변", "tone": "bad"},
+    {"key": "key_matching_error", "label": "lot/wafer/step 매칭 오류", "tone": "bad"},
+    {"key": "aggregation_error", "label": "avg/median/집계 오류", "tone": "bad"},
+]
 FLOWI_FEATURE_ENTRYPOINTS = [
     {
         "key": "filebrowser",
@@ -63,6 +80,12 @@ FLOWI_FEATURE_ENTRYPOINTS = [
         "title": "스플릿 테이블",
         "description": "Root lot/wafer 단위로 plan과 actual을 비교하고 변경 이력을 추적합니다.",
         "prompt": "스플릿 테이블에서 plan vs actual mismatch를 빨리 확인하는 흐름을 알려줘.",
+    },
+    {
+        "key": "diagnosis",
+        "title": "반도체 진단/RCA",
+        "description": "ET/Inline/VM item 의미를 item_master로 해석하고 Knowledge Card, causal graph, similar case로 RCA 후보를 만듭니다.",
+        "prompt": "GAA short Lg에서 DIBL과 SS가 증가했을 때 원인 후보와 확인 차트를 추천해줘.",
     },
     {
         "key": "tracker",
@@ -123,6 +146,7 @@ FLOWI_FEATURE_ALIASES = {
     "filebrowser": ["files", "file browser", "파일", "파일브라우저", "파일 탐색", "csv", "parquet", "db 조회", "데이터 조회"],
     "dashboard": ["dashboard", "대시보드", "차트", "trend", "추세", "그래프", "시각화", "scatter", "corr", "correlation", "상관", "피팅", "fitting"],
     "splittable": ["split", "split table", "splittable", "스플릿", "스플릿테이블", "plan", "actual", "mismatch", "매칭", "불일치"],
+    "diagnosis": ["diagnosis", "rca", "root cause", "root-cause", "진단", "원인", "원인 후보", "반도체 지식", "knowledge card", "causal", "인과", "DIBL", "SS", "RSD", "ION", "IOFF", "IGATE", "VTH", "CA_RS", "SRAM"],
     "tracker": ["tracker", "트래커", "issue", "이슈", "gantt", "간트", "lot 이슈"],
     "inform": ["inform", "인폼", "공유", "메일", "공지", "보고"],
     "meeting": ["meeting", "회의", "아젠다", "회의록", "action item", "액션아이템"],
@@ -135,9 +159,9 @@ FLOWI_FEATURE_ALIASES = {
 }
 FLOWI_DEFAULT_TABS = {
     "filebrowser", "dashboard", "splittable", "ettime", "waferlayout",
-    "inform", "meeting", "calendar",
+    "inform", "meeting", "calendar", "diagnosis",
 }
-FLOWI_NEW_DEFAULT_TABS = {"inform", "meeting", "calendar", "ettime", "waferlayout"}
+FLOWI_NEW_DEFAULT_TABS = {"inform", "meeting", "calendar", "ettime", "waferlayout", "diagnosis"}
 FLOWI_ADMIN_ONLY_FEATURES = {"tablemap", "admin"}
 FLOWI_RESTRICTED_FEATURES = {"devguide": "devguide_allowed"}
 FLOWI_UNIT_ACTIONS = {
@@ -158,6 +182,12 @@ FLOWI_UNIT_ACTIONS = {
         "action": "open_splittable",
         "needs": ["product", "root_lot_id", "wafer_id or all", "parameter prefix such as KNOB/MASK/FAB"],
         "outputs": ["plan vs actual matrix", "mismatch cells", "notes"],
+    },
+    "diagnosis": {
+        "intent": "semiconductor_diagnosis",
+        "action": "run_semiconductor_diagnosis",
+        "needs": ["symptom metrics", "unit/source/test_structure if ambiguous", "product/lot when available"],
+        "outputs": ["interpreted item meanings", "ranked RCA hypotheses", "causal paths", "similar cases", "chart specs", "missing data"],
     },
     "tracker": {
         "intent": "tracker_guidance",
@@ -484,6 +514,156 @@ def _append_user_event(username: str, title: str, fields: dict[str, Any]) -> Non
             }, ensure_ascii=False, default=str) + "\n")
     except Exception as e:
         logger.warning("flowi user md append failed: %s", e)
+
+
+def _taxonomy_keys() -> set[str]:
+    return {str(item.get("key") or "") for item in FLOWI_FEEDBACK_TAXONOMY}
+
+
+def _normalize_feedback_tags(tags: Any, rating: str = "") -> list[str]:
+    allowed = _taxonomy_keys()
+    raw = tags if isinstance(tags, list) else []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        key = str(item or "").strip()
+        if not key or key not in allowed or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    if not out and str(rating or "").lower() == "up":
+        out.append("correct")
+    if not out and str(rating or "").lower() == "down":
+        out.append("output_issue")
+    return out[:8]
+
+
+def _flowi_tool_summary(tool: Any) -> dict[str, Any]:
+    if not isinstance(tool, dict):
+        return {}
+    table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
+    chart = tool.get("chart") if isinstance(tool.get("chart"), dict) else {}
+    chart_result = tool.get("chart_result") if isinstance(tool.get("chart_result"), dict) else {}
+    profile = tool.get("source_profile") if isinstance(tool.get("source_profile"), dict) else {}
+    return {
+        "intent": str(tool.get("intent") or "")[:100],
+        "action": str(tool.get("action") or "")[:100],
+        "feature": str(tool.get("feature") or "")[:80],
+        "blocked": bool(tool.get("blocked")),
+        "missing": [str(x)[:80] for x in (tool.get("missing") or [])[:8]] if isinstance(tool.get("missing"), list) else [],
+        "table_kind": str(table.get("kind") or "")[:80],
+        "table_total": table.get("total") if isinstance(table.get("total"), int) else None,
+        "chart_status": str(chart.get("status") or "")[:80],
+        "chart_kind": str(chart.get("kind") or chart_result.get("kind") or "")[:80],
+        "source_type": str(profile.get("suggested_source_type") or "")[:40],
+        "source_shape": str(profile.get("metric_shape") or "")[:40],
+        "source_grain": str(profile.get("grain") or "")[:40],
+    }
+
+
+def _read_jsonl(path: Path, limit: int = 500) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: deque[str] = deque(maxlen=max(1, min(int(limit or 500), 10000)))
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    rows.append(line)
+    except Exception as e:
+        logger.warning("flowi jsonl read failed (%s): %s", path, e)
+        return []
+    out: list[dict[str, Any]] = []
+    for line in rows:
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _feedback_summary_from_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+    sorted_records = sorted(
+        records,
+        key=lambda r: str(r.get("timestamp") or ""),
+        reverse=True,
+    )
+    by_rating = Counter(str(r.get("rating") or "neutral") for r in sorted_records)
+    by_user = Counter(str(r.get("username") or "-") for r in sorted_records)
+    by_intent = Counter(str(r.get("intent") or "-") for r in sorted_records)
+    by_workflow = Counter(str(r.get("expected_workflow") or r.get("workflow") or "-") for r in sorted_records)
+    by_tag: Counter[str] = Counter()
+    needs_review: list[dict[str, Any]] = []
+    for rec in sorted_records:
+        tags = _normalize_feedback_tags(rec.get("tags") or rec.get("failure_types") or [], rec.get("rating") or "")
+        by_tag.update(tags)
+        if rec.get("needs_review") or rec.get("golden_candidate") or str(rec.get("rating") or "") != "up" or any(t != "correct" for t in tags):
+            needs_review.append(rec)
+    return {
+        "total": len(sorted_records),
+        "by_rating": dict(by_rating),
+        "by_user": dict(by_user.most_common(30)),
+        "by_intent": dict(by_intent.most_common(30)),
+        "by_workflow": dict(by_workflow.most_common(30)),
+        "by_tag": dict(by_tag.most_common(30)),
+        "recent": sorted_records,
+        "review_queue": needs_review,
+    }
+
+
+def _feedback_to_golden_case(
+    rec: dict[str, Any],
+    *,
+    created_by: str,
+    expected_intent: str = "",
+    expected_tool: str = "",
+    expected_answer: str = "",
+    notes: str = "",
+) -> dict[str, Any]:
+    tool_summary = rec.get("tool_summary") if isinstance(rec.get("tool_summary"), dict) else {}
+    tags = _normalize_feedback_tags(rec.get("tags") or [], rec.get("rating") or "")
+    forbidden = []
+    if "hallucination" in tags:
+        forbidden.append("DB/cache/tool 결과에 없는 값을 생성하지 않는다.")
+    if "missed_clarification" in tags:
+        forbidden.append("필수 slot이 불명확하면 실행 전에 선택지로 되묻는다.")
+    if "permission_risk" in tags:
+        forbidden.append("일반 user에게 DB/File 원본 수정 권한을 주지 않는다.")
+    if "aggregation_error" in tags:
+        forbidden.append("INLINE avg, ET median 기본 집계 원칙을 어기지 않는다.")
+    if "key_matching_error" in tags:
+        forbidden.append("root_lot_id, fab_lot_id, lot_wf, shot key를 명시적으로 확인한다.")
+    return {
+        "id": "golden_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "created_by": _safe_username(created_by),
+        "source_feedback_id": rec.get("id") or "",
+        "prompt": rec.get("prompt_excerpt") or "",
+        "expected_intent": (expected_intent or rec.get("intent") or tool_summary.get("intent") or "").strip()[:120],
+        "expected_tool": (expected_tool or rec.get("expected_workflow") or tool_summary.get("action") or "").strip()[:160],
+        "expected_answer": (expected_answer or rec.get("expected_answer") or rec.get("correct_route") or "").strip()[:4000],
+        "must_use_data_refs": (rec.get("data_refs") or "").strip()[:1000],
+        "tags": tags,
+        "forbidden": forbidden,
+        "notes": (notes or rec.get("note") or "").strip()[:2000],
+    }
 
 
 def _profile_context(username: str) -> str:
@@ -2618,6 +2798,407 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
     }
 
 
+def _is_rag_update_prompt(prompt: str) -> bool:
+    return bool(re.match(r"^\s*\[?\s*flow-i\s+rag\s+update\s*\]?", str(prompt or ""), flags=re.I))
+
+
+def _handle_flowi_rag_update(prompt: str, me: dict[str, Any]) -> dict[str, Any]:
+    username = me.get("username") or "user"
+    role = me.get("role") or "user"
+    try:
+        out = semi_knowledge.structure_rag_update_from_prompt(prompt, username=username, role=role)
+    except ValueError as e:
+        return {
+            "handled": True,
+            "intent": "semiconductor_rag_update",
+            "action": "append_custom_knowledge",
+            "blocked": True,
+            "answer": f"RAG Update 본문이 비어 있습니다. [flow-i RAG Update] 뒤에 구조화할 item/TEG/alias/판단 지식을 적어주세요. ({e})",
+        }
+    saved = out.get("saved") or {}
+    structured = out.get("structured") or {}
+    storage = out.get("storage") or {}
+    rows = [
+        {"field": "id", "value": saved.get("id") or ""},
+        {"field": "kind", "value": saved.get("kind") or ""},
+        {"field": "visibility", "value": saved.get("visibility") or ""},
+        {"field": "schema_type", "value": structured.get("schema_type") or ""},
+        {"field": "items", "value": ", ".join(structured.get("known_canonical_candidates") or [])},
+        {"field": "raw_item_tokens", "value": ", ".join(structured.get("raw_item_tokens") or [])},
+        {"field": "discriminators", "value": ", ".join(structured.get("discriminators") or [])},
+        {"field": "storage", "value": storage.get("custom_knowledge") or ""},
+    ]
+    answer = (
+        "Flow-i RAG Update를 append-only 지식으로 저장했습니다.\n"
+        f"- 저장 위치: {storage.get('custom_knowledge') or '-'}\n"
+        f"- visibility: {saved.get('visibility') or '-'}\n"
+        f"- 구조 타입: {structured.get('schema_type') or '-'}\n"
+        "기본 seed 코드는 프롬프트로 직접 수정하지 않고, 운영 지식은 flow-data에 누적합니다."
+    )
+    return {
+        "handled": True,
+        "intent": "semiconductor_rag_update",
+        "action": "append_custom_knowledge",
+        "answer": answer,
+        "rag_update": out,
+        "table": {"kind": "flowi_rag_update", "columns": ["field", "value"], "rows": rows},
+        "feature": "diagnosis",
+    }
+
+
+def _is_reformatter_proposal_prompt(prompt: str) -> bool:
+    low = str(prompt or "").lower()
+    return (
+        ("reformatter" in low or "alias" in low or "alias화" in low or "별칭" in low)
+        and any(t in low for t in ["item", "teg", "chain", "pc-", "cb-", "m1", "raw"])
+    )
+
+
+def _is_teg_layout_prompt(prompt: str) -> bool:
+    low = str(prompt or "").lower()
+    return ("teg" in low or "좌표" in low or "coordinate" in low) and ("yaml" in low or "layout" in low or "정리" in low or "넣어" in low)
+
+
+def _flowi_dataset_source_from_prompt(prompt: str, product: str, preferred_source: str = "") -> dict[str, Any]:
+    files = _flowi_file_tokens(prompt)
+    source: dict[str, Any] = {"product": product or ""}
+    if files:
+        source.update({"source_type": "base_file", "file": files[0]})
+    explicit_source = re.search(r"(?:source_type|source|소스)\s*[:=]\s*(FAB|INLINE|ET|VM|QTIME|EDS)\b", prompt or "", re.I)
+    if explicit_source:
+        source["source_type_filter"] = explicit_source.group(1).upper()
+        source["flowi_source_confirmed"] = True
+    if preferred_source:
+        source["source_type_filter"] = preferred_source.upper()
+        source["flowi_source_confirmed"] = True
+    return {k: v for k, v in source.items() if v}
+
+
+def _compact_flowi_dataset_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(profile, dict):
+        return {}
+    if not profile.get("ok"):
+        return {
+            "ok": False,
+            "reason": str(profile.get("reason") or "profile_failed")[:240],
+            "warnings": [str(x)[:240] for x in (profile.get("warnings") or [])[:4]],
+        }
+    return {
+        "ok": True,
+        "source": profile.get("source") or {},
+        "suggested_source_type": profile.get("suggested_source_type") or "",
+        "metric_shape": profile.get("metric_shape") or "",
+        "grain": profile.get("grain") or "",
+        "join_keys": [str(x) for x in (profile.get("join_keys") or [])[:10]],
+        "unique_items": [str(x) for x in (profile.get("unique_items") or [])[:12]],
+        "metric_columns": [str(x) for x in (profile.get("metric_columns") or [])[:12]],
+        "default_aggregation": profile.get("default_aggregation") or "",
+        "warnings": [str(x)[:240] for x in (profile.get("warnings") or [])[:4]],
+    }
+
+
+def _flowi_dataset_profile_for_source(source: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(source, dict) or not source:
+        return {}
+    # Explicit file/root sources are cheap and explainable.  Product-only
+    # discovery can scan many roots, so keep that out of the Home prompt path.
+    if not (source.get("file") or (source.get("root") and source.get("product"))):
+        return {}
+    try:
+        return _compact_flowi_dataset_profile(semi_knowledge.dataset_profile(source, limit=250))
+    except Exception as e:
+        return {"ok": False, "reason": str(e)[:240], "warnings": [str(e)[:240]]}
+
+
+def _flowi_profile_label(profile: dict[str, Any]) -> str:
+    if not profile:
+        return "-"
+    if not profile.get("ok"):
+        return "profile_failed: " + str(profile.get("reason") or "-")
+    bits = [
+        str(profile.get("suggested_source_type") or "AUTO"),
+        str(profile.get("metric_shape") or "?"),
+        str(profile.get("grain") or "?"),
+    ]
+    keys = profile.get("join_keys") or []
+    if keys:
+        bits.append("join=" + ",".join(str(x) for x in keys[:4]))
+    return " / ".join(bits)
+
+
+def _flowi_source_profile_needs_clarification(source: dict[str, Any], profile: dict[str, Any]) -> bool:
+    if not isinstance(source, dict) or not (source.get("file") or source.get("root")):
+        return False
+    if source.get("flowi_source_confirmed") or source.get("source_type_filter"):
+        return False
+    if not profile:
+        return False
+    if not profile.get("ok"):
+        return True
+    suggested = str(profile.get("suggested_source_type") or "").upper()
+    shape = str(profile.get("metric_shape") or "").lower()
+    grain = str(profile.get("grain") or "").lower()
+    join_keys = profile.get("join_keys") or []
+    if suggested in {"", "AUTO"}:
+        return True
+    if shape not in {"long", "wide"}:
+        return True
+    if grain in {"", "row"}:
+        return True
+    if not join_keys:
+        return True
+    severe = ("no clear item", "source type could not", "lot_wf cannot", "no readable")
+    return any(any(term in str(w).lower() for term in severe) for w in (profile.get("warnings") or []))
+
+
+def _flowi_source_type_choices(prompt: str, profile: dict[str, Any]) -> list[dict[str, Any]]:
+    suggested = str((profile or {}).get("suggested_source_type") or "").upper()
+    order = [suggested] if suggested in {"ET", "INLINE", "EDS", "VM", "QTIME", "FAB"} else []
+    for item in ("ET", "INLINE", "EDS", "VM", "QTIME", "FAB"):
+        if item not in order:
+            order.append(item)
+    meta = {
+        "ET": ("ET/WAT parametric", "lot_wf 기준 median. DIBL/SS/Vth/Ion/Ioff/Rsd 같은 전기 특성에 적합합니다.", "grain=lot_wf aggregation=median"),
+        "INLINE": ("INLINE metrology", "lot_wf 기준 avg, shot/position key가 있으면 shot 매칭을 우선합니다.", "grain=lot_wf aggregation=avg"),
+        "EDS": ("EDS wafer sort", "die/bin 좌표와 fail/yield-rate를 보존합니다.", "grain=die aggregation=yield_rate"),
+        "VM": ("VM/SRAM margin", "macro/condition/bin split을 유지하고 median 또는 fail-rate로 봅니다.", "grain=macro aggregation=median"),
+        "QTIME": ("QTIME route window", "from_step/to_step 시간 구간을 route segment별 median/p95로 봅니다.", "grain=route_segment aggregation=p95"),
+        "FAB": ("FAB route/progress", "step/time 최신 이력과 route sequence를 기준으로 봅니다.", "grain=lot_wf_step aggregation=latest"),
+    }
+    choices: list[dict[str, Any]] = []
+    for idx, st in enumerate(order[:3]):
+        title, desc, suffix = meta[st]
+        choices.append({
+            "id": f"source_{st.lower()}",
+            "label": str(idx + 1),
+            "title": title,
+            "recommended": idx == 0,
+            "description": desc,
+            "prompt": f"{prompt.strip()} / source_type={st} {suffix} 으로 진행",
+        })
+    return choices
+
+
+def _flowi_source_profile_clarification(
+    prompt: str,
+    product: str,
+    source: dict[str, Any],
+    profile: dict[str, Any],
+    max_rows: int,
+) -> dict[str, Any]:
+    rows = [
+        {"field": "source", "value": source.get("file") or (str(source.get("root") or "") + "/" + str(source.get("product") or product or "")).rstrip("/")},
+        {"field": "profile", "value": _flowi_profile_label(profile)},
+        {"field": "reason", "value": "source type/grain/join key가 확실하지 않아 실행 전 확인 필요"},
+    ]
+    if profile.get("ok"):
+        rows.extend([
+            {"field": "suggested_source_type", "value": profile.get("suggested_source_type") or "-"},
+            {"field": "metric_shape", "value": profile.get("metric_shape") or "-"},
+            {"field": "grain", "value": profile.get("grain") or "-"},
+            {"field": "join_keys", "value": ", ".join(profile.get("join_keys") or []) or "-"},
+            {"field": "unique_items", "value": ", ".join((profile.get("unique_items") or profile.get("metric_columns") or [])[:8]) or "-"},
+        ])
+    else:
+        rows.append({"field": "profile_error", "value": profile.get("reason") or "profile_failed"})
+    for i, warning in enumerate((profile.get("warnings") or [])[:3], start=1):
+        rows.append({"field": f"warning_{i}", "value": warning})
+    choices = _flowi_source_type_choices(prompt, profile)
+    answer = (
+        "파일/DB source의 schema가 애매해서 진단을 바로 실행하지 않았습니다.\n"
+        "아래 1/2/3 중 어떤 데이터 성격으로 볼지 선택해주세요. "
+        "선택 후에는 같은 파일을 whitelisted query로만 읽고, DB에 없는 값은 만들지 않습니다."
+    )
+    return {
+        "handled": True,
+        "intent": "semiconductor_source_clarification",
+        "action": "confirm_semiconductor_source_profile",
+        "answer": answer,
+        "data_source": source,
+        "source_profile": profile,
+        "clarification": {
+            "question": "이 source를 어떤 반도체 데이터 타입과 집계 기준으로 해석할까요?",
+            "choices": choices,
+        },
+        "table": {
+            "kind": "semiconductor_source_profile_review",
+            "title": "Flow-i source profile review",
+            "placement": "below",
+            "columns": [{"key": "field", "label": "FIELD"}, {"key": "value", "label": "VALUE"}],
+            "rows": rows[:max(1, max_rows)],
+            "total": len(rows),
+        },
+        "feature": "diagnosis",
+        "slots": {"product": product, "source": source},
+    }
+
+
+def _handle_flowi_admin_semiconductor_file_prep(prompt: str, product: str, me: dict[str, Any]) -> dict[str, Any]:
+    if (me.get("role") or "user") != "admin":
+        return {"handled": False}
+    if _is_teg_layout_prompt(prompt):
+        source = _flowi_dataset_source_from_prompt(prompt, product)
+        source_profile = _flowi_dataset_profile_for_source(source)
+        proposal = (
+            semi_knowledge.teg_layout_proposal_from_dataset(product, source=source, prompt=prompt)
+            if source.get("file") else
+            semi_knowledge.teg_layout_proposal_from_rows(product, rows=[], prompt=prompt)
+        )
+        rows = [
+            {"field": "target", "value": "product_config/products.yaml wafer_layout.teg_definitions"},
+            {"field": "product", "value": product or "(필요)"},
+            {"field": "source", "value": source.get("file") or "prompt/table rows"},
+            {"field": "profile", "value": _flowi_profile_label(source_profile)},
+            {"field": "detected_tegs", "value": str(len(proposal.get("teg_definitions") or []))},
+            {"field": "required_columns", "value": ", ".join(proposal.get("required_columns") or [])},
+        ]
+        answer = (
+            "TEG 좌표/YAML 반영은 admin 단위기능으로 처리해야 합니다.\n"
+            "현재 프롬프트에서 추출된 TEG가 부족하면 `label/name/id`, `dx_mm/x`, `dy_mm/y` 컬럼을 가진 표를 먼저 넣어주세요. "
+            "검토 후 `/api/semiconductor/teg/apply`가 product YAML에 반영합니다."
+        )
+        return {
+            "handled": True,
+            "intent": "semiconductor_teg_layout_proposal",
+            "action": "propose_teg_yaml_update",
+            "answer": answer,
+            "proposal": proposal,
+            "data_source": source,
+            "source_profile": source_profile,
+            "table": {"kind": "semiconductor_teg_yaml_proposal", "columns": ["field", "value"], "rows": rows},
+            "feature": "diagnosis",
+        }
+    if _is_reformatter_proposal_prompt(prompt):
+        source = _flowi_dataset_source_from_prompt(prompt, product)
+        source_profile = _flowi_dataset_profile_for_source(source)
+        proposal = (
+            semi_knowledge.reformatter_alias_proposal_from_dataset(product, source=source, prompt=prompt)
+            if source.get("file") else
+            semi_knowledge.reformatter_alias_proposal_from_prompt(prompt, product=product)
+        )
+        rows = [
+            {"field": "target", "value": "data/flow-data/reformatter/<product>.json"},
+            {"field": "product", "value": product or "(필요)"},
+            {"field": "source", "value": source.get("file") or "prompt text"},
+            {"field": "profile", "value": _flowi_profile_label(source_profile)},
+            {"field": "proposed_rules", "value": str(len(proposal.get("rules") or []))},
+            {"field": "discriminators", "value": ", ".join(proposal.get("discriminators") or [])},
+            {"field": "status", "value": "proposal_only; admin apply required"},
+        ]
+        answer = (
+            "real item alias/reformatter 후보를 만들었습니다.\n"
+            "PC-CB-M1처럼 비슷한 item은 14x14/13x13/12x12, pitch, cell height, coordinate 같은 discriminator를 유지한 뒤 admin apply 해야 합니다. "
+            "반영은 `/api/semiconductor/reformatter/apply`에서 기존 rule과 중복/validation을 확인하고 저장합니다."
+        )
+        return {
+            "handled": True,
+            "intent": "semiconductor_reformatter_proposal",
+            "action": "propose_reformatter_alias_rules",
+            "answer": answer,
+            "proposal": proposal,
+            "data_source": source,
+            "source_profile": source_profile,
+            "table": {"kind": "semiconductor_reformatter_proposal", "columns": ["field", "value"], "rows": rows},
+            "feature": "diagnosis",
+        }
+    return {"handled": False}
+
+
+def _is_semiconductor_diagnosis_prompt(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    phrase_terms = [
+        "rca", "root cause", "원인", "원인 후보", "진단", "mechanism", "causal", "knowledge card",
+        "dibl", "vth", "rolloff", "roll-off", "ioff", "rsd", "igate",
+        "gate leakage", "sram", "vmin", "ca_rs", "ca rc", "ca_cd", "short lg", "gaa",
+    ]
+    if any(t in low for t in phrase_terms):
+        return True
+    return bool(re.search(r"(?<![a-z0-9])(ss|ion)(?![a-z0-9])", low))
+
+
+def _handle_semiconductor_diagnosis_query(prompt: str, product: str, max_rows: int = 12) -> dict[str, Any]:
+    if _is_rag_update_prompt(prompt):
+        return {"handled": False}
+    if not _is_semiconductor_diagnosis_prompt(prompt):
+        return {"handled": False}
+    try:
+        source_filter = _flowi_dataset_source_from_prompt(prompt, product)
+        source_profile = _flowi_dataset_profile_for_source(source_filter)
+        if _flowi_source_profile_needs_clarification(source_filter, source_profile):
+            return _flowi_source_profile_clarification(prompt, product, source_filter, source_profile, max_rows)
+        report = semi_knowledge.run_diagnosis(
+            prompt,
+            product=product,
+            filters={"source": source_filter or "flowi", **source_filter, "max_rows": max_rows},
+            save=True,
+        )
+    except Exception as e:
+        return {
+            "handled": True,
+            "intent": "semiconductor_diagnosis",
+            "action": "run_semiconductor_diagnosis",
+            "answer": f"반도체 진단 실행 중 오류가 발생했습니다: {e}",
+            "blocked": False,
+        }
+    hyps = report.get("ranked_hypotheses") or []
+    rows = [
+        {
+            "rank": h.get("rank"),
+            "hypothesis": h.get("hypothesis"),
+            "confidence": h.get("confidence"),
+            "mechanism": h.get("electrical_mechanism"),
+            "card": h.get("knowledge_card_id"),
+        }
+        for h in hyps[:max_rows]
+    ]
+    item_rows = [
+        {
+            "raw": r.get("raw_item"),
+            "status": r.get("status"),
+            "canonical": r.get("canonical_item_id") or ", ".join(c.get("canonical_item_id", "") for c in r.get("candidates") or []),
+            "meaning": (r.get("item") or {}).get("meaning") or r.get("ambiguity") or "",
+        }
+        for r in (report.get("interpreted_items") or {}).get("resolved", [])
+    ]
+    top = hyps[:3]
+    source_line = ""
+    if source_filter.get("file"):
+        source_line = f"\n데이터 source: {source_filter.get('file')}"
+    elif source_filter.get("root"):
+        source_line = f"\n데이터 source: {source_filter.get('root')}/{source_filter.get('product') or product}"
+    if source_profile:
+        source_line += f" ({_flowi_profile_label(source_profile)})"
+    if top:
+        lines = [f"{h.get('rank')}. {h.get('hypothesis')} (confidence {h.get('confidence')})" for h in top]
+        answer = (
+            "반도체 진단/RCA 단위기능으로 처리했습니다.\n"
+            + "\n".join(lines)
+            + source_line
+            + "\n확정 원인이 아니라 item 의미, Knowledge Card, causal graph, 유사 case 기반 후보입니다."
+        )
+    else:
+        answer = "반도체 진단/RCA 단위기능으로 보았지만 인식된 지표가 부족합니다." + source_line + "\nitem명과 unit/test_structure를 더 알려주세요."
+    return {
+        "handled": True,
+        "intent": "semiconductor_diagnosis",
+        "action": "run_semiconductor_diagnosis",
+        "answer": answer,
+        "diagnosis": report,
+        "data_source": source_filter,
+        "source_profile": source_profile,
+        "table": {"kind": "semiconductor_rca_hypotheses", "columns": ["rank", "hypothesis", "confidence", "mechanism", "card"], "rows": rows},
+        "items_table": {"kind": "semiconductor_item_resolution", "columns": ["raw", "status", "canonical", "meaning"], "rows": item_rows},
+        "feature": "diagnosis",
+        "slots": {
+            "product": product,
+            "source": source_filter,
+            "items": report.get("feature_extractor", {}).get("items") or [],
+            "modules": report.get("feature_extractor", {}).get("modules") or [],
+        },
+    }
+
+
 def _handle_flowi_query(
     prompt: str,
     product: str = "",
@@ -2625,6 +3206,10 @@ def _handle_flowi_query(
     allowed_keys: set[str] | None = None,
 ) -> dict:
     product = _product_hint(prompt, product)
+    if allowed_keys is None or "diagnosis" in allowed_keys:
+        diag_out = _handle_semiconductor_diagnosis_query(prompt, product, max_rows)
+        if diag_out.get("handled"):
+            return diag_out
     if allowed_keys is None or "dashboard" in allowed_keys or "ml" in allowed_keys:
         chart_out = _handle_chart_request(prompt, product, max_rows)
         if chart_out.get("handled"):
@@ -2726,6 +3311,137 @@ def _event_fields(fields: dict[str, Any], *, source: str = "", client_run_id: st
     return out
 
 
+def _flowi_public_trace(
+    *,
+    prompt: str,
+    allowed_keys: set[str],
+    result: dict[str, Any],
+    agent_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """User-visible execution trace. This is not model chain-of-thought."""
+    tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
+    llm = result.get("llm") if isinstance(result.get("llm"), dict) else {}
+    context_messages = []
+    if isinstance(agent_context, dict):
+        raw_msgs = agent_context.get("messages")
+        context_messages = raw_msgs if isinstance(raw_msgs, list) else []
+    table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
+    chart = tool.get("chart_result") if isinstance(tool.get("chart_result"), dict) else (tool.get("chart") if isinstance(tool.get("chart"), dict) else {})
+    data_source = tool.get("data_source") if isinstance(tool.get("data_source"), dict) else {}
+    source_profile = tool.get("source_profile") if isinstance(tool.get("source_profile"), dict) else {}
+    choices = []
+    clarification = tool.get("clarification") if isinstance(tool.get("clarification"), dict) else {}
+    if isinstance(clarification.get("choices"), list):
+        choices = clarification.get("choices") or []
+
+    intent = str(tool.get("intent") or "general")
+    action = str(tool.get("action") or tool.get("feature") or "")
+    output_bits = []
+    if table:
+        output_bits.append(f"table {table.get('kind') or ''} rows={table.get('total', len(table.get('rows') or []))}")
+    if chart:
+        output_bits.append(f"chart {chart.get('kind') or chart.get('status') or 'planned'}")
+    if tool.get("rows"):
+        output_bits.append(f"rows={len(tool.get('rows') or [])}")
+    if tool.get("knobs"):
+        output_bits.append(f"knobs={len(tool.get('knobs') or [])}")
+    if data_source.get("file"):
+        output_bits.append(f"source={data_source.get('file')}")
+    elif data_source.get("root"):
+        output_bits.append(f"source={data_source.get('root')}/{data_source.get('product') or ''}".rstrip("/"))
+    if source_profile:
+        output_bits.append("profile=" + _flowi_profile_label(source_profile))
+    if choices:
+        output_bits.append(f"choices={len(choices)}")
+    if not output_bits:
+        output_bits.append("answer text")
+
+    guard_status = "blocked" if tool.get("blocked") else "done"
+    guard_detail = "차단됨" if tool.get("blocked") else "허용된 단위기능 범위에서 진행"
+    if tool.get("blocked") and tool.get("missing_permission"):
+        guard_detail = f"권한 없음: {tool.get('missing_permission')}"
+    elif tool.get("intent") == "admin_file_operation":
+        guard_detail = "admin 파일 작업은 FLOWI_FILE_OP 확인 구조로 제한"
+    elif tool.get("intent") == "blocked_write_request":
+        guard_detail = "일반 user의 DB/File 원본 수정 요청 차단"
+
+    llm_status = "done" if llm.get("used") else ("error" if llm.get("error") else "skipped")
+    if llm.get("blocked"):
+        llm_status = "blocked"
+    llm_detail = "LLM이 로컬 결과를 짧게 정리" if llm.get("used") else "로컬 단위기능 결과를 그대로 사용"
+    if llm.get("error"):
+        llm_detail = f"LLM 오류: {llm.get('error')}"
+    if llm.get("blocked"):
+        llm_detail = "권한/보호 정책으로 LLM 보정 없이 종료"
+
+    steps = [
+        {
+            "key": "receive",
+            "label": "요청 접수",
+            "status": "done",
+            "detail": f"prompt {len(prompt or '')} chars, context {len(context_messages)} messages",
+        },
+        {
+            "key": "auth",
+            "label": "사용자/권한 확인",
+            "status": "done",
+            "detail": f"허용 기능 {len(allowed_keys)}개",
+        },
+        {
+            "key": "route",
+            "label": "의도/단위기능 선택",
+            "status": "done",
+            "detail": f"intent={intent}" + (f", action={action}" if action else ""),
+        },
+        {
+            "key": "guardrail",
+            "label": "권한/쓰기 보호",
+            "status": guard_status,
+            "detail": guard_detail,
+        },
+        {
+            "key": "tool",
+            "label": "DB/cache/tool 실행",
+            "status": "skipped" if tool.get("blocked") else "done",
+            "detail": ", ".join(output_bits),
+        },
+        {
+            "key": "llm",
+            "label": "LLM 답변 정리",
+            "status": llm_status,
+            "detail": llm_detail,
+        },
+        {
+            "key": "render",
+            "label": "화면 출력 준비",
+            "status": "done",
+            "detail": ", ".join(output_bits),
+        },
+    ]
+    return {
+        "kind": "public_execution_trace",
+        "visible": True,
+        "note": "사고과정 원문이 아니라 사용자가 검증할 수 있는 실행 흐름 요약입니다.",
+        "steps": steps,
+    }
+
+
+def _attach_flowi_trace(
+    result: dict[str, Any],
+    *,
+    prompt: str,
+    allowed_keys: set[str],
+    agent_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result["trace"] = _flowi_public_trace(
+        prompt=prompt,
+        allowed_keys=allowed_keys,
+        result=result,
+        agent_context=agent_context,
+    )
+    return result
+
+
 def _run_flowi_chat(
     *,
     prompt: str,
@@ -2772,7 +3488,76 @@ def _run_flowi_chat(
                 tool=tool,
                 agent_context=agent_context,
             )
-        return result
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    if _is_rag_update_prompt(prompt):
+        if "diagnosis" not in allowed_keys:
+            tool = _flowi_permission_block("diagnosis", me)
+            answer = tool["answer"]
+        else:
+            tool = _handle_flowi_rag_update(prompt, me)
+            answer = tool.get("answer") or "Flow-i RAG Update를 처리했습니다."
+        _append_user_event(username, "semiconductor_rag_update", _event_fields(
+            {
+                "prompt": prompt,
+                "intent": tool.get("intent") or "",
+                "action": tool.get("action") or "",
+                "answer": answer,
+            },
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": bool(tool.get("blocked"))},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    if "diagnosis" in allowed_keys:
+        prep_tool = _handle_flowi_admin_semiconductor_file_prep(prompt, product, me)
+        if prep_tool.get("handled"):
+            answer = prep_tool.get("answer") or "반도체 지식/reformatter/YAML 준비 작업을 처리했습니다."
+            _append_user_event(username, "semiconductor_admin_file_prep", _event_fields(
+                {
+                    "prompt": prompt,
+                    "intent": prep_tool.get("intent") or "",
+                    "action": prep_tool.get("action") or "",
+                    "answer": answer,
+                },
+                source=source,
+                client_run_id=client_run_id,
+            ))
+            result = {
+                "ok": True,
+                "active": True,
+                "user": username,
+                "answer": answer,
+                "tool": prep_tool,
+                "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": False},
+                "allowed_features": sorted(allowed_keys),
+            }
+            if source:
+                result["agent_api"] = _agent_api_meta(
+                    source=source,
+                    client_run_id=client_run_id,
+                    username=username,
+                    tool=prep_tool,
+                    agent_context=agent_context,
+                )
+            return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
     if _flowi_write_target_detected(prompt):
         if (me.get("role") or "user") == "admin":
@@ -2806,7 +3591,7 @@ def _run_flowi_chat(
                     tool=tool,
                     agent_context=agent_context,
                 )
-            return result
+            return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
         blocked_msg = _flowi_write_block_message(prompt)
         _append_user_event(username, "blocked_write_request", _event_fields(
@@ -2838,7 +3623,7 @@ def _run_flowi_chat(
                 tool=tool,
                 agent_context=agent_context,
             )
-        return result
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
     max_rows = max(4, min(24, int(max_rows or 12)))
     tool = _handle_flowi_query(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys)
@@ -2930,7 +3715,7 @@ def _run_flowi_chat(
             tool=tool,
             agent_context=agent_context,
         )
-    return result
+    return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
 
 @router.get("/status")
@@ -3000,6 +3785,23 @@ class FlowiFeedbackReq(BaseModel):
     answer: str = ""
     intent: str = ""
     note: str = ""
+    tags: list[str] = Field(default_factory=list)
+    expected_workflow: str = ""
+    expected_answer: str = ""
+    correct_route: str = ""
+    data_refs: str = ""
+    golden_candidate: bool = False
+    tool: dict[str, Any] = Field(default_factory=dict)
+    llm: dict[str, Any] = Field(default_factory=dict)
+    elapsed_ms: int | None = None
+
+
+class FlowiGoldenPromoteReq(BaseModel):
+    feedback_id: str
+    expected_intent: str = ""
+    expected_tool: str = ""
+    expected_answer: str = ""
+    notes: str = ""
 
 
 class FlowiProfileReq(BaseModel):
@@ -3057,7 +3859,11 @@ def flowi_feedback(req: FlowiFeedbackReq, request: Request):
     rating = (req.rating or "").strip().lower()
     if rating not in {"up", "down", "neutral"}:
         raise HTTPException(400, "rating must be up/down/neutral")
+    tags = _normalize_feedback_tags(req.tags, rating)
+    tool_summary = _flowi_tool_summary(req.tool)
+    needs_review = rating != "up" or bool(req.golden_candidate) or any(tag != "correct" for tag in tags)
     rec = {
+        "id": "ff_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8],
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "username": me.get("username") or "",
         "rating": rating,
@@ -3065,6 +3871,22 @@ def flowi_feedback(req: FlowiFeedbackReq, request: Request):
         "prompt_excerpt": (req.prompt or "").strip()[:500],
         "answer_excerpt": (req.answer or "").strip()[:800],
         "note": (req.note or "").strip()[:1000],
+        "tags": tags,
+        "expected_workflow": (req.expected_workflow or "").strip()[:160],
+        "expected_answer": (req.expected_answer or "").strip()[:2000],
+        "correct_route": (req.correct_route or "").strip()[:2000],
+        "data_refs": (req.data_refs or "").strip()[:1000],
+        "golden_candidate": bool(req.golden_candidate),
+        "needs_review": needs_review,
+        "review_status": "golden_candidate" if req.golden_candidate else ("needs_review" if needs_review else "ok"),
+        "tool_summary": tool_summary,
+        "llm": {
+            "used": bool(req.llm.get("used")) if isinstance(req.llm, dict) else False,
+            "available": bool(req.llm.get("available")) if isinstance(req.llm, dict) else False,
+            "provider": str(req.llm.get("provider") or "")[:80] if isinstance(req.llm, dict) else "",
+            "model": str(req.llm.get("model") or "")[:120] if isinstance(req.llm, dict) else "",
+        },
+        "elapsed_ms": req.elapsed_ms if isinstance(req.elapsed_ms, int) and req.elapsed_ms >= 0 else None,
     }
     try:
         FLOWI_FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -3076,10 +3898,80 @@ def flowi_feedback(req: FlowiFeedbackReq, request: Request):
     _append_user_event(me.get("username") or "user", "feedback", {
         "rating": rating,
         "intent": rec["intent"],
+        "tags": ", ".join(tags),
+        "needs_review": needs_review,
+        "golden_candidate": rec["golden_candidate"],
         "note": rec["note"],
         "prompt": rec["prompt_excerpt"],
     })
-    return {"ok": True}
+    return {"ok": True, "id": rec["id"], "needs_review": needs_review}
+
+
+@router.get("/flowi/feedback/summary")
+def flowi_feedback_summary(
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(300, ge=1, le=1000),
+    _admin=Depends(require_admin),
+):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = _read_jsonl(FLOWI_FEEDBACK_FILE, limit=max(1000, limit * 5))
+    records = []
+    for rec in rows:
+        ts = _parse_ts(rec.get("timestamp"))
+        if ts and ts < cutoff:
+            continue
+        rec = dict(rec)
+        rec["tags"] = _normalize_feedback_tags(rec.get("tags") or rec.get("failure_types") or [], rec.get("rating") or "")
+        records.append(rec)
+    summary = _feedback_summary_from_records(records)
+    golden = _read_jsonl(FLOWI_GOLDEN_FILE, limit=200)
+    return {
+        "ok": True,
+        "days": days,
+        "taxonomy": FLOWI_FEEDBACK_TAXONOMY,
+        "total": summary["total"],
+        "by_rating": summary["by_rating"],
+        "by_tag": summary["by_tag"],
+        "by_user": summary["by_user"],
+        "by_intent": summary["by_intent"],
+        "by_workflow": summary["by_workflow"],
+        "recent": summary["recent"][:limit],
+        "review_queue": summary["review_queue"][:min(limit, 200)],
+        "golden_cases": sorted(golden, key=lambda r: str(r.get("timestamp") or ""), reverse=True)[:100],
+    }
+
+
+@router.post("/flowi/feedback/promote")
+def flowi_feedback_promote(req: FlowiGoldenPromoteReq, _admin=Depends(require_admin)):
+    feedback_id = (req.feedback_id or "").strip()
+    if not feedback_id:
+        raise HTTPException(400, "feedback_id is required")
+    records = _read_jsonl(FLOWI_FEEDBACK_FILE, limit=10000)
+    rec = next((r for r in reversed(records) if str(r.get("id") or "") == feedback_id), None)
+    if not rec:
+        raise HTTPException(404, "feedback not found")
+    case = _feedback_to_golden_case(
+        rec,
+        created_by=_admin.get("username") or "admin",
+        expected_intent=req.expected_intent,
+        expected_tool=req.expected_tool,
+        expected_answer=req.expected_answer,
+        notes=req.notes,
+    )
+    try:
+        FLOWI_GOLDEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with FLOWI_GOLDEN_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(case, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning("flowi golden case save failed: %s", e)
+        raise HTTPException(500, "golden case 저장 실패")
+    _append_user_event(_admin.get("username") or "admin", "golden_case_promote", {
+        "feedback_id": feedback_id,
+        "golden_id": case["id"],
+        "expected_intent": case["expected_intent"],
+        "expected_tool": case["expected_tool"],
+    })
+    return {"ok": True, "case": case}
 
 
 @router.post("/flowi/chat")

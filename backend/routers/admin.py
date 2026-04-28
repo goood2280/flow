@@ -66,6 +66,11 @@ DEFAULT_SETTINGS = {
     "dashboard_bg_refresh_minutes": 10,  # backend scheduled recompute (if any)
     "splittable_match_refresh_minutes": 30,  # FAB root/fab_lot cache rebuild interval
     "tracker_et_match_refresh_minutes": 30,  # ET root/fab_lot cache rebuild interval
+    "dashboard_fab_progress": {
+        "reference_step_id": "AA200000",
+        "sample_lots": 3,
+        "days": 30,
+    },
     # Dashboard section visibility for non-admin users. Admin always sees all.
     "dashboard_sections": {"charts": True, "progress": False, "alerts": False},
 }
@@ -184,7 +189,7 @@ def approve_user(req: ApproveReq, request: Request, _admin=Depends(require_admin
             u["status"] = "approved"
             if not u.get("tabs"):
                 # v8.8.3: 신규 승인 시 inform/meeting/calendar 기본 포함.
-                u["tabs"] = "filebrowser,dashboard,splittable,ettime,waferlayout,inform,meeting,calendar"
+                u["tabs"] = "filebrowser,dashboard,splittable,diagnosis,ettime,waferlayout,inform,meeting,calendar"
             write_users(users)
             send_notify(req.username, "Account Approved",
                         "Your account has been approved.", "info")
@@ -296,7 +301,7 @@ def bulk_create_users(req: BulkUsersReq, request: Request, _admin=Depends(requir
     existing = {str(u.get("username") or "").strip().lower() for u in users}
     created = []
     skipped = []
-    default_tabs = "filebrowser,dashboard,splittable,ettime,waferlayout,inform,meeting,calendar"
+    default_tabs = "filebrowser,dashboard,splittable,diagnosis,ettime,waferlayout,inform,meeting,calendar"
 
     for idx, parts in enumerate(body, start=1):
       vals = [str(x or "").strip() for x in parts]
@@ -371,7 +376,7 @@ def get_user_tabs(request: Request, username: str = Query(...)):
     v8.8.3: inform/meeting/calendar 하위호환 — 기존 유저의 tabs 에 누락됐으면 자동 추가.
     v9.0.x: ET 레포트/WF Layout 은 데이터 기본 화면이므로 기존 유저에게도 기본 노출."""
     # v8.8.3: 새로 추가된 탭 — 기존 유저는 기본 허용.
-    _NEW_DEFAULT_TABS = {"inform", "meeting", "calendar", "ettime", "waferlayout"}
+    _NEW_DEFAULT_TABS = {"inform", "meeting", "calendar", "ettime", "waferlayout", "diagnosis"}
     verify_owner(request, username)
     for u in read_users():
         if u["username"] == username:
@@ -380,7 +385,7 @@ def get_user_tabs(request: Request, username: str = Query(...)):
             raw = u.get("tabs", "")
             if not raw:
                 tabs_list = ["filebrowser", "dashboard", "splittable",
-                             "ettime", "waferlayout", "inform", "meeting", "calendar"]
+                             "diagnosis", "ettime", "waferlayout", "inform", "meeting", "calendar"]
             else:
                 tabs_list = [t.strip() for t in raw.split(",") if t.strip()]
                 # 기존 유저가 저장된 tabs 에 신규 탭을 갖고 있지 않으면 자동 추가 (하위호환).
@@ -576,6 +581,17 @@ def get_settings(request: Request):
         **DEFAULT_SETTINGS["dashboard_sections"],
         **{k: bool(v) for k, v in raw_sections.items() if k in DEFAULT_SETTINGS["dashboard_sections"]},
     }
+    raw_fab = (data or {}).get("dashboard_fab_progress") if isinstance(data, dict) else {}
+    if not isinstance(raw_fab, dict):
+        raw_fab = {}
+    merged["dashboard_fab_progress"] = {
+        **DEFAULT_SETTINGS["dashboard_fab_progress"],
+        **{
+            k: raw_fab[k]
+            for k in DEFAULT_SETTINGS["dashboard_fab_progress"]
+            if k in raw_fab
+        },
+    }
     adm = _load_admin_settings()
     devguide_users = adm.get("devguide_user") or []
     if not isinstance(devguide_users, list):
@@ -684,6 +700,7 @@ class SettingsSaveReq(BaseModel):
     splittable_match_refresh_minutes: Optional[int] = None
     tracker_et_match_refresh_minutes: Optional[int] = None
     dashboard_sections: Optional[Dict[str, bool]] = None
+    dashboard_fab_progress: Optional[Dict[str, Any]] = None
     data_roots: Optional[DataRootsReq] = None
     backup: Optional[BackupCfgReq] = None
     mail: Optional[MailCfgReq] = None
@@ -730,6 +747,24 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         data["dashboard_sections"] = {
             **DEFAULT_SETTINGS["dashboard_sections"],
             **{k: bool(v) for k, v in raw_sections.items() if k in DEFAULT_SETTINGS["dashboard_sections"]},
+        }
+    if "dashboard_fab_progress" in data:
+        raw_fab = data.get("dashboard_fab_progress") or {}
+        if not isinstance(raw_fab, dict):
+            raw_fab = {}
+        ref = str(raw_fab.get("reference_step_id") or DEFAULT_SETTINGS["dashboard_fab_progress"]["reference_step_id"]).strip().upper()[:80]
+        try:
+            lots = int(raw_fab.get("sample_lots", DEFAULT_SETTINGS["dashboard_fab_progress"]["sample_lots"]))
+        except Exception:
+            lots = DEFAULT_SETTINGS["dashboard_fab_progress"]["sample_lots"]
+        try:
+            days = int(raw_fab.get("days", DEFAULT_SETTINGS["dashboard_fab_progress"]["days"]))
+        except Exception:
+            days = DEFAULT_SETTINGS["dashboard_fab_progress"]["days"]
+        data["dashboard_fab_progress"] = {
+            "reference_step_id": ref or DEFAULT_SETTINGS["dashboard_fab_progress"]["reference_step_id"],
+            "sample_lots": max(1, min(50, lots)),
+            "days": max(1, min(365, days)),
         }
     current_settings = load_json(SETTINGS_FILE, {})
     if not isinstance(current_settings, dict):

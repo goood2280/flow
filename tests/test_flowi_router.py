@@ -12,7 +12,14 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from routers import llm as llm_router  # noqa: E402
-from routers.llm import _handle_flowi_query, _matched_feature_entrypoints, _run_flowi_chat  # noqa: E402
+from routers.llm import (  # noqa: E402
+    _feedback_summary_from_records,
+    _feedback_to_golden_case,
+    _handle_flowi_query,
+    _matched_feature_entrypoints,
+    _normalize_feedback_tags,
+    _run_flowi_chat,
+)
 
 
 def test_flowi_feature_router_matches_korean_splittable_alias():
@@ -207,6 +214,29 @@ def test_flowi_user_file_write_request_is_blocked(monkeypatch):
     assert out["tool"]["intent"] == "blocked_write_request"
     assert out["tool"]["blocked"] is True
     assert out["llm"]["blocked"] is True
+    assert out["trace"]["kind"] == "public_execution_trace"
+    assert any(step["key"] == "guardrail" and step["status"] == "blocked" for step in out["trace"]["steps"])
+    assert "사고과정 원문" in out["trace"]["note"]
+
+
+def test_flowi_chat_returns_public_execution_trace(monkeypatch):
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_profile_context", lambda _username: "")
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+
+    out = _run_flowi_chat(
+        prompt="A10001 1.0 STI 스플릿테이블에서 plan actual 보여줘",
+        product="",
+        max_rows=12,
+        me={"username": "trace_user", "role": "admin"},
+        agent_context={"messages": [{"role": "user", "text": "이전 질문"}]},
+    )
+
+    steps = out["trace"]["steps"]
+    assert out["ok"] is True
+    assert [step["key"] for step in steps[:4]] == ["receive", "auth", "route", "guardrail"]
+    assert any("context 1 messages" in step["detail"] for step in steps)
+    assert any(step["key"] == "tool" and "table" in step["detail"] for step in steps)
 
 
 def test_flowi_admin_file_delete_requires_structured_confirmation(tmp_path, monkeypatch):
@@ -357,3 +387,186 @@ def test_flowi_agent_chat_accepts_codex_source_and_returns_web_actions(monkeypat
     assert "외부 AI source: codex" in seen["prompt"]
     assert "codex-smoke-1" in seen["prompt"]
     assert "codex-test" in seen["prompt"]
+
+
+def test_flowi_semiconductor_diagnosis_includes_file_source_profile(monkeypatch):
+    monkeypatch.setattr(llm_router, "_flowi_file_tokens", lambda _prompt: ["ET_PRODX.parquet"])
+    monkeypatch.setattr(llm_router.semi_knowledge, "dataset_profile", lambda source, limit=250: {
+        "ok": True,
+        "source": source,
+        "suggested_source_type": "ET",
+        "metric_shape": "long",
+        "grain": "lot_wf",
+        "join_keys": ["lot_wf", "root_lot_id", "wafer_id"],
+        "unique_items": ["DIBL", "SS"],
+        "metric_columns": [],
+        "default_aggregation": "median by lot_wf unless exact shot/point match exists",
+        "warnings": [],
+    })
+    monkeypatch.setattr(llm_router.semi_knowledge, "run_diagnosis", lambda prompt, product="", filters=None, save=True, **_kwargs: {
+        "ranked_hypotheses": [
+            {
+                "rank": 1,
+                "hypothesis": "GAA electrostatic control degradation",
+                "confidence": 0.72,
+                "electrical_mechanism": "DIBL/SS increase",
+                "knowledge_card_id": "KC_DIBL_SS_GAA_ELECTROSTATICS",
+            }
+        ],
+        "interpreted_items": {
+            "resolved": [
+                {"raw_item": "DIBL", "status": "resolved", "canonical_item_id": "DIBL", "item": {"meaning": "Drain-induced barrier lowering"}},
+                {"raw_item": "SS", "status": "resolved", "canonical_item_id": "SS", "item": {"meaning": "Subthreshold swing"}},
+            ]
+        },
+        "feature_extractor": {"items": ["DIBL", "SS"], "modules": ["GAA_CHANNEL_RELEASE"]},
+    })
+
+    out = llm_router._handle_semiconductor_diagnosis_query(
+        "ET_PRODX.parquet 기준으로 DIBL SS 증가 원인 후보 보여줘",
+        "PRODX",
+        12,
+    )
+
+    assert out["handled"] is True
+    assert out["data_source"]["file"] == "ET_PRODX.parquet"
+    assert out["source_profile"]["suggested_source_type"] == "ET"
+    assert out["source_profile"]["metric_shape"] == "long"
+    assert "ET_PRODX.parquet" in out["answer"]
+    assert "ET / long / lot_wf" in out["answer"]
+    trace = llm_router._flowi_public_trace(
+        prompt="ET_PRODX.parquet 기준으로 DIBL SS 증가 원인 후보 보여줘",
+        allowed_keys={"diagnosis"},
+        result={"tool": out, "llm": {"available": False, "used": False}},
+    )
+    tool_step = next(step for step in trace["steps"] if step["key"] == "tool")
+    assert "source=ET_PRODX.parquet" in tool_step["detail"]
+    assert "profile=ET / long / lot_wf" in tool_step["detail"]
+
+
+def test_flowi_semiconductor_diagnosis_asks_when_file_profile_is_ambiguous(monkeypatch):
+    monkeypatch.setattr(llm_router, "_flowi_file_tokens", lambda _prompt: ["MIXED_PRODX.parquet"])
+    monkeypatch.setattr(llm_router.semi_knowledge, "dataset_profile", lambda source, limit=250: {
+        "ok": True,
+        "source": source,
+        "suggested_source_type": "AUTO",
+        "metric_shape": "wide",
+        "grain": "row",
+        "join_keys": [],
+        "unique_items": [],
+        "metric_columns": ["COL_A", "COL_B"],
+        "default_aggregation": "Review grain and item meaning before aggregation.",
+        "warnings": ["Source type could not be inferred; choose ET/INLINE/EDS/VM/QTIME in the prompt or source profile."],
+    })
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("run_diagnosis should wait for source clarification")
+
+    monkeypatch.setattr(llm_router.semi_knowledge, "run_diagnosis", fail_run)
+
+    out = llm_router._handle_semiconductor_diagnosis_query(
+        "MIXED_PRODX.parquet 기준으로 DIBL SS 증가 원인 후보 보여줘",
+        "PRODX",
+        12,
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "semiconductor_source_clarification"
+    assert out["action"] == "confirm_semiconductor_source_profile"
+    assert out["data_source"]["file"] == "MIXED_PRODX.parquet"
+    assert out["source_profile"]["suggested_source_type"] == "AUTO"
+    choices = out["clarification"]["choices"]
+    assert choices[0]["label"] == "1"
+    assert choices[0]["recommended"] is True
+    assert "source_type=ET" in choices[0]["prompt"]
+    assert out["table"]["kind"] == "semiconductor_source_profile_review"
+
+
+def test_flowi_semiconductor_diagnosis_runs_after_source_type_choice(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(llm_router, "_flowi_file_tokens", lambda _prompt: ["MIXED_PRODX.parquet"])
+    monkeypatch.setattr(llm_router.semi_knowledge, "dataset_profile", lambda source, limit=250: {
+        "ok": True,
+        "source": source,
+        "suggested_source_type": "AUTO",
+        "metric_shape": "wide",
+        "grain": "row",
+        "join_keys": [],
+        "warnings": ["Source type could not be inferred; choose ET/INLINE/EDS/VM/QTIME in the prompt or source profile."],
+    })
+
+    def fake_run(prompt, product="", filters=None, save=True, **_kwargs):
+        seen["filters"] = filters or {}
+        return {
+            "ranked_hypotheses": [],
+            "interpreted_items": {"resolved": []},
+            "feature_extractor": {"items": ["DIBL"], "modules": []},
+        }
+
+    monkeypatch.setattr(llm_router.semi_knowledge, "run_diagnosis", fake_run)
+
+    out = llm_router._handle_semiconductor_diagnosis_query(
+        "MIXED_PRODX.parquet 기준으로 DIBL 증가 원인 후보 보여줘 / source_type=ET grain=lot_wf aggregation=median 으로 진행",
+        "PRODX",
+        12,
+    )
+
+    assert out["intent"] == "semiconductor_diagnosis"
+    assert out["data_source"]["flowi_source_confirmed"] is True
+    assert out["data_source"]["source_type_filter"] == "ET"
+    assert seen["filters"]["source_type_filter"] == "ET"
+
+
+def test_flowi_feedback_tags_normalize_and_default_by_rating():
+    assert _normalize_feedback_tags([], "up") == ["correct"]
+    assert _normalize_feedback_tags([], "down") == ["output_issue"]
+    assert _normalize_feedback_tags(["wrong_data_source", "bad_key", "wrong_data_source"], "down") == ["wrong_data_source"]
+
+
+def test_flowi_feedback_summary_builds_review_queue():
+    records = [
+        {
+            "id": "ff1",
+            "timestamp": "2026-04-29T00:00:00+00:00",
+            "username": "u1",
+            "rating": "up",
+            "intent": "inform_create",
+            "tags": ["correct"],
+        },
+        {
+            "id": "ff2",
+            "timestamp": "2026-04-29T00:01:00+00:00",
+            "username": "u2",
+            "rating": "down",
+            "intent": "dashboard_scatter_plan",
+            "tags": ["wrong_data_source", "missed_clarification"],
+            "needs_review": True,
+        },
+    ]
+
+    summary = _feedback_summary_from_records(records)
+
+    assert summary["total"] == 2
+    assert summary["by_rating"]["down"] == 1
+    assert summary["by_tag"]["wrong_data_source"] == 1
+    assert [r["id"] for r in summary["review_queue"]] == ["ff2"]
+
+
+def test_flowi_feedback_promotes_to_golden_case_with_forbidden_rules():
+    rec = {
+        "id": "ff2",
+        "prompt_excerpt": "INLINE CD와 ET LKG 그려줘",
+        "rating": "down",
+        "intent": "dashboard_scatter_plan",
+        "tags": ["hallucination", "aggregation_error"],
+        "correct_route": "INLINE은 avg, ET는 median으로 lot_wf join",
+        "tool_summary": {"action": "build_metric_scatter"},
+    }
+
+    case = _feedback_to_golden_case(rec, created_by="admin")
+
+    assert case["source_feedback_id"] == "ff2"
+    assert case["expected_intent"] == "dashboard_scatter_plan"
+    assert case["expected_tool"] == "build_metric_scatter"
+    assert "INLINE은 avg" in case["expected_answer"]
+    assert any("없는 값" in rule or "생성하지" in rule for rule in case["forbidden"])

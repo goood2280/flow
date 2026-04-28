@@ -5,6 +5,7 @@ export const PAGE_MAP = {
   filebrowser: lazy(() => import("../pages/My_FileBrowser")),
   splittable: lazy(() => import("../pages/My_SplitTable")),
   dashboard: lazy(() => import("../pages/My_Dashboard")),
+  diagnosis: lazy(() => import("../pages/My_Diagnosis")),
   ettime: lazy(() => import("../pages/My_ETTime")),
   waferlayout: lazy(() => import("../pages/My_WaferLayout")),
   tracker: lazy(() => import("../pages/My_Tracker")),

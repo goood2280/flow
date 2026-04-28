@@ -10,9 +10,10 @@
 | 2 | [PRODUCT_PHILOSOPHY.md](PRODUCT_PHILOSOPHY.md) | 앱이 어떤 문제를 풀어야 하는지 정렬할 때 |
 | 3 | [FEATURE_GOALS.md](FEATURE_GOALS.md) | 화면별 목표와 기능 추가 기준을 볼 때 |
 | 4 | [ARCHITECTURE.md](ARCHITECTURE.md) | backend/frontend/data 구조와 책임 경계를 볼 때 |
-| 5 | [WEB_CONCURRENCY_BUNDLE_GUIDE.md](WEB_CONCURRENCY_BUNDLE_GUIDE.md) | 동시성/번들 분리 후 웹 기능 사용법을 설명할 때 |
-| 6 | [DEVELOPMENT.md](DEVELOPMENT.md) | 코드를 수정하기 전 범위, 검증, 문서 반영 기준을 볼 때 |
-| 7 | [SOFT_LANDING_INTERNAL.md](SOFT_LANDING_INTERNAL.md) | 사내 서버 반입, 포트, data_root 보존, preflight를 볼 때 |
+| 5 | [SEMICONDUCTOR_DIAGNOSIS_MVP.md](SEMICONDUCTOR_DIAGNOSIS_MVP.md) | 진단/RCA 지식, RAG Update, reformatter/TEG 반영 구조를 볼 때 |
+| 6 | [WEB_CONCURRENCY_BUNDLE_GUIDE.md](WEB_CONCURRENCY_BUNDLE_GUIDE.md) | 동시성/번들 분리 후 웹 기능 사용법을 설명할 때 |
+| 7 | [DEVELOPMENT.md](DEVELOPMENT.md) | 코드를 수정하기 전 범위, 검증, 문서 반영 기준을 볼 때 |
+| 8 | [SOFT_LANDING_INTERNAL.md](SOFT_LANDING_INTERNAL.md) | 사내 서버 반입, 포트, data_root 보존, preflight를 볼 때 |
 
 소유자에게 구조와 요청 방법을 설명해야 하면 [OWNER_ARCHITECTURE_UPDATE_REPORT.md](OWNER_ARCHITECTURE_UPDATE_REPORT.md)를 사용한다.
 

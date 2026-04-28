@@ -16,6 +16,7 @@ Fab data analytics + plan vs actual tracking platform.
 | 지금 바로 실행 | 이 README의 [Quick Start](#quick-start) |
 | 문서 전체 입구 | [docs/README.md](docs/README.md) |
 | 구조 파악 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 반도체 진단/RCA 지식 구조 | [docs/SEMICONDUCTOR_DIAGNOSIS_MVP.md](docs/SEMICONDUCTOR_DIAGNOSIS_MVP.md) |
 | 동시성/번들 분리와 웹 기능 사용 | [docs/WEB_CONCURRENCY_BUNDLE_GUIDE.md](docs/WEB_CONCURRENCY_BUNDLE_GUIDE.md) |
 | 수정 반영 기준 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | 화면별 목표 | [docs/FEATURE_GOALS.md](docs/FEATURE_GOALS.md) |
@@ -29,6 +30,7 @@ Fab data analytics + plan vs actual tracking platform.
 | 파일탐색기 | DB root 파일 탐색, parquet/CSV preview, SQL filter, S3 동기화 상태, 기본 샘플 로드 |
 | 대시보드 | chart, fab progress, alert watch, snapshot, admin section visibility, lazy filter/join projection |
 | 스플릿 테이블 | root/fab lot cache, wafer 축 plan vs actual, diff, notes, related issues, XLSX export |
+| 진단/RCA | item semantics, Knowledge Card, causal graph, Case DB, Eval, Flow-i RAG Update, reformatter/TEG proposal |
 | 트래커 | 이슈, Gantt, category, group visibility, 댓글/대댓글, 이슈 단위 메일/ET watch |
 | ET 레포트 | product/lot 검색, measurement package, `step_seq(XXpt)`, reformatter index, PPTX |
 | 웨이퍼 레이아웃 | wafer/shot/chip/TEG layout, selected TEG, chip-shot table, CSV export |
