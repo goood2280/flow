@@ -68,15 +68,17 @@ export default function My_FileBrowser({user}){
     const latestItemAt=info?.latest_item_at||null;
     const latestItemStr=latestItemAt?latestItemAt.slice(5,16).replace("T"," "):"-";
     const latestItemAge=Number.isFinite(Number(info?.latest_item_age_hours))?Number(info.latest_item_age_hours):null;
-    const latestItemStale=!!info?.latest_item_stale_6h;
+    const latestItemStaleRaw=!!info?.latest_item_stale_6h;
     const latestItemPath=info?.latest_item_relpath||"";
     const ageH=last?(Date.now()-new Date(last).getTime())/3600000:Infinity;
     const nextStr=info&&info.next_due?info.next_due.slice(0,16).replace("T"," "):(info&&info.interval_min>0?"계산중":"수동 실행만");
-    const directionLabel=direction==="upload"?"업로드":"다운로드";
-    const directionArrow=direction==="upload"?"↑":"↓";
+    const directionLabel=direction==="upload"?"업로드":(direction==="mixed"?"혼합":"다운로드");
+    const directionArrow=direction==="upload"?"↑":(direction==="mixed"?"↕":"↓");
+    const st=info?.last_status||"never";
+    const syncFresh=st==="ok"&&isFinite(ageH)&&ageH<=6;
+    const latestItemStale=latestItemStaleRaw&&!syncFresh;
     if(!info)return{color:"#ef4444",tip:"S3 동기화 미설정 — File Browser 우하단 ⚙️(admin) 에서 설정하세요",directionLabel:"미설정",directionArrow:"·",freshLabel:"-",latestItemStale:false};
-    if(info.is_running)return{color:"#3b82f6",tip:(inh?`상위 경로 '${fromLabel}' 에서 상속\n`:"")+`S3 ${directionLabel} 실행 중…\n이전 실행: ${lastStr}\n최신 항목: ${latestItemStr}`,directionLabel,directionArrow,freshLabel:latestItemStr,latestItemStale};
-    const st=info.last_status||"never";
+    if(info.is_running)return{color:"#3b82f6",tip:(inh?`상위 경로 '${fromLabel}' 에서 상속\n`:"")+`S3 ${directionLabel} 실행 중…\n이전 실행: ${lastStr}\n최신 항목: ${latestItemStr}`,directionLabel,directionArrow,freshLabel:latestItemStr,latestItemStale:false};
     let color,line;
     if(st==="error"){color="#ef4444";line="실패 (exit="+(info.last_exit_code??"?")+")";}
     else if(st==="ok"&&latestItemStale){color="#ef4444";line="최신 항목 지연 ("+(latestItemAge!=null?latestItemAge.toFixed(1)+"시간":"6시간+")+")";}

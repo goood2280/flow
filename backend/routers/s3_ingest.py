@@ -183,6 +183,108 @@ def _latest_local_item_info(target: str) -> Dict[str, Any]:
         return info
 
 
+def _parse_iso_ts(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "")).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _fmt_iso_epoch(value: float) -> str | None:
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromtimestamp(value).isoformat(timespec="seconds")
+    except Exception:
+        return None
+
+
+def _aggregate_child_statuses(by_target: Dict[str, Dict[str, Any]]) -> None:
+    """Create synthetic parent lights when only child DB targets are configured.
+
+    File Browser renders both a DB root row and child product rows. Operators may
+    configure S3 sync on each child product instead of the parent folder; in that
+    case the parent should reflect the child set instead of showing "unconfigured".
+    """
+    grouped: Dict[str, list[Dict[str, Any]]] = {}
+    for target, info in list(by_target.items()):
+        parts = [p for p in str(target or "").split("/") if p]
+        for i in range(1, len(parts)):
+            parent = "/".join(parts[:i])
+            if parent and parent not in by_target:
+                grouped.setdefault(parent, []).append(info)
+    for parent, children in grouped.items():
+        if not children:
+            continue
+        statuses = [str(c.get("last_status") or "never") for c in children]
+        if any(c.get("is_running") for c in children):
+            last_status = "running"
+        elif any(s == "error" for s in statuses):
+            last_status = "error"
+        elif any(s == "never" for s in statuses):
+            last_status = "never"
+        elif all(s == "ok" for s in statuses):
+            last_status = "ok"
+        else:
+            last_status = statuses[0] if statuses else "never"
+
+        last_times = [
+            _parse_iso_ts(c.get("last_end") or c.get("last_start"))
+            for c in children
+            if c.get("last_end") or c.get("last_start")
+        ]
+        latest_item_times = [
+            _parse_iso_ts(c.get("latest_item_at"))
+            for c in children
+            if c.get("latest_item_at")
+        ]
+        next_times = [
+            _parse_iso_ts(c.get("next_due"))
+            for c in children
+            if c.get("next_due")
+        ]
+        directions = sorted({str(c.get("direction") or "download").lower() for c in children})
+        intervals = []
+        for child in children:
+            try:
+                interval = int(child.get("interval_min") or 0)
+            except Exception:
+                interval = 0
+            if interval > 0:
+                intervals.append(interval)
+        aggregate = {
+            "kind": "aggregate",
+            "direction": directions[0] if len(directions) == 1 else "mixed",
+            "enabled": all(bool(c.get("enabled", True)) for c in children),
+            "interval_min": min(intervals) if intervals else 0,
+            "last_status": "ok" if last_status == "running" else last_status,
+            "last_end": _fmt_iso_epoch(min(last_times)) if last_times else None,
+            "last_start": None,
+            "last_exit_code": None,
+            "last_duration_sec": None,
+            "is_running": any(c.get("is_running") for c in children),
+            "latest_item_at": _fmt_iso_epoch(max(latest_item_times)) if latest_item_times else None,
+            "latest_item_relpath": f"{len(children)} child targets",
+            "latest_item_age_hours": None,
+            "latest_item_stale_6h": any(bool(c.get("latest_item_stale_6h")) for c in children),
+            "latest_item_scan_error": None,
+            "next_due": _fmt_iso_epoch(min(next_times)) if next_times else None,
+            "aggregate": True,
+            "child_targets": len(children),
+        }
+        if aggregate["is_running"]:
+            aggregate["freshness_state"] = "running"
+        elif aggregate["last_status"] == "ok":
+            aggregate["freshness_state"] = "ok"
+        elif aggregate["last_status"] == "never":
+            aggregate["freshness_state"] = "never"
+        else:
+            aggregate["freshness_state"] = "error"
+        by_target[parent] = aggregate
+
+
 def _validate_s3_url(url: str):
     if not url or not S3_URL_RE.match(url):
         raise HTTPException(400, f"invalid s3 url: {url!r}")
@@ -757,8 +859,13 @@ def status_by_target():
                 info["next_due"] = None
         else:
             info["next_due"] = None
+        last_ts = _parse_iso_ts(last_end)
+        sync_recent_6h = bool(last_ts and (time.time() - last_ts) <= 6 * 3600)
         stale_item = bool(info.get("latest_item_stale_6h"))
-        if stale_item and not info["is_running"] and info["last_status"] == "ok":
+        # Downloaded files can legitimately keep the source object's older
+        # mtime.  A successful recent sync is fresh even when the newest local
+        # file timestamp itself is older than six hours.
+        if stale_item and not sync_recent_6h and not info["is_running"] and info["last_status"] == "ok":
             info["freshness_state"] = "stale_item"
         elif info["is_running"]:
             info["freshness_state"] = "running"
@@ -778,6 +885,7 @@ def status_by_target():
                 by_target[tgt] = info
         else:
             by_target[tgt] = info
+    _aggregate_child_statuses(by_target)
     return {"by_target": by_target}
 
 
