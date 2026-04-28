@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
+import os
 import random
 import threading
 import time
@@ -44,6 +45,12 @@ USER_ACTIVITY_TTL_SEC = 2 * 60          # 직전 2분 이내 활동이면 "activ
 RESOURCE_LOG: Path = PATHS.resource_log
 SYSMON_STATE_FILE: Path = PATHS.log_dir / "sysmon_state.json"
 RESOURCE_LOG.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _load_generation_enabled() -> bool:
+    """Synthetic load is opt-in on small shared Flow hosts."""
+    raw = os.environ.get("FLOW_SYSMON_ENABLE_LOAD", "").strip().lower()
+    return raw in {"1", "true", "yes", "on", "enabled"}
 
 # ── 내부 상태 ────────────────────────────────────────────────────────
 _lock = threading.Lock()
@@ -262,6 +269,7 @@ def get_state() -> dict:
         "psutil_available": _psutil is not None,
         "threshold_pct": THRESHOLD_PCT,
         "window_hours": HISTORY_WINDOW_HOURS,
+        "load_generation_enabled": _load_generation_enabled(),
     }
 
 
@@ -328,6 +336,8 @@ def _load_worker(duration_sec: int) -> None:
 def _maybe_start_load() -> None:
     """유휴 조건 만족 시 부하 스레드 시작. 이미 돌고 있거나 최근 사용자 활동이 있으면 skip."""
     global _load_thread
+    if not _load_generation_enabled():
+        return
     if _load_thread and _load_thread.is_alive():
         return
     if _has_recent_user_activity():

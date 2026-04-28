@@ -162,6 +162,66 @@ def _category_source(category: str, default: str = "auto") -> str:
     return src if src in ("fab", "et", "both", "auto") else "auto"
 
 
+def _tracker_mltable_lot_candidates(product: str, prefix: str = "", limit: int = 200) -> list[dict]:
+    """Use SplitTable's warmed ML_TABLE/FAB match cache for Tracker dropdowns."""
+    prod = str(product or "").strip()
+    if not prod:
+        return []
+    try:
+        limit = max(1, min(500, int(limit or 200)))
+    except Exception:
+        limit = 200
+    try:
+        from routers import splittable
+    except Exception:
+        return []
+    ml_product = prod if prod.upper().startswith("ML_TABLE_") else f"ML_TABLE_{prod}"
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_rows(values, typ: str, source_root: str) -> None:
+        for value in values or []:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            key = (typ, text.upper())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"value": text, "type": typ, "source_root": source_root or "ML_TABLE"})
+            if len(out) >= limit:
+                return
+
+    root_limit = max(1, limit // 2)
+    try:
+        roots = splittable.get_lot_candidates(
+            product=ml_product,
+            col="root_lot_id",
+            prefix=prefix,
+            limit=root_limit,
+            source="auto",
+            root_lot_id="",
+        )
+        add_rows(roots.get("candidates") or [], "root_lot_id", roots.get("fab_source") or roots.get("source") or "ML_TABLE")
+    except Exception:
+        pass
+
+    remaining = max(1, limit - len(out))
+    try:
+        fabs = splittable.get_lot_candidates(
+            product=ml_product,
+            col="fab_lot_id",
+            prefix=prefix,
+            limit=remaining,
+            source="auto",
+            root_lot_id="",
+        )
+        add_rows(fabs.get("candidates") or [], "fab_lot_id", fabs.get("fab_source") or fabs.get("source") or "ML_TABLE")
+    except Exception:
+        pass
+    return out[:limit]
+
+
 def _save(issues):
     save_json(ISSUES_FILE, issues, indent=2)
 
@@ -552,6 +612,18 @@ def tracker_lot_candidates(request: Request,
             "source_root": source_root,
             "requires_product": True,
             "candidates": [],
+        }
+    fast_candidates = _tracker_mltable_lot_candidates(
+        product=product,
+        prefix=prefix,
+        limit=max(1, min(500, int(limit or 200))),
+    )
+    if fast_candidates:
+        return {
+            "source": resolved_source,
+            "source_root": source_root,
+            "candidates": fast_candidates,
+            "cache": "mltable",
         }
     candidates = lot_id_candidates(
         product=product,

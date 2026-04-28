@@ -126,8 +126,8 @@ PLAN_DIR = PATHS.data_root / "splittable"
 PLAN_DIR.mkdir(parents=True, exist_ok=True)
 MATCH_CACHE_DIR = PLAN_DIR / "match_cache"
 MATCH_CACHE_VERSION = 1
-MATCH_CACHE_REFRESH_MINUTES_DEFAULT = 30
-MATCH_CACHE_REFRESH_MINUTES_MIN = 30
+MATCH_CACHE_REFRESH_MINUTES_DEFAULT = 10
+MATCH_CACHE_REFRESH_MINUTES_MIN = 5
 MATCH_CACHE_REFRESH_MINUTES_MAX = 60
 MATCH_CACHE_ROOT_COL = "__cache_root_lot_id"
 MATCH_CACHE_WAFER_COL = "__cache_wafer_id"
@@ -137,6 +137,9 @@ _MATCH_CACHE_THREAD: threading.Thread | None = None
 _MATCH_CACHE_STARTED = False
 _MATCH_CACHE_STOP = threading.Event()
 _MATCH_CACHE_BUILD_LOCK = threading.Lock()
+_PLAN_RISK_CACHE: dict[tuple[str, bool], dict] = {}
+_PLAN_RISK_CACHE_LOCK = threading.Lock()
+_PLAN_RISK_CACHE_MAX = 64
 PREFIX_CFG = PLAN_DIR / "prefix_config.json"
 DEFAULT_PREFIXES = ["KNOB", "MASK", "INLINE", "VM", "FAB"]
 PLAN_ALLOWED_PREFIXES = ["KNOB", "MASK", "FAB"]  # Only these can have plan values
@@ -3572,6 +3575,41 @@ def _fab_history_root_candidates_from_cache(product: str, prefix: str = "", limi
     return {"candidates": values, "source": current.get("fab_source", ""), "cache": True}
 
 
+def _fab_lot_snapshot_from_cache(product: str, root_lot_id: str, wafer_id: str = "") -> str:
+    current = _match_cache_current(product)
+    root = str(root_lot_id or "").strip()
+    if not current or not root:
+        return ""
+    cache_lf = _filter_match_cache_scope(current["lf"], root_lot_id=root, wafer_ids=str(wafer_id or ""))
+    try:
+        names = cache_lf.collect_schema().names()
+    except Exception:
+        return ""
+    if MATCH_CACHE_FAB_COL not in names:
+        return ""
+    q = (
+        cache_lf
+        .select([
+            pl.col(MATCH_CACHE_FAB_COL).cast(_STR, strict=False).alias("fab"),
+            *([pl.col(MATCH_CACHE_TS_COL).cast(_STR, strict=False).alias("ts")] if MATCH_CACHE_TS_COL in names else []),
+        ])
+        .filter(pl.col("fab").is_not_null() & (pl.col("fab") != ""))
+    )
+    if "ts" in q.collect_schema().names():
+        q = q.sort("ts", descending=True, nulls_last=True)
+    else:
+        q = q.sort("fab")
+    try:
+        df = q.head(1).collect()
+    except Exception as e:
+        logger.warning("_fab_lot_snapshot_from_cache 실패 (product=%s root=%s wafer=%s) %s: %s",
+                       product, root_lot_id, wafer_id, type(e).__name__, e)
+        return ""
+    if df.is_empty():
+        return ""
+    return _clean_str(df.item(0, 0))
+
+
 def refresh_match_cache(product: str = "", force: bool = False) -> dict:
     """Build persisted FAB root/fab/wafer connection tables for SplitTable."""
     products = [product] if str(product or "").strip() else [p.get("name") for p in list_products().get("products", [])]
@@ -3696,6 +3734,7 @@ def _match_cache_loop() -> None:
     while not _MATCH_CACHE_STOP.is_set():
         try:
             refresh_match_cache(force=False)
+            refresh_plan_risk_cache(force=False)
         except Exception as e:
             logger.warning("SplitTable match cache scheduler tick failed: %s", e)
         wait_s = _seconds_until_next_match_cache_tick()
@@ -4291,6 +4330,193 @@ def _merge_candidate_values(*groups, limit: int = 500) -> list[str]:
     return out
 
 
+def _plan_history_path(product: str) -> Path:
+    return PLAN_DIR / f"{product}.json"
+
+
+def _plan_risk_cache_key(product: str, include_deleted: bool) -> tuple[str, bool]:
+    fp = _plan_history_path(product)
+    try:
+        return (str(fp.resolve()), bool(include_deleted))
+    except Exception:
+        return (str(fp), bool(include_deleted))
+
+
+def _plan_risk_cache_sig(fp: Path) -> tuple[str, float, int]:
+    try:
+        st = fp.stat()
+        return (str(fp.resolve()), st.st_mtime, st.st_size)
+    except Exception:
+        return (str(fp), 0.0, 0)
+
+
+def _empty_plan_risk_payload(cache: bool = False) -> dict:
+    return {"final": [], "drift": [], "drift_count": 0, "total_cells": 0, "cache": cache}
+
+
+def _copy_plan_risk_payload(payload: dict, root_lot_id: str = "") -> dict:
+    root = str(root_lot_id or "").strip()
+    if root:
+        by_root = payload.get("_by_root") if isinstance(payload.get("_by_root"), dict) else {}
+        scoped = by_root.get(root) or {"final": [], "drift": []}
+        final_rows = [dict(r) for r in (scoped.get("final") or [])]
+        drift_rows = [dict(r) for r in (scoped.get("drift") or [])]
+    else:
+        final_rows = [dict(r) for r in (payload.get("final") or [])]
+        drift_rows = [dict(r) for r in (payload.get("drift") or [])]
+    return {
+        "final": final_rows,
+        "drift": drift_rows,
+        "drift_count": len(drift_rows),
+        "total_cells": len(final_rows),
+        "cache": bool(payload.get("cache")),
+        "cache_built_at": payload.get("cache_built_at", ""),
+    }
+
+
+def _build_plan_risk_payload(hist: list, include_deleted: bool = False) -> dict:
+    per_cell: dict[str, list] = {}
+    for h in hist or []:
+        if not isinstance(h, dict):
+            continue
+        ck = h.get("cell")
+        if not ck:
+            continue
+        per_cell.setdefault(str(ck), []).append(h)
+
+    final_rows = []
+    drift_rows = []
+    for ck, entries in per_cell.items():
+        entries.sort(key=lambda x: x.get("time", ""))
+        last = entries[-1]
+        action = last.get("action") or "set"
+        if action == "delete" and not include_deleted:
+            continue
+        sets = [e for e in entries if (e.get("action") or "set") == "set"]
+        distinct_values = list({e.get("new") for e in sets if e.get("new") is not None})
+        distinct_users = list({e.get("user") for e in sets if e.get("user")})
+        set_count = len(sets)
+        delete_count = sum(1 for e in entries if e.get("action") == "delete")
+        drift_flags = []
+        if set_count >= 2 and len(distinct_values) >= 2:
+            drift_flags.append("multi_change")
+        if len(distinct_users) >= 2:
+            drift_flags.append("multi_user")
+        if delete_count >= 1 and set_count >= 1:
+            drift_flags.append("reinstated")
+        parts = (ck or "").split("|")
+        lot = parts[0] if len(parts) > 0 else ""
+        wf = parts[1] if len(parts) > 1 else ""
+        col = parts[2] if len(parts) > 2 else ""
+        row = {
+            "cell": ck,
+            "root_lot_id": lot,
+            "wafer_id": wf,
+            "column": col,
+            "final_value": last.get("new"),
+            "final_action": action,
+            "final_user": last.get("user"),
+            "final_time": last.get("time"),
+            "set_count": set_count,
+            "delete_count": delete_count,
+            "distinct_values": distinct_values,
+            "distinct_users": distinct_users,
+            "drift": drift_flags,
+        }
+        final_rows.append(row)
+        if drift_flags:
+            drift_rows.append(row)
+
+    final_rows.sort(key=lambda r: r.get("final_time") or "", reverse=True)
+    drift_rows.sort(key=lambda r: r.get("final_time") or "", reverse=True)
+    by_root: dict[str, dict[str, list]] = {}
+    for row in final_rows:
+        root = str(row.get("root_lot_id") or "").strip()
+        if not root:
+            continue
+        bucket = by_root.setdefault(root, {"final": [], "drift": []})
+        bucket["final"].append(row)
+        if row.get("drift"):
+            bucket["drift"].append(row)
+
+    return {
+        "final": final_rows,
+        "drift": drift_rows,
+        "drift_count": len(drift_rows),
+        "total_cells": len(final_rows),
+        "_by_root": by_root,
+    }
+
+
+def _get_plan_risk_payload(product: str, include_deleted: bool = False, force: bool = False) -> dict:
+    fp = _plan_history_path(product)
+    if not fp.exists():
+        return _empty_plan_risk_payload(cache=True)
+    sig = _plan_risk_cache_sig(fp)
+    key = _plan_risk_cache_key(product, include_deleted)
+    with _PLAN_RISK_CACHE_LOCK:
+        cached = _PLAN_RISK_CACHE.get(key)
+        if cached and not force and cached.get("_sig") == sig:
+            return cached
+    data = load_json(fp, {})
+    hist = data.get("history", []) if isinstance(data, dict) else []
+    payload = _build_plan_risk_payload(hist if isinstance(hist, list) else [], include_deleted=include_deleted)
+    payload.update({
+        "_sig": sig,
+        "cache": True,
+        "cache_built_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    })
+    with _PLAN_RISK_CACHE_LOCK:
+        if len(_PLAN_RISK_CACHE) >= _PLAN_RISK_CACHE_MAX:
+            try:
+                _PLAN_RISK_CACHE.pop(next(iter(_PLAN_RISK_CACHE)))
+            except Exception:
+                _PLAN_RISK_CACHE.clear()
+        _PLAN_RISK_CACHE[key] = payload
+    return payload
+
+
+def _invalidate_plan_risk_cache(product: str) -> None:
+    if not product:
+        return
+    keys = {
+        _plan_risk_cache_key(product, False),
+        _plan_risk_cache_key(product, True),
+    }
+    with _PLAN_RISK_CACHE_LOCK:
+        for key in keys:
+            _PLAN_RISK_CACHE.pop(key, None)
+
+
+def refresh_plan_risk_cache(product: str = "", force: bool = False) -> dict:
+    products = [product] if str(product or "").strip() else []
+    if not products:
+        try:
+            products = [p.get("name") for p in list_products().get("products", []) if p.get("name")]
+        except Exception:
+            products = []
+    results = []
+    for raw_product in products:
+        fp = _plan_history_path(raw_product)
+        if not fp.exists():
+            results.append({"product": raw_product, "ok": True, "skipped": True, "reason": "no plan history"})
+            continue
+        try:
+            payload = _get_plan_risk_payload(raw_product, include_deleted=False, force=force)
+            results.append({
+                "product": raw_product,
+                "ok": True,
+                "skipped": False,
+                "total_cells": int(payload.get("total_cells") or 0),
+                "drift_count": int(payload.get("drift_count") or 0),
+            })
+        except Exception as e:
+            logger.warning("plan risk cache refresh failed (product=%s) %s: %s",
+                           raw_product, type(e).__name__, e)
+            results.append({"product": raw_product, "ok": False, "reason": f"{type(e).__name__}: {e}"})
+    return {"ok": all(r.get("ok") for r in results) if results else True, "products": results}
+
+
 def _candidate_values_from_frame(rows, value_col: str = "v", limit: int = 500) -> list[str]:
     """Return clean string autocomplete values from a collected Polars frame."""
     values: list[str] = []
@@ -4882,6 +5108,9 @@ def resolve_fab_lot_snapshot(product: str, root_lot_id: str, wafer_id: str = "")
     if not ml_product or not root:
         return ""
     try:
+        cached = _fab_lot_snapshot_from_cache(ml_product, root, wafer_id)
+        if cached:
+            return cached
         lf = _scan_product(ml_product, root_lot_id=root, wafer_ids=str(wafer_id or ""))
         lot_col, wf_col = _detect_lot_wafer(lf, ml_product)
         if not lot_col:
@@ -5286,6 +5515,7 @@ def save_plan(req: PlanReq):
         auto_entries.append((ck, old, val))
     data["history"] = data["history"][-1000:]
     save_json(pf, data)
+    _invalidate_plan_risk_cache(req.product)
     # v8.8.33: notify 이벤트 — 본인이 아닌 원 소유자에게만.
     try:
         from core.notify import emit_event
@@ -5361,6 +5591,7 @@ def delete_plan(req: PlanDeleteReq):
             })
             deleted.append((ck, old))
     save_json(pf, data)
+    _invalidate_plan_risk_cache(req.product)
     try:
         from routers.informs import auto_log_splittable_change
         for ck, old in deleted:
@@ -5422,73 +5653,8 @@ def get_history_final(request: Request, product: str = Query(...), root_lot_id: 
       - 서로 다른 user 가 set → drift_level="multi_user"
       - 둘 다 → "multi_user_multi_change"
     """
-    pf = PLAN_DIR / f"{product}.json"
-    if not pf.exists():
-        return {"final": [], "drift": [], "total_cells": 0}
-    data = load_json(pf, {})
-    hist = data.get("history", [])
-    if root_lot_id:
-        hist = [h for h in hist
-                if h.get("root_lot_id") == root_lot_id
-                or h.get("cell", "").startswith(root_lot_id + "|")]
-    # cell 별로 시간순 그룹핑
-    per_cell: dict[str, list] = {}
-    for h in hist:
-        ck = h.get("cell")
-        if not ck:
-            continue
-        per_cell.setdefault(ck, []).append(h)
-    final_rows = []
-    drift_rows = []
-    for ck, entries in per_cell.items():
-        entries.sort(key=lambda x: x.get("time", ""))
-        last = entries[-1]
-        action = last.get("action") or "set"
-        if action == "delete" and not include_deleted:
-            continue
-        sets = [e for e in entries if (e.get("action") or "set") == "set"]
-        distinct_values = list({e.get("new") for e in sets if e.get("new") is not None})
-        distinct_users = list({e.get("user") for e in sets if e.get("user")})
-        set_count = len(sets)
-        delete_count = sum(1 for e in entries if e.get("action") == "delete")
-        drift_flags = []
-        if set_count >= 2 and len(distinct_values) >= 2:
-            drift_flags.append("multi_change")
-        if len(distinct_users) >= 2:
-            drift_flags.append("multi_user")
-        if delete_count >= 1 and set_count >= 1:
-            drift_flags.append("reinstated")
-        parts = (ck or "").split("|")
-        lot = parts[0] if len(parts) > 0 else ""
-        wf = parts[1] if len(parts) > 1 else ""
-        col = parts[2] if len(parts) > 2 else ""
-        row = {
-            "cell": ck,
-            "root_lot_id": lot,
-            "wafer_id": wf,
-            "column": col,
-            "final_value": last.get("new"),
-            "final_action": action,
-            "final_user": last.get("user"),
-            "final_time": last.get("time"),
-            "set_count": set_count,
-            "delete_count": delete_count,
-            "distinct_values": distinct_values,
-            "distinct_users": distinct_users,
-            "drift": drift_flags,
-        }
-        final_rows.append(row)
-        if drift_flags:
-            drift_rows.append(row)
-    # 최신 시각 순
-    final_rows.sort(key=lambda r: r.get("final_time") or "", reverse=True)
-    drift_rows.sort(key=lambda r: r.get("final_time") or "", reverse=True)
-    return {
-        "final": final_rows,
-        "drift": drift_rows,
-        "drift_count": len(drift_rows),
-        "total_cells": len(final_rows),
-    }
+    payload = _get_plan_risk_payload(product, include_deleted=include_deleted)
+    return _copy_plan_risk_payload(payload, root_lot_id=root_lot_id)
 
 
 @router.get("/history-csv")
