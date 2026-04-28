@@ -148,6 +148,7 @@ def normalize_fab_history(lf: pl.LazyFrame) -> pl.LazyFrame:
     add_alias("eqp", "eqp_id")
     add_alias("chamber", "chamber_id")
     add_alias("fab_lot_id", "lot_id")
+    add_alias("lot_id", "fab_lot_id")
     add_alias("time", "tkout_time")
     add_alias("time", "tkin_time")
     if "time" not in planned:

@@ -248,3 +248,43 @@ def test_root_lot_view_handles_categorical_fab_partitions(tmp_path, monkeypatch)
     assert result["headers"] == ["#1", "#2"]
     assert [g["label"] for g in result["header_groups"]] == ["F9000A.1", "F9000A.2"]
     assert result["available_fab_lots"] == ["F9000A.1", "F9000A.2"]
+
+
+def test_fab_lot_id_is_exposed_when_fab_source_uses_lot_id(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["R9100", "R9100"],
+        "wafer_id": [1, 2],
+        "KNOB_ALPHA": ["ON", "OFF"],
+    }).write_parquet(tmp_path / "ML_TABLE_STD.parquet")
+
+    fab_root = tmp_path / "1.RAWDATA_DB_FAB" / "STD" / "date=20240420"
+    fab_root.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["R9100", "R9100"],
+        "lot_id": ["F9100A.1", "F9100A.1"],
+        "wafer_id": [1, 2],
+        "tkout_time": ["2024-04-20T10:00:00", "2024-04-20T10:01:00"],
+    }).write_parquet(fab_root / "part_0.parquet")
+
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+
+    schema_names = splittable._scan_product(
+        "ML_TABLE_STD",
+        root_lot_id="R9100",
+    ).collect_schema().names()
+    result = splittable.view_split(
+        product="ML_TABLE_STD",
+        root_lot_id="R9100",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert "fab_lot_id" in schema_names
+    assert result["header_groups"] == [{"label": "F9100A.1", "span": 2}]
+    assert result["available_fab_lots"] == ["F9100A.1"]
