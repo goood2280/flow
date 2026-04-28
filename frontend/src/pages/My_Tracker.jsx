@@ -955,6 +955,10 @@ export default function My_Tracker({ user }) {
   const load = () => sf(API + "/issues").then(d => setIssues(d.issues || []));
   useEffect(() => { load(); }, []);
   const loadDetail = (id) => { sf(API + "/issue?issue_id=" + id).then(d => { setSelected(d.issue || d); setEditMode(false); }); };
+  useEffect(() => {
+    const issueId = new URLSearchParams(window.location.search || "").get("issue_id");
+    if (issueId) loadDetail(issueId);
+  }, []);
   const create = (data) => {
     // v9.0.0 fix: lots 를 create payload 에서 제외. /create 가 lots 를 저장하고, 뒤이어 /lots/bulk 를 또
     //   호출하면 같은 행이 2번 추가되어 UI 에 중복으로 보였음. 이제 /create 에 lots=[] 로 보내고

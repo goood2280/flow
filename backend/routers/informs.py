@@ -37,13 +37,14 @@ import html as _html
 import json as _json
 import mimetypes
 import re
+import sys
 import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Depends
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -942,21 +943,48 @@ def _safe_filename(name: str) -> str:
     return name[-120:] or "file"
 
 
+async def _read_upload_payload(request: Request) -> tuple[str, bytes]:
+    """Read multipart field `file` without a FastAPI File dependency.
+
+    Using `UploadFile = File(...)` makes FastAPI validate python-multipart at
+    router import time. If that package is missing in an operator environment,
+    the entire informs router fails to load. Keep the dependency runtime-only
+    so non-upload informs APIs stay available.
+    """
+    try:
+        form = await request.form()
+    except Exception as exc:
+        raise HTTPException(
+            500,
+            "파일 업로드 파서가 준비되지 않았습니다. 서버에서 `python setup.py install-deps` "
+            f"또는 `{sys.executable} -m pip install python-multipart` 실행이 필요합니다: {exc}",
+        )
+    file = form.get("file")
+    if file is None or not hasattr(file, "read"):
+        raise HTTPException(400, "file 필드가 필요합니다.")
+    filename = str(getattr(file, "filename", "") or "")
+    data_or_coro = file.read()
+    data = await data_or_coro if hasattr(data_or_coro, "__await__") else data_or_coro
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return filename, bytes(data or b"")
+
+
 @router.post("/upload")
-async def upload_image(request: Request, file: UploadFile = File(...)):
+async def upload_image(request: Request):
     """인폼용 이미지 업로드. 유저당 세션으로만 가능 (current_user 검증)."""
     me = current_user(request)
-    ext = Path(file.filename or "").suffix.lower()
+    filename, data = await _read_upload_payload(request)
+    ext = Path(filename or "").suffix.lower()
     if ext not in ALLOWED_IMAGE_EXTS:
         raise HTTPException(400, f"이미지 형식만 업로드 가능합니다 ({', '.join(sorted(ALLOWED_IMAGE_EXTS))}).")
-    data = await file.read()
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "파일이 너무 큽니다 (최대 8MB).")
     if not data:
         raise HTTPException(400, "빈 파일입니다.")
 
     uid = uuid.uuid4().hex[:12]
-    safe = _safe_filename(file.filename or ("image" + ext))
+    safe = _safe_filename(filename or ("image" + ext))
     if not safe.lower().endswith(ext):
         safe += ext
     subdir = UPLOADS_DIR / uid
@@ -979,21 +1007,21 @@ _ATTACHMENT_BLOCKED_EXTS = {".exe", ".bat", ".cmd", ".com", ".scr", ".msi",
 
 
 @router.post("/upload-attachment")
-async def upload_attachment(request: Request, file: UploadFile = File(...)):
+async def upload_attachment(request: Request):
     """메일 첨부용 범용 업로드. 실행 가능한 확장자(.exe/.bat/...)는 차단.
     반환 URL 은 이미지 업로드와 동일 경로 규약 → 기존 send-mail attachment resolver 재사용."""
     me = current_user(request)
-    ext = Path(file.filename or "").suffix.lower()
+    filename, data = await _read_upload_payload(request)
+    ext = Path(filename or "").suffix.lower()
     if ext in _ATTACHMENT_BLOCKED_EXTS:
         raise HTTPException(400, f"보안상 업로드 차단된 확장자: {ext}")
-    data = await file.read()
     if len(data) > _ATTACHMENT_MAX_BYTES:
         raise HTTPException(413, f"파일이 너무 큽니다 (최대 {_ATTACHMENT_MAX_BYTES // (1024*1024)}MB).")
     if not data:
         raise HTTPException(400, "빈 파일입니다.")
 
     uid = uuid.uuid4().hex[:12]
-    safe = _safe_filename(file.filename or ("attachment" + ext))
+    safe = _safe_filename(filename or ("attachment" + ext))
     if ext and not safe.lower().endswith(ext):
         safe += ext
     subdir = UPLOADS_DIR / uid
@@ -2444,6 +2472,78 @@ MAIL_CONTENT_MAX = 2 * 1024 * 1024          # 2 MB HTML body
 MAIL_ATTACH_MAX  = 10 * 1024 * 1024         # 10 MB total attachments
 
 
+def _inform_snapshot_simple_sheets(target: dict) -> list[dict]:
+    rows1 = [["Field", "Value"]]
+    meta_keys = ("id", "product", "module", "reason", "root_lot_id", "lot_id",
+                 "wafer_id", "fab_lot_id_at_save", "flow_status", "author",
+                 "created_at", "updated_at")
+    for k in meta_keys:
+        v = target.get(k, "")
+        if v not in ("", None):
+            rows1.append([k, str(v)])
+    sc = target.get("splittable_change") or {}
+    if sc:
+        rows1.extend([[], ["SplitTable Change", ""]])
+        for k in ("column", "old_value", "new_value", "applied"):
+            if k in sc:
+                rows1.append([k, str(sc.get(k, ""))])
+    body = (target.get("text") or "").strip()
+    if body:
+        rows1.extend([[], ["Body", ""]])
+        for ln in body.splitlines():
+            rows1.append(["", ln])
+
+    sheets = [{"title": "Inform Snapshot", "rows": rows1}]
+    embed = target.get("embed_table") or {}
+    st = embed.get("st_view") or {}
+    headers = [str(h or "") for h in (st.get("headers") or [])]
+    rows = st.get("rows") or []
+    if headers or rows:
+        rows2 = []
+        merges = []
+        root_lot_id = str(st.get("root_lot_id") or "").strip()
+        if root_lot_id:
+            rows2.append(["", root_lot_id, *["" for _ in headers[1:]]])
+            if headers:
+                merges.append((len(rows2), 2, len(rows2), len(headers) + 1))
+        header_groups = _split_table_header_groups(st)
+        if header_groups:
+            out = [""]
+            col = 2
+            merge_row = len(rows2) + 1
+            for group in header_groups:
+                span = max(1, int(group.get("span") or 1))
+                out.extend([str(group.get("label") or ""), *["" for _ in range(span - 1)]])
+                if span > 1:
+                    merges.append((merge_row, col, merge_row, col + span - 1))
+                col += span
+            rows2.append(out[:len(headers) + 1])
+        rows2.append(["parameter", *headers])
+        for row in rows:
+            label = str(row.get("_param") or row.get("_display") or "")
+            cells = row.get("_cells") or {}
+            out = [label]
+            for i, _ in enumerate(headers):
+                cell = cells.get(i) or cells.get(str(i)) or {}
+                actual = cell.get("actual")
+                plan = cell.get("plan")
+                if plan not in (None, "") and str(plan) != str(actual if actual is not None else ""):
+                    out.append(f"{'' if actual is None else actual} -> {plan}")
+                else:
+                    out.append("" if actual is None else str(actual))
+            rows2.append(out)
+        sheets.append({"title": "SplitTable Snapshot", "rows": rows2, "merges": merges})
+    elif embed.get("columns") or embed.get("rows"):
+        rows2 = []
+        cols = [str(c or "") for c in (embed.get("columns") or [])]
+        if cols:
+            rows2.append(cols)
+        for row in (embed.get("rows") or []):
+            rows2.append([("" if v is None else str(v)) for v in row])
+        sheets.append({"title": "Embedded Table", "rows": rows2})
+    return sheets
+
+
 # v8.8.21: 인폼 → SplitTable 스냅샷 xlsx 자동 첨부.
 #   사용자가 직접 파일 업로드하지 않아도, 해당 인폼에 담긴 제품/lot/wafer 스냅샷을
 #   SplitTable 엑셀 내보내기와 동일 형식으로 렌더해 첨부한다.
@@ -2451,10 +2551,17 @@ def _build_inform_snapshot_xlsx(target: dict) -> Optional[tuple]:
     """Return (filename, bytes, mime) or None if no snapshot available."""
     try:
         import io as _io
+        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        fn = f"inform_{target.get('id','snapshot')}.xlsx"
         try:
             from openpyxl import Workbook
         except Exception:
-            return None
+            try:
+                from core.simple_xlsx import build_workbook
+                data = build_workbook(_inform_snapshot_simple_sheets(target))
+                return (fn, data, mime) if data else None
+            except Exception:
+                return None
         wb = Workbook()
         ws = wb.active
         ws.title = "Inform Snapshot"
@@ -2531,9 +2638,7 @@ def _build_inform_snapshot_xlsx(target: dict) -> Optional[tuple]:
         data = buf.getvalue()
         if not data:
             return None
-        fn = f"inform_{target.get('id','snapshot')}.xlsx"
-        return (fn, data,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        return (fn, data, mime)
     except Exception:
         return None
 

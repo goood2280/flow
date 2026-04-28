@@ -5136,13 +5136,13 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     UI 의 그룹 헤더와 동일하게 표시.
     v8.8.33: custom_cols 추가 — save 없이 체크만 한 ad-hoc 컬럼.
     """
+    openpyxl_error = None
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
         from openpyxl.utils import get_column_letter
-    except ImportError as e:
-        import sys
-        raise HTTPException(500, f"openpyxl not installed at {sys.executable}: {e}")
+    except Exception as e:
+        openpyxl_error = e
 
     lf = _scan_product(product, root_lot_id=root_lot_id, wafer_ids=wafer_ids)
     lot_col, wf_col = _detect_lot_wafer(lf, product)
@@ -5177,15 +5177,102 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
 
     plans = load_json(PLAN_DIR / f"{product}.json", {}).get("plans", {})
 
+    if openpyxl_error is not None:
+        try:
+            from core.simple_xlsx import build_workbook
+            from fastapi.responses import StreamingResponse
+        except Exception as e:
+            import sys
+            raise HTTPException(
+                500,
+                f"XLSX export unavailable at {sys.executable}: openpyxl={openpyxl_error}; fallback={e}",
+            )
+
+        download_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        n_wafers = len(wf_sorted)
+        last_col = 1 + n_wafers
+        rows = [
+            ["downloaded_at", download_ts],
+            ["username", username or ""],
+            ["root_lot_id", root_lot_id or "", *["" for _ in range(max(0, n_wafers - 1))]],
+        ]
+        merges = []
+        if n_wafers > 1:
+            merges.append((3, 2, 3, last_col))
+
+        has_fab_row = bool(fab_col and wf_sorted)
+        if has_fab_row:
+            fab_row = ["fab_lot_id", *["" for _ in wf_sorted]]
+            cur = None
+            start = 0
+            for i, w in enumerate(wf_sorted):
+                f = wf2fab.get(w, "")
+                if f != cur:
+                    if cur is not None and i - start > 0:
+                        fab_row[1 + start] = cur
+                        if i - start > 1:
+                            merges.append((4, 2 + start, 4, 2 + i - 1))
+                    cur = f
+                    start = i
+            if cur is not None and len(wf_sorted) - start > 0:
+                fab_row[1 + start] = cur
+                if len(wf_sorted) - start > 1:
+                    merges.append((4, 2 + start, 4, 2 + len(wf_sorted) - 1))
+            rows.append(fab_row)
+
+        rows.append(["Parameter", *[f"#{w}" for w in wf_sorted]])
+        for col_name in selected:
+            display_name = col_rename.get(col_name, col_name)
+            vals = df[col_name].to_list() if col_name in df.columns else []
+            actual_by_idx = {}
+            plan_by_idx = {}
+            for i, v in enumerate(vals):
+                wk = wf_vals[i] if i < len(wf_vals) else None
+                idx = wf_idx.get(wk)
+                if idx is None:
+                    continue
+                sv = str(v) if v is not None and str(v) not in ("None", "null") else ""
+                ck = f"{root_lot_id}|{wk}|{col_name}"
+                pv = plans.get(ck, {}).get("value")
+                if sv:
+                    actual_by_idx[idx] = sv
+                if pv:
+                    plan_by_idx[idx] = str(pv)
+            if col_name not in df.columns:
+                for idx, wk in enumerate(wf_sorted):
+                    ck = f"{root_lot_id}|{wk}|{col_name}"
+                    pv = plans.get(ck, {}).get("value")
+                    if pv:
+                        plan_by_idx[idx] = str(pv)
+            out = [display_name, *["" for _ in wf_sorted]]
+            for idx in sorted(set(list(actual_by_idx.keys()) + list(plan_by_idx.keys()))):
+                sv = actual_by_idx.get(idx, "")
+                pv = plan_by_idx.get(idx, "")
+                if sv and pv and sv != pv:
+                    out[1 + idx] = f"{sv} != {pv}"
+                elif pv and not sv:
+                    out[1 + idx] = f"PLAN: {pv}"
+                else:
+                    out[1 + idx] = sv or pv
+            rows.append(out)
+
+        data = build_workbook([{"title": product[:31], "rows": rows, "merges": merges}])
+        fname = f"{product}_{root_lot_id or 'all'}.xlsx"
+        return StreamingResponse(
+            iter([data]),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
     wb = Workbook()
     ws = wb.active
     ws.title = product[:31]
     hdr_fill = PatternFill("solid", fgColor="1f2937")
-    fab_fill = PatternFill("solid", fgColor="f59e0b")
+    fab_fill = PatternFill("solid", fgColor="374151")
     param_fill = PatternFill("solid", fgColor="374151")
     white = Font(color="FFFFFF", bold=True)
-    # v8.4.4b: fab_lot_id 텍스트를 진한 남색/검정 으로 (오렌지 배경에 대비 확보)
-    fab_font = Font(color="111827", bold=True, name="Consolas", size=12)
+    # fab_lot_id 헤더는 어두운 배경 + 흰 글자로 고정해 노란색 대비 문제를 피한다.
+    fab_font = Font(color="FFFFFF", bold=True, name="Consolas", size=12)
     center = Alignment(horizontal="center", vertical="center")
     thin = Side(style="thin", color="555555")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)

@@ -50,6 +50,7 @@ def test_tracker_route_contract_includes_page_bootstrap_reads():
     routes = _route_methods(tracker.router)
 
     for path in [
+        "/api/tracker",
         "/api/tracker/categories",
         "/api/tracker/db-sources",
         "/api/tracker/issues",

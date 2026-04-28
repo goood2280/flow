@@ -841,7 +841,8 @@ export default function My_Meeting({ user }) {
                           const issueLinks = Array.isArray(issue?.links) ? issue.links : [];
                           const issueLots = Array.isArray(issue?.lots) ? issue.lots : [];
                           const issueImages = trackerImages(issue);
-                          const trackerHref = `/tracker?issue_id=${encodeURIComponent(a.issue_ref.issue_id)}`;
+                          const trackerSearch = `?issue_id=${encodeURIComponent(a.issue_ref.issue_id)}`;
+                          const trackerHref = `/tracker${trackerSearch}`;
                           return (
                             <div style={{ marginTop: 6, marginLeft: 34, padding: 10, borderRadius: 6, border: "1px solid rgba(139,92,246,0.28)", background: "rgba(139,92,246,0.06)" }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
@@ -849,7 +850,7 @@ export default function My_Meeting({ user }) {
                                 <span style={{ fontSize: 10, fontFamily: "monospace", color: "var(--text-secondary)" }}>#{a.issue_ref.issue_id}</span>
                                 {a.issue_ref.category && <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 999, background: "var(--bg-card)", color: "var(--text-secondary)" }}>{a.issue_ref.category}</span>}
                                 {a.issue_ref.status && <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 999, background: "rgba(245,158,11,0.16)", color: "#b45309" }}>{a.issue_ref.status}</span>}
-                                <a href={trackerHref} style={{ fontSize: 10, color: "var(--accent)", textDecoration: "underline" }}>트래커에서 열기</a>
+                                <a href={trackerHref} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("flow:navigate", { detail: { tab: "tracker", search: trackerSearch } })); }} style={{ fontSize: 10, color: "var(--accent)", textDecoration: "underline" }}>트래커에서 열기</a>
                               </div>
                               {issue?.title && <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>{issue.title}</div>}
                               {issue?.description_html ? (

@@ -3,6 +3,13 @@ import { startTransition, useCallback, useEffect, useRef, useState } from "react
 import { TABS } from "../config";
 import { logActivity, postJson, sf } from "../lib/api";
 
+const TAB_KEYS = new Set(TABS.map((item) => item.key));
+
+function tabFromPath(pathname = window.location.pathname) {
+  const key = String(pathname || "").split("/").filter(Boolean)[0] || "";
+  return TAB_KEYS.has(key) ? key : "";
+}
+
 const darkV = {
   "--bg-primary": "#1a1a1a",
   "--bg-secondary": "#262626",
@@ -79,7 +86,7 @@ function toTabList(userTabs) {
 
 export function useFlowShell() {
   const [user, setUser] = useState(null);
-  const [tab, setTab] = useState("home");
+  const [tab, setTab] = useState(() => tabFromPath() || "home");
   const [dark, setDark] = useState(true);
   const [notifs, setNotifs] = useState([]);
   const [userTabs, setUserTabs] = useState("__all__");
@@ -114,9 +121,10 @@ export function useFlowShell() {
 
   useEffect(() => {
     if (!user) return;
+    const urlTab = tabFromPath();
     sf("/api/session/load?username=" + user.username)
       .then((data) => {
-        if (data.last_tab) setTab(data.last_tab);
+        if (data.last_tab && !urlTab) setTab(data.last_tab);
       })
       .catch(() => {});
     if (user.tabs) {
@@ -127,6 +135,35 @@ export function useFlowShell() {
         .catch(() => {});
     }
   }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const openTab = (tabKey, search = "", push = false) => {
+      if (!tabKey || (!canAccess(tabKey) && tabKey !== "admin")) return;
+      startTransition(() => setTab(tabKey));
+      if (push) {
+        const nextUrl = `/${tabKey}${search || ""}`;
+        if (window.location.pathname + window.location.search !== nextUrl) {
+          window.history.pushState({ tab: tabKey }, "", nextUrl);
+        }
+      }
+      logActivity(user.username, "nav:" + tabKey);
+    };
+    const onNavigate = (event) => {
+      const detail = event.detail || {};
+      openTab(detail.tab || tabFromPath(detail.path || ""), detail.search || "", true);
+    };
+    const onPopState = () => {
+      const next = tabFromPath();
+      if (next) openTab(next, window.location.search || "", false);
+    };
+    window.addEventListener("flow:navigate", onNavigate);
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("flow:navigate", onNavigate);
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [canAccess, user]);
 
   useEffect(() => {
     if (!user) {

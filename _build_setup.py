@@ -796,6 +796,24 @@ def _has(cmd: str) -> bool:
     return which(cmd) is not None
 
 
+def _ensure_pip_ready() -> None:
+    rc = _run(f"{sys.executable} -m pip --version", cwd=ROOT, timeout=30)
+    if rc == 0:
+        return
+    print("[deps] python -m pip is not ready; trying ensurepip bootstrap")
+    _run(f"{sys.executable} -m ensurepip --upgrade", cwd=ROOT, timeout=120)
+
+
+def _pip_install(pkgs: list[str], timeout: int | None = None) -> int:
+    _ensure_pip_ready()
+    return _run(
+        f"{sys.executable} -m pip install --disable-pip-version-check "
+        + ' '.join(shlex.quote(p) for p in pkgs),
+        cwd=ROOT,
+        timeout=timeout,
+    )
+
+
 def _ensure_critical_deps() -> None:
     """v8.8.2: extract 시에도 엑셀 관련 핵심 의존성은 자동 설치.
     openpyxl 은 인폼 표 embed / SplitTable 엑셀 export 에서 즉시 사용되므로
@@ -812,12 +830,7 @@ def _ensure_critical_deps() -> None:
         return
     print(f"[deps] ensure critical: {', '.join(missing)}")
     # v8.8.19: 오프라인/프록시 환경에서 pip 가 무한 대기하지 않도록 timeout.
-    _run(
-        f"{sys.executable} -m pip install --disable-pip-version-check "
-        + ' '.join(shlex.quote(p) for p in missing),
-        cwd=ROOT,
-        timeout=180,
-    )
+    _pip_install(missing, timeout=180)
 
 
 def extract() -> int:
@@ -872,7 +885,7 @@ def install_deps() -> int:
         'openpyxl', 'xlsxwriter', 'xlrd',
         'psutil',   # v8.8.18: 시스템 모니터 (core/sysmon.py)
     ]
-    return _run(f"{sys.executable} -m pip install " + ' '.join(shlex.quote(p) for p in pkgs), cwd=ROOT)
+    return _pip_install(pkgs)
 
 
 def build_frontend() -> int:
