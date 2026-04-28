@@ -3,6 +3,7 @@ import Loading from "../components/Loading";
 import S3StatusLight from "../components/S3StatusLight";
 import { sf } from "../lib/api";
 const API="/api/filebrowser";
+const PAGE_SIZE=200;
 function formatSize(b){if(!b)return"-";if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB";}
 
 function LazyAwsPanel({ user, compact = false }) {
@@ -33,6 +34,7 @@ export default function My_FileBrowser({user}){
   const[baseRaw,setBaseRaw]=useState(null);
   // Column selection state
   const[selectedCols,setSelectedCols]=useState([]);const[colSelectMode,setColSelectMode]=useState(false);
+  const[page,setPage]=useState(0);
   const[error,setError]=useState("");
   // S3 sync status map (public endpoint) — powers sidebar traffic-light dots
   const[s3Status,setS3Status]=useState({});
@@ -196,14 +198,13 @@ export default function My_FileBrowser({user}){
   },[scope]);
 
   // v4.1: Base-file preview loader (parquet/csv/json/md).
-  // v8.8.17: 첫 클릭에서 head 200 rows 즉시 로드 (meta_only 기본 off).
-  //   Base 파일(JSON/md/CSV 소형)은 원본 그대로 반환되고, parquet 는
-  //   polars lazy head(200) 로 빠르게 수집. 헤비 연산(full SQL / 전체 SELECT)
-  //   만 "실행" 버튼으로 트리거. `full=true` 는 explicit 전체 스캔.
-  const loadBaseFileView=(file,{full=false}={})=>{
+  // 첫 클릭은 meta_only 로 스키마만 받고, 샘플/SQL/컬럼 선택 시 page 단위로 행을 조회한다.
+  const loadBaseFileView=(file,{full=false,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
+    setPage(pageArg);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
-    const params={file,rows:200,cols:10,_ts:Date.now()};
+    const params={file,rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,_ts:Date.now()};
+    if(!full)params.meta_only=true;
     const url=buildUrl(API+"/base-file-view",params);
     sf(url).then(d=>{
       if(d.kind==="json"||d.kind==="md"||d.kind==="yaml"){
@@ -245,38 +246,42 @@ export default function My_FileBrowser({user}){
     return base+"?"+q;
   };
 
-  // v8.8.17: 첫 클릭에 head 200 rows 즉시 로드 (meta_only off).
-  //   SQL/SELECT 를 실제로 적용할 때만 full=true 로 전체 스캔.
-  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=false}={})=>{
+  // 첫 클릭은 meta_only, SQL/SELECT/페이지 이동은 full=true 로 page slice 조회.
+  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=false,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
+    setPage(pageArg);
     const sc=selColsOverride||selectedCols;
-    const params={root,product:prod,sql:sqlQ||"",rows:200,select_cols:sc.length?sc.join(","):""};
+    const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,select_cols:sc.length?sc.join(","):""};
+    if(!full&&!sqlQ&&!sc.length)params.meta_only=true;
     const url=buildUrl(API+"/view",params);
     sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
-  const loadRootPqView=(file,sqlQ,selColsOverride,{full=false}={})=>{
+  const loadRootPqView=(file,sqlQ,selColsOverride,{full=false,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
+    setPage(pageArg);
     const sc=selColsOverride||selectedCols;
-    const params={file,sql:sqlQ||"",rows:200,cols:10,select_cols:sc.length?sc.join(","):""};
+    const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):""};
+    if(!full&&!sqlQ&&!sc.length)params.meta_only=true;
     const url=buildUrl(API+"/root-parquet-view",params);
     sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
   // v8.8.16: "실행" 클릭 = 실제 행 조회 트리거. meta_only 없이 호출 → 서버에서 collect.
   const applySql=()=>{
-    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql,null,{full:true});
+    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql,null,{full:true,page:0});
     else if(mode==="base"&&selBaseFile){
       // Base JSON/md files have no SQL surface — silently ignore. Tabular
       // parquet/csv re-load with the SQL param applied server-side.
       if(baseRaw)return; // json/md 는 SQL 적용 불가 — baseRaw 상태로 판단
       setLoading(true);setError("");
       // full=true 와 동일 — SQL 이 비어도 sample 행을 보여줘야 하므로 meta_only 꺼둠.
-      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:200,cols:10,_ts:Date.now(),
+      setPage(0);
+      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
         select_cols:selectedCols.length?selectedCols.join(","):""});
       sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
-    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,null,{full:true});
+    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,null,{full:true,page:0});
   };
 
   const toggleCol=(col)=>{
@@ -288,15 +293,16 @@ export default function My_FileBrowser({user}){
 
   const reloadWithCols=(cols)=>{
     // v8.4.4: Base 모드도 select_cols 적용되도록 분기 추가
-    if(mode==="rootpq"&&selRootPq){loadRootPqView(selRootPq,sql,cols);}
+    if(mode==="rootpq"&&selRootPq){loadRootPqView(selRootPq,sql,cols,{full:true,page:0});}
     else if(mode==="base"&&selBaseFile){
       if(baseRaw)return; // json/md 는 컬럼 선택 불가 — baseRaw 상태로 판단
       setLoading(true);setError("");setTab("data");
-      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:200,cols:10,_ts:Date.now(),
+      setPage(0);
+      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
         select_cols:cols.length?cols.join(","):""});
       sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
-    else if(selRoot&&selProd){loadHiveView(selRoot,selProd,sql,cols);}
+    else if(selRoot&&selProd){loadHiveView(selRoot,selProd,sql,cols,{full:true,page:0});}
   };
   const applySelectedCols=()=>reloadWithCols(selectedCols);
   const clearSelectedCols=()=>{setSelectedCols([]);reloadWithCols([]);};
@@ -317,6 +323,17 @@ export default function My_FileBrowser({user}){
     else url+="&root="+encodeURIComponent(selRoot)+"&product="+encodeURIComponent(selProd);
     fetch(url).then(r=>{if(!r.ok)return r.json().then(d=>{alert(d.detail||"다운로드 실패");throw new Error();});
       return r.blob();}).then(blob=>{const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='data.csv';a.click();}).catch(()=>{});
+  };
+
+  const gotoPage=(nextPage)=>{
+    const p=Math.max(0,nextPage);
+    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql,selectedCols,{full:true,page:p});
+    else if(mode==="base"&&selBaseFile&&!baseRaw){
+      setLoading(true);setError("");setTab("data");setPage(p);
+      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:p,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
+        select_cols:selectedCols.length?selectedCols.join(","):""});
+      sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
+    } else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,selectedCols,{full:true,page:p});
   };
 
   const allCols=data?.all_columns||data?.columns||[];
@@ -498,6 +515,13 @@ export default function My_FileBrowser({user}){
               </span>
               {/* v8.8.16: meta_only 상태에서 전체 데이터 조회 버튼 */}
               {data.meta_only&&<button onClick={applySql} style={{padding:"4px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:11,fontWeight:600,cursor:"pointer"}} title="SQL 없이도 행 미리보기 200건 조회">▶ 샘플 로드</button>}
+              {!data.meta_only&&<div style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:"auto"}}>
+                <button onClick={()=>gotoPage((data.page??page)-1)} disabled={(data.page??page)<=0}
+                  style={{padding:"4px 9px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:(data.page??page)<=0?"default":"pointer",opacity:(data.page??page)<=0?0.45:1}}>이전</button>
+                <span style={{fontSize:11,color:"var(--text-secondary)",fontFamily:"monospace"}}>page {(data.page??page)+1}</span>
+                <button onClick={()=>gotoPage((data.page??page)+1)} disabled={!data.has_more}
+                  style={{padding:"4px 9px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:data.has_more?"pointer":"default",opacity:data.has_more?1:0.45}}>다음</button>
+              </div>}
             </div>
             {/* Tabs: Data + Columns */}
             <div style={{display:"flex",gap:0,borderBottom:"1px solid var(--border)",marginBottom:12}}>

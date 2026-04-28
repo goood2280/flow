@@ -29,6 +29,12 @@ for p in (str(_BACKEND), str(_HERE)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+try:
+    from core.runtime_limits import apply_runtime_limits
+    apply_runtime_limits()
+except Exception:
+    pass
+
 # Working directory 와 무관하게 backend/app.py 를 import.
 # 우선 `from backend.app import app` 시도, 실패 시 cwd 변경 후 fallback.
 try:

@@ -42,6 +42,8 @@ _DB_ROOTS_CACHE: dict[str, tuple[float, list[Path]]] = {}
 _LOT_LOOKUP_CACHE_TTL_SEC = 60.0
 _LOT_LOOKUP_CACHE_MAX = 256
 _LOT_LOOKUP_CACHE: dict[tuple, tuple[float, dict]] = {}
+_CSV_ROWS_CACHE: dict[str, tuple[float, int, list[dict]]] = {}
+_SCHEMA_COLUMNS_CACHE: dict[str, tuple[float, int, list[str]]] = {}
 
 
 def _db_base() -> Path:
@@ -1452,7 +1454,8 @@ def override_debug(product: str = Query(...)):
 
 
 @router.get("/schema")
-def get_schema(product: str = Query(...)):
+def get_schema(product: str = Query(...), root_lot_id: str = Query(""),
+               fab_lot_id: str = Query(""), wafer_ids: str = Query("")):
     """v8.8.23: 오버라이드 조인을 포함한 실제 view 컬럼과 동일한 스키마를 반환.
        기존에는 ML_TABLE 원본 parquet 컬럼만 반환 → CUSTOM 선택 pool 에 root_lot_id 등
        오버라이드 컬럼이 들어가지 못해 검색/필터 드롭다운에서 누락. `_scan_product` 로
@@ -1774,8 +1777,15 @@ def _load_csv_rows(fp: Path) -> list[dict]:
     if not fp.is_file():
         return []
     try:
+        st = fp.stat()
+        key = str(fp.resolve())
+        cached = _CSV_ROWS_CACHE.get(key)
+        if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+            return [dict(row) for row in cached[2]]
         with open(fp, "r", encoding="utf-8") as f:
-            return list(csv_mod.DictReader(f))
+            rows = list(csv_mod.DictReader(f))
+        _CSV_ROWS_CACHE[key] = (st.st_mtime, st.st_size, [dict(row) for row in rows])
+        return rows
     except Exception:
         return []
 
@@ -1807,7 +1817,14 @@ def _mltable_schema_columns(product: str, prefix: str = "") -> list[str]:
         if not fp.is_file():
             continue
         try:
-            cols = _scan_parquet_compat(fp).collect_schema().names()
+            st = fp.stat()
+            key = str(fp.resolve())
+            cached = _SCHEMA_COLUMNS_CACHE.get(key)
+            if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+                cols = list(cached[2])
+            else:
+                cols = _scan_parquet_compat(str(fp)).collect_schema().names()
+                _SCHEMA_COLUMNS_CACHE[key] = (st.st_mtime, st.st_size, list(cols))
         except Exception:
             continue
         if pref:
@@ -3963,6 +3980,17 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
             logger.warning("_scan_product: main schema 조회 실패 (product=%s) %s: %s",
                            product, type(e).__name__, e)
             return lf
+        if root_lot_id or wafer_ids:
+            try:
+                main_lot_col, main_wf_col = _detect_lot_wafer(lf, product)
+                lf = _filter_lot_wafer(
+                    lf, main_lot_col, main_wf_col,
+                    root_lot_id=root_lot_id,
+                    wafer_ids=wafer_ids,
+                )
+            except Exception as e:
+                logger.warning("_scan_product: main scope filter 실패 (product=%s root=%s wafer=%s) %s: %s",
+                               product, root_lot_id, wafer_ids, type(e).__name__, e)
 
         # v8.8.22: CI 정렬 — fab_lf 컬럼명을 main 쪽 casing 으로 rename.
         #   ex) ML_TABLE 의 ROOT_LOT_ID ↔ hive root_lot_id → join 성공.
@@ -4500,7 +4528,38 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         lf = _filter_lot_wafer(lf, lot_col, wf_col, root_lot_id, wafer_ids,
                                fab_lot_id=fab_filter_for_join, fab_lot_col=fab_lot_col)
 
-        df = lf.collect()
+        def _prepare_view_frame(view_lf):
+            view_schema = view_lf.collect_schema().names()
+            all_data = [c for c in view_schema if c != lot_col and c != wf_col]
+            sel = _select_columns(all_data, custom_name, prefix,
+                                  max_fallback=50, custom_cols=custom_cols)
+            if not custom_name and not custom_cols:
+                for raw_pref in [p.strip() for p in str(prefix or "").split(",") if p.strip()]:
+                    for virt in _virtual_columns_for_prefix(product, raw_pref):
+                        if virt not in sel:
+                            sel.append(virt)
+            rename = _build_col_rename_map(sel, product)
+            sel = sorted(sel, key=lambda c: _natural_param_key(rename.get(c, c)))
+            keep_cols = []
+            for c in (lot_col, wf_col):
+                if c and c in view_schema and c not in keep_cols:
+                    keep_cols.append(c)
+            keep_fab_col = "fab_lot_id" if "fab_lot_id" in view_schema else None
+            if not keep_fab_col:
+                keep_fab_col = (
+                    _ci_resolve_in(fab_lot_col, view_schema)
+                    or _pick_first_present_ci(_FAB_COL_CANDIDATES, view_schema)
+                    or None
+                )
+            if keep_fab_col and keep_fab_col in view_schema and keep_fab_col not in keep_cols:
+                keep_cols.append(keep_fab_col)
+            for c in sel:
+                if c in view_schema and c not in keep_cols:
+                    keep_cols.append(c)
+            q = view_lf.select(keep_cols) if keep_cols else view_lf
+            return q.head(500).collect(), all_data, sel, rename
+
+        df, all_data_cols, selected, col_rename = _prepare_view_frame(lf)
         if df.height == 0 and root_lot_id.strip() and fab_lot_id.strip():
             # If the UI carries a stale Fab Lot while the operator searches a
             # valid root lot, do not let the stale secondary field hide the
@@ -4511,7 +4570,8 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                 root_only_df = _filter_lot_wafer(
                     root_only_lf, lot_col, wf_col, root_lot_id, wafer_ids,
                     fab_lot_col=fab_lot_col,
-                ).collect()
+                )
+                root_only_df, all_data_cols, selected, col_rename = _prepare_view_frame(root_only_df)
                 if root_only_df.height > 0:
                     df = root_only_df
                     _lot_warn = "Fab Lot ID와 Root Lot ID 조합이 없어 Root Lot ID 기준으로 조회했습니다."
@@ -4538,7 +4598,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                             wafer_ids, fab_lot_id=root_input,
                             fab_lot_col=fallback_fab_col,
                         )
-                        fallback_df = fallback_lf.collect()
+                        fallback_df, all_data_cols, selected, col_rename = _prepare_view_frame(fallback_lf)
                         if fallback_df.height > 0:
                             df = fallback_df
                             fab_lot_id = root_input
@@ -4558,25 +4618,6 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                     roots.append(s)
             if roots:
                 root_lot_id = sorted(roots)[0]
-        if df.height > 500:
-            df = df.head(500)
-
-        all_data_cols = [c for c in df.columns if c != lot_col and c != wf_col]
-        selected = _select_columns(all_data_cols, custom_name, prefix,
-                                   max_fallback=50, custom_cols=custom_cols)
-        if not custom_name and not custom_cols:
-            for raw_pref in [p.strip() for p in str(prefix or "").split(",") if p.strip()]:
-                for virt in _virtual_columns_for_prefix(product, raw_pref):
-                    if virt not in selected:
-                        selected.append(virt)
-        # v8.8.14: rule_order + func_step 를 컬럼명에 끼워 넣어 display-rename.
-        #   원본 col 이름은 `_param` 으로 그대로 두고, 렌더용 `_display` 를 별도로 내려보냄.
-        #   정렬은 display 이름 기준으로 → `KNOB_<rule_order>_<func_step>_<feat>` 가
-        #   rule_order 숫자 기준 자연 정렬된다.
-        col_rename = _build_col_rename_map(selected, product)
-        # v8.4.4/v8.8.14: natural sort — rename 후 이름이 있으면 그걸 기준,
-        #   없으면 원본 이름 기준. KNOB_12.0_... 포맷이므로 _natural_param_key 가 rule_order 를 잡아낸다.
-        selected = sorted(selected, key=lambda c: _natural_param_key(col_rename.get(c, c)))
 
         # Wafer header list + fab_lot_id grouping (v8.4.4)
         fab_col = "fab_lot_id" if "fab_lot_id" in df.columns else None
