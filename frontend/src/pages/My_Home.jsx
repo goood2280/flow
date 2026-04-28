@@ -37,7 +37,7 @@ const VCACHE_KEY="hol_home_version_v1";
 function readVerCache(){try{const s=localStorage.getItem(VCACHE_KEY);return s?JSON.parse(s):null;}catch{return null;}}
 function writeVerCache(v){try{localStorage.setItem(VCACHE_KEY,JSON.stringify(v));}catch{}}
 
-function FlowiConsole({onActiveChange}){
+function FlowiConsole({onActiveChange,onNavigate}){
   const[active,setActive]=useState(false);
   const[prompt,setPrompt]=useState("");
   const[busy,setBusy]=useState(false);
@@ -85,11 +85,11 @@ function FlowiConsole({onActiveChange}){
           style={{alignSelf:"stretch",padding:"0 12px",borderRadius:8,border:"none",background:busy||!prompt.trim()?"#404040":"#f97316",color:"#111",fontSize:11,fontFamily:"monospace",fontWeight:800,cursor:busy||!prompt.trim()?"default":"pointer"}}>{busy?"RUNNING":"RUN"}</button>
       </div>
     </form>}
-    <FlowiResult busy={busy} error={err} result={result} prompt={lastPrompt}/>
+    <FlowiResult busy={busy} error={err} result={result} prompt={lastPrompt} onNavigate={onNavigate}/>
   </section>);
 }
 
-function FlowiResult({busy,error,result,prompt}){
+function FlowiResult({busy,error,result,prompt,onNavigate}){
   if(busy)return <div style={{marginTop:10,fontSize:12,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
   if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:12,border:"1px solid #7f1d1d"}}>{error}</div>;
   if(!result)return null;
@@ -97,12 +97,14 @@ function FlowiResult({busy,error,result,prompt}){
   const table=tool.table&&Array.isArray(tool.table.rows)&&Array.isArray(tool.table.columns)?tool.table:null;
   const rows=Array.isArray(tool.rows)?tool.rows:[];
   const knobs=Array.isArray(tool.knobs)?tool.knobs:[];
+  const canNavigate=typeof onNavigate==="function";
+  const featureEntries=Array.isArray(tool.feature_entrypoints)?tool.feature_entrypoints.slice(0,3):[];
   return(<div style={{marginTop:12,borderTop:"1px solid #262626",paddingTop:10}}>
     <div style={{whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.65,color:"#d4d4d4"}}>{result.answer||"응답이 없습니다."}</div>
     <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
       {tool.intent&&<span style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
       {result.llm&&<span style={{fontSize:10,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
-      {Array.isArray(tool.feature_entrypoints)&&tool.feature_entrypoints.slice(0,3).map(ep=><span key={ep.key} title={ep.description||""} style={{fontSize:10,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 7px"}}>{ep.title}</span>)}
+      {featureEntries.map(ep=>canNavigate?<button key={ep.key} type="button" onClick={()=>onNavigate(ep.key)} title={ep.description||""} style={{fontSize:10,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 8px",background:"#1f130b",cursor:"pointer"}}>{ep.title} 열기</button>:<span key={ep.key} title={ep.description||""} style={{fontSize:10,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 7px"}}>{ep.title}</span>)}
     </div>
     <FlowiFeedback result={result} tool={tool} prompt={prompt}/>
     {table&&<FlowiDataTable table={table}/>}
@@ -224,7 +226,7 @@ export default function My_Home({onNavigate,user}){
         <div style={{flex:1,paddingTop:4}}>
           <Cli cmd="--version" output={`v${ver} "${codename}"`}/>
           <div style={{marginTop:6,fontFamily:"'JetBrains Mono',monospace",fontSize:13}}><span style={{color:"#f97316"}}>{">"}</span><span style={{color:"#737373"}}> WELCOME </span><WelcomeType name={user?.username||"user"}/></div>
-          <FlowiConsole onActiveChange={setFlowiConnected}/>
+          <FlowiConsole onActiveChange={setFlowiConnected} onNavigate={nav}/>
         </div>
       </div>
     </div>

@@ -12,7 +12,12 @@
     "api_url":   str,            # POST 대상 (예: https://llm.internal/v1/chat)
     "model":     str,            # e.g. "internal-7b"
     "mode":      str,            # e.g. "fast"
-    "admin_token": str,           # admin-managed bearer token shared by users
+    "admin_token": str,           # admin-managed credential shared by users
+    "provider":  "generic"|"playground",
+    "auth_mode": "bearer"|"dep_ticket"|"none",
+    "system_name": str,           # playground header Send-System-Name
+    "user_id":   str,             # playground header User-Id
+    "user_type": str,             # playground header User-Type
     "headers":   {k: v, ...},    # 인증 헤더 등
     "format":    "openai"|"raw", # 요청 body 스키마.  default "openai" (messages:[{role,content}])
     "extra_body":{k: v, ...},    # POST body 병합 (예: {"temperature":0.2})
@@ -35,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
@@ -53,6 +59,11 @@ _DEFAULT: Dict[str, Any] = {
     "model": "",
     "mode": "fast",
     "admin_token": "",
+    "provider": "generic",
+    "auth_mode": "",
+    "system_name": "",
+    "user_id": "",
+    "user_type": "",
     "headers": {},
     "format": "openai",
     "extra_body": {},
@@ -76,6 +87,21 @@ def _raw_config() -> Dict[str, Any]:
     merged["model"] = str(merged.get("model") or "").strip()
     merged["mode"] = str(merged.get("mode") or "fast").strip() or "fast"
     merged["admin_token"] = str(merged.get("admin_token") or "").strip()
+    provider = str(merged.get("provider") or "generic").strip().lower() or "generic"
+    if provider not in {"generic", "playground"}:
+        provider = "generic"
+    merged["provider"] = provider
+    auth_mode = str(merged.get("auth_mode") or "").strip().lower()
+    if not auth_mode:
+        auth_mode = "dep_ticket" if provider == "playground" else "bearer"
+    if auth_mode not in {"bearer", "dep_ticket", "none"}:
+        auth_mode = "bearer"
+    merged["auth_mode"] = auth_mode
+    merged["system_name"] = str(merged.get("system_name") or "").strip()
+    if provider == "playground" and not merged["system_name"]:
+        merged["system_name"] = "playground"
+    merged["user_id"] = str(merged.get("user_id") or "").strip()
+    merged["user_type"] = str(merged.get("user_type") or "").strip()
     merged["format"] = (merged.get("format") or "openai").strip() or "openai"
     try:
         merged["timeout_s"] = int(merged.get("timeout_s") or 20)
@@ -171,6 +197,103 @@ def _extract_response_text(obj: Any) -> str:
     return ""
 
 
+def _set_header(headers: Dict[str, str], name: str, value: Any) -> None:
+    text = str(value or "").strip()
+    if not text:
+        return
+    for key in list(headers.keys()):
+        if key.lower() == name.lower() and key != name:
+            headers.pop(key, None)
+    headers[name] = text
+
+
+def _replace_header_tokens(value: Any, *, token: str, prompt_msg_id: str,
+                           completion_msg_id: str, cfg: Dict[str, Any]) -> str:
+    text = str(value)
+    replacements = {
+        "{token}": token,
+        "{prompt_msg_id}": prompt_msg_id,
+        "{completion_msg_id}": completion_msg_id,
+        "{system_name}": str(cfg.get("system_name") or ""),
+        "{user_id}": str(cfg.get("user_id") or ""),
+        "{user_type}": str(cfg.get("user_type") or ""),
+    }
+    for key, val in replacements.items():
+        text = text.replace(key, val)
+    return text
+
+
+def _build_request_headers(cfg: Dict[str, Any], *,
+                           auth_token: Optional[str] = None,
+                           prompt_msg_id: Optional[str] = None,
+                           completion_msg_id: Optional[str] = None) -> Dict[str, str]:
+    """Build outbound LLM headers while keeping credentials server-side."""
+    prompt_id = prompt_msg_id or str(uuid.uuid4())
+    completion_id = completion_msg_id or str(uuid.uuid4())
+    token = str(auth_token or cfg.get("admin_token") or "").strip()
+    headers: Dict[str, str] = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    for k, v in (cfg.get("headers") or {}).items():
+        if not k:
+            continue
+        _set_header(
+            headers,
+            str(k),
+            _replace_header_tokens(
+                v,
+                token=token,
+                prompt_msg_id=prompt_id,
+                completion_msg_id=completion_id,
+                cfg=cfg,
+            ),
+        )
+
+    auth_mode = str(cfg.get("auth_mode") or "bearer").strip().lower()
+    if auth_mode == "bearer" and token:
+        _set_header(headers, "Authorization", f"Bearer {token}")
+    elif auth_mode == "dep_ticket" and token:
+        _set_header(headers, "x-dep-ticket", token)
+
+    if str(cfg.get("provider") or "").strip().lower() == "playground":
+        _set_header(headers, "Send-System-Name", cfg.get("system_name") or "playground")
+        _set_header(headers, "User-Id", cfg.get("user_id") or "")
+        _set_header(headers, "User-Type", cfg.get("user_type") or "")
+        _set_header(headers, "Prompt-Msg-Id", prompt_id)
+        _set_header(headers, "Completion-Msg-Id", completion_id)
+    return headers
+
+
+def _build_request_body(cfg: Dict[str, Any], prompt: str,
+                        system: Optional[str] = None) -> Dict[str, Any]:
+    fmt = cfg.get("format") or "openai"
+    provider = str(cfg.get("provider") or "generic").strip().lower()
+    model = cfg.get("model") or ""
+    mode = str(cfg.get("mode") or "").strip()
+    body: Dict[str, Any] = dict(cfg.get("extra_body") or {})
+    if provider == "playground":
+        body.setdefault("temperature", 0.5)
+        body.setdefault("stream", False)
+    elif mode and "mode" not in body:
+        body["mode"] = mode
+    if fmt == "openai":
+        msgs = []
+        if system:
+            msgs.append({"role": "system", "content": system})
+        msgs.append({"role": "user", "content": prompt})
+        body["messages"] = msgs
+        if model:
+            body["model"] = model
+    else:
+        body["prompt"] = prompt
+        if system:
+            body["system"] = system
+        if model:
+            body["model"] = model
+    return body
+
+
 def complete(prompt: str, *, system: Optional[str] = None,
              timeout: Optional[int] = None,
              auth_token: Optional[str] = None) -> Dict[str, Any]:
@@ -188,41 +311,9 @@ def complete(prompt: str, *, system: Optional[str] = None,
     url = _openai_chat_url(cfg.get("api_url") or "", fmt)
     if not url:
         return {"ok": False, "text": "", "error": "llm api_url missing"}
-    model = cfg.get("model") or ""
-    mode = str(cfg.get("mode") or "").strip()
-    body: Dict[str, Any] = dict(cfg.get("extra_body") or {})
-    if mode and "mode" not in body:
-        body["mode"] = mode
-    if fmt == "openai":
-        msgs = []
-        if system:
-            msgs.append({"role": "system", "content": system})
-        msgs.append({"role": "user", "content": prompt})
-        body["messages"] = msgs
-        if model:
-            body["model"] = model
-    else:
-        body["prompt"] = prompt
-        if system:
-            body["system"] = system
-        if model:
-            body["model"] = model
+    body = _build_request_body(cfg, prompt, system)
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    hdrs = {"Content-Type": "application/json"}
-    effective_token = str(auth_token or cfg.get("admin_token") or "").strip()
-    for k, v in (cfg.get("headers") or {}).items():
-        if k:
-            val = str(v)
-            if effective_token and "{token}" in val:
-                val = val.replace("{token}", effective_token)
-            hdrs[str(k)] = val
-    if effective_token and cfg.get("admin_token"):
-        for k in list(hdrs.keys()):
-            if k.lower() == "authorization":
-                hdrs.pop(k, None)
-        hdrs["Authorization"] = f"Bearer {effective_token}"
-    elif effective_token and not any(k.lower() == "authorization" for k in hdrs):
-        hdrs["Authorization"] = f"Bearer {effective_token}"
+    hdrs = _build_request_headers(cfg, auth_token=auth_token)
     to = int(timeout or cfg.get("timeout_s") or 20)
     try:
         req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
