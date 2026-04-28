@@ -220,12 +220,6 @@ def _top_level_data_roots(db_root: Path) -> list[Path]:
         return []
     db_up = db_root.name.upper()
     db_tokens = _name_tokens(db_up)
-    if (
-        db_up.startswith("1.RAWDATA_DB")
-        or db_up in {"FAB", "ET", "EDS", "INLINE"}
-        or {"FAB", "ET", "EDS", "INLINE"} & db_tokens
-    ) and _path_has_data(db_root):
-        return [db_root]
     source_roots: list[Path] = []
     data_roots: list[Path] = []
     try:
@@ -242,6 +236,12 @@ def _top_level_data_roots(db_root: Path) -> list[Path]:
         return []
     if source_roots:
         return source_roots
+    if (
+        db_up.startswith("1.RAWDATA_DB")
+        or db_up in {"FAB", "ET", "EDS", "INLINE"}
+        or {"FAB", "ET", "EDS", "INLINE"} & db_tokens
+    ) and _path_has_data(db_root):
+        return [db_root]
     if _path_has_data(db_root):
         return [db_root]
     return data_roots

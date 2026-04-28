@@ -674,6 +674,12 @@ def get_categories():
     return {"categories": _load_cats()}
 
 
+@router.get("/settings")
+def get_settings_compat():
+    """Compatibility alias for PageGear builds that request page settings."""
+    return get_categories()
+
+
 @router.post("/categories/save")
 def save_categories(req: CategoriesSave, request: Request):
     require_admin(request)
@@ -690,3 +696,9 @@ def save_categories(req: CategoriesSave, request: Request):
         raise HTTPException(400, "At least one category required")
     _save_cats(cats)
     return {"ok": True, "categories": cats}
+
+
+@router.post("/settings/save")
+def save_settings_compat(req: CategoriesSave, request: Request):
+    """Compatibility alias for PageGear builds that request page settings."""
+    return save_categories(req, request)

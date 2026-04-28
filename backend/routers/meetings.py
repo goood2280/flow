@@ -636,6 +636,20 @@ from typing import Any  # noqa: E402
 
 router = APIRouter(prefix="/api/meetings", tags=["meetings"])
 
+
+@router.get("/categories")
+def meeting_categories_compat():
+    """Compatibility alias: meeting settings share the calendar category palette."""
+    from routers.calendar import get_categories
+    return get_categories()
+
+
+@router.post("/categories/save")
+def save_meeting_categories_compat(req: dict, request: Request):
+    """Compatibility alias for older Meeting PageGear builds."""
+    from routers.calendar import CategoriesSave, save_categories
+    return save_categories(CategoriesSave(categories=req.get("categories") or []), request)
+
 MEET_DIR = PATHS.data_root / "meetings"
 MEET_DIR.mkdir(parents=True, exist_ok=True)
 MEET_FILE = MEET_DIR / "meetings.json"
