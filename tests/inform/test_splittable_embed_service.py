@@ -98,3 +98,37 @@ def test_create_inform_keeps_service_snapshot_fab_lot_labels(tmp_path, monkeypat
     assert created["root_lot_id"] == "A1000"
     assert created["fab_lot_id_at_save"] == "A1000A.1"
     assert created["embed_table"]["st_view"]["header_groups"][0]["label"] == "A1000A.1"
+
+
+def test_auto_log_splittable_change_attaches_changed_column_snapshot(tmp_path, monkeypatch):
+    informs_file = tmp_path / "informs.json"
+    monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
+    monkeypatch.setattr(informs, "build_splittable_embed", lambda **kwargs: {
+        "source": "SplitTable/PRODA @ A1000 · CUSTOM(1)",
+        "columns": ["parameter", "#1"],
+        "rows": [["KNOB_GATE", "R1 -> R2"]],
+        "st_view": {
+            "root_lot_id": "A1000",
+            "headers": ["#1"],
+            "rows": [{"_param": "KNOB_GATE", "_cells": {"0": {"actual": "R1", "plan": "R2"}}}],
+        },
+        "st_scope": {"inline_cols": kwargs["custom_cols"]},
+    })
+
+    informs.auto_log_splittable_change(
+        author="tester",
+        product="PRODA",
+        lot_id="A1000",
+        cell_key="A1000|1|KNOB_GATE",
+        old_value="R1",
+        new_value="R2",
+        action="set",
+        fab_lot_id="A1000A.1",
+    )
+
+    saved = informs._load()
+    assert len(saved) == 1
+    assert saved[0]["auto_generated"] is True
+    assert saved[0]["splittable_change"]["column"] == "KNOB_GATE"
+    assert saved[0]["embed_table"]["st_scope"]["inline_cols"] == ["KNOB_GATE"]
+    assert saved[0]["embed_table"]["st_view"]["rows"][0]["_cells"]["0"]["plan"] == "R2"

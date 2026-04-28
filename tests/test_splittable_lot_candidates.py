@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -28,6 +29,40 @@ def test_root_lot_candidates_prefer_renderable_mltable_roots():
     assert result["fab_source"] == "1.RAWDATA_DB_FAB/PRODA"
     assert "A1000" in result["candidates"]
     assert "A0001" not in result["candidates"]
+
+
+def test_operational_history_matches_saved_full_inform_root(tmp_path, monkeypatch):
+    informs_file = tmp_path / "informs.json"
+    tracker_file = tmp_path / "issues.json"
+    informs_file.write_text(json.dumps([{
+        "id": "inf_1",
+        "root_lot_id": "LOT029AA",
+        "lot_id": "",
+        "wafer_id": "7",
+        "product": "PRODA",
+        "module": "KNOB",
+        "reason": "PEMS",
+        "text": "plan saved",
+        "author": "tester",
+        "created_at": "2026-04-28T10:00:00",
+        "flow_status": "received",
+        "group_ids": [],
+    }]), encoding="utf-8")
+    tracker_file.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(splittable, "INFORMS_FILE", informs_file)
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tracker_file)
+
+    items = splittable._load_operational_history(
+        product="ML_TABLE_PRODA",
+        root_lot_id="LOT029AA",
+        wafer_ids="",
+        username="tester",
+        role="admin",
+    )
+
+    assert len(items) == 1
+    assert items[0]["source"] == "inform"
+    assert items[0]["detail"] == "plan saved"
 
 
 def test_lot_ids_do_not_suggest_fab_roots_that_cannot_render():

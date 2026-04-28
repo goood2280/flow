@@ -818,6 +818,29 @@ def _scope_label(has_wafer: bool) -> str:
     return "wafer" if has_wafer else "lot"
 
 
+def _root_lot_matches(candidate, root_lot_id: str) -> bool:
+    cand = str(candidate or "").strip()
+    root = str(root_lot_id or "").strip()
+    if not cand or not root:
+        return False
+    if cand == root:
+        return True
+    # Legacy tracker/inform entries sometimes stored only the old 5-char root.
+    if len(cand) <= 5 and root.startswith(cand):
+        return True
+    if len(root) <= 5 and cand.startswith(root):
+        return True
+    return False
+
+
+def _lot_or_fab_matches_root(value, root_lot_id: str) -> bool:
+    text = str(value or "").strip()
+    root = str(root_lot_id or "").strip()
+    if not text or not root:
+        return False
+    return text == root or text.startswith(root)
+
+
 def _load_operational_history(product: str, root_lot_id: str, wafer_ids: str,
                               username: str, role: str) -> list[dict]:
     if not root_lot_id:
@@ -834,8 +857,9 @@ def _load_operational_history(product: str, root_lot_id: str, wafer_ids: str,
     for issue in tracker_items or []:
         matched_rows = []
         for row in (issue.get("lots") or []):
-            rid = (row.get("root_lot_id") or "")[:5]
-            if rid != root_lot_id:
+            rid = str(row.get("root_lot_id") or "").strip()
+            lot_value = str(row.get("lot_id") or "").strip()
+            if not (_root_lot_matches(rid, root_lot_id) or _lot_or_fab_matches_root(lot_value, root_lot_id)):
                 continue
             wafer_val = str(row.get("wafer_id") or "").strip()
             if wafer_val and not _wafer_matches(wafer_val, wafer_set):
@@ -879,9 +903,15 @@ def _load_operational_history(product: str, root_lot_id: str, wafer_ids: str,
 
     inform_items = filter_by_visibility(load_json(INFORMS_FILE, []), username, role, key="group_ids")
     for inf in inform_items or []:
-        inf_root = (inf.get("root_lot_id") or (inf.get("lot_id") or "")[:5] or "")[:5]
+        inf_root = str(inf.get("root_lot_id") or "").strip()
+        inf_lot = str(inf.get("lot_id") or "").strip()
         inf_fab = str(inf.get("fab_lot_id_at_save") or inf.get("lot_id") or "").strip()
-        if inf_root != root_lot_id and not inf_fab.startswith(root_lot_id):
+        fab_parts = [p.strip() for p in inf_fab.split(",") if p.strip()]
+        if not (
+            _root_lot_matches(inf_root, root_lot_id)
+            or _lot_or_fab_matches_root(inf_lot, root_lot_id)
+            or any(_lot_or_fab_matches_root(part, root_lot_id) for part in fab_parts)
+        ):
             continue
         inf_wafer = str(inf.get("wafer_id") or "").strip()
         if inf_wafer and not _wafer_matches(inf_wafer, wafer_set):
