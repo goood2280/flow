@@ -631,6 +631,12 @@ def get_config():
     return cfg
 
 
+@router.get("/settings")
+def get_settings_compat():
+    """Compatibility alias for older PageGear builds."""
+    return get_config()
+
+
 @router.post("/config")
 def save_config_endpoint(req: ConfigReq, _admin=Depends(require_admin)):
     """Admin 전용 — 모듈/사유 옵션 목록 편집."""
@@ -667,6 +673,12 @@ def save_config_endpoint(req: ConfigReq, _admin=Depends(require_admin)):
     resp = dict(cfg)
     resp["products"] = _merged_catalog_products(resp.get("products") or [])
     return {"ok": True, "config": resp}
+
+
+@router.post("/settings")
+def save_settings_compat(req: ConfigReq, _admin=Depends(require_admin)):
+    """Compatibility alias for older PageGear builds."""
+    return save_config_endpoint(req, _admin)
 
 
 @router.post("/splittable-snapshot")
@@ -808,6 +820,12 @@ def add_product(req: ProductReq, request: Request):
     _save_config(cfg)
     _audit(request, "inform:product_add", detail=f"product={p} by={me['username']}", tab="inform")
     return {"ok": True, "products": products}
+
+
+@router.get("/products/add")
+def add_product_get_compat(request: Request, product: str = Query("")):
+    """Back-compat for older Inform UI builds that used a query-string add call."""
+    return add_product(ProductReq(product=product), request)
 
 
 @router.post("/products/dedup")

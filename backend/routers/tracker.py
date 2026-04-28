@@ -370,6 +370,16 @@ def get_tracker_db_sources(request: Request):
     }
 
 
+@router.get("/settings")
+def get_tracker_settings_compat(request: Request):
+    """Compatibility settings payload for PageGear builds expecting one endpoint."""
+    return {
+        "categories": _load_cats(),
+        "db_sources": get_tracker_db_sources(request),
+        "scheduler": get_tracker_scheduler(request),
+    }
+
+
 @router.post("/db-sources/save")
 def save_tracker_db_sources(req: TrackerDbSourcesReq, request: Request, _a=Depends(require_admin)):
     from core.lot_step import FAB_ROOT, ET_ROOT, list_db_source_roots, tracker_db_sources_config, tracker_role_names_config

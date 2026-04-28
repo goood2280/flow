@@ -14,7 +14,7 @@ v4.1 (2026-04-19, adapter-engineer slice):
       `<db_root>/_uniques.json` unchanged, for frontend feature-select
     autocomplete catalog.
 """
-import json, datetime, io, csv as csv_mod, logging
+import json, datetime, io, csv as csv_mod, logging, time
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -35,6 +35,10 @@ from core.utils import (
 logger = logging.getLogger("flow.splittable")
 
 router = APIRouter(prefix="/api/splittable", tags=["splittable"])
+
+_DISCOVERY_CACHE_TTL_SEC = 30.0
+_RGLOB_CACHE: dict[tuple[str, tuple[str, ...]], tuple[float, list[Path]]] = {}
+_DB_ROOTS_CACHE: dict[str, tuple[float, list[Path]]] = {}
 
 
 def _db_base() -> Path:
@@ -963,14 +967,25 @@ def _list_db_roots():
     db_base = _db_base()
     if not db_base.exists():
         return []
+    try:
+        cache_key = str(db_base.resolve())
+    except Exception:
+        cache_key = str(db_base)
+    now = time.monotonic()
+    cached = _DB_ROOTS_CACHE.get(cache_key)
+    if cached and now - cached[0] < _DISCOVERY_CACHE_TTL_SEC:
+        return list(cached[1])
     # Case 1: children match — legacy `Fab/` 아래의 `1.RAWDATA_DB_*` 구조를 우선 존중.
     cands = [p for p in db_base.iterdir() if _is_db_root_dir(p)]
     if cands:
         cands.sort(key=lambda p: _rank_db_root_name(p.name))
+        _DB_ROOTS_CACHE[cache_key] = (now, list(cands))
         return cands
     # Case 2: db_base itself is a direct rawdata root (or a legacy short root with no rawdata children).
     if _is_db_root_dir(db_base):
-        return [db_base]
+        out = [db_base]
+        _DB_ROOTS_CACHE[cache_key] = (now, out)
+        return out
     # Case 3: db_base has no 1.RAWDATA_DB* children, but has product-like subfolders
     # (any subfolder that contains at least one parquet, possibly under hive date=* part).
     try:
@@ -988,9 +1003,12 @@ def _list_db_roots():
                 has_product = True
                 break
         if has_product:
-            return [db_base]
+            out = [db_base]
+            _DB_ROOTS_CACHE[cache_key] = (now, out)
+            return out
     except Exception:
         pass
+    _DB_ROOTS_CACHE[cache_key] = (now, [])
     return []
 
 
@@ -1024,7 +1042,7 @@ def list_fab_roots():
 
 
 @router.get("/ml-table-match")
-def ml_table_match(product: str = Query(...)):
+def ml_table_match(product: str = Query(...), detail: bool = False):
     """v8.7.8/v8.8.5: ML_TABLE_<PROD> 에서 PROD 추출 → `1.RAWDATA_DB*` / 레거시 짧은 이름 상위폴더 내 <PROD>/ 매칭.
     Ex) product=ML_TABLE_PRODA → {"matches": [{"root":"1.RAWDATA_DB_FAB","product":"PRODA","path":"1.RAWDATA_DB_FAB/PRODA"}, ...]}
     v8.8.3: 자동으로 선택된 fab_source (_auto_derive_fab_source) 와 현재 override 상태도 같이 반환.
@@ -1057,8 +1075,9 @@ def ml_table_match(product: str = Query(...)):
         pass
     manual_fs = _normalize_fab_source_path((manual_ov.get("fab_source") or "").strip())
     effective = manual_fs or auto_path
-    # v8.8.5: 현재 적용 중인 오버라이드 resolve 세부정보. FE 에서 "어디서 읽어옴?" 에 바로 답변 가능.
-    override_meta = _resolve_override_meta(p, include_diagnostics=False)
+    # Default to the light resolver.  The full resolver scans FAB parquet just
+    # to populate diagnostics, which made product switching feel slow.
+    override_meta = _resolve_override_meta(p, include_diagnostics=False) if detail else _resolve_override_meta_light(p)
     return {
         "product": p,
         "derived_product": pro,
@@ -2870,10 +2889,20 @@ def _resolve_fab_source_target(fab_source: str):
 def _rglob_files_ci(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
     suffix_set = {s.casefold() for s in suffixes}
     try:
-        return sorted(
+        cache_key = (str(root.resolve()), tuple(sorted(suffix_set)))
+    except Exception:
+        cache_key = (str(root), tuple(sorted(suffix_set)))
+    now = time.monotonic()
+    cached = _RGLOB_CACHE.get(cache_key)
+    if cached and now - cached[0] < _DISCOVERY_CACHE_TTL_SEC:
+        return list(cached[1])
+    try:
+        out = sorted(
             [p for p in root.rglob("*") if p.is_file() and p.suffix.casefold() in suffix_set],
             key=lambda p: str(p).casefold(),
         )
+        _RGLOB_CACHE[cache_key] = (now, out)
+        return list(out)
     except Exception:
         return []
 
@@ -3369,7 +3398,10 @@ def _resolve_override_meta_light(product: str) -> dict:
     meta = {
         "enabled": False, "manual_override": False,
         "fab_source": "", "fab_col": "fab_lot_id", "ts_col": "",
-        "join_keys": [], "override_cols": [], "error": None,
+        "root_col": "", "wf_col": "", "join_keys": [], "override_cols": [],
+        "scanned_count": 0, "row_count": 0, "sample_fab_values": [],
+        "raw_columns": [], "runtime_columns": [], "column_aliases": {},
+        "error": None,
     }
     try:
         product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
@@ -3382,6 +3414,8 @@ def _resolve_override_meta_light(product: str) -> dict:
         meta["manual_override"] = bool(manual)
         meta["fab_source"] = fab_source
         meta["enabled"] = bool(fab_source)
+        meta["root_col"] = (ov.get("root_col") or "").strip()
+        meta["wf_col"] = (ov.get("wf_col") or ov.get("wafer_col") or "").strip()
         meta["fab_col"] = (ov.get("fab_col") or "fab_lot_id").strip() or "fab_lot_id"
         meta["ts_col"] = (ov.get("ts_col") or "").strip()
         join_keys = ov.get("join_keys") or []
