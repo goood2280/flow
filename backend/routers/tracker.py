@@ -380,6 +380,18 @@ def get_tracker_settings_compat(request: Request):
     }
 
 
+@router.get("")
+def tracker_bootstrap(request: Request):
+    """Root compatibility payload for clients probing /api/tracker."""
+    return {
+        "ok": True,
+        "categories": _load_cats(),
+        "issues": list_issues(request).get("issues", []),
+        "db_sources": get_tracker_db_sources(request),
+        "scheduler": get_tracker_scheduler(request),
+    }
+
+
 @router.post("/db-sources/save")
 def save_tracker_db_sources(req: TrackerDbSourcesReq, request: Request, _a=Depends(require_admin)):
     from core.lot_step import FAB_ROOT, ET_ROOT, list_db_source_roots, tracker_db_sources_config, tracker_role_names_config
