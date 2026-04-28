@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import importlib
+import importlib.machinery
+import importlib.util
 import os
 from pathlib import Path
 import sys
 import traceback
+import types
 
 from fastapi import FastAPI
 
@@ -24,6 +26,90 @@ def _ensure_backend_import_path(routers_dir: Path) -> tuple[Path, Path]:
         if raw not in sys.path:
             sys.path.insert(0, raw)
     return backend_root, app_root
+
+
+def _module_path(module: object) -> Path | None:
+    raw = getattr(module, "__file__", None)
+    if not raw:
+        return None
+    try:
+        return Path(raw).resolve()
+    except OSError:
+        return None
+
+
+def _package_paths(module: object) -> list[Path]:
+    paths = getattr(module, "__path__", None)
+    if not paths:
+        return []
+    resolved: list[Path] = []
+    for raw in paths:
+        try:
+            resolved.append(Path(raw).resolve())
+        except OSError:
+            continue
+    return resolved
+
+
+def _clear_package(package_name: str) -> None:
+    for name in list(sys.modules):
+        if name == package_name or name.startswith(package_name + "."):
+            sys.modules.pop(name, None)
+
+
+def _ensure_local_package(package_name: str, package_dir: Path) -> None:
+    """Bind a top-level package name to the package beside this app."""
+
+    package_dir = package_dir.resolve()
+    existing = sys.modules.get(package_name)
+    if existing is not None and package_dir in _package_paths(existing):
+        return
+
+    if existing is not None:
+        _clear_package(package_name)
+
+    init_file = package_dir / "__init__.py"
+    if init_file.exists():
+        spec = importlib.util.spec_from_file_location(
+            package_name,
+            init_file,
+            submodule_search_locations=[str(package_dir)],
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot locate package spec for {package_name}: {init_file}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[package_name] = module
+        spec.loader.exec_module(module)
+        return
+
+    module = types.ModuleType(package_name)
+    module.__package__ = package_name
+    module.__path__ = [str(package_dir)]  # type: ignore[attr-defined]
+    spec = importlib.machinery.ModuleSpec(package_name, loader=None, is_package=True)
+    spec.submodule_search_locations = [str(package_dir)]
+    module.__spec__ = spec
+    sys.modules[package_name] = module
+
+
+def _import_module_from_path(module_name: str, file_path: Path):
+    file_path = file_path.resolve()
+    existing = sys.modules.get(module_name)
+    if existing is not None and _module_path(existing) == file_path:
+        return existing
+
+    sys.modules.pop(module_name, None)
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot locate module spec for {module_name}: {file_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
 
 
 def _format_import_error(module_name: str, file_path: Path, exc: Exception, backend_root: Path, app_root: Path) -> str:
@@ -50,7 +136,9 @@ def include_router_modules(app: FastAPI, routers_dir: Path, logger) -> tuple[lis
     expose a secondary `match_router`.
     """
 
+    routers_dir = routers_dir.resolve()
     backend_root, app_root = _ensure_backend_import_path(routers_dir)
+    _ensure_local_package("routers", routers_dir)
     loaded: list[str] = []
     failed: list[tuple[str, str]] = []
     for file_path in sorted(routers_dir.glob("*.py")):
@@ -58,7 +146,7 @@ def include_router_modules(app: FastAPI, routers_dir: Path, logger) -> tuple[lis
             continue
         module_name = f"routers.{file_path.stem}"
         try:
-            module = importlib.import_module(module_name)
+            module = _import_module_from_path(module_name, file_path)
             if hasattr(module, "router"):
                 app.include_router(module.router)
                 loaded.append(file_path.stem)
