@@ -69,7 +69,11 @@ def _load_prefixes():
 
 def _cast_cats_lazy(lf):
     """Cast Categorical to Utf8 in a LazyFrame."""
-    casts = [pl.col(n).cast(_STR, strict=False) for n, d in lf.schema.items() if is_cat(d)]
+    try:
+        schema = lf.collect_schema()
+    except Exception:
+        schema = lf.schema
+    casts = [pl.col(n).cast(_STR, strict=False) for n, d in schema.items() if is_cat(d)]
     return lf.with_columns(casts) if casts else lf
 
 
@@ -313,16 +317,21 @@ def _build_col_rename_map(selected_cols: list, product: str) -> dict:
             if key == full_l or key == tail_l:
                 return v
         return None
+    needed_prefixes = {
+        str(col or "").partition("_")[0].upper()
+        for col in selected_cols
+        if col and "_" in str(col)
+    }
     try:
-        knob_meta = _build_knob_meta(product)
+        knob_meta = _build_knob_meta(product) if "KNOB" in needed_prefixes else {}
     except Exception:
         knob_meta = {}
     try:
-        inline_meta = _build_inline_meta(product)
+        inline_meta = _build_inline_meta(product) if "INLINE" in needed_prefixes else {}
     except Exception:
         inline_meta = {}
     try:
-        vm_meta = _build_vm_meta(product)
+        vm_meta = _build_vm_meta(product) if "VM" in needed_prefixes else {}
     except Exception:
         vm_meta = {}
 
@@ -402,11 +411,15 @@ def _detect_lot_wafer(lf, product: str = ""):
             wf_col = _ci_resolve_in(ov.get("wf_col") or "", schema_names_list) or None
             if root_col or wf_col:
                 # Fill missing with auto-detect
-                auto_r, auto_w = find_lot_wafer_cols(lf.schema)
+                auto_r, auto_w = find_lot_wafer_cols(schema_names_list)
                 return (root_col or auto_r, wf_col or auto_w)
         except Exception:
             pass
-    return find_lot_wafer_cols(lf.schema)
+    try:
+        schema_names = lf.collect_schema().names()
+    except Exception:
+        schema_names = lf.schema
+    return find_lot_wafer_cols(schema_names)
 
 
 def _product_path(product: str):
@@ -1045,7 +1058,7 @@ def ml_table_match(product: str = Query(...)):
     manual_fs = _normalize_fab_source_path((manual_ov.get("fab_source") or "").strip())
     effective = manual_fs or auto_path
     # v8.8.5: 현재 적용 중인 오버라이드 resolve 세부정보. FE 에서 "어디서 읽어옴?" 에 바로 답변 가능.
-    override_meta = _resolve_override_meta(p)
+    override_meta = _resolve_override_meta(p, include_diagnostics=False)
     return {
         "product": p,
         "derived_product": pro,
@@ -1359,7 +1372,8 @@ def get_schema(product: str = Query(...)):
        을 별도 필드로도 내려 FE 가 '오버라이드 제공' 뱃지를 표시할 수 있게 한다.
     """
     try:
-        lf = _scan_product(product)
+        lf = _scan_product(product, root_lot_id=root_lot_id,
+                           fab_lot_id=fab_lot_id, wafer_ids=wafer_ids)
         schema = lf.collect_schema()
         cols = [{"name": n, "dtype": str(d)} for n, d in schema.items()]
     except Exception:
@@ -1373,7 +1387,7 @@ def get_schema(product: str = Query(...)):
     # 오버라이드에서 실제로 join 된 컬럼 목록 (FE 가 검색 pool 에서 '숨김 해제' 할 기준).
     override_cols_present: list = []
     try:
-        meta = _resolve_override_meta(product)
+        meta = _resolve_override_meta(product, include_diagnostics=False)
         if meta.get("enabled"):
             override_cols_present = list(meta.get("override_cols_present") or [])
     except Exception:
@@ -3089,6 +3103,43 @@ def _contains_literal_ci_expr(col_name: str, needle: str):
         .str.to_uppercase()
         .str.contains(str(needle or "").strip().upper(), literal=True)
     )
+
+
+def _apply_fab_scope_filters(fab_lf, fab_names, ov: dict, root_lot_id: str = "",
+                             fab_lot_id: str = "", wafer_ids: str = "",
+                             fab_col: str = ""):
+    """Limit FAB source rows before latest-row picking and join."""
+    root_scope = str(root_lot_id or "").strip()
+    fab_scope = str(fab_lot_id or "").strip()
+    wafer_scope = str(wafer_ids or "").strip()
+    if root_scope:
+        root_col = _resolve_source_col_name((ov.get("root_col") or "").strip(), fab_names) \
+                   or _ci_resolve_in("root_lot_id", fab_names)
+        if root_col:
+            fab_lf = fab_lf.filter(_join_key_expr(root_col) == root_scope.upper())
+    if fab_scope:
+        target_fab_col = fab_col if fab_col in fab_names else _pick_first_present_ci(_FAB_COL_CANDIDATES, fab_names)
+        if target_fab_col:
+            fab_lf = fab_lf.filter(_join_key_expr(target_fab_col) == fab_scope.upper())
+    if wafer_scope:
+        wf_col = _resolve_source_col_name((ov.get("wf_col") or ov.get("wafer_col") or "").strip(), fab_names) \
+                 or _pick_first_present_ci(("wafer_id", "wafer"), fab_names)
+        if wf_col:
+            wf_list = [w.strip() for w in wafer_scope.split(",") if w.strip()]
+            try:
+                wf_ints = [int(w) for w in wf_list]
+                wf_strs = set()
+                for n in wf_ints:
+                    wf_strs.update([str(n), f"{n:02d}", f"W{n}", f"W{n:02d}"])
+                fab_lf = fab_lf.filter(
+                    pl.col(wf_col).cast(_STR, strict=False).is_in(list(wf_strs))
+                    | pl.col(wf_col).cast(pl.Int64, strict=False).is_in(wf_ints)
+                )
+            except ValueError:
+                fab_lf = fab_lf.filter(pl.col(wf_col).cast(_STR, strict=False).is_in(wf_list))
+    return fab_lf
+
+
 # v8.8.16: hive 원천에서 끌어와 ML_TABLE 값을 덮어쓸 기본 컬럼 집합.
 #   사내 `1.RAWDATA_DB*/<PROD>/date=*/*.parquet` 레이아웃에서 이 이름이 있으면 소스값으로 교체.
 #   fab_col(보통 fab_lot_id) 는 레거시 단일 필드와 병합되어 override_cols 에 합류.
@@ -3098,7 +3149,7 @@ _DEFAULT_OVERRIDE_COLS = (
 )
 
 
-def _resolve_override_meta(product: str) -> dict:
+def _resolve_override_meta(product: str, include_diagnostics: bool = True) -> dict:
     """v8.8.5: view / ml-table-match 양쪽에서 공용. 현재 product 에 대해 적용된 오버라이드 설정 요약.
 
     Returns (모든 필드 optional, 에러 시 error 로 이유 표기):
@@ -3289,15 +3340,16 @@ def _resolve_override_meta(product: str) -> dict:
             return meta
 
         # row count + sample
-        try:
-            rc = fab_lf.select(pl.len()).collect()
-            meta["row_count"] = int(rc.item()) if rc.height > 0 else 0
-        except Exception as e:
-            meta["row_count"] = -1
+        if include_diagnostics:
+            try:
+                rc = fab_lf.select(pl.len()).collect()
+                meta["row_count"] = int(rc.item()) if rc.height > 0 else 0
+            except Exception as e:
+                meta["row_count"] = -1
         try:
             sample_cols = [c for c in (join_keys + [meta["fab_col"]] + ([meta["ts_col"]] if meta["ts_col"] else [])) if c in fab_names]
             sample = fab_lf.select(sample_cols)
-            if meta["ts_col"] and meta["ts_col"] in fab_names:
+            if include_diagnostics and meta["ts_col"] and meta["ts_col"] in fab_names:
                 sample = sample.sort(meta["ts_col"], descending=True, nulls_last=True)
             vals = sample.head(5).collect()
             if meta["fab_col"] in vals.columns:
@@ -3309,6 +3361,41 @@ def _resolve_override_meta(product: str) -> dict:
         meta["enabled"] = True
     except Exception as e:
         meta["error"] = f"resolve 중 예외: {type(e).__name__}: {e}"
+    return meta
+
+
+def _resolve_override_meta_light(product: str) -> dict:
+    """Cheap view badge metadata; avoid rescanning FAB source after /view already did."""
+    meta = {
+        "enabled": False, "manual_override": False,
+        "fab_source": "", "fab_col": "fab_lot_id", "ts_col": "",
+        "join_keys": [], "override_cols": [], "error": None,
+    }
+    try:
+        product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
+        cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
+        ov = _lot_override_for(cfg, product)
+        manual = _normalize_fab_source_path((ov.get("fab_source") or "").strip())
+        if manual.startswith("root:"):
+            manual = ""
+        fab_source = manual or _auto_derive_fab_source(product)
+        meta["manual_override"] = bool(manual)
+        meta["fab_source"] = fab_source
+        meta["enabled"] = bool(fab_source)
+        meta["fab_col"] = (ov.get("fab_col") or "fab_lot_id").strip() or "fab_lot_id"
+        meta["ts_col"] = (ov.get("ts_col") or "").strip()
+        join_keys = ov.get("join_keys") or []
+        if isinstance(join_keys, str):
+            join_keys = [k.strip() for k in join_keys.split(",") if k.strip()]
+        meta["join_keys"] = list(join_keys)
+        raw_oc = ov.get("override_cols")
+        if isinstance(raw_oc, str):
+            raw_oc = [c.strip() for c in raw_oc.split(",") if c.strip()]
+        meta["override_cols"] = list(raw_oc or _DEFAULT_OVERRIDE_COLS)
+        if not fab_source and product.casefold().startswith("ml_table_"):
+            meta["error"] = "FAB source not matched"
+    except Exception as e:
+        meta["error"] = f"{type(e).__name__}: {e}"
     return meta
 
 def _pick_first_present(candidates, available_names):
@@ -3656,7 +3743,10 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
     except Exception:
         limit = 500
     try:
-        lf = _scan_product(product)
+        lf = _scan_product(
+            product,
+            root_lot_id=root_lot_id if str(col or "").casefold() != "root_lot_id" else "",
+        )
         schema_names = lf.collect_schema().names()
         lot_col, _ = _detect_lot_wafer(lf, product)
         target = ""
@@ -3688,7 +3778,8 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
         return {"candidates": [], "source_col": col, "root_ids": []}
 
 
-def _scan_product(product: str):
+def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
+                  wafer_ids: str = ""):
     """Scan ML_TABLE_<PROD>.parquet + hive override join.
 
     v8.8.26: 실패 경로마다 logger.warning 로 가시화 (이전 blanket except 제거).
@@ -3772,6 +3863,13 @@ def _scan_product(product: str):
         tc_raw = (ov.get("ts_col") or "").strip()
         ts_col = (_resolve_source_col_name(tc_raw, fab_schema_names) if tc_raw else "") \
                  or _pick_ts_col(fab_schema_names)
+        fab_lf = _apply_fab_scope_filters(
+            fab_lf, fab_schema_names, ov,
+            root_lot_id=root_lot_id,
+            fab_lot_id=fab_lot_id,
+            wafer_ids=wafer_ids,
+            fab_col=fab_col,
+        )
 
         raw_oc = ov.get("override_cols")
         if isinstance(raw_oc, str):
@@ -3871,7 +3969,7 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
     # v8.8.26: main 이 all-null 이거나 비어있으면 override fab_source 로 폴백.
     if not lots_list:
         try:
-            meta = _resolve_override_meta(product)
+            meta = _resolve_override_meta(product, include_diagnostics=False)
             fab_source = (meta.get("fab_source") or "").strip()
             if fab_source and not meta.get("error"):
                 fab_lf = _scan_fab_source(fab_source)
@@ -3993,7 +4091,7 @@ def get_lot_candidates(
     lf = None
     if source == "override" and product.casefold().startswith("ml_table_"):
         try:
-            meta = _resolve_override_meta(product)
+            meta = _resolve_override_meta(product, include_diagnostics=False)
             fab_source = (meta.get("fab_source") or "").strip()
             if fab_source and not meta.get("error"):
                 fab_lf = _scan_fab_source(fab_source)
@@ -4006,7 +4104,10 @@ def get_lot_candidates(
             return {"col": col, "candidates": [], "source": "override",
                     "note": "override 비활성 또는 fab_source 없음"}
     if lf is None:
-        lf = _scan_product(product)
+        lf = _scan_product(
+            product,
+            root_lot_id=root_scope if col.casefold() != "root_lot_id" else "",
+        )
 
     schema_names = lf.collect_schema().names()
     # v8.8.26: CI 매칭 — FE 가 "ROOT_LOT_ID"(ML_TABLE casing) 로 요청해도 raw 소스의
@@ -4159,7 +4260,7 @@ def resolve_fab_lot_snapshot(product: str, root_lot_id: str, wafer_id: str = "")
     if not ml_product or not root:
         return ""
     try:
-        lf = _scan_product(ml_product)
+        lf = _scan_product(ml_product, root_lot_id=root, wafer_ids=str(wafer_id or ""))
         lot_col, wf_col = _detect_lot_wafer(lf, ml_product)
         if not lot_col:
             return ""
@@ -4212,7 +4313,8 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
     _lot_warn = ""
     fp = _product_path(product)
     try:
-        lf = _scan_product(product)
+        lf = _scan_product(product, root_lot_id=root_lot_id,
+                           fab_lot_id=fab_lot_id, wafer_ids=wafer_ids)
         lot_col, wf_col = _detect_lot_wafer(lf, product)
         # v8.4.4/v8.8.3: fab_lot_col — 매뉴얼 override > 자동 추론 > "fab_lot_id".
         fab_lot_col = "fab_lot_id"
@@ -4262,7 +4364,8 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             # valid root lot, do not let the stale secondary field hide the
             # renderable SplitTable rows. Root remains the primary scope.
             try:
-                root_only_lf = _scan_product(product)
+                root_only_lf = _scan_product(product, root_lot_id=root_lot_id,
+                                             wafer_ids=wafer_ids)
                 root_only_df = _filter_lot_wafer(
                     root_only_lf, lot_col, wf_col, root_lot_id, wafer_ids,
                     fab_lot_col=fab_lot_col,
@@ -4280,7 +4383,8 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             root_input = root_lot_id.strip()
             if root_input and not fab_lot_id.strip():
                 try:
-                    fallback_lf = _scan_product(product)
+                    fallback_lf = _scan_product(product, fab_lot_id=root_input,
+                                                wafer_ids=wafer_ids)
                     fallback_names = fallback_lf.collect_schema().names()
                     fallback_fab_col = (
                         _ci_resolve_in(fab_lot_col, fallback_names)
@@ -4473,13 +4577,17 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                 pass
 
         # v8.8.5: view 응답에 오버라이드 resolve 결과 동봉 — FE 상단 배지에 "어디서 읽어왔는지" 바로 표시.
-        override_meta = _resolve_override_meta(product)
+        override_meta = _resolve_override_meta_light(product)
         # v9.0.5: FAB 후보는 DB FAB 원천의 정확한 root 매칭만 노출한다.
         #   DB FAB 에 없는 root 는 ML_TABLE LOT_ID / joined null fallback 을 쓰지 않는다.
-        available_fab_lots = []
-        hist_lots = _fab_history_scope(product, root_lot_id=root_lot_id, limit=1000)
-        if hist_lots.get("candidates"):
-            available_fab_lots = hist_lots["candidates"]
+        available_fab_lots = sorted(
+            {str(v).strip() for v in wafer_fab_list if str(v or "").strip()},
+            key=lambda s: s.upper(),
+        )
+        if not available_fab_lots:
+            hist_lots = _fab_history_scope(product, root_lot_id=root_lot_id, limit=1000)
+            if hist_lots.get("candidates"):
+                available_fab_lots = hist_lots["candidates"]
         return {
             "product": product, "lot_col": lot_col, "wf_col": wf_col,
             "headers": headers, "rows": rows,
@@ -4781,7 +4889,7 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
                  username: str = Query(""),
                  custom_cols: str = Query("")):
     fp = _product_path(product)
-    lf = _scan_product(product)
+    lf = _scan_product(product, root_lot_id=root_lot_id, wafer_ids=wafer_ids)
     lot_col, wf_col = _detect_lot_wafer(lf)
     lf = _filter_lot_wafer(lf, lot_col, wf_col, root_lot_id, wafer_ids)
     df = lf.collect()
@@ -4894,7 +5002,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         import sys
         raise HTTPException(500, f"openpyxl not installed at {sys.executable}: {e}")
 
-    lf = _scan_product(product)
+    lf = _scan_product(product, root_lot_id=root_lot_id, wafer_ids=wafer_ids)
     lot_col, wf_col = _detect_lot_wafer(lf, product)
     lf = _filter_lot_wafer(lf, lot_col, wf_col, root_lot_id, wafer_ids)
     df = lf.collect()

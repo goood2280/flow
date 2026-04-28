@@ -787,6 +787,8 @@ def _normalize_products(products: list) -> list:
 
 
 @router.post("/products/add")
+@router.put("/products/add")
+@router.patch("/products/add")
 def add_product(req: ProductReq, request: Request):
     # v8.8.33 보안: admin 또는 page_admin('informs') 만 카탈로그 변경.
     from core.auth import is_page_admin
