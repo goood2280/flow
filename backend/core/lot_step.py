@@ -459,6 +459,13 @@ def _product_names_under_root(root_dir: Path) -> list[str]:
     except Exception:
         return names
 
+    try:
+        for fp in sorted(root_dir.iterdir(), key=lambda x: x.name.lower()):
+            if fp.is_file() and fp.suffix.lower() in (".parquet", ".csv"):
+                _add(_product_from_data_file(fp))
+    except Exception:
+        pass
+
     for child in children:
         if child.name.startswith((".", "_", "__")):
             continue
@@ -492,6 +499,12 @@ def _product_names_under_root(root_dir: Path) -> list[str]:
     for table_dir in children:
         if table_dir.name.startswith((".", "_", "__", "product=")):
             continue
+        try:
+            for fp in sorted(table_dir.iterdir(), key=lambda x: x.name.lower()):
+                if fp.is_file() and fp.suffix.lower() in (".parquet", ".csv"):
+                    _add(_product_from_data_file(fp))
+        except Exception:
+            pass
         try:
             parts = [p for p in table_dir.iterdir() if p.is_dir() and p.name.startswith("product=")]
         except Exception:
@@ -540,6 +553,40 @@ def _product_dirs_under_root(root_dir: Path, product: str) -> list[Path]:
         for alias in aliases:
             _add(_casefold_child_path(child, f"product={alias}"))
     return dirs
+
+
+def _product_from_data_file(path: Path) -> str:
+    """Infer product from flat source filenames such as PRODA_2024-04-23.parquet."""
+    if not path or path.suffix.lower() not in {".parquet", ".csv"}:
+        return ""
+    stem = path.stem.strip()
+    if not stem or stem.lower().startswith("part"):
+        return ""
+    if stem.startswith("product="):
+        stem = stem[len("product="):].strip()
+    if stem.upper().startswith("ML_TABLE_"):
+        stem = stem[len("ML_TABLE_"):].strip()
+    stem = re.split(r"[_-](?:19|20)\d{2}(?:[-_]?\d{2}){0,2}", stem, maxsplit=1)[0].strip()
+    return stem
+
+
+def _product_files_under_root(root_dir: Path, product: str) -> list[Path]:
+    raw = str(product or "").strip().upper()
+    if raw.startswith("ML_TABLE_"):
+        raw = raw[len("ML_TABLE_"):].strip()
+    aliases = _product_aliases(raw) or {raw}
+    files: list[Path] = []
+    try:
+        children = sorted(root_dir.iterdir(), key=lambda x: x.name.lower())
+    except Exception:
+        return files
+    for fp in children:
+        if not fp.is_file() or fp.suffix.lower() != ".parquet":
+            continue
+        inferred = _product_from_data_file(fp).upper()
+        if inferred and inferred in aliases:
+            files.append(fp)
+    return files
 
 
 def _apply_lot_filters(lf, schema: list[str], product: str = "", root_lot_id: str = "", lot_id: str = ""):
@@ -808,9 +855,17 @@ def _parquet_files(root_name: str, product: str = "", source: str = "auto") -> l
     files: list[Path] = []
     if raw:
         for root_dir in root_dirs:
+            files.extend(_product_files_under_root(root_dir, raw))
             dirs = _product_dirs_under_root(root_dir, raw)
             for d in dirs:
+                files.extend(_product_files_under_root(d, raw))
                 files.extend(sorted(d.rglob("*.parquet")))
+            try:
+                for child in root_dir.iterdir():
+                    if child.is_dir() and not child.name.startswith((".", "_", "__", "product=")):
+                        files.extend(_product_files_under_root(child, raw))
+            except Exception:
+                pass
         return _dedupe_paths(files)
     for root_dir in root_dirs:
         files.extend(sorted(root_dir.rglob("*.parquet")))

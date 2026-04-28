@@ -126,6 +126,25 @@ def test_tracker_product_and_lot_sources_support_nested_product_partitions(monke
     assert _parquet_files("FAB_HISTORY", "PRODA", source="fab") == [part]
 
 
+def test_tracker_sources_support_flat_product_files(monkeypatch, tmp_path):
+    db = tmp_path / "DB"
+    flat = db / "ET_MEASURE" / "PRODA_2026-04-27.parquet"
+    flat.parent.mkdir(parents=True)
+    flat.write_bytes(b"placeholder")
+    import core.lot_step as lot_step
+
+    monkeypatch.setattr(lot_step, "_get_db_root", lambda: db)
+    monkeypatch.setattr(lot_step, "tracker_db_sources_config", lambda: {
+        "monitor": "FAB_HISTORY",
+        "analysis": "ET_MEASURE",
+        "fab": "FAB_HISTORY",
+        "et": "ET_MEASURE",
+    })
+
+    assert db_product_candidates(source="et", source_root="ET_MEASURE") == ["PRODA"]
+    assert _parquet_files("ET_MEASURE", "PRODA", source="et") == [flat]
+
+
 def test_expand_lot_row_for_wafer_selection_splits_rows_and_resets_watch_state():
     rows = expand_lot_row_for_wafer_selection(
         {
