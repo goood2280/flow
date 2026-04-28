@@ -25,14 +25,14 @@ for _path in (_APP_ROOT, _BACKEND_ROOT):
     sys.path[:] = [p for p in sys.path if p != _raw]
     sys.path.insert(0, _raw)
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from typing import List
 import polars as pl
 from core.paths import PATHS
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_column
 from core.audit import record_user as _audit_user
-from core.auth import current_user
+from core.auth import current_user, require_admin
 from core.domain import classify_process_area
 from core import s3_sync as _s3
 from core.utils import (
@@ -126,8 +126,8 @@ PLAN_DIR = PATHS.data_root / "splittable"
 PLAN_DIR.mkdir(parents=True, exist_ok=True)
 MATCH_CACHE_DIR = PLAN_DIR / "match_cache"
 MATCH_CACHE_VERSION = 2
-MATCH_CACHE_REFRESH_MINUTES_DEFAULT = 10
-MATCH_CACHE_REFRESH_MINUTES_MIN = 5
+MATCH_CACHE_REFRESH_MINUTES_DEFAULT = 30
+MATCH_CACHE_REFRESH_MINUTES_MIN = 30
 MATCH_CACHE_REFRESH_MINUTES_MAX = 60
 MATCH_CACHE_ROOT_COL = "__cache_root_lot_id"
 MATCH_CACHE_WAFER_COL = "__cache_wafer_id"
@@ -934,6 +934,80 @@ def _load_operational_history(product: str, root_lot_id: str, wafer_ids: str,
         })
     out.sort(key=lambda x: x.get("time") or "", reverse=True)
     return out[:300]
+
+
+def _issue_comment_count(issue: dict) -> int:
+    total = 0
+    for cm in issue.get("comments") or []:
+        if not isinstance(cm, dict):
+            continue
+        total += 1
+        total += len([r for r in (cm.get("replies") or []) if isinstance(r, dict)])
+    return total
+
+
+def _product_matches_issue(product: str, issue: dict, row: dict) -> bool:
+    aliases = _product_aliases(product)
+    if not aliases:
+        return True
+    values = [
+        issue.get("product"),
+        row.get("product"),
+        row.get("monitor_prod"),
+        row.get("prod"),
+    ]
+    candidates = {str(v or "").strip().upper() for v in values if str(v or "").strip()}
+    if not candidates:
+        return True
+    return bool(candidates & aliases)
+
+
+def _related_tracker_issues(product: str, root_lot_id: str,
+                            username: str = "", role: str = "admin",
+                            limit: int = 8) -> list[dict]:
+    root = str(root_lot_id or "").strip()
+    if not root:
+        return []
+    try:
+        from routers.groups import filter_by_visibility
+    except Exception:
+        def filter_by_visibility(items, username, role, key="group_ids"):
+            return items
+    try:
+        tracker_items = filter_by_visibility(load_json(TRACKER_ISSUES_FILE, []), username, role, key="group_ids")
+    except Exception:
+        tracker_items = []
+    out: list[dict] = []
+    for issue in tracker_items or []:
+        matched_lots = []
+        matched_wafers = []
+        for row in (issue.get("lots") or []):
+            rid = str(row.get("root_lot_id") or "").strip()
+            lot_value = str(row.get("lot_id") or "").strip()
+            if not (_root_lot_matches(rid, root) or _lot_or_fab_matches_root(lot_value, root)):
+                continue
+            if not _product_matches_issue(product, issue, row):
+                continue
+            matched_lots.append(lot_value or rid or root)
+            wafer = str(row.get("wafer_id") or "").strip()
+            if wafer:
+                matched_wafers.append(wafer)
+        if not matched_lots:
+            continue
+        out.append({
+            "id": issue.get("id") or "",
+            "title": issue.get("title") or "(untitled issue)",
+            "status": issue.get("status") or "",
+            "category": issue.get("category") or "",
+            "priority": issue.get("priority") or "",
+            "username": issue.get("username") or "",
+            "updated_at": issue.get("updated_at") or issue.get("created") or issue.get("timestamp") or "",
+            "matched_lots": sorted({v for v in matched_lots if v}),
+            "matched_wafers": sorted({v for v in matched_wafers if v}, key=_natural_param_key),
+            "comment_count": _issue_comment_count(issue),
+        })
+    out.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+    return out[:max(1, min(20, int(limit or 8)))]
 
 
 # ── Products / schema ──
@@ -3876,6 +3950,39 @@ def start_match_cache_scheduler() -> bool:
     return True
 
 
+class MatchCacheRefreshReq(BaseModel):
+    product: str = ""
+    force: bool = True
+
+
+@router.get("/match-cache/status")
+def match_cache_status(request: Request, product: str = Query("")):
+    me = current_user(request)
+    if me.get("role") != "admin":
+        raise HTTPException(403, "admin only")
+    products = [product] if str(product or "").strip() else [p.get("name") for p in list_products().get("products", [])]
+    rows = []
+    for prod in [p for p in products if p]:
+        current = _match_cache_current(prod)
+        if not current:
+            continue
+        meta = current.get("meta") or {}
+        rows.append({
+            "product": current.get("product") or prod,
+            "fab_source": current.get("fab_source") or "",
+            "path": str(current.get("path") or ""),
+            "built_at": meta.get("built_at", ""),
+            "row_count": int(meta.get("row_count") or 0),
+            "join_keys": meta.get("join_keys") or [],
+        })
+    return {"ok": True, "interval_minutes": _match_cache_refresh_minutes(), "products": rows}
+
+
+@router.post("/match-cache/refresh")
+def refresh_match_cache_now(req: MatchCacheRefreshReq, request: Request, _a=Depends(require_admin)):
+    return refresh_match_cache(product=req.product or "", force=bool(req.force))
+
+
 def _resolve_override_meta(product: str, include_diagnostics: bool = True) -> dict:
     """v8.8.5: view / ml-table-match 양쪽에서 공용. 현재 product 에 대해 적용된 오버라이드 설정 요약.
 
@@ -5275,7 +5382,8 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                custom_name: str = Query(""), view_mode: str = Query("all"),
                history_mode: str = Query("all"),
                fab_lot_id: str = Query(""),
-               custom_cols: str = Query("")):
+               custom_cols: str = Query(""),
+               request: Request = None):
     # v8.8.33: custom_cols (쉼표 구분) 추가 — Save 없이 체크만 한 컬럼을 ad-hoc 으로 전달.
     # v9.0.3: 한 root_lot_id 아래 여러 fab_lot_id 가 정상이다. FAB 공정 진행 중
     #   fab_lot_id 가 바뀔 수 있으므로 앞 5자 일치 여부를 검증/경고 기준으로 쓰지 않는다.
@@ -5573,6 +5681,16 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             hist_lots = _fab_history_scope(product, root_lot_id=root_lot_id, limit=1000)
             if hist_lots.get("candidates"):
                 available_fab_lots = hist_lots["candidates"]
+        viewer_username = ""
+        viewer_role = "admin"
+        if request is not None:
+            try:
+                me = current_user(request)
+                viewer_username = me.get("username") or ""
+                viewer_role = me.get("role") or "user"
+            except Exception:
+                viewer_username = ""
+                viewer_role = "admin"
         return {
             "product": product, "lot_col": lot_col, "wf_col": wf_col,
             "headers": headers, "rows": rows,
@@ -5586,6 +5704,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             "mismatch_count": len(mismatches),
             "override": override_meta,
             "lot_warn": _lot_warn,
+            "related_issues": _related_tracker_issues(product, root_lot_id, viewer_username, viewer_role),
         }
     except HTTPException:
         raise
@@ -5664,24 +5783,8 @@ def save_plan(req: PlanReq):
             )
     except Exception:
         pass
-    # v8.7.0: 인폼 로그에 자동 기록 (plan 변경 별건으로 루트 인폼 생성).
-    try:
-        from routers.informs import auto_log_splittable_change
-        fab_cache: dict[tuple[str, str], str] = {}
-        for ck, old, val in auto_entries:
-            if old != val:
-                parts = str(ck or "").split("|")
-                cache_key = (req.root_lot_id or (parts[0] if parts else ""), parts[1] if len(parts) > 1 else "")
-                if cache_key not in fab_cache:
-                    fab_cache[cache_key] = _resolve_fab_lot_for_cell(req.product, ck, req.root_lot_id)
-                auto_log_splittable_change(
-                    author=req.username, product=req.product,
-                    lot_id=req.root_lot_id, cell_key=ck,
-                    old_value=old, new_value=val, action="set",
-                    fab_lot_id=fab_cache.get(cache_key, ""),
-                )
-    except Exception:
-        pass
+    # SplitTable plan changes stay in SplitTable history/notifications only.
+    # They no longer create InformLog entries automatically.
     _audit_user(req.username, "splittable:plan_save",
                 detail=f"product={req.product} saved={len(req.plans)} rejected={len(rejected)}",
                 tab="splittable")
@@ -5713,18 +5816,7 @@ def delete_plan(req: PlanDeleteReq):
             deleted.append((ck, old))
     save_json(pf, data)
     _invalidate_plan_risk_cache(req.product)
-    try:
-        from routers.informs import auto_log_splittable_change
-        for ck, old in deleted:
-            parts = str(ck or "").split("|")
-            root_lot = parts[0] if parts else ""
-            auto_log_splittable_change(
-                author=req.username, product=req.product, lot_id=root_lot,
-                cell_key=ck, old_value=old, new_value=None, action="delete",
-                fab_lot_id=_resolve_fab_lot_for_cell(req.product, ck, root_lot),
-            )
-    except Exception:
-        pass
+    # SplitTable plan deletes stay in SplitTable history/notifications only.
     _audit_user(req.username, "splittable:plan_delete",
                 detail=f"product={req.product} deleted={len(deleted)}",
                 tab="splittable")

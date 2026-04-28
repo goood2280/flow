@@ -25,20 +25,20 @@ Fab data analytics + plan vs actual tracking platform.
 
 | 페이지 | 현재 역할 |
 |---|---|
-| 홈 | 버전, changelog, contact bell, 공지 배너 |
-| 파일탐색기 | DB root 파일 탐색, parquet/CSV preview, SQL filter, S3 동기화 상태 |
-| 대시보드 | chart, fab progress, alert watch, snapshot, admin section visibility |
-| 스플릿 테이블 | root/fab lot, wafer 축 plan vs actual, diff, notes, XLSX export |
-| 트래커 | 이슈, Gantt, category, group visibility, 이슈 단위 메일/ET watch |
+| 홈 | 버전, changelog, contact bell, 공지 배너, Flow-i 대화형 프롬프트/LLM 연결 상태 |
+| 파일탐색기 | DB root 파일 탐색, parquet/CSV preview, SQL filter, S3 동기화 상태, 기본 샘플 로드 |
+| 대시보드 | chart, fab progress, alert watch, snapshot, admin section visibility, lazy filter/join projection |
+| 스플릿 테이블 | root/fab lot cache, wafer 축 plan vs actual, diff, notes, related issues, XLSX export |
+| 트래커 | 이슈, Gantt, category, group visibility, 댓글/대댓글, 이슈 단위 메일/ET watch |
 | ET 레포트 | product/lot 검색, measurement package, `step_seq(XXpt)`, reformatter index, PPTX |
 | 웨이퍼 레이아웃 | wafer/shot/chip/TEG layout, selected TEG, chip-shot table, CSV export |
 | 테이블맵 | DB 관계 그래프, table edit/version, product YAML block 관리 |
 | ML 분석 | TabICL/XGBoost/LightGBM trigger, SHAP/feature importance, process area filter |
-| 인폼 로그 | wafer 단위 thread, reason chip, image, SplitTable snapshot, deadline/Gantt |
+| 인폼 로그 | lot/root 단위 thread, PEMS reason, image, SplitTable CUSTOM snapshot, timeline |
 | 회의관리 | 회의 차수, agenda, minutes, tracker issue import, mail |
 | 변경점 관리 | 월 grid, pending/in_progress/done, meeting action/decision sync |
 | Messages | 사용자-admin 1:1 문의, admin 공지, bell 동기화 |
-| 관리자 | 사용자, 권한, 그룹, 알림, 메일/API, root, backup, monitor, Base CSV |
+| 관리자 | 사용자, 권한, 그룹, 알림, 메일/API/LLM, root, backup, monitor, Base CSV |
 | 개발자 가이드 | 앱 내부에서 보는 요약형 개발 문서 |
 
 ## Quick Start
@@ -162,7 +162,7 @@ git diff --check
 
 ## Latest Changes
 
-**9.0.4 (2026-04-26)**: Tracker 이슈 단위 메일/수신그룹/템플릿, ET Report reformatter index/PPTX, TableMap product YAML 관리, WF Layout TEG/Chip View, Dashboard section visibility와 Meeting/Inform 연동을 정리했다.
+**9.0.4 (2026-04-29)**: Flow-i 홈 프롬프트를 대화형으로 정리하고 LLM 연결 확인/모델 표시/컨텍스트 전달을 보강했다. SplitTable/Tracker는 root_lot_id↔fab_lot_id 캐시와 수동 스캔, LOT 노트/related issue, 댓글·대댓글 삭제 권한을 정리했다. Dashboard/FileBrowser는 대용량 parquet 대응을 위해 lazy filter, join projection, preview/download cap을 보강했고, Admin monitor와 공통 Loading UX도 운영 기준으로 맞췄다.
 
 전체 내역은 [VERSION.json](VERSION.json)을 기준으로 한다.
 

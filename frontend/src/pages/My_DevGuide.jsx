@@ -26,6 +26,10 @@ const NAV = [
   { id:"files", label:"파일 구조" },
   { id:"api", label:"API 레퍼런스" },
   { id:"db", label:"DB 구조" },
+  { id:"schema", label:"표준 스키마" },
+  { id:"flowi", label:"Flow-i 규칙" },
+  { id:"perf", label:"대용량 운영" },
+  { id:"ux", label:"UX 시스템" },
   { id:"add", label:"기능 추가" },
   { id:"update", label:"업데이트 시스템" },
   { id:"theme", label:"테마 시스템" },
@@ -222,6 +226,136 @@ df = pl.read_parquet(files).filter(pl.sql_expr("item_id = 'VTH' AND et_value > 0
           <span><span style={{display:"inline-block",width:10,height:10,borderRadius:"50%",background:"#fbbf24",marginRight:6}} />노랑: 24~72시간</span>
           <span><span style={{display:"inline-block",width:10,height:10,borderRadius:"50%",background:"#ef4444",marginRight:6}} />빨강: 72시간 이상 또는 없음</span>
         </div>
+
+        <H2 id="schema">표준 스키마</H2>
+        <p>Flow의 분석 기능과 Flow-i는 아래 contract를 기준으로만 데이터를 연결합니다. 컬럼명은 schema catalog에서 실제 존재 여부를 확인한 뒤 사용하며, 없는 컬럼은 추측하지 않습니다.</p>
+        <Code>{`# 공통 식별자
+product        # 제품명 또는 ML_TABLE product
+root_lot_id    # root lot
+fab_lot_id     # 최신 FAB lot, splittable match_cache 에서 우선 조회
+wafer_id       # wafer 식별자
+lot_wf         # root_lot_id + "_" + wafer_id
+shot_id        # optional, 있으면 lot_wf 보다 우선
+die_x, die_y   # optional, shot_id 없을 때 shot/die 매칭 후보
+measure_time   # 측정 시각 또는 source update time`}</Code>
+
+        <p><strong style={{color:"var(--text-primary)"}}>INLINE:</strong> 기본 집계는 <code>lot_wf</code> 기준 평균입니다. 단, INLINE과 상대 데이터 양쪽에 shot/die key가 있으면 shot 단위로 먼저 매칭합니다.</p>
+        <Code>{`INLINE required:
+- product, root_lot_id, wafer_id, lot_wf
+- step or step_id
+- item or item_id
+- value
+- measure_time
+
+default:
+group by product, root_lot_id, wafer_id, lot_wf, step, item
+value = avg(value)`}</Code>
+
+        <p><strong style={{color:"var(--text-primary)"}}>ET:</strong> 기본 집계는 <code>lot_wf</code> 기준 median입니다.</p>
+        <Code>{`ET required:
+- product, root_lot_id or lot_id/fab_lot_id
+- wafer_id, lot_wf
+- step_id
+- item_id
+- value
+- measure_time
+
+default:
+group by product, root_lot_id, wafer_id, lot_wf, step_id, item_id
+value = median(value)`}</Code>
+
+        <p><strong style={{color:"var(--text-primary)"}}>ML_TABLE_제품:</strong> 4000열 이상 wide table을 전제로 합니다. 전체 collect 금지, schema catalog를 먼저 보여주고 선택된 컬럼만 읽습니다.</p>
+        <Code>{`ML_TABLE required:
+- product, root_lot_id, wafer_id, lot_wf
+- fab_lot_id optional
+- KNOB_* columns
+- target/metric columns
+
+guard:
+- default selected columns <= 100
+- preview rows <= configured query budget
+- product/date/lot/filter 없이 broad scan 금지`}</Code>
+
+        <p><strong style={{color:"var(--text-primary)"}}>매칭 우선순위:</strong></p>
+        <Code>{`1. root_lot_id + wafer_id + shot_id
+2. root_lot_id + wafer_id + die_x + die_y
+3. root_lot_id + wafer_id + site/field/reticle
+4. lot_wf = root_lot_id + "_" + wafer_id
+
+결과에는 항상 join key, left/right row 수, matched row 수, null/drop 비율을 표시합니다.`}</Code>
+
+        <p><strong style={{color:"var(--text-primary)"}}>반도체 기본 metric dictionary:</strong> DIBL, Rch, DC, Rs, Rc, LKG, Short, Vth/VT, Ion, Ioff, Idsat, Ilin, BV, CD, Overlay, Thickness, Resistance, Contact, Defect. 이 사전은 후보 검색용이며 실제 데이터 확정은 DB schema와 사용자 선택으로만 합니다.</p>
+
+        <H2 id="flowi">Flow-i 규칙</H2>
+        <p>Flow-i는 자유 실행 agent가 아니라 등록된 단위기능을 고르는 입구입니다. LLM은 JSON 계획과 설명을 만들 수 있지만 실제 실행은 백엔드 단위기능이 검증합니다.</p>
+        <Code>{`Flow-i pipeline:
+1. prompt 수신
+2. feature/action 후보 선택
+3. role, tab permission, query budget 검사
+4. 애매하면 1/2/3 선택지로 질문
+5. schema catalog로 실제 컬럼 존재 확인
+6. 단위기능 실행
+7. 기존 화면 renderer와 같은 표/차트 결과 반환
+8. user memory/activity log 기록`}</Code>
+
+        <p><strong style={{color:"var(--text-primary)"}}>권한:</strong> 일반 user는 조회/요약/차트만 가능합니다. Admin 파일 조작은 별도 admin-only 단위기능, diff, 확인, audit log, soft-delete를 거쳐야 합니다.</p>
+        <Code>{`read-only user tools:
+- schema_search
+- split_table_view
+- inform_log_search
+- issue_tracker_search
+- raw_data_preview
+- dashboard_metric_scatter
+- ml_table_column_search
+
+admin-only mutation tools:
+- file_patch_admin_only
+- file_move_admin_only
+- file_delete_to_trash_admin_only
+- cache_refresh_admin_only
+- settings_edit_admin_only`}</Code>
+
+        <p><strong style={{color:"var(--text-primary)"}}>차트 요청:</strong> 예를 들어 "INLINE CD와 ET LKG Corr scatter 그리고 1차식 fitting"은 아래 순서로 처리합니다.</p>
+        <Code>{`1. INLINE CD 후보를 schema catalog에서 검색
+2. ET LKG 후보를 schema catalog에서 검색
+3. 후보가 여러 개면 1/2/3 선택지를 표시
+4. INLINE value = avg by lot_wf
+5. ET value = median by lot_wf
+6. shot/die key가 있으면 shot-level left join 우선
+7. scatter + Corr + optional y=ax+b fitting
+8. ML_TABLE KNOB coloring/filter는 lot_wf 또는 shot key로 추가 left join`}</Code>
+
+        <H2 id="perf">대용량 운영</H2>
+        <p>INLINE/ET 50~100GB, ML_TABLE wide table을 기준으로 설계합니다. 원본 Parquet는 유지하고, DuckDB/Polars lazy scan, cache, index table을 붙여 broad scan을 피합니다.</p>
+        <Code>{`source of truth:
+- Parquet files
+
+fast path:
+- DuckDB view/index for SQL preview/filter
+- splittable match_cache for root_lot_id -> latest fab_lot_id
+- schema catalog for wide ML_TABLE columns
+- activity/user memory index for recommendations
+
+query budget:
+- product/date/lot/filter 없는 원본 전체 scan 금지
+- heavy query concurrency: 1 기본
+- cache builder concurrency: 1
+- table result paging
+- preview row/column cap
+- atomic cache build: temp file -> replace`}</Code>
+
+        <p><strong style={{color:"var(--text-primary)"}}>4 core / 15GB 기준:</strong> Polars/DuckDB thread는 3 수준, BLAS thread는 1, memory danger threshold는 85%로 둡니다. Admin 모니터의 수동 부하는 최대 시간과 메모리 cap을 둡니다.</p>
+
+        <H2 id="ux">UX 시스템</H2>
+        <p>Flow는 작업용 도구이므로 페이지마다 같은 밀도, 글씨, 색, 표 스타일을 사용합니다. 공통 컴포넌트는 <code>frontend/src/components/UXKit.jsx</code>를 우선 사용합니다.</p>
+        <Code>{`UX rules:
+- no blank page: cached data 또는 skeleton 먼저 표시
+- long job: job id/progress/cancel 제공
+- stale-while-revalidate: 기존 결과 먼저 표시 후 갱신
+- loading/empty/error 상태 문구 통일
+- table/filter/chart 색상 팔레트 통일
+- card radius <= 8px
+- dashboard/splittable/inform/tracker/admin spacing 통일`}</Code>
 
         <H2 id="add">새 기능 추가</H2>
         <p><strong style={{color:"var(--text-primary)"}}>1단계.</strong> 백엔드 라우터 생성:</p>

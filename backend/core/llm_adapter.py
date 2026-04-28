@@ -13,7 +13,7 @@
     "model":     str,            # e.g. "internal-7b"
     "mode":      str,            # e.g. "fast"
     "admin_token": str,           # admin-managed credential shared by users
-    "provider":  "generic"|"playground",
+    "provider":  "generic"|"openai"|"openai_compatible"|"playground",
     "auth_mode": "bearer"|"dep_ticket"|"none",
     "system_name": str,           # playground header Send-System-Name
     "user_id":   str,             # playground header User-Id
@@ -88,7 +88,7 @@ def _raw_config() -> Dict[str, Any]:
     merged["mode"] = str(merged.get("mode") or "fast").strip() or "fast"
     merged["admin_token"] = str(merged.get("admin_token") or "").strip()
     provider = str(merged.get("provider") or "generic").strip().lower() or "generic"
-    if provider not in {"generic", "playground"}:
+    if provider not in {"generic", "openai", "openai_compatible", "playground"}:
         provider = "generic"
     merged["provider"] = provider
     auth_mode = str(merged.get("auth_mode") or "").strip().lower()
@@ -275,7 +275,7 @@ def _build_request_body(cfg: Dict[str, Any], prompt: str,
     if provider == "playground":
         body.setdefault("temperature", 0.5)
         body.setdefault("stream", False)
-    elif mode and "mode" not in body:
+    elif provider == "generic" and mode and "mode" not in body:
         body["mode"] = mode
     if fmt == "openai":
         msgs = []

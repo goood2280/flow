@@ -135,6 +135,16 @@ def _issue_mail_watch(issue: dict) -> dict:
     }
 
 
+def _comment_count(issue: dict) -> int:
+    total = 0
+    for c in issue.get("comments") or []:
+        if not isinstance(c, dict):
+            continue
+        total += 1
+        total += len([r for r in (c.get("replies") or []) if isinstance(r, dict)])
+    return total
+
+
 def _category_source(category: str, default: str = "auto") -> str:
     """Resolve tracker category to lot tracking source."""
     name = (category or "").strip()
@@ -297,6 +307,20 @@ class CommentReq(BaseModel):
     lot_id: str = ""
     wafer_id: str = ""
 
+
+class CommentReplyReq(BaseModel):
+    issue_id: str
+    parent_index: int
+    username: str = ""
+    text: str = ""
+
+
+class CommentDeleteReq(BaseModel):
+    issue_id: str
+    comment_index: int
+    reply_index: Optional[int] = None
+
+
 class LotBulkReq(BaseModel):
     issue_id: str
     username: str = ""
@@ -311,6 +335,12 @@ class TrackerSchedulerReq(BaseModel):
     enabled: bool = True
     interval_minutes: int = 30
     et_stable_delay_minutes: int = 180
+
+
+class EtLotCacheRefreshReq(BaseModel):
+    product: str = ""
+    source_root: str = ""
+    force: bool = True
 
 
 class TrackerDbSourcesReq(BaseModel):
@@ -368,6 +398,27 @@ def run_tracker_scheduler_now(request: Request, _a=Depends(require_admin)):
         **scheduler_status(),
         "can_edit": True,
     }
+
+
+@router.get("/et-lot-cache/status")
+def get_et_lot_cache_status(request: Request,
+                            product: str = Query(""),
+                            source_root: str = Query("")):
+    me = current_user(request)
+    if me.get("role") != "admin":
+        raise HTTPException(403, "admin only")
+    from core.lot_step import et_lot_cache_status
+    return et_lot_cache_status(product=product, source_root=source_root)
+
+
+@router.post("/et-lot-cache/refresh")
+def refresh_et_lot_cache_now(req: EtLotCacheRefreshReq, request: Request, _a=Depends(require_admin)):
+    from core.lot_step import refresh_et_lot_cache
+    return refresh_et_lot_cache(
+        product=req.product or "",
+        source_root=req.source_root or "",
+        force=bool(req.force),
+    )
 
 
 def _sync_role_categories(prev_roles: dict, next_roles: dict) -> dict:
@@ -613,18 +664,19 @@ def tracker_lot_candidates(request: Request,
             "requires_product": True,
             "candidates": [],
         }
-    fast_candidates = _tracker_mltable_lot_candidates(
-        product=product,
-        prefix=prefix,
-        limit=max(1, min(500, int(limit or 200))),
-    )
-    if fast_candidates:
-        return {
-            "source": resolved_source,
-            "source_root": source_root,
-            "candidates": fast_candidates,
-            "cache": "mltable",
-        }
+    if resolved_source != "et":
+        fast_candidates = _tracker_mltable_lot_candidates(
+            product=product,
+            prefix=prefix,
+            limit=max(1, min(500, int(limit or 200))),
+        )
+        if fast_candidates:
+            return {
+                "source": resolved_source,
+                "source_root": source_root,
+                "candidates": fast_candidates,
+                "cache": "mltable",
+            }
     candidates = lot_id_candidates(
         product=product,
         source_root=source_root,
@@ -632,6 +684,14 @@ def tracker_lot_candidates(request: Request,
         prefix=prefix,
         limit=max(1, min(500, int(limit or 200))),
     )
+    if candidates:
+        cache_name = "et_lot" if any(c.get("cache") == "et_lot" for c in candidates) else ""
+        return {
+            "source": resolved_source,
+            "source_root": source_root,
+            "candidates": candidates,
+            **({"cache": cache_name} if cache_name else {}),
+        }
     return {
         "source": resolved_source,
         "source_root": source_root,
@@ -700,7 +760,7 @@ def list_issues(request: Request, status: str = Query(""), limit: int = Query(20
             "summary": summary,
             "closed_at": iss.get("closed_at"),
             "lot_count": len(iss.get("lots", [])),
-            "comment_count": len(iss.get("comments", [])),
+            "comment_count": _comment_count(iss),
             "group_ids": iss.get("group_ids") or [],
         })
     # v8.8.28: updated_at 내림차순 정렬 (최신 수정 위). 기존 reversed(created 기준) 대체.
@@ -836,6 +896,8 @@ def add_comment(req: CommentReq, request: Request):
                 targets.add(u)
         preview = (req.text or "")[:80]
         for tgt in targets:
+            if tgt == req.username:
+                continue
             emit_event(
                 "my_tracker_comment",
                 actor=req.username or "",
@@ -847,6 +909,111 @@ def add_comment(req: CommentReq, request: Request):
             )
     except Exception:
         pass
+    return {"ok": True}
+
+
+@router.post("/comment/reply")
+def add_comment_reply(req: CommentReplyReq, request: Request):
+    me = current_user(request)
+    username = me.get("username") or ""
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "reply text required")
+    issues = _load()
+    iss = next((i for i in issues if i.get("id") == req.issue_id), None)
+    if not iss:
+        raise HTTPException(404)
+    comments = iss.get("comments") if isinstance(iss.get("comments"), list) else []
+    if req.parent_index < 0 or req.parent_index >= len(comments):
+        raise HTTPException(404, "parent comment not found")
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    reply = {
+        "username": username,
+        "text": text,
+        "timestamp": now,
+    }
+    parent = dict(comments[req.parent_index] or {})
+    replies = list(parent.get("replies") or [])
+    replies.append(reply)
+    parent["replies"] = replies
+    comments[req.parent_index] = parent
+    iss["comments"] = comments
+    iss["updated_at"] = now
+    iss["updated_by"] = username
+    try:
+        iss["revision"] = int(iss.get("revision") or 0) + 1
+    except Exception:
+        iss["revision"] = 1
+    _save(issues)
+    try:
+        from core.notify import emit_event
+        targets = set()
+        if iss.get("username"):
+            targets.add(iss["username"])
+        if parent.get("username"):
+            targets.add(parent["username"])
+        for r in parent.get("replies") or []:
+            u = r.get("username") if isinstance(r, dict) else ""
+            if u:
+                targets.add(u)
+        preview = text[:80]
+        for tgt in targets:
+            if tgt == username:
+                continue
+            emit_event(
+                "my_tracker_comment_reply",
+                actor=username,
+                target_user=tgt,
+                title=f"[이슈 대댓글] {iss.get('title') or iss['id']}",
+                body=f"{username} · {preview}",
+                payload={"issue_id": iss["id"], "parent_index": req.parent_index, "text": preview},
+            )
+    except Exception:
+        pass
+    return {"ok": True, "reply": reply}
+
+
+@router.post("/comment/delete")
+def delete_comment(req: CommentDeleteReq, request: Request):
+    me = current_user(request)
+    username = me.get("username") or ""
+    is_admin = me.get("role") == "admin"
+    issues = _load()
+    iss = next((i for i in issues if i.get("id") == req.issue_id), None)
+    if not iss:
+        raise HTTPException(404)
+    comments = iss.get("comments") if isinstance(iss.get("comments"), list) else []
+    if req.comment_index < 0 or req.comment_index >= len(comments):
+        raise HTTPException(404, "comment not found")
+    raw_parent = comments[req.comment_index]
+    parent = dict(raw_parent) if isinstance(raw_parent, dict) else {"text": str(raw_parent or ""), "username": ""}
+    target = parent
+    if req.reply_index is not None:
+        replies = list(parent.get("replies") or [])
+        if req.reply_index < 0 or req.reply_index >= len(replies):
+            raise HTTPException(404, "reply not found")
+        raw_reply = replies[req.reply_index]
+        target = dict(raw_reply) if isinstance(raw_reply, dict) else {"text": str(raw_reply or ""), "username": ""}
+        owner = target.get("username") or ""
+        if not is_admin and owner != username:
+            raise HTTPException(403, "작성자 또는 admin 만 삭제 가능")
+        del replies[req.reply_index]
+        parent["replies"] = replies
+        comments[req.comment_index] = parent
+    else:
+        owner = target.get("username") or ""
+        if not is_admin and owner != username:
+            raise HTTPException(403, "작성자 또는 admin 만 삭제 가능")
+        del comments[req.comment_index]
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    iss["comments"] = comments
+    iss["updated_at"] = now
+    iss["updated_by"] = username
+    try:
+        iss["revision"] = int(iss.get("revision") or 0) + 1
+    except Exception:
+        iss["revision"] = 1
+    _save(issues)
     return {"ok": True}
 
 

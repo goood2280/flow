@@ -60,3 +60,38 @@ def test_playground_profile_builds_internal_headers_and_body():
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "How are you?"},
     ]
+
+
+def test_openai_provider_does_not_send_internal_mode_parameter():
+    cfg = {
+        "provider": "openai",
+        "auth_mode": "bearer",
+        "headers": {},
+        "format": "openai",
+        "extra_body": {},
+        "mode": "fast",
+        "model": "gpt-4o-mini",
+    }
+
+    body = _build_request_body(cfg, "ping", None)
+
+    assert body["model"] == "gpt-4o-mini"
+    assert "mode" not in body
+    assert body["messages"] == [{"role": "user", "content": "ping"}]
+
+
+def test_openai_compatible_provider_does_not_send_internal_mode_parameter():
+    cfg = {
+        "provider": "openai_compatible",
+        "auth_mode": "bearer",
+        "headers": {},
+        "format": "openai",
+        "extra_body": {},
+        "mode": "fast",
+        "model": "compatible-model",
+    }
+
+    body = _build_request_body(cfg, "ping", None)
+
+    assert body["model"] == "compatible-model"
+    assert "mode" not in body

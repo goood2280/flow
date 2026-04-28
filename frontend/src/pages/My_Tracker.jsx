@@ -478,9 +478,13 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
     fontFamily: "monospace",
   };
   const categorySource = trackerCategorySource(category, roleNames, cats);
+  const monitorMode = isMonitorCategory(category, roleNames);
   const showEtColumn = readOnly && (categorySource === "et" || categorySource === "both");
   const showStepColumn = readOnly && (categorySource === "fab" || categorySource === "both" || categorySource === "auto");
   const readOnlyColSpan = 4 + (showStepColumn ? 1 : 0) + (showEtColumn ? 1 : 0) + 1 + 2;
+  const baseHeaders = monitorMode
+    ? ["prod", "lot_id", "wafer_id", "comment"]
+    : ["PROD", "root_lot_id / fab_lot_id(lot_id)", "Wafer", "코멘트"];
 
   // v8.8.5: 빈 상태 플레이스홀더 행 대신, 항상 테이블 형태 유지 + 맨 아래 [+ 행추가] 빈 행.
   //   - readOnly 가 아닐 때: 데이터 행들 아래에 "+ 버튼만 있는 빈 셀 행" 하나 (여기 클릭 = addRow).
@@ -533,11 +537,11 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
       <div style={{ maxHeight: 260, overflow: "auto", border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-card)" }}>
         <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
           <thead><tr>
-            {["PROD", "root_lot_id / fab_lot_id(lot_id)", "Wafer", "코멘트"].map(h => (
+            {baseHeaders.map(h => (
               <th key={h} style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{h}</th>
             ))}
             {readOnly && <>
-              {showStepColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>step_id &gt; func_step</th>}
+              {showStepColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{monitorMode ? "step_id(func_step)" : "step_id > func_step"}</th>}
               {showEtColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>ET 측정</th>}
               <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>watch</th>
             </>}
@@ -557,6 +561,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
               const stepInfo = trackerStepInfo(l, fab, et);
               const currentStepText = formatTrackerStep(l, fab, et);
               const stepIdText = stepInfo.stepId ? (stepInfo.seq !== null && stepInfo.seq !== "" ? `${stepInfo.stepId} / seq ${stepInfo.seq}` : stepInfo.stepId) : "";
+              const compactStepText = stepIdText && stepInfo.funcStep ? `${stepIdText}(${stepInfo.funcStep})` : (stepIdText || stepInfo.funcStep || "조회 필요");
               const lastMoveAt = l.last_move_at || fab.time || et[0]?.time || "";
               const checkedAt = l.last_checked_at || "";
               const scanStatus = l.last_scan_status || "";
@@ -607,6 +612,11 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                 {readOnly && <>
                   {showStepColumn && <td style={cellStyle}>
                     {busyRow === i ? <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>…</span>
+                      : monitorMode ? (
+                        <span title={stepTitle} style={{ display: "inline-block", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: 11, color: compactStepText === "조회 필요" ? "var(--text-secondary)" : "var(--accent)", fontWeight: compactStepText === "조회 필요" ? 500 : 800 }}>
+                          {compactStepText}
+                        </span>
+                      )
                       : currentStepText !== "조회 필요" ? (
                         <div title={stepTitle} style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 150 }}>
                           <span style={{ fontFamily: "monospace", fontSize: 11, color: "var(--accent)", fontWeight: 700 }}>{stepIdText || stepInfo.funcStep}</span>
@@ -923,6 +933,7 @@ function GanttChart({ issues, onIssueClick }) {
 export default function My_Tracker({ user }) {
   const [issues, setIssues] = useState([]); const [selected, setSelected] = useState(null); const [creating, setCreating] = useState(false);
   const [filter, setFilter] = useState(""); const [comment, setComment] = useState(""); const [search, setSearch] = useState("");
+  const [replyDrafts, setReplyDrafts] = useState({});
   const [viewTab, setViewTab] = useState("list");
   const [editMode, setEditMode] = useState(false); const [editTitle, setEditTitle] = useState(""); const [editDesc, setEditDesc] = useState(""); const [editPrio, setEditPrio] = useState("normal");
   // v8.8.13: 수정 시 카테고리도 변경 가능하도록 state 추가.
@@ -954,7 +965,7 @@ export default function My_Tracker({ user }) {
 
   const load = () => sf(API + "/issues").then(d => setIssues(d.issues || []));
   useEffect(() => { load(); }, []);
-  const loadDetail = (id) => { sf(API + "/issue?issue_id=" + id).then(d => { setSelected(d.issue || d); setEditMode(false); }); };
+  const loadDetail = (id) => { sf(API + "/issue?issue_id=" + id).then(d => { setSelected(d.issue || d); setEditMode(false); setReplyDrafts({}); }); };
   useEffect(() => {
     const issueId = new URLSearchParams(window.location.search || "").get("issue_id");
     if (issueId) loadDetail(issueId);
@@ -972,7 +983,39 @@ export default function My_Tracker({ user }) {
     });
   };
   const updateStatus = (id, status) => { sf(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: id, status }) }).then(() => { loadDetail(id); load(); }); };
-  const addComment = () => { if (!comment.trim() || !selected) return; sf(API + "/comment", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: selected.id, username: user?.username || "", text: comment }) }).then(() => { setComment(""); loadDetail(selected.id); }); };
+  const commentTotal = (comments = []) => (comments || []).reduce((acc, c) => acc + 1 + ((c.replies || []).length || 0), 0);
+  const addComment = () => { if (!comment.trim() || !selected) return; sf(API + "/comment", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: selected.id, username: user?.username || "", text: comment }) }).then(() => { setComment(""); loadDetail(selected.id); load(); }); };
+  const addReply = (parentIndex) => {
+    const text = String(replyDrafts[parentIndex] || "").trim();
+    if (!text || !selected) return;
+    sf(API + "/comment/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ issue_id: selected.id, parent_index: parentIndex, username: user?.username || "", text }),
+    }).then(() => {
+      setReplyDrafts(m => ({ ...m, [parentIndex]: "" }));
+      loadDetail(selected.id);
+      load();
+    }).catch(e => alert(e.message || "대댓글 저장 실패"));
+  };
+  const canDeleteCommentItem = (item) => isAdmin || String(item?.username || "") === String(user?.username || "");
+  const deleteCommentItem = (commentIndex, replyIndex = null) => {
+    if (!selected) return;
+    const isReply = replyIndex !== null && replyIndex !== undefined;
+    if (!confirm(isReply ? "이 대댓글을 삭제할까요?" : "이 댓글을 삭제할까요?")) return;
+    sf(API + "/comment/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        issue_id: selected.id,
+        comment_index: commentIndex,
+        reply_index: isReply ? replyIndex : null,
+      }),
+    }).then(() => {
+      loadDetail(selected.id);
+      load();
+    }).catch(e => alert(e.message || "댓글 삭제 실패"));
+  };
   const deleteIssue = () => { if (!confirm("이 이슈를 삭제할까요?")) return; sf(API + "/delete?issue_id=" + selected.id, { method: "POST" }).then(() => { setSelected(null); load(); }); };
   const canEdit = selected && (selected.username === user?.username || isAdmin);
   const startEdit = () => { if (!canEdit) return; setEditMode(true); setEditTitle(selected.title); setEditDesc(selected.description_html || selected.description || ""); setEditPrio(selected.priority || "normal"); setEditCategory(selected.category || ""); };
@@ -1146,19 +1189,44 @@ export default function My_Tracker({ user }) {
 
             {/* Comments */}
             <div style={{ marginTop: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>댓글 ({selected.comments?.length || 0})</div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>댓글 ({commentTotal(selected.comments || [])})</div>
               {selected.comments?.map((c, i) => (
                 <div key={i} style={{ padding: "10px 12px", marginBottom: 8, background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, alignItems: "center" }}>
                     <span style={{ fontSize: 12, fontWeight: 600 }}>{c.username}</span>
-                    <span title={c.timestamp || ""} style={{
-                      fontSize: 10, padding: "2px 8px", borderRadius: 999,
-                      background: "var(--bg-primary)", color: "var(--text-primary)",
-                      border: "1px solid var(--border)", fontFamily: "monospace",
-                    }}>🕐 {(c.timestamp || "").replace("T", " ").slice(0, 16) || "시간 없음"}</span>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <span title={c.timestamp || ""} style={{
+                        fontSize: 10, padding: "2px 8px", borderRadius: 999,
+                        background: "var(--bg-primary)", color: "var(--text-primary)",
+                        border: "1px solid var(--border)", fontFamily: "monospace",
+                      }}>🕐 {(c.timestamp || "").replace("T", " ").slice(0, 16) || "시간 없음"}</span>
+                      {canDeleteCommentItem(c) && <button type="button" onClick={() => deleteCommentItem(i)}
+                        style={{ padding: "2px 7px", borderRadius: 999, border: "1px solid #ef444455", background: "#ef444411", color: "#ef4444", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>삭제</button>}
+                    </div>
                   </div>
                   <div style={{ fontSize: 13, lineHeight: 1.6 }}>{c.text}</div>
                   {(c.lot_id || c.wafer_id) && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>{c.lot_id} / {c.wafer_id}</div>}
+                  {(c.replies || []).length > 0 && <div style={{ marginTop: 8, paddingLeft: 12, borderLeft: "2px solid var(--border)", display: "grid", gap: 6 }}>
+                    {(c.replies || []).map((r, ri) => (
+                      <div key={ri} style={{ padding: "7px 8px", borderRadius: 6, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 3 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700 }}>{r.username || "-"}</span>
+                          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            <span title={r.timestamp || ""} style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace", whiteSpace: "nowrap" }}>{(r.timestamp || "").replace("T", " ").slice(0, 16) || "시간 없음"}</span>
+                            {canDeleteCommentItem(r) && <button type="button" onClick={() => deleteCommentItem(i, ri)}
+                              style={{ padding: "1px 6px", borderRadius: 999, border: "1px solid #ef444455", background: "#ef444411", color: "#ef4444", fontSize: 9, fontWeight: 700, cursor: "pointer" }}>삭제</button>}
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 12, lineHeight: 1.55 }}>{r.text}</div>
+                      </div>
+                    ))}
+                  </div>}
+                  <div style={{ display: "flex", gap: 6, marginTop: 8, paddingLeft: 12 }}>
+                    <input value={replyDrafts[i] || ""} onChange={e => setReplyDrafts(m => ({ ...m, [i]: e.target.value }))} placeholder="대댓글 입력..."
+                      style={{ flex: 1, padding: "6px 9px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none" }}
+                      onKeyDown={e => e.key === "Enter" && addReply(i)} />
+                    <button onClick={() => addReply(i)} style={{ padding: "6px 11px", borderRadius: 6, border: "1px solid var(--accent)", background: "var(--accent-glow)", color: "var(--accent)", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>답글</button>
+                  </div>
                 </div>))}
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <input value={comment} onChange={e => setComment(e.target.value)} placeholder="댓글 입력..."

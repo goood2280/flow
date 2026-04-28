@@ -200,13 +200,12 @@ export default function My_FileBrowser({user}){
   },[scope]);
 
   // v4.1: Base-file preview loader (parquet/csv/json/md).
-  // 첫 클릭은 meta_only 로 스키마만 받고, 샘플/SQL/컬럼 선택 시 page 단위로 행을 조회한다.
+  // 기본 클릭부터 page 단위 샘플을 로드한다. 서버가 wide parquet 기본 표시 컬럼을 제한한다.
   const loadBaseFileView=(file,{full=false,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
     setPage(pageArg);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
     const params={file,rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,_ts:Date.now()};
-    if(!full)params.meta_only=true;
     const url=buildUrl(API+"/base-file-view",params);
     sf(url).then(d=>{
       if(d.kind==="json"||d.kind==="md"||d.kind==="yaml"){
@@ -248,13 +247,12 @@ export default function My_FileBrowser({user}){
     return base+"?"+q;
   };
 
-  // 첫 클릭은 meta_only, SQL/SELECT/페이지 이동은 full=true 로 page slice 조회.
+  // 첫 클릭부터 샘플 row를 로드한다. SQL/SELECT/페이지 이동도 같은 page slice 경로를 사용.
   const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=false,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
     setPage(pageArg);
     const sc=selColsOverride||selectedCols;
-    const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,select_cols:sc.length?sc.join(","):""};
-    if(!full&&!sqlQ&&!sc.length)params.meta_only=true;
+    const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:20,select_cols:sc.length?sc.join(","):""};
     const url=buildUrl(API+"/view",params);
     sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
@@ -264,7 +262,6 @@ export default function My_FileBrowser({user}){
     setPage(pageArg);
     const sc=selColsOverride||selectedCols;
     const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):""};
-    if(!full&&!sqlQ&&!sc.length)params.meta_only=true;
     const url=buildUrl(API+"/root-parquet-view",params);
     sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
@@ -512,11 +509,10 @@ export default function My_FileBrowser({user}){
                 {data.meta_only
                   ?<>스키마만 로드 · {data.total_cols}열 <span style={{color:"var(--accent)",fontWeight:600}}>| SQL 실행 또는 컬럼 SELECT 적용 시 데이터 조회</span></>
                   :<>{data.total_rows?.toLocaleString()}행 × {data.total_cols}열 | 표시 {data.showing}
-                     {data.selected_cols&&<span style={{color:"var(--accent)"}}> | {data.selected_cols.length}열 선택됨</span>}</>}
+                     {data.selected_cols&&<span style={{color:"var(--accent)"}}> | {selectedCols.length||String(data.selected_cols).split(",").filter(Boolean).length}열 선택됨</span>}
+                     {data.truncated_cols&&<span style={{color:"var(--accent)"}}> | 기본 미리보기 {data.preview_cols}열</span>}</>}
                 {data.source_modified&&<span title={data.source_path||""}> | 수정 {new Date(data.source_modified*1000).toLocaleString()}</span>}
               </span>
-              {/* v8.8.16: meta_only 상태에서 전체 데이터 조회 버튼 */}
-              {data.meta_only&&<button onClick={applySql} style={{padding:"4px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:11,fontWeight:600,cursor:"pointer"}} title="SQL 없이도 행 미리보기 200건 조회">▶ 샘플 로드</button>}
               {!data.meta_only&&<div style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:"auto"}}>
                 <button onClick={()=>gotoPage((data.page??page)-1)} disabled={(data.page??page)<=0}
                   style={{padding:"4px 9px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:(data.page??page)<=0?"default":"pointer",opacity:(data.page??page)<=0?0.45:1}}>이전</button>

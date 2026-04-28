@@ -28,6 +28,13 @@ def collect_streaming(lf, fallback: bool = True):
     실패 시 일반 collect 로 자동 fallback.
     """
     try:
+        return lf.collect(engine="streaming")
+    except TypeError:
+        pass
+    except Exception:
+        if not fallback:
+            raise
+    try:
         return lf.collect(streaming=True)
     except TypeError:
         # 구버전 polars — streaming 인자 없음

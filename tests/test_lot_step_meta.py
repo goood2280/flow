@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import polars as pl
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -16,9 +18,11 @@ from core.lot_step import (  # noqa: E402
     db_product_candidates,
     compare_to_watch,
     expand_lot_row_for_wafer_selection,
+    et_lot_candidates_from_cache,
     list_db_source_roots,
     lookup_step_meta,
     parse_wafer_selection,
+    refresh_et_lot_cache,
     snapshot_row_fields,
     summarize_et_steps,
 )
@@ -143,6 +147,38 @@ def test_tracker_sources_support_flat_product_files(monkeypatch, tmp_path):
 
     assert db_product_candidates(source="et", source_root="ET_MEASURE") == ["PRODA"]
     assert _parquet_files("ET_MEASURE", "PRODA", source="et") == [flat]
+
+
+def test_et_lot_cache_supplies_analysis_candidates(monkeypatch, tmp_path):
+    db = tmp_path / "DB"
+    data_root = tmp_path / "flow-data"
+    et = db / "ET_MEASURE" / "PRODA" / "date=20260427"
+    et.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1000", "fab_lot_id": "F1000A.1", "lot_id": "L1000", "wafer_id": "01", "time": "2026-04-27T10:00:00"},
+        {"product": "PRODA", "root_lot_id": "A1001", "fab_lot_id": "F1001A.1", "lot_id": "L1001", "wafer_id": "02", "time": "2026-04-27T11:00:00"},
+    ]).write_parquet(et / "part.parquet")
+    import core.lot_step as lot_step
+
+    monkeypatch.setattr(lot_step, "_get_db_root", lambda: db)
+    monkeypatch.setattr(lot_step, "_et_lot_cache_dir", lambda: data_root / "tracker" / "et_lot_cache")
+    monkeypatch.setattr(lot_step, "tracker_db_sources_config", lambda: {
+        "monitor": "FAB_HISTORY",
+        "analysis": "ET_MEASURE",
+        "fab": "FAB_HISTORY",
+        "et": "ET_MEASURE",
+    })
+
+    built = refresh_et_lot_cache(product="PRODA", source_root="ET_MEASURE", force=True)
+    assert built["ok"] is True
+    assert built["products"][0]["row_count"] == 2
+
+    candidates = et_lot_candidates_from_cache(product="PRODA", source_root="ET_MEASURE", prefix="F100", limit=10)
+    assert [(c["value"], c["type"], c["source_root"], c["cache"]) for c in candidates] == [
+        ("F1000A.1", "fab_lot_id", "ET_MEASURE", "et_lot"),
+        ("F1001A.1", "fab_lot_id", "ET_MEASURE", "et_lot"),
+    ]
+    assert all(c.get("cache_built_at") for c in candidates)
 
 
 def test_expand_lot_row_for_wafer_selection_splits_rows_and_resets_watch_state():

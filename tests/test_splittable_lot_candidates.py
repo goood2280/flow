@@ -65,6 +65,61 @@ def test_operational_history_matches_saved_full_inform_root(tmp_path, monkeypatc
     assert items[0]["detail"] == "plan saved"
 
 
+def test_view_includes_related_tracker_issues_for_root_lot(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["LOT900AA", "LOT900AA"],
+        "wafer_id": [1, 2],
+        "KNOB_ALPHA": ["A", "B"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+
+    tracker_file = tmp_path / "issues.json"
+    tracker_file.write_text(json.dumps([{
+        "id": "iss_related",
+        "title": "Related lot issue",
+        "status": "in_progress",
+        "category": "Monitor",
+        "priority": "normal",
+        "username": "owner",
+        "updated_at": "2026-04-28T10:00:00",
+        "group_ids": [],
+        "lots": [{"product": "PRODA", "root_lot_id": "LOT900AA", "wafer_id": "1", "lot_id": "LOT900AA.1"}],
+        "comments": [{"username": "owner", "text": "check", "replies": [{"username": "peer", "text": "ok"}]}],
+    }, {
+        "id": "iss_other",
+        "title": "Other lot issue",
+        "status": "in_progress",
+        "category": "Monitor",
+        "group_ids": [],
+        "lots": [{"product": "PRODA", "root_lot_id": "LOT901AA"}],
+        "comments": [],
+    }]), encoding="utf-8")
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tracker_file)
+
+    result = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="LOT900AA",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert [x["id"] for x in result["related_issues"]] == ["iss_related"]
+    assert result["related_issues"][0]["matched_wafers"] == ["1"]
+    assert result["related_issues"][0]["comment_count"] == 2
+
+
 def test_lot_ids_do_not_suggest_fab_roots_that_cannot_render():
     result = splittable.get_lot_ids(product="ML_TABLE_PRODA", limit=20)
 
