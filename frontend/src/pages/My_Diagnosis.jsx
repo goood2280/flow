@@ -525,7 +525,7 @@ export default function My_Diagnosis({ user }) {
                 <Button variant="primary" onClick={savePrior} disabled={!prior.prior_knowledge.trim()}>내 사전지식 저장</Button>
               </div>
             </Panel>
-            <Panel title="Flow-i RAG Update" subtitle="심층리서치/사내 판단/TEG 해석을 flow-data에 append-only 저장" style={{ gridColumn: "1 / -1" }}>
+            <Panel title="Flow-i RAG Update" subtitle="[flow-i update] 또는 [flow-i RAG Update] 마커가 있는 지식만 flow-data에 append-only 저장" style={{ gridColumn: "1 / -1" }}>
               <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(280px,0.6fr)", gap: 12 }}>
                 <div style={{ display: "grid", gap: 8 }}>
                   <textarea value={ragPrompt} onChange={(e) => setRagPrompt(e.target.value)} rows={5} style={{ ...formControlStyle, resize: "vertical" }} />

@@ -299,11 +299,13 @@ def custom_knowledge_import(req: CustomKnowledgeReq, request: Request):
 @router.post("/semiconductor/knowledge/update-prompt")
 def custom_knowledge_update_prompt(req: RagUpdatePromptReq, request: Request):
     me = current_user(request)
+    role = me.get("role") or "user"
     try:
         return semi.structure_rag_update_from_prompt(
             req.prompt,
             username=me.get("username") or "",
-            role=me.get("role") or "user",
+            role=role,
+            require_marker=(role != "admin"),
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
