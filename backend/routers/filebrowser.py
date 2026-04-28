@@ -349,7 +349,9 @@ def base_files():
 def base_file_view(file: str = Query(...), sql: str = Query(""),
                    rows: int = Query(200), cols: int = Query(10),
                    select_cols: str = Query(""),
-                   meta_only: bool = Query(False)):
+                   meta_only: bool = Query(False),
+                   page: int = Query(0, ge=0),
+                   page_size: int = Query(200, ge=1, le=1000)):
     """v4.1: Preview a file under the Base root.
 
     Parquet/CSV use the same lazy reader path as `/root-parquet-view`; JSON
@@ -396,13 +398,15 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 from core.reformatter import REFORMATTER_TABLE_COLUMNS, load_rules, rules_to_reformatter_table
                 if cand.suffix.lower() == ".csv":
                     df = pl.read_csv(str(cand), infer_schema_length=5000, try_parse_dates=False)
-                    rows_out = serialize_rows(df.head(max(1, min(1000, rows))).to_dicts())
+                    _, page_size, offset = _page_args(page, page_size or rows)
+                    rows_out = serialize_rows(df.slice(offset, page_size).to_dicts())
                     columns = list(df.columns)
                     total_rows = df.height
                     dtypes = {c: str(df.schema[c]) for c in columns}
                 else:
                     rows_all = rules_to_reformatter_table(load_rules(rf_root, product))
-                    rows_out = rows_all[: max(1, min(1000, rows))]
+                    page, page_size, offset = _page_args(page, page_size or rows)
+                    rows_out = rows_all[offset:offset + page_size]
                     columns = REFORMATTER_TABLE_COLUMNS
                     total_rows = len(rows_all)
                     dtypes = {c: "str" for c in columns}
@@ -417,6 +421,9 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                     "showing": len(rows_out),
                     "showing_cols": columns,
                     "total_rows": total_rows,
+                    "page": page,
+                    "page_size": page_size,
+                    "has_more": offset + len(rows_out) < total_rows,
                     "dtypes": dtypes,
                     "source_path": str(cand),
                     "source_modified": cand.stat().st_mtime,
@@ -495,16 +502,36 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         schema_full = {n: str(full_schema_obj[n]) for n in all_cols_full}
         # v8.8.16: meta_only 빠른 경로 — 스키마만 돌려주고 collect 없음.
         if meta_only:
+            cached_meta = None
+            if ext == ".parquet":
+                try:
+                    from core.parquet_perf import read_meta
+                    cached_meta = read_meta(fp)
+                except Exception:
+                    cached_meta = None
             return {
                 "kind": "table", "file": file,
                 "all_columns": all_cols_full, "total_cols": len(all_cols_full),
                 "columns": all_cols_full[:cols], "dtypes": schema_full,
                 "data": [], "showing": 0, "showing_cols": [],
-                "total_rows": 0, "meta_only": True,
+                "total_rows": int((cached_meta or {}).get("row_count") or 0),
+                "meta_only": True,
+                "page": page, "page_size": page_size, "has_more": False,
+                "meta_cached": bool(cached_meta),
             }
         if not (select_cols and select_cols.strip()) and not (sql and sql.strip()):
             lf = lf.select(all_cols_full[:cols])
-        resp = _run_view_lazy(lf, sql, select_cols, rows)
+        cached_meta = None
+        if ext == ".parquet":
+            try:
+                from core.parquet_perf import read_meta
+                cached_meta = read_meta(fp)
+            except Exception:
+                cached_meta = None
+        resp = _run_view_lazy(
+            lf, sql, select_cols, rows,
+            page=page, page_size=page_size, cached_meta=cached_meta,
+        )
         resp["all_columns"] = all_cols_full
         resp["total_cols"] = len(all_cols_full)
         resp["dtypes"] = schema_full
@@ -590,11 +617,26 @@ def list_products(root: str = Query(...)):
     return {"products": prods}
 
 
-def _run_view(df, sql: str, select_cols: str, rows: int):
+def _page_args(page: int = 0, page_size: int = 200) -> tuple[int, int, int]:
+    try:
+        page = max(0, int(page or 0))
+    except Exception:
+        page = 0
+    try:
+        page_size = max(1, min(1000, int(page_size or 200)))
+    except Exception:
+        page_size = 200
+    return page, page_size, page * page_size
+
+
+def _run_view(df, sql: str, select_cols: str, rows: int,
+              page: int = 0, page_size: int | None = None):
     """Apply select + sql + head; return standard response dict. Legacy DataFrame path."""
     all_columns = list(df.columns)
     schema = {n: str(d) for n, d in df.schema.items()}
     total = df.height
+    page_size = int(page_size or rows or 200)
+    page, page_size, offset = _page_args(page, page_size)
 
     if select_cols and select_cols.strip():
         sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(all_columns)]
@@ -603,37 +645,45 @@ def _run_view(df, sql: str, select_cols: str, rows: int):
     if sql and sql.strip():
         df = apply_sql_like(df, sql)
         total = df.height
-    show = df.head(rows) if df.height > rows else df
+    show = df.slice(offset, page_size)
     return {
         "total_rows": total, "total_cols": len(all_columns),
         "columns": list(show.columns), "all_columns": all_columns,
         "dtypes": schema, "showing_cols": list(show.columns),
         "selected_cols": select_cols.strip() or None,
         "data": serialize_rows(show.to_dicts()), "showing": len(show),
+        "page": page, "page_size": page_size,
+        "has_more": offset + len(show) < total,
     }
 
 
-def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = False):
+def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = False,
+                   page: int = 0, page_size: int | None = None, cached_meta: dict | None = None):
     """v8.4.3 OOM-aware: lazy 스캔 + projection pushdown + head + (필요 시) SQL.
 
     - 컬럼 선택 / head 은 lazy 에서 처리 → parquet reader 에서 필요한 컬럼·행만 읽음
     - SQL 필터가 있으면 .collect() 후 apply_sql_like (projection 뒤라 메모리 작음)
-    - 초기 미리보기(SQL/select 없음) 는 head 만 읽어 10GB 파일도 수백 KB 만 로드
+    - 초기 미리보기(SQL/select 없음) 는 page 단위 slice 로 10GB 파일도 필요한 행만 로드
     - v8.8.16: meta_only=True 는 컬럼 스키마만 반환 (collect 없음) → 클릭 즉시 반응.
               실제 행 조회는 SQL 실행 / 컬럼 선택 적용 시점으로 이연.
     """
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
     schema = {n: str(schema_obj[n]) for n in all_columns}
+    page_size = int(page_size or rows or 200)
+    page, page_size, offset = _page_args(page, page_size)
 
     if meta_only:
         # 스키마만 — 어떤 collect() 도 하지 않음. 큰 parquet/CSV 도 수 ms.
+        total_rows = int((cached_meta or {}).get("row_count") or 0)
         return {
-            "total_rows": 0, "total_cols": len(all_columns),
+            "total_rows": total_rows, "total_cols": len(all_columns),
             "columns": all_columns[:min(len(all_columns), 10)], "all_columns": all_columns,
             "dtypes": schema, "showing_cols": [],
             "selected_cols": select_cols.strip() or None,
             "data": [], "showing": 0, "meta_only": True,
+            "page": page, "page_size": page_size, "has_more": False,
+            "meta_cached": bool(cached_meta),
         }
 
     # Column-projection pushdown
@@ -643,19 +693,29 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             lf = lf.select(sel)
 
     if sql and sql.strip():
-        # v8.8.33: streaming collect — SQL/필터 후 대용량 collect 시 메모리 상한 고정.
+        # Prefer lazy SQL so filtering/pagination stays in the parquet scanner.
+        # Fallback keeps the legacy Polars-method expression support.
         try:
             from core.parquet_perf import collect_streaming
-            df = collect_streaming(lf)
+            filtered = lf.filter(pl.sql_expr(sql.strip()))
+            total_df = collect_streaming(filtered.select(pl.len()))
+            total = int(total_df[0, 0]) if total_df.height else 0
+            show = filtered.slice(offset, page_size).collect()
         except Exception:
-            df = lf.collect()
-        df = apply_sql_like(df, sql)
-        total = df.height
-        show = df.head(rows) if df.height > rows else df
+            try:
+                from core.parquet_perf import collect_streaming
+                df = collect_streaming(lf)
+            except Exception:
+                df = lf.collect()
+            df = apply_sql_like(df, sql)
+            total = df.height
+            show = df.slice(offset, page_size)
+        has_more = offset + len(show) < total
     else:
-        # Head-only path: parquet scan + lazy head → only fetches the rows we need.
-        show = lf.head(rows).collect()
-        total = show.height  # 정확한 총 rows 는 defer — 성능 우선
+        # Page path: parquet scan + lazy slice → only fetches the rows we need.
+        show = lf.slice(offset, page_size).collect()
+        total = int((cached_meta or {}).get("row_count") or 0) or (offset + show.height)
+        has_more = show.height == page_size if not cached_meta else offset + show.height < total
 
     return {
         "total_rows": total, "total_cols": len(all_columns),
@@ -663,6 +723,8 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
         "dtypes": schema, "showing_cols": list(show.columns),
         "selected_cols": select_cols.strip() or None,
         "data": serialize_rows(show.to_dicts()), "showing": len(show),
+        "page": page, "page_size": page_size, "has_more": has_more,
+        "meta_cached": bool(cached_meta),
     }
 
 
@@ -671,7 +733,9 @@ def view_product(root: str = Query(...), product: str = Query(...),
                  sql: str = Query(""), rows: int = Query(200),
                  select_cols: str = Query(""),
                  meta_only: bool = Query(False),
-                 all_partitions: bool = Query(False)):
+                 all_partitions: bool = Query(False),
+                 page: int = Query(0, ge=0),
+                 page_size: int = Query(200, ge=1, le=1000)):
     # v8.4.3 OOM-aware: Hive-flat 도 lazy_read_source 로 scan. Polars 가 projection +
     # head 를 parquet reader 로 pushdown → 메모리 수 GB 제품도 안전.
     # v8.8.16: meta_only=True 는 스키마만 — 사이드바 제품 클릭 즉시 반응.
@@ -683,7 +747,8 @@ def view_product(root: str = Query(...), product: str = Query(...),
         recent = None if (all_partitions or has_date_filter(sql)) else 30
         lf = lazy_read_source(root=root, product=product, recent_days=recent)
         if lf is not None:
-            return _run_view_lazy(lf, sql, select_cols, rows, meta_only=meta_only)
+            return _run_view_lazy(lf, sql, select_cols, rows, meta_only=meta_only,
+                                  page=page, page_size=page_size)
         # Fallback — legacy DF 경로
         df = read_source(root=root, product=product)
         if meta_only:
@@ -694,8 +759,9 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 "dtypes": {n: str(d) for n, d in df.schema.items()},
                 "showing_cols": [], "selected_cols": None,
                 "data": [], "showing": 0, "meta_only": True,
+                "page": page, "page_size": page_size, "has_more": False,
             }
-        return _run_view(df, sql, select_cols, rows)
+        return _run_view(df, sql, select_cols, rows, page=page, page_size=page_size)
     except HTTPException:
         raise
     except Exception as e:
@@ -800,7 +866,9 @@ def parquet_meta_invalidate(request: Request, root: str = Query(""), product: st
 def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       rows: int = Query(200), cols: int = Query(10),
                       select_cols: str = Query(""),
-                      meta_only: bool = Query(False)):
+                      meta_only: bool = Query(False),
+                      page: int = Query(0, ge=0),
+                      page_size: int = Query(200, ge=1, le=1000)):
     # v8.4.6: path traversal 방어 — db_root 밖 파일 접근 차단
     db_root = PATHS.db_root
     fp = (db_root / file).resolve()
@@ -820,16 +888,32 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
         schema_full = {n: str(full_schema_obj[n]) for n in all_cols_full}
         # v8.8.16: meta_only 빠른 경로.
         if meta_only:
+            try:
+                from core.parquet_perf import read_meta
+                cached_meta = read_meta(fp)
+            except Exception:
+                cached_meta = None
             return {
                 "all_columns": all_cols_full, "total_cols": len(all_cols_full),
                 "columns": all_cols_full[:cols], "dtypes": schema_full,
                 "data": [], "showing": 0, "showing_cols": [],
-                "total_rows": 0, "meta_only": True,
+                "total_rows": int((cached_meta or {}).get("row_count") or 0),
+                "meta_only": True,
+                "page": page, "page_size": page_size, "has_more": False,
+                "meta_cached": bool(cached_meta),
             }
         # 미리보기 기본: 앞쪽 N 컬럼만. SQL 또는 select_cols 가 오면 그쪽 우선.
         if not (select_cols and select_cols.strip()) and not (sql and sql.strip()):
             lf = lf.select(all_cols_full[:cols])
-        resp = _run_view_lazy(lf, sql, select_cols, rows)
+        try:
+            from core.parquet_perf import read_meta
+            cached_meta = read_meta(fp)
+        except Exception:
+            cached_meta = None
+        resp = _run_view_lazy(
+            lf, sql, select_cols, rows,
+            page=page, page_size=page_size, cached_meta=cached_meta,
+        )
         resp["all_columns"] = all_cols_full
         resp["total_cols"] = len(all_cols_full)
         resp["dtypes"] = schema_full

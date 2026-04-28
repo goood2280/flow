@@ -1,7 +1,7 @@
 """core/utils.py v4.0.0 - shared backend helpers
 Extracted common patterns from routers to reduce duplication.
 """
-import json, datetime, re, io, csv as csv_mod
+import json, datetime, re, io, csv as csv_mod, time
 from pathlib import Path
 from fastapi import HTTPException
 import polars as pl
@@ -14,6 +14,8 @@ from core.paths import PATHS
 _STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 
 DATA_EXTENSIONS = {".parquet", ".csv"}
+_DATA_FILE_COUNT_CACHE_TTL_SEC = 20.0
+_DATA_FILE_COUNT_CACHE: dict[tuple[str, int], tuple[float, float, int]] = {}
 
 
 def is_cat(d) -> bool:
@@ -107,15 +109,29 @@ def count_data_files(directory: Path, limit: int = 2000) -> int:
         limit = max(1, int(limit or 2000))
     except Exception:
         limit = 2000
+    try:
+        cache_key = (str(directory.resolve()), limit)
+        dir_mtime = directory.stat().st_mtime
+        cached = _DATA_FILE_COUNT_CACHE.get(cache_key)
+        now = time.monotonic()
+        if cached and cached[1] == dir_mtime and now - cached[0] < _DATA_FILE_COUNT_CACHE_TTL_SEC:
+            return cached[2]
+    except Exception:
+        cache_key = None
+        now = time.monotonic()
     count = 0
     try:
         for fp in directory.rglob("*"):
             if fp.is_file() and fp.suffix.lower() in DATA_EXTENSIONS:
                 count += 1
                 if count >= limit:
+                    if cache_key is not None:
+                        _DATA_FILE_COUNT_CACHE[cache_key] = (now, dir_mtime, count)
                     return count
     except Exception:
         return count
+    if cache_key is not None:
+        _DATA_FILE_COUNT_CACHE[cache_key] = (now, dir_mtime, count)
     return count
 
 
