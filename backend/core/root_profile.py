@@ -118,9 +118,11 @@ def _shared_default_root(profile: dict | None, child: str) -> Path | None:
     if project_is_prod_app(profile) or os.environ.get("FLOW_PROD") == "1":
         return shared_child
     if _is_linux_host():
-        # On internal Linux hosts the DB root is operator-owned and may be
-        # mounted after process startup; keep the default path stable.
-        if child == "DB":
+        # Generic Linux/dev hosts can have /config/work/sharedworkspace present
+        # without the Flow DB mounted. Only adopt the shared default implicitly
+        # when that child exists; prod app root/FLOW_PROD above still keeps a
+        # stable operator-owned path even if the mount arrives later.
+        if child == "DB" and shared_child.exists():
             return shared_child
         if shared_child.exists():
             return shared_child
