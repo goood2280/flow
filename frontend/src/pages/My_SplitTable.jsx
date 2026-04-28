@@ -484,9 +484,32 @@ export default function My_SplitTable({user}){
     let url=API+"/operational-history?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId.trim());
     if((waferIds||"").trim())url+="&wafer_ids="+encodeURIComponent(waferIds.trim());
     sf(url).then(d=>setOpHistory(d.items||[])).catch(()=>setOpHistory([]));};
+  const columnFromCellKey=(key)=>String(key||"").split("|").slice(2).join("|");
+  const hasValue=(v)=>v!=null&&v!==""&&v!=="None"&&v!=="null";
+  const pendingValueFor=(cell)=>cell?.key&&Object.prototype.hasOwnProperty.call(pendingPlans,cell.key)?pendingPlans[cell.key]:undefined;
+  const suggestionValuesFor=(param,base=[])=>{
+    const out=[];const seen=new Set();
+    const add=(v)=>{if(!hasValue(v))return;const s=String(v);if(seen.has(s))return;seen.add(s);out.push(s);};
+    (base||[]).forEach(add);
+    Object.entries(pendingPlans).forEach(([key,val])=>{if(columnFromCellKey(key)===param)add(val);});
+    return out;
+  };
+  const primePlanValueCache=(plans)=>{
+    setColValCache(m=>{
+      const next={...m};
+      Object.entries(plans||{}).forEach(([key,val])=>{
+        const col=columnFromCellKey(key);
+        if(!col||!hasValue(val)||!Array.isArray(next[col]))return;
+        const s=String(val);
+        if(!next[col].includes(s))next[col]=[...next[col],s];
+      });
+      return next;
+    });
+  };
   const savePlans=()=>{if(!Object.keys(pendingPlans).length)return;
-    sf(API+"/plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,plans:pendingPlans,username:user?.username||"",root_lot_id:lotId})})
-      .then(()=>{setShowConfirm(false);setEditing(false);loadView();}).catch(e=>alert(e.message));};
+    const plansToSave={...pendingPlans};
+    sf(API+"/plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,plans:plansToSave,username:user?.username||"",root_lot_id:lotId})})
+      .then(()=>{primePlanValueCache(plansToSave);setShowConfirm(false);setEditing(false);loadView();if(isLotHistoryMode(histMode))loadOperationalHistory();}).catch(e=>alert(e.message));};
   const deletePlan=(ck)=>{if(!confirm("Delete?"))return;sf(API+"/plan/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,cell_keys:[ck],username:user?.username||""})}).then(loadView);};
 
   // v8.6.1: 낙관적 잠금 — 동일 name 의 기존 custom version 을 expected_version 으로 첨부.
@@ -562,7 +585,7 @@ export default function My_SplitTable({user}){
   const getCellPlanStyle=(cell)=>{if(!cell)return{};
     if(cell.plan&&cell.actual){
       if(String(cell.plan)===String(cell.actual))return{}; // match = normal (값이 같아서 별도 강조 불필요)
-      return{borderLeft:"3px solid #ef4444",background:"#fef2f2"}; // MISMATCH = 빨강
+      return{borderLeft:"3px solid #ef4444",boxShadow:"inset 0 0 0 1px rgba(239,68,68,0.45)"}; // mismatch: unique 색상 유지
     }
     if(cell.plan)return{borderLeft:"3px solid #f97316",fontStyle:"italic",fontWeight:700}; // plan-only: bg 는 getCellBg 가 plan 값 기준으로 처리
     return{};};
@@ -1275,8 +1298,8 @@ export default function My_SplitTable({user}){
           </tr></thead>
           <tbody>{displayRows.map((row,ri)=>{
             const cells=row._cells||{};
-            // v8.4.5: plan 값도 uniqMap 에 포함 — 같은 값이면 같은 팔레트 색상
-            const allVals=Object.values(cells).map(c=>c?.actual||c?.plan).filter(v=>v&&v!=="None"&&v!=="null");
+            // v8.4.5/v9.x: saved/pending plan 값도 uniqMap 에 포함 — 같은 값이면 같은 팔레트 색상
+            const allVals=[];Object.values(cells).forEach(c=>{[c?.actual,c?.plan,pendingValueFor(c)].forEach(v=>{if(hasValue(v))allVals.push(String(v));});});
             const uniqVals=[...new Set(allVals)];const uniqMap={};uniqVals.forEach((v,i)=>{uniqMap[v]=i;});
             return(<tr key={ri}>
               {(()=>{const pLotN=notesForParam(row._param).length;return(
@@ -1359,20 +1382,21 @@ export default function My_SplitTable({user}){
                 if(!cell)return(<td key={ci} style={{borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-card)",position:"relative"}}>
                   {cellNoteCount>0&&<span onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={`${cellNoteCount}개 메모`} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:9,padding:"0 5px",borderRadius:7,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontWeight:700,lineHeight:"14px"}}>💬 {cellNoteCount}</span>}
                 </td>);
-                const bgStyle=getCellBg(cell.actual||cell.plan,uniqMap,row._param);const planStyle=getCellPlanStyle(cell);
+                const pendingPlan=pendingValueFor(cell);
+                const effectiveCell=pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
+                const paintVal=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
+                const bgStyle=getCellBg(paintVal,uniqMap,row._param);const planStyle=getCellPlanStyle(effectiveCell);
                 const canPlan=cell.can_plan!==false; // default true for backward compat
                 const baseStyle={background:"var(--bg-card)",color:"var(--text-primary)"};
                 const canEdit=canPlan;
                 const style={...baseStyle,...bgStyle,...planStyle,padding:"4px 8px",borderBottom:"1px solid #555",borderRight:"1px solid #555",textAlign:"center",fontSize:11,cursor:canEdit?"pointer":"default",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,position:"relative"};
-                const hasPlan=cell.plan&&!cell.actual;
-                const isMismatch=cell.mismatch||false;
+                const hasPlan=hasValue(effectiveCell.plan)&&!hasValue(effectiveCell.actual);
+                const isMismatch=(hasValue(effectiveCell.plan)&&hasValue(effectiveCell.actual)&&String(effectiveCell.plan)!==String(effectiveCell.actual))||false;
                 const display=formatCell(cell.actual,row._param)||"";
                 const openEdit=()=>{if(!canEdit)return;
                   // 자동으로 editing 모드 진입 (dbl-click 시 Edit 버튼 클릭 없이도 작동)
                   if(!editing)setEditing(true);
-                  const editValue=Object.prototype.hasOwnProperty.call(pendingPlans,cell.key)
-                    ? pendingPlans[cell.key]
-                    : (cell.plan ?? cell.actual ?? "");
+                  const editValue=pendingPlan!==undefined?pendingPlan:(cell.plan ?? cell.actual ?? "");
                   setActiveCell({key:cell.key,param:row._param,value:editValue});
                   // suggestion 캐시 확인 후 없으면 fetch
                   if(!colValCache[row._param]){
@@ -1387,9 +1411,9 @@ export default function My_SplitTable({user}){
                   title={canPlan
                     ? (cell.actual ? "actual 값이 있어도 plan 입력/수정 가능. plan 과 actual 이 다르면 ✗ 로 표시됩니다." : "plan 입력 가능")
                     : "이 항목은 plan 입력 대상이 아닙니다"}>
-                  {pendingPlans[cell.key]?<span style={{color:"#ea580c",fontWeight:700,fontStyle:"italic"}}>{"📌 "}{pendingPlans[cell.key]}</span>
-                  :isMismatch?<span style={{color:"#dc2626",fontWeight:700}}>{"✗ "}{formatCell(cell.actual,row._param)}<span style={{fontSize:9,color:"rgba(239,68,68,0.95)"}}>{" (≠"+cell.plan+")"}</span></span>
-                  :hasPlan?<span style={{fontStyle:"italic",fontWeight:700}}>{"📌 "}{cell.plan}</span>
+                  {pendingPlan!==undefined?<span style={{color:"#ea580c",fontWeight:700,fontStyle:"italic"}}>{"📌 "}{pendingPlan}</span>
+                  :isMismatch?<span style={{color:"#dc2626",fontWeight:700}}>{"✗ "}{formatCell(effectiveCell.actual,row._param)}<span style={{fontSize:9,color:"rgba(239,68,68,0.95)"}}>{" (≠"+effectiveCell.plan+")"}</span></span>
+                  :hasPlan?<span style={{fontStyle:"italic",fontWeight:700}}>{"📌 "}{effectiveCell.plan}</span>
                   :display}
                   {/* v8.4.9-c: per-cell 메모 배지. 메모가 있으면 항상 표시, 없으면 hover 시에만 + 아이콘 노출. */}
                   <span className="stm-note-btn" onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={cellNoteCount>0?`${cellNoteCount}개 메모`:"메모 추가"} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:9,padding:"0 5px",borderRadius:7,background:cellNoteCount>0?"rgba(139,92,246,0.95)":"rgba(139,92,246,0.25)",color:cellNoteCount>0?"var(--bg-secondary)":"rgba(139,92,246,0.95)",fontWeight:700,lineHeight:"14px",opacity:cellNoteCount>0?1:0,transition:"opacity 0.15s"}}>💬{cellNoteCount>0?" "+cellNoteCount:"+"}</span>
@@ -1613,7 +1637,7 @@ export default function My_SplitTable({user}){
         </div>);
       })():null}
     </div>
-    {activeCell&&(()=>{const sugg=colValCache[activeCell.param]||[];const commit=(v)=>{const t=(v??"").trim();if(t)setPendingPlans(p=>({...p,[activeCell.key]:t}));setActiveCell(null);};
+    {activeCell&&(()=>{const sugg=suggestionValuesFor(activeCell.param,colValCache[activeCell.param]||[]);const commit=(v)=>{const t=(v??"").trim();if(t)setPendingPlans(p=>({...p,[activeCell.key]:t}));setActiveCell(null);};
       return <div style={{position:"fixed",inset:0,zIndex:9998,background:"rgba(0,0,0,0.55)",display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setActiveCell(null)}>
         <div onClick={e=>e.stopPropagation()} style={{background:"var(--bg-secondary)",borderRadius:10,padding:18,width:360,border:"1px solid var(--border)"}}>
           <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontFamily:"monospace"}}>{activeCell.key.split("|").slice(0,2).join(" · ")}</div>

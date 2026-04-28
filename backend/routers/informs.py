@@ -1387,6 +1387,17 @@ def auto_log_splittable_change(author: str, product: str, lot_id: str,
         now = _now()
         text = f"[SplitTable 자동기록] {action} · {col} · {old_value!r} → {new_value!r}"
         fab_snapshot = (fab_lot_id or "").strip() or _resolve_fab_lot_snapshot(product, root_lot, cell_wafer)
+        embed = None
+        try:
+            if root_lot and col:
+                embed = build_splittable_embed(
+                    product=product,
+                    lot_id=root_lot,
+                    custom_cols=[col],
+                    is_fab_lot=False,
+                )
+        except Exception:
+            embed = None
         entry = {
             "id": _new_id(),
             "parent_id": None,
@@ -1410,7 +1421,7 @@ def auto_log_splittable_change(author: str, product: str, lot_id: str,
                 "applied": (action == "set"),
             },
             "images": [],
-            "embed_table": None,
+            "embed_table": embed,
             "auto_generated": True,
             "fab_lot_id_at_save": fab_snapshot,
         }
@@ -2080,14 +2091,12 @@ def _st_build_uniq_map(rows_st: list, headers: list) -> dict:
         cells = r.get("_cells") or {}
         for i in range(len(headers or [])):
             cell = cells.get(i) or cells.get(str(i)) or {}
-            v = cell.get("actual")
-            if v is None or v == "":
-                v = cell.get("plan")
-            if v is None or v == "":
-                continue
-            s = str(v)
-            if s not in seen:
-                seen[s] = len(seen)
+            for v in (cell.get("actual"), cell.get("plan")):
+                if v is None or v == "":
+                    continue
+                s = str(v)
+                if s not in seen:
+                    seen[s] = len(seen)
         out[pn] = seen
     return out
 
@@ -2307,8 +2316,8 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
                     disp_html = f"{esc(disp)} <span style='color:#ea580c;font-weight:700'>→ {esc(str(plan))}</span>"
                 else:
                     disp_html = esc(disp)
-                # v8.8.30: cell background 컬러링 — actual 우선, 없으면 plan 기준.
-                paint_val = actual if actual not in (None, "") else plan
+                # v8.8.30/v9.x: plan 이 있으면 plan 기준으로 컬러링해 SplitTable unique 색상과 맞춘다.
+                paint_val = plan if plan not in (None, "") else actual
                 cell_bg = _st_cell_bg(paint_val, uniq_map, param_raw)
                 tds.append(f"<td style='{td_cell_base}{cell_bg}'>{disp_html}</td>")
             body_parts.append("<tr>" + "".join(tds) + "</tr>")

@@ -313,7 +313,7 @@ function stPlanStyle(cell) {
   if (!cell) return {};
   if (cell.plan && cell.actual) {
     if (String(cell.plan) === String(cell.actual)) return {};
-    return { borderLeft: `3px solid ${BAD.fg}`, background: "rgba(254,242,242,0.95)" };
+    return { borderLeft: `3px solid ${BAD.fg}`, boxShadow: `inset 0 0 0 1px ${BAD.fg}66` };
   }
   if (cell.plan) return { borderLeft: `3px solid ${WARN.fg}`, fontStyle: "italic", fontWeight: 700 };
   return {};
@@ -471,10 +471,11 @@ function EmbedTableView({ embed, product }) {
       if (!ST_COLOR_PREFIXES.some(p => pn.startsWith(p + "_"))) continue;
       const seen = {};
       Object.values(r._cells || {}).forEach(c => {
-        const v = c?.actual ?? c?.plan;
-        if (v == null || v === "") return;
-        const s = String(v);
-        if (!(s in seen)) seen[s] = Object.keys(seen).length;
+        [c?.actual, c?.plan].forEach(v => {
+          if (v == null || v === "") return;
+          const s = String(v);
+          if (!(s in seen)) seen[s] = Object.keys(seen).length;
+        });
       });
       uniq[pn] = seen;
     }
@@ -515,7 +516,7 @@ function EmbedTableView({ embed, product }) {
                   <td style={leftCellStyle}>{r._param}</td>
                   {headers.map((_, ci) => {
                     const cell = (r._cells && r._cells[ci]) || {};
-                    const bg = stCellBg(cell.actual ?? cell.plan, uniq, r._param);
+                    const bg = stCellBg(cell.plan ?? cell.actual, uniq, r._param);
                     const plan = stPlanStyle(cell);
                     const isPlan = !!cell.plan;
                     const display = (cell.actual != null && cell.actual !== "") ? String(cell.actual)
