@@ -3,6 +3,7 @@
 - GET  /api/llm/status     is_available + redacted config (모든 유저 조회 가능 — UI 가시성용)
 - POST /api/llm/test       admin 전용.  prompt 1건 실행해 연결 확인.
 - POST /api/llm/flowi/chat 홈 Flowi 토큰 활성화 + fab 데이터 질의
+- POST /api/llm/flowi/agent/chat 외부 AI client 가 같은 Flowi 기능을 API 로 호출
 
 caller 주의: LLM 은 옵션. UI 는 status.available == false 면 관련 버튼을 숨겨야 함.
 설정 편집은 /api/admin/settings/save 에서 llm 블록으로 수행.
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import polars as pl
 
 from core.paths import PATHS
@@ -1075,6 +1076,242 @@ def _handle_flowi_query(
     }
 
 
+def _clean_source_ai(raw: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(raw or "").strip())
+    return text.strip("._:-")[:64] or "external"
+
+
+def _json_excerpt(value: Any, limit: int = 4000) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)[:limit]
+    except Exception:
+        return str(value or "")[:limit]
+
+
+def _flowi_agent_actions(tool: dict[str, Any]) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    entries = tool.get("feature_entrypoints") or []
+    if isinstance(entries, list):
+        for item in entries[:3]:
+            if not isinstance(item, dict) or not item.get("key"):
+                continue
+            actions.append({
+                "type": "open_tab",
+                "tab": item.get("key"),
+                "title": item.get("title") or item.get("key"),
+                "description": item.get("description") or "",
+            })
+    unit_action = tool.get("action")
+    if unit_action:
+        actions.append({
+            "type": "flowi_unit_action",
+            "action": unit_action,
+            "intent": tool.get("intent") or "",
+            "slots": tool.get("slots") or {},
+            "filters": tool.get("filters") or {},
+        })
+    return actions
+
+
+def _agent_api_meta(
+    *,
+    source: str,
+    client_run_id: str,
+    username: str,
+    tool: dict[str, Any],
+    agent_context: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "received": True,
+        "source_ai": source,
+        "client_run_id": client_run_id,
+        "auth_user": username,
+        "read_only": True,
+        "actions": _flowi_agent_actions(tool),
+        "context_keys": sorted(str(k) for k in agent_context.keys())[:20],
+    }
+
+
+def _event_fields(fields: dict[str, Any], *, source: str = "", client_run_id: str = "") -> dict[str, Any]:
+    out = dict(fields)
+    if source:
+        out["source_ai"] = source
+    if client_run_id:
+        out["client_run_id"] = client_run_id
+    return out
+
+
+def _run_flowi_chat(
+    *,
+    prompt: str,
+    product: str,
+    max_rows: int,
+    me: dict[str, Any],
+    source_ai: str = "",
+    client_run_id: str = "",
+    agent_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    username = me.get("username") or "user"
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise HTTPException(400, "질문을 입력해주세요")
+
+    source = _clean_source_ai(source_ai) if source_ai else ""
+    client_run_id = str(client_run_id or "").strip()[:120]
+    agent_context = agent_context if isinstance(agent_context, dict) else {}
+
+    allowed_keys = _allowed_flowi_feature_keys(me)
+    all_entries = _matched_feature_entrypoints(prompt)
+    if all_entries and all_entries[0].get("key") not in allowed_keys:
+        tool = _flowi_permission_block(all_entries[0].get("key") or "", me)
+        answer = tool["answer"]
+        _append_user_event(username, "blocked_permission_request", _event_fields(
+            {"prompt": prompt, "feature": tool.get("feature"), "answer": answer},
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": True},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=tool,
+                agent_context=agent_context,
+            )
+        return result
+
+    blocked_msg = _flowi_write_block_message(prompt)
+    if blocked_msg:
+        _append_user_event(username, "blocked_write_request", _event_fields(
+            {"prompt": prompt, "answer": blocked_msg},
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        tool = {
+            "handled": True,
+            "intent": "blocked_write_request",
+            "blocked": True,
+            "answer": blocked_msg,
+            "policy": FLOWI_READ_ONLY_POLICY,
+        }
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": blocked_msg,
+            "tool": tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": True},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=tool,
+                agent_context=agent_context,
+            )
+        return result
+
+    max_rows = max(4, min(24, int(max_rows or 12)))
+    tool = _handle_flowi_query(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys)
+    entries = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
+    if entries:
+        tool["feature_entrypoints"] = entries
+    if not tool.get("handled") and entries:
+        tool["answer"] = (
+            "질문과 가장 가까운 기능 진입점입니다.\n"
+            + "\n".join(f"- {e['title']}: {e['description']}" for e in entries[:3])
+        )
+    answer = tool.get("answer") or ""
+    llm_info: dict[str, Any] = {"available": llm_adapter.is_available(), "used": False}
+    user_ctx = _profile_context(username)
+    feature_ctx = _feature_context(prompt, allowed_keys=allowed_keys)
+    agent_ctx = _json_excerpt(agent_context) if agent_context else ""
+
+    if llm_adapter.is_available() and not tool.get("blocked"):
+        source_line = f"외부 AI source: {source}\nclient_run_id: {client_run_id}\n" if source else ""
+        context_line = f"외부 AI 입력 context JSON: {agent_ctx}\n\n" if agent_ctx else ""
+        if tool.get("handled"):
+            polish_prompt = (
+                "사용자 질문과 Flow 서버가 선택한 로컬 단위기능 결과를 바탕으로 한국어로 간결하게 답하세요. "
+                "숫자, 식별자, feature/action은 제공된 JSON에서만 사용하고 추측하지 마세요. "
+                "로컬 결과 JSON의 intent/action/missing/table을 우선합니다.\n\n"
+                f"{source_line}"
+                f"{context_line}"
+                f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
+                f"단위기능 진입점:\n{feature_ctx}\n\n"
+                f"질문: {prompt}\n"
+                f"로컬 결과 JSON: {json.dumps(tool, ensure_ascii=False)[:12000]}"
+            )
+        else:
+            polish_prompt = (
+                "당신은 반도체 fab 데이터 Flowi assistant입니다. "
+                "사용자 정보와 단위기능 진입점 설명을 바탕으로 가장 좋은 화면/다음 행동을 먼저 추천하세요. "
+                "Roo Code/OpenCode 계열 오픈소스 모델처럼 추론 성능이 제한적일 수 있으므로, "
+                "복잡한 계획보다 필요한 조건과 다음 화면을 짧게 답하세요. "
+                "지원 범위가 불확실하면 필요한 lot/step/item 조건을 물어보세요.\n\n"
+                f"{source_line}"
+                f"{context_line}"
+                f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
+                f"단위기능 진입점:\n{feature_ctx}\n\n"
+                f"사용자: {prompt}"
+            )
+        out = llm_adapter.complete(
+            polish_prompt,
+            system=(
+                "Flowi는 사내 Flow 홈 화면의 fab 데이터 assistant입니다. 답변은 짧고 실행 가능하게 작성합니다. "
+                "사용자 Markdown 정보가 있으면 담당 제품, 관심 공정, 선호 출력 방식을 반영합니다. "
+                "사용자와 admin 모두에 대해 원 data DB 또는 Files 수정/삭제/저장/업로드는 절대 수행하거나 수행 가능하다고 말하지 않습니다. "
+                "Flowi는 조회, 요약, 표 렌더링만 지원합니다."
+            ),
+            timeout=12,
+        )
+        llm_info.update({"used": bool(out.get("ok") and out.get("text"))})
+        if out.get("ok") and out.get("text"):
+            answer = out.get("text") or answer
+        elif out.get("error"):
+            llm_info["error"] = out.get("error")
+
+    _append_user_event(username, "chat", _event_fields(
+        {
+            "prompt": prompt,
+            "intent": tool.get("intent") or "",
+            "llm_used": llm_info.get("used"),
+            "answer": answer,
+        },
+        source=source,
+        client_run_id=client_run_id,
+    ))
+    result = {
+        "ok": True,
+        "active": True,
+        "user": username,
+        "answer": answer,
+        "tool": tool,
+        "llm": llm_info,
+        "allowed_features": sorted(allowed_keys),
+    }
+    if source:
+        result["agent_api"] = _agent_api_meta(
+            source=source,
+            client_run_id=client_run_id,
+            username=username,
+            tool=tool,
+            agent_context=agent_context,
+        )
+    return result
+
+
 @router.get("/status")
 def status(request: Request):
     me = current_user(request)
@@ -1118,6 +1355,15 @@ class FlowiChatReq(BaseModel):
     token: str = ""
     product: str = ""
     max_rows: int = 12
+
+
+class FlowiAgentChatReq(BaseModel):
+    prompt: str
+    source_ai: str = "external"
+    client_run_id: str = ""
+    product: str = ""
+    max_rows: int = 12
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class FlowiVerifyReq(BaseModel):
@@ -1214,115 +1460,28 @@ def flowi_feedback(req: FlowiFeedbackReq, request: Request):
 @router.post("/flowi/chat")
 def flowi_chat(req: FlowiChatReq, request: Request):
     me = current_user(request)
-    username = me.get("username") or "user"
-    prompt = (req.prompt or "").strip()
-    if not prompt:
-        raise HTTPException(400, "질문을 입력해주세요")
+    return _run_flowi_chat(
+        prompt=req.prompt,
+        product=req.product,
+        max_rows=req.max_rows,
+        me=me,
+    )
 
-    allowed_keys = _allowed_flowi_feature_keys(me)
-    all_entries = _matched_feature_entrypoints(prompt)
-    if all_entries and all_entries[0].get("key") not in allowed_keys:
-        tool = _flowi_permission_block(all_entries[0].get("key") or "", me)
-        answer = tool["answer"]
-        _append_user_event(username, "blocked_permission_request", {
-            "prompt": prompt,
-            "feature": tool.get("feature"),
-            "answer": answer,
-        })
-        return {
-            "ok": True,
-            "active": True,
-            "user": username,
-            "answer": answer,
-            "tool": tool,
-            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": True},
-            "allowed_features": sorted(allowed_keys),
-        }
 
-    blocked_msg = _flowi_write_block_message(prompt)
-    if blocked_msg:
-        _append_user_event(username, "blocked_write_request", {"prompt": prompt, "answer": blocked_msg})
-        return {
-            "ok": True,
-            "active": True,
-            "user": username,
-            "answer": blocked_msg,
-            "tool": {
-                "handled": True,
-                "intent": "blocked_write_request",
-                "blocked": True,
-                "answer": blocked_msg,
-                "policy": FLOWI_READ_ONLY_POLICY,
-            },
-            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": True},
-            "allowed_features": sorted(allowed_keys),
-        }
+@router.post("/flowi/agent/chat")
+def flowi_agent_chat(req: FlowiAgentChatReq, request: Request):
+    """External AI clients can call the same read-only Flowi web-app router.
 
-    max_rows = max(4, min(24, int(req.max_rows or 12)))
-    tool = _handle_flowi_query(prompt, req.product, max_rows=max_rows, allowed_keys=allowed_keys)
-    entries = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
-    if entries:
-        tool["feature_entrypoints"] = entries
-    if not tool.get("handled") and entries:
-        tool["answer"] = (
-            "질문과 가장 가까운 기능 진입점입니다.\n"
-            + "\n".join(f"- {e['title']}: {e['description']}" for e in entries[:3])
-        )
-    answer = tool.get("answer") or ""
-    llm_info: dict[str, Any] = {"available": llm_adapter.is_available(), "used": False}
-    user_ctx = _profile_context(username)
-    feature_ctx = _feature_context(prompt, allowed_keys=allowed_keys)
-
-    if llm_adapter.is_available() and not tool.get("blocked"):
-        if tool.get("handled"):
-            polish_prompt = (
-                "사용자 질문과 Flow 서버가 선택한 로컬 단위기능 결과를 바탕으로 한국어로 간결하게 답하세요. "
-                "숫자, 식별자, feature/action은 제공된 JSON에서만 사용하고 추측하지 마세요. "
-                "로컬 결과 JSON의 intent/action/missing/table을 우선합니다.\n\n"
-                f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
-                f"단위기능 진입점:\n{feature_ctx}\n\n"
-                f"질문: {prompt}\n"
-                f"로컬 결과 JSON: {json.dumps(tool, ensure_ascii=False)[:12000]}"
-            )
-        else:
-            polish_prompt = (
-                "당신은 반도체 fab 데이터 Flowi assistant입니다. "
-                "사용자 정보와 단위기능 진입점 설명을 바탕으로 가장 좋은 화면/다음 행동을 먼저 추천하세요. "
-                "Roo Code/OpenCode 계열 오픈소스 모델처럼 추론 성능이 제한적일 수 있으므로, "
-                "복잡한 계획보다 필요한 조건과 다음 화면을 짧게 답하세요. "
-                "지원 범위가 불확실하면 필요한 lot/step/item 조건을 물어보세요.\n\n"
-                f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
-                f"단위기능 진입점:\n{feature_ctx}\n\n"
-                f"사용자: {prompt}"
-            )
-        out = llm_adapter.complete(
-            polish_prompt,
-            system=(
-                "Flowi는 사내 Flow 홈 화면의 fab 데이터 assistant입니다. 답변은 짧고 실행 가능하게 작성합니다. "
-                "사용자 Markdown 정보가 있으면 담당 제품, 관심 공정, 선호 출력 방식을 반영합니다. "
-                "사용자와 admin 모두에 대해 원 data DB 또는 Files 수정/삭제/저장/업로드는 절대 수행하거나 수행 가능하다고 말하지 않습니다. "
-                "Flowi는 조회, 요약, 표 렌더링만 지원합니다."
-            ),
-            timeout=12,
-        )
-        llm_info.update({"used": bool(out.get("ok") and out.get("text"))})
-        if out.get("ok") and out.get("text"):
-            answer = out.get("text") or answer
-        elif out.get("error"):
-            llm_info["error"] = out.get("error")
-
-    _append_user_event(username, "chat", {
-        "prompt": prompt,
-        "intent": tool.get("intent") or "",
-        "llm_used": llm_info.get("used"),
-        "answer": answer,
-    })
-    return {
-        "ok": True,
-        "active": True,
-        "user": username,
-        "answer": answer,
-        "tool": tool,
-        "llm": llm_info,
-        "allowed_features": sorted(allowed_keys),
-    }
+    Authentication still uses the normal Flow session token; the body fields
+    only identify the calling AI and correlate its run id for audit/debugging.
+    """
+    me = current_user(request)
+    return _run_flowi_chat(
+        prompt=req.prompt,
+        product=req.product,
+        max_rows=req.max_rows,
+        me=me,
+        source_ai=req.source_ai,
+        client_run_id=req.client_run_id,
+        agent_context=req.context,
+    )
