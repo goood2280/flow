@@ -210,7 +210,7 @@ def scan_one_file(fp: Path):
 
 
 def lazy_read_source(source_type: str = "", root: str = "", product: str = "",
-                     file: str = "", max_files: int = 20,
+                     file: str = "", max_files: int | None = 20,
                      recent_days: int | None = 30):
     """Memory-efficient lazy reader. Returns LazyFrame (call .collect() when ready).
     For 30-60GB datasets on 2-core/6GB machines — push filters before collect.
@@ -248,7 +248,8 @@ def lazy_read_source(source_type: str = "", root: str = "", product: str = "",
             pass
         # Fallback: scan individually and concat
         frames = []
-        for f in pq_files[-max_files:]:
+        fallback_files = pq_files if max_files is None else pq_files[-max_files:]
+        for f in fallback_files:
             lf = scan_one_file(f)
             if lf is not None:
                 frames.append(lf)
@@ -258,7 +259,8 @@ def lazy_read_source(source_type: str = "", root: str = "", product: str = "",
     # CSV fallback
     csv_files = sorted(prod_path.rglob("*.csv"))
     if csv_files:
-        frames = [scan_one_file(f) for f in csv_files[-max_files:]]
+        fallback_files = csv_files if max_files is None else csv_files[-max_files:]
+        frames = [scan_one_file(f) for f in fallback_files]
         frames = [f for f in frames if f is not None]
         if frames:
             return pl.concat(frames, how="diagonal_relaxed")
@@ -275,7 +277,7 @@ def _glob_data_files(directory: Path):
 
 
 def read_source(source_type: str = "", root: str = "", product: str = "",
-                file: str = "", max_files: int = 40):
+                file: str = "", max_files: int | None = 40):
     """Universal reader covering all DB types:
       - base_file:   DB_ROOT/<file> (parquet or CSV) — DB 루트 최상단 단일 파일
       - root_parquet: DB_BASE/<file> (parquet or CSV)
@@ -321,14 +323,15 @@ def read_source(source_type: str = "", root: str = "", product: str = "",
     if not data_files:
         raise HTTPException(404, f"No data files in {root}/{product}")
 
+    selected_files = data_files if max_files is None or max_files <= 0 else data_files[-max_files:]
     dfs = []
-    for f in data_files[-max_files:] if max_files > 0 else data_files:
+    for f in selected_files:
         d = read_one_file(f)
         if d is not None and d.height > 0:
             dfs.append(cast_all_str(d))
 
     if not dfs:
-        raise HTTPException(404, f"No readable files with data (tried {len(data_files[-max_files:])})")
+        raise HTTPException(404, f"No readable files with data (tried {len(selected_files)})")
 
     if len(dfs) == 1:
         return dfs[0]

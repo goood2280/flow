@@ -125,7 +125,7 @@ def _lot_lookup_cache_set(key: tuple, payload: dict) -> dict:
 PLAN_DIR = PATHS.data_root / "splittable"
 PLAN_DIR.mkdir(parents=True, exist_ok=True)
 MATCH_CACHE_DIR = PLAN_DIR / "match_cache"
-MATCH_CACHE_VERSION = 1
+MATCH_CACHE_VERSION = 2
 MATCH_CACHE_REFRESH_MINUTES_DEFAULT = 10
 MATCH_CACHE_REFRESH_MINUTES_MIN = 5
 MATCH_CACHE_REFRESH_MINUTES_MAX = 60
@@ -3089,6 +3089,85 @@ def _scan_fab_source(fab_source: str):
     return lf_raw
 
 
+def _global_fab_source_paths(preferred_source: str = "") -> list[str]:
+    """Return db-relative FAB product folders to use for lot-id matching.
+
+    SplitTable renders one ML_TABLE product, but fab_lot_id lineage can be
+    present in a different FAB product folder.  Build the matching table from
+    the whole FAB DB root, keeping the product-derived source first when it
+    exists so current behavior remains the common fast path.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(rel: str):
+        rel = _normalize_fab_source_path(rel)
+        if not rel:
+            return
+        key = rel.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(rel)
+
+    add(preferred_source)
+    db_base = _db_base()
+    try:
+        db_base_resolved = db_base.resolve()
+    except Exception:
+        db_base_resolved = None
+
+    for root_dir in _list_db_roots():
+        up = root_dir.name.upper()
+        is_fab_root = (
+            up == _RAWDATA_FAB.upper()
+            or up == _RAWDATA_EXACT.upper()
+            or "FAB" in up
+        )
+        try:
+            root_is_db_base = db_base_resolved is not None and root_dir.resolve() == db_base_resolved
+        except Exception:
+            root_is_db_base = False
+        if not is_fab_root and not root_is_db_base:
+            continue
+        try:
+            children = sorted(
+                [p for p in root_dir.iterdir() if p.is_dir() and not p.name.startswith((".", "_", "__"))],
+                key=lambda p: p.name.lower(),
+            )
+        except Exception:
+            continue
+        for child in children:
+            if not _rglob_files_ci(child, (".parquet", ".csv")):
+                continue
+            if root_is_db_base:
+                add(child.name)
+            else:
+                add(f"{root_dir.name}/{child.name}")
+    return out
+
+
+def _scan_global_fab_sources(preferred_source: str = ""):
+    """Scan all FAB DB product folders as one LazyFrame for matching."""
+    frames = []
+    used_sources: list[str] = []
+    for source in _global_fab_source_paths(preferred_source):
+        lf = _scan_fab_source(source)
+        if lf is None:
+            continue
+        frames.append(lf)
+        used_sources.append(source)
+    if not frames:
+        return None, used_sources
+    if len(frames) == 1:
+        return frames[0], used_sources
+    try:
+        return _cast_cats_lazy(pl.concat(frames, how="diagonal_relaxed")), used_sources
+    except Exception as e:
+        logger.warning("_scan_global_fab_sources concat 실패 %s: %s", type(e).__name__, e)
+        return frames[0], used_sources[:1]
+
+
 # v8.8.3/v8.8.5: ML_TABLE_<PROD> → DB 상위폴더 자동 매칭.
 #   `_list_db_roots()` 에 위임 — 사내 `1.RAWDATA_DB*` 접두 폴더도 인식 (FAB 힌트 우선).
 # v8.8.17: root_dir 이 db_base 자체일 때(Case 1/3) 는 제품명만 반환 —
@@ -3328,6 +3407,7 @@ def _match_cache_config_key(product: str, ov: dict, fab_source: str) -> str:
         "version": MATCH_CACHE_VERSION,
         "product": _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip(),
         "fab_source": _normalize_fab_source_path(fab_source),
+        "fab_sources": _global_fab_source_paths(fab_source),
         "db_root": str(_db_base()),
         "base_root": str(_base_root()),
         "override": clean_ov,
@@ -3340,7 +3420,9 @@ def _match_cache_config_key(product: str, ov: dict, fab_source: str) -> str:
 
 def _match_cache_current(product: str) -> dict | None:
     ml_product, ov, fab_source = _current_fab_override(product)
-    if not ml_product or not fab_source:
+    if not ml_product:
+        return None
+    if not fab_source and not _global_fab_source_paths(""):
         return None
     fp = _match_cache_path(ml_product)
     meta_fp = _match_cache_meta_path(ml_product)
@@ -3621,7 +3703,11 @@ def refresh_match_cache(product: str = "", force: bool = False) -> dict:
             ml_product, ov, fab_source = _current_fab_override(raw_product)
             result = {"product": ml_product or raw_product, "ok": False, "skipped": False, "row_count": 0, "fab_source": fab_source}
             try:
-                if not ml_product or not fab_source:
+                if not ml_product:
+                    result["reason"] = "FAB source not matched"
+                    results.append(result)
+                    continue
+                if not fab_source and not _global_fab_source_paths(""):
                     result["reason"] = "FAB source not matched"
                     results.append(result)
                     continue
@@ -3638,9 +3724,10 @@ def refresh_match_cache(product: str = "", force: bool = False) -> dict:
 
                 main_lf = _scan_product_base(ml_product)
                 main_names_list = main_lf.collect_schema().names()
-                fab_lf = _scan_fab_source(fab_source)
+                fab_lf, fab_sources = _scan_global_fab_sources(fab_source)
                 if fab_lf is None:
                     result["reason"] = "FAB source scan failed"
+                    result["fab_sources"] = fab_sources
                     results.append(result)
                     continue
                 fab_lf, fab_schema_names = _ci_align_fab_to_main(fab_lf, main_names_list)
@@ -3648,6 +3735,7 @@ def refresh_match_cache(product: str = "", force: bool = False) -> dict:
                     fab_schema_names = fab_lf.collect_schema().names()
                 except Exception:
                     pass
+                result["fab_sources"] = fab_sources
                 cols = _resolve_match_cache_columns(ov, main_names_list, fab_schema_names)
                 join_keys = cols["join_keys"]
                 override_cols = cols["override_cols"]
@@ -3703,6 +3791,7 @@ def refresh_match_cache(product: str = "", force: bool = False) -> dict:
                     "version": MATCH_CACHE_VERSION,
                     "product": ml_product,
                     "fab_source": _normalize_fab_source_path(fab_source),
+                    "fab_sources": fab_sources,
                     "config_key": config_key,
                     "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
                     "built_epoch": time.time(),
@@ -3717,7 +3806,8 @@ def refresh_match_cache(product: str = "", force: bool = False) -> dict:
                 }
                 save_json(meta_fp, meta)
                 _LOT_LOOKUP_CACHE.clear()
-                result.update({"ok": True, "row_count": int(df.height), "join_keys": join_keys, "override_cols": override_cols})
+                result.update({"ok": True, "row_count": int(df.height), "join_keys": join_keys,
+                               "override_cols": override_cols, "fab_sources": fab_sources})
             except Exception as e:
                 logger.warning("SplitTable match cache build failed (product=%s) %s: %s",
                                raw_product, type(e).__name__, e, exc_info=True)
@@ -4098,12 +4188,12 @@ def _fab_source_context(product: str) -> dict:
             fab_source = ""
         if not fab_source:
             fab_source = _auto_derive_fab_source(ml_product)
-        if not fab_source:
+        if not fab_source and not _global_fab_source_paths(""):
             return {}
-        _, resolved_fab_source = _resolve_fab_source_target(fab_source)
+        _, resolved_fab_source = _resolve_fab_source_target(fab_source) if fab_source else (None, "")
         if resolved_fab_source:
             fab_source = resolved_fab_source
-        fab_lf = _scan_fab_source(fab_source)
+        fab_lf, fab_sources = _scan_global_fab_sources(fab_source)
         if fab_lf is None:
             return {}
         try:
@@ -4130,6 +4220,7 @@ def _fab_source_context(product: str) -> dict:
         return {
             "lf": fab_lf,
             "source": fab_source,
+            "sources": fab_sources,
             "root_col": root_col,
             "wafer_col": wafer_col,
             "fab_col": fab_col,
@@ -4649,7 +4740,7 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
     #   4) 조인은 항상 "ts_col 기준 최신 레코드만" join keys 별로 picking 후 left-join.
     try:
         product, ov, fab_source = _current_fab_override(product)
-        if not fab_source:
+        if not fab_source and not _global_fab_source_paths(""):
             return _strip_non_authoritative_fab_fields(lf, product)
 
         try:
@@ -4683,10 +4774,10 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
                 fab_has_join_tmp=True,
             )
 
-        fab_lf = _scan_fab_source(fab_source)
+        fab_lf, fab_sources = _scan_global_fab_sources(fab_source)
         if fab_lf is None:
-            logger.warning("_scan_product: _scan_fab_source 가 None (product=%s fab_source=%s)",
-                           product, fab_source)
+            logger.warning("_scan_product: FAB source scan 실패 (product=%s fab_source=%s sources=%s)",
+                           product, fab_source, fab_sources)
             return _strip_non_authoritative_fab_fields(lf, product)
 
         # v8.8.22: CI 정렬 — fab_lf 컬럼명을 main 쪽 casing 으로 rename.

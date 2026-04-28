@@ -528,8 +528,6 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 "page": page, "page_size": page_size, "has_more": False,
                 "meta_cached": bool(cached_meta),
             }
-        if not (select_cols and select_cols.strip()) and not (sql and sql.strip()):
-            lf = lf.select(all_cols_full[:cols])
         cached_meta = None
         if ext == ".parquet":
             try:
@@ -647,13 +645,14 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
 
+    sel = []
     if select_cols and select_cols.strip():
         sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(all_columns)]
-        if sel:
-            df = df.select(sel)
     if sql and sql.strip():
         df = apply_sql_like(df, sql)
         total = df.height
+    if sel:
+        df = df.select(sel)
     show = df.slice(offset, page_size)
     return {
         "total_rows": total, "total_cols": len(all_columns),
@@ -695,11 +694,12 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             "meta_cached": bool(cached_meta),
         }
 
-    # Column-projection pushdown
+    # Keep SQL filtering on the full source schema.  Projection is applied only
+    # after the filter, so users can filter by a column that is not selected for
+    # display/download.
+    sel = []
     if select_cols and select_cols.strip():
         sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(all_columns)]
-        if sel:
-            lf = lf.select(sel)
 
     if sql and sql.strip():
         # Prefer lazy SQL so filtering/pagination stays in the parquet scanner.
@@ -709,7 +709,8 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             filtered = lf.filter(pl.sql_expr(sql.strip()))
             total_df = collect_streaming(filtered.select(pl.len()))
             total = int(total_df[0, 0]) if total_df.height else 0
-            show = filtered.slice(offset, page_size).collect()
+            show_lf = filtered.select(sel) if sel else filtered
+            show = show_lf.slice(offset, page_size).collect()
         except Exception:
             try:
                 from core.parquet_perf import collect_streaming
@@ -718,10 +719,14 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
                 df = lf.collect()
             df = apply_sql_like(df, sql)
             total = df.height
+            if sel:
+                df = df.select(sel)
             show = df.slice(offset, page_size)
         has_more = offset + len(show) < total
     else:
         # Page path: parquet scan + lazy slice → only fetches the rows we need.
+        if sel:
+            lf = lf.select(sel)
         show = lf.slice(offset, page_size).collect()
         total = int((cached_meta or {}).get("row_count") or 0) or (offset + show.height)
         has_more = show.height == page_size if not cached_meta else offset + show.height < total
@@ -753,8 +758,14 @@ def view_product(root: str = Query(...), product: str = Query(...),
     try:
         from core.utils import lazy_read_source
         from core.parquet_perf import has_date_filter
-        recent = None if (all_partitions or has_date_filter(sql)) else 30
-        lf = lazy_read_source(root=root, product=product, recent_days=recent)
+        # SQL 검색은 사용자가 명시적으로 DB 전체에서 찾는 동작이다. 날짜 조건이
+        # 없어도 최근 30일 pruning 및 max_files 상한을 적용하지 않는다.
+        full_scan = all_partitions or (sql and sql.strip()) or has_date_filter(sql)
+        recent = None if full_scan else 30
+        lf = lazy_read_source(
+            root=root, product=product,
+            recent_days=recent, max_files=None if full_scan else 20,
+        )
         if lf is not None:
             return _run_view_lazy(lf, sql, select_cols, rows, meta_only=meta_only,
                                   page=page, page_size=page_size)
@@ -911,9 +922,6 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                 "page": page, "page_size": page_size, "has_more": False,
                 "meta_cached": bool(cached_meta),
             }
-        # 미리보기 기본: 앞쪽 N 컬럼만. SQL 또는 select_cols 가 오면 그쪽 우선.
-        if not (select_cols and select_cols.strip()) and not (sql and sql.strip()):
-            lf = lf.select(all_cols_full[:cols])
         try:
             from core.parquet_perf import read_meta
             cached_meta = read_meta(fp)
@@ -997,7 +1005,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                     raise HTTPException(400, f"Cannot read: {file}")
                 label = file
         elif root and product:
-            df = read_source(root=root, product=product)
+            df = read_source(root=root, product=product, max_files=None if sql.strip() else 40)
             label = f"{root}/{product}"
         else:
             raise HTTPException(400, "Specify file or root+product")
@@ -1017,12 +1025,12 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             except Exception as e:
                 logger.warning(f"Reformatter skipped: {e}")
 
+        if sql.strip():
+            df = apply_sql_like(df, sql)
         if select_cols.strip():
             sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(df.columns)]
             if sel:
                 df = df.select(sel)
-        if sql.strip():
-            df = apply_sql_like(df, sql)
 
         csv_bytes = df.write_csv().encode("utf-8")
         if len(csv_bytes) > 100_000_000:
