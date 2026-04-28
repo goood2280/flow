@@ -15,9 +15,10 @@ v8.7.3 hotfix:
 import logging
 import os
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.routing import Match
 from core.paths import PATHS
 from app_v2.runtime.router_loader import include_router_modules
 from app_v2.runtime.security import AuthMiddleware
@@ -53,6 +54,70 @@ logger.info(f"  data_root = {PATHS.data_root}")
 logger.info(f"  db_root   = {PATHS.db_root}")
 
 start_background_services(logger)
+
+
+def _allowed_methods_for_path(path: str, method: str) -> set[str]:
+    """Return methods for a registered API path when the current method missed.
+
+    This keeps the API fallback below from turning a real method mismatch into
+    a misleading generic 404 while still preventing the SPA catch-all from
+    surfacing as 405 for missing API POST routes.
+    """
+    scope = {"type": "http", "path": path, "method": method, "root_path": "", "headers": []}
+    allowed: set[str] = set()
+    for route in app.routes:
+        endpoint_name = getattr(getattr(route, "endpoint", None), "__name__", "")
+        if endpoint_name in {"api_not_found", "serve_spa"}:
+            continue
+        try:
+            match, _child_scope = route.matches(scope)
+        except Exception:
+            continue
+        if match is Match.PARTIAL:
+            allowed.update(getattr(route, "methods", set()) or set())
+    allowed.discard("HEAD")
+    return allowed
+
+
+def _compat_api_path(path: str) -> str:
+    """Map legacy singular/plural API prefixes to their canonical routers."""
+    if path == "inform" or path.startswith("inform/"):
+        return "/api/informs" + path[len("inform"):]
+    if path == "trackers" or path.startswith("trackers/"):
+        return "/api/tracker" + path[len("trackers"):]
+    return ""
+
+
+@app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+def api_not_found(path: str, request: Request):
+    """JSON fallback for unmatched API calls.
+
+    Without this route, an unmatched POST under /api can be reported by
+    Starlette as Method Not Allowed because the SPA GET catch-all also matches
+    the path. Operators then see a confusing 405 instead of the missing API
+    route that actually needs attention.
+    """
+    full_path = f"/api/{path}"
+    compat_path = _compat_api_path(path)
+    if compat_path:
+        return RedirectResponse(str(request.url.replace(path=compat_path)), status_code=307)
+
+    allowed = _allowed_methods_for_path(full_path, request.method)
+    if allowed:
+        allow = ", ".join(sorted(allowed))
+        return JSONResponse(
+            {"detail": "Method Not Allowed", "path": full_path, "allowed_methods": sorted(allowed)},
+            status_code=405,
+            headers={"Allow": allow},
+        )
+
+    failed_map = {name: err for name, err in failed}
+    router_key = (path.split("/", 1)[0] or "").strip()
+    body = {"detail": "API not found", "path": full_path}
+    if router_key in failed_map:
+        body["detail"] = f"API router '{router_key}' failed to load"
+        body["router_error"] = failed_map[router_key]
+    return JSONResponse(body, status_code=404)
 
 
 @app.get("/version.json")
