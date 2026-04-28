@@ -11,6 +11,7 @@
     "enabled":   bool,
     "api_url":   str,            # POST 대상 (예: https://llm.internal/v1/chat)
     "model":     str,            # e.g. "internal-7b"
+    "mode":      str,            # e.g. "fast"
     "admin_token": str,           # admin-managed bearer token shared by users
     "headers":   {k: v, ...},    # 인증 헤더 등
     "format":    "openai"|"raw", # 요청 body 스키마.  default "openai" (messages:[{role,content}])
@@ -50,6 +51,7 @@ _DEFAULT: Dict[str, Any] = {
     "enabled": False,
     "api_url": "",
     "model": "",
+    "mode": "fast",
     "admin_token": "",
     "headers": {},
     "format": "openai",
@@ -72,6 +74,7 @@ def _raw_config() -> Dict[str, Any]:
     merged["enabled"] = bool(merged.get("enabled"))
     merged["api_url"] = str(merged.get("api_url") or "").strip()
     merged["model"] = str(merged.get("model") or "").strip()
+    merged["mode"] = str(merged.get("mode") or "fast").strip() or "fast"
     merged["admin_token"] = str(merged.get("admin_token") or "").strip()
     merged["format"] = (merged.get("format") or "openai").strip() or "openai"
     try:
@@ -186,7 +189,10 @@ def complete(prompt: str, *, system: Optional[str] = None,
     if not url:
         return {"ok": False, "text": "", "error": "llm api_url missing"}
     model = cfg.get("model") or ""
+    mode = str(cfg.get("mode") or "").strip()
     body: Dict[str, Any] = dict(cfg.get("extra_body") or {})
+    if mode and "mode" not in body:
+        body["mode"] = mode
     if fmt == "openai":
         msgs = []
         if system:
