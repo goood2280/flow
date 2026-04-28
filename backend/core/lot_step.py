@@ -435,6 +435,113 @@ def _data_product_values(product: str = "") -> set[str]:
     return {raw}
 
 
+def _product_names_under_root(root_dir: Path) -> list[str]:
+    """Discover product names from legacy and hive-table source roots.
+
+    This stays structural and bounded so Tracker dropdowns do not trigger a
+    broad parquet scan just to populate products.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str) -> None:
+        text = str(value or "").strip()
+        if text.startswith("product="):
+            text = text[len("product="):].strip()
+        key = text.upper()
+        if not text or key in seen:
+            return
+        seen.add(key)
+        names.append(text)
+
+    try:
+        children = [p for p in sorted(root_dir.iterdir(), key=lambda x: x.name.lower()) if p.is_dir()]
+    except Exception:
+        return names
+
+    for child in children:
+        if child.name.startswith((".", "_", "__")):
+            continue
+        if child.name.startswith("product="):
+            try:
+                has_structured_data = any(
+                    (p.is_dir() and p.name.startswith("date=")) or (p.is_file() and p.suffix.lower() in (".parquet", ".csv"))
+                    for p in child.iterdir()
+                )
+            except Exception:
+                has_structured_data = False
+            if has_structured_data or _path_has_data(child):
+                _add(child.name)
+            continue
+        try:
+            has_product_parts = any(p.is_dir() and p.name.startswith("product=") for p in child.iterdir())
+        except Exception:
+            has_product_parts = False
+        if has_product_parts:
+            continue
+        try:
+            has_structured_data = any(
+                (p.is_dir() and p.name.startswith("date=")) or (p.is_file() and p.suffix.lower() in (".parquet", ".csv"))
+                for p in child.iterdir()
+            )
+        except Exception:
+            has_structured_data = False
+        if has_structured_data or _path_has_data(child):
+            _add(child.name)
+
+    for table_dir in children:
+        if table_dir.name.startswith((".", "_", "__", "product=")):
+            continue
+        try:
+            parts = [p for p in table_dir.iterdir() if p.is_dir() and p.name.startswith("product=")]
+        except Exception:
+            continue
+        for part in parts:
+            try:
+                has_structured_data = any(
+                    (p.is_dir() and p.name.startswith("date=")) or (p.is_file() and p.suffix.lower() in (".parquet", ".csv"))
+                    for p in part.iterdir()
+                )
+            except Exception:
+                has_structured_data = False
+            if has_structured_data or _path_has_data(part):
+                _add(part.name)
+    return names
+
+
+def _product_dirs_under_root(root_dir: Path, product: str) -> list[Path]:
+    raw = str(product or "").strip().upper()
+    if raw.startswith("ML_TABLE_"):
+        raw = raw[len("ML_TABLE_"):].strip()
+    aliases = sorted(_product_aliases(raw) or {raw})
+    dirs: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Path | None) -> None:
+        if path is None or not path.is_dir():
+            return
+        key = str(path.resolve())
+        if key in seen:
+            return
+        seen.add(key)
+        dirs.append(path)
+
+    for alias in aliases:
+        _add(_casefold_child_path(root_dir, alias))
+        _add(_casefold_child_path(root_dir, f"product={alias}"))
+
+    try:
+        children = [p for p in root_dir.iterdir() if p.is_dir()]
+    except Exception:
+        return dirs
+    for child in children:
+        if child.name.startswith((".", "_", "__", "product=")):
+            continue
+        for alias in aliases:
+            _add(_casefold_child_path(child, f"product={alias}"))
+    return dirs
+
+
 def _apply_lot_filters(lf, schema: list[str], product: str = "", root_lot_id: str = "", lot_id: str = ""):
     try:
         import polars as pl
@@ -502,15 +609,18 @@ def db_product_candidates(source_root: str = "", source: str = "auto", prefix: s
         values.append(text)
 
     for root_name in _source_roots(source, source_root):
+        root_structured = False
         for root_dir in _resolve_source_root_dirs(source, root_name):
             try:
-                for child in sorted(root_dir.iterdir(), key=lambda p: p.name.lower()):
-                    if child.is_dir():
-                        _add(child.name)
-                        if len(values) >= limit:
-                            return values[:limit]
+                for product_name in _product_names_under_root(root_dir):
+                    root_structured = True
+                    _add(product_name)
+                    if len(values) >= limit:
+                        return values[:limit]
             except Exception:
                 pass
+        if root_structured and not needle:
+            continue
         try:
             import polars as pl
             lf = _scan_source_files(root_name, "", source=source)
@@ -698,13 +808,7 @@ def _parquet_files(root_name: str, product: str = "", source: str = "auto") -> l
     files: list[Path] = []
     if raw:
         for root_dir in root_dirs:
-            exact = _casefold_child_path(root_dir, raw)
-            dirs = [exact] if exact is not None and exact.is_dir() else []
-            if not dirs:
-                for alias in sorted(_product_aliases(raw)):
-                    d = _casefold_child_path(root_dir, alias)
-                    if d is not None and d.is_dir() and d not in dirs:
-                        dirs.append(d)
+            dirs = _product_dirs_under_root(root_dir, raw)
             for d in dirs:
                 files.extend(sorted(d.rglob("*.parquet")))
         return _dedupe_paths(files)

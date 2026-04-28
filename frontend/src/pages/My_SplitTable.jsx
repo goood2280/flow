@@ -36,8 +36,10 @@ export default function My_SplitTable({user}){
   const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState("");
   const[lotId,setLotId]=useState("");const[waferIds,setWaferIds]=useState("");
   const[lotSuggestions,setLotSuggestions]=useState([]);const[showLotDrop,setShowLotDrop]=useState(false);const[lotFilter,setLotFilter]=useState("");
+  const[lotSuggestBusy,setLotSuggestBusy]=useState(false);const[lotSuggestMsg,setLotSuggestMsg]=useState("");
   // v8.4.3: fab_lot_id 검색도 지원 — root_lot_id 대체 키로 사용 가능.
   const[fabLotId,setFabLotId]=useState("");const[fabSuggestions,setFabSuggestions]=useState([]);const[showFabDrop,setShowFabDrop]=useState(false);
+  const[fabSuggestBusy,setFabSuggestBusy]=useState(false);const[fabSuggestMsg,setFabSuggestMsg]=useState("");
   const[prefixes,setPrefixes]=useState([]);const[selPrefixes,setSelPrefixes]=useState(["KNOB"]);
   const[customs,setCustoms]=useState([]);const[selCustom,setSelCustom]=useState("");const[isCustomMode,setIsCustomMode]=useState(false);
   const[viewMode,setViewMode]=useState("all");
@@ -231,21 +233,24 @@ export default function My_SplitTable({user}){
     }
   },[enabledSources,products]);
   useEffect(()=>{
-    if(!selProd){setLotSuggestions([]);return;}
+    if(!selProd){setLotSuggestions([]);setLotSuggestBusy(false);setLotSuggestMsg("");return;}
     const prefix=(lotId||"").trim();
     const limit=candidateLimit(prefix);
     let url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=root_lot_id&limit="+limit;
     if(prefix) url+="&prefix="+encodeURIComponent(prefix);
+    setLotSuggestBusy(true);setLotSuggestMsg("");
     const fallbackLots=()=>sf(API+"/lot-ids?product="+encodeURIComponent(selProd)+"&limit="+limit)
       .then(d=>{
         const lots=normalizeLotList(d.lot_ids||[]);
         setLotSuggestions(prefix?lots.filter(l=>l.toLowerCase().includes(prefix.toLowerCase())):lots);
+        setLotSuggestMsg(lots.length?"":"Lot 후보가 없습니다. DB 연결/제품 매칭을 확인하세요.");
       })
-      .catch(()=>{});
+      .catch(e=>{setLotSuggestions([]);setLotSuggestMsg(e?.message||"Lot 후보 조회 실패");})
+      .finally(()=>setLotSuggestBusy(false));
     sf(url)
       .then(d=>{
         const candidates=normalizeLotList(d.candidates||[]);
-        if(candidates.length)setLotSuggestions(candidates);
+        if(candidates.length){setLotSuggestions(candidates);setLotSuggestMsg("");setLotSuggestBusy(false);}
         else fallbackLots();
       })
       .catch(()=>fallbackLots());
@@ -410,14 +415,20 @@ export default function My_SplitTable({user}){
   //   (root_lot_id == lotId 인 row 의 fab_lot_id) 으로 매칭, 0건이면 starts_with → 전체 폴백.
   //   기존 'lotId.length===5' 분기는 시드 데이터에서 root/fab 앞 5자가 다른 케이스를 못 잡았음.
   useEffect(()=>{
-    if(!selProd) return;
+    if(!selProd){setFabSuggestions([]);setFabSuggestBusy(false);setFabSuggestMsg("");return;}
     const _r=(lotId||"").trim();
     const _f=(fabLotId||"").trim();
     const limit=candidateLimit(_f||_r);
     let url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=fab_lot_id&limit="+limit;
     if(_r) url+="&root_lot_id="+encodeURIComponent(_r);
     if(_f) url+="&prefix="+encodeURIComponent(_f);
-    sf(url).then(d=>setFabSuggestions(d.candidates||[])).catch(()=>{});
+    setFabSuggestBusy(true);setFabSuggestMsg("");
+    sf(url).then(d=>{
+      const rows=normalizeLotList(d.candidates||[]);
+      setFabSuggestions(rows);
+      setFabSuggestMsg(rows.length?"":"Fab lot 후보가 없습니다. root_lot_id 범위 또는 DB 연결을 확인하세요.");
+    }).catch(e=>{setFabSuggestions([]);setFabSuggestMsg(e?.message||"Fab lot 후보 조회 실패");})
+      .finally(()=>setFabSuggestBusy(false));
   },[selProd,lotId,fabLotId]);
   useEffect(()=>{const h=e=>{if(lotRef.current&&!lotRef.current.contains(e.target))setShowLotDrop(false);};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
 
@@ -602,8 +613,10 @@ export default function My_SplitTable({user}){
         <input value={lotId} onChange={e=>{setLotId(e.target.value);setFabLotId("");setLotFilter(e.target.value);setShowLotDrop(true);}}
           onFocus={()=>setShowLotDrop(true)} placeholder="입력 또는 선택"
           style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&(setShowLotDrop(false),doSearch())}/>
-        {showLotDrop&&filteredLots.length>0&&<div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
-          {filteredLots.slice(0,50).map(l=><div key={l} onClick={()=>{setLotId(l);setFabLotId("");setShowLotDrop(false);}}
+        {showLotDrop&&(filteredLots.length>0||lotSuggestBusy||lotSuggestMsg)&&<div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
+          {lotSuggestBusy&&<div style={{padding:"7px 10px",fontSize:10,color:"var(--text-secondary)"}}>Lot 후보 조회 중...</div>}
+          {!lotSuggestBusy&&filteredLots.length===0&&lotSuggestMsg&&<div style={{padding:"7px 10px",fontSize:10,color:BAD.fg,lineHeight:1.4}}>{lotSuggestMsg}</div>}
+          {!lotSuggestBusy&&filteredLots.slice(0,50).map(l=><div key={l} onClick={()=>{setLotId(l);setFabLotId("");setShowLotDrop(false);}}
             style={{padding:"6px 10px",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--border)",color:"var(--text-primary)"}}
             onMouseEnter={e=>e.currentTarget.style.background="var(--bg-hover)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{l}</div>)}
         </div>}
@@ -614,9 +627,11 @@ export default function My_SplitTable({user}){
         <input value={fabLotId} onChange={e=>{setFabLotId(e.target.value);setShowFabDrop(true);}}
           onFocus={()=>setShowFabDrop(true)} onBlur={()=>setTimeout(()=>setShowFabDrop(false),150)}
           placeholder="fab_lot_id 입력" style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&(setShowFabDrop(false),doSearch())}/>
-        {showFabDrop&&fabSuggestions.length>0&&(fabLotId?fabSuggestions.filter(f=>f.toLowerCase().includes(fabLotId.toLowerCase())):fabSuggestions).length>0&&
+        {showFabDrop&&(fabSuggestions.length>0||fabSuggestBusy||fabSuggestMsg)&&
           <div style={{maxHeight:160,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
-            {(fabLotId?fabSuggestions.filter(f=>f.toLowerCase().includes(fabLotId.toLowerCase())):fabSuggestions).slice(0,50).map(f=><div key={f} onMouseDown={()=>{setFabLotId(f);setShowFabDrop(false);}}
+            {fabSuggestBusy&&<div style={{padding:"7px 10px",fontSize:10,color:"var(--text-secondary)"}}>Fab lot 후보 조회 중...</div>}
+            {!fabSuggestBusy&&(fabLotId?fabSuggestions.filter(f=>f.toLowerCase().includes(fabLotId.toLowerCase())):fabSuggestions).length===0&&fabSuggestMsg&&<div style={{padding:"7px 10px",fontSize:10,color:BAD.fg,lineHeight:1.4}}>{fabSuggestMsg}</div>}
+            {!fabSuggestBusy&&(fabLotId?fabSuggestions.filter(f=>f.toLowerCase().includes(fabLotId.toLowerCase())):fabSuggestions).slice(0,50).map(f=><div key={f} onMouseDown={()=>{setFabLotId(f);setShowFabDrop(false);}}
               style={{padding:"6px 10px",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--border)",color:"var(--text-primary)"}}
               onMouseEnter={e=>e.currentTarget.style.background="var(--bg-hover)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{f}</div>)}
           </div>}

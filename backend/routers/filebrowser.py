@@ -29,7 +29,7 @@ from app_v2.shared.source_adapter import resolve_existing_root, resolve_named_ch
 from core.utils import (
     cast_cats, read_source, read_one_file, scan_one_file, apply_sql_like, serialize_rows,
     jsonl_append, jsonl_read, csv_response, safe_filename,
-    DATA_EXTENSIONS, _glob_data_files,
+    DATA_EXTENSIONS, count_data_files,
 )
 
 logger = logging.getLogger("flow.fb")
@@ -145,7 +145,7 @@ def list_roots(all: bool = Query(False)):
         if d.name.startswith(".") or d.name.startswith("__") or d.name.startswith("_"):
             continue
         # v8.7.6: whitelist 바깥이어도 데이터가 있으면 표시 (hive/flat 인식).
-        file_count = len(_glob_data_files(d))
+        file_count = count_data_files(d)
         whitelisted = is_visible_root(d.name)
         if not all and not whitelisted and file_count == 0:
             continue
@@ -560,7 +560,7 @@ def list_products(root: str = Query(...)):
             parts = by_name[name]
             total_files = 0
             for p in parts:
-                total_files += len(_glob_data_files(p))
+                total_files += count_data_files(p)
             prods.append({
                 "name": name,
                 "date_count": 0,
@@ -575,8 +575,8 @@ def list_products(root: str = Query(...)):
     for d in sorted(rp.iterdir()):
         if not d.is_dir():
             continue
-        data_files = _glob_data_files(d)
-        if not data_files:
+        data_file_count = count_data_files(d)
+        if not data_file_count:
             continue
         has_hive = any(x.is_dir() and x.name.startswith("date=") for x in d.iterdir())
         structure = "hive" if has_hive else "flat"
@@ -584,7 +584,7 @@ def list_products(root: str = Query(...)):
                         for x in d.iterdir()
                         if x.is_dir() and x.name.startswith("date=")])
         prods.append({
-            "name": d.name, "date_count": len(dates), "parquet_count": len(data_files),
+            "name": d.name, "date_count": len(dates), "parquet_count": data_file_count,
             "latest_date": dates[-1] if dates else "", "structure": structure,
         })
     return {"products": prods}

@@ -48,6 +48,127 @@ def detect_structure(prod_path: Path) -> str:
     return "unknown"
 
 
+def has_data_files(directory: Path) -> bool:
+    """Fast existence check for data files without materializing large trees."""
+    if not directory.is_dir():
+        return False
+    try:
+        for fp in directory.rglob("*"):
+            if fp.is_file() and fp.suffix.lower() in DATA_EXTENSIONS:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def first_data_file(directory: Path) -> Path | None:
+    """Return the first data file under a directory using a single bounded walk."""
+    if not directory.is_dir():
+        return None
+    try:
+        for fp in directory.rglob("*"):
+            if fp.is_file() and fp.suffix.lower() in DATA_EXTENSIONS:
+                return fp
+    except Exception:
+        return None
+    return None
+
+
+def data_files_limited(directory: Path, limit: int = 2000) -> list[Path]:
+    """Return up to ``limit`` data files without exhausting huge partition trees."""
+    if not directory.is_dir():
+        return []
+    try:
+        limit = max(1, int(limit or 2000))
+    except Exception:
+        limit = 2000
+    out: list[Path] = []
+    try:
+        for fp in directory.rglob("*"):
+            if fp.is_file() and fp.suffix.lower() in DATA_EXTENSIONS:
+                out.append(fp)
+                if len(out) >= limit:
+                    break
+    except Exception:
+        pass
+    return sorted(out)
+
+
+def count_data_files(directory: Path, limit: int = 2000) -> int:
+    """Bounded recursive data-file count for sidebar/source metadata.
+
+    Large production DB roots can contain tens of thousands of partitions. UI
+    badges only need a quick approximate count, so stop after ``limit``.
+    Callers that need the full file list should keep using ``_glob_data_files``.
+    """
+    if not directory.is_dir():
+        return 0
+    try:
+        limit = max(1, int(limit or 2000))
+    except Exception:
+        limit = 2000
+    count = 0
+    try:
+        for fp in directory.rglob("*"):
+            if fp.is_file() and fp.suffix.lower() in DATA_EXTENSIONS:
+                count += 1
+                if count >= limit:
+                    return count
+    except Exception:
+        return count
+    return count
+
+
+def iter_source_product_dirs(root_dir: Path):
+    """Yield logical ``(product_name, directory, structure)`` under a DB root.
+
+    Supports both legacy ``<root>/<product>/date=...`` layouts and hive table
+    layouts such as ``<root>/<table>/product=PRODA/date=...`` without doing a
+    full recursive file list for every candidate.
+    """
+    if not root_dir.is_dir():
+        return
+    seen: set[str] = set()
+
+    def _emit(name: str, path: Path, structure: str):
+        key = str(name or "").casefold()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        yield (name, path, structure)
+
+    try:
+        children = [p for p in sorted(root_dir.iterdir(), key=lambda x: x.name.lower()) if p.is_dir()]
+    except Exception:
+        return
+
+    for child in children:
+        if child.name.startswith((".", "_", "__")):
+            continue
+        if child.name.startswith("product="):
+            st = detect_structure(child)
+            if st in ("hive", "flat") or has_data_files(child):
+                yield from _emit(child.name[len("product="):], child, st if st in ("hive", "flat") else "hive")
+            continue
+        st = detect_structure(child)
+        if st in ("hive", "flat"):
+            yield from _emit(child.name, child, st)
+
+    for table_dir in children:
+        if table_dir.name.startswith((".", "_", "__", "product=")):
+            continue
+        try:
+            parts = [p for p in sorted(table_dir.iterdir(), key=lambda x: x.name.lower()) if p.is_dir()]
+        except Exception:
+            continue
+        for part in parts:
+            if not part.name.startswith("product="):
+                continue
+            st = detect_structure(part)
+            if st in ("hive", "flat") or has_data_files(part):
+                yield from _emit(part.name[len("product="):], part, st if st in ("hive", "flat") else "hive")
+
+
 def read_one_file(fp: Path):
     """Read single parquet or CSV with cats cast. Returns None on failure."""
     try:
@@ -501,17 +622,15 @@ def find_all_sources(apply_whitelist: bool = True):
         is_rawdata = root_dir.name.startswith("1.RAWDATA_DB")
         if apply_whitelist and not is_rawdata and not is_visible_root(root_dir.name):
             continue
-        for prod_dir in sorted(root_dir.iterdir()):
-            if prod_dir.is_dir() and any(_glob_data_files(prod_dir)):
-                st = detect_structure(prod_dir)
-                canon = canonical_name(root_dir.name) if not is_rawdata else root_dir.name
-                level = DB_REGISTRY.get(canon, {}).get("level", "")
-                lvl_suffix = f" [{level}]" if level and level != "wide" else ""
-                sources.append({
-                    "source_type": st, "root": root_dir.name, "product": prod_dir.name,
-                    "file": "", "canonical": canon, "level": level,
-                    "label": f"{canon}/{prod_dir.name}{lvl_suffix}",
-                })
+        for product_name, _prod_dir, st in iter_source_product_dirs(root_dir):
+            canon = canonical_name(root_dir.name) if not is_rawdata else root_dir.name
+            level = DB_REGISTRY.get(canon, {}).get("level", "")
+            lvl_suffix = f" [{level}]" if level and level != "wide" else ""
+            sources.append({
+                "source_type": st, "root": root_dir.name, "product": product_name,
+                "file": "", "canonical": canon, "level": level,
+                "label": f"{canon}/{product_name}{lvl_suffix}",
+            })
     # dedup — (source_type, root, product, file, label) 완전 일치만 제거.
     # v8.8.5: 추가로 (file, same_root) 기반 strict dedup — ML_TABLE_*.parquet 같은 게 base_file + root_parquet 로 동시 들어오던 문제 원천 차단.
     seen = set()

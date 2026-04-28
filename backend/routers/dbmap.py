@@ -616,7 +616,7 @@ def db_ref_info(node_id: str = Query(...)):
         "structure": "unknown", "file_count": 0, "columns": [], "dtypes": {},
     }
 
-    from core.utils import read_one_file, _glob_data_files, detect_structure
+    from core.utils import read_one_file, detect_structure, count_data_files, first_data_file
     try:
         root = node.get("root", "")
         product = node.get("product", "")
@@ -635,10 +635,10 @@ def db_ref_info(node_id: str = Query(...)):
             prod_path = _db_root() / root / product
             if prod_path.is_dir():
                 info["structure"] = detect_structure(prod_path)
-                files = _glob_data_files(prod_path)
-                info["file_count"] = len(files)
-                if files:
-                    df = read_one_file(files[0])
+                info["file_count"] = count_data_files(prod_path)
+                first_file = first_data_file(prod_path)
+                if first_file is not None:
+                    df = read_one_file(first_file)
                     if df is not None:
                         info["columns"] = list(df.columns)
                         info["dtypes"] = {n: str(d) for n, d in df.schema.items()}
