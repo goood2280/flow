@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 
 import polars as pl
+import pytest
+from fastapi import HTTPException
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -55,6 +57,32 @@ def test_splittable_view_route_renders_fixture_table(tmp_path, monkeypatch):
     assert body["rows"][0]["_cells"]["1"]["actual"] == "B"
 
 
+def test_splittable_lot_note_uses_lot_id_without_extra_prefix():
+    assert splittable._notes_key_lot("PRODA", "A1000") == "PRODA__LOT__A1000"
+    ui = (ROOT / "frontend" / "src" / "pages" / "My_SplitTable.jsx").read_text(encoding="utf-8")
+    assert "A{lotId}" not in ui
+    assert "+ LOT 노트 ({lotId})" in ui
+
+
+def test_home_flowi_empty_chat_greeting_copy():
+    ui = (ROOT / "frontend" / "src" / "pages" / "My_Home.jsx").read_text(encoding="utf-8")
+    assert "오늘 어떤 도움을 드릴까요?" in ui
+    assert "flow-i 대화가 여기 이어집니다." not in ui
+    assert "/api/llm/flowi/verify" in ui
+    assert "연결확인중" in ui
+    assert "연결끊김" in ui
+    assert "flowiStartle" not in ui
+    assert "READYING" not in ui
+
+
+def test_common_loading_component_shows_progress_cues():
+    ui = (ROOT / "frontend" / "src" / "components" / "Loading.jsx").read_text(encoding="utf-8")
+    assert "flowLoadingSweep" in ui
+    assert "aria-live=\"polite\"" in ui
+    assert "캐시 확인" in ui
+    assert "데이터 준비 중" in ui
+
+
 def test_tracker_issue_routes_round_trip_against_configured_store(tmp_path, monkeypatch):
     tracker_dir = tmp_path / "tracker"
     issues_file = tracker_dir / "issues.json"
@@ -91,6 +119,47 @@ def test_tracker_issue_routes_round_trip_against_configured_store(tmp_path, monk
 
     fetched = tracker.get_issue(object(), issue_id=issue_id)
     assert fetched["issue"]["title"] == "Feature contract tracker issue"
+
+    tracker.add_comment(
+        tracker.CommentReq(issue_id=issue_id, text="top level comment"),
+        object(),
+    )
+    tracker.add_comment_reply(
+        tracker.CommentReplyReq(issue_id=issue_id, parent_index=0, text="nested reply"),
+        object(),
+    )
+    fetched = tracker.get_issue(object(), issue_id=issue_id)
+    assert fetched["issue"]["comments"][0]["replies"][0]["text"] == "nested reply"
+    listed = tracker.list_issues(object(), status="", limit=5)
+    assert listed["issues"][0]["comment_count"] == 2
+
+    monkeypatch.setattr(tracker, "current_user", lambda _request: {"username": "stranger", "role": "user"})
+    with pytest.raises(HTTPException):
+        tracker.delete_comment(
+            tracker.CommentDeleteReq(issue_id=issue_id, comment_index=0),
+            object(),
+        )
+
+    monkeypatch.setattr(tracker, "current_user", lambda _request: {"username": "feature_tester", "role": "user"})
+    tracker.delete_comment(
+        tracker.CommentDeleteReq(issue_id=issue_id, comment_index=0, reply_index=0),
+        object(),
+    )
+    fetched = tracker.get_issue(object(), issue_id=issue_id)
+    assert fetched["issue"]["comments"][0].get("replies") == []
+
+    monkeypatch.setattr(tracker, "current_user", lambda _request: {"username": "other_user", "role": "user"})
+    tracker.add_comment(
+        tracker.CommentReq(issue_id=issue_id, text="other user comment"),
+        object(),
+    )
+    monkeypatch.setattr(tracker, "current_user", lambda _request: {"username": "admin_user", "role": "admin"})
+    tracker.delete_comment(
+        tracker.CommentDeleteReq(issue_id=issue_id, comment_index=1),
+        object(),
+    )
+    fetched = tracker.get_issue(object(), issue_id=issue_id)
+    assert len(fetched["issue"]["comments"]) == 1
 
 
 def test_tracker_lot_step_route_reads_configured_fab_db(tmp_path, monkeypatch):

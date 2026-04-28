@@ -43,7 +43,7 @@ export default function My_SplitTable({user}){
   const[prefixes,setPrefixes]=useState([]);const[selPrefixes,setSelPrefixes]=useState(["KNOB"]);
   const[customs,setCustoms]=useState([]);const[selCustom,setSelCustom]=useState("");const[isCustomMode,setIsCustomMode]=useState(false);
   const[viewMode,setViewMode]=useState("all");
-  const[showParamMeta,setShowParamMeta]=useState(true);
+  const[showParamMeta,setShowParamMeta]=useState(false);
   const[showLineageSummary,setShowLineageSummary]=useState(false);
   const[data,setData]=useState(null);const[loading,setLoading]=useState(false);
   const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});
@@ -73,6 +73,7 @@ export default function My_SplitTable({user}){
   const[fabRoots,setFabRoots]=useState([]);
   const[overridePreview,setOverridePreview]=useState(null);
   const[overridePreviewLoading,setOverridePreviewLoading]=useState(false);
+  const[fabCacheBusy,setFabCacheBusy]=useState(false);
   // v8.4.4: fab_source 후보 (FileBrowser/Dashboard 와 동일 source 리스트)
   const[fabSourceOptions,setFabSourceOptions]=useState([]);
   // v8.7.8: fab_source 후보 = DB 상위폴더 (FAB/INLINE/ET/EDS) + Base 단일파일 + DB 제품 디렉토리 + TableMap.
@@ -208,6 +209,19 @@ export default function My_SplitTable({user}){
     if(loadView&&(lotId.trim()||fabLotId.trim())) loadView();
   };
   const saveSourceConfig=(enabled)=>{sf(API+"/source-config/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:[...enabled]})}).catch(()=>{});};
+  const runFabMatchCache=()=>{
+    setFabCacheBusy(true);
+    sf(API+"/match-cache/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd||"",force:true})})
+      .then(r=>{
+        const rows=r.products||[];
+        const ok=rows.filter(x=>x.ok).length;
+        alert(`FAB 매칭 캐시 스캔 완료: ${ok}/${rows.length}`);
+        reloadMlMatch();
+        if(loadView&&(lotId.trim()||fabLotId.trim())) loadView();
+      })
+      .catch(e=>alert("FAB 매칭 캐시 스캔 실패: "+(e?.message||e)))
+      .finally(()=>setFabCacheBusy(false));
+  };
   useEffect(()=>{
     Promise.all([sf(API+"/products").catch(()=>({products:[]})),sf(API+"/source-config").catch(()=>({enabled:[]})),sf(API+"/prefixes").catch(()=>({prefixes:[]}))])
       .then(([prodRes,srcRes,prefRes])=>{
@@ -470,6 +484,12 @@ export default function My_SplitTable({user}){
   const notesParamGlobal=(param)=>notes.filter(n=>n.scope==="param_global"&&n.key===`${selProd}__PARAM__${param}`);
   const notesForLot=()=>notes.filter(n=>n.scope==="lot"&&n.key===`${selProd}__LOT__${lotId}`);
   const doSearch=()=>loadView();
+  const openTrackerIssue=(issueId)=>{
+    const iid=String(issueId||"").trim();
+    if(!iid)return;
+    const search=`?issue_id=${encodeURIComponent(iid)}`;
+    window.dispatchEvent(new CustomEvent("flow:navigate",{detail:{tab:"tracker",search}}));
+  };
   const isLotHistoryMode=(mode)=>mode==="lot_all"||mode==="lot_final";
   const isFinalHistoryMode=(mode)=>mode==="lot_final"||mode==="all_final";
   const normalizeHistoryMode=(mode)=>{
@@ -760,6 +780,13 @@ export default function My_SplitTable({user}){
             </div>
             <div style={{fontSize:10,color:"var(--text-secondary)",lineHeight:1.6}}>
               제품 노출, Lot 컬럼 연결, 컬럼/공정 규칙만 관리합니다. 규칙 추가·수정은 각 섹션의 <b>편집</b> 버튼에서 처리합니다.
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <button onClick={runFabMatchCache} disabled={fabCacheBusy}
+                style={{padding:"5px 12px",borderRadius:999,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,fontWeight:700,cursor:fabCacheBusy?"wait":"pointer",opacity:fabCacheBusy?0.65:1}}>
+                {fabCacheBusy?"FAB 캐시 스캔 중...":"FAB root/fab_lot 캐시 수동 스캔"}
+              </button>
+              <span style={{fontSize:9,color:"var(--text-secondary)"}}>현재 선택 제품 기준. 제품 미선택 시 전체 표시 제품을 스캔합니다.</span>
             </div>
           </div>
           {/* Source visibility checkboxes — Base 파일(ML_TABLE_ 등)만 표시 */}
@@ -1274,6 +1301,17 @@ export default function My_SplitTable({user}){
         const lineageSummary = buildLineageSummary(displayRows);
         return <div style={{flex:1,overflow:"auto",background:"var(--bg-card)"}}>
         {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:11,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
+        {Array.isArray(data.related_issues)&&data.related_issues.length>0&&<div style={{padding:"8px 10px",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",fontSize:11,background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>
+          <span style={{fontWeight:800,color:"rgba(59,130,246,0.95)",fontFamily:"monospace"}}>이슈추적 {data.related_issues.length}건</span>
+          {data.related_issues.slice(0,6).map(iss=><button key={iss.id} onClick={()=>openTrackerIssue(iss.id)} title={`${iss.title}\n${iss.category||"-"} · ${iss.status||"-"} · ${iss.updated_at||""}`}
+            style={{display:"inline-flex",alignItems:"center",gap:5,maxWidth:260,padding:"3px 8px",borderRadius:999,border:"1px solid rgba(59,130,246,0.45)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:10,fontWeight:700,cursor:"pointer"}}>
+            <span style={{width:7,height:7,borderRadius:"50%",background:iss.status==="closed"?"rgba(34,197,94,0.95)":"rgba(249,115,22,0.95)",flexShrink:0}}/>
+            <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{iss.title||iss.id}</span>
+            {iss.matched_wafers?.length>0&&<span style={{color:"var(--text-secondary)",fontFamily:"monospace",flexShrink:0}}>W{iss.matched_wafers.slice(0,3).join(",")}</span>}
+            {iss.comment_count>0&&<span style={{color:"var(--text-secondary)",fontFamily:"monospace",flexShrink:0}}>댓글 {iss.comment_count}</span>}
+          </button>)}
+          {data.related_issues.length>6&&<span style={{fontSize:10,color:"var(--text-secondary)"}}>+{data.related_issues.length-6}</span>}
+        </div>}
         {/* v8.8.13: 빈 셀 / knobMeta 확장 행에서 테두리 끊기는 현상 — 전체 td/th 기본 border 강제.
             inline style(borderLeft plan 등)은 specificity 가 높아 유지됨. */}
         <style>{`.splittable-grid td, .splittable-grid th { border: 1px solid #555; }`}</style>
@@ -1739,7 +1777,7 @@ export default function My_SplitTable({user}){
         {lotId && !noteDraftScope && (
           <div style={{padding:"6px 16px",borderBottom:"1px dashed var(--border)",display:"flex",gap:6,fontSize:10}}>
             <button onClick={()=>setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId})}
-              style={{padding:"3px 10px",borderRadius:4,border:"1px solid #16a34a",background:"transparent",color:"rgba(22,163,74,0.95)",fontSize:10,cursor:"pointer"}}>+ LOT 노트 (A{lotId})</button>
+              style={{padding:"3px 10px",borderRadius:4,border:"1px solid #16a34a",background:"transparent",color:"rgba(22,163,74,0.95)",fontSize:10,cursor:"pointer"}}>+ LOT 노트 ({lotId})</button>
           </div>
         )}
         <div style={{flex:1,overflow:"auto",padding:"8px 14px",display:"flex",flexDirection:"column",gap:4}}>

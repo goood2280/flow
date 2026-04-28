@@ -37,60 +37,131 @@ const VCACHE_KEY="hol_home_version_v1";
 function readVerCache(){try{const s=localStorage.getItem(VCACHE_KEY);return s?JSON.parse(s):null;}catch{return null;}}
 function writeVerCache(v){try{localStorage.setItem(VCACHE_KEY,JSON.stringify(v));}catch{}}
 
-function FlowiConsole({onActiveChange,onNavigate}){
+function FlowiConsole({onNavigate}){
   const[active,setActive]=useState(false);
+  const[connState,setConnState]=useState("idle");
   const[prompt,setPrompt]=useState("");
   const[busy,setBusy]=useState(false);
   const[result,setResult]=useState(null);
   const[lastPrompt,setLastPrompt]=useState("");
   const[err,setErr]=useState("");
+  const[modelLabel,setModelLabel]=useState("");
+  const[messages,setMessages]=useState([]);
   const promptRef=useRef(null);
+  const scrollRef=useRef(null);
+  const verifySeq=useRef(0);
+  const CTX_LIMIT=12000;
 
   useEffect(()=>{if(active&&promptRef.current)setTimeout(()=>promptRef.current?.focus(),30);},[active]);
-  useEffect(()=>{if(typeof onActiveChange==="function")onActiveChange(active);},[active,onActiveChange]);
+  useEffect(()=>{if(active&&scrollRef.current)scrollRef.current.scrollTop=scrollRef.current.scrollHeight;},[active,messages,busy]);
+  useEffect(()=>{
+    let alive=true;
+    fetch("/api/llm/status").then(r=>r.ok?r.json():null).then(d=>{
+      if(!alive)return;
+      const cfg=d?.config||{};
+      const model=String(cfg.model||"").trim();
+      setModelLabel(d?.available&&model?model:"");
+      if(d&&!d.available)setConnState("disconnected");
+    }).catch(()=>{if(alive)setModelLabel("");});
+    return()=>{alive=false;};
+  },[]);
 
   const activate=()=>{
     setActive(true);setErr("");
+    const seq=++verifySeq.current;
+    setConnState("checking");
+    postJson("/api/llm/flowi/verify",{token:""})
+      .then(d=>{
+        if(seq!==verifySeq.current)return;
+        const msg=String(d?.message||d?.text||"");
+        setConnState(d?.ok&&msg.includes("확인완료")?"connected":"disconnected");
+      })
+      .catch(()=>{if(seq===verifySeq.current)setConnState("disconnected");});
     return true;
   };
-  const close=()=>{setActive(false);setResult(null);setErr("");};
-  const ask=()=>{
-    const q=(prompt||"").trim();
+  const close=()=>{setActive(false);setErr("");};
+  const contextMessages=messages.slice(-8).map(m=>({
+    role:m.role,
+    prompt:m.prompt||"",
+    text:String(m.answer||m.text||"").slice(0,900),
+    intent:m.intent||"",
+  }));
+  const contextText=contextMessages.map(m=>`${m.role}: ${m.prompt||m.text||""} ${m.intent?`(${m.intent})`:""}`).join("\n");
+  const contextRemaining=Math.max(0,CTX_LIMIT-String(contextText||"").length-String(prompt||"").length);
+  const contextPct=Math.max(0,Math.min(100,Math.round(contextRemaining/CTX_LIMIT*100)));
+  const ask=(overridePrompt="")=>{
+    if(busy)return;
+    const q=String(overridePrompt||prompt||"").trim();
     if(!q){setErr("질문을 입력해주세요.");return;}
+    if(overridePrompt)setPrompt(q);
+    const userMsg={id:`u-${Date.now()}`,role:"user",text:q,ts:new Date().toISOString()};
+    const context={type:"home_flowi_chat",limit_chars:CTX_LIMIT,remaining_chars:contextRemaining,messages:contextMessages};
+    setMessages(prev=>[...prev,userMsg]);
     setActive(true);setBusy(true);setErr("");setLastPrompt(q);
-    postJson("/api/llm/flowi/chat",{prompt:q,product:"",max_rows:12})
-      .then(d=>setResult(d)).catch(e=>setErr(e.message||String(e))).finally(()=>setBusy(false));
+    postJson("/api/llm/flowi/chat",{prompt:q,product:"",max_rows:12,context})
+      .then(d=>{
+        setResult(d);
+        setMessages(prev=>[...prev,{id:`a-${Date.now()}`,role:"assistant",answer:d?.answer||"",prompt:q,result:d,intent:d?.tool?.intent||"",ts:new Date().toISOString()}]);
+        setPrompt("");
+      }).catch(e=>setErr(e.message||String(e))).finally(()=>setBusy(false));
   };
+  const connLabel=connState==="checking"?"연결확인중":connState==="connected"?"연결":connState==="disconnected"?"연결끊김":"";
+  const connColor=connState==="connected"?"#22c55e":connState==="checking"?"#f97316":"#ef4444";
   return(<section style={{marginTop:12,fontFamily:"'JetBrains Mono',monospace"}}>
+    <style>{`@keyframes flowiPanelWake{0%{opacity:0;transform:translateY(-8px) scaleY(.96)}100%{opacity:1;transform:translateY(0) scaleY(1)}}@keyframes flowiConnBlink{0%,100%{opacity:.45}50%{opacity:1}}`}</style>
     <form onSubmit={e=>{e.preventDefault();activate();}} style={{margin:0}}>
       <div style={{display:"flex",alignItems:"center",gap:7,minWidth:0,fontSize:13,lineHeight:1.7,flexWrap:"wrap"}}>
         <span style={{color:"#f97316"}}>{">"}</span>
         <span style={{color:"#737373",whiteSpace:"nowrap"}}>flow-i</span>
+        {active&&connLabel&&<span title={modelLabel?`LLM ${modelLabel}`:"LLM 연결 확인"} style={{display:"inline-flex",alignItems:"center",gap:5,color:connColor,border:`1px solid ${connColor}66`,background:`${connColor}14`,borderRadius:999,padding:"1px 8px",fontSize:10,fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>
+          <span style={{width:6,height:6,borderRadius:"50%",background:connColor,animation:connState==="checking"?"flowiConnBlink .75s ease-in-out infinite":"none"}}/>{connLabel}
+        </span>}
         {!active&&<button type="submit" aria-label="start flowi"
           style={{padding:"2px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#f97316",fontSize:10,fontFamily:"monospace",fontWeight:800,cursor:"pointer"}}>START</button>}
         {active&&<button type="button" onClick={close} aria-label="close flowi"
           style={{padding:"1px 6px",borderRadius:5,border:"1px solid #333",background:"transparent",color:"#737373",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>CLOSE</button>}
       </div>
     </form>
-    {active&&<form onSubmit={e=>{e.preventDefault();ask();}} style={{margin:"10px 0 0"}}>
+    {active&&<div style={{marginTop:10,border:"1px solid #2a2a2a",borderRadius:10,background:"#101010",overflow:"hidden",animation:"flowiPanelWake .32s ease-out",transformOrigin:"top"}}>
+      <div ref={scrollRef} style={{height:messages.length?420:260,maxHeight:"48vh",overflowY:"auto",padding:"12px 14px",borderBottom:"1px solid #262626",scrollBehavior:"smooth"}}>
+        {messages.length===0&&<div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",color:"#525252",fontSize:12}}>오늘 어떤 도움을 드릴까요?</div>}
+        {messages.map(m=>m.role==="user"
+          ?<div key={m.id} style={{display:"flex",justifyContent:"flex-end",margin:"0 0 10px"}}>
+            <div style={{maxWidth:"82%",background:"#1f130b",border:"1px solid #7c2d12",borderRadius:"10px 10px 2px 10px",padding:"8px 10px",color:"#f5f5f5",fontSize:12,lineHeight:1.55,whiteSpace:"pre-wrap"}}>{m.text}</div>
+          </div>
+          :<div key={m.id} style={{margin:"0 0 14px",maxWidth:"92%"}}>
+            <div style={{fontSize:10,color:"#737373",fontFamily:"monospace",marginBottom:4}}>flow-i{m.intent?` · ${m.intent}`:""}</div>
+            <FlowiResult busy={false} error="" result={m.result} prompt={m.prompt} onNavigate={onNavigate} onChoice={ask} embedded/>
+          </div>)}
+        {busy&&<div style={{marginTop:4,fontSize:12,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>}
+      </div>
+      <form onSubmit={e=>{e.preventDefault();ask();}} style={{margin:0,padding:"10px 10px 10px 0"}}>
       <div style={{display:"flex",alignItems:"stretch",gap:8,minWidth:0}}>
         <span style={{color:"#f97316"}}>{">"}</span>
-        <textarea ref={promptRef} value={prompt} onChange={e=>setPrompt(e.target.value)}
-          placeholder="PRODA0 root_lot_id A10001 wafer_id 07 ET ETA100010 VTH median wf별 몇이야?"
-          aria-label="Flowi prompt"
-          rows={5}
-          onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter")ask();}}
-          style={{flex:1,minWidth:0,padding:"10px 12px",borderRadius:8,border:"1px solid #333",background:"#141414",color:"#e5e5e5",fontSize:13,lineHeight:1.55,fontFamily:"'JetBrains Mono',monospace",outline:"none",resize:"vertical",boxSizing:"border-box"}}/>
-        <button type="submit" disabled={busy||!prompt.trim()} aria-label="run flowi prompt"
-          style={{alignSelf:"stretch",padding:"0 12px",borderRadius:8,border:"none",background:busy||!prompt.trim()?"#404040":"#f97316",color:"#111",fontSize:11,fontFamily:"monospace",fontWeight:800,cursor:busy||!prompt.trim()?"default":"pointer"}}>{busy?"RUNNING":"RUN"}</button>
+        <div style={{position:"relative",flex:1,minWidth:0}}>
+          <textarea ref={promptRef} value={prompt} onChange={e=>setPrompt(e.target.value)}
+            placeholder=""
+            aria-label="Flowi prompt"
+            rows={5}
+            onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();ask();}}}
+            style={{width:"100%",minWidth:0,padding:"10px 12px 24px",borderRadius:8,border:"1px solid #333",background:"#141414",color:"#e5e5e5",fontSize:13,lineHeight:1.55,fontFamily:"'JetBrains Mono',monospace",outline:"none",resize:"vertical",boxSizing:"border-box",display:"block"}}/>
+          {modelLabel&&<span title="connected model" style={{position:"absolute",right:10,bottom:7,maxWidth:"70%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",pointerEvents:"none",fontSize:9,lineHeight:1,color:"#737373",fontFamily:"monospace",letterSpacing:0}}>
+            {modelLabel}
+          </span>}
+          <span title="남은 대화 context 추정치" style={{position:"absolute",right:10,bottom:modelLabel?18:7,maxWidth:"70%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",pointerEvents:"none",fontSize:9,lineHeight:1,color:contextPct<20?"#f97316":"#737373",fontFamily:"monospace",letterSpacing:0}}>
+            ctx {contextRemaining.toLocaleString()}
+          </span>
+        </div>
+        {busy&&<div aria-live="polite" style={{alignSelf:"center",color:"#f97316",fontSize:10,fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>RUNNING</div>}
       </div>
-    </form>}
-    <FlowiResult busy={busy} error={err} result={result} prompt={lastPrompt} onNavigate={onNavigate}/>
+      </form>
+    </div>}
+    {err&&<FlowiResult busy={false} error={err} result={null} prompt={lastPrompt} onNavigate={onNavigate} onChoice={ask}/>}
   </section>);
 }
 
-function FlowiResult({busy,error,result,prompt,onNavigate}){
-  if(busy)return <div style={{marginTop:10,fontSize:12,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
+function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=false}){
+  if(busy)return <div style={{marginTop:embedded?0:10,fontSize:12,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
   if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:12,border:"1px solid #7f1d1d"}}>{error}</div>;
   if(!result)return null;
   const tool=result.tool||{};
@@ -99,16 +170,22 @@ function FlowiResult({busy,error,result,prompt,onNavigate}){
   const knobs=Array.isArray(tool.knobs)?tool.knobs:[];
   const canNavigate=typeof onNavigate==="function";
   const featureEntries=Array.isArray(tool.feature_entrypoints)?tool.feature_entrypoints.slice(0,3):[];
-  return(<div style={{marginTop:12,borderTop:"1px solid #262626",paddingTop:10}}>
+  const choices=Array.isArray(tool?.clarification?.choices)?tool.clarification.choices.slice(0,4):[];
+  const chart=tool?.chart&&typeof tool.chart==="object"?tool.chart:null;
+  const chartResult=tool?.chart_result&&typeof tool.chart_result==="object"?tool.chart_result:null;
+  return(<div style={{marginTop:embedded?0:12,borderTop:embedded?"none":"1px solid #262626",paddingTop:embedded?0:10}}>
     <div style={{whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.65,color:"#d4d4d4"}}>{result.answer||"응답이 없습니다."}</div>
     <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
       {tool.intent&&<span style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
       {result.llm&&<span style={{fontSize:10,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
       {featureEntries.map(ep=>canNavigate?<button key={ep.key} type="button" onClick={()=>onNavigate(ep.key)} title={ep.description||""} style={{fontSize:10,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 8px",background:"#1f130b",cursor:"pointer"}}>{ep.title} 열기</button>:<span key={ep.key} title={ep.description||""} style={{fontSize:10,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 7px"}}>{ep.title}</span>)}
     </div>
+    {choices.length>0&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice}/>}
     <FlowiFeedback result={result} tool={tool} prompt={prompt}/>
+    {chartResult&&<FlowiScatterResult data={chartResult}/>}
+    {chart&&<FlowiChartPlan chart={chart}/>}
     {table&&<FlowiDataTable table={table}/>}
-    {rows.length>0&&<div style={{marginTop:10,overflowX:"auto"}}>
+    {!table&&rows.length>0&&<div style={{marginTop:10,overflowX:"auto"}}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
         <thead><tr>{["product","step","item","wf","median","mean","n"].map(h=><th key={h} style={{textAlign:"left",padding:"5px 6px",borderBottom:"1px solid #333",color:"#a3a3a3"}}>{h}</th>)}</tr></thead>
         <tbody>{rows.slice(0,12).map((r,i)=><tr key={i}>
@@ -126,6 +203,96 @@ function FlowiResult({busy,error,result,prompt,onNavigate}){
   </div>);
 }
 const FR_TD={padding:"5px 6px",borderBottom:"1px solid #262626",color:"#d4d4d4",whiteSpace:"nowrap"};
+
+function FlowiChoices({question,choices,onChoice}){
+  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#141414",padding:"9px 10px"}}>
+    <div style={{fontSize:11,fontWeight:800,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace",marginBottom:7}}>{question||"확인이 필요합니다."}</div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:7}}>
+      {choices.map((c,i)=><button key={c.id||i} type="button" onClick={()=>onChoice&&onChoice(c.prompt||c.title||"")}
+        style={{textAlign:"left",border:"1px solid "+(c.recommended?"#f97316":"#333"),borderRadius:7,background:c.recommended?"#2a1608":"#171717",padding:"8px 9px",cursor:"pointer",color:"#d4d4d4"}}>
+        <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:3}}>
+          <span style={{fontSize:10,fontWeight:900,color:c.recommended?"#f97316":"#a3a3a3",fontFamily:"monospace"}}>{c.label||i+1}</span>
+          <span style={{fontSize:11,fontWeight:800,color:"#e5e5e5"}}>{c.title}</span>
+          {c.recommended&&<span style={{fontSize:9,color:"#f97316",border:"1px solid #7c2d12",borderRadius:999,padding:"1px 5px",marginLeft:"auto"}}>recommended</span>}
+        </div>
+        <div style={{fontSize:10,lineHeight:1.45,color:"#a3a3a3"}}>{c.description}</div>
+      </button>)}
+    </div>
+  </div>);
+}
+
+function FlowiChartPlan({chart}){
+  const metrics=Array.isArray(chart.metrics)?chart.metrics:[];
+  const ops=Array.isArray(chart.operations)?chart.operations:[];
+  const requires=Array.isArray(chart.requires)?chart.requires:[];
+  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101827",padding:"9px 10px"}}>
+    <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center",marginBottom:7}}>
+      <div style={{fontSize:11,fontWeight:900,color:"#dbeafe",fontFamily:"'JetBrains Mono',monospace"}}>Dashboard chart plan</div>
+      <span style={{fontSize:10,color:requires.length?"#f97316":"#22c55e",fontFamily:"monospace"}}>{requires.length?"needs confirmation":"ready to route"}</span>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:6,fontSize:10,color:"#bfdbfe",fontFamily:"monospace"}}>
+      <div>kind: {chart.kind||"scatter"}</div>
+      <div>source: {(chart.sources||[]).join(", ")||"-"}</div>
+      <div>ops: {ops.join(", ")||"-"}</div>
+      <div>join: {chart.join_key||"lot_wf"}</div>
+      <div>INLINE: {chart.aggregations?.INLINE||"avg"}</div>
+      <div>ET: {chart.aggregations?.ET||"median"}</div>
+    </div>
+    {metrics.length>0&&<div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap"}}>
+      {metrics.slice(0,10).map(m=><span key={m.metric} style={{fontSize:10,color:"#dbeafe",background:"#1e3a8a66",border:"1px solid #3b82f666",borderRadius:999,padding:"2px 7px"}}>{m.metric}</span>)}
+    </div>}
+  </div>);
+}
+
+function FlowiScatterResult({data}){
+  const pts=Array.isArray(data.points)?data.points.filter(p=>Number.isFinite(Number(p.x))&&Number.isFinite(Number(p.y))):[];
+  if(!pts.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:11,color:"#a3a3a3"}}>차트로 표시할 numeric point가 없습니다.</div>;
+  const W=520,H=300,pad={l:54,r:18,t:22,b:44};
+  const xs=pts.map(p=>Number(p.x)),ys=pts.map(p=>Number(p.y));
+  const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
+  const rx=maxX-minX||1,ry=maxY-minY||1;
+  const sx=(v)=>pad.l+(Number(v)-minX)/rx*(W-pad.l-pad.r);
+  const sy=(v)=>pad.t+(H-pad.t-pad.b)-(Number(v)-minY)/ry*(H-pad.t-pad.b);
+  const fit=data.fit&&Number.isFinite(Number(data.fit.slope))&&Number.isFinite(Number(data.fit.intercept))?data.fit:null;
+  const x0=minX,x1=maxX,y0=fit?fit.slope*x0+fit.intercept:null,y1=fit?fit.slope*x1+fit.intercept:null;
+  const palette=["#3b82f6","#f97316","#22c55e","#eab308","#a855f7","#06b6d4","#ef4444","#84cc16","#ec4899","#14b8a6"];
+  const colorValues=(Array.isArray(data.color_values)&&data.color_values.length?data.color_values.map(v=>String(v.value??"")).filter(Boolean):[...new Set(pts.map(p=>String(p.color_value??"")).filter(Boolean))]).slice(0,10);
+  const colorMap=new Map(colorValues.map((v,i)=>[v,palette[i%palette.length]]));
+  const colorFor=(p)=>colorMap.get(String(p.color_value??""))||"#3b82f6";
+  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"10px 12px"}}>
+    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8}}>
+      <div style={{fontSize:12,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi scatter"}</div>
+      <div style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>n={data.total||pts.length} · corr={data.corr??"-"}{fit?` · R²=${fit.r2}`:""}{data.color_by?` · color=${data.color_by}`:""}</div>
+    </div>
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block"}}>
+      {[0,0.5,1].map((f)=><g key={`y${f}`}>
+        <line x1={pad.l} x2={W-pad.r} y1={pad.t+(H-pad.t-pad.b)*(1-f)} y2={pad.t+(H-pad.t-pad.b)*(1-f)} stroke="#333" strokeDasharray="3,4"/>
+        <text x={pad.l-8} y={pad.t+(H-pad.t-pad.b)*(1-f)+3} textAnchor="end" fontSize="9" fill="#a3a3a3">{(minY+ry*f).toFixed(2)}</text>
+      </g>)}
+      {[0,0.5,1].map((f)=><g key={`x${f}`}>
+        <line y1={pad.t} y2={H-pad.b} x1={pad.l+(W-pad.l-pad.r)*f} x2={pad.l+(W-pad.l-pad.r)*f} stroke="#262626" strokeDasharray="2,5"/>
+        <text x={pad.l+(W-pad.l-pad.r)*f} y={H-20} textAnchor="middle" fontSize="9" fill="#a3a3a3">{(minX+rx*f).toFixed(2)}</text>
+      </g>)}
+      <line x1={pad.l} x2={W-pad.r} y1={H-pad.b} y2={H-pad.b} stroke="#525252"/>
+      <line x1={pad.l} x2={pad.l} y1={pad.t} y2={H-pad.b} stroke="#525252"/>
+      {fit&&<line x1={sx(x0)} y1={sy(y0)} x2={sx(x1)} y2={sy(y1)} stroke="#ef4444" strokeWidth="2" strokeDasharray="7,4"/>}
+      {pts.slice(0,500).map((p,i)=><circle key={i} cx={sx(p.x)} cy={sy(p.y)} r="3.2" fill={colorFor(p)} opacity="0.78">
+        <title>{`${p.label||p.join_key||""}\nX=${p.x}\nY=${p.y}${p.color_value?`\n${data.color_by||"color"}=${p.color_value}`:""}\nINLINE n=${p.inline_n||0}, ET n=${p.et_n||0}`}</title>
+      </circle>)}
+      <text x={(pad.l+W-pad.r)/2} y={H-5} textAnchor="middle" fontSize="10" fill="#f97316">{data.x_label||"x"}</text>
+      <text x="12" y={(pad.t+H-pad.b)/2} transform={`rotate(-90,12,${(pad.t+H-pad.b)/2})`} textAnchor="middle" fontSize="10" fill="#f97316">{data.y_label||"y"}</text>
+    </svg>
+    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>
+      <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>join {Array.isArray(data.join_cols)?data.join_cols.join("+"):"lot_wf"} · {data.join_how||"left"}</span>
+      <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>INLINE avg</span>
+      <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>ET median</span>
+      {data.color_by&&<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>color {data.color_by}</span>}
+      {colorValues.map(v=><span key={v} style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px",display:"inline-flex",alignItems:"center",gap:5}}>
+        <span style={{width:8,height:8,borderRadius:999,background:colorMap.get(v),display:"inline-block"}}></span>{v}
+      </span>)}
+    </div>
+  </div>);
+}
 
 function FlowiFeedback({result,tool,prompt}){
   const[rating,setRating]=useState("");
@@ -191,7 +358,6 @@ export default function My_Home({onNavigate,user}){
   const isAdmin=user?.role==="admin";
   const userTabs=isAdmin?"__all__":(user?.tabs||"");
   const hasTab=(k)=>userTabs==="__all__"||userTabs.split(",").map(s=>s.trim()).filter(Boolean).includes(k);
-  const[flowiConnected,setFlowiConnected]=useState(false);
 
   // v8.7.4: TABS 순서와 동일하게 카드 정렬. 홈 카드에 inform/meeting/calendar 포함.
   // v8.8.5: 카드별 tag(개별 버전) 제거 — 통합 버전(v8.8.5) 만 의미 있음.
@@ -222,11 +388,11 @@ export default function My_Home({onNavigate,user}){
         <span style={{fontSize:11,color:"#525252",fontFamily:"monospace",marginLeft:6}}>flow ~ v{ver}</span>
       </div>
       <div style={{display:"flex",gap:20,padding:"20px 24px",alignItems:"flex-start"}}>
-        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,flexShrink:0}}><Holli size={72}/><span style={{fontSize:9,color:"#f97316",fontFamily:"monospace",letterSpacing:"0.12em",fontWeight:700}}>flow-i</span>{flowiConnected&&<span style={{fontSize:8,color:"#22c55e",fontFamily:"monospace",border:"1px solid #22c55e66",borderRadius:999,padding:"1px 6px",letterSpacing:0}}>connected</span>}</div>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,flexShrink:0}}><Holli size={72}/><span style={{fontSize:9,color:"#f97316",fontFamily:"monospace",letterSpacing:"0.12em",fontWeight:700}}>flow-i</span></div>
         <div style={{flex:1,paddingTop:4}}>
           <Cli cmd="--version" output={`v${ver} "${codename}"`}/>
           <div style={{marginTop:6,fontFamily:"'JetBrains Mono',monospace",fontSize:13}}><span style={{color:"#f97316"}}>{">"}</span><span style={{color:"#737373"}}> WELCOME </span><WelcomeType name={user?.username||"user"}/></div>
-          <FlowiConsole onActiveChange={setFlowiConnected} onNavigate={nav}/>
+          <FlowiConsole onNavigate={nav}/>
         </div>
       </div>
     </div>

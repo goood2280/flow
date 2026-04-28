@@ -12,15 +12,23 @@ core/sysmon.py 에 실제 수집/부하 로직이 있고 이 라우터는 읽기
   GET  /api/monitor/farm-status → state 로 리다이렉션.
   GET  /api/monitor/resource-log → history.
 """
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 
 from core import sysmon
+from core.auth import require_admin
 
 router = APIRouter(tags=["monitor"])
 
 # Two prefixes: 기존 /api/monitor/* 는 호환용, 홈 위젯은 /api/system/stats 로 호출.
 mon_router = APIRouter(prefix="/api/monitor")
 sys_router = APIRouter(prefix="/api/system")
+
+
+class LoadStartReq(BaseModel):
+    duration_sec: int = 180
+    target_pct: float = 85.0
+    memory: bool = True
 
 
 @mon_router.get("/system")
@@ -36,6 +44,20 @@ def system_history(limit: int = Query(288)):
 @mon_router.get("/state")
 def system_state():
     return sysmon.get_state()
+
+
+@mon_router.post("/load/start")
+def load_start(req: LoadStartReq, _admin=Depends(require_admin)):
+    return sysmon.start_manual_load(
+        duration_sec=req.duration_sec,
+        target_pct=req.target_pct,
+        memory=req.memory,
+    )
+
+
+@mon_router.post("/load/stop")
+def load_stop(_admin=Depends(require_admin)):
+    return sysmon.stop_load()
 
 
 @mon_router.post("/heartbeat")

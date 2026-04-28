@@ -63,7 +63,28 @@ function timeAgo(iso) {
   if (d < 1) return "방금"; if (d < 60) return `${Math.floor(d)}분 전`;
   if (d < 1440) return `${Math.floor(d / 60)}시간 전`; return `${Math.floor(d / 1440)}일 전`;
 }
-function fmt(v) { if (v == null) return ""; const n = Number(v); if (isNaN(n)) return String(v); return Math.abs(n) >= 1000 ? (n/1000).toFixed(1)+"k" : n % 1 === 0 ? String(n) : n.toFixed(2); }
+function num(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+function maybeNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function fmt(v) {
+  if (v == null || v === "") return "";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return Math.abs(n) >= 1000 ? (n/1000).toFixed(1)+"k" : n % 1 === 0 ? String(n) : n.toFixed(2);
+}
+function fixed(v, digits = 1, fallback = "-") {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return v == null || v === "" ? fallback : String(v);
+  return n.toFixed(digits);
+}
+function pct(v, digits = 1) {
+  return fixed(num(v) * 100, digits, "0.0");
+}
 
 function MiniStat({ label, value, tone = "var(--accent)" }) {
   return (
@@ -609,9 +630,10 @@ function ChartCanvas({ cfg, points, computedAt }) {
 
   /* ── Pie ── */
   if (type === "pie") {
-    const total = points.reduce((s, p) => s + p.y, 0) || 1;
+    const chartPoints = points.map(p => ({ ...p, y: num(p.y) }));
+    const total = chartPoints.reduce((s, p) => s + p.y, 0) || 1;
     const R = 110, cx = 140, cy = 140; let acc = 0;
-    const slices = points.map((p, i) => {
+    const slices = chartPoints.map((p, i) => {
       const frac = p.y / total; const a0 = acc * 2 * Math.PI; acc += frac; const a1 = acc * 2 * Math.PI;
       const mid = (a0 + a1) / 2;
       return { ...p, frac, a0, a1, lx: cx + R * 0.65 * Math.sin(mid), ly: cy - R * 0.65 * Math.cos(mid),
@@ -626,9 +648,9 @@ function ChartCanvas({ cfg, points, computedAt }) {
           {slices.map(s => (<g key={s.i}>
             <path d={`M ${cx},${cy} L ${s.x0},${s.y0} A ${R},${R} 0 ${s.frac > 0.5 ? 1 : 0} 1 ${s.x1},${s.y1} Z`}
               fill={s.color} stroke="var(--bg-card)" strokeWidth={2} opacity={0.9}
-              onMouseMove={e => { const r = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top, lines: [`${s.label}`, `개수: ${s.y.toLocaleString()}`, `비율: ${(s.frac * 100).toFixed(1)}%`] }); }}
+              onMouseMove={e => { const r = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top, lines: [`${s.label}`, `개수: ${s.y.toLocaleString()}`, `비율: ${pct(s.frac)}%`] }); }}
               style={{ cursor: "pointer" }} />
-            {s.frac > 0.04 && <text x={s.lx} y={s.ly} textAnchor="middle" dominantBaseline="middle" fill={WHITE} fontSize={s.frac > 0.1 ? 12 : 10} fontWeight={700} style={{ textShadow: "0 1px 3px rgba(0,0,0,0.6)", pointerEvents: "none" }}>{(s.frac * 100).toFixed(1)}%</text>}
+            {s.frac > 0.04 && <text x={s.lx} y={s.ly} textAnchor="middle" dominantBaseline="middle" fill={WHITE} fontSize={s.frac > 0.1 ? 12 : 10} fontWeight={700} style={{ textShadow: "0 1px 3px rgba(0,0,0,0.6)", pointerEvents: "none" }}>{pct(s.frac)}%</text>}
           </g>))}
         </svg>
         <div style={{ flex: 1, overflow: "auto", maxHeight: 260 }}>
@@ -636,7 +658,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
             <span style={{ width: 10, height: 10, borderRadius: 2, background: s.color, flexShrink: 0 }} />
             <span style={{ flex: 1, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.label}>{s.label}</span>
             <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0 }}>{s.y.toLocaleString()}</span>
-            <span style={{ fontSize: 10, fontWeight: 600, color: s.color, flexShrink: 0, minWidth: 42, textAlign: "right" }}>{(s.frac * 100).toFixed(1)}%</span>
+            <span style={{ fontSize: 10, fontWeight: 600, color: s.color, flexShrink: 0, minWidth: 42, textAlign: "right" }}>{pct(s.frac)}%</span>
           </div>))}
           <div style={{ fontSize: 10, color: "var(--text-secondary)", padding: "6px 0", fontWeight: 600 }}>합계: {total.toLocaleString()}</div>
         </div>
@@ -646,23 +668,24 @@ function ChartCanvas({ cfg, points, computedAt }) {
 
   /* ── Binning / Histogram ── */
   if (type === "binning") {
-    const maxY = Math.max(...points.map(p => p.y));
-    const total = points.reduce((s, p) => s + p.y, 0) || 1;
+    const chartPoints = points.map(p => ({ ...p, y: num(p.y) }));
+    const maxY = Math.max(...chartPoints.map(p => p.y));
+    const total = chartPoints.reduce((s, p) => s + p.y, 0) || 1;
     const W = Math.max(400, Math.min(600, points.length * 48)), H = 300, pad = { t: 24, r: 16, b: 56, l: 56 };
     const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b, bw = Math.max(4, cw / points.length - 2);
     return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "14px 16px", position: "relative" }}>
       {Header}{Tip}
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
         {[0, 0.25, 0.5, 0.75, 1].map((f, i) => { const y = pad.t + ch * (1 - f); return (<g key={i}><line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--border)" strokeDasharray="2,3" /><text x={pad.l - 6} y={y + 3} textAnchor="end" fill="var(--text-secondary)" fontSize={9}>{Math.round(maxY * f)}</text></g>); })}
-        {points.map((p, i) => {
+        {chartPoints.map((p, i) => {
           const x = pad.l + i * (cw / points.length) + (cw / points.length - bw) / 2;
-          const barH = maxY > 0 ? (p.y / maxY) * ch : 0; const pct = (p.y / total * 100).toFixed(1);
+          const barH = maxY > 0 ? (p.y / maxY) * ch : 0; const pctText = fixed((p.y / total) * 100, 1, "0.0");
           return (<g key={i}>
             <rect x={x} y={pad.t + ch - barH} width={bw} height={Math.max(1, barH)} fill={SERIES[i % SERIES.length]} rx={2} opacity={0.85}
-              onMouseMove={e => { const r = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top, lines: [`${p.label || p.x}`, `개수: ${p.y.toLocaleString()}`, `전체의 ${pct}%`] }); }}
+              onMouseMove={e => { const r = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top, lines: [`${p.label || p.x}`, `개수: ${p.y.toLocaleString()}`, `전체의 ${pctText}%`] }); }}
               style={{ cursor: "pointer" }} />
             {barH > 16 && <text x={x + bw / 2} y={pad.t + ch - barH + 13} textAnchor="middle" fill={WHITE} fontSize={9} fontWeight={600} style={{ pointerEvents: "none" }}>{p.y}</text>}
-            {barH > 30 && <text x={x + bw / 2} y={pad.t + ch - barH + 25} textAnchor="middle" fill="rgba(255,255,255,0.6)" fontSize={8} style={{ pointerEvents: "none" }}>{pct}%</text>}
+            {barH > 30 && <text x={x + bw / 2} y={pad.t + ch - barH + 25} textAnchor="middle" fill="rgba(255,255,255,0.6)" fontSize={8} style={{ pointerEvents: "none" }}>{pctText}%</text>}
             <text x={x + bw / 2} y={H - pad.b + 6} textAnchor="end" fill="var(--text-secondary)" fontSize={8} transform={`rotate(-90,${x + bw / 2},${H - pad.b + 6})`}>{(p.x || "").slice(0, 12)}</text>
           </g>);
         })}
@@ -673,9 +696,10 @@ function ChartCanvas({ cfg, points, computedAt }) {
 
   /* ── Donut ── */
   if (type === "donut") {
-    const total = points.reduce((s, p) => s + p.y, 0) || 1;
+    const chartPoints = points.map(p => ({ ...p, y: num(p.y) }));
+    const total = chartPoints.reduce((s, p) => s + p.y, 0) || 1;
     const R = 90, IR = 50, cx = 120, cy = 120; let acc = 0;
-    const slices = points.map((p, i) => {
+    const slices = chartPoints.map((p, i) => {
       const frac = p.y / total; const a0 = acc * 2 * Math.PI; acc += frac; const a1 = acc * 2 * Math.PI;
       const mid = (a0 + a1) / 2;
       return { ...p, frac, color: PASTELS[i % PASTELS.length], i,
@@ -690,7 +714,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
           {slices.map(s => <path key={s.i}
             d={`M ${s.outerX0},${s.outerY0} A ${R},${R} 0 ${s.frac > 0.5 ? 1 : 0} 1 ${s.outerX1},${s.outerY1} L ${s.innerX1},${s.innerY1} A ${IR},${IR} 0 ${s.frac > 0.5 ? 1 : 0} 0 ${s.innerX0},${s.innerY0} Z`}
             fill={s.color} stroke="var(--bg-card)" strokeWidth={1.5} opacity={0.9}
-            onMouseMove={e => { const r = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top, lines: [s.label, `${s.y.toLocaleString()} (${(s.frac * 100).toFixed(1)}%)`] }); }}
+            onMouseMove={e => { const r = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top, lines: [s.label, `${s.y.toLocaleString()} (${pct(s.frac)}%)`] }); }}
             style={{ cursor: "pointer" }} />)}
           <text x={cx} y={cy - 4} textAnchor="middle" fill="var(--text-secondary)" fontSize={10}>합계</text>
           <text x={cx} y={cy + 12} textAnchor="middle" fill="var(--text-primary)" fontSize={14} fontWeight={700}>{total.toLocaleString()}</text>
@@ -700,7 +724,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
             <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color, flexShrink: 0 }} />
             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.label}</span>
             <span style={{ color: "var(--text-secondary)", fontFamily: "monospace", fontSize: 10 }}>{s.y}</span>
-            <span style={{ color: s.color, fontWeight: 600, fontSize: 10, minWidth: 36, textAlign: "right" }}>{(s.frac * 100).toFixed(1)}%</span>
+            <span style={{ color: s.color, fontWeight: 600, fontSize: 10, minWidth: 36, textAlign: "right" }}>{pct(s.frac)}%</span>
           </div>))}
         </div>
       </div>
@@ -709,8 +733,9 @@ function ChartCanvas({ cfg, points, computedAt }) {
 
   /* ── Pareto ── */
   if (type === "pareto") {
-    const maxY = Math.max(...points.map(p => p.y));
-    const total = points.reduce((s, p) => s + p.y, 0) || 1;
+    const chartPoints = points.map(p => ({ ...p, y: num(p.y) }));
+    const maxY = Math.max(...chartPoints.map(p => p.y));
+    const total = chartPoints.reduce((s, p) => s + p.y, 0) || 1;
     const W = Math.max(400, Math.min(600, points.length * 44)), H = 260, pad = { t: 20, r: 40, b: 50, l: 50 };
     const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b, bw = Math.max(4, cw / points.length - 2);
     let cum = 0;
@@ -718,14 +743,14 @@ function ChartCanvas({ cfg, points, computedAt }) {
       {Header}{Tip}
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
         {[0, 0.5, 1].map((f, i) => { const y = pad.t + ch * (1 - f); return <g key={i}><line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--border)" strokeDasharray="2,3" /><text x={pad.l - 4} y={y + 3} textAnchor="end" fill="var(--text-secondary)" fontSize={8}>{Math.round(maxY * f)}</text></g>; })}
-        {points.map((p, i) => {
+        {chartPoints.map((p, i) => {
           const x = pad.l + i * (cw / points.length) + (cw / points.length - bw) / 2;
           const barH = maxY > 0 ? (p.y / maxY) * ch : 0;
           cum += p.y; const cumPct = cum / total * 100;
           const lineY = pad.t + ch * (1 - cumPct / 100);
           return (<g key={i}>
             <rect x={x} y={pad.t + ch - barH} width={bw} height={Math.max(1, barH)} fill={SERIES[i % SERIES.length]} rx={2} opacity={0.8}
-              onMouseMove={e => { const r = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top, lines: [p.label || p.x, `개수: ${p.y}`, `누적: ${cumPct.toFixed(1)}%`] }); }} style={{ cursor: "pointer" }} />
+              onMouseMove={e => { const r = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top, lines: [p.label || p.x, `개수: ${p.y}`, `누적: ${fixed(cumPct, 1, "0.0")}%`] }); }} style={{ cursor: "pointer" }} />
             <circle cx={x + bw / 2} cy={lineY} r={3} fill={BAD.fg} />
             {i > 0 && <line x1={pad.l + (i - 1) * (cw / points.length) + (cw / points.length) / 2} y1={pad.t + ch * (1 - (cum - p.y) / total)} x2={x + bw / 2} y2={lineY} stroke={BAD.fg} strokeWidth={1.5} />}
             <text x={x + bw / 2} y={H - pad.b + 6} textAnchor="end" fill="var(--text-secondary)" fontSize={7} transform={`rotate(-90,${x + bw / 2},${H - pad.b + 6})`}>{(p.x || "").slice(0, 10)}</text>
@@ -739,26 +764,27 @@ function ChartCanvas({ cfg, points, computedAt }) {
 
   /* ── Box Plot with Statistics Table (chart above, stats aligned below) ── */
   if (type === "box") {
-    const allVals = points.flatMap(p => [p.min, p.q1, p.median, p.q3, p.max].filter(v => v != null));
+    const allVals = points.flatMap(p => [p.min, p.q1, p.median, p.q3, p.max].map(maybeNum).filter(v => v != null));
+    if (!allVals.length) return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)", fontSize: 12 }}>숫자 통계 데이터 없음</div>;
     const minV = Math.min(...allVals), maxV = Math.max(...allVals), rangeV = maxV - minV || 1;
     const colW = Math.max(80, Math.min(120, 500 / points.length));
     const padL = 54, padR = 16;
     const W = padL + points.length * colW + padR, H = 220;
     const pad = { t: 20, r: padR, b: 24, l: padL };
     const ch = H - pad.t - pad.b;
-    const toY = v => pad.t + ch - (v - minV) / rangeV * ch;
+    const toY = v => pad.t + ch - (num(v, minV) - minV) / rangeV * ch;
     const bw = Math.min(44, colW * 0.55);
     const statRows = [
       { label: "N", key: "count", fmt: v => v },
-      { label: "Mean", key: "mean", fmt: v => v?.toFixed(4) },
-      { label: "Median", key: "median", fmt: v => v?.toFixed(4) },
-      { label: "Std Dev", key: "std", fmt: v => v?.toFixed(4) },
-      { label: "Min", key: "min", fmt: v => v?.toFixed(4) },
-      { label: "P10", key: "p10", fmt: v => v?.toFixed(4) },
-      { label: "Q1", key: "q1", fmt: v => v?.toFixed(4) },
-      { label: "Q3", key: "q3", fmt: v => v?.toFixed(4) },
-      { label: "P90", key: "p90", fmt: v => v?.toFixed(4) },
-      { label: "Max", key: "max", fmt: v => v?.toFixed(4) },
+      { label: "Mean", key: "mean", fmt: v => fixed(v, 4) },
+      { label: "Median", key: "median", fmt: v => fixed(v, 4) },
+      { label: "Std Dev", key: "std", fmt: v => fixed(v, 4) },
+      { label: "Min", key: "min", fmt: v => fixed(v, 4) },
+      { label: "P10", key: "p10", fmt: v => fixed(v, 4) },
+      { label: "Q1", key: "q1", fmt: v => fixed(v, 4) },
+      { label: "Q3", key: "q3", fmt: v => fixed(v, 4) },
+      { label: "P90", key: "p90", fmt: v => fixed(v, 4) },
+      { label: "Max", key: "max", fmt: v => fixed(v, 4) },
     ];
     const tS = { padding: "2px 4px", borderBottom: "1px solid var(--border)", fontSize: 10, textAlign: "center", fontFamily: "monospace", overflow: "hidden" };
     return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative" }}>
@@ -811,24 +837,25 @@ function ChartCanvas({ cfg, points, computedAt }) {
 
   /* ── Treemap (div-based, no overflow) ── */
   if (type === "treemap") {
-    const total = points.reduce((s, p) => s + p.y, 0) || 1;
+    const chartPoints = points.map(p => ({ ...p, y: num(p.y) }));
+    const total = chartPoints.reduce((s, p) => s + p.y, 0) || 1;
     const H = 220;
-    const sorted = [...points].sort((a, b) => b.y - a.y).map((p, i) => ({ ...p, pct: p.y / total * 100, color: PASTELS[i % PASTELS.length], i }));
+    const sorted = [...chartPoints].sort((a, b) => b.y - a.y).map((p, i) => ({ ...p, pct: p.y / total * 100, color: PASTELS[i % PASTELS.length], i }));
     return (<div style={{ background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative", overflow: "hidden" }}>
       {Header}{Tip}
       <div ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "flex", height: H, borderRadius: 6, overflow: "hidden", gap: 2 }}>
         {sorted.map((r, i) => (
           <div key={i} style={{ flex: `${r.pct} 0 0%`, minWidth: 2, height: "100%", background: r.color, borderRadius: 4, opacity: 0.88, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", overflow: "hidden", position: "relative" }}
-            onMouseMove={e => { const b = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - b.left, y: e.clientY - b.top, lines: [r.label, `${r.y.toLocaleString()} (${r.pct.toFixed(1)}%)`] }); }}>
+            onMouseMove={e => { const b = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - b.left, y: e.clientY - b.top, lines: [r.label, `${r.y.toLocaleString()} (${fixed(r.pct, 1, "0.0")}%)`] }); }}>
             {r.pct > 8 && <div style={{ color: WHITE, fontSize: Math.min(13, Math.max(9, r.pct / 3)), fontWeight: 700, textShadow: "0 1px 3px rgba(0,0,0,0.6)", pointerEvents: "none", textAlign: "center", padding: "0 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{(r.label || "").slice(0, 12)}</div>}
-            {r.pct > 6 && <div style={{ color: "rgba(255,255,255,0.8)", fontSize: 9, fontWeight: 600, pointerEvents: "none" }}>{r.pct.toFixed(1)}%</div>}
+            {r.pct > 6 && <div style={{ color: "rgba(255,255,255,0.8)", fontSize: 9, fontWeight: 600, pointerEvents: "none" }}>{fixed(r.pct, 1, "0.0")}%</div>}
           </div>
         ))}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
         {sorted.map((r, i) => <span key={i} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
           <span style={{ width: 8, height: 8, borderRadius: 2, background: r.color, flexShrink: 0 }} />
-          <span style={{ color: "var(--text-secondary)" }}>{r.label} ({r.pct.toFixed(1)}%)</span>
+          <span style={{ color: "var(--text-secondary)" }}>{r.label} ({fixed(r.pct, 1, "0.0")}%)</span>
         </span>)}
       </div>
     </div>);
@@ -837,7 +864,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
   /* ── Heatmap (2D binned grid) ── */
   if (type === "heatmap") {
     const meta = cfg._heatmap_meta || {};
-    const maxCnt = Math.max(...points.map(p => p.cnt));
+    const maxCnt = Math.max(1, ...points.map(p => num(p.cnt)));
     const nBins = meta.n_bins || 20;
     const W = 420, H = 380;
     const pad = { t: 16, r: 60, b: 44, l: 58 };
@@ -846,7 +873,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
     // Viridis-like color scale
     const heatColor = (cnt) => {
       if (!cnt) return "transparent";
-      const t = Math.pow(cnt / maxCnt, 0.6);
+      const t = Math.pow(num(cnt) / maxCnt, 0.6);
       const r = Math.round(68 + 187 * t);
       const g = Math.round(1 + 150 * Math.min(t * 1.5, 1) - 80 * Math.max(t - 0.6, 0));
       const b = Math.round(84 + 100 * (1 - t));
@@ -1086,14 +1113,14 @@ function ChartCanvas({ cfg, points, computedAt }) {
   const groupNames = Object.keys(colorGroups);
   const hasColor = groupNames.length > 1 || (groupNames.length === 1 && groupNames[0] !== "default");
 
-  const ys = points.map(p => p.y).filter(v => !isNaN(v));
+  const ys = points.map(p => maybeNum(p.y)).filter(v => v != null);
   // v6: Extend Y range to include spec lines + SPC limits
   // v7: spec_lines[] in addition to legacy single usl/lsl/target
-  const extraSpec = (cfg.spec_lines || []).map(s => Number(s.value)).filter(v => !isNaN(v));
-  const specVals = [cfg.usl, cfg.lsl, cfg.target, ...extraSpec].filter(v => v != null);
-  const spcVals = cfg._spc ? [cfg._spc.ucl, cfg._spc.lcl] : [];
-  const extraVals = [...specVals, ...spcVals];
-  const rawMinY = Math.min(...ys), rawMaxY = Math.max(...ys);
+  const extraSpec = (cfg.spec_lines || []).map(s => maybeNum(s.value)).filter(v => v != null);
+  const specVals = [cfg.usl, cfg.lsl, cfg.target].map(maybeNum).filter(v => v != null);
+  const spcVals = cfg._spc ? [cfg._spc.ucl, cfg._spc.lcl].map(maybeNum).filter(v => v != null) : [];
+  const extraVals = [...specVals, ...extraSpec, ...spcVals];
+  const rawMinY = ys.length ? Math.min(...ys) : 0, rawMaxY = ys.length ? Math.max(...ys) : 1;
   const minY = extraVals.length ? Math.min(rawMinY, ...extraVals) : rawMinY;
   const maxY = extraVals.length ? Math.max(rawMaxY, ...extraVals) : rawMaxY;
   const rangeY = maxY - minY || 1;
@@ -1101,7 +1128,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
   const pad = { t: 24, r: hasColor ? 110 : 16, b: 48, l: 58 };
   const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
   const toX = (i) => pad.l + (points.length <= 1 ? cw / 2 : i / (points.length - 1) * cw);
-  const toY = (v) => pad.t + ch - (v - minY) / rangeY * ch;
+  const toY = (v) => pad.t + ch - (num(v, minY) - minY) / rangeY * ch;
 
   // v8.4.4: polynomial fit (degree 1-4) with R² — cfg.fit_line_enabled / fit_line_degree / fit_line_show_r2
   // v8.8.16: scatter 기본값 변경 — 사용자가 체크박스를 직접 켜야만 fitting line 표시 (이전: 항상 on).
@@ -1109,7 +1136,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
   const fitEnabled = cfg.fit_line_enabled === true;
   if (fitEnabled && points.length > 2) {
     const deg = Math.max(1, Math.min(4, cfg.fit_line_degree || 1));
-    const xs = points.map((_, i) => i), yv = points.map(p => p.y);
+    const xs = points.map((_, i) => i), yv = points.map(p => num(p.y));
     const n = xs.length;
     // Normal equation for polynomial fit: build Vandermonde-like matrix.
     // Solve the coefficient vector via Gauss elimination.
@@ -1258,7 +1285,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
         {fitLine && <g>
           <path d={fitLine.path} fill="none" stroke={BAD.fg} strokeWidth={2} strokeDasharray={fitLine.degree===1?"8,4":undefined} opacity={0.85} />
           {/* v8.8.16: R² 표시도 명시적 체크 필요 (기본 off). */}
-          {(cfg.fit_line_show_r2 === true) && <text x={W - pad.r - 4} y={pad.t + 16} textAnchor="end" fill={BAD.fg} fontSize={13} fontWeight={800} fontFamily="monospace" style={{ textShadow: "0 0 4px var(--bg-card), 0 0 4px var(--bg-card)" }}>deg={fitLine.degree} · R² = {fitLine.r2.toFixed(4)}</text>}
+          {(cfg.fit_line_show_r2 === true) && <text x={W - pad.r - 4} y={pad.t + 16} textAnchor="end" fill={BAD.fg} fontSize={13} fontWeight={800} fontFamily="monospace" style={{ textShadow: "0 0 4px var(--bg-card), 0 0 4px var(--bg-card)" }}>deg={fitLine.degree} · R² = {fixed(fitLine.r2, 4)}</text>}
         </g>}
         </g>
       }

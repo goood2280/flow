@@ -182,9 +182,29 @@ def to_rel_posix(p):
     return p.relative_to(ROOT).as_posix()
 
 
+def installer_version_meta(version: dict) -> dict:
+    """Keep setup.py release text concise; detailed notes stay in CHANGELOG/Home."""
+    return {
+        "version": version.get("version", ""),
+        "codename": version.get("codename", "flow"),
+        "changelog": [{
+            "version": version.get("version", ""),
+            "date": version.get("date", ""),
+            "title": "Flow app 운영 개선 통합 요약",
+            "tag": "rollup",
+            "changes": [
+                "SplitTable, Tracker, Inform, Dashboard, Admin, Flow-i/LLM 연동, 대용량 DB 대응을 운영 흐름 기준으로 통합 정리.",
+                "사용자 데이터는 setup.py 번들에 포함하지 않고 기존 data/Base, data/DB, data/flow-data 및 설정/로그/캐시 파일을 보존.",
+                "세부 버전별 내역은 앱의 최근 변경사항, CHANGELOG.md, VERSION.json에서 확인.",
+            ],
+        }],
+    }
+
+
 def build():
     files = gather_files()
     version = json.loads((ROOT / 'VERSION.json').read_text(encoding='utf-8'))
+    installer_meta = installer_version_meta(version)
 
     entries = []
     for p in files:
@@ -219,7 +239,7 @@ admin_settings, tracker, splittable, meetings, calendar, messages,
 dbmap, S3 sync config, …) is NEVER bundled and NEVER overwritten —
 re-running setup.py on an existing install preserves ALL user data.
 
-보존 whitelist (v8.8.3):
+데이터 보존 정책 (요약):
   - data/ 트리 전체 (data/Base, data/DB, data/flow-data)
   - flow-data/ 세그먼트가 포함된 모든 경로
   - FLOW_DATA_ROOT 환경변수 아래의 모든 경로
@@ -254,7 +274,7 @@ except Exception:
 
 VERSION = "{version['version']}"
 CODENAME = "{version.get('codename', 'flow')}"
-VERSION_META = {json.dumps(version, ensure_ascii=False)}
+VERSION_META = {json.dumps(installer_meta, ensure_ascii=False)}
 
 
 # v8.8.3 — 사용자 데이터 보존 whitelist (덮어쓰기 금지 파일명)

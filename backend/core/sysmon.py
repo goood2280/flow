@@ -41,6 +41,8 @@ LOAD_MIN_SEC         = 5 * 60           # 부하 최소 5분
 LOAD_MAX_SEC         = 10 * 60          # 부하 최대 10분
 PAUSE_AFTER_USER_SEC = 30 * 60          # 사용자 활동 감지 후 30분 대기
 USER_ACTIVITY_TTL_SEC = 2 * 60          # 직전 2분 이내 활동이면 "active" 로 간주
+MANUAL_LOAD_MAX_SEC  = 10 * 60          # Admin 수동 부하 최대 10분
+MEM_CHUNK_MB         = 16               # 메모리 pressure 는 작은 chunk 로 점진 할당
 
 RESOURCE_LOG: Path = PATHS.resource_log
 SYSMON_STATE_FILE: Path = PATHS.log_dir / "sysmon_state.json"
@@ -52,6 +54,15 @@ def _load_generation_enabled() -> bool:
     raw = os.environ.get("FLOW_SYSMON_ENABLE_LOAD", "").strip().lower()
     return raw in {"1", "true", "yes", "on", "enabled"}
 
+
+def _manual_memory_cap_mb() -> int:
+    raw = os.environ.get("FLOW_SYSMON_MAX_MEM_LOAD_MB", "").strip()
+    try:
+        val = int(raw)
+    except Exception:
+        val = 1024
+    return max(0, min(8192, val))
+
 # ── 내부 상태 ────────────────────────────────────────────────────────
 _lock = threading.Lock()
 _last_user_activity: float = 0.0        # epoch seconds
@@ -59,6 +70,10 @@ _load_thread: Optional[threading.Thread] = None
 _load_stop = threading.Event()
 _load_started_at: float = 0.0
 _load_end_at: float = 0.0
+_load_mode: str = ""
+_load_target_pct: float = THRESHOLD_PCT
+_mem_hold: list[bytearray] = []
+_mem_allocated_mb: int = 0
 _paused_until: float = 0.0              # 유휴 체크를 건너뛰는 마감 시각
 _bg_thread: Optional[threading.Thread] = None
 _last_sample: dict = {}
@@ -258,9 +273,17 @@ def get_state() -> dict:
         started_at = _load_started_at if load_active else 0.0
         paused_until = _paused_until
         last_user = _last_user_activity
+        mode = _load_mode if load_active else ""
+        target_pct = _load_target_pct if load_active else THRESHOLD_PCT
+        mem_allocated_mb = _mem_allocated_mb if load_active else 0
     return {
         "sample": sample,
         "load_active": load_active,
+        "farming": load_active,
+        "load_mode": mode,
+        "load_target_pct": target_pct,
+        "load_memory_allocated_mb": mem_allocated_mb,
+        "load_memory_cap_mb": _manual_memory_cap_mb(),
         "load_started_at": _iso(started_at) if started_at else "",
         "load_estimated_end": _iso(end_at) if end_at else "",
         "paused_until": _iso(paused_until) if paused_until and paused_until > _now() else "",
@@ -299,15 +322,48 @@ def _burn_cpu(stop_event: threading.Event, deadline: float) -> None:
             return
 
 
-def _load_worker(duration_sec: int) -> None:
+def _hold_memory_until(stop_event: threading.Event, deadline: float, target_pct: float) -> None:
+    """Manual memory pressure with a hard cap and frequent system checks."""
+    global _mem_hold, _mem_allocated_mb
+    max_mb = _manual_memory_cap_mb()
+    if max_mb <= 0:
+        return
+    chunk_bytes = MEM_CHUNK_MB * 1024 * 1024
+    try:
+        while not stop_event.is_set() and _now() < deadline:
+            s = _collect_stats()
+            mem_pct = float(s.get("memory_percent") or 0)
+            with _lock:
+                allocated = _mem_allocated_mb
+            if mem_pct >= target_pct or allocated + MEM_CHUNK_MB > max_mb:
+                break
+            _mem_hold.append(bytearray(chunk_bytes))
+            with _lock:
+                _mem_allocated_mb += MEM_CHUNK_MB
+            if stop_event.wait(timeout=0.25):
+                return
+        while not stop_event.is_set() and _now() < deadline:
+            if stop_event.wait(timeout=0.5):
+                return
+    finally:
+        _mem_hold = []
+        with _lock:
+            _mem_allocated_mb = 0
+
+
+def _load_worker(duration_sec: int, mode: str = "auto", target_pct: float = THRESHOLD_PCT, memory: bool = False) -> None:
     """부하 스레드 entry point — _burn_cpu 를 듀얼 쓰레드로 돌려 85% 근처까지 끌어올림."""
-    global _load_started_at, _load_end_at
+    global _load_started_at, _load_end_at, _load_mode, _load_target_pct, _mem_hold, _mem_allocated_mb
     start = _now()
     end = start + duration_sec
     with _lock:
         _load_started_at = start
         _load_end_at = end
-    logger.info(f"[sysmon] load generation start — {duration_sec}s planned")
+        _load_mode = mode
+        _load_target_pct = float(target_pct or THRESHOLD_PCT)
+        _mem_allocated_mb = 0
+    _mem_hold = []
+    logger.info(f"[sysmon] load generation start — {duration_sec}s planned mode={mode} target={target_pct}")
     _load_stop.clear()
 
     # 보조 워커 1~2 개로 병렬 부하. psutil 이 있으면 코어수 기반으로 조절.
@@ -322,6 +378,10 @@ def _load_worker(duration_sec: int) -> None:
         t = threading.Thread(target=_burn_cpu, args=(_load_stop, end), daemon=True)
         t.start()
         aux_threads.append(t)
+    if memory:
+        t = threading.Thread(target=_hold_memory_until, args=(_load_stop, end, float(target_pct or THRESHOLD_PCT)), daemon=True)
+        t.start()
+        aux_threads.append(t)
     # 메인에서도 함께 burn — 단일 워커가 아닌 다수 스레드가 함께 돌도록.
     _burn_cpu(_load_stop, end)
     for t in aux_threads:
@@ -329,6 +389,9 @@ def _load_worker(duration_sec: int) -> None:
     stopped_early = _load_stop.is_set()
     with _lock:
         _load_end_at = _now() if stopped_early else end
+        _load_mode = ""
+        _mem_allocated_mb = 0
+    _mem_hold = []
     logger.info(f"[sysmon] load generation {'stopped' if stopped_early else 'finished'} "
                 f"after {int(_now() - start)}s")
 
@@ -351,6 +414,31 @@ def _maybe_start_load() -> None:
     _load_stop.clear()
     _load_thread = threading.Thread(target=_load_worker, args=(duration,), daemon=True)
     _load_thread.start()
+
+
+def start_manual_load(duration_sec: int = 180, target_pct: float = THRESHOLD_PCT, memory: bool = True) -> dict:
+    """Admin-triggered synthetic load. Keeps the API server alive if the worker stops."""
+    global _load_thread, _paused_until
+    duration = max(15, min(MANUAL_LOAD_MAX_SEC, int(duration_sec or 180)))
+    target = max(10.0, min(THRESHOLD_PCT, float(target_pct or THRESHOLD_PCT)))
+    if _load_thread and _load_thread.is_alive():
+        return {"ok": False, "already_running": True, "state": get_state()}
+    with _lock:
+        _paused_until = _now() + duration + 60
+    _load_stop.clear()
+    _load_thread = threading.Thread(
+        target=_load_worker,
+        args=(duration, "manual", target, bool(memory)),
+        name="sysmon-manual-load",
+        daemon=True,
+    )
+    _load_thread.start()
+    return {"ok": True, "duration_sec": duration, "target_pct": target, "memory": bool(memory), "state": get_state()}
+
+
+def stop_load() -> dict:
+    _load_stop.set()
+    return {"ok": True, "state": get_state()}
 
 
 def _bg_loop() -> None:

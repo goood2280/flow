@@ -65,6 +65,7 @@ DEFAULT_SETTINGS = {
     "dashboard_refresh_minutes": 10,  # auto-refresh interval (frontend)
     "dashboard_bg_refresh_minutes": 10,  # backend scheduled recompute (if any)
     "splittable_match_refresh_minutes": 30,  # FAB root/fab_lot cache rebuild interval
+    "tracker_et_match_refresh_minutes": 30,  # ET root/fab_lot cache rebuild interval
     # Dashboard section visibility for non-admin users. Admin always sees all.
     "dashboard_sections": {"charts": True, "progress": False, "alerts": False},
 }
@@ -681,6 +682,7 @@ class SettingsSaveReq(BaseModel):
     dashboard_refresh_minutes: int = 10
     dashboard_bg_refresh_minutes: int = 10
     splittable_match_refresh_minutes: Optional[int] = None
+    tracker_et_match_refresh_minutes: Optional[int] = None
     dashboard_sections: Optional[Dict[str, bool]] = None
     data_roots: Optional[DataRootsReq] = None
     backup: Optional[BackupCfgReq] = None
@@ -717,6 +719,12 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         except Exception:
             st_match = 30
         data["splittable_match_refresh_minutes"] = max(30, min(60, st_match))
+    if "tracker_et_match_refresh_minutes" in data:
+        try:
+            et_match = int(data.get("tracker_et_match_refresh_minutes", 30))
+        except Exception:
+            et_match = 30
+        data["tracker_et_match_refresh_minutes"] = max(30, min(60, et_match))
     if "dashboard_sections" in data:
         raw_sections = data.get("dashboard_sections") or {}
         data["dashboard_sections"] = {

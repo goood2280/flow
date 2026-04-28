@@ -16,7 +16,7 @@ for _path in (_APP_ROOT, _BACKEND_ROOT):
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 import polars as pl
 from core.paths import PATHS
 from core.long_pivot import scan_long_fab
@@ -1326,6 +1326,107 @@ def _compute_step_knob_binning(df: pl.DataFrame, cfg: dict, names: list[str], x_
         return {"points": [], "total": 0, "error": f"step_knob_binning error: {e}"}
 
 
+def _pushdown_dashboard_filters(lf: pl.LazyFrame, cfg: dict, schema_cols: set[str] | None = None) -> tuple[pl.LazyFrame, dict]:
+    """Apply chart filters before collect when Polars can push them into parquet scan."""
+    schema_cols = schema_cols or set()
+    pushed = {"filter_expr": False, "time_window": False}
+    fe = str(cfg.get("filter_expr") or "").strip()
+    if fe:
+        try:
+            lf = lf.filter(pl.sql_expr(fe))
+            pushed["filter_expr"] = True
+        except Exception:
+            pushed["filter_expr"] = False
+
+    time_col = str(cfg.get("time_col") or "").strip()
+    days = cfg.get("days")
+    if time_col and days and (not schema_cols or time_col in schema_cols):
+        try:
+            d_int = int(days)
+            cutoff = (datetime.datetime.now() - datetime.timedelta(days=d_int)).isoformat()
+            lf = lf.filter(pl.col(time_col).cast(_STR, strict=False) >= cutoff)
+            pushed["time_window"] = True
+        except Exception:
+            pushed["time_window"] = False
+    return lf, pushed
+
+
+_DASHBOARD_EXPR_STOP = {
+    "and", "or", "not", "null", "true", "false", "is", "in", "like", "as", "case", "when", "then", "else",
+    "pl", "col", "lit", "str", "dt", "cast", "alias", "mean", "sum", "min", "max", "count", "len",
+}
+
+
+def _dashboard_expr_tokens(raw: Any) -> set[str]:
+    out: set[str] = set()
+    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_. ]*", str(raw or "")):
+        tok = token.strip()
+        if not tok or tok.lower() in _DASHBOARD_EXPR_STOP:
+            continue
+        out.add(tok)
+    return out
+
+
+def _dashboard_referenced_columns(cfg: dict) -> set[str]:
+    refs: set[str] = set()
+    for key in ("x_col", "y_expr", "color_col", "agg_col", "time_col", "selection_key", "eqp_col", "chamber_col", "filter_expr"):
+        refs.update(_dashboard_expr_tokens(cfg.get(key) or ""))
+    for key in ("table_columns", "cross_cols", "cross_rows"):
+        vals = cfg.get(key) or []
+        if isinstance(vals, str):
+            vals = [v.strip() for v in vals.split(",") if v.strip()]
+        if isinstance(vals, list):
+            for val in vals:
+                refs.update(_dashboard_expr_tokens(val))
+    return refs
+
+
+def _join_projection_columns(schema_cols: list[str], right_on: list[str], cfg: dict, suffix: str) -> list[str]:
+    include: list[str] = []
+
+    def add(raw: str):
+        hit = _resolve_name(schema_cols, raw) or raw
+        if hit in schema_cols and hit not in include:
+            include.append(hit)
+
+    for key in right_on:
+        add(key)
+    refs = _dashboard_referenced_columns(cfg)
+    for ref in refs:
+        candidates = [ref]
+        if suffix and ref.endswith(suffix):
+            candidates.append(ref[:-len(suffix)])
+        for cand in candidates:
+            hit = _resolve_name(schema_cols, cand)
+            if hit:
+                add(hit)
+    if str(cfg.get("chart_type") or "").lower() == "table" and len(include) <= len(right_on):
+        for col in schema_cols[:12]:
+            add(col)
+    return include or schema_cols
+
+
+def _load_dashboard_join_right_source(jst: str, jroot: str, jprod: str, jfile: str,
+                                      right_on: list[str], cfg: dict, suffix: str) -> tuple[pl.DataFrame, list[str]]:
+    lf = lazy_read_source(jst, jroot, jprod, jfile)
+    if lf is not None:
+        try:
+            schema_cols = list(lf.collect_schema().names())
+            resolved_right_on = [_resolve_name(schema_cols, c) or c for c in right_on]
+            keep = _join_projection_columns(schema_cols, resolved_right_on, cfg, suffix)
+            lf = lf.select([pl.col(c) for c in keep if c in schema_cols])
+            try:
+                from core.parquet_perf import collect_streaming
+                return cast_cats(collect_streaming(lf)), resolved_right_on
+            except Exception:
+                return cast_cats(lf.collect()), resolved_right_on
+        except Exception:
+            pass
+    right_df = read_source(jst, jroot, jprod, jfile)
+    resolved_right_on = [_resolve_name(right_df.columns, c) or c for c in right_on]
+    return right_df, resolved_right_on
+
+
 def _compute_chart(cfg: dict) -> dict:
     """Compute one chart. Uses lazy reads for memory efficiency."""
     chart_id = cfg.get("id", "")
@@ -1393,19 +1494,27 @@ def _compute_chart(cfg: dict) -> dict:
                 for k in left_keys:
                     if k:
                         needed.add(k)
+            pushed = {"filter_expr": False, "time_window": False}
             try:
                 schema_cols = lf.collect_schema().names()
                 needed = {c for c in needed if c in schema_cols}
                 if needed:
                     lf = lf.select([pl.col(c) for c in needed])
+                lf, pushed = _pushdown_dashboard_filters(lf, cfg, set(schema_cols))
             except Exception:
                 pass
             try:
-                df = cast_cats(lf.collect())
+                try:
+                    from core.parquet_perf import collect_streaming
+                    df = cast_cats(collect_streaming(lf))
+                except Exception:
+                    df = cast_cats(lf.collect())
             except Exception:
+                pushed = {"filter_expr": False, "time_window": False}
                 df = read_source(cfg.get("source_type", ""), cfg.get("root", ""),
                                  cfg.get("product", ""), cfg.get("file", ""))
         else:
+            pushed = {"filter_expr": False, "time_window": False}
             df = read_source(cfg.get("source_type", ""), cfg.get("root", ""),
                              cfg.get("product", ""), cfg.get("file", ""))
 
@@ -1425,7 +1534,8 @@ def _compute_chart(cfg: dict) -> dict:
         sel_key = _resolve_name(names, cfg.get("selection_key", "LOT_WF") or "")
 
         # Time window filter
-        df = apply_time_window(df, time_col, cfg.get("days"))
+        if not pushed.get("time_window"):
+            df = apply_time_window(df, time_col, cfg.get("days"))
         names = list(df.columns)
 
         # v8.1.1: LEFT JOIN additional sources (applied AFTER reformatter+time, BEFORE sql filter)
@@ -1447,9 +1557,9 @@ def _compute_chart(cfg: dict) -> dict:
                 if len(left_on) != len(right_on):
                     logger.warning(f"chart {chart_id} join {ji}: key length mismatch L={left_on} R={right_on}")
                     continue
-                # Pull only the keys we need plus any right-side columns referenced downstream
-                right_df = read_source(jst, jroot, jprod, jfile)
-                right_on = [_resolve_name(right_df.columns, c) or c for c in right_on]
+                suffix = (j or {}).get("suffix") or f"_j{ji+1}"
+                # Pull only right keys plus columns referenced downstream.
+                right_df, right_on = _load_dashboard_join_right_source(jst, jroot, jprod, jfile, right_on, cfg, suffix)
                 # Cast join keys to string on both sides for safety (categorical / int mismatches)
                 for lk, rk in zip(left_on, right_on):
                     if lk in df.columns:
@@ -1466,7 +1576,6 @@ def _compute_chart(cfg: dict) -> dict:
                     right_df = right_df.unique(subset=right_on, keep="first")
                 except Exception:
                     pass
-                suffix = (j or {}).get("suffix") or f"_j{ji+1}"
                 df = df.join(right_df, left_on=left_on, right_on=right_on, how="left", suffix=suffix)
             except Exception as e:
                 logger.warning(f"chart {chart_id} join {ji} failed: {e}")
@@ -1503,7 +1612,7 @@ def _compute_chart(cfg: dict) -> dict:
 
         # SQL filter
         fe = (cfg.get("filter_expr") or "").strip()
-        if fe:
+        if fe and not pushed.get("filter_expr"):
             try:
                 df = df.filter(pl.sql_expr(fe))
             except Exception:

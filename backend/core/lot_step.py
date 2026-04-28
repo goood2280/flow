@@ -21,6 +21,8 @@ import csv
 import datetime as dt
 import logging
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Optional, Iterable
 
@@ -31,6 +33,14 @@ ET_ROOT = "1.RAWDATA_DB_ET"
 DEFAULT_MONITOR_CATEGORY = "Monitor"
 DEFAULT_ANALYSIS_CATEGORY = "Analysis"
 _STEP_META_CACHE: dict = {}
+ET_LOT_CACHE_VERSION = 1
+ET_LOT_CACHE_DEFAULT_MINUTES = 30
+ET_LOT_CACHE_MIN_MINUTES = 30
+ET_LOT_CACHE_MAX_MINUTES = 60
+_ET_LOT_CACHE_THREAD: threading.Thread | None = None
+_ET_LOT_CACHE_STARTED = False
+_ET_LOT_CACHE_STOP = threading.Event()
+_ET_LOT_CACHE_LOCK = threading.Lock()
 
 
 def _get_db_root() -> Path:
@@ -45,6 +55,33 @@ def _get_db_root() -> Path:
 def _settings_file() -> Path:
     from core.paths import PATHS
     return PATHS.data_root / "settings.json"
+
+
+def _et_lot_cache_dir() -> Path:
+    from core.paths import PATHS
+    return PATHS.data_root / "tracker" / "et_lot_cache"
+
+
+def _safe_id(value: str, max_len: int = 80) -> str:
+    try:
+        from core.utils import safe_id
+        return safe_id(value, max_len=max_len).strip() or "product"
+    except Exception:
+        return re.sub(r"[^A-Za-z0-9 _-]+", "", str(value or ""))[:max_len].strip() or "product"
+
+
+def et_lot_cache_refresh_minutes() -> int:
+    try:
+        from core.utils import load_json
+        settings = load_json(_settings_file(), {})
+    except Exception:
+        settings = {}
+    raw = settings.get("tracker_et_match_refresh_minutes", ET_LOT_CACHE_DEFAULT_MINUTES) if isinstance(settings, dict) else ET_LOT_CACHE_DEFAULT_MINUTES
+    try:
+        value = int(raw)
+    except Exception:
+        value = ET_LOT_CACHE_DEFAULT_MINUTES
+    return max(ET_LOT_CACHE_MIN_MINUTES, min(ET_LOT_CACHE_MAX_MINUTES, value))
 
 
 def tracker_db_sources_config() -> dict:
@@ -636,6 +673,344 @@ def _scan_source_files(root_name: str, product: str = "", source: str = "auto"):
             return None
 
 
+def _scan_source_files_all(root_name: str, product: str = "", source: str = "auto"):
+    try:
+        import polars as pl
+    except Exception:
+        return None
+    files = _parquet_files(root_name, product, source=source)
+    if not files:
+        return None
+    try:
+        return pl.scan_parquet([str(f) for f in files], hive_partitioning=True)
+    except Exception:
+        try:
+            return pl.scan_parquet([str(f) for f in files])
+        except Exception:
+            return None
+
+
+def _ci_col(cols: list[str], *candidates: str) -> str:
+    by_lower = {str(c).lower(): c for c in cols}
+    for cand in candidates:
+        hit = by_lower.get(str(cand).lower())
+        if hit:
+            return hit
+    return ""
+
+
+def _cache_product_name(product: str) -> str:
+    raw = str(product or "").strip()
+    if raw.upper().startswith("ML_TABLE_"):
+        raw = raw[len("ML_TABLE_"):].strip()
+    return raw
+
+
+def _et_lot_cache_path(product: str, source_root: str = "") -> Path:
+    name = _safe_id(f"{_cache_product_name(product)}__{source_root or tracker_db_sources_config().get('analysis') or ET_ROOT}")
+    return _et_lot_cache_dir() / f"{name}.parquet"
+
+
+def _et_lot_cache_meta_path(product: str, source_root: str = "") -> Path:
+    return _et_lot_cache_path(product, source_root).with_suffix(".json")
+
+
+def _et_lot_cache_config_key(product: str, source_root: str = "") -> str:
+    import json
+    payload = {
+        "version": ET_LOT_CACHE_VERSION,
+        "product": _cache_product_name(product).upper(),
+        "source_root": str(source_root or tracker_db_sources_config().get("analysis") or ET_ROOT).strip(),
+        "db_root": str(_get_db_root()),
+    }
+    try:
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        return str(payload)
+
+
+def _et_lot_cache_current(product: str, source_root: str = "") -> dict | None:
+    prod = _cache_product_name(product)
+    if not prod:
+        return None
+    root = str(source_root or tracker_db_sources_config().get("analysis") or ET_ROOT).strip() or ET_ROOT
+    fp = _et_lot_cache_path(prod, root)
+    meta_fp = _et_lot_cache_meta_path(prod, root)
+    if not fp.is_file() or not meta_fp.is_file():
+        return None
+    try:
+        from core.utils import load_json
+        meta = load_json(meta_fp, {})
+    except Exception:
+        meta = {}
+    if not isinstance(meta, dict) or meta.get("version") != ET_LOT_CACHE_VERSION:
+        return None
+    if meta.get("config_key") != _et_lot_cache_config_key(prod, root):
+        return None
+    try:
+        import polars as pl
+        lf = pl.scan_parquet(str(fp))
+    except Exception as e:
+        logger.warning("ET lot cache scan failed product=%s source=%s: %s", prod, root, e)
+        return None
+    return {"product": prod, "source_root": root, "path": fp, "meta": meta, "lf": lf}
+
+
+def _sort_cache_values(rows: list[dict]) -> list[dict]:
+    return sorted(rows, key=lambda r: (
+        str(r.get("value") or "").upper(),
+        str(r.get("type") or ""),
+    ))
+
+
+def et_lot_candidates_from_cache(product: str = "", source_root: str = "", prefix: str = "",
+                                 limit: int = 200) -> list[dict]:
+    current = _et_lot_cache_current(product, source_root)
+    if not current:
+        return []
+    try:
+        import polars as pl
+    except Exception:
+        return []
+    try:
+        limit = max(1, min(500, int(limit or 200)))
+    except Exception:
+        limit = 200
+    needle = str(prefix or "").strip().upper()
+    out: list[dict] = []
+    seen = set()
+    lf = current["lf"]
+
+    def add_col(col: str, typ: str) -> None:
+        nonlocal out
+        if len(out) >= limit:
+            return
+        try:
+            names = lf.collect_schema().names()
+        except Exception:
+            return
+        if col not in names:
+            return
+        try:
+            q = (
+                lf.select(pl.col(col).cast(pl.Utf8).alias("value"))
+                .filter(pl.col("value").is_not_null() & (pl.col("value") != ""))
+            )
+            if needle:
+                q = q.filter(pl.col("value").str.to_uppercase().str.starts_with(needle))
+            df = q.unique().head(max(1, limit - len(out))).collect()
+        except Exception:
+            return
+        for row in df.to_dicts():
+            value = str(row.get("value") or "").strip()
+            if not value:
+                continue
+            key = (typ, value.upper())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "value": value,
+                "type": typ,
+                "source_root": current["source_root"],
+                "cache": "et_lot",
+                "cache_built_at": current["meta"].get("built_at", ""),
+            })
+            if len(out) >= limit:
+                return
+
+    add_col("root_lot_id", "root_lot_id")
+    add_col("fab_lot_id", "fab_lot_id")
+    add_col("lot_id", "lot_id")
+    return _sort_cache_values(out)[:limit]
+
+
+def refresh_et_lot_cache(product: str = "", source_root: str = "", force: bool = False) -> dict:
+    """Persist ET root_lot_id/fab_lot_id/lot_id candidates for Tracker Analysis."""
+    try:
+        import polars as pl
+        from core.utils import save_json, load_json
+    except Exception as e:
+        return {"ok": False, "products": [], "error": f"import failed: {e}"}
+
+    root = str(source_root or tracker_db_sources_config().get("analysis") or ET_ROOT).strip() or ET_ROOT
+    raw_prod = _cache_product_name(product)
+    products = [raw_prod] if raw_prod else []
+    if not products:
+        try:
+            products = db_product_candidates(source_root=root, source="et", limit=500)
+        except Exception:
+            products = []
+    products = [_cache_product_name(p) for p in products if _cache_product_name(p)]
+    results: list[dict] = []
+    with _ET_LOT_CACHE_LOCK:
+        _et_lot_cache_dir().mkdir(parents=True, exist_ok=True)
+        for prod in products:
+            fp = _et_lot_cache_path(prod, root)
+            meta_fp = _et_lot_cache_meta_path(prod, root)
+            config_key = _et_lot_cache_config_key(prod, root)
+            result = {"product": prod, "source_root": root, "ok": False, "skipped": False, "row_count": 0}
+            try:
+                old_meta = load_json(meta_fp, {}) if meta_fp.is_file() else {}
+                if not force and fp.is_file() and isinstance(old_meta, dict) and old_meta.get("config_key") == config_key:
+                    age_s = time.time() - float(old_meta.get("built_epoch") or 0)
+                    if age_s < et_lot_cache_refresh_minutes() * 60:
+                        result.update({"ok": True, "skipped": True, "row_count": int(old_meta.get("row_count") or 0)})
+                        results.append(result)
+                        continue
+                lf = _scan_source_files_all(root, prod, source="et")
+                if lf is None:
+                    result["reason"] = "ET source parquet not found"
+                    results.append(result)
+                    continue
+                cols = lf.collect_schema().names()
+                product_col = _ci_col(cols, "product", "PRODUCT")
+                root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+                fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
+                lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+                wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+                ts_col = _ci_col(cols, "time", "TIME", "tkout_time", "TKOUT_TIME", "end_ts", "END_TS", "start_ts", "START_TS", "measure_time", "MEASURE_TIME", "timestamp", "TIMESTAMP")
+                if not (root_col or fab_col or lot_col):
+                    result["reason"] = "root_lot_id/fab_lot_id/lot_id columns missing"
+                    result["columns"] = cols[:80]
+                    results.append(result)
+                    continue
+                aliases = _data_product_values(prod)
+                if aliases and product_col:
+                    lf = lf.filter(pl.col(product_col).cast(pl.Utf8).str.to_uppercase().is_in(sorted(aliases)))
+                exprs = []
+                if root_col:
+                    exprs.append(pl.col(root_col).cast(pl.Utf8, strict=False).alias("root_lot_id"))
+                else:
+                    exprs.append(pl.lit("").alias("root_lot_id"))
+                if fab_col:
+                    exprs.append(pl.col(fab_col).cast(pl.Utf8, strict=False).alias("fab_lot_id"))
+                elif lot_col:
+                    exprs.append(pl.col(lot_col).cast(pl.Utf8, strict=False).alias("fab_lot_id"))
+                else:
+                    exprs.append(pl.lit("").alias("fab_lot_id"))
+                if lot_col:
+                    exprs.append(pl.col(lot_col).cast(pl.Utf8, strict=False).alias("lot_id"))
+                else:
+                    exprs.append(pl.lit("").alias("lot_id"))
+                if wafer_col:
+                    exprs.append(pl.col(wafer_col).cast(pl.Utf8, strict=False).alias("wafer_id"))
+                else:
+                    exprs.append(pl.lit("").alias("wafer_id"))
+                if ts_col:
+                    exprs.append(pl.col(ts_col).cast(pl.Utf8, strict=False).alias("ts"))
+                else:
+                    exprs.append(pl.lit("").alias("ts"))
+                q = lf.select(exprs)
+                q = q.filter(
+                    (pl.col("root_lot_id") != "")
+                    | (pl.col("fab_lot_id") != "")
+                    | (pl.col("lot_id") != "")
+                )
+                q = q.sort("ts", descending=True, nulls_last=True).unique(
+                    subset=["root_lot_id", "fab_lot_id", "lot_id", "wafer_id"],
+                    keep="first",
+                    maintain_order=True,
+                )
+                df = q.collect()
+                tmp = fp.with_suffix(fp.suffix + ".tmp")
+                df.write_parquet(tmp)
+                tmp.replace(fp)
+                meta = {
+                    "version": ET_LOT_CACHE_VERSION,
+                    "product": prod,
+                    "source_root": root,
+                    "config_key": config_key,
+                    "built_at": dt.datetime.now().isoformat(timespec="seconds"),
+                    "built_epoch": time.time(),
+                    "row_count": int(df.height),
+                    "columns": {
+                        "product": product_col,
+                        "root_lot_id": root_col,
+                        "fab_lot_id": fab_col,
+                        "lot_id": lot_col,
+                        "wafer_id": wafer_col,
+                        "ts": ts_col,
+                    },
+                }
+                save_json(meta_fp, meta)
+                result.update({"ok": True, "row_count": int(df.height), "columns": meta["columns"]})
+            except Exception as e:
+                logger.warning("ET lot cache build failed product=%s source=%s: %s", prod, root, e, exc_info=True)
+                result["reason"] = f"{type(e).__name__}: {e}"
+            results.append(result)
+    return {"ok": any(r.get("ok") for r in results), "products": results, "interval_minutes": et_lot_cache_refresh_minutes(), "source_root": root}
+
+
+def et_lot_cache_status(product: str = "", source_root: str = "") -> dict:
+    root = str(source_root or tracker_db_sources_config().get("analysis") or ET_ROOT).strip() or ET_ROOT
+    prod = _cache_product_name(product)
+    rows = []
+    if prod:
+        current = _et_lot_cache_current(prod, root)
+        if current:
+            meta = current["meta"]
+            rows.append({
+                "product": prod,
+                "source_root": root,
+                "path": str(current["path"]),
+                "built_at": meta.get("built_at", ""),
+                "row_count": int(meta.get("row_count") or 0),
+            })
+    else:
+        cache_dir = _et_lot_cache_dir()
+        try:
+            metas = sorted(cache_dir.glob("*.json"))
+        except Exception:
+            metas = []
+        try:
+            from core.utils import load_json
+        except Exception:
+            load_json = None
+        for fp in metas[:500]:
+            meta = load_json(fp, {}) if load_json else {}
+            if not isinstance(meta, dict) or meta.get("version") != ET_LOT_CACHE_VERSION:
+                continue
+            rows.append({
+                "product": meta.get("product", ""),
+                "source_root": meta.get("source_root", ""),
+                "path": str(fp.with_suffix(".parquet")),
+                "built_at": meta.get("built_at", ""),
+                "row_count": int(meta.get("row_count") or 0),
+            })
+    return {
+        "ok": True,
+        "interval_minutes": et_lot_cache_refresh_minutes(),
+        "source_root": root,
+        "products": rows,
+    }
+
+
+def _et_lot_cache_loop() -> None:
+    while not _ET_LOT_CACHE_STOP.is_set():
+        try:
+            refresh_et_lot_cache(force=False)
+        except Exception as e:
+            logger.warning("ET lot cache scheduler tick failed: %s", e)
+        wait_s = max(60.0, et_lot_cache_refresh_minutes() * 60.0)
+        while wait_s > 0 and not _ET_LOT_CACHE_STOP.is_set():
+            step = min(wait_s, 60.0)
+            _ET_LOT_CACHE_STOP.wait(step)
+            wait_s -= step
+
+
+def start_et_lot_cache_scheduler() -> bool:
+    global _ET_LOT_CACHE_THREAD, _ET_LOT_CACHE_STARTED
+    if _ET_LOT_CACHE_STARTED:
+        return False
+    _ET_LOT_CACHE_STOP.clear()
+    _ET_LOT_CACHE_THREAD = threading.Thread(target=_et_lot_cache_loop, name="tracker-et-lot-cache", daemon=True)
+    _ET_LOT_CACHE_THREAD.start()
+    _ET_LOT_CACHE_STARTED = True
+    logger.info("Tracker ET lot cache scheduler started (interval=%sm)", et_lot_cache_refresh_minutes())
+    return True
+
+
 def db_product_candidates(source_root: str = "", source: str = "auto", prefix: str = "",
                           limit: int = 500) -> list[str]:
     """Return product candidates visible under the selected Tracker DB root."""
@@ -692,6 +1067,15 @@ def db_product_candidates(source_root: str = "", source: str = "auto", prefix: s
 def lot_id_candidates(product: str = "", source_root: str = "", source: str = "auto",
                       prefix: str = "", limit: int = 200) -> list[dict]:
     """Return root_lot_id/fab_lot_id/lot_id candidates for Tracker row entry."""
+    if _source_kind(source, source_root) == "et":
+        cached = et_lot_candidates_from_cache(
+            product=product,
+            source_root=source_root or tracker_db_sources_config().get("analysis") or ET_ROOT,
+            prefix=prefix,
+            limit=limit,
+        )
+        if cached:
+            return cached
     try:
         import polars as pl
     except Exception:

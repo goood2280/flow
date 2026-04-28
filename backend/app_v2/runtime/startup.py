@@ -12,6 +12,7 @@ def start_background_services(logger) -> None:
     starters = (
         ("backup scheduler", "core.backup", "start_scheduler"),
         ("tracker scheduler", "core.tracker_scheduler", "start_scheduler"),
+        ("tracker ET lot cache scheduler", "core.lot_step", "start_et_lot_cache_scheduler"),
         ("valve watch scheduler", "core.valve_watch", "start_scheduler"),
         ("product dedup scheduler", "scheduler", "start_scheduler"),
         ("splittable match cache scheduler", "routers.splittable", "start_match_cache_scheduler"),

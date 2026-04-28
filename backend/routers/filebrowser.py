@@ -47,6 +47,10 @@ router = APIRouter(prefix="/api/filebrowser", tags=["filebrowser"])
 # reads `PATHS.db_root` / `PATHS.base_root` at request time so env overrides
 # (FLOW_*) and admin_settings.json data_roots land without reload.
 DL_LOG = PATHS.download_log
+MAX_CSV_DOWNLOAD_BYTES = 100_000_000
+DEFAULT_CSV_DOWNLOAD_MAX_ROWS = 100_000
+MAX_CSV_DOWNLOAD_MAX_ROWS = 500_000
+MAX_CSV_DOWNLOAD_AUTO_COLUMNS = 200
 
 # Files scope policy: keep only the operational artifacts engineers actually
 # maintain for ML_TABLE / SplitTable matching.  Physical files are not deleted;
@@ -538,6 +542,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         resp = _run_view_lazy(
             lf, sql, select_cols, rows,
             page=page, page_size=page_size, cached_meta=cached_meta,
+            preview_cols=cols,
         )
         resp["all_columns"] = all_cols_full
         resp["total_cols"] = len(all_cols_full)
@@ -636,8 +641,24 @@ def _page_args(page: int = 0, page_size: int = 200) -> tuple[int, int, int]:
     return page, page_size, page * page_size
 
 
+def _preview_cols_limit(raw: int | None = None) -> int:
+    try:
+        return max(1, min(200, int(raw or 20)))
+    except Exception:
+        return 20
+
+
+def _selected_columns(all_columns: list[str], select_cols: str, preview_cols: int | None = None) -> tuple[list[str], bool]:
+    if select_cols and select_cols.strip():
+        allowed = set(all_columns)
+        selected = [c.strip() for c in select_cols.split(",") if c.strip() in allowed]
+        return selected, False
+    limit = _preview_cols_limit(preview_cols)
+    return all_columns[:limit], len(all_columns) > limit
+
+
 def _run_view(df, sql: str, select_cols: str, rows: int,
-              page: int = 0, page_size: int | None = None):
+              page: int = 0, page_size: int | None = None, preview_cols: int | None = None):
     """Apply select + sql + head; return standard response dict. Legacy DataFrame path."""
     all_columns = list(df.columns)
     schema = {n: str(d) for n, d in df.schema.items()}
@@ -645,9 +666,7 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
 
-    sel = []
-    if select_cols and select_cols.strip():
-        sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(all_columns)]
+    sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
     if sql and sql.strip():
         df = apply_sql_like(df, sql)
         total = df.height
@@ -662,11 +681,14 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
         "data": serialize_rows(show.to_dicts()), "showing": len(show),
         "page": page, "page_size": page_size,
         "has_more": offset + len(show) < total,
+        "preview_cols": len(show.columns),
+        "truncated_cols": truncated_cols,
     }
 
 
 def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = False,
-                   page: int = 0, page_size: int | None = None, cached_meta: dict | None = None):
+                   page: int = 0, page_size: int | None = None, cached_meta: dict | None = None,
+                   preview_cols: int | None = None):
     """v8.4.3 OOM-aware: lazy 스캔 + projection pushdown + head + (필요 시) SQL.
 
     - 컬럼 선택 / head 은 lazy 에서 처리 → parquet reader 에서 필요한 컬럼·행만 읽음
@@ -678,6 +700,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
     schema = {n: str(schema_obj[n]) for n in all_columns}
+    preview_cols = _preview_cols_limit(preview_cols)
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
 
@@ -686,20 +709,20 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
         total_rows = int((cached_meta or {}).get("row_count") or 0)
         return {
             "total_rows": total_rows, "total_cols": len(all_columns),
-            "columns": all_columns[:min(len(all_columns), 10)], "all_columns": all_columns,
+            "columns": all_columns[:preview_cols], "all_columns": all_columns,
             "dtypes": schema, "showing_cols": [],
             "selected_cols": select_cols.strip() or None,
             "data": [], "showing": 0, "meta_only": True,
             "page": page, "page_size": page_size, "has_more": False,
             "meta_cached": bool(cached_meta),
+            "preview_cols": min(len(all_columns), preview_cols),
+            "truncated_cols": len(all_columns) > preview_cols,
         }
 
     # Keep SQL filtering on the full source schema.  Projection is applied only
     # after the filter, so users can filter by a column that is not selected for
     # display/download.
-    sel = []
-    if select_cols and select_cols.strip():
-        sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(all_columns)]
+    sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
 
     if sql and sql.strip():
         # Prefer lazy SQL so filtering/pagination stays in the parquet scanner.
@@ -739,12 +762,55 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
         "data": serialize_rows(show.to_dicts()), "showing": len(show),
         "page": page, "page_size": page_size, "has_more": has_more,
         "meta_cached": bool(cached_meta),
+        "preview_cols": len(show.columns),
+        "truncated_cols": truncated_cols,
     }
+
+
+def _csv_download_max_rows(raw: int | None = None) -> int:
+    try:
+        return max(1, min(MAX_CSV_DOWNLOAD_MAX_ROWS, int(raw or DEFAULT_CSV_DOWNLOAD_MAX_ROWS)))
+    except Exception:
+        return DEFAULT_CSV_DOWNLOAD_MAX_ROWS
+
+
+def _download_lazy_csv(lf: pl.LazyFrame, sql: str, select_cols: str, max_rows: int) -> tuple[pl.DataFrame, bytes]:
+    schema_obj = lf.collect_schema()
+    all_columns = list(schema_obj.names())
+    requested = [c.strip() for c in str(select_cols or "").split(",") if c.strip()]
+    selected = [c for c in requested if c in set(all_columns)]
+    if not selected and len(all_columns) > MAX_CSV_DOWNLOAD_AUTO_COLUMNS:
+        raise HTTPException(
+            400,
+            f"CSV 대상이 {len(all_columns)}열입니다. 컬럼 탭에서 필요한 열을 선택한 뒤 다운로드하세요.",
+        )
+    if sql and sql.strip():
+        try:
+            lf = lf.filter(pl.sql_expr(sql.strip()))
+        except Exception as e:
+            raise HTTPException(400, f"CSV download SQL must be pushdown-compatible: {e}")
+    if selected:
+        lf = lf.select(selected)
+    try:
+        from core.parquet_perf import collect_streaming
+        df = collect_streaming(lf.head(max_rows + 1))
+    except Exception:
+        df = lf.head(max_rows + 1).collect()
+    if df.height > max_rows:
+        raise HTTPException(
+            400,
+            f"CSV 다운로드는 최대 {max_rows:,}행까지 허용됩니다. SQL 필터를 추가하거나 max_rows를 조정하세요.",
+        )
+    csv_bytes = df.write_csv().encode("utf-8")
+    if len(csv_bytes) > MAX_CSV_DOWNLOAD_BYTES:
+        raise HTTPException(400, "CSV too large (>100MB). 컬럼/SQL 필터를 줄여주세요.")
+    return df, csv_bytes
 
 
 @router.get("/view")
 def view_product(root: str = Query(...), product: str = Query(...),
                  sql: str = Query(""), rows: int = Query(200),
+                 cols: int = Query(20, ge=1, le=200),
                  select_cols: str = Query(""),
                  meta_only: bool = Query(False),
                  all_partitions: bool = Query(False),
@@ -768,7 +834,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
         )
         if lf is not None:
             return _run_view_lazy(lf, sql, select_cols, rows, meta_only=meta_only,
-                                  page=page, page_size=page_size)
+                                  page=page, page_size=page_size, preview_cols=cols)
         # Fallback — legacy DF 경로
         df = read_source(root=root, product=product)
         if meta_only:
@@ -781,7 +847,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 "data": [], "showing": 0, "meta_only": True,
                 "page": page, "page_size": page_size, "has_more": False,
             }
-        return _run_view(df, sql, select_cols, rows, page=page, page_size=page_size)
+        return _run_view(df, sql, select_cols, rows, page=page, page_size=page_size, preview_cols=cols)
     except HTTPException:
         raise
     except Exception as e:
@@ -930,6 +996,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
         resp = _run_view_lazy(
             lf, sql, select_cols, rows,
             page=page, page_size=page_size, cached_meta=cached_meta,
+            preview_cols=cols,
         )
         resp["all_columns"] = all_cols_full
         resp["total_cols"] = len(all_cols_full)
@@ -945,7 +1012,8 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
 def download_csv(request: Request, root: str = Query(""), product: str = Query(""),
                  file: str = Query(""), sql: str = Query(""),
                  select_cols: str = Query(""), username: str = Query(""),
-                 apply_reformatter: bool = Query(True)):
+                 apply_reformatter: bool = Query(True),
+                 max_rows: int = Query(DEFAULT_CSV_DOWNLOAD_MAX_ROWS, ge=1, le=MAX_CSV_DOWNLOAD_MAX_ROWS)):
     """v7.2: If apply_reformatter=True and a per-product rules file exists,
     derived indices (VTH_IDX, CD_RANGE, poly2 window width, etc.) are appended
     to the download — matching what engineers actually need, not raw VALUE.
@@ -954,6 +1022,8 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
     me = current_user(request)
     username = me.get("username") or "anonymous"
     try:
+        max_rows = _csv_download_max_rows(max_rows)
+        lazy_lf = None
         if file:
             rel = Path(file)
             if rel.parts and rel.parts[0] == "reformatter":
@@ -1000,17 +1070,41 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                         break
                 if fp is None:
                     raise HTTPException(404)
-                df = read_one_file(fp)
-                if df is None:
+                lazy_lf = scan_one_file(fp)
+                if lazy_lf is None:
                     raise HTTPException(400, f"Cannot read: {file}")
                 label = file
         elif root and product:
-            df = read_source(root=root, product=product, max_files=None if sql.strip() else 40)
             label = f"{root}/{product}"
+            reformatter_rules = []
+            if apply_reformatter and product:
+                try:
+                    from core.reformatter import load_rules
+                    reformatter_rules = load_rules(PATHS.data_root / "reformatter", product)
+                except Exception:
+                    reformatter_rules = []
+            if reformatter_rules:
+                df = read_source(root=root, product=product, max_files=None if sql.strip() else 40)
+            else:
+                lazy_lf = lazy_read_source(
+                    root=root,
+                    product=product,
+                    max_files=None if sql.strip() else 40,
+                    recent_days=None if sql.strip() else 30,
+                )
+                if lazy_lf is None:
+                    df = read_source(root=root, product=product, max_files=None if sql.strip() else 40)
         else:
             raise HTTPException(400, "Specify file or root+product")
 
-        # v7.2: Apply reformatter rules BEFORE select/sql so derived cols can be selected/filtered
+        if lazy_lf is not None:
+            df, csv_bytes = _download_lazy_csv(lazy_lf, sql, select_cols, max_rows)
+            _log_dl(username, label, sql, df.height, df.width,
+                    select_cols=select_cols, size_bytes=len(csv_bytes))
+            return csv_response(csv_bytes, label)
+
+        # v7.2: Apply reformatter rules BEFORE select/sql so derived cols can be selected/filtered.
+        # This dataframe path is retained for reformatter-derived columns and small config files.
         rf_applied = []
         if apply_reformatter and product:
             try:
@@ -1031,10 +1125,20 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(df.columns)]
             if sel:
                 df = df.select(sel)
+        if df.height > max_rows:
+            raise HTTPException(
+                400,
+                f"CSV 다운로드는 최대 {max_rows:,}행까지 허용됩니다. SQL 필터를 추가하거나 max_rows를 조정하세요.",
+            )
+        if not select_cols.strip() and df.width > MAX_CSV_DOWNLOAD_AUTO_COLUMNS:
+            raise HTTPException(
+                400,
+                f"CSV 대상이 {df.width}열입니다. 컬럼 탭에서 필요한 열을 선택한 뒤 다운로드하세요.",
+            )
 
         csv_bytes = df.write_csv().encode("utf-8")
-        if len(csv_bytes) > 100_000_000:
-            raise HTTPException(400, "CSV too large (>100MB)")
+        if len(csv_bytes) > MAX_CSV_DOWNLOAD_BYTES:
+            raise HTTPException(400, "CSV too large (>100MB). 컬럼/SQL 필터를 줄여주세요.")
         _log_dl(username, label, sql, df.height, df.width,
                 select_cols=select_cols, size_bytes=len(csv_bytes))
         return csv_response(csv_bytes, label)

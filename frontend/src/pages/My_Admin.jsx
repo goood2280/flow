@@ -117,6 +117,7 @@ export default function My_Admin({user}){
   const[tab,setTab]=useState("notifs");const[dlHistory,setDlHistory]=useState([]);
   const[sys,setSys]=useState({});const[resLog,setResLog]=useState([]);const[farmStatus,setFarmStatus]=useState({});
   const[resWindow,setResWindow]=useState("24h");
+  const[loadBusy,setLoadBusy]=useState(false);
   const[qaReport,setQaReport]=useState({runs:[]});const[qaBusy,setQaBusy]=useState(false);const[qaMsg,setQaMsg]=useState("");
   const[etDlHistory,setEtDlHistory]=useState([]);
   const[editPerm,setEditPerm]=useState(null);const[permTabs,setPermTabs]=useState([]);
@@ -176,6 +177,25 @@ export default function My_Admin({user}){
   const loadSys=()=>{sf("/api/monitor/system").then(setSys).catch(()=>{});
     sf(`/api/monitor/resource-log?limit=${RESOURCE_LOG_LIMIT}`).then(d=>setResLog(d.logs||[])).catch(()=>{});
     sf("/api/monitor/farm-status").then(setFarmStatus).catch(()=>{});};
+  const startPaverLoad=()=>{
+    if(!isAdmin||loadBusy)return;
+    setLoadBusy(true);
+    sf("/api/monitor/load/start",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({duration_sec:180,target_pct:85,memory:true})
+    }).then(d=>{setFarmStatus(d.state||{});loadSys();})
+      .catch(e=>alert(e.message||"부하 시작 실패"))
+      .finally(()=>setLoadBusy(false));
+  };
+  const stopPaverLoad=()=>{
+    if(!isAdmin||loadBusy)return;
+    setLoadBusy(true);
+    sf("/api/monitor/load/stop",{method:"POST"})
+      .then(d=>{setFarmStatus(d.state||{});loadSys();})
+      .catch(e=>alert(e.message||"부하 중지 실패"))
+      .finally(()=>setLoadBusy(false));
+  };
   const action=(url,body)=>sf(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(()=>setTimeout(load,500));
   const savePerm=()=>{if(!editPerm)return;sf("/api/admin/set-tabs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm,tabs:permTabs})}).then(()=>{setEditPerm(null);load();setTab("perms");});};
   const submitBulkUsers=()=>{
@@ -536,8 +556,20 @@ export default function My_Admin({user}){
         {farmStatus.farming&&<div style={{background:WARN.bg,border:`1px solid ${WARN.fg}`,borderRadius:10,padding:16,marginBottom:16,display:"flex",alignItems:"center",gap:16}}>
           <div style={{animation:"fabFarm 1s ease-in-out infinite",fontSize:32}}>🧑‍🌾</div>
           <div><div style={{fontSize:14,fontWeight:700,color:WARN.fg}}>FAB-i 가 farming 중...</div>
-            <div style={{fontSize:12,color:"var(--text-secondary)"}}>리소스를 활성 상태로 유지합니다</div></div>
+            <div style={{fontSize:12,color:"var(--text-secondary)"}}>리소스를 활성 상태로 유지합니다 · {farmStatus.load_mode||"auto"} · MEM hold {farmStatus.load_memory_allocated_mb||0}MB</div></div>
         </div>}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,marginBottom:12,padding:"10px 12px",border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-secondary)"}}>
+          <div>
+            <div style={{fontSize:12,fontWeight:800,color:"var(--text-primary)"}}>보도블럭 갈기</div>
+            <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:2}}>Admin 수동 부하 테스트. 목표 85%, 최대 3분, 사용자 활동 감지 시 자동 중단됩니다.</div>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
+            <Button variant="subtle" onClick={loadSys}>새로고침</Button>
+            {farmStatus.load_active||farmStatus.farming
+              ? <Button variant="danger" disabled={loadBusy} onClick={stopPaverLoad}>중지</Button>
+              : <Button variant="primary" disabled={loadBusy} onClick={startPaverLoad}>보도블럭 갈기</Button>}
+          </div>
+        </div>
         {sys && sys.psutil === false && <div style={{marginBottom:12,padding:"8px 12px",border:`1px solid ${WARN.fg}`,background:WARN.bg,borderRadius:6,color:WARN.fg,fontSize:11}}>
           ⚠ psutil 미설치 (폴백 모드: Linux /proc/statvfs). 정확한 측정을 원하면 서버에 <code>pip install psutil</code>.
         </div>}
@@ -1032,7 +1064,9 @@ function LlmCfgPanel(){
     provider,
     auth_mode:provider==="playground"?"dep_ticket":(c.auth_mode==="dep_ticket"?"bearer":(c.auth_mode||"bearer")),
     system_name:provider==="playground"?(c.system_name||"playground"):c.system_name,
-    format:provider==="playground"?"openai":c.format,
+    format:provider==="playground"||provider==="openai"||provider==="openai_compatible"?"openai":c.format,
+    api_url:provider==="openai"&&!c.api_url?"https://api.openai.com/v1":c.api_url,
+    model:provider==="openai"&&!c.model?"gpt-5-nano":c.model,
   }));
   const save=()=>{
     setBusy(true);setMsg("");
@@ -1111,19 +1145,21 @@ function LlmCfgPanel(){
       <div>
         <div style={L}>API Profile</div>
         <select value={cfg.provider||"generic"} onChange={e=>setProvider(e.target.value)} style={I}>
-          <option value="generic">OpenAI 호환 / Generic</option>
+          <option value="openai">OpenAI API</option>
+          <option value="openai_compatible">OpenAI 호환 API</option>
+          <option value="generic">Custom Generic</option>
           <option value="playground">사내 Playground API</option>
         </select>
       </div>
       <div>
         <div style={L}>API URL</div>
-        <input value={cfg.api_url} onChange={e=>patch({api_url:e.target.value})} placeholder="https://llm.internal/v1/chat/completions" style={I}/>
+        <input value={cfg.api_url} onChange={e=>patch({api_url:e.target.value})} placeholder={cfg.provider==="openai"?"https://api.openai.com/v1":"https://llm.internal/v1/chat/completions"} style={I}/>
       </div>
     </div>
     <div style={{display:"grid",gridTemplateColumns:isPlayground?"2fr 1fr 1fr":"2fr 1fr 1fr 1fr",gap:10}}>
       <div>
         <div style={L}>Model</div>
-        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder="internal-model" style={I}/>
+        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder={cfg.provider==="openai"?"gpt-5-nano":"internal-model"} style={I}/>
       </div>
       {!isPlayground&&<div>
         <div style={L}>Mode</div>
@@ -1188,6 +1224,9 @@ function DataRootsPanel(){
   const[eff,setEff]=useState({db_root:"",sources:{}});
   const[form,setForm]=useState({db_root:""});
   const[splitRefresh,setSplitRefresh]=useState(30);
+  const[etRefresh,setEtRefresh]=useState(30);
+  const[cacheBusy,setCacheBusy]=useState("");
+  const[cacheStatus,setCacheStatus]=useState({fab:[],et:[]});
   const[backup,setBackup]=useState({path:"",interval_hours:24,keep:5,enabled:true,last:{}});
   const[backupList,setBackupList]=useState([]);
   const[bkBusy,setBkBusy]=useState(false);
@@ -1198,8 +1237,13 @@ function DataRootsPanel(){
       const dr=d.data_roots||{db_root:"",sources:{}};
       setEff(dr);
       setSplitRefresh(Math.max(30,Math.min(60,Number(d.splittable_match_refresh_minutes)||30)));
+      setEtRefresh(Math.max(30,Math.min(60,Number(d.tracker_et_match_refresh_minutes)||30)));
       if(d.backup)setBackup(prev=>({...prev,...d.backup}));
     }).catch(e=>setMsg("로드 오류: "+e.message));
+    Promise.all([
+      sf("/api/splittable/match-cache/status").catch(()=>({products:[]})),
+      sf("/api/tracker/et-lot-cache/status").catch(()=>({products:[]})),
+    ]).then(([fab,et])=>setCacheStatus({fab:fab.products||[],et:et.products||[]})).catch(()=>{});
     sf("/api/admin/backup/status").then(d=>{
       if(d.settings)setBackup(b=>({...b,...d.settings}));
       setBackupList(d.backups||[]);
@@ -1242,6 +1286,7 @@ function DataRootsPanel(){
           dashboard_refresh_minutes: cur.dashboard_refresh_minutes??10,
           dashboard_bg_refresh_minutes: cur.dashboard_bg_refresh_minutes??10,
           splittable_match_refresh_minutes: Number(splitRefresh)||30,
+          tracker_et_match_refresh_minutes: Number(etRefresh)||30,
           data_roots: {db_root:form.db_root||""},
         })});
     }).then(()=>{setMsg("저장되었습니다. 새 요청부터 적용됩니다.");setForm({db_root:""});reload();})
@@ -1269,6 +1314,14 @@ function DataRootsPanel(){
       <div style={H} data-dr-effective={key}>현재 effective: {currentEff} <span style={{opacity:0.7}}>{hint}</span></div>
     </div>);
   };
+  const runCacheRefresh=(kind)=>{
+    const url=kind==="et"?"/api/tracker/et-lot-cache/refresh":"/api/splittable/match-cache/refresh";
+    setCacheBusy(kind);setMsg("");
+    sf(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({force:true})})
+      .then(r=>{setMsg(`${kind==="et"?"ET":"FAB"} 캐시 스캔 완료: ${(r.products||[]).filter(x=>x.ok).length}/${(r.products||[]).length}`);reload();})
+      .catch(e=>setMsg("캐시 스캔 오류: "+e.message))
+      .finally(()=>setCacheBusy(""));
+  };
   return(<div data-admin-panel="data_roots" style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:760}}>
     <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>📂 데이터 루트 (소프트랜딩)</div>
     <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:16,lineHeight:1.5}}>
@@ -1292,6 +1345,32 @@ function DataRootsPanel(){
         onChange={e=>setSplitRefresh(Math.max(30,Math.min(60,Number(e.target.value)||30)))}
         style={{...I,maxWidth:140}}/>
       <div style={H}>30~60분 범위. 저장 후 백그라운드 스케줄러의 다음 tick부터 적용됩니다.</div>
+      <div style={{display:"flex",gap:8,alignItems:"center",marginTop:10,flexWrap:"wrap"}}>
+        <button onClick={()=>runCacheRefresh("fab")} disabled={cacheBusy==="fab"}
+          style={{padding:"6px 12px",borderRadius:6,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:11,fontWeight:700,cursor:cacheBusy==="fab"?"wait":"pointer"}}>
+          {cacheBusy==="fab"?"FAB 스캔 중...":"FAB 수동 스캔"}
+        </button>
+        <span style={{fontSize:10,color:"var(--text-secondary)"}}>캐시 {cacheStatus.fab?.length||0}개 제품</span>
+      </div>
+    </div>
+    <div style={{marginTop:18,paddingTop:16,borderTop:"1px solid var(--border)"}}>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>🧪 Tracker Analysis ET 캐시</div>
+      <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.5}}>
+        ET DB 를 주기적으로 스캔해 root_lot_id / fab_lot_id / lot_id 후보를 미리 저장합니다.
+        이슈추적 Analysis 의 lot 선택 목록은 이 캐시를 먼저 사용합니다.
+      </div>
+      <div style={L}>갱신 주기 (분)</div>
+      <input type="number" min={30} max={60} value={etRefresh}
+        onChange={e=>setEtRefresh(Math.max(30,Math.min(60,Number(e.target.value)||30)))}
+        style={{...I,maxWidth:140}}/>
+      <div style={H}>30~60분 범위. 저장 후 ET 캐시 스케줄러의 다음 tick부터 적용됩니다.</div>
+      <div style={{display:"flex",gap:8,alignItems:"center",marginTop:10,flexWrap:"wrap"}}>
+        <button onClick={()=>runCacheRefresh("et")} disabled={cacheBusy==="et"}
+          style={{padding:"6px 12px",borderRadius:6,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:11,fontWeight:700,cursor:cacheBusy==="et"?"wait":"pointer"}}>
+          {cacheBusy==="et"?"ET 스캔 중...":"ET 수동 스캔"}
+        </button>
+        <span style={{fontSize:10,color:"var(--text-secondary)"}}>캐시 {cacheStatus.et?.length||0}개 제품</span>
+      </div>
     </div>
     <div style={{display:"flex",gap:8,marginTop:16,alignItems:"center"}}>
       <button data-dr-btn="save" onClick={save} disabled={busy}
