@@ -864,6 +864,21 @@ def _ensure_critical_deps() -> None:
     _pip_install(missing, timeout=180)
 
 
+def _seed_semiconductor_flow_data() -> None:
+    """Install default RCA seed knowledge only when the runtime copy is absent."""
+    src = ROOT / 'backend' / 'core' / 'semiconductor_rca_seed_knowledge.json'
+    if not src.is_file():
+        return
+    flow_root = Path(os.environ.get('FLOW_DATA_ROOT') or (ROOT / 'data' / 'flow-data')).resolve()
+    dst = flow_root / 'semiconductor' / 'seed_knowledge' / 'semiconductor_rca_seed_knowledge.json'
+    if dst.exists():
+        print(f"[seed] semiconductor RCA seed preserved: {dst}")
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(src.read_bytes())
+    print(f"[seed] semiconductor RCA seed installed: {dst}")
+
+
 def extract() -> int:
     # v8.8.17: 추출 직전 data_root 스냅샷 (~/.flow_backups/v<ver>-<stamp>/).
     # 스냅샷 실패/없음이면 snap=None 으로 계속 진행 — 신규 설치는 보호할 게 없음.
@@ -902,6 +917,10 @@ def extract() -> int:
         _verify_and_restore(snap)
     except Exception as e:
         print(f"[verify] WARN failed: {e}")
+    try:
+        _seed_semiconductor_flow_data()
+    except Exception as e:
+        print(f"[seed] WARN semiconductor RCA seed install failed: {e}")
     print(f"\\n[extract] flow v{VERSION} - {len(FILES)} files processed -> {ROOT}")
     print(f"[extract] user data preservation: snapshot @ ~/.flow_backups/ + "
           f"5-layer _write guard + post-extract SHA-256 verify/restore.")

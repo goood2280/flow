@@ -55,6 +55,44 @@ def test_fab_progress_target_eta_uses_last_three_same_product_lots(monkeypatch):
     assert lot["target_eta"]["avg_hours"] == 40
 
 
+def test_fab_progress_uses_reference_step_recent_lots_for_speed_basis(monkeypatch):
+    base = datetime.datetime(2026, 4, 20, 8, 0, 0)
+    rows = []
+    for i, hours in enumerate([10, 20, 30, 40], start=1):
+        lot = f"L{i:03d}"
+        start = base + datetime.timedelta(days=i)
+        rows.extend([
+            {"product": "PRODX", "root_lot_id": lot, "fab_lot_id": lot, "step_id": "S10", "time": start.isoformat()},
+            {"product": "PRODX", "root_lot_id": lot, "fab_lot_id": lot, "step_id": "S20", "time": (start + datetime.timedelta(hours=hours)).isoformat()},
+            {"product": "PRODX", "root_lot_id": lot, "fab_lot_id": lot, "step_id": "AA200000", "time": (start + datetime.timedelta(hours=hours + i)).isoformat()},
+        ])
+    rows.append({
+        "product": "PRODX",
+        "root_lot_id": "L999",
+        "fab_lot_id": "L999",
+        "step_id": "S10",
+        "time": (base + datetime.timedelta(days=9)).isoformat(),
+    })
+    monkeypatch.setattr(dashboard, "_scan_dashboard_fab_long", lambda _product: pl.DataFrame(rows).lazy())
+
+    data = dashboard._compute_fab_progress(
+        product="PRODX",
+        days=999,
+        limit=10,
+        target_step_id="S20",
+        lot_query="L999",
+        sample_lots=2,
+        reference_step_id="AA200000",
+    )
+
+    compare = data["step_speed_compare"]
+    assert compare["reference_step_id"] == "AA200000"
+    assert [row["root_lot_id"] for row in compare["sample_lots"]] == ["L004", "L003"]
+    assert compare["sample_pool"] == 4
+    assert compare["target_eta"]["status"] == "estimated"
+    assert compare["target_eta"]["avg_hours"] == 35
+
+
 def test_dashboard_pushdown_filters_apply_before_collect():
     now = datetime.datetime.now()
     lf = pl.DataFrame([

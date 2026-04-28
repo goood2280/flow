@@ -2,12 +2,12 @@ import { useState, useEffect, useRef, Component } from "react";
 import Loading from "../components/Loading";
 import { PageHeader, TabStrip, Button, Banner, Pill, statusPalette, chartPalette } from "../components/UXKit";
 import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
-import { sf, dl, userLabel, userMatches } from "../lib/api";
+import { sf, dl, postJson, userLabel, userMatches } from "../lib/api";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
 //   순서 = TABS(config.js) — home/admin 제외: filebrowser → dashboard → splittable → tracker →
 //   inform → meeting → calendar → tablemap → ml → devguide(맨 뒤).
-const ALL_TABS=["filebrowser","dashboard","splittable","ettime","waferlayout","tracker","inform","meeting","calendar","tablemap","ml","devguide"];
+const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","ettime","waferlayout","tracker","inform","meeting","calendar","tablemap","ml","devguide"];
 // v8.7.5: u.tabs 는 string 이지만 legacy json 에서 array 로 저장된 기록이 있을 수 있어
 // "r.split is not a function" 방지를 위해 정규화 헬퍼를 둔다.
 function _tabsToArray(v){
@@ -220,7 +220,7 @@ export default function My_Admin({user}){
   //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
   //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
   //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["inform_cfg","인폼 설정"],["mail_cfg","메일 API"],["llm_cfg","LLM"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["inform_cfg","인폼 설정"],["mail_cfg","메일 API"],["llm_cfg","LLM"],["flowi_quality","Flow-i 품질"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -623,6 +623,9 @@ export default function My_Admin({user}){
       {/* v9.0.4: Flowi LLM admin-managed token */}
       {tab==="llm_cfg"&&isAdmin&&<LlmCfgPanel/>}
 
+      {/* v9.0.5: Flow-i structured feedback review loop */}
+      {tab==="flowi_quality"&&isAdmin&&<FlowiQualityPanel/>}
+
       {/* v8.8.14: Per-page admin delegation (admin only) */}
       {tab==="page_admins"&&isAdmin&&<PageAdminsPanel users={users}/>}
 
@@ -887,6 +890,147 @@ function ActivityDashboardPanel(){
           <thead><tr>{["시각","유저","action","tab","detail"].map(h=><th key={h} style={{textAlign:"left",padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)"}}>{h}</th>)}</tr></thead>
           <tbody>{_arr(summary?.recent).map((r,i)=>(<tr key={i}><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.timestamp||r.time||"").replace("T"," ").slice(0,16)}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontWeight:600}}>{r.username||r.actor}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{r.action}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{r.tab||""}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",maxWidth:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.detail}>{r.detail}</td></tr>))}</tbody>
         </table>
+      </div>
+    </div>
+  </div>);
+}
+
+// ── v9.0.5: Flow-i structured feedback review loop ──
+function FlowiQualityPanel(){
+  const[days,setDays]=useState(30);
+  const[data,setData]=useState(null);
+  const[err,setErr]=useState("");
+  const[msg,setMsg]=useState("");
+  const[promoting,setPromoting]=useState("");
+  const reload=()=>{
+    setErr("");
+    sf(`/api/llm/flowi/feedback/summary?days=${days}&limit=300`).then(setData).catch(e=>setErr("로드 오류: "+e.message));
+  };
+  useEffect(reload,[days]);
+  const taxonomy=Object.fromEntries(_arr(data?.taxonomy).map(t=>[t.key,t]));
+  const labelTag=(key)=>taxonomy[key]?.label||key;
+  const toneFor=(rating,tags)=>{
+    if(rating==="up"&&(!tags||tags.every(t=>t==="correct")))return "ok";
+    if(_arr(tags).some(t=>["wrong_data_source","permission_risk","hallucination","key_matching_error","aggregation_error"].includes(t)))return "bad";
+    return rating==="down"?"warn":"neutral";
+  };
+  const promote=(rec)=>{
+    if(!rec?.id)return;
+    setPromoting(rec.id);setMsg("");
+    postJson("/api/llm/flowi/feedback/promote",{
+      feedback_id:rec.id,
+      expected_intent:rec.intent||rec.tool_summary?.intent||"",
+      expected_tool:rec.expected_workflow||rec.tool_summary?.action||"",
+      expected_answer:rec.correct_route||rec.expected_answer||"",
+      notes:rec.note||"",
+    }).then(d=>{setMsg(`Golden case 저장됨: ${d?.case?.id||""}`);reload();})
+      .catch(e=>setMsg(e.message||"승격 실패"))
+      .finally(()=>setPromoting(""));
+  };
+  const smallCount=(label,val,tone="neutral")=><div style={{padding:"10px 12px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-secondary)"}}>
+    <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>{label}</div>
+    <div style={{fontSize:22,fontWeight:900,color:tone==="ok"?OK.fg:tone==="bad"?BAD.fg:tone==="warn"?WARN.fg:"var(--text-primary)",fontFamily:"monospace"}}>{Number(val||0).toLocaleString()}</div>
+  </div>;
+  const counterList=(title,obj,color)=><div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:14,minHeight:160}}>
+    <div style={{fontSize:13,fontWeight:800,marginBottom:10}}>{title}</div>
+    <div style={{display:"grid",gap:6}}>
+      {_entries(obj).slice(0,10).map(([k,v])=><div key={k} style={{display:"grid",gridTemplateColumns:"minmax(90px,0.8fr) minmax(80px,1fr) 42px",alignItems:"center",gap:8}}>
+        <span style={{fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={k}>{title==="실패 유형"?labelTag(k):k}</span>
+        <div style={{height:9,borderRadius:999,background:"var(--bg-tertiary)",overflow:"hidden"}}><div style={{height:"100%",width:`${Math.min(100,(Number(v)||0)/Math.max(1,...Object.values(_obj(obj)).map(Number))*100)}%`,background:color}}/></div>
+        <span style={{fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace",textAlign:"right"}}>{v}</span>
+      </div>)}
+      {_entries(obj).length===0&&<div style={{fontSize:11,color:"var(--text-secondary)"}}>데이터 없음</div>}
+    </div>
+  </div>;
+  const feedbackCard=(rec,idx)=><div key={rec.id||idx} style={{padding:12,borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
+    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:7}}>
+      <Pill tone={toneFor(rec.rating,rec.tags)}>{rec.rating||"neutral"}</Pill>
+      <span style={{fontSize:11,fontFamily:"monospace",color:"var(--text-secondary)"}}>{String(rec.timestamp||"").replace("T"," ").slice(0,19)}</span>
+      <span style={{fontSize:11,fontWeight:700}}>{rec.username||"-"}</span>
+      <span style={{fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>{rec.intent||rec.tool_summary?.intent||"-"}</span>
+      {rec.golden_candidate&&<Pill tone="warn">golden 후보</Pill>}
+      <span style={{flex:1}}/>
+      <Button variant="ghost" disabled={promoting===rec.id} onClick={()=>promote(rec)}>{promoting===rec.id?"저장 중":"Golden 저장"}</Button>
+    </div>
+    <div style={{fontSize:11,color:"var(--text-secondary)",lineHeight:1.55,display:"grid",gap:5}}>
+      <div><b style={{color:"var(--text-primary)"}}>Prompt</b> {rec.prompt_excerpt||"-"}</div>
+      <div><b style={{color:"var(--text-primary)"}}>Answer</b> {rec.answer_excerpt||"-"}</div>
+      {(rec.note||rec.correct_route||rec.expected_workflow||rec.data_refs)&&<div style={{padding:8,borderRadius:6,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>
+        {rec.note&&<div>의견: {rec.note}</div>}
+        {rec.expected_workflow&&<div>기대 workflow: {rec.expected_workflow}</div>}
+        {rec.data_refs&&<div>정답 DB/컬럼: {rec.data_refs}</div>}
+        {rec.correct_route&&<div>정답 경로: {rec.correct_route}</div>}
+      </div>}
+      <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+        {_arr(rec.tags).map(t=><span key={t} style={{fontSize:10,padding:"2px 7px",borderRadius:999,border:"1px solid var(--border)",color:taxonomy[t]?.tone==="bad"?BAD.fg:taxonomy[t]?.tone==="warn"?WARN.fg:OK.fg}}>{labelTag(t)}</span>)}
+        {rec.tool_summary?.action&&<span style={{fontSize:10,padding:"2px 7px",borderRadius:999,border:"1px solid var(--border)",color:"var(--text-secondary)",fontFamily:"monospace"}}>{rec.tool_summary.action}</span>}
+        {rec.elapsed_ms!=null&&<span style={{fontSize:10,padding:"2px 7px",borderRadius:999,border:"1px solid var(--border)",color:"var(--text-secondary)",fontFamily:"monospace"}}>{rec.elapsed_ms}ms</span>}
+      </div>
+    </div>
+  </div>;
+  const review=_arr(data?.review_queue);
+  const recent=_arr(data?.recent);
+  const golden=_arr(data?.golden_cases);
+  return(<div style={{display:"grid",gap:16}}>
+    <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+      <div>
+        <div style={{fontSize:14,fontWeight:800}}>Flow-i 품질 피드백</div>
+        <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:3}}>실패 유형을 모아 tool schema, 확인 질문, cache/query 경로, golden workflow를 개선합니다.</div>
+      </div>
+      <span style={{marginLeft:"auto",fontSize:11,color:"var(--text-secondary)"}}>최근</span>
+      {[7,30,90,180].map(d=><button key={d} type="button" onClick={()=>setDays(d)}
+        style={{padding:"4px 10px",borderRadius:6,border:"1px solid "+(days===d?"var(--accent)":"var(--border)"),background:days===d?"var(--accent-glow)":"transparent",color:days===d?"var(--accent)":"var(--text-secondary)",fontSize:11,fontWeight:days===d?800:500,cursor:"pointer"}}>{d}일</button>)}
+      <Button variant="ghost" onClick={reload}>새로고침</Button>
+    </div>
+    {err&&<Banner tone="bad">{err}</Banner>}
+    {msg&&<Banner tone={msg.includes("저장됨")?"ok":"warn"}>{msg}</Banner>}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10}}>
+      {smallCount("총 피드백",data?.total||0)}
+      {smallCount("정확함",data?.by_rating?.up||0,"ok")}
+      {smallCount("개선 필요",data?.by_rating?.down||0,"warn")}
+      {smallCount("리뷰 큐",review.length,review.length?"bad":"ok")}
+      {smallCount("Golden case",golden.length,"ok")}
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))",gap:12}}>
+      {counterList("실패 유형",data?.by_tag||{},BAD.fg)}
+      {counterList("의도별",data?.by_intent||{},INFO.fg)}
+      {counterList("유저별",data?.by_user||{},OK.fg)}
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"minmax(0,1.15fr) minmax(320px,0.85fr)",gap:14,alignItems:"start"}}>
+      <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:14}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+          <div style={{fontSize:13,fontWeight:800}}>리뷰 큐</div>
+          <span style={{fontSize:10,color:"var(--text-secondary)"}}>개선 필요, 실패 유형, golden 후보</span>
+        </div>
+        <div style={{display:"grid",gap:10,maxHeight:720,overflow:"auto"}}>
+          {review.length?review.map(feedbackCard):<div style={{fontSize:12,color:"var(--text-secondary)",padding:20,textAlign:"center"}}>리뷰할 피드백이 없습니다.</div>}
+        </div>
+      </div>
+      <div style={{display:"grid",gap:12}}>
+        <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:14}}>
+          <div style={{fontSize:13,fontWeight:800,marginBottom:10}}>최근 Golden cases</div>
+          <div style={{display:"grid",gap:8,maxHeight:280,overflow:"auto"}}>
+            {golden.slice(0,12).map(g=><div key={g.id} style={{padding:9,borderRadius:7,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
+              <div style={{fontSize:10,fontFamily:"monospace",color:"var(--accent)",marginBottom:4}}>{g.expected_intent||"-"} · {g.expected_tool||"-"}</div>
+              <div style={{fontSize:11,color:"var(--text-secondary)",lineHeight:1.45}}>{g.prompt||"-"}</div>
+            </div>)}
+            {!golden.length&&<div style={{fontSize:11,color:"var(--text-secondary)"}}>아직 저장된 golden case가 없습니다.</div>}
+          </div>
+        </div>
+        <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:14}}>
+          <div style={{fontSize:13,fontWeight:800,marginBottom:10}}>최근 전체 피드백</div>
+          <div style={{display:"grid",gap:8,maxHeight:360,overflow:"auto"}}>
+            {recent.slice(0,20).map((r,i)=><div key={r.id||i} style={{padding:8,borderRadius:7,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
+              <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:4}}>
+                <Pill tone={toneFor(r.rating,r.tags)}>{r.rating}</Pill>
+                <span style={{fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace"}}>{String(r.timestamp||"").slice(5,16).replace("T"," ")}</span>
+                <span style={{fontSize:10,color:"var(--text-secondary)"}}>{r.username}</span>
+              </div>
+              <div style={{fontSize:11,color:"var(--text-secondary)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={r.prompt_excerpt}>{r.prompt_excerpt||"-"}</div>
+            </div>)}
+            {!recent.length&&<div style={{fontSize:11,color:"var(--text-secondary)"}}>피드백 없음</div>}
+          </div>
+        </div>
       </div>
     </div>
   </div>);

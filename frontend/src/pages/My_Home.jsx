@@ -47,6 +47,7 @@ function FlowiConsole({onNavigate}){
   const[err,setErr]=useState("");
   const[modelLabel,setModelLabel]=useState("");
   const[messages,setMessages]=useState([]);
+  const[liveStep,setLiveStep]=useState(0);
   const promptRef=useRef(null);
   const scrollRef=useRef(null);
   const verifySeq=useRef(0);
@@ -54,6 +55,12 @@ function FlowiConsole({onNavigate}){
 
   useEffect(()=>{if(active&&promptRef.current)setTimeout(()=>promptRef.current?.focus(),30);},[active]);
   useEffect(()=>{if(active&&scrollRef.current)scrollRef.current.scrollTop=scrollRef.current.scrollHeight;},[active,messages,busy]);
+  useEffect(()=>{
+    if(!busy){setLiveStep(0);return undefined;}
+    setLiveStep(0);
+    const iv=setInterval(()=>setLiveStep(v=>Math.min(v+1,FLOWI_LIVE_STEPS.length-1)),850);
+    return()=>clearInterval(iv);
+  },[busy]);
   useEffect(()=>{
     let alive=true;
     fetch("/api/llm/status").then(r=>r.ok?r.json():null).then(d=>{
@@ -98,10 +105,12 @@ function FlowiConsole({onNavigate}){
     const context={type:"home_flowi_chat",limit_chars:CTX_LIMIT,remaining_chars:contextRemaining,messages:contextMessages};
     setMessages(prev=>[...prev,userMsg]);
     setActive(true);setBusy(true);setErr("");setLastPrompt(q);
+    const started=Date.now();
     postJson("/api/llm/flowi/chat",{prompt:q,product:"",max_rows:12,context})
       .then(d=>{
-        setResult(d);
-        setMessages(prev=>[...prev,{id:`a-${Date.now()}`,role:"assistant",answer:d?.answer||"",prompt:q,result:d,intent:d?.tool?.intent||"",ts:new Date().toISOString()}]);
+        const enriched={...(d||{}),elapsed_ms:Date.now()-started};
+        setResult(enriched);
+        setMessages(prev=>[...prev,{id:`a-${Date.now()}`,role:"assistant",answer:enriched?.answer||"",prompt:q,result:enriched,intent:enriched?.tool?.intent||"",ts:new Date().toISOString()}]);
         setPrompt("");
       }).catch(e=>setErr(e.message||String(e))).finally(()=>setBusy(false));
   };
@@ -133,7 +142,7 @@ function FlowiConsole({onNavigate}){
             <div style={{fontSize:10,color:"#737373",fontFamily:"monospace",marginBottom:4}}>flow-i{m.intent?` · ${m.intent}`:""}</div>
             <FlowiResult busy={false} error="" result={m.result} prompt={m.prompt} onNavigate={onNavigate} onChoice={ask} embedded/>
           </div>)}
-        {busy&&<div style={{marginTop:4,fontSize:12,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>}
+        {busy&&<FlowiLiveTrace step={liveStep}/>}
       </div>
       <form onSubmit={e=>{e.preventDefault();ask();}} style={{margin:0,padding:"10px 10px 10px 0"}}>
       <div style={{display:"flex",alignItems:"stretch",gap:8,minWidth:0}}>
@@ -180,6 +189,7 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
       {result.llm&&<span style={{fontSize:10,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
       {featureEntries.map(ep=>canNavigate?<button key={ep.key} type="button" onClick={()=>onNavigate(ep.key)} title={ep.description||""} style={{fontSize:10,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 8px",background:"#1f130b",cursor:"pointer"}}>{ep.title} 열기</button>:<span key={ep.key} title={ep.description||""} style={{fontSize:10,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 7px"}}>{ep.title}</span>)}
     </div>
+    <FlowiTrace trace={result.trace}/>
     {choices.length>0&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice}/>}
     <FlowiFeedback result={result} tool={tool} prompt={prompt}/>
     {chartResult&&<FlowiScatterResult data={chartResult}/>}
@@ -203,6 +213,54 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
   </div>);
 }
 const FR_TD={padding:"5px 6px",borderBottom:"1px solid #262626",color:"#d4d4d4",whiteSpace:"nowrap"};
+
+const FLOWI_LIVE_STEPS=[
+  ["요청 접수","prompt와 대화 context를 서버로 보냅니다."],
+  ["권한 확인","현재 계정이 사용할 수 있는 단위기능을 확인합니다."],
+  ["의도 선택","가장 가까운 workflow와 tool을 고릅니다."],
+  ["DB/cache 조회","필요한 FAB/ET/INLINE/ML/cache 데이터를 찾습니다."],
+  ["LLM 정리","로컬 결과를 근거로 답변 문장을 다듬습니다."],
+  ["화면 구성","표, 차트, 선택지, 답변을 같은 카드에 묶습니다."],
+];
+
+function FlowiLiveTrace({step=0}){
+  return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"9px 10px",fontFamily:"monospace"}}>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
+      <span style={{width:7,height:7,borderRadius:999,background:"#f97316",display:"inline-block",animation:"flowiConnBlink .75s ease-in-out infinite"}}/>
+      <span style={{fontSize:11,fontWeight:900,color:"#e5e5e5"}}>작업 흐름</span>
+      <span style={{fontSize:9,color:"#737373"}}>공개 가능한 실행 단계 요약</span>
+    </div>
+    <div style={{display:"grid",gap:5}}>
+      {FLOWI_LIVE_STEPS.map(([label,detail],i)=>{
+        const done=i<step,active=i===step;
+        return <div key={label} style={{display:"grid",gridTemplateColumns:"18px 96px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:10,lineHeight:1.35}}>
+          <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:9,border:"1px solid "+(done?"#22c55e":active?"#f97316":"#333"),color:done?"#22c55e":active?"#f97316":"#737373"}}>{done?"✓":i+1}</span>
+          <span style={{color:active?"#f97316":done?"#d4d4d4":"#737373",fontWeight:active?900:700}}>{label}</span>
+          <span style={{color:active?"#d4d4d4":"#737373",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{detail}</span>
+        </div>;
+      })}
+    </div>
+  </div>);
+}
+
+function FlowiTrace({trace}){
+  const steps=Array.isArray(trace?.steps)?trace.steps:[];
+  if(!steps.length)return null;
+  const colorFor=(status)=>status==="done"?"#22c55e":status==="blocked"?"#ef4444":status==="error"?"#ef4444":status==="skipped"?"#737373":"#f97316";
+  return(<details style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"7px 9px"}}>
+    <summary style={{cursor:"pointer",fontSize:10,color:"#a3a3a3",fontFamily:"monospace",fontWeight:800}}>
+      작업 흐름 보기 <span style={{fontWeight:400,color:"#737373"}}>사고과정 원문이 아닌 실행 로그</span>
+    </summary>
+    <div style={{marginTop:7,display:"grid",gap:5,fontFamily:"monospace"}}>
+      {steps.map((s,i)=><div key={s.key||i} style={{display:"grid",gridTemplateColumns:"18px 118px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:10,lineHeight:1.4}}>
+        <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:8,border:`1px solid ${colorFor(s.status)}99`,color:colorFor(s.status)}}>{s.status==="done"?"✓":s.status==="blocked"?"!":i+1}</span>
+        <span style={{color:"#d4d4d4",fontWeight:800}}>{s.label||s.key}</span>
+        <span style={{color:"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={s.detail||""}>{s.detail||""}</span>
+      </div>)}
+      {trace.note&&<div style={{marginTop:4,fontSize:9,color:"#737373",lineHeight:1.45}}>{trace.note}</div>}
+    </div>
+  </details>);
+}
 
 function FlowiChoices({question,choices,onChoice}){
   return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#141414",padding:"9px 10px"}}>
@@ -294,12 +352,40 @@ function FlowiScatterResult({data}){
   </div>);
 }
 
+const FLOWI_FEEDBACK_TAGS=[
+  ["correct","정확함"],
+  ["explanation_gap","설명 부족"],
+  ["wrong_data_source","잘못된 DB/컬럼"],
+  ["wrong_workflow","workflow 다름"],
+  ["missed_clarification","질문 필요"],
+  ["too_slow","느림"],
+  ["permission_risk","권한 우려"],
+  ["output_issue","출력 문제"],
+  ["hallucination","없는 값"],
+  ["key_matching_error","key 매칭"],
+  ["aggregation_error","집계 오류"],
+];
 function FlowiFeedback({result,tool,prompt}){
   const[rating,setRating]=useState("");
+  const[tags,setTags]=useState([]);
   const[note,setNote]=useState("");
+  const[expectedWorkflow,setExpectedWorkflow]=useState("");
+  const[correctRoute,setCorrectRoute]=useState("");
+  const[dataRefs,setDataRefs]=useState("");
+  const[golden,setGolden]=useState(false);
   const[msg,setMsg]=useState("");
+  const[open,setOpen]=useState(false);
+  const toggleTag=(key)=>{
+    setTags(prev=>{
+      const next=prev.includes(key)?prev.filter(x=>x!==key):[...prev,key];
+      if(key==="correct"&&!prev.includes(key))setRating("up");
+      if(key!=="correct"&&!prev.includes(key))setRating("down");
+      return next;
+    });
+  };
   const send=(nextRating=rating)=>{
-    const r=nextRating||"neutral";
+    const r=nextRating||((tags.length&&tags.some(t=>t!=="correct"))?"down":"neutral");
+    const payloadTags=tags.length?tags:(r==="up"?["correct"]:[]);
     setRating(r);setMsg("");
     postJson("/api/llm/flowi/feedback",{
       rating:r,
@@ -307,15 +393,47 @@ function FlowiFeedback({result,tool,prompt}){
       answer:result?.answer||"",
       intent:tool?.intent||"",
       note:note||"",
-    }).then(()=>setMsg("피드백 저장됨")).catch(e=>setMsg(e.message||"저장 실패"));
+      tags:payloadTags,
+      expected_workflow:expectedWorkflow||"",
+      correct_route:correctRoute||"",
+      data_refs:dataRefs||"",
+      golden_candidate:golden,
+      tool:tool||{},
+      llm:result?.llm||{},
+      elapsed_ms:result?.elapsed_ms||null,
+    }).then(d=>setMsg(d?.needs_review?"리뷰 큐 저장됨":"피드백 저장됨")).catch(e=>setMsg(e.message||"저장 실패"));
   };
-  return(<div style={{marginTop:8,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-    <button type="button" onClick={()=>send("up")} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="up"?"#22c55e22":"transparent",color:rating==="up"?"#22c55e":"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>좋아요</button>
-    <button type="button" onClick={()=>send("down")} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="down"?"#ef444422":"transparent",color:rating==="down"?"#fca5a5":"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>개선 필요</button>
-    <input value={note} onChange={e=>setNote(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")send(rating||"neutral");}} placeholder="워크플로우 개선 의견"
-      style={{flex:"1 1 180px",minWidth:160,padding:"4px 7px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:10,outline:"none"}}/>
-    <button type="button" onClick={()=>send(rating||"neutral")} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>의견 저장</button>
-    {msg&&<span style={{fontSize:10,color:msg.includes("실패")?"#fca5a5":"#22c55e",fontFamily:"monospace"}}>{msg}</span>}
+  const chip=(key,label)=>{
+    const on=tags.includes(key);
+    const bad=key!=="correct";
+    return <button key={key} type="button" onClick={()=>toggleTag(key)}
+      style={{padding:"3px 7px",borderRadius:5,border:"1px solid "+(on?(bad?"#ef4444":"#22c55e"):"#333"),background:on?(bad?"#7f1d1d33":"#14532d33"):"transparent",color:on?(bad?"#fca5a5":"#86efac"):"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer",whiteSpace:"nowrap"}}>{label}</button>;
+  };
+  return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"7px 8px"}}>
+    <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+      <button type="button" onClick={()=>{setTags(["correct"]);send("up");}} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="up"?"#22c55e22":"transparent",color:rating==="up"?"#22c55e":"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>정확함</button>
+      <button type="button" onClick={()=>{setOpen(true);setRating("down");if(!tags.length)setTags(["output_issue"]);}} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="down"?"#ef444422":"transparent",color:rating==="down"?"#fca5a5":"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>개선 필요</button>
+      <button type="button" onClick={()=>setOpen(!open)} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:"transparent",color:"#737373",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>{open?"접기":"상세"}</button>
+      <input value={note} onChange={e=>setNote(e.target.value)} onFocus={()=>setOpen(true)} onKeyDown={e=>{if(e.key==="Enter")send(rating||"neutral");}} placeholder="짧은 개선 의견"
+        style={{flex:"1 1 190px",minWidth:170,padding:"4px 7px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:10,outline:"none"}}/>
+      <button type="button" onClick={()=>send(rating||"neutral")} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>저장</button>
+      {msg&&<span style={{fontSize:10,color:msg.includes("실패")?"#fca5a5":"#22c55e",fontFamily:"monospace"}}>{msg}</span>}
+    </div>
+    {open&&<div style={{marginTop:8,display:"grid",gap:7}}>
+      <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{FLOWI_FEEDBACK_TAGS.map(([k,l])=>chip(k,l))}</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:7}}>
+        <input value={expectedWorkflow} onChange={e=>setExpectedWorkflow(e.target.value)} placeholder="기대 workflow/tool"
+          style={{padding:"6px 8px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:10,outline:"none"}}/>
+        <input value={dataRefs} onChange={e=>setDataRefs(e.target.value)} placeholder="정답 DB/컬럼/join key"
+          style={{padding:"6px 8px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:10,outline:"none"}}/>
+      </div>
+      <textarea value={correctRoute} onChange={e=>setCorrectRoute(e.target.value)} placeholder="정답 경로 또는 기대 결과를 적어주세요"
+        rows={2} style={{width:"100%",boxSizing:"border-box",padding:"7px 8px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:10,lineHeight:1.45,outline:"none",resize:"vertical"}}/>
+      <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:"#a3a3a3"}}>
+        <input type="checkbox" checked={golden} onChange={e=>setGolden(e.target.checked)} style={{accentColor:"#f97316"}}/>
+        Golden workflow 후보로 Admin 리뷰 큐에 올리기
+      </label>
+    </div>}
   </div>);
 }
 

@@ -19,7 +19,7 @@ function LazyAwsPanel({ user, compact = false }) {
   return <Comp user={user} compact={compact} />;
 }
 
-export default function My_FileBrowser({user}){
+export default function My_FileBrowser({user,onNavigate}){
   const[roots,setRoots]=useState([]);const[rootPqs,setRootPqs]=useState([]);const[selRoot,setSelRoot]=useState("");
   const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState("");const[sideLoading,setSideLoading]=useState(true);
   const[data,setData]=useState(null);const[sql,setSql]=useState("");const[loading,setLoading]=useState(false);
@@ -324,6 +324,60 @@ export default function My_FileBrowser({user}){
       return r.blob();}).then(blob=>{const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='data.csv';a.click();}).catch(()=>{});
   };
 
+  const sourceTypeFromName=(name)=>{
+    const up=String(name||"").toUpperCase().replace(/\.(PARQUET|CSV|JSON|YAML|YML)$/,"");
+    if(up.includes("INLINE"))return"INLINE";
+    if(up.includes("EDS"))return"EDS";
+    if(up.includes("VM"))return"VM";
+    if(up.includes("QTIME"))return"QTIME";
+    if(up.includes("FAB"))return"FAB";
+    if(up.includes("ET"))return"ET";
+    return"";
+  };
+
+  const currentDiagnosisSource=()=>{
+    if(mode==="base"&&selBaseFile){
+      const st=sourceTypeFromName(selBaseFile);
+      return{
+        label:selBaseFile,
+        product:selProd||"",
+        source:{source_type:"base_file",file:selBaseFile,product:selProd||"",source_type_filter:st},
+        mode:"base_file",
+        selected_columns:selectedCols,
+      };
+    }
+    if(mode==="rootpq"&&selRootPq){
+      const st=sourceTypeFromName(selRootPq);
+      return{
+        label:selRootPq,
+        product:"",
+        source:{source_type:"root_parquet",file:selRootPq,source_type_filter:st},
+        mode:"root_parquet",
+        selected_columns:selectedCols,
+      };
+    }
+    if(mode==="hive"&&selRoot&&selProd){
+      const st=sourceTypeFromName(selRoot);
+      return{
+        label:selRoot+"/"+selProd,
+        product:selProd,
+        source:{root:selRoot,product:selProd,source_type_filter:st},
+        mode:"db_product",
+        selected_columns:selectedCols,
+      };
+    }
+    return null;
+  };
+
+  const sendToDiagnosis=()=>{
+    const payload=currentDiagnosisSource();
+    if(!payload)return;
+    const next={...payload,ts:Date.now()};
+    try{sessionStorage.setItem("flow_diagnosis_source",JSON.stringify(next));}catch(_){}
+    try{window.dispatchEvent(new CustomEvent("flow:diagnosis-source",{detail:next}));}catch(_){}
+    if(onNavigate)onNavigate("diagnosis");
+  };
+
   const gotoPage=(nextPage)=>{
     const p=Math.max(0,nextPage);
     if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql,selectedCols,{full:true,page:p});
@@ -341,6 +395,7 @@ export default function My_FileBrowser({user}){
   const chipS={display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:4,fontSize:10,cursor:"pointer",marginRight:4,marginBottom:4,border:"1px solid var(--border)",transition:"all 0.15s"};
   const chipActive={...chipS,background:"var(--accent-glow)",borderColor:"var(--accent)",color:"var(--accent)",fontWeight:600};
   const chipInactive={...chipS,background:"var(--bg-hover)",color:"var(--text-secondary)"};
+  const diagnosisSource=currentDiagnosisSource();
 
   return(
     <div style={{display:"flex",height:"calc(100vh - 48px)",fontFamily:"'Pretendard',sans-serif",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
@@ -444,6 +499,11 @@ export default function My_FileBrowser({user}){
             onKeyDown={e=>e.key==="Enter"&&applySql()}/>
           <button onClick={applySql} style={{padding:"6px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>실행</button>
           {data&&<button onClick={downloadCsv} style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,fontWeight:600,cursor:"pointer"}}>⬇ CSV</button>}
+          <button onClick={sendToDiagnosis} disabled={!diagnosisSource}
+            title={diagnosisSource?`진단/RCA 소스로 전달: ${diagnosisSource.label}`:"제품 또는 파일을 먼저 선택하세요"}
+            style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--border)",background:diagnosisSource?"var(--bg-primary)":"transparent",color:diagnosisSource?"var(--accent)":"var(--text-secondary)",fontSize:11,fontWeight:700,cursor:diagnosisSource?"pointer":"default",opacity:diagnosisSource?1:0.45}}>
+            진단/RCA로
+          </button>
         </div>
 
         {/* Selected columns chips */}
