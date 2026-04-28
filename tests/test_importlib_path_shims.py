@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import gzip
 import importlib.util
 import os
 import sys
@@ -117,3 +119,50 @@ def test_setup_builder_includes_root_import_shims():
         sys.modules.pop("_flow_build_setup_probe", None)
 
     assert {"core/__init__.py", "routers/__init__.py", "app_v2/__init__.py"}.issubset(bundled)
+
+
+def _load_setup_module():
+    spec = importlib.util.spec_from_file_location("_flow_setup_probe", ROOT / "setup.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["_flow_setup_probe"] = module
+    try:
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        sys.modules.pop("_flow_setup_probe", None)
+        raise
+
+
+def _gz_payload(text: str) -> str:
+    return base64.b64encode(gzip.compress(text.encode("utf-8"), mtime=0)).decode("ascii")
+
+
+def test_setup_write_guard_allows_app_v2_data_named_source_dirs(tmp_path):
+    setup_module = _load_setup_module()
+    try:
+        setup_module.ROOT = tmp_path
+        payload = _gz_payload("# probe\n")
+
+        for module_name in ("informs", "tracker", "meetings"):
+            rel = f"backend/app_v2/modules/{module_name}/probe.py"
+            setup_module._write(rel, payload)
+
+            assert (tmp_path / rel).read_text(encoding="utf-8") == "# probe\n"
+    finally:
+        sys.modules.pop("_flow_setup_probe", None)
+
+
+def test_setup_write_guard_still_blocks_runtime_data_paths(tmp_path):
+    setup_module = _load_setup_module()
+    try:
+        setup_module.ROOT = tmp_path
+        payload = _gz_payload("# probe\n")
+
+        setup_module._write("data/flow-data/informs/probe.py", payload)
+        setup_module._write("backend/app_v2/modules/informs/config.json", payload)
+
+        assert not (tmp_path / "data/flow-data/informs/probe.py").exists()
+        assert not (tmp_path / "backend/app_v2/modules/informs/config.json").exists()
+    finally:
+        sys.modules.pop("_flow_setup_probe", None)
