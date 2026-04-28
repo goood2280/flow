@@ -283,7 +283,7 @@ _PROTECTED_BASENAMES = {{
     'farm_status.json', 'sysmon_state.json',
 }}
 
-# v8.8.3 — 데이터 루트로 간주되는 세그먼트 (경로 어디에 있든 보호)
+# v8.8.3 — 데이터 루트로 간주되는 세그먼트.
 # v8.8.16 — s3_ingest / reformatter / notifications / cache 추가 보호.
 _PROTECTED_SEGMENTS = {{
     'flow-data',    # 사내 운영 데이터 디렉토리
@@ -319,6 +319,10 @@ _ALLOWED_TOP_LEVEL = {{
 }}
 
 
+def _is_backend_app_v2_source(parts: list[str]) -> bool:
+    return len(parts) >= 2 and parts[0] == "backend" and parts[1] == "app_v2"
+
+
 def _write(rel: str, gz_b64: str) -> None:
     # v8.8.3/v8.8.17: 사용자 데이터 보존 가드 — defense in depth.
     #
@@ -327,7 +331,7 @@ def _write(rel: str, gz_b64: str) -> None:
     # 6개 레이어로 검증 (하나라도 match 하면 쓰기 skip):
     #   L0) top-level 세그먼트가 _ALLOWED_TOP_LEVEL 에 없으면 화이트리스트 위반 → skip
     #   L1) 경로 prefix 가 data/ 또는 flow-data/ 이면 skip
-    #   L2) 경로 세그먼트에 _PROTECTED_SEGMENTS 가 하나라도 있으면 skip
+    #   L2) backend/app_v2 소스가 아닌 경로의 보호 세그먼트는 skip
     #   L3) 파일명이 _PROTECTED_BASENAMES 에 있으면 skip
     #   L4) resolve() 한 절대 경로가 ./data 또는 ./data/flow-data 아래면 skip
     #   L5) FLOW_DATA_ROOT / FLOW_{{DB,WAFER_MAP}}_ROOT 아래면 skip
@@ -343,10 +347,12 @@ def _write(rel: str, gz_b64: str) -> None:
         if rel_posix.startswith(guard) or rel_posix.rstrip("/") == guard.rstrip("/"):
             return
 
-    # L2
-    for seg in parts:
-        if seg in _PROTECTED_SEGMENTS:
-            return
+    # L2: app_v2 migration layer has legitimate source module names such as
+    # informs/tracker/meetings. Do not classify those code paths as data roots.
+    if not _is_backend_app_v2_source(parts):
+        for seg in parts:
+            if seg in _PROTECTED_SEGMENTS:
+                return
 
     # L3
     if parts and parts[-1].lower() in _PROTECTED_BASENAMES:
