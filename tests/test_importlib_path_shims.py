@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -33,6 +34,16 @@ def _is_backend_path(raw: str) -> bool:
         return False
 
 
+def _is_checkout_path(raw: str) -> bool:
+    if not raw:
+        return False
+    try:
+        resolved = Path(raw).resolve()
+    except OSError:
+        return False
+    return resolved in {ROOT, BACKEND}
+
+
 def _load_by_path(rel_path: str):
     path = ROOT / rel_path
     module_name = "_flow_importlib_probe_" + rel_path.replace("/", "_").replace(".", "_")
@@ -47,6 +58,31 @@ def _load_by_path(rel_path: str):
         sys.modules.pop(module_name, None)
         raise
     return module
+
+
+def test_direct_router_path_loads_find_app_v2_without_checkout_sys_path(tmp_path, monkeypatch):
+    original_cwd = Path.cwd()
+    original_sys_path = list(sys.path)
+    monkeypatch.setenv("FLOW_APP_ROOT", str(ROOT))
+    monkeypatch.setenv("FLOW_DATA_ROOT", str(tmp_path / "flow-data"))
+
+    for rel_path, prefix in (
+        ("backend/routers/informs.py", "/api/informs"),
+        ("backend/routers/meetings.py", "/api/meetings"),
+        ("backend/routers/tracker.py", "/api/tracker"),
+    ):
+        saved = _clear_imports(("core", "app_v2", "routers"))
+        try:
+            os.chdir(tmp_path)
+            sys.path[:] = [p for p in original_sys_path if not _is_checkout_path(p)]
+
+            module = _load_by_path(rel_path)
+
+            assert module.router.prefix == prefix
+        finally:
+            os.chdir(original_cwd)
+            sys.path[:] = original_sys_path
+            _restore_imports(saved, ("core", "app_v2", "routers"))
 
 
 def test_importlib_path_loads_backend_modules_without_backend_sys_path():
