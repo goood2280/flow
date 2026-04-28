@@ -44,6 +44,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+_APP_ROOT = _BACKEND_ROOT.parent
+for _path in (_APP_ROOT, _BACKEND_ROOT):
+    _raw = str(_path)
+    sys.path[:] = [p for p in sys.path if p != _raw]
+    sys.path.insert(0, _raw)
+
 from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel

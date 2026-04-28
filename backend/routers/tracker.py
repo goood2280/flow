@@ -1,5 +1,15 @@
 """routers/tracker.py v4.1.0 — Issue board + inline images in description + lot/wafer table"""
 import datetime, uuid, base64, re
+from pathlib import Path
+import sys
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+_APP_ROOT = _BACKEND_ROOT.parent
+for _path in (_APP_ROOT, _BACKEND_ROOT):
+    _raw = str(_path)
+    sys.path[:] = [p for p in sys.path if p != _raw]
+    sys.path.insert(0, _raw)
+
 from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
