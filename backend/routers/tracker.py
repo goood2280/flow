@@ -86,7 +86,13 @@ def _normalize_cats(raw):
 def _load_cats():
     """Returns list of {name, color} dicts (v8.1.5). Legacy str list auto-upgraded on read."""
     raw = load_json(CATS_FILE, DEFAULT_CATS)
-    return _normalize_cats(raw)
+    cats = _normalize_cats(raw)
+    if cats:
+        return cats
+    # If categories.json exists but is empty/corrupt-shaped, the create/edit
+    # form should still have usable categories instead of rendering a blank
+    # required select.
+    return _normalize_cats(DEFAULT_CATS)
 
 
 def _cat_names():

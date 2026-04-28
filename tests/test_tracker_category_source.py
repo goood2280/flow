@@ -20,3 +20,11 @@ def test_category_source_uses_saved_category_mapping_case_insensitively(monkeypa
     )
 
     assert tracker._category_source(" inline analysis ", "fab") == "et"
+
+
+def test_empty_categories_file_falls_back_to_default_categories(monkeypatch):
+    monkeypatch.setattr(tracker, "load_json", lambda *_args, **_kwargs: [])
+
+    cats = tracker._load_cats()
+
+    assert [c["name"] for c in cats[:2]] == ["Analysis", "Monitor"]

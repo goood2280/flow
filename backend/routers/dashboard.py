@@ -13,7 +13,7 @@ from core.long_pivot import scan_long_fab
 from core.utils import (
     _STR, cast_cats, read_source, read_one_file, find_all_sources,
     apply_time_window, lazy_read_source,
-    load_json, save_json, serialize_rows,
+    load_json, save_json, serialize_rows, first_data_file,
 )
 from app_v2.shared.source_adapter import resolve_column
 
@@ -2200,7 +2200,10 @@ def get_charts(request: Request):
 
 @router.get("/products")
 def list_products(request: Request):
-    _require_dashboard_section(request, "progress")
+    # Chart creation uses this source picker. Gate it with the charts section,
+    # not the progress panel, so delegated chart users do not see an empty
+    # source list just because FAB progress is disabled.
+    _require_dashboard_section(request, "charts")
     return {"products": find_all_sources()}
 
 
@@ -2349,16 +2352,15 @@ def get_columns(root: str = Query(""), product: str = Query(""), file: str = Que
                 404,
                 f"Product directory not found: {root}/{product} (db_root={db_base})"
             )
-        from core.utils import _glob_data_files
-        files = _glob_data_files(prod_path)
-        if not files:
+        first_file = first_data_file(prod_path)
+        if first_file is None:
             raise HTTPException(
                 404,
                 f"No data files found in: {root}/{product} (db_root={db_base})"
             )
-        df = read_one_file(files[0])
+        df = read_one_file(first_file)
         if df is None:
-            raise HTTPException(400, f"Cannot read data file: {files[0].name}")
+            raise HTTPException(400, f"Cannot read data file: {first_file.name}")
         df = df.head(1)
     return {"columns": list(df.columns), "dtypes": {n: str(d) for n, d in df.schema.items()}}
 

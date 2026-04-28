@@ -13,6 +13,7 @@ from core.lot_step import (  # noqa: E402
     _parquet_files,
     _resolve_source_root_dirs,
     _source_roots,
+    db_product_candidates,
     compare_to_watch,
     expand_lot_row_for_wafer_selection,
     list_db_source_roots,
@@ -104,6 +105,25 @@ def test_tracker_db_roots_soft_land_to_existing_db_folder(monkeypatch, tmp_path)
     assert _resolve_source_root_dirs("fab", "1.RAWDATA_DB_FAB")[0] == db / "FAB_HISTORY"
     assert _resolve_source_root_dirs("et", "1.RAWDATA_DB_ET")[0] == db / "ET_MEASURE"
     assert _parquet_files("1.RAWDATA_DB_FAB", "PRODA", source="fab") == [fab / "part.parquet"]
+
+
+def test_tracker_product_and_lot_sources_support_nested_product_partitions(monkeypatch, tmp_path):
+    db = tmp_path / "DB"
+    part = db / "FAB_HISTORY" / "fab_history" / "product=PRODA" / "date=20260427" / "part.parquet"
+    part.parent.mkdir(parents=True)
+    part.write_bytes(b"placeholder")
+    import core.lot_step as lot_step
+
+    monkeypatch.setattr(lot_step, "_get_db_root", lambda: db)
+    monkeypatch.setattr(lot_step, "tracker_db_sources_config", lambda: {
+        "monitor": "FAB_HISTORY",
+        "analysis": "ET_MEASURE",
+        "fab": "FAB_HISTORY",
+        "et": "ET_MEASURE",
+    })
+
+    assert db_product_candidates(source="fab", source_root="FAB_HISTORY") == ["PRODA"]
+    assert _parquet_files("FAB_HISTORY", "PRODA", source="fab") == [part]
 
 
 def test_expand_lot_row_for_wafer_selection_splits_rows_and_resets_watch_state():
