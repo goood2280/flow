@@ -192,3 +192,59 @@ def test_root_lot_candidate_search_reaches_beyond_empty_preview(tmp_path, monkey
     assert len(preview["candidates"]) <= 20
     assert "R1199" not in preview["candidates"]
     assert searched["candidates"] == ["R1199"]
+
+
+def test_root_lot_view_handles_categorical_fab_partitions(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["R9000", "R9000"],
+        "wafer_id": [1, 2],
+        "KNOB_ALPHA": ["ON", "OFF"],
+    }).write_parquet(tmp_path / "ML_TABLE_MIXCAT.parquet")
+
+    fab_root = tmp_path / "1.RAWDATA_DB_FAB" / "MIXCAT"
+    part_a = fab_root / "date=20240418"
+    part_b = fab_root / "date=20240419"
+    part_a.mkdir(parents=True)
+    part_b.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["R9000"],
+        "fab_lot_id": ["F9000A.1"],
+        "wafer_id": [1],
+        "tkout_time": ["2024-04-18T10:00:00"],
+    }).write_parquet(part_a / "part_0.parquet")
+    pl.DataFrame({
+        "root_lot_id": ["R9000"],
+        "fab_lot_id": ["F9000A.2"],
+        "wafer_id": [2],
+        "tkout_time": ["2024-04-19T10:00:00"],
+    }).with_columns(
+        pl.col("root_lot_id").cast(pl.Categorical)
+    ).write_parquet(part_b / "part_0.parquet")
+
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+
+    searched = splittable.get_lot_candidates(
+        product="ML_TABLE_MIXCAT",
+        col="root_lot_id",
+        prefix="R9000",
+        limit=20,
+        source="auto",
+        root_lot_id="",
+    )
+    result = splittable.view_split(
+        product="ML_TABLE_MIXCAT",
+        root_lot_id="R9000",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert searched["candidates"] == ["R9000"]
+    assert result["headers"] == ["#1", "#2"]
+    assert [g["label"] for g in result["header_groups"]] == ["F9000A.1", "F9000A.2"]
+    assert result["available_fab_lots"] == ["F9000A.1", "F9000A.2"]

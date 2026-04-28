@@ -73,6 +73,53 @@ def _cast_cats_lazy(lf):
     return lf.with_columns(casts) if casts else lf
 
 
+def _scan_cast_options():
+    try:
+        return pl.ScanCastOptions(categorical_to_string="allow")
+    except Exception:
+        return None
+
+
+def _first_scan_schema_with_string_cats(source, hive_partitioning=None):
+    if not isinstance(source, (list, tuple)) or not source:
+        return None
+    try:
+        kwargs = {}
+        if hive_partitioning is not None:
+            kwargs["hive_partitioning"] = hive_partitioning
+        schema = pl.scan_parquet(str(source[0]), **kwargs).collect_schema()
+    except Exception:
+        return None
+    out = {}
+    changed = False
+    for name, dtype in schema.items():
+        if is_cat(dtype):
+            out[name] = _STR
+            changed = True
+        else:
+            out[name] = dtype
+    return out if changed else None
+
+
+def _scan_parquet_compat(source, **kwargs):
+    """Scan parquet while accepting String/Categorical drift across partitions."""
+    scan_kwargs = dict(kwargs)
+    if "schema" not in scan_kwargs:
+        schema = _first_scan_schema_with_string_cats(
+            source, hive_partitioning=scan_kwargs.get("hive_partitioning")
+        )
+        if schema:
+            scan_kwargs["schema"] = schema
+    opts = _scan_cast_options()
+    if opts is not None and "cast_options" not in scan_kwargs:
+        scan_kwargs["cast_options"] = opts
+    try:
+        return pl.scan_parquet(source, **scan_kwargs)
+    except TypeError:
+        scan_kwargs.pop("cast_options", None)
+        return pl.scan_parquet(source, **scan_kwargs)
+
+
 import re as _re
 _NUM_RE = _re.compile(r"(\d+(?:\.\d+)?)")
 _PREFIX_NUM_RE = _re.compile(r"^(\d+(?:\.\d+)*)(?:[_\s-]|$)")
@@ -1093,7 +1140,7 @@ def override_link_preview(
         }
 
     try:
-        main_names = pl.scan_parquet(str(_product_path(p))).collect_schema().names()
+        main_names = _scan_parquet_compat(str(_product_path(p))).collect_schema().names()
     except Exception:
         main_names = []
     fab_lf, fab_names = _ci_align_fab_to_main(fab_lf, main_names)
@@ -1196,7 +1243,7 @@ def override_debug(product: str = Query(...)):
         if fp.suffix.lower() == ".csv":
             main_lf = _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
         else:
-            main_lf = _cast_cats_lazy(pl.scan_parquet(str(fp)))
+            main_lf = _cast_cats_lazy(_scan_parquet_compat(str(fp)))
         main_schema = main_lf.collect_schema()
         main_names = main_schema.names()
         out["main_schema"] = main_names[:30]
@@ -1321,7 +1368,7 @@ def get_schema(product: str = Query(...)):
         if fp.suffix.lower() == ".csv":
             lf = pl.scan_csv(str(fp), infer_schema_length=5000)
         else:
-            lf = pl.scan_parquet(str(fp))
+            lf = _scan_parquet_compat(str(fp))
         cols = [{"name": n, "dtype": str(d)} for n, d in lf.schema.items()]
     # 오버라이드에서 실제로 join 된 컬럼 목록 (FE 가 검색 pool 에서 '숨김 해제' 할 기준).
     override_cols_present: list = []
@@ -1658,7 +1705,7 @@ def _mltable_schema_columns(product: str, prefix: str = "") -> list[str]:
         if not fp.is_file():
             continue
         try:
-            cols = pl.scan_parquet(fp).collect_schema().names()
+            cols = _scan_parquet_compat(fp).collect_schema().names()
         except Exception:
             continue
         if pref:
@@ -2189,8 +2236,8 @@ def infer_step_mapping(request: Request, product: str = Query(...), kind: str = 
     if not fab_files or not src_files:
         raise HTTPException(404, "no parquet files")
     try:
-        fab_lf = pl.scan_parquet([str(f) for f in fab_files], hive_partitioning=True)
-        src_lf = pl.scan_parquet([str(f) for f in src_files], hive_partitioning=True)
+        fab_lf = _scan_parquet_compat([str(f) for f in fab_files], hive_partitioning=True)
+        src_lf = _scan_parquet_compat([str(f) for f in src_files], hive_partitioning=True)
     except Exception as e:
         raise HTTPException(500, f"scan error: {e}")
     fab_schema = fab_lf.collect_schema().names()
@@ -2831,14 +2878,14 @@ def _scan_fab_source_raw(fab_source: str):
             # hive_partitioning 을 켜서 경로의 `date=...` 를 컬럼으로 노출 → ts_col 자동 추론 시
             # `date` 후보가 적중해 "가장 최신 date 의 fab_col" join 이 자동으로 동작.
             try:
-                return _cast_cats_lazy(pl.scan_parquet([str(p) for p in parquets],
-                                                       hive_partitioning=True))
+                return _cast_cats_lazy(_scan_parquet_compat([str(p) for p in parquets],
+                                                            hive_partitioning=True))
             except TypeError:
                 # polars 구버전 — 파라미터 미지원 시 폴백 (경로 기반 파티션 컬럼 없음).
-                return _cast_cats_lazy(pl.scan_parquet([str(p) for p in parquets]))
+                return _cast_cats_lazy(_scan_parquet_compat([str(p) for p in parquets]))
         if fp.suffix.lower() == ".csv":
             return _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
-        return _cast_cats_lazy(pl.scan_parquet(str(fp)))
+        return _cast_cats_lazy(_scan_parquet_compat(str(fp)))
     except Exception:
         return None
 
@@ -3174,7 +3221,7 @@ def _resolve_override_meta(product: str) -> dict:
             if main_fp.suffix.lower() == ".csv":
                 main_names_list = pl.scan_csv(str(main_fp), infer_schema_length=5000).collect_schema().names()
             else:
-                main_names_list = pl.scan_parquet(str(main_fp)).collect_schema().names()
+                main_names_list = _scan_parquet_compat(str(main_fp)).collect_schema().names()
         except Exception:
             main_names_list = []
         fab_lf, fab_schema_names = _ci_align_fab_to_main(fab_lf, main_names_list)
@@ -3365,7 +3412,7 @@ def _fab_source_context(product: str) -> dict:
             if main_fp.suffix.lower() == ".csv":
                 main_names = pl.scan_csv(str(main_fp), infer_schema_length=5000).collect_schema().names()
             else:
-                main_names = pl.scan_parquet(str(main_fp)).collect_schema().names()
+                main_names = _scan_parquet_compat(str(main_fp)).collect_schema().names()
         except Exception:
             main_names = []
         fab_lf, fab_names = _ci_align_fab_to_main(fab_lf, main_names)
@@ -3653,7 +3700,7 @@ def _scan_product(product: str):
     if fp.suffix.lower() == ".csv":
         lf = _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
     else:
-        lf = _cast_cats_lazy(pl.scan_parquet(str(fp)))
+        lf = _cast_cats_lazy(_scan_parquet_compat(str(fp)))
 
     # v8.8.3: 오버라이드 로직 근본 재정리.
     #   1) 매뉴얼 config(lot_overrides[product].fab_source) 가 있으면 그 값을 사용.
