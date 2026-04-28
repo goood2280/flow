@@ -131,3 +131,45 @@ def test_router_loader_uses_requested_router_directory_when_package_is_stale(tmp
     finally:
         sys.path[:] = original_sys_path
         _restore_imports(saved, ("routers",))
+
+
+def test_router_loader_rebinds_stale_core_package(tmp_path):
+    stale_backend = tmp_path / "stale" / "backend"
+    stale_core = stale_backend / "core"
+    stale_core.mkdir(parents=True)
+    (stale_core / "__init__.py").write_text("", encoding="utf-8")
+    (stale_core / "fake.py").write_text("VALUE = 'wrong'\n", encoding="utf-8")
+
+    backend = tmp_path / "backend"
+    routers_dir = backend / "routers"
+    core_dir = backend / "core"
+    routers_dir.mkdir(parents=True)
+    core_dir.mkdir()
+    (routers_dir / "__init__.py").write_text("", encoding="utf-8")
+    (core_dir / "__init__.py").write_text("", encoding="utf-8")
+    (core_dir / "fake.py").write_text("VALUE = 'target'\n", encoding="utf-8")
+    (routers_dir / "probe.py").write_text(
+        "from fastapi import APIRouter\n"
+        "from core.fake import VALUE\n\n"
+        "router = APIRouter(prefix='/probe')\n\n"
+        "@router.get('/value')\n"
+        "def value():\n"
+        "    return {'value': VALUE}\n",
+        encoding="utf-8",
+    )
+
+    saved = _clear_imports(("core", "routers", "app_v2"))
+    original_sys_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(stale_backend))
+        importlib.import_module("core")
+
+        app = FastAPI()
+        loaded, failed = include_router_modules(app, routers_dir, logging.getLogger("test.router_loader"))
+
+        assert loaded == ["probe"]
+        assert failed == []
+        assert getattr(sys.modules.get("core.fake"), "VALUE", None) == "target"
+    finally:
+        sys.path[:] = original_sys_path
+        _restore_imports(saved, ("core", "routers", "app_v2"))
