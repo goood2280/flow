@@ -999,7 +999,7 @@ function MailCfgPanel(){
 
 // ── v9.0.4: Flowi LLM 설정 — admin token 을 서버 설정에 저장하고 사용자는 실행만 한다. ──
 function LlmCfgPanel(){
-  const[cfg,setCfg]=useState({enabled:false,api_url:"",model:"",admin_token:"",format:"openai",timeout_s:20});
+  const[cfg,setCfg]=useState({enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",format:"openai",timeout_s:20});
   const[msg,setMsg]=useState("");
   const[busy,setBusy]=useState(false);
   const[testBusy,setTestBusy]=useState(false);
@@ -1012,6 +1012,7 @@ function LlmCfgPanel(){
         enabled:!!l.enabled,
         api_url:l.api_url||"",
         model:l.model||"",
+        mode:l.mode||"fast",
         admin_token:l.admin_token||"",
         format:l.format||"openai",
         timeout_s:Number(l.timeout_s||20),
@@ -1028,6 +1029,7 @@ function LlmCfgPanel(){
         enabled:!!cfg.enabled,
         api_url:cfg.api_url,
         model:cfg.model,
+        mode:cfg.mode||"fast",
         admin_token:cfg.admin_token,
         format:cfg.format||"openai",
         timeout_s:Number(cfg.timeout_s)||20,
@@ -1049,6 +1051,7 @@ function LlmCfgPanel(){
     auth:cfg.admin_token?"Authorization: Bearer <admin_token>":"admin_token 없음",
     format:cfg.format||"openai",
     model:cfg.model||"(default)",
+    mode:cfg.mode||"fast",
     users:"홈 Flowi 사용자는 별도 LLM token 입력 없이 서버 설정으로 실행",
   };
   return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:900}}>
@@ -1062,10 +1065,18 @@ function LlmCfgPanel(){
     </label>
     <div style={L}>API URL</div>
     <input value={cfg.api_url} onChange={e=>setCfg({...cfg,api_url:e.target.value})} placeholder="https://llm.internal/v1/chat/completions" style={I}/>
-    <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:10}}>
+    <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:10}}>
       <div>
         <div style={L}>Model</div>
         <input value={cfg.model} onChange={e=>setCfg({...cfg,model:e.target.value})} placeholder="internal-model" style={I}/>
+      </div>
+      <div>
+        <div style={L}>Mode</div>
+        <select value={cfg.mode||"fast"} onChange={e=>setCfg({...cfg,mode:e.target.value})} style={I}>
+          <option value="fast">fast</option>
+          <option value="balanced">balanced</option>
+          <option value="quality">quality</option>
+        </select>
       </div>
       <div>
         <div style={L}>Format</div>
