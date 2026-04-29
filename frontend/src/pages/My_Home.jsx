@@ -180,17 +180,21 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
   const canNavigate=typeof onNavigate==="function";
   const featureEntries=Array.isArray(tool.feature_entrypoints)?tool.feature_entrypoints.slice(0,3):[];
   const choices=Array.isArray(tool?.clarification?.choices)?tool.clarification.choices.slice(0,4):[];
+  const workflow=tool.workflow_state||result.workflow_state||{};
+  const nextActions=(Array.isArray(tool.next_actions)?tool.next_actions:(Array.isArray(result.next_actions)?result.next_actions:[])).filter(a=>a&&a.type!=="respond_with_prompt").slice(0,6);
   const chart=tool?.chart&&typeof tool.chart==="object"?tool.chart:null;
   const chartResult=tool?.chart_result&&typeof tool.chart_result==="object"?tool.chart_result:null;
   return(<div style={{marginTop:embedded?0:12,borderTop:embedded?"none":"1px solid #262626",paddingTop:embedded?0:10}}>
     <div style={{whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.65,color:"#d4d4d4"}}>{result.answer||"응답이 없습니다."}</div>
     <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
       {tool.intent&&<span style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
+      {workflow.status&&<span style={{fontSize:10,color:workflow.status.startsWith("awaiting")?"#f97316":workflow.status==="blocked"?"#ef4444":"#22c55e",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{workflow.status}</span>}
       {result.llm&&<span style={{fontSize:10,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
       {featureEntries.map(ep=>canNavigate?<button key={ep.key} type="button" onClick={()=>onNavigate(ep.key)} title={ep.description||""} style={{fontSize:10,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 8px",background:"#1f130b",cursor:"pointer"}}>{ep.title} 열기</button>:<span key={ep.key} title={ep.description||""} style={{fontSize:10,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 7px"}}>{ep.title}</span>)}
     </div>
     <FlowiTrace trace={result.trace}/>
     {choices.length>0&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice}/>}
+    {nextActions.length>0&&<FlowiNextActions actions={nextActions} onNavigate={onNavigate} onChoice={onChoice}/>}
     <FlowiFeedback result={result} tool={tool} prompt={prompt}/>
     {chartResult&&<FlowiScatterResult data={chartResult}/>}
     {chart&&<FlowiChartPlan chart={chart}/>}
@@ -275,6 +279,22 @@ function FlowiChoices({question,choices,onChoice}){
         </div>
         <div style={{fontSize:10,lineHeight:1.45,color:"#a3a3a3"}}>{c.description}</div>
       </button>)}
+    </div>
+  </div>);
+}
+
+function FlowiNextActions({actions,onNavigate,onChoice}){
+  return(<div style={{marginTop:10,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"8px 9px"}}>
+    <div style={{fontSize:10,fontWeight:900,color:"#a3a3a3",fontFamily:"'JetBrains Mono',monospace",marginBottom:6}}>next actions</div>
+    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+      {actions.map((a,i)=>{
+        const clickable=(a.type==="open_tab"&&a.tab&&typeof onNavigate==="function")||(a.prompt&&typeof onChoice==="function");
+        const click=()=>{if(a.type==="open_tab"&&a.tab&&onNavigate)onNavigate(a.tab);else if(a.prompt&&onChoice)onChoice(a.prompt);};
+        return <button key={a.id||i} type="button" onClick={click} disabled={!clickable} title={a.description||""}
+          style={{fontSize:10,color:clickable?"#f97316":"#a3a3a3",fontFamily:"monospace",border:"1px solid "+(clickable?"#7c2d12":"#333"),borderRadius:999,padding:"3px 8px",background:clickable?"#1f130b":"#171717",cursor:clickable?"pointer":"default",opacity:clickable?1:.82}}>
+          {a.title||a.type}
+        </button>;
+      })}
     </div>
   </div>);
 }

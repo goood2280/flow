@@ -74,6 +74,26 @@ DEFAULT_SETTINGS = {
     # Dashboard section visibility for non-admin users. Admin always sees all.
     "dashboard_sections": {"charts": True, "progress": False, "alerts": False},
 }
+FLOWI_DEFAULT_SETTINGS = {
+    "chart_defaults": {
+        "surface": "home_flowi",
+        "scatter": {"grain": "wafer_agg", "max_points": 500, "inline_agg": "avg", "et_agg": "median"},
+        "line": {"grain": "wafer_agg", "max_points_per_series": 120},
+        "bar": {"top_n": 12, "other_bucket": True},
+        "pie": {"max_slices": 6, "other_bucket": True},
+        "box": {"max_groups": 12, "min_n": 3},
+    },
+    "feedback_policy": {
+        "auto_apply_to_rag": False,
+        "review_required": True,
+        "promotion_target": "golden_cases",
+    },
+    "engineer_knowledge": {
+        "rag_update_requires_marker": True,
+        "admin_review_required": True,
+        "custom_knowledge_append_only": True,
+    },
+}
 
 # Map UI-facing long keys to admin_settings.json short keys used by core/roots.py
 _DR_KEY_MAP = {
@@ -128,6 +148,72 @@ def _load_admin_settings() -> dict:
 
 def _save_admin_settings(data: dict) -> None:
     save_json(ADMIN_SETTINGS_FILE, data)
+
+
+def _merge_nested(base: Dict[str, Any], override: Any) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        k: _merge_nested(v, {}) if isinstance(v, dict) else v
+        for k, v in (base or {}).items()
+    }
+    if not isinstance(override, dict):
+        return out
+    for key, value in override.items():
+        if isinstance(out.get(key), dict) and isinstance(value, dict):
+            out[key] = _merge_nested(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _int_between(raw: Any, default: int, lo: int, hi: int) -> int:
+    try:
+        val = int(raw)
+    except Exception:
+        val = default
+    return max(lo, min(hi, val))
+
+
+def _flowi_default_settings(raw: Any = None) -> Dict[str, Any]:
+    merged = _merge_nested(FLOWI_DEFAULT_SETTINGS, raw or {})
+    charts = merged.get("chart_defaults") if isinstance(merged.get("chart_defaults"), dict) else {}
+    scatter = charts.get("scatter") if isinstance(charts.get("scatter"), dict) else {}
+    if scatter.get("grain") not in {"wafer_agg", "shot", "die", "map"}:
+        scatter["grain"] = "wafer_agg"
+    scatter["max_points"] = _int_between(scatter.get("max_points"), 500, 50, 5000)
+    if scatter.get("inline_agg") not in {"avg", "median"}:
+        scatter["inline_agg"] = "avg"
+    if scatter.get("et_agg") not in {"avg", "median"}:
+        scatter["et_agg"] = "median"
+    charts["scatter"] = scatter
+    line = charts.get("line") if isinstance(charts.get("line"), dict) else {}
+    line["grain"] = "wafer_agg" if line.get("grain") not in {"wafer_agg", "shot", "die", "map"} else line.get("grain")
+    line["max_points_per_series"] = _int_between(line.get("max_points_per_series"), 120, 20, 1000)
+    charts["line"] = line
+    bar = charts.get("bar") if isinstance(charts.get("bar"), dict) else {}
+    bar["top_n"] = _int_between(bar.get("top_n"), 12, 3, 50)
+    bar["other_bucket"] = bool(bar.get("other_bucket", True))
+    charts["bar"] = bar
+    pie = charts.get("pie") if isinstance(charts.get("pie"), dict) else {}
+    pie["max_slices"] = _int_between(pie.get("max_slices"), 6, 3, 20)
+    pie["other_bucket"] = bool(pie.get("other_bucket", True))
+    charts["pie"] = pie
+    box = charts.get("box") if isinstance(charts.get("box"), dict) else {}
+    box["max_groups"] = _int_between(box.get("max_groups"), 12, 3, 50)
+    box["min_n"] = _int_between(box.get("min_n"), 3, 1, 30)
+    charts["box"] = box
+    charts["surface"] = str(charts.get("surface") or "home_flowi").strip()[:80] or "home_flowi"
+    merged["chart_defaults"] = charts
+    policy = merged.get("feedback_policy") if isinstance(merged.get("feedback_policy"), dict) else {}
+    policy["auto_apply_to_rag"] = False
+    policy["review_required"] = bool(policy.get("review_required", True))
+    policy["promotion_target"] = str(policy.get("promotion_target") or "golden_cases").strip()[:80] or "golden_cases"
+    merged["feedback_policy"] = policy
+    knowledge = merged.get("engineer_knowledge") if isinstance(merged.get("engineer_knowledge"), dict) else {}
+    knowledge["rag_update_requires_marker"] = bool(knowledge.get("rag_update_requires_marker", True))
+    knowledge["admin_review_required"] = bool(knowledge.get("admin_review_required", True))
+    knowledge["custom_knowledge_append_only"] = bool(knowledge.get("custom_knowledge_append_only", True))
+    merged["engineer_knowledge"] = knowledge
+    return merged
 
 
 class ApproveReq(BaseModel):
@@ -622,6 +708,7 @@ def get_settings(request: Request):
             }
         except Exception:
             merged["llm"] = None
+        merged["flowi_defaults"] = _flowi_default_settings(adm.get("flowi_defaults") or {})
         merged["devguide_user"] = [str(u).strip() for u in devguide_users if str(u).strip()]
     # v8.4.6: data_roots (내부 파일시스템 경로) 는 admin 에게만 노출.
     if me.get("role") == "admin":
@@ -694,6 +781,12 @@ class LLMCfgReq(BaseModel):
     timeout_s: Optional[int] = None
 
 
+class FlowiDefaultsReq(BaseModel):
+    chart_defaults: Optional[Dict[str, Any]] = None
+    feedback_policy: Optional[Dict[str, Any]] = None
+    engineer_knowledge: Optional[Dict[str, Any]] = None
+
+
 class SettingsSaveReq(BaseModel):
     dashboard_refresh_minutes: int = 10
     dashboard_bg_refresh_minutes: int = 10
@@ -705,6 +798,7 @@ class SettingsSaveReq(BaseModel):
     backup: Optional[BackupCfgReq] = None
     mail: Optional[MailCfgReq] = None
     llm: Optional[LLMCfgReq] = None
+    flowi_defaults: Optional[FlowiDefaultsReq] = None
     devguide_user: Optional[List[str]] = None
 
 
@@ -721,6 +815,7 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
     bk_in = data.pop("backup", None)
     mail_in = data.pop("mail", None)
     llm_in = data.pop("llm", None)
+    flowi_defaults_in = data.pop("flowi_defaults", None)
     devguide_in = data.pop("devguide_user", None)
     # Clamp to sane bounds: dashboard 1..240 minutes, SplitTable match cache 30..60 minutes.
     for k in ("dashboard_refresh_minutes", "dashboard_bg_refresh_minutes"):
@@ -904,6 +999,13 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         current["llm"] = llm_cur
         _save_admin_settings(current)
 
+    # v9.0.6: Flow-i home LLM defaults — admin only, read by routers/llm.py at runtime.
+    if flowi_defaults_in is not None:
+        current = _load_admin_settings()
+        cur_defaults = current.get("flowi_defaults") or {}
+        current["flowi_defaults"] = _flowi_default_settings(_merge_nested(cur_defaults, flowi_defaults_in))
+        _save_admin_settings(current)
+
     if devguide_in is not None:
         current = _load_admin_settings()
         approved = {u["username"] for u in read_users() if u.get("status") == "approved"}
@@ -911,7 +1013,7 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         _save_admin_settings(current)
 
     _audit(request, "admin:settings-save",
-           detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'} mail={'yes' if mail_in else 'no'} llm={'yes' if llm_in else 'no'} devguide={'yes' if devguide_in is not None else 'no'}",
+           detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'} mail={'yes' if mail_in else 'no'} llm={'yes' if llm_in else 'no'} flowi_defaults={'yes' if flowi_defaults_in is not None else 'no'} devguide={'yes' if devguide_in is not None else 'no'}",
            tab="admin")
     return {"ok": True, "settings": data, "data_roots": (_resolver_snapshot() if dr_in is not None else None)}
 

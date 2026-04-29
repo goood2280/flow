@@ -896,17 +896,71 @@ function ActivityDashboardPanel(){
 }
 
 // ── v9.0.5: Flow-i structured feedback review loop ──
+const FLOWI_DEFAULTS_FALLBACK={
+  chart_defaults:{
+    surface:"home_flowi",
+    scatter:{grain:"wafer_agg",max_points:500,inline_agg:"avg",et_agg:"median"},
+    line:{grain:"wafer_agg",max_points_per_series:120},
+    bar:{top_n:12,other_bucket:true},
+    pie:{max_slices:6,other_bucket:true},
+    box:{max_groups:12,min_n:3},
+  },
+  feedback_policy:{auto_apply_to_rag:false,review_required:true,promotion_target:"golden_cases"},
+  engineer_knowledge:{rag_update_requires_marker:true,admin_review_required:true,custom_knowledge_append_only:true},
+};
+function normalizeFlowiDefaults(raw={}){
+  const c=_obj(raw.chart_defaults);
+  const scatter={...FLOWI_DEFAULTS_FALLBACK.chart_defaults.scatter,..._obj(c.scatter)};
+  const line={...FLOWI_DEFAULTS_FALLBACK.chart_defaults.line,..._obj(c.line)};
+  const bar={...FLOWI_DEFAULTS_FALLBACK.chart_defaults.bar,..._obj(c.bar)};
+  const pie={...FLOWI_DEFAULTS_FALLBACK.chart_defaults.pie,..._obj(c.pie)};
+  const box={...FLOWI_DEFAULTS_FALLBACK.chart_defaults.box,..._obj(c.box)};
+  return{
+    chart_defaults:{
+      surface:c.surface||"home_flowi",
+      scatter:{...scatter,max_points:Number(scatter.max_points)||500},
+      line:{...line,max_points_per_series:Number(line.max_points_per_series)||120},
+      bar:{...bar,top_n:Number(bar.top_n)||12,other_bucket:bar.other_bucket!==false},
+      pie:{...pie,max_slices:Number(pie.max_slices)||6,other_bucket:pie.other_bucket!==false},
+      box:{...box,max_groups:Number(box.max_groups)||12,min_n:Number(box.min_n)||3},
+    },
+    feedback_policy:{...FLOWI_DEFAULTS_FALLBACK.feedback_policy,..._obj(raw.feedback_policy),auto_apply_to_rag:false},
+    engineer_knowledge:{...FLOWI_DEFAULTS_FALLBACK.engineer_knowledge,..._obj(raw.engineer_knowledge)},
+  };
+}
+
 function FlowiQualityPanel(){
   const[days,setDays]=useState(30);
   const[data,setData]=useState(null);
   const[err,setErr]=useState("");
   const[msg,setMsg]=useState("");
   const[promoting,setPromoting]=useState("");
+  const[defaults,setDefaults]=useState(FLOWI_DEFAULTS_FALLBACK);
+  const[defaultsMsg,setDefaultsMsg]=useState("");
+  const[defaultsBusy,setDefaultsBusy]=useState(false);
   const reload=()=>{
     setErr("");
     sf(`/api/llm/flowi/feedback/summary?days=${days}&limit=300`).then(setData).catch(e=>setErr("로드 오류: "+e.message));
   };
   useEffect(reload,[days]);
+  const reloadDefaults=()=>{
+    sf("/api/admin/settings").then(d=>setDefaults(normalizeFlowiDefaults(d.flowi_defaults||{}))).catch(e=>setDefaultsMsg("기본값 로드 오류: "+e.message));
+  };
+  useEffect(reloadDefaults,[]);
+  const patchChart=(kind,next)=>setDefaults(d=>({...d,chart_defaults:{...d.chart_defaults,[kind]:{..._obj(d.chart_defaults?.[kind]),...next}}}));
+  const patchPolicy=(next)=>setDefaults(d=>({...d,feedback_policy:{..._obj(d.feedback_policy),...next,auto_apply_to_rag:false}}));
+  const patchKnowledge=(next)=>setDefaults(d=>({...d,engineer_knowledge:{..._obj(d.engineer_knowledge),...next}}));
+  const saveDefaults=()=>{
+    setDefaultsBusy(true);setDefaultsMsg("");
+    const payload=normalizeFlowiDefaults(defaults);
+    sf("/api/admin/settings").then(cur=>sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+      dashboard_refresh_minutes:cur.dashboard_refresh_minutes??10,
+      dashboard_bg_refresh_minutes:cur.dashboard_bg_refresh_minutes??10,
+      flowi_defaults:payload,
+    })})).then(()=>{setDefaultsMsg("운영 기본값 저장됨");reloadDefaults();})
+      .catch(e=>setDefaultsMsg("저장 오류: "+e.message))
+      .finally(()=>setDefaultsBusy(false));
+  };
   const taxonomy=Object.fromEntries(_arr(data?.taxonomy).map(t=>[t.key,t]));
   const labelTag=(key)=>taxonomy[key]?.label||key;
   const toneFor=(rating,tags)=>{
@@ -971,6 +1025,16 @@ function FlowiQualityPanel(){
   const review=_arr(data?.review_queue);
   const recent=_arr(data?.recent);
   const golden=_arr(data?.golden_cases);
+  const cd=defaults.chart_defaults||{};
+  const scatter=cd.scatter||{};
+  const line=cd.line||{};
+  const bar=cd.bar||{};
+  const pie=cd.pie||{};
+  const box=cd.box||{};
+  const policy=defaults.feedback_policy||{};
+  const knowledge=defaults.engineer_knowledge||{};
+  const L={fontSize:11,color:"var(--text-secondary)",marginBottom:4,fontWeight:700};
+  const I={width:"100%",padding:"7px 9px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",boxSizing:"border-box"};
   return(<div style={{display:"grid",gap:16}}>
     <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
       <div>
@@ -984,6 +1048,84 @@ function FlowiQualityPanel(){
     </div>
     {err&&<Banner tone="bad">{err}</Banner>}
     {msg&&<Banner tone={msg.includes("저장됨")?"ok":"warn"}>{msg}</Banner>}
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:14}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:12}}>
+        <div>
+          <div style={{fontSize:13,fontWeight:800}}>Flow-i 운영 기본값</div>
+          <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:3}}>홈 Flow-i 차트와 엔지니어 지식 업데이트 정책입니다. 일반 유저는 이 값을 수정할 수 없습니다.</div>
+        </div>
+        <span style={{flex:1}}/>
+        <Button variant="ghost" onClick={reloadDefaults} disabled={defaultsBusy}>불러오기</Button>
+        <Button onClick={saveDefaults} disabled={defaultsBusy}>{defaultsBusy?"저장 중":"저장"}</Button>
+      </div>
+      {defaultsMsg&&<div style={{fontSize:11,color:defaultsMsg.includes("오류")?BAD.fg:OK.fg,marginBottom:10}}>{defaultsMsg}</div>}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:10}}>
+        <div>
+          <div style={L}>Scatter grain</div>
+          <select value={scatter.grain||"wafer_agg"} onChange={e=>patchChart("scatter",{grain:e.target.value})} style={I}>
+            <option value="wafer_agg">WF Agg</option>
+            <option value="shot">Shot</option>
+            <option value="die">Die</option>
+            <option value="map">Map</option>
+          </select>
+        </div>
+        <div>
+          <div style={L}>Scatter max points</div>
+          <input type="number" min={50} max={5000} value={scatter.max_points||500} onChange={e=>patchChart("scatter",{max_points:Number(e.target.value)||500})} style={{...I,fontFamily:"monospace"}}/>
+        </div>
+        <div>
+          <div style={L}>INLINE agg</div>
+          <select value={scatter.inline_agg||"avg"} onChange={e=>patchChart("scatter",{inline_agg:e.target.value})} style={I}>
+            <option value="avg">avg</option>
+            <option value="median">median</option>
+          </select>
+        </div>
+        <div>
+          <div style={L}>ET agg</div>
+          <select value={scatter.et_agg||"median"} onChange={e=>patchChart("scatter",{et_agg:e.target.value})} style={I}>
+            <option value="median">median</option>
+            <option value="avg">avg</option>
+          </select>
+        </div>
+        <div>
+          <div style={L}>Line max / series</div>
+          <input type="number" min={20} max={1000} value={line.max_points_per_series||120} onChange={e=>patchChart("line",{max_points_per_series:Number(e.target.value)||120})} style={{...I,fontFamily:"monospace"}}/>
+        </div>
+        <div>
+          <div style={L}>Bar top N</div>
+          <input type="number" min={3} max={50} value={bar.top_n||12} onChange={e=>patchChart("bar",{top_n:Number(e.target.value)||12})} style={{...I,fontFamily:"monospace"}}/>
+        </div>
+        <div>
+          <div style={L}>Pie max slices</div>
+          <input type="number" min={3} max={20} value={pie.max_slices||6} onChange={e=>patchChart("pie",{max_slices:Number(e.target.value)||6})} style={{...I,fontFamily:"monospace"}}/>
+        </div>
+        <div>
+          <div style={L}>Box groups / min N</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+            <input type="number" min={3} max={50} value={box.max_groups||12} onChange={e=>patchChart("box",{max_groups:Number(e.target.value)||12})} style={{...I,fontFamily:"monospace"}}/>
+            <input type="number" min={1} max={30} value={box.min_n||3} onChange={e=>patchChart("box",{min_n:Number(e.target.value)||3})} style={{...I,fontFamily:"monospace"}}/>
+          </div>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:10,marginTop:12}}>
+        <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--text-primary)",padding:"8px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
+          <input type="checkbox" checked={false} disabled onChange={()=>{}}/>
+          피드백 RAG 자동반영 비활성
+        </label>
+        <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--text-primary)",padding:"8px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
+          <input type="checkbox" checked={policy.review_required!==false} onChange={e=>patchPolicy({review_required:e.target.checked})}/>
+          피드백 리뷰 후 Golden 승격
+        </label>
+        <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--text-primary)",padding:"8px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
+          <input type="checkbox" checked={knowledge.rag_update_requires_marker!==false} onChange={e=>patchKnowledge({rag_update_requires_marker:e.target.checked})}/>
+          RAG 업데이트 marker 필요
+        </label>
+        <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--text-primary)",padding:"8px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
+          <input type="checkbox" checked={knowledge.custom_knowledge_append_only!==false} onChange={e=>patchKnowledge({custom_knowledge_append_only:e.target.checked})}/>
+          엔지니어 지식 append-only
+        </label>
+      </div>
+    </div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10}}>
       {smallCount("총 피드백",data?.total||0)}
       {smallCount("정확함",data?.by_rating?.up||0,"ok")}
