@@ -14,14 +14,13 @@ if str(ROOT / "backend") not in sys.path:
 from core import semiconductor_knowledge as semi  # noqa: E402
 
 
-def test_item_resolution_uses_item_master_metadata():
+def test_item_resolution_is_guarded_when_item_master_is_empty():
     out = semi.resolve_item_semantics(["DIBL"])
 
-    assert out["resolved"][0]["canonical_item_id"] == "DIBL"
-    item = out["resolved"][0]["item"]
-    assert item["unit"] == "mV/V"
-    assert item["source_type"] == "ET"
-    assert "Id-Vg" in item["measurement_method"]
+    assert out["resolved"] == []
+    assert out["unresolved"][0]["raw_item"] == "DIBL"
+    assert out["unresolved"][0]["status"] == "unresolved"
+    assert "Add item_master metadata" in out["unresolved"][0]["reason"]
 
 
 def test_ca_rs_without_context_is_ambiguous():
@@ -30,7 +29,7 @@ def test_ca_rs_without_context_is_ambiguous():
     row = out["resolved"][0]
     assert row["status"] == "ambiguous"
     assert row["canonical_item_id"] == ""
-    assert {c["canonical_item_id"] for c in row["candidates"]} >= {"CA_RS", "CA_RC_KELVIN", "CA_CHAIN_R"}
+    assert row["candidates"] == []
     assert "raw name alone" in row["ambiguity"]
 
 
@@ -42,7 +41,7 @@ def test_ca_rs_contact_structure_maps_to_contact_candidate():
     row = out["resolved"][0]
     assert row["status"] == "resolved_with_context"
     assert row["canonical_item_id"] == "CA_RC_KELVIN"
-    assert "contact resistance" in row["item"]["meaning"]
+    assert row["item"] == {}
 
 
 def test_ca_rs_sheet_context_maps_to_sheet_resistance():
@@ -53,7 +52,7 @@ def test_ca_rs_sheet_context_maps_to_sheet_resistance():
     row = out["resolved"][0]
     assert row["status"] == "resolved"
     assert row["canonical_item_id"] == "CA_RS"
-    assert row["item"]["test_structure"] == "sheet_resistance"
+    assert row["item"] == {}
 
 
 def test_diagnosis_output_schema_is_deterministic_and_guarded():
@@ -75,9 +74,10 @@ def test_diagnosis_output_schema_is_deterministic_and_guarded():
     ]:
         assert key in report
     assert report["mode"] == "mock_llm_deterministic"
-    assert report["ranked_hypotheses"]
+    assert report["ranked_hypotheses"] == []
     assert report["eval"]["passed"] is True
-    assert any("CA_RS" in item for item in report["do_not_conclude"])
+    assert report["knowledge_cards"] == []
+    assert any("knowledge" in item.lower() for item in report["missing_data"])
     assert any(step["stage"] == "graph_causal_db" for step in report["pipeline"])
 
 
@@ -86,30 +86,29 @@ def test_semiconductor_storage_manifest_documents_runtime_and_seed_paths():
 
     assert manifest["code_seed"]["python_module"] == "backend/core/semiconductor_knowledge.py"
     assert manifest["code_seed"]["default_rca_seed"].endswith("semiconductor_rca_seed_knowledge.json")
-    assert manifest["default_seed_pack"]["card_count"] >= 8
+    assert manifest["default_seed_pack"]["card_count"] == 0
     assert "flow-data" in manifest["runtime_data"]["description"]
     assert "custom_knowledge" in manifest["runtime_data"]
 
 
-def test_default_seed_knowledge_pack_extends_rca_cards_and_cases():
+def test_default_seed_knowledge_pack_starts_empty_for_site_specific_registration():
     cards = semi.seed_knowledge_cards()
     cases = semi.seed_historical_cases()
     edges = semi.seed_causal_edges()
 
-    assert any(card["id"] == "SEED_KC_GAA_DIBL_SS_SHORT_LG" for card in cards)
-    assert any("GAA_CHANNEL_RELEASE" in card.get("module_tags", []) for card in cards)
-    assert any(case["case_id"] == "SEED_CASE_GAA_DIBL_SS" for case in cases)
-    assert any(edge["source"] == "GAA_CHANNEL_RELEASE" and edge["target"] == "DIBL" for edge in edges)
+    assert cards == []
+    assert cases == []
+    assert edges == []
 
 
-def test_seed_knowledge_is_used_by_search_graph_and_cases():
+def test_empty_seed_search_graph_and_cases_are_graceful():
     cards = semi.search_knowledge_cards("GAA short Lg DIBL SS 증가", limit=5)["cards"]
     graph = semi.traverse_causal_graph(["GAA_CHANNEL_RELEASE"], max_depth=1)
     cases = semi.find_similar_cases({"items": ["DIBL", "SS"], "terms": ["short_lg"], "modules": ["GAA_CHANNEL_RELEASE"]})
 
-    assert any(card["id"] == "SEED_KC_GAA_DIBL_SS_SHORT_LG" for card in cards)
-    assert any(path["edge"]["target"] == "DIBL" for path in graph["paths"])
-    assert any(case["case_id"] == "SEED_CASE_GAA_DIBL_SS" for case in cases["cases"])
+    assert cards == []
+    assert graph["paths"] == []
+    assert cases["cases"] == []
 
 
 def test_rag_update_requires_marker_for_non_admin(tmp_path, monkeypatch):
@@ -137,6 +136,47 @@ def test_rag_update_requires_marker_for_non_admin(tmp_path, monkeypatch):
     assert out["ok"] is True
     assert out["saved"]["visibility"] == "private"
     assert (tmp_path / "custom_knowledge.jsonl").exists()
+
+
+def test_document_knowledge_is_public_shared_runtime_rag(tmp_path, monkeypatch):
+    monkeypatch.setattr(semi, "SEMICONDUCTOR_DIR", tmp_path)
+    monkeypatch.setattr(semi, "CUSTOM_KNOWLEDGE_FILE", tmp_path / "custom_knowledge.jsonl")
+
+    out = semi.add_document_knowledge(
+        {
+            "title": "공용 심층리서치",
+            "document_type": "gpt_deep_research",
+            "visibility": "private",
+            "content": "GAA short Lg DIBL SS RCA document. Gate CD와 electrostatic check를 같이 본다.",
+        },
+        username="admin1",
+        role="admin",
+    )
+
+    assert out["ok"] is True
+    assert out["saved"]["kind"] == "document"
+    assert out["saved"]["visibility"] == "public"
+    assert out["structured"]["review_status"] == "admin_added_public"
+    user_rows = semi.custom_knowledge_rows(username="u1", role="user")
+    assert len(user_rows) == 1
+    assert user_rows[0]["title"] == "공용 심층리서치"
+
+
+def test_document_knowledge_registration_is_admin_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(semi, "SEMICONDUCTOR_DIR", tmp_path)
+    monkeypatch.setattr(semi, "CUSTOM_KNOWLEDGE_FILE", tmp_path / "custom_knowledge.jsonl")
+
+    try:
+        semi.add_document_knowledge(
+            {"title": "개인 문서", "content": "private document should not be accepted"},
+            username="u1",
+            role="user",
+        )
+    except ValueError as e:
+        assert "admin-only" in str(e)
+    else:
+        raise AssertionError("non-admin document knowledge registration should fail")
+    assert not (tmp_path / "custom_knowledge.jsonl").exists()
 
 
 def test_reformatter_alias_proposal_keeps_teg_discriminators():

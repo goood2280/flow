@@ -95,3 +95,25 @@ def test_openai_compatible_provider_does_not_send_internal_mode_parameter():
 
     assert body["model"] == "compatible-model"
     assert "mode" not in body
+
+
+def test_local_provider_uses_openai_shape_without_auth_or_internal_mode():
+    cfg = {
+        "provider": "local",
+        "auth_mode": "none",
+        "admin_token": "secret",
+        "headers": {},
+        "format": "openai",
+        "extra_body": {},
+        "mode": "fast",
+        "model": "GPT-OSS-120B",
+    }
+
+    headers = _build_request_headers(cfg)
+    body = _build_request_body(cfg, "ping", None)
+
+    assert "Authorization" not in headers
+    assert "x-dep-ticket" not in headers
+    assert body["model"] == "GPT-OSS-120B"
+    assert "mode" not in body
+    assert body["messages"] == [{"role": "user", "content": "ping"}]

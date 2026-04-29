@@ -584,7 +584,7 @@ export default function My_Meeting({ user }) {
   };
 
   return (
-    <div style={{ position: "relative", display: "flex", height: "calc(100vh - 48px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
+    <div className="flow-connected-page" style={{ position: "relative", display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
       {/* Left list */}
       <div style={{ width: 340, minWidth: 300, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>

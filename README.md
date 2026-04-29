@@ -16,7 +16,7 @@ Fab data analytics + plan vs actual tracking platform.
 | 지금 바로 실행 | 이 README의 [Quick Start](#quick-start) |
 | 문서 전체 입구 | [docs/README.md](docs/README.md) |
 | 구조 파악 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| 반도체 진단/RCA 지식 구조 | [docs/SEMICONDUCTOR_DIAGNOSIS_MVP.md](docs/SEMICONDUCTOR_DIAGNOSIS_MVP.md) |
+| 반도체 진단/RCA 지식 구조 | [docs/SEMICONDUCTOR_DIAGNOSIS_RCA.md](docs/SEMICONDUCTOR_DIAGNOSIS_RCA.md) |
 | 사내 지식/RAG 입력 운영 | [docs/RAG/SEMICONDUCTOR_RAG_OPERATIONS.md](docs/RAG/SEMICONDUCTOR_RAG_OPERATIONS.md) |
 | 동시성/번들 분리와 웹 기능 사용 | [docs/WEB_CONCURRENCY_BUNDLE_GUIDE.md](docs/WEB_CONCURRENCY_BUNDLE_GUIDE.md) |
 | 수정 반영 기준 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
@@ -36,7 +36,6 @@ Fab data analytics + plan vs actual tracking platform.
 | ET 레포트 | product/lot 검색, measurement package, `step_seq(XXpt)`, reformatter index, PPTX |
 | 웨이퍼 레이아웃 | wafer/shot/chip/TEG layout, selected TEG, chip-shot table, CSV export |
 | 테이블맵 | DB 관계 그래프, table edit/version, product YAML block 관리 |
-| ML 분석 | TabICL/XGBoost/LightGBM trigger, SHAP/feature importance, process area filter |
 | 인폼 로그 | lot/root 단위 thread, PEMS reason, image, SplitTable CUSTOM snapshot, timeline |
 | 회의관리 | 회의 차수, agenda, minutes, tracker issue import, mail |
 | 변경점 관리 | 월 grid, pending/in_progress/done, meeting action/decision sync |

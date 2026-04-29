@@ -5,9 +5,7 @@ import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
 import { sf, dl, postJson, userLabel, userMatches } from "../lib/api";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
-//   순서 = TABS(config.js) — home/admin 제외: filebrowser → dashboard → splittable → tracker →
-//   inform → meeting → calendar → tablemap → ml → devguide(맨 뒤).
-const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","ettime","waferlayout","tracker","inform","meeting","calendar","tablemap","ml","devguide"];
+const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","ettime","waferlayout","tracker","inform","meeting","calendar","tablemap","devguide"];
 // v8.7.5: u.tabs 는 string 이지만 legacy json 에서 array 로 저장된 기록이 있을 수 있어
 // "r.split is not a function" 방지를 위해 정규화 헬퍼를 둔다.
 function _tabsToArray(v){
@@ -154,7 +152,7 @@ export default function My_Admin({user}){
     if(logFilter.tab)q.set("tab",logFilter.tab);
     sf("/api/admin/logs?"+q.toString()).then(d=>setLogs(d.logs||[])).catch(()=>{});
   };
-  useEffect(load,[]);
+  useEffect(()=>{load();},[]);
   useEffect(()=>{if(isAdmin&&tab==="logs")reloadLogs();},[logFilter.username,logFilter.action,logFilter.tab]);
   // v8.2.0: Bell dismiss / external read → re-load this tab's notif list immediately
   useEffect(()=>{
@@ -220,7 +218,7 @@ export default function My_Admin({user}){
   //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
   //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
   //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["inform_cfg","인폼 설정"],["mail_cfg","메일 API"],["llm_cfg","LLM"],["flowi_quality","Flow-i 품질"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["inform_cfg","인폼 설정"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -254,7 +252,7 @@ export default function My_Admin({user}){
   const resourceChartHours=resWindow==="7d"?168:24;
 
   return(
-    <div style={{padding:"24px 32px",background:"var(--bg-primary)",minHeight:"calc(100vh - 48px)",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif"}}>
+    <div style={{padding:"24px 32px",background:"var(--bg-primary)",minHeight:"calc(100vh - 52px)",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif"}}>
       <PageHeader
         title={isAdmin?"관리자 콘솔":"내 관리"}
         subtitle={isAdmin?"사용자·권한·운영 설정을 한 곳에서 관리합니다.":"내 알림과 로그를 확인합니다."}
@@ -620,12 +618,6 @@ export default function My_Admin({user}){
       {/* v8.7.2: Mail API (admin only) */}
       {tab==="mail_cfg"&&isAdmin&&<MailCfgPanel/>}
 
-      {/* v9.0.4: Flowi LLM admin-managed token */}
-      {tab==="llm_cfg"&&isAdmin&&<LlmCfgPanel/>}
-
-      {/* v9.0.5: Flow-i structured feedback review loop */}
-      {tab==="flowi_quality"&&isAdmin&&<FlowiQualityPanel/>}
-
       {/* v8.8.14: Per-page admin delegation (admin only) */}
       {tab==="page_admins"&&isAdmin&&<PageAdminsPanel users={users}/>}
 
@@ -645,7 +637,7 @@ export default function My_Admin({user}){
 const PAGE_IDS=[
   ["filebrowser","파일탐색기"],["dashboard","대시보드"],["splittable","스플릿 테이블"],
   ["tracker","이슈 추적"],["informs","인폼 로그"],["meetings","회의관리"],["calendar","변경점 관리"],
-  ["tablemap","테이블맵"],["ml","ML 분석"],
+  ["tablemap","테이블맵"],
   ["spc","SPC"],["ettime","ET 레포트"],["wafer_map","웨이퍼 맵"],
   ["messages","문의함"],["groups","그룹"],
 ];
@@ -663,7 +655,7 @@ function PageAdminsPanel({users}){
       })
       .catch(e=>setMsg("로드 오류: "+e.message));
   };
-  useEffect(reload,[]);
+  useEffect(()=>{reload();},[]);
   // v8.8.21: 행=유저 / 열=페이지 매트릭스. admin 유저는 자동 전체 허용 (체크 disabled).
   // v8.8.28: Array.isArray 가드 — users 가 object 로 떨어져도 PageAdminsPanel 크래시 방지.
   const approved=(Array.isArray(users)?users:[]).filter(u=>u&&u.status==="approved");
@@ -748,7 +740,7 @@ function BackupSchedulePanel(){
     setForm({interval_hours:s.interval_hours||24,enabled:s.enabled!==false,keep:s.keep||5});
     setSched({at:(s.scheduled_at||"").slice(0,16),reason:s.scheduled_reason||"pre-maintenance"});
   }).catch(e=>setMsg("로드 오류: "+e.message));
-  useEffect(reload,[]);
+  useEffect(()=>{reload();},[]);
   const saveSettings=()=>{
     setMsg("");
     sf("/api/admin/settings").then(cur=>sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
@@ -832,7 +824,7 @@ function ActivityDashboardPanel(){
     sf("/api/admin/activity/summary?days="+days).then(setSummary).catch(e=>setErr("요약 로드 오류: "+e.message));
     sf("/api/admin/activity/features?days="+days).then(setFeatures).catch(()=>{});
   };
-  useEffect(reload,[days]);
+  useEffect(()=>{reload();},[days]);
   const barItem=(label,val,max,color)=>(<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
     <span style={{fontSize:11,minWidth:120,fontFamily:"monospace"}}>{label}</span>
     <div style={{flex:1,height:14,background:"var(--bg-tertiary)",borderRadius:3,overflow:"hidden"}}>
@@ -929,7 +921,7 @@ function normalizeFlowiDefaults(raw={}){
   };
 }
 
-function FlowiQualityPanel(){
+export function FlowiQualityPanel(){
   const[days,setDays]=useState(30);
   const[data,setData]=useState(null);
   const[err,setErr]=useState("");
@@ -938,18 +930,20 @@ function FlowiQualityPanel(){
   const[defaults,setDefaults]=useState(FLOWI_DEFAULTS_FALLBACK);
   const[defaultsMsg,setDefaultsMsg]=useState("");
   const[defaultsBusy,setDefaultsBusy]=useState(false);
+  const[adminUpdate,setAdminUpdate]=useState({mode:"workflow",prompt:"",expected_intent:"",expected_tool:"",expected_answer:"",data_refs:"",notes:""});
+  const[adminUpdateMsg,setAdminUpdateMsg]=useState("");
+  const[adminUpdateBusy,setAdminUpdateBusy]=useState(false);
   const reload=()=>{
     setErr("");
     sf(`/api/llm/flowi/feedback/summary?days=${days}&limit=300`).then(setData).catch(e=>setErr("로드 오류: "+e.message));
   };
-  useEffect(reload,[days]);
+  useEffect(()=>{reload();},[days]);
   const reloadDefaults=()=>{
     sf("/api/admin/settings").then(d=>setDefaults(normalizeFlowiDefaults(d.flowi_defaults||{}))).catch(e=>setDefaultsMsg("기본값 로드 오류: "+e.message));
   };
-  useEffect(reloadDefaults,[]);
+  useEffect(()=>{reloadDefaults();},[]);
   const patchChart=(kind,next)=>setDefaults(d=>({...d,chart_defaults:{...d.chart_defaults,[kind]:{..._obj(d.chart_defaults?.[kind]),...next}}}));
   const patchPolicy=(next)=>setDefaults(d=>({...d,feedback_policy:{..._obj(d.feedback_policy),...next,auto_apply_to_rag:false}}));
-  const patchKnowledge=(next)=>setDefaults(d=>({...d,engineer_knowledge:{..._obj(d.engineer_knowledge),...next}}));
   const saveDefaults=()=>{
     setDefaultsBusy(true);setDefaultsMsg("");
     const payload=normalizeFlowiDefaults(defaults);
@@ -960,6 +954,20 @@ function FlowiQualityPanel(){
     })})).then(()=>{setDefaultsMsg("운영 기본값 저장됨");reloadDefaults();})
       .catch(e=>setDefaultsMsg("저장 오류: "+e.message))
       .finally(()=>setDefaultsBusy(false));
+  };
+  const patchAdminUpdate=(next)=>setAdminUpdate(d=>({...d,...next}));
+  const submitAdminUpdate=()=>{
+    setAdminUpdateBusy(true);setAdminUpdateMsg("");
+    postJson("/api/llm/flowi/admin/update",adminUpdate)
+      .then(d=>{
+        const workflowId=d?.workflow?.id||"";
+        const bits=[];
+        if(workflowId)bits.push(`workflow ${workflowId}`);
+        setAdminUpdateMsg(bits.length?`workflow 저장됨: ${bits.join(" / ")}`:"workflow 저장됨");
+        reload();
+      })
+      .catch(e=>setAdminUpdateMsg("업데이트 오류: "+(e.message||e)))
+      .finally(()=>setAdminUpdateBusy(false));
   };
   const taxonomy=Object.fromEntries(_arr(data?.taxonomy).map(t=>[t.key,t]));
   const labelTag=(key)=>taxonomy[key]?.label||key;
@@ -1032,7 +1040,6 @@ function FlowiQualityPanel(){
   const pie=cd.pie||{};
   const box=cd.box||{};
   const policy=defaults.feedback_policy||{};
-  const knowledge=defaults.engineer_knowledge||{};
   const L={fontSize:11,color:"var(--text-secondary)",marginBottom:4,fontWeight:700};
   const I={width:"100%",padding:"7px 9px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",boxSizing:"border-box"};
   return(<div style={{display:"grid",gap:16}}>
@@ -1051,8 +1058,55 @@ function FlowiQualityPanel(){
     <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:14}}>
       <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:12}}>
         <div>
+          <div style={{fontSize:13,fontWeight:800}}>Admin workflow 업데이트</div>
+          <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:3}}>홈 Flow-i 피드백을 바탕으로 golden workflow만 관리합니다. RAG 지식 등록은 에이전트 페이지의 RAG 반영 화면에서 처리합니다.</div>
+        </div>
+        <span style={{flex:1}}/>
+        <Button onClick={submitAdminUpdate} disabled={adminUpdateBusy}>{adminUpdateBusy?"저장 중":"workflow 저장"}</Button>
+      </div>
+      {adminUpdateMsg&&<div style={{fontSize:11,color:adminUpdateMsg.includes("오류")?BAD.fg:OK.fg,marginBottom:10}}>{adminUpdateMsg}</div>}
+      <div style={{display:"grid",gridTemplateColumns:"minmax(280px,1.2fr) minmax(240px,0.8fr)",gap:12}}>
+        <div>
+          <div style={L}>대표 prompt</div>
+          <textarea value={adminUpdate.prompt} onChange={e=>patchAdminUpdate({prompt:e.target.value})} rows={7}
+            placeholder="예: 사용자가 INLINE CD와 ET metric 상관을 물으면 source type과 join grain을 먼저 확인"
+            style={{...I,resize:"vertical",lineHeight:1.55}}/>
+        </div>
+        <div style={{display:"grid",gap:8}}>
+          <div>
+            <div style={L}>기대 intent</div>
+            <input value={adminUpdate.expected_intent} onChange={e=>patchAdminUpdate({expected_intent:e.target.value})} placeholder="dashboard_scatter_plan" style={{...I,fontFamily:"monospace"}}/>
+          </div>
+          <div>
+            <div style={L}>기대 동작/tool</div>
+            <input value={adminUpdate.expected_tool} onChange={e=>patchAdminUpdate({expected_tool:e.target.value})} placeholder="build_metric_scatter" style={{...I,fontFamily:"monospace"}}/>
+          </div>
+          <div>
+            <div style={L}>정답 DB/컬럼</div>
+            <input value={adminUpdate.data_refs} onChange={e=>patchAdminUpdate({data_refs:e.target.value})} placeholder="INLINE item_id=..., ET item_id=..." style={{...I,fontFamily:"monospace"}}/>
+          </div>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:10}}>
+        <div>
+          <div style={L}>기대 답변 / 정답 경로</div>
+          <textarea value={adminUpdate.expected_answer} onChange={e=>patchAdminUpdate({expected_answer:e.target.value})} rows={4}
+            placeholder="Flow-i가 따라야 할 조회 순서, 집계 기준, 확인 질문 기준"
+            style={{...I,resize:"vertical",lineHeight:1.5}}/>
+        </div>
+        <div>
+          <div style={L}>운영 메모</div>
+          <textarea value={adminUpdate.notes} onChange={e=>patchAdminUpdate({notes:e.target.value})} rows={4}
+            placeholder="관리자가 리뷰한 이유, 적용 범위, 금지 조건"
+            style={{...I,resize:"vertical",lineHeight:1.5}}/>
+        </div>
+      </div>
+    </div>
+    <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:14}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:12}}>
+        <div>
           <div style={{fontSize:13,fontWeight:800}}>Flow-i 운영 기본값</div>
-          <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:3}}>홈 Flow-i 차트와 엔지니어 지식 업데이트 정책입니다. 일반 유저는 이 값을 수정할 수 없습니다.</div>
+          <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:3}}>홈 Flow-i 차트와 피드백 운영 정책입니다. RAG 지식 등록은 에이전트 페이지에서 처리합니다.</div>
         </div>
         <span style={{flex:1}}/>
         <Button variant="ghost" onClick={reloadDefaults} disabled={defaultsBusy}>불러오기</Button>
@@ -1115,14 +1169,6 @@ function FlowiQualityPanel(){
         <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--text-primary)",padding:"8px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
           <input type="checkbox" checked={policy.review_required!==false} onChange={e=>patchPolicy({review_required:e.target.checked})}/>
           피드백 리뷰 후 Golden 승격
-        </label>
-        <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--text-primary)",padding:"8px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
-          <input type="checkbox" checked={knowledge.rag_update_requires_marker!==false} onChange={e=>patchKnowledge({rag_update_requires_marker:e.target.checked})}/>
-          RAG 업데이트 marker 필요
-        </label>
-        <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--text-primary)",padding:"8px 10px",borderRadius:7,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
-          <input type="checkbox" checked={knowledge.custom_knowledge_append_only!==false} onChange={e=>patchKnowledge({custom_knowledge_append_only:e.target.checked})}/>
-          엔지니어 지식 append-only
         </label>
       </div>
     </div>
@@ -1213,7 +1259,7 @@ function MailCfgPanel(){
       setCfg({api_url:m.api_url||"",dep_ticket:dt,from_addr:m.from_addr||"",status_code:m.status_code||"",domain:(m.domain||"").replace(/^@/,""),enabled:!!m.enabled});
     }).catch(()=>{});
   };
-  useEffect(reload,[]);
+  useEffect(()=>{reload();},[]);
   const save=()=>{
     setBusy(true);setMsg("");
     sf("/api/admin/settings").then(cur=>{
@@ -1316,62 +1362,101 @@ function MailCfgPanel(){
 }
 
 // ── v9.0.4: Flowi LLM 설정 — admin token 을 서버 설정에 저장하고 사용자는 실행만 한다. ──
-function LlmCfgPanel(){
-  const[cfg,setCfg]=useState({enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"generic",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20});
+export function LlmCfgPanel(){
+  const FALLBACK_LLM_DEFAULTS={
+    openai:{enabled:false,api_url:"https://api.openai.com/v1",model:"gpt-5-nano",mode:"fast",admin_token:"",provider:"openai",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20},
+    openai_compatible:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"openai_compatible",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:30},
+    local:{enabled:false,api_url:"",model:"GPT-OSS-120B",mode:"fast",admin_token:"",provider:"local",auth_mode:"none",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
+    generic:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"generic",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20},
+    playground:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"playground",auth_mode:"dep_ticket",system_name:"playground",user_id:"",user_type:"",format:"openai",timeout_s:20},
+  };
+  const PROVIDERS=Object.keys(FALLBACK_LLM_DEFAULTS);
+  const[cfg,setCfg]=useState(FALLBACK_LLM_DEFAULTS.generic);
+  const[profiles,setProfiles]=useState({});
+  const[profileDefaults,setProfileDefaults]=useState({});
   const[msg,setMsg]=useState("");
   const[busy,setBusy]=useState(false);
   const[testBusy,setTestBusy]=useState(false);
   const[testPrompt,setTestPrompt]=useState("연결 확인입니다. 정상 수신했다면 확인완료 라고만 답하세요.");
   const[showToken,setShowToken]=useState(false);
-  const normalize=(l={})=>{
-    const provider=(l.provider||"generic").toString().trim()||"generic";
-    return {
-      enabled:!!l.enabled,
-      api_url:l.api_url||"",
-      model:l.model||"",
-      mode:l.mode||"fast",
-      admin_token:l.admin_token||"",
-      provider,
-      auth_mode:l.auth_mode||(provider==="playground"?"dep_ticket":"bearer"),
-      system_name:l.system_name||(provider==="playground"?"playground":""),
-      user_id:l.user_id||"",
-      user_type:l.user_type||"",
-      format:l.format||"openai",
-      timeout_s:Number(l.timeout_s||20),
-    };
+  const cleanProvider=(provider)=>{
+    const p=(provider||"generic").toString().trim();
+    return PROVIDERS.includes(p)?p:"generic";
+  };
+  const providerDefaults=(provider,defaultsMap=profileDefaults)=>{
+    const p=cleanProvider(provider);
+    return {...(FALLBACK_LLM_DEFAULTS[p]||FALLBACK_LLM_DEFAULTS.generic),...((defaultsMap||{})[p]||{})};
+  };
+  const normalizeWithDefaults=(l={},providerHint="",defaultsMap=profileDefaults)=>{
+    const provider=cleanProvider(l.provider||providerHint);
+    const base=providerDefaults(provider,defaultsMap);
+    const out={...base,...l,provider};
+    const timeout=Number(out.timeout_s||base.timeout_s||20);
+    out.enabled=!!out.enabled;
+    out.api_url=(out.api_url||"").toString();
+    out.model=(out.model||"").toString();
+    out.mode=(out.mode||"fast").toString()||"fast";
+    out.admin_token=(out.admin_token||"").toString();
+    out.auth_mode=(out.auth_mode||base.auth_mode||"bearer").toString();
+    if(!["bearer","dep_ticket","none"].includes(out.auth_mode))out.auth_mode=base.auth_mode||"bearer";
+    out.system_name=(out.system_name||(provider==="playground"?"playground":"")).toString();
+    out.user_id=(out.user_id||"").toString();
+    out.user_type=(out.user_type||"").toString();
+    out.format=(out.format||"openai").toString();
+    out.timeout_s=Math.max(3,Math.min(120,Number.isFinite(timeout)?timeout:(base.timeout_s||20)));
+    return out;
   };
   const reload=()=>{
-    sf("/api/admin/settings").then(d=>setCfg(normalize(d.llm||{}))).catch(e=>setMsg("로드 오류: "+e.message));
+    sf("/api/admin/settings").then(d=>{
+      const defaults=d.llm_profile_defaults||{};
+      const saved=d.llm_profiles||{};
+      const nextProfiles={};
+      Object.entries(saved).forEach(([provider,payload])=>{
+        const normalized=normalizeWithDefaults(payload||{},provider,defaults);
+        nextProfiles[normalized.provider]=normalized;
+      });
+      const active=normalizeWithDefaults(d.llm||{},(d.llm||{}).provider||"generic",defaults);
+      if(active.provider&&!nextProfiles[active.provider])nextProfiles[active.provider]=active;
+      setProfileDefaults(defaults);
+      setProfiles(nextProfiles);
+      setCfg(active);
+    }).catch(e=>setMsg("로드 오류: "+e.message));
   };
-  useEffect(reload,[]);
-  const patch=(next)=>setCfg(c=>({...c,...next}));
-  const setProvider=(provider)=>setCfg(c=>({
-    ...c,
-    provider,
-    auth_mode:provider==="playground"?"dep_ticket":(c.auth_mode==="dep_ticket"?"bearer":(c.auth_mode||"bearer")),
-    system_name:provider==="playground"?(c.system_name||"playground"):c.system_name,
-    format:provider==="playground"||provider==="openai"||provider==="openai_compatible"?"openai":c.format,
-    api_url:provider==="openai"&&!c.api_url?"https://api.openai.com/v1":c.api_url,
-    model:provider==="openai"&&!c.model?"gpt-5-nano":c.model,
-  }));
+  useEffect(()=>{reload();},[]);
+  const patch=(next)=>setCfg(c=>{
+    const updated=normalizeWithDefaults({...c,...next},c.provider,profileDefaults);
+    setProfiles(p=>({...p,[updated.provider]:updated}));
+    return updated;
+  });
+  const setProvider=(provider)=>{
+    const nextProvider=cleanProvider(provider);
+    setProfiles(prev=>{
+      const curProvider=cleanProvider(cfg.provider);
+      const withCurrent={...prev,[curProvider]:normalizeWithDefaults(cfg,curProvider,profileDefaults)};
+      const nextCfg=normalizeWithDefaults(withCurrent[nextProvider]||{},nextProvider,profileDefaults);
+      setCfg(nextCfg);
+      return withCurrent;
+    });
+  };
   const save=()=>{
     setBusy(true);setMsg("");
+    const active=normalizeWithDefaults(cfg,cfg.provider,profileDefaults);
     sf("/api/admin/settings").then(cur=>sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       dashboard_refresh_minutes:cur.dashboard_refresh_minutes??10,
       dashboard_bg_refresh_minutes:cur.dashboard_bg_refresh_minutes??10,
       llm:{
-        enabled:!!cfg.enabled,
-        api_url:cfg.api_url,
-        model:cfg.model,
-        mode:cfg.mode||"fast",
-        admin_token:cfg.admin_token,
-        provider:cfg.provider||"generic",
-        auth_mode:cfg.auth_mode||(cfg.provider==="playground"?"dep_ticket":"bearer"),
-        system_name:cfg.system_name,
-        user_id:cfg.user_id,
-        user_type:cfg.user_type,
-        format:cfg.format||"openai",
-        timeout_s:Number(cfg.timeout_s)||20,
+        enabled:!!active.enabled,
+        api_url:active.api_url,
+        model:active.model,
+        mode:active.mode||"fast",
+        admin_token:active.admin_token,
+        provider:active.provider||"generic",
+        auth_mode:active.auth_mode||providerDefaults(active.provider).auth_mode||"bearer",
+        system_name:active.system_name,
+        user_id:active.user_id,
+        user_type:active.user_type,
+        format:active.format||"openai",
+        timeout_s:Number(active.timeout_s)||20,
       },
     })})).then(()=>{setMsg("저장됨");reload();}).catch(e=>setMsg("오류: "+e.message)).finally(()=>setBusy(false));
   };
@@ -1384,8 +1469,11 @@ function LlmCfgPanel(){
   };
   const L={fontSize:11,color:"var(--text-secondary)",marginBottom:4,marginTop:10,fontWeight:600};
   const I={width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",boxSizing:"border-box"};
-  const isPlayground=(cfg.provider||"generic")==="playground";
-  const authMode=cfg.auth_mode||(isPlayground?"dep_ticket":"bearer");
+  const provider=cleanProvider(cfg.provider);
+  const isPlayground=provider==="playground";
+  const isLocal=provider==="local";
+  const showMode=provider==="generic";
+  const authMode=cfg.auth_mode||providerDefaults(provider).auth_mode||"bearer";
   const previewHeaders={
     Accept:"application/json",
     "Content-Type":"application/json",
@@ -1405,14 +1493,14 @@ function LlmCfgPanel(){
     temperature:0.5,
     stream:false,
   }:{
-    ...(cfg.mode?{mode:cfg.mode}:{}),
+    ...(showMode&&cfg.mode?{mode:cfg.mode}:{}),
     ...(cfg.model?{model:cfg.model}:{}),
     [cfg.format==="raw"?"prompt":"messages"]:cfg.format==="raw"?"...":[{role:"system",content:"..."},{role:"user",content:"..."}],
   };
   const preview={
     enabled:!!cfg.enabled,
     request:"POST "+(cfg.api_url||"(설정 필요)"),
-    provider:cfg.provider||"generic",
+    provider,
     auth_mode:authMode,
     headers:previewHeaders,
     body:previewBody,
@@ -1433,21 +1521,22 @@ function LlmCfgPanel(){
         <select value={cfg.provider||"generic"} onChange={e=>setProvider(e.target.value)} style={I}>
           <option value="openai">OpenAI API</option>
           <option value="openai_compatible">OpenAI 호환 API</option>
+          <option value="local">사내 Local LLM</option>
           <option value="generic">Custom Generic</option>
           <option value="playground">사내 Playground API</option>
         </select>
       </div>
       <div>
         <div style={L}>API URL</div>
-        <input value={cfg.api_url} onChange={e=>patch({api_url:e.target.value})} placeholder={cfg.provider==="openai"?"https://api.openai.com/v1":"https://llm.internal/v1/chat/completions"} style={I}/>
+        <input value={cfg.api_url} onChange={e=>patch({api_url:e.target.value})} placeholder={provider==="openai"?"https://api.openai.com/v1":(isLocal?"http://llm.internal/v1":"https://llm.internal/v1/chat/completions")} style={I}/>
       </div>
     </div>
-    <div style={{display:"grid",gridTemplateColumns:isPlayground?"2fr 1fr 1fr":"2fr 1fr 1fr 1fr",gap:10}}>
+    <div style={{display:"grid",gridTemplateColumns:isPlayground||!showMode?"2fr 1fr 1fr":"2fr 1fr 1fr 1fr",gap:10}}>
       <div>
         <div style={L}>Model</div>
-        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder={cfg.provider==="openai"?"gpt-5-nano":"internal-model"} style={I}/>
+        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder={provider==="openai"?"gpt-5-nano":(isLocal?"GPT-OSS-120B":"internal-model")} style={I}/>
       </div>
-      {!isPlayground&&<div>
+      {showMode&&<div>
         <div style={L}>Mode</div>
         <select value={cfg.mode||"fast"} onChange={e=>patch({mode:e.target.value})} style={I}>
           <option value="fast">fast</option>
@@ -1467,7 +1556,7 @@ function LlmCfgPanel(){
         <input type="number" min={3} max={120} value={cfg.timeout_s||20} onChange={e=>patch({timeout_s:Number(e.target.value)})} style={{...I,fontFamily:"monospace"}}/>
       </div>
     </div>
-    <div style={L}>{isPlayground?"Credential Key":"Admin LLM Token"} <span style={{fontWeight:400,color:"var(--text-secondary)"}}>({isPlayground?"x-dep-ticket 로 전송":"Authorization Bearer 로 전송"})</span></div>
+    <div style={L}>{isPlayground?"Credential Key":"Admin LLM Token"} <span style={{fontWeight:400,color:"var(--text-secondary)"}}>({isPlayground?"x-dep-ticket 로 전송":(authMode==="none"?"인증 없음":"Authorization Bearer 로 전송")})</span></div>
     <div style={{display:"flex",gap:8}}>
       <input type={showToken?"text":"password"} value={cfg.admin_token} onChange={e=>patch({admin_token:e.target.value})} placeholder={isPlayground?"사내 credential key":"admin token"} autoComplete="off" style={{...I,fontFamily:"monospace",flex:1}}/>
       <button type="button" onClick={()=>setShowToken(!showToken)} style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>{showToken?"숨김":"보기"}</button>
@@ -1535,7 +1624,7 @@ function DataRootsPanel(){
       setBackupList(d.backups||[]);
     }).catch(()=>{});
   };
-  useEffect(reload,[]);
+  useEffect(()=>{reload();},[]);
   const saveBackup=()=>{
     setBkBusy(true);
     sf("/api/admin/settings").then(cur=>sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
@@ -2002,7 +2091,7 @@ function S3Panel(){
     sf("/api/catalog/s3/artifacts").then(d=>setArts(d.artifacts||[]));
     sf("/api/catalog/s3/status?limit=30").then(d=>setEvents(d.events||[]));
   };
-  useEffect(load,[]);
+  useEffect(()=>{load();},[]);
   // v8.2.0: Bell dismiss / external read → re-load this tab's notif list immediately
   useEffect(()=>{
     const onRefresh=()=>load();
@@ -2091,7 +2180,7 @@ function AdminInbox({user}){
       .catch(e=>alert("실패: "+e.message))
       .finally(()=>setSending(false));};
   const totalUnread=threads.reduce((s,t)=>s+(t.unread_for_admin||0),0);
-  return(<div style={{display:"flex",gap:12,height:"calc(100vh - 48px - 80px - 20px)"}}>
+  return(<div style={{display:"flex",gap:12,height:"calc(100vh - 52px - 80px - 20px)"}}>
     <div style={{width:280,background:"var(--bg-secondary)",borderRadius:8,border:"1px solid var(--border)",overflow:"hidden",display:"flex",flexDirection:"column",flexShrink:0}}>
       <div style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center"}}>
         <span style={{fontSize:12,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{"> 스레드"}</span>

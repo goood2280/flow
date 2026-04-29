@@ -173,6 +173,91 @@ def test_flowi_chart_request_colors_and_filters_by_ml_table_knob(tmp_path, monke
     assert out["chart_result"]["color_values"] == [{"value": "A", "count": 1}]
 
 
+def test_flowi_chart_request_computes_product_level_cross_db_scatter(tmp_path, monkeypatch):
+    inline_fp = tmp_path / "inline.parquet"
+    et_fp = tmp_path / "et.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "CD_MEAN", "value": 10.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "02", "item_id": "CD_MEAN", "value": 20.0},
+        {"product": "PRODX", "root_lot_id": "A10002", "wafer_id": "01", "item_id": "CD_MEAN", "value": 30.0},
+    ]).write_parquet(inline_fp)
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "LKG_RAW", "value": 100.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "02", "item_id": "LKG_RAW", "value": 200.0},
+        {"product": "PRODX", "root_lot_id": "A10002", "wafer_id": "01", "item_id": "LKG_RAW", "value": 300.0},
+    ]).write_parquet(et_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [inline_fp])
+    monkeypatch.setattr(llm_router, "_et_files", lambda _product: [et_fp])
+
+    out = _handle_flowi_query(
+        "PRODX Inline CD와 ET LKG Corr scatter 그려줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "ml"},
+    )
+
+    assert out["handled"] is True
+    assert out["chart"]["status"] == "computed"
+    assert out["chart_result"]["kind"] == "dashboard_scatter"
+    assert out["chart_result"]["total"] == 3
+    assert out["chart_result"]["join_cols"] == ["lot_wf"]
+    assert out["slots"]["lots"] == []
+
+
+def test_flowi_box_chart_returns_visible_chart_result(tmp_path, monkeypatch):
+    inline_fp = tmp_path / "inline.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "CD_GATE", "value": 10.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "02", "item_id": "CD_GATE", "value": 12.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "03", "item_id": "CD_GATE", "value": 14.0},
+        {"product": "PRODX", "root_lot_id": "A10002", "wafer_id": "01", "item_id": "CD_GATE", "value": 20.0},
+        {"product": "PRODX", "root_lot_id": "A10002", "wafer_id": "02", "item_id": "CD_GATE", "value": 22.0},
+        {"product": "PRODX", "root_lot_id": "A10002", "wafer_id": "03", "item_id": "CD_GATE", "value": 24.0},
+    ]).write_parquet(inline_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [inline_fp])
+
+    out = _handle_flowi_query(
+        "PRODX CD_GATE box plot 그려줘",
+        "",
+        12,
+        allowed_keys={"dashboard"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "dashboard_box_chart"
+    assert out["chart_result"]["kind"] == "dashboard_box"
+    assert len(out["chart_result"]["boxes"]) == 2
+    assert out["table"]["kind"] == "dashboard_box"
+
+
+def test_flowi_wafer_map_chart_returns_visible_points(tmp_path, monkeypatch):
+    et_fp = tmp_path / "et.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "shot_x": 0, "shot_y": 0, "item_id": "VTH", "value": 1.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "shot_x": 0, "shot_y": 1, "item_id": "VTH", "value": 2.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "shot_x": 1, "shot_y": 0, "item_id": "VTH", "value": 3.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "shot_x": 1, "shot_y": 1, "item_id": "VTH", "value": 4.0},
+    ]).write_parquet(et_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [])
+    monkeypatch.setattr(llm_router, "_et_files", lambda _product: [et_fp])
+
+    out = _handle_flowi_query(
+        "PRODX ET VTH WF map 그려줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "waferlayout"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "dashboard_wafer_map_chart"
+    assert out["chart_result"]["kind"] == "dashboard_wafer_map"
+    assert out["chart_result"]["source"] == "ET"
+    assert out["chart_result"]["total"] == 4
+
+
 def test_flowi_value_lookup_returns_mltable_preview(tmp_path, monkeypatch):
     ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
     pl.DataFrame([
@@ -826,6 +911,7 @@ def test_flowi_rag_update_marker_alias_is_detected(monkeypatch):
         product="",
         max_rows=12,
         me={"username": "normal_user", "role": "user"},
+        allow_rag_update=True,
     )
 
     assert out["tool"]["intent"] == "semiconductor_rag_update"
@@ -1004,6 +1090,41 @@ def test_flowi_agent_chat_accepts_codex_source_and_returns_web_actions(monkeypat
     assert "외부 AI source: codex" in seen["prompt"]
     assert "codex-smoke-1" in seen["prompt"]
     assert "codex-test" in seen["prompt"]
+
+
+def test_flowi_chart_tool_skips_llm_polish_for_fast_visible_payload(monkeypatch):
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_profile_context", lambda _username: "")
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_router.llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("chart requests should not wait for LLM polish")),
+    )
+    monkeypatch.setattr(
+        llm_router,
+        "_handle_flowi_query",
+        lambda *_args, **_kwargs: {
+            "handled": True,
+            "intent": "dashboard_box_chart",
+            "action": "query_inline_box_chart",
+            "answer": "chart ready",
+            "feature": "dashboard",
+            "chart_result": {"kind": "dashboard_box", "boxes": []},
+        },
+    )
+
+    out = _run_flowi_chat(
+        prompt="PRODA CD_GATE box plot 그려줘",
+        product="PRODA",
+        max_rows=12,
+        me={"username": "fast_chart_user", "role": "admin"},
+    )
+
+    assert out["ok"] is True
+    assert out["answer"] == "chart ready"
+    assert out["llm"]["used"] is False
+    assert out["llm"]["skipped"] == "deterministic_tool_result"
 
 
 def test_flowi_agent_api_returns_confirmation_workflow_for_app_writes(monkeypatch):

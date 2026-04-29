@@ -3942,6 +3942,13 @@ def start_match_cache_scheduler() -> bool:
     global _MATCH_CACHE_THREAD, _MATCH_CACHE_STARTED
     if _MATCH_CACHE_STARTED:
         return False
+    try:
+        from core.runtime_limits import heavy_background_jobs_enabled
+        if not heavy_background_jobs_enabled():
+            logger.info("SplitTable match cache scheduler disabled by resource profile")
+            return False
+    except Exception:
+        pass
     _MATCH_CACHE_STOP.clear()
     _MATCH_CACHE_THREAD = threading.Thread(target=_match_cache_loop, name="splittable-match-cache", daemon=True)
     _MATCH_CACHE_THREAD.start()

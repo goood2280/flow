@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from core.paths import PATHS
+from core.runtime_limits import manual_load_test_enabled, process_memory_snapshot
 from core.utils import jsonl_append, jsonl_read, jsonl_trim
 
 logger = logging.getLogger("flow.sysmon")
@@ -172,7 +173,7 @@ def _collect_stats() -> dict:
         cpu = _read_proc_cpu_percent()
         mem_pct, mem_used, mem_total = _read_proc_meminfo()
         disk_pct, disk_used, disk_total = _read_proc_disk(_disk_target())
-        return {
+        sample = {
             "timestamp": _iso(ts), "ts_epoch": ts,
             "cpu_percent": round(cpu, 1),
             "memory_percent": mem_pct,
@@ -184,6 +185,8 @@ def _collect_stats() -> dict:
             "psutil": False,
             "source": "proc_fallback",
         }
+        sample.update(process_memory_snapshot())
+        return sample
     try:
         cpu = float(_psutil.cpu_percent(interval=0.3))
     except Exception:
@@ -202,7 +205,7 @@ def _collect_stats() -> dict:
         disk_total = float(du.total) / 1e9
     except Exception:
         disk_pct, disk_used, disk_total = 0.0, 0.0, 0.0
-    return {
+    sample = {
         "timestamp": _iso(ts), "ts_epoch": ts,
         "cpu_percent": round(cpu, 1),
         "memory_percent": round(mem_pct, 1),
@@ -213,6 +216,8 @@ def _collect_stats() -> dict:
         "disk_total_gb": round(disk_total, 2),
         "psutil": True,
     }
+    sample.update(process_memory_snapshot())
+    return sample
 
 
 def collect_once() -> dict:
@@ -419,6 +424,13 @@ def _maybe_start_load() -> None:
 def start_manual_load(duration_sec: int = 180, target_pct: float = THRESHOLD_PCT, memory: bool = True) -> dict:
     """Admin-triggered synthetic load. Keeps the API server alive if the worker stops."""
     global _load_thread, _paused_until
+    if not manual_load_test_enabled():
+        return {
+            "ok": False,
+            "disabled": True,
+            "error": "manual load test disabled; set FLOW_ENABLE_MANUAL_LOAD_TEST=1 to enable",
+            "state": get_state(),
+        }
     duration = max(15, min(MANUAL_LOAD_MAX_SEC, int(duration_sec or 180)))
     target = max(10.0, min(THRESHOLD_PCT, float(target_pct or THRESHOLD_PCT)))
     if _load_thread and _load_thread.is_alive():

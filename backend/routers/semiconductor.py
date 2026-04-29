@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from core.auth import current_user, require_admin
+from core.auth import current_user, is_page_admin, require_admin
 from core import semiconductor_knowledge as semi
 
 
@@ -76,6 +76,8 @@ class CustomKnowledgeReq(BaseModel):
     visibility: str = "private"
     title: str = ""
     source: str = "manual"
+    document_type: str = ""
+    source_url: str = ""
     product: str = ""
     module: str = ""
     items: list[str] = Field(default_factory=list)
@@ -89,6 +91,34 @@ class CustomKnowledgeReq(BaseModel):
 
 class RagUpdatePromptReq(BaseModel):
     prompt: str = ""
+
+
+class RagDocumentReq(BaseModel):
+    title: str = ""
+    document_type: str = "internal_note"
+    source: str = "manual_document"
+    source_url: str = ""
+    product: str = ""
+    module: str = ""
+    tags: list[str] = Field(default_factory=list)
+    content: str = ""
+
+
+class RagTableReq(BaseModel):
+    title: str = ""
+    table_type: str = "process_plan_func_step"
+    source: str = "manual_table"
+    source_url: str = ""
+    visibility: str = "private"
+    product: str = ""
+    module: str = ""
+    tags: list[str] = Field(default_factory=list)
+    content: str = ""
+    reference_content: str = ""
+    apply_instructions: str = ""
+    target_file: str = ""
+    apply_to_file: bool = False
+    preview: dict[str, Any] = Field(default_factory=dict)
 
 
 class ReformatterProposalReq(BaseModel):
@@ -133,6 +163,14 @@ def _user_context(me: dict, req_context: list[dict[str, Any]] | None = None) -> 
         "role": me.get("role") or "user",
         "conversation_turns": len(req_context or []),
     }
+
+
+def _require_file_write_delegate(request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    username = me.get("username") or ""
+    if (me.get("role") or "") == "admin" or is_page_admin(username, "filebrowser"):
+        return me
+    raise HTTPException(403, "Admin or delegated FileBrowser writer only")
 
 
 @router.get("/items/search")
@@ -200,7 +238,9 @@ def diagnosis_run(req: DiagnosisRunReq, request: Request):
 
 @router.get("/diagnosis/{run_id}")
 def diagnosis_get(run_id: str, request: Request):
-    current_user(request)
+    me = current_user(request)
+    if str(run_id or "").strip().lower() == "knowledge":
+        return _knowledge_manifest_response(me)
     row = semi.get_diagnosis_run(run_id)
     if not row:
         raise HTTPException(404, "Diagnosis run not found")
@@ -227,7 +267,7 @@ def llm_chat(req: FlowLlmChatReq, request: Request):
     top = report.get("ranked_hypotheses") or []
     if top:
         lines = [f"{h.get('rank')}. {h.get('hypothesis')} (confidence {h.get('confidence')})" for h in top[:3]]
-        answer = "반도체 진단 MVP가 구조화된 RCA 초안을 만들었습니다.\n" + "\n".join(lines)
+        answer = "진단/RCA가 구조화된 RCA 초안을 만들었습니다.\n" + "\n".join(lines)
     else:
         answer = "인식된 반도체 지표가 부족합니다. item_master에 등록된 ET/Inline/VM item 또는 측정 구조를 더 알려주세요."
     return {
@@ -249,6 +289,10 @@ def llm_chat(req: FlowLlmChatReq, request: Request):
 @router.get("/semiconductor/knowledge")
 def knowledge_manifest(request: Request):
     me = current_user(request)
+    return _knowledge_manifest_response(me)
+
+
+def _knowledge_manifest_response(me: dict[str, Any]):
     out = semi.storage_manifest()
     out.update({
         "counts": {
@@ -264,6 +308,48 @@ def knowledge_manifest(request: Request):
         "custom_knowledge": semi.custom_knowledge_rows(me.get("username") or "", me.get("role") or "user"),
     })
     return out
+
+
+@router.get("/semiconductor/knowledge/rag-view")
+def knowledge_rag_view(
+    request: Request,
+    q: str = Query("", max_length=200),
+    limit: int = Query(120, ge=20, le=300),
+):
+    me = current_user(request)
+    return _knowledge_rag_view_response(me, q, limit)
+
+
+def _knowledge_rag_view_response(me: dict[str, Any], q: str = "", limit: int = 120):
+    return semi.rag_knowledge_view(
+        username=me.get("username") or "",
+        role=me.get("role") or "user",
+        q=q,
+        limit=limit,
+    )
+
+
+@router.get("/diagnosis/knowledge")
+@router.get("/rca/knowledge")
+@router.get("/knowledge/rca")
+def knowledge_manifest_alias(request: Request):
+    """Compatibility aliases for cached/older RCA knowledge screens."""
+    me = current_user(request)
+    return _knowledge_manifest_response(me)
+
+
+@router.get("/diagnosis/knowledge/rag-view")
+@router.get("/rca/knowledge/rag-view")
+@router.get("/knowledge/rca/rag-view")
+@router.get("/knowledge/rag-view")
+def knowledge_rag_view_alias(
+    request: Request,
+    q: str = Query("", max_length=200),
+    limit: int = Query(120, ge=1, le=500),
+):
+    """Compatibility aliases for cached/older RCA knowledge screens."""
+    me = current_user(request)
+    return _knowledge_rag_view_response(me, q, limit)
 
 
 @router.get("/semiconductor/use-cases")
@@ -296,6 +382,35 @@ def custom_knowledge_import(req: CustomKnowledgeReq, request: Request):
     return semi.add_custom_knowledge(req.dict(), me.get("username") or "", me.get("role") or "admin")
 
 
+@router.post("/semiconductor/knowledge/document")
+def custom_knowledge_document(req: RagDocumentReq, request: Request):
+    me = require_admin(request)
+    try:
+        return semi.add_document_knowledge(req.dict(), me.get("username") or "", me.get("role") or "admin")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/semiconductor/knowledge/table/preview")
+def custom_knowledge_table_preview(req: RagTableReq, request: Request):
+    me = current_user(request)
+    return semi.preview_table_knowledge(req.dict(), me.get("username") or "", me.get("role") or "user")
+
+
+@router.post("/semiconductor/knowledge/table/commit")
+def custom_knowledge_table_commit(req: RagTableReq, request: Request):
+    me = current_user(request)
+    try:
+        if req.apply_to_file or req.target_file:
+            if me.get("role") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
+                raise HTTPException(403, "admin or filebrowser page_admin only")
+        return semi.commit_table_knowledge(req.dict(), me.get("username") or "", me.get("role") or "user")
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @router.post("/semiconductor/knowledge/update-prompt")
 def custom_knowledge_update_prompt(req: RagUpdatePromptReq, request: Request):
     me = current_user(request)
@@ -321,9 +436,9 @@ def reformatter_propose(req: ReformatterProposalReq, request: Request):
 
 @router.post("/semiconductor/reformatter/apply")
 def reformatter_apply(req: ReformatterApplyReq, request: Request):
-    me = require_admin(request)
+    me = _require_file_write_delegate(request)
     try:
-        return semi.apply_reformatter_alias_proposal(req.product, req.rules, username=me.get("username") or "admin")
+        return semi.apply_reformatter_alias_proposal(req.product, req.rules, username=me.get("username") or "filebrowser_delegate")
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -338,9 +453,9 @@ def teg_propose(req: TegProposalReq, request: Request):
 
 @router.post("/semiconductor/teg/apply")
 def teg_apply(req: TegApplyReq, request: Request):
-    me = require_admin(request)
+    me = _require_file_write_delegate(request)
     try:
-        return semi.apply_teg_layout_proposal(req.product, req.teg_definitions, username=me.get("username") or "admin")
+        return semi.apply_teg_layout_proposal(req.product, req.teg_definitions, username=me.get("username") or "filebrowser_delegate")
     except ValueError as e:
         raise HTTPException(400, str(e))
 

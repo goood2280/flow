@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import csv
+import io
 import json
 import math
 import re
+import shutil
 import statistics
 import uuid
 from pathlib import Path
@@ -14,7 +17,7 @@ import polars as pl
 from core.paths import PATHS
 
 
-KNOWLEDGE_VERSION = "semi-dx-seed-2026.04"
+KNOWLEDGE_VERSION = "semi-dx-seed-2026.04.rag-defaults"
 SEMICONDUCTOR_DIR = PATHS.data_root / "semiconductor"
 DIAGNOSIS_RUNS_FILE = SEMICONDUCTOR_DIR / "diagnosis_runs.jsonl"
 ENGINEER_KNOWLEDGE_FILE = SEMICONDUCTOR_DIR / "engineer_knowledge.jsonl"
@@ -136,7 +139,7 @@ ITEM_MASTER: list[dict[str, Any]] = [
         "measurement_method": "gate current bias sweep",
         "module": "GATE_DIELECTRIC",
         "direction_bad": "increase",
-        "aliases": ["gate leak", "게이트 누설", "LKG"],
+        "aliases": ["gate leak", "게이트 누설"],
     },
     {
         "canonical_item_id": "SRAM_VMIN",
@@ -670,6 +673,14 @@ HISTORICAL_CASES: list[dict[str, Any]] = [
 ]
 
 
+# Agent starts with no pre-registered RCA/item dictionary data. Operators add
+# site-specific knowledge through the RAG/document/table registration flows.
+ITEM_MASTER = []
+KNOWLEDGE_CARDS = []
+CAUSAL_EDGES = []
+HISTORICAL_CASES = []
+
+
 ENGINEER_USE_CASE_SEEDS: list[dict[str, Any]] = [
     {
         "id": "UC_PROCESS_OWNER_DAILY_RCA",
@@ -946,7 +957,11 @@ def _extract_candidate_item_names(prompt: str) -> list[str]:
                 if re.search(rf"(?<![A-Za-z0-9]){re.escape(name_s)}(?![A-Za-z0-9])", prompt_s, flags=re.IGNORECASE):
                     found.append(item["canonical_item_id"])
                     break
-            elif name_s.lower() in prompt_l or _norm(name_s) in _norm(prompt_s):
+            else:
+                name_norm = _norm(name_s)
+                prompt_norm = _norm(prompt_s)
+                if name_s.lower() not in prompt_l and (not name_norm or name_norm not in prompt_norm):
+                    continue
                 found.append(item["canonical_item_id"])
                 break
     return _unique(found)
@@ -1073,7 +1088,9 @@ def _canonical_from_raw_item(raw: Any, requested: set[str] | None = None) -> str
                 return canonical
         return ""
     item = _find_item_by_name(str(raw or ""))
-    return str(item.get("canonical_item_id") or raw or "").upper()
+    if item:
+        return str(item.get("canonical_item_id") or raw or "").upper()
+    return str(raw or "").upper()
 
 
 def _float_value(value: Any) -> float | None:
@@ -1623,6 +1640,8 @@ def search_knowledge_cards(query: str, filters: dict[str, Any] | None = None, li
             scored.append((score, out))
     if not scored:
         fallback_cards = all_knowledge_cards() or KNOWLEDGE_CARDS
+        if not fallback_cards:
+            return {"ok": True, "cards": [], "warnings": ["knowledge card registry is empty; add admin public document/RAG knowledge first"]}
         scored = [(0.1, dict(fallback_cards[0], score=0.1))]
     scored.sort(key=lambda x: x[0], reverse=True)
     return {"ok": True, "cards": [c for _, c in scored[: max(1, min(20, int(limit or 8)))]]}
@@ -1761,7 +1780,8 @@ def run_diagnosis(
     all_raw = _unique(list(raw_items or []) + detected_items)
     resolution = resolve_item_semantics(all_raw, context=(filters or {}).get("item_context") or {})
     features = extract_symptom_features(prompt, resolution)
-    card_hits = search_knowledge_cards(prompt, filters, limit=8)["cards"]
+    card_search = search_knowledge_cards(prompt, filters, limit=8)
+    card_hits = card_search["cards"]
     cases = find_similar_cases(features, limit=5)["cases"]
     graph = traverse_causal_graph(features.get("items") + features.get("modules"), max_depth=2)
     hypotheses = _hypotheses_from_cards(card_hits, features)
@@ -1806,6 +1826,8 @@ def run_diagnosis(
             action_plan.append({"priority": hyp["rank"], "action": check, "hypothesis": hyp["hypothesis"]})
     if not observed:
         missing.append("No recognized semiconductor metric in prompt; resolve item names first.")
+    for warning in card_search.get("warnings") or []:
+        missing.append(str(warning))
     if any(r.get("status") == "ambiguous" for r in resolution.get("resolved") or []):
         missing.append("Ambiguous item metadata: unit/source_type/test_structure/layer/measurement_method")
 
@@ -2021,7 +2043,7 @@ def list_engineer_knowledge(username: str, role: str = "user") -> dict[str, Any]
 def add_engineer_knowledge(payload: dict[str, Any], username: str, role: str = "user") -> dict[str, Any]:
     SEMICONDUCTOR_DIR.mkdir(parents=True, exist_ok=True)
     visibility = str(payload.get("visibility") or "private").lower()
-    if role != "admin" and visibility != "public":
+    if role != "admin" and visibility == "public":
         visibility = "private"
     row = {
         "id": "EK-" + uuid.uuid4().hex[:10].upper(),
@@ -2048,6 +2070,7 @@ def custom_knowledge_rows(username: str = "", role: str = "user") -> list[dict[s
             r for r in rows
             if r.get("visibility") == "public" or (username and r.get("username") == username)
         ]
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
     return rows
 
 
@@ -2061,10 +2084,10 @@ def custom_knowledge_cards() -> list[dict[str, Any]]:
             body = {}
         card = {
             "id": row.get("id") or "CUSTOM_CARD",
-            "title": body.get("title") or row.get("title") or "Custom knowledge card",
+            "title": body.get("title") or row.get("display_title") or row.get("title") or "Custom knowledge card",
             "symptom_items": _coerce_list(body.get("symptom_items") or row.get("items")),
             "trigger_terms": _coerce_list(body.get("trigger_terms") or row.get("tags")),
-            "electrical_mechanism": body.get("electrical_mechanism") or row.get("content") or "",
+            "electrical_mechanism": body.get("electrical_mechanism") or row.get("display_content") or row.get("content") or "",
             "structural_causes": _coerce_list(body.get("structural_causes")),
             "process_root_causes": _coerce_list(body.get("process_root_causes")),
             "supporting_evidence": _coerce_list(body.get("supporting_evidence")),
@@ -2080,10 +2103,1310 @@ def custom_knowledge_cards() -> list[dict[str, Any]]:
     return cards
 
 
+def _chunk_key_terms(text: str) -> list[str]:
+    canonical = _extract_candidate_item_names(text)
+    raw = [
+        x for x in re.findall(r"[A-Za-z가-힣][A-Za-z0-9가-힣_./+-]*(?:[-_][A-Za-z0-9가-힣_./+-]+)*", text or "")
+        if len(x) >= 3
+    ]
+    stop = {"그리고", "하지만", "위해서", "사용", "경우", "문서", "내용", "확인", "because", "therefore", "section"}
+    raw = [x for x in raw if x.lower() not in stop]
+    return _unique(canonical + raw)[:24]
+
+
+def _chunk_summary(text: str, limit: int = 220) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(compact) <= limit:
+        return compact
+    cut = compact[:limit]
+    for sep in (". ", "。", "다. ", "; ", ", "):
+        idx = cut.rfind(sep)
+        if idx >= 80:
+            return cut[:idx + len(sep)].strip()
+    return cut.rstrip() + "..."
+
+
+def _is_doc_heading(line: str) -> bool:
+    s = str(line or "").strip()
+    if not s:
+        return False
+    if re.match(r"^#{1,6}\s+\S+", s):
+        return True
+    if re.match(r"^(\d+(?:\.\d+)*[.)]|[A-Z]\.|[가-힣]\.)\s+\S+", s):
+        return True
+    if len(s) <= 80 and s.endswith(":") and not re.search(r"[.!?。！？]$", s[:-1]):
+        return True
+    return False
+
+
+def _document_chunks(text: str, *, target_chars: int = 900, max_chars: int = 1400, max_chunks: int = 60) -> list[dict[str, Any]]:
+    """Split operator documents into semantic, retrieval-ready passages.
+
+    The chunker preserves headings/bullets/tables as local context and only uses
+    character limits as a guardrail. Each chunk carries summary and key terms so
+    RAG can choose usable passages instead of raw fixed-size slices.
+    """
+    body = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not body:
+        return []
+    sections: list[dict[str, Any]] = []
+    cur_title = "본문"
+    cur_lines: list[str] = []
+    for line in body.split("\n"):
+        if _is_doc_heading(line):
+            if cur_lines:
+                sections.append({"title": cur_title, "text": "\n".join(cur_lines).strip()})
+            cur_title = re.sub(r"^#{1,6}\s*", "", line.strip()).rstrip(":").strip() or "본문"
+            cur_lines = [line.strip()]
+        else:
+            cur_lines.append(line)
+    if cur_lines:
+        sections.append({"title": cur_title, "text": "\n".join(cur_lines).strip()})
+    if not sections:
+        sections = [{"title": "본문", "text": body}]
+
+    chunks: list[dict[str, str]] = []
+    for section in sections:
+        title = section["title"]
+        parts = [p.strip() for p in re.split(r"\n\s*\n+", section["text"]) if p.strip()]
+        if not parts:
+            continue
+        cur = ""
+        for part in parts:
+            atomic_parts = [part]
+            if len(part) > max_chars:
+                atomic_parts = [p.strip() for p in re.split(r"(?<=[.!?。！？])\s+", part) if p.strip()]
+            for atom in atomic_parts:
+                next_text = f"{cur}\n\n{atom}".strip() if cur else atom
+                if cur and len(next_text) > target_chars:
+                    chunks.append({"section": title, "text": cur.strip()})
+                    cur = atom
+                else:
+                    cur = next_text
+                if len(cur) > max_chars:
+                    chunks.append({"section": title, "text": cur.strip()})
+                    cur = ""
+        if cur:
+            chunks.append({"section": title, "text": cur.strip()})
+    out = []
+    for i, chunk in enumerate(chunks[:max_chunks], start=1):
+        txt = chunk["text"]
+        section = chunk["section"]
+        out.append({
+            "chunk_id": i,
+            "section": section,
+            "retrieval_title": f"{section} #{i}",
+            "summary": _chunk_summary(txt),
+            "key_terms": _chunk_key_terms(f"{section}\n{txt}"),
+            "text": txt,
+            "char_count": len(txt),
+            "chunk_type": "semantic_section",
+            "usage_hint": "Use this chunk as a focused RAG passage with its section title, summary, and key_terms.",
+        })
+    return out
+
+
+def _document_type_label(value: str) -> str:
+    raw = str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "gpt": "gpt_deep_research",
+        "deep_research": "gpt_deep_research",
+        "gpt_research": "gpt_deep_research",
+        "사내정보": "internal_knowledge",
+        "internal_info": "internal_knowledge",
+        "internal_notice": "internal_knowledge",
+        "process_spec": "process_spec",
+        "spec": "process_spec",
+        "rca": "rca_report",
+        "rca_report": "rca_report",
+        "meeting": "meeting_note",
+        "meeting_note": "meeting_note",
+        "paper": "external_paper",
+        "research_paper": "external_paper",
+    }
+    return aliases.get(raw) or raw or "internal_knowledge"
+
+
+def _table_type_label(value: str) -> str:
+    raw = str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "process": "process_plan_func_step",
+        "process_plan": "process_plan_func_step",
+        "func_step": "process_plan_func_step",
+        "step_map": "process_plan_func_step",
+        "step_func": "process_plan_func_step",
+        "inline": "inline_item_semantics",
+        "inline_item": "inline_item_semantics",
+        "inline_item_semantics": "inline_item_semantics",
+        "item_step": "inline_item_semantics",
+        "teg": "teg_coordinate_table",
+        "teg_coordinate": "teg_coordinate_table",
+        "teg_layout": "teg_coordinate_table",
+        "coordinates": "teg_coordinate_table",
+        "cleaning": "data_cleaning_plan",
+        "data_cleaning": "data_cleaning_plan",
+        "cleanup": "data_cleaning_plan",
+        "item_dictionary": "item_dictionary_table",
+        "item_dict": "item_dictionary_table",
+        "alias": "alias_mapping_table",
+        "alias_mapping": "alias_mapping_table",
+        "relation": "relation_mapping_table",
+        "table_map": "relation_mapping_table",
+    }
+    return aliases.get(raw) or raw or "process_plan_func_step"
+
+
+def _split_table_line(line: str, delimiter: str) -> list[str]:
+    if delimiter == "|":
+        raw = line.strip().strip("|").split("|")
+        return [c.strip() for c in raw]
+    return next(csv.reader([line], delimiter=delimiter))
+
+
+def _looks_like_markdown_separator(values: list[str]) -> bool:
+    return bool(values) and all(re.fullmatch(r":?-{2,}:?", str(v or "").strip()) for v in values if str(v or "").strip())
+
+
+def _parse_table_text(text: str, *, max_rows: int = 800) -> dict[str, Any]:
+    body = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not body:
+        return {"columns": [], "rows": [], "warnings": ["table content is empty"]}
+    lines = [ln for ln in body.split("\n") if ln.strip()]
+    if not lines:
+        return {"columns": [], "rows": [], "warnings": ["table content is empty"]}
+    pipe_lines = [ln for ln in lines if "|" in ln]
+    if len(pipe_lines) >= max(2, len(lines) // 2):
+        delimiter = "|"
+    elif any("\t" in ln for ln in lines[:10]):
+        delimiter = "\t"
+    elif sum(ln.count(",") for ln in lines[:10]) >= max(2, len(lines[:10])):
+        delimiter = ","
+    else:
+        delimiter = None
+
+    matrix: list[list[str]] = []
+    if delimiter:
+        for line in lines:
+            vals = [str(c or "").strip() for c in _split_table_line(line, delimiter)]
+            if delimiter == "|" and _looks_like_markdown_separator(vals):
+                continue
+            if any(vals):
+                matrix.append(vals)
+    else:
+        matrix = [re.split(r"\s{2,}", ln.strip()) if re.search(r"\s{2,}", ln.strip()) else [ln.strip()] for ln in lines]
+
+    if not matrix:
+        return {"columns": [], "rows": [], "warnings": ["no table rows parsed"]}
+    width = max(len(r) for r in matrix)
+    matrix = [r + [""] * (width - len(r)) for r in matrix]
+    header = [str(c or "").strip() for c in matrix[0]]
+    data = matrix[1:]
+    if not data or len([h for h in header if h]) < 1:
+        header = [f"col_{i + 1}" for i in range(width)]
+        data = matrix
+    columns = []
+    seen: dict[str, int] = {}
+    for i, col in enumerate(header, start=1):
+        base = str(col or f"col_{i}").strip() or f"col_{i}"
+        key = base
+        if key in seen:
+            seen[key] += 1
+            key = f"{base}_{seen[base]}"
+        else:
+            seen[key] = 1
+        columns.append(key)
+    rows = []
+    for vals in data[:max_rows]:
+        row = {columns[i]: vals[i] if i < len(vals) else "" for i in range(len(columns))}
+        if any(str(v or "").strip() for v in row.values()):
+            rows.append(row)
+    warnings = []
+    if len(data) > max_rows:
+        warnings.append(f"preview limited to first {max_rows} rows")
+    if delimiter is None:
+        warnings.append("delimiter was not obvious; parsed each line or double-space separated blocks")
+    return {"columns": columns, "rows": rows, "warnings": warnings}
+
+
+def _norm_header(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _pick_col(columns: list[str], *candidates: str) -> str:
+    norms = {_norm_header(c): c for c in columns}
+    for cand in candidates:
+        hit = norms.get(_norm_header(cand))
+        if hit:
+            return hit
+    for col in columns:
+        n = _norm_header(col)
+        if any(_norm_header(cand) in n for cand in candidates):
+            return col
+    return ""
+
+
+def _schema_signature(columns: list[str]) -> str:
+    return "|".join(_norm_header(c) for c in columns if str(c or "").strip())
+
+
+def _clean_instruction_field(value: str) -> str:
+    out = str(value or "").strip().strip("`'\"“”‘’[](){}")
+    out = re.sub(r"\s+", " ", out).strip()
+    out = re.sub(r"(?:이라는|라는)?\s*열$", "", out).strip()
+    out = re.sub(r"(?:은|는|이|가)$", "", out).strip()
+    out = re.sub(r"^(?:열|컬럼)\s+", "", out).strip()
+    return out.strip("`'\"“”‘’[](){} ")
+
+
+def _mentioned_columns(text: str, columns: list[str]) -> list[str]:
+    norm_text = _norm_header(text)
+    out: list[str] = []
+    for col in columns:
+        n = _norm_header(col)
+        if n and n in norm_text:
+            out.append(col)
+    return _unique(out)
+
+
+def _merge_table_apply_policies(*policies: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {
+        "same_column_pairs": [],
+        "drop_columns": [],
+        "transforms": {},
+        "notes": [],
+        "sources": [],
+    }
+    pair_seen: set[tuple[str, str]] = set()
+    for policy in policies:
+        if not isinstance(policy, dict):
+            continue
+        for pair in policy.get("same_column_pairs") or []:
+            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                continue
+            left = _clean_instruction_field(pair[0])
+            right = _clean_instruction_field(pair[1])
+            if not left or not right:
+                continue
+            key = tuple(sorted([_norm_header(left), _norm_header(right)]))
+            if key not in pair_seen:
+                pair_seen.add(key)
+                merged["same_column_pairs"].append([left, right])
+        for col in policy.get("drop_columns") or []:
+            clean = _clean_instruction_field(col)
+            if clean and clean not in merged["drop_columns"]:
+                merged["drop_columns"].append(clean)
+        transforms = policy.get("transforms") if isinstance(policy.get("transforms"), dict) else {}
+        for col, action in transforms.items():
+            clean = _clean_instruction_field(col)
+            if clean and action:
+                merged["transforms"][clean] = str(action)
+        for note in policy.get("notes") or []:
+            note_s = str(note or "").strip()
+            if note_s and note_s not in merged["notes"]:
+                merged["notes"].append(note_s[:500])
+        for src in policy.get("sources") or []:
+            if src and src not in merged["sources"]:
+                merged["sources"].append(src)
+    return merged
+
+
+def _table_apply_policy_from_prompt(
+    prompt: str,
+    *,
+    source_cols: list[str],
+    target_cols: list[str],
+) -> dict[str, Any]:
+    text = str(prompt or "").strip()
+    policy: dict[str, Any] = {
+        "same_column_pairs": [],
+        "drop_columns": [],
+        "transforms": {},
+        "notes": [],
+        "sources": ["current_prompt"] if text else [],
+    }
+    if not text:
+        return policy
+    columns = _unique(source_cols + target_cols)
+    for raw_line in re.split(r"[\n;]+", text):
+        line = raw_line.strip()
+        if not line:
+            continue
+        same = re.search(
+            r"([A-Za-z0-9_./가-힣 -]{1,80})\s*(?:랑|와|과|및|and|=|,)\s*([A-Za-z0-9_./가-힣 -]{1,80})\s*(?:은|는)?\s*(?:같은\s*열|동일\s*열|same\s*(?:column|col)|alias)",
+            line,
+            flags=re.I,
+        )
+        if same:
+            left = _clean_instruction_field(same.group(1))
+            right = _clean_instruction_field(same.group(2))
+            if left and right:
+                policy["same_column_pairs"].append([left, right])
+                policy["notes"].append(f"{left} <-> {right} same column")
+
+        mentioned = _mentioned_columns(line, columns)
+        low = line.lower()
+        has_func = "func_step" in low or "function_step" in low or "functional_step" in low or "기존" in line and "스텝" in line
+        if has_func and any(term in line for term in ["맞게", "정규화", "변경", "그냥 넣지", "그대로 넣지", "trim", "공백"]):
+            for col in mentioned:
+                policy["transforms"][col] = "normalize_func_step"
+            for col in target_cols:
+                if _norm_header(col) in {"funcstep", "functionstep", "functionalstep", "processmodule"}:
+                    policy["transforms"][col] = "normalize_func_step"
+            policy["notes"].append(line[:500])
+            continue
+
+        if any(term in low for term in ["trim", "strip", "space"]) or any(term in line for term in ["공백", "앞뒤"]):
+            for col in mentioned:
+                policy["transforms"][col] = "trim"
+            if mentioned:
+                policy["notes"].append(line[:500])
+
+        if any(term in line for term in ["넣지 말", "넣지말", "제외", "무시"]) or any(term in low for term in ["drop", "ignore", "exclude"]):
+            if has_func:
+                continue
+            for col in mentioned:
+                policy["drop_columns"].append(col)
+            if mentioned:
+                policy["notes"].append(line[:500])
+    return _merge_table_apply_policies(policy)
+
+
+def _policy_alias_candidates(target_col: str, policy: dict[str, Any]) -> list[str]:
+    out = [target_col]
+    target_norm = _norm_header(target_col)
+    for left, right in policy.get("same_column_pairs") or []:
+        if _norm_header(left) == target_norm:
+            out.append(right)
+        if _norm_header(right) == target_norm:
+            out.append(left)
+    return _unique(out)
+
+
+def _policy_transform_for(target_col: str, source_col: str, policy: dict[str, Any]) -> str:
+    transforms = policy.get("transforms") if isinstance(policy.get("transforms"), dict) else {}
+    for key, action in transforms.items():
+        if _norm_header(key) in {_norm_header(target_col), _norm_header(source_col)}:
+            return str(action or "")
+    if _norm_header(target_col) in {"funcstep", "functionstep", "functionalstep", "processmodule"}:
+        return "normalize_func_step"
+    if source_col and target_col and _norm_header(source_col) == _norm_header(target_col):
+        return "copy_as_is"
+    return "copy_as_is"
+
+
+def _row_value_fuzzy(row: dict[str, Any], *candidates: str) -> Any:
+    if not isinstance(row, dict):
+        return None
+    direct = {str(k): k for k in row.keys()}
+    for cand in candidates:
+        if cand in direct:
+            return row.get(direct[cand])
+    norm_map = {_norm_header(str(k)): k for k in row.keys()}
+    for cand in candidates:
+        key = norm_map.get(_norm_header(cand))
+        if key is not None:
+            return row.get(key)
+    for key in row.keys():
+        nk = _norm_header(str(key))
+        if any(_norm_header(cand) and _norm_header(cand) in nk for cand in candidates):
+            return row.get(key)
+    return None
+
+
+def _num_value_fuzzy(row: dict[str, Any], *candidates: str) -> float | None:
+    value = _row_value_fuzzy(row, *candidates)
+    if value in (None, ""):
+        return None
+    try:
+        out = float(str(value).strip().replace(",", ""))
+        return out if math.isfinite(out) else None
+    except Exception:
+        return None
+
+
+def _cleaning_actions_for_row(row: dict[str, Any], key_cols: list[str]) -> list[str]:
+    actions: list[str] = []
+    for col in key_cols:
+        if col and str(row.get(col) or "").strip() != str(row.get(col) or ""):
+            actions.append(f"trim whitespace in {col}")
+    for col, value in row.items():
+        if isinstance(value, str) and value.strip().lower() in {"", "na", "n/a", "null", "none", "-", "--"}:
+            actions.append(f"normalize blank/null token in {col}")
+        if isinstance(value, str) and re.search(r"\d,\d", value):
+            try:
+                float(value.replace(",", ""))
+                actions.append(f"remove numeric thousands comma in {col}")
+            except Exception:
+                pass
+    return _unique(actions)[:8]
+
+
+FUNC_STEP_RULES: list[tuple[str, list[str], str]] = [
+    ("GAA_CHANNEL_RELEASE", ["gaa", "nanosheet", "nanowire", "channel release", "sheet release", "sacrificial", "siGe release"], "GAA channel/release keyword"),
+    ("INNER_SPACER", ["inner spacer", "is etch", "spacer recess", "spacer dep", "spacer"], "inner spacer keyword"),
+    ("RMG_WFM", ["rmg", "replacement metal", "wfm", "work function", "workfunction", "hkmg", "metal gate"], "RMG/WFM keyword"),
+    ("GATE_DIELECTRIC", ["eot", "high-k", "hfo", "oxide", "gate dielectric", "interfacial layer"], "gate dielectric keyword"),
+    ("SD_EPI", ["s/d", "source drain", "sd epi", "epi", "epitaxy", "silicide", "activation"], "S/D epi or activation keyword"),
+    ("CA_MOL_CONTACT", [" ca", "contact", "m0", "mol", "local interconnect", "cb", "tungsten plug", "contact etch"], "MOL contact keyword"),
+    ("BEOL_INTERCONNECT", ["beol", "metal", "m1", "m2", "via", "low-k", "copper", "cu", "ild"], "BEOL interconnect keyword"),
+    ("LITHO", ["litho", "photo", "resist", "expose", "develop", "overlay", "focus", "dose"], "lithography keyword"),
+    ("ETCH", ["etch", "ash", "strip", "plasma"], "etch/plasma keyword"),
+    ("CLEAN", ["clean", "preclean", "wet", "rinse", "sc1", "sc2", "hf"], "clean keyword"),
+    ("CMP", ["cmp", "polish", "planar"], "CMP keyword"),
+    ("IMPLANT_ANNEAL", ["implant", "anneal", "rta", "laser anneal", "dopant"], "implant/anneal keyword"),
+    ("METROLOGY", ["metro", "measure", "cdsem", "inspection", "defect", "review", "inline"], "metrology/inspection keyword"),
+    ("TEST", ["et ", "e-test", "etest", "eds", "wlt", "cp test", "probe", "sort"], "test keyword"),
+]
+
+
+def _classify_func_step(row: dict[str, Any], step_text: str, reference_map: dict[str, str]) -> dict[str, Any]:
+    step_id = str(row.get("_step_id") or "").strip()
+    if step_id and step_id in reference_map:
+        return {
+            "proposed_func_step": reference_map[step_id],
+            "confidence": 0.98,
+            "source": "reference_step_map",
+            "reason": "reference table matched exact step_id",
+        }
+    joined = f" {step_text.lower()} "
+    hits: list[dict[str, Any]] = []
+    for label, keywords, reason in FUNC_STEP_RULES:
+        score = 0
+        matched = []
+        for kw in keywords:
+            k = kw.lower()
+            if k.startswith(" ") or " " in k:
+                if k.strip() in joined:
+                    score += 2
+                    matched.append(kw.strip())
+            elif re.search(rf"(^|[^a-z0-9]){re.escape(k)}([^a-z0-9]|$)", joined):
+                score += 1
+                matched.append(kw)
+        if score:
+            hits.append({"label": label, "score": score, "matched": matched, "reason": reason})
+    hits.sort(key=lambda x: x["score"], reverse=True)
+    if not hits:
+        return {
+            "proposed_func_step": "UNCLASSIFIED",
+            "confidence": 0.2,
+            "source": "needs_review",
+            "reason": "no reliable keyword or reference match",
+        }
+    top = hits[0]
+    confidence = min(0.9, 0.48 + 0.12 * float(top["score"]))
+    if len(hits) > 1 and hits[1]["score"] == top["score"]:
+        confidence = min(confidence, 0.55)
+    return {
+        "proposed_func_step": top["label"],
+        "confidence": round(confidence, 2),
+        "source": "heuristic_keyword",
+        "reason": f"{top['reason']}: {', '.join(top['matched'][:4])}",
+    }
+
+
+def _known_func_step_labels() -> list[str]:
+    labels = [row[0] for row in FUNC_STEP_RULES]
+    for row in PROCESS_MODULE_DICTIONARY:
+        module = str(row.get("module") or "").strip()
+        if module:
+            labels.append(module)
+    return sorted(set(labels), key=lambda x: (-len(x), x))
+
+
+def _target_column_values(file_name: str, column: str, limit: int = 80) -> list[str]:
+    if not column:
+        return []
+    try:
+        fp = _resolve_single_file_target(file_name)
+        if fp.suffix.lower() == ".csv":
+            lf = pl.scan_csv(str(fp), infer_schema_length=5000, try_parse_dates=False)
+        else:
+            lf = pl.scan_parquet(str(fp))
+        if column not in lf.collect_schema().names():
+            return []
+        vals = (
+            lf.select(pl.col(column).cast(pl.String, strict=False).alias(column))
+            .drop_nulls()
+            .unique()
+            .limit(limit)
+            .collect()
+            .to_series()
+            .to_list()
+        )
+        return [str(v).strip() for v in vals if str(v or "").strip()]
+    except Exception:
+        return []
+
+
+def _canonical_existing_value(value: str, existing_values: list[str]) -> str:
+    key = _norm_header(value)
+    if not key:
+        return str(value or "").strip()
+    for existing in existing_values:
+        if _norm_header(existing) == key:
+            return existing
+    return str(value or "").strip()
+
+
+def _normalize_func_step_cell(
+    raw: Any,
+    *,
+    row: dict[str, Any],
+    preview_row: dict[str, Any] | None,
+    existing_values: list[str],
+) -> tuple[str, str]:
+    proposed = str((preview_row or {}).get("proposed_func_step") or "").strip()
+    if proposed and proposed != "UNCLASSIFIED":
+        return _canonical_existing_value(proposed, existing_values), "preview func_step classification"
+    text = str(raw or "").strip()
+    if not text:
+        return "", "blank source value"
+    for label in _known_func_step_labels():
+        if _norm_header(text) == _norm_header(label):
+            return _canonical_existing_value(label, existing_values), "matched known func_step label"
+    classified = _classify_func_step(row, " ".join([text] + [str(v or "") for v in row.values()]), {})
+    proposed = str(classified.get("proposed_func_step") or "").strip()
+    if proposed and proposed != "UNCLASSIFIED":
+        return _canonical_existing_value(proposed, existing_values), str(classified.get("reason") or "keyword classification")
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", text.strip()).strip("_").upper()
+    return _canonical_existing_value(normalized, existing_values), "trim/uppercase fallback"
+
+
+def _matching_table_apply_policies(
+    *,
+    username: str,
+    role: str,
+    table_type: str,
+    source_cols: list[str],
+    target_file: str,
+    target_cols: list[str],
+) -> list[dict[str, Any]]:
+    source_sig = _schema_signature(source_cols)
+    target_sig = _schema_signature(target_cols)
+    out: list[dict[str, Any]] = []
+    for row in custom_knowledge_rows(username, role):
+        structured = row.get("structured_json") if isinstance(row.get("structured_json"), dict) else {}
+        policy = structured.get("table_apply_policy") if isinstance(structured.get("table_apply_policy"), dict) else {}
+        if not policy:
+            continue
+        if str(policy.get("table_type") or "") != table_type:
+            continue
+        same_target = (
+            str(policy.get("target_file") or "") == target_file
+            or str(policy.get("target_schema_signature") or "") == target_sig
+        )
+        same_source = str(policy.get("source_schema_signature") or "") == source_sig
+        if same_target and same_source:
+            inherited = policy.get("rules") if isinstance(policy.get("rules"), dict) else {}
+            if inherited:
+                inherited = dict(inherited)
+                inherited.setdefault("sources", [])
+                inherited["sources"] = _unique(_coerce_list(inherited.get("sources")) + [str(row.get("id") or "prior_table_policy")])
+                out.append(inherited)
+    return out[:5]
+
+
+def _build_table_apply_policy(
+    *,
+    payload: dict[str, Any],
+    table_type: str,
+    source_cols: list[str],
+    target_file: str,
+    target_cols: list[str],
+    username: str,
+    role: str,
+) -> dict[str, Any]:
+    prior = _matching_table_apply_policies(
+        username=username,
+        role=role,
+        table_type=table_type,
+        source_cols=source_cols,
+        target_file=target_file,
+        target_cols=target_cols,
+    )
+    prompt = str(payload.get("apply_instructions") or payload.get("mapping_prompt") or payload.get("reference_content") or "").strip()
+    current = _table_apply_policy_from_prompt(prompt, source_cols=source_cols, target_cols=target_cols)
+    rules = _merge_table_apply_policies(*prior, current)
+    return {
+        "table_type": table_type,
+        "target_file": target_file,
+        "source_columns": source_cols,
+        "target_columns": target_cols,
+        "source_schema_signature": _schema_signature(source_cols),
+        "target_schema_signature": _schema_signature(target_cols),
+        "instruction_prompt": prompt,
+        "prior_policy_count": len(prior),
+        "rules": rules,
+    }
+
+
+def _resolve_single_file_target(name: str) -> Path:
+    raw = str(name or "").strip()
+    if not raw or "/" in raw or "\\" in raw or raw in {".", ".."}:
+        raise ValueError("target single file must be a top-level CSV/parquet file")
+    for root in (PATHS.base_root, PATHS.db_root):
+        try:
+            base = root.resolve()
+            cand = (base / raw).resolve()
+            cand.relative_to(base)
+        except Exception:
+            continue
+        if cand.is_file() and cand.suffix.lower() in {".csv", ".parquet"}:
+            return cand
+    raise ValueError(f"target single file not found: {raw}")
+
+
+def _single_file_schema(file_name: str) -> dict[str, Any]:
+    fp = _resolve_single_file_target(file_name)
+    ext = fp.suffix.lower()
+    try:
+        lf = pl.scan_csv(str(fp), infer_schema_length=5000, try_parse_dates=False) if ext == ".csv" else pl.scan_parquet(str(fp))
+        schema = lf.collect_schema()
+        cols = list(schema.names())
+        dtypes = {c: str(schema[c]) for c in cols}
+    except Exception:
+        df = pl.read_csv(str(fp), infer_schema_length=5000, try_parse_dates=False) if ext == ".csv" else pl.read_parquet(str(fp))
+        cols = list(df.columns)
+        dtypes = {c: str(df.schema[c]) for c in cols}
+    return {"file": fp.name, "path": str(fp), "ext": ext.lstrip("."), "columns": cols, "dtypes": dtypes}
+
+
+def _build_target_file_preview(
+    parsed: dict[str, Any],
+    target_file: str,
+    *,
+    preview_rows: list[dict[str, Any]] | None = None,
+    apply_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    schema = _single_file_schema(target_file)
+    source_cols = parsed.get("columns") or []
+    source_rows = parsed.get("rows") or []
+    preview_rows = preview_rows or []
+    apply_policy = apply_policy or {}
+    rules = apply_policy.get("rules") if isinstance(apply_policy.get("rules"), dict) else {}
+    mappings = []
+    used: set[str] = set()
+    for target_col in schema["columns"]:
+        candidates = _policy_alias_candidates(target_col, rules)
+        source_col = _pick_col(source_cols, *candidates)
+        if source_col in used:
+            source_col = ""
+        dropped = False
+        for drop_col in rules.get("drop_columns") or []:
+            if source_col and _norm_header(drop_col) == _norm_header(source_col):
+                dropped = True
+                source_col = ""
+                break
+        if source_col:
+            used.add(source_col)
+        action = _policy_transform_for(target_col, source_col, rules) if source_col else "blank"
+        existing_values = _target_column_values(target_file, target_col, limit=60) if action == "normalize_func_step" else []
+        sample_before = ""
+        sample_after = ""
+        if source_col and source_rows:
+            sample_before = str((source_rows[0] or {}).get(source_col) or "")
+            if action == "normalize_func_step":
+                sample_after, _ = _normalize_func_step_cell(
+                    sample_before,
+                    row=source_rows[0] or {},
+                    preview_row=preview_rows[0] if preview_rows else None,
+                    existing_values=existing_values,
+                )
+            elif action == "trim":
+                sample_after = sample_before.strip()
+            else:
+                sample_after = sample_before
+        reason_bits = []
+        if len(candidates) > 1:
+            reason_bits.append("instruction/prior alias")
+        if action == "normalize_func_step":
+            reason_bits.append("func_step normalized to known/existing value")
+        elif action == "trim":
+            reason_bits.append("trim whitespace")
+        elif dropped:
+            reason_bits.append("input column excluded by instruction")
+        elif source_col:
+            reason_bits.append("schema column match")
+        else:
+            reason_bits.append("no source column")
+        mappings.append({
+            "target_col": target_col,
+            "target_dtype": schema["dtypes"].get(target_col, ""),
+            "source_col": source_col,
+            "status": "mapped" if source_col else "blank",
+            "apply_action": action,
+            "reason": "; ".join(reason_bits),
+            "sample_before": sample_before,
+            "sample_after": sample_after,
+            "target_existing_values": existing_values[:12],
+        })
+    mapped_rows = []
+    for idx, row in enumerate(source_rows[:800]):
+        out = {}
+        for m in mappings:
+            src = m["source_col"]
+            value = row.get(src, "") if src else ""
+            action = m.get("apply_action") or "copy_as_is"
+            if src and action == "normalize_func_step":
+                value, reason = _normalize_func_step_cell(
+                    value,
+                    row=row,
+                    preview_row=preview_rows[idx] if idx < len(preview_rows) else None,
+                    existing_values=m.get("target_existing_values") or [],
+                )
+                if idx == 0 and reason and "reason" in m and reason not in m["reason"]:
+                    m["reason"] = f"{m['reason']}; {reason}"
+            elif src and action == "trim":
+                value = str(value or "").strip()
+            out[m["target_col"]] = value if src else ""
+        mapped_rows.append(out)
+    extra_source_cols = [c for c in source_cols if c not in used]
+    warnings = []
+    blank_targets = [m["target_col"] for m in mappings if not m["source_col"]]
+    if blank_targets:
+        warnings.append("target columns without source values: " + ", ".join(blank_targets[:12]))
+    if extra_source_cols:
+        warnings.append("input columns not used by target schema: " + ", ".join(extra_source_cols[:12]))
+    normalized_cols = [m["target_col"] for m in mappings if m.get("apply_action") == "normalize_func_step"]
+    if normalized_cols:
+        warnings.append("columns normalized before append: " + ", ".join(normalized_cols[:8]))
+    return {
+        **schema,
+        "column_mapping": mappings,
+        "mapped_rows": mapped_rows,
+        "mapped_row_count": len(mapped_rows),
+        "extra_source_cols": extra_source_cols,
+        "warnings": warnings,
+        "table_apply_policy": apply_policy,
+        "apply_mode": "append_rows_after_schema_mapping",
+    }
+
+
+def _append_table_preview_to_single_file(target_file: str, target_preview: dict[str, Any], username: str = "") -> dict[str, Any]:
+    fp = _resolve_single_file_target(target_file)
+    mapped_rows = target_preview.get("mapped_rows") or []
+    if not mapped_rows:
+        raise ValueError("no mapped rows to append")
+    old = pl.read_csv(str(fp), infer_schema_length=5000, try_parse_dates=False) if fp.suffix.lower() == ".csv" else pl.read_parquet(str(fp))
+    target_cols = list(old.columns)
+    new = pl.DataFrame(mapped_rows)
+    for col in target_cols:
+        if col not in new.columns:
+            new = new.with_columns(pl.lit(None).alias(col))
+    new = new.select(target_cols)
+    for col, dtype in old.schema.items():
+        try:
+            new = new.with_columns(pl.col(col).cast(dtype, strict=False))
+        except Exception:
+            pass
+    backup_dir = PATHS.data_root / "_backups" / "table_knowledge_apply"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / f"{dt.datetime.now().strftime('%Y%m%d%H%M%S')}__{fp.name}"
+    shutil.copy2(fp, backup)
+    combined = pl.concat([old, new], how="vertical_relaxed")
+    if fp.suffix.lower() == ".csv":
+        combined.write_csv(str(fp))
+    else:
+        combined.write_parquet(str(fp))
+    return {
+        "ok": True,
+        "file": fp.name,
+        "path": str(fp),
+        "backup": str(backup),
+        "added": new.height,
+        "before_rows": old.height,
+        "after_rows": combined.height,
+        "username": username,
+    }
+
+
+def preview_table_knowledge(payload: dict[str, Any], username: str = "", role: str = "user") -> dict[str, Any]:
+    table_type = _table_type_label(payload.get("table_type") or payload.get("document_type") or "")
+    content = str(payload.get("content") or "").strip()
+    parsed = _parse_table_text(content)
+    ref = _parse_table_text(str(payload.get("reference_content") or "").strip()) if str(payload.get("reference_content") or "").strip() else {"columns": [], "rows": [], "warnings": []}
+    cols = parsed.get("columns") or []
+    rows = parsed.get("rows") or []
+    step_col = _pick_col(cols, "step_id", "stepid", "step", "operation_id", "operation", "oper", "ope_no", "route_step", "seq")
+    name_col = _pick_col(cols, "step_name", "operation_name", "process_name", "description", "desc", "recipe", "module", "name")
+    existing_func_col = _pick_col(cols, "func_step", "function_step", "functional_step", "process_module", "area")
+    item_col = _pick_col(cols, "item_id", "rawitem_id", "raw_item_id", "parameter", "metric", "item", "canonical_item_id")
+    item_desc_col = _pick_col(cols, "item_desc", "item_description", "description", "desc", "item_name", "parameter_desc", "metric_desc")
+    unit_col = _pick_col(cols, "unit", "units", "uom")
+    value_col = _pick_col(cols, "value", "val", "result", "meas_value", "measure_value", "data")
+    teg_name_col = _pick_col(cols, "teg", "teg_id", "teg_name", "structure", "structure_name", "label", "name", "id")
+    teg_x_col = _pick_col(cols, "dx_mm", "x_mm", "x", "teg_x", "local_x", "coord_x", "xcoord", "x_coordinate", "shot_x", "offset_x", "pos_x")
+    teg_y_col = _pick_col(cols, "dy_mm", "y_mm", "y", "teg_y", "local_y", "coord_y", "ycoord", "y_coordinate", "shot_y", "offset_y", "pos_y")
+    ref_cols = ref.get("columns") or []
+    ref_step_col = _pick_col(ref_cols, "step_id", "stepid", "step", "operation_id", "operation", "oper", "route_step", "seq")
+    ref_func_col = _pick_col(ref_cols, "func_step", "function_step", "functional_step", "process_module", "area", "module")
+    reference_map: dict[str, str] = {}
+    if ref_step_col and ref_func_col:
+        for r in ref.get("rows") or []:
+            sid = str(r.get(ref_step_col) or "").strip()
+            fstep = str(r.get(ref_func_col) or "").strip()
+            if sid and fstep:
+                reference_map[sid] = fstep
+
+    preview_rows: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows[:300], start=1):
+        step_id = str(row.get(step_col) or row.get("step_id") or "").strip() if step_col else ""
+        step_name = str(row.get(name_col) or "").strip() if name_col else ""
+        existing = str(row.get(existing_func_col) or "").strip() if existing_func_col else ""
+        raw_item = str(row.get(item_col) or "").strip() if item_col else ""
+        item_desc = str(row.get(item_desc_col) or "").strip() if item_desc_col else ""
+        text = " ".join(str(v or "") for v in row.values())
+        classified = _classify_func_step({"_step_id": step_id, **row}, f"{step_id} {step_name} {text}", reference_map)
+        if existing and classified["proposed_func_step"] == "UNCLASSIFIED":
+            classified = {
+                "proposed_func_step": existing,
+                "confidence": 0.72,
+                "source": "existing_func_step",
+                "reason": "existing func_step column was used",
+            }
+        canonical = ""
+        if table_type == "inline_item_semantics" or raw_item or item_desc:
+            canonical = _canonical_from_raw_item(raw_item) if raw_item else ""
+            if canonical and canonical == raw_item.upper() and not _find_item_by_name(canonical):
+                canonical = ""
+            if not canonical:
+                candidates = _extract_candidate_item_names(f"{raw_item} {item_desc} {text}")
+                canonical = str(candidates[0]) if candidates else ""
+        cleaning_actions = _cleaning_actions_for_row(row, [c for c in [step_col, item_col, item_desc_col, existing_func_col] if c])
+        if table_type == "inline_item_semantics":
+            if not step_id:
+                cleaning_actions.append("review missing step_id")
+            if not raw_item:
+                cleaning_actions.append("review missing item_id")
+            if raw_item and raw_item != raw_item.strip().upper():
+                cleaning_actions.append("normalize item_id case/space")
+            if raw_item and not canonical:
+                cleaning_actions.append("add item dictionary mapping before RCA use")
+            if value_col and row.get(value_col) not in (None, "") and _float_value(row.get(value_col)) is None:
+                cleaning_actions.append("review non-numeric value column")
+        preview_rows.append({
+            "row_no": idx,
+            "step_id": step_id or f"ROW_{idx}",
+            "step_name": step_name or str(row.get(cols[0], "") if cols else "")[:80],
+            "current_func_step": existing,
+            "raw_item_id": raw_item,
+            "canonical_item_id": canonical,
+            "item_desc": item_desc,
+            "unit": str(row.get(unit_col) or "").strip() if unit_col else "",
+            "cleaning_actions": _unique(cleaning_actions)[:10],
+            **classified,
+            "raw": row,
+        })
+    counts: dict[str, int] = {}
+    for r in preview_rows:
+        key = str(r.get("proposed_func_step") or "UNCLASSIFIED")
+        counts[key] = counts.get(key, 0) + 1
+    warnings = list(parsed.get("warnings") or []) + list(ref.get("warnings") or [])
+    if table_type == "process_plan_func_step" and not step_col:
+        warnings.append("step_id column was not detected; row numbers are used in preview.")
+    if table_type == "process_plan_func_step" and not reference_map and str(payload.get("reference_content") or "").strip():
+        warnings.append("reference table was provided but step_id/func_step columns were not detected.")
+    if table_type == "inline_item_semantics" and not item_col:
+        warnings.append("item_id column was not detected; item semantics can only be inferred from descriptions.")
+    teg_proposal = {}
+    if table_type == "teg_coordinate_table":
+        teg_proposal = teg_layout_proposal_from_rows(str(payload.get("product") or ""), rows=rows, prompt=content)
+        if not teg_proposal.get("teg_definitions"):
+            warnings.append("TEG coordinate columns were not detected. Check x/y/name column names or paste a clearer table.")
+    cleaning_summary: dict[str, Any] = {}
+    action_counts: dict[str, int] = {}
+    for r in preview_rows:
+        for action in r.get("cleaning_actions") or []:
+            action_counts[action] = action_counts.get(action, 0) + 1
+    if table_type in {"inline_item_semantics", "data_cleaning_plan"} or action_counts:
+        dup_keys: dict[str, int] = {}
+        for r in preview_rows:
+            key = "|".join([str(r.get("step_id") or ""), str(r.get("raw_item_id") or ""), str(r.get("item_desc") or "")])
+            if key.strip("|"):
+                dup_keys[key] = dup_keys.get(key, 0) + 1
+        cleaning_summary = {
+            "action_counts": action_counts,
+            "duplicate_key_count": len([k for k, v in dup_keys.items() if v > 1]),
+            "unmapped_item_count": len([r for r in preview_rows if r.get("raw_item_id") and not r.get("canonical_item_id")]),
+            "missing_step_count": len([r for r in preview_rows if str(r.get("step_id") or "").startswith("ROW_")]),
+            "note": "원본 파일은 수정하지 않습니다. 확정 시 RAG용 table knowledge만 저장됩니다.",
+        }
+    target_file = str(payload.get("target_file") or "").strip()
+    target_file_preview = {}
+    table_apply_policy: dict[str, Any] = {}
+    if target_file:
+        target_schema = _single_file_schema(target_file)
+        table_apply_policy = _build_table_apply_policy(
+            payload=payload,
+            table_type=table_type,
+            source_cols=cols,
+            target_file=target_file,
+            target_cols=target_schema.get("columns") or [],
+            username=username,
+            role=role,
+        )
+        target_file_preview = _build_target_file_preview(
+            parsed,
+            target_file,
+            preview_rows=preview_rows,
+            apply_policy=table_apply_policy,
+        )
+        warnings.extend(target_file_preview.get("warnings") or [])
+        if cleaning_summary:
+            cleaning_summary["note"] = "대상 단일파일 schema에 맞춰 매핑했습니다. 확정 시 백업을 만든 뒤 append 저장합니다."
+    return {
+        "ok": True,
+        "mode": "preview_only_no_rag_write",
+        "table_type": table_type,
+        "title": payload.get("title") or "",
+        "product": payload.get("product") or "",
+        "module": payload.get("module") or "",
+        "columns": cols,
+        "detected_columns": {
+            "step_id": step_col,
+            "step_name": name_col,
+            "func_step": existing_func_col,
+            "item_id": item_col,
+            "item_desc": item_desc_col,
+            "unit": unit_col,
+            "value": value_col,
+            "teg_name": teg_name_col,
+            "teg_x": teg_x_col,
+            "teg_y": teg_y_col,
+            "reference_step_id": ref_step_col,
+            "reference_func_step": ref_func_col,
+        },
+        "reference_matches": len(reference_map),
+        "row_count": len(rows),
+        "preview_rows": preview_rows,
+        "teg_definitions": teg_proposal.get("teg_definitions") or [],
+        "func_step_counts": counts,
+        "cleaning_summary": cleaning_summary,
+        "target_file_preview": target_file_preview,
+        "table_apply_policy": table_apply_policy,
+        "warnings": warnings,
+        "review_status": "preview_needs_confirmation",
+        "rag_effect": "아직 반영하지 않았습니다. 대상 단일파일이 있으면 schema mapping과 열별 변환 방식을 확인한 뒤 append 저장합니다.",
+    }
+
+
+def commit_table_knowledge(payload: dict[str, Any], username: str, role: str = "user") -> dict[str, Any]:
+    preview = payload.get("preview") if isinstance(payload.get("preview"), dict) else {}
+    if not preview:
+        preview = preview_table_knowledge(payload, username=username, role=role)
+    rows = preview.get("preview_rows") or []
+    if not rows:
+        raise ValueError("table preview rows are empty")
+    table_type = _table_type_label(payload.get("table_type") or preview.get("table_type") or "")
+    title = str(payload.get("title") or preview.get("title") or table_type).strip()
+    content = str(payload.get("content") or "").strip()
+    display_lines = [
+        f"{r.get('step_id')} | {r.get('step_name')} | {r.get('proposed_func_step')} | confidence={r.get('confidence')} | {r.get('reason')}"
+        for r in rows[:500]
+    ]
+    func_labels = sorted({str(r.get("proposed_func_step") or "") for r in rows if r.get("proposed_func_step")})
+    likely_items = _extract_candidate_item_names(" ".join([title, content, json.dumps(rows, ensure_ascii=False, default=str)]))
+    tags = _unique(["table_rag", table_type] + _coerce_list(payload.get("tags")) + func_labels[:20] + likely_items[:10])
+    structured = {
+        "schema_type": "table_rag_source",
+        "table_type": table_type,
+        "storage_policy": {
+            "flow_data_only": True,
+            "local_runtime_path": str(CUSTOM_KNOWLEDGE_FILE),
+            "external_export": False,
+        },
+        "display_language": "ko" if _contains_hangul(title + content) else "en",
+        "row_count": preview.get("row_count") or len(rows),
+        "columns": preview.get("columns") or [],
+        "detected_columns": preview.get("detected_columns") or {},
+        "func_step_counts": preview.get("func_step_counts") or {},
+        "classifications": rows,
+        "key_rows": rows[:120],
+        "target_file_preview": preview.get("target_file_preview") or {},
+        "table_apply_policy": preview.get("table_apply_policy") or (preview.get("target_file_preview") or {}).get("table_apply_policy") or {},
+        "known_canonical_candidates": likely_items,
+        "retrieval_hints": {
+            "title": title,
+            "product": payload.get("product") or preview.get("product") or "",
+            "module": payload.get("module") or preview.get("module") or "",
+            "tags": tags,
+            "preferred_query_terms": _unique(func_labels + likely_items + ["step_id", "func_step", "process_plan"])[:40],
+        },
+        "rag_effect": "확정된 표 반영 방식과 schema별 열 변환 규칙을 저장했습니다. 같은 schema가 다시 들어오면 preview에서 재사용합니다.",
+        "review_status": "admin_confirmed" if role == "admin" else "user_confirmed_private",
+        "preview_warnings": preview.get("warnings") or [],
+    }
+    file_apply = None
+    target_file = str(payload.get("target_file") or "").strip()
+    if payload.get("apply_to_file") and target_file:
+        file_apply = _append_table_preview_to_single_file(target_file, preview.get("target_file_preview") or {}, username=username)
+        structured["file_apply"] = file_apply
+    saved = add_custom_knowledge({
+        "kind": "table",
+        "visibility": "private",
+        "title": title,
+        "display_title": title,
+        "source": payload.get("source") or "manual_table_preview",
+        "source_url": payload.get("source_url") or "",
+        "document_type": table_type,
+        "product": payload.get("product") or preview.get("product") or "",
+        "module": payload.get("module") or preview.get("module") or "",
+        "items": likely_items,
+        "tags": tags,
+        "content": content,
+        "display_content": "\n".join(display_lines),
+        "display_language": structured["display_language"],
+        "structured_json": structured,
+    }, username=username, role=role)
+    return {
+        "ok": True,
+        "mode": "confirmed_table_file_append_and_rag_write" if file_apply else "confirmed_table_rag_write",
+        "saved": saved.get("row"),
+        "file_apply": file_apply,
+        "structured": structured,
+        "storage": storage_manifest()["runtime_data"],
+    }
+
+
+def add_document_knowledge(payload: dict[str, Any], username: str, role: str = "user") -> dict[str, Any]:
+    """Store GPT deep research / internal documents as RAG-ready runtime knowledge.
+
+    Documents remain append-only.  The visible title/content can stay Korean,
+    while the structured metadata extracts English-ish canonical tokens and
+    chunk boundaries so an internal GPT/RAG layer can retrieve focused passages.
+    """
+    if role != "admin":
+        raise ValueError("document knowledge registration is admin-only and saved as public shared RAG")
+    title = str(payload.get("title") or "").strip()
+    content = str(payload.get("content") or "").strip()
+    if not content:
+        raise ValueError("document content is empty")
+    document_type = _document_type_label(payload.get("document_type") or payload.get("doc_type") or "")
+    chunks = _document_chunks(content)
+    display_language = "ko" if _contains_hangul(" ".join([title, content])) else "en"
+    likely_items = _extract_candidate_item_names(content + " " + title)
+    raw_tokens = _unique([
+        x for x in re.findall(r"[A-Za-z][A-Za-z0-9_./+-]*(?:[-_][A-Za-z0-9_./+-]+){1,}", content + " " + title)
+        if len(x) >= 3
+    ])[:40]
+    tags = _unique([document_type] + _coerce_list(payload.get("tags")) + likely_items[:10] + raw_tokens[:10])
+    structured = {
+        "schema_type": "document_rag_source",
+        "document_type": document_type,
+        "storage_policy": {
+            "flow_data_only": True,
+            "local_runtime_path": str(CUSTOM_KNOWLEDGE_FILE),
+            "external_export": False,
+        },
+        "display_language": display_language,
+        "canonical_language": "english_tokens",
+        "chunk_count": len(chunks),
+        "chunks": chunks,
+        "raw_item_tokens": raw_tokens,
+        "known_canonical_candidates": likely_items,
+        "retrieval_hints": {
+            "title": title,
+            "product": payload.get("product") or "",
+            "module": payload.get("module") or "",
+            "tags": tags,
+            "preferred_query_terms": _unique(likely_items + raw_tokens)[:30],
+        },
+        "rag_effect": "문서 본문을 검색 가능한 chunk로 나누고, canonical item/process 후보와 tag를 함께 저장했습니다.",
+        "review_status": "admin_added_public",
+    }
+    saved = add_custom_knowledge({
+        "kind": "document",
+        "visibility": "public",
+        "title": title or f"{document_type} document",
+        "display_title": title or f"{document_type} document",
+        "source": payload.get("source") or "manual_document",
+        "source_url": payload.get("source_url") or "",
+        "document_type": document_type,
+        "product": payload.get("product") or "",
+        "module": payload.get("module") or "",
+        "items": likely_items,
+        "tags": tags,
+        "content": content,
+        "display_content": content,
+        "display_language": display_language,
+        "structured_json": structured,
+    }, username=username, role=role)
+    return {
+        "ok": True,
+        "mode": "append_only_document_knowledge",
+        "saved": saved.get("row"),
+        "structured": structured,
+        "storage": storage_manifest()["runtime_data"],
+    }
+
+
+def rag_knowledge_view(username: str = "", role: str = "user", q: str = "", limit: int = 120) -> dict[str, Any]:
+    """Compact view for the Diagnosis/RCA knowledge RAG UI."""
+    needle = str(q or "").strip().lower()
+    lim = max(20, min(300, int(limit or 120)))
+    cards = all_knowledge_cards()
+    edges = all_causal_edges()
+    custom_rows = custom_knowledge_rows(username, role)
+
+    def _hit(*values: Any) -> bool:
+        if not needle:
+            return True
+        text = " ".join(
+            json.dumps(v, ensure_ascii=False, default=str) if isinstance(v, (dict, list)) else str(v or "")
+            for v in values
+        ).lower()
+        return needle in text
+
+    card_links: dict[str, list[dict[str, str]]] = {}
+    for card in cards:
+        link = {
+            "id": str(card.get("id") or ""),
+            "title": str(card.get("title") or ""),
+        }
+        for item_id in _coerce_list(card.get("symptom_items")):
+            card_links.setdefault(str(item_id).upper(), []).append(link)
+
+    edge_links: dict[str, list[dict[str, str]]] = {}
+    for edge in edges:
+        src = str(edge.get("source") or "").upper()
+        tgt = str(edge.get("target") or "").upper()
+        row = {
+            "source": str(edge.get("source") or ""),
+            "target": str(edge.get("target") or ""),
+            "relation": str(edge.get("relation") or ""),
+            "module": str(edge.get("module") or ""),
+        }
+        if src:
+            edge_links.setdefault(src, []).append(row)
+        if tgt:
+            edge_links.setdefault(tgt, []).append(row)
+
+    item_rows = []
+    for item in ITEM_MASTER:
+        iid = str(item.get("canonical_item_id") or "").upper()
+        linked_cards = card_links.get(iid, [])
+        linked_edges = edge_links.get(iid, [])
+        row = {
+            **_compact_item(item),
+            "raw_names": _coerce_list(item.get("raw_names"))[:8],
+            "aliases": _coerce_list(item.get("aliases"))[:8],
+            "knowledge_cards": linked_cards[:8],
+            "card_count": len(linked_cards),
+            "connections": linked_edges[:10],
+            "connection_count": len(linked_edges),
+        }
+        if _hit(row):
+            item_rows.append(row)
+
+    card_rows = []
+    for card in cards:
+        source_kind = "custom" if card.get("custom") else ("seed" if card.get("default_seed") else "core")
+        row = {
+            "id": card.get("id") or "",
+            "title": card.get("title") or "",
+            "source_kind": source_kind,
+            "symptom_items": _coerce_list(card.get("symptom_items"))[:12],
+            "module_tags": _coerce_list(card.get("module_tags"))[:10],
+            "electrical_mechanism": card.get("electrical_mechanism") or "",
+            "structural_causes": _coerce_list(card.get("structural_causes"))[:6],
+            "process_root_causes": _coerce_list(card.get("process_root_causes"))[:6],
+            "recommended_checks": _coerce_list(card.get("recommended_checks"))[:8],
+            "confidence_base": card.get("confidence_base"),
+        }
+        if _hit(row):
+            card_rows.append(row)
+
+    edge_rows = []
+    for edge in edges:
+        row = {
+            "source": edge.get("source") or "",
+            "relation": edge.get("relation") or "",
+            "target": edge.get("target") or "",
+            "module": edge.get("module") or "",
+            "evidence": edge.get("evidence") or "",
+            "source_kind": "seed" if edge.get("default_seed") else "core",
+        }
+        if _hit(row):
+            edge_rows.append(row)
+
+    runtime_rows = []
+    for row in custom_rows:
+        structured = row.get("structured_json") if isinstance(row.get("structured_json"), dict) else {}
+        doc_chunks = _coerce_list(structured.get("chunks"))
+        key_terms = _coerce_list(structured.get("known_canonical_candidates") or row.get("items")) + _coerce_list(structured.get("raw_item_tokens"))
+        out = {
+            "id": row.get("id") or "",
+            "created_at": row.get("created_at") or "",
+            "username": row.get("username") or "",
+            "kind": row.get("kind") or "",
+            "visibility": row.get("visibility") or "",
+            "source": row.get("source") or "",
+            "product": row.get("product") or "",
+            "module": row.get("module") or "",
+            "title": row.get("title") or "",
+            "display_title": row.get("display_title") or row.get("title") or "",
+            "display_language": row.get("display_language") or structured.get("display_language") or "",
+            "schema_type": structured.get("schema_type") or "",
+            "document_type": row.get("document_type") or structured.get("document_type") or "",
+            "table_type": row.get("document_type") if row.get("kind") == "table" else structured.get("table_type") or "",
+            "chunk_count": structured.get("chunk_count") or len(doc_chunks),
+            "row_count": structured.get("row_count") or 0,
+            "func_step_counts": structured.get("func_step_counts") or {},
+            "key_terms": _unique(key_terms)[:12],
+            "rag_effect": structured.get("rag_effect") or (
+                "Flow-i update prompt를 runtime knowledge로 저장하고 item/tag 검색 후보에 반영했습니다."
+                if row.get("source") == "flow-i RAG Update prompt" else
+                "runtime custom knowledge로 저장되어 RAG 검색 대상에 포함됩니다."
+            ),
+            "review_status": structured.get("review_status") or "",
+            "items": _coerce_list(row.get("items"))[:10],
+            "tags": _coerce_list(row.get("tags"))[:10],
+            "content": str(row.get("content") or "")[:700],
+            "display_content": str(row.get("display_content") or row.get("content") or "")[:700],
+            "focus_points": _coerce_list(structured.get("focus_points"))[:6],
+            "key_rows": _coerce_list(structured.get("key_rows"))[:8],
+        }
+        if _hit(out):
+            runtime_rows.append(out)
+
+    return {
+        "ok": True,
+        "version": KNOWLEDGE_VERSION,
+        "query": q,
+        "counts": {
+            "items": len(ITEM_MASTER),
+            "knowledge_cards": len(cards),
+            "custom_knowledge": len(custom_rows),
+            "documents": len([r for r in custom_rows if r.get("kind") == "document"]),
+            "tables": len([r for r in custom_rows if r.get("kind") == "table"]),
+            "causal_edges": len(edges),
+            "matched_items": len(item_rows),
+            "matched_cards": len(card_rows),
+            "matched_edges": len(edge_rows),
+            "matched_runtime": len(runtime_rows),
+        },
+        "items": item_rows[:lim],
+        "knowledge_cards": card_rows[:lim],
+        "causal_edges": edge_rows[:lim],
+        "runtime_knowledge": runtime_rows[:lim],
+        "recent_updates": runtime_rows[:min(lim, 80)],
+        "documents": [r for r in runtime_rows if r.get("kind") == "document"][:lim],
+        "tables": [r for r in runtime_rows if r.get("kind") == "table"][:lim],
+        "rules": [
+            "Item meaning comes from item_master metadata, not raw name guessing.",
+            "Knowledge cards connect symptom_items to mechanisms, process causes, checks, and charts.",
+            "Causal edges show source -> relation -> target paths used by RCA traversal.",
+            "Runtime knowledge is append-only custom knowledge from Flow-i RAG updates, admin imports, and document ingestion.",
+            "Document knowledge is chunked for retrieval; Korean display text is preserved while English/canonical tokens are extracted for search.",
+            "Table knowledge uses preview-first classification; it is only written to RAG after confirmation.",
+        ],
+    }
+
+
 def add_custom_knowledge(payload: dict[str, Any], username: str, role: str = "user") -> dict[str, Any]:
     SEMICONDUCTOR_DIR.mkdir(parents=True, exist_ok=True)
     kind = str(payload.get("kind") or "research_note").strip().lower()
-    if kind not in {"research_note", "knowledge_card", "historical_case", "engineer_prior"}:
+    if kind not in {"research_note", "knowledge_card", "historical_case", "engineer_prior", "document", "table"}:
         kind = "research_note"
     visibility = str(payload.get("visibility") or "private").strip().lower()
     if visibility not in {"private", "public"}:
@@ -2103,12 +3426,17 @@ def add_custom_knowledge(payload: dict[str, Any], username: str, role: str = "us
         "kind": kind,
         "visibility": visibility,
         "title": payload.get("title") or "",
+        "display_title": payload.get("display_title") or payload.get("title") or "",
         "source": payload.get("source") or "manual",
+        "source_url": payload.get("source_url") or "",
+        "document_type": payload.get("document_type") or "",
         "product": payload.get("product") or "",
         "module": payload.get("module") or "",
         "items": _coerce_list(payload.get("items")),
         "tags": _coerce_list(payload.get("tags")),
         "content": payload.get("content") or "",
+        "display_content": payload.get("display_content") or payload.get("content") or "",
+        "display_language": payload.get("display_language") or ("ko" if _contains_hangul(payload.get("content") or payload.get("title") or "") else "en"),
         "structured_json": structured if isinstance(structured, dict) else {},
     }
     with CUSTOM_KNOWLEDGE_FILE.open("a", encoding="utf-8") as f:
@@ -2146,6 +3474,7 @@ def structure_rag_update_from_prompt(
     body = RAG_UPDATE_MARKER_RE.sub("", text).strip()
     if not body:
         raise ValueError("RAG update body is empty")
+    display_language = "ko" if _contains_hangul(body) else "en"
 
     dims = [
         {"width": m.group(1), "height": m.group(2), "raw": m.group(0)}
@@ -2181,6 +3510,9 @@ def structure_rag_update_from_prompt(
         "review_status": "needs_admin_review" if role != "admin" else "admin_added",
         "source_prompt_prefix": "[flow-i RAG Update]",
         "accepted_prompt_prefixes": ["[flow-i update]", "[flow-i RAG Update]"],
+        "canonical_language": "english_tokens",
+        "display_language": display_language,
+        "display_policy": "Use canonical English item/process tokens for retrieval; keep operator-facing title/content in Korean when provided.",
     }
     if dims:
         structured["discriminators"].append("geometry_dimension")
@@ -2202,12 +3534,15 @@ def structure_rag_update_from_prompt(
         "kind": kind,
         "visibility": "public" if role == "admin" else "private",
         "title": (body.splitlines()[0] or "Flow-i RAG update")[:120],
+        "display_title": (body.splitlines()[0] or "Flow-i RAG update")[:120],
         "source": "flow-i RAG Update prompt",
         "product": "",
         "module": "",
         "items": likely_items,
         "tags": [schema_type] + likely_items[:8],
         "content": body,
+        "display_content": body,
+        "display_language": display_language,
         "structured_json": structured,
     }
     saved = add_custom_knowledge(payload, username=username, role=role)
@@ -2239,6 +3574,10 @@ def _alias_from_raw_item(raw: str) -> str:
     if alias[0].isdigit():
         alias = "I_" + alias
     return alias[:80]
+
+
+def _contains_hangul(text: str) -> bool:
+    return bool(re.search(r"[\uac00-\ud7a3]", str(text or "")))
 
 
 def _category_from_raw_item(raw: str) -> str:
@@ -2446,21 +3785,13 @@ def teg_layout_proposal_from_rows(product: str, rows: list[dict[str, Any]] | Non
     prompt = str(prompt or "")
     out: list[dict[str, Any]] = []
 
-    def _num_value(row: dict[str, Any], *keys: str) -> float | None:
-        for key in keys:
-            if key in row and row.get(key) not in (None, ""):
-                try:
-                    v = float(row.get(key))
-                    if math.isfinite(v):
-                        return v
-                except Exception:
-                    pass
-        return None
-
     for idx, row in enumerate(rows, start=1):
-        name = row.get("id") or row.get("label") or row.get("name") or row.get("teg") or row.get("TEG") or f"TEG_{idx}"
-        x = _num_value(row, "dx_mm", "x", "X", "teg_x", "TEG_X", "local_x", "coord_x")
-        y = _num_value(row, "dy_mm", "y", "Y", "teg_y", "TEG_Y", "local_y", "coord_y")
+        name = (
+            _row_value_fuzzy(row, "id", "label", "name", "teg", "teg_id", "teg_name", "structure", "structure_name", "site", "site_name")
+            or f"TEG_{idx}"
+        )
+        x = _num_value_fuzzy(row, "dx_mm", "x_mm", "x", "teg_x", "local_x", "coord_x", "xcoord", "x_coordinate", "shot_x", "offset_x", "pos_x", "center_x", "site_x")
+        y = _num_value_fuzzy(row, "dy_mm", "y_mm", "y", "teg_y", "local_y", "coord_y", "ycoord", "y_coordinate", "shot_y", "offset_y", "pos_y", "center_y", "site_y")
         if x is None or y is None:
             continue
         item = {
@@ -2468,14 +3799,18 @@ def teg_layout_proposal_from_rows(product: str, rows: list[dict[str, Any]] | Non
             "label": str(name),
             "dx_mm": x,
             "dy_mm": y,
-            "role": row.get("role") or row.get("type") or "",
+            "role": _row_value_fuzzy(row, "role", "type", "kind", "category", "module") or "",
         }
-        width = _num_value(row, "width_mm", "w", "width", "teg_w", "size_x")
-        height = _num_value(row, "height_mm", "h", "height", "teg_h", "size_y")
+        width = _num_value_fuzzy(row, "width_mm", "w_mm", "w", "width", "teg_w", "size_x", "x_size", "sx")
+        height = _num_value_fuzzy(row, "height_mm", "h_mm", "h", "height", "teg_h", "size_y", "y_size", "sy")
         if width is not None:
             item["width_mm"] = width
         if height is not None:
             item["height_mm"] = height
+        for meta_key in ("gate_pitch", "cell_height", "array_size", "doe", "layer", "item_id"):
+            meta = _row_value_fuzzy(row, meta_key, meta_key.replace("_", " "))
+            if meta not in (None, ""):
+                item[meta_key] = str(meta)
         out.append(item)
 
     if not out:
@@ -2548,6 +3883,7 @@ def apply_teg_layout_proposal(product: str, teg_definitions: list[dict[str, Any]
             "role": row.get("role") or "",
             **({"width_mm": float(row["width_mm"])} if row.get("width_mm") not in (None, "") else {}),
             **({"height_mm": float(row["height_mm"])} if row.get("height_mm") not in (None, "") else {}),
+            **({k: str(row.get(k) or "") for k in ("gate_pitch", "cell_height", "array_size", "doe", "layer", "item_id") if row.get(k) not in (None, "")}),
         })
     if not clean:
         raise ValueError("no valid TEG rows")
@@ -2587,7 +3923,7 @@ def storage_manifest() -> dict[str, Any]:
             "description": "운영 중 추가되는 사내 지식/심층리서치/유저별 prior는 flow-data 아래 jsonl로 보존.",
         },
         "setup_policy": {
-            "bundled": ["backend/core/semiconductor_knowledge.py", "backend/core/semiconductor_rca_seed_knowledge.json", "backend/routers/semiconductor.py", "frontend/src/pages/My_Diagnosis.jsx", "docs/SEMICONDUCTOR_DIAGNOSIS_MVP.md"],
+            "bundled": ["backend/core/semiconductor_knowledge.py", "backend/core/semiconductor_rca_seed_knowledge.json", "backend/routers/semiconductor.py", "frontend/src/pages/My_Diagnosis.jsx", "docs/SEMICONDUCTOR_DIAGNOSIS_RCA.md"],
             "not_bundled": ["data/DB", "data/Base", "data/flow-data", "FLOW_DATA_ROOT", "FLOW_DB_ROOT"],
             "operator_action": "setup.py는 기본 RCA seed를 flow-data에 없을 때만 생성하고, 기존 custom_knowledge/engineer_knowledge/diagnosis_runs는 덮어쓰지 않습니다.",
         },

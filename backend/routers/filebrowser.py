@@ -36,7 +36,7 @@ import polars as pl
 from core.paths import PATHS
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_named_child
 from core.utils import (
-    cast_cats, read_source, read_one_file, scan_one_file, apply_sql_like, serialize_rows,
+    cast_cats, read_source, lazy_read_source, read_one_file, scan_one_file, apply_sql_like, serialize_rows,
     jsonl_append, jsonl_read, csv_response, safe_filename,
     DATA_EXTENSIONS, count_data_files,
 )
@@ -103,6 +103,24 @@ def _core_file_meta(name: str) -> dict | None:
             "role": "ML_TABLE parquet",
             "description": "제품별 wafer-level ML_TABLE parquet",
             "order": 10,
+        }
+    if low.startswith("features_") and low.endswith(".parquet"):
+        return {
+            "role": "Feature parquet",
+            "description": "제품/공정 feature 단일 parquet",
+            "order": 15,
+        }
+    if low.endswith(".parquet"):
+        return {
+            "role": "Parquet file",
+            "description": "DB root-level 단일 parquet",
+            "order": 85,
+        }
+    if low.endswith(".csv"):
+        return {
+            "role": "CSV file",
+            "description": "DB root-level 단일 CSV",
+            "order": 86,
         }
     return CORE_BASE_FILES.get(low)
 
@@ -204,7 +222,7 @@ def list_scopes():
     The API key remains "Base" for frontend compatibility.
     """
     scopes = []
-    db_root = PATHS.db_root
+    db_root = _db_root()
     scopes.append({
         "key": "DB",
         "label": "DB",
@@ -233,7 +251,7 @@ def base_files():
     ML_TABLE_*.parquet, the small matching CSVs, and product_config/products.yaml.
     Directories and legacy helper files remain on disk but are not surfaced here.
     """
-    base_root = PATHS.base_root
+    base_root = _base_root()
     files, dirs = [], []
     if base_root.is_dir():
         for f in sorted(base_root.iterdir(), key=lambda p: (not p.is_file(), p.name.lower())):
@@ -352,6 +370,28 @@ def base_files():
                 "order": 80,
             })
 
+    upload_dir = PATHS.upload_dir
+    if upload_dir.is_dir():
+        for f in sorted(upload_dir.iterdir(), key=lambda p: p.name.lower()):
+            if not f.is_file() or f.name.startswith(".") or f.suffix.lower() not in (".csv", ".json", ".txt"):
+                continue
+            try:
+                stat = f.stat()
+            except OSError:
+                continue
+            files.append({
+                "name": f.name,
+                "path": f"uploads/{f.name}",
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+                "ext": f.suffix.lower().lstrip("."),
+                "kind": "file",
+                "source": "uploads",
+                "role": "Flow-i registered file",
+                "description": "Flow-i가 확인 후 Files 영역에 등록한 단일 파일",
+                "order": 5,
+            })
+
     files.sort(key=lambda x: (x.get("order", 999), x["name"].lower()))
     return {"files": files, "dirs": dirs,
             "path": str(base_root) if base_root.is_dir() else "",
@@ -376,8 +416,8 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     # Guard against path traversal — allow base_root, and also db_root-level
     # single files (CSV/Parquet). v8.7.7: parquet 도 허용 (base-files 에 노출되므로
     # 미리보기도 가능해야 함).
-    base_root = PATHS.base_root
-    db_root = PATHS.db_root
+    base_root = _base_root()
+    db_root = _db_root()
     fp = None
     rel = Path(file)
     if rel.parts and rel.parts[0] == "product_config":
@@ -393,6 +433,19 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             fp = cand
         else:
             raise HTTPException(404, f"Product config not found: {file}")
+    elif rel.parts and rel.parts[0] == "uploads":
+        if len(rel.parts) != 2 or rel.parts[1].startswith(".") or rel.parts[1] in ("", ".", ".."):
+            raise HTTPException(400, "Invalid uploads path")
+        up_root = PATHS.upload_dir.resolve()
+        cand = (up_root / rel.parts[1]).resolve()
+        try:
+            cand.relative_to(up_root)
+        except ValueError:
+            raise HTTPException(400, "Invalid uploads path")
+        if cand.is_file() and cand.suffix.lower() in (".csv", ".json", ".txt"):
+            fp = cand
+        else:
+            raise HTTPException(404, f"Registered file not found: {file}")
     elif rel.parts and rel.parts[0] == "reformatter":
         suffix = Path(rel.parts[1]).suffix.lower()
         if len(rel.parts) != 2 or rel.parts[1].startswith(".") or rel.parts[1] in ("", ".", "..") or suffix not in (".csv", ".json"):
@@ -959,7 +1012,7 @@ def parquet_meta_invalidate(request: Request, root: str = Query(""), product: st
     me = current_user(request)
     if me.get("role") != "admin":
         raise HTTPException(403, "admin only")
-    db_root = PATHS.db_root
+    db_root = _db_root()
     count = 0
     if file and not product:
         fp = (db_root / file).resolve()
@@ -983,7 +1036,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       page: int = Query(0, ge=0),
                       page_size: int = Query(200, ge=1, le=1000)):
     # v8.4.6: path traversal 방어 — db_root 밖 파일 접근 차단
-    db_root = PATHS.db_root
+    db_root = _db_root()
     fp = (db_root / file).resolve()
     try:
         fp.relative_to(db_root.resolve())
@@ -1084,7 +1137,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 # v8.4.6: traversal 방어. Base Files can originate from base_root
                 # or db_root, so resolve against both but never outside either root.
                 fp = None
-                for candidate_root in (PATHS.base_root, PATHS.db_root):
+                for candidate_root in (_base_root(), _db_root()):
                     if not candidate_root.is_dir():
                         continue
                     cand = (candidate_root / file).resolve()
@@ -1193,65 +1246,34 @@ class BaseDeleteReq(BaseModel):
 
 @router.post("/base-file/delete")
 def delete_base_file(req: BaseDeleteReq, request: Request):
-    """v8.8.3/v8.8.5 — Admin 이 Base 섹션 단일 파일(원본) 삭제.
-
-    v8.8.5: 이중 권한 체크 —
-      (1) 세션 토큰 기반 current_user().role == "admin" (spoofable 한 body.username 대신 토큰 신뢰)
-      (2) body.username 도 여전히 admin 이어야 함 (기존 계약 유지)
-
-    - 화이트리스트 확장자만 허용 (parquet/csv/json/md/txt)
-    - subdir escape / 숨김파일 금지
-    - trash 위치: 파일이 속한 루트 하위 `.trash/`
-    """
-    from core.auth import current_user
+    """Delete only Files/upload single files. DB root is read-only for everyone."""
+    from core.auth import current_user, is_page_admin
     me = current_user(request)
-    if (me.get("role") or "") != "admin":
-        raise HTTPException(403, "Admin only (session token)")
-    from routers.admin import _is_admin
-    if not _is_admin(req.username):
-        raise HTTPException(403, "Admin only")
+    if (me.get("role") or "") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
+        raise HTTPException(403, "Admin or delegated filebrowser admin only")
     name = (req.file or "").strip()
     if not name or "/" in name or "\\" in name or ".." in name or name.startswith("."):
         raise HTTPException(400, "Invalid filename")
 
-    allowed_ext = {".parquet", ".csv", ".json", ".md", ".txt"}
-    base_root = PATHS.base_root
-    db_root = PATHS.db_root
-
-    # v8.8.3: base_root 우선, 없으면 db_root fallback (UI 가 양쪽을 통합 노출하므로).
-    candidates = []
-    if base_root.is_dir():
-        candidates.append(base_root)
-    if db_root.is_dir() and db_root.resolve() != (base_root.resolve() if base_root.is_dir() else None):
-        candidates.append(db_root)
-
-    fp = None
-    host_root = None
-    for root_dir in candidates:
-        cand = root_dir / name
-        # 경로 escape 방어
-        try:
-            cand.resolve().relative_to(root_dir.resolve())
-        except ValueError:
-            continue
-        if cand.is_file():
-            fp = cand
-            host_root = root_dir
-            break
-
-    if fp is None or host_root is None:
-        raise HTTPException(404, f"Not found: {name}")
+    allowed_ext = {".csv", ".json", ".txt"}
+    host_root = PATHS.upload_dir
+    fp = (host_root / name).resolve()
+    try:
+        fp.relative_to(host_root.resolve())
+    except ValueError:
+        raise HTTPException(400, "Invalid filename")
+    if not fp.is_file():
+        raise HTTPException(404, f"Not found in Files uploads: {name}")
     if fp.suffix.lower() not in allowed_ext:
         raise HTTPException(400, f"Unsupported file type: {fp.suffix}")
 
-    # Archive to <host_root>/.trash/<ts>_<name>
     try:
         trash = host_root / ".trash"
         trash.mkdir(parents=True, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         archived = trash / f"{ts}_{name}"
         fp.rename(archived)
-        logger.info(f"base-file/delete: {name} → {archived} (by {req.username})")
+        logger.info(f"base-file/delete uploads: {name} → {archived} (by {me.get('username')})")
         return {"ok": True, "file": name, "archived": str(archived), "host": host_root.name}
     except Exception as e:
         raise HTTPException(500, f"Delete failed: {e}")

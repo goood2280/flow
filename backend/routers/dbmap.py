@@ -192,6 +192,7 @@ class TableGroupReq(BaseModel):
     columns: List[dict]
     description: str = ""
     tables: List[str] = []
+    color: str = ""
 
 
 @router.post("/groups/save", dependencies=[Depends(_require_tablemap_admin)])
@@ -207,12 +208,17 @@ def save_group(req: TableGroupReq):
     existing = next((n for n in cfg["nodes"] if n.get("id") == sid), None)
     if existing:
         existing.update({"kind": "group", "name": req.name, "ref_id": sid})
+        if req.color:
+            existing["color"] = req.color
     else:
-        cfg["nodes"].append({
+        node = {
             "id": sid, "kind": "group", "name": req.name, "ref_id": sid,
             "x": 100 + len(cfg["nodes"]) * 40,
             "y": 100 + len(cfg["nodes"]) * 40,
-        })
+        }
+        if req.color:
+            node["color"] = req.color
+        cfg["nodes"].append(node)
     _save_config(cfg)
     return {"ok": True, "id": sid}
 
@@ -229,6 +235,7 @@ class TableReq(BaseModel):
     description: str = ""
     aws_cmd: str = ""
     username: str = ""
+    color: str = ""
     # v8.7.2: per-table validation & sort rules.
     validation: Dict[str, Any] = {}
 
@@ -463,13 +470,18 @@ def _save_table_impl(req: TableReq):
         if existing:
             existing.update({"kind": "table", "name": display_label,
                               "physical_name": req.name, "ref_id": sid})
+            if req.color:
+                existing["color"] = req.color
         else:
-            cfg["nodes"].append({
+            node = {
                 "id": sid, "kind": "table", "name": display_label,
                 "physical_name": req.name, "ref_id": sid,
                 "x": 100 + len(cfg["nodes"]) * 40,
                 "y": 100 + len(cfg["nodes"]) * 40,
-            })
+            }
+            if req.color:
+                node["color"] = req.color
+            cfg["nodes"].append(node)
     _save_config(cfg)
 
     # Update group's tables list
@@ -663,6 +675,62 @@ def save_db_ref_description(req: DBRefDescReq):
     return {"ok": True}
 
 
+class NodeColorReq(BaseModel):
+    node_id: str
+    ref_id: str = ""
+    color: str = ""
+
+
+def _clean_node_color(value: str) -> str:
+    color = str(value or "").strip()
+    if not color:
+        return ""
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        raise HTTPException(400, "color must be #RRGGBB")
+    return color
+
+
+def _set_json_color(fp, color: str) -> bool:
+    data = load_json(fp, None)
+    if not isinstance(data, dict):
+        return False
+    if color:
+        data["color"] = color
+    else:
+        data.pop("color", None)
+    save_json(fp, data, indent=2)
+    return True
+
+
+@router.post("/node/color", dependencies=[Depends(_require_tablemap_admin)])
+def update_node_color(req: NodeColorReq):
+    color = _clean_node_color(req.color)
+    cfg = _load_config()
+    node = next((n for n in cfg.get("nodes", []) if n.get("id") == req.node_id), None)
+    touched = False
+    if node:
+        if color:
+            node["color"] = color
+        else:
+            node.pop("color", None)
+        touched = True
+
+    ref_id = safe_id(req.ref_id or (node or {}).get("ref_id") or "")
+    if not ref_id and str(req.node_id or "").startswith("member_"):
+        ref_id = safe_id(str(req.node_id)[7:])
+
+    kind = (node or {}).get("kind") or ("table" if ref_id else "")
+    if ref_id and kind == "table":
+        touched = _set_json_color(TABLES_DIR / f"{ref_id}.json", color) or touched
+    elif ref_id and kind == "group":
+        touched = _set_json_color(GROUPS_DIR / f"{ref_id}.json", color) or touched
+
+    if not touched:
+        raise HTTPException(404, "node not found")
+    _save_config(cfg)
+    return {"ok": True, "node_id": req.node_id, "ref_id": ref_id, "color": color}
+
+
 @router.post("/db-ref/delete", dependencies=[Depends(_require_tablemap_admin)])
 def delete_db_ref(node_id: str = Query(...)):
     cfg = _load_config()
@@ -781,6 +849,12 @@ def _list_dir(dir_path, fields=("name", "updated")):
             entry["products"] = d.get("products", [])
         if "scope" in d:
             entry["scope"] = d.get("scope", "")
+        if "color" in d:
+            entry["color"] = d.get("color", "")
+        if "display_name" in d:
+            entry["display_name"] = d.get("display_name", "")
+        if "table_type" in d:
+            entry["table_type"] = d.get("table_type", "")
         items.append(entry)
     return items
 

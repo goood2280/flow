@@ -154,8 +154,16 @@ def include_router_modules(app: FastAPI, routers_dir: Path, logger) -> tuple[lis
             _ensure_local_package(package_name, package_dir)
     loaded: list[str] = []
     failed: list[tuple[str, str]] = []
+    disabled = {
+        name.strip()
+        for name in os.environ.get("FLOW_DISABLED_ROUTERS", "ml").split(",")
+        if name.strip()
+    }
     for file_path in sorted(routers_dir.glob("*.py")):
         if file_path.name.startswith("_"):
+            continue
+        if file_path.stem in disabled:
+            logger.info("Router disabled by FLOW_DISABLED_ROUTERS: %s", file_path.stem)
             continue
         module_name = f"routers.{file_path.stem}"
         try:

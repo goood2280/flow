@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 
 const mono = "'JetBrains Mono',monospace";
 
@@ -37,18 +37,15 @@ const NAV = [
 ];
 
 export default function My_DevGuide() {
-  const [version, setVersion] = useState(null);
   const [active, setActive] = useState("arch");
-
-  useEffect(() => { fetch("/version.json").then(r=>r.json()).then(setVersion).catch(()=>{}); }, []);
 
   const scrollTo = (id) => { setActive(id); document.getElementById(id)?.scrollIntoView({behavior:"smooth",block:"start"}); };
 
   return (
-    <div style={{ display:"flex", minHeight:"calc(100vh - 48px)", background:"var(--bg-primary,#1a1a1a)", color:"var(--text-primary,#e5e5e5)", fontFamily:"'Pretendard',sans-serif" }}>
+    <div style={{ display:"flex", minHeight:"calc(100vh - 52px)", background:"var(--bg-primary,#1a1a1a)", color:"var(--text-primary,#e5e5e5)", fontFamily:"'Pretendard',sans-serif" }}>
 
       {/* Side Nav */}
-      <div style={{ width:190, padding:"20px 10px", borderRight:"1px solid var(--border,#333)", position:"sticky", top:48, height:"calc(100vh - 48px)", overflowY:"auto", flexShrink:0 }}>
+      <div style={{ width:190, padding:"20px 10px", borderRight:"1px solid var(--border,#333)", position:"sticky", top:52, height:"calc(100vh - 52px)", overflowY:"auto", flexShrink:0 }}>
         <div style={{ fontSize:10, fontWeight:700, color:"var(--accent,#f97316)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:12, paddingLeft:10, fontFamily:mono }}>{">"} 개발자_가이드</div>
         {NAV.map(n => (
           <div key={n.id} onClick={() => scrollTo(n.id)}
@@ -57,9 +54,6 @@ export default function My_DevGuide() {
               color: active===n.id ? "var(--accent,#f97316)" : "var(--text-secondary,#a3a3a3)",
               fontWeight: active===n.id ? 600 : 400 }}>{n.label}</div>
         ))}
-        {version && <div style={{ marginTop:16, padding:"8px 10px", borderRadius:5, background:"var(--bg-card,#2a2a2a)", fontSize:10, color:"var(--text-secondary)", fontFamily:mono, lineHeight:1.6 }}>
-          v{version.version}<br/>"{version.codename}"<br/>{version.updated}
-        </div>}
       </div>
 
       {/* Content */}
@@ -175,12 +169,6 @@ prod:
         <ApiRow method="GET" path="/api/filebrowser/preview?root=&path=&rows=" desc="Parquet/CSV head + 컬럼 정보" />
         <ApiRow method="GET" path="/api/filebrowser/merge-preview?root=&path=" desc="Hive 파티션 병합 미리보기" />
         <ApiRow method="GET" path="/api/filebrowser/download?root=&path=" desc="파일 다운로드" />
-
-        <div style={{fontSize:13,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>ML 분석 (v7)</div>
-        <ApiRow method="GET" path="/api/ml/sources" desc="ML_TABLE 소스 목록 (와이드 테이블 자동 탐지)" />
-        <ApiRow method="GET" path="/api/ml/columns?root=&product=" desc="컬럼을 prefix별로 그룹화 (KNOB/MASK/INLINE/VM/FAB/QTIME/ET)" />
-        <ApiRow method="POST" path="/api/ml/train" desc="correlation / TabPFN / TabICL 학습 → importance, scatter, metrics" />
-        <ApiRow method="POST" path="/api/ml/process_window" desc="v7: 공정 window-aware 분석 — 상류만 인과 허용, exp(-d/5) 감쇠, KNOB split μ±σ" />
 
         <div style={{fontSize:13,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>이슈 추적 (카테고리 v7)</div>
         <ApiRow method="GET" path="/api/tracker/categories" desc="카테고리 목록 (admin configurable)" />

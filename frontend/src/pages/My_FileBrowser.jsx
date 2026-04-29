@@ -200,9 +200,8 @@ export default function My_FileBrowser({user,onNavigate}){
   },[scope]);
 
   // v4.1: Base-file preview loader (parquet/csv/json/md).
-  // 기본 클릭은 schema-only 로 열 목록만 즉답하고, "실행"/컬럼 적용/페이지 이동에서
-  // 실제 row collect 를 수행한다. 작은 2-core/8GB 배포에서 Files 단일 parquet 클릭이
-  // 프록시 502 로 끊기는 것을 막기 위한 보호 경로다.
+  // 단일 파일 클릭은 곧바로 첫 페이지를 보여준다. 서버는 lazy slice + 공통
+  // 리소스 게이트로 보호하므로 큰 파일도 전체 collect 없이 미리보기만 수행한다.
   const loadBaseFileView=(file,{full=false,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
     setPage(pageArg);
@@ -326,60 +325,6 @@ export default function My_FileBrowser({user,onNavigate}){
       return r.blob();}).then(blob=>{const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='data.csv';a.click();}).catch(()=>{});
   };
 
-  const sourceTypeFromName=(name)=>{
-    const up=String(name||"").toUpperCase().replace(/\.(PARQUET|CSV|JSON|YAML|YML)$/,"");
-    if(up.includes("INLINE"))return"INLINE";
-    if(up.includes("EDS"))return"EDS";
-    if(up.includes("VM"))return"VM";
-    if(up.includes("QTIME"))return"QTIME";
-    if(up.includes("FAB"))return"FAB";
-    if(up.includes("ET"))return"ET";
-    return"";
-  };
-
-  const currentDiagnosisSource=()=>{
-    if(mode==="base"&&selBaseFile){
-      const st=sourceTypeFromName(selBaseFile);
-      return{
-        label:selBaseFile,
-        product:selProd||"",
-        source:{source_type:"base_file",file:selBaseFile,product:selProd||"",source_type_filter:st},
-        mode:"base_file",
-        selected_columns:selectedCols,
-      };
-    }
-    if(mode==="rootpq"&&selRootPq){
-      const st=sourceTypeFromName(selRootPq);
-      return{
-        label:selRootPq,
-        product:"",
-        source:{source_type:"root_parquet",file:selRootPq,source_type_filter:st},
-        mode:"root_parquet",
-        selected_columns:selectedCols,
-      };
-    }
-    if(mode==="hive"&&selRoot&&selProd){
-      const st=sourceTypeFromName(selRoot);
-      return{
-        label:selRoot+"/"+selProd,
-        product:selProd,
-        source:{root:selRoot,product:selProd,source_type_filter:st},
-        mode:"db_product",
-        selected_columns:selectedCols,
-      };
-    }
-    return null;
-  };
-
-  const sendToDiagnosis=()=>{
-    const payload=currentDiagnosisSource();
-    if(!payload)return;
-    const next={...payload,ts:Date.now()};
-    try{sessionStorage.setItem("flow_diagnosis_source",JSON.stringify(next));}catch(_){}
-    try{window.dispatchEvent(new CustomEvent("flow:diagnosis-source",{detail:next}));}catch(_){}
-    if(onNavigate)onNavigate("diagnosis");
-  };
-
   const gotoPage=(nextPage)=>{
     const p=Math.max(0,nextPage);
     if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql,selectedCols,{full:true,page:p});
@@ -397,14 +342,13 @@ export default function My_FileBrowser({user,onNavigate}){
   const chipS={display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:4,fontSize:10,cursor:"pointer",marginRight:4,marginBottom:4,border:"1px solid var(--border)",transition:"all 0.15s"};
   const chipActive={...chipS,background:"var(--accent-glow)",borderColor:"var(--accent)",color:"var(--accent)",fontWeight:600};
   const chipInactive={...chipS,background:"var(--bg-hover)",color:"var(--text-secondary)"};
-  const diagnosisSource=currentDiagnosisSource();
 
   return(
-    <div style={{display:"flex",height:"calc(100vh - 48px)",fontFamily:"'Pretendard',sans-serif",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
+    <div style={{display:"flex",height:"calc(100vh - 52px)",fontFamily:"'Pretendard',sans-serif",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
       {/* Sidebar */}
       <div style={{width:260,minWidth:260,borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",background:"var(--bg-secondary)"}}>
         <div style={{padding:"14px 16px 10px",borderBottom:"1px solid var(--border)",fontSize:12,fontWeight:700,color:"var(--text-secondary)",textTransform:"uppercase",letterSpacing:"0.04em"}}>
-          <span>데이터 브라우저</span>
+          <span>파일탐색기</span>
         </div>
         {/* Scope switcher (DB / root-level files). Shown only when backend reports 2+ scopes. */}
         {scopes.length>=2&&<div className="filebrowser-scope-switcher" style={{display:"flex",gap:4,padding:"6px 10px",borderBottom:"1px solid var(--border)"}}>
@@ -430,7 +374,7 @@ export default function My_FileBrowser({user,onNavigate}){
               const isSel=selBaseFile===fileKey;
               const extColor={parquet:"#10b981",csv:"#3b82f6",json:"#f59e0b",md:"#94a3b8",yaml:"#eab308",yml:"#eab308"}[f.ext]||"#64748b";
               const icon={parquet:"📊",csv:"📋",json:"🔧",md:"📄",yaml:"⚙️",yml:"⚙️"}[f.ext]||"📁";
-              return(<div key={fileKey} className="filebrowser-base-file" data-file={fileKey} data-ext={f.ext} onClick={()=>{setSelectedCols([]);loadBaseFileView(fileKey);}}
+              return(<div key={fileKey} className="filebrowser-base-file" data-file={fileKey} data-ext={f.ext} onClick={()=>{setSelectedCols([]);loadBaseFileView(fileKey,{full:true});}}
                 title={(f.description||f.name)+(f.role?`\n${f.role}`:"")}
                 style={{display:"flex",alignItems:"center",gap:6,padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:11,marginBottom:1,
                   background:isSel?"var(--bg-hover)":"transparent",color:isSel?"var(--accent)":"var(--text-primary)"}}>
@@ -442,10 +386,10 @@ export default function My_FileBrowser({user,onNavigate}){
                 {/* v8.7.7: `db` 소스 태그 제거 — Base 단일 파일은 소스 구분 없이 한 번만 표시. */}
                 <span style={{fontSize:9,padding:"1px 4px",borderRadius:3,background:extColor+"22",color:extColor,fontWeight:700,fontFamily:"monospace"}}>{f.ext}</span>
                 <span style={{fontSize:9,color:"#64748b"}}>{formatSize(f.size)}</span>
-                {/* v8.8.3: Admin 전용 원본 삭제 버튼 — .trash 로 archive (복구 가능) */}
-                {isAdmin&&!["product_config","reformatter"].includes(f.source)&&<span
+                {/* DB/root 원본은 read-only. Flow-i가 Files 영역에 등록한 uploads 파일만 삭제 가능. */}
+                {isAdmin&&f.source==="uploads"&&<span
                   onClick={(e)=>{e.stopPropagation();deleteBaseFile(f.name);}}
-                  title={"원본 삭제 (admin) — "+f.name+" 을 .trash 로 이동"}
+                  title={"Files 등록 파일 삭제 (admin) — "+f.name+" 을 .trash 로 이동"}
                   style={{fontSize:11,lineHeight:1,padding:"1px 5px",borderRadius:3,cursor:"pointer",color:"#ef4444",border:"1px solid #ef444455",background:"transparent",flexShrink:0}}>
                   🗑
                 </span>}
@@ -501,11 +445,6 @@ export default function My_FileBrowser({user,onNavigate}){
             onKeyDown={e=>e.key==="Enter"&&applySql()}/>
           <button onClick={applySql} style={{padding:"6px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>실행</button>
           {data&&<button onClick={downloadCsv} style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,fontWeight:600,cursor:"pointer"}}>⬇ CSV</button>}
-          <button onClick={sendToDiagnosis} disabled={!diagnosisSource}
-            title={diagnosisSource?`진단/RCA 소스로 전달: ${diagnosisSource.label}`:"제품 또는 파일을 먼저 선택하세요"}
-            style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--border)",background:diagnosisSource?"var(--bg-primary)":"transparent",color:diagnosisSource?"var(--accent)":"var(--text-secondary)",fontSize:11,fontWeight:700,cursor:diagnosisSource?"pointer":"default",opacity:diagnosisSource?1:0.45}}>
-            진단/RCA로
-          </button>
         </div>
 
         {/* Selected columns chips */}

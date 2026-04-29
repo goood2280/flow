@@ -132,6 +132,81 @@ def _collect_raw_et(product: str) -> pl.DataFrame:
     return pl.DataFrame()
 
 
+def _add_et_report_keys(df: pl.DataFrame) -> pl.DataFrame:
+    """Normalize ET identity columns for report views.
+
+    `measurement_key` keeps the raw request/measure identity, while
+    `package_key` is the row key users expect in ET Report: product + root lot
+    + fab lot + ET step. Different step_seq values are aggregated below.
+    """
+    if df.is_empty():
+        return df
+    cols = set(df.columns)
+    exprs: list[pl.Expr] = []
+    if "fab_lot_id" not in cols:
+        exprs.append((pl.col("lot_id") if "lot_id" in cols else pl.lit("")).cast(_STR, strict=False).alias("fab_lot_id"))
+    for c in ("product", "root_lot_id", "fab_lot_id", "lot_id", "wafer_id", "step_id", "step_seq"):
+        if c in cols:
+            exprs.append(pl.col(c).cast(_STR, strict=False).fill_null("").alias(c))
+        elif c != "fab_lot_id":
+            exprs.append(pl.lit("").alias(c))
+    if exprs:
+        df = df.with_columns(exprs)
+
+    time_exprs = []
+    for c in ("tkout_time", "time", "tkin_time"):
+        if c in df.columns:
+            time_exprs.append(pl.col(c).cast(_STR, strict=False))
+    req_exprs = []
+    for c in ("request_id", "measure_group_id", "request_no", "job_id"):
+        if c in df.columns:
+            req_exprs.append(pl.col(c).cast(_STR, strict=False))
+
+    measurement_key = (
+        pl.when((pl.col("request_id").cast(_STR, strict=False).fill_null("") != "") if "request_id" in df.columns else pl.lit(False))
+        .then(pl.lit("REQ|") + pl.col("request_id").cast(_STR, strict=False).fill_null(""))
+        .when((pl.col("measure_group_id").cast(_STR, strict=False).fill_null("") != "") if "measure_group_id" in df.columns else pl.lit(False))
+        .then(pl.lit("MEAS|") + pl.col("measure_group_id").cast(_STR, strict=False).fill_null(""))
+        .otherwise(
+            pl.lit("SEQ|") +
+            pl.col("step_id").fill_null("") + pl.lit("|") +
+            pl.col("step_seq").fill_null("") + pl.lit("|") +
+            ((pl.col("tkout_time").cast(_STR, strict=False).fill_null("")) if "tkout_time" in df.columns else pl.lit(""))
+        )
+        .alias("measurement_key")
+    )
+    lot_step_key = pl.concat_str([
+        pl.lit("LOTSTEP|"),
+        pl.col("product").fill_null(""),
+        pl.lit("|"),
+        pl.col("root_lot_id").fill_null(""),
+        pl.lit("|"),
+        pl.col("fab_lot_id").fill_null(""),
+        pl.lit("|"),
+        pl.col("step_id").fill_null(""),
+    ]).alias("package_key")
+    return df.with_columns([
+        (pl.coalesce(time_exprs) if time_exprs else pl.lit("")).fill_null("").alias("package_time"),
+        (pl.coalesce(req_exprs) if req_exprs else pl.lit("")).fill_null("").alias("request_key"),
+        measurement_key,
+        lot_step_key,
+    ])
+
+
+def _join_unique(values, limit: int = 8) -> str:
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in values or []:
+        s = str(v or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    if len(out) > limit:
+        return ", ".join(out[:limit]) + f" +{len(out) - limit}"
+    return ", ".join(out)
+
+
 def _read_probe_state() -> dict:
     try:
         if PROBE_ALERT_STATE.is_file():
@@ -722,41 +797,11 @@ def _raw_et_report(product: str, root_lot_id: str, fab_lot_id: str, wafer_id: st
     if not metric_name:
         metric_name = str(df["item_id"].drop_nulls().unique().to_list()[0]) if "item_id" in df.columns and df["item_id"].drop_nulls().len() else ""
 
-    package_key = (
-        pl.when(pl.col("request_id").is_not_null() & (pl.col("request_id") != ""))
-        .then(pl.lit("REQ|") + pl.col("request_id"))
-        .when(pl.col("measure_group_id").is_not_null() & (pl.col("measure_group_id") != ""))
-        .then(pl.lit("MEAS|") + pl.col("measure_group_id"))
-        .otherwise(
-            pl.lit("SEQ|") +
-            pl.col("step_id").fill_null("") + pl.lit("|") +
-            pl.col("step_seq").fill_null("") + pl.lit("|") +
-            pl.col("tkout_time").cast(_STR, strict=False).fill_null("")
-        )
-        .alias("package_key")
-    )
-    time_exprs = []
-    if "tkout_time" in df.columns:
-        time_exprs.append(pl.col("tkout_time").cast(_STR, strict=False))
-    if "tkin_time" in df.columns:
-        time_exprs.append(pl.col("tkin_time").cast(_STR, strict=False))
-    package_time = (pl.coalesce(time_exprs) if time_exprs else pl.lit("")).alias("package_time")
-    req_exprs = []
-    for c in ("request_id", "measure_group_id", "request_no", "job_id"):
-        if c in df.columns:
-            req_exprs.append(pl.col(c).cast(_STR, strict=False))
-    req_key = (pl.coalesce(req_exprs) if req_exprs else pl.lit("")).fill_null("").alias("request_key")
-    df = df.with_columns([package_key, package_time, req_key])
-    if not fab_col:
-        df = df.with_columns(pl.lit("").alias("fab_lot_id"))
-        fab_col = "fab_lot_id"
-    elif fab_col != "fab_lot_id":
-        df = df.with_columns(pl.col(fab_col).alias("fab_lot_id"))
-        fab_col = "fab_lot_id"
+    df = _add_et_report_keys(df)
     metric_df = df.filter(pl.col("item_id") == metric_name) if metric_name and "item_id" in df.columns else pl.DataFrame()
 
     recent_base = (
-        df.group_by(["product", "root_lot_id", "fab_lot_id", "step_id", "package_key", "package_time", "request_key"])
+        df.group_by(["product", "root_lot_id", "fab_lot_id", "step_id", "package_key"])
         .agg([
             pl.len().alias("pt_count"),
             pl.col("wafer_id").n_unique().alias("wafer_count"),
@@ -764,6 +809,11 @@ def _raw_et_report(product: str, root_lot_id: str, fab_lot_id: str, wafer_id: st
             pl.col("chamber").drop_nulls().last().alias("chamber") if "chamber" in df.columns else pl.lit("").alias("chamber"),
             pl.col("item_id").n_unique().alias("item_count"),
             pl.col("step_seq").drop_nulls().unique().sort().alias("step_seqs"),
+            pl.col("package_time").drop_nulls().max().alias("package_time"),
+            pl.col("package_time").drop_nulls().min().alias("first_package_time"),
+            pl.col("request_key").drop_nulls().unique().sort().alias("request_keys"),
+            pl.col("request_key").n_unique().alias("request_count"),
+            pl.col("measurement_key").n_unique().alias("measurement_count"),
         ])
         .sort("package_time", descending=True)
         .head(limit)
@@ -803,6 +853,7 @@ def _raw_et_report(product: str, root_lot_id: str, fab_lot_id: str, wafer_id: st
     for row in recent_base.to_dicts():
         seqs = [str(v) for v in (row.get("step_seqs") or []) if str(v or "").strip()]
         row["step_seq_combo"] = ", ".join(seqs) if seqs else "-"
+        row["request_key"] = _join_unique(row.get("request_keys") or [])
         row["step_seq_points"] = _seq_points_label(pkg_seq_map.get(str(row.get("package_key") or ""), []))
         row["step_seq_point_rows"] = pkg_seq_map.get(str(row.get("package_key") or ""), [])
         row["item_points"] = " | ".join(pkg_item_map.get(str(row.get("package_key") or ""), []))
@@ -842,7 +893,7 @@ def _raw_et_report(product: str, root_lot_id: str, fab_lot_id: str, wafer_id: st
     seq_summary = []
     if "tkin_time" in df.columns or "tkout_time" in df.columns:
         seq_base = (
-            df.group_by(["product", "root_lot_id", "fab_lot_id", "step_id", "package_key", "request_key", "step_seq"])
+            df.group_by(["product", "root_lot_id", "fab_lot_id", "step_id", "package_key", "step_seq"])
             .agg([
                 pl.col("tkin_time").drop_nulls().min().alias("seq_tkin") if "tkin_time" in df.columns else pl.lit("").alias("seq_tkin"),
                 pl.col("tkout_time").drop_nulls().max().alias("seq_tkout") if "tkout_time" in df.columns else pl.lit("").alias("seq_tkout"),
@@ -850,6 +901,7 @@ def _raw_et_report(product: str, root_lot_id: str, fab_lot_id: str, wafer_id: st
                 pl.len().alias("pt_count"),
                 pl.concat_str([pl.col("shot_x").cast(_STR, strict=False).fill_null(""), pl.lit(","), pl.col("shot_y").cast(_STR, strict=False).fill_null("")]).n_unique().alias("shot_count") if "shot_x" in df.columns and "shot_y" in df.columns else pl.lit(0).alias("shot_count"),
                 pl.col("item_id").drop_nulls().unique().sort().alias("items"),
+                pl.col("request_key").drop_nulls().unique().sort().alias("request_keys"),
             ])
             .sort(["package_key", "step_seq"])
         )
@@ -902,7 +954,7 @@ def _raw_et_report(product: str, root_lot_id: str, fab_lot_id: str, wafer_id: st
                 "fab_lot_id": head.get("fab_lot_id") or "",
                 "step_id": head.get("step_id") or "",
                 "package_key": pkg,
-                "request_key": head.get("request_key") or "",
+                "request_key": _join_unique(head.get("request_keys") or []),
                 "segments": segments,
                 "total_duration_min": round(sum(float(s.get("duration_min") or 0.0) for s in segments), 2),
             })
@@ -926,14 +978,15 @@ def _raw_et_report(product: str, root_lot_id: str, fab_lot_id: str, wafer_id: st
         df.group_by(["product", "root_lot_id", "fab_lot_id", "step_id"])
         .agg([
             pl.col("package_key").n_unique().alias("package_count"),
+            pl.col("measurement_key").n_unique().alias("measurement_count"),
             pl.col("package_time").max().alias("last_package_time"),
             pl.col("package_time").min().alias("first_package_time"),
             pl.col("request_key").n_unique().alias("request_count"),
             pl.col("wafer_id").n_unique().alias("wafer_count"),
         ])
-        .sort(["package_count", "last_package_time"], descending=[True, True])
+        .sort(["measurement_count", "last_package_time"], descending=[True, True])
     )
-    repeats = lot_group.filter(pl.col("package_count") > 1).head(20).to_dicts()
+    repeats = lot_group.filter(pl.col("measurement_count") > 1).head(20).to_dicts()
 
     high = []
     low = []
@@ -1242,35 +1295,13 @@ def _build_et_pptx_payload(
     if df.is_empty():
         raise HTTPException(404, "No ET rows matched the PPTX report filter")
 
-    time_exprs = []
-    for c in ("tkout_time", "time", "tkin_time"):
-        if c in df.columns:
-            time_exprs.append(pl.col(c).cast(_STR, strict=False))
-    req_exprs = []
-    for c in ("request_id", "measure_group_id", "request_no", "job_id"):
-        if c in df.columns:
-            req_exprs.append(pl.col(c).cast(_STR, strict=False))
-    df = df.with_columns([
-        (pl.coalesce(time_exprs) if time_exprs else pl.lit("")).fill_null("").alias("package_time"),
-        (pl.coalesce(req_exprs) if req_exprs else pl.lit("")).fill_null("").alias("request_key"),
-        pl.col("value").cast(pl.Float64, strict=False).alias("value"),
-    ])
-    if "package_key" not in df.columns:
-        df = df.with_columns(
-            pl.concat_str([
-                pl.col("step_id").fill_null("") if "step_id" in df.columns else pl.lit(""),
-                pl.lit("|"),
-                pl.col("step_seq").fill_null("") if "step_seq" in df.columns else pl.lit(""),
-                pl.lit("|"),
-                pl.col("package_time").fill_null(""),
-                pl.lit("|"),
-                pl.col("request_key").fill_null(""),
-            ]).alias("package_key")
-        )
+    df = _add_et_report_keys(df)
+    if "value" in df.columns:
+        df = df.with_columns(pl.col("value").cast(pl.Float64, strict=False).alias("value"))
     if package_key and "package_key" in df.columns:
         df = df.filter(pl.col("package_key") == str(package_key))
         if df.is_empty():
-            raise HTTPException(404, "No ET rows matched the selected measurement package")
+            raise HTTPException(404, "No ET rows matched the selected lot / fab lot / ET step")
     for c in ("shot_x", "shot_y"):
         if c in df.columns:
             df = df.with_columns(pl.col(c).cast(pl.Float64, strict=False).alias(c))
@@ -1286,12 +1317,17 @@ def _build_et_pptx_payload(
         raise HTTPException(404, "No ET score items or item_id values available for PPTX")
 
     recent_base = (
-        df.group_by(["product", "root_lot_id", "fab_lot_id", "step_id", "package_key", "package_time", "request_key"])
+        df.group_by(["product", "root_lot_id", "fab_lot_id", "step_id", "package_key"])
         .agg([
             pl.len().alias("pt_count"),
             pl.col("wafer_id").n_unique().alias("wafer_count") if "wafer_id" in df.columns else pl.lit(0).alias("wafer_count"),
             pl.col("item_id").n_unique().alias("item_count") if "item_id" in df.columns else pl.lit(0).alias("item_count"),
             pl.col("step_seq").drop_nulls().unique().sort().alias("step_seqs") if "step_seq" in df.columns else pl.lit([]).alias("step_seqs"),
+            pl.col("package_time").drop_nulls().max().alias("package_time"),
+            pl.col("package_time").drop_nulls().min().alias("first_package_time"),
+            pl.col("request_key").drop_nulls().unique().sort().alias("request_keys"),
+            pl.col("request_key").n_unique().alias("request_count"),
+            pl.col("measurement_key").n_unique().alias("measurement_count"),
         ])
         .sort("package_time", descending=True)
         .head(max(1, min(50, int(max_items or 6))))
@@ -1314,6 +1350,7 @@ def _build_et_pptx_payload(
         pkg = str(row.get("package_key") or "")
         row["step_seq_combo"] = ", ".join(seqs) if seqs else "-"
         row["step_seq_points"] = _seq_points_label(pkg_seq_map.get(pkg, []))
+        row["request_key"] = _join_unique(row.get("request_keys") or [])
         recent_rows.append(row)
 
     probe_watch = _probe_watch_report(df, product)
@@ -1326,6 +1363,11 @@ def _build_et_pptx_payload(
     active_key = str(active_package.get("package_key") or "")
     active_detail = report_details.get(active_key) or next(iter(report_details.values()), {})
     scoreboard = active_detail.get("scoreboard") or []
+    if not scoreboard and not item_ids:
+        fallback_rules = _top_item_rules(df, max_items=max_items)
+        report_archive, report_details = _package_report_views(df, fallback_rules, recent_rows, probe_watch)
+        active_detail = report_details.get(active_key) or next(iter(report_details.values()), {})
+        scoreboard = active_detail.get("scoreboard") or []
 
     if not scoreboard:
         raise HTTPException(404, "No numeric ET item values available for PPTX")
@@ -1581,7 +1623,7 @@ def et_lots(product: str = Query(""), search: str = Query(""), days: int = Query
             "step_range": row.get("step_id") or "",
             "last_measured_at": row.get("last_package_time") or "",
             "point_count": int(row.get("request_count") or 0),
-            "abnormal_count": int(row.get("package_count") or 0) - 1 if int(row.get("package_count") or 0) > 1 else 0,
+            "abnormal_count": int(row.get("measurement_count") or 0) - 1 if int(row.get("measurement_count") or 0) > 1 else 0,
         })
     # supplement from recent packages so non-repeat lots also show
     seen = {str(r["root_lot_id"]) for r in rows if r.get("root_lot_id")}

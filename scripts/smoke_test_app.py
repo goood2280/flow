@@ -10,56 +10,20 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-import polars as pl
-
 from app import app
-from core.utils import find_all_sources, read_source
 from routers.dashboard import fab_progress, trend_alerts
 from routers.ettime import et_report, _product_aliases
-from routers.ml import InlineETReq, MLSourceReq, inline_et_overview, knob_lineage_summary
 from routers.splittable import _build_inline_meta, _build_knob_meta, _build_vm_meta, _load_operational_history
-
-
-def _pick_ml_source() -> dict:
-    sources = find_all_sources()
-    for s in sources:
-        label = str(s.get("label", "")).upper()
-        root = str(s.get("root", "")).upper()
-        product = str(s.get("product", "")).upper()
-        file = str(s.get("file", "")).upper()
-        if "ML" in label or "ML_TABLE" in root or "ML_TABLE" in product or "ML_TABLE" in file:
-            return s
-    raise RuntimeError("No ML source found for smoke test")
 
 
 def main() -> int:
     report: dict[str, object] = {"checks": []}
 
-    ml_src = _pick_ml_source()
-    ml_df = read_source(
-        source_type=ml_src.get("source_type") or "base_file",
-        root=ml_src.get("root") or "",
-        product=ml_src.get("product") or "",
-        file=ml_src.get("file") or "ML_TABLE_PRODA.parquet",
-        max_files=1,
-    )
-    ml_available = ml_df is not None and not ml_df.is_empty()
-    id_cols = [c for c in ("product", "root_lot_id", "wafer_id") if ml_df is not None and c in ml_df.columns]
-    ml_available = ml_available and bool(id_cols)
-    if ml_available and id_cols:
-        first_row = ml_df.select(id_cols).row(0, named=True)
-    else:
-        first_row = {
-            "product": str(ml_src.get("product") or "PRODA").replace("ML_TABLE_", ""),
-            "root_lot_id": "",
-            "wafer_id": "",
-        }
-    product_code = str(first_row.get("product") or ml_src.get("product") or "").replace("ML_TABLE_", "")
+    product_code = "PRODA"
+    first_row = {"product": product_code, "root_lot_id": "", "wafer_id": ""}
 
     schema_paths = {route.path for route in app.routes}
     required_paths = {
-        "/api/ml/inline_et_overview",
-        "/api/ml/knob_lineage_summary",
         "/api/ettime/report",
         "/api/dashboard/fab-progress",
         "/api/dashboard/trend-alerts",
@@ -92,39 +56,6 @@ def main() -> int:
         role="admin",
     )
     report["checks"].append({"name": "operational_history", "ok": isinstance(hist, list), "items": len(hist)})
-
-    if ml_available:
-        inline_res = inline_et_overview(InlineETReq(
-            source_type=ml_src.get("source_type") or "flat",
-            root=ml_src.get("root") or "ML_TABLE",
-            product=ml_src.get("product") or product_code,
-            file=ml_src.get("file") or "",
-        ))
-        report["checks"].append({
-            "name": "inline_et_overview",
-            "ok": inline_res.get("rows", 0) > 0 and len(inline_res.get("knob_cards", [])) > 0,
-            "rows": inline_res.get("rows", 0),
-            "target_et": inline_res.get("target_et"),
-            "top_inline": len(inline_res.get("top_inline", [])),
-        })
-
-        lineage = knob_lineage_summary(MLSourceReq(
-            source_type=ml_src.get("source_type") or "flat",
-            root=ml_src.get("root") or "ML_TABLE",
-            product=ml_src.get("product") or product_code,
-            file=ml_src.get("file") or "",
-            max_knobs=6,
-        ))
-        report["checks"].append({
-            "name": "knob_lineage_summary",
-            "ok": lineage.get("row_count", 0) > 0 and len(lineage.get("knobs", [])) > 0,
-            "rows": lineage.get("row_count", 0),
-            "knobs": len(lineage.get("knobs", [])),
-            "first_earliest_step": (lineage.get("knobs") or [{}])[0].get("earliest_step_id", ""),
-        })
-    else:
-        report["checks"].append({"name": "inline_et_overview", "ok": True, "skipped": "empty ML_TABLE source"})
-        report["checks"].append({"name": "knob_lineage_summary", "ok": True, "skipped": "empty ML_TABLE source"})
 
     et_res = {"summary": {"packages": 0, "metric_name": "Rc"}}
     for cand in [product_code, *_product_aliases(product_code)]:

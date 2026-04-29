@@ -226,33 +226,13 @@ check("GET /api/groups/list", status, 200, f"groups={gc}")
 status, body = _req("GET", "/api/messages/notices", token=TOKEN)
 check("GET /api/messages/notices", status, 200)
 
-# ── 9. 대시보드 + TableMap + ML ────────────────────────────────
-section("9. 대시보드 · TableMap · ML")
+# ── 9. 대시보드 + TableMap ────────────────────────────────────
+section("9. 대시보드 · TableMap")
 status, _ = _req("GET", "/api/dashboard/charts", token=TOKEN)
 check("GET /api/dashboard/charts", status, 200)
 
 status, _ = _req("GET", "/api/dbmap/tables", token=TOKEN)
 check("GET /api/dbmap/tables", status, 200)
-
-status, _ = _req("GET", "/api/ml/runs", token=TOKEN)
-check("GET /api/ml/runs", status, [200, 404])
-
-status, body = _req("GET", "/api/ml/sources", token=TOKEN)
-msources = (body or {}).get("sources", []) if isinstance(body, dict) else []
-check("GET /api/ml/sources", status, 200, f"sources={len(msources)}")
-if msources:
-    src = msources[0]
-    mbody = {
-        "source_type": src.get("source_type", "flat"),
-        "root": src.get("root", ""),
-        "product": src.get("product", ""),
-        "file": src.get("file", ""),
-        "target_et": "",
-        "filter_expr": "",
-    }
-    status, body = _req("POST", "/api/ml/inline_et_overview", mbody, token=TOKEN)
-    check("POST /api/ml/inline_et_overview", status, 200,
-          f"target={(body or {}).get('target_et','?')} rows={(body or {}).get('rows','?')}")
 
 # ── 10. 인증 실패 경로 ─────────────────────────────────────────
 section("10. 인증 방어")

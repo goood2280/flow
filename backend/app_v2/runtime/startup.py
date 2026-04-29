@@ -4,19 +4,30 @@ import datetime
 import os
 
 from core.auth import hash_password
+from core.runtime_limits import heavy_background_jobs_enabled
 
 
 def start_background_services(logger) -> None:
     """Start optional background schedulers without blocking app startup."""
 
-    starters = (
+    light_starters = (
         ("backup scheduler", "core.backup", "start_scheduler"),
-        ("tracker scheduler", "core.tracker_scheduler", "start_scheduler"),
-        ("tracker ET lot cache scheduler", "core.lot_step", "start_et_lot_cache_scheduler"),
         ("valve watch scheduler", "core.valve_watch", "start_scheduler"),
         ("product dedup scheduler", "scheduler", "start_scheduler"),
+    )
+    heavy_starters = (
+        ("tracker scheduler", "core.tracker_scheduler", "start_scheduler"),
+        ("tracker ET lot cache scheduler", "core.lot_step", "start_et_lot_cache_scheduler"),
         ("splittable match cache scheduler", "routers.splittable", "start_match_cache_scheduler"),
     )
+    starters = light_starters
+    if heavy_background_jobs_enabled():
+        starters = starters + heavy_starters
+    else:
+        logger.info(
+            "heavy background DB scanners disabled "
+            "(set FLOW_ENABLE_HEAVY_BACKGROUND_JOBS=1 to enable)"
+        )
     for label, module_name, attr_name in starters:
         try:
             module = __import__(module_name, fromlist=[attr_name])

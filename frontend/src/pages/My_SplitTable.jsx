@@ -642,7 +642,7 @@ export default function My_SplitTable({user}){
   const S={padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none"};
   const chipS=(active)=>({padding:"3px 8px",borderRadius:4,fontSize:10,cursor:"pointer",fontWeight:active?700:400,background:active?"var(--accent-glow)":"var(--bg-hover)",color:active?"var(--accent)":"var(--text-secondary)",border:active?"1px solid var(--accent)":"1px solid transparent"});
 
-  return(<div style={{display:"flex",height:"calc(100vh - 48px)",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
+  return(<div style={{display:"flex",height:"calc(100vh - 52px)",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
     {/* v8.4.9-c: 셀 hover 시 빈 💬+ 배지 페이드인 */}
     <style>{`.stm-cell:hover .stm-note-btn{opacity:1 !important;}`}</style>
     {/* Sidebar */}

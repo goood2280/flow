@@ -13,6 +13,8 @@ import logging
 import math
 import re
 import uuid
+import csv
+import io
 from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,8 +25,8 @@ from pydantic import BaseModel, Field
 import polars as pl
 
 from core.paths import PATHS
-from core.utils import _STR, load_json
-from core.auth import current_user, require_admin
+from core.utils import _STR, load_json, save_json
+from core.auth import current_user, require_admin, is_page_admin
 from core import llm_adapter
 from core import semiconductor_knowledge as semi_knowledge
 from routers.auth import read_users
@@ -36,6 +38,25 @@ FLOWI_FEEDBACK_FILE = PATHS.data_root / "flowi_feedback.jsonl"
 FLOWI_GOLDEN_FILE = PATHS.data_root / "flowi_golden_cases.jsonl"
 FLOWI_ACTIVITY_FILE = PATHS.data_root / "flowi_activity.jsonl"
 FLOWI_USER_DIR = PATHS.data_root / "flowi_users"
+FLOWI_AGENT_GUIDE_FILE = PATHS.data_root / "flowi_agent_entrypoints.md"
+FLOWI_AGENT_FEATURE_GUIDE_DIR = PATHS.data_root / "flowi_agent_features"
+FLOWI_STAGED_DATA_DIR = PATHS.cache_dir / "flowi_data_register"
+FLOWI_AGENT_GUIDE_FALLBACK = """# Flowi Agent Entrypoints
+
+가벼운 라우팅 인덱스다. 질문에서 기능을 먼저 고르고, 고른 기능의 상세 가이드만 읽어 실행한다.
+
+- dashboard: 차트, trend, 그래프, 그려줘, scatter, 상관, EQP/Chamber별
+- tracker: 이슈, tracker, 모니터링, Analysis, 등록
+- inform: 인폼, 인폼로그, 공지, 공유, 메일
+- meeting: 회의, 미팅, 아젠다, 반복 회의
+- calendar: 일정, 캘린더, 변경점, schedule
+- splittable: SplitTable, plan, actual, KNOB, MASK, CUSTOM set
+- ettime: ET median, elapsed, step/item/wf별 측정
+- diagnosis: DIBL, VTH, SS, ION, IOFF, RCA, 원인 후보
+- waferlayout: TEG, shot, die, wafer layout, edge
+- tablemap: table map, relation, join path, 컬럼 관계
+- filebrowser: parquet, csv, 파일, schema, 컬럼, row 조회
+"""
 FLOWI_READ_ONLY_POLICY = {
     "read_only": True,
     "applies_to": ["user"],
@@ -43,10 +64,61 @@ FLOWI_READ_ONLY_POLICY = {
     "admin_controlled_file_ops": {
         "enabled": True,
         "format": "FLOWI_FILE_OP JSON with exact confirm text",
-        "scope": "DB/Files root-level files only",
-        "ops": ["delete", "rename", "replace_text"],
+        "scope": "Files root-level files only; DB root is read-only for everyone",
+        "ops": ["delete", "rename", "replace_text", "register_data"],
     },
 }
+FLOWI_BASE_WORKFLOW_GUIDE = [
+    {
+        "key": "root_lot_id",
+        "label": "root lot",
+        "rule": "영문/숫자 혼합 5자 토큰은 기본적으로 root_lot_id로 해석합니다.",
+        "examples": ["A0001", "B1234"],
+    },
+    {
+        "key": "fab_lot_id",
+        "label": "fab lot",
+        "rule": "영문/숫자 혼합 6자 이상 토큰 또는 AZAAAB.1 같은 점 suffix lot은 fab_lot_id로 해석합니다.",
+        "examples": ["A12345", "AZAAAB.1"],
+    },
+    {
+        "key": "step_id",
+        "label": "step",
+        "rule": "step_id는 영문 2자 + 숫자 6자리만 step으로 해석합니다. 그 외에는 등록된 func_step 이름과 정확히 맞을 때만 step 후보로 봅니다.",
+        "examples": ["AA200000", "GAA_CHANNEL_RELEASE"],
+    },
+    {
+        "key": "wafer_id",
+        "label": "wafer",
+        "rule": "#6, WF6, WAFER 6은 wafer_id=6으로 해석합니다. 저장/표시는 DB 값에 맞춰 6 또는 06을 모두 매칭합니다.",
+        "examples": ["#6", "WF6", "WAFER 06"],
+    },
+    {
+        "key": "clarification",
+        "label": "ambiguous",
+        "rule": "lot/product/wafer/source가 애매하면 실행 전에 3개 이하의 선택지를 제시하고 사용자가 고르면 이어서 진행합니다.",
+        "examples": ["root/fab/source 후보 선택"],
+    },
+]
+FLOWI_DEFAULT_SYSTEM_PROMPT = (
+    "Flowi는 사내 Flow 홈 화면의 fab 데이터 assistant입니다. 답변은 짧고 실행 가능하게 작성합니다. "
+    "사용자 Markdown 정보가 있으면 담당 제품, 관심 공정, 선호 출력 방식을 반영합니다. "
+    "요청이 애매하면 바로 실행한다고 말하지 말고 1/2/3 형태의 선택지를 제시합니다. "
+    "영문/숫자 혼합 5자 토큰은 root_lot_id, 6자 이상 혼합 토큰이나 AZAAAB.1 형태는 fab_lot_id로 해석합니다. "
+    "#6, WF6, WAFER 6은 wafer_id=6으로 해석합니다. "
+    "step_id는 영문 2자 + 숫자 6자리만 step으로 해석하고, 그 외에는 등록된 func_step 이름과 정확히 맞을 때만 step 후보로 봅니다. "
+    "INLINE은 기본 avg, ET는 기본 median이며 shot/die key가 있으면 lot_wf보다 우선합니다. "
+    "일반 사용자의 원 data DB 또는 Files 수정/삭제/저장/업로드는 차단합니다. "
+    "admin 파일 변경은 서버의 FLOWI_FILE_OP 단위기능 결과가 제공된 경우에만 그 결과를 설명합니다."
+)
+FLOWI_DEFAULT_MUST_NOT = (
+    "- DB root/raw data 원본을 직접 수정, 삭제, 덮어쓰기, 이동하지 않는다.\n"
+    "- 로컬 tool/cache/schema 결과에 없는 숫자, lot, product, step, item 값을 지어내지 않는다.\n"
+    "- step_id는 영문 2자 + 숫자 6자리 또는 등록된 func_step 이름이 아니면 step으로 확정하지 않는다.\n"
+    "- 기존 인폼/회의/이슈/일정 수정, 삭제, 상태 변경은 권한과 대상 내용을 확인하기 전 실행하지 않는다.\n"
+    "- 파일 변경은 FLOWI_FILE_OP 또는 전용 단일파일 반영 플로우 없이 실행하지 않는다.\n"
+    "- RAG/문서 내용은 flow-data 내부 저장소 밖으로 내보내지 않는다."
+)
 FLOWI_PROFILE_START = "<!-- FLOWI_USER_NOTES_START -->"
 FLOWI_PROFILE_END = "<!-- FLOWI_USER_NOTES_END -->"
 FLOWI_FEEDBACK_TAXONOMY = [
@@ -124,12 +196,6 @@ FLOWI_FEATURE_ENTRYPOINTS = [
         "prompt": "WF Layout에서 내 제품의 layout 검토 포인트를 체크리스트로 만들어줘.",
     },
     {
-        "key": "ml",
-        "title": "ML 분석",
-        "description": "Inline/ET 요약, 상관, 중요도, 공정 window 후보를 비교합니다.",
-        "prompt": "ML 분석에서 내 제품의 원인 후보를 좁히기 위한 컬럼 선택을 추천해줘.",
-    },
-    {
         "key": "tablemap",
         "title": "테이블 맵",
         "description": "DB 테이블과 컬럼 관계를 그래프로 보고 연결 맥락을 확인합니다.",
@@ -153,15 +219,14 @@ FLOWI_FEATURE_ALIASES = {
     "calendar": ["calendar", "캘린더", "일정", "변경점", "change", "schedule"],
     "ettime": ["et report", "ettime", "et 레포트", "et 리포트", "median", "wf별", "wafer별", "측정", "eta"],
     "waferlayout": ["wafer layout", "wf layout", "layout", "레이아웃", "shot", "die", "teg"],
-    "ml": ["ml", "머신러닝", "상관", "correlation", "feature", "importance", "윈도우", "window", "knob", "노브", "coloring", "컬러링"],
     "tablemap": ["table map", "tablemap", "테이블맵", "관계", "relation", "join", "column map", "컬럼"],
     "devguide": ["devguide", "개발", "api", "문서", "가이드", "architecture"],
 }
 FLOWI_DEFAULT_TABS = {
     "filebrowser", "dashboard", "splittable", "ettime", "waferlayout",
-    "inform", "meeting", "calendar", "diagnosis",
+    "tracker", "inform", "meeting", "calendar", "diagnosis",
 }
-FLOWI_NEW_DEFAULT_TABS = {"inform", "meeting", "calendar", "ettime", "waferlayout", "diagnosis"}
+FLOWI_NEW_DEFAULT_TABS = {"tracker", "inform", "meeting", "calendar", "ettime", "waferlayout", "diagnosis"}
 FLOWI_ADMIN_ONLY_FEATURES = {"tablemap", "admin"}
 FLOWI_RESTRICTED_FEATURES = {"devguide": "devguide_allowed"}
 FLOWI_UNIT_ACTIONS = {
@@ -225,12 +290,6 @@ FLOWI_UNIT_ACTIONS = {
         "needs": ["product", "layout name or shot/chip context"],
         "outputs": ["wafer map", "edge shot/layout checks"],
     },
-    "ml": {
-        "intent": "ml_guidance",
-        "action": "open_ml",
-        "needs": ["source table", "target metric", "candidate features"],
-        "outputs": ["importance/correlation", "candidate process window"],
-    },
     "tablemap": {
         "intent": "tablemap_guidance",
         "action": "open_tablemap",
@@ -248,6 +307,7 @@ FLOWI_UNIT_ACTIONS = {
 FLOWI_CHART_TERMS = {
     "차트", "그래프", "scatter", "산점도", "corr", "correlation", "상관", "피팅", "fitting",
     "fit", "1차식", "선형", "linear", "컬러링", "color", "coloring", "filter", "필터", "제외",
+    "그려", "그려줘", "plot", "bar", "막대", "trend", "추세", "시계열", "라인", "line",
 }
 FLOWI_JOIN_CHOICES = [
     {
@@ -287,6 +347,8 @@ FLOWI_DOMAIN_DICTIONARY = {
     "ION": ["ION", "IDSAT"],
     "IOFF": ["IOFF", "LEAKAGE"],
     "CD": ["CD", "CRITICAL_DIMENSION", "WIDTH"],
+    "CD_GATE": ["CD_GATE", "GATE_CD", "GATE CD"],
+    "CD_SPACER": ["CD_SPACER", "SPACER_CD", "SPACER CD"],
     "OVERLAY": ["OVERLAY", "OVL"],
     "THICKNESS": ["THICKNESS", "THK", "TICK"],
 }
@@ -294,7 +356,7 @@ FLOWI_CHART_METRIC_STOP = {
     "INLINE", "IN-LINE", "ET", "ML", "ML_TABLE", "KNOB", "CORR", "CORRELATION",
     "SCATTER", "CHART", "DASHBOARD", "FITTING", "FIT", "LINE", "LINEAR", "COLOR",
     "COLORING", "FILTER", "LEFT", "JOIN", "INNER", "AVG", "AVERAGE", "MEDIAN",
-    "EXCLUDE", "EXCEPT", "REMOVE", "WITHOUT", "BY", "BASIS",
+    "EXCLUDE", "EXCEPT", "REMOVE", "WITHOUT", "BY", "BASIS", "TREND", "PLOT", "BAR", "GRAPH",
 }
 FLOWI_CHART_POINT_LIMIT = 500
 FLOWI_CHART_DEFAULTS = {
@@ -365,20 +427,33 @@ _WRITE_TARGET_TERMS = (
     "데이터", "파일", "루트", "소스", "제품별 reformatter",
 )
 _FLOWI_FILE_OP_MARKER = "FLOWI_FILE_OP"
+_FLOWI_DATA_REGISTER_MARKER = "FLOWI_DATA_REGISTER"
+_FLOWI_SPLITTABLE_NOTE_MARKER = "FLOWI_SPLITTABLE_NOTE"
 _FLOWI_FILE_EXTS = {".parquet", ".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 _FLOWI_TEXT_FILE_EXTS = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 _FLOWI_MAX_TEXT_EDIT_BYTES = 2 * 1024 * 1024
+_FLOWI_MAX_REGISTER_ROWS = 300
+_FLOWI_MAX_REGISTER_COLS = 80
 _FLOWI_FILE_TOKEN_RE = re.compile(
     r"(?<![\w./-])([A-Za-z0-9][A-Za-z0-9_.@+=-]{0,120}\.(?:parquet|csv|json|md|txt|yaml|yml))(?![\w.-])",
     re.I,
 )
 _FLOWI_APP_WRITE_TERMS = (
-    "등록해줘", "만들어줘", "생성해줘", "추가해줘", "넣어줘", "남겨줘",
-    "올려줘", "기록 남겨", "기록해줘", "코멘트", "꼬리표",
+    "등록해줘", "등록해주세요", "만들어줘", "만들어주세요", "생성해줘", "생성해주세요",
+    "추가해줘", "추가해주세요", "넣어줘", "넣어주세요", "남겨줘", "남겨주세요",
+    "올려줘", "올려주세요", "기록 남겨", "기록해줘", "기록해주세요", "코멘트", "꼬리표",
+)
+_FLOWI_APP_CREATE_TERMS = (
+    "등록", "만들", "생성", "추가", "넣어", "남겨", "기록", "올려",
+    "create", "add", "new",
+)
+_FLOWI_APP_MODIFY_TERMS = (
+    "수정", "삭제", "지워", "바꿔", "바꾸", "편집", "업데이트", "rename",
+    "delete", "remove", "edit", "update", "modify", "replace", "archive",
 )
 _FLOWI_APP_WRITE_HINTS = {
     "inform": ("인폼", "inform"),
-    "tracker": ("이슈", "issue", "tracker", "트래커"),
+    "tracker": ("이슈추적", "이슈 추적", "이슈", "issue", "tracker", "트래커"),
     "meeting": ("회의", "아젠다", "회의록", "agenda", "meeting"),
     "calendar": ("일정", "캘린더", "변경점", "calendar"),
     "splittable": ("split table", "splittable", "스플릿", "스플릿테이블", "split table"),
@@ -418,6 +493,38 @@ def _safe_username(raw: Any) -> str:
 def _admin_settings() -> dict:
     data = load_json(PATHS.data_root / "admin_settings.json", {})
     return data if isinstance(data, dict) else {}
+
+
+def _save_admin_settings(data: dict) -> None:
+    save_json(PATHS.data_root / "admin_settings.json", data if isinstance(data, dict) else {}, indent=2)
+
+
+def _flowi_persona_config() -> dict[str, Any]:
+    raw = _admin_settings().get("flowi_persona")
+    raw = raw if isinstance(raw, dict) else {}
+    custom_prompt = str(raw.get("system_prompt") or "").strip()
+    custom_must_not = str(raw.get("must_not") or "").strip()
+    active_prompt = custom_prompt or FLOWI_DEFAULT_SYSTEM_PROMPT
+    active_must_not = custom_must_not or FLOWI_DEFAULT_MUST_NOT
+    active_system_prompt = active_prompt
+    if active_must_not:
+        active_system_prompt += "\n\n반드시 하지 말아야 할 것:\n" + active_must_not
+    return {
+        "enabled": True,
+        "source": "saved" if custom_prompt else "default",
+        "system_prompt": custom_prompt or FLOWI_DEFAULT_SYSTEM_PROMPT,
+        "must_not": custom_must_not or FLOWI_DEFAULT_MUST_NOT,
+        "active_system_prompt": active_system_prompt,
+        "default_system_prompt": FLOWI_DEFAULT_SYSTEM_PROMPT,
+        "default_must_not": FLOWI_DEFAULT_MUST_NOT,
+        "notes": str(raw.get("notes") or "").strip(),
+        "updated_by": str(raw.get("updated_by") or "").strip(),
+        "updated_at": str(raw.get("updated_at") or "").strip(),
+    }
+
+
+def _flowi_system_prompt() -> str:
+    return _flowi_persona_config()["active_system_prompt"]
 
 
 def _tabs_for_user(username: str, role: str) -> set[str] | str:
@@ -740,7 +847,8 @@ def _profile_context(username: str) -> str:
     md = _read_user_md(username, create=False)
     notes = _notes_from_md(md)
     recent = md[-2500:] if md else ""
-    parts = []
+    workflow = "\n".join(f"- {item['key']}: {item['rule']}" for item in FLOWI_BASE_WORKFLOW_GUIDE)
+    parts = ["기본 workflow/slot 해석 규칙:\n" + workflow]
     if notes:
         parts.append("사용자 메모:\n" + notes[:2500])
     if recent:
@@ -748,13 +856,42 @@ def _profile_context(username: str) -> str:
     return "\n\n".join(parts).strip()
 
 
+def _flowi_agent_guide_md() -> str:
+    try:
+        if FLOWI_AGENT_GUIDE_FILE.exists():
+            text = FLOWI_AGENT_GUIDE_FILE.read_text(encoding="utf-8")
+            if text.strip():
+                return text.strip()
+    except Exception as e:
+        logger.warning("flowi agent guide read failed: %s", e)
+    return FLOWI_AGENT_GUIDE_FALLBACK.strip()
+
+
+def _flowi_feature_guide_md(key: str) -> str:
+    safe = re.sub(r"[^a-z0-9_-]+", "", str(key or "").lower())
+    if not safe:
+        return ""
+    try:
+        fp = FLOWI_AGENT_FEATURE_GUIDE_DIR / f"{safe}.md"
+        if fp.exists():
+            text = fp.read_text(encoding="utf-8").strip()
+            return text
+    except Exception as e:
+        logger.warning("flowi feature guide read failed key=%s: %s", key, e)
+    return ""
+
+
 def _matched_feature_entrypoints(
     prompt: str,
     limit: int = 4,
     allowed_keys: set[str] | None = None,
 ) -> list[dict[str, str]]:
-    prompt_l = str(prompt or "").lower()
+    text = str(prompt or "")
+    prompt_l = text.lower()
+    prompt_u = _upper(text)
     toks = {_upper(t) for t in _tokens(prompt)}
+    has_create = any(term in prompt_l or term in text for term in _FLOWI_APP_CREATE_TERMS)
+    has_chart = _contains_chart_intent(text) or any(t in prompt_l or t in text for t in ("trend", "추세", "시계열", "그려", "그래프"))
     scored: list[tuple[int, dict[str, str]]] = []
     for item in FLOWI_FEATURE_ENTRYPOINTS:
         if allowed_keys is not None and item["key"] not in allowed_keys:
@@ -763,6 +900,23 @@ def _matched_feature_entrypoints(
         score = 0
         if item["key"].lower() in prompt_l or item["title"].lower() in prompt_l:
             score += 4
+        key = item["key"]
+        if key == "dashboard" and has_chart:
+            score += 8
+        if key == "tracker" and any(t in prompt_l or t in text for t in ("이슈", "issue", "tracker", "트래커", "모니터링", "analysis")):
+            score += 7 + (2 if has_create else 0)
+        if key == "inform" and any(t in prompt_l or t in text for t in ("인폼", "인폼로그", "inform", "공지", "공유")):
+            score += 7 + (2 if has_create else 0)
+        if key == "meeting" and any(t in prompt_l or t in text for t in ("회의", "미팅", "meeting", "아젠다", "매주", "매월")):
+            score += 7 + (2 if has_create else 0)
+        if key == "calendar" and any(t in prompt_l or t in text for t in ("일정", "캘린더", "calendar", "변경점", "schedule")):
+            score += 7 + (2 if has_create else 0)
+        if key == "splittable" and any(t in prompt_u for t in ("KNOB", "MASK", "PLAN", "ACTUAL", "CUSTOM", "SPLITTABLE", "ML_TABLE")):
+            score += 6
+        if key == "ettime" and (re.search(r"\bET\b", prompt_u) or any(t in prompt_l or t in text for t in ("elapsed", "median", "wf별", "wafer별", "측정시간"))):
+            score += 5
+        if key == "filebrowser" and any(t in prompt_l or t in text for t in ("parquet", "csv", "파일", "컬럼", "schema", "스키마")):
+            score += 5
         for alias in FLOWI_FEATURE_ALIASES.get(item["key"], []):
             alias_l = alias.lower()
             if alias_l and alias_l in prompt_l:
@@ -779,9 +933,13 @@ def _matched_feature_entrypoints(
 
 
 def _slot_summary(prompt: str, product: str = "") -> dict[str, Any]:
+    classified_lots = _classified_lot_tokens(prompt)
     return {
         "product": _product_hint(prompt, product),
         "lots": _lot_tokens(prompt),
+        "root_lot_ids": classified_lots.get("root_lot_ids") or [],
+        "fab_lot_ids": classified_lots.get("fab_lot_ids") or [],
+        "wafers": _wafer_tokens(prompt),
         "steps": _step_tokens(prompt),
         "terms": _query_tokens(prompt)[:12],
     }
@@ -863,10 +1021,19 @@ def _unit_feature_guidance(
 def _feature_context(prompt: str, allowed_keys: set[str] | None = None) -> str:
     matches = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
     items = matches or [item for item in FLOWI_FEATURE_ENTRYPOINTS[:6] if allowed_keys is None or item["key"] in allowed_keys]
-    return "\n".join(
+    summary = "\n".join(
         f"- {it['title']}({it['key']}): {it['description']} 시작 질문 예시: {it['prompt']}"
         for it in items
     )
+    parts = ["진입점 인덱스:\n" + _flowi_agent_guide_md()[:2200], "매칭된 기능 후보:\n" + summary]
+    detail_parts = []
+    for it in items[:3]:
+        md = _flowi_feature_guide_md(it.get("key", ""))
+        if md:
+            detail_parts.append(md[:2600])
+    if detail_parts:
+        parts.append("선택 기능 상세 가이드:\n" + "\n\n".join(detail_parts))
+    return "\n\n".join(parts)
 
 
 def _flowi_write_target_detected(prompt: str) -> bool:
@@ -882,14 +1049,21 @@ def _flowi_write_block_message(prompt: str) -> str:
         return ""
     return (
         "일반 사용자는 Flowi에서 원 data DB 또는 Files를 수정할 수 없습니다. "
-        "조회/요약/표시는 가능하지만 파일 변경은 admin의 확인된 단위기능으로만 실행됩니다."
+        "조회/요약/표시는 가능하지만 파일 변경/데이터 등록은 admin 또는 파일탐색기 위임 admin의 확인된 단위기능으로만 실행됩니다."
     )
+
+
+def _can_flowi_file_write(me: dict[str, Any]) -> bool:
+    username = me.get("username") or ""
+    if (me.get("role") or "") == "admin":
+        return True
+    return is_page_admin(username, "filebrowser")
 
 
 def _flowi_file_roots() -> list[tuple[str, Path]]:
     roots: list[tuple[str, Path]] = []
     seen: set[str] = set()
-    for label, root in (("Files", PATHS.base_root), ("DB", PATHS.db_root)):
+    for label, root in (("Files", PATHS.upload_dir),):
         try:
             root = Path(root)
             key = str(root.resolve()) if root.exists() else str(root)
@@ -940,7 +1114,7 @@ def _resolve_flowi_admin_file(raw_path: Any) -> tuple[str, Path, Path]:
             continue
         if fp.is_file():
             return label, root_resolved, fp
-    raise FileNotFoundError(f"DB/Files 루트에서 파일을 찾지 못했습니다: {rel.as_posix()}")
+    raise FileNotFoundError(f"Files 루트에서 파일을 찾지 못했습니다: {rel.as_posix()}")
 
 
 def _flowi_file_tokens(prompt: str) -> list[str]:
@@ -1018,7 +1192,7 @@ def _flowi_admin_file_confirmation(prompt: str, parse_error: str = "") -> dict:
     guessed_op = _guess_flowi_file_op(prompt) or "delete"
     rows = [
         {"field": "status", "value": "confirmation_required"},
-        {"field": "scope", "value": "admin only; DB/Files root-level files"},
+        {"field": "scope", "value": "admin or filebrowser delegated admin; Files root-level files only"},
         {"field": "supported_ops", "value": "delete, rename, replace_text"},
         {"field": "safety", "value": "delete/replace_text는 .trash 백업 후 실행"},
     ]
@@ -1075,19 +1249,19 @@ def _flowi_admin_file_confirmation(prompt: str, parse_error: str = "") -> dict:
                 "prompt": f"{_FLOWI_FILE_OP_MARKER} {json.dumps(payload, ensure_ascii=False)}",
             })
     choices.append({
-        "id": "open_filebrowser",
-        "label": "2",
-        "title": "파일 탐색기에서 먼저 확인",
-        "recommended": not bool(files),
-        "description": "대상 파일과 컬럼/내용을 조회한 뒤 다시 실행합니다.",
-        "prompt": "파일 탐색기에서 수정할 파일을 먼저 확인해줘",
-    })
+            "id": "open_filebrowser",
+            "label": "2",
+            "title": "파일 탐색기에서 먼저 확인",
+            "recommended": not bool(files),
+            "description": "Files 영역 대상 파일과 내용을 조회한 뒤 다시 실행합니다. DB는 수정하지 않습니다.",
+            "prompt": "파일 탐색기에서 수정할 파일을 먼저 확인해줘",
+        })
     return {
         "handled": True,
         "intent": "admin_file_operation",
         "action": "confirm_file_operation",
         "requires_confirmation": True,
-        "answer": "Admin 파일 작업은 구조화된 확인 명령이 필요합니다. 추천 선택지를 눌러 확인 명령을 다시 보내거나 JSON을 직접 입력하세요.",
+            "answer": "Files 단일파일 작업은 구조화된 확인 명령이 필요합니다. DB 루트는 admin도 수정할 수 없습니다.",
         "clarification": {
             "question": "어떤 파일 작업을 실행할까요?",
             "choices": choices,
@@ -1218,6 +1392,333 @@ def _execute_admin_file_operation(payload: dict[str, Any]) -> dict:
     }
 
 
+def _extract_flowi_data_register_payload(prompt: str) -> dict[str, Any] | None:
+    text = str(prompt or "")
+    idx = text.upper().find(_FLOWI_DATA_REGISTER_MARKER)
+    if idx < 0:
+        return None
+    tail = text[idx + len(_FLOWI_DATA_REGISTER_MARKER):].strip()
+    if tail.startswith(":"):
+        tail = tail[1:].strip()
+    if not tail:
+        return {}
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(tail)
+    except Exception as e:
+        return {"_parse_error": str(e)}
+    return obj if isinstance(obj, dict) else {"_parse_error": "JSON object가 필요합니다."}
+
+
+def _flowi_data_register_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if _FLOWI_DATA_REGISTER_MARKER in text.upper():
+        return True
+    has_register = any(t in low or t in text for t in ("등록", "올려", "업로드", "저장", "추가", "register", "upload", "save", "import"))
+    has_data = any(t in low or t in text for t in ("데이터", "표", "csv", "tsv", "json", "테이블", "data", "table"))
+    looks_tabular = text.count("\n") >= 2 and ("\t" in text or "," in text or "|" in text)
+    return bool(has_register and (has_data or looks_tabular))
+
+
+def _flowi_fenced_block(prompt: str) -> str:
+    m = re.search(r"```(?:csv|tsv|json|table|txt)?\s*\n(.*?)```", prompt or "", flags=re.I | re.S)
+    return (m.group(1).strip() if m else "").strip()
+
+
+def _flowi_register_filename(prompt: str, fmt: str) -> str:
+    files = _flowi_file_tokens(prompt)
+    ext = ".json" if fmt == "json" else ".csv"
+    for name in files:
+        if Path(name).suffix.lower() in {".csv", ".json", ".txt"}:
+            return name
+    product = _product_hint(prompt) or "flowi"
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", product).strip("._") or "flowi"
+    return f"{safe}_registered_{ts}{ext}"
+
+
+def _parse_flowi_data_block(prompt: str) -> dict[str, Any]:
+    block = _flowi_fenced_block(prompt) or str(prompt or "").strip()
+    block = block.strip()
+    if len(block.encode("utf-8")) > 512 * 1024:
+        raise ValueError("입력 데이터가 너무 큽니다. 512KB 이하로 나눠 등록해주세요.")
+    json_candidate = block
+    if not json_candidate.startswith(("[", "{")):
+        m = re.search(r"(\[[\s\S]*\]|\{[\s\S]*\})", block)
+        json_candidate = m.group(1).strip() if m else ""
+    if json_candidate:
+        try:
+            parsed = json.loads(json_candidate)
+            rows = parsed if isinstance(parsed, list) else [parsed]
+            if not all(isinstance(r, dict) for r in rows):
+                raise ValueError("JSON list는 object row 배열이어야 합니다.")
+            columns: list[str] = []
+            for row in rows:
+                for key in row.keys():
+                    k = str(key)
+                    if k not in columns:
+                        columns.append(k)
+            return {
+                "format": "json",
+                "columns": columns[:_FLOWI_MAX_REGISTER_COLS],
+                "rows": [{str(k): v for k, v in row.items()} for row in rows[:_FLOWI_MAX_REGISTER_ROWS]],
+                "total_rows": len(rows),
+            }
+        except Exception:
+            pass
+
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+    data_lines = [ln for ln in lines if ("\t" in ln or "," in ln or "|" in ln)]
+    if len(data_lines) < 2:
+        kv_pairs = []
+        for ln in lines:
+            m = re.match(r"^\s*([^:=]{1,80})\s*[:=]\s*(.+?)\s*$", ln)
+            if m:
+                kv_pairs.append((m.group(1).strip(), m.group(2).strip()))
+        if kv_pairs:
+            return {
+                "format": "csv",
+                "columns": [k for k, _v in kv_pairs],
+                "rows": [{k: v for k, v in kv_pairs}],
+                "total_rows": 1,
+            }
+        raise ValueError("등록할 표 데이터를 찾지 못했습니다. CSV/TSV/JSON 또는 key: value 형식으로 붙여주세요.")
+
+    sample = "\n".join(data_lines[:20])
+    delimiter = "\t" if "\t" in sample else ("|" if "|" in sample and sample.count("|") >= sample.count(",") else ",")
+    reader = csv.reader(io.StringIO("\n".join(data_lines)), delimiter=delimiter)
+    matrix = [row for row in reader if row]
+    if len(matrix) < 2:
+        raise ValueError("표 데이터는 header와 row가 필요합니다.")
+    header = [str(c or "").strip() or f"col{i + 1}" for i, c in enumerate(matrix[0])]
+    if len(header) > _FLOWI_MAX_REGISTER_COLS:
+        raise ValueError(f"컬럼이 너무 많습니다. 최대 {_FLOWI_MAX_REGISTER_COLS}개까지 등록 가능합니다.")
+    seen: dict[str, int] = {}
+    columns = []
+    for col in header:
+        base = re.sub(r"\s+", "_", col.strip()) or "col"
+        seen[base] = seen.get(base, 0) + 1
+        columns.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
+    rows: list[dict[str, Any]] = []
+    for raw in matrix[1:]:
+        if not any(str(v or "").strip() for v in raw):
+            continue
+        row = {}
+        for i, col in enumerate(columns):
+            row[col] = raw[i].strip() if i < len(raw) else ""
+        rows.append(row)
+    if not rows:
+        raise ValueError("header 아래 데이터 row가 없습니다.")
+    return {
+        "format": "csv",
+        "columns": columns,
+        "rows": rows[:_FLOWI_MAX_REGISTER_ROWS],
+        "total_rows": len(rows),
+    }
+
+
+def _flowi_data_register_confirm_text(path: str) -> str:
+    return f"REGISTER {path}"
+
+
+def _flowi_stage_data_register(draft: dict[str, Any]) -> str:
+    FLOWI_STAGED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    draft_id = "dr_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    fp = FLOWI_STAGED_DATA_DIR / f"{draft_id}.json"
+    fp.write_text(json.dumps(draft, ensure_ascii=False, default=str), encoding="utf-8")
+    return draft_id
+
+
+def _flowi_load_staged_data_register(draft_id: str) -> dict[str, Any]:
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "", str(draft_id or ""))
+    if not safe:
+        raise ValueError("draft_id가 비어 있습니다.")
+    fp = FLOWI_STAGED_DATA_DIR / f"{safe}.json"
+    if not fp.is_file():
+        raise FileNotFoundError("등록 draft를 찾지 못했습니다. 다시 초안을 생성해주세요.")
+    return json.loads(fp.read_text(encoding="utf-8"))
+
+
+def _flowi_data_register_table(rows: list[dict[str, Any]], title: str = "Flowi data registration") -> dict:
+    return {
+        "kind": "flowi_data_register",
+        "title": title,
+        "placement": "below",
+        "columns": [{"key": "field", "label": "FIELD"}, {"key": "value", "label": "VALUE"}],
+        "rows": rows,
+        "total": len(rows),
+    }
+
+
+def _write_flowi_registered_data(draft: dict[str, Any]) -> tuple[Path, int, int]:
+    rel = _flowi_rel_file_path(draft.get("path"))
+    if rel.suffix.lower() not in {".csv", ".json", ".txt"}:
+        raise ValueError("데이터 등록은 csv/json/txt 파일만 허용합니다.")
+    root = PATHS.upload_dir.resolve()
+    target = (root / rel).resolve()
+    if not _is_relative_to(target, root):
+        raise ValueError("대상 경로가 Files 루트를 벗어납니다.")
+    if target.exists() and not bool(draft.get("overwrite")):
+        raise FileExistsError(f"대상 파일이 이미 존재합니다: {rel.as_posix()}")
+    columns = [str(c) for c in (draft.get("columns") or [])]
+    rows = draft.get("rows") if isinstance(draft.get("rows"), list) else []
+    if len(rows) > _FLOWI_MAX_REGISTER_ROWS:
+        raise ValueError(f"최대 {_FLOWI_MAX_REGISTER_ROWS}행까지 등록 가능합니다.")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if rel.suffix.lower() == ".json" or draft.get("format") == "json":
+        target.write_text(json.dumps(rows, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    elif rel.suffix.lower() == ".txt":
+        body = draft.get("text")
+        if not isinstance(body, str):
+            body = "\n".join("\t".join(str(row.get(c, "")) for c in columns) for row in rows)
+        target.write_text(body, encoding="utf-8")
+    else:
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({c: row.get(c, "") if isinstance(row, dict) else "" for c in columns})
+        target.write_text(buf.getvalue(), encoding="utf-8")
+    return target, len(rows), len(columns)
+
+
+def _handle_flowi_data_registration(prompt: str, me: dict[str, Any]) -> dict[str, Any]:
+    if not _flowi_data_register_intent(prompt):
+        return {"handled": False}
+    if "db" in str(prompt or "").lower() or "DB" in str(prompt or "") or "원본" in str(prompt or "") or "raw data" in str(prompt or "").lower():
+        return {
+            "handled": True,
+            "intent": "flowi_data_register",
+            "action": "blocked_db_write",
+            "blocked": True,
+            "answer": "DB 루트 원본은 admin도 Flow-i에서 수정하거나 등록할 수 없습니다. 등록은 파일탐색기 수정 권한이 있는 사용자만 Files 영역 단일파일에 대해 확인 후 실행됩니다.",
+            "table": _flowi_data_register_table([
+                {"field": "status", "value": "blocked"},
+                {"field": "reason", "value": "DB root is read-only for everyone"},
+                {"field": "allowed_target", "value": "Files root-level file"},
+            ]),
+        }
+    if not _can_flowi_file_write(me):
+        return {
+            "handled": True,
+            "intent": "flowi_data_register",
+            "action": "blocked",
+            "blocked": True,
+            "answer": "홈 Flow-i 데이터 등록은 admin 또는 파일탐색기 위임 admin만 실행할 수 있습니다.",
+            "table": _flowi_data_register_table([
+                {"field": "status", "value": "blocked"},
+                {"field": "required_permission", "value": "admin or page_admin:filebrowser"},
+            ]),
+        }
+
+    payload = _extract_flowi_data_register_payload(prompt)
+    if payload is not None:
+        if payload.get("_parse_error"):
+            raise HTTPException(400, payload.get("_parse_error"))
+        draft = _flowi_load_staged_data_register(str(payload.get("draft_id") or ""))
+        expected = _flowi_data_register_confirm_text(str(draft.get("path") or ""))
+        if str(payload.get("confirm") or "").strip() != expected:
+            return {
+                "handled": True,
+                "intent": "flowi_data_register",
+                "action": "confirm_data_register",
+                "requires_confirmation": True,
+                "answer": f"등록 전 확인 문구가 필요합니다: {expected}",
+                "table": _flowi_data_register_table([
+                    {"field": "status", "value": "confirmation_required"},
+                    {"field": "target", "value": draft.get("path") or ""},
+                    {"field": "rows", "value": len(draft.get("rows") or [])},
+                    {"field": "columns", "value": ", ".join(draft.get("columns") or [])},
+                ]),
+                "clarification": {
+                    "question": "이 형식으로 파일탐색기에 등록할까요?",
+                    "choices": [{
+                        "id": "confirm_register",
+                        "label": "1",
+                        "title": expected,
+                        "recommended": True,
+                        "description": "초안 데이터를 CSV/JSON 파일로 저장합니다.",
+                        "prompt": f"{_FLOWI_DATA_REGISTER_MARKER} {json.dumps({'draft_id': payload.get('draft_id'), 'confirm': expected}, ensure_ascii=False)}",
+                    }, {
+                        "id": "cancel_register",
+                        "label": "2",
+                        "title": "취소",
+                        "description": "등록하지 않고 초안만 폐기합니다.",
+                        "prompt": "데이터 등록 취소",
+                    }],
+                },
+            }
+        target, n_rows, n_cols = _write_flowi_registered_data(draft)
+        return {
+            "handled": True,
+            "intent": "flowi_data_register",
+            "action": "registered",
+            "answer": f"{target.name} 파일로 데이터 {n_rows}행/{n_cols}열을 등록했습니다. 파일탐색기에서 바로 확인할 수 있습니다.",
+            "table": _flowi_data_register_table([
+                {"field": "status", "value": "registered"},
+                {"field": "path", "value": target.name},
+                {"field": "rows", "value": n_rows},
+                {"field": "columns", "value": n_cols},
+            ]),
+            "feature": "filebrowser",
+        }
+
+    parsed = _parse_flowi_data_block(prompt)
+    fmt = "json" if parsed.get("format") == "json" else "csv"
+    path = _flowi_register_filename(prompt, fmt)
+    draft = {
+        "path": path,
+        "format": fmt,
+        "columns": parsed.get("columns") or [],
+        "rows": parsed.get("rows") or [],
+        "created_by": me.get("username") or "",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    draft_id = _flowi_stage_data_register(draft)
+    expected = _flowi_data_register_confirm_text(path)
+    preview_rows = draft["rows"][:3]
+    rows = [
+        {"field": "status", "value": "draft_ready"},
+        {"field": "target_file", "value": path},
+        {"field": "format", "value": fmt},
+        {"field": "rows", "value": f"{len(draft['rows'])}" + (f" / input {parsed.get('total_rows')}" if parsed.get("total_rows") != len(draft["rows"]) else "")},
+        {"field": "columns", "value": ", ".join(draft["columns"])},
+        {"field": "preview", "value": json.dumps(preview_rows, ensure_ascii=False)[:900]},
+    ]
+    return {
+        "handled": True,
+        "intent": "flowi_data_register",
+        "action": "draft_data_register",
+        "requires_confirmation": True,
+        "answer": "입력 데이터를 파일탐색기에 등록 가능한 형식으로 정리했습니다. 등록 전 확인 선택지를 눌러야 실제 파일이 생성됩니다.",
+        "table": _flowi_data_register_table(rows),
+        "clarification": {
+            "question": "정리된 데이터를 파일탐색기에 등록할까요?",
+            "choices": [{
+                "id": "register_data",
+                "label": "1",
+                "title": f"{path} 등록",
+                "recommended": True,
+                "description": f"Files 영역에 {len(draft['rows'])}행/{len(draft['columns'])}열을 {fmt.upper()}로 저장합니다. DB는 수정하지 않습니다.",
+                "prompt": f"{_FLOWI_DATA_REGISTER_MARKER} {json.dumps({'draft_id': draft_id, 'confirm': expected}, ensure_ascii=False)}",
+            }, {
+                "id": "revise_data",
+                "label": "2",
+                "title": "수정해서 다시 등록",
+                "description": "컬럼명/파일명/값을 고쳐 다시 붙여넣습니다.",
+                "prompt": "데이터 등록 초안을 수정해서 다시 만들게",
+            }, {
+                "id": "open_filebrowser",
+                "label": "3",
+                "title": "파일탐색기에서 확인",
+                "description": "등록 전 기존 파일과 root를 먼저 확인합니다.",
+                "prompt": "파일탐색기에서 등록 위치를 먼저 확인해줘",
+            }],
+        },
+        "feature": "filebrowser",
+    }
+
+
 def _handle_admin_file_operation(prompt: str) -> dict:
     payload = _extract_flowi_file_op(prompt)
     if payload is None:
@@ -1229,6 +1730,27 @@ def _handle_admin_file_operation(prompt: str) -> dict:
 
 def _tokens(prompt: str) -> list[str]:
     return [m.group(0).upper() for m in re.finditer(r"[A-Za-z][A-Za-z0-9_.-]*|\d+(?:\.\d+)?", prompt or "")]
+
+
+def _title_hint_tokens(prompt: str) -> set[str]:
+    text = str(prompt or "")
+    hints: set[str] = set()
+    patterns = [
+        r"([A-Za-z0-9_.-]{1,80})\s*(?:이름|제목|title)\s*으로",
+        r"(?:이름|제목|title)\s*[:=]\s*([^\n,;/]+)",
+        r"(?:이름|제목|title)\s*(?:은|는)\s*([^\n,;/]+)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.I)
+        if not m:
+            continue
+        for tok in _tokens(m.group(1)):
+            hints.add(tok)
+    return hints
+
+
+def _is_mixed_alnum_token(tok: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z0-9]+", tok or "") and re.search(r"[A-Z]", tok or "") and re.search(r"\d", tok or ""))
 
 
 def _product_aliases(product: str) -> set[str]:
@@ -1262,17 +1784,100 @@ def _product_hint(prompt: str, explicit: str = "") -> str:
 
 def _lot_tokens(prompt: str) -> list[str]:
     out = []
+    seen = set()
+    title_tokens = _title_hint_tokens(prompt)
     for tok in _tokens(prompt):
-        if re.fullmatch(r"[A-Z]\d{4,}(?:[A-Z])?(?:\.\d+)?", tok):
+        if tok.startswith(("PROD", "ML_TABLE_", "PRODUCT_")):
+            continue
+        if tok in title_tokens:
+            continue
+        is_root_like = len(tok) == 5 and _is_mixed_alnum_token(tok)
+        is_fab_like = (
+            bool(re.fullmatch(r"[A-Z0-9]{5,12}\.\d+", tok))
+            or (len(tok) >= 6 and _is_mixed_alnum_token(tok) and not re.fullmatch(r"[A-Z]{2,5}\d{4,}", tok))
+        )
+        legacy_lot_like = bool(re.fullmatch(r"[A-Z]\d{4,}(?:[A-Z])?(?:\.\d+)?", tok))
+        if (is_root_like or is_fab_like or legacy_lot_like) and tok not in seen:
+            seen.add(tok)
             out.append(tok)
     return out
 
 
-def _step_tokens(prompt: str) -> list[str]:
-    out = []
+def _classified_lot_tokens(prompt: str) -> dict[str, list[str]]:
+    root_ids: list[str] = []
+    fab_ids: list[str] = []
+    seen_root: set[str] = set()
+    seen_fab: set[str] = set()
     for tok in _tokens(prompt):
-        if re.fullmatch(r"[A-Z]{1,5}\d{4,}", tok):
-            out.append(tok)
+        if tok.startswith(("PROD", "ML_TABLE_", "PRODUCT_")):
+            continue
+        if len(tok) == 5 and _is_mixed_alnum_token(tok):
+            if tok not in seen_root:
+                seen_root.add(tok)
+                root_ids.append(tok)
+            continue
+        if re.fullmatch(r"[A-Z0-9]{5,12}\.\d+", tok) or (len(tok) >= 6 and _is_mixed_alnum_token(tok) and not re.fullmatch(r"[A-Z]{2,5}\d{4,}", tok)):
+            if tok not in seen_fab:
+                seen_fab.add(tok)
+                fab_ids.append(tok)
+            continue
+        if re.fullmatch(r"[A-Z]\d{4,}(?:[A-Z])?(?:\.\d+)?", tok):
+            bucket = fab_ids if "." in tok or len(tok) >= 6 else root_ids
+            seen = seen_fab if bucket is fab_ids else seen_root
+            if tok not in seen:
+                seen.add(tok)
+                bucket.append(tok)
+    return {"root_lot_ids": root_ids, "fab_lot_ids": fab_ids}
+
+
+def _is_step_id_token(tok: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z]{2}\d{6}", _upper(tok)))
+
+
+def _known_func_step_names() -> list[str]:
+    names: list[str] = []
+    try:
+        for row in getattr(semi_knowledge, "PROCESS_MODULE_DICTIONARY", []) or []:
+            module = _upper(row.get("module") if isinstance(row, dict) else "")
+            if module:
+                names.append(module)
+    except Exception:
+        pass
+    try:
+        for row in getattr(semi_knowledge, "FUNC_STEP_RULES", []) or []:
+            if isinstance(row, (list, tuple)) and row:
+                label = _upper(row[0])
+                if label:
+                    names.append(label)
+    except Exception:
+        pass
+    return sorted(set(names), key=lambda x: (-len(x), x))
+
+
+def _func_step_tokens(prompt: str) -> list[str]:
+    norm_text = "_" + re.sub(r"[^A-Z0-9]+", "_", _upper(prompt)).strip("_") + "_"
+    if norm_text == "__":
+        return []
+    out: list[str] = []
+    for name in _known_func_step_names():
+        needle = "_" + re.sub(r"[^A-Z0-9]+", "_", name).strip("_") + "_"
+        if needle in norm_text:
+            out.append(name)
+    return out
+
+
+def _step_tokens(prompt: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for tok in _tokens(prompt):
+        key = _upper(tok)
+        if _is_step_id_token(key) and key not in seen:
+            seen.add(key)
+            out.append(key)
+    for func_step in _func_step_tokens(prompt):
+        if func_step not in seen:
+            seen.add(func_step)
+            out.append(func_step)
     return out
 
 
@@ -1292,7 +1897,17 @@ def _query_tokens(prompt: str) -> list[str]:
 def _contains_chart_intent(prompt: str) -> bool:
     text = str(prompt or "")
     low = text.lower()
-    return any(term in low or term in text for term in FLOWI_CHART_TERMS)
+    korean_terms = {
+        "차트", "그래프", "산점도", "상관", "피팅", "1차식", "선형", "컬러링",
+        "필터", "제외", "그려", "그려줘", "막대", "추세", "시계열", "라인",
+    }
+    if any(term in text for term in korean_terms):
+        return True
+    latin_terms = {
+        "scatter", "corr", "correlation", "fitting", "fit", "linear", "color",
+        "coloring", "filter", "plot", "bar", "trend", "line", "chart", "graph",
+    }
+    return any(re.search(rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])", low) for term in latin_terms)
 
 
 def _source_terms(prompt: str) -> set[str]:
@@ -1347,8 +1962,6 @@ def _chart_operations(prompt: str) -> list[str]:
 
 
 def _chart_default_join_key(sources: set[str]) -> str:
-    if {"INLINE", "ET"} & sources:
-        return "shot_or_die_key if present, else lot_wf"
     return "lot_wf"
 
 
@@ -1872,6 +2485,736 @@ def _try_metric_scatter(prompt: str, product: str, metrics: list[dict[str, Any]]
     }
 
 
+def _group_chart_group_keys(prompt: str) -> list[str]:
+    text = str(prompt or "")
+    low = text.lower()
+    has_eqp = any(t in low or t in text for t in ("eqp", "equipment", "장비", "설비"))
+    has_chamber = any(t in low or t in text for t in ("chamber", "챔버"))
+    if has_eqp and has_chamber:
+        return ["eqp", "chamber"]
+    if has_chamber:
+        return ["chamber"]
+    if has_eqp:
+        return ["eqp"]
+    return []
+
+
+def _inline_metric_match_for_prompt(lf: pl.LazyFrame, item_col: str, prompt: str) -> tuple[str, list[str], list[str]]:
+    item_vals = _unique_strings(lf, item_col, limit=1200)
+    blocked = {"EQP", "EQUIPMENT", "CHAMBER", "장비", "설비", "챔버"}
+    terms = []
+    seen = set()
+    for hit in _metric_alias_hits(prompt):
+        key = _upper(hit.get("metric"))
+        if key and key not in blocked and key not in seen:
+            seen.add(key)
+            terms.append(key)
+    for tok in _query_tokens(prompt):
+        key = _upper(tok)
+        if key and key not in blocked and key not in seen:
+            seen.add(key)
+            terms.append(key)
+    exact = []
+    for term in terms:
+        exact.extend([v for v in item_vals if _upper(v) == term])
+    if exact:
+        matches = sorted(set(exact), key=lambda x: (-len(str(x)), str(x)))
+        return matches[0], matches, item_vals[:24]
+    matches = _match_values(item_vals, terms)
+    if matches:
+        matches = sorted(set(matches), key=lambda x: (-len(str(x)), str(x)))
+        return matches[0], matches, item_vals[:24]
+    term_sets = {term: set(t for t in re.split(r"[_\W]+", _upper(term)) if t) for term in terms}
+    reordered = []
+    for value in item_vals:
+        val_set = set(t for t in re.split(r"[_\W]+", _upper(value)) if t)
+        if val_set and any(val_set == parts for parts in term_sets.values()):
+            reordered.append(value)
+    if reordered:
+        reordered = sorted(set(reordered), key=lambda x: (-len(str(x)), str(x)))
+        return reordered[0], reordered, item_vals[:24]
+    return "", [], item_vals[:24]
+
+
+def _is_trend_chart_request(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if any(re.search(rf"(?<![a-z0-9_]){term}(?![a-z0-9_])", low) for term in ("scatter", "corr", "correlation")):
+        return False
+    if any(t in text for t in ("추세", "시계열", "라인")):
+        return True
+    return any(re.search(rf"(?<![a-z0-9_]){term}(?![a-z0-9_])", low) for term in ("trend", "line"))
+
+
+def _is_box_chart_request(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return _contains_chart_intent(text) and (
+        any(t in text for t in ("박스", "분포", "분산"))
+        or any(re.search(rf"(?<![a-z0-9_]){term}(?![a-z0-9_])", low) for term in ("box", "boxplot", "distribution"))
+    )
+
+
+def _percentile_sorted(vals: list[float], q: float) -> float | None:
+    clean = sorted(float(v) for v in vals if v is not None and math.isfinite(float(v)))
+    if not clean:
+        return None
+    if len(clean) == 1:
+        return clean[0]
+    pos = (len(clean) - 1) * max(0.0, min(1.0, float(q)))
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return clean[lo]
+    frac = pos - lo
+    return clean[lo] * (1 - frac) + clean[hi] * frac
+
+
+def _is_wafer_map_chart_request(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if any(t in low or t in text for t in ("tablemap", "table map", "테이블맵", "테이블 맵", "relation", "관계")):
+        return False
+    has_map = any(t in low or t in text for t in ("wf map", "wafer map", "웨이퍼맵", "맵", "map"))
+    if not has_map or any(t in low or t in text for t in ("비슷", "similar", "유사", "닮")):
+        return False
+    return _contains_chart_intent(text) or any(t in low or t in text for t in ("보여", "표시", "view"))
+
+
+def _metric_map_source_order(prompt: str, product: str = "") -> list[tuple[str, list[Path]]]:
+    up = _upper(prompt)
+    product_hint = _product_hint(prompt, product)
+    order: list[tuple[str, list[Path]]] = []
+    if "ET" in up:
+        order.append(("ET", _et_files(product_hint)))
+    if "INLINE" in up or "인라인" in prompt:
+        order.append(("INLINE", _inline_files(product_hint)))
+    for source, getter in (("INLINE", _inline_files), ("ET", _et_files)):
+        if source not in {s for s, _ in order}:
+            order.append((source, getter(product_hint)))
+    return order
+
+
+def _handle_inline_box_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    text = str(prompt or "")
+    if not _is_box_chart_request(text):
+        return {"handled": False}
+    product_hint = _product_hint(text, product)
+    if not product_hint:
+        return {
+            "handled": True,
+            "intent": "dashboard_box_needs_context",
+            "action": "collect_required_fields",
+            "answer": "Box plot을 그리려면 product가 필요합니다. 예: `PRODA CD_GATE box plot 그려줘`",
+            "missing": ["product"],
+            "feature": "dashboard",
+        }
+    inline_files = _inline_files(product_hint)
+    if not inline_files:
+        return {"handled": True, "intent": "dashboard_box", "answer": f"{product_hint} INLINE parquet을 찾지 못했습니다.", "feature": "dashboard"}
+    inline_lf = _scan_parquet(inline_files)
+    cols = _schema_names(inline_lf)
+    product_col = _ci_col(cols, "product", "PRODUCT")
+    root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+    lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+    fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
+    wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+    item_col = _ci_col(cols, "item_id", "ITEM_ID", "rawitem_id", "RAWITEM_ID", "item", "ITEM")
+    value_col = _ci_col(cols, "value", "VALUE", "_value", "val", "VAL")
+    if not item_col or not value_col:
+        return {"handled": True, "intent": "dashboard_box", "answer": "INLINE 데이터에서 item_id/value 컬럼을 찾지 못했습니다.", "feature": "dashboard"}
+    metric, item_matches, item_candidates = _inline_metric_match_for_prompt(inline_lf, item_col, text)
+    if not metric:
+        return {
+            "handled": True,
+            "intent": "dashboard_box_needs_context",
+            "action": "collect_required_fields",
+            "answer": "Box plot으로 그릴 INLINE item을 찾지 못했습니다. item명을 더 정확히 알려주세요.",
+            "missing": ["item_id"],
+            "feature": "dashboard",
+            "table": {"kind": "inline_item_candidates", "title": "INLINE item candidates", "placement": "below", "columns": _table_columns(["item_id"]), "rows": [{"item_id": x} for x in item_candidates], "total": len(item_candidates)},
+        }
+    aliases = _product_aliases(product_hint)
+    lots = _lot_tokens(text)
+    filters = []
+    if aliases and product_col:
+        filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+    if lots:
+        lot_expr = _or_contains([c for c in (root_col, lot_col, fab_col) if c], lots)
+        if lot_expr is not None:
+            filters.append(lot_expr)
+    filters.append(pl.col(item_col).cast(_STR, strict=False).is_in(item_matches or [metric]))
+    for expr in filters:
+        inline_lf = inline_lf.filter(expr)
+    group_expr = pl.col(root_col).cast(_STR, strict=False).alias("group") if root_col else pl.lit(product_hint).alias("group")
+    try:
+        df = (
+            inline_lf.select([
+                group_expr,
+                pl.col(value_col).cast(pl.Float64, strict=False).alias("value"),
+                pl.col(wafer_col).cast(_STR, strict=False).alias("wafer_id") if wafer_col else pl.lit("").alias("wafer_id"),
+            ])
+            .drop_nulls(subset=["group", "value"])
+            .limit(200000)
+            .collect()
+        )
+    except Exception as e:
+        logger.warning("flowi inline box failed: %s", e)
+        return {"handled": True, "intent": "dashboard_box", "answer": f"Box plot query 실패: {e}", "feature": "dashboard"}
+    buckets: dict[str, list[float]] = {}
+    wafer_counts: dict[str, set[str]] = {}
+    for row in df.to_dicts():
+        label = _text(row.get("group")) or product_hint
+        try:
+            val = float(row.get("value"))
+        except Exception:
+            continue
+        if not math.isfinite(val):
+            continue
+        buckets.setdefault(label, []).append(val)
+        wf = _text(row.get("wafer_id"))
+        if wf:
+            wafer_counts.setdefault(label, set()).add(wf)
+    min_n = max(1, int((_flowi_chart_defaults().get("box") or FLOWI_CHART_DEFAULTS["box"]).get("min_n") or 3))
+    max_groups = max(1, min(40, int((_flowi_chart_defaults().get("box") or FLOWI_CHART_DEFAULTS["box"]).get("max_groups") or 12)))
+    boxes = []
+    for label, vals in buckets.items():
+        if len(vals) < min_n:
+            continue
+        vals_s = sorted(vals)
+        boxes.append({
+            "label": label,
+            "min": _round4(vals_s[0]),
+            "q1": _round4(_percentile_sorted(vals_s, 0.25)),
+            "median": _round4(_percentile_sorted(vals_s, 0.5)),
+            "q3": _round4(_percentile_sorted(vals_s, 0.75)),
+            "max": _round4(vals_s[-1]),
+            "mean": _round4(sum(vals_s) / len(vals_s)),
+            "n": len(vals_s),
+            "wafer_count": len(wafer_counts.get(label, set())),
+        })
+    boxes.sort(key=lambda r: (-int(r.get("n") or 0), str(r.get("label") or "")))
+    boxes = boxes[:max_groups]
+    rows = boxes
+    answer = (
+        f"{product_hint} {metric} INLINE 분포를 root_lot_id별 box plot으로 그렸습니다. "
+        f"group={len(boxes)}, item match={', '.join(item_matches or [metric])}."
+    ) if boxes else f"{product_hint} {metric} 조건으로 box plot을 만들 row가 부족합니다."
+    cols_out = ["label", "min", "q1", "median", "q3", "max", "mean", "n", "wafer_count"]
+    return {
+        "handled": True,
+        "intent": "dashboard_box_chart",
+        "action": "query_inline_box_chart",
+        "answer": answer,
+        "feature": "dashboard",
+        "slots": {"product": product_hint, "metric": metric, "lots": lots},
+        "chart_result": {
+            "ok": True,
+            "kind": "dashboard_box",
+            "title": f"{product_hint} {metric} Box Plot",
+            "boxes": boxes,
+            "total": len(boxes),
+            "x_label": "root_lot_id",
+            "y_label": metric,
+            "metric": metric,
+            "sources": {"inline_file_count": len(inline_files), "inline_items": item_matches or [metric]},
+        },
+        "table": {"kind": "dashboard_box", "title": f"{metric} box plot", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows], "total": len(rows)},
+    }
+
+
+def _handle_wafer_map_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    text = str(prompt or "")
+    if not _is_wafer_map_chart_request(text):
+        return {"handled": False}
+    product_hint = _product_hint(text, product)
+    if not product_hint:
+        return {
+            "handled": True,
+            "intent": "dashboard_wafer_map_needs_context",
+            "action": "collect_required_fields",
+            "answer": "WF map을 그리려면 product가 필요합니다. 예: `PRODA CD_GATE WF map 그려줘`",
+            "missing": ["product"],
+            "feature": "dashboard",
+        }
+    lots = _lot_tokens(text)
+    aliases = _product_aliases(product_hint)
+    item_candidates: list[str] = []
+    for source, files in _metric_map_source_order(text, product_hint):
+        if not files:
+            continue
+        try:
+            lf = _scan_parquet(files)
+            cols = _schema_names(lf)
+            product_col = _ci_col(cols, "product", "PRODUCT")
+            root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+            lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+            fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
+            wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+            item_col = _ci_col(cols, "item_id", "ITEM_ID", "rawitem_id", "RAWITEM_ID", "item", "ITEM")
+            value_col = _ci_col(cols, "value", "VALUE", "_value", "val", "VAL")
+            shot_x_col = _ci_col(cols, "shot_x", "SHOT_X", "x", "X")
+            shot_y_col = _ci_col(cols, "shot_y", "SHOT_Y", "y", "Y")
+            if not (item_col and value_col and shot_x_col and shot_y_col):
+                continue
+            metric, item_matches, item_candidates = _inline_metric_match_for_prompt(lf, item_col, text)
+            if not metric:
+                continue
+            filters = []
+            if aliases and product_col:
+                filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+            if lots:
+                lot_expr = _or_contains([c for c in (root_col, lot_col, fab_col) if c], lots)
+                if lot_expr is not None:
+                    filters.append(lot_expr)
+            filters.append(pl.col(item_col).cast(_STR, strict=False).is_in(item_matches or [metric]))
+            for expr in filters:
+                lf = lf.filter(expr)
+            df = (
+                lf.select([
+                    pl.col(shot_x_col).cast(pl.Float64, strict=False).alias("shot_x"),
+                    pl.col(shot_y_col).cast(pl.Float64, strict=False).alias("shot_y"),
+                    pl.col(value_col).cast(pl.Float64, strict=False).alias("value"),
+                    pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id") if root_col else pl.lit("").alias("root_lot_id"),
+                    pl.col(wafer_col).cast(_STR, strict=False).alias("wafer_id") if wafer_col else pl.lit("").alias("wafer_id"),
+                ])
+                .drop_nulls(subset=["shot_x", "shot_y", "value"])
+                .group_by(["shot_x", "shot_y"])
+                .agg([
+                    pl.col("value").median().alias("value"),
+                    pl.col("value").mean().alias("mean"),
+                    pl.len().alias("n"),
+                    pl.col("root_lot_id").n_unique().alias("lot_count"),
+                    pl.col("wafer_id").n_unique().alias("wafer_count"),
+                ])
+                .sort(["shot_y", "shot_x"])
+                .limit(800)
+                .collect()
+            )
+        except Exception as e:
+            logger.warning("flowi wafer map chart failed source=%s: %s", source, e)
+            continue
+        rows = df.to_dicts()
+        points = []
+        for row in rows:
+            points.append({
+                "x": _round4(row.get("shot_x")),
+                "y": _round4(row.get("shot_y")),
+                "value": _round4(row.get("value")),
+                "mean": _round4(row.get("mean")),
+                "n": int(row.get("n") or 0),
+                "lot_count": int(row.get("lot_count") or 0),
+                "wafer_count": int(row.get("wafer_count") or 0),
+                "label": f"shot({row.get('shot_x')},{row.get('shot_y')})",
+            })
+        if not points:
+            continue
+        answer = (
+            f"{product_hint} {source} {metric}을 shot_x/shot_y 기준 median으로 집계해 WF map을 그렸습니다. "
+            f"points={len(points)}, item match={', '.join(item_matches or [metric])}."
+        )
+        cols_out = ["shot_x", "shot_y", "value", "mean", "n", "lot_count", "wafer_count"]
+        return {
+            "handled": True,
+            "intent": "dashboard_wafer_map_chart",
+            "action": "query_metric_wafer_map",
+            "answer": answer,
+            "feature": "dashboard",
+            "slots": {"product": product_hint, "metric": metric, "source": source, "lots": lots},
+            "chart_result": {
+                "ok": True,
+                "kind": "dashboard_wafer_map",
+                "title": f"{product_hint} {source} {metric} WF Map",
+                "points": points,
+                "total": len(points),
+                "x_label": "shot_x",
+                "y_label": "shot_y",
+                "value_label": f"{metric} median",
+                "metric": metric,
+                "source": source,
+                "sources": {"file_count": len(files), "items": item_matches or [metric]},
+            },
+            "table": {"kind": "dashboard_wafer_map", "title": f"{metric} WF map", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]], "total": len(rows)},
+        }
+    return {
+        "handled": True,
+        "intent": "dashboard_wafer_map_needs_context",
+        "action": "collect_required_fields",
+        "answer": "WF map으로 그릴 item 또는 shot_x/shot_y/value 형태의 데이터를 찾지 못했습니다. item명을 더 정확히 알려주세요.",
+        "missing": ["item_id"],
+        "feature": "dashboard",
+        "table": {"kind": "wafer_map_item_candidates", "title": "WF map item candidates", "placement": "below", "columns": _table_columns(["item_id"]), "rows": [{"item_id": x} for x in item_candidates[:40]], "total": len(item_candidates)},
+    }
+
+
+def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    text = str(prompt or "")
+    if not (_contains_chart_intent(text) and _is_trend_chart_request(text)):
+        return {"handled": False}
+    product_hint = _product_hint(text, product)
+    if not product_hint:
+        return {
+            "handled": True,
+            "intent": "dashboard_inline_trend_needs_context",
+            "action": "collect_required_fields",
+            "answer": "Trend 차트를 그리려면 product가 필요합니다. 예: `PRODA0 SPACER_CD Trend 그려줘`",
+            "missing": ["product"],
+            "feature": "dashboard",
+        }
+    inline_files = _inline_files(product_hint)
+    if not inline_files:
+        return {"handled": True, "intent": "dashboard_inline_trend", "answer": f"{product_hint} INLINE parquet을 찾지 못했습니다.", "feature": "dashboard"}
+    inline_lf = _scan_parquet(inline_files)
+    cols = _schema_names(inline_lf)
+    product_col = _ci_col(cols, "product", "PRODUCT")
+    root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+    lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+    fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
+    wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+    lot_wf_col = _ci_col(cols, "lot_wf", "LOT_WF")
+    item_col = _ci_col(cols, "item_id", "ITEM_ID", "rawitem_id", "RAWITEM_ID", "item", "ITEM")
+    value_col = _ci_col(cols, "value", "VALUE", "_value", "val", "VAL")
+    time_col = _ci_col(cols, "time", "TIME", "tkout_time", "TKOUT_TIME", "tkin_time", "TKIN_TIME", "date", "DATE")
+    if not item_col or not value_col or not time_col:
+        return {
+            "handled": True,
+            "intent": "dashboard_inline_trend",
+            "answer": "INLINE 데이터에서 item_id/value/time 컬럼을 찾지 못했습니다.",
+            "table": {"kind": "dashboard_inline_trend_error", "title": "Missing INLINE columns", "placement": "below", "columns": _table_columns(["message", "columns"]), "rows": [{"message": "missing item_id/value/time", "columns": ", ".join(cols[:80])}], "total": 1},
+            "feature": "dashboard",
+        }
+    metric, item_matches, item_candidates = _inline_metric_match_for_prompt(inline_lf, item_col, text)
+    if not metric:
+        return {
+            "handled": True,
+            "intent": "dashboard_inline_trend_needs_context",
+            "action": "collect_required_fields",
+            "answer": "Trend로 그릴 INLINE item을 찾지 못했습니다. item명을 더 정확히 알려주세요.",
+            "missing": ["item_id"],
+            "feature": "dashboard",
+            "table": {"kind": "inline_item_candidates", "title": "INLINE item candidates", "placement": "below", "columns": _table_columns(["item_id"]), "rows": [{"item_id": x} for x in item_candidates], "total": len(item_candidates)},
+        }
+    aliases = _product_aliases(product_hint)
+    lots = _lot_tokens(text)
+    filters = []
+    if aliases and product_col:
+        filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+    if lots:
+        lot_expr = _or_contains([c for c in (root_col, lot_col, fab_col, lot_wf_col) if c], lots)
+        if lot_expr is not None:
+            filters.append(lot_expr)
+    filters.append(pl.col(item_col).cast(_STR, strict=False).is_in(item_matches or [metric]))
+    for expr in filters:
+        inline_lf = inline_lf.filter(expr)
+
+    exprs = [
+        pl.col(time_col).cast(_STR, strict=False).str.slice(0, 10).alias("bucket"),
+        pl.col(value_col).cast(pl.Float64, strict=False).alias("metric_value"),
+    ]
+    if root_col:
+        exprs.append(pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id"))
+    else:
+        exprs.append(pl.lit("").alias("root_lot_id"))
+    if wafer_col:
+        exprs.append(pl.col(wafer_col).cast(_STR, strict=False).alias("wafer_id"))
+    else:
+        exprs.append(pl.lit("").alias("wafer_id"))
+    if lot_wf_col:
+        exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
+    elif root_col and wafer_col:
+        exprs.append(_lot_wf_expr(root_col, wafer_col).alias("lot_wf"))
+    else:
+        exprs.append(pl.lit("").alias("lot_wf"))
+    try:
+        line_cfg = (_flowi_chart_defaults().get("line") or FLOWI_CHART_DEFAULTS["line"])
+        point_limit = max(20, min(1000, int(line_cfg.get("max_points_per_series") or 120)))
+    except Exception:
+        point_limit = 120
+    try:
+        df = (
+            inline_lf.select(exprs)
+            .drop_nulls(subset=["bucket", "metric_value"])
+            .group_by("bucket")
+            .agg([
+                pl.col("metric_value").median().alias("median"),
+                pl.col("metric_value").mean().alias("mean"),
+                pl.len().alias("n"),
+                pl.col("root_lot_id").n_unique().alias("lot_count"),
+                pl.col("lot_wf").n_unique().alias("wafer_groups"),
+            ])
+            .sort("bucket")
+            .limit(point_limit)
+            .collect()
+        )
+    except Exception as e:
+        logger.warning("flowi inline trend failed: %s", e)
+        return {"handled": True, "intent": "dashboard_inline_trend", "answer": f"INLINE trend query 실패: {e}", "feature": "dashboard"}
+    rows = df.to_dicts()
+    points = []
+    for idx, row in enumerate(rows):
+        y = _round4(row.get("median"))
+        if y is None:
+            continue
+        points.append({
+            "x": idx,
+            "x_label": _text(row.get("bucket")),
+            "y": y,
+            "median": y,
+            "mean": _round4(row.get("mean")),
+            "n": int(row.get("n") or 0),
+            "lot_count": int(row.get("lot_count") or 0),
+            "wafer_groups": int(row.get("wafer_groups") or 0),
+        })
+    answer = (
+        f"{product_hint} {metric} INLINE 값을 날짜별 median으로 집계해 Trend 차트를 그렸습니다. "
+        f"표시 point={len(points)}, item match={', '.join(item_matches or [metric])}."
+    )
+    if not points:
+        answer = f"{product_hint} {metric} 조건으로 Trend chart row를 찾지 못했습니다."
+    cols_out = ["bucket", "median", "mean", "n", "lot_count", "wafer_groups"]
+    return {
+        "handled": True,
+        "intent": "dashboard_inline_trend_chart",
+        "action": "query_inline_trend_line_chart",
+        "answer": answer,
+        "feature": "dashboard",
+        "slots": {"product": product_hint, "metric": metric, "lots": lots},
+        "chart_result": {
+            "ok": True,
+            "kind": "dashboard_line",
+            "title": f"{product_hint} {metric} Trend",
+            "series": [{"name": metric, "points": points}],
+            "total": len(points),
+            "x_label": "date",
+            "y_label": f"{metric} median",
+            "metric": metric,
+            "sources": {"inline_file_count": len(inline_files), "inline_items": item_matches or [metric]},
+        },
+        "table": {"kind": "dashboard_inline_trend", "title": f"{metric} Trend", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]], "total": len(rows)},
+    }
+
+
+def _fab_context_files(product: str) -> list[Path]:
+    files = [p for p in _fab_files(product) if "1.RAWDATA_DB_FAB" in str(p) and "_backups" not in str(p)]
+    return files or [p for p in _fab_files(product) if "_backups" not in str(p)] or _fab_files(product)
+
+
+def _handle_grouped_metric_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    text = str(prompt or "")
+    if not (_contains_chart_intent(text) or "별로" in text):
+        return {"handled": False}
+    group_keys = _group_chart_group_keys(text)
+    if not group_keys:
+        return {"handled": False}
+    product_hint = _product_hint(text, product)
+    if not product_hint:
+        return {
+            "handled": True,
+            "intent": "dashboard_group_metric_needs_context",
+            "action": "collect_required_fields",
+            "answer": "EQP/Chamber별 차트를 그리려면 product가 필요합니다. 예: `PRODA CD_GATE EQP/Chamber별로 그려줘`",
+            "missing": ["product"],
+            "feature": "dashboard",
+        }
+    inline_files = _inline_files(product_hint)
+    if not inline_files:
+        return {"handled": True, "intent": "dashboard_group_metric", "answer": f"{product_hint} INLINE parquet을 찾지 못했습니다.", "feature": "dashboard"}
+    inline_lf = _scan_parquet(inline_files)
+    inline_cols = _schema_names(inline_lf)
+    product_col = _ci_col(inline_cols, "product", "PRODUCT")
+    root_col = _ci_col(inline_cols, "root_lot_id", "ROOT_LOT_ID")
+    wafer_col = _ci_col(inline_cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+    lot_wf_col = _ci_col(inline_cols, "lot_wf", "LOT_WF")
+    item_col = _ci_col(inline_cols, "item_id", "ITEM_ID", "rawitem_id", "RAWITEM_ID", "item", "ITEM")
+    value_col = _ci_col(inline_cols, "value", "VALUE", "_value", "val", "VAL")
+    if not item_col or not value_col:
+        return {
+            "handled": True,
+            "intent": "dashboard_group_metric",
+            "answer": "INLINE 데이터에서 item_id/value 컬럼을 찾지 못했습니다.",
+            "table": {"kind": "dashboard_group_metric_error", "title": "Missing INLINE columns", "placement": "below", "columns": _table_columns(["message", "columns"]), "rows": [{"message": "missing item_id/value", "columns": ", ".join(inline_cols[:80])}], "total": 1},
+            "feature": "dashboard",
+        }
+    if not ((root_col and wafer_col) or lot_wf_col):
+        return {"handled": True, "intent": "dashboard_group_metric", "answer": "INLINE 데이터에 root_lot_id+wafer_id 또는 lot_wf join key가 필요합니다.", "feature": "dashboard"}
+    metric, item_matches, item_candidates = _inline_metric_match_for_prompt(inline_lf, item_col, text)
+    if not metric:
+        return {
+            "handled": True,
+            "intent": "dashboard_group_metric_needs_context",
+            "action": "collect_required_fields",
+            "answer": "차트로 그릴 INLINE item을 찾지 못했습니다. item명을 더 정확히 알려주세요.",
+            "missing": ["item_id"],
+            "feature": "dashboard",
+            "table": {"kind": "inline_item_candidates", "title": "INLINE item candidates", "placement": "below", "columns": _table_columns(["item_id"]), "rows": [{"item_id": x} for x in item_candidates], "total": len(item_candidates)},
+        }
+    lots = _lot_tokens(text)
+    aliases = _product_aliases(product_hint)
+    filters = []
+    if aliases and product_col:
+        filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+    if lots:
+        lot_cols = [c for c in (root_col, lot_wf_col) if c]
+        lot_expr = _or_contains(lot_cols, lots)
+        if lot_expr is not None:
+            filters.append(lot_expr)
+    filters.append(pl.col(item_col).cast(_STR, strict=False).is_in(item_matches or [metric]))
+    for expr in filters:
+        inline_lf = inline_lf.filter(expr)
+    inline_exprs = []
+    join_cols = []
+    if root_col and wafer_col:
+        inline_exprs.append(pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id"))
+        inline_exprs.append(pl.col(wafer_col).cast(_STR, strict=False).alias("wafer_id"))
+        join_cols = ["root_lot_id", "wafer_id"]
+    if lot_wf_col:
+        inline_exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
+        if not join_cols:
+            join_cols = ["lot_wf"]
+    elif root_col and wafer_col:
+        inline_exprs.append(_lot_wf_expr(root_col, wafer_col).alias("lot_wf"))
+    inline_exprs.append(pl.col(value_col).cast(pl.Float64, strict=False).alias("metric_value"))
+    inline_group_cols = list(dict.fromkeys([*join_cols, "lot_wf"]))
+    try:
+        metric_lf = (
+            inline_lf.select(inline_exprs)
+            .drop_nulls(subset=["metric_value"])
+            .group_by(inline_group_cols)
+            .agg([
+                pl.col("metric_value").mean().alias("metric_value"),
+                pl.len().alias("metric_n"),
+            ])
+        )
+    except Exception as e:
+        return {"handled": True, "intent": "dashboard_group_metric", "answer": f"INLINE metric 집계 실패: {e}", "feature": "dashboard"}
+
+    fab_files = _fab_context_files(product_hint)
+    if not fab_files:
+        return {"handled": True, "intent": "dashboard_group_metric", "answer": f"{product_hint} FAB parquet을 찾지 못해 EQP/Chamber를 붙일 수 없습니다.", "feature": "dashboard"}
+    fab_lf = _scan_parquet(fab_files)
+    fab_cols = _schema_names(fab_lf)
+    f_product_col = _ci_col(fab_cols, "product", "PRODUCT")
+    f_root_col = _ci_col(fab_cols, "root_lot_id", "ROOT_LOT_ID")
+    f_wafer_col = _ci_col(fab_cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+    f_lot_wf_col = _ci_col(fab_cols, "lot_wf", "LOT_WF")
+    eqp_col = _ci_col(fab_cols, "eqp", "EQP", "eqp_id", "EQP_ID", "equipment_id", "EQUIPMENT_ID")
+    chamber_col = _ci_col(fab_cols, "chamber", "CHAMBER", "chamber_id", "CHAMBER_ID")
+    time_col = _ci_col(fab_cols, "tkout_time", "TKOUT_TIME", "time", "TIME", "timestamp", "TIMESTAMP")
+    if ("eqp" in group_keys and not eqp_col) or ("chamber" in group_keys and not chamber_col):
+        return {
+            "handled": True,
+            "intent": "dashboard_group_metric",
+            "answer": "FAB 데이터에서 요청한 EQP/Chamber 컬럼을 찾지 못했습니다.",
+            "table": {"kind": "dashboard_group_metric_error", "title": "Missing FAB columns", "placement": "below", "columns": _table_columns(["message", "columns"]), "rows": [{"message": "missing eqp/chamber", "columns": ", ".join(fab_cols[:80])}], "total": 1},
+            "feature": "dashboard",
+        }
+    f_filters = []
+    if aliases and f_product_col:
+        f_filters.append(pl.col(f_product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+    if lots:
+        f_lot_cols = [c for c in (f_root_col, f_lot_wf_col) if c]
+        lot_expr = _or_contains(f_lot_cols, lots)
+        if lot_expr is not None:
+            f_filters.append(lot_expr)
+    for expr in f_filters:
+        fab_lf = fab_lf.filter(expr)
+    fab_exprs = []
+    if f_root_col and f_wafer_col and "root_lot_id" in join_cols:
+        fab_exprs.append(pl.col(f_root_col).cast(_STR, strict=False).alias("root_lot_id"))
+        fab_exprs.append(pl.col(f_wafer_col).cast(_STR, strict=False).alias("wafer_id"))
+        fab_join_cols = ["root_lot_id", "wafer_id"]
+    elif f_lot_wf_col:
+        fab_exprs.append(pl.col(f_lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
+        fab_join_cols = ["lot_wf"]
+    elif f_root_col and f_wafer_col:
+        fab_exprs.append(_lot_wf_expr(f_root_col, f_wafer_col).alias("lot_wf"))
+        fab_join_cols = ["lot_wf"]
+    else:
+        return {"handled": True, "intent": "dashboard_group_metric", "answer": "FAB 데이터에 metric과 연결할 root_lot_id+wafer_id 또는 lot_wf가 필요합니다.", "feature": "dashboard"}
+    if eqp_col:
+        fab_exprs.append(pl.col(eqp_col).cast(_STR, strict=False).alias("eqp"))
+    else:
+        fab_exprs.append(pl.lit("").alias("eqp"))
+    if chamber_col:
+        fab_exprs.append(pl.col(chamber_col).cast(_STR, strict=False).alias("chamber"))
+    else:
+        fab_exprs.append(pl.lit("").alias("chamber"))
+    fab_exprs.append(pl.col(time_col).cast(_STR, strict=False).alias("latest_time") if time_col else pl.lit("").alias("latest_time"))
+    try:
+        fab_ctx = (
+            fab_lf.select(fab_exprs)
+            .drop_nulls(subset=[g for g in group_keys if g in {"eqp", "chamber"}])
+            .group_by([*fab_join_cols, "eqp", "chamber"])
+            .agg([
+                pl.len().alias("fab_context_rows"),
+                pl.col("latest_time").max().alias("latest_time"),
+            ])
+        )
+        joined = metric_lf.join(fab_ctx, on=fab_join_cols, how="inner")
+        group_exprs = [
+            pl.col("metric_value").mean().alias("mean"),
+            pl.col("metric_value").median().alias("median"),
+            pl.len().alias("joined_rows"),
+            pl.col("lot_wf").n_unique().alias("wafer_groups") if "lot_wf" in joined.collect_schema().names() else pl.len().alias("wafer_groups"),
+            pl.col("metric_n").sum().alias("metric_n"),
+            pl.col("fab_context_rows").sum().alias("fab_context_rows"),
+        ]
+        grouped = (
+            joined.group_by(group_keys)
+            .agg(group_exprs)
+            .sort("median", descending=True)
+            .limit(max(5, min(40, max_rows * 4)))
+            .collect()
+        )
+    except Exception as e:
+        logger.warning("flowi grouped metric chart failed: %s", e)
+        return {"handled": True, "intent": "dashboard_group_metric", "answer": f"EQP/Chamber별 chart query 실패: {e}", "feature": "dashboard"}
+    rows = grouped.to_dicts()
+    groups = []
+    for row in rows:
+        label = " / ".join(_text(row.get(k)) or "-" for k in group_keys)
+        groups.append({
+            "label": label,
+            "value": _round4(row.get("median")),
+            "mean": _round4(row.get("mean")),
+            "median": _round4(row.get("median")),
+            "joined_rows": int(row.get("joined_rows") or 0),
+            "wafer_groups": int(row.get("wafer_groups") or 0),
+            "metric_n": int(row.get("metric_n") or 0),
+            "fab_context_rows": int(row.get("fab_context_rows") or 0),
+            **{k: row.get(k) or "" for k in group_keys},
+        })
+    cols_out = [*group_keys, "median", "mean", "joined_rows", "wafer_groups", "metric_n", "fab_context_rows"]
+    answer = (
+        f"{product_hint} {metric}을 실제 INLINE 값에 FAB EQP/Chamber context를 붙여 {len(groups)}개 그룹으로 그렸습니다. "
+        "집계값은 그룹별 median 기준이며, join은 root_lot_id+wafer_id 우선입니다."
+    )
+    if not groups:
+        answer = f"{product_hint} {metric} 조건으로 EQP/Chamber별 chart row를 찾지 못했습니다."
+    return {
+        "handled": True,
+        "intent": "dashboard_group_metric_chart",
+        "action": "query_group_metric_bar_chart",
+        "answer": answer,
+        "feature": "dashboard",
+        "slots": {"product": product_hint, "metric": metric, "group_by": group_keys, "lots": lots},
+        "chart_result": {
+            "ok": True,
+            "kind": "dashboard_group_bar",
+            "title": f"{product_hint} {metric} by {'/'.join(group_keys).upper()}",
+            "groups": groups,
+            "total": len(groups),
+            "x_label": " / ".join(group_keys),
+            "y_label": f"{metric} median",
+            "metric": metric,
+            "group_by": group_keys,
+            "join_cols": fab_join_cols,
+            "sources": {"inline_file_count": len(inline_files), "fab_file_count": len(fab_files), "inline_items": item_matches or [metric]},
+        },
+        "table": {"kind": "dashboard_group_metric", "title": f"{metric} by {'/'.join(group_keys)}", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]], "total": len(rows)},
+    }
+
+
 def _handle_chart_request(prompt: str, product: str, max_rows: int) -> dict:
     if not _contains_chart_intent(prompt):
         return {"handled": False}
@@ -1892,8 +3235,6 @@ def _handle_chart_request(prompt: str, product: str, max_rows: int) -> dict:
         requires.append("x/y metric")
     if not product_hint:
         requires.append("product")
-    if not lots:
-        requires.append("root_lot_id/fab_lot_id filter")
     rows = [
         {"field": "unit_action", "value": "dashboard.metric_scatter"},
         {"field": "sources", "value": ", ".join(sorted(sources)) or "-"},
@@ -1983,7 +3324,7 @@ def _handle_chart_request(prompt: str, product: str, max_rows: int) -> dict:
         "chart_result": chart_result,
         "clarification": {
             "question": "어떤 기준으로 실제 DB query를 만들까요?",
-            "choices": choices[:4],
+            "choices": choices[:3],
         },
         "table": {
             "kind": "flowi_chart_plan",
@@ -2720,7 +4061,13 @@ def _handle_meeting_recall(prompt: str, max_rows: int, me: dict[str, Any]) -> di
 def _detect_app_write_feature(prompt: str) -> str:
     text = str(prompt or "")
     low = text.lower()
-    if not any(term in low or term in text for term in _FLOWI_APP_WRITE_TERMS):
+    has_write_intent = (
+        any(term in low or term in text for term in _FLOWI_APP_WRITE_TERMS)
+        or any(term in low or term in text for term in _FLOWI_APP_CREATE_TERMS)
+        or any(term in low or term in text for term in _FLOWI_APP_MODIFY_TERMS)
+        or ("변경" in text.replace("변경점", ""))
+    )
+    if not has_write_intent:
         return ""
     # "안올라왔는데" 같은 freshness 질문은 write가 아니다.
     if any(term in text for term in ("안올라", "안 올라", "최근업데이트", "업데이트 되었")):
@@ -2729,6 +4076,829 @@ def _detect_app_write_feature(prompt: str) -> str:
         if any(h in low or h in text for h in hints):
             return feature
     return ""
+
+
+def _flowi_app_write_mode(prompt: str) -> str:
+    text = str(prompt or "")
+    low = text.lower()
+    create = any(term in low or term in text for term in _FLOWI_APP_CREATE_TERMS)
+    modify = any(term in low or term in text for term in _FLOWI_APP_MODIFY_TERMS)
+    # "변경점 등록"은 calendar create 의미라서 수정 요청으로 보지 않는다.
+    change_text = text.replace("변경점", "")
+    if "변경" in change_text and not create:
+        modify = True
+    if modify:
+        return "modify"
+    if create:
+        return "create"
+    return ""
+
+
+def _flowi_prompt_title(prompt: str, feature: str) -> str:
+    text = str(prompt or "").strip()
+    quoted = re.findall(r"[\"'“”‘’「」『』](.+?)[\"'“”‘’「」『』]", text)
+    if quoted:
+        text = max(quoted, key=len)
+    for pat in (
+        r"(?:이름|제목|title)\s*[:=]\s*([^\n,;/]+)",
+        r"(?:이름|제목|title)\s*(?:은|는)\s*([^\n,;/]+)",
+        r"([A-Za-z0-9_.-]{1,80})\s*(?:이름|제목|title)\s*으로",
+    ):
+        m = re.search(pat, text, flags=re.I)
+        if m:
+            title = re.sub(r"\s+", " ", m.group(1)).strip(" \t\r\n-_:,.;")
+            if title:
+                return title[:120]
+    feature_words = {
+        "tracker": r"(?:이슈추적|이슈\s*추적|이슈|tracker|issue|트래커)",
+        "meeting": r"(?:회의|미팅|meeting)",
+        "inform": r"(?:인폼|inform)",
+        "calendar": r"(?:일정|캘린더|calendar|변경점)",
+    }.get(feature, "")
+    if feature_words:
+        m = re.search(rf"{feature_words}\s+(.{{1,80}}?)(?:이라고|라고|이라는|라는)", text, flags=re.I)
+        if m:
+            title = re.sub(r"\s+", " ", m.group(1)).strip(" \t\r\n-_:,.;")
+            if title:
+                return title[:120]
+    if feature == "meeting":
+        for pat in (
+            r"^\s*(.{1,80}?)(?:이라고|라고|이라는|라는)\s*",
+            r"^\s*(.{1,80}?)(?:\s+)?(?:회의|미팅)\s*(?:하나|한\s*개|1개)?\s*(?:등록|만들|생성|추가)",
+        ):
+            m = re.search(pat, text, flags=re.I)
+            if m:
+                title = re.sub(r"\s+", " ", m.group(1)).strip(" \t\r\n-_:,.;")
+                if title:
+                    return title[:120]
+    remove_terms = [
+        "등록해줘", "등록해주세요", "만들어줘", "만들어주세요", "생성해줘", "생성해주세요",
+        "추가해줘", "추가해주세요", "넣어줘", "넣어주세요", "남겨줘", "남겨주세요",
+        "기록해줘", "기록해주세요", "올려줘", "올려주세요",
+        "등록", "만들어", "생성", "추가", "넣어", "남겨", "기록", "올려",
+        "인폼", "inform", "이슈", "issue", "tracker", "트래커", "회의", "meeting",
+        "일정", "캘린더", "calendar", "변경점", "아젠다", "회의록", "주세요", "해줘",
+    ]
+    for term in remove_terms:
+        text = re.sub(re.escape(term), " ", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip(" \t\r\n-_:,.;")
+    if not text:
+        text = f"{_feature_title(feature)} 자동 등록"
+    return text[:120]
+
+
+_FLOWI_WEEKDAY_WORDS = (
+    ("월요일", 0), ("화요일", 1), ("수요일", 2), ("목요일", 3),
+    ("금요일", 4), ("토요일", 5), ("일요일", 6),
+)
+
+
+def _flowi_prompt_weekdays(prompt: str) -> list[int]:
+    text = str(prompt or "")
+    days = []
+    for word, idx in _FLOWI_WEEKDAY_WORDS:
+        if word in text and idx not in days:
+            days.append(idx)
+    return days
+
+
+def _flowi_prompt_time(prompt: str) -> tuple[int, int] | None:
+    text = str(prompt or "")
+    m = re.search(r"(오전|오후|am|pm)?\s*(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분?)?", text, flags=re.I)
+    if not m:
+        m = re.search(r"(오전|오후|am|pm)?\s*(\d{1,2})\s*:\s*(\d{2})", text, flags=re.I)
+    if not m:
+        return None
+    meridiem = (m.group(1) or "").lower()
+    hour = int(m.group(2))
+    minute = int(m.group(3) or 0)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    if meridiem in {"오후", "pm"} and hour < 12:
+        hour += 12
+    if meridiem in {"오전", "am"} and hour == 12:
+        hour = 0
+    return hour, minute
+
+
+def _flowi_prompt_meeting_schedule(prompt: str) -> tuple[str, dict[str, Any]]:
+    text = str(prompt or "")
+    weekdays = _flowi_prompt_weekdays(text)
+    time_pair = _flowi_prompt_time(text)
+    recurrence = {"type": "none", "count_per_week": 0, "weekday": [], "note": ""}
+    if any(term in text.lower() or term in text for term in ("매주", "매 주", "주마다", "weekly")):
+        recurrence = {
+            "type": "weekly",
+            "count_per_week": len(weekdays) or 1,
+            "weekday": weekdays,
+            "note": text[:200],
+        }
+    date_s = _flowi_prompt_date(text)
+    if not date_s and weekdays:
+        today = datetime.now().date()
+        target_wd = weekdays[0]
+        days_ahead = (target_wd - today.weekday()) % 7
+        candidate = today + timedelta(days=days_ahead)
+        if time_pair:
+            now = datetime.now()
+            cand_dt = datetime(candidate.year, candidate.month, candidate.day, time_pair[0], time_pair[1])
+            if cand_dt <= now:
+                candidate = candidate + timedelta(days=7)
+        date_s = candidate.isoformat()
+    if date_s and time_pair:
+        return f"{date_s}T{time_pair[0]:02d}:{time_pair[1]:02d}:00", recurrence
+    if date_s:
+        return f"{date_s}T00:00:00", recurrence
+    return "", recurrence
+
+
+def _flowi_prompt_field(prompt: str, names: tuple[str, ...], limit: int = 80) -> str:
+    for name in names:
+        m = re.search(rf"(?:{re.escape(name)})\s*[:=]\s*([^\n,;/]+)", str(prompt or ""), flags=re.I)
+        if m:
+            return m.group(1).strip()[:limit]
+    return ""
+
+
+def _flowi_prompt_content(prompt: str, limit: int = 4000) -> str:
+    text = str(prompt or "")
+    m = re.search(r"(?:내용|본문|description|desc)\s*(?:은|는|:|=)?\s*(.+?)(?:\s*(?:적어줘|작성해줘|등록해줘|넣어줘|남겨줘)\s*)?$", text, flags=re.I | re.S)
+    if not m:
+        return ""
+    content = re.sub(r"\s+", " ", m.group(1)).strip(" \t\r\n-_:,.;")
+    return content[:limit]
+
+
+def _flowi_prompt_inform_text(prompt: str, limit: int = 4000) -> str:
+    explicit = _flowi_prompt_content(prompt, limit=limit)
+    if explicit:
+        return explicit
+    text = str(prompt or "")
+    m = re.search(r"(?:인폼\s*로그|인폼로그|인폼|inform)\s+(.+?)(?:\s*으로)?\s*(?:등록|생성|추가|남겨|기록|올려)", text, flags=re.I | re.S)
+    if not m:
+        return ""
+    body = re.sub(r"\s+", " ", m.group(1)).strip(" \t\r\n-_:,.;")
+    return body[:limit]
+
+
+def _extract_flowi_splittable_note_payload(prompt: str) -> dict[str, Any] | None:
+    text = str(prompt or "")
+    idx = text.upper().find(_FLOWI_SPLITTABLE_NOTE_MARKER)
+    if idx < 0:
+        return None
+    tail = text[idx + len(_FLOWI_SPLITTABLE_NOTE_MARKER):].strip()
+    if tail.startswith(":"):
+        tail = tail[1:].strip()
+    if not tail:
+        return {}
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(tail)
+    except Exception as e:
+        return {"_parse_error": str(e)}
+    return obj if isinstance(obj, dict) else {"_parse_error": "JSON object가 필요합니다."}
+
+
+def _flowi_splittable_note_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if _FLOWI_SPLITTABLE_NOTE_MARKER in text.upper():
+        return True
+    has_split = any(t in low or t in text for t in ("split table", "splittable", "스플릿", "스플릿테이블", "스플릿 테이블"))
+    has_note = any(t in low or t in text for t in ("꼬리표", "태그", "tag", "메모", "memo", "코멘트", "comment"))
+    has_write = any(t in low or t in text for t in _FLOWI_APP_WRITE_TERMS + _FLOWI_APP_CREATE_TERMS)
+    return bool(has_split and has_note and has_write)
+
+
+def _clean_flowi_splittable_note_text(candidate: str, prompt: str) -> str:
+    text = re.sub(r"\s+", " ", str(candidate or "")).strip(" \t\r\n-_:,.;'\"“”‘’")
+    text = re.sub(r"(?:이라고|라고|이라는|라는)\s*$", "", text).strip(" \t\r\n-_:,.;'\"“”‘’")
+    for term in (
+        "스플릿 테이블", "스플릿테이블", "split table", "splittable",
+        "꼬리표", "태그", "tag", "메모", "memo", "코멘트", "comment",
+        "달아줘", "달아주세요", "붙여줘", "붙여주세요", "등록해줘", "등록해주세요",
+        "추가해줘", "추가해주세요", "남겨줘", "남겨주세요", "기록해줘", "기록해주세요",
+    ):
+        text = re.sub(re.escape(term), " ", text, flags=re.I)
+    for lot in _lot_tokens(prompt):
+        text = re.sub(rf"\b{re.escape(lot)}\b\s*(?:에|에는|으로|로|를|을|은|는)?", " ", text, flags=re.I)
+    product = _product_hint(prompt)
+    if product:
+        text = re.sub(rf"\b{re.escape(product)}\b\s*(?:에|에는|으로|로|를|을|은|는)?", " ", text, flags=re.I)
+    text = re.sub(r"^(?:에|에는|으로|로|를|을|은|는)\s+", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" \t\r\n-_:,.;'\"“”‘’")
+    return text[:2000]
+
+
+def _flowi_prompt_splittable_note_text(prompt: str) -> str:
+    text = str(prompt or "")
+    marker = re.search(r"(꼬리표|태그|tag|메모|memo|코멘트|comment)", text, flags=re.I)
+    if marker:
+        after = text[marker.end():]
+        after = re.sub(r"^\s*(?:로|를|을|은|는|:|=|-)?\s*", "", after)
+        m = re.search(
+            r"(.+?)(?:이라고|라고|이라는|라는)?\s*(?:달아|붙여|등록|추가|남겨|기록|저장|add|save|create)",
+            after,
+            flags=re.I | re.S,
+        )
+        body = m.group(1) if m else after
+        cleaned = _clean_flowi_splittable_note_text(body, prompt)
+        if cleaned:
+            return cleaned
+    for pat in (
+        r"(.{1,200}?)(?:이라는|이라고|라는|라고)\s*(?:꼬리표|태그|tag|메모|memo|코멘트|comment)?\s*(?:달아|붙여|등록|추가|남겨|기록|저장)",
+        r"(.{1,200}?)\s*(?:꼬리표|태그|tag|메모|memo|코멘트|comment)(?:를|을)?\s*(?:달아|붙여|등록|추가|남겨|기록|저장)",
+    ):
+        m = re.search(pat, text, flags=re.I | re.S)
+        if m:
+            cleaned = _clean_flowi_splittable_note_text(m.group(1), prompt)
+            if cleaned:
+                return cleaned
+    return ""
+
+
+def _flowi_splittable_product_id(product: str) -> str:
+    raw = _upper(product)
+    if not raw:
+        return ""
+    if raw.startswith("ML_TABLE_"):
+        raw = raw[len("ML_TABLE_"):]
+    if raw in {"PRODUCT_A", "PRODUCT_A0", "PRODUCT_A1", "PRODA0", "PRODA1"}:
+        raw = "PRODA"
+    elif raw == "PRODUCT_B":
+        raw = "PRODB"
+    if not raw:
+        return ""
+    return f"ML_TABLE_{raw}"
+
+
+def _flowi_splittable_note_confirm_text(product: str, root_lot_id: str, text: str) -> str:
+    basis = re.sub(r"\s+", " ", str(text or "")).strip()[:80]
+    return f"SPLITTABLE_NOTE_CONFIRM::{product}::{root_lot_id}::{basis}"
+
+
+def _flowi_splittable_note_table(rows: list[dict[str, Any]], title: str = "SplitTable lot note") -> dict[str, Any]:
+    return {
+        "kind": "splittable_lot_note",
+        "title": title,
+        "placement": "below",
+        "columns": _table_columns(["field", "value"]),
+        "rows": rows,
+        "total": len(rows),
+    }
+
+
+def _flowi_splittable_note_product_choices(prompt: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    choices: list[dict[str, Any]] = []
+    for row in candidates:
+        product = _flowi_splittable_product_id(row.get("product") or "")
+        if not product or product in seen:
+            continue
+        seen.add(product)
+        choices.append({
+            "id": f"product_{len(choices) + 1}",
+            "label": str(len(choices) + 1),
+            "title": product,
+            "recommended": len(choices) == 0,
+            "description": f"{row.get('sources') or 'data'} 기준 후보",
+            "prompt": f"{product} {prompt.strip()}",
+        })
+    return choices[:4]
+
+
+def _flowi_splittable_note_payload(prompt: str, me: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    classified = _classified_lot_tokens(prompt)
+    root_lots = classified.get("root_lot_ids") or []
+    fab_lots = classified.get("fab_lot_ids") or []
+    root_lot_id = root_lots[0] if root_lots else ((fab_lots[0][:5] if fab_lots else "") or (_lot_tokens(prompt)[0] if _lot_tokens(prompt) else ""))
+    note_text = _flowi_prompt_splittable_note_text(prompt)
+    product = _flowi_splittable_product_id(_product_hint(prompt))
+    missing: list[str] = []
+    if not root_lot_id:
+        missing.append("root_lot_id")
+    if not note_text:
+        missing.append("꼬리표 내용")
+    if not product and root_lot_id:
+        candidates = _resolve_products_for_lots([root_lot_id], kinds=("ML_TABLE", "FAB"), limit=8)
+        choices = _flowi_splittable_note_product_choices(prompt, candidates)
+        if len(choices) == 1:
+            product = choices[0]["title"]
+        elif len(choices) > 1:
+            return None, {
+                "handled": True,
+                "intent": "splittable_lot_note_needs_product",
+                "action": "clarify_product",
+                "answer": "같은 lot 후보가 여러 product에서 발견됐습니다. 스플릿 테이블 꼬리표를 등록할 product를 선택해주세요.",
+                "feature": "splittable",
+                "missing": ["product"],
+                "pending_prompt": prompt,
+                "clarification": {"question": "어느 스플릿 테이블 product에 꼬리표를 등록할까요?", "choices": choices},
+                "table": _flowi_splittable_note_table([
+                    {"field": "status", "value": "needs_product"},
+                    {"field": "root_lot_id", "value": root_lot_id},
+                    {"field": "note", "value": note_text},
+                ], title="SplitTable note needs product"),
+            }
+    if not product:
+        missing.append("product")
+    if missing:
+        return None, _flowi_app_write_missing("splittable", missing, prompt, product, [root_lot_id] if root_lot_id else [], [])
+    return {
+        "scope": "lot",
+        "product": product,
+        "root_lot_id": root_lot_id,
+        "text": note_text,
+        "username": me.get("username") or "user",
+    }, None
+
+
+def _save_flowi_splittable_lot_note(payload: dict[str, Any]) -> dict[str, Any]:
+    from routers import splittable as splittable_router
+    product = _flowi_splittable_product_id(payload.get("product") or "")
+    root_lot_id = _upper(payload.get("root_lot_id") or "")
+    text = str(payload.get("text") or "").strip()
+    username = _safe_username(payload.get("username") or "user")
+    if not product:
+        raise ValueError("product가 필요합니다.")
+    if not root_lot_id:
+        raise ValueError("root_lot_id가 필요합니다.")
+    if not text:
+        raise ValueError("꼬리표 내용이 비어 있습니다.")
+    if len(text) > 2000:
+        raise ValueError("꼬리표 내용은 2000자 이하로 입력해주세요.")
+    entry = {
+        "id": splittable_router._new_note_id(),
+        "scope": "lot",
+        "key": splittable_router._notes_key_lot(product, root_lot_id),
+        "text": text,
+        "username": username,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    entries = splittable_router._load_notes()
+    entries.append(entry)
+    splittable_router._save_notes(entries)
+    return entry
+
+
+def _handle_splittable_note_request(prompt: str, me: dict[str, Any], allowed_keys: set[str] | None = None) -> dict[str, Any]:
+    payload = _extract_flowi_splittable_note_payload(prompt)
+    if payload is None and not _flowi_splittable_note_intent(prompt):
+        return {"handled": False}
+    if allowed_keys is not None and "splittable" not in allowed_keys:
+        return _flowi_permission_block("splittable", me)
+    if payload is not None:
+        if payload.get("_parse_error"):
+            raise HTTPException(400, payload.get("_parse_error"))
+        product = _flowi_splittable_product_id(payload.get("product") or "")
+        root_lot_id = _upper(payload.get("root_lot_id") or "")
+        note_text = str(payload.get("text") or "").strip()
+        expected = _flowi_splittable_note_confirm_text(product, root_lot_id, note_text)
+        if str(payload.get("confirm") or "").strip() != expected:
+            return {
+                "handled": True,
+                "intent": "splittable_lot_note_confirm",
+                "action": "confirm_splittable_lot_note",
+                "requires_confirmation": True,
+                "answer": "스플릿 테이블 꼬리표 등록 전 확인이 필요합니다.",
+                "feature": "splittable",
+                "clarification": {
+                    "question": "이 꼬리표를 스플릿 테이블 lot에 등록할까요?",
+                    "choices": [{
+                        "id": "confirm_splittable_note",
+                        "label": "1",
+                        "title": "꼬리표 등록",
+                        "recommended": True,
+                        "description": f"{product} / {root_lot_id}에 `{note_text[:80]}` 등록",
+                        "prompt": f"{_FLOWI_SPLITTABLE_NOTE_MARKER} {json.dumps({**payload, 'product': product, 'root_lot_id': root_lot_id, 'confirm': expected}, ensure_ascii=False)}",
+                    }, {
+                        "id": "cancel_splittable_note",
+                        "label": "2",
+                        "title": "취소",
+                        "description": "꼬리표를 등록하지 않습니다.",
+                        "prompt": "스플릿 테이블 꼬리표 등록 취소",
+                    }],
+                },
+                "table": _flowi_splittable_note_table([
+                    {"field": "status", "value": "confirmation_required"},
+                    {"field": "product", "value": product},
+                    {"field": "root_lot_id", "value": root_lot_id},
+                    {"field": "note", "value": note_text},
+                ]),
+            }
+        try:
+            entry = _save_flowi_splittable_lot_note({**payload, "product": product, "root_lot_id": root_lot_id})
+        except Exception as e:
+            return {
+                "handled": True,
+                "intent": "splittable_lot_note_failed",
+                "action": "create_splittable_lot_note",
+                "blocked": True,
+                "answer": f"스플릿 테이블 꼬리표 등록 중 오류가 발생했습니다: {e}",
+                "feature": "splittable",
+            }
+        return {
+            "handled": True,
+            "intent": "splittable_lot_note_create",
+            "action": "create_splittable_lot_note",
+            "answer": f"스플릿 테이블 꼬리표를 등록했습니다.\n- product: {product}\n- lot: {root_lot_id}\n- 내용: {entry.get('text')}",
+            "feature": "splittable",
+            "created_record": {"id": entry.get("id") or "", "feature": "splittable", "title": entry.get("text") or "", "target": root_lot_id},
+            "table": _flowi_splittable_note_table([
+                {"field": "status", "value": "created"},
+                {"field": "id", "value": entry.get("id") or ""},
+                {"field": "product", "value": product},
+                {"field": "root_lot_id", "value": root_lot_id},
+                {"field": "note", "value": entry.get("text") or ""},
+            ]),
+        }
+
+    draft, missing_tool = _flowi_splittable_note_payload(prompt, me)
+    if missing_tool:
+        return missing_tool
+    if not draft:
+        return {"handled": False}
+    expected = _flowi_splittable_note_confirm_text(draft["product"], draft["root_lot_id"], draft["text"])
+    confirm_payload = {**draft, "confirm": expected}
+    return {
+        "handled": True,
+        "intent": "splittable_lot_note_create_draft",
+        "action": "confirm_splittable_lot_note",
+        "requires_confirmation": True,
+        "answer": "스플릿 테이블 lot 꼬리표 등록 준비가 됐습니다. 확인 선택을 누르면 실제로 등록합니다.",
+        "feature": "splittable",
+        "slots": {"product": draft["product"], "lots": [draft["root_lot_id"]], "wafers": []},
+        "clarification": {
+            "question": "이 꼬리표를 스플릿 테이블 lot에 등록할까요?",
+            "choices": [{
+                "id": "confirm_splittable_note",
+                "label": "1",
+                "title": "꼬리표 등록",
+                "recommended": True,
+                "description": f"{draft['product']} / {draft['root_lot_id']}에 `{draft['text'][:80]}` 등록",
+                "prompt": f"{_FLOWI_SPLITTABLE_NOTE_MARKER} {json.dumps(confirm_payload, ensure_ascii=False)}",
+            }, {
+                "id": "cancel_splittable_note",
+                "label": "2",
+                "title": "취소",
+                "description": "꼬리표를 등록하지 않습니다.",
+                "prompt": "스플릿 테이블 꼬리표 등록 취소",
+            }],
+        },
+        "table": _flowi_splittable_note_table([
+            {"field": "status", "value": "draft_ready"},
+            {"field": "product", "value": draft["product"]},
+            {"field": "root_lot_id", "value": draft["root_lot_id"]},
+            {"field": "note", "value": draft["text"]},
+            {"field": "policy", "value": "스플릿 테이블 권한이 있는 사용자는 lot 꼬리표를 확인 후 등록할 수 있습니다. DB/Files 원본은 수정하지 않습니다."},
+        ]),
+    }
+
+
+def _flowi_prompt_tracker_category_match(prompt: str, cat_names: list[str]) -> tuple[str, bool]:
+    names = [str(c or "").strip() for c in (cat_names or []) if str(c or "").strip()]
+    if not names:
+        return "General", False
+    text = str(prompt or "")
+    low = text.lower()
+    for name in names:
+        if name.lower() in low:
+            return name, True
+
+    def by_role(role: str) -> str:
+        for name in names:
+            if name.lower() == role:
+                return name
+        for name in names:
+            if role in name.lower():
+                return name
+        return ""
+
+    if any(term in low or term in text for term in ("analysis", "분석", "해석")):
+        matched = by_role("analysis")
+        if matched:
+            return matched, True
+    if any(term in low or term in text for term in ("monitor", "monitoring", "모니터", "모니터링", "감시")):
+        matched = by_role("monitor")
+        if matched:
+            return matched, True
+    return names[0], False
+
+
+def _flowi_prompt_tracker_category(prompt: str, cat_names: list[str]) -> str:
+    return _flowi_prompt_tracker_category_match(prompt, cat_names)[0]
+
+
+def _flowi_prompt_date(prompt: str) -> str:
+    text = str(prompt or "")
+    today = datetime.now().date()
+    m = re.search(r"\b(20\d{2})[-./](\d{1,2})[-./](\d{1,2})\b", text)
+    if m:
+        y, mo, d = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        try:
+            return datetime(y, mo, d).date().isoformat()
+        except Exception:
+            return ""
+    m = re.search(r"(?<!\d)(\d{1,2})[-./](\d{1,2})(?!\d)", text)
+    if m:
+        try:
+            return datetime(today.year, int(m.group(1)), int(m.group(2))).date().isoformat()
+        except Exception:
+            return ""
+    if "모레" in text:
+        return (today + timedelta(days=2)).isoformat()
+    if "내일" in text:
+        return (today + timedelta(days=1)).isoformat()
+    if "오늘" in text:
+        return today.isoformat()
+    return ""
+
+
+def _flowi_app_write_missing(
+    feature: str,
+    missing: list[str],
+    prompt: str,
+    product: str,
+    lots: list[str],
+    wafers: list[str],
+    *,
+    choices: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    title = _feature_title(feature)
+    choice_rows = choices if choices else [
+        {
+            "id": "provide_missing",
+            "label": "1",
+            "title": "필수값 이어서 입력",
+            "recommended": True,
+            "description": f"부족한 값({', '.join(missing)})을 추가해 같은 등록 요청을 이어갑니다.",
+            "prompt": f"{title} 등록 필수값: ",
+        }
+    ]
+    return {
+        "handled": True,
+        "intent": f"{feature}_create_needs_context",
+        "action": "collect_required_fields",
+        "answer": f"{title} 등록에 필요한 조건이 부족합니다. 추가로 필요한 값: {', '.join(missing)}",
+        "feature": feature,
+        "missing": missing,
+        "pending_prompt": prompt,
+        "slots": {"product": product, "lots": lots, "wafers": wafers},
+        "clarification": {
+            "question": f"{title} 등록을 계속하려면 {', '.join(missing)} 값을 알려주세요.",
+            "choices": choice_rows[:3],
+        },
+        "table": {
+            "kind": "flowi_app_write_missing",
+            "title": "Registration needs more context",
+            "placement": "below",
+            "columns": _table_columns(["field", "value"]),
+            "rows": [
+                {"field": "requested_feature", "value": feature},
+                {"field": "missing", "value": ", ".join(missing)},
+                {"field": "prompt", "value": prompt[:500]},
+            ],
+            "total": 3,
+        },
+    }
+
+
+def _flowi_app_create_missing(feature: str, prompt: str, product: str, lots: list[str], wafers: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
+    missing: list[str] = []
+    choices: list[dict[str, Any]] = []
+    if feature == "tracker":
+        from routers import tracker as tracker_router
+        cat_names = tracker_router._cat_names()
+        _, category_explicit = _flowi_prompt_tracker_category_match(prompt, cat_names)
+        if not category_explicit:
+            missing.append("category")
+            for i, name in enumerate(cat_names[:3], start=1):
+                choices.append({
+                    "id": f"category_{name}",
+                    "label": str(i),
+                    "title": name,
+                    "recommended": i == 1,
+                    "description": f"이슈 카테고리를 {name}(으)로 선택하고 등록을 이어갑니다.",
+                    "prompt": f"category: {name}",
+                })
+        if not product:
+            missing.append("product")
+        if not lots and not wafers:
+            missing.append("lot_id 또는 wafer_id")
+    elif feature == "inform":
+        if not lots and not wafers:
+            missing.append("lot_id 또는 wafer_id")
+        if not _flowi_prompt_inform_text(prompt) and not _flowi_prompt_content(prompt):
+            missing.append("인폼 내용")
+    elif feature == "meeting":
+        title = _flowi_prompt_title(prompt, feature)
+        if not title or title == f"{_feature_title(feature)} 자동 등록":
+            missing.append("회의 제목")
+        scheduled_at, recurrence = _flowi_prompt_meeting_schedule(prompt)
+        if not scheduled_at and (recurrence or {}).get("type") == "none":
+            missing.append("회의 일시 또는 반복 조건")
+    elif feature == "calendar":
+        if not _flowi_prompt_date(prompt):
+            missing.append("date")
+        title = _flowi_prompt_title(prompt, feature)
+        if not title or title == f"{_feature_title(feature)} 자동 등록":
+            missing.append("일정 제목")
+    return missing, choices
+
+
+def _flowi_create_app_record(feature: str, prompt: str, me: dict[str, Any], product: str, lots: list[str], wafers: list[str]) -> dict[str, Any]:
+    username = me.get("username") or "user"
+    title = _flowi_prompt_title(prompt, feature)
+    now_s = datetime.now(timezone.utc).isoformat()
+    if feature == "inform":
+        if not (lots or wafers):
+            return _flowi_app_write_missing(feature, ["lot_id 또는 wafer_id"], prompt, product, lots, wafers)
+        from routers import informs as informs_router
+        lot = lots[0] if lots else ""
+        wafer = wafers[0] if wafers else lot
+        module = _flowi_prompt_field(prompt, ("module", "모듈")) or ""
+        inform_text = _flowi_prompt_inform_text(prompt) or str(prompt or "").strip()
+        reason = _flowi_prompt_field(prompt, ("reason", "사유")) or inform_text[:80] or "Flow-i 등록"
+        now = informs_router._now()
+        root_lot = informs_router._root_lot_from_values(lot)
+        fab_snapshot = informs_router._resolve_fab_lot_snapshot(product, lot, wafer)
+        entry = {
+            "id": informs_router._new_id(),
+            "parent_id": None,
+            "wafer_id": wafer,
+            "lot_id": lot,
+            "root_lot_id": root_lot,
+            "product": product,
+            "module": module,
+            "reason": reason,
+            "text": inform_text,
+            "author": username,
+            "created_at": now,
+            "checked": False,
+            "checked_by": "",
+            "checked_at": "",
+            "flow_status": "received",
+            "status_history": [{"status": "received", "actor": username, "at": now, "note": "created by Flow-i"}],
+            "splittable_change": None,
+            "images": [],
+            "embed_table": None,
+            "auto_generated": False,
+            "group_ids": [],
+            "fab_lot_id_at_save": fab_snapshot,
+        }
+        items = informs_router._load_upgraded()
+        items.append(entry)
+        informs_router._save(items)
+        record = {"id": entry["id"], "title": reason, "feature": "inform", "target": lot or wafer}
+        answer = f"인폼을 바로 등록했습니다.\n- id: {entry['id']}\n- lot/wafer: {lot or '-'} / {wafer or '-'}\n- 내용: {inform_text[:80] or '-'}"
+    elif feature == "tracker":
+        from routers import tracker as tracker_router
+        from core.tracker_schema import normalize_lot_row
+        cat_names = tracker_router._cat_names()
+        category = _flowi_prompt_tracker_category(prompt, cat_names)
+        issue_id = f"ISS-{datetime.now().strftime('%y%m%d')}-{uuid.uuid4().hex[:4].upper()}"
+        lot_rows = []
+        for lot in lots[:20]:
+            root_lot_id = lot if len(lot) == 5 and _is_mixed_alnum_token(lot) else ""
+            lot_rows.append(normalize_lot_row({
+                "product": product,
+                "lot_id": "" if root_lot_id else lot,
+                "root_lot_id": root_lot_id,
+                "wafer_id": wafers[0] if wafers else "",
+                "username": username,
+                "added": now_s,
+            }))
+        result = tracker_router.TRACKER_SERVICE.create_legacy_issue(
+            issue_id=issue_id,
+            title=title,
+            description=_flowi_prompt_content(prompt) or str(prompt or "").strip(),
+            username=username,
+            status="in_progress",
+            priority="normal",
+            category=category,
+            links=[],
+            images=[],
+            lots=lot_rows,
+            group_ids=[],
+        )
+        if not result.ok:
+            raise RuntimeError(result.error)
+        record = {"id": issue_id, "title": title, "feature": "tracker", "target": category}
+        answer = f"이슈를 바로 등록했습니다.\n- id: {issue_id}\n- category: {category}\n- title: {title}"
+    elif feature == "meeting":
+        from routers import meetings as meetings_router
+        now = meetings_router._now()
+        scheduled_at, recurrence = _flowi_prompt_meeting_schedule(prompt)
+        first_session = {
+            "id": meetings_router._new_sid(),
+            "idx": 1,
+            "scheduled_at": scheduled_at,
+            "status": "scheduled",
+            "agendas": [],
+            "minutes": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        items = meetings_router._load()
+        used_colors = {m.get("color") for m in items if isinstance(m, dict) and m.get("color")}
+        palette = getattr(meetings_router, "MEETING_PALETTE", ["#3b82f6"])
+        color = ""
+        for i in range(len(palette)):
+            cand = palette[(len(items) + i) % len(palette)]
+            if cand not in used_colors:
+                color = cand
+                break
+        if not color:
+            color = palette[len(items) % len(palette)]
+        entry = {
+            "id": meetings_router._new_mid(),
+            "title": title,
+            "owner": username,
+            "recurrence": meetings_router._normalize_recurrence(recurrence),
+            "status": "active",
+            "color": color,
+            "sessions": [first_session],
+            "created_by": username,
+            "created_at": now,
+            "updated_at": now,
+            "group_ids": [],
+        }
+        result = meetings_router.MEETING_SERVICE.create_meeting(entry)
+        if not result.ok:
+            raise RuntimeError(result.error)
+        rec_summary = entry["recurrence"].get("type") or "none"
+        if entry["recurrence"].get("weekday"):
+            rec_summary += f" / weekday={','.join(str(x) for x in entry['recurrence']['weekday'])}"
+        record = {
+            "id": entry["id"],
+            "title": title,
+            "feature": "meeting",
+            "target": username,
+            "scheduled_at": scheduled_at,
+            "recurrence": rec_summary,
+        }
+        answer = f"회의를 바로 등록했습니다.\n- id: {entry['id']}\n- title: {title}"
+        if scheduled_at:
+            answer += f"\n- 1차 일시: {scheduled_at}"
+        if rec_summary != "none":
+            answer += f"\n- 반복: {rec_summary}"
+    elif feature == "calendar":
+        date_s = _flowi_prompt_date(prompt)
+        if not date_s:
+            return _flowi_app_write_missing(feature, ["date"], prompt, product, lots, wafers)
+        from routers import calendar as calendar_router
+        now = calendar_router._now_iso()
+        entry = {
+            "id": calendar_router._new_id(),
+            "version": 1,
+            "date": date_s,
+            "end_date": "",
+            "title": title,
+            "body": str(prompt or "").strip(),
+            "category": "",
+            "author": username,
+            "source_type": "manual",
+            "meeting_ref": None,
+            "status": "pending",
+            "created_at": now,
+            "updated_at": now,
+            "history": [],
+            "group_ids": [],
+        }
+        items = calendar_router._load_events()
+        items.append(entry)
+        calendar_router._save_events(items)
+        record = {"id": entry["id"], "title": title, "feature": "calendar", "target": date_s}
+        answer = f"일정을 바로 등록했습니다.\n- id: {entry['id']}\n- date: {date_s}\n- title: {title}"
+    else:
+        return {"handled": False}
+    table_rows = [
+        {"field": "status", "value": "created"},
+        {"field": "feature", "value": feature},
+        {"field": "id", "value": record.get("id") or ""},
+        {"field": "title", "value": record.get("title") or ""},
+        {"field": "target", "value": record.get("target") or ""},
+    ]
+    for key in ("scheduled_at", "recurrence"):
+        if record.get(key):
+            table_rows.append({"field": key, "value": record.get(key) or ""})
+    return {
+        "handled": True,
+        "intent": f"{feature}_create",
+        "action": "create_app_record",
+        "answer": answer,
+        "feature": feature,
+        "created_record": record,
+        "feature_entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] == feature],
+        "slots": {"product": product, "lots": lots, "wafers": wafers},
+        "table": {
+            "kind": "flowi_app_write_created",
+            "title": "Created app record",
+            "placement": "below",
+            "columns": _table_columns(["field", "value"]),
+            "rows": table_rows,
+            "total": len(table_rows),
+        },
+    }
 
 
 def _handle_app_write_draft(prompt: str, me: dict[str, Any], allowed_keys: set[str] | None = None) -> dict[str, Any]:
@@ -2741,6 +4911,24 @@ def _handle_app_write_draft(prompt: str, me: dict[str, Any], allowed_keys: set[s
     lots = _lot_tokens(prompt)
     wafers = _wafer_tokens(prompt)
     product = _product_hint(prompt)
+    mode = _flowi_app_write_mode(prompt)
+    if mode == "create" and feature != "annotation" and target_feature in {"inform", "tracker", "meeting", "calendar"}:
+        try:
+            missing, choices = _flowi_app_create_missing(target_feature, prompt, product, lots, wafers)
+            if missing:
+                return _flowi_app_write_missing(target_feature, missing, prompt, product, lots, wafers, choices=choices)
+            return _flowi_create_app_record(target_feature, prompt, me, product, lots, wafers)
+        except Exception as e:
+            logger.warning("flowi app create failed: %s", e)
+            return {
+                "handled": True,
+                "intent": f"{target_feature}_create_failed",
+                "action": "create_app_record",
+                "blocked": True,
+                "answer": f"{_feature_title(target_feature)} 등록 중 오류가 발생했습니다. 관련 화면에서 직접 확인해주세요: {e}",
+                "feature": target_feature,
+                "slots": {"product": product, "lots": lots, "wafers": wafers},
+            }
     action_by_feature = {
         "inform": "inform_create_draft",
         "tracker": "tracker_issue_create_draft",
@@ -2756,11 +4944,11 @@ def _handle_app_write_draft(prompt: str, me: dict[str, Any], allowed_keys: set[s
         {"field": "detected_lot", "value": ", ".join(lots)},
         {"field": "detected_wafer", "value": ", ".join(wafers)},
         {"field": "prompt", "value": prompt[:500]},
-        {"field": "policy", "value": "Flowi는 앱 내부 기록/계획 변경도 초안 미리보기와 명시 확인 후 실행합니다."},
+        {"field": "policy", "value": "신규 등록은 확실하면 바로 실행합니다. 수정/삭제/상태 변경은 권한 확인과 사전 확인 후 실행해야 합니다."},
     ]
     answer = (
-        "이 요청은 조회가 아니라 앱 내부 기록 생성/수정 작업입니다. "
-        "이번 단계에서는 바로 실행하지 않고 초안과 확인 플로우가 필요하다고 표시합니다. "
+        "이 요청은 기존 기록의 수정/변경 또는 권한 확인이 필요한 작업입니다. "
+        "변경 전에는 반드시 대상 화면에서 권한과 내용을 확인해야 합니다. "
         "원본 DB/Files는 수정하지 않습니다."
     )
     return {
@@ -2778,6 +4966,7 @@ def _handle_app_write_draft(prompt: str, me: dict[str, Any], allowed_keys: set[s
                     "id": "open_feature",
                     "label": "1",
                     "title": f"{_feature_title(target_feature)} 열기",
+                    "tab": target_feature,
                     "recommended": True,
                     "description": "관련 화면에서 현재 조건을 확인한 뒤 수동 저장합니다.",
                     "prompt": f"{_feature_title(target_feature)}에서 이 요청을 처리할 화면을 열어줘",
@@ -2800,6 +4989,288 @@ def _handle_app_write_draft(prompt: str, me: dict[str, Any], allowed_keys: set[s
             "rows": rows,
             "total": len(rows),
         },
+    }
+
+
+def _flowi_context_messages(agent_context: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(agent_context, dict):
+        return []
+    raw = agent_context.get("messages")
+    return [m for m in (raw or []) if isinstance(m, dict)] if isinstance(raw, list) else []
+
+
+def _flowi_pending_create_from_context(agent_context: dict[str, Any] | None) -> dict[str, Any]:
+    messages = _flowi_context_messages(agent_context)
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        feature = str(msg.get("feature") or "").strip()
+        intent = str(msg.get("intent") or "")
+        action = str(msg.get("action") or "")
+        missing = msg.get("missing") if isinstance(msg.get("missing"), list) else []
+        pending_prompt = str(msg.get("pending_prompt") or "").strip()
+        if not feature or (not missing and not intent.endswith("_create_needs_context") and action != "collect_required_fields"):
+            continue
+        if not pending_prompt:
+            for prev in range(idx - 1, -1, -1):
+                if str(messages[prev].get("role") or "") == "user":
+                    pending_prompt = str(messages[prev].get("prompt") or messages[prev].get("text") or "").strip()
+                    break
+        if pending_prompt:
+            return {
+                "feature": "tracker" if feature == "annotation" else feature,
+                "pending_prompt": pending_prompt,
+                "missing": missing,
+            }
+    return {}
+
+
+def _handle_app_write_missing_followup(prompt: str, me: dict[str, Any], agent_context: dict[str, Any] | None, allowed_keys: set[str] | None = None) -> dict[str, Any]:
+    if _is_app_write_status_followup(prompt):
+        return {"handled": False}
+    if _detect_app_write_feature(prompt) and _flowi_app_write_mode(prompt) == "create":
+        return {"handled": False}
+    pending = _flowi_pending_create_from_context(agent_context)
+    feature = str(pending.get("feature") or "").strip()
+    base = str(pending.get("pending_prompt") or "").strip()
+    if not feature or not base:
+        return {"handled": False}
+    if allowed_keys is not None and feature not in allowed_keys:
+        return _flowi_permission_block(feature, me)
+    combined = (base + "\n" + str(prompt or "").strip()).strip()
+    product = _product_hint(combined)
+    lots = _lot_tokens(combined)
+    wafers = _wafer_tokens(combined)
+    missing, choices = _flowi_app_create_missing(feature, combined, product, lots, wafers)
+    if missing:
+        return _flowi_app_write_missing(feature, missing, combined, product, lots, wafers, choices=choices)
+    try:
+        created = _flowi_create_app_record(feature, combined, me, product, lots, wafers)
+        created["intent"] = f"{feature}_create_from_missing_context"
+        created["answer"] = "부족한 값을 반영해서 등록했습니다.\n" + str(created.get("answer") or "")
+        return created
+    except Exception as e:
+        logger.warning("flowi app missing followup create failed: %s", e)
+        return {
+            "handled": True,
+            "intent": f"{feature}_create_failed",
+            "action": "create_app_record",
+            "blocked": True,
+            "answer": f"{_feature_title(feature)} 등록 중 오류가 발생했습니다. 관련 화면에서 직접 확인해주세요: {e}",
+            "feature": feature,
+            "slots": {"product": product, "lots": lots, "wafers": wafers},
+        }
+
+
+def _is_app_write_status_followup(prompt: str) -> bool:
+    text = str(prompt or "")
+    if not text.strip():
+        return False
+    status_terms = (
+        "등록했", "등록됐", "등록 되었", "등록되어", "생성했", "생성됐", "생성 되었",
+        "만들었", "만들어졌", "저장했", "저장됐", "저장 되었", "추가했", "추가됐",
+        "되어있", "되어 있", "안되어", "안 되어", "안됐", "안 됐", "됐어", "되었어",
+    )
+    if not any(term in text for term in status_terms):
+        return False
+    return bool("?" in text or text.rstrip().endswith(("어", "니", "나", "요")))
+
+
+def _flowi_feature_from_context(agent_context: dict[str, Any] | None) -> str:
+    for msg in reversed(_flowi_context_messages(agent_context)):
+        feature = str(msg.get("feature") or "").strip()
+        if feature:
+            return "tracker" if feature == "annotation" else feature
+        intent = str(msg.get("intent") or "")
+        action = str(msg.get("action") or "")
+        text = " ".join([intent, action, str(msg.get("prompt") or ""), str(msg.get("text") or "")])
+        if "tracker" in text or "이슈" in text:
+            return "tracker"
+        if "meeting" in text or "회의" in text:
+            return "meeting"
+        if "inform" in text or "인폼" in text:
+            return "inform"
+        if "calendar" in text or "일정" in text or "변경점" in text:
+            return "calendar"
+    return ""
+
+
+def _flowi_last_create_prompt(agent_context: dict[str, Any] | None, feature: str) -> str:
+    for msg in reversed(_flowi_context_messages(agent_context)):
+        if str(msg.get("role") or "") != "user":
+            continue
+        text = str(msg.get("prompt") or msg.get("text") or "").strip()
+        if not text or _is_app_write_status_followup(text):
+            continue
+        f = _detect_app_write_feature(text)
+        f = "tracker" if f == "annotation" else f
+        if f == feature and _flowi_app_write_mode(text) == "create":
+            return text
+    return ""
+
+
+def _flowi_created_record_from_context(agent_context: dict[str, Any] | None, feature: str) -> dict[str, Any]:
+    for msg in reversed(_flowi_context_messages(agent_context)):
+        rec = msg.get("created_record")
+        if isinstance(rec, dict):
+            rec_feature = str(rec.get("feature") or msg.get("feature") or "").strip()
+            if not rec_feature or rec_feature == feature:
+                return rec
+        text = str(msg.get("text") or "")
+        if feature == "tracker":
+            m = re.search(r"\bISS-\d{6}-[A-Z0-9]{4}\b", text)
+            if m:
+                return {"id": m.group(0), "feature": feature}
+        if feature == "meeting":
+            m = re.search(r"\bmt_\d{6}_[a-f0-9]{6}\b", text, flags=re.I)
+            if m:
+                return {"id": m.group(0), "feature": feature}
+    return {}
+
+
+def _flowi_find_app_record(feature: str, *, username: str, record_id: str = "", title: str = "", lots: list[str] | None = None) -> dict[str, Any]:
+    lots_u = {_upper(x) for x in (lots or []) if str(x or "").strip()}
+    title_s = str(title or "").strip()
+    rid = str(record_id or "").strip()
+    try:
+        if feature == "tracker":
+            from routers import tracker as tracker_router
+            rows = tracker_router._load()
+            def score(issue: dict[str, Any]) -> int:
+                if rid and issue.get("id") == rid:
+                    return 100
+                s = 0
+                if title_s:
+                    if str(issue.get("title") or "").strip() == title_s:
+                        s += 20
+                    else:
+                        return 0
+                if username and str(issue.get("username") or issue.get("created_by") or "") == username:
+                    s += 4
+                issue_lots = set()
+                for lot in issue.get("lots") or []:
+                    if isinstance(lot, dict):
+                        issue_lots.update(_upper(lot.get(k)) for k in ("lot_id", "root_lot_id", "wafer_id") if lot.get(k))
+                if lots_u and issue_lots & lots_u:
+                    s += 12
+                elif lots_u and not title_s:
+                    return 0
+                return s
+            best = max((r for r in rows if isinstance(r, dict)), key=score, default=None)
+            if best and score(best) >= (100 if rid else 12):
+                return {"id": best.get("id") or "", "title": best.get("title") or "", "feature": feature, "target": best.get("category") or "", "found": True}
+        if feature == "meeting":
+            from routers import meetings as meetings_router
+            rows = meetings_router._load()
+            def score(meeting: dict[str, Any]) -> int:
+                if rid and meeting.get("id") == rid:
+                    return 100
+                s = 0
+                if title_s and str(meeting.get("title") or "").strip() == title_s:
+                    s += 20
+                if username and username in {str(meeting.get("owner") or ""), str(meeting.get("created_by") or "")}:
+                    s += 4
+                return s
+            best = max((r for r in rows if isinstance(r, dict)), key=score, default=None)
+            if best and score(best) >= (100 if rid else 16):
+                scheduled = ""
+                sessions = best.get("sessions") or []
+                if sessions and isinstance(sessions[0], dict):
+                    scheduled = sessions[0].get("scheduled_at") or ""
+                return {"id": best.get("id") or "", "title": best.get("title") or "", "feature": feature, "target": best.get("owner") or "", "scheduled_at": scheduled, "found": True}
+        if feature == "inform":
+            from routers import informs as informs_router
+            rows = informs_router._load_upgraded()
+            for row in reversed([r for r in rows if isinstance(r, dict)]):
+                if rid and row.get("id") != rid:
+                    continue
+                if lots_u and not ({_upper(row.get("lot_id")), _upper(row.get("wafer_id")), _upper(row.get("root_lot_id"))} & lots_u):
+                    continue
+                if username and row.get("author") not in {"", username}:
+                    continue
+                return {"id": row.get("id") or "", "title": title_s or row.get("reason") or "인폼", "feature": feature, "target": row.get("lot_id") or row.get("wafer_id") or "", "found": True}
+        if feature == "calendar":
+            from routers import calendar as calendar_router
+            rows = calendar_router._load_events()
+            for row in reversed([r for r in rows if isinstance(r, dict)]):
+                if rid and row.get("id") != rid:
+                    continue
+                if title_s and str(row.get("title") or "").strip() != title_s:
+                    continue
+                if username and row.get("author") not in {"", username}:
+                    continue
+                return {"id": row.get("id") or "", "title": row.get("title") or "", "feature": feature, "target": row.get("date") or "", "found": True}
+    except Exception as e:
+        logger.warning("flowi app record lookup failed: %s", e)
+    return {}
+
+
+def _handle_app_write_status_followup(prompt: str, me: dict[str, Any], agent_context: dict[str, Any] | None, allowed_keys: set[str] | None = None) -> dict[str, Any]:
+    if not _is_app_write_status_followup(prompt):
+        return {"handled": False}
+    feature = _detect_app_write_feature(prompt) or _flowi_feature_from_context(agent_context)
+    feature = "tracker" if feature == "annotation" else feature
+    if not feature or feature not in {"tracker", "meeting", "inform", "calendar"}:
+        return {"handled": False}
+    if allowed_keys is not None and feature not in allowed_keys:
+        return _flowi_permission_block(feature, me)
+    username = me.get("username") or "user"
+    rec_ctx = _flowi_created_record_from_context(agent_context, feature)
+    prev_prompt = _flowi_last_create_prompt(agent_context, feature)
+    basis_prompt = prev_prompt or prompt
+    title = _flowi_prompt_title(basis_prompt, feature)
+    lots = _lot_tokens(basis_prompt)
+    found = _flowi_find_app_record(
+        feature,
+        username=username,
+        record_id=str(rec_ctx.get("id") or ""),
+        title=title,
+        lots=lots,
+    )
+    if found:
+        answer = f"네, 직전 {_feature_title(feature)} 등록 기록을 확인했습니다.\n- id: {found.get('id') or '-'}\n- title: {found.get('title') or '-'}"
+        if found.get("target"):
+            answer += f"\n- target: {found.get('target')}"
+        if found.get("scheduled_at"):
+            answer += f"\n- 1차 일시: {found.get('scheduled_at')}"
+        rows = [{"field": k, "value": v} for k, v in found.items() if k not in {"found"} and v]
+        return {
+            "handled": True,
+            "intent": f"{feature}_registration_status",
+            "action": "check_app_record",
+            "answer": answer,
+            "feature": feature,
+            "created_record": found,
+            "feature_entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] == feature],
+            "table": {"kind": "flowi_app_record_status", "title": "Registration status", "placement": "below", "columns": _table_columns(["field", "value"]), "rows": rows, "total": len(rows)},
+        }
+    if rec_ctx.get("id"):
+        rid = str(rec_ctx.get("id") or "")
+        return {
+            "handled": True,
+            "intent": f"{feature}_registration_status_missing",
+            "action": "check_app_record",
+            "blocked": True,
+            "answer": (
+                f"직전 응답에는 {_feature_title(feature)} 생성 id `{rid}`가 있었지만, 현재 저장소에서 같은 id를 확인하지 못했습니다. "
+                "중복 등록을 피하려고 자동 재등록은 하지 않았습니다. 다시 등록하려면 원래 등록 요청을 그대로 보내주세요."
+            ),
+            "feature": feature,
+            "created_record": rec_ctx,
+            "feature_entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] == feature],
+        }
+    if prev_prompt:
+        created = _flowi_create_app_record(feature, prev_prompt, me, _product_hint(prev_prompt), _lot_tokens(prev_prompt), _wafer_tokens(prev_prompt))
+        created["intent"] = f"{feature}_registration_followup_create"
+        created["answer"] = "직전 등록 요청이 저장 기록으로 확인되지 않아, 같은 요청을 지금 이어서 등록했습니다.\n" + str(created.get("answer") or "")
+        return created
+    return {
+        "handled": True,
+        "intent": f"{feature}_registration_status_unknown",
+        "action": "check_app_record",
+        "blocked": True,
+        "answer": f"현재 대화에서 확인할 직전 {_feature_title(feature)} 등록 요청이나 생성 id를 찾지 못했습니다. 제목, lot, 회의명 중 하나를 같이 알려주면 실제 저장 기록을 확인하겠습니다.",
+        "feature": feature,
+        "feature_entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] == feature],
     }
 
 
@@ -3344,6 +5815,8 @@ def _step_id_terms_from_prompt(prompt: str, lots: list[str] | None = None, produ
         raw = (m.group(1) or "").strip(" .,;:()[]{}")
         key = _upper(raw)
         if not key or key in blocked or key.startswith(("PPID", "PROD", "KNOB")):
+            continue
+        if not _is_step_id_token(key) and key not in _known_func_step_names():
             continue
         if key not in seen:
             seen.add(key)
@@ -5679,8 +8152,8 @@ def _handle_flowi_query(
     allowed_keys: set[str] | None = None,
 ) -> dict:
     product = _product_hint(prompt, product)
-    if allowed_keys is None or {"filebrowser", "dashboard", "splittable", "ettime", "ml", "waferlayout"} & set(allowed_keys):
-        for handler in (_handle_teg_radius_lookup, _handle_teg_position_lookup, _handle_wafer_map_similarity):
+    if allowed_keys is None or {"filebrowser", "dashboard", "splittable", "ettime", "waferlayout"} & set(allowed_keys):
+        for handler in (_handle_teg_radius_lookup, _handle_teg_position_lookup, _handle_wafer_map_chart, _handle_wafer_map_similarity):
             wafer_out = handler(prompt, product, max_rows)
             if wafer_out.get("handled"):
                 return wafer_out
@@ -5705,11 +8178,20 @@ def _handle_flowi_query(
         diag_out = _handle_semiconductor_diagnosis_query(prompt, product, max_rows)
         if diag_out.get("handled"):
             return diag_out
-    if allowed_keys is None or "dashboard" in allowed_keys or "ml" in allowed_keys:
+    if allowed_keys is None or "dashboard" in allowed_keys:
+        box_chart_out = _handle_inline_box_chart(prompt, product, max_rows)
+        if box_chart_out.get("handled"):
+            return box_chart_out
+        trend_chart_out = _handle_inline_trend_chart(prompt, product, max_rows)
+        if trend_chart_out.get("handled"):
+            return trend_chart_out
+        grouped_chart_out = _handle_grouped_metric_chart(prompt, product, max_rows)
+        if grouped_chart_out.get("handled"):
+            return grouped_chart_out
         chart_out = _handle_chart_request(prompt, product, max_rows)
         if chart_out.get("handled"):
             return chart_out
-    if allowed_keys is None or "splittable" in allowed_keys or "ml" in allowed_keys:
+    if allowed_keys is None or "splittable" in allowed_keys:
         fastest_out = _handle_fastest_knob_query(prompt, product, max_rows)
         if fastest_out.get("handled"):
             return fastest_out
@@ -5842,7 +8324,7 @@ def _flowi_next_actions(tool: dict[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     clarification = tool.get("clarification") if isinstance(tool.get("clarification"), dict) else {}
     choices = clarification.get("choices") if isinstance(clarification.get("choices"), list) else []
-    for i, choice in enumerate(choices[:4]):
+    for i, choice in enumerate(choices[:3]):
         if not isinstance(choice, dict):
             continue
         actions.append({
@@ -5910,6 +8392,18 @@ def _flowi_next_actions(tool: dict[str, Any]) -> list[dict[str, Any]]:
     return actions[:8]
 
 
+def _limit_flowi_choices(tool: dict[str, Any], limit: int = 3) -> dict[str, Any]:
+    clarification = tool.get("clarification") if isinstance(tool.get("clarification"), dict) else {}
+    choices = clarification.get("choices") if isinstance(clarification.get("choices"), list) else []
+    if len(choices) <= limit:
+        return tool
+    trimmed = choices[:max(1, int(limit or 3))]
+    clarification = dict(clarification)
+    clarification["choices"] = trimmed
+    tool["clarification"] = clarification
+    return tool
+
+
 def _flowi_workflow_state(
     tool: dict[str, Any],
     *,
@@ -5951,6 +8445,7 @@ def _finalize_flowi_tool(
 ) -> dict[str, Any]:
     if not isinstance(tool, dict):
         return tool
+    _limit_flowi_choices(tool, 3)
     tool["workflow_state"] = _flowi_workflow_state(tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
     tool["next_actions"] = _flowi_next_actions(tool)
     return tool
@@ -6139,6 +8634,7 @@ def _run_flowi_chat(
     source_ai: str = "",
     client_run_id: str = "",
     agent_context: dict[str, Any] | None = None,
+    allow_rag_update: bool = False,
 ) -> dict[str, Any]:
     username = me.get("username") or "user"
     prompt = (prompt or "").strip()
@@ -6182,6 +8678,23 @@ def _run_flowi_chat(
         if "diagnosis" not in allowed_keys:
             tool = _flowi_permission_block("diagnosis", me)
             answer = tool["answer"]
+        elif not allow_rag_update:
+            answer = (
+                "[flow-i update] 지식 등록은 홈 Flow-i 채팅에서 처리하지 않습니다.\n"
+                "에이전트 페이지의 `RAG 반영` 화면에서 문서 타입 지식 등록, 빠른 RAG Update, 표 지식 반영 중 하나로 저장해주세요.\n"
+                "홈에서는 일반 질의와 답변 피드백만 받습니다."
+            )
+            tool = {
+                "handled": True,
+                "intent": "semiconductor_rag_update",
+                "action": "blocked_home_rag_update",
+                "blocked": True,
+                "answer": answer,
+                "feature": "diagnosis",
+                "feature_entrypoints": [
+                    {"key": "diagnosis", "title": "에이전트", "description": "RAG 반영 화면에서 지식 등록"}
+                ],
+            }
         else:
             tool = _handle_flowi_rag_update(prompt, me)
             answer = tool.get("answer") or "Flow-i RAG Update를 처리했습니다."
@@ -6244,8 +8757,104 @@ def _run_flowi_chat(
                     username=username,
                     tool=prep_tool,
                     agent_context=agent_context,
-                )
+            )
             return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    missing_followup_tool = _handle_app_write_missing_followup(prompt, me, agent_context, allowed_keys=allowed_keys)
+    if missing_followup_tool.get("handled"):
+        answer = missing_followup_tool.get("answer") or "부족한 값을 반영해 등록 요청을 처리했습니다."
+        _append_user_event(username, "app_write_missing_followup", _event_fields(
+            {
+                "prompt": prompt,
+                "intent": missing_followup_tool.get("intent") or "",
+                "feature": missing_followup_tool.get("feature") or "",
+                "answer": answer,
+            },
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": missing_followup_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": bool(missing_followup_tool.get("blocked"))},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=missing_followup_tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    status_tool = _handle_app_write_status_followup(prompt, me, agent_context, allowed_keys=allowed_keys)
+    if status_tool.get("handled"):
+        answer = status_tool.get("answer") or "직전 등록 상태를 확인했습니다."
+        _append_user_event(username, "app_write_status_followup", _event_fields(
+            {
+                "prompt": prompt,
+                "intent": status_tool.get("intent") or "",
+                "feature": status_tool.get("feature") or "",
+                "answer": answer,
+            },
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": status_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": bool(status_tool.get("blocked"))},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=status_tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    splittable_note_tool = _handle_splittable_note_request(prompt, me, allowed_keys=allowed_keys)
+    if splittable_note_tool.get("handled"):
+        answer = splittable_note_tool.get("answer") or "스플릿 테이블 꼬리표 요청을 처리했습니다."
+        _append_user_event(username, "splittable_lot_note", _event_fields(
+            {
+                "prompt": prompt,
+                "intent": splittable_note_tool.get("intent") or "",
+                "feature": splittable_note_tool.get("feature") or "",
+                "answer": answer,
+            },
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": splittable_note_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": bool(splittable_note_tool.get("blocked"))},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=splittable_note_tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
     draft_tool = _handle_app_write_draft(prompt, me, allowed_keys=allowed_keys)
     if draft_tool.get("handled"):
@@ -6279,10 +8888,80 @@ def _run_flowi_chat(
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
+    data_tool = _handle_flowi_data_registration(prompt, me)
+    if data_tool.get("handled"):
+        answer = data_tool.get("answer") or "데이터 등록 요청을 처리했습니다."
+        _append_user_event(username, "flowi_data_register", _event_fields(
+            {
+                "prompt": prompt[:1000],
+                "action": data_tool.get("action") or "",
+                "requires_confirmation": data_tool.get("requires_confirmation") or False,
+                "blocked": data_tool.get("blocked") or False,
+                "answer": answer,
+            },
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": data_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": bool(data_tool.get("blocked"))},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=data_tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
     if _flowi_write_target_detected(prompt):
-        if (me.get("role") or "user") == "admin":
+        db_blocked = (
+            "DB 루트 원본은 admin도 Flow-i에서 수정할 수 없습니다. "
+            "수정/등록은 파일탐색기 수정 권한이 있는 사용자만 Files 영역 단일파일에 대해 확인 후 실행됩니다."
+        )
+        if "db" in str(prompt or "").lower() or "DB" in str(prompt or "") or "원본" in str(prompt or "") or "raw data" in str(prompt or "").lower():
+            blocked_msg = db_blocked
+            _append_user_event(username, "blocked_write_request", _event_fields(
+                {"prompt": prompt, "answer": blocked_msg},
+                source=source,
+                client_run_id=client_run_id,
+            ))
+            tool = {
+                "handled": True,
+                "intent": "blocked_write_request",
+                "blocked": True,
+                "answer": blocked_msg,
+                "policy": FLOWI_READ_ONLY_POLICY,
+            }
+            result = {
+                "ok": True,
+                "active": True,
+                "user": username,
+                "answer": blocked_msg,
+                "tool": tool,
+                "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": True},
+                "allowed_features": sorted(allowed_keys),
+            }
+            if source:
+                result["agent_api"] = _agent_api_meta(
+                    source=source,
+                    client_run_id=client_run_id,
+                    username=username,
+                    tool=tool,
+                    agent_context=agent_context,
+                )
+            return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+        if _can_flowi_file_write(me):
             tool = _handle_admin_file_operation(prompt)
-            answer = tool.get("answer") or "Admin 파일 작업 요청을 처리했습니다."
+            answer = tool.get("answer") or "파일탐색기 관리 작업 요청을 처리했습니다."
             _append_user_event(username, "admin_file_operation", _event_fields(
                 {
                     "prompt": prompt,
@@ -6366,7 +9045,10 @@ def _run_flowi_chat(
     feature_ctx = _feature_context(prompt, allowed_keys=allowed_keys)
     agent_ctx = _json_excerpt(agent_context) if agent_context else ""
 
-    if llm_adapter.is_available() and not tool.get("blocked"):
+    skip_llm_polish = _flowi_should_skip_llm_polish(tool)
+    if skip_llm_polish:
+        llm_info["skipped"] = "deterministic_tool_result"
+    if llm_adapter.is_available() and not tool.get("blocked") and not skip_llm_polish:
         source_line = f"외부 AI source: {source}\nclient_run_id: {client_run_id}\n" if source else ""
         context_line = f"외부 AI 입력 context JSON: {agent_ctx}\n\n" if agent_ctx else ""
         if tool.get("handled"):
@@ -6388,7 +9070,7 @@ def _run_flowi_chat(
                 "사용자 정보와 단위기능 진입점 설명을 바탕으로 가장 좋은 화면/다음 행동을 먼저 추천하세요. "
                 "Roo Code/OpenCode 계열 오픈소스 모델처럼 추론 성능이 제한적일 수 있으므로, "
                 "복잡한 계획보다 필요한 조건과 다음 화면을 짧게 답하세요. "
-                "지원 범위가 불확실하면 필요한 lot/step/item 조건을 물어보세요.\n\n"
+                "지원 범위가 불확실하면 필요한 lot/step/item 조건을 3개 이하 선택지로 물어보세요.\n\n"
                 f"{source_line}"
                 f"{context_line}"
                 f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
@@ -6397,14 +9079,7 @@ def _run_flowi_chat(
             )
         out = llm_adapter.complete(
             polish_prompt,
-            system=(
-                "Flowi는 사내 Flow 홈 화면의 fab 데이터 assistant입니다. 답변은 짧고 실행 가능하게 작성합니다. "
-                "사용자 Markdown 정보가 있으면 담당 제품, 관심 공정, 선호 출력 방식을 반영합니다. "
-                "요청이 애매하면 바로 실행한다고 말하지 말고 1/2/3 형태의 선택지를 제시합니다. "
-                "INLINE은 기본 avg, ET는 기본 median이며 shot/die key가 있으면 lot_wf보다 우선합니다. "
-                "일반 사용자의 원 data DB 또는 Files 수정/삭제/저장/업로드는 차단합니다. "
-                "admin 파일 변경은 서버의 FLOWI_FILE_OP 단위기능 결과가 제공된 경우에만 그 결과를 설명합니다."
-            ),
+            system=_flowi_system_prompt(),
             timeout=12,
         )
         llm_info.update({"used": bool(out.get("ok") and out.get("text"))})
@@ -6443,6 +9118,16 @@ def _run_flowi_chat(
     return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
 
+def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
+    """Keep local chart/tablemap results fast and avoid delaying visible payloads."""
+    intent = str(tool.get("intent") or "")
+    if intent.startswith("dashboard_") or intent == "tablemap_guidance":
+        return True
+    if isinstance(tool.get("chart_result"), dict):
+        return True
+    return False
+
+
 @router.get("/status")
 def status(request: Request):
     me = current_user(request)
@@ -6452,9 +9137,10 @@ def status(request: Request):
         local_tools.insert(0, "et_wafer_median")
     if "splittable" in allowed_keys:
         local_tools.insert(1 if local_tools and local_tools[0] == "et_wafer_median" else 0, "lot_knobs")
-    if "dashboard" in allowed_keys or "ml" in allowed_keys:
+    if "dashboard" in allowed_keys:
         local_tools.append("dashboard_scatter_plan")
     cfg = llm_adapter.get_config(redact=True)
+    persona = _flowi_persona_config()
     return {
         "available": llm_adapter.is_available(),
         "config": cfg,
@@ -6463,9 +9149,16 @@ def status(request: Request):
             "admin_token_configured": llm_adapter.has_admin_token(),
             "local_tools": local_tools,
             "policy": FLOWI_READ_ONLY_POLICY,
+            "workflow_guide": FLOWI_BASE_WORKFLOW_GUIDE,
             "allowed_features": sorted(allowed_keys),
             "entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] in allowed_keys],
             "unit_actions": {k: v for k, v in FLOWI_UNIT_ACTIONS.items() if k in allowed_keys},
+            "persona": {
+                "source": persona.get("source"),
+                "enabled": persona.get("enabled"),
+                "updated_by": persona.get("updated_by"),
+                "updated_at": persona.get("updated_at"),
+            },
         },
     }
 
@@ -6529,7 +9222,24 @@ class FlowiGoldenPromoteReq(BaseModel):
     notes: str = ""
 
 
+class FlowiAdminUpdateReq(BaseModel):
+    mode: str = "both"
+    prompt: str = ""
+    expected_intent: str = ""
+    expected_tool: str = ""
+    expected_answer: str = ""
+    notes: str = ""
+    data_refs: str = ""
+
+
 class FlowiProfileReq(BaseModel):
+    notes: str = ""
+
+
+class FlowiPersonaReq(BaseModel):
+    enabled: bool = False
+    system_prompt: str = ""
+    must_not: str = ""
     notes: str = ""
 
 
@@ -6547,6 +9257,38 @@ def flowi_verify(req: FlowiVerifyReq, request: Request):
     if out.get("ok") and "확인완료" in text:
         return {"ok": True, "message": "확인완료"}
     return {"ok": False, "message": "LLM 연결 확인 실패", "error": out.get("error") or text or "unknown"}
+
+
+@router.get("/flowi/persona")
+def flowi_persona(_admin=Depends(require_admin)):
+    cfg = _flowi_persona_config()
+    return {"ok": True, **cfg}
+
+
+@router.post("/flowi/persona")
+def flowi_persona_save(req: FlowiPersonaReq, request: Request, _admin=Depends(require_admin)):
+    system_prompt = (req.system_prompt or "").strip()
+    must_not = (req.must_not or "").strip()
+    notes = (req.notes or "").strip()
+    if len(system_prompt) > 12000:
+        raise HTTPException(400, "system_prompt는 12000자 이하로 입력해주세요")
+    if len(must_not) > 8000:
+        raise HTTPException(400, "must_not은 8000자 이하로 입력해주세요")
+    if len(notes) > 2000:
+        raise HTTPException(400, "notes는 2000자 이하로 입력해주세요")
+    current = _admin_settings()
+    me = current_user(request)
+    current["flowi_persona"] = {
+        "enabled": True,
+        "system_prompt": system_prompt or FLOWI_DEFAULT_SYSTEM_PROMPT,
+        "must_not": must_not or FLOWI_DEFAULT_MUST_NOT,
+        "notes": notes,
+        "updated_by": me.get("username") or "admin",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_admin_settings(current)
+    cfg = _flowi_persona_config()
+    return {"ok": True, **cfg}
 
 
 @router.get("/flowi/profile")
@@ -6697,6 +9439,69 @@ def flowi_feedback_promote(req: FlowiGoldenPromoteReq, _admin=Depends(require_ad
         "expected_tool": case["expected_tool"],
     })
     return {"ok": True, "case": case}
+
+
+@router.post("/flowi/admin/update")
+def flowi_admin_update(req: FlowiAdminUpdateReq, _admin=Depends(require_admin)):
+    mode = (req.mode or "both").strip().lower()
+    if mode not in {"knowledge", "workflow", "both"}:
+        raise HTTPException(400, "mode must be knowledge/workflow/both")
+    if mode == "knowledge":
+        raise HTTPException(400, "사전지식 등록은 에이전트 페이지의 RAG 반영 화면에서만 가능합니다.")
+    if mode == "both":
+        mode = "workflow"
+    prompt = (req.prompt or "").strip()
+    expected_intent = (req.expected_intent or "").strip()
+    expected_tool = (req.expected_tool or "").strip()
+    expected_answer = (req.expected_answer or "").strip()
+    notes = (req.notes or "").strip()
+    data_refs = (req.data_refs or "").strip()
+    if not any([prompt, expected_intent, expected_tool, expected_answer, notes, data_refs]):
+        raise HTTPException(400, "업데이트할 사전지식 또는 workflow 내용을 입력해주세요")
+
+    admin_user = _admin.get("username") or "admin"
+    result: dict[str, Any] = {"ok": True, "mode": mode}
+
+    wants_workflow = mode == "workflow" and any([prompt, expected_intent, expected_tool, expected_answer, notes, data_refs])
+    if wants_workflow:
+        rec = {
+            "id": "admin_direct_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8],
+            "prompt_excerpt": (prompt or notes or expected_answer)[:500],
+            "rating": "up",
+            "intent": expected_intent[:120],
+            "tags": ["correct"],
+            "expected_answer": expected_answer[:4000],
+            "correct_route": expected_answer[:4000],
+            "data_refs": data_refs[:1000],
+            "note": notes[:2000],
+            "expected_workflow": expected_tool[:160],
+            "tool_summary": {"action": expected_tool[:160], "intent": expected_intent[:120]},
+        }
+        case = _feedback_to_golden_case(
+            rec,
+            created_by=admin_user,
+            expected_intent=expected_intent,
+            expected_tool=expected_tool,
+            expected_answer=expected_answer,
+            notes=notes,
+        )
+        try:
+            FLOWI_GOLDEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with FLOWI_GOLDEN_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(case, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning("flowi admin workflow update failed: %s", e)
+            raise HTTPException(500, "workflow 업데이트 저장 실패") from e
+        result["workflow"] = case
+
+    _append_user_event(admin_user, "admin_agent_update", {
+        "mode": mode,
+        "prompt": prompt[:500],
+        "expected_intent": expected_intent[:120],
+        "expected_tool": expected_tool[:160],
+        "workflow_id": ((result.get("workflow") or {}).get("id") if isinstance(result.get("workflow"), dict) else ""),
+    })
+    return result
 
 
 @router.post("/flowi/chat")

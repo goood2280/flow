@@ -5,9 +5,11 @@
 :root {
   --font-sans: "Pretendard", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 5px;
+  --radius-xl: 6px;
 }
 
 html,
@@ -72,7 +74,7 @@ textarea:disabled {
 ::-webkit-scrollbar-thumb {
   background: var(--bg-hover);
   border: 2px solid var(--bg-primary);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -80,6 +82,8 @@ textarea:disabled {
 }
 
 .flow-app {
+  --control-radius: var(--radius-md);
+  --surface-radius: var(--radius-lg);
   height: 100vh;
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -90,6 +94,57 @@ textarea:disabled {
 
 .flow-app * {
   letter-spacing: 0 !important;
+}
+
+.flow-app button,
+.flow-app input,
+.flow-app select,
+.flow-app textarea {
+  border-radius: var(--control-radius);
+}
+
+.flow-app .rounded,
+.flow-app .rounded-sm,
+.flow-app .rounded-md {
+  border-radius: var(--control-radius) !important;
+}
+
+.flow-app .rounded-lg,
+.flow-app .rounded-xl,
+.flow-app .rounded-2xl {
+  border-radius: var(--surface-radius) !important;
+}
+
+.flow-app .rounded-full {
+  border-radius: 999px !important;
+}
+
+.flow-app [style*="border-radius: 5px"],
+.flow-app [style*="border-radius: 6px"],
+.flow-app [style*="border-radius: 7px"] {
+  border-radius: var(--control-radius) !important;
+}
+
+.flow-app [style*="border-radius: 8px"],
+.flow-app [style*="border-radius: 9px"],
+.flow-app [style*="border-radius: 10px"],
+.flow-app [style*="border-radius: 11px"],
+.flow-app [style*="border-radius: 12px"],
+.flow-app [style*="border-radius: 14px"],
+.flow-app [style*="border-radius: 16px"],
+.flow-app [style*="border-radius: 20px"],
+.flow-app [style*="border-radius: 24px"] {
+  border-radius: var(--surface-radius) !important;
+}
+
+.flow-app [style*="border-radius: 50%"],
+.flow-app [style*="border-radius:50%"] {
+  border-radius: 50% !important;
+}
+
+.flow-app [style*="border-radius: 999"],
+.flow-app [style*="border-radius:999"] {
+  border-radius: 999px !important;
 }
 
 code,
@@ -103,14 +158,126 @@ samp,
 .flow-nav {
   display: flex;
   align-items: center;
-  height: 48px;
+  height: 52px;
   padding: 0 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
-  gap: 2px;
-  overflow-x: auto;
+  gap: 10px;
+  overflow: visible;
   white-space: nowrap;
   font-family: var(--font-sans);
+  position: relative;
+  z-index: 1000;
+}
+
+.flow-nav-separator {
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.flow-nav-groups {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.flow-nav-group {
+  position: relative;
+}
+
+.flow-nav-trigger {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.flow-nav-trigger:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.flow-nav-trigger.is-active {
+  background: var(--accent-glow);
+  border-color: rgba(249, 115, 22, 0.28);
+  color: var(--accent);
+}
+
+.flow-nav-current {
+  max-width: 104px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.88;
+}
+
+.flow-nav-caret {
+  color: var(--text-secondary);
+  font-size: 8px;
+  line-height: 1;
+}
+
+.flow-nav-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 1200;
+  min-width: 188px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.22);
+}
+
+.flow-nav-menu-item {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.flow-nav-menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.flow-nav-menu-item.is-active {
+  background: var(--accent-glow);
+  color: var(--accent);
+}
+
+.flow-nav-badge {
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: rgba(249, 115, 22, 0.14);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 800;
 }
 
 .flow-page,
@@ -122,14 +289,14 @@ samp,
 
 .flow-split-page {
   display: flex;
-  height: calc(100vh - 48px);
+  height: calc(100vh - 52px);
   overflow: hidden;
 }
 
 .flow-panel {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--surface-radius);
 }
 
 .flow-toolbar {
@@ -184,6 +351,51 @@ samp,
   gap: 10px;
 }
 
+.flow-connected-page {
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 5px;
+  --control-radius: var(--radius-md);
+  --surface-radius: var(--radius-lg);
+}
+
+.flow-connected-page .flow-panel,
+.flow-connected-page .flow-toolbar {
+  border-radius: var(--surface-radius) !important;
+  box-shadow: none !important;
+}
+
+.flow-connected-page [style*="border-radius"] {
+  border-radius: var(--control-radius) !important;
+}
+
+.flow-connected-page [style*="border-radius: 50%"],
+.flow-connected-page [style*="border-radius:50%"] {
+  border-radius: 50% !important;
+}
+
+.flow-connected-page [style*="border-radius: 999"],
+.flow-connected-page [style*="border-radius:999"] {
+  border-radius: 999px !important;
+}
+
+.flow-connected-page [style*="box-shadow"] {
+  box-shadow: none !important;
+}
+
+.flow-connected-page [style*="margin-bottom: 10px"][style*="border: 1px solid var(--border)"],
+.flow-connected-page [style*="margin-bottom: 12px"][style*="border: 1px solid var(--border)"],
+.flow-connected-page [style*="margin-bottom: 14px"][style*="border: 1px solid var(--border)"] {
+  margin-bottom: -1px !important;
+}
+
+.flow-connected-page button,
+.flow-connected-page input,
+.flow-connected-page select,
+.flow-connected-page textarea {
+  border-radius: var(--control-radius) !important;
+}
+
 .flow-muted {
   color: var(--text-secondary);
 }
@@ -215,7 +427,7 @@ samp,
   }
 
   .flow-split-page {
-    min-height: calc(100vh - 48px);
+    min-height: calc(100vh - 52px);
     height: auto;
     flex-direction: column;
     overflow: auto;
