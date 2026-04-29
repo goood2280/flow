@@ -507,6 +507,29 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         raise HTTPException(400, f"Unsupported ext for preview: {ext}")
     # v8.4.3 OOM-aware — lazy scan 동일.
     try:
+        if meta_only and ext == ".parquet":
+            try:
+                from core.parquet_perf import read_meta
+                cached_meta = read_meta(fp)
+            except Exception:
+                cached_meta = None
+            cached_schema = (cached_meta or {}).get("schema") or {}
+            if cached_schema:
+                all_cols_full = list(cached_schema.keys())
+                schema_full = {n: str(cached_schema[n]) for n in all_cols_full}
+                return {
+                    "kind": "table", "file": file,
+                    "all_columns": all_cols_full, "total_cols": len(all_cols_full),
+                    "columns": all_cols_full[:cols], "dtypes": schema_full,
+                    "data": [], "showing": 0, "showing_cols": [],
+                    "total_rows": int((cached_meta or {}).get("row_count") or 0),
+                    "meta_only": True,
+                    "page": page, "page_size": page_size, "has_more": False,
+                    "meta_cached": True,
+                    "source_path": str(fp),
+                    "source_size": fp.stat().st_size,
+                    "source_modified": fp.stat().st_mtime,
+                }
         lf = scan_one_file(fp)
         if lf is None:
             raise HTTPException(400, f"Cannot read: {file}")
@@ -733,7 +756,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             total_df = collect_streaming(filtered.select(pl.len()))
             total = int(total_df[0, 0]) if total_df.height else 0
             show_lf = filtered.select(sel) if sel else filtered
-            show = show_lf.slice(offset, page_size).collect()
+            show = collect_streaming(show_lf.slice(offset, page_size))
         except Exception:
             try:
                 from core.parquet_perf import collect_streaming
@@ -750,7 +773,11 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
         # Page path: parquet scan + lazy slice → only fetches the rows we need.
         if sel:
             lf = lf.select(sel)
-        show = lf.slice(offset, page_size).collect()
+        try:
+            from core.parquet_perf import collect_streaming
+            show = collect_streaming(lf.slice(offset, page_size))
+        except Exception:
+            show = lf.slice(offset, page_size).collect()
         total = int((cached_meta or {}).get("row_count") or 0) or (offset + show.height)
         has_more = show.height == page_size if not cached_meta else offset + show.height < total
 

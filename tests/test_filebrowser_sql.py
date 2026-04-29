@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -67,6 +68,46 @@ def test_lazy_view_limits_default_wide_preview_but_filters_full_schema():
     assert result["truncated_cols"] is True
     assert result["columns"] == [f"c{i:02d}" for i in range(5)]
     assert result["data"] == [{"c00": 0, "c01": 1, "c02": 2, "c03": 3, "c04": 4}]
+
+
+def test_base_file_meta_only_uses_cached_parquet_metadata(monkeypatch, tmp_path):
+    fp = tmp_path / "ML_TABLE_BIG.parquet"
+    fp.write_bytes(b"placeholder")
+    meta = fp.with_suffix(fp.suffix + ".meta.json")
+    meta.write_text(
+        json.dumps({"row_count": 123, "schema": {"lot": "String", "value": "Float64"}}),
+        encoding="utf-8",
+    )
+
+    class DummyPaths:
+        pass
+
+    dummy_paths = DummyPaths()
+    dummy_paths.base_root = tmp_path
+    dummy_paths.db_root = tmp_path
+    dummy_paths.data_root = tmp_path
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+
+    def fail_scan(_fp):
+        raise AssertionError("meta_only should not scan parquet when sidecar metadata exists")
+
+    monkeypatch.setattr(filebrowser, "scan_one_file", fail_scan)
+
+    result = filebrowser.base_file_view(
+        file=fp.name,
+        rows=200,
+        cols=1,
+        meta_only=True,
+        page=0,
+        page_size=200,
+    )
+
+    assert result["meta_only"] is True
+    assert result["meta_cached"] is True
+    assert result["total_rows"] == 123
+    assert result["columns"] == ["lot"]
+    assert result["all_columns"] == ["lot", "value"]
+    assert result["data"] == []
 
 
 def test_download_lazy_csv_requires_selected_columns_for_wide_sources():
