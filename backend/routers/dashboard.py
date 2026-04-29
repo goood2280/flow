@@ -1293,8 +1293,8 @@ class ChartConfig(BaseModel):
     ml_file: str = ""
     knob_col: str = ""
     knob_value: str = ""
-    # v8.4.8: Layout fields — group (filter chips 용) + grid span.
-    # width 1..4 = 가로 열수, height 1..3 = 세로 행수. Legacy 차트는 (1,1).
+    # v8.4.8: Layout fields — group/phase sections + grid span.
+    # width 1..4 = 가로 열수, height 1..4 = 세로 크기. Legacy 차트는 (1,1).
     group: str = ""
     width: int = 1
     height: int = 1

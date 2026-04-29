@@ -93,6 +93,9 @@ function FlowiConsole({onNavigate}){
     created_record:m.result?.tool?.created_record||null,
     missing:m.result?.tool?.missing||[],
     slots:m.result?.tool?.slots||{},
+    filters:m.result?.tool?.filters||{},
+    workflow_state:m.result?.workflow_state||m.result?.tool?.workflow_state||{},
+    output_summary:m.result?.workflow_state?.outputs||m.result?.tool?.workflow_state?.outputs||{},
     pending_prompt:m.result?.tool?.pending_prompt||"",
   }));
   const contextText=contextMessages.map(m=>`${m.role}: ${m.prompt||m.text||""} ${m.intent?`(${m.intent})`:""}`).join("\n");
