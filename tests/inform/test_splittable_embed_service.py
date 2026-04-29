@@ -132,3 +132,41 @@ def test_auto_log_splittable_change_attaches_changed_column_snapshot(tmp_path, m
     assert saved[0]["splittable_change"]["column"] == "KNOB_GATE"
     assert saved[0]["embed_table"]["st_scope"]["inline_cols"] == ["KNOB_GATE"]
     assert saved[0]["embed_table"]["st_view"]["rows"][0]["_cells"]["0"]["plan"] == "R2"
+
+
+def test_inform_mail_splittable_snapshot_html_fits_without_horizontal_scroll():
+    headers = [f"#{i}" for i in range(1, 13)]
+    embed = {
+        "source": "SplitTable/PRODA @ A1000 · ALL",
+        "note": "mail fit check",
+        "st_view": {
+            "root_lot_id": "A1000",
+            "headers": headers,
+            "header_groups": [{"label": "A1000A.1", "span": len(headers)}],
+            "rows": [{
+                "_param": "KNOB_GATE_PROFILE_LONG_NAME",
+                "_cells": {str(i): {"actual": f"R{i}", "plan": ""} for i in range(len(headers))},
+            }],
+        },
+    }
+
+    html = informs._render_embed_table_html(embed)
+
+    assert "overflow:auto" not in html
+    assert "table-layout:fixed" in html
+    assert "width:100%;max-width:100%" in html
+    assert "word-break:break-word" in html
+
+
+def test_inform_mail_body_links_go_flow_in_new_tab():
+    html = informs._build_html_body({
+        "id": "inf_test",
+        "product": "PRODA",
+        "lot_id": "A1000",
+        "author": "tester",
+        "created_at": "2026-04-29T10:00:00",
+    }, "", "")
+
+    assert "href='http://go/flow'" in html
+    assert "target='_blank'" in html
+    assert "<b>go/flow</b>" not in html

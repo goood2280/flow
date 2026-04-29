@@ -2062,6 +2062,27 @@ _ST_CELL_COLORS = [
     {"bg": "#B4DED4", "fg": "#0B5345"},
     {"bg": "#F4CCCC", "fg": "#75194C"},
 ]
+_GO_FLOW_URL = "http://go/flow"
+
+
+def _mail_fit_col_styles(data_columns: int) -> tuple[str, str]:
+    """Column widths for mail tables that must fit without horizontal scrolling."""
+    n = max(1, int(data_columns or 0))
+    first_pct = 26.0 if n <= 6 else (22.0 if n <= 10 else 18.0)
+    data_pct = (100.0 - first_pct) / n
+    break_style = "white-space:normal;word-break:break-word;overflow-wrap:anywhere;vertical-align:top;"
+    return (
+        f"width:{first_pct:.2f}%;max-width:{first_pct:.2f}%;{break_style}",
+        f"width:{data_pct:.2f}%;max-width:{data_pct:.2f}%;{break_style}",
+    )
+
+
+def _mail_data_col_style(data_col_style: str, span: int = 1) -> str:
+    m = re.search(r"width:([0-9.]+)%", data_col_style)
+    if not m:
+        return data_col_style
+    width = float(m.group(1)) * max(1, int(span or 1))
+    return re.sub(r"width:[0-9.]+%;max-width:[0-9.]+%;", f"width:{width:.2f}%;max-width:{width:.2f}%;", data_col_style, count=1)
 
 
 def _st_cell_bg(val: str, uniq_map: dict, pname: str) -> str:
@@ -2268,11 +2289,15 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
         )
 
     def _wrap(body_rows_html: str, head_cells: list[str], truncated: bool) -> str:
+        first_col_style, data_col_style = _mail_fit_col_styles(max(0, len(head_cells) - 1))
         th_style = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
-                    "font-size:11px;color:#1f2937;text-align:center;font-family:monospace;")
-        td_style_first = ("border:1px solid #d1d5db;padding:4px 8px;background:#f9fafb;"
-                          "font-size:11px;font-weight:700;color:#1f2937;font-family:monospace;")
-        thead = "<tr>" + "".join(f"<th style='{th_style}'>{c}</th>" for c in head_cells) + "</tr>"
+                    "font-size:10px;color:#1f2937;text-align:center;font-family:monospace;line-height:1.2;")
+        table_style = ("border-collapse:collapse;font-size:10px;width:100%;max-width:100%;"
+                       "table-layout:fixed;mso-table-lspace:0pt;mso-table-rspace:0pt;")
+        thead = "<tr>" + "".join(
+            f"<th style='{th_style}{first_col_style if i == 0 else data_col_style}'>{c}</th>"
+            for i, c in enumerate(head_cells)
+        ) + "</tr>"
         hdr = (
             f"<div style='margin:12px 0 4px 0;font-size:12px;font-weight:700;color:#ea580c;'>"
             f"🔗 SplitTable 스냅샷"
@@ -2284,8 +2309,8 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
                       f"⚠ {max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
         return (
             f"{hdr}{note_html}"
-            f"<div style='overflow:auto;'>"
-            f"<table style='border-collapse:collapse;font-size:11px;max-width:100%;'>"
+            f"<div style='width:100%;max-width:100%;'>"
+            f"<table style='{table_style}'>"
             f"<thead>{thead}</thead>"
             f"<tbody>{body_rows_html}</tbody>"
             f"</table></div>{trunc_html}{_plan_summary_html()}{_lineage_summary_html()}"
@@ -2296,16 +2321,17 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
         shown = rows_st[:max_rows]
         # v8.8.30: KNOB/MASK 행용 unique-value → color index 맵.
         uniq_map = _st_build_uniq_map(shown, headers)
+        first_col_style, data_col_style = _mail_fit_col_styles(len(headers))
         body_parts = []
         td_first = ("border:1px solid #d1d5db;padding:4px 8px;background:#f9fafb;"
-                    "font-size:11px;font-weight:700;font-family:monospace;")
+                    "font-size:10px;font-weight:700;font-family:monospace;line-height:1.2;")
         td_cell_base = ("border:1px solid #d1d5db;padding:4px 8px;text-align:center;"
-                        "font-size:11px;font-family:monospace;")
+                        "font-size:10px;font-family:monospace;line-height:1.2;")
         for r in shown:
             param_raw = str(r.get("_param", ""))
             param = esc(param_raw)
             cells = r.get("_cells") or {}
-            tds = [f"<td style='{td_first}'>{param}</td>"]
+            tds = [f"<td style='{td_first}{first_col_style}'>{param}</td>"]
             for i in range(len(headers)):
                 cell = cells.get(i) or cells.get(str(i)) or {}
                 actual = cell.get("actual")
@@ -2319,29 +2345,35 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
                 # v8.8.30/v9.x: plan 이 있으면 plan 기준으로 컬러링해 SplitTable unique 색상과 맞춘다.
                 paint_val = plan if plan not in (None, "") else actual
                 cell_bg = _st_cell_bg(paint_val, uniq_map, param_raw)
-                tds.append(f"<td style='{td_cell_base}{cell_bg}'>{disp_html}</td>")
+                tds.append(f"<td style='{td_cell_base}{data_col_style}{cell_bg}'>{disp_html}</td>")
             body_parts.append("<tr>" + "".join(tds) + "</tr>")
         th_style = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
-                    "font-size:11px;color:#1f2937;text-align:center;font-family:monospace;")
+                    "font-size:10px;color:#1f2937;text-align:center;font-family:monospace;line-height:1.2;")
         th_root = ("border:1px solid #d1d5db;padding:5px 8px;background:#f3f4f6;"
                    "font-size:12px;color:#ea580c;text-align:center;font-family:monospace;font-weight:700;")
         th_group = ("border:1px solid #d1d5db;padding:3px 8px;background:#f9fafb;"
                     "font-size:10px;color:#b45309;text-align:center;font-family:monospace;font-weight:700;")
+        table_style = ("border-collapse:collapse;font-size:10px;width:100%;max-width:100%;"
+                       "table-layout:fixed;mso-table-lspace:0pt;mso-table-rspace:0pt;")
         thead_parts = []
         if root_lot_id:
             thead_parts.append(
                 "<tr>"
-                f"<th style='{th_style}'></th>"
+                f"<th style='{th_style}{first_col_style}'></th>"
                 f"<th colspan='{max(1, len(headers))}' style='{th_root}'>{esc(root_lot_id)}</th>"
                 "</tr>"
             )
         if header_groups:
-            cells = [f"<th style='{th_style}'></th>"]
+            cells = [f"<th style='{th_style}{first_col_style}'></th>"]
             for g in header_groups:
-                cells.append(f"<th colspan='{int(g.get('span') or 1)}' style='{th_group}'>{esc(str(g.get('label') or ''))}</th>")
+                span = int(g.get("span") or 1)
+                cells.append(f"<th colspan='{span}' style='{th_group}{_mail_data_col_style(data_col_style, span)}'>{esc(str(g.get('label') or ''))}</th>")
             thead_parts.append("<tr>" + "".join(cells) + "</tr>")
         head_cells = ["parameter"] + [esc(h or "") for h in headers]
-        thead_parts.append("<tr>" + "".join(f"<th style='{th_style}'>{c}</th>" for c in head_cells) + "</tr>")
+        thead_parts.append("<tr>" + "".join(
+            f"<th style='{th_style}{first_col_style if i == 0 else data_col_style}'>{c}</th>"
+            for i, c in enumerate(head_cells)
+        ) + "</tr>")
         hdr = (
             f"<div style='margin:12px 0 4px 0;font-size:12px;font-weight:700;color:#ea580c;'>"
             f"🔗 SplitTable 스냅샷"
@@ -2353,8 +2385,8 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
                       f"⚠ {max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
         return (
             f"{hdr}{note_html}"
-            f"<div style='overflow:auto;'>"
-            f"<table style='border-collapse:collapse;font-size:11px;max-width:100%;'>"
+            f"<div style='width:100%;max-width:100%;'>"
+            f"<table style='{table_style}'>"
             f"<thead>{''.join(thead_parts)}</thead>"
             f"<tbody>{''.join(body_parts)}</tbody>"
             f"</table></div>{trunc_html}{_plan_summary_html()}{_lineage_summary_html()}"
@@ -2367,13 +2399,17 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
         return ""
     truncated = len(rows2d) > max_rows
     shown = rows2d[:max_rows]
+    first_col_style, data_col_style = _mail_fit_col_styles(max(0, len(cols) - 1))
     td_cell = ("border:1px solid #d1d5db;padding:4px 8px;font-size:11px;"
-               "font-family:monospace;")
+               "font-family:monospace;line-height:1.2;")
     body_parts = []
     for r in shown:
         if not isinstance(r, (list, tuple)):
             continue
-        tds = "".join(f"<td style='{td_cell}'>{esc('' if v is None else str(v))}</td>" for v in r)
+        tds = "".join(
+            f"<td style='{td_cell}{first_col_style if i == 0 else data_col_style}'>{esc('' if v is None else str(v))}</td>"
+            for i, v in enumerate(r)
+        )
         body_parts.append(f"<tr>{tds}</tr>")
     return _wrap("".join(body_parts), [esc(c or "") for c in cols], truncated)
 
@@ -2452,7 +2488,9 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         f"{embed_html}"
         f"{thread_block}"
         "<hr style='border:none;border-top:1px solid #e5e7eb;margin:18px 0 8px 0;'/>"
-        "<div style='font-size:10px;color:#6b7280;margin-bottom:4px;'>상세 확인 및 후속 조치는 <b>go/flow</b> 에서 진행해 주세요.</div>"
+        f"<div style='font-size:10px;color:#6b7280;margin-bottom:4px;'>상세 확인 및 후속 조치는 "
+        f"<a href='{esc(_GO_FLOW_URL)}' target='_blank' rel='noopener noreferrer' "
+        f"style='color:#ea580c;text-decoration:underline;font-weight:700;'>go/flow</a> 에서 진행해 주세요.</div>"
         "<div style='font-size:10px;color:#9ca3af;'>Sent by flow · 자동 전송된 메일입니다.</div>"
         "</div>"
     )
