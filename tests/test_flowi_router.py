@@ -55,7 +55,9 @@ def test_flowi_feature_router_filters_by_allowed_tabs():
     assert not matches or matches[0]["key"] != "tablemap"
 
 
-def test_flowi_chart_request_returns_clarifying_unit_plan():
+def test_flowi_chart_request_returns_clarifying_unit_plan(monkeypatch):
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+
     out = _handle_flowi_query(
         "Inline 1.0 CD와 ET LKG Corr. scatter 그리고 1차식 fitting line 그려줘",
         "PRODA",
@@ -73,6 +75,30 @@ def test_flowi_chart_request_returns_clarifying_unit_plan():
     assert out["table"]["kind"] == "flowi_chart_plan"
 
 
+def test_flowi_chart_request_uses_admin_defaults(monkeypatch):
+    monkeypatch.setattr(
+        llm_router,
+        "_admin_settings",
+        lambda: {
+            "flowi_defaults": {
+                "chart_defaults": {
+                    "scatter": {"max_points": 123, "inline_agg": "median", "et_agg": "avg"}
+                }
+            }
+        },
+    )
+
+    out = _handle_flowi_query(
+        "Inline CD와 ET LKG Corr. scatter 그려줘",
+        "PRODA",
+        12,
+        allowed_keys={"dashboard", "ml"},
+    )
+
+    assert out["chart"]["render_preset"]["max_points"] == 123
+    assert out["chart"]["aggregations"] == {"INLINE": "median", "ET": "avg"}
+
+
 def test_flowi_chart_request_computes_inline_et_scatter(tmp_path, monkeypatch):
     inline_fp = tmp_path / "inline.parquet"
     et_fp = tmp_path / "et.parquet"
@@ -86,6 +112,7 @@ def test_flowi_chart_request_computes_inline_et_scatter(tmp_path, monkeypatch):
         {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "LKG_RAW", "value": 99.0},
         {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "02", "item_id": "LKG_RAW", "value": 200.0},
     ]).write_parquet(et_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
     monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [inline_fp])
     monkeypatch.setattr(llm_router, "_et_files", lambda _product: [et_fp])
 
@@ -125,6 +152,7 @@ def test_flowi_chart_request_colors_and_filters_by_ml_table_knob(tmp_path, monke
         {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "KNOB_SPLIT": "A"},
         {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "02", "KNOB_SPLIT": "B"},
     ]).write_parquet(ml_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
     monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [inline_fp])
     monkeypatch.setattr(llm_router, "_et_files", lambda _product: [et_fp])
     monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
@@ -198,6 +226,564 @@ def test_flowi_knob_fastest_lot_joins_latest_fab_step(tmp_path, monkeypatch):
     assert out["table"]["rows"][0]["root_lot_id"] == "R2000"
     assert out["table"]["rows"][0]["current_step_id"] == "STEP_020"
     assert out["table"]["rows"][0]["func_step"] == "GATE"
+
+
+def test_flowi_fab_eqp_lookup_maps_function_step(tmp_path, monkeypatch):
+    fab_dir = tmp_path / "1.RAWDATA_DB_FAB" / "PRODX" / "date=20260429"
+    fab_dir.mkdir(parents=True)
+    pl.DataFrame([
+        {
+            "product": "PRODX",
+            "root_lot_id": "A0001",
+            "lot_id": "A0001.1",
+            "fab_lot_id": "A0001.1",
+            "wafer_id": "03",
+            "step_id": "AA230400",
+            "eqp_id": "EQP_STI_01",
+            "chamber_id": "CH_A",
+            "ppid": "PPID_STI",
+            "tkout_time": "2026-04-29T08:00:00",
+        },
+        {
+            "product": "PRODX",
+            "root_lot_id": "A0001",
+            "lot_id": "A0001.1",
+            "fab_lot_id": "A0001.1",
+            "wafer_id": "03",
+            "step_id": "AA240000",
+            "eqp_id": "EQP_GATE_01",
+            "chamber_id": "CH_B",
+            "ppid": "PPID_GATE",
+            "tkout_time": "2026-04-29T10:00:00",
+        },
+    ]).write_parquet(fab_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_FAB"] if kind.upper() == "FAB" else [])
+
+    import core.lot_step as lot_step
+    monkeypatch.setattr(lot_step, "lookup_step_meta", lambda product="", step_id="": {"func_step": {"AA230400": "STI", "AA240000": "GATE"}.get(step_id, "")})
+
+    out = _handle_flowi_query(
+        "A0001 #3 STI step eqp이 뭐야",
+        "",
+        12,
+        allowed_keys={"filebrowser", "dashboard"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "fab_eqp_lookup"
+    assert out["table"]["kind"] == "fab_eqp_lookup"
+    assert out["table"]["rows"][0]["step_id"] == "AA230400"
+    assert out["table"]["rows"][0]["function_step"] == "STI"
+    assert out["table"]["rows"][0]["eqp_id"] == "EQP_STI_01"
+
+
+def test_flowi_product_process_id_lookup_uses_latest_fab_row(tmp_path, monkeypatch):
+    fab_dir = tmp_path / "1.RAWDATA_DB_FAB" / "PRODX" / "date=20260429"
+    fab_dir.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A0001", "process_id": "PROC_OLD", "tkout_time": "2026-04-28T08:00:00"},
+        {"product": "PRODX", "root_lot_id": "A0002", "process_id": "PROC_NEW", "tkout_time": "2026-04-29T08:00:00"},
+        {"product": "PRODX", "root_lot_id": "A0003", "process_id": "PROC_NEW", "tkout_time": "2026-04-29T09:00:00"},
+    ]).write_parquet(fab_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_FAB"] if kind.upper() == "FAB" else [])
+
+    out = _handle_flowi_query(
+        "현재 PRODX 제품 process_id 확인해줘",
+        "",
+        12,
+        allowed_keys={"filebrowser"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "product_process_id_lookup"
+    assert out["table"]["rows"][0]["process_id"] == "PROC_NEW"
+    assert out["table"]["rows"][0]["latest_root_lot_id"] == "A0003"
+
+
+def test_flowi_meeting_decision_recall_by_date(monkeypatch):
+    monkeypatch.setattr(llm_router, "_load_flowi_meetings", lambda: [
+        {
+            "id": "m1",
+            "title": "모듈내부회의",
+            "owner": "hol",
+            "sessions": [
+                {
+                    "id": "s1",
+                    "idx": 1,
+                    "scheduled_at": "2026-04-01T11:00:00",
+                    "minutes": {"decisions": [{"id": "d1", "text": "WF Agg를 기본으로 한다", "calendar_pushed": True}], "action_items": []},
+                },
+                {
+                    "id": "s2",
+                    "idx": 2,
+                    "scheduled_at": "2026-04-08T11:00:00",
+                    "minutes": {"decisions": [{"id": "d2", "text": "Admin만 chart default 변경"}], "action_items": []},
+                },
+            ],
+        }
+    ])
+    monkeypatch.setattr(llm_router, "_load_flowi_calendar_events", lambda: [])
+
+    out = llm_router._handle_meeting_recall(
+        "모듈내부회의에서 결정사항들 날짜별로 정리해줘",
+        max_rows=12,
+        me={"username": "hol", "role": "user"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "meeting_recall_summary"
+    assert out["table"]["rows"][0]["date"] == "2026-04-08"
+    assert out["table"]["rows"][0]["type"] == "decision"
+    assert "Admin만" in out["table"]["rows"][0]["text"]
+
+
+def test_flowi_app_write_request_returns_draft_not_execution():
+    out = llm_router._handle_app_write_draft(
+        "A0003 #3에 ABC 이상있는데 꼬리표 남겨줘",
+        me={"username": "hol", "role": "user"},
+        allowed_keys={"tracker", "inform"},
+    )
+
+    assert out["handled"] is True
+    assert out["requires_confirmation"] is True
+    assert out["intent"] == "lot_wafer_annotation_draft"
+    assert out["slots"]["lots"] == ["A0003"]
+    assert out["slots"]["wafers"] == ["3"]
+
+
+def test_flowi_fab_step_eta_estimates_from_historical_lots(tmp_path, monkeypatch):
+    fab_dir = tmp_path / "1.RAWDATA_DB_FAB" / "PRODX" / "date=20260429"
+    fab_dir.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A0001", "lot_id": "A0001.1", "step_id": "AA220000", "tkout_time": "2026-04-29T08:00:00"},
+        {"product": "PRODX", "root_lot_id": "B0001", "lot_id": "B0001.1", "step_id": "AA220000", "tkout_time": "2026-04-28T00:00:00"},
+        {"product": "PRODX", "root_lot_id": "B0001", "lot_id": "B0001.1", "step_id": "AA230400", "tkout_time": "2026-04-28T10:00:00"},
+        {"product": "PRODX", "root_lot_id": "B0002", "lot_id": "B0002.1", "step_id": "AA220000", "tkout_time": "2026-04-28T00:00:00"},
+        {"product": "PRODX", "root_lot_id": "B0002", "lot_id": "B0002.1", "step_id": "AA230400", "tkout_time": "2026-04-28T20:00:00"},
+    ]).write_parquet(fab_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_FAB"] if kind.upper() == "FAB" else [])
+
+    import core.lot_step as lot_step
+    monkeypatch.setattr(lot_step, "lookup_step_meta", lambda product="", step_id="": {"func_step": {"AA220000": "STI", "AA230400": "MOL"}.get(step_id, "")})
+
+    out = _handle_flowi_query(
+        "A0001 AA230400에 언제쯤 도착해?",
+        "",
+        12,
+        allowed_keys={"filebrowser", "dashboard"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "fab_step_eta"
+    row = out["table"]["rows"][0]
+    assert row["product"] == "PRODX"
+    assert row["current_step_id"] == "AA220000"
+    assert row["target_step_id"] == "AA230400"
+    assert row["eta_median_hours"] == 15.0
+    assert row["sample_lots"] == 2
+    assert row["eta_at_median"] == "2026-04-29T23:00:00"
+
+
+def test_flowi_et_report_lookup_by_lot(tmp_path, monkeypatch):
+    et_dir = tmp_path / "1.RAWDATA_DB_ET" / "PRODX" / "date=20260429"
+    et_dir.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A0002", "wafer_id": "01", "step_id": "ET1000", "item_id": "AB_DC", "value": 10.0, "tkout_time": "2026-04-29T08:00:00"},
+        {"product": "PRODX", "root_lot_id": "A0002", "wafer_id": "01", "step_id": "ET1000", "item_id": "AB_DC", "value": 14.0, "tkout_time": "2026-04-29T08:05:00"},
+        {"product": "PRODX", "root_lot_id": "A0002", "wafer_id": "02", "step_id": "ET1000", "item_id": "AB_DC", "value": 20.0, "tkout_time": "2026-04-29T08:10:00"},
+    ]).write_parquet(et_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_ET"] if kind.upper() == "ET" else [])
+
+    out = _handle_flowi_query(
+        "A0002 ET Report 보여줘",
+        "",
+        12,
+        allowed_keys={"ettime", "filebrowser"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "et_report_lookup"
+    assert out["table"]["kind"] == "et_report_lookup"
+    assert out["table"]["total"] == 2
+    assert out["table"]["rows"][0]["root_lot_id"] == "A0002"
+    assert {row["median"] for row in out["table"]["rows"]} == {12.0, 20.0}
+
+
+def test_flowi_et_report_freshness_uses_file_and_data_time(tmp_path, monkeypatch):
+    et_dir = tmp_path / "1.RAWDATA_DB_ET" / "PRODX" / "date=20260429"
+    et_dir.mkdir(parents=True)
+    fp = et_dir / "ABC_ET_REPORT.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A0002", "step_id": "ET1000", "item_id": "AB_DC", "value": 10.0, "tkout_time": "2026-04-29T08:00:00"},
+        {"product": "PRODX", "root_lot_id": "A0003", "step_id": "ET1000", "item_id": "AB_DC", "value": 20.0, "tkout_time": "2026-04-29T09:30:00"},
+    ]).write_parquet(fp)
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_ET"] if kind.upper() == "ET" else [])
+
+    out = _handle_flowi_query(
+        "PRODX ABC ET Report 안올라왔는데 언제 최근업데이트 되었어?",
+        "",
+        12,
+        allowed_keys={"ettime", "filebrowser"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "et_report_freshness_lookup"
+    assert out["table"]["kind"] == "et_report_freshness"
+    assert out["table"]["rows"][0]["latest_data_time"] == "2026-04-29T09:30:00"
+    assert out["table"]["rows"][0]["row_count"] == 2
+
+
+def test_flowi_measurement_duration_lookup(tmp_path, monkeypatch):
+    et_dir = tmp_path / "1.RAWDATA_DB_ET" / "PRODX" / "date=20260429"
+    et_dir.mkdir(parents=True)
+    pl.DataFrame([
+        {
+            "product": "PRODX",
+            "root_lot_id": "A0001",
+            "wafer_id": "01",
+            "step_id": "ET1000",
+            "item_id": "AB_DC",
+            "value": 10.0,
+            "tkin_time": "2026-04-29T08:00:00",
+            "tkout_time": "2026-04-29T09:00:00",
+        }
+    ]).write_parquet(et_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_ET"] if kind.upper() == "ET" else [])
+
+    out = _handle_flowi_query(
+        "A0001 AB DC 측정시간 얼마나 걸렸어?",
+        "",
+        12,
+        allowed_keys={"ettime", "filebrowser"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "measurement_duration_lookup"
+    row = out["table"]["rows"][0]
+    assert row["item_id"] == "AB_DC"
+    assert row["duration_min"] == 60.0
+    assert row["duration_basis"] == "start_end_columns"
+
+
+def test_flowi_inline_item_lookup_by_step_id(tmp_path, monkeypatch):
+    inline_dir = tmp_path / "1.RAWDATA_DB_INLINE" / "PRODX" / "date=20260429"
+    inline_dir.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A0001", "wafer_id": "01", "step_id": "AA230400", "item_id": "CD_TOP", "value": 11.0, "time": "2026-04-29T08:00:00"},
+        {"product": "PRODX", "root_lot_id": "A0001", "wafer_id": "02", "step_id": "AA230400", "item_id": "CD_TOP", "value": 13.0, "time": "2026-04-29T08:10:00"},
+        {"product": "PRODX", "root_lot_id": "A0002", "wafer_id": "01", "step_id": "AA230400", "item_id": "THK", "value": 100.0, "time": "2026-04-29T09:00:00"},
+    ]).write_parquet(inline_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_INLINE"] if kind.upper() == "INLINE" else [])
+
+    import core.lot_step as lot_step
+    monkeypatch.setattr(lot_step, "lookup_step_meta", lambda product="", step_id="": {"func_step": "STI"} if step_id == "AA230400" else {})
+
+    out = _handle_flowi_query(
+        "PRODX step_id AA230400이면 이거 어떤 인라인 아이템이야?",
+        "",
+        12,
+        allowed_keys={"filebrowser", "dashboard"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "inline_item_by_step_lookup"
+    assert out["table"]["kind"] == "inline_item_by_step"
+    assert {row["item_id"] for row in out["table"]["rows"]} == {"CD_TOP", "THK"}
+    assert out["table"]["rows"][0]["function_step"] == "STI"
+
+
+def test_flowi_ppid_knob_lookup_links_fab_to_mltable(tmp_path, monkeypatch):
+    fab_dir = tmp_path / "1.RAWDATA_DB_FAB" / "PRODX" / "date=20260429"
+    fab_dir.mkdir(parents=True)
+    ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A0001", "wafer_id": "01", "step_id": "AA230400", "ppid": "PPID_STI", "tkout_time": "2026-04-29T08:00:00"},
+        {"product": "PRODX", "root_lot_id": "A0002", "wafer_id": "01", "step_id": "AA230400", "ppid": "PPID_STI", "tkout_time": "2026-04-29T09:00:00"},
+    ]).write_parquet(fab_dir / "part.parquet")
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A0001", "wafer_id": "01", "KNOB_STI": "A", "KNOB_OTHER": "OFF"},
+        {"product": "PRODX", "root_lot_id": "A0002", "wafer_id": "01", "KNOB_STI": "B", "KNOB_OTHER": "OFF"},
+    ]).write_parquet(ml_fp)
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_FAB"] if kind.upper() == "FAB" else [])
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+
+    out = _handle_flowi_query(
+        "PRODX step_id AA230400 ppid PPID_STI 이거 무슨 knob이야?",
+        "",
+        12,
+        allowed_keys={"filebrowser", "splittable", "ml"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "ppid_knob_lookup"
+    assert out["table"]["kind"] == "ppid_knob_lookup"
+    assert {row["knob"] for row in out["table"]["rows"]} >= {"KNOB_STI", "KNOB_OTHER"}
+    assert {row["knob_value"] for row in out["table"]["rows"] if row["knob"] == "KNOB_STI"} == {"A", "B"}
+    assert out["filters"]["fab_root_count"] == 2
+
+
+def test_flowi_index_addp_form_lookup_profiles_columns(tmp_path, monkeypatch):
+    ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A0001", "wafer_id": "01", "ADDP_INDEX": "IDX_A", "VALUE": 1.0},
+        {"product": "PRODX", "root_lot_id": "A0002", "wafer_id": "01", "ADDP_INDEX": "IDX_B", "VALUE": 2.0},
+    ]).write_parquet(ml_fp)
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+    monkeypatch.setattr(llm_router, "_et_files", lambda _product: [])
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [])
+
+    out = _handle_flowi_query(
+        "PRODX 이 index는 어떻게 만들어진거야? addp form이 어떻게돼?",
+        "",
+        12,
+        allowed_keys={"filebrowser", "ml"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "index_form_lookup"
+    assert out["table"]["kind"] == "index_form_lookup"
+    assert any(row["column"] == "ADDP_INDEX" for row in out["table"]["rows"])
+    assert any(row["source"] == "reformatter_template" and row["column"] == "python_expr" for row in out["table"]["rows"])
+
+
+def test_flowi_teg_radius_lookup_uses_wafer_layout(monkeypatch):
+    import routers.waferlayout as waferlayout_router
+
+    layout = {
+        "waferRadius": 35,
+        "wfCenterX": 0,
+        "wfCenterY": 0,
+        "refShotX": 0,
+        "refShotY": 0,
+        "refShotCenterX": 0,
+        "refShotCenterY": 0,
+        "shotPitchX": 20,
+        "shotPitchY": 20,
+        "shotSizeX": 12,
+        "shotSizeY": 12,
+        "tegSizeX": 1.2,
+        "tegSizeY": 0.6,
+        "edgeExclusionMm": 0,
+        "teg_definitions": [{"id": "AAA_TEG", "label": "AAA_TEG", "dx_mm": 2, "dy_mm": 0}],
+    }
+    monkeypatch.setattr(waferlayout_router, "_load_product_wafer_layout", lambda product: layout)
+
+    out = _handle_flowi_query(
+        "PRODX AAA TEG radius 가장 먼게 어느 샷까지 있어? 풀맵기준으로",
+        "",
+        12,
+        allowed_keys={"waferlayout"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "teg_radius_lookup"
+    assert out["feature"] == "waferlayout"
+    rows = out["table"]["rows"]
+    assert rows
+    assert rows[0]["teg_label"] == "AAA_TEG"
+    assert rows[0]["radius_mm"] >= rows[-1]["radius_mm"]
+    assert out["workflow_state"]["intent"] == "teg_radius_lookup" if "workflow_state" in out else True
+
+
+def test_flowi_teg_position_lookup_returns_shot_local_coordinates(monkeypatch):
+    import routers.waferlayout as waferlayout_router
+
+    layout = {
+        "shotSizeX": 30,
+        "shotSizeY": 30,
+        "tegSizeX": 1.5,
+        "tegSizeY": 0.7,
+        "teg_definitions": [{"id": "AAA_TEG", "label": "AAA_TEG", "dx_mm": 13.6, "dy_mm": 29.6}],
+    }
+    monkeypatch.setattr(waferlayout_router, "_load_product_wafer_layout", lambda product: layout)
+
+    out = _handle_flowi_query(
+        "PRODX AAA TEG Shot내 위치 보여줘",
+        "",
+        12,
+        allowed_keys={"waferlayout"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "teg_shot_position_lookup"
+    row = out["table"]["rows"][0]
+    assert row["teg_label"] == "AAA_TEG"
+    assert row["shot_local_x_mm"] == 13.6
+    assert row["shot_local_y_mm"] == 29.6
+    assert row["origin"] == "shot_center + dx/dy"
+
+
+def test_flowi_wafer_map_similarity_prefers_beol_candidates(tmp_path, monkeypatch):
+    et_dir = tmp_path / "1.RAWDATA_DB_ET" / "PRODX" / "date=20260429"
+    et_dir.mkdir(parents=True)
+    rows = []
+    for sx, sy, v in [(0, 0, 1.0), (0, 1, 2.0), (1, 0, 3.0), (1, 1, 4.0)]:
+        rows.append({"product": "PRODX", "root_lot_id": "A0001", "wafer_id": "01", "step_id": "FEOL", "item_id": "VTH", "shot_x": sx, "shot_y": sy, "value": v})
+        rows.append({"product": "PRODX", "root_lot_id": "A0001", "wafer_id": "01", "step_id": "BEOL_M1", "item_id": "BEOL_CD", "shot_x": sx, "shot_y": sy, "value": v * 2})
+        rows.append({"product": "PRODX", "root_lot_id": "A0001", "wafer_id": "01", "step_id": "FEOL", "item_id": "FEOL_INV", "shot_x": sx, "shot_y": sy, "value": 5 - v})
+    pl.DataFrame(rows).write_parquet(et_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_ET"] if kind.upper() == "ET" else [])
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [])
+
+    out = _handle_flowi_query(
+        "PRODX VTH wf map이랑 가장 비슷한 map을 보이는거는 뭐야? beol쪽 위주로 찾아줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "ml"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "wafer_map_similarity"
+    assert out["table"]["kind"] == "wafer_map_similarity"
+    row = out["table"]["rows"][0]
+    assert row["candidate_item"] == "BEOL_CD"
+    assert row["similarity"] == 1.0
+    assert row["common_shots"] == 4
+    assert row["beol_hint"] is True
+
+
+def test_flowi_wafer_map_similarity_asks_for_target_item(tmp_path, monkeypatch):
+    et_dir = tmp_path / "1.RAWDATA_DB_ET" / "PRODX" / "date=20260429"
+    et_dir.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A0001", "wafer_id": "01", "step_id": "BEOL_M1", "item_id": "BEOL_CD", "shot_x": 0, "shot_y": 0, "value": 1.0},
+        {"product": "PRODX", "root_lot_id": "A0001", "wafer_id": "01", "step_id": "BEOL_M1", "item_id": "BEOL_CD", "shot_x": 0, "shot_y": 1, "value": 2.0},
+    ]).write_parquet(et_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_ET"] if kind.upper() == "ET" else [])
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [])
+
+    out = _handle_flowi_query(
+        "PRODX 이 항목 wf map이랑 가장 비슷한 map을 보이는거는 뭐야? beol쪽 위주로 찾아줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "ml"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "wafer_map_similarity"
+    assert out["action"] == "clarify_target_map_item"
+    assert out["clarification"]["choices"]
+
+
+def test_flowi_splittable_fab_lot_basis_uses_match_cache(monkeypatch, tmp_path):
+    import routers.splittable as splittable_router
+
+    cache_path = tmp_path / "ML_TABLE_PRODX.parquet"
+    monkeypatch.setattr(splittable_router, "_match_cache_current", lambda product: {
+        "product": "ML_TABLE_PRODX",
+        "fab_source": "1.RAWDATA_DB_FAB/PRODX",
+        "path": cache_path,
+        "meta": {
+            "built_at": "2026-04-29T10:00:00",
+            "row_count": 123,
+            "join_keys": ["root_lot_id", "wafer_id"],
+            "fab_col": "fab_lot_id",
+            "ts_col": "tkout_time",
+        },
+    })
+    monkeypatch.setattr(splittable_router, "_match_cache_refresh_minutes", lambda: 30)
+
+    out = _handle_flowi_query(
+        "PRODX 스플릿 테이블 fab_lot_id 언제 업데이트 기준이야?",
+        "",
+        12,
+        allowed_keys={"splittable"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "splittable_fab_lot_basis"
+    row = out["table"]["rows"][0]
+    assert row["built_at"] == "2026-04-29T10:00:00"
+    assert row["interval_minutes"] == 30
+    assert row["ts_col"] == "tkout_time"
+
+
+def test_flowi_fab_corun_lots_by_function_step(tmp_path, monkeypatch):
+    fab_dir = tmp_path / "1.RAWDATA_DB_FAB" / "PRODX" / "date=20260429"
+    fab_dir.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A0004", "lot_id": "A0004.1", "fab_lot_id": "A0004.1", "wafer_id": "01", "step_id": "MOL100", "tkout_time": "2026-04-29T08:00:00"},
+        {"product": "PRODX", "root_lot_id": "B0004", "lot_id": "B0004.1", "fab_lot_id": "B0004.1", "wafer_id": "01", "step_id": "MOL100", "tkout_time": "2026-04-29T09:00:00"},
+        {"product": "PRODX", "root_lot_id": "C0004", "lot_id": "C0004.1", "fab_lot_id": "C0004.1", "wafer_id": "01", "step_id": "MOL100", "tkout_time": "2026-05-05T09:00:00"},
+    ]).write_parquet(fab_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_FAB"] if kind.upper() == "FAB" else [])
+
+    import core.lot_step as lot_step
+    monkeypatch.setattr(lot_step, "lookup_step_meta", lambda product="", step_id="": {"func_step": "MOL"} if step_id == "MOL100" else {})
+
+    out = _handle_flowi_query(
+        "A0004와 MOL 기준 같이 진행한 랏이 뭐야?",
+        "",
+        12,
+        allowed_keys={"filebrowser", "dashboard"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "fab_corun_lots"
+    assert out["table"]["rows"][0]["peer_root_lot_id"] == "B0004"
+    assert out["table"]["rows"][0]["delta_hours"] == 1.0
+    assert out["table"]["total"] == 1
+
+
+def test_flowi_knob_clean_split_and_interference(tmp_path, monkeypatch):
+    ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A0001", "wafer_id": "01", "KNOB_ABC": "ON", "KNOB_DEF": ""},
+        {"product": "PRODX", "root_lot_id": "A0002", "wafer_id": "01", "KNOB_ABC": "ON", "KNOB_DEF": "HI"},
+        {"product": "PRODX", "root_lot_id": "A0003", "wafer_id": "01", "KNOB_ABC": "", "KNOB_DEF": "HI"},
+    ]).write_parquet(ml_fp)
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+
+    clean = _handle_flowi_query(
+        "PRODX ABC Knob 클린 스플릿 어떤 랏이야?",
+        "",
+        12,
+        allowed_keys={"splittable", "ml"},
+    )
+    assert clean["handled"] is True
+    assert clean["intent"] == "knob_clean_split"
+    assert clean["table"]["rows"][0]["root_lot_id"] == "A0001"
+    assert clean["table"]["rows"][0]["clean_split"] is True
+
+    inter = _handle_flowi_query(
+        "PRODX ABC Knob 분석할때 신경쓸만한 다른 Knob 적용된거있어?",
+        "",
+        12,
+        allowed_keys={"splittable", "ml"},
+    )
+    assert inter["handled"] is True
+    assert inter["intent"] == "knob_interference_lookup"
+    assert inter["table"]["rows"][0]["root_lot_id"] == "A0002"
+    assert "KNOB_DEF=HI" in inter["table"]["rows"][0]["other_knobs"]
+
+
+def test_flowi_lot_anomaly_summary_compares_against_baseline(tmp_path, monkeypatch):
+    et_dir = tmp_path / "1.RAWDATA_DB_ET" / "PRODX" / "date=20260429"
+    et_dir.mkdir(parents=True)
+    rows = []
+    for lot, val in [("A0001", 10.0), ("A0002", 11.0), ("A0003", 9.0), ("A0004", 10.5)]:
+        rows.append({"product": "PRODX", "root_lot_id": lot, "wafer_id": "01", "step_id": "ET1000", "item_id": "VTH", "value": val, "tkout_time": "2026-04-29T08:00:00"})
+    rows.append({"product": "PRODX", "root_lot_id": "A0005", "wafer_id": "01", "step_id": "ET1000", "item_id": "VTH", "value": 20.0, "tkout_time": "2026-04-29T09:00:00"})
+    rows.append({"product": "PRODX", "root_lot_id": "A0005", "wafer_id": "02", "step_id": "ET1000", "item_id": "VTH", "value": 21.0, "tkout_time": "2026-04-29T09:10:00"})
+    pl.DataFrame(rows).write_parquet(et_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_ET"] if kind.upper() == "ET" else [])
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [])
+
+    out = _handle_flowi_query(
+        "A0005 랏에 특이사항있었어? Trend대비 상하향이나 아님 outlier 생겼던것들",
+        "",
+        12,
+        allowed_keys={"dashboard", "ettime"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "lot_anomaly_summary"
+    row = out["table"]["rows"][0]
+    assert row["item_id"] == "VTH"
+    assert row["direction"] == "up"
+    assert row["severity"] == "outlier"
+    assert row["target_n"] == 2
+    assert row["baseline_n"] == 4
 
 
 def test_flowi_user_file_write_request_is_blocked(monkeypatch):
@@ -410,11 +996,40 @@ def test_flowi_agent_chat_accepts_codex_source_and_returns_web_actions(monkeypat
     assert out["agent_api"]["received"] is True
     assert out["agent_api"]["source_ai"] == "codex"
     assert out["agent_api"]["auth_user"] == "codex_tester"
+    assert out["workflow_state"]["status"] == "ready"
+    assert out["agent_api"]["workflow_state"]["intent"] == out["tool"]["intent"]
+    assert any(a["type"] == "open_tab" for a in out["next_actions"])
     assert any(a["type"] == "open_tab" and a["tab"] == "splittable" for a in out["agent_api"]["actions"])
     assert any(a["type"] == "flowi_unit_action" and a["action"] == "open_splittable" for a in out["agent_api"]["actions"])
     assert "외부 AI source: codex" in seen["prompt"]
     assert "codex-smoke-1" in seen["prompt"]
     assert "codex-test" in seen["prompt"]
+
+
+def test_flowi_agent_api_returns_confirmation_workflow_for_app_writes(monkeypatch):
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+
+    out = _run_flowi_chat(
+        prompt="A0003 #3에 ABC 이상있는데 꼬리표 남겨줘",
+        product="",
+        max_rows=12,
+        me={"username": "discord_user", "role": "admin"},
+        source_ai="discord",
+        client_run_id="discord-1",
+        agent_context={"surface": "discord", "messages": [{"role": "user", "text": "이어서 해줘"}]},
+    )
+
+    assert out["ok"] is True
+    assert out["tool"]["requires_confirmation"] is True
+    assert out["workflow_state"]["status"] == "awaiting_confirmation"
+    assert out["workflow_state"]["waiting_for"] == "user_confirmation"
+    assert out["workflow_state"]["context_message_count"] == 1
+    assert out["agent_api"]["requires_confirmation"] is True
+    assert out["agent_api"]["workflow_state"]["status"] == "awaiting_confirmation"
+    assert any(a["type"] == "respond_with_prompt" and a["recommended"] for a in out["agent_api"]["next_actions"])
+    assert out["tool"]["slots"]["lots"] == ["A0003"]
+    assert out["tool"]["slots"]["wafers"] == ["3"]
 
 
 def test_flowi_semiconductor_diagnosis_includes_file_source_profile(monkeypatch):
