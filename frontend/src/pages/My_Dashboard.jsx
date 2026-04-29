@@ -7,10 +7,12 @@ import { sf as apiSf } from "../lib/api";
 if(typeof document!=="undefined"&&!document.getElementById("dash-styles")){
   const s=document.createElement("style");s.id="dash-styles";
   s.textContent=`
-    .chart-card .chart-actions{opacity:0;transition:opacity 0.15s}
+    .chart-card .chart-actions{opacity:.92;transition:opacity 0.15s}
     .chart-card:hover .chart-actions{opacity:1}
     .chart-card{box-shadow:0 8px 22px rgba(15,23,42,0.06)}
     .chart-card:hover{box-shadow:0 12px 30px rgba(15,23,42,0.10)}
+    .chart-phase-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));align-content:start}
+    @media (max-width: 920px){.chart-phase-grid>.chart-card{grid-column:span 12!important}}
   `;
   document.head.appendChild(s);
 }
@@ -35,6 +37,16 @@ const SOFT_TEXT = "rgba(229,231,235,0.94)";
 const DIM_TEXT = "rgba(156,163,175,0.95)";
 const DIVIDER_DARK = "rgba(68,68,68,0.85)";
 const MARK_STROKE = "rgba(251,191,36,0.95)";
+const CHART_WIDTH_UNITS = [[1, "S"], [2, "M"], [3, "L"], [4, "XL"]];
+const CHART_HEIGHT_UNITS = [1, 2, 3, 4];
+const DEFAULT_CHART_FORM = {
+  title: "", source_type: "", root: "", product: "", file: "", x_col: "", y_expr: "",
+  time_col: "", days: null, chart_type: "scatter", filter_expr: "", agg_col: "",
+  agg_method: "", color_col: "", x_label: "", y_label: "", bin_count: 10,
+  bin_width: null, visible_to: "all", no_schedule: false, exclude_null: true,
+  point_size: 3, opacity: 0.7, sort_x: false, limit_points: null, joins: [],
+  group_ids: [], group: "", width: 2, height: 1,
+};
 
 function chartTypeLabel(type) {
   return ({
@@ -619,7 +631,7 @@ function DashboardSectionNav({ view, setView, counts, sections }) {
 }
 
 /* ═══ Interactive SVG Chart ═══ */
-function ChartCanvas({ cfg, points, computedAt }) {
+function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
   // v7.2: cross-chart marks
   const { marks, toggle: toggleMark } = useContext(SelectionContext);
   const hasAnyMark = marks && marks.size > 0;
@@ -628,7 +640,23 @@ function ChartCanvas({ cfg, points, computedAt }) {
   const rawType = cfg.chart_type || "scatter";
   const type = rawType === "step_knob_binning" ? "combo" : rawType;
   points = Array.isArray(points) ? points : [];
-  if (!points.length && type !== "wafer_map") return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)", fontSize: 12 }}>데이터 없음</div>;
+  const chartBoxHeight = Math.max(240, Number(canvasHeight) || 340);
+  const plotBoxHeight = Math.max(180, chartBoxHeight - 68);
+  const scrollBoxHeight = Math.max(150, chartBoxHeight - 94);
+  const panelStyle = (extra = {}) => ({
+    height: "100%",
+    minHeight: 0,
+    background: "var(--bg-card)",
+    borderRadius: 8,
+    border: "1px solid var(--border)",
+    padding: "12px 14px",
+    position: "relative",
+    overflow: "hidden",
+    display: "flex",
+    flexDirection: "column",
+    ...extra,
+  });
+  if (!points.length && type !== "wafer_map") return <div style={{ height: "100%", minHeight: 220, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12 }}>데이터 없음</div>;
   const title = cfg.title; const xL = cfg.x_label || cfg.x_col; const yL = cfg.y_label || cfg.y_expr;
   const ptSize = cfg.point_size || 3; const ptOpacity = cfg.opacity || 0.7;
 
@@ -649,9 +677,9 @@ function ChartCanvas({ cfg, points, computedAt }) {
   if (type === "table") {
     const cols = cfg.table_columns || (points[0] ? Object.keys(points[0]) : []);
     const tS = { padding: "4px 8px", fontSize: 10, fontFamily: "monospace", borderBottom: "1px solid var(--border)", textAlign: "left", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160 };
-    return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative" }}>
+    return (<div style={panelStyle()}>
       {Header}
-      <div style={{ overflow: "auto", maxHeight: 280 }}>
+      <div style={{ overflow: "auto", maxHeight: scrollBoxHeight, flex: 1, minHeight: 0 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead><tr>{cols.map(c => <th key={c} style={{ ...tS, background: "var(--bg-tertiary)", color: "var(--accent)", fontWeight: 700, position: "sticky", top: 0 }}>{c}</th>)}</tr></thead>
           <tbody>{points.map((r, i) => (
@@ -681,12 +709,12 @@ function ChartCanvas({ cfg, points, computedAt }) {
       return `rgba(${r},${g},${b},0.25)`;
     };
     const tS = { padding: "4px 8px", fontSize: 11, fontFamily: "monospace", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", textAlign: "center", whiteSpace: "nowrap" };
-    return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative" }}>
+    return (<div style={panelStyle()}>
       {Header}
       <div style={{ fontSize: 9, color: "var(--text-secondary)", marginBottom: 6, fontFamily: "monospace" }}>
         {method}{valCol ? "(" + valCol + ")" : ""} | rows: {rowCol} | cols: {colCol}
       </div>
-      <div style={{ overflow: "auto", maxHeight: 280 }}>
+      <div style={{ overflow: "auto", maxHeight: scrollBoxHeight, flex: 1, minHeight: 0 }}>
         <table style={{ borderCollapse: "collapse" }}>
           <thead><tr>
             <th style={{ ...tS, background: "var(--bg-tertiary)", color: "var(--accent)", fontWeight: 700, textAlign: "left", position: "sticky", top: 0, left: 0, zIndex: 3 }}>{rowCol} \ {colCol}</th>
@@ -712,7 +740,8 @@ function ChartCanvas({ cfg, points, computedAt }) {
   if (type === "pie") {
     const chartPoints = points.map(p => ({ ...p, y: num(p.y) }));
     const total = chartPoints.reduce((s, p) => s + p.y, 0) || 1;
-    const R = 110, cx = 140, cy = 140; let acc = 0;
+    const size = Math.max(220, Math.min(380, plotBoxHeight));
+    const R = size * 0.39, cx = size / 2, cy = size / 2; let acc = 0;
     const slices = chartPoints.map((p, i) => {
       const frac = p.y / total; const a0 = acc * 2 * Math.PI; acc += frac; const a1 = acc * 2 * Math.PI;
       const mid = (a0 + a1) / 2;
@@ -720,10 +749,10 @@ function ChartCanvas({ cfg, points, computedAt }) {
         x0: cx + R * Math.sin(a0), y0: cy - R * Math.cos(a0), x1: cx + R * Math.sin(a1), y1: cy - R * Math.cos(a1),
         color: PASTELS[i % PASTELS.length], i };
     });
-    return (<div style={{ background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "14px 16px", position: "relative" }}>
+    return (<div style={panelStyle({ padding: "14px 16px" })}>
       {Header}{Tip}
-      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-        <svg width={280} height={280} viewBox="0 0 280 280" ref={svgRef}
+      <div style={{ display: "flex", gap: 12, alignItems: "center", minHeight: 0, flex: 1 }}>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} ref={svgRef}
           onMouseLeave={() => setTip(null)}>
           {slices.map(s => (<g key={s.i}>
             <path d={`M ${cx},${cy} L ${s.x0},${s.y0} A ${R},${R} 0 ${s.frac > 0.5 ? 1 : 0} 1 ${s.x1},${s.y1} Z`}
@@ -733,7 +762,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
             {s.frac > 0.04 && <text x={s.lx} y={s.ly} textAnchor="middle" dominantBaseline="middle" fill={WHITE} fontSize={s.frac > 0.1 ? 12 : 10} fontWeight={700} style={{ textShadow: "0 1px 3px rgba(0,0,0,0.6)", pointerEvents: "none" }}>{pct(s.frac)}%</text>}
           </g>))}
         </svg>
-        <div style={{ flex: 1, overflow: "auto", maxHeight: 260 }}>
+        <div style={{ flex: 1, overflow: "auto", maxHeight: Math.max(180, Math.min(size, scrollBoxHeight)), minHeight: 0 }}>
           {slices.map(s => (<div key={s.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", borderBottom: "1px solid var(--border)" }}>
             <span style={{ width: 10, height: 10, borderRadius: 2, background: s.color, flexShrink: 0 }} />
             <span style={{ flex: 1, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.label}>{s.label}</span>
@@ -751,11 +780,11 @@ function ChartCanvas({ cfg, points, computedAt }) {
     const chartPoints = points.map(p => ({ ...p, y: num(p.y) }));
     const maxY = Math.max(...chartPoints.map(p => p.y));
     const total = chartPoints.reduce((s, p) => s + p.y, 0) || 1;
-    const W = Math.max(400, Math.min(600, points.length * 48)), H = 300, pad = { t: 24, r: 16, b: 56, l: 56 };
+    const W = Math.max(400, Math.min(600, points.length * 48)), H = Math.max(260, plotBoxHeight), pad = { t: 24, r: 16, b: 56, l: 56 };
     const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b, bw = Math.max(4, cw / points.length - 2);
-    return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "14px 16px", position: "relative" }}>
+    return (<div style={panelStyle({ padding: "14px 16px" })}>
       {Header}{Tip}
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
         {[0, 0.25, 0.5, 0.75, 1].map((f, i) => { const y = pad.t + ch * (1 - f); return (<g key={i}><line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--border)" strokeDasharray="2,3" /><text x={pad.l - 6} y={y + 3} textAnchor="end" fill="var(--text-secondary)" fontSize={9}>{Math.round(maxY * f)}</text></g>); })}
         {chartPoints.map((p, i) => {
           const x = pad.l + i * (cw / points.length) + (cw / points.length - bw) / 2;
@@ -778,7 +807,8 @@ function ChartCanvas({ cfg, points, computedAt }) {
   if (type === "donut") {
     const chartPoints = points.map(p => ({ ...p, y: num(p.y) }));
     const total = chartPoints.reduce((s, p) => s + p.y, 0) || 1;
-    const R = 90, IR = 50, cx = 120, cy = 120; let acc = 0;
+    const size = Math.max(210, Math.min(360, plotBoxHeight));
+    const R = size * 0.38, IR = size * 0.21, cx = size / 2, cy = size / 2; let acc = 0;
     const slices = chartPoints.map((p, i) => {
       const frac = p.y / total; const a0 = acc * 2 * Math.PI; acc += frac; const a1 = acc * 2 * Math.PI;
       const mid = (a0 + a1) / 2;
@@ -787,10 +817,10 @@ function ChartCanvas({ cfg, points, computedAt }) {
         innerX0: cx + IR * Math.sin(a0), innerY0: cy - IR * Math.cos(a0), innerX1: cx + IR * Math.sin(a1), innerY1: cy - IR * Math.cos(a1),
         lx: cx + (R + IR) / 2 * 0.9 * Math.sin(mid), ly: cy - (R + IR) / 2 * 0.9 * Math.cos(mid) };
     });
-    return (<div style={{ background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative" }}>
+    return (<div style={panelStyle()}>
       {Header}{Tip}
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <svg width={240} height={240} viewBox="0 0 240 240" ref={svgRef} onMouseLeave={() => setTip(null)}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", minHeight: 0, flex: 1 }}>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} ref={svgRef} onMouseLeave={() => setTip(null)}>
           {slices.map(s => <path key={s.i}
             d={`M ${s.outerX0},${s.outerY0} A ${R},${R} 0 ${s.frac > 0.5 ? 1 : 0} 1 ${s.outerX1},${s.outerY1} L ${s.innerX1},${s.innerY1} A ${IR},${IR} 0 ${s.frac > 0.5 ? 1 : 0} 0 ${s.innerX0},${s.innerY0} Z`}
             fill={s.color} stroke="var(--bg-card)" strokeWidth={1.5} opacity={0.9}
@@ -799,7 +829,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
           <text x={cx} y={cy - 4} textAnchor="middle" fill="var(--text-secondary)" fontSize={10}>합계</text>
           <text x={cx} y={cy + 12} textAnchor="middle" fill="var(--text-primary)" fontSize={14} fontWeight={700}>{total.toLocaleString()}</text>
         </svg>
-        <div style={{ flex: 1, overflow: "auto", maxHeight: 220, fontSize: 11 }}>
+        <div style={{ flex: 1, overflow: "auto", maxHeight: Math.max(170, Math.min(size, scrollBoxHeight)), minHeight: 0, fontSize: 11 }}>
           {slices.map(s => (<div key={s.i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0" }}>
             <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color, flexShrink: 0 }} />
             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.label}</span>
@@ -816,12 +846,12 @@ function ChartCanvas({ cfg, points, computedAt }) {
     const chartPoints = points.map(p => ({ ...p, y: num(p.y) }));
     const maxY = Math.max(...chartPoints.map(p => p.y));
     const total = chartPoints.reduce((s, p) => s + p.y, 0) || 1;
-    const W = Math.max(400, Math.min(600, points.length * 44)), H = 260, pad = { t: 20, r: 40, b: 50, l: 50 };
+    const W = Math.max(400, Math.min(600, points.length * 44)), H = Math.max(240, plotBoxHeight), pad = { t: 20, r: 40, b: 50, l: 50 };
     const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b, bw = Math.max(4, cw / points.length - 2);
     let cum = 0;
-    return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative" }}>
+    return (<div style={panelStyle()}>
       {Header}{Tip}
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
         {[0, 0.5, 1].map((f, i) => { const y = pad.t + ch * (1 - f); return <g key={i}><line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--border)" strokeDasharray="2,3" /><text x={pad.l - 4} y={y + 3} textAnchor="end" fill="var(--text-secondary)" fontSize={8}>{Math.round(maxY * f)}</text></g>; })}
         {chartPoints.map((p, i) => {
           const x = pad.l + i * (cw / points.length) + (cw / points.length - bw) / 2;
@@ -849,7 +879,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
     const minV = Math.min(...allVals), maxV = Math.max(...allVals), rangeV = maxV - minV || 1;
     const colW = Math.max(80, Math.min(120, 500 / points.length));
     const padL = 54, padR = 16;
-    const W = padL + points.length * colW + padR, H = 220;
+    const W = padL + points.length * colW + padR, H = Math.max(220, Math.min(380, Math.floor(plotBoxHeight * 0.48)));
     const pad = { t: 20, r: padR, b: 24, l: padL };
     const ch = H - pad.t - pad.b;
     const toY = v => pad.t + ch - (num(v, minV) - minV) / rangeV * ch;
@@ -867,10 +897,10 @@ function ChartCanvas({ cfg, points, computedAt }) {
       { label: "Max", key: "max", fmt: v => fixed(v, 4) },
     ];
     const tS = { padding: "2px 4px", borderBottom: "1px solid var(--border)", fontSize: 10, textAlign: "center", fontFamily: "monospace", overflow: "hidden" };
-    return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative" }}>
+    return (<div style={panelStyle()}>
       {Header}{Tip}
       {/* Wrapper: SVG + table share identical pixel width */}
-      <div style={{ width: W, maxWidth: "100%", margin: "0 auto" }}>
+      <div style={{ width: W, maxWidth: "100%", margin: "0 auto", overflow: "auto", minHeight: 0 }}>
       <svg width={W} height={H} ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
         <line x1={pad.l} y1={pad.t} x2={pad.l} y2={pad.t + ch} stroke="var(--text-secondary)" strokeWidth={0.5} opacity={0.4} />
         <line x1={pad.l} y1={pad.t + ch} x2={W - pad.r} y2={pad.t + ch} stroke="var(--text-secondary)" strokeWidth={0.5} opacity={0.4} />
@@ -919,9 +949,9 @@ function ChartCanvas({ cfg, points, computedAt }) {
   if (type === "treemap") {
     const chartPoints = points.map(p => ({ ...p, y: num(p.y) }));
     const total = chartPoints.reduce((s, p) => s + p.y, 0) || 1;
-    const H = 220;
+    const H = Math.max(180, plotBoxHeight - 34);
     const sorted = [...chartPoints].sort((a, b) => b.y - a.y).map((p, i) => ({ ...p, pct: p.y / total * 100, color: PASTELS[i % PASTELS.length], i }));
-    return (<div style={{ background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative", overflow: "hidden" }}>
+    return (<div style={panelStyle()}>
       {Header}{Tip}
       <div ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "flex", height: H, borderRadius: 6, overflow: "hidden", gap: 2 }}>
         {sorted.map((r, i) => (
@@ -946,7 +976,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
     const meta = cfg._heatmap_meta || {};
     const maxCnt = Math.max(1, ...points.map(p => num(p.cnt)));
     const nBins = meta.n_bins || 20;
-    const W = 420, H = 380;
+    const W = 420, H = Math.max(320, plotBoxHeight);
     const pad = { t: 16, r: 60, b: 44, l: 58 };
     const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
     const cellW = cw / nBins, cellH = ch / nBins;
@@ -959,9 +989,9 @@ function ChartCanvas({ cfg, points, computedAt }) {
       const b = Math.round(84 + 100 * (1 - t));
       return `rgb(${r},${g},${b})`;
     };
-    return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative" }}>
+    return (<div style={panelStyle()}>
       {Header}{Tip}
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
         {/* Grid cells */}
         {points.map((p, i) => (
           <rect key={i} x={pad.l + p.bx * cellW} y={pad.t + (nBins - 1 - p.by) * cellH}
@@ -1016,7 +1046,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
     }
 
     if (layoutShots.length) {
-      const W = 520, H = 520, pad = 28;
+      const W = Math.max(220, Math.min(820, plotBoxHeight - 28)), H = W, pad = 28;
       const wrMm = Number(lcfg.waferRadius || 150);
       const cx0 = Number(lcfg.wfCenterX || 0);
       const cy0 = Number(lcfg.wfCenterY || 0);
@@ -1035,9 +1065,9 @@ function ChartCanvas({ cfg, points, computedAt }) {
       const clipId = "waferClip-" + (cfg.id || "0");
       const gradId = "wBg-" + (cfg.id || "0");
       const waferCx = sx(cx0), waferCy = sy(cy0), waferR = wrMm * scale;
-      return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative" }}>
+      return (<div style={panelStyle()}>
         {Header}{Tip}
-        <svg viewBox={`0 0 ${W} ${H}`} width="100%" ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
           <defs>
             <clipPath id={clipId}><circle cx={waferCx} cy={waferCy} r={waferR} /></clipPath>
             <radialGradient id={gradId} cx="50%" cy="50%" r="50%">
@@ -1095,14 +1125,15 @@ function ChartCanvas({ cfg, points, computedAt }) {
     const xs = points.map(p => p.x), ysv = points.map(p => p.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minYv = Math.min(...ysv), maxYv = Math.max(...ysv);
     const cols = maxX - minX + 1, rows = maxYv - minYv + 1;
-    const cellW = Math.min(16, Math.max(4, 320 / cols)), cellH = Math.min(16, Math.max(4, 320 / rows));
+    const targetGrid = Math.max(260, Math.min(620, plotBoxHeight));
+    const cellW = Math.min(20, Math.max(4, targetGrid / cols)), cellH = Math.min(20, Math.max(4, targetGrid / rows));
     const W = cols * cellW + 80, H = rows * cellH + 80;
     const ox = 40, oy = 30;
     const wcx = ox + cols * cellW / 2, wcy = oy + rows * cellH / 2, wr = Math.max(cols * cellW, rows * cellH) / 2 + 8;
     const clipId = "waferClip-" + (cfg.id || "0");
-    return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative" }}>
+    return (<div style={panelStyle()}>
       {Header}{Tip}
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={Math.min(H, plotBoxHeight)} ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
         <defs>
           <clipPath id={clipId}><circle cx={wcx} cy={wcy} r={wr} /></clipPath>
           <radialGradient id={"wBg-" + (cfg.id || "0")} cx="50%" cy="50%" r="50%">
@@ -1153,15 +1184,15 @@ function ChartCanvas({ cfg, points, computedAt }) {
     const lineVals = hasLine ? points.map(p => p.line).filter(v => v != null) : [];
     const allVals = [...barVals, ...lineVals];
     const minV = Math.min(0, ...allVals), maxV = Math.max(...allVals), rangeV = maxV - minV || 1;
-    const W = Math.max(400, Math.min(600, points.length * 30)), H = 260;
+    const W = Math.max(400, Math.min(600, points.length * 30)), H = Math.max(240, plotBoxHeight);
     const pad = { t: 24, r: 16, b: 44, l: 54 };
     const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
     const toX = (i) => pad.l + (i + 0.5) * (cw / points.length);
     const toY = (v) => pad.t + ch - (v - minV) / rangeV * ch;
     const bw = Math.max(4, cw / points.length * 0.6);
-    return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 14px", position: "relative" }}>
+    return (<div style={panelStyle()}>
       {Header}{Tip}
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
         <line x1={pad.l} y1={pad.t} x2={pad.l} y2={pad.t + ch} stroke="var(--text-secondary)" strokeWidth={0.5} opacity={0.4} />
         <line x1={pad.l} y1={pad.t + ch} x2={W - pad.r} y2={pad.t + ch} stroke="var(--text-secondary)" strokeWidth={0.5} opacity={0.4} />
         {[0, 0.25, 0.5, 0.75, 1].map((f, i) => { const y = pad.t + ch * (1 - f); return <g key={i}><line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--border)" strokeDasharray="2,3" opacity={0.3} /><text x={pad.l - 6} y={y + 3} textAnchor="end" fill="var(--text-secondary)" fontSize={9}>{fmt(minV + rangeV * f)}</text></g>; })}
@@ -1204,7 +1235,7 @@ function ChartCanvas({ cfg, points, computedAt }) {
   const minY = extraVals.length ? Math.min(rawMinY, ...extraVals) : rawMinY;
   const maxY = extraVals.length ? Math.max(rawMaxY, ...extraVals) : rawMaxY;
   const rangeY = maxY - minY || 1;
-  const W = 500, H = 280;
+  const W = 500, H = Math.max(260, plotBoxHeight);
   const pad = { t: 24, r: hasColor ? 110 : 16, b: 48, l: 58 };
   const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
   const toX = (i) => pad.l + (points.length <= 1 ? cw / 2 : i / (points.length - 1) * cw);
@@ -1254,9 +1285,9 @@ function ChartCanvas({ cfg, points, computedAt }) {
     fitLine = { path, r2, degree: deg };
   }
 
-  return (<div style={{ overflow: "hidden", background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)", padding: "14px 16px", position: "relative" }}>
+  return (<div style={panelStyle({ padding: "14px 16px" })}>
     {Header}{Tip}
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
       {/* Solid axis lines */}
       <line x1={pad.l} y1={pad.t} x2={pad.l} y2={pad.t + ch} stroke="var(--text-secondary)" strokeWidth={1} opacity={0.5} />
       <line x1={pad.l} y1={pad.t + ch} x2={W - pad.r} y2={pad.t + ch} stroke="var(--text-secondary)" strokeWidth={1} opacity={0.5} />
@@ -1402,7 +1433,7 @@ function ColInput({ label, value, onChange, columns, placeholder, guide }) {
 
 /* ═══ Chart Editor ═══ */
 function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
-  const [form, setForm] = useState(cfg || { title: "", source_type: "", root: "", product: "", file: "", x_col: "", y_expr: "", time_col: "", days: null, chart_type: "scatter", filter_expr: "", agg_col: "", agg_method: "", color_col: "", x_label: "", y_label: "", bin_count: 10, bin_width: null, visible_to: "all", no_schedule: false, exclude_null: true, point_size: 3, opacity: 0.7, sort_x: false, limit_points: null, joins: [], group_ids: [] });
+  const [form, setForm] = useState({ ...DEFAULT_CHART_FORM, ...(cfg || {}) });
   const [sources, setSources] = useState([]); const [columns, setColumns] = useState([]);
   // v8.4.3: JOIN 된 소스별 컬럼 캐시. 키는 join 인덱스, 값은 컬럼명 배열.
   const [joinColumns, setJoinColumns] = useState({});
@@ -1470,7 +1501,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
   };
   const doSave = () => {
     const payload = { ...form };
-    ["days", "bin_count", "point_size", "limit_points"].forEach(k => { if (payload[k] === "" || payload[k] === undefined) payload[k] = null; else if (typeof payload[k] === "string") payload[k] = parseInt(payload[k]) || null; });
+    ["days", "bin_count", "point_size", "limit_points", "width", "height"].forEach(k => { if (payload[k] === "" || payload[k] === undefined) payload[k] = null; else if (typeof payload[k] === "string") payload[k] = parseInt(payload[k]) || null; });
     ["bin_width", "opacity", "usl", "lsl", "target"].forEach(k => { if (payload[k] === "" || payload[k] === undefined) payload[k] = null; else if (typeof payload[k] === "string") payload[k] = parseFloat(payload[k]) || null; });
     delete payload._spc; delete payload._oos;
     onSave(payload);
@@ -1504,6 +1535,18 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
           <option value="heatmap">Heatmap (2D)</option>
           <option value="table">Table</option>
           <option value="cross_table">Cross Table (Pivot)</option>
+        </select></div>
+    </div>
+    <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "flex-end" }}>
+      <div style={{ flex: 2 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>그룹 / 페이즈</div>
+        <input value={form.group || ""} onChange={e => u("group", e.target.value)} style={S} placeholder="예: Phase 1 / Gate / Corr" /></div>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>가로 크기</div>
+        <select value={Math.max(1, Math.min(4, Number(form.width) || 2))} onChange={e => u("width", parseInt(e.target.value))} style={S}>
+          {CHART_WIDTH_UNITS.map(([v, label]) => <option key={v} value={v}>{label} ({v})</option>)}
+        </select></div>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>세로 크기</div>
+        <select value={Math.max(1, Math.min(4, Number(form.height) || 1))} onChange={e => u("height", parseInt(e.target.value))} style={S}>
+          {CHART_HEIGHT_UNITS.map(v => <option key={v} value={v}>{v}</option>)}
         </select></div>
     </div>
     <div style={{ marginBottom: 8 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>데이터 소스</div>
@@ -1837,6 +1880,20 @@ export default function My_Dashboard({ user }) {
   visibleByVis.forEach(c => { const g = c.group || "기타"; groupCounts[g] = (groupCounts[g] || 0) + 1; });
   const groupNames = Object.keys(groupCounts).sort();
   const visibleCharts = visibleByVis.filter(c => !hiddenGroups.has(c.group || "기타"));
+  const chartPhaseGroups = useMemo(() => {
+    const idx = new Map();
+    const out = [];
+    visibleCharts.forEach((c) => {
+      const name = c.group || "기타";
+      if (!idx.has(name)) {
+        const entry = { name, charts: [] };
+        idx.set(name, entry);
+        out.push(entry);
+      }
+      idx.get(name).charts.push(c);
+    });
+    return out;
+  }, [visibleCharts]);
   const snapshotStamp = useMemo(
     () => Object.values(snapshots || {}).map((s) => `${s?.computed_at || ""}:${s?.oos_count || 0}:${(s?.trend_alert || {}).count || 0}`).join("|"),
     [snapshots]
@@ -2013,18 +2070,28 @@ export default function My_Dashboard({ user }) {
     </div>}
 
     {dashboardView === "charts" && visibleCharts.length === 0 && !editing && <div style={{ textAlign: "center", padding: 60, color: "var(--text-secondary)" }}>차트 없음.{canEdit ? " + 차트 추가 를 클릭하세요." : ""}</div>}
-    {/* 차트 뷰는 고정 row 높이를 없애고 카드가 자연 높이로 커지게 바꿔 잘림을 줄인다. */}
-    {dashboardView === "charts" && <div style={{ display: "grid", gridTemplateColumns: "repeat(12, minmax(0, 1fr))", gap: densityMeta.gap, alignContent: "start", paddingBottom: 12 }}>
-      {visibleCharts.map(c => { const snap = snapshots[c.id]; const isAdminChart = c.visible_to === "admin";
+    {/* 그룹/페이즈별 섹션 안에서 각 차트 카드가 선택한 크기만큼 실제 캔버스도 같이 커진다. */}
+    {dashboardView === "charts" && <div style={{ display: "grid", gap: densityMeta.gap + 4, paddingBottom: 12 }}>
+      {chartPhaseGroups.map(({ name, charts: phaseCharts }) => (
+        <section key={name} style={{ display: "grid", gap: 8 }}>
+          {chartPhaseGroups.length > 1 && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "2px 2px 0", color: "var(--text-secondary)", fontSize: 11, fontFamily: "monospace" }}>
+              <span style={{ fontWeight: 800, color: "var(--text-primary)" }}>{name}</span>
+              <span>{phaseCharts.length} charts</span>
+            </div>
+          )}
+          <div className="chart-phase-grid" style={{ gap: densityMeta.gap }}>
+      {phaseCharts.map(c => { const snap = snapshots[c.id]; const isAdminChart = c.visible_to === "admin";
         const bgColor = isAdminChart ? "linear-gradient(180deg, rgba(99,102,241,0.055), rgba(255,255,255,0))" : "linear-gradient(180deg, rgba(15,23,42,0.022), rgba(255,255,255,0))";
         const w = Math.max(1, Math.min(4, c.width || 1));
-        const h = Math.max(1, Math.min(3, c.height || 1));
+        const h = Math.max(1, Math.min(4, c.height || 1));
         // 12-col grid: width 1=3cols(S), 2=6cols(M), 3=9cols(L), 4=12cols(XL). 모바일에서는 auto-min 으로 접힘.
         const colSpan = { 1: "span 4", 2: "span 6", 3: "span 9", 4: "span 12" }[w] || "span 4";
-        const cardMinHeight = Math.max(340, densityMeta.row * h);
-        return (<div key={c.id} className="chart-card" style={{ position: "relative", background: bgColor, borderRadius: 8, border: isAdminChart ? "1.5px dashed rgba(99,102,241,0.36)" : "1px solid var(--border)", gridColumn: colSpan, minWidth: 280, minHeight: cardMinHeight, display:"flex", flexDirection:"column", overflow:"hidden" }} onDoubleClick={() => setExpanded(c.id)}>
+        const cardHeight = Math.max(330, densityMeta.row * h);
+        const chartCanvasHeight = Math.max(240, cardHeight - 48);
+        return (<div key={c.id} className="chart-card" style={{ position: "relative", background: bgColor, borderRadius: 8, border: isAdminChart ? "1.5px dashed rgba(99,102,241,0.36)" : "1px solid var(--border)", gridColumn: colSpan, minWidth: 280, height: cardHeight, display:"flex", flexDirection:"column", overflow:"hidden" }} onDoubleClick={() => setExpanded(c.id)}>
         <div style={{flex:1,minHeight:0,padding:8}}>
-          <ChartCanvas cfg={{ ...c, _spc: snap?.spc, _oos: snap?.oos_count, _heatmap_meta: snap?.heatmap_meta, _wafer_layout: snap?.wafer_layout, _wafer_map_meta: snap?.wafer_map_meta, table_columns: snap?.table_columns, cross_cols: snap?.cross_cols, cross_rows: snap?.cross_rows, cross_method: snap?.cross_method, cross_val_col: snap?.cross_val_col }} points={snap?.points} computedAt={snap?.computed_at} />
+          <ChartCanvas cfg={{ ...c, _spc: snap?.spc, _oos: snap?.oos_count, _heatmap_meta: snap?.heatmap_meta, _wafer_layout: snap?.wafer_layout, _wafer_map_meta: snap?.wafer_map_meta, table_columns: snap?.table_columns, cross_cols: snap?.cross_cols, cross_rows: snap?.cross_rows, cross_method: snap?.cross_method, cross_val_col: snap?.cross_val_col }} points={snap?.points} computedAt={snap?.computed_at} canvasHeight={chartCanvasHeight} />
         </div>
         <div style={{ fontSize: 10, color: "var(--text-secondary)", padding: "6px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop:"1px solid var(--border)", background:"rgba(0,0,0,0.02)" }}>
           <span>
@@ -2040,13 +2107,15 @@ export default function My_Dashboard({ user }) {
           </span>
         </div>
         <div className="chart-actions" style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 4, alignItems: "center" }}>
-          {/* v8.4.8: 크기 피커 — S/M/L/XL (width) × 1/2/3 (height) */}
+          {/* v8.4.8: 크기 피커 — S/M/L/XL (width) × 1/2/3/4 (height) */}
           {canEdit && <span onClick={e => e.stopPropagation()} style={{ display: "inline-flex", gap: 2, padding: "2px 4px", background: "rgba(0,0,0,0.55)", borderRadius: 4 }} title="크기 조절">
-            {[[1,"S"],[2,"M"],[3,"L"],[4,"XL"]].map(([wv, wl]) => (
+            <span style={{ fontSize: 9, color: DIM_TEXT, padding: "1px 2px" }}>W</span>
+            {CHART_WIDTH_UNITS.map(([wv, wl]) => (
               <span key={wv} onClick={() => resizeChart(c, wv, h)} style={{ cursor: "pointer", fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 3, color: w === wv ? WHITE : DIM_TEXT, background: w === wv ? "var(--accent)" : "transparent" }}>{wl}</span>
             ))}
             <span style={{ width: 1, background: DIVIDER_DARK, margin: "2px 2px" }} />
-            {[1,2,3].map(hv => (
+            <span style={{ fontSize: 9, color: DIM_TEXT, padding: "1px 2px" }}>H</span>
+            {CHART_HEIGHT_UNITS.map(hv => (
               <span key={hv} onClick={() => resizeChart(c, w, hv)} style={{ cursor: "pointer", fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 3, color: h === hv ? WHITE : DIM_TEXT, background: h === hv ? BLUE.fg : "transparent" }}>{hv}</span>
             ))}
           </span>}
@@ -2058,6 +2127,9 @@ export default function My_Dashboard({ user }) {
           </>}
         </div>
       </div>); })}
+          </div>
+        </section>
+      ))}
     </div>}
   </div>
 
@@ -2074,7 +2146,9 @@ export default function My_Dashboard({ user }) {
               <span onClick={() => setExpanded(null)} style={{ cursor: "pointer", fontSize: 20, color: "var(--text-secondary)", padding: "4px 8px" }}>✕</span>
             </div>
           </div>
-          <ChartCanvas cfg={{ ...c, point_size: (c.point_size || 3) + 1, _spc: snap?.spc, _oos: snap?.oos_count, _heatmap_meta: snap?.heatmap_meta, _wafer_layout: snap?.wafer_layout, _wafer_map_meta: snap?.wafer_map_meta, table_columns: snap?.table_columns, cross_cols: snap?.cross_cols, cross_rows: snap?.cross_rows, cross_method: snap?.cross_method, cross_val_col: snap?.cross_val_col }} points={snap?.points} computedAt={snap?.computed_at} />
+          <div style={{ height: "calc(90vh - 120px)", minHeight: 420 }}>
+            <ChartCanvas cfg={{ ...c, point_size: (c.point_size || 3) + 1, _spc: snap?.spc, _oos: snap?.oos_count, _heatmap_meta: snap?.heatmap_meta, _wafer_layout: snap?.wafer_layout, _wafer_map_meta: snap?.wafer_map_meta, table_columns: snap?.table_columns, cross_cols: snap?.cross_cols, cross_rows: snap?.cross_rows, cross_method: snap?.cross_method, cross_val_col: snap?.cross_val_col }} points={snap?.points} computedAt={snap?.computed_at} canvasHeight={760} />
+          </div>
           {isAdmin && (
             <details style={{ marginTop: 8 }}>
               <summary style={{ fontSize: 10, color: "var(--text-secondary)", cursor: "pointer" }}>debug</summary>

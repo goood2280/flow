@@ -3931,29 +3931,95 @@ def _meeting_search_terms(prompt: str) -> list[str]:
     stop = {
         "회의", "회의록", "결정사항", "결정", "액션", "액션아이템", "날짜별로", "정리",
         "보여줘", "찾아줘", "이전", "지난", "했던", "일", "뭐", "어떤", "에서", "만",
+        "날짜", "시간", "일시", "언제", "몇시", "몇", "아젠다", "agenda", "차", "회차",
     }
+    text = re.sub(r"\b\d+\s*(?:차|회차|번째)\b", " ", text)
     parts = re.split(r"[\s,./]+", text)
     out: list[str] = []
     for part in parts:
-        item = part.strip()
+        item = part.strip(" ?!~요은는이가을를과와:")
         if not item or item in stop:
             continue
-        item = re.sub(r"(회의에서|회의만|회의)$", "", item)
+        item = re.sub(r"(회의에서|회의만|회의|아젠다는|아젠다)$", "", item)
         if item and item not in stop and item not in out:
             out.append(item)
     return out[:8]
 
 
-def _is_meeting_recall_prompt(prompt: str) -> bool:
+def _meeting_session_idx_from_prompt(prompt: str) -> int | None:
     text = str(prompt or "")
-    return "회의" in text and any(term in text for term in ("결정", "회의록", "아젠다", "했던 일", "정리", "액션", "지난"))
+    m = re.search(r"(\d{1,3})\s*(?:차|회차|번째)", text)
+    if m:
+        try:
+            return max(1, int(m.group(1)))
+        except Exception:
+            return None
+    aliases = {
+        "첫": 1, "첫번": 1, "첫번째": 1,
+        "두": 2, "둘": 2, "두번": 2, "두번째": 2,
+        "세": 3, "셋": 3, "세번": 3, "세번째": 3,
+        "네": 4, "넷": 4, "네번째": 4,
+        "다섯": 5, "다섯번째": 5,
+    }
+    for key, value in aliases.items():
+        if key in text and ("차" in text or "번째" in text or "회의" in text):
+            return value
+    return None
 
 
-def _handle_meeting_recall(prompt: str, max_rows: int, me: dict[str, Any]) -> dict[str, Any]:
-    if not _is_meeting_recall_prompt(prompt):
+def _meeting_context_from_agent(agent_context: dict[str, Any] | None) -> dict[str, Any]:
+    for msg in reversed(_flowi_context_messages(agent_context)):
+        intent = str(msg.get("intent") or "")
+        feature = str(msg.get("feature") or "")
+        slots = msg.get("slots") if isinstance(msg.get("slots"), dict) else {}
+        workflow = msg.get("workflow_state") if isinstance(msg.get("workflow_state"), dict) else {}
+        workflow_slots = workflow.get("slots") if isinstance(workflow.get("slots"), dict) else {}
+        merged_slots = {**workflow_slots, **slots}
+        if intent != "meeting_recall_summary" and feature != "meeting" and not merged_slots.get("meeting_id"):
+            continue
+        out = {
+            "meeting_id": str(merged_slots.get("meeting_id") or ""),
+            "meeting_title": str(merged_slots.get("meeting_title") or ""),
+            "session_idx": merged_slots.get("session_idx"),
+        }
+        try:
+            if out["session_idx"] not in (None, ""):
+                out["session_idx"] = int(out["session_idx"])
+        except Exception:
+            out["session_idx"] = None
+        if out.get("meeting_id") or out.get("meeting_title") or out.get("session_idx"):
+            return out
+    return {}
+
+
+def _is_meeting_recall_prompt(prompt: str, agent_context: dict[str, Any] | None = None) -> bool:
+    text = str(prompt or "")
+    meeting_terms = ("결정", "회의록", "아젠다", "했던 일", "정리", "액션", "지난", "날짜", "시간", "일시", "언제", "몇시")
+    if ("회의" in text or "회의록" in text) and any(term in text for term in meeting_terms):
+        return True
+    if _meeting_context_from_agent(agent_context) and any(term in text for term in meeting_terms + ("차", "번째")):
+        return True
+    return False
+
+
+def _handle_meeting_recall(
+    prompt: str,
+    max_rows: int,
+    me: dict[str, Any],
+    agent_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not _is_meeting_recall_prompt(prompt, agent_context):
         return {"handled": False}
     meetings = [m for m in _load_flowi_meetings() if isinstance(m, dict) and _meeting_visible_to_flowi(m, me)]
+    context = _meeting_context_from_agent(agent_context)
+    requested_idx = _meeting_session_idx_from_prompt(prompt)
+    context_idx = context.get("session_idx") if isinstance(context.get("session_idx"), int) else None
+    session_idx = requested_idx or context_idx
     terms = _meeting_search_terms(prompt)
+    if not terms and context.get("meeting_title"):
+        terms = [str(context.get("meeting_title"))]
+    if context.get("meeting_id"):
+        meetings = [m for m in meetings if str(m.get("id") or "") == str(context.get("meeting_id"))] or meetings
     if terms:
         def score(meeting: dict[str, Any]) -> int:
             hay = _upper(" ".join([
@@ -3966,24 +4032,65 @@ def _handle_meeting_recall(prompt: str, max_rows: int, me: dict[str, Any]) -> di
         meetings = [m for s, m in scored if s > 0] or meetings
     want_actions = "액션" in prompt or "했던 일" in prompt or "할 일" in prompt
     want_agenda = "아젠다" in prompt
+    want_schedule = any(term in prompt for term in ("시간", "일시", "언제", "몇시")) or ("날짜" in prompt and "날짜별" not in prompt)
+    want_minutes = "회의록" in prompt or "정리" in prompt
     rows: list[dict[str, Any]] = []
+    matched_meetings: list[dict[str, Any]] = []
+    matched_sessions: list[dict[str, Any]] = []
     for meeting in meetings:
         title = meeting.get("title") or ""
         for session in meeting.get("sessions") or []:
+            try:
+                idx_int = int(session.get("idx") or 0)
+            except Exception:
+                idx_int = 0
+            if session_idx and idx_int != session_idx:
+                continue
+            if not any(m.get("id") == meeting.get("id") for m in matched_meetings):
+                matched_meetings.append(meeting)
+            matched_sessions.append(session)
             session_date = str(session.get("scheduled_at") or "")[:10]
+            session_time = str(session.get("scheduled_at") or "")[11:16]
+            scheduled_at = str(session.get("scheduled_at") or "")
             idx = session.get("idx") or ""
             minutes = session.get("minutes") or {}
+            if want_schedule:
+                agenda_count = len(session.get("agendas") or [])
+                decision_count = len(minutes.get("decisions") or [])
+                action_count = len(minutes.get("action_items") or [])
+                rows.append({
+                    "date": session_date,
+                    "time": session_time,
+                    "meeting_title": title,
+                    "session_idx": idx,
+                    "type": "session",
+                    "text": f"{idx}차 회의 일시: {scheduled_at or '(미정)'} · agenda {agenda_count} · decision {decision_count} · action {action_count}",
+                    "owner": meeting.get("owner") or "",
+                    "status": session.get("status") or "",
+                })
             if want_agenda:
                 for ag in session.get("agendas") or []:
                     rows.append({
                         "date": session_date,
+                        "time": session_time,
                         "meeting_title": title,
                         "session_idx": idx,
                         "type": "agenda",
-                        "text": ag.get("title") or "",
+                        "text": " - ".join(x for x in [ag.get("title") or "", ag.get("description") or ""] if x),
                         "owner": ag.get("owner") or "",
                         "status": session.get("status") or "",
                     })
+            if want_minutes and _text(minutes.get("body")):
+                rows.append({
+                    "date": session_date,
+                    "time": session_time,
+                    "meeting_title": title,
+                    "session_idx": idx,
+                    "type": "minutes",
+                    "text": minutes.get("body") or "",
+                    "owner": minutes.get("author") or "",
+                    "status": session.get("status") or "",
+                })
             if not want_actions:
                 for dec in minutes.get("decisions") or []:
                     obj = {"text": dec} if isinstance(dec, str) else (dec if isinstance(dec, dict) else {})
@@ -3991,6 +4098,7 @@ def _handle_meeting_recall(prompt: str, max_rows: int, me: dict[str, Any]) -> di
                         continue
                     rows.append({
                         "date": str(obj.get("due") or session_date)[:10],
+                        "time": session_time,
                         "meeting_title": title,
                         "session_idx": idx,
                         "type": "decision",
@@ -4004,6 +4112,7 @@ def _handle_meeting_recall(prompt: str, max_rows: int, me: dict[str, Any]) -> di
                         continue
                     rows.append({
                         "date": str(ai.get("due") or session_date)[:10],
+                        "time": session_time,
                         "meeting_title": title,
                         "session_idx": idx,
                         "type": "action",
@@ -4021,6 +4130,7 @@ def _handle_meeting_recall(prompt: str, max_rows: int, me: dict[str, Any]) -> di
                 continue
             rows.append({
                 "date": ev.get("date") or "",
+                "time": "",
                 "meeting_title": ref.get("meeting_title") or "",
                 "session_idx": "",
                 "type": ev.get("source_type") or "calendar",
@@ -4029,8 +4139,8 @@ def _handle_meeting_recall(prompt: str, max_rows: int, me: dict[str, Any]) -> di
                 "status": ev.get("status") or "",
             })
     rows = [r for r in rows if r.get("text")]
-    rows.sort(key=lambda r: (str(r.get("date") or ""), str(r.get("meeting_title") or ""), str(r.get("session_idx") or "")), reverse=True)
-    cols = ["date", "meeting_title", "session_idx", "type", "text", "owner", "status"]
+    rows.sort(key=lambda r: (str(r.get("date") or ""), str(r.get("time") or ""), str(r.get("meeting_title") or ""), str(r.get("session_idx") or "")), reverse=True)
+    cols = ["date", "time", "meeting_title", "session_idx", "type", "text", "owner", "status"]
     if not rows:
         return {
             "handled": True,
@@ -4039,7 +4149,12 @@ def _handle_meeting_recall(prompt: str, max_rows: int, me: dict[str, Any]) -> di
             "table": {"kind": "meeting_recall", "title": "Meeting recall", "placement": "below", "columns": _table_columns(["message"]), "rows": [{"message": "no meeting records"}], "total": 0},
         }
     scope = " / ".join(terms) if terms else "전체 회의"
-    answer = f"{scope} 기준 회의 기록 {len(rows)}건을 날짜별로 정리했습니다. 회의관리/변경점 관리의 저장된 기록만 사용했습니다."
+    if session_idx:
+        scope += f" · {session_idx}차"
+    title = "Meeting minutes" if want_minutes else ("Meeting session details" if (want_schedule or want_agenda) else "Meeting decisions/actions by date")
+    answer = f"{scope} 기준 회의 기록 {len(rows)}건을 정리했습니다. 회의관리/변경점 관리의 저장된 기록만 사용했습니다."
+    primary_meeting = matched_meetings[0] if matched_meetings else {}
+    primary_session = matched_sessions[0] if matched_sessions else {}
     return {
         "handled": True,
         "intent": "meeting_recall_summary",
@@ -4048,13 +4163,19 @@ def _handle_meeting_recall(prompt: str, max_rows: int, me: dict[str, Any]) -> di
         "feature_entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] in {"meeting", "calendar"}],
         "table": {
             "kind": "meeting_recall",
-            "title": "Meeting decisions/actions by date",
+            "title": title,
             "placement": "below",
             "columns": _table_columns(cols),
             "rows": [{k: row.get(k, "") for k in cols} for row in rows[:max(1, min(120, max_rows * 8))]],
             "total": len(rows),
         },
-        "filters": {"terms": terms},
+        "filters": {"terms": terms, "session_idx": session_idx or ""},
+        "slots": {
+            "meeting_id": primary_meeting.get("id") or context.get("meeting_id") or "",
+            "meeting_title": primary_meeting.get("title") or context.get("meeting_title") or "",
+            "session_id": primary_session.get("id") or "",
+            "session_idx": primary_session.get("idx") or session_idx or "",
+        },
     }
 
 
@@ -9025,7 +9146,7 @@ def _run_flowi_chat(
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
     max_rows = max(4, min(24, int(max_rows or 12)))
-    meeting_tool = _handle_meeting_recall(prompt, max_rows=max_rows, me=me) if ("meeting" in allowed_keys or "calendar" in allowed_keys) else {"handled": False}
+    meeting_tool = _handle_meeting_recall(prompt, max_rows=max_rows, me=me, agent_context=agent_context) if ("meeting" in allowed_keys or "calendar" in allowed_keys) else {"handled": False}
     if meeting_tool.get("handled"):
         tool = meeting_tool
     else:
@@ -9122,6 +9243,8 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
     """Keep local chart/tablemap results fast and avoid delaying visible payloads."""
     intent = str(tool.get("intent") or "")
     if intent.startswith("dashboard_") or intent == "tablemap_guidance":
+        return True
+    if intent == "meeting_recall_summary":
         return True
     if isinstance(tool.get("chart_result"), dict):
         return True

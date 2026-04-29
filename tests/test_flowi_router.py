@@ -422,6 +422,111 @@ def test_flowi_meeting_decision_recall_by_date(monkeypatch):
     assert "Admin만" in out["table"]["rows"][0]["text"]
 
 
+def test_flowi_meeting_recall_filters_requested_session_and_agenda(monkeypatch):
+    monkeypatch.setattr(llm_router, "_load_flowi_meetings", lambda: [
+        {
+            "id": "m1",
+            "title": "모듈내부회의",
+            "owner": "hol",
+            "sessions": [
+                {
+                    "id": "s1",
+                    "idx": 1,
+                    "scheduled_at": "2026-04-01T11:00:00",
+                    "agendas": [{"title": "1차 아젠다", "owner": "hol"}],
+                    "minutes": {"body": "1차 회의록", "decisions": [], "action_items": []},
+                },
+                {
+                    "id": "s2",
+                    "idx": 2,
+                    "scheduled_at": "2026-04-08T14:30:00",
+                    "agendas": [{"title": "2차 아젠다", "description": "차트 default 확정", "owner": "hol"}],
+                    "minutes": {"body": "2차 회의록", "decisions": [], "action_items": []},
+                },
+            ],
+        }
+    ])
+    monkeypatch.setattr(llm_router, "_load_flowi_calendar_events", lambda: [])
+
+    out = llm_router._handle_meeting_recall(
+        "모듈내부회의 2차 날짜랑 시간이 어떻게돼? 아젠다는?",
+        max_rows=12,
+        me={"username": "hol", "role": "user"},
+    )
+
+    rows = out["table"]["rows"]
+    assert out["handled"] is True
+    assert out["table"]["title"] == "Meeting session details"
+    assert {row["session_idx"] for row in rows} == {2}
+    assert rows[0]["type"] == "session"
+    assert rows[0]["date"] == "2026-04-08"
+    assert rows[0]["time"] == "14:30"
+    assert any(row["type"] == "agenda" and "2차 아젠다" in row["text"] for row in rows)
+    assert out["slots"]["meeting_id"] == "m1"
+    assert out["slots"]["session_idx"] == 2
+
+
+def test_flowi_meeting_recall_uses_context_for_followup_session_minutes(monkeypatch):
+    monkeypatch.setattr(llm_router, "_load_flowi_meetings", lambda: [
+        {
+            "id": "m1",
+            "title": "모듈내부회의",
+            "owner": "hol",
+            "sessions": [
+                {
+                    "id": "s1",
+                    "idx": 1,
+                    "scheduled_at": "2026-04-01T11:00:00",
+                    "minutes": {
+                        "body": "1차 회의록 본문",
+                        "decisions": [{"id": "d1", "text": "1차 결정"}],
+                        "action_items": [{"id": "a1", "text": "1차 액션", "owner": "hol", "due": "2026-04-03"}],
+                    },
+                },
+                {
+                    "id": "s2",
+                    "idx": 2,
+                    "scheduled_at": "2026-04-08T14:30:00",
+                    "minutes": {
+                        "body": "2차 회의록 본문",
+                        "decisions": [{"id": "d2", "text": "2차 결정"}],
+                        "action_items": [{"id": "a2", "text": "2차 액션", "owner": "hol", "due": "2026-04-09"}],
+                    },
+                },
+            ],
+        }
+    ])
+    monkeypatch.setattr(llm_router, "_load_flowi_calendar_events", lambda: [])
+    agent_context = {
+        "type": "home_flowi_chat",
+        "messages": [
+            {
+                "role": "assistant",
+                "intent": "meeting_recall_summary",
+                "feature": "meeting",
+                "slots": {"meeting_id": "m1", "meeting_title": "모듈내부회의", "session_idx": 2},
+                "workflow_state": {"slots": {"meeting_id": "m1", "meeting_title": "모듈내부회의", "session_idx": 2}},
+            }
+        ],
+    }
+
+    out = llm_router._handle_meeting_recall(
+        "그 회의록 정리해줘",
+        max_rows=12,
+        me={"username": "hol", "role": "user"},
+        agent_context=agent_context,
+    )
+
+    rows = out["table"]["rows"]
+    assert out["handled"] is True
+    assert out["table"]["title"] == "Meeting minutes"
+    assert {row["session_idx"] for row in rows} == {2}
+    assert any(row["type"] == "minutes" and "2차 회의록 본문" in row["text"] for row in rows)
+    assert any(row["type"] == "decision" and "2차 결정" in row["text"] for row in rows)
+    assert any(row["type"] == "action" and "2차 액션" in row["text"] for row in rows)
+    assert all("1차" not in row["text"] for row in rows)
+
+
 def test_flowi_app_write_request_returns_draft_not_execution():
     out = llm_router._handle_app_write_draft(
         "A0003 #3에 ABC 이상있는데 꼬리표 남겨줘",
