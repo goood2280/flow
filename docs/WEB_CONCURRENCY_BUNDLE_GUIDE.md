@@ -328,24 +328,6 @@ frontend/src/
 - `frontend/src/pages/My_TableMap.jsx`
 - `backend/routers/dbmap.py`
 
-### ML
-
-용도: Y에 대한 feature 영향 후보를 뽑고 도메인 방향성과 함께 해석한다.
-
-사용 흐름:
-
-1. ML 분석 탭을 연다.
-2. product, target Y, feature source, model 후보를 선택한다.
-3. TabICL/XGBoost/LightGBM 실행 결과를 비교한다.
-4. SHAP/feature importance를 공정 area와 direction 신뢰도와 함께 본다.
-5. 결과는 원인 확정이 아니라 후보로 해석한다.
-
-주요 파일:
-
-- `frontend/src/pages/My_ML.jsx`
-- `backend/routers/ml.py`
-- `backend/core/ml_heuristics.py`
-
 ### Messages
 
 용도: 사용자와 admin 사이의 1:1 문의와 공지를 앱 내부 기록으로 남긴다.

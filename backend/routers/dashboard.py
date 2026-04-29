@@ -25,6 +25,7 @@ from core.utils import (
     apply_time_window, lazy_read_source,
     load_json, save_json, serialize_rows, first_data_file,
 )
+from core.runtime_limits import dashboard_scheduler_enabled
 from app_v2.shared.source_adapter import resolve_column
 
 logger = logging.getLogger("flow.dashboard")
@@ -2336,6 +2337,12 @@ class ChartScheduler:
 
     def start(self):
         if self._thread is not None:
+            return
+        if not dashboard_scheduler_enabled():
+            logger.info(
+                "Chart scheduler disabled "
+                "(set FLOW_ENABLE_DASHBOARD_SCHEDULER=1 to enable)"
+            )
             return
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()

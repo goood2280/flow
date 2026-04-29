@@ -1,3 +1,4 @@
+import dagre from "dagre";
 import { useState, useEffect, useRef } from "react";
 // v8.8.2: S3StatusLight 제거 — S3 상태는 File Browser 에서만 관리.
 import { sf } from "../lib/api";
@@ -7,24 +8,31 @@ const API="/api/dbmap";
 const NODE_COLORS={table:"#f97316",group:"#a855f7",db_ref:"#3b82f6"};
 // Table type colors (overrides default table color based on table_type)
 const TABLE_TYPE_COLORS={data:"#f97316",matching:"#10b981",rulebook:"#eab308"};
-const TABLE_TYPE_ICONS={data:"📋",matching:"🔗",rulebook:"📖"};
-const NODE_ICONS={table:"📋",group:"📚",db_ref:"🗄️"};
+
+function splitRelationCols(value){
+  const text=String(value||"").trim();
+  if(!text)return[];
+  const parts=text.includes(",")||text.includes("\n")
+    ? text.split(/[,\n]+/)
+    : text.split(/\s+/);
+  return parts.map(s=>s.trim()).filter(Boolean);
+}
 
 // Inject overlay styles at module load — hardcoded colors prevent any flash
 if(typeof document!=="undefined"&&!document.getElementById("tm-styles")){
   const s=document.createElement("style");s.id="tm-styles";
   s.textContent=`
 .tm-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.8)!important;z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px}
-.tm-modal{background:#262626!important;border-radius:12px;padding:20px;border:1px solid #333!important;color:#e5e5e5!important;--bg-primary:#1a1a1a;--bg-secondary:#262626;--bg-tertiary:#333;--bg-hover:#2a2a2a;--border:#444;--text-primary:#e5e5e5;--text-secondary:#a3a3a3}
-.tm-modal select option{background:#1a1a1a;color:#e5e5e5}
-.tm-modal input::placeholder,.tm-modal textarea::placeholder{color:#777}
-.tm-modal h1,.tm-modal h2,.tm-modal h3,.tm-modal h4{color:#e5e5e5}
+.tm-modal{background:var(--bg-secondary,var(--bg-primary,#fff))!important;border-radius:12px;padding:20px;border:1px solid var(--border,#d1d5db)!important;color:var(--text-primary,#111827)!important}
+.tm-modal select option{background:var(--bg-primary,#fff);color:var(--text-primary,#111827)}
+.tm-modal input::placeholder,.tm-modal textarea::placeholder{color:var(--text-secondary,#6b7280)}
+.tm-modal h1,.tm-modal h2,.tm-modal h3,.tm-modal h4{color:var(--text-primary,#111827)}
 `;
   document.head.appendChild(s);
 }
 
 // ─── Graph view with zoom/pan ───────────────────────────
-function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelation,onSavePosition,onSaveRelationPosition,onNodeRightClick,selectedNodeId,onEditRelation,lineageEdges,showLineage,onDropIntoGroup,onMemberContext}){
+function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelation,onSavePosition,onSaveRelationPosition,onNodeRightClick,selectedNodeId,selectedRelationId,onEditRelation,lineageEdges,showLineage,onDropIntoGroup,onMemberContext,canManage,onSetNodeColor}){
   const[drag,setDrag]=useState(null);const[relStart,setRelStart]=useState(null);
   const[relDrag,setRelDrag]=useState(null); // {fromNode, mx, my} for relation drag
   const[relLabelDrag,setRelLabelDrag]=useState(null);
@@ -74,7 +82,7 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
       const {x,y}=graphPoint(e);
       const off={dx:relLabelDrag.startDx+(x-relLabelDrag.startX),dy:relLabelDrag.startDy+(y-relLabelDrag.startY)};
       setRelationOffsets(cur=>({...cur,[relLabelDrag.id]:off}));
-      if(onSaveRelationPosition)onSaveRelationPosition(relLabelDrag.id,off.dx,off.dy);
+      if(relDragMoved.current&&onSaveRelationPosition)onSaveRelationPosition(relLabelDrag.id,off.dx,off.dy);
       setRelLabelDrag(null);return;
     }
     if(relDrag){
@@ -145,21 +153,6 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
     e.stopPropagation();
     if(onNodeDblClick)onNodeDblClick(node);
   };
-  const laneDefs=[
-    {key:"raw",label:"Raw DB",x:24,w:320,tone:"rgba(59,130,246,0.05)",border:"rgba(59,130,246,0.20)"},
-    {key:"matching",label:"Matching / Registry",x:372,w:260,tone:"rgba(16,185,129,0.05)",border:"rgba(16,185,129,0.20)"},
-    {key:"rulebook",label:"Rulebook / Config",x:660,w:260,tone:"rgba(234,179,8,0.06)",border:"rgba(234,179,8,0.20)"},
-    {key:"derived",label:"Derived / Feature",x:948,w:320,tone:"rgba(168,85,247,0.05)",border:"rgba(168,85,247,0.20)"},
-  ];
-  const inferLane=(n)=>{
-    if(n.kind==="db_ref") return "raw";
-    const nm=String(n.name||"").toLowerCase();
-    const ref=String(n.ref_id||"").toLowerCase();
-    if(nm.includes("matching")||nm.includes("registry")||ref.includes("matching")||ref.includes("registry")) return "matching";
-    if(nm.includes("rulebook")||nm.includes("config")||ref.includes("rulebook")||ref.includes("config")) return "rulebook";
-    if(nm.includes("derived")||nm.includes("feature")||ref.includes("derived")||ref.includes("feature")) return "derived";
-    return "derived";
-  };
   const nodeById=(id)=>config.nodes.find(n=>n.id===id);
 
   // Build group→member table map (table data objects, not nodes)
@@ -175,40 +168,105 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
   // Standalone = non-group nodes that are NOT grouped tables
   const standaloneNodes=(config.nodes||[]).filter(n=>n.kind!=="group"&&!(n.kind==="table"&&groupedTableIds.has(n.ref_id)));
 
-  const laneMap=Object.fromEntries(laneDefs.map(l=>[l.key,l]));
-  const groupedByLane={raw:[],matching:[],rulebook:[],derived:[]};
-  const autoNodeMap={};
-  groupNodes.forEach((n, idx)=>{
-    const lane=inferLane(n);
-    const laneCfg=laneMap[lane];
-    autoNodeMap[n.id]={x:laneCfg.x+18,y:96+idx*160};
-  });
-  standaloneNodes.forEach((n)=>{
-    const lane=inferLane(n);
-    groupedByLane[lane].push(n);
-  });
-  Object.entries(groupedByLane).forEach(([lane, nodes])=>{
-    const laneCfg=laneMap[lane];
-    nodes
-      .sort((a,b)=>String(a.name||"").localeCompare(String(b.name||"")))
-      .forEach((n, idx)=>{
-        autoNodeMap[n.id]={x:laneCfg.x+22,y:220+idx*84};
+  const visibleGraphNodes=[...groupNodes,...standaloneNodes];
+  const nodeType=(n)=>{
+    if(n.kind==="group"||n.type==="group") return "group";
+    if(n.kind==="db_ref"||n.kind==="db"||n.type==="db") return "db";
+    return "table";
+  };
+  const nodeSize=(n)=>{
+    if(n.kind==="group"){
+      const grp=(groups||[]).find(g=>g.id===n.ref_id);
+      const memberCount=grp?(groupMembers[grp.id]||[]).length:0;
+      const cols=Math.min(memberCount,3)||1;
+      const rows=Math.ceil(memberCount/cols)||1;
+      const w=Math.max(NW+PAD*2,cols*(NW+8)-8+PAD*2);
+      const h=memberCount?28+rows*(NH+8)-8+PAD*2:70;
+      return {w,h};
+    }
+    return {w:NW,h:NH};
+  };
+  const autoNodeMap=(()=>{
+    const g=new dagre.graphlib.Graph();
+    g.setGraph({rankdir:"TB",nodesep:80,ranksep:120,marginx:40,marginy:40});
+    g.setDefaultEdgeLabel(()=>({}));
+    visibleGraphNodes.forEach(n=>{
+      const s=nodeSize(n);
+      g.setNode(n.id,{width:s.w,height:s.h});
+    });
+    const visibleIds=new Set(visibleGraphNodes.map(n=>n.id));
+    (config.relations||[]).forEach(r=>{
+      if(visibleIds.has(r.from)&&visibleIds.has(r.to)) g.setEdge(r.from,r.to);
+    });
+    try{dagre.layout(g);}catch(e){console.warn("[tablemap] dagre layout failed",e);}
+
+    const orderedByType={group:[],table:[],db:[]};
+    visibleGraphNodes.forEach(n=>{
+      const s=nodeSize(n);
+      const dn=g.node(n.id)||{};
+      orderedByType[nodeType(n)].push({node:n,size:s,cx:Number.isFinite(dn.x)?dn.x:0});
+    });
+    Object.values(orderedByType).forEach(arr=>{
+      arr.sort((a,b)=>a.cx-b.cx||String(a.node.name||"").localeCompare(String(b.node.name||"")));
+    });
+
+    const packRow=(items,y)=>{
+      let x=40;
+      const out={};
+      items.forEach(({node,size})=>{
+        out[node.id]={x,y};
+        x+=size.w+80;
       });
-  });
+      return out;
+    };
+    const groupH=Math.max(0,...orderedByType.group.map(x=>x.size.h));
+    const tableH=Math.max(NH,...orderedByType.table.map(x=>x.size.h));
+    const groupY=56;
+    const tableY=orderedByType.group.length?groupY+groupH+120:56;
+    const dbY=tableY+tableH+120;
+    return {
+      ...packRow(orderedByType.group,groupY),
+      ...packRow(orderedByType.table,tableY),
+      ...packRow(orderedByType.db,dbY),
+    };
+  })();
   const savedPos=(n)=>{
     const x=Number(n?.x),y=Number(n?.y);
     return Number.isFinite(x)&&Number.isFinite(y)?{x,y}:null;
   };
-  const getNodePos=(n)=>drag&&drag.id===n.id?{x:drag.x,y:drag.y}:(savedPos(n)||autoNodeMap[n.id]||{x:100,y:100});
+  const getNodePos=(n)=>drag&&drag.id===n.id?{x:drag.x,y:drag.y}:(autoNodeMap[n.id]||savedPos(n)||{x:100,y:100});
+  const safeColor=(value,fallback)=>{
+    const s=String(value||"").trim();
+    return /^#[0-9a-fA-F]{6}$/.test(s)?s:fallback;
+  };
+  const resolveNodeColor=(node,fallback,refObj)=>safeColor(node?.color||refObj?.color,fallback);
+  const textOnColor=(value)=>{
+    const hex=safeColor(value,"#1f2937").slice(1);
+    const r=parseInt(hex.slice(0,2),16),g=parseInt(hex.slice(2,4),16),b=parseInt(hex.slice(4,6),16);
+    const lum=(0.2126*r+0.7152*g+0.0722*b)/255;
+    return lum>0.58?"#111827":"#f9fafb";
+  };
+  const ColorPicker=({node,color,x,y})=>{
+    if(!canManage||!onSetNodeColor||!node)return null;
+    return(<foreignObject x={x} y={y} width={22} height={22}>
+      <input xmlns="http://www.w3.org/1999/xhtml" type="color" value={safeColor(color,"#f97316")}
+        title="노드 색상 지정"
+        onMouseDown={e=>e.stopPropagation()}
+        onClick={e=>e.stopPropagation()}
+        onChange={e=>onSetNodeColor(node,e.target.value)}
+        style={{width:20,height:20,padding:0,border:"1px solid rgba(255,255,255,0.35)",borderRadius:4,background:"transparent",cursor:"pointer",boxSizing:"border-box"}}/>
+    </foreignObject>);
+  };
 
   return(<div ref={containerRef} style={{position:"relative",width:"100%",height:"calc(100vh - 220px)",minHeight:620,background:"radial-gradient(circle at 1px 1px, rgba(148,163,184,0.16) 1px, transparent 0) 0 0/20px 20px, var(--bg-primary)",borderRadius:10,border:"1px solid var(--border)",overflow:"hidden"}}>
     <div style={{position:"absolute",top:8,left:8,fontSize:12,color:"var(--text-primary)",zIndex:2,background:"var(--bg-card)",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",lineHeight:1.7,boxShadow:"0 2px 8px rgba(0,0,0,0.3)"}}>
-      <div style={{fontSize:11,fontWeight:800,color:"#ef4444",marginBottom:4,letterSpacing:"0.05em"}}>📘 GUIDE</div>
+      <div style={{fontSize:11,fontWeight:800,color:"#ef4444",marginBottom:4,letterSpacing:"0.05em"}}>GUIDE</div>
       <div><b style={{color:"var(--accent)"}}>더블클릭</b> → 테이블/그룹 편집</div>
       <div><b style={{color:"var(--accent)"}}>노드 드래그</b> → 위치 이동</div>
       <div><b style={{color:"var(--accent)"}}>배경 드래그</b> → 맵 이동</div>
       <div><b style={{color:"var(--accent)"}}>마우스 휠</b> → 확대/축소</div>
       <div><b style={{color:"var(--accent)"}}>Ctrl + 드래그</b> 다른 노드로 → 관계 생성</div>
+      <div><b style={{color:"var(--accent)"}}>Relation 노드 클릭</b> → 연결 컬럼 테이블</div>
     </div>
     {relStart&&<div style={{position:"absolute",top:32,left:8,fontSize:11,color:"var(--accent)",zIndex:2,background:"var(--accent-glow)",padding:"4px 8px",borderRadius:4}}>
 출발 <b>{relStart.name}</b> → 대상 클릭 (<span onClick={()=>setRelStart(null)} style={{cursor:"pointer",textDecoration:"underline"}}>취소</span>)
@@ -221,7 +279,7 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
       <span onClick={()=>{setZoom(0.5);setPan({x:0,y:0});}} style={{height:28,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",cursor:"pointer",fontSize:10,padding:"0 8px",color:"var(--text-secondary)"}}>맞추기</span>
     </div>
     <div title="현재 확대 비율"
-      style={{position:"absolute",right:12,top:48,width:42,height:118,zIndex:2,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,boxShadow:"0 2px 8px rgba(0,0,0,0.25)"}}>
+      style={{position:"absolute",right:12,top:52,width:42,height:118,zIndex:2,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,boxShadow:"0 2px 8px rgba(0,0,0,0.25)"}}>
       <span style={{fontSize:9,color:"var(--text-secondary)",fontWeight:700}}>WHEEL</span>
       <div style={{width:4,height:58,borderRadius:3,background:"linear-gradient(180deg,var(--accent),rgba(148,163,184,0.55))",position:"relative"}}>
         <span style={{position:"absolute",left:-7,top:`${Math.max(2,Math.min(50,58-((zoom-0.2)/(2-0.2))*58))}px`,width:18,height:6,borderRadius:3,background:"#fff",border:"1px solid var(--accent)"}}/>
@@ -242,6 +300,7 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
       {/* Group bounding boxes with member tables rendered inside */}
       {groupNodes.map(gn=>{
         const gp=getNodePos(gn);const grp=(groups||[]).find(g=>g.id===gn.ref_id);
+        const groupColor=resolveNodeColor(gn,"#a855f7",grp);
         const members=grp?groupMembers[grp.id]||[]:[];
         const groupProducts=[...(Array.isArray(gn.products)?gn.products:[])].filter(p=>p&&String(p).toLowerCase()!=="common");
         const HEADER=28,INNER_PAD=12,COL_GAP=8;
@@ -257,14 +316,15 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
           style={{cursor:relDrag?"crosshair":"move"}}>
           {/* Group container */}
           <rect x={gp.x} y={gp.y} width={bw} height={members.length?bh:70} rx={12}
-            fill="#a855f726" stroke="#a855f7" strokeWidth={2.5} strokeDasharray="6,4" opacity={0.95}
+            fill={groupColor+"26"} stroke={groupColor} strokeWidth={2.5} strokeDasharray="6,4" opacity={0.95}
             />
-          <text x={gp.x+INNER_PAD} y={gp.y+18} fill="#a855f7" fontSize={11} fontWeight={700}>📚 {gn.name}</text>
-          <text x={gp.x+bw-INNER_PAD} y={gp.y+18} fill="#a855f766" fontSize={9} textAnchor="end">{members.length} 테이블</text>
+          <text x={gp.x+INNER_PAD} y={gp.y+18} fill={groupColor} fontSize={11} fontWeight={700}>📚 {gn.name}</text>
+          <text x={gp.x+bw-INNER_PAD-(canManage?26:0)} y={gp.y+18} fill={groupColor+"aa"} fontSize={9} textAnchor="end">{members.length} 테이블</text>
+          <ColorPicker node={gn} color={groupColor} x={gp.x+bw-24} y={gp.y+4}/>
           {groupProducts.length>0&&(
             <g transform={`translate(${gp.x+bw-72},${gp.y+24})`}>
-              <rect x={0} y={0} width={60} height={16} rx={8} fill="rgba(168,85,247,0.16)" stroke="rgba(168,85,247,0.35)"/>
-              <text x={30} y={11} textAnchor="middle" fill="#a855f7" fontSize={8} fontWeight={700} style={{fontFamily:"monospace"}}>{groupProducts[0]}</text>
+              <rect x={0} y={0} width={60} height={16} rx={8} fill={groupColor+"22"} stroke={groupColor+"66"}/>
+              <text x={30} y={11} textAnchor="middle" fill={groupColor} fontSize={8} fontWeight={700} style={{fontFamily:"monospace"}}>{groupProducts[0]}</text>
             </g>
           )}
 
@@ -277,18 +337,18 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
             const memberNode=config.nodes.find(n=>n.kind==="table"&&n.ref_id===m.id)||{id:"member_"+m.id,kind:"table",ref_id:m.id,name:m.name};
             const isSel=selectedNodeId===memberNode.id;
             const tType=m.table_type||"data";
-            const tColor=TABLE_TYPE_COLORS[tType]||"#f97316";
-            const tIcon=TABLE_TYPE_ICONS[tType]||"📋";
+            const tColor=resolveNodeColor(memberNode,TABLE_TYPE_COLORS[tType]||"#f97316",m);
             return(<g key={m.id} transform={`translate(${mx},${my})`}
               onMouseDown={e=>{e.stopPropagation();}}
               onClick={e=>{e.stopPropagation();onNodeClick(memberNode);}}
               onDoubleClick={e=>{e.stopPropagation();if(onNodeDblClick)onNodeDblClick(memberNode);}}
               onContextMenu={e=>{e.preventDefault();e.stopPropagation();if(onMemberContext)onMemberContext(memberNode,m);}}
               style={{cursor:"pointer"}}>
-              <rect width={NW} height={NH} rx={6} fill={tColor+"55"} stroke={isSel?"#fbbf24":tColor} strokeWidth={isSel?2.5:1.5}/>
-              <text x={10} y={20} fill={tColor} fontSize={12}>{tIcon}</text>
-              <text x={30} y={20} fill="#fff" fontSize={10} fontWeight={700} style={{textShadow:"0 1px 2px rgba(0,0,0,0.5)"}}>{(m.name||"?").slice(0,14)}</text>
-              <text x={30} y={36} fill="rgba(255,255,255,0.85)" fontSize={8}>{tType} · {m.rows?.length||0}r · {m.columns?.length||0}c</text>
+              <rect width={NW} height={NH} rx={6} fill="var(--bg-card,var(--bg-secondary,#fff))" stroke={isSel?"#fbbf24":tColor} strokeWidth={isSel?2.3:1.3}/>
+              <rect x={0} y={0} width={5} height={NH} rx={3} fill={tColor}/>
+              <text x={14} y={20} fill="var(--text-primary,#111827)" fontSize={10.5} fontWeight={800}>{(m.display_name||m.name||"?").slice(0,17)}</text>
+              <text x={14} y={36} fill="var(--text-secondary,#6b7280)" fontSize={8.5} fontWeight={700}>{tType} · {m.rows?.length||0}r · {m.columns?.length||0}c</text>
+              <ColorPicker node={memberNode} color={tColor} x={NW-24} y={NH-23}/>
             </g>);
           })}
           {members.length===0&&<text x={gp.x+bw/2} y={gp.y+48} fill="#a855f744" fontSize={10} textAnchor="middle">빈 그룹</text>}
@@ -319,42 +379,29 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
         const mx=(ax1+bx1)/2,my=(ay1+by1)/2;
         const off=relationOffsets[r.id]||{dx:Number(r.label_dx||0),dy:Number(r.label_dy||0)};
         const labelMx=mx+off.dx,labelMy=my+off.dy;
-        const fromCols=(r.from_col||"").split(/[,\s]+/).filter(Boolean);
-        const toCols=(r.to_col||"").split(/[,\s]+/).filter(Boolean);
+        const fromCols=splitRelationCols(r.from_col);
+        const toCols=splitRelationCols(r.to_col);
         const pairs=Math.max(fromCols.length,toCols.length);
         const pairRows=Array.from({length:pairs||1},(_,i)=>({from:fromCols[i]||"",to:toCols[i]||""}));
-        const tableRows=pairRows.slice(0,4);
         const compactDesc=(r.description||"").trim();
-        const label=(pairs?`${pairs} pair${pairs>1?"s":""}`:"link") + (compactDesc?` · ${compactDesc}`:"");
-        const isPairTable=pairs>1;
-        const boxW=isPairTable?190:Math.min(220, Math.max(74, label.length*5.5 + 14));
-        const boxH=isPairTable?Math.min(88, 18 + tableRows.length*14 + (pairs>4?12:0)):18;
-        const boxX=labelMx-boxW/2, boxY=labelMy-boxH/2;
+        const pairCount=pairs||0;
+        const relW=102,relH=34;
+        const relX=-relW/2,relY=-relH/2;
+        const isRelSel=selectedRelationId===r.id;
         return(<g key={r.id}>
-          <line x1={ax1} y1={ay1} x2={bx1} y2={by1} stroke="var(--accent)" strokeWidth={2} strokeOpacity={0.5} markerEnd="url(#arrow)"/>
-          <g onMouseDown={e=>onRelationMouseDown(e,r,mx,my)} onClick={e=>{e.stopPropagation();if(relDragMoved.current){relDragMoved.current=false;return;}if(onEditRelation)onEditRelation(r);}} style={{cursor:"move"}}>
-            <rect x={boxX} y={boxY} width={boxW} height={boxH} rx={5}
-                  fill="var(--bg-card,#1e1e1e)" stroke="var(--accent)" strokeOpacity={0.68} strokeWidth={1}/>
-            {isPairTable?<>
-              <text x={boxX+8} y={boxY+12} fill="var(--accent)" fontSize={8.5} fontWeight={800} style={{fontFamily:"monospace"}}>{pairs} pair relation</text>
-              <line x1={boxX} y1={boxY+18} x2={boxX+boxW} y2={boxY+18} stroke="var(--border)" strokeOpacity={0.75}/>
-              <line x1={boxX+boxW/2} y1={boxY+18} x2={boxX+boxW/2} y2={boxY+boxH} stroke="var(--border)" strokeOpacity={0.55}/>
-              {tableRows.map((p,i)=>(
-                <g key={i}>
-                  <text x={boxX+7} y={boxY+31+i*14} fill="var(--text-primary)" fontSize={8.2} style={{fontFamily:"monospace"}}>{(p.from||"-").slice(0,18)}</text>
-                  <text x={boxX+boxW/2+7} y={boxY+31+i*14} fill="var(--text-primary)" fontSize={8.2} style={{fontFamily:"monospace"}}>{(p.to||"-").slice(0,18)}</text>
-                  {i<tableRows.length-1&&<line x1={boxX} y1={boxY+36+i*14} x2={boxX+boxW} y2={boxY+36+i*14} stroke="var(--border)" strokeOpacity={0.35}/>}
-                </g>
-              ))}
-              {pairs>4&&<text x={boxX+boxW-8} y={boxY+boxH-5} textAnchor="end" fill="var(--text-secondary)" fontSize={7.8} style={{fontFamily:"monospace"}}>+{pairs-4} more</text>}
-            </>:<text x={boxX+boxW/2} y={boxY+12} textAnchor="middle" fill="var(--text-primary)" fontSize={8.5} fontWeight={700} style={{fontFamily:"monospace"}}>
-              {label.length>34?label.slice(0,34)+"…":label}
-            </text>}
-          </g>
-          {/* Edit pencil — pushed to the right of the label box */}
-          <g transform={`translate(${boxX+boxW+4},${labelMy-9})`} onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(onEditRelation)onEditRelation(r);}} style={{cursor:"pointer"}}>
-            <circle cx={9} cy={9} r={9} fill="var(--bg-card,#2a2a2a)" stroke="var(--accent)" strokeWidth={1} opacity={0.9}/>
-            <text x={9} y={13} textAnchor="middle" fill="var(--accent)" fontSize={10}>✏</text>
+          <line x1={ax1} y1={ay1} x2={bx1} y2={by1} stroke="var(--accent)" strokeWidth={1.8} strokeOpacity={0.55} markerEnd="url(#arrow)"/>
+          <circle cx={labelMx} cy={labelMy} r={relH/2+5} fill="var(--bg-primary)" opacity={0.9}/>
+          <g transform={`translate(${labelMx},${labelMy})`}
+             onMouseDown={e=>onRelationMouseDown(e,r,mx,my)}
+             onClick={e=>{e.stopPropagation();if(relDragMoved.current){relDragMoved.current=false;return;}if(onEditRelation)onEditRelation(r);}}
+             style={{cursor:"grab"}}>
+            <title>{`${a.name||r.from} -> ${b.name||r.to}\n${pairRows.map(p=>`${p.from||"-"} -> ${p.to||"-"}`).join("\n")}${compactDesc?`\n${compactDesc}`:""}`}</title>
+            <rect x={relX-3} y={relY-3} width={relW+6} height={relH+6} rx={relH/2+3} fill="var(--accent)" opacity={isRelSel?0.2:0.08}/>
+            <rect x={relX} y={relY} width={relW} height={relH} rx={relH/2} fill="var(--bg-card,var(--bg-secondary,#fff))" stroke={isRelSel?"#fbbf24":"var(--accent)"} strokeOpacity={0.9} strokeWidth={isRelSel?2.2:1.4}/>
+            <text x={relX+16} y={relY+21} fill="var(--accent)" fontSize={10} fontWeight={900} style={{fontFamily:"monospace"}}>REL</text>
+            <line x1={relX+43} y1={relY+8} x2={relX+43} y2={relY+26} stroke="var(--border)" strokeWidth={1}/>
+            <text x={relX+55} y={relY+21} fill="var(--text-primary)" fontSize={10} fontWeight={900} style={{fontFamily:"monospace"}}>{pairCount}</text>
+            <text x={relX+74} y={relY+21} fill="var(--text-secondary)" fontSize={8.5} fontWeight={800}>cols</text>
           </g>
         </g>);
       })}
@@ -393,13 +440,14 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
         const isDb=n.kind==="db_ref";
         const nodeProducts=[...(Array.isArray(n.products)?n.products:[]).concat(n.product?[n.product]:[])].filter(p=>p&&String(p).toLowerCase()!=="common");
         // For tables, use table_type color; otherwise default color
-        let color=NODE_COLORS[n.kind]||"#888", icon="📋", typeLabel="table";
+        let color=NODE_COLORS[n.kind]||"#888", typeLabel="table";
         if(n.kind==="table"){
           const tbl=(tables||[]).find(t=>t.id===n.ref_id);
           const tType=tbl?.table_type||"data";
-          color=TABLE_TYPE_COLORS[tType]||"#f97316";
-          icon=TABLE_TYPE_ICONS[tType]||"📋";
+          color=resolveNodeColor(n,TABLE_TYPE_COLORS[tType]||"#f97316",tbl);
           typeLabel=tType;
+        }else{
+          color=resolveNodeColor(n,color,null);
         }
         const sw=isSel?3:relStart?.id===n.id?3:1.5;const sc=isSel?"#fbbf24":relStart?.id===n.id?"#fbbf24":color;
         return(<g key={n.id} transform={`translate(${p.x},${p.y})`}
@@ -412,21 +460,23 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
             {/* DB cylinder — simple clean shape */}
             <path d={`M 0,12 L 0,${NH-4} Q 0,${NH+8} ${NW/2},${NH+8} Q ${NW},${NH+8} ${NW},${NH-4} L ${NW},12`} fill={color+"55"} stroke={sc} strokeWidth={sw+0.5}/>
             <ellipse cx={NW/2} cy={12} rx={NW/2} ry={12} fill={color+"80"} stroke={sc} strokeWidth={sw+0.5}/>
-            <text x={NW/2} y={38} fill="#fff" fontSize={10} fontWeight={700} textAnchor="middle" style={{textShadow:"0 1px 2px rgba(0,0,0,0.5)"}}>{(n.name||"?").slice(0,18)}</text>
+            <text x={NW/2} y={38} fill={textOnColor(color)} fontSize={10} fontWeight={700} textAnchor="middle" style={{textShadow:"0 1px 2px rgba(0,0,0,0.35)"}}>{(n.name||"?").slice(0,18)}</text>
             <text x={NW/2} y={NH+2} fill={color} fontSize={8} textAnchor="middle" fontWeight={600}>{n.source_type||"데이터베이스"}</text>
+            <ColorPicker node={n} color={color} x={8} y={2}/>
             {nodeProducts[0]&&<>
               <rect x={NW-66} y={4} width={58} height={14} rx={7} fill="rgba(59,130,246,0.16)" stroke="rgba(59,130,246,0.35)"/>
-              <text x={NW-37} y={14} textAnchor="middle" fill="#bfdbfe" fontSize={8} fontWeight={700} style={{fontFamily:"monospace"}}>{nodeProducts[0]}</text>
+              <text x={NW-37} y={14} textAnchor="middle" fill="var(--text-primary,#111827)" fontSize={8} fontWeight={700} style={{fontFamily:"monospace"}}>{nodeProducts[0]}</text>
             </>}
           </>:<>
             {/* Regular table/node box */}
-            <rect width={NW} height={NH} rx={8} fill={color+"55"} stroke={sc} strokeWidth={sw+0.5}/>
-            <text x={12} y={20} fill={color} fontSize={13}>{icon}</text>
-            <text x={34} y={20} fill="#fff" fontSize={11} fontWeight={700} style={{textShadow:"0 1px 2px rgba(0,0,0,0.5)"}}>{(n.name||"?").slice(0,16)}</text>
-            <text x={34} y={36} fill="rgba(255,255,255,0.85)" fontSize={9}>{typeLabel}</text>
+            <rect width={NW} height={NH} rx={8} fill="var(--bg-card,var(--bg-secondary,#fff))" stroke={sc} strokeWidth={sw+0.5}/>
+            <rect x={0} y={0} width={6} height={NH} rx={4} fill={color}/>
+            <text x={16} y={20} fill="var(--text-primary,#111827)" fontSize={11} fontWeight={800}>{(n.name||"?").slice(0,17)}</text>
+            <text x={16} y={36} fill="var(--text-secondary,#6b7280)" fontSize={9} fontWeight={700}>{typeLabel}</text>
+            <ColorPicker node={n} color={color} x={NW-24} y={NH-23}/>
             {nodeProducts[0]&&<>
               <rect x={NW-62} y={6} width={54} height={14} rx={7} fill={color+"22"} stroke={color+"88"}/>
-              <text x={NW-35} y={16} textAnchor="middle" fill="#fff" fontSize={8} fontWeight={700} style={{fontFamily:"monospace"}}>{nodeProducts[0]}</text>
+              <text x={NW-35} y={16} textAnchor="middle" fill="var(--text-primary,#111827)" fontSize={8} fontWeight={700} style={{fontFamily:"monospace"}}>{nodeProducts[0]}</text>
             </>}
           </>}
         </g>);
@@ -1033,7 +1083,7 @@ export default function My_TableMap({user}){
     sf(API+"/product-pages").then(d=>setHiddenProductPages(d.hidden_product_pages||[])).catch(()=>setHiddenProductPages([]));
     if(showLineage)loadLineage();
   };
-  useEffect(loadAll,[]);
+  useEffect(()=>{loadAll();},[]);
   useEffect(()=>{
     if(productFilter==="ALL"){
       setSelectedProductConfig(null);
@@ -1066,8 +1116,8 @@ export default function My_TableMap({user}){
   const nodeHasProduct=(n,p)=>productsForNode(n).some(x=>x.toLowerCase()===String(p).toLowerCase());
   const nodeHasCommon=(n)=>productsForNode(n).some(x=>x.toLowerCase()==="common");
   const splitRelationPairs=(fromStr,toStr)=>{
-    const fc=(fromStr||"").split(/[,\n]+/).map(s=>s.trim()).filter(Boolean);
-    const tc=(toStr||"").split(/[,\n]+/).map(s=>s.trim()).filter(Boolean);
+    const fc=splitRelationCols(fromStr);
+    const tc=splitRelationCols(toStr);
     const n=Math.max(fc.length,tc.length);
     const out=[];
     for(let i=0;i<n;i++) out.push({from_col:fc[i]||"",to_col:tc[i]||""});
@@ -1158,25 +1208,12 @@ export default function My_TableMap({user}){
   });
   const visibleNodes=filteredConfig.nodes||[];
   const visibleRelations=filteredConfig.relations||[];
-  const selectedNodeNames=new Map(visibleNodes.map(n=>[n.id,n.name||n.id]));
   const connectionSummary={
     db:(visibleNodes||[]).filter(n=>n.kind==="db_ref").length,
     groups:visibleGroups.length,
     tables:visibleTables.length,
     relations:visibleRelations.length,
   };
-  const relationPairRows=visibleRelations.flatMap((r)=>{
-    const pairs=splitRelationPairs(r.from_col,r.to_col);
-    const rows=pairs.length?pairs:[{from_col:"",to_col:""}];
-    return rows.map((p,idx)=>({
-      id:`${r.id}-${idx}`,
-      from_table:selectedNodeNames.get(r.from)||r.from,
-      from_col:p.from_col||"-",
-      to_table:selectedNodeNames.get(r.to)||r.to,
-      to_col:p.to_col||"-",
-      description:idx===0?(r.description||""):"",
-    }));
-  });
   const selectedProductMeta=(productConfigs||[]).find(p=>String(p.product).toLowerCase()===String(productFilter).toLowerCase());
   const cfg=selectedProductConfig||{};
   const cfgListCount=(k)=>Array.isArray(cfg[k])?cfg[k].length:0;
@@ -1199,6 +1236,12 @@ export default function My_TableMap({user}){
   const unlinkNodeFromMap=(nid)=>sf(API+"/nodes/unlink?node_id="+encodeURIComponent(nid),{method:"POST"}).then(loadAll);
   const savePosition=(id,x,y)=>sf(API+"/node/position",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:id,x,y})}).then(loadAll);
   const saveRelationPosition=(id,label_dx,label_dy)=>sf(API+"/relations/label-position",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({relation_id:id,label_dx,label_dy})}).then(loadAll);
+  const saveNodeColor=(node,color)=>{
+    if(!canManage||!node)return;
+    sf(API+"/node/color",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:node.id,ref_id:node.ref_id||"",color})})
+      .then(loadAll)
+      .catch(e=>alert(e.message||"색상 저장 실패"));
+  };
   const[selectedNode,setSelectedNode]=useState(null);
   const[dbInfo,setDbInfo]=useState(null); // DB ref detail modal
   const[dbDesc,setDbDesc]=useState("");
@@ -1302,6 +1345,7 @@ export default function My_TableMap({user}){
   // v8.8.13: relation 편집을 pairs 배열 기반 편집 표로 재설계.
   //   relForm.pairs = [{from_col, to_col}, ...]. 저장 시 기존 BE 호환(from_col/to_col 콤마 문자열) 로 직렬화.
   const[editRel,setEditRel]=useState(null);
+  const[relationMode,setRelationMode]=useState("view");
   const[relForm,setRelForm]=useState({pairs:[],description:""});
   const[autoMatchInfo,setAutoMatchInfo]=useState(null); // {matched, fromTotal, toTotal}
   // v8.7.5: 노드 kind 에 따른 컬럼 목록 fetch. case-insensitive 교집합으로 자동 매칭.
@@ -1324,10 +1368,10 @@ export default function My_TableMap({user}){
     return[];
   };
   // v8.8.13: 자동 매칭 — case-insensitive 로 pairs 배열 채움. 기존 pairs 와 dedup.
-  const autoMatchRelation=async()=>{
-    if(!editRel)return;
-    const fromN=config.nodes.find(n=>n.id===editRel.from_id);
-    const toN=config.nodes.find(n=>n.id===editRel.to_id);
+  const autoMatchRelation=async(rel=editRel)=>{
+    if(!rel)return;
+    const fromN=config.nodes.find(n=>n.id===rel.from_id);
+    const toN=config.nodes.find(n=>n.id===rel.to_id);
     const [fc,tc]=await Promise.all([_fetchNodeColumns(fromN),_fetchNodeColumns(toN)]);
     const toMap=new Map();(tc||[]).forEach(c=>{if(c)toMap.set(String(c).toLowerCase(),c);});
     const newPairs=[];
@@ -1352,14 +1396,17 @@ export default function My_TableMap({user}){
     return splitRelationPairs(fromStr,toStr);
   };
   const onAddRelation=(from,to)=>{
-    setEditRel({id:"",from_id:from.id,to_id:to.id,from_name:from.name,to_name:to.name});
+    const next={id:"",from_id:from.id,to_id:to.id,from_name:from.name,to_name:to.name};
+    setEditRel(next);
+    setRelationMode("edit");
     setRelForm({pairs:[],description:""});
     setAutoMatchInfo(null);
-    setTimeout(()=>{autoMatchRelation();},50);
+    setTimeout(()=>{autoMatchRelation(next);},50);
   };
-  const onEditRelation=(r)=>{
+  const onEditRelation=(r,mode="view")=>{
     const fromN=config.nodes.find(n=>n.id===r.from);const toN=config.nodes.find(n=>n.id===r.to);
     setEditRel({id:r.id,from_id:r.from,to_id:r.to,from_name:fromN?.name||"?",to_name:toN?.name||"?"});
+    setRelationMode(mode);
     setRelForm({pairs:_parsePairs(r.from_col,r.to_col),description:r.description||""});
     setAutoMatchInfo(null);
   };
@@ -1372,11 +1419,21 @@ export default function My_TableMap({user}){
     }).then(()=>{setEditRel(null);loadAll();}).catch(e=>alert(e.message));
   };
   const delRelation=(rid)=>sf(API+"/relations/delete?relation_id="+rid,{method:"POST"}).then(loadAll);
+  const closeRelationModal=()=>{setEditRel(null);setAutoMatchInfo(null);};
+  const relationPairs=relForm.pairs||[];
+  const relationEditing=canManage&&relationMode==="edit";
+  const relationPairStatus=(p)=>{
+    const from=String(p?.from_col||"").trim();
+    const to=String(p?.to_col||"").trim();
+    if(!from||!to)return{text:"incomplete",color:"#ef4444"};
+    if(from.toLowerCase()===to.toLowerCase())return{text:"same name",color:"#22c55e"};
+    return{text:"mapped",color:"var(--text-secondary)"};
+  };
 
-  return(<div style={{padding:"20px 28px",background:"var(--bg-primary)",minHeight:"calc(100vh - 48px)",color:"var(--text-primary)"}}>
+  return(<div style={{padding:"20px 28px",background:"var(--bg-primary)",minHeight:"calc(100vh - 52px)",color:"var(--text-primary)"}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
       <div style={{fontSize:16,fontWeight:700,fontFamily:"monospace",color:"var(--accent)",display:"flex",alignItems:"center",gap:10}}>
-        <span>{">"} table map</span>
+        <span>테이블 맵</span>
       </div>
       <div style={{display:"flex",gap:4,alignItems:"center"}}>
         {[["graph","그래프"],["manage","관리"],["configs","YAML"]].map(([k,l])=>(
@@ -1392,13 +1449,12 @@ export default function My_TableMap({user}){
       </div>}
     </div>
 
-    <div style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:6,padding:14,marginBottom:14,display:"grid",gridTemplateColumns:"minmax(320px, 1fr) minmax(260px, 420px)",gap:12,alignItems:"start"}}>
+    <div style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:6,padding:14,marginBottom:14,display:"grid",gridTemplateColumns:"1fr",gap:12,alignItems:"start"}}>
       <div>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,flexWrap:"wrap"}}>
           <div style={{fontSize:12,fontWeight:800,color:"var(--accent)",fontFamily:"monospace"}}>Product Connection</div>
           <Pill tone={productFilter==="ALL"?"neutral":"accent"}>{productFilter==="ALL"?"ALL":productFilter}</Pill>
           <Pill tone="info">DB {connectionSummary.db}</Pill>
-          <Pill tone="warn">relations {connectionSummary.relations}</Pill>
           <Pill tone="neutral">tables {connectionSummary.tables}</Pill>
         </div>
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
@@ -1425,29 +1481,6 @@ export default function My_TableMap({user}){
             ))}
           </div>
         )}
-      </div>
-      <div style={{fontSize:11,color:"var(--text-secondary)",lineHeight:1.6, minWidth:260}}>
-        <div style={{fontWeight:800,color:"var(--text-primary)",marginBottom:6}}>Pair 매칭</div>
-        <div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)"}}>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}>
-            <thead>
-              <tr>
-                {["From Table","From Col","To Table","To Col"].map(h=><th key={h} style={{textAlign:"left",padding:"6px 7px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-secondary)",fontWeight:800}}>{h}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {relationPairRows.length?relationPairRows.slice(0,80).map(row=>(
-                <tr key={row.id} title={row.description||""}>
-                  <td style={{padding:"5px 7px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",whiteSpace:"nowrap"}}>{row.from_table}</td>
-                  <td style={{padding:"5px 7px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontWeight:700,color:"var(--accent)"}}>{row.from_col}</td>
-                  <td style={{padding:"5px 7px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",whiteSpace:"nowrap"}}>{row.to_table}</td>
-                  <td style={{padding:"5px 7px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontWeight:700,color:"var(--accent)"}}>{row.to_col}</td>
-                </tr>
-              )):<tr><td colSpan={4} style={{padding:16,textAlign:"center",color:"var(--text-secondary)"}}>선택 제품에 매칭 pair가 없습니다.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-        {relationPairRows.length>80&&<div style={{fontFamily:"monospace",color:"var(--accent)",marginTop:4}}>+{relationPairRows.length-80} rows</div>}
       </div>
       {productFilter!=="ALL"&&<div style={{gridColumn:"1 / -1",borderTop:"1px solid var(--border)",paddingTop:12,display:"grid",gridTemplateColumns:"minmax(220px, 0.8fr) minmax(360px, 1.6fr)",gap:12,alignItems:"stretch"}}>
         <div style={{background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6,padding:12}}>
@@ -1489,7 +1522,10 @@ export default function My_TableMap({user}){
       onSaveRelationPosition={saveRelationPosition}
       onDropIntoGroup={onDropIntoGroup} onMemberContext={onMemberContext}
       selectedNodeId={selectedNode?.id}
+      selectedRelationId={editRel?.id||""}
       onEditRelation={onEditRelation}
+      canManage={canManage}
+      onSetNodeColor={saveNodeColor}
       lineageEdges={lineageData.edges} showLineage={showLineage}
       onNodeRightClick={(e,node)=>{
         // v8.8.2: 모든 노드(table/db_ref/group) 에 대해 "맵에서만 제거" 지원.
@@ -1579,75 +1615,95 @@ export default function My_TableMap({user}){
       {(config.relations||[]).length===0&&<div style={{padding:40,textAlign:"center",color:"var(--text-secondary)"}}>관계가 없습니다. 그래프 뷰에서 Shift+클릭으로 노드 A 를 선택한 뒤 노드 B 를 클릭하세요.</div>}
     </div>}
 
-    {/* v8.8.13: Relation editor modal — 컬럼 쌍을 표 형태로 편집. 자동 매칭은 대소문자 무시. */}
-    {editRel&&<div className="tm-overlay" onClick={()=>setEditRel(null)}>
-      <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:720,maxWidth:"94vw"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-          <div style={{fontSize:15,fontWeight:700}}>{canManage?(editRel.id?"관계 편집":"새 관계"):"관계 상세"}</div>
-          <span onClick={()=>setEditRel(null)} style={{cursor:"pointer",fontSize:18}}>✕</span>
+    {/* Relation node click opens a clean matched-column table. Admin editing is an explicit mode. */}
+    {editRel&&<div className="tm-overlay" onClick={closeRelationModal}>
+      <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:680,maxWidth:"94vw"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:14}}>
+          <div>
+            <div style={{fontSize:15,fontWeight:800}}>관계 매칭</div>
+            <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:5,fontFamily:"monospace"}}>
+              <strong style={{color:"var(--accent)"}}>{editRel.from_name}</strong>
+              <span style={{padding:"0 8px",color:"var(--text-secondary)"}}>→</span>
+              <strong style={{color:"var(--accent)"}}>{editRel.to_name}</strong>
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{padding:"4px 9px",borderRadius:999,background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,fontWeight:900,fontFamily:"monospace"}}>
+              {relationPairs.length} MATCH
+            </span>
+            <span onClick={closeRelationModal} style={{cursor:"pointer",fontSize:18}}>✕</span>
+          </div>
         </div>
-        <div style={{fontSize:12,marginBottom:12,color:"var(--text-secondary)"}}>
-          <strong style={{color:"var(--accent)"}}>{editRel.from_name}</strong> → <strong style={{color:"var(--accent)"}}>{editRel.to_name}</strong>
-        </div>
-        {canManage&&<div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,padding:"6px 10px",borderRadius:5,background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.3)"}}>
-          <button onClick={autoMatchRelation} style={{padding:"4px 12px",borderRadius:5,border:"1px solid #22c55e",background:"transparent",color:"#22c55e",fontSize:11,fontWeight:600,cursor:"pointer"}}>🔍 자동 매칭</button>
-          <span style={{fontSize:10,color:"var(--text-secondary)"}}>대소문자 무시 동명 컬럼 자동 추가 (이름 같아도 다른 열이면 수정 가능)</span>
+
+        {relationEditing&&<div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,padding:"6px 10px",borderRadius:5,background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.3)"}}>
+          <button onClick={()=>autoMatchRelation()} style={{padding:"4px 12px",borderRadius:5,border:"1px solid #22c55e",background:"transparent",color:"#22c55e",fontSize:11,fontWeight:700,cursor:"pointer"}}>자동 매칭</button>
+          <span style={{fontSize:10,color:"var(--text-secondary)"}}>대소문자 무시 동명 컬럼을 추가합니다.</span>
           {autoMatchInfo&&<span style={{fontSize:10,marginLeft:"auto",color:autoMatchInfo.matched>0?"#22c55e":"var(--text-secondary)",fontFamily:"monospace"}}>+{autoMatchInfo.matched} ({autoMatchInfo.fromTotal}↔{autoMatchInfo.toTotal})</span>}
         </div>}
-        <div style={{marginBottom:6,fontSize:11,color:"var(--text-secondary)"}}>컬럼 매핑 ({(relForm.pairs||[]).length}쌍)</div>
-        <div style={{border:"1px solid var(--border)",borderRadius:6,overflow:"auto",marginBottom:10,maxHeight:360}}>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+
+        <div style={{border:"1px solid var(--border)",borderRadius:7,overflow:"hidden",marginBottom:10}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,tableLayout:"fixed"}}>
             <thead>
               <tr style={{background:"var(--bg-tertiary)"}}>
-                {[..."No|Source Table|Source Column|Target Table|Target Column".split("|"),...(canManage?[]:["Status"])].map(h=><th key={h} style={{padding:"7px 8px",textAlign:h==="No"?"center":"left",borderBottom:"1px solid var(--border)",fontSize:10,color:h.includes("Column")?"var(--accent)":"var(--text-secondary)",fontFamily:"monospace",whiteSpace:"nowrap"}}>{h}</th>)}
-                {canManage&&<th style={{padding:"7px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",width:34}}></th>}
+                <th style={{width:44,padding:"8px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace"}}>#</th>
+                <th style={{padding:"8px 10px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>{editRel.from_name}</th>
+                <th style={{padding:"8px 10px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>{editRel.to_name}</th>
+                <th style={{width:104,padding:"8px 10px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace"}}>STATUS</th>
+                {relationEditing&&<th style={{width:34,padding:"8px 6px",textAlign:"center",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)"}}></th>}
               </tr>
             </thead>
             <tbody>
-              {(relForm.pairs||[]).length===0&&(
-                <tr><td colSpan={canManage?6:6} style={{padding:"14px 10px",textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>{canManage?"매핑 쌍이 없습니다. 자동 매칭 또는 + 행 추가 로 시작.":"매핑 쌍이 없습니다."}</td></tr>
+              {relationPairs.length===0&&(
+                <tr>
+                  <td colSpan={relationEditing?5:4} style={{padding:"18px 10px",textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>
+                    {relationEditing?"매칭된 컬럼이 없습니다. 자동 매칭 또는 행 추가로 시작하세요.":"매칭된 컬럼이 없습니다."}
+                  </td>
+                </tr>
               )}
-              {(relForm.pairs||[]).map((p,i)=>{
-                const sameLower=(p.from_col||"").toLowerCase()===(p.to_col||"").toLowerCase()&&(p.from_col||"").trim();
+              {relationPairs.map((p,i)=>{
+                const status=relationPairStatus(p);
                 return (
-                  <tr key={i} style={{borderBottom:"1px solid var(--border)"}}>
-                    <td style={{padding:"6px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",width:34}}>{i+1}</td>
-                    <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",whiteSpace:"nowrap",color:"var(--text-primary)"}}>{editRel.from_name}</td>
-                    <td style={{padding:"4px 6px",borderBottom:"1px solid var(--border)",minWidth:150}}>
-                      {canManage?<input value={p.from_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],from_col:e.target.value};return{...f,pairs:n};})}
-                        placeholder="source col" style={{width:"100%",padding:"4px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>:
-                        <span style={{fontFamily:"monospace",fontWeight:800,color:"var(--accent)"}}>{p.from_col||"-"}</span>}
+                  <tr key={i} style={{background:i%2===0?"var(--bg-card)":"var(--bg-secondary)"}}>
+                    <td style={{padding:"7px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",fontWeight:800}}>{i+1}</td>
+                    <td style={{padding:"5px 8px",borderBottom:"1px solid var(--border)",minWidth:0}}>
+                      {relationEditing?<input value={p.from_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],from_col:e.target.value};return{...f,pairs:n};})}
+                        placeholder="source column" style={{width:"100%",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>:
+                        <span style={{display:"block",fontFamily:"monospace",fontWeight:800,color:"var(--text-primary)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={p.from_col||""}>{p.from_col||"-"}</span>}
                     </td>
-                    <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",whiteSpace:"nowrap",color:"var(--text-primary)"}}>{editRel.to_name}</td>
-                    <td style={{padding:"4px 6px",borderBottom:"1px solid var(--border)",minWidth:150}}>
-                      {canManage?<input value={p.to_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],to_col:e.target.value};return{...f,pairs:n};})}
-                        placeholder="target col" style={{width:"100%",padding:"4px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>:
-                        <span style={{fontFamily:"monospace",fontWeight:800,color:"var(--accent)"}}>{p.to_col||"-"}</span>}
+                    <td style={{padding:"5px 8px",borderBottom:"1px solid var(--border)",minWidth:0}}>
+                      {relationEditing?<input value={p.to_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],to_col:e.target.value};return{...f,pairs:n};})}
+                        placeholder="target column" style={{width:"100%",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>:
+                        <span style={{display:"block",fontFamily:"monospace",fontWeight:800,color:"var(--text-primary)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={p.to_col||""}>{p.to_col||"-"}</span>}
                     </td>
-                    {canManage?<td style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>
+                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:status.color,fontSize:10,fontWeight:900,whiteSpace:"nowrap"}}>{status.text}</td>
+                    {relationEditing&&<td style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>
                       <span onClick={()=>setRelForm(f=>({...f,pairs:(f.pairs||[]).filter((_,j)=>j!==i)}))} title="이 쌍 제거"
-                        style={{cursor:"pointer",color:"#ef4444",fontSize:14,fontWeight:700,padding:"0 6px"}}>×</span>
-                    </td>:<td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:sameLower?"#22c55e":"var(--text-secondary)",fontWeight:700,whiteSpace:"nowrap"}}>{sameLower?"same name":"mapped"}</td>}
+                        style={{cursor:"pointer",color:"#ef4444",fontSize:14,fontWeight:800,padding:"0 6px"}}>×</span>
+                    </td>}
                   </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
-        {canManage&&<div style={{marginBottom:10}}>
+
+        {relationEditing&&<div style={{marginBottom:10}}>
           <button onClick={()=>setRelForm(f=>({...f,pairs:[...(f.pairs||[]),{from_col:"",to_col:""}]}))}
             style={{padding:"4px 12px",borderRadius:4,border:"1px dashed var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>+ 행 추가</button>
         </div>}
-        <div style={{marginBottom:12}}>
+
+        {(relationEditing||relForm.description)&&<div style={{marginBottom:12}}>
           <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:3}}>설명</div>
-          {canManage?<input value={relForm.description} onChange={e=>setRelForm({...relForm,description:e.target.value})} placeholder="예: Lot 이력 추적"
+          {relationEditing?<input value={relForm.description} onChange={e=>setRelForm({...relForm,description:e.target.value})} placeholder="예: Lot 이력 추적"
             style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",boxSizing:"border-box"}}/>:
-            <div style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,minHeight:16}}>{relForm.description||"-"}</div>}
-        </div>
+            <div style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,minHeight:16}}>{relForm.description}</div>}
+        </div>}
+
         <div style={{display:"flex",gap:8}}>
-          {canManage&&<button onClick={saveRelation} style={{flex:1,padding:"8px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:600,cursor:"pointer"}}>저장</button>}
-          {canManage&&editRel.id&&<button onClick={()=>{delRelation(editRel.id);setEditRel(null);}} style={{padding:"8px 16px",borderRadius:6,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",cursor:"pointer"}}>삭제</button>}
-          <button onClick={()=>setEditRel(null)} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>취소</button>
+          {relationEditing&&<button onClick={saveRelation} style={{flex:1,padding:"8px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:700,cursor:"pointer"}}>저장</button>}
+          {canManage&&!relationEditing&&<button onClick={()=>setRelationMode("edit")} style={{flex:1,padding:"8px",borderRadius:6,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontWeight:700,cursor:"pointer"}}>편집</button>}
+          {canManage&&editRel.id&&<button onClick={()=>{delRelation(editRel.id);closeRelationModal();}} style={{padding:"8px 16px",borderRadius:6,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",cursor:"pointer"}}>삭제</button>}
+          <button onClick={closeRelationModal} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>{relationEditing?"취소":"닫기"}</button>
         </div>
       </div>
     </div>}
@@ -1688,9 +1744,8 @@ export default function My_TableMap({user}){
           <span onClick={()=>setPickingDb(false)} style={{cursor:"pointer",fontSize:18}}>✕</span>
         </div>
         <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:8}}>맵 노드로 추가할 DB 소스를 선택하세요 (참조만, 실제 데이터는 변경되지 않습니다)</div>
-        {/* v8.8.13: 라벨 가독성 — 흰배경 + 검정 글자 고정 (다크 테마에서도 동일). */}
-        {dbSources.map(s=><div key={s.label} onClick={()=>addDbRef(s)} style={{padding:"8px 12px",background:"#fff",color:"#111",borderRadius:6,marginBottom:4,cursor:"pointer",fontSize:12,fontWeight:600,border:"1px solid var(--border)"}}>
-          {s.label} <span style={{fontSize:10,color:"#ea580c",fontWeight:700}}>[{s.source_type}]</span>
+        {dbSources.map(s=><div key={s.label} onClick={()=>addDbRef(s)} style={{padding:"8px 12px",background:"var(--bg-card,var(--bg-primary,#fff))",color:"var(--text-primary,#111827)",borderRadius:6,marginBottom:4,cursor:"pointer",fontSize:12,fontWeight:600,border:"1px solid var(--border)"}}>
+          {s.label} <span style={{fontSize:10,color:"var(--accent,#ea580c)",fontWeight:700}}>[{s.source_type}]</span>
         </div>)}
       </div></div>}
   </div>);

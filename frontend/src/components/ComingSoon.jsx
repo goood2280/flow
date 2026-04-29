@@ -1,6 +1,6 @@
 export default function ComingSoon({ name }) {
   return (
-    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"calc(100vh - 48px)",
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"calc(100vh - 52px)",
       background:"var(--bg-primary,#1a1a1a)",fontFamily:"'JetBrains Mono',monospace"}}>
       <div style={{textAlign:"center"}}>
         <div style={{fontSize:48,marginBottom:16}}>🚧</div>

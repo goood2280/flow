@@ -1,6 +1,6 @@
-# Semiconductor Diagnosis MVP
+# Semiconductor Diagnosis/RCA
 
-Flow의 `진단/RCA` 탭은 ET/Inline/VM/QTIME/EDS 같은 반도체 데이터를 LLM이 직접 SQL로 만지지 않고, 서버의 허용된 단위기능만 호출해서 해석하도록 만든 MVP다.
+Flow의 `진단/RCA` 탭은 ET/Inline/VM/QTIME/EDS 같은 반도체 데이터를 LLM이 직접 SQL로 만지지 않고, 서버의 허용된 단위기능만 호출해서 해석하도록 만든다.
 
 ## 구조
 
@@ -63,7 +63,7 @@ Flow-i 또는 진단/RCA 탭에서 아래처럼 입력한다.
 alias화할 때 geometry_dimension, gate pitch, cell height, coordinate discriminator를 보존해야 한다.
 ```
 
-이 입력은 seed 코드를 직접 수정하지 않고 `custom_knowledge.jsonl`에 append-only로 저장된다. Admin 입력은 public, 일반 user 입력은 private으로 저장된다.
+이 입력은 seed 코드를 직접 수정하지 않고 `custom_knowledge.jsonl`에 append-only로 저장된다. 짧은 Flow-i RAG update는 Admin 입력은 public, 일반 user 입력은 private으로 저장된다. 긴 문서 타입 지식 등록은 Admin 전용이며 항상 public 공용 RAG로 저장되어 다른 유저의 에이전트 검색에도 사용된다.
 
 심층리서치 결과를 긴 문서로 넣을 때는 다음 기준으로 나눠 넣는다.
 

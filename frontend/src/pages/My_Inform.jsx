@@ -238,8 +238,9 @@ function StatusBadge({ status }) {
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 4,
-      padding: "2px 8px", borderRadius: 999,
-      background: m.color + "22", color: m.color,
+      padding: "2px 8px", borderRadius: 6,
+      background: m.color + "16", color: m.color,
+      border: "1px solid " + m.color + "33",
       fontSize: 10, fontWeight: 700,
     }}>
       <span>{m.dot}</span>{m.label}
@@ -256,9 +257,11 @@ function CheckPill({ node }) {
   return (
     <span title={title}
       style={{
-        fontSize: 10, padding: "2px 8px", borderRadius: 999,
-        background: checked ? OK.bg : BAD.bg,
-        color: checked ? GREEN.fg : BAD.fg, fontWeight: 700,
+        fontSize: 10, padding: "2px 8px", borderRadius: 6,
+        background: checked ? OK.bg : WARN.bg,
+        color: checked ? GREEN.fg : WARN.fg,
+        border: "1px solid " + (checked ? GREEN.fg + "33" : WARN.fg + "33"),
+        fontWeight: 700,
       }}>{checked ? "✓ 확인완료" : "○ 확인중"}</span>
   );
 }
@@ -267,8 +270,8 @@ function AutoGenPill({ node }) {
   if (!node.auto_generated) return null;
   return (
     <span style={{
-      fontSize: 10, padding: "2px 8px", borderRadius: 999,
-      background: PURPLE.bg, color: PURPLE.fg, fontWeight: 700,
+      fontSize: 10, padding: "2px 8px", borderRadius: 6,
+      background: INFO.bg, color: INFO.fg, border: "1px solid " + INFO.fg + "33", fontWeight: 700,
     }}>⚙ 자동</span>
   );
 }
@@ -709,13 +712,12 @@ function ThreadNode({
   const [splitForm, setSplitForm] = useState({ column: "", old_value: "", new_value: "" });
   const [replyImages, setReplyImages] = useState([]);
   const [uploading, setUploading] = useState(false);
-  // v8.8.13: admin 만 수정 가능. text + module + reason 수정 (embed 스냅샷은 원본 유지).
-  //          나중에 체크한 모듈/사유 보정 가능하도록 module/reason 도 편집 허용.
+  // 작성자 또는 admin 은 text + module + reason 수정 가능 (embed 스냅샷은 원본 유지).
   const [editOpen, setEditOpen] = useState(false);
   const [editText, setEditText] = useState(node.text || "");
   const [editModule, setEditModule] = useState(node.module || "");
   const [editReason, setEditReason] = useState(node.reason || "");
-  const canEdit = user?.role === "admin" && !!onEdit;
+  const canEdit = !!onEdit && (user?.role === "admin" || user?.username === node.author);
 
   const handleFile = async (fl) => {
     if (!fl || fl.length === 0) return;
@@ -734,7 +736,7 @@ function ThreadNode({
     setReplyImages((prev) => [...prev, ...uploaded]);
     setUploading(false);
   };
-  const canDelete = user && user.username === node.author;
+  const canDelete = user && (user.role === "admin" || user.username === node.author);
   const kids = childrenByParent[node.id] || [];
   const indent = Math.min(depth, 5) * 28;
 
@@ -774,10 +776,10 @@ function ThreadNode({
               border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 700 }}>
             {replyOpen ? "닫기" : "답글"}
           </button>
-          {/* v8.8.13: 수정 — admin 만. text 만 바뀌고 module/reason/embed 는 원본 유지. */}
+          {/* 수정 — 작성자/admin. text/module/reason 만 바뀌고 embed 는 원본 유지. */}
           {canEdit && (
             <button onClick={() => { setEditText(node.text || ""); setEditModule(node.module || ""); setEditReason(node.reason || ""); setEditOpen(!editOpen); }}
-              title="본문 수정 (admin 전용)"
+              title="본문 수정"
               style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
                 border: `1px solid ${INFO.fg}`, background: "transparent", color: INFO.fg, fontWeight: 700 }}>
               {editOpen ? "닫기" : "✎ 수정"}
@@ -822,7 +824,7 @@ function ThreadNode({
                 if (Object.keys(patch).length === 0) { setEditOpen(false); return; }
                 onEdit(node.id, patch).then(() => setEditOpen(false));
               }}
-                style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: INFO.fg, color: WHITE, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>저장 (admin)</button>
+                style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: INFO.fg, color: WHITE, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>저장</button>
               <button onClick={() => { setEditOpen(false); setEditText(node.text || ""); setEditModule(node.module || ""); setEditReason(node.reason || ""); }}
                 style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer" }}>취소</button>
             </div>
@@ -992,7 +994,7 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
     .replaceAll("{reason}", root.reason || "");
   const _defSubject = _tpl.subject
     ? _subst(_tpl.subject)
-    : `[flow 인폼] ${root.module || ""} · ${root.lot_id || root.wafer_id || ""}`.trim();
+    : `[인폼] ${root.module || ""} · ${root.lot_id || root.wafer_id || ""}`.trim();
   const _defBody = _tpl.body ? _subst(_tpl.body) : "";
   const [subject, setSubject] = useState(_defSubject);
   const [body, setBody] = useState(_defBody);
@@ -1106,7 +1108,7 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 10, padding: 18, width: "95%", maxWidth: 820, maxHeight: "92vh", overflow: "auto", color: "var(--text-primary)" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 10, padding: 18, width: "96%", maxWidth: 1180, maxHeight: "94vh", overflow: "auto", color: "var(--text-primary)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <div style={{ fontSize: 15, fontWeight: 700 }}>✉ 인폼 메일 보내기 <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-secondary)" }}>(최대 199명 · 본문 2MB · 첨부 10MB)</span></div>
           <span onClick={onClose} style={{ cursor: "pointer", fontSize: 18 }}>✕</span>
@@ -1276,7 +1278,7 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
             <div style={{ marginTop: 6, fontSize: 10, color: "var(--text-secondary)", marginBottom: 4, fontFamily: "monospace" }}>
               To: {computedEmails().slice(0, 8).join(", ")}{computedEmails().length > 8 ? ` (+${computedEmails().length - 8}명)` : ""}
             </div>
-            <div style={{ maxHeight: 320, overflow: "auto", background: WHITE, color: "var(--text-primary)", padding: 8, border: "1px solid var(--border)", borderRadius: 4 }}
+            <div style={{ maxHeight: 560, overflowY: "auto", overflowX: "hidden", background: WHITE, color: "var(--text-primary)", padding: 10, border: "1px solid var(--border)", borderRadius: 4 }}
                  dangerouslySetInnerHTML={{ __html: preview.html_body }} />
           </details>
         )}
@@ -1493,7 +1495,6 @@ function LotModuleSummary({ thread, modules }) {
     return { module: m, hasInform, mailCount, lastMailAt, completedAt, count };
   });
   if (!rows.length) return null;
-  const cellBase = { padding: "8px 12px", borderBottom: "1px solid var(--border)" };
   // v8.8.12: LocalStorage 기반 접기 상태 유지.
   const COLLAPSE_KEY = "flow_inform_module_summary_collapsed";
   const [collapsed, setCollapsed] = useState(() => {
@@ -1505,60 +1506,36 @@ function LotModuleSummary({ thread, modules }) {
     try { localStorage.setItem(COLLAPSE_KEY, nv ? "1" : "0"); } catch {}
   };
   return (
-    <div style={{ marginBottom: 14, padding: 12, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+    <div style={{ marginBottom: 8, padding: "7px 8px", borderRadius: 7, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
       <div onClick={toggle}
-        style={{ fontSize: 14, fontWeight: 700, marginBottom: collapsed ? 0 : 8, fontFamily: "monospace", color: "var(--accent)", cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 6 }}>
+        style={{ fontSize: 12, fontWeight: 800, marginBottom: collapsed ? 0 : 6, fontFamily: "monospace", color: "var(--accent)", cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 6, lineHeight: 1.2 }}>
         <span>{collapsed ? "▶" : "▼"}</span>
-        <span>📋 모듈별 진행 요약</span>
-        {collapsed && <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 400, marginLeft: 8 }}>
+        <span>모듈별 진행 요약</span>
+        <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, marginLeft: 4 }}>
           ({rows.filter(r => r.hasInform).length} 모듈 활성 / {rows.reduce((s, r) => s + (r.count || 0), 0)} 건)
-        </span>}
+        </span>
       </div>
-      {!collapsed && <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%", tableLayout: "fixed" }}>
-          {/* v8.8.0: 3개 데이터 열 너비 균등 (등록 / 메일 / 담당자 확인). */}
-          <colgroup>
-            <col style={{ width: "18%" }} />
-            <col style={{ width: "27%" }} />
-            <col style={{ width: "27%" }} />
-            <col style={{ width: "20%" }} />
-            <col style={{ width: "8%" }} />
-          </colgroup>
-          <thead>
-            <tr style={{ background: "var(--bg-tertiary)" }}>
-              <th style={{ ...cellBase, textAlign: "left", fontWeight: 700 }}>모듈</th>
-              <th style={{ ...cellBase, textAlign: "center", fontWeight: 700 }}>등록</th>
-              <th style={{ ...cellBase, textAlign: "center", fontWeight: 700 }}>메일</th>
-              <th style={{ ...cellBase, textAlign: "center", fontWeight: 700 }}>담당자 확인</th>
-              <th style={{ ...cellBase, textAlign: "center", fontWeight: 700 }}>건수</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(r => (
-              <tr key={r.module}>
-                <td style={{ ...cellBase, fontFamily: "monospace", fontWeight: 600 }}>{r.module}</td>
-                <td style={{ ...cellBase, textAlign: "center", color: r.hasInform ? OK.fg : "var(--text-secondary)", fontWeight: 700 }}>{r.hasInform ? "✓" : "·"}</td>
-                <td style={{ ...cellBase, fontFamily: "monospace" }}>
-                  {r.mailCount > 0
-                    ? <>
-                        <span style={{ color: INFO.fg, fontWeight: 700 }}>✓ {r.mailCount}회</span>
-                        {r.lastMailAt && <span style={{ marginLeft: 8, color: "var(--text-secondary)", fontSize: 11 }}>{(r.lastMailAt || "").replace("T", " ").slice(0, 16)}</span>}
-                      </>
-                    : <span style={{ color: "var(--text-secondary)" }}>·</span>}
-                </td>
-                <td style={{ ...cellBase, fontFamily: "monospace" }}>
-                  {r.completedAt
-                    ? <>
-                        <span style={{ color: OK.fg, fontWeight: 700 }}>✓ 완료</span>
-                        <span style={{ marginLeft: 8, color: "var(--text-secondary)", fontSize: 11 }}>{(r.completedAt || "").replace("T", " ").slice(0, 16)}</span>
-                      </>
-                    : <span style={{ color: "var(--text-secondary)" }}>·</span>}
-                </td>
-                <td style={{ ...cellBase, textAlign: "center", color: "var(--text-secondary)" }}>{r.count}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {!collapsed && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(126px,1fr))", gap: 5 }}>
+        {rows.map(r => {
+          const mc = moduleColor(r.module);
+          const done = !!r.completedAt;
+          const border = done ? OK.fg : (r.hasInform ? mc : "var(--border)");
+          return (
+            <div key={r.module} title={`메일: ${r.mailCount}회 ${r.lastMailAt ? r.lastMailAt.replace("T", " ").slice(0, 16) : ""}\n담당자 확인: ${r.completedAt ? r.completedAt.replace("T", " ").slice(0, 16) : "미완료"}`}
+              style={{ minWidth: 0, padding: "5px 7px", borderRadius: 6, border: `1px solid ${border}`, background: r.hasInform ? `${mc}12` : "var(--bg-primary)", display: "grid", gap: 3 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+                <span style={{ width: 6, height: 6, borderRadius: 999, background: done ? OK.fg : (r.hasInform ? mc : "var(--text-tertiary, var(--text-secondary))"), flex: "0 0 auto" }} />
+                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, fontFamily: "monospace", fontWeight: 800, color: r.hasInform ? "var(--text-primary)" : "var(--text-secondary)" }}>{r.module}</span>
+                <span style={{ marginLeft: "auto", fontSize: 10, fontFamily: "monospace", color: "var(--text-secondary)" }}>{r.count || 0}</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, fontFamily: "monospace", color: "var(--text-secondary)", whiteSpace: "nowrap" }}>
+                <span style={{ color: r.hasInform ? OK.fg : "var(--text-tertiary, var(--text-secondary))", fontWeight: 700 }}>{r.hasInform ? "등록" : "미등록"}</span>
+                <span style={{ color: r.mailCount ? INFO.fg : "var(--text-tertiary, var(--text-secondary))" }}>메일 {r.mailCount || 0}</span>
+                <span style={{ color: done ? OK.fg : "var(--text-tertiary, var(--text-secondary))" }}>{done ? "확인" : "대기"}</span>
+              </div>
+            </div>
+          );
+        })}
       </div>}
     </div>
   );
@@ -1599,12 +1576,13 @@ export default function My_Inform({ user }) {
   const [embedFetching, setEmbedFetching] = useState(false);
   const [msg, setMsg] = useState("");
 
-  const [moduleFilter, setModuleFilter] = useState([]);  // 체크된 모듈만 표시 (빈 배열=전체)
-  // v8.8.15: 제품 필터 nav — 빈 배열 = 전체, 아니면 선택된 제품만 통과.
+  const [moduleFilter, setModuleFilter] = useState([]);  // 체크된 모듈만 표시 (빈 배열=모두 해제)
+  // v8.8.15: 제품 필터 nav — 체크된 제품만 통과. 빈 배열은 "모두 해제"라서 목록을 비운다.
   const [productFilter, setProductFilter] = useState([]);
   // v8.8.13: moduleFilter 기본 = 내 조회 권한 모든 모듈. admin 또는 all_rounder 이면 전체.
   //   myMods/constants 가 로딩되면 1회 자동 셋업. 이후엔 사용자 체크 토글이 우선.
   const [moduleFilterInit, setModuleFilterInit] = useState(false);
+  const [productFilterInit, setProductFilterInit] = useState(false);
 
   // v8.8.0: SplitTable 노트 — Lot 뷰 하단에 표시 (root_lot_id 키).
   const [splitNotes, setSplitNotes] = useState([]);
@@ -1661,22 +1639,26 @@ export default function My_Inform({ user }) {
     })).catch(() => setMyMods({ modules: [], all_rounder: !!isAdmin }));
   }, []);
 
+  const moduleFilterOptions = useMemo(() => {
+    const all = constants.modules || [];
+    const my = (myMods.all_rounder || isAdmin) ? all : (myMods.modules || []).filter(m => all.includes(m));
+    return my.length ? my : all;
+  }, [constants.modules, myMods, isAdmin]);
+
   // v8.8.13: moduleFilter 기본값 = 내 권한 모듈 전체 체크. 최초 한 번만.
   useEffect(() => {
     if (moduleFilterInit) return;
-    const all = constants.modules || [];
-    if (all.length === 0) return;
-    const my = (myMods.all_rounder || isAdmin) ? all : (myMods.modules || []).filter(m => all.includes(m));
-    setModuleFilter(my.length ? [...my] : [...all]);
+    if (moduleFilterOptions.length === 0) return;
+    setModuleFilter([...moduleFilterOptions]);
     setModuleFilterInit(true);
-  }, [constants.modules, myMods, isAdmin, moduleFilterInit]);
+  }, [moduleFilterOptions, moduleFilterInit]);
 
   const loadSidebar = () => {
     sf(API + "/wafers").then(d => setWafers(d.wafers || [])).catch(() => setWafers([]));
     sf(API + "/products").then(d => setProducts(d.products || [])).catch(() => setProducts([]));
     sf(API + "/lots").then(d => setLots(d.lots || [])).catch(() => setLots([]));
   };
-  useEffect(loadSidebar, [mode]);
+  useEffect(()=>{loadSidebar();}, [mode]);
 
   /* Scope 별 thread 로드 */
   useEffect(() => {
@@ -2111,12 +2093,14 @@ export default function My_Inform({ user }) {
     }).then(refreshAll);
   };
 
-  /* 모듈/제품 필터: 빈 배열은 "전체" 로 간주.
-     v9.0.3: lot 상세에서 신규 인폼이 저장돼도 기본 필터 때문에 안 보이던 문제 수정.
+  /* 모듈/제품 필터: 빈 배열은 "모두 해제" 로 간주해서 목록을 비운다.
+     기본 상태는 모듈/제품 모두 전체 체크로 초기화한다.
      제품 매칭은 canonical (ML_TABLE_ 제거) 기준 — `PRODA` 하나 체크하면 records 의
      `PRODA` 와 `ML_TABLE_PRODA` 양쪽 다 통과. */
   const canonProd = (s) => stripMlPrefix(String(s || "").trim()).toLowerCase();
   const applyModFilter = (arr) => {
+    if (moduleFilterOptions.length > 0 && (!moduleFilter || moduleFilter.length === 0)) return [];
+    if (presentProducts.length > 0 && (!productFilter || productFilter.length === 0)) return [];
     let out = arr;
     if (moduleFilter && moduleFilter.length > 0) {
       const mfSet = new Set(moduleFilter);
@@ -2134,7 +2118,7 @@ export default function My_Inform({ user }) {
   };
 
   const del = (id) => {
-    if (!confirm("삭제하시겠습니까? (작성자 본인만 가능 · 답글 있으면 불가)")) return;
+    if (!confirm("삭제하시겠습니까? (작성자/admin 가능 · 답글 있으면 불가)")) return;
     sf(API + "/delete?id=" + encodeURIComponent(id), { method: "POST" })
       .then(refreshAll).catch(e => alert(e.message));
   };
@@ -2144,7 +2128,7 @@ export default function My_Inform({ user }) {
     body: JSON.stringify({ checked: !node.checked }),
   }).then(refreshAll).catch(e => alert(e.message));
 
-  // v8.8.13: admin 본문 수정. text 만 바뀌고 module/reason/embed/시각 은 원본 유지 (스냅샷 잠금).
+  // 작성자/admin 본문 수정. text/module/reason 만 바뀌고 embed/시각 은 원본 유지 (스냅샷 잠금).
   const editInform = (id, patch) => sf(API + "/edit?id=" + encodeURIComponent(id), {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch || {}),
@@ -2176,6 +2160,30 @@ export default function My_Inform({ user }) {
     return { rootsSorted: roots, childrenByParent: kids };
   }, [thread, mode]);
 
+  const presentProducts = useMemo(() => {
+    const seen = new Map();
+    (rootsSorted || []).forEach(r => {
+      const raw = (r.product || "").trim();
+      if (!raw) return;
+      const canon = stripMlPrefix(raw);
+      const k = canon.toLowerCase();
+      if (!seen.has(k)) seen.set(k, canon);
+    });
+    return Array.from(seen.values()).sort();
+  }, [rootsSorted]);
+
+  useEffect(() => {
+    if (productFilterInit) return;
+    if (presentProducts.length === 0) return;
+    setProductFilter([...presentProducts]);
+    setProductFilterInit(true);
+  }, [presentProducts, productFilterInit]);
+
+  const resetInformFilters = () => {
+    setModuleFilter([...moduleFilterOptions]);
+    setProductFilter([...presentProducts]);
+  };
+
   /* 사이드바 목록 (mode 별) */
   const sidebarItems = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -2205,14 +2213,23 @@ export default function My_Inform({ user }) {
   };
 
   const modeButton = (key, label, hint) => (
-    <Button
-      variant={mode === key ? "primary" : "subtle"}
+    <button
+      type="button"
       onClick={() => setMode(key)}
       title={hint}
-      style={{ padding: "6px 12px", fontSize: 11 }}
+      style={{
+        padding: "6px 12px",
+        borderRadius: 6,
+        border: "1px solid " + (mode === key ? "var(--accent)" : "var(--border)"),
+        background: mode === key ? "var(--accent)" : "var(--bg-primary)",
+        color: mode === key ? "#fff" : "var(--text-secondary)",
+        fontSize: 11,
+        fontWeight: 700,
+        cursor: "pointer",
+      }}
     >
       {label}
-    </Button>
+    </button>
   );
 
   // v8.7.8: 모듈 순서 편집 (admin → PageGear)
@@ -2250,7 +2267,7 @@ export default function My_Inform({ user }) {
   };
 
   return (
-    <div style={{ display: "flex", height: "calc(100vh - 48px)", background: "var(--bg-primary)", color: "var(--text-primary)", position: "relative" }}>
+    <div className="flow-connected-page" style={{ display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)", position: "relative" }}>
       <PageGear title="인폼 설정" canEdit={isAdmin} position="bottom-right">
         <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>
           모듈 표시 순서를 관리합니다 (Lot 뷰에서 이 순서대로 그룹핑).
@@ -2305,9 +2322,12 @@ export default function My_Inform({ user }) {
         )}
       </PageGear>
       {/* Sidebar */}
-      <div style={{ width: 340, minWidth: 300, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
-        <div style={{ minHeight: 34, padding: "8px 12px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, background: "var(--bg-secondary)" }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>인폼 로그</span>
+      <div style={{ width: 312, minWidth: 280, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
+        <div style={{ minHeight: 46, padding: "10px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, background: "var(--bg-secondary)" }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)" }}>인폼 로그</div>
+            <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 1 }}>제품 · Lot · Wafer 이슈 기록</div>
+          </div>
           <span style={{ marginLeft: "auto" }}><Button variant="primary" onClick={() => {
             // v8.8.3 bugfix: 폼 열기 전 /config 를 갱신해 product 카탈로그를 최신화.
             sf(API + "/config").then(d => setConstants(c => ({
@@ -2321,7 +2341,7 @@ export default function My_Inform({ user }) {
           }}>+ 신규</Button></span>
         </div>
 
-        <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", display: "flex", flexWrap: "wrap", gap: 4 }}>
+        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", display: "flex", flexWrap: "wrap", gap: 6 }}>
           {modeButton("all",     "전체",    "최근 루트 인폼 (역할 필터 적용)")}
           {modeButton("product", "제품",  "제품 → Lot → Wafer drill-down")}
           {modeButton("lot",     "Lot",    "LOT 으로 전체 인폼 검색")}
@@ -2329,12 +2349,12 @@ export default function My_Inform({ user }) {
           {/* v8.7.8: wafer 모드 제거 — product/lot drill-down 으로 통합. */}
         </div>
 
-        <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)" }}>
           <input value={search} onChange={e => setSearch(e.target.value)}
             placeholder={mode === "lot" ? "lot_id 검색..."
                        : mode === "product" ? "product 검색..."
                        : "검색 (해당 모드에서는 미사용)"}
-            style={{ width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none", boxSizing: "border-box" }} />
+            style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none", boxSizing: "border-box" }} />
         </div>
 
         {/* 담당 모듈 요약 */}
@@ -2938,28 +2958,27 @@ export default function My_Inform({ user }) {
                 {(moduleFilter.length > 0 || productFilter.length > 0) && <span style={{ color: "var(--accent)", marginLeft: 4 }}>(필터됨)</span>}
               </span>
               {(moduleFilter.length > 0 || productFilter.length > 0) && (
-                <button onClick={() => { setModuleFilter([]); setProductFilter([]); }}
+                <button onClick={resetInformFilters}
                   style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 10, cursor: "pointer" }}>필터 초기화</button>
               )}
             </div>
             {/* v8.8.15: 모듈 nav 스타일 필터 — 토글 pill (checkbox 제거). */}
             {(() => {
-              const allowed = (myMods.all_rounder || isAdmin) ? (constants.modules || []) : (myMods.modules || []).filter(m => (constants.modules || []).includes(m));
+              const allowed = moduleFilterOptions;
               if (allowed.length === 0) return null;
               const allOn = allowed.length > 0 && allowed.every(m => moduleFilter.includes(m));
               return (
-                <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", padding: "6px 10px", borderRadius: 6, background: "var(--bg-card)", border: "1px solid var(--border)", marginBottom: 6 }}>
-                  <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 700, marginRight: 4 }}>📁 모듈</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "8px 10px", borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)", marginBottom: 8 }}>
+                  <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 800, marginRight: 4 }}>모듈</span>
                   <button onClick={() => setModuleFilter(allOn ? [] : [...allowed])}
-                    style={{ padding: "2px 10px", borderRadius: 999, border: "1px solid " + (allOn ? "var(--accent)" : "var(--border)"), background: allOn ? "var(--accent)22" : "transparent", color: allOn ? "var(--accent)" : "var(--text-secondary)", fontSize: 10, fontWeight: allOn ? 700 : 500, cursor: "pointer" }}>
+                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (allOn ? "var(--accent)" : "var(--border)"), background: allOn ? "var(--accent)" : "var(--bg-primary)", color: allOn ? "#fff" : "var(--text-secondary)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
                     전체
                   </button>
                   {allowed.map(m => {
                     const on = moduleFilter.includes(m);
-                    const mc = moduleColor(m);
                     return (
                       <button key={m} onClick={() => setModuleFilter(on ? moduleFilter.filter(x => x !== m) : [...moduleFilter, m])}
-                        style={{ padding: "2px 10px", borderRadius: 999, border: "1px solid " + (on ? mc + "aa" : "var(--border)"), background: on ? mc + "22" : "transparent", color: on ? mc : "var(--text-secondary)", fontSize: 10, fontWeight: on ? 700 : 500, cursor: "pointer" }}>
+                        style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)" : "var(--bg-primary)", color: on ? "#fff" : "var(--text-secondary)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
                         {m}
                       </button>
                     );
@@ -2969,32 +2988,22 @@ export default function My_Inform({ user }) {
             })()}
             {/* v9.0.0: 제품 nav 필터 — canonical (ML_TABLE_ 제거) 기준 dedup. "전체" 는 모든 제품 체크 토글. */}
             {(() => {
-              // 레코드에 등장한 canonical 제품명 unique 리스트.
-              const seen = new Map();
-              (rootsSorted || []).forEach(r => {
-                const raw = (r.product || "").trim();
-                if (!raw) return;
-                const canon = stripMlPrefix(raw);
-                const k = canon.toLowerCase();
-                if (!seen.has(k)) seen.set(k, canon);
-              });
-              const presentProds = Array.from(seen.values()).sort();
-              if (presentProds.length === 0) return null;
-              const allSelected = presentProds.length > 0 && presentProds.every(p => productFilter.includes(p));
+              if (presentProducts.length === 0) return null;
+              const allSelected = presentProducts.length > 0 && presentProducts.every(p => productFilter.includes(p));
               return (
-                <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", padding: "6px 10px", borderRadius: 6, background: "var(--bg-card)", border: "1px solid var(--border)", marginBottom: 10 }}>
-                  <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 700, marginRight: 4 }}>📦 제품</span>
-                  <button onClick={() => setProductFilter(allSelected ? [] : presentProds)}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "8px 10px", borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)", marginBottom: 12 }}>
+                  <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 800, marginRight: 4 }}>제품</span>
+                  <button onClick={() => setProductFilter(allSelected ? [] : presentProducts)}
                     title={allSelected ? "전체 해제 → 아무것도 표시 안됨" : "모든 제품 선택"}
-                    style={{ padding: "2px 10px", borderRadius: 999, border: "1px solid " + (allSelected ? "var(--accent)" : "var(--border)"), background: allSelected ? "var(--accent)22" : "transparent", color: allSelected ? "var(--accent)" : "var(--text-secondary)", fontSize: 10, fontWeight: allSelected ? 700 : 500, cursor: "pointer" }}>
+                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (allSelected ? "var(--accent)" : "var(--border)"), background: allSelected ? "var(--accent)" : "var(--bg-primary)", color: allSelected ? "#fff" : "var(--text-secondary)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
                     전체
                   </button>
-                  {presentProds.map(p => {
+                  {presentProducts.map(p => {
                     const on = productFilter.includes(p);
                     return (
                       <button key={p} onClick={() => setProductFilter(on ? productFilter.filter(x => x !== p) : [...productFilter, p])}
                         title={p}
-                        style={{ padding: "2px 10px", borderRadius: 999, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)22" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)", fontSize: 10, fontWeight: on ? 700 : 500, cursor: "pointer", fontFamily: "monospace" }}>
+                        style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)" : "var(--bg-primary)", color: on ? "#fff" : "var(--text-secondary)", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "monospace" }}>
                         {p}
                       </button>
                     );
@@ -3485,7 +3494,6 @@ function UserModulePermsPanel({ allModules }) {
 
 /* 요약 카드 (all/mine/product 모드에서 루트 리스트용) */
 function CompactRow({ root, onOpen }) {
-  const mc = moduleColor(root.module);
   // v8.8.8: 이 root 인폼의 (product, root_lot_id) 에 달린 SplitTable notes(꼬리표) 를 요약 배지로 표시.
   //   wafer 태그 / param 메모 / LOT 노트 / global 태그 각 카운트. 클릭 시 상세는 별도 동작 없이 hover tooltip 으로.
   const [tagSummary, setTagSummary] = useState(null);
@@ -3508,80 +3516,108 @@ function CompactRow({ root, onOpen }) {
     return () => { alive = false; };
   }, [root.product, root.root_lot_id, root.lot_id]);
 
-  // v8.8.14: 레이아웃 재정비 — "어떤 제품 · 어떤 모듈" 이 한눈에 보이도록 좌측 88px 고정 컬럼으로 분리.
-  //   좌측: 모듈 pill (색상 채우기) + 그 아래 reason 꼬리표. 모듈 미정이면 회색 placeholder.
-  //   우측: 상태 pill + 첨부 icon + [제품] lot_id + 타임스탬프 + 본문 1-2줄.
   const hasModule = !!(root.module && String(root.module).trim());
   const modLabel = hasModule ? root.module : "미정";
-  const modFill = hasModule ? mc : "#6b7280";
   const reasonLabel = (root.reason || "").trim();
   const rootLotLabel = root.lot_id || root.wafer_id || "-";
   const fabLots = splitFabLotsFromNode(root).filter(v => v !== rootLotLabel);
   const fabLotLabel = fabLots.join(" / ");
+  const text = String(root.text || "").trim();
+  const headline = text.split(/\n+/).find(Boolean) || "(내용 없음)";
+  const summary = text && text !== headline ? text.replace(headline, "").trim() : "";
+  const metaBadge = {
+    display: "inline-flex",
+    alignItems: "center",
+    minHeight: 22,
+    padding: "2px 8px",
+    borderRadius: 6,
+    border: "1px solid var(--border)",
+    background: "var(--bg-tertiary)",
+    color: "var(--text-secondary)",
+    fontSize: 10,
+    fontWeight: 700,
+    fontFamily: "monospace",
+    maxWidth: 280,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  };
 
   return (
     <div onClick={onOpen}
-      style={{ display: "flex", padding: 0, marginBottom: 8, borderRadius: 8,
-               border: "1px solid var(--border)", background: "var(--bg-secondary)",
-               borderLeft: "5px solid " + modFill,
-               cursor: "pointer", overflow: "hidden" }}>
-      {/* 좌측 모듈/사유 컬럼 — 고정폭으로 행 간 정렬 시각화 */}
-      <div style={{ flex: "0 0 96px", padding: "10px 8px 10px 10px",
-                    display: "flex", flexDirection: "column", gap: 4,
-                    alignItems: "center", justifyContent: "center",
-                    background: modFill + "0D", borderRight: "1px solid var(--border)" }}>
-        <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 999,
-                       background: modFill, color: "#fff", fontWeight: 800,
-                       letterSpacing: 0.3, whiteSpace: "nowrap",
-                       boxShadow: "0 1px 2px rgba(0,0,0,0.15)" }}>{modLabel}</span>
-        {reasonLabel
-          ? <span style={{ fontSize: 9.5, padding: "1px 6px", borderRadius: 4,
-                           background: modFill + "22", color: modFill, fontWeight: 700,
-                           textAlign: "center", lineHeight: 1.25, whiteSpace: "nowrap",
-                           maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" }}
-                  title={reasonLabel}>[{reasonLabel}]</span>
-          : <span style={{ fontSize: 9, color: "var(--text-secondary)", fontStyle: "italic" }}>(사유 미정)</span>}
-      </div>
-      {/* 우측 본문 */}
-      <div style={{ flex: 1, padding: "10px 14px", minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {/* v8.8.13: '접수' StatusBadge 제거 — CheckPill(확인중/확인완료) 하나로 통합. */}
+      style={{
+        padding: 14,
+        marginBottom: 10,
+        borderRadius: 8,
+        border: "1px solid var(--border)",
+        background: "var(--bg-secondary)",
+        cursor: "pointer",
+        boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
+      }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ ...metaBadge, color: "var(--accent)", background: "var(--accent-glow)", borderColor: "rgba(249,115,22,0.24)" }}>
+          {stripMlPrefix(root.product || "제품 미정")}
+        </span>
+        <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{(root.created_at || "").replace("T", " ").slice(0, 16)}</span>
+        <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 700 }}>{root.author || "-"}</span>
+        <div style={{ flex: 1 }} />
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
           <CheckPill node={root} />
           <AutoGenPill node={root} />
           {(root.images && root.images.length > 0) && <span title="이미지 첨부" style={{ fontSize: 10 }}>📎{root.images.length}</span>}
           {root.embed_table && <span title="SplitTable 스냅샷 첨부" style={{ fontSize: 10 }}>🔗</span>}
-          {/* v8.8.8: lot/wafer 꼬리표 배지 — SplitTable notes 집계. */}
           {tagSummary && (
             <span title={`이 lot 의 꼬리표 ${tagSummary.total}개 (wafer ${tagSummary.by.wafer} · param ${tagSummary.by.param} · lot ${tagSummary.by.lot} · global ${tagSummary.by.param_global})\n샘플: ${tagSummary.sample.join(" / ")}`}
-                  style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#8b5cf6", color: "#fff", fontWeight: 700, cursor: "help" }}>
+                  style={{ fontSize: 10, padding: "2px 8px", borderRadius: 6, background: INFO.bg, color: INFO.fg, border: "1px solid " + INFO.fg + "33", fontWeight: 700, cursor: "help" }}>
               🏷 {tagSummary.total}
             </span>
           )}
-          {/* v8.7.9: `[제품명] Lot` 표시. wafer_id 는 보조적으로만.
-               v8.8.30: ML_TABLE_ prefix 는 내부 식별자 — UI 는 PRODA 만 노출. */}
-          <span style={{ fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>
-            {root.product && <span style={{ color: "var(--accent)" }}>[{stripMlPrefix(root.product)}]</span>}
-            {root.product && rootLotLabel ? " " : ""}
-            {rootLotLabel}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        <div style={{
+          fontSize: 14,
+          lineHeight: 1.45,
+          fontWeight: 900,
+          color: "var(--text-primary)",
+          whiteSpace: "pre-wrap",
+          display: "-webkit-box",
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+        }}>
+          {headline}
+        </div>
+        {summary && (
+          <div style={{
+            marginTop: 4,
+            fontSize: 12,
+            lineHeight: 1.5,
+            color: "var(--text-secondary)",
+            whiteSpace: "pre-wrap",
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+          }}>
+            {summary}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", maxHeight: 58, overflow: "hidden" }}>
+        <span style={metaBadge}>lot:{rootLotLabel}</span>
+        {root.root_lot_id && root.lot_id && root.root_lot_id !== root.lot_id && (
+          <span title="root_lot_id" style={metaBadge}>root:{root.root_lot_id}</span>
+        )}
+        {fabLots.length > 0 && (
+          <span title={`SplitTable fab_lot_id: ${fabLotLabel}`} style={metaBadge}>
+            fab:{fabLotLabel}
           </span>
-          {root.root_lot_id && root.lot_id && root.root_lot_id !== root.lot_id && (
-            <span title="root_lot_id" style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>root:{root.root_lot_id}</span>
-          )}
-          {/* v9.0.x: 저장된 SplitTable 스냅샷의 fab_lot_id 그룹을 그대로 표시. */}
-          {fabLots.length > 0 && (
-            <span title={`SplitTable fab_lot_id: ${fabLotLabel}`}
-              style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "rgba(34,197,94,0.12)", color: "#16a34a", border: "1px solid rgba(34,197,94,0.4)", fontFamily: "monospace", fontWeight: 700, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              🔗 {fabLotLabel}
-            </span>
-          )}
-          <div style={{ flex: 1 }} />
-          <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{(root.created_at || "").replace("T", " ").slice(0, 16)}</span>
-          <span style={{ fontSize: 10, fontWeight: 600 }}>{root.author}</span>
-        </div>
-        <div style={{ fontSize: 12, marginTop: 4, whiteSpace: "pre-wrap", opacity: 0.95,
-                      display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-          {root.text}
-        </div>
+        )}
+        <span style={metaBadge}>module:{modLabel}</span>
+        {reasonLabel && <span title={reasonLabel} style={metaBadge}>reason:{reasonLabel}</span>}
       </div>
     </div>
   );

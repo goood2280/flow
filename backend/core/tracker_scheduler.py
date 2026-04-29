@@ -694,6 +694,13 @@ def start_scheduler() -> bool:
     global _scheduler_thread, _scheduler_started
     if _scheduler_started:
         return False
+    try:
+        from core.runtime_limits import heavy_background_jobs_enabled
+        if not heavy_background_jobs_enabled():
+            logger.info("tracker scheduler disabled by resource profile")
+            return False
+    except Exception:
+        pass
     if os.environ.get("FLOW_DISABLE_TRACKER_SCHED") == "1":
         logger.info("tracker scheduler disabled via FLOW_DISABLE_TRACKER_SCHED=1")
         return False

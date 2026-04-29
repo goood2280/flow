@@ -73,6 +73,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.routing import Match
 from core.paths import PATHS
 from app_v2.runtime.router_loader import include_router_modules
+from app_v2.runtime.resource_guard import ResourceGuardMiddleware
 from app_v2.runtime.security import AuthMiddleware
 from app_v2.runtime.startup import ensure_seed_admin, start_background_services
 
@@ -90,6 +91,7 @@ app = FastAPI(
 
 
 app.add_middleware(AuthMiddleware)
+app.add_middleware(ResourceGuardMiddleware)
 
 # ── Dynamic Router Loading ──
 ROUTERS_DIR = Path(__file__).parent / "routers"

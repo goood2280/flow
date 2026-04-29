@@ -243,6 +243,7 @@ export default function My_ETTime() {
   const [lots, setLots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedPackage, setSelectedPackage] = useState("");
+  const [err, setErr] = useState("");
 
   useEffect(() => {
     sf(API + "/products")
@@ -263,6 +264,7 @@ export default function My_ETTime() {
       limit: 500,
       ...overrides,
     };
+    setErr("");
     setLoading(true);
     return Promise.all([
       sf(API + "/report" + qs(params)),
@@ -296,13 +298,19 @@ export default function My_ETTime() {
     package_key: row.package_key || activePackage?.package_key || "",
     max_items: 30,
   });
+  const downloadPptx = (row = {}) => {
+    const target = row || {};
+    const name = `ET_Report_${target.root_lot_id || rootLotId || product || "lot"}.pptx`;
+    setErr("");
+    return dl(pptxUrl(target), name).catch((e) => setErr(e.message || String(e) || "PPTX 다운로드 실패"));
+  };
 
   if (loading && !report) {
     return <div style={{ padding: 40, textAlign: "center" }}><Loading text="ET 레포트 로딩 중..." /></div>;
   }
 
   return (
-    <div style={{ padding: "14px 16px", background: "var(--bg-primary)", minHeight: "calc(100vh - 48px)", color: "var(--text-primary)" }}>
+    <div style={{ padding: "14px 16px", background: "var(--bg-primary)", minHeight: "calc(100vh - 52px)", color: "var(--text-primary)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>ET 레포트</div>
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
@@ -328,9 +336,14 @@ export default function My_ETTime() {
           >
             A0001 예시
           </button>
-          <button onClick={() => dl(pptxUrl(activePackage || {}), `ET_Report_${rootLotId || activePackage?.root_lot_id || product || "lot"}.pptx`).catch(() => {})} style={{ ...ctl, border: "1px solid #7c3aed", color: "#6d28d9", fontWeight: 800, cursor: "pointer" }}>PPTX</button>
+          <button onClick={() => downloadPptx(activePackage || {})} style={{ ...ctl, border: "1px solid #7c3aed", color: "#6d28d9", fontWeight: 800, cursor: "pointer" }}>PPTX</button>
         </div>
       </div>
+      {err && (
+        <div style={{ marginBottom: 10, padding: "8px 10px", border: "1px solid #ef444466", background: "#ef444422", color: "#ef4444", fontSize: 12, borderRadius: 4 }}>
+          {err}
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(120px, 1fr))", gap: 8, marginBottom: 10 }}>
         <Mini label="ET 측정이력" value={summary.packages || 0} />
@@ -390,7 +403,7 @@ export default function My_ETTime() {
                 { key: "item_count", label: "Items", mono: true, align: "right" },
                 { key: "probe_status", label: "Probe", mono: true, nowrap: true, render: (v) => String(v || "ok").toUpperCase(), color: (v) => tone(v || "ok") },
                 { key: "download", label: "PPTX", render: (_, r) => (
-                  <button onClick={(e) => { e.stopPropagation(); dl(pptxUrl(r), `ET_Report_${r.root_lot_id || "lot"}.pptx`).catch(() => {}); }} style={{ ...ctl, padding: "4px 7px", border: "1px solid #7c3aed", color: "#6d28d9", fontWeight: 800, cursor: "pointer" }}>PPTX</button>
+                  <button onClick={(e) => { e.stopPropagation(); downloadPptx(r); }} style={{ ...ctl, padding: "4px 7px", border: "1px solid #7c3aed", color: "#6d28d9", fontWeight: 800, cursor: "pointer" }}>PPTX</button>
                 ) },
               ]}
             />
@@ -399,7 +412,7 @@ export default function My_ETTime() {
           <Panel
             title="선택한 ET 측정"
             right={activePackage && (
-              <button onClick={() => dl(pptxUrl(activePackage), `ET_Report_${activePackage.root_lot_id || "lot"}.pptx`).catch(() => {})}
+              <button onClick={() => downloadPptx(activePackage)}
                 style={{ ...ctl, padding: "4px 8px", border: "1px solid #7c3aed", color: "#6d28d9", fontWeight: 800, cursor: "pointer" }}>
                 PPTX
               </button>

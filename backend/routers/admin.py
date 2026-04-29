@@ -95,6 +95,44 @@ FLOWI_DEFAULT_SETTINGS = {
     },
 }
 
+LLM_PROFILE_KEYS = (
+    "enabled", "api_url", "model", "mode", "admin_token", "provider", "auth_mode",
+    "system_name", "user_id", "user_type", "headers", "format", "extra_body", "timeout_s",
+)
+LLM_PROVIDER_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "openai": {
+        "enabled": False, "api_url": "https://api.openai.com/v1", "model": "gpt-5-nano",
+        "mode": "fast", "admin_token": "", "provider": "openai", "auth_mode": "bearer",
+        "system_name": "", "user_id": "", "user_type": "", "headers": {},
+        "format": "openai", "extra_body": {}, "timeout_s": 20,
+    },
+    "openai_compatible": {
+        "enabled": False, "api_url": "", "model": "", "mode": "fast",
+        "admin_token": "", "provider": "openai_compatible", "auth_mode": "bearer",
+        "system_name": "", "user_id": "", "user_type": "", "headers": {},
+        "format": "openai", "extra_body": {}, "timeout_s": 30,
+    },
+    "local": {
+        "enabled": False, "api_url": "", "model": "GPT-OSS-120B", "mode": "fast",
+        "admin_token": "", "provider": "local", "auth_mode": "none",
+        "system_name": "", "user_id": "", "user_type": "", "headers": {},
+        "format": "openai", "extra_body": {}, "timeout_s": 60,
+    },
+    "generic": {
+        "enabled": False, "api_url": "", "model": "", "mode": "fast",
+        "admin_token": "", "provider": "generic", "auth_mode": "bearer",
+        "system_name": "", "user_id": "", "user_type": "", "headers": {},
+        "format": "openai", "extra_body": {}, "timeout_s": 20,
+    },
+    "playground": {
+        "enabled": False, "api_url": "", "model": "", "mode": "fast",
+        "admin_token": "", "provider": "playground", "auth_mode": "dep_ticket",
+        "system_name": "playground", "user_id": "", "user_type": "", "headers": {},
+        "format": "openai", "extra_body": {}, "timeout_s": 20,
+    },
+}
+LLM_ALLOWED_PROVIDERS = set(LLM_PROVIDER_DEFAULTS)
+
 # Map UI-facing long keys to admin_settings.json short keys used by core/roots.py
 _DR_KEY_MAP = {
     "db_root":        "db",
@@ -214,6 +252,75 @@ def _flowi_default_settings(raw: Any = None) -> Dict[str, Any]:
     knowledge["custom_knowledge_append_only"] = bool(knowledge.get("custom_knowledge_append_only", True))
     merged["engineer_knowledge"] = knowledge
     return merged
+
+
+def _llm_provider(raw: Any) -> str:
+    provider = str(raw or "generic").strip().lower() or "generic"
+    return provider if provider in LLM_ALLOWED_PROVIDERS else "generic"
+
+
+def _llm_defaults(provider: str = "generic") -> Dict[str, Any]:
+    p = _llm_provider(provider)
+    base = LLM_PROVIDER_DEFAULTS.get(p) or LLM_PROVIDER_DEFAULTS["generic"]
+    return {
+        k: (_merge_nested(v, {}) if isinstance(v, dict) else v)
+        for k, v in base.items()
+    }
+
+
+def _normalize_llm_profile(raw: Any = None, provider_hint: str = "") -> Dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    provider = _llm_provider(raw.get("provider") or provider_hint)
+    out = _llm_defaults(provider)
+    for key in LLM_PROFILE_KEYS:
+        if key in raw:
+            out[key] = raw.get(key)
+    out["provider"] = provider
+    for key in ("api_url", "model", "mode", "admin_token", "auth_mode", "system_name", "user_id", "user_type", "format"):
+        out[key] = str(out.get(key) or "").strip()
+    if not out["mode"]:
+        out["mode"] = "fast"
+    if not out["format"]:
+        out["format"] = "openai"
+    if not out["auth_mode"]:
+        out["auth_mode"] = "dep_ticket" if provider == "playground" else ("none" if provider == "local" else "bearer")
+    if out["auth_mode"] not in {"bearer", "dep_ticket", "none"}:
+        out["auth_mode"] = str(_llm_defaults(provider).get("auth_mode") or "bearer")
+    if provider == "playground" and not out["system_name"]:
+        out["system_name"] = "playground"
+    if provider == "local" and not out["model"]:
+        out["model"] = "GPT-OSS-120B"
+    out["enabled"] = bool(out.get("enabled"))
+    if not isinstance(out.get("headers"), dict):
+        out["headers"] = {}
+    else:
+        out["headers"] = {str(k): str(v) for k, v in out["headers"].items() if k}
+    if not isinstance(out.get("extra_body"), dict):
+        out["extra_body"] = {}
+    try:
+        out["timeout_s"] = max(3, min(120, int(out.get("timeout_s") or _llm_defaults(provider).get("timeout_s") or 20)))
+    except Exception:
+        out["timeout_s"] = int(_llm_defaults(provider).get("timeout_s") or 20)
+    return out
+
+
+def _llm_profiles_from_admin(adm: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    raw_profiles = adm.get("llm_profiles") if isinstance(adm.get("llm_profiles"), dict) else {}
+    profiles: Dict[str, Dict[str, Any]] = {}
+    for provider, payload in raw_profiles.items():
+        p = _llm_provider(provider)
+        if isinstance(payload, dict):
+            profiles[p] = _normalize_llm_profile({**payload, "provider": p}, p)
+    legacy = adm.get("llm") if isinstance(adm.get("llm"), dict) else {}
+    if legacy:
+        p = _llm_provider(legacy.get("provider"))
+        profiles.setdefault(p, _normalize_llm_profile(legacy, p))
+    return profiles
+
+
+def _llm_active_from_admin(adm: Dict[str, Any]) -> Dict[str, Any]:
+    raw = adm.get("llm") if isinstance(adm.get("llm"), dict) else {}
+    return _normalize_llm_profile(raw, raw.get("provider") if isinstance(raw, dict) else "generic")
 
 
 class ApproveReq(BaseModel):
@@ -700,15 +807,17 @@ def get_settings(request: Request):
             merged["mail"] = None
         # v8.7.7: LLM 설정도 admin 에게만 노출 (unredacted — 편집을 위해).
         try:
-            merged["llm"] = adm.get("llm") or {
-                "enabled": False, "api_url": "", "model": "", "mode": "fast",
-                "admin_token": "", "provider": "generic", "auth_mode": "bearer",
-                "system_name": "", "user_id": "", "user_type": "",
-                "headers": {}, "format": "openai", "extra_body": {}, "timeout_s": 20,
+            merged["llm"] = _llm_active_from_admin(adm)
+            merged["llm_profiles"] = _llm_profiles_from_admin(adm)
+            merged["llm_profile_defaults"] = {
+                p: _llm_defaults(p) for p in sorted(LLM_ALLOWED_PROVIDERS)
             }
         except Exception:
             merged["llm"] = None
+            merged["llm_profiles"] = {}
+            merged["llm_profile_defaults"] = {}
         merged["flowi_defaults"] = _flowi_default_settings(adm.get("flowi_defaults") or {})
+        merged["flowi_persona"] = adm.get("flowi_persona") if isinstance(adm.get("flowi_persona"), dict) else {}
         merged["devguide_user"] = [str(u).strip() for u in devguide_users if str(u).strip()]
     # v8.4.6: data_roots (내부 파일시스템 경로) 는 admin 에게만 노출.
     if me.get("role") == "admin":
@@ -799,6 +908,7 @@ class SettingsSaveReq(BaseModel):
     mail: Optional[MailCfgReq] = None
     llm: Optional[LLMCfgReq] = None
     flowi_defaults: Optional[FlowiDefaultsReq] = None
+    flowi_persona: Optional[Dict[str, Any]] = None
     devguide_user: Optional[List[str]] = None
 
 
@@ -816,6 +926,7 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
     mail_in = data.pop("mail", None)
     llm_in = data.pop("llm", None)
     flowi_defaults_in = data.pop("flowi_defaults", None)
+    flowi_persona_in = data.pop("flowi_persona", None)
     devguide_in = data.pop("devguide_user", None)
     # Clamp to sane bounds: dashboard 1..240 minutes, SplitTable match cache 30..60 minutes.
     for k in ("dashboard_refresh_minutes", "dashboard_bg_refresh_minutes"):
@@ -979,23 +1090,22 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
     # v8.7.7: 사내 LLM 어댑터 설정 저장 (옵션 기능).
     if llm_in is not None:
         current = _load_admin_settings()
-        llm_cur = dict(current.get("llm") or {})
-        for k in ("api_url", "model", "mode", "format", "admin_token", "provider", "auth_mode", "system_name", "user_id", "user_type"):
-            if llm_in.get(k) is not None:
-                llm_cur[k] = str(llm_in.get(k) or "").strip()
-        if llm_in.get("headers") is not None:
-            hdrs = llm_in.get("headers") or {}
-            llm_cur["headers"] = {str(k): str(v) for k, v in hdrs.items() if k}
-        if llm_in.get("extra_body") is not None:
-            eb = llm_in.get("extra_body") or {}
-            llm_cur["extra_body"] = eb if isinstance(eb, dict) else {}
-        if llm_in.get("timeout_s") is not None:
-            try:
-                llm_cur["timeout_s"] = max(3, min(120, int(llm_in.get("timeout_s"))))
-            except Exception:
-                llm_cur["timeout_s"] = 20
-        if llm_in.get("enabled") is not None:
-            llm_cur["enabled"] = bool(llm_in.get("enabled"))
+        current_llm = current.get("llm") if isinstance(current.get("llm"), dict) else {}
+        requested_provider = _llm_provider(llm_in.get("provider") or current_llm.get("provider"))
+        raw_profiles = current.get("llm_profiles") if isinstance(current.get("llm_profiles"), dict) else {}
+        base = raw_profiles.get(requested_provider) if isinstance(raw_profiles.get(requested_provider), dict) else {}
+        if not base and _llm_provider(current_llm.get("provider")) == requested_provider:
+            base = current_llm
+        incoming: Dict[str, Any] = {
+            k: llm_in.get(k)
+            for k in LLM_PROFILE_KEYS
+            if llm_in.get(k) is not None
+        }
+        incoming["provider"] = requested_provider
+        llm_cur = _normalize_llm_profile({**base, **incoming}, requested_provider)
+        profiles = _llm_profiles_from_admin(current)
+        profiles[requested_provider] = llm_cur
+        current["llm_profiles"] = profiles
         current["llm"] = llm_cur
         _save_admin_settings(current)
 
@@ -1006,6 +1116,19 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         current["flowi_defaults"] = _flowi_default_settings(_merge_nested(cur_defaults, flowi_defaults_in))
         _save_admin_settings(current)
 
+    if flowi_persona_in is not None:
+        current = _load_admin_settings()
+        raw = flowi_persona_in if isinstance(flowi_persona_in, dict) else {}
+        current["flowi_persona"] = {
+            "enabled": True,
+            "system_prompt": str(raw.get("system_prompt") or "").strip()[:12000],
+            "must_not": str(raw.get("must_not") or "").strip()[:8000],
+            "notes": str(raw.get("notes") or "").strip()[:2000],
+            "updated_by": current_user(request).get("username") or "admin",
+            "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        _save_admin_settings(current)
+
     if devguide_in is not None:
         current = _load_admin_settings()
         approved = {u["username"] for u in read_users() if u.get("status") == "approved"}
@@ -1013,7 +1136,7 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         _save_admin_settings(current)
 
     _audit(request, "admin:settings-save",
-           detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'} mail={'yes' if mail_in else 'no'} llm={'yes' if llm_in else 'no'} flowi_defaults={'yes' if flowi_defaults_in is not None else 'no'} devguide={'yes' if devguide_in is not None else 'no'}",
+           detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'} mail={'yes' if mail_in else 'no'} llm={'yes' if llm_in else 'no'} flowi_defaults={'yes' if flowi_defaults_in is not None else 'no'} flowi_persona={'yes' if flowi_persona_in is not None else 'no'} devguide={'yes' if devguide_in is not None else 'no'}",
            tab="admin")
     return {"ok": True, "settings": data, "data_roots": (_resolver_snapshot() if dr_in is not None else None)}
 

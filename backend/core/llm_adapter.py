@@ -13,7 +13,7 @@
     "model":     str,            # e.g. "internal-7b"
     "mode":      str,            # e.g. "fast"
     "admin_token": str,           # admin-managed credential shared by users
-    "provider":  "generic"|"openai"|"openai_compatible"|"playground",
+    "provider":  "generic"|"openai"|"openai_compatible"|"local"|"playground",
     "auth_mode": "bearer"|"dep_ticket"|"none",
     "system_name": str,           # playground header Send-System-Name
     "user_id":   str,             # playground header User-Id
@@ -88,18 +88,20 @@ def _raw_config() -> Dict[str, Any]:
     merged["mode"] = str(merged.get("mode") or "fast").strip() or "fast"
     merged["admin_token"] = str(merged.get("admin_token") or "").strip()
     provider = str(merged.get("provider") or "generic").strip().lower() or "generic"
-    if provider not in {"generic", "openai", "openai_compatible", "playground"}:
+    if provider not in {"generic", "openai", "openai_compatible", "local", "playground"}:
         provider = "generic"
     merged["provider"] = provider
     auth_mode = str(merged.get("auth_mode") or "").strip().lower()
     if not auth_mode:
-        auth_mode = "dep_ticket" if provider == "playground" else "bearer"
+        auth_mode = "dep_ticket" if provider == "playground" else ("none" if provider == "local" else "bearer")
     if auth_mode not in {"bearer", "dep_ticket", "none"}:
         auth_mode = "bearer"
     merged["auth_mode"] = auth_mode
     merged["system_name"] = str(merged.get("system_name") or "").strip()
     if provider == "playground" and not merged["system_name"]:
         merged["system_name"] = "playground"
+    if provider == "local" and not merged["model"]:
+        merged["model"] = "GPT-OSS-120B"
     merged["user_id"] = str(merged.get("user_id") or "").strip()
     merged["user_type"] = str(merged.get("user_type") or "").strip()
     merged["format"] = (merged.get("format") or "openai").strip() or "openai"

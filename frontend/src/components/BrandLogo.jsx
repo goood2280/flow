@@ -152,9 +152,11 @@ export default function BrandLogo({ size = "home", version, onClick }) {
       style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 0 12px", userSelect: "none" }}
     >
       <FlowWordmark size="home" />
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: 2 }}>
-        <span style={{ fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "#f97316", letterSpacing: "0.18em", fontWeight: 700, opacity: 0.85 }}>v{version || "8.4.2"}</span>
-      </div>
+      {version && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: 2 }}>
+          <span style={{ fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "#f97316", letterSpacing: "0.18em", fontWeight: 700, opacity: 0.85 }}>v{version}</span>
+        </div>
+      )}
     </div>
   );
 }

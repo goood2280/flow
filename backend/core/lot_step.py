@@ -1003,6 +1003,13 @@ def start_et_lot_cache_scheduler() -> bool:
     global _ET_LOT_CACHE_THREAD, _ET_LOT_CACHE_STARTED
     if _ET_LOT_CACHE_STARTED:
         return False
+    try:
+        from core.runtime_limits import heavy_background_jobs_enabled
+        if not heavy_background_jobs_enabled():
+            logger.info("Tracker ET lot cache scheduler disabled by resource profile")
+            return False
+    except Exception:
+        pass
     _ET_LOT_CACHE_STOP.clear()
     _ET_LOT_CACHE_THREAD = threading.Thread(target=_et_lot_cache_loop, name="tracker-et-lot-cache", daemon=True)
     _ET_LOT_CACHE_THREAD.start()

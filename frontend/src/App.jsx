@@ -61,6 +61,83 @@ function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
   );
 }
 
+const NAV_GROUPS = [
+  { id: "home", label: "홈", keys: ["home"], direct: true },
+  { id: "data", label: "데이터", keys: ["filebrowser", "dashboard", "splittable", "ettime", "waferlayout"] },
+  { id: "work", label: "업무", keys: ["inform", "tracker", "meeting", "calendar"] },
+  { id: "agent", label: "에이전트", keys: ["diagnosis"], direct: true },
+  { id: "admin", label: "관리", keys: ["tablemap", "admin", "devguide"] },
+];
+
+function buildNavGroups(visibleTabs) {
+  const byKey = new Map((visibleTabs || []).map(t => [t.key, t]));
+  const used = new Set();
+  const groups = NAV_GROUPS.map(group => {
+    const items = group.keys.map(k => byKey.get(k)).filter(Boolean);
+    items.forEach(item => used.add(item.key));
+    return { ...group, items };
+  }).filter(group => group.items.length > 0);
+  const extra = (visibleTabs || []).filter(t => !used.has(t.key));
+  if (extra.length) groups.push({ id: "extra", label: "기타", keys: extra.map(t => t.key), items: extra });
+  return groups;
+}
+
+function NavGroup({ group, activeKey, onNavigate }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const activeItem = group.items.find(t => t.key === activeKey);
+  const active = !!activeItem;
+  const direct = group.direct && group.items.length === 1;
+
+  useEffect(() => {
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  if (direct) {
+    const item = group.items[0];
+    return (
+      <button
+        type="button"
+        className={"flow-nav-trigger" + (active ? " is-active" : "")}
+        onClick={() => onNavigate(item.key)}
+      >
+        {item.label}
+      </button>
+    );
+  }
+
+  return (
+    <div ref={ref} className="flow-nav-group">
+      <button
+        type="button"
+        className={"flow-nav-trigger" + (active ? " is-active" : "")}
+        onClick={() => setOpen(v => !v)}
+      >
+        <span>{group.label}</span>
+        {activeItem && <span className="flow-nav-current">{activeItem.label}</span>}
+        <span className="flow-nav-caret">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="flow-nav-menu">
+          {group.items.map(item => (
+            <button
+              key={item.key}
+              type="button"
+              className={"flow-nav-menu-item" + (item.key === activeKey ? " is-active" : "")}
+              onClick={() => { setOpen(false); onNavigate(item.key); }}
+            >
+              <span>{item.label}</span>
+              {(item.badge || item.status === "beta") && <span className="flow-nav-badge">{item.badge || "BETA"}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* v6: Bell dropdown with checkbox dismiss */
 // v8.4.4: Contact button + modal (nav bell 옆). 백엔드 /api/messages/* 재사용.
 function ContactButton({ user }) {
@@ -419,23 +496,19 @@ export default function App() {
   if (!user) return <My_Login onLogin={handleLogin} />;
 
   const Page = PAGE_MAP[tab];
+  const navGroups = buildNavGroups(visibleTabs);
 
   return (
     <div className="flow-app">
       <nav className="flow-nav">
         {/* v8.3.3: nav brand logo — pixel glyph unified with home, compact (2px cell), subtle glow. */}
         <BrandLogo size="nav" onClick={()=>nav("home")} />
-        <div style={{width:1,height:20,background:"var(--border)",marginRight:6,flexShrink:0}} />
-        {visibleTabs.map(t=>(
-          <div key={t.key} onClick={()=>nav(t.key)} style={{padding:"5px 10px",borderRadius:4,cursor:"pointer",
-            fontSize:11,flexShrink:0,position:"relative",
-            background:tab===t.key?"var(--accent-glow)":"transparent",
-            color:tab===t.key?"var(--accent)":"var(--text-secondary)",
-            fontWeight:tab===t.key?600:400}}>
-            {t.icon&&<span style={{marginRight:3}}>{t.icon}</span>}{t.label}
-            {(t.badge || t.status === "beta") && <span style={{marginLeft:5,fontSize:8,fontWeight:800,padding:"1px 4px",borderRadius:4,background:"rgba(249,115,22,0.16)",color:"var(--accent)",letterSpacing:"0.04em"}}>{t.badge || "BETA"}</span>}
-          </div>
-        ))}
+        <div className="flow-nav-separator" />
+        <div className="flow-nav-groups">
+          {navGroups.map(group => (
+            <NavGroup key={group.id} group={group} activeKey={tab} onNavigate={nav} />
+          ))}
+        </div>
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
           <ContactButton user={user} />
           <BellDropdown notifs={notifs} user={user} onDismiss={refreshNotifications} onNavigate={nav} />

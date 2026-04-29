@@ -235,7 +235,7 @@ export default function My_Calendar({ user }) {
   };
 
   return (
-    <div style={{ display: "flex", height: "calc(100vh - 48px)", background: "var(--bg-primary)", color: "var(--text-primary)", position: "relative" }}>
+    <div className="flow-connected-page" style={{ display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)", position: "relative" }}>
       <PageGear title="변경점 달력 설정" canEdit={isAdmin} position="bottom-left">
         <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 }}>
           카테고리별 색상을 관리합니다. 회의관리의 회의 카테고리도 이 팔레트를 공유합니다.

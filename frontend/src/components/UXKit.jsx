@@ -22,7 +22,7 @@ const c = {
 };
 
 export const uxColors = c;
-export const uxRadii = { xs: 3, sm: 4, md: 6, lg: 8 };
+export const uxRadii = { xs: 2, sm: 3, md: 4, lg: 5 };
 export const flowLabels = {
   "Charts": "차트",
   "FAB Progress": "FAB 진행",
@@ -170,7 +170,7 @@ export function PageHeader({ title, subtitle, right, style = {} }) {
 export function PageShell({ children, split = false, style = {} }) {
   return (
     <div className={split ? "flow-split-page" : "flow-page"} style={{
-      minHeight: split ? undefined : "calc(100vh - 48px)",
+      minHeight: split ? undefined : "calc(100vh - 52px)",
       display: split ? "flex" : "block",
       overflow: split ? "hidden" : "auto",
       ...style,
