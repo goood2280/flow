@@ -200,12 +200,14 @@ export default function My_FileBrowser({user,onNavigate}){
   },[scope]);
 
   // v4.1: Base-file preview loader (parquet/csv/json/md).
-  // 기본 클릭부터 page 단위 샘플을 로드한다. 서버가 wide parquet 기본 표시 컬럼을 제한한다.
+  // 기본 클릭은 schema-only 로 열 목록만 즉답하고, "실행"/컬럼 적용/페이지 이동에서
+  // 실제 row collect 를 수행한다. 작은 2-core/8GB 배포에서 Files 단일 parquet 클릭이
+  // 프록시 502 로 끊기는 것을 막기 위한 보호 경로다.
   const loadBaseFileView=(file,{full=false,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
     setPage(pageArg);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
-    const params={file,rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,_ts:Date.now()};
+    const params={file,rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,meta_only:!full,_ts:Date.now()};
     const url=buildUrl(API+"/base-file-view",params);
     sf(url).then(d=>{
       if(d.kind==="json"||d.kind==="md"||d.kind==="yaml"){
