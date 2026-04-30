@@ -5,7 +5,7 @@
   - 포함: data_root (flow-data) 전체 + DB 루트 최상단 CSV 등 가벼운 설정 파일.
   - 제외: `*.parquet`, `*.pyc`, `__pycache__`, `_backups`, `cache`, `tmp`, `node_modules`.
   - logs/uploads 는 포함 (운영 기록 + 인폼 이미지 보존 필요).
-  - 백업 경로: admin_settings.json `backup.path` (없으면 {data_root}/_backups).
+  - 백업 경로: admin_settings.json `backup.path` (없으면 /config/work/sharedworkspace).
   - 보관 정책: 최신 N 개 유지 (기본 5, 상한 5 — v8.8.3 부터 축소).
   - 주기: 서버 기동 시 1회 + 스케줄 스레드 (기본 24h). admin_settings.json
     `backup.interval_hours` 로 런타임 조절.
@@ -27,6 +27,7 @@ from core.paths import PATHS
 
 logger = logging.getLogger("flow.backup")
 _PROD_SHARED = Path("/config/work/sharedworkspace")
+_DEFAULT_BACKUP_ROOT = _PROD_SHARED
 
 # 제외 규칙 — 큰 바이너리/휘발성/tmp/파이썬 캐시.  logs/uploads 는 **포함**.
 _EXCLUDE_DIR_NAMES = {"_backups", "cache", "tmp", "__pycache__", "node_modules"}
@@ -107,7 +108,7 @@ def _resolve_backup_root() -> Path:
     override = cfg["path"]
     if override:
         return Path(override)
-    return PATHS.data_root / "_backups"
+    return _DEFAULT_BACKUP_ROOT
 
 
 def _iter_files(src: Path):

@@ -3,7 +3,7 @@
 v8.4.6 보안 패치:
   - 모든 admin 전용 엔드포인트에 Depends(require_admin) 추가 → curl 로 role 우회 불가.
   - /users 응답에서 password_hash 제거.
-  - /reset-password 는 임시 랜덤 비번 발급 (응답엔 포함하고 호출자에게 전달 책임).
+  - /reset-password 는 임시 랜덤 비번 발급 후 설정된 메일 도메인으로 사용자에게 발송.
   - /my-notifications · /user-tabs · /log 은 본인 또는 admin 만 접근 (verify_owner).
   - /settings 의 data_roots 는 admin 요청에만 노출 (일반 유저는 숨김).
 
@@ -12,7 +12,7 @@ v8.7.3 hotfix:
     NameError 를 일으켜 admin 라우터 로딩이 실패하던 문제 수정. `Any` 를 typing
     import 에 추가.
 """
-import os, secrets, subprocess, sys
+import html, os, secrets, subprocess, sys
 import datetime as dt
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
@@ -402,20 +402,61 @@ def reject_user(req: ApproveReq, request: Request, _admin=Depends(require_admin)
 @router.post("/reset-password")
 def reset_password(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
     """v8.4.6: 임시 랜덤 비번 (12자) 발급. 기존 '1111' 하드코딩 제거.
-    응답에 평문 포함 — admin 이 해당 유저에게 별도 채널로 전달 책임."""
+    v9.x: admin 메일 설정(domain 포함)을 사용해 사용자에게 임시 비번을 발송."""
     from core.auth import hash_password, revoke_user_tokens
+    from core.mail import send_mail
     users = read_users()
+    try:
+        actor = (current_user(request).get("username") or "flow-admin").strip()
+    except Exception:
+        actor = "flow-admin"
     for u in users:
         if u["username"] == req.username:
             new_pw = secrets.token_urlsafe(9)  # ≈12 chars
+            old_hash = u.get("password_hash", "")
             u["password_hash"] = hash_password(new_pw)
             write_users(users)
-            revoke_user_tokens(req.username)  # 기존 세션 강제 로그아웃
+            safe_username = html.escape(req.username)
+            safe_pw = html.escape(new_pw)
+            content = (
+                "<div style='font-family:Arial,sans-serif;font-size:14px;line-height:1.6'>"
+                "<p>Your password has been reset by an administrator.</p>"
+                f"<p><b>Username</b>: {safe_username}<br/>"
+                f"<b>Temporary Password</b>: {safe_pw}</p>"
+                "<p>Please sign in and change your password immediately.</p>"
+                "<p style='color:#666;font-size:12px'>If you did not expect this, contact the administrator.</p>"
+                "</div>"
+            )
+            try:
+                mail_res = send_mail(
+                    sender_username=actor or "flow-admin",
+                    receiver_usernames=[req.username],
+                    title="[flow] Password Reset",
+                    content=content,
+                    status_code="auth",
+                )
+            except Exception as e:
+                mail_res = {"ok": False, "reason": f"{type(e).__name__}: {e}", "to": [], "skipped": [req.username]}
+            if not mail_res.get("ok"):
+                u["password_hash"] = old_hash
+                write_users(users)
+                reason = mail_res.get("reason") or "Password reset email failed"
+                _audit(request, "admin:reset-password-mail-failed",
+                       detail=f"user={req.username};reason={reason}", tab="admin")
+                raise HTTPException(503, reason)
+            revoked = revoke_user_tokens(req.username)  # 기존 세션 강제 로그아웃
             send_notify(req.username, "Password Reset",
-                        "Your password has been reset by admin. "
-                        "Contact admin to receive the new temporary password.", "info")
-            _audit(request, "admin:reset-password", detail=f"user={req.username}", tab="admin")
-            return {"ok": True, "new_password": new_pw}
+                        "Your temporary password was sent to your configured email.", "info")
+            mail_to = mail_res.get("to") or []
+            _audit(request, "admin:reset-password",
+                   detail=f"user={req.username};revoked={revoked};mail_to={','.join(mail_to)}", tab="admin")
+            return {
+                "ok": True,
+                "new_password": new_pw,
+                "mail_sent": True,
+                "mail_to": mail_to,
+                "mail_skipped": mail_res.get("skipped") or [],
+            }
     raise HTTPException(404)
 
 

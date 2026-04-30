@@ -94,10 +94,10 @@ curl http://localhost:8080/runtime-roots.json
 
 ## 백업과 롤백
 
-기본 백업 위치는 `data_root/_backups`다. 예를 들어 사내 기본값은:
+기본 백업 위치는 `/config/work/sharedworkspace`다. `admin_settings.json`의 `backup.path`가 있으면 그 값을 우선한다.
 
 ```text
-/config/work/sharedworkspace/flow-data/_backups/
+/config/work/sharedworkspace/
 ```
 
 Admin UI의 `Admin > 백업` 또는 `Admin > 데이터 루트 > 자동 백업`에서 즉시 백업과 롤백을 실행할 수 있다.

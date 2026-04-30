@@ -153,7 +153,7 @@ prod:
         <ApiRow method="GET" path="/api/admin/users" desc="전체 유저 목록" />
         <ApiRow method="POST" path="/api/admin/approve" desc="유저 승인" />
         <ApiRow method="POST" path="/api/admin/reject" desc="유저 삭제" />
-        <ApiRow method="POST" path="/api/admin/reset-password" desc="비밀번호 초기화 (hol12345!)" />
+        <ApiRow method="POST" path="/api/admin/reset-password" desc="비밀번호 초기화 → 설정된 메일 도메인으로 임시 비밀번호 발송" />
         <ApiRow method="POST" path="/api/admin/send-message" desc="특정 유저에게 메시지" />
         <ApiRow method="POST" path="/api/admin/broadcast" desc="전체 공지" />
         <ApiRow method="GET" path="/api/admin/my-notifications?username=" desc="내 알림 (미읽음)" />

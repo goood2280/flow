@@ -195,6 +195,17 @@ export default function My_Admin({user}){
       .finally(()=>setLoadBusy(false));
   };
   const action=(url,body)=>sf(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(()=>setTimeout(load,500));
+  const resetPassword=(username)=>{
+    if(!username)return;
+    if(!confirm(`${username} 비밀번호를 초기화하고 설정된 메일 도메인으로 임시 비밀번호를 보낼까요?`))return;
+    sf("/api/admin/reset-password",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username})})
+      .then((r)=>{
+        const to=_arr(r?.mail_to).join(", ");
+        alert(to?`임시 비밀번호를 발송했습니다: ${to}`:"임시 비밀번호를 발송했습니다.");
+        setTimeout(load,500);
+      })
+      .catch(e=>alert("비번 초기화 실패: "+e.message));
+  };
   const savePerm=()=>{if(!editPerm)return;sf("/api/admin/set-tabs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm,tabs:permTabs})}).then(()=>{setEditPerm(null);load();setTab("perms");});};
   const submitBulkUsers=()=>{
     const text=String(bulkUsersText||"").trim();
@@ -296,7 +307,7 @@ export default function My_Admin({user}){
                     <Button variant="danger" onClick={()=>action("/api/admin/reject",{username:u.username})}>거절</Button>
                   </>}
                   {u.status==="approved"&&u.role!=="admin"&&<>
-                    <Button variant="ghost" onClick={()=>action("/api/admin/reset-password",{username:u.username})}>비번 초기화</Button>
+                    <Button variant="ghost" onClick={()=>resetPassword(u.username)}>비번 초기화</Button>
                     <Button variant="danger" onClick={()=>{if(confirm("삭제하시겠습니까?"))action("/api/admin/delete-user",{username:u.username});}}>삭제</Button>
                     <Button variant="ghost" onClick={()=>{setEditPerm(u.username);setPermTabs(_tabsToArray(u.tabs));setTab("perms");}} style={{color:"var(--info,#3b82f6)",border:"1px solid var(--info,#3b82f6)"}}>권한</Button>
                   </>}
@@ -1778,13 +1789,13 @@ function DataRootsPanel(){
       <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:12,lineHeight:1.5}}>
         data_root 전체와 DB 루트 최상단 설정 파일을 zip 스냅샷으로 백업합니다.
         서버 기동 시 1회 + 설정된 주기로 자동 실행. 보관개수 초과 시 오래된 백업부터 자동 삭제.
-        경로를 비워두면 현재 <span style={{fontFamily:"monospace"}}>data_root/_backups</span> 를 자동 사용합니다.
+        경로를 비워두면 현재 <span style={{fontFamily:"monospace"}}>/config/work/sharedworkspace</span> 를 자동 사용합니다.
       </div>
       <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:10,alignItems:"end"}}>
         <div>
-          <div style={L}>백업 경로 (비워두면 data_root/_backups 자동)</div>
+          <div style={L}>백업 경로 (비워두면 /config/work/sharedworkspace 자동)</div>
           <input value={backup.path||""} onChange={e=>setBackup({...backup,path:e.target.value})}
-            placeholder="예: D:/flow_backups"
+            placeholder="예: /config/work/sharedworkspace"
             style={I}/>
         </div>
         <div>
