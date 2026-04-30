@@ -5,9 +5,6 @@
     "PC",
     "MOL",
     "BEOL",
-    "ET",
-    "EDS",
-    "S-D Epi",
     "Spacer",
     "Well",
     "기타"
@@ -18,5 +15,6 @@
   "products": [
     "PRODA"
   ],
-  "raw_db_root": ""
+  "raw_db_root": "",
+  "reason_templates": {}
 }
