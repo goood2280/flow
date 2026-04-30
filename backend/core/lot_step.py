@@ -943,6 +943,11 @@ def refresh_et_lot_cache(product: str = "", source_root: str = "", force: bool =
 
 
 def et_lot_cache_status(product: str = "", source_root: str = "") -> dict:
+    try:
+        from core.runtime_limits import tracker_et_lot_cache_enabled
+        enabled = tracker_et_lot_cache_enabled()
+    except Exception:
+        enabled = False
     root = str(source_root or tracker_db_sources_config().get("analysis") or ET_ROOT).strip() or ET_ROOT
     prod = _cache_product_name(product)
     rows = []
@@ -980,6 +985,7 @@ def et_lot_cache_status(product: str = "", source_root: str = "") -> dict:
             })
     return {
         "ok": True,
+        "enabled": enabled,
         "interval_minutes": et_lot_cache_refresh_minutes(),
         "source_root": root,
         "products": rows,
@@ -1004,9 +1010,9 @@ def start_et_lot_cache_scheduler() -> bool:
     if _ET_LOT_CACHE_STARTED:
         return False
     try:
-        from core.runtime_limits import heavy_background_jobs_enabled
-        if not heavy_background_jobs_enabled():
-            logger.info("Tracker ET lot cache scheduler disabled by resource profile")
+        from core.runtime_limits import tracker_et_lot_cache_enabled
+        if not tracker_et_lot_cache_enabled():
+            logger.info("Tracker ET lot cache scheduler disabled")
             return False
     except Exception:
         pass

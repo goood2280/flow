@@ -214,8 +214,14 @@ export default function My_SplitTable({user}){
     sf(API+"/match-cache/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd||"",force:true})})
       .then(r=>{
         const rows=r.products||[];
-        const ok=rows.filter(x=>x.ok).length;
-        alert(`FAB 매칭 캐시 스캔 완료: ${ok}/${rows.length}`);
+        if(r.queued){
+          alert(`FAB 매칭 캐시 스캔 예약됨: ${rows.length}개 제품`);
+        }else if(r.running){
+          alert("FAB 매칭 캐시 스캔이 이미 실행 중입니다.");
+        }else{
+          const ok=rows.filter(x=>x.ok).length;
+          alert(`FAB 매칭 캐시 스캔 완료: ${ok}/${rows.length}`);
+        }
         reloadMlMatch();
         if(loadView&&(lotId.trim()||fabLotId.trim())) loadView();
       })

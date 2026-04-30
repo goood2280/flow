@@ -413,7 +413,16 @@ def get_et_lot_cache_status(request: Request,
 
 @router.post("/et-lot-cache/refresh")
 def refresh_et_lot_cache_now(req: EtLotCacheRefreshReq, request: Request, _a=Depends(require_admin)):
+    from core.runtime_limits import tracker_et_lot_cache_enabled
     from core.lot_step import refresh_et_lot_cache
+    if not tracker_et_lot_cache_enabled():
+        return {
+            "ok": False,
+            "disabled": True,
+            "enabled": False,
+            "products": [],
+            "detail": "Tracker ET lot cache is disabled. Set FLOW_ENABLE_TRACKER_ET_LOT_CACHE=1 to enable it.",
+        }
     return refresh_et_lot_cache(
         product=req.product or "",
         source_root=req.source_root or "",

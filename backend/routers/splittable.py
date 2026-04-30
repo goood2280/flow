@@ -14,7 +14,7 @@ v4.1 (2026-04-19, adapter-engineer slice):
       `<db_root>/_uniques.json` unchanged, for frontend feature-select
     autocomplete catalog.
 """
-import json, datetime, io, csv as csv_mod, logging, time, threading
+import json, datetime, io, csv as csv_mod, logging, time, threading, os, gc
 from pathlib import Path
 import sys
 
@@ -137,6 +137,24 @@ _MATCH_CACHE_THREAD: threading.Thread | None = None
 _MATCH_CACHE_STARTED = False
 _MATCH_CACHE_STOP = threading.Event()
 _MATCH_CACHE_BUILD_LOCK = threading.Lock()
+_MATCH_CACHE_JOB_LOCK = threading.Lock()
+_MATCH_CACHE_JOB_THREAD: threading.Thread | None = None
+_MATCH_CACHE_JOB_STATE: dict = {
+    "running": False,
+    "queued": False,
+    "reason": "",
+    "started_at": "",
+    "finished_at": "",
+    "current_product": "",
+    "total": 0,
+    "done": 0,
+    "ok_count": 0,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "paused": False,
+    "last_error": "",
+    "products": [],
+}
 _PLAN_RISK_CACHE: dict[tuple[str, bool], dict] = {}
 _PLAN_RISK_CACHE_LOCK = threading.Lock()
 _PLAN_RISK_CACHE_MAX = 64
@@ -3482,6 +3500,151 @@ def _match_cache_refresh_minutes() -> int:
     return max(MATCH_CACHE_REFRESH_MINUTES_MIN, min(MATCH_CACHE_REFRESH_MINUTES_MAX, value))
 
 
+def _float_env_clamped(name: str, default: float, lo: float, hi: float) -> float:
+    try:
+        value = float(os.environ.get(name, "") or default)
+    except Exception:
+        value = default
+    return max(lo, min(hi, value))
+
+
+def _match_cache_product_pause_seconds() -> float:
+    return _float_env_clamped("FLOW_SPLITTABLE_MATCH_CACHE_PRODUCT_PAUSE_SEC", 5.0, 0.0, 300.0)
+
+
+def _match_cache_memory_wait_seconds() -> float:
+    return _float_env_clamped("FLOW_SPLITTABLE_MATCH_CACHE_MEMORY_WAIT_SEC", 60.0, 5.0, 600.0)
+
+
+def _match_cache_products(product: str = "") -> list[str]:
+    raw = str(product or "").strip()
+    if raw:
+        return [raw]
+    try:
+        products = [p.get("name") for p in list_products().get("products", [])]
+    except Exception:
+        products = []
+    return [p for p in products if p]
+
+
+def _match_cache_job_status() -> dict:
+    with _MATCH_CACHE_JOB_LOCK:
+        out = dict(_MATCH_CACHE_JOB_STATE)
+        out["products"] = [dict(r) for r in (_MATCH_CACHE_JOB_STATE.get("products") or [])]
+    return out
+
+
+def _match_cache_job_update(**updates) -> None:
+    with _MATCH_CACHE_JOB_LOCK:
+        _MATCH_CACHE_JOB_STATE.update(updates)
+
+
+def _match_cache_job_append_products(rows: list[dict]) -> None:
+    if not rows:
+        return
+    with _MATCH_CACHE_JOB_LOCK:
+        current = [dict(r) for r in (_MATCH_CACHE_JOB_STATE.get("products") or [])]
+        current.extend(dict(r) for r in rows)
+        _MATCH_CACHE_JOB_STATE["products"] = current[-500:]
+        _MATCH_CACHE_JOB_STATE["done"] = int(_MATCH_CACHE_JOB_STATE.get("done") or 0) + len(rows)
+        _MATCH_CACHE_JOB_STATE["ok_count"] = int(_MATCH_CACHE_JOB_STATE.get("ok_count") or 0) + len([r for r in rows if r.get("ok")])
+        _MATCH_CACHE_JOB_STATE["failed_count"] = int(_MATCH_CACHE_JOB_STATE.get("failed_count") or 0) + len([r for r in rows if not r.get("ok") and not r.get("skipped")])
+        _MATCH_CACHE_JOB_STATE["skipped_count"] = int(_MATCH_CACHE_JOB_STATE.get("skipped_count") or 0) + len([r for r in rows if r.get("skipped")])
+        for row in reversed(rows):
+            if row.get("reason"):
+                _MATCH_CACHE_JOB_STATE["last_error"] = str(row.get("reason") or "")
+                break
+
+
+def _begin_match_cache_job(products: list[str], force: bool, reason: str) -> tuple[bool, dict]:
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    with _MATCH_CACHE_JOB_LOCK:
+        if _MATCH_CACHE_JOB_STATE.get("running"):
+            status = dict(_MATCH_CACHE_JOB_STATE)
+            status["products"] = [dict(r) for r in (_MATCH_CACHE_JOB_STATE.get("products") or [])]
+            return False, status
+        _MATCH_CACHE_JOB_STATE.clear()
+        _MATCH_CACHE_JOB_STATE.update({
+            "running": True,
+            "queued": True,
+            "force": bool(force),
+            "reason": reason or "manual",
+            "started_at": now,
+            "finished_at": "",
+            "current_product": "",
+            "total": len(products),
+            "done": 0,
+            "ok_count": 0,
+            "failed_count": 0,
+            "skipped_count": 0,
+            "paused": False,
+            "last_error": "",
+            "products": [],
+        })
+        status = dict(_MATCH_CACHE_JOB_STATE)
+        status["products"] = []
+        return True, status
+
+
+def _wait_for_match_cache_memory() -> bool:
+    try:
+        from core.runtime_limits import process_memory_high, process_memory_snapshot
+    except Exception:
+        return True
+    wait_s = _match_cache_memory_wait_seconds()
+    while not _MATCH_CACHE_STOP.is_set():
+        try:
+            high = process_memory_high()
+            snap = process_memory_snapshot()
+        except Exception:
+            return True
+        if not high:
+            _match_cache_job_update(paused=False, memory=snap)
+            return True
+        _match_cache_job_update(paused=True, memory=snap)
+        _MATCH_CACHE_STOP.wait(wait_s)
+    return False
+
+
+def _write_match_cache_lazyframe(q, tmp: Path) -> int:
+    """Write cache output with the lowest available peak-memory path."""
+    try:
+        tmp.unlink(missing_ok=True)
+    except Exception:
+        pass
+    try:
+        q.sink_parquet(str(tmp))
+        try:
+            return int(pl.scan_parquet(str(tmp)).select(pl.len().alias("row_count")).collect().item(0, 0))
+        except Exception:
+            try:
+                return int(pl.read_parquet(str(tmp)).height)
+            except Exception:
+                return 0
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+    df = None
+    try:
+        try:
+            df = q.collect(streaming=True)
+        except TypeError:
+            df = q.collect()
+        df.write_parquet(tmp)
+        return int(df.height)
+    finally:
+        try:
+            del df
+        except Exception:
+            pass
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
+
 def _current_fab_override(product: str) -> tuple[str, dict, str]:
     ml_product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
     cfg = load_json(SOURCE_CFG, {}) if SOURCE_CFG.exists() else {}
@@ -3796,9 +3959,8 @@ def _fab_lot_snapshot_from_cache(product: str, root_lot_id: str, wafer_id: str =
     return _clean_str(df.item(0, 0))
 
 
-def refresh_match_cache(product: str = "", force: bool = False) -> dict:
-    """Build persisted FAB root/fab/wafer connection tables for SplitTable."""
-    products = [product] if str(product or "").strip() else [p.get("name") for p in list_products().get("products", [])]
+def _refresh_match_cache_products(products: list[str], force: bool = False) -> dict:
+    """Build persisted FAB root/fab/wafer connection tables for known products."""
     products = [p for p in products if p]
     results: list[dict] = []
     with _MATCH_CACHE_BUILD_LOCK:
@@ -3887,9 +4049,8 @@ def refresh_match_cache(product: str = "", force: bool = False) -> dict:
                     q = q.unique(subset=unique_subset, keep="first", maintain_order=True)
                 else:
                     q = q.unique(subset=unique_subset, keep="last")
-                df = q.collect()
                 tmp = fp.with_suffix(fp.suffix + ".tmp")
-                df.write_parquet(tmp)
+                row_count = _write_match_cache_lazyframe(q, tmp)
                 tmp.replace(fp)
                 meta = {
                     "version": MATCH_CACHE_VERSION,
@@ -3899,7 +4060,7 @@ def refresh_match_cache(product: str = "", force: bool = False) -> dict:
                     "config_key": config_key,
                     "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
                     "built_epoch": time.time(),
-                    "row_count": int(df.height),
+                    "row_count": int(row_count),
                     "join_keys": join_keys,
                     "join_tmp_keys": join_tmp_keys,
                     "override_cols": override_cols,
@@ -3910,14 +4071,121 @@ def refresh_match_cache(product: str = "", force: bool = False) -> dict:
                 }
                 save_json(meta_fp, meta)
                 _LOT_LOOKUP_CACHE.clear()
-                result.update({"ok": True, "row_count": int(df.height), "join_keys": join_keys,
+                result.update({"ok": True, "row_count": int(row_count), "join_keys": join_keys,
                                "override_cols": override_cols, "fab_sources": fab_sources})
             except Exception as e:
                 logger.warning("SplitTable match cache build failed (product=%s) %s: %s",
                                raw_product, type(e).__name__, e, exc_info=True)
                 result["reason"] = f"{type(e).__name__}: {e}"
             results.append(result)
+            try:
+                gc.collect()
+            except Exception:
+                pass
     return {"ok": any(r.get("ok") for r in results), "products": results, "interval_minutes": _match_cache_refresh_minutes()}
+
+
+def refresh_match_cache(product: str = "", force: bool = False, max_products: int | None = None) -> dict:
+    """Build persisted FAB root/fab/wafer connection tables for SplitTable.
+
+    Callers that warm the whole cache can pass max_products to pace large
+    sweeps. Product-specific calls keep the historical synchronous behavior.
+    """
+    products = _match_cache_products(product)
+    if max_products is not None:
+        try:
+            n = max(1, int(max_products))
+            products = products[:n]
+        except Exception:
+            pass
+    return _refresh_match_cache_products(products, force=force)
+
+
+def _run_started_match_cache_job(products: list[str], force: bool, reason: str = "manual",
+                                 refresh_plan_risk: bool = False) -> dict:
+    pause_s = _match_cache_product_pause_seconds()
+    try:
+        if not products:
+            return {"ok": True, "queued": False, "products": [], "job": _match_cache_job_status()}
+        for idx, raw_product in enumerate(products):
+            if _MATCH_CACHE_STOP.is_set():
+                break
+            if not _wait_for_match_cache_memory():
+                break
+            _match_cache_job_update(current_product=raw_product, paused=False)
+            try:
+                result = _refresh_match_cache_products([raw_product], force=force)
+            except Exception as e:
+                logger.warning("SplitTable match cache queued build failed (product=%s) %s: %s",
+                               raw_product, type(e).__name__, e, exc_info=True)
+                result = {
+                    "ok": False,
+                    "products": [{
+                        "product": raw_product,
+                        "ok": False,
+                        "skipped": False,
+                        "row_count": 0,
+                        "reason": f"{type(e).__name__}: {e}",
+                    }],
+                    "interval_minutes": _match_cache_refresh_minutes(),
+                }
+            _match_cache_job_append_products(result.get("products") or [])
+            if idx < len(products) - 1 and pause_s > 0:
+                _MATCH_CACHE_STOP.wait(pause_s)
+        if refresh_plan_risk and not _MATCH_CACHE_STOP.is_set():
+            try:
+                refresh_plan_risk_cache(force=False)
+            except Exception as e:
+                logger.warning("SplitTable plan risk cache refresh after match cache failed: %s", e)
+    finally:
+        _match_cache_job_update(
+            running=False,
+            queued=False,
+            current_product="",
+            paused=False,
+            finished_at=datetime.datetime.now().isoformat(timespec="seconds"),
+        )
+    status = _match_cache_job_status()
+    return {
+        "ok": bool(status.get("ok_count")),
+        "queued": False,
+        "products": status.get("products") or [],
+        "interval_minutes": _match_cache_refresh_minutes(),
+        "job": status,
+        "reason": reason,
+    }
+
+
+def enqueue_match_cache_refresh(product: str = "", force: bool = True, reason: str = "manual") -> dict:
+    """Queue a paced match-cache refresh and return immediately."""
+    global _MATCH_CACHE_JOB_THREAD
+    products = _match_cache_products(product)
+    started, status = _begin_match_cache_job(products, force=force, reason=reason)
+    if not started:
+        return {
+            "ok": True,
+            "queued": False,
+            "running": True,
+            "products": [],
+            "interval_minutes": _match_cache_refresh_minutes(),
+            "job": status,
+            "detail": "SplitTable match cache refresh is already running.",
+        }
+    _MATCH_CACHE_JOB_THREAD = threading.Thread(
+        target=_run_started_match_cache_job,
+        args=(products, force, reason, False),
+        name="splittable-match-cache-refresh",
+        daemon=True,
+    )
+    _MATCH_CACHE_JOB_THREAD.start()
+    return {
+        "ok": True,
+        "queued": True,
+        "running": True,
+        "products": [{"product": p, "queued": True} for p in products],
+        "interval_minutes": _match_cache_refresh_minutes(),
+        "job": _match_cache_job_status(),
+    }
 
 
 def _seconds_until_next_match_cache_tick() -> float:
@@ -3927,8 +4195,15 @@ def _seconds_until_next_match_cache_tick() -> float:
 def _match_cache_loop() -> None:
     while not _MATCH_CACHE_STOP.is_set():
         try:
-            refresh_match_cache(force=False)
-            refresh_plan_risk_cache(force=False)
+            products = _match_cache_products("")
+            started, _status = _begin_match_cache_job(products, force=False, reason="scheduler")
+            if started:
+                _run_started_match_cache_job(
+                    products,
+                    force=False,
+                    reason="scheduler",
+                    refresh_plan_risk=True,
+                )
         except Exception as e:
             logger.warning("SplitTable match cache scheduler tick failed: %s", e)
         wait_s = _seconds_until_next_match_cache_tick()
@@ -3943,9 +4218,9 @@ def start_match_cache_scheduler() -> bool:
     if _MATCH_CACHE_STARTED:
         return False
     try:
-        from core.runtime_limits import heavy_background_jobs_enabled
-        if not heavy_background_jobs_enabled():
-            logger.info("SplitTable match cache scheduler disabled by resource profile")
+        from core.runtime_limits import splittable_match_cache_enabled
+        if not splittable_match_cache_enabled():
+            logger.info("SplitTable match cache scheduler disabled")
             return False
     except Exception:
         pass
@@ -3967,6 +4242,11 @@ def match_cache_status(request: Request, product: str = Query("")):
     me = current_user(request)
     if me.get("role") != "admin":
         raise HTTPException(403, "admin only")
+    try:
+        from core.runtime_limits import splittable_match_cache_enabled
+        enabled = splittable_match_cache_enabled()
+    except Exception:
+        enabled = True
     products = [product] if str(product or "").strip() else [p.get("name") for p in list_products().get("products", [])]
     rows = []
     for prod in [p for p in products if p]:
@@ -3982,12 +4262,18 @@ def match_cache_status(request: Request, product: str = Query("")):
             "row_count": int(meta.get("row_count") or 0),
             "join_keys": meta.get("join_keys") or [],
         })
-    return {"ok": True, "interval_minutes": _match_cache_refresh_minutes(), "products": rows}
+    return {
+        "ok": True,
+        "enabled": enabled,
+        "interval_minutes": _match_cache_refresh_minutes(),
+        "products": rows,
+        "job": _match_cache_job_status(),
+    }
 
 
 @router.post("/match-cache/refresh")
 def refresh_match_cache_now(req: MatchCacheRefreshReq, request: Request, _a=Depends(require_admin)):
-    return refresh_match_cache(product=req.product or "", force=bool(req.force))
+    return enqueue_match_cache_refresh(product=req.product or "", force=bool(req.force), reason="manual")
 
 
 def _resolve_override_meta(product: str, include_diagnostics: bool = True) -> dict:
