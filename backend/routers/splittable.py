@@ -125,7 +125,7 @@ def _lot_lookup_cache_set(key: tuple, payload: dict) -> dict:
 PLAN_DIR = PATHS.data_root / "splittable"
 PLAN_DIR.mkdir(parents=True, exist_ok=True)
 MATCH_CACHE_DIR = PLAN_DIR / "match_cache"
-MATCH_CACHE_VERSION = 2
+MATCH_CACHE_VERSION = 3
 MATCH_CACHE_REFRESH_MINUTES_DEFAULT = 30
 MATCH_CACHE_REFRESH_MINUTES_MIN = 30
 MATCH_CACHE_REFRESH_MINUTES_MAX = 60
@@ -4043,7 +4043,15 @@ def _refresh_match_cache_products(products: list[str], force: bool = False) -> d
                 q = q.select(keep)
                 for k in join_tmp_keys:
                     q = q.filter(pl.col(k).is_not_null() & (pl.col(k) != ""))
-                unique_subset = [c for c in join_tmp_keys + [MATCH_CACHE_FAB_COL] if c in keep]
+                # The persisted cache is the authoritative SplitTable
+                # root/wafer -> FAB lot mapping.  Keep exactly one FAB row per
+                # root_lot_id + wafer_id join key, chosen by latest tkout/time,
+                # so SplitTable and Inform snapshots read the same lot_id basis.
+                unique_subset = [c for c in join_tmp_keys if c in keep]
+                if not unique_subset:
+                    unique_subset = [c for c in (MATCH_CACHE_ROOT_COL, MATCH_CACHE_WAFER_COL) if c in keep]
+                if not unique_subset:
+                    unique_subset = [c for c in (MATCH_CACHE_FAB_COL,) if c in keep]
                 if MATCH_CACHE_TS_COL in keep:
                     q = q.sort(MATCH_CACHE_TS_COL, descending=True, nulls_last=True)
                     q = q.unique(subset=unique_subset, keep="first", maintain_order=True)
@@ -4063,6 +4071,7 @@ def _refresh_match_cache_products(products: list[str], force: bool = False) -> d
                     "row_count": int(row_count),
                     "join_keys": join_keys,
                     "join_tmp_keys": join_tmp_keys,
+                    "dedup_keys": unique_subset,
                     "override_cols": override_cols,
                     "root_col": cols["root_col"],
                     "wafer_col": cols["wafer_col"],
