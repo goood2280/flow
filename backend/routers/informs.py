@@ -1251,7 +1251,8 @@ def list_lots(request: Request):
 def create_inform(req: InformCreate, request: Request):
     me = current_user(request)
     # v8.7.9: wafer_id 는 선택. 없으면 lot_id 로 자동 채움. 둘 다 없고 parent 도 없으면 400.
-    wid = (req.wafer_id or "").strip()
+    requested_wafer_id = (req.wafer_id or "").strip()
+    wid = requested_wafer_id
     lot_for_fallback = (req.lot_id or "").strip()
     if not wid:
         wid = lot_for_fallback
@@ -1318,7 +1319,7 @@ def create_inform(req: InformCreate, request: Request):
     embed_fabs = _extract_fab_lots_from_embed(embed)
     fab_snapshot = (
         (req.fab_lot_id_at_save or "").strip()
-        or _resolve_fab_lot_snapshot(inherit_product, inherit_lot, wid)
+        or _resolve_fab_lot_snapshot(inherit_product, inherit_lot, requested_wafer_id)
         or ", ".join(embed_fabs)
     )
     entry = {

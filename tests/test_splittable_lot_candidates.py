@@ -485,3 +485,67 @@ def test_match_cache_searches_entire_fab_db_when_product_folder_is_missing(tmp_p
     assert built["products"][0]["fab_sources"] == ["1.RAWDATA_DB_FAB/OTHER"]
     assert result["header_groups"] == [{"label": "F9300A.1", "span": 2}]
     assert result["available_fab_lots"] == ["F9300A.1"]
+
+
+def test_match_cache_keeps_latest_fab_lot_per_root_wafer(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["R9400", "R9400"],
+        "wafer_id": [1, 2],
+        "KNOB_ALPHA": ["ON", "OFF"],
+    }).write_parquet(tmp_path / "ML_TABLE_LATEST.parquet")
+
+    fab_root = tmp_path / "1.RAWDATA_DB_FAB" / "LATEST" / "date=20240422"
+    fab_root.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["R9400", "R9400", "R9400"],
+        "lot_id": ["F9400_OLD", "F9400_NEW", "F9400_W2"],
+        "wafer_id": [1, 1, 2],
+        "tkout_time": [
+            "2024-04-22T08:00:00",
+            "2024-04-22T12:00:00",
+            "2024-04-22T09:00:00",
+        ],
+    }).write_parquet(fab_root / "part_0.parquet")
+
+    cache_dir = tmp_path / "flow-data" / "splittable" / "match_cache"
+    source_cfg = tmp_path / "flow-data" / "splittable" / "source_config.json"
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "MATCH_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(splittable, "SOURCE_CFG", source_cfg)
+    splittable._LOT_LOOKUP_CACHE.clear()
+    splittable._RGLOB_CACHE.clear()
+    splittable._DB_ROOTS_CACHE.clear()
+
+    built = splittable.refresh_match_cache(product="ML_TABLE_LATEST", force=True)
+    cache_df = pl.read_parquet(cache_dir / "ML_TABLE_LATEST.parquet")
+    result = splittable.view_split(
+        product="ML_TABLE_LATEST",
+        root_lot_id="R9400",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+    fab_candidates = splittable.get_lot_candidates(
+        product="ML_TABLE_LATEST",
+        col="fab_lot_id",
+        prefix="F9400",
+        limit=20,
+        source="auto",
+        root_lot_id="R9400",
+    )
+    wafer_snapshot = splittable.resolve_fab_lot_snapshot("LATEST", "R9400", "1")
+
+    assert built["products"][0]["ok"] is True
+    assert built["products"][0]["row_count"] == 2
+    assert cache_df["__cache_fab_lot_id"].to_list() == ["F9400_NEW", "F9400_W2"]
+    assert result["header_groups"] == [
+        {"label": "F9400_NEW", "span": 1},
+        {"label": "F9400_W2", "span": 1},
+    ]
+    assert fab_candidates["candidates"] == ["F9400_NEW", "F9400_W2"]
+    assert wafer_snapshot == "F9400_NEW"
