@@ -1601,7 +1601,7 @@ function DataRootsPanel(){
   const[splitRefresh,setSplitRefresh]=useState(30);
   const[etRefresh,setEtRefresh]=useState(30);
   const[cacheBusy,setCacheBusy]=useState("");
-  const[cacheStatus,setCacheStatus]=useState({fab:[],et:[]});
+  const[cacheStatus,setCacheStatus]=useState({fab:[],et:[],fabJob:null,etEnabled:false});
   const[backup,setBackup]=useState({path:"",interval_hours:24,keep:5,enabled:true,last:{}});
   const[backupList,setBackupList]=useState([]);
   const[bkBusy,setBkBusy]=useState(false);
@@ -1618,7 +1618,12 @@ function DataRootsPanel(){
     Promise.all([
       sf("/api/splittable/match-cache/status").catch(()=>({products:[]})),
       sf("/api/tracker/et-lot-cache/status").catch(()=>({products:[]})),
-    ]).then(([fab,et])=>setCacheStatus({fab:fab.products||[],et:et.products||[]})).catch(()=>{});
+    ]).then(([fab,et])=>setCacheStatus({
+      fab:fab.products||[],
+      et:et.products||[],
+      fabJob:fab.job||null,
+      etEnabled:et.enabled!==false,
+    })).catch(()=>{});
     sf("/api/admin/backup/status").then(d=>{
       if(d.settings)setBackup(b=>({...b,...d.settings}));
       setBackupList(d.backups||[]);
@@ -1693,7 +1698,13 @@ function DataRootsPanel(){
     const url=kind==="et"?"/api/tracker/et-lot-cache/refresh":"/api/splittable/match-cache/refresh";
     setCacheBusy(kind);setMsg("");
     sf(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({force:true})})
-      .then(r=>{setMsg(`${kind==="et"?"ET":"FAB"} 캐시 스캔 완료: ${(r.products||[]).filter(x=>x.ok).length}/${(r.products||[]).length}`);reload();})
+      .then(r=>{
+        if(r.disabled)setMsg("ET 캐시는 현재 꺼져 있습니다.");
+        else if(r.queued)setMsg(`${kind==="et"?"ET":"FAB"} 캐시 스캔 예약됨: ${(r.products||[]).length}개 제품`);
+        else if(r.running)setMsg(`${kind==="et"?"ET":"FAB"} 캐시 스캔이 이미 실행 중입니다.`);
+        else setMsg(`${kind==="et"?"ET":"FAB"} 캐시 스캔 완료: ${(r.products||[]).filter(x=>x.ok).length}/${(r.products||[]).length}`);
+        reload();
+      })
       .catch(e=>setMsg("캐시 스캔 오류: "+e.message))
       .finally(()=>setCacheBusy(""));
   };
@@ -1725,7 +1736,9 @@ function DataRootsPanel(){
           style={{padding:"6px 12px",borderRadius:6,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:11,fontWeight:700,cursor:cacheBusy==="fab"?"wait":"pointer"}}>
           {cacheBusy==="fab"?"FAB 스캔 중...":"FAB 수동 스캔"}
         </button>
-        <span style={{fontSize:10,color:"var(--text-secondary)"}}>캐시 {cacheStatus.fab?.length||0}개 제품</span>
+        <span style={{fontSize:10,color:"var(--text-secondary)"}}>
+          캐시 {cacheStatus.fab?.length||0}개 제품{cacheStatus.fabJob?.running?` · 진행 ${cacheStatus.fabJob.done||0}/${cacheStatus.fabJob.total||0}`:""}
+        </span>
       </div>
     </div>
     <div style={{marginTop:18,paddingTop:16,borderTop:"1px solid var(--border)"}}>
@@ -1740,9 +1753,9 @@ function DataRootsPanel(){
         style={{...I,maxWidth:140}}/>
       <div style={H}>30~60분 범위. 저장 후 ET 캐시 스케줄러의 다음 tick부터 적용됩니다.</div>
       <div style={{display:"flex",gap:8,alignItems:"center",marginTop:10,flexWrap:"wrap"}}>
-        <button onClick={()=>runCacheRefresh("et")} disabled={cacheBusy==="et"}
-          style={{padding:"6px 12px",borderRadius:6,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:11,fontWeight:700,cursor:cacheBusy==="et"?"wait":"pointer"}}>
-          {cacheBusy==="et"?"ET 스캔 중...":"ET 수동 스캔"}
+        <button onClick={()=>runCacheRefresh("et")} disabled={cacheBusy==="et"||cacheStatus.etEnabled===false}
+          style={{padding:"6px 12px",borderRadius:6,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:11,fontWeight:700,cursor:cacheBusy==="et"?"wait":cacheStatus.etEnabled===false?"not-allowed":"pointer",opacity:cacheStatus.etEnabled===false?0.55:1}}>
+          {cacheStatus.etEnabled===false?"ET 캐시 꺼짐":cacheBusy==="et"?"ET 스캔 중...":"ET 수동 스캔"}
         </button>
         <span style={{fontSize:10,color:"var(--text-secondary)"}}>캐시 {cacheStatus.et?.length||0}개 제품</span>
       </div>

@@ -58,14 +58,38 @@ def process_memory_limit_gb() -> float:
 def heavy_background_jobs_enabled() -> bool:
     """Whether startup may run DB-scanning background jobs.
 
-    Heavy jobs include dashboard chart recompute, SplitTable match-cache scans,
-    Tracker ET cache scans, and tracker lot polling. Operators can enable them
-    after sizing the host with FLOW_ENABLE_HEAVY_BACKGROUND_JOBS=1 or by using a
-    full resource profile.
+    Heavy jobs include dashboard chart recompute, Tracker ET cache scans, and
+    tracker lot polling. SplitTable match-cache has its own paced scheduler so
+    it can run conservatively on small hosts.
     """
     if "FLOW_ENABLE_HEAVY_BACKGROUND_JOBS" in os.environ:
         return _env_flag("FLOW_ENABLE_HEAVY_BACKGROUND_JOBS")
     return resource_profile() in _FULL_PROFILES
+
+
+def splittable_match_cache_enabled() -> bool:
+    """Whether the managed SplitTable FAB match-cache scheduler may run.
+
+    Unlike broad dashboard/tracker scanners, this cache is paced product by
+    product so SplitTable can keep its root_lot_id/fab_lot_id lookup warm on
+    small servers.
+    """
+    if "FLOW_ENABLE_SPLITTABLE_MATCH_CACHE" in os.environ:
+        return _env_flag("FLOW_ENABLE_SPLITTABLE_MATCH_CACHE")
+    if "FLOW_DISABLE_SPLITTABLE_MATCH_CACHE" in os.environ:
+        return not _env_flag("FLOW_DISABLE_SPLITTABLE_MATCH_CACHE")
+    return True
+
+
+def tracker_et_lot_cache_enabled() -> bool:
+    """Whether Tracker Analysis ET lot-cache jobs may run.
+
+    ET caches are intentionally opt-in for now because ET roots tend to be much
+    larger than the FAB lineage data used by SplitTable.
+    """
+    if "FLOW_ENABLE_TRACKER_ET_LOT_CACHE" in os.environ:
+        return _env_flag("FLOW_ENABLE_TRACKER_ET_LOT_CACHE")
+    return False
 
 
 def dashboard_scheduler_enabled() -> bool:

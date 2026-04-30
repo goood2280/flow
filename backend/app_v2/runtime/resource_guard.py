@@ -25,6 +25,12 @@ DEFAULT_HEAVY_PREFIXES = (
     "/api/waferlayout",
 )
 
+DEFAULT_LIGHT_PATHS = (
+    "/api/splittable/match-cache/status",
+    "/api/splittable/match-cache/refresh",
+    "/api/tracker/et-lot-cache/status",
+)
+
 
 def _int_env(name: str, default: int, lo: int, hi: int) -> int:
     try:
@@ -50,6 +56,12 @@ def _prefixes() -> tuple[str, ...]:
     return out or DEFAULT_HEAVY_PREFIXES
 
 
+def _light_paths() -> tuple[str, ...]:
+    raw = os.environ.get("FLOW_LIGHT_API_PATHS", "")
+    extra = tuple(p.strip() for p in raw.split(",") if p.strip())
+    return DEFAULT_LIGHT_PATHS + extra
+
+
 def _matches(path: str, prefixes: Iterable[str]) -> bool:
     return any(path.startswith(prefix) for prefix in prefixes)
 
@@ -70,11 +82,14 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         self._queue_timeout = _float_env("FLOW_HEAVY_REQUEST_QUEUE_TIMEOUT_SEC", 120.0, 1.0, 600.0)
         self._memory_reserve_gb = _float_env("FLOW_MEMORY_RESERVE_GB", 1.0, 0.0, 8.0)
         self._prefixes = _prefixes()
+        self._light_paths = _light_paths()
         self._semaphore = asyncio.Semaphore(self._concurrency)
         self._active = 0
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+        if path.startswith("/api/") and _matches(path, self._light_paths):
+            return await call_next(request)
         if not path.startswith("/api/") or not _matches(path, self._prefixes):
             return await call_next(request)
 

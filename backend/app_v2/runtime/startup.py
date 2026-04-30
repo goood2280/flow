@@ -4,7 +4,11 @@ import datetime
 import os
 
 from core.auth import hash_password
-from core.runtime_limits import heavy_background_jobs_enabled
+from core.runtime_limits import (
+    heavy_background_jobs_enabled,
+    splittable_match_cache_enabled,
+    tracker_et_lot_cache_enabled,
+)
 
 
 def start_background_services(logger) -> None:
@@ -17,16 +21,32 @@ def start_background_services(logger) -> None:
     )
     heavy_starters = (
         ("tracker scheduler", "core.tracker_scheduler", "start_scheduler"),
-        ("tracker ET lot cache scheduler", "core.lot_step", "start_et_lot_cache_scheduler"),
-        ("splittable match cache scheduler", "routers.splittable", "start_match_cache_scheduler"),
     )
     starters = light_starters
+    if splittable_match_cache_enabled():
+        starters = starters + (
+            ("splittable match cache scheduler", "routers.splittable", "start_match_cache_scheduler"),
+        )
+    else:
+        logger.info(
+            "SplitTable match cache scheduler disabled "
+            "(set FLOW_ENABLE_SPLITTABLE_MATCH_CACHE=1 to enable)"
+        )
     if heavy_background_jobs_enabled():
         starters = starters + heavy_starters
     else:
         logger.info(
             "heavy background DB scanners disabled "
             "(set FLOW_ENABLE_HEAVY_BACKGROUND_JOBS=1 to enable)"
+        )
+    if tracker_et_lot_cache_enabled():
+        starters = starters + (
+            ("tracker ET lot cache scheduler", "core.lot_step", "start_et_lot_cache_scheduler"),
+        )
+    else:
+        logger.info(
+            "Tracker ET lot cache scheduler disabled "
+            "(set FLOW_ENABLE_TRACKER_ET_LOT_CACHE=1 to enable)"
         )
     for label, module_name, attr_name in starters:
         try:
