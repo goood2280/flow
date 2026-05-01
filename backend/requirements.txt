@@ -2,6 +2,7 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 polars>=0.20
 pyarrow>=14.0
+duckdb>=1.0
 openpyxl>=3.1
 xlsxwriter>=3.2
 xlrd>=2.0

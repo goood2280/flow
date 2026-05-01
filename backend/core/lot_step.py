@@ -30,6 +30,7 @@ logger = logging.getLogger("flow.lot_step")
 
 FAB_ROOT = "1.RAWDATA_DB_FAB"
 ET_ROOT = "1.RAWDATA_DB_ET"
+LOT_STEP_MAX_WAFER_ID = 25
 DEFAULT_MONITOR_CATEGORY = "Monitor"
 DEFAULT_ANALYSIS_CATEGORY = "Analysis"
 _STEP_META_CACHE: dict = {}
@@ -172,6 +173,21 @@ def _is_all_wafer_id(v: str) -> bool:
     return str(v or "").strip().lower() in {"all", "*", "전체"}
 
 
+def _normalize_wafer_id(raw, *, max_wafer: int = LOT_STEP_MAX_WAFER_ID) -> str:
+    text = str(raw or "").strip().upper()
+    if not text:
+        return ""
+    core = re.sub(r"^(?:#|WAFER|WF|W)\s*", "", text, flags=re.I).strip()
+    try:
+        num = float(core)
+    except Exception:
+        return ""
+    if not num.is_integer():
+        return ""
+    n = int(num)
+    return str(n) if 1 <= n <= max_wafer else ""
+
+
 def parse_wafer_selection(wafer_id: str) -> list[str]:
     """Parse tracker wafer input.
 
@@ -195,12 +211,16 @@ def parse_wafer_selection(wafer_id: str) -> list[str]:
                 start = int(left.strip())
                 end = int(right.strip())
             except Exception:
-                parts.append(item)
+                norm = _normalize_wafer_id(item)
+                if norm:
+                    parts.append(norm)
                 continue
             step = 1 if end >= start else -1
-            parts.extend(str(v) for v in range(start, end + step, step))
+            parts.extend(str(v) for v in range(start, end + step, step) if 1 <= v <= LOT_STEP_MAX_WAFER_ID)
         else:
-            parts.append(item)
+            norm = _normalize_wafer_id(item)
+            if norm:
+                parts.append(norm)
     out = []
     seen = set()
     for item in parts:
@@ -209,6 +229,37 @@ def parse_wafer_selection(wafer_id: str) -> list[str]:
         seen.add(item)
         out.append(item)
     return out
+
+
+def _wafer_filter_parts(values: Iterable[str]) -> tuple[list[str], list[int]]:
+    strings: set[str] = set()
+    ints: set[int] = set()
+    for raw in values or []:
+        norm = _normalize_wafer_id(raw)
+        if not norm:
+            continue
+        n = int(norm)
+        ints.add(n)
+        strings.update({
+            str(n),
+            f"{n:02d}",
+            f"W{n}",
+            f"W{n:02d}",
+            f"WF{n}",
+            f"WF{n:02d}",
+        })
+    return sorted(strings), sorted(ints)
+
+
+def _wafer_filter_expr(pl_module, col: str, values: Iterable[str]):
+    strings, ints = _wafer_filter_parts(values)
+    expr = None
+    if strings:
+        expr = pl_module.col(col).cast(pl_module.Utf8, strict=False).str.to_uppercase().is_in(strings)
+    if ints:
+        int_expr = pl_module.col(col).cast(pl_module.Int64, strict=False).is_in(ints)
+        expr = int_expr if expr is None else (expr | int_expr)
+    return expr
 
 
 def _wafer_sort_key(v) -> tuple[int, str]:
@@ -656,6 +707,14 @@ def _apply_lot_filters(lf, schema: list[str], product: str = "", root_lot_id: st
     return lf
 
 
+def _filter_valid_wafers(lf):
+    try:
+        from core.utils import filter_valid_wafer_ids_lazy
+        return filter_valid_wafer_ids_lazy(lf)
+    except Exception:
+        return lf
+
+
 def _scan_source_files(root_name: str, product: str = "", source: str = "auto"):
     try:
         import polars as pl
@@ -665,10 +724,10 @@ def _scan_source_files(root_name: str, product: str = "", source: str = "auto"):
     if not files:
         return None
     try:
-        return pl.scan_parquet([str(f) for f in files[-30:]], hive_partitioning=True)
+        return _filter_valid_wafers(pl.scan_parquet([str(f) for f in files[-30:]], hive_partitioning=True))
     except Exception:
         try:
-            return pl.scan_parquet([str(f) for f in files[-30:]])
+            return _filter_valid_wafers(pl.scan_parquet([str(f) for f in files[-30:]]))
         except Exception:
             return None
 
@@ -682,10 +741,10 @@ def _scan_source_files_all(root_name: str, product: str = "", source: str = "aut
     if not files:
         return None
     try:
-        return pl.scan_parquet([str(f) for f in files], hive_partitioning=True)
+        return _filter_valid_wafers(pl.scan_parquet([str(f) for f in files], hive_partitioning=True))
     except Exception:
         try:
-            return pl.scan_parquet([str(f) for f in files])
+            return _filter_valid_wafers(pl.scan_parquet([str(f) for f in files]))
         except Exception:
             return None
 
@@ -749,7 +808,7 @@ def _et_lot_cache_current(product: str, source_root: str = "") -> dict | None:
         return None
     try:
         import polars as pl
-        lf = pl.scan_parquet(str(fp))
+        lf = _filter_valid_wafers(pl.scan_parquet(str(fp)))
     except Exception as e:
         logger.warning("ET lot cache scan failed product=%s source=%s: %s", prod, root, e)
         return None
@@ -1193,7 +1252,7 @@ def resolve_wafer_selection(product: str = "", root_lot_id: str = "", lot_id: st
             source_root=source_root,
         )
         return found or [text]
-    return [text] if text else [""]
+    return [] if text else [""]
 
 
 _WATCH_WAFER_STATE_KEYS = {
@@ -1381,6 +1440,7 @@ def latest_fab_step(product: str = "", root_lot_id: str = "", lot_id: str = "",
             lf = pl.scan_parquet([str(f) for f in files[-30:]])
         except Exception:
             return {}
+    lf = _filter_valid_wafers(lf)
     schema = lf.collect_schema().names()
     filters = []
     prod_values = _data_product_values(product)
@@ -1399,9 +1459,14 @@ def latest_fab_step(product: str = "", root_lot_id: str = "", lot_id: str = "",
             for e in lot_filters[1:]:
                 expr = expr | e
             filters.append(expr)
-    wafer_values = parse_wafer_selection(wafer_id)
+    wafer_text = str(wafer_id or "").strip()
+    wafer_values = parse_wafer_selection(wafer_text)
+    if wafer_text and not _is_all_wafer_id(wafer_text) and not wafer_values:
+        return {}
     if wafer_values and "wafer_id" in schema:
-        filters.append(pl.col("wafer_id").cast(pl.Utf8).is_in(wafer_values))
+        wafer_expr = _wafer_filter_expr(pl, "wafer_id", wafer_values)
+        if wafer_expr is not None:
+            filters.append(wafer_expr)
     if filters:
         expr = filters[0]
         for e in filters[1:]:
@@ -1453,6 +1518,7 @@ def et_packages(product: str = "", root_lot_id: str = "", lot_id: str = "",
             lf = pl.scan_parquet([str(f) for f in files[-30:]])
         except Exception:
             return []
+    lf = _filter_valid_wafers(lf)
     schema = lf.collect_schema().names()
     filters = []
     prod_values = _data_product_values(product)
@@ -1471,9 +1537,14 @@ def et_packages(product: str = "", root_lot_id: str = "", lot_id: str = "",
             for e in lot_filters[1:]:
                 expr = expr | e
             filters.append(expr)
-    wafer_values = parse_wafer_selection(wafer_id)
+    wafer_text = str(wafer_id or "").strip()
+    wafer_values = parse_wafer_selection(wafer_text)
+    if wafer_text and not _is_all_wafer_id(wafer_text) and not wafer_values:
+        return []
     if wafer_values and "wafer_id" in schema:
-        filters.append(pl.col("wafer_id").cast(pl.Utf8).is_in(wafer_values))
+        wafer_expr = _wafer_filter_expr(pl, "wafer_id", wafer_values)
+        if wafer_expr is not None:
+            filters.append(wafer_expr)
     if filters:
         expr = filters[0]
         for e in filters[1:]:

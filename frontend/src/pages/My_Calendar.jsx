@@ -218,7 +218,7 @@ export default function My_Calendar({ user }) {
     const borderLeft = isAction ? `4px solid ${color}` : `3px solid ${color}`;
     return (
       <div key={e.id + "_" + occ.dayIdx} onClick={ev => { ev.stopPropagation(); openEdit(e); }} style={{
-        fontSize: 10, padding: "2px 5px", borderRadius: radius,
+        fontSize: 14, padding: "2px 5px", borderRadius: radius,
         background: fill,
         border: isMid || isEnd || isStart ? border : "none",
         borderLeft: (occ.kind === "single" || isStart) ? borderLeft : (isMid ? "none" : border),
@@ -237,10 +237,10 @@ export default function My_Calendar({ user }) {
   return (
     <div className="flow-connected-page" style={{ display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)", position: "relative" }}>
       <PageGear title="변경점 달력 설정" canEdit={isAdmin} position="bottom-left">
-        <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 }}>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10 }}>
           카테고리별 색상을 관리합니다. 회의관리의 회의 카테고리도 이 팔레트를 공유합니다.
         </div>
-        <button onClick={startEditCats} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>🎨 카테고리 팔레트 편집</button>
+        <button onClick={startEditCats} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>🎨 카테고리 팔레트 편집</button>
       </PageGear>
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <PageHeader
@@ -253,7 +253,7 @@ export default function My_Calendar({ user }) {
               <Button variant="subtle" onClick={() => setView(new Date())}>오늘</Button>
               <Button variant="subtle" onClick={() => { reload(); }} title="회의 auto-sync 이벤트를 포함해 서버에서 다시 불러옵니다">↻ 새로고침</Button>
               <select value={meetingFilter} onChange={e => setMeetingFilter(e.target.value)}
-                style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none" }}
+                style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" }}
                 title="회의별 필터">
                 <option value="all">전체 이벤트</option>
                 <option value="manual">일반 이벤트만</option>
@@ -263,13 +263,13 @@ export default function My_Calendar({ user }) {
               </select>
               <input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === "Enter" && runSearch()}
                 placeholder="검색…"
-                style={{ width: 180, padding: "6px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none" }} />
+                style={{ width: 180, padding: "6px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" }} />
               <Button variant="ghost" onClick={runSearch}>검색</Button>
               {searchResults && <Button variant="subtle" onClick={() => { setSearch(""); setSearchResults(null); }}>×</Button>}
             </div>
           )}
         />
-        <div style={{ padding: "6px 20px", display: "flex", gap: 14, fontSize: 10, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ padding: "6px 20px", display: "flex", gap: 14, fontSize: 14, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
           <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#3b82f680", border: "1px solid #3b82f6", marginRight: 4, verticalAlign: "middle" }} /> 일반</span>
           <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#3b82f680", border: "1px solid #3b82f6", marginRight: 4, verticalAlign: "middle" }} /> 결정사항 (N차 회의 결정사항, 회의일자)</span>
           <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#3b82f620", border: "1px solid #3b82f6", borderLeft: "3px solid #3b82f6", marginRight: 4, verticalAlign: "middle" }} /> 📍 액션아이템 (마감일 단독)</span>
@@ -278,7 +278,7 @@ export default function My_Calendar({ user }) {
         <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
           {searchResults ? (
             <div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>검색 결과: {searchResults.length}건</div>
+              <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>검색 결과: {searchResults.length}건</div>
               {searchResults.length === 0 && <EmptyState title="일치하는 이벤트 없음" hint="검색어를 바꾸거나 필터를 해제하세요." />}
               {searchResults.map(e => (
                 <div key={e.id} onClick={() => openEdit(e)} style={{
@@ -286,11 +286,11 @@ export default function My_Calendar({ user }) {
                   border: "1px solid var(--border)", cursor: "pointer", display: "flex", gap: 10, alignItems: "center",
                 }}>
                   <span style={{ width: 8, height: 8, borderRadius: "50%", background: catColor(e.category), flexShrink: 0 }} />
-                  <span style={{ fontSize: 11, fontFamily: "monospace", color: "var(--text-secondary)", minWidth: 90 }}>{e.date}{e.end_date && e.end_date !== e.date ? ` ~ ${e.end_date}` : ""}</span>
-                  <span style={{ fontSize: 13, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.title}</span>
+                  <span style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", minWidth: 90 }}>{e.date}{e.end_date && e.end_date !== e.date ? ` ~ ${e.end_date}` : ""}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.title}</span>
                   <Pill tone="neutral">{SOURCE_LABEL[e.source_type || "manual"]}</Pill>
-                  {e.category && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: catColor(e.category) + "33", color: catColor(e.category) }}>{e.category}</span>}
-                  <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{e.author}</span>
+                  {e.category && <span style={{ fontSize: 14, padding: "2px 8px", borderRadius: 999, background: catColor(e.category) + "33", color: catColor(e.category) }}>{e.category}</span>}
+                  <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{e.author}</span>
                 </div>
               ))}
             </div>
@@ -299,7 +299,7 @@ export default function My_Calendar({ user }) {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4, marginBottom: 4 }}>
                 {WEEKDAYS.map((w, i) => (
                   <div key={w} style={{
-                    padding: "6px 8px", fontSize: 11, fontWeight: 700, textAlign: "center",
+                    padding: "6px 8px", fontSize: 14, fontWeight: 700, textAlign: "center",
                     color: i === 0 ? "#ef4444" : i === 6 ? "#3b82f6" : "var(--text-secondary)",
                     fontFamily: "monospace",
                   }}>{w}</div>
@@ -334,7 +334,7 @@ export default function My_Calendar({ user }) {
                           <span title="오늘" style={{
                             background: "var(--accent)", color: "#fff",
                             padding: "1px 6px", borderRadius: 999,
-                            fontSize: 9, fontWeight: 700, letterSpacing: 0.3,
+                            fontSize: 14, fontWeight: 700, letterSpacing: 0.3,
                             lineHeight: 1.4, fontFamily: "monospace",
                             boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
                           }}>TODAY</span>
@@ -342,13 +342,13 @@ export default function My_Calendar({ user }) {
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
                         {occs.slice(0, 4).map(renderOccurrence)}
-                        {occs.length > 4 && <div style={{ fontSize: 9, color: "var(--text-secondary)", padding: "0 4px" }}>+{occs.length - 4}건</div>}
+                        {occs.length > 4 && <div style={{ fontSize: 14, color: "var(--text-secondary)", padding: "0 4px" }}>+{occs.length - 4}건</div>}
                       </div>
                     </div>
                   );
                 })}
               </div>
-              <div style={{ marginTop: 10, fontSize: 10, color: "var(--text-secondary)" }}>
+              <div style={{ marginTop: 10, fontSize: 14, color: "var(--text-secondary)" }}>
                 {loading ? "로딩…" : `${filteredEvents.length}건`} · 셀 클릭 → 신규 등록 · 이벤트 클릭 → 편집 · 회의 이벤트는 회의관리에서만 수정 가능
               </div>
             </div>
@@ -359,14 +359,14 @@ export default function My_Calendar({ user }) {
       {selected && (
         <div style={{ width: 360, minWidth: 320, borderLeft: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
           <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 13, fontWeight: 700, fontFamily: "monospace", color: "var(--accent)" }}>
+            <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace", color: "var(--accent)" }}>
               {selected._new ? "+ 신규 이벤트" : `이벤트 상세 · ${SOURCE_LABEL[selected.source_type || "manual"]}`}
             </span>
             <span onClick={() => { setSelected(null); setConflict(null); }} style={{ cursor: "pointer", fontSize: 16 }}>✕</span>
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
             {conflict && (
-              <div style={{ padding: 10, borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid #ef4444", fontSize: 11 }}>
+              <div style={{ padding: 10, borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid #ef4444", fontSize: 14 }}>
                 ⚠ 다른 사용자가 이 이벤트를 수정했습니다.
                 <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
                   <button onClick={acceptServer} style={smallBtnPrimary}>최신 데이터 불러오기</button>
@@ -375,7 +375,7 @@ export default function My_Calendar({ user }) {
               </div>
             )}
             {!selected._new && (selected.source_type || "manual") !== "manual" && (
-              <div style={{ padding: 8, borderRadius: 5, background: "rgba(59,130,246,0.08)", border: "1px dashed #3b82f6", fontSize: 11, color: "var(--text-secondary)" }}>
+              <div style={{ padding: 8, borderRadius: 5, background: "rgba(59,130,246,0.08)", border: "1px dashed #3b82f6", fontSize: 14, color: "var(--text-secondary)" }}>
                 🔗 회의에서 auto-sync 된 이벤트입니다. 수정/삭제는 회의관리의 해당 결정/액션에서.
                 {selected.meeting_ref?.meeting_title && <div style={{ marginTop: 4, fontWeight: 600, color: "var(--accent)" }}>🗓 {selected.meeting_ref.meeting_title}</div>}
               </div>
@@ -411,7 +411,7 @@ export default function My_Calendar({ user }) {
               <Field label={`공개범위 · 그룹 선택 (비우면 전원 공개)`}>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: 6, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 5, minHeight: 32 }}>
                   {myGroups.length === 0 && (
-                    <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>열람 가능한 그룹이 없습니다.</span>
+                    <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>열람 가능한 그룹이 없습니다.</span>
                   )}
                   {myGroups.map(g => {
                     const gid = g.id;
@@ -424,7 +424,7 @@ export default function My_Calendar({ user }) {
                               setSelected({ ...selected, group_ids: next });
                             }}
                             style={{
-                              padding: "3px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer",
+                              padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer",
                               background: sel ? "var(--accent)" : "var(--bg-card)",
                               color: sel ? "#fff" : "var(--text-primary)",
                               border: "1px solid " + (sel ? "var(--accent)" : "var(--border)"),
@@ -436,14 +436,14 @@ export default function My_Calendar({ user }) {
                   })}
                 </div>
                 {(selected.group_ids || []).length > 0 && (
-                  <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>
+                  <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>
                     선택한 {(selected.group_ids || []).length}개 그룹의 멤버와 본인·관리자만 열람합니다.
                   </div>
                 )}
               </Field>
             )}
             {!selected._new && (
-              <div style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", lineHeight: 1.7 }}>
+              <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", lineHeight: 1.7 }}>
                 <div>id: <span style={{ color: "var(--text-primary)" }}>{selected.id}</span></div>
                 <div>version: <span style={{ color: "var(--text-primary)" }}>{selected.version}</span></div>
                 <div>작성자: <span style={{ color: "var(--text-primary)" }}>{selected.author}</span></div>
@@ -485,7 +485,7 @@ export default function My_Calendar({ user }) {
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setEditCats(false)}>
           <div onClick={e => e.stopPropagation()} style={{ width: 480, maxWidth: "90%", background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, fontFamily: "monospace", color: "var(--accent)" }}>🎨 카테고리 관리</div>
-            {!isAdmin && <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>(관리자만 저장할 수 있습니다 — 보기 전용)</div>}
+            {!isAdmin && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>(관리자만 저장할 수 있습니다 — 보기 전용)</div>}
             {draftCats.map((c, i) => (
               <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
                 <input value={c.name} onChange={e => { const n = [...draftCats]; n[i] = { ...n[i], name: e.target.value }; setDraftCats(n); }}
@@ -508,15 +508,15 @@ export default function My_Calendar({ user }) {
   );
 }
 
-const navBtn = { padding: "4px 12px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 12, cursor: "pointer", fontFamily: "monospace" };
-const inp = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none" };
-const smallBtn = { padding: "5px 12px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 11, cursor: "pointer" };
-const smallBtnPrimary = { padding: "5px 12px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, cursor: "pointer", fontWeight: 600 };
+const navBtn = { padding: "4px 12px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer", fontFamily: "monospace" };
+const inp = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
+const smallBtn = { padding: "5px 12px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer" };
+const smallBtnPrimary = { padding: "5px 12px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: "pointer", fontWeight: 600 };
 
 function Field({ label, children }) {
   return (
     <div>
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 3, fontFamily: "monospace" }}>{label}</div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 3, fontFamily: "monospace" }}>{label}</div>
       {children}
     </div>
   );

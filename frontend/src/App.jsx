@@ -16,10 +16,10 @@ class ErrorBoundary extends Component {
     if (this.state.error) {
       return (<div style={{padding:"40px 32px",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif",maxWidth:720}}>
         <div style={{fontSize:18,fontWeight:800,color:"#ef4444",marginBottom:8,fontFamily:"'JetBrains Mono',monospace"}}>⚠ 오류가 발생했습니다</div>
-        <div style={{fontSize:12,color:"var(--text-secondary)",marginBottom:6}}>이 페이지에서 JavaScript 에러가 발생했습니다. 아래 재시도 버튼을 눌러 다시 렌더링하거나 다른 탭으로 이동하세요.</div>
-        <div style={{fontSize:11,color:"#fbbf24",marginBottom:16,padding:"8px 12px",borderRadius:6,background:"rgba(251,191,36,0.08)",border:"1px solid rgba(251,191,36,0.25)",fontFamily:"monospace",wordBreak:"break-word"}}>{String(this.state.error?.message || this.state.error)}</div>
-        <button onClick={()=>this.setState({error:null})} style={{padding:"8px 18px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:12,fontWeight:600,cursor:"pointer",marginRight:8}}>↻ 재시도</button>
-        <span style={{fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace"}}>콘솔 (F12) 에서 전체 스택 확인</span>
+        <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6}}>이 페이지에서 JavaScript 에러가 발생했습니다. 아래 재시도 버튼을 눌러 다시 렌더링하거나 다른 탭으로 이동하세요.</div>
+        <div style={{fontSize:14,color:"#fbbf24",marginBottom:16,padding:"8px 12px",borderRadius:6,background:"rgba(251,191,36,0.08)",border:"1px solid rgba(251,191,36,0.25)",fontFamily:"monospace",wordBreak:"break-word"}}>{String(this.state.error?.message || this.state.error)}</div>
+        <button onClick={()=>this.setState({error:null})} style={{padding:"8px 18px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer",marginRight:8}}>↻ 재시도</button>
+        <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>콘솔 (F12) 에서 전체 스택 확인</span>
       </div>);
     }
     return this.props.children;
@@ -36,24 +36,24 @@ function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
   return (
     <div ref={ref} style={{position:"relative"}}>
       <div onClick={() => setOpen(!open)} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:6,
-        padding:"4px 10px",borderRadius:6,background:open?"var(--bg-hover)":"transparent",fontSize:12,
+        padding:"4px 10px",borderRadius:6,background:open?"var(--bg-hover)":"transparent",fontSize:14,
         color:"var(--text-secondary)"}}>
         <span style={{fontSize:14}}>👤</span>{user.username}
       </div>
       {open && <div style={{position:"fixed",top:52,right:16,background:"var(--bg-secondary)",border:"1px solid var(--border)",
         borderRadius:8,padding:6,minWidth:150,zIndex:9999,boxShadow:"0 4px 12px rgba(0,0,0,0.3)"}}>
-        <div style={{padding:"8px 12px",fontSize:12,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)"}}>
+        <div style={{padding:"8px 12px",fontSize:14,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)"}}>
           {user.role} | {user.username}
         </div>
         <div onClick={() => { setDark(!dark); localStorage.setItem("hol_dark",String(!dark)); }}
-          style={{padding:"8px 12px",fontSize:12,cursor:"pointer",color:"var(--text-primary)"}}>
+          style={{padding:"8px 12px",fontSize:14,cursor:"pointer",color:"var(--text-primary)"}}>
           {dark ? "☀ 라이트 모드" : "☾ 다크 모드"}
         </div>
         <div onClick={() => { setOpen(false); onChangePw(); }}
-          style={{padding:"8px 12px",fontSize:12,cursor:"pointer",color:"var(--text-primary)"}}>
+          style={{padding:"8px 12px",fontSize:14,cursor:"pointer",color:"var(--text-primary)"}}>
           🔑 비밀번호 변경
         </div>
-        <div onClick={onLogout} style={{padding:"8px 12px",fontSize:12,cursor:"pointer",color:"#ef4444"}}>
+        <div onClick={onLogout} style={{padding:"8px 12px",fontSize:14,cursor:"pointer",color:"#ef4444"}}>
           ⏻ 로그아웃
         </div>
       </div>}
@@ -217,7 +217,7 @@ function ContactButton({ user }) {
   };
 
   const tabBtn = (k, l) => <div key={k} onClick={() => setTab(k)} style={{
-    padding: "6px 14px", fontSize: 11, cursor: "pointer",
+    padding: "6px 14px", fontSize: 14, cursor: "pointer",
     fontWeight: tab === k ? 700 : 400,
     borderBottom: tab === k ? "2px solid var(--accent)" : "2px solid transparent",
     color: tab === k ? "var(--accent)" : "var(--text-secondary)"
@@ -227,7 +227,7 @@ function ContactButton({ user }) {
     <div onClick={() => setOpen(true)} style={{ cursor: "pointer", position: "relative" }} title="문의">
       <span style={{ fontSize: 14 }}>✉️</span>
       {unread > 0 && <span style={{
-        position: "absolute", top: -4, right: -6, fontSize: 9, fontWeight: 700,
+        position: "absolute", top: -4, right: -6, fontSize: 14, fontWeight: 700,
         background: "#3b82f6", color: "#fff", borderRadius: "50%", minWidth: 14, height: 14,
         display: "flex", alignItems: "center", justifyContent: "center", padding: "0 2px"
       }}>{unread > 99 ? "99+" : unread}</span>}
@@ -254,65 +254,65 @@ function ContactButton({ user }) {
         <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
           {tab === "inquiry" && <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div ref={listRef} style={{ minHeight: 260, maxHeight: 360, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, padding: 10, background: "var(--bg-card)", display: "flex", flexDirection: "column", gap: 8 }}>
-              {thread.length === 0 && <div style={{ textAlign: "center", color: "var(--text-secondary)", fontSize: 11, padding: 40 }}>관리자와의 이전 문의가 없습니다. 아래에 메시지를 입력해 시작하세요.</div>}
+              {thread.length === 0 && <div style={{ textAlign: "center", color: "var(--text-secondary)", fontSize: 14, padding: 40 }}>관리자와의 이전 문의가 없습니다. 아래에 메시지를 입력해 시작하세요.</div>}
               {thread.map((m, i) => (<div key={i} style={{ alignSelf: m.from === user.username ? "flex-end" : "flex-start", maxWidth: "80%", padding: "6px 12px", borderRadius: 8, background: m.from === user.username ? "var(--accent-glow)" : "var(--bg-hover)", border: "1px solid " + (m.from === user.username ? "var(--accent)" : "var(--border)") }}>
-                <div style={{ fontSize: 9, color: "var(--text-secondary)", marginBottom: 2, fontFamily: "monospace" }}>{m.from === user.username ? "나" : "관리자"} · {(m.created_at || m.ts || "").slice(5, 16).replace("T", " ")}</div>
-                <div style={{ fontSize: 12, whiteSpace: "pre-wrap" }}>{m.text || m.body}</div>
+                <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2, fontFamily: "monospace" }}>{m.from === user.username ? "나" : "관리자"} · {(m.created_at || m.ts || "").slice(5, 16).replace("T", " ")}</div>
+                <div style={{ fontSize: 14, whiteSpace: "pre-wrap" }}>{m.text || m.body}</div>
               </div>))}
             </div>
             <div style={{ display: "flex", gap: 6 }}>
-              <input value={msg} onChange={e => setMsg(e.target.value)} onKeyDown={e => { if (e.key === "Enter") send(); }} placeholder="관리자에게 보낼 메시지…" style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
-              <button onClick={send} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>전송</button>
+              <input value={msg} onChange={e => setMsg(e.target.value)} onKeyDown={e => { if (e.key === "Enter") send(); }} placeholder="관리자에게 보낼 메시지…" style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
+              <button onClick={send} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>전송</button>
             </div>
           </div>}
           {tab === "notices" && <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {notices.length === 0 && <div style={{ textAlign: "center", color: "var(--text-secondary)", fontSize: 11, padding: 40 }}>등록된 공지 없음</div>}
+            {notices.length === 0 && <div style={{ textAlign: "center", color: "var(--text-secondary)", fontSize: 14, padding: 40 }}>등록된 공지 없음</div>}
             {notices.map(n => (<div key={n.id} style={{ padding: 12, borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)" }}>{n.title}</div>
-                <div style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{(n.created || n.ts || "").slice(0, 16).replace("T", " ")}</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>{n.title}</div>
+                <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{(n.created || n.ts || "").slice(0, 16).replace("T", " ")}</div>
               </div>
-              <div style={{ fontSize: 12, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{n.body}</div>
-              {isAdmin && <div style={{ marginTop: 8 }}><span onClick={() => deleteNotice(n.id)} style={{ fontSize: 10, color: "#ef4444", cursor: "pointer" }}>삭제</span></div>}
+              <div style={{ fontSize: 14, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{n.body}</div>
+              {isAdmin && <div style={{ marginTop: 8 }}><span onClick={() => deleteNotice(n.id)} style={{ fontSize: 14, color: "#ef4444", cursor: "pointer" }}>삭제</span></div>}
             </div>))}
           </div>}
           {tab === "inbox" && isAdmin && <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 12, minHeight: 360 }}>
             <div style={{ borderRight: "1px solid var(--border)", paddingRight: 10, maxHeight: 400, overflow: "auto" }}>
-              {adminThreads.length === 0 && <div style={{ fontSize: 11, color: "var(--text-secondary)", padding: 12 }}>받은 문의 없음</div>}
+              {adminThreads.length === 0 && <div style={{ fontSize: 14, color: "var(--text-secondary)", padding: 12 }}>받은 문의 없음</div>}
               {adminThreads.map(t => (<div key={t.user} onClick={() => loadAdminThread(t.user)} style={{ padding: "8px 10px", borderRadius: 6, cursor: "pointer", background: selThreadUser === t.user ? "var(--accent-glow)" : "transparent", marginBottom: 2 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 11, fontFamily: "monospace", fontWeight: t.unread_for_admin > 0 ? 700 : 400 }}>{t.user}</span>
-                  {t.unread_for_admin > 0 && <span style={{ fontSize: 9, background: "#ef4444", color: "#fff", borderRadius: 8, padding: "1px 6px" }}>{t.unread_for_admin}</span>}
+                  <span style={{ fontSize: 14, fontFamily: "monospace", fontWeight: t.unread_for_admin > 0 ? 700 : 400 }}>{t.user}</span>
+                  {t.unread_for_admin > 0 && <span style={{ fontSize: 14, background: "#ef4444", color: "#fff", borderRadius: 8, padding: "1px 6px" }}>{t.unread_for_admin}</span>}
                 </div>
-                <div style={{ fontSize: 9, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.last_body || ""}</div>
+                <div style={{ fontSize: 14, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.last_body || ""}</div>
               </div>))}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={{ maxHeight: 300, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, padding: 10, background: "var(--bg-card)", display: "flex", flexDirection: "column", gap: 8 }}>
-                {!selThreadUser && <div style={{ textAlign: "center", color: "var(--text-secondary)", fontSize: 11, padding: 40 }}>좌측에서 유저 선택</div>}
+                {!selThreadUser && <div style={{ textAlign: "center", color: "var(--text-secondary)", fontSize: 14, padding: 40 }}>좌측에서 유저 선택</div>}
                 {adminThread.map((m, i) => (<div key={i} style={{ alignSelf: m.from === "admin" ? "flex-end" : "flex-start", maxWidth: "85%", padding: "6px 12px", borderRadius: 8, background: m.from === "admin" ? "var(--accent-glow)" : "var(--bg-hover)", border: "1px solid " + (m.from === "admin" ? "var(--accent)" : "var(--border)") }}>
-                  <div style={{ fontSize: 9, color: "var(--text-secondary)", marginBottom: 2, fontFamily: "monospace" }}>{m.from} · {(m.created_at || m.ts || "").slice(5, 16).replace("T", " ")}</div>
-                  <div style={{ fontSize: 12, whiteSpace: "pre-wrap" }}>{m.text || m.body}</div>
+                  <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2, fontFamily: "monospace" }}>{m.from} · {(m.created_at || m.ts || "").slice(5, 16).replace("T", " ")}</div>
+                  <div style={{ fontSize: 14, whiteSpace: "pre-wrap" }}>{m.text || m.body}</div>
                 </div>))}
               </div>
               {selThreadUser && <div style={{ display: "flex", gap: 6 }}>
-                <input value={replyMsg} onChange={e => setReplyMsg(e.target.value)} onKeyDown={e => { if (e.key === "Enter") reply(); }} placeholder={`${selThreadUser} 에게 답장…`} style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
-                <button onClick={reply} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>답장</button>
+                <input value={replyMsg} onChange={e => setReplyMsg(e.target.value)} onKeyDown={e => { if (e.key === "Enter") reply(); }} placeholder={`${selThreadUser} 에게 답장…`} style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
+                <button onClick={reply} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>답장</button>
               </div>}
             </div>
           </div>}
           {tab === "compose" && isAdmin && <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <input value={noticeTitle} onChange={e => setNoticeTitle(e.target.value)} placeholder="공지 제목" style={{ padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, fontWeight: 600 }} />
-            <textarea value={noticeBody} onChange={e => setNoticeBody(e.target.value)} rows={6} placeholder="공지 내용" style={{ padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, resize: "vertical", fontFamily: "inherit" }} />
+            <input value={noticeTitle} onChange={e => setNoticeTitle(e.target.value)} placeholder="공지 제목" style={{ padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontWeight: 600 }} />
+            <textarea value={noticeBody} onChange={e => setNoticeBody(e.target.value)} rows={6} placeholder="공지 내용" style={{ padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, resize: "vertical", fontFamily: "inherit" }} />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>공지는 홈 상단 배너에 3일간 표시됩니다.</span>
-              <button onClick={postNotice} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>공지 등록</button>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>공지는 홈 상단 배너에 3일간 표시됩니다.</span>
+              <button onClick={postNotice} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>공지 등록</button>
             </div>
             <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 10 }}>
-              <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6 }}>기존 공지 ({notices.length})</div>
+              <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6 }}>기존 공지 ({notices.length})</div>
               {notices.map(n => (<div key={n.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 10px", borderRadius: 5, background: "var(--bg-card)", border: "1px solid var(--border)", marginBottom: 4 }}>
-                <span style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{n.title}</span>
-                <span onClick={() => deleteNotice(n.id)} style={{ fontSize: 10, color: "#ef4444", cursor: "pointer", marginLeft: 10 }}>삭제</span>
+                <span style={{ fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{n.title}</span>
+                <span onClick={() => deleteNotice(n.id)} style={{ fontSize: 14, color: "#ef4444", cursor: "pointer", marginLeft: 10 }}>삭제</span>
               </div>))}
             </div>
           </div>}
@@ -361,12 +361,12 @@ function NoticeBanner({ user }) {
   return (<div style={{
     padding: "6px 18px", background: "linear-gradient(90deg, rgba(249,115,22,0.15), rgba(249,115,22,0.05))",
     borderBottom: "1px solid rgba(249,115,22,0.35)", display: "flex", alignItems: "center",
-    gap: 10, fontSize: 12
+    gap: 10, fontSize: 14
   }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", flexShrink: 0 }}>📢 {label}</span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", flexShrink: 0 }}>📢 {label}</span>
     {title && <span style={{ fontWeight: 700, flexShrink: 0 }}>{title}</span>}
     <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>{body}</span>
-    <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0 }}>by {notice.author || "admin"}</span>
+    <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0 }}>by {notice.author || "admin"}</span>
     <span onClick={dismiss} title="닫기 (3일간 숨김)" style={{ cursor: "pointer", fontSize: 14, color: "var(--text-secondary)", flexShrink: 0 }}>✕</span>
   </div>);
 }
@@ -394,7 +394,7 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
     <div ref={ref} style={{ position: "relative" }}>
       <div onClick={() => setOpen(!open)} style={{ cursor: "pointer", position: "relative" }}>
         <span style={{ fontSize: 14 }}>🔔</span>
-        {notifs.length > 0 && <span style={{ position: "absolute", top: -4, right: -6, fontSize: 9, fontWeight: 700,
+        {notifs.length > 0 && <span style={{ position: "absolute", top: -4, right: -6, fontSize: 14, fontWeight: 700,
           background: "#ef4444", color: "#fff", borderRadius: "50%", minWidth: 14, height: 14, display: "flex",
           alignItems: "center", justifyContent: "center", padding: "0 2px" }}>
           {notifs.length > 99 ? "99+" : notifs.length}
@@ -405,15 +405,15 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
         overflow: "hidden" }}>
         <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", display: "flex",
           justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 12, fontWeight: 800, color: "var(--accent)" }}>
+          <span style={{ fontSize: 14, fontWeight: 800, color: "var(--accent)" }}>
             알림 ({notifs.length})
           </span>
-          {sel.size > 0 && <button onClick={dismissSel} style={{ fontSize: 10, padding: "3px 8px", borderRadius: 4,
+          {sel.size > 0 && <button onClick={dismissSel} style={{ fontSize: 14, padding: "3px 8px", borderRadius: 4,
             border: "1px solid var(--accent)", background: "var(--accent-glow)", color: "var(--accent)", cursor: "pointer",
             fontWeight: 600 }}>읽음 처리 ({sel.size})</button>}
         </div>
         <div style={{ maxHeight: 320, overflow: "auto" }}>
-          {recent.length === 0 && <div style={{ padding: 24, textAlign: "center", fontSize: 11,
+          {recent.length === 0 && <div style={{ padding: 24, textAlign: "center", fontSize: 14,
             color: "var(--text-secondary)" }}>알림 없음</div>}
           {recent.map(n => (
             <div key={n.id} style={{ display: "flex", gap: 8, padding: "8px 14px", alignItems: "flex-start",
@@ -422,15 +422,15 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
                 style={{ marginTop: 2, accentColor: "var(--accent)", flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 2 }}>
-                  <span style={{ fontSize: 8, fontWeight: 700, color: "#fff", padding: "1px 5px", borderRadius: 3,
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "#fff", padding: "1px 5px", borderRadius: 3,
                     background: typeColor[n.type] || "#6b7280", textTransform: "uppercase" }}>{n.type}</span>
-                  <span style={{ fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis",
+                  <span style={{ fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis",
                     whiteSpace: "nowrap" }}>{n.title}</span>
                 </div>
-                <div style={{ fontSize: 10, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis",
+                <div style={{ fontSize: 14, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis",
                   whiteSpace: "nowrap" }}>{n.body}</div>
               </div>
-              <span style={{ fontSize: 9, color: "var(--text-secondary)", flexShrink: 0, whiteSpace: "nowrap" }}>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)", flexShrink: 0, whiteSpace: "nowrap" }}>
                 {(n.timestamp || "").slice(11, 16)}
               </span>
             </div>
@@ -439,11 +439,11 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
         <div style={{ padding: "8px 14px", borderTop: "1px solid var(--border)", display: "flex",
           justifyContent: "space-between", alignItems: "center" }}>
           <span onClick={() => { const all = new Set(recent.map(n => n.id)); setSel(prev => prev.size === all.size ? new Set() : all); }}
-            style={{ fontSize: 10, color: "var(--accent)", cursor: "pointer" }}>
+            style={{ fontSize: 14, color: "var(--accent)", cursor: "pointer" }}>
             {sel.size === recent.length && recent.length > 0 ? "전체 해제" : "전체 선택"}
           </span>
           <span onClick={() => { setOpen(false); onNavigate("admin"); }}
-            style={{ fontSize: 10, color: "var(--accent)", cursor: "pointer", fontWeight: 600 }}>전체 보기 →</span>
+            style={{ fontSize: 14, color: "var(--accent)", cursor: "pointer", fontWeight: 600 }}>전체 보기 →</span>
         </div>
       </div>}
     </div>
@@ -461,7 +461,7 @@ function PwModal({ user, onClose }) {
       .catch(e => setMsg(e.message));
   };
   const S = {width:"100%",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",
-    background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,outline:"none"};
+    background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none"};
   return (
     <Modal open onClose={onClose} title="비밀번호 변경" width={320}>
       <input value={oldPw} onChange={e=>setOldPw(e.target.value)} placeholder="현재 비밀번호" type="password"
@@ -470,7 +470,7 @@ function PwModal({ user, onClose }) {
         style={{...S,marginBottom:12}} onKeyDown={e=>e.key==="Enter"&&submit()} />
       <button onClick={submit} style={{width:"100%",padding:10,borderRadius:6,border:"none",
         background:"var(--accent)",color:"#fff",fontWeight:600,cursor:"pointer"}}>변경</button>
-      {msg && <div style={{marginTop:8,fontSize:12,textAlign:"center",
+      {msg && <div style={{marginTop:8,fontSize:14,textAlign:"center",
         color:msg.includes("변경 완료")?"#22c55e":"#ef4444"}}>{msg}</div>}
     </Modal>
   );

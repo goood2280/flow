@@ -66,7 +66,7 @@ TEMPLATE = {
             {
                 "item_id": "PC_RES",
                 "alias": "Probe Resistance",
-                "step_ids": ["ETA100010"],
+                "step_ids": ["EA100010"],
                 "step_seqs": ["0"],
                 "spec": "usl",
                 "usl": 0.22,
@@ -75,7 +75,7 @@ TEMPLATE = {
             {
                 "item_id": "PC_OPEN",
                 "alias": "Probe Open",
-                "step_ids": ["ETA100010"],
+                "step_ids": ["EA100010"],
                 "step_seqs": ["0"],
                 "spec": "usl",
                 "usl": 0.08,

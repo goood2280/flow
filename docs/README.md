@@ -16,6 +16,7 @@
 | 8 | [WEB_CONCURRENCY_BUNDLE_GUIDE.md](WEB_CONCURRENCY_BUNDLE_GUIDE.md) | 동시성/번들 분리 후 웹 기능 사용법을 설명할 때 |
 | 9 | [DEVELOPMENT.md](DEVELOPMENT.md) | 코드를 수정하기 전 범위, 검증, 문서 반영 기준을 볼 때 |
 | 10 | [SOFT_LANDING_INTERNAL.md](SOFT_LANDING_INTERNAL.md) | 사내 서버 반입, 포트, data_root 보존, preflight를 볼 때 |
+| 11 | [PORTABLE_DEMO_DATA.md](PORTABLE_DEMO_DATA.md) | 사내/외부 이동 가능한 demo data 전략과 공개 반도체 데이터 후보를 볼 때 |
 
 소유자에게 구조와 요청 방법을 설명해야 하면 [OWNER_ARCHITECTURE_UPDATE_REPORT.md](OWNER_ARCHITECTURE_UPDATE_REPORT.md)를 사용한다.
 

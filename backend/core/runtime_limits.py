@@ -24,6 +24,15 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
+def _env_float(name: str, default: float, lo: float = 0.0, hi: float = 10_000.0) -> float:
+    raw = os.environ.get(name)
+    try:
+        value = float(raw if raw not in (None, "") else default)
+    except Exception:
+        value = default
+    return max(lo, min(hi, value))
+
+
 def resource_profile() -> str:
     """Return the configured resource profile name.
 
@@ -116,6 +125,63 @@ def _read_proc_status_kb(field: str) -> int:
         return 0
 
 
+def _read_meminfo_kb(field: str) -> int:
+    try:
+        text = open("/proc/meminfo", "r", encoding="utf-8").read()
+    except Exception:
+        return 0
+    m = re.search(rf"^{re.escape(field)}:\s+(\d+)\s+kB", text, flags=re.MULTILINE)
+    if not m:
+        return 0
+    try:
+        return int(m.group(1))
+    except Exception:
+        return 0
+
+
+def system_memory_snapshot(reserve_gb: float = 1.0) -> dict:
+    """Host/container memory state used by the soft guard."""
+    total_gb = 0.0
+    available_gb = 0.0
+    percent = 0.0
+    try:
+        import psutil  # type: ignore
+
+        vm = psutil.virtual_memory()
+        total_gb = float(vm.total) / (1024 ** 3)
+        available_gb = float(vm.available) / (1024 ** 3)
+        percent = float(vm.percent)
+    except Exception:
+        total_kb = _read_meminfo_kb("MemTotal")
+        avail_kb = _read_meminfo_kb("MemAvailable")
+        total_gb = float(total_kb) / (1024 ** 2) if total_kb else 0.0
+        available_gb = float(avail_kb) / (1024 ** 2) if avail_kb else 0.0
+        if total_gb > 0:
+            percent = max(0.0, min(100.0, (1.0 - available_gb / total_gb) * 100.0))
+    min_available = _env_float(
+        "FLOW_SYSTEM_MEMORY_MIN_AVAILABLE_GB",
+        max(2.0, float(reserve_gb or 0.0)),
+        0.0,
+        1024.0,
+    )
+    high_percent = _env_float("FLOW_SYSTEM_MEMORY_GUARD_PERCENT", 95.0, 50.0, 100.0)
+    low = bool(
+        total_gb > 0
+        and (
+            available_gb <= min_available
+            or (percent > 0 and percent >= high_percent)
+        )
+    )
+    return {
+        "system_memory_total_gb": round(total_gb, 3),
+        "system_memory_available_gb": round(available_gb, 3),
+        "system_memory_percent": round(percent, 1),
+        "system_memory_min_available_gb": round(min_available, 3),
+        "system_memory_guard_percent": round(high_percent, 1),
+        "system_memory_low": low,
+    }
+
+
 def process_memory_snapshot() -> dict:
     """Current process memory, with no psutil dependency."""
     rss_gb = 0.0
@@ -133,13 +199,15 @@ def process_memory_snapshot() -> dict:
         vms_gb = float(vms_kb) / (1024 ** 2) if vms_kb else 0.0
     limit_gb = process_memory_limit_gb()
     pct = (rss_gb / limit_gb * 100.0) if limit_gb > 0 else 0.0
-    return {
+    out = {
         "process_rss_gb": round(rss_gb, 3),
         "process_vms_gb": round(vms_gb, 3),
         "process_memory_limit_gb": round(limit_gb, 3),
         "process_memory_limit_percent": round(pct, 1),
         "process_memory_over_limit": bool(limit_gb > 0 and rss_gb >= limit_gb),
     }
+    out.update(system_memory_snapshot())
+    return out
 
 
 def process_memory_high(reserve_gb: float = 1.0) -> bool:
@@ -148,7 +216,19 @@ def process_memory_high(reserve_gb: float = 1.0) -> bool:
         return False
     snap = process_memory_snapshot()
     rss = float(snap.get("process_rss_gb") or 0.0)
-    return rss >= max(0.0, limit - max(0.0, reserve_gb))
+    rss_high = rss >= max(0.0, limit - max(0.0, reserve_gb))
+    if not rss_high:
+        return False
+    if _env_flag("FLOW_PROCESS_MEMORY_LIMIT_STRICT", False):
+        return True
+
+    # The process limit is a soft default for small deployments. On internal
+    # hosts with much larger RAM, Python/Polars RSS can stay high after a scan
+    # even while the machine has ample free memory. Refuse new work only when
+    # the host/container memory is also genuinely tight.
+    if float(snap.get("system_memory_total_gb") or 0.0) > 0:
+        return bool(snap.get("system_memory_low"))
+    return True
 
 
 def _default_polars_threads() -> str:

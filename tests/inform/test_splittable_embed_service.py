@@ -156,6 +156,10 @@ def test_inform_mail_splittable_snapshot_html_fits_without_horizontal_scroll():
     assert "table-layout:fixed" in html
     assert "width:100%;max-width:100%" in html
     assert "word-break:break-word" in html
+    assert "Split table" in html
+    assert "root_lot_id" in html
+    assert "lot_id" in html
+    assert "A1000A.1" in html
 
 
 def test_inform_mail_body_links_go_flow_in_new_tab():
@@ -170,3 +174,5 @@ def test_inform_mail_body_links_go_flow_in_new_tab():
     assert "href='http://go/flow'" in html
     assert "target='_blank'" in html
     assert "<b>go/flow</b>" not in html
+    assert "인폼 공유" not in html
+    assert "Sent by flow" not in html

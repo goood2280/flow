@@ -17,6 +17,7 @@ import {
 import { FlowiQualityPanel, LlmCfgPanel } from "./My_Admin";
 
 const SAMPLE_PROMPT = "GAA nFET short Lg에서 DIBL과 SS가 증가했고 CA_RS도 올랐어. 원인 후보와 확인 차트 보여줘.";
+const FUNCTION_TEST_PROMPT = "PRODA A1000 #6 현재 fab lot id가 뭐야?";
 const DEFAULT_TABLE_CONTENT = "step_id,step_name,func_step\nAA200000,channel release etch,\nAB300000,inner spacer recess,\nCA100000,CA contact etch,";
 
 function parseGridText(text) {
@@ -93,9 +94,9 @@ function AgentStepCard({ item }) {
     <div style={{ border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-secondary)", padding: 10, display: "grid", gap: 7 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <Pill tone="accent">{item.step}</Pill>
-        <span style={{ fontSize: 13, fontWeight: 800, color: uxColors.text }}>{item.label}</span>
+        <span style={{ fontSize: 14, fontWeight: 800, color: uxColors.text }}>{item.label}</span>
       </div>
-      <div style={{ fontSize: 12, color: uxColors.textSub, lineHeight: 1.55 }}>{item.detail}</div>
+      <div style={{ fontSize: 14, color: uxColors.textSub, lineHeight: 1.55 }}>{item.detail}</div>
       <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
         {(item.refs || []).map((ref) => <Pill key={ref} tone="neutral">{ref}</Pill>)}
       </div>
@@ -108,7 +109,7 @@ function FlowiPersonaPanel() {
   const [form, setForm] = useState({ system_prompt: "", must_not: "", notes: "" });
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
-  const fallbackPrompt = "Flowi는 사내 Flow 홈 화면의 fab 데이터 assistant입니다. 답변은 짧고 실행 가능하게 작성합니다. 사용자 Markdown 정보가 있으면 담당 제품, 관심 공정, 선호 출력 방식을 반영합니다. 요청이 애매하면 바로 실행한다고 말하지 말고 1/2/3 형태의 선택지를 제시합니다. 신규 인폼/이슈/회의/일정 등록은 조건이 충분하면 바로 실행하고, 기존 기록 수정/삭제/상태 변경은 권한과 대상 내용을 확인한 뒤 진행합니다.";
+  const fallbackPrompt = "Flowi는 사내 Flow 홈 화면의 반도체 공정 데이터 분석가입니다. 자연어를 먼저 product/root_lot_id/fab_lot_id/wafer_id/step_id/source/item 중심의 function arguments JSON으로 구조화한 뒤 답변합니다. product는 product_config/products.yaml과 ML_TABLE/FAB product directory 기준으로 동적으로 확인합니다. root_lot_id는 영어/숫자 조합 5자리, fab_lot_id는 AZGASB.1/ASDAGFH.NJ처럼 점(.)이 들어간 조합, wafer_id는 #6/WF6/slot 6/6번장/6장 표현을 1~25 물리 slot으로 해석합니다. FAB은 최신 route/progress, ET는 median, INLINE은 avg와 subitem_id grain을 기본으로 봅니다. 요청이 애매하면 바로 실행한다고 말하지 말고 1/2/3 형태의 선택지를 제시합니다.";
   const fallbackMustNot = "- DB root/raw data 원본을 직접 수정, 삭제, 덮어쓰기, 이동하지 않는다.\n- 로컬 tool/cache/schema 결과에 없는 숫자, lot, product, step, item 값을 지어내지 않는다.\n- step_id는 영문 2자 + 숫자 6자리 또는 등록된 func_step 이름이 아니면 step으로 확정하지 않는다.\n- 기존 인폼/회의/이슈/일정 수정, 삭제, 상태 변경은 권한과 대상 내용을 확인하기 전 실행하지 않는다.\n- 파일 변경은 FLOWI_FILE_OP 또는 전용 단일파일 반영 플로우 없이 실행하지 않는다.\n- RAG/문서 내용은 flow-data 내부 저장소 밖으로 내보내지 않는다.";
   const inputStyle = {
     ...formControlStyle,
@@ -197,12 +198,98 @@ function FlowiPersonaPanel() {
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <Button variant="primary" onClick={save} disabled={busy || !form.system_prompt.trim()}>{busy ? "저장 중" : "저장"}</Button>
           <Button variant="ghost" onClick={reload} disabled={busy}>새로고침</Button>
-          <span style={{ fontSize: 11, color: uxColors.textSub }}>
+          <span style={{ fontSize: 14, color: uxColors.textSub }}>
             {persona?.updated_at ? `마지막 수정: ${String(persona.updated_at).replace("T", " ").slice(0, 16)} · ${persona.updated_by || "-"}` : "저장 전 기본 페르소나"}
           </span>
         </div>
       </div>
     </Panel>
+  );
+}
+
+function FunctionCallTestPanel() {
+  const [prompt, setPrompt] = useState(FUNCTION_TEST_PROMPT);
+  const [product, setProduct] = useState("");
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box", fontSize: 14 };
+  const samples = [
+    { label: "FAB lot", prompt: "PRODA A1000 #6 현재 fab lot id가 뭐야?" },
+    { label: "Slot alias", prompt: "PRODA AZGASB.1 6번 slot 현재 fab lot id 조회" },
+    { label: "Plan", prompt: "PRODA A1000 A KNOB #1~10은 ABC로 plan해주고 나머지는 DGD로 plan 넣어줘" },
+    { label: "Chart", prompt: "PRODA A1000 Inline CD와 ET LKG Corr scatter 그려줘" },
+  ];
+  const runPreview = () => {
+    setBusy(true);
+    setMsg("");
+    setResult(null);
+    postJson("/api/llm/flowi/function-call/preview", { prompt, product, max_rows: 20 })
+      .then(setResult)
+      .catch((e) => setMsg(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <Panel
+        title="Function Calling Test"
+        subtitle="자연어를 실행 전 function name과 arguments JSON으로 변환합니다."
+        right={<Pill tone="accent">admin dry-run</Pill>}
+      >
+        {msg && <Banner tone="bad">{msg}</Banner>}
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 180px", gap: 10, alignItems: "end" }}>
+          <Field label="프롬프트">
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={4}
+              style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55 }}
+            />
+          </Field>
+          <Field label="product override">
+            <input value={product} onChange={(e) => setProduct(e.target.value)} style={inputStyle} placeholder="optional" />
+          </Field>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <Button variant="primary" onClick={runPreview} disabled={busy || !prompt.trim()}>{busy ? "변환 중" : "JSON 변환"}</Button>
+          {samples.map((item) => (
+            <Button key={item.label} variant="ghost" onClick={() => setPrompt(item.prompt)}>{item.label}</Button>
+          ))}
+        </div>
+      </Panel>
+      {result && (
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.9fr) minmax(0,1.1fr)", gap: 12, alignItems: "start" }}>
+          <div style={{ display: "grid", gap: 12 }}>
+            <Panel title="선택된 함수" subtitle={result.selected_function?.reason || ""}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <Pill tone="accent">{result.selected_function?.name || "-"}</Pill>
+                <Pill tone="neutral">{result.selected_function?.intent || "-"}</Pill>
+                <Pill tone={result.validation?.valid ? "ok" : "warn"}>{result.validation?.valid ? "valid" : "missing"}</Pill>
+                {result.validation?.requires_confirmation && <Pill tone="warn">confirm required</Pill>}
+              </div>
+              {result.validation?.missing?.length ? <Banner tone="warn">missing: {result.validation.missing.join(", ")}</Banner> : null}
+              {result.validation?.warnings?.map((w, i) => <Banner key={i} tone="info">{w}</Banner>)}
+            </Panel>
+            <Panel title="Naming Rule" subtitle="프롬프트 슬롯 해석 기준">
+              <DataTable
+                rows={result.naming_rules || []}
+                maxHeight={300}
+                columns={[
+                  { key: "key", label: "key", width: 110 },
+                  { key: "rule", label: "rule" },
+                  { key: "examples", label: "examples", width: 180, render: (r) => (r.examples || []).join(", ") },
+                ]}
+              />
+            </Panel>
+          </div>
+          <Panel title="Function Call JSON" subtitle="이 JSON을 기준으로 실제 Flow-i router/tool이 호출됩니다.">
+            <pre style={{ margin: 0, maxHeight: 560, overflow: "auto", fontSize: 14, lineHeight: 1.45, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
+              {JSON.stringify(result.function_call, null, 2)}
+            </pre>
+          </Panel>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -275,7 +362,7 @@ export default function My_Diagnosis({ user }) {
     boxShadow: "none",
     background: "transparent",
     color: uxColors.text,
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: "monospace",
     padding: "6px 8px",
     boxSizing: "border-box",
@@ -312,6 +399,7 @@ export default function My_Diagnosis({ user }) {
     { k: "dictionary", l: "Item Dictionary" },
     { k: "knowledge", l: "전체 지식" },
     ...(isAdmin ? [
+      { k: "function_call", l: "Function Calling" },
       { k: "persona", l: "기본 페르소나" },
       { k: "quality", l: "품질/워크플로우" },
       { k: "llm", l: "LLM 설정" },
@@ -534,7 +622,7 @@ export default function My_Diagnosis({ user }) {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8 }}>
               {Object.entries(ragView?.counts || manifest?.counts || {}).filter(([k]) => ["custom_knowledge", "documents", "tables", "knowledge_cards", "matched_runtime"].includes(k)).map(([k, v]) => (
                 <div key={k} style={{ border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg-primary)", padding: "10px 12px" }}>
-                  <div style={{ fontSize: 10, color: uxColors.textSub, marginBottom: 4 }}>{k}</div>
+                  <div style={{ fontSize: 14, color: uxColors.textSub, marginBottom: 4 }}>{k}</div>
                   <div style={{ fontSize: 20, fontWeight: 900, fontFamily: "monospace", color: uxColors.text }}>{v}</div>
                 </div>
               ))}
@@ -616,7 +704,7 @@ export default function My_Diagnosis({ user }) {
                   </Field>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <Button variant="primary" onClick={saveDocumentKnowledge} disabled={!isAdmin || !docForm.content.trim()}>문서 RAG 등록</Button>
-                    <span style={{ fontSize: 11, color: uxColors.textSub }}>{isAdmin ? "본문은 표시용으로 보존되고, 공용 RAG 검색용 chunk/token/요약 구조가 함께 저장됩니다." : "문서 지식 등록은 admin 전용입니다. 등록된 문서는 모든 유저의 에이전트 검색에 사용됩니다."}</span>
+                    <span style={{ fontSize: 14, color: uxColors.textSub }}>{isAdmin ? "본문은 표시용으로 보존되고, 공용 RAG 검색용 chunk/token/요약 구조가 함께 저장됩니다." : "문서 지식 등록은 admin 전용입니다. 등록된 문서는 모든 유저의 에이전트 검색에 사용됩니다."}</span>
                   </div>
                   {docResult?.structured && <Banner tone="ok">저장됨: {docResult.structured.chunk_count} chunks</Banner>}
                 </div>
@@ -627,7 +715,7 @@ export default function My_Diagnosis({ user }) {
                   <textarea value={ragPrompt} onChange={(e) => setRagPrompt(e.target.value)} rows={7} style={{ ...formControlStyle, resize: "vertical", lineHeight: 1.55 }} />
                   <Button variant="primary" onClick={saveRagUpdate} disabled={!ragPrompt.trim()}>RAG Update 저장</Button>
                   {ragResult?.structured && (
-                    <pre style={{ maxHeight: 220, overflow: "auto", fontSize: 11, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 5, padding: 8, margin: 0 }}>
+                    <pre style={{ maxHeight: 220, overflow: "auto", fontSize: 14, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 5, padding: 8, margin: 0 }}>
                       {JSON.stringify(ragResult.structured, null, 2)}
                     </pre>
                   )}
@@ -668,7 +756,7 @@ export default function My_Diagnosis({ user }) {
                       }}
                       style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "auto", maxHeight: 260, background: "var(--bg-primary)" }}
                     >
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, tableLayout: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, tableLayout: "auto" }}>
                         <thead>
                           <tr>
                             <th style={{ width: 40, padding: "6px 8px", borderRight: "1px solid var(--border)", borderBottom: "1px solid var(--border)", color: uxColors.textSub, background: "var(--bg-tertiary)", textAlign: "center" }}>#</th>
@@ -696,7 +784,7 @@ export default function My_Diagnosis({ user }) {
                     <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
                       <Button onClick={() => setGridAndContent({ ...tableGrid, rows: [...tableGrid.rows, Array(tableGrid.columns.length).fill("")] })}>+ 행</Button>
                       <Button onClick={() => setGridAndContent({ columns: [...tableGrid.columns, `col_${tableGrid.columns.length + 1}`], rows: tableGrid.rows.map((r) => [...r, ""]) })}>+ 열</Button>
-                      <span style={{ fontSize: 11, color: uxColors.textSub, alignSelf: "center" }}>엑셀/CSV 표를 이 영역에 붙여넣으면 표로 변환됩니다.</span>
+                      <span style={{ fontSize: 14, color: uxColors.textSub, alignSelf: "center" }}>엑셀/CSV 표를 이 영역에 붙여넣으면 표로 변환됩니다.</span>
                     </div>
                   </Field>
                   <Field label="반영 지시 프롬프트">
@@ -707,14 +795,14 @@ export default function My_Diagnosis({ user }) {
                       style={{ ...formControlStyle, resize: "vertical", lineHeight: 1.5 }}
                       placeholder={"예: step_name이랑 operation_name은 같은 열이다\nfunc_step 열은 그대로 넣지 말고 기존 func_step 값에 맞게 trim/정규화해줘\ncomment 열은 넣지 말고 제외해줘"}
                     />
-                    <div style={{ marginTop: 4, fontSize: 11, color: uxColors.textSub }}>
+                    <div style={{ marginTop: 4, fontSize: 14, color: uxColors.textSub }}>
                       이 지시는 확정 시 schema별 반영 규칙으로 저장됩니다. 같은 입력/대상 schema가 다시 들어오면 preview에서 자동으로 참고합니다.
                     </div>
                   </Field>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                     <Button onClick={previewTableKnowledge} disabled={!tableGrid.columns.length || !tableForm.target_file}>반영 방식 Preview</Button>
                     <Button variant="primary" onClick={commitTableKnowledge} disabled={!tablePreview?.target_file_preview?.mapped_row_count || !canFileWrite}>확인 후 단일파일 반영</Button>
-                    <span style={{ fontSize: 11, color: uxColors.textSub }}>반영 시 백업 생성 후 행 append</span>
+                    <span style={{ fontSize: 14, color: uxColors.textSub }}>반영 시 백업 생성 후 행 append</span>
                   </div>
                   {!canFileWrite && <Banner tone="warn">단일파일 반영은 admin 또는 FileBrowser 위임 사용자만 가능합니다.</Banner>}
                   {tableResult?.ok && <Banner tone="ok">저장됨: {tableResult.file_apply?.file || "RAG"} / added {tableResult.file_apply?.added || 0} rows</Banner>}
@@ -903,6 +991,10 @@ export default function My_Diagnosis({ user }) {
 
         {active === "quality" && isAdmin && (
           <FlowiQualityPanel />
+        )}
+
+        {active === "function_call" && isAdmin && (
+          <FunctionCallTestPanel />
         )}
 
         {active === "persona" && isAdmin && (

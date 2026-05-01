@@ -83,7 +83,7 @@ export default function S3StatusLight({ compact = false }) {
         {indicators}
       </span>
       {!compact && (
-        <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", fontWeight: 600 }}>
+        <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", fontWeight: 600 }}>
           {unconfigured ? "S3 미설정" : c.label}
         </span>
       )}
@@ -92,7 +92,7 @@ export default function S3StatusLight({ compact = false }) {
           position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 1000,
           minWidth: 240, padding: "8px 12px", borderRadius: 6,
           background: "var(--bg-secondary)", border: "1px solid var(--border)",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.3)", fontSize: 11, color: "var(--text-primary)",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.3)", fontSize: 14, color: "var(--text-primary)",
           fontFamily: "monospace", lineHeight: 1.7,
         }}>
           <div style={{ fontWeight: 700, color: unconfigured ? COLORS.red.bg : c.bg, marginBottom: 4 }}>{unconfigured ? "● S3 미설정" : `● ${c.label}`}</div>

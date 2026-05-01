@@ -47,12 +47,15 @@ router = APIRouter(prefix="/api/splittable", tags=["splittable"])
 
 _DISCOVERY_CACHE_TTL_SEC = 30.0
 _RGLOB_CACHE: dict[tuple[str, tuple[str, ...]], tuple[float, list[Path]]] = {}
+_FIRST_DATA_FILE_CACHE: dict[tuple[str, tuple[str, ...]], tuple[float, Path | None]] = {}
 _DB_ROOTS_CACHE: dict[str, tuple[float, list[Path]]] = {}
 _LOT_LOOKUP_CACHE_TTL_SEC = 60.0
 _LOT_LOOKUP_CACHE_MAX = 256
 _LOT_LOOKUP_CACHE: dict[tuple, tuple[float, dict]] = {}
 _CSV_ROWS_CACHE: dict[str, tuple[float, int, list[dict]]] = {}
 _SCHEMA_COLUMNS_CACHE: dict[str, tuple[float, int, list[str]]] = {}
+SPLITTABLE_VIEW_MAX_WAFERS = 3200
+SPLITTABLE_MAX_WAFER_ID = 25
 
 
 def _db_base() -> Path:
@@ -183,7 +186,12 @@ def _cast_cats_lazy(lf):
     except Exception:
         schema = lf.schema
     casts = [pl.col(n).cast(_STR, strict=False) for n, d in schema.items() if is_cat(d)]
-    return lf.with_columns(casts) if casts else lf
+    out = lf.with_columns(casts) if casts else lf
+    try:
+        from core.utils import filter_valid_wafer_ids_lazy
+        return filter_valid_wafer_ids_lazy(out, list(schema.keys()))
+    except Exception:
+        return out
 
 
 def _scan_cast_options():
@@ -227,10 +235,15 @@ def _scan_parquet_compat(source, **kwargs):
     if opts is not None and "cast_options" not in scan_kwargs:
         scan_kwargs["cast_options"] = opts
     try:
-        return pl.scan_parquet(source, **scan_kwargs)
+        lf = pl.scan_parquet(source, **scan_kwargs)
     except TypeError:
         scan_kwargs.pop("cast_options", None)
-        return pl.scan_parquet(source, **scan_kwargs)
+        lf = pl.scan_parquet(source, **scan_kwargs)
+    try:
+        from core.utils import filter_valid_wafer_ids_lazy
+        return filter_valid_wafer_ids_lazy(lf)
+    except Exception:
+        return lf
 
 
 import re as _re
@@ -794,42 +807,37 @@ def delete_note(req: NoteDeleteReq, request: Request):
     return {"ok": True}
 
 
+def _normalize_wafer_id(raw, *, max_wafer: int = SPLITTABLE_MAX_WAFER_ID) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    core = _re.sub(r"^(?:#|WAFER|WF|W)\s*", "", text, flags=_re.I).strip()
+    if not _re.fullmatch(r"\d+", core):
+        return ""
+    try:
+        n = int(core)
+    except Exception:
+        return ""
+    return str(n) if 1 <= n <= max_wafer else ""
+
+
 def _wafer_filter_set(raw: str) -> set[str]:
     out = set()
     for part in (raw or "").split(","):
         s = str(part).strip()
         if not s:
             continue
-        out.add(s)
-        if s.upper().startswith("W"):
-            core = s[1:]
-            out.add(core)
-            try:
-                n = int(core)
-                out.add(str(n))
-                out.add(f"{n:02d}")
-                out.add(f"W{n}")
-                out.add(f"W{n:02d}")
-            except Exception:
-                pass
-        else:
-            out.add("W" + s)
-            try:
-                n = int(s)
-                out.add(str(n))
-                out.add(f"{n:02d}")
-                out.add(f"W{n}")
-                out.add(f"W{n:02d}")
-            except Exception:
-                pass
+        norm = _normalize_wafer_id(s)
+        if norm:
+            out.add(norm)
     return {v for v in out if v not in ("", "None", "null")}
 
 
 def _wafer_matches(wafer_value, wafer_set: set[str]) -> bool:
     if not wafer_set:
         return True
-    s = ("" if wafer_value is None else str(wafer_value).strip())
-    return s in wafer_set or s.upper() in wafer_set
+    s = _normalize_wafer_id(wafer_value)
+    return bool(s and s in wafer_set)
 
 
 def _scope_label(has_wafer: bool) -> str:
@@ -1215,8 +1223,7 @@ def _list_db_roots():
             for depth in range(3):
                 pattern = "/".join(["*"] * depth) + ("/" if depth else "") + "*.parquet"
                 # fall back to simple rglob
-            found = False
-            found = bool(_rglob_files_ci(sub, (".parquet",)))
+            found = _first_data_file_ci(sub, (".parquet",)) is not None
             if found:
                 has_product = True
                 break
@@ -1243,13 +1250,13 @@ def list_fab_roots():
             for prod_dir in sorted(root_dir.iterdir()):
                 if not prod_dir.is_dir():
                     continue
-                has_data = False
-                # hive 파티션 포함해서 탐색 — 하위 어디에든 parquet/csv 있으면 "제품" 으로 간주.
-                for f in _rglob_files_ci(prod_dir, (".parquet", ".csv")):
-                    has_data = True
+                # 리스트 화면은 "제품으로 볼 수 있는가"만 필요하다. 실데이터에서
+                # 전체 rglob+sort 는 수만 파티션을 훑으므로 첫 파일만 확인한다.
+                f = _first_data_file_ci(prod_dir, (".parquet", ".csv"))
+                has_data = f is not None
+                if has_data:
                     try: total_size += f.stat().st_size
                     except Exception: pass
-                    break
                 if has_data:
                     products.append(prod_dir.name)
         except Exception:
@@ -1610,8 +1617,11 @@ def get_schema(product: str = Query(...), root_lot_id: str = Query(""),
        을 별도 필드로도 내려 FE 가 '오버라이드 제공' 뱃지를 표시할 수 있게 한다.
     """
     try:
-        lf = _scan_product(product, root_lot_id=root_lot_id,
-                           fab_lot_id=fab_lot_id, wafer_ids=wafer_ids)
+        if root_lot_id or fab_lot_id or wafer_ids:
+            lf = _scan_product(product, root_lot_id=root_lot_id,
+                               fab_lot_id=fab_lot_id, wafer_ids=wafer_ids)
+        else:
+            lf = _scan_product_base(product)
         schema = lf.collect_schema()
         cols = [{"name": n, "dtype": str(d)} for n, d in schema.items()]
     except Exception:
@@ -1625,9 +1635,9 @@ def get_schema(product: str = Query(...), root_lot_id: str = Query(""),
     # 오버라이드에서 실제로 join 된 컬럼 목록 (FE 가 검색 pool 에서 '숨김 해제' 할 기준).
     override_cols_present: list = []
     try:
-        meta = _resolve_override_meta(product, include_diagnostics=False)
+        meta = _resolve_override_meta_light(product)
         if meta.get("enabled"):
-            override_cols_present = list(meta.get("override_cols_present") or [])
+            override_cols_present = list(meta.get("override_cols_present") or meta.get("override_cols") or [])
     except Exception:
         pass
     return {
@@ -1659,8 +1669,9 @@ def _read_et_and_inline():
             f"Base feature file(s) not found under {base}: {', '.join(missing)}",
         )
     try:
-        et = pl.read_parquet(str(et_fp))
-        inl = pl.read_parquet(str(inl_fp))
+        from core.utils import filter_valid_wafer_ids_df
+        et = filter_valid_wafer_ids_df(pl.read_parquet(str(et_fp)))
+        inl = filter_valid_wafer_ids_df(pl.read_parquet(str(inl_fp)))
     except Exception as e:
         raise HTTPException(500, f"Failed to read Base parquet: {e}")
     return et, inl
@@ -3140,6 +3151,27 @@ def _rglob_files_ci(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
         return []
 
 
+def _first_data_file_ci(root: Path, suffixes: tuple[str, ...]) -> Path | None:
+    suffix_set = {s.casefold() for s in suffixes}
+    try:
+        cache_key = (str(root.resolve()), tuple(sorted(suffix_set)))
+    except Exception:
+        cache_key = (str(root), tuple(sorted(suffix_set)))
+    now = time.monotonic()
+    cached = _FIRST_DATA_FILE_CACHE.get(cache_key)
+    if cached and now - cached[0] < _DISCOVERY_CACHE_TTL_SEC:
+        return cached[1]
+    try:
+        for p in root.rglob("*"):
+            if p.is_file() and p.suffix.casefold() in suffix_set:
+                _FIRST_DATA_FILE_CACHE[cache_key] = (now, p)
+                return p
+    except Exception:
+        pass
+    _FIRST_DATA_FILE_CACHE[cache_key] = (now, None)
+    return None
+
+
 def _scan_fab_source_raw(fab_source: str):
     """Scan a fab_source without applying the long-format compatibility adapter."""
     fp, fab_source = _resolve_fab_source_target(fab_source)
@@ -3211,7 +3243,13 @@ def _scan_fab_source(fab_source: str):
     return lf_raw
 
 
-def _global_fab_source_paths(preferred_source: str = "") -> list[str]:
+def _foreground_global_fab_scan_enabled() -> bool:
+    return str(os.environ.get("FLOW_SPLITTABLE_FOREGROUND_GLOBAL_FAB_SCAN", "")).strip().lower() in {
+        "1", "true", "yes", "on", "enabled"
+    }
+
+
+def _global_fab_source_paths(preferred_source: str = "", include_all: bool = True) -> list[str]:
     """Return db-relative FAB product folders to use for lot-id matching.
 
     SplitTable renders one ML_TABLE product, but fab_lot_id lineage can be
@@ -3233,6 +3271,8 @@ def _global_fab_source_paths(preferred_source: str = "") -> list[str]:
         out.append(rel)
 
     add(preferred_source)
+    if not include_all:
+        return out
     db_base = _db_base()
     try:
         db_base_resolved = db_base.resolve()
@@ -3260,7 +3300,7 @@ def _global_fab_source_paths(preferred_source: str = "") -> list[str]:
         except Exception:
             continue
         for child in children:
-            if not _rglob_files_ci(child, (".parquet", ".csv")):
+            if _first_data_file_ci(child, (".parquet", ".csv")) is None:
                 continue
             if root_is_db_base:
                 add(child.name)
@@ -3269,11 +3309,11 @@ def _global_fab_source_paths(preferred_source: str = "") -> list[str]:
     return out
 
 
-def _scan_global_fab_sources(preferred_source: str = ""):
+def _scan_global_fab_sources(preferred_source: str = "", include_all: bool = True):
     """Scan all FAB DB product folders as one LazyFrame for matching."""
     frames = []
     used_sources: list[str] = []
-    for source in _global_fab_source_paths(preferred_source):
+    for source in _global_fab_source_paths(preferred_source, include_all=include_all):
         lf = _scan_fab_source(source)
         if lf is None:
             continue
@@ -3784,6 +3824,12 @@ def _join_fab_projection_into_main(lf, main_names: set[str], fab_proj, join_keys
             lf = lf.drop(bk)
         else:
             lf = lf.with_columns(pl.coalesce([pl.col(c), pl.col(bk)]).alias(c)).drop(bk)
+    joined_lot_col = next((c for c in override_cols if str(c).casefold() == "lot_id"), "")
+    joined_fab_col = next((c for c in override_cols if str(c).casefold() == "fab_lot_id"), "")
+    if joined_lot_col and not joined_fab_col:
+        # Raw FAB now uses lot_id as the fab-lot key. Keep raw schema clean, but
+        # expose the legacy view label so SplitTable grouping/export still works.
+        lf = lf.with_columns(pl.col(joined_lot_col).cast(_STR, strict=False).alias("fab_lot_id"))
     return lf
 
 
@@ -4506,6 +4552,7 @@ def _resolve_override_meta_light(product: str) -> dict:
         "enabled": False, "manual_override": False,
         "fab_source": "", "fab_col": "fab_lot_id", "ts_col": "",
         "root_col": "", "wf_col": "", "join_keys": [], "override_cols": [],
+        "override_cols_present": [],
         "scanned_count": 0, "row_count": 0, "sample_fab_values": [],
         "raw_columns": [], "runtime_columns": [], "column_aliases": {},
         "error": None,
@@ -4533,6 +4580,7 @@ def _resolve_override_meta_light(product: str) -> dict:
         if isinstance(raw_oc, str):
             raw_oc = [c.strip() for c in raw_oc.split(",") if c.strip()]
         meta["override_cols"] = list(raw_oc or _DEFAULT_OVERRIDE_COLS)
+        meta["override_cols_present"] = list(meta["override_cols"])
         if not fab_source and product.casefold().startswith("ml_table_"):
             meta["error"] = "FAB source not matched"
     except Exception as e:
@@ -4627,12 +4675,13 @@ def _fab_source_context(product: str) -> dict:
             fab_source = ""
         if not fab_source:
             fab_source = _auto_derive_fab_source(ml_product)
-        if not fab_source and not _global_fab_source_paths(""):
+        include_all = _foreground_global_fab_scan_enabled()
+        if not fab_source and not _global_fab_source_paths("", include_all=include_all):
             return {}
         _, resolved_fab_source = _resolve_fab_source_target(fab_source) if fab_source else (None, "")
         if resolved_fab_source:
             fab_source = resolved_fab_source
-        fab_lf, fab_sources = _scan_global_fab_sources(fab_source)
+        fab_lf, fab_sources = _scan_global_fab_sources(fab_source, include_all=include_all)
         if fab_lf is None:
             return {}
         try:
@@ -4739,7 +4788,9 @@ def _fab_history_scope(product: str, root_lot_id: str = "", fab_lot_id: str = ""
         prefix=prefix, limit=limit,
     )
     if cached_scope is not None:
-        return finish(cached_scope)
+        has_explicit_scope = bool(root_lot_id.strip() or fab_lot_id.strip())
+        if cached_scope.get("candidates") or not has_explicit_scope:
+            return finish(cached_scope)
 
     ctx = _fab_source_context(product)
     if not ctx:
@@ -5152,8 +5203,9 @@ def _main_table_candidates(product: str, col: str = "root_lot_id", prefix: str =
             if root_col and root_col in schema_names:
                 lf = lf.filter(_join_key_expr(root_col) == root_scope.upper())
 
+        preview_only = not bool(root_scope) and str(col or "").casefold() != "root_lot_id"
         values = _limited_unique_values(lf, target, prefix=prefix, limit=limit,
-                                        preview_only=not bool(root_scope))
+                                        preview_only=preview_only)
         return finish({"candidates": values, "source_col": target, "root_ids": values if str(col or "").casefold() == "root_lot_id" else []})
     except Exception as e:
         logger.warning("_main_table_candidates 실패 (product=%s col=%s) %s: %s",
@@ -5179,8 +5231,7 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
     #   4) 조인은 항상 "ts_col 기준 최신 레코드만" join keys 별로 picking 후 left-join.
     try:
         product, ov, fab_source = _current_fab_override(product)
-        if not fab_source and not _global_fab_source_paths(""):
-            return _strip_non_authoritative_fab_fields(lf, product)
+        include_all = _foreground_global_fab_scan_enabled()
 
         try:
             main_names_list = lf.collect_schema().names()
@@ -5213,7 +5264,10 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
                 fab_has_join_tmp=True,
             )
 
-        fab_lf, fab_sources = _scan_global_fab_sources(fab_source)
+        if not fab_source and not _global_fab_source_paths("", include_all=include_all):
+            return _strip_non_authoritative_fab_fields(lf, product)
+
+        fab_lf, fab_sources = _scan_global_fab_sources(fab_source, include_all=include_all)
         if fab_lf is None:
             logger.warning("_scan_product: FAB source scan 실패 (product=%s fab_source=%s sources=%s)",
                            product, fab_source, fab_sources)
@@ -5319,7 +5373,7 @@ def get_lot_ids(product: str = Query(...), limit: int = Query(200)):
     lots_list: list = []
     fallback_used = False
     try:
-        lots_list = _limited_unique_values(lf, lot_col, limit=limit)
+        lots_list = _limited_unique_values(lf, lot_col, limit=limit, preview_only=False)
     except Exception as e:
         logger.warning("/lot-ids: main lf 조회 실패 (product=%s) %s: %s",
                        product, type(e).__name__, e)
@@ -5723,6 +5777,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
 
         fab_scope = {}
         fab_filter_for_join = fab_lot_id
+        forced_fab_scope_label = ""
         if fab_lot_id.strip():
             # v9.0.5: fab_lot_id 는 DB FAB 원천에서 정확히 매칭될 때만 유효하다.
             # v9.0.6: 다만 사내/데모 파일이 이미 ML_TABLE 안에 fab/lot 값을 가진 경우도
@@ -5736,6 +5791,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                     root_lot_id = fab_scope["root_ids"][0]
                 wafer_ids = _merge_wafer_scope(wafer_ids, src_wafers)
                 fab_filter_for_join = ""
+                forced_fab_scope_label = fab_lot_id.strip()
 
         lf = _filter_lot_wafer(lf, lot_col, wf_col, root_lot_id, wafer_ids,
                                fab_lot_id=fab_filter_for_join, fab_lot_col=fab_lot_col)
@@ -5769,7 +5825,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                 if c in view_schema and c not in keep_cols:
                     keep_cols.append(c)
             q = view_lf.select(keep_cols) if keep_cols else view_lf
-            return q.head(500).collect(), all_data, sel, rename
+            return q.head(SPLITTABLE_VIEW_MAX_WAFERS).collect(), all_data, sel, rename
 
         df, all_data_cols, selected, col_rename = _prepare_view_frame(lf)
         if df.height == 0 and root_lot_id.strip() and fab_lot_id.strip():
@@ -5797,14 +5853,36 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             root_input = root_lot_id.strip()
             if root_input and not fab_lot_id.strip():
                 try:
-                    fallback_lf = _scan_product(product, fab_lot_id=root_input,
-                                                wafer_ids=wafer_ids)
+                    pasted_fab_scope = _fab_history_scope(
+                        product, fab_lot_id=root_input, limit=5000
+                    )
+                    pasted_wafers = pasted_fab_scope.get("wafer_ids") or []
+                    pasted_roots = pasted_fab_scope.get("root_ids") or []
+                    if pasted_wafers and pasted_roots:
+                        fallback_root = pasted_roots[0]
+                        fallback_wafers = _merge_wafer_scope(wafer_ids, pasted_wafers)
+                        fallback_lf = _scan_product(
+                            product, root_lot_id=fallback_root,
+                            wafer_ids=fallback_wafers,
+                        )
+                    else:
+                        fallback_root = ""
+                        fallback_lf = _scan_product(product, fab_lot_id=root_input,
+                                                    wafer_ids=wafer_ids)
                     fallback_names = fallback_lf.collect_schema().names()
                     fallback_fab_col = (
                         _ci_resolve_in(fab_lot_col, fallback_names)
                         or _pick_first_present_ci(_FAB_COL_CANDIDATES, fallback_names)
                     )
-                    if fallback_fab_col:
+                    if pasted_wafers and pasted_roots:
+                        fallback_df, all_data_cols, selected, col_rename = _prepare_view_frame(fallback_lf)
+                        if fallback_df.height > 0:
+                            df = fallback_df
+                            fab_lot_id = root_input
+                            root_lot_id = fallback_root
+                            forced_fab_scope_label = root_input
+                            _lot_warn = "입력한 Root Lot ID를 fab_lot_id로 해석해 조회했습니다."
+                    elif fallback_fab_col:
                         fallback_lf = _filter_lot_wafer(
                             fallback_lf, lot_col, wf_col, "",
                             wafer_ids, fab_lot_id=root_input,
@@ -5834,24 +5912,22 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         # Wafer header list + fab_lot_id grouping (v8.4.4)
         fab_col = "fab_lot_id" if "fab_lot_id" in df.columns else None
         if wf_col and wf_col in df.columns:
-            # Try numeric wafer IDs first, fall back to string
-            wf_raw_int = df[wf_col].cast(pl.Int64, strict=False).to_list()
-            non_null = [v for v in wf_raw_int if v is not None]
-            if non_null:
-                wf_raw = wf_raw_int
-            else:
-                wf_raw = [str(v) for v in df[wf_col].to_list()]
+            # Wafer IDs are physically 1..25. Some upstream DBs contain
+            # placeholder values like 1000; do not expose or plan against them.
+            wf_raw = [_normalize_wafer_id(v) for v in df[wf_col].to_list()]
             # Per-wafer fab_lot_id (first non-null occurrence per wafer)
             wf2fab: dict = {}
             if fab_col:
                 fab_vals = [(None if v is None else str(v)) for v in df[fab_col].to_list()]
                 for w, f in zip(wf_raw, fab_vals):
-                    if w is None: continue
+                    if not w: continue
                     if w not in wf2fab and f and f not in ("None", "null"):
                         wf2fab[w] = f
+            if forced_fab_scope_label:
+                wf2fab = {w: forced_fab_scope_label for w in dict.fromkeys(wf_raw) if w}
             # Sort: (fab_lot_id 그룹, wafer_id 숫자-aware) — fab_lot 미정이면 "~" 로 후순위.
             # v8.8.3: wafer_id 가 문자열일 때 "10" < "2" 오작동 → 숫자 가능하면 int 로 cast 해서 secondary 키.
-            wf_uniq = [w for w in dict.fromkeys(wf_raw) if w is not None and w != "None" and w != "null"]
+            wf_uniq = [w for w in dict.fromkeys(wf_raw) if w]
             def _wf_sort_key(w):
                 primary = wf2fab.get(w, "~")
                 try:

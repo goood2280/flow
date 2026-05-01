@@ -589,7 +589,7 @@ export default function My_Meeting({ user }) {
       <div style={{ width: 340, minWidth: 300, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>회의 관리</span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>회의 관리</span>
             <span style={{ flex: 1 }} />
             <button onClick={() => setCreating(true)} style={btnPrimary}>+ 새 회의</button>
           </div>
@@ -599,7 +599,7 @@ export default function My_Meeting({ user }) {
             {/* v8.8.13: 보관(archived) 제거 — 전체/활성/취소 만. */}
             {["", "active", "cancelled"].map(s => (
               <span key={s || "all"} onClick={() => setFilterStatus(s)} style={{
-                padding: "3px 10px", borderRadius: 999, fontSize: 10, cursor: "pointer", fontFamily: "monospace",
+                padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer", fontFamily: "monospace",
                 background: filterStatus === s ? "var(--accent-glow)" : "var(--bg-card)",
                 color: filterStatus === s ? "var(--accent)" : "var(--text-secondary)",
                 border: "1px solid " + (filterStatus === s ? "var(--accent)" : "var(--border)"),
@@ -608,8 +608,8 @@ export default function My_Meeting({ user }) {
           </div>
         </div>
         <div style={{ flex: 1, overflow: "auto", padding: "8px 6px" }}>
-          {loading && <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>로딩...</div>}
-          {!loading && filtered.length === 0 && <div style={{ padding: 30, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>회의 없음</div>}
+          {loading && <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>로딩...</div>}
+          {!loading && filtered.length === 0 && <div style={{ padding: 30, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>회의 없음</div>}
           {filtered.map(m => {
             const sel = m.id === selectedId;
             const sessions = m.sessions || [];
@@ -626,15 +626,15 @@ export default function My_Meeting({ user }) {
                 borderLeft: `4px solid ${color}`,
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title}</span>
-                  <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, color: SESS_STATUS_COLOR[latestStatus], border: "1px solid " + SESS_STATUS_COLOR[latestStatus] }}>{SESS_STATUS_LABEL[latestStatus]}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title}</span>
+                  <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 3, color: SESS_STATUS_COLOR[latestStatus], border: "1px solid " + SESS_STATUS_COLOR[latestStatus] }}>{SESS_STATUS_LABEL[latestStatus]}</span>
                 </div>
-                <div style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <span>👤 {m.owner || "—"}</span>
                   <span>🔢 {sessions.length}차</span>
                   {latest?.scheduled_at && <span>🕒 {dtPretty(latest.scheduled_at)}</span>}
                 </div>
-                <div style={{ marginTop: 4, fontSize: 10, color: "var(--text-secondary)" }}>
+                <div style={{ marginTop: 4, fontSize: 14, color: "var(--text-secondary)" }}>
                   {recurrenceSummary(m.recurrence)}
                 </div>
               </div>
@@ -649,7 +649,7 @@ export default function My_Meeting({ user }) {
           <ActionItemsGantt meetings={filtered} onPickMeeting={(id) => { setSelectedId(id); setViewMode("list"); }} />
         )}
         {viewMode === "list" && !selected && (
-          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12 }}>
+          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 14 }}>
             ← 좌측에서 회의를 선택하거나 "+ 새 회의" 버튼으로 생성하세요.
           </div>
         )}
@@ -663,7 +663,7 @@ export default function My_Meeting({ user }) {
                   <span title="이 회의의 고유 색상 (변경점 달력에도 동일 색으로 표시)"
                         style={{ width: 14, height: 14, borderRadius: "50%", background: selected.color, display: "inline-block", flexShrink: 0, border: "2px solid rgba(255,255,255,0.2)" }} />
                 )}
-                <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 999, color: SESS_STATUS_COLOR[(selectedSession?.status) || "scheduled"], border: "1px solid " + SESS_STATUS_COLOR[(selectedSession?.status) || "scheduled"] }}>
+                <span style={{ fontSize: 14, padding: "3px 10px", borderRadius: 999, color: SESS_STATUS_COLOR[(selectedSession?.status) || "scheduled"], border: "1px solid " + SESS_STATUS_COLOR[(selectedSession?.status) || "scheduled"] }}>
                   차수: {SESS_STATUS_LABEL[(selectedSession?.status) || "scheduled"]}
                 </span>
                 <span style={{ fontSize: 18, fontWeight: 700, flex: 1 }}>{selected.title}</span>
@@ -671,7 +671,7 @@ export default function My_Meeting({ user }) {
                 {canEditMeta(selected) && <button onClick={removeMeeting} style={btnDanger}>삭제</button>}
               </div>
               {!editingMeta && (
-                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto 1fr", gap: "6px 14px", fontSize: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto 1fr", gap: "6px 14px", fontSize: 14 }}>
                   <span style={lbl}>주관자</span><span style={val}>{selected.owner || "—"}</span>
                   <span style={lbl}>반복</span><span style={val}>{recurrenceSummary(selected.recurrence)}</span>
                   <span style={lbl}>카테고리</span><span style={val}>{selected.category || "—"}</span>
@@ -713,7 +713,7 @@ export default function My_Meeting({ user }) {
                         const on = (metaDraft.recurrence.weekday || []).includes(d);
                         return (
                           <span key={d} onClick={() => setMetaDraft({ ...metaDraft, recurrence: { ...metaDraft.recurrence, weekday: toggleWeekday(metaDraft.recurrence.weekday || [], d) } })}
-                                style={{ padding: "3px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
+                                style={{ padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
                             {WEEKDAY_LABEL[d]}
                           </span>
                         );
@@ -727,7 +727,7 @@ export default function My_Meeting({ user }) {
                   {/* v8.8.3: 공개범위 group_ids FE picker */}
                   <span style={lbl}>공개 그룹</span>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                    {(allGroups || []).length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(등록된 그룹 없음 — 모두에게 공개)</span>}
+                    {(allGroups || []).length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>(등록된 그룹 없음 — 모두에게 공개)</span>}
                     {(allGroups || []).map(g => {
                       const on = (metaDraft.group_ids || []).includes(g.id);
                       return (
@@ -735,13 +735,13 @@ export default function My_Meeting({ user }) {
                           const cur = metaDraft.group_ids || [];
                           const next = on ? cur.filter(x => x !== g.id) : [...cur, g.id];
                           setMetaDraft({ ...metaDraft, group_ids: next });
-                        }} style={{ padding: "3px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
+                        }} style={{ padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
                           {on ? "✓ " : ""}{g.name}
                         </span>
                       );
                     })}
                     {(metaDraft.group_ids || []).length === 0 && (allGroups || []).length > 0 && (
-                      <span style={{ fontSize: 10, color: "var(--text-secondary)", marginLeft: 4 }}>비워두면 모두에게 공개</span>
+                      <span style={{ fontSize: 14, color: "var(--text-secondary)", marginLeft: 4 }}>비워두면 모두에게 공개</span>
                     )}
                   </div>
                   <div />
@@ -756,12 +756,12 @@ export default function My_Meeting({ user }) {
             {/* Session tabs */}
             <div style={{ marginBottom: 14, padding: "10px 16px", borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace", marginRight: 6 }}>차수:</span>
+                <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", marginRight: 6 }}>차수:</span>
                 {(selected.sessions || []).map(s => {
                   const on = s.id === (selectedSession?.id);
                   return (
                     <span key={s.id} onClick={() => setSelectedSid(s.id)} style={{
-                      padding: "4px 12px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "monospace",
+                      padding: "4px 12px", borderRadius: 6, cursor: "pointer", fontSize: 14, fontFamily: "monospace",
                       border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
                       background: on ? "var(--accent-glow)" : "var(--bg-card)",
                       color: on ? "var(--accent)" : "var(--text-primary)",
@@ -775,7 +775,7 @@ export default function My_Meeting({ user }) {
                 {selectedSession && canEditMeta(selected) && <button onClick={removeSession} style={btnDanger}>차수 삭제</button>}
               </div>
               {selectedSession && (
-                <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 11 }}>
+                <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 14 }}>
                   <span style={lbl}>예정 일시</span>
                   {canEditMeta(selected) ? (
                     <input type="datetime-local"
@@ -798,11 +798,11 @@ export default function My_Meeting({ user }) {
             {selectedSession && (<>
               {/* Agendas */}
               <div style={{ marginBottom: 14, padding: 16, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "var(--accent)", marginBottom: 10, fontFamily: "monospace" }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 10, fontFamily: "monospace" }}>
                   📋 {selectedSession.idx}차 아젠다 ({(selectedSession.agendas || []).length})
                 </div>
                 {(selectedSession.agendas || []).length === 0 && (
-                  <div style={{ padding: 14, textAlign: "center", color: "var(--text-secondary)", fontSize: 11, marginBottom: 10 }}>
+                  <div style={{ padding: 14, textAlign: "center", color: "var(--text-secondary)", fontSize: 14, marginBottom: 10 }}>
                     이 차수에 아젠다가 아직 없습니다.
                   </div>
                 )}
@@ -822,20 +822,20 @@ export default function My_Meeting({ user }) {
                     ) : (
                       <>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                          <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", minWidth: 26 }}>#{i + 1}</span>
-                          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{a.title}</span>
-                          <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>👤 {a.owner}</span>
+                          <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", minWidth: 26 }}>#{i + 1}</span>
+                          <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>{a.title}</span>
+                          <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>👤 {a.owner}</span>
                           {canEditAgenda(selected, a) && <span onClick={() => startEditAgenda(a)} style={editLink}>수정</span>}
                           {canEditAgenda(selected, a) && <span onClick={() => removeAgenda(a)} style={delLink}>삭제</span>}
                         </div>
                         {/* v8.7.7: 아젠다 등록/수정 시각 */}
                         {(a.created_at || a.updated_at) && (
-                          <div style={{ paddingLeft: 34, fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace", marginBottom: 4 }}>
+                          <div style={{ paddingLeft: 34, fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", marginBottom: 4 }}>
                             {a.created_at && <>🕐 등록 {dtPretty(a.created_at)}</>}
                             {a.updated_at && a.updated_at !== a.created_at && <> · ✎ 수정 {dtPretty(a.updated_at)}</>}
                           </div>
                         )}
-                        {a.description && <div style={{ fontSize: 12, color: "var(--text-primary)", marginBottom: 4, whiteSpace: "pre-wrap", paddingLeft: 34 }}>{a.description}</div>}
+                        {a.description && <div style={{ fontSize: 14, color: "var(--text-primary)", marginBottom: 4, whiteSpace: "pre-wrap", paddingLeft: 34 }}>{a.description}</div>}
                         {a.issue_ref?.issue_id && (() => {
                           const issue = issueDetails[String(a.issue_ref.issue_id)] || a.issue_ref || null;
                           const issueLinks = Array.isArray(issue?.links) ? issue.links : [];
@@ -846,24 +846,24 @@ export default function My_Meeting({ user }) {
                           return (
                             <div style={{ marginTop: 6, marginLeft: 34, padding: 10, borderRadius: 6, border: "1px solid rgba(139,92,246,0.28)", background: "rgba(139,92,246,0.06)" }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-                                <span style={{ fontSize: 11, fontWeight: 700, color: "#8b5cf6" }}>연결 이슈</span>
-                                <span style={{ fontSize: 10, fontFamily: "monospace", color: "var(--text-secondary)" }}>#{a.issue_ref.issue_id}</span>
-                                {a.issue_ref.category && <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 999, background: "var(--bg-card)", color: "var(--text-secondary)" }}>{a.issue_ref.category}</span>}
-                                {a.issue_ref.status && <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 999, background: "rgba(245,158,11,0.16)", color: "#b45309" }}>{a.issue_ref.status}</span>}
-                                <a href={trackerHref} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("flow:navigate", { detail: { tab: "tracker", search: trackerSearch } })); }} style={{ fontSize: 10, color: "var(--accent)", textDecoration: "underline" }}>트래커에서 열기</a>
+                                <span style={{ fontSize: 14, fontWeight: 700, color: "#8b5cf6" }}>연결 이슈</span>
+                                <span style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)" }}>#{a.issue_ref.issue_id}</span>
+                                {a.issue_ref.category && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 999, background: "var(--bg-card)", color: "var(--text-secondary)" }}>{a.issue_ref.category}</span>}
+                                {a.issue_ref.status && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 999, background: "rgba(245,158,11,0.16)", color: "#b45309" }}>{a.issue_ref.status}</span>}
+                                <a href={trackerHref} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("flow:navigate", { detail: { tab: "tracker", search: trackerSearch } })); }} style={{ fontSize: 14, color: "var(--accent)", textDecoration: "underline" }}>트래커에서 열기</a>
                               </div>
-                              {issue?.title && <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>{issue.title}</div>}
+                              {issue?.title && <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>{issue.title}</div>}
                               {issue?.description_html ? (
-                                <div style={{ fontSize: 11, color: "var(--text-primary)", background: "rgba(255,255,255,0.7)", borderRadius: 4, padding: 8, border: "1px solid var(--border)" }}
+                                <div style={{ fontSize: 14, color: "var(--text-primary)", background: "rgba(255,255,255,0.7)", borderRadius: 4, padding: 8, border: "1px solid var(--border)" }}
                                   dangerouslySetInnerHTML={{ __html: withTrackerImageAuth(issue.description_html) }} />
                               ) : issue?.description ? (
-                                <div style={{ fontSize: 11, color: "var(--text-primary)", whiteSpace: "pre-wrap" }}>{issue.description}</div>
+                                <div style={{ fontSize: 14, color: "var(--text-primary)", whiteSpace: "pre-wrap" }}>{issue.description}</div>
                               ) : (
-                                <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>이슈 상세 로딩 중…</div>
+                                <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>이슈 상세 로딩 중…</div>
                               )}
                               {issueImages.length > 0 && (
                                 <div style={{ marginTop: 8 }}>
-                                  <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-secondary)", marginBottom: 5 }}>첨부 이미지 ({issueImages.length})</div>
+                                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)", marginBottom: 5 }}>첨부 이미지 ({issueImages.length})</div>
                                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(104px, 1fr))", gap: 6 }}>
                                     {issueImages.map((img, ii) => {
                                       const src = trackerImageSrc(img);
@@ -882,22 +882,22 @@ export default function My_Meeting({ user }) {
                               {issueLinks.length > 0 && (
                                 <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 3 }}>
                                   {issueLinks.map((lnk, li) => isUrl(lnk) ? (
-                                    <a key={li} href={lnk} target="_blank" rel="noopener noreferrer" style={{ fontSize: 10, color: "var(--accent)", textDecoration: "underline", wordBreak: "break-all" }}>{lnk}</a>
+                                    <a key={li} href={lnk} target="_blank" rel="noopener noreferrer" style={{ fontSize: 14, color: "var(--accent)", textDecoration: "underline", wordBreak: "break-all" }}>{lnk}</a>
                                   ) : (
-                                    <span key={li} style={{ fontSize: 10, color: "var(--text-secondary)", wordBreak: "break-all" }}>{lnk}</span>
+                                    <span key={li} style={{ fontSize: 14, color: "var(--text-secondary)", wordBreak: "break-all" }}>{lnk}</span>
                                   ))}
                                 </div>
                               )}
                               {issueLots.length > 0 && (
                                 <div style={{ marginTop: 8, borderTop: "1px dashed rgba(139,92,246,0.32)", paddingTop: 7 }}>
-                                  <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-secondary)", marginBottom: 4 }}>관련 LOT_WF ({issueLots.length})</div>
+                                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)", marginBottom: 4 }}>관련 LOT_WF ({issueLots.length})</div>
                                   <div style={{ display: "grid", gap: 3, maxHeight: 96, overflow: "auto" }}>
                                     {issueLots.slice(0, 30).map((lot, li) => (
-                                      <div key={li} title={lotWfText(lot)} style={{ fontSize: 10, color: "var(--text-primary)", fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                      <div key={li} title={lotWfText(lot)} style={{ fontSize: 14, color: "var(--text-primary)", fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                         {lotWfText(lot)}
                                       </div>
                                     ))}
-                                    {issueLots.length > 30 && <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>+ {issueLots.length - 30} rows</div>}
+                                    {issueLots.length > 30 && <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>+ {issueLots.length - 30} rows</div>}
                                   </div>
                                 </div>
                               )}
@@ -907,9 +907,9 @@ export default function My_Meeting({ user }) {
                         {a.link && (
                           <div style={{ paddingLeft: 34 }}>
                             {isUrl(a.link) ? (
-                              <a href={a.link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "var(--accent)", textDecoration: "underline", wordBreak: "break-all" }}>🔗 {a.link}</a>
+                              <a href={a.link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 14, color: "var(--accent)", textDecoration: "underline", wordBreak: "break-all" }}>🔗 {a.link}</a>
                             ) : (
-                              <span style={{ fontSize: 11, color: "var(--text-secondary)", wordBreak: "break-all" }}>🔗 {a.link}</span>
+                              <span style={{ fontSize: 14, color: "var(--text-secondary)", wordBreak: "break-all" }}>🔗 {a.link}</span>
                             )}
                           </div>
                         )}
@@ -919,10 +919,10 @@ export default function My_Meeting({ user }) {
                 ))}
                 <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px dashed var(--border)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                    <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace", flex: 1 }}>+ 새 아젠다 추가 (담당자: {(agendaDraft.owner || me)})</div>
+                    <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", flex: 1 }}>+ 새 아젠다 추가 (담당자: {(agendaDraft.owner || me)})</div>
                     {/* v8.8.13: 같은 그룹 이슈 불러와서 자동 채움 */}
                     <button onClick={openIssuePicker} title="같은 그룹의 이슈에서 가져오기 (제목·설명·담당자·링크·이미지 자동 채움)"
-                      style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid #8b5cf6", background: "transparent", color: "#8b5cf6", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                      style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid #8b5cf6", background: "transparent", color: "#8b5cf6", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
                       📎 이슈 가져오기
                     </button>
                   </div>
@@ -937,17 +937,17 @@ export default function My_Meeting({ user }) {
                     return (
                       <div style={{ marginTop: 6, padding: 10, borderRadius: 6, border: "1px solid rgba(139,92,246,0.28)", background: "rgba(139,92,246,0.06)" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-                          <span style={{ fontSize: 11, fontWeight: 700, color: "#8b5cf6" }}>가져온 이슈</span>
-                          <span style={{ fontSize: 10, fontFamily: "monospace", color: "var(--text-secondary)" }}>#{agendaDraft.issue_ref.issue_id}</span>
-                          {issue?.category && <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 999, background: "var(--bg-card)", color: "var(--text-secondary)" }}>{issue.category}</span>}
-                          {issueImages.length > 0 && <span style={{ fontSize: 9, color: "var(--text-secondary)" }}>이미지 {issueImages.length}개 함께 저장</span>}
+                          <span style={{ fontSize: 14, fontWeight: 700, color: "#8b5cf6" }}>가져온 이슈</span>
+                          <span style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)" }}>#{agendaDraft.issue_ref.issue_id}</span>
+                          {issue?.category && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 999, background: "var(--bg-card)", color: "var(--text-secondary)" }}>{issue.category}</span>}
+                          {issueImages.length > 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>이미지 {issueImages.length}개 함께 저장</span>}
                         </div>
-                        {issue?.title && <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>{issue.title}</div>}
+                        {issue?.title && <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>{issue.title}</div>}
                         {issue?.description_html ? (
-                          <div style={{ fontSize: 11, color: "var(--text-primary)", background: "rgba(255,255,255,0.7)", borderRadius: 4, padding: 8, border: "1px solid var(--border)" }}
+                          <div style={{ fontSize: 14, color: "var(--text-primary)", background: "rgba(255,255,255,0.7)", borderRadius: 4, padding: 8, border: "1px solid var(--border)" }}
                             dangerouslySetInnerHTML={{ __html: withTrackerImageAuth(issue.description_html) }} />
                         ) : issue?.description ? (
-                          <div style={{ fontSize: 11, color: "var(--text-primary)", whiteSpace: "pre-wrap" }}>{issue.description}</div>
+                          <div style={{ fontSize: 14, color: "var(--text-primary)", whiteSpace: "pre-wrap" }}>{issue.description}</div>
                         ) : null}
                         {issueImages.length > 0 && (
                           <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(104px, 1fr))", gap: 6 }}>
@@ -977,8 +977,8 @@ export default function My_Meeting({ user }) {
               {/* v8.8.6/v8.8.15: 외부 저장 알림 배너 — 편집 중 다른 유저가 저장하면 표시. rev 표시 + "유지하며 rebase" 옵션. */}
               {externalUpdate && editingMinutes && (
                 <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: "rgba(245,158,11,0.12)", border: "1px solid #f59e0b", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 11, color: "#b45309", fontWeight: 700 }}>⚠ 동시편집 감지</span>
-                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                  <span style={{ fontSize: 14, color: "#b45309", fontWeight: 700 }}>⚠ 동시편집 감지</span>
+                  <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>
                     {externalUpdate.author} 님이 방금 저장함 ({(externalUpdate.at || "").slice(11, 16)})
                     {externalUpdate.rev !== undefined && <> · <span style={{ fontFamily: "monospace", color: "#b45309", fontWeight: 700 }}>rev {externalUpdate.rev}</span></>}
                     · 결정 {externalUpdate.decisions}개 · 액션 {externalUpdate.actions}개
@@ -989,18 +989,18 @@ export default function My_Meeting({ user }) {
                     setMinutesDraft(d => d ? { ...d, base_rev: Number(externalUpdate.rev || 0) } : d);
                     setExternalUpdate(null);
                   }} title="내 편집 유지 + 서버 rev 에만 맞춰 재동기화 (저장 시 상대 변경 덮어씀)"
-                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>내 편집 유지 · rebase</button>
+                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>내 편집 유지 · rebase</button>
                   <button onClick={() => { setExternalUpdate(null); reload(); setEditingMinutes(false); setMinutesDraft(null); }}
-                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid #f59e0b", background: "#f59e0b", color: "#fff", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>외부 내용 불러오기</button>
+                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid #f59e0b", background: "#f59e0b", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>외부 내용 불러오기</button>
                   <button onClick={() => setExternalUpdate(null)}
-                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 10, cursor: "pointer" }}>무시</button>
+                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>무시</button>
                 </div>
               )}
 
               {/* Minutes */}
               <div style={{ marginBottom: 14, padding: 16, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
                 <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", flex: 1 }}>📝 {selectedSession.idx}차 회의록</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", flex: 1 }}>📝 {selectedSession.idx}차 회의록</span>
                   {canEditMinutes(selected) && !editingMinutes && (
                     <button onClick={startEditMinutes} style={btnGhost}>{selectedSession.minutes ? "✎ 수정" : "+ 작성"}</button>
                   )}
@@ -1012,7 +1012,7 @@ export default function My_Meeting({ user }) {
                   )}
                 </div>
                 {!editingMinutes && !selectedSession.minutes && (
-                  <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>
+                  <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>
                     회의록 미작성. 주관자({selected.owner || "—"})가 작성합니다. <b>그룹 멤버는 아래 공동 작성란으로 추가 내용을 남길 수 있습니다.</b>
                   </div>
                 )}
@@ -1028,7 +1028,7 @@ export default function My_Meeting({ user }) {
                     {selectedSession.minutes.body && (
                       <div>
                         <div style={lbl}>본문</div>
-                        <div style={{ marginTop: 4, padding: 10, borderRadius: 5, background: "var(--bg-card)", border: "1px solid var(--border)", fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                        <div style={{ marginTop: 4, padding: 10, borderRadius: 5, background: "var(--bg-card)", border: "1px solid var(--border)", fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
                           {selectedSession.minutes.body}
                         </div>
                       </div>
@@ -1036,7 +1036,7 @@ export default function My_Meeting({ user }) {
                     {(selectedSession.minutes.decisions || []).length > 0 && (
                       <div>
                         <div style={lbl}>⚡ 결정사항 ({selectedSession.minutes.decisions.length})</div>
-                        <table style={{ width: "100%", marginTop: 4, fontSize: 11, borderCollapse: "collapse" }}>
+                        <table style={{ width: "100%", marginTop: 4, fontSize: 14, borderCollapse: "collapse" }}>
                           <thead>
                             <tr style={{ background: "var(--bg-card)" }}>
                               <th style={th}>내용</th>
@@ -1051,7 +1051,7 @@ export default function My_Meeting({ user }) {
                                   <td style={td}>{obj.text}</td>
                                   <td style={td}>
                                     {obj.calendar_pushed ? (
-                                      <div style={{ fontSize: 10, lineHeight: 1.4 }}>
+                                      <div style={{ fontSize: 14, lineHeight: 1.4 }}>
                                         <span style={{ color: "#22c55e", fontWeight: 600 }}>✓ 등록됨</span>
                                         <div style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{obj.calendar_pushed_by} · {dtPretty(obj.calendar_pushed_at)}</div>
                                         <span onClick={() => unpushDecision(obj)} style={delLink}>해제</span>
@@ -1070,7 +1070,7 @@ export default function My_Meeting({ user }) {
                     {(selectedSession.minutes.action_items || []).length > 0 && (
                       <div>
                         <div style={lbl}>✅ 액션 아이템 ({selectedSession.minutes.action_items.length})</div>
-                        <table style={{ width: "100%", marginTop: 4, fontSize: 11, borderCollapse: "collapse" }}>
+                        <table style={{ width: "100%", marginTop: 4, fontSize: 14, borderCollapse: "collapse" }}>
                           <thead>
                             <tr style={{ background: "var(--bg-card)" }}>
                               <th style={th}>내용</th>
@@ -1087,7 +1087,7 @@ export default function My_Meeting({ user }) {
                                 <td style={td}>{a.due || "—"}</td>
                                 <td style={td}>
                                   {a.calendar_pushed ? (
-                                    <div style={{ fontSize: 10, lineHeight: 1.4 }}>
+                                    <div style={{ fontSize: 14, lineHeight: 1.4 }}>
                                       <span style={{ color: "#22c55e", fontWeight: 600 }}>✓ 등록됨</span>
                                       <div style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
                                         {a.calendar_pushed_by} · {dtPretty(a.calendar_pushed_at)}
@@ -1104,7 +1104,7 @@ export default function My_Meeting({ user }) {
                         </table>
                       </div>
                     )}
-                    <div style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                    <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
                       작성: {selectedSession.minutes.author} · {dtPretty(selectedSession.minutes.updated_at)}
                     </div>
                   </div>
@@ -1129,7 +1129,7 @@ export default function My_Meeting({ user }) {
                           </div>
                         );
                       })}
-                      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>
+                      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>
                         * 결정사항에는 별도 마감일이 없으며 달력 등록 시 회의 세션 날짜로 자동 기록됩니다.
                       </div>
                     </div>
@@ -1148,7 +1148,7 @@ export default function My_Meeting({ user }) {
                           </div>
                           <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                             <span style={{ ...lbl, minWidth: 68 }}>그룹 담당</span>
-                            {allGroups.length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(그룹이 없습니다 — Admin → 그룹 에서 생성)</span>}
+                            {allGroups.length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>(그룹이 없습니다 — Admin → 그룹 에서 생성)</span>}
                             {allGroups.map(g => {
                               const on = (a.group_ids || []).includes(g.id);
                               return (
@@ -1157,7 +1157,7 @@ export default function My_Meeting({ user }) {
                                   const next = on ? cur.filter(x => x !== g.id) : [...cur, g.id];
                                   updAction(i, "group_ids", next);
                                 }} style={{
-                                  padding: "2px 8px", borderRadius: 999, fontSize: 10, cursor: "pointer",
+                                  padding: "2px 8px", borderRadius: 999, fontSize: 14, cursor: "pointer",
                                   border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
                                   background: on ? "var(--accent-glow)" : "transparent",
                                   color: on ? "var(--accent)" : "var(--text-secondary)",
@@ -1170,7 +1170,7 @@ export default function My_Meeting({ user }) {
                     </div>
                     {/* v8.7.6: 메일 발송 옵션 */}
                     <div style={{ marginTop: 6, padding: 10, border: "1px solid var(--accent)", borderRadius: 6, background: "var(--bg-card)" }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, fontWeight: 600 }}>
                         <input type="checkbox" checked={!!minutesDraft.send_mail} onChange={e => setMinutesDraft({ ...minutesDraft, send_mail: e.target.checked })} />
                         📧 저장과 동시에 아젠다+회의록+액션아이템을 메일로 발송
                       </label>
@@ -1179,7 +1179,7 @@ export default function My_Meeting({ user }) {
                           <input value={minutesDraft.mail_subject} onChange={e => setMinutesDraft({ ...minutesDraft, mail_subject: e.target.value })} placeholder={`메일 제목 (기본: [flow 회의록] ${selected.title} · ${selectedSession.idx}차)`} style={inp} />
                           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                             <span style={{ ...lbl, minWidth: 68 }}>수신 유저</span>
-                            {mailRecipients.length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(승인된 유저 없음)</span>}
+                            {mailRecipients.length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>(승인된 유저 없음)</span>}
                             {/* v8.8.27: username = 사내 email id (자동 도메인 합성). "(no email)" disable 로직 제거. 이름 있으면 `홍길동 (id)` 로 표시. */}
                             {mailRecipients.map(u => {
                               const on = (minutesDraft.mail_to_users || []).includes(u.username);
@@ -1190,7 +1190,7 @@ export default function My_Meeting({ user }) {
                                   setMinutesDraft({ ...minutesDraft, mail_to_users: next });
                                 }} title={u.username}
                                   style={{
-                                    padding: "2px 8px", borderRadius: 999, fontSize: 10, cursor: "pointer",
+                                    padding: "2px 8px", borderRadius: 999, fontSize: 14, cursor: "pointer",
                                     border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
                                     background: on ? "var(--accent-glow)" : "transparent",
                                     color: on ? "var(--accent)" : "var(--text-secondary)",
@@ -1200,7 +1200,7 @@ export default function My_Meeting({ user }) {
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                             <span style={{ ...lbl, minWidth: 68 }}>메일 그룹</span>
-                            {mailGroups.length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(그룹 없음 — 아래 "관리" 버튼)</span>}
+                            {mailGroups.length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>(그룹 없음 — 아래 "관리" 버튼)</span>}
                             {mailGroups.map(g => {
                               const on = (minutesDraft.mail_group_ids || []).includes(g.id);
                               return (
@@ -1210,7 +1210,7 @@ export default function My_Meeting({ user }) {
                                   setMinutesDraft({ ...minutesDraft, mail_group_ids: next });
                                 }} title={`${(g.members || []).length}명 + ${(g.extra_emails || []).length}외부`}
                                   style={{
-                                    padding: "2px 8px", borderRadius: 999, fontSize: 10, cursor: "pointer",
+                                    padding: "2px 8px", borderRadius: 999, fontSize: 14, cursor: "pointer",
                                     border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
                                     background: on ? "var(--accent-glow)" : "transparent",
                                     color: on ? "var(--accent)" : "var(--text-secondary)",
@@ -1220,22 +1220,22 @@ export default function My_Meeting({ user }) {
                             <button onClick={() => setMgEditor(true)} style={btnTiny} type="button">관리</button>
                           </div>
                           <input value={minutesDraft.mail_to} onChange={e => setMinutesDraft({ ...minutesDraft, mail_to: e.target.value })} placeholder="추가 이메일 (쉼표/공백 구분, 선택)" style={inp} />
-                          <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>
+                          <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>
                             * 액션아이템에 지정된 그룹 멤버의 이메일도 자동 포함됩니다.
                           </div>
                           {/* v8.8.16: 메일 전용 본문 — 공동 작성된 minutes.body 와 분리. 빈 채 발송하면 메일에 본문 섹션 없음. */}
                           <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 5, border: "1px dashed var(--border)", background: "var(--bg-primary)" }}>
-                            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4, color: "var(--text-secondary)" }}>📝 메일 본문 (선택)</div>
-                            <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>
+                            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: "var(--text-secondary)" }}>📝 메일 본문 (선택)</div>
+                            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>
                               공동 작성된 회의록 본문은 메일에 자동 첨부되지 않습니다. 아래는 참고용이고, 메일에 넣을 내용은 아래 텍스트 영역에 직접 작성하세요.
                             </div>
                             {minutesDraft.body && (
                               <details style={{ marginBottom: 6 }}>
-                                <summary style={{ cursor: "pointer", fontSize: 10, color: "var(--accent)", fontWeight: 600 }}>참고: 공동 작성된 회의록 본문 (클릭하여 펼치기/접기)</summary>
-                                <pre style={{ fontSize: 10, margin: "4px 0 0", padding: "6px 8px", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 4, whiteSpace: "pre-wrap", maxHeight: 160, overflow: "auto" }}>{minutesDraft.body}</pre>
+                                <summary style={{ cursor: "pointer", fontSize: 14, color: "var(--accent)", fontWeight: 600 }}>참고: 공동 작성된 회의록 본문 (클릭하여 펼치기/접기)</summary>
+                                <pre style={{ fontSize: 14, margin: "4px 0 0", padding: "6px 8px", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 4, whiteSpace: "pre-wrap", maxHeight: 160, overflow: "auto" }}>{minutesDraft.body}</pre>
                                 <div style={{ textAlign: "right", marginTop: 4 }}>
                                   <button type="button" onClick={() => setMinutesDraft({ ...minutesDraft, mail_body: (minutesDraft.mail_body ? minutesDraft.mail_body + "\n\n" : "") + minutesDraft.body })}
-                                    style={{ padding: "2px 8px", borderRadius: 3, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
+                                    style={{ padding: "2px 8px", borderRadius: 3, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
                                     ↓ 메일 본문에 복사
                                   </button>
                                 </div>
@@ -1270,7 +1270,7 @@ export default function My_Meeting({ user }) {
               <div style={{ fontSize: 14, fontWeight: 700, color: "#8b5cf6", fontFamily: "monospace", flex: 1 }}>📎 이슈에서 가져오기</div>
               <span onClick={() => setIssuePickerOpen(false)} style={{ cursor: "pointer", fontSize: 18, color: "var(--text-secondary)" }}>✕</span>
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
               선택하면 제목·설명·담당자·첫 번째 링크가 채워지고, 이슈 본문·이미지는 연결 이슈로 함께 보관됩니다.
               {!isAdmin && (selected?.group_ids || []).length > 0 && <> (회의 그룹과 겹치는 이슈만)</>}
             </div>
@@ -1278,7 +1278,7 @@ export default function My_Meeting({ user }) {
               placeholder="🔎 제목/카테고리/작성자 검색"
               style={{ ...inp, marginBottom: 8 }} />
             <div style={{ maxHeight: 360, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
-              {issuePickerBusy && <div style={{ padding: 24, textAlign: "center", fontSize: 11, color: "var(--text-secondary)" }}>로딩…</div>}
+              {issuePickerBusy && <div style={{ padding: 24, textAlign: "center", fontSize: 14, color: "var(--text-secondary)" }}>로딩…</div>}
               {!issuePickerBusy && (() => {
                 const q = issuePickerSearch.trim().toLowerCase();
                 // v8.8.28: 검색 범위에 summary 포함. BE 가 이미 updated_at desc 정렬해서 내려줌.
@@ -1289,7 +1289,7 @@ export default function My_Meeting({ user }) {
                       (x.category || "").toLowerCase().includes(q) ||
                       (x.username || "").toLowerCase().includes(q))
                   : issuePickerList;
-                if (filtered.length === 0) return <div style={{ padding: 24, textAlign: "center", fontSize: 11, color: "var(--text-secondary)" }}>이슈 없음 {q ? "(검색 조건 일치 없음)" : "(같은 그룹 이슈 없음)"}.</div>;
+                if (filtered.length === 0) return <div style={{ padding: 24, textAlign: "center", fontSize: 14, color: "var(--text-secondary)" }}>이슈 없음 {q ? "(검색 조건 일치 없음)" : "(같은 그룹 이슈 없음)"}.</div>;
                 // v8.8.28: 고유번호(iss.id) 대신 최신 수정 날짜를 왼쪽에 노출.
                 //   포맷: "MM/DD HH:mm" (ISO YYYY-MM-DDTHH:MM:SS → 월/일 시:분).
                 const fmtUpdated = (s) => {
@@ -1301,19 +1301,19 @@ export default function My_Meeting({ user }) {
                 return filtered.map(iss => (
                   <div key={iss.id} onClick={() => attachIssueToAgenda(iss.id)}
                     title={`#${iss.id} · ${iss.summary || ""}`}
-                    style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--border)", cursor: "pointer", fontSize: 11 }}
+                    style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--border)", cursor: "pointer", fontSize: 14 }}
                     onMouseEnter={e => e.currentTarget.style.background = "rgba(139,92,246,0.08)"}
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                     {/* v8.8.28: 왼쪽은 고유번호 대신 최신 수정 시각. */}
-                    <span style={{ fontFamily: "monospace", fontSize: 10, color: "var(--text-secondary)", width: 88, flexShrink: 0, whiteSpace: "nowrap" }}>🕘 {fmtUpdated(iss.updated_at)}</span>
-                    {iss.category && <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: "var(--bg-card)", color: "var(--text-secondary)", flexShrink: 0 }}>{iss.category}</span>}
-                    {iss.status && <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 10, background: iss.status === "closed" ? "#22c55e22" : "#f59e0b22", color: iss.status === "closed" ? "#16a34a" : "#c2410c", flexShrink: 0 }}>{iss.status}</span>}
+                    <span style={{ fontFamily: "monospace", fontSize: 14, color: "var(--text-secondary)", width: 88, flexShrink: 0, whiteSpace: "nowrap" }}>🕘 {fmtUpdated(iss.updated_at)}</span>
+                    {iss.category && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 10, background: "var(--bg-card)", color: "var(--text-secondary)", flexShrink: 0 }}>{iss.category}</span>}
+                    {iss.status && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 10, background: iss.status === "closed" ? "#22c55e22" : "#f59e0b22", color: iss.status === "closed" ? "#16a34a" : "#c2410c", flexShrink: 0 }}>{iss.status}</span>}
                     {/* v8.8.28: 제목 + 한 줄 요약 (회색, nowrap ellipsis). title/summary 합쳐서 flex:1. */}
                     <span style={{ flex: 1, minWidth: 0, display: "flex", gap: 8, alignItems: "baseline", overflow: "hidden" }}>
                       <span style={{ color: "var(--text-primary)", fontWeight: 600, flexShrink: 0, maxWidth: "45%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{iss.title || "(제목 없음)"}</span>
-                      {iss.summary && <span style={{ fontSize: 10, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>— {iss.summary}</span>}
+                      {iss.summary && <span style={{ fontSize: 14, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>— {iss.summary}</span>}
                     </span>
-                    <span style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0 }}>{iss.username}</span>
+                    <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0 }}>{iss.username}</span>
                   </div>
                 ));
               })()}
@@ -1360,7 +1360,7 @@ export default function My_Meeting({ user }) {
                     const on = draft.recurrence.weekday.includes(d);
                     return (
                       <span key={d} onClick={() => setDraft({ ...draft, recurrence: { ...draft.recurrence, weekday: toggleWeekday(draft.recurrence.weekday, d) } })}
-                            style={{ padding: "3px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
+                            style={{ padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
                         {WEEKDAY_LABEL[d]}
                       </span>
                     );
@@ -1370,7 +1370,7 @@ export default function My_Meeting({ user }) {
               {/* v8.8.3: 공개범위 group_ids FE picker (create) */}
               <span style={lbl}>공개 그룹</span>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                {(allGroups || []).length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(등록된 그룹 없음 — 모두에게 공개)</span>}
+                {(allGroups || []).length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>(등록된 그룹 없음 — 모두에게 공개)</span>}
                 {(allGroups || []).map(g => {
                   const on = (draft.group_ids || []).includes(g.id);
                   return (
@@ -1378,13 +1378,13 @@ export default function My_Meeting({ user }) {
                       const cur = draft.group_ids || [];
                       const next = on ? cur.filter(x => x !== g.id) : [...cur, g.id];
                       setDraft({ ...draft, group_ids: next });
-                    }} style={{ padding: "3px 10px", borderRadius: 999, fontSize: 11, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
+                    }} style={{ padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
                       {on ? "✓ " : ""}{g.name}
                     </span>
                   );
                 })}
                 {(draft.group_ids || []).length === 0 && (allGroups || []).length > 0 && (
-                  <span style={{ fontSize: 10, color: "var(--text-secondary)", marginLeft: 4 }}>비워두면 모두에게 공개</span>
+                  <span style={{ fontSize: 14, color: "var(--text-secondary)", marginLeft: 4 }}>비워두면 모두에게 공개</span>
                 )}
               </div>
             </div>
@@ -1443,22 +1443,22 @@ function MinutesAppendix({ session, meeting, user, appendText, setAppendText, ap
     <div style={{ marginTop: list.length ? 8 : 0, padding: 10, borderRadius: 5, background: "var(--bg-card)", border: "1px dashed var(--border)" }}>
       <div style={{ ...lbl, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
         <span>✍ 공동 작성</span>
-        <span style={{ fontSize: 9, color: "var(--text-secondary)", fontWeight: 400 }}>(그룹 멤버는 추가만 가능 · 본인 글만 삭제 · 주관자는 전체 정리)</span>
+        <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 400 }}>(그룹 멤버는 추가만 가능 · 본인 글만 삭제 · 주관자는 전체 정리)</span>
       </div>
-      {list.length === 0 && <div style={{ fontSize: 10, color: "var(--text-secondary)", padding: "4px 2px" }}>추가된 내용 없음</div>}
+      {list.length === 0 && <div style={{ fontSize: 14, color: "var(--text-secondary)", padding: "4px 2px" }}>추가된 내용 없음</div>}
       {list.map(e => {
         const mine = e.author === me;
         const canDel = mine || isOwner || isAdmin;
         return (
           <div key={e.id} style={{ display: "flex", gap: 8, padding: "6px 4px", borderBottom: "1px dashed var(--border)" }}>
-            <div style={{ minWidth: 130, fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0, lineHeight: 1.4 }}>
+            <div style={{ minWidth: 130, fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0, lineHeight: 1.4 }}>
               <div style={{ fontWeight: 700, color: mine ? "var(--accent)" : "var(--text-primary)" }}>{e.author}</div>
               <div>{(e.at || "").replace("T", " ").slice(5, 16)}</div>
             </div>
-            <div style={{ flex: 1, fontSize: 12, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{e.text}</div>
+            <div style={{ flex: 1, fontSize: 14, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{e.text}</div>
             {canDel && (
               <span onClick={() => onDelete(e.id)} title="삭제"
-                style={{ cursor: "pointer", color: "#ef4444", fontSize: 11, padding: "0 4px", flexShrink: 0 }}>×</span>
+                style={{ cursor: "pointer", color: "#ef4444", fontSize: 14, padding: "0 4px", flexShrink: 0 }}>×</span>
             )}
           </div>
         );
@@ -1496,10 +1496,10 @@ function MeetingCategoryEditor({ categories, setCategories, isAdmin }) {
   };
   if (!draft) {
     return (
-      <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.6 }}>
         회의 카테고리는 달력 카테고리 팔레트와 공유됩니다.<br />
         <button onClick={start} disabled={!isAdmin}
-          style={{ marginTop: 8, padding: "6px 12px", borderRadius: 5, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 11, cursor: isAdmin ? "pointer" : "not-allowed", fontWeight: 600, opacity: isAdmin ? 1 : 0.5 }}>
+          style={{ marginTop: 8, padding: "6px 12px", borderRadius: 5, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: isAdmin ? "pointer" : "not-allowed", fontWeight: 600, opacity: isAdmin ? 1 : 0.5 }}>
           🎨 카테고리 편집 ({(categories || []).length})
         </button>
       </div>
@@ -1507,42 +1507,42 @@ function MeetingCategoryEditor({ categories, setCategories, isAdmin }) {
   }
   return (
     <div>
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 6 }}>이름/색 변경 + 순서 조정 + 추가/삭제</div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6 }}>이름/색 변경 + 순서 조정 + 추가/삭제</div>
       <div style={{ maxHeight: 300, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
         {draft.map((c, i) => (
           <div key={i} style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 6px", borderBottom: "1px solid var(--border)" }}>
-            <span style={{ width: 18, fontSize: 10, color: "var(--text-secondary)" }}>{i + 1}</span>
+            <span style={{ width: 18, fontSize: 14, color: "var(--text-secondary)" }}>{i + 1}</span>
             <input value={c.name} onChange={e => { const n = draft.slice(); n[i] = { ...n[i], name: e.target.value }; setDraft(n); }}
-              style={{ flex: 1, padding: "3px 6px", fontSize: 11, border: "1px solid var(--border)", borderRadius: 3, background: "var(--bg-primary)", color: "var(--text-primary)" }} />
+              style={{ flex: 1, padding: "3px 6px", fontSize: 14, border: "1px solid var(--border)", borderRadius: 3, background: "var(--bg-primary)", color: "var(--text-primary)" }} />
             <input type="color" value={c.color || "#6b7280"} onChange={e => { const n = draft.slice(); n[i] = { ...n[i], color: e.target.value }; setDraft(n); }}
               style={{ width: 32, height: 24, border: "1px solid var(--border)", borderRadius: 3, background: "transparent" }} />
-            <button onClick={() => move(i, -1)} style={{ padding: "1px 5px", fontSize: 10, border: "1px solid var(--border)", background: "transparent", borderRadius: 3, cursor: "pointer" }}>↑</button>
-            <button onClick={() => move(i, 1)} style={{ padding: "1px 5px", fontSize: 10, border: "1px solid var(--border)", background: "transparent", borderRadius: 3, cursor: "pointer" }}>↓</button>
-            <button onClick={() => setDraft(draft.filter((_, j) => j !== i))} style={{ padding: "1px 5px", fontSize: 10, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", borderRadius: 3, cursor: "pointer" }}>×</button>
+            <button onClick={() => move(i, -1)} style={{ padding: "1px 5px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", borderRadius: 3, cursor: "pointer" }}>↑</button>
+            <button onClick={() => move(i, 1)} style={{ padding: "1px 5px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", borderRadius: 3, cursor: "pointer" }}>↓</button>
+            <button onClick={() => setDraft(draft.filter((_, j) => j !== i))} style={{ padding: "1px 5px", fontSize: 14, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", borderRadius: 3, cursor: "pointer" }}>×</button>
           </div>
         ))}
       </div>
       <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-        <button onClick={() => setDraft([...draft, { name: "신규", color: "#6b7280" }])} style={{ padding: "4px 10px", fontSize: 11, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 4, cursor: "pointer" }}>+ 추가</button>
+        <button onClick={() => setDraft([...draft, { name: "신규", color: "#6b7280" }])} style={{ padding: "4px 10px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 4, cursor: "pointer" }}>+ 추가</button>
         <div style={{ flex: 1 }} />
-        <button onClick={save} style={{ padding: "4px 12px", fontSize: 11, border: "none", background: "var(--accent)", color: "#fff", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>저장</button>
-        <button onClick={() => setDraft(null)} style={{ padding: "4px 12px", fontSize: 11, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", borderRadius: 4, cursor: "pointer" }}>취소</button>
+        <button onClick={save} style={{ padding: "4px 12px", fontSize: 14, border: "none", background: "var(--accent)", color: "#fff", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>저장</button>
+        <button onClick={() => setDraft(null)} style={{ padding: "4px 12px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", borderRadius: 4, cursor: "pointer" }}>취소</button>
       </div>
     </div>
   );
 }
 
-const inp = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none", boxSizing: "border-box" };
-const lbl = { fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" };
-const val = { fontSize: 12, color: "var(--text-primary)" };
-const btnPrimary = { padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" };
-const btnGhost = { padding: "5px 12px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 11, cursor: "pointer" };
-const btnDanger = { padding: "5px 10px", borderRadius: 5, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 11, cursor: "pointer" };
-const btnTiny = { padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 10, cursor: "pointer" };
-const btnTinyDanger = { padding: "2px 10px", borderRadius: 4, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 11, cursor: "pointer" };
-const editLink = { fontSize: 10, color: "var(--accent)", cursor: "pointer", textDecoration: "underline" };
-const delLink = { fontSize: 10, color: "#ef4444", cursor: "pointer", textDecoration: "underline" };
-const th = { padding: "6px 8px", textAlign: "left", fontSize: 10, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)", fontWeight: 600 };
+const inp = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" };
+const lbl = { fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" };
+const val = { fontSize: 14, color: "var(--text-primary)" };
+const btnPrimary = { padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" };
+const btnGhost = { padding: "5px 12px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer" };
+const btnDanger = { padding: "5px 10px", borderRadius: 5, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 14, cursor: "pointer" };
+const btnTiny = { padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" };
+const btnTinyDanger = { padding: "2px 10px", borderRadius: 4, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 14, cursor: "pointer" };
+const editLink = { fontSize: 14, color: "var(--accent)", cursor: "pointer", textDecoration: "underline" };
+const delLink = { fontSize: 14, color: "#ef4444", cursor: "pointer", textDecoration: "underline" };
+const th = { padding: "6px 8px", textAlign: "left", fontSize: 14, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)", fontWeight: 600 };
 const td = { padding: "6px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
 const modalBack = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" };
 const modalCard = { width: 520, maxWidth: "92%", padding: 18, borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" };
@@ -1574,9 +1574,9 @@ function ActionItemsGantt({ meetings, onPickMeeting }) {
   }
   if (rows.length === 0) {
     return (
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12, flexDirection: "column", gap: 8 }}>
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 14, flexDirection: "column", gap: 8 }}>
         <div>간트 차트에 표시할 액션아이템이 없습니다.</div>
-        <div style={{ fontSize: 10 }}>액션아이템에 마감일(due) 을 설정하면 여기에 나타납니다.</div>
+        <div style={{ fontSize: 14 }}>액션아이템에 마감일(due) 을 설정하면 여기에 나타납니다.</div>
       </div>
     );
   }
@@ -1599,7 +1599,7 @@ function ActionItemsGantt({ meetings, onPickMeeting }) {
   const statusColor = (s) => s === "done" ? "#22c55e" : s === "in_progress" ? "#f59e0b" : "#3b82f6";
   return (
     <div style={{ padding: 16, overflow: "auto" }}>
-      <div style={{ marginBottom: 8, fontSize: 12, color: "var(--text-secondary)" }}>
+      <div style={{ marginBottom: 8, fontSize: 14, color: "var(--text-secondary)" }}>
         📊 액션아이템 간트 차트 · {rows.length} items · {new Date(minT).toISOString().slice(0, 10)} ~ {new Date(maxT).toISOString().slice(0, 10)}
       </div>
       <svg width={W} height={H} style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 6 }}>
@@ -1640,7 +1640,7 @@ function ActionItemsGantt({ meetings, onPickMeeting }) {
           );
         })}
       </svg>
-      <div style={{ marginTop: 8, fontSize: 10, color: "var(--text-secondary)", display: "flex", gap: 14 }}>
+      <div style={{ marginTop: 8, fontSize: 14, color: "var(--text-secondary)", display: "flex", gap: 14 }}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#3b82f6", borderRadius: 2, display: "inline-block" }} />pending</span>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#f59e0b", borderRadius: 2, display: "inline-block" }} />in_progress</span>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#22c55e", borderRadius: 2, display: "inline-block" }} />done</span>
@@ -1686,29 +1686,29 @@ function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
     sf(`/api/mail-groups/delete?id=${encodeURIComponent(rawId)}`, { method: "POST" })
       .then(() => { setEditId(null); onReload(); }).catch(e => setMsg(e.message));
   };
-  const inp2 = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none", boxSizing: "border-box" };
+  const inp2 = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" };
   return (
     // v8.8.3: z-index 10001 — SendMailDialog(9999) 위에 확실히 올라오도록.
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 10001, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} style={{ width: 720, maxWidth: "94%", maxHeight: "86vh", overflow: "auto", padding: 18, borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
         <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
           <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", flex: 1 }}>공용 메일 그룹 관리</span>
-          <button onClick={startCreate} style={{ padding: "4px 12px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, cursor: "pointer" }}>+ 새 그룹</button>
-          <button onClick={onClose} style={{ marginLeft: 6, padding: "4px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 11, cursor: "pointer" }}>닫기</button>
+          <button onClick={startCreate} style={{ padding: "4px 12px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: "pointer" }}>+ 새 그룹</button>
+          <button onClick={onClose} style={{ marginLeft: 6, padding: "4px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer" }}>닫기</button>
         </div>
-        <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 10 }}>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10 }}>
           * 공용 메일그룹(직접 생성) + 일반 그룹(그룹관리 탭)이 함께 표시됩니다. 일반 그룹은 여기서 편집 불가.
         </div>
         {editId && (
           <div style={{ padding: 12, borderRadius: 6, background: "var(--bg-card)", border: "1px solid var(--accent)", marginBottom: 12 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{editId === "__new__" ? "새 그룹 생성" : "그룹 편집"}</div>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>{editId === "__new__" ? "새 그룹 생성" : "그룹 편집"}</div>
             <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 10px", alignItems: "center", marginBottom: 6 }}>
-              <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>이름</span>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>이름</span>
               <input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} placeholder="예: GATE 담당 팀" style={inp2} />
-              <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>메모</span>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>메모</span>
               <input value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} placeholder="(선택)" style={inp2} />
             </div>
-            <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 6, marginBottom: 4 }}>멤버 (클릭 토글)</div>
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 6, marginBottom: 4 }}>멤버 (클릭 토글)</div>
             <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxHeight: 120, overflow: "auto", padding: 4, border: "1px solid var(--border)", borderRadius: 4 }}>
               {/* v8.8.27: username = 이메일 → disable 로직 제거. 이름(있으면) + id 로 표시. */}
               {(mailRecipients || []).map(u => {
@@ -1716,43 +1716,43 @@ function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
                 return (
                   <span key={u.username} onClick={() => toggleMember(u.username)}
                     title={u.username}
-                    style={{ padding: "2px 8px", borderRadius: 999, fontSize: 10, cursor: "pointer", border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>{userLabel(u)}</span>
+                    style={{ padding: "2px 8px", borderRadius: 999, fontSize: 14, cursor: "pointer", border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>{userLabel(u)}</span>
                 );
               })}
             </div>
-            <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 8, marginBottom: 4 }}>추가 외부 이메일 (콤마/공백/줄바꿈 구분)</div>
-            <textarea value={draft.extra_emails} onChange={e => setDraft({ ...draft, extra_emails: e.target.value })} rows={2} placeholder="vendor@partner.com, external@x.com" style={{ ...inp2, resize: "vertical", fontFamily: "monospace", fontSize: 11 }} />
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 8, marginBottom: 4 }}>추가 외부 이메일 (콤마/공백/줄바꿈 구분)</div>
+            <textarea value={draft.extra_emails} onChange={e => setDraft({ ...draft, extra_emails: e.target.value })} rows={2} placeholder="vendor@partner.com, external@x.com" style={{ ...inp2, resize: "vertical", fontFamily: "monospace", fontSize: 14 }} />
             <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center" }}>
-              <button onClick={submit} style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>저장</button>
-              <button onClick={() => setEditId(null)} style={{ padding: "6px 12px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 11, cursor: "pointer" }}>취소</button>
-              {msg && <span style={{ fontSize: 11, color: "var(--accent)" }}>{msg}</span>}
+              <button onClick={submit} style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>저장</button>
+              <button onClick={() => setEditId(null)} style={{ padding: "6px 12px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer" }}>취소</button>
+              {msg && <span style={{ fontSize: 14, color: "var(--accent)" }}>{msg}</span>}
             </div>
           </div>
         )}
-        {msg && !editId && <div style={{ marginBottom: 8, fontSize: 11, color: "var(--accent)" }}>{msg}</div>}
+        {msg && !editId && <div style={{ marginBottom: 8, fontSize: 14, color: "var(--accent)" }}>{msg}</div>}
         <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6 }}>
-          {(groups || []).length === 0 && <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 12 }}>아직 그룹이 없습니다. "+ 새 그룹" 으로 생성하세요.</div>}
+          {(groups || []).length === 0 && <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>아직 그룹이 없습니다. "+ 새 그룹" 으로 생성하세요.</div>}
           {(groups || []).map(g => {
             const isGrp = (g.id || "").startsWith("grp:");
             return (
               <div key={g.id} style={{ padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)", opacity: isGrp ? 0.85 : 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, flex: 1 }}>
+                  <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>
                     {isGrp ? "[그룹]" : "[메일그룹]"} {g.name}
                   </span>
-                  <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                  <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
                     {(g.members || []).length}명{!isGrp && ` + ${(g.extra_emails || []).length}외부`}
                     {!isGrp && g.created_by ? ` · by ${g.created_by}` : ""}
                   </span>
                   {isGrp
-                    ? <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>그룹관리 탭</span>
+                    ? <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>그룹관리 탭</span>
                     : <>
-                        <span onClick={() => startEdit(g)} style={{ fontSize: 11, color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}>편집</span>
-                        <span onClick={() => remove(g)} style={{ fontSize: 11, color: "#ef4444", cursor: "pointer", textDecoration: "underline" }}>삭제</span>
+                        <span onClick={() => startEdit(g)} style={{ fontSize: 14, color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}>편집</span>
+                        <span onClick={() => remove(g)} style={{ fontSize: 14, color: "#ef4444", cursor: "pointer", textDecoration: "underline" }}>삭제</span>
                       </>
                   }
                 </div>
-                {g.note && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 2 }}>{g.note}</div>}
+                {g.note && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 2 }}>{g.note}</div>}
               </div>
             );
           })}
@@ -1777,28 +1777,28 @@ function SendMailDialog({ meeting, session, mailGroups, mailRecipients, draft, o
       mail_subject: draft.mail_subject || "",
     }).then(onSent).catch(e => { setErr(e.message || "발송 실패"); setBusy(false); });
   };
-  const inp3 = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none", boxSizing: "border-box" };
+  const inp3 = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" };
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} style={{ width: 620, maxWidth: "94%", padding: 18, borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📧 {session.idx}차 회의록 메일 발송</div>
-        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 10 }}>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10 }}>
           "{meeting.title}" · {session.idx}차 의 아젠다 + 회의록 + 액션아이템을 HTML 메일로 전송합니다.
         </div>
         <input value={draft.mail_subject} onChange={e => onChange({ mail_subject: e.target.value })} placeholder={`메일 제목 (기본: [flow 회의록] ${meeting.title} · ${session.idx}차)`} style={inp3} />
-        <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 10, marginBottom: 4 }}>📮 메일 그룹</div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 10, marginBottom: 4 }}>📮 메일 그룹</div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-          {(mailGroups || []).length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>(없음)</span>}
+          {(mailGroups || []).length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>(없음)</span>}
           {(mailGroups || []).map(g => {
             const on = (draft.mail_group_ids || []).includes(g.id);
             return (
               <span key={g.id} onClick={() => onChange({ mail_group_ids: on ? draft.mail_group_ids.filter(x => x !== g.id) : [...(draft.mail_group_ids || []), g.id] })}
-                style={{ padding: "2px 8px", borderRadius: 999, fontSize: 10, cursor: "pointer", border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>{g.name}</span>
+                style={{ padding: "2px 8px", borderRadius: 999, fontSize: 14, cursor: "pointer", border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>{g.name}</span>
             );
           })}
-          <button onClick={onOpenManager} type="button" style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 10, cursor: "pointer" }}>관리</button>
+          <button onClick={onOpenManager} type="button" style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>관리</button>
         </div>
-        <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 10, marginBottom: 4 }}>개별 수신자 (선택)</div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 10, marginBottom: 4 }}>개별 수신자 (선택)</div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxHeight: 90, overflow: "auto" }}>
           {/* v8.8.27: username=email 전제. disable 제거. userLabel(name+id) 적용. */}
           {(mailRecipients || []).map(u => {
@@ -1806,17 +1806,17 @@ function SendMailDialog({ meeting, session, mailGroups, mailRecipients, draft, o
             return (
               <span key={u.username} onClick={() => onChange({ mail_to_users: on ? draft.mail_to_users.filter(x => x !== u.username) : [...(draft.mail_to_users || []), u.username] })}
                 title={u.username}
-                style={{ padding: "2px 8px", borderRadius: 999, fontSize: 10, cursor: "pointer", border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>{userLabel(u)}</span>
+                style={{ padding: "2px 8px", borderRadius: 999, fontSize: 14, cursor: "pointer", border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>{userLabel(u)}</span>
             );
           })}
         </div>
         <div style={{ marginTop: 8 }}>
           <input value={draft.mail_to} onChange={e => onChange({ mail_to: e.target.value })} placeholder="추가 이메일 (콤마/공백 구분)" style={inp3} />
         </div>
-        {err && <div style={{ marginTop: 8, fontSize: 11, color: "#ef4444" }}>{err}</div>}
+        {err && <div style={{ marginTop: 8, fontSize: 14, color: "#ef4444" }}>{err}</div>}
         <div style={{ marginTop: 14, display: "flex", gap: 6, justifyContent: "flex-end" }}>
-          <button onClick={onClose} style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 12, cursor: "pointer" }} disabled={busy}>취소</button>
-          <button onClick={submit} style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: busy ? "wait" : "pointer" }} disabled={busy}>{busy ? "발송 중…" : "📧 발송"}</button>
+          <button onClick={onClose} style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer" }} disabled={busy}>취소</button>
+          <button onClick={submit} style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: busy ? "wait" : "pointer" }} disabled={busy}>{busy ? "발송 중…" : "📧 발송"}</button>
         </div>
       </div>
     </div>

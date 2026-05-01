@@ -259,8 +259,8 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
   };
 
   return(<div ref={containerRef} style={{position:"relative",width:"100%",height:"calc(100vh - 220px)",minHeight:620,background:"radial-gradient(circle at 1px 1px, rgba(148,163,184,0.16) 1px, transparent 0) 0 0/20px 20px, var(--bg-primary)",borderRadius:10,border:"1px solid var(--border)",overflow:"hidden"}}>
-    <div style={{position:"absolute",top:8,left:8,fontSize:12,color:"var(--text-primary)",zIndex:2,background:"var(--bg-card)",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",lineHeight:1.7,boxShadow:"0 2px 8px rgba(0,0,0,0.3)"}}>
-      <div style={{fontSize:11,fontWeight:800,color:"#ef4444",marginBottom:4,letterSpacing:"0.05em"}}>GUIDE</div>
+    <div style={{position:"absolute",top:8,left:8,fontSize:14,color:"var(--text-primary)",zIndex:2,background:"var(--bg-card)",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",lineHeight:1.7,boxShadow:"0 2px 8px rgba(0,0,0,0.3)"}}>
+      <div style={{fontSize:14,fontWeight:800,color:"#ef4444",marginBottom:4,letterSpacing:"0.05em"}}>GUIDE</div>
       <div><b style={{color:"var(--accent)"}}>더블클릭</b> → 테이블/그룹 편집</div>
       <div><b style={{color:"var(--accent)"}}>노드 드래그</b> → 위치 이동</div>
       <div><b style={{color:"var(--accent)"}}>배경 드래그</b> → 맵 이동</div>
@@ -268,23 +268,23 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
       <div><b style={{color:"var(--accent)"}}>Ctrl + 드래그</b> 다른 노드로 → 관계 생성</div>
       <div><b style={{color:"var(--accent)"}}>Relation 노드 클릭</b> → 연결 컬럼 테이블</div>
     </div>
-    {relStart&&<div style={{position:"absolute",top:32,left:8,fontSize:11,color:"var(--accent)",zIndex:2,background:"var(--accent-glow)",padding:"4px 8px",borderRadius:4}}>
+    {relStart&&<div style={{position:"absolute",top:32,left:8,fontSize:14,color:"var(--accent)",zIndex:2,background:"var(--accent-glow)",padding:"4px 8px",borderRadius:4}}>
 출발 <b>{relStart.name}</b> → 대상 클릭 (<span onClick={()=>setRelStart(null)} style={{cursor:"pointer",textDecoration:"underline"}}>취소</span>)
     </div>}
     {/* Zoom controls */}
     <div style={{position:"absolute",top:8,right:8,display:"flex",gap:4,zIndex:2}}>
       <span onClick={()=>setZoom(z=>clampZoom(z+0.15))} style={{width:28,height:28,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",cursor:"pointer",fontSize:14,fontWeight:700,color:"var(--text-primary)"}}>+</span>
-      <span onClick={()=>setZoom(1)} style={{minWidth:36,height:28,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",cursor:"pointer",fontSize:10,fontWeight:600,color:"var(--text-secondary)",fontFamily:"monospace"}}>{Math.round(zoom*100)}%</span>
+      <span onClick={()=>setZoom(1)} style={{minWidth:36,height:28,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",cursor:"pointer",fontSize:14,fontWeight:600,color:"var(--text-secondary)",fontFamily:"monospace"}}>{Math.round(zoom*100)}%</span>
       <span onClick={()=>setZoom(z=>clampZoom(z-0.15))} style={{width:28,height:28,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",cursor:"pointer",fontSize:14,fontWeight:700,color:"var(--text-primary)"}}>-</span>
-      <span onClick={()=>{setZoom(0.5);setPan({x:0,y:0});}} style={{height:28,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",cursor:"pointer",fontSize:10,padding:"0 8px",color:"var(--text-secondary)"}}>맞추기</span>
+      <span onClick={()=>{setZoom(0.5);setPan({x:0,y:0});}} style={{height:28,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",cursor:"pointer",fontSize:14,padding:"0 8px",color:"var(--text-secondary)"}}>맞추기</span>
     </div>
     <div title="현재 확대 비율"
       style={{position:"absolute",right:12,top:52,width:42,height:118,zIndex:2,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,boxShadow:"0 2px 8px rgba(0,0,0,0.25)"}}>
-      <span style={{fontSize:9,color:"var(--text-secondary)",fontWeight:700}}>WHEEL</span>
+      <span style={{fontSize:14,color:"var(--text-secondary)",fontWeight:700}}>WHEEL</span>
       <div style={{width:4,height:58,borderRadius:3,background:"linear-gradient(180deg,var(--accent),rgba(148,163,184,0.55))",position:"relative"}}>
         <span style={{position:"absolute",left:-7,top:`${Math.max(2,Math.min(50,58-((zoom-0.2)/(2-0.2))*58))}px`,width:18,height:6,borderRadius:3,background:"#fff",border:"1px solid var(--accent)"}}/>
       </div>
-      <span style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace"}}>{Math.round(zoom*100)}%</span>
+      <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{Math.round(zoom*100)}%</span>
     </div>
     <svg ref={svgRef} width="100%" height="100%" onMouseDown={onBgMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} onWheel={onWheel} style={{cursor:panning?"grabbing":drag||relLabelDrag?"grabbing":"grab"}}>
       <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
@@ -563,7 +563,7 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
         const sel=r2-r1+1,selC=c2-c1+1;
         const tip=document.createElement("div");
         tip.textContent=`✔ 복사됨 (${sel}행 × ${selC}열)`;
-        tip.style.cssText="position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;padding:8px 16px;border-radius:6px;z-index:99999;font-size:12px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,0.4)";
+        tip.style.cssText="position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;padding:8px 16px;border-radius:6px;z-index:99999;font-size:14px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,0.4)";
         document.body.appendChild(tip);setTimeout(()=>tip.remove(),1400);
         e.preventDefault();
       }
@@ -639,42 +639,42 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
     sf(API+"/versions/rollback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({table_id:form.id,version:v,username:user?.username||""})})
       .then(()=>{sf(API+"/tables/"+form.id).then(d=>setForm(d));sf(API+"/versions/"+form.id).then(d=>setVersions(d.versions||[]));}).catch(e=>alert(e.message));};
 
-  const S={width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none"};
+  const S={width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none"};
 
   return(<div className="tm-overlay" onClick={onClose}>
     <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:"90%",maxWidth:900,maxHeight:"90vh",overflow:"auto"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <div style={{fontSize:16,fontWeight:700,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
           <span>{form.id?"테이블 편집":"새 테이블"}</span>
-          {form.name&&<span style={{fontSize:10,color:"#a3a3a3",fontWeight:400,fontFamily:"monospace"}}>→ Base/{(form.name.replace(/[^a-zA-Z0-9_-]/g,"_")||"table")}.csv</span>}
-          {previewVer&&<span style={{fontSize:11,padding:"2px 10px",borderRadius:12,background:"rgba(59,130,246,0.15)",color:"#3b82f6",fontWeight:700,fontFamily:"monospace"}}>👁 미리보기: {previewVer}</span>}
-          {previewVer&&<span onClick={clearPreview} style={{fontSize:10,cursor:"pointer",color:"var(--text-secondary)",textDecoration:"underline"}}>원본 복구</span>}
+          {form.name&&<span style={{fontSize:14,color:"#a3a3a3",fontWeight:400,fontFamily:"monospace"}}>→ Base/{(form.name.replace(/[^a-zA-Z0-9_-]/g,"_")||"table")}.csv</span>}
+          {previewVer&&<span style={{fontSize:14,padding:"2px 10px",borderRadius:12,background:"rgba(59,130,246,0.15)",color:"#3b82f6",fontWeight:700,fontFamily:"monospace"}}>👁 미리보기: {previewVer}</span>}
+          {previewVer&&<span onClick={clearPreview} style={{fontSize:14,cursor:"pointer",color:"var(--text-secondary)",textDecoration:"underline"}}>원본 복구</span>}
         </div>
         <span onClick={onClose} style={{cursor:"pointer",fontSize:18}}>✕</span>
       </div>
       <div style={{display:"flex",gap:8,marginBottom:8}}>
-        <div style={{flex:2}}><div style={{fontSize:11,color:"var(--text-secondary)"}}>이름 <span style={{color:"#a3a3a3",fontWeight:400}}>(파일명 기준)</span></div><input value={form.name} onChange={e=>u("name",e.target.value)} style={S} placeholder="matching_step"/></div>
-        <div style={{flex:2}}><div style={{fontSize:11,color:"var(--text-secondary)"}}>표시 라벨 <span style={{color:"#a3a3a3",fontWeight:400}}>(선택, 그래프에 표시)</span></div><input value={form.display_name||""} onChange={e=>u("display_name",e.target.value)} style={S} placeholder="예: 공정 매칭 테이블"/></div>
-        <div style={{flex:1}}><div style={{fontSize:11,color:"var(--text-secondary)"}}>유형</div>
+        <div style={{flex:2}}><div style={{fontSize:14,color:"var(--text-secondary)"}}>이름 <span style={{color:"#a3a3a3",fontWeight:400}}>(파일명 기준)</span></div><input value={form.name} onChange={e=>u("name",e.target.value)} style={S} placeholder="matching_step"/></div>
+        <div style={{flex:2}}><div style={{fontSize:14,color:"var(--text-secondary)"}}>표시 라벨 <span style={{color:"#a3a3a3",fontWeight:400}}>(선택, 그래프에 표시)</span></div><input value={form.display_name||""} onChange={e=>u("display_name",e.target.value)} style={S} placeholder="예: 공정 매칭 테이블"/></div>
+        <div style={{flex:1}}><div style={{fontSize:14,color:"var(--text-secondary)"}}>유형</div>
           <select value={form.table_type||"data"} onChange={e=>u("table_type",e.target.value)} style={S}>
             <option value="data">데이터</option>
             <option value="matching">매칭</option>
             <option value="rulebook">룰북</option>
           </select></div>
-        <div style={{flex:2}}><div style={{fontSize:11,color:"var(--text-secondary)"}}>그룹 (선택)</div>
+        <div style={{flex:2}}><div style={{fontSize:14,color:"var(--text-secondary)"}}>그룹 (선택)</div>
           <select value={form.group_id||""} onChange={e=>u("group_id",e.target.value)} style={S}>
             <option value="">-- 없음 (단독) --</option>
             {groups.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}
           </select></div>
       </div>
-      <div style={{marginBottom:8}}><div style={{fontSize:11,color:"var(--text-secondary)"}}>설명</div>
+      <div style={{marginBottom:8}}><div style={{fontSize:14,color:"var(--text-secondary)"}}>설명</div>
         <textarea value={form.description||""} onChange={e=>u("description",e.target.value)} rows={2} style={{...S,resize:"vertical"}}/></div>
 
       {/* Columns */}
       <div style={{marginBottom:8}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div style={{fontSize:12,fontWeight:600}}>컬럼 {groupCols?"(그룹에서 상속)":""} <span style={{fontSize:9,color:"var(--text-secondary)",fontWeight:400}}>· Tab=다음 필드</span></div>
-          {!groupCols&&<button onClick={addCol} style={{padding:"3px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:10,cursor:"pointer"}}>+ 컬럼 추가</button>}
+          <div style={{fontSize:14,fontWeight:600}}>컬럼 {groupCols?"(그룹에서 상속)":""} <span style={{fontSize:14,color:"var(--text-secondary)",fontWeight:400}}>· Tab=다음 필드</span></div>
+          {!groupCols&&<button onClick={addCol} style={{padding:"3px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer"}}>+ 컬럼 추가</button>}
         </div>
         {/* v8.7.2: Tab navigation across column name/type/desc inputs */}
         {effectiveCols.map((c,i)=>{
@@ -698,16 +698,16 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
             {!groupCols&&<span onClick={()=>delCol(i)} style={{padding:"4px 8px",color:"#ef4444",cursor:"pointer"}}>✕</span>}
           </div>);
         })}
-        {effectiveCols.length===0&&!groupCols&&<div style={{marginTop:6,padding:10,fontSize:11,color:"var(--text-secondary)",textAlign:"center",background:"var(--bg-tertiary)",borderRadius:4,border:"1px dashed var(--border)"}}>컬럼이 없습니다. <b>+ 컬럼 추가</b> 를 클릭하세요.</div>}
+        {effectiveCols.length===0&&!groupCols&&<div style={{marginTop:6,padding:10,fontSize:14,color:"var(--text-secondary)",textAlign:"center",background:"var(--bg-tertiary)",borderRadius:4,border:"1px dashed var(--border)"}}>컬럼이 없습니다. <b>+ 컬럼 추가</b> 를 클릭하세요.</div>}
       </div>
 
       {/* v8.7.2: Validation / Sort rules */}
       {!groupCols&&<div style={{marginBottom:8,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)"}}>
-        <div onClick={()=>setShowValidation(s=>!s)} style={{padding:"6px 10px",cursor:"pointer",display:"flex",alignItems:"center",gap:6,fontSize:12,fontWeight:600,userSelect:"none"}}>
-          <span style={{fontSize:10,color:"var(--text-secondary)"}}>{showValidation?"▼":"▶"}</span>
+        <div onClick={()=>setShowValidation(s=>!s)} style={{padding:"6px 10px",cursor:"pointer",display:"flex",alignItems:"center",gap:6,fontSize:14,fontWeight:600,userSelect:"none"}}>
+          <span style={{fontSize:14,color:"var(--text-secondary)"}}>{showValidation?"▼":"▶"}</span>
           <span>🛡 검증 & 정렬 규칙</span>
-          {form.validation?.enabled&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:10,background:"rgba(16,185,129,0.15)",color:"#10b981",fontWeight:700}}>ENABLED</span>}
-          <label style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:4,fontSize:10,color:"var(--text-secondary)",fontWeight:400}} onClick={e=>e.stopPropagation()}>
+          {form.validation?.enabled&&<span style={{fontSize:14,padding:"1px 6px",borderRadius:10,background:"rgba(16,185,129,0.15)",color:"#10b981",fontWeight:700}}>ENABLED</span>}
+          <label style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:4,fontSize:14,color:"var(--text-secondary)",fontWeight:400}} onClick={e=>e.stopPropagation()}>
             <input type="checkbox" checked={!!form.validation?.enabled} onChange={e=>u("validation",{...(form.validation||{}),enabled:e.target.checked})}/>
             켜기
           </label>
@@ -715,7 +715,7 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
         {showValidation&&<div style={{padding:"4px 10px 10px",borderTop:"1px solid var(--border)"}}>
           {/* Sort */}
           <div style={{display:"flex",gap:6,alignItems:"center",marginTop:8}}>
-            <div style={{fontSize:10,color:"var(--text-secondary)",minWidth:70}}>정렬 기준</div>
+            <div style={{fontSize:14,color:"var(--text-secondary)",minWidth:70}}>정렬 기준</div>
             <select value={form.validation?.sort?.column||""} onChange={e=>u("validation",{...(form.validation||{}),sort:{...(form.validation?.sort||{}),column:e.target.value}})} style={{...S,flex:1}}>
               <option value="">-- 정렬 없음 --</option>
               {effectiveCols.filter(c=>c.name).map(c=><option key={c.name} value={c.name}>{c.name}</option>)}
@@ -729,11 +729,11 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
             </select>
           </div>
           {/* Per-column rules */}
-          <div style={{fontSize:10,color:"var(--text-secondary)",marginTop:10,marginBottom:4}}>컬럼별 제약 <span style={{fontSize:9}}>· 필수 / enum (콤마 구분) / 정규식</span></div>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:10,marginBottom:4}}>컬럼별 제약 <span style={{fontSize:14}}>· 필수 / enum (콤마 구분) / 정규식</span></div>
           <div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:4}}>
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
               <thead><tr>
-                {["컬럼","필수","허용값 (enum)","정규식"].map(h=><th key={h} style={{textAlign:"left",padding:"4px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:10}}>{h}</th>)}
+                {["컬럼","필수","허용값 (enum)","정규식"].map(h=><th key={h} style={{textAlign:"left",padding:"4px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14}}>{h}</th>)}
               </tr></thead>
               <tbody>
                 {effectiveCols.filter(c=>c.name).map(c=>{
@@ -745,36 +745,36 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
                       <input type="checkbox" checked={!!rule.required} onChange={e=>setRule("required",e.target.checked)}/>
                     </td>
                     <td style={{padding:"3px 6px",borderBottom:"1px solid var(--border)"}}>
-                      <input value={(rule.enum||[]).join(", ")} onChange={e=>setRule("enum",e.target.value.split(",").map(s=>s.trim()).filter(Boolean))} placeholder="예: PASS, FAIL, HOLD" style={{...S,padding:"3px 6px",fontSize:10}}/>
+                      <input value={(rule.enum||[]).join(", ")} onChange={e=>setRule("enum",e.target.value.split(",").map(s=>s.trim()).filter(Boolean))} placeholder="예: PASS, FAIL, HOLD" style={{...S,padding:"3px 6px",fontSize:14}}/>
                     </td>
                     <td style={{padding:"3px 6px",borderBottom:"1px solid var(--border)"}}>
-                      <input value={rule.regex||""} onChange={e=>setRule("regex",e.target.value)} placeholder="예: ^[A-Z]{2}\\d+$" style={{...S,padding:"3px 6px",fontSize:10,fontFamily:"monospace"}}/>
+                      <input value={rule.regex||""} onChange={e=>setRule("regex",e.target.value)} placeholder="예: ^[A-Z]{2}\\d+$" style={{...S,padding:"3px 6px",fontSize:14,fontFamily:"monospace"}}/>
                     </td>
                   </tr>);
                 })}
-                {effectiveCols.filter(c=>c.name).length===0&&<tr><td colSpan={4} style={{padding:12,textAlign:"center",color:"var(--text-secondary)",fontSize:10}}>컬럼을 먼저 정의하세요.</td></tr>}
+                {effectiveCols.filter(c=>c.name).length===0&&<tr><td colSpan={4} style={{padding:12,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>컬럼을 먼저 정의하세요.</td></tr>}
               </tbody>
             </table>
           </div>
-          <div style={{fontSize:10,color:"var(--text-secondary)",marginTop:6,lineHeight:1.5}}>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:6,lineHeight:1.5}}>
             저장 시 <b style={{color:"var(--accent)"}}>검증 → 정렬</b> 순서로 적용됩니다. 검증 실패 시 저장 차단 + 오류 메시지 노출.
           </div>
         </div>}
       </div>}
       {/* v8.7.2: Save errors */}
-      {saveErrors.length>0&&<div style={{marginBottom:8,padding:"8px 10px",background:"rgba(239,68,68,0.08)",border:"1px solid #ef4444",borderRadius:6,fontSize:11,color:"#ef4444",maxHeight:140,overflow:"auto"}}>
+      {saveErrors.length>0&&<div style={{marginBottom:8,padding:"8px 10px",background:"rgba(239,68,68,0.08)",border:"1px solid #ef4444",borderRadius:6,fontSize:14,color:"#ef4444",maxHeight:140,overflow:"auto"}}>
         <div style={{fontWeight:700,marginBottom:4}}>⚠ 검증 실패 — 저장되지 않았습니다 ({saveErrors.length}건)</div>
-        {saveErrors.slice(0,20).map((m,i)=><div key={i} style={{fontFamily:"monospace",fontSize:10}}>• {m}</div>)}
-        {saveErrors.length>20&&<div style={{fontSize:10}}>... 외 {saveErrors.length-20}건</div>}
+        {saveErrors.slice(0,20).map((m,i)=><div key={i} style={{fontFamily:"monospace",fontSize:14}}>• {m}</div>)}
+        {saveErrors.length>20&&<div style={{fontSize:14}}>... 외 {saveErrors.length-20}건</div>}
       </div>}
 
       {/* Rows */}
       <div style={{marginBottom:8}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-          <div style={{fontSize:12,fontWeight:600}}>데이터 ({form.rows?.length||0} 행) <span style={{fontSize:9,color:"var(--text-secondary)",fontWeight:400}}>· Tab=다음 컬럼, Enter=다음 행</span></div>
+          <div style={{fontSize:14,fontWeight:600}}>데이터 ({form.rows?.length||0} 행) <span style={{fontSize:14,color:"var(--text-secondary)",fontWeight:400}}>· Tab=다음 컬럼, Enter=다음 행</span></div>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
-            <span style={{fontSize:9,color:"var(--text-secondary)"}}>엑셀 붙여넣기 지원</span>
-            <button onClick={addRow} style={{padding:"3px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:10,cursor:"pointer"}}>+ 행 추가</button>
+            <span style={{fontSize:14,color:"var(--text-secondary)"}}>엑셀 붙여넣기 지원</span>
+            <button onClick={addRow} style={{padding:"3px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer"}}>+ 행 추가</button>
           </div>
         </div>
         <div style={{maxHeight:320,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"#fff"}}
@@ -793,18 +793,18 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
             });
             u("rows",[...(form.rows||[]),...newRows]);
           }}>
-          <table style={{width:"100%",borderCollapse:"separate",borderSpacing:0,fontSize:12,fontFamily:"'Segoe UI',Arial,sans-serif",tableLayout:"fixed"}}>
+          <table style={{width:"100%",borderCollapse:"separate",borderSpacing:0,fontSize:14,fontFamily:"'Segoe UI',Arial,sans-serif",tableLayout:"fixed"}}>
             <thead>
               <tr>
-                <th style={{position:"sticky",top:0,left:0,zIndex:3,width:44,minWidth:44,padding:"6px 4px",background:"#e5e7eb",color:"#374151",fontSize:10,fontWeight:700,border:"1px solid #9ca3af",textAlign:"center"}}>#</th>
-                {effectiveCols.map(c=><th key={c.name} style={{position:"sticky",top:0,zIndex:2,minWidth:120,padding:"6px 10px",background:"#e5e7eb",color:"#111827",fontSize:11,fontWeight:700,border:"1px solid #9ca3af",textAlign:"left",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.name||<span style={{color:"#9ca3af"}}>(이름 없음)</span>}</th>)}
+                <th style={{position:"sticky",top:0,left:0,zIndex:3,width:44,minWidth:44,padding:"6px 4px",background:"#e5e7eb",color:"#374151",fontSize:14,fontWeight:700,border:"1px solid #9ca3af",textAlign:"center"}}>#</th>
+                {effectiveCols.map(c=><th key={c.name} style={{position:"sticky",top:0,zIndex:2,minWidth:120,padding:"6px 10px",background:"#e5e7eb",color:"#111827",fontSize:14,fontWeight:700,border:"1px solid #9ca3af",textAlign:"left",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.name||<span style={{color:"#9ca3af"}}>(이름 없음)</span>}</th>)}
                 <th style={{position:"sticky",top:0,zIndex:2,width:32,minWidth:32,background:"#e5e7eb",border:"1px solid #9ca3af"}}></th>
               </tr>
             </thead>
             <tbody>
               {(form.rows||[]).map((r,i)=>(
                 <tr key={i}>
-                  <td style={{position:"sticky",left:0,zIndex:1,width:44,minWidth:44,padding:"0 4px",background:"#f3f4f6",color:"#6b7280",fontSize:10,fontWeight:600,border:"1px solid #d1d5db",textAlign:"center",cursor:"pointer",userSelect:"none"}}
+                  <td style={{position:"sticky",left:0,zIndex:1,width:44,minWidth:44,padding:"0 4px",background:"#f3f4f6",color:"#6b7280",fontSize:14,fontWeight:600,border:"1px solid #d1d5db",textAlign:"center",cursor:"pointer",userSelect:"none"}}
                     onMouseDown={(e)=>{
                       // Row-number click selects the full row; drag extends.
                       e.preventDefault();
@@ -852,26 +852,26 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
                         }}
                         onFocus={e=>{e.target.style.outline="2px solid #f97316";e.target.style.outlineOffset="-2px";e.target.style.background="#fff7ed";setSelection({r1:i,c1:ci,r2:i,c2:ci});}}
                         onBlur={e=>{e.target.style.outline="none";e.target.style.background="transparent";}}
-                        style={{width:"100%",padding:"5px 8px",border:"none",background:"transparent",color:"#111827",fontSize:12,fontWeight:500,outline:"none",fontFamily:"'Consolas','Courier New',monospace",boxSizing:"border-box"}}
+                        style={{width:"100%",padding:"5px 8px",border:"none",background:"transparent",color:"#111827",fontSize:14,fontWeight:500,outline:"none",fontFamily:"'Consolas','Courier New',monospace",boxSizing:"border-box"}}
                       />
                     </td>);
                   })}
                   <td style={{width:32,minWidth:32,padding:"2px 4px",textAlign:"center",border:"1px solid #d1d5db",background:i%2===0?"#fff":"#f9fafb"}}>
-                    <span onClick={()=>delRow(i)} title="행 삭제" style={{cursor:"pointer",color:"#ef4444",fontSize:12,fontWeight:700}}>✕</span>
+                    <span onClick={()=>delRow(i)} title="행 삭제" style={{cursor:"pointer",color:"#ef4444",fontSize:14,fontWeight:700}}>✕</span>
                   </td>
                 </tr>
               ))}
               {/* v8.7.2: 인라인 + 행 추가 버튼 */}
               {effectiveCols.length>0&&<tr>
                 <td colSpan={effectiveCols.length+2} style={{padding:0,border:"1px dashed #d1d5db",background:"#f9fafb"}}>
-                  <div onClick={addRow} title="행 추가" style={{cursor:"pointer",padding:"6px",textAlign:"center",color:"#6b7280",fontSize:11,fontWeight:600,userSelect:"none",transition:"background 0.15s"}}
+                  <div onClick={addRow} title="행 추가" style={{cursor:"pointer",padding:"6px",textAlign:"center",color:"#6b7280",fontSize:14,fontWeight:600,userSelect:"none",transition:"background 0.15s"}}
                     onMouseEnter={e=>{e.currentTarget.style.background="#e0f2fe";e.currentTarget.style.color="#3b82f6";}}
                     onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color="#6b7280";}}
                   >＋ 행 추가</div>
                 </td>
               </tr>}
               {(form.rows||[]).length===0&&effectiveCols.length===0&&(
-                <tr><td colSpan={2} style={{padding:"24px",textAlign:"center",color:"#9ca3af",fontSize:11,background:"#fff",border:"1px solid #d1d5db"}}>컬럼을 먼저 정의한 뒤 행을 추가하세요.</td></tr>
+                <tr><td colSpan={2} style={{padding:"24px",textAlign:"center",color:"#9ca3af",fontSize:14,background:"#fff",border:"1px solid #d1d5db"}}>컬럼을 먼저 정의한 뒤 행을 추가하세요.</td></tr>
               )}
             </tbody>
           </table>
@@ -882,16 +882,16 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
 
       {/* Versions */}
       {versions.length>0&&<div style={{marginBottom:8}}>
-        <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:4}}>버전 이력 ({versions.length}/30)</div>
+        <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>버전 이력 ({versions.length}/30)</div>
         <div style={{display:"flex",flexDirection:"column",gap:2,maxHeight:160,overflow:"auto",border:"1px solid var(--border)",borderRadius:4,padding:4}}>{versions.map(v=>(
-          <div key={v.name} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 6px",fontSize:10,background:"var(--bg-card)",borderRadius:3}}>
+          <div key={v.name} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 6px",fontSize:14,background:"var(--bg-card)",borderRadius:3}}>
             <span style={{fontFamily:"monospace",fontWeight:700,color:"var(--accent)",minWidth:40}}>{v.name}</span>
             <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{(v.updated||"").replace("T"," ").slice(0,16)}</span>
-            <span style={{fontFamily:"monospace",color:v.action==="pre-rollback"?"#a855f7":"#64748b",fontSize:9}}>[{v.action||"edit"}]</span>
-            {v.user&&<span style={{fontFamily:"monospace",color:"#10b981",fontSize:9}}>by {v.user}</span>}
-            <span style={{color:"var(--text-secondary)",fontSize:9}}>{v.rows}r × {v.cols}c</span>
-            <span onClick={()=>loadVersion(v.name)} style={{marginLeft:"auto",padding:"1px 8px",borderRadius:3,background:"var(--bg-hover)",cursor:"pointer",fontSize:10}}>미리보기</span>
-            <span onClick={()=>rollbackTo(v.name)} style={{padding:"1px 8px",borderRadius:3,background:"#ef444422",color:"#ef4444",cursor:"pointer",fontSize:10,fontWeight:600}}>롤백</span>
+            <span style={{fontFamily:"monospace",color:v.action==="pre-rollback"?"#a855f7":"#64748b",fontSize:14}}>[{v.action||"edit"}]</span>
+            {v.user&&<span style={{fontFamily:"monospace",color:"#10b981",fontSize:14}}>by {v.user}</span>}
+            <span style={{color:"var(--text-secondary)",fontSize:14}}>{v.rows}r × {v.cols}c</span>
+            <span onClick={()=>loadVersion(v.name)} style={{marginLeft:"auto",padding:"1px 8px",borderRadius:3,background:"var(--bg-hover)",cursor:"pointer",fontSize:14}}>미리보기</span>
+            <span onClick={()=>rollbackTo(v.name)} style={{padding:"1px 8px",borderRadius:3,background:"#ef444422",color:"#ef4444",cursor:"pointer",fontSize:14,fontWeight:600}}>롤백</span>
           </div>))}</div>
       </div>}
 
@@ -910,21 +910,21 @@ function GroupEditor({group,onSave,onClose}){
   const addCol=()=>u("columns",[...form.columns,{name:"",type:"string"}]);
   const updateCol=(i,k,v)=>{const cols=[...form.columns];cols[i]={...cols[i],[k]:v};u("columns",cols);};
   const delCol=(i)=>u("columns",form.columns.filter((_,j)=>j!==i));
-  const S={width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none"};
+  const S={width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none"};
   return(<div className="tm-overlay" onClick={onClose}>
     <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:"90%",maxWidth:600}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <div style={{fontSize:16,fontWeight:700}}>{form.id?"그룹 편집":"새 테이블 그룹"}</div>
         <span onClick={onClose} style={{cursor:"pointer",fontSize:18}}>✕</span>
       </div>
-      <div style={{marginBottom:8}}><div style={{fontSize:11,color:"var(--text-secondary)"}}>그룹명 (예: TABLE_ET)</div>
+      <div style={{marginBottom:8}}><div style={{fontSize:14,color:"var(--text-secondary)"}}>그룹명 (예: TABLE_ET)</div>
         <input value={form.name} onChange={e=>u("name",e.target.value)} style={S} placeholder="예: TABLE_ET"/></div>
-      <div style={{marginBottom:8}}><div style={{fontSize:11,color:"var(--text-secondary)"}}>설명</div>
+      <div style={{marginBottom:8}}><div style={{fontSize:14,color:"var(--text-secondary)"}}>설명</div>
         <textarea value={form.description||""} onChange={e=>u("description",e.target.value)} rows={2} style={{...S,resize:"vertical"}}/></div>
       <div style={{marginBottom:8}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div style={{fontSize:12,fontWeight:600}}>공유 컬럼 (모든 멤버 테이블이 상속)</div>
-          <button onClick={addCol} style={{padding:"3px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:10,cursor:"pointer"}}>+ 컬럼 추가</button>
+          <div style={{fontSize:14,fontWeight:600}}>공유 컬럼 (모든 멤버 테이블이 상속)</div>
+          <button onClick={addCol} style={{padding:"3px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer"}}>+ 컬럼 추가</button>
         </div>
         {form.columns.map((c,i)=>(<div key={i} style={{display:"flex",gap:6,marginTop:4}}>
           <input value={c.name} onChange={e=>updateCol(i,"name",e.target.value)} placeholder="컬럼명" style={{...S,flex:2}}/>
@@ -1001,37 +1001,37 @@ function ProductConfigPanel({canManage,onChanged}){
   return(<div style={{display:"grid",gridTemplateColumns:"300px 1fr",gap:14}}>
     <div style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:8,padding:10,maxHeight:"calc(100vh - 260px)",overflow:"auto"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:8}}>
-        <div style={{fontSize:11,fontWeight:800,color:"var(--accent)",fontFamily:"monospace"}}>Product YAML · products.yaml ({list.length})</div>
-        <button disabled={!canManage} onClick={newProduct} title="products.yaml 안에 새 제품 블록 추가" style={{padding:"4px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-card)",color:canManage?"var(--text-primary)":"var(--text-secondary)",fontSize:10,cursor:canManage?"pointer":"not-allowed"}}>+ 제품</button>
+        <div style={{fontSize:14,fontWeight:800,color:"var(--accent)",fontFamily:"monospace"}}>Product YAML · products.yaml ({list.length})</div>
+        <button disabled={!canManage} onClick={newProduct} title="products.yaml 안에 새 제품 블록 추가" style={{padding:"4px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-card)",color:canManage?"var(--text-primary)":"var(--text-secondary)",fontSize:14,cursor:canManage?"pointer":"not-allowed"}}>+ 제품</button>
       </div>
-      {list.length===0&&<div style={{padding:18,textAlign:"center",fontSize:11,color:"var(--text-secondary)"}}>product_config YAML 이 없습니다.</div>}
+      {list.length===0&&<div style={{padding:18,textAlign:"center",fontSize:14,color:"var(--text-secondary)"}}>product_config YAML 이 없습니다.</div>}
       {list.map(p=>(
         <div key={p.product} onClick={()=>pick(p.product)} style={{padding:"8px 10px",borderRadius:6,cursor:"pointer",marginBottom:5,background:sel===p.product?"var(--accent-glow)":"var(--bg-card)",border:"1px solid "+(sel===p.product?"var(--accent)":"var(--border)")}}>
           <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}>
-            <span style={{fontSize:12,fontWeight:800,fontFamily:"monospace"}}>{p.product}</span>
-            <span style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace"}}>{p.file}</span>
+            <span style={{fontSize:14,fontWeight:800,fontFamily:"monospace"}}>{p.product}</span>
+            <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{p.file}</span>
           </div>
-          <div style={{fontSize:10,color:"var(--text-secondary)",marginTop:3,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:3,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
             proc_id: {p.process_id||"-"} · owner: {p.owner||"-"}
           </div>
-          <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:2}}>KNOB {p.knob_count} · ET {p.et_key_count} · spec {p.has_spec?"Y":"-"}</div>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:2}}>KNOB {p.knob_count} · ET {p.et_key_count} · spec {p.has_spec?"Y":"-"}</div>
         </div>
       ))}
     </div>
     <div style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:8,padding:14,minHeight:420}}>
-      {!sel&&<div style={{padding:50,textAlign:"center",fontSize:12,color:"var(--text-secondary)"}}>왼쪽에서 제품 YAML 을 선택하세요.</div>}
+      {!sel&&<div style={{padding:50,textAlign:"center",fontSize:14,color:"var(--text-secondary)"}}>왼쪽에서 제품 YAML 을 선택하세요.</div>}
       {sel&&<>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
-          <span style={{fontSize:13,fontWeight:800,fontFamily:"monospace",color:"var(--accent)"}}>products.yaml · {sel}</span>
-          {loading&&<span style={{fontSize:11,color:"var(--text-secondary)"}}>로딩 중...</span>}
-          {msg&&<span style={{fontSize:11,fontFamily:"monospace",color:msg.includes("실패")||msg.includes("parse")||msg.includes("확인")?"#ef4444":"#10b981"}}>{msg}</span>}
-          <button disabled={!canManage||loading} onClick={deleteSelected} title={canManage?"제품 YAML 삭제":"tablemap 관리자 권한 필요"} style={{marginLeft:"auto",padding:"6px 12px",borderRadius:5,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",fontSize:11,fontWeight:700,cursor:canManage?"pointer":"not-allowed"}}>삭제</button>
-          <button disabled={!canManage||loading} onClick={save} title={canManage?"YAML 저장":"tablemap 관리자 권한 필요"} style={{padding:"6px 14px",borderRadius:5,border:"none",background:canManage?"var(--accent)":"#64748b",color:"#fff",fontSize:11,fontWeight:700,cursor:canManage?"pointer":"not-allowed"}}>저장</button>
+          <span style={{fontSize:14,fontWeight:800,fontFamily:"monospace",color:"var(--accent)"}}>products.yaml · {sel}</span>
+          {loading&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>로딩 중...</span>}
+          {msg&&<span style={{fontSize:14,fontFamily:"monospace",color:msg.includes("실패")||msg.includes("parse")||msg.includes("확인")?"#ef4444":"#10b981"}}>{msg}</span>}
+          <button disabled={!canManage||loading} onClick={deleteSelected} title={canManage?"제품 YAML 삭제":"tablemap 관리자 권한 필요"} style={{marginLeft:"auto",padding:"6px 12px",borderRadius:5,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",fontSize:14,fontWeight:700,cursor:canManage?"pointer":"not-allowed"}}>삭제</button>
+          <button disabled={!canManage||loading} onClick={save} title={canManage?"YAML 저장":"tablemap 관리자 권한 필요"} style={{padding:"6px 14px",borderRadius:5,border:"none",background:canManage?"var(--accent)":"#64748b",color:"#fff",fontSize:14,fontWeight:700,cursor:canManage?"pointer":"not-allowed"}}>저장</button>
         </div>
         <textarea value={text} onChange={e=>setText(e.target.value)} spellCheck={false}
-          style={{width:"100%",minHeight:"calc(100vh - 330px)",maxHeight:"calc(100vh - 260px)",resize:"vertical",boxSizing:"border-box",padding:12,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontFamily:"Consolas, monospace",fontSize:11,lineHeight:1.5,outline:"none"}}
+          style={{width:"100%",minHeight:"calc(100vh - 330px)",maxHeight:"calc(100vh - 260px)",resize:"vertical",boxSizing:"border-box",padding:12,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontFamily:"Consolas, monospace",fontSize:14,lineHeight:1.5,outline:"none"}}
         />
-        <div style={{fontSize:10,color:"var(--text-secondary)",marginTop:8,lineHeight:1.6}}>
+        <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:8,lineHeight:1.6}}>
           제품별로 수정하지만 저장 파일은 하나입니다: <code>product_config/products.yaml</code>. 저장 시 해당 제품 블록만 갱신되고 다른 제품 블록은 유지됩니다.
         </div>
       </>}
@@ -1437,22 +1437,22 @@ export default function My_TableMap({user}){
       </div>
       <div style={{display:"flex",gap:4,alignItems:"center"}}>
         {[["graph","그래프"],["manage","관리"],["configs","YAML"]].map(([k,l])=>(
-          <span key={k} onClick={()=>setView(k)} style={{padding:"4px 12px",borderRadius:4,fontSize:11,cursor:"pointer",fontWeight:view===k?600:400,background:view===k?"var(--accent-glow)":"transparent",color:view===k?"var(--accent)":"var(--text-secondary)"}}>{l}</span>))}
+          <span key={k} onClick={()=>setView(k)} style={{padding:"4px 12px",borderRadius:4,fontSize:14,cursor:"pointer",fontWeight:view===k?600:400,background:view===k?"var(--accent-glow)":"transparent",color:view===k?"var(--accent)":"var(--text-secondary)"}}>{l}</span>))}
         {/* v8.8.13: 계보 탭 제거 — relation 편집 시 컬럼 매칭 표로 대체. */}
       </div>
       {canManage&&<div style={{display:"flex",gap:6}}>
-        <button onClick={()=>setEditingTable({})} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:11,cursor:"pointer"}}>+ 테이블</button>
-        <button onClick={()=>setShowImport(true)} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"#10b981",color:"#fff",fontSize:11,cursor:"pointer"}} title="기존 Base/DB 데이터를 TableMap 에 불러오기">↓ 임포트</button>
-        <button onClick={()=>setEditingGroup({})} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"#a855f7",color:"#fff",fontSize:11,cursor:"pointer"}}>+ 그룹</button>
-        <button onClick={()=>setPickingDb(true)} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"#3b82f6",color:"#fff",fontSize:11,cursor:"pointer"}}>+ DB 참조</button>
-        <button onClick={()=>{const name=prompt("더미 DB 이름 (예: WIP/PRODUCT_A):");if(name){addDbRef({kind:"db_ref",source_type:"dummy",name:name,root:name.split("/")[0]||name,product:name.split("/")[1]||""});}}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #3b82f6",background:"transparent",color:"#3b82f6",fontSize:11,cursor:"pointer"}}>+ 더미 DB</button>
+        <button onClick={()=>setEditingTable({})} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer"}}>+ 테이블</button>
+        <button onClick={()=>setShowImport(true)} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"#10b981",color:"#fff",fontSize:14,cursor:"pointer"}} title="기존 Base/DB 데이터를 TableMap 에 불러오기">↓ 임포트</button>
+        <button onClick={()=>setEditingGroup({})} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"#a855f7",color:"#fff",fontSize:14,cursor:"pointer"}}>+ 그룹</button>
+        <button onClick={()=>setPickingDb(true)} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"#3b82f6",color:"#fff",fontSize:14,cursor:"pointer"}}>+ DB 참조</button>
+        <button onClick={()=>{const name=prompt("더미 DB 이름 (예: WIP/PRODUCT_A):");if(name){addDbRef({kind:"db_ref",source_type:"dummy",name:name,root:name.split("/")[0]||name,product:name.split("/")[1]||""});}}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #3b82f6",background:"transparent",color:"#3b82f6",fontSize:14,cursor:"pointer"}}>+ 더미 DB</button>
       </div>}
     </div>
 
     <div style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:6,padding:14,marginBottom:14,display:"grid",gridTemplateColumns:"1fr",gap:12,alignItems:"start"}}>
       <div>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,flexWrap:"wrap"}}>
-          <div style={{fontSize:12,fontWeight:800,color:"var(--accent)",fontFamily:"monospace"}}>Product Connection</div>
+          <div style={{fontSize:14,fontWeight:800,color:"var(--accent)",fontFamily:"monospace"}}>Product Connection</div>
           <Pill tone={productFilter==="ALL"?"neutral":"accent"}>{productFilter==="ALL"?"ALL":productFilter}</Pill>
           <Pill tone="info">DB {connectionSummary.db}</Pill>
           <Pill tone="neutral">tables {connectionSummary.tables}</Pill>
@@ -1460,11 +1460,11 @@ export default function My_TableMap({user}){
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
           {["ALL",...productOptions].map((opt)=>(
             <span key={opt} style={{display:"inline-flex",alignItems:"center",border:"1px solid "+(productFilter===opt?"var(--accent)":"var(--border)"),borderRadius:4,background:productFilter===opt?"var(--accent-glow)":"var(--bg-card)",overflow:"hidden"}}>
-              <button onClick={()=>setProductFilter(opt)} style={{padding:"6px 9px",border:"none",background:"transparent",color:productFilter===opt?"var(--accent)":"var(--text-primary)",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"monospace"}}>
+              <button onClick={()=>setProductFilter(opt)} style={{padding:"6px 9px",border:"none",background:"transparent",color:productFilter===opt?"var(--accent)":"var(--text-primary)",cursor:"pointer",fontSize:14,fontWeight:700,fontFamily:"monospace"}}>
                 {opt}
               </button>
               {canManage&&opt!=="ALL"&&(
-                <button onClick={(e)=>{e.stopPropagation();hideProductPage(opt);}} title="제품 페이지 숨김" style={{padding:"6px 7px",border:"none",borderLeft:"1px solid var(--border)",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11,fontWeight:800}}>
+                <button onClick={(e)=>{e.stopPropagation();hideProductPage(opt);}} title="제품 페이지 숨김" style={{padding:"6px 7px",border:"none",borderLeft:"1px solid var(--border)",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:14,fontWeight:800}}>
                   ×
                 </button>
               )}
@@ -1472,10 +1472,10 @@ export default function My_TableMap({user}){
           ))}
         </div>
         {canManage&&hiddenProductPages.length>0&&(
-          <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginTop:8,fontSize:10,color:"var(--text-secondary)"}}>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",marginTop:8,fontSize:14,color:"var(--text-secondary)"}}>
             <span>숨김:</span>
             {hiddenProductPages.map(p=>(
-              <button key={p} onClick={()=>unhideProductPage(p)} title="제품 페이지 복원" style={{padding:"3px 7px",borderRadius:4,border:"1px dashed var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:10,fontFamily:"monospace"}}>
+              <button key={p} onClick={()=>unhideProductPage(p)} title="제품 페이지 복원" style={{padding:"3px 7px",borderRadius:4,border:"1px dashed var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:14,fontFamily:"monospace"}}>
                 {p} 복원
               </button>
             ))}
@@ -1485,30 +1485,30 @@ export default function My_TableMap({user}){
       {productFilter!=="ALL"&&<div style={{gridColumn:"1 / -1",borderTop:"1px solid var(--border)",paddingTop:12,display:"grid",gridTemplateColumns:"minmax(220px, 0.8fr) minmax(360px, 1.6fr)",gap:12,alignItems:"stretch"}}>
         <div style={{background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6,padding:12}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:8}}>
-            <div style={{fontSize:12,fontWeight:800,color:"var(--accent)",fontFamily:"monospace"}}>products.yaml · {productFilter}</div>
+            <div style={{fontSize:14,fontWeight:800,color:"var(--accent)",fontFamily:"monospace"}}>products.yaml · {productFilter}</div>
             <Pill tone={selectedProductMeta?"info":"neutral"}>{selectedProductMeta?"saved":"template"}</Pill>
           </div>
-          {productConfigLoading?<div style={{fontSize:11,color:"var(--text-secondary)"}}>YAML 기본 정보 로딩 중...</div>:<>
-            <div style={{display:"grid",gridTemplateColumns:"90px 1fr",gap:"5px 10px",fontSize:11,lineHeight:1.5}}>
+          {productConfigLoading?<div style={{fontSize:14,color:"var(--text-secondary)"}}>YAML 기본 정보 로딩 중...</div>:<>
+            <div style={{display:"grid",gridTemplateColumns:"90px 1fr",gap:"5px 10px",fontSize:14,lineHeight:1.5}}>
               <span style={{color:"var(--text-secondary)",fontWeight:700}}>process_id</span><span style={{fontFamily:"monospace"}}>{cfg.process_id||"-"}</span>
               <span style={{color:"var(--text-secondary)",fontWeight:700}}>owner</span><span>{cfg.owner||"-"}</span>
               <span style={{color:"var(--text-secondary)",fontWeight:700}}>perf_metric</span><span style={{fontFamily:"monospace"}}>{cfg.perf_metric||"-"}</span>
               <span style={{color:"var(--text-secondary)",fontWeight:700}}>yld_metric</span><span style={{fontFamily:"monospace"}}>{cfg.yld_metric||"-"}</span>
             </div>
-            {cfg.description&&<div style={{fontSize:11,color:"var(--text-secondary)",marginTop:8,lineHeight:1.5}}>{cfg.description}</div>}
+            {cfg.description&&<div style={{fontSize:14,color:"var(--text-secondary)",marginTop:8,lineHeight:1.5}}>{cfg.description}</div>}
           </>}
         </div>
         <div style={{background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6,padding:12}}>
-          <div style={{fontSize:12,fontWeight:800,color:"var(--text-primary)",marginBottom:8}}>해당 제품 Table Map 정보</div>
+          <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)",marginBottom:8}}>해당 제품 Table Map 정보</div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(92px,1fr))",gap:8,marginBottom:8}}>
             {[["DB",connectionSummary.db],["Groups",connectionSummary.groups],["Tables",connectionSummary.tables],["Relations",connectionSummary.relations]].map(([k,v])=>(
               <div key={k} style={{border:"1px solid var(--border)",borderRadius:5,padding:"7px 8px",background:"var(--bg-secondary)"}}>
-                <div style={{fontSize:9,color:"var(--text-secondary)",fontWeight:800,textTransform:"uppercase"}}>{k}</div>
+                <div style={{fontSize:14,color:"var(--text-secondary)",fontWeight:800,textTransform:"uppercase"}}>{k}</div>
                 <div style={{fontSize:16,fontWeight:800,fontFamily:"monospace",color:"var(--accent)"}}>{v}</div>
               </div>
             ))}
           </div>
-          <div style={{display:"flex",gap:6,flexWrap:"wrap",fontSize:10,color:"var(--text-secondary)"}}>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",fontSize:14,color:"var(--text-secondary)"}}>
             <span style={{padding:"3px 7px",borderRadius:4,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>canonical_knobs {cfgListCount("canonical_knobs")}</span>
             <span style={{padding:"3px 7px",borderRadius:4,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>inline_items {cfgListCount("canonical_inline_items")}</span>
             <span style={{padding:"3px 7px",borderRadius:4,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>et_key_items {cfgListCount("et_key_items")}</span>
@@ -1541,7 +1541,7 @@ export default function My_TableMap({user}){
           <span onClick={()=>{setDbInfo(null);setSelectedNode(null);}} style={{cursor:"pointer",fontSize:18}}>✕</span>
         </div>
         {/* Info grid */}
-        <div style={{display:"grid",gridTemplateColumns:"110px 1fr",gap:"6px 12px",fontSize:12,marginBottom:14}}>
+        <div style={{display:"grid",gridTemplateColumns:"110px 1fr",gap:"6px 12px",fontSize:14,marginBottom:14}}>
           <span style={{color:"var(--text-secondary)",fontWeight:600}}>구조</span>
           <span style={{fontFamily:"monospace",color:"var(--accent)"}}>{dbInfo.structure}</span>
           <span style={{color:"var(--text-secondary)",fontWeight:600}}>소스 유형</span>
@@ -1553,46 +1553,46 @@ export default function My_TableMap({user}){
         </div>
         {/* Columns */}
         {dbInfo.columns?.length>0&&<div style={{marginBottom:14}}>
-          <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>컬럼 ({dbInfo.columns.length})</div>
+          <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>컬럼 ({dbInfo.columns.length})</div>
           <div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6}}>
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-              <thead><tr><th style={{textAlign:"left",padding:"4px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:10}}>컬럼</th><th style={{textAlign:"left",padding:"4px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:10}}>유형</th></tr></thead>
-              <tbody>{dbInfo.columns.map(c=><tr key={c}><td style={{padding:"3px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{c}</td><td style={{padding:"3px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:10}}>{dbInfo.dtypes?.[c]||""}</td></tr>)}</tbody>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+              <thead><tr><th style={{textAlign:"left",padding:"4px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14}}>컬럼</th><th style={{textAlign:"left",padding:"4px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14}}>유형</th></tr></thead>
+              <tbody>{dbInfo.columns.map(c=><tr key={c}><td style={{padding:"3px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{c}</td><td style={{padding:"3px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:14}}>{dbInfo.dtypes?.[c]||""}</td></tr>)}</tbody>
             </table>
           </div>
         </div>}
         {/* Description */}
         <div style={{marginBottom:14}}>
-          <div style={{fontSize:12,fontWeight:600,marginBottom:4}}>설명</div>
+          <div style={{fontSize:14,fontWeight:600,marginBottom:4}}>설명</div>
           <textarea value={dbDesc} onChange={e=>setDbDesc(e.target.value)} rows={3}
-            style={{width:"100%",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",resize:"vertical",fontFamily:"monospace"}}
+            style={{width:"100%",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none",resize:"vertical",fontFamily:"monospace"}}
             placeholder="이 데이터베이스에 대한 메모 추가..."/>
         </div>
         <div style={{display:"flex",gap:8}}>
           <button onClick={saveDbDesc} style={{padding:"8px 20px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:600,cursor:"pointer"}}>설명 저장</button>
           <button onClick={()=>{setDbInfo(null);setSelectedNode(null);}} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>닫기</button>
-          {isAdmin&&<button onClick={()=>{if(confirm("맵에서 제거할까요? (DB 데이터는 영향 없음)")){sf(API+"/db-ref/delete?node_id="+dbInfo.node_id,{method:"POST"}).then(()=>{setDbInfo(null);setSelectedNode(null);loadAll();});}}} style={{marginLeft:"auto",padding:"8px 16px",borderRadius:6,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:11}}>맵에서 해제</button>}
+          {isAdmin&&<button onClick={()=>{if(confirm("맵에서 제거할까요? (DB 데이터는 영향 없음)")){sf(API+"/db-ref/delete?node_id="+dbInfo.node_id,{method:"POST"}).then(()=>{setDbInfo(null);setSelectedNode(null);loadAll();});}}} style={{marginLeft:"auto",padding:"8px 16px",borderRadius:6,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:14}}>맵에서 해제</button>}
         </div>
       </div>
     </div>}
 
     {view==="manage"&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:12}}>
       {visibleGroups.map(g=>(<div key={g.id} style={{background:"var(--bg-secondary)",borderRadius:8,border:"1px solid #a855f7",padding:12}}>
-        <div style={{fontSize:11,color:"#a855f7",fontWeight:700,marginBottom:4}}>📚 그룹</div>
-        <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>{g.name}</div>
-        <div style={{fontSize:10,color:"var(--text-secondary)"}}>{g.tables?.length||0} 테이블 | {g.updated?.slice(0,10)}</div>
+        <div style={{fontSize:14,color:"#a855f7",fontWeight:700,marginBottom:4}}>📚 그룹</div>
+        <div style={{fontSize:14,fontWeight:600,marginBottom:4}}>{g.name}</div>
+        <div style={{fontSize:14,color:"var(--text-secondary)"}}>{g.tables?.length||0} 테이블 | {g.updated?.slice(0,10)}</div>
         <div style={{display:"flex",gap:4,marginTop:6}}>
-          <span onClick={()=>sf(API+"/groups/"+g.id).then(d=>setEditingGroup(d)).catch(()=>{})} style={{color:"var(--accent)",cursor:"pointer",fontSize:11}}>편집</span>
-          {canManage&&<span onClick={()=>deleteGroup(g.id)} style={{color:"#ef4444",cursor:"pointer",fontSize:11}}>삭제</span>}
+          <span onClick={()=>sf(API+"/groups/"+g.id).then(d=>setEditingGroup(d)).catch(()=>{})} style={{color:"var(--accent)",cursor:"pointer",fontSize:14}}>편집</span>
+          {canManage&&<span onClick={()=>deleteGroup(g.id)} style={{color:"#ef4444",cursor:"pointer",fontSize:14}}>삭제</span>}
         </div>
       </div>))}
       {visibleTables.map(t=>(<div key={t.id} style={{background:"var(--bg-secondary)",borderRadius:8,border:"1px solid var(--accent)",padding:12}}>
-        <div style={{fontSize:11,color:"var(--accent)",fontWeight:700,marginBottom:4}}>📋 테이블{t.group_id?" (그룹 내)":""}</div>
-        <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>{t.name}</div>
-        <div style={{fontSize:10,color:"var(--text-secondary)"}}>{t.updated?.slice(0,10)} · <span style={{fontFamily:"monospace",color:"#f97316"}}>📄 {(t.name||t.id).replace(/[^a-zA-Z0-9_-]/g,"_")}.csv</span></div>
+        <div style={{fontSize:14,color:"var(--accent)",fontWeight:700,marginBottom:4}}>📋 테이블{t.group_id?" (그룹 내)":""}</div>
+        <div style={{fontSize:14,fontWeight:600,marginBottom:4}}>{t.name}</div>
+        <div style={{fontSize:14,color:"var(--text-secondary)"}}>{t.updated?.slice(0,10)} · <span style={{fontFamily:"monospace",color:"#f97316"}}>📄 {(t.name||t.id).replace(/[^a-zA-Z0-9_-]/g,"_")}.csv</span></div>
         <div style={{display:"flex",gap:4,marginTop:6}}>
-          <span onClick={()=>sf(API+"/tables/"+t.id).then(d=>setEditingTable(d)).catch(()=>{})} style={{color:"var(--accent)",cursor:"pointer",fontSize:11}}>편집</span>
-          {canManage&&<span onClick={()=>{if(confirm("삭제할까요? (아카이브됨)"))deleteTable(t.id);}} style={{color:"#ef4444",cursor:"pointer",fontSize:11}}>삭제</span>}
+          <span onClick={()=>sf(API+"/tables/"+t.id).then(d=>setEditingTable(d)).catch(()=>{})} style={{color:"var(--accent)",cursor:"pointer",fontSize:14}}>편집</span>
+          {canManage&&<span onClick={()=>{if(confirm("삭제할까요? (아카이브됨)"))deleteTable(t.id);}} style={{color:"#ef4444",cursor:"pointer",fontSize:14}}>삭제</span>}
         </div>
       </div>))}
     </div>}
@@ -1600,16 +1600,16 @@ export default function My_TableMap({user}){
     {view==="configs"&&<ProductConfigPanel canManage={canManage} onChanged={loadAll}/>}
 
     {view==="relations"&&<div style={{background:"var(--bg-secondary)",borderRadius:8,border:"1px solid var(--border)",overflow:"auto"}}>
-      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-        <thead><tr>{["소스","타겟","소스 컬럼","타겟 컬럼","설명","작업"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:11,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+        <thead><tr>{["소스","타겟","소스 컬럼","타겟 컬럼","설명","작업"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:14,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
         <tbody>{(config.relations||[]).map(r=>{const a=config.nodes.find(n=>n.id===r.from);const b=config.nodes.find(n=>n.id===r.to);return(
           <tr key={r.id}>
             <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)"}}>{a?.name||"?"}</td>
             <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)"}}>{b?.name||"?"}</td>
-            <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10}}>{r.from_col||"-"}</td>
-            <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10}}>{r.to_col||"-"}</td>
-            <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontSize:11,color:"var(--text-secondary)"}}>{r.description||""}</td>
-            <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)"}}>{isAdmin&&<span onClick={()=>delRelation(r.id)} style={{color:"#ef4444",cursor:"pointer",fontSize:11}}>삭제</span>}</td>
+            <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14}}>{r.from_col||"-"}</td>
+            <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14}}>{r.to_col||"-"}</td>
+            <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>{r.description||""}</td>
+            <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)"}}>{isAdmin&&<span onClick={()=>delRelation(r.id)} style={{color:"#ef4444",cursor:"pointer",fontSize:14}}>삭제</span>}</td>
           </tr>);})}</tbody>
       </table>
       {(config.relations||[]).length===0&&<div style={{padding:40,textAlign:"center",color:"var(--text-secondary)"}}>관계가 없습니다. 그래프 뷰에서 Shift+클릭으로 노드 A 를 선택한 뒤 노드 B 를 클릭하세요.</div>}
@@ -1621,14 +1621,14 @@ export default function My_TableMap({user}){
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:14}}>
           <div>
             <div style={{fontSize:15,fontWeight:800}}>관계 매칭</div>
-            <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:5,fontFamily:"monospace"}}>
+            <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:5,fontFamily:"monospace"}}>
               <strong style={{color:"var(--accent)"}}>{editRel.from_name}</strong>
               <span style={{padding:"0 8px",color:"var(--text-secondary)"}}>→</span>
               <strong style={{color:"var(--accent)"}}>{editRel.to_name}</strong>
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <span style={{padding:"4px 9px",borderRadius:999,background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,fontWeight:900,fontFamily:"monospace"}}>
+            <span style={{padding:"4px 9px",borderRadius:999,background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:900,fontFamily:"monospace"}}>
               {relationPairs.length} MATCH
             </span>
             <span onClick={closeRelationModal} style={{cursor:"pointer",fontSize:18}}>✕</span>
@@ -1636,26 +1636,26 @@ export default function My_TableMap({user}){
         </div>
 
         {relationEditing&&<div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,padding:"6px 10px",borderRadius:5,background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.3)"}}>
-          <button onClick={()=>autoMatchRelation()} style={{padding:"4px 12px",borderRadius:5,border:"1px solid #22c55e",background:"transparent",color:"#22c55e",fontSize:11,fontWeight:700,cursor:"pointer"}}>자동 매칭</button>
-          <span style={{fontSize:10,color:"var(--text-secondary)"}}>대소문자 무시 동명 컬럼을 추가합니다.</span>
-          {autoMatchInfo&&<span style={{fontSize:10,marginLeft:"auto",color:autoMatchInfo.matched>0?"#22c55e":"var(--text-secondary)",fontFamily:"monospace"}}>+{autoMatchInfo.matched} ({autoMatchInfo.fromTotal}↔{autoMatchInfo.toTotal})</span>}
+          <button onClick={()=>autoMatchRelation()} style={{padding:"4px 12px",borderRadius:5,border:"1px solid #22c55e",background:"transparent",color:"#22c55e",fontSize:14,fontWeight:700,cursor:"pointer"}}>자동 매칭</button>
+          <span style={{fontSize:14,color:"var(--text-secondary)"}}>대소문자 무시 동명 컬럼을 추가합니다.</span>
+          {autoMatchInfo&&<span style={{fontSize:14,marginLeft:"auto",color:autoMatchInfo.matched>0?"#22c55e":"var(--text-secondary)",fontFamily:"monospace"}}>+{autoMatchInfo.matched} ({autoMatchInfo.fromTotal}↔{autoMatchInfo.toTotal})</span>}
         </div>}
 
         <div style={{border:"1px solid var(--border)",borderRadius:7,overflow:"hidden",marginBottom:10}}>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,tableLayout:"fixed"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:14,tableLayout:"fixed"}}>
             <thead>
               <tr style={{background:"var(--bg-tertiary)"}}>
-                <th style={{width:44,padding:"8px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace"}}>#</th>
-                <th style={{padding:"8px 10px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>{editRel.from_name}</th>
-                <th style={{padding:"8px 10px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>{editRel.to_name}</th>
-                <th style={{width:104,padding:"8px 10px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace"}}>STATUS</th>
-                {relationEditing&&<th style={{width:34,padding:"8px 6px",textAlign:"center",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)"}}></th>}
+                <th style={{width:44,padding:"8px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>#</th>
+                <th style={{padding:"8px 10px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--accent)",fontFamily:"monospace"}}>{editRel.from_name}</th>
+                <th style={{padding:"8px 10px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--accent)",fontFamily:"monospace"}}>{editRel.to_name}</th>
+                <th style={{width:104,padding:"8px 10px",textAlign:"left",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>STATUS</th>
+                {relationEditing&&<th style={{width:34,padding:"8px 6px",textAlign:"center",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}></th>}
               </tr>
             </thead>
             <tbody>
               {relationPairs.length===0&&(
                 <tr>
-                  <td colSpan={relationEditing?5:4} style={{padding:"18px 10px",textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>
+                  <td colSpan={relationEditing?5:4} style={{padding:"18px 10px",textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>
                     {relationEditing?"매칭된 컬럼이 없습니다. 자동 매칭 또는 행 추가로 시작하세요.":"매칭된 컬럼이 없습니다."}
                   </td>
                 </tr>
@@ -1667,15 +1667,15 @@ export default function My_TableMap({user}){
                     <td style={{padding:"7px 8px",textAlign:"center",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",fontWeight:800}}>{i+1}</td>
                     <td style={{padding:"5px 8px",borderBottom:"1px solid var(--border)",minWidth:0}}>
                       {relationEditing?<input value={p.from_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],from_col:e.target.value};return{...f,pairs:n};})}
-                        placeholder="source column" style={{width:"100%",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>:
+                        placeholder="source column" style={{width:"100%",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",boxSizing:"border-box"}}/>:
                         <span style={{display:"block",fontFamily:"monospace",fontWeight:800,color:"var(--text-primary)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={p.from_col||""}>{p.from_col||"-"}</span>}
                     </td>
                     <td style={{padding:"5px 8px",borderBottom:"1px solid var(--border)",minWidth:0}}>
                       {relationEditing?<input value={p.to_col||""} onChange={e=>setRelForm(f=>{const n=(f.pairs||[]).slice();n[i]={...n[i],to_col:e.target.value};return{...f,pairs:n};})}
-                        placeholder="target column" style={{width:"100%",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace",boxSizing:"border-box"}}/>:
+                        placeholder="target column" style={{width:"100%",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",boxSizing:"border-box"}}/>:
                         <span style={{display:"block",fontFamily:"monospace",fontWeight:800,color:"var(--text-primary)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={p.to_col||""}>{p.to_col||"-"}</span>}
                     </td>
-                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:status.color,fontSize:10,fontWeight:900,whiteSpace:"nowrap"}}>{status.text}</td>
+                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:status.color,fontSize:14,fontWeight:900,whiteSpace:"nowrap"}}>{status.text}</td>
                     {relationEditing&&<td style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>
                       <span onClick={()=>setRelForm(f=>({...f,pairs:(f.pairs||[]).filter((_,j)=>j!==i)}))} title="이 쌍 제거"
                         style={{cursor:"pointer",color:"#ef4444",fontSize:14,fontWeight:800,padding:"0 6px"}}>×</span>
@@ -1689,14 +1689,14 @@ export default function My_TableMap({user}){
 
         {relationEditing&&<div style={{marginBottom:10}}>
           <button onClick={()=>setRelForm(f=>({...f,pairs:[...(f.pairs||[]),{from_col:"",to_col:""}]}))}
-            style={{padding:"4px 12px",borderRadius:4,border:"1px dashed var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>+ 행 추가</button>
+            style={{padding:"4px 12px",borderRadius:4,border:"1px dashed var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>+ 행 추가</button>
         </div>}
 
         {(relationEditing||relForm.description)&&<div style={{marginBottom:12}}>
-          <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:3}}>설명</div>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:3}}>설명</div>
           {relationEditing?<input value={relForm.description} onChange={e=>setRelForm({...relForm,description:e.target.value})} placeholder="예: Lot 이력 추적"
-            style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none",boxSizing:"border-box"}}/>:
-            <div style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,minHeight:16}}>{relForm.description}</div>}
+            style={{width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none",boxSizing:"border-box"}}/>:
+            <div style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,minHeight:16}}>{relForm.description}</div>}
         </div>}
 
         <div style={{display:"flex",gap:8}}>
@@ -1715,21 +1715,21 @@ export default function My_TableMap({user}){
           <div style={{fontSize:16,fontWeight:700}}>기존 데이터 임포트</div>
           <span onClick={()=>setShowImport(false)} style={{cursor:"pointer",fontSize:18}}>✕</span>
         </div>
-        <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:12}}>Base/DB 의 parquet/csv 를 TableMap 테이블로 가져옵니다. 스키마 + 최대 rows 건.</div>
+        <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:12}}>Base/DB 의 parquet/csv 를 TableMap 테이블로 가져옵니다. 스키마 + 최대 rows 건.</div>
         <div style={{marginBottom:8}}>
-          <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:4}}>소스</div>
-          <select value={importForm.source} onChange={e=>setImportForm({...importForm,source:e.target.value})} style={{width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,fontFamily:"monospace"}}>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>소스</div>
+          <select value={importForm.source} onChange={e=>setImportForm({...importForm,source:e.target.value})} style={{width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}>
             <option value="">-- 선택 --</option>
             {importSrcs.map(s=><option key={s.label} value={s.label}>{s.label}</option>)}
           </select>
         </div>
         <div style={{display:"flex",gap:8,marginBottom:8}}>
-          <div style={{flex:1}}><div style={{fontSize:11,color:"var(--text-secondary)"}}>테이블 이름 (선택)</div><input value={importForm.name} onChange={e=>setImportForm({...importForm,name:e.target.value})} placeholder="자동(파일명)" style={{width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12}}/></div>
-          <div style={{flex:1}}><div style={{fontSize:11,color:"var(--text-secondary)"}}>표시 라벨 (선택)</div><input value={importForm.display_name} onChange={e=>setImportForm({...importForm,display_name:e.target.value})} placeholder="그래프 라벨" style={{width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12}}/></div>
+          <div style={{flex:1}}><div style={{fontSize:14,color:"var(--text-secondary)"}}>테이블 이름 (선택)</div><input value={importForm.name} onChange={e=>setImportForm({...importForm,name:e.target.value})} placeholder="자동(파일명)" style={{width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/></div>
+          <div style={{flex:1}}><div style={{fontSize:14,color:"var(--text-secondary)"}}>표시 라벨 (선택)</div><input value={importForm.display_name} onChange={e=>setImportForm({...importForm,display_name:e.target.value})} placeholder="그래프 라벨" style={{width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/></div>
         </div>
         <div style={{marginBottom:12}}>
-          <div style={{fontSize:11,color:"var(--text-secondary)"}}>최대 행 수 (기본 1000)</div>
-          <input type="number" value={importForm.rows_limit} onChange={e=>setImportForm({...importForm,rows_limit:parseInt(e.target.value)||1000})} style={{width:120,padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12}}/>
+          <div style={{fontSize:14,color:"var(--text-secondary)"}}>최대 행 수 (기본 1000)</div>
+          <input type="number" value={importForm.rows_limit} onChange={e=>setImportForm({...importForm,rows_limit:parseInt(e.target.value)||1000})} style={{width:120,padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
         </div>
         <div style={{display:"flex",gap:8}}>
           <button onClick={doImport} style={{flex:1,padding:10,borderRadius:6,border:"none",background:"#10b981",color:"#fff",fontWeight:600,cursor:"pointer"}}>임포트</button>
@@ -1743,9 +1743,9 @@ export default function My_TableMap({user}){
           <div style={{fontSize:16,fontWeight:700}}>DB 참조 고정</div>
           <span onClick={()=>setPickingDb(false)} style={{cursor:"pointer",fontSize:18}}>✕</span>
         </div>
-        <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:8}}>맵 노드로 추가할 DB 소스를 선택하세요 (참조만, 실제 데이터는 변경되지 않습니다)</div>
-        {dbSources.map(s=><div key={s.label} onClick={()=>addDbRef(s)} style={{padding:"8px 12px",background:"var(--bg-card,var(--bg-primary,#fff))",color:"var(--text-primary,#111827)",borderRadius:6,marginBottom:4,cursor:"pointer",fontSize:12,fontWeight:600,border:"1px solid var(--border)"}}>
-          {s.label} <span style={{fontSize:10,color:"var(--accent,#ea580c)",fontWeight:700}}>[{s.source_type}]</span>
+        <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:8}}>맵 노드로 추가할 DB 소스를 선택하세요 (참조만, 실제 데이터는 변경되지 않습니다)</div>
+        {dbSources.map(s=><div key={s.label} onClick={()=>addDbRef(s)} style={{padding:"8px 12px",background:"var(--bg-card,var(--bg-primary,#fff))",color:"var(--text-primary,#111827)",borderRadius:6,marginBottom:4,cursor:"pointer",fontSize:14,fontWeight:600,border:"1px solid var(--border)"}}>
+          {s.label} <span style={{fontSize:14,color:"var(--accent,#ea580c)",fontWeight:700}}>[{s.source_type}]</span>
         </div>)}
       </div></div>}
   </div>);

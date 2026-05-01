@@ -20,6 +20,9 @@ Legacy `/roots` (no `scope` param) keeps its v7.1 shape — DB-canonical only.
 import json
 import logging
 import datetime
+import re
+import copy
+import time
 from pathlib import Path
 import sys
 
@@ -33,12 +36,14 @@ for _path in (_APP_ROOT, _BACKEND_ROOT):
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 import polars as pl
+from core import duckdb_engine
 from core.paths import PATHS
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_named_child
 from core.utils import (
     cast_cats, read_source, lazy_read_source, read_one_file, scan_one_file, apply_sql_like, serialize_rows,
     jsonl_append, jsonl_read, csv_response, safe_filename,
-    DATA_EXTENSIONS, count_data_files,
+    DATA_EXTENSIONS, count_data_files, iter_source_product_dirs,
+    data_files_limited, source_data_files,
 )
 
 logger = logging.getLogger("flow.fb")
@@ -51,6 +56,91 @@ MAX_CSV_DOWNLOAD_BYTES = 100_000_000
 DEFAULT_CSV_DOWNLOAD_MAX_ROWS = 100_000
 MAX_CSV_DOWNLOAD_MAX_ROWS = 500_000
 MAX_CSV_DOWNLOAD_AUTO_COLUMNS = 200
+LATEST_PREVIEW_ROWS = 200
+LATEST_PREVIEW_MAX_FILES = 4
+LIST_CACHE_TTL_SEC = 5.0
+MAX_WAFER_ID = 25
+_SORT_STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
+_LIST_CACHE: dict[tuple, tuple[float, object]] = {}
+
+_DATE_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})[-_]?(\d{2})[-_]?(\d{2})(?!\d)")
+_LATEST_COLUMN_PRIORITY = (
+    "tkout_time",
+    "time",
+    "timestamp",
+    "datetime",
+    "date",
+    "tkin_time",
+    "updated_at",
+    "modified_at",
+    "created_at",
+)
+
+_WAFER_COLUMN_CANDIDATES = ("wafer_id", "wf_id")
+
+
+def _wafer_column(columns: list[str] | tuple[str, ...] | None) -> str | None:
+    lookup = {str(c).lower(): str(c) for c in (columns or [])}
+    for name in _WAFER_COLUMN_CANDIDATES:
+        if name in lookup:
+            return lookup[name]
+    return None
+
+
+def _wafer_number_expr(column: str) -> pl.Expr:
+    text = (
+        pl.col(column)
+        .cast(_SORT_STR, strict=False)
+        .str.strip_chars()
+        .str.to_uppercase()
+        .str.replace(r"^(?:#|WAFER|WF|W)\s*", "")
+    )
+    return text.cast(pl.Float64, strict=False)
+
+
+def _valid_wafer_expr(column: str) -> pl.Expr:
+    num = _wafer_number_expr(column)
+    as_int = num.cast(pl.Int64, strict=False).cast(pl.Float64, strict=False)
+    return ((num >= 1) & (num == as_int)).fill_null(False)
+
+
+def _physical_wafer_expr(column: str) -> pl.Expr:
+    num = _wafer_number_expr(column).cast(pl.Int64, strict=False)
+    return (((num - 1) % MAX_WAFER_ID) + 1).cast(_SORT_STR, strict=False)
+
+
+def _filter_valid_wafers_df(df: pl.DataFrame) -> tuple[pl.DataFrame, bool]:
+    wafer_col = _wafer_column(list(df.columns))
+    if not wafer_col:
+        return df, False
+    return df.filter(_valid_wafer_expr(wafer_col)).with_columns(_physical_wafer_expr(wafer_col).alias(wafer_col)), True
+
+
+def _filter_valid_wafers_lazy(lf: pl.LazyFrame, columns: list[str]) -> tuple[pl.LazyFrame, bool]:
+    wafer_col = _wafer_column(columns)
+    if not wafer_col:
+        return lf, False
+    return lf.filter(_valid_wafer_expr(wafer_col)).with_columns(_physical_wafer_expr(wafer_col).alias(wafer_col)), True
+
+
+def _duckdb_valid_wafer_where(columns: list[str]) -> str:
+    wafer_col = _wafer_column(columns)
+    if not wafer_col:
+        return ""
+    raw = f"UPPER(TRIM(CAST({duckdb_engine.quote_ident(wafer_col)} AS VARCHAR)))"
+    cleaned = raw
+    for pattern in ("^#\\s*", "^WAFER\\s*", "^WF\\s*", "^W\\s*"):
+        cleaned = f"REGEXP_REPLACE({cleaned}, '{pattern}', '')"
+    num = f"TRY_CAST({cleaned} AS DOUBLE)"
+    return f"({num} >= 1 AND {num} = FLOOR({num}))"
+
+
+def _combine_where(left: str, right: str) -> str:
+    left = str(left or "").strip()
+    right = str(right or "").strip()
+    if left and right:
+        return f"({left}) AND ({right})"
+    return left or right
 
 # Files scope policy: keep only the operational artifacts engineers actually
 # maintain for ML_TABLE / SplitTable matching.  Physical files are not deleted;
@@ -133,12 +223,106 @@ def _base_root():
     return resolve_existing_root("base", PATHS.base_root)
 
 
+def _date_key_from_text(text: str) -> str:
+    m = _DATE_TOKEN_RE.search(str(text or ""))
+    if not m:
+        return ""
+    return "".join(m.groups())
+
+
+def _date_label_from_key(key: str) -> str:
+    key = str(key or "")
+    if len(key) != 8:
+        return key
+    return f"{key[:4]}-{key[4:6]}-{key[6:]}"
+
+
+def _date_key_from_path(path: Path) -> str:
+    for part in path.parts:
+        if part.startswith("date="):
+            key = _date_key_from_text(part[len("date="):])
+            if key:
+                return key
+    return _date_key_from_text(path.name)
+
+
+def _latest_date_label_for_dir(directory: Path) -> str:
+    keys: list[str] = []
+    try:
+        for d in directory.iterdir():
+            if d.is_dir() and d.name.startswith("date="):
+                key = _date_key_from_path(d)
+                if key:
+                    keys.append(key)
+    except Exception:
+        pass
+    if not keys:
+        try:
+            for d in directory.rglob("date=*"):
+                if d.is_dir():
+                    key = _date_key_from_path(d)
+                    if key:
+                        keys.append(key)
+                    if len(keys) >= 200:
+                        break
+        except Exception:
+            pass
+    if not keys:
+        for fp in data_files_limited(directory, limit=2000):
+            key = _date_key_from_path(fp)
+            if key:
+                keys.append(key)
+    return _date_label_from_key(max(keys)) if keys else ""
+
+
+def _latest_order_column(columns: list[str]) -> str:
+    by_lower = {str(c).lower(): str(c) for c in columns}
+    for name in _LATEST_COLUMN_PRIORITY:
+        if name in by_lower:
+            return by_lower[name]
+    for name in columns:
+        low = str(name).lower()
+        if "tkout" in low or "timestamp" in low:
+            return str(name)
+    for name in columns:
+        low = str(name).lower()
+        if low.endswith("time") or low.endswith("date") or "datetime" in low:
+            return str(name)
+    return ""
+
+
 def _log_dl(username, product, sql, rows, cols, select_cols="", size_bytes=0):
     jsonl_append(DL_LOG, {
         "username": username, "product": product, "sql": sql or "",
         "rows": rows, "cols": cols, "select_cols": select_cols,
         "size_mb": round(size_bytes / 1e6, 2),
     })
+
+
+def _list_cache_get(key: tuple):
+    cached = _LIST_CACHE.get(key)
+    if not cached:
+        return None
+    ts, payload = cached
+    if time.monotonic() - ts > LIST_CACHE_TTL_SEC:
+        _LIST_CACHE.pop(key, None)
+        return None
+    return copy.deepcopy(payload)
+
+
+def _list_cache_set(key: tuple, payload):
+    if len(_LIST_CACHE) > 128:
+        _LIST_CACHE.clear()
+    _LIST_CACHE[key] = (time.monotonic(), copy.deepcopy(payload))
+    return payload
+
+
+def _path_sig(path: Path) -> tuple:
+    try:
+        st = path.stat()
+        return (str(path.resolve()), st.st_mtime, st.st_size)
+    except Exception:
+        return (str(path), 0.0, 0)
 
 
 @router.get("/domain")
@@ -168,6 +352,10 @@ def list_roots(all: bool = Query(False)):
     DB_BASE = _db_root()
     if not DB_BASE.exists():
         return {"roots": []}
+    cache_key = ("roots", bool(all), _path_sig(DB_BASE))
+    cached = _list_cache_get(cache_key)
+    if cached is not None:
+        return cached
     for d in sorted(DB_BASE.iterdir()):
         # v8.1.2: explicit file skip — root-level single files go via Base only (v8.7.6).
         if not d.is_dir():
@@ -211,7 +399,7 @@ def list_roots(all: bool = Query(False)):
     # Sort: directories first by level (L0→L3→wide), then rulebooks
     level_order = {"L0": 0, "L1": 1, "L2": 2, "L3": 3, "wide": 4, "rulebook": 5, "": 6}
     result.sort(key=lambda r: (level_order.get(r.get("level", ""), 99), r["name"]))
-    return {"roots": result}
+    return _list_cache_set(cache_key, {"roots": result})
 
 
 @router.get("/scopes")
@@ -252,6 +440,10 @@ def base_files():
     Directories and legacy helper files remain on disk but are not surfaced here.
     """
     base_root = _base_root()
+    cache_key = ("base_files", _path_sig(base_root), _path_sig(_db_root()), _path_sig(PATHS.upload_dir))
+    cached = _list_cache_get(cache_key)
+    if cached is not None:
+        return cached
     files, dirs = [], []
     if base_root.is_dir():
         for f in sorted(base_root.iterdir(), key=lambda p: (not p.is_file(), p.name.lower())):
@@ -393,15 +585,16 @@ def base_files():
             })
 
     files.sort(key=lambda x: (x.get("order", 999), x["name"].lower()))
-    return {"files": files, "dirs": dirs,
+    return _list_cache_set(cache_key, {"files": files, "dirs": dirs,
             "path": str(base_root) if base_root.is_dir() else "",
-            "exists": base_root.is_dir() or bool(files)}
+            "exists": base_root.is_dir() or bool(files)})
 
 
 @router.get("/base-file-view")
 def base_file_view(file: str = Query(...), sql: str = Query(""),
                    rows: int = Query(200), cols: int = Query(10),
                    select_cols: str = Query(""),
+                   engine: str = Query("auto"),
                    meta_only: bool = Query(False),
                    page: int = Query(0, ge=0),
                    page_size: int = Query(200, ge=1, le=1000)):
@@ -464,15 +657,15 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 from core.reformatter import REFORMATTER_TABLE_COLUMNS, load_rules, rules_to_reformatter_table
                 if cand.suffix.lower() == ".csv":
                     df = pl.read_csv(str(cand), infer_schema_length=5000, try_parse_dates=False)
-                    _, page_size, offset = _page_args(page, page_size or rows)
-                    rows_out = serialize_rows(df.slice(offset, page_size).to_dicts())
+                    page, page_size, offset = 0, df.height, 0
+                    rows_out = serialize_rows(df.to_dicts())
                     columns = list(df.columns)
                     total_rows = df.height
                     dtypes = {c: str(df.schema[c]) for c in columns}
                 else:
                     rows_all = rules_to_reformatter_table(load_rules(rf_root, product))
-                    page, page_size, offset = _page_args(page, page_size or rows)
-                    rows_out = rows_all[offset:offset + page_size]
+                    page, page_size, offset = 0, len(rows_all), 0
+                    rows_out = rows_all
                     columns = REFORMATTER_TABLE_COLUMNS
                     total_rows = len(rows_all)
                     dtypes = {c: "str" for c in columns}
@@ -531,8 +724,8 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             "kind": "json",
             "file": file,
             "size": fp.stat().st_size,
-            "preview": text[:4096],
-            "truncated": len(text) > 4096,
+            "preview": text,
+            "truncated": False,
             "parsed_top_keys": list(parsed.keys()) if isinstance(parsed, dict) else None,
         }
     if ext == ".md":
@@ -540,8 +733,8 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             text = fp.read_text(encoding="utf-8")
         except Exception as e:
             raise HTTPException(400, f"Cannot read md: {e}")
-        return {"kind": "md", "file": file, "size": fp.stat().st_size, "text": text[:16000],
-                "truncated": len(text) > 16000}
+        return {"kind": "md", "file": file, "size": fp.stat().st_size, "text": text,
+                "truncated": False}
     if ext in PRODUCT_CONFIG_EXTENSIONS:
         try:
             text = fp.read_text(encoding="utf-8")
@@ -554,8 +747,8 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             parsed_keys = list(parsed.keys()) if isinstance(parsed, dict) else None
         except Exception:
             parsed_keys = None
-        return {"kind": "yaml", "file": file, "size": fp.stat().st_size, "text": text[:24000],
-                "truncated": len(text) > 24000, "parsed_top_keys": parsed_keys}
+        return {"kind": "yaml", "file": file, "size": fp.stat().st_size, "text": text,
+                "truncated": False, "parsed_top_keys": parsed_keys}
     if ext not in DATA_EXTENSIONS:
         raise HTTPException(400, f"Unsupported ext for preview: {ext}")
     # v8.4.3 OOM-aware — lazy scan 동일.
@@ -615,6 +808,41 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 cached_meta = read_meta(fp)
             except Exception:
                 cached_meta = None
+        ml_table = _is_ml_table_file(fp)
+        full_single_file = (not ml_table) or _has_view_filter(sql, select_cols)
+        if full_single_file:
+            resp = _run_view_lazy_full(
+                lf, sql, select_cols,
+                preview_cols=cols if ml_table else None,
+            )
+            resp["all_columns"] = all_cols_full
+            resp["total_cols"] = len(all_cols_full)
+            resp["dtypes"] = schema_full
+            resp["kind"] = "table"
+            resp["file"] = file
+            resp["source_path"] = str(fp)
+            resp["source_size"] = fp.stat().st_size
+            resp["source_modified"] = fp.stat().st_mtime
+            return resp
+        rows = min(int(rows or 200), 200)
+        page_size = min(int(page_size or 200), 200)
+        if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
+            try:
+                resp = _run_view_duckdb(
+                    [fp], sql, select_cols, rows,
+                    page=page, page_size=page_size, preview_cols=cols,
+                    cached_meta=cached_meta,
+                )
+                resp["kind"] = "table"
+                resp["file"] = file
+                resp["source_path"] = str(fp)
+                resp["source_size"] = fp.stat().st_size
+                resp["source_modified"] = fp.stat().st_mtime
+                return resp
+            except Exception as e:
+                if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
+                    raise HTTPException(400, f"DuckDB query failed: {e}")
+                logger.warning("duckdb base-file-view fallback file=%s: %s", file, e)
         resp = _run_view_lazy(
             lf, sql, select_cols, rows,
             page=page, page_size=page_size, cached_meta=cached_meta,
@@ -651,6 +879,10 @@ def list_products(root: str = Query(...)):
     rp = resolve_named_child(db_root, root) or (db_root / root)
     if not rp.is_dir():
         raise HTTPException(404)
+    cache_key = ("products", str(root), _path_sig(rp))
+    cached = _list_cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     # 1. Collect every `product=<P>` directory at depth 1 or 2.
     direct_hive = [d for d in rp.iterdir()
@@ -674,16 +906,20 @@ def list_products(root: str = Query(...)):
         for name in sorted(by_name):
             parts = by_name[name]
             total_files = 0
+            latest_dates = []
             for p in parts:
                 total_files += count_data_files(p)
+                latest = _latest_date_label_for_dir(p)
+                if latest:
+                    latest_dates.append(latest)
             prods.append({
                 "name": name,
                 "date_count": 0,
                 "parquet_count": total_files,
-                "latest_date": "",
+                "latest_date": max(latest_dates) if latest_dates else "",
                 "structure": "hive",
             })
-        return {"products": prods}
+        return _list_cache_set(cache_key, {"products": prods})
 
     # 2. Legacy fallback — emit each subdir as a "product" (pre-v8.2.2 behaviour).
     prods = []
@@ -698,11 +934,12 @@ def list_products(root: str = Query(...)):
         dates = sorted([x.name.replace("date=", "")
                         for x in d.iterdir()
                         if x.is_dir() and x.name.startswith("date=")])
+        latest_date = _date_label_from_key(_date_key_from_text(dates[-1])) if dates else _latest_date_label_for_dir(d)
         prods.append({
             "name": d.name, "date_count": len(dates), "parquet_count": data_file_count,
-            "latest_date": dates[-1] if dates else "", "structure": structure,
+            "latest_date": latest_date, "structure": structure,
         })
-    return {"products": prods}
+    return _list_cache_set(cache_key, {"products": prods})
 
 
 def _page_args(page: int = 0, page_size: int = 200) -> tuple[int, int, int]:
@@ -717,11 +954,126 @@ def _page_args(page: int = 0, page_size: int = 200) -> tuple[int, int, int]:
     return page, page_size, page * page_size
 
 
+def _resolve_product_dir_fast(root: str, product: str) -> Path | None:
+    """Resolve a logical product folder without recursively listing all files."""
+    root_path = (_db_root() / root).resolve()
+    if not root_path.is_dir():
+        return None
+    direct = root_path / product
+    if direct.is_dir():
+        return direct
+    ci = resolve_named_child(root_path, product)
+    if ci is not None and ci.is_dir():
+        return ci
+    target = str(product or "").casefold()
+    try:
+        for name, path, _structure in iter_source_product_dirs(root_path):
+            if str(name or "").casefold() == target:
+                return path
+    except Exception:
+        return None
+    return None
+
+
+def _first_data_file(directory: Path, suffixes: tuple[str, ...]) -> Path | None:
+    suffix_set = {s.lower() for s in suffixes}
+    try:
+        for fp in directory.rglob("*"):
+            if fp.is_file() and fp.suffix.lower() in suffix_set:
+                return fp
+    except Exception:
+        return None
+    return None
+
+
+def _fast_product_meta_response(root: str, product: str, cols: int,
+                                page: int = 0, page_size: int = 200) -> dict | None:
+    """Return schema-only metadata for huge DB products without scanning every partition."""
+    prod_dir = _resolve_product_dir_fast(root, product)
+    if prod_dir is None:
+        return None
+    fp = _first_data_file(prod_dir, (".parquet",)) or _first_data_file(prod_dir, (".csv",))
+    if fp is None:
+        return None
+    cached_meta = None
+    schema_full = {}
+    if fp.suffix.lower() == ".parquet":
+        try:
+            from core.parquet_perf import read_meta
+            cached_meta = read_meta(fp)
+        except Exception:
+            cached_meta = None
+        cached_schema = (cached_meta or {}).get("schema") or {}
+        if cached_schema:
+            schema_full = {str(k): str(v) for k, v in cached_schema.items()}
+        else:
+            lf = scan_one_file(fp)
+            if lf is None:
+                return None
+            schema_obj = lf.collect_schema()
+            schema_full = {n: str(schema_obj[n]) for n in schema_obj.names()}
+    else:
+        lf = scan_one_file(fp)
+        if lf is None:
+            return None
+        schema_obj = lf.collect_schema()
+        schema_full = {n: str(schema_obj[n]) for n in schema_obj.names()}
+    if "INLINE" in str(root or "").upper():
+        schema_full = {
+            str(k): str(v)
+            for k, v in schema_full.items()
+            if str(k).lower() not in {"shot_x", "shot_y"}
+        }
+    all_cols_full = list(schema_full.keys())
+    _, page_size, _ = _page_args(page, page_size)
+    try:
+        st = fp.stat()
+        source_modified = st.st_mtime
+        source_size = st.st_size
+    except Exception:
+        source_modified = None
+        source_size = None
+    return {
+        "kind": "table",
+        "root": root,
+        "product": product,
+        "all_columns": all_cols_full,
+        "total_cols": len(all_cols_full),
+        "columns": all_cols_full[:_preview_cols_limit(cols)],
+        "dtypes": schema_full,
+        "data": [],
+        "showing": 0,
+        "showing_cols": [],
+        "total_rows": int((cached_meta or {}).get("row_count") or 0),
+        "meta_only": True,
+        "page": page,
+        "page_size": page_size,
+        "has_more": False,
+        "meta_cached": bool(cached_meta),
+        "meta_sample_file": fp.name,
+        "source_path": str(prod_dir),
+        "source_size": source_size,
+        "source_modified": source_modified,
+    }
+
+
 def _preview_cols_limit(raw: int | None = None) -> int:
     try:
         return max(1, min(200, int(raw or 20)))
     except Exception:
         return 20
+
+
+def _is_ml_table_file(fp_or_name) -> bool:
+    try:
+        stem = Path(str(fp_or_name or "")).stem
+    except Exception:
+        stem = str(fp_or_name or "")
+    return stem.upper().startswith("ML_TABLE_")
+
+
+def _has_view_filter(sql: str, select_cols: str) -> bool:
+    return bool(str(sql or "").strip() or str(select_cols or "").strip())
 
 
 def _selected_columns(all_columns: list[str], select_cols: str, preview_cols: int | None = None) -> tuple[list[str], bool]:
@@ -733,11 +1085,27 @@ def _selected_columns(all_columns: list[str], select_cols: str, preview_cols: in
     return all_columns[:limit], len(all_columns) > limit
 
 
+def _lazy_filter_expr(sql: str, columns: list[str]):
+    s = (sql or "").strip()
+    if not s:
+        return None
+    try:
+        return pl.sql_expr(s)
+    except Exception as sql_err:
+        try:
+            ns = {c: pl.col(c) for c in columns}
+            return eval(s, {"__builtins__": {}, "pl": pl}, ns)  # noqa: S307
+        except Exception as eval_err:
+            raise HTTPException(400, f"SQL error: {sql_err} | expr error: {eval_err}")
+
+
 def _run_view(df, sql: str, select_cols: str, rows: int,
-              page: int = 0, page_size: int | None = None, preview_cols: int | None = None):
+              page: int = 0, page_size: int | None = None, preview_cols: int | None = None,
+              latest_first: bool = False, latest_preview: bool = False):
     """Apply select + sql + head; return standard response dict. Legacy DataFrame path."""
     all_columns = list(df.columns)
     schema = {n: str(d) for n, d in df.schema.items()}
+    df, wafer_filtered = _filter_valid_wafers_df(df)
     total = df.height
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
@@ -746,6 +1114,13 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
     if sql and sql.strip():
         df = apply_sql_like(df, sql)
         total = df.height
+    latest_order_col = _latest_order_column(all_columns) if latest_first else ""
+    if latest_order_col and latest_order_col in df.columns:
+        df = df.sort(
+            pl.col(latest_order_col).cast(_SORT_STR, strict=False),
+            descending=True,
+            nulls_last=True,
+        )
     if sel:
         df = df.select(sel)
     show = df.slice(offset, page_size)
@@ -759,16 +1134,71 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
         "has_more": offset + len(show) < total,
         "preview_cols": len(show.columns),
         "truncated_cols": truncated_cols,
+        "latest_order_col": latest_order_col or None,
+        "latest_preview": bool(latest_preview),
+        "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
+    }
+
+
+def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
+                     page: int = 0, page_size: int | None = None,
+                     preview_cols: int | None = None,
+                     latest_first: bool = False, latest_preview: bool = False,
+                     cached_meta: dict | None = None):
+    """Apply the same preview contract through DuckDB for large read-only sources."""
+    all_columns, schema = duckdb_engine.inspect_files(files)
+    page_size = int(page_size or rows or 200)
+    page, page_size, offset = _page_args(page, page_size)
+    sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
+    latest_order_col = _latest_order_column(all_columns) if latest_first else ""
+    wafer_where = _duckdb_valid_wafer_where(all_columns)
+    show_plus, _all_cols, _schema = duckdb_engine.query_files(
+        files,
+        where=_combine_where(sql, wafer_where),
+        select_cols=sel,
+        limit=page_size + 1,
+        offset=offset,
+        order_by=latest_order_col,
+        descending=bool(latest_order_col),
+    )
+    has_more = show_plus.height > page_size
+    show = show_plus.head(page_size) if has_more else show_plus
+    total = offset + show.height + (1 if has_more else 0)
+    return {
+        "total_rows": total,
+        "total_cols": len(all_columns),
+        "columns": list(show.columns),
+        "all_columns": all_columns,
+        "dtypes": schema,
+        "showing_cols": list(show.columns),
+        "selected_cols": select_cols.strip() or None,
+        "data": serialize_rows(show.to_dicts()),
+        "showing": len(show),
+        "page": page,
+        "page_size": page_size,
+        "has_more": has_more,
+        "preview_cols": len(show.columns),
+        "truncated_cols": truncated_cols,
+        "latest_order_col": latest_order_col or None,
+        "latest_preview": bool(latest_preview),
+        "engine": "duckdb",
+        "source_file_count": len(files),
+        "source_size": duckdb_engine.total_size(files),
+        "total_rows_exact": False,
+        "meta_cached": bool(cached_meta),
+        "wafer_filter": {"max": MAX_WAFER_ID} if wafer_where else None,
     }
 
 
 def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = False,
                    page: int = 0, page_size: int | None = None, cached_meta: dict | None = None,
-                   preview_cols: int | None = None):
+                   preview_cols: int | None = None, latest_first: bool = False,
+                   latest_preview: bool = False,
+                   allow_eager_sql_fallback: bool = False):
     """v8.4.3 OOM-aware: lazy 스캔 + projection pushdown + head + (필요 시) SQL.
 
     - 컬럼 선택 / head 은 lazy 에서 처리 → parquet reader 에서 필요한 컬럼·행만 읽음
-    - SQL 필터가 있으면 .collect() 후 apply_sql_like (projection 뒤라 메모리 작음)
+    - SQL 필터도 lazy filter 로 밀어 넣고 첫 페이지 + 1행만 collect
     - 초기 미리보기(SQL/select 없음) 는 page 단위 slice 로 10GB 파일도 필요한 행만 로드
     - v8.8.16: meta_only=True 는 컬럼 스키마만 반환 (collect 없음) → 클릭 즉시 반응.
               실제 행 조회는 SQL 실행 / 컬럼 선택 적용 시점으로 이연.
@@ -779,6 +1209,8 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
     preview_cols = _preview_cols_limit(preview_cols)
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
+    latest_order_col = _latest_order_column(all_columns) if latest_first else ""
+    lf, wafer_filtered = _filter_valid_wafers_lazy(lf, all_columns)
 
     if meta_only:
         # 스키마만 — 어떤 collect() 도 하지 않음. 큰 parquet/CSV 도 수 ms.
@@ -791,8 +1223,11 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             "data": [], "showing": 0, "meta_only": True,
             "page": page, "page_size": page_size, "has_more": False,
             "meta_cached": bool(cached_meta),
+            "total_rows_exact": bool(cached_meta) and not wafer_filtered,
             "preview_cols": min(len(all_columns), preview_cols),
             "truncated_cols": len(all_columns) > preview_cols,
+            "latest_order_col": latest_order_col or None,
+            "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
         }
 
     # Keep SQL filtering on the full source schema.  Projection is applied only
@@ -801,16 +1236,26 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
     sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
 
     if sql and sql.strip():
-        # Prefer lazy SQL so filtering/pagination stays in the parquet scanner.
-        # Fallback keeps the legacy Polars-method expression support.
+        # Keep SQL lazy. Exact counts and eager fallback are intentionally
+        # avoided on production-size parquet because they double-scan or OOM.
         try:
             from core.parquet_perf import collect_streaming
-            filtered = lf.filter(pl.sql_expr(sql.strip()))
-            total_df = collect_streaming(filtered.select(pl.len()))
-            total = int(total_df[0, 0]) if total_df.height else 0
+            filtered = lf.filter(_lazy_filter_expr(sql, all_columns))
+            if latest_order_col:
+                filtered = filtered.sort(
+                    pl.col(latest_order_col).cast(_SORT_STR, strict=False),
+                    descending=True,
+                    nulls_last=True,
+                )
             show_lf = filtered.select(sel) if sel else filtered
-            show = collect_streaming(show_lf.slice(offset, page_size))
+            show_plus = collect_streaming(show_lf.slice(offset, page_size + 1))
+            has_more = show_plus.height > page_size
+            show = show_plus.head(page_size) if has_more else show_plus
+            total = offset + show.height + (1 if has_more else 0)
+            total_exact = False
         except Exception:
+            if not allow_eager_sql_fallback:
+                raise
             try:
                 from core.parquet_perf import collect_streaming
                 df = collect_streaming(lf)
@@ -818,21 +1263,42 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
                 df = lf.collect()
             df = apply_sql_like(df, sql)
             total = df.height
+            if latest_order_col and latest_order_col in df.columns:
+                df = df.sort(
+                    pl.col(latest_order_col).cast(_SORT_STR, strict=False),
+                    descending=True,
+                    nulls_last=True,
+                )
             if sel:
                 df = df.select(sel)
             show = df.slice(offset, page_size)
-        has_more = offset + len(show) < total
+            has_more = offset + len(show) < total
+            total_exact = True
     else:
         # Page path: parquet scan + lazy slice → only fetches the rows we need.
+        if latest_order_col:
+            lf = lf.sort(
+                pl.col(latest_order_col).cast(_SORT_STR, strict=False),
+                descending=True,
+                nulls_last=True,
+            )
         if sel:
             lf = lf.select(sel)
         try:
             from core.parquet_perf import collect_streaming
-            show = collect_streaming(lf.slice(offset, page_size))
+            show_plus = collect_streaming(lf.slice(offset, page_size + 1 if wafer_filtered else page_size))
         except Exception:
-            show = lf.slice(offset, page_size).collect()
-        total = int((cached_meta or {}).get("row_count") or 0) or (offset + show.height)
-        has_more = show.height == page_size if not cached_meta else offset + show.height < total
+            show_plus = lf.slice(offset, page_size + 1 if wafer_filtered else page_size).collect()
+        if wafer_filtered:
+            has_more = show_plus.height > page_size
+            show = show_plus.head(page_size) if has_more else show_plus
+            total = offset + show.height + (1 if has_more else 0)
+            total_exact = False
+        else:
+            show = show_plus
+            total = int((cached_meta or {}).get("row_count") or 0) or (offset + show.height)
+            has_more = show.height == page_size if not cached_meta else offset + show.height < total
+            total_exact = bool(cached_meta)
 
     return {
         "total_rows": total, "total_cols": len(all_columns),
@@ -842,8 +1308,58 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
         "data": serialize_rows(show.to_dicts()), "showing": len(show),
         "page": page, "page_size": page_size, "has_more": has_more,
         "meta_cached": bool(cached_meta),
+        "total_rows_exact": total_exact,
         "preview_cols": len(show.columns),
         "truncated_cols": truncated_cols,
+        "latest_order_col": latest_order_col or None,
+        "latest_preview": bool(latest_preview),
+        "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
+    }
+
+
+def _run_view_lazy_full(lf, sql: str, select_cols: str, preview_cols: int | None = None,
+                        latest_first: bool = False):
+    """Collect a single lightweight file fully after optional SQL/projection."""
+    schema_obj = lf.collect_schema()
+    all_columns = list(schema_obj.names())
+    schema = {n: str(schema_obj[n]) for n in all_columns}
+    latest_order_col = _latest_order_column(all_columns) if latest_first else ""
+    lf, wafer_filtered = _filter_valid_wafers_lazy(lf, all_columns)
+
+    if sql and sql.strip():
+        lf = lf.filter(_lazy_filter_expr(sql, all_columns))
+    if latest_order_col:
+        lf = lf.sort(
+            pl.col(latest_order_col).cast(_SORT_STR, strict=False),
+            descending=True,
+            nulls_last=True,
+        )
+    if preview_cols is None:
+        sel, truncated_cols = _selected_columns(all_columns, select_cols, len(all_columns) or 1)
+    else:
+        sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
+    if sel:
+        lf = lf.select(sel)
+    try:
+        from core.parquet_perf import collect_streaming
+        show = collect_streaming(lf)
+    except Exception:
+        show = lf.collect()
+    return {
+        "total_rows": show.height, "total_cols": len(all_columns),
+        "columns": list(show.columns), "all_columns": all_columns,
+        "dtypes": schema, "showing_cols": list(show.columns),
+        "selected_cols": select_cols.strip() or None,
+        "data": serialize_rows(show.to_dicts()), "showing": show.height,
+        "page": 0, "page_size": show.height, "has_more": False,
+        "meta_cached": False,
+        "total_rows_exact": True,
+        "preview_cols": len(show.columns),
+        "truncated_cols": truncated_cols,
+        "latest_order_col": latest_order_col or None,
+        "latest_preview": False,
+        "single_file_full_read": True,
+        "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
     }
 
 
@@ -857,6 +1373,7 @@ def _csv_download_max_rows(raw: int | None = None) -> int:
 def _download_lazy_csv(lf: pl.LazyFrame, sql: str, select_cols: str, max_rows: int) -> tuple[pl.DataFrame, bytes]:
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
+    lf, _wafer_filtered = _filter_valid_wafers_lazy(lf, all_columns)
     requested = [c.strip() for c in str(select_cols or "").split(",") if c.strip()]
     selected = [c for c in requested if c in set(all_columns)]
     if not selected and len(all_columns) > MAX_CSV_DOWNLOAD_AUTO_COLUMNS:
@@ -866,9 +1383,9 @@ def _download_lazy_csv(lf: pl.LazyFrame, sql: str, select_cols: str, max_rows: i
         )
     if sql and sql.strip():
         try:
-            lf = lf.filter(pl.sql_expr(sql.strip()))
+            lf = lf.filter(_lazy_filter_expr(sql, all_columns))
         except Exception as e:
-            raise HTTPException(400, f"CSV download SQL must be pushdown-compatible: {e}")
+            raise HTTPException(400, f"CSV download SQL error: {e}")
     if selected:
         lf = lf.select(selected)
     try:
@@ -894,6 +1411,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
                  select_cols: str = Query(""),
                  meta_only: bool = Query(False),
                  all_partitions: bool = Query(False),
+                 engine: str = Query("auto"),
                  page: int = Query(0, ge=0),
                  page_size: int = Query(200, ge=1, le=1000)):
     # v8.4.3 OOM-aware: Hive-flat 도 lazy_read_source 로 scan. Polars 가 projection +
@@ -904,17 +1422,45 @@ def view_product(root: str = Query(...), product: str = Query(...),
     try:
         from core.utils import lazy_read_source
         from core.parquet_perf import has_date_filter
-        # SQL 검색은 사용자가 명시적으로 DB 전체에서 찾는 동작이다. 날짜 조건이
-        # 없어도 최근 30일 pruning 및 max_files 상한을 적용하지 않는다.
-        full_scan = all_partitions or (sql and sql.strip()) or has_date_filter(sql)
+        if meta_only:
+            fast_meta = _fast_product_meta_response(root, product, cols, page=page, page_size=page_size)
+            if fast_meta is not None:
+                return fast_meta
+        # SQL 검색/컬럼 SELECT 는 사용자가 명시적으로 DB 를 조회하는 동작이다.
+        # 제품 클릭 기본 화면은 전체 스캔 대신 최신 파티션/파일에서 200행만 보여준다.
+        full_scan = (
+            all_partitions
+            or bool(sql and sql.strip())
+            or bool(select_cols and select_cols.strip())
+            or has_date_filter(sql)
+        )
         recent = None if full_scan else 30
+        latest_preview = not full_scan and not meta_only
+        if latest_preview:
+            rows = min(int(rows or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
+            page_size = min(int(page_size or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
+        if full_scan and not meta_only and duckdb_engine.is_available() and "INLINE" not in str(root or "").upper():
+            files = source_data_files(root=root, product=product)
+            if duckdb_engine.should_use_duckdb(files, engine=engine, sql=sql, select_cols=select_cols):
+                try:
+                    return _run_view_duckdb(
+                        files, sql, select_cols, rows,
+                        page=page, page_size=page_size, preview_cols=cols,
+                        latest_first=False, latest_preview=False,
+                    )
+                except Exception as e:
+                    if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
+                        raise HTTPException(400, f"DuckDB query failed: {e}")
+                    logger.warning("duckdb product view fallback root=%s product=%s: %s", root, product, e)
         lf = lazy_read_source(
             root=root, product=product,
-            recent_days=recent, max_files=None if full_scan else 20,
+            recent_days=recent, max_files=None if full_scan else LATEST_PREVIEW_MAX_FILES,
+            latest_only=latest_preview,
         )
         if lf is not None:
             return _run_view_lazy(lf, sql, select_cols, rows, meta_only=meta_only,
-                                  page=page, page_size=page_size, preview_cols=cols)
+                                  page=page, page_size=page_size, preview_cols=cols,
+                                  latest_first=latest_preview, latest_preview=latest_preview)
         # Fallback — legacy DF 경로
         df = read_source(root=root, product=product)
         if meta_only:
@@ -927,7 +1473,8 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 "data": [], "showing": 0, "meta_only": True,
                 "page": page, "page_size": page_size, "has_more": False,
             }
-        return _run_view(df, sql, select_cols, rows, page=page, page_size=page_size, preview_cols=cols)
+        return _run_view(df, sql, select_cols, rows, page=page, page_size=page_size,
+                         preview_cols=cols, latest_first=latest_preview, latest_preview=latest_preview)
     except HTTPException:
         raise
     except Exception as e:
@@ -1033,6 +1580,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       rows: int = Query(200), cols: int = Query(10),
                       select_cols: str = Query(""),
                       meta_only: bool = Query(False),
+                      engine: str = Query("auto"),
                       page: int = Query(0, ge=0),
                       page_size: int = Query(200, ge=1, le=1000)):
     # v8.4.6: path traversal 방어 — db_root 밖 파일 접근 차단
@@ -1073,6 +1621,26 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
             cached_meta = read_meta(fp)
         except Exception:
             cached_meta = None
+        ml_table = _is_ml_table_file(fp)
+        full_single_file = (not ml_table) or _has_view_filter(sql, select_cols)
+        if full_single_file:
+            return _run_view_lazy_full(
+                lf, sql, select_cols,
+                preview_cols=cols if ml_table else None,
+            )
+        rows = min(int(rows or 200), 200)
+        page_size = min(int(page_size or 200), 200)
+        if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
+            try:
+                return _run_view_duckdb(
+                    [fp], sql, select_cols, rows,
+                    page=page, page_size=page_size, cached_meta=cached_meta,
+                    preview_cols=cols,
+                )
+            except Exception as e:
+                if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
+                    raise HTTPException(400, f"DuckDB query failed: {e}")
+                logger.warning("duckdb root-parquet-view fallback file=%s: %s", file, e)
         resp = _run_view_lazy(
             lf, sql, select_cols, rows,
             page=page, page_size=page_size, cached_meta=cached_meta,
@@ -1199,6 +1767,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             except Exception as e:
                 logger.warning(f"Reformatter skipped: {e}")
 
+        df, _wafer_filtered = _filter_valid_wafers_df(df)
         if sql.strip():
             df = apply_sql_like(df, sql)
         if select_cols.strip():

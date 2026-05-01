@@ -645,106 +645,106 @@ export default function My_SplitTable({user}){
     ?customPool.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase()))
     :customPool;
   const filteredLots=lotFilter?lotSuggestions.filter(l=>String(l||"").toLowerCase().includes(lotFilter.toLowerCase())):lotSuggestions;
-  const S={padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,outline:"none"};
-  const chipS=(active)=>({padding:"3px 8px",borderRadius:4,fontSize:10,cursor:"pointer",fontWeight:active?700:400,background:active?"var(--accent-glow)":"var(--bg-hover)",color:active?"var(--accent)":"var(--text-secondary)",border:active?"1px solid var(--accent)":"1px solid transparent"});
+  const S={padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none"};
+  const chipS=(active)=>({padding:"3px 8px",borderRadius:4,fontSize:14,cursor:"pointer",fontWeight:active?700:400,background:active?"var(--accent-glow)":"var(--bg-hover)",color:active?"var(--accent)":"var(--text-secondary)",border:active?"1px solid var(--accent)":"1px solid transparent"});
 
   return(<div style={{display:"flex",height:"calc(100vh - 52px)",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
     {/* v8.4.9-c: 셀 hover 시 빈 💬+ 배지 페이드인 */}
     <style>{`.stm-cell:hover .stm-note-btn{opacity:1 !important;}`}</style>
     {/* Sidebar */}
     <div style={{width:250,minWidth:250,borderRight:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",flexDirection:"column",overflow:"auto",position:"relative"}}>
-      <div style={{padding:"12px 14px",borderBottom:"1px solid var(--border)",fontSize:12,fontWeight:700,color:"var(--text-secondary)"}}>스플릿 테이블</div>
-      <div style={{padding:"8px 12px"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>제품</div>
+      <div style={{padding:"12px 14px",borderBottom:"1px solid var(--border)",fontSize:14,fontWeight:700,color:"var(--text-secondary)"}}>스플릿 테이블</div>
+      <div style={{padding:"8px 12px"}}><div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>제품</div>
         <select value={selProd} onChange={e=>setSelProd(e.target.value)} style={{...S,width:"100%"}}>{visibleProducts.map(p=><option key={p.name} value={p.name}>{p.name}</option>)}</select></div>
       {/* Lot ID dropdown */}
       <div style={{padding:"4px 12px"}} ref={lotRef}>
-        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>루트 Lot ID</div>
+        <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>루트 Lot ID</div>
         <input value={lotId} onChange={e=>{setLotId(e.target.value);setFabLotId("");setLotFilter(e.target.value);setShowLotDrop(true);}}
           onFocus={()=>setShowLotDrop(true)} placeholder="입력 또는 선택"
           style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&(setShowLotDrop(false),doSearch())}/>
         {showLotDrop&&(filteredLots.length>0||lotSuggestBusy||lotSuggestMsg)&&<div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
-          {lotSuggestBusy&&<div style={{padding:"7px 10px",fontSize:10,color:"var(--text-secondary)"}}>Lot 후보 조회 중...</div>}
-          {!lotSuggestBusy&&filteredLots.length===0&&lotSuggestMsg&&<div style={{padding:"7px 10px",fontSize:10,color:BAD.fg,lineHeight:1.4}}>{lotSuggestMsg}</div>}
+          {lotSuggestBusy&&<div style={{padding:"7px 10px",fontSize:14,color:"var(--text-secondary)"}}>Lot 후보 조회 중...</div>}
+          {!lotSuggestBusy&&filteredLots.length===0&&lotSuggestMsg&&<div style={{padding:"7px 10px",fontSize:14,color:BAD.fg,lineHeight:1.4}}>{lotSuggestMsg}</div>}
           {!lotSuggestBusy&&filteredLots.slice(0,50).map(l=><div key={l} onClick={()=>{setLotId(l);setFabLotId("");setShowLotDrop(false);}}
-            style={{padding:"6px 10px",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--border)",color:"var(--text-primary)"}}
+            style={{padding:"6px 10px",fontSize:14,cursor:"pointer",borderBottom:"1px solid var(--border)",color:"var(--text-primary)"}}
             onMouseEnter={e=>e.currentTarget.style.background="var(--bg-hover)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{l}</div>)}
         </div>}
       </div>
       {/* v8.4.3: fab_lot_id 검색 — root_lot_id 대신 FAB 쪽 ID 로 조회 */}
       <div style={{padding:"4px 12px"}}>
-        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Fab Lot ID</div>
+        <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>Fab Lot ID</div>
         <input value={fabLotId} onChange={e=>{setFabLotId(e.target.value);setShowFabDrop(true);}}
           onFocus={()=>setShowFabDrop(true)} onBlur={()=>setTimeout(()=>setShowFabDrop(false),150)}
           placeholder="fab_lot_id 입력" style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&(setShowFabDrop(false),doSearch())}/>
         {showFabDrop&&(fabSuggestions.length>0||fabSuggestBusy||fabSuggestMsg)&&
           <div style={{maxHeight:160,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
-            {fabSuggestBusy&&<div style={{padding:"7px 10px",fontSize:10,color:"var(--text-secondary)"}}>Fab lot 후보 조회 중...</div>}
-            {!fabSuggestBusy&&(fabLotId?fabSuggestions.filter(f=>f.toLowerCase().includes(fabLotId.toLowerCase())):fabSuggestions).length===0&&fabSuggestMsg&&<div style={{padding:"7px 10px",fontSize:10,color:BAD.fg,lineHeight:1.4}}>{fabSuggestMsg}</div>}
+            {fabSuggestBusy&&<div style={{padding:"7px 10px",fontSize:14,color:"var(--text-secondary)"}}>Fab lot 후보 조회 중...</div>}
+            {!fabSuggestBusy&&(fabLotId?fabSuggestions.filter(f=>f.toLowerCase().includes(fabLotId.toLowerCase())):fabSuggestions).length===0&&fabSuggestMsg&&<div style={{padding:"7px 10px",fontSize:14,color:BAD.fg,lineHeight:1.4}}>{fabSuggestMsg}</div>}
             {!fabSuggestBusy&&(fabLotId?fabSuggestions.filter(f=>f.toLowerCase().includes(fabLotId.toLowerCase())):fabSuggestions).slice(0,50).map(f=><div key={f} onMouseDown={()=>{setFabLotId(f);setShowFabDrop(false);}}
-              style={{padding:"6px 10px",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--border)",color:"var(--text-primary)"}}
+              style={{padding:"6px 10px",fontSize:14,cursor:"pointer",borderBottom:"1px solid var(--border)",color:"var(--text-primary)"}}
               onMouseEnter={e=>e.currentTarget.style.background="var(--bg-hover)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{f}</div>)}
           </div>}
       </div>
-      <div style={{padding:"4px 12px"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>Wafer ID</div>
+      <div style={{padding:"4px 12px"}}><div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>Wafer ID</div>
         <input value={waferIds} onChange={e=>setWaferIds(e.target.value)} placeholder="예: 1,2,3" style={{...S,width:"100%"}} onKeyDown={e=>e.key==="Enter"&&doSearch()}/></div>
       <div style={{padding:"6px 12px"}}>
         <button onClick={doSearch} title="검색"
-          style={{width:"100%",padding:"7px 0",borderRadius:5,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:12,fontWeight:600,cursor:"pointer",opacity:1}}>
+          style={{width:"100%",padding:"7px 0",borderRadius:5,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer",opacity:1}}>
           검색
         </button>
       </div>
       {/* Prefix multi-select */}
-      <div style={{padding:"8px 12px",borderTop:"1px solid var(--border)"}}><div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>컬럼 그룹</div>
+      <div style={{padding:"8px 12px",borderTop:"1px solid var(--border)"}}><div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>컬럼 그룹</div>
         <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
           {prefixes.map(p=><span key={p} onClick={()=>togglePrefix(p)} style={chipS(selPrefixes.includes(p)&&!isCustomMode)}>{p}</span>)}
           <span onClick={()=>{setIsCustomMode(true);setSelPrefixes([]);}} style={chipS(isCustomMode)}>CUSTOM</span>
         </div></div>
       {/* Custom mode */}
       {isCustomMode&&<div style={{padding:"8px 12px",borderTop:"1px solid var(--border)",flex:1,overflow:"auto"}}>
-        <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4}}>커스텀 세트</div>
+        <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>커스텀 세트</div>
         {customs.map(c=><div key={c.name} style={{display:"flex",alignItems:"center",gap:4,padding:"3px 6px",borderRadius:4,marginBottom:2,background:selCustom===c.name?"var(--accent-glow)":"transparent",cursor:"pointer"}}
           onClick={()=>selectCustomSet(c)}>
-          <span style={{flex:1,fontSize:11,color:selCustom===c.name?"var(--accent)":"var(--text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.name}</span>
-          <span style={{fontSize:8,color:"var(--text-secondary)",flexShrink:0}}>{c.updated?.slice(5,10)||c.created?.slice(5,10)||""}</span>
-          {(c.username===user?.username||isAdmin)&&<span onClick={e=>{e.stopPropagation();deleteCustom(c.name);}} style={{fontSize:9,color:"rgba(239,68,68,0.95)",cursor:"pointer",flexShrink:0}} title="Delete">✕</span>}
+          <span style={{flex:1,fontSize:14,color:selCustom===c.name?"var(--accent)":"var(--text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.name}</span>
+          <span style={{fontSize:14,color:"var(--text-secondary)",flexShrink:0}}>{c.updated?.slice(5,10)||c.created?.slice(5,10)||""}</span>
+          {(c.username===user?.username||isAdmin)&&<span onClick={e=>{e.stopPropagation();deleteCustom(c.name);}} style={{fontSize:14,color:"rgba(239,68,68,0.95)",cursor:"pointer",flexShrink:0}} title="Delete">✕</span>}
         </div>)}
         {/* v8.8.16: 선택된 Set 의 컬럼을 pill 로 현재 선택 상태에 노출 — 어느 컬럼이 포함됐는지 한눈에. */}
         {selCustom&&customCols.length>0&&<div style={{marginTop:6,padding:"5px 6px",borderRadius:4,background:"var(--bg-card)",border:"1px dashed var(--border)"}}>
-          <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:3,fontWeight:600}}>'{selCustom}' 선택 컬럼 ({customCols.length})</div>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:3,fontWeight:600}}>'{selCustom}' 선택 컬럼 ({customCols.length})</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
             {customCols.map(c=><span key={c} title={c}
-              style={{display:"inline-flex",alignItems:"center",gap:2,padding:"1px 5px",borderRadius:3,fontSize:9,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>
-              {c}<span onClick={()=>setCustomCols(customCols.filter(x=>x!==c))} style={{cursor:"pointer",fontSize:10,lineHeight:1,marginLeft:2,color:"rgba(239,68,68,0.95)"}} title="제거">×</span>
+              style={{display:"inline-flex",alignItems:"center",gap:2,padding:"1px 5px",borderRadius:3,fontSize:14,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>
+              {c}<span onClick={()=>setCustomCols(customCols.filter(x=>x!==c))} style={{cursor:"pointer",fontSize:14,lineHeight:1,marginLeft:2,color:"rgba(239,68,68,0.95)"}} title="제거">×</span>
             </span>)}
           </div>
         </div>}
-        <div style={{marginTop:6,fontSize:10,color:"var(--text-secondary)"}}>생성 / 편집</div>
-        <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색" style={{...S,width:"100%",fontSize:10,marginBottom:4,marginTop:4}}/>
+        <div style={{marginTop:6,fontSize:14,color:"var(--text-secondary)"}}>생성 / 편집</div>
+        <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색" style={{...S,width:"100%",fontSize:14,marginBottom:4,marginTop:4}}/>
         {/* v8.8.16: 전체 체크/제거 + 개수 표시 */}
-        <div style={{display:"flex",gap:4,marginBottom:4,fontSize:9,alignItems:"center"}}>
+        <div style={{display:"flex",gap:4,marginBottom:4,fontSize:14,alignItems:"center"}}>
           <button onClick={()=>{const all=Array.from(new Set([...customCols,...filteredCustomCols]));setCustomCols(all);}}
-            style={{padding:"2px 8px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:9,cursor:"pointer",fontWeight:600}}>
+            style={{padding:"2px 8px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer",fontWeight:600}}>
             ✓ 전체 체크{colSearch?` (${filteredCustomCols.length})`:""}
           </button>
           <button onClick={()=>{if(colSearch){const fs=new Set(filteredCustomCols);setCustomCols(customCols.filter(c=>!fs.has(c)));}else setCustomCols([]);}}
-            style={{padding:"2px 8px",borderRadius:3,border:"1px solid #ef4444",background:"transparent",color:"rgba(239,68,68,0.95)",fontSize:9,cursor:"pointer",fontWeight:600}}>
+            style={{padding:"2px 8px",borderRadius:3,border:"1px solid #ef4444",background:"transparent",color:"rgba(239,68,68,0.95)",fontSize:14,cursor:"pointer",fontWeight:600}}>
             ✕ 전체 제거
           </button>
-          <span style={{marginLeft:"auto",color:"var(--text-secondary)",fontSize:9}}>{customCols.length}/{customPool.length} 선택</span>
+          <span style={{marginLeft:"auto",color:"var(--text-secondary)",fontSize:14}}>{customCols.length}/{customPool.length} 선택</span>
         </div>
         <div style={{maxHeight:120,overflow:"auto"}}>
-          {filteredCustomCols.map(c=><div key={c} onClick={()=>{if(!customCols.includes(c))setCustomCols([...customCols,c]);else setCustomCols(customCols.filter(x=>x!==c));}} style={{fontSize:10,padding:"2px 6px",cursor:"pointer",color:customCols.includes(c)?"var(--accent)":"var(--text-secondary)"}}>{customCols.includes(c)?"✓ ":""}{c}</div>)}
-          {filteredCustomCols.length===0&&<div style={{fontSize:10,color:"var(--text-secondary)",padding:6,fontStyle:"italic"}}>
+          {filteredCustomCols.map(c=><div key={c} onClick={()=>{if(!customCols.includes(c))setCustomCols([...customCols,c]);else setCustomCols(customCols.filter(x=>x!==c));}} style={{fontSize:14,padding:"2px 6px",cursor:"pointer",color:customCols.includes(c)?"var(--accent)":"var(--text-secondary)"}}>{customCols.includes(c)?"✓ ":""}{c}</div>)}
+          {filteredCustomCols.length===0&&<div style={{fontSize:14,color:"var(--text-secondary)",padding:6,fontStyle:"italic"}}>
             {productSchema.length===0?"제품 스키마 로딩 중...":"검색 결과 없음"}
           </div>}
         </div>
         {customCols.length>0&&<div style={{marginTop:4}}>
-          <div style={{fontSize:9,color:"var(--text-secondary)"}}>{customCols.length}개 선택</div>
+          <div style={{fontSize:14,color:"var(--text-secondary)"}}>{customCols.length}개 선택</div>
           <div style={{display:"flex",gap:4,marginTop:4}}>
-            <input value={customName} onChange={e=>setCustomName(e.target.value)} placeholder="세트명" style={{...S,flex:1,fontSize:10}}/>
-            <button onClick={saveCustom} style={{padding:"3px 8px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:10,cursor:"pointer"}}>저장</button>
+            <input value={customName} onChange={e=>setCustomName(e.target.value)} placeholder="세트명" style={{...S,flex:1,fontSize:14}}/>
+            <button onClick={saveCustom} style={{padding:"3px 8px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,cursor:"pointer"}}>저장</button>
           </div>
-          <div style={{fontSize:8,color:"var(--text-secondary)",marginTop:2}}>같은 이름은 덮어쓰기</div>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:2}}>같은 이름은 덮어쓰기</div>
         </div>}
       </div>}
       {/* Settings gear */}
@@ -752,25 +752,25 @@ export default function My_SplitTable({user}){
         <div onClick={()=>setShowSettings(!showSettings)} style={{position:"fixed",bottom:16,left:16,width:40,height:40,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,boxShadow:"0 2px 8px rgba(0,0,0,0.3)",fontSize:18}} title="Admin settings">⚙️</div>
         {showSettings&&<><div style={{position:"fixed",inset:0,zIndex:98}} onClick={()=>setShowSettings(false)}/><div style={{position:"fixed",left:"50%",top:"50%",transform:"translate(-50%, -50%)",background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:12,padding:16,width:"min(920px, calc(100vw - 32px))",maxHeight:"84vh",overflow:"auto",zIndex:99,boxShadow:"0 16px 48px rgba(0,0,0,0.55)"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-            <span style={{fontSize:12,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>Split Table 설정</span>
+            <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>Split Table 설정</span>
             <span onClick={()=>setShowSettings(false)} style={{cursor:"pointer",color:"var(--text-secondary)",fontSize:16}}>✕</span>
           </div>
           <div style={{display:"flex",gap:4,marginBottom:12,borderBottom:"1px solid var(--border)"}}>
-            <span onClick={()=>setSettingsTab("basic")} style={{padding:"5px 10px",fontSize:11,cursor:"pointer",fontWeight:settingsTab==="basic"?700:500,borderBottom:settingsTab==="basic"?"2px solid var(--accent)":"2px solid transparent",color:settingsTab==="basic"?"var(--accent)":"var(--text-secondary)"}}>기본</span>
-            <span onClick={()=>setSettingsTab("advanced")} style={{padding:"5px 10px",fontSize:11,cursor:"pointer",fontWeight:settingsTab==="advanced"?700:500,borderBottom:settingsTab==="advanced"?"2px solid var(--accent)":"2px solid transparent",color:settingsTab==="advanced"?"var(--accent)":"var(--text-secondary)"}}>고급</span>
+            <span onClick={()=>setSettingsTab("basic")} style={{padding:"5px 10px",fontSize:14,cursor:"pointer",fontWeight:settingsTab==="basic"?700:500,borderBottom:settingsTab==="basic"?"2px solid var(--accent)":"2px solid transparent",color:settingsTab==="basic"?"var(--accent)":"var(--text-secondary)"}}>기본</span>
+            <span onClick={()=>setSettingsTab("advanced")} style={{padding:"5px 10px",fontSize:14,cursor:"pointer",fontWeight:settingsTab==="advanced"?700:500,borderBottom:settingsTab==="advanced"?"2px solid var(--accent)":"2px solid transparent",color:settingsTab==="advanced"?"var(--accent)":"var(--text-secondary)"}}>고급</span>
           </div>
           {settingsTab==="basic"&&<div style={{display:"grid",gap:10,marginBottom:10}}>
             <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>
-              <div style={{fontSize:11,fontWeight:700,color:"var(--text-primary)",marginBottom:6}}>기본 표시 설정</div>
-              <div style={{display:"grid",gap:8,fontSize:10,color:"var(--text-secondary)",lineHeight:1.55}}>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--text-primary)",marginBottom:6}}>기본 표시 설정</div>
+              <div style={{display:"grid",gap:8,fontSize:14,color:"var(--text-secondary)",lineHeight:1.55}}>
                 <div>사용자에게 보이는 기본 표시 형식을 조정합니다.</div>
                 <div>적용 공정 정보, 하단 적용 요약, 표시 자리수는 화면 상단 토글과 기본 설정으로 조정할 수 있습니다.</div>
                 <div>데이터 연결 방식, 원천 컬럼 매칭, 규칙 편집은 <b>고급</b> 탭에서 관리합니다.</div>
               </div>
             </div>
             <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>
-              <div style={{fontSize:11,fontWeight:700,color:"var(--text-primary)",marginBottom:6}}>용어 안내</div>
-              <div style={{fontSize:10,color:"var(--text-secondary)",lineHeight:1.6}}>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--text-primary)",marginBottom:6}}>용어 안내</div>
+              <div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
                 내부 용어는 [docs/splittable_terms_ko.md] 에 정리되어 있습니다. 일반 사용자는 화면에서 technical 용어 대신 더 쉬운 표현을 우선 보게 됩니다.
               </div>
             </div>
@@ -778,54 +778,54 @@ export default function My_SplitTable({user}){
           {settingsTab==="advanced"&&<>
           <div style={{display:"grid",gap:8,marginBottom:12,padding:"10px 12px",borderRadius:10,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>
             <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-              <div style={{fontSize:11,fontWeight:700,color:"var(--accent)"}}>설정 연결 흐름</div>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--accent)"}}>설정 연결 흐름</div>
               <button onClick={scrollToSettingsLotLink}
-                style={{marginLeft:"auto",padding:"4px 10px",borderRadius:999,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,fontWeight:700,cursor:"pointer"}}>
+                style={{marginLeft:"auto",padding:"4px 10px",borderRadius:999,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:"pointer"}}>
                 Lot 컬럼 연결로 이동
               </button>
             </div>
-            <div style={{fontSize:10,color:"var(--text-secondary)",lineHeight:1.6}}>
+            <div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
               제품 노출, Lot 컬럼 연결, 컬럼/공정 규칙만 관리합니다. 규칙 추가·수정은 각 섹션의 <b>편집</b> 버튼에서 처리합니다.
             </div>
             <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
               <button onClick={runFabMatchCache} disabled={fabCacheBusy}
-                style={{padding:"5px 12px",borderRadius:999,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,fontWeight:700,cursor:fabCacheBusy?"wait":"pointer",opacity:fabCacheBusy?0.65:1}}>
+                style={{padding:"5px 12px",borderRadius:999,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:fabCacheBusy?"wait":"pointer",opacity:fabCacheBusy?0.65:1}}>
                 {fabCacheBusy?"FAB 캐시 스캔 중...":"FAB root/fab_lot 캐시 수동 스캔"}
               </button>
-              <span style={{fontSize:9,color:"var(--text-secondary)"}}>현재 선택 제품 기준. 제품 미선택 시 전체 표시 제품을 스캔합니다.</span>
+              <span style={{fontSize:14,color:"var(--text-secondary)"}}>현재 선택 제품 기준. 제품 미선택 시 전체 표시 제품을 스캔합니다.</span>
             </div>
           </div>
           {/* Source visibility checkboxes — Base 파일(ML_TABLE_ 등)만 표시 */}
-          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:6,fontWeight:600}}>사용자 표시 대상</div>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6,fontWeight:600}}>사용자 표시 대상</div>
           {(()=>{const baseProds=products.filter(p=>p.source_type==="base_file");const allBaseNames=baseProds.map(x=>x.name);return(<>
             {baseProds.map(p=>{const checked=!enabledSources||enabledSources.has(p.name);return(
-              <label key={p.name} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",fontSize:11,cursor:"pointer",borderBottom:"1px solid var(--border)"}}>
+              <label key={p.name} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",fontSize:14,cursor:"pointer",borderBottom:"1px solid var(--border)"}}>
                 <input type="checkbox" checked={checked} onChange={()=>{
                   const next=new Set(enabledSources||allBaseNames);
                   if(next.has(p.name))next.delete(p.name);else next.add(p.name);
                   setEnabledSources(next);saveSourceConfig(next);
                 }} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
                 <span style={{fontFamily:"monospace",flex:1}}>{p.name}</span>
-                <span style={{fontSize:9,color:"var(--text-secondary)"}}>{p.type||"parquet"}</span>
+                <span style={{fontSize:14,color:"var(--text-secondary)"}}>{p.type||"parquet"}</span>
               </label>);})}
-            <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:4,marginBottom:10}}>
+            <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:4,marginBottom:10}}>
               사용자 노출 {enabledSources?[...enabledSources].filter(n=>allBaseNames.includes(n)).length:baseProds.length} / {baseProds.length} · 선택한 제품의 실제 DB 연결은 아래 Lot 컬럼 연결에서 조정합니다.
             </div>
           </>)})()}
           {/* Prefix management */}
-          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontWeight:600}}>컬럼 그룹 관리</div>
-          {prefixes.map(p=><div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"3px 0",fontSize:11}}>
-            <span style={{fontFamily:"monospace"}}>{p}</span><span onClick={()=>removePrefix(p)} style={{color:"rgba(239,68,68,0.95)",cursor:"pointer",fontSize:10}}>✕</span>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontWeight:600}}>컬럼 그룹 관리</div>
+          {prefixes.map(p=><div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"3px 0",fontSize:14}}>
+            <span style={{fontFamily:"monospace"}}>{p}</span><span onClick={()=>removePrefix(p)} style={{color:"rgba(239,68,68,0.95)",cursor:"pointer",fontSize:14}}>✕</span>
           </div>)}
           <div style={{display:"flex",gap:4,marginTop:6}}>
-            <input value={newPrefix} onChange={e=>setNewPrefix(e.target.value)} placeholder="새 그룹명" style={{...S,flex:1,fontSize:10}} onKeyDown={e=>e.key==="Enter"&&addPrefix()}/>
-            <button onClick={addPrefix} style={{padding:"3px 8px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:10,cursor:"pointer"}}>+</button>
+            <input value={newPrefix} onChange={e=>setNewPrefix(e.target.value)} placeholder="새 그룹명" style={{...S,flex:1,fontSize:14}} onKeyDown={e=>e.key==="Enter"&&addPrefix()}/>
+            <button onClick={addPrefix} style={{padding:"3px 8px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,cursor:"pointer"}}>+</button>
           </div>
-          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontWeight:600,marginTop:10}}>표시 자리수</div>
-          <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:6}}>숫자 셀을 몇째 자리까지 표시할지 (0-10, 기본 INLINE/VM = 2)</div>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontWeight:600,marginTop:10}}>표시 자리수</div>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6}}>숫자 셀을 몇째 자리까지 표시할지 (0-10, 기본 INLINE/VM = 2)</div>
           {[...new Set([...Object.keys(precisionDraft||{}),...prefixes,"INLINE","VM"])].map(pfx=>{
             const v=precisionDraft[pfx];
-            return(<div key={pfx} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0",fontSize:11}}>
+            return(<div key={pfx} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0",fontSize:14}}>
               <span style={{fontFamily:"monospace",flex:1}}>{pfx}</span>
               <input type="number" min={0} max={10} value={v==null?"":v} placeholder="none"
                 onChange={e=>{
@@ -835,13 +835,13 @@ export default function My_SplitTable({user}){
                   else next[pfx]=Math.max(0,Math.min(10,Number(val)||0));
                   setPrecisionDraft(next);
                 }}
-                style={{width:60,padding:"3px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace"}}/>
+                style={{width:60,padding:"3px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>
             </div>);
           })}
-          <button onClick={savePrecision} style={{marginTop:6,padding:"4px 10px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,cursor:"pointer",fontWeight:600}}>Save Precision</button>
+          <button onClick={savePrecision} style={{marginTop:6,padding:"4px 10px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,cursor:"pointer",fontWeight:600}}>Save Precision</button>
 
-          <div ref={settingsLotLinkRef} style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontWeight:600,marginTop:10,scrollMarginTop:16}}>Lot 컬럼 연결 조정 ({selProd||"제품 선택 필요"})</div>
-          <div style={{fontSize:9,color:"var(--text-secondary)",marginBottom:6}}>자동 매칭을 1순위로 사용하고, 안 맞을 때만 탐색기에 보이는 DB 경로로 수동 연결합니다.</div>
+          <div ref={settingsLotLinkRef} style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontWeight:600,marginTop:10,scrollMarginTop:16}}>Lot 컬럼 연결 조정 ({selProd||"제품 선택 필요"})</div>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6}}>자동 매칭을 1순위로 사용하고, 안 맞을 때만 탐색기에 보이는 DB 경로로 수동 연결합니다.</div>
           {selProd&&(()=>{const ov=currentOverride||{};const preview=overridePreview||{};const rec=preview.recommended||{};const cols=preview.columns||[];
             const rawCols=(Array.isArray(preview.raw_columns)&&preview.raw_columns.length?preview.raw_columns:cols);
             const aliasMap=preview.column_aliases||{};
@@ -935,7 +935,7 @@ export default function My_SplitTable({user}){
                 alert("저장 실패: "+(e?.message||e));
               }
             };
-            const selectS={...S,width:"100%",fontSize:10,fontFamily:"monospace"};
+            const selectS={...S,width:"100%",fontSize:14,fontFamily:"monospace"};
             const currentPreviewLots=(currentMeta.sample_fab_values||[]).filter(Boolean);
             const draftPreviewLots=(preview.latest_fab_lot_ids||[]).filter(Boolean);
             const statusTone=currentMeta.error?"rgba(239,68,68,0.95)":currentMode==="manual"?"rgba(245,158,11,0.95)":"rgba(34,197,94,0.95)";
@@ -944,116 +944,116 @@ export default function My_SplitTable({user}){
             return(<div style={{display:"grid",gap:10,padding:"12px 14px",borderRadius:10,background:"var(--bg-secondary)",border:"1px solid var(--border)",marginBottom:10}}>
               <div style={{display:"grid",gridTemplateColumns:"repeat(2, minmax(0, 1fr))",gap:8}}>
                 <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg-card)",border:"1px solid var(--border)"}}>
-                  <div style={{fontSize:10,fontWeight:700,color:"var(--accent)",marginBottom:6}}>현재 적용</div>
-                  <div style={{display:"grid",gap:4,fontSize:10,color:"var(--text-secondary)",lineHeight:1.55}}>
+                  <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginBottom:6}}>현재 적용</div>
+                  <div style={{display:"grid",gap:4,fontSize:14,color:"var(--text-secondary)",lineHeight:1.55}}>
                     <div>방식: <span style={{color:statusTone,fontWeight:700}}>{currentMode==="manual"?"수동 연결":"자동 매칭"}</span></div>
                     <div>경로: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{currentSource||"(없음)"}</span></div>
                     <div>fab_col / ts_col: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{currentMeta.fab_col||"fab_lot_id"} / {currentMeta.ts_col||"last"}</span></div>
                     <div>join_keys: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{(currentMeta.join_keys||[]).length?(currentMeta.join_keys||[]).join(", "):"미확정"}</span></div>
                     {currentAliasPairs.length>0&&<div>raw → runtime: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{currentAliasPairs.map(([raw,runtime])=>`${raw}→${runtime}`).join(", ")}</span></div>}
                     <div style={{display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>fab_lot 예시:
-                      {currentPreviewLots.length?currentPreviewLots.map(v=><span key={v} style={{padding:"1px 7px",borderRadius:999,background:"rgba(34,197,94,0.12)",color:"rgba(22,163,74,0.95)",fontSize:10,fontFamily:"monospace",fontWeight:700}}>{v}</span>)
-                        :<span style={{fontSize:10,color:"var(--text-secondary)"}}>표시할 값 없음</span>}
+                      {currentPreviewLots.length?currentPreviewLots.map(v=><span key={v} style={{padding:"1px 7px",borderRadius:999,background:"rgba(34,197,94,0.12)",color:"rgba(22,163,74,0.95)",fontSize:14,fontFamily:"monospace",fontWeight:700}}>{v}</span>)
+                        :<span style={{fontSize:14,color:"var(--text-secondary)"}}>표시할 값 없음</span>}
                     </div>
-                    {currentMeta.error&&<div style={{padding:"6px 8px",borderRadius:6,background:"rgba(239,68,68,0.12)",border:"1px solid rgba(239,68,68,0.35)",fontSize:10,color:"rgba(239,68,68,0.95)"}}>{currentMeta.error}</div>}
+                    {currentMeta.error&&<div style={{padding:"6px 8px",borderRadius:6,background:"rgba(239,68,68,0.12)",border:"1px solid rgba(239,68,68,0.35)",fontSize:14,color:"rgba(239,68,68,0.95)"}}>{currentMeta.error}</div>}
                   </div>
                 </div>
                 <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg-card)",border:"1px solid var(--border)"}}>
-                  <div style={{fontSize:10,fontWeight:700,color:"var(--accent)",marginBottom:6}}>자동 매칭 후보</div>
-                  <div style={{display:"grid",gap:4,fontSize:10,color:"var(--text-secondary)",lineHeight:1.55}}>
+                  <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginBottom:6}}>자동 매칭 후보</div>
+                  <div style={{display:"grid",gap:4,fontSize:14,color:"var(--text-secondary)",lineHeight:1.55}}>
                     <div>ML_TABLE 파생 제품: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{mlMatch.pro||deriveProductFolder(selProd)||"(없음)"}</span></div>
                     <div>자동 경로: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{autoFabSource||"(자동 후보 없음)"}</span></div>
                     <div>탐색기 DB 후보: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{(mlMatch.matches||[]).length?(mlMatch.matches||[]).map(x=>x.path).join(", "):"(없음)"}</span></div>
-                    <div style={{fontSize:9,color:"var(--text-secondary)"}}>수동 연결은 아래 목록에서 탐색기와 같은 DB 경로를 직접 고릅니다.</div>
+                    <div style={{fontSize:14,color:"var(--text-secondary)"}}>수동 연결은 아래 목록에서 탐색기와 같은 DB 경로를 직접 고릅니다.</div>
                   </div>
                 </div>
               </div>
 
-              <div style={{fontSize:10,fontWeight:700,color:"var(--accent)"}}>1. 연결 방식 선택</div>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--accent)"}}>1. 연결 방식 선택</div>
               <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-                <button onClick={()=>setMode("auto")} style={{padding:"5px 12px",borderRadius:999,border:draftOverrideMode==="auto"?"1px solid var(--accent)":"1px solid var(--border)",background:draftOverrideMode==="auto"?"var(--accent-glow)":"var(--bg-card)",color:draftOverrideMode==="auto"?"var(--accent)":"var(--text-secondary)",fontSize:10,fontWeight:700,cursor:"pointer"}}>자동 매칭</button>
-                <button onClick={()=>setMode("manual")} disabled={!manualFabOptions.length} style={{padding:"5px 12px",borderRadius:999,border:draftOverrideMode==="manual"?"1px solid rgba(245,158,11,0.95)":"1px solid var(--border)",background:draftOverrideMode==="manual"?"rgba(245,158,11,0.12)":"var(--bg-card)",color:draftOverrideMode==="manual"?"rgba(245,158,11,0.95)":"var(--text-secondary)",fontSize:10,fontWeight:700,cursor:manualFabOptions.length?"pointer":"not-allowed",opacity:manualFabOptions.length?1:0.5}}>수동 연결</button>
+                <button onClick={()=>setMode("auto")} style={{padding:"5px 12px",borderRadius:999,border:draftOverrideMode==="auto"?"1px solid var(--accent)":"1px solid var(--border)",background:draftOverrideMode==="auto"?"var(--accent-glow)":"var(--bg-card)",color:draftOverrideMode==="auto"?"var(--accent)":"var(--text-secondary)",fontSize:14,fontWeight:700,cursor:"pointer"}}>자동 매칭</button>
+                <button onClick={()=>setMode("manual")} disabled={!manualFabOptions.length} style={{padding:"5px 12px",borderRadius:999,border:draftOverrideMode==="manual"?"1px solid rgba(245,158,11,0.95)":"1px solid var(--border)",background:draftOverrideMode==="manual"?"rgba(245,158,11,0.12)":"var(--bg-card)",color:draftOverrideMode==="manual"?"rgba(245,158,11,0.95)":"var(--text-secondary)",fontSize:14,fontWeight:700,cursor:manualFabOptions.length?"pointer":"not-allowed",opacity:manualFabOptions.length?1:0.5}}>수동 연결</button>
               </div>
               {draftOverrideMode==="auto"
-                ?<div style={{padding:"10px 12px",borderRadius:8,background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.24)",fontSize:10,color:"var(--text-secondary)",lineHeight:1.6}}>
+                ?<div style={{padding:"10px 12px",borderRadius:8,background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.24)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
                   <div>저장 시 <span style={{fontFamily:"monospace",color:"rgba(22,163,74,0.95)",fontWeight:700}}>{autoFabSource||"(자동 후보 없음)"}</span> 를 사용합니다.</div>
                   <div>자동 후보가 없으면 수동 연결로 전환해서 탐색기 DB 경로를 선택하면 됩니다.</div>
                 </div>
                 :<div style={{display:"grid",gap:6}}>
-                  <div style={{fontSize:10,fontWeight:700,color:"var(--accent)"}}>2. 수동 DB 경로 선택</div>
+                  <div style={{fontSize:14,fontWeight:700,color:"var(--accent)"}}>2. 수동 DB 경로 선택</div>
                   <select value={currentManualFabSource||""} onChange={e=>setManualSource(e.target.value)} style={selectS}>
                     <option value="">DB 경로 선택</option>
                     {manualFabOptions.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
-                  <div style={{fontSize:9,color:"var(--text-secondary)"}}>탐색기에 보이는 DB 경로와 같은 형식으로 연결됩니다. 예: <span style={{fontFamily:"monospace"}}>1.RAWDATA_DB_FAB/PRODA</span></div>
+                  <div style={{fontSize:14,color:"var(--text-secondary)"}}>탐색기에 보이는 DB 경로와 같은 형식으로 연결됩니다. 예: <span style={{fontFamily:"monospace"}}>1.RAWDATA_DB_FAB/PRODA</span></div>
                 </div>}
 
-              <div style={{fontSize:10,fontWeight:700,color:"var(--accent)",marginTop:2}}>3. 연결 열 확인</div>
-              {overridePreviewLoading?<div style={{fontSize:10,color:"var(--text-secondary)"}}>연결 미리보기 로딩 중...</div>
-              :!effectivePreviewSource?<div style={{padding:"8px 10px",borderRadius:6,background:"var(--bg-card)",border:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)"}}>먼저 자동 후보를 확인하거나 수동 DB 경로를 선택하세요.</div>
-              :preview.error&&!previewApiMissing?<div style={{padding:"8px 10px",borderRadius:6,background:"rgba(239,68,68,0.12)",border:"1px solid rgba(239,68,68,0.35)",fontSize:10,color:"rgba(239,68,68,0.95)",lineHeight:1.5}}>{preview.error}</div>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginTop:2}}>3. 연결 열 확인</div>
+              {overridePreviewLoading?<div style={{fontSize:14,color:"var(--text-secondary)"}}>연결 미리보기 로딩 중...</div>
+              :!effectivePreviewSource?<div style={{padding:"8px 10px",borderRadius:6,background:"var(--bg-card)",border:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>먼저 자동 후보를 확인하거나 수동 DB 경로를 선택하세요.</div>
+              :preview.error&&!previewApiMissing?<div style={{padding:"8px 10px",borderRadius:6,background:"rgba(239,68,68,0.12)",border:"1px solid rgba(239,68,68,0.35)",fontSize:14,color:"rgba(239,68,68,0.95)",lineHeight:1.5}}>{preview.error}</div>
               :<div style={{display:"grid",gap:8}}>
-                <div style={{fontSize:10,color:"var(--text-secondary)",lineHeight:1.5}}>
+                <div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.5}}>
                   미리보기 경로: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{effectivePreviewSource}</span>
                 </div>
-                {draftAliasPairs.length>0&&<div style={{padding:"8px 10px",borderRadius:6,background:"rgba(59,130,246,0.08)",border:"1px solid rgba(59,130,246,0.24)",fontSize:10,color:"var(--text-secondary)",lineHeight:1.5}}>
+                {draftAliasPairs.length>0&&<div style={{padding:"8px 10px",borderRadius:6,background:"rgba(59,130,246,0.08)",border:"1px solid rgba(59,130,246,0.24)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.5}}>
                   실제 DB 컬럼 선택 기준: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{draftAliasPairs.map(([raw,runtime])=>`${raw} → ${runtime}`).join(", ")}</span>
                 </div>}
-                {previewApiMissing&&<div style={{padding:"8px 10px",borderRadius:6,background:"rgba(245,158,11,0.12)",border:"1px solid rgba(245,158,11,0.35)",fontSize:10,color:"rgba(245,158,11,0.95)",lineHeight:1.5}}>
+                {previewApiMissing&&<div style={{padding:"8px 10px",borderRadius:6,background:"rgba(245,158,11,0.12)",border:"1px solid rgba(245,158,11,0.35)",fontSize:14,color:"rgba(245,158,11,0.95)",lineHeight:1.5}}>
                   {preview.error}
                 </div>}
                 <div style={{display:"grid",gridTemplateColumns:"repeat(2, minmax(0, 1fr))",gap:6}}>
-                  <label style={{fontSize:10,color:"var(--text-secondary)"}}>root_col
+                  <label style={{fontSize:14,color:"var(--text-secondary)"}}>root_col
                     <select value={selectedRootCol||""} onChange={e=>setOv("root_col",e.target.value)} style={{...selectS,marginTop:4}}>
                       <option value="">자동 ({rec.root_col||"없음"})</option>
                       {rawCols.map(c=><option key={c} value={c}>{formatColLabel(c)}</option>)}
                     </select>
                   </label>
-                  <label style={{fontSize:10,color:"var(--text-secondary)"}}>wf_col
+                  <label style={{fontSize:14,color:"var(--text-secondary)"}}>wf_col
                     <select value={selectedWfCol||""} onChange={e=>setOv("wf_col",e.target.value)} style={{...selectS,marginTop:4}}>
                       <option value="">자동 ({rec.wf_col||"없음"})</option>
                       {rawCols.map(c=><option key={c} value={c}>{formatColLabel(c)}</option>)}
                     </select>
                   </label>
-                  <label style={{fontSize:10,color:"var(--text-secondary)"}}>fab_col
+                  <label style={{fontSize:14,color:"var(--text-secondary)"}}>fab_col
                     <select value={selectedFabCol||""} onChange={e=>setOv("fab_col",e.target.value)} style={{...selectS,marginTop:4}}>
                       <option value="">자동 ({rec.fab_col||"없음"})</option>
                       {rawCols.map(c=><option key={c} value={c}>{formatColLabel(c)}</option>)}
                     </select>
                   </label>
-                  <label style={{fontSize:10,color:"var(--text-secondary)"}}>ts_col
+                  <label style={{fontSize:14,color:"var(--text-secondary)"}}>ts_col
                     <select value={selectedTsCol||""} onChange={e=>setOv("ts_col",e.target.value)} style={{...selectS,marginTop:4}}>
                       <option value="">자동 ({rec.ts_col||"없음"})</option>
                       {rawCols.map(c=><option key={c} value={c}>{formatColLabel(c)}</option>)}
                     </select>
                   </label>
                 </div>
-                <div style={{fontSize:10,color:"var(--text-secondary)"}}>4. 가져올 열 (실제 DB 컬럼)</div>
+                <div style={{fontSize:14,color:"var(--text-secondary)"}}>4. 가져올 열 (실제 DB 컬럼)</div>
                 <div style={{display:"flex",flexWrap:"wrap",gap:4,maxHeight:120,overflowY:"auto",padding:"2px 0"}}>
                   {overrideOptions.map(col=><span key={col} onClick={()=>toggleOverrideCol(col)}
-                    style={{padding:"3px 8px",borderRadius:999,cursor:"pointer",fontSize:10,fontFamily:"monospace",
+                    style={{padding:"3px 8px",borderRadius:999,cursor:"pointer",fontSize:14,fontFamily:"monospace",
                       background:chosenCols.includes(col)?"var(--accent-glow)":"var(--bg-card)",
                       color:chosenCols.includes(col)?"var(--accent)":"var(--text-secondary)",
                       border:"1px solid "+(chosenCols.includes(col)?"var(--accent)":"var(--border)")}}>
                     {chosenCols.includes(col)?"✓ ":""}{formatColLabel(col)}
                   </span>)}
-                  {overrideOptions.length===0&&<span style={{fontSize:10,color:"var(--text-secondary)"}}>선택 가능한 DB 컬럼 없음</span>}
+                  {overrideOptions.length===0&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>선택 가능한 DB 컬럼 없음</span>}
                 </div>
-                <div style={{fontSize:10,color:"var(--text-secondary)"}}>5. 최근 fab_lot_id 미리보기</div>
+                <div style={{fontSize:14,color:"var(--text-secondary)"}}>5. 최근 fab_lot_id 미리보기</div>
                 <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-                  {draftPreviewLots.map(v=><span key={v} style={{padding:"2px 8px",borderRadius:999,background:"rgba(245,158,11,0.14)",color:"rgba(245,158,11,0.95)",fontSize:10,fontFamily:"monospace",fontWeight:700}}>{v}</span>)}
-                  {draftPreviewLots.length===0&&<span style={{fontSize:10,color:"var(--text-secondary)"}}>{previewApiMissing?"미리보기 API가 없어 저장 후 조회에서 확인됩니다.":"표시할 fab_lot_id 가 없습니다."}</span>}
+                  {draftPreviewLots.map(v=><span key={v} style={{padding:"2px 8px",borderRadius:999,background:"rgba(245,158,11,0.14)",color:"rgba(245,158,11,0.95)",fontSize:14,fontFamily:"monospace",fontWeight:700}}>{v}</span>)}
+                  {draftPreviewLots.length===0&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>{previewApiMissing?"미리보기 API가 없어 저장 후 조회에서 확인됩니다.":"표시할 fab_lot_id 가 없습니다."}</span>}
                 </div>
               </div>}
               <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
-                <button onClick={applyLink} style={{padding:"5px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:10,cursor:"pointer",fontWeight:700}}>연결 적용</button>
-                <span style={{fontSize:9,color:"var(--text-secondary)"}}>현재 선택된 제품에만 저장됩니다.</span>
+                <button onClick={applyLink} style={{padding:"5px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,cursor:"pointer",fontWeight:700}}>연결 적용</button>
+                <span style={{fontSize:14,color:"var(--text-secondary)"}}>현재 선택된 제품에만 저장됩니다.</span>
               </div>
               <details style={{marginTop:2}}>
-                <summary style={{cursor:"pointer",fontSize:10,color:"var(--text-secondary)"}}>고급 수동 조정</summary>
+                <summary style={{cursor:"pointer",fontSize:14,color:"var(--text-secondary)"}}>고급 수동 조정</summary>
                 <div style={{display:"grid",gap:6,marginTop:8}}>
                   <textarea value={ov.override_cols||""} onChange={e=>setOv("override_cols",e.target.value)} rows={2}
-                    placeholder={(overrideOptions||[]).join(", ")||"root_lot_id, wafer_id, lot_id, time"} style={{...S,width:"100%",fontSize:10,fontFamily:"monospace",resize:"vertical"}}/>
+                    placeholder={(overrideOptions||[]).join(", ")||"root_lot_id, wafer_id, lot_id, time"} style={{...S,width:"100%",fontSize:14,fontFamily:"monospace",resize:"vertical"}}/>
                 </div>
               </details>
             </div>);
@@ -1073,19 +1073,19 @@ export default function My_SplitTable({user}){
             };
             const SectionHeader = ({title, files, count, editKinds}) => (
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
-                <span style={{fontSize:10,fontWeight:700,color:"var(--text-primary)"}}>{title}</span>
-                <span style={{fontSize:9,color:"var(--text-secondary)"}}>({count} 항목)</span>
-                <span style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace"}}>
+                <span style={{fontSize:14,fontWeight:700,color:"var(--text-primary)"}}>{title}</span>
+                <span style={{fontSize:14,color:"var(--text-secondary)"}}>({count} 항목)</span>
+                <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
                   → {files.join(" + ")}
                 </span>
                 {isAdmin && (editKinds||[]).map(k => (
                   <span key={k} style={{display:"inline-flex",gap:2}}>
                     <button onClick={()=>openRowEditor(k)}
                       title={`${k} 의 ${selProd||"제품"} 행 추가/수정/삭제`}
-                      style={{padding:"1px 6px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:9,cursor:"pointer"}}>편집 {k}</button>
+                      style={{padding:"1px 6px",borderRadius:3,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>편집 {k}</button>
                     <button onClick={()=>openSchemaEditor(k)}
                       title={`${k} 의 역할→실제 컬럼명 매핑 조정 (soft-landing)`}
-                      style={{padding:"1px 6px",borderRadius:3,border:"1px dashed var(--text-secondary)",background:"transparent",color:"var(--text-secondary)",fontSize:9,cursor:"pointer"}}>🔧 컬럼</button>
+                      style={{padding:"1px 6px",borderRadius:3,border:"1px dashed var(--text-secondary)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>🔧 컬럼</button>
                   </span>
                 ))}
               </div>
@@ -1100,8 +1100,8 @@ export default function My_SplitTable({user}){
                   return(
                     <div key={kind} style={{padding:"7px 8px",borderRadius:6,background:"var(--bg-secondary)",border:"1px solid var(--border)"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:5}}>
-                        <span style={{fontSize:10,fontWeight:700,color:spec.color,fontFamily:"monospace"}}>{spec.file}</span>
-                        <span style={{fontSize:9,color:"var(--text-secondary)"}}>기준 CSV</span>
+                        <span style={{fontSize:14,fontWeight:700,color:spec.color,fontFamily:"monospace"}}>{spec.file}</span>
+                        <span style={{fontSize:14,color:"var(--text-secondary)"}}>기준 CSV</span>
                       </div>
                       <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
                         {spec.roles.map(([label,key])=>{
@@ -1111,7 +1111,7 @@ export default function My_SplitTable({user}){
                             <span key={key} style={{
                               padding:"2px 7px",
                               borderRadius:999,
-                              fontSize:9,
+                              fontSize:14,
                               fontFamily:"monospace",
                               background:changed?"rgba(245,158,11,0.12)":"var(--bg-card)",
                               color:changed?"rgba(245,158,11,0.95)":"var(--text-secondary)",
@@ -1134,8 +1134,8 @@ export default function My_SplitTable({user}){
 
             return (
               <div style={{marginTop:12,marginBottom:10,padding:"8px 10px",borderRadius:6,background:"var(--bg-card)",border:"1px dashed var(--border)"}}>
-                <div style={{fontSize:11,fontWeight:700,color:"var(--accent)",marginBottom:8}}>📘 컬럼/공정 연결 규칙 — {selProd}</div>
-                <div style={{marginBottom:8,padding:"8px 10px",borderRadius:6,background:"var(--bg-secondary)",border:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",lineHeight:1.6}}>
+                <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginBottom:8}}>📘 컬럼/공정 연결 규칙 — {selProd}</div>
+                <div style={{marginBottom:8,padding:"8px 10px",borderRadius:6,background:"var(--bg-secondary)",border:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
                   <div>기본값은 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>같은 이름의 Base 파일</span>과 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>기본 열 이름</span>을 자동으로 사용합니다.</div>
                   <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>KNOB_*</span> 는 조건 항목을 <span style={{fontFamily:"monospace"}}>knob_ppid.csv</span> 와 <span style={{fontFamily:"monospace"}}>step_matching.csv</span> 로 function_step / step_id 에 연결합니다.</div>
                   <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>INLINE_*</span>, <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>VM_*</span> 은 측정/예측 항목을 각 matching 파일로 step_id 에 연결합니다.</div>
@@ -1149,13 +1149,13 @@ export default function My_SplitTable({user}){
                     editKinds={["knob_ppid","step_matching"]} />
                   <RulebookSourceSummary kinds={["knob_ppid","step_matching"]}/>
                   {knobEntries.length===0 && (
-                    <div style={{fontSize:9,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 KNOB 룰 없음.</div>
+                    <div style={{fontSize:14,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 KNOB 룰 없음.</div>
                   )}
                   <div style={{maxHeight:160,overflowY:"auto",display:"flex",flexDirection:"column",gap:4}}>
                     {knobEntries.map(([fname, meta]) => (
                       <div key={fname} style={{padding:"4px 6px",borderRadius:3,background:"var(--bg-secondary)"}}>
-                        <div style={{fontFamily:"monospace",fontSize:10,color:"rgba(251,191,36,0.95)",fontWeight:700}}>{fname}</div>
-                        <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:1,lineHeight:1.4}}>
+                        <div style={{fontFamily:"monospace",fontSize:14,color:"rgba(251,191,36,0.95)",fontWeight:700}}>{fname}</div>
+                        <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:1,lineHeight:1.4}}>
                           {(meta.groups || []).map((g, gi) => (
                             <div key={gi} style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:1}}>
                               <span style={{padding:"0 3px",background:"rgba(59,130,246,0.15)",color:"rgba(59,130,246,0.95)",borderRadius:2,fontFamily:"monospace",fontWeight:700}}>#{g.rule_order}</span>
@@ -1165,7 +1165,7 @@ export default function My_SplitTable({user}){
                               ))}
                               {g.operator && <span style={{opacity:0.55}}>{g.operator}</span>}
                               {g.ppid && <span style={{fontFamily:"monospace",opacity:0.7}}>[{g.ppid}]</span>}
-                              <span style={{flex:"1 1 100%",marginLeft:12,fontFamily:"monospace",fontSize:9,color:"var(--text-secondary)"}}>
+                              <span style={{flex:"1 1 100%",marginLeft:12,fontFamily:"monospace",fontSize:14,color:"var(--text-secondary)"}}>
                                 → [{(g.step_ids || []).join(", ") || "—"}]
                               </span>
                             </div>
@@ -1183,11 +1183,11 @@ export default function My_SplitTable({user}){
                     editKinds={["inline_matching"]} />
                   <RulebookSourceSummary kinds={["inline_matching"]}/>
                   {inlineEntries.length===0 && (
-                    <div style={{fontSize:9,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 INLINE 룰 없음.</div>
+                    <div style={{fontSize:14,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 INLINE 룰 없음.</div>
                   )}
                   <div style={{maxHeight:120,overflowY:"auto",display:"flex",flexDirection:"column",gap:3}}>
                     {inlineEntries.map(([fname, meta]) => (
-                      <div key={fname} style={{padding:"3px 6px",borderRadius:3,background:"var(--bg-secondary)",display:"flex",gap:6,fontFamily:"monospace",fontSize:9,alignItems:"center"}}>
+                      <div key={fname} style={{padding:"3px 6px",borderRadius:3,background:"var(--bg-secondary)",display:"flex",gap:6,fontFamily:"monospace",fontSize:14,alignItems:"center"}}>
                         <span style={{color:"rgba(16,185,129,0.95)",fontWeight:700}}>{fname}</span>
                         {meta.item_desc && <span style={{color:"var(--text-secondary)"}}>{meta.item_desc}</span>}
                         <span style={{flex:1}}/>
@@ -1206,11 +1206,11 @@ export default function My_SplitTable({user}){
                     editKinds={["vm_matching"]} />
                   <RulebookSourceSummary kinds={["vm_matching"]}/>
                   {vmEntries.length===0 && (
-                    <div style={{fontSize:9,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 VM 룰 없음.</div>
+                    <div style={{fontSize:14,fontStyle:"italic",color:"var(--text-secondary)"}}>등록된 VM 룰 없음.</div>
                   )}
                   <div style={{maxHeight:140,overflowY:"auto",display:"flex",flexDirection:"column",gap:3}}>
                     {vmEntries.map(([fname, meta]) => (
-                      <div key={fname} style={{padding:"3px 6px",borderRadius:3,background:"var(--bg-secondary)",display:"flex",gap:6,fontFamily:"monospace",fontSize:9}}>
+                      <div key={fname} style={{padding:"3px 6px",borderRadius:3,background:"var(--bg-secondary)",display:"flex",gap:6,fontFamily:"monospace",fontSize:14}}>
                         <span style={{color:"rgba(139,92,246,0.95)",fontWeight:700}}>{fname}</span>
                         {meta.step_desc && <span style={{color:"var(--text-secondary)"}}>{meta.step_desc}</span>}
                         <span style={{flex:1}}/>
@@ -1220,27 +1220,27 @@ export default function My_SplitTable({user}){
                   </div>
                 </div>
 
-                <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:4,lineHeight:1.4}}>
+                <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:4,lineHeight:1.4}}>
                   {isAdmin ? "admin: 섹션별 [편집]에서 제품별 연결 규칙을 추가/수정/삭제하고, [컬럼]에서 CSV 헤더 매핑을 조정합니다." : "편집은 admin 권한이 필요합니다. 규칙 파일은 DB 루트 최상단에 있습니다."}
                 </div>
               </div>
             );
           })()}
 
-          <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:10,marginBottom:10,lineHeight:1.5}}>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:10,marginBottom:10,lineHeight:1.5}}>
             Color-coded: {COLOR_PREFIXES.join(", ")}
           </div>
           </>}
-          <button onClick={()=>setShowSettings(false)} style={{width:"100%",padding:"8px",borderRadius:6,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontWeight:600,fontSize:11,cursor:"pointer"}}>{settingsTab==="advanced"?"고급 설정 닫기":"닫기"}</button>
+          <button onClick={()=>setShowSettings(false)} style={{width:"100%",padding:"8px",borderRadius:6,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontWeight:600,fontSize:14,cursor:"pointer"}}>{settingsTab==="advanced"?"고급 설정 닫기":"닫기"}</button>
         </div></>}
       </div>}
     </div>
     {/* Main */}
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
       <div style={{padding:"8px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-        <span style={{fontSize:13,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{selProd}</span>
-        {lotId&&<span style={{fontSize:11,color:"var(--text-secondary)"}}>| {lotId}</span>}
-        <span style={{fontSize:10,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"2px 8px",borderRadius:4}}>
+        <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{selProd}</span>
+        {lotId&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>| {lotId}</span>}
+        <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"2px 8px",borderRadius:4}}>
           {isCustomMode?"CUSTOM"+(selCustom?": "+selCustom:""):selPrefixes.join("+")}</span>
         {/* v8.8.5: 상단 fab_source 배지 — Fab Lot ID 가 어디서 join 되어 왔는지 한눈에 확인. */}
         {(data?.override||mlMatch.override) && (()=>{const ov=data?.override||mlMatch.override;
@@ -1255,89 +1255,101 @@ export default function My_SplitTable({user}){
             ].filter(Boolean).join("");
             return <span title={detail}
               onClick={()=>alert(detail)}
-              style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"rgba(239,68,68,0.15)",color:"rgba(239,68,68,0.95)",border:"1px solid #ef4444",cursor:"help"}}>⚠ FAB 연동 꺼짐 (상세)</span>;
+              style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"rgba(239,68,68,0.15)",color:"rgba(239,68,68,0.95)",border:"1px solid #ef4444",cursor:"help"}}>⚠ FAB 연동 꺼짐 (상세)</span>;
           }
           if(!ov.enabled){
             if(!mlMatch.effective_fab_source) return null;
-            return <span style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"rgba(245,158,11,0.12)",color:"rgba(245,158,11,0.95)",border:"1px solid rgba(245,158,11,0.45)",fontFamily:"monospace"}}>
+            return <span style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"rgba(245,158,11,0.12)",color:"rgba(245,158,11,0.95)",border:"1px solid rgba(245,158,11,0.45)",fontFamily:"monospace"}}>
               🔗 {mlMatch.effective_fab_source} (확인 필요)
             </span>;
           }
           const sfx=ov.manual_override?"매뉴얼":"자동";
           const title=`fab_source: ${ov.fab_source}\nfab_col: ${ov.fab_col} · ts_col: ${ov.ts_col||"(없음)"}\njoin_keys: [${(ov.join_keys||[]).join(", ")}]\nscanned: ${ov.scanned_count}파일 / ${ov.row_count}행\nsample: ${(ov.sample_fab_values||[]).join(", ")||"(없음)"}`;
-          return <span title={title} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"rgba(34,197,94,0.12)",color:"rgba(22,163,74,0.95)",border:"1px solid #22c55e",fontFamily:"monospace",cursor:"help"}}>
+          return <span title={title} style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"rgba(34,197,94,0.12)",color:"rgba(22,163,74,0.95)",border:"1px solid #22c55e",fontFamily:"monospace",cursor:"help"}}>
             🔗 {ov.fab_source} · {ov.fab_col}@{ov.ts_col||"last"} ({sfx})
           </span>;
         })()}
         <div style={{marginLeft:"auto",display:"flex",gap:4,alignItems:"center"}}>
           {/* v8.4.3: Features 탭 제거 — ML_TABLE_PROD* 가 source 이므로 별도 features 뷰 불필요. */}
-          {[{k:"view",l:"View"},{k:"history",l:"History"}].map(({k,l})=><span key={k} className={"splittable-tab splittable-tab-"+k} data-active={tab===k?"1":"0"} onClick={()=>{setTab(k);if(k==="history")loadHistoryByMode(histMode);}} style={{padding:"4px 10px",borderRadius:4,fontSize:11,cursor:"pointer",background:tab===k?"var(--accent-glow)":"transparent",color:tab===k?"var(--accent)":"var(--text-secondary)",fontWeight:tab===k?600:400}}>{l}</span>)}
+          {[{k:"view",l:"View"},{k:"history",l:"History"}].map(({k,l})=><span key={k} className={"splittable-tab splittable-tab-"+k} data-active={tab===k?"1":"0"} onClick={()=>{setTab(k);if(k==="history")loadHistoryByMode(histMode);}} style={{padding:"4px 10px",borderRadius:4,fontSize:14,cursor:"pointer",background:tab===k?"var(--accent-glow)":"transparent",color:tab===k?"var(--accent)":"var(--text-secondary)",fontWeight:tab===k?600:400}}>{l}</span>)}
           <span style={{width:1,height:16,background:"var(--border)"}}/>
-          {["all","diff"].map(m=><span key={m} onClick={()=>setViewMode(m)} style={{padding:"4px 10px",borderRadius:4,fontSize:11,cursor:"pointer",background:viewMode===m?"var(--accent-glow)":"transparent",color:viewMode===m?"var(--accent)":"var(--text-secondary)",fontWeight:viewMode===m?600:400}}>{m}</span>)}
+          {["all","diff"].map(m=><span key={m} onClick={()=>setViewMode(m)} style={{padding:"4px 10px",borderRadius:4,fontSize:14,cursor:"pointer",background:viewMode===m?"var(--accent-glow)":"transparent",color:viewMode===m?"var(--accent)":"var(--text-secondary)",fontWeight:viewMode===m?600:400}}>{m}</span>)}
           <span style={{width:1,height:16,background:"var(--border)"}}/>
-          <label title="필요할 때만 적용 대상 공정 정보를 표시합니다" style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:11,color:showParamMeta?"var(--accent)":"var(--text-secondary)",cursor:"pointer",padding:"2px 6px"}}>
+          <label title="필요할 때만 적용 대상 공정 정보를 표시합니다" style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:14,color:showParamMeta?"var(--accent)":"var(--text-secondary)",cursor:"pointer",padding:"2px 6px"}}>
             <input type="checkbox" checked={showParamMeta} onChange={e=>setShowParamMeta(e.target.checked)}/>
             적용 공정 정보
           </label>
-          <label title="아래 요약 표에서 항목과 적용 공정을 함께 봅니다" style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:11,color:showLineageSummary?"var(--accent)":"var(--text-secondary)",cursor:"pointer",padding:"2px 6px"}}>
+          <label title="아래 요약 표에서 항목과 적용 공정을 함께 봅니다" style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:14,color:showLineageSummary?"var(--accent)":"var(--text-secondary)",cursor:"pointer",padding:"2px 6px"}}>
             <input type="checkbox" checked={showLineageSummary} onChange={e=>setShowLineageSummary(e.target.checked)}/>
             하단 적용 요약
           </label>
           <span style={{width:1,height:16,background:"var(--border)"}}/>
           {editing?<>
-            <button onClick={()=>{if(Object.keys(pendingPlans).length>0)setShowConfirm(true);else setEditing(false);}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"rgba(34,197,94,0.95)",color:"var(--bg-secondary)",fontSize:11,fontWeight:600,cursor:"pointer"}}>Save ({Object.keys(pendingPlans).length})</button>
-            <button onClick={()=>{setEditing(false);setPendingPlans({});}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>Cancel</button>
+            <button onClick={()=>{if(Object.keys(pendingPlans).length>0)setShowConfirm(true);else setEditing(false);}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"rgba(34,197,94,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({Object.keys(pendingPlans).length})</button>
+            <button onClick={()=>{setEditing(false);setPendingPlans({});}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>Cancel</button>
           </>:<>
             {/* v8.4.9: window.open → dl() — 새 탭은 토큰 헤더가 안 붙어 401. blob 다운로드로 전환. */}
-            <button onClick={()=>{const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>alert("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>⬇ CSV</button>
-            <button onClick={()=>{const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.xlsx`).catch(e=>alert("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"rgba(16,185,129,0.95)",fontSize:11,cursor:"pointer"}} title="XLSX (fab_lot_id 병합)">⬇ XLSX</button>
-            <button onClick={()=>setEditing(true)} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:11,fontWeight:600,cursor:"pointer"}}>Edit</button>
+            <button onClick={()=>{const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>alert("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ CSV</button>
+            <button onClick={()=>{const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.xlsx`).catch(e=>alert("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"rgba(16,185,129,0.95)",fontSize:14,cursor:"pointer"}} title="XLSX (fab_lot_id 병합)">⬇ XLSX</button>
+            <button onClick={()=>setEditing(true)} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Edit</button>
             {/* v8.4.9-b: 노트 드로어 토글 */}
-            <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 항목 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid #3b82f6",background:"transparent",color:"rgba(59,130,246,0.95)",fontSize:11,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:9,fontWeight:700}}>{notes.length}</span>}</button>
+            <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 항목 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid #3b82f6",background:"transparent",color:"rgba(59,130,246,0.95)",fontSize:14,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>{notes.length}</span>}</button>
           </>}
         </div>
       </div>
       {loading?<div style={{padding:40,textAlign:"center"}}><Loading text="Loading..."/></div>
-      :data?.msg&&!data?.rows?.length?<div style={{padding:60,textAlign:"center",color:"var(--text-secondary)",fontSize:13}}>{data.msg}</div>
+      :data?.msg&&!data?.rows?.length?<div style={{padding:60,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>{data.msg}</div>
       :tab==="view"&&data?.rows?.length?(()=>{
         // 클라이언트 diff 필터: viewMode==='diff' 이면 non-null unique 값 >= 2 인 행만
         const displayRows = viewMode==="diff"
           ? data.rows.filter(r=>{const vs=Object.values(r._cells||{}).map(c=>c?.actual).filter(v=>v!=null&&v!==""&&v!=="None"&&v!=="null");return new Set(vs).size>=2;})
           : data.rows;
         const lineageSummary = buildLineageSummary(displayRows);
+        const headerGroupLabels = [...new Set((data.header_groups||[]).map(g=>String(g?.label||"").trim()).filter(Boolean))];
+        const lotHeaderRoot = String(data.root_lot_id||lotId||"").trim();
+        const lotHeaderLot = String((fabLotId||"").trim() || headerGroupLabels.join(", ") || lotId || "").trim();
+        const hasLotContext = !!(lotHeaderRoot || lotHeaderLot);
+        const rootHeaderHeight = hasLotContext ? 44 : 0;
+        const groupHeaderHeight = data.header_groups?.length>0 ? 24 : 0;
+        const paramHeaderTop = rootHeaderHeight + groupHeaderHeight;
+        const lotContextTitle = `root_lot_id: ${lotHeaderRoot || "-"}\nlot_id: ${lotHeaderLot || "-"}`;
         return <div style={{flex:1,overflow:"auto",background:"var(--bg-card)"}}>
-        {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:11,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
-        {Array.isArray(data.related_issues)&&data.related_issues.length>0&&<div style={{padding:"8px 10px",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",fontSize:11,background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>
+        {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
+        {Array.isArray(data.related_issues)&&data.related_issues.length>0&&<div style={{padding:"8px 10px",display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",fontSize:14,background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>
           <span style={{fontWeight:800,color:"rgba(59,130,246,0.95)",fontFamily:"monospace"}}>이슈추적 {data.related_issues.length}건</span>
           {data.related_issues.slice(0,6).map(iss=><button key={iss.id} onClick={()=>openTrackerIssue(iss.id)} title={`${iss.title}\n${iss.category||"-"} · ${iss.status||"-"} · ${iss.updated_at||""}`}
-            style={{display:"inline-flex",alignItems:"center",gap:5,maxWidth:260,padding:"3px 8px",borderRadius:999,border:"1px solid rgba(59,130,246,0.45)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:10,fontWeight:700,cursor:"pointer"}}>
+            style={{display:"inline-flex",alignItems:"center",gap:5,maxWidth:260,padding:"3px 8px",borderRadius:999,border:"1px solid rgba(59,130,246,0.45)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:"pointer"}}>
             <span style={{width:7,height:7,borderRadius:"50%",background:iss.status==="closed"?"rgba(34,197,94,0.95)":"rgba(249,115,22,0.95)",flexShrink:0}}/>
             <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{iss.title||iss.id}</span>
             {iss.matched_wafers?.length>0&&<span style={{color:"var(--text-secondary)",fontFamily:"monospace",flexShrink:0}}>W{iss.matched_wafers.slice(0,3).join(",")}</span>}
             {iss.comment_count>0&&<span style={{color:"var(--text-secondary)",fontFamily:"monospace",flexShrink:0}}>댓글 {iss.comment_count}</span>}
           </button>)}
-          {data.related_issues.length>6&&<span style={{fontSize:10,color:"var(--text-secondary)"}}>+{data.related_issues.length-6}</span>}
+          {data.related_issues.length>6&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>+{data.related_issues.length-6}</span>}
         </div>}
         {/* v8.8.13: 빈 셀 / knobMeta 확장 행에서 테두리 끊기는 현상 — 전체 td/th 기본 border 강제.
             inline style(borderLeft plan 등)은 specificity 가 높아 유지됨. */}
         <style>{`.splittable-grid td, .splittable-grid th { border: 1px solid #555; }`}</style>
-        <table className="splittable-grid" style={{borderCollapse:"collapse",fontSize:11,background:"var(--bg-card)",tableLayout:"fixed",width:288+(data.headers?.length||1)*115}}>
+        <table className="splittable-grid" style={{borderCollapse:"collapse",fontSize:14,background:"var(--bg-card)",tableLayout:"fixed",width:288+(data.headers?.length||1)*115}}>
           <colgroup>
             <col style={{width:288}}/>
             {data.headers?.map((_,i)=><col key={i} style={{width:115}}/>)}
           </colgroup>
           <thead>
-            {data.root_lot_id&&(()=>{const lotN=notesForLot().length;return(<tr style={{height:28}}><th style={{boxSizing:"border-box",height:28,padding:0,background:"var(--bg-tertiary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",position:"sticky",top:0,left:0,zIndex:5}}></th>
-              <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:28,textAlign:"center",padding:"0 8px",lineHeight:"27px",fontWeight:700,fontSize:12,color:"var(--accent)",background:"var(--bg-tertiary)",borderBottom:"1px solid #555",position:"sticky",top:0,zIndex:4,fontFamily:"monospace",cursor:"pointer"}} title={lotN>0?`LOT ${data.root_lot_id} — ${lotN}개 태그 · 클릭해서 보기`:`LOT ${data.root_lot_id} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"lot"});setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId});setNotesOpen(true);}}>{data.root_lot_id}{lotN>0&&<span style={{marginLeft:8,padding:"0 6px",borderRadius:10,background:"rgba(16,185,129,0.95)",color:"var(--bg-secondary)",fontSize:10,fontWeight:700}}>📦 {lotN}</span>}{viewMode==="diff"?<span style={{marginLeft:8,fontSize:10,color:"var(--text-secondary)",fontWeight:400}}>(diff: {displayRows.length}/{data.rows.length})</span>:null}</th></tr>);})()}
+            {hasLotContext&&(()=>{const lotN=notesForLot().length;return(<tr style={{height:rootHeaderHeight}}>
+              <th title={lotContextTitle} style={{boxSizing:"border-box",height:rootHeaderHeight,padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",position:"sticky",top:0,left:0,zIndex:5,textAlign:"left",fontFamily:"monospace",fontSize:14,lineHeight:1.25,color:"var(--text-primary)",whiteSpace:"normal",wordBreak:"break-word"}}>
+                <div><span style={{color:"var(--text-secondary)",fontWeight:700}}>root_lot_id</span> {lotHeaderRoot || "-"}</div>
+                <div><span style={{color:"var(--text-secondary)",fontWeight:700}}>lot_id</span> {lotHeaderLot || "-"}</div>
+              </th>
+              <th colSpan={data.headers?.length||1} style={{boxSizing:"border-box",height:rootHeaderHeight,textAlign:"center",padding:"0 8px",lineHeight:`${rootHeaderHeight-1}px`,fontWeight:700,fontSize:14,color:"var(--accent)",background:"var(--bg-tertiary)",borderBottom:"1px solid #555",position:"sticky",top:0,zIndex:4,fontFamily:"monospace",cursor:"pointer"}} title={lotN>0?`LOT ${lotHeaderRoot || data.root_lot_id} — ${lotN}개 태그 · 클릭해서 보기`:`LOT ${lotHeaderRoot || data.root_lot_id} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"lot"});setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId});setNotesOpen(true);}}>{lotHeaderRoot || data.root_lot_id}{lotN>0&&<span style={{marginLeft:8,padding:"0 6px",borderRadius:10,background:"rgba(16,185,129,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>📦 {lotN}</span>}{viewMode==="diff"?<span style={{marginLeft:8,fontSize:14,color:"var(--text-secondary)",fontWeight:400}}>(diff: {displayRows.length}/{data.rows.length})</span>:null}</th></tr>);})()}
             {data.header_groups?.length>0&&<tr style={{height:24}}>
-              <th style={{boxSizing:"border-box",height:24,padding:0,background:"var(--bg-tertiary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",position:"sticky",top:data.root_lot_id?28:0,left:0,zIndex:5}}></th>
-              {data.header_groups.map((g,gi)=><th key={gi} colSpan={g.span} style={{boxSizing:"border-box",height:24,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:10,color:"var(--text-primary)",background:"var(--bg-tertiary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",position:"sticky",top:data.root_lot_id?28:0,zIndex:4,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={g.label}>{g.label}</th>)}
+              <th style={{boxSizing:"border-box",height:24,padding:0,background:"var(--bg-tertiary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",position:"sticky",top:rootHeaderHeight,left:0,zIndex:5}}></th>
+              {data.header_groups.map((g,gi)=><th key={gi} colSpan={g.span} style={{boxSizing:"border-box",height:24,textAlign:"center",padding:"0 6px",fontWeight:800,fontSize:14,color:"var(--text-primary)",background:"var(--bg-tertiary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",position:"sticky",top:rootHeaderHeight,zIndex:4,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={g.label}>{g.label}</th>)}
             </tr>}
             <tr>
-            <th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:10,color:"var(--accent)",borderBottom:"2px solid #555",borderRight:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:data.root_lot_id?(data.header_groups?.length>0?52:27):(data.header_groups?.length>0?24:0),left:0,zIndex:5,minWidth:260}}>항목</th>
-            {data.headers?.map((h,i)=>{const wid=String(h).replace(/^#/,"");const wn=notesForWafer(wid).length;return(<th key={i} style={{textAlign:"center",padding:"6px 8px",fontWeight:600,fontSize:10,color:"var(--text-secondary)",borderBottom:"2px solid #555",borderRight:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:data.root_lot_id?(data.header_groups?.length>0?52:27):(data.header_groups?.length>0?24:0),zIndex:3,whiteSpace:"normal",wordBreak:"break-word",minWidth:100,cursor:"pointer"}} title={wn>0?`wafer ${h} — ${wn}개 태그 · 클릭해서 보기`:`wafer ${h} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"wafer",key:`${selProd}__${lotId}__W${wid}`});setNoteDraftScope({scope:"wafer",product:selProd,root_lot_id:lotId,wafer_id:wid});setNotesOpen(true);}}>
+            <th style={{textAlign:"left",padding:"8px 10px",fontWeight:700,fontSize:14,color:"var(--accent)",borderBottom:"2px solid #555",borderRight:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,left:0,zIndex:5,minWidth:260}}>항목</th>
+            {data.headers?.map((h,i)=>{const wid=String(h).replace(/^#/,"");const wn=notesForWafer(wid).length;return(<th key={i} style={{textAlign:"center",padding:"6px 8px",fontWeight:600,fontSize:14,color:"var(--text-secondary)",borderBottom:"2px solid #555",borderRight:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:paramHeaderTop,zIndex:3,whiteSpace:"normal",wordBreak:"break-word",minWidth:100,cursor:"pointer"}} title={wn>0?`wafer ${h} — ${wn}개 태그 · 클릭해서 보기`:`wafer ${h} — 태그 추가`} onClick={()=>{setNoteFilter({scope:"wafer",key:`${selProd}__${lotId}__W${wid}`});setNoteDraftScope({scope:"wafer",product:selProd,root_lot_id:lotId,wafer_id:wid});setNotesOpen(true);}}>
               <div>{h}</div>
-              {wn>0&&<span style={{display:"inline-block",marginTop:2,padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:9,fontWeight:700}}>🏷 {wn}</span>}
+              {wn>0&&<span style={{display:"inline-block",marginTop:2,padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>🏷 {wn}</span>}
             </th>);})}
           </tr></thead>
           <tbody>{displayRows.map((row,ri)=>{
@@ -1347,30 +1359,30 @@ export default function My_SplitTable({user}){
             const uniqVals=[...new Set(allVals)];const uniqMap={};uniqVals.forEach((v,i)=>{uniqMap[v]=i;});
             return(<tr key={ri}>
               {(()=>{const pLotN=notesForParam(row._param).length;return(
-              <td style={{padding:"6px 10px",fontWeight:600,fontSize:11,color:"var(--text-primary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-secondary)",position:"sticky",left:0,zIndex:2,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,cursor:"pointer"}} title={(pLotN>0?`${row._param} — lot내 ${pLotN}개 태그 · 클릭해서 보기`:`${row._param} — 태그 보기/추가`)+((knobLookup(row._param)?.label)?"\n"+knobLookup(row._param).label:"")} onClick={()=>{setNoteFilter({scope:"param",param:row._param});setNoteDraftScope(null);setNotesOpen(true);}}>
+              <td style={{padding:"6px 10px",fontWeight:600,fontSize:14,color:"var(--text-primary)",borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-secondary)",position:"sticky",left:0,zIndex:2,whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,cursor:"pointer"}} title={(pLotN>0?`${row._param} — lot내 ${pLotN}개 태그 · 클릭해서 보기`:`${row._param} — 태그 보기/추가`)+((knobLookup(row._param)?.label)?"\n"+knobLookup(row._param).label:"")} onClick={()=>{setNoteFilter({scope:"param",param:row._param});setNoteDraftScope(null);setNotesOpen(true);}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                   {/* v8.8.14: _display 가 있으면(KNOB/INLINE/VM 에서 rule_order+func_step 끼워 넣은 이름) 그것을, 없으면 raw _param 을 prefix strip 해서 표시. */}
                   <span>{(row._display||row._param||"").replace(/^[A-Z]+_/,"")}</span>
-                  {pLotN>0&&<span style={{padding:"0 5px",borderRadius:8,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontSize:9,fontWeight:700}}>💬 {pLotN}</span>}
+                  {pLotN>0&&<span style={{padding:"0 5px",borderRadius:8,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>💬 {pLotN}</span>}
                 </div>
                 {/* v8.4.9: + 결합이면 줄바꿈. step_id 는 파란 pill 로 대비 강화. */}
                 {showParamMeta && Array.isArray(knobLookup(row._param)?.groups) && knobLookup(row._param).groups.length > 0 && (
-                  <div style={{fontSize:10,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace"}}>
+                  <div style={{fontSize:14,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace"}}>
                     {knobLookup(row._param).groups.map((g, gi) => (
                       <div key={gi} style={{marginTop:gi>0?4:0,padding:"4px 6px",borderRadius:4,background:"rgba(251,191,36,0.06)",border:"1px solid rgba(251,191,36,0.18)"}}>
                         <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4}}>
-                        {gi > 0 && <span style={{color:"rgba(239,68,68,0.95)",fontWeight:800,fontSize:12,marginRight:2}}>+</span>}
+                        {gi > 0 && <span style={{color:"rgba(239,68,68,0.95)",fontWeight:800,fontSize:14,marginRight:2}}>+</span>}
                         <span style={{color:"rgba(251,191,36,0.95)",fontWeight:700}}>{g.func_step}</span>
                         {Array.isArray(g.modules) && g.modules.length > 0 && g.modules.map((mod) => (
-                          <span key={mod} style={{padding:"0 6px",borderRadius:999,background:"rgba(16,185,129,0.14)",border:"1px solid rgba(16,185,129,0.35)",color:"rgba(16,185,129,0.95)",fontWeight:700,fontSize:9}}>{mod}</span>
+                          <span key={mod} style={{padding:"0 6px",borderRadius:999,background:"rgba(16,185,129,0.14)",border:"1px solid rgba(16,185,129,0.35)",color:"rgba(16,185,129,0.95)",fontWeight:700,fontSize:14}}>{mod}</span>
                         ))}
                         </div>
                         {Array.isArray(g.step_ids) && g.step_ids.length > 0 && (
                           <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4,marginTop:4}}>
-                            <span style={{color:"var(--text-secondary)",fontSize:9}}>step_id</span>
+                            <span style={{color:"var(--text-secondary)",fontSize:14}}>step_id</span>
                             <span style={{display:"inline-flex",flexWrap:"wrap",gap:3}}>
                             {g.step_ids.map((sid, si) => (
-                              <span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.18)",border:"1px solid rgba(96,165,250,0.5)",color:"rgba(147,197,253,0.95)",fontWeight:700,fontSize:10,letterSpacing:0.3}}>{sid}</span>
+                              <span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.18)",border:"1px solid rgba(96,165,250,0.5)",color:"rgba(147,197,253,0.95)",fontWeight:700,fontSize:14,letterSpacing:0.3}}>{sid}</span>
                             ))}
                             </span>
                           </div>
@@ -1381,41 +1393,41 @@ export default function My_SplitTable({user}){
                 )}
                 {/* v8.8.15/v8.8.33: VM_ prefix row 의 step_id/step_desc sub-label — 항상 렌더, step_id 없으면 "미등록" pill. */}
                 {showParamMeta && (row._param||"").startsWith("VM_") && (()=>{const vm=vmLookup(row._param)||{};const hasMeta=vm.step_id||vm.step_desc;return(
-                  <div style={{fontSize:10,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace"}}>
+                  <div style={{fontSize:14,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace"}}>
                     <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4}}>
                       <span style={{color:"rgba(139,92,246,0.95)",fontWeight:700}}>🤖 VM</span>
                       {vm.step_desc && <span style={{color:"rgba(196,181,253,0.95)"}}>{vm.step_desc}</span>}
-                      {!hasMeta && <span title={row._param} style={{fontSize:9,color:"var(--text-secondary)",fontStyle:"italic"}}>{(row._param||"").replace(/^VM_/,"")}</span>}
+                      {!hasMeta && <span title={row._param} style={{fontSize:14,color:"var(--text-secondary)",fontStyle:"italic"}}>{(row._param||"").replace(/^VM_/,"")}</span>}
                     </div>
                     {Array.isArray(vm.groups) && vm.groups.length>0 ? vm.groups.map((g,gi)=>(
                       <div key={gi} style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4,marginTop:gi>0?2:4}}>
                         {g.function_step && <span style={{color:"rgba(196,181,253,0.95)",fontWeight:700}}>{g.function_step}</span>}
-                        {(()=>{const sids=Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(139,92,246,0.18)",border:"1px solid rgba(139,92,246,0.5)",color:"rgba(196,181,253,0.95)",fontWeight:700,fontSize:10,letterSpacing:0.3}}>{sid}</span>):<span title="vm_matching.csv 에 step_id 미등록 — 연결 규칙 탭에서 자동 추정 실행" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:10,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
+                        {(()=>{const sids=Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(139,92,246,0.18)",border:"1px solid rgba(139,92,246,0.5)",color:"rgba(196,181,253,0.95)",fontWeight:700,fontSize:14,letterSpacing:0.3}}>{sid}</span>):<span title="vm_matching.csv 에 step_id 미등록 — 연결 규칙 탭에서 자동 추정 실행" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
                       </div>
                     )) : (
                       <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4,marginTop:4}}>
                         {vm.function_step && <span style={{color:"rgba(196,181,253,0.95)",fontWeight:700}}>{vm.function_step}</span>}
-                        {(()=>{const sids=Array.isArray(vm.step_ids)&&vm.step_ids.length?vm.step_ids:(vm.step_id?[vm.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(139,92,246,0.18)",border:"1px solid rgba(139,92,246,0.5)",color:"rgba(196,181,253,0.95)",fontWeight:700,fontSize:10,letterSpacing:0.3}}>{sid}</span>):<span title="vm_matching.csv 에 step_id 미등록 — 연결 규칙 탭에서 자동 추정 실행" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:10,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
+                        {(()=>{const sids=Array.isArray(vm.step_ids)&&vm.step_ids.length?vm.step_ids:(vm.step_id?[vm.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(139,92,246,0.18)",border:"1px solid rgba(139,92,246,0.5)",color:"rgba(196,181,253,0.95)",fontWeight:700,fontSize:14,letterSpacing:0.3}}>{sid}</span>):<span title="vm_matching.csv 에 step_id 미등록 — 연결 규칙 탭에서 자동 추정 실행" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
                       </div>
                     )}
                   </div>);})()}
                 {/* v8.8.15/v8.8.33: INLINE_ prefix row 의 step_id/item_desc sub-label — 항상 렌더. */}
                 {showParamMeta && (row._param||"").startsWith("INLINE_") && (()=>{const im=inlineLookup(row._param)||{};const hasMeta=im.step_id||im.item_desc;return(
-                  <div style={{fontSize:10,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace"}}>
+                  <div style={{fontSize:14,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace"}}>
                     <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4}}>
                       <span style={{color:"rgba(16,185,129,0.95)",fontWeight:700}}>🔬 INLINE</span>
                       {im.item_desc && <span style={{color:"rgba(110,231,183,0.95)"}}>{im.item_desc}</span>}
-                      {!hasMeta && <span title={row._param} style={{fontSize:9,color:"var(--text-secondary)",fontStyle:"italic"}}>{(row._param||"").replace(/^INLINE_/,"")}</span>}
+                      {!hasMeta && <span title={row._param} style={{fontSize:14,color:"var(--text-secondary)",fontStyle:"italic"}}>{(row._param||"").replace(/^INLINE_/,"")}</span>}
                     </div>
                     {Array.isArray(im.groups) && im.groups.length>0 ? im.groups.map((g,gi)=>(
                       <div key={gi} style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4,marginTop:gi>0?2:4}}>
                         {g.function_step && <span style={{color:"rgba(110,231,183,0.95)",fontWeight:700}}>{g.function_step}</span>}
-                        {(()=>{const sids=Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(16,185,129,0.18)",border:"1px solid rgba(16,185,129,0.5)",color:"rgba(110,231,183,0.95)",fontWeight:700,fontSize:10,letterSpacing:0.3}}>{sid}</span>):<span title="inline_matching.csv 에 step_id 미등록 — 연결 규칙 탭에서 자동 추정 실행" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:10,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
+                        {(()=>{const sids=Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(16,185,129,0.18)",border:"1px solid rgba(16,185,129,0.5)",color:"rgba(110,231,183,0.95)",fontWeight:700,fontSize:14,letterSpacing:0.3}}>{sid}</span>):<span title="inline_matching.csv 에 step_id 미등록 — 연결 규칙 탭에서 자동 추정 실행" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
                       </div>
                     )) : (
                       <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4,marginTop:4}}>
                         {im.function_step && <span style={{color:"rgba(110,231,183,0.95)",fontWeight:700}}>{im.function_step}</span>}
-                        {(()=>{const sids=Array.isArray(im.step_ids)&&im.step_ids.length?im.step_ids:(im.step_id?[im.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(16,185,129,0.18)",border:"1px solid rgba(16,185,129,0.5)",color:"rgba(110,231,183,0.95)",fontWeight:700,fontSize:10,letterSpacing:0.3}}>{sid}</span>):<span title="inline_matching.csv 에 step_id 미등록 — 연결 규칙 탭에서 자동 추정 실행" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:10,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
+                        {(()=>{const sids=Array.isArray(im.step_ids)&&im.step_ids.length?im.step_ids:(im.step_id?[im.step_id]:[]);return sids.length?sids.map((sid,si)=><span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(16,185,129,0.18)",border:"1px solid rgba(16,185,129,0.5)",color:"rgba(110,231,183,0.95)",fontWeight:700,fontSize:14,letterSpacing:0.3}}>{sid}</span>):<span title="inline_matching.csv 에 step_id 미등록 — 연결 규칙 탭에서 자동 추정 실행" style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>연결 확인 필요</span>;})()}
                       </div>
                     )}
                   </div>);})()}
@@ -1424,7 +1436,7 @@ export default function My_SplitTable({user}){
                 const cell=cells[String(ci)];const wid=String(data.headers[ci]??"").replace(/^#/,"");
                 const cellNoteCount=notesForCell(wid,row._param).length;
                 if(!cell)return(<td key={ci} style={{borderBottom:"1px solid #555",borderRight:"1px solid #555",background:"var(--bg-card)",position:"relative"}}>
-                  {cellNoteCount>0&&<span onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={`${cellNoteCount}개 메모`} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:9,padding:"0 5px",borderRadius:7,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontWeight:700,lineHeight:"14px"}}>💬 {cellNoteCount}</span>}
+                  {cellNoteCount>0&&<span onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={`${cellNoteCount}개 메모`} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:14,padding:"0 5px",borderRadius:7,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontWeight:700,lineHeight:"14px"}}>💬 {cellNoteCount}</span>}
                 </td>);
                 const pendingPlan=pendingValueFor(cell);
                 const effectiveCell=pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
@@ -1433,7 +1445,7 @@ export default function My_SplitTable({user}){
                 const canPlan=cell.can_plan!==false; // default true for backward compat
                 const baseStyle={background:"var(--bg-card)",color:"var(--text-primary)"};
                 const canEdit=canPlan;
-                const style={...baseStyle,...bgStyle,...planStyle,padding:"4px 8px",borderBottom:"1px solid #555",borderRight:"1px solid #555",textAlign:"center",fontSize:11,cursor:canEdit?"pointer":"default",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,position:"relative"};
+                const style={...baseStyle,...bgStyle,...planStyle,padding:"4px 8px",borderBottom:"1px solid #555",borderRight:"1px solid #555",textAlign:"center",fontSize:14,cursor:canEdit?"pointer":"default",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,position:"relative"};
                 const hasPlan=hasValue(effectiveCell.plan)&&!hasValue(effectiveCell.actual);
                 const isMismatch=(hasValue(effectiveCell.plan)&&hasValue(effectiveCell.actual)&&String(effectiveCell.plan)!==String(effectiveCell.actual))||false;
                 const display=formatCell(cell.actual,row._param)||"";
@@ -1456,18 +1468,18 @@ export default function My_SplitTable({user}){
                     ? (cell.actual ? "actual 값이 있어도 plan 입력/수정 가능. plan 과 actual 이 다르면 ✗ 로 표시됩니다." : "plan 입력 가능")
                     : "이 항목은 plan 입력 대상이 아닙니다"}>
                   {pendingPlan!==undefined?<span style={{color:"#ea580c",fontWeight:700,fontStyle:"italic"}}>{"📌 "}{pendingPlan}</span>
-                  :isMismatch?<span style={{color:"#dc2626",fontWeight:700}}>{"✗ "}{formatCell(effectiveCell.actual,row._param)}<span style={{fontSize:9,color:"rgba(239,68,68,0.95)"}}>{" (≠"+effectiveCell.plan+")"}</span></span>
+                  :isMismatch?<span style={{color:"#dc2626",fontWeight:700}}>{"✗ "}{formatCell(effectiveCell.actual,row._param)}<span style={{fontSize:14,color:"rgba(239,68,68,0.95)"}}>{" (≠"+effectiveCell.plan+")"}</span></span>
                   :hasPlan?<span style={{fontStyle:"italic",fontWeight:700}}>{"📌 "}{effectiveCell.plan}</span>
                   :display}
                   {/* v8.4.9-c: per-cell 메모 배지. 메모가 있으면 항상 표시, 없으면 hover 시에만 + 아이콘 노출. */}
-                  <span className="stm-note-btn" onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={cellNoteCount>0?`${cellNoteCount}개 메모`:"메모 추가"} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:9,padding:"0 5px",borderRadius:7,background:cellNoteCount>0?"rgba(139,92,246,0.95)":"rgba(139,92,246,0.25)",color:cellNoteCount>0?"var(--bg-secondary)":"rgba(139,92,246,0.95)",fontWeight:700,lineHeight:"14px",opacity:cellNoteCount>0?1:0,transition:"opacity 0.15s"}}>💬{cellNoteCount>0?" "+cellNoteCount:"+"}</span>
+                  <span className="stm-note-btn" onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={cellNoteCount>0?`${cellNoteCount}개 메모`:"메모 추가"} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:14,padding:"0 5px",borderRadius:7,background:cellNoteCount>0?"rgba(139,92,246,0.95)":"rgba(139,92,246,0.25)",color:cellNoteCount>0?"var(--bg-secondary)":"rgba(139,92,246,0.95)",fontWeight:700,lineHeight:"14px",opacity:cellNoteCount>0?1:0,transition:"opacity 0.15s"}}>💬{cellNoteCount>0?" "+cellNoteCount:"+"}</span>
                 </td>);})}
             </tr>);})}</tbody>
         </table>
         {showLineageSummary && lineageSummary.length>0&&<div style={{margin:"12px 10px 18px",border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-card)",overflow:"hidden"}}>
-          <div style={{padding:"10px 12px",fontSize:12,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",borderTop:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>항목 → function_step → step_id 요약</div>
+          <div style={{padding:"10px 12px",fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",borderTop:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>항목 → function_step → step_id 요약</div>
           <div style={{maxHeight:320,overflow:"auto"}}>
-            <table style={{borderCollapse:"collapse",width:"100%",fontSize:11,fontFamily:"monospace"}}>
+            <table style={{borderCollapse:"collapse",width:"100%",fontSize:14,fontFamily:"monospace"}}>
               <thead>
                 <tr>
                   <th style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid #555",minWidth:220}}>항목</th>
@@ -1497,65 +1509,65 @@ export default function My_SplitTable({user}){
             {key:"all",label:"전체 History Log",title:"제품 전체 변경 이력"},
             {key:"all_final",label:"전체 최종 Log",title:"제품 전체에서 지금 적용 중인 최종 값만 표시"},
           ].map(opt=>(
-            <label key={opt.key} title={opt.title} style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,color:opt.disabled?"var(--text-muted)":"var(--text-primary)",cursor:opt.disabled?"not-allowed":"pointer",opacity:opt.disabled?0.55:1}}>
+            <label key={opt.key} title={opt.title} style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:14,color:opt.disabled?"var(--text-muted)":"var(--text-primary)",cursor:opt.disabled?"not-allowed":"pointer",opacity:opt.disabled?0.55:1}}>
               <input type="radio" name="history-mode" checked={histMode===opt.key} disabled={!!opt.disabled} onChange={()=>!opt.disabled&&loadHistoryByMode(opt.key)} />
               <span style={histMode===opt.key?{color:"var(--accent)",fontWeight:700}:{color:"inherit"}}>{opt.label}</span>
             </label>
           ))}
-          {isFinalHistoryMode(histMode)&&histFinal.drift_count>0&&<span style={{fontSize:10,padding:"2px 8px",borderRadius:10,background:"rgba(239,68,68,0.13)",color:"rgba(239,68,68,0.95)",fontWeight:600}}>⚠ drift {histFinal.drift_count}/{histFinal.total_cells}</span>}
-          {isAdmin&&<button onClick={()=>dl(API+"/history-csv?product="+encodeURIComponent(selProd), `splittable_history_${selProd}.csv`).catch(e=>alert("이력 CSV 다운로드 실패: "+e.message))} style={{marginLeft:"auto",padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:11,cursor:"pointer"}}>⬇ History CSV</button>}
+          {isFinalHistoryMode(histMode)&&histFinal.drift_count>0&&<span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"rgba(239,68,68,0.13)",color:"rgba(239,68,68,0.95)",fontWeight:600}}>⚠ drift {histFinal.drift_count}/{histFinal.total_cells}</span>}
+          {isAdmin&&<button onClick={()=>dl(API+"/history-csv?product="+encodeURIComponent(selProd), `splittable_history_${selProd}.csv`).catch(e=>alert("이력 CSV 다운로드 실패: "+e.message))} style={{marginLeft:"auto",padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ History CSV</button>}
         </div>
         {isLotHistoryMode(histMode)&&lotId.trim()&&(
           <div style={{marginBottom:16,padding:12,borderRadius:8,background:"var(--bg-card)",border:"1px solid var(--border)"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-              <div style={{fontSize:12,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>Lot Operational History</div>
-              <div style={{fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace"}}>{lotId}{waferIds?.trim()?` · wafers ${waferIds.trim()}`:""}</div>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>Lot Operational History</div>
+              <div style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{lotId}{waferIds?.trim()?` · wafers ${waferIds.trim()}`:""}</div>
             </div>
-            {opHistory.length===0?<div style={{fontSize:11,color:"var(--text-secondary)",padding:"8px 2px"}}>연결된 tracker / inform 기록 없음</div>
-            :<table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-              <thead><tr>{["Time","Source","Scope","Wafer","Title","Status","Author"].map(h=><th key={h} style={{textAlign:"left",padding:"6px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:10}}>{h}</th>)}</tr></thead>
+            {opHistory.length===0?<div style={{fontSize:14,color:"var(--text-secondary)",padding:"8px 2px"}}>연결된 tracker / inform 기록 없음</div>
+            :<table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+              <thead><tr>{["Time","Source","Scope","Wafer","Title","Status","Author"].map(h=><th key={h} style={{textAlign:"left",padding:"6px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:14}}>{h}</th>)}</tr></thead>
               <tbody>{opHistory.map((r,i)=><tr key={i}>
-                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.time||"").slice(0,16)}</td>
-                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)"}}><span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:r.source?.includes("tracker")?"#3b82f622":"#10b98122",color:r.source?.includes("tracker")?"rgba(59,130,246,0.95)":"rgba(16,185,129,0.95)"}}>{r.source}</span></td>
-                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)"}}>{r.scope}</td>
-                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10}}>{r.wafer_id||"-"}</td>
-                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)"}} title={r.detail||r.title}><div style={{fontWeight:600,color:"var(--text-primary)"}}>{r.title}</div><div style={{fontSize:10,color:"var(--text-secondary)",maxWidth:420,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.detail||""}</div></td>
-                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)"}}>{r.status||"-"}</td>
-                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontSize:10}}>{r.author||"-"}</td>
+                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.time||"").slice(0,16)}</td>
+                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)"}}><span style={{fontSize:14,padding:"2px 6px",borderRadius:4,background:r.source?.includes("tracker")?"#3b82f622":"#10b98122",color:r.source?.includes("tracker")?"rgba(59,130,246,0.95)":"rgba(16,185,129,0.95)"}}>{r.source}</span></td>
+                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>{r.scope}</td>
+                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14}}>{r.wafer_id||"-"}</td>
+                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)"}} title={r.detail||r.title}><div style={{fontWeight:600,color:"var(--text-primary)"}}>{r.title}</div><div style={{fontSize:14,color:"var(--text-secondary)",maxWidth:420,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.detail||""}</div></td>
+                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>{r.status||"-"}</td>
+                <td style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",fontSize:14}}>{r.author||"-"}</td>
               </tr>)}</tbody>
             </table>}
           </div>
         )}
         {isFinalHistoryMode(histMode)?(
           histFinal.final.length===0?<div style={{textAlign:"center",padding:40,color:"var(--text-secondary)"}}>No plan cells</div>
-          :<table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-            <thead><tr>{["Last","User","Root Lot","Wafer","Column","Final","Changes","Drift"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 10px",borderBottom:"2px solid var(--border)",color:"var(--text-secondary)",fontSize:11}}>{h}</th>)}</tr></thead>
+          :<table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+            <thead><tr>{["Last","User","Root Lot","Wafer","Column","Final","Changes","Drift"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 10px",borderBottom:"2px solid var(--border)",color:"var(--text-secondary)",fontSize:14}}>{h}</th>)}</tr></thead>
             <tbody>{histFinal.final.map((r,i)=>{
               const drift=Array.isArray(r.drift)?r.drift:[];
               const driftLabel=drift.includes("multi_change")&&drift.includes("multi_user")?"다수 변경·다수 사용자":drift.includes("multi_change")?"다수 변경":drift.includes("multi_user")?"다수 사용자":drift.includes("reinstated")?"삭제 후 재설정":"";
               return(<tr key={i} style={drift.length>0?{background:"#ef444408"}:{}}>
-                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.final_time||"").slice(0,16)}</td>
+                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.final_time||"").slice(0,16)}</td>
                 <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)"}}>{r.final_user||"-"}</td>
-                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10,color:"var(--accent)"}}>{r.root_lot_id}</td>
-                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10}}>{r.wafer_id}</td>
-                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis"}} title={r.column}>{r.column}</td>
+                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14,color:"var(--accent)"}}>{r.root_lot_id}</td>
+                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14}}>{r.wafer_id}</td>
+                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis"}} title={r.column}>{r.column}</td>
                 <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",color:r.final_action==="delete"?"rgba(239,68,68,0.95)":"rgba(34,197,94,0.95)",fontWeight:600}}>{r.final_action==="delete"?"(삭제)":(r.final_value??"-")}</td>
-                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)"}} title={"distinct values: "+JSON.stringify(r.distinct_values)}>set {r.set_count}{r.delete_count>0?` / del ${r.delete_count}`:""}</td>
-                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)"}}>{driftLabel?<span style={{fontSize:10,padding:"2px 6px",borderRadius:3,background:"rgba(239,68,68,0.13)",color:"rgba(239,68,68,0.95)"}} title={drift.join(", ")}>⚠ {driftLabel}</span>:<span style={{fontSize:10,color:"var(--text-secondary)"}}>-</span>}</td>
+                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}} title={"distinct values: "+JSON.stringify(r.distinct_values)}>set {r.set_count}{r.delete_count>0?` / del ${r.delete_count}`:""}</td>
+                <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)"}}>{driftLabel?<span style={{fontSize:14,padding:"2px 6px",borderRadius:3,background:"rgba(239,68,68,0.13)",color:"rgba(239,68,68,0.95)"}} title={drift.join(", ")}>⚠ {driftLabel}</span>:<span style={{fontSize:14,color:"var(--text-secondary)"}}>-</span>}</td>
               </tr>);})}</tbody>
           </table>
         ):(
           history.length===0?<div style={{textAlign:"center",padding:40,color:"var(--text-secondary)"}}>No history</div>
-          :<table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-            <thead><tr>{["Time","User","Root Lot","Wafer","Column","Action","Old","New"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 10px",borderBottom:"2px solid var(--border)",color:"var(--text-secondary)",fontSize:11}}>{h}</th>)}</tr></thead>
+          :<table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+            <thead><tr>{["Time","User","Root Lot","Wafer","Column","Action","Old","New"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 10px",borderBottom:"2px solid var(--border)",color:"var(--text-secondary)",fontSize:14}}>{h}</th>)}</tr></thead>
             <tbody>{[...history].reverse().map((h,i)=>{const parts=h.cell?.split("|")||[];const lotPart=parts[0]||"";const wfPart=parts[1]||"";const colPart=parts[2]||h.cell||"";
               return(<tr key={i}>
-              <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{h.time?.slice(0,16)}</td>
+              <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{h.time?.slice(0,16)}</td>
               <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)"}}>{h.user}</td>
-              <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10,color:"var(--accent)"}}>{lotPart}</td>
-              <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10}}>{wfPart}</td>
-              <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:10,maxWidth:140,overflow:"hidden",textOverflow:"ellipsis"}} title={colPart}>{colPart}</td>
-              <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)"}}><span style={{fontSize:10,padding:"1px 5px",borderRadius:3,background:h.action==="set"?"#f9731622":"rgba(239,68,68,0.13)",color:h.action==="set"?"rgba(249,115,22,0.95)":"rgba(239,68,68,0.95)"}}>{h.action}</span></td>
+              <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14,color:"var(--accent)"}}>{lotPart}</td>
+              <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14}}>{wfPart}</td>
+              <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14,maxWidth:140,overflow:"hidden",textOverflow:"ellipsis"}} title={colPart}>{colPart}</td>
+              <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)"}}><span style={{fontSize:14,padding:"1px 5px",borderRadius:3,background:h.action==="set"?"#f9731622":"rgba(239,68,68,0.13)",color:h.action==="set"?"rgba(249,115,22,0.95)":"rgba(239,68,68,0.95)"}}>{h.action}</span></td>
               <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{h.old||"-"}</td>
               <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",color:"rgba(34,197,94,0.95)"}}>{h.new||"-"}</td>
             </tr>);})}</tbody></table>
@@ -1598,41 +1610,41 @@ export default function My_SplitTable({user}){
         return(<div className="splittable-features" style={{flex:1,overflow:"auto",padding:16}}>
           <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:12}}>
             <button className="splittable-load-features" onClick={loadFeatures} disabled={featuresLoading}
-              style={{padding:"6px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:12,fontWeight:600,cursor:featuresLoading?"default":"pointer",opacity:featuresLoading?0.5:1}}>
+              style={{padding:"6px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:featuresLoading?"default":"pointer",opacity:featuresLoading?0.5:1}}>
               {featuresLoading?"Loading…":"Load features"}
             </button>
-            {features&&<span style={{fontSize:11,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6}}>
+            {features&&<span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6}}>
               {features.total_rows?.toLocaleString()}행 × {features.total_cols}열 | 표시 {sampleRows.length} | join: {features.join}
             </span>}
-            {uniques&&<span style={{fontSize:10,color:"var(--text-secondary)"}}>uniques: {Object.keys(uniques).length} keys</span>}
+            {uniques&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>uniques: {Object.keys(uniques).length} keys</span>}
           </div>
           {/* Filter row */}
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:8,marginBottom:12,padding:10,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6}}>
-            <label style={{fontSize:10,color:"var(--text-secondary)"}}>제품 (product)
+            <label style={{fontSize:14,color:"var(--text-secondary)"}}>제품 (product)
               <select className="splittable-feat-product" value={featProd} onChange={e=>{setFeatProd(e.target.value);setFeatPpid("");}} style={{...S,width:"100%",marginTop:4}}>
                 <option value="">— 전체 —</option>
                 {prodOpts.map(p=><option key={p} value={p}>{p}</option>)}
               </select>
             </label>
-            <label style={{fontSize:10,color:"var(--text-secondary)"}}>PPID
+            <label style={{fontSize:14,color:"var(--text-secondary)"}}>PPID
               <select className="splittable-feat-ppid" value={featPpid} onChange={e=>setFeatPpid(e.target.value)} disabled={!featProd} style={{...S,width:"100%",marginTop:4,opacity:featProd?1:0.5}}>
                 <option value="">— 전체 —</option>
                 {ppidOpts.map(p=><option key={p} value={p}>{p}</option>)}
               </select>
             </label>
-            <label style={{fontSize:10,color:"var(--text-secondary)"}}>KNOB
+            <label style={{fontSize:14,color:"var(--text-secondary)"}}>KNOB
               <select className="splittable-feat-knob" value={featKnob} onChange={e=>{setFeatKnob(e.target.value);setFeatKnobVal("");}} style={{...S,width:"100%",marginTop:4}}>
                 <option value="">— 선택 —</option>
                 {knobOpts.map(k=><option key={k} value={k}>{k}</option>)}
               </select>
             </label>
-            <label style={{fontSize:10,color:"var(--text-secondary)"}}>KNOB 값
+            <label style={{fontSize:14,color:"var(--text-secondary)"}}>KNOB 값
               <select className="splittable-feat-knob-val" value={featKnobVal} onChange={e=>setFeatKnobVal(e.target.value)} disabled={!featKnob} style={{...S,width:"100%",marginTop:4,opacity:featKnob?1:0.5}}>
                 <option value="">— 전체 —</option>
                 {knobValOpts.map(v=><option key={String(v)} value={String(v)}>{String(v)}</option>)}
               </select>
             </label>
-            <label style={{fontSize:10,color:"var(--text-secondary)"}}>MASK
+            <label style={{fontSize:14,color:"var(--text-secondary)"}}>MASK
               <select className="splittable-feat-mask" value={featMask} onChange={e=>setFeatMask(e.target.value)} style={{...S,width:"100%",marginTop:4}}>
                 <option value="">— 전체 —</option>
                 {maskOpts.map(m=><option key={m} value={m}>{m}</option>)}
@@ -1641,42 +1653,42 @@ export default function My_SplitTable({user}){
           </div>
           {/* Feature picker */}
           {featureNames.length>0&&<div style={{padding:10,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6,marginBottom:12}}>
-            <div style={{fontSize:11,fontWeight:600,color:"var(--accent)",marginBottom:6}}>Feature 선택 ({selFeatCols.length}/{featureNames.length}) — _uniques.json 기반</div>
+            <div style={{fontSize:14,fontWeight:600,color:"var(--accent)",marginBottom:6}}>Feature 선택 ({selFeatCols.length}/{featureNames.length}) — _uniques.json 기반</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:4,maxHeight:140,overflow:"auto"}}>
               {featureNames.map(n=>{const on=selFeatCols.includes(n);return(
                 <span key={n} className="splittable-feature-chip" data-selected={on?"1":"0"} onClick={()=>toggleFeat(n)}
-                  style={{padding:"3px 8px",borderRadius:4,fontSize:10,cursor:"pointer",fontFamily:"monospace",fontWeight:on?700:400,
+                  style={{padding:"3px 8px",borderRadius:4,fontSize:14,cursor:"pointer",fontFamily:"monospace",fontWeight:on?700:400,
                     background:on?"var(--accent-glow)":"var(--bg-hover)",color:on?"var(--accent)":"var(--text-secondary)",
                     border:"1px solid "+(on?"var(--accent)":"transparent")}}>{n}</span>
               );})}
             </div>
             <div style={{display:"flex",gap:6,marginTop:8,alignItems:"center"}}>
               <button className="splittable-build-plan" onClick={buildPlan} disabled={!selFeatCols.length}
-                style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:11,fontWeight:600,cursor:selFeatCols.length?"pointer":"default",opacity:selFeatCols.length?1:0.5}}>
+                style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:selFeatCols.length?"pointer":"default",opacity:selFeatCols.length?1:0.5}}>
                 ML plan 생성
               </button>
-              {selFeatCols.length>0&&<button onClick={()=>{setSelFeatCols([]);setMlPlan(null);}} style={{padding:"4px 10px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>초기화</button>}
-              {mlPlan&&<span style={{fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>plan: {mlPlan.features.length} features • {mlPlan.created.slice(11,19)}</span>}
+              {selFeatCols.length>0&&<button onClick={()=>{setSelFeatCols([]);setMlPlan(null);}} style={{padding:"4px 10px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>초기화</button>}
+              {mlPlan&&<span style={{fontSize:14,color:"var(--accent)",fontFamily:"monospace"}}>plan: {mlPlan.features.length} features • {mlPlan.created.slice(11,19)}</span>}
             </div>
-            {mlPlan&&<pre className="splittable-ml-plan" style={{margin:"8px 0 0",padding:8,background:"var(--bg-primary)",border:"1px solid var(--border)",borderRadius:4,fontSize:10,fontFamily:"monospace",color:"var(--text-secondary)",maxHeight:140,overflow:"auto",whiteSpace:"pre-wrap"}}>{JSON.stringify(mlPlan,null,2)}</pre>}
+            {mlPlan&&<pre className="splittable-ml-plan" style={{margin:"8px 0 0",padding:8,background:"var(--bg-primary)",border:"1px solid var(--border)",borderRadius:4,fontSize:14,fontFamily:"monospace",color:"var(--text-secondary)",maxHeight:140,overflow:"auto",whiteSpace:"pre-wrap"}}>{JSON.stringify(mlPlan,null,2)}</pre>}
           </div>}
           {/* Features table */}
           {featuresLoading?<div style={{padding:40,textAlign:"center"}}><Loading text="Loading features..."/></div>
-          :!features?<div style={{padding:40,textAlign:"center",color:"var(--text-secondary)",fontSize:12}}>상단의 <b>Load features</b> 버튼으로 ET⋈INLINE wide form 을 불러오세요.</div>
+          :!features?<div style={{padding:40,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>상단의 <b>Load features</b> 버튼으로 ET⋈INLINE wide form 을 불러오세요.</div>
           :<div className="splittable-features-table" style={{overflow:"auto",maxHeight:"calc(100vh - 440px)",background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6}}>
-            <table style={{borderCollapse:"collapse",fontSize:11,width:"max-content",minWidth:"100%"}}>
+            <table style={{borderCollapse:"collapse",fontSize:14,width:"max-content",minWidth:"100%"}}>
               <thead><tr>
-                <th style={{padding:"6px 8px",textAlign:"left",fontSize:10,fontWeight:700,color:"var(--text-secondary)",borderBottom:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:1}}>#</th>
-                {cols.map(c=><th key={c} data-col={c} style={{padding:"6px 8px",textAlign:"left",fontSize:10,fontWeight:700,color:selFeatCols.includes(c)?"var(--accent)":"var(--text-secondary)",borderBottom:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:1,whiteSpace:"nowrap",cursor:"pointer"}} onClick={()=>toggleFeat(c)} title="클릭 → feature select 토글">{c}</th>)}
+                <th style={{padding:"6px 8px",textAlign:"left",fontSize:14,fontWeight:700,color:"var(--text-secondary)",borderBottom:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:1}}>#</th>
+                {cols.map(c=><th key={c} data-col={c} style={{padding:"6px 8px",textAlign:"left",fontSize:14,fontWeight:700,color:selFeatCols.includes(c)?"var(--accent)":"var(--text-secondary)",borderBottom:"1px solid #555",background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:1,whiteSpace:"nowrap",cursor:"pointer"}} onClick={()=>toggleFeat(c)} title="클릭 → feature select 토글">{c}</th>)}
               </tr></thead>
               <tbody>{filtered.slice(0,200).map((r,i)=>(<tr key={i}>
-                <td style={{padding:"4px 8px",borderBottom:"1px solid #555",color:"rgba(100,116,139,0.95)",fontSize:10}}>{i+1}</td>
-                {cols.map(c=><td key={c} style={{padding:"4px 8px",borderBottom:"1px solid #555",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:11,background:selFeatCols.includes(c)?"var(--accent-glow)":"transparent"}} title={String(r[c]==null?"":r[c])}>
+                <td style={{padding:"4px 8px",borderBottom:"1px solid #555",color:"rgba(100,116,139,0.95)",fontSize:14}}>{i+1}</td>
+                {cols.map(c=><td key={c} style={{padding:"4px 8px",borderBottom:"1px solid #555",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:14,background:selFeatCols.includes(c)?"var(--accent-glow)":"transparent"}} title={String(r[c]==null?"":r[c])}>
                   {r[c]===null||r[c]===undefined?<span style={{color:"rgba(100,116,139,0.95)"}}>null</span>:String(r[c])}
                 </td>)}
               </tr>))}</tbody>
             </table>
-            {filtered.length===0&&<div style={{padding:20,textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>필터와 일치하는 행이 없습니다.</div>}
+            {filtered.length===0&&<div style={{padding:20,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>필터와 일치하는 행이 없습니다.</div>}
           </div>}
         </div>);
       })():null}
@@ -1684,30 +1696,30 @@ export default function My_SplitTable({user}){
     {activeCell&&(()=>{const sugg=suggestionValuesFor(activeCell.param,colValCache[activeCell.param]||[]);const commit=(v)=>{const t=(v??"").trim();if(t)setPendingPlans(p=>({...p,[activeCell.key]:t}));setActiveCell(null);};
       return <div style={{position:"fixed",inset:0,zIndex:9998,background:"rgba(0,0,0,0.55)",display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setActiveCell(null)}>
         <div onClick={e=>e.stopPropagation()} style={{background:"var(--bg-secondary)",borderRadius:10,padding:18,width:360,border:"1px solid var(--border)"}}>
-          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:4,fontFamily:"monospace"}}>{activeCell.key.split("|").slice(0,2).join(" · ")}</div>
-          <div style={{fontSize:13,fontWeight:700,marginBottom:10,color:"var(--accent)",fontFamily:"monospace"}}>{activeCell.param}</div>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontFamily:"monospace"}}>{activeCell.key.split("|").slice(0,2).join(" · ")}</div>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:10,color:"var(--accent)",fontFamily:"monospace"}}>{activeCell.param}</div>
           <input autoFocus value={activeCell.value} onChange={e=>setActiveCell(c=>({...c,value:e.target.value}))}
             onKeyDown={e=>{if(e.key==="Enter")commit(activeCell.value);else if(e.key==="Escape")setActiveCell(null);}}
             list={`cv-${activeCell.key}`}
             placeholder="값 입력 또는 아래 리스트 선택"
-            style={{width:"100%",padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:12,fontFamily:"monospace",boxSizing:"border-box"}}/>
+            style={{width:"100%",padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",boxSizing:"border-box"}}/>
           <datalist id={`cv-${activeCell.key}`}>{sugg.map(v=><option key={v} value={v}/>)}</datalist>
           <div style={{marginTop:10,maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)"}}>
-            {sugg.length===0?<div style={{padding:"10px 12px",fontSize:11,color:"var(--text-secondary)"}}>{colValCache[activeCell.param]===undefined?"로딩…":"suggestion 없음"}</div>
-             :sugg.slice(0,100).map((v,i)=><div key={i} onClick={()=>commit(v)} style={{padding:"6px 10px",fontSize:11,fontFamily:"monospace",cursor:"pointer",borderBottom:i<sugg.length-1?"1px solid var(--border)":"none"}} onMouseEnter={e=>e.currentTarget.style.background="var(--accent-glow)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{v}</div>)}
+            {sugg.length===0?<div style={{padding:"10px 12px",fontSize:14,color:"var(--text-secondary)"}}>{colValCache[activeCell.param]===undefined?"로딩…":"suggestion 없음"}</div>
+             :sugg.slice(0,100).map((v,i)=><div key={i} onClick={()=>commit(v)} style={{padding:"6px 10px",fontSize:14,fontFamily:"monospace",cursor:"pointer",borderBottom:i<sugg.length-1?"1px solid var(--border)":"none"}} onMouseEnter={e=>e.currentTarget.style.background="var(--accent-glow)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{v}</div>)}
           </div>
-          {sugg.length>0&&<div style={{fontSize:10,color:"var(--text-secondary)",marginTop:6}}>{sugg.length} 개 (전체 데이터셋 unique + plan 포함)</div>}
+          {sugg.length>0&&<div style={{fontSize:14,color:"var(--text-secondary)",marginTop:6}}>{sugg.length} 개 (전체 데이터셋 unique + plan 포함)</div>}
           <div style={{display:"flex",gap:8,marginTop:12}}>
-            <button onClick={()=>commit(activeCell.value)} style={{flex:1,padding:"8px 12px",borderRadius:6,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontWeight:600,cursor:"pointer",fontSize:12}}>Apply</button>
-            <button onClick={()=>setActiveCell(null)} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:12}}>Cancel</button>
+            <button onClick={()=>commit(activeCell.value)} style={{flex:1,padding:"8px 12px",borderRadius:6,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontWeight:600,cursor:"pointer",fontSize:14}}>Apply</button>
+            <button onClick={()=>setActiveCell(null)} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:14}}>Cancel</button>
           </div>
         </div>
       </div>;})()}
     {showConfirm&&<div style={{position:"fixed",inset:0,zIndex:9999,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setShowConfirm(false)}>
       <div onClick={e=>e.stopPropagation()} style={{background:"var(--bg-secondary)",borderRadius:12,padding:24,width:400,border:"1px solid var(--border)",maxHeight:"80vh",overflow:"auto"}}>
         <div style={{fontSize:16,fontWeight:700,marginBottom:12}}>Confirm Changes</div>
-        <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:16}}>{Object.keys(pendingPlans).length} cells will be updated</div>
-        {Object.entries(pendingPlans).map(([k,v])=>(<div key={k} style={{fontSize:11,padding:"4px 0",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between"}}><span style={{fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis"}}>{k.split("|").pop()}</span><span style={{color:"rgba(249,115,22,0.95)",fontWeight:600}}>{v}</span></div>))}
+        <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:16}}>{Object.keys(pendingPlans).length} cells will be updated</div>
+        {Object.entries(pendingPlans).map(([k,v])=>(<div key={k} style={{fontSize:14,padding:"4px 0",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between"}}><span style={{fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis"}}>{k.split("|").pop()}</span><span style={{color:"rgba(249,115,22,0.95)",fontWeight:600}}>{v}</span></div>))}
         <div style={{display:"flex",gap:8,marginTop:16}}>
           <button onClick={savePlans} style={{flex:1,padding:10,borderRadius:6,border:"none",background:"rgba(34,197,94,0.95)",color:"var(--bg-secondary)",fontWeight:600,cursor:"pointer"}}>Confirm</button>
           <button onClick={()=>setShowConfirm(false)} style={{padding:"10px 20px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>Cancel</button>
@@ -1751,11 +1763,11 @@ export default function My_SplitTable({user}){
       const me=user?.username||"";
       return(<div style={{position:"fixed",top:0,right:0,bottom:0,width:420,background:"var(--bg-secondary)",borderLeft:"1px solid var(--border)",zIndex:2000,display:"flex",flexDirection:"column",boxShadow:"-4px 0 16px rgba(0,0,0,0.35)"}}>
         <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div style={{fontSize:13,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>📝 {title}</div>
+          <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>📝 {title}</div>
           <span onClick={()=>{setNotesOpen(false);setNoteDraft("");setNoteFilter(null);setNoteDraftScope(null);setNoteSearch("");}} style={{cursor:"pointer",fontSize:18,color:"var(--text-secondary)"}}>✕</span>
         </div>
         {/* scope 필터 칩 — 전체 / wafer / param / lot (global 제거) */}
-        <div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",display:"flex",gap:4,flexWrap:"wrap",fontSize:10,color:"var(--text-secondary)"}}>
+        <div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",display:"flex",gap:4,flexWrap:"wrap",fontSize:14,color:"var(--text-secondary)"}}>
           {[
             {k:"all",l:`전체 ${base.length}`},
             {k:"wafer",l:`🏷 wafer ${base.filter(n=>n.scope==="wafer").length}`},
@@ -1777,17 +1789,17 @@ export default function My_SplitTable({user}){
         <div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)"}}>
           <input value={noteSearch} onChange={e=>setNoteSearch(e.target.value)}
             placeholder="🔍 wafer id · param 이름 · 본문 검색"
-            style={{width:"100%",padding:"4px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,boxSizing:"border-box"}}/>
+            style={{width:"100%",padding:"4px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,boxSizing:"border-box"}}/>
         </div>
         {/* lot 노트 추가 버튼 — root_lot_id 있을 때만 (param/wafer 는 테이블에서 진입) */}
         {lotId && !noteDraftScope && (
-          <div style={{padding:"6px 16px",borderBottom:"1px dashed var(--border)",display:"flex",gap:6,fontSize:10}}>
+          <div style={{padding:"6px 16px",borderBottom:"1px dashed var(--border)",display:"flex",gap:6,fontSize:14}}>
             <button onClick={()=>setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId})}
-              style={{padding:"3px 10px",borderRadius:4,border:"1px solid #16a34a",background:"transparent",color:"rgba(22,163,74,0.95)",fontSize:10,cursor:"pointer"}}>+ LOT 노트 ({lotId})</button>
+              style={{padding:"3px 10px",borderRadius:4,border:"1px solid #16a34a",background:"transparent",color:"rgba(22,163,74,0.95)",fontSize:14,cursor:"pointer"}}>+ LOT 노트 ({lotId})</button>
           </div>
         )}
         <div style={{flex:1,overflow:"auto",padding:"8px 14px",display:"flex",flexDirection:"column",gap:4}}>
-          {filtered.length===0&&<div style={{padding:24,textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>기록된 노트 없음</div>}
+          {filtered.length===0&&<div style={{padding:24,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>기록된 노트 없음</div>}
           {/* 최신순 정렬 */}
           {[...filtered].sort((a,b)=>(b.created_at||"").localeCompare(a.created_at||"")).map(n=>{
             const parts=(n.key||"").split("__");
@@ -1800,18 +1812,18 @@ export default function My_SplitTable({user}){
               :n.scope==="lot"?{bg:"rgba(22,163,74,0.95)",txt:`📦 ${lotOf}`}
               :{bg:"rgba(107,114,128,0.95)",txt:n.scope};
             const time=(n.created_at||"").replace("T"," ").slice(5,16);
-            return(<div key={n.id} title={n.text} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 6px",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",fontSize:11,minHeight:26}}>
-              <span style={{flexShrink:0,fontSize:9,fontWeight:700,padding:"1px 6px",borderRadius:8,background:badge.bg,color:"var(--bg-secondary)",whiteSpace:"nowrap"}}>{badge.txt}</span>
+            return(<div key={n.id} title={n.text} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 6px",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",fontSize:14,minHeight:26}}>
+              <span style={{flexShrink:0,fontSize:14,fontWeight:700,padding:"1px 6px",borderRadius:8,background:badge.bg,color:"var(--bg-secondary)",whiteSpace:"nowrap"}}>{badge.txt}</span>
               <span style={{flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",color:"var(--text-primary)"}}>{n.text}</span>
-              <span style={{flexShrink:0,fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace"}}>{n.username}</span>
-              <span style={{flexShrink:0,fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace"}}>{time}</span>
-              {mine&&<span onClick={()=>deleteNote(n.id)} title="작성자만 삭제 가능" style={{flexShrink:0,cursor:"pointer",fontSize:11,color:"rgba(239,68,68,0.95)",padding:"0 4px"}}>×</span>}
+              <span style={{flexShrink:0,fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{n.username}</span>
+              <span style={{flexShrink:0,fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{time}</span>
+              {mine&&<span onClick={()=>deleteNote(n.id)} title="작성자만 삭제 가능" style={{flexShrink:0,cursor:"pointer",fontSize:14,color:"rgba(239,68,68,0.95)",padding:"0 4px"}}>×</span>}
             </div>);
           })}
         </div>
         {/* draft 패널 — scope 별 입력 */}
         {noteDraftScope&&<div style={{padding:"10px 16px",borderTop:"1px solid var(--border)",display:"flex",flexDirection:"column",gap:6}}>
-          <div style={{fontSize:10,color:"var(--text-secondary)",display:"flex",alignItems:"center",flexWrap:"wrap",gap:6}}>
+          <div style={{fontSize:14,color:"var(--text-secondary)",display:"flex",alignItems:"center",flexWrap:"wrap",gap:6}}>
             {(() => {
               const sc = noteDraftScope.scope;
               const color = sc==="wafer"?"rgba(59,130,246,0.95)":sc==="param"?"rgba(139,92,246,0.95)":sc==="lot"?"rgba(22,163,74,0.95)":"rgba(107,114,128,0.95)";
@@ -1821,23 +1833,23 @@ export default function My_SplitTable({user}){
               return <>대상: <span style={{color,fontWeight:700}}>{label}</span></>;
             })()}
             {noteDraftScope.scope==="param"&&<span>wafer:
-              <input value={noteDraftScope.wafer_id||""} onChange={e=>setNoteDraftScope({...noteDraftScope,wafer_id:e.target.value})} placeholder="wafer_id" style={{marginLeft:4,width:70,padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:10}}/>
+              <input value={noteDraftScope.wafer_id||""} onChange={e=>setNoteDraftScope({...noteDraftScope,wafer_id:e.target.value})} placeholder="wafer_id" style={{marginLeft:4,width:70,padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
             </span>}
-            <span style={{marginLeft:"auto"}}><span onClick={()=>setNoteDraftScope(null)} style={{cursor:"pointer",color:"var(--text-secondary)",fontSize:10}}>✕ 취소</span></span>
+            <span style={{marginLeft:"auto"}}><span onClick={()=>setNoteDraftScope(null)} style={{cursor:"pointer",color:"var(--text-secondary)",fontSize:14}}>✕ 취소</span></span>
           </div>
           <textarea value={noteDraft} onChange={e=>setNoteDraft(e.target.value)} placeholder="새 노트 내용…" rows={2}
-            style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,resize:"vertical",fontFamily:"inherit"}}/>
+            style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,resize:"vertical",fontFamily:"inherit"}}/>
           <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
             {(() => {
               const sc = noteDraftScope.scope;
               const need = sc==="param" ? !!(noteDraftScope.wafer_id||"").trim() : true;
               const canSave = !!noteDraft.trim() && need;
               return <button onClick={addNote} disabled={!canSave}
-                style={{padding:"5px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:11,fontWeight:600,cursor:canSave?"pointer":"not-allowed",opacity:canSave?1:0.5}}>저장 ({me||"anonymous"})</button>;
+                style={{padding:"5px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:canSave?"pointer":"not-allowed",opacity:canSave?1:0.5}}>저장 ({me||"anonymous"})</button>;
             })()}
           </div>
         </div>}
-        {!noteDraftScope&&<div style={{padding:"8px 16px",borderTop:"1px solid var(--border)",fontSize:10,color:"var(--text-secondary)",lineHeight:1.5}}>
+        {!noteDraftScope&&<div style={{padding:"8px 16px",borderTop:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.5}}>
           위 목록 아래에 직접 답글/태그를 추가하려면 테이블에서 해당 셀(wafer·param·lot)을 클릭하세요.
         </div>}
       </div>);
@@ -1850,22 +1862,22 @@ export default function My_SplitTable({user}){
         <div onClick={e=>e.stopPropagation()}
              style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:10,padding:18,width:500,maxWidth:"92vw",color:"var(--text-primary)"}}>
           <div style={{display:"flex",alignItems:"center",marginBottom:10}}>
-            <div style={{fontSize:13,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>🔧 컬럼 매핑 — {rbEditKind}</div>
+            <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>🔧 컬럼 매핑 — {rbEditKind}</div>
             <span style={{flex:1}}/>
             <span onClick={()=>setRbEditKind(null)} style={{cursor:"pointer",fontSize:16}}>✕</span>
           </div>
-          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.5}}>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.5}}>
             역할 → 실제 CSV 컬럼명. 사내 CSV 의 헤더가 다르면 여기만 조정해도 연결 유지됨.
             입력 안 한 값은 기본값으로 저장.
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
             {Object.entries(rbSchema.defaults?.[rbEditKind] || {}).map(([role, dfl]) => (
-              <label key={role} style={{display:"flex",alignItems:"center",gap:8,fontSize:11}}>
+              <label key={role} style={{display:"flex",alignItems:"center",gap:8,fontSize:14}}>
                 <span style={{width:140,color:"var(--text-secondary)",fontFamily:"monospace"}}>{role}</span>
                 <input value={rbDraftMap[role] ?? dfl}
                   onChange={e=>setRbDraftMap(m=>({...m,[role]:e.target.value}))}
-                  style={{flex:1,padding:"5px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:11,fontFamily:"monospace"}} />
-                <span style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace",opacity:0.7,width:120,textAlign:"right"}}>기본: {dfl}</span>
+                  style={{flex:1,padding:"5px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}} />
+                <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",opacity:0.7,width:120,textAlign:"right"}}>기본: {dfl}</span>
               </label>
             ))}
           </div>
@@ -1873,11 +1885,11 @@ export default function My_SplitTable({user}){
             <button onClick={()=>{
               // 기본값으로 리셋
               setRbDraftMap({...(rbSchema.defaults?.[rbEditKind]||{})});
-            }} style={{padding:"6px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>기본값 복원</button>
+            }} style={{padding:"6px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>기본값 복원</button>
             <button onClick={()=>setRbEditKind(null)}
-              style={{padding:"6px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:"pointer"}}>취소</button>
+              style={{padding:"6px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>취소</button>
             <button onClick={saveSchemaEdit}
-              style={{padding:"6px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:11,fontWeight:600,cursor:"pointer"}}>저장</button>
+              style={{padding:"6px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>저장</button>
           </div>
         </div>
       </div>
@@ -1889,25 +1901,25 @@ export default function My_SplitTable({user}){
         <div onClick={e=>e.stopPropagation()}
              style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:10,padding:18,width:920,maxWidth:"96vw",maxHeight:"88vh",display:"flex",flexDirection:"column",color:"var(--text-primary)"}}>
           <div style={{display:"flex",alignItems:"center",marginBottom:10,gap:8}}>
-            <div style={{fontSize:13,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>📘 Rulebook 편집 — {rbRowKind}</div>
-            <span style={{fontSize:10,padding:"2px 8px",borderRadius:10,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>product = {selProd}</span>
-            <span style={{fontSize:10,color:"var(--text-secondary)"}}>행 {rbRowRows.length}개</span>
+            <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>📘 Rulebook 편집 — {rbRowKind}</div>
+            <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>product = {selProd}</span>
+            <span style={{fontSize:14,color:"var(--text-secondary)"}}>행 {rbRowRows.length}개</span>
             <span style={{flex:1}}/>
             <button onClick={rbAddRow} disabled={rbRowSaving}
-              style={{padding:"4px 12px",borderRadius:4,border:"1px solid #22c55e",background:"transparent",color:"rgba(34,197,94,0.95)",fontSize:11,cursor:"pointer",fontWeight:600}}>+ 행 추가</button>
+              style={{padding:"4px 12px",borderRadius:4,border:"1px solid #22c55e",background:"transparent",color:"rgba(34,197,94,0.95)",fontSize:14,cursor:"pointer",fontWeight:600}}>+ 행 추가</button>
             <span onClick={()=>!rbRowSaving&&setRbRowKind(null)} style={{cursor:rbRowSaving?"wait":"pointer",fontSize:16,marginLeft:4}}>✕</span>
           </div>
-          <div style={{fontSize:10,color:"var(--text-secondary)",marginBottom:8,lineHeight:1.5}}>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:8,lineHeight:1.5}}>
             이 제품({selProd})의 행만 이 modal 에서 편집합니다. 저장 시 기존 해당 제품 행은 전체 교체되고, 다른 제품/공용 행은 보존됩니다.
             필수 컬럼: <span style={{fontFamily:"monospace",color:"rgba(245,158,11,0.95)"}}>{(rbRowReq||[]).join(", ")}</span>
           </div>
           <div style={{flex:1,overflow:"auto",border:"1px solid var(--border)",borderRadius:4}}>
             {rbRowRows.length===0 ? (
-              <div style={{padding:"30px 20px",textAlign:"center",fontSize:11,color:"var(--text-secondary)",fontStyle:"italic"}}>
+              <div style={{padding:"30px 20px",textAlign:"center",fontSize:14,color:"var(--text-secondary)",fontStyle:"italic"}}>
                 이 제품에 등록된 행이 없습니다. 우측 상단 <b>+ 행 추가</b>로 시작하세요.
               </div>
             ) : (
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,fontFamily:"monospace"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:14,fontFamily:"monospace"}}>
                 <thead style={{position:"sticky",top:0,background:"var(--bg-card)",zIndex:1}}>
                   <tr>
                     <th style={{padding:"6px 8px",textAlign:"left",borderBottom:"1px solid var(--border)",width:40,color:"var(--text-secondary)"}}>#</th>
@@ -1928,12 +1940,12 @@ export default function My_SplitTable({user}){
                           <input value={r[c]||""} disabled={c==="product"}
                             onChange={e=>rbUpdateCell(i,c,e.target.value)}
                             placeholder={(rbRowReq||[]).includes(c)?"필수":""}
-                            style={{width:"100%",padding:"4px 6px",borderRadius:3,border:`1px solid ${(rbRowReq||[]).includes(c)&&!r[c]?"rgba(239,68,68,0.95)":"var(--border)"}`,background:c==="product"?"var(--bg-card)":"var(--bg-primary)",color:"var(--text-primary)",fontSize:10,fontFamily:"monospace"}}/>
+                            style={{width:"100%",padding:"4px 6px",borderRadius:3,border:`1px solid ${(rbRowReq||[]).includes(c)&&!r[c]?"rgba(239,68,68,0.95)":"var(--border)"}`,background:c==="product"?"var(--bg-card)":"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>
                         </td>
                       ))}
                       <td style={{padding:"2px 4px",textAlign:"center"}}>
                         <button onClick={()=>rbDelRow(i)} title="행 삭제" disabled={rbRowSaving}
-                          style={{padding:"2px 8px",borderRadius:3,border:"1px solid #ef4444",background:"transparent",color:"rgba(239,68,68,0.95)",fontSize:10,cursor:"pointer"}}>🗑</button>
+                          style={{padding:"2px 8px",borderRadius:3,border:"1px solid #ef4444",background:"transparent",color:"rgba(239,68,68,0.95)",fontSize:14,cursor:"pointer"}}>🗑</button>
                       </td>
                     </tr>
                   ))}
@@ -1942,12 +1954,12 @@ export default function My_SplitTable({user}){
             )}
           </div>
           <div style={{display:"flex",alignItems:"center",gap:6,marginTop:12}}>
-            <div style={{fontSize:9,color:"var(--text-secondary)"}}>* 필수 · 🔒 자동</div>
+            <div style={{fontSize:14,color:"var(--text-secondary)"}}>* 필수 · 🔒 자동</div>
             <span style={{flex:1}}/>
             <button onClick={()=>!rbRowSaving&&setRbRowKind(null)} disabled={rbRowSaving}
-              style={{padding:"6px 14px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:11,cursor:rbRowSaving?"wait":"pointer"}}>취소</button>
+              style={{padding:"6px 14px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:rbRowSaving?"wait":"pointer"}}>취소</button>
             <button onClick={rbSaveRows} disabled={rbRowSaving}
-              style={{padding:"6px 16px",borderRadius:4,border:"none",background:rbRowSaving?"var(--border)":"var(--accent)",color:"var(--bg-secondary)",fontSize:11,fontWeight:600,cursor:rbRowSaving?"wait":"pointer"}}>{rbRowSaving?"저장 중…":`저장 (${rbRowRows.length}행)`}</button>
+              style={{padding:"6px 16px",borderRadius:4,border:"none",background:rbRowSaving?"var(--border)":"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:rbRowSaving?"wait":"pointer"}}>{rbRowSaving?"저장 중…":`저장 (${rbRowRows.length}행)`}</button>
           </div>
         </div>
       </div>

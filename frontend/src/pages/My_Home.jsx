@@ -13,9 +13,9 @@ const EC=[[6,3,B],[6,4,M],[6,5,L],[6,6,L],[6,7,L],[6,8,L],[6,9,L],[6,10,L],[6,11
 const AD=[[7,1,M],[7,2,M],[8,1,B],[7,13,M],[7,14,M],[8,14,B]];
 const AW=[[7,1,M],[7,2,M],[8,1,B],[5,13,M],[5,14,G],[6,13,M],[6,14,B]];
 function Holli({size=72}){const[fr,setFr]=useState("idle");const t=useRef(null);useEffect(()=>{const loop=()=>{t.current=setTimeout(()=>{if(Math.random()<0.6){setFr("blink");setTimeout(()=>{setFr("idle");loop();},150);}else{setFr("wave");setTimeout(()=>{setFr("idle");loop();},600);}},1500+Math.random()*2500);};loop();return()=>clearTimeout(t.current);},[]);const px=[...BASE_PX,...(fr==="blink"?EC:EO),...(fr==="wave"?AW:AD)];return(<div style={{animation:fr==="idle"?"holBob 2s ease-in-out infinite":"none"}}><style>{`@keyframes holBob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}@keyframes holBlink{0%,100%{opacity:1}50%{opacity:0}}`}</style><svg width={size} height={size} viewBox="0 0 16 16" style={{imageRendering:"pixelated"}}>{px.map(([r,c,color],i)=><rect key={i} x={c} y={r} width={1} height={1} fill={color}/>)}</svg></div>);}
-function Cli({cmd,output,delay=0}){const line=`> flow ${cmd}`;const parts=[{text:">",color:"#f97316"},{text:" flow ",color:"#737373"},{text:cmd,color:"#e5e5e5"}];const[show,setShow]=useState(delay===0);const[typedLen,setTypedLen]=useState(0);const[done,setDone]=useState(false);useEffect(()=>{if(delay){const t=setTimeout(()=>setShow(true),delay);return()=>clearTimeout(t);}},[delay]);useEffect(()=>{if(!show)return;setTypedLen(0);setDone(false);let i=0;const iv=setInterval(()=>{i++;setTypedLen(i);if(i>=line.length){clearInterval(iv);setTimeout(()=>setDone(true),100);}},30);return()=>clearInterval(iv);},[show,line]);if(!show)return null;let remain=typedLen;return(<div style={{marginBottom:4,fontFamily:"'JetBrains Mono',monospace",fontSize:13,lineHeight:1.7}}>{parts.map((p,idx)=>{const s=p.text.slice(0,Math.max(0,Math.min(p.text.length,remain)));remain-=s.length;return s?<span key={idx} style={{color:p.color}}>{s}</span>:null;})}{!done&&<span style={{display:"inline-block",width:8,height:14,background:"#f97316",marginLeft:2,animation:"holBlink 0.6s step-end infinite"}}/>}{done&&output&&<div style={{color:"#a3a3a3",paddingLeft:20,fontSize:12}}>{output}</div>}</div>);}
+function Cli({cmd,output,delay=0}){const line=`> flow ${cmd}`;const parts=[{text:">",color:"#f97316"},{text:" flow ",color:"#737373"},{text:cmd,color:"#e5e5e5"}];const[show,setShow]=useState(delay===0);const[typedLen,setTypedLen]=useState(0);const[done,setDone]=useState(false);useEffect(()=>{if(delay){const t=setTimeout(()=>setShow(true),delay);return()=>clearTimeout(t);}},[delay]);useEffect(()=>{if(!show)return;setTypedLen(0);setDone(false);let i=0;const iv=setInterval(()=>{i++;setTypedLen(i);if(i>=line.length){clearInterval(iv);setTimeout(()=>setDone(true),100);}},30);return()=>clearInterval(iv);},[show,line]);if(!show)return null;let remain=typedLen;return(<div style={{marginBottom:4,fontFamily:"'JetBrains Mono',monospace",fontSize:14,lineHeight:1.7}}>{parts.map((p,idx)=>{const s=p.text.slice(0,Math.max(0,Math.min(p.text.length,remain)));remain-=s.length;return s?<span key={idx} style={{color:p.color}}>{s}</span>:null;})}{!done&&<span style={{display:"inline-block",width:8,height:14,background:"#f97316",marginLeft:2,animation:"holBlink 0.6s step-end infinite"}}/>}{done&&output&&<div style={{color:"#a3a3a3",paddingLeft:20,fontSize:14}}>{output}</div>}</div>);}
 function WelcomeType({name}){const full=`${name}님, 안녕하세요`;const[len,setLen]=useState(0);useEffect(()=>{const t=setTimeout(()=>{let i=0;const iv=setInterval(()=>{i++;setLen(i);if(i>=full.length)clearInterval(iv);},70);return()=>clearInterval(iv);},800);return()=>clearTimeout(t);},[full]);return(<span><span style={{color:"#e5e5e5",fontWeight:700}}>{full.slice(0,len)}</span></span>);}
-function Card({icon,title,desc,tag,onClick,width=220}){return(<div onClick={onClick} onMouseEnter={e=>{e.currentTarget.style.borderColor="#f97316";e.currentTarget.style.background="#f9731610";}} onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--border,#333)";e.currentTarget.style.background="var(--bg-card,#2a2a2a)";}} style={{background:"var(--bg-card,#2a2a2a)",borderRadius:12,padding:"20px 24px",cursor:onClick?"pointer":"default",border:"1px solid var(--border,#333)",transition:"all 0.2s",position:"relative",width,boxSizing:"border-box"}}>{tag&&<span style={{position:"absolute",top:12,right:12,fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:"#f9731622",color:"#f97316",fontFamily:"monospace",textTransform:"uppercase"}}>{tag}</span>}<div style={{fontSize:28,marginBottom:10}}>{icon}</div><div style={{fontSize:14,fontWeight:700,color:"var(--text-primary,#e5e5e5)",marginBottom:6,fontFamily:"'JetBrains Mono',monospace"}}>{title}</div><div style={{fontSize:12,color:"var(--text-secondary,#a3a3a3)",lineHeight:1.6}}>{desc}</div></div>);}
+function Card({icon,title,desc,tag,onClick,width=220}){return(<div onClick={onClick} onMouseEnter={e=>{e.currentTarget.style.borderColor="#f97316";e.currentTarget.style.background="#f9731610";}} onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--border,#333)";e.currentTarget.style.background="var(--bg-card,#2a2a2a)";}} style={{background:"var(--bg-card,#2a2a2a)",borderRadius:12,padding:"20px 24px",cursor:onClick?"pointer":"default",border:"1px solid var(--border,#333)",transition:"all 0.2s",position:"relative",width,boxSizing:"border-box"}}>{tag&&<span style={{position:"absolute",top:12,right:12,fontSize:14,fontWeight:700,padding:"2px 6px",borderRadius:3,background:"#f9731622",color:"#f97316",fontFamily:"monospace",textTransform:"uppercase"}}>{tag}</span>}<div style={{fontSize:28,marginBottom:10}}>{icon}</div><div style={{fontSize:14,fontWeight:700,color:"var(--text-primary,#e5e5e5)",marginBottom:6,fontFamily:"'JetBrains Mono',monospace"}}>{title}</div><div style={{fontSize:14,color:"var(--text-secondary,#a3a3a3)",lineHeight:1.6}}>{desc}</div></div>);}
 
 // Feature guide content shown to users (non-admin) instead of changelog
 const FEATURE_GUIDES={
@@ -32,7 +32,8 @@ const FEATURE_GUIDES={
   tablemap:{icon:"🗺️",title:"테이블 맵",steps:["DB 간 관계 그래프 조회","노드 더블클릭 → 상세 정보","관계선 drag-drop 으로 편집"]},
   devguide:{icon:"📖",title:"개발 가이드",steps:["아키텍처 다이어그램","API 엔드포인트 문서","Gotchas / 코드 규칙"]},
 };
-function FlowiConsole({onNavigate}){
+function FlowiConsole({onNavigate,user}){
+  const isAdmin=user?.role==="admin";
   const[active,setActive]=useState(false);
   const[connState,setConnState]=useState("idle");
   const[prompt,setPrompt]=useState("");
@@ -125,29 +126,29 @@ function FlowiConsole({onNavigate}){
   return(<section style={{marginTop:12,fontFamily:"'JetBrains Mono',monospace"}}>
     <style>{`@keyframes flowiPanelWake{0%{opacity:0;transform:translateY(-8px) scaleY(.96)}100%{opacity:1;transform:translateY(0) scaleY(1)}}@keyframes flowiConnBlink{0%,100%{opacity:.45}50%{opacity:1}}`}</style>
     <form onSubmit={e=>{e.preventDefault();activate();}} style={{margin:0}}>
-      <div style={{display:"flex",alignItems:"center",gap:7,minWidth:0,fontSize:13,lineHeight:1.7,flexWrap:"wrap"}}>
+      <div style={{display:"flex",alignItems:"center",gap:7,minWidth:0,fontSize:14,lineHeight:1.7,flexWrap:"wrap"}}>
         <span style={{color:"#f97316"}}>{">"}</span>
         <span style={{color:"#737373",whiteSpace:"nowrap"}}>flow-i</span>
-        {active&&connLabel&&<span title={modelLabel?`LLM ${modelLabel}`:"LLM 연결 확인"} style={{display:"inline-flex",alignItems:"center",gap:5,color:connColor,border:`1px solid ${connColor}66`,background:`${connColor}14`,borderRadius:999,padding:"1px 8px",fontSize:10,fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>
+        {active&&connLabel&&<span title={modelLabel?`LLM ${modelLabel}`:"LLM 연결 확인"} style={{display:"inline-flex",alignItems:"center",gap:5,color:connColor,border:`1px solid ${connColor}66`,background:`${connColor}14`,borderRadius:999,padding:"1px 8px",fontSize:14,fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>
           <span style={{width:6,height:6,borderRadius:"50%",background:connColor,animation:connState==="checking"?"flowiConnBlink .75s ease-in-out infinite":"none"}}/>{connLabel}
         </span>}
         {!active&&<button type="submit" aria-label="start flowi"
-          style={{padding:"2px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#f97316",fontSize:10,fontFamily:"monospace",fontWeight:800,cursor:"pointer"}}>START</button>}
+          style={{padding:"2px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#f97316",fontSize:14,fontFamily:"monospace",fontWeight:800,cursor:"pointer"}}>START</button>}
         {active&&<button type="button" onClick={close} aria-label="close flowi"
-          style={{padding:"1px 6px",borderRadius:5,border:"1px solid #333",background:"transparent",color:"#737373",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>CLOSE</button>}
+          style={{padding:"1px 6px",borderRadius:5,border:"1px solid #333",background:"transparent",color:"#737373",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>CLOSE</button>}
       </div>
     </form>
     {active&&<div style={{marginTop:10,border:"1px solid #2a2a2a",borderRadius:10,background:"#101010",overflow:"hidden",animation:"flowiPanelWake .32s ease-out",transformOrigin:"top"}}>
       <div ref={scrollRef} style={{height:messages.length?420:260,maxHeight:"48vh",overflowY:"auto",padding:"12px 14px",borderBottom:"1px solid #262626",scrollBehavior:"smooth"}}>
         {messages.map(m=>m.role==="user"
           ?<div key={m.id} style={{display:"flex",justifyContent:"flex-end",margin:"0 0 10px"}}>
-            <div style={{maxWidth:"82%",background:"#1f130b",border:"1px solid #7c2d12",borderRadius:"10px 10px 2px 10px",padding:"8px 10px",color:"#f5f5f5",fontSize:12,lineHeight:1.55,whiteSpace:"pre-wrap"}}>{m.text}</div>
+            <div style={{maxWidth:"82%",background:"#1f130b",border:"1px solid #7c2d12",borderRadius:"10px 10px 2px 10px",padding:"8px 10px",color:"#f5f5f5",fontSize:14,lineHeight:1.55,whiteSpace:"pre-wrap"}}>{m.text}</div>
           </div>
           :<div key={m.id} style={{margin:"0 0 14px",maxWidth:"92%"}}>
-            <div style={{fontSize:10,color:"#737373",fontFamily:"monospace",marginBottom:4}}>flow-i{m.intent?` · ${m.intent}`:""}</div>
-            <FlowiResult busy={false} error="" result={m.result} prompt={m.prompt} onNavigate={onNavigate} onChoice={ask} embedded/>
+            <div style={{fontSize:14,color:"#737373",fontFamily:"monospace",marginBottom:4}}>flow-i{isAdmin&&m.intent?` · ${m.intent}`:""}</div>
+            <FlowiResult busy={false} error="" result={m.result} prompt={m.prompt} onNavigate={onNavigate} onChoice={ask} embedded isAdmin={isAdmin}/>
           </div>)}
-        {busy&&<FlowiLiveTrace step={liveStep}/>}
+        {busy&&isAdmin&&<FlowiLiveTrace step={liveStep}/>}
       </div>
       <form onSubmit={e=>{e.preventDefault();ask();}} style={{margin:0,padding:"10px 10px 10px 0"}}>
       <div style={{display:"flex",alignItems:"stretch",gap:8,minWidth:0}}>
@@ -158,27 +159,27 @@ function FlowiConsole({onNavigate}){
             aria-label="Flowi prompt"
             rows={5}
             onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();ask();}}}
-            style={{width:"100%",minWidth:0,padding:"10px 12px 48px",borderRadius:8,border:"1px solid #525252",background:"#3a3a3a",color:"#f5f5f5",fontSize:13,lineHeight:1.55,fontFamily:"'JetBrains Mono',monospace",outline:"none",resize:"vertical",boxSizing:"border-box",display:"block"}}/>
-          <div title="현재 연결 모델과 남은 대화 context 추정치" style={{position:"absolute",right:10,bottom:8,display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",maxWidth:"calc(100% - 20px)",pointerEvents:"none",fontFamily:"'JetBrains Mono',monospace"}}>
-            <span style={{minWidth:0,maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:11,lineHeight:1.1,color:modelLabel?"#d4d4d4":"#737373",border:"1px solid #333",background:"#0f0f0f",borderRadius:999,padding:"6px 9px",fontWeight:900}}>
+            style={{width:"100%",minWidth:0,padding:isAdmin?"10px 12px 48px":"10px 12px",borderRadius:8,border:"1px solid #525252",background:"#3a3a3a",color:"#f5f5f5",fontSize:14,lineHeight:1.55,fontFamily:"'JetBrains Mono',monospace",outline:"none",resize:"vertical",boxSizing:"border-box",display:"block"}}/>
+          {isAdmin&&<div title="현재 연결 모델과 남은 대화 context 추정치" style={{position:"absolute",right:10,bottom:8,display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",maxWidth:"calc(100% - 20px)",pointerEvents:"none",fontFamily:"'JetBrains Mono',monospace"}}>
+            <span style={{minWidth:0,maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:14,lineHeight:1.1,color:modelLabel?"#d4d4d4":"#737373",border:"1px solid #333",background:"#0f0f0f",borderRadius:999,padding:"6px 9px",fontWeight:900}}>
               MODEL {modelLabel||"미연결"}
             </span>
-            <span style={{whiteSpace:"nowrap",fontSize:11,lineHeight:1.1,color:contextPct<20?"#fb923c":"#d4d4d4",border:`1px solid ${contextPct<20?"#f9731666":"#333"}`,background:contextPct<20?"#2a1207":"#0f0f0f",borderRadius:999,padding:"6px 9px",fontWeight:900}}>
+            <span style={{whiteSpace:"nowrap",fontSize:14,lineHeight:1.1,color:contextPct<20?"#fb923c":"#d4d4d4",border:`1px solid ${contextPct<20?"#f9731666":"#333"}`,background:contextPct<20?"#2a1207":"#0f0f0f",borderRadius:999,padding:"6px 9px",fontWeight:900}}>
               CTX {contextUsed.toLocaleString()} / {CTX_LIMIT.toLocaleString()}
             </span>
-          </div>
+          </div>}
         </div>
-        {busy&&<div aria-live="polite" style={{alignSelf:"center",color:"#f97316",fontSize:10,fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>RUNNING</div>}
+        {busy&&<div aria-live="polite" style={{alignSelf:"center",color:"#f97316",fontSize:14,fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>RUNNING</div>}
       </div>
       </form>
     </div>}
-    {err&&<FlowiResult busy={false} error={err} result={null} prompt={lastPrompt} onNavigate={onNavigate} onChoice={ask}/>}
+    {err&&<FlowiResult busy={false} error={err} result={null} prompt={lastPrompt} onNavigate={onNavigate} onChoice={ask} isAdmin={isAdmin}/>}
   </section>);
 }
 
-function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=false}){
-  if(busy)return <div style={{marginTop:embedded?0:10,fontSize:12,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
-  if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:12,border:"1px solid #7f1d1d"}}>{error}</div>;
+function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=false,isAdmin=false}){
+  if(busy)return <div style={{marginTop:embedded?0:10,fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
+  if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:14,border:"1px solid #7f1d1d"}}>{error}</div>;
   if(!result)return null;
   const tool=result.tool||{};
   const table=tool.table&&Array.isArray(tool.table.rows)&&Array.isArray(tool.table.columns)?tool.table:null;
@@ -192,19 +193,19 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
   const chart=tool?.chart&&typeof tool.chart==="object"?tool.chart:null;
   const chartResult=tool?.chart_result&&typeof tool.chart_result==="object"?tool.chart_result:null;
   return(<div style={{marginTop:embedded?0:12,borderTop:embedded?"none":"1px solid #262626",paddingTop:embedded?0:10}}>
-    <div style={{whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.65,color:"#d4d4d4"}}>{result.answer||"응답이 없습니다."}</div>
-    <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
-      {tool.intent&&<span style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
-      {workflow.status&&<span style={{fontSize:10,color:workflow.status.startsWith("awaiting")?"#f97316":workflow.status==="blocked"?"#ef4444":"#22c55e",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{workflow.status}</span>}
-      {result.llm&&<span style={{fontSize:10,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
-      {featureEntries.map(ep=>canNavigate?<button key={ep.key} type="button" onClick={()=>onNavigate(ep.key)} title={ep.description||""} style={{fontSize:10,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 8px",background:"#1f130b",cursor:"pointer"}}>{ep.title} 열기</button>:<span key={ep.key} title={ep.description||""} style={{fontSize:10,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 7px"}}>{ep.title}</span>)}
-    </div>
-    <FlowiTrace trace={result.trace}/>
+    <div style={{whiteSpace:"pre-wrap",fontSize:14,lineHeight:1.65,color:"#d4d4d4"}}>{result.answer||"응답이 없습니다."}</div>
+    {isAdmin&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+      {tool.intent&&<span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
+      {workflow.status&&<span style={{fontSize:14,color:workflow.status.startsWith("awaiting")?"#f97316":workflow.status==="blocked"?"#ef4444":"#22c55e",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{workflow.status}</span>}
+      {result.llm&&<span style={{fontSize:14,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
+      {featureEntries.map(ep=>canNavigate?<button key={ep.key} type="button" onClick={()=>onNavigate(ep.key)} title={ep.description||""} style={{fontSize:14,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 8px",background:"#1f130b",cursor:"pointer"}}>{ep.title} 열기</button>:<span key={ep.key} title={ep.description||""} style={{fontSize:14,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 7px"}}>{ep.title}</span>)}
+    </div>}
+    {isAdmin&&<FlowiTrace trace={result.trace}/>}
     {chartResult&&<FlowiScatterResult data={chartResult}/>}
     {chart&&<FlowiChartPlan chart={chart}/>}
     {table&&<FlowiDataTable table={table}/>}
     {!table&&rows.length>0&&<div style={{marginTop:10,overflowX:"auto"}}>
-      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:14,fontFamily:"monospace"}}>
         <thead><tr>{["product","step","item","wf","median","mean","n"].map(h=><th key={h} style={{textAlign:"left",padding:"5px 6px",borderBottom:"1px solid #333",color:"#a3a3a3"}}>{h}</th>)}</tr></thead>
         <tbody>{rows.slice(0,12).map((r,i)=><tr key={i}>
           <td style={FR_TD}>{r.product||""}</td><td style={FR_TD}>{r.step_id||""}</td><td style={FR_TD}>{r.item_id||""}</td><td style={FR_TD}>{r.wafer_id||""}</td>
@@ -214,13 +215,13 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
     </div>}
     {knobs.length>0&&<div style={{marginTop:10,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:8}}>
       {knobs.slice(0,8).map(k=><div key={k.knob} style={{border:"1px solid #333",borderRadius:6,padding:"8px 10px",background:"#151515"}}>
-        <div style={{fontSize:11,fontWeight:800,color:"#e5e5e5",marginBottom:4}}>{k.display_name||k.knob}</div>
-        {(k.values||[]).slice(0,3).map(v=><div key={String(v.value)} style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace",lineHeight:1.55}}>{String(v.value)} · {v.count}wf{Array.isArray(v.wafers)&&v.wafers.length?" · "+v.wafers.slice(0,8).join(","):""}</div>)}
+        <div style={{fontSize:14,fontWeight:800,color:"#e5e5e5",marginBottom:4}}>{k.display_name||k.knob}</div>
+        {(k.values||[]).slice(0,3).map(v=><div key={String(v.value)} style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",lineHeight:1.55}}>{String(v.value)} · {v.count}wf{Array.isArray(v.wafers)&&v.wafers.length?" · "+v.wafers.slice(0,8).join(","):""}</div>)}
       </div>)}
     </div>}
-    <FlowiFeedback result={result} tool={tool} prompt={prompt}/>
     {choices.length>0&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice} onNavigate={onNavigate}/>}
-    {nextActions.length>0&&<FlowiNextActions actions={nextActions} onNavigate={onNavigate} onChoice={onChoice}/>}
+    <FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>
+    {isAdmin&&nextActions.length>0&&<FlowiNextActions actions={nextActions} onNavigate={onNavigate} onChoice={onChoice}/>}
   </div>);
 }
 const FR_TD={padding:"5px 6px",borderBottom:"1px solid #262626",color:"#d4d4d4",whiteSpace:"nowrap"};
@@ -238,14 +239,14 @@ function FlowiLiveTrace({step=0}){
   return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"9px 10px",fontFamily:"monospace"}}>
     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
       <span style={{width:7,height:7,borderRadius:999,background:"#f97316",display:"inline-block",animation:"flowiConnBlink .75s ease-in-out infinite"}}/>
-      <span style={{fontSize:11,fontWeight:900,color:"#e5e5e5"}}>작업 흐름</span>
-      <span style={{fontSize:9,color:"#737373"}}>공개 가능한 실행 단계 요약</span>
+      <span style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>작업 흐름</span>
+      <span style={{fontSize:14,color:"#737373"}}>공개 가능한 실행 단계 요약</span>
     </div>
     <div style={{display:"grid",gap:5}}>
       {FLOWI_LIVE_STEPS.map(([label,detail],i)=>{
         const done=i<step,active=i===step;
-        return <div key={label} style={{display:"grid",gridTemplateColumns:"18px 96px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:10,lineHeight:1.35}}>
-          <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:9,border:"1px solid "+(done?"#22c55e":active?"#f97316":"#333"),color:done?"#22c55e":active?"#f97316":"#737373"}}>{done?"✓":i+1}</span>
+        return <div key={label} style={{display:"grid",gridTemplateColumns:"18px 96px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
+          <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:"1px solid "+(done?"#22c55e":active?"#f97316":"#333"),color:done?"#22c55e":active?"#f97316":"#737373"}}>{done?"✓":i+1}</span>
           <span style={{color:active?"#f97316":done?"#d4d4d4":"#737373",fontWeight:active?900:700}}>{label}</span>
           <span style={{color:active?"#d4d4d4":"#737373",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{detail}</span>
         </div>;
@@ -259,16 +260,16 @@ function FlowiTrace({trace}){
   if(!steps.length)return null;
   const colorFor=(status)=>status==="done"?"#22c55e":status==="blocked"?"#ef4444":status==="error"?"#ef4444":status==="skipped"?"#737373":"#f97316";
   return(<details style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"7px 9px"}}>
-    <summary style={{cursor:"pointer",fontSize:10,color:"#a3a3a3",fontFamily:"monospace",fontWeight:800}}>
+    <summary style={{cursor:"pointer",fontSize:14,color:"#a3a3a3",fontFamily:"monospace",fontWeight:800}}>
       작업 흐름 보기 <span style={{fontWeight:400,color:"#737373"}}>사고과정 원문이 아닌 실행 로그</span>
     </summary>
     <div style={{marginTop:7,display:"grid",gap:5,fontFamily:"monospace"}}>
-      {steps.map((s,i)=><div key={s.key||i} style={{display:"grid",gridTemplateColumns:"18px 118px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:10,lineHeight:1.4}}>
-        <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:8,border:`1px solid ${colorFor(s.status)}99`,color:colorFor(s.status)}}>{s.status==="done"?"✓":s.status==="blocked"?"!":i+1}</span>
+      {steps.map((s,i)=><div key={s.key||i} style={{display:"grid",gridTemplateColumns:"18px 118px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.4}}>
+        <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:`1px solid ${colorFor(s.status)}99`,color:colorFor(s.status)}}>{s.status==="done"?"✓":s.status==="blocked"?"!":i+1}</span>
         <span style={{color:"#d4d4d4",fontWeight:800}}>{s.label||s.key}</span>
         <span style={{color:"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={s.detail||""}>{s.detail||""}</span>
       </div>)}
-      {trace.note&&<div style={{marginTop:4,fontSize:9,color:"#737373",lineHeight:1.45}}>{trace.note}</div>}
+      {trace.note&&<div style={{marginTop:4,fontSize:14,color:"#737373",lineHeight:1.45}}>{trace.note}</div>}
     </div>
   </details>);
 }
@@ -276,8 +277,8 @@ function FlowiTrace({trace}){
 function FlowiChoices({question,choices,onChoice,onNavigate}){
   return(<div style={{marginTop:12,border:"1px solid #7c2d12",borderRadius:8,background:"#1f130b",padding:"10px 11px",boxShadow:"0 0 0 1px rgba(249,115,22,0.12)"}}>
     <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:8,flexWrap:"wrap"}}>
-      <span style={{fontSize:10,color:"#f97316",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 7px"}}>확인 선택</span>
-      <span style={{fontSize:11,fontWeight:800,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace"}}>{question||"확인이 필요합니다."}</span>
+      <span style={{fontSize:14,color:"#f97316",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 7px"}}>확인 선택</span>
+      <span style={{fontSize:14,fontWeight:800,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace"}}>{question||"확인이 필요합니다."}</span>
     </div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:7}}>
       {choices.map((c,i)=><button key={c.id||i} type="button" onClick={()=>{
@@ -287,11 +288,11 @@ function FlowiChoices({question,choices,onChoice,onNavigate}){
       }}
         style={{textAlign:"left",border:"1px solid "+(c.recommended?"#f97316":"#333"),borderRadius:7,background:c.recommended?"#2a1608":"#171717",padding:"8px 9px",cursor:"pointer",color:"#d4d4d4"}}>
         <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:3}}>
-          <span style={{fontSize:10,fontWeight:900,color:c.recommended?"#f97316":"#a3a3a3",fontFamily:"monospace"}}>{c.label||i+1}</span>
-          <span style={{fontSize:11,fontWeight:800,color:"#e5e5e5"}}>{c.title}</span>
-          {c.recommended&&<span style={{fontSize:9,color:"#f97316",border:"1px solid #7c2d12",borderRadius:999,padding:"1px 5px",marginLeft:"auto"}}>recommended</span>}
+          <span style={{fontSize:14,fontWeight:900,color:c.recommended?"#f97316":"#a3a3a3",fontFamily:"monospace"}}>{c.label||i+1}</span>
+          <span style={{fontSize:14,fontWeight:800,color:"#e5e5e5"}}>{c.title}</span>
+          {c.recommended&&<span style={{fontSize:14,color:"#f97316",border:"1px solid #7c2d12",borderRadius:999,padding:"1px 5px",marginLeft:"auto"}}>recommended</span>}
         </div>
-        <div style={{fontSize:10,lineHeight:1.45,color:"#a3a3a3"}}>{c.description}</div>
+        <div style={{fontSize:14,lineHeight:1.45,color:"#a3a3a3"}}>{c.description}</div>
       </button>)}
     </div>
   </div>);
@@ -299,13 +300,13 @@ function FlowiChoices({question,choices,onChoice,onNavigate}){
 
 function FlowiNextActions({actions,onNavigate,onChoice}){
   return(<div style={{marginTop:10,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"8px 9px"}}>
-    <div style={{fontSize:10,fontWeight:900,color:"#a3a3a3",fontFamily:"'JetBrains Mono',monospace",marginBottom:6}}>next actions</div>
+    <div style={{fontSize:14,fontWeight:900,color:"#a3a3a3",fontFamily:"'JetBrains Mono',monospace",marginBottom:6}}>next actions</div>
     <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
       {actions.map((a,i)=>{
         const clickable=(a.type==="open_tab"&&a.tab&&typeof onNavigate==="function")||(a.prompt&&typeof onChoice==="function");
         const click=()=>{if(a.type==="open_tab"&&a.tab&&onNavigate)onNavigate(a.tab);else if(a.prompt&&onChoice)onChoice(a.prompt);};
         return <button key={a.id||i} type="button" onClick={click} disabled={!clickable} title={a.description||""}
-          style={{fontSize:10,color:clickable?"#f97316":"#a3a3a3",fontFamily:"monospace",border:"1px solid "+(clickable?"#7c2d12":"#333"),borderRadius:999,padding:"3px 8px",background:clickable?"#1f130b":"#171717",cursor:clickable?"pointer":"default",opacity:clickable?1:.82}}>
+          style={{fontSize:14,color:clickable?"#f97316":"#a3a3a3",fontFamily:"monospace",border:"1px solid "+(clickable?"#7c2d12":"#333"),borderRadius:999,padding:"3px 8px",background:clickable?"#1f130b":"#171717",cursor:clickable?"pointer":"default",opacity:clickable?1:.82}}>
           {a.title||a.type}
         </button>;
       })}
@@ -319,10 +320,10 @@ function FlowiChartPlan({chart}){
   const requires=Array.isArray(chart.requires)?chart.requires:[];
   return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101827",padding:"9px 10px"}}>
     <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center",marginBottom:7}}>
-      <div style={{fontSize:11,fontWeight:900,color:"#dbeafe",fontFamily:"'JetBrains Mono',monospace"}}>Dashboard chart plan</div>
-      <span style={{fontSize:10,color:requires.length?"#f97316":"#22c55e",fontFamily:"monospace"}}>{requires.length?"needs confirmation":"ready to route"}</span>
+      <div style={{fontSize:14,fontWeight:900,color:"#dbeafe",fontFamily:"'JetBrains Mono',monospace"}}>Dashboard chart plan</div>
+      <span style={{fontSize:14,color:requires.length?"#f97316":"#22c55e",fontFamily:"monospace"}}>{requires.length?"needs confirmation":"ready to route"}</span>
     </div>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:6,fontSize:10,color:"#bfdbfe",fontFamily:"monospace"}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:6,fontSize:14,color:"#bfdbfe",fontFamily:"monospace"}}>
       <div>kind: {chart.kind||"scatter"}</div>
       <div>source: {(chart.sources||[]).join(", ")||"-"}</div>
       <div>ops: {ops.join(", ")||"-"}</div>
@@ -331,7 +332,7 @@ function FlowiChartPlan({chart}){
       <div>ET: {chart.aggregations?.ET||"median"}</div>
     </div>
     {metrics.length>0&&<div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap"}}>
-      {metrics.slice(0,10).map(m=><span key={m.metric} style={{fontSize:10,color:"#dbeafe",background:"#1e3a8a66",border:"1px solid #3b82f666",borderRadius:999,padding:"2px 7px"}}>{m.metric}</span>)}
+      {metrics.slice(0,10).map(m=><span key={m.metric} style={{fontSize:14,color:"#dbeafe",background:"#1e3a8a66",border:"1px solid #3b82f666",borderRadius:999,padding:"2px 7px"}}>{m.metric}</span>)}
     </div>}
   </div>);
 }
@@ -342,7 +343,7 @@ function FlowiScatterResult({data}){
   if(Array.isArray(data.boxes)&&data.boxes.length)return <FlowiBoxResult data={data}/>;
   if(data.kind==="dashboard_wafer_map"&&Array.isArray(data.points))return <FlowiWaferMapResult data={data}/>;
   const pts=Array.isArray(data.points)?data.points.filter(p=>Number.isFinite(Number(p.x))&&Number.isFinite(Number(p.y))):[];
-  if(!pts.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:11,color:"#a3a3a3"}}>차트로 표시할 numeric point가 없습니다.</div>;
+  if(!pts.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:14,color:"#a3a3a3"}}>차트로 표시할 numeric point가 없습니다.</div>;
   const W=520,H=300,pad={l:54,r:18,t:22,b:44};
   const xs=pts.map(p=>Number(p.x)),ys=pts.map(p=>Number(p.y));
   const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
@@ -357,8 +358,8 @@ function FlowiScatterResult({data}){
   const colorFor=(p)=>colorMap.get(String(p.color_value??""))||"#3b82f6";
   return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"10px 12px"}}>
     <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8}}>
-      <div style={{fontSize:12,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi scatter"}</div>
-      <div style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>n={data.total||pts.length} · corr={data.corr??"-"}{fit?` · R²=${fit.r2}`:""}{data.color_by?` · color=${data.color_by}`:""}</div>
+      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi scatter"}</div>
+      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>n={data.total||pts.length} · corr={data.corr??"-"}{fit?` · R²=${fit.r2}`:""}{data.color_by?` · color=${data.color_by}`:""}</div>
     </div>
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block"}}>
       {[0,0.5,1].map((f)=><g key={`y${f}`}>
@@ -378,7 +379,7 @@ function FlowiScatterResult({data}){
       <text x={(pad.l+W-pad.r)/2} y={H-5} textAnchor="middle" fontSize="10" fill="#f97316">{data.x_label||"x"}</text>
       <text x="12" y={(pad.t+H-pad.b)/2} transform={`rotate(-90,12,${(pad.t+H-pad.b)/2})`} textAnchor="middle" fontSize="10" fill="#f97316">{data.y_label||"y"}</text>
     </svg>
-    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>
+    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>join {Array.isArray(data.join_cols)?data.join_cols.join("+"):"lot_wf"} · {data.join_how||"left"}</span>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>INLINE avg</span>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>ET median</span>
@@ -392,7 +393,7 @@ function FlowiScatterResult({data}){
 
 function FlowiBoxResult({data}){
   const boxes=(Array.isArray(data.boxes)?data.boxes:[]).filter(b=>["min","q1","median","q3","max"].every(k=>Number.isFinite(Number(b[k])))).slice(0,18);
-  if(!boxes.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:11,color:"#a3a3a3"}}>차트로 표시할 box 값이 없습니다.</div>;
+  if(!boxes.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:14,color:"#a3a3a3"}}>차트로 표시할 box 값이 없습니다.</div>;
   const W=620,H=300,pad={l:54,r:20,t:22,b:66};
   const vals=boxes.flatMap(b=>[Number(b.min),Number(b.max),Number(b.q1),Number(b.q3),Number(b.median)]);
   const minY=Math.min(...vals),maxY=Math.max(...vals),ry=maxY-minY||1;
@@ -401,8 +402,8 @@ function FlowiBoxResult({data}){
   const boxW=Math.max(12,Math.min(34,step*.48));
   return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"10px 12px"}}>
     <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8}}>
-      <div style={{fontSize:12,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi box plot"}</div>
-      <div style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>groups={data.total||boxes.length} · {data.metric||""}</div>
+      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi box plot"}</div>
+      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>groups={data.total||boxes.length} · {data.metric||""}</div>
     </div>
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block"}}>
       {[0,0.5,1].map(f=><g key={f}>
@@ -426,7 +427,7 @@ function FlowiBoxResult({data}){
       })}
       <text x="12" y={(pad.t+H-pad.b)/2} transform={`rotate(-90,12,${(pad.t+H-pad.b)/2})`} textAnchor="middle" fontSize="10" fill="#f97316">{data.y_label||"value"}</text>
     </svg>
-    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>
+    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>median / IQR</span>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{data.x_label||"group"}</span>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{data.y_label||data.metric||"value"}</span>
@@ -436,7 +437,7 @@ function FlowiBoxResult({data}){
 
 function FlowiWaferMapResult({data}){
   const pts=(Array.isArray(data.points)?data.points:[]).filter(p=>Number.isFinite(Number(p.x))&&Number.isFinite(Number(p.y))&&Number.isFinite(Number(p.value))).slice(0,900);
-  if(!pts.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:11,color:"#a3a3a3"}}>차트로 표시할 WF map point가 없습니다.</div>;
+  if(!pts.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:14,color:"#a3a3a3"}}>차트로 표시할 WF map point가 없습니다.</div>;
   const W=360,H=360,pad=26;
   const xs=pts.map(p=>Number(p.x)),ys=pts.map(p=>Number(p.y)),vs=pts.map(p=>Number(p.value));
   const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys),minV=Math.min(...vs),maxV=Math.max(...vs);
@@ -447,8 +448,8 @@ function FlowiWaferMapResult({data}){
   const cx=W/2,cy=H/2,rad=Math.min(W,H)/2-pad*.7;
   return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"10px 12px"}}>
     <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8}}>
-      <div style={{fontSize:12,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi WF map"}</div>
-      <div style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>points={data.total||pts.length} · {data.metric||""}</div>
+      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi WF map"}</div>
+      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>points={data.total||pts.length} · {data.metric||""}</div>
     </div>
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block",maxWidth:520,margin:"0 auto"}}>
       <circle cx={cx} cy={cy} r={rad} fill="#0f172a" stroke="#334155" strokeWidth="1.5"/>
@@ -458,7 +459,7 @@ function FlowiWaferMapResult({data}){
         <title>{`${p.label||`shot(${p.x},${p.y})`}\n${data.value_label||"value"}=${p.value}\nmean=${p.mean??"-"}\nn=${p.n??"-"}\nlot_count=${p.lot_count??"-"}\nwafer_count=${p.wafer_count??"-"}`}</title>
       </circle>)}
     </svg>
-    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>
+    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{data.source||"source"}</span>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{data.value_label||"median"}</span>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>range {minV.toFixed(3)}~{maxV.toFixed(3)}</span>
@@ -468,7 +469,7 @@ function FlowiWaferMapResult({data}){
 
 function FlowiLineResult({data}){
   const series=(Array.isArray(data.series)?data.series:[]).map(s=>({...s,points:(Array.isArray(s.points)?s.points:[]).filter(p=>Number.isFinite(Number(p.y)))})).filter(s=>s.points.length);
-  if(!series.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:11,color:"#a3a3a3"}}>차트로 표시할 trend point가 없습니다.</div>;
+  if(!series.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:14,color:"#a3a3a3"}}>차트로 표시할 trend point가 없습니다.</div>;
   const W=620,H=300,pad={l:54,r:18,t:22,b:48};
   const all=series.flatMap(s=>s.points.map((p,i)=>({...p,_i:i})));
   const ys=all.map(p=>Number(p.y));
@@ -485,8 +486,8 @@ function FlowiLineResult({data}){
   };
   return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"10px 12px"}}>
     <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8}}>
-      <div style={{fontSize:12,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi trend"}</div>
-      <div style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>points={data.total||series[0].points.length} · {data.metric||""}</div>
+      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi trend"}</div>
+      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>points={data.total||series[0].points.length} · {data.metric||""}</div>
     </div>
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block"}}>
       {[0,0.5,1].map((f)=><g key={`y${f}`}>
@@ -511,7 +512,7 @@ function FlowiLineResult({data}){
       <text x={(pad.l+W-pad.r)/2} y={H-5} textAnchor="middle" fontSize="10" fill="#f97316">{data.x_label||"x"}</text>
       <text x="12" y={(pad.t+H-pad.b)/2} transform={`rotate(-90,12,${(pad.t+H-pad.b)/2})`} textAnchor="middle" fontSize="10" fill="#f97316">{data.y_label||"y"}</text>
     </svg>
-    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>
+    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>
       {series.map((s,si)=><span key={s.name||si} style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px",display:"inline-flex",alignItems:"center",gap:5}}>
         <span style={{width:8,height:8,borderRadius:999,background:palette[si%palette.length],display:"inline-block"}}></span>{s.name||data.metric||"series"}
       </span>)}
@@ -522,7 +523,7 @@ function FlowiLineResult({data}){
 
 function FlowiGroupBarResult({data}){
   const groups=(Array.isArray(data.groups)?data.groups:[]).map(g=>({...g,value:Number(g.value??g.median??g.mean)})).filter(g=>Number.isFinite(g.value)).slice(0,24);
-  if(!groups.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:11,color:"#a3a3a3"}}>차트로 표시할 group 값이 없습니다.</div>;
+  if(!groups.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:14,color:"#a3a3a3"}}>차트로 표시할 group 값이 없습니다.</div>;
   const W=620,H=Math.max(260,groups.length*24+58),pad={l:148,r:64,t:18,b:30};
   const minV=Math.min(0,...groups.map(g=>g.value)),maxV=Math.max(...groups.map(g=>g.value));
   const rv=maxV-minV||1;
@@ -530,8 +531,8 @@ function FlowiGroupBarResult({data}){
   const rowH=(H-pad.t-pad.b)/groups.length;
   return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"10px 12px"}}>
     <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8}}>
-      <div style={{fontSize:12,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi group chart"}</div>
-      <div style={{fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>groups={data.total||groups.length} · {data.metric||""}</div>
+      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi group chart"}</div>
+      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>groups={data.total||groups.length} · {data.metric||""}</div>
     </div>
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block"}}>
       {[0,0.5,1].map(f=><g key={f}>
@@ -552,7 +553,7 @@ function FlowiGroupBarResult({data}){
       <line x1={sx(0)} x2={sx(0)} y1={pad.t} y2={H-pad.b} stroke="#525252"/>
       <text x={(pad.l+W-pad.r)/2} y={H-1} textAnchor="middle" fontSize="10" fill="#f97316">{data.y_label||"value"}</text>
     </svg>
-    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:10,color:"#a3a3a3",fontFamily:"monospace"}}>
+    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>group {Array.isArray(data.group_by)?data.group_by.join("+"):"-"}</span>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>median</span>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>join {Array.isArray(data.join_cols)?data.join_cols.join("+"):"root_lot_id+wafer_id"}</span>
@@ -573,7 +574,8 @@ const FLOWI_FEEDBACK_TAGS=[
   ["key_matching_error","key 매칭"],
   ["aggregation_error","집계 오류"],
 ];
-function FlowiFeedback({result,tool,prompt}){
+const FLOWI_USER_FEEDBACK_KEYS=new Set(["correct","explanation_gap","missed_clarification","too_slow","output_issue","hallucination"]);
+function FlowiFeedback({result,tool,prompt,isAdmin=false}){
   const[rating,setRating]=useState("");
   const[tags,setTags]=useState([]);
   const[note,setNote]=useState("");
@@ -602,10 +604,10 @@ function FlowiFeedback({result,tool,prompt}){
       intent:tool?.intent||"",
       note:note||"",
       tags:payloadTags,
-      expected_workflow:expectedWorkflow||"",
-      correct_route:correctRoute||"",
-      data_refs:dataRefs||"",
-      golden_candidate:golden,
+      expected_workflow:isAdmin?expectedWorkflow||"":"",
+      correct_route:isAdmin?correctRoute||"":"",
+      data_refs:isAdmin?dataRefs||"":"",
+      golden_candidate:isAdmin&&golden,
       tool:tool||{},
       llm:result?.llm||{},
       elapsed_ms:result?.elapsed_ms||null,
@@ -615,32 +617,34 @@ function FlowiFeedback({result,tool,prompt}){
     const on=tags.includes(key);
     const bad=key!=="correct";
     return <button key={key} type="button" onClick={()=>toggleTag(key)}
-      style={{padding:"3px 7px",borderRadius:5,border:"1px solid "+(on?(bad?"#ef4444":"#22c55e"):"#333"),background:on?(bad?"#7f1d1d33":"#14532d33"):"transparent",color:on?(bad?"#fca5a5":"#86efac"):"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer",whiteSpace:"nowrap"}}>{label}</button>;
+      style={{padding:"3px 7px",borderRadius:5,border:"1px solid "+(on?(bad?"#ef4444":"#22c55e"):"#333"),background:on?(bad?"#7f1d1d33":"#14532d33"):"transparent",color:on?(bad?"#fca5a5":"#86efac"):"#a3a3a3",fontSize:14,fontFamily:"monospace",cursor:"pointer",whiteSpace:"nowrap"}}>{label}</button>;
   };
+  const feedbackTags=isAdmin?FLOWI_FEEDBACK_TAGS:FLOWI_FEEDBACK_TAGS.filter(([key])=>FLOWI_USER_FEEDBACK_KEYS.has(key));
   return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"7px 8px"}}>
     <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-      <button type="button" onClick={()=>{setTags(["correct"]);send("up");}} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="up"?"#22c55e22":"transparent",color:rating==="up"?"#22c55e":"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>정확함</button>
-      <button type="button" onClick={()=>{setOpen(true);setRating("down");if(!tags.length)setTags(["output_issue"]);}} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="down"?"#ef444422":"transparent",color:rating==="down"?"#fca5a5":"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>개선 필요</button>
-      <button type="button" onClick={()=>setOpen(!open)} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:"transparent",color:"#737373",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>{open?"접기":"상세"}</button>
+      <button type="button" onClick={()=>{setTags(["correct"]);send("up");}} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="up"?"#22c55e22":"transparent",color:rating==="up"?"#22c55e":"#a3a3a3",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>정확함</button>
+      <button type="button" onClick={()=>{setOpen(true);setRating("down");if(!tags.length)setTags(["output_issue"]);}} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="down"?"#ef444422":"transparent",color:rating==="down"?"#fca5a5":"#a3a3a3",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>개선 필요</button>
+      <button type="button" onClick={()=>setOpen(!open)} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:"transparent",color:"#737373",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>{open?"접기":"상세"}</button>
       <input value={note} onChange={e=>setNote(e.target.value)} onFocus={()=>setOpen(true)} onKeyDown={e=>{if(e.key==="Enter")send(rating||"neutral");}} placeholder="짧은 개선 의견"
-        style={{flex:"1 1 190px",minWidth:170,padding:"4px 7px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:10,outline:"none"}}/>
-      <button type="button" onClick={()=>send(rating||"neutral")} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#a3a3a3",fontSize:10,fontFamily:"monospace",cursor:"pointer"}}>저장</button>
-      {msg&&<span style={{fontSize:10,color:msg.includes("실패")?"#fca5a5":"#22c55e",fontFamily:"monospace"}}>{msg}</span>}
+        style={{flex:"1 1 190px",minWidth:170,padding:"4px 7px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:14,outline:"none"}}/>
+      <button type="button" onClick={()=>send(rating||"neutral")} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#a3a3a3",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>저장</button>
+      {msg&&<span style={{fontSize:14,color:msg.includes("실패")?"#fca5a5":"#22c55e",fontFamily:"monospace"}}>{msg}</span>}
     </div>
     {open&&<div style={{marginTop:8,display:"grid",gap:7}}>
-      <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{FLOWI_FEEDBACK_TAGS.map(([k,l])=>chip(k,l))}</div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:7}}>
+      <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{feedbackTags.map(([k,l])=>chip(k,l))}</div>
+      {isAdmin&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:7}}>
         <input value={expectedWorkflow} onChange={e=>setExpectedWorkflow(e.target.value)} placeholder="기대 동작/사용해야 할 tool"
-          style={{padding:"6px 8px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:10,outline:"none"}}/>
+          style={{padding:"6px 8px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:14,outline:"none"}}/>
         <input value={dataRefs} onChange={e=>setDataRefs(e.target.value)} placeholder="정답 DB/컬럼/join key"
-          style={{padding:"6px 8px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:10,outline:"none"}}/>
-      </div>
-      <textarea value={correctRoute} onChange={e=>setCorrectRoute(e.target.value)} placeholder="정답 경로 또는 기대 결과를 적어주세요"
-        rows={2} style={{width:"100%",boxSizing:"border-box",padding:"7px 8px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:10,lineHeight:1.45,outline:"none",resize:"vertical"}}/>
-      <label style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:"#a3a3a3"}}>
+          style={{padding:"6px 8px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:14,outline:"none"}}/>
+      </div>}
+      {isAdmin&&<textarea value={correctRoute} onChange={e=>setCorrectRoute(e.target.value)} placeholder="정답 경로 또는 기대 결과를 적어주세요"
+        rows={2} style={{width:"100%",boxSizing:"border-box",padding:"7px 8px",borderRadius:5,border:"1px solid #333",background:"#141414",color:"#d4d4d4",fontSize:14,lineHeight:1.45,outline:"none",resize:"vertical"}}/>
+      }
+      {isAdmin&&<label style={{display:"flex",alignItems:"center",gap:6,fontSize:14,color:"#a3a3a3"}}>
         <input type="checkbox" checked={golden} onChange={e=>setGolden(e.target.checked)} style={{accentColor:"#f97316"}}/>
         좋은 답변 기준 후보로 관리자 검토함에 올리기
-      </label>
+      </label>}
     </div>}
   </div>);
 }
@@ -650,11 +654,11 @@ function FlowiDataTable({table}){
   const rows=table.rows||[];
   return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,overflow:"hidden",background:"#121212"}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,padding:"8px 10px",borderBottom:"1px solid #2a2a2a",background:"#171717"}}>
-      <div style={{fontSize:11,fontWeight:800,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace"}}>{table.title||"Flowi table"}</div>
-      <div style={{fontSize:10,color:"#737373",fontFamily:"monospace"}}>{rows.length}{table.total&&table.total!==rows.length?` / ${table.total}`:""} rows</div>
+      <div style={{fontSize:14,fontWeight:800,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace"}}>{table.title||"Flowi table"}</div>
+      <div style={{fontSize:14,color:"#737373",fontFamily:"monospace"}}>{rows.length}{table.total&&table.total!==rows.length?` / ${table.total}`:""} rows</div>
     </div>
     <div style={{overflow:"auto",maxHeight:360}}>
-      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:14,fontFamily:"monospace"}}>
         <thead><tr>{cols.map(c=><th key={c.key} style={{position:"sticky",top:0,zIndex:1,textAlign:"left",padding:"7px 8px",borderBottom:"1px solid #333",background:"#1f1f1f",color:"#a3a3a3",whiteSpace:"nowrap"}}>{c.label||c.key}</th>)}</tr></thead>
         <tbody>{rows.map((r,i)=><tr key={i}>
           {cols.map(c=><td key={c.key} style={{padding:"6px 8px",borderBottom:"1px solid #262626",color:c.key==="wafer_id"||String(c.key).includes("STI")?"#e5e5e5":"#c7c7c7",whiteSpace:"nowrap",fontWeight:String(c.key).startsWith("KNOB")||String(c.label).includes("KNOB")?800:500}}>{r[c.key]??""}</td>)}
@@ -696,13 +700,13 @@ export default function My_Home({onNavigate,user}){
     <div style={{background:"#111",borderRadius:12,border:"1px solid #333",overflow:"hidden",marginBottom:28,boxShadow:"0 2px 20px rgba(0,0,0,0.4)"}}>
       <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px",background:"#1a1a1a",borderBottom:"1px solid #333"}}>
         <div style={{display:"flex",gap:6}}><div style={{width:10,height:10,borderRadius:"50%",background:"#ef4444"}}/><div style={{width:10,height:10,borderRadius:"50%",background:"#fbbf24"}}/><div style={{width:10,height:10,borderRadius:"50%",background:"#22c55e"}}/></div>
-        <span style={{fontSize:11,color:"#525252",fontFamily:"monospace",marginLeft:6}}>flow-i console</span>
+        <span style={{fontSize:14,color:"#525252",fontFamily:"monospace",marginLeft:6}}>flow-i console</span>
       </div>
       <div style={{display:"flex",gap:20,padding:"20px 24px",alignItems:"flex-start"}}>
-        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,flexShrink:0}}><Holli size={72}/><span style={{fontSize:9,color:"#f97316",fontFamily:"monospace",letterSpacing:"0.12em",fontWeight:700}}>flow-i</span></div>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,flexShrink:0}}><Holli size={72}/><span style={{fontSize:14,color:"#f97316",fontFamily:"monospace",letterSpacing:"0.12em",fontWeight:700}}>flow-i</span></div>
         <div style={{flex:1,paddingTop:4}}>
-          <div style={{marginTop:6,fontFamily:"'JetBrains Mono',monospace",fontSize:13}}><span style={{color:"#f97316"}}>{">"}</span><span style={{color:"#737373"}}> </span><WelcomeType name={user?.username||"user"}/></div>
-          <FlowiConsole onNavigate={nav}/>
+          <div style={{marginTop:6,fontFamily:"'JetBrains Mono',monospace",fontSize:14}}><span style={{color:"#f97316"}}>{">"}</span><span style={{color:"#737373"}}> </span><WelcomeType name={user?.username||"user"}/></div>
+          <FlowiConsole onNavigate={nav} user={user}/>
         </div>
       </div>
     </div>
@@ -710,27 +714,27 @@ export default function My_Home({onNavigate,user}){
     {/* Permission-filtered cards, centered */}
     {visibleCards.length>0?<div style={{display:"grid",gridTemplateColumns:"repeat(4, minmax(0, 1fr))",gap:14,justifyContent:"start",marginBottom:32}}>
       {visibleCards.map(c=><Card key={c.key} icon={c.icon} title={c.title} desc={c.desc} tag={c.tag} onClick={()=>nav(c.key)} width="100%"/>)}
-    </div>:<div style={{padding:"40px 20px",textAlign:"center",color:"var(--text-secondary)",fontSize:13,marginBottom:32}}>
+    </div>:<div style={{padding:"40px 20px",textAlign:"center",color:"var(--text-secondary)",fontSize:14,marginBottom:32}}>
       사용 가능한 탭이 없습니다. 관리자에게 권한을 요청해주세요.
     </div>}
 
     <div style={{background:"var(--bg-secondary,#262626)",borderRadius:12,border:"1px solid var(--border,#333)",overflow:"hidden"}}>
       <div style={{padding:"14px 20px",borderBottom:"1px solid var(--border,#333)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <span style={{fontSize:13,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:"var(--accent,#f97316)"}}>{">"} 사용 방법</span>
-        <span style={{fontSize:11,color:"var(--text-secondary)"}}>권한있는 기능 가이드</span>
+        <span style={{fontSize:14,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:"var(--accent,#f97316)"}}>{">"} 사용 방법</span>
+        <span style={{fontSize:14,color:"var(--text-secondary)"}}>권한있는 기능 가이드</span>
       </div>
       <div style={{padding:"6px 20px 16px"}}>
         {visibleCards.filter(c=>FEATURE_GUIDES[c.key]).map((c,i,arr)=>{const g=FEATURE_GUIDES[c.key];return(<div key={c.key} style={{paddingTop:16,paddingBottom:12,borderBottom:i<arr.length-1?"1px solid var(--border,#333)":"none"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,cursor:"pointer"}} onClick={()=>nav(c.key)}>
             <span style={{fontSize:24}}>{g.icon}</span>
             <span style={{fontSize:14,fontWeight:700,color:"var(--text-primary)",fontFamily:"'JetBrains Mono',monospace"}}>{g.title}</span>
-            <span style={{fontSize:10,color:"var(--accent)",fontFamily:"monospace",marginLeft:"auto"}}>→ 열기</span>
+            <span style={{fontSize:14,color:"var(--accent)",fontFamily:"monospace",marginLeft:"auto"}}>→ 열기</span>
           </div>
-          <ol style={{margin:0,paddingLeft:28,fontSize:12,lineHeight:1.8,color:"var(--text-secondary)"}}>
+          <ol style={{margin:0,paddingLeft:28,fontSize:14,lineHeight:1.8,color:"var(--text-secondary)"}}>
             {g.steps.map((s,si)=><li key={si} style={{marginBottom:2}}>{s}</li>)}
           </ol>
         </div>);})}
-        {visibleCards.filter(c=>FEATURE_GUIDES[c.key]).length===0&&<div style={{padding:"20px 0",textAlign:"center",color:"var(--text-secondary)",fontSize:12}}>권한있는 기능이 없습니다. 아래 관리자 문의 버튼으로 문의해주세요.</div>}
+        {visibleCards.filter(c=>FEATURE_GUIDES[c.key]).length===0&&<div style={{padding:"20px 0",textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>권한있는 기능이 없습니다. 아래 관리자 문의 버튼으로 문의해주세요.</div>}
       </div>
     </div>
 
@@ -743,14 +747,14 @@ export default function My_Home({onNavigate,user}){
 function fmtT(iso){if(!iso)return"";try{const d=new Date(iso);const mm=String(d.getMonth()+1).padStart(2,"0");const dd=String(d.getDate()).padStart(2,"0");const H=String(d.getHours()).padStart(2,"0");const M=String(d.getMinutes()).padStart(2,"0");return `${mm}-${dd} ${H}:${M}`;}catch{return(iso||"").slice(0,16).replace("T"," ");}}
 const SEC_WRAP={marginTop:40,background:"var(--bg-secondary,#262626)",borderRadius:12,border:"1px solid var(--border,#333)",overflow:"hidden"};
 const SEC_HEADER={padding:"14px 20px",borderBottom:"1px solid var(--border,#333)",display:"flex",justifyContent:"space-between",alignItems:"center"};
-const SEC_TITLE={fontSize:13,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:"var(--accent,#f97316)"};
+const SEC_TITLE={fontSize:14,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:"var(--accent,#f97316)"};
 
 function ContactSection({user}){
   const isAdmin=user?.role==="admin";
   return(<section data-testid="home-contact-section" id="home-contact-section" style={SEC_WRAP}>
     <div style={SEC_HEADER}>
       <span style={SEC_TITLE}>{"> contact"}</span>
-      <span style={{fontSize:11,color:"var(--text-secondary)"}}>{isAdmin?"관리자 — 1:1 문의함 + 전체 공지":"관리자에게 문의 보내기"}</span>
+      <span style={{fontSize:14,color:"var(--text-secondary)"}}>{isAdmin?"관리자 — 1:1 문의함 + 전체 공지":"관리자에게 문의 보내기"}</span>
     </div>
     {isAdmin?<AdminContact user={user}/>:<UserContact user={user}/>}
   </section>);
@@ -786,41 +790,41 @@ function UserContact({user}){
   return(<div data-testid="contact-user" style={{padding:"16px 20px"}}>
     {/* 최신 공지 pinned to top */}
     {unreadNotices.length>0&&<div style={{marginBottom:16}}>
-      <div style={{fontSize:10,color:"var(--accent)",fontFamily:"monospace",marginBottom:6,fontWeight:700}}>📢 새 공지사항 ({unreadNotices.length})</div>
+      <div style={{fontSize:14,color:"var(--accent)",fontFamily:"monospace",marginBottom:6,fontWeight:700}}>📢 새 공지사항 ({unreadNotices.length})</div>
       {unreadNotices.slice(0,3).map(n=>(
         <div key={n.id} onClick={()=>markNoticeRead(n.id)} style={{padding:"10px 12px",borderRadius:6,background:"var(--accent-glow,rgba(249,115,22,0.1))",border:"1px solid var(--border)",marginBottom:6,cursor:"pointer"}}>
-          <div style={{fontSize:12,fontWeight:700,color:"var(--text-primary)"}}>{n.title||"(제목 없음)"}</div>
-          {n.body&&<div style={{fontSize:11,color:"var(--text-secondary)",marginTop:3,whiteSpace:"pre-wrap",lineHeight:1.5}}>{n.body}</div>}
-          <div style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace",marginTop:4}}>{n.author} · {fmtT(n.created_at)}</div>
+          <div style={{fontSize:14,fontWeight:700,color:"var(--text-primary)"}}>{n.title||"(제목 없음)"}</div>
+          {n.body&&<div style={{fontSize:14,color:"var(--text-secondary)",marginTop:3,whiteSpace:"pre-wrap",lineHeight:1.5}}>{n.body}</div>}
+          <div style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",marginTop:4}}>{n.author} · {fmtT(n.created_at)}</div>
         </div>))}
     </div>}
 
     {/* Send-to-admin input */}
-    <div style={{fontSize:11,color:"var(--text-secondary)",marginBottom:6,fontFamily:"monospace"}}>💬 관리자에게 문의</div>
+    <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6,fontFamily:"monospace"}}>💬 관리자에게 문의</div>
     <div style={{display:"flex",gap:8,alignItems:"flex-end"}}>
       <textarea data-testid="contact-user-input" value={text} onChange={e=>setText(e.target.value)} disabled={sending}
         onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")send();}}
         placeholder="버그 리포트 / 기능 요청 / 권한 요청 등 (Cmd/Ctrl + Enter 전송)" rows={3}
-        style={{flex:1,padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"'Pretendard',sans-serif",resize:"vertical",outline:"none"}}/>
+        style={{flex:1,padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"'Pretendard',sans-serif",resize:"vertical",outline:"none"}}/>
       <button data-testid="contact-user-send" onClick={send} disabled={sending||!text.trim()}
-        style={{padding:"8px 18px",borderRadius:6,border:"none",background:sending||!text.trim()?"#94a3b8":"var(--accent)",color:"#fff",fontSize:12,fontWeight:700,cursor:sending||!text.trim()?"default":"pointer",flexShrink:0,alignSelf:"stretch"}}>
+        style={{padding:"8px 18px",borderRadius:6,border:"none",background:sending||!text.trim()?"#94a3b8":"var(--accent)",color:"#fff",fontSize:14,fontWeight:700,cursor:sending||!text.trim()?"default":"pointer",flexShrink:0,alignSelf:"stretch"}}>
         {sending?"…":"보내기"}
       </button>
     </div>
-    <div style={{fontSize:9,color:"var(--text-secondary)",marginTop:4,textAlign:"right"}}>{text.length} / 5000</div>
+    <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:4,textAlign:"right"}}>{text.length} / 5000</div>
 
     {/* Collapsible history */}
     <div style={{marginTop:18,borderTop:"1px solid var(--border)",paddingTop:10}}>
-      <div onClick={()=>setShowHistory(!showHistory)} style={{cursor:"pointer",fontSize:11,color:"var(--text-secondary)",fontFamily:"monospace",display:"flex",alignItems:"center",gap:6}}>
+      <div onClick={()=>setShowHistory(!showHistory)} style={{cursor:"pointer",fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",display:"flex",alignItems:"center",gap:6}}>
         <span>{showHistory?"▼":"▶"}</span><span>과거 대화 ({msgs.length})</span>
       </div>
       {showHistory&&<div data-testid="contact-user-history" style={{marginTop:10,maxHeight:300,overflowY:"auto",padding:"4px 2px"}}>
-        {msgs.length===0&&<div style={{textAlign:"center",color:"var(--text-secondary)",fontSize:11,padding:20}}>아직 대화가 없습니다.</div>}
+        {msgs.length===0&&<div style={{textAlign:"center",color:"var(--text-secondary)",fontSize:14,padding:20}}>아직 대화가 없습니다.</div>}
         {msgs.map(m=>{const mine=m.from===uname;return(
           <div key={m.id} style={{display:"flex",justifyContent:mine?"flex-end":"flex-start",marginBottom:8}}>
             <div style={{maxWidth:"78%",display:"flex",flexDirection:"column",alignItems:mine?"flex-end":"flex-start"}}>
-              <div style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace",marginBottom:2,padding:"0 4px"}}>{mine?"나":m.from} · {fmtT(m.created_at)}</div>
-              <div style={{padding:"6px 10px",borderRadius:10,background:mine?"var(--accent)":"var(--bg-card)",color:mine?"#fff":"var(--text-primary)",fontSize:12,lineHeight:1.5,whiteSpace:"pre-wrap",wordBreak:"break-word",border:mine?"none":"1px solid var(--border)"}}>{m.text}</div>
+              <div style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",marginBottom:2,padding:"0 4px"}}>{mine?"나":m.from} · {fmtT(m.created_at)}</div>
+              <div style={{padding:"6px 10px",borderRadius:10,background:mine?"var(--accent)":"var(--bg-card)",color:mine?"#fff":"var(--text-primary)",fontSize:14,lineHeight:1.5,whiteSpace:"pre-wrap",wordBreak:"break-word",border:mine?"none":"1px solid var(--border)"}}>{m.text}</div>
             </div>
           </div>);})}
       </div>}
@@ -831,7 +835,7 @@ function UserContact({user}){
 // ── Admin side: two tabs only — [📨 1:1 문의함] [📢 전체 공지].
 function AdminContact({user}){
   const[sub,setSub]=useState("inbox");
-  const tS=(a)=>({padding:"7px 14px",fontSize:11,cursor:"pointer",fontWeight:a?700:500,borderRadius:5,background:a?"var(--accent-glow)":"transparent",color:a?"var(--accent)":"var(--text-secondary)",fontFamily:"'JetBrains Mono',monospace"});
+  const tS=(a)=>({padding:"7px 14px",fontSize:14,cursor:"pointer",fontWeight:a?700:500,borderRadius:5,background:a?"var(--accent-glow)":"transparent",color:a?"var(--accent)":"var(--text-secondary)",fontFamily:"'JetBrains Mono',monospace"});
   return(<div data-testid="contact-admin" style={{padding:"14px 20px"}}>
     <div style={{display:"flex",gap:6,marginBottom:14}}>
       <div data-testid="contact-admin-tab-inbox" style={tS(sub==="inbox")} onClick={()=>setSub("inbox")}>📨 1:1 문의함</div>
@@ -858,37 +862,37 @@ function AdminContactInbox({user}){
   return(<div style={{display:"flex",gap:12,minHeight:340}}>
     <div style={{width:240,background:"var(--bg-primary)",borderRadius:8,border:"1px solid var(--border)",overflow:"hidden",display:"flex",flexDirection:"column",flexShrink:0}}>
       <div style={{padding:"8px 12px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:6}}>
-        <span style={{fontSize:11,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>스레드</span>
-        <span style={{fontSize:9,color:"var(--text-secondary)"}}>{threads.length}·미확인 {totalUnread}</span>
+        <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>스레드</span>
+        <span style={{fontSize:14,color:"var(--text-secondary)"}}>{threads.length}·미확인 {totalUnread}</span>
         <div style={{flex:1}}/>
-        <span onClick={loadThreads} style={{fontSize:11,cursor:"pointer",color:"var(--text-secondary)"}} title="새로고침">↻</span>
+        <span onClick={loadThreads} style={{fontSize:14,cursor:"pointer",color:"var(--text-secondary)"}} title="새로고침">↻</span>
       </div>
       <div style={{flex:1,overflowY:"auto",maxHeight:340}}>
-        {threads.length===0&&<div style={{padding:20,textAlign:"center",color:"var(--text-secondary)",fontSize:11}}>수신 없음</div>}
+        {threads.length===0&&<div style={{padding:20,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>수신 없음</div>}
         {threads.map(t=>(
           <div key={t.user} onClick={()=>open(t.user)} style={{padding:"8px 12px",borderBottom:"1px solid var(--border)",cursor:"pointer",background:sel===t.user?"var(--accent-glow)":(t.unread_for_admin>0?"rgba(249,115,22,0.05)":"transparent")}}>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
               {t.unread_for_admin>0&&<span style={{width:6,height:6,borderRadius:"50%",background:"var(--accent)",flexShrink:0}}/>}
-              <span style={{fontSize:12,fontWeight:t.unread_for_admin>0?700:500,color:"var(--text-primary)",fontFamily:"monospace",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.user}</span>
-              {t.unread_for_admin>0&&<span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,background:"var(--accent)",color:"#fff"}}>{t.unread_for_admin}</span>}
+              <span style={{fontSize:14,fontWeight:t.unread_for_admin>0?700:500,color:"var(--text-primary)",fontFamily:"monospace",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.user}</span>
+              {t.unread_for_admin>0&&<span style={{fontSize:14,fontWeight:700,padding:"1px 5px",borderRadius:3,background:"var(--accent)",color:"#fff"}}>{t.unread_for_admin}</span>}
             </div>
-            <div style={{fontSize:10,color:"var(--text-secondary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",lineHeight:1.4}}>{t.last_from?`[${t.last_from}] `:""}{t.last_preview||"(비어 있음)"}</div>
+            <div style={{fontSize:14,color:"var(--text-secondary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",lineHeight:1.4}}>{t.last_from?`[${t.last_from}] `:""}{t.last_preview||"(비어 있음)"}</div>
           </div>))}
       </div>
     </div>
     <div style={{flex:1,background:"var(--bg-primary)",borderRadius:8,border:"1px solid var(--border)",display:"flex",flexDirection:"column",minWidth:0,minHeight:340}}>
-      {!sel&&<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text-secondary)",fontSize:12,padding:20}}>← 스레드를 선택하세요</div>}
+      {!sel&&<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text-secondary)",fontSize:14,padding:20}}>← 스레드를 선택하세요</div>}
       {sel&&thr&&<>
         <div style={{padding:"8px 12px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:8}}>
-          <span style={{fontSize:12,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>💬 {sel}</span>
-          <span style={{fontSize:10,color:"var(--text-secondary)"}}>{(thr.messages||[]).length} 메시지</span>
+          <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>💬 {sel}</span>
+          <span style={{fontSize:14,color:"var(--text-secondary)"}}>{(thr.messages||[]).length} 메시지</span>
         </div>
         <div style={{flex:1,overflowY:"auto",padding:12,maxHeight:280}}>
           {(thr.messages||[]).map(m=>{const mine=m.from===admin;return(
             <div key={m.id} style={{display:"flex",justifyContent:mine?"flex-end":"flex-start",marginBottom:8}}>
               <div style={{maxWidth:"78%",display:"flex",flexDirection:"column",alignItems:mine?"flex-end":"flex-start"}}>
-                <div style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace",marginBottom:2,padding:"0 4px"}}>{mine?`나 (${m.from})`:m.from} · {fmtT(m.created_at)}</div>
-                <div style={{padding:"6px 10px",borderRadius:10,background:mine?"var(--accent)":"var(--bg-card)",color:mine?"#fff":"var(--text-primary)",fontSize:12,lineHeight:1.5,whiteSpace:"pre-wrap",wordBreak:"break-word",border:mine?"none":"1px solid var(--border)"}}>{m.text}</div>
+                <div style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",marginBottom:2,padding:"0 4px"}}>{mine?`나 (${m.from})`:m.from} · {fmtT(m.created_at)}</div>
+                <div style={{padding:"6px 10px",borderRadius:10,background:mine?"var(--accent)":"var(--bg-card)",color:mine?"#fff":"var(--text-primary)",fontSize:14,lineHeight:1.5,whiteSpace:"pre-wrap",wordBreak:"break-word",border:mine?"none":"1px solid var(--border)"}}>{m.text}</div>
               </div>
             </div>);})}
         </div>
@@ -897,9 +901,9 @@ function AdminContactInbox({user}){
             <textarea value={reply} onChange={e=>setReply(e.target.value)} disabled={sending}
               onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")send();}}
               placeholder={`${sel} 에게 답장 (Cmd/Ctrl+Enter 전송)`} rows={2}
-              style={{flex:1,padding:"7px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:12,fontFamily:"'Pretendard',sans-serif",resize:"vertical",outline:"none"}}/>
+              style={{flex:1,padding:"7px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,fontFamily:"'Pretendard',sans-serif",resize:"vertical",outline:"none"}}/>
             <button onClick={send} disabled={sending||!reply.trim()}
-              style={{padding:"7px 16px",borderRadius:6,border:"none",background:sending||!reply.trim()?"#94a3b8":"var(--accent)",color:"#fff",fontSize:12,fontWeight:700,cursor:sending||!reply.trim()?"default":"pointer",flexShrink:0,alignSelf:"stretch"}}>{sending?"…":"답장"}</button>
+              style={{padding:"7px 16px",borderRadius:6,border:"none",background:sending||!reply.trim()?"#94a3b8":"var(--accent)",color:"#fff",fontSize:14,fontWeight:700,cursor:sending||!reply.trim()?"default":"pointer",flexShrink:0,alignSelf:"stretch"}}>{sending?"…":"답장"}</button>
           </div>
         </div>
       </>}
@@ -922,38 +926,38 @@ function AdminContactNotices({user}){
   };
   const del=(id)=>{if(!confirm("공지사항을 삭제하시겠습니까?"))return;
     fetch("/api/messages/admin/notice_delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({admin,id})}).then(loadNotices).catch(e=>alert(e.message));};
-  const S={width:"100%",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,outline:"none",fontFamily:"'Pretendard',sans-serif",boxSizing:"border-box"};
+  const S={width:"100%",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none",fontFamily:"'Pretendard',sans-serif",boxSizing:"border-box"};
   return(<div>
     <div style={{background:"var(--bg-primary)",border:"1px solid var(--accent)",borderRadius:8,padding:14,marginBottom:14}}>
-      <div data-testid="contact-admin-mode-all" style={{display:"flex",alignItems:"center",gap:6,fontSize:12,marginBottom:10,color:"var(--accent)",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>
+      <div data-testid="contact-admin-mode-all" style={{display:"flex",alignItems:"center",gap:6,fontSize:14,marginBottom:10,color:"var(--accent)",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>
         📢 전체 공지 작성 — 모든 사용자에게 발행
       </div>
       <input data-testid="contact-admin-notice-title" value={title} onChange={e=>setTitle(e.target.value)} placeholder="제목 (최대 200자)" maxLength={200} style={{...S,marginBottom:8,fontWeight:600}}/>
       <textarea data-testid="contact-admin-notice-body" value={body} onChange={e=>setBody(e.target.value)} placeholder="공지 본문 (최대 5000자)" rows={4} style={{...S,marginBottom:8,resize:"vertical"}}/>
       <div style={{display:"flex",alignItems:"center"}}>
-        <span style={{fontSize:10,color:"var(--text-secondary)"}}>{title.length}/200 · {body.length}/5000</span>
+        <span style={{fontSize:14,color:"var(--text-secondary)"}}>{title.length}/200 · {body.length}/5000</span>
         <div style={{flex:1}}/>
         <button data-testid="contact-admin-notice-publish" onClick={publish} disabled={sending||(!title.trim()&&!body.trim())}
-          style={{padding:"7px 18px",borderRadius:5,border:"none",background:sending||(!title.trim()&&!body.trim())?"#94a3b8":"var(--accent)",color:"#fff",fontSize:12,fontWeight:700,cursor:sending?"default":"pointer"}}>
+          style={{padding:"7px 18px",borderRadius:5,border:"none",background:sending||(!title.trim()&&!body.trim())?"#94a3b8":"var(--accent)",color:"#fff",fontSize:14,fontWeight:700,cursor:sending?"default":"pointer"}}>
           {sending?"…":"전체 발행"}
         </button>
       </div>
     </div>
 
     {/* 기존 공지 리스트 */}
-    <div style={{fontSize:11,color:"var(--text-secondary)",fontFamily:"monospace",marginBottom:6}}>기존 공지사항 ({notices.length})</div>
+    <div style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",marginBottom:6}}>기존 공지사항 ({notices.length})</div>
     <div style={{background:"var(--bg-primary)",borderRadius:8,border:"1px solid var(--border)",overflow:"hidden",maxHeight:320,overflowY:"auto"}}>
-      {notices.length===0&&<div style={{padding:24,textAlign:"center",color:"var(--text-secondary)",fontSize:12}}>등록된 공지사항이 없습니다.</div>}
+      {notices.length===0&&<div style={{padding:24,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>등록된 공지사항이 없습니다.</div>}
       {notices.map(n=>(
         <div key={n.id} style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
-            <span style={{fontSize:12,fontWeight:700,color:"var(--text-primary)",flex:1}}>{n.title||"(제목 없음)"}</span>
-            <span style={{fontSize:10,color:"var(--text-secondary)",fontFamily:"monospace"}}>{fmtT(n.created_at)}</span>
-            <span style={{fontSize:10,color:"var(--accent)",fontFamily:"monospace"}}>👁 {n.read_count||0}/{n.total_recipients||"?"}</span>
-            <span onClick={()=>del(n.id)} style={{cursor:"pointer",color:"#ef4444",fontSize:11}}>🗑</span>
+            <span style={{fontSize:14,fontWeight:700,color:"var(--text-primary)",flex:1}}>{n.title||"(제목 없음)"}</span>
+            <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{fmtT(n.created_at)}</span>
+            <span style={{fontSize:14,color:"var(--accent)",fontFamily:"monospace"}}>👁 {n.read_count||0}/{n.total_recipients||"?"}</span>
+            <span onClick={()=>del(n.id)} style={{cursor:"pointer",color:"#ef4444",fontSize:14}}>🗑</span>
           </div>
-          {n.body&&<div style={{fontSize:11,color:"var(--text-secondary)",lineHeight:1.5,whiteSpace:"pre-wrap"}}>{n.body}</div>}
-          <div style={{fontSize:9,color:"var(--text-secondary)",fontFamily:"monospace",marginTop:3}}>by {n.author}</div>
+          {n.body&&<div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.5,whiteSpace:"pre-wrap"}}>{n.body}</div>}
+          <div style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",marginTop:3}}>by {n.author}</div>
         </div>))}
     </div>
   </div>);

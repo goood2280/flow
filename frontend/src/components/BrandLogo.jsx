@@ -154,7 +154,7 @@ export default function BrandLogo({ size = "home", version, onClick }) {
       <FlowWordmark size="home" />
       {version && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: 2 }}>
-          <span style={{ fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: "#f97316", letterSpacing: "0.18em", fontWeight: 700, opacity: 0.85 }}>v{version}</span>
+          <span style={{ fontSize: 14, fontFamily: "'JetBrains Mono',monospace", color: "#f97316", letterSpacing: "0.18em", fontWeight: 700, opacity: 0.85 }}>v{version}</span>
         </div>
       )}
     </div>

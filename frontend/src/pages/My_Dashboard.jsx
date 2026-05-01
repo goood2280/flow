@@ -101,7 +101,7 @@ function pct(v, digits = 1) {
 function MiniStat({ label, value, tone = "var(--accent)" }) {
   return (
     <div style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid var(--border)", background: "rgba(255,255,255,0.62)" }}>
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{label}</div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{label}</div>
       <div style={{ marginTop: 4, fontSize: 18, fontWeight: 800, color: tone, fontFamily: "monospace" }}>{value}</div>
     </div>
   );
@@ -109,7 +109,7 @@ function MiniStat({ label, value, tone = "var(--accent)" }) {
 
 function ProgressSparkline({ path }) {
   const pts = Array.isArray(path) ? path.slice(-6) : [];
-  if (pts.length < 2) return <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>경로 데이터 없음</div>;
+  if (pts.length < 2) return <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>경로 데이터 없음</div>;
   const W = 180, H = 54, pad = 8;
   const x = (i) => pad + ((W - pad * 2) * i) / Math.max(1, pts.length - 1);
   const y = (i) => H - pad - ((H - pad * 2) * i) / Math.max(1, pts.length - 1);
@@ -129,7 +129,7 @@ function ProgressSparkline({ path }) {
 
 function StepSpeedLineChart({ rows }) {
   const data = (Array.isArray(rows) ? rows : []).slice(0, 36);
-  if (!data.length) return <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>비교 가능한 step transition이 없습니다.</div>;
+  if (!data.length) return <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>비교 가능한 step transition이 없습니다.</div>;
   const W = 720, H = 250;
   const pad = { t: 18, r: 28, b: 58, l: 56 };
   const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
@@ -186,7 +186,7 @@ function StepSpeedLineChart({ rows }) {
 function LotProgressOverlayChart({ chart }) {
   const anchor = Array.isArray(chart?.anchor) ? chart.anchor : [];
   const avg = Array.isArray(chart?.average) ? chart.average : [];
-  if (anchor.length < 2) return <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>progress chart를 만들 path가 부족합니다.</div>;
+  if (anchor.length < 2) return <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>progress chart를 만들 path가 부족합니다.</div>;
   const W = 720, H = 250;
   const pad = { t: 18, r: 28, b: 58, l: 58 };
   const vals = [
@@ -259,7 +259,7 @@ function StepSpeedComparePanel({ compare, targetStepId, sampleLots }) {
   })();
   if (!hasTarget) {
     return (
-      <div style={{ marginBottom: 12, padding: 12, borderRadius: 12, border: "1px dashed rgba(37,99,235,0.28)", background: "rgba(255,255,255,0.62)", fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+      <div style={{ marginBottom: 12, padding: 12, borderRadius: 12, border: "1px dashed rgba(37,99,235,0.28)", background: "rgba(255,255,255,0.62)", fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
         {compare?.note || "root_lot_id 또는 fab_lot_id를 검색하면 최근 lots 평균과 비교합니다."}
       </div>
     );
@@ -267,13 +267,13 @@ function StepSpeedComparePanel({ compare, targetStepId, sampleLots }) {
   return (
     <div style={{ marginBottom: 12, border: "1px solid rgba(37,99,235,0.16)", borderRadius: 12, overflow: "hidden", background: "rgba(255,255,255,0.72)" }}>
       <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-        <div style={{ fontSize: 11, fontWeight: 800, color: INDIGO.fg, fontFamily: "monospace" }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: INDIGO.fg, fontFamily: "monospace" }}>
           {compare.target_root_lot_id} 속도 비교
           <span style={{ marginLeft: 8, color: "var(--text-secondary)", fontWeight: 600 }}>
             {compare.target_fab_lot_id || "-"} · {compare.reference_step_id || "기준 step"} 통과 최근 {sampleRows.length || compare.sample_window || sampleLots || 3} lots 평균
           </span>
         </div>
-        {targetStepId && <div style={{ fontSize: 11, color: eta.status === "estimated" ? TEAL.fg : eta.status === "reached" ? OK.fg : "var(--text-secondary)", fontFamily: "monospace", fontWeight: 700 }}>{targetStepId}: {etaLabel}</div>}
+        {targetStepId && <div style={{ fontSize: 14, color: eta.status === "estimated" ? TEAL.fg : eta.status === "reached" ? OK.fg : "var(--text-secondary)", fontFamily: "monospace", fontWeight: 700 }}>{targetStepId}: {etaLabel}</div>}
       </div>
       <div style={{ padding: 12, display: "grid", gap: 10 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
@@ -282,12 +282,12 @@ function StepSpeedComparePanel({ compare, targetStepId, sampleLots }) {
           <MiniStat label="진행 step 수" value={compare.progress_steps || 0} tone={TEAL.fg} />
           <MiniStat label="속도 기준 lots" value={`${sampleRows.length}/${compare.sample_pool ?? sampleRows.length}`} tone={PURPLE.fg} />
         </div>
-        <div style={{ padding: "8px 10px", borderRadius: 9, border: "1px solid var(--border)", background: "rgba(15,23,42,0.025)", fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", lineHeight: 1.6 }}>
+        <div style={{ padding: "8px 10px", borderRadius: 9, border: "1px solid var(--border)", background: "rgba(15,23,42,0.025)", fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", lineHeight: 1.6 }}>
           기준: {compare.reference_step_id || "-"} 통과 최근 {compare.sample_window || sampleLots || 3}개 랏. 검색 랏 상태: {compare.speed_badge || "-"} · 현재 {compare.current_step_id || "-"} · {compare.current_time ? dt(compare.current_time) : "-"}
         </div>
         <LotProgressOverlayChart chart={progressChart} />
         {rows.length === 0 ? (
-          <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>비교 가능한 step transition이 없습니다.</div>
+          <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>비교 가능한 step transition이 없습니다.</div>
         ) : (
           <>
             <StepSpeedLineChart rows={rows} />
@@ -297,8 +297,8 @@ function StepSpeedComparePanel({ compare, targetStepId, sampleLots }) {
                 const tone = ratio > 1.15 ? WARN.fg : ratio > 0 && ratio < 0.85 ? OK.fg : BLUE.fg;
                 return (
                   <div key={`${row.index}-${row.from_step}-${row.to_step}`} style={{ padding: "7px 9px", border: "1px solid var(--border)", borderRadius: 8, background: "rgba(15,23,42,0.025)", fontFamily: "monospace" }}>
-                    <div style={{ fontSize: 10, color: "var(--text-primary)", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{String(row.from_step || "").slice(-6)} → {String(row.to_step || "").slice(-6)}</div>
-                    <div style={{ marginTop: 3, display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, color: "var(--text-secondary)" }}>
+                    <div style={{ fontSize: 14, color: "var(--text-primary)", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{String(row.from_step || "").slice(-6)} → {String(row.to_step || "").slice(-6)}</div>
+                    <div style={{ marginTop: 3, display: "flex", justifyContent: "space-between", gap: 8, fontSize: 14, color: "var(--text-secondary)" }}>
                       <span>lot {fmt(row.searched_hours)}h</span>
                       <span>avg {row.avg_hours == null ? "-" : `${fmt(row.avg_hours)}h`}</span>
                       <span style={{ color: tone, fontWeight: 800 }}>{ratio ? `${fmt(ratio)}x` : "-"}</span>
@@ -310,11 +310,11 @@ function StepSpeedComparePanel({ compare, targetStepId, sampleLots }) {
           </>
         )}
         <div style={{ borderTop: "1px solid var(--border)", paddingTop: 9 }}>
-          <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", fontFamily: "monospace", marginBottom: 6 }}>속도 기준 랏</div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-secondary)", fontFamily: "monospace", marginBottom: 6 }}>속도 기준 랏</div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {sampleRows.length === 0
-              ? <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>기준 step을 통과한 비교 랏이 없습니다.</span>
-              : sampleRows.map(r => <span key={r.root_lot_id} title={`${r.reference_step_id || ""} ${r.reference_time || ""}\ncurrent ${r.current_step_id || ""} ${r.current_time || ""}`} style={{ fontSize: 10, padding: "3px 8px", borderRadius: 999, border: "1px solid var(--border)", background: "rgba(255,255,255,0.55)", color: "var(--text-primary)", fontFamily: "monospace" }}>{r.root_lot_id}</span>)}
+              ? <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>기준 step을 통과한 비교 랏이 없습니다.</span>
+              : sampleRows.map(r => <span key={r.root_lot_id} title={`${r.reference_step_id || ""} ${r.reference_time || ""}\ncurrent ${r.current_step_id || ""} ${r.current_time || ""}`} style={{ fontSize: 14, padding: "3px 8px", borderRadius: 999, border: "1px solid var(--border)", background: "rgba(255,255,255,0.55)", color: "var(--text-primary)", fontFamily: "monospace" }}>{r.root_lot_id}</span>)}
           </div>
         </div>
       </div>
@@ -331,40 +331,40 @@ function KnobProgressPanel({ data, targetStepId }) {
   return (
     <div style={{ marginBottom: 12, border: "1px solid rgba(15,23,42,0.12)", borderRadius: 12, overflow: "hidden", background: "rgba(255,255,255,0.72)" }}>
       <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
-        <div style={{ fontSize: 11, fontWeight: 800, color: INDIGO.fg, fontFamily: "monospace" }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: INDIGO.fg, fontFamily: "monospace" }}>
           KNOB 위치/속도
           <span style={{ marginLeft: 8, color: "var(--text-secondary)", fontWeight: 600 }}>{kp.knob_col} = {kp.knob_value || "(전체)"} · {kp.total_lots || 0} lots</span>
         </div>
-        <div style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
           {targetStepId ? `target ${targetStepId} ETA와 함께 비교` : "step별 현재 위치와 평균 h/step"}
         </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.4fr) minmax(240px, 0.6fr)", gap: 12, padding: 12 }}>
         <div style={{ display: "grid", gap: 6, maxHeight: 280, overflow: "auto" }}>
-          {bins.length === 0 ? <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>해당 KNOB lot이 없습니다.</div> : bins.map((b) => {
+          {bins.length === 0 ? <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>해당 KNOB lot이 없습니다.</div> : bins.map((b) => {
             const w = Math.max(4, Math.min(100, (Number(b.lot_count || 0) / maxCount) * 100));
             const tone = b.stuck_lots > 0 ? BAD.fg : b.slow_lots > b.fast_lots ? WARN.fg : BLUE.fg;
             return (
               <div key={b.step_id} style={{ display: "grid", gridTemplateColumns: "118px minmax(160px,1fr) 88px", gap: 9, alignItems: "center", fontFamily: "monospace" }}>
-                <div title={b.step_id} style={{ minWidth: 0, fontSize: 10, color: "var(--text-primary)", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{b.step_id}</div>
+                <div title={b.step_id} style={{ minWidth: 0, fontSize: 14, color: "var(--text-primary)", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{b.step_id}</div>
                 <div title={(b.root_lot_ids || []).join(", ")} style={{ height: 14, borderRadius: 4, background: "rgba(15,23,42,0.07)", overflow: "hidden", position: "relative" }}>
                   <div style={{ width: `${w}%`, height: "100%", background: tone, borderRadius: 4 }} />
-                  <span style={{ position: "absolute", left: 6, top: 1, fontSize: 9, color: "rgba(255,255,255,0.96)", fontWeight: 800 }}>{b.lot_count} lots · {b.pct}%</span>
+                  <span style={{ position: "absolute", left: 6, top: 1, fontSize: 14, color: "rgba(255,255,255,0.96)", fontWeight: 800 }}>{b.lot_count} lots · {b.pct}%</span>
                 </div>
-                <div style={{ textAlign: "right", fontSize: 10, color: "var(--text-secondary)" }}>{fmt(b.avg_unit_hours)} h/step</div>
+                <div style={{ textAlign: "right", fontSize: 14, color: "var(--text-secondary)" }}>{fmt(b.avg_unit_hours)} h/step</div>
               </div>
             );
           })}
         </div>
         <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ fontSize: 10, fontWeight: 800, color: "var(--text-secondary)", fontFamily: "monospace" }}>빠른 bucket</div>
-          {fastest.length === 0 ? <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>비교 대상 없음</div> : fastest.map((b, idx) => (
+          <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-secondary)", fontFamily: "monospace" }}>빠른 bucket</div>
+          {fastest.length === 0 ? <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>비교 대상 없음</div> : fastest.map((b, idx) => (
             <div key={b.step_id} style={{ padding: "8px 9px", borderRadius: 8, border: "1px solid var(--border)", background: idx === 0 ? "rgba(37,99,235,0.07)" : "rgba(15,23,42,0.025)", fontFamily: "monospace" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, fontWeight: 800 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 14, fontWeight: 800 }}>
                 <span>{b.step_id}</span>
                 <span style={{ color: BLUE.fg }}>{fmt(b.avg_unit_hours)}h</span>
               </div>
-              <div style={{ marginTop: 3, fontSize: 9, color: "var(--text-secondary)" }}>{b.lot_count} lots · fast {b.fast_lots} / slow {b.slow_lots} / stuck {b.stuck_lots}</div>
+              <div style={{ marginTop: 3, fontSize: 14, color: "var(--text-secondary)" }}>{b.lot_count} lots · fast {b.fast_lots} / slow {b.slow_lots} / stuck {b.stuck_lots}</div>
             </div>
           ))}
         </div>
@@ -390,44 +390,44 @@ function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter,
     <div style={{ marginBottom: 14, background: "linear-gradient(135deg, rgba(14,116,144,0.04), rgba(37,99,235,0.05))", border: "1px solid rgba(37,99,235,0.15)", borderRadius: 14, padding: 16, boxShadow: "0 14px 36px rgba(15,23,42,0.05)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 800, color: INDIGO.fg, fontFamily: "monospace" }}>FAB Progress / TAT / ETA</div>
-          <div style={{ marginTop: 4, fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: INDIGO.fg, fontFamily: "monospace" }}>FAB Progress / TAT / ETA</div>
+          <div style={{ marginTop: 4, fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
             제품과 lot_id를 검색하면 FAB DB 기준 진행 chart, 기준 step 통과 최근 lots 평균, target step ETA를 계산합니다.
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <select value={product} onChange={(e) => setProduct(e.target.value)} style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11 }}>
+          <select value={product} onChange={(e) => setProduct(e.target.value)} style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14 }}>
             {products.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
-          <input value={lotQuery} onChange={(e) => setLotQuery(e.target.value.toUpperCase())} placeholder="lot_id / root_lot / fab_lot" style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11, width: 180, fontFamily: "monospace" }} />
-          <input value={targetStepId} onChange={(e) => setTargetStepId(e.target.value.toUpperCase())} placeholder="target step_id" style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11, width: 132, fontFamily: "monospace" }} />
-          <input value={knobCol} onChange={(e) => { setKnobCol(e.target.value); setKnobValue(""); }} placeholder="KNOB_5.0 PC" list="dashboard-knob-cols" style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11, width: 140, fontFamily: "monospace" }} />
+          <input value={lotQuery} onChange={(e) => setLotQuery(e.target.value.toUpperCase())} placeholder="lot_id / root_lot / fab_lot" style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14, width: 180, fontFamily: "monospace" }} />
+          <input value={targetStepId} onChange={(e) => setTargetStepId(e.target.value.toUpperCase())} placeholder="target step_id" style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14, width: 132, fontFamily: "monospace" }} />
+          <input value={knobCol} onChange={(e) => { setKnobCol(e.target.value); setKnobValue(""); }} placeholder="KNOB_5.0 PC" list="dashboard-knob-cols" style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14, width: 140, fontFamily: "monospace" }} />
           <datalist id="dashboard-knob-cols">{(knobProgress.knob_options || []).map(k => <option key={k} value={k} />)}</datalist>
-          <select value={knobValue} onChange={(e) => setKnobValue(e.target.value)} style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11, maxWidth: 150 }}>
+          <select value={knobValue} onChange={(e) => setKnobValue(e.target.value)} style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14, maxWidth: 150 }}>
             <option value="">KNOB value auto</option>
             {(knobProgress.knob_values || []).map(v => <option key={v.value} value={v.value}>{v.value} ({v.count})</option>)}
           </select>
-          <span title="대시보드 톱니바퀴에서 admin이 기준 step과 lots 수를 조절합니다." style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "7px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-secondary)", fontSize: 10, fontFamily: "monospace", whiteSpace: "nowrap" }}>
+          <span title="대시보드 톱니바퀴에서 admin이 기준 step과 lots 수를 조절합니다." style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "7px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-secondary)", fontSize: 14, fontFamily: "monospace", whiteSpace: "nowrap" }}>
             기준 {referenceStepId || "AA200000"} · 최근 {sampleLots || 3} lots
           </span>
-          <select value={progressDays} onChange={(e) => setProgressDays(Number(e.target.value) || 30)} style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11 }}>
+          <select value={progressDays} onChange={(e) => setProgressDays(Number(e.target.value) || 30)} style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14 }}>
             {[7, 14, 30, 60].map((d) => <option key={d} value={d}>{d}d</option>)}
           </select>
           <div style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
             {[["all","전체"],["stuck","정체만"],["slow_stuck","느림+정체"],["fast","빠름만"]].map(([key,label])=>(
-              <button key={key} onClick={()=>setSpeedFilter(key)} style={{ padding:"7px 10px", border:"none", background:speedFilter===key?"var(--accent)":"var(--bg-card)", color:speedFilter===key?"#fff":"var(--text-primary)", fontSize:11, cursor:"pointer", fontWeight:700 }}>{label}</button>
+              <button key={key} onClick={()=>setSpeedFilter(key)} style={{ padding:"7px 10px", border:"none", background:speedFilter===key?"var(--accent)":"var(--bg-card)", color:speedFilter===key?"#fff":"var(--text-primary)", fontSize:14, cursor:"pointer", fontWeight:700 }}>{label}</button>
             ))}
           </div>
         </div>
       </div>
       {!String(lotQuery || "").trim() ? (
-        <div style={{ padding: 18, borderRadius: 12, background: "rgba(255,255,255,0.65)", border: "1px dashed rgba(37,99,235,0.28)", fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.7, fontFamily: "monospace" }}>
+        <div style={{ padding: 18, borderRadius: 12, background: "rgba(255,255,255,0.65)", border: "1px dashed rgba(37,99,235,0.28)", fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.7, fontFamily: "monospace" }}>
           product와 lot_id를 입력하면 FAB DB에서 해당 랏의 진행 chart를 만들고, {referenceStepId || "AA200000"} 통과 최근 {sampleLots || 3}개 랏 평균 속도와 비교합니다.
         </div>
       ) : loading ? (
-        <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>progress loading...</div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>progress loading...</div>
       ) : !ok ? (
-        <div style={{ padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.65)", border: "1px dashed rgba(37,99,235,0.28)", fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+        <div style={{ padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.65)", border: "1px dashed rgba(37,99,235,0.28)", fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.7 }}>
           {data?.note || "FAB long-format 데이터가 아직 없어 진행속도/TAT를 계산할 수 없습니다."}
         </div>
       ) : (
@@ -443,7 +443,7 @@ function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter,
           {lotQuery && <StepSpeedComparePanel compare={compare} targetStepId={targetStepId} sampleLots={sampleLots} />}
           <KnobProgressPanel data={data} targetStepId={targetStepId} />
           {targetStepId && !hasCompare && (
-            <div style={{ marginBottom: 12, padding: "10px 12px", borderRadius: 12, border: "1px solid rgba(15,118,110,0.22)", background: "rgba(15,118,110,0.06)", display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center", fontSize: 11, fontFamily: "monospace" }}>
+            <div style={{ marginBottom: 12, padding: "10px 12px", borderRadius: 12, border: "1px solid rgba(15,118,110,0.22)", background: "rgba(15,118,110,0.06)", display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center", fontSize: 14, fontFamily: "monospace" }}>
               <b style={{ color: TEAL.fg }}>Target {bench.target_step_id || targetStepId}</b>
               <span>from {bench.from_step_id || "현재 step"}</span>
               <span>{bench.basis_label || `최근 ${sampleLots || 3} lots 평균`}</span>
@@ -456,7 +456,7 @@ function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter,
           )}
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.55fr) minmax(340px, 0.85fr)", gap: 12 }}>
             <div style={{ border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden", background: "rgba(255,255,255,0.7)" }}>
-              <div style={{ padding: "10px 12px", fontSize: 11, fontWeight: 700, color: INDIGO.fg, borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", gap: 8 }}>
+              <div style={{ padding: "10px 12px", fontSize: 14, fontWeight: 700, color: INDIGO.fg, borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", gap: 8 }}>
                 <span>현재 진행 랏</span>
                 <span style={{ color: "var(--text-secondary)", fontFamily: "monospace", fontWeight: 500 }}>검색 {search.matched_lots ?? rows.length}/{search.total_lots ?? rows.length}</span>
               </div>
@@ -465,35 +465,35 @@ function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter,
                   <thead>
                     <tr>
                       {["root_lot", "current", "speed", "tat", "ETA", "stuck", "path"].map((h) => (
-                        <th key={h} style={{ textAlign: "left", padding: "8px 10px", fontSize: 10, fontFamily: "monospace", color: "var(--text-secondary)", background: "rgba(15,23,42,0.03)", position: "sticky", top: 0 }}>{h}</th>
+                        <th key={h} style={{ textAlign: "left", padding: "8px 10px", fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", background: "rgba(15,23,42,0.03)", position: "sticky", top: 0 }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {rows.map((row, idx) => (
                       <tr key={idx} style={{ borderTop: "1px solid var(--border)" }}>
-                        <td style={{ padding: "8px 10px", fontSize: 11, fontFamily: "monospace", verticalAlign: "top" }}>
+                        <td style={{ padding: "8px 10px", fontSize: 14, fontFamily: "monospace", verticalAlign: "top" }}>
                           <div style={{ fontWeight: 700, color: "var(--text-primary)" }}>{row.root_lot_id}</div>
-                          <div style={{ fontSize: 9, color: "var(--text-secondary)" }}>{row.current_fab_lot_id || row.fab_lot_id || "-"}</div>
+                          <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>{row.current_fab_lot_id || row.fab_lot_id || "-"}</div>
                           {Array.isArray(row.fab_lot_ids) && row.fab_lot_ids.length > 1 && (
-                            <div style={{ fontSize: 9, color: "var(--text-secondary)" }}>{row.fab_lot_ids.length} fab lots</div>
+                            <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>{row.fab_lot_ids.length} fab lots</div>
                           )}
                         </td>
-                        <td style={{ padding: "8px 10px", fontSize: 11, fontFamily: "monospace", verticalAlign: "top" }}>
+                        <td style={{ padding: "8px 10px", fontSize: 14, fontFamily: "monospace", verticalAlign: "top" }}>
                           <div>{row.current_step_id || "-"}</div>
-                          <div style={{ fontSize: 9, color: "var(--text-secondary)" }}>{timeAgo(row.current_time)} · {fmt(row.progress_pct)}%</div>
+                          <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>{timeAgo(row.current_time)} · {fmt(row.progress_pct)}%</div>
                         </td>
-                        <td style={{ padding: "8px 10px", fontSize: 11, fontFamily: "monospace", verticalAlign: "top" }}>
+                        <td style={{ padding: "8px 10px", fontSize: 14, fontFamily: "monospace", verticalAlign: "top" }}>
                           <div style={{ fontWeight: 700, color: row.speed_state === "stuck" ? BAD.fg : row.speed_state === "slow" ? WARN.fg : row.speed_state === "fast" ? OK.fg : "var(--text-primary)" }}>{row.speed_badge || "-"}</div>
-                          <div style={{ fontSize: 9, color: "var(--text-secondary)" }}>{fmt(row.speed_unit_hours)} h/step</div>
+                          <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>{fmt(row.speed_unit_hours)} h/step</div>
                         </td>
-                        <td style={{ padding: "8px 10px", fontSize: 11, fontFamily: "monospace", verticalAlign: "top" }}>
+                        <td style={{ padding: "8px 10px", fontSize: 14, fontFamily: "monospace", verticalAlign: "top" }}>
                           <div>{fmt(row.elapsed_hours)} h</div>
-                          <div style={{ fontSize: 9, color: "var(--text-secondary)" }}>{row.progress_steps} steps</div>
+                          <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>{row.progress_steps} steps</div>
                         </td>
-                        <td style={{ padding: "8px 10px", fontSize: 11, fontFamily: "monospace", verticalAlign: "top" }}>
+                        <td style={{ padding: "8px 10px", fontSize: 14, fontFamily: "monospace", verticalAlign: "top" }}>
                           <div>{row.target_eta?.target_step_id ? `target ${row.target_eta.target_step_id}` : (row.eta?.next_step_id || "-")}</div>
-                          <div style={{ fontSize: 9, color: (row.target_eta?.eta_at || row.eta?.eta_at) ? TEAL.fg : "var(--text-secondary)" }}>
+                          <div style={{ fontSize: 14, color: (row.target_eta?.eta_at || row.eta?.eta_at) ? TEAL.fg : "var(--text-secondary)" }}>
                             {row.target_eta?.status === "reached"
                               ? `도착 완료 · ${new Date(row.target_eta.actual_time || row.target_eta.eta_at).toLocaleString()}`
                               : row.target_eta?.eta_at
@@ -503,9 +503,9 @@ function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter,
                                   : row.eta?.eta_at ? new Date(row.eta.eta_at).toLocaleString() : "-"}
                           </div>
                         </td>
-                        <td style={{ padding: "8px 10px", fontSize: 11, fontFamily: "monospace", verticalAlign: "top" }}>
+                        <td style={{ padding: "8px 10px", fontSize: 14, fontFamily: "monospace", verticalAlign: "top" }}>
                           <div>{fmt(row.stuck_hours)} h</div>
-                          <div style={{ fontSize: 9, color: row.stuck_hours >= 24 ? BAD.fg : "var(--text-secondary)" }}>{row.target_eta?.target_step_id || targetStepId || "-"}</div>
+                          <div style={{ fontSize: 14, color: row.stuck_hours >= 24 ? BAD.fg : "var(--text-secondary)" }}>{row.target_eta?.target_step_id || targetStepId || "-"}</div>
                         </td>
                         <td style={{ padding: "8px 10px", minWidth: 180 }}><ProgressSparkline path={row.path} /></td>
                       </tr>
@@ -516,23 +516,23 @@ function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter,
             </div>
             <div style={{ display: "grid", gap: 12 }}>
               <div style={{ border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden", background: "rgba(255,255,255,0.7)" }}>
-                <div style={{ padding: "10px 12px", fontSize: 11, fontWeight: 700, color: INDIGO.fg, borderBottom: "1px solid var(--border)" }}>주요 Step TAT</div>
+                <div style={{ padding: "10px 12px", fontSize: 14, fontWeight: 700, color: INDIGO.fg, borderBottom: "1px solid var(--border)" }}>주요 Step TAT</div>
                 <div style={{ maxHeight: 152, overflow: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead>
                       <tr>
                         {["from", "to", "avg(h)", "samples"].map((h) => (
-                          <th key={h} style={{ textAlign: "left", padding: "8px 10px", fontSize: 10, fontFamily: "monospace", color: "var(--text-secondary)", background: "rgba(15,23,42,0.03)", position: "sticky", top: 0 }}>{h}</th>
+                          <th key={h} style={{ textAlign: "left", padding: "8px 10px", fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", background: "rgba(15,23,42,0.03)", position: "sticky", top: 0 }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
                       {(data?.step_tat || []).slice(0, 8).map((row, idx) => (
                         <tr key={idx} style={{ borderTop: "1px solid var(--border)" }}>
-                          <td style={{ padding: "8px 10px", fontSize: 10, fontFamily: "monospace" }}>{row.from_step}</td>
-                          <td style={{ padding: "8px 10px", fontSize: 10, fontFamily: "monospace" }}>{row.to_step}</td>
-                          <td style={{ padding: "8px 10px", fontSize: 10, fontFamily: "monospace" }}>{row.avg_hours}</td>
-                          <td style={{ padding: "8px 10px", fontSize: 10, fontFamily: "monospace" }}>{row.samples}</td>
+                          <td style={{ padding: "8px 10px", fontSize: 14, fontFamily: "monospace" }}>{row.from_step}</td>
+                          <td style={{ padding: "8px 10px", fontSize: 14, fontFamily: "monospace" }}>{row.to_step}</td>
+                          <td style={{ padding: "8px 10px", fontSize: 14, fontFamily: "monospace" }}>{row.avg_hours}</td>
+                          <td style={{ padding: "8px 10px", fontSize: 14, fontFamily: "monospace" }}>{row.samples}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -540,15 +540,15 @@ function FabProgressPanel({ loading, data, summary, speedFilter, setSpeedFilter,
                 </div>
               </div>
               <div style={{ border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden", background: "rgba(255,255,255,0.7)" }}>
-                <div style={{ padding: "10px 12px", fontSize: 11, fontWeight: 700, color: INDIGO.fg, borderBottom: "1px solid var(--border)" }}>최근 진행 Path</div>
+                <div style={{ padding: "10px 12px", fontSize: 14, fontWeight: 700, color: INDIGO.fg, borderBottom: "1px solid var(--border)" }}>최근 진행 Path</div>
                 <div style={{ maxHeight: 156, overflow: "auto", padding: 10, display: "grid", gap: 8 }}>
                   {(data?.recent_paths || []).slice(0, 4).map((row, idx) => (
                     <div key={idx} style={{ padding: 10, borderRadius: 10, border: "1px solid var(--border)", background: "rgba(15,23,42,0.02)" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, fontFamily: "monospace" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 14, fontFamily: "monospace" }}>
                         <span style={{ color: "var(--text-primary)", fontWeight: 700 }}>{row.root_lot_id}</span>
                         <span style={{ color: "var(--text-secondary)" }}>{row.current_step_id}</span>
                       </div>
-                      <div style={{ marginTop: 6, fontSize: 9, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                      <div style={{ marginTop: 6, fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.6 }}>
                         {(row.path || []).map((p) => p.step_id).join(" → ")}
                       </div>
                     </div>
@@ -570,24 +570,24 @@ function TrendAlertPanel({ loading, alerts }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
         <div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: bad.fg, fontFamily: "monospace" }}>Trend Alert Watch</div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: bad.fg, fontFamily: "monospace" }}>Trend Alert Watch</div>
           </div>
-          <div style={{ marginTop: 4, fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+          <div style={{ marginTop: 4, fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
             scatter/line/area/combo 차트의 OOS/IQR 후보를 기준으로 주의가 필요한 trend를 보여줍니다.
           </div>
         </div>
       </div>
       {loading ? (
-        <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>trend alerts loading...</div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>trend alerts loading...</div>
       ) : !alerts?.length ? (
-        <div style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>현재 눈에 띄는 trend 이상치 후보가 없습니다.</div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>현재 눈에 띄는 trend 이상치 후보가 없습니다.</div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
           {alerts.map((row) => (
             <div key={row.chart_id} style={{ padding: 12, borderRadius: 12, border: "1px solid rgba(239,68,68,0.16)", background: "rgba(255,255,255,0.72)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-                <div style={{ fontSize: 11, fontWeight: 800, color: bad.fg }}>{row.title}</div>
-                <div style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace" }}>{timeAgo(row.computed_at)}</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: bad.fg }}>{row.title}</div>
+                <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{timeAgo(row.computed_at)}</div>
               </div>
               <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <Pill tone="info" size="sm">{row.group}</Pill>
@@ -597,7 +597,7 @@ function TrendAlertPanel({ loading, alerts }) {
               {!!row.latest_points?.length && (
                 <div style={{ marginTop: 8, display: "grid", gap: 4 }}>
                   {row.latest_points.slice(0, 3).map((p, idx) => (
-                    <div key={idx} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 9, fontFamily: "monospace", color: "var(--text-secondary)" }}>
+                    <div key={idx} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)" }}>
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>x={String(p.x ?? "-")}</span>
                       <span>y={fmt(p.y)}</span>
                     </div>
@@ -656,27 +656,27 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
     flexDirection: "column",
     ...extra,
   });
-  if (!points.length && type !== "wafer_map") return <div style={{ height: "100%", minHeight: 220, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12 }}>데이터 없음</div>;
+  if (!points.length && type !== "wafer_map") return <div style={{ height: "100%", minHeight: 220, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 14 }}>데이터 없음</div>;
   const title = cfg.title; const xL = cfg.x_label || cfg.x_col; const yL = cfg.y_label || cfg.y_expr;
   const ptSize = cfg.point_size || 3; const ptOpacity = cfg.opacity || 0.7;
 
-  const Tip = tip ? <div style={{ position: "absolute", left: tip.x + 12, top: tip.y - 10, background: MUTED_DARK, border: "1px solid var(--border)", borderRadius: 6, padding: "6px 10px", fontSize: 11, color: SOFT_TEXT, pointerEvents: "none", zIndex: 10, maxWidth: 280, whiteSpace: "pre-wrap", lineHeight: 1.5, boxShadow: "0 4px 12px rgba(0,0,0,0.5)" }}>
+  const Tip = tip ? <div style={{ position: "absolute", left: tip.x + 12, top: tip.y - 10, background: MUTED_DARK, border: "1px solid var(--border)", borderRadius: 6, padding: "6px 10px", fontSize: 14, color: SOFT_TEXT, pointerEvents: "none", zIndex: 10, maxWidth: 280, whiteSpace: "pre-wrap", lineHeight: 1.5, boxShadow: "0 4px 12px rgba(0,0,0,0.5)" }}>
     {tip.lines.map((l, i) => <div key={i}>{l}</div>)}
   </div> : null;
 
   const Header = <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", margin: "-12px -14px 8px", borderRadius: "8px 8px 0 0", background: "rgba(15,23,42,0.035)", borderBottom: "1px solid var(--border)" }}>
-    {title && <div style={{ fontSize: 12, fontWeight: 800, fontFamily: "monospace", color: "var(--text-primary)" }}>{title}</div>}
+    {title && <div style={{ fontSize: 14, fontWeight: 800, fontFamily: "monospace", color: "var(--text-primary)" }}>{title}</div>}
     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-      {cfg._oos > 0 && <span style={{ fontSize: 9, fontWeight: 700, color: WHITE, background: BAD.fg, borderRadius: 4, padding: "1px 5px" }}>OOS: {cfg._oos}</span>}
-      <span style={{ fontSize: 9, color: "var(--text-secondary)" }}>{points.length.toLocaleString()} 개 점</span>
-      {computedAt && <span style={{ fontSize: 8, color: "var(--text-secondary)" }}>{timeAgo(computedAt)}</span>}
+      {cfg._oos > 0 && <span style={{ fontSize: 14, fontWeight: 700, color: WHITE, background: BAD.fg, borderRadius: 4, padding: "1px 5px" }}>OOS: {cfg._oos}</span>}
+      <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{points.length.toLocaleString()} 개 점</span>
+      {computedAt && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{timeAgo(computedAt)}</span>}
     </div>
   </div>;
 
   /* ── Table (simple row viewer) ── */
   if (type === "table") {
     const cols = cfg.table_columns || (points[0] ? Object.keys(points[0]) : []);
-    const tS = { padding: "4px 8px", fontSize: 10, fontFamily: "monospace", borderBottom: "1px solid var(--border)", textAlign: "left", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160 };
+    const tS = { padding: "4px 8px", fontSize: 14, fontFamily: "monospace", borderBottom: "1px solid var(--border)", textAlign: "left", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160 };
     return (<div style={panelStyle()}>
       {Header}
       <div style={{ overflow: "auto", maxHeight: scrollBoxHeight, flex: 1, minHeight: 0 }}>
@@ -708,10 +708,10 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
       const r = Math.round(50 + 200 * t), g = Math.round(100 - 40 * t), b = Math.round(220 - 180 * t);
       return `rgba(${r},${g},${b},0.25)`;
     };
-    const tS = { padding: "4px 8px", fontSize: 11, fontFamily: "monospace", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", textAlign: "center", whiteSpace: "nowrap" };
+    const tS = { padding: "4px 8px", fontSize: 14, fontFamily: "monospace", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", textAlign: "center", whiteSpace: "nowrap" };
     return (<div style={panelStyle()}>
       {Header}
-      <div style={{ fontSize: 9, color: "var(--text-secondary)", marginBottom: 6, fontFamily: "monospace" }}>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6, fontFamily: "monospace" }}>
         {method}{valCol ? "(" + valCol + ")" : ""} | rows: {rowCol} | cols: {colCol}
       </div>
       <div style={{ overflow: "auto", maxHeight: scrollBoxHeight, flex: 1, minHeight: 0 }}>
@@ -765,11 +765,11 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
         <div style={{ flex: 1, overflow: "auto", maxHeight: Math.max(180, Math.min(size, scrollBoxHeight)), minHeight: 0 }}>
           {slices.map(s => (<div key={s.i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", borderBottom: "1px solid var(--border)" }}>
             <span style={{ width: 10, height: 10, borderRadius: 2, background: s.color, flexShrink: 0 }} />
-            <span style={{ flex: 1, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.label}>{s.label}</span>
-            <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0 }}>{s.y.toLocaleString()}</span>
-            <span style={{ fontSize: 10, fontWeight: 600, color: s.color, flexShrink: 0, minWidth: 42, textAlign: "right" }}>{pct(s.frac)}%</span>
+            <span style={{ flex: 1, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.label}>{s.label}</span>
+            <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0 }}>{s.y.toLocaleString()}</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: s.color, flexShrink: 0, minWidth: 42, textAlign: "right" }}>{pct(s.frac)}%</span>
           </div>))}
-          <div style={{ fontSize: 10, color: "var(--text-secondary)", padding: "6px 0", fontWeight: 600 }}>합계: {total.toLocaleString()}</div>
+          <div style={{ fontSize: 14, color: "var(--text-secondary)", padding: "6px 0", fontWeight: 600 }}>합계: {total.toLocaleString()}</div>
         </div>
       </div>
     </div>);
@@ -829,12 +829,12 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
           <text x={cx} y={cy - 4} textAnchor="middle" fill="var(--text-secondary)" fontSize={10}>합계</text>
           <text x={cx} y={cy + 12} textAnchor="middle" fill="var(--text-primary)" fontSize={14} fontWeight={700}>{total.toLocaleString()}</text>
         </svg>
-        <div style={{ flex: 1, overflow: "auto", maxHeight: Math.max(170, Math.min(size, scrollBoxHeight)), minHeight: 0, fontSize: 11 }}>
+        <div style={{ flex: 1, overflow: "auto", maxHeight: Math.max(170, Math.min(size, scrollBoxHeight)), minHeight: 0, fontSize: 14 }}>
           {slices.map(s => (<div key={s.i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0" }}>
             <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color, flexShrink: 0 }} />
             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.label}</span>
-            <span style={{ color: "var(--text-secondary)", fontFamily: "monospace", fontSize: 10 }}>{s.y}</span>
-            <span style={{ color: s.color, fontWeight: 600, fontSize: 10, minWidth: 36, textAlign: "right" }}>{pct(s.frac)}%</span>
+            <span style={{ color: "var(--text-secondary)", fontFamily: "monospace", fontSize: 14 }}>{s.y}</span>
+            <span style={{ color: s.color, fontWeight: 600, fontSize: 14, minWidth: 36, textAlign: "right" }}>{pct(s.frac)}%</span>
           </div>))}
         </div>
       </div>
@@ -875,7 +875,7 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
   /* ── Box Plot with Statistics Table (chart above, stats aligned below) ── */
   if (type === "box") {
     const allVals = points.flatMap(p => [p.min, p.q1, p.median, p.q3, p.max].map(maybeNum).filter(v => v != null));
-    if (!allVals.length) return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)", fontSize: 12 }}>숫자 통계 데이터 없음</div>;
+    if (!allVals.length) return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>숫자 통계 데이터 없음</div>;
     const minV = Math.min(...allVals), maxV = Math.max(...allVals), rangeV = maxV - minV || 1;
     const colW = Math.max(80, Math.min(120, 500 / points.length));
     const padL = 54, padR = 16;
@@ -896,7 +896,7 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
       { label: "P90", key: "p90", fmt: v => fixed(v, 4) },
       { label: "Max", key: "max", fmt: v => fixed(v, 4) },
     ];
-    const tS = { padding: "2px 4px", borderBottom: "1px solid var(--border)", fontSize: 10, textAlign: "center", fontFamily: "monospace", overflow: "hidden" };
+    const tS = { padding: "2px 4px", borderBottom: "1px solid var(--border)", fontSize: 14, textAlign: "center", fontFamily: "monospace", overflow: "hidden" };
     return (<div style={panelStyle()}>
       {Header}{Tip}
       {/* Wrapper: SVG + table share identical pixel width */}
@@ -929,13 +929,13 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
           <col style={{ width: padR }} />
         </colgroup>
         <thead><tr>
-          <th style={{ ...tS, textAlign: "left", background: "var(--bg-tertiary)", fontWeight: 700, fontSize: 9, color: "var(--text-secondary)" }}>통계</th>
-          {points.map((p, i) => <th key={i} style={{ ...tS, background: "var(--bg-tertiary)", fontWeight: 700, color: SERIES[i % SERIES.length], fontSize: 10 }}>{p.x}</th>)}
+          <th style={{ ...tS, textAlign: "left", background: "var(--bg-tertiary)", fontWeight: 700, fontSize: 14, color: "var(--text-secondary)" }}>통계</th>
+          {points.map((p, i) => <th key={i} style={{ ...tS, background: "var(--bg-tertiary)", fontWeight: 700, color: SERIES[i % SERIES.length], fontSize: 14 }}>{p.x}</th>)}
           <th style={{ ...tS, background: "var(--bg-tertiary)" }}></th>
         </tr></thead>
         <tbody>{statRows.map(sr => (
           <tr key={sr.label}>
-            <td style={{ ...tS, textAlign: "left", fontWeight: 600, color: "var(--text-secondary)", fontSize: 9, background: "var(--bg-primary)" }}>{sr.label}</td>
+            <td style={{ ...tS, textAlign: "left", fontWeight: 600, color: "var(--text-secondary)", fontSize: 14, background: "var(--bg-primary)" }}>{sr.label}</td>
             {points.map((p, i) => <td key={i} style={{ ...tS, color: sr.label === "Mean" || sr.label === "Median" ? "var(--accent)" : "var(--text-primary)" }}>{p[sr.key] != null ? sr.fmt(p[sr.key]) : "-"}</td>)}
             <td style={{ ...tS }}></td>
           </tr>
@@ -958,12 +958,12 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
           <div key={i} style={{ flex: `${r.pct} 0 0%`, minWidth: 2, height: "100%", background: r.color, borderRadius: 4, opacity: 0.88, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", overflow: "hidden", position: "relative" }}
             onMouseMove={e => { const b = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - b.left, y: e.clientY - b.top, lines: [r.label, `${r.y.toLocaleString()} (${fixed(r.pct, 1, "0.0")}%)`] }); }}>
             {r.pct > 8 && <div style={{ color: WHITE, fontSize: Math.min(13, Math.max(9, r.pct / 3)), fontWeight: 700, textShadow: "0 1px 3px rgba(0,0,0,0.6)", pointerEvents: "none", textAlign: "center", padding: "0 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{(r.label || "").slice(0, 12)}</div>}
-            {r.pct > 6 && <div style={{ color: "rgba(255,255,255,0.8)", fontSize: 9, fontWeight: 600, pointerEvents: "none" }}>{fixed(r.pct, 1, "0.0")}%</div>}
+            {r.pct > 6 && <div style={{ color: "rgba(255,255,255,0.8)", fontSize: 14, fontWeight: 600, pointerEvents: "none" }}>{fixed(r.pct, 1, "0.0")}%</div>}
           </div>
         ))}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-        {sorted.map((r, i) => <span key={i} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+        {sorted.map((r, i) => <span key={i} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 14 }}>
           <span style={{ width: 8, height: 8, borderRadius: 2, background: r.color, flexShrink: 0 }} />
           <span style={{ color: "var(--text-secondary)" }}>{r.label} ({fixed(r.pct, 1, "0.0")}%)</span>
         </span>)}
@@ -1107,7 +1107,7 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
             layout: {layout.product || cfg.layout_product || cfg.product || "-"} · measured {points.length} / shots {layoutShots.length}
           </text>
         </svg>
-        <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, fontSize: 9, color: "var(--text-secondary)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, fontSize: 14, color: "var(--text-secondary)" }}>
           {isNumeric ? <>
             <span>{Math.min(...numericVals).toFixed(2)}</span>
             <div style={{ flex: 1, height: 10, borderRadius: 3, background: "linear-gradient(to right, rgb(50,100,220), rgb(150,70,120), rgb(250,60,40))" }} />
@@ -1121,7 +1121,7 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
       </div>);
     }
 
-    if (!points.length) return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)", fontSize: 12 }}>WF Layout 또는 측정 shot 데이터 없음</div>;
+    if (!points.length) return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>WF Layout 또는 측정 shot 데이터 없음</div>;
     const xs = points.map(p => p.x), ysv = points.map(p => p.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minYv = Math.min(...ysv), maxYv = Math.max(...ysv);
     const cols = maxX - minX + 1, rows = maxYv - minYv + 1;
@@ -1163,7 +1163,7 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
         {yL && <text x={8} y={wcy} transform={`rotate(-90,8,${wcy})`} fill="var(--accent)" fontSize={11} fontWeight={700} textAnchor="middle">{yL}</text>}
       </svg>
       {/* Color bar */}
-      <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, fontSize: 9, color: "var(--text-secondary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, fontSize: 14, color: "var(--text-secondary)" }}>
         {isNumeric ? <>
           <span>{Math.min(...vals.map(Number)).toFixed(2)}</span>
           <div style={{ flex: 1, height: 10, borderRadius: 3, background: "linear-gradient(to right, rgb(50,100,220), rgb(150,70,120), rgb(250,60,40))" }} />
@@ -1418,16 +1418,16 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
 function ColInput({ label, value, onChange, columns, placeholder, guide }) {
   const [open, setOpen] = useState(false); const [sg, setSg] = useState(false);
   const filtered = value ? columns.filter(c => c.toLowerCase().includes(value.toLowerCase())) : columns;
-  const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none" };
+  const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
   return (<div style={{ marginBottom: 8, position: "relative" }}>
-    <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2, display: "flex", justifyContent: "space-between" }}>
-      <span>{label}</span>{guide && <span onClick={() => setSg(!sg)} style={{ cursor: "pointer", color: "var(--accent)", fontSize: 10 }}>{sg ? "▼" : "▶"}</span>}
+    <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2, display: "flex", justifyContent: "space-between" }}>
+      <span>{label}</span>{guide && <span onClick={() => setSg(!sg)} style={{ cursor: "pointer", color: "var(--accent)", fontSize: 14 }}>{sg ? "▼" : "▶"}</span>}
     </div>
     <input value={value || ""} onChange={e => onChange(e.target.value)} onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 200)} style={S} placeholder={placeholder} />
     {open && filtered.length > 0 && <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10, maxHeight: 320, overflow: "auto", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 6, marginTop: 2 }}>
-      {filtered.slice(0, 500).map(c => <div key={c} onMouseDown={() => { onChange(c); setOpen(false); }} style={{ padding: "5px 10px", fontSize: 11, cursor: "pointer" }} onMouseEnter={e => e.currentTarget.style.background = "var(--bg-hover)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>{c}</div>)}
+      {filtered.slice(0, 500).map(c => <div key={c} onMouseDown={() => { onChange(c); setOpen(false); }} style={{ padding: "5px 10px", fontSize: 14, cursor: "pointer" }} onMouseEnter={e => e.currentTarget.style.background = "var(--bg-hover)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>{c}</div>)}
     </div>}
-    {sg && <div style={{ marginTop: 4, padding: "6px 10px", background: "var(--bg-card)", borderRadius: 6, border: "1px solid var(--border)", fontSize: 10, fontFamily: "monospace", lineHeight: 1.6, color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>{guide}</div>}
+    {sg && <div style={{ marginTop: 4, padding: "6px 10px", background: "var(--bg-card)", borderRadius: 6, border: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace", lineHeight: 1.6, color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>{guide}</div>}
   </div>);
 }
 
@@ -1506,7 +1506,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
     delete payload._spc; delete payload._oos;
     onSave(payload);
   };
-  const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none" };
+  const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
   // v8.4.5: match by actual source metadata (icons removed, base_file supported)
   const curLabel = (sources.find(s => (s.source_type || "") === (form.source_type || "")
     && (s.file || "") === (form.file || "")
@@ -1523,8 +1523,8 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
       <span onClick={onClose} style={{ cursor: "pointer", fontSize: 16, color: "var(--text-secondary)" }}>✕</span>
     </div>
     <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-      <div style={{ flex: 2 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>제목</div><input value={form.title} onChange={e => u("title", e.target.value)} style={S} /></div>
-      <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>타입</div>
+      <div style={{ flex: 2 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>제목</div><input value={form.title} onChange={e => u("title", e.target.value)} style={S} /></div>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>타입</div>
         <select value={form.chart_type} onChange={e => u("chart_type", e.target.value)} style={S}>
           <option value="scatter">Scatter</option><option value="line">Line</option><option value="bar">Bar</option>
           <option value="pie">Pie</option><option value="donut">Donut</option><option value="binning">Histogram</option>
@@ -1538,18 +1538,18 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
         </select></div>
     </div>
     <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "flex-end" }}>
-      <div style={{ flex: 2 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>그룹 / 페이즈</div>
+      <div style={{ flex: 2 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>그룹 / 페이즈</div>
         <input value={form.group || ""} onChange={e => u("group", e.target.value)} style={S} placeholder="예: Phase 1 / Gate / Corr" /></div>
-      <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>가로 크기</div>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>가로 크기</div>
         <select value={Math.max(1, Math.min(4, Number(form.width) || 2))} onChange={e => u("width", parseInt(e.target.value))} style={S}>
           {CHART_WIDTH_UNITS.map(([v, label]) => <option key={v} value={v}>{label} ({v})</option>)}
         </select></div>
-      <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>세로 크기</div>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>세로 크기</div>
         <select value={Math.max(1, Math.min(4, Number(form.height) || 1))} onChange={e => u("height", parseInt(e.target.value))} style={S}>
           {CHART_HEIGHT_UNITS.map(v => <option key={v} value={v}>{v}</option>)}
         </select></div>
     </div>
-    <div style={{ marginBottom: 8 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>데이터 소스</div>
+    <div style={{ marginBottom: 8 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>데이터 소스</div>
       <select value={curLabel} onChange={e => selectSource(e.target.value)} style={S}>
         <option value="">-- 선택 --</option>
         {sources.map(s => <option key={s.label} value={s.label}>{s.label} ({s.source_type})</option>)}
@@ -1557,10 +1557,10 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
     {/* Joins (LEFT JOIN additional sources) */}
     <div style={{ marginBottom: 10, padding: 10, background: "var(--bg-primary)", borderRadius: 6, border: "1px solid var(--border)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>⨝ LEFT JOINs ({(form.joins||[]).length})</span>
-        <button onClick={() => u("joins", [...(form.joins || []), { source_type: "", root: "", product: "", file: "", left_on: "", right_on: "", suffix: "" }])} style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 10, cursor: "pointer" }}>+ Join 추가</button>
+        <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>⨝ LEFT JOINs ({(form.joins||[]).length})</span>
+        <button onClick={() => u("joins", [...(form.joins || []), { source_type: "", root: "", product: "", file: "", left_on: "", right_on: "", suffix: "" }])} style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer" }}>+ Join 추가</button>
       </div>
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 8, lineHeight: 1.4 }}>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8, lineHeight: 1.4 }}>
         다른 파일을 LEFT JOIN 하여 추가 컬럼을 차트에서 쓸 수 있습니다. 여러 키는 쉼표로 구분 (예: <code>LOT_ID,WAFER_ID</code>).
       </div>
       {(form.joins || []).map((j, i) => {
@@ -1573,26 +1573,26 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
           && (s.product || "") === (j.product || "")) || {}).label || "";
         return (<div key={i} style={{ marginBottom: 8, padding: 8, background: "var(--bg-secondary)", borderRadius: 5, border: "1px solid var(--border)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-            <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>#{i + 1}</span>
-            <span onClick={() => u("joins", (form.joins || []).filter((_, k) => k !== i))} style={{ cursor: "pointer", color: BAD.fg, fontSize: 11 }}>✕ 제거</span>
+            <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>#{i + 1}</span>
+            <span onClick={() => u("joins", (form.joins || []).filter((_, k) => k !== i))} style={{ cursor: "pointer", color: BAD.fg, fontSize: 14 }}>✕ 제거</span>
           </div>
-          <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 2 }}>우측 소스</div>
-          <select value={jLabel} onChange={e => selJSource(e.target.value)} style={{ ...S, marginBottom: 6, fontSize: 11 }}>
+          <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>우측 소스</div>
+          <select value={jLabel} onChange={e => selJSource(e.target.value)} style={{ ...S, marginBottom: 6, fontSize: 14 }}>
             <option value="">-- 선택 --</option>
             {sources.map(s => <option key={s.label} value={s.label}>{s.label} ({s.source_type})</option>)}
           </select>
           <div style={{ display: "flex", gap: 6 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>좌측 키 (main)</div>
-              <input value={j.left_on || ""} onChange={e => updJ("left_on", e.target.value)} placeholder="LOT_ID,WAFER_ID" style={{ ...S, fontSize: 11, fontFamily: "monospace" }} />
+              <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>좌측 키 (main)</div>
+              <input value={j.left_on || ""} onChange={e => updJ("left_on", e.target.value)} placeholder="LOT_ID,WAFER_ID" style={{ ...S, fontSize: 14, fontFamily: "monospace" }} />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>우측 키 (이 소스)</div>
-              <input value={j.right_on || ""} onChange={e => updJ("right_on", e.target.value)} placeholder="LOT,WF" style={{ ...S, fontSize: 11, fontFamily: "monospace" }} />
+              <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>우측 키 (이 소스)</div>
+              <input value={j.right_on || ""} onChange={e => updJ("right_on", e.target.value)} placeholder="LOT,WF" style={{ ...S, fontSize: 14, fontFamily: "monospace" }} />
             </div>
             <div style={{ width: 80 }}>
-              <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>접미사</div>
-              <input value={j.suffix || ""} onChange={e => updJ("suffix", e.target.value)} placeholder={`_j${i + 1}`} style={{ ...S, fontSize: 11, fontFamily: "monospace" }} />
+              <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>접미사</div>
+              <input value={j.suffix || ""} onChange={e => updJ("suffix", e.target.value)} placeholder={`_j${i + 1}`} style={{ ...S, fontSize: 14, fontFamily: "monospace" }} />
             </div>
           </div>
         </div>);
@@ -1600,18 +1600,18 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
     </div>
     {/* v8.8.0/v8.8.2: X/Y 등 컬럼 선택 UI — 소스 미선택 시에도 항상 노출. 컬럼 로딩/에러 상태 가시화. */}
     {columnsLoading && (
-      <div style={{ padding: "6px 10px", marginBottom: 8, borderRadius: 6, background: BLUE.soft, border: `1px dashed ${BLUE.border}`, color: INDIGO.fg, fontSize: 11 }}>
+      <div style={{ padding: "6px 10px", marginBottom: 8, borderRadius: 6, background: BLUE.soft, border: `1px dashed ${BLUE.border}`, color: INDIGO.fg, fontSize: 14 }}>
         … 소스에서 컬럼을 불러오는 중입니다.
       </div>
     )}
     {!columnsLoading && columnsError && (
-      <div style={{ padding: "6px 10px", marginBottom: 8, borderRadius: 6, background: BAD.bg, border: `1px dashed ${BAD.fg}`, color: BAD.fg, fontSize: 11 }}>
+      <div style={{ padding: "6px 10px", marginBottom: 8, borderRadius: 6, background: BAD.bg, border: `1px dashed ${BAD.fg}`, color: BAD.fg, fontSize: 14 }}>
         {/* v8.8.3: columnsError 에 서버 detail 이 포함되므로 prefix 없이 그대로 표시 */}
         ⚠ {columnsError}
       </div>
     )}
     {!columnsLoading && !columnsError && columns.length === 0 && (
-      <div style={{ padding: "8px 10px", marginBottom: 8, borderRadius: 6, background: WARN.bg, border: `1px dashed ${WARN.fg}`, color: WARN.fg, fontSize: 11 }}>
+      <div style={{ padding: "8px 10px", marginBottom: 8, borderRadius: 6, background: WARN.bg, border: `1px dashed ${WARN.fg}`, color: WARN.fg, fontSize: 14 }}>
         ⚠ 위 <b>소스 선택</b> 후에 컬럼이 로드됩니다 (선택해도 비어있다면 해당 parquet 가 빈 파일이거나 권한이 없는 경우).
       </div>
     )}
@@ -1622,7 +1622,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
         <div style={{ flex: 1 }}><ColInput label="색상 / 그룹" value={form.color_col} onChange={v => u("color_col", v)} columns={allColumns} placeholder="범주형 컬럼" /></div>
         <div style={{ flex: 1 }}><ColInput label="집계 컬럼" value={form.agg_col} onChange={v => u("agg_col", v)} columns={allColumns} placeholder="그룹화 컬럼" /></div>
       </div>
-      {form.agg_col && <div style={{ marginBottom: 8 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>집계 방법</div>
+      {form.agg_col && <div style={{ marginBottom: 8 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>집계 방법</div>
         <select value={form.agg_method || ""} onChange={e => u("agg_method", e.target.value)} style={S}>
           <option value="">없음 (raw)</option><option value="mean">평균</option><option value="sum">합계</option><option value="count">개수</option><option value="min">최소</option><option value="max">최대</option>
         </select></div>}
@@ -1630,27 +1630,27 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
     </>}
     <ColInput label="SQL 필터" value={form.filter_expr} onChange={v => u("filter_expr", v)} columns={allColumns} placeholder="예: col == 'value'" guide={sqlG} />
     <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-      <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>X 라벨</div><input value={form.x_label || ""} onChange={e => u("x_label", e.target.value)} style={S} /></div>
-      <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>Y 라벨</div><input value={form.y_label || ""} onChange={e => u("y_label", e.target.value)} style={S} /></div>
-      <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>Days (전체)</div>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>X 라벨</div><input value={form.x_label || ""} onChange={e => u("x_label", e.target.value)} style={S} /></div>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Y 라벨</div><input value={form.y_label || ""} onChange={e => u("y_label", e.target.value)} style={S} /></div>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Days (전체)</div>
         <input type="number" value={form.days || ""} onChange={e => u("days", e.target.value)} style={S} placeholder="전체" /></div>
     </div>
     {/* v6: Spec lines + SPC */}
     {!isPieOrBin && !isWaferMap && <div style={{ display: "flex", gap: 8, marginBottom: 8, padding: "8px 10px", background: "rgba(239,68,68,0.04)", borderRadius: 6, border: "1px solid rgba(239,68,68,0.1)" }}>
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 10, color: BAD.fg, marginBottom: 2, fontWeight: 600 }}>USL</div>
-        <input type="number" step="any" value={form.usl ?? ""} onChange={e => u("usl", e.target.value === "" ? null : parseFloat(e.target.value))} style={{ ...S, fontSize: 11 }} placeholder="상한선" />
+        <div style={{ fontSize: 14, color: BAD.fg, marginBottom: 2, fontWeight: 600 }}>USL</div>
+        <input type="number" step="any" value={form.usl ?? ""} onChange={e => u("usl", e.target.value === "" ? null : parseFloat(e.target.value))} style={{ ...S, fontSize: 14 }} placeholder="상한선" />
       </div>
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 10, color: OK.fg, marginBottom: 2, fontWeight: 600 }}>Target</div>
-        <input type="number" step="any" value={form.target ?? ""} onChange={e => u("target", e.target.value === "" ? null : parseFloat(e.target.value))} style={{ ...S, fontSize: 11 }} placeholder="중앙값" />
+        <div style={{ fontSize: 14, color: OK.fg, marginBottom: 2, fontWeight: 600 }}>Target</div>
+        <input type="number" step="any" value={form.target ?? ""} onChange={e => u("target", e.target.value === "" ? null : parseFloat(e.target.value))} style={{ ...S, fontSize: 14 }} placeholder="중앙값" />
       </div>
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 10, color: BAD.fg, marginBottom: 2, fontWeight: 600 }}>LSL</div>
-        <input type="number" step="any" value={form.lsl ?? ""} onChange={e => u("lsl", e.target.value === "" ? null : parseFloat(e.target.value))} style={{ ...S, fontSize: 11 }} placeholder="하한선" />
+        <div style={{ fontSize: 14, color: BAD.fg, marginBottom: 2, fontWeight: 600 }}>LSL</div>
+        <input type="number" step="any" value={form.lsl ?? ""} onChange={e => u("lsl", e.target.value === "" ? null : parseFloat(e.target.value))} style={{ ...S, fontSize: 14 }} placeholder="하한선" />
       </div>
       <div style={{ flex: "0 0 auto", display: "flex", alignItems: "flex-end", paddingBottom: 2 }}>
-        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: WARN.fg, whiteSpace: "nowrap" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 14, color: WARN.fg, whiteSpace: "nowrap" }}>
           <input type="checkbox" checked={form.enable_spc || false} onChange={e => u("enable_spc", e.target.checked)} style={{ accentColor: WARN.fg }} />SPC
         </label>
       </div>
@@ -1658,19 +1658,19 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
     {/* v7: Extra spec lines (multi) */}
     {!isPieOrBin && !isWaferMap && <div style={{ marginBottom: 8, padding: "8px 10px", background: "rgba(139,92,246,0.04)", borderRadius: 6, border: "1px solid rgba(139,92,246,0.15)" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-        <span style={{ fontSize: 10, color: PURPLE.fg, fontWeight: 700 }}>추가 Spec Line ({(form.spec_lines || []).length})</span>
+        <span style={{ fontSize: 14, color: PURPLE.fg, fontWeight: 700 }}>추가 Spec Line ({(form.spec_lines || []).length})</span>
         <span onClick={() => u("spec_lines", [...(form.spec_lines || []), { name: "", value: 0, kind: "custom", color: PURPLE.fg, style: "dashed" }])}
-              style={{ cursor: "pointer", color: PURPLE.fg, fontSize: 11, fontWeight: 600 }}>+ 추가</span>
+              style={{ cursor: "pointer", color: PURPLE.fg, fontSize: 14, fontWeight: 600 }}>+ 추가</span>
       </div>
       {(form.spec_lines || []).map((sl, i) => (
         <div key={i} style={{ display: "flex", gap: 6, marginBottom: 4 }}>
-          <input value={sl.name || ""} onChange={e => { const arr = [...form.spec_lines]; arr[i] = { ...sl, name: e.target.value }; u("spec_lines", arr); }} placeholder="이름" style={{ ...S, fontSize: 10, flex: 2 }} />
-          <input type="number" step="any" value={sl.value ?? ""} onChange={e => { const arr = [...form.spec_lines]; arr[i] = { ...sl, value: e.target.value === "" ? 0 : parseFloat(e.target.value) }; u("spec_lines", arr); }} placeholder="값" style={{ ...S, fontSize: 10, flex: 1 }} />
-          <select value={sl.kind || "custom"} onChange={e => { const arr = [...form.spec_lines]; arr[i] = { ...sl, kind: e.target.value }; u("spec_lines", arr); }} style={{ ...S, fontSize: 10, width: 80 }}>
+          <input value={sl.name || ""} onChange={e => { const arr = [...form.spec_lines]; arr[i] = { ...sl, name: e.target.value }; u("spec_lines", arr); }} placeholder="이름" style={{ ...S, fontSize: 14, flex: 2 }} />
+          <input type="number" step="any" value={sl.value ?? ""} onChange={e => { const arr = [...form.spec_lines]; arr[i] = { ...sl, value: e.target.value === "" ? 0 : parseFloat(e.target.value) }; u("spec_lines", arr); }} placeholder="값" style={{ ...S, fontSize: 14, flex: 1 }} />
+          <select value={sl.kind || "custom"} onChange={e => { const arr = [...form.spec_lines]; arr[i] = { ...sl, kind: e.target.value }; u("spec_lines", arr); }} style={{ ...S, fontSize: 14, width: 80 }}>
             <option value="usl">USL</option><option value="lsl">LSL</option><option value="target">Target</option><option value="custom">사용자</option>
           </select>
           <input type="color" value={sl.color || PURPLE.fg} onChange={e => { const arr = [...form.spec_lines]; arr[i] = { ...sl, color: e.target.value }; u("spec_lines", arr); }} style={{ width: 32, height: 24, border: "none", background: "transparent", cursor: "pointer" }} />
-          <select value={sl.style || "dashed"} onChange={e => { const arr = [...form.spec_lines]; arr[i] = { ...sl, style: e.target.value }; u("spec_lines", arr); }} style={{ ...S, fontSize: 10, width: 70 }}>
+          <select value={sl.style || "dashed"} onChange={e => { const arr = [...form.spec_lines]; arr[i] = { ...sl, style: e.target.value }; u("spec_lines", arr); }} style={{ ...S, fontSize: 14, width: 70 }}>
             <option value="solid">실선</option><option value="dashed">점선</option>
           </select>
           <span onClick={() => u("spec_lines", form.spec_lines.filter((_, j) => j !== i))} style={{ cursor: "pointer", color: BAD.fg, fontSize: 14, padding: "2px 6px" }}>✕</span>
@@ -1678,47 +1678,47 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
       ))}
     </div>}
     {isPieOrBin && <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-      <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>Bin 개수</div>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Bin 개수</div>
         <input type="number" value={form.bin_count || ""} onChange={e => u("bin_count", e.target.value)} style={S} placeholder="10" /></div>
-      {form.chart_type === "binning" && <div style={{ flex: 1 }}><div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 2 }}>Bin 너비</div>
+      {form.chart_type === "binning" && <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Bin 너비</div>
         <input type="number" step="0.01" value={form.bin_width || ""} onChange={e => u("bin_width", e.target.value)} style={S} placeholder="자동" /></div>}
     </div>}
         {/* Advanced options */}
     <div style={{ marginBottom: 8 }}>
-      <span onClick={() => setShowAdv(!showAdv)} style={{ fontSize: 11, color: "var(--accent)", cursor: "pointer" }}>{showAdv ? "▼" : "▶"} 고급 설정</span>
+      <span onClick={() => setShowAdv(!showAdv)} style={{ fontSize: 14, color: "var(--accent)", cursor: "pointer" }}>{showAdv ? "▼" : "▶"} 고급 설정</span>
       {showAdv && <div style={{ marginTop: 8, padding: 12, background: "var(--bg-primary)", borderRadius: 6, border: "1px solid var(--border)" }}>
         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <div style={{ flex: 1 }}><div style={{ fontSize: 10, color: "var(--text-secondary)" }}>점 크기</div>
-            <input type="number" value={form.point_size || ""} onChange={e => u("point_size", e.target.value)} style={{ ...S, fontSize: 10 }} placeholder="3" /></div>
-          <div style={{ flex: 1 }}><div style={{ fontSize: 10, color: "var(--text-secondary)" }}>불투명도 (0-1)</div>
-            <input type="number" step="0.1" value={form.opacity || ""} onChange={e => u("opacity", e.target.value)} style={{ ...S, fontSize: 10 }} placeholder="0.7" /></div>
-          <div style={{ flex: 1 }}><div style={{ fontSize: 10, color: "var(--text-secondary)" }}>최대 점 수</div>
-            <input type="number" value={form.limit_points || ""} onChange={e => u("limit_points", e.target.value)} style={{ ...S, fontSize: 10 }} placeholder="5000" /></div>
+          <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)" }}>점 크기</div>
+            <input type="number" value={form.point_size || ""} onChange={e => u("point_size", e.target.value)} style={{ ...S, fontSize: 14 }} placeholder="3" /></div>
+          <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)" }}>불투명도 (0-1)</div>
+            <input type="number" step="0.1" value={form.opacity || ""} onChange={e => u("opacity", e.target.value)} style={{ ...S, fontSize: 14 }} placeholder="0.7" /></div>
+          <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)" }}>최대 점 수</div>
+            <input type="number" value={form.limit_points || ""} onChange={e => u("limit_points", e.target.value)} style={{ ...S, fontSize: 14 }} placeholder="5000" /></div>
         </div>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, marginBottom: 6 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, marginBottom: 6 }}>
           <input type="checkbox" checked={form.exclude_null !== false} onChange={e => u("exclude_null", e.target.checked)} style={{ accentColor: "var(--accent)" }} />null / (null) / NaN 값 제외</label>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, marginBottom: 6 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, marginBottom: 6 }}>
           <input type="checkbox" checked={form.sort_x || false} onChange={e => u("sort_x", e.target.checked)} style={{ accentColor: "var(--accent)" }} />X축 정렬</label>
         {/* v8.4.3: Fitting line degree + R^2 — scatter/line 차트에서 추세선 표시 */}
         <div style={{ display: "flex", gap: 10, marginBottom: 6, alignItems: "center", padding: "6px 8px", background: "var(--bg-card)", borderRadius: 5, border: "1px solid var(--border)" }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, flex: "0 0 auto" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, flex: "0 0 auto" }}>
             <input type="checkbox" checked={form.fit_line_enabled || false} onChange={e => u("fit_line_enabled", e.target.checked)} style={{ accentColor: "var(--accent)" }} />Fitting Line</label>
-          <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, opacity: form.fit_line_enabled ? 1 : 0.5 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 14, opacity: form.fit_line_enabled ? 1 : 0.5 }}>
             <span style={{ color: "var(--text-secondary)" }}>차수</span>
-            <select disabled={!form.fit_line_enabled} value={form.fit_line_degree || 1} onChange={e => u("fit_line_degree", parseInt(e.target.value))} style={{ ...S, width: "auto", fontSize: 10 }}>
+            <select disabled={!form.fit_line_enabled} value={form.fit_line_degree || 1} onChange={e => u("fit_line_degree", parseInt(e.target.value))} style={{ ...S, width: "auto", fontSize: 14 }}>
               <option value={1}>1차 (선형)</option><option value={2}>2차</option><option value={3}>3차</option><option value={4}>4차</option>
             </select>
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, opacity: form.fit_line_enabled ? 1 : 0.5 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, opacity: form.fit_line_enabled ? 1 : 0.5 }}>
             <input type="checkbox" disabled={!form.fit_line_enabled} checked={form.fit_line_show_r2 || false} onChange={e => u("fit_line_show_r2", e.target.checked)} style={{ accentColor: "var(--accent)" }} />R² 표시</label>
         </div>
         {/* v8.5.0: 그룹 가시성 (모든 유저) */}
-        <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4, marginTop: 8, fontWeight: 600 }}>그룹 가시성 (비어있으면 공개)</div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4, marginTop: 8, fontWeight: 600 }}>그룹 가시성 (비어있으면 공개)</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {myGroups.length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>가입된 그룹 없음</span>}
+          {myGroups.length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>가입된 그룹 없음</span>}
           {myGroups.map(g => {
             const on = (form.group_ids || []).includes(g.id);
-            return <label key={g.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, padding: "3px 8px", borderRadius: 999, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)22" : "transparent", cursor: "pointer" }}>
+            return <label key={g.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 14, padding: "3px 8px", borderRadius: 999, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)22" : "transparent", cursor: "pointer" }}>
               <input type="checkbox" checked={on} onChange={e => {
                 const s = new Set(form.group_ids || []);
                 if (e.target.checked) s.add(g.id); else s.delete(g.id);
@@ -1730,29 +1730,29 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
         </div>
 
         {isAdmin && <>
-          <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4, marginTop: 8, fontWeight: 600 }}>관리자 옵션 — 공개범위</div>
+          <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4, marginTop: 8, fontWeight: 600 }}>관리자 옵션 — 공개범위</div>
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 14 }}>
               <select value={form.visible_to || "all"} onChange={e => {
                 const v = e.target.value;
                 u("visible_to", v);
                 if (v !== "groups") u("group_ids", []);
-              }} style={{ ...S, width: "auto", fontSize: 10 }}>
+              }} style={{ ...S, width: "auto", fontSize: 14 }}>
                 <option value="all">모두에게 표시</option>
                 <option value="admin">관리자 전용</option>
                 <option value="groups">특정 그룹에게만</option>
               </select>
             </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 14 }}>
               <input type="checkbox" checked={form.no_schedule || false} onChange={e => u("no_schedule", e.target.checked)} style={{ accentColor: "var(--accent)" }} />자동 새로고침 제외</label>
           </div>
           {(form.visible_to === "groups") && (
             <div style={{ marginTop: 8, padding: 8, borderRadius: 6, background: "var(--bg-primary)", border: "1px solid var(--border)" }}>
-              <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>
+              <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>
                 선택한 그룹 멤버에게만 노출 ({(form.group_ids || []).length} 그룹 선택). 비워두면 admin 외엔 안 보입니다.
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                {(myGroups || []).length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>등록된 그룹이 없습니다 (Admin → 그룹 관리)</span>}
+                {(myGroups || []).length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>등록된 그룹이 없습니다 (Admin → 그룹 관리)</span>}
                 {(myGroups || []).map(g => {
                   const id = g.id || g.group_id || g.name;
                   const sel = (form.group_ids || []).includes(id);
@@ -1761,7 +1761,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
                       const cur = form.group_ids || [];
                       u("group_ids", sel ? cur.filter(x => x !== id) : [...cur, id]);
                     }} style={{
-                      padding: "3px 10px", borderRadius: 999, fontSize: 10, cursor: "pointer", fontWeight: 600,
+                      padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer", fontWeight: 600,
                       background: sel ? "var(--accent)" : "var(--bg-card)",
                       color: sel ? WHITE : "var(--text-secondary)",
                       border: "1px solid " + (sel ? "var(--accent)" : "var(--border)"),
@@ -1776,16 +1776,16 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
     </div>
     {/* Preview */}
     <div style={{ marginBottom: 12 }}>
-      <button onClick={runPreview} disabled={prevLoading} style={{ padding: "6px 16px", borderRadius: 5, border: `1px solid ${BLUE.fg}`, background: BLUE.bg, color: BLUE.fg, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+      <button onClick={runPreview} disabled={prevLoading} style={{ padding: "6px 16px", borderRadius: 5, border: `1px solid ${BLUE.fg}`, background: BLUE.bg, color: BLUE.fg, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
         {prevLoading ? "..." : "미리보기 (10행)"}</button>
       {preview && !preview.error && <div style={{ marginTop: 8, background: "var(--bg-primary)", borderRadius: 6, border: "1px solid var(--border)", padding: 8, maxHeight: 180, overflow: "auto" }}>
-        <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>합계: {preview.total} 행</div>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
-          <thead><tr>{preview.columns?.map(c => <th key={c} style={{ textAlign: "left", padding: "3px 6px", borderBottom: "1px solid var(--border)", fontSize: 9 }}>{c}</th>)}</tr></thead>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>합계: {preview.total} 행</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+          <thead><tr>{preview.columns?.map(c => <th key={c} style={{ textAlign: "left", padding: "3px 6px", borderBottom: "1px solid var(--border)", fontSize: 14 }}>{c}</th>)}</tr></thead>
           <tbody>{preview.rows?.map((r, i) => <tr key={i}>{preview.columns?.map(c => <td key={c} style={{ padding: "2px 6px", borderBottom: "1px solid var(--border)" }}>{r[c] == null ? "" : String(r[c])}</td>)}</tr>)}</tbody>
         </table>
       </div>}
-      {preview?.error && <div style={{ marginTop: 6, fontSize: 11, color: BAD.fg }}>{preview.error}</div>}
+      {preview?.error && <div style={{ marginTop: 6, fontSize: 14, color: BAD.fg }}>{preview.error}</div>}
     </div>
     <div style={{ display: "flex", gap: 8 }}>
       <button onClick={doSave} style={{ flex: 1, padding: 8, borderRadius: 6, border: "none", background: "var(--accent)", color: WHITE, fontWeight: 600, cursor: "pointer" }}>저장</button>
@@ -1993,16 +1993,16 @@ export default function My_Dashboard({ user }) {
       right={<div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         {marks.size > 0 && (
           <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "4px 10px", borderRadius: 20, background: "var(--accent-glow)", border: "1px solid var(--accent)" }}>
-            <span style={{ fontSize: 11, fontFamily: "monospace", color: "var(--accent)", fontWeight: 700 }}>★ {marks.size} 개 표시됨</span>
-            <span style={{ fontSize: 9, color: "var(--text-secondary)", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{[...marks].slice(0, 3).join(", ")}{marks.size > 3 ? ` +${marks.size - 3}` : ""}</span>
-            {canEdit && <span onClick={makeFilteredChart} title="표시된 항목으로 필터링된 새 차트 생성" style={{ cursor: "pointer", fontSize: 10, color: WHITE, padding: "2px 8px", background: "var(--accent)", borderRadius: 4, fontWeight: 700 }}>→ 필터 차트</span>}
-            <span onClick={clearMarks} style={{ cursor: "pointer", fontSize: 12, color: "var(--text-secondary)", marginLeft: 4 }}>✕</span>
+            <span style={{ fontSize: 14, fontFamily: "monospace", color: "var(--accent)", fontWeight: 700 }}>★ {marks.size} 개 표시됨</span>
+            <span style={{ fontSize: 14, color: "var(--text-secondary)", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{[...marks].slice(0, 3).join(", ")}{marks.size > 3 ? ` +${marks.size - 3}` : ""}</span>
+            {canEdit && <span onClick={makeFilteredChart} title="표시된 항목으로 필터링된 새 차트 생성" style={{ cursor: "pointer", fontSize: 14, color: WHITE, padding: "2px 8px", background: "var(--accent)", borderRadius: 4, fontWeight: 700 }}>→ 필터 차트</span>}
+            <span onClick={clearMarks} style={{ cursor: "pointer", fontSize: 14, color: "var(--text-secondary)", marginLeft: 4 }}>✕</span>
           </div>
         )}
         {isAdmin && <Button variant="subtle" onClick={doRefresh} disabled={refreshing}>{refreshing ? "계산 중..." : "전체 새로고침"}</Button>}
         <div style={{ display: "inline-flex", gap: 4, alignItems: "center", padding: "4px 6px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)" }}>
-          <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>밀도</span>
-          {[["compact","촘촘"],["comfortable","기본"],["presentation","넓게"]].map(([k,l])=><span key={k} onClick={()=>{setLayoutDensity(k);localStorage.setItem("flow_dash_density",k);}} style={{cursor:"pointer",fontSize:10,padding:"2px 8px",borderRadius:4,background:layoutDensity===k?"var(--accent-glow)":"transparent",color:layoutDensity===k?"var(--accent)":"var(--text-secondary)",fontWeight:layoutDensity===k?700:500}}>{l}</span>)}
+          <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>밀도</span>
+          {[["compact","촘촘"],["comfortable","기본"],["presentation","넓게"]].map(([k,l])=><span key={k} onClick={()=>{setLayoutDensity(k);localStorage.setItem("flow_dash_density",k);}} style={{cursor:"pointer",fontSize:14,padding:"2px 8px",borderRadius:4,background:layoutDensity===k?"var(--accent-glow)":"transparent",color:layoutDensity===k?"var(--accent)":"var(--text-secondary)",fontWeight:layoutDensity===k?700:500}}>{l}</span>)}
         </div>
         {canEdit && <Button variant="primary" onClick={() => setEditing({})}>+ 차트 추가</Button>}
         {/* v8.7.4: 전 탭 톱니 좌하단 통일 */}
@@ -2052,21 +2052,21 @@ export default function My_Dashboard({ user }) {
 
     {/* v8.4.8: 그룹 필터 칩 (그룹이 1개 이상이면 노출). 클릭해서 숨김/표시 토글. */}
     {dashboardView === "charts" && groupNames.length > 1 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12, alignItems: "center" }}>
-      <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", marginRight: 4 }}>그룹:</span>
+      <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", marginRight: 4 }}>그룹:</span>
       {groupNames.map(g => {
         const hidden = hiddenGroups.has(g);
         return <span key={g} onClick={() => toggleGroup(g)} style={{
-          cursor: "pointer", padding: "3px 10px", borderRadius: 12, fontSize: 11, fontFamily: "monospace",
+          cursor: "pointer", padding: "3px 10px", borderRadius: 12, fontSize: 14, fontFamily: "monospace",
           border: "1px solid " + (hidden ? "var(--border)" : "var(--accent)"),
           background: hidden ? "transparent" : "var(--accent-glow)",
           color: hidden ? "var(--text-secondary)" : "var(--accent)",
           fontWeight: hidden ? 400 : 700, opacity: hidden ? 0.6 : 1,
         }} title={hidden ? `${g} 표시` : `${g} 숨기기`}>
-          {hidden ? "○" : "●"} {g} <span style={{ fontSize: 9, opacity: 0.7 }}>({groupCounts[g]})</span>
+          {hidden ? "○" : "●"} {g} <span style={{ fontSize: 14, opacity: 0.7 }}>({groupCounts[g]})</span>
         </span>;
       })}
       {hiddenGroups.size > 0 && <span onClick={() => { setHiddenGroups(new Set()); localStorage.setItem("flow_dash_hidden_groups", "[]"); }}
-        style={{ cursor: "pointer", fontSize: 10, color: "var(--accent)", marginLeft: 8 }}>모두 표시</span>}
+        style={{ cursor: "pointer", fontSize: 14, color: "var(--accent)", marginLeft: 8 }}>모두 표시</span>}
     </div>}
 
     {dashboardView === "charts" && visibleCharts.length === 0 && !editing && <div style={{ textAlign: "center", padding: 60, color: "var(--text-secondary)" }}>차트 없음.{canEdit ? " + 차트 추가 를 클릭하세요." : ""}</div>}
@@ -2075,7 +2075,7 @@ export default function My_Dashboard({ user }) {
       {chartPhaseGroups.map(({ name, charts: phaseCharts }) => (
         <section key={name} style={{ display: "grid", gap: 8 }}>
           {chartPhaseGroups.length > 1 && (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "2px 2px 0", color: "var(--text-secondary)", fontSize: 11, fontFamily: "monospace" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "2px 2px 0", color: "var(--text-secondary)", fontSize: 14, fontFamily: "monospace" }}>
               <span style={{ fontWeight: 800, color: "var(--text-primary)" }}>{name}</span>
               <span>{phaseCharts.length} charts</span>
             </div>
@@ -2093,37 +2093,37 @@ export default function My_Dashboard({ user }) {
         <div style={{flex:1,minHeight:0,padding:8}}>
           <ChartCanvas cfg={{ ...c, _spc: snap?.spc, _oos: snap?.oos_count, _heatmap_meta: snap?.heatmap_meta, _wafer_layout: snap?.wafer_layout, _wafer_map_meta: snap?.wafer_map_meta, table_columns: snap?.table_columns, cross_cols: snap?.cross_cols, cross_rows: snap?.cross_rows, cross_method: snap?.cross_method, cross_val_col: snap?.cross_val_col }} points={snap?.points} computedAt={snap?.computed_at} canvasHeight={chartCanvasHeight} />
         </div>
-        <div style={{ fontSize: 10, color: "var(--text-secondary)", padding: "6px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop:"1px solid var(--border)", background:"rgba(0,0,0,0.02)" }}>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", padding: "6px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop:"1px solid var(--border)", background:"rgba(0,0,0,0.02)" }}>
           <span>
             {c.group && <span style={{ color: "var(--accent)", fontWeight: 700, marginRight: 6 }}>[{c.group}]</span>}
             {isAdmin ? chartTypeLabel(c.chart_type) : "업데이트된 시각화"}
           </span>
           <span style={{ display: "flex", gap: 4, alignItems: "center" }}>
             {snap?.error && <span style={{ color: BAD.fg }} title={snap.error}>오류</span>}
-            <span style={{fontSize:9,fontFamily:"monospace",color:"var(--text-secondary)"}}>{w}×{h}</span>
+            <span style={{fontSize:14,fontFamily:"monospace",color:"var(--text-secondary)"}}>{w}×{h}</span>
             {isAdmin && (isAdminChart
-              ? <span style={{ fontSize: 8, fontWeight: 700, color: PURPLE.fg, background: PURPLE.soft, padding: "1px 5px", borderRadius: 3, border: `1px solid ${PURPLE.border}` }}>관리자</span>
-              : <span style={{ fontSize: 8, fontWeight: 700, color: GREEN.fg, background: GREEN.soft, padding: "1px 5px", borderRadius: 3, border: `1px solid ${GREEN.border}` }}>사용자</span>)}
+              ? <span style={{ fontSize: 14, fontWeight: 700, color: PURPLE.fg, background: PURPLE.soft, padding: "1px 5px", borderRadius: 3, border: `1px solid ${PURPLE.border}` }}>관리자</span>
+              : <span style={{ fontSize: 14, fontWeight: 700, color: GREEN.fg, background: GREEN.soft, padding: "1px 5px", borderRadius: 3, border: `1px solid ${GREEN.border}` }}>사용자</span>)}
           </span>
         </div>
         <div className="chart-actions" style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 4, alignItems: "center" }}>
           {/* v8.4.8: 크기 피커 — S/M/L/XL (width) × 1/2/3/4 (height) */}
           {canEdit && <span onClick={e => e.stopPropagation()} style={{ display: "inline-flex", gap: 2, padding: "2px 4px", background: "rgba(0,0,0,0.55)", borderRadius: 4 }} title="크기 조절">
-            <span style={{ fontSize: 9, color: DIM_TEXT, padding: "1px 2px" }}>W</span>
+            <span style={{ fontSize: 14, color: DIM_TEXT, padding: "1px 2px" }}>W</span>
             {CHART_WIDTH_UNITS.map(([wv, wl]) => (
-              <span key={wv} onClick={() => resizeChart(c, wv, h)} style={{ cursor: "pointer", fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 3, color: w === wv ? WHITE : DIM_TEXT, background: w === wv ? "var(--accent)" : "transparent" }}>{wl}</span>
+              <span key={wv} onClick={() => resizeChart(c, wv, h)} style={{ cursor: "pointer", fontSize: 14, fontWeight: 700, padding: "1px 5px", borderRadius: 3, color: w === wv ? WHITE : DIM_TEXT, background: w === wv ? "var(--accent)" : "transparent" }}>{wl}</span>
             ))}
             <span style={{ width: 1, background: DIVIDER_DARK, margin: "2px 2px" }} />
-            <span style={{ fontSize: 9, color: DIM_TEXT, padding: "1px 2px" }}>H</span>
+            <span style={{ fontSize: 14, color: DIM_TEXT, padding: "1px 2px" }}>H</span>
             {CHART_HEIGHT_UNITS.map(hv => (
-              <span key={hv} onClick={() => resizeChart(c, w, hv)} style={{ cursor: "pointer", fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 3, color: h === hv ? WHITE : DIM_TEXT, background: h === hv ? BLUE.fg : "transparent" }}>{hv}</span>
+              <span key={hv} onClick={() => resizeChart(c, w, hv)} style={{ cursor: "pointer", fontSize: 14, fontWeight: 700, padding: "1px 5px", borderRadius: 3, color: h === hv ? WHITE : DIM_TEXT, background: h === hv ? BLUE.fg : "transparent" }}>{hv}</span>
             ))}
           </span>}
-          <span onClick={(e) => { e.stopPropagation(); setExpanded(c.id); }} style={{ cursor: "pointer", fontSize: 11, color: WHITE, padding: "3px 8px", background: "var(--accent)", borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>확대</span>
+          <span onClick={(e) => { e.stopPropagation(); setExpanded(c.id); }} style={{ cursor: "pointer", fontSize: 14, color: WHITE, padding: "3px 8px", background: "var(--accent)", borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>확대</span>
           {canEdit && <>
-            <span onClick={(e) => { e.stopPropagation(); setEditing(c); }} style={{ cursor: "pointer", fontSize: 11, color: WHITE, padding: "3px 8px", background: BLUE.fg, borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>편집</span>
-            <span onClick={(e) => { e.stopPropagation(); sf(API + "/charts/copy?chart_id=" + c.id, { method: "POST" }).then(load); }} style={{ cursor: "pointer", fontSize: 11, color: WHITE, padding: "3px 8px", background: PURPLE.fg, borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>복사</span>
-            {isAdmin && <span onClick={(e) => { e.stopPropagation(); deleteChart(c.id); }} style={{ cursor: "pointer", fontSize: 11, color: WHITE, padding: "3px 8px", background: BAD.fg, borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>삭제</span>}
+            <span onClick={(e) => { e.stopPropagation(); setEditing(c); }} style={{ cursor: "pointer", fontSize: 14, color: WHITE, padding: "3px 8px", background: BLUE.fg, borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>편집</span>
+            <span onClick={(e) => { e.stopPropagation(); sf(API + "/charts/copy?chart_id=" + c.id, { method: "POST" }).then(load); }} style={{ cursor: "pointer", fontSize: 14, color: WHITE, padding: "3px 8px", background: PURPLE.fg, borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>복사</span>
+            {isAdmin && <span onClick={(e) => { e.stopPropagation(); deleteChart(c.id); }} style={{ cursor: "pointer", fontSize: 14, color: WHITE, padding: "3px 8px", background: BAD.fg, borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>삭제</span>}
           </>}
         </div>
       </div>); })}
@@ -2142,7 +2142,7 @@ export default function My_Dashboard({ user }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "monospace", color: "var(--accent)" }}>{c.title}</div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{snap?.total?.toLocaleString()} 개 점 | {chartTypeLabel(c.chart_type)}</span>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{snap?.total?.toLocaleString()} 개 점 | {chartTypeLabel(c.chart_type)}</span>
               <span onClick={() => setExpanded(null)} style={{ cursor: "pointer", fontSize: 20, color: "var(--text-secondary)", padding: "4px 8px" }}>✕</span>
             </div>
           </div>
@@ -2151,8 +2151,8 @@ export default function My_Dashboard({ user }) {
           </div>
           {isAdmin && (
             <details style={{ marginTop: 8 }}>
-              <summary style={{ fontSize: 10, color: "var(--text-secondary)", cursor: "pointer" }}>debug</summary>
-              <div style={{ marginTop: 6, fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+              <summary style={{ fontSize: 14, color: "var(--text-secondary)", cursor: "pointer" }}>debug</summary>
+              <div style={{ marginTop: 6, fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
                 {c.file || `${c.root}/${c.product}`} | type={c.chart_type} | X: {c.x_col}{c.y_expr ? " | Y: " + c.y_expr : ""}{c.color_col ? " | color: " + c.color_col : ""}{c.filter_expr ? " | filter: " + c.filter_expr : ""}
               </div>
             </details>
@@ -2219,61 +2219,61 @@ function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSe
   const toggleSection = (key) => setSectionDraft(prev => ({ ...prev, [key]: !prev[key] }));
   return (
     <div>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>자동 새로고침 주기 (분)</div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>자동 새로고침 주기 (분)</div>
       <input type="number" min={1} max={240} value={val} onChange={e => setVal(e.target.value)} disabled={!isAdmin}
-        style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>프론트가 차트를 다시 불러오는 주기. 1~240분.</div>
+        style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>프론트가 차트를 다시 불러오는 주기. 1~240분.</div>
 
-      <div style={{ fontSize: 12, fontWeight: 600, marginTop: 14, marginBottom: 6 }}>백그라운드 재계산 주기 (분)</div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginTop: 14, marginBottom: 6 }}>백그라운드 재계산 주기 (분)</div>
       <input type="number" min={1} max={240} value={bgVal} onChange={e => setBgVal(e.target.value)} disabled={!isAdmin}
-        style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>백엔드가 각 차트 스냅샷을 재계산하는 주기.</div>
+        style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>백엔드가 각 차트 스냅샷을 재계산하는 주기.</div>
 
-      <div style={{ fontSize: 12, fontWeight: 600, marginTop: 14, marginBottom: 6 }}>일반 사용자 대시보드 공개 섹션</div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginTop: 14, marginBottom: 6 }}>일반 사용자 대시보드 공개 섹션</div>
       <div style={{ display: "grid", gap: 6 }}>
         {[
           ["charts", "차트"],
           ["progress", "FAB 진행"],
           ["alerts", "알림 감시"],
         ].map(([key, label]) => (
-          <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", fontSize: 12, cursor: isAdmin ? "pointer" : "default" }}>
+          <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", fontSize: 14, cursor: isAdmin ? "pointer" : "default" }}>
             <input type="checkbox" checked={sectionDraft[key] !== false} disabled={!isAdmin} onChange={() => toggleSection(key)} />
             <span style={{ fontWeight: 700 }}>{label}</span>
-            {key !== "charts" && <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-secondary)" }}>기본 비공개</span>}
+            {key !== "charts" && <span style={{ marginLeft: "auto", fontSize: 14, color: "var(--text-secondary)" }}>기본 비공개</span>}
           </label>
         ))}
       </div>
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>관리자는 설정과 관계없이 모든 섹션을 볼 수 있습니다.</div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>관리자는 설정과 관계없이 모든 섹션을 볼 수 있습니다.</div>
 
-      <div style={{ fontSize: 12, fontWeight: 600, marginTop: 14, marginBottom: 6 }}>FAB Progress 검색 기준</div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginTop: 14, marginBottom: 6 }}>FAB Progress 검색 기준</div>
       <div style={{ display: "grid", gap: 8 }}>
-        <label style={{ display: "grid", gap: 4, fontSize: 11, color: "var(--text-secondary)" }}>
+        <label style={{ display: "grid", gap: 4, fontSize: 14, color: "var(--text-secondary)" }}>
           기준 step_id
           <input value={fabDraft.reference_step_id} onChange={e => setFabDraft(prev => ({ ...prev, reference_step_id: e.target.value.toUpperCase() }))} disabled={!isAdmin}
-            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
+            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
         </label>
-        <label style={{ display: "grid", gap: 4, fontSize: 11, color: "var(--text-secondary)" }}>
+        <label style={{ display: "grid", gap: 4, fontSize: 14, color: "var(--text-secondary)" }}>
           평균 기준 최근 랏 수
           <input type="number" min={1} max={50} value={fabDraft.sample_lots} onChange={e => setFabDraft(prev => ({ ...prev, sample_lots: e.target.value }))} disabled={!isAdmin}
-            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
         </label>
-        <label style={{ display: "grid", gap: 4, fontSize: 11, color: "var(--text-secondary)" }}>
+        <label style={{ display: "grid", gap: 4, fontSize: 14, color: "var(--text-secondary)" }}>
           FAB 검색 기간(days)
           <input type="number" min={1} max={365} value={fabDraft.days} onChange={e => setFabDraft(prev => ({ ...prev, days: e.target.value }))} disabled={!isAdmin}
-            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
         </label>
       </div>
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>검색한 lot과 비교할 기준선입니다. 예: AA200000 통과 최근 5개 랏 평균.</div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>검색한 lot과 비교할 기준선입니다. 예: AA200000 통과 최근 5개 랏 평균.</div>
 
       {isAdmin && (
         <button onClick={save} disabled={saving}
-          style={{ marginTop: 14, width: "100%", padding: "8px 12px", borderRadius: 6, border: "none", background: "var(--accent)", color: WHITE, fontWeight: 600, fontSize: 12, cursor: saving ? "wait" : "pointer" }}>
+          style={{ marginTop: 14, width: "100%", padding: "8px 12px", borderRadius: 6, border: "none", background: "var(--accent)", color: WHITE, fontWeight: 600, fontSize: 14, cursor: saving ? "wait" : "pointer" }}>
           {saving ? "저장 중..." : "저장"}
         </button>
       )}
-      {msg && <div style={{ marginTop: 8, fontSize: 11, color: msg === "저장 완료" ? OK.fg : BAD.fg }}>{msg}</div>}
+      {msg && <div style={{ marginTop: 8, fontSize: 14, color: msg === "저장 완료" ? OK.fg : BAD.fg }}>{msg}</div>}
 
-      <div style={{ marginTop: 18, padding: 10, background: "var(--bg-primary)", borderRadius: 6, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+      <div style={{ marginTop: 18, padding: 10, background: "var(--bg-primary)", borderRadius: 6, fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.6 }}>
         • 일반 유저는 값 확인만 가능 (편집은 관리자).<br/>
         • 차트별 exclude_null / fitting line 등은 각 차트의 편집 화면에서 설정합니다.
       </div>

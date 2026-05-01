@@ -17,7 +17,7 @@ Rules:
 
 Granularity:
   - wf      — LOT_WF (ROOT_LOT_ID + WAFER_ID) — FAB, VM, MASK, KNOB, ML_TABLE
-  - shot    — WF × (shot_x, shot_y)           — ET, INLINE
+  - shot    — ET: WF × (shot_x, shot_y); INLINE raw: WF × subitem_id
   - chip    — WF × shot × chip_coordinate     — YLD
 
 ML analysis for PRODA → PRODB transfer should:
@@ -65,9 +65,9 @@ DB_REGISTRY: dict = {
     },
     "INLINE": {
         "level": "L1", "granularity": "shot",
-        "keys": ["ROOT_LOT_ID", "WAFER_ID", "SHOT_X", "SHOT_Y"],
+        "keys": ["ROOT_LOT_ID", "WAFER_ID", "SUBITEM_ID"],
         "signature_cols": ["ITEM_ID", "VALUE"],  # CD, OCD, THK, ...
-        "description": "In-line metrology (CD/OCD/THK — optical/chemical). Typically sparse, not all shots measured.",
+        "description": "In-line metrology (CD/OCD/THK — optical/chemical). Raw INLINE distinguishes measured points by subitem_id; coordinate mapping is optional.",
         "icon": "📏",
     },
     "ET": {

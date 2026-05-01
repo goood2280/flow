@@ -16,6 +16,7 @@ import uuid
 import csv
 import io
 from collections import Counter, deque
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -24,10 +25,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 import polars as pl
 
+from core import duckdb_engine
 from core.paths import PATHS
 from core.utils import _STR, load_json, save_json
 from core.auth import current_user, require_admin, is_page_admin
 from core import llm_adapter
+from core import product_config
 from core import semiconductor_knowledge as semi_knowledge
 from routers.auth import read_users
 
@@ -100,14 +103,63 @@ FLOWI_BASE_WORKFLOW_GUIDE = [
         "examples": ["root/fab/source 후보 선택"],
     },
 ]
+FLOWI_AGENT_PERSONA = {
+    "role": "semiconductor_process_data_analyst",
+    "label": "반도체 공정 데이터 분석가",
+    "principles": [
+        "사내 naming rule을 먼저 적용해 자연어를 정형 파라미터로 변환한다.",
+        "FAB/ET/INLINE/VM/EDS/QTIME의 grain과 join key 차이를 구분한다.",
+        "원본 DB는 read-only로 다루고, 변경 요청은 전용 확인 workflow로만 진행한다.",
+    ],
+}
+FLOWI_NAMING_RULES = [
+    {
+        "key": "product",
+        "label": "product",
+        "rule": "product_config/products.yaml, ML_TABLE_<product>, FAB product directory에서 product명을 동적으로 인식한다.",
+        "examples": ["PRODA", "PRODB", "GAA2N"],
+    },
+    {
+        "key": "root_lot_id",
+        "label": "root lot",
+        "rule": "영어/숫자 조합 5자리 토큰은 root_lot_id로 해석한다. product 토큰과 title 토큰은 lot에서 제외한다.",
+        "examples": ["A1000", "R2001", "AB12C"],
+    },
+    {
+        "key": "fab_lot_id",
+        "label": "fab lot",
+        "rule": "점(.)이 들어간 lot 조합이나 6자 이상 fab lot 후보는 fab_lot_id로 해석한다.",
+        "examples": ["AZGASB.1", "ASDGA.1", "ASDAGFH.NJ"],
+    },
+    {
+        "key": "wafer_id",
+        "label": "wafer",
+        "rule": "#6, WF6, wafer 6, slot 6, 6번 slot, 6번장, 6장 표현은 wafer_id=6으로 정규화한다. 유효 wafer slot은 1~25만 사용한다.",
+        "examples": ["#6", "slot 6", "6번장"],
+    },
+    {
+        "key": "step_id",
+        "label": "step",
+        "rule": "영문 2자 + 숫자 6자리 또는 등록된 func_step 이름만 step 후보로 확정한다.",
+        "examples": ["AA200000", "GAA_CHANNEL_RELEASE"],
+    },
+    {
+        "key": "source_grain",
+        "label": "source grain",
+        "rule": "FAB은 route/progress 최신 이력, ET는 lot_wf median, INLINE raw는 lot_wf/subitem_id avg 기준으로 해석한다. raw INLINE에는 shot_x/shot_y가 없다.",
+        "examples": ["FAB latest", "ET median", "INLINE subitem_id"],
+    },
+]
 FLOWI_DEFAULT_SYSTEM_PROMPT = (
-    "Flowi는 사내 Flow 홈 화면의 fab 데이터 assistant입니다. 답변은 짧고 실행 가능하게 작성합니다. "
+    "Flowi는 사내 Flow 홈 화면의 반도체 공정 데이터 분석가입니다. 답변은 짧고 실행 가능하게 작성합니다. "
     "사용자 Markdown 정보가 있으면 담당 제품, 관심 공정, 선호 출력 방식을 반영합니다. "
     "요청이 애매하면 바로 실행한다고 말하지 말고 1/2/3 형태의 선택지를 제시합니다. "
-    "영문/숫자 혼합 5자 토큰은 root_lot_id, 6자 이상 혼합 토큰이나 AZAAAB.1 형태는 fab_lot_id로 해석합니다. "
-    "#6, WF6, WAFER 6은 wafer_id=6으로 해석합니다. "
+    "먼저 사내 naming rule을 적용해 자연어를 function arguments JSON으로 구조화한 뒤, 그 파라미터와 답변이 어긋나지 않게 합니다. "
+    "product는 product_config/products.yaml, ML_TABLE_<product>, FAB product directory에서 동적으로 확인합니다. "
+    "영어/숫자 조합 5자리 토큰은 root_lot_id, AZGASB.1/ASDAGFH.NJ처럼 점(.)이 들어간 lot 조합은 fab_lot_id로 해석합니다. "
+    "#6, WF6, WAFER 6, slot 6, 6번 slot, 6번장, 6장은 wafer_id=6으로 해석하며 wafer_id는 1~25만 유효한 물리 slot으로 봅니다. "
     "step_id는 영문 2자 + 숫자 6자리만 step으로 해석하고, 그 외에는 등록된 func_step 이름과 정확히 맞을 때만 step 후보로 봅니다. "
-    "INLINE은 기본 avg, ET는 기본 median이며 shot/die key가 있으면 lot_wf보다 우선합니다. "
+    "FAB은 최신 route/progress 이력, ET는 기본 median, INLINE은 기본 avg이며 raw INLINE은 shot_x/shot_y가 아니라 subitem_id를 shot 구분자로 봅니다. "
     "일반 사용자의 원 data DB 또는 Files 수정/삭제/저장/업로드는 차단합니다. "
     "admin 파일 변경은 서버의 FLOWI_FILE_OP 단위기능 결과가 제공된 경우에만 그 결과를 설명합니다."
 )
@@ -134,6 +186,7 @@ FLOWI_FEEDBACK_TAXONOMY = [
     {"key": "key_matching_error", "label": "lot/wafer/step 매칭 오류", "tone": "bad"},
     {"key": "aggregation_error", "label": "avg/median/집계 오류", "tone": "bad"},
 ]
+FLOWI_USER_FEEDBACK_TAGS = {"correct", "explanation_gap", "missed_clarification", "too_slow", "output_issue", "hallucination"}
 FLOWI_FEATURE_ENTRYPOINTS = [
     {
         "key": "filebrowser",
@@ -429,11 +482,13 @@ _WRITE_TARGET_TERMS = (
 _FLOWI_FILE_OP_MARKER = "FLOWI_FILE_OP"
 _FLOWI_DATA_REGISTER_MARKER = "FLOWI_DATA_REGISTER"
 _FLOWI_SPLITTABLE_NOTE_MARKER = "FLOWI_SPLITTABLE_NOTE"
+_FLOWI_SPLITTABLE_PLAN_MARKER = "FLOWI_SPLITTABLE_PLAN"
 _FLOWI_FILE_EXTS = {".parquet", ".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 _FLOWI_TEXT_FILE_EXTS = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 _FLOWI_MAX_TEXT_EDIT_BYTES = 2 * 1024 * 1024
 _FLOWI_MAX_REGISTER_ROWS = 300
 _FLOWI_MAX_REGISTER_COLS = 80
+FLOWI_MAX_WAFER_ID = 25
 _FLOWI_FILE_TOKEN_RE = re.compile(
     r"(?<![\w./-])([A-Za-z0-9][A-Za-z0-9_.@+=-]{0,120}\.(?:parquet|csv|json|md|txt|yaml|yml))(?![\w.-])",
     re.I,
@@ -477,6 +532,24 @@ def _text(raw: Any) -> str:
 
 def _upper(raw: Any) -> str:
     return _text(raw).upper()
+
+
+def _normalize_wafer_id(raw: Any, *, max_wafer: int = FLOWI_MAX_WAFER_ID) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    core = re.sub(r"^(?:#|WAFER|WF|W)\s*", "", text, flags=re.I).strip()
+    if not re.fullmatch(r"\d+", core):
+        return ""
+    try:
+        n = int(core)
+    except Exception:
+        return ""
+    return str(n) if 1 <= n <= max_wafer else ""
+
+
+def _all_valid_wafer_ids() -> list[str]:
+    return [str(i) for i in range(1, FLOWI_MAX_WAFER_ID + 1)]
 
 
 def _md_line(raw: Any, limit: int = 600) -> str:
@@ -942,6 +1015,270 @@ def _slot_summary(prompt: str, product: str = "") -> dict[str, Any]:
         "wafers": _wafer_tokens(prompt),
         "steps": _step_tokens(prompt),
         "terms": _query_tokens(prompt)[:12],
+    }
+
+
+def _flowi_product_resolution(prompt: str, explicit: str = "") -> dict[str, Any]:
+    product = _product_hint(prompt, explicit)
+    configured = _configured_product_names()
+    source = "missing"
+    if explicit:
+        source = "explicit"
+    elif product and _upper(product) in configured:
+        source = "product_config_or_data"
+    elif product:
+        source = "prompt_token"
+    return {
+        "value": product,
+        "source": source,
+        "configured_products": sorted(set(configured.values()), key=lambda x: x.casefold())[:80],
+    }
+
+
+def _flowi_source_type_tokens(prompt: str) -> list[str]:
+    text = str(prompt or "")
+    up = _upper(text)
+    out: list[str] = []
+    for key, aliases in {
+        "FAB": ["FAB", "ROUTE", "PROGRESS", "CURRENT", "현재", "진행", "공정"],
+        "ET": ["ET", "WAT", "PARAMETRIC"],
+        "INLINE": ["INLINE", "인라인", "METROLOGY"],
+        "VM": ["VM", "VMIN", "SRAM"],
+        "EDS": ["EDS", "SORT", "BIN", "YIELD"],
+        "QTIME": ["QTIME", "QUEUE", "대기시간", "큐타임"],
+        "ML_TABLE": ["ML_TABLE", "KNOB", "노브", "PLAN", "ACTUAL"],
+    }.items():
+        if any(alias in up or alias in text for alias in aliases):
+            out.append(key)
+    return out
+
+
+def _flowi_knob_tokens(prompt: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for tok in _tokens(prompt):
+        key = _upper(tok)
+        if "KNOB" in key and key not in seen:
+            seen.add(key)
+            out.append(key)
+    if not out and re.search(r"\b[A-Z]\s+KNOB\b", _upper(prompt)):
+        out.append("KNOB_" + re.search(r"\b([A-Z])\s+KNOB\b", _upper(prompt)).group(1))
+    return out
+
+
+def _flowi_invalid_wafer_mentions(prompt: str) -> list[str]:
+    text = str(prompt or "")
+    invalid: set[str] = set()
+    patterns = [
+        r"#\s*(\d{1,4})",
+        r"\b(?:WF|WAFER|SLOT)\s*0?(\d{1,4})\b",
+        r"(?:웨이퍼|슬롯)\s*0?(\d{1,4})",
+        r"0?(\d{1,4})\s*번\s*(?:WF|WAFER|웨이퍼|SLOT|슬롯|장)",
+        r"0?(\d{1,4})\s*번장",
+        r"0?(\d{1,4})\s*장\b",
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, text, flags=re.I):
+            try:
+                n = int(m.group(1))
+            except Exception:
+                continue
+            if n < 1 or n > FLOWI_MAX_WAFER_ID:
+                invalid.add(str(n))
+    return sorted(invalid, key=lambda x: int(x))
+
+
+def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, Any]:
+    text = str(prompt or "")
+    up = _upper(text)
+    entries = _matched_feature_entrypoints(text, limit=3)
+    assignments, invalid_wafers = _flowi_parse_splittable_plan_assignments(text)
+    if _is_current_fab_lot_prompt(text):
+        return {
+            "name": "query_current_fab_lot_from_fab_db",
+            "feature": "filebrowser",
+            "intent": "current_fab_lot_lookup",
+            "confidence": 0.94,
+            "reason": "fab_lot_id + 현재/조회 표현이 있고 lot 조건이 있어 FAB DB 최신 이력 조회로 라우팅",
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
+    if assignments and ("PLAN" in up or "계획" in text) and ("KNOB" in up or "노브" in text):
+        return {
+            "name": "preview_splittable_plan_update",
+            "feature": "splittable",
+            "intent": "splittable_plan_confirm",
+            "confidence": 0.9,
+            "reason": "KNOB plan 변경 요청과 wafer assignment가 있어 저장 전 확인 JSON으로 라우팅",
+            "requires_confirmation": True,
+            "side_effect": "confirm_before_write",
+            "invalid_wafers": invalid_wafers,
+        }
+    if "KNOB" in up or "노브" in text:
+        return {
+            "name": "query_lot_knobs_from_ml_table",
+            "feature": "splittable",
+            "intent": "lot_knobs",
+            "confidence": 0.82,
+            "reason": "KNOB/노브 표현은 ML_TABLE/SplitTable 조회로 라우팅",
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
+    if _contains_chart_intent(text):
+        return {
+            "name": "build_dashboard_metric_chart",
+            "feature": "dashboard",
+            "intent": "dashboard_chart_request",
+            "confidence": 0.8,
+            "reason": "chart/scatter/trend/상관 표현이 있어 Dashboard chart arguments로 라우팅",
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
+    if "FAB" in up and any(t in text or t in up for t in ("현재", "진행", "공정", "STEP", "어디")):
+        return {
+            "name": "query_fab_progress",
+            "feature": "filebrowser",
+            "intent": "fab_progress_lookup",
+            "confidence": 0.74,
+            "reason": "FAB 진행/공정 조회 표현이 있어 FAB route/progress 조회로 라우팅",
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
+    if entries:
+        primary = entries[0]
+        return {
+            "name": "route_flowi_feature",
+            "feature": primary.get("key") or "",
+            "intent": f"{primary.get('key')}_guidance",
+            "confidence": 0.62,
+            "reason": f"{primary.get('title') or primary.get('key')} feature keyword match",
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
+    return {
+        "name": "route_flowi_feature",
+        "feature": "diagnosis",
+        "intent": "semiconductor_analysis_request",
+        "confidence": 0.45,
+        "reason": "명확한 tool trigger가 없어 반도체 분석/RCA 기본 라우터로 전달",
+        "requires_confirmation": False,
+        "side_effect": "none",
+    }
+
+
+def _flowi_function_schema(name: str) -> dict[str, Any]:
+    schemas = {
+        "query_current_fab_lot_from_fab_db": {
+            "description": "FAB DB에서 product/root_lot_id/fab_lot_id/wafer_id 조건으로 최신 fab_lot_id를 조회한다.",
+            "required": ["product", "lot_ids"],
+        },
+        "preview_splittable_plan_update": {
+            "description": "SplitTable plan 변경안을 저장 전 확인용 JSON으로 만든다. 원본 DB는 수정하지 않는다.",
+            "required": ["product", "root_lot_ids", "plan_assignments"],
+        },
+        "query_lot_knobs_from_ml_table": {
+            "description": "ML_TABLE/SplitTable에서 lot wafer별 KNOB 값을 조회한다.",
+            "required": ["product", "lot_ids"],
+        },
+        "build_dashboard_metric_chart": {
+            "description": "ET/INLINE/VM/EDS/FAB 데이터를 읽어 Dashboard 차트용 query arguments를 만든다.",
+            "required": ["product", "metrics_or_items"],
+        },
+        "query_fab_progress": {
+            "description": "FAB route/progress DB에서 현재 step, fab lot, 시간 이력을 조회한다.",
+            "required": ["product", "lot_ids"],
+        },
+        "route_flowi_feature": {
+            "description": "feature 후보와 slots를 바탕으로 Flow-i 기본 라우터에 전달한다.",
+            "required": [],
+        },
+    }
+    return schemas.get(name, schemas["route_flowi_feature"])
+
+
+def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int = 12) -> dict[str, Any]:
+    text = str(prompt or "").strip()
+    product_info = _flowi_product_resolution(text, product)
+    resolved_product = str(product_info.get("value") or "")
+    slots = _slot_summary(text, resolved_product)
+    classified = _classified_lot_tokens(text)
+    wafers = [int(w) for w in _wafer_tokens(text)]
+    assignments, invalid_wafers = _flowi_parse_splittable_plan_assignments(text)
+    invalid_wafers = sorted(set(invalid_wafers + _flowi_invalid_wafer_mentions(text)), key=lambda x: int(x))
+    metrics = _metric_alias_hits(text)
+    selected = _flowi_infer_function_call(text, slots)
+    selected_name = str(selected.get("name") or "")
+    if invalid_wafers:
+        selected["invalid_wafers"] = invalid_wafers
+    source_types = _flowi_source_type_tokens(text)
+    if selected_name == "query_current_fab_lot_from_fab_db" and "FAB" not in source_types:
+        source_types.insert(0, "FAB")
+    if selected_name == "build_dashboard_metric_chart" and not source_types:
+        source_types = ["ET", "INLINE"]
+    metric_names = [m.get("metric") for m in metrics] if selected_name == "build_dashboard_metric_chart" else []
+    plan_assignments = assignments if selected_name == "preview_splittable_plan_update" else []
+
+    arguments = {
+        "product": resolved_product,
+        "product_source": product_info.get("source"),
+        "root_lot_ids": classified.get("root_lot_ids") or [],
+        "fab_lot_ids": classified.get("fab_lot_ids") or [],
+        "lot_ids": slots.get("lots") or [],
+        "wafer_ids": wafers,
+        "step_ids": slots.get("steps") or [],
+        "source_types": source_types,
+        "metrics_or_items": metric_names,
+        "knobs": _flowi_knob_tokens(text),
+        "plan_assignments": plan_assignments,
+        "aggregations": {"ET": "median", "INLINE": "avg", "FAB": "latest"},
+        "join_keys": ["root_lot_id", "fab_lot_id", "wafer_id", "lot_wf"],
+        "max_rows": max(1, min(int(max_rows or 12), 200)),
+        "read_only": True,
+        "side_effect": selected.get("side_effect") or "none",
+    }
+    schema = _flowi_function_schema(str(selected.get("name") or ""))
+    missing: list[str] = []
+    if "product" in schema.get("required", []) and not resolved_product:
+        missing.append("product")
+    if "lot_ids" in schema.get("required", []) and not arguments["lot_ids"]:
+        missing.append("root_lot_id_or_fab_lot_id")
+    if "root_lot_ids" in schema.get("required", []) and not arguments["root_lot_ids"]:
+        missing.append("root_lot_id")
+    if "plan_assignments" in schema.get("required", []) and not arguments["plan_assignments"]:
+        missing.append("plan_assignments")
+    if "metrics_or_items" in schema.get("required", []) and not arguments["metrics_or_items"]:
+        missing.append("metrics_or_items")
+    warnings: list[str] = []
+    if invalid_wafers:
+        warnings.append("wafer_id는 1~25만 유효합니다. 제외된 wafer: " + ", ".join(invalid_wafers))
+    if "INLINE" in source_types:
+        warnings.append("raw INLINE에는 shot_x/shot_y가 없으며 subitem_id 또는 explicit matching table이 필요합니다.")
+    if not resolved_product:
+        warnings.append("product를 찾지 못하면 YAML/product directory 기준 후보 선택이 필요합니다.")
+    return {
+        "ok": True,
+        "mode": "dry_run",
+        "prompt": text,
+        "persona": FLOWI_AGENT_PERSONA,
+        "naming_rules": FLOWI_NAMING_RULES,
+        "selected_function": selected,
+        "function_schema": schema,
+        "function_call": {
+            "type": "function_call",
+            "function": {
+                "name": selected.get("name"),
+                "arguments": arguments,
+            },
+        },
+        "validation": {
+            "valid": not missing,
+            "missing": missing,
+            "warnings": warnings,
+            "requires_confirmation": bool(selected.get("requires_confirmation")),
+            "raw_db_policy": "read_only",
+        },
+        "feature_candidates": _matched_feature_entrypoints(text, limit=3),
+        "slot_summary": slots,
     }
 
 
@@ -1753,6 +2090,54 @@ def _is_mixed_alnum_token(tok: str) -> bool:
     return bool(re.fullmatch(r"[A-Z0-9]+", tok or "") and re.search(r"[A-Z]", tok or "") and re.search(r"\d", tok or ""))
 
 
+def _configured_product_names() -> dict[str, str]:
+    products: dict[str, str] = {}
+    try:
+        for key, cfg in (product_config.load_all(PATHS.data_root) or {}).items():
+            name = str((cfg or {}).get("product") or key or "").strip()
+            if name:
+                products[_upper(name)] = name
+                products[_upper(f"ML_TABLE_{name}")] = name
+    except Exception:
+        pass
+    for fp in _ml_files("") if "_ml_files" in globals() else []:
+        try:
+            stem = fp.stem
+        except Exception:
+            continue
+        if stem.upper().startswith("ML_TABLE_"):
+            name = stem[len("ML_TABLE_"):]
+            products.setdefault(_upper(name), name)
+            products.setdefault(_upper(stem), name)
+    try:
+        for root in _db_root_candidates("FAB"):
+            for child in root.iterdir():
+                if child.is_dir() and child.name:
+                    products.setdefault(_upper(child.name), child.name)
+    except Exception:
+        pass
+    return products
+
+
+def _is_product_token(tok: str) -> bool:
+    key = _upper(tok)
+    if not key:
+        return False
+    if key.startswith(("ML_TABLE_", "PRODUCT_", "PROD")):
+        return True
+    return key in _configured_product_names()
+
+
+def _is_root_lot_token(tok: str) -> bool:
+    key = _upper(tok)
+    return bool(re.fullmatch(r"[A-Z0-9]{5}", key or "") and re.search(r"[A-Z]", key or ""))
+
+
+def _is_fab_lot_token(tok: str) -> bool:
+    key = _upper(tok)
+    return bool(re.fullmatch(r"[A-Z0-9]{5,24}\.[A-Z0-9][A-Z0-9_.-]{0,31}", key or ""))
+
+
 def _product_aliases(product: str) -> set[str]:
     raw = _upper(product)
     if not raw:
@@ -1776,7 +2161,10 @@ def _product_aliases(product: str) -> set[str]:
 def _product_hint(prompt: str, explicit: str = "") -> str:
     if explicit:
         return explicit
+    configured = _configured_product_names()
     for tok in _tokens(prompt):
+        if tok in configured:
+            return configured[tok]
         if tok.startswith(("ML_TABLE_", "PRODUCT_", "PROD")):
             return tok
     return ""
@@ -1787,13 +2175,13 @@ def _lot_tokens(prompt: str) -> list[str]:
     seen = set()
     title_tokens = _title_hint_tokens(prompt)
     for tok in _tokens(prompt):
-        if tok.startswith(("PROD", "ML_TABLE_", "PRODUCT_")):
+        if _is_product_token(tok):
             continue
         if tok in title_tokens:
             continue
-        is_root_like = len(tok) == 5 and _is_mixed_alnum_token(tok)
+        is_root_like = _is_root_lot_token(tok)
         is_fab_like = (
-            bool(re.fullmatch(r"[A-Z0-9]{5,12}\.\d+", tok))
+            _is_fab_lot_token(tok)
             or (len(tok) >= 6 and _is_mixed_alnum_token(tok) and not re.fullmatch(r"[A-Z]{2,5}\d{4,}", tok))
         )
         legacy_lot_like = bool(re.fullmatch(r"[A-Z]\d{4,}(?:[A-Z])?(?:\.\d+)?", tok))
@@ -1809,14 +2197,14 @@ def _classified_lot_tokens(prompt: str) -> dict[str, list[str]]:
     seen_root: set[str] = set()
     seen_fab: set[str] = set()
     for tok in _tokens(prompt):
-        if tok.startswith(("PROD", "ML_TABLE_", "PRODUCT_")):
+        if _is_product_token(tok):
             continue
-        if len(tok) == 5 and _is_mixed_alnum_token(tok):
+        if _is_root_lot_token(tok):
             if tok not in seen_root:
                 seen_root.add(tok)
                 root_ids.append(tok)
             continue
-        if re.fullmatch(r"[A-Z0-9]{5,12}\.\d+", tok) or (len(tok) >= 6 and _is_mixed_alnum_token(tok) and not re.fullmatch(r"[A-Z]{2,5}\d{4,}", tok)):
+        if _is_fab_lot_token(tok) or (len(tok) >= 6 and _is_mixed_alnum_token(tok) and not re.fullmatch(r"[A-Z]{2,5}\d{4,}", tok)):
             if tok not in seen_fab:
                 seen_fab.add(tok)
                 fab_ids.append(tok)
@@ -2022,11 +2410,31 @@ def _inline_et_metric_pair(prompt: str, metrics: list[dict[str, Any]]) -> tuple[
     return inline_metric, et_metric
 
 
+def _root_key_expr(root_col: str):
+    return (
+        pl.col(root_col)
+        .cast(_STR, strict=False)
+        .str.strip_chars()
+        .str.to_uppercase()
+    )
+
+
+def _wafer_key_expr(wafer_col: str):
+    raw = pl.col(wafer_col).cast(_STR, strict=False).str.strip_chars()
+    core = raw.str.replace(r"(?i)^(?:WAFER|WF|W)", "")
+    numeric = core.cast(pl.Int64, strict=False)
+    return (
+        pl.when((numeric >= 1) & (numeric <= FLOWI_MAX_WAFER_ID))
+        .then(numeric.cast(_STR, strict=False))
+        .otherwise(None)
+    )
+
+
 def _lot_wf_expr(root_col: str, wafer_col: str):
     return (
-        pl.col(root_col).cast(_STR, strict=False)
+        _root_key_expr(root_col)
         + pl.lit("_")
-        + pl.col(wafer_col).cast(_STR, strict=False)
+        + _wafer_key_expr(wafer_col)
     )
 
 
@@ -2063,6 +2471,8 @@ def _flowi_metric_lf(
     item_col = _ci_col(cols, "item_id", "ITEM_ID", "rawitem_id", "RAWITEM_ID", "item", "ITEM")
     value_col = _ci_col(cols, "value", "VALUE", "_value", "val", "VAL")
     shot_id_col = _ci_col(cols, "shot_id", "SHOT_ID")
+    if kind_u == "INLINE":
+        shot_id_col = _ci_col(cols, "subitem_id", "SUBITEM_ID") or shot_id_col
     shot_x_col = _ci_col(cols, "shot_x", "SHOT_X", "die_x", "DIE_X")
     shot_y_col = _ci_col(cols, "shot_y", "SHOT_Y", "die_y", "DIE_Y")
     if not value_col:
@@ -2098,21 +2508,21 @@ def _flowi_metric_lf(
     exprs = []
     group_cols = []
     if root_col:
-        exprs.append(pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id"))
+        exprs.append(_root_key_expr(root_col).alias("root_lot_id"))
         group_cols.append("root_lot_id")
     if wafer_col:
-        exprs.append(pl.col(wafer_col).cast(_STR, strict=False).alias("wafer_id"))
+        exprs.append(_wafer_key_expr(wafer_col).alias("wafer_id"))
         group_cols.append("wafer_id")
-    if lot_wf_col:
-        exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
-    elif root_col and wafer_col:
+    if root_col and wafer_col:
         exprs.append(_lot_wf_expr(root_col, wafer_col).alias("lot_wf"))
+    elif lot_wf_col:
+        exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
     if "lot_wf" not in group_cols:
         group_cols.append("lot_wf")
     if include_shot and shot_id_col:
         exprs.append(pl.col(shot_id_col).cast(_STR, strict=False).alias("shot_id"))
         group_cols.append("shot_id")
-    if include_shot and shot_x_col and shot_y_col:
+    elif include_shot and shot_x_col and shot_y_col:
         exprs.append(pl.col(shot_x_col).cast(_STR, strict=False).alias("shot_x"))
         exprs.append(pl.col(shot_y_col).cast(_STR, strict=False).alias("shot_y"))
         group_cols.extend(["shot_x", "shot_y"])
@@ -2145,6 +2555,23 @@ def _flowi_join_cols(left_cols: list[str], right_cols: list[str]) -> list[str]:
     return ["lot_wf"]
 
 
+def _explicit_knob_terms(prompt: str) -> list[str]:
+    text = str(prompt or "")
+    out: list[str] = []
+    seen: set[str] = set()
+    for pat in (
+        r"\b([A-Za-z0-9_.-]{1,40})\s*(?:KNOB|노브)\b",
+        r"\b(?:KNOB|노브)\s*([A-Za-z0-9_.-]{1,40})\b",
+    ):
+        for m in re.finditer(pat, text, flags=re.I):
+            key = _upper(m.group(1))
+            if not key or key in {"KNOB", "노브", "PLAN"} or key in seen:
+                continue
+            seen.add(key)
+            out.append(key)
+    return out[:6]
+
+
 def _flowi_knob_query_terms(prompt: str, lots: list[str], xy_metrics: list[str]) -> list[str]:
     blocked = set(FLOWI_CHART_METRIC_STOP) | set(_STOP_TOKENS)
     blocked.update(_upper(v) for v in lots)
@@ -2153,6 +2580,10 @@ def _flowi_knob_query_terms(prompt: str, lots: list[str], xy_metrics: list[str])
         metric_terms.update(_metric_terms(metric))
     out = []
     seen = set()
+    for key in _explicit_knob_terms(prompt):
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
     for tok in _query_tokens(prompt):
         key = _upper(tok)
         if len(key) < 2 or key in blocked or key in metric_terms:
@@ -2268,15 +2699,15 @@ def _flowi_knob_lf(product: str, lots: list[str], prompt: str, xy_metrics: list[
     exprs = []
     group_cols = []
     if root_col:
-        exprs.append(pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id"))
+        exprs.append(_root_key_expr(root_col).alias("root_lot_id"))
         group_cols.append("root_lot_id")
     if wafer_col:
-        exprs.append(pl.col(wafer_col).cast(_STR, strict=False).alias("wafer_id"))
+        exprs.append(_wafer_key_expr(wafer_col).alias("wafer_id"))
         group_cols.append("wafer_id")
-    if lot_wf_col:
-        exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
-    elif root_col and wafer_col:
+    if root_col and wafer_col:
         exprs.append(_lot_wf_expr(root_col, wafer_col).alias("lot_wf"))
+    elif lot_wf_col:
+        exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
     if "lot_wf" not in group_cols:
         group_cols.append("lot_wf")
     if not group_cols:
@@ -2312,6 +2743,405 @@ def _flowi_knob_join_cols(scatter_cols: list[str], knob_cols: list[str]) -> list
     if "lot_wf" in left and "lot_wf" in right:
         return ["lot_wf"]
     return []
+
+
+def _duck_col(alias: str, col: str) -> str:
+    return f"{alias}.{duckdb_engine.quote_ident(col)}"
+
+
+def _duck_cast_str(alias: str, col: str) -> str:
+    return f"CAST({_duck_col(alias, col)} AS VARCHAR)"
+
+
+def _duck_root_key_expr(alias: str, col: str) -> str:
+    return f"UPPER(TRIM({_duck_cast_str(alias, col)}))"
+
+
+def _duck_wafer_key_expr(alias: str, col: str) -> str:
+    raw = f"TRIM({_duck_cast_str(alias, col)})"
+    core = f"REGEXP_REPLACE(UPPER({raw}), '^(WAFER|WF|W)', '')"
+    numeric = f"TRY_CAST({core} AS BIGINT)"
+    return f"CASE WHEN {numeric} BETWEEN 1 AND {FLOWI_MAX_WAFER_ID} THEN CAST({numeric} AS VARCHAR) ELSE NULL END"
+
+
+def _duck_in(values: list[str] | set[str]) -> str:
+    return ", ".join(duckdb_engine.sql_literal(v) for v in values if _text(v))
+
+
+def _duck_alias_filter(alias: str, col: str, aliases: set[str]) -> str:
+    vals = _duck_in(sorted(aliases))
+    return f"UPPER({_duck_cast_str(alias, col)}) IN ({vals})" if col and vals else ""
+
+
+def _duck_lot_filter(alias: str, cols: list[str], lots: list[str]) -> str:
+    terms = [_upper(v) for v in lots if _upper(v)]
+    if not terms:
+        return ""
+    parts: list[str] = []
+    for col in cols:
+        if not col:
+            continue
+        casted = f"UPPER({_duck_cast_str(alias, col)})"
+        for term in terms:
+            safe = term.replace("'", "''").replace("%", "").replace("_", "")
+            if safe:
+                parts.append(f"{casted} LIKE '%{safe}%'")
+    return "(" + " OR ".join(parts) + ")" if parts else ""
+
+
+def _duck_lot_wf_expr(alias: str, lot_wf_col: str, root_col: str, wafer_col: str) -> str:
+    if root_col and wafer_col:
+        return f"{_duck_root_key_expr(alias, root_col)} || '_' || {_duck_wafer_key_expr(alias, wafer_col)}"
+    return _duck_cast_str(alias, lot_wf_col)
+
+
+def _duck_metric_subquery(
+    *,
+    view: str,
+    files: list[Path],
+    kind: str,
+    product: str,
+    lots: list[str],
+    metric: str,
+    value_alias: str,
+    include_shot: bool,
+    agg_name: str,
+) -> dict[str, Any]:
+    kind_u = _upper(kind)
+    if not files:
+        return {"ok": False, "error": f"{kind_u} parquet 파일을 찾지 못했습니다.", "files": []}
+    cols, _schema = duckdb_engine.inspect_files(files)
+    product_col = _ci_col(cols, "product", "PRODUCT")
+    root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+    wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+    lot_wf_col = _ci_col(cols, "lot_wf", "LOT_WF")
+    lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+    fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
+    item_col = _ci_col(cols, "item_id", "ITEM_ID", "rawitem_id", "RAWITEM_ID", "item", "ITEM")
+    value_col = _ci_col(cols, "value", "VALUE", "_value", "val", "VAL")
+    shot_id_col = _ci_col(cols, "shot_id", "SHOT_ID")
+    if kind_u == "INLINE":
+        shot_id_col = _ci_col(cols, "subitem_id", "SUBITEM_ID") or shot_id_col
+    shot_x_col = _ci_col(cols, "shot_x", "SHOT_X", "die_x", "DIE_X")
+    shot_y_col = _ci_col(cols, "shot_y", "SHOT_Y", "die_y", "DIE_Y")
+    if not value_col:
+        return {"ok": False, "error": f"{kind_u} value 컬럼을 찾지 못했습니다.", "columns": cols[:80]}
+    if not lot_wf_col and not (root_col and wafer_col):
+        return {"ok": False, "error": f"{kind_u} lot_wf 또는 root_lot_id/wafer_id 컬럼이 필요합니다.", "columns": cols[:80]}
+    if not item_col:
+        return {"ok": False, "error": f"{kind_u} item_id 컬럼을 찾지 못했습니다.", "columns": cols[:80]}
+
+    item_vals = duckdb_engine.distinct_values(files, item_col, limit=1200)
+    item_matches = _match_values(item_vals, _metric_terms(metric))
+    if not item_matches:
+        return {
+            "ok": False,
+            "error": f"{kind_u}에서 metric `{metric}`에 맞는 item 후보를 찾지 못했습니다.",
+            "item_candidates": item_vals[:24],
+            "metric": metric,
+        }
+
+    alias = "src"
+    filters: list[str] = []
+    product_filter = _duck_alias_filter(alias, product_col, _product_aliases(product))
+    if product_filter:
+        filters.append(product_filter)
+    lot_filter = _duck_lot_filter(alias, [c for c in (root_col, lot_col, fab_col, lot_wf_col) if c], lots)
+    if lot_filter:
+        filters.append(lot_filter)
+    filters.append(f"{_duck_cast_str(alias, item_col)} IN ({_duck_in(item_matches)})")
+    where_sql = " AND ".join(filters) if filters else "TRUE"
+
+    select_exprs: list[str] = []
+    group_cols: list[str] = []
+    if root_col:
+        select_exprs.append(f"{_duck_root_key_expr(alias, root_col)} AS root_lot_id")
+        group_cols.append("root_lot_id")
+    if wafer_col:
+        select_exprs.append(f"{_duck_wafer_key_expr(alias, wafer_col)} AS wafer_id")
+        group_cols.append("wafer_id")
+    select_exprs.append(f"{_duck_lot_wf_expr(alias, lot_wf_col, root_col, wafer_col)} AS lot_wf")
+    if "lot_wf" not in group_cols:
+        group_cols.append("lot_wf")
+    if include_shot and shot_id_col:
+        select_exprs.append(f"{_duck_cast_str(alias, shot_id_col)} AS shot_id")
+        group_cols.append("shot_id")
+    elif include_shot and shot_x_col and shot_y_col:
+        select_exprs.append(f"{_duck_cast_str(alias, shot_x_col)} AS shot_x")
+        select_exprs.append(f"{_duck_cast_str(alias, shot_y_col)} AS shot_y")
+        group_cols.extend(["shot_x", "shot_y"])
+    select_exprs.append(f"TRY_CAST({_duck_col(alias, value_col)} AS DOUBLE) AS _metric_value")
+    agg_sql = "AVG(_metric_value)" if agg_name == "avg" else "MEDIAN(_metric_value)"
+    group_sql = ", ".join(group_cols)
+    sql = f"""
+        SELECT {group_sql},
+               {agg_sql} AS {value_alias},
+               COUNT(*) AS {value_alias}_n
+        FROM (
+            SELECT {", ".join(select_exprs)}
+            FROM {duckdb_engine.quote_ident(view)} {alias}
+            WHERE {where_sql}
+        ) scoped
+        WHERE _metric_value IS NOT NULL
+        GROUP BY {group_sql}
+    """
+    return {
+        "ok": True,
+        "sql": sql,
+        "group_cols": group_cols,
+        "metric": metric,
+        "item_matches": item_matches,
+        "files": [str(p) for p in files[:12]],
+        "file_count": len(files),
+    }
+
+
+def _duck_select_knob_column(files: list[Path], knob_cols: list[str], prompt: str, lots: list[str], xy_metrics: list[str]) -> tuple[str, list[str], list[str]]:
+    terms = _flowi_knob_query_terms(prompt, lots, xy_metrics)
+    exact: list[str] = []
+    contains: list[str] = []
+    for col in knob_cols:
+        body = _upper(col.replace("KNOB_", "", 1))
+        col_u = _upper(col)
+        for term in terms:
+            if col_u == f"KNOB_{term}" or body == term:
+                exact.append(col)
+                break
+            if term in body or term in col_u:
+                contains.append(col)
+                break
+    candidates = exact or contains or knob_cols[:80]
+    knob_col = candidates[0] if candidates else ""
+    values = duckdb_engine.distinct_values(files, knob_col, limit=80) if knob_col else []
+    return knob_col, candidates, values
+
+
+def _duck_knob_subquery(product: str, lots: list[str], prompt: str, xy_metrics: list[str]) -> dict[str, Any]:
+    files = _ml_files(product)
+    if not files:
+        return {"ok": False, "error": "ML_TABLE parquet 파일을 찾지 못했습니다.", "files": []}
+    cols, _schema = duckdb_engine.inspect_files(files)
+    product_col = _ci_col(cols, "product", "PRODUCT")
+    root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+    wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+    lot_wf_col = _ci_col(cols, "lot_wf", "LOT_WF")
+    lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+    fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
+    knob_cols = [c for c in cols if _upper(c).startswith("KNOB_")]
+    if not knob_cols:
+        return {"ok": False, "error": "ML_TABLE에서 KNOB_* 컬럼을 찾지 못했습니다.", "columns": cols[:80]}
+    if not lot_wf_col and not (root_col and wafer_col):
+        return {"ok": False, "error": "ML_TABLE에 lot_wf 또는 root_lot_id/wafer_id 컬럼이 필요합니다.", "columns": cols[:80]}
+    knob_col, candidates, values = _duck_select_knob_column(files, knob_cols, prompt, lots, xy_metrics)
+    if not knob_col:
+        return {"ok": False, "error": "ML_TABLE에서 color/filter 기준 KNOB 컬럼을 정하지 못했습니다.", "knob_candidates": knob_cols[:24]}
+
+    alias = "src"
+    filters: list[str] = []
+    product_filter = _duck_alias_filter(alias, product_col, _product_aliases(product))
+    if product_filter:
+        filters.append(product_filter)
+    lot_filter = _duck_lot_filter(alias, [c for c in (root_col, lot_col, fab_col, lot_wf_col) if c], lots)
+    if lot_filter:
+        filters.append(lot_filter)
+    where_sql = " AND ".join(filters) if filters else "TRUE"
+    exprs: list[str] = []
+    group_cols: list[str] = []
+    if root_col:
+        exprs.append(f"{_duck_root_key_expr(alias, root_col)} AS root_lot_id")
+        group_cols.append("root_lot_id")
+    if wafer_col:
+        exprs.append(f"{_duck_wafer_key_expr(alias, wafer_col)} AS wafer_id")
+        group_cols.append("wafer_id")
+    exprs.append(f"{_duck_lot_wf_expr(alias, lot_wf_col, root_col, wafer_col)} AS lot_wf")
+    if "lot_wf" not in group_cols:
+        group_cols.append("lot_wf")
+    exprs.append(f"{_duck_cast_str(alias, knob_col)} AS color_value")
+    group_sql = ", ".join(group_cols)
+    sql = f"""
+        SELECT {group_sql},
+               MIN(color_value) AS color_value,
+               COUNT(*) AS color_n
+        FROM (
+            SELECT {", ".join(exprs)}
+            FROM {duckdb_engine.quote_ident("ml_src")} {alias}
+            WHERE {where_sql}
+        ) scoped
+        WHERE color_value IS NOT NULL
+        GROUP BY {group_sql}
+    """
+    return {
+        "ok": True,
+        "sql": sql,
+        "group_cols": group_cols,
+        "knob_col": knob_col,
+        "display_name": knob_col.replace("KNOB_", "", 1),
+        "candidate_count": len(candidates),
+        "values": values[:24],
+        "excluded_values": _knob_filter_values(prompt, values),
+        "file_count": len(files),
+        "files": files,
+    }
+
+
+def _try_metric_scatter_duckdb(prompt: str, product: str, metrics: list[dict[str, Any]], lots: list[str], operations: list[str]) -> dict[str, Any]:
+    if not duckdb_engine.is_available():
+        return {"ok": False, "error": "duckdb unavailable", "fallback": True}
+    sources = _source_terms(prompt)
+    if not {"INLINE", "ET"}.issubset(sources):
+        return {"ok": False, "error": "현재 실제 scatter 실행은 INLINE + ET 조합부터 지원합니다.", "fallback": True}
+    inline_metric, et_metric = _inline_et_metric_pair(prompt, metrics)
+    if not inline_metric or not et_metric:
+        return {"ok": False, "error": "INLINE/ET metric 2개가 필요합니다.", "fallback": True}
+    chart_defaults = _flowi_chart_defaults()
+    scatter_defaults = chart_defaults.get("scatter") or FLOWI_CHART_DEFAULTS["scatter"]
+    inline_agg = scatter_defaults.get("inline_agg") if scatter_defaults.get("inline_agg") in {"avg", "median"} else "avg"
+    et_agg = scatter_defaults.get("et_agg") if scatter_defaults.get("et_agg") in {"avg", "median"} else "median"
+    try:
+        point_limit = max(50, min(5000, int(scatter_defaults.get("max_points") or FLOWI_CHART_POINT_LIMIT)))
+    except Exception:
+        point_limit = FLOWI_CHART_POINT_LIMIT
+    include_shot = _explicit_shot_grain(prompt)
+    inline_files = _inline_files(product)
+    et_files = _et_files(product)
+    inline = _duck_metric_subquery(
+        view="inline_src", files=inline_files, kind="INLINE", product=product, lots=lots,
+        metric=inline_metric, value_alias="inline_value", include_shot=include_shot, agg_name=inline_agg,
+    )
+    if not inline.get("ok"):
+        return inline
+    et = _duck_metric_subquery(
+        view="et_src", files=et_files, kind="ET", product=product, lots=lots,
+        metric=et_metric, value_alias="et_value", include_shot=include_shot, agg_name=et_agg,
+    )
+    if not et.get("ok"):
+        return et
+    join_cols = _flowi_join_cols(inline.get("group_cols") or [], et.get("group_cols") or [])
+    join_how = "INNER" if "inner join" in str(prompt).lower() or "inner" in str(prompt).lower() else "LEFT"
+    needs_knob = (
+        "color_by_column" in operations
+        or "filter" in operations
+        or "KNOB" in _upper(prompt)
+        or "노브" in str(prompt or "")
+    )
+    source_files = {"inline_src": inline_files, "et_src": et_files}
+    ctes = [f"inline_metric AS ({inline['sql']})", f"et_metric AS ({et['sql']})"]
+    select_cols = [
+        *(f"j.{c}" for c in join_cols),
+        "j.lot_wf",
+        "j.root_lot_id",
+        "j.wafer_id",
+        "j.inline_value",
+        "j.et_value",
+        "j.inline_value_n",
+        "j.et_value_n",
+    ]
+    knob = None
+    knob_join_cols: list[str] = []
+    exclusion_sql = ""
+    if needs_knob:
+        knob = _duck_knob_subquery(product, lots, prompt, [inline_metric, et_metric])
+        if not knob.get("ok"):
+            return knob
+        source_files["ml_src"] = knob["files"]
+        ctes.append(f"knob_metric AS ({knob['sql']})")
+        knob_join_cols = _flowi_knob_join_cols([*join_cols, "lot_wf", "root_lot_id", "wafer_id"], knob.get("group_cols") or [])
+        if not knob_join_cols:
+            return {"ok": False, "error": "INLINE/ET 결과와 ML_TABLE KNOB를 연결할 lot_wf/root_lot_id+wafer_id 키가 없습니다."}
+        select_cols.extend(["j.color_value", "j.color_n"])
+        excluded = knob.get("excluded_values") or []
+        if excluded:
+            exclusion_sql = f"AND (j.color_value IS NULL OR j.color_value NOT IN ({_duck_in(excluded)}))"
+
+    using_cols = ", ".join(join_cols)
+    joined_sql = (
+        f"SELECT * FROM inline_metric i {join_how} JOIN et_metric e USING ({using_cols})"
+    )
+    if knob:
+        knob_using = ", ".join(knob_join_cols)
+        joined_sql = f"SELECT j.*, k.color_value, k.color_n FROM ({joined_sql}) j LEFT JOIN knob_metric k USING ({knob_using})"
+    ctes.append(f"joined AS ({joined_sql})")
+    final_sql = f"""
+        WITH {", ".join(ctes)}
+        SELECT {", ".join(dict.fromkeys(select_cols))}
+        FROM joined j
+        WHERE j.inline_value IS NOT NULL AND j.et_value IS NOT NULL
+        {exclusion_sql}
+        LIMIT {point_limit}
+    """
+    try:
+        df = duckdb_engine.query_views(source_files, final_sql)
+    except Exception as e:
+        logger.warning("flowi duckdb metric scatter failed: %s", e)
+        return {"ok": False, "error": f"DuckDB metric scatter query 실패: {e}", "fallback": True}
+
+    rows = df.to_dicts()
+    points = []
+    xs: list[float] = []
+    ys: list[float] = []
+    for row in rows:
+        try:
+            x = float(row.get("inline_value"))
+            y = float(row.get("et_value"))
+        except Exception:
+            continue
+        xs.append(x)
+        ys.append(y)
+        label = row.get("lot_wf") or "_".join(str(row.get(c) or "") for c in join_cols)
+        point = {
+            "x": round(x, 6),
+            "y": round(y, 6),
+            "label": label,
+            "root_lot_id": row.get("root_lot_id") or "",
+            "wafer_id": row.get("wafer_id") or "",
+            "join_key": "|".join(str(row.get(c) or "") for c in join_cols),
+            "inline_n": int(row.get("inline_value_n") or 0),
+            "et_n": int(row.get("et_value_n") or 0),
+        }
+        if knob and _text(row.get("color_value")):
+            point["color_by"] = knob.get("display_name") or knob.get("knob_col") or "KNOB"
+            point["color_value"] = _text(row.get("color_value"))
+            point["color_n"] = int(row.get("color_n") or 0)
+        points.append(point)
+    corr = _pearson(xs, ys)
+    fit = _linear_fit(xs, ys) if "linear_fit" in operations else {}
+    color_counts: dict[str, int] = {}
+    for point in points:
+        cv = _text(point.get("color_value"))
+        if cv:
+            color_counts[cv] = color_counts.get(cv, 0) + 1
+    source_meta = {
+        "engine": "duckdb",
+        "inline_items": inline.get("item_matches") or [],
+        "et_items": et.get("item_matches") or [],
+        "inline_file_count": inline.get("file_count") or 0,
+        "et_file_count": et.get("file_count") or 0,
+    }
+    if knob:
+        source_meta.update({
+            "ml_table_file_count": knob.get("file_count") or 0,
+            "knob_column": knob.get("knob_col") or "",
+            "knob_join_cols": knob_join_cols,
+        })
+    return {
+        "ok": True,
+        "kind": "dashboard_scatter",
+        "title": f"INLINE {inline_metric} vs ET {et_metric}",
+        "points": points,
+        "total": len(points),
+        "x_label": f"INLINE {inline_metric} {inline_agg}",
+        "y_label": f"ET {et_metric} {et_agg}",
+        "join_cols": join_cols,
+        "join_how": join_how.lower(),
+        "corr": round(corr, 6) if corr is not None else None,
+        "fit": fit,
+        "color_by": (knob.get("display_name") if knob else "") or "",
+        "color_values": [{"value": k, "count": v} for k, v in sorted(color_counts.items(), key=lambda kv: (-kv[1], kv[0]))],
+        "filters": {"excluded_values": knob.get("excluded_values") or []} if knob else {},
+        "sources": source_meta,
+        "aggregations": {"INLINE": inline_agg, "ET": et_agg},
+        "render_preset": {**scatter_defaults, "grain": "shot" if include_shot else "wafer_agg"},
+    }
 
 
 def _pearson(xs: list[float], ys: list[float]) -> float | None:
@@ -2353,6 +3183,11 @@ def _try_metric_scatter(prompt: str, product: str, metrics: list[dict[str, Any]]
     inline_metric, et_metric = _inline_et_metric_pair(prompt, metrics)
     if not inline_metric or not et_metric:
         return {"ok": False, "error": "INLINE/ET metric 2개가 필요합니다."}
+    duckdb_result = _try_metric_scatter_duckdb(prompt, product, metrics, lots, operations)
+    if duckdb_result.get("ok"):
+        return duckdb_result
+    if duckdb_result.get("fallback") and duckdb_result.get("error") != "duckdb unavailable":
+        logger.warning("flowi duckdb scatter fallback: %s", duckdb_result.get("error"))
     chart_defaults = _flowi_chart_defaults()
     scatter_defaults = chart_defaults.get("scatter") or FLOWI_CHART_DEFAULTS["scatter"]
     inline_agg = scatter_defaults.get("inline_agg") if scatter_defaults.get("inline_agg") in {"avg", "median"} else "avg"
@@ -2584,12 +3419,18 @@ def _is_wafer_map_chart_request(prompt: str) -> bool:
 def _metric_map_source_order(prompt: str, product: str = "") -> list[tuple[str, list[Path]]]:
     up = _upper(prompt)
     product_hint = _product_hint(prompt, product)
+    explicit_inline = "INLINE" in up or "인라인" in str(prompt or "")
+    explicit_et = "ET" in up
+    if explicit_inline and not explicit_et:
+        return [("INLINE", _inline_files(product_hint))]
+    if explicit_et and not explicit_inline:
+        return [("ET", _et_files(product_hint))]
     order: list[tuple[str, list[Path]]] = []
-    if "ET" in up:
+    if explicit_et:
         order.append(("ET", _et_files(product_hint)))
-    if "INLINE" in up or "인라인" in prompt:
+    if explicit_inline:
         order.append(("INLINE", _inline_files(product_hint)))
-    for source, getter in (("INLINE", _inline_files), ("ET", _et_files)):
+    for source, getter in (("ET", _et_files), ("INLINE", _inline_files)):
         if source not in {s for s, _ in order}:
             order.append((source, getter(product_hint)))
     return order
@@ -2740,6 +3581,7 @@ def _handle_wafer_map_chart(prompt: str, product: str, max_rows: int) -> dict[st
     lots = _lot_tokens(text)
     aliases = _product_aliases(product_hint)
     item_candidates: list[str] = []
+    inline_needs_coord_map = False
     for source, files in _metric_map_source_order(text, product_hint):
         if not files:
             continue
@@ -2756,6 +3598,10 @@ def _handle_wafer_map_chart(prompt: str, product: str, max_rows: int) -> dict[st
             shot_x_col = _ci_col(cols, "shot_x", "SHOT_X", "x", "X")
             shot_y_col = _ci_col(cols, "shot_y", "SHOT_Y", "y", "Y")
             if not (item_col and value_col and shot_x_col and shot_y_col):
+                if source == "INLINE" and item_col and value_col and _ci_col(cols, "subitem_id", "SUBITEM_ID"):
+                    inline_needs_coord_map = True
+                    if not item_candidates:
+                        item_candidates = _unique_strings(lf, item_col, limit=80)
                 continue
             metric, item_matches, item_candidates = _inline_metric_match_for_prompt(lf, item_col, text)
             if not metric:
@@ -2836,11 +3682,21 @@ def _handle_wafer_map_chart(prompt: str, product: str, max_rows: int) -> dict[st
             },
             "table": {"kind": "dashboard_wafer_map", "title": f"{metric} WF map", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]], "total": len(rows)},
         }
+    if inline_needs_coord_map:
+        return {
+            "handled": True,
+            "intent": "dashboard_wafer_map_needs_inline_mapping",
+            "action": "collect_inline_coordinate_mapping",
+            "answer": "INLINE raw DB에는 shot_x/shot_y가 없고 subitem_id만 있습니다. WF map은 inline_item_map.csv와 inline_subitem_pos.csv로 ET shot 좌표에 매핑된 파생 데이터가 있을 때 그릴 수 있습니다.",
+            "missing": ["inline_item_map", "inline_subitem_pos"],
+            "feature": "dashboard",
+            "table": {"kind": "wafer_map_item_candidates", "title": "INLINE item candidates", "placement": "below", "columns": _table_columns(["item_id"]), "rows": [{"item_id": x} for x in item_candidates[:40]], "total": len(item_candidates)},
+        }
     return {
         "handled": True,
         "intent": "dashboard_wafer_map_needs_context",
         "action": "collect_required_fields",
-        "answer": "WF map으로 그릴 item 또는 shot_x/shot_y/value 형태의 데이터를 찾지 못했습니다. item명을 더 정확히 알려주세요.",
+        "answer": "WF map으로 그릴 item 또는 ET shot_x/shot_y/value 형태의 데이터를 찾지 못했습니다. INLINE raw는 subitem_id 기반이라 좌표 매핑이 먼저 필요합니다.",
         "missing": ["item_id"],
         "feature": "dashboard",
         "table": {"kind": "wafer_map_item_candidates", "title": "WF map item candidates", "placement": "below", "columns": _table_columns(["item_id"]), "rows": [{"item_id": x} for x in item_candidates[:40]], "total": len(item_candidates)},
@@ -2912,17 +3768,17 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
         pl.col(value_col).cast(pl.Float64, strict=False).alias("metric_value"),
     ]
     if root_col:
-        exprs.append(pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id"))
+        exprs.append(_root_key_expr(root_col).alias("root_lot_id"))
     else:
         exprs.append(pl.lit("").alias("root_lot_id"))
     if wafer_col:
-        exprs.append(pl.col(wafer_col).cast(_STR, strict=False).alias("wafer_id"))
+        exprs.append(_wafer_key_expr(wafer_col).alias("wafer_id"))
     else:
         exprs.append(pl.lit("").alias("wafer_id"))
-    if lot_wf_col:
-        exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
-    elif root_col and wafer_col:
+    if root_col and wafer_col:
         exprs.append(_lot_wf_expr(root_col, wafer_col).alias("lot_wf"))
+    elif lot_wf_col:
+        exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
     else:
         exprs.append(pl.lit("").alias("lot_wf"))
     try:
@@ -3064,15 +3920,15 @@ def _handle_grouped_metric_chart(prompt: str, product: str, max_rows: int) -> di
     inline_exprs = []
     join_cols = []
     if root_col and wafer_col:
-        inline_exprs.append(pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id"))
-        inline_exprs.append(pl.col(wafer_col).cast(_STR, strict=False).alias("wafer_id"))
+        inline_exprs.append(_root_key_expr(root_col).alias("root_lot_id"))
+        inline_exprs.append(_wafer_key_expr(wafer_col).alias("wafer_id"))
         join_cols = ["root_lot_id", "wafer_id"]
-    if lot_wf_col:
+    if root_col and wafer_col:
+        inline_exprs.append(_lot_wf_expr(root_col, wafer_col).alias("lot_wf"))
+    elif lot_wf_col:
         inline_exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
         if not join_cols:
             join_cols = ["lot_wf"]
-    elif root_col and wafer_col:
-        inline_exprs.append(_lot_wf_expr(root_col, wafer_col).alias("lot_wf"))
     inline_exprs.append(pl.col(value_col).cast(pl.Float64, strict=False).alias("metric_value"))
     inline_group_cols = list(dict.fromkeys([*join_cols, "lot_wf"]))
     try:
@@ -3120,14 +3976,14 @@ def _handle_grouped_metric_chart(prompt: str, product: str, max_rows: int) -> di
         fab_lf = fab_lf.filter(expr)
     fab_exprs = []
     if f_root_col and f_wafer_col and "root_lot_id" in join_cols:
-        fab_exprs.append(pl.col(f_root_col).cast(_STR, strict=False).alias("root_lot_id"))
-        fab_exprs.append(pl.col(f_wafer_col).cast(_STR, strict=False).alias("wafer_id"))
+        fab_exprs.append(_root_key_expr(f_root_col).alias("root_lot_id"))
+        fab_exprs.append(_wafer_key_expr(f_wafer_col).alias("wafer_id"))
         fab_join_cols = ["root_lot_id", "wafer_id"]
-    elif f_lot_wf_col:
-        fab_exprs.append(pl.col(f_lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
-        fab_join_cols = ["lot_wf"]
     elif f_root_col and f_wafer_col:
         fab_exprs.append(_lot_wf_expr(f_root_col, f_wafer_col).alias("lot_wf"))
+        fab_join_cols = ["lot_wf"]
+    elif f_lot_wf_col:
+        fab_exprs.append(pl.col(f_lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
         fab_join_cols = ["lot_wf"]
     else:
         return {"handled": True, "intent": "dashboard_group_metric", "answer": "FAB 데이터에 metric과 연결할 root_lot_id+wafer_id 또는 lot_wf가 필요합니다.", "feature": "dashboard"}
@@ -3358,7 +4214,12 @@ def _filter_files_by_product(files: list[Path], product: str) -> list[Path]:
 def _scan_parquet(files: list[Path]) -> pl.LazyFrame:
     if not files:
         raise HTTPException(404, "읽을 parquet 파일이 없습니다")
-    return pl.scan_parquet([str(p) for p in files])
+    lf = pl.scan_parquet([str(p) for p in files])
+    try:
+        from core.utils import filter_valid_wafer_ids_lazy
+        return filter_valid_wafer_ids_lazy(lf)
+    except Exception:
+        return lf
 
 
 def _schema_names(lf: pl.LazyFrame) -> list[str]:
@@ -3511,40 +4372,61 @@ def _wafer_tokens(prompt: str) -> list[str]:
     text = str(prompt or "")
     out: list[str] = []
     seen: set[str] = set()
+    def add(raw: Any) -> None:
+        val = _normalize_wafer_id(raw)
+        if val and val not in seen:
+            seen.add(val)
+            out.append(val)
+    def add_range(a: Any, b: Any) -> None:
+        try:
+            start, end = int(a), int(b)
+        except Exception:
+            return
+        if start > end:
+            start, end = end, start
+        for n in range(max(1, start), min(FLOWI_MAX_WAFER_ID, end) + 1):
+            add(n)
+    range_patterns = [
+        r"#\s*0?(\d{1,2})\s*(?:~|-|–|—|to)\s*#?\s*0?(\d{1,2})",
+        r"\b(?:WF|WAFER)\s*0?(\d{1,2})\s*(?:~|-|–|—|to)\s*(?:WF|WAFER)?\s*0?(\d{1,2})\b",
+        r"\b(?:SLOT|슬롯)\s*0?(\d{1,2})\s*(?:~|-|–|—|to)\s*(?:SLOT|슬롯)?\s*0?(\d{1,2})\b",
+        r"웨이퍼\s*0?(\d{1,2})\s*(?:~|-|–|—|부터)\s*(?:웨이퍼\s*)?0?(\d{1,2})",
+        r"0?(\d{1,2})\s*번\s*(?:~|-|–|—|부터)\s*0?(\d{1,2})\s*번",
+        r"0?(\d{1,2})\s*장\s*(?:~|-|–|—|부터)\s*0?(\d{1,2})\s*장",
+    ]
+    for pat in range_patterns:
+        for m in re.finditer(pat, text, flags=re.I):
+            add_range(m.group(1), m.group(2))
     patterns = [
         r"#\s*(\d{1,2})(?=\D|$)",
         r"\bWF\s*0?(\d{1,2})\b",
         r"\bWAFER\s*0?(\d{1,2})\b",
+        r"\bSLOT\s*0?(\d{1,2})\b",
+        r"슬롯\s*0?(\d{1,2})",
         r"웨이퍼\s*0?(\d{1,2})",
         r"(\d{1,2})\s*번\s*(?:WF|WAFER|웨이퍼)",
+        r"(\d{1,2})\s*번\s*(?:SLOT|슬롯)",
+        r"(\d{1,2})\s*번\s*장",
+        r"(\d{1,2})\s*번장",
+        r"(\d{1,2})\s*장\b",
     ]
     for pat in patterns:
         for m in re.finditer(pat, text, flags=re.I):
-            try:
-                val = str(int(m.group(1)))
-            except Exception:
-                val = m.group(1).lstrip("0") or m.group(1)
-            if val not in seen:
-                seen.add(val)
-                out.append(val)
+            add(m.group(1))
     return out
 
 
 def _wafer_match_expr(col: str, wafers: list[str]):
     if not col or not wafers:
         return None
-    vals = set()
+    vals: set[str] = set()
     for raw in wafers:
-        text = str(raw or "").strip()
-        if not text:
-            continue
-        vals.add(text)
-        try:
-            vals.add(str(int(text)))
-            vals.add(f"{int(text):02d}")
-        except Exception:
-            pass
-    return pl.col(col).cast(_STR, strict=False).is_in(sorted(vals))
+        val = _normalize_wafer_id(raw)
+        if val:
+            vals.add(val)
+    if not vals:
+        return pl.lit(False)
+    return _wafer_key_expr(col).is_in(sorted(vals))
 
 
 def _step_meta(product: str, step_id: Any) -> dict[str, Any]:
@@ -3568,6 +4450,118 @@ def _source_filter_lots(lf: pl.LazyFrame, cols: list[str], lots: list[str]) -> p
     lot_wf_col = _ci_col(cols, "lot_wf", "LOT_WF")
     expr = _or_contains([c for c in (root_col, lot_col, fab_col, lot_wf_col) if c], lots)
     return lf.filter(expr) if expr is not None else lf
+
+
+def _is_current_fab_lot_prompt(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if not _lot_tokens(text):
+        return False
+    mentions_fab_lot = any(t in low for t in ("fab_lot", "fab lot", "fab-lot", "fablot"))
+    mentions_lot_id_with_fab = "fab" in low and ("lot id" in low or "lot_id" in low)
+    if not (mentions_fab_lot or mentions_lot_id_with_fab):
+        return False
+    return any(t in low or t in text for t in ("현재", "지금", "current", "now", "뭐야", "무엇", "알려", "찾", "조회", "확인"))
+
+
+def _handle_current_fab_lot_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    if not _is_current_fab_lot_prompt(prompt):
+        return {"handled": False}
+    lots = _lot_tokens(prompt)
+    product_hint, candidate_tool = _product_or_candidate_tool(
+        prompt, product, lots, kinds=("FAB",), intent="current_fab_lot_lookup"
+    )
+    if candidate_tool:
+        return candidate_tool
+    if not product_hint:
+        return {
+            "handled": True,
+            "intent": "current_fab_lot_lookup",
+            "action": "collect_required_fields",
+            "answer": "현재 fab_lot_id를 FAB DB에서 찾으려면 product가 필요합니다. 예: `PRODA A1000 #6 현재 fab lot id가 뭐야?`",
+            "missing": ["product"],
+            "feature": "filebrowser",
+        }
+    files = _fab_files(product_hint)
+    if not files:
+        return {
+            "handled": True,
+            "intent": "current_fab_lot_lookup",
+            "answer": f"{product_hint} FAB parquet을 찾지 못했습니다. DB root와 product명을 확인해주세요.",
+            "table": {"kind": "current_fab_lot_lookup", "title": "Current FAB lot", "placement": "below", "columns": _table_columns(["message"]), "rows": [{"message": "FAB not found"}], "total": 0},
+            "feature": "filebrowser",
+        }
+    wafers = _wafer_tokens(prompt)
+    try:
+        lf = _scan_parquet(files)
+        cols = _schema_names(lf)
+        product_col = _ci_col(cols, "product", "PRODUCT")
+        root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+        lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+        fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID") or lot_col
+        wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+        step_col = _ci_col(cols, "step_id", "STEP_ID")
+        process_col = _ci_col(cols, "process_id", "PROCESS_ID")
+        time_col = _ci_col(cols, "tkout_time", "TKOUT_TIME", "time", "TIME", "timestamp", "TIMESTAMP", "move_time", "MOVE_TIME", "updated_at", "UPDATED_AT")
+        if not fab_col or not (root_col or lot_col):
+            return {"handled": True, "intent": "current_fab_lot_lookup", "answer": "FAB 데이터에서 root_lot_id/lot_id/fab_lot_id 컬럼을 찾지 못했습니다.", "feature": "filebrowser"}
+        aliases = _product_aliases(product_hint)
+        if aliases and product_col:
+            lf = lf.filter(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+        lf = _source_filter_lots(lf, cols, lots)
+        if wafers and wafer_col:
+            wf_expr = _wafer_match_expr(wafer_col, wafers)
+            if wf_expr is not None:
+                lf = lf.filter(wf_expr)
+        exprs = [
+            pl.col(product_col).cast(_STR, strict=False).alias("product") if product_col else pl.lit(_core_product_name(product_hint)).alias("product"),
+            pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id") if root_col else (
+                pl.col(lot_col).cast(_STR, strict=False).str.slice(0, 5).alias("root_lot_id") if lot_col else pl.lit("").alias("root_lot_id")
+            ),
+            pl.col(lot_col).cast(_STR, strict=False).alias("lot_id") if lot_col else pl.lit("").alias("lot_id"),
+            pl.col(fab_col).cast(_STR, strict=False).alias("fab_lot_id"),
+            _wafer_key_expr(wafer_col).alias("wafer_id") if wafer_col else pl.lit("").alias("wafer_id"),
+            pl.col(step_col).cast(_STR, strict=False).alias("step_id") if step_col else pl.lit("").alias("step_id"),
+            pl.col(process_col).cast(_STR, strict=False).alias("process_id") if process_col else pl.lit("").alias("process_id"),
+            pl.col(time_col).cast(_STR, strict=False).alias("time") if time_col else pl.lit("").alias("time"),
+        ]
+        df = lf.select(exprs).drop_nulls(subset=["fab_lot_id"]).limit(50000).collect()
+    except Exception as e:
+        return {"handled": True, "intent": "current_fab_lot_lookup", "answer": f"FAB DB fab_lot_id 조회 실패: {e}", "feature": "filebrowser"}
+    rows_all = [r for r in df.to_dicts() if _text(r.get("fab_lot_id"))]
+    if not rows_all:
+        wafer_text = f" wafer #{', #'.join(wafers)}" if wafers else ""
+        return {
+            "handled": True,
+            "intent": "current_fab_lot_lookup",
+            "answer": f"{product_hint} {', '.join(lots)}{wafer_text}에 해당하는 FAB row를 찾지 못했습니다.",
+            "table": {"kind": "current_fab_lot_lookup", "title": "Current FAB lot", "placement": "below", "columns": _table_columns(["message"]), "rows": [{"message": "No FAB row matched"}], "total": 0},
+            "filters": {"product": product_hint, "lots": lots, "wafers": wafers},
+            "feature": "filebrowser",
+        }
+    def sort_key(row: dict[str, Any]):
+        dt = _parse_flowi_datetime(row.get("time"))
+        return (dt or datetime.min, _text(row.get("step_id")), _text(row.get("fab_lot_id")))
+    rows_all.sort(key=sort_key, reverse=True)
+    current = rows_all[0]
+    cols_out = ["product", "root_lot_id", "wafer_id", "fab_lot_id", "lot_id", "step_id", "process_id", "time"]
+    rows = [{k: r.get(k, "") for k in cols_out} for r in rows_all[:max(1, min(max_rows, 25))]]
+    wafer_label = f" wafer #{current.get('wafer_id')}" if current.get("wafer_id") else ""
+    answer = (
+        f"{current.get('product') or product_hint} {current.get('root_lot_id') or lots[0]}{wafer_label}의 현재 fab_lot_id는 "
+        f"`{current.get('fab_lot_id')}`입니다."
+    )
+    if current.get("time") or current.get("step_id"):
+        answer += f" 기준 row: step_id={current.get('step_id') or '-'}, time={current.get('time') or '-'}."
+    return {
+        "handled": True,
+        "intent": "current_fab_lot_lookup",
+        "action": "query_current_fab_lot_from_fab_db",
+        "answer": answer,
+        "table": {"kind": "current_fab_lot_lookup", "title": "Current FAB lot", "placement": "below", "columns": _table_columns(cols_out), "rows": rows, "total": len(rows_all)},
+        "filters": {"product": product_hint, "lots": lots, "wafers": wafers, "source": "FAB"},
+        "feature": "filebrowser",
+    }
 
 
 def _resolve_products_for_lots(lots: list[str], *, kinds: tuple[str, ...] = ("FAB", "ET", "INLINE", "ML_TABLE"), limit: int = 12) -> list[dict[str, Any]]:
@@ -4561,6 +5555,363 @@ def _save_flowi_splittable_lot_note(payload: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
+def _extract_flowi_splittable_plan_payload(prompt: str) -> dict[str, Any] | None:
+    text = str(prompt or "")
+    idx = text.upper().find(_FLOWI_SPLITTABLE_PLAN_MARKER)
+    if idx < 0:
+        return None
+    tail = text[idx + len(_FLOWI_SPLITTABLE_PLAN_MARKER):].strip()
+    if tail.startswith(":"):
+        tail = tail[1:].strip()
+    if not tail:
+        return {}
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(tail)
+    except Exception as e:
+        return {"_parse_error": str(e)}
+    return obj if isinstance(obj, dict) else {"_parse_error": "JSON object가 필요합니다."}
+
+
+def _flowi_splittable_plan_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if _FLOWI_SPLITTABLE_PLAN_MARKER in text.upper():
+        return True
+    has_plan = any(t in low or t in text for t in ("plan", "플랜", "계획"))
+    has_knob_or_split = any(t in low or t in text for t in ("knob", "노브", "스플릿", "splittable", "split table"))
+    has_write = any(t in low or t in text for t in ("넣어", "입력", "저장", "등록", "plan해", "plan 해", "set", "save"))
+    return bool(has_plan and has_knob_or_split and has_write)
+
+
+def _flowi_splittable_plan_confirm_text(product: str, root_lot_id: str, knob_col: str, plans: dict[str, Any]) -> str:
+    basis = f"{product}|{root_lot_id}|{knob_col}|{len(plans or {})}"
+    return "SPLITTABLE_PLAN_CONFIRM::" + basis[:160]
+
+
+def _flowi_plan_table(rows: list[dict[str, Any]], title: str = "SplitTable plan draft") -> dict[str, Any]:
+    return {
+        "kind": "splittable_plan",
+        "title": title,
+        "placement": "below",
+        "columns": _table_columns(["field", "value"]),
+        "rows": rows,
+        "total": len(rows),
+    }
+
+
+def _flowi_plan_value_from_tail(tail: str) -> str:
+    text = re.sub(r"\s+", " ", str(tail or "")).strip()
+    text = re.sub(r"^(?:은|는|에|으로|로|:|=|-)\s*", "", text)
+    m = re.search(r"([A-Za-z0-9_.-]{1,60})", text)
+    if not m:
+        return ""
+    val = m.group(1).strip(" .,:;")
+    if _upper(val) in {"PLAN", "SAVE", "SET", "KNOB", "WF", "WAFER"}:
+        return ""
+    return val[:80]
+
+
+def _flowi_wafer_ids_from_fragment(fragment: str) -> list[str]:
+    text = str(fragment or "")
+    out: list[str] = []
+    seen: set[str] = set()
+    def add(raw: Any) -> None:
+        val = _normalize_wafer_id(raw)
+        if val and val not in seen:
+            seen.add(val)
+            out.append(val)
+    m = re.search(r"(\d{1,4})\s*(?:~|-|–|—|to)\s*#?\s*(\d{1,4})", text, flags=re.I)
+    if m:
+        try:
+            start, end = int(m.group(1)), int(m.group(2))
+        except Exception:
+            start, end = 0, -1
+        if start > end:
+            start, end = end, start
+        for n in range(max(1, start), min(FLOWI_MAX_WAFER_ID, end) + 1):
+            add(n)
+        return out
+    for m in re.finditer(r"(?:#|WF|WAFER|W)?\s*0?(\d{1,4})", text, flags=re.I):
+        add(m.group(1))
+    return out
+
+
+def _flowi_parse_splittable_plan_assignments(prompt: str) -> tuple[list[dict[str, Any]], list[str]]:
+    text = str(prompt or "")
+    assignments: list[dict[str, Any]] = []
+    invalid_wafers: list[str] = []
+    used: set[str] = set()
+    range_pat = re.compile(
+        r"(?P<wf>#\s*\d{1,4}\s*(?:~|-|–|—|to)\s*#?\s*\d{1,4}|#\s*\d{1,4}|\b(?:WF|WAFER)\s*\d{1,4}\b|웨이퍼\s*\d{1,4})"
+        r"(?P<tail>.{0,80}?)(?=,|그리고|나머지|$)",
+        flags=re.I | re.S,
+    )
+    for m in range_pat.finditer(text):
+        frag = m.group("wf") or ""
+        raw_nums = [int(x) for x in re.findall(r"\d{1,4}", frag)]
+        for raw in raw_nums:
+            if raw < 1 or raw > FLOWI_MAX_WAFER_ID:
+                invalid_wafers.append(str(raw))
+        wafers = _flowi_wafer_ids_from_fragment(frag)
+        if not wafers:
+            continue
+        value = _flowi_plan_value_from_tail(m.group("tail") or "")
+        if not value:
+            continue
+        for wf in wafers:
+            used.add(wf)
+        assignments.append({"wafers": wafers, "value": value, "label": frag.strip()})
+    rest_pat = re.compile(r"나머지(?:는|은|에)?(?P<tail>.{0,80}?)(?=,|그리고|$)", flags=re.I | re.S)
+    for m in rest_pat.finditer(text):
+        value = _flowi_plan_value_from_tail(m.group("tail") or "")
+        if not value:
+            continue
+        rest = [wf for wf in _all_valid_wafer_ids() if wf not in used]
+        if rest:
+            assignments.append({"wafers": rest, "value": value, "label": "나머지"})
+            used.update(rest)
+    return assignments, sorted(set(invalid_wafers), key=lambda x: int(x))
+
+
+def _flowi_splittable_plan_product_choices(prompt: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    choices = []
+    seen: set[str] = set()
+    for row in candidates:
+        product = _flowi_splittable_product_id(row.get("product") or "")
+        if not product or product in seen:
+            continue
+        seen.add(product)
+        choices.append({
+            "id": f"product_{len(choices) + 1}",
+            "label": str(len(choices) + 1),
+            "title": product,
+            "recommended": len(choices) == 0,
+            "description": f"{row.get('sources') or 'ML_TABLE'} 기준 후보",
+            "prompt": f"{product} {prompt.strip()}",
+        })
+    return choices[:3]
+
+
+def _flowi_build_splittable_plan_payload(prompt: str, me: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    lots = _lot_tokens(prompt)
+    classified = _classified_lot_tokens(prompt)
+    root_lot_id = (classified.get("root_lot_ids") or lots or [""])[0]
+    if "." in root_lot_id:
+        root_lot_id = root_lot_id.split(".", 1)[0]
+    product = _flowi_splittable_product_id(_product_hint(prompt))
+    if not product and root_lot_id:
+        candidates = _resolve_products_for_lots([root_lot_id], kinds=("ML_TABLE",), limit=8)
+        choices = _flowi_splittable_plan_product_choices(prompt, candidates)
+        if len(choices) == 1:
+            product = choices[0]["title"]
+        elif len(choices) > 1:
+            return None, {
+                "handled": True,
+                "intent": "splittable_plan_needs_product",
+                "action": "clarify_product",
+                "answer": "같은 lot 후보가 여러 product에서 발견됐습니다. plan을 넣을 SplitTable product를 선택해주세요.",
+                "feature": "splittable",
+                "missing": ["product"],
+                "pending_prompt": prompt,
+                "clarification": {"question": "어느 SplitTable product에 plan을 넣을까요?", "choices": choices},
+                "table": _flowi_plan_table([
+                    {"field": "status", "value": "needs_product"},
+                    {"field": "root_lot_id", "value": root_lot_id},
+                ]),
+            }
+    assignments, invalid_wafers = _flowi_parse_splittable_plan_assignments(prompt)
+    missing = []
+    if not root_lot_id:
+        missing.append("root_lot_id")
+    if not product:
+        missing.append("product")
+    if not assignments:
+        missing.append("wafer별 plan 값")
+    if missing:
+        return None, _flowi_app_write_missing("splittable", missing, prompt, product, [root_lot_id] if root_lot_id else [], _wafer_tokens(prompt))
+    files = _ml_files(product)
+    if not files:
+        return None, {
+            "handled": True,
+            "intent": "splittable_plan_failed",
+            "action": "prepare_splittable_plan",
+            "blocked": True,
+            "answer": f"{product} ML_TABLE parquet을 찾지 못해 plan cell을 만들 수 없습니다.",
+            "feature": "splittable",
+        }
+    try:
+        lf = _scan_parquet(files)
+        cols = _schema_names(lf)
+        product_col = _ci_col(cols, "product", "PRODUCT")
+        root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+        lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+        knob_cols = [c for c in cols if _upper(c).startswith("KNOB_")]
+        if product_col:
+            aliases = _product_aliases(product)
+            if aliases:
+                lf = lf.filter(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+        lot_expr = _or_contains([c for c in (root_col, lot_col) if c], [root_lot_id])
+        if lot_expr is not None:
+            lf = lf.filter(lot_expr)
+        knob_col, knob_candidates = _select_knob_column(lf, knob_cols, prompt, [root_lot_id], [])
+    except Exception as e:
+        return None, {
+            "handled": True,
+            "intent": "splittable_plan_failed",
+            "action": "prepare_splittable_plan",
+            "blocked": True,
+            "answer": f"SplitTable plan 준비 중 ML_TABLE 조회에 실패했습니다: {e}",
+            "feature": "splittable",
+        }
+    if not knob_col:
+        return None, _flowi_app_write_missing("splittable", ["KNOB 컬럼"], prompt, product, [root_lot_id], _wafer_tokens(prompt))
+    plans: dict[str, str] = {}
+    summary_parts = []
+    for item in assignments:
+        value = str(item.get("value") or "").strip()
+        wafers = [wf for wf in (item.get("wafers") or []) if _normalize_wafer_id(wf)]
+        if not value or not wafers:
+            continue
+        for wf in wafers:
+            plans[f"{root_lot_id}|{wf}|{knob_col}"] = value
+        summary_parts.append(f"{item.get('label')}: {value} ({len(wafers)}wf)")
+    if not plans:
+        return None, _flowi_app_write_missing("splittable", ["유효 wafer_id 1~25 plan"], prompt, product, [root_lot_id], _wafer_tokens(prompt))
+    return {
+        "product": product,
+        "root_lot_id": root_lot_id,
+        "knob": knob_col,
+        "plans": plans,
+        "assignments": assignments,
+        "summary": summary_parts,
+        "invalid_wafers": invalid_wafers,
+        "username": me.get("username") or "user",
+        "knob_candidates": knob_candidates[:12],
+    }, None
+
+
+def _save_flowi_splittable_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    from routers import splittable as splittable_router
+    product = _flowi_splittable_product_id(payload.get("product") or "")
+    root_lot_id = _upper(payload.get("root_lot_id") or "")
+    plans = payload.get("plans") if isinstance(payload.get("plans"), dict) else {}
+    username = _safe_username(payload.get("username") or "user")
+    clean_plans = {
+        str(k): str(v)
+        for k, v in plans.items()
+        if str(k or "").startswith(f"{root_lot_id}|") and _normalize_wafer_id(str(k).split("|")[1] if "|" in str(k) else "")
+    }
+    if not product or not root_lot_id or not clean_plans:
+        raise ValueError("product/root_lot_id/plans가 필요합니다.")
+    req = splittable_router.PlanReq(product=product, plans=clean_plans, username=username, root_lot_id=root_lot_id)
+    result = splittable_router.save_plan(req)
+    return result if isinstance(result, dict) else {"ok": True, "saved": len(clean_plans)}
+
+
+def _handle_splittable_plan_request(prompt: str, me: dict[str, Any], allowed_keys: set[str] | None = None) -> dict[str, Any]:
+    payload = _extract_flowi_splittable_plan_payload(prompt)
+    if payload is None and not _flowi_splittable_plan_intent(prompt):
+        return {"handled": False}
+    if allowed_keys is not None and "splittable" not in allowed_keys:
+        return _flowi_permission_block("splittable", me)
+    if payload is not None:
+        if payload.get("_parse_error"):
+            raise HTTPException(400, payload.get("_parse_error"))
+        product = _flowi_splittable_product_id(payload.get("product") or "")
+        root_lot_id = _upper(payload.get("root_lot_id") or "")
+        plans = payload.get("plans") if isinstance(payload.get("plans"), dict) else {}
+        expected = _flowi_splittable_plan_confirm_text(product, root_lot_id, str(payload.get("knob") or ""), plans)
+        if str(payload.get("confirm") or "").strip() != expected:
+            payload = {**payload, "product": product, "root_lot_id": root_lot_id, "confirm": expected, "username": me.get("username") or "user"}
+            return _flowi_splittable_plan_confirmation(payload, "SplitTable plan 저장 전 확인이 필요합니다.")
+        try:
+            saved = _save_flowi_splittable_plan({**payload, "product": product, "root_lot_id": root_lot_id, "username": me.get("username") or payload.get("username") or "user"})
+        except Exception as e:
+            return {
+                "handled": True,
+                "intent": "splittable_plan_failed",
+                "action": "save_splittable_plan",
+                "blocked": True,
+                "answer": f"SplitTable plan 저장 중 오류가 발생했습니다: {e}",
+                "feature": "splittable",
+            }
+        rows = [
+            {"field": "status", "value": "saved"},
+            {"field": "product", "value": product},
+            {"field": "root_lot_id", "value": root_lot_id},
+            {"field": "knob", "value": str(payload.get("knob") or "")},
+            {"field": "saved_cells", "value": str(saved.get("saved") or len(plans))},
+            {"field": "wafer_policy", "value": f"wafer_id 1~{FLOWI_MAX_WAFER_ID}만 저장"},
+        ]
+        return {
+            "handled": True,
+            "intent": "splittable_plan_saved",
+            "action": "save_splittable_plan",
+            "answer": f"SplitTable plan을 저장했습니다.\n- product: {product}\n- lot: {root_lot_id}\n- KNOB: {payload.get('knob')}\n- 저장 cell: {saved.get('saved') or len(plans)}",
+            "feature": "splittable",
+            "created_record": {"id": f"{product}:{root_lot_id}:{payload.get('knob')}", "feature": "splittable", "title": "plan saved", "target": root_lot_id},
+            "table": _flowi_plan_table(rows, title="SplitTable plan saved"),
+        }
+    draft, missing_tool = _flowi_build_splittable_plan_payload(prompt, me)
+    if missing_tool:
+        return missing_tool
+    if not draft:
+        return {"handled": False}
+    expected = _flowi_splittable_plan_confirm_text(draft["product"], draft["root_lot_id"], draft["knob"], draft["plans"])
+    return _flowi_splittable_plan_confirmation({**draft, "confirm": expected}, "SplitTable plan 저장 준비가 됐습니다. 확인 선택을 누르면 실제 plan 저장소에 반영합니다.")
+
+
+def _flowi_splittable_plan_confirmation(payload: dict[str, Any], answer: str) -> dict[str, Any]:
+    product = _flowi_splittable_product_id(payload.get("product") or "")
+    root_lot_id = _upper(payload.get("root_lot_id") or "")
+    plans = payload.get("plans") if isinstance(payload.get("plans"), dict) else {}
+    rows = [
+        {"field": "status", "value": "confirmation_required"},
+        {"field": "product", "value": product},
+        {"field": "root_lot_id", "value": root_lot_id},
+        {"field": "knob", "value": str(payload.get("knob") or "")},
+        {"field": "plan_cells", "value": str(len(plans))},
+        {"field": "assignments", "value": "; ".join(payload.get("summary") or [])},
+        {"field": "wafer_policy", "value": f"wafer_id 1~{FLOWI_MAX_WAFER_ID}만 반영"},
+    ]
+    if payload.get("invalid_wafers"):
+        rows.append({"field": "ignored_wafers", "value": ", ".join(payload.get("invalid_wafers") or [])})
+    return {
+        "handled": True,
+        "intent": "splittable_plan_confirm",
+        "action": "confirm_splittable_plan",
+        "requires_confirmation": True,
+        "answer": answer,
+        "feature": "splittable",
+        "slots": {"product": product, "lots": [root_lot_id], "wafers": sorted({str(k).split("|")[1] for k in plans if "|" in str(k)}, key=lambda x: int(x))},
+        "clarification": {
+            "question": "이 SplitTable plan을 저장할까요?",
+            "choices": [{
+                "id": "confirm_splittable_plan",
+                "label": "1",
+                "title": "plan 저장",
+                "recommended": True,
+                "description": f"{product} / {root_lot_id} / {payload.get('knob')} {len(plans)} cells",
+                "prompt": f"{_FLOWI_SPLITTABLE_PLAN_MARKER} {json.dumps(payload, ensure_ascii=False)}",
+            }, {
+                "id": "open_splittable",
+                "label": "2",
+                "title": "SplitTable에서 확인",
+                "tab": "splittable",
+                "description": "화면에서 lot과 KNOB row를 직접 확인합니다.",
+                "prompt": "스플릿 테이블 열기",
+            }, {
+                "id": "cancel_splittable_plan",
+                "label": "3",
+                "title": "취소",
+                "description": "plan을 저장하지 않습니다.",
+                "prompt": "SplitTable plan 저장 취소",
+            }],
+        },
+        "table": _flowi_plan_table(rows),
+    }
+
+
 def _handle_splittable_note_request(prompt: str, me: dict[str, Any], allowed_keys: set[str] | None = None) -> dict[str, Any]:
     payload = _extract_flowi_splittable_note_payload(prompt)
     if payload is None and not _flowi_splittable_note_intent(prompt):
@@ -5392,6 +6743,106 @@ def _handle_app_write_status_followup(prompt: str, me: dict[str, Any], agent_con
         "answer": f"현재 대화에서 확인할 직전 {_feature_title(feature)} 등록 요청이나 생성 id를 찾지 못했습니다. 제목, lot, 회의명 중 하나를 같이 알려주면 실제 저장 기록을 확인하겠습니다.",
         "feature": feature,
         "feature_entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] == feature],
+    }
+
+
+def _flowi_inform_summary_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if not any(term in low or term in text for term in ("inform", "인폼", "공지", "공유")):
+        return False
+    if _detect_app_write_feature(text) and _flowi_app_write_mode(text):
+        return False
+    return any(term in low or term in text for term in (
+        "현황", "상태", "요약", "누락", "미등록", "미완료", "전체", "모듈", "관리",
+        "status", "summary", "missing", "module",
+    ))
+
+
+def _handle_flowi_inform_summary(prompt: str, me: dict[str, Any], max_rows: int, allowed_keys: set[str] | None = None) -> dict[str, Any]:
+    if not _flowi_inform_summary_intent(prompt):
+        return {"handled": False}
+    if allowed_keys is not None and "inform" not in allowed_keys:
+        return _flowi_permission_block("inform", me)
+    lots = _lot_tokens(prompt)
+    if not lots:
+        return {
+            "handled": True,
+            "intent": "inform_lot_module_summary_needs_context",
+            "action": "collect_required_fields",
+            "answer": "Lot별 인폼 모듈 현황을 보려면 lot_id 또는 root_lot_id가 필요합니다.",
+            "feature": "inform",
+            "missing": ["lot_id 또는 root_lot_id"],
+            "clarification": {
+                "question": "어떤 Lot의 인폼 현황을 볼까요?",
+                "choices": [{
+                    "id": "provide_lot",
+                    "label": "1",
+                    "title": "Lot 입력",
+                    "recommended": True,
+                    "description": "root_lot_id 또는 fab_lot_id를 이어서 입력합니다.",
+                    "prompt": "lot_id: ",
+                }],
+            },
+            "feature_entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] == "inform"],
+        }
+    from routers import informs as informs_router
+    username = me.get("username") or "user"
+    role = me.get("role") or "user"
+    my_mods = informs_router._effective_modules(username, role)
+    query = lots[0]
+    root = informs_router._root_lot_from_values(query)
+    root_prefix = root if len(root) <= 5 else ""
+    items = informs_router._load_upgraded()
+    hits = [x for x in items if (
+        (x.get("root_lot_id") or informs_router._root_lot_from_values(x.get("lot_id") or "")) == root
+        or (root_prefix and (x.get("root_lot_id") or "").startswith(root_prefix))
+        or (query and (x.get("lot_id") or "") == query)
+        or (query and (x.get("fab_lot_id_at_save") or "") == query)
+    )]
+    hits = [x for x in hits if informs_router._visible_to(x, username, role, my_mods)]
+    hits.sort(key=lambda x: x.get("created_at", ""))
+    summary = informs_router._module_progress_summary(hits)
+    rows = []
+    for row in summary.get("modules") or []:
+        rows.append({
+            "module": row.get("module") or "",
+            "status": row.get("status") or "",
+            "count": row.get("count") or 0,
+            "mail_count": row.get("mail_count") or 0,
+            "last_at": row.get("last_at") or "",
+            "completed_at": row.get("completed_at") or "",
+        })
+    missing = summary.get("missing_modules") or []
+    pending = summary.get("pending_modules") or []
+    answer = (
+        f"{root or query} 인폼 모듈 현황입니다.\n"
+        f"- 등록 모듈: {summary.get('active_modules', 0)}/{summary.get('total_modules', 0)}\n"
+        f"- 완료 모듈: {summary.get('completed_modules', 0)}\n"
+        f"- 미완료 모듈: {len(pending)}\n"
+        f"- 미등록 모듈: {len(missing)}"
+    )
+    if pending:
+        answer += "\n- 미완료: " + ", ".join(pending[:8]) + ("..." if len(pending) > 8 else "")
+    if missing:
+        answer += "\n- 미등록: " + ", ".join(missing[:8]) + ("..." if len(missing) > 8 else "")
+    return {
+        "handled": True,
+        "intent": "inform_lot_module_summary",
+        "action": "summarize_inform_modules",
+        "answer": answer,
+        "feature": "inform",
+        "slots": {"lots": [query], "root_lot_id": root, "product": _product_hint(prompt)},
+        "summary": summary,
+        "feature_entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] == "inform"],
+        "table": {
+            "kind": "inform_lot_module_summary",
+            "title": f"Inform module summary: {root or query}",
+            "placement": "below",
+            "columns": _table_columns(["module", "status", "count", "mail_count", "last_at", "completed_at"]),
+            "rows": rows,
+            "total": len(rows),
+        },
     }
 
 
@@ -7018,6 +8469,7 @@ def _handle_wafer_map_similarity(prompt: str, product: str, max_rows: int) -> di
     terms = _flowi_report_terms(prompt, product=product_hint)
     beol_only = "BEOL" in _upper(prompt) or "beol" in str(prompt or "").lower()
     frames: list[dict[str, Any]] = []
+    inline_needs_coord_map = False
     for source, files in (("ET", _et_files(product_hint)), ("INLINE", _inline_files(product_hint))):
         if not files:
             continue
@@ -7031,6 +8483,8 @@ def _handle_wafer_map_similarity(prompt: str, product: str, max_rows: int) -> di
             shot_y_col = _ci_col(cols, "shot_y", "SHOT_Y", "y", "Y")
             step_col = _ci_col(cols, "step_id", "STEP_ID")
             if not (item_col and value_col and shot_x_col and shot_y_col):
+                if source == "INLINE" and item_col and value_col and _ci_col(cols, "subitem_id", "SUBITEM_ID"):
+                    inline_needs_coord_map = True
                 continue
             aliases = _product_aliases(product_hint)
             if aliases and product_col:
@@ -7048,7 +8502,10 @@ def _handle_wafer_map_similarity(prompt: str, product: str, max_rows: int) -> di
         except Exception as e:
             logger.warning("flowi wafer map scan failed source=%s: %s", source, e)
     if not frames:
-        return {"handled": True, "intent": "wafer_map_similarity", "answer": "shot_x/shot_y/value/item_id 형태의 ET/INLINE wafer map 데이터를 찾지 못했습니다."}
+        answer = "shot_x/shot_y/value/item_id 형태의 ET wafer map 데이터를 찾지 못했습니다."
+        if inline_needs_coord_map:
+            answer += " INLINE raw DB는 subitem_id만 있어서 inline_item_map.csv와 inline_subitem_pos.csv 매핑 후에 shot map similarity를 계산할 수 있습니다."
+        return {"handled": True, "intent": "wafer_map_similarity", "answer": answer}
     item_counts: dict[tuple[str, str, str], int] = {}
     for row in frames:
         key = (_text(row.get("source")), _text(row.get("item_id")), _text(row.get("step_id")))
@@ -7749,6 +9206,15 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
     except Exception as e:
         logger.warning("flowi knob query failed: %s", e)
         raise HTTPException(400, f"KNOB 조회 실패: {e}")
+    if wafer_col and wafer_col in df.columns:
+        df = (
+            df.with_columns(
+                pl.col(wafer_col)
+                .map_elements(lambda v: _normalize_wafer_id(v), return_dtype=_STR)
+                .alias(wafer_col)
+            )
+            .filter(pl.col(wafer_col).is_not_null() & (pl.col(wafer_col) != ""))
+        )
     if df.height == 0:
         return {
             "handled": True,
@@ -8274,6 +9740,9 @@ def _handle_flowi_query(
 ) -> dict:
     product = _product_hint(prompt, product)
     if allowed_keys is None or {"filebrowser", "dashboard", "splittable", "ettime", "waferlayout"} & set(allowed_keys):
+        fab_lot_out = _handle_current_fab_lot_lookup(prompt, product, max_rows)
+        if fab_lot_out.get("handled"):
+            return fab_lot_out
         for handler in (_handle_teg_radius_lookup, _handle_teg_position_lookup, _handle_wafer_map_chart, _handle_wafer_map_similarity):
             wafer_out = handler(prompt, product, max_rows)
             if wafer_out.get("handled"):
@@ -8746,6 +10215,60 @@ def _attach_flowi_trace(
     return result
 
 
+_FLOWI_HOME_USER_TOOL_KEYS = {
+    "answer",
+    "clarification",
+    "table",
+    "rows",
+    "knobs",
+    "chart",
+    "chart_result",
+    "samples_table",
+    "module_summary",
+    "summary",
+    "created_record",
+    "missing",
+    "blocked",
+    "requires_confirmation",
+}
+
+
+def _flowi_home_response_for_role(result: dict[str, Any], me: dict[str, Any]) -> dict[str, Any]:
+    if (me.get("role") or "user") == "admin":
+        return result
+    if not isinstance(result, dict):
+        return result
+    out: dict[str, Any] = {
+        "ok": bool(result.get("ok", True)),
+        "active": bool(result.get("active", True)),
+        "answer": result.get("answer") or "",
+    }
+    if result.get("error"):
+        out["error"] = result.get("error")
+    tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
+    public_tool = {key: deepcopy(tool[key]) for key in _FLOWI_HOME_USER_TOOL_KEYS if key in tool}
+    clarification = public_tool.get("clarification") if isinstance(public_tool.get("clarification"), dict) else {}
+    choices = clarification.get("choices") if isinstance(clarification.get("choices"), list) else []
+    if choices:
+        safe_choices = []
+        for choice in choices[:3]:
+            if not isinstance(choice, dict):
+                continue
+            safe = {
+                key: choice.get(key)
+                for key in ("id", "label", "title", "description", "prompt", "tab", "feature", "recommended")
+                if key in choice
+            }
+            safe_choices.append(safe)
+        public_tool["clarification"] = {
+            "question": clarification.get("question") or "확인이 필요합니다.",
+            "choices": safe_choices,
+        }
+    if public_tool:
+        out["tool"] = public_tool
+    return out
+
+
 def _run_flowi_chat(
     *,
     prompt: str,
@@ -8941,6 +10464,38 @@ def _run_flowi_chat(
                 client_run_id=client_run_id,
                 username=username,
                 tool=status_tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    splittable_plan_tool = _handle_splittable_plan_request(prompt, me, allowed_keys=allowed_keys)
+    if splittable_plan_tool.get("handled"):
+        answer = splittable_plan_tool.get("answer") or "스플릿 테이블 plan 요청을 처리했습니다."
+        _append_user_event(username, "splittable_plan", _event_fields(
+            {
+                "prompt": prompt,
+                "intent": splittable_plan_tool.get("intent") or "",
+                "feature": splittable_plan_tool.get("feature") or "",
+                "answer": answer,
+            },
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": splittable_plan_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": bool(splittable_plan_tool.get("blocked"))},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=splittable_plan_tool,
                 agent_context=agent_context,
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
@@ -9146,8 +10701,15 @@ def _run_flowi_chat(
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
     max_rows = max(4, min(24, int(max_rows or 12)))
+    inform_tool = _handle_flowi_inform_summary(prompt, me, max_rows=max_rows, allowed_keys=allowed_keys) if "inform" in allowed_keys else {"handled": False}
+    if inform_tool.get("handled"):
+        tool = inform_tool
+    else:
+        tool = {}
     meeting_tool = _handle_meeting_recall(prompt, max_rows=max_rows, me=me, agent_context=agent_context) if ("meeting" in allowed_keys or "calendar" in allowed_keys) else {"handled": False}
-    if meeting_tool.get("handled"):
+    if tool.get("handled"):
+        pass
+    elif meeting_tool.get("handled"):
         tool = meeting_tool
     else:
         tool = _handle_flowi_query(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys)
@@ -9246,6 +10808,8 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
         return True
     if intent == "meeting_recall_summary":
         return True
+    if intent == "inform_lot_module_summary":
+        return True
     if isinstance(tool.get("chart_result"), dict):
         return True
     return False
@@ -9254,6 +10818,7 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
 @router.get("/status")
 def status(request: Request):
     me = current_user(request)
+    is_admin = (me.get("role") or "user") == "admin"
     allowed_keys = _allowed_flowi_feature_keys(me)
     local_tools = ["unit_feature_router"] if allowed_keys else []
     if "ettime" in allowed_keys:
@@ -9264,17 +10829,23 @@ def status(request: Request):
         local_tools.append("dashboard_scatter_plan")
     cfg = llm_adapter.get_config(redact=True)
     persona = _flowi_persona_config()
-    return {
-        "available": llm_adapter.is_available(),
-        "config": cfg,
-        "flowi": {
-            "requires_token": False,
+    flowi = {
+        "requires_token": False,
+        "allowed_features": sorted(allowed_keys),
+        "entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] in allowed_keys],
+        "persona": {
+            "source": persona.get("source"),
+            "enabled": persona.get("enabled"),
+        },
+        "agent_persona": FLOWI_AGENT_PERSONA,
+        "naming_rules": FLOWI_NAMING_RULES,
+    }
+    if is_admin:
+        flowi.update({
             "admin_token_configured": llm_adapter.has_admin_token(),
             "local_tools": local_tools,
             "policy": FLOWI_READ_ONLY_POLICY,
             "workflow_guide": FLOWI_BASE_WORKFLOW_GUIDE,
-            "allowed_features": sorted(allowed_keys),
-            "entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] in allowed_keys],
             "unit_actions": {k: v for k, v in FLOWI_UNIT_ACTIONS.items() if k in allowed_keys},
             "persona": {
                 "source": persona.get("source"),
@@ -9282,7 +10853,11 @@ def status(request: Request):
                 "updated_by": persona.get("updated_by"),
                 "updated_at": persona.get("updated_at"),
             },
-        },
+        })
+    return {
+        "available": llm_adapter.is_available(),
+        "config": cfg,
+        "flowi": flowi,
     }
 
 
@@ -9318,6 +10893,12 @@ class FlowiAgentChatReq(BaseModel):
 
 class FlowiVerifyReq(BaseModel):
     token: str = ""
+
+
+class FlowiFunctionCallPreviewReq(BaseModel):
+    prompt: str
+    product: str = ""
+    max_rows: int = 12
 
 
 class FlowiFeedbackReq(BaseModel):
@@ -9380,6 +10961,18 @@ def flowi_verify(req: FlowiVerifyReq, request: Request):
     if out.get("ok") and "확인완료" in text:
         return {"ok": True, "message": "확인완료"}
     return {"ok": False, "message": "LLM 연결 확인 실패", "error": out.get("error") or text or "unknown"}
+
+
+@router.post("/flowi/function-call/preview")
+def flowi_function_call_preview(req: FlowiFunctionCallPreviewReq, _admin=Depends(require_admin)):
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(400, "prompt is required")
+    return _structure_flowi_function_call(
+        prompt,
+        product=(req.product or "").strip(),
+        max_rows=req.max_rows,
+    )
 
 
 @router.get("/flowi/persona")
@@ -9446,29 +11039,33 @@ def flowi_profile_save(req: FlowiProfileReq, request: Request):
 @router.post("/flowi/feedback")
 def flowi_feedback(req: FlowiFeedbackReq, request: Request):
     me = current_user(request)
+    is_admin = (me.get("role") or "user") == "admin"
     rating = (req.rating or "").strip().lower()
     if rating not in {"up", "down", "neutral"}:
         raise HTTPException(400, "rating must be up/down/neutral")
     tags = _normalize_feedback_tags(req.tags, rating)
-    tool_summary = _flowi_tool_summary(req.tool)
-    needs_review = rating != "up" or bool(req.golden_candidate) or any(tag != "correct" for tag in tags)
+    if not is_admin:
+        tags = [tag for tag in tags if tag in FLOWI_USER_FEEDBACK_TAGS]
+    tool_summary = _flowi_tool_summary(req.tool if is_admin else {})
+    golden_candidate = bool(req.golden_candidate) if is_admin else False
+    needs_review = rating != "up" or golden_candidate or any(tag != "correct" for tag in tags)
     rec = {
         "id": "ff_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8],
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "username": me.get("username") or "",
         "rating": rating,
-        "intent": (req.intent or "").strip()[:80],
+        "intent": ((req.intent or "").strip()[:80] if is_admin else ""),
         "prompt_excerpt": (req.prompt or "").strip()[:500],
         "answer_excerpt": (req.answer or "").strip()[:800],
         "note": (req.note or "").strip()[:1000],
         "tags": tags,
-        "expected_workflow": (req.expected_workflow or "").strip()[:160],
-        "expected_answer": (req.expected_answer or "").strip()[:2000],
-        "correct_route": (req.correct_route or "").strip()[:2000],
-        "data_refs": (req.data_refs or "").strip()[:1000],
-        "golden_candidate": bool(req.golden_candidate),
+        "expected_workflow": ((req.expected_workflow or "").strip()[:160] if is_admin else ""),
+        "expected_answer": ((req.expected_answer or "").strip()[:2000] if is_admin else ""),
+        "correct_route": ((req.correct_route or "").strip()[:2000] if is_admin else ""),
+        "data_refs": ((req.data_refs or "").strip()[:1000] if is_admin else ""),
+        "golden_candidate": golden_candidate,
         "needs_review": needs_review,
-        "review_status": "golden_candidate" if req.golden_candidate else ("needs_review" if needs_review else "ok"),
+        "review_status": "golden_candidate" if golden_candidate else ("needs_review" if needs_review else "ok"),
         "tool_summary": tool_summary,
         "llm": {
             "used": bool(req.llm.get("used")) if isinstance(req.llm, dict) else False,
@@ -9630,13 +11227,14 @@ def flowi_admin_update(req: FlowiAdminUpdateReq, _admin=Depends(require_admin)):
 @router.post("/flowi/chat")
 def flowi_chat(req: FlowiChatReq, request: Request):
     me = current_user(request)
-    return _run_flowi_chat(
+    result = _run_flowi_chat(
         prompt=req.prompt,
         product=req.product,
         max_rows=req.max_rows,
         me=me,
         agent_context=req.context,
     )
+    return _flowi_home_response_for_role(result, me)
 
 
 @router.post("/flowi/agent/chat")

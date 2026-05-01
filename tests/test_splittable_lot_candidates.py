@@ -120,6 +120,43 @@ def test_view_includes_related_tracker_issues_for_root_lot(tmp_path, monkeypatch
     assert result["related_issues"][0]["comment_count"] == 2
 
 
+def test_view_normalizes_wafer_ids_above_25(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["LOT925AA", "LOT925AA", "LOT925AA"],
+        "wafer_id": ["1", "1000", "0"],
+        "KNOB_ALPHA": ["A", "MAPPED", "BAD"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
+    (tmp_path / "issues.json").write_text("[]", encoding="utf-8")
+
+    result = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="LOT925AA",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert result["headers"] == ["#1", "#25"]
+    row = result["rows"][0]
+    assert row["_cells"]["0"]["actual"] == "A"
+    assert row["_cells"]["1"]["actual"] == "MAPPED"
+    assert all("1000" not in cell["key"] for cell in row["_cells"].values())
+
+
 def test_lot_ids_do_not_suggest_fab_roots_that_cannot_render():
     result = splittable.get_lot_ids(product="ML_TABLE_PRODA", limit=20)
 
