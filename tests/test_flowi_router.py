@@ -605,6 +605,87 @@ def test_flowi_function_call_preview_keeps_wafer_slots_1_to_25(monkeypatch):
     assert any("1~25" in w for w in out["validation"]["warnings"])
 
 
+def test_flowi_function_catalog_routes_required_acceptance_patterns(monkeypatch):
+    monkeypatch.setattr(llm_router.product_config, "load_all", lambda _root: {"PRODA": {"product": "PRODA"}})
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [])
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda _kind: [])
+
+    q1 = llm_router._structure_flowi_function_call("PRODA A1002 24.0 SORT KNOB 구성이 어떻게돼?")
+    a1 = q1["function_call"]["function"]["arguments"]
+    assert q1["selected_function"]["name"] == "query_lot_knobs_from_ml_table"
+    assert a1["product"] == "PRODA"
+    assert a1["root_lot_ids"] == ["A1002"]
+    assert a1["step"] == "24.0 SORT"
+    assert a1["group"] == "KNOB"
+
+    q2 = llm_router._structure_flowi_function_call("PRODA A1002 #1 24.0 SORT Split이 뭐야? 뭘로 진행했어?")
+    a2 = q2["function_call"]["function"]["arguments"]
+    assert q2["selected_function"]["name"] == "query_wafer_split_at_step"
+    assert a2["root_lot_ids"] == ["A1002"]
+    assert a2["wafer_ids"] == [1]
+    assert a2["step"] == "24.0 SORT"
+
+    q3 = llm_router._structure_flowi_function_call("24.0 SORT PPID_24_3인 자재 가장 빠른게 어디에 있어?")
+    a3 = q3["function_call"]["function"]["arguments"]
+    assert q3["selected_function"]["name"] == "find_lots_by_knob_value"
+    assert a3["step"] == "24.0 SORT"
+    assert a3["knob_value"] == "PPID_24_3"
+    assert a3["sort"] == "earliest_progress"
+
+    q4 = llm_router._structure_flowi_function_call("A1002A.1 어디에 있어?")
+    assert q4["selected_function"]["name"] == "query_fab_progress"
+    assert q4["function_call"]["function"]["arguments"]["fab_lot_ids"] == ["A1002A.1"]
+    assert "product" not in q4["validation"]["missing"]
+
+    q5 = llm_router._structure_flowi_function_call("A1000 #20 16.0 VIA2 Avg 몇이야?")
+    a5 = q5["function_call"]["function"]["arguments"]
+    assert q5["selected_function"]["name"] == "query_metric_at_step"
+    assert a5["root_lot_ids"] == ["A1000"]
+    assert a5["wafer_ids"] == [20]
+    assert a5["step"] == "16.0 VIA2"
+    assert a5["metric"] == "VIA2 Avg"
+    assert a5["agg"] == "avg"
+
+    q6 = llm_router._structure_flowi_function_call("PRODA A1000A.3 GATE 모듈 인폼해줘 test1 스플릿으로 선택해줘 내용은 GATE 모듈인폼입니다.")
+    a6 = q6["function_call"]["function"]["arguments"]
+    assert q6["selected_function"]["name"] == "register_inform_log"
+    assert a6["fab_lot_ids"] == ["A1000A.3"]
+    assert a6["module"] == "GATE"
+    assert a6["split_set"] == "test1"
+    assert a6["note"] == "GATE 모듈인폼입니다."
+    assert q6["selected_function"]["side_effect"] == "confirm_before_write"
+
+
+def test_flowi_inform_batch_and_edge_choices(monkeypatch):
+    monkeypatch.setattr(llm_router.product_config, "load_all", lambda _root: {"PRODA": {"product": "PRODA"}, "PRODB": {"product": "PRODB"}})
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [])
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda _kind: [])
+    monkeypatch.setattr(llm_router, "_flowi_inform_modules", lambda: ["GATE", "STI", "PC"])
+
+    batch = llm_router._structure_flowi_function_call("A1003 GATE는 test1 STI는 test2 이런식으로 A1003에 대해서 인폼로그 다 만들어줘")
+    args = batch["function_call"]["function"]["arguments"]
+    assert batch["selected_function"]["name"] == "register_inform_log"
+    assert args["root_lot_ids"] == ["A1003"]
+    assert args["mode"] == "batch"
+    assert args["entries"] == [{"module": "GATE", "split_set": "test1"}, {"module": "STI", "split_set": "test2"}]
+
+    mail = llm_router._structure_flowi_function_call("메일 보내")
+    assert mail["selected_function"]["name"] == "compose_inform_module_mail"
+    assert mail["validation"]["missing"] == ["module"]
+    fields = mail["arguments_choices"]["fields"]
+    assert fields and fields[0]["field"] == "module"
+    assert [c["value"] for c in fields[0]["choices"][:3]] == ["GATE", "STI", "PC"]
+
+    split = llm_router._structure_flowi_function_call("A1002 #1 24.0 SORT Split")
+    assert split["selected_function"]["name"] == "query_wafer_split_at_step"
+    assert split["validation"]["missing"][0] == "product"
+    assert split["arguments_choices"]["fields"][0]["field"] == "product"
+
+    invalid = llm_router._structure_flowi_function_call("A1002 #26 24.0 SORT Split")
+    assert invalid["selected_function"]["invalid_wafers"] == ["26"]
+    assert any("26번 wafer" in w for w in invalid["validation"]["warnings"])
+
+
 def test_flowi_product_process_id_lookup_uses_latest_fab_row(tmp_path, monkeypatch):
     fab_dir = tmp_path / "1.RAWDATA_DB_FAB" / "PRODX" / "date=20260429"
     fab_dir.mkdir(parents=True)
@@ -836,8 +917,23 @@ def test_flowi_agent_chat_creates_inform_record(tmp_path, monkeypatch):
     saved = informs_router._load_upgraded()
 
     assert out["ok"] is True
-    assert out["tool"]["intent"] == "inform_create"
-    assert out["agent_api"]["workflow_state"]["action"] == "create_app_record"
+    assert out["tool"]["intent"] == "inform_log_draft"
+    assert out["tool"]["requires_confirmation"] is True
+    assert out["agent_api"]["workflow_state"]["action"] == "register_inform_log"
+    assert len(saved) == 0
+
+    confirm_prompt = out["tool"]["clarification"]["choices"][0]["prompt"]
+    confirmed = llm_router.flowi_agent_chat(
+        llm_router.FlowiAgentChatReq(
+            prompt=confirm_prompt,
+            source_ai="codex",
+            client_run_id="run-2-confirm",
+        ),
+        object(),
+    )
+    saved = informs_router._load_upgraded()
+
+    assert confirmed["tool"]["intent"] == "inform_log_registered"
     assert len(saved) == 1
     assert saved[0]["root_lot_id"] == "A1000"
     assert saved[0]["wafer_id"] == "1"
