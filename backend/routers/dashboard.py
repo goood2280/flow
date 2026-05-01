@@ -14,7 +14,7 @@ for _path in (_APP_ROOT, _BACKEND_ROOT):
     sys.path[:] = [p for p in sys.path if p != _raw]
     sys.path.insert(0, _raw)
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from typing import Any, Optional
 import polars as pl
@@ -26,6 +26,7 @@ from core.utils import (
     load_json, save_json, serialize_rows, first_data_file,
 )
 from core.runtime_limits import dashboard_scheduler_enabled
+from core.auth import require_admin
 from app_v2.shared.source_adapter import resolve_column
 from core.dashboard_join import (
     apply_chart_defaults,
@@ -2508,7 +2509,7 @@ def get_chart_defaults(request: Request):
 
 
 @router.post("/chart-defaults")
-def post_chart_defaults(req: ChartDefaultReq, request: Request):
+def post_chart_defaults(req: ChartDefaultReq, request: Request, _admin=Depends(require_admin)):
     from core.auth import current_user
     me = current_user(request)
     if me.get("role") != "admin":
@@ -2638,7 +2639,7 @@ def get_snapshots(request: Request):
 
 
 @router.post("/refresh")
-def refresh_charts():
+def refresh_charts(_admin=Depends(require_admin)):
     """Admin: manually trigger re-computation."""
     _scheduler.refresh()
     return {"ok": True, "message": "Refresh started in background"}
@@ -2653,7 +2654,7 @@ def trend_alerts(request: Request, limit: int = Query(8)):
 
 
 @router.post("/charts/save")
-def save_chart(cfg: ChartConfig):
+def save_chart(cfg: ChartConfig, _admin=Depends(require_admin)):
     charts = _charts()
     if not cfg.id:
         cfg.id = _new_id()
@@ -2674,7 +2675,7 @@ def save_chart(cfg: ChartConfig):
 
 
 @router.post("/charts/delete")
-def delete_chart(chart_id: str = Query(...)):
+def delete_chart(chart_id: str = Query(...), _admin=Depends(require_admin)):
     charts = [c for c in _charts() if c.get("id") != chart_id]
     save_json(CHARTS_FILE, charts, indent=2)
     with _scheduler._lock:
@@ -2684,7 +2685,7 @@ def delete_chart(chart_id: str = Query(...)):
 
 
 @router.post("/charts/copy")
-def copy_chart(chart_id: str = Query(...)):
+def copy_chart(chart_id: str = Query(...), _admin=Depends(require_admin)):
     import copy as cp
     charts = _charts()
     src = next((c for c in charts if c.get("id") == chart_id), None)

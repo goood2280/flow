@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import Loading from "../components/Loading";
 import { sf, dl } from "../lib/api";
+import { useUserRole } from "../lib/permissions";
 import { statusPalette, chartPalette } from "../components/UXKit";
 const API="/api/splittable";
 const OK = statusPalette.ok;
@@ -170,7 +171,9 @@ export default function My_SplitTable({user}){
       })
       .finally(()=>setOverridePreviewLoading(false));
   },[selProd,effectivePreviewSource]);
-  const isAdmin=user?.role==="admin";
+  const role = useUserRole(user);
+  const isAdmin = role.isAdmin;
+  const canManage = role.canManagePage("splittable");
   const lotRef=useRef(null);
   const settingsLotLinkRef=useRef(null);
   const scrollToSettingsLotLink=()=>settingsLotLinkRef.current?.scrollIntoView({behavior:"smooth",block:"start"});
@@ -752,7 +755,7 @@ export default function My_SplitTable({user}){
         </div>}
       </div>}
       {/* Settings gear */}
-      {isAdmin&&<div>
+      {canManage&&<div>
         <div onClick={()=>setShowSettings(!showSettings)} style={{position:"fixed",bottom:16,left:16,width:40,height:40,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,boxShadow:"0 2px 8px rgba(0,0,0,0.3)",fontSize:18}} title="Admin settings">⚙️</div>
         {showSettings&&<><div style={{position:"fixed",inset:0,zIndex:98}} onClick={()=>setShowSettings(false)}/><div style={{position:"fixed",left:"50%",top:"50%",transform:"translate(-50%, -50%)",background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:12,padding:16,width:"min(920px, calc(100vw - 32px))",maxHeight:"84vh",overflow:"auto",zIndex:99,boxShadow:"0 16px 48px rgba(0,0,0,0.55)"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -1082,7 +1085,7 @@ export default function My_SplitTable({user}){
                 <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
                   → {files.join(" + ")}
                 </span>
-                {isAdmin && (editKinds||[]).map(k => (
+                {canManage && (editKinds||[]).map(k => (
                   <span key={k} style={{display:"inline-flex",gap:2}}>
                     <button onClick={()=>openRowEditor(k)}
                       title={`${k} 의 ${selProd||"제품"} 행 추가/수정/삭제`}
@@ -1225,7 +1228,7 @@ export default function My_SplitTable({user}){
                 </div>
 
                 <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:4,lineHeight:1.4}}>
-                  {isAdmin ? "admin: 섹션별 [편집]에서 제품별 연결 규칙을 추가/수정/삭제하고, [컬럼]에서 CSV 헤더 매핑을 조정합니다." : "편집은 admin 권한이 필요합니다. 규칙 파일은 DB 루트 최상단에 있습니다."}
+                  {canManage ? "관리 권한: 섹션별 [편집]에서 제품별 연결 규칙을 추가/수정/삭제하고, [컬럼]에서 CSV 헤더 매핑을 조정합니다." : "편집은 관리자 권한이 필요합니다. 규칙 파일은 DB 루트 최상단에 있습니다."}
                 </div>
               </div>
             );

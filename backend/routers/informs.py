@@ -58,7 +58,7 @@ from pydantic import BaseModel
 from core.paths import PATHS
 from core.product_dedup import canonical_product, find_duplicate_product, normalize_products
 from core.utils import load_json, save_json
-from core.auth import current_user, require_admin
+from core.auth import current_user, require_admin, require_page_admin
 from core.audit import record as _audit
 from app_v2.shared.source_adapter import resolve_column
 from app_v2.modules.informs.splittable_embed import build_splittable_embed
@@ -856,10 +856,12 @@ def get_module_knob_map(request: Request):
 
 
 @router.post("/modules/knob-map")
-def set_module_knob_map(req: ModuleKnobMapReq, request: Request):
+def set_module_knob_map(
+    req: ModuleKnobMapReq,
+    request: Request,
+    _perm=Depends(require_page_admin("informs")),
+):
     me = current_user(request)
-    if me.get("role") != "admin":
-        raise HTTPException(403, "admin only")
     mod = (req.module or "").strip()
     if not mod:
         raise HTTPException(400, "module required")
@@ -895,8 +897,8 @@ def get_settings_compat():
 
 
 @router.post("/config")
-def save_config_endpoint(req: ConfigReq, _admin=Depends(require_admin)):
-    """Admin 전용 — 모듈/사유 옵션 목록 편집."""
+def save_config_endpoint(req: ConfigReq, _admin=Depends(require_page_admin("informs"))):
+    """Admin 또는 informs page_admin 전용 — 모듈/사유 옵션 목록 편집."""
     cfg = _load_config()
     if req.modules is not None:
         cfg["modules"] = [m.strip() for m in req.modules if m and m.strip()]
@@ -933,7 +935,7 @@ def save_config_endpoint(req: ConfigReq, _admin=Depends(require_admin)):
 
 
 @router.post("/settings")
-def save_settings_compat(req: ConfigReq, _admin=Depends(require_admin)):
+def save_settings_compat(req: ConfigReq, _admin=Depends(require_page_admin("informs"))):
     """Compatibility alias for older PageGear builds."""
     return save_config_endpoint(req, _admin)
 
@@ -3458,6 +3460,8 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
     target = _find(items, inform_id)
     if not target:
         raise HTTPException(404, "인폼을 찾을 수 없습니다.")
+    if me.get("role") != "admin" and target.get("author") != me.get("username"):
+        raise HTTPException(403, "작성자 또는 admin 만 인폼 메일을 발송할 수 있습니다.")
 
     # v8.8.27: 발송 rate limit 검사 (dry-run 도 동일 적용 — preview 스팸도 방지).
     _check_mail_throttle(items, inform_id, target, me.get("username", ""))

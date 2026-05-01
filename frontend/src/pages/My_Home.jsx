@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import BrandLogo from "../components/BrandLogo";
 import { postJson } from "../lib/api";
+import { isAdmin as isAdminUser, isPageAdmin } from "../lib/permissions";
 const B="#ea580c",M="#f97316",L="#fb923c",D="#9a3412",BK="#171717",W="#fff7ed",PK="#fda4af",G="#fbbf24";
 
 // v8.3.3: PF_HOME / PixelGlyph / HomeBrandLogo extracted to shared ../components/BrandLogo.jsx.
@@ -780,7 +781,7 @@ function FlowiDataTable({table}){
 
 export default function My_Home({onNavigate,user}){
   const nav=(k)=>onNavigate&&onNavigate(k);
-  const isAdmin=user?.role==="admin";
+  const isAdmin=isAdminUser(user);
   const userTabs=isAdmin?"__all__":(user?.tabs||"");
   const hasTab=(k)=>userTabs==="__all__"||userTabs.split(",").map(s=>s.trim()).filter(Boolean).includes(k);
 
@@ -801,7 +802,10 @@ export default function My_Home({onNavigate,user}){
     {key:"admin",      icon:"⚙️",title:"관리자",desc:"사용자, 권한, 모니터",adminOnly:true},
     {key:"devguide",   icon:"📖",title:"개발자 가이드",desc:"아키텍처, API 레퍼런스"},
   ];
-  const visibleCards=ALL_CARDS.filter(c=>(!c.adminOnly||isAdmin)&&hasTab(c.key));
+  const visibleCards=ALL_CARDS.filter(c=>{
+    const delegated=c.key!=="admin"&&isPageAdmin(user,c.key);
+    return (!c.adminOnly||isAdmin||delegated)&&(hasTab(c.key)||delegated);
+  });
 
   return(<div style={{minHeight:"calc(100vh - 52px)",padding:"32px 32px 96px",background:"var(--bg-primary,#1a1a1a)",color:"var(--text-primary,#e5e5e5)",fontFamily:"'Pretendard',sans-serif",maxWidth:1040,margin:"0 auto"}}>
     {/* v8.3.3: Home brand logo — shared BrandLogo.jsx, size="home" retains .home-brand-logo marker. */}

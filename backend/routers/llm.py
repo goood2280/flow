@@ -875,14 +875,20 @@ def _flowi_permission_block(feature_key: str, me: dict) -> dict:
     }
 
 
-def _flowi_home_admin_function_block(prompt: str) -> dict[str, Any]:
+def _flowi_home_admin_function_block(prompt: str, me: dict[str, Any] | None = None) -> dict[str, Any]:
+    if ((me or {}).get("role") or "user") == "admin":
+        return {"handled": False}
     text = str(prompt or "")
     low = text.lower()
     admin_terms = (
         "매칭테이블", "매칭 테이블", "matching table", "match table",
         "룰북", "rulebook", "rule book",
-        "knowledge ingest", "knowledge 등록", "지식 ingest", "지식 등록",
-        "rag 반영", "rag 등록",
+        "knowledge ingest", "knowledge 등록", "knowledge promote", "promote knowledge",
+        "지식 ingest", "지식 등록", "지식 promote", "지식 프로모트", "지식 승격",
+        "rag 반영", "rag 등록", "rag promote",
+        "user 삭제", "users 삭제", "사용자 삭제", "계정 삭제", "delete user", "delete users",
+        "db 직접 변경", "db 변경", "db 수정", "database update", "direct db",
+        "admin update", "관리자 설정", "관리자 변경",
     )
     if not any(term in low or term in text for term in admin_terms):
         return {"handled": False}
@@ -12453,6 +12459,10 @@ def _flowi_home_response_for_role(result: dict[str, Any], me: dict[str, Any]) ->
     }
     if result.get("error"):
         out["error"] = result.get("error")
+    if result.get("blocked"):
+        out["blocked"] = True
+    if result.get("reject_reason"):
+        out["reject_reason"] = result.get("reject_reason")
     tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
     public_tool = {key: deepcopy(tool[key]) for key in _FLOWI_HOME_USER_TOOL_KEYS if key in tool}
     clarification = public_tool.get("clarification") if isinstance(public_tool.get("clarification"), dict) else {}
@@ -12499,7 +12509,7 @@ def _run_flowi_chat(
     agent_context = agent_context if isinstance(agent_context, dict) else {}
 
     allowed_keys = _allowed_flowi_feature_keys(me)
-    admin_block = _flowi_home_admin_function_block(prompt)
+    admin_block = _flowi_home_admin_function_block(prompt, me)
     if admin_block.get("handled"):
         answer = admin_block["answer"]
         result = {
@@ -12507,6 +12517,8 @@ def _run_flowi_chat(
             "active": True,
             "user": username,
             "answer": answer,
+            "blocked": True,
+            "reject_reason": answer,
             "tool": admin_block,
             "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": True},
             "allowed_features": sorted(allowed_keys),
@@ -13402,7 +13414,11 @@ def flowi_inform_walkthrough_resolve(req: FlowiInformWalkthroughResolveReq, requ
 
 
 @router.post("/flowi/inform/walkthrough/confirm")
-def flowi_inform_walkthrough_confirm(req: FlowiInformWalkthroughConfirmReq, request: Request):
+def flowi_inform_walkthrough_confirm(
+    req: FlowiInformWalkthroughConfirmReq,
+    request: Request,
+    _admin=Depends(require_admin),
+):
     me = current_user(request)
     return _flowi_confirm_inform_draft(req.session_id, req.confirm, me)
 
