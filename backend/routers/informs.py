@@ -2482,18 +2482,42 @@ def _mail_table_style(data_columns: int) -> str:
 
 
 def _mail_data_col_style(data_col_style: str, span: int = 1) -> str:
-    m = re.search(r"width:([0-9.]+)%", data_col_style)
+    m = re.search(r"width:([0-9.]+)(%|px)", data_col_style or "")
     if not m:
         return data_col_style
     width = float(m.group(1)) * max(1, int(span or 1))
-    return re.sub(r"width:[0-9.]+%;max-width:[0-9.]+%;", f"width:{width:.2f}%;max-width:{width:.2f}%;", data_col_style, count=1)
+    unit = m.group(2)
+    return re.sub(r"width:[^;]+;max-width:[^;]+;", f"width:{width:.2f}{unit};max-width:{width:.2f}{unit};", data_col_style, count=1)
+
+
+def _mail_scroll_col_styles(data_columns: int) -> tuple[str, str]:
+    """Fixed pixel columns for horizontally scrollable SplitTable mail snapshots."""
+    n = max(1, int(data_columns or 0))
+    first_px = 180
+    data_px = 72 if n >= 16 else 86
+    break_style = "white-space:normal;word-break:break-word;overflow-wrap:anywhere;vertical-align:top;box-sizing:border-box;"
+    return (
+        f"width:{first_px}px;max-width:{first_px}px;{break_style}",
+        f"width:{data_px}px;max-width:{data_px}px;{break_style}",
+    )
+
+
+def _mail_scroll_table_style(data_columns: int) -> str:
+    n = max(1, int(data_columns or 0))
+    data_px = 72 if n >= 16 else 86
+    total_px = 180 + data_px * n
+    return (
+        f"border-collapse:collapse;font-size:{_MAIL_MIN_FONT};width:{total_px}px;"
+        "min-width:100%;max-width:none;table-layout:fixed;"
+        "mso-table-lspace:0pt;mso-table-rspace:0pt;"
+    )
 
 
 def _mail_colgroup_html(first_col_style: str, data_col_style: str, data_columns: int) -> str:
     """Make fixed-layout mail tables keep every wafer column the same width."""
     def _width(style: str) -> str:
-        m = re.search(r"width:([0-9.]+)%", style or "")
-        return f"{float(m.group(1)):.2f}%" if m else ""
+        m = re.search(r"width:([0-9.]+)(%|px)", style or "")
+        return f"{float(m.group(1)):.2f}{m.group(2)}" if m else ""
 
     first_w = _width(first_col_style)
     data_w = _width(data_col_style)
@@ -2644,16 +2668,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
     src = str(embed.get("source") or "")
     m = re.search(r"SplitTable/([^ @·]+)", src)
     product = (m.group(1).strip() if m else "").strip()
-    max_mail_cols = 12
     highlight_knobs = _module_highlight_knobs(module)
-
-    def _lot_context_th(style: str) -> str:
-        return (
-            f"<th style='{style}text-align:left;line-height:1.25;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>"
-            f"<div><span style='color:#6b7280;font-weight:700;'>root_lot_id</span> {esc(root_lot_id or '—')}</div>"
-            f"<div><span style='color:#6b7280;font-weight:700;'>lot_id</span> {esc(lot_id_label or '—')}</div>"
-            "</th>"
-        )
 
     def _lineage_summary_html() -> str:
         if not rows_st or not product:
@@ -2835,17 +2850,20 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         shown = rows_st[:max_rows]
         # v8.8.30: KNOB/MASK 행용 unique-value → color index 맵.
         uniq_map = _st_build_uniq_map(shown, headers)
-        dense = len(headers) >= max_mail_cols
+        dense = len(headers) >= 12
         data_pad = "4px 5px" if dense else "4px 8px"
         first_pad = "4px 6px" if dense else "4px 8px"
         font_sz = _MAIL_MIN_FONT
         line_h = "1.25"
+        first_col_style, data_col_style = _mail_scroll_col_styles(len(headers))
+        colgroup = _mail_colgroup_html(first_col_style, data_col_style, len(headers))
         td_first = (f"border:1px solid #d1d5db;padding:{first_pad};background:#f9fafb;"
                     f"font-size:{font_sz};font-weight:700;font-family:monospace;line-height:{line_h};")
         td_cell_base = (f"border:1px solid #d1d5db;padding:{data_pad};text-align:center;"
                         f"font-size:{font_sz};font-family:monospace;line-height:{line_h};")
         th_style = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f3f4f6;"
                     f"font-size:{font_sz};color:#1f2937;text-align:center;font-family:monospace;line-height:{line_h};")
+        th_label = th_style + first_col_style + "text-align:left;font-weight:700;color:#6b7280;"
         th_root = ("border:1px solid #d1d5db;padding:5px 8px;background:#f3f4f6;"
                    f"font-size:{_MAIL_MIN_FONT};color:#ea580c;text-align:center;font-family:monospace;font-weight:700;")
         th_group = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f9fafb;"
@@ -2858,95 +2876,66 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         note_html = ""
         trunc_html = (f"<div style='font-size:{_MAIL_MIN_FONT};color:#b91c1c;margin-top:4px;'>"
                       f"⚠ {max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
+        body_parts = []
+        for r in shown:
+            param_raw = str(r.get("_param", ""))
+            param = esc(str(r.get("_display") or param_raw or "").replace("KNOB_", "").replace("MASK_", "").replace("INLINE_", "").replace("VM_", ""))
+            cells = r.get("_cells") or {}
+            row_highlight = _is_module_highlight_param(param_raw, highlight_knobs)
+            hilite = _MODULE_KNOB_HILITE if row_highlight else ""
+            tds = [f"<td style='{td_first}{first_col_style}{hilite}'>{param}</td>"]
+            for i in range(len(headers)):
+                cell = cells.get(i) or cells.get(str(i)) or {}
+                actual = cell.get("actual")
+                plan = cell.get("plan")
+                disp = "" if actual is None or actual == "" else str(actual)
+                plan_diff = plan is not None and plan != "" and plan != actual
+                if plan_diff:
+                    disp_html = f"{esc(disp)} <span style='color:#ea580c;font-weight:700'>→ {esc(str(plan))}</span>"
+                else:
+                    disp_html = esc(disp)
+                # plan 이 있으면 plan 기준으로 컬러링해 SplitTable unique 색상과 맞춘다.
+                paint_val = plan if plan not in (None, "") else actual
+                cell_bg = _st_cell_bg(paint_val, uniq_map, param_raw)
+                tds.append(f"<td style='{td_cell_base}{data_col_style}{cell_bg}{hilite}'>{disp_html}</td>")
+            body_parts.append("<tr>" + "".join(tds) + "</tr>")
 
-        def _chunk_header_groups(start: int, end: int) -> list[dict]:
-            out: list[dict] = []
-            pos = 0
+        thead_parts = [
+            "<tr>"
+            f"<th style='{th_label}'>root_lot_id</th>"
+            f"<th colspan='{max(1, len(headers))}' style='{th_root}{_mail_data_col_style(data_col_style, len(headers))}'>{esc(root_lot_id or '—')}</th>"
+            "</tr>"
+        ]
+        if header_groups:
+            cells = [f"<th style='{th_label}'>lot_id</th>"]
             for g in header_groups:
                 span = max(1, int(g.get("span") or 1))
-                g_start, g_end = pos, pos + span
-                overlap = max(0, min(end, g_end) - max(start, g_start))
-                if overlap > 0:
-                    label = str(g.get("label") or "")
-                    if out and out[-1].get("label") == label:
-                        out[-1]["span"] += overlap
-                    else:
-                        out.append({"label": label, "span": overlap})
-                pos = g_end
-            return out
-
-        def _render_chunk(start: int, end: int, chunk_idx: int, chunk_count: int) -> str:
-            chunk_headers = headers[start:end]
-            first_col_style, data_col_style = _mail_fit_col_styles(len(chunk_headers))
-            colgroup = _mail_colgroup_html(first_col_style, data_col_style, len(chunk_headers))
-            body_parts = []
-            for r in shown:
-                param_raw = str(r.get("_param", ""))
-                param = esc(str(r.get("_display") or param_raw or "").replace("KNOB_", "").replace("MASK_", "").replace("INLINE_", "").replace("VM_", ""))
-                cells = r.get("_cells") or {}
-                row_highlight = _is_module_highlight_param(param_raw, highlight_knobs)
-                hilite = _MODULE_KNOB_HILITE if row_highlight else ""
-                tds = [f"<td style='{td_first}{first_col_style}{hilite}'>{param}</td>"]
-                for i in range(start, end):
-                    cell = cells.get(i) or cells.get(str(i)) or {}
-                    actual = cell.get("actual")
-                    plan = cell.get("plan")
-                    disp = "" if actual is None or actual == "" else str(actual)
-                    plan_diff = plan is not None and plan != "" and plan != actual
-                    if plan_diff:
-                        disp_html = f"{esc(disp)} <span style='color:#ea580c;font-weight:700'>→ {esc(str(plan))}</span>"
-                    else:
-                        disp_html = esc(disp)
-                    # plan 이 있으면 plan 기준으로 컬러링해 SplitTable unique 색상과 맞춘다.
-                    paint_val = plan if plan not in (None, "") else actual
-                    cell_bg = _st_cell_bg(paint_val, uniq_map, param_raw)
-                    tds.append(f"<td style='{td_cell_base}{data_col_style}{cell_bg}{hilite}'>{disp_html}</td>")
-                body_parts.append("<tr>" + "".join(tds) + "</tr>")
-
-            thead_parts = []
-            if root_lot_id or lot_id_label:
-                root_label = esc(root_lot_id or lot_id_label)
-                if chunk_count > 1:
-                    root_label += f" <span style='font-size:{_MAIL_MIN_FONT};color:#6b7280;font-weight:600;'>({start + 1}-{end}/{len(headers)})</span>"
-                thead_parts.append(
-                    "<tr>"
-                    f"{_lot_context_th(th_style + first_col_style)}"
-                    f"<th colspan='{max(1, len(chunk_headers))}' style='{th_root}'>{root_label}</th>"
-                    "</tr>"
-                )
-            groups_for_chunk = _chunk_header_groups(start, end)
-            if groups_for_chunk:
-                cells = [f"<th style='{th_style}{first_col_style}'></th>"]
-                for g in groups_for_chunk:
-                    span = int(g.get("span") or 1)
-                    cells.append(f"<th colspan='{span}' style='{th_group}{_mail_data_col_style(data_col_style, span)}'>{esc(str(g.get('label') or ''))}</th>")
-                thead_parts.append("<tr>" + "".join(cells) + "</tr>")
-            head_cells = ["parameter"] + [esc(h or "") for h in chunk_headers]
-            thead_parts.append("<tr>" + "".join(
-                f"<th style='{th_style}{first_col_style if i == 0 else data_col_style}'>{c}</th>"
-                for i, c in enumerate(head_cells)
-            ) + "</tr>")
-            table_style = _mail_table_style(len(chunk_headers))
-            block_label = (
-                f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin:7px 0 3px 0;font-family:monospace;'>"
-                f"wafer columns {start + 1}-{end} / {len(headers)}</div>"
-                if chunk_count > 1 and not root_lot_id else ""
+                cells.append(f"<th colspan='{span}' style='{th_group}{_mail_data_col_style(data_col_style, span)}'>{esc(str(g.get('label') or '—'))}</th>")
+            thead_parts.append("<tr>" + "".join(cells) + "</tr>")
+        else:
+            thead_parts.append(
+                "<tr>"
+                f"<th style='{th_label}'>lot_id</th>"
+                f"<th colspan='{max(1, len(headers))}' style='{th_group}{_mail_data_col_style(data_col_style, len(headers))}'>{esc(lot_id_label or '—')}</th>"
+                "</tr>"
             )
-            return (
-                f"{block_label}"
-                f"<div style='width:100%;max-width:100%;margin-bottom:{'8px' if chunk_count > 1 else '0'};'>"
-                f"<table style='{table_style}'>"
-                f"{colgroup}"
-                f"<thead>{''.join(thead_parts)}</thead>"
-                f"<tbody>{''.join(body_parts)}</tbody>"
-                f"</table></div>"
-            )
-
-        ranges = [(i, min(len(headers), i + max_mail_cols)) for i in range(0, len(headers), max_mail_cols)]
-        tables_html = "".join(_render_chunk(start, end, idx, len(ranges)) for idx, (start, end) in enumerate(ranges))
+        head_cells = ["항목"] + [esc(h or "") for h in headers]
+        thead_parts.append("<tr>" + "".join(
+            f"<th style='{th_style}{first_col_style if i == 0 else data_col_style}'>{c}</th>"
+            for i, c in enumerate(head_cells)
+        ) + "</tr>")
+        table_style = _mail_scroll_table_style(len(headers))
+        table_html = (
+            "<div style='overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%'>"
+            f"<table style='{table_style}'>"
+            f"{colgroup}"
+            f"<thead>{''.join(thead_parts)}</thead>"
+            f"<tbody>{''.join(body_parts)}</tbody>"
+            "</table></div>"
+        )
         return (
             f"{hdr}{note_html}"
-            f"{tables_html}{trunc_html}{_plan_summary_html()}{_lineage_summary_html()}"
+            f"{table_html}{trunc_html}{_plan_summary_html()}{_lineage_summary_html()}"
         )
 
     # Legacy 2D path.
