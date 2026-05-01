@@ -855,6 +855,64 @@ def get_module_knob_map(request: Request):
     return {"knob_map": _load_module_knob_map()}
 
 
+@router.get("/modules/summary")
+def module_summary(request: Request, days: int = Query(30, ge=1, le=3650)):
+    """Module-wise Inform counts for the left summary pane.
+
+    Shape is intentionally a plain list for the frontend contract:
+    [{module, received, completed, in_progress, pending}].
+    """
+    me = current_user(request)
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
+    now = datetime.datetime.now()
+    cutoff = now - datetime.timedelta(days=days)
+
+    def in_window(entry: dict) -> bool:
+        raw = str(entry.get("created_at") or "")
+        if not raw:
+            return True
+        try:
+            ts = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if ts.tzinfo is not None:
+                ts = ts.astimezone().replace(tzinfo=None)
+            return ts >= cutoff
+        except Exception:
+            return True
+
+    cfg_modules = [
+        str(m or "").strip()
+        for m in (_load_config().get("modules") or DEFAULT_MODULES)
+        if str(m or "").strip()
+    ]
+    ordered = list(dict.fromkeys(cfg_modules))
+    buckets: dict[str, dict[str, int | str]] = {
+        mod: {"module": mod, "received": 0, "completed": 0, "in_progress": 0, "pending": 0}
+        for mod in ordered
+    }
+    items = _load_upgraded()
+    for entry in items:
+        if entry.get("parent_id"):
+            continue
+        if not in_window(entry):
+            continue
+        if not _visible_to(entry, me["username"], me.get("role", "user"), my_mods):
+            continue
+        mod = str(entry.get("module") or "").strip() or "기타"
+        if mod not in buckets:
+            buckets[mod] = {"module": mod, "received": 0, "completed": 0, "in_progress": 0, "pending": 0}
+            ordered.append(mod)
+        status = str(entry.get("flow_status") or "received")
+        if status == "completed":
+            buckets[mod]["completed"] = int(buckets[mod]["completed"]) + 1
+        elif status in ("in_progress", "reviewing"):
+            buckets[mod]["in_progress"] = int(buckets[mod]["in_progress"]) + 1
+            buckets[mod]["pending"] = int(buckets[mod]["pending"]) + 1
+        else:
+            buckets[mod]["received"] = int(buckets[mod]["received"]) + 1
+            buckets[mod]["pending"] = int(buckets[mod]["pending"]) + 1
+    return [buckets[m] for m in ordered]
+
+
 @router.post("/modules/knob-map")
 def set_module_knob_map(
     req: ModuleKnobMapReq,
@@ -862,6 +920,9 @@ def set_module_knob_map(
     _perm=Depends(require_page_admin("informs")),
 ):
     me = current_user(request)
+    from core.auth import is_page_admin
+    if me.get("role") != "admin" and not is_page_admin(me.get("username") or "", "informs"):
+        raise HTTPException(403, "admin or informs page_admin only")
     mod = (req.module or "").strip()
     if not mod:
         raise HTTPException(400, "module required")
