@@ -1655,7 +1655,7 @@ def _flowi_arguments_choices(missing: list[str], prompt: str, arguments: dict[st
                 "free_input": True,
                 "prompt": prompt,
             })
-        fields.append({"field": key, "choices": choices[:4], "free_input_label": placeholder})
+        fields.append({"field": key, "question": _flowi_field_question(key), "choices": choices[:4], "free_input_label": placeholder})
     return {"message": "또는 직접 입력해 주세요", "fields": fields}
 
 
@@ -2192,7 +2192,7 @@ def _flowi_preview_tool(preview: dict[str, Any], *, answer: str = "") -> dict[st
             "question": f"{first.get('field') or '필수값'} 값을 선택하거나 직접 입력해 주세요.",
             "choices": [c for c in choices if not c.get("free_input")][:3],
         }
-    return tool
+    return _flowi_set_inline_type(tool, "table")
 
 
 def _unit_feature_guidance(
@@ -2248,7 +2248,7 @@ def _unit_feature_guidance(
     if missing:
         answer += f"\n- 추가로 필요: {', '.join(missing)}"
     answer += "\nFlowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다."
-    return {
+    return _flowi_set_inline_type({
         "handled": True,
         "intent": action.get("intent", "unit_feature_guidance"),
         "answer": answer,
@@ -2265,7 +2265,7 @@ def _unit_feature_guidance(
             "rows": rows[:max(1, max_rows)],
             "total": len(rows),
         },
-    }
+    }, "table", prompt=prompt)
 
 
 def _feature_context(prompt: str, allowed_keys: set[str] | None = None) -> str:
@@ -3360,10 +3360,12 @@ def _dashboard_chart_data_for_stats(chart_result: dict[str, Any]) -> list[dict[s
 
 
 def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = "", username: str = "flowi") -> dict[str, Any]:
-    if not isinstance(tool, dict) or tool.get("feature") != "dashboard":
+    if not isinstance(tool, dict):
         return tool
     chart_result = tool.get("chart_result") if isinstance(tool.get("chart_result"), dict) else {}
     chart = tool.get("chart") if isinstance(tool.get("chart"), dict) else {}
+    if tool.get("feature") != "dashboard" and not (chart_result or chart):
+        return tool
     metrics = []
     if isinstance(tool.get("slots"), dict) and isinstance(tool["slots"].get("metrics"), list):
         metrics = [{"metric": m} for m in tool["slots"].get("metrics") if m]
@@ -3416,7 +3418,7 @@ def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = ""
             "chart_session_id": session_id,
         })
         tool["chart_result"] = chart_result
-    return tool
+    return _flowi_set_inline_type(tool, "chart", prompt=prompt)
 
 
 def _active_chart_session_id(agent_context: dict[str, Any] | None) -> str:
@@ -5526,6 +5528,126 @@ def _flowi_value_lookup_intent(prompt: str) -> bool:
 
 def _table_columns(keys: list[str]) -> list[dict[str, str]]:
     return [{"key": key, "label": key.upper()} for key in keys]
+
+
+_FLOWI_HIGHLIGHT_TERMS = (
+    "잘못", "틀린", "이상", "불일치", "안 맞", "안맞", "mismatch", "wrong", "fail", "ng"
+)
+
+
+def _flowi_wants_highlight(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return any(term in text or term in low for term in _FLOWI_HIGHLIGHT_TERMS)
+
+
+def _flowi_field_question(field: str) -> str:
+    labels = {
+        "product": "어느 제품인가요?",
+        "root_lot_ids": "어느 Root Lot인가요?",
+        "root_lot_id": "어느 Root Lot인가요?",
+        "lot_ids": "어느 Lot인가요?",
+        "fab_lot_ids": "어느 Fab Lot인가요?",
+        "root_lot_id_or_fab_lot_id": "어느 Lot인가요?",
+        "module": "어느 모듈인가요?",
+        "step": "어느 Step인가요?",
+        "metric": "어느 항목인가요?",
+        "metrics_or_items": "어느 항목인가요?",
+        "knob_value": "어떤 KNOB 값인가요?",
+        "source_type": "어느 Source인가요?",
+        "split_set": "어느 Split인가요?",
+        "note": "어떤 내용을 남길까요?",
+        "entries": "모듈별 Split을 어떻게 넣을까요?",
+        "wafer_ids": "어느 Wafer인가요?",
+        "plan_assignments": "Wafer별 plan 값을 어떻게 넣을까요?",
+        "keyword": "어떤 키워드로 찾을까요?",
+    }
+    return labels.get(str(field or ""), f"{field} 값을 알려주세요.")
+
+
+def _flowi_table_headers(table: dict[str, Any]) -> list[str]:
+    if not isinstance(table, dict):
+        return []
+    headers = table.get("headers")
+    if isinstance(headers, list) and headers:
+        return [str(h.get("label") if isinstance(h, dict) else h) for h in headers]
+    columns = table.get("columns") if isinstance(table.get("columns"), list) else []
+    out: list[str] = []
+    for col in columns:
+        if isinstance(col, dict):
+            out.append(str(col.get("label") or col.get("key") or ""))
+        else:
+            out.append(str(col or ""))
+    if out:
+        return out
+    rows = table.get("rows") if isinstance(table.get("rows"), list) else []
+    if rows and isinstance(rows[0], dict):
+        return [str(k) for k in rows[0].keys() if not str(k).startswith("__")]
+    return []
+
+
+def _flowi_prepare_inline_table(table: dict[str, Any] | None, *, highlight: bool = False) -> dict[str, Any] | None:
+    if not isinstance(table, dict):
+        return table
+    rows = table.get("rows") if isinstance(table.get("rows"), list) else []
+    columns = table.get("columns") if isinstance(table.get("columns"), list) else []
+    if not columns and rows and isinstance(rows[0], dict):
+        keys = [str(k) for k in rows[0].keys() if not str(k).startswith("__")]
+        table["columns"] = _table_columns(keys)
+    headers = _flowi_table_headers(table)
+    if headers and "headers" not in table:
+        table["headers"] = headers
+    table.setdefault("max_height", 320)
+    table.setdefault("overflow_x", True)
+    if highlight:
+        table["highlight"] = True
+        table.setdefault("highlight_reason", "사용자가 잘못된/불일치 셀 강조를 요청했습니다.")
+    return table
+
+
+def _flowi_inline_summary(tool: dict[str, Any]) -> str:
+    if not isinstance(tool, dict):
+        return ""
+    table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
+    chart = tool.get("chart_result") if isinstance(tool.get("chart_result"), dict) else (tool.get("chart") if isinstance(tool.get("chart"), dict) else {})
+    split_view = tool.get("split_view") if isinstance(tool.get("split_view"), dict) else {}
+    lot_list = tool.get("lot_list") if isinstance(tool.get("lot_list"), list) else []
+    if split_view:
+        total = split_view.get("total", len(split_view.get("rows") or []))
+        return f"{split_view.get('title') or 'SplitTable'} {total}개 셀"
+    if lot_list:
+        return f"Lot list {len(lot_list)}건"
+    if table:
+        total = table.get("total", len(table.get("rows") or []))
+        headers = _flowi_table_headers(table)
+        return f"{table.get('title') or table.get('kind') or 'Table'} {total} rows · {len(headers)} columns"
+    if chart:
+        return f"{chart.get('title') or chart.get('kind') or 'Chart'}"
+    return str(tool.get("action") or tool.get("intent") or "Flowi response")
+
+
+def _flowi_set_inline_type(tool: dict[str, Any], tool_type: str = "", *, prompt: str = "", highlight: bool | None = None) -> dict[str, Any]:
+    if not isinstance(tool, dict):
+        return tool
+    wants_highlight = _flowi_wants_highlight(prompt) if highlight is None else bool(highlight)
+    if isinstance(tool.get("table"), dict):
+        _flowi_prepare_inline_table(tool["table"], highlight=wants_highlight or bool(tool.get("highlight")))
+    if not tool_type:
+        if isinstance(tool.get("chart_result"), dict) or isinstance(tool.get("chart"), dict):
+            tool_type = "chart"
+        elif isinstance(tool.get("split_view"), dict):
+            tool_type = "split_view"
+        elif isinstance(tool.get("lot_list"), list):
+            tool_type = "lot_list"
+        elif isinstance(tool.get("table"), dict) or isinstance(tool.get("rows"), list) or isinstance(tool.get("knobs"), list):
+            tool_type = "table"
+        else:
+            tool_type = "message"
+    tool["type"] = tool_type
+    if wants_highlight:
+        tool["highlight"] = True
+    tool.setdefault("inline_summary", _flowi_inline_summary(tool))
+    return tool
 
 
 def _fab_files(product: str = "") -> list[Path]:
@@ -10407,7 +10529,8 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
         selected_knobs = knob_cols
 
     table = None
-    detail_requested = bool(q_tokens) or any(w in prompt for w in ("다", "전체", "테이블", "표", "보여"))
+    highlight = _flowi_wants_highlight(prompt)
+    detail_requested = highlight or bool(q_tokens) or any(w in prompt for w in ("다", "전체", "테이블", "표", "보여"))
     if detail_requested and selected_knobs:
         table_knobs = selected_knobs[:8]
         table_cols = [c for c in (product_col, root_col, lot_col, fab_col, wafer_col) if c] + table_knobs
@@ -10429,6 +10552,9 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
             table_rows = _sort_wafer_rows(tdf.to_dicts())[:80]
         except Exception:
             table_rows = []
+        if highlight:
+            for row in table_rows:
+                row["__highlight"] = True
         table_columns = []
         for key, label in [
             ("product", "PRODUCT"),
@@ -10492,14 +10618,17 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
         )
         lines.append(f"- {item.get('display_name')}: {val_txt}")
     answer = f"{lot_label} KNOB 요약입니다. {df.height} wafer row 기준, {len(summaries)}개 KNOB 중 {len(preview)}개를 표시합니다.\n" + "\n".join(lines)
-    return {
+    return _flowi_set_inline_type({
         "handled": True,
         "intent": "lot_knobs",
+        "action": "query_lot_knobs_from_ml_table",
         "answer": answer,
+        "feature": "splittable",
         "knobs": summaries,
+        "highlight": highlight,
         "table": table,
         "filters": {"lot": lot_matches, "product": sorted(aliases), "step": step, "group": group},
-    }
+    }, "table", prompt=prompt, highlight=highlight)
 
 
 def _is_rag_update_prompt(prompt: str) -> bool:
@@ -11011,15 +11140,27 @@ def _handle_fab_progress_query(prompt: str, product: str, max_rows: int) -> dict
     answer = f"{top.get('fab_lot_id') or top.get('root_lot_id') or (lots[0] if lots else '')} 현재 위치는 step_id={top.get('step_id') or '-'} 입니다."
     if top.get("tkout_time"):
         answer += f" 최신 시간: {top.get('tkout_time')}."
-    return {
+    lot_list = [
+        {
+            "product": r.get("product") or product_hint,
+            "root_lot": r.get("root_lot_id") or "",
+            "fab_lot": r.get("fab_lot_id") or r.get("lot_id") or "",
+            "wafer": r.get("wafer_id") or "",
+            "current_step": r.get("step_id") or "",
+            "tkout_time": r.get("tkout_time") or "",
+        }
+        for r in rows[:max(1, min(40, max_rows * 3))]
+    ]
+    return _flowi_set_inline_type({
         "handled": True,
         "intent": "fab_progress_lookup",
         "action": "query_fab_progress",
         "answer": answer,
         "feature": "filebrowser",
+        "lot_list": lot_list,
         "filters": {"product": product_hint, "root_lot_ids": roots, "fab_lot_ids": fabs},
         "table": {"kind": "fab_progress_lookup", "title": "FAB progress", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(80, max_rows * 4))]], "total": len(rows)},
-    }
+    }, "lot_list", prompt=prompt)
 
 
 def _handle_wafer_split_at_step(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
@@ -11076,15 +11217,30 @@ def _handle_wafer_split_at_step(prompt: str, product: str, max_rows: int) -> dic
             })
     cols_out = ["product", "root_lot_id", "fab_lot_id", "lot_id", "wafer_id", "step", "parameter", "value"]
     answer = f"{args.get('step')} 기준 wafer split 조합 {len(rows)}개를 찾았습니다." if rows else "조건에 맞는 wafer split 값을 찾지 못했습니다."
-    return {
+    wafer_headers = [w for w in dict.fromkeys(_normalize_wafer_id(r.get("wafer_id")) or _text(r.get("wafer_id")) for r in rows) if w]
+    split_rows = []
+    for param in dict.fromkeys(_text(r.get("parameter")) for r in rows if _text(r.get("parameter"))):
+        cells = []
+        for wf in wafer_headers:
+            match = next((r for r in rows if _text(r.get("parameter")) == param and (_normalize_wafer_id(r.get("wafer_id")) or _text(r.get("wafer_id"))) == wf), {})
+            cells.append({
+                "wafer_id": wf,
+                "actual": match.get("value") or "",
+                "plan": "",
+                "mismatch": False,
+                "highlight": False,
+            })
+        split_rows.append({"parameter": param, "display": param.replace("KNOB_", "").replace("MASK_", ""), "cells": cells})
+    return _flowi_set_inline_type({
         "handled": True,
         "intent": "wafer_split_at_step",
         "action": "query_wafer_split_at_step",
         "answer": answer,
         "feature": "splittable",
+        "split_view": {"kind": "wafer_split_at_step", "title": "Wafer split at step", "headers": [f"#{w}" for w in wafer_headers], "rows": split_rows, "total": len(rows), "row_label": "KNOB/MASK"},
         "table": {"kind": "wafer_split_at_step", "title": "Wafer split at step", "placement": "below", "columns": _table_columns(cols_out), "rows": rows[:max(1, min(120, max_rows * 8))], "total": len(rows)},
         "filters": {"product": product_hint, "step": args.get("step"), "root_lot_ids": args.get("root_lot_ids"), "fab_lot_ids": args.get("fab_lot_ids"), "wafer_ids": args.get("wafer_ids")},
-    }
+    }, "split_view", prompt=prompt)
 
 
 def _handle_find_lots_by_knob_value(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
@@ -11153,15 +11309,29 @@ def _handle_find_lots_by_knob_value(prompt: str, product: str, max_rows: int) ->
     limit = max(1, min(100, int(args.get("limit") or max_rows or 10)))
     cols_out = ["product", "root_lot_id", "lot_id", "fab_lot_id", "wafer_id", "step", "knob", "knob_value", "current_step", "current_func_step", "tkout_time"]
     answer = f"{args.get('step')}에서 {knob_value} 값을 받은 lot/wafer {len(rows)}건을 FAB 진행 위치와 연결했습니다." if rows else f"{knob_value} 조건의 lot을 찾지 못했습니다."
-    return {
+    lot_list = [
+        {
+            "product": r.get("product") or product_hint,
+            "root_lot": r.get("root_lot_id") or "",
+            "fab_lot": r.get("fab_lot_id") or r.get("lot_id") or "",
+            "wafer": r.get("wafer_id") or "",
+            "current_step": r.get("current_step") or r.get("current_func_step") or "",
+            "tkout_time": r.get("tkout_time") or "",
+            "knob": r.get("knob") or "",
+            "knob_value": r.get("knob_value") or knob_value,
+        }
+        for r in rows[:limit]
+    ]
+    return _flowi_set_inline_type({
         "handled": True,
         "intent": "knob_value_lot_search",
         "action": "find_lots_by_knob_value",
         "answer": answer,
         "feature": "splittable",
+        "lot_list": lot_list,
         "table": {"kind": "knob_value_lot_search", "title": "Lots by KNOB value", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:limit]], "total": len(rows)},
         "filters": {"product": product_hint, "step": args.get("step"), "knob_value": knob_value, "sort": args.get("sort") or "earliest_progress"},
-    }
+    }, "lot_list", prompt=prompt)
 
 
 def _handle_metric_at_step(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
@@ -11239,15 +11409,218 @@ def _handle_metric_at_step(prompt: str, product: str, max_rows: int) -> dict[str
             pass
     cols_out = ["source_type", "product", "root_lot_id", "wafer_id", "step_id", "metric", "value", "count"]
     answer = f"{args.get('step')} {metric} {agg} 집계 {len(rows)}건입니다." if rows else f"{args.get('step')} {metric} 측정값을 찾지 못했습니다."
-    return {
+    highlight = _flowi_wants_highlight(prompt)
+    table_rows = [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]]
+    if highlight:
+        for row in table_rows[:1]:
+            row["__highlight"] = True
+    return _flowi_set_inline_type({
         "handled": True,
         "intent": "metric_at_step_lookup",
         "action": "query_metric_at_step",
         "answer": answer,
         "feature": "filebrowser",
-        "table": {"kind": "metric_at_step", "title": "Metric at step", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]], "total": len(rows)},
+        "highlight": highlight,
+        "table": {"kind": "metric_at_step", "title": "Metric at step", "placement": "below", "columns": _table_columns(cols_out), "rows": table_rows, "total": len(rows)},
         "filters": {"product": product_hint, "step": args.get("step"), "metric": metric, "agg": agg, "root_lot_ids": args.get("root_lot_ids"), "fab_lot_ids": args.get("fab_lot_ids"), "wafer_ids": args.get("wafer_ids")},
-    }
+    }, "table", prompt=prompt, highlight=highlight)
+
+
+def _flowi_splittable_plan_mismatch_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    has_plan = any(t in low or t in text for t in ("plan", "계획", "플랜"))
+    has_wrong = _flowi_wants_highlight(text) or any(t in low or t in text for t in ("불일치", "mismatch", "다른", "달라"))
+    has_view = any(t in low or t in text for t in ("보여", "찾", "조회", "확인", "show", "list"))
+    return has_plan and has_wrong and (has_view or bool(_lot_tokens(text)))
+
+
+def _flowi_plan_value(raw: Any) -> str:
+    if isinstance(raw, dict):
+        raw = raw.get("value")
+    val = "" if raw is None else str(raw)
+    return "" if val in {"None", "null"} else val
+
+
+def _handle_splittable_plan_mismatch_query(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    if not _flowi_splittable_plan_mismatch_intent(prompt):
+        return {"handled": False}
+    classified = _classified_lot_tokens(prompt)
+    product_hint = _flowi_splittable_product_id(_product_hint(prompt, product))
+    product_aliases = _product_aliases(product_hint) if product_hint else set()
+    raw_lots = [*(classified.get("root_lot_ids") or []), *_lot_tokens(prompt)]
+    lot_matches = [
+        lot for lot in dict.fromkeys(_upper(x) for x in raw_lots if x)
+        if lot not in product_aliases and not lot.startswith("PROD")
+    ]
+    root_lot_id = _upper((lot_matches or [""])[0])
+    if "." in root_lot_id:
+        root_lot_id = root_lot_id.split(".", 1)[0]
+    product_choices: list[dict[str, Any]] = []
+    if not product_hint and root_lot_id:
+        candidates = _resolve_products_for_lots([root_lot_id], kinds=("ML_TABLE",), limit=6)
+        seen_products = []
+        for c in candidates:
+            prod = _flowi_splittable_product_id(c.get("product") or "")
+            if prod and prod not in seen_products:
+                seen_products.append(prod)
+        if len(seen_products) == 1:
+            product_hint = seen_products[0]
+        elif len(seen_products) > 1:
+            product_choices = [
+                {
+                    "id": str(i + 1),
+                    "label": str(i + 1),
+                    "title": prod,
+                    "value": prod,
+                    "recommended": i == 0,
+                    "description": f"{prod} SplitTable에서 mismatch를 조회",
+                    "prompt": f"{prompt} {prod}",
+                }
+                for i, prod in enumerate(seen_products[:3])
+            ]
+    missing = []
+    if not product_hint:
+        missing.append("product")
+    if not root_lot_id:
+        missing.append("root_lot_id")
+    if missing:
+        tool = {
+            "handled": True,
+            "intent": "splittable_plan_mismatch",
+            "action": "query_lot_knobs_from_ml_table",
+            "answer": "SplitTable plan과 actual이 다른 셀을 보려면 product와 lot이 필요합니다.",
+            "feature": "splittable",
+            "missing": missing,
+            "arguments_choices": _flowi_arguments_choices(missing, prompt, {"product": product_hint, "root_lot_ids": [root_lot_id] if root_lot_id else []}),
+        }
+        if product_choices:
+            tool["clarification"] = {"question": "어느 SplitTable product에서 볼까요?", "choices": product_choices}
+        return _flowi_set_inline_type(tool, "message", prompt=prompt, highlight=True)
+    files = _ml_files(product_hint)
+    if not files:
+        return _flowi_set_inline_type({
+            "handled": True,
+            "intent": "splittable_plan_mismatch",
+            "action": "query_lot_knobs_from_ml_table",
+            "answer": f"{product_hint} ML_TABLE parquet을 찾지 못했습니다.",
+            "feature": "splittable",
+            "highlight": True,
+        }, "message", prompt=prompt, highlight=True)
+    try:
+        lf = _scan_parquet(files)
+        cols = _schema_names(lf)
+        product_col = _ci_col(cols, "product", "PRODUCT")
+        root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+        lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+        fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
+        wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+        if product_hint and product_col:
+            lf = lf.filter(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(_product_aliases(product_hint))))
+        lot_expr = _or_contains([c for c in (root_col, lot_col, fab_col) if c], [root_lot_id])
+        if lot_expr is not None:
+            lf = lf.filter(lot_expr)
+        split_cols = [c for c in cols if _upper(c).startswith(("KNOB_", "MASK_", "FAB_"))]
+        plans = load_json(PATHS.data_root / "splittable" / f"{product_hint}.json", {}).get("plans", {})
+        planned_cols = []
+        planned_wafers = []
+        if isinstance(plans, dict):
+            for key, value in plans.items():
+                parts = str(key or "").split("|")
+                if len(parts) < 3 or _upper(parts[0]) != root_lot_id or not _flowi_plan_value(value):
+                    continue
+                wf = _normalize_wafer_id(parts[1])
+                col = parts[2]
+                if wf and col not in planned_cols:
+                    planned_cols.append(col)
+                if wf and wf not in planned_wafers:
+                    planned_wafers.append(wf)
+        selected_cols = [c for c in planned_cols if c in cols] or split_cols[:30]
+        keep = [c for c in (product_col, root_col, lot_col, fab_col, wafer_col) if c] + [c for c in selected_cols if c in cols]
+        if not keep:
+            return {"handled": False}
+        df = lf.select([pl.col(c).cast(_STR, strict=False).alias(c) for c in keep]).limit(5000).collect()
+    except Exception as e:
+        return _flowi_set_inline_type({
+            "handled": True,
+            "intent": "splittable_plan_mismatch",
+            "action": "query_lot_knobs_from_ml_table",
+            "answer": f"SplitTable mismatch 조회 실패: {e}",
+            "feature": "splittable",
+            "highlight": True,
+        }, "message", prompt=prompt, highlight=True)
+    rows: list[dict[str, Any]] = []
+    for rec in df.to_dicts():
+        root = _upper(_text(rec.get(root_col))) if root_col else root_lot_id
+        if not root:
+            root = root_lot_id
+        wafer = _normalize_wafer_id(rec.get(wafer_col)) if wafer_col else ""
+        if not wafer:
+            continue
+        for col in selected_cols:
+            key = f"{root}|{wafer}|{col}"
+            plan = _flowi_plan_value((plans or {}).get(key) if isinstance(plans, dict) else "")
+            if not plan:
+                continue
+            actual = _flowi_plan_value(rec.get(col) if col in rec else "")
+            status = "plan_only"
+            mismatch = False
+            if actual:
+                mismatch = str(plan) != str(actual)
+                status = "mismatch" if mismatch else "match"
+            if status != "mismatch":
+                continue
+            rows.append({
+                "product": rec.get(product_col) if product_col else product_hint,
+                "root_lot_id": root,
+                "fab_lot_id": rec.get(fab_col) if fab_col else "",
+                "lot_id": rec.get(lot_col) if lot_col else "",
+                "wafer_id": wafer,
+                "parameter": col,
+                "actual": actual,
+                "plan": plan,
+                "status": status,
+                "__highlight": True,
+            })
+    rows = _sort_wafer_rows(rows)
+    wafer_headers = [w for w in dict.fromkeys(r.get("wafer_id") for r in rows if r.get("wafer_id"))]
+    split_rows = []
+    for param in dict.fromkeys(r.get("parameter") for r in rows if r.get("parameter")):
+        cells = []
+        for wf in wafer_headers:
+            match = next((r for r in rows if r.get("parameter") == param and r.get("wafer_id") == wf), {})
+            cells.append({
+                "wafer_id": wf,
+                "actual": match.get("actual") or "",
+                "plan": match.get("plan") or "",
+                "mismatch": bool(match),
+                "highlight": bool(match),
+            })
+        split_rows.append({"parameter": param, "display": str(param or "").replace("KNOB_", "").replace("MASK_", "").replace("FAB_", ""), "cells": cells})
+    limit = max(1, min(120, max_rows * 8))
+    answer = (
+        f"{product_hint} {root_lot_id}에서 plan과 actual이 다른 셀 {len(rows)}개를 찾았습니다."
+        if rows else f"{product_hint} {root_lot_id}에서 plan과 actual이 다른 셀을 찾지 못했습니다."
+    )
+    cols_out = ["product", "root_lot_id", "fab_lot_id", "lot_id", "wafer_id", "parameter", "actual", "plan", "status"]
+    return _flowi_set_inline_type({
+        "handled": True,
+        "intent": "splittable_plan_mismatch",
+        "action": "query_lot_knobs_from_ml_table",
+        "answer": answer,
+        "feature": "splittable",
+        "highlight": True,
+        "split_view": {
+            "kind": "splittable_plan_mismatch",
+            "title": "SplitTable plan mismatch",
+            "headers": [f"#{w}" for w in wafer_headers],
+            "rows": split_rows,
+            "total": len(rows),
+            "row_label": "KNOB/MASK",
+        },
+        "table": {"kind": "splittable_plan_mismatch", "title": "SplitTable plan mismatch", "placement": "below", "columns": _table_columns(cols_out), "rows": [{**{k: r.get(k, "") for k in cols_out}, "__highlight": True} for r in rows[:limit]], "total": len(rows), "highlight": True},
+        "filters": {"product": product_hint, "root_lot_ids": [root_lot_id], "planned_wafers": planned_wafers},
+    }, "split_view", prompt=prompt, highlight=True)
 
 
 def _handle_filebrowser_data_preview(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
@@ -11877,6 +12250,9 @@ def _handle_flowi_query(
         knob_value_out = _handle_find_lots_by_knob_value(prompt, product, max_rows)
         if knob_value_out.get("handled"):
             return knob_value_out
+        mismatch_out = _handle_splittable_plan_mismatch_query(prompt, product, max_rows)
+        if mismatch_out.get("handled"):
+            return mismatch_out
         for handler in (_handle_teg_radius_lookup, _handle_teg_position_lookup, _handle_wafer_map_chart, _handle_wafer_map_similarity):
             wafer_out = handler(prompt, product, max_rows)
             if wafer_out.get("handled"):
@@ -12182,6 +12558,7 @@ def _finalize_flowi_tool(
 ) -> dict[str, Any]:
     if not isinstance(tool, dict):
         return tool
+    _flowi_set_inline_type(tool)
     _limit_flowi_choices(tool, 3)
     tool["workflow_state"] = _flowi_workflow_state(tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
     tool["next_actions"] = _flowi_next_actions(tool)
@@ -12421,13 +12798,26 @@ def _attach_flowi_trace(
 
 
 _FLOWI_HOME_USER_TOOL_KEYS = {
+    "type",
     "answer",
+    "inline_summary",
+    "action",
+    "feature",
+    "feature_entrypoints",
     "clarification",
     "table",
     "rows",
     "knobs",
+    "lot_list",
+    "split_view",
     "chart",
     "chart_result",
+    "chart_type",
+    "chart_session_id",
+    "config",
+    "data",
+    "fit",
+    "stats_table",
     "samples_table",
     "module_summary",
     "summary",
@@ -12440,6 +12830,10 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "walkthrough",
     "draft_id",
     "session_id",
+    "slots",
+    "filters",
+    "highlight",
+    "highlights",
     "side_effect",
     "blocked",
     "reject_reason",
@@ -12474,7 +12868,7 @@ def _flowi_home_response_for_role(result: dict[str, Any], me: dict[str, Any]) ->
                 continue
             safe = {
                 key: choice.get(key)
-                for key in ("id", "label", "title", "description", "prompt", "tab", "feature", "recommended")
+                for key in ("id", "label", "title", "description", "prompt", "tab", "feature", "value", "recommended")
                 if key in choice
             }
             safe_choices.append(safe)
@@ -13166,7 +13560,7 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
         return True
     if intent.startswith("inform_"):
         return True
-    if intent in {"wafer_split_at_step", "knob_value_lot_search", "metric_at_step_lookup", "fab_progress_lookup", "filebrowser_data_preview", "filebrowser_schema_search"}:
+    if intent in {"lot_knobs", "splittable_plan_mismatch", "wafer_split_at_step", "knob_value_lot_search", "metric_at_step_lookup", "fab_progress_lookup", "filebrowser_data_preview", "filebrowser_schema_search"}:
         return True
     if isinstance(tool.get("chart_result"), dict):
         return True

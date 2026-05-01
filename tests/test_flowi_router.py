@@ -240,6 +240,7 @@ def test_flowi_chart_request_computes_inline_et_scatter(tmp_path, monkeypatch):
     )
 
     assert out["handled"] is True
+    assert out["type"] == "chart"
     assert out["chart"]["status"] == "computed"
     assert out["chart_result"]["kind"] == "dashboard_scatter"
     assert out["chart_result"]["total"] == 2
@@ -481,6 +482,121 @@ def test_flowi_value_lookup_returns_mltable_preview(tmp_path, monkeypatch):
     assert out["table"]["kind"] == "flowi_db_table"
     assert out["table"]["total"] == 2
     assert {row["KNOB_ALPHA"] for row in out["table"]["rows"]} == {"ON", "OFF"}
+
+
+def test_flowi_lot_knob_query_returns_inline_table_with_highlight(tmp_path, monkeypatch):
+    ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "R1000", "wafer_id": "01", "KNOB_ALPHA": "ON", "MASK_A": "M1"},
+        {"product": "PRODX", "root_lot_id": "R1000", "wafer_id": "02", "KNOB_ALPHA": "OFF", "MASK_A": "M1"},
+    ]).write_parquet(ml_fp)
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+
+    out = _handle_flowi_query(
+        "PRODX R1000 KNOB 잘못된거 표로 보여줘",
+        "",
+        12,
+        allowed_keys={"splittable"},
+    )
+
+    assert out["handled"] is True
+    assert out["type"] == "table"
+    assert out["action"] == "query_lot_knobs_from_ml_table"
+    assert out["highlight"] is True
+    assert out["table"]["headers"]
+    assert out["table"]["highlight"] is True
+    assert out["table"]["rows"][0]["__highlight"] is True
+
+
+def test_flowi_splittable_plan_mismatch_returns_split_view(tmp_path, monkeypatch):
+    ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "R1000", "wafer_id": "01", "KNOB_ALPHA": "ACTUAL_A"},
+        {"product": "PRODX", "root_lot_id": "R1000", "wafer_id": "02", "KNOB_ALPHA": "PLAN_B"},
+    ]).write_parquet(ml_fp)
+    data_root = tmp_path / "flow-data"
+    plan_dir = data_root / "splittable"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "ML_TABLE_PRODX.json").write_text(
+        '{"plans":{"R1000|1|KNOB_ALPHA":{"value":"PLAN_A"},"R1000|2|KNOB_ALPHA":{"value":"PLAN_B"}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(llm_router.PATHS, "data_root", data_root)
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+
+    out = _handle_flowi_query(
+        "PRODX R1000 plan 세운거 잘못된거 보여줘",
+        "",
+        12,
+        allowed_keys={"splittable"},
+    )
+
+    assert out["handled"] is True
+    assert out["type"] == "split_view"
+    assert out["intent"] == "splittable_plan_mismatch"
+    assert out["highlight"] is True
+    assert out["split_view"]["headers"] == ["#1"]
+    assert out["split_view"]["rows"][0]["cells"][0]["mismatch"] is True
+    assert out["table"]["rows"][0]["actual"] == "ACTUAL_A"
+    assert out["table"]["rows"][0]["plan"] == "PLAN_A"
+
+
+def test_flowi_wafer_split_and_lot_list_inline_shapes(tmp_path, monkeypatch):
+    ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "R1000", "wafer_id": "01", "func_step": "24.0 SORT", "KNOB_ALPHA": "PPID_24_3"},
+        {"product": "PRODX", "root_lot_id": "R2000", "wafer_id": "01", "func_step": "24.0 SORT", "KNOB_ALPHA": "PPID_24_3"},
+    ]).write_parquet(ml_fp)
+    fab_fp = tmp_path / "fab.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "R1000", "lot_id": "R1000A.1", "fab_lot_id": "R1000A.1", "wafer_id": "01", "step_id": "STEP_010", "tkout_time": "2026-04-29T08:00:00"},
+        {"product": "PRODX", "root_lot_id": "R2000", "lot_id": "R2000A.1", "fab_lot_id": "R2000A.1", "wafer_id": "01", "step_id": "STEP_020", "tkout_time": "2026-04-29T09:00:00"},
+    ]).write_parquet(fab_fp)
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+    monkeypatch.setattr(llm_router, "_fab_files", lambda _product: [fab_fp])
+
+    split = _handle_flowi_query(
+        "PRODX R1000 #1 24.0 SORT Split이 뭐야?",
+        "",
+        12,
+        allowed_keys={"splittable"},
+    )
+    assert split["handled"] is True
+    assert split["type"] == "split_view"
+    assert split["split_view"]["headers"] == ["#1"]
+    assert split["table"]["headers"]
+
+    lots = _handle_flowi_query(
+        "24.0 SORT PPID_24_3인 자재 가장 빠른게 어디에 있어?",
+        "",
+        12,
+        allowed_keys={"splittable"},
+    )
+    assert lots["handled"] is True
+    assert lots["type"] == "lot_list"
+    assert lots["lot_list"]
+    assert {"root_lot", "fab_lot", "wafer", "current_step"} <= set(lots["lot_list"][0])
+
+
+def test_flowi_fab_progress_returns_inline_lot_list(tmp_path, monkeypatch):
+    fab_fp = tmp_path / "fab.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "R1000", "lot_id": "R1000A.1", "fab_lot_id": "R1000A.1", "wafer_id": "01", "step_id": "STEP_010", "process_id": "PROC", "tkout_time": "2026-04-29T08:00:00"},
+        {"product": "PRODX", "root_lot_id": "R1000", "lot_id": "R1000A.1", "fab_lot_id": "R1000A.1", "wafer_id": "01", "step_id": "STEP_020", "process_id": "PROC", "tkout_time": "2026-04-29T10:00:00"},
+    ]).write_parquet(fab_fp)
+    monkeypatch.setattr(llm_router, "_fab_files", lambda _product: [fab_fp])
+
+    out = _handle_flowi_query(
+        "R1000 어디에 있어?",
+        "",
+        12,
+        allowed_keys={"filebrowser"},
+    )
+
+    assert out["handled"] is True
+    assert out["type"] == "lot_list"
+    assert out["action"] == "query_fab_progress"
+    assert out["lot_list"][0]["current_step"] == "STEP_020"
 
 
 def test_flowi_knob_fastest_lot_joins_latest_fab_step(tmp_path, monkeypatch):
@@ -731,6 +847,8 @@ def test_flowi_inform_batch_and_edge_choices(monkeypatch):
     assert mail["validation"]["missing"] == ["module"]
     fields = mail["arguments_choices"]["fields"]
     assert fields and fields[0]["field"] == "module"
+    assert fields[0]["question"] == "어느 모듈인가요?"
+    assert all("label" in c and "value" in c for c in fields[0]["choices"][:3])
     assert [c["value"] for c in fields[0]["choices"][:3]] == ["GATE", "STI", "PC"]
 
     split = llm_router._structure_flowi_function_call("A1002 #1 24.0 SORT Split")

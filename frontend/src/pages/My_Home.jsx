@@ -169,7 +169,7 @@ function FlowiConsole({onNavigate,user}){
           ?<div key={m.id} style={{display:"flex",justifyContent:"flex-end",margin:"0 0 10px"}}>
             <div style={{maxWidth:"82%",background:"#1f130b",border:"1px solid #7c2d12",borderRadius:"10px 10px 2px 10px",padding:"8px 10px",color:"#f5f5f5",fontSize:14,lineHeight:1.55,whiteSpace:"pre-wrap"}}>{m.text}</div>
           </div>
-          :<div key={m.id} style={{margin:"0 0 14px",maxWidth:"92%"}}>
+          :<div key={m.id} style={{margin:"0 0 16px",maxWidth:"100%"}}>
             <div style={{fontSize:14,color:"#737373",fontFamily:"monospace",marginBottom:4}}>flow-i{isAdmin&&m.intent?` · ${m.intent}`:""}</div>
             <FlowiResult busy={false} error="" result={m.result} prompt={m.prompt} onNavigate={onNavigate} onChoice={ask} embedded isAdmin={isAdmin} activeChartSessionId={activeChartSessionId} onUseChartSession={setActiveChartSessionId}/>
           </div>)}
@@ -227,34 +227,41 @@ function FlowiPersonaCard({card,open,onToggle}){
   </div>);
 }
 
+const FLOWI_ACTION_BTN={fontSize:14,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:6,padding:"4px 8px",background:"#1f130b",cursor:"pointer",fontWeight:800,whiteSpace:"nowrap"};
+
 function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=false,isAdmin=false,activeChartSessionId="",onUseChartSession=null}){
   if(busy)return <div style={{marginTop:embedded?0:10,fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
   if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:14,border:"1px solid #7f1d1d"}}>{error}</div>;
   if(!result)return null;
   const tool=result.tool||{};
-  const table=tool.table&&Array.isArray(tool.table.rows)&&Array.isArray(tool.table.columns)?tool.table:null;
-  const rows=Array.isArray(tool.rows)?tool.rows:[];
-  const knobs=Array.isArray(tool.knobs)?tool.knobs:[];
-  const canNavigate=typeof onNavigate==="function";
-  const featureEntries=Array.isArray(tool.feature_entrypoints)?tool.feature_entrypoints.slice(0,3):[];
+  const table=tool.table&&Array.isArray(tool.table.rows)?tool.table:null;
   const choices=Array.isArray(tool?.clarification?.choices)?tool.clarification.choices.slice(0,3):[];
   const argumentChoices=tool.arguments_choices||result.arguments_choices||{};
+  const hasArgumentChoices=argumentChoices&&Array.isArray(argumentChoices.fields)&&argumentChoices.fields.length>0;
   const walkthrough=tool.walkthrough||{};
   const workflow=tool.workflow_state||result.workflow_state||{};
   const nextActions=(Array.isArray(tool.next_actions)?tool.next_actions:(Array.isArray(result.next_actions)?result.next_actions:[])).filter(a=>a&&a.type!=="respond_with_prompt").slice(0,6);
   const chart=tool?.chart&&typeof tool.chart==="object"?tool.chart:null;
   const chartResult=tool?.chart_result&&typeof tool.chart_result==="object"?tool.chart_result:null;
   const chartSessionId=tool?.chart_session_id||chartResult?.chart_session_id||"";
-  return(<div style={{marginTop:embedded?0:12,borderTop:embedded?"none":"1px solid #262626",paddingTop:embedded?0:10}}>
-    <div style={{whiteSpace:"pre-wrap",fontSize:14,lineHeight:1.65,color:"#d4d4d4"}}>{result.answer||"응답이 없습니다."}</div>
+  const summary=flowiResultSummary(tool,result);
+  const actions=flowiResultActions(tool,table,chartResult,onNavigate);
+  const emptyHint=!result.answer&&(tool.missing||hasArgumentChoices)
+    ?"필요한 조건이 조금 더 있어요. 아래 선택지나 직접 입력으로 이어서 알려주세요."
+    :"표시할 결과가 비어 있습니다. 조건을 조금 더 좁혀서 다시 물어봐 주세요.";
+  return(<div style={{width:"100%",boxSizing:"border-box",marginTop:embedded?0:12,border:embedded?"1px solid #2a2a2a":"1px solid #333",borderRadius:10,padding:12,background:"#111",overflow:"hidden"}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:8}}>
+      <div style={{minWidth:0,fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{summary}</div>
+      {actions.length>0&&<div style={{display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",flexWrap:"wrap"}}>{actions.map(a=><button key={a.key} type="button" onClick={a.onClick} title={a.title} style={FLOWI_ACTION_BTN}>{a.label}</button>)}</div>}
+    </div>
+    <FlowiMarkdown text={result.answer||emptyHint}/>
     {isAdmin&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
       {tool.intent&&<span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
       {workflow.status&&<span style={{fontSize:14,color:workflow.status.startsWith("awaiting")?"#f97316":workflow.status==="blocked"?"#ef4444":"#22c55e",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{workflow.status}</span>}
       {result.llm&&<span style={{fontSize:14,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
-      {featureEntries.map(ep=>canNavigate?<button key={ep.key} type="button" onClick={()=>onNavigate(ep.key)} title={ep.description||""} style={{fontSize:14,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 8px",background:"#1f130b",cursor:"pointer"}}>{ep.title} 열기</button>:<span key={ep.key} title={ep.description||""} style={{fontSize:14,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 7px"}}>{ep.title}</span>)}
     </div>}
     {isAdmin&&<FlowiTrace trace={result.trace}/>}
-    {chartResult&&<FlowiScatterResult data={chartResult}/>}
+    <FlowiInlineContent tool={tool} table={table} chart={chart} chartResult={chartResult}/>
     {chartSessionId&&<div style={{marginTop:8,display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
       <button type="button" onClick={()=>onUseChartSession&&onUseChartSession(chartSessionId)}
         style={{fontSize:14,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"3px 9px",background:activeChartSessionId===chartSessionId?"#2a1608":"#1f130b",cursor:"pointer",fontWeight:900}}>
@@ -262,29 +269,167 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
       </button>
       <span style={{fontSize:14,color:"#737373",fontFamily:"monospace"}}>{String(chartSessionId).slice(0,12)}</span>
     </div>}
-    {chart&&<FlowiChartPlan chart={chart}/>}
     {walkthrough&&walkthrough.session_id&&<FlowiWalkthrough data={walkthrough}/>}
-    {table&&<FlowiDataTable table={table}/>}
-    {!table&&rows.length>0&&<div style={{marginTop:10,overflowX:"auto"}}>
-      <table style={{width:"100%",borderCollapse:"collapse",fontSize:14,fontFamily:"monospace"}}>
-        <thead><tr>{["product","step","item","wf","median","mean","n"].map(h=><th key={h} style={{textAlign:"left",padding:"5px 6px",borderBottom:"1px solid #333",color:"#a3a3a3"}}>{h}</th>)}</tr></thead>
-        <tbody>{rows.slice(0,12).map((r,i)=><tr key={i}>
-          <td style={FR_TD}>{r.product||""}</td><td style={FR_TD}>{r.step_id||""}</td><td style={FR_TD}>{r.item_id||""}</td><td style={FR_TD}>{r.wafer_id||""}</td>
-          <td style={FR_TD}>{r.median??""}</td><td style={FR_TD}>{r.mean??""}</td><td style={FR_TD}>{r.count??""}</td>
+    {isAdmin&&nextActions.length>0&&<FlowiNextActions actions={nextActions} onNavigate={onNavigate} onChoice={onChoice}/>}
+    <FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>
+    {choices.length>0&&!hasArgumentChoices&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice} onNavigate={onNavigate}/>}
+    {hasArgumentChoices&&<FlowiArgumentChoices data={argumentChoices} basePrompt={prompt} onChoice={onChoice}/>}
+  </div>);
+}
+
+function FlowiMarkdown({text}){
+  return <div style={{whiteSpace:"pre-wrap",fontSize:14,lineHeight:1.65,color:"#d4d4d4",overflowWrap:"anywhere"}}>{text}</div>;
+}
+
+function flowiTableColumns(table){
+  const rows=Array.isArray(table?.rows)?table.rows:[];
+  const cols=Array.isArray(table?.columns)?table.columns:[];
+  if(cols.length)return cols.map(c=>typeof c==="string"?{key:c,label:c}:{key:c.key||c.label,label:c.label||c.key}).filter(c=>c.key);
+  if(rows.length&&rows[0]&&typeof rows[0]==="object")return Object.keys(rows[0]).filter(k=>!String(k).startsWith("__")).map(k=>({key:k,label:k}));
+  return [];
+}
+
+function flowiResultType(tool,table,chartResult){
+  if(tool?.type)return String(tool.type);
+  if(chartResult||tool?.chart)return "chart";
+  if(tool?.split_view)return "split_view";
+  if(Array.isArray(tool?.lot_list))return "lot_list";
+  if(table||Array.isArray(tool?.rows)||Array.isArray(tool?.knobs))return "table";
+  return "message";
+}
+
+function flowiResultSummary(tool,result){
+  if(tool?.inline_summary)return tool.inline_summary;
+  const table=tool?.table;
+  const chart=tool?.chart_result||tool?.chart;
+  if(tool?.split_view)return `${tool.split_view.title||"SplitTable"} ${tool.split_view.total??(tool.split_view.rows||[]).length}개 셀`;
+  if(Array.isArray(tool?.lot_list)&&tool.lot_list.length)return `Lot list ${tool.lot_list.length}건`;
+  if(table&&Array.isArray(table.rows)){
+    const cols=flowiTableColumns(table);
+    return `${table.title||table.kind||"Flowi table"} ${table.total??table.rows.length} rows · ${cols.length} columns`;
+  }
+  if(chart)return chart.title||chart.kind||"Flowi chart";
+  return result?.answer?"Flowi 응답":"Flowi 결과";
+}
+
+function flowiResultActions(tool,table,chartResult,onNavigate){
+  const items=[];
+  const canNav=typeof onNavigate==="function";
+  const feature=tool?.feature||"";
+  const kind=String(table?.kind||tool?.split_view?.kind||"").toLowerCase();
+  const addNav=(key,label,title)=>{if(canNav&&!items.some(x=>x.key===`nav-${key}`))items.push({key:`nav-${key}`,label,title,onClick:()=>onNavigate(key)});};
+  if(feature==="splittable"||kind.includes("split")||kind.includes("knob"))addNav("splittable","전체화면 SplitTable","SplitTable 화면에서 전체 결과 보기");
+  if(feature==="dashboard"||chartResult||tool?.chart)addNav("dashboard","차트 페이지","Dashboard 화면에서 차트 보기");
+  if(table&&Array.isArray(table.rows)&&table.rows.length)items.push({key:"export-table",label:"엑셀 내보내기",title:"현재 인라인 표를 CSV로 내려받기",onClick:()=>flowiDownloadTable(table)});
+  const entries=Array.isArray(tool?.feature_entrypoints)?tool.feature_entrypoints:[];
+  entries.slice(0,2).forEach(ep=>{if(ep?.key&&ep.key!==feature)addNav(ep.key,`${ep.title||ep.key} 열기`,ep.description||"관련 화면 열기");});
+  return items.slice(0,4);
+}
+
+function flowiDownloadTable(table){
+  const rows=Array.isArray(table?.rows)?table.rows:[];
+  const cols=flowiTableColumns(table);
+  if(!rows.length||!cols.length||typeof document==="undefined")return;
+  const esc=(v)=>`"${String(v??"").replace(/"/g,'""')}"`;
+  const csv=[cols.map(c=>esc(c.label||c.key)).join(","),...rows.map(r=>cols.map(c=>esc(r[c.key])).join(","))].join("\n");
+  const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=`flowi_${String(table.kind||"result").replace(/[^A-Za-z0-9_-]+/g,"_")}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function FlowiInlineContent({tool,table,chart,chartResult}){
+  const type=flowiResultType(tool,table,chartResult);
+  const lotList=Array.isArray(tool?.lot_list)?tool.lot_list:[];
+  const rows=Array.isArray(tool?.rows)?tool.rows:[];
+  const knobs=Array.isArray(tool?.knobs)?tool.knobs:[];
+  if((type==="chart"||chartResult)&&chartResult)return <FlowiScatterResult data={chartResult}/>;
+  if(type==="chart"&&chart)return <FlowiChartPlan chart={chart}/>;
+  if((type==="split_view"||tool?.split_view)&&tool?.split_view)return <FlowiSplitView view={tool.split_view}/>;
+  if((type==="lot_list"||lotList.length>0)&&lotList.length>0)return <FlowiLotList items={lotList}/>;
+  if(table)return <FlowiDataTable table={table}/>;
+  if(rows.length>0)return <FlowiDataTable table={{kind:"flowi_rows",title:"Flowi rows",columns:_legacyRowColumns(rows),rows,total:rows.length}}/>;
+  if(knobs.length>0)return <FlowiKnobCards knobs={knobs}/>;
+  return null;
+}
+
+function _legacyRowColumns(rows){
+  const keys=rows.length&&rows[0]?Object.keys(rows[0]).filter(k=>!String(k).startsWith("__")):["product","step_id","item_id","wafer_id","median","mean","count"];
+  return keys.map(k=>({key:k,label:k}));
+}
+
+function FlowiKnobCards({knobs}){
+  return <div style={{marginTop:10,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:8}}>
+    {knobs.slice(0,8).map(k=><div key={k.knob} style={{border:"1px solid #333",borderRadius:8,padding:"8px 10px",background:"#151515"}}>
+      <div style={{fontSize:14,fontWeight:800,color:"#e5e5e5",marginBottom:4}}>{k.display_name||k.knob}</div>
+      {(k.values||[]).slice(0,3).map(v=><div key={String(v.value)} style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",lineHeight:1.55}}>{String(v.value)} · {v.count}wf{Array.isArray(v.wafers)&&v.wafers.length?" · "+v.wafers.slice(0,8).join(","):""}</div>)}
+    </div>)}
+  </div>;
+}
+
+function FlowiLotList({items}){
+  return <div style={{marginTop:10,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:8}}>
+    {items.slice(0,24).map((item,i)=><div key={`${item.root_lot||item.root_lot_id||i}-${item.wafer||item.wafer_id||""}`} style={{border:"1px solid #333",borderRadius:8,padding:"9px 10px",background:"#151515",minWidth:0}}>
+      <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"baseline",marginBottom:5}}>
+        <span style={{fontSize:14,color:"#f97316",fontWeight:900,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.root_lot||item.root_lot_id||"-"}</span>
+        <span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>{item.product||""}</span>
+      </div>
+      <FlowiLotLine label="fab" value={item.fab_lot||item.fab_lot_id||item.lot_id}/>
+      <FlowiLotLine label="wf" value={item.wafer||item.wafer_id}/>
+      <FlowiLotLine label="step" value={item.current_step||item.current_func_step}/>
+      <FlowiLotLine label="time" value={item.tkout_time}/>
+      {(item.knob||item.knob_value)&&<FlowiLotLine label="knob" value={[item.knob,item.knob_value].filter(Boolean).join(" = ")}/>}
+    </div>)}
+  </div>;
+}
+
+function FlowiLotLine({label,value}){
+  if(value===undefined||value===null||value==="")return null;
+  return <div style={{display:"grid",gridTemplateColumns:"42px minmax(0,1fr)",gap:6,fontSize:14,lineHeight:1.45,fontFamily:"monospace"}}>
+    <span style={{color:"#737373"}}>{label}</span><span style={{color:"#d4d4d4",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={String(value)}>{String(value)}</span>
+  </div>;
+}
+
+function FlowiSplitView({view}){
+  const headers=Array.isArray(view?.headers)?view.headers:[];
+  const rows=Array.isArray(view?.rows)?view.rows:[];
+  if(!rows.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:14,color:"#a3a3a3"}}>인라인으로 표시할 SplitTable 셀이 없습니다.</div>;
+  const values=[];
+  rows.forEach(r=>(r.cells||[]).forEach(c=>{[c.actual,c.plan].forEach(v=>{if(v!==undefined&&v!==null&&v!=="")values.push(String(v));});}));
+  const uniq=[...new Set(values)].slice(0,18);
+  const palette=["#1f2937","#3b2f16","#1f3a2d","#26324a","#3a2535","#243b3f","#3a2a20","#2f3340"];
+  const colorFor=(v)=>{const idx=uniq.indexOf(String(v));return idx>=0?palette[idx%palette.length]:"#171717";};
+  return <div style={{marginTop:10,border:"1px solid #333",borderRadius:8,overflow:"hidden",background:"#121212"}}>
+    <div style={{display:"flex",justifyContent:"space-between",gap:8,padding:"8px 10px",borderBottom:"1px solid #2a2a2a",background:"#171717"}}>
+      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace"}}>{view.title||"SplitTable inline"}</div>
+      <div style={{fontSize:14,color:"#737373",fontFamily:"monospace"}}>{view.total??rows.length} cells</div>
+    </div>
+    <div style={{overflow:"auto",maxHeight:320}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:14,fontFamily:"monospace",tableLayout:"fixed",minWidth:Math.max(360,120+(headers.length||1)*92)}}>
+        <thead><tr>
+          <th style={{position:"sticky",left:0,top:0,zIndex:2,textAlign:"left",padding:"7px 8px",borderBottom:"1px solid #333",borderRight:"1px solid #333",background:"#1f1f1f",color:"#a3a3a3",width:120}}>{view.row_label||"항목"}</th>
+          {headers.map((h,i)=><th key={`${h}-${i}`} style={{position:"sticky",top:0,zIndex:1,textAlign:"center",padding:"7px 8px",borderBottom:"1px solid #333",background:"#1f1f1f",color:"#a3a3a3",width:92}}>{h}</th>)}
+        </tr></thead>
+        <tbody>{rows.map((r,ri)=><tr key={r.parameter||ri}>
+          <td style={{position:"sticky",left:0,zIndex:1,padding:"6px 8px",borderBottom:"1px solid #262626",borderRight:"1px solid #333",background:"#151515",color:"#e5e5e5",fontWeight:900,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={r.parameter||r.display}>{r.display||r.parameter}</td>
+          {(r.cells||[]).map((c,ci)=>{
+            const actual=c.actual??"";
+            const plan=c.plan??"";
+            const show=actual?String(actual):(plan?`plan ${plan}`:"");
+            const mismatch=!!(c.mismatch||c.highlight);
+            return <td key={ci} style={{padding:"6px 8px",borderBottom:"1px solid #262626",borderRight:"1px solid #262626",textAlign:"center",background:colorFor(actual||plan),color:"#e5e5e5",boxShadow:mismatch?"inset 0 0 0 2px rgba(239,68,68,0.9)":"none",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35}}>
+              {show}{mismatch&&plan&&actual&&<span style={{display:"block",fontSize:14,color:"#fca5a5"}}>plan {plan}</span>}
+            </td>;
+          })}
         </tr>)}</tbody>
       </table>
-    </div>}
-    {knobs.length>0&&<div style={{marginTop:10,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:8}}>
-      {knobs.slice(0,8).map(k=><div key={k.knob} style={{border:"1px solid #333",borderRadius:6,padding:"8px 10px",background:"#151515"}}>
-        <div style={{fontSize:14,fontWeight:800,color:"#e5e5e5",marginBottom:4}}>{k.display_name||k.knob}</div>
-        {(k.values||[]).slice(0,3).map(v=><div key={String(v.value)} style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",lineHeight:1.55}}>{String(v.value)} · {v.count}wf{Array.isArray(v.wafers)&&v.wafers.length?" · "+v.wafers.slice(0,8).join(","):""}</div>)}
-      </div>)}
-    </div>}
-    {choices.length>0&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice} onNavigate={onNavigate}/>}
-    {argumentChoices&&Array.isArray(argumentChoices.fields)&&argumentChoices.fields.length>0&&<FlowiArgumentChoices data={argumentChoices} basePrompt={prompt} onChoice={onChoice}/>}
-    <FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>
-    {isAdmin&&nextActions.length>0&&<FlowiNextActions actions={nextActions} onNavigate={onNavigate} onChoice={onChoice}/>}
-  </div>);
+    </div>
+  </div>;
 }
 const FR_TD={padding:"5px 6px",borderBottom:"1px solid #262626",color:"#d4d4d4",whiteSpace:"nowrap"};
 
@@ -336,25 +481,23 @@ function FlowiTrace({trace}){
   </details>);
 }
 
+const FLOWI_CHOICE_BTN={textAlign:"left",border:"1px solid #f97316",borderRadius:7,background:"#2a2a2a",padding:"8px 12px",cursor:"pointer",color:"#d4d4d4",fontSize:14,fontFamily:"'JetBrains Mono',monospace",lineHeight:1.35};
+
 function FlowiChoices({question,choices,onChoice,onNavigate}){
-  return(<div style={{marginTop:12,border:"1px solid #7c2d12",borderRadius:8,background:"#1f130b",padding:"10px 11px",boxShadow:"0 0 0 1px rgba(249,115,22,0.12)"}}>
-    <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:8,flexWrap:"wrap"}}>
-      <span style={{fontSize:14,color:"#f97316",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"2px 7px"}}>확인 선택</span>
-      <span style={{fontSize:14,fontWeight:800,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace"}}>{question||"확인이 필요합니다."}</span>
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:7}}>
+  return(<div style={{marginTop:12,border:"1px solid #333",borderRadius:8,background:"#151515",padding:"10px 11px"}}>
+    <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace",marginBottom:8}}>{question||"어떻게 진행할까요?"}</div>
+    <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
       {choices.map((c,i)=><button key={c.id||i} type="button" onClick={()=>{
         const tab=c.tab||c.feature||"";
         if(tab&&typeof onNavigate==="function")onNavigate(tab);
-        else if(onChoice)onChoice(c.prompt||c.title||"");
+        else if(onChoice)onChoice(c.prompt||c.value||c.title||"");
       }}
-        style={{textAlign:"left",border:"1px solid "+(c.recommended?"#f97316":"#333"),borderRadius:7,background:c.recommended?"#2a1608":"#171717",padding:"8px 9px",cursor:"pointer",color:"#d4d4d4"}}>
-        <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:3}}>
-          <span style={{fontSize:14,fontWeight:900,color:c.recommended?"#f97316":"#a3a3a3",fontFamily:"monospace"}}>{c.label||i+1}</span>
-          <span style={{fontSize:14,fontWeight:800,color:"#e5e5e5"}}>{c.title}</span>
-          {c.recommended&&<span style={{fontSize:14,color:"#f97316",border:"1px solid #7c2d12",borderRadius:999,padding:"1px 5px",marginLeft:"auto"}}>recommended</span>}
-        </div>
-        <div style={{fontSize:14,lineHeight:1.45,color:"#a3a3a3"}}>{c.description}</div>
+        onMouseEnter={e=>{e.currentTarget.style.background="#3a3a3a";}}
+        onMouseLeave={e=>{e.currentTarget.style.background="#2a2a2a";}}
+        style={{...FLOWI_CHOICE_BTN,minWidth:150,maxWidth:"100%"}}>
+        <span style={{fontWeight:900,color:"#f97316",marginRight:7}}>{c.label||i+1}</span>
+        <span style={{fontWeight:900,color:"#e5e5e5"}}>{c.title||c.value}</span>
+        {c.description&&<span style={{display:"block",marginTop:3,color:"#a3a3a3",whiteSpace:"normal"}}>{c.description}</span>}
       </button>)}
     </div>
   </div>);
@@ -382,31 +525,39 @@ function FlowiArgumentChoices({data,basePrompt,onChoice}){
   const fields=Array.isArray(data?.fields)?data.fields:[];
   const[free,setFree]=useState({});
   if(!fields.length)return null;
-  const submit=(field,value,prompt)=>{
+  const submit=(field,value)=>{
     const val=String(value||"").trim();
-    const q=String(prompt||basePrompt||"").trim();
+    const q=String(basePrompt||"").trim();
     if(onChoice)onChoice(val?(q?`${q} ${val}`:val):q);
   };
-  return(<div style={{marginTop:12,border:"1px solid #333",borderRadius:8,background:"#111",padding:"10px 11px"}}>
-    <div style={{fontSize:14,color:"#f97316",fontWeight:900,fontFamily:"monospace",marginBottom:8}}>{data.message||"또는 직접 입력해 주세요"}</div>
+  return(<div style={{marginTop:12,border:"1px solid #333",borderRadius:8,background:"#151515",padding:"10px 11px"}}>
     <div style={{display:"grid",gap:9}}>
       {fields.map(f=>{
         const choices=Array.isArray(f.choices)?f.choices:[];
         return <div key={f.field} style={{display:"grid",gap:6}}>
-          <div style={{fontSize:14,color:"#e5e5e5",fontWeight:800,fontFamily:"monospace"}}>{f.field}</div>
-          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-            {choices.filter(c=>!c.free_input).slice(0,3).map(c=><button key={c.id||c.value} type="button" onClick={()=>submit(f.field,c.value,c.prompt)} style={{border:"1px solid "+(c.recommended?"#f97316":"#333"),borderRadius:999,background:c.recommended?"#2a1608":"#171717",color:"#d4d4d4",fontSize:14,padding:"5px 9px",cursor:"pointer"}}>
-              <span style={{color:"#f97316",fontWeight:900,marginRight:5}}>{c.label}</span>{c.title||c.value}
+          <div style={{fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace"}}>{f.question||flowiFieldQuestion(f.field)}</div>
+          <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+            {choices.filter(c=>!c.free_input).slice(0,3).map(c=><button key={c.id||c.value} type="button" onClick={()=>submit(f.field,c.value)}
+              onMouseEnter={e=>{e.currentTarget.style.background="#3a3a3a";}}
+              onMouseLeave={e=>{e.currentTarget.style.background="#2a2a2a";}}
+              style={{...FLOWI_CHOICE_BTN,minWidth:112}}>
+              <span style={{color:"#f97316",fontWeight:900,marginRight:7}}>{c.label}</span>{c.title||c.value}
             </button>)}
           </div>
-          <div style={{display:"flex",gap:6,minWidth:0}}>
-            <input value={free[f.field]||""} onChange={e=>setFree(v=>({...v,[f.field]:e.target.value}))} placeholder={f.free_input_label||"직접 입력"} style={{flex:1,minWidth:0,border:"1px solid #333",borderRadius:7,background:"#171717",color:"#e5e5e5",fontSize:14,padding:"7px 8px",fontFamily:"'JetBrains Mono',monospace"}}/>
-            <button type="button" onClick={()=>submit(f.field,free[f.field]||"",basePrompt)} style={{border:"1px solid #7c2d12",borderRadius:7,background:"#1f130b",color:"#f97316",fontSize:14,fontWeight:900,padding:"7px 10px",cursor:"pointer"}}>입력</button>
+          <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"'JetBrains Mono',monospace"}}>{data.message||"또는 직접 입력해 주세요"}</div>
+          <div style={{display:"flex",gap:6,minWidth:0,alignItems:"stretch"}}>
+            <input value={free[f.field]||""} onChange={e=>setFree(v=>({...v,[f.field]:e.target.value}))} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();submit(f.field,free[f.field]||"");}}} placeholder={f.free_input_label||"직접 입력"} style={{flex:1,minWidth:0,border:"1px solid #333",borderRadius:7,background:"#171717",color:"#e5e5e5",fontSize:14,padding:"8px 10px",fontFamily:"'JetBrains Mono',monospace",boxSizing:"border-box"}}/>
+            <button type="button" onClick={()=>submit(f.field,free[f.field]||"")} style={{border:"1px solid #f97316",borderRadius:7,background:"#2a2a2a",color:"#f97316",fontSize:14,fontWeight:900,padding:"8px 12px",cursor:"pointer",fontFamily:"'JetBrains Mono',monospace"}}>보내기</button>
           </div>
         </div>;
       })}
     </div>
   </div>);
+}
+
+function flowiFieldQuestion(field){
+  const map={product:"어느 제품인가요?",module:"어느 모듈인가요?",root_lot_ids:"어느 Root Lot인가요?",root_lot_id:"어느 Root Lot인가요?",lot_ids:"어느 Lot인가요?",fab_lot_ids:"어느 Fab Lot인가요?",root_lot_id_or_fab_lot_id:"어느 Lot인가요?",step:"어느 Step인가요?",metric:"어느 항목인가요?",metrics_or_items:"어느 항목인가요?",knob_value:"어떤 KNOB 값인가요?",source_type:"어느 Source인가요?",split_set:"어느 Split인가요?",wafer_ids:"어느 Wafer인가요?"};
+  return map[field]||`${field} 값을 알려주세요.`;
 }
 
 function FlowiNextActions({actions,onNavigate,onChoice}){
@@ -761,18 +912,33 @@ function FlowiFeedback({result,tool,prompt,isAdmin=false}){
 }
 
 function FlowiDataTable({table}){
-  const cols=table.columns||[];
-  const rows=table.rows||[];
+  const cols=flowiTableColumns(table);
+  const rows=Array.isArray(table.rows)?table.rows:[];
+  const maxHeight=Number(table.max_height||table.maxHeight||320);
+  const cellStyle=(row,c)=>{
+    const key=String(c.key||"");
+    const isSplit=/^(KNOB|MASK|FAB)_/i.test(key)||["parameter","actual","plan","status"].includes(key);
+    const highlighted=!!(row.__highlight||row._highlight||row.highlight||table.highlight);
+    return {
+      padding:"6px 8px",
+      borderBottom:"1px solid #262626",
+      color:isSplit?"#e5e5e5":"#c7c7c7",
+      whiteSpace:"nowrap",
+      fontWeight:isSplit?800:500,
+      background:highlighted?"rgba(127,29,29,0.18)":"transparent",
+      boxShadow:highlighted&&["actual","plan","status"].includes(key)?"inset 0 0 0 2px rgba(239,68,68,0.85)":"none",
+    };
+  };
   return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,overflow:"hidden",background:"#121212"}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,padding:"8px 10px",borderBottom:"1px solid #2a2a2a",background:"#171717"}}>
       <div style={{fontSize:14,fontWeight:800,color:"#e5e5e5",fontFamily:"'JetBrains Mono',monospace"}}>{table.title||"Flowi table"}</div>
       <div style={{fontSize:14,color:"#737373",fontFamily:"monospace"}}>{rows.length}{table.total&&table.total!==rows.length?` / ${table.total}`:""} rows</div>
     </div>
-    <div style={{overflow:"auto",maxHeight:360}}>
+    <div style={{overflow:"auto",maxHeight}}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:14,fontFamily:"monospace"}}>
         <thead><tr>{cols.map(c=><th key={c.key} style={{position:"sticky",top:0,zIndex:1,textAlign:"left",padding:"7px 8px",borderBottom:"1px solid #333",background:"#1f1f1f",color:"#a3a3a3",whiteSpace:"nowrap"}}>{c.label||c.key}</th>)}</tr></thead>
         <tbody>{rows.map((r,i)=><tr key={i}>
-          {cols.map(c=><td key={c.key} style={{padding:"6px 8px",borderBottom:"1px solid #262626",color:c.key==="wafer_id"||String(c.key).includes("STI")?"#e5e5e5":"#c7c7c7",whiteSpace:"nowrap",fontWeight:String(c.key).startsWith("KNOB")||String(c.label).includes("KNOB")?800:500}}>{r[c.key]??""}</td>)}
+          {cols.map(c=><td key={c.key} style={cellStyle(r,c)}>{r[c.key]??""}</td>)}
         </tr>)}</tbody>
       </table>
     </div>
