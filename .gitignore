@@ -50,6 +50,8 @@ flow_도메인지식_방향성_정리.txt
 data/**/__pycache__/
 data/**/*.py[cod]
 data/flow-data/_backups/
+data/flow-data/agent_backups/
+data/flow-data/knowledge/raw/
 data/flow-data/logs/
 data/flow-data/sessions/
 data/flow-data/calendar/

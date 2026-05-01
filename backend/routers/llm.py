@@ -44,6 +44,7 @@ FLOWI_ACTIVITY_FILE = PATHS.data_root / "flowi_activity.jsonl"
 FLOWI_USER_DIR = PATHS.data_root / "flowi_users"
 FLOWI_AGENT_GUIDE_FILE = PATHS.data_root / "flowi_agent_entrypoints.md"
 FLOWI_AGENT_FEATURE_GUIDE_DIR = PATHS.data_root / "flowi_agent_features"
+FLOWI_PROMOTED_KNOWLEDGE_FILE = PATHS.data_root / "promoted_knowledge.json"
 FLOWI_STAGED_DATA_DIR = PATHS.cache_dir / "flowi_data_register"
 FLOWI_INFORM_SESSION_DIR = PATHS.data_root / "flowi_inform_sessions"
 FLOWI_INFORM_SESSION_TTL_SECONDS = 3600
@@ -751,10 +752,51 @@ def _flowi_few_shot_section(limit: int = 24) -> str:
     return "[Few-shot examples]\n" + "\n".join(rows)
 
 
+def _flowi_promoted_knowledge_items(limit: int = 12) -> list[dict[str, Any]]:
+    data = load_json(FLOWI_PROMOTED_KNOWLEDGE_FILE, {})
+    raw = data.get("items") if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict) or item.get("promoted") is False:
+            continue
+        title = str(item.get("title") or item.get("display_title") or "").strip()
+        summary = re.sub(r"\s+", " ", str(item.get("summary") or item.get("content") or item.get("body") or "")).strip()
+        if not title and not summary:
+            continue
+        out.append({
+            "id": str(item.get("id") or item.get("source_id") or title or uuid.uuid4().hex[:8])[:140],
+            "kind": str(item.get("kind") or "promoted_docs")[:80],
+            "title": title[:180] or "Promoted knowledge",
+            "summary": summary[:220],
+            "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
+            "updated_at": str(item.get("updated_at") or item.get("created_at") or "")[:80],
+        })
+        if len(out) >= max(1, int(limit or 12)):
+            break
+    return out
+
+
+def _flowi_promoted_knowledge_section(limit: int = 12) -> str:
+    rows = _flowi_promoted_knowledge_items(limit)
+    if not rows:
+        return ""
+    lines = ["[사내 지식]"]
+    for row in rows:
+        title = row.get("title") or row.get("id") or "Promoted knowledge"
+        summary = row.get("summary") or ""
+        lines.append(f"- {title}: {summary[:200]}")
+    return "\n".join(lines)
+
+
 def _flowi_system_prompt(include_few_shots: bool = True) -> str:
     prompt = _flowi_persona_config()["active_system_prompt"]
     if include_few_shots:
         prompt += "\n\n" + _flowi_few_shot_section()
+    promoted = _flowi_promoted_knowledge_section()
+    if promoted:
+        prompt += "\n\n" + promoted
     return prompt
 
 
@@ -936,13 +978,17 @@ def _append_user_event(username: str, title: str, fields: dict[str, Any]) -> Non
             lines.append(f"- {key}: {_md_line(val, 900)}")
         path.write_text(md.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
         FLOWI_ACTIVITY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "timestamp": now,
+            "username": _safe_username(username),
+            "event": title,
+            "fields": fields,
+        }
+        for key in ("selected_function", "retrieved_ids", "system_knowledge_ids", "retrieval_score", "result_status", "elapsed_ms"):
+            if key in fields:
+                event[key] = fields.get(key)
         with FLOWI_ACTIVITY_FILE.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "timestamp": now,
-                "username": _safe_username(username),
-                "event": title,
-                "fields": fields,
-            }, ensure_ascii=False, default=str) + "\n")
+            f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
     except Exception as e:
         logger.warning("flowi user md append failed: %s", e)
 
@@ -12168,6 +12214,64 @@ def _event_fields(fields: dict[str, Any], *, source: str = "", client_run_id: st
     return out
 
 
+def _flowi_tool_retrieved_ids(tool: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in ids:
+            ids.append(text[:160])
+
+    if not isinstance(tool, dict):
+        return ids
+    diagnosis = tool.get("diagnosis") if isinstance(tool.get("diagnosis"), dict) else {}
+    for hyp in diagnosis.get("ranked_hypotheses") or []:
+        if isinstance(hyp, dict):
+            add(hyp.get("knowledge_card_id"))
+    for card in diagnosis.get("knowledge_cards") or []:
+        if isinstance(card, dict):
+            add(card.get("id") or card.get("knowledge_card_id"))
+    for case in diagnosis.get("similar_cases") or []:
+        if isinstance(case, dict):
+            add(case.get("case_id") or case.get("id"))
+    for row in tool.get("retrieved_knowledge") or []:
+        if isinstance(row, dict):
+            add(row.get("id") or row.get("knowledge_id"))
+        else:
+            add(row)
+    return ids[:30]
+
+
+def _flowi_tool_retrieval_score(tool: dict[str, Any]) -> float | None:
+    if not isinstance(tool, dict):
+        return None
+    scores: list[float] = []
+    diagnosis = tool.get("diagnosis") if isinstance(tool.get("diagnosis"), dict) else {}
+    for hyp in diagnosis.get("ranked_hypotheses") or []:
+        if not isinstance(hyp, dict):
+            continue
+        for key in ("score", "confidence"):
+            try:
+                val = float(hyp.get(key))
+            except Exception:
+                continue
+            scores.append(val)
+            break
+    return max(scores) if scores else None
+
+
+def _flowi_result_status(tool: dict[str, Any], llm_info: dict[str, Any] | None = None) -> str:
+    if isinstance(tool, dict) and tool.get("blocked"):
+        return "error"
+    if isinstance(llm_info, dict) and llm_info.get("error"):
+        return "error"
+    if isinstance(tool, dict) and (tool.get("missing") or (tool.get("validation") or {}).get("missing") or tool.get("arguments_choices")):
+        return "missing"
+    if isinstance(tool, dict) and ((tool.get("clarification") or {}).get("choices")):
+        return "missing"
+    return "success"
+
+
 def _flowi_public_trace(
     *,
     prompt: str,
@@ -12384,6 +12488,7 @@ def _run_flowi_chat(
     agent_context: dict[str, Any] | None = None,
     allow_rag_update: bool = False,
 ) -> dict[str, Any]:
+    started_at = datetime.now(timezone.utc)
     username = me.get("username") or "user"
     prompt = (prompt or "").strip()
     if not prompt:
@@ -12999,10 +13104,19 @@ def _run_flowi_chat(
         elif out.get("error"):
             llm_info["error"] = out.get("error")
 
+    retrieved_ids = _flowi_tool_retrieved_ids(tool)
+    system_knowledge_ids = [item.get("id") for item in _flowi_promoted_knowledge_items() if item.get("id")]
+    elapsed_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
     _append_user_event(username, "chat", _event_fields(
         {
             "prompt": prompt,
             "intent": tool.get("intent") or "",
+            "selected_function": tool.get("action") or tool.get("intent") or "",
+            "retrieved_ids": retrieved_ids,
+            "system_knowledge_ids": system_knowledge_ids,
+            "retrieval_score": _flowi_tool_retrieval_score(tool),
+            "result_status": _flowi_result_status(tool, llm_info),
+            "elapsed_ms": elapsed_ms,
             "llm_used": llm_info.get("used"),
             "answer": answer,
         },

@@ -1,24 +1,47 @@
-import { useCallback, useEffect, useState } from "react";
-import { postJson, sf, qs } from "../lib/api";
+import { useEffect, useState } from "react";
+import { postJson, qs, sf } from "../lib/api";
 import {
   Banner,
   Button,
   DataTable,
+  EmptyState,
   Field,
   PageHeader,
   PageShell,
   Panel,
   Pill,
-  TabStrip,
   formControlStyle,
-  statusPalette,
   uxColors,
 } from "../components/UXKit";
-import { FlowiQualityPanel, LlmCfgPanel } from "./My_Admin";
+import { LlmCfgPanel } from "./My_Admin";
 
 const SAMPLE_PROMPT = "GAA nFET short Lg에서 DIBL과 SS가 증가했고 CA_RS도 올랐어. 원인 후보와 확인 차트 보여줘.";
 const FUNCTION_TEST_PROMPT = "PRODA A1000 #6 현재 fab lot id가 뭐야?";
 const DEFAULT_TABLE_CONTENT = "step_id,step_name,func_step\nAA200000,channel release etch,\nAB300000,inner spacer recess,\nCA100000,CA contact etch,";
+
+const QUICK_PROMPTS = [
+  { label: "RCA", prompt: SAMPLE_PROMPT },
+  { label: "FAB lot", prompt: FUNCTION_TEST_PROMPT },
+  { label: "Q1", prompt: "PRODA A1002 24.0 SORT KNOB 구성이 어떻게돼?" },
+  { label: "Q2", prompt: "PRODA A1002 #1 24.0 SORT Split이 뭐야? 뭘로 진행했어?" },
+  { label: "Q3", prompt: "24.0 SORT PPID_24_3인 자재 가장 빠른게 어디에 있어?" },
+  { label: "Q4", prompt: "A1002A.1 어디에 있어?" },
+  { label: "Q5", prompt: "A1000 #20 16.0 VIA2 Avg 몇이야?" },
+  { label: "Q6", prompt: "PRODA A1000A.3 GATE 모듈 인폼해줘 test1 스플릿으로 선택해줘 내용은 GATE 모듈인폼입니다." },
+  { label: "Q7", prompt: "A1003 GATE는 test1 STI는 test2 이런식으로 A1003에 대해서 인폼로그 다 만들어줘" },
+  { label: "Q8", prompt: "A1004 인폼전체 작성해줘" },
+];
+
+const CATEGORIES = [
+  { id: "workflow", icon: "01", label: "워크플로우", desc: "Flowi가 자연어를 받아 안전한 단위기능과 응답으로 바꾸는 전체 pipeline입니다." },
+  { id: "persona", icon: "02", label: "유저 페르소나", desc: "현재 로그인 유저의 최근 사용 경향과 Flowi가 가정하는 업무 모델입니다." },
+  { id: "prompt", icon: "03", label: "프롬프트 해석", desc: "입력 prompt를 slots, selected_function, arguments JSON, missing choices로 live preview합니다." },
+  { id: "knowledge", icon: "04", label: "지식 인벤토리", desc: "RCA 지식, causal edge, similar case, custom knowledge, agent feature, promoted 문서를 통합 검색합니다." },
+  { id: "recent", icon: "05", label: "최근 RAG 반영", desc: "최근 Flowi 호출에서 어떤 함수와 지식 id가 쓰였는지 trace를 확인합니다." },
+  { id: "item", icon: "06", label: "Item 해석", desc: "semiconductor_knowledge 기반 item 의미와 knob/mask/step 변환 룰을 표로 봅니다." },
+  { id: "llm", icon: "07", label: "LLM 설정", desc: "모델, endpoint, timeout, provider, auth mode를 확인하고 admin은 바로 수정합니다." },
+  { id: "admin", icon: "🔒", label: "관리 도구", desc: "매칭, 룰북, 지식 주입 도구입니다. admin에게만 열립니다.", adminOnly: true },
+];
 
 function parseGridText(text) {
   const body = String(text || "").trim();
@@ -50,480 +73,618 @@ function listText(v, max = 4) {
   return arr.slice(0, max).map((x) => typeof x === "string" ? x : (x?.title || x?.id || x?.target || x?.source || "")).filter(Boolean).join(", ") + (arr.length > max ? ` +${arr.length - max}` : "");
 }
 
-const AGENT_FLOW_STEPS = [
-  {
-    step: "01",
-    label: "Intent / slot 해석",
-    detail: "프롬프트에서 RCA, chart, lot, product, wafer, source, item 후보를 먼저 분리합니다.",
-    refs: ["FLOWI_FEATURE_ALIASES", "lot/product/item parser"],
-  },
-  {
-    step: "02",
-    label: "Source profile 확인",
-    detail: "파일/DB source가 들어오면 grain, join key, item shape, 기본 집계 기준을 먼저 확인합니다.",
-    refs: ["dataset_profile", "source_type_profiles"],
-  },
-  {
-    step: "03",
-    label: "Item 의미 해석",
-    detail: "raw item 이름만 믿지 않고 item_master의 unit, source_type, test_structure, layer, method를 함께 봅니다.",
-    refs: ["item_master", "resolve_item_semantics"],
-  },
-  {
-    step: "04",
-    label: "RCA 지식 검색",
-    detail: "Knowledge Card, causal graph, similar case, engineer/runtime 지식을 모아 후보 근거를 만듭니다.",
-    refs: ["knowledge_cards", "causal_edges", "similar_cases", "custom_knowledge"],
-  },
-  {
-    step: "05",
-    label: "Whitelisted data tool",
-    detail: "필요한 경우에만 안전한 backend tool로 ET/INLINE/VM/EDS/QTIME/FAB 데이터를 조회합니다. LLM SQL은 쓰지 않습니다.",
-    refs: ["query_measurements", "Flow-i chart/query handlers"],
-  },
-  {
-    step: "06",
-    label: "Agent trace / 출력",
-    detail: "최종 답변에는 후보, 근거, missing data, 확인 차트, 다음 액션과 실행 trace를 함께 붙입니다.",
-    refs: ["workflow_state", "next_actions", "chart_spec"],
-  },
-];
-
-function AgentStepCard({ item }) {
+function JsonBlock({ value, maxHeight = 360 }) {
   return (
-    <div style={{ border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-secondary)", padding: 10, display: "grid", gap: 7 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <Pill tone="accent">{item.step}</Pill>
-        <span style={{ fontSize: 14, fontWeight: 800, color: uxColors.text }}>{item.label}</span>
-      </div>
-      <div style={{ fontSize: 14, color: uxColors.textSub, lineHeight: 1.55 }}>{item.detail}</div>
-      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-        {(item.refs || []).map((ref) => <Pill key={ref} tone="neutral">{ref}</Pill>)}
-      </div>
+    <pre style={{ margin: 0, maxHeight, overflow: "auto", fontSize: 14, lineHeight: 1.45, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 5, padding: 10 }}>
+      {JSON.stringify(value || {}, null, 2)}
+    </pre>
+  );
+}
+
+function CategoryNav({ active, onChange, isAdmin }) {
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      {CATEGORIES.map((item) => {
+        const locked = item.adminOnly && !isAdmin;
+        const selected = active === item.id;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            disabled={locked}
+            onClick={() => !locked && onChange(item.id)}
+            title={locked ? "admin 전용" : item.desc}
+            style={{
+              width: "100%",
+              display: "grid",
+              gridTemplateColumns: "32px 1fr",
+              gap: 8,
+              alignItems: "center",
+              textAlign: "left",
+              padding: "9px 10px",
+              borderRadius: 6,
+              border: `1px solid ${selected ? uxColors.accent : "var(--border)"}`,
+              background: selected ? "var(--accent-glow)" : "var(--bg-secondary)",
+              color: locked ? uxColors.textSub : (selected ? uxColors.accent : uxColors.text),
+              cursor: locked ? "not-allowed" : "pointer",
+              opacity: locked ? 0.62 : 1,
+            }}
+          >
+            <span style={{ fontSize: 13, fontWeight: 900, fontFamily: "monospace", color: selected ? uxColors.accent : uxColors.textSub }}>{item.icon}</span>
+            <span style={{ display: "grid", gap: 2, minWidth: 0 }}>
+              <span style={{ fontSize: 14, fontWeight: 800 }}>{item.label}</span>
+              <span style={{ fontSize: 13, color: uxColors.textSub, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.desc}</span>
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-function FlowiPersonaPanel() {
-  const [persona, setPersona] = useState(null);
-  const [form, setForm] = useState({ system_prompt: "", must_not: "", notes: "" });
-  const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState(false);
-  const fallbackPrompt = "Flowi는 사내 Flow 홈 화면의 반도체 공정 데이터 분석가입니다. 자연어를 먼저 product/root_lot_id/fab_lot_id/wafer_id/step_id/source/item 중심의 function arguments JSON으로 구조화한 뒤 답변합니다. product는 product_config/products.yaml과 ML_TABLE/FAB product directory 기준으로 동적으로 확인합니다. root_lot_id는 영어/숫자 조합 5자리, fab_lot_id는 AZGASB.1/ASDAGFH.NJ처럼 점(.)이 들어간 조합, wafer_id는 #6/WF6/slot 6/6번장/6장 표현을 1~25 물리 slot으로 해석합니다. FAB은 최신 route/progress, ET는 median, INLINE은 avg와 subitem_id grain을 기본으로 봅니다. 요청이 애매하면 바로 실행한다고 말하지 말고 1/2/3 형태의 선택지를 제시합니다.";
-  const fallbackMustNot = "- DB root/raw data 원본을 직접 수정, 삭제, 덮어쓰기, 이동하지 않는다.\n- 로컬 tool/cache/schema 결과에 없는 숫자, lot, product, step, item 값을 지어내지 않는다.\n- step_id는 영문 2자 + 숫자 6자리 또는 등록된 func_step 이름이 아니면 step으로 확정하지 않는다.\n- 기존 인폼/회의/이슈/일정 수정, 삭제, 상태 변경은 권한과 대상 내용을 확인하기 전 실행하지 않는다.\n- 파일 변경은 FLOWI_FILE_OP 또는 전용 단일파일 반영 플로우 없이 실행하지 않는다.\n- RAG/문서 내용은 flow-data 내부 저장소 밖으로 내보내지 않는다.";
-  const inputStyle = {
-    ...formControlStyle,
-    width: "100%",
-    boxSizing: "border-box",
-  };
-  const applyPersona = (d = {}) => {
-    const raw = d.flowi_persona || d;
-    const next = {
-      system_prompt: raw.system_prompt || raw.default_system_prompt || fallbackPrompt,
-      must_not: raw.must_not || raw.default_must_not || fallbackMustNot,
-      notes: raw.notes || "",
-    };
-    setPersona({ ...raw, ...next });
-    setForm(next);
-  };
-  const reload = () => {
-    setMsg("");
-    sf("/api/llm/flowi/persona")
-      .then(applyPersona)
-      .catch(() => sf("/api/admin/settings").then(applyPersona).catch((e) => {
-        applyPersona({});
-        setMsg("로드 오류: " + (e.message || e));
-      }));
-  };
-  useEffect(() => { reload(); }, []);
-  const save = () => {
-    setBusy(true);
-    setMsg("");
-    const payload = {
-      system_prompt: form.system_prompt || fallbackPrompt,
-      must_not: form.must_not || fallbackMustNot,
-      notes: form.notes || "",
-    };
-    const saveViaAdminSettings = () => sf("/api/admin/settings")
-      .then((cur) => postJson("/api/admin/settings/save", {
-        dashboard_refresh_minutes: cur.dashboard_refresh_minutes ?? 10,
-        dashboard_bg_refresh_minutes: cur.dashboard_bg_refresh_minutes ?? 10,
-        flowi_persona: payload,
-      }));
-    postJson("/api/llm/flowi/persona", payload)
-      .catch(saveViaAdminSettings)
-      .then((d) => {
-        applyPersona(d?.flowi_persona ? d : { ...payload, ...(d || {}) });
-        setMsg("저장됨");
-      })
-      .catch((e) => setMsg("저장 오류: " + (e.message || e)))
-      .finally(() => setBusy(false));
-  };
+function CategoryFrame({ category, children, right = null }) {
   return (
-    <Panel
-      title="Flow-i 페르소나"
-      subtitle="에이전트가 기본적으로 따라야 하는 업무 방식과 금지 규칙입니다."
-      right={<Pill tone="accent">active persona</Pill>}
-    >
-      <div style={{ display: "grid", gap: 12 }}>
-        {msg && <Banner tone={msg.includes("오류") ? "bad" : "ok"}>{msg}</Banner>}
-        <Banner tone="info">
-          여기 적힌 내용이 홈 Flow-i와 외부 Agent API의 기본 system prompt로 사용됩니다. 사용자별 담당 제품이나 선호 출력은 별도 사용자 메모가 추가로 붙습니다.
-        </Banner>
-        <Field label="기본 페르소나">
-          <textarea
-            value={form.system_prompt}
-            onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
-            rows={9}
-            style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55, fontFamily: "monospace" }}
-          />
-        </Field>
-        <Field label="반드시 하지 말아야 할 것">
-          <textarea
-            value={form.must_not}
-            onChange={(e) => setForm({ ...form, must_not: e.target.value })}
-            rows={8}
-            style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55, fontFamily: "monospace" }}
-          />
-        </Field>
-        <Field label="운영 메모">
-          <textarea
-            value={form.notes}
-            onChange={(e) => setForm({ ...form, notes: e.target.value })}
-            rows={3}
-            style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5 }}
-            placeholder="변경 이유, 적용 범위, 금지 조건"
-          />
-        </Field>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <Button variant="primary" onClick={save} disabled={busy || !form.system_prompt.trim()}>{busy ? "저장 중" : "저장"}</Button>
-          <Button variant="ghost" onClick={reload} disabled={busy}>새로고침</Button>
-          <span style={{ fontSize: 14, color: uxColors.textSub }}>
-            {persona?.updated_at ? `마지막 수정: ${String(persona.updated_at).replace("T", " ").slice(0, 16)} · ${persona.updated_by || "-"}` : "저장 전 기본 페르소나"}
-          </span>
-        </div>
-      </div>
-    </Panel>
+    <div style={{ display: "grid", gap: 12 }}>
+      <Panel title={category.label} subtitle={category.desc} right={right} bodyStyle={{ display: "none" }} />
+      {children}
+    </div>
   );
 }
 
-function FunctionCallTestPanel() {
-  const [prompt, setPrompt] = useState(FUNCTION_TEST_PROMPT);
+function WorkflowPanel() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    sf("/api/agent/workflow").then(setData).catch((e) => setErr(e.message || String(e)));
+  }, []);
+  return (
+    <CategoryFrame category={CATEGORIES[0]} right={<Pill tone="accent">{data?.stage_count || 0} stages</Pill>}>
+      {err && <Banner tone="bad">{err}</Banner>}
+      <Panel title="Flowi pipeline stage" subtitle="입력 prompt에서 응답까지 이어지는 단일 chain">
+        <div style={{ display: "grid", gap: 10 }}>
+          {(data?.stages || []).map((stage, idx) => (
+            <div key={stage.key} style={{ border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", padding: 12 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
+                <Pill tone="accent">{String(idx + 1).padStart(2, "0")}</Pill>
+                <span style={{ fontSize: 14, fontWeight: 900, color: uxColors.text }}>{stage.label}</span>
+                {idx < (data?.stages || []).length - 1 && <span style={{ color: uxColors.textSub, fontFamily: "monospace" }}>→</span>}
+              </div>
+              <div style={{ fontSize: 14, color: uxColors.textSub, lineHeight: 1.55, marginBottom: 8 }}>{stage.description}</div>
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>{(stage.modules || []).map((x) => <Pill key={x} tone="neutral">{x}</Pill>)}</div>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>{(stage.knowledge_sources || []).map((x) => <Pill key={x} tone="info">{x}</Pill>)}</div>
+              </div>
+            </div>
+          ))}
+          {!data?.stages?.length && <EmptyState title="워크플로우 데이터 없음" hint="backend workflow endpoint 응답을 기다리는 중입니다." />}
+        </div>
+      </Panel>
+    </CategoryFrame>
+  );
+}
+
+function PersonaPanel() {
+  const [persona, setPersona] = useState(null);
+  const [card, setCard] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    sf("/api/agent/persona").then(setPersona).catch((e) => setErr(e.message || String(e)));
+    sf("/api/llm/flowi/persona-card").then(setCard).catch(() => {});
+  }, []);
+  const doList = card?.do_list || [];
+  const dontList = card?.dont_list || [];
+  return (
+    <CategoryFrame category={CATEGORIES[1]} right={<Pill tone="accent">{persona?.role || "-"}</Pill>}>
+      {err && <Banner tone="bad">{err}</Banner>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12 }}>
+        <Panel title="최근 사용 모듈" subtitle="사용자 본인 activity 기반">
+          <DataTable
+            rows={persona?.recent_modules || []}
+            empty="최근 모듈 사용 기록이 없습니다."
+            columns={[
+              { key: "name", label: "module/function" },
+              { key: "count", label: "count", width: 70 },
+            ]}
+          />
+        </Panel>
+        <Panel title="자주 본 product/lot" subtitle="prompt와 활동 로그에서 추정">
+          <DataTable
+            rows={persona?.frequent_products || []}
+            empty="product 사용 기록이 아직 없습니다."
+            columns={[
+              { key: "product", label: "product" },
+              { key: "count", label: "count", width: 70 },
+            ]}
+          />
+        </Panel>
+      </div>
+      <Panel title="도우미가 도와주는 일 / 하지 않는 일" subtitle="홈 Flowi persona-card 응답 재사용" right={<Pill tone="ok">기본 펼침</Pill>}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12 }}>
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 14, fontWeight: 900, color: uxColors.accent }}>도와주는 일</div>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>{doList.map((x) => <Pill key={x} tone="accent">{x}</Pill>)}</div>
+            {!doList.length && <EmptyState title="do_list 없음" hint="persona-card 응답이 비어 있습니다." />}
+          </div>
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 14, fontWeight: 900, color: uxColors.accent }}>하지 않는 일</div>
+            <div style={{ display: "grid", gap: 5 }}>{dontList.map((x, i) => <div key={i} style={{ fontSize: 14, color: uxColors.textSub, lineHeight: 1.45 }}>{x}</div>)}</div>
+            {!dontList.length && <EmptyState title="dont_list 없음" hint="persona-card 응답이 비어 있습니다." />}
+          </div>
+        </div>
+      </Panel>
+      <Panel title="도메인 관리자/Admin 페르소나" subtitle="앱이 가정하는 행동 모델">
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <Pill tone="accent">{persona?.admin_persona?.label || "반도체 공정 데이터 분석가"}</Pill>
+            <Pill tone="neutral">{persona?.admin_persona?.role || "semiconductor_process_data_analyst"}</Pill>
+          </div>
+          {(persona?.admin_persona?.principles || []).map((x, i) => <Banner key={i} tone="info">{x}</Banner>)}
+          <DataTable
+            rows={persona?.last_actions || []}
+            empty="최근 Flowi action 기록이 없습니다."
+            columns={[
+              { key: "timestamp", label: "time", width: 128, render: (r) => String(r.timestamp || "").replace("T", " ").slice(0, 16) },
+              { key: "selected_function", label: "function", width: 170 },
+              { key: "result_status", label: "status", width: 90 },
+              { key: "prompt", label: "prompt" },
+            ]}
+          />
+        </div>
+      </Panel>
+    </CategoryFrame>
+  );
+}
+
+function PromptPanel() {
+  const [prompt, setPrompt] = useState(SAMPLE_PROMPT);
   const [product, setProduct] = useState("");
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
   const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box", fontSize: 14 };
-  const samples = [
-    { label: "FAB lot", prompt: "PRODA A1000 #6 현재 fab lot id가 뭐야?" },
-    { label: "Slot alias", prompt: "PRODA AZGASB.1 6번 slot 현재 fab lot id 조회" },
-    { label: "Plan", prompt: "PRODA A1000 A KNOB #1~10은 ABC로 plan해주고 나머지는 DGD로 plan 넣어줘" },
-    { label: "Chart", prompt: "PRODA A1000 Inline CD와 ET LKG Corr scatter 그려줘" },
-  ];
-  const runPreview = () => {
+  const run = () => {
     setBusy(true);
-    setMsg("");
-    setResult(null);
-    postJson("/api/llm/flowi/function-call/preview", { prompt, product, max_rows: 20 })
+    setErr("");
+    postJson("/api/agent/prompt-preview", { prompt, product, max_rows: 20 })
       .then(setResult)
-      .catch((e) => setMsg(e.message || String(e)))
+      .catch((e) => setErr(e.message || String(e)))
       .finally(() => setBusy(false));
   };
+  const args = result?.function_call?.function?.arguments || {};
+  const selected = result?.selected_function || {};
+  const missing = result?.validation?.missing || [];
+  const choices = result?.arguments_choices?.fields || [];
   return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <Panel
-        title="Function Calling Test"
-        subtitle="자연어를 실행 전 function name과 arguments JSON으로 변환합니다."
-        right={<Pill tone="accent">admin dry-run</Pill>}
-      >
-        {msg && <Banner tone="bad">{msg}</Banner>}
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 180px", gap: 10, alignItems: "end" }}>
-          <Field label="프롬프트">
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={4}
-              style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55 }}
-            />
+    <CategoryFrame category={CATEGORIES[2]} right={<Pill tone={result?.validation?.valid ? "ok" : "neutral"}>{result ? (result.validation?.valid ? "valid" : "missing") : "ready"}</Pill>}>
+      <Panel title="Live prompt demo" subtitle="기존 Intent / slot 해석과 function-call preview를 통합했습니다.">
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 160px", gap: 10, alignItems: "end" }}>
+          <Field label="prompt">
+            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55 }} />
           </Field>
           <Field label="product override">
             <input value={product} onChange={(e) => setProduct(e.target.value)} style={inputStyle} placeholder="optional" />
           </Field>
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <Button variant="primary" onClick={runPreview} disabled={busy || !prompt.trim()}>{busy ? "변환 중" : "JSON 변환"}</Button>
-          {samples.map((item) => (
-            <Button key={item.label} variant="ghost" onClick={() => setPrompt(item.prompt)}>{item.label}</Button>
-          ))}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
+          <Button variant="primary" onClick={run} disabled={busy || !prompt.trim()}>{busy ? "실행 중" : "해석 실행"}</Button>
+          {QUICK_PROMPTS.map((item) => <Button key={item.label} variant="subtle" onClick={() => setPrompt(item.prompt)}>{item.label}</Button>)}
         </div>
+        {err && <Banner tone="bad" style={{ marginTop: 10 }}>{err}</Banner>}
       </Panel>
       {result && (
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.9fr) minmax(0,1.1fr)", gap: 12, alignItems: "start" }}>
-          <div style={{ display: "grid", gap: 12 }}>
-            <Panel title="선택된 함수" subtitle={result.selected_function?.reason || ""}>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                <Pill tone="accent">{result.selected_function?.name || "-"}</Pill>
-                <Pill tone="neutral">{result.selected_function?.intent || "-"}</Pill>
-                <Pill tone={result.validation?.valid ? "ok" : "warn"}>{result.validation?.valid ? "valid" : "missing"}</Pill>
-                {result.validation?.requires_confirmation && <Pill tone="warn">confirm required</Pill>}
+          <Panel title="추출 결과" subtitle={selected.reason || ""}>
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <Pill tone="accent">{selected.name || "-"}</Pill>
+                <Pill tone="neutral">{selected.intent || "-"}</Pill>
+                <Pill tone={missing.length ? "warn" : "ok"}>{missing.length ? "missing" : "complete"}</Pill>
               </div>
-              {result.validation?.missing?.length ? <Banner tone="warn">missing: {result.validation.missing.join(", ")}</Banner> : null}
-              {result.validation?.warnings?.map((w, i) => <Banner key={i} tone="info">{w}</Banner>)}
-            </Panel>
-            <Panel title="Naming Rule" subtitle="프롬프트 슬롯 해석 기준">
               <DataTable
-                rows={result.naming_rules || []}
-                maxHeight={300}
+                rows={[
+                  { key: "product", value: result?.slots?.product || args.product || "-" },
+                  { key: "root_lot", value: listText(result?.slots?.root_lot_ids || args.root_lot_ids) },
+                  { key: "fab_lot", value: listText(result?.slots?.fab_lot_ids || args.fab_lot_ids) },
+                  { key: "wafer", value: listText(result?.slots?.wafers || args.wafer_ids) },
+                  { key: "step", value: listText(result?.slots?.steps || (args.step ? [args.step] : [])) },
+                  { key: "knob", value: listText(result?.slots?.knobs || (args.knob_value ? [args.knob_value] : [])) },
+                ]}
                 columns={[
-                  { key: "key", label: "key", width: 110 },
-                  { key: "rule", label: "rule" },
-                  { key: "examples", label: "examples", width: 180, render: (r) => (r.examples || []).join(", ") },
+                  { key: "key", label: "slot", width: 120 },
+                  { key: "value", label: "value" },
                 ]}
               />
-            </Panel>
-          </div>
-          <Panel title="Function Call JSON" subtitle="이 JSON을 기준으로 실제 Flow-i router/tool이 호출됩니다.">
-            <pre style={{ margin: 0, maxHeight: 560, overflow: "auto", fontSize: 14, lineHeight: 1.45, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 6, padding: 10 }}>
-              {JSON.stringify(result.function_call, null, 2)}
-            </pre>
+              {missing.length ? <Banner tone="warn">missing: {missing.join(", ")}</Banner> : null}
+              <DataTable
+                rows={choices}
+                empty="missing field 선택지가 없습니다."
+                columns={[
+                  { key: "field", label: "field", width: 150 },
+                  { key: "choices", label: "1/2/3 choices", render: (r) => listText(r.choices, 3) },
+                  { key: "free_input_label", label: "free input", width: 140 },
+                ]}
+              />
+            </div>
+          </Panel>
+          <Panel title="Arguments JSON" subtitle="실제 router/tool 호출 전에 쓰는 구조">
+            <JsonBlock value={{ selected_function: selected, arguments: args, few_shot_examples: result.few_shot_examples || [] }} maxHeight={560} />
           </Panel>
         </div>
       )}
-    </div>
+    </CategoryFrame>
   );
 }
 
-export default function My_Diagnosis({ user }) {
-  const [active, setActive] = useState("agent");
-  const [prompt, setPrompt] = useState(SAMPLE_PROMPT);
-  const [product, setProduct] = useState("PRODA");
-  const [sourceFile, setSourceFile] = useState("");
-  const [sourceRoot, setSourceRoot] = useState("");
-  const [sourceLabel, setSourceLabel] = useState("");
-  const [sourcePayload, setSourcePayload] = useState(null);
-  const [sourceProfile, setSourceProfile] = useState(null);
+function KnowledgePanel({ isAdmin }) {
+  const [q, setQ] = useState("");
+  const [tag, setTag] = useState("");
+  const [kind, setKind] = useState("all");
+  const [data, setData] = useState(null);
+  const [selected, setSelected] = useState(null);
   const [err, setErr] = useState("");
-  const [q, setQ] = useState("CA");
-  const [items, setItems] = useState([]);
-  const [manifest, setManifest] = useState(null);
-  const [ragView, setRagView] = useState(null);
-  const [ragQ, setRagQ] = useState("");
-  const [useCases, setUseCases] = useState([]);
-  const [prior, setPrior] = useState({ module: "", use_case: "", prior_knowledge: "", tags: "" });
-  const [ragPrompt, setRagPrompt] = useState("[flow-i RAG Update] PC-CB-M1 Chain item은 14x14, 13x13, 12x12 DOE TEG가 다르고 gate pitch와 Cell height를 구분해서 봐야 함.");
-  const [ragResult, setRagResult] = useState(null);
-  const [docForm, setDocForm] = useState({
-    title: "",
-    document_type: "gpt_deep_research",
-    product: "",
-    module: "",
-    tags: "",
-    content: "",
-  });
-  const [docResult, setDocResult] = useState(null);
-  const [pageAdmin, setPageAdmin] = useState(null);
-  const [tableForm, setTableForm] = useState({
-    title: "Process plan / func_step preview",
-    table_type: "process_plan_func_step",
-    content: DEFAULT_TABLE_CONTENT,
-    apply_instructions: "",
-    target_file: "",
-  });
+  const [busy, setBusy] = useState(false);
+  const load = () => {
+    setBusy(true);
+    setErr("");
+    sf("/api/agent/knowledge-inventory" + qs({ q, tag, kind: kind === "all" ? "" : kind }))
+      .then((d) => {
+        setData(d);
+        setSelected((cur) => (cur && (d.items || []).find((x) => x.id === cur.id)) || (d.items || [])[0] || null);
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+  useEffect(() => { load(); }, []);
+  const togglePromote = (item) => {
+    if (!isAdmin || !item) return;
+    postJson("/api/agent/knowledge-inventory/promote", {
+      id: item.id,
+      kind: item.kind,
+      title: item.title,
+      summary: item.summary,
+      content: item.content,
+      tags: item.tags || [],
+      source: item.source || "",
+      promoted: !item.promoted,
+    }).then(load).catch((e) => setErr(e.message || String(e)));
+  };
+  return (
+    <CategoryFrame category={CATEGORIES[3]} right={<Pill tone="accent">{data?.items?.length || 0} items</Pill>}>
+      {err && <Banner tone="bad">{err}</Banner>}
+      <Panel title="검색 / 필터" subtitle="kind와 tag를 조합해 통합 지식 리스트를 좁힙니다.">
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 180px 210px auto auto", gap: 8, alignItems: "end" }}>
+          <Field label="검색어">
+            <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load()} style={{ ...formControlStyle, width: "100%" }} placeholder="item, module, 원인, 함수" />
+          </Field>
+          <Field label="tag">
+            <input value={tag} onChange={(e) => setTag(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load()} style={{ ...formControlStyle, width: "100%" }} placeholder="DIBL, CA" />
+          </Field>
+          <Field label="kind">
+            <select value={kind} onChange={(e) => setKind(e.target.value)} style={{ ...formControlStyle, width: "100%" }}>
+              <option value="all">전체</option>
+              {(data?.kinds || ["knowledge_cards", "causal_edges", "similar_cases", "custom_knowledge", "agent_features", "promoted_docs"]).map((x) => <option key={x} value={x}>{x}</option>)}
+            </select>
+          </Field>
+          <Button variant="primary" onClick={load} disabled={busy}>{busy ? "검색 중" : "검색"}</Button>
+          <Button variant="subtle" onClick={() => { setQ(""); setTag(""); setKind("all"); setTimeout(load, 0); }}>초기화</Button>
+        </div>
+      </Panel>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(320px,0.72fr)", gap: 12, alignItems: "start" }}>
+        <Panel title="분류된 카드 list" subtitle="카드 클릭 시 우측 detail 패널에 본문과 관련 함수를 표시합니다.">
+          <DataTable
+            rows={data?.items || []}
+            empty="조건에 맞는 지식이 없습니다."
+            onRowClick={setSelected}
+            columns={[
+              { key: "promoted", label: "★", width: 52, render: (r) => isAdmin ? <Button variant="subtle" onClick={(e) => { e?.stopPropagation?.(); togglePromote(r); }} title="promote/unpromote">{r.promoted ? "★" : "☆"}</Button> : (r.promoted ? "★" : "") },
+              { key: "kind", label: "kind", width: 140, render: (r) => <Pill tone={r.kind === "promoted_docs" ? "accent" : "neutral"}>{r.kind}</Pill> },
+              { key: "title", label: "title" },
+              { key: "tags", label: "tags", render: (r) => listText(r.tags, 4) },
+            ]}
+          />
+        </Panel>
+        <Panel title="Detail" subtitle={selected?.kind || "선택된 카드 없음"}>
+          {selected ? (
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <Pill tone="accent">{selected.id}</Pill>
+                {selected.promoted && <Pill tone="ok">promoted</Pill>}
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 900, color: uxColors.text }}>{selected.title}</div>
+              <div style={{ fontSize: 14, color: uxColors.textSub, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{selected.content || selected.summary || "-"}</div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>{(selected.related_functions || []).map((x) => <Pill key={x} tone="info">{x}</Pill>)}</div>
+              <JsonBlock value={selected.raw} maxHeight={300} />
+            </div>
+          ) : <EmptyState title="선택된 지식 없음" hint="왼쪽 리스트에서 카드를 선택하세요." />}
+        </Panel>
+      </div>
+    </CategoryFrame>
+  );
+}
+
+function RecentRagPanel({ user }) {
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useState("");
+  const [limit, setLimit] = useState(50);
+  const load = () => {
+    setErr("");
+    sf("/api/agent/recent-rag" + qs({ limit }))
+      .then((d) => setRows(d.traces || []))
+      .catch((e) => setErr(e.message || String(e)));
+  };
+  useEffect(() => { load(); }, []);
+  return (
+    <CategoryFrame category={CATEGORIES[4]} right={<Pill tone="accent">{rows.length} traces</Pill>}>
+      {err && <Banner tone="bad">{err}</Banner>}
+      <Panel title="최근 Flowi 호출 trace" subtitle="prompt, selected_function, retrieved knowledge id, score, 사용 시간, 결과 분류">
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+          <Field label="limit">
+            <input type="number" min={1} max={50} value={limit} onChange={(e) => setLimit(Number(e.target.value) || 50)} style={{ ...formControlStyle, width: 90 }} />
+          </Field>
+          <Button onClick={load}>새로고침</Button>
+          <span style={{ fontSize: 14, color: uxColors.textSub }}>현재 사용자: {user?.username || "-"}</span>
+        </div>
+        <DataTable
+          rows={rows}
+          empty="최근 Flowi trace가 없습니다."
+          columns={[
+            { key: "timestamp", label: "time", width: 128, render: (r) => String(r.timestamp || "").replace("T", " ").slice(0, 16) },
+            { key: "selected_function", label: "function", width: 180 },
+            { key: "retrieved_ids", label: "knowledge ids", render: (r) => listText(r.retrieved_ids, 4) },
+            { key: "score", label: "score", width: 70, render: (r) => r.score ?? "-" },
+            { key: "elapsed_ms", label: "ms", width: 70, render: (r) => r.elapsed_ms ?? "-" },
+            { key: "result_type", label: "result", width: 90 },
+            { key: "prompt", label: "prompt" },
+          ]}
+        />
+      </Panel>
+    </CategoryFrame>
+  );
+}
+
+function ItemRulesPanel() {
+  const [sourceType, setSourceType] = useState("");
+  const [product, setProduct] = useState("");
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState("");
+  const load = () => {
+    setErr("");
+    sf("/api/agent/item-rules" + qs({ source_type: sourceType, product }))
+      .then(setData)
+      .catch((e) => setErr(e.message || String(e)));
+  };
+  useEffect(() => { load(); }, []);
+  return (
+    <CategoryFrame category={CATEGORIES[5]} right={<Pill tone="accent">{data?.rules?.length || 0} rules</Pill>}>
+      {err && <Banner tone="bad">{err}</Banner>}
+      <Panel title="Item → knob/mask/step 변환 룰" subtitle="semiconductor_knowledge ITEM_MASTER 요약 dump">
+        <div style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap", marginBottom: 10 }}>
+          <Field label="source_type">
+            <select value={sourceType} onChange={(e) => setSourceType(e.target.value)} style={{ ...formControlStyle, width: 140 }}>
+              <option value="">전체</option>
+              <option value="ET">ET</option>
+              <option value="INLINE">INLINE</option>
+              <option value="VM">VM</option>
+              <option value="FAB">FAB</option>
+            </select>
+          </Field>
+          <Field label="product">
+            <input value={product} onChange={(e) => setProduct(e.target.value)} style={{ ...formControlStyle, width: 140 }} placeholder="optional" />
+          </Field>
+          <Button onClick={load}>필터 적용</Button>
+        </div>
+        <DataTable
+          rows={data?.rules || []}
+          empty="item rule 데이터가 없습니다."
+          columns={[
+            { key: "item", label: "item", width: 130 },
+            { key: "matching_step_id", label: "step_id/module", width: 150 },
+            { key: "matching_knob", label: "knob", width: 140 },
+            { key: "matching_mask", label: "mask", width: 140 },
+            { key: "source_type", label: "source", width: 80 },
+            { key: "product", label: "product", width: 90 },
+            { key: "raw_names", label: "raw names", render: (r) => listText(r.raw_names, 4) },
+            { key: "rule", label: "rule/source" },
+          ]}
+        />
+      </Panel>
+    </CategoryFrame>
+  );
+}
+
+function LlmPanel({ isAdmin }) {
+  const [status, setStatus] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    if (!isAdmin) {
+      sf("/api/llm/status").then(setStatus).catch((e) => setErr(e.message || String(e)));
+    }
+  }, [isAdmin]);
+  return (
+    <CategoryFrame category={CATEGORIES[6]} right={<Pill tone={isAdmin ? "accent" : (status?.available ? "ok" : "warn")}>{isAdmin ? "admin editable" : (status?.available ? "available" : "read only")}</Pill>}>
+      {isAdmin ? (
+        <LlmCfgPanel />
+      ) : (
+        <Panel title="LLM 설정 확인" subtitle="일반 유저는 서버에 저장된 redacted 상태만 확인합니다.">
+          {err && <Banner tone="bad">{err}</Banner>}
+          <DataTable
+            rows={[
+              { key: "available", value: status?.available ? "true" : "false" },
+              { key: "provider", value: status?.config?.provider || "-" },
+              { key: "model", value: status?.config?.model || "-" },
+              { key: "endpoint", value: status?.config?.api_url || "-" },
+              { key: "timeout", value: status?.config?.timeout_s || "-" },
+              { key: "auth_mode", value: status?.config?.auth_mode || "-" },
+            ]}
+            columns={[
+              { key: "key", label: "field", width: 130 },
+              { key: "value", label: "value" },
+            ]}
+          />
+        </Panel>
+      )}
+    </CategoryFrame>
+  );
+}
+
+function AdminToolsPanel({ isAdmin }) {
+  const [section, setSection] = useState("matching");
+  if (!isAdmin) {
+    return (
+      <CategoryFrame category={CATEGORIES[7]} right={<Pill tone="warn">locked</Pill>}>
+        <Panel title="Admin only">
+          <EmptyState icon="🔒" title="관리 도구는 admin 전용입니다." hint="일반 유저에게는 매칭/룰북/지식 주입 폼을 표시하지 않습니다." />
+        </Panel>
+      </CategoryFrame>
+    );
+  }
+  const sections = [
+    { id: "matching", label: "매칭 어시스턴트" },
+    { id: "rulebook", label: "룰북 어시스턴트" },
+    { id: "knowledge", label: "지식 주입" },
+  ];
+  return (
+    <CategoryFrame category={CATEGORIES[7]} right={<Pill tone="accent">admin</Pill>}>
+      <Panel title="관리 도구 sub-section" subtitle="한 번에 하나의 관리 흐름만 엽니다.">
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {sections.map((item) => <Button key={item.id} variant={section === item.id ? "primary" : "subtle"} onClick={() => setSection(item.id)}>{item.label}</Button>)}
+        </div>
+      </Panel>
+      {section === "matching" && <MatchingAssistant />}
+      {section === "rulebook" && <RulebookAssistant />}
+      {section === "knowledge" && <KnowledgeIngestAssistant />}
+    </CategoryFrame>
+  );
+}
+
+function MatchingAssistant() {
+  const [form, setForm] = useState({ product: "PRODA", source_table: "ML_TABLE" });
+  const [result, setResult] = useState(null);
+  const [msg, setMsg] = useState("");
+  const suggest = () => {
+    setMsg("");
+    postJson("/api/agent/admin-tools/matching/suggest", form)
+      .then(setResult)
+      .catch((e) => setMsg("오류: " + (e.message || e)));
+  };
+  const apply = () => {
+    setMsg("");
+    postJson("/api/agent/admin-tools/matching/apply", { ...form, candidates: result?.candidates || [] })
+      .then((d) => setMsg(`적용됨 / backup: ${d.backup || "-"}`))
+      .catch((e) => setMsg("오류: " + (e.message || e)));
+  };
+  return (
+    <Panel title="매칭 어시스턴트" subtitle="product/source_table에서 ML_TABLE 컬럼 매핑 후보를 추천하고 backup 후 적용합니다.">
+      {msg && <Banner tone={msg.startsWith("오류") ? "bad" : "ok"}>{msg}</Banner>}
+      <div style={{ display: "grid", gridTemplateColumns: "160px minmax(0,1fr) auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
+        <Field label="product">
+          <input value={form.product} onChange={(e) => setForm({ ...form, product: e.target.value })} style={{ ...formControlStyle, width: "100%" }} />
+        </Field>
+        <Field label="source_table">
+          <input value={form.source_table} onChange={(e) => setForm({ ...form, source_table: e.target.value })} style={{ ...formControlStyle, width: "100%" }} />
+        </Field>
+        <Button variant="primary" onClick={suggest}>추천</Button>
+      </div>
+      <DataTable
+        rows={result?.candidates || []}
+        empty="아직 추천 결과가 없습니다."
+        columns={[
+          { key: "target", label: "target", width: 130 },
+          { key: "source_column", label: "ML_TABLE column", width: 180 },
+          { key: "score", label: "score", width: 70 },
+          { key: "reason", label: "reason" },
+        ]}
+      />
+      <div style={{ marginTop: 10 }}>
+        <Button variant="primary" onClick={apply} disabled={!result?.candidates?.length}>적용</Button>
+      </div>
+    </Panel>
+  );
+}
+
+function RulebookAssistant() {
+  const [form, setForm] = useState({ product: "PRODA", knob: "", mask: "", change_summary: "" });
+  const [result, setResult] = useState(null);
+  const [msg, setMsg] = useState("");
+  const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box" };
+  const suggest = () => {
+    setMsg("");
+    postJson("/api/agent/admin-tools/rulebook/suggest", form)
+      .then(setResult)
+      .catch((e) => setMsg("오류: " + (e.message || e)));
+  };
+  const apply = () => {
+    setMsg("");
+    postJson("/api/agent/admin-tools/rulebook/apply", { ...form, candidates: result?.candidates || [] })
+      .then((d) => setMsg(`적용됨 / backup: ${d.backup || "-"}`))
+      .catch((e) => setMsg("오류: " + (e.message || e)));
+  };
+  return (
+    <Panel title="룰북 어시스턴트" subtitle="knob/mask 변경 요약에서 영향 step/item 후보를 제안하고 backup 후 적용합니다.">
+      {msg && <Banner tone={msg.startsWith("오류") ? "bad" : "ok"}>{msg}</Banner>}
+      <div style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr", gap: 8, marginBottom: 8 }}>
+        <Field label="product"><input value={form.product} onChange={(e) => setForm({ ...form, product: e.target.value })} style={inputStyle} /></Field>
+        <Field label="knob"><input value={form.knob} onChange={(e) => setForm({ ...form, knob: e.target.value })} style={inputStyle} /></Field>
+        <Field label="mask"><input value={form.mask} onChange={(e) => setForm({ ...form, mask: e.target.value })} style={inputStyle} /></Field>
+      </div>
+      <Field label="변경 요약">
+        <textarea value={form.change_summary} onChange={(e) => setForm({ ...form, change_summary: e.target.value })} rows={4} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55 }} />
+      </Field>
+      <div style={{ display: "flex", gap: 8, marginTop: 10, marginBottom: 10 }}>
+        <Button variant="primary" onClick={suggest}>추천</Button>
+        <Button variant="primary" onClick={apply} disabled={!result?.candidates?.length}>적용</Button>
+      </div>
+      <DataTable
+        rows={result?.candidates || []}
+        empty="영향 후보가 아직 없습니다."
+        columns={[
+          { key: "affected_item", label: "item", width: 140 },
+          { key: "affected_step", label: "step/module", width: 160 },
+          { key: "knob", label: "knob", width: 120 },
+          { key: "mask", label: "mask", width: 120 },
+          { key: "reason", label: "reason" },
+        ]}
+      />
+    </Panel>
+  );
+}
+
+function KnowledgeIngestAssistant() {
+  const [form, setForm] = useState({ title: "", tags: "", doc_type: "internal_knowledge", content: "", file_name: "" });
+  const [result, setResult] = useState(null);
+  const [list, setList] = useState([]);
+  const [msg, setMsg] = useState("");
+  const [tableForm, setTableForm] = useState({ title: "Process plan / func_step preview", table_type: "process_plan_func_step", content: DEFAULT_TABLE_CONTENT, apply_instructions: "", target_file: "" });
   const [tableGrid, setTableGrid] = useState(() => parseGridText(DEFAULT_TABLE_CONTENT));
   const [baseFiles, setBaseFiles] = useState([]);
   const [tablePreview, setTablePreview] = useState(null);
   const [tableResult, setTableResult] = useState(null);
-  const [refPrompt, setRefPrompt] = useState("PC-CB-M1 Chain item은 14x14, 13x13, 12x12 DOE TEG가 다르고 gate pitch와 Cell height discriminator를 유지해서 alias화해야 함.");
-  const [refProposal, setRefProposal] = useState(null);
-  const [tegRowsText, setTegRowsText] = useState('[{"name":"TEG_TOP","x":13.6,"y":29.6,"width":1.2,"height":0.6},{"name":"TEG_RIGHT","x":27.6,"y":14.6}]');
-  const [tegProposal, setTegProposal] = useState(null);
-  const isAdmin = user?.role === "admin";
-  const canFileWrite = isAdmin || (pageAdmin?.pages || []).includes("filebrowser");
-  const compactInput = {
-    ...formControlStyle,
-    width: "100%",
-    height: 34,
-    boxSizing: "border-box",
-    fontFamily: "monospace",
-  };
-  const sourceGridStyle = {
-    display: "grid",
-    gridTemplateColumns: "minmax(120px,0.45fr) minmax(280px,1fr) 128px",
-    gap: 10,
-    alignItems: "start",
-  };
-  const sourceFieldStyle = { gridTemplateRows: "14px 34px 28px", alignItems: "start" };
-  const tableInputStyle = {
-    width: "100%",
-    minWidth: 92,
-    height: 30,
-    border: 0,
-    outline: "none",
-    boxShadow: "none",
-    background: "transparent",
-    color: uxColors.text,
-    fontSize: 14,
-    fontFamily: "monospace",
-    padding: "6px 8px",
-    boxSizing: "border-box",
-  };
-  const tableHeaderInputStyle = {
-    ...tableInputStyle,
-    fontWeight: 800,
-    color: uxColors.text,
-  };
-  const tableCellStyle = {
-    padding: 0,
-    borderRight: "1px solid var(--border)",
-    borderBottom: "1px solid var(--border)",
-    background: "var(--bg-primary)",
-  };
-  const sourcePathValue = sourceFile || sourceRoot;
-  const setSourcePathValue = (value) => {
-    const next = value || "";
-    const looksLikeFile = /\.(parquet|csv|json|jsonl|xlsx?)$/i.test(next.trim());
-    if (!next.trim()) {
-      setSourceRoot("");
-      setSourceFile("");
-    } else if (looksLikeFile) {
-      setSourceFile(next);
-      setSourceRoot("");
-    } else {
-      setSourceRoot(next);
-      setSourceFile("");
-    }
-  };
-
-  const tabs = [
-    { k: "agent", l: "RAG 반영" },
-    { k: "dictionary", l: "Item Dictionary" },
-    { k: "knowledge", l: "전체 지식" },
-    ...(isAdmin ? [
-      { k: "function_call", l: "Function Calling" },
-      { k: "persona", l: "기본 페르소나" },
-      { k: "quality", l: "품질/워크플로우" },
-      { k: "llm", l: "LLM 설정" },
-    ] : []),
-  ];
-
-  const loadRagView = (nextQ = ragQ) => {
-    sf("/api/semiconductor/knowledge/rag-view" + qs({ q: nextQ, limit: 180 }))
-      .then(setRagView)
-      .catch((e) => setErr(e.message || String(e)));
-  };
-
-  const loadManifest = () => {
-    sf("/api/semiconductor/knowledge")
-      .then(setManifest)
-      .catch((e) => setErr(e.message || String(e)));
-    loadRagView(ragQ);
-    sf("/api/admin/my-page-admin")
-      .then(setPageAdmin)
-      .catch(() => {});
-    sf("/api/semiconductor/use-cases")
-      .then((d) => setUseCases(d.use_cases || []))
-      .catch(() => {});
-  };
-
-  const search = (nextQ = q) => {
-    sf("/api/items/search" + qs({ q: nextQ, limit: 100 }))
-      .then((d) => setItems(d.items || []))
-      .catch((e) => setErr(e.message || String(e)));
-  };
+  const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box" };
 
   useEffect(() => {
-    loadManifest();
-    search(q);
+    sf("/api/agent/admin-tools/knowledge/list").then((d) => setList(d.rows || [])).catch(() => {});
     sf("/api/filebrowser/base-files")
       .then((d) => setBaseFiles((d.files || []).filter((f) => ["csv", "parquet"].includes(String(f.ext || "").toLowerCase()) && ["base_root", "db_root"].includes(f.source))))
       .catch(() => setBaseFiles([]));
   }, []);
 
-  const buildSourceFilter = useCallback(() => {
-    if (sourceFile.trim()) return { source_type: "base_file", file: sourceFile.trim(), product };
-    if (sourceRoot.trim()) return { root: sourceRoot.trim(), product };
-    return {};
-  }, [product, sourceFile, sourceRoot]);
-
-  const refreshSourceProfile = useCallback((source) => {
-    if (!source || !Object.keys(source).length) {
-      setSourceProfile(null);
-      return;
-    }
-    postJson("/api/semiconductor/dataset/profile", { source, limit: 300 })
-      .then(setSourceProfile)
-      .catch((e) => setSourceProfile({ ok: false, reason: e.message || String(e), warnings: [e.message || String(e)] }));
-  }, []);
-
-  const applyIncomingSource = useCallback((payload) => {
-    if (!payload?.source) return;
-    const src = payload.source || {};
-    setSourcePayload(payload);
-    setSourceLabel(payload.label || src.file || (src.root && src.product ? `${src.root}/${src.product}` : ""));
-    if (payload.product || src.product) setProduct(payload.product || src.product);
-    if (src.file) {
-      setSourceFile(src.file);
-      setSourceRoot("");
-    } else if (src.root) {
-      setSourceRoot(src.root);
-      setSourceFile("");
-    }
-    refreshSourceProfile(src);
-  }, [refreshSourceProfile]);
-
-  useEffect(() => {
-    const readStoredSource = () => {
-      try {
-        const raw = sessionStorage.getItem("flow_diagnosis_source");
-        if (!raw) return;
-        const payload = JSON.parse(raw);
-        if (!payload?.source || payload.ts === sourcePayload?.ts) return;
-        applyIncomingSource(payload);
-      } catch (_) {}
-    };
-    const onSource = (e) => applyIncomingSource(e.detail);
-    readStoredSource();
-    window.addEventListener("flow:diagnosis-source", onSource);
-    window.addEventListener("focus", readStoredSource);
-    return () => {
-      window.removeEventListener("flow:diagnosis-source", onSource);
-      window.removeEventListener("focus", readStoredSource);
-    };
-  }, [applyIncomingSource, sourcePayload?.ts]);
-
-  const savePrior = () => {
-    const tags = String(prior.tags || "").split(",").map((x) => x.trim()).filter(Boolean);
-    postJson("/api/semiconductor/engineer-knowledge", { ...prior, product, tags })
-      .then(() => {
-        setPrior({ module: "", use_case: "", prior_knowledge: "", tags: "" });
-        loadManifest();
-      })
-      .catch((e) => setErr(e.message || String(e)));
-  };
-
-  const saveRagUpdate = () => {
-    setErr("");
-    postJson("/api/semiconductor/knowledge/update-prompt", { prompt: ragPrompt })
+  const ingest = () => {
+    setMsg("");
+    const tags = String(form.tags || "").split(",").map((x) => x.trim()).filter(Boolean);
+    postJson("/api/agent/admin-tools/knowledge/ingest", { ...form, tags })
       .then((d) => {
-        setRagResult(d);
-        loadManifest();
+        setResult(d);
+        setMsg(`저장됨: ${d.structured?.chunk_count || 0} chunks`);
+        sf("/api/agent/admin-tools/knowledge/list").then((x) => setList(x.rows || [])).catch(() => {});
       })
-      .catch((e) => setErr(e.message || String(e)));
+      .catch((e) => setMsg("오류: " + (e.message || e)));
   };
-
-  const saveDocumentKnowledge = () => {
-    setErr("");
-    const tags = String(docForm.tags || "").split(",").map((x) => x.trim()).filter(Boolean);
-    postJson("/api/semiconductor/knowledge/document", { ...docForm, tags })
-      .then((d) => {
-        setDocResult(d);
-        setDocForm({ ...docForm, title: "", content: "", tags: "" });
-        loadManifest();
-      })
-      .catch((e) => setErr(e.message || String(e)));
+  const readFile = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setForm((f) => ({ ...f, file_name: file.name, title: f.title || file.name, content: String(reader.result || "") }));
+    reader.readAsText(file);
   };
-
-  const tableContentFromGrid = () => gridToCsv(tableGrid.columns, tableGrid.rows);
   const setGridAndContent = (nextGrid) => {
     setTableGrid(nextGrid);
     setTableForm((f) => ({ ...f, content: gridToCsv(nextGrid.columns, nextGrid.rows) }));
@@ -538,472 +699,180 @@ export default function My_Diagnosis({ user }) {
     columns[c] = value;
     setGridAndContent({ ...tableGrid, columns });
   };
-
   const tablePayload = () => ({
     ...tableForm,
-    content: tableContentFromGrid(),
+    content: gridToCsv(tableGrid.columns, tableGrid.rows),
     visibility: "private",
     product: "",
     module: "",
     tags: [],
   });
-
   const previewTableKnowledge = () => {
-    setErr("");
-    setTableResult(null);
+    setMsg("");
     postJson("/api/semiconductor/knowledge/table/preview", tablePayload())
       .then(setTablePreview)
-      .catch((e) => setErr(e.message || String(e)));
+      .catch((e) => setMsg("오류: " + (e.message || e)));
   };
-
   const commitTableKnowledge = () => {
-    setErr("");
+    setMsg("");
     postJson("/api/semiconductor/knowledge/table/commit", { ...tablePayload(), apply_to_file: true, preview: tablePreview || {} })
-      .then((d) => {
-        setTableResult(d);
-        loadManifest();
-      })
-      .catch((e) => setErr(e.message || String(e)));
+      .then(setTableResult)
+      .catch((e) => setMsg("오류: " + (e.message || e)));
   };
+  const tableInputStyle = { width: "100%", minWidth: 92, height: 30, border: 0, outline: "none", background: "transparent", color: uxColors.text, fontSize: 14, fontFamily: "monospace", padding: "6px 8px", boxSizing: "border-box" };
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <Panel title="지식 주입" subtitle="제목/태그/타입 + 본문 또는 파일을 1500자±200 chunk로 저장합니다.">
+        {msg && <Banner tone={msg.startsWith("오류") ? "bad" : "ok"}>{msg}</Banner>}
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 180px", gap: 8 }}>
+          <Field label="제목"><input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} style={inputStyle} /></Field>
+          <Field label="타입">
+            <select value={form.doc_type} onChange={(e) => setForm({ ...form, doc_type: e.target.value })} style={inputStyle}>
+              <option value="internal_knowledge">사내 정보지식</option>
+              <option value="process_spec">공정/spec</option>
+              <option value="rca_report">RCA 보고서</option>
+              <option value="meeting_note">회의/결정사항</option>
+              <option value="external_paper">논문/외부자료</option>
+            </select>
+          </Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 8, marginTop: 8 }}>
+          <Field label="태그">
+            <input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} style={inputStyle} placeholder="DIBL, CA, GAA" />
+          </Field>
+          <Field label="파일 업로드 (.md/.csv/.pdf)">
+            <input type="file" accept=".md,.csv,.pdf,text/markdown,text/csv,application/pdf" onChange={(e) => readFile(e.target.files?.[0])} style={inputStyle} />
+          </Field>
+        </div>
+        <Field label="본문">
+          <textarea value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} rows={10} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55 }} />
+        </Field>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+          <Button variant="primary" onClick={ingest} disabled={!form.content.trim()}>주입</Button>
+          {result?.structured && <Pill tone="ok">{result.structured.chunk_count} chunks</Pill>}
+        </div>
+      </Panel>
+      <Panel title="주입 목록" subtitle="agent admin tools로 추가한 promoted_docs 후보">
+        <DataTable
+          rows={list}
+          empty="아직 주입한 지식이 없습니다."
+          columns={[
+            { key: "created_at", label: "time", width: 128, render: (r) => String(r.created_at || "").replace("T", " ").slice(0, 16) },
+            { key: "title", label: "title" },
+            { key: "doc_type", label: "type", width: 140 },
+            { key: "chunk_count", label: "chunks", width: 80 },
+            { key: "tags", label: "tags", render: (r) => listText(r.tags, 4) },
+          ]}
+        />
+      </Panel>
+      <Panel title="표 지식 Preview → 확정 반영" subtitle="기존 RCA 입력 table 폼을 admin 지식 주입 영역으로 이동했습니다.">
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 220px", gap: 8 }}>
+            <Field label="제목"><input value={tableForm.title} onChange={(e) => setTableForm({ ...tableForm, title: e.target.value })} style={inputStyle} /></Field>
+            <Field label="표 타입">
+              <select value={tableForm.table_type} onChange={(e) => setTableForm({ ...tableForm, table_type: e.target.value })} style={inputStyle}>
+                <option value="process_plan_func_step">공정 plan → func_step</option>
+                <option value="inline_item_semantics">Inline step/item/item_desc</option>
+                <option value="teg_coordinate_table">TEG 좌표/layout 표</option>
+                <option value="data_cleaning_plan">데이터 클리닝 기준</option>
+                <option value="relation_mapping_table">Relation/Table map 기준</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="대상 단일파일(schema 기준)">
+            <select value={tableForm.target_file} onChange={(e) => setTableForm({ ...tableForm, target_file: e.target.value })} style={inputStyle}>
+              <option value="">-- 추가할 CSV/Parquet 선택 --</option>
+              {baseFiles.map((f) => <option key={f.path || f.name} value={f.name}>{f.name} · {f.role || f.source}</option>)}
+            </select>
+          </Field>
+          <div
+            onPaste={(e) => {
+              const text = e.clipboardData?.getData("text/plain") || "";
+              if (!text.trim()) return;
+              e.preventDefault();
+              setGridAndContent(parseGridText(text));
+            }}
+            style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "auto", background: "var(--bg-primary)" }}
+          >
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+              <thead>
+                <tr>
+                  <th style={{ width: 40, padding: "6px 8px", borderRight: "1px solid var(--border)", borderBottom: "1px solid var(--border)", color: uxColors.textSub, background: "var(--bg-tertiary)", textAlign: "center" }}>#</th>
+                  {tableGrid.columns.map((col, ci) => (
+                    <th key={ci} style={{ padding: 0, borderRight: "1px solid var(--border)", borderBottom: "1px solid var(--border)", background: "var(--bg-tertiary)" }}>
+                      <input value={col} onChange={(e) => updateGridHeader(ci, e.target.value)} style={{ ...tableInputStyle, fontWeight: 800 }} />
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {tableGrid.rows.map((row, ri) => (
+                  <tr key={ri}>
+                    <td style={{ width: 40, padding: "6px 8px", textAlign: "center", borderRight: "1px solid var(--border)", borderBottom: "1px solid var(--border)", color: uxColors.textSub, fontFamily: "monospace", background: "var(--bg-secondary)" }}>{ri + 1}</td>
+                    {tableGrid.columns.map((_, ci) => (
+                      <td key={ci} style={{ padding: 0, borderRight: "1px solid var(--border)", borderBottom: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+                        <input value={row[ci] || ""} onChange={(e) => updateGridCell(ri, ci, e.target.value)} style={tableInputStyle} />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <Button onClick={() => setGridAndContent({ ...tableGrid, rows: [...tableGrid.rows, Array(tableGrid.columns.length).fill("")] })}>+ 행</Button>
+            <Button onClick={() => setGridAndContent({ columns: [...tableGrid.columns, `col_${tableGrid.columns.length + 1}`], rows: tableGrid.rows.map((r) => [...r, ""]) })}>+ 열</Button>
+          </div>
+          <Field label="반영 지시 프롬프트">
+            <textarea value={tableForm.apply_instructions} onChange={(e) => setTableForm({ ...tableForm, apply_instructions: e.target.value })} rows={3} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5 }} />
+          </Field>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <Button onClick={previewTableKnowledge} disabled={!tableGrid.columns.length || !tableForm.target_file}>반영 방식 Preview</Button>
+            <Button variant="primary" onClick={commitTableKnowledge} disabled={!tablePreview?.target_file_preview?.mapped_row_count}>확인 후 단일파일 반영</Button>
+            {tableResult?.ok && <Pill tone="ok">added {tableResult.file_apply?.added || 0}</Pill>}
+          </div>
+          <DataTable
+            rows={tablePreview?.target_file_preview?.column_mapping || []}
+            empty="preview 후 컬럼 매핑이 표시됩니다."
+            columns={[
+              { key: "target_col", label: "target column" },
+              { key: "target_dtype", label: "dtype", width: 90 },
+              { key: "source_col", label: "input column" },
+              { key: "apply_action", label: "action", width: 130 },
+              { key: "reason", label: "reason" },
+            ]}
+          />
+        </div>
+      </Panel>
+    </div>
+  );
+}
 
-  const proposeReformatter = () => {
-    setErr("");
-    const source = buildSourceFilter();
-    postJson("/api/semiconductor/reformatter/propose", { product, prompt: refPrompt, sample_columns: [], source, use_dataset: !!Object.keys(source).length })
-      .then(setRefProposal)
-      .catch((e) => setErr(e.message || String(e)));
-  };
-
-  const applyReformatter = () => {
-    if (!refProposal?.rules?.length) return;
-    setErr("");
-    postJson("/api/semiconductor/reformatter/apply", { product, rules: refProposal.rules })
-      .then((d) => setRefProposal({ ...refProposal, applied: d }))
-      .catch((e) => setErr(e.message || String(e)));
-  };
-
-  const proposeTeg = () => {
-    setErr("");
-    let rows = [];
-    try {
-      rows = JSON.parse(tegRowsText || "[]");
-      if (!Array.isArray(rows)) rows = [];
-    } catch (e) {
-      setErr("TEG rows는 JSON array 형식이어야 합니다.");
-      return;
-    }
-    const source = buildSourceFilter();
-    postJson("/api/semiconductor/teg/propose", { product, rows, prompt: "", source, use_dataset: !!Object.keys(source).length })
-      .then(setTegProposal)
-      .catch((e) => setErr(e.message || String(e)));
-  };
-
-  const applyTeg = () => {
-    if (!tegProposal?.teg_definitions?.length) return;
-    setErr("");
-    postJson("/api/semiconductor/teg/apply", { product, teg_definitions: tegProposal.teg_definitions })
-      .then((d) => setTegProposal({ ...tegProposal, applied: d }))
-      .catch((e) => setErr(e.message || String(e)));
-  };
-
+export default function My_Diagnosis({ user }) {
+  const [active, setActive] = useState("workflow");
+  const isAdmin = user?.role === "admin";
+  const activeCategory = CATEGORIES.find((item) => item.id === active) || CATEGORIES[0];
+  useEffect(() => {
+    if (active === "admin" && !isAdmin) setActive("workflow");
+  }, [active, isAdmin]);
   return (
     <PageShell>
-      <PageHeader
-        title="에이전트"
-      />
-      <div style={{ padding: 12, display: "grid", gap: 12 }}>
-        {err && <Banner tone="bad" onClose={() => setErr("")}>{err}</Banner>}
-        <Panel
-          title="RAG 반영 현황"
-          subtitle="[flow-i update], 문서형 지식, 표 지식이 custom_knowledge에 어떻게 저장되고 검색 대상으로 잡히는지 확인합니다."
-          right={<Pill tone="accent">append-only RAG</Pill>}
-        >
-          <div style={{ display: "grid", gap: 10 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8 }}>
-              {Object.entries(ragView?.counts || manifest?.counts || {}).filter(([k]) => ["custom_knowledge", "documents", "tables", "knowledge_cards", "matched_runtime"].includes(k)).map(([k, v]) => (
-                <div key={k} style={{ border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg-primary)", padding: "10px 12px" }}>
-                  <div style={{ fontSize: 14, color: uxColors.textSub, marginBottom: 4 }}>{k}</div>
-                  <div style={{ fontSize: 20, fontWeight: 900, fontFamily: "monospace", color: uxColors.text }}>{v}</div>
-                </div>
-              ))}
-            </div>
-            <Banner tone="info">
-              문서 본문은 사람이 보는 한국어를 유지하고, RAG 검색용으로 chunk, canonical item 후보, tag, raw token을 같이 저장합니다. 실제 답변 실행은 홈 Flow-i에서 하고, 이 화면은 지식 반영 상태를 검토하는 곳입니다.
-            </Banner>
-          </div>
+      <PageHeader title="에이전트" subtitle="Flowi agent workflow, persona, RAG, item rules, LLM, admin tools" />
+      <div style={{ padding: 12, display: "grid", gridTemplateColumns: "250px minmax(0,1fr)", gap: 12, alignItems: "start" }}>
+        <Panel title="카테고리" subtitle="8개 영역" bodyStyle={{ padding: 10 }}>
+          <CategoryNav active={active} onChange={setActive} isAdmin={isAdmin} />
         </Panel>
-
-        <TabStrip items={tabs} active={active} onChange={setActive} />
-
-        {active === "agent" && (
-          <div style={{ display: "grid", gap: 12 }}>
-            <Panel title="최근 RAG 반영 내역" subtitle="[flow-i update], 문서형 지식, 표 지식이 어떤 형태로 RAG에 반영됐는지 시간순으로 봅니다.">
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-                <input
-                  value={ragQ}
-                  onChange={(e) => setRagQ(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && loadRagView(e.currentTarget.value)}
-                  style={{ ...formControlStyle, width: 300 }}
-                  placeholder="문서 제목, item, module, tag 검색"
-                />
-                <Button onClick={() => loadRagView(ragQ)}>검색</Button>
-                <Button variant="ghost" onClick={() => { setRagQ(""); loadRagView(""); }}>전체</Button>
-                <span style={{ flex: 1 }} />
-                <Pill tone="accent">runtime {ragView?.counts?.custom_knowledge ?? manifest?.counts?.custom_cards ?? 0}</Pill>
-                <Pill tone="info">documents {ragView?.counts?.documents ?? 0}</Pill>
-                <Pill tone="neutral">tables {ragView?.counts?.tables ?? 0}</Pill>
-              </div>
-              <DataTable
-                rows={ragView?.recent_updates || ragView?.runtime_knowledge || []}
-                maxHeight={430}
-                columns={[
-                  { key: "created_at", label: "time", width: 116, render: (r) => String(r.created_at || "").replace("T", " ").slice(0, 16) },
-                  { key: "username", label: "by", width: 90 },
-                  { key: "kind", label: "type", width: 120, render: (r) => <Pill tone={r.kind === "document" ? "accent" : "neutral"}>{r.document_type || r.kind || "-"}</Pill> },
-                  { key: "visibility", label: "vis", width: 70 },
-                  { key: "display_title", label: "표시명", render: (r) => r.display_title || r.title || "-" },
-                  { key: "key_terms", label: "검색키", render: (r) => listText(r.key_terms || r.items || r.tags, 5) },
-                  { key: "chunk_count", label: "chunks/rows", width: 88, render: (r) => r.kind === "table" ? (r.row_count || "-") : (r.chunk_count || "-") },
-                  { key: "rag_effect", label: "RAG 반영 방식", render: (r) => r.rag_effect || "-" },
-                ]}
-              />
-            </Panel>
-
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 12, alignItems: "start" }}>
-              <Panel title="문서 타입 지식 등록" subtitle="Admin이 긴 문서를 공용 runtime RAG 지식으로 저장하고, 모든 유저의 에이전트 검색에 반영합니다.">
-                <div style={{ display: "grid", gap: 8 }}>
-                  <Banner tone="info">문서 지식은 admin이 공용 RAG로 등록합니다. 등록 내용은 <code>flow-data/semiconductor/custom_knowledge.jsonl</code>에만 append-only 저장되며 외부로 전송하거나 별도 문서 파일로 내보내지 않습니다.</Banner>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 180px", gap: 8 }}>
-                    <Field label="제목">
-                      <input value={docForm.title} onChange={(e) => setDocForm({ ...docForm, title: e.target.value })} style={formControlStyle} placeholder="예: PRODA PC-CB-M1 심층리서치" />
-                    </Field>
-                    <Field label="문서 타입">
-                      <select value={docForm.document_type} onChange={(e) => setDocForm({ ...docForm, document_type: e.target.value })} style={formControlStyle}>
-                        <option value="gpt_deep_research">GPT 심층리서치</option>
-                        <option value="internal_knowledge">사내 정보지식</option>
-                        <option value="process_spec">공정/spec 문서</option>
-                        <option value="rca_report">RCA 보고서</option>
-                        <option value="meeting_note">회의/결정사항</option>
-                        <option value="external_paper">논문/외부자료(로컬 등록)</option>
-                      </select>
-                    </Field>
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "160px 160px 1fr", gap: 8 }}>
-                    <Field label="product">
-                      <input value={docForm.product} onChange={(e) => setDocForm({ ...docForm, product: e.target.value })} style={formControlStyle} placeholder="PRODA" />
-                    </Field>
-                    <Field label="module">
-                      <input value={docForm.module} onChange={(e) => setDocForm({ ...docForm, module: e.target.value })} style={formControlStyle} placeholder="CA, RMG, BEOL" />
-                    </Field>
-                    <Field label="tags">
-                      <input value={docForm.tags} onChange={(e) => setDocForm({ ...docForm, tags: e.target.value })} style={formControlStyle} placeholder="DIBL, PC-CB-M1, chain" />
-                    </Field>
-                  </div>
-                  <Field label="문서 본문">
-                    <textarea value={docForm.content} onChange={(e) => setDocForm({ ...docForm, content: e.target.value })} rows={10} style={{ ...formControlStyle, resize: "vertical", lineHeight: 1.55 }} />
-                  </Field>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <Button variant="primary" onClick={saveDocumentKnowledge} disabled={!isAdmin || !docForm.content.trim()}>문서 RAG 등록</Button>
-                    <span style={{ fontSize: 14, color: uxColors.textSub }}>{isAdmin ? "본문은 표시용으로 보존되고, 공용 RAG 검색용 chunk/token/요약 구조가 함께 저장됩니다." : "문서 지식 등록은 admin 전용입니다. 등록된 문서는 모든 유저의 에이전트 검색에 사용됩니다."}</span>
-                  </div>
-                  {docResult?.structured && <Banner tone="ok">저장됨: {docResult.structured.chunk_count} chunks</Banner>}
-                </div>
-              </Panel>
-
-              <Panel title="[flow-i update] 빠른 지식 등록" subtitle="짧은 운영 지식은 marker 기반으로 저장하고 최근 반영 내역에서 바로 확인합니다.">
-                <div style={{ display: "grid", gap: 8 }}>
-                  <textarea value={ragPrompt} onChange={(e) => setRagPrompt(e.target.value)} rows={7} style={{ ...formControlStyle, resize: "vertical", lineHeight: 1.55 }} />
-                  <Button variant="primary" onClick={saveRagUpdate} disabled={!ragPrompt.trim()}>RAG Update 저장</Button>
-                  {ragResult?.structured && (
-                    <pre style={{ maxHeight: 220, overflow: "auto", fontSize: 14, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 5, padding: 8, margin: 0 }}>
-                      {JSON.stringify(ragResult.structured, null, 2)}
-                    </pre>
-                  )}
-                </div>
-              </Panel>
-            </div>
-
-            <Panel title="표 지식 Preview → 확정 반영" subtitle="표 본문을 대상 단일파일 schema에 맞춰 매핑하고, 확인 후 해당 CSV/Parquet에 행을 추가합니다.">
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.9fr) minmax(0,1.1fr)", gap: 12, alignItems: "start" }}>
-                <div style={{ display: "grid", gap: 8 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 220px", gap: 8 }}>
-                    <Field label="제목">
-                      <input value={tableForm.title} onChange={(e) => setTableForm({ ...tableForm, title: e.target.value })} style={formControlStyle} />
-                    </Field>
-                    <Field label="표 타입">
-                      <select value={tableForm.table_type} onChange={(e) => setTableForm({ ...tableForm, table_type: e.target.value })} style={formControlStyle}>
-                        <option value="process_plan_func_step">공정 plan → func_step</option>
-                        <option value="inline_item_semantics">Inline step/item/item_desc</option>
-                        <option value="teg_coordinate_table">TEG 좌표/layout 표</option>
-                        <option value="data_cleaning_plan">데이터 클리닝 기준</option>
-                        <option value="relation_mapping_table">Relation/Table map 기준</option>
-                      </select>
-                    </Field>
-                  </div>
-                  <Field label="대상 단일파일(schema 기준)">
-                    <select value={tableForm.target_file} onChange={(e) => setTableForm({ ...tableForm, target_file: e.target.value })} style={formControlStyle}>
-                      <option value="">-- 추가할 CSV/Parquet 선택 --</option>
-                      {baseFiles.map((f) => <option key={f.path || f.name} value={f.name}>{f.name} · {f.role || f.source}</option>)}
-                    </select>
-                  </Field>
-                  <Field label="표 본문">
-                    <div
-                      onPaste={(e) => {
-                        const text = e.clipboardData?.getData("text/plain") || "";
-                        if (!text.trim()) return;
-                        e.preventDefault();
-                        setGridAndContent(parseGridText(text));
-                      }}
-                      style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "auto", maxHeight: 260, background: "var(--bg-primary)" }}
-                    >
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, tableLayout: "auto" }}>
-                        <thead>
-                          <tr>
-                            <th style={{ width: 40, padding: "6px 8px", borderRight: "1px solid var(--border)", borderBottom: "1px solid var(--border)", color: uxColors.textSub, background: "var(--bg-tertiary)", textAlign: "center" }}>#</th>
-                            {tableGrid.columns.map((col, ci) => (
-                              <th key={ci} style={{ ...tableCellStyle, background: "var(--bg-tertiary)" }}>
-                                <input value={col} onChange={(e) => updateGridHeader(ci, e.target.value)} style={tableHeaderInputStyle} />
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {tableGrid.rows.map((row, ri) => (
-                            <tr key={ri}>
-                              <td style={{ width: 40, padding: "6px 8px", textAlign: "center", borderRight: "1px solid var(--border)", borderBottom: "1px solid var(--border)", color: uxColors.textSub, fontFamily: "monospace", background: "var(--bg-secondary)" }}>{ri + 1}</td>
-                              {tableGrid.columns.map((_, ci) => (
-                                <td key={ci} style={tableCellStyle}>
-                                  <input value={row[ci] || ""} onChange={(e) => updateGridCell(ri, ci, e.target.value)} style={tableInputStyle} />
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                      <Button onClick={() => setGridAndContent({ ...tableGrid, rows: [...tableGrid.rows, Array(tableGrid.columns.length).fill("")] })}>+ 행</Button>
-                      <Button onClick={() => setGridAndContent({ columns: [...tableGrid.columns, `col_${tableGrid.columns.length + 1}`], rows: tableGrid.rows.map((r) => [...r, ""]) })}>+ 열</Button>
-                      <span style={{ fontSize: 14, color: uxColors.textSub, alignSelf: "center" }}>엑셀/CSV 표를 이 영역에 붙여넣으면 표로 변환됩니다.</span>
-                    </div>
-                  </Field>
-                  <Field label="반영 지시 프롬프트">
-                    <textarea
-                      value={tableForm.apply_instructions}
-                      onChange={(e) => setTableForm({ ...tableForm, apply_instructions: e.target.value })}
-                      rows={4}
-                      style={{ ...formControlStyle, resize: "vertical", lineHeight: 1.5 }}
-                      placeholder={"예: step_name이랑 operation_name은 같은 열이다\nfunc_step 열은 그대로 넣지 말고 기존 func_step 값에 맞게 trim/정규화해줘\ncomment 열은 넣지 말고 제외해줘"}
-                    />
-                    <div style={{ marginTop: 4, fontSize: 14, color: uxColors.textSub }}>
-                      이 지시는 확정 시 schema별 반영 규칙으로 저장됩니다. 같은 입력/대상 schema가 다시 들어오면 preview에서 자동으로 참고합니다.
-                    </div>
-                  </Field>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                    <Button onClick={previewTableKnowledge} disabled={!tableGrid.columns.length || !tableForm.target_file}>반영 방식 Preview</Button>
-                    <Button variant="primary" onClick={commitTableKnowledge} disabled={!tablePreview?.target_file_preview?.mapped_row_count || !canFileWrite}>확인 후 단일파일 반영</Button>
-                    <span style={{ fontSize: 14, color: uxColors.textSub }}>반영 시 백업 생성 후 행 append</span>
-                  </div>
-                  {!canFileWrite && <Banner tone="warn">단일파일 반영은 admin 또는 FileBrowser 위임 사용자만 가능합니다.</Banner>}
-                  {tableResult?.ok && <Banner tone="ok">저장됨: {tableResult.file_apply?.file || "RAG"} / added {tableResult.file_apply?.added || 0} rows</Banner>}
-                </div>
-                <div style={{ display: "grid", gap: 8 }}>
-                  {tablePreview?.warnings?.length ? <Banner tone="warn">{tablePreview.warnings.join(" / ")}</Banner> : null}
-                  {tablePreview?.target_file_preview?.column_mapping?.length ? (
-                    <DataTable
-                      rows={tablePreview.target_file_preview.column_mapping}
-                      maxHeight={180}
-                      columns={[
-                        { key: "target_col", label: "target column" },
-                        { key: "target_dtype", label: "dtype", width: 90 },
-                        { key: "source_col", label: "input column" },
-                        { key: "apply_action", label: "action", width: 130 },
-                        { key: "sample_before", label: "before", width: 130 },
-                        { key: "sample_after", label: "after", width: 130 },
-                        { key: "reason", label: "reason" },
-                      ]}
-                    />
-                  ) : null}
-                  {tablePreview?.table_apply_policy?.prior_policy_count ? (
-                    <Banner tone="info">같은 schema의 이전 반영 규칙 {tablePreview.table_apply_policy.prior_policy_count}개를 함께 적용했습니다.</Banner>
-                  ) : null}
-                  {tablePreview?.cleaning_summary?.note ? <Banner tone="info">{tablePreview.cleaning_summary.note}</Banner> : null}
-                  <DataTable
-                    rows={tablePreview?.preview_rows || []}
-                    maxHeight={330}
-                    columns={[
-                      { key: "step_id", label: "step_id", width: 110 },
-                      { key: "step_name", label: "step/name" },
-                      { key: "raw_item_id", label: "item", width: 120 },
-                      { key: "canonical_item_id", label: "canonical", width: 120 },
-                      { key: "proposed_func_step", label: "func_step", width: 150 },
-                      { key: "confidence", label: "conf", width: 58 },
-                      { key: "cleaning_actions", label: "cleaning", render: (r) => listText(r.cleaning_actions, 3) },
-                    ]}
-                  />
-                  {tablePreview?.teg_definitions?.length ? (
-                    <DataTable
-                      rows={tablePreview.teg_definitions}
-                      maxHeight={180}
-                      columns={[
-                        { key: "id", label: "TEG id", width: 120 },
-                        { key: "label", label: "label" },
-                        { key: "dx_mm", label: "x", width: 70 },
-                        { key: "dy_mm", label: "y", width: 70 },
-                        { key: "role", label: "role", width: 90 },
-                      ]}
-                    />
-                  ) : null}
-                </div>
-              </div>
-            </Panel>
-
-            <Panel title="문서형 RAG 반영 방식" subtitle="사내 GPT가 활용하기 좋은 형태로 저장되는 필드">
-              <DataTable
-                rows={[
-                  { field: "display_title / display_content", value: "사용자가 입력한 한국어 제목과 본문을 화면 표시용으로 그대로 보존" },
-                  { field: "chunks", value: "긴 문서를 900자 안팎 passage로 나누어 검색/인용 단위로 사용" },
-                  { field: "known_canonical_candidates", value: "item_master와 매칭되는 DIBL, VTH, CA_RS 같은 canonical item 후보" },
-                  { field: "raw_item_tokens / tags", value: "PC-CB-M1, gate_pitch 같은 검색 토큰과 문서 타입 tag" },
-                  { field: "table classifications", value: "공정 plan, inline item, TEG 좌표 표는 preview 후 확정 시 table knowledge로 저장" },
-                  { field: "review_status", value: "admin_added 또는 needs_admin_review로 운영 검토 상태 구분" },
-                ]}
-                columns={[
-                  { key: "field", label: "field", width: 230 },
-                  { key: "value", label: "RAG 사용 의미" },
-                ]}
-              />
-            </Panel>
-          </div>
-        )}
-
-        {active === "dictionary" && (
-          <div style={{ display: "grid", gap: 12 }}>
-            <Panel title="Item Dictionary" subtitle="raw item name만으로 의미를 추론하지 않기 위한 기준 테이블">
-              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                <input
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && search(e.currentTarget.value)}
-                  style={{ ...formControlStyle, width: 260 }}
-                  placeholder="DIBL, CA, RSD..."
-                />
-                <Button onClick={() => search(q)}>검색</Button>
-              </div>
-              <DataTable
-                rows={items}
-                maxHeight={520}
-                columns={[
-                  { key: "canonical_item_id", label: "canonical", width: 130 },
-                  { key: "source_type", label: "source", width: 80 },
-                  { key: "unit", label: "unit", width: 90 },
-                  { key: "test_structure", label: "structure", width: 140 },
-                  { key: "layer", label: "layer", width: 90 },
-                  { key: "measurement_method", label: "method" },
-                  { key: "meaning", label: "meaning" },
-                ]}
-              />
-            </Panel>
-          </div>
-        )}
-
-        {active === "knowledge" && (
-          <div style={{ display: "grid", gap: 12 }}>
-            <Panel title="RAG 지식 한눈에 보기" subtitle="등록된 지식카드와 Item Dictionary가 어떻게 연결되는지 확인합니다.">
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                <input
-                  value={ragQ}
-                  onChange={(e) => setRagQ(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && loadRagView(e.currentTarget.value)}
-                  style={{ ...formControlStyle, width: 280 }}
-                  placeholder="Item, module, cause, raw token 검색"
-                />
-                <Button onClick={() => loadRagView(ragQ)}>검색</Button>
-                <Button variant="ghost" onClick={() => { setRagQ(""); loadRagView(""); }}>전체</Button>
-                <span style={{ flex: 1 }} />
-                <Pill tone="accent">version {ragView?.version || manifest?.knowledge_version || "-"}</Pill>
-              </div>
-            </Panel>
-
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.2fr) minmax(320px,0.8fr)", gap: 12, alignItems: "start" }}>
-              <Panel title="Item Dictionary + 연결" subtitle="각 Item이 어떤 지식카드/edge에 연결되는지">
-                <DataTable
-                  rows={ragView?.items || []}
-                  maxHeight={430}
-                  columns={[
-                    { key: "canonical_item_id", label: "item", width: 120 },
-                    { key: "source_type", label: "source", width: 76 },
-                    { key: "unit", label: "unit", width: 76 },
-                    { key: "test_structure", label: "structure", width: 130 },
-                    { key: "module", label: "module", width: 120 },
-                    { key: "meaning", label: "meaning" },
-                    { key: "knowledge_cards", label: "cards", render: (r) => listText(r.knowledge_cards, 3) },
-                    { key: "connections", label: "links", render: (r) => listText((r.connections || []).map((x) => `${x.source}->${x.target}`), 3) },
-                  ]}
-                />
-              </Panel>
-              <Panel title="Runtime 추가 지식" subtitle="문서/표/RAG Update로 flow-data에 쌓인 지식">
-                <DataTable
-                  rows={ragView?.runtime_knowledge || []}
-                  maxHeight={430}
-                  columns={[
-                    { key: "created_at", label: "time", width: 116, render: (r) => String(r.created_at || "").replace("T", " ").slice(0, 16) },
-                    { key: "kind", label: "kind", width: 96 },
-                    { key: "visibility", label: "vis", width: 70 },
-                    { key: "display_title", label: "표시명", render: (r) => r.display_title || r.title || "-" },
-                    { key: "key_terms", label: "검색키", render: (r) => listText(r.key_terms || r.items || r.tags, 5) },
-                    { key: "display_content", label: "내용", render: (r) => r.display_content || r.content || "-" },
-                  ]}
-                />
-              </Panel>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 12, alignItems: "start" }}>
-              <Panel title="Knowledge Cards" subtitle="증상 item에서 원인/확인 항목으로 붙는 RAG 카드">
-                <DataTable
-                  rows={ragView?.knowledge_cards || []}
-                  maxHeight={360}
-                  columns={[
-                    { key: "source_kind", label: "src", width: 64, render: (r) => <Pill tone={r.source_kind === "custom" ? "accent" : "neutral"}>{r.source_kind}</Pill> },
-                    { key: "title", label: "title" },
-                    { key: "symptom_items", label: "items", render: (r) => listText(r.symptom_items, 5) },
-                    { key: "module_tags", label: "module", render: (r) => listText(r.module_tags, 3) },
-                    { key: "recommended_checks", label: "checks", render: (r) => listText(r.recommended_checks, 3) },
-                  ]}
-                />
-              </Panel>
-              <Panel title="Causal Connections" subtitle="RCA에서 따라가는 source → relation → target 연결">
-                <DataTable
-                  rows={ragView?.causal_edges || []}
-                  maxHeight={360}
-                  columns={[
-                    { key: "source", label: "source" },
-                    { key: "relation", label: "relation", width: 140 },
-                    { key: "target", label: "target" },
-                    { key: "module", label: "module", width: 130 },
-                    { key: "evidence", label: "evidence" },
-                  ]}
-                />
-              </Panel>
-            </div>
-          </div>
-        )}
-
-        {active === "quality" && isAdmin && (
-          <FlowiQualityPanel />
-        )}
-
-        {active === "function_call" && isAdmin && (
-          <FunctionCallTestPanel />
-        )}
-
-        {active === "persona" && isAdmin && (
-          <FlowiPersonaPanel />
-        )}
-
-        {active === "llm" && isAdmin && (
-          <LlmCfgPanel />
-        )}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: active === "workflow" ? "block" : "none" }}><WorkflowPanel /></div>
+          <div style={{ display: active === "persona" ? "block" : "none" }}><PersonaPanel /></div>
+          <div style={{ display: active === "prompt" ? "block" : "none" }}><PromptPanel /></div>
+          <div style={{ display: active === "knowledge" ? "block" : "none" }}><KnowledgePanel isAdmin={isAdmin} /></div>
+          <div style={{ display: active === "recent" ? "block" : "none" }}><RecentRagPanel user={user} /></div>
+          <div style={{ display: active === "item" ? "block" : "none" }}><ItemRulesPanel /></div>
+          <div style={{ display: active === "llm" ? "block" : "none" }}><LlmPanel isAdmin={isAdmin} /></div>
+          <div style={{ display: active === "admin" ? "block" : "none" }}><AdminToolsPanel isAdmin={isAdmin} /></div>
+          {!activeCategory && <EmptyState title="카테고리를 선택하세요." />}
+        </div>
       </div>
     </PageShell>
   );
