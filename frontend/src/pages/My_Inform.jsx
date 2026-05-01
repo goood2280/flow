@@ -9,6 +9,16 @@ import PageGear from "../components/PageGear";
 import { Button, Pill, statusPalette, chartPalette } from "../components/UXKit";
 
 const API = "/api/informs";
+export const WIZARD_STEPS = ["lot", "module_reason", "splittable", "mail_preview", "review"];
+export const WIZARD_BACKEND_CALLS = [
+  "/api/informs/config",
+  "/api/splittable/lot-candidates",
+  "/api/informs/splittable-snapshot",
+  "/api/informs/modules/recipients",
+  "/api/informs/modules/knob-map",
+  "POST /api/informs",
+];
+const WIZARD_DRAFT_KEY = "flow_inform_wizard_draft_v1";
 const OK = statusPalette.ok;
 const WARN = statusPalette.warn;
 const BAD = statusPalette.bad;
@@ -109,13 +119,64 @@ function parseDuplicateProductError(error) {
 }
 
 const STATUS_META = {
-  received:    { label: "접수",   color: NEUTRAL.fg, dot: "○" },
+  received:    { label: "접수",   color: INFO.fg, dot: "○" },
   reviewing:   { label: "검토중", color: INFO.fg, dot: "◐" },
   in_progress: { label: "진행중", color: WARN.fg, dot: "◑" },
   completed:   { label: "완료",   color: OK.fg, dot: "●" },
 };
 // v8.7.9: 2단계 플로우 — 접수 → 완료. legacy 값은 값만 허용(UI 는 숨김).
 const STATUS_ORDER = ["received", "completed"];
+
+function defaultInformForm() {
+  return {
+    wafer_id: "", lot_id: "", product: "", module: "", reason: "PEMS", text: "",
+    deadline: "",
+    attach_split: false, split: { column: "", old_value: "", new_value: "" },
+    attach_embed: false, embed: emptyEmbedTable(),
+  };
+}
+
+function informTitle(node) {
+  const text = String(node?.text || "").trim();
+  const first = text.split(/\n+/).find(Boolean);
+  if (first) return first;
+  const reason = String(node?.reason || "").trim();
+  const module = String(node?.module || "").trim();
+  return [module, reason, "인폼"].filter(Boolean).join(" · ") || "(내용 없음)";
+}
+
+function relativeTime(iso) {
+  if (!iso) return "-";
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return String(iso).replace("T", " ").slice(0, 16);
+  const diff = Date.now() - t.getTime();
+  const abs = Math.abs(diff);
+  const suffix = diff >= 0 ? "전" : "후";
+  const mins = Math.round(abs / 60000);
+  if (mins < 1) return "방금 전";
+  if (mins < 60) return `${mins}분 ${suffix}`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}시간 ${suffix}`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}일 ${suffix}`;
+  return String(iso).replace("T", " ").slice(0, 10);
+}
+
+function inputStyle(extra = {}) {
+  return {
+    width: "100%",
+    minWidth: 0,
+    boxSizing: "border-box",
+    padding: "7px 9px",
+    borderRadius: 8,
+    border: "1px solid var(--border)",
+    background: "var(--bg-primary)",
+    color: "var(--text-primary)",
+    fontSize: 14,
+    outline: "none",
+    ...extra,
+  };
+}
 
 /* v8.7.1 — 모듈별 구분색 (좌측 리스트 / 루트카드 left border / Gantt bar fallback) */
 const MODULE_COLORS = {
@@ -1581,15 +1642,21 @@ export default function My_Inform({ user }) {
 
   const [thread, setThread] = useState([]);          // 선택 scope 의 전체 entries (wafer/lot/product)
   const [lotWafers, setLotWafers] = useState([]);    // lot 모드에서 포함된 wafer 들
+  const [listRoots, setListRoots] = useState([]);
+  const [moduleSummary, setModuleSummary] = useState([]);
+  const [selectedRootId, setSelectedRootId] = useState("");
+  const [detailTab, setDetailTab] = useState("body");
+  const [listFilters, setListFilters] = useState({
+    query: "", module: "", status: "", product: "", root_lot: "", fab_lot: "", author: "", start: "", end: "",
+  });
+  const [wizardStep, setWizardStep] = useState(0);
+  const [wizardAttachMode, setWizardAttachMode] = useState("auto");
+  const [wizardMailDraft, setWizardMailDraft] = useState({ subject: "", body: "", generatedFor: "" });
+  const [wizardMailMeta, setWizardMailMeta] = useState({ recipients: [], knobMap: {} });
+  const [mailDialogRoot, setMailDialogRoot] = useState(null);
 
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({
-    // v9.0.1: reason 기본값 'PEMS' — split table plan 인폼이 주 용도. admin 에서 추가 사유 등록 가능.
-    wafer_id: "", lot_id: "", product: "", module: "", reason: "PEMS", text: "",
-    deadline: "",
-    attach_split: false, split: { column: "", old_value: "", new_value: "" },
-    attach_embed: false, embed: emptyEmbedTable(),
-  });
+  const [form, setForm] = useState(defaultInformForm);
   const [createImages, setCreateImages] = useState([]);
   const [uploadingMain, setUploadingMain] = useState(false);
   const [embedFetching, setEmbedFetching] = useState(false);
@@ -1639,6 +1706,72 @@ export default function My_Inform({ user }) {
       throw error;
     }
   };
+
+  const loadModuleSummary = () => {
+    sf(API + "/modules/summary?days=30")
+      .then(d => setModuleSummary(Array.isArray(d) ? d : (d.modules || [])))
+      .catch(() => setModuleSummary([]));
+  };
+
+  const loadInformList = () => {
+    sf(API + "/recent?limit=500")
+      .then(d => setListRoots(d.informs || []))
+      .catch(() => setListRoots([]));
+  };
+
+  const loadDetailForRoot = (root) => {
+    if (!root) { setThread([]); setLotWafers([]); return; }
+    const rawLot = String(root?.lot_id || "").trim();
+    const lotKey = (root?.root_lot_id || (isFabLotInput(rawLot) ? rawLot.slice(0, 5) : rawLot) || "").trim();
+    if (!lotKey) {
+      setThread([root]);
+      setLotWafers([]);
+      return;
+    }
+    setSelectedLot(lotKey);
+    sf(API + "/by-lot?lot_id=" + encodeURIComponent(lotKey))
+      .then(d => {
+        setThread(d.informs || []);
+        setLotWafers(d.wafers || []);
+      })
+      .catch(() => { setThread([root]); setLotWafers([]); });
+  };
+
+  const openRootForDetail = (root) => {
+    if (!root) return;
+    setSelectedRootId(root.id);
+    setDetailTab("body");
+    loadDetailForRoot(root);
+  };
+
+  const openCreateWizard = () => {
+    sf(API + "/config").then(d => setConstants(c => ({
+      ...c,
+      modules: d.modules || c.modules,
+      reasons: d.reasons || c.reasons,
+      products: d.products || c.products,
+      raw_db_root: d.raw_db_root ?? c.raw_db_root,
+      reason_templates: d.reason_templates || c.reason_templates,
+    }))).catch(() => {});
+    try {
+      const raw = localStorage.getItem(WIZARD_DRAFT_KEY);
+      if (raw) {
+        const draft = JSON.parse(raw);
+        if (draft?.form) setForm({ ...defaultInformForm(), ...draft.form });
+        if (Array.isArray(draft?.createImages)) setCreateImages(draft.createImages);
+        if (typeof draft?.wizardStep === "number") setWizardStep(Math.max(0, Math.min(4, draft.wizardStep)));
+        if (draft?.wizardAttachMode) setWizardAttachMode(draft.wizardAttachMode);
+        if (Array.isArray(draft?.embedCustomCols)) setEmbedCustomCols(draft.embedCustomCols);
+        if (draft?.wizardMailDraft) setWizardMailDraft(draft.wizardMailDraft);
+      }
+    } catch (_) {}
+    setCreating(true);
+  };
+
+  useEffect(() => {
+    loadInformList();
+    loadModuleSummary();
+  }, []);
 
   /* Load constants + my modules */
   useEffect(() => {
@@ -1799,7 +1932,15 @@ export default function My_Inform({ user }) {
 
   const refreshAll = () => {
     loadSidebar();
-    if (mode === "wafer" && selectedWafer) {
+    loadInformList();
+    loadModuleSummary();
+    const selected = listRoots.find(x => x.id === selectedRootId) || thread.find(x => x.id === selectedRootId);
+    const rawLot = String(selected?.lot_id || "").trim();
+    const lotForDetail = selected?.root_lot_id || selectedLot || (isFabLotInput(rawLot) ? rawLot.slice(0, 5) : rawLot);
+    if (lotForDetail) {
+      sf(API + "/by-lot?lot_id=" + encodeURIComponent(lotForDetail))
+        .then(d => { setThread(d.informs || []); setLotWafers(d.wafers || []); });
+    } else if (mode === "wafer" && selectedWafer) {
       sf(API + "?wafer_id=" + encodeURIComponent(selectedWafer)).then(d => setThread(d.informs || []));
     } else if (mode === "lot" && selectedLot) {
       sf(API + "/by-lot?lot_id=" + encodeURIComponent(selectedLot))
@@ -1814,17 +1955,17 @@ export default function My_Inform({ user }) {
   };
 
   const openRootDetail = (root) => {
-    const rawLot = (root?.lot_id || "").trim();
-    const lotKey = (root?.root_lot_id || (isFabLotInput(rawLot) ? rawLot.slice(0, 5) : rawLot) || "").trim();
-    if (!lotKey) return;
-    setSelectedLot(lotKey);
-    setMode("lot");
+    openRootForDetail(root);
   };
 
   const create = () => {
     const lot = (form.lot_id || "").trim();
-    if (!lot || (!form.text.trim() && createImages.length === 0)) {
-      setMsg("Lot 과 내용(또는 이미지)을 입력하세요."); return;
+    if (!form.product.trim()) { setMsg("product 를 선택해 주세요."); return Promise.reject(new Error("product required")); }
+    if (!lot) { setMsg("lot 을 선택해 주세요."); return Promise.reject(new Error("lot required")); }
+    if (!form.module) { setMsg("module 을 선택해 주세요."); return Promise.reject(new Error("module required")); }
+    if (!form.reason) { setMsg("사유를 선택해 주세요."); return Promise.reject(new Error("reason required")); }
+    if (!form.text.trim() && createImages.length === 0) {
+      setMsg("note 를 입력해 주세요."); return Promise.reject(new Error("text required"));
     }
     const body = {
       wafer_id: "", lot_id: lot, product: form.product.trim(),
@@ -1842,19 +1983,24 @@ export default function My_Inform({ user }) {
       const isFabLot = isFabLotInput(lot, lotOptions);
       if (isFabLot) body.fab_lot_id_at_save = lot;
     }
-    sf(API, {
+    return sf(API, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }).then(() => {
-      setForm({
-        wafer_id: "", lot_id: "", product: "", module: "", reason: "PEMS", text: "",
-        attach_split: false, split: { column: "", old_value: "", new_value: "" },
-        attach_embed: false, embed: emptyEmbedTable(),
-      });
+    }).then((res) => {
+      setForm(defaultInformForm());
       setCreateImages([]);
+      setWizardStep(0);
+      setWizardAttachMode("auto");
+      setWizardMailDraft({ subject: "", body: "", generatedFor: "" });
       setCreating(false); setMsg("");
-      // v8.7.9: lot mode 로 바로 이동 (wafer mode 는 폐지).
-      setMode("lot"); setSelectedLot(isFabLotInput(lot, lotOptions) ? lot.slice(0, 5) : lot);
+      try { localStorage.removeItem(WIZARD_DRAFT_KEY); } catch (_) {}
+      const created = res?.inform;
+      if (created?.id) {
+        setSelectedRootId(created.id);
+        setDetailTab("body");
+        setSelectedLot(created.root_lot_id || (isFabLotInput(lot, lotOptions) ? lot.slice(0, 5) : lot));
+        loadDetailForRoot(created);
+      }
       setTimeout(refreshAll, 50);
     }).catch(e => setMsg(e.message));
   };
@@ -1953,6 +2099,11 @@ export default function My_Inform({ user }) {
     const prod = (form.product || "").trim();
     const lot  = (form.lot_id || "").trim();
     if (!creating) { setEmbedFetching(false); return; }
+    if (wizardAttachMode === "none") {
+      setEmbedFetching(false);
+      setForm(f => f.attach_embed ? { ...f, attach_embed: false, embed: emptyEmbedTable() } : f);
+      return;
+    }
     if (snapshotTick <= 0) { setEmbedFetching(false); return; }
     if (!prod || !lot) {
       setEmbedFetching(false);
@@ -1962,7 +2113,7 @@ export default function My_Inform({ user }) {
       return;
     }
     const mlProd = prod.startsWith("ML_TABLE_") ? prod : `ML_TABLE_${prod}`;
-    const customCols = (Array.isArray(embedCustomCols) ? embedCustomCols : [])
+    const customCols = (wizardAttachMode === "custom" ? (Array.isArray(embedCustomCols) ? embedCustomCols : []) : [])
       .map(c => String(c || "").trim())
       .filter(Boolean);
     const isFabLot = isFabLotInput(lot, lotOptions);
@@ -1986,7 +2137,7 @@ export default function My_Inform({ user }) {
     }, 400);
     return () => { clearTimeout(handle); setEmbedFetching(false); };
     // v8.8.16: snapshotTick 변경 시에도 재fetch — 사용자가 Search 버튼으로 명시적 갱신.
-  }, [form.product, form.lot_id, creating, embedCustomCols, snapshotTick, lotOptions]);
+  }, [form.product, form.lot_id, creating, embedCustomCols, snapshotTick, lotOptions, wizardAttachMode]);
 
   useEffect(() => {
     if (!creating) return;
@@ -2017,6 +2168,49 @@ export default function My_Inform({ user }) {
       setLotOptions(out);
     });
   }, [form.product]);
+
+  useEffect(() => {
+    if (!creating) return;
+    try {
+      localStorage.setItem(WIZARD_DRAFT_KEY, JSON.stringify({
+        form,
+        createImages,
+        wizardStep,
+        wizardAttachMode,
+        embedCustomCols,
+        wizardMailDraft,
+      }));
+    } catch (_) {}
+  }, [creating, form, createImages, wizardStep, wizardAttachMode, embedCustomCols, wizardMailDraft]);
+
+  useEffect(() => {
+    if (!creating || wizardStep !== 3) return;
+    const mod = (form.module || "").trim();
+    if (!mod) {
+      setWizardMailMeta({ recipients: [], knobMap: {} });
+      return;
+    }
+    Promise.all([
+      sf(API + "/modules/recipients?module=" + encodeURIComponent(mod)).catch(() => ({ recipients: [] })),
+      sf(API + "/modules/knob-map").catch(() => ({ knob_map: {} })),
+    ]).then(([rec, knobs]) => {
+      setWizardMailMeta({ recipients: rec.recipients || [], knobMap: knobs.knob_map || {} });
+      const key = [form.product, form.lot_id, form.module, form.reason].join("|");
+      setWizardMailDraft(d => {
+        if (d.generatedFor === key && (d.subject || d.body)) return d;
+        const subject = `[plan 적용 통보] ${stripMlPrefix(form.product || "")} ${form.lot_id || ""} - ${mod}`.trim();
+        const body = [
+          `안녕하세요. ${mod}팀에 다음과 같이 plan 적용 인폼을 등록합니다.`,
+          `제품: ${stripMlPrefix(form.product || "-")}`,
+          `Lot: ${form.lot_id || "-"}`,
+          `사유: ${form.reason || "-"}`,
+          "",
+          form.text || "",
+        ].join("\n");
+        return { subject, body, generatedFor: key };
+      });
+    });
+  }, [creating, wizardStep, form.product, form.lot_id, form.module, form.reason, form.text]);
 
   // v8.8.0: SplitTable 에서 현재 product 의 plan 스냅샷을 본문에 임베드.
   // 빈 history 인 경우 명시적으로 알림 + paste 폴백 제안.
@@ -2199,6 +2393,52 @@ export default function My_Inform({ user }) {
     return Array.from(seen.values()).sort();
   }, [rootsSorted]);
 
+  const selectedRoot = useMemo(() => {
+    if (!selectedRootId) return null;
+    return (thread || []).find(x => x.id === selectedRootId)
+      || (listRoots || []).find(x => x.id === selectedRootId)
+      || null;
+  }, [selectedRootId, thread, listRoots]);
+
+  const listProductOptions = useMemo(() => {
+    const seen = new Map();
+    (listRoots || []).forEach(r => {
+      const p = stripMlPrefix(r.product || "");
+      if (p) seen.set(p.toLowerCase(), p);
+    });
+    return Array.from(seen.values()).sort();
+  }, [listRoots]);
+
+  const filteredListRoots = useMemo(() => {
+    const q = (listFilters.query || "").trim().toLowerCase();
+    const start = listFilters.start || "";
+    const end = listFilters.end || "";
+    return (listRoots || []).filter(r => {
+      const hay = [
+        informTitle(r), r.module, r.flow_status, r.product, r.root_lot_id,
+        r.lot_id, r.fab_lot_id_at_save, lotSearchText(r), r.author,
+      ].filter(Boolean).join(" ").toLowerCase();
+      if (q && !hay.includes(q)) return false;
+      if (listFilters.module && (r.module || "기타") !== listFilters.module) return false;
+      if (listFilters.status) {
+        const st = r.flow_status || "received";
+        if (listFilters.status === "pending") {
+          if (st === "completed") return false;
+        } else if (st !== listFilters.status) return false;
+      }
+      if (listFilters.product && stripMlPrefix(r.product || "") !== listFilters.product) return false;
+      if (listFilters.root_lot && !String(r.root_lot_id || r.lot_id || "").toLowerCase().includes(listFilters.root_lot.toLowerCase())) return false;
+      if (listFilters.fab_lot && !lotSearchText(r).toLowerCase().includes(listFilters.fab_lot.toLowerCase())) return false;
+      if (listFilters.author && !String(r.author || "").toLowerCase().includes(listFilters.author.toLowerCase())) return false;
+      const day = String(r.created_at || "").slice(0, 10);
+      if (start && day && day < start) return false;
+      if (end && day && day > end) return false;
+      return true;
+    });
+  }, [listRoots, listFilters]);
+
+  const setListFilter = (key, value) => setListFilters(f => ({ ...f, [key]: value }));
+
   useEffect(() => {
     if (productFilterInit) return;
     if (presentProducts.length === 0) return;
@@ -2292,6 +2532,175 @@ export default function My_Inform({ user }) {
     const j = i + delta; if (j < 0 || j >= modDraft.length) return;
     const n = modDraft.slice(); [n[i], n[j]] = [n[j], n[i]]; setModDraft(n);
   };
+
+  return (
+    <div className="flow-connected-page" style={{
+      display: "grid",
+      gridTemplateColumns: "360px minmax(0,1fr)",
+      height: "calc(100vh - 52px)",
+      background: "var(--bg-primary)",
+      color: "var(--text-primary)",
+      fontSize: 14,
+      position: "relative",
+      overflow: "hidden",
+    }}>
+      <PageGear title="인폼 설정" canEdit={isAdmin} position="bottom-right">
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
+          카탈로그, 모듈 순서, 권한, 메일 템플릿을 여기에서 관리합니다.
+        </div>
+        <ProductCatalogPanel
+          products={[
+            ...(constants.products || []),
+            ...(products || []).map(p => typeof p === "string" ? p : p.product).filter(Boolean),
+            ...Object.keys(productContacts || {}),
+          ]}
+          canEdit={isAdmin}
+          onAdd={(product) => addCatalogProduct(product, {
+            onAdded: (_product, d) => setConstants(c => ({ ...c, products: d.products || c.products })),
+          })}
+          onDelete={(product) => postJson(API + "/products/delete", { product })
+            .then(d => setConstants(c => ({ ...c, products: d.products || c.products })))
+            .catch(e => alert("제품 삭제 실패: " + (e.message || e)))}
+        />
+        <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
+          <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
+            모듈 표시 순서를 관리합니다.
+          </div>
+          {!modDraft && (
+            <button onClick={() => setModDraft([...(constants.modules || [])])} disabled={!isAdmin}
+              style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 700 }}>
+              모듈 순서 편집 ({(constants.modules || []).length})
+            </button>
+          )}
+          {modDraft && (
+            <div>
+              <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+                {modDraft.map((m, i) => (
+                  <div key={m + i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace" }}>
+                    <span style={{ width: 20, color: "var(--text-secondary)" }}>{i + 1}</span>
+                    <span style={{ flex: 1 }}>{m}</span>
+                    <button onClick={() => moveMod(i, -1)} style={{ padding: "1px 6px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 6, cursor: "pointer" }}>↑</button>
+                    <button onClick={() => moveMod(i, 1)} style={{ padding: "1px 6px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 6, cursor: "pointer" }}>↓</button>
+                    <button onClick={() => setModDraft(modDraft.filter((_, j) => j !== i))} style={{ padding: "1px 6px", fontSize: 14, border: `1px solid ${BAD.fg}`, background: "transparent", color: BAD.fg, borderRadius: 6, cursor: "pointer" }}>×</button>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                <input value={modNewName} onChange={e => setModNewName(e.target.value)}
+                  placeholder="새 모듈 이름"
+                  style={inputStyle({ flex: 1, minWidth: 120 })}
+                  onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addPendingMod(); } }} />
+                <button onClick={addPendingMod} title="모듈 추가"
+                  style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>+</button>
+                <button onClick={saveModuleOrder} style={{ padding: "5px 12px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>저장</button>
+                <button onClick={() => { setModDraft(null); setModNewName(""); }} style={{ padding: "5px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
+              </div>
+            </div>
+          )}
+        </div>
+        {isAdmin && <UserModulePermsPanel allModules={constants.modules || []} />}
+        {isAdmin && (
+          <ReasonTemplatesPanel
+            reasons={constants.reasons || []}
+            templates={constants.reason_templates || {}}
+            onSave={(rt) => {
+              sf(API + "/config", { method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ reason_templates: rt }) })
+                .then(d => setConstants(c => ({ ...c, reason_templates: (d.config && d.config.reason_templates) || rt })))
+                .catch(e => alert("저장 실패: " + e.message));
+            }}
+          />
+        )}
+      </PageGear>
+
+      <aside style={{ borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <div style={{ padding: 12, borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 900 }}>인폼</div>
+            <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>
+              모듈 요약 → 리스트 → 상세
+            </div>
+          </div>
+          <button type="button" onClick={openCreateWizard} title="신규 인폼 등록"
+            style={{ marginLeft: "auto", width: 32, height: 32, borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontSize: 20, fontWeight: 800, cursor: "pointer", lineHeight: 1 }}>
+            +
+          </button>
+        </div>
+        {!myMods.all_rounder && (
+          <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)", fontSize: 14, lineHeight: 1.4 }}>
+            내 담당: {(myMods.modules || []).length ? (myMods.modules || []).join(", ") : "미지정"}
+          </div>
+        )}
+        <ModuleProgressSummary
+          rows={moduleSummary}
+          activeModule={listFilters.module}
+          onPick={(module) => setListFilter("module", listFilters.module === module ? "" : module)}
+        />
+        <InformFilterPanel
+          filters={listFilters}
+          setFilter={setListFilter}
+          modules={constants.modules || []}
+          products={listProductOptions}
+          onReset={() => setListFilters({ query: "", module: "", status: "", product: "", root_lot: "", fab_lot: "", author: "", start: "", end: "" })}
+        />
+        <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)", fontSize: 14 }}>
+          {filteredListRoots.length}건 표시 / 전체 {listRoots.length}건
+        </div>
+        <InformVirtualList
+          roots={filteredListRoots}
+          selectedId={selectedRootId}
+          onOpen={openRootForDetail}
+        />
+      </aside>
+
+      <main style={{ minWidth: 0, overflow: "hidden", display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
+        <InformDetailPane
+          root={selectedRoot}
+          thread={thread}
+          childrenByParent={childrenByParent}
+          constants={constants}
+          user={user}
+          tab={detailTab}
+          setTab={setDetailTab}
+          onReply={reply}
+          onDelete={del}
+          onToggleCheck={toggleCheck}
+          onEdit={editInform}
+          onChangeStatus={changeStatus}
+          onOpenMail={(root) => setMailDialogRoot(root)}
+        />
+      </main>
+
+      {creating && (
+        <InformWizard
+          form={form}
+          setForm={setForm}
+          constants={constants}
+          products={[...(constants.products || []), ...listProductOptions]}
+          lotOptions={lotOptions}
+          step={wizardStep}
+          setStep={setWizardStep}
+          attachMode={wizardAttachMode}
+          setAttachMode={setWizardAttachMode}
+          embedFetching={embedFetching}
+          embedSchemaCols={embedSchemaCols}
+          embedCustomCols={embedCustomCols}
+          setEmbedCustomCols={setEmbedCustomCols}
+          embedCustomSearch={embedCustomSearch}
+          setEmbedCustomSearch={setEmbedCustomSearch}
+          setSnapshotTick={setSnapshotTick}
+          mailDraft={wizardMailDraft}
+          setMailDraft={setWizardMailDraft}
+          mailMeta={wizardMailMeta}
+          msg={msg}
+          setMsg={setMsg}
+          onSubmit={() => create().catch(() => {})}
+          onClose={() => { setCreating(false); setMsg(""); }}
+        />
+      )}
+      {mailDialogRoot && <MailDialog root={mailDialogRoot} user={user} reasonTemplates={constants.reason_templates || {}} onClose={() => setMailDialogRoot(null)} />}
+    </div>
+  );
 
   return (
     <div className="flow-connected-page" style={{ display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)", position: "relative" }}>
@@ -3645,6 +4054,622 @@ function CompactRow({ root, onOpen }) {
         )}
         <span style={metaBadge}>module:{modLabel}</span>
         {reasonLabel && <span title={reasonLabel} style={metaBadge}>reason:{reasonLabel}</span>}
+      </div>
+    </div>
+  );
+}
+
+function ModulePill({ module }) {
+  const mc = moduleColor(module || "기타");
+  return (
+    <span title={module || "기타"} style={{
+      display: "inline-flex", alignItems: "center", maxWidth: 96,
+      padding: "2px 7px", borderRadius: 999,
+      background: mc + "18", color: mc, border: "1px solid " + mc + "44",
+      fontSize: 14, fontWeight: 800, fontFamily: "monospace",
+      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+    }}>{module || "기타"}</span>
+  );
+}
+
+function LotPill({ root }) {
+  const label = informLotDisplay(root, { maxFabLots: 2 }) || "-";
+  return (
+    <span title={label} style={{
+      display: "inline-flex", alignItems: "center", minWidth: 0, maxWidth: 160,
+      padding: "2px 7px", borderRadius: 999,
+      background: "var(--bg-tertiary)", color: "var(--text-secondary)",
+      border: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace",
+      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+    }}>{label}</span>
+  );
+}
+
+function ModuleProgressSummary({ rows, activeModule, onPick }) {
+  const list = Array.isArray(rows) ? rows : [];
+  return (
+    <div style={{ padding: 12, borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ fontWeight: 900, fontSize: 14 }}>모듈별 진행 요약</div>
+        <span style={{ marginLeft: "auto", color: "var(--text-secondary)", fontSize: 14 }}>30일</span>
+      </div>
+      <div style={{ display: "grid", gap: 6, maxHeight: 252, overflow: "auto" }}>
+        {list.length === 0 && <div style={{ color: "var(--text-secondary)", fontSize: 14, padding: 10, textAlign: "center" }}>요약 없음</div>}
+        {list.map(row => {
+          const received = Number(row.received || 0);
+          const completed = Number(row.completed || 0);
+          const inProgress = Number(row.in_progress || 0);
+          const pending = Number(row.pending || 0);
+          const total = received + completed + inProgress;
+          const pendingRate = total ? Math.round((pending / total) * 100) : 0;
+          const mc = moduleColor(row.module);
+          const active = activeModule === row.module;
+          return (
+            <button key={row.module} type="button" onClick={() => onPick(row.module)}
+              style={{
+                display: "grid", gap: 4, textAlign: "left",
+                padding: 8, borderRadius: 10,
+                border: "1px solid " + (active ? mc : "var(--border)"),
+                background: active ? mc + "12" : "var(--bg-card)",
+                color: "var(--text-primary)", cursor: "pointer",
+              }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 7, height: 7, borderRadius: 999, background: mc, flex: "0 0 auto" }} />
+                <span style={{ fontWeight: 900, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.module}</span>
+                <span style={{ marginLeft: "auto", color: "var(--text-secondary)", fontFamily: "monospace", fontSize: 14 }}>
+                  받음 {received + inProgress + completed} · 완료 {completed}
+                </span>
+              </div>
+              <div style={{ height: 5, borderRadius: 999, background: "var(--bg-primary)", overflow: "hidden" }}>
+                <div style={{ width: `${pendingRate}%`, height: "100%", background: pendingRate ? WARN.fg : OK.fg }} />
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", color: "var(--text-secondary)", fontSize: 14 }}>
+                <span>진행 {inProgress}</span>
+                <span>미완료 {pendingRate}%</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function InformFilterPanel({ filters, setFilter, modules, products, onReset }) {
+  const statusOptions = [
+    ["", "상태 전체"],
+    ["received", "접수"],
+    ["in_progress", "진행중"],
+    ["completed", "완료"],
+    ["pending", "미완료"],
+  ];
+  return (
+    <div style={{ padding: 12, borderBottom: "1px solid var(--border)", display: "grid", gap: 8 }}>
+      <input value={filters.query} onChange={e => setFilter("query", e.target.value)}
+        placeholder="검색: 제목, lot, 작성자"
+        style={inputStyle()} />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <select value={filters.module} onChange={e => setFilter("module", e.target.value)} style={inputStyle()}>
+          <option value="">모듈 전체</option>
+          {(modules || []).map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <select value={filters.status} onChange={e => setFilter("status", e.target.value)} style={inputStyle()}>
+          {statusOptions.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+      </div>
+      <select value={filters.product} onChange={e => setFilter("product", e.target.value)} style={inputStyle()}>
+        <option value="">product 전체</option>
+        {(products || []).map(p => <option key={p} value={p}>{p}</option>)}
+      </select>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <input value={filters.root_lot} onChange={e => setFilter("root_lot", e.target.value)} placeholder="root_lot" style={inputStyle()} />
+        <input value={filters.fab_lot} onChange={e => setFilter("fab_lot", e.target.value)} placeholder="fab_lot" style={inputStyle()} />
+      </div>
+      <input value={filters.author} onChange={e => setFilter("author", e.target.value)} placeholder="작성자" style={inputStyle()} />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, alignItems: "center" }}>
+        <input type="date" value={filters.start} onChange={e => setFilter("start", e.target.value)} style={inputStyle()} />
+        <input type="date" value={filters.end} onChange={e => setFilter("end", e.target.value)} style={inputStyle()} />
+        <button type="button" onClick={onReset} title="필터 초기화"
+          style={{ height: 34, padding: "0 10px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontSize: 14 }}>
+          초기화
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function InformVirtualList({ roots, selectedId, onOpen }) {
+  const rowHeight = 64;
+  const ref = useRef(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [height, setHeight] = useState(480);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const update = () => setHeight(el.clientHeight || 480);
+    update();
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(update);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+  const count = roots.length;
+  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - 6);
+  const end = Math.min(count, start + Math.ceil(height / rowHeight) + 14);
+  const visible = roots.slice(start, end);
+  return (
+    <div ref={ref} onScroll={e => setScrollTop(e.currentTarget.scrollTop)}
+      style={{ flex: 1, overflow: "auto", minHeight: 0, background: "var(--bg-secondary)" }}>
+      {count === 0 && <div style={{ padding: 24, textAlign: "center", color: "var(--text-secondary)" }}>조건에 맞는 인폼이 없습니다.</div>}
+      <div style={{ height: count * rowHeight, position: "relative" }}>
+        <div style={{ transform: `translateY(${start * rowHeight}px)` }}>
+          {visible.map(root => (
+            <InformListRow key={root.id} root={root} selected={selectedId === root.id} onOpen={() => onOpen(root)} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InformListRow({ root, selected, onOpen }) {
+  const [hover, setHover] = useState(false);
+  const status = root.flow_status || "received";
+  const mailCount = (root.mail_history || []).length;
+  const attachCount = (root.images || []).length + (root.embed_table ? 1 : 0);
+  return (
+    <button type="button" onClick={onOpen} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      onFocus={() => setHover(true)} onBlur={() => setHover(false)}
+      style={{
+        height: 64, width: "100%", boxSizing: "border-box",
+        border: "none", borderBottom: "1px solid var(--border)",
+        background: selected ? "var(--bg-hover)" : "transparent",
+        color: "var(--text-primary)", cursor: "pointer", textAlign: "left",
+        display: "grid", gridTemplateRows: "28px 28px", gap: 0,
+        padding: "5px 12px",
+      }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+        <span title={informTitle(root)} style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 900, fontSize: 14 }}>
+          {informTitle(root)}
+        </span>
+        <ModulePill module={root.module || "기타"} />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, color: "var(--text-secondary)" }}>
+        <LotPill root={root} />
+        <StatusBadge status={status} />
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{root.author || "-"}</span>
+        <span>·</span>
+        <span style={{ whiteSpace: "nowrap" }}>{relativeTime(root.created_at)}</span>
+        <span style={{ marginLeft: "auto", display: "inline-flex", gap: 5, opacity: hover ? 1 : 0.35, transition: "opacity 120ms" }}>
+          <span title="메일 발송">✉{mailCount || ""}</span>
+          <span title="댓글">💬</span>
+          <span title="첨부">📎{attachCount || ""}</span>
+        </span>
+      </div>
+    </button>
+  );
+}
+
+function InformDetailPane({ root, thread, childrenByParent, constants, user, tab, setTab, onReply, onDelete, onToggleCheck, onEdit, onChangeStatus, onOpenMail }) {
+  if (!root) {
+    return (
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 14 }}>
+        왼쪽에서 인폼을 선택하면 자세한 내용이 여기 표시돼요
+      </div>
+    );
+  }
+  const tabs = [
+    ["body", "본문"],
+    ["mail", "메일"],
+    ["comments", "댓글"],
+    ["history", "이력"],
+    ["attachments", "첨부"],
+  ];
+  const lotText = informLotDisplay(root, { maxFabLots: 8 }) || "-";
+  const completed = root.flow_status === "completed";
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div style={{ padding: 16, borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", minWidth: 0 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div title={informTitle(root)} style={{ fontSize: 18, fontWeight: 900, lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {informTitle(root)}
+            </div>
+            <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <ModulePill module={root.module || "기타"} />
+              <StatusBadge status={root.flow_status || "received"} />
+              <LotPill root={root} />
+              {root.product && <span style={{ padding: "2px 8px", borderRadius: 999, background: "var(--accent-glow)", color: "var(--accent)", border: "1px solid rgba(249,115,22,0.24)", fontFamily: "monospace", fontSize: 14 }}>{stripMlPrefix(root.product)}</span>}
+              <span style={{ color: "var(--text-secondary)", fontSize: 14 }}>{root.author || "-"} · {relativeTime(root.created_at)}</span>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button type="button" onClick={() => onChangeStatus(root.id, completed ? "received" : "completed", "")}
+              style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid " + (completed ? WARN.fg : OK.fg), background: completed ? "transparent" : OK.fg, color: completed ? WARN.fg : "#fff", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
+              {completed ? "완료 해제" : "완료"}
+            </button>
+            <button type="button" onClick={() => onOpenMail(root)}
+              style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
+              ✉ 메일
+            </button>
+          </div>
+        </div>
+        <div style={{ marginTop: 8, color: "var(--text-secondary)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          lot {lotText}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 4, padding: "8px 16px 0", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+        {tabs.map(([key, label]) => (
+          <button key={key} type="button" onClick={() => setTab(key)}
+            style={{ padding: "8px 12px", borderRadius: "8px 8px 0 0", border: "1px solid " + (tab === key ? "var(--border)" : "transparent"), borderBottom: "none", background: tab === key ? "var(--bg-primary)" : "transparent", color: tab === key ? "var(--text-primary)" : "var(--text-secondary)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16 }}>
+        {tab === "body" && (
+          <div style={{ display: "grid", gap: 12 }}>
+            <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
+              <div style={{ marginBottom: 8, color: "var(--text-secondary)", fontWeight: 800 }}>사유 / 내용</div>
+              {root.reason && <div style={{ marginBottom: 8 }}><Pill tone="info">{root.reason}</Pill></div>}
+              <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{root.text || "(내용 없음)"}</div>
+            </section>
+            {root.embed_table && <EmbedTableView embed={root.embed_table} product={root.product} />}
+          </div>
+        )}
+        {tab === "mail" && <MailPreviewPanel root={root} onOpenMail={() => onOpenMail(root)} />}
+        {tab === "comments" && (
+          <ThreadNode node={root} childrenByParent={childrenByParent}
+            onReply={onReply} onDelete={onDelete} onToggleCheck={onToggleCheck}
+            onEdit={onEdit} user={user} depth={0} constants={constants} />
+        )}
+        {tab === "history" && <InformHistoryPanel root={root} thread={thread} />}
+        {tab === "attachments" && <InformAttachmentsPanel root={root} />}
+      </div>
+    </div>
+  );
+}
+
+function MailPreviewPanel({ root, onOpenMail }) {
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [preview, setPreview] = useState(null);
+  useEffect(() => {
+    setSubject("");
+    setBody("");
+  }, [root?.id]);
+  useEffect(() => {
+    if (!root?.id) return;
+    const h = setTimeout(() => {
+      const q = new URLSearchParams();
+      q.set("subject", subject || "");
+      q.set("body", body || "");
+      sf(API + "/" + encodeURIComponent(root.id) + "/mail-preview?" + q.toString())
+        .then(d => setPreview(d))
+        .catch(() => setPreview(null));
+    }, 250);
+    return () => clearTimeout(h);
+  }, [root?.id, subject, body]);
+  const history = root.mail_history || [];
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <div style={{ fontWeight: 900 }}>수신자 미리보기</div>
+          <span style={{ color: "var(--text-secondary)" }}>{(preview?.resolved_recipients || []).length}명</span>
+          <button type="button" onClick={onOpenMail} style={{ marginLeft: "auto", padding: "6px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>전송 창 열기</button>
+        </div>
+        <div style={{ color: "var(--text-secondary)", fontFamily: "monospace", lineHeight: 1.5 }}>
+          {(preview?.resolved_recipients || []).slice(0, 12).join(", ") || "모듈 수신자 없음"}
+          {(preview?.resolved_recipients || []).length > 12 ? ` +${preview.resolved_recipients.length - 12}` : ""}
+        </div>
+      </section>
+      <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)", display: "grid", gap: 8 }}>
+        <label style={{ display: "grid", gap: 4 }}>
+          <span style={{ fontWeight: 800 }}>제목</span>
+          <input value={subject} onChange={e => setSubject(e.target.value)} placeholder={preview?.subject || "자동 제목"} style={inputStyle()} />
+        </label>
+        <label style={{ display: "grid", gap: 4 }}>
+          <span style={{ fontWeight: 800 }}>본문</span>
+          <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} placeholder="비워두면 자동 본문을 사용합니다." style={inputStyle({ resize: "vertical", fontFamily: "inherit" })} />
+        </label>
+      </section>
+      {preview?.html_body && (
+        <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
+          <div style={{ fontWeight: 900, marginBottom: 8 }}>본문 미리보기</div>
+          <div style={{ maxHeight: 480, overflow: "auto", background: WHITE, border: "1px solid var(--border)", borderRadius: 8, padding: 10 }}
+            dangerouslySetInnerHTML={{ __html: preview.html_body }} />
+        </section>
+      )}
+      <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
+        <div style={{ fontWeight: 900, marginBottom: 8 }}>발송 이력</div>
+        {history.length === 0 && <div style={{ color: "var(--text-secondary)" }}>발송 이력이 없습니다.</div>}
+        {history.slice().reverse().map((m, i) => (
+          <div key={i} style={{ padding: "6px 0", borderBottom: "1px dashed var(--border)", color: "var(--text-secondary)" }}>
+            {(m.at || m.sent_at || "").replace("T", " ").slice(0, 16)} · {m.actor || m.sender || "-"} · {(m.to || []).length || 0}명 {m.subject ? `· ${m.subject}` : ""}
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function InformHistoryPanel({ root, thread }) {
+  const rows = [];
+  rows.push({ at: root.created_at, actor: root.author, label: "등록", note: informTitle(root) });
+  (root.status_history || []).forEach(h => rows.push({ at: h.at, actor: h.actor, label: `상태: ${h.status}`, note: h.note || "" }));
+  (root.edit_history || []).forEach(h => rows.push({ at: h.at, actor: h.actor, label: `수정: ${h.field}`, note: h.after || "" }));
+  (root.mail_history || []).forEach(h => rows.push({ at: h.at || h.sent_at, actor: h.actor || h.sender, label: "메일", note: h.subject || "" }));
+  (thread || []).filter(x => x.parent_id === root.id).forEach(x => rows.push({ at: x.created_at, actor: x.author, label: "댓글", note: informTitle(x) }));
+  rows.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+  return (
+    <div style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: "grid", gridTemplateColumns: "150px 120px 120px minmax(0,1fr)", gap: 8, padding: "7px 0", borderBottom: "1px dashed var(--border)", alignItems: "center" }}>
+          <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{(r.at || "").replace("T", " ").slice(0, 16)}</span>
+          <span>{r.actor || "-"}</span>
+          <span style={{ fontWeight: 800 }}>{r.label}</span>
+          <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.note || "-"}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InformAttachmentsPanel({ root }) {
+  const images = root.images || [];
+  const hasEmbed = !!root.embed_table;
+  if (!images.length && !hasEmbed) {
+    return <div style={{ padding: 32, textAlign: "center", color: "var(--text-secondary)" }}>첨부가 없습니다.</div>;
+  }
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
+        <div style={{ fontWeight: 900, marginBottom: 8 }}>이미지 / 파일</div>
+        {images.length ? <ImageGallery images={images} /> : <div style={{ color: "var(--text-secondary)" }}>이미지 첨부 없음</div>}
+      </section>
+      {hasEmbed && (
+        <section>
+          <EmbedTableView embed={root.embed_table} product={root.product} />
+        </section>
+      )}
+    </div>
+  );
+}
+
+function ProductCatalogPanel({ products, canEdit, onAdd, onDelete }) {
+  const [draft, setDraft] = useState("");
+  const seen = new Map();
+  (products || []).forEach(p => {
+    const value = stripMlPrefix(String(p || "").trim());
+    if (value) seen.set(value.toLowerCase(), value);
+  });
+  const list = Array.from(seen.values()).sort();
+  const add = () => {
+    const v = draft.trim();
+    if (!v) return;
+    Promise.resolve(onAdd(v)).then(() => setDraft("")).catch(e => alert(e.message || e));
+  };
+  return (
+    <div>
+      <div style={{ fontWeight: 900, marginBottom: 6 }}>제품 카탈로그</div>
+      <div style={{ maxHeight: 150, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)" }}>
+        {list.length === 0 && <div style={{ padding: 10, color: "var(--text-secondary)" }}>등록된 제품 없음</div>}
+        {list.map(p => (
+          <div key={p} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>
+            <span style={{ flex: 1 }}>{p}</span>
+            {canEdit && <button type="button" onClick={() => onDelete(p)} style={{ border: "1px solid " + BAD.fg, background: "transparent", color: BAD.fg, borderRadius: 6, cursor: "pointer", fontSize: 14 }}>삭제</button>}
+          </div>
+        ))}
+      </div>
+      {canEdit && (
+        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+          <input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") add(); }}
+            placeholder="신규 제품명" style={inputStyle({ flex: 1 })} />
+          <button type="button" onClick={add} style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>추가</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InformWizard({
+  form, setForm, constants, products, lotOptions, step, setStep,
+  attachMode, setAttachMode, embedFetching, embedSchemaCols,
+  embedCustomCols, setEmbedCustomCols, embedCustomSearch, setEmbedCustomSearch,
+  setSnapshotTick, mailDraft, setMailDraft, mailMeta, msg, setMsg, onSubmit, onClose,
+}) {
+  const productOptions = Array.from(new Set((products || []).map(p => stripMlPrefix(String(p || "").trim())).filter(Boolean))).sort();
+  const steps = ["lot 선택", "모듈 + 사유", "SplitTable 첨부", "메일 미리보기", "검토 + 등록"];
+  const validate = () => {
+    if (step === 0) {
+      if (!(form.product || "").trim()) { setMsg("product 를 선택해 주세요"); return false; }
+      if (!(form.lot_id || "").trim()) { setMsg("lot 을 선택해 주세요"); return false; }
+    }
+    if (step === 1) {
+      if (!(form.module || "").trim()) { setMsg("module 을 선택해 주세요"); return false; }
+      if (!(form.reason || "").trim()) { setMsg("사유를 선택해 주세요"); return false; }
+      if (!(form.text || "").trim()) { setMsg("note 를 입력해 주세요"); return false; }
+    }
+    if (step === 2 && attachMode === "custom" && embedCustomCols.length === 0) {
+      setMsg("CUSTOM 컬럼을 하나 이상 선택해 주세요");
+      return false;
+    }
+    setMsg("");
+    return true;
+  };
+  const next = () => {
+    if (!validate()) return;
+    if (step === 2 && attachMode !== "none") setSnapshotTick(x => x + 1);
+    setStep(Math.min(4, step + 1));
+  };
+  const prev = () => { setMsg(""); setStep(Math.max(0, step - 1)); };
+  const toggleCol = (col) => {
+    setEmbedCustomCols(embedCustomCols.includes(col)
+      ? embedCustomCols.filter(x => x !== col)
+      : [...embedCustomCols, col]);
+  };
+  const filteredCols = (embedSchemaCols || []).filter(c => !embedCustomSearch || String(c).toLowerCase().includes(embedCustomSearch.toLowerCase())).slice(0, 200);
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 3200, background: "rgba(0,0,0,0.62)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: "min(980px,96vw)", maxHeight: "92vh", overflow: "auto", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 10, padding: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+          <div style={{ fontSize: 16, fontWeight: 900 }}>신규 인폼 등록</div>
+          <div style={{ marginLeft: "auto", color: "var(--text-secondary)" }}>draft 자동 저장</div>
+          <button type="button" onClick={onClose} style={{ border: "none", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontSize: 20 }}>×</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 6, marginBottom: 14 }}>
+          {steps.map((label, i) => (
+            <button key={label} type="button" onClick={() => setStep(i)}
+              style={{ padding: "7px 8px", borderRadius: 8, border: "1px solid " + (i === step ? "var(--accent)" : "var(--border)"), background: i === step ? "var(--accent)" : "var(--bg-primary)", color: i === step ? "#fff" : "var(--text-secondary)", fontSize: 14, fontWeight: 800, cursor: "pointer" }}>
+              {i + 1}. {label}
+            </button>
+          ))}
+        </div>
+        {step === 0 && (
+          <div style={{ display: "grid", gap: 12 }}>
+            <label style={{ display: "grid", gap: 5 }}>
+              <span style={{ fontWeight: 800 }}>product</span>
+              <select value={form.product} onChange={e => setForm(f => ({ ...f, product: e.target.value, lot_id: "" }))} style={inputStyle()}>
+                <option value="">-- product 선택 --</option>
+                {productOptions.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </label>
+            <label style={{ display: "grid", gap: 5 }}>
+              <span style={{ fontWeight: 800 }}>root_lot_id / fab_lot_id</span>
+              <LotCombobox
+                value={form.lot_id}
+                onChange={v => setForm(f => ({ ...f, lot_id: v }))}
+                options={lotOptions}
+                productSelected={!!form.product}
+                manualMode={false}
+                onToggleManual={() => {}}
+              />
+            </label>
+          </div>
+        )}
+        {step === 1 && (
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <label style={{ display: "grid", gap: 5 }}>
+                <span style={{ fontWeight: 800 }}>module</span>
+                <select value={form.module} onChange={e => setForm(f => ({ ...f, module: e.target.value }))} style={inputStyle()}>
+                  <option value="">-- module --</option>
+                  {(constants.modules || []).map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </label>
+              <label style={{ display: "grid", gap: 5 }}>
+                <span style={{ fontWeight: 800 }}>사유</span>
+                <select value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} style={inputStyle()}>
+                  <option value="">-- 사유 --</option>
+                  {(constants.reasons || []).map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </label>
+            </div>
+            <label style={{ display: "grid", gap: 5 }}>
+              <span style={{ fontWeight: 800 }}>note</span>
+              <textarea value={form.text} onChange={e => setForm(f => ({ ...f, text: e.target.value }))} rows={8} style={inputStyle({ resize: "vertical", fontFamily: "inherit" })} />
+            </label>
+          </div>
+        )}
+        {step === 2 && (
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {[["auto", "자동 첨부"], ["custom", "CUSTOM 검색 후 첨부"], ["none", "안 함"]].map(([key, label]) => (
+                <button key={key} type="button" onClick={() => {
+                  setAttachMode(key);
+                  if (key === "none") setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
+                  else setSnapshotTick(x => x + 1);
+                }}
+                  style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid " + (attachMode === key ? "var(--accent)" : "var(--border)"), background: attachMode === key ? "var(--accent)" : "var(--bg-primary)", color: attachMode === key ? "#fff" : "var(--text-secondary)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
+                  {label}
+                </button>
+              ))}
+              {embedFetching && <span style={{ alignSelf: "center", color: "var(--accent)" }}>SplitTable 스냅샷 로딩...</span>}
+            </div>
+            {attachMode === "custom" && (
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--bg-card)" }}>
+                <input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)} placeholder="컬럼 검색" style={inputStyle({ marginBottom: 8 })} />
+                <div style={{ maxHeight: 230, overflow: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 4 }}>
+                  {filteredCols.map(c => {
+                    const on = embedCustomCols.includes(c);
+                    return (
+                      <label key={c} style={{ display: "flex", gap: 5, alignItems: "center", padding: "4px 6px", borderRadius: 6, background: on ? "var(--accent-glow)" : "transparent", cursor: "pointer", fontFamily: "monospace" }}>
+                        <input type="checkbox" checked={on} onChange={() => toggleCol(c)} />
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop: 8, color: "var(--text-secondary)" }}>선택 {embedCustomCols.length}개</div>
+              </div>
+            )}
+            <button type="button" onClick={() => setSnapshotTick(x => x + 1)}
+              disabled={attachMode === "none"}
+              style={{ justifySelf: "start", padding: "7px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: attachMode === "none" ? "not-allowed" : "pointer", opacity: attachMode === "none" ? 0.5 : 1, fontSize: 14 }}>
+              Search
+            </button>
+            {form.attach_embed && hasEmbedSnapshot(form.embed) && <EmbedTableView embed={form.embed} product={form.product} />}
+          </div>
+        )}
+        {step === 3 && (
+          <div style={{ display: "grid", gap: 12 }}>
+            <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-card)" }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>자동 수신자</div>
+              <div style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                {(mailMeta.recipients || []).map(r => `${r.username} <${r.email}>`).join(", ") || "모듈 수신자 없음"}
+              </div>
+            </section>
+            <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-card)" }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>KNOB 강조</div>
+              <div style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                {((mailMeta.knobMap || {})[form.module] || []).join(", ") || "설정 없음"}
+              </div>
+            </section>
+            <label style={{ display: "grid", gap: 5 }}>
+              <span style={{ fontWeight: 800 }}>제목</span>
+              <input value={mailDraft.subject || ""} onChange={e => setMailDraft(d => ({ ...d, subject: e.target.value }))} style={inputStyle()} />
+            </label>
+            <label style={{ display: "grid", gap: 5 }}>
+              <span style={{ fontWeight: 800 }}>본문</span>
+              <textarea value={mailDraft.body || ""} onChange={e => setMailDraft(d => ({ ...d, body: e.target.value }))} rows={8} style={inputStyle({ resize: "vertical", fontFamily: "inherit" })} />
+            </label>
+          </div>
+        )}
+        {step === 4 && (
+          <div style={{ display: "grid", gap: 10 }}>
+            {[
+              ["product", stripMlPrefix(form.product || "-")],
+              ["lot", form.lot_id || "-"],
+              ["module", form.module || "-"],
+              ["사유", form.reason || "-"],
+              ["SplitTable", attachMode === "none" ? "첨부 안 함" : (form.attach_embed ? `${embedSnapshotRowCount(form.embed)} rows` : "대기")],
+              ["메일 수신자", `${(mailMeta.recipients || []).length}명`],
+            ].map(([k, v]) => (
+              <div key={k} style={{ display: "grid", gridTemplateColumns: "140px minmax(0,1fr)", gap: 10, padding: 10, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-card)" }}>
+                <b>{k}</b><span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v}</span>
+              </div>
+            ))}
+            <div style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-card)", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
+              {form.text || "(note 없음)"}
+            </div>
+          </div>
+        )}
+        {msg && <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 8, border: `1px solid ${BAD.fg}`, color: BAD.fg, background: BAD.bg }}>{msg}</div>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+          <button type="button" onClick={prev} disabled={step === 0}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: step === 0 ? "not-allowed" : "pointer", opacity: step === 0 ? 0.5 : 1, fontSize: 14 }}>이전</button>
+          {step < 4 ? (
+            <button type="button" onClick={next}
+              style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 900, cursor: "pointer", fontSize: 14 }}>다음</button>
+          ) : (
+            <button type="button" onClick={() => { if (validate()) onSubmit(); }}
+              style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 900, cursor: "pointer", fontSize: 14 }}>등록</button>
+          )}
+        </div>
       </div>
     </div>
   );
