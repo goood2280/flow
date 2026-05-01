@@ -44,6 +44,8 @@ function FlowiConsole({onNavigate,user}){
   const[modelLabel,setModelLabel]=useState("");
   const[messages,setMessages]=useState([]);
   const[liveStep,setLiveStep]=useState(0);
+  const[personaCard,setPersonaCard]=useState(null);
+  const[personaOpen,setPersonaOpen]=useState(false);
   const promptRef=useRef(null);
   const scrollRef=useRef(null);
   const verifySeq=useRef(0);
@@ -68,6 +70,18 @@ function FlowiConsole({onNavigate,user}){
     }).catch(()=>{if(alive)setModelLabel("");});
     return()=>{alive=false;};
   },[]);
+  useEffect(()=>{
+    if(!active||personaCard)return;
+    let alive=true;
+    fetch("/api/llm/flowi/persona-card").then(r=>r.ok?r.json():null).then(d=>{
+      if(!alive||!d?.ok)return;
+      setPersonaCard(d);
+      const seen=localStorage.getItem("flowiPersonaCardSeen")==="1";
+      setPersonaOpen(!seen);
+      if(!seen)localStorage.setItem("flowiPersonaCardSeen","1");
+    }).catch(()=>{});
+    return()=>{alive=false;};
+  },[active,personaCard]);
 
   const activate=()=>{
     setActive(true);setErr("");
@@ -93,6 +107,8 @@ function FlowiConsole({onNavigate,user}){
     blocked:!!m.result?.tool?.blocked,
     created_record:m.result?.tool?.created_record||null,
     missing:m.result?.tool?.missing||[],
+    arguments_choices:m.result?.tool?.arguments_choices||{},
+    walkthrough:m.result?.tool?.walkthrough||{},
     slots:m.result?.tool?.slots||{},
     filters:m.result?.tool?.filters||{},
     workflow_state:m.result?.workflow_state||m.result?.tool?.workflow_state||{},
@@ -139,6 +155,7 @@ function FlowiConsole({onNavigate,user}){
       </div>
     </form>
     {active&&<div style={{marginTop:10,border:"1px solid #2a2a2a",borderRadius:10,background:"#101010",overflow:"hidden",animation:"flowiPanelWake .32s ease-out",transformOrigin:"top"}}>
+      {personaCard&&<FlowiPersonaCard card={personaCard} open={personaOpen} onToggle={()=>setPersonaOpen(v=>!v)}/>}
       <div ref={scrollRef} style={{height:messages.length?420:260,maxHeight:"48vh",overflowY:"auto",padding:"12px 14px",borderBottom:"1px solid #262626",scrollBehavior:"smooth"}}>
         {messages.length===0&&!busy&&<div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",color:"#d4d4d4",fontSize:14,fontWeight:800,textAlign:"center"}}>
           오늘 어떤 도움을 드릴까요?
@@ -180,6 +197,31 @@ function FlowiConsole({onNavigate,user}){
   </section>);
 }
 
+function FlowiPersonaCard({card,open,onToggle}){
+  const doList=Array.isArray(card?.do_list)?card.do_list:[];
+  const dontList=Array.isArray(card?.dont_list)?card.dont_list:[];
+  return(<div style={{borderBottom:"1px solid #262626",background:"#121212",padding:"9px 12px"}}>
+    <button type="button" onClick={onToggle} style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,border:"0",background:"transparent",color:"#e5e5e5",fontSize:14,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",cursor:"pointer",padding:0,textAlign:"left"}}>
+      <span>이 도우미가 도와주는 일 / 하지 않는 일</span>
+      <span style={{color:"#f97316"}}>{open?"접기":"펼치기"}</span>
+    </button>
+    {open&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10,marginTop:9}}>
+      <div>
+        <div style={{fontSize:14,color:"#f97316",fontWeight:900,marginBottom:5}}>도와주는 일</div>
+        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+          {doList.map(x=><span key={x} style={{fontSize:14,color:"#d4d4d4",border:"1px solid #333",borderRadius:999,padding:"2px 7px",background:"#171717"}}>{x}</span>)}
+        </div>
+      </div>
+      <div>
+        <div style={{fontSize:14,color:"#f97316",fontWeight:900,marginBottom:5}}>하지 않는 일</div>
+        <div style={{display:"grid",gap:3}}>
+          {dontList.slice(0,5).map((x,i)=><div key={i} style={{fontSize:14,lineHeight:1.45,color:"#a3a3a3"}}>{x}</div>)}
+        </div>
+      </div>
+    </div>}
+  </div>);
+}
+
 function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=false,isAdmin=false}){
   if(busy)return <div style={{marginTop:embedded?0:10,fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
   if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:14,border:"1px solid #7f1d1d"}}>{error}</div>;
@@ -191,6 +233,8 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
   const canNavigate=typeof onNavigate==="function";
   const featureEntries=Array.isArray(tool.feature_entrypoints)?tool.feature_entrypoints.slice(0,3):[];
   const choices=Array.isArray(tool?.clarification?.choices)?tool.clarification.choices.slice(0,3):[];
+  const argumentChoices=tool.arguments_choices||result.arguments_choices||{};
+  const walkthrough=tool.walkthrough||{};
   const workflow=tool.workflow_state||result.workflow_state||{};
   const nextActions=(Array.isArray(tool.next_actions)?tool.next_actions:(Array.isArray(result.next_actions)?result.next_actions:[])).filter(a=>a&&a.type!=="respond_with_prompt").slice(0,6);
   const chart=tool?.chart&&typeof tool.chart==="object"?tool.chart:null;
@@ -206,6 +250,7 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
     {isAdmin&&<FlowiTrace trace={result.trace}/>}
     {chartResult&&<FlowiScatterResult data={chartResult}/>}
     {chart&&<FlowiChartPlan chart={chart}/>}
+    {walkthrough&&walkthrough.session_id&&<FlowiWalkthrough data={walkthrough}/>}
     {table&&<FlowiDataTable table={table}/>}
     {!table&&rows.length>0&&<div style={{marginTop:10,overflowX:"auto"}}>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:14,fontFamily:"monospace"}}>
@@ -223,6 +268,7 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
       </div>)}
     </div>}
     {choices.length>0&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice} onNavigate={onNavigate}/>}
+    {argumentChoices&&Array.isArray(argumentChoices.fields)&&argumentChoices.fields.length>0&&<FlowiArgumentChoices data={argumentChoices} basePrompt={prompt} onChoice={onChoice}/>}
     <FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>
     {isAdmin&&nextActions.length>0&&<FlowiNextActions actions={nextActions} onNavigate={onNavigate} onChoice={onChoice}/>}
   </div>);
@@ -297,6 +343,55 @@ function FlowiChoices({question,choices,onChoice,onNavigate}){
         </div>
         <div style={{fontSize:14,lineHeight:1.45,color:"#a3a3a3"}}>{c.description}</div>
       </button>)}
+    </div>
+  </div>);
+}
+
+function FlowiWalkthrough({data}){
+  const entries=Array.isArray(data.entries)?data.entries:[];
+  const remaining=Array.isArray(data.modules_remaining)?data.modules_remaining:[];
+  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#111",padding:"9px 10px"}}>
+    <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap",marginBottom:7}}>
+      <span style={{fontSize:14,color:"#f97316",fontWeight:900,fontFamily:"monospace"}}>inform walkthrough</span>
+      {data.current_module&&<span style={{fontSize:14,color:"#e5e5e5",fontFamily:"monospace"}}>현재 {data.current_module}</span>}
+      <span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>완료 {entries.length} · 남음 {remaining.length}</span>
+    </div>
+    {entries.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:6}}>
+      {entries.slice(0,8).map((e,i)=><div key={i} style={{border:"1px solid #2a2a2a",borderRadius:6,padding:"6px 7px",background:"#151515",fontSize:14,lineHeight:1.45}}>
+        <div style={{color:"#e5e5e5",fontWeight:800}}>{e.module||"-"}</div>
+        <div style={{color:"#a3a3a3",fontFamily:"monospace"}}>{e.split_set||e.reason||"-"}</div>
+      </div>)}
+    </div>}
+  </div>);
+}
+
+function FlowiArgumentChoices({data,basePrompt,onChoice}){
+  const fields=Array.isArray(data?.fields)?data.fields:[];
+  const[free,setFree]=useState({});
+  if(!fields.length)return null;
+  const submit=(field,value,prompt)=>{
+    const val=String(value||"").trim();
+    const q=String(prompt||basePrompt||"").trim();
+    if(onChoice)onChoice(val?(q?`${q} ${val}`:val):q);
+  };
+  return(<div style={{marginTop:12,border:"1px solid #333",borderRadius:8,background:"#111",padding:"10px 11px"}}>
+    <div style={{fontSize:14,color:"#f97316",fontWeight:900,fontFamily:"monospace",marginBottom:8}}>{data.message||"또는 직접 입력해 주세요"}</div>
+    <div style={{display:"grid",gap:9}}>
+      {fields.map(f=>{
+        const choices=Array.isArray(f.choices)?f.choices:[];
+        return <div key={f.field} style={{display:"grid",gap:6}}>
+          <div style={{fontSize:14,color:"#e5e5e5",fontWeight:800,fontFamily:"monospace"}}>{f.field}</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {choices.filter(c=>!c.free_input).slice(0,3).map(c=><button key={c.id||c.value} type="button" onClick={()=>submit(f.field,c.value,c.prompt)} style={{border:"1px solid "+(c.recommended?"#f97316":"#333"),borderRadius:999,background:c.recommended?"#2a1608":"#171717",color:"#d4d4d4",fontSize:14,padding:"5px 9px",cursor:"pointer"}}>
+              <span style={{color:"#f97316",fontWeight:900,marginRight:5}}>{c.label}</span>{c.title||c.value}
+            </button>)}
+          </div>
+          <div style={{display:"flex",gap:6,minWidth:0}}>
+            <input value={free[f.field]||""} onChange={e=>setFree(v=>({...v,[f.field]:e.target.value}))} placeholder={f.free_input_label||"직접 입력"} style={{flex:1,minWidth:0,border:"1px solid #333",borderRadius:7,background:"#171717",color:"#e5e5e5",fontSize:14,padding:"7px 8px",fontFamily:"'JetBrains Mono',monospace"}}/>
+            <button type="button" onClick={()=>submit(f.field,free[f.field]||"",basePrompt)} style={{border:"1px solid #7c2d12",borderRadius:7,background:"#1f130b",color:"#f97316",fontSize:14,fontWeight:900,padding:"7px 10px",cursor:"pointer"}}>입력</button>
+          </div>
+        </div>;
+      })}
     </div>
   </div>);
 }
