@@ -134,17 +134,20 @@ def test_auto_log_splittable_change_attaches_changed_column_snapshot(tmp_path, m
     assert saved[0]["embed_table"]["st_view"]["rows"][0]["_cells"]["0"]["plan"] == "R2"
 
 
-def test_inform_mail_splittable_snapshot_html_fits_without_horizontal_scroll():
-    headers = [f"#{i}" for i in range(1, 13)]
+def test_inform_mail_splittable_snapshot_html_uses_single_scrollable_header_table():
+    headers = [f"#{i}" for i in range(1, 26)]
     embed = {
-        "source": "SplitTable/PRODA @ A1000 · ALL",
+        "source": "SplitTable/NO_META @ A1000 · ALL",
         "note": "mail fit check",
         "st_view": {
             "root_lot_id": "A1000",
             "headers": headers,
-            "header_groups": [{"label": "A1000A.1", "span": len(headers)}],
+            "header_groups": [
+                {"label": "A1000A.1", "span": 12},
+                {"label": "A1000A.2", "span": 13},
+            ],
             "rows": [{
-                "_param": "KNOB_GATE_PROFILE_LONG_NAME",
+                "_param": "KNOB_NO_SUCH_TEST_COLUMN",
                 "_cells": {str(i): {"actual": f"R{i}", "plan": ""} for i in range(len(headers))},
             }],
         },
@@ -152,14 +155,19 @@ def test_inform_mail_splittable_snapshot_html_fits_without_horizontal_scroll():
 
     html = informs._render_embed_table_html(embed)
 
-    assert "overflow:auto" not in html
+    assert "overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%" in html
+    assert html.count("<table") == 1
+    assert "wafer columns" not in html
     assert "table-layout:fixed" in html
-    assert "width:100%;max-width:100%" in html
+    assert "#25" in html
     assert "word-break:break-word" in html
     assert "Split table" in html
     assert "root_lot_id" in html
     assert "lot_id" in html
     assert "A1000A.1" in html
+    assert "A1000A.2" in html
+    assert "root_lot_id</span> A1000" not in html
+    assert "lot_id</span> A1000A.1" not in html
 
 
 def test_inform_mail_body_links_go_flow_in_new_tab():
