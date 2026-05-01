@@ -72,6 +72,9 @@ data/flow-data/tracker/schema_migrations.jsonl
 data/flow-data/users.json
 data/flow-data/valve_watch.json
 data/flow-data/**/*.backup_*.json
+# User-local config that may contain LLM tokens / secrets — keep on disk, never push to GitHub
+data/flow-data/admin_settings.json
+data/flow-data/qa_report.json
 data/Fab/_backups/
 archive/
 
