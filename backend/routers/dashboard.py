@@ -27,6 +27,14 @@ from core.utils import (
 )
 from core.runtime_limits import dashboard_scheduler_enabled
 from app_v2.shared.source_adapter import resolve_column
+from core.dashboard_join import (
+    apply_chart_defaults,
+    build_multi_db_chart,
+    dashboard_items,
+    load_chart_defaults,
+    refine_chart_session,
+    save_chart_default,
+)
 
 logger = logging.getLogger("flow.dashboard")
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -1303,6 +1311,37 @@ class ChartConfig(BaseModel):
     group_ids: list = []
 
 
+class ChartDefaultReq(BaseModel):
+    chart_type: str
+    config: dict[str, Any]
+
+
+class MultiDbChartReq(BaseModel):
+    primary_source: str = "ET"
+    secondary_source: str = ""
+    x_item: str = ""
+    y_item: str = ""
+    items: list = []
+    chart_type: str = "scatter"
+    product: str = ""
+    root_lot_ids: list = []
+    color_by: str = "none"
+    group_by: str = ""
+    fit: str = "none"
+    stats: Any = None
+    font_size: int = 14
+
+
+class ChartRefineReq(BaseModel):
+    chart_session_id: str
+    action: str
+    value: Any = None
+
+
+class DashboardLayoutReq(BaseModel):
+    layout: Any = None
+
+
 def _charts():
     return load_json(CHARTS_FILE, [])
 
@@ -2451,6 +2490,81 @@ _scheduler.start()
 # ──────────────────────────────────────────────────────────────────
 # API Endpoints
 # ──────────────────────────────────────────────────────────────────
+@router.get("/items")
+def get_dashboard_items(
+    request: Request,
+    group: str = Query("ET"),
+    product: str = Query(""),
+    limit: int = Query(2000),
+):
+    _require_dashboard_section(request, "charts")
+    return {"items": dashboard_items(group=group, product=product, limit=limit)}
+
+
+@router.get("/chart-defaults")
+def get_chart_defaults(request: Request):
+    _require_dashboard_section(request, "charts")
+    return {"defaults": load_chart_defaults()}
+
+
+@router.post("/chart-defaults")
+def post_chart_defaults(req: ChartDefaultReq, request: Request):
+    from core.auth import current_user
+    me = current_user(request)
+    if me.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    updated = save_chart_default(req.chart_type, req.config)
+    return {"ok": True, "chart_type": req.chart_type, "config": updated, "defaults": load_chart_defaults()}
+
+
+@router.post("/multi-db-chart")
+def multi_db_chart(req: MultiDbChartReq, request: Request):
+    me = _require_dashboard_section(request, "charts")
+    payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    result = build_multi_db_chart(payload, username=me.get("username") or "user")
+    return result
+
+
+@router.post("/chart-refine")
+def chart_refine(req: ChartRefineReq, request: Request):
+    from core.auth import current_user
+    me = current_user(request)
+    try:
+        return refine_chart_session(
+            req.chart_session_id,
+            req.action,
+            req.value,
+            username=me.get("username") or "user",
+        )
+    except FileNotFoundError:
+        raise HTTPException(404, "chart session not found")
+
+
+@router.post("/layout")
+def save_dashboard_layout(req: DashboardLayoutReq, request: Request):
+    from core.auth import current_user
+    me = current_user(request)
+    username = me.get("username") or "user"
+    with _scheduler._lock:
+        snaps = load_json(SNAP_FILE, {})
+        if not isinstance(snaps, dict):
+            snaps = {}
+        layouts = snaps.get("_last_layout")
+        if not isinstance(layouts, dict):
+            layouts = {}
+        layouts[username] = {"layout": req.layout, "updated_at": datetime.datetime.now().isoformat(timespec="seconds")}
+        snaps["_last_layout"] = layouts
+        save_json(SNAP_FILE, snaps, indent=2)
+    return {"ok": True}
+
+
+@router.post("/apply-default")
+def apply_dashboard_default(req: MultiDbChartReq, request: Request):
+    _require_dashboard_section(request, "charts")
+    selected = [req.x_item, req.y_item, *list(req.items or [])]
+    return {"ok": True, "config": apply_chart_defaults(req.chart_type, selected)}
+
+
 @router.get("/charts")
 def get_charts(request: Request):
     """v8.5.0: group_ids visibility 필터. admin 은 전체, 일반 유저는 자기 그룹 매칭만.

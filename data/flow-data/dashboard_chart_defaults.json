@@ -1,0 +1,37 @@
+{
+  "scatter": {
+    "x": "$item1",
+    "y": "$item2",
+    "color": "lot_id",
+    "agg": "raw"
+  },
+  "boxplot": {
+    "x": "step_id",
+    "y": "$item1",
+    "color": "product"
+  },
+  "trend": {
+    "x": "tkout_time",
+    "y": "$item1",
+    "group": "lot_id",
+    "agg": "median"
+  },
+  "correlation_matrix": {
+    "items": "$selected",
+    "method": "pearson"
+  },
+  "wafer_map": {
+    "value": "$item1",
+    "agg": "median"
+  },
+  "classification": {
+    "x": "step_id",
+    "y": "$item1",
+    "group": "product"
+  },
+  "stacked_bar": {
+    "x": "step_id",
+    "y": "count",
+    "group": "defect_type"
+  }
+}

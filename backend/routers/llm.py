@@ -32,6 +32,7 @@ from core.auth import current_user, require_admin, is_page_admin
 from core import llm_adapter
 from core import product_config
 from core import semiconductor_knowledge as semi_knowledge
+from core import dashboard_join as dashboard_charting
 from routers.auth import read_users
 
 
@@ -525,10 +526,11 @@ FLOWI_DOMAIN_DICTIONARY = {
     "THICKNESS": ["THICKNESS", "THK", "TICK"],
 }
 FLOWI_CHART_METRIC_STOP = {
-    "INLINE", "IN-LINE", "ET", "ML", "ML_TABLE", "KNOB", "CORR", "CORRELATION",
+    "INLINE", "IN-LINE", "ET", "FAB", "VM", "EDS", "ML", "ML_TABLE", "KNOB", "MASK", "CORR", "CORRELATION",
     "SCATTER", "CHART", "DASHBOARD", "FITTING", "FIT", "LINE", "LINEAR", "COLOR",
     "COLORING", "FILTER", "LEFT", "JOIN", "INNER", "AVG", "AVERAGE", "MEDIAN",
     "EXCLUDE", "EXCEPT", "REMOVE", "WITHOUT", "BY", "BASIS", "TREND", "PLOT", "BAR", "GRAPH",
+    "BOX", "BOXPLOT", "WAFER", "MAP", "CLASSIFICATION", "R2",
 }
 FLOWI_CHART_POINT_LIMIT = 500
 FLOWI_CHART_DEFAULTS = {
@@ -538,6 +540,12 @@ FLOWI_CHART_DEFAULTS = {
     "bar": {"top_n": 12, "other_bucket": True},
     "pie": {"max_slices": 6, "other_bucket": True},
     "box": {"max_groups": 12, "min_n": 3},
+    "boxplot": {"x": "step_id", "y": "$item1", "color": "product"},
+    "trend": {"x": "tkout_time", "y": "$item1", "group": "lot_id", "agg": "median"},
+    "correlation_matrix": {"items": "$selected", "method": "pearson"},
+    "wafer_map": {"value": "$item1", "agg": "median"},
+    "classification": {"x": "step_id", "y": "$item1", "group": "product"},
+    "stacked_bar": {"x": "step_id", "y": "count", "group": "defect_type"},
 }
 
 
@@ -558,7 +566,11 @@ def _merge_nested(base: dict[str, Any], override: Any) -> dict[str, Any]:
 
 def _flowi_chart_defaults() -> dict[str, Any]:
     cfg = (_admin_settings().get("flowi_defaults") or {}).get("chart_defaults") or {}
-    defaults = _merge_nested(FLOWI_CHART_DEFAULTS, cfg)
+    try:
+        file_defaults = dashboard_charting.load_chart_defaults()
+    except Exception:
+        file_defaults = {}
+    defaults = _merge_nested(_merge_nested(FLOWI_CHART_DEFAULTS, file_defaults), cfg)
     scatter = defaults.get("scatter") if isinstance(defaults.get("scatter"), dict) else {}
     if scatter.get("grain") not in {"wafer_agg", "shot", "die", "map"}:
         scatter["grain"] = "wafer_agg"
@@ -1991,6 +2003,18 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
     if selected_name == "search_filebrowser_schema":
         arguments["source_type"] = source_type or None
         arguments["keyword"] = keyword or metric or knob_value or ""
+    if selected_name == "build_dashboard_metric_chart":
+        arguments["chart_type"] = _flowi_chart_type_from_prompt(text, metrics)
+        arguments["color_by"] = dashboard_charting.parse_color_by(text)
+        arguments["group_by"] = dashboard_charting.parse_group_by(text)
+        arguments["fit"] = dashboard_charting.parse_fit(text)
+        arguments["stats_columns"] = dashboard_charting.parse_stats_columns(text)
+        arguments["config"] = _flowi_dashboard_default_config(
+            text,
+            arguments["chart_type"],
+            metrics,
+            product=resolved_product,
+        )
     if selected_name == "compose_inform_module_mail":
         arguments["lot_count"] = len(arguments["root_lot_ids"] or arguments["fab_lot_ids"] or arguments["lot_ids"])
         reason = _flowi_note_extract(text) or _flowi_prompt_field(text, ("reason", "사유")) if "_flowi_prompt_field" in globals() else ""
@@ -3133,12 +3157,14 @@ def _contains_chart_intent(prompt: str) -> bool:
     korean_terms = {
         "차트", "그래프", "산점도", "상관", "피팅", "1차식", "선형", "컬러링",
         "필터", "제외", "그려", "그려줘", "막대", "추세", "시계열", "라인",
+        "박스", "분포", "웨이퍼맵", "분류", "통계표", "분리", "별",
     }
     if any(term in text for term in korean_terms):
         return True
     latin_terms = {
         "scatter", "corr", "correlation", "fitting", "fit", "linear", "color",
         "coloring", "filter", "plot", "bar", "trend", "line", "chart", "graph",
+        "boxplot", "box", "wafer map", "classification", "stacked",
     }
     return any(re.search(rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])", low) for term in latin_terms)
 
@@ -3150,6 +3176,12 @@ def _source_terms(prompt: str) -> set[str]:
         out.add("INLINE")
     if re.search(r"\bET\b", up) or "ET" in up:
         out.add("ET")
+    if re.search(r"\bFAB\b", up) or "공정" in prompt:
+        out.add("FAB")
+    if re.search(r"\bVM\b", up):
+        out.add("VM")
+    if re.search(r"\bEDS\b", up):
+        out.add("EDS")
     if "ML_TABLE" in up or "KNOB" in up or "노브" in prompt:
         out.add("ML_TABLE")
     return out
@@ -3192,6 +3224,244 @@ def _chart_operations(prompt: str) -> list[str]:
     if any(t in low or t in text for t in ("filter", "필터", "제외", "빼줘")):
         ops.append("filter")
     return ops or ["scatter"]
+
+
+def _flowi_chart_type_from_prompt(prompt: str, metrics: list[dict[str, Any]] | None = None) -> str:
+    selected = [str(m.get("metric") or "") for m in (metrics or []) if isinstance(m, dict) and m.get("metric")]
+    return dashboard_charting.infer_chart_type(prompt, selected)
+
+
+def _flowi_dashboard_default_config(
+    prompt: str,
+    chart_type: str,
+    metrics: list[dict[str, Any]] | list[str] | None = None,
+    *,
+    product: str = "",
+) -> dict[str, Any]:
+    selected: list[str] = []
+    for item in metrics or []:
+        if isinstance(item, dict):
+            val = str(item.get("metric") or "").strip()
+        else:
+            val = str(item or "").strip()
+        if val:
+            selected.append(val)
+    color_by = dashboard_charting.parse_color_by(prompt)
+    group_by = dashboard_charting.parse_group_by(prompt)
+    fit = dashboard_charting.parse_fit(prompt)
+    stats_cols = dashboard_charting.parse_stats_columns(prompt)
+    overrides = {
+        "product": product,
+        "color_by": color_by,
+        "group_by": group_by,
+        "fit": fit,
+        "stats_columns": stats_cols,
+        "font_size": 14,
+        "axis_label_size": 12,
+        "legend": True,
+        "theme": "dark",
+    }
+    return dashboard_charting.apply_chart_defaults(chart_type, selected, overrides=overrides)
+
+
+def _fit_with_equation(fit: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(fit, dict) or not fit:
+        return {}
+    out = dict(fit)
+    if "equation" not in out and "slope" in out and "intercept" in out:
+        try:
+            slope = float(out.get("slope"))
+            intercept = float(out.get("intercept"))
+            out["equation"] = f"y = {slope:.6g}*x + {intercept:.6g}"
+        except Exception:
+            pass
+    out.setdefault("residual_std", None)
+    return out
+
+
+def _dashboard_chart_data_for_stats(chart_result: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(chart_result, dict):
+        return []
+    if isinstance(chart_result.get("points"), list):
+        return [p for p in chart_result.get("points") or [] if isinstance(p, dict)]
+    if isinstance(chart_result.get("groups"), list):
+        rows = []
+        for row in chart_result.get("groups") or []:
+            if isinstance(row, dict):
+                rows.append({"group": row.get("label") or row.get("group") or row.get("eqp") or "", "y": row.get("value") or row.get("median") or row.get("mean")})
+        return rows
+    if isinstance(chart_result.get("boxes"), list):
+        rows = []
+        for row in chart_result.get("boxes") or []:
+            if isinstance(row, dict):
+                rows.append({"group": row.get("label") or "", "y": row.get("median"), **row})
+        return rows
+    if isinstance(chart_result.get("series"), list):
+        rows = []
+        for series in chart_result.get("series") or []:
+            name = series.get("name") if isinstance(series, dict) else ""
+            for point in (series.get("points") if isinstance(series, dict) else []) or []:
+                if isinstance(point, dict):
+                    rows.append({"group": name, "y": point.get("y"), **point})
+        return rows
+    return []
+
+
+def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = "", username: str = "flowi") -> dict[str, Any]:
+    if not isinstance(tool, dict) or tool.get("feature") != "dashboard":
+        return tool
+    chart_result = tool.get("chart_result") if isinstance(tool.get("chart_result"), dict) else {}
+    chart = tool.get("chart") if isinstance(tool.get("chart"), dict) else {}
+    metrics = []
+    if isinstance(tool.get("slots"), dict) and isinstance(tool["slots"].get("metrics"), list):
+        metrics = [{"metric": m} for m in tool["slots"].get("metrics") if m]
+    if not metrics and isinstance(tool.get("slots"), dict) and tool["slots"].get("metric"):
+        metrics = [{"metric": tool["slots"].get("metric")}]
+    if not metrics:
+        metrics = _metric_alias_hits(prompt)
+    chart_type = str(tool.get("chart_type") or chart.get("kind") or _flowi_chart_type_from_prompt(prompt, metrics) or "scatter")
+    if chart_type in {"box", "dashboard_box"}:
+        chart_type = "boxplot"
+    if chart_type in {"line", "dashboard_line"}:
+        chart_type = "trend"
+    if chart_result.get("kind") == "dashboard_wafer_map":
+        chart_type = "wafer_map"
+    config = _flowi_dashboard_default_config(prompt, chart_type, metrics, product=product)
+    data = _dashboard_chart_data_for_stats(chart_result)
+    stats_cols = config.get("stats_columns")
+    stats_table = None if stats_cols is None else dashboard_charting.stats_table_from_points(data, stats_cols if isinstance(stats_cols, list) else None)
+    fit = _fit_with_equation(chart_result.get("fit") or chart_result.get("fit_params") or tool.get("fit") or {})
+    session_id = tool.get("chart_session_id") or chart_result.get("chart_session_id")
+    if not session_id:
+        try:
+            session_id = dashboard_charting.save_chart_session({
+                "username": username,
+                "chart_type": chart_type,
+                "config": config,
+                "base_data_query": {
+                    "prompt": prompt,
+                    "product": product,
+                    "tool_intent": tool.get("intent") or "",
+                },
+                "data": data,
+            })
+        except Exception:
+            session_id = ""
+    tool.update({
+        "chart_type": chart_type,
+        "config": config,
+        "data": data,
+        "fit": fit,
+        "stats_table": stats_table,
+        "chart_session_id": session_id,
+    })
+    if isinstance(chart_result, dict):
+        chart_result.update({
+            "chart_type": chart_type,
+            "config": config,
+            "fit_params": fit,
+            "stats_table": stats_table,
+            "chart_session_id": session_id,
+        })
+        tool["chart_result"] = chart_result
+    return tool
+
+
+def _active_chart_session_id(agent_context: dict[str, Any] | None) -> str:
+    ctx = agent_context if isinstance(agent_context, dict) else {}
+    direct = str(ctx.get("chart_session_id") or "").strip()
+    if direct:
+        return direct
+    messages = ctx.get("messages") if isinstance(ctx.get("messages"), list) else []
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        sid = str(msg.get("chart_session_id") or "").strip()
+        if sid:
+            return sid
+    return ""
+
+
+def _chart_refine_action(prompt: str) -> tuple[str, Any] | None:
+    text = str(prompt or "")
+    low = text.lower()
+    if any(t in text for t in ("글씨 키워", "글자 키워")):
+        return ("font_size_delta", 2)
+    if any(t in text for t in ("글씨 줄여", "글자 줄여")):
+        return ("font_size_delta", -2)
+    if "축 라벨 키워" in text:
+        return ("axis_label_size_delta", 2)
+    if "범례 빼" in text or "legend 숨겨" in text or "legend hide" in low:
+        return ("legend", False)
+    if "라이트" in text or "light" in low:
+        return ("theme", "light")
+    if "다크" in text or "dark" in low:
+        return ("theme", "dark")
+    if "y축 log" in text or "y log" in low:
+        return ("y_scale", "log")
+    m = re.search(r"타이틀\s*['\"]([^'\"]{1,80})['\"]\s*로\s*바꿔", text)
+    if m:
+        return ("title", m.group(1))
+    return None
+
+
+def _handle_dashboard_chart_refine(prompt: str, me: dict[str, Any], agent_context: dict[str, Any] | None) -> dict[str, Any]:
+    action = _chart_refine_action(prompt)
+    if not action:
+        return {"handled": False}
+    sid = _active_chart_session_id(agent_context)
+    if not sid:
+        return {"handled": False}
+    try:
+        refined = dashboard_charting.refine_chart_session(sid, action[0], action[1], username=me.get("username") or "user")
+    except FileNotFoundError:
+        return {"handled": True, "intent": "dashboard_chart_refine", "feature": "dashboard", "answer": "수정할 차트 세션을 찾지 못했습니다.", "missing": ["chart_session_id"]}
+    return {
+        "handled": True,
+        "intent": "dashboard_chart_refine",
+        "action": "refine_chart_session",
+        "feature": "dashboard",
+        "answer": "차트 설정을 수정했습니다.",
+        **refined,
+    }
+
+
+def _handle_dashboard_generic_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    if not _contains_chart_intent(prompt):
+        return {"handled": False}
+    metrics = _metric_alias_hits(prompt)
+    chart_type = _flowi_chart_type_from_prompt(prompt, metrics)
+    if chart_type not in {"correlation_matrix", "classification"}:
+        return {"handled": False}
+    product_hint = _product_hint(prompt, product)
+    config = _flowi_dashboard_default_config(prompt, chart_type, metrics, product=product_hint)
+    metric_names = [m.get("metric") for m in metrics if m.get("metric")]
+    if chart_type == "correlation_matrix":
+        data = [{"x": a, "y": b, "corr": 1.0 if a == b else None} for a in metric_names for b in metric_names]
+        answer = f"{', '.join(metric_names) or '선택 항목'} 기준 correlation matrix 설정을 만들었습니다."
+    else:
+        data = []
+        answer = "step별 classification 차트 설정을 만들었습니다."
+    return {
+        "handled": True,
+        "intent": f"dashboard_{chart_type}",
+        "action": "build_dashboard_metric_chart",
+        "feature": "dashboard",
+        "answer": answer,
+        "slots": {"product": product_hint, "metrics": metric_names},
+        "chart_type": chart_type,
+        "config": config,
+        "data": data,
+        "fit": {},
+        "stats_table": data if chart_type == "correlation_matrix" else [],
+        "chart_result": {
+            "ok": True,
+            "kind": f"dashboard_{chart_type}",
+            "title": f"{product_hint} {chart_type}".strip(),
+            "points": data,
+            "total": len(data),
+        },
+    }
 
 
 def _chart_default_join_key(sources: set[str]) -> str:
@@ -4702,7 +4972,7 @@ def _fab_context_files(product: str) -> list[Path]:
 
 def _handle_grouped_metric_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     text = str(prompt or "")
-    if not (_contains_chart_intent(text) or "별로" in text):
+    if not (_contains_chart_intent(text) or "별로" in text or "별" in text or "분리" in text):
         return {"handled": False}
     group_keys = _group_chart_group_keys(text)
     if not group_keys:
@@ -11539,6 +11809,7 @@ def _handle_flowi_query(
     product: str = "",
     max_rows: int = 12,
     allowed_keys: set[str] | None = None,
+    username: str = "flowi",
 ) -> dict:
     product = _product_hint(prompt, product)
     if allowed_keys is None or {"filebrowser", "dashboard", "splittable", "ettime", "waferlayout"} & set(allowed_keys):
@@ -11585,16 +11856,19 @@ def _handle_flowi_query(
     if allowed_keys is None or "dashboard" in allowed_keys:
         box_chart_out = _handle_inline_box_chart(prompt, product, max_rows)
         if box_chart_out.get("handled"):
-            return box_chart_out
+            return _augment_dashboard_tool(box_chart_out, prompt, product=product, username=username)
         trend_chart_out = _handle_inline_trend_chart(prompt, product, max_rows)
         if trend_chart_out.get("handled"):
-            return trend_chart_out
+            return _augment_dashboard_tool(trend_chart_out, prompt, product=product, username=username)
         grouped_chart_out = _handle_grouped_metric_chart(prompt, product, max_rows)
         if grouped_chart_out.get("handled"):
-            return grouped_chart_out
+            return _augment_dashboard_tool(grouped_chart_out, prompt, product=product, username=username)
+        generic_chart_out = _handle_dashboard_generic_chart(prompt, product, max_rows)
+        if generic_chart_out.get("handled"):
+            return _augment_dashboard_tool(generic_chart_out, prompt, product=product, username=username)
         chart_out = _handle_chart_request(prompt, product, max_rows)
         if chart_out.get("handled"):
-            return chart_out
+            return _augment_dashboard_tool(chart_out, prompt, product=product, username=username)
     if allowed_keys is None or "splittable" in allowed_keys:
         fastest_out = _handle_fastest_knob_query(prompt, product, max_rows)
         if fastest_out.get("handled"):
@@ -12214,6 +12488,34 @@ def _run_flowi_chat(
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
+    if "dashboard" in allowed_keys:
+        refine_tool = _handle_dashboard_chart_refine(prompt, me, agent_context)
+        if refine_tool.get("handled"):
+            answer = refine_tool.get("answer") or "차트 설정을 수정했습니다."
+            _append_user_event(username, "dashboard_chart_refine", _event_fields(
+                {"prompt": prompt, "intent": refine_tool.get("intent") or "", "answer": answer},
+                source=source,
+                client_run_id=client_run_id,
+            ))
+            result = {
+                "ok": True,
+                "active": True,
+                "user": username,
+                "answer": answer,
+                "tool": refine_tool,
+                "llm": {"available": llm_adapter.is_available(), "used": False},
+                "allowed_features": sorted(allowed_keys),
+            }
+            if source:
+                result["agent_api"] = _agent_api_meta(
+                    source=source,
+                    client_run_id=client_run_id,
+                    username=username,
+                    tool=refine_tool,
+                    agent_context=agent_context,
+                )
+            return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
     if "diagnosis" in allowed_keys:
         prep_tool = _handle_flowi_admin_semiconductor_file_prep(prompt, product, me)
         if prep_tool.get("handled"):
@@ -12638,7 +12940,7 @@ def _run_flowi_chat(
     elif meeting_tool.get("handled"):
         tool = meeting_tool
     else:
-        tool = _handle_flowi_query(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys)
+        tool = _handle_flowi_query(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys, username=username)
     entries = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
     if entries:
         tool["feature_entrypoints"] = entries
