@@ -172,7 +172,7 @@ export default function My_Login({ onLogin }) {
   const inputStyle = {
     width: "100%", padding: "11px 14px", borderRadius: 3,
     border: "1px solid #2a2a2a", background: "rgba(0,0,0,0.5)", color: "#d4d4d4",
-    fontSize: 13, outline: "none", marginBottom: 14,
+    fontSize: 14, outline: "none", marginBottom: 14,
     fontFamily: "'JetBrains Mono',monospace", letterSpacing: .5, caretColor: "#f97316",
     transition: "border-color 0.2s, box-shadow 0.2s",
     boxSizing: "border-box",
@@ -202,11 +202,11 @@ export default function My_Login({ onLogin }) {
         }}>
           {/* v8.8.27: register 모드면 NAME 을 맨 위에 배치 — 이름·아이디·비번 순으로 수집. */}
           {mode === "register" && <>
-            <div style={{ fontSize: 10, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>NAME</div>
+            <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>NAME</div>
             <input value={nm} onChange={e => setNm(e.target.value)} style={inputStyle} onFocus={onF} onBlur={onB} onKeyDown={e => e.key === "Enter" && submit()} autoComplete="name" placeholder="이름" />
           </>}
 
-          <div style={{ fontSize: 10, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>
+          <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>
             {mode === "register" ? "USERNAME (ID)" : mode === "reset" ? "USERNAME / EMAIL" : "USERNAME"}
           </div>
           <input
@@ -221,7 +221,7 @@ export default function My_Login({ onLogin }) {
           />
 
           {(mode === "login" || mode === "register") && <>
-            <div style={{ fontSize: 10, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>PASSWORD</div>
+            <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>PASSWORD</div>
             <input value={p} onChange={e => setP(e.target.value)} type="password" style={inputStyle} onFocus={onF} onBlur={onB} onKeyDown={e => e.key === "Enter" && submit()} autoComplete="current-password" />
           </>}
 
@@ -230,7 +230,7 @@ export default function My_Login({ onLogin }) {
             onMouseLeave={e => { e.target.style.background = "#f97316"; e.target.style.boxShadow = "0 0 10px rgba(249,115,22,0.1)"; }}
             style={{
               width: "100%", padding: "12px", borderRadius: 3, border: "none",
-              background: "#f97316", color: "#000", fontSize: 13, fontWeight: 800,
+              background: "#f97316", color: "#000", fontSize: 14, fontWeight: 800,
               cursor: loading ? "wait" : "pointer", opacity: loading ? 0.5 : 1,
               marginTop: 2, fontFamily: "'JetBrains Mono',monospace",
               letterSpacing: 2, textTransform: "uppercase",
@@ -240,7 +240,7 @@ export default function My_Login({ onLogin }) {
           </button>
 
           {msg && <div style={{
-            marginTop: 12, fontSize: 12, textAlign: "center", lineHeight: 1.6, padding: "8px 12px", borderRadius: 4,
+            marginTop: 12, fontSize: 14, textAlign: "center", lineHeight: 1.6, padding: "8px 12px", borderRadius: 4,
             fontFamily: "'JetBrains Mono',monospace",
             color: isOk ? "#4ade80" : "#fb7185",
             background: isOk ? "rgba(34,197,94,0.06)" : "rgba(248,113,113,0.06)",
@@ -254,13 +254,13 @@ export default function My_Login({ onLogin }) {
               <span onClick={() => { setMode("register"); setMsg(""); }}
                 onMouseEnter={e => e.target.style.color = "#f97316"}
                 onMouseLeave={e => e.target.style.color = "#555"}
-                style={{ cursor: "pointer", fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "#555", transition: "color 0.2s" }}>
+                style={{ cursor: "pointer", fontFamily: "'JetBrains Mono',monospace", fontSize: 14, color: "#555", transition: "color 0.2s" }}>
                 Create Account
               </span>
               <span onClick={() => { setMode("reset"); setMsg(""); }}
                 onMouseEnter={e => e.target.style.color = "#f97316"}
                 onMouseLeave={e => e.target.style.color = "#555"}
-                style={{ cursor: "pointer", fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "#555", transition: "color 0.2s" }}>
+                style={{ cursor: "pointer", fontFamily: "'JetBrains Mono',monospace", fontSize: 14, color: "#555", transition: "color 0.2s" }}>
                 Forgot Password?
               </span>
             </div>
@@ -269,13 +269,13 @@ export default function My_Login({ onLogin }) {
               <span onClick={() => { setMode("login"); setMsg(""); }}
                 onMouseEnter={e => e.target.style.color = "#f97316"}
                 onMouseLeave={e => e.target.style.color = "#555"}
-                style={{ cursor: "pointer", fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: "#555", transition: "color 0.2s" }}>
+                style={{ cursor: "pointer", fontFamily: "'JetBrains Mono',monospace", fontSize: 14, color: "#555", transition: "color 0.2s" }}>
                 Back to Sign In
               </span>
             </div>
           )}
 
-          <div style={{ marginTop: 14, textAlign: "center", fontSize: 9, fontFamily: "'JetBrains Mono',monospace", color: "#1e1e1e", letterSpacing: 1 }}>flow · v8.4.2</div>
+          <div style={{ marginTop: 14, textAlign: "center", fontSize: 14, fontFamily: "'JetBrains Mono',monospace", color: "#1e1e1e", letterSpacing: 1 }}>flow · v8.4.2</div>
         </div>
       </div>
     </div>

@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 from core.paths import PATHS
-from core.utils import detect_structure, load_json, save_json, safe_id
+from core.utils import detect_structure, load_json, read_one_file, save_json, safe_id
 from core.auth import current_user, require_admin, is_page_admin
 from core import product_config as _pc
 
@@ -1078,20 +1078,12 @@ def auto_load_table_from_base(table_id: str, limit: int = Query(500, ge=1, le=50
     if not target:
         raise HTTPException(404, "동명 Base/DB 파일 없음")
     try:
-        if target.suffix.lower() == ".csv":
-            import csv as _csv
-            with open(target, "r", encoding="utf-8-sig", newline="") as f:
-                reader = _csv.reader(f)
-                cols = next(reader, []) or []
-                rows = []
-                for i, r in enumerate(reader):
-                    if i >= limit: break
-                    rows.append(list(r))
-        else:
-            import polars as _pl
-            df = _pl.scan_parquet(str(target)).head(limit).collect()
-            cols = df.columns
-            rows = [list(row) for row in df.iter_rows()]
+        df = read_one_file(target)
+        if df is None:
+            raise RuntimeError("read_one_file returned no data")
+        show = df.head(limit)
+        cols = show.columns
+        rows = [list(row) for row in show.iter_rows()]
         return {"ok": True, "path": str(target), "columns": cols,
                 "rows": rows, "truncated": len(rows) >= limit}
     except Exception as e:

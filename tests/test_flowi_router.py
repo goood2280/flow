@@ -99,6 +99,65 @@ def test_flowi_chart_request_uses_admin_defaults(monkeypatch):
     assert out["chart"]["aggregations"] == {"INLINE": "median", "ET": "avg"}
 
 
+def test_flowi_wafer_match_expr_handles_prefixed_and_int_values():
+    int_df = pl.DataFrame({"wafer_id": [1, 2, 3]})
+    str_df = pl.DataFrame({"wafer_id": ["W01", "02", "WF03"]})
+
+    int_rows = int_df.lazy().filter(llm_router._wafer_match_expr("wafer_id", ["W01"])).collect()
+    str_rows = str_df.lazy().filter(llm_router._wafer_match_expr("wafer_id", ["3"])).collect()
+
+    assert int_rows["wafer_id"].to_list() == [1]
+    assert str_rows["wafer_id"].to_list() == ["WF03"]
+
+
+def test_flowi_wafer_tokens_expand_ranges_and_ignore_out_of_range():
+    assert llm_router._wafer_tokens("#1~3은 ABC, #1000은 제외") == ["1", "2", "3"]
+
+
+def test_flowi_splittable_plan_confirms_and_saves_wafer_range(tmp_path, monkeypatch):
+    from routers import splittable as splittable_router
+
+    ml_fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "product": ["PRODA"] * 26,
+        "root_lot_id": ["A1000"] * 26,
+        "wafer_id": list(range(1, 26)) + [1000],
+        "KNOB_A": ["OLD"] * 26,
+        "KNOB_B": ["B"] * 26,
+    }).write_parquet(ml_fp)
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product="": [ml_fp])
+    monkeypatch.setattr(splittable_router, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+
+    draft = llm_router._handle_splittable_plan_request(
+        "PRODA A1000 A KNOB #1~10은 ABC로 plan해주고 나머지는 DGD로 plan 넣어줘",
+        me={"username": "planner", "role": "user"},
+        allowed_keys={"splittable"},
+    )
+
+    assert draft["intent"] == "splittable_plan_confirm"
+    assert draft["slots"]["wafers"][0] == "1"
+    assert draft["slots"]["wafers"][-1] == "25"
+    confirm_prompt = draft["clarification"]["choices"][0]["prompt"]
+
+    saved = llm_router._handle_splittable_plan_request(
+        confirm_prompt,
+        me={"username": "planner", "role": "user"},
+        allowed_keys={"splittable"},
+    )
+    data = splittable_router.load_json(plan_dir / "ML_TABLE_PRODA.json", {})
+    plans = data["plans"]
+
+    assert saved["intent"] == "splittable_plan_saved"
+    assert plans["A1000|1|KNOB_A"]["value"] == "ABC"
+    assert plans["A1000|10|KNOB_A"]["value"] == "ABC"
+    assert plans["A1000|11|KNOB_A"]["value"] == "DGD"
+    assert plans["A1000|25|KNOB_A"]["value"] == "DGD"
+    assert "A1000|1000|KNOB_A" not in plans
+
+
 def test_flowi_chart_request_computes_inline_et_scatter(tmp_path, monkeypatch):
     inline_fp = tmp_path / "inline.parquet"
     et_fp = tmp_path / "et.parquet"
@@ -132,6 +191,32 @@ def test_flowi_chart_request_computes_inline_et_scatter(tmp_path, monkeypatch):
     assert out["chart_result"]["fit"]["r2"] == 1.0
     assert {p["x"] for p in out["chart_result"]["points"]} == {11.0, 20.0}
     assert {p["y"] for p in out["chart_result"]["points"]} == {100.0, 200.0}
+
+
+def test_flowi_inline_shot_grain_uses_subitem_id_not_coordinates(tmp_path, monkeypatch):
+    inline_fp = tmp_path / "inline.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "1000", "item_id": "CD_MEAN", "subitem_id": "SHOT01", "shot_x": 99, "shot_y": 99, "value": 10.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "1000", "item_id": "CD_MEAN", "subitem_id": "SHOT02", "shot_x": 99, "shot_y": 99, "value": 12.0},
+    ]).write_parquet(inline_fp)
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [inline_fp])
+
+    out = llm_router._flowi_metric_lf(
+        "INLINE",
+        "PRODX",
+        ["A10001"],
+        "CD",
+        "inline_value",
+        include_shot=True,
+        agg_name="avg",
+    )
+
+    assert out["ok"] is True
+    assert out["group_cols"] == ["root_lot_id", "wafer_id", "lot_wf", "shot_id"]
+    rows = out["lf"].sort("shot_id").collect().to_dicts()
+    assert [row["shot_id"] for row in rows] == ["SHOT01", "SHOT02"]
+    assert all("shot_x" not in row and "shot_y" not in row for row in rows)
+    assert {row["wafer_id"] for row in rows} == {"25"}
 
 
 def test_flowi_chart_request_colors_and_filters_by_ml_table_knob(tmp_path, monkeypatch):
@@ -171,6 +256,38 @@ def test_flowi_chart_request_colors_and_filters_by_ml_table_knob(tmp_path, monke
     assert out["chart_result"]["filters"]["excluded_values"] == ["B"]
     assert out["chart_result"]["points"][0]["color_value"] == "A"
     assert out["chart_result"]["color_values"] == [{"value": "A", "count": 1}]
+
+
+def test_flowi_chart_request_normalizes_wafer_keys_across_sources(tmp_path, monkeypatch):
+    inline_fp = tmp_path / "inline.parquet"
+    et_fp = tmp_path / "et.parquet"
+    ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "CD_MEAN", "value": 10.0},
+    ]).write_parquet(inline_fp)
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": 1, "item_id": "LKG_RAW", "value": 100.0},
+    ]).write_parquet(et_fp)
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "W01", "KNOB_SPLIT": "A"},
+    ]).write_parquet(ml_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [inline_fp])
+    monkeypatch.setattr(llm_router, "_et_files", lambda _product: [et_fp])
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+
+    out = _handle_flowi_query(
+        "PRODX A10001 Inline CD와 ET LKG Corr scatter KNOB_SPLIT 컬러링",
+        "",
+        12,
+        allowed_keys={"dashboard", "ml"},
+    )
+
+    assert out["handled"] is True
+    assert out["chart"]["status"] == "computed"
+    assert out["chart_result"]["total"] == 1
+    assert out["chart_result"]["points"][0]["label"] == "A10001_1"
+    assert out["chart_result"]["points"][0]["color_value"] == "A"
 
 
 def test_flowi_chart_request_computes_product_level_cross_db_scatter(tmp_path, monkeypatch):
@@ -256,6 +373,34 @@ def test_flowi_wafer_map_chart_returns_visible_points(tmp_path, monkeypatch):
     assert out["chart_result"]["kind"] == "dashboard_wafer_map"
     assert out["chart_result"]["source"] == "ET"
     assert out["chart_result"]["total"] == 4
+
+
+def test_flowi_inline_wafer_map_requires_explicit_coordinate_mapping(tmp_path, monkeypatch):
+    inline_fp = tmp_path / "inline.parquet"
+    et_fp = tmp_path / "et.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "VTH", "subitem_id": "SHOT01", "value": 1.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "VTH", "subitem_id": "SHOT02", "value": 2.0},
+    ]).write_parquet(inline_fp)
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "shot_x": 0, "shot_y": 0, "item_id": "VTH", "value": 10.0},
+    ]).write_parquet(et_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [inline_fp])
+    monkeypatch.setattr(llm_router, "_et_files", lambda _product: [et_fp])
+
+    out = _handle_flowi_query(
+        "PRODX INLINE VTH WF map 그려줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "waferlayout"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "dashboard_wafer_map_needs_inline_mapping"
+    assert "subitem_id" in out["answer"]
+    assert out["missing"] == ["inline_item_map", "inline_subitem_pos"]
+    assert out["table"]["rows"] == [{"item_id": "VTH"}]
 
 
 def test_flowi_value_lookup_returns_mltable_preview(tmp_path, monkeypatch):
@@ -360,6 +505,104 @@ def test_flowi_fab_eqp_lookup_maps_function_step(tmp_path, monkeypatch):
     assert out["table"]["rows"][0]["step_id"] == "AA230400"
     assert out["table"]["rows"][0]["function_step"] == "STI"
     assert out["table"]["rows"][0]["eqp_id"] == "EQP_STI_01"
+
+
+def test_flowi_current_fab_lot_lookup_uses_fab_db_not_et_report(tmp_path, monkeypatch):
+    fab_dir = tmp_path / "1.RAWDATA_DB_FAB" / "PRODA" / "date=20260429"
+    fab_dir.mkdir(parents=True)
+    pl.DataFrame([
+        {
+            "product": "PRODA",
+            "root_lot_id": "A1000",
+            "lot_id": "A1000A.1",
+            "fab_lot_id": "A1000A.1",
+            "wafer_id": "06",
+            "step_id": "AA230400",
+            "process_id": "PROC_A",
+            "tkout_time": "2026-04-29T08:00:00",
+        },
+        {
+            "product": "PRODA",
+            "root_lot_id": "A1000",
+            "lot_id": "A1000A.2",
+            "fab_lot_id": "A1000A.2",
+            "wafer_id": "06",
+            "step_id": "AA240000",
+            "process_id": "PROC_A",
+            "tkout_time": "2026-04-29T10:00:00",
+        },
+        {
+            "product": "PRODA",
+            "root_lot_id": "A1000",
+            "lot_id": "A1000A.7",
+            "fab_lot_id": "A1000A.7",
+            "wafer_id": "07",
+            "step_id": "AA250000",
+            "process_id": "PROC_A",
+            "tkout_time": "2026-04-29T11:00:00",
+        },
+    ]).write_parquet(fab_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_FAB"] if kind.upper() == "FAB" else [])
+
+    out = _handle_flowi_query(
+        "PRODA A1000 #6 현재 fab lot id가 뭐야?",
+        "",
+        12,
+        allowed_keys={"filebrowser", "dashboard", "ettime"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "current_fab_lot_lookup"
+    assert out["action"] == "query_current_fab_lot_from_fab_db"
+    assert out["table"]["kind"] == "current_fab_lot_lookup"
+    assert out["table"]["rows"][0]["fab_lot_id"] == "A1000A.2"
+    assert out["table"]["rows"][0]["wafer_id"] == "6"
+    assert "ET Report" not in out["answer"]
+
+
+def test_flowi_parses_yaml_product_fab_lot_and_wafer_aliases(monkeypatch):
+    monkeypatch.setattr(llm_router.product_config, "load_all", lambda _root: {"GAA2N": {"product": "GAA2N"}})
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [])
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda _kind: [])
+
+    prompt = "gaa2n A1000 #6 현재 fab lot id가 뭐야? 이전 fab은 AZGASB.1 ASDAGFH.NJ"
+
+    assert llm_router._product_hint(prompt) == "GAA2N"
+    assert llm_router._lot_tokens(prompt) == ["A1000", "AZGASB.1", "ASDAGFH.NJ"]
+    assert llm_router._wafer_tokens("A1000 slot 6 / 6번 slot / 6번장 / 6장") == ["6"]
+
+
+def test_flowi_function_call_preview_structures_fab_lot_lookup(monkeypatch):
+    monkeypatch.setattr(llm_router.product_config, "load_all", lambda _root: {"PRODA": {"product": "PRODA"}})
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [])
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda _kind: [])
+
+    out = llm_router._structure_flowi_function_call("PRODA A1000 #6 현재 fab lot id가 뭐야?")
+
+    assert out["persona"]["role"] == "semiconductor_process_data_analyst"
+    assert out["selected_function"]["name"] == "query_current_fab_lot_from_fab_db"
+    assert out["function_call"]["function"]["arguments"]["product"] == "PRODA"
+    assert out["function_call"]["function"]["arguments"]["root_lot_ids"] == ["A1000"]
+    assert out["function_call"]["function"]["arguments"]["wafer_ids"] == [6]
+    assert out["function_call"]["function"]["arguments"]["source_types"][0] == "FAB"
+    assert out["validation"]["valid"] is True
+
+
+def test_flowi_function_call_preview_keeps_wafer_slots_1_to_25(monkeypatch):
+    monkeypatch.setattr(llm_router.product_config, "load_all", lambda _root: {"PRODA": {"product": "PRODA"}})
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [])
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda _kind: [])
+
+    out = llm_router._structure_flowi_function_call(
+        "PRODA A1000 A KNOB #1~10은 ABC로 plan해주고 #1000은 DGD로 plan 넣어줘"
+    )
+    args = out["function_call"]["function"]["arguments"]
+
+    assert out["selected_function"]["name"] == "preview_splittable_plan_update"
+    assert args["root_lot_ids"] == ["A1000"]
+    assert args["plan_assignments"][0]["wafers"] == [str(i) for i in range(1, 11)]
+    assert "1000" not in {wf for item in args["plan_assignments"] for wf in item["wafers"]}
+    assert any("1~25" in w for w in out["validation"]["warnings"])
 
 
 def test_flowi_product_process_id_lookup_uses_latest_fab_row(tmp_path, monkeypatch):
@@ -539,6 +782,68 @@ def test_flowi_app_write_request_returns_draft_not_execution():
     assert out["intent"] == "lot_wafer_annotation_draft"
     assert out["slots"]["lots"] == ["A0003"]
     assert out["slots"]["wafers"] == ["3"]
+
+
+def test_flowi_agent_chat_summarizes_inform_modules(monkeypatch):
+    from routers import informs as informs_router
+
+    items = [
+        {"id": "a", "root_lot_id": "A1000", "lot_id": "A1000", "wafer_id": "1", "module": "ET", "flow_status": "completed", "created_at": "2026-04-27T10:00:00", "status_history": [{"status": "completed", "at": "2026-04-27T11:00:00"}]},
+        {"id": "b", "root_lot_id": "A1000", "lot_id": "A1000", "wafer_id": "2", "module": "FAB", "flow_status": "received", "created_at": "2026-04-27T12:00:00"},
+    ]
+    monkeypatch.setattr(llm_router, "current_user", lambda _request: {"username": "lotmgr", "role": "admin"})
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(informs_router, "_load_upgraded", lambda: items)
+    monkeypatch.setattr(informs_router, "_load_config", lambda: {"modules": ["ET", "FAB", "PC"]})
+
+    out = llm_router.flowi_agent_chat(
+        llm_router.FlowiAgentChatReq(
+            prompt="A1000 인폼 모듈 전체 현황 보여줘",
+            source_ai="codex",
+            client_run_id="run-1",
+        ),
+        object(),
+    )
+
+    assert out["ok"] is True
+    assert out["tool"]["intent"] == "inform_lot_module_summary"
+    assert out["tool"]["summary"]["missing_modules"] == ["PC"]
+    assert out["tool"]["summary"]["pending_modules"] == ["FAB"]
+    assert out["agent_api"]["source_ai"] == "codex"
+    assert out["agent_api"]["client_run_id"] == "run-1"
+    assert out["agent_api"]["workflow_state"]["action"] == "summarize_inform_modules"
+
+
+def test_flowi_agent_chat_creates_inform_record(tmp_path, monkeypatch):
+    from routers import informs as informs_router
+
+    informs_file = tmp_path / "informs.json"
+    monkeypatch.setattr(informs_router, "INFORMS_FILE", informs_file)
+    monkeypatch.setattr(informs_router, "_INFORMS_CACHE_SIG", None)
+    monkeypatch.setattr(informs_router, "_INFORMS_CACHE_ITEMS", None)
+    monkeypatch.setattr(informs_router, "_resolve_fab_lot_snapshot", lambda *_args, **_kwargs: "FAB1000.1")
+    monkeypatch.setattr(llm_router, "current_user", lambda _request: {"username": "lotmgr", "role": "admin"})
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+
+    out = llm_router.flowi_agent_chat(
+        llm_router.FlowiAgentChatReq(
+            prompt="PRODA A1000 #1 인폼 등록, module: ET, reason: PEMS, 내용: Gate CD 이상 확인 필요",
+            source_ai="codex",
+            client_run_id="run-2",
+        ),
+        object(),
+    )
+    saved = informs_router._load_upgraded()
+
+    assert out["ok"] is True
+    assert out["tool"]["intent"] == "inform_create"
+    assert out["agent_api"]["workflow_state"]["action"] == "create_app_record"
+    assert len(saved) == 1
+    assert saved[0]["root_lot_id"] == "A1000"
+    assert saved[0]["wafer_id"] == "1"
+    assert saved[0]["module"] == "ET"
+    assert saved[0]["reason"] == "PEMS"
+    assert saved[0]["fab_lot_id_at_save"] == "FAB1000.1"
 
 
 def test_flowi_fab_step_eta_estimates_from_historical_lots(tmp_path, monkeypatch):
@@ -1125,6 +1430,44 @@ def test_flowi_chat_route_passes_home_conversation_context(monkeypatch):
     assert seen["prompt"] == "그 조건으로 다음도 봐줘"
     assert seen["agent_context"]["type"] == "home_flowi_chat"
     assert seen["agent_context"]["messages"][0]["text"] == "A10001 먼저 봐줘"
+
+
+def test_flowi_chat_route_redacts_workflow_for_non_admin(monkeypatch):
+    monkeypatch.setattr(llm_router, "current_user", lambda _request: {"username": "home_user", "role": "user"})
+    monkeypatch.setattr(
+        llm_router,
+        "_run_flowi_chat",
+        lambda **_kwargs: {
+            "ok": True,
+            "active": True,
+            "answer": "선택해주세요.",
+            "trace": {"steps": [{"key": "route"}]},
+            "workflow_state": {"status": "awaiting_choice"},
+            "next_actions": [{"type": "open_tab", "tab": "splittable"}],
+            "llm": {"used": True},
+            "agent_api": {"workflow_state": {"status": "awaiting_choice"}},
+            "tool": {
+                "intent": "splittable_plan_confirm",
+                "action": "confirm_splittable_plan",
+                "workflow_state": {"status": "awaiting_choice"},
+                "next_actions": [{"type": "open_tab", "tab": "splittable"}],
+                "feature_entrypoints": [{"key": "splittable"}],
+                "clarification": {"question": "저장할까요?", "choices": [{"id": "ok", "label": "1", "title": "저장", "prompt": "yes"}]},
+                "table": {"columns": [], "rows": []},
+            },
+        },
+    )
+
+    out = llm_router.flowi_chat(llm_router.FlowiChatReq(prompt="plan"), request=object())
+
+    assert out["ok"] is True
+    assert "trace" not in out
+    assert "workflow_state" not in out
+    assert "next_actions" not in out
+    assert "llm" not in out
+    assert "intent" not in out["tool"]
+    assert "workflow_state" not in out["tool"]
+    assert out["tool"]["clarification"]["choices"][0]["title"] == "저장"
 
 
 def test_flowi_verify_tests_llm_connection_for_home_start(monkeypatch):

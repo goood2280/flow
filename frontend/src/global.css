@@ -24,7 +24,7 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.5;
 }
 
@@ -199,7 +199,7 @@ samp,
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -220,14 +220,14 @@ samp,
   overflow: hidden;
   text-overflow: ellipsis;
   color: inherit;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 600;
   opacity: 0.88;
 }
 
 .flow-nav-caret {
   color: var(--text-secondary);
-  font-size: 8px;
+  font-size: 14px;
   line-height: 1;
 }
 
@@ -258,7 +258,7 @@ samp,
   color: var(--text-primary);
   cursor: pointer;
   text-align: left;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -276,7 +276,7 @@ samp,
   border-radius: var(--radius-sm);
   background: rgba(249, 115, 22, 0.14);
   color: var(--accent);
-  font-size: 9px;
+  font-size: 14px;
   font-weight: 800;
 }
 
@@ -314,7 +314,7 @@ samp,
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -322,7 +322,7 @@ samp,
 .flow-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .flow-table th {
@@ -332,7 +332,7 @@ samp,
   background: var(--bg-tertiary);
   color: var(--text-secondary);
   border-bottom: 1px solid var(--border);
-  font-size: 10px;
+  font-size: 14px;
   font-weight: 600;
   text-align: left;
   padding: 6px 10px;
@@ -402,13 +402,13 @@ samp,
 
 .flow-title {
   color: var(--accent);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 800;
 }
 
 .flow-subtitle {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .flow-segment {

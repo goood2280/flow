@@ -1,25 +1,25 @@
 {
   "products": [
-    "PRODA0",
-    "PRODA1",
+    "PRODA",
+    "PRODA",
     "PRODB"
   ],
   "ppids": {
-    "PRODA0": [
-      "PP_PRODA0_01",
-      "PP_PRODA0_02",
-      "PP_PRODA0_03",
-      "PP_PRODA0_04",
-      "PP_PRODA0_05",
-      "PP_PRODA0_06"
+    "PRODA": [
+      "PP_PRODA_01",
+      "PP_PRODA_02",
+      "PP_PRODA_03",
+      "PP_PRODA_04",
+      "PP_PRODA_05",
+      "PP_PRODA_06"
     ],
-    "PRODA1": [
-      "PP_PRODA1_01",
-      "PP_PRODA1_02",
-      "PP_PRODA1_03",
-      "PP_PRODA1_04",
-      "PP_PRODA1_05",
-      "PP_PRODA1_06"
+    "PRODA": [
+      "PP_PRODA_01",
+      "PP_PRODA_02",
+      "PP_PRODA_03",
+      "PP_PRODA_04",
+      "PP_PRODA_05",
+      "PP_PRODA_06"
     ],
     "PRODB": [
       "PP_PRODB_01",

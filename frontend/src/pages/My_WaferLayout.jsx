@@ -8,7 +8,7 @@ const S = {
   border: "1px solid var(--border)",
   background: "var(--bg-card)",
   color: "var(--text-primary)",
-  fontSize: 12,
+  fontSize: 14,
   boxSizing: "border-box",
 };
 
@@ -358,7 +358,7 @@ function parseTechPaste(text, product, prevRows = []) {
 function Input({ label, value, onChange, type = "number" }) {
   return (
     <label style={{ display: "grid", gap: 4 }}>
-      <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{label}</span>
+      <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{label}</span>
       <input value={value} onChange={onChange} type={type} style={S} />
     </label>
   );
@@ -367,7 +367,7 @@ function Input({ label, value, onChange, type = "number" }) {
 function Mini({ label, value, tone = "var(--accent)" }) {
   return (
     <div style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)" }}>
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{label}</div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{label}</div>
       <div style={{ marginTop: 4, fontSize: 18, fontWeight: 800, color: tone, fontFamily: "monospace" }}>{value}</div>
     </div>
   );
@@ -837,7 +837,7 @@ export default function My_WaferLayout() {
   const sheetHead = {
     textAlign: "left",
     padding: "8px 10px",
-    fontSize: 10,
+    fontSize: 14,
     color: "var(--text-secondary)",
     fontFamily: "monospace",
     borderBottom: "1px solid var(--border)",
@@ -859,7 +859,7 @@ export default function My_WaferLayout() {
     border: "none",
     background: "transparent",
     color: "var(--text-primary)",
-    fontSize: 12,
+    fontSize: 14,
     outline: "none",
     boxSizing: "border-box",
     fontFamily: "monospace",
@@ -921,7 +921,7 @@ export default function My_WaferLayout() {
   return (
     <div style={{ padding: "12px 14px", background: "var(--bg-primary)", color: "var(--text-primary)", height: "100%", overflow: "auto", boxSizing: "border-box" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>웨이퍼 레이아웃</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>웨이퍼 레이아웃</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <select value={product} onChange={(e) => {
             const next = e.target.value;
@@ -940,19 +940,19 @@ export default function My_WaferLayout() {
           <button onClick={() => setShowAdvanced((v) => !v)} style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)", background: showAdvanced ? "var(--accent-glow)" : "var(--bg-card)", color: showAdvanced ? "var(--accent)" : "var(--text-primary)", cursor: "pointer", fontWeight: 700 }}>
             {showAdvanced ? "상세 접기" : "상세 설정"}
           </button>
-          {!!msg && <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{msg}</span>}
-          {layoutLoading && <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>loading…</span>}
+          {!!msg && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{msg}</span>}
+          {layoutLoading && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>loading…</span>}
         </div>
       </div>
 
       <div style={{ marginBottom: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
-        <span style={{ padding: "6px 10px", borderRadius: 999, background: "rgba(37,99,235,0.10)", border: "1px solid rgba(37,99,235,0.20)", color: "#1d4ed8", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>
+        <span style={{ padding: "6px 10px", borderRadius: 999, background: "rgba(37,99,235,0.10)", border: "1px solid rgba(37,99,235,0.20)", color: "#1d4ed8", fontSize: 14, fontFamily: "monospace", fontWeight: 700 }}>
           제품: {product || "-"}
         </span>
-        <span style={{ padding: "6px 10px", borderRadius: 999, background: "rgba(15,118,110,0.08)", border: "1px solid rgba(15,118,110,0.18)", color: "#0f766e", fontSize: 11, fontFamily: "monospace" }}>
+        <span style={{ padding: "6px 10px", borderRadius: 999, background: "rgba(15,118,110,0.08)", border: "1px solid rgba(15,118,110,0.18)", color: "#0f766e", fontSize: 14, fontFamily: "monospace" }}>
           보기: {viewMode === "shot" ? "샷" : viewMode === "shot_all" ? "샷 전체" : "칩"}
         </span>
-        <span style={{ padding: "6px 10px", borderRadius: 999, background: "rgba(249,115,22,0.08)", border: "1px solid rgba(249,115,22,0.18)", color: "#b45309", fontSize: 11, fontFamily: "monospace" }}>
+        <span style={{ padding: "6px 10px", borderRadius: 999, background: "rgba(249,115,22,0.08)", border: "1px solid rgba(249,115,22,0.18)", color: "#b45309", fontSize: 14, fontFamily: "monospace" }}>
           엣지 제외: {fmt(data.cfg.edgeExclusionMm)} mm
         </span>
       </div>
@@ -967,8 +967,8 @@ export default function My_WaferLayout() {
           </div>
 
           {viewMode === "chip" && <div style={paneCard}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: "var(--accent)", marginBottom: 10 }}>칩 좌표 검증</div>
-            <div style={{ display: "grid", gap: 7, fontSize: 11, lineHeight: 1.55, color: "var(--text-secondary)" }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "var(--accent)", marginBottom: 10 }}>칩 좌표 검증</div>
+            <div style={{ display: "grid", gap: 7, fontSize: 14, lineHeight: 1.55, color: "var(--text-secondary)" }}>
               <div>
                 <b style={{ color: "var(--text-primary)" }}>Center chip</b>{" "}
                 {centerChip ? `G(${centerChip.globalChipX},${centerChip.globalChipY}) / center (${fmt(centerChip.centerX)}, ${fmt(centerChip.centerY)}) mm / Shot (${centerChip.gridShotY || "-"},${centerChip.gridShotX || "-"})` : "-"}
@@ -990,8 +990,8 @@ export default function My_WaferLayout() {
 
           <div style={paneCard}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>TEG Pick</div>
-              <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{selectedTegDefs.length} selected</span>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>TEG Pick</div>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{selectedTegDefs.length} selected</span>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {data.tegs.map((row) => {
@@ -1008,7 +1008,7 @@ export default function My_WaferLayout() {
                       background: active ? "var(--accent-glow)" : "var(--bg-card)",
                       color: active ? "var(--accent)" : "var(--text-primary)",
                       cursor: "pointer",
-                      fontSize: 10,
+                      fontSize: 14,
                       fontFamily: "monospace",
                       fontWeight: active ? 800 : 600,
                     }}
@@ -1019,7 +1019,7 @@ export default function My_WaferLayout() {
               })}
             </div>
             {viewMode === "shot_all" && (
-              <div style={{ marginTop: 8, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+              <div style={{ marginTop: 8, fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.5 }}>
                 TEG를 선택하면 edge shot 중 선택 TEG가 모두 3mm usable band 안에 완전히 들어가는 shot만 표시합니다.
               </div>
             )}
@@ -1027,8 +1027,8 @@ export default function My_WaferLayout() {
 
           {viewMode === "shot" && <div style={paneCard}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>제품별 Tech List</div>
-              <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{techRows.length} rows</span>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>제품별 Tech List</div>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{techRows.length} rows</span>
             </div>
             <div style={{ ...sheetWrap, maxHeight: 260 }} onPaste={handleTechPaste}>
               <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
@@ -1043,7 +1043,7 @@ export default function My_WaferLayout() {
                 <tbody>
                   {techRows.length === 0 && (
                     <tr>
-                      <td colSpan={TECH_COLUMNS.length + 1} style={{ padding: "14px 10px", color: "var(--text-secondary)", fontSize: 11, textAlign: "center" }}>
+                      <td colSpan={TECH_COLUMNS.length + 1} style={{ padding: "14px 10px", color: "var(--text-secondary)", fontSize: 14, textAlign: "center" }}>
                         엑셀에서 tech / module / step / note 컬럼을 복사해 붙여넣을 수 있습니다.
                       </td>
                     </tr>
@@ -1075,18 +1075,18 @@ export default function My_WaferLayout() {
               </table>
             </div>
             <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>
                 저장 위치: flow-data/waferlayout/product_tech_lists.csv
               </span>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                {techLoading && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>loading...</span>}
-                {techMsg && <span style={{ fontSize: 10, color: techMsg.includes("실패") ? "#dc2626" : "#16a34a" }}>{techMsg}</span>}
+                {techLoading && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>loading...</span>}
+                {techMsg && <span style={{ fontSize: 14, color: techMsg.includes("실패") ? "#dc2626" : "#16a34a" }}>{techMsg}</span>}
                 <button disabled={!isAdmin} onClick={addTechRow}
-                  style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", cursor: isAdmin ? "pointer" : "not-allowed", fontSize: 10, fontWeight: 700, opacity: isAdmin ? 1 : 0.5 }}>
+                  style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", cursor: isAdmin ? "pointer" : "not-allowed", fontSize: 14, fontWeight: 700, opacity: isAdmin ? 1 : 0.5 }}>
                   + 행
                 </button>
                 <button disabled={!isAdmin} onClick={saveTechList}
-                  style={{ padding: "6px 10px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", cursor: isAdmin ? "pointer" : "not-allowed", fontSize: 10, fontWeight: 700, opacity: isAdmin ? 1 : 0.5 }}>
+                  style={{ padding: "6px 10px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", cursor: isAdmin ? "pointer" : "not-allowed", fontSize: 14, fontWeight: 700, opacity: isAdmin ? 1 : 0.5 }}>
                   저장
                 </button>
               </div>
@@ -1094,7 +1094,7 @@ export default function My_WaferLayout() {
           </div>}
 
           {showAdvanced && <div style={paneCard}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Wafer / Shot Geometry</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Wafer / Shot Geometry</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <Input label="wafer_radius" value={cfg.waferRadius} onChange={(e) => setCfg((p) => ({ ...p, waferRadius: e.target.value }))} />
               <Input label="shot_pitch_x" value={cfg.shotPitchX} onChange={(e) => setCfg((p) => ({ ...p, shotPitchX: e.target.value }))} />
@@ -1116,7 +1116,7 @@ export default function My_WaferLayout() {
           </div>}
 
           {showAdvanced && <div style={paneCard}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Chip / TEG Geometry</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Chip / TEG Geometry</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
               <Input label="chip_cols" value={cfg.chipCols} onChange={(e) => setCfg((p) => ({ ...p, chipCols: e.target.value }))} />
               <Input label="chip_rows" value={cfg.chipRows} onChange={(e) => setCfg((p) => ({ ...p, chipRows: e.target.value }))} />
@@ -1126,11 +1126,11 @@ export default function My_WaferLayout() {
               <Input label="chip_offset_y" value={cfg.chipOffsetY} onChange={(e) => setCfg((p) => ({ ...p, chipOffsetY: e.target.value }))} />
             </div>
             <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-              <div style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>scribe_pattern (full = teg_h, half = teg_h/2)</div>
+              <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>scribe_pattern (full = teg_h, half = teg_h/2)</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
                 {normalizeScribePattern(cfg.scribePattern, cfg.chipRows).map((row, idx) => (
                   <label key={idx} style={{ display: "grid", gap: 4 }}>
-                    <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>lane {idx}</span>
+                    <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>lane {idx}</span>
                     <select value={row.type} onChange={(e) => setCfg((p) => ({ ...p, scribePattern: normalizeScribePattern(p.scribePattern, p.chipRows).map((lane, laneIdx) => laneIdx === idx ? { ...lane, type: e.target.value === "half" ? "half" : "full" } : lane) }))} style={S}>
                       <option value="full">full</option>
                       <option value="half">half</option>
@@ -1140,21 +1140,21 @@ export default function My_WaferLayout() {
               </div>
             </div>
             <label style={{ display: "grid", gap: 4, marginBottom: 10 }}>
-              <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>chip_origin_mode</span>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>chip_origin_mode</span>
               <select value={cfg.chipOrigin} onChange={(e) => setCfg((p) => ({ ...p, chipOrigin: e.target.value }))} style={S}>
                 <option value="shot_lower_left">shot lower-left = 0,0</option>
                 <option value="shot_center">shot center = 0,0</option>
               </select>
             </label>
             <label style={{ display: "grid", gap: 4, marginTop: 10 }}>
-              <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>TEG search</span>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>TEG search</span>
               <input value={tegSearch} onChange={(e) => setTegSearch(e.target.value)} placeholder="예: 101 / TOP / RIGHT" style={S} />
             </label>
           </div>}
 
           {showAdvanced && <div style={paneCard}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Quick Reading</div>
-            <div style={{ display: "grid", gap: 6, fontSize: 11, lineHeight: 1.65, color: "var(--text-secondary)" }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Quick Reading</div>
+            <div style={{ display: "grid", gap: 6, fontSize: 14, lineHeight: 1.65, color: "var(--text-secondary)" }}>
               <div>ref shot `{cfg.refShotX},{cfg.refShotY}` 의 center 가 `{cfg.refShotCenterX},{cfg.refShotCenterY}` 로 놓이고, 나머지 shot은 pitch 기준으로 펼쳐집니다.</div>
               <div>shot view는 usable shot만 봅니다. wafer 안에 들어와도 끝 3mm exclusion에 닿는 shot은 비사용 shot으로 취급합니다.</div>
               <div>shot view(all)은 wafer에 걸리는 shot까지 모두 보고, full square shot grid 기준 좌상단 `(1,1)` 번호를 붙입니다.</div>
@@ -1165,8 +1165,8 @@ export default function My_WaferLayout() {
           </div>}
 
           {showAdvanced && <div style={paneCard}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Recommended Input Rule</div>
-            <div style={{ display: "grid", gap: 6, fontSize: 11, lineHeight: 1.7, color: "var(--text-secondary)" }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Recommended Input Rule</div>
+            <div style={{ display: "grid", gap: 6, fontSize: 14, lineHeight: 1.7, color: "var(--text-secondary)" }}>
               <div>1. wafer center 는 가능하면 `(0,0)` 으로 둡니다.</div>
               <div>2. shot 은 `pitch` 기준 셀로 배치하고, `shot_size` 는 거의 pitch와 같게 두어 shot이 거의 붙어 보이게 합니다.</div>
               <div>3. shot은 wafer edge exclusion을 적용해 usable shot을 정하고, Shot View(All)에서는 edge/partial shot도 같이 봅니다.</div>
@@ -1176,9 +1176,9 @@ export default function My_WaferLayout() {
           </div>}
 
           {showAdvanced && <div style={paneCard}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>TEG Coordinate Guide</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>TEG Coordinate Guide</div>
             <div style={{ display: "grid", gap: 10 }}>
-              <div style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(59,130,246,0.18)", background: "rgba(59,130,246,0.06)", fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+              <div style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(59,130,246,0.18)", background: "rgba(59,130,246,0.06)", fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.7 }}>
                 Shot 중심을 원점 `(0,0)` 으로 둡니다. `dx_mm` 는 오른쪽이 `+`, `dy_mm` 는 위쪽이 `+` 입니다.
               </div>
               <svg viewBox="0 0 180 120" width="100%" style={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--bg-card)" }}>
@@ -1199,8 +1199,8 @@ export default function My_WaferLayout() {
           {showAdvanced && isAdmin && (
             <div style={paneCard}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>TEG Table</div>
-                <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>product 선택 후 제품별 TEG를 저장합니다</span>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>TEG Table</div>
+                <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>product 선택 후 제품별 TEG를 저장합니다</span>
               </div>
               <div style={{ ...sheetWrap, maxHeight: 300 }} onPaste={handleTegPaste}>
                 <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
@@ -1238,8 +1238,8 @@ export default function My_WaferLayout() {
           )}
 
           {showAdvanced && <div style={paneCard}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Selected TEG Check</div>
-            <div style={{ display: "grid", gap: 6, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Selected TEG Check</div>
+            <div style={{ display: "grid", gap: 6, fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.7 }}>
               {sampleSelectedTeg ? (
                 <>
                   <div>sample shot: {shotLabel(data.shotSample)}</div>
@@ -1254,12 +1254,12 @@ export default function My_WaferLayout() {
               {viewMode === "shot_all" && (
                 <>
                   <div style={{ display: "grid", gap: 6 }}>
-                    <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>Shot View All 에서 edge shot 후보를 계산할 TEG를 선택합니다.</div>
+                    <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>Shot View All 에서 edge shot 후보를 계산할 TEG를 선택합니다.</div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                       {tegRows.map((row) => (
                         <label key={row.id} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 8px", borderRadius: 999, border: "1px solid var(--border)", background: selectedTegSet.has(Number(row.no)) ? "rgba(249,115,22,0.10)" : "var(--bg-card)", cursor: "pointer" }}>
                           <input type="checkbox" checked={selectedTegSet.has(Number(row.no))} onChange={() => toggleTegNo(row.no)} />
-                          <span style={{ fontSize: 10, fontFamily: "monospace" }}>{row.id || row.name}</span>
+                          <span style={{ fontSize: 14, fontFamily: "monospace" }}>{row.id || row.name}</span>
                         </label>
                       ))}
                     </div>
@@ -1275,16 +1275,16 @@ export default function My_WaferLayout() {
                   <thead>
                     <tr>
                       {["Grid Shot", "Raw Shot", "TEG IDs"].map((h) => (
-                        <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, background: "var(--bg-secondary)" }}>{h}</th>
+                        <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, background: "var(--bg-secondary)" }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {(edgeShotCoverage.rows || []).slice(0, 60).map((row, idx) => (
                       <tr key={idx}>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{row.shotX && row.shotY ? `${row.shotY},${row.shotX}` : "-"}</td>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace" }}>{row.rawShotX},{row.rawShotY}</td>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace", color: "var(--text-secondary)" }}>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace", fontWeight: 700 }}>{row.shotX && row.shotY ? `${row.shotY},${row.shotX}` : "-"}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace" }}>{row.rawShotX},{row.rawShotY}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)" }}>
                           {(row.tegIds || []).join(", ")}
                         </td>
                       </tr>
@@ -1298,7 +1298,7 @@ export default function My_WaferLayout() {
 
         <div style={{ display: "grid", gridTemplateColumns: "minmax(380px, 1fr) minmax(360px, 0.95fr)", gap: 12, minWidth: 0, gridColumn: 1, gridRow: 1, alignItems: "start" }}>
           <div style={{ ...paneCard, overflow: "hidden" }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>WF View</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>WF View</div>
             <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: "block", borderRadius: 12, background: "linear-gradient(180deg, rgba(59,130,246,0.03), rgba(15,23,42,0.02))" }}>
               <defs>
                 <clipPath id="wfClip">
@@ -1367,7 +1367,7 @@ export default function My_WaferLayout() {
 
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 12, minWidth: 0 }}>
             <div style={{ ...paneCard, overflow: "hidden" }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Shot Sample</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>Shot Sample</div>
               {data.shotSample ? (
                 <svg viewBox={`0 0 ${shotSampleViewW} ${Math.max(300, shotSampleH + 78)}`} width="100%" style={{ display: "block" }}>
                   <rect x={shotSampleX} y={shotSampleY} width={shotSampleW} height={shotSampleH} rx="6" fill="rgba(15,23,42,0.03)" stroke="rgba(15,23,42,0.15)" />
@@ -1466,18 +1466,18 @@ export default function My_WaferLayout() {
                   </text>
                 </svg>
               ) : (
-                <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>shot sample 없음</div>
+                <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>shot sample 없음</div>
               )}
             </div>
 
             <div style={{ ...paneCard, overflow: "hidden" }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>TEG Catalog</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 10 }}>TEG Catalog</div>
               <div style={{ maxHeight: 300, overflow: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr>
                       {["no", "name", "local_x", "local_y", "flat"].map((h) => (
-                        <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, background: "var(--bg-secondary)" }}>{h}</th>
+                        <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, background: "var(--bg-secondary)" }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -1486,11 +1486,11 @@ export default function My_WaferLayout() {
                       const active = selectedTegSet.has(Number(t.no));
                       return (
                       <tr key={t.id} onClick={() => toggleTegNo(t.no)} style={{ cursor: "pointer", background: active ? "var(--accent-glow)" : "transparent" }}>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace", color: active ? "var(--accent)" : "#1d4ed8", fontWeight: 800 }}>{active ? "● " : ""}{t.no}</td>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace", color: active ? "var(--accent)" : "#991b1b", fontWeight: 700 }}>{t.name}</td>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace" }}>{fmt(t.x)}</td>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace" }}>{fmt(t.y)}</td>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace" }}>{t.flat||0}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace", color: active ? "var(--accent)" : "#1d4ed8", fontWeight: 800 }}>{active ? "● " : ""}{t.no}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace", color: active ? "var(--accent)" : "#991b1b", fontWeight: 700 }}>{t.name}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace" }}>{fmt(t.x)}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace" }}>{fmt(t.y)}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace" }}>{t.flat||0}</td>
                       </tr>
                     );})}
                   </tbody>
@@ -1501,13 +1501,13 @@ export default function My_WaferLayout() {
 
           <div style={{ ...paneCard, overflow: "hidden", gridColumn: "1 / -1" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>
                 {viewMode === "chip" ? "Chip -> Shot Map" : viewMode === "shot_all" ? "Shot View(All) Coverage" : "Shot Summary"}
               </div>
               {viewMode === "chip" && (
                 <button
                   onClick={() => downloadRowsCsv(`wf_chip_shot_map_${product || "product"}.csv`, chipMappingRows, chipCsvColumns)}
-                  style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                  style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: 14, fontWeight: 700 }}
                 >
                   CSV
                 </button>
@@ -1519,25 +1519,25 @@ export default function My_WaferLayout() {
                   <thead>
                     <tr>
                       {["Chip X", "Chip Y", "Shot X", "Shot Y", "Status"].map((h) => (
-                        <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, background: "var(--bg-secondary)" }}>{h}</th>
+                        <th key={h} style={{ textAlign: "left", padding: "6px 8px", fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, background: "var(--bg-secondary)" }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {chipMappingRows.map((row, idx) => (
                       <tr key={idx}>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{row.chipX}</td>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>{row.chipY}</td>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace" }}>{row.shotX || "-"}</td>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace" }}>{row.shotY || "-"}</td>
-                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace", color: row.status === "inside" ? "#0f766e" : "#dc2626", fontWeight: 700 }}>{row.status}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace", fontWeight: 700 }}>{row.chipX}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace", fontWeight: 700 }}>{row.chipY}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace" }}>{row.shotX || "-"}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace" }}>{row.shotY || "-"}</td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace", color: row.status === "inside" ? "#0f766e" : "#dc2626", fontWeight: 700 }}>{row.status}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             ) : viewMode === "shot_all" ? (
-              <div style={{ display: "grid", gap: 6, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+              <div style={{ display: "grid", gap: 6, fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.7 }}>
                 <div>wafer에 걸리는 전체 shot: {data.shots.length}</div>
                 <div>usable shot: {data.shots.filter((s) => s.usableShot).length}</div>
                 <div>partial/edge shot: {shotAllRows.length}</div>
@@ -1547,7 +1547,7 @@ export default function My_WaferLayout() {
                 {!selectedTegDefs.length && <div>TEG를 선택하면 edge shot 중 선택 TEG가 모두 살아남는 shot만 남깁니다.</div>}
               </div>
             ) : (
-              <div style={{ display: "grid", gap: 6, fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+              <div style={{ display: "grid", gap: 6, fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.7 }}>
                 <div>Shot View는 공정상 바로 쓰는 usable shot만 보여줍니다.</div>
                 <div>Edge/partial shot 검토는 `Shot View(All)`에서 확인합니다.</div>
               </div>

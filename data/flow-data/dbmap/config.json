@@ -8,8 +8,8 @@
       "products": [
         "common"
       ],
-      "x": 419.942100521017,
-      "y": 466.9835076585576
+      "x": 294.59024866916513,
+      "y": 917.823013831397
     },
     {
       "id": "grp_rulebook_config",
@@ -19,8 +19,8 @@
       "products": [
         "common"
       ],
-      "x": 772.0,
-      "y": 46.0
+      "x": 282.6301652892562,
+      "y": 266.4855371900826
     },
     {
       "id": "grp_derived_features",
@@ -58,8 +58,8 @@
       "products": [
         "PRODB"
       ],
-      "x": 90.0,
-      "y": 560.0
+      "x": 979.7755090207265,
+      "y": 565.0867316368765
     },
     {
       "id": "db_inline_proda",
@@ -100,8 +100,8 @@
       "products": [
         "PRODA0"
       ],
-      "x": 840,
-      "y": 470
+      "x": 40.0,
+      "y": 456.0
     },
     {
       "id": "db_et_proda1",
@@ -114,8 +114,8 @@
       "products": [
         "PRODA1"
       ],
-      "x": 840,
-      "y": 560
+      "x": 270.0,
+      "y": 514.0
     },
     {
       "id": "db_et_prodb",
@@ -142,7 +142,9 @@
       ],
       "from_col": "step_id ppid",
       "to_col": "step_id function_step",
-      "description": "FAB raw step/recipe를 function_step/module registry와 연결"
+      "description": "FAB raw step/recipe를 function_step/module registry와 연결",
+      "label_dx": 67.84907508739786,
+      "label_dy": -31.584914264823112
     },
     {
       "id": "rel_fab_to_matching_prodb",
@@ -186,7 +188,9 @@
       ],
       "from_col": "step_id step_seq item_id",
       "to_col": "rawitem_id alias report_variant",
-      "description": "ET raw item을 reformatter / report rulebook과 연결"
+      "description": "ET raw item을 reformatter / report rulebook과 연결",
+      "label_dx": -58.4905819718947,
+      "label_dy": 25.735856067633677
     },
     {
       "id": "rel_et_to_rulebook_a1",
@@ -197,7 +201,9 @@
       ],
       "from_col": "step_id step_seq item_id",
       "to_col": "rawitem_id alias report_variant",
-      "description": "ET raw item을 reformatter / report rulebook과 연결"
+      "description": "ET raw item을 reformatter / report rulebook과 연결",
+      "label_dx": 62.00001689020837,
+      "label_dy": -74.86794492402518
     },
     {
       "id": "rel_et_to_rulebook_b",
@@ -208,7 +214,9 @@
       ],
       "from_col": "step_id step_seq item_id",
       "to_col": "rawitem_id alias report_variant",
-      "description": "ET raw item을 reformatter / report rulebook과 연결"
+      "description": "ET raw item을 reformatter / report rulebook과 연결",
+      "label_dx": -29.245290985947236,
+      "label_dy": 2.339623278875763
     },
     {
       "id": "rel_matching_to_rulebook",
@@ -219,7 +227,9 @@
       ],
       "from_col": "function_step module step_id",
       "to_col": "function_step module step_id",
-      "description": "step/function/module registry를 rulebook과 연결"
+      "description": "step/function/module registry를 rulebook과 연결",
+      "label_dx": -12.867928033816838,
+      "label_dy": 109.962294107162
     },
     {
       "id": "rel_rulebook_to_derived",
@@ -230,7 +240,9 @@
       ],
       "from_col": "knob_name alias mask_name",
       "to_col": "feature_name alias feature_group",
-      "description": "rulebook 결과가 ML_TABLE / ET / INLINE 파생 feature로 반영"
+      "description": "rulebook 결과가 ML_TABLE / ET / INLINE 파생 feature로 반영",
+      "label_dx": 158.8490581971895,
+      "label_dy": 117.33960638866742
     }
   ]
 }

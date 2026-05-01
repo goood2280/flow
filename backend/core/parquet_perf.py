@@ -54,10 +54,11 @@ def collect_streaming(lf, fallback: bool = True):
 # 2. partition pruning
 # ─────────────────────────────────────────────────────────────
 _HIVE_DATE_RE = re.compile(r"date=(\d{4}-?\d{2}-?\d{2})")
+_DATE_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})[-_]?(\d{2})[-_]?(\d{2})(?!\d)")
 
 
 def _parse_hive_date(path: Path):
-    """path 어딘가의 `date=YYYYMMDD` 또는 `date=YYYY-MM-DD` 를 datetime.date 로."""
+    """path 어딘가의 `date=YYYYMMDD` 또는 파일명 날짜를 datetime.date 로."""
     for part in path.parts:
         m = _HIVE_DATE_RE.search(part)
         if m:
@@ -67,6 +68,13 @@ def _parse_hive_date(path: Path):
                     return datetime.strptime(raw, "%Y%m%d").date()
                 except ValueError:
                     return None
+    m = _DATE_TOKEN_RE.search(path.name)
+    if m:
+        raw = "".join(m.groups())
+        try:
+            return datetime.strptime(raw, "%Y%m%d").date()
+        except ValueError:
+            return None
     return None
 
 
@@ -99,6 +107,33 @@ def prune_recent_partitions(files: Iterable[Path], days: int = 30,
     if max_files is not None and len(merged) > max_files:
         merged = merged[-max_files:]
     return sorted(merged)
+
+
+def prune_latest_partitions(files: Iterable[Path], max_files: int | None = None) -> list[Path]:
+    """Return files from the newest date partition/file date only.
+
+    This is the fast path for File Browser default previews. It avoids scanning
+    a whole 30-day window just to show the first visible 200 rows.
+    """
+    files = list(files or [])
+    if not files:
+        return []
+    dated: list[tuple[object, Path]] = []
+    undated: list[Path] = []
+    for fp in files:
+        d = _parse_hive_date(fp)
+        if d is None:
+            undated.append(fp)
+        else:
+            dated.append((d, fp))
+    if dated:
+        latest = max(d for d, _fp in dated)
+        selected = [fp for d, fp in dated if d == latest]
+    else:
+        selected = sorted(undated, key=lambda p: (p.stat().st_mtime if p.exists() else 0.0, str(p)))
+    if max_files is not None and len(selected) > max_files:
+        selected = selected[-max_files:]
+    return sorted(selected)
 
 
 def has_date_filter(sql: str | None) -> bool:
@@ -198,7 +233,8 @@ def invalidate_meta(fp: Path) -> bool:
 # ─────────────────────────────────────────────────────────────
 def scan_parquet_perf(files: list[Path], *, hive: bool = True,
                       recent_days: int | None = 30,
-                      max_files: int = 30):
+                      max_files: int = 30,
+                      latest_only: bool = False):
     """30~60GB 스케일 전용 scan helper.
       - hive_partitioning 활성
       - date= 파티션 pruning 기본 30일
@@ -208,7 +244,9 @@ def scan_parquet_perf(files: list[Path], *, hive: bool = True,
     if not files:
         return None
     selected = files
-    if recent_days is not None:
+    if latest_only:
+        selected = prune_latest_partitions(files, max_files=max_files)
+    elif recent_days is not None:
         selected = prune_recent_partitions(files, days=recent_days, max_files=max_files)
     elif max_files is not None and len(selected) > max_files:
         selected = selected[-max_files:]

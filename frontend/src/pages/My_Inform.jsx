@@ -166,7 +166,7 @@ function LotCombobox({ value, onChange, options, productSelected, manualMode, on
     ? "Lot 직접 입력 (root_lot_id 또는 fab_lot_id)"
     : `Lot 검색 (${(options || []).length}건 · 타이핑하면 필터)`;
 
-  const iS = { flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace", outline: "none" };
+  const iS = { flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace", outline: "none" };
 
   return (
     <div ref={wrapRef} style={{ display: "flex", gap: 6, alignItems: "center", position: "relative", flex: 1 }}>
@@ -186,7 +186,7 @@ function LotCombobox({ value, onChange, options, productSelected, manualMode, on
       <button type="button"
         onClick={onToggleManual}
         title={manualMode ? "검색 드롭다운으로 전환" : "직접 입력 (필터 off)"}
-        style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>
+        style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer", whiteSpace: "nowrap" }}>
         {manualMode ? "🔎 검색" : "✏ 직접"}
       </button>
       {showDropdown && (
@@ -201,20 +201,20 @@ function LotCombobox({ value, onChange, options, productSelected, manualMode, on
             <div key={o.type + ":" + o.value}
               onMouseDown={e => { e.preventDefault(); onChange(o.value); setOpen(false); }}
               style={{
-                padding: "5px 10px", fontSize: 12, fontFamily: "monospace",
+                padding: "5px 10px", fontSize: 14, fontFamily: "monospace",
                 cursor: "pointer", borderBottom: "1px solid var(--border)",
                 display: "flex", gap: 8, alignItems: "center",
               }}
               onMouseEnter={e => e.currentTarget.style.background = "var(--accent-glow)"}
               onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-              <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 8, background: o.type === "fab" ? INFO.bg : GREEN.bg, color: o.type === "fab" ? INFO.fg : GREEN.fg, fontFamily: "inherit", flexShrink: 0 }}>
+              <span style={{ fontSize: 14, padding: "1px 5px", borderRadius: 8, background: o.type === "fab" ? INFO.bg : GREEN.bg, color: o.type === "fab" ? INFO.fg : GREEN.fg, fontFamily: "inherit", flexShrink: 0 }}>
                 {o.type}
               </span>
               <span style={{ flex: 1 }}>{o.value}</span>
             </div>
           ))}
           {filtered.length > 300 && (
-            <div style={{ padding: "6px 10px", fontSize: 10, color: "var(--text-secondary)", fontStyle: "italic", textAlign: "center", borderTop: "1px solid var(--border)" }}>
+            <div style={{ padding: "6px 10px", fontSize: 14, color: "var(--text-secondary)", fontStyle: "italic", textAlign: "center", borderTop: "1px solid var(--border)" }}>
               … {filtered.length - 300}개 더 있음. 더 구체적으로 타이핑하세요.
             </div>
           )}
@@ -241,7 +241,7 @@ function StatusBadge({ status }) {
       padding: "2px 8px", borderRadius: 6,
       background: m.color + "16", color: m.color,
       border: "1px solid " + m.color + "33",
-      fontSize: 10, fontWeight: 700,
+      fontSize: 14, fontWeight: 700,
     }}>
       <span>{m.dot}</span>{m.label}
     </span>
@@ -257,7 +257,7 @@ function CheckPill({ node }) {
   return (
     <span title={title}
       style={{
-        fontSize: 10, padding: "2px 8px", borderRadius: 6,
+        fontSize: 14, padding: "2px 8px", borderRadius: 6,
         background: checked ? OK.bg : WARN.bg,
         color: checked ? GREEN.fg : WARN.fg,
         border: "1px solid " + (checked ? GREEN.fg + "33" : WARN.fg + "33"),
@@ -270,7 +270,7 @@ function AutoGenPill({ node }) {
   if (!node.auto_generated) return null;
   return (
     <span style={{
-      fontSize: 10, padding: "2px 8px", borderRadius: 6,
+      fontSize: 14, padding: "2px 8px", borderRadius: 6,
       background: INFO.bg, color: INFO.fg, border: "1px solid " + INFO.fg + "33", fontWeight: 700,
     }}>⚙ 자동</span>
   );
@@ -285,7 +285,7 @@ function ImageGallery({ images }) {
           style={{ display: "block", border: "1px solid var(--border)", borderRadius: 4, padding: 2, background: "var(--bg-primary)" }}>
           <img src={authSrc(im.url)} alt={im.filename}
             style={{ display: "block", maxHeight: 120, maxWidth: 180, objectFit: "contain" }} />
-          <div style={{ fontSize: 9, color: "var(--text-secondary)", padding: "2px 4px", textAlign: "center", fontFamily: "monospace" }}>{im.filename}</div>
+          <div style={{ fontSize: 14, color: "var(--text-secondary)", padding: "2px 4px", textAlign: "center", fontFamily: "monospace" }}>{im.filename}</div>
         </a>
       ))}
     </div>
@@ -446,11 +446,11 @@ function EmbedTableView({ embed, product }) {
   })();
   const shellStyle = { marginTop: 8, padding: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)" };
   const scrollerStyle = { maxHeight: 620, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" };
-  const tableStyle = { borderCollapse: "collapse", fontSize: 11, fontFamily: "monospace", width: "max-content", minWidth: "100%" };
+  const tableStyle = { borderCollapse: "collapse", fontSize: 14, fontFamily: "monospace", width: "max-content", minWidth: "100%" };
   const leftHeadStyle = { border: "1px solid var(--border)", padding: "6px 10px", background: "var(--bg-secondary)", textAlign: "left", position: "sticky", top: 0, left: 0, zIndex: 3, minWidth: 220, lineHeight: 1.35 };
   const headStyle = { border: "1px solid var(--border)", padding: "6px 10px", background: "var(--bg-secondary)", textAlign: "center", position: "sticky", top: 0, minWidth: 84, lineHeight: 1.35, zIndex: 2 };
-  const subHeadLeftStyle = { border: "1px solid var(--border)", padding: "5px 10px", background: "var(--bg-tertiary)", fontSize: 10, color: "var(--text-secondary)", textAlign: "left", position: "sticky", top: 34, zIndex: 2, minWidth: 220 };
-  const subHeadStyle = { border: "1px solid var(--border)", padding: "5px 10px", background: "var(--bg-tertiary)", fontSize: 10, color: "var(--text-secondary)", textAlign: "center", position: "sticky", top: 34, zIndex: 1, minWidth: 84 };
+  const subHeadLeftStyle = { border: "1px solid var(--border)", padding: "5px 10px", background: "var(--bg-tertiary)", fontSize: 14, color: "var(--text-secondary)", textAlign: "left", position: "sticky", top: 34, zIndex: 2, minWidth: 220 };
+  const subHeadStyle = { border: "1px solid var(--border)", padding: "5px 10px", background: "var(--bg-tertiary)", fontSize: 14, color: "var(--text-secondary)", textAlign: "center", position: "sticky", top: 34, zIndex: 1, minWidth: 84 };
   const leftCellStyle = { border: "1px solid var(--border)", padding: "5px 10px", background: "var(--bg-secondary)", fontWeight: 700, position: "sticky", left: 0, zIndex: 1, lineHeight: 1.35 };
   const cellStyle = { border: "1px solid var(--border)", padding: "5px 10px", textAlign: "center", lineHeight: 1.35, whiteSpace: "nowrap" };
   // v8.8.11: st_view(SplitTable /view 응답) 가 있으면 컬러링 + plan pin 동일 렌더.
@@ -460,11 +460,17 @@ function EmbedTableView({ embed, product }) {
     const headers = st.headers || [];
     const headerGroups = splitTableHeaderGroups(st);
     const rootLotId = String(st.root_lot_id || "").trim();
-    const waferTop = rootLotId ? (headerGroups.length ? 52 : 28) : (headerGroups.length ? 24 : 0);
-    const rootLeftStyle = { border: "1px solid var(--border)", padding: 0, background: "var(--bg-secondary)", position: "sticky", top: 0, left: 0, zIndex: 5, minWidth: 220 };
-    const rootHeadStyle = { border: "1px solid var(--border)", padding: "6px 10px", background: "var(--bg-secondary)", color: "var(--accent)", textAlign: "center", position: "sticky", top: 0, zIndex: 4, fontWeight: 800, fontSize: 12, fontFamily: "monospace" };
-    const groupLeftStyle = { border: "1px solid var(--border)", padding: 0, background: "var(--bg-tertiary)", position: "sticky", top: rootLotId ? 28 : 0, left: 0, zIndex: 5, minWidth: 220 };
-    const groupHeadStyle = { border: "1px solid var(--border)", padding: "5px 10px", background: "var(--bg-tertiary)", color: "rgba(251,191,36,0.95)", textAlign: "center", position: "sticky", top: rootLotId ? 28 : 0, zIndex: 4, fontWeight: 800, fontSize: 10, fontFamily: "monospace", whiteSpace: "nowrap" };
+    const lotIdValues = [...new Set(headerGroups.map(g => String(g?.label || "").trim()).filter(Boolean))];
+    const lotIdLabel = lotIdValues.join(", ");
+    const hasLotContext = !!(rootLotId || lotIdLabel);
+    const rootHeaderHeight = hasLotContext ? 44 : 0;
+    const groupHeaderHeight = headerGroups.length ? 30 : 0;
+    const waferTop = rootHeaderHeight + groupHeaderHeight;
+    const lotContextTitle = `root_lot_id: ${rootLotId || "-"}\nlot_id: ${lotIdLabel || "-"}`;
+    const rootLeftStyle = { border: "1px solid var(--border)", padding: "4px 10px", background: "var(--bg-secondary)", position: "sticky", top: 0, left: 0, zIndex: 5, minWidth: 220, height: rootHeaderHeight, fontSize: 14, lineHeight: 1.25, whiteSpace: "normal", wordBreak: "break-word" };
+    const rootHeadStyle = { border: "1px solid var(--border)", padding: "6px 10px", background: "var(--bg-secondary)", color: "var(--accent)", textAlign: "center", position: "sticky", top: 0, zIndex: 4, fontWeight: 800, fontSize: 14, fontFamily: "monospace", height: rootHeaderHeight };
+    const groupLeftStyle = { border: "1px solid var(--border)", padding: 0, background: "var(--bg-tertiary)", position: "sticky", top: rootHeaderHeight, left: 0, zIndex: 5, minWidth: 220 };
+    const groupHeadStyle = { border: "1px solid var(--border)", padding: "5px 10px", background: "var(--bg-tertiary)", color: "rgba(251,191,36,0.95)", textAlign: "center", position: "sticky", top: rootHeaderHeight, zIndex: 4, fontWeight: 800, fontSize: 14, fontFamily: "monospace", whiteSpace: "nowrap" };
     const waferLeftStyle = { ...leftHeadStyle, top: waferTop };
     const waferHeadStyle = { ...headStyle, top: waferTop };
     // uniqueMap 계산: param 별 값 → 인덱스.
@@ -484,18 +490,21 @@ function EmbedTableView({ embed, product }) {
     }
     return (
       <div style={shellStyle}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)", marginBottom: 4 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 4 }}>
           🔗 SplitTable {embed.source && <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>· {embed.source}</span>}
         </div>
-        {embed.note && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
-        <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 6 }}>최대 15줄 이상을 한 화면에서 검토할 수 있도록 확장 표시됩니다.</div>
+        {embed.note && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6 }}>최대 15줄 이상을 한 화면에서 검토할 수 있도록 확장 표시됩니다.</div>
         <div style={scrollerStyle}>
           <table style={tableStyle}>
             <thead>
-              {rootLotId && (
+              {hasLotContext && (
                 <tr>
-                  <th style={rootLeftStyle}></th>
-                  <th colSpan={headers.length || 1} style={rootHeadStyle}>{rootLotId}</th>
+                  <th style={rootLeftStyle} title={lotContextTitle}>
+                    <div><span style={{ color: "var(--text-secondary)", fontWeight: 700 }}>root_lot_id</span> {rootLotId || "-"}</div>
+                    <div><span style={{ color: "var(--text-secondary)", fontWeight: 700 }}>lot_id</span> {lotIdLabel || "-"}</div>
+                  </th>
+                  <th colSpan={headers.length || 1} style={rootHeadStyle}>{rootLotId || lotIdLabel}</th>
                 </tr>
               )}
               {headerGroups.length > 0 && (
@@ -541,7 +550,7 @@ function EmbedTableView({ embed, product }) {
         </div>
         {planSummary.length > 0 && (
           <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>📋 Wafer별 적용 plan 요약</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>📋 Wafer별 적용 plan 요약</div>
             <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" }}>
               <table style={{ ...tableStyle, width: "100%" }}>
                 <thead>
@@ -568,7 +577,7 @@ function EmbedTableView({ embed, product }) {
         )}
         {lineageSummary.length > 0 && (
           <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>🧭 Parameter별 적용 step 요약</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>🧭 Parameter별 적용 step 요약</div>
             <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" }}>
               <table style={{ ...tableStyle, width: "100%" }}>
                 <thead>
@@ -586,7 +595,7 @@ function EmbedTableView({ embed, product }) {
                       <td style={{ ...cellStyle, textAlign: "left", color: INFO.fg, fontWeight: 700 }}>
                         {(x.step_ids || []).length ? x.step_ids.join(", ") : "—"}
                         {stepWarning(x.step_ids) && (
-                          <div style={{ marginTop: 4, fontSize: 10, lineHeight: 1.35, color: "rgba(220,38,38,0.95)", fontFamily: "system-ui, sans-serif", fontWeight: 600 }}>
+                          <div style={{ marginTop: 4, fontSize: 14, lineHeight: 1.35, color: "rgba(220,38,38,0.95)", fontFamily: "system-ui, sans-serif", fontWeight: 600 }}>
                             {stepWarning(x.step_ids)}
                           </div>
                         )}
@@ -596,7 +605,7 @@ function EmbedTableView({ embed, product }) {
                 </tbody>
               </table>
             </div>
-            <div style={{ marginTop: 6, fontSize: 10, color: "var(--text-secondary)" }}>
+            <div style={{ marginTop: 6, fontSize: 14, color: "var(--text-secondary)" }}>
               function_step 에 여러 step_id 가 연결되면 현재 제품에서 실제 적용할 step_id 를 담당 엔지니어가 확인한 뒤 진행해야 합니다.
             </div>
           </div>
@@ -638,11 +647,11 @@ function EmbedTableView({ embed, product }) {
     }
     return (
       <div style={shellStyle}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)", marginBottom: 4 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 4 }}>
           🔗 SplitTable {embed.source && <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>· {embed.source}</span>}
         </div>
-        {embed.note && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
-        <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 6 }}>최대 15줄 이상을 한 화면에서 검토할 수 있도록 확장 표시됩니다.</div>
+        {embed.note && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6 }}>최대 15줄 이상을 한 화면에서 검토할 수 있도록 확장 표시됩니다.</div>
         <div style={scrollerStyle}>
           <table style={tableStyle}>
             <thead>
@@ -676,10 +685,10 @@ function EmbedTableView({ embed, product }) {
   // legacy (non-param-table) 그대로.
   return (
     <div style={shellStyle}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)", marginBottom: 4 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 4 }}>
         🔗 Embed {embed.source && <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>· {embed.source}</span>}
       </div>
-      {embed.note && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
+      {embed.note && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
       <div style={scrollerStyle}>
         <table style={tableStyle}>
           <thead>
@@ -750,14 +759,14 @@ function ThreadNode({
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
           {node.module && (() => { const mc = moduleColor(node.module); return (
-            <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: mc + "22", color: mc, fontWeight: 700, border: "1px solid " + mc + "55" }}>{node.module}</span>
+            <span style={{ fontSize: 14, padding: "2px 8px", borderRadius: 999, background: mc + "22", color: mc, fontWeight: 700, border: "1px solid " + mc + "55" }}>{node.module}</span>
           ); })()}
-          {node.reason && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "var(--bg-hover)", color: "var(--text-secondary)" }}>[{node.reason}]</span>}
+          {node.reason && <span style={{ fontSize: 14, padding: "2px 8px", borderRadius: 999, background: "var(--bg-hover)", color: "var(--text-secondary)" }}>[{node.reason}]</span>}
           <CheckPill node={node} />
           <AutoGenPill node={node} />
-          <span style={{ fontSize: 11, fontWeight: 600 }}>{node.author}</span>
+          <span style={{ fontSize: 14, fontWeight: 600 }}>{node.author}</span>
           <span title={node.created_at || ""} style={{
-            fontSize: 10, padding: "2px 8px", borderRadius: 999,
+            fontSize: 14, padding: "2px 8px", borderRadius: 999,
             background: "var(--bg-primary)", color: "var(--text-primary)",
             border: "1px solid var(--border)", fontFamily: "monospace",
             display: "inline-flex", alignItems: "center", gap: 4,
@@ -765,14 +774,14 @@ function ThreadNode({
           <div style={{ flex: 1 }} />
           {/* v8.8.13: 우측 액션 3버튼 통일 — 확인 · 답글 · 삭제. 상태 라벨은 CheckPill 로 좌측에 표시. */}
           <button onClick={() => onToggleCheck(node)} title={node.checked ? "미확인으로 되돌리기" : "확인 완료 처리"}
-            style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
+            style={{ fontSize: 14, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
               border: "1px solid " + (node.checked ? BAD.fg : OK.fg),
               background: node.checked ? "transparent" : OK.fg,
               color: node.checked ? BAD.fg : WHITE, fontWeight: 700 }}>
             {node.checked ? "↺ 미확인" : "✓ 확인"}
           </button>
           <button onClick={() => setReplyOpen(!replyOpen)} title="답글 달기 (module/reason 은 부모 자동 상속)"
-            style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
+            style={{ fontSize: 14, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
               border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 700 }}>
             {replyOpen ? "닫기" : "답글"}
           </button>
@@ -780,14 +789,14 @@ function ThreadNode({
           {canEdit && (
             <button onClick={() => { setEditText(node.text || ""); setEditModule(node.module || ""); setEditReason(node.reason || ""); setEditOpen(!editOpen); }}
               title="본문 수정"
-              style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
+              style={{ fontSize: 14, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
                 border: `1px solid ${INFO.fg}`, background: "transparent", color: INFO.fg, fontWeight: 700 }}>
               {editOpen ? "닫기" : "✎ 수정"}
             </button>
           )}
           {canDelete && kids.length === 0 && (
             <button onClick={() => onDelete(node.id)} title="이 글 삭제 (자식이 없을 때만)"
-              style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
+              style={{ fontSize: 14, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
                 border: `1px solid ${BAD.fg}`, background: "transparent", color: BAD.fg, fontWeight: 700 }}>
               🗑 삭제
             </button>
@@ -799,19 +808,19 @@ function ThreadNode({
             {/* v8.8.13: module/사유 도 수정 허용 — 처음 등록 시 실수로 안 넣었어도 나중에 교정 가능. */}
             <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
               <select value={editModule} onChange={e => setEditModule(e.target.value)}
-                style={{ padding: "4px 6px", borderRadius: 4, border: `1px solid ${INFO.fg}`, background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11 }}>
+                style={{ padding: "4px 6px", borderRadius: 4, border: `1px solid ${INFO.fg}`, background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }}>
                 <option value="">(모듈 없음)</option>
                 {constants.modules.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
               <select value={editReason} onChange={e => setEditReason(e.target.value)}
-                style={{ padding: "4px 6px", borderRadius: 4, border: `1px solid ${INFO.fg}`, background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11 }}>
+                style={{ padding: "4px 6px", borderRadius: 4, border: `1px solid ${INFO.fg}`, background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }}>
                 <option value="">(사유 없음)</option>
                 {constants.reasons.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
             </div>
             <textarea value={editText} onChange={e => setEditText(e.target.value)} rows={4}
-              style={{ width: "100%", padding: 8, borderRadius: 4, border: `1px solid ${INFO.fg}`, background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, resize: "vertical", fontFamily: "inherit" }} />
-            <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>
+              style={{ width: "100%", padding: 8, borderRadius: 4, border: `1px solid ${INFO.fg}`, background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, resize: "vertical", fontFamily: "inherit" }} />
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>
               ※ 본문·모듈·사유 수정 가능. SplitTable 스냅샷은 작성 시점 값으로 유지됩니다.
             </div>
             <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
@@ -824,27 +833,27 @@ function ThreadNode({
                 if (Object.keys(patch).length === 0) { setEditOpen(false); return; }
                 onEdit(node.id, patch).then(() => setEditOpen(false));
               }}
-                style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: INFO.fg, color: WHITE, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>저장</button>
+                style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: INFO.fg, color: WHITE, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>저장</button>
               <button onClick={() => { setEditOpen(false); setEditText(node.text || ""); setEditModule(node.module || ""); setEditReason(node.reason || ""); }}
-                style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer" }}>취소</button>
+                style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
             </div>
           </div>
         ) : (
-          <div style={{ fontSize: 12, color: "var(--text-primary)", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{node.text}</div>
+          <div style={{ fontSize: 14, color: "var(--text-primary)", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{node.text}</div>
         )}
         <ImageGallery images={node.images} />
         <EmbedTableView embed={node.embed_table} product={node.product} />
 
         {sc && (sc.column || sc.new_value) && (
           <div style={{ marginTop: 8, padding: "6px 10px", borderLeft: `3px solid ${WARN.fg}`,
-                        background: WARN.bg, borderRadius: 4, fontSize: 11 }}>
+                        background: WARN.bg, borderRadius: 4, fontSize: 14 }}>
             <b>SplitTable 변경 요청</b>
             <div style={{ fontFamily: "monospace", marginTop: 2 }}>
               {sc.column ? <><span style={{ color: WARN.fg }}>{sc.column}</span>: </> : null}
               <span style={{ textDecoration: "line-through", opacity: 0.7 }}>{sc.old_value || "-"}</span>
               {" → "}
               <span style={{ color: OK.fg, fontWeight: 700 }}>{sc.new_value || "-"}</span>
-              {sc.applied && <span style={{ marginLeft: 8, fontSize: 9, color: GREEN.fg, fontWeight: 700 }}>APPLIED</span>}
+              {sc.applied && <span style={{ marginLeft: 8, fontSize: 14, color: GREEN.fg, fontWeight: 700 }}>APPLIED</span>}
             </div>
           </div>
         )}
@@ -852,30 +861,30 @@ function ThreadNode({
         {replyOpen && (
           <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border)" }}>
             {/* v8.8.13: 답글의 module/reason 은 부모 자동 상속 → 읽기전용 pill. */}
-            <div style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center", flexWrap: "wrap", fontSize: 10, color: "var(--text-secondary)" }}>
+            <div style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center", flexWrap: "wrap", fontSize: 14, color: "var(--text-secondary)" }}>
               <span>상속:</span>
               {(() => { const mc = moduleColor(reply.module || "—"); return (
-                <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: mc + "22", color: mc, fontWeight: 700, border: "1px solid " + mc + "55" }}>{reply.module || "(모듈 없음)"}</span>
+                <span style={{ fontSize: 14, padding: "2px 8px", borderRadius: 999, background: mc + "22", color: mc, fontWeight: 700, border: "1px solid " + mc + "55" }}>{reply.module || "(모듈 없음)"}</span>
               ); })()}
-              <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "var(--bg-hover)", color: "var(--text-secondary)" }}>[{reply.reason || "(사유 없음)"}]</span>
-              <label style={{ fontSize: 10, color: "var(--text-secondary)", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", marginLeft: "auto" }}>
+              <span style={{ fontSize: 14, padding: "2px 8px", borderRadius: 999, background: "var(--bg-hover)", color: "var(--text-secondary)" }}>[{reply.reason || "(사유 없음)"}]</span>
+              <label style={{ fontSize: 14, color: "var(--text-secondary)", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", marginLeft: "auto" }}>
                 <input type="checkbox" checked={attachSplit} onChange={e => setAttachSplit(e.target.checked)} />
                 SplitTable 변경요청 포함
               </label>
             </div>
             <textarea value={reply.text} onChange={e => setReply({ ...reply, text: e.target.value })} rows={2}
               placeholder="내용 (재인폼 사유, 조치 제안 등)"
-              style={{ width: "100%", padding: 6, borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, resize: "vertical" }} />
+              style={{ width: "100%", padding: 6, borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, resize: "vertical" }} />
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-              <label style={{ fontSize: 10, color: "var(--text-secondary)", cursor: "pointer" }}>
+              <label style={{ fontSize: 14, color: "var(--text-secondary)", cursor: "pointer" }}>
                 📎 이미지
                 <input type="file" accept="image/*" multiple
                   style={{ display: "none" }}
                   onChange={e => { handleFile(e.target.files); e.target.value = ""; }} />
               </label>
-              {uploading && <span style={{ fontSize: 10, color: "var(--accent)" }}>업로드중…</span>}
+              {uploading && <span style={{ fontSize: 14, color: "var(--accent)" }}>업로드중…</span>}
               {replyImages.map((im, i) => (
-                <span key={i} style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, background: "var(--bg-primary)", border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                <span key={i} style={{ fontSize: 14, padding: "2px 6px", borderRadius: 3, background: "var(--bg-primary)", border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 4 }}>
                   <img src={authSrc(im.url)} alt="" style={{ width: 24, height: 24, objectFit: "cover", borderRadius: 2 }} />
                   <span style={{ fontFamily: "monospace" }}>{im.filename}</span>
                   <button onClick={() => setReplyImages(replyImages.filter((_, j) => j !== i))}
@@ -885,17 +894,17 @@ function ThreadNode({
             </div>
             {attachSplit && (
               <div style={{ marginTop: 6, padding: 8, background: "var(--bg-primary)", borderRadius: 4, border: "1px dashed var(--border)" }}>
-                <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4, fontWeight: 600 }}>Split Table 변경 (예: KNOB A → B)</div>
+                <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4, fontWeight: 600 }}>Split Table 변경 (예: KNOB A → B)</div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   <input value={splitForm.column} onChange={e => setSplitForm({ ...splitForm, column: e.target.value })}
                     placeholder="column (예: KNOB/GATE_PPID)"
-                    style={{ flex: "1 1 180px", padding: "4px 6px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace" }} />
+                    style={{ flex: "1 1 180px", padding: "4px 6px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
                   <input value={splitForm.old_value} onChange={e => setSplitForm({ ...splitForm, old_value: e.target.value })}
                     placeholder="old"
-                    style={{ flex: "1 1 100px", padding: "4px 6px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace" }} />
+                    style={{ flex: "1 1 100px", padding: "4px 6px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
                   <input value={splitForm.new_value} onChange={e => setSplitForm({ ...splitForm, new_value: e.target.value })}
                     placeholder="new"
-                    style={{ flex: "1 1 100px", padding: "4px 6px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace" }} />
+                    style={{ flex: "1 1 100px", padding: "4px 6px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
                 </div>
               </div>
             )}
@@ -917,9 +926,9 @@ function ThreadNode({
                   setReplyOpen(false);
                 });
               }}
-                style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "var(--accent)", color: WHITE, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>등록</button>
+                style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "var(--accent)", color: WHITE, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>등록</button>
               <button onClick={() => setReplyOpen(false)}
-                style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer" }}>취소</button>
+                style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
             </div>
           </div>
         )}
@@ -947,25 +956,25 @@ function DeadlineBadge({ deadline, onChange, canEdit }) {
     return (
       <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
         <input type="date" value={val} onChange={e => setVal(e.target.value)}
-          style={{ fontSize: 11, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)" }} />
+          style={{ fontSize: 14, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)" }} />
         <button onClick={() => { onChange(val); setEditing(false); }}
-          style={{ fontSize: 10, padding: "2px 8px", borderRadius: 3, border: "none", background: "var(--accent)", color: WHITE, cursor: "pointer" }}>저장</button>
+          style={{ fontSize: 14, padding: "2px 8px", borderRadius: 3, border: "none", background: "var(--accent)", color: WHITE, cursor: "pointer" }}>저장</button>
         {deadline && <button onClick={() => { onChange(""); setEditing(false); }}
-          style={{ fontSize: 10, padding: "2px 8px", borderRadius: 3, border: "1px solid var(--border)", background: "transparent", color: BAD.fg, cursor: "pointer" }}>해제</button>}
+          style={{ fontSize: 14, padding: "2px 8px", borderRadius: 3, border: "1px solid var(--border)", background: "transparent", color: BAD.fg, cursor: "pointer" }}>해제</button>}
         <button onClick={() => setEditing(false)}
-          style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>×</button>
+          style={{ fontSize: 14, padding: "2px 6px", borderRadius: 3, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>×</button>
       </span>
     );
   }
   if (!deadline) {
     if (!canEdit) return null;
-    return <span onClick={() => setEditing(true)} style={{ fontSize: 10, color: "var(--text-secondary)", cursor: "pointer", padding: "2px 8px", borderRadius: 999, border: "1px dashed var(--border)" }}>🗓 데드라인 설정</span>;
+    return <span onClick={() => setEditing(true)} style={{ fontSize: 14, color: "var(--text-secondary)", cursor: "pointer", padding: "2px 8px", borderRadius: 999, border: "1px dashed var(--border)" }}>🗓 데드라인 설정</span>;
   }
   return (
     <span onClick={() => canEdit && setEditing(true)}
       title={overdue ? "마감 초과" : near ? "임박" : "데드라인"}
       style={{
-        fontSize: 10, fontWeight: 700,
+        fontSize: 14, fontWeight: 700,
         padding: "2px 8px", borderRadius: 999,
         background: color + "22", color, border: "1px solid " + color,
         cursor: canEdit ? "pointer" : "default",
@@ -1104,31 +1113,31 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
     }).finally(() => setSending(false));
   };
 
-  const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none" };
+  const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 10, padding: 18, width: "96%", maxWidth: 1180, maxHeight: "94vh", overflow: "auto", color: "var(--text-primary)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <div style={{ fontSize: 15, fontWeight: 700 }}>✉ 인폼 메일 보내기 <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-secondary)" }}>(최대 199명 · 본문 2MB · 첨부 10MB)</span></div>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>✉ 인폼 메일 보내기 <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-secondary)" }}>(최대 199명 · 본문 2MB · 첨부 10MB)</span></div>
           <span onClick={onClose} style={{ cursor: "pointer", fontSize: 18 }}>✕</span>
         </div>
-        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>Admin 설정의 메일 API 로 multipart POST. 수신자 총 <b style={{ color: "var(--accent)" }}>{totalEmails}명</b> · Inform <code>{root.id}</code></div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>Admin 설정의 메일 API 로 multipart POST. 수신자 총 <b style={{ color: "var(--accent)" }}>{totalEmails}명</b> · Inform <code>{root.id}</code></div>
         {/* v8.8.1: 발송자 ID 자동 명시 제거. 제품 담당자 라인만 본문 상단에 삽입. */}
-        <div style={{ fontSize: 10, padding: "6px 10px", marginBottom: 10, borderRadius: 4, background: INFO.bg, border: `1px solid ${INFO.fg}`, color: "rgba(29,78,216,0.95)" }}>
+        <div style={{ fontSize: 14, padding: "6px 10px", marginBottom: 10, borderRadius: 4, background: INFO.bg, border: `1px solid ${INFO.fg}`, color: "rgba(29,78,216,0.95)" }}>
           📨 발송계정: 시스템(Admin) · 본문 상단에 <b>제품 담당자</b> 라인 자동 삽입 (해당 제품에 등록된 담당자 있을 때).
         </div>
 
         {/* v8.8.3: Module recipient groups — admin 그룹 + 공용 메일그룹 합집합. 만들어진 그룹도 노출. */}
         <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
             <span>📮 메일 그룹 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>({pickedGroups.length} 선택 · {allGroupNames.length} 가용)</span></span>
             <span style={{ flex: 1 }} />
             <button type="button" onClick={() => setShowMgr(true)}
-              style={{ padding: "2px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 10, cursor: "pointer" }}>관리</button>
+              style={{ padding: "2px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>관리</button>
           </div>
           {allGroupNames.length === 0 && (
-            <div style={{ fontSize: 10, color: "var(--text-secondary)", padding: 6, border: "1px dashed var(--border)", borderRadius: 4 }}>
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", padding: 6, border: "1px dashed var(--border)", borderRadius: 4 }}>
               등록된 메일 그룹 없음 — 우측 [관리] 로 새 그룹을 만드세요.
             </div>
           )}
@@ -1140,7 +1149,7 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
                 const isPublic = !groups[gname];
                 return (
                   <span key={gname} onClick={() => toggleGroup(gname)} style={{
-                    padding: "5px 12px", borderRadius: 999, fontSize: 11,
+                    padding: "5px 12px", borderRadius: 999, fontSize: 14,
                     background: on ? "var(--accent)" : "var(--bg-card)",
                     color: on ? WHITE : "var(--text-primary)",
                     border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
@@ -1165,7 +1174,7 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
                 <span style={{ flex: 1 }} />
                 <span onClick={() => setShowMgr(false)} style={{ cursor: "pointer", fontSize: 16 }}>✕</span>
               </div>
-              <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 8 }}>
+              <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
                 모든 로그인 유저가 공용으로 사용하는 메일 그룹 (inform / meeting 공용). 이름 + 이메일 콤마/세미콜론 구분으로 입력하면 바로 생성됩니다.
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 6, marginBottom: 8 }}>
@@ -1183,15 +1192,15 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
                     .then(() => { setNewGroupName(""); setNewGroupEmails(""); reloadGroups(); })
                     .catch(e => alert(e.message));
                 }}
-                  style={{ padding: "6px 14px", borderRadius: 4, border: "none", background: "var(--accent)", color: WHITE, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>+ 그룹 생성</button>
+                  style={{ padding: "6px 14px", borderRadius: 4, border: "none", background: "var(--accent)", color: WHITE, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>+ 그룹 생성</button>
               </div>
-              <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>현재 공용 그룹 ({publicGroups.length})</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>현재 공용 그룹 ({publicGroups.length})</div>
               <div style={{ maxHeight: 240, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" }}>
                 {publicGroups.length === 0 && (
-                  <div style={{ padding: 10, fontSize: 11, color: "var(--text-secondary)", textAlign: "center" }}>공용 그룹 없음</div>
+                  <div style={{ padding: 10, fontSize: 14, color: "var(--text-secondary)", textAlign: "center" }}>공용 그룹 없음</div>
                 )}
                 {publicGroups.map(g => (
-                  <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderBottom: "1px solid var(--border)", fontSize: 11 }}>
+                  <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderBottom: "1px solid var(--border)", fontSize: 14 }}>
                     <b style={{ fontFamily: "monospace" }}>{g.name}</b>
                     <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
                       · members {(g.members || []).length} · extras {(g.extra_emails || []).length}
@@ -1202,13 +1211,13 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
                       sf("/api/mail-groups/delete?id=" + encodeURIComponent(g.id), { method: "POST" })
                         .then(() => reloadGroups())
                         .catch(e => alert(e.message));
-                    }} style={{ cursor: "pointer", color: BAD.fg, fontSize: 10, fontWeight: 600 }}>삭제</span>
+                    }} style={{ cursor: "pointer", color: BAD.fg, fontSize: 14, fontWeight: 600 }}>삭제</span>
                   </div>
                 ))}
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
                 <button type="button" onClick={() => setShowMgr(false)}
-                  style={{ padding: "6px 14px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer" }}>닫기</button>
+                  style={{ padding: "6px 14px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>닫기</button>
               </div>
             </div>
           </div>
@@ -1216,22 +1225,22 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
 
         {/* Individual recipient picker */}
         <div style={{ marginBottom: 10 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 11, fontWeight: 600 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 14, fontWeight: 600 }}>
             <span>개별 유저 ({pickedUsers.length} 선택)</span>
-            <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="🔎 유저/이메일 검색" style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, width: 200 }} />
+            <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="🔎 유저/이메일 검색" style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, width: 200 }} />
           </div>
           <div style={{ maxHeight: 140, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)" }}>
-            {visibleList.length === 0 && <div style={{ padding: 14, textAlign: "center", fontSize: 11, color: "var(--text-secondary)" }}>유저가 없습니다.</div>}
+            {visibleList.length === 0 && <div style={{ padding: 14, textAlign: "center", fontSize: 14, color: "var(--text-secondary)" }}>유저가 없습니다.</div>}
             {/* v8.8.27: 이름(실명) + username 동시 표시 — 동명이인 구분. BE 는 admin/hol/test/비email 이미 필터. */}
             {visibleList.map(r => {
               const on = pickedUsers.includes(r.username);
               const nm = (r.name || "").trim();
               return (
-                <div key={r.username} onClick={() => toggleUser(r.username)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 11, cursor: "pointer", background: on ? "rgba(59,130,246,0.12)" : "transparent", borderBottom: "1px solid var(--border)" }}>
+                <div key={r.username} onClick={() => toggleUser(r.username)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 14, cursor: "pointer", background: on ? "rgba(59,130,246,0.12)" : "transparent", borderBottom: "1px solid var(--border)" }}>
                   <input type="checkbox" checked={on} readOnly />
                   {nm
                     ? <><span style={{ fontWeight: 600 }}>{nm}</span>
-                        <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>({r.username})</span></>
+                        <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>({r.username})</span></>
                     : <span style={{ fontWeight: 600 }}>{r.username}</span>}
                 </div>
               );
@@ -1240,20 +1249,20 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
         </div>
 
         <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>추가 이메일 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(콤마/공백/세미콜론 구분)</span></div>
-          <input value={extraEmails} onChange={e => setExtraEmails(e.target.value)} placeholder="ext1@vendor.com, ext2@vendor.com" style={{ ...S, fontFamily: "monospace", fontSize: 11 }} />
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>추가 이메일 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(콤마/공백/세미콜론 구분)</span></div>
+          <input value={extraEmails} onChange={e => setExtraEmails(e.target.value)} placeholder="ext1@vendor.com, ext2@vendor.com" style={{ ...S, fontFamily: "monospace", fontSize: 14 }} />
         </div>
 
         {/* v8.8.1: statusCode 등 백엔드 전용 필드는 UI 에서 제거 — admin 기본값으로 자동 주입됨. */}
         <div style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>제목</div>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>제목</div>
           <input value={subject} onChange={e => setSubject(e.target.value)} style={S} />
         </div>
         <div style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>본문 프로즈 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(HTML content 상단에 강조 삽입, 생략 가능)</span></div>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>본문 프로즈 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(HTML content 상단에 강조 삽입, 생략 가능)</span></div>
           <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} style={{ ...S, resize: "vertical" }} />
           {preview?.owners_line && (
-            <div style={{ marginTop: 4, fontSize: 10, color: GREEN.fg, background: GREEN.soft, border: `1px solid ${GREEN.fg}`, borderRadius: 4, padding: "4px 8px" }}>
+            <div style={{ marginTop: 4, fontSize: 14, color: GREEN.fg, background: GREEN.soft, border: `1px solid ${GREEN.fg}`, borderRadius: 4, padding: "4px 8px" }}>
               📌 자동 삽입: <b>제품담당자</b> : {preview.owners_line}
             </div>
           )}
@@ -1261,10 +1270,10 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
         {/* v8.8.21: 실시간 미리보기 — 실제 보낼 HTML body, 수신자, 담당자 라인을 한눈에. */}
         {preview?.html_body && (
           <details style={{ marginBottom: 10, border: "1px solid var(--border)", borderRadius: 5, padding: "4px 10px", background: "var(--bg-card)" }} open>
-            <summary style={{ fontSize: 11, fontWeight: 600, cursor: "pointer", color: "var(--accent)" }}>
+            <summary style={{ fontSize: 14, fontWeight: 600, cursor: "pointer", color: "var(--accent)" }}>
               🔍 메일 미리보기 · 제목 [{subject}] · 수신자 {totalEmails}명
             </summary>
-            <div style={{ marginTop: 6, marginBottom: 6, display: "flex", gap: 8, flexWrap: "wrap", fontSize: 10 }}>
+            <div style={{ marginTop: 6, marginBottom: 6, display: "flex", gap: 8, flexWrap: "wrap", fontSize: 14 }}>
               <span style={{ padding: "3px 8px", borderRadius: 999, background: INFO.bg, color: INFO.fg, border: `1px solid ${INFO.fg}55` }}>
                 본문 {formatBytes(preview.html_size_bytes)}
               </span>
@@ -1275,7 +1284,7 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
                 SplitTable xlsx {(preview.auto_attachments || []).length}개
               </span>
             </div>
-            <div style={{ marginTop: 6, fontSize: 10, color: "var(--text-secondary)", marginBottom: 4, fontFamily: "monospace" }}>
+            <div style={{ marginTop: 6, fontSize: 14, color: "var(--text-secondary)", marginBottom: 4, fontFamily: "monospace" }}>
               To: {computedEmails().slice(0, 8).join(", ")}{computedEmails().length > 8 ? ` (+${computedEmails().length - 8}명)` : ""}
             </div>
             <div style={{ maxHeight: 560, overflowY: "auto", overflowX: "hidden", background: WHITE, color: "var(--text-primary)", padding: 10, border: "1px solid var(--border)", borderRadius: 4 }}
@@ -1284,23 +1293,23 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
         )}
         {/* v8.8.30: 스레드 포함 옵션 제거 — 메일 본문은 제품/Lot/작성자/작성시간 + SplitTable 스냅샷 중심으로 간결화. */}
         {preview?.html_over_limit && (
-          <div style={{ marginBottom: 8, padding: "6px 10px", border: `1px solid ${BAD.fg}`, background: BAD.bg, borderRadius: 4, color: BAD.fg, fontSize: 11 }}>
+          <div style={{ marginBottom: 8, padding: "6px 10px", border: `1px solid ${BAD.fg}`, background: BAD.bg, borderRadius: 4, color: BAD.fg, fontSize: 14 }}>
             ⚠ 메일 본문 HTML 크기 {preview.html_size_kb}KB — 2MB 한도 초과. SplitTable 컬럼 수를 줄이거나 본문을 단축해야 발송 가능합니다.
           </div>
         )}
         {preview && preview.html_size_kb != null && !preview.html_over_limit && (
-          <div style={{ marginBottom: 8, fontSize: 10, color: "var(--text-secondary)" }}>
+          <div style={{ marginBottom: 8, fontSize: 14, color: "var(--text-secondary)" }}>
             📦 HTML 본문 크기: {preview.html_size_kb}KB / {Math.round((preview.html_size_limit_bytes || 2097152) / 1024)}KB
           </div>
         )}
 
         {inlineImages.length > 0 && <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>📎 첨부 이미지 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(각 파일 10MB 한도 · 총합 제한)</span></div>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>📎 첨부 이미지 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(각 파일 10MB 한도 · 총합 제한)</span></div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {inlineImages.map(img => {
               const on = attachments.includes(img.url);
               return <span key={img.url} onClick={() => toggleAttach(img.url)} style={{
-                padding: "4px 10px", borderRadius: 4, fontSize: 10,
+                padding: "4px 10px", borderRadius: 4, fontSize: 14,
                 background: on ? "rgba(16,185,129,0.15)" : "var(--bg-card)",
                 color: on ? OK.fg : "var(--text-primary)",
                 border: "1px solid " + (on ? OK.fg : "var(--border)"),
@@ -1315,20 +1324,20 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
              BE 가 렌더 → 메일 files 에 자동 포함 된다. 인라인 이미지 첨부는 그대로 유지. */}
         {preview?.auto_attachments?.length > 0 && (
           <div style={{ marginBottom: 10, padding: 8, borderRadius: 5, background: GREEN.soft, border: `1px solid ${OK.fg}` }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: OK.fg }}>📎 자동 첨부 (SplitTable 스냅샷 xlsx)</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: OK.fg }}>📎 자동 첨부 (SplitTable 스냅샷 xlsx)</div>
             {preview.auto_attachments.map((a, i) => (
-              <div key={i} style={{ fontSize: 10, fontFamily: "monospace", color: "var(--text-secondary)", marginTop: 2 }}>
+              <div key={i} style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", marginTop: 2 }}>
                 · {a.name} ({formatBytes(a.bytes)})
               </div>
             ))}
-            <div style={{ marginTop: 6, fontSize: 10, color: "var(--text-secondary)" }}>
+            <div style={{ marginTop: 6, fontSize: 14, color: "var(--text-secondary)" }}>
               총 첨부 용량: {formatBytes(preview.attachment_total_bytes)}
             </div>
           </div>
         )}
 
-        {error && <div style={{ padding: "6px 10px", background: BAD.bg, color: BAD.fg, border: `1px solid ${BAD.fg}`, borderRadius: 4, fontSize: 11, marginBottom: 8 }}>⚠ {error}</div>}
-        {sent && <div style={{ padding: "6px 10px", background: GREEN.bg, color: OK.fg, border: `1px solid ${OK.fg}`, borderRadius: 4, fontSize: 11, marginBottom: 8 }}>✔ 전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}
+        {error && <div style={{ padding: "6px 10px", background: BAD.bg, color: BAD.fg, border: `1px solid ${BAD.fg}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>⚠ {error}</div>}
+        {sent && <div style={{ padding: "6px 10px", background: GREEN.bg, color: OK.fg, border: `1px solid ${OK.fg}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>✔ 전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}
 
         <div style={{ display: "flex", gap: 8 }}>
           <button disabled={sending} onClick={doSend} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: sending ? "var(--text-secondary)" : "var(--accent)", color: WHITE, fontWeight: 600, cursor: sending ? "wait" : "pointer" }}>{sending ? "전송 중…" : `📧 ${totalEmails}명에게 전송`}</button>
@@ -1359,7 +1368,7 @@ function RootHeader({ root, onChangeStatus, user }) {
     }}>
       {/* v8.8.13: wafer + 메일 + 이력 을 한 줄로 통합. 외부 wafer 라벨 제거하고 이 내부에 흡수 →
           이전에 있던 빈 RootHeader 라인(왼쪽 공백+오른쪽 메일/이력만)을 제거. */}
-      <span style={{ fontSize: 11, fontFamily: "monospace", color: "var(--text-secondary)" }}>
+      <span style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)" }}>
         wafer: <b style={{ color: "var(--text-primary)" }}>{root.wafer_id || "-"}</b>
       </span>
       <div style={{ flex: 1 }} />
@@ -1367,17 +1376,17 @@ function RootHeader({ root, onChangeStatus, user }) {
         title={lastMailAt ? `최근 메일: ${(lastMailAt || "").replace("T"," ").slice(0,16)}` : "사내 메일 API 로 이 인폼 내용 전송"}
         style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--accent)",
                  background: "rgba(249,115,22,0.08)", color: "var(--accent)",
-                 fontSize: 10, fontWeight: 700, cursor: "pointer", userSelect: "none", lineHeight: 1.3 }}>
+                 fontSize: 14, fontWeight: 700, cursor: "pointer", userSelect: "none", lineHeight: 1.3 }}>
         ✉ 메일{mailCount > 0 && ` (${mailCount})`}
       </span>
       <span onClick={() => setOpenHist(!openHist)}
         title="상태 변경 이력 토글"
-        style={{ fontSize: 10, color: "var(--accent)", cursor: "pointer", padding: "2px 6px" }}>
+        style={{ fontSize: 14, color: "var(--accent)", cursor: "pointer", padding: "2px 6px" }}>
         이력{hist.length > 0 && ` (${hist.length})`}
       </span>
       {openMail && <MailDialog root={root} user={user} onClose={() => setOpenMail(false)} />}
       {openHist && hist.length > 0 && (
-        <div style={{ width: "100%", marginTop: 4, paddingTop: 4, borderTop: "1px dashed var(--border)", fontSize: 11, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+        <div style={{ width: "100%", marginTop: 4, paddingTop: 4, borderTop: "1px dashed var(--border)", fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
           {hist.slice().reverse().map((h, i) => (
             <div key={i} style={{ marginBottom: 2 }}>
               {(h.at || "").replace("T", " ")} · <b>{h.actor}</b> → <StatusBadge status={h.status} />
@@ -1399,13 +1408,13 @@ function PlanSummaryCard({ thread }) {
       background: WARN.bg, border: `1px solid ${WARN.fg}66`,
       borderRadius: 8, padding: 10, marginBottom: 10,
     }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(194,65,12,0.95)", marginBottom: 6 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: "rgba(194,65,12,0.95)", marginBottom: 6 }}>
         ■ Split Table 변경 요약 ({changes.length}건)
       </div>
       {changes.map(x => {
         const sc = x.splittable_change;
         return (
-          <div key={x.id} style={{ fontSize: 11, fontFamily: "monospace", marginBottom: 2 }}>
+          <div key={x.id} style={{ fontSize: 14, fontFamily: "monospace", marginBottom: 2 }}>
             <span style={{ opacity: 0.7 }}>{x.author}</span>
             {" · "}
             {sc.column && <span style={{ color: "rgba(194,65,12,0.95)" }}>{sc.column}</span>}
@@ -1416,7 +1425,7 @@ function PlanSummaryCard({ thread }) {
           </div>
         );
       })}
-      <div style={{ fontSize: 10, color: "rgba(146,64,14,0.95)", marginTop: 6, opacity: 0.85 }}>
+      <div style={{ fontSize: 14, color: "rgba(146,64,14,0.95)", marginTop: 6, opacity: 0.85 }}>
         * 위 column 은 SplitTable 에서 해당 인폼과 연결된 컬럼입니다.
       </div>
     </div>
@@ -1440,20 +1449,20 @@ function SplitNotesCard({ notes, root_lot_id }) {
     return (
       <div key={n.id} style={{ padding: "6px 10px", marginBottom: 4, borderRadius: 5, background: "var(--bg-card)", border: "1px solid var(--border)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3, gap: 6 }}>
-          <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: color, color: WHITE }}>{label}</span>
-          <span style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+          <span style={{ fontSize: 14, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: color, color: WHITE }}>{label}</span>
+          <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
             {n.username} · {(n.created_at || "").replace("T", " ").slice(0, 16)}
           </span>
         </div>
-        <div style={{ fontSize: 11, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{n.text}</div>
+        <div style={{ fontSize: 14, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{n.text}</div>
       </div>
     );
   };
   return (
     <div style={{ background: INFO.bg, border: `1px solid ${INFO.fg}66`, borderRadius: 8, padding: 10, marginBottom: 10 }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(29,78,216,0.95)", marginBottom: 6 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: "rgba(29,78,216,0.95)", marginBottom: 6 }}>
         📝 SplitTable 노트 — root_lot_id <span style={{ fontFamily: "monospace" }}>{root_lot_id}</span> ({notes.length}건)
-        <span style={{ fontSize: 10, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
+        <span style={{ fontSize: 14, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
           wafer {wafers.length} · param {params.length} · lot {lots.length} · 전역 {pgs.length}
         </span>
       </div>
@@ -1508,10 +1517,10 @@ function LotModuleSummary({ thread, modules }) {
   return (
     <div style={{ marginBottom: 8, padding: "7px 8px", borderRadius: 7, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
       <div onClick={toggle}
-        style={{ fontSize: 12, fontWeight: 800, marginBottom: collapsed ? 0 : 6, fontFamily: "monospace", color: "var(--accent)", cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 6, lineHeight: 1.2 }}>
+        style={{ fontSize: 14, fontWeight: 800, marginBottom: collapsed ? 0 : 6, fontFamily: "monospace", color: "var(--accent)", cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 6, lineHeight: 1.2 }}>
         <span>{collapsed ? "▶" : "▼"}</span>
         <span>모듈별 진행 요약</span>
-        <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, marginLeft: 4 }}>
+        <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, marginLeft: 4 }}>
           ({rows.filter(r => r.hasInform).length} 모듈 활성 / {rows.reduce((s, r) => s + (r.count || 0), 0)} 건)
         </span>
       </div>
@@ -1525,10 +1534,10 @@ function LotModuleSummary({ thread, modules }) {
               style={{ minWidth: 0, padding: "5px 7px", borderRadius: 6, border: `1px solid ${border}`, background: r.hasInform ? `${mc}12` : "var(--bg-primary)", display: "grid", gap: 3 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
                 <span style={{ width: 6, height: 6, borderRadius: 999, background: done ? OK.fg : (r.hasInform ? mc : "var(--text-tertiary, var(--text-secondary))"), flex: "0 0 auto" }} />
-                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, fontFamily: "monospace", fontWeight: 800, color: r.hasInform ? "var(--text-primary)" : "var(--text-secondary)" }}>{r.module}</span>
-                <span style={{ marginLeft: "auto", fontSize: 10, fontFamily: "monospace", color: "var(--text-secondary)" }}>{r.count || 0}</span>
+                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, fontFamily: "monospace", fontWeight: 800, color: r.hasInform ? "var(--text-primary)" : "var(--text-secondary)" }}>{r.module}</span>
+                <span style={{ marginLeft: "auto", fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)" }}>{r.count || 0}</span>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, fontFamily: "monospace", color: "var(--text-secondary)", whiteSpace: "nowrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", whiteSpace: "nowrap" }}>
                 <span style={{ color: r.hasInform ? OK.fg : "var(--text-tertiary, var(--text-secondary))", fontWeight: 700 }}>{r.hasInform ? "등록" : "미등록"}</span>
                 <span style={{ color: r.mailCount ? INFO.fg : "var(--text-tertiary, var(--text-secondary))" }}>메일 {r.mailCount || 0}</span>
                 <span style={{ color: done ? OK.fg : "var(--text-tertiary, var(--text-secondary))" }}>{done ? "확인" : "대기"}</span>
@@ -1654,9 +1663,17 @@ export default function My_Inform({ user }) {
   }, [moduleFilterOptions, moduleFilterInit]);
 
   const loadSidebar = () => {
-    sf(API + "/wafers").then(d => setWafers(d.wafers || [])).catch(() => setWafers([]));
-    sf(API + "/products").then(d => setProducts(d.products || [])).catch(() => setProducts([]));
-    sf(API + "/lots").then(d => setLots(d.lots || [])).catch(() => setLots([]));
+    sf(API + "/sidebar")
+      .then(d => {
+        setWafers(d.wafers || []);
+        setProducts(d.products || []);
+        setLots(d.lots || []);
+      })
+      .catch(() => {
+        sf(API + "/wafers").then(d => setWafers(d.wafers || [])).catch(() => setWafers([]));
+        sf(API + "/products").then(d => setProducts(d.products || [])).catch(() => setProducts([]));
+        sf(API + "/lots").then(d => setLots(d.lots || [])).catch(() => setLots([]));
+      });
   };
   useEffect(()=>{loadSidebar();}, [mode]);
 
@@ -2223,7 +2240,7 @@ export default function My_Inform({ user }) {
         border: "1px solid " + (mode === key ? "var(--accent)" : "var(--border)"),
         background: mode === key ? "var(--accent)" : "var(--bg-primary)",
         color: mode === key ? "#fff" : "var(--text-secondary)",
-        fontSize: 11,
+        fontSize: 14,
         fontWeight: 700,
         cursor: "pointer",
       }}
@@ -2269,26 +2286,26 @@ export default function My_Inform({ user }) {
   return (
     <div className="flow-connected-page" style={{ display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)", position: "relative" }}>
       <PageGear title="인폼 설정" canEdit={isAdmin} position="bottom-right">
-        <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 8 }}>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
           모듈 표시 순서를 관리합니다 (Lot 뷰에서 이 순서대로 그룹핑).
         </div>
         {!modDraft && (
           <button onClick={() => setModDraft([...(constants.modules || [])])} disabled={!isAdmin}
-            style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
+            style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
             📋 모듈 순서 편집 ({(constants.modules || []).length})
           </button>
         )}
         {modDraft && (
           <div>
-            <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 6 }}>드래그 대신 ↑↓ 버튼으로 순서 조정</div>
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6 }}>드래그 대신 ↑↓ 버튼으로 순서 조정</div>
             <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
               {modDraft.map((m, i) => (
-                <div key={m + i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontFamily: "monospace" }}>
+                <div key={m + i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace" }}>
                   <span style={{ width: 20, color: "var(--text-secondary)" }}>{i + 1}</span>
                   <span style={{ flex: 1 }}>{m}</span>
-                  <button onClick={() => moveMod(i, -1)} style={{ padding: "1px 6px", fontSize: 10, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 3, cursor: "pointer" }}>↑</button>
-                  <button onClick={() => moveMod(i, 1)} style={{ padding: "1px 6px", fontSize: 10, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 3, cursor: "pointer" }}>↓</button>
-                  <button onClick={() => setModDraft(modDraft.filter((_, j) => j !== i))} style={{ padding: "1px 6px", fontSize: 10, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", borderRadius: 3, cursor: "pointer" }}>×</button>
+                  <button onClick={() => moveMod(i, -1)} style={{ padding: "1px 6px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 3, cursor: "pointer" }}>↑</button>
+                  <button onClick={() => moveMod(i, 1)} style={{ padding: "1px 6px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 3, cursor: "pointer" }}>↓</button>
+                  <button onClick={() => setModDraft(modDraft.filter((_, j) => j !== i))} style={{ padding: "1px 6px", fontSize: 14, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", borderRadius: 3, cursor: "pointer" }}>×</button>
                 </div>
               ))}
             </div>
@@ -2296,12 +2313,12 @@ export default function My_Inform({ user }) {
             <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
               <input value={modNewName} onChange={e => setModNewName(e.target.value)}
                 placeholder="새 모듈 이름 (Enter 또는 + 버튼)"
-                style={{ flex: 1, minWidth: 120, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11 }}
+                style={{ flex: 1, minWidth: 120, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }}
                 onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addPendingMod(); } }} />
               <button onClick={addPendingMod} title="모듈 추가"
-                style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+</button>
-              <button onClick={saveModuleOrder} style={{ padding: "4px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>저장</button>
-              <button onClick={() => { setModDraft(null); setModNewName(""); }} style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer" }}>취소</button>
+                style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>+</button>
+              <button onClick={saveModuleOrder} style={{ padding: "4px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>저장</button>
+              <button onClick={() => { setModDraft(null); setModNewName(""); }} style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
             </div>
           </div>
         )}
@@ -2326,7 +2343,7 @@ export default function My_Inform({ user }) {
         <div style={{ minHeight: 46, padding: "10px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, background: "var(--bg-secondary)" }}>
           <div>
             <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)" }}>인폼 로그</div>
-            <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 1 }}>제품 · Lot · Wafer 이슈 기록</div>
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 1 }}>제품 · Lot · Wafer 이슈 기록</div>
           </div>
           <span style={{ marginLeft: "auto" }}><Button variant="primary" onClick={() => {
             // v8.8.3 bugfix: 폼 열기 전 /config 를 갱신해 product 카탈로그를 최신화.
@@ -2354,18 +2371,18 @@ export default function My_Inform({ user }) {
             placeholder={mode === "lot" ? "lot_id 검색..."
                        : mode === "product" ? "product 검색..."
                        : "검색 (해당 모드에서는 미사용)"}
-            style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none", boxSizing: "border-box" }} />
+            style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" }} />
         </div>
 
         {/* 담당 모듈 요약 */}
         {!myMods.all_rounder && (
-          <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)" }}>
+          <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)" }}>
             내 담당: {(myMods.modules || []).length === 0 ? "없음 (Admin→그룹에서 설정)"
                                                           : (myMods.modules || []).join(", ")}
           </div>
         )}
         {myMods.all_rounder && (
-          <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)" }}>
+          <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)" }}>
             <Pill tone="ok">전체 담당</Pill>
             <span style={{ marginLeft: 6 }}>admin 권한으로 모든 모듈을 열람합니다.</span>
           </div>
@@ -2373,19 +2390,19 @@ export default function My_Inform({ user }) {
 
         <div style={{ flex: 1, overflowY: "auto" }}>
           {(mode === "all" || mode === "gantt") && (
-            <div style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>
+            <div style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>
               메인 패널에서 목록을 확인하세요
             </div>
           )}
           {(mode === "wafer" || mode === "lot" || mode === "product") && sidebarItems.length === 0 && (
-            <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>기록 없음</div>
+            <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>기록 없음</div>
           )}
           {(mode === "wafer" || mode === "lot" || mode === "product") && sidebarItems.map(it => (
             <div key={it.key} onClick={() => setSelected(it.key)}
               style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", cursor: "pointer",
                        background: selectedKey === it.key ? "var(--bg-hover)" : "transparent" }}>
-              <div style={{ fontSize: 12, fontWeight: 600, fontFamily: "monospace" }}>{it.label}</div>
-              <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 2 }}>{it.sub}</div>
+              <div style={{ fontSize: 14, fontWeight: 600, fontFamily: "monospace" }}>{it.label}</div>
+              <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 2 }}>{it.sub}</div>
             </div>
           ))}
         </div>
@@ -2396,7 +2413,7 @@ export default function My_Inform({ user }) {
                     → 새 인폼 폼 드롭다운에도 즉시 반영. 각 행에 `🗑` 제거 버튼 추가. */}
         <div style={{ borderTop: "2px solid var(--border)", maxHeight: 360, overflowY: "auto", background: "var(--bg-tertiary)" }}>
           <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>👥 제품 · 담당자</span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>👥 제품 · 담당자</span>
             {(() => {
               // v9.0.0: stripMlPrefix 로 ML_TABLE_PRODA 와 PRODA 를 같은 제품으로 병합.
               //   dedup key = stripMlPrefix(t).toLowerCase() — raw 'ML_TABLE_PRODA'/'PRODA'/'PRODA ' 모두 "proda" 로 통일.
@@ -2407,7 +2424,7 @@ export default function My_Inform({ user }) {
               ];
               const seen = new Map();
               raw.forEach(s => { if (typeof s !== "string") return; const t = s.trim(); if (!t) return; const stripped = stripMlPrefix(t); const k = stripped.toLowerCase(); if (!seen.has(k)) seen.set(k, stripped); });
-              return <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{seen.size} 제품</span>;
+              return <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{seen.size} 제품</span>;
             })()}
           </div>
           {(() => {
@@ -2422,7 +2439,7 @@ export default function My_Inform({ user }) {
             const unified = Array.from(seen.values()).sort();
             if (unified.length === 0) {
               return (
-                <div style={{ padding: 14, fontSize: 11, color: "var(--text-secondary)", textAlign: "center" }}>
+                <div style={{ padding: 14, fontSize: 14, color: "var(--text-secondary)", textAlign: "center" }}>
                   등록된 제품 없음 — 아래 + 로 추가
                 </div>
               );
@@ -2438,13 +2455,13 @@ export default function My_Inform({ user }) {
                 <div key={prod} style={{ borderBottom: "1px solid var(--border)" }}>
                   <div style={{ padding: "6px 10px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer", background: open ? "var(--bg-secondary)" : "transparent" }}
                        onClick={() => setOpenContactProducts(o => ({ ...o, [prod]: !o[prod] }))}>
-                    <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{open ? "▼" : "▶"}</span>
-                    <span title={prod} style={{ flex: 1, fontSize: 12, fontWeight: 600, fontFamily: "monospace" }}>{stripMlPrefix(prod)}</span>
-                    <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{arr.length}</span>
+                    <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{open ? "▼" : "▶"}</span>
+                    <span title={prod} style={{ flex: 1, fontSize: 14, fontWeight: 600, fontFamily: "monospace" }}>{stripMlPrefix(prod)}</span>
+                    <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{arr.length}</span>
                     {/* v8.8.13: 두 버튼(+ / 👥) 통합 — 사람 앞에 '+' 가 붙은 단일 추가 버튼. bulk 모달에서 유저/그룹 선택. */}
                     <span onClick={(e) => { e.stopPropagation(); openBulkPick(prod); }}
                           title="담당자 추가 — 유저/그룹에서 일괄 선택"
-                          style={{ fontSize: 11, padding: "1px 8px", borderRadius: 4, background: "var(--accent)", color: "#fff", fontWeight: 700, cursor: "pointer" }}>+👤</span>
+                          style={{ fontSize: 14, padding: "1px 8px", borderRadius: 4, background: "var(--accent)", color: "#fff", fontWeight: 700, cursor: "pointer" }}>+👤</span>
                     {/* v8.8.12: 삭제 버튼 항상 노출. catalog 에 있으면 /products/delete,
                           productContacts 만 있으면 해당 제품의 contacts 를 모두 개별 삭제해 key 제거. */}
                     <span onClick={(e) => {
@@ -2464,24 +2481,24 @@ export default function My_Inform({ user }) {
                             });
                           }}
                           title="제품 삭제 (담당자 + 카탈로그)"
-                          style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "transparent", color: "#ef4444", fontWeight: 700, cursor: "pointer", border: "1px solid #ef4444" }}>🗑</span>
+                          style={{ fontSize: 14, padding: "1px 6px", borderRadius: 4, background: "transparent", color: "#ef4444", fontWeight: 700, cursor: "pointer", border: "1px solid #ef4444" }}>🗑</span>
                   </div>
                   {open && arr.length === 0 && (
-                    <div style={{ padding: "6px 14px 8px 24px", fontSize: 10, color: "var(--text-secondary)" }}>담당자 없음</div>
+                    <div style={{ padding: "6px 14px 8px 24px", fontSize: 14, color: "var(--text-secondary)" }}>담당자 없음</div>
                   )}
                   {open && arr.map(c => (
                     <div key={c.id} style={{ padding: "5px 14px 5px 24px", display: "flex", flexDirection: "column", borderTop: "1px dashed var(--border)" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                        <span style={{ fontSize: 11, fontWeight: 600 }}>{c.name}</span>
-                        {c.role && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 6, background: "var(--accent)22", color: "var(--accent)", fontWeight: 700 }}>{c.role}</span>}
+                        <span style={{ fontSize: 14, fontWeight: 600 }}>{c.name}</span>
+                        {c.role && <span style={{ fontSize: 14, padding: "1px 5px", borderRadius: 6, background: "var(--accent)22", color: "var(--accent)", fontWeight: 700 }}>{c.role}</span>}
                         <span style={{ flex: 1 }} />
                         <span onClick={() => setEditContact({ id: c.id, product: prod, name: c.name, role: c.role || "", email: c.email || "", phone: c.phone || "", note: c.note || "" })}
-                              style={{ fontSize: 9, color: "var(--text-secondary)", cursor: "pointer" }}>수정</span>
+                              style={{ fontSize: 14, color: "var(--text-secondary)", cursor: "pointer" }}>수정</span>
                         <span onClick={() => deleteContact(prod, c.id)}
-                              style={{ fontSize: 9, color: "#ef4444", cursor: "pointer" }}>삭제</span>
+                              style={{ fontSize: 14, color: "#ef4444", cursor: "pointer" }}>삭제</span>
                       </div>
                       {(c.email || c.phone) && (
-                        <div style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace", marginTop: 1 }}>
+                        <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", marginTop: 1 }}>
                           {c.email}{c.email && c.phone ? " · " : ""}{c.phone}
                         </div>
                       )}
@@ -2493,7 +2510,7 @@ export default function My_Inform({ user }) {
           })()}
           <div style={{ padding: 8, display: "flex", gap: 6 }}>
             <input id="__pc_new_prod" placeholder="신규 제품명 (카탈로그 등록)"
-              style={{ flex: 1, minWidth: 0, padding: "5px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace" }}
+              style={{ flex: 1, minWidth: 0, padding: "5px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   const v = e.target.value.trim();
@@ -2518,7 +2535,7 @@ export default function My_Inform({ user }) {
                 },
               })
                 .catch(err => alert(err.message));
-            }} style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 10, fontWeight: 600, cursor: "pointer" }}>+제품</button>
+            }} style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>+제품</button>
           </div>
         </div>
       </div>
@@ -2531,19 +2548,19 @@ export default function My_Inform({ user }) {
           <div onClick={(e) => e.stopPropagation()}
                style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18, width: 640, maxWidth: "94vw" }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📋 표 붙여넣기 (TSV/CSV)</div>
-            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 8 }}>
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
               Excel/SplitTable 셀 영역을 복사한 뒤 아래에 Ctrl+V. 첫 줄이 컬럼명. 세트명을 지정하면 LocalStorage 에 저장되어 다음에 재사용 가능.
             </div>
             {loadPasteSets().length > 0 && (
-              <div style={{ marginBottom: 8, padding: 8, background: "var(--bg-card)", borderRadius: 6, fontSize: 11 }}>
-                <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>저장된 세트 ({loadPasteSets().length})</div>
+              <div style={{ marginBottom: 8, padding: 8, background: "var(--bg-card)", borderRadius: 6, fontSize: 14 }}>
+                <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>저장된 세트 ({loadPasteSets().length})</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                   {loadPasteSets().map(s => (
                     <span key={s.name} onClick={() => {
                       setForm(f => ({ ...f, attach_embed: true, embed: { source: s.name, columns: s.columns, rows: s.rows, note: `${s.rows.length} rows reused` } }));
                       setPasteOpen(false);
                     }}
-                    style={{ padding: "3px 10px", borderRadius: 999, fontSize: 10, cursor: "pointer", background: "var(--accent-glow)", color: "var(--accent)", fontWeight: 600 }}
+                    style={{ padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer", background: "var(--accent-glow)", color: "var(--accent)", fontWeight: 600 }}
                     title={`${s.product || ""} · ${s.rows.length} rows · ${s.saved_at?.slice(0,16)}`}>{s.name}</span>
                   ))}
                 </div>
@@ -2551,16 +2568,16 @@ export default function My_Inform({ user }) {
             )}
             <input value={pasteSetName} onChange={e => setPasteSetName(e.target.value)}
               placeholder="세트 이름 (선택, 비우면 1회용)"
-              style={{ width: "100%", padding: "6px 10px", marginBottom: 6, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, boxSizing: "border-box" }} />
+              style={{ width: "100%", padding: "6px 10px", marginBottom: 6, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, boxSizing: "border-box" }} />
             <textarea value={pasteText} onChange={e => setPasteText(e.target.value)}
               placeholder="여기에 Ctrl+V (첫 줄 = 헤더, 탭 또는 콤마 구분)"
               rows={10}
-              style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }} />
+              style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }} />
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
               <button onClick={() => { setPasteOpen(false); setPasteText(""); setPasteSetName(""); }}
-                style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 12, cursor: "pointer" }}>취소</button>
+                style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
               <button onClick={applyPasteAsEmbed}
-                style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>본문에 첨부</button>
+                style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>본문에 첨부</button>
             </div>
           </div>
         </div>
@@ -2574,13 +2591,13 @@ export default function My_Inform({ user }) {
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6, fontFamily: "monospace" }}>
               👥 일괄 담당자 추가 <span style={{ color: "var(--accent)" }}>· {bulkPickProduct}</span>
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 10 }}>
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10 }}>
               개별 유저와 그룹을 혼합해 선택할 수 있습니다. 이미 등록된 담당자(동일 username/email) 는 자동으로 건너뜁니다. admin/test 계정은 제외됩니다.
             </div>
             <div style={{ display: "flex", gap: 10, flex: 1, minHeight: 280 }}>
               {/* 유저 풀 */}
               <div style={{ flex: 1, display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
-                <div style={{ padding: "6px 10px", fontSize: 11, fontWeight: 700, background: "var(--bg-primary)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between" }}>
+                <div style={{ padding: "6px 10px", fontSize: 14, fontWeight: 700, background: "var(--bg-primary)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between" }}>
                   <span>👤 유저 ({bulkEligibleUsers.length})</span>
                   <span style={{ color: "var(--accent)", cursor: "pointer", fontWeight: 600 }}
                         onClick={() => setBulkSelUsers(bulkSelUsers.length === bulkEligibleUsers.length ? [] : bulkEligibleUsers.map(u => u.username))}>
@@ -2592,10 +2609,10 @@ export default function My_Inform({ user }) {
                     const sel = bulkSelUsers.includes(u.username);
                     return (
                       <div key={u.username} onClick={() => setBulkSelUsers(sel ? bulkSelUsers.filter(x => x !== u.username) : [...bulkSelUsers, u.username])}
-                           style={{ padding: "5px 10px", fontSize: 11, cursor: "pointer", background: sel ? "var(--accent-glow)" : "transparent", borderBottom: "1px dashed var(--border)", display: "flex", alignItems: "center", gap: 6 }}>
+                           style={{ padding: "5px 10px", fontSize: 14, cursor: "pointer", background: sel ? "var(--accent-glow)" : "transparent", borderBottom: "1px dashed var(--border)", display: "flex", alignItems: "center", gap: 6 }}>
                         <input type="checkbox" readOnly checked={sel} />
                         <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{u.username}</span>
-                        {u.email && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>· {u.email}</span>}
+                        {u.email && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>· {u.email}</span>}
                       </div>
                     );
                   })}
@@ -2603,7 +2620,7 @@ export default function My_Inform({ user }) {
               </div>
               {/* 그룹 풀 */}
               <div style={{ flex: 1, display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
-                <div style={{ padding: "6px 10px", fontSize: 11, fontWeight: 700, background: "var(--bg-primary)", borderBottom: "1px solid var(--border)" }}>
+                <div style={{ padding: "6px 10px", fontSize: 14, fontWeight: 700, background: "var(--bg-primary)", borderBottom: "1px solid var(--border)" }}>
                   🏷 그룹 ({bulkGroups.length}) — 선택 시 해당 그룹 멤버 전체 합류
                 </div>
                 <div style={{ flex: 1, overflowY: "auto" }}>
@@ -2611,32 +2628,32 @@ export default function My_Inform({ user }) {
                     const sel = bulkSelGroups.includes(g.id);
                     return (
                       <div key={g.id} onClick={() => setBulkSelGroups(sel ? bulkSelGroups.filter(x => x !== g.id) : [...bulkSelGroups, g.id])}
-                           style={{ padding: "5px 10px", fontSize: 11, cursor: "pointer", background: sel ? "var(--accent-glow)" : "transparent", borderBottom: "1px dashed var(--border)", display: "flex", alignItems: "center", gap: 6 }}>
+                           style={{ padding: "5px 10px", fontSize: 14, cursor: "pointer", background: sel ? "var(--accent-glow)" : "transparent", borderBottom: "1px dashed var(--border)", display: "flex", alignItems: "center", gap: 6 }}>
                         <input type="checkbox" readOnly checked={sel} />
                         <span style={{ fontWeight: 600 }}>{g.name}</span>
-                        <span style={{ fontSize: 10, color: "var(--text-secondary)", marginLeft: "auto" }}>{(g.members || []).length}명</span>
+                        <span style={{ fontSize: 14, color: "var(--text-secondary)", marginLeft: "auto" }}>{(g.members || []).length}명</span>
                       </div>
                     );
                   })}
-                  {bulkGroups.length === 0 && <div style={{ padding: 18, fontSize: 11, color: "var(--text-secondary)", textAlign: "center" }}>볼 수 있는 그룹 없음</div>}
+                  {bulkGroups.length === 0 && <div style={{ padding: 18, fontSize: 14, color: "var(--text-secondary)", textAlign: "center" }}>볼 수 있는 그룹 없음</div>}
                 </div>
               </div>
             </div>
             <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>역할(선택):</span>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>역할(선택):</span>
               <input value={bulkRole} onChange={(e) => setBulkRole(e.target.value)}
                      placeholder="예: PIE, 측정 (비우면 유저 기본 role)"
-                     style={{ flex: 1, padding: "5px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+                     style={{ flex: 1, padding: "5px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
             </div>
             <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>
                 선택: 유저 {bulkSelUsers.length} · 그룹 {bulkSelGroups.length}
               </span>
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={() => !bulkBusy && setBulkPickProduct("")}
-                  style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 12, cursor: bulkBusy ? "not-allowed" : "pointer" }}>취소</button>
+                  style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: bulkBusy ? "not-allowed" : "pointer" }}>취소</button>
                 <button onClick={runBulkAdd} disabled={bulkBusy}
-                  style={{ padding: "6px 16px", borderRadius: 5, border: "none", background: bulkBusy ? "var(--border)" : "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: bulkBusy ? "not-allowed" : "pointer" }}>
+                  style={{ padding: "6px 16px", borderRadius: 5, border: "none", background: bulkBusy ? "var(--border)" : "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: bulkBusy ? "not-allowed" : "pointer" }}>
                   {bulkBusy ? "추가 중…" : "일괄 추가"}
                 </button>
               </div>
@@ -2661,13 +2678,13 @@ export default function My_Inform({ user }) {
               <input key={k} placeholder={ph}
                 value={editContact[k] || ""}
                 onChange={(e) => setEditContact({ ...editContact, [k]: e.target.value })}
-                style={{ display: "block", width: "100%", padding: "8px 10px", marginBottom: 8, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, boxSizing: "border-box" }} />
+                style={{ display: "block", width: "100%", padding: "8px 10px", marginBottom: 8, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, boxSizing: "border-box" }} />
             ))}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button onClick={() => setEditContact(null)}
-                style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 12, cursor: "pointer" }}>취소</button>
+                style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
               <button onClick={saveContact}
-                style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>저장</button>
+                style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>저장</button>
             </div>
           </div>
         </div>
@@ -2694,7 +2711,7 @@ export default function My_Inform({ user }) {
                       setProductLots({ product: "", lots: [], source: "" });
                     }
                   }}
-                  style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }}>
+                  style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }}>
                   <option value="">-- 제품 선택 --</option>
                   {/* v9.0.0: 드롭다운도 stripMlPrefix 기반 dedup — "ML_TABLE_PRODA" 와 "PRODA" 를 하나로.
                       value 는 stripped (사용자가 택한 canonical name) 로 통일 — 저장 시 BE 가 ML_TABLE_ 접두어 자동 보강. */}
@@ -2724,7 +2741,7 @@ export default function My_Inform({ user }) {
                     })
                       .catch(e => alert(e.message));
                   }}
-                  style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 11, cursor: "pointer" }}>+</button>
+                  style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer" }}>+</button>
                 {form.product && (constants.products || []).includes(form.product) && (
                   <button type="button"
                     title="선택된 제품을 카탈로그에서 제거"
@@ -2738,7 +2755,7 @@ export default function My_Inform({ user }) {
                         })
                         .catch(e => alert(e.message));
                     }}
-                    style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 11, cursor: "pointer" }}>−</button>
+                    style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 14, cursor: "pointer" }}>−</button>
                 )}
               </div>
               {/* v8.8.29: Lot 선택 = 타이핑 검색 콤보박스 + 직접 입력 토글.
@@ -2757,11 +2774,11 @@ export default function My_Inform({ user }) {
             </div>
             <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
               <select value={form.module} onChange={e => setForm({ ...form, module: e.target.value })}
-                style={{ padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }}>
+                style={{ padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }}>
                 <option value="">-- 모듈 --</option>{constants.modules.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
               <div title="카테고리는 현재 PEMS 고정"
-                style={{ display: "inline-flex", alignItems: "center", padding: "8px 12px", borderRadius: 999, border: "1px solid rgba(37,99,235,0.28)", background: "rgba(59,130,246,0.10)", color: "#2563eb", fontSize: 12, fontWeight: 700 }}>
+                style={{ display: "inline-flex", alignItems: "center", padding: "8px 12px", borderRadius: 999, border: "1px solid rgba(37,99,235,0.28)", background: "rgba(59,130,246,0.10)", color: "#2563eb", fontSize: 14, fontWeight: 700 }}>
                 PEMS
               </div>
               {/* v8.8.8: SplitTable 변경요청 체크박스 제거 — fab_lot_id 입력 시 자동으로 SplitTable 스냅샷 attach. */}
@@ -2769,29 +2786,29 @@ export default function My_Inform({ user }) {
             <textarea value={form.text} onChange={e => setForm({ ...form, text: e.target.value })} rows={4}
               onPaste={handleBodyPaste}
               placeholder="인폼 내용 (배경, 영향, 조치 요청 등) — Ctrl+V 로 이미지도 바로 붙여넣을 수 있어요"
-              style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, resize: "vertical", boxSizing: "border-box", lineHeight: 1.5 }} />
+              style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, resize: "vertical", boxSizing: "border-box", lineHeight: 1.5 }} />
             {/* SplitTable 스냅샷: 기본은 ALL 자동 첨부, 컬럼 선택 시 CUSTOM 스코프로 축소. */}
-            <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 10 }}>
+            <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 14 }}>
               <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>
                 SplitTable 스냅샷 <span style={{ fontWeight: 400, color: "var(--text-tertiary, var(--text-secondary))" }}>{embedCustomCols.length > 0 ? "CUSTOM 컬럼만 첨부" : "기본 ALL 자동 첨부"}</span>
               </span>
               <button type="button" onClick={() => setEmbedCustomOpen(!embedCustomOpen)}
-                style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: embedCustomOpen ? "var(--accent-glow)" : "var(--bg-card)", color: embedCustomOpen ? "var(--accent)" : "var(--text-primary)", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
+                style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: embedCustomOpen ? "var(--accent-glow)" : "var(--bg-card)", color: embedCustomOpen ? "var(--accent)" : "var(--text-primary)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
                 {embedCustomOpen ? "▼" : "▶"} 컬럼 편집{embedCustomCols.length > 0 ? ` · ${embedCustomCols.length}개 선택` : " · 미선택"}
               </button>
               <button type="button" onClick={() => setSnapshotTick(x => x + 1)}
                 title="스냅샷 재조회 — lot/컬럼 변경 없이도 서버에서 다시 가져옴"
-                style={{ padding: "2px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
+                style={{ padding: "2px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
                 스냅샷 조회
               </button>
             </div>
             {/* v8.8.16: 인라인 CUSTOM 편집기 — SplitTable 사이드바와 동일 UX.
                 v8.8.19: SplitTable 공용 CUSTOM set 드롭다운 + 새 set 저장. 양방향 공유. */}
             {embedCustomOpen && (
-              <div style={{ marginTop: 6, padding: "8px 10px", borderRadius: 5, border: "1px dashed var(--border)", background: "var(--bg-card)", fontSize: 10 }}>
+              <div style={{ marginTop: 6, padding: "8px 10px", borderRadius: 5, border: "1px dashed var(--border)", background: "var(--bg-card)", fontSize: 14 }}>
                 {/* v8.8.19: SplitTable 공용 CUSTOM set 선택/저장 행 */}
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 9, color: "var(--text-secondary)", fontWeight: 600 }}>공용 CUSTOM set:</span>
+                  <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 600 }}>공용 CUSTOM set:</span>
                   <select value={embedCustomName} onChange={e => {
                       const nm = e.target.value;
                       setEmbedCustomName(nm);
@@ -2802,7 +2819,7 @@ export default function My_Inform({ user }) {
                         }
                       }
                     }}
-                    style={{ padding: "2px 6px", fontSize: 10, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 3, maxWidth: 180 }}>
+                    style={{ padding: "2px 6px", fontSize: 14, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 3, maxWidth: 180 }}>
                     <option value="">-- 선택 (직접 편집) --</option>
                     {(customsList || []).map(c => <option key={c.name} value={c.name}>{c.name} ({(c.columns||[]).length})</option>)}
                   </select>
@@ -2820,7 +2837,7 @@ export default function My_Inform({ user }) {
                         alert(`CUSTOM set '${nm}' 저장됨. SplitTable 과 공유.`);
                       }).catch(e => alert("저장 실패: " + (e.message || e)));
                     }}
-                    style={{ padding: "2px 8px", fontSize: 9, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", borderRadius: 3, cursor: embedCustomCols.length ? "pointer" : "not-allowed", fontWeight: 600 }}>
+                    style={{ padding: "2px 8px", fontSize: 14, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", borderRadius: 3, cursor: embedCustomCols.length ? "pointer" : "not-allowed", fontWeight: 600 }}>
                     💾 set 저장
                   </button>
                 </div>
@@ -2828,12 +2845,12 @@ export default function My_Inform({ user }) {
                   <span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>
                     인라인 CUSTOM 컬럼 선택 · {embedCustomCols.length}/{embedSchemaCols.length}
                   </span>
-                  <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--text-secondary)" }}>
+                  <span style={{ marginLeft: "auto", fontSize: 14, color: "var(--text-secondary)" }}>
                     {embedCustomName ? `set='${embedCustomName}' (SplitTable 공유)` : "저장하지 않은 상태 — 이 인폼에만 적용됨"}
                   </span>
                 </div>
                 <input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)}
-                  placeholder="컬럼 검색..." style={{ width: "100%", padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, marginBottom: 4, boxSizing: "border-box" }} />
+                  placeholder="컬럼 검색..." style={{ width: "100%", padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, marginBottom: 4, boxSizing: "border-box" }} />
                 {(() => {
                   // v8.8.19: PRODUCT / ROOT_LOT_ID / WAFER_ID / lot_id / fab_lot_id 는 자동 포함 기본 컬럼 → CUSTOM pool 에서 제외.
                   const HIDDEN = new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
@@ -2848,14 +2865,14 @@ export default function My_Inform({ user }) {
                   return (<>
                     <div style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
                       <button type="button" onClick={() => setEmbedCustomCols(Array.from(new Set([...embedCustomCols, ...filtered])))}
-                        style={{ padding: "2px 8px", borderRadius: 3, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 9, cursor: "pointer", fontWeight: 600 }}>
+                        style={{ padding: "2px 8px", borderRadius: 3, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
                         ✓ 전체 체크{embedCustomSearch ? ` (${filtered.length})` : ""}
                       </button>
                       <button type="button" onClick={() => {
                           if (embedCustomSearch) { const fs = new Set(filtered); setEmbedCustomCols(embedCustomCols.filter(c => !fs.has(c))); }
                           else setEmbedCustomCols([]);
                         }}
-                        style={{ padding: "2px 8px", borderRadius: 3, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 9, cursor: "pointer", fontWeight: 600 }}>
+                        style={{ padding: "2px 8px", borderRadius: 3, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
                         ✕ 전체 제거
                       </button>
                     </div>
@@ -2879,13 +2896,13 @@ export default function My_Inform({ user }) {
                 {/* 선택된 컬럼 pill 표시 */}
                 {embedCustomCols.length > 0 && (
                   <div style={{ marginTop: 6 }}>
-                    <div style={{ fontSize: 9, color: "var(--text-secondary)", marginBottom: 2, fontWeight: 600 }}>선택됨 ({embedCustomCols.length})</div>
+                    <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2, fontWeight: 600 }}>선택됨 ({embedCustomCols.length})</div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                       {embedCustomCols.map(c => (
                         <span key={c} title={c}
-                          style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "1px 5px", borderRadius: 3, fontSize: 9, background: "var(--accent-glow)", color: "var(--accent)", fontFamily: "monospace" }}>
+                          style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "1px 5px", borderRadius: 3, fontSize: 14, background: "var(--accent-glow)", color: "var(--accent)", fontFamily: "monospace" }}>
                           {c}<span onClick={() => setEmbedCustomCols(embedCustomCols.filter(x => x !== c))}
-                            style={{ cursor: "pointer", fontSize: 10, lineHeight: 1, marginLeft: 2, color: "#ef4444" }} title="제거">×</span>
+                            style={{ cursor: "pointer", fontSize: 14, lineHeight: 1, marginLeft: 2, color: "#ef4444" }} title="제거">×</span>
                         </span>
                       ))}
                     </div>
@@ -2895,11 +2912,11 @@ export default function My_Inform({ user }) {
             )}
 
             <div style={{ marginTop: 6, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>이미지: 본문에 <b>Ctrl+V</b> 로 바로 붙여넣기 (markdown 으로 inline 삽입)</span>
-              {uploadingMain && <span style={{ fontSize: 10, color: "var(--accent)" }}>업로드중…</span>}
-              {embedFetching && <span style={{ fontSize: 10, color: "var(--accent)" }}>SplitTable 스냅샷 로딩…</span>}
+              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>이미지: 본문에 <b>Ctrl+V</b> 로 바로 붙여넣기 (markdown 으로 inline 삽입)</span>
+              {uploadingMain && <span style={{ fontSize: 14, color: "var(--accent)" }}>업로드중…</span>}
+              {embedFetching && <span style={{ fontSize: 14, color: "var(--accent)" }}>SplitTable 스냅샷 로딩…</span>}
               {form.attach_embed && hasEmbedSnapshot(form.embed) && (
-                <span style={{ fontSize: 10, color: "#16a34a", fontWeight: 600 }}>
+                <span style={{ fontSize: 14, color: "#16a34a", fontWeight: 600 }}>
                   ✓ SplitTable 자동 첨부 ({embedSnapshotRowCount(form.embed)} rows)
                   <button type="button" onClick={() => setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }))}
                     style={{ marginLeft: 6, border: "none", background: "transparent", color: "#ef4444", cursor: "pointer" }}>×</button>
@@ -2909,7 +2926,7 @@ export default function My_Inform({ user }) {
             {createImages.length > 0 && (
               <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {createImages.map((im, i) => (
-                  <span key={i} style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, background: "var(--bg-primary)", border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  <span key={i} style={{ fontSize: 14, padding: "2px 6px", borderRadius: 3, background: "var(--bg-primary)", border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 4 }}>
                     <img src={authSrc(im.url)} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 2 }} />
                     <span style={{ fontFamily: "monospace" }}>{im.filename}</span>
                     <button onClick={() => setCreateImages(createImages.filter((_, j) => j !== i))}
@@ -2927,7 +2944,7 @@ export default function My_Inform({ user }) {
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
               <button onClick={create} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 600, cursor: "pointer" }}>등록</button>
               <button onClick={() => { setCreating(false); setMsg(""); }} style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>취소</button>
-              {msg && <span style={{ fontSize: 11, color: "#ef4444", alignSelf: "center" }}>{msg}</span>}
+              {msg && <span style={{ fontSize: 14, color: "#ef4444", alignSelf: "center" }}>{msg}</span>}
             </div>
           </div>
         )}
@@ -2953,13 +2970,13 @@ export default function My_Inform({ user }) {
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>최근 인폼</div>
-              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>
                 · {applyModFilter(rootsSorted).length}건
                 {(moduleFilter.length > 0 || productFilter.length > 0) && <span style={{ color: "var(--accent)", marginLeft: 4 }}>(필터됨)</span>}
               </span>
               {(moduleFilter.length > 0 || productFilter.length > 0) && (
                 <button onClick={resetInformFilters}
-                  style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 10, cursor: "pointer" }}>필터 초기화</button>
+                  style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>필터 초기화</button>
               )}
             </div>
             {/* v8.8.15: 모듈 nav 스타일 필터 — 토글 pill (checkbox 제거). */}
@@ -2969,16 +2986,16 @@ export default function My_Inform({ user }) {
               const allOn = allowed.length > 0 && allowed.every(m => moduleFilter.includes(m));
               return (
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "8px 10px", borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)", marginBottom: 8 }}>
-                  <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 800, marginRight: 4 }}>모듈</span>
+                  <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 800, marginRight: 4 }}>모듈</span>
                   <button onClick={() => setModuleFilter(allOn ? [] : [...allowed])}
-                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (allOn ? "var(--accent)" : "var(--border)"), background: allOn ? "var(--accent)" : "var(--bg-primary)", color: allOn ? "#fff" : "var(--text-secondary)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (allOn ? "var(--accent)" : "var(--border)"), background: allOn ? "var(--accent)" : "var(--bg-primary)", color: allOn ? "#fff" : "var(--text-secondary)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
                     전체
                   </button>
                   {allowed.map(m => {
                     const on = moduleFilter.includes(m);
                     return (
                       <button key={m} onClick={() => setModuleFilter(on ? moduleFilter.filter(x => x !== m) : [...moduleFilter, m])}
-                        style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)" : "var(--bg-primary)", color: on ? "#fff" : "var(--text-secondary)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                        style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)" : "var(--bg-primary)", color: on ? "#fff" : "var(--text-secondary)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
                         {m}
                       </button>
                     );
@@ -2992,10 +3009,10 @@ export default function My_Inform({ user }) {
               const allSelected = presentProducts.length > 0 && presentProducts.every(p => productFilter.includes(p));
               return (
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "8px 10px", borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)", marginBottom: 12 }}>
-                  <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 800, marginRight: 4 }}>제품</span>
+                  <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 800, marginRight: 4 }}>제품</span>
                   <button onClick={() => setProductFilter(allSelected ? [] : presentProducts)}
                     title={allSelected ? "전체 해제 → 아무것도 표시 안됨" : "모든 제품 선택"}
-                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (allSelected ? "var(--accent)" : "var(--border)"), background: allSelected ? "var(--accent)" : "var(--bg-primary)", color: allSelected ? "#fff" : "var(--text-secondary)", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (allSelected ? "var(--accent)" : "var(--border)"), background: allSelected ? "var(--accent)" : "var(--bg-primary)", color: allSelected ? "#fff" : "var(--text-secondary)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
                     전체
                   </button>
                   {presentProducts.map(p => {
@@ -3003,7 +3020,7 @@ export default function My_Inform({ user }) {
                     return (
                       <button key={p} onClick={() => setProductFilter(on ? productFilter.filter(x => x !== p) : [...productFilter, p])}
                         title={p}
-                        style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)" : "var(--bg-primary)", color: on ? "#fff" : "var(--text-secondary)", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "monospace" }}>
+                        style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)" : "var(--bg-primary)", color: on ? "#fff" : "var(--text-secondary)", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "monospace" }}>
                         {p}
                       </button>
                     );
@@ -3014,8 +3031,8 @@ export default function My_Inform({ user }) {
             {applyModFilter(rootsSorted).length === 0 && (
               (!moduleFilter?.length && !productFilter?.length)
                 ? <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>
-                    <div style={{ fontSize: 13, marginBottom: 6 }}>필터를 하나 이상 선택하세요.</div>
-                    <div style={{ fontSize: 11 }}>위 📁 모듈 · 📦 제품 pill 중 최소 1개 이상 체크해야 인폼이 표시됩니다.</div>
+                    <div style={{ fontSize: 14, marginBottom: 6 }}>필터를 하나 이상 선택하세요.</div>
+                    <div style={{ fontSize: 14 }}>위 📁 모듈 · 📦 제품 pill 중 최소 1개 이상 체크해야 인폼이 표시됩니다.</div>
                   </div>
                 : <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>인폼 없음.</div>
             )}
@@ -3029,10 +3046,10 @@ export default function My_Inform({ user }) {
           <>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>
               내 모듈 인폼 {myMods.all_rounder
-                ? <span style={{ fontSize: 11, color: "#22c55e", marginLeft: 6 }}>(전체 담당)</span>
-                : <span style={{ fontSize: 11, color: "var(--text-secondary)", marginLeft: 6 }}>({(myMods.modules || []).join(", ") || "모듈 미배정"})</span>}
+                ? <span style={{ fontSize: 14, color: "#22c55e", marginLeft: 6 }}>(전체 담당)</span>
+                : <span style={{ fontSize: 14, color: "var(--text-secondary)", marginLeft: 6 }}>({(myMods.modules || []).join(", ") || "모듈 미배정"})</span>}
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 10 }}>
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10 }}>
               나의 그룹 담당 모듈에 해당하는 루트 인폼만 노출됩니다. {isAdmin ? "admin 은 모듈 필터 칩으로 단일 모듈을 좁혀 볼 수 있습니다." : ""}
             </div>
             {applyModFilter(rootsSorted).length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>해당 없음.</div>}
@@ -3047,7 +3064,7 @@ export default function My_Inform({ user }) {
           <>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6, fontFamily: "monospace" }}>
               📦 {selectedProduct}
-              <span style={{ fontSize: 11, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
+              <span style={{ fontSize: 14, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
                 — 이 제품 인폼 {rootsSorted.length}건 · drill-down 가능
               </span>
             </div>
@@ -3060,7 +3077,7 @@ export default function My_Inform({ user }) {
               }
               const lotKeys = Object.keys(lotMap).sort();
               if (lotKeys.length === 0) {
-                return <div style={{ padding: 20, color: "var(--text-secondary)", fontSize: 11 }}>해당 제품 인폼 없음.</div>;
+                return <div style={{ padding: 20, color: "var(--text-secondary)", fontSize: 14 }}>해당 제품 인폼 없음.</div>;
               }
               return lotKeys.map(lid => {
                 const lotRoots = lotMap[lid];
@@ -3068,28 +3085,28 @@ export default function My_Inform({ user }) {
                 return (
                   <div key={lid} style={{ marginBottom: 12, padding: 10, borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                      <span style={{ fontSize: 13, fontWeight: 700, fontFamily: "monospace" }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace" }}>
                         <span style={{ color: "var(--accent)" }}>[{selectedProduct}]</span> {lid}
                       </span>
-                      <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>· {lotRoots.length}건</span>
+                      <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>· {lotRoots.length}건</span>
                       <span style={{ flex: 1 }} />
                       <span onClick={() => {
                         const rawLot = String(lid || "").trim();
                         setSelectedLot(isFabLotInput(rawLot) ? rawLot.slice(0, 5) : rawLot);
                         setMode("lot");
                       }}
-                            style={{ fontSize: 11, color: "var(--accent)", textDecoration: "underline", cursor: "pointer" }}>Lot 전용 뷰 ↗</span>
+                            style={{ fontSize: 14, color: "var(--accent)", textDecoration: "underline", cursor: "pointer" }}>Lot 전용 뷰 ↗</span>
                     </div>
                     {waferSet.length > 0 && (
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
                         {waferSet.slice(0, 30).map(w => (
                           <span key={w} onClick={() => { setSelectedWafer(w); setMode("wafer"); }}
-                                style={{ padding: "2px 8px", borderRadius: 999, fontSize: 10, fontFamily: "monospace", cursor: "pointer",
+                                style={{ padding: "2px 8px", borderRadius: 999, fontSize: 14, fontFamily: "monospace", cursor: "pointer",
                                          background: "var(--accent-glow)", color: "var(--accent)", border: "1px solid var(--accent)" }}>
                             {w}
                           </span>
                         ))}
-                        {waferSet.length > 30 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>+{waferSet.length - 30}</span>}
+                        {waferSet.length > 30 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>+{waferSet.length - 30}</span>}
                       </div>
                     )}
                     {lotRoots.slice(0, 5).map(r => (
@@ -3107,12 +3124,12 @@ export default function My_Inform({ user }) {
           <>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6, fontFamily: "monospace" }}>
               🧾 Lot: {selectedLot}
-              <span style={{ fontSize: 11, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
+              <span style={{ fontSize: 14, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
                 — wafer {lotWafers.length}개 · inform {thread.length}건
               </span>
             </div>
             {lotWafers.length > 0 && (
-              <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 10, fontFamily: "monospace" }}>
+              <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10, fontFamily: "monospace" }}>
                 연결 wafer: {lotWafers.join(", ")}
               </div>
             )}
@@ -3133,8 +3150,8 @@ export default function My_Inform({ user }) {
               if (modKeys.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>해당 없음.</div>;
               return modKeys.map(mk => (
                 <div key={mk} style={{ marginBottom: 22, padding: 10, borderRadius: 8, background: "var(--bg-card)", border: "1px solid var(--border)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, fontFamily: "monospace", color: "var(--accent)" }}>
-                    ▣ {mk} <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 500, marginLeft: 6 }}>{grouped[mk].length}건</span>
+                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8, fontFamily: "monospace", color: "var(--accent)" }}>
+                    ▣ {mk} <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 500, marginLeft: 6 }}>{grouped[mk].length}건</span>
                   </div>
                   {grouped[mk].map(r => (
                     <div key={r.id} style={{ marginBottom: 14, paddingBottom: 10, borderBottom: "1px dashed var(--border)" }}>
@@ -3287,13 +3304,13 @@ function TimelineLog({ thread, onOpen }) {
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-secondary)", padding: 10, fontFamily: "monospace" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "var(--accent)" }}>📜 이력 타임라인 ({filtered.length}{lotQ ? ` / ${events.length}` : ""}건)</span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>📜 이력 타임라인 ({filtered.length}{lotQ ? ` / ${events.length}` : ""}건)</span>
         <input value={lotQ} onChange={e => setLotQ(e.target.value)}
           placeholder="🔎 Lot 검색 (root_lot_id 또는 fab_lot_id 부분일치)"
-          style={{ flex: 1, minWidth: 220, padding: "5px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, fontFamily: "monospace" }} />
-        {lotQ && <span onClick={() => setLotQ("")} style={{ cursor: "pointer", color: "#ef4444", fontSize: 11 }}>✕ 초기화</span>}
+          style={{ flex: 1, minWidth: 220, padding: "5px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
+        {lotQ && <span onClick={() => setLotQ("")} style={{ cursor: "pointer", color: "#ef4444", fontSize: 14 }}>✕ 초기화</span>}
       </div>
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 8 }}>작성 / 수정 / 이행(확인·완료) — 누가 언제 무엇을 했는지 시간순. Lot 입력 시 해당 Lot 만 필터링.</div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>작성 / 수정 / 이행(확인·완료) — 누가 언제 무엇을 했는지 시간순. Lot 입력 시 해당 Lot 만 필터링.</div>
       {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>{lotQ ? `'${lotQ}' 매칭 이력 없음.` : "이력 없음."}</div>}
       {filtered.map((e, i) => {
         const mc = moduleColor(e.module);
@@ -3308,16 +3325,16 @@ function TimelineLog({ thread, onOpen }) {
         return (
           <div key={i} onClick={() => onOpen && onOpen(e.node)} style={{
             display: "flex", gap: 10, alignItems: "center", padding: "4px 6px",
-            borderRadius: 4, cursor: "pointer", fontSize: 12, lineHeight: 1.55,
+            borderRadius: 4, cursor: "pointer", fontSize: 14, lineHeight: 1.55,
             borderLeft: `3px solid ${mc}`, marginBottom: 2, background: i % 2 ? "var(--bg-primary)" : "transparent",
           }}>
             <span style={{ color: "var(--text-secondary)", minWidth: 115 }}>{(e.at || "").replace("T", " ").slice(0, 16)}</span>
             <span style={{ minWidth: 56, color: mc, fontWeight: 700 }}>{e.module || "-"}</span>
             <span style={{ minWidth: 88, color: "var(--text-secondary)" }}>{e.reason ? `[${e.reason}]` : ""}</span>
             <span title={lotLabel} style={{ minWidth: 220, maxWidth: 360, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lotLabel}</span>
-            <span style={{ padding: "1px 8px", borderRadius: 999, background: kindColor + "22", color: kindColor, fontWeight: 700, fontSize: 11 }}>{e.kind}</span>
+            <span style={{ padding: "1px 8px", borderRadius: 999, background: kindColor + "22", color: kindColor, fontWeight: 700, fontSize: 14 }}>{e.kind}</span>
             <span style={{ color: "var(--text-primary)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.summary}</span>
-            <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>· {e.actor || "-"}</span>
+            <span style={{ color: "var(--text-secondary)", fontSize: 14 }}>· {e.actor || "-"}</span>
           </div>
         );
       })}
@@ -3344,7 +3361,7 @@ function ReasonTemplatesPanel({ reasons, templates, onSave }) {
     return (
       <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
         <button onClick={() => setOpen(true)}
-          style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
+          style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
           ✉ 사유별 메일 템플릿 편집 ({count}/{(reasons || []).length})
         </button>
       </div>
@@ -3352,7 +3369,7 @@ function ReasonTemplatesPanel({ reasons, templates, onSave }) {
   }
   return (
     <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
-      <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6 }}>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6 }}>
         사유 선택 시 자동으로 채워지는 메일 제목/본문 템플릿. 저장 후 등록 폼에서 사유를 고르면 적용됩니다.
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
@@ -3360,7 +3377,7 @@ function ReasonTemplatesPanel({ reasons, templates, onSave }) {
           const has = draft[r] && (draft[r].subject || draft[r].body);
           return (
             <span key={r} onClick={() => setActive(r)}
-              style={{ padding: "3px 8px", borderRadius: 999, cursor: "pointer", fontSize: 11,
+              style={{ padding: "3px 8px", borderRadius: 999, cursor: "pointer", fontSize: 14,
                 background: active === r ? "var(--accent)" : (has ? "var(--accent-glow)" : "var(--bg-card)"),
                 color: active === r ? "#fff" : (has ? "var(--accent)" : "var(--text-primary)"),
                 border: "1px solid " + (active === r ? "var(--accent)" : "var(--border)") }}>
@@ -3371,27 +3388,27 @@ function ReasonTemplatesPanel({ reasons, templates, onSave }) {
       </div>
       {active && (
         <div style={{ padding: 8, border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg-card)" }}>
-          <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 2 }}>제목 템플릿</div>
+          <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>제목 템플릿</div>
           <input value={(draft[active] || {}).subject || ""}
             onChange={e => setField(active, "subject", e.target.value)}
             placeholder="[인폼·장비이상] {product} · {lot}"
-            style={{ width: "100%", padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, boxSizing: "border-box", marginBottom: 6 }} />
-          <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 2 }}>본문 템플릿</div>
+            style={{ width: "100%", padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, boxSizing: "border-box", marginBottom: 6 }} />
+          <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>본문 템플릿</div>
           <textarea value={(draft[active] || {}).body || ""}
             onChange={e => setField(active, "body", e.target.value)}
             placeholder="배경:&#10;영향:&#10;조치 요청:"
             rows={6}
-            style={{ width: "100%", padding: 6, borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, boxSizing: "border-box", fontFamily: "inherit", lineHeight: 1.4 }} />
-          <div style={{ fontSize: 9, color: "var(--text-secondary)", marginTop: 4 }}>
+            style={{ width: "100%", padding: 6, borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, boxSizing: "border-box", fontFamily: "inherit", lineHeight: 1.4 }} />
+          <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>
             변수 참고: <code>{"{product}"}</code> <code>{"{lot}"}</code> <code>{"{module}"}</code> <code>{"{reason}"}</code> — 현재 폼에 자동 치환.
           </div>
         </div>
       )}
       <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
         <button onClick={() => onSave(draft)}
-          style={{ padding: "5px 12px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>저장</button>
+          style={{ padding: "5px 12px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>저장</button>
         <button onClick={() => setOpen(false)}
-          style={{ padding: "5px 12px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer" }}>닫기</button>
+          style={{ padding: "5px 12px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>닫기</button>
       </div>
     </div>
   );
@@ -3435,15 +3452,15 @@ function UserModulePermsPanel({ allModules }) {
   const filtered = q ? users.filter(u => (u.username || "").toLowerCase().includes(q.toLowerCase()) || (u.email || "").toLowerCase().includes(q.toLowerCase())) : users;
   return (
     <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
-      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>🔒 유저별 모듈 조회 권한</div>
-      <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 6, lineHeight: 1.5 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>🔒 유저별 모듈 조회 권한</div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6, lineHeight: 1.5 }}>
         인폼 탭 권한이 있는 유저에게 <b>모듈별 조회 권한</b> 을 부여합니다.
         체크된 모듈의 인폼만 목록·검색에 노출됩니다. admin 은 항상 전체. 설정을 초기화하면 그룹 기반으로 돌아갑니다.
       </div>
       <input value={q} onChange={e => setQ(e.target.value)} placeholder="🔎 유저/이메일 검색"
-        style={{ width: "100%", padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, marginBottom: 6, boxSizing: "border-box" }} />
-      {loading && <div style={{ padding: 10, fontSize: 10, color: "var(--text-secondary)" }}>로딩...</div>}
-      {!loading && filtered.length === 0 && <div style={{ padding: 10, fontSize: 10, color: "var(--text-secondary)" }}>해당 유저 없음</div>}
+        style={{ width: "100%", padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, marginBottom: 6, boxSizing: "border-box" }} />
+      {loading && <div style={{ padding: 10, fontSize: 14, color: "var(--text-secondary)" }}>로딩...</div>}
+      {!loading && filtered.length === 0 && <div style={{ padding: 10, fontSize: 14, color: "var(--text-secondary)" }}>해당 유저 없음</div>}
       <div style={{ maxHeight: 380, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
         {filtered.map(u => {
           const modsSet = new Set(u.modules || []);
@@ -3452,19 +3469,19 @@ function UserModulePermsPanel({ allModules }) {
           return (
             <div key={u.username} style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", opacity: busy ? 0.6 : 1 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 11, fontWeight: 700, fontFamily: "monospace" }}>{u.username}</span>
-                {u.role === "admin" && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 8, background: "#ef444422", color: "#ef4444", fontWeight: 700 }}>admin</span>}
-                {u.email && <span style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace" }}>{u.email}</span>}
+                <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace" }}>{u.username}</span>
+                {u.role === "admin" && <span style={{ fontSize: 14, padding: "1px 5px", borderRadius: 8, background: "#ef444422", color: "#ef4444", fontWeight: 700 }}>admin</span>}
+                {u.email && <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{u.email}</span>}
                 <span style={{ flex: 1 }} />
-                <span style={{ fontSize: 9, color: u.has_setting ? "#16a34a" : "var(--text-secondary)" }}>
+                <span style={{ fontSize: 14, color: u.has_setting ? "#16a34a" : "var(--text-secondary)" }}>
                   {u.has_setting ? `✓ 설정됨 (${(u.modules || []).length})` : "기본(그룹 기반)"}
                 </span>
                 <span onClick={() => setAllFor(u.username, !allOn)}
-                  style={{ fontSize: 9, padding: "1px 6px", borderRadius: 4, cursor: "pointer", border: "1px solid var(--border)", color: "var(--accent)" }}>
+                  style={{ fontSize: 14, padding: "1px 6px", borderRadius: 4, cursor: "pointer", border: "1px solid var(--border)", color: "var(--accent)" }}>
                   {allOn ? "전체 해제" : "전체 선택"}
                 </span>
                 {u.has_setting && <span onClick={() => clearFor(u.username)}
-                  style={{ fontSize: 9, padding: "1px 6px", borderRadius: 4, cursor: "pointer", border: "1px solid #ef4444", color: "#ef4444" }}
+                  style={{ fontSize: 14, padding: "1px 6px", borderRadius: 4, cursor: "pointer", border: "1px solid #ef4444", color: "#ef4444" }}
                   title="이 유저의 권한 설정을 초기화 (groups 기반으로 복귀)">× 초기화</span>}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -3473,7 +3490,7 @@ function UserModulePermsPanel({ allModules }) {
                   const mc = moduleColor(m);
                   return (
                     <label key={m}
-                      style={{ fontSize: 10, padding: "1px 7px", borderRadius: 999, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 3,
+                      style={{ fontSize: 14, padding: "1px 7px", borderRadius: 999, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 3,
                         background: on ? (mc + "22") : "transparent",
                         color: on ? mc : "var(--text-secondary)",
                         fontWeight: on ? 700 : 500,
@@ -3534,7 +3551,7 @@ function CompactRow({ root, onOpen }) {
     border: "1px solid var(--border)",
     background: "var(--bg-tertiary)",
     color: "var(--text-secondary)",
-    fontSize: 10,
+    fontSize: 14,
     fontWeight: 700,
     fontFamily: "monospace",
     maxWidth: 280,
@@ -3558,17 +3575,17 @@ function CompactRow({ root, onOpen }) {
         <span style={{ ...metaBadge, color: "var(--accent)", background: "var(--accent-glow)", borderColor: "rgba(249,115,22,0.24)" }}>
           {stripMlPrefix(root.product || "제품 미정")}
         </span>
-        <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{(root.created_at || "").replace("T", " ").slice(0, 16)}</span>
-        <span style={{ fontSize: 10, color: "var(--text-secondary)", fontWeight: 700 }}>{root.author || "-"}</span>
+        <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{(root.created_at || "").replace("T", " ").slice(0, 16)}</span>
+        <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 700 }}>{root.author || "-"}</span>
         <div style={{ flex: 1 }} />
         <div style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
           <CheckPill node={root} />
           <AutoGenPill node={root} />
-          {(root.images && root.images.length > 0) && <span title="이미지 첨부" style={{ fontSize: 10 }}>📎{root.images.length}</span>}
-          {root.embed_table && <span title="SplitTable 스냅샷 첨부" style={{ fontSize: 10 }}>🔗</span>}
+          {(root.images && root.images.length > 0) && <span title="이미지 첨부" style={{ fontSize: 14 }}>📎{root.images.length}</span>}
+          {root.embed_table && <span title="SplitTable 스냅샷 첨부" style={{ fontSize: 14 }}>🔗</span>}
           {tagSummary && (
             <span title={`이 lot 의 꼬리표 ${tagSummary.total}개 (wafer ${tagSummary.by.wafer} · param ${tagSummary.by.param} · lot ${tagSummary.by.lot} · global ${tagSummary.by.param_global})\n샘플: ${tagSummary.sample.join(" / ")}`}
-                  style={{ fontSize: 10, padding: "2px 8px", borderRadius: 6, background: INFO.bg, color: INFO.fg, border: "1px solid " + INFO.fg + "33", fontWeight: 700, cursor: "help" }}>
+                  style={{ fontSize: 14, padding: "2px 8px", borderRadius: 6, background: INFO.bg, color: INFO.fg, border: "1px solid " + INFO.fg + "33", fontWeight: 700, cursor: "help" }}>
               🏷 {tagSummary.total}
             </span>
           )}
@@ -3592,7 +3609,7 @@ function CompactRow({ root, onOpen }) {
         {summary && (
           <div style={{
             marginTop: 4,
-            fontSize: 12,
+            fontSize: 14,
             lineHeight: 1.5,
             color: "var(--text-secondary)",
             whiteSpace: "pre-wrap",

@@ -7,6 +7,7 @@
     "root_aliases": {
       "FAB": ["1.RAWDATA_DB_FAB", "1.RAWDATA_DB"],
       "INLINE": ["1.RAWDATA_DB_INLINE"],
+      "VM": ["1.RAWDATA_DB_VM"],
       "ET": ["1.RAWDATA_DB_ET", "ET"],
       "EDS": ["1.RAWDATA_DB_EDS", "EDS"]
     },

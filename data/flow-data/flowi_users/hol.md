@@ -456,3 +456,15 @@
 - intent: meeting_recall_summary
 - llm_used: 
 - answer: 2차 / 정리해줘 기준 회의 기록 3건을 날짜별로 정리했습니다. 회의관리/변경점 관리의 저장된 기록만 사용했습니다.
+
+### 2026-05-01T00:57:07.111183+00:00 - chat
+- prompt: A1000 #1000 1.0 STI plan이 뭐야?
+- intent: splittable_guidance
+- llm_used: True
+- answer: 현재 감지: lot A1000, product 미확정. 스플릿 테이블 진행을 위해 아래 3가지 중 하나를 선택해 주세요. 1) product를 PRODA로 지정, lot=A1000, wafer은 전체(all)로 확인 2) product를 지정하지 않고, lot=A1000을 모든 product에서 검색 3) 특정 product 이름을 알려주시면 그 product로 A1000 로트를 확인 선택지 번호를 말씀해 주시면 바로 open_splittable로 진행합니다. DB/파일 수정 없이 조회/표시만 수행합니다.
+
+### 2026-05-01T03:20:24.088065+00:00 - chat
+- prompt: PRODA A1000 #6 현재 fab lot id가 뭐야?
+- intent: et_wafer_median
+- llm_used: 
+- answer: ET 레포트 단위기능으로 처리하는 요청입니다. - 실행 경로: query_et - 필요한 조건: product, root_lot_id or lot_id, step_id, item_id - 현재 감지: product=PRODA, lot=A1000, step=- - 추가로 필요: step_id Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.

@@ -57,7 +57,7 @@ export const formControlStyle = {
   border: `1px solid ${c.border}`,
   background: c.bg1,
   color: c.text,
-  fontSize: 12,
+  fontSize: 14,
   outline: "none",
 };
 
@@ -85,8 +85,8 @@ export const statusPalette = {
 export function Pill({ children, tone = "neutral", size = "sm", title, onClick, style = {} }) {
   const p = statusPalette[tone] || statusPalette.neutral;
   const sizeMap = {
-    sm: { fontSize: 10, padding: "1px 6px", borderRadius: 3 },
-    md: { fontSize: 11, padding: "2px 8px", borderRadius: 4 },
+    sm: { fontSize: 14, padding: "1px 6px", borderRadius: 3 },
+    md: { fontSize: 14, padding: "2px 8px", borderRadius: 4 },
   };
   return (
     <span
@@ -128,7 +128,7 @@ export function TabStrip({ items = [], active, onChange, right = null }) {
           <span key={k} onClick={() => onChange && onChange(k)}
                 data-active={isA ? "1" : "0"}
                 style={{
-                  padding: "6px 12px", fontSize: 12,
+                  padding: "6px 12px", fontSize: 14,
                   cursor: "pointer", userSelect: "none",
                   background: isA ? c.accentGlow : "transparent",
                   color: isA ? c.accent : c.textSub,
@@ -157,8 +157,8 @@ export function PageHeader({ title, subtitle, right, style = {} }) {
       padding: "8px 14px", borderBottom: `1px solid ${c.border}`,
       background: c.bg2, minHeight: 34, ...style,
     }}>
-      {title && <span style={{ fontSize: 12, fontWeight: 700, color: c.textSub }}>{uiLabel(title)}</span>}
-      {subtitle && <span style={{ fontSize: 11, color: c.textSub }}>{subtitle}</span>}
+      {title && <span style={{ fontSize: 14, fontWeight: 700, color: c.textSub }}>{uiLabel(title)}</span>}
+      {subtitle && <span style={{ fontSize: 14, color: c.textSub }}>{subtitle}</span>}
       {right != null && <span style={{ marginLeft: "auto" }}>{right}</span>}
     </div>
   );
@@ -194,8 +194,8 @@ export function Panel({ title, subtitle, right, children, style = {}, bodyStyle 
     <section className="flow-panel" style={{ overflow: "hidden", ...style }}>
       {(title || subtitle || right) && (
         <div style={{ minHeight: 34, padding: "8px 12px", borderBottom: `1px solid ${c.border}`, display: "flex", alignItems: "center", gap: 10, background: c.bg2 }}>
-          {title && <span style={{ fontSize: 12, fontWeight: 800, color: c.accent }}>{uiLabel(title)}</span>}
-          {subtitle && <span style={{ fontSize: 10, color: c.textSub }}>{subtitle}</span>}
+          {title && <span style={{ fontSize: 14, fontWeight: 800, color: c.accent }}>{uiLabel(title)}</span>}
+          {subtitle && <span style={{ fontSize: 14, color: c.textSub }}>{subtitle}</span>}
           {right != null && <span style={{ marginLeft: "auto" }}>{right}</span>}
         </div>
       )}
@@ -211,7 +211,7 @@ export function Banner({ tone = "info", children, onClose, style = {} }) {
   const p = statusPalette[tone] || statusPalette.info;
   return (
     <div style={{
-      padding: "8px 12px", fontSize: 12,
+      padding: "8px 12px", fontSize: 14,
       background: p.bg, color: p.fg, borderRadius: 4,
       display: "flex", alignItems: "center", gap: 10, ...style,
     }}>
@@ -245,11 +245,11 @@ export function TwoCol({ left, right, leftWidth = 260, style = {} }) {
 // empty: string shown when rows is empty
 export function DataTable({ columns = [], rows = [], empty = "데이터 없음", rowStyle, onRowClick, maxHeight }) {
   if (!rows || rows.length === 0) {
-    return <div style={{ textAlign: "center", padding: 40, color: c.textSub, fontSize: 12 }}>{empty}</div>;
+    return <div style={{ textAlign: "center", padding: 40, color: c.textSub, fontSize: 14 }}>{empty}</div>;
   }
   return (
     <div style={{ overflow: "auto", maxHeight: maxHeight }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
         <thead>
           <tr>
             {columns.map(col => (
@@ -257,7 +257,7 @@ export function DataTable({ columns = [], rows = [], empty = "데이터 없음",
                 textAlign: col.align || "left",
                 padding: "8px 10px",
                 borderBottom: `1px solid ${c.border}`,
-                color: c.textSub, fontSize: 11,
+                color: c.textSub, fontSize: 14,
                 fontWeight: 600,
                 background: c.bg3, position: "sticky", top: 0, zIndex: 1,
                 width: col.width, whiteSpace: "nowrap",
@@ -278,7 +278,7 @@ export function DataTable({ columns = [], rows = [], empty = "데이터 없음",
                   borderBottom: `1px solid ${c.border}`,
                   textAlign: col.align || "left",
                   verticalAlign: "middle",
-                  color: c.text, fontSize: 12,
+                  color: c.text, fontSize: 14,
                 }}>
                   {col.render ? col.render(row) : row[col.key]}
                 </td>
@@ -295,7 +295,7 @@ export function DataTable({ columns = [], rows = [], empty = "데이터 없음",
 // ── Button (primary / ghost) ─────────────────────────
 export function Button({ variant = "ghost", children, onClick, disabled, title, style = {} }) {
   const base = {
-    padding: "5px 12px", borderRadius: 4, fontSize: 11,
+    padding: "5px 12px", borderRadius: 4, fontSize: 14,
     fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.5 : 1, border: `1px solid ${c.accent}`,
     whiteSpace: "nowrap",
@@ -318,9 +318,9 @@ export function Button({ variant = "ghost", children, onClick, disabled, title, 
 // ── EmptyState ────────────────────────────────────────
 export function EmptyState({ icon = "○", title, hint }) {
   return (
-    <div style={{ padding: "40px 20px", textAlign: "center", color: c.textSub, fontSize: 12 }}>
+    <div style={{ padding: "40px 20px", textAlign: "center", color: c.textSub, fontSize: 14 }}>
       <div style={{ fontSize: 28, marginBottom: 8 }}>{icon}</div>
-      <div style={{ fontWeight: 600, color: c.text, fontSize: 13 }}>{title}</div>
+      <div style={{ fontWeight: 600, color: c.text, fontSize: 14 }}>{title}</div>
       {hint && <div style={{ marginTop: 4 }}>{hint}</div>}
     </div>
   );
@@ -329,9 +329,9 @@ export function EmptyState({ icon = "○", title, hint }) {
 export function Field({ label, children, hint, style = {} }) {
   return (
     <label style={{ display: "grid", gap: 4, ...style }}>
-      <span style={{ fontSize: 10, color: c.textSub, fontFamily: "monospace" }}>{label}</span>
+      <span style={{ fontSize: 14, color: c.textSub, fontFamily: "monospace" }}>{label}</span>
       {children}
-      {hint && <span style={{ fontSize: 10, color: c.textSub }}>{hint}</span>}
+      {hint && <span style={{ fontSize: 14, color: c.textSub }}>{hint}</span>}
     </label>
   );
 }

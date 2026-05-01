@@ -28,7 +28,29 @@ DEFAULT_HEAVY_PREFIXES = (
 DEFAULT_LIGHT_PATHS = (
     "/api/splittable/match-cache/status",
     "/api/splittable/match-cache/refresh",
+    "/api/splittable/products",
+    "/api/splittable/source-config",
+    "/api/splittable/prefixes",
+    "/api/splittable/customs",
+    "/api/splittable/schema",
+    "/api/splittable/lot-candidates",
+    "/api/splittable/lot-ids",
+    "/api/splittable/ml-table-match",
+    "/api/splittable/fab-roots",
+    "/api/splittable/knob-meta",
+    "/api/splittable/vm-meta",
+    "/api/splittable/inline-meta",
+    "/api/splittable/precision",
+    "/api/splittable/notes",
+    "/api/splittable/history",
+    "/api/splittable/operational-history",
     "/api/tracker/et-lot-cache/status",
+)
+
+META_ONLY_PATHS = (
+    "/api/filebrowser/view",
+    "/api/filebrowser/base-file-view",
+    "/api/filebrowser/root-parquet-view",
 )
 
 
@@ -66,6 +88,10 @@ def _matches(path: str, prefixes: Iterable[str]) -> bool:
     return any(path.startswith(prefix) for prefix in prefixes)
 
 
+def _truthy(raw: str | None) -> bool:
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class ResourceGuardMiddleware(BaseHTTPMiddleware):
     """Serialize heavy API work and reject it before the process reaches OOM.
 
@@ -77,7 +103,10 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app):
         super().__init__(app)
-        default_concurrency = 1 if is_small_profile() else 2
+        # Metadata/list requests stay light; heavy scans may run two at a time
+        # on the default 4-core/16GB target while remaining bounded by the
+        # memory guard. Operators can still lower this via env.
+        default_concurrency = 2 if is_small_profile() else 3
         self._concurrency = _int_env("FLOW_HEAVY_REQUEST_CONCURRENCY", default_concurrency, 1, 8)
         self._queue_timeout = _float_env("FLOW_HEAVY_REQUEST_QUEUE_TIMEOUT_SEC", 120.0, 1.0, 600.0)
         self._memory_reserve_gb = _float_env("FLOW_MEMORY_RESERVE_GB", 1.0, 0.0, 8.0)
@@ -86,9 +115,17 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         self._semaphore = asyncio.Semaphore(self._concurrency)
         self._active = 0
 
+    def _is_light_request(self, request: Request) -> bool:
+        path = request.url.path
+        if _matches(path, self._light_paths):
+            return True
+        if path in META_ONLY_PATHS and _truthy(request.query_params.get("meta_only")):
+            return True
+        return False
+
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if path.startswith("/api/") and _matches(path, self._light_paths):
+        if path.startswith("/api/") and self._is_light_request(request):
             return await call_next(request)
         if not path.startswith("/api/") or not _matches(path, self._prefixes):
             return await call_next(request)

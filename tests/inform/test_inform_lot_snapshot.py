@@ -53,6 +53,46 @@ def test_create_inform_preserves_split_table_root_and_fab_lots(tmp_path, monkeyp
     assert by_lot["count"] == 1
 
 
+def test_inform_wafer_queries_normalize_saved_wafer_forms(monkeypatch):
+    items = [
+        {"id": "a", "wafer_id": "01", "lot_id": "A1000", "product": "PRODA", "created_at": "2026-04-27T10:00:00"},
+        {"id": "b", "wafer_id": "W1", "lot_id": "A1000", "product": "PRODA", "created_at": "2026-04-27T11:00:00"},
+    ]
+    monkeypatch.setattr(informs, "_load_upgraded", lambda: items)
+
+    by_wf = informs.list_by_wafer("1")
+    sidebar = informs._sidebar_payload(items, {"username": "admin", "role": "admin"}, {"__all__"})
+
+    assert [row["id"] for row in by_wf["informs"]] == ["a", "b"]
+    assert sidebar["wafers"][0]["wafer_key"] == "1"
+    assert sidebar["wafers"][0]["wafer_id"] == "W1"
+    assert sidebar["wafers"][0]["count"] == 2
+
+
+def test_by_lot_returns_module_progress_summary(monkeypatch):
+    items = [
+        {"id": "a", "root_lot_id": "A1000", "lot_id": "A1000", "wafer_id": "1", "module": "ET", "flow_status": "completed", "created_at": "2026-04-27T10:00:00", "status_history": [{"status": "completed", "at": "2026-04-27T11:00:00"}]},
+        {"id": "b", "root_lot_id": "A1000", "lot_id": "A1000", "wafer_id": "2", "module": "FAB", "flow_status": "received", "created_at": "2026-04-27T12:00:00"},
+    ]
+    monkeypatch.setattr(informs, "_load_upgraded", lambda: items)
+    monkeypatch.setattr(informs, "_load_config", lambda: {"modules": ["ET", "FAB", "PC"]})
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
+
+    out = informs.by_lot(object(), lot_id="A1000")
+    summary = out["module_summary"]
+
+    assert out["count"] == 2
+    assert summary["active_modules"] == 2
+    assert summary["completed_modules"] == 1
+    assert summary["pending_modules"] == ["FAB"]
+    assert summary["missing_modules"] == ["PC"]
+    assert {row["module"]: row["status"] for row in summary["modules"]} == {
+        "ET": "completed",
+        "FAB": "received",
+        "PC": "missing",
+    }
+
+
 def test_create_inform_resolves_root_only_fab_lot_from_splittable_cache(tmp_path, monkeypatch):
     informs_file = tmp_path / "informs.json"
     monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)

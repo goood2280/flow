@@ -60,7 +60,7 @@ export function ConfirmModal({
 }) {
   return (
     <Modal open={open} onClose={onCancel} title={title} width={360}>
-      <div style={{ fontSize: 13, color: "var(--text-primary)", lineHeight: 1.5, marginBottom: 16 }}>
+      <div style={{ fontSize: 14, color: "var(--text-primary)", lineHeight: 1.5, marginBottom: 16 }}>
         {message}
       </div>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
@@ -68,12 +68,12 @@ export function ConfirmModal({
           padding: "6px 14px", borderRadius: 6,
           border: "1px solid var(--border)",
           background: "transparent", color: "var(--text-secondary)",
-          fontSize: 12, cursor: "pointer",
+          fontSize: 14, cursor: "pointer",
         }}>{cancelText}</button>
         <button onClick={onConfirm} style={{
           padding: "6px 14px", borderRadius: 6, border: "none",
           background: danger ? "#ef4444" : "var(--accent)",
-          color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer",
+          color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer",
         }}>{confirmText}</button>
       </div>
     </Modal>

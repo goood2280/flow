@@ -89,6 +89,24 @@ INLINE_MEASUREMENT_COLUMNS = (
 _NUMERIC_COLUMNS = {"shot_x", "shot_y", "value", "speclow", "target", "spechigh"}
 
 
+def _filter_valid_wafers(lf: pl.LazyFrame) -> pl.LazyFrame:
+    try:
+        from core.utils import filter_valid_wafer_ids_lazy
+        return filter_valid_wafer_ids_lazy(lf)
+    except Exception:
+        return lf
+
+
+def _with_product_column(lf: pl.LazyFrame, product: str) -> pl.LazyFrame:
+    try:
+        names = lf.collect_schema().names()
+    except Exception:
+        names = list(getattr(lf, "schema", {}).keys())
+    if "product" in names:
+        return lf
+    return lf.with_columns(pl.lit(str(product or "")).alias("product"))
+
+
 def _scan_hive(db_root: Path, folder: str, product: str) -> Optional[pl.LazyFrame]:
     """Hive-partitioned parquet scan. 제품 폴더가 없으면 None."""
     base = db_root / folder / product
@@ -96,7 +114,7 @@ def _scan_hive(db_root: Path, folder: str, product: str) -> Optional[pl.LazyFram
         return None
     pattern = str(base / "date=*" / "*.parquet")
     try:
-        return pl.scan_parquet(pattern, hive_partitioning=True)
+        return _with_product_column(_filter_valid_wafers(pl.scan_parquet(pattern, hive_partitioning=True)), product)
     except Exception as e:
         logger.warning("scan_hive failed %s: %s", pattern, e)
         return None
@@ -115,7 +133,7 @@ def _scan_flat(db_root: Path, folder: str, product: str) -> Optional[pl.LazyFram
     if not files:
         return None
     try:
-        return pl.scan_parquet([str(f) for f in files])
+        return _with_product_column(_filter_valid_wafers(pl.scan_parquet([str(f) for f in files])), product)
     except Exception as e:
         logger.warning("scan_flat failed %s: %s", base, e)
         return None
@@ -234,7 +252,12 @@ def normalize_inline_measurements(lf: pl.LazyFrame) -> pl.LazyFrame:
     INLINE uses subitem_id as the shot-position key. The actual shot_x/shot_y
     coordinates come from item-specific matching tables.
     """
-    return _normalize_measurement_aliases(lf, INLINE_MEASUREMENT_COLUMNS)
+    lf = _normalize_measurement_aliases(lf, INLINE_MEASUREMENT_COLUMNS)
+    try:
+        from core.utils import drop_inline_coord_columns_lazy
+        return drop_inline_coord_columns_lazy(lf)
+    except Exception:
+        return lf
 
 
 def scan_long_fab(product: str, db_root: Path) -> Optional[pl.LazyFrame]:

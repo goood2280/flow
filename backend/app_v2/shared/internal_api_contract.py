@@ -43,7 +43,7 @@ DEFAULT_CONTRACTS: dict[str, Any] = {
             "root_lot_id", "lot_id", "wafer_id", "process_id", "tkin_time", "tkout_time",
             "eqp_id", "subitem_id", "item_id", "value", "speclow", "target", "spechigh",
         ],
-        "optional_columns": ["product", "fab_lot_id", "time", "shot_x", "shot_y", "step_id"],
+        "optional_columns": ["product", "fab_lot_id", "time", "step_id"],
         "join_keys": ["root_lot_id", "wafer_id", "item_id", "subitem_id"],
         "time_columns": ["tkin_time", "tkout_time"],
         "step_column": "",

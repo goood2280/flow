@@ -73,6 +73,7 @@
 
 - `data/Fab/`은 로컬 DB root seed다. 운영에서는 `FLOW_DB_ROOT` 또는 공유 기본 DB를 쓴다.
 - `data/flow-data/`는 runtime/user state다. 코드 업데이트나 build가 덮어쓰면 안 된다.
+- DuckDB는 parquet/csv 원본 위의 in-memory read-only query engine으로만 사용한다. 원본 DB 파일을 수정하거나 DuckDB database 파일로 변환하지 않는다.
 - tracker, informs, meetings, calendar, messages, sessions, backups는 runtime 변동 파일이다.
 - real production raw data, credentials, session token, private export는 Git에 넣지 않는다.
 - 사내 반입 전후에는 `scripts/preflight_internal.py --write-probe`로 root와 data_root 보존을 확인한다.

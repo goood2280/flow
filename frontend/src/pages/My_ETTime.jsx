@@ -11,7 +11,7 @@ const ctl = {
   border: "1px solid var(--border)",
   background: "var(--bg-card)",
   color: "var(--text-primary)",
-  fontSize: 12,
+  fontSize: 14,
   outline: "none",
 };
 
@@ -40,7 +40,7 @@ function tone(status) {
 function Mini({ label, value, color = "var(--accent)" }) {
   return (
     <div style={{ ...card, padding: "10px 12px", background: "var(--bg-card)" }}>
-      <div style={{ fontSize: 10, color: "var(--text-secondary)" }}>{uiLabel(label)}</div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>{uiLabel(label)}</div>
       <div style={{ marginTop: 4, fontSize: 18, fontWeight: 800, color, fontFamily: "monospace" }}>{value ?? "-"}</div>
     </div>
   );
@@ -50,7 +50,7 @@ function Panel({ title, right, children, style }) {
   return (
     <div style={{ ...card, padding: 12, ...style }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 }}>
-        <div style={{ fontSize: 11, fontWeight: 800, color: "var(--accent)" }}>{uiLabel(title)}</div>
+        <div style={{ fontSize: 14, fontWeight: 800, color: "var(--accent)" }}>{uiLabel(title)}</div>
         {right}
       </div>
       {children}
@@ -60,11 +60,11 @@ function Panel({ title, right, children, style }) {
 
 function Table({ rows, columns, selected, rowKey, onRow }) {
   if (!rows?.length) {
-    return <div style={{ padding: 24, textAlign: "center", fontSize: 11, color: "var(--text-secondary)" }}>데이터 없음</div>;
+    return <div style={{ padding: 24, textAlign: "center", fontSize: 14, color: "var(--text-secondary)" }}>데이터 없음</div>;
   }
   return (
     <div style={{ overflow: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
         <thead>
           <tr>
             {columns.map((c) => (
@@ -113,7 +113,7 @@ function extent(vals, pad = 0.08) {
 function SvgFrame({ title, children }) {
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)", overflow: "hidden" }}>
-      <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border)", fontSize: 10, fontWeight: 800, color: "var(--text-secondary)" }}>{uiLabel(title)}</div>
+      <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border)", fontSize: 14, fontWeight: 800, color: "var(--text-secondary)" }}>{uiLabel(title)}</div>
       {children}
     </div>
   );
@@ -217,8 +217,8 @@ function StatsTable({ item }) {
   ];
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden", background: "var(--bg-card)" }}>
-      <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border)", fontSize: 10, fontWeight: 800, color: "var(--text-secondary)" }}>{uiLabel("Statistical Table")}</div>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+      <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border)", fontSize: 14, fontWeight: 800, color: "var(--text-secondary)" }}>{uiLabel("Statistical Table")}</div>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
         <tbody>
           {rows.map((r) => (
             <tr key={r[0]}>
@@ -312,7 +312,7 @@ export default function My_ETTime() {
   return (
     <div style={{ padding: "14px 16px", background: "var(--bg-primary)", minHeight: "calc(100vh - 52px)", color: "var(--text-primary)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>ET 레포트</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>ET 레포트</div>
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
           <select value={product} onChange={(e) => setProduct(e.target.value)} style={{ ...ctl, minWidth: 150 }}>
             {products.map((p) => <option key={p} value={p}>{p}</option>)}
@@ -340,7 +340,7 @@ export default function My_ETTime() {
         </div>
       </div>
       {err && (
-        <div style={{ marginBottom: 10, padding: "8px 10px", border: "1px solid #ef444466", background: "#ef444422", color: "#ef4444", fontSize: 12, borderRadius: 4 }}>
+        <div style={{ marginBottom: 10, padding: "8px 10px", border: "1px solid #ef444466", background: "#ef444422", color: "#ef4444", fontSize: 14, borderRadius: 4 }}>
           {err}
         </div>
       )}
@@ -380,7 +380,7 @@ export default function My_ETTime() {
         </Panel>
 
         <div style={{ display: "grid", gap: 10, minWidth: 0 }}>
-          <Panel title="ET 측정이력" right={<span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{activePackage?.package_time || ""}</span>}>
+          <Panel title="ET 측정이력" right={<span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{activePackage?.package_time || ""}</span>}>
             <Table
               rows={report?.recent_packages || []}
               selected={selectedPackage}
@@ -419,7 +419,7 @@ export default function My_ETTime() {
             )}
           >
             {!activePackage ? (
-              <div style={{ padding: 24, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>ET 측정이력을 선택하세요</div>
+              <div style={{ padding: 24, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>ET 측정이력을 선택하세요</div>
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(120px, 1fr))", gap: 8 }}>
                 <Mini label="제품" value={activePackage.product || "-"} color="#2563eb" />
@@ -430,7 +430,7 @@ export default function My_ETTime() {
             )}
           </Panel>
 
-          <Panel title="스코어보드" right={<span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{activePackage?.step_id || ""} {activePackage?.fab_lot_id || ""}</span>}>
+          <Panel title="스코어보드" right={<span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{activePackage?.step_id || ""} {activePackage?.fab_lot_id || ""}</span>}>
             <Table
               rows={activeDetail?.scoreboard || []}
               columns={[

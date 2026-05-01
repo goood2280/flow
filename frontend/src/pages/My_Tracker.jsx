@@ -260,7 +260,7 @@ function DescEditor({ value, onChange, placeholder }) {
       style={{
         width: "100%", minHeight: 80, padding: "8px 12px", borderRadius: 6,
         border: "1px solid var(--border)", background: "var(--bg-primary)",
-        color: "var(--text-primary)", fontSize: 13, outline: "none", lineHeight: 1.7,
+        color: "var(--text-primary)", fontSize: 14, outline: "none", lineHeight: 1.7,
         marginBottom: 8, overflowY: "auto", maxHeight: 400, whiteSpace: "pre-wrap",
         wordBreak: "break-word",
       }} />
@@ -457,7 +457,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   const addRow = () => setLots(prev => [...prev, { product: "", monitor_prod: "", root_lot_id: "", wafer_id: "", comment: "" }]);
 
   const cellStyle = {
-    padding: "5px 8px", borderBottom: "1px solid var(--border)", fontSize: 12,
+    padding: "5px 8px", borderBottom: "1px solid var(--border)", fontSize: 14,
   };
   const sheetCell = {
     padding: 0,
@@ -472,7 +472,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
     border: "none",
     background: "transparent",
     color: "var(--text-primary)",
-    fontSize: 12,
+    fontSize: 14,
     outline: "none",
     boxSizing: "border-box",
     fontFamily: "monospace",
@@ -516,20 +516,20 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   return (
     <div onPaste={!readOnly ? handlePaste : undefined}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 12, fontWeight: 600 }}>Product / root_lot_id·lot_id / Wafer ({lots.length})</span>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>Product / root_lot_id·lot_id / Wafer ({lots.length})</span>
         {readOnly ? (
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace" }}>{batchBusy ? `0/${lots.length} 완료` : `${batchDone}/${lots.length} 완료`}</span>
+            <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{batchBusy ? `0/${lots.length} 완료` : `${batchDone}/${lots.length} 완료`}</span>
             <button onClick={fetchAllSteps} disabled={!issueId || batchBusy || lots.length === 0}
-              style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid var(--accent)", background: batchBusy ? "var(--bg-tertiary)" : "transparent", color: "var(--accent)", fontSize: 11, fontWeight: 700, cursor: !issueId || batchBusy || lots.length === 0 ? "not-allowed" : "pointer", opacity: !issueId || batchBusy || lots.length === 0 ? 0.6 : 1 }}>
+              style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid var(--accent)", background: batchBusy ? "var(--bg-tertiary)" : "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: !issueId || batchBusy || lots.length === 0 ? "not-allowed" : "pointer", opacity: !issueId || batchBusy || lots.length === 0 ? 0.6 : 1 }}>
               {batchBusy ? "조회 중..." : "전체 조회"}
             </button>
           </div>
-        ) : <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>Excel TSV 붙여넣기 지원 · PRODUCT / root_lot_id·lot_id / WAFER / COMMENT 순서</span>}
+        ) : <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>Excel TSV 붙여넣기 지원 · PRODUCT / root_lot_id·lot_id / WAFER / COMMENT 순서</span>}
       </div>
       {!readOnly && (
         <>
-          <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 4 }}>
+          <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>
             PROD를 먼저 선택하면 해당 PROD의 root_lot_id / fab_lot_id(lot_id) 후보가 아래 선택 목록에 표시됩니다.
           </div>
         </>
@@ -538,17 +538,17 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
         <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
           <thead><tr>
             {baseHeaders.map(h => (
-              <th key={h} style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{h}</th>
+              <th key={h} style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{h}</th>
             ))}
             {readOnly && <>
-              {showStepColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{monitorMode ? "step_id(func_step)" : "step_id > func_step"}</th>}
-              {showEtColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>ET 측정</th>}
-              <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>watch</th>
+              {showStepColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{monitorMode ? "step_id(func_step)" : "step_id > func_step"}</th>}
+              {showEtColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>ET 측정</th>}
+              <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>watch</th>
             </>}
             {!readOnly && <th style={{ width: 40, background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, zIndex: 1 }} />}
             {readOnly && <>
-              <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>작성자</th>
-              <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", fontSize: 10, color: "var(--text-secondary)", fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>날짜</th>
+              <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>작성자</th>
+              <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>날짜</th>
             </>}
           </tr></thead>
           <tbody>
@@ -611,32 +611,32 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                 <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 180 }}>{readOnly ? l.comment : <input value={l.comment || ""} onChange={e => updateCell(i, "comment", e.target.value)} style={sheetInput} placeholder="comment" />}</td>
                 {readOnly && <>
                   {showStepColumn && <td style={cellStyle}>
-                    {busyRow === i ? <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>…</span>
+                    {busyRow === i ? <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>…</span>
                       : monitorMode ? (
-                        <span title={stepTitle} style={{ display: "inline-block", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: 11, color: compactStepText === "조회 필요" ? "var(--text-secondary)" : "var(--accent)", fontWeight: compactStepText === "조회 필요" ? 500 : 800 }}>
+                        <span title={stepTitle} style={{ display: "inline-block", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: 14, color: compactStepText === "조회 필요" ? "var(--text-secondary)" : "var(--accent)", fontWeight: compactStepText === "조회 필요" ? 500 : 800 }}>
                           {compactStepText}
                         </span>
                       )
                       : currentStepText !== "조회 필요" ? (
                         <div title={stepTitle} style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 150 }}>
-                          <span style={{ fontFamily: "monospace", fontSize: 11, color: "var(--accent)", fontWeight: 700 }}>{stepIdText || stepInfo.funcStep}</span>
+                          <span style={{ fontFamily: "monospace", fontSize: 14, color: "var(--accent)", fontWeight: 700 }}>{stepIdText || stepInfo.funcStep}</span>
                           {stepInfo.funcStep && stepIdText && (
-                            <span style={{ fontFamily: "monospace", fontSize: 10, color: "var(--text-primary)" }}>→ {stepInfo.funcStep}</span>
+                            <span style={{ fontFamily: "monospace", fontSize: 14, color: "var(--text-primary)" }}>→ {stepInfo.funcStep}</span>
                           )}
-                          <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>step {lastMoveAt ? String(lastMoveAt).slice(0, 16) : "-"}</span>
-                          <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>갱신 {checkedAt ? String(checkedAt).slice(0, 16) : "-"}{scanStatus === "no_match" ? " · DB 매칭 없음" : ""}</span>
+                          <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>step {lastMoveAt ? String(lastMoveAt).slice(0, 16) : "-"}</span>
+                          <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>갱신 {checkedAt ? String(checkedAt).slice(0, 16) : "-"}{scanStatus === "no_match" ? " · DB 매칭 없음" : ""}</span>
                         </div>
                       ) : (
                         <div title={stepTitle} style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 150 }}>
-                          <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>조회 필요</span>
-                          <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>갱신 {checkedAt ? String(checkedAt).slice(0, 16) : "-"}{scanStatus === "no_match" ? " · DB 매칭 없음" : ""}</span>
+                          <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>조회 필요</span>
+                          <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>갱신 {checkedAt ? String(checkedAt).slice(0, 16) : "-"}{scanStatus === "no_match" ? " · DB 매칭 없음" : ""}</span>
                         </div>
                       )}
                   </td>}
                   {showEtColumn && <td style={cellStyle}>
                     <div
                       title={etStatus.title || (et.length > 0 ? etStepSummaries(l, et).slice(0, 5).map(formatEtSummaryLine).join("\n") : (l.et_last_time || l.last_checked_at || ""))}
-                      style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 210, fontSize: 10, color: etStatus.color, fontWeight: 700, lineHeight: 1.35, whiteSpace: "normal" }}
+                      style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 210, fontSize: 14, color: etStatus.color, fontWeight: 700, lineHeight: 1.35, whiteSpace: "normal" }}
                     >
                       {etStatus.blocks?.length
                         ? etStatus.blocks.map((block, idx) => (
@@ -659,9 +659,9 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                       const effSrc = isMonitorCategory(category, roleNames) ? "fab" : (watch.source || (categorySource === "et" ? "et" : "fab"));
                       const isEt = effSrc === "et";
                       return (
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, flexWrap: "wrap" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, flexWrap: "wrap" }}>
                           <span title={isEt ? "Analysis 카테고리: ET 측정 이력 감지" : "Monitor 카테고리: FAB step 도달 감지"}
-                                style={{ padding: "3px 8px", fontSize: 10, fontWeight: 700, borderRadius: 4, background: isEt ? "#ec4899" : "#3b82f6", color: "#fff" }}>
+                                style={{ padding: "3px 8px", fontSize: 14, fontWeight: 700, borderRadius: 4, background: isEt ? "#ec4899" : "#3b82f6", color: "#fff" }}>
                             {isEt ? "ET" : "FAB"}
                           </span>
                           {!isEt && (
@@ -672,7 +672,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                                 setLots(prev => prev.map((r, idx) => idx === i ? { ...r, watch: { ...(r.watch || {}), target_step_id: v } } : r));
                               }}
                               title="대문자2+숫자6+뒤6 형식. 뒤 6자리 숫자가 target 이상이면 fire (앞 prefix+head 동일 필요)"
-                              style={{ ...sheetInput, width: 130, fontSize: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", padding: "6px 8px" }} />
+                              style={{ ...sheetInput, width: 130, fontSize: 14, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", padding: "6px 8px" }} />
                           )}
                           {isEt && (
                             <>
@@ -683,7 +683,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                                   setLots(prev => prev.map((r, idx) => idx === i ? { ...r, watch: { ...(r.watch || {}), target_et_step_id: v } } : r));
                                 }}
                                 title="비우면 모든 ET step 관측. step_id 또는 VIA_DC 같은 func_step 이름 일부도 매칭"
-                                style={{ ...sheetInput, width: 118, fontSize: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", padding: "6px 8px" }} />
+                                style={{ ...sheetInput, width: 118, fontSize: 14, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", padding: "6px 8px" }} />
                               <input value={watch.target_et_seqs || ""} placeholder="%seq1% OR %seq2%"
                                 onBlur={e => saveWatch(i, { target_et_seqs: e.target.value })}
                                 onChange={e => {
@@ -691,11 +691,11 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                                   setLots(prev => prev.map((r, idx) => idx === i ? { ...r, watch: { ...(r.watch || {}), target_et_seqs: v } } : r));
                                 }}
                                 title="비우면 모든 seq. 1,2는 둘 다 찍혔을 때, %seq1% OR %seq2%는 둘 중 하나가 찍혔을 때 알림"
-                                style={{ ...sheetInput, width: 126, fontSize: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", padding: "6px 8px" }} />
+                                style={{ ...sheetInput, width: 126, fontSize: 14, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", padding: "6px 8px" }} />
                             </>
                           )}
                           {watch.last_fired_at && (
-                            <span title={`최근 알림: ${watch.last_fired_et_signature || watch.last_fired_step_id || "-"}\n${watch.last_fired_at}`} style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                            <span title={`최근 알림: ${watch.last_fired_et_signature || watch.last_fired_step_id || "-"}\n${watch.last_fired_at}`} style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
                               알림 {String(watch.last_fired_at).slice(5, 16).replace("T", " ")}
                             </span>
                           )}
@@ -705,11 +705,11 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                   </td>
                 </>}
                 {!readOnly && <td style={{ ...cellStyle, textAlign: "center" }}>
-                  <span onClick={() => removeRow(i)} style={{ cursor: "pointer", color: "#ef4444", fontSize: 12, fontWeight: 700 }}>×</span>
+                  <span onClick={() => removeRow(i)} style={{ cursor: "pointer", color: "#ef4444", fontSize: 14, fontWeight: 700 }}>×</span>
                 </td>}
                 {readOnly && <>
-                  <td style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 11 }}>{l.username}</td>
-                  <td style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 10 }}>{l.added?.slice(0, 10)}</td>
+                  <td style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 14 }}>{l.username}</td>
+                  <td style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 14 }}>{l.added?.slice(0, 10)}</td>
                 </>}
               </tr>
               );
@@ -718,15 +718,15 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
             {!readOnly && (
               <tr onClick={addRow} style={{ cursor: "pointer" }}
                   title="클릭 또는 + 로 행 추가 · Excel TSV 붙여넣기 지원">
-                <td colSpan={4} style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 11, background: "var(--bg-tertiary)", opacity: 0.7, fontFamily: "monospace" }}>
+                <td colSpan={4} style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 14, background: "var(--bg-tertiary)", opacity: 0.7, fontFamily: "monospace" }}>
                   {lots.length === 0 ? "Excel 붙여넣기 (PRODUCT \t root_lot_id/lot_id \t WAFER_ID \t COMMENT) 또는 + 로 행 추가" : "(빈 행)"}
                 </td>
                 <td style={{ ...cellStyle, textAlign: "center", background: "var(--bg-tertiary)" }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, borderRadius: "50%", background: "var(--accent)", color: "#fff", fontSize: 13, fontWeight: 700, lineHeight: 1 }}>+</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, borderRadius: "50%", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 700, lineHeight: 1 }}>+</span>
                 </td>
               </tr>
             )}
-            {readOnly && lots.length === 0 && <tr><td colSpan={readOnlyColSpan} style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 11 }}>Lot/Wafer 데이터 없음</td></tr>}
+            {readOnly && lots.length === 0 && <tr><td colSpan={readOnlyColSpan} style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>Lot/Wafer 데이터 없음</td></tr>}
           </tbody>
         </table>
       </div>
@@ -757,28 +757,28 @@ function IssueMailControl({ issue, mailGroups, canEdit, onSave }) {
   };
   return (
     <div style={{ marginBottom: 12, padding: "9px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-      <label title="메일 발송 여부는 lot/wafer 행이 아니라 이슈 단위로 적용됩니다." style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: canEdit ? "pointer" : "default", fontSize: 12, fontWeight: 700, color: enabled ? "var(--accent)" : "var(--text-secondary)" }}>
+      <label title="메일 발송 여부는 lot/wafer 행이 아니라 이슈 단위로 적용됩니다." style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: canEdit ? "pointer" : "default", fontSize: 14, fontWeight: 700, color: enabled ? "var(--accent)" : "var(--text-secondary)" }}>
         <input type="checkbox" checked={enabled} disabled={!canEdit} onChange={e => save({ mail: e.target.checked })} />
         <span>이슈 메일 발송</span>
       </label>
-      <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>watch 조건이 감지되면 이 이슈 설정으로 메일을 보냅니다.</span>
+      <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>watch 조건이 감지되면 이 이슈 설정으로 메일을 보냅니다.</span>
       <details style={{ position: "relative" }}>
-        <summary title="선택하지 않으면 이슈 작성자와 lot 추가자만 받습니다." style={{ listStyle: "none", cursor: canEdit ? "pointer" : "default", padding: "4px 8px", border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg-primary)", color: selectedGroups.length ? "var(--accent)" : "var(--text-secondary)", fontSize: 11, fontWeight: selectedGroups.length ? 700 : 500 }}>
+        <summary title="선택하지 않으면 이슈 작성자와 lot 추가자만 받습니다." style={{ listStyle: "none", cursor: canEdit ? "pointer" : "default", padding: "4px 8px", border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg-primary)", color: selectedGroups.length ? "var(--accent)" : "var(--text-secondary)", fontSize: 14, fontWeight: selectedGroups.length ? 700 : 500 }}>
           수신 {groupLabel}
         </summary>
         {canEdit && (
           <div style={{ position: "absolute", top: 28, left: 0, zIndex: 10, minWidth: 240, maxHeight: 240, overflow: "auto", padding: 8, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)", boxShadow: "0 8px 24px rgba(0,0,0,0.18)" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 4px", cursor: "pointer", fontSize: 11 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 4px", cursor: "pointer", fontSize: 14 }}>
               <input type="checkbox" checked={selectedGroups.length === 0} onChange={() => save({ mail_group_ids: [] })} />
               <span>User only</span>
             </label>
             <div style={{ borderTop: "1px solid var(--border)", margin: "4px 0" }} />
-            {mailGroups.length === 0 && <div style={{ padding: 6, color: "var(--text-secondary)", fontSize: 10 }}>등록된 수신처 그룹 없음</div>}
+            {mailGroups.length === 0 && <div style={{ padding: 6, color: "var(--text-secondary)", fontSize: 14 }}>등록된 수신처 그룹 없음</div>}
             {mailGroups.map(g => (
-              <label key={g.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 4px", cursor: "pointer", fontSize: 11 }}>
+              <label key={g.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 4px", cursor: "pointer", fontSize: 14 }}>
                 <input type="checkbox" checked={selectedGroups.includes(g.id)} onChange={() => toggleGroup(g.id)} />
                 <span style={{ flex: 1 }}>{g.name}</span>
-                <span style={{ color: "var(--text-secondary)", fontSize: 10 }}>{(g.members?.length || 0) + (g.extra_emails?.length || 0)}</span>
+                <span style={{ color: "var(--text-secondary)", fontSize: 14 }}>{(g.members?.length || 0) + (g.extra_emails?.length || 0)}</span>
               </label>
             ))}
           </div>
@@ -797,12 +797,12 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
   const [myGroups, setMyGroups] = useState([]); const [groupIds, setGroupIds] = useState([]);
   useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#64748b" } : c))).catch(() => { }); }, []);
   useEffect(() => { sf("/api/groups/list").then(d => setMyGroups(d.groups || [])).catch(() => setMyGroups([])); }, []);
-  const S = { width: "100%", padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, outline: "none" };
+  const S = { width: "100%", padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
   return (
     <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 20, marginBottom: 20 }}>
       <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>새 이슈</div>
       <input value={title} onChange={e => setTitle(e.target.value)} placeholder="제목" style={{ ...S, marginBottom: 8 }} />
-      <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 4 }}>설명 (Ctrl+V 로 이미지 붙여넣기)</div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>설명 (Ctrl+V 로 이미지 붙여넣기)</div>
       <DescEditor value={desc} onChange={setDesc} placeholder="설명 입력... Ctrl+V 로 이미지 붙여넣기" />
       <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
         <select value={priority} onChange={e => setPriority(e.target.value)} style={{ ...S, width: "auto" }}>
@@ -815,13 +815,13 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
       </div>
       {/* Related Links */}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 4, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span>관련 링크 ({links.filter(l => l.trim()).length})</span>
-          <span onClick={() => setLinks([...links, ""])} style={{ cursor: "pointer", color: "var(--accent)", fontSize: 10, fontWeight: 600 }}>+ 추가</span>
+          <span onClick={() => setLinks([...links, ""])} style={{ cursor: "pointer", color: "var(--accent)", fontSize: 14, fontWeight: 600 }}>+ 추가</span>
         </div>
         {links.map((lnk, i) => (
           <div key={i} style={{ display: "flex", gap: 6, marginBottom: 4 }}>
-            <input value={lnk} onChange={e => { const nl = [...links]; nl[i] = e.target.value; setLinks(nl); }} placeholder="https://... 또는 설명" style={{ ...S, fontSize: 12 }} />
+            <input value={lnk} onChange={e => { const nl = [...links]; nl[i] = e.target.value; setLinks(nl); }} placeholder="https://... 또는 설명" style={{ ...S, fontSize: 14 }} />
             {links.length > 1 && <span onClick={() => setLinks(links.filter((_, j) => j !== i))} style={{ cursor: "pointer", color: "#ef4444", fontSize: 14, padding: "6px 4px", flexShrink: 0 }}>✕</span>}
           </div>
         ))}
@@ -831,12 +831,12 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
       </div>
       {/* v8.5.0: 그룹 가시성 */}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 4 }}>그룹 가시성 (비어있으면 공개)</div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>그룹 가시성 (비어있으면 공개)</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {myGroups.length === 0 && <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>가입된 그룹 없음</span>}
+          {myGroups.length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>가입된 그룹 없음</span>}
           {myGroups.map(g => {
             const on = groupIds.includes(g.id);
-            return <label key={g.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, padding: "3px 8px", borderRadius: 999, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)22" : "transparent", cursor: "pointer" }}>
+            return <label key={g.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 14, padding: "3px 8px", borderRadius: 999, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)22" : "transparent", cursor: "pointer" }}>
               <input type="checkbox" checked={on} onChange={e => {
                 const s = new Set(groupIds);
                 if (e.target.checked) s.add(g.id); else s.delete(g.id);
@@ -892,15 +892,15 @@ function GanttChart({ issues, onIssueClick }) {
       {/* v8.8.13: 제목 / 담당자 / 카테고리 부분일치 필터 */}
       <input value={gQuery} onChange={e => setGQuery(e.target.value)}
         placeholder="🔎 제목 · 담당자 · 카테고리 검색"
-        style={{ flex: 1, minWidth: 220, padding: "4px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
-      {gQuery && <span onClick={() => setGQuery("")} style={{ cursor: "pointer", color: "#ef4444", fontSize: 11 }}>✕ 초기화</span>}
-      <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{filtered.length}{gQuery ? ` / ${(issues || []).length}` : ""}건</span>
+        style={{ flex: 1, minWidth: 220, padding: "4px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
+      {gQuery && <span onClick={() => setGQuery("")} style={{ cursor: "pointer", color: "#ef4444", fontSize: 14 }}>✕ 초기화</span>}
+      <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{filtered.length}{gQuery ? ` / ${(issues || []).length}` : ""}건</span>
     </div>
     {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>{gQuery ? "매칭 이슈 없음" : "이슈 없음"}</div>}
     {filtered.length > 0 && (<>
 
     <div style={{ overflow: "auto" }}>
-      <table style={{ borderCollapse: "collapse", fontSize: 10, minWidth: "100%" }}>
+      <table style={{ borderCollapse: "collapse", fontSize: 14, minWidth: "100%" }}>
         <thead><tr>
           <th style={{ textAlign: "left", padding: "6px 8px", borderBottom: "2px solid var(--border)", background: "var(--bg-tertiary)", position: "sticky", left: 0, zIndex: 2, minWidth: 140 }}>이슈</th>
           {days.map(d => <th key={d} style={{ padding: "4px 2px", borderBottom: "2px solid var(--border)", background: "var(--bg-tertiary)", minWidth: 20, textAlign: "center", color: new Date(year, month, d).getDay() === 0 ? "#ef4444" : "var(--text-secondary)" }}>{d}</th>)}
@@ -911,7 +911,7 @@ function GanttChart({ issues, onIssueClick }) {
             <td style={{ padding: "4px 8px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 220 }} title={`${iss.title} · 담당: ${iss.username || "-"}`}>
               <span onClick={() => onIssueClick && onIssueClick(iss.id)} style={{ fontWeight: 600, cursor: "pointer", color: "var(--accent)", textDecoration: "none" }} onMouseEnter={e=>e.currentTarget.style.textDecoration="underline"} onMouseLeave={e=>e.currentTarget.style.textDecoration="none"}>{iss.category ? `[${iss.category}] ` : ""}{iss.title}</span>
               {/* v8.8.13: 이슈 옆에 담당자 회색 표시 */}
-              {iss.username && <span style={{ marginLeft: 6, fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace" }}>· {iss.username}</span>}
+              {iss.username && <span style={{ marginLeft: 6, fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>· {iss.username}</span>}
             </td>
             {days.map(d => {
               const day = new Date(year, month, d);
@@ -1059,7 +1059,7 @@ export default function My_Tracker({ user }) {
       {/* Sidebar */}
       <div style={{ width: 400, minWidth: 350, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", background: "var(--bg-secondary)" }}>
         <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>이슈 추적</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>이슈 추적</span>
           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
             <Pill tone="neutral">{filteredIssues.length}</Pill>
             <Button variant="primary" onClick={() => setCreating(!creating)}>+ 새 이슈</Button>
@@ -1075,25 +1075,25 @@ export default function My_Tracker({ user }) {
         />
         <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="제목 또는 작성자 검색..."
-            style={{ width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none" }} />
+            style={{ width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" }} />
         </div>
         <div style={{ display: "flex", gap: 4, padding: "8px 12px", flexWrap: "wrap" }}>
           {["", "in_progress", "closed"].map(s => {
             const label = s === "" ? "전체" : s === "in_progress" ? "진행중" : "완료";
-            return <span key={s} onClick={() => setFilter(s)} style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", fontWeight: filter === s ? 600 : 400, background: filter === s ? "var(--accent-glow)" : "transparent", color: filter === s ? "var(--accent)" : "var(--text-secondary)" }}>{label}</span>;
+            return <span key={s} onClick={() => setFilter(s)} style={{ padding: "3px 8px", borderRadius: 4, fontSize: 14, cursor: "pointer", fontWeight: filter === s ? 600 : 400, background: filter === s ? "var(--accent-glow)" : "transparent", color: filter === s ? "var(--accent)" : "var(--text-secondary)" }}>{label}</span>;
           })}
-          <span style={{ fontSize: 10, color: "var(--text-secondary)", marginLeft: "auto" }}>{filteredIssues.length}</span>
+          <span style={{ fontSize: 14, color: "var(--text-secondary)", marginLeft: "auto" }}>{filteredIssues.length}</span>
         </div>
         <div style={{ flex: 1, overflow: "auto" }}>
           {filteredIssues.map(iss => (
             <div key={iss.id} onClick={() => { loadDetail(iss.id); setViewTab("list"); }} style={{ padding: "10px 16px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: selected?.id === iss.id ? "var(--bg-hover)" : "transparent" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
                 <span title={iss.category ? `카테고리: ${iss.category}` : `상태: ${iss.status}`} style={{ width: 9, height: 9, borderRadius: "50%", background: iss.category ? catColor(iss.category) : (statusColor[iss.status] || "#666"), flexShrink: 0, border: iss.category ? "1px solid rgba(255,255,255,0.2)" : "none" }} />
-                {iss.category && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: catColor(iss.category) + "22", color: catColor(iss.category), fontWeight: 700, flexShrink: 0, fontFamily: "monospace", letterSpacing: "0.02em" }}>{iss.category}</span>}
-                <span style={{ fontSize: 13, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{iss.title}</span>
-                <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: (prioColor[iss.priority] || "#666") + "22", color: prioColor[iss.priority] || "#666", fontWeight: 700 }}>{({low:"낮음",normal:"보통",high:"높음",critical:"긴급"}[iss.priority]) || iss.priority}</span>
+                {iss.category && <span style={{ fontSize: 14, padding: "1px 5px", borderRadius: 3, background: catColor(iss.category) + "22", color: catColor(iss.category), fontWeight: 700, flexShrink: 0, fontFamily: "monospace", letterSpacing: "0.02em" }}>{iss.category}</span>}
+                <span style={{ fontSize: 14, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{iss.title}</span>
+                <span style={{ fontSize: 14, padding: "1px 5px", borderRadius: 3, background: (prioColor[iss.priority] || "#666") + "22", color: prioColor[iss.priority] || "#666", fontWeight: 700 }}>{({low:"낮음",normal:"보통",high:"높음",critical:"긴급"}[iss.priority]) || iss.priority}</span>
               </div>
-              <div style={{ fontSize: 10, color: "var(--text-secondary)", display: "flex", gap: 8 }}>
+              <div style={{ fontSize: 14, color: "var(--text-secondary)", display: "flex", gap: 8 }}>
                 <span style={{ fontWeight: 500 }}>{iss.username || "?"}</span>
                 <span>{(iss.created || iss.timestamp || "")?.slice(0, 10)}</span>
                 {iss.lot_count > 0 && <span>lot {iss.lot_count}건</span>}
@@ -1112,17 +1112,17 @@ export default function My_Tracker({ user }) {
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
               {editMode ? <input value={editTitle} onChange={e => setEditTitle(e.target.value)} style={{ fontSize: 18, fontWeight: 700, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--accent)", background: "var(--bg-primary)", color: "var(--text-primary)", outline: "none", flex: 1 }} />
                 : <span style={{ fontSize: 18, fontWeight: 700 }}>{selected.title}</span>}
-              {canEdit && !editMode && <span onClick={startEdit} style={{ cursor: "pointer", fontSize: 12, color: "var(--accent)", padding: "4px 8px", borderRadius: 4, background: "var(--accent-glow)" }}>수정</span>}
-              {editMode && <span onClick={saveEdit} style={{ cursor: "pointer", fontSize: 12, color: "#22c55e", padding: "4px 8px", borderRadius: 4, background: "#22c55e22", fontWeight: 600 }}>저장</span>}
-              {editMode && <span onClick={() => setEditMode(false)} style={{ cursor: "pointer", fontSize: 12, color: "var(--text-secondary)", padding: "4px 8px", borderRadius: 4, background: "var(--bg-hover)" }}>취소</span>}
-              {canEdit && <span onClick={deleteIssue} style={{ cursor: "pointer", fontSize: 12, color: "#ef4444", padding: "4px 8px", borderRadius: 4, background: "#ef444411" }}>삭제</span>}
-              <select value={selected.status} onChange={e => updateStatus(selected.id, e.target.value)} style={{ padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11, marginLeft: "auto" }}>
+              {canEdit && !editMode && <span onClick={startEdit} style={{ cursor: "pointer", fontSize: 14, color: "var(--accent)", padding: "4px 8px", borderRadius: 4, background: "var(--accent-glow)" }}>수정</span>}
+              {editMode && <span onClick={saveEdit} style={{ cursor: "pointer", fontSize: 14, color: "#22c55e", padding: "4px 8px", borderRadius: 4, background: "#22c55e22", fontWeight: 600 }}>저장</span>}
+              {editMode && <span onClick={() => setEditMode(false)} style={{ cursor: "pointer", fontSize: 14, color: "var(--text-secondary)", padding: "4px 8px", borderRadius: 4, background: "var(--bg-hover)" }}>취소</span>}
+              {canEdit && <span onClick={deleteIssue} style={{ cursor: "pointer", fontSize: 14, color: "#ef4444", padding: "4px 8px", borderRadius: 4, background: "#ef444411" }}>삭제</span>}
+              <select value={selected.status} onChange={e => updateStatus(selected.id, e.target.value)} style={{ padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14, marginLeft: "auto" }}>
                 {[["in_progress","진행중"], ["closed","완료"]].map(([v,lbl]) => <option key={v} value={v}>{lbl}</option>)}
               </select>
             </div>
 
             {/* Meta */}
-            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 12, display: "flex", gap: 12 }}>
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 12, display: "flex", gap: 12 }}>
               <span>작성자 <strong>{selected.username}</strong></span>
               <span>{(selected.created || selected.timestamp || "")?.slice(0, 16)}</span>
               {selected.closed_at && <span>완료: {selected.closed_at?.slice(0, 16)}</span>}
@@ -1137,25 +1137,25 @@ export default function My_Tracker({ user }) {
             {/* Description */}
             {editMode ? (
               <div style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 4 }}>설명 (Ctrl+V 로 이미지 붙여넣기)</div>
+                <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>설명 (Ctrl+V 로 이미지 붙여넣기)</div>
                 <DescEditor value={editDesc} onChange={setEditDesc} placeholder="설명 수정..." />
               </div>
             ) : (selected.description_html || selected.description) && (<>
               <style>{`.desc-view img{max-width:400px!important;border-radius:6px;display:block;margin:4px 0;}`}</style>
-              <div className="desc-view" style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16, lineHeight: 1.7, background: "var(--bg-card)", padding: 12, borderRadius: 8, border: "1px solid var(--border)", wordBreak: "break-word" }}
+              <div className="desc-view" style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 16, lineHeight: 1.7, background: "var(--bg-card)", padding: 12, borderRadius: 8, border: "1px solid var(--border)", wordBreak: "break-word" }}
                 dangerouslySetInnerHTML={{ __html: withTrackerImageAuth(selected.description_html || selected.description) }} /></>
 
             )}
 
             {/* Priority (edit) */}
             {editMode && <div style={{ marginBottom: 12, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>우선순위:
-                <select value={editPrio} onChange={e => setEditPrio(e.target.value)} style={{ marginLeft: 6, padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11 }}>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>우선순위:
+                <select value={editPrio} onChange={e => setEditPrio(e.target.value)} style={{ marginLeft: 6, padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14 }}>
                   <option value="low">낮음</option><option value="normal">보통</option><option value="high">높음</option><option value="critical">긴급</option></select>
               </span>
               {/* v8.8.13: 카테고리 수정 허용 — 이전엔 FE state 누락으로 저장 시 변경 안 됨. */}
-              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>카테고리:
-                <select value={editCategory} onChange={e => setEditCategory(e.target.value)} style={{ marginLeft: 6, padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 11 }}>
+              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>카테고리:
+                <select value={editCategory} onChange={e => setEditCategory(e.target.value)} style={{ marginLeft: 6, padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14 }}>
                   <option value="">카테고리 필수</option>
                   {cats.map(c => <option key={c.name || c} value={c.name || c}>{c.name || c}</option>)}
                 </select>
@@ -1167,11 +1167,11 @@ export default function My_Tracker({ user }) {
 
             {/* Related Links */}
             {selected.links?.length > 0 && <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--text-secondary)" }}>관련 링크</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: "var(--text-secondary)" }}>관련 링크</div>
               {selected.links.map((lnk, i) => (
                 <div key={i} style={{ marginBottom: 4 }}>
-                  {lnk.startsWith("http") ? <a href={lnk} target="_blank" rel="noopener noreferrer" style={{ color: "#3b82f6", fontSize: 12, textDecoration: "none", wordBreak: "break-all" }}>{lnk}</a>
-                    : <span style={{ fontSize: 12, color: "var(--text-primary)" }}>{lnk}</span>}
+                  {lnk.startsWith("http") ? <a href={lnk} target="_blank" rel="noopener noreferrer" style={{ color: "#3b82f6", fontSize: 14, textDecoration: "none", wordBreak: "break-all" }}>{lnk}</a>
+                    : <span style={{ fontSize: 14, color: "var(--text-primary)" }}>{lnk}</span>}
                 </div>
               ))}
             </div>}
@@ -1189,50 +1189,50 @@ export default function My_Tracker({ user }) {
 
             {/* Comments */}
             <div style={{ marginTop: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>댓글 ({commentTotal(selected.comments || [])})</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>댓글 ({commentTotal(selected.comments || [])})</div>
               {selected.comments?.map((c, i) => (
                 <div key={i} style={{ padding: "10px 12px", marginBottom: 8, background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, alignItems: "center" }}>
-                    <span style={{ fontSize: 12, fontWeight: 600 }}>{c.username}</span>
+                    <span style={{ fontSize: 14, fontWeight: 600 }}>{c.username}</span>
                     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                       <span title={c.timestamp || ""} style={{
-                        fontSize: 10, padding: "2px 8px", borderRadius: 999,
+                        fontSize: 14, padding: "2px 8px", borderRadius: 999,
                         background: "var(--bg-primary)", color: "var(--text-primary)",
                         border: "1px solid var(--border)", fontFamily: "monospace",
                       }}>🕐 {(c.timestamp || "").replace("T", " ").slice(0, 16) || "시간 없음"}</span>
                       {canDeleteCommentItem(c) && <button type="button" onClick={() => deleteCommentItem(i)}
-                        style={{ padding: "2px 7px", borderRadius: 999, border: "1px solid #ef444455", background: "#ef444411", color: "#ef4444", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>삭제</button>}
+                        style={{ padding: "2px 7px", borderRadius: 999, border: "1px solid #ef444455", background: "#ef444411", color: "#ef4444", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>삭제</button>}
                     </div>
                   </div>
-                  <div style={{ fontSize: 13, lineHeight: 1.6 }}>{c.text}</div>
-                  {(c.lot_id || c.wafer_id) && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginTop: 4 }}>{c.lot_id} / {c.wafer_id}</div>}
+                  <div style={{ fontSize: 14, lineHeight: 1.6 }}>{c.text}</div>
+                  {(c.lot_id || c.wafer_id) && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>{c.lot_id} / {c.wafer_id}</div>}
                   {(c.replies || []).length > 0 && <div style={{ marginTop: 8, paddingLeft: 12, borderLeft: "2px solid var(--border)", display: "grid", gap: 6 }}>
                     {(c.replies || []).map((r, ri) => (
                       <div key={ri} style={{ padding: "7px 8px", borderRadius: 6, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 3 }}>
-                          <span style={{ fontSize: 11, fontWeight: 700 }}>{r.username || "-"}</span>
+                          <span style={{ fontSize: 14, fontWeight: 700 }}>{r.username || "-"}</span>
                           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                            <span title={r.timestamp || ""} style={{ fontSize: 9, color: "var(--text-secondary)", fontFamily: "monospace", whiteSpace: "nowrap" }}>{(r.timestamp || "").replace("T", " ").slice(0, 16) || "시간 없음"}</span>
+                            <span title={r.timestamp || ""} style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", whiteSpace: "nowrap" }}>{(r.timestamp || "").replace("T", " ").slice(0, 16) || "시간 없음"}</span>
                             {canDeleteCommentItem(r) && <button type="button" onClick={() => deleteCommentItem(i, ri)}
-                              style={{ padding: "1px 6px", borderRadius: 999, border: "1px solid #ef444455", background: "#ef444411", color: "#ef4444", fontSize: 9, fontWeight: 700, cursor: "pointer" }}>삭제</button>}
+                              style={{ padding: "1px 6px", borderRadius: 999, border: "1px solid #ef444455", background: "#ef444411", color: "#ef4444", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>삭제</button>}
                           </div>
                         </div>
-                        <div style={{ fontSize: 12, lineHeight: 1.55 }}>{r.text}</div>
+                        <div style={{ fontSize: 14, lineHeight: 1.55 }}>{r.text}</div>
                       </div>
                     ))}
                   </div>}
                   <div style={{ display: "flex", gap: 6, marginTop: 8, paddingLeft: 12 }}>
                     <input value={replyDrafts[i] || ""} onChange={e => setReplyDrafts(m => ({ ...m, [i]: e.target.value }))} placeholder="대댓글 입력..."
-                      style={{ flex: 1, padding: "6px 9px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12, outline: "none" }}
+                      style={{ flex: 1, padding: "6px 9px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" }}
                       onKeyDown={e => e.key === "Enter" && addReply(i)} />
-                    <button onClick={() => addReply(i)} style={{ padding: "6px 11px", borderRadius: 6, border: "1px solid var(--accent)", background: "var(--accent-glow)", color: "var(--accent)", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>답글</button>
+                    <button onClick={() => addReply(i)} style={{ padding: "6px 11px", borderRadius: 6, border: "1px solid var(--accent)", background: "var(--accent-glow)", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>답글</button>
                   </div>
                 </div>))}
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <input value={comment} onChange={e => setComment(e.target.value)} placeholder="댓글 입력..."
-                  style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, outline: "none" }}
+                  style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" }}
                   onKeyDown={e => e.key === "Enter" && addComment()} />
-                <button onClick={addComment} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>전송</button>
+                <button onClick={addComment} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>전송</button>
               </div>
             </div>
           </div>) : <EmptyState title="이슈를 선택하세요" hint="좌측 목록에서 이슈를 고르거나 새 이슈를 생성하세요." />}
@@ -1423,38 +1423,38 @@ function TrackerSettings({ isAdmin, onChanged }) {
   const templateVars = dbSources.template_variables?.length ? dbSources.template_variables : ["issue_id", "issue_title", "lot", "wafer_id", "reason", "recent_et"];
   return (
     <div>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>DB 연결</div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>DB 연결</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6, marginBottom: 12 }}>
-        <label style={{ display: "grid", gridTemplateColumns: "70px 1fr", gap: 8, alignItems: "center", fontSize: 11, color: "var(--text-secondary)" }}>
+        <label style={{ display: "grid", gridTemplateColumns: "70px 1fr", gap: 8, alignItems: "center", fontSize: 14, color: "var(--text-secondary)" }}>
           Monitor명
           <input value={dbSources.monitor_name || ""} disabled={!isAdmin || dbBusy}
             onChange={e => setDbSources(prev => ({ ...prev, monitor_name: e.target.value }))}
-            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11 }} />
+            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
         </label>
-        <label style={{ display: "grid", gridTemplateColumns: "70px 1fr", gap: 8, alignItems: "center", fontSize: 11, color: "var(--text-secondary)" }}>
+        <label style={{ display: "grid", gridTemplateColumns: "70px 1fr", gap: 8, alignItems: "center", fontSize: 14, color: "var(--text-secondary)" }}>
           Monitor DB
           <select value={dbSources.monitor || ""} disabled={!isAdmin || dbBusy}
             onChange={e => setDbSources(prev => ({ ...prev, monitor: e.target.value }))}
-            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11 }}>
+            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }}>
             {dbRootOptions.map(root => <option key={root} value={root}>{root}</option>)}
           </select>
         </label>
-        <label style={{ display: "grid", gridTemplateColumns: "70px 1fr", gap: 8, alignItems: "center", fontSize: 11, color: "var(--text-secondary)" }}>
+        <label style={{ display: "grid", gridTemplateColumns: "70px 1fr", gap: 8, alignItems: "center", fontSize: 14, color: "var(--text-secondary)" }}>
           Analysis명
           <input value={dbSources.analysis_name || ""} disabled={!isAdmin || dbBusy}
             onChange={e => setDbSources(prev => ({ ...prev, analysis_name: e.target.value }))}
-            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11 }} />
+            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
         </label>
-        <label style={{ display: "grid", gridTemplateColumns: "70px 1fr", gap: 8, alignItems: "center", fontSize: 11, color: "var(--text-secondary)" }}>
+        <label style={{ display: "grid", gridTemplateColumns: "70px 1fr", gap: 8, alignItems: "center", fontSize: 14, color: "var(--text-secondary)" }}>
           Analysis DB
           <select value={dbSources.analysis || ""} disabled={!isAdmin || dbBusy}
             onChange={e => setDbSources(prev => ({ ...prev, analysis: e.target.value }))}
-            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11 }}>
+            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }}>
             {dbRootOptions.map(root => <option key={root} value={root}>{root}</option>)}
           </select>
         </label>
-        <div style={{ fontSize: 11, fontWeight: 600, marginTop: 4 }}>메일 템플릿</div>
-        <div style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4 }}>메일 템플릿</div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.5 }}>
           사용 변수: {templateVars.map(v => `{${v}}`).join(" ")}
         </div>
         {[
@@ -1463,28 +1463,28 @@ function TrackerSettings({ isAdmin, onChanged }) {
         ].map(([kind, label]) => (
           <div key={kind} style={{ display: "grid", gap: 4, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-              <div style={{ fontSize: 11, fontWeight: 600 }}>{label} 메일</div>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{label} 메일</div>
               <button onClick={() => applyDefaultMailTemplate(kind)} disabled={!isAdmin || dbBusy}
-                style={{ padding: "4px 7px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 10, cursor: isAdmin && !dbBusy ? "pointer" : "not-allowed" }}>
+                style={{ padding: "4px 7px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: isAdmin && !dbBusy ? "pointer" : "not-allowed" }}>
                 기본값 적용
               </button>
             </div>
             <input value={dbSources.mail_templates?.[kind]?.subject || ""} disabled={!isAdmin || dbBusy}
               onChange={e => updateMailTemplate(kind, "subject", e.target.value)}
               placeholder="[flow · {role_name}] {issue_title}"
-              style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11 }} />
+              style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
             <textarea value={dbSources.mail_templates?.[kind]?.body || ""} disabled={!isAdmin || dbBusy}
               onChange={e => updateMailTemplate(kind, "body", e.target.value)}
               rows={kind === "analysis" ? 6 : 5}
               placeholder="<p>{reason}</p>"
-              style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, minHeight: 86, resize: "vertical", fontFamily: "monospace" }} />
+              style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, minHeight: 86, resize: "vertical", fontFamily: "monospace" }} />
             <button onClick={() => previewMailTemplate(kind)} disabled={!!previewBusy}
-              style={{ justifySelf: "start", padding: "5px 9px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, cursor: previewBusy ? "not-allowed" : "pointer" }}>
+              style={{ justifySelf: "start", padding: "5px 9px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, cursor: previewBusy ? "not-allowed" : "pointer" }}>
               {previewBusy === kind ? "미리보기 중..." : "미리보기"}
             </button>
             {mailPreview?.kind === kind && (
               <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden", background: "var(--bg-primary)" }}>
-                <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border)", fontSize: 11, lineHeight: 1.5 }}>
+                <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border)", fontSize: 14, lineHeight: 1.5 }}>
                   <div style={{ color: "var(--text-secondary)", marginBottom: 2 }}>제목</div>
                   <div style={{ fontWeight: 700, color: "var(--text-primary)", wordBreak: "break-word" }}>{mailPreview.subject || "-"}</div>
                 </div>
@@ -1499,46 +1499,46 @@ function TrackerSettings({ isAdmin, onChanged }) {
           </div>
         ))}
         <button onClick={saveDbSources} disabled={!isAdmin || dbBusy}
-          style={{ justifySelf: "end", padding: "6px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, cursor: isAdmin && !dbBusy ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.55 }}>
+          style={{ justifySelf: "end", padding: "6px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: isAdmin && !dbBusy ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.55 }}>
           페이지 설정 저장
         </button>
-        {dbMsg && <div style={{ fontSize: 11, color: dbMsg.includes("완료") ? "#22c55e" : "#ef4444" }}>{dbMsg}</div>}
+        {dbMsg && <div style={{ fontSize: 14, color: dbMsg.includes("완료") ? "#22c55e" : "#ef4444" }}>{dbMsg}</div>}
       </div>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>자동 갱신</div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>자동 갱신</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-secondary)" }}>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 14, color: "var(--text-secondary)" }}>
           <input type="checkbox" checked={!!sched.enabled} disabled={!isAdmin || schedBusy}
             onChange={e => setSched(prev => ({ ...prev, enabled: e.target.checked }))} />
           자동 스캔
         </label>
         <button onClick={runSchedulerNow} disabled={!isAdmin || schedBusy}
-          style={{ padding: "6px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, cursor: isAdmin && !schedBusy ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.55 }}>
+          style={{ padding: "6px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, cursor: isAdmin && !schedBusy ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.55 }}>
           즉시 스캔
         </button>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-secondary)" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, color: "var(--text-secondary)" }}>
           몇 분마다 갱신
           <input type="number" min={sched.min_interval_minutes || 1} max={sched.max_interval_minutes || 1440}
             value={sched.interval_minutes}
             disabled={!isAdmin || schedBusy}
             onChange={e => setSched(prev => ({ ...prev, interval_minutes: e.target.value }))}
-            style={{ width: 70, padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+            style={{ width: 70, padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
           분
         </label>
-        <label title="Analysis ET step에서 seq/pt 구성이 이 시간 동안 변하지 않으면 측정 완료 알림" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-secondary)" }}>
+        <label title="Analysis ET step에서 seq/pt 구성이 이 시간 동안 변하지 않으면 측정 완료 알림" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, color: "var(--text-secondary)" }}>
           ET 완료 딜레이
           <input type="number" min={sched.min_et_stable_delay_minutes || 1} max={sched.max_et_stable_delay_minutes || 1440}
             value={sched.et_stable_delay_minutes}
             disabled={!isAdmin || schedBusy}
             onChange={e => setSched(prev => ({ ...prev, et_stable_delay_minutes: e.target.value }))}
-            style={{ width: 70, padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
+            style={{ width: 70, padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
           분
         </label>
         <button onClick={saveScheduler} disabled={!isAdmin || schedBusy}
-          style={{ padding: "6px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, cursor: isAdmin && !schedBusy ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.55 }}>
+          style={{ padding: "6px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: isAdmin && !schedBusy ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.55 }}>
           저장
         </button>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14, fontSize: 10, color: "var(--text-secondary)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14, fontSize: 14, color: "var(--text-secondary)" }}>
         <span>최근 스캔 {fmtTime(status.finished_at || status.started_at)}</span>
         <span>스캔 랏 {status.lots_scanned ?? 0} / 갱신 {status.lots_updated ?? 0}</span>
         <span>watch {status.watches_checked ?? 0} / 알림 {status.notify_count ?? 0}</span>
@@ -1546,18 +1546,18 @@ function TrackerSettings({ isAdmin, onChanged }) {
         <span>자동 갱신 {sched.enabled === false ? "꺼짐" : `${sched.interval_minutes ?? 30}분마다`}</span>
         <span>ET 완료 딜레이 {sched.et_stable_delay_minutes ?? 180}분</span>
       </div>
-      {status.last_error && <div style={{ marginBottom: 10, fontSize: 10, color: "#ef4444" }}>{status.last_error}</div>}
-      {schedMsg && <div style={{ marginBottom: 12, fontSize: 11, color: schedMsg.includes("완료") ? "#22c55e" : "#ef4444" }}>{schedMsg}</div>}
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>카테고리 관리</div>
-      {!isAdmin && <div style={{ fontSize: 10, color: "var(--text-secondary)", marginBottom: 8 }}>편집은 관리자만 가능합니다.</div>}
+      {status.last_error && <div style={{ marginBottom: 10, fontSize: 14, color: "#ef4444" }}>{status.last_error}</div>}
+      {schedMsg && <div style={{ marginBottom: 12, fontSize: 14, color: schedMsg.includes("완료") ? "#22c55e" : "#ef4444" }}>{schedMsg}</div>}
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>카테고리 관리</div>
+      {!isAdmin && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>편집은 관리자만 가능합니다.</div>}
       <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
         {cats.map(c => (
           <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input type="color" value={c.color || "#64748b"} disabled={!isAdmin}
               onChange={e => updColor(c.name, e.target.value)}
               style={{ width: 28, height: 26, border: "1px solid var(--border)", borderRadius: 4, background: "transparent", cursor: isAdmin ? "pointer" : "default" }} />
-            <span style={{ flex: 1, fontSize: 12 }}>{c.name}</span>
-            {isAdmin && <span onClick={() => remove(c.name)} style={{ cursor: "pointer", color: "#ef4444", fontSize: 11 }}>삭제</span>}
+            <span style={{ flex: 1, fontSize: 14 }}>{c.name}</span>
+            {isAdmin && <span onClick={() => remove(c.name)} style={{ cursor: "pointer", color: "#ef4444", fontSize: 14 }}>삭제</span>}
           </div>
         ))}
       </div>
@@ -1566,12 +1566,12 @@ function TrackerSettings({ isAdmin, onChanged }) {
           <input type="color" value={color} onChange={e => setColor(e.target.value)}
             style={{ width: 28, height: 30, border: "1px solid var(--border)", borderRadius: 4, background: "transparent" }} />
           <input value={name} onChange={e => setName(e.target.value)} placeholder="새 카테고리 이름"
-            style={{ flex: 1, padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 12 }} />
-          <button onClick={add} style={{ padding: "6px 12px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 11, cursor: "pointer" }}>추가</button>
+            style={{ flex: 1, padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
+          <button onClick={add} style={{ padding: "6px 12px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: "pointer" }}>추가</button>
         </div>
       )}
-      {msg && <div style={{ marginTop: 8, fontSize: 11, color: msg === "저장 완료" ? "#22c55e" : "#ef4444" }}>{msg}</div>}
-      <div style={{ marginTop: 16, padding: 10, background: "var(--bg-primary)", borderRadius: 6, fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+      {msg && <div style={{ marginTop: 8, fontSize: 14, color: msg === "저장 완료" ? "#22c55e" : "#ef4444" }}>{msg}</div>}
+      <div style={{ marginTop: 16, padding: 10, background: "var(--bg-primary)", borderRadius: 6, fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.6 }}>
         • 카테고리 색상은 이슈 리스트/간트 차트 bar/카테고리 chip 에 반영됩니다.<br/>
         • Analysis ET 알림은 새 step 1회와 seq/pt 안정화 완료 기준으로 동작합니다.<br/>
         • 일반 유저는 현재 카테고리 목록만 조회 가능.

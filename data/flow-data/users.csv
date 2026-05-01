@@ -1,8 +1,3 @@
-username,password_hash,role,status,created,tabs,email
-hol,pbkdf2$sha256$200000$16de1cd45a982ce8e9c92c21f71c2796$adbcfb54ccd4f5d93c9fb399657041e8afaddcdced20e97da1b88044d7b8e7d4,admin,approved,2026-04-18T22:27:39.850610,__all__,
-test1,pbkdf2$sha256$200000$586db1f72244806801dcb9a6f220025a$04ad08337de5464355ef842513fc266317dd8182e3d759a1bf65395a3677135b,user,approved,2026-04-19T17:16:29.941754,"filebrowser,dashboard,splittable,inform,meeting,calendar",
-test2,0ffe1abd1a08215353c233d6e009613e95eec4253832a761af28ff37ac5a150c,user,approved,2026-04-19T17:16:50.771224,"filebrowser,dashboard,splittable",
-test3,pbkdf2$sha256$200000$eead9277da9ba7aa862d73cc26fe7712$e5878106935aee4c7b5a9ada8ae93aba91059885dde0e2fe6ae6a9cf6d81a4d6,user,approved,2026-04-21T19:44:50.922296,"filebrowser,dashboard,splittable",
-test4,pbkdf2$sha256$200000$5a1a248536e9674a17b1fcf563765347$682e7ef1f4bc5d264a331e76166329283e85b1d236b9a27131accb1719526ea7,user,approved,2026-04-21T19:44:55.531980,"filebrowser,dashboard,splittable",
-man,pbkdf2$sha256$200000$add505fab3ea8dfca741a4a629a60ef6$fda9e0ab0c0018f19dd5ccb05c586c09e80ef6d593a5d3770625abb8af5d735a,user,approved,2026-04-21T21:46:28.014858,"filebrowser,dashboard,splittable,inform,meeting,calendar",
-man2,pbkdf2$sha256$200000$d206a72e2265e87cd37c93efb20104fa$9fd962143e8b92882f48a3dbd6fb4620d0833c5df52074cae6faf021780d18b2,user,approved,2026-04-21T21:46:31.316460,"filebrowser,dashboard,splittable,inform,meeting,calendar",
+username,password_hash,role,status,created,tabs,email,name
+hol,pbkdf2$sha256$200000$16de1cd45a982ce8e9c92c21f71c2796$adbcfb54ccd4f5d93c9fb399657041e8afaddcdced20e97da1b88044d7b8e7d4,admin,approved,2026-04-18T22:27:39.850610,__all__,,Admin
+man1,pbkdf2$sha256$200000$fe6aa0c6014b16769a94a50080da5386$9fe26a5a3aa63e6ce9ef1ddbf5406646f626ad7b32acab8b47d0025c4152ee53,user,approved,2026-04-29T22:08:34.201188,"filebrowser,dashboard,splittable,calendar,meeting,inform",,1111

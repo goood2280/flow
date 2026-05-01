@@ -82,6 +82,8 @@ FLOW_STATUSES = ["received", "completed"]
 FLOW_STATUSES_LEGACY = ["received", "reviewing", "in_progress", "completed"]
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8 MB/이미지
+_INFORMS_CACHE_SIG: tuple[float, int] | None = None
+_INFORMS_CACHE_ITEMS: list | None = None
 
 
 def _load_config() -> dict:
@@ -229,12 +231,31 @@ REASONS = list(DEFAULT_REASONS)
 
 # ── helpers ────────────────────────────────────────────────────────────
 def _load() -> list:
+    global _INFORMS_CACHE_SIG, _INFORMS_CACHE_ITEMS
+    try:
+        st = INFORMS_FILE.stat()
+        sig = (st.st_mtime, st.st_size)
+    except Exception:
+        sig = (0.0, 0)
+    if _INFORMS_CACHE_ITEMS is not None and _INFORMS_CACHE_SIG == sig:
+        return _INFORMS_CACHE_ITEMS
     data = load_json(INFORMS_FILE, [])
-    return data if isinstance(data, list) else []
+    items = data if isinstance(data, list) else []
+    _INFORMS_CACHE_SIG = sig
+    _INFORMS_CACHE_ITEMS = items
+    return items
 
 
 def _save(items: list) -> None:
+    global _INFORMS_CACHE_SIG, _INFORMS_CACHE_ITEMS
     save_json(INFORMS_FILE, items, indent=2)
+    try:
+        st = INFORMS_FILE.stat()
+        _INFORMS_CACHE_SIG = (st.st_mtime, st.st_size)
+        _INFORMS_CACHE_ITEMS = items
+    except Exception:
+        _INFORMS_CACHE_SIG = None
+        _INFORMS_CACHE_ITEMS = None
 
 
 def _new_id() -> str:
@@ -272,6 +293,87 @@ def _root_lot_from_values(lot_id: str, embed: Optional[dict] = None) -> str:
     if not s:
         return ""
     return s[:5] if _looks_like_fab_lot(s) else s
+
+
+def _wafer_key(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    core = re.sub(r"^(?:WAFER|WF|W)", "", text, flags=re.I).strip()
+    try:
+        return str(int(core))
+    except Exception:
+        return text.upper()
+
+
+def _wafer_matches(value, query) -> bool:
+    key = _wafer_key(value)
+    target = _wafer_key(query)
+    return bool(key and target and key == target)
+
+
+def _module_progress_summary(items: list, modules: Optional[list[str]] = None) -> dict:
+    configured = [str(m or "").strip() for m in (modules if modules is not None else _load_config().get("modules") or [])]
+    configured = [m for m in dict.fromkeys(configured) if m]
+    extras = []
+    for x in items or []:
+        mod = str((x or {}).get("module") or "").strip() or "(미지정)"
+        if mod not in configured and mod not in extras:
+            extras.append(mod)
+    ordered = [*configured, *extras]
+    rows = []
+    for mod in ordered:
+        entries = [
+            x for x in (items or [])
+            if (str((x or {}).get("module") or "").strip() or "(미지정)") == mod
+        ]
+        last_at = ""
+        completed_at = ""
+        checked_at = ""
+        mail_count = 0
+        for entry in entries:
+            ts = str(entry.get("created_at") or "")
+            if ts > last_at:
+                last_at = ts
+            if entry.get("checked"):
+                ca = str(entry.get("checked_at") or ts)
+                if ca > checked_at:
+                    checked_at = ca
+            if entry.get("flow_status") == "completed":
+                hist = [h for h in (entry.get("status_history") or []) if isinstance(h, dict) and h.get("status") == "completed"]
+                ca = str((hist[-1].get("at") if hist else "") or ts)
+                if ca > completed_at:
+                    completed_at = ca
+            for mh in entry.get("mail_history") or []:
+                if isinstance(mh, dict):
+                    mail_count += 1
+        has_inform = bool(entries)
+        completed = bool(completed_at)
+        rows.append({
+            "module": mod,
+            "status": "missing" if not has_inform else ("completed" if completed else "received"),
+            "has_inform": has_inform,
+            "completed": completed,
+            "count": len(entries),
+            "mail_count": mail_count,
+            "last_at": last_at,
+            "completed_at": completed_at,
+            "checked_at": checked_at,
+        })
+    active = [r for r in rows if r["has_inform"]]
+    completed_rows = [r for r in rows if r["completed"]]
+    missing = [r["module"] for r in rows if not r["has_inform"]]
+    pending = [r["module"] for r in rows if r["has_inform"] and not r["completed"]]
+    return {
+        "modules": rows,
+        "total_modules": len(rows),
+        "active_modules": len(active),
+        "completed_modules": len(completed_rows),
+        "missing_modules": missing,
+        "pending_modules": pending,
+        "inform_count": len(items or []),
+        "open_count": sum(1 for x in (items or []) if (x or {}).get("flow_status") != "completed"),
+    }
 
 
 def _add_unique_text(out: list[str], seen: set[str], value) -> None:
@@ -502,6 +604,11 @@ def _resolve_fab_lot_snapshot(product: str, lot_id: str, wafer_id: str) -> str:
         if not fp:
             return ""
         lf = pl.scan_parquet(fp)
+        try:
+            from core.utils import filter_valid_wafer_ids_lazy
+            lf = filter_valid_wafer_ids_lazy(lf)
+        except Exception:
+            pass
         names = list(lf.collect_schema().names()) if hasattr(lf, "collect_schema") else list(lf.schema.keys())
         fab_col = _ci_resolve("fab_lot_id", names)
         if not fab_col:
@@ -1063,9 +1170,100 @@ def serve_image(request: Request, uid: str, name: str):
 
 @router.get("")
 def list_by_wafer(wafer_id: str = Query(..., min_length=1)):
-    items = [x for x in _load_upgraded() if x.get("wafer_id") == wafer_id]
+    items = [x for x in _load_upgraded() if _wafer_matches(x.get("wafer_id"), wafer_id)]
     items.sort(key=lambda x: x.get("created_at", ""))
-    return {"informs": items}
+    return {"informs": items, "module_summary": _module_progress_summary(items)}
+
+
+def _sidebar_payload(items: list, me: dict, my_mods: set,
+                     wafer_limit: int = 500, product_limit: int = 500, lot_limit: int = 1000) -> dict:
+    role = me.get("role", "user")
+    username = me.get("username", "")
+    wafers_seen: dict = {}
+    products_seen: dict = {}
+    lots_seen: dict = {}
+
+    for x in items:
+        if not _visible_to(x, username, role, my_mods):
+            continue
+        ts = x.get("created_at", "")
+
+        w = x.get("wafer_id")
+        wk = _wafer_key(w)
+        if wk:
+            cur = wafers_seen.get(wk)
+            if cur is None:
+                wafers_seen[wk] = {
+                    "wafer_id": w, "wafer_key": wk, "last": ts, "count": 0,
+                    "lot_id": x.get("lot_id", ""), "product": x.get("product", ""),
+                }
+                cur = wafers_seen[wk]
+            elif ts > cur.get("last", ""):
+                cur["last"] = ts
+                cur["wafer_id"] = w
+                if x.get("lot_id"):
+                    cur["lot_id"] = x.get("lot_id")
+                if x.get("product"):
+                    cur["product"] = x.get("product")
+            cur["count"] = cur.get("count", 0) + 1
+
+        p = x.get("product")
+        if p and isinstance(p, str):
+            canon = _canonical_product(p)
+            if canon:
+                key = canon.lower()
+                ps = products_seen.setdefault(key, {"product": canon, "count": 0, "last": ""})
+                ps["count"] += 1
+                if ts > ps["last"]:
+                    ps["last"] = ts
+
+        l = x.get("lot_id")
+        if l:
+            root = x.get("root_lot_id") or _root_lot_from_values(l)
+            if root:
+                ls = lots_seen.setdefault(root, {
+                    "lot_id": root,
+                    "root_lot_id": root,
+                    "count": 0,
+                    "last": "",
+                    "product": x.get("product", ""),
+                    "fab_lots": set(),
+                })
+                ls["count"] += 1
+                if ts > ls["last"]:
+                    ls["last"] = ts
+                if x.get("product"):
+                    ls["product"] = x.get("product")
+                fab_lots = _extract_fab_lots_from_embed(x.get("embed_table")) or []
+                if x.get("fab_lot_id_at_save"):
+                    fab_lots.extend([p.strip() for p in str(x.get("fab_lot_id_at_save")).split(",") if p.strip()])
+                if not fab_lots:
+                    fab_lots = [l]
+                for fl in fab_lots:
+                    ls["fab_lots"].add(fl)
+
+    for p in _fab_db_products():
+        key = p.lower()
+        products_seen.setdefault(key, {"product": p, "count": 0, "last": ""})
+
+    wafers = sorted(wafers_seen.values(), key=lambda v: v.get("last", ""), reverse=True)[:wafer_limit]
+    products = sorted(products_seen.values(), key=lambda v: (v["last"], v["product"]), reverse=True)[:product_limit]
+    lots = []
+    for s in lots_seen.values():
+        s["fab_lots"] = sorted(s["fab_lots"])
+        lots.append(s)
+    lots.sort(key=lambda v: v["last"], reverse=True)
+    return {"wafers": wafers, "products": products, "lots": lots[:lot_limit]}
+
+
+@router.get("/sidebar")
+def sidebar(request: Request,
+            wafer_limit: int = Query(500, ge=1, le=5000),
+            product_limit: int = Query(500, ge=1, le=5000),
+            lot_limit: int = Query(1000, ge=1, le=10000)):
+    me = current_user(request)
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
+    return _sidebar_payload(_load_upgraded(), me, my_mods, wafer_limit, product_limit, lot_limit)
 
 
 @router.get("/recent")
@@ -1087,23 +1285,25 @@ def list_wafers(request: Request, limit: int = Query(500, ge=1, le=5000)):
     seen: dict = {}
     for x in items:
         w = x.get("wafer_id")
-        if not w:
+        wk = _wafer_key(w)
+        if not wk:
             continue
         if not _visible_to(x, me["username"], me.get("role", "user"), my_mods):
             continue
-        cur = seen.get(w)
+        cur = seen.get(wk)
         ts = x.get("created_at", "")
         if cur is None or ts > cur.get("last", ""):
             if cur is None:
-                seen[w] = {"wafer_id": w, "last": ts, "count": 0, "lot_id": x.get("lot_id", ""),
-                           "product": x.get("product", "")}
+                seen[wk] = {"wafer_id": w, "wafer_key": wk, "last": ts, "count": 0, "lot_id": x.get("lot_id", ""),
+                            "product": x.get("product", "")}
             else:
                 cur["last"] = ts
+                cur["wafer_id"] = w
                 if x.get("lot_id"):
                     cur["lot_id"] = x.get("lot_id")
                 if x.get("product"):
                     cur["product"] = x.get("product")
-        seen[w]["count"] = seen[w].get("count", 0) + 1
+        seen[wk]["count"] = seen[wk].get("count", 0) + 1
     arr = sorted(seen.values(), key=lambda v: v.get("last", ""), reverse=True)
     return {"wafers": arr[:limit]}
 
@@ -1127,7 +1327,14 @@ def by_lot(request: Request, lot_id: str = Query(..., min_length=1)):
     hits.sort(key=lambda x: x.get("created_at", ""))
     wafers = sorted({x.get("wafer_id") for x in hits if x.get("wafer_id")})
     lots = sorted({x.get("lot_id") for x in hits if x.get("lot_id")})
-    return {"informs": hits, "wafers": wafers, "lots": lots, "root_lot_id": root, "count": len(hits)}
+    return {
+        "informs": hits,
+        "wafers": wafers,
+        "lots": lots,
+        "root_lot_id": root,
+        "count": len(hits),
+        "module_summary": _module_progress_summary(hits),
+    }
 
 
 @router.get("/by-product")
@@ -2019,7 +2226,7 @@ def _thread_html(items: list, root_id: str) -> str:
         sc_block = ""
         if sc and (sc.get("column") or sc.get("new_value")):
             sc_block = (
-                "<div style='margin-top:6px;padding:6px 8px;background:#fff7ed;border-left:3px solid #f97316;font-family:monospace;font-size:12px;'>"
+                f"<div style='margin-top:6px;padding:6px 8px;background:#fff7ed;border-left:3px solid #f97316;font-family:monospace;font-size:{_MAIL_MIN_FONT};'>"
                 f"▸ <b>{esc(sc.get('column',''))}</b>: "
                 f"<span style='color:#6b7280;text-decoration:line-through'>{esc(sc.get('old_value','-'))}</span>"
                 f" → <span style='color:#16a34a;font-weight:700'>{esc(sc.get('new_value','-'))}</span>"
@@ -2028,12 +2235,12 @@ def _thread_html(items: list, root_id: str) -> str:
         parts.append(
             f"<div style='margin-left:{left_pad}px;margin-bottom:8px;padding:10px 12px;"
             f"background:{bg};border:1px solid {border};border-left:4px solid {border};"
-            f"border-radius:6px;font-family:-apple-system,Segoe UI,Arial,sans-serif;font-size:13px;color:#1f2937;'>"
-            f"<div style='font-size:11px;color:#6b7280;margin-bottom:4px;'>"
+            f"border-radius:6px;font-family:-apple-system,Segoe UI,Arial,sans-serif;font-size:{_MAIL_MIN_FONT};color:#1f2937;'>"
+            f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin-bottom:4px;'>"
             f"<b style='color:#1f2937'>{author}</b> · {esc(ts)} · "
             f"<span style='color:#f97316'>{module}</span>"
             + (f" / {reason}" if reason else "")
-            + (f" · <span style='padding:1px 6px;border-radius:10px;background:#e0f2fe;color:#0369a1;font-size:10px;'>{status}</span>" if status else "")
+            + (f" · <span style='padding:1px 6px;border-radius:10px;background:#e0f2fe;color:#0369a1;font-size:{_MAIL_MIN_FONT};'>{status}</span>" if status else "")
             + f"</div>"
             f"<div style='line-height:1.55'>{body_html}</div>"
             f"{sc_block}"
@@ -2064,17 +2271,26 @@ _ST_CELL_COLORS = [
     {"bg": "#F4CCCC", "fg": "#75194C"},
 ]
 _GO_FLOW_URL = "http://go/flow"
+_MAIL_MIN_FONT = "10pt"
 
 
 def _mail_fit_col_styles(data_columns: int) -> tuple[str, str]:
     """Column widths for mail tables that must fit without horizontal scrolling."""
     n = max(1, int(data_columns or 0))
-    first_pct = 26.0 if n <= 6 else (22.0 if n <= 10 else (18.0 if n <= 16 else 16.0))
+    first_pct = 42.0 if n == 1 else (34.0 if n <= 3 else (28.0 if n <= 6 else (24.0 if n <= 10 else 22.0)))
     data_pct = (100.0 - first_pct) / n
     break_style = "white-space:normal;word-break:break-word;overflow-wrap:anywhere;vertical-align:top;box-sizing:border-box;"
     return (
         f"width:{first_pct:.2f}%;max-width:{first_pct:.2f}%;{break_style}",
         f"width:{data_pct:.2f}%;max-width:{data_pct:.2f}%;{break_style}",
+    )
+
+
+def _mail_table_style(data_columns: int) -> str:
+    width_style = "width:auto;min-width:360px;" if max(1, int(data_columns or 0)) <= 3 else "width:100%;"
+    return (
+        f"border-collapse:collapse;font-size:{_MAIL_MIN_FONT};{width_style}max-width:100%;"
+        "table-layout:fixed;mso-table-lspace:0pt;mso-table-rspace:0pt;"
     )
 
 
@@ -2157,10 +2373,26 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
     headers = st.get("headers") or []
     header_groups = _split_table_header_groups(st)
     root_lot_id = str(st.get("root_lot_id") or "").strip()
+    lot_id_values = []
+    for group in header_groups:
+        label = str(group.get("label") or "").strip() if isinstance(group, dict) else ""
+        if label and label not in lot_id_values:
+            lot_id_values.append(label)
+    lot_id_label = ", ".join(lot_id_values[:3])
+    if len(lot_id_values) > 3:
+        lot_id_label += f" +{len(lot_id_values) - 3}"
     src = str(embed.get("source") or "")
     m = re.search(r"SplitTable/([^ @·]+)", src)
     product = (m.group(1).strip() if m else "").strip()
-    max_mail_cols = 25
+    max_mail_cols = 12
+
+    def _lot_context_th(style: str) -> str:
+        return (
+            f"<th style='{style}text-align:left;line-height:1.25;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>"
+            f"<div><span style='color:#6b7280;font-weight:700;'>root_lot_id</span> {esc(root_lot_id or '—')}</div>"
+            f"<div><span style='color:#6b7280;font-weight:700;'>lot_id</span> {esc(lot_id_label or '—')}</div>"
+            "</th>"
+        )
 
     def _lineage_summary_html() -> str:
         if not rows_st or not product:
@@ -2239,28 +2471,29 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
         if not out:
             return ""
         th = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
-              "font-size:11px;color:#1f2937;text-align:left;font-family:monospace;")
+              f"font-size:{_MAIL_MIN_FONT};color:#1f2937;text-align:left;font-family:monospace;"
+              "white-space:normal;word-break:break-word;overflow-wrap:anywhere;")
         body = []
         for row in out:
             note = _step_note(row["step_ids"])
             body.append(
                 "<tr>"
-                f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:11px;font-family:monospace;'>{esc(row['parameter'])}</td>"
-                f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:11px;font-family:monospace;color:#6b7280;'>{esc(row['function_step'] or '—')}</td>"
-                f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:11px;font-family:monospace;color:#2563eb;font-weight:700;'>{esc(', '.join(row['step_ids']) if row['step_ids'] else '—')}"
-                + (f"<div style='margin-top:4px;font-size:10px;line-height:1.35;color:#dc2626;font-family:system-ui,sans-serif;font-weight:600;'>{esc(note)}</div>" if note else "")
+                f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(row['parameter'])}</td>"
+                f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#6b7280;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(row['function_step'] or '—')}</td>"
+                f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#2563eb;font-weight:700;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(', '.join(row['step_ids']) if row['step_ids'] else '—')}"
+                + (f"<div style='margin-top:4px;font-size:{_MAIL_MIN_FONT};line-height:1.35;color:#dc2626;font-family:system-ui,sans-serif;font-weight:600;'>{esc(note)}</div>" if note else "")
                 + "</td>"
                 "</tr>"
             )
         return (
             "<div style='margin-top:8px;'>"
-            "<div style='font-size:11px;font-weight:700;color:#ea580c;margin-bottom:4px;'>🧭 Parameter별 적용 step 요약</div>"
-            "<table style='border-collapse:collapse;font-size:11px;max-width:100%;'>"
+            f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;margin-bottom:4px;'>🧭 Parameter별 적용 step 요약</div>"
+            f"<table style='border-collapse:collapse;font-size:{_MAIL_MIN_FONT};max-width:100%;table-layout:fixed;'>"
             "<thead><tr>"
             f"<th style='{th}'>parameter</th><th style='{th}'>function_step</th><th style='{th}'>step_id</th>"
             "</tr></thead>"
             f"<tbody>{''.join(body)}</tbody></table>"
-            "<div style='margin-top:6px;font-size:10px;color:#6b7280;'>function_step 에 여러 step_id 가 연결되면 메일 수신/적용 엔지니어가 현재 제품의 유효 step_id 를 확인한 뒤 적용해야 합니다.</div>"
+            f"<div style='margin-top:6px;font-size:{_MAIL_MIN_FONT};color:#6b7280;'>function_step 에 여러 step_id 가 연결되면 메일 수신/적용 엔지니어가 현재 제품의 유효 step_id 를 확인한 뒤 적용해야 합니다.</div>"
             "</div>"
         )
 
@@ -2284,20 +2517,21 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
             for p in plans:
                 out.append(
                     "<tr>"
-                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:11px;font-family:monospace;font-weight:700;'>{esc(str(wafer or ''))}</td>"
-                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:11px;font-family:monospace;'>{esc(p['parameter'])}</td>"
-                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:11px;font-family:monospace;color:#6b7280;'>{esc(p['actual'] or '—')}</td>"
-                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:11px;font-family:monospace;color:#ea580c;font-weight:700;'>{esc(p['plan'])}</td>"
+                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;font-weight:700;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(str(wafer or ''))}</td>"
+                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(p['parameter'])}</td>"
+                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#6b7280;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(p['actual'] or '—')}</td>"
+                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#ea580c;font-weight:700;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(p['plan'])}</td>"
                     "</tr>"
                 )
         if not out:
             return ""
         th = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
-              "font-size:11px;color:#1f2937;text-align:left;font-family:monospace;")
+              f"font-size:{_MAIL_MIN_FONT};color:#1f2937;text-align:left;font-family:monospace;"
+              "white-space:normal;word-break:break-word;overflow-wrap:anywhere;")
         return (
             "<div style='margin-top:8px;'>"
-            "<div style='font-size:11px;font-weight:700;color:#ea580c;margin-bottom:4px;'>📋 Wafer별 적용 plan 요약</div>"
-            "<table style='border-collapse:collapse;font-size:11px;max-width:100%;'>"
+            f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;margin-bottom:4px;'>📋 Wafer별 적용 plan 요약</div>"
+            f"<table style='border-collapse:collapse;font-size:{_MAIL_MIN_FONT};max-width:100%;table-layout:fixed;'>"
             "<thead><tr>"
             f"<th style='{th}'>wafer</th><th style='{th}'>parameter</th><th style='{th}'>actual</th><th style='{th}'>plan</th>"
             "</tr></thead>"
@@ -2308,21 +2542,20 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
     def _wrap(body_rows_html: str, head_cells: list[str], truncated: bool) -> str:
         first_col_style, data_col_style = _mail_fit_col_styles(max(0, len(head_cells) - 1))
         th_style = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
-                    "font-size:10px;color:#1f2937;text-align:center;font-family:monospace;line-height:1.2;")
-        table_style = ("border-collapse:collapse;font-size:10px;width:100%;max-width:100%;"
-                       "table-layout:fixed;mso-table-lspace:0pt;mso-table-rspace:0pt;")
+                    f"font-size:{_MAIL_MIN_FONT};color:#1f2937;text-align:center;font-family:monospace;line-height:1.25;")
+        table_style = _mail_table_style(max(0, len(head_cells) - 1))
         colgroup = _mail_colgroup_html(first_col_style, data_col_style, max(0, len(head_cells) - 1))
         thead = "<tr>" + "".join(
             f"<th style='{th_style}{first_col_style if i == 0 else data_col_style}'>{c}</th>"
             for i, c in enumerate(head_cells)
         ) + "</tr>"
         hdr = (
-            f"<div style='margin:12px 0 4px 0;font-size:12px;font-weight:700;color:#ea580c;'>"
-            f"Lot/Wafer 현황"
+            f"<div style='margin:12px 0 4px 0;font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;'>"
+            f"Split table"
             + "</div>"
         )
         note_html = ""
-        trunc_html = (f"<div style='font-size:10px;color:#b91c1c;margin-top:4px;'>"
+        trunc_html = (f"<div style='font-size:{_MAIL_MIN_FONT};color:#b91c1c;margin-top:4px;'>"
                       f"⚠ {max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
         return (
             f"{hdr}{note_html}"
@@ -2339,11 +2572,11 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
         shown = rows_st[:max_rows]
         # v8.8.30: KNOB/MASK 행용 unique-value → color index 맵.
         uniq_map = _st_build_uniq_map(shown, headers)
-        dense = len(headers) >= 18
-        data_pad = "2px 3px" if dense else "4px 8px"
+        dense = len(headers) >= max_mail_cols
+        data_pad = "4px 5px" if dense else "4px 8px"
         first_pad = "4px 6px" if dense else "4px 8px"
-        font_sz = "9px" if dense else "10px"
-        line_h = "1.15" if dense else "1.2"
+        font_sz = _MAIL_MIN_FONT
+        line_h = "1.25"
         td_first = (f"border:1px solid #d1d5db;padding:{first_pad};background:#f9fafb;"
                     f"font-size:{font_sz};font-weight:700;font-family:monospace;line-height:{line_h};")
         td_cell_base = (f"border:1px solid #d1d5db;padding:{data_pad};text-align:center;"
@@ -2351,16 +2584,16 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
         th_style = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f3f4f6;"
                     f"font-size:{font_sz};color:#1f2937;text-align:center;font-family:monospace;line-height:{line_h};")
         th_root = ("border:1px solid #d1d5db;padding:5px 8px;background:#f3f4f6;"
-                   "font-size:12px;color:#ea580c;text-align:center;font-family:monospace;font-weight:700;")
+                   f"font-size:{_MAIL_MIN_FONT};color:#ea580c;text-align:center;font-family:monospace;font-weight:700;")
         th_group = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f9fafb;"
                     f"font-size:{font_sz};color:#b45309;text-align:center;font-family:monospace;font-weight:700;")
         hdr = (
-            f"<div style='margin:12px 0 4px 0;font-size:12px;font-weight:700;color:#ea580c;'>"
-            f"Lot/Wafer 현황"
+            f"<div style='margin:12px 0 4px 0;font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;'>"
+            f"Split table"
             + "</div>"
         )
         note_html = ""
-        trunc_html = (f"<div style='font-size:10px;color:#b91c1c;margin-top:4px;'>"
+        trunc_html = (f"<div style='font-size:{_MAIL_MIN_FONT};color:#b91c1c;margin-top:4px;'>"
                       f"⚠ {max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
 
         def _chunk_header_groups(start: int, end: int) -> list[dict]:
@@ -2406,13 +2639,13 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
                 body_parts.append("<tr>" + "".join(tds) + "</tr>")
 
             thead_parts = []
-            if root_lot_id:
-                root_label = esc(root_lot_id)
+            if root_lot_id or lot_id_label:
+                root_label = esc(root_lot_id or lot_id_label)
                 if chunk_count > 1:
-                    root_label += f" <span style='font-size:10px;color:#6b7280;font-weight:600;'>({start + 1}-{end}/{len(headers)})</span>"
+                    root_label += f" <span style='font-size:{_MAIL_MIN_FONT};color:#6b7280;font-weight:600;'>({start + 1}-{end}/{len(headers)})</span>"
                 thead_parts.append(
                     "<tr>"
-                    f"<th style='{th_style}{first_col_style}'></th>"
+                    f"{_lot_context_th(th_style + first_col_style)}"
                     f"<th colspan='{max(1, len(chunk_headers))}' style='{th_root}'>{root_label}</th>"
                     "</tr>"
                 )
@@ -2428,10 +2661,9 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
                 f"<th style='{th_style}{first_col_style if i == 0 else data_col_style}'>{c}</th>"
                 for i, c in enumerate(head_cells)
             ) + "</tr>")
-            table_style = ("border-collapse:collapse;font-size:10px;width:100%;max-width:100%;"
-                           "table-layout:fixed;mso-table-lspace:0pt;mso-table-rspace:0pt;")
+            table_style = _mail_table_style(len(chunk_headers))
             block_label = (
-                f"<div style='font-size:10px;color:#6b7280;margin:7px 0 3px 0;font-family:monospace;'>"
+                f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin:7px 0 3px 0;font-family:monospace;'>"
                 f"wafer columns {start + 1}-{end} / {len(headers)}</div>"
                 if chunk_count > 1 and not root_lot_id else ""
             )
@@ -2460,7 +2692,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
     truncated = len(rows2d) > max_rows
     shown = rows2d[:max_rows]
     first_col_style, data_col_style = _mail_fit_col_styles(max(0, len(cols) - 1))
-    td_cell = ("border:1px solid #d1d5db;padding:4px 8px;font-size:11px;"
+    td_cell = (f"border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};"
                "font-family:monospace;line-height:1.2;")
     body_parts = []
     for r in shown:
@@ -2500,8 +2732,8 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         if not val:
             continue
         meta_rows.append(
-            f"<tr><td style='padding:4px 10px;font-size:11px;color:#6b7280;background:#f3f4f6;width:90px;'>{esc(label)}</td>"
-            f"<td style='padding:4px 10px;font-size:12px;color:#1f2937;font-family:monospace;'>{esc(val)}</td></tr>"
+            f"<tr><td style='padding:4px 10px;font-size:{_MAIL_MIN_FONT};color:#6b7280;background:#f3f4f6;width:90px;'>{esc(label)}</td>"
+            f"<td style='padding:4px 10px;font-size:{_MAIL_MIN_FONT};color:#1f2937;font-family:monospace;'>{esc(val)}</td></tr>"
         )
     meta_tbl = "<table style='border-collapse:collapse;border:1px solid #d1d5db;margin:10px 0;width:100%;max-width:560px;'>" + "".join(meta_rows) + "</table>"
     prose_block = ""
@@ -2509,7 +2741,7 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         safe = _html.escape(extra_prose).replace("\n", "<br/>")
         prose_block = (
             f"<div style='margin:12px 0;padding:10px 12px;background:#fffbeb;border-left:4px solid #f59e0b;"
-            f"border-radius:4px;font-size:13px;color:#78350f;'>{safe}</div>"
+            f"border-radius:4px;font-size:{_MAIL_MIN_FONT};color:#78350f;'>{safe}</div>"
         )
     # v8.8.1: 발송 요청자(hol) 자동 명시 제거.
     contacts_block = ""
@@ -2526,31 +2758,29 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
                 names.append(esc(em))
         if names:
             contacts_block = (
-                f"<div style='margin:10px 0;padding:8px 12px;background:#f0fdf4;border-left:4px solid #16a34a;"
-                f"border-radius:4px;font-size:12px;color:#14532d;'>"
-                f"<b>제품 담당자</b> : " + ", ".join(names)
+                f"<div style='margin:10px 0;padding:10px 12px;background:#f0fdf4;border-left:4px solid #16a34a;"
+                f"border-radius:4px;font-size:14px;line-height:1.45;color:#14532d;font-weight:700;'>"
+                f"제품 담당자 : " + ", ".join(names)
                 + "</div>"
             )
     embed_html = _render_embed_table_html(embed_table) if embed_table else ""
     # v8.8.30: 스레드 섹션 조건부 — thread_html 이 비어있으면 "스레드" 헤더 자체를 넣지 않음.
     #   FE include_thread 체크박스 제거에 맞춰, 기본 발송은 스레드 없는 간결 본문.
     thread_block = (
-        f"<h3 style='font-size:13px;margin:14px 0 6px 0;color:#374151;'>스레드</h3>{thread_html}"
+        f"<h3 style='font-size:{_MAIL_MIN_FONT};margin:14px 0 6px 0;color:#374151;'>스레드</h3>{thread_html}"
         if (thread_html or "").strip() else ""
     )
     return (
         "<div style='font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1f2937;width:100%;max-width:none;margin:0;'>"
-        f"<h2 style='font-size:16px;margin:0 0 10px 0;color:#ea580c;'>인폼 공유</h2>"
         f"{meta_tbl}"
         f"{contacts_block}"
         f"{prose_block}"
         f"{embed_html}"
         f"{thread_block}"
         "<hr style='border:none;border-top:1px solid #e5e7eb;margin:18px 0 8px 0;'/>"
-        f"<div style='font-size:10px;color:#6b7280;margin-bottom:4px;'>상세 확인 및 후속 조치는 "
+        f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin-bottom:4px;'>상세 확인 및 후속 조치는 "
         f"<a href='{esc(_GO_FLOW_URL)}' target='_blank' rel='noopener noreferrer' "
         f"style='color:#ea580c;text-decoration:underline;font-weight:700;'>go/flow</a> 에서 진행해 주세요.</div>"
-        "<div style='font-size:10px;color:#9ca3af;'>Sent by flow · 자동 전송된 메일입니다.</div>"
         "</div>"
     )
 

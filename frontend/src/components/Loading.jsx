@@ -45,7 +45,7 @@ export default function Loading({ text, size = "md", overlay = false, steps = DE
       <div style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         <style>{spinnerCSS}</style>
         <Spinner size={s} />
-        {label && <span style={{ fontSize:12, color:"var(--text-secondary, #94a3b8)", fontFamily:"monospace" }}>{label}</span>}
+        {label && <span style={{ fontSize:14, color:"var(--text-secondary, #94a3b8)", fontFamily:"monospace" }}>{label}</span>}
       </div>
     );
   }
@@ -62,7 +62,7 @@ export default function Loading({ text, size = "md", overlay = false, steps = DE
         <div style={{ display:"flex", gap:6, flexWrap:"wrap", justifyContent:"center", maxWidth:320 }}>
           {activeSteps.map((step, i) => (
             <span key={step + i} style={{
-              fontSize:10,
+              fontSize:14,
               color:i===stepIdx?"var(--accent, #2dd4bf)":"var(--text-secondary, #94a3b8)",
               border:"1px solid " + (i===stepIdx ? "var(--accent, #2dd4bf)" : "var(--border, #334155)"),
               background:i===stepIdx?"var(--accent-glow, rgba(45,212,191,0.12))":"transparent",

@@ -78,7 +78,7 @@ export default function PageGear({ title = "설정", children, canEdit = true, p
           }}>
             <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 700, flex: 1 }}>{title}</span>
-              {!canEdit && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "var(--bg-tertiary)", color: "var(--text-secondary)" }}>읽기 전용</span>}
+              {!canEdit && <span style={{ fontSize: 14, padding: "2px 8px", borderRadius: 999, background: "var(--bg-tertiary)", color: "var(--text-secondary)" }}>읽기 전용</span>}
               <span onClick={() => setOpen(false)} style={{ cursor: "pointer", color: "var(--text-secondary)", padding: "2px 8px" }}>×</span>
             </div>
             <div style={{ flex: 1, overflow: "auto", padding: 16 }}>

@@ -19,6 +19,8 @@ from core.lot_step import (  # noqa: E402
     compare_to_watch,
     expand_lot_row_for_wafer_selection,
     et_lot_candidates_from_cache,
+    et_packages,
+    latest_fab_step,
     list_db_source_roots,
     lookup_step_meta,
     parse_wafer_selection,
@@ -75,6 +77,85 @@ def test_summarize_et_steps_omits_zero_point_seq():
 def test_parse_wafer_selection_supports_csv_and_ranges():
     assert parse_wafer_selection("1,2~4,7") == ["1", "2", "3", "4", "7"]
     assert parse_wafer_selection("4~2") == ["4", "3", "2"]
+    assert parse_wafer_selection("24~27,1000,W01") == ["24", "25", "1"]
+
+
+def test_latest_fab_step_matches_prefixed_wafer_against_int_column(monkeypatch, tmp_path):
+    db = tmp_path / "DB"
+    fab = db / "FAB_HISTORY" / "PRODA" / "date=20260427"
+    fab.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "L1000", "wafer_id": 1, "step_id": "STEP_OLD", "tkout_time": "2026-04-27T10:00:00"},
+        {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "L1000", "wafer_id": 2, "step_id": "STEP_OTHER", "tkout_time": "2026-04-27T11:00:00"},
+        {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "L1000", "wafer_id": 1, "step_id": "STEP_NEW", "tkout_time": "2026-04-27T12:00:00"},
+    ]).write_parquet(fab / "part.parquet")
+    import core.lot_step as lot_step
+
+    monkeypatch.setattr(lot_step, "_get_db_root", lambda: db)
+    monkeypatch.setattr(lot_step, "tracker_db_sources_config", lambda: {
+        "monitor": "FAB_HISTORY",
+        "analysis": "ET_MEASURE",
+        "fab": "FAB_HISTORY",
+        "et": "ET_MEASURE",
+    })
+
+    out = latest_fab_step(product="PRODA", root_lot_id="A1000", wafer_id="W01", source_root="FAB_HISTORY")
+
+    assert out["step_id"] == "STEP_NEW"
+    assert out["wafer_id"] == "1"
+
+
+def test_lot_step_db_reads_normalize_wafers_above_25(monkeypatch, tmp_path):
+    db = tmp_path / "DB"
+    fab = db / "FAB_HISTORY" / "PRODA" / "date=20260427"
+    fab.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "L1000", "wafer_id": 1, "step_id": "STEP_OK", "tkout_time": "2026-04-27T10:00:00"},
+        {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "L1000", "wafer_id": 1000, "step_id": "STEP_BAD", "tkout_time": "2026-04-27T12:00:00"},
+    ]).write_parquet(fab / "part.parquet")
+    import core.lot_step as lot_step
+
+    monkeypatch.setattr(lot_step, "_get_db_root", lambda: db)
+    monkeypatch.setattr(lot_step, "tracker_db_sources_config", lambda: {
+        "monitor": "FAB_HISTORY",
+        "analysis": "ET_MEASURE",
+        "fab": "FAB_HISTORY",
+        "et": "ET_MEASURE",
+    })
+
+    wafers = lot_step.discover_wafer_ids(
+        product="PRODA",
+        root_lot_id="A1000",
+        source="fab",
+        source_root="FAB_HISTORY",
+    )
+    assert wafers == ["1", "25"]
+    assert latest_fab_step(product="PRODA", root_lot_id="A1000", wafer_id="1000", source_root="FAB_HISTORY") == {}
+    assert latest_fab_step(product="PRODA", root_lot_id="A1000", wafer_id="25", source_root="FAB_HISTORY")["step_id"] == "STEP_BAD"
+    assert latest_fab_step(product="PRODA", root_lot_id="A1000", wafer_id="", source_root="FAB_HISTORY")["step_id"] == "STEP_BAD"
+
+
+def test_et_packages_matches_zero_padded_wafer_against_int_column(monkeypatch, tmp_path):
+    db = tmp_path / "DB"
+    et = db / "ET_MEASURE" / "PRODA" / "date=20260427"
+    et.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1000", "wafer_id": 1, "step_id": "ET100", "step_seq": 1, "flat": "F", "tkout_time": "2026-04-27T10:00:00"},
+        {"product": "PRODA", "root_lot_id": "A1000", "wafer_id": 2, "step_id": "ET200", "step_seq": 1, "flat": "F", "tkout_time": "2026-04-27T11:00:00"},
+    ]).write_parquet(et / "part.parquet")
+    import core.lot_step as lot_step
+
+    monkeypatch.setattr(lot_step, "_get_db_root", lambda: db)
+    monkeypatch.setattr(lot_step, "tracker_db_sources_config", lambda: {
+        "monitor": "FAB_HISTORY",
+        "analysis": "ET_MEASURE",
+        "fab": "FAB_HISTORY",
+        "et": "ET_MEASURE",
+    })
+
+    out = et_packages(product="PRODA", root_lot_id="A1000", wafer_id="01", source_root="ET_MEASURE")
+
+    assert [row["step_id"] for row in out] == ["ET100"]
 
 
 def test_source_roots_use_tracker_db_source_config(monkeypatch, tmp_path):

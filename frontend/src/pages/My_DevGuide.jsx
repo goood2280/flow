@@ -3,7 +3,7 @@ import { useState } from "react";
 const mono = "'JetBrains Mono',monospace";
 
 function Code({ children }) {
-  return <pre style={{ background:"#111", borderRadius:8, padding:"14px 18px", border:"1px solid var(--border,#333)", overflow:"auto", fontFamily:mono, fontSize:11, lineHeight:1.8, color:"#e5e5e5", whiteSpace:"pre", margin:"12px 0" }}>{children}</pre>;
+  return <pre style={{ background:"#111", borderRadius:8, padding:"14px 18px", border:"1px solid var(--border,#333)", overflow:"auto", fontFamily:mono, fontSize:14, lineHeight:1.8, color:"#e5e5e5", whiteSpace:"pre", margin:"12px 0" }}>{children}</pre>;
 }
 
 function H2({ children, id }) {
@@ -13,8 +13,8 @@ function H2({ children, id }) {
 function ApiRow({ method, path, desc }) {
   const c = {GET:"#22c55e",POST:"#f97316",DELETE:"#ef4444"};
   return (
-    <div style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:"1px solid var(--border,#222)", fontSize:12 }}>
-      <span style={{ fontFamily:mono, fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:4, minWidth:44, textAlign:"center", background:(c[method]||"#666")+"22", color:c[method]||"#666" }}>{method}</span>
+    <div style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:"1px solid var(--border,#222)", fontSize:14 }}>
+      <span style={{ fontFamily:mono, fontSize:14, fontWeight:700, padding:"2px 8px", borderRadius:4, minWidth:44, textAlign:"center", background:(c[method]||"#666")+"22", color:c[method]||"#666" }}>{method}</span>
       <span style={{ fontFamily:mono, color:"var(--text-primary)", minWidth:300 }}>{path}</span>
       <span style={{ color:"var(--text-secondary)" }}>{desc}</span>
     </div>
@@ -46,10 +46,10 @@ export default function My_DevGuide() {
 
       {/* Side Nav */}
       <div style={{ width:190, padding:"20px 10px", borderRight:"1px solid var(--border,#333)", position:"sticky", top:52, height:"calc(100vh - 52px)", overflowY:"auto", flexShrink:0 }}>
-        <div style={{ fontSize:10, fontWeight:700, color:"var(--accent,#f97316)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:12, paddingLeft:10, fontFamily:mono }}>{">"} 개발자_가이드</div>
+        <div style={{ fontSize:14, fontWeight:700, color:"var(--accent,#f97316)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:12, paddingLeft:10, fontFamily:mono }}>{">"} 개발자_가이드</div>
         {NAV.map(n => (
           <div key={n.id} onClick={() => scrollTo(n.id)}
-            style={{ padding:"6px 10px", borderRadius:5, cursor:"pointer", fontSize:12, marginBottom:1, fontFamily:mono,
+            style={{ padding:"6px 10px", borderRadius:5, cursor:"pointer", fontSize:14, marginBottom:1, fontFamily:mono,
               background: active===n.id ? "var(--accent-glow,#f9731622)" : "transparent",
               color: active===n.id ? "var(--accent,#f97316)" : "var(--text-secondary,#a3a3a3)",
               fontWeight: active===n.id ? 600 : 400 }}>{n.label}</div>
@@ -57,7 +57,7 @@ export default function My_DevGuide() {
       </div>
 
       {/* Content */}
-      <div style={{ flex:1, padding:"28px 36px", maxWidth:860, overflow:"auto", lineHeight:1.8, fontSize:13, color:"var(--text-secondary,#a3a3a3)" }}>
+      <div style={{ flex:1, padding:"28px 36px", maxWidth:860, overflow:"auto", lineHeight:1.8, fontSize:14, color:"var(--text-secondary,#a3a3a3)" }}>
 
         <H2 id="arch">아키텍처</H2>
         <p>flow = <strong style={{color:"var(--text-primary)"}}>FastAPI</strong> (백엔드) + <strong style={{color:"var(--text-primary)"}}>React + Vite</strong> (프론트엔드) + <strong style={{color:"var(--text-primary)"}}>Polars/Parquet</strong> (데이터)</p>
@@ -144,12 +144,12 @@ prod:
         <H2 id="api">API 레퍼런스</H2>
         <p>보안상 Swagger UI는 비활성화되어 있습니다. API shape는 각 router와 smoke test를 기준으로 확인합니다.</p>
 
-        <div style={{fontSize:13,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>인증 (Auth)</div>
+        <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>인증 (Auth)</div>
         <ApiRow method="POST" path="/api/auth/login" desc="로그인 → {ok, username, role}" />
         <ApiRow method="POST" path="/api/auth/register" desc="회원가입 → admin 승인 대기" />
         <ApiRow method="POST" path="/api/auth/reset-request" desc="비밀번호 리셋 요청 → admin에 알림" />
 
-        <div style={{fontSize:13,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>관리자 (Admin)</div>
+        <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>관리자 (Admin)</div>
         <ApiRow method="GET" path="/api/admin/users" desc="전체 유저 목록" />
         <ApiRow method="POST" path="/api/admin/approve" desc="유저 승인" />
         <ApiRow method="POST" path="/api/admin/reject" desc="유저 삭제" />
@@ -162,7 +162,7 @@ prod:
         <ApiRow method="POST" path="/api/admin/log" desc="활동 로그 기록" />
         <ApiRow method="GET" path="/api/admin/logs?limit=&username=" desc="활동 로그 조회" />
 
-        <div style={{fontSize:13,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>파일탐색기 (File Browser)</div>
+        <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>파일탐색기 (File Browser)</div>
         <ApiRow method="GET" path="/api/filebrowser/roots" desc="DB 루트 목록 (자동 탐색)" />
         <ApiRow method="GET" path="/api/filebrowser/tree?root=&depth=" desc="폴더 트리" />
         <ApiRow method="GET" path="/api/filebrowser/files?root=&path=&page=" desc="파일 목록 + 페이징" />
@@ -170,17 +170,17 @@ prod:
         <ApiRow method="GET" path="/api/filebrowser/merge-preview?root=&path=" desc="Hive 파티션 병합 미리보기" />
         <ApiRow method="GET" path="/api/filebrowser/download?root=&path=" desc="파일 다운로드" />
 
-        <div style={{fontSize:13,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>이슈 추적 (카테고리 v7)</div>
+        <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>이슈 추적 (카테고리 v7)</div>
         <ApiRow method="GET" path="/api/tracker/categories" desc="카테고리 목록 (admin configurable)" />
         <ApiRow method="GET" path="/api/tracker/categories/usage" desc="v7: 카테고리별 사용 이슈 수 + orphan 감지" />
         <ApiRow method="POST" path="/api/tracker/categories/save" desc="카테고리 리스트 덮어쓰기 (순서 포함)" />
 
-        <div style={{fontSize:13,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>모니터 (Monitor)</div>
+        <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>모니터 (Monitor)</div>
         <ApiRow method="GET" path="/api/monitor/health" desc="DB별 상태 신호등 (green/yellow/red)" />
         <ApiRow method="GET" path="/api/monitor/system" desc="CPU/메모리/디스크 사용량" />
         <ApiRow method="POST" path="/api/monitor/heartbeat" desc="서버 유지용 heartbeat (cron)" />
 
-        <div style={{fontSize:13,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>세션 (Session)</div>
+        <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginTop:20,marginBottom:8,fontFamily:mono}}>세션 (Session)</div>
         <ApiRow method="POST" path="/api/session/save" desc="유저 세션 저장 (탭, 폼 데이터)" />
         <ApiRow method="GET" path="/api/session/load?username=" desc="유저 세션 복원" />
 
@@ -209,7 +209,7 @@ df = pl.read_parquet("ProductA/date=2024-12-17/*.parquet")
 df = pl.read_parquet(files).filter(pl.sql_expr("item_id = 'VTH' AND et_value > 0.5"))`}</Code>
 
         <p><strong style={{color:"var(--text-primary)"}}>모니터 신호등 기준:</strong></p>
-        <div style={{display:"flex",gap:16,margin:"8px 0 16px",fontSize:12}}>
+        <div style={{display:"flex",gap:16,margin:"8px 0 16px",fontSize:14}}>
           <span><span style={{display:"inline-block",width:10,height:10,borderRadius:"50%",background:"#22c55e",marginRight:6}} />초록: 24시간 이내 업데이트</span>
           <span><span style={{display:"inline-block",width:10,height:10,borderRadius:"50%",background:"#fbbf24",marginRight:6}} />노랑: 24~72시간</span>
           <span><span style={{display:"inline-block",width:10,height:10,borderRadius:"50%",background:"#ef4444",marginRight:6}} />빨강: 72시간 이상 또는 없음</span>
@@ -227,7 +227,7 @@ shot_id        # optional, 있으면 lot_wf 보다 우선
 die_x, die_y   # optional, shot_id 없을 때 shot/die 매칭 후보
 measure_time   # 측정 시각 또는 source update time`}</Code>
 
-        <p><strong style={{color:"var(--text-primary)"}}>INLINE:</strong> 기본 집계는 <code>lot_wf</code> 기준 평균입니다. 단, INLINE과 상대 데이터 양쪽에 shot/die key가 있으면 shot 단위로 먼저 매칭합니다.</p>
+        <p><strong style={{color:"var(--text-primary)"}}>INLINE:</strong> 원천 DB는 <code>subitem_id</code>로 측정 위치를 구분하고 <code>shot_x/shot_y</code>는 없습니다. 기본 집계는 <code>lot_wf</code> 기준 평균이며, item별 mapping table로 ET shot 좌표를 만든 경우에만 shot 단위로 매칭합니다.</p>
         <Code>{`INLINE required:
 - product, root_lot_id, wafer_id, lot_wf
 - step or step_id
@@ -446,7 +446,7 @@ data = load_session("username")  # → dict`}</Code>
         <Code>{`# crontab에 등록 (매 30분)
 */30 * * * * curl -X POST http://localhost:8080/api/monitor/heartbeat`}</Code>
 
-        <p style={{marginTop:24,padding:"12px 16px",borderRadius:8,background:"var(--bg-card,#2a2a2a)",border:"1px solid var(--border,#333)",fontSize:12}}>
+        <p style={{marginTop:24,padding:"12px 16px",borderRadius:8,background:"var(--bg-card,#2a2a2a)",border:"1px solid var(--border,#333)",fontSize:14}}>
           <strong style={{color:"var(--accent)"}}>포트:</strong> 8080 &nbsp;|&nbsp;
           <strong style={{color:"var(--accent)"}}>로그인:</strong> hol / hol12345! &nbsp;|&nbsp;
           <strong style={{color:"var(--accent)"}}>서버 실행:</strong> cd backend && uvicorn app:app --host 0.0.0.0 --port 8080

@@ -14,6 +14,9 @@ from core.paths import PATHS
 _STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 
 DATA_EXTENSIONS = {".parquet", ".csv"}
+MAX_WAFER_ID = 25
+WAFER_COLUMN_CANDIDATES = ("wafer_id", "wf_id")
+INLINE_COORD_COLUMNS = ("shot_x", "shot_y")
 _DATA_FILE_COUNT_CACHE_TTL_SEC = 20.0
 _DATA_FILE_COUNT_CACHE: dict[tuple[str, int], tuple[float, float, int]] = {}
 
@@ -33,6 +36,131 @@ def cast_cats(df):
 def cast_all_str(df):
     """Force every column to Utf8 so concat always works."""
     return df.with_columns([pl.col(c).cast(_STR, strict=False) for c in df.columns])
+
+
+def wafer_column(columns) -> str | None:
+    """Return the wafer id column if a schema has one, case-insensitively."""
+    by_lower = {str(c).lower(): str(c) for c in (columns or [])}
+    for name in WAFER_COLUMN_CANDIDATES:
+        hit = by_lower.get(name)
+        if hit:
+            return hit
+    return None
+
+
+def _wafer_number_expr(column: str) -> pl.Expr:
+    text = (
+        pl.col(column)
+        .cast(_STR, strict=False)
+        .str.strip_chars()
+        .str.to_uppercase()
+        .str.replace(r"^(?:#|WAFER|WF|W)\s*", "")
+    )
+    return text.cast(pl.Float64, strict=False)
+
+
+def valid_wafer_expr(column: str) -> pl.Expr:
+    """Return rows that have a positive integer wafer token.
+
+    Source DBs can contain synthetic row ids such as 1000 in wafer_id. Those
+    are normalized to physical wafer ids 1..25 instead of being dropped.
+    Decimal, zero, null, and non-numeric wafer tokens are still invalid.
+    """
+    num = _wafer_number_expr(column)
+    as_int = num.cast(pl.Int64, strict=False).cast(pl.Float64, strict=False)
+    return ((num >= 1) & (num == as_int)).fill_null(False)
+
+
+def physical_wafer_expr(column: str) -> pl.Expr:
+    num = _wafer_number_expr(column).cast(pl.Int64, strict=False)
+    return (((num - 1) % MAX_WAFER_ID) + 1).cast(_STR, strict=False)
+
+
+def filter_valid_wafer_ids_df(df: pl.DataFrame) -> pl.DataFrame:
+    """Normalize wafer ids to 1..25 when a wafer column exists."""
+    if df is None:
+        return df
+    col = wafer_column(df.columns)
+    if not col:
+        return df
+    try:
+        return df.filter(valid_wafer_expr(col)).with_columns(physical_wafer_expr(col).alias(col))
+    except Exception:
+        return df
+
+
+def filter_valid_wafer_ids_lazy(lf: pl.LazyFrame, columns: list[str] | None = None) -> pl.LazyFrame:
+    """Normalize wafer ids to 1..25 when a wafer column exists."""
+    if lf is None:
+        return lf
+    if columns is None:
+        try:
+            columns = list(lf.collect_schema().names())
+        except Exception:
+            try:
+                columns = list(lf.schema.keys())
+            except Exception:
+                columns = []
+    col = wafer_column(columns)
+    if not col:
+        return lf
+    try:
+        return lf.filter(valid_wafer_expr(col)).with_columns(physical_wafer_expr(col).alias(col))
+    except Exception:
+        return lf
+
+
+def is_inline_source(root: str = "", file: str = "") -> bool:
+    text = f"{root or ''}/{file or ''}".upper()
+    return "INLINE" in text
+
+
+def _inline_coord_columns(columns) -> list[str]:
+    blocked = {c.lower() for c in INLINE_COORD_COLUMNS}
+    return [str(c) for c in (columns or []) if str(c).lower() in blocked]
+
+
+def drop_inline_coord_columns_df(df: pl.DataFrame) -> pl.DataFrame:
+    if df is None:
+        return df
+    cols = _inline_coord_columns(df.columns)
+    if not cols:
+        return df
+    try:
+        return df.drop(cols)
+    except Exception:
+        return df
+
+
+def drop_inline_coord_columns_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
+    if lf is None:
+        return lf
+    try:
+        columns = lf.collect_schema().names()
+    except Exception:
+        try:
+            columns = list(lf.schema.keys())
+        except Exception:
+            columns = []
+    cols = _inline_coord_columns(columns)
+    if not cols:
+        return lf
+    try:
+        return lf.drop(cols)
+    except Exception:
+        return lf
+
+
+def normalize_source_df(df: pl.DataFrame, *, root: str = "", file: str = "") -> pl.DataFrame:
+    if is_inline_source(root, file):
+        return drop_inline_coord_columns_df(df)
+    return df
+
+
+def normalize_source_lazy(lf: pl.LazyFrame, *, root: str = "", file: str = "") -> pl.LazyFrame:
+    if is_inline_source(root, file):
+        return drop_inline_coord_columns_lazy(lf)
+    return lf
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -189,8 +317,8 @@ def read_one_file(fp: Path):
     """Read single parquet or CSV with cats cast. Returns None on failure."""
     try:
         if fp.suffix == ".csv":
-            return cast_cats(pl.read_csv(str(fp), infer_schema_length=5000, try_parse_dates=False))
-        return cast_cats(pl.read_parquet(str(fp)))
+            return filter_valid_wafer_ids_df(cast_cats(pl.read_csv(str(fp), infer_schema_length=5000, try_parse_dates=False)))
+        return filter_valid_wafer_ids_df(cast_cats(pl.read_parquet(str(fp))))
     except Exception:
         return None
 
@@ -203,19 +331,70 @@ def scan_one_file(fp: Path):
     """Lazy-scan a single file. Returns LazyFrame or None."""
     try:
         if fp.suffix == ".csv":
-            return pl.scan_csv(str(fp), infer_schema_length=5000, try_parse_dates=False)
-        return pl.scan_parquet(str(fp))
+            return filter_valid_wafer_ids_lazy(pl.scan_csv(str(fp), infer_schema_length=5000, try_parse_dates=False))
+        return filter_valid_wafer_ids_lazy(pl.scan_parquet(str(fp)))
     except Exception:
         return None
 
 
+def _source_product_paths(db_base: Path, root: str, product: str) -> list[Path]:
+    """Resolve product directories without a deep recursive walk.
+
+    Covers both legacy `<root>/<product>` and table hive
+    `<root>/<table>/product=<product>` layouts.  Returning all matching table
+    partitions keeps lazy_read_source from falling back to eager reads.
+    """
+    root_path = db_base / root
+    if not root_path.is_dir():
+        return []
+    target = str(product or "").casefold()
+    hive_target = f"product={product}".casefold()
+    out: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        try:
+            key = str(path.resolve())
+        except Exception:
+            key = str(path)
+        if key not in seen and path.is_dir():
+            seen.add(key)
+            out.append(path)
+
+    direct = root_path / product
+    if direct.is_dir():
+        add(direct)
+
+    try:
+        children = [p for p in sorted(root_path.iterdir(), key=lambda x: x.name.lower()) if p.is_dir()]
+    except Exception:
+        return out
+
+    for child in children:
+        low = child.name.casefold()
+        if low == target or low == hive_target:
+            add(child)
+        if child.name.startswith((".", "_", "__")):
+            continue
+        try:
+            inner_dirs = [p for p in child.iterdir() if p.is_dir()]
+        except Exception:
+            continue
+        for inner in inner_dirs:
+            if inner.name.casefold() == hive_target:
+                add(inner)
+    return out
+
+
 def lazy_read_source(source_type: str = "", root: str = "", product: str = "",
                      file: str = "", max_files: int | None = 20,
-                     recent_days: int | None = 30):
+                     recent_days: int | None = 30,
+                     latest_only: bool = False):
     """Memory-efficient lazy reader. Returns LazyFrame (call .collect() when ready).
     For 30-60GB datasets on 2-core/6GB machines — push filters before collect.
 
     v8.8.33: partition pruning (recent_days 기본 30) + hive_partitioning.
+    latest_only=True 이면 최신 date 파티션/파일 날짜만 scan 해서 클릭 preview를 빠르게 반환.
     recent_days=None 이면 전체 파티션 스캔 (역사 조회용).
     """
     DB_BASE = PATHS.db_root
@@ -224,26 +403,27 @@ def lazy_read_source(source_type: str = "", root: str = "", product: str = "",
         fp = PATHS.base_root / file
         if not fp.is_file():
             return None
-        return scan_one_file(fp)
+        return normalize_source_lazy(scan_one_file(fp), root=root, file=file)
     if source_type == "root_parquet" or (file and not product):
         fp = DB_BASE / file
         if not fp.is_file():
             return None
-        return scan_one_file(fp)
+        return normalize_source_lazy(scan_one_file(fp), root=root, file=file)
 
-    prod_path = DB_BASE / root / product
-    if not prod_path.is_dir():
+    prod_paths = _source_product_paths(DB_BASE, root, product)
+    if not prod_paths:
         return None
 
     # v8.8.33: parquet_perf.scan_parquet_perf 로 통합 — hive + partition pruning.
-    pq_files = sorted(prod_path.rglob("*.parquet"))
+    pq_files = sorted(fp for prod_path in prod_paths for fp in prod_path.rglob("*.parquet"))
     if pq_files:
         try:
             from core.parquet_perf import scan_parquet_perf
             lf = scan_parquet_perf(pq_files, hive=True,
-                                   recent_days=recent_days, max_files=max_files)
+                                   recent_days=recent_days, max_files=max_files,
+                                   latest_only=latest_only)
             if lf is not None:
-                return lf
+                return normalize_source_lazy(filter_valid_wafer_ids_lazy(lf), root=root, file=file)
         except Exception:
             pass
         # Fallback: scan individually and concat
@@ -254,16 +434,16 @@ def lazy_read_source(source_type: str = "", root: str = "", product: str = "",
             if lf is not None:
                 frames.append(lf)
         if frames:
-            return pl.concat(frames, how="diagonal_relaxed")
+            return normalize_source_lazy(filter_valid_wafer_ids_lazy(pl.concat(frames, how="diagonal_relaxed")), root=root, file=file)
 
     # CSV fallback
-    csv_files = sorted(prod_path.rglob("*.csv"))
+    csv_files = sorted(fp for prod_path in prod_paths for fp in prod_path.rglob("*.csv"))
     if csv_files:
         fallback_files = csv_files if max_files is None else csv_files[-max_files:]
         frames = [scan_one_file(f) for f in fallback_files]
         frames = [f for f in frames if f is not None]
         if frames:
-            return pl.concat(frames, how="diagonal_relaxed")
+            return normalize_source_lazy(filter_valid_wafer_ids_lazy(pl.concat(frames, how="diagonal_relaxed")), root=root, file=file)
 
     return None
 
@@ -274,6 +454,30 @@ def _glob_data_files(directory: Path):
     for ext in DATA_EXTENSIONS:
         files.extend(directory.rglob(f"*{ext}"))
     return sorted(files)
+
+
+def source_data_files(source_type: str = "", root: str = "", product: str = "",
+                      file: str = "", max_files: int | None = None) -> list[Path]:
+    """Resolve physical data files for a Flow DB source without reading them."""
+    DB_BASE = PATHS.db_root
+    files: list[Path] = []
+    if source_type == "base_file":
+        fp = PATHS.base_root / file
+        files = [fp] if fp.is_file() and fp.suffix.lower() in DATA_EXTENSIONS else []
+    elif source_type == "root_parquet" or (file and not product):
+        fp = DB_BASE / file
+        files = [fp] if fp.is_file() and fp.suffix.lower() in DATA_EXTENSIONS else []
+    else:
+        prod_paths = _source_product_paths(DB_BASE, root, product)
+        files = sorted(
+            fp
+            for prod_path in prod_paths
+            for fp in _glob_data_files(prod_path)
+            if fp.suffix.lower() in DATA_EXTENSIONS
+        )
+    if max_files is not None and max_files > 0 and len(files) > max_files:
+        return files[-max_files:]
+    return files
 
 
 def read_source(source_type: str = "", root: str = "", product: str = "",
@@ -291,7 +495,7 @@ def read_source(source_type: str = "", root: str = "", product: str = "",
         df = read_one_file(fp)
         if df is None:
             raise HTTPException(400, f"Cannot read DB root file: {file}")
-        return df
+        return normalize_source_df(df, root=root, file=file)
     if source_type == "root_parquet" or (file and not product):
         fp = DB_BASE / file
         if not fp.is_file():
@@ -299,7 +503,7 @@ def read_source(source_type: str = "", root: str = "", product: str = "",
         df = read_one_file(fp)
         if df is None:
             raise HTTPException(400, f"Cannot read file: {file}")
-        return df
+        return normalize_source_df(df, root=root, file=file)
 
     prod_path = DB_BASE / root / product
     data_files: list
@@ -334,7 +538,7 @@ def read_source(source_type: str = "", root: str = "", product: str = "",
         raise HTTPException(404, f"No readable files with data (tried {len(selected_files)})")
 
     if len(dfs) == 1:
-        return dfs[0]
+        return normalize_source_df(filter_valid_wafer_ids_df(dfs[0]), root=root, file=file)
 
     # Unify columns across partitions
     all_cols, seen = [], set()
@@ -349,7 +553,7 @@ def read_source(source_type: str = "", root: str = "", product: str = "",
         if missing:
             d = d.with_columns([pl.lit(None).cast(_STR).alias(c) for c in missing])
         unified.append(d.select(all_cols))
-    return pl.concat(unified, how="vertical")
+    return normalize_source_df(filter_valid_wafer_ids_df(pl.concat(unified, how="vertical")), root=root, file=file)
 
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -384,11 +384,12 @@ SOURCE_TYPE_PROFILES: list[dict[str, Any]] = [
     {
         "source_type": "INLINE",
         "meaning": "Inline metrology, CD/film/defect/process monitors before or during route.",
-        "default_grain": "lot_wf or shot/position when available",
-        "join_keys": ["lot_wf", "root_lot_id", "wafer_id", "shot_id", "shot_x", "shot_y", "subitem_id"],
-        "default_aggregation": "avg by lot_wf unless shot/position exact match exists",
+        "default_grain": "lot_wf/subitem_id; raw INLINE has no shot_x/shot_y",
+        "join_keys": ["lot_wf", "root_lot_id", "wafer_id", "subitem_id", "shot_id"],
+        "mapped_join_keys": ["shot_x", "shot_y"],
+        "default_aggregation": "avg by lot_wf unless an explicit subitem-to-shot coordinate map is applied",
         "knowledge_to_attach": ["item semantics", "measurement method", "layer/module", "coordinate map", "source step"],
-        "guardrails": ["Do not infer item meaning from raw name alone.", "Prefer shot match over lot_wf aggregation when both sides have coordinates."],
+        "guardrails": ["Do not infer item meaning from raw name alone.", "Treat INLINE subitem_id as the raw shot key.", "Use shot_x/shot_y only after inline_subitem_pos mapping is applied."],
     },
     {
         "source_type": "ET",
@@ -1339,8 +1340,10 @@ def _guess_source_type_from_dataset(source: dict[str, Any], columns: list[str]) 
         return "VM"
     if {"step_id", "chamber", "recipe"} & lower_cols and {"item_id", "value"}.isdisjoint(lower_cols):
         return "FAB"
-    if {"shot_x", "shot_y", "site_x", "site_y"} & lower_cols:
+    if "subitem_id" in lower_cols and {"item_id", "value"} <= lower_cols:
         return "INLINE"
+    if {"shot_x", "shot_y", "site_x", "site_y"} & lower_cols:
+        return "ET" if {"step_seq", "flat_zone"} & lower_cols else "INLINE"
     return "ET" if {"item_id", "value"} <= lower_cols else "AUTO"
 
 
@@ -1375,6 +1378,7 @@ def dataset_profile(filters: dict[str, Any] | None = None, limit: int = 300) -> 
     step_col = _ci_col(columns, "step_id", "STEP_ID", "func_step", "FUNC_STEP")
     shot_x_col = _ci_col(columns, "shot_x", "SHOT_X", "site_x", "SITE_X", "x_shot", "X_SHOT")
     shot_y_col = _ci_col(columns, "shot_y", "SHOT_Y", "site_y", "SITE_Y", "y_shot", "Y_SHOT")
+    subitem_col = _ci_col(columns, "subitem_id", "SUBITEM_ID")
     die_x_col = _ci_col(columns, "die_x", "DIE_X", "x_die", "X_DIE")
     die_y_col = _ci_col(columns, "die_y", "DIE_Y", "y_die", "Y_DIE")
     macro_col = _ci_col(columns, "macro", "MACRO", "macro_id", "MACRO_ID")
@@ -1386,6 +1390,7 @@ def dataset_profile(filters: dict[str, Any] | None = None, limit: int = 300) -> 
         x for x in [
             item_col, value_col, product_col, root_col, lot_col, fab_col, wafer_col, lot_wf_col,
             step_col, shot_x_col, shot_y_col, die_x_col, die_y_col, macro_col, bin_col, condition_col,
+            subitem_col,
         ] if x
     }
     metric_cols = []
@@ -1404,6 +1409,7 @@ def dataset_profile(filters: dict[str, Any] | None = None, limit: int = 300) -> 
             ("fab_lot_id", fab_col),
             ("wafer_id", wafer_col),
             ("step_id", step_col),
+            ("subitem_id", subitem_col),
             ("shot_x", shot_x_col),
             ("shot_y", shot_y_col),
             ("die_x", die_x_col),
@@ -1413,7 +1419,9 @@ def dataset_profile(filters: dict[str, Any] | None = None, limit: int = 300) -> 
             ("condition", condition_col),
         ] if col
     ]
-    if die_x_col and die_y_col:
+    if source_type == "INLINE" and subitem_col:
+        grain = "subitem"
+    elif die_x_col and die_y_col:
         grain = "die"
     elif shot_x_col and shot_y_col:
         grain = "shot"
@@ -2618,10 +2626,10 @@ def _target_column_values(file_name: str, column: str, limit: int = 80) -> list[
         return []
     try:
         fp = _resolve_single_file_target(file_name)
-        if fp.suffix.lower() == ".csv":
-            lf = pl.scan_csv(str(fp), infer_schema_length=5000, try_parse_dates=False)
-        else:
-            lf = pl.scan_parquet(str(fp))
+        from core.utils import scan_one_file
+        lf = scan_one_file(fp)
+        if lf is None:
+            return []
         if column not in lf.collect_schema().names():
             return []
         vals = (
