@@ -12,7 +12,16 @@ if(typeof document!=="undefined"&&!document.getElementById("dash-styles")){
     .chart-card{box-shadow:0 8px 22px rgba(15,23,42,0.06)}
     .chart-card:hover{box-shadow:0 12px 30px rgba(15,23,42,0.10)}
     .chart-phase-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));align-content:start}
+    .spotfire-shell{background:#0e1116;color:#fff;border:1px solid #2a2a2a;border-radius:10px;overflow:hidden}
+    .spotfire-shell.light{background:var(--bg-secondary);color:var(--text-primary)}
+    .spotfire-item-row{height:34px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:0 10px;border-bottom:1px solid rgba(255,255,255,.045);cursor:pointer}
+    .spotfire-item-row:hover{background:rgba(59,130,246,.10)}
+    .spotfire-card{border:1px solid #2a2a2a;border-radius:10px;background:#121722;min-width:0;overflow:hidden}
+    .spotfire-shell.light .spotfire-card{background:var(--bg-card);border-color:var(--border)}
+    .spotfire-select,.spotfire-input{border:1px solid #2a2a2a;border-radius:6px;background:#0e1116;color:#fff;font-size:14px;padding:7px 9px;box-sizing:border-box}
+    .spotfire-shell.light .spotfire-select,.spotfire-shell.light .spotfire-input{background:var(--bg-secondary);color:var(--text-primary);border-color:var(--border)}
     @media (max-width: 920px){.chart-phase-grid>.chart-card{grid-column:span 12!important}}
+    @media (max-width: 980px){.spotfire-layout{grid-template-columns:1fr!important}.spotfire-side{position:relative!important;top:auto!important;max-height:none!important}}
   `;
   document.head.appendChild(s);
 }
@@ -46,6 +55,29 @@ const DEFAULT_CHART_FORM = {
   bin_width: null, visible_to: "all", no_schedule: false, exclude_null: true,
   point_size: 3, opacity: 0.7, sort_x: false, limit_points: null, joins: [],
   group_ids: [], group: "", width: 2, height: 1,
+};
+const SPOTFIRE_GROUPS = ["FAB", "ET", "INLINE", "VM", "EDS", "KNOB", "MASK", "SPC"];
+const SPOTFIRE_CHART_TYPES = ["scatter", "boxplot", "trend", "correlation_matrix", "wafer_map", "classification", "stacked_bar"];
+const SOURCE_BADGE = {
+  FAB: "#3b82f6",
+  ET: "#ec4899",
+  INLINE: "#10b981",
+  VM: "#a855f7",
+  EDS: "#f97316",
+  KNOB: "#eab308",
+  MASK: "#ef4444",
+  SPC: "#14b8a6",
+};
+const DEFAULT_SPOTFIRE_CARD = {
+  id: "spotfire-1",
+  title: "Chart 1",
+  chart_type: "scatter",
+  size: "1x1",
+  selected: [],
+  config: {},
+  result: null,
+  loading: false,
+  error: "",
 };
 
 function chartTypeLabel(type) {
@@ -1861,6 +1893,22 @@ export default function My_Dashboard({ user }) {
   const [trendLoading, setTrendLoading] = useState(false);
   const [dashboardView, setDashboardView] = useState(() => localStorage.getItem("flow_dashboard_view") || "charts");
   const [dashboardSections, setDashboardSections] = useState(DASHBOARD_SECTIONS_DEFAULT);
+  const [spotfireGroup, setSpotfireGroup] = useState(() => localStorage.getItem("flow_spotfire_group") || "ET");
+  const [spotfireItems, setSpotfireItems] = useState([]);
+  const [spotfireSearch, setSpotfireSearch] = useState("");
+  const [selectedItems, setSelectedItems] = useState([]);
+  const [lastItemIndex, setLastItemIndex] = useState(-1);
+  const [activeSpotfireCard, setActiveSpotfireCard] = useState(() => localStorage.getItem("flow_spotfire_active_card") || "spotfire-1");
+  const [spotfireCards, setSpotfireCards] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("flow_spotfire_cards") || "[]");
+      return Array.isArray(saved) && saved.length ? saved : [DEFAULT_SPOTFIRE_CARD];
+    } catch {
+      return [DEFAULT_SPOTFIRE_CARD];
+    }
+  });
+  const [spotfireTheme, setSpotfireTheme] = useState(() => localStorage.getItem("flow_spotfire_theme") || "dark");
+  const [chartDefaults, setChartDefaults] = useState({});
   const visibleSections = isAdmin
     ? { charts: true, progress: true, alerts: true }
     : { ...DASHBOARD_SECTIONS_DEFAULT, ...dashboardSections };
@@ -1873,6 +1921,84 @@ export default function My_Dashboard({ user }) {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...c, width: w, height: h })
   }).then(load).catch(e => alert(e.message));
+
+  const updateSpotfireCard = (id, patch) => {
+    setSpotfireCards(prev => prev.map(c => c.id === id ? { ...c, ...(typeof patch === "function" ? patch(c) : patch) } : c));
+  };
+  const addSpotfireCard = () => {
+    const id = `spotfire-${Date.now()}`;
+    setActiveSpotfireCard(id);
+    setSpotfireCards(prev => [...prev, { ...DEFAULT_SPOTFIRE_CARD, id, title: `Chart ${prev.length + 1}` }]);
+  };
+  const removeSpotfireCard = (id) => {
+    setSpotfireCards(prev => {
+      const next = prev.filter(c => c.id !== id);
+      if (activeSpotfireCard === id && next[0]) setActiveSpotfireCard(next[0].id);
+      return next.length ? next : [DEFAULT_SPOTFIRE_CARD];
+    });
+  };
+  const duplicateSpotfireCard = (card) => {
+    const id = `spotfire-${Date.now()}`;
+    setActiveSpotfireCard(id);
+    setSpotfireCards(prev => [...prev, { ...card, id, title: `${card.title || "Chart"} copy` }]);
+  };
+  const runSpotfireCard = (card, selected = selectedItems) => {
+    const chosen = (selected || []).filter(Boolean);
+    if (!chosen.length) {
+      updateSpotfireCard(card.id, { selected: [], result: null, error: "" });
+      return;
+    }
+    const type = card.chart_type || chosen[0]?.default_chart_type || "scatter";
+    const x = type === "scatter" ? chosen[0] : chosen[0];
+    const y = type === "scatter" ? (chosen[1] || chosen[0]) : chosen[0];
+    const cfg = chartDefaults[type] || {};
+    updateSpotfireCard(card.id, { loading: true, error: "", chart_type: type, selected: chosen, config: cfg });
+    sf(API + "/multi-db-chart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        primary_source: y?.source_type || x?.source_type || spotfireGroup,
+        secondary_source: x?.source_type && x?.source_type !== (y?.source_type || "") ? x.source_type : "",
+        x_item: x?.key || "",
+        y_item: y?.key || x?.key || "",
+        items: chosen.map(i => i.key),
+        chart_type: type,
+        product: focusProduct || "",
+        color_by: cfg.color || "none",
+        group_by: cfg.group || "",
+        fit: type === "scatter" ? "linear" : "none",
+        stats: { columns: ["count", "median", "avg", "std"] },
+        font_size: 14,
+      }),
+    }).then((result) => {
+      updateSpotfireCard(card.id, { loading: false, result, error: result?.ok === false ? (result.error || "차트 데이터 없음") : "" });
+    }).catch(e => updateSpotfireCard(card.id, { loading: false, error: e.message || String(e) }));
+  };
+  const handleSpotfireSelect = (item, index, event) => {
+    const ctrl = event?.ctrlKey || event?.metaKey;
+    const shift = event?.shiftKey;
+    let next = [];
+    if (shift && lastItemIndex >= 0) {
+      const filtered = spotfireItems.filter(i => !spotfireSearch || `${i.label} ${i.key}`.toLowerCase().includes(spotfireSearch.toLowerCase()));
+      const a = Math.min(lastItemIndex, index);
+      const b = Math.max(lastItemIndex, index);
+      next = filtered.slice(a, b + 1);
+    } else if (ctrl) {
+      const exists = selectedItems.some(i => i.key === item.key && i.source_type === item.source_type);
+      next = exists ? selectedItems.filter(i => !(i.key === item.key && i.source_type === item.source_type)) : [...selectedItems, item];
+    } else {
+      next = [item];
+    }
+    setSelectedItems(next);
+    setLastItemIndex(index);
+    const active = spotfireCards.find(c => c.id === activeSpotfireCard) || spotfireCards[0];
+    if (active) {
+      const inferred = next.length >= 3 ? "correlation_matrix" : (active.chart_type || item.default_chart_type || "scatter");
+      const card = { ...active, chart_type: inferred };
+      updateSpotfireCard(active.id, { chart_type: inferred });
+      runSpotfireCard(card, next);
+    }
+  };
 
   // Filter charts by visibility + group hide
   const visibleByVis = charts.filter(c => !(c.visible_to === "admin" && !isAdmin));
@@ -1911,10 +2037,6 @@ export default function My_Dashboard({ user }) {
     if (!allowed.includes(dashboardView)) setDashboardView(allowed[0] || "charts");
   }, [dashboardView, visibleSections.charts, visibleSections.progress, visibleSections.alerts]);
   useEffect(() => {
-    if (!visibleSections.progress) {
-      setDashProducts([]);
-      return;
-    }
     sf(API + "/products").then((d) => {
       const vals = new Set();
       (d.products || []).forEach((s) => {
@@ -1925,7 +2047,39 @@ export default function My_Dashboard({ user }) {
       setDashProducts(arr);
       if (!focusProduct && arr.length) setFocusProduct(arr[0]);
     }).catch(() => setDashProducts([]));
-  }, [visibleSections.progress]);
+  }, [visibleSections.charts]);
+
+  useEffect(() => {
+    if (dashboardView !== "charts") return;
+    const q = new URLSearchParams({ group: spotfireGroup, product: focusProduct || "" });
+    sf(API + "/items?" + q.toString()).then(d => setSpotfireItems(d.items || [])).catch(() => setSpotfireItems([]));
+    localStorage.setItem("flow_spotfire_group", spotfireGroup);
+  }, [dashboardView, spotfireGroup, focusProduct]);
+
+  useEffect(() => {
+    if (dashboardView !== "charts") return;
+    sf(API + "/chart-defaults").then(d => setChartDefaults(d.defaults || {})).catch(() => setChartDefaults({}));
+  }, [dashboardView]);
+
+  useEffect(() => {
+    localStorage.setItem("flow_spotfire_cards", JSON.stringify(spotfireCards.map(c => ({ ...c, loading: false }))));
+    const t = setTimeout(() => {
+      sf(API + "/layout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ layout: { spotfireCards: spotfireCards.map(c => ({ id: c.id, chart_type: c.chart_type, size: c.size, selected: c.selected })), activeSpotfireCard } }),
+      }).catch(() => {});
+    }, 700);
+    return () => clearTimeout(t);
+  }, [spotfireCards, activeSpotfireCard]);
+
+  useEffect(() => {
+    localStorage.setItem("flow_spotfire_active_card", activeSpotfireCard);
+  }, [activeSpotfireCard]);
+
+  useEffect(() => {
+    localStorage.setItem("flow_spotfire_theme", spotfireTheme);
+  }, [spotfireTheme]);
 
   useEffect(() => {
     if (!visibleSections.progress || !focusProduct) return;
@@ -2011,7 +2165,8 @@ export default function My_Dashboard({ user }) {
             sections={dashboardSections} setSections={setDashboardSections}
             fabReferenceStep={referenceStepId} setFabReferenceStep={setReferenceStepId}
             fabSampleLots={sampleLots} setFabSampleLots={setSampleLots}
-            fabDays={progressDays} setFabDays={setProgressDays} />
+            fabDays={progressDays} setFabDays={setProgressDays}
+            chartDefaults={chartDefaults} setChartDefaults={setChartDefaults} />
         </PageGear>
       </div>}
     />
@@ -2049,6 +2204,29 @@ export default function My_Dashboard({ user }) {
       />
     )}
     {dashboardView === "alerts" && visibleSections.alerts && <TrendAlertPanel loading={trendLoading} alerts={trendAlerts} />}
+
+    {dashboardView === "charts" && (
+      <SpotfireDashboardPanel
+        group={spotfireGroup}
+        setGroup={setSpotfireGroup}
+        items={spotfireItems}
+        search={spotfireSearch}
+        setSearch={setSpotfireSearch}
+        selectedItems={selectedItems}
+        onSelectItem={handleSpotfireSelect}
+        cards={spotfireCards}
+        activeCardId={activeSpotfireCard}
+        setActiveCardId={setActiveSpotfireCard}
+        addCard={addSpotfireCard}
+        removeCard={removeSpotfireCard}
+        duplicateCard={duplicateSpotfireCard}
+        updateCard={updateSpotfireCard}
+        runCard={runSpotfireCard}
+        theme={spotfireTheme}
+        setTheme={setSpotfireTheme}
+        product={focusProduct}
+      />
+    )}
 
     {/* v8.4.8: 그룹 필터 칩 (그룹이 1개 이상이면 노출). 클릭해서 숨김/표시 토글. */}
     {dashboardView === "charts" && groupNames.length > 1 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12, alignItems: "center" }}>
@@ -2164,8 +2342,309 @@ export default function My_Dashboard({ user }) {
   </SelectionContext.Provider>);
 }
 
+function SpotfireDashboardPanel({
+  group, setGroup, items, search, setSearch, selectedItems, onSelectItem,
+  cards, activeCardId, setActiveCardId, addCard, removeCard, duplicateCard,
+  updateCard, runCard, theme, setTheme, product,
+}) {
+  const dark = theme !== "light";
+  return (
+    <section className={`spotfire-shell ${dark ? "" : "light"}`} style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}`, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+          <div style={{ fontSize: 16, fontWeight: 900 }}>Analysis Workspace</div>
+          <div style={{ fontSize: 14, color: dark ? "#9ca3af" : "var(--text-secondary)" }}>{product || "product 미선택"} · selected {selectedItems.length}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button type="button" onClick={addCard} style={spotfireButton("#3b82f6")}>+ 카드</button>
+          <button type="button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} style={spotfireButton(dark ? "#10b981" : "#0f172a")}>{dark ? "라이트" : "다크"}</button>
+        </div>
+      </div>
+      <div className="spotfire-layout" style={{ display: "grid", gridTemplateColumns: "300px minmax(0,1fr)", gap: 0 }}>
+        <aside className="spotfire-side" style={{ borderRight: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}`, minHeight: 520, maxHeight: 760, position: "sticky", top: 0, alignSelf: "start" }}>
+          <div style={{ padding: 12, display: "grid", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 5 }}>
+              {SPOTFIRE_GROUPS.map(g => (
+                <button key={g} type="button" onClick={() => setGroup(g)}
+                  style={{ border: `1px solid ${group === g ? (SOURCE_BADGE[g] || "#f97316") : (dark ? "#2a2a2a" : "var(--border)")}`, background: group === g ? `${SOURCE_BADGE[g] || "#f97316"}22` : "transparent", color: group === g ? (SOURCE_BADGE[g] || "#f97316") : (dark ? "#d1d5db" : "var(--text-secondary)"), borderRadius: 6, padding: "7px 0", fontSize: 14, fontWeight: 800, cursor: "pointer" }}>
+                  {g}
+                </button>
+              ))}
+            </div>
+            <input className="spotfire-input" value={search} onChange={e => setSearch(e.target.value)} placeholder="검색" />
+          </div>
+          <VirtualItemList items={items} search={search} selectedItems={selectedItems} onSelectItem={onSelectItem} dark={dark} />
+        </aside>
+        <main style={{ padding: 14, minWidth: 0 }}>
+          {(!cards || cards.length === 0) && <div style={spotfireEmpty(dark)}>왼쪽에서 항목을 선택하면 차트가 나타나요</div>}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 16, alignItems: "start" }}>
+            {(cards || []).map(card => (
+              <SpotfireChartCard
+                key={card.id}
+                card={card}
+                active={card.id === activeCardId}
+                setActive={() => setActiveCardId(card.id)}
+                updateCard={updateCard}
+                removeCard={removeCard}
+                duplicateCard={duplicateCard}
+                runCard={runCard}
+                dark={dark}
+              />
+            ))}
+          </div>
+        </main>
+      </div>
+    </section>
+  );
+}
+
+function VirtualItemList({ items, search, selectedItems, onSelectItem, dark }) {
+  const ref = useRef(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const rowH = 34;
+  const viewH = 520;
+  const filtered = useMemo(() => {
+    const q = String(search || "").toLowerCase();
+    return (items || []).filter(i => !q || `${i.key || ""} ${i.label || ""} ${i.source_type || ""}`.toLowerCase().includes(q));
+  }, [items, search]);
+  const start = Math.max(0, Math.floor(scrollTop / rowH) - 4);
+  const visibleCount = Math.ceil(viewH / rowH) + 8;
+  const slice = filtered.slice(start, start + visibleCount);
+  const selectedSet = new Set((selectedItems || []).map(i => `${i.source_type}:${i.key}`));
+  return (
+    <div ref={ref} onScroll={e => setScrollTop(e.currentTarget.scrollTop)} style={{ height: viewH, overflow: "auto", borderTop: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}` }}>
+      <div style={{ height: filtered.length * rowH, position: "relative" }}>
+        <div style={{ position: "absolute", top: start * rowH, left: 0, right: 0 }}>
+          {slice.map((item, i) => {
+            const idx = start + i;
+            const key = `${item.source_type}:${item.key}`;
+            const selected = selectedSet.has(key);
+            const color = SOURCE_BADGE[item.source_type] || "#64748b";
+            return (
+              <div key={key} className="spotfire-item-row" onClick={e => onSelectItem(item, idx, e)}
+                style={{ background: selected ? `${color}26` : "transparent", color: dark ? "#e5e7eb" : "var(--text-primary)" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, fontWeight: 800 }}>{item.label || item.key}</div>
+                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, color: dark ? "#9ca3af" : "var(--text-secondary)", fontFamily: "monospace" }}>{item.key}</div>
+                </div>
+                <span style={{ fontSize: 14, borderRadius: 999, padding: "2px 7px", color, border: `1px solid ${color}66`, background: `${color}16`, fontWeight: 900 }}>{item.source_type}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      {filtered.length === 0 && <div style={{ padding: 18, fontSize: 14, color: dark ? "#9ca3af" : "var(--text-secondary)" }}>항목 없음</div>}
+    </div>
+  );
+}
+
+function SpotfireChartCard({ card, active, setActive, updateCard, removeCard, duplicateCard, runCard, dark }) {
+  const [menu, setMenu] = useState("");
+  const size = card.size || "1x1";
+  const [w, h] = size.split("x").map(v => Math.max(1, Number(v) || 1));
+  const colSpan = Math.min(4, Math.max(1, w * 2));
+  const minH = Math.max(360, h * 330);
+  const doMenu = (value) => {
+    setMenu("");
+    if (value === "apply") runCard(card, card.selected || []);
+    if (value === "edit") updateCard(card.id, { editing: !card.editing });
+    if (value === "csv") exportSpotfireCsv(card);
+    if (value === "png") exportSpotfirePng(card, dark);
+    if (value === "duplicate") duplicateCard(card);
+    if (value === "delete") removeCard(card.id);
+  };
+  return (
+    <article className="spotfire-card" onClick={setActive} style={{ gridColumn: `span ${colSpan}`, minHeight: minH, outline: active ? "2px solid #f97316" : "none" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", padding: "10px 12px", borderBottom: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}` }}>
+        <input value={card.title || ""} onChange={e => updateCard(card.id, { title: e.target.value })} className="spotfire-input" style={{ flex: 1, minWidth: 0, fontWeight: 900 }} />
+        <select className="spotfire-select" value={card.chart_type || "scatter"} onChange={e => { const next = { ...card, chart_type: e.target.value }; updateCard(card.id, { chart_type: e.target.value }); if ((card.selected || []).length) runCard(next, card.selected); }}>
+          {SPOTFIRE_CHART_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <select className="spotfire-select" value={menu} onChange={e => doMenu(e.target.value)} title="카드 메뉴" style={{ width: 48 }}>
+          <option value="">⋮</option>
+          <option value="apply">기본 설정 적용</option>
+          <option value="edit">사용자 정의 편집</option>
+          <option value="csv">CSV 내보내기</option>
+          <option value="png">PNG 내보내기</option>
+          <option value="duplicate">카드 복제</option>
+          <option value="delete">삭제</option>
+        </select>
+      </div>
+      {card.editing && <div style={{ padding: 10, display: "grid", gap: 8, borderBottom: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}` }}>
+        <textarea value={JSON.stringify(card.config || {}, null, 2)} onChange={e => {
+          try { updateCard(card.id, { config: JSON.parse(e.target.value) }); } catch (_) {}
+        }} rows={5} className="spotfire-input" style={{ fontFamily: "monospace", resize: "vertical" }} />
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {["1x1", "2x1", "1x2", "2x2"].map(s => <button key={s} type="button" onClick={() => updateCard(card.id, { size: s })} style={spotfireButton(size === s ? "#f97316" : "#374151")}>{s}</button>)}
+        </div>
+      </div>}
+      <div style={{ padding: 12 }}>
+        {card.loading && <div style={spotfireEmpty(dark)}>차트 계산 중...</div>}
+        {!card.loading && card.error && <div style={{ ...spotfireEmpty(dark), color: "#fca5a5", borderColor: "#7f1d1d" }}>{card.error}</div>}
+        {!card.loading && !card.error && !card.result && <div style={spotfireEmpty(dark)}>왼쪽에서 항목을 선택하면 차트가 나타나요</div>}
+        {!card.loading && !card.error && card.result && <SpotfireChartViz card={card} dark={dark} />}
+      </div>
+    </article>
+  );
+}
+
+function SpotfireChartViz({ card, dark }) {
+  const result = card.result || {};
+  const type = result.chart_type || card.chart_type || "scatter";
+  const pts = Array.isArray(result.points) ? result.points : (Array.isArray(result.data) ? result.data : []);
+  const stats = Array.isArray(result.stats_table) ? result.stats_table : [];
+  const panels = Array.isArray(result.panels) ? result.panels : [];
+  if (type === "correlation_matrix" && result.matrix) {
+    return <CorrelationMatrix matrix={result.matrix} dark={dark} />;
+  }
+  if (panels.length) {
+    return <div style={{ display: "grid", gridTemplateColumns: panels.length < 4 ? "repeat(2,minmax(0,1fr))" : "repeat(2,minmax(0,1fr))", gap: 10 }}>
+      {panels.map(p => <div key={p.group} style={{ border: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}`, borderRadius: 8, padding: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 900, marginBottom: 6 }}>{p.group}</div>
+        <ScatterSvg points={p.points || []} fit={p.fit_params} dark={dark} height={220} />
+      </div>)}
+    </div>;
+  }
+  return (
+    <div>
+      <ScatterSvg points={pts} fit={result.fit_params || result.fit} dark={dark} height={300} />
+      <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap", fontSize: 14, color: dark ? "#9ca3af" : "var(--text-secondary)", fontFamily: "monospace" }}>
+        <span style={spotfireChip(dark)}>n={pts.length}</span>
+        {result.corr != null && <span style={spotfireChip(dark)}>corr={fmt(result.corr)}</span>}
+        {(result.fit_params || result.fit)?.r2 != null && <span style={spotfireChip(dark)}>R²={fmt((result.fit_params || result.fit).r2)}</span>}
+        {result.chart_session_id && <span style={spotfireChip(dark)}>session {String(result.chart_session_id).slice(0, 8)}</span>}
+      </div>
+      {stats.length > 0 && <StatsTable rows={stats} dark={dark} />}
+    </div>
+  );
+}
+
+function ScatterSvg({ points, fit, dark, height = 300 }) {
+  const pts = (Array.isArray(points) ? points : []).filter(p => Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y)));
+  if (!pts.length) return <div style={spotfireEmpty(dark)}>표시할 point가 없습니다</div>;
+  const W = 640, H = height, pad = { l: 52, r: 20, t: 20, b: 42 };
+  const xs = pts.map(p => Number(p.x)), ys = pts.map(p => Number(p.y));
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const rx = maxX - minX || 1, ry = maxY - minY || 1;
+  const sx = v => pad.l + (Number(v) - minX) / rx * (W - pad.l - pad.r);
+  const sy = v => pad.t + (H - pad.t - pad.b) - (Number(v) - minY) / ry * (H - pad.t - pad.b);
+  const fitOk = fit && Number.isFinite(Number(fit.slope)) && Number.isFinite(Number(fit.intercept));
+  const palette = ["#3b82f6", "#f97316", "#10b981", "#ef4444", "#a855f7", "#eab308", "#14b8a6"];
+  const colorVals = [...new Set(pts.map(p => String(p.color_value || "")).filter(Boolean))];
+  const colorFor = p => colorVals.length ? palette[Math.max(0, colorVals.indexOf(String(p.color_value || ""))) % palette.length] : "#3b82f6";
+  return (
+    <svg data-spotfire-chart="1" viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: "block" }}>
+      {[0, 0.25, 0.5, 0.75, 1].map(f => {
+        const y = pad.t + (H - pad.t - pad.b) * (1 - f);
+        return <g key={`y${f}`}><line x1={pad.l} x2={W - pad.r} y1={y} y2={y} stroke={dark ? "#2a2a2a" : "#d1d5db"} strokeDasharray="3,4" /><text x={pad.l - 8} y={y + 4} textAnchor="end" fontSize="12" fill={dark ? "#9ca3af" : "#64748b"}>{fmt(minY + ry * f)}</text></g>;
+      })}
+      {[0, 0.5, 1].map(f => {
+        const x = pad.l + (W - pad.l - pad.r) * f;
+        return <g key={`x${f}`}><line y1={pad.t} y2={H - pad.b} x1={x} x2={x} stroke={dark ? "#1f2937" : "#e5e7eb"} strokeDasharray="2,5" /><text x={x} y={H - 16} textAnchor="middle" fontSize="12" fill={dark ? "#9ca3af" : "#64748b"}>{fmt(minX + rx * f)}</text></g>;
+      })}
+      <line x1={pad.l} x2={W - pad.r} y1={H - pad.b} y2={H - pad.b} stroke={dark ? "#6b7280" : "#94a3b8"} />
+      <line x1={pad.l} x2={pad.l} y1={pad.t} y2={H - pad.b} stroke={dark ? "#6b7280" : "#94a3b8"} />
+      {fitOk && <line x1={sx(minX)} y1={sy(Number(fit.slope) * minX + Number(fit.intercept))} x2={sx(maxX)} y2={sy(Number(fit.slope) * maxX + Number(fit.intercept))} stroke="#ef4444" strokeWidth="2" strokeDasharray="7,4" />}
+      {pts.slice(0, 1200).map((p, i) => <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r="3.4" fill={colorFor(p)} opacity=".82">
+        <title>{`${p.label || ""}\nX=${p.x}\nY=${p.y}${p.color_value ? `\ncolor=${p.color_value}` : ""}`}</title>
+      </circle>)}
+      {fitOk && fit.r2 != null && <text x={W - pad.r - 4} y={pad.t + 14} textAnchor="end" fontSize="14" fill="#ef4444">R² {fmt(fit.r2)}</text>}
+    </svg>
+  );
+}
+
+function CorrelationMatrix({ matrix, dark }) {
+  const keys = Object.keys(matrix || {});
+  if (!keys.length) return <div style={spotfireEmpty(dark)}>상관 행렬 데이터 없음</div>;
+  return <div style={{ overflow: "auto" }}><table style={{ borderCollapse: "collapse", width: "100%", fontSize: 14, fontFamily: "monospace" }}>
+    <thead><tr><th style={spotfireTh(dark)}></th>{keys.map(k => <th key={k} style={spotfireTh(dark)}>{k}</th>)}</tr></thead>
+    <tbody>{keys.map(r => <tr key={r}><th style={spotfireTh(dark)}>{r}</th>{keys.map(c => {
+      const v = matrix?.[r]?.[c];
+      const n = Number(v);
+      const bg = Number.isFinite(n) ? `rgba(${n >= 0 ? "59,130,246" : "239,68,68"},${Math.min(0.72, Math.abs(n))})` : "transparent";
+      return <td key={c} style={{ ...spotfireTd(dark), background: bg, color: dark ? "#fff" : "#111827", textAlign: "center" }}>{v == null ? "-" : fmt(v)}</td>;
+    })}</tr>)}</tbody>
+  </table></div>;
+}
+
+function StatsTable({ rows, dark }) {
+  const cols = Object.keys(rows[0] || {});
+  if (!cols.length) return null;
+  return <div style={{ marginTop: 10, overflow: "auto", border: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}`, borderRadius: 8 }}>
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, fontFamily: "monospace" }}>
+      <thead><tr>{cols.map(c => <th key={c} style={spotfireTh(dark)}>{c}</th>)}</tr></thead>
+      <tbody>{rows.slice(0, 16).map((r, i) => <tr key={i}>{cols.map(c => <td key={c} style={spotfireTd(dark)}>{r[c] ?? ""}</td>)}</tr>)}</tbody>
+    </table>
+  </div>;
+}
+
+function exportSpotfireCsv(card) {
+  const rows = card?.result?.data || card?.result?.points || [];
+  if (!Array.isArray(rows) || !rows.length) return;
+  const cols = Object.keys(rows[0] || {});
+  const csv = [cols.join(","), ...rows.map(r => cols.map(c => JSON.stringify(r[c] ?? "")).join(","))].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${card.title || "dashboard_chart"}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function exportSpotfirePng(card, dark) {
+  const svg = document.querySelector(`[data-spotfire-chart="1"]`);
+  if (!svg) return;
+  const xml = new XMLSerializer().serializeToString(svg);
+  const blob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const box = svg.viewBox?.baseVal || {};
+  const width = Math.max(1, Math.round(box.width || svg.clientWidth || 640));
+  const height = Math.max(1, Math.round(box.height || svg.clientHeight || 300));
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.fillStyle = dark ? "#0e1116" : "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    URL.revokeObjectURL(url);
+    canvas.toBlob(png => {
+      if (!png) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(png);
+      a.download = `${card.title || "dashboard_chart"}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+    }, "image/png");
+  };
+  img.onerror = () => URL.revokeObjectURL(url);
+  img.src = url;
+}
+
+function spotfireButton(color) {
+  return { border: "0", borderRadius: 6, background: color, color: "#fff", padding: "8px 10px", fontSize: 14, fontWeight: 900, cursor: "pointer" };
+}
+function spotfireEmpty(dark) {
+  return { minHeight: 170, display: "flex", alignItems: "center", justifyContent: "center", border: `1px dashed ${dark ? "#374151" : "var(--border)"}`, borderRadius: 8, color: dark ? "#9ca3af" : "var(--text-secondary)", fontSize: 14, textAlign: "center", padding: 12 };
+}
+function spotfireChip(dark) {
+  return { border: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}`, borderRadius: 999, padding: "2px 7px" };
+}
+function spotfireTh(dark) {
+  return { textAlign: "left", padding: "6px 8px", borderBottom: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}`, color: dark ? "#9ca3af" : "var(--text-secondary)", whiteSpace: "nowrap" };
+}
+function spotfireTd(dark) {
+  return { padding: "6px 8px", borderBottom: `1px solid ${dark ? "#1f2937" : "var(--border)"}`, color: dark ? "#e5e7eb" : "var(--text-primary)", whiteSpace: "nowrap" };
+}
+
 /* ═══ v8.5.2 Dashboard Settings panel (PageGear 내부) ═══ */
-function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSections, fabReferenceStep, setFabReferenceStep, fabSampleLots, setFabSampleLots, fabDays, setFabDays }) {
+function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSections, fabReferenceStep, setFabReferenceStep, fabSampleLots, setFabSampleLots, fabDays, setFabDays, chartDefaults, setChartDefaults }) {
   const [val, setVal] = useState(refreshMin);
   const [bgVal, setBgVal] = useState(10);
   const [sectionDraft, setSectionDraft] = useState({ ...DASHBOARD_SECTIONS_DEFAULT, ...(sections || {}) });
@@ -2265,6 +2744,8 @@ function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSe
       </div>
       <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>검색한 lot과 비교할 기준선입니다. 예: AA200000 통과 최근 5개 랏 평균.</div>
 
+      <DashboardDefaultsEditor isAdmin={isAdmin} defaults={chartDefaults || {}} setDefaults={setChartDefaults} />
+
       {isAdmin && (
         <button onClick={save} disabled={saving}
           style={{ marginTop: 14, width: "100%", padding: "8px 12px", borderRadius: 6, border: "none", background: "var(--accent)", color: WHITE, fontWeight: 600, fontSize: 14, cursor: saving ? "wait" : "pointer" }}>
@@ -2277,6 +2758,46 @@ function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSe
         • 일반 유저는 값 확인만 가능 (편집은 관리자).<br/>
         • 차트별 exclude_null / fitting line 등은 각 차트의 편집 화면에서 설정합니다.
       </div>
+    </div>
+  );
+}
+
+function DashboardDefaultsEditor({ isAdmin, defaults, setDefaults }) {
+  const [type, setType] = useState("scatter");
+  const [text, setText] = useState("{}");
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    setText(JSON.stringify((defaults || {})[type] || {}, null, 2));
+  }, [type, defaults]);
+  const save = () => {
+    setMsg("");
+    let config = {};
+    try {
+      config = JSON.parse(text || "{}");
+    } catch (e) {
+      setMsg("JSON 형식 오류");
+      return;
+    }
+    sf(API + "/chart-defaults", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chart_type: type, config }),
+    }).then(d => {
+      setDefaults && setDefaults(d.defaults || {});
+      setMsg("기본 설정 저장 완료");
+    }).catch(e => setMsg(e.message || String(e)));
+  };
+  return (
+    <div style={{ marginTop: 16, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>차트 종류별 기본 설정</div>
+      <select value={type} onChange={e => setType(e.target.value)} disabled={!isAdmin}
+        style={{ width: "100%", padding: "7px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }}>
+        {SPOTFIRE_CHART_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+      </select>
+      <textarea value={text} onChange={e => setText(e.target.value)} disabled={!isAdmin} rows={8}
+        style={{ marginTop: 8, width: "100%", padding: "8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace", resize: "vertical", boxSizing: "border-box" }} />
+      {isAdmin && <button type="button" onClick={save} style={{ marginTop: 8, width: "100%", padding: "8px 12px", borderRadius: 6, border: "none", background: "#3b82f6", color: WHITE, fontWeight: 700, fontSize: 14, cursor: "pointer" }}>차트 기본 설정 저장</button>}
+      {msg && <div style={{ marginTop: 6, color: msg.includes("완료") ? OK.fg : BAD.fg, fontSize: 14 }}>{msg}</div>}
     </div>
   );
 }

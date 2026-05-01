@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -20,6 +21,11 @@ from routers.llm import (  # noqa: E402
     _normalize_feedback_tags,
     _run_flowi_chat,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dashboard_chart_sessions(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm_router.dashboard_charting, "CHART_SESSION_DIR", tmp_path / "dashboard_chart_sessions")
 
 
 def test_flowi_feature_router_matches_korean_splittable_alias():
@@ -97,6 +103,57 @@ def test_flowi_chart_request_uses_admin_defaults(monkeypatch):
 
     assert out["chart"]["render_preset"]["max_points"] == 123
     assert out["chart"]["aggregations"] == {"INLINE": "median", "ET": "avg"}
+
+
+def test_flowi_dashboard_chart_type_defaults_and_color_group_parsing(monkeypatch):
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+
+    corr = _handle_flowi_query(
+        "PRODA CD LKG VTH 상관행렬 그려줘",
+        "",
+        12,
+        allowed_keys={"dashboard"},
+    )
+    assert corr["chart_type"] == "correlation_matrix"
+    assert corr["config"]["chart_type"] == "correlation_matrix"
+
+    knob_box = _handle_flowi_query(
+        "PRODA STI knob 별 ET LKG boxplot",
+        "",
+        12,
+        allowed_keys={"dashboard"},
+    )
+    assert knob_box["chart_type"] == "boxplot"
+    assert knob_box["config"]["color_by"] == "ml_knob:STI"
+
+    grouped = _handle_flowi_query(
+        "PRODA ET LKG eqp_chamber 별 분리",
+        "",
+        12,
+        allowed_keys={"dashboard"},
+    )
+    assert grouped["config"]["group_by"].startswith("eqp_chamber")
+
+
+def test_flowi_chart_refine_uses_chart_session_context(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm_router.dashboard_charting, "CHART_SESSION_DIR", tmp_path / "sessions")
+    sid = llm_router.dashboard_charting.save_chart_session({
+        "username": "home_user",
+        "chart_type": "scatter",
+        "config": {"font_size": 14, "legend": True},
+        "base_data_query": {},
+        "data": [{"x": 1, "y": 2}],
+    })
+
+    out = llm_router._handle_dashboard_chart_refine(
+        "글씨 키워줘",
+        {"username": "home_user", "role": "user"},
+        {"chart_session_id": sid},
+    )
+
+    assert out["handled"] is True
+    assert out["config"]["font_size"] == 16
+    assert out["chart_session_id"] == sid
 
 
 def test_flowi_wafer_match_expr_handles_prefixed_and_int_values():

@@ -46,6 +46,7 @@ function FlowiConsole({onNavigate,user}){
   const[liveStep,setLiveStep]=useState(0);
   const[personaCard,setPersonaCard]=useState(null);
   const[personaOpen,setPersonaOpen]=useState(false);
+  const[activeChartSessionId,setActiveChartSessionId]=useState("");
   const promptRef=useRef(null);
   const scrollRef=useRef(null);
   const verifySeq=useRef(0);
@@ -111,6 +112,7 @@ function FlowiConsole({onNavigate,user}){
     walkthrough:m.result?.tool?.walkthrough||{},
     slots:m.result?.tool?.slots||{},
     filters:m.result?.tool?.filters||{},
+    chart_session_id:m.result?.tool?.chart_session_id||m.result?.tool?.chart_result?.chart_session_id||"",
     workflow_state:m.result?.workflow_state||m.result?.tool?.workflow_state||{},
     output_summary:m.result?.workflow_state?.outputs||m.result?.tool?.workflow_state?.outputs||{},
     pending_prompt:m.result?.tool?.pending_prompt||"",
@@ -125,13 +127,15 @@ function FlowiConsole({onNavigate,user}){
     if(!q){setErr("질문을 입력해주세요.");return;}
     if(overridePrompt)setPrompt(q);
     const userMsg={id:`u-${Date.now()}`,role:"user",text:q,ts:new Date().toISOString()};
-    const context={type:"home_flowi_chat",limit_chars:CTX_LIMIT,remaining_chars:contextRemaining,messages:contextMessages};
+    const context={type:"home_flowi_chat",limit_chars:CTX_LIMIT,remaining_chars:contextRemaining,messages:contextMessages,chart_session_id:activeChartSessionId||""};
     setMessages(prev=>[...prev,userMsg]);
     setActive(true);setBusy(true);setErr("");setLastPrompt(q);
     const started=Date.now();
     postJson("/api/llm/flowi/chat",{prompt:q,product:"",max_rows:12,context})
       .then(d=>{
         const enriched={...(d||{}),elapsed_ms:Date.now()-started};
+        const sid=enriched?.tool?.chart_session_id||enriched?.tool?.chart_result?.chart_session_id||"";
+        if(sid)setActiveChartSessionId(sid);
         setResult(enriched);
         setMessages(prev=>[...prev,{id:`a-${Date.now()}`,role:"assistant",answer:enriched?.answer||"",prompt:q,result:enriched,intent:enriched?.tool?.intent||"",ts:new Date().toISOString()}]);
         setPrompt("");
@@ -166,7 +170,7 @@ function FlowiConsole({onNavigate,user}){
           </div>
           :<div key={m.id} style={{margin:"0 0 14px",maxWidth:"92%"}}>
             <div style={{fontSize:14,color:"#737373",fontFamily:"monospace",marginBottom:4}}>flow-i{isAdmin&&m.intent?` · ${m.intent}`:""}</div>
-            <FlowiResult busy={false} error="" result={m.result} prompt={m.prompt} onNavigate={onNavigate} onChoice={ask} embedded isAdmin={isAdmin}/>
+            <FlowiResult busy={false} error="" result={m.result} prompt={m.prompt} onNavigate={onNavigate} onChoice={ask} embedded isAdmin={isAdmin} activeChartSessionId={activeChartSessionId} onUseChartSession={setActiveChartSessionId}/>
           </div>)}
         {busy&&isAdmin&&<FlowiLiveTrace step={liveStep}/>}
       </div>
@@ -193,7 +197,7 @@ function FlowiConsole({onNavigate,user}){
       </div>
       </form>
     </div>}
-    {err&&<FlowiResult busy={false} error={err} result={null} prompt={lastPrompt} onNavigate={onNavigate} onChoice={ask} isAdmin={isAdmin}/>}
+    {err&&<FlowiResult busy={false} error={err} result={null} prompt={lastPrompt} onNavigate={onNavigate} onChoice={ask} isAdmin={isAdmin} activeChartSessionId={activeChartSessionId} onUseChartSession={setActiveChartSessionId}/>}
   </section>);
 }
 
@@ -222,7 +226,7 @@ function FlowiPersonaCard({card,open,onToggle}){
   </div>);
 }
 
-function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=false,isAdmin=false}){
+function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=false,isAdmin=false,activeChartSessionId="",onUseChartSession=null}){
   if(busy)return <div style={{marginTop:embedded?0:10,fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
   if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:14,border:"1px solid #7f1d1d"}}>{error}</div>;
   if(!result)return null;
@@ -239,6 +243,7 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
   const nextActions=(Array.isArray(tool.next_actions)?tool.next_actions:(Array.isArray(result.next_actions)?result.next_actions:[])).filter(a=>a&&a.type!=="respond_with_prompt").slice(0,6);
   const chart=tool?.chart&&typeof tool.chart==="object"?tool.chart:null;
   const chartResult=tool?.chart_result&&typeof tool.chart_result==="object"?tool.chart_result:null;
+  const chartSessionId=tool?.chart_session_id||chartResult?.chart_session_id||"";
   return(<div style={{marginTop:embedded?0:12,borderTop:embedded?"none":"1px solid #262626",paddingTop:embedded?0:10}}>
     <div style={{whiteSpace:"pre-wrap",fontSize:14,lineHeight:1.65,color:"#d4d4d4"}}>{result.answer||"응답이 없습니다."}</div>
     {isAdmin&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
@@ -249,6 +254,13 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
     </div>}
     {isAdmin&&<FlowiTrace trace={result.trace}/>}
     {chartResult&&<FlowiScatterResult data={chartResult}/>}
+    {chartSessionId&&<div style={{marginTop:8,display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
+      <button type="button" onClick={()=>onUseChartSession&&onUseChartSession(chartSessionId)}
+        style={{fontSize:14,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:999,padding:"3px 9px",background:activeChartSessionId===chartSessionId?"#2a1608":"#1f130b",cursor:"pointer",fontWeight:900}}>
+        수정 요청
+      </button>
+      <span style={{fontSize:14,color:"#737373",fontFamily:"monospace"}}>{String(chartSessionId).slice(0,12)}</span>
+    </div>}
     {chart&&<FlowiChartPlan chart={chart}/>}
     {walkthrough&&walkthrough.session_id&&<FlowiWalkthrough data={walkthrough}/>}
     {table&&<FlowiDataTable table={table}/>}
