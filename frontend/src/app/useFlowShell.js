@@ -2,6 +2,7 @@ import { startTransition, useCallback, useEffect, useRef, useState } from "react
 
 import { TABS } from "../config";
 import { logActivity, postJson, sf } from "../lib/api";
+import { isAdmin, isPageAdmin } from "../lib/permissions";
 
 const TAB_KEYS = new Set(TABS.map((item) => item.key));
 
@@ -108,13 +109,16 @@ export function useFlowShell() {
       if (tabKey === "home") return true;
       if (userTabs === "__all__") return true;
       const tabConfig = TABS.find((item) => item.key === tabKey);
-      if (tabConfig?.adminOnly && user?.role !== "admin") return false;
-      if (tabConfig?.restrictedSetting && user?.role !== "admin" && !sidebarPolicy[tabConfig.restrictedSetting]) {
+      if (tabConfig?.adminOnly && !isAdmin(user)) {
+        if (tabKey === "admin" || !isPageAdmin(user, tabKey)) return false;
+        return true;
+      }
+      if (tabConfig?.restrictedSetting && !isAdmin(user) && !sidebarPolicy[tabConfig.restrictedSetting]) {
         return false;
       }
       return toTabList(userTabs).includes(tabKey);
     },
-    [sidebarPolicy, user?.role, userTabs],
+    [sidebarPolicy, user, userTabs],
   );
 
   useIdleLogout(handleLogout);
@@ -148,6 +152,18 @@ export function useFlowShell() {
         .then((data) => setUserTabs(data.tabs || "filebrowser,dashboard,splittable"))
         .catch(() => {});
     }
+    sf("/api/admin/my-page-admin")
+      .then((data) => {
+        const pages = Array.isArray(data?.pages) ? data.pages : [];
+        setUser((prev) => {
+          if (!prev || prev.username !== user.username) return prev;
+          if ((prev.page_admins || []).join(",") === pages.join(",")) return prev;
+          const merged = { ...prev, page_admins: pages };
+          localStorage.setItem("hol_user", JSON.stringify(merged));
+          return merged;
+        });
+      })
+      .catch(() => {});
   }, [user]);
 
   useEffect(() => {

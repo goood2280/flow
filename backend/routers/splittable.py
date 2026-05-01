@@ -32,7 +32,7 @@ import polars as pl
 from core.paths import PATHS
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_column
 from core.audit import record_user as _audit_user
-from core.auth import current_user, require_admin
+from core.auth import current_user, require_admin, is_page_admin, require_page_admin
 from core.domain import classify_process_area
 from core import s3_sync as _s3
 from core.utils import (
@@ -1905,7 +1905,7 @@ def _migrate_legacy_root_prefix(cfg: dict) -> dict:
 
 
 @router.post("/source-config/save")
-def save_source_config(req: SourceConfigReq):
+def save_source_config(req: SourceConfigReq, _perm=Depends(require_page_admin("splittable"))):
     cur = load_json(SOURCE_CFG, {"enabled": [], "lot_overrides": {}})
     cur["enabled"] = req.enabled
     if req.lot_overrides:
@@ -2688,16 +2688,12 @@ class RulebookSchemaReq(BaseModel):
 
 
 @router.post("/rulebook/schema/save")
-def save_rulebook_schema(req: RulebookSchemaReq, request: Request):
-    try:
-        from core.auth import current_user
-        me = current_user(request)
-        if (me.get("role") or "") != "admin":
-            raise HTTPException(403, "Admin only")
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(403, "Auth required")
+def save_rulebook_schema(
+    req: RulebookSchemaReq,
+    request: Request,
+    _perm=Depends(require_page_admin("splittable")),
+):
+    me = current_user(request)
     if req.kind not in _DEFAULT_RULEBOOK_SCHEMA:
         raise HTTPException(400, f"unknown rulebook: {req.kind}")
     cur = _load_rulebook_schema()
@@ -2776,18 +2772,9 @@ class RulebookSaveReq(BaseModel):
 
 
 @router.post("/rulebook/save")
-def save_rulebook(req: RulebookSaveReq, request: Request):
-    """admin 전용. product 스코프면 해당 제품 행만 교체, 아니면 파일 전체 교체."""
-    # admin check
-    try:
-        from core.auth import current_user
-        me = current_user(request)
-        if (me.get("role") or "") != "admin":
-            raise HTTPException(403, "Admin only")
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(403, "Auth required")
+def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_page_admin("splittable"))):
+    """Admin 또는 splittable page_admin 전용. product 스코프면 해당 제품 행만 교체."""
+    me = current_user(request)
 
     meta = _RULEBOOK_FILES.get(req.kind)
     if not meta:
@@ -2862,7 +2849,7 @@ class PrefixSaveReq(BaseModel):
 
 
 @router.post("/prefixes/save")
-def save_prefixes(req: PrefixSaveReq):
+def save_prefixes(req: PrefixSaveReq, _perm=Depends(require_page_admin("splittable"))):
     save_json(PREFIX_CFG, req.prefixes)
     return {"ok": True}
 
@@ -2884,7 +2871,7 @@ class PrecisionReq(BaseModel):
 
 
 @router.post("/precision/save")
-def save_precision(req: PrecisionReq):
+def save_precision(req: PrecisionReq, _perm=Depends(require_page_admin("splittable"))):
     # Sanitize: ensure int 0..10 per prefix
     out = {}
     for k, v in (req.precision or {}).items():

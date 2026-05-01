@@ -2,6 +2,7 @@ import dagre from "dagre";
 import { useState, useEffect, useRef } from "react";
 // v8.8.2: S3StatusLight 제거 — S3 상태는 File Browser 에서만 관리.
 import { sf } from "../lib/api";
+import { canManagePage, isAdmin as isAdminUser } from "../lib/permissions";
 import { Pill } from "../components/UXKit";
 const API="/api/dbmap";
 
@@ -1065,9 +1066,8 @@ export default function My_TableMap({user}){
   };
   const[view,setView]=useState("graph");
   const[editingRelation,setEditingRelation]=useState(null);
-  const pageAdmins = Array.isArray(user?.page_admins) ? user.page_admins : [];
-  const canManage = user?.role==="admin" || pageAdmins.includes("tablemap");
-  const isAdmin=user?.role==="admin";
+  const canManage = canManagePage(user, "tablemap");
+  const isAdmin=isAdminUser(user);
   // v8.6.3: lineage overlay (ET/INLINE/EDS → ML_TABLE)
   const[showLineage,setShowLineage]=useState(false);
   const[lineageData,setLineageData]=useState({edges:[],stats:{}});
