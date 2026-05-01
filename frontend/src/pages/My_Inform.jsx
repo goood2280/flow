@@ -1003,7 +1003,7 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
     .replaceAll("{reason}", root.reason || "");
   const _defSubject = _tpl.subject
     ? _subst(_tpl.subject)
-    : `[인폼] ${root.module || ""} · ${root.lot_id || root.wafer_id || ""}`.trim();
+    : "";
   const _defBody = _tpl.body ? _subst(_tpl.body) : "";
   const [subject, setSubject] = useState(_defSubject);
   const [body, setBody] = useState(_defBody);
@@ -1032,11 +1032,15 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
   useEffect(() => {
     if (!root?.id) return;
     const h = setTimeout(() => {
-      sf(API + "/" + encodeURIComponent(root.id) + "/mail-preview?body=" + encodeURIComponent(body || ""))
+      const q = new URLSearchParams();
+      q.set("body", body || "");
+      q.set("subject", subject || "");
+      computedEmails().forEach(em => q.append("to", em));
+      sf(API + "/" + encodeURIComponent(root.id) + "/mail-preview?" + q.toString())
         .then(d => setPreview(d)).catch(() => setPreview(null));
     }, 250);
     return () => clearTimeout(h);
-  }, [root?.id, body]);
+  }, [root?.id, body, subject, pickedUsers, pickedGroups, extraEmails, recipients, groups, publicGroups]);
 
   const reloadGroups = () => {
     sf(API + "/mail-groups").then(d => setGroups(d.groups || {})).catch(() => setGroups({}));
@@ -1089,13 +1093,14 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
     return Array.from(out);
   };
   const totalEmails = computedEmails().length;
+  const previewEmails = totalEmails ? computedEmails() : (preview?.resolved_recipients || []);
+  const effectiveEmailCount = totalEmails || (preview?.auto_module_used ? previewEmails.length : 0);
 
   const doSend = () => {
     setError(""); setSent(null);
     const to = computedEmails();
-    if (to.length === 0) { setError("수신자 이메일을 1명 이상 선택하세요 (그룹·유저·추가 이메일)."); return; }
+    if (to.length === 0 && !(root.module || "").trim()) { setError("수신자를 선택하거나 인폼 모듈을 지정하세요."); return; }
     if (to.length > 199) { setError(`수신자는 최대 199명입니다 (현재 ${to.length}명).`); return; }
-    if (!subject.trim()) { setError("제목을 입력하세요."); return; }
     setSending(true);
     sf(`${API}/${root.id}/send-mail`, {
       method: "POST",
@@ -1122,7 +1127,7 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
           <div style={{ fontSize: 15, fontWeight: 700 }}>✉ 인폼 메일 보내기 <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-secondary)" }}>(최대 199명 · 본문 2MB · 첨부 10MB)</span></div>
           <span onClick={onClose} style={{ cursor: "pointer", fontSize: 18 }}>✕</span>
         </div>
-        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>Admin 설정의 메일 API 로 multipart POST. 수신자 총 <b style={{ color: "var(--accent)" }}>{totalEmails}명</b> · Inform <code>{root.id}</code></div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>Admin 설정의 메일 API 로 multipart POST. 수신자 총 <b style={{ color: "var(--accent)" }}>{effectiveEmailCount}명</b> · Inform <code>{root.id}</code></div>
         {/* v8.8.1: 발송자 ID 자동 명시 제거. 제품 담당자 라인만 본문 상단에 삽입. */}
         <div style={{ fontSize: 14, padding: "6px 10px", marginBottom: 10, borderRadius: 4, background: INFO.bg, border: `1px solid ${INFO.fg}`, color: "rgba(29,78,216,0.95)" }}>
           📨 발송계정: 시스템(Admin) · 본문 상단에 <b>제품 담당자</b> 라인 자동 삽입 (해당 제품에 등록된 담당자 있을 때).
@@ -1256,14 +1261,19 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
         {/* v8.8.1: statusCode 등 백엔드 전용 필드는 UI 에서 제거 — admin 기본값으로 자동 주입됨. */}
         <div style={{ marginBottom: 8 }}>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>제목</div>
-          <input value={subject} onChange={e => setSubject(e.target.value)} style={S} />
+          <input value={subject} onChange={e => setSubject(e.target.value)} placeholder={preview?.subject || "비워두면 plan 적용 통보 제목 자동 생성"} style={S} />
         </div>
         <div style={{ marginBottom: 8 }}>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>본문 프로즈 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(HTML content 상단에 강조 삽입, 생략 가능)</span></div>
-          <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} style={{ ...S, resize: "vertical" }} />
+          <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} placeholder="비워두면 모듈팀 plan 적용 통보 문구가 자동 생성됩니다." style={{ ...S, resize: "vertical" }} />
           {preview?.owners_line && (
             <div style={{ marginTop: 4, fontSize: 14, color: GREEN.fg, background: GREEN.soft, border: `1px solid ${GREEN.fg}`, borderRadius: 4, padding: "4px 8px" }}>
               📌 자동 삽입: <b>제품담당자</b> : {preview.owners_line}
+            </div>
+          )}
+          {preview?.auto_module_used && (preview.auto_module_recipients || []).length > 0 && (
+            <div style={{ marginTop: 4, fontSize: 14, color: INFO.fg, background: INFO.bg, border: `1px solid ${INFO.fg}55`, borderRadius: 4, padding: "4px 8px" }}>
+              자동 수신: {(preview.auto_module_recipients || []).map(r => `${r.username} <${r.email}>`).join(", ")}
             </div>
           )}
         </div>
@@ -1271,7 +1281,7 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
         {preview?.html_body && (
           <details style={{ marginBottom: 10, border: "1px solid var(--border)", borderRadius: 5, padding: "4px 10px", background: "var(--bg-card)" }} open>
             <summary style={{ fontSize: 14, fontWeight: 600, cursor: "pointer", color: "var(--accent)" }}>
-              🔍 메일 미리보기 · 제목 [{subject}] · 수신자 {totalEmails}명
+              🔍 메일 미리보기 · 제목 [{subject || preview.subject || "자동"}] · 수신자 {effectiveEmailCount}명
             </summary>
             <div style={{ marginTop: 6, marginBottom: 6, display: "flex", gap: 8, flexWrap: "wrap", fontSize: 14 }}>
               <span style={{ padding: "3px 8px", borderRadius: 999, background: INFO.bg, color: INFO.fg, border: `1px solid ${INFO.fg}55` }}>
@@ -1285,7 +1295,7 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
               </span>
             </div>
             <div style={{ marginTop: 6, fontSize: 14, color: "var(--text-secondary)", marginBottom: 4, fontFamily: "monospace" }}>
-              To: {computedEmails().slice(0, 8).join(", ")}{computedEmails().length > 8 ? ` (+${computedEmails().length - 8}명)` : ""}
+              To: {previewEmails.slice(0, 8).join(", ")}{previewEmails.length > 8 ? ` (+${previewEmails.length - 8}명)` : ""}
             </div>
             <div style={{ maxHeight: 560, overflowY: "auto", overflowX: "hidden", background: WHITE, color: "var(--text-primary)", padding: 10, border: "1px solid var(--border)", borderRadius: 4 }}
                  dangerouslySetInnerHTML={{ __html: preview.html_body }} />
@@ -1340,7 +1350,7 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
         {sent && <div style={{ padding: "6px 10px", background: GREEN.bg, color: OK.fg, border: `1px solid ${OK.fg}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>✔ 전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}
 
         <div style={{ display: "flex", gap: 8 }}>
-          <button disabled={sending} onClick={doSend} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: sending ? "var(--text-secondary)" : "var(--accent)", color: WHITE, fontWeight: 600, cursor: sending ? "wait" : "pointer" }}>{sending ? "전송 중…" : `📧 ${totalEmails}명에게 전송`}</button>
+          <button disabled={sending} onClick={doSend} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: sending ? "var(--text-secondary)" : "var(--accent)", color: WHITE, fontWeight: 600, cursor: sending ? "wait" : "pointer" }}>{sending ? "전송 중…" : `📧 ${effectiveEmailCount}명에게 전송`}</button>
           <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>닫기</button>
         </div>
       </div>
