@@ -72,6 +72,8 @@ INFORMS_FILE = INFORMS_DIR / "informs.json"
 CONFIG_FILE = INFORMS_DIR / "config.json"
 UPLOADS_DIR = INFORMS_DIR / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
+MODULE_KNOB_MAP_FILE = PATHS.data_root / "inform_module_knob_map.json"
 
 # Default 모듈·사유. config.json 에 저장된 값이 있으면 그것을 우선.
 DEFAULT_MODULES = ["GATE", "STI", "PC", "MOL", "BEOL", "ET", "EDS", "S-D Epi", "Spacer", "Well", "기타"]
@@ -159,6 +161,59 @@ def _save_config(cfg: dict) -> None:
     save_json(CONFIG_FILE, cfg, indent=2)
 
 
+DEFAULT_MODULE_KNOB_MAP = {
+    "GATE": ["GATE_DOSE", "GATE_TIME"],
+    "STI": ["STI_DEPTH", "STI_CD"],
+    "PC": ["PC_DOSE"],
+    "MOL": [],
+    "BEOL": [],
+    "ET": [],
+    "EDS": [],
+    "S-D Epi": [],
+    "Spacer": [],
+    "Well": [],
+}
+
+
+def _normalize_knob_map(raw: Any) -> dict[str, list[str]]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for mod, knobs in raw.items():
+        m = str(mod or "").strip()
+        if not m:
+            continue
+        vals = knobs if isinstance(knobs, list) else []
+        clean: list[str] = []
+        seen: set[str] = set()
+        for k in vals:
+            name = str(k or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            clean.append(name)
+        out[m] = clean
+    return out
+
+
+def _load_module_knob_map() -> dict[str, list[str]]:
+    data = load_json(MODULE_KNOB_MAP_FILE, {})
+    return _normalize_knob_map(data)
+
+
+def _save_module_knob_map(mapping: dict[str, list[str]]) -> None:
+    save_json(MODULE_KNOB_MAP_FILE, _normalize_knob_map(mapping), indent=2)
+
+
+def _module_highlight_knobs(module: str) -> set[str]:
+    mod = str(module or "").strip()
+    if not mod:
+        return set()
+    mapping = _load_module_knob_map()
+    knobs = mapping.get(mod) or []
+    return {str(k or "").strip().upper() for k in knobs if str(k or "").strip()}
+
+
 # v8.8.13: 유저별 인폼 모듈 조회 권한. admin_settings.json 의 `inform_user_modules` 에 저장.
 #   스키마: { username: [module, ...] }.
 #   - admin 은 항상 전체(all_rounder) — 설정값과 무관.
@@ -168,7 +223,7 @@ _INFORM_USER_MODS_KEY = "inform_user_modules"
 
 
 def _inform_user_mods_path():
-    return PATHS.data_root / "admin_settings.json"
+    return ADMIN_SETTINGS_FILE
 
 
 def _read_admin_settings() -> dict:
@@ -196,6 +251,50 @@ def _get_inform_user_mods() -> dict:
     d = _read_admin_settings()
     um = d.get(_INFORM_USER_MODS_KEY) or {}
     return um if isinstance(um, dict) else {}
+
+
+def build_inform_module_user_index(user_modules_map: Optional[dict] = None) -> dict[str, list[str]]:
+    """Return module -> usernames from admin_settings.inform_user_modules."""
+    src = user_modules_map if isinstance(user_modules_map, dict) else _get_inform_user_mods()
+    out: dict[str, list[str]] = {}
+    seen: dict[str, set[str]] = {}
+    for username, modules in (src or {}).items():
+        un = str(username or "").strip()
+        if not un or not isinstance(modules, list):
+            continue
+        for raw_mod in modules:
+            mod = str(raw_mod or "").strip()
+            if not mod:
+                continue
+            bucket = out.setdefault(mod, [])
+            used = seen.setdefault(mod, set())
+            if un not in used:
+                used.add(un)
+                bucket.append(un)
+    return out
+
+
+def _module_usernames(module: str) -> list[str]:
+    mod = str(module or "").strip()
+    if not mod:
+        return []
+    return build_inform_module_user_index().get(mod, [])
+
+
+def _module_recipient_rows(module: str) -> list[dict]:
+    out: list[dict] = []
+    seen_emails: set[str] = set()
+    for un in _module_usernames(module):
+        emails = _resolve_users_to_emails([un])
+        if not emails:
+            continue
+        em = emails[0]
+        key = em.lower()
+        if key in seen_emails:
+            continue
+        seen_emails.add(key)
+        out.append({"username": un, "email": em})
+    return out
 
 
 def _user_module_scope(username: str, role: str):
@@ -690,6 +789,11 @@ class ConfigReq(BaseModel):
     reason_templates: Optional[dict] = None
 
 
+class ModuleKnobMapReq(BaseModel):
+    module: str
+    knobs: List[str] = []
+
+
 class SplitTableSnapshotReq(BaseModel):
     product: str
     lot_id: str
@@ -734,6 +838,44 @@ def list_modules():
         "reasons": cfg["reasons"],
         "flow_statuses": FLOW_STATUSES,
     }
+
+
+@router.get("/modules/recipients")
+def module_recipients(request: Request, module: str = Query("")):
+    _ = current_user(request)
+    mod = (module or "").strip()
+    if not mod:
+        raise HTTPException(400, "module required")
+    return {"module": mod, "recipients": _module_recipient_rows(mod)}
+
+
+@router.get("/modules/knob-map")
+def get_module_knob_map(request: Request):
+    _ = current_user(request)
+    return {"knob_map": _load_module_knob_map()}
+
+
+@router.post("/modules/knob-map")
+def set_module_knob_map(req: ModuleKnobMapReq, request: Request):
+    me = current_user(request)
+    if me.get("role") != "admin":
+        raise HTTPException(403, "admin only")
+    mod = (req.module or "").strip()
+    if not mod:
+        raise HTTPException(400, "module required")
+    mapping = _load_module_knob_map()
+    clean: list[str] = []
+    seen: set[str] = set()
+    for raw in req.knobs or []:
+        knob = str(raw or "").strip()
+        if not knob or knob in seen:
+            continue
+        seen.add(knob)
+        clean.append(knob)
+    mapping[mod] = clean
+    _save_module_knob_map(mapping)
+    _audit(request, "inform:module-knob-map", detail=f"module={mod} knobs={len(clean)}", tab="inform")
+    return {"ok": True, "module": mod, "knobs": clean, "knob_map": mapping}
 
 
 @router.get("/config")
@@ -2047,9 +2189,6 @@ def bulk_add_product_contacts(req: ProductContactBulkReq, request: Request):
 
 
 # ── v8.7.2: Mail relay ─────────────────────────────────────────────
-ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
-
-
 def _load_mail_cfg() -> dict:
     data = load_json(ADMIN_SETTINGS_FILE, {})
     if not isinstance(data, dict):
@@ -2067,6 +2206,54 @@ class SendMailReq(BaseModel):
     include_thread: bool = True     # include full thread HTML in content
     status_code: str = ""           # per-send override; else admin default
     attachments: List[str] = []     # inform image URLs to attach
+
+
+def _resolve_mail_recipients(
+    target: dict,
+    *,
+    to: Optional[List[str]] = None,
+    to_users: Optional[List[str]] = None,
+    groups: Optional[List[str]] = None,
+    cfg: Optional[dict] = None,
+) -> tuple[list[str], list[dict], bool]:
+    """Resolve explicit recipients, or module recipients when no explicit target is given."""
+    cfg = cfg or {}
+    explicit_to = [str(x or "").strip() for x in (to or []) if str(x or "").strip()]
+    explicit_users = [str(x or "").strip() for x in (to_users or []) if str(x or "").strip()]
+    explicit_groups = [str(x or "").strip() for x in (groups or []) if str(x or "").strip()]
+    use_auto_module = not explicit_to and not explicit_users and not explicit_groups and bool(str(target.get("module") or "").strip())
+
+    to_addrs: List[str] = []
+    seen_addrs: set = set()
+
+    def _push(em: str):
+        em = (em or "").strip()
+        if not em or "@" not in em:
+            return
+        key = em.lower()
+        if key in seen_addrs:
+            return
+        seen_addrs.add(key)
+        to_addrs.append(em)
+
+    auto_rows: list[dict] = []
+    if use_auto_module:
+        auto_rows = _module_recipient_rows(str(target.get("module") or ""))
+        for row in auto_rows:
+            _push(row.get("email", ""))
+        return to_addrs, auto_rows, True
+
+    for a in explicit_to:
+        _push(a)
+    for em in _resolve_users_to_emails(explicit_users):
+        _push(em)
+    rg_cfg = (cfg or {}).get("recipient_groups") or {}
+    for gname in explicit_groups:
+        members = rg_cfg.get(gname) if isinstance(rg_cfg, dict) else None
+        if isinstance(members, list):
+            for em in members:
+                _push(str(em))
+    return to_addrs, auto_rows, False
 
 
 @router.get("/mail-groups")
@@ -2354,7 +2541,80 @@ def _st_build_uniq_map(rows_st: list, headers: list) -> dict:
     return out
 
 
-def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
+_MODULE_KNOB_HILITE = "background:#fff7cc;border:2px solid #ca8a04;"
+
+
+def _is_module_highlight_param(param: str, highlight_knobs: set[str]) -> bool:
+    if not highlight_knobs:
+        return False
+    return str(param or "").strip().upper() in highlight_knobs
+
+
+def _inform_lot_ids(root: dict) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(v: Any) -> None:
+        s = str(v or "").strip()
+        if not s:
+            return
+        key = s.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(s)
+
+    embed = root.get("embed_table") or {}
+    st = embed.get("st_view") if isinstance(embed, dict) else {}
+    if isinstance(st, dict):
+        for g in _split_table_header_groups(st):
+            if isinstance(g, dict):
+                add(g.get("label"))
+        for lot in st.get("wafer_fab_list") or []:
+            add(lot)
+    for raw in str(root.get("fab_lot_id_at_save") or "").split(","):
+        add(raw)
+    add(root.get("root_lot_id"))
+    add(root.get("lot_id"))
+    add(root.get("wafer_id"))
+    return out
+
+
+def _default_mail_subject(root: dict) -> str:
+    product = str(root.get("product") or "").strip()
+    module = str(root.get("module") or "").strip()
+    root_lots = [x.strip() for x in str(root.get("root_lot_id") or "").split(",") if x.strip()]
+    if not root_lots:
+        root_lots = [x.strip() for x in str(root.get("lot_id") or "").split(",") if x.strip()]
+    lots = list(dict.fromkeys(root_lots)) or _inform_lot_ids(root)
+    if len(lots) <= 1:
+        lot = lots[0] if lots else str(root.get("root_lot_id") or root.get("lot_id") or "").strip()
+        core = " ".join([x for x in [product, lot] if x])
+    else:
+        core = f"{product} ({len(lots)}lots)" if product else f"({len(lots)}lots)"
+    suffix = f" - {module}" if module else ""
+    return f"[plan 적용 통보] {core}{suffix}".strip()
+
+
+def _default_mail_prose(root: dict, sender_username: str = "") -> str:
+    module = str(root.get("module") or "").strip() or "담당"
+    reason = str(root.get("reason") or "").strip() or "-"
+    sender = str(sender_username or "").strip() or "랏관리팀"
+    created_raw = str(root.get("created_at") or "").strip()
+    created = created_raw.replace("T", " ")[:16] if created_raw else "-"
+    lots = _inform_lot_ids(root)
+    lot_list = ", ".join(lots) if lots else "-"
+    return "\n".join([
+        f"안녕하세요. {module}팀에 다음과 같이 plan 을 적용할 예정입니다.",
+        "",
+        f"사유: {reason}",
+        f"작성자: {sender}",
+        f"작성시간: {created}",
+        f"Lot 리스트: {lot_list}",
+    ])
+
+
+def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: str = "") -> str:
     """v8.8.22: 인폼에 붙어있는 SplitTable 스냅샷을 메일 본문 HTML 테이블로 인라인 렌더.
     - st_view (SplitTable /view 응답) 가 있으면 parameter x wafer 매트릭스로 렌더.
     - 없으면 legacy 2D (columns/rows) 를 그대로 렌더.
@@ -2385,6 +2645,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
     m = re.search(r"SplitTable/([^ @·]+)", src)
     product = (m.group(1).strip() if m else "").strip()
     max_mail_cols = 12
+    highlight_knobs = _module_highlight_knobs(module)
 
     def _lot_context_th(style: str) -> str:
         return (
@@ -2539,14 +2800,16 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
             "</div>"
         )
 
-    def _wrap(body_rows_html: str, head_cells: list[str], truncated: bool) -> str:
+    def _wrap(body_rows_html: str, head_cells: list[str], truncated: bool,
+              highlight_col_indices: Optional[set[int]] = None) -> str:
         first_col_style, data_col_style = _mail_fit_col_styles(max(0, len(head_cells) - 1))
         th_style = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
                     f"font-size:{_MAIL_MIN_FONT};color:#1f2937;text-align:center;font-family:monospace;line-height:1.25;")
         table_style = _mail_table_style(max(0, len(head_cells) - 1))
         colgroup = _mail_colgroup_html(first_col_style, data_col_style, max(0, len(head_cells) - 1))
+        highlight_col_indices = highlight_col_indices or set()
         thead = "<tr>" + "".join(
-            f"<th style='{th_style}{first_col_style if i == 0 else data_col_style}'>{c}</th>"
+            f"<th style='{th_style}{first_col_style if i == 0 else data_col_style}{_MODULE_KNOB_HILITE if i in highlight_col_indices else ''}'>{c}</th>"
             for i, c in enumerate(head_cells)
         ) + "</tr>"
         hdr = (
@@ -2621,7 +2884,9 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
                 param_raw = str(r.get("_param", ""))
                 param = esc(str(r.get("_display") or param_raw or "").replace("KNOB_", "").replace("MASK_", "").replace("INLINE_", "").replace("VM_", ""))
                 cells = r.get("_cells") or {}
-                tds = [f"<td style='{td_first}{first_col_style}'>{param}</td>"]
+                row_highlight = _is_module_highlight_param(param_raw, highlight_knobs)
+                hilite = _MODULE_KNOB_HILITE if row_highlight else ""
+                tds = [f"<td style='{td_first}{first_col_style}{hilite}'>{param}</td>"]
                 for i in range(start, end):
                     cell = cells.get(i) or cells.get(str(i)) or {}
                     actual = cell.get("actual")
@@ -2635,7 +2900,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
                     # plan 이 있으면 plan 기준으로 컬러링해 SplitTable unique 색상과 맞춘다.
                     paint_val = plan if plan not in (None, "") else actual
                     cell_bg = _st_cell_bg(paint_val, uniq_map, param_raw)
-                    tds.append(f"<td style='{td_cell_base}{data_col_style}{cell_bg}'>{disp_html}</td>")
+                    tds.append(f"<td style='{td_cell_base}{data_col_style}{cell_bg}{hilite}'>{disp_html}</td>")
                 body_parts.append("<tr>" + "".join(tds) + "</tr>")
 
             thead_parts = []
@@ -2694,16 +2959,21 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60) -> str:
     first_col_style, data_col_style = _mail_fit_col_styles(max(0, len(cols) - 1))
     td_cell = (f"border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};"
                "font-family:monospace;line-height:1.2;")
+    highlight_col_indices = {
+        i for i, c in enumerate(cols)
+        if _is_module_highlight_param(str(c or ""), highlight_knobs)
+    }
     body_parts = []
     for r in shown:
         if not isinstance(r, (list, tuple)):
             continue
+        row_highlight = bool(r) and _is_module_highlight_param(str(r[0] or ""), highlight_knobs)
         tds = "".join(
-            f"<td style='{td_cell}{first_col_style if i == 0 else data_col_style}'>{esc('' if v is None else str(v))}</td>"
+            f"<td style='{td_cell}{first_col_style if i == 0 else data_col_style}{_MODULE_KNOB_HILITE if (row_highlight or i in highlight_col_indices) else ''}'>{esc('' if v is None else str(v))}</td>"
             for i, v in enumerate(r)
         )
         body_parts.append(f"<tr>{tds}</tr>")
-    return _wrap("".join(body_parts), [esc(c or "") for c in cols], truncated)
+    return _wrap("".join(body_parts), [esc(c or "") for c in cols], truncated, highlight_col_indices)
 
 
 def _build_html_body(root: dict, thread_html: str, extra_prose: str,
@@ -2737,8 +3007,9 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         )
     meta_tbl = "<table style='border-collapse:collapse;border:1px solid #d1d5db;margin:10px 0;width:100%;max-width:560px;'>" + "".join(meta_rows) + "</table>"
     prose_block = ""
-    if extra_prose.strip():
-        safe = _html.escape(extra_prose).replace("\n", "<br/>")
+    prose_text = extra_prose if (extra_prose or "").strip() else _default_mail_prose(root, sender_username)
+    if prose_text.strip():
+        safe = _html.escape(prose_text).replace("\n", "<br/>")
         prose_block = (
             f"<div style='margin:12px 0;padding:10px 12px;background:#fffbeb;border-left:4px solid #f59e0b;"
             f"border-radius:4px;font-size:{_MAIL_MIN_FONT};color:#78350f;'>{safe}</div>"
@@ -2763,7 +3034,7 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
                 f"제품 담당자 : " + ", ".join(names)
                 + "</div>"
             )
-    embed_html = _render_embed_table_html(embed_table) if embed_table else ""
+    embed_html = _render_embed_table_html(embed_table, module=root.get("module", "")) if embed_table else ""
     # v8.8.30: 스레드 섹션 조건부 — thread_html 이 비어있으면 "스레드" 헤더 자체를 넣지 않음.
     #   FE include_thread 체크박스 제거에 맞춰, 기본 발송은 스레드 없는 간결 본문.
     thread_block = (
@@ -2790,24 +3061,50 @@ def _resolve_users_to_emails(usernames: List[str]) -> List[str]:
       우선순위:
         1) users.csv 에 email 필드가 있고 '@' 가 포함되면 그 값.
         2) username 자체가 '@' 를 포함하면 email 로 취급 (가입 시 사내 메일 입력 규약).
-        3) 둘 다 아니면 제외 (admin / test 등 시스템 계정 자동 스킵).
+        3) admin mail domain 이 있으면 <username>@<domain> 합성.
+        4) 둘 다 아니면 제외.
     """
     if not usernames:
         return []
     from routers.auth import read_users
     all_users = {u.get("username", ""): u for u in read_users()}
     out = []
+    seen: set[str] = set()
+    try:
+        domain = str((_load_mail_cfg().get("domain") or "")).strip().lstrip("@")
+    except Exception:
+        domain = ""
+
+    def _looks_like_email(v: str) -> bool:
+        if not v or "@" not in v:
+            return False
+        _local, _, _domain = v.partition("@")
+        return bool(_local) and "." in _domain
+
+    def _append(v: str) -> bool:
+        em = (v or "").strip()
+        if not _looks_like_email(em):
+            return False
+        key = em.lower()
+        if key in seen:
+            return True
+        seen.add(key)
+        out.append(em)
+        return True
+
     for un in usernames:
+        un = str(un or "").strip()
         if not un:
             continue
         u = all_users.get(un) or {}
         em = (u.get("email") or "").strip()
-        if em and "@" in em:
-            out.append(em)
+        if _append(em):
             continue
         # username 자체가 이메일 포맷이면 그대로 사용.
-        if "@" in un and "." in un.split("@", 1)[1]:
-            out.append(un)
+        if _append(un):
+            continue
+        if domain:
+            _append(f"{un}@{domain}")
     return out
 
 
@@ -2989,21 +3286,39 @@ def _build_inform_snapshot_xlsx(target: dict) -> Optional[tuple]:
 
 
 @router.get("/{inform_id}/mail-preview")
-def mail_preview(inform_id: str, request: Request, body: str = Query("")):
+def mail_preview(inform_id: str, request: Request, body: str = Query(""),
+                 subject: str = Query(""),
+                 to: Optional[List[str]] = Query(None),
+                 to_users: Optional[List[str]] = Query(None),
+                 groups: Optional[List[str]] = Query(None)):
     """v8.8.21: FE MailDialog 용 실시간 프리뷰.
     실제로 send-mail 이 호출할 HTML body / 수신자 그룹 해석 / 담당자 라인 / 자동 첨부 목록을 반환.
     v8.8.30: HTML 용량 계산 + 2MB 한도 초과 경고 플래그를 응답에 포함 (FE 가 실제 발송 전 경고).
     스레드는 기본 미포함(간결 본문) — FE 체크박스 제거와 정합.
     """
-    _ = current_user(request)
+    me = current_user(request)
     items = _load_upgraded()
     target = _find(items, inform_id)
     if not target:
         raise HTTPException(404)
     pc_data = _load_product_contacts()
     pc_list = (pc_data.get("products") or {}).get(target.get("product", ""), []) or []
+    cfg = _load_mail_cfg()
+    body_text = body if isinstance(body, str) else ""
+    subject_text = subject if isinstance(subject, str) else ""
+    q_to = list(to) if isinstance(to, list) else []
+    q_to_users = list(to_users) if isinstance(to_users, list) else []
+    q_groups = list(groups) if isinstance(groups, list) else []
+    to_addrs, auto_rows, used_auto = _resolve_mail_recipients(
+        target,
+        to=q_to,
+        to_users=q_to_users,
+        groups=q_groups,
+        cfg=cfg,
+    )
     # v8.8.30: 프리뷰는 스레드 섹션 없이 보여줘 — 발송 시 include_thread 기본 off 와 일치.
-    html = _build_html_body(target, "", body or "", product_contacts=pc_list,
+    html = _build_html_body(target, "", body_text, sender_username=me.get("username", ""),
+                             product_contacts=pc_list,
                              embed_table=target.get("embed_table"))
     size_bytes = len(html.encode("utf-8"))
     snap = _build_inform_snapshot_xlsx(target)
@@ -3012,6 +3327,10 @@ def mail_preview(inform_id: str, request: Request, body: str = Query("")):
     return {
         "inform_id": inform_id,
         "product": target.get("product", ""),
+        "subject": subject_text.strip() or _default_mail_subject(target),
+        "resolved_recipients": to_addrs,
+        "auto_module_recipients": auto_rows,
+        "auto_module_used": used_auto,
         "owners_line": owners_line,
         "product_contacts": pc_list,
         "html_body": html,
@@ -3154,30 +3473,15 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
     # v8.8.27: 발송 rate limit 검사 (dry-run 도 동일 적용 — preview 스팸도 방지).
     _check_mail_throttle(items, inform_id, target, me.get("username", ""))
 
-    # Resolve recipients. Admin-side groups store emails directly; to_users is
-    # a convenience path that looks up emails from users.csv.
-    to_addrs: List[str] = []
-    seen_addrs: set = set()
-
-    def _push(em: str):
-        em = (em or "").strip()
-        if not em or "@" not in em:
-            return
-        if em in seen_addrs:
-            return
-        seen_addrs.add(em)
-        to_addrs.append(em)
-
-    for a in (req.to or []):
-        _push(a)
-    for em in _resolve_users_to_emails(list(req.to_users or [])):
-        _push(em)
-    rg_cfg = cfg.get("recipient_groups") or {}
-    for gname in (req.groups or []):
-        members = rg_cfg.get(gname) if isinstance(rg_cfg, dict) else None
-        if isinstance(members, list):
-            for em in members:
-                _push(str(em))
+    # Resolve recipients. If the sender did not explicitly choose people or
+    # groups, a module inform goes to users assigned to that module.
+    to_addrs, auto_module_recipients, used_auto_module = _resolve_mail_recipients(
+        target,
+        to=list(req.to or []),
+        to_users=list(req.to_users or []),
+        groups=list(req.groups or []),
+        cfg=cfg,
+    )
 
     if not to_addrs:
         raise HTTPException(400, "수신자 이메일이 없습니다 (유저 email 또는 group 을 먼저 설정하세요).")
@@ -3188,7 +3492,7 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
                      for i, em in enumerate(to_addrs)]
     to_list = to_addrs  # kept for audit (plain list of emails)
 
-    subject = (req.subject or "").strip() or f"[인폼] {target.get('module','')} · {target.get('lot_id') or target.get('wafer_id') or ''}".strip()
+    subject = (req.subject or "").strip() or _default_mail_subject(target)
     # HTML body (content)
     thread_html = _thread_html(items, inform_id) if req.include_thread else ""
     # v8.8.0: sender = 실제 요청 유저(me), 제품 담당자 자동 첨부.
@@ -3294,12 +3598,21 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
         "to": to_list,
         "to_users": list(req.to_users or []),
         "groups": list(req.groups or []),
+        "auto_module": target.get("module", "") if used_auto_module else "",
+        "auto_module_recipients": auto_module_recipients,
         "subject": subject,
     })
     target["mail_history"] = hist[-20:]  # keep last 20
     _save(items)
     _audit(request, "inform:mail-send", detail=f"id={inform_id} n_to={len(to_list)} dry={dry_run}", tab="inform")
-    return {"ok": True, "to": to_list, "subject": subject, **result_info}
+    return {
+        "ok": True,
+        "to": to_list,
+        "subject": subject,
+        "auto_module_recipients": auto_module_recipients,
+        "auto_module_used": used_auto_module,
+        **result_info,
+    }
 
 
 @router.post("/splittable")

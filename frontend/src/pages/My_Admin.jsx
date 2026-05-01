@@ -2649,14 +2649,32 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
 // ── Inform Config Panel (v8.8.1) — 모듈/사유/제품/DB경로 Admin 관리 ──
 function InformConfigPanel(){
   const [cfg,setCfg]=useState({modules:[],reasons:[],products:[],raw_db_root:""});
+  const [knobMap,setKnobMap]=useState({});
+  const [knobModule,setKnobModule]=useState("");
+  const [knobDraft,setKnobDraft]=useState("");
+  const [knobBusy,setKnobBusy]=useState(false);
   const [newMod,setNewMod]=useState("");
   const [newReason,setNewReason]=useState("");
   const [newProduct,setNewProduct]=useState("");
   const [rawRootDraft,setRawRootDraft]=useState("");
   const [msg,setMsg]=useState("");
-  const load=()=>sf("/api/informs/config").then(d=>{setCfg(d);setRawRootDraft(d.raw_db_root||"");}).catch(e=>setMsg(e.message));
+  const load=()=>Promise.all([
+    sf("/api/informs/config"),
+    sf("/api/informs/modules/knob-map").catch(()=>({knob_map:{}})),
+  ]).then(([d,k])=>{
+    setCfg(d);setRawRootDraft(d.raw_db_root||"");
+    setKnobMap(k.knob_map||{});
+  }).catch(e=>setMsg(e.message));
   // fix: arrow+Promise crash 회피.
   useEffect(()=>{load();},[]);
+  useEffect(()=>{
+    const mods=cfg.modules||[];
+    if(!knobModule&&mods.length)setKnobModule(mods[0]);
+  },[cfg.modules,knobModule]);
+  useEffect(()=>{
+    if(!knobModule){setKnobDraft("");return;}
+    setKnobDraft(((knobMap||{})[knobModule]||[]).join(", "));
+  },[knobModule,knobMap]);
   const saveAll=(next)=>sf("/api/informs/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(next)})
     .then(r=>{setCfg(r.config||next);setMsg("저장되었습니다.");}).catch(e=>setMsg(e.message));
   const addMod=()=>{const v=newMod.trim();if(!v)return;
@@ -2675,6 +2693,16 @@ function InformConfigPanel(){
   const rmProduct=(p)=>{if(!confirm(`제품 '${p}' 삭제? (기존 인폼 레코드는 유지)`))return;
     saveAll({products:(cfg.products||[]).filter(x=>x!==p)});};
   const saveRawRoot=()=>saveAll({raw_db_root:rawRootDraft});
+  const saveKnobMap=()=>{
+    const mod=(knobModule||"").trim();
+    if(!mod){setMsg("모듈을 선택하세요.");return;}
+    const knobs=Array.from(new Set((knobDraft||"").split(",").map(x=>x.trim()).filter(Boolean)));
+    setKnobBusy(true);setMsg("");
+    sf("/api/informs/modules/knob-map",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({module:mod,knobs})})
+      .then(d=>{setKnobMap(d.knob_map||{...(knobMap||{}),[mod]:knobs});setMsg("모듈→KNOB 매핑이 저장되었습니다.");})
+      .catch(e=>setMsg(e.message))
+      .finally(()=>setKnobBusy(false));
+  };
 
   // v8.7.5: Section 을 inline 컴포넌트로 두면 매 렌더마다 새 reference 라 input focus 가 날아감.
   // 여기서는 간단하게 JSX 로 inline 하게 두 블록을 렌더한다.
@@ -2698,10 +2726,43 @@ function InformConfigPanel(){
       </div>
     </div>
   );
+  const knobRows=(cfg.modules||[]).map(m=>({module:m,knobs:(knobMap||{})[m]||[]}));
   return(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,maxWidth:1000}}>
     {renderSection("모듈 옵션",cfg.modules||[],rmMod,newMod,setNewMod,addMod,"예: NEW_MOD")}
     {renderSection("사유 옵션",cfg.reasons||[],rmReason,newReason,setNewReason,addReason,"예: 신뢰성 이슈")}
     {renderSection("제품 카탈로그",cfg.products||[],rmProduct,newProduct,setNewProduct,addProduct,"예: PROD_A")}
+    <div style={{gridColumn:"span 2",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,marginBottom:10}}>
+        <div>
+          <div style={{fontSize:14,fontWeight:700}}>모듈→KNOB 매핑</div>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:3}}>인폼 메일의 SplitTable 캡처에서 해당 모듈 KNOB/MASK 항목만 강조합니다.</div>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"180px 1fr auto",gap:8,alignItems:"center",marginBottom:12}}>
+        <select value={knobModule} onChange={e=>setKnobModule(e.target.value)}
+          style={{padding:"7px 10px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}>
+          {(cfg.modules||[]).map(m=><option key={m} value={m}>{m}</option>)}
+        </select>
+        <input value={knobDraft} onChange={e=>setKnobDraft(e.target.value)} placeholder="예: GATE_DOSE, GATE_TIME"
+          onKeyDown={e=>{if(e.key==="Enter")saveKnobMap();}}
+          style={{padding:"7px 10px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>
+        <button onClick={saveKnobMap} disabled={knobBusy}
+          style={{padding:"7px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:knobBusy?"wait":"pointer"}}>
+          {knobBusy?"저장 중…":"저장"}
+        </button>
+      </div>
+      <div style={{display:"grid",gap:6,maxHeight:240,overflow:"auto"}}>
+        {knobRows.map(r=>(
+          <div key={r.module} style={{display:"grid",gridTemplateColumns:"120px 1fr",gap:10,alignItems:"start",padding:"7px 9px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-primary)"}}>
+            <div style={{fontSize:14,fontWeight:800,color:"var(--accent)",fontFamily:"monospace"}}>{r.module}</div>
+            <div style={{fontSize:14,color:r.knobs.length?"var(--text-primary)":"var(--text-secondary)",fontFamily:"monospace",wordBreak:"break-word"}}>
+              {r.knobs.length?r.knobs.join(", "):"강조 없음"}
+            </div>
+          </div>
+        ))}
+        {knobRows.length===0&&<div style={{fontSize:14,color:"var(--text-secondary)"}}>설정된 모듈이 없습니다.</div>}
+      </div>
+    </div>
     {/* v9.0.0: RAWDATA_DB 루트 경로 섹션 제거 — SplitTable source_config 의 제품별 fab_source override 로 통합.
         인폼 Lot 드롭다운이 SplitTable override 경로를 공유 — 관리 지점 단일화. */}
     {msg&&<div style={{gridColumn:"span 2",fontSize:14,color:"var(--accent)"}}>{msg}</div>}
