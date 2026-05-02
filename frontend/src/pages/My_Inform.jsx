@@ -32,6 +32,30 @@ const TEAL = { fg: chartPalette.series[11], bg: `${chartPalette.series[11]}22` }
 const SLATE = { fg: "var(--text-secondary)", bg: "var(--bg-tertiary)" };
 const WHITE = "var(--bg-secondary)";
 const MODULE_SERIES = [chartPalette.series[0], chartPalette.series[2], chartPalette.series[11], chartPalette.series[8], chartPalette.series[6], chartPalette.series[12], chartPalette.series[3]];
+const INFORM_TABS = [
+  ["matrix", "매트릭스"],
+  ["inform", "인폼"],
+  ["modules", "모듈 요약"],
+  ["audit", "로그"],
+];
+const DEFAULT_SHARED_FILTERS = {
+  products: [],
+  modules: [],
+  statuses: [],
+  lot: "",
+  period: "30",
+  start: "",
+  end: "",
+  types: [],
+};
+const AUDIT_TYPES = [
+  ["status_change", "상태변경"],
+  ["mail", "메일"],
+  ["comment", "댓글"],
+  ["edit", "수정"],
+  ["create", "생성"],
+  ["delete", "삭제"],
+];
 
 // v8.8.30: ML_TABLE_PRODA 같은 내부 식별자를 UI 에서는 PRODA 로 축약 표시.
 //   서버 호출 / 저장 / ML_TABLE 매칭은 그대로 full name 유지, 화면 렌더만 축약.
@@ -162,6 +186,14 @@ function relativeTime(iso) {
   return String(iso).replace("T", " ").slice(0, 10);
 }
 
+function _entryLastUpdateForUi(entry) {
+  const vals = [entry?.created_at, entry?.checked_at, entry?.updated_at];
+  (entry?.status_history || []).forEach(h => vals.push(h?.at));
+  (entry?.edit_history || []).forEach(h => vals.push(h?.at));
+  (entry?.mail_history || []).forEach(h => vals.push(h?.at || h?.sent_at));
+  return vals.filter(Boolean).sort().slice(-1)[0] || entry?.created_at || "";
+}
+
 function inputStyle(extra = {}) {
   return {
     width: "100%",
@@ -176,6 +208,84 @@ function inputStyle(extra = {}) {
     outline: "none",
     ...extra,
   };
+}
+
+function uniqueClean(values) {
+  const seen = new Set();
+  const out = [];
+  (values || []).forEach(v => {
+    const s = String(v || "").trim();
+    if (!s || seen.has(s)) return;
+    seen.add(s);
+    out.push(s);
+  });
+  return out;
+}
+
+function parseCsvParam(params, key) {
+  return uniqueClean([
+    ...params.getAll(key),
+    ...params.getAll(`${key}[]`),
+  ].flatMap(v => String(v || "").split(",")));
+}
+
+function parseInformFiltersFromUrl() {
+  if (typeof window === "undefined") return { tab: "matrix", filters: DEFAULT_SHARED_FILTERS };
+  const params = new URLSearchParams(window.location.search);
+  const tab = INFORM_TABS.some(([key]) => key === params.get("inform_tab")) ? params.get("inform_tab") : "matrix";
+  return {
+    tab,
+    filters: {
+      products: parseCsvParam(params, "products"),
+      modules: parseCsvParam(params, "modules"),
+      statuses: parseCsvParam(params, "statuses"),
+      lot: params.get("lot") || "",
+      period: ["7", "30", "90", "custom"].includes(params.get("period")) ? params.get("period") : "30",
+      start: params.get("start") || "",
+      end: params.get("end") || "",
+      types: parseCsvParam(params, "types"),
+    },
+  };
+}
+
+function syncInformQuery(tab, filters) {
+  if (typeof window === "undefined") return;
+  const params = new URLSearchParams(window.location.search);
+  params.set("inform_tab", tab || "matrix");
+  const setArray = (key, arr) => {
+    params.delete(key);
+    params.delete(`${key}[]`);
+    uniqueClean(arr).forEach(v => params.append(key, v));
+  };
+  setArray("products", filters.products);
+  setArray("modules", filters.modules);
+  setArray("statuses", filters.statuses);
+  setArray("types", filters.types);
+  if (filters.lot) params.set("lot", filters.lot); else params.delete("lot");
+  if (filters.period && filters.period !== "30") params.set("period", filters.period); else params.delete("period");
+  if (filters.start) params.set("start", filters.start); else params.delete("start");
+  if (filters.end) params.set("end", filters.end); else params.delete("end");
+  const next = `${window.location.pathname}?${params.toString()}`;
+  window.history.replaceState(null, "", params.toString() ? next : window.location.pathname);
+}
+
+function filterDays(filters) {
+  const raw = String(filters?.period || "30");
+  if (raw === "custom") return 3650;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 30;
+}
+
+function dateInSharedPeriod(iso, filters) {
+  const day = String(iso || "").slice(0, 10);
+  if (filters.period === "custom") {
+    if (filters.start && day && day < filters.start) return false;
+    if (filters.end && day && day > filters.end) return false;
+    return true;
+  }
+  const dt = new Date(iso || "");
+  if (Number.isNaN(dt.getTime())) return true;
+  return dt.getTime() >= Date.now() - filterDays(filters) * 86400000;
 }
 
 /* v8.7.1 — 모듈별 구분색 (좌측 리스트 / 루트카드 left border / Gantt bar fallback) */
@@ -1624,6 +1734,19 @@ function LotModuleSummary({ thread, modules }) {
 
 /* ── 메인 페이지 ── */
 export default function My_Inform({ user }) {
+  const initialInformQueryRef = useRef(null);
+  if (!initialInformQueryRef.current) initialInformQueryRef.current = parseInformFiltersFromUrl();
+  const [activeTab, setActiveTab] = useState(initialInformQueryRef.current.tab);
+  const [sharedFilters, setSharedFilters] = useState(initialInformQueryRef.current.filters);
+  const [informViewMode, setInformViewMode] = useState("table");
+  const [auditRows, setAuditRows] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [drawerMode, setDrawerMode] = useState("detail");
+  const [drawerBackMode, setDrawerBackMode] = useState("");
+  const [cellDrawer, setCellDrawer] = useState(null);
+  const [lotDrawer, setLotDrawer] = useState(null);
+  const [lotDrawerModule, setLotDrawerModule] = useState("");
+
   // v8.8.1: 설정에 products(카탈로그) + raw_db_root 추가.
   const [constants, setConstants] = useState({ modules: [], reasons: [], flow_statuses: [], products: [], raw_db_root: "", reason_templates: {} });
   // v8.8.1: 선택 제품의 Lot 후보 (RAWDATA_DB 에서 폴더 스캔).
@@ -1712,16 +1835,16 @@ export default function My_Inform({ user }) {
   };
 
   const loadModuleSummary = () => {
-    sf(API + "/modules/summary?days=30")
+    sf(API + "/modules/summary?days=" + encodeURIComponent(filterDays(sharedFilters)))
       .then(d => setModuleSummary(Array.isArray(d) ? d : (d.modules || [])))
       .catch(() => setModuleSummary([]));
   };
 
   const loadLotMatrix = () => {
     const q = new URLSearchParams();
-    q.set("days", "90");
-    if ((lotMatrixFilters.product || "").trim()) q.set("product", lotMatrixFilters.product.trim());
-    if ((lotMatrixFilters.search || "").trim()) q.set("search", lotMatrixFilters.search.trim());
+    q.set("days", String(filterDays(sharedFilters)));
+    if ((sharedFilters.products || []).length === 1) q.set("product", sharedFilters.products[0]);
+    if ((sharedFilters.lot || "").trim()) q.set("search", sharedFilters.lot.trim());
     setLotMatrixLoading(true);
     return sf(API + "/lot-matrix?" + q.toString())
       .then(d => setLotMatrix({
@@ -1738,7 +1861,25 @@ export default function My_Inform({ user }) {
       .catch(() => setListRoots([]));
   };
 
-  const loadDetailForRoot = (root) => {
+  const loadAuditLog = () => {
+    const q = new URLSearchParams();
+    q.set("days", String(filterDays(sharedFilters)));
+    uniqueClean(sharedFilters.products).forEach(v => q.append("products[]", v));
+    uniqueClean(sharedFilters.modules).forEach(v => q.append("modules[]", v));
+    uniqueClean(sharedFilters.types).forEach(v => q.append("types[]", v));
+    if ((sharedFilters.lot || "").trim()) q.set("lot_search", sharedFilters.lot.trim());
+    if (sharedFilters.period === "custom") {
+      if (sharedFilters.start) q.set("start", sharedFilters.start);
+      if (sharedFilters.end) q.set("end", sharedFilters.end);
+    }
+    setAuditLoading(true);
+    return sf(API + "/audit-log?" + q.toString())
+      .then(d => setAuditRows(d.audit || d.logs || []))
+      .catch(() => setAuditRows([]))
+      .finally(() => setAuditLoading(false));
+  };
+
+  const loadDetailForRoot = (root, opts = {}) => {
     if (!root) { setThread([]); setLotWafers([]); return; }
     const rawLot = String(root?.lot_id || "").trim();
     const lotKey = (root?.root_lot_id || (isFabLotInput(rawLot) ? rawLot.slice(0, 5) : rawLot) || "").trim();
@@ -1748,7 +1889,10 @@ export default function My_Inform({ user }) {
       return;
     }
     setSelectedLot(lotKey);
-    sf(API + "/by-lot?lot_id=" + encodeURIComponent(lotKey))
+    const q = new URLSearchParams();
+    q.set("lot_id", lotKey);
+    if (opts.includeDeleted) q.set("include_deleted", "true");
+    sf(API + "/by-lot?" + q.toString())
       .then(d => {
         setThread(d.informs || []);
         setLotWafers(d.wafers || []);
@@ -1758,9 +1902,36 @@ export default function My_Inform({ user }) {
 
   const openRootForDetail = (root) => {
     if (!root) return;
+    setDrawerMode("detail");
+    setDrawerBackMode("");
     setSelectedRootId(root.id);
     setDetailTab("body");
     loadDetailForRoot(root);
+  };
+
+  const openRootFromDrawerStack = (root, backMode) => {
+    if (!root) return;
+    setDrawerMode("detail");
+    setDrawerBackMode(backMode || "");
+    setSelectedRootId(root.id);
+    setDetailTab("body");
+    loadDetailForRoot(root);
+  };
+
+  const openAuditRow = (row) => {
+    const informId = String(row?.inform_id || row?.target_id || "").trim();
+    if (!informId) return;
+    setDrawerMode("detail");
+    setDrawerBackMode("");
+    setSelectedRootId(informId);
+    setDetailTab("history");
+    loadDetailForRoot({
+      id: informId,
+      root_lot_id: row.root_lot_id || row.lot_id || "",
+      lot_id: row.lot_id || row.root_lot_id || "",
+      product: row.product || "",
+      module: row.module || "",
+    }, { includeDeleted: true });
   };
 
   const openCreateWizard = () => {
@@ -1790,11 +1961,38 @@ export default function My_Inform({ user }) {
   useEffect(() => {
     loadInformList();
     loadModuleSummary();
+    loadAuditLog();
   }, []);
 
   useEffect(() => {
     loadLotMatrix();
-  }, [lotMatrixFilters.product, lotMatrixFilters.search]);
+  }, [sharedFilters.products.join("|"), sharedFilters.lot, sharedFilters.period, sharedFilters.start, sharedFilters.end]);
+
+  useEffect(() => {
+    loadModuleSummary();
+  }, [sharedFilters.period, sharedFilters.start, sharedFilters.end]);
+
+  useEffect(() => {
+    loadAuditLog();
+  }, [sharedFilters.products.join("|"), sharedFilters.modules.join("|"), sharedFilters.types.join("|"), sharedFilters.lot, sharedFilters.period, sharedFilters.start, sharedFilters.end]);
+
+  useEffect(() => {
+    syncInformQuery(activeTab, sharedFilters);
+  }, [activeTab, sharedFilters]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      if (!(selectedRootId || drawerMode === "cell" || drawerMode === "lot")) return;
+      setSelectedRootId("");
+      setDrawerMode("detail");
+      setDrawerBackMode("");
+      setCellDrawer(null);
+      setLotDrawer(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedRootId, drawerMode]);
 
   /* Load constants + my modules */
   useEffect(() => {
@@ -1958,6 +2156,7 @@ export default function My_Inform({ user }) {
     loadInformList();
     loadModuleSummary();
     loadLotMatrix();
+    loadAuditLog();
     const selected = listRoots.find(x => x.id === selectedRootId) || thread.find(x => x.id === selectedRootId);
     const rawLot = String(selected?.lot_id || "").trim();
     const lotForDetail = selected?.root_lot_id || selectedLot || (isFabLotInput(rawLot) ? rawLot.slice(0, 5) : rawLot);
@@ -2363,9 +2562,10 @@ export default function My_Inform({ user }) {
   };
 
   const del = (id) => {
-    if (!confirm("삭제하시겠습니까? (작성자/admin 가능 · 답글 있으면 불가)")) return;
-    sf(API + "/delete?id=" + encodeURIComponent(id), { method: "POST" })
-      .then(refreshAll).catch(e => alert(e.message));
+    if (!confirm("삭제하시겠습니까? (작성자/admin만 가능 · 목록에서는 숨김 처리)")) return;
+    sf(API + "/" + encodeURIComponent(id), { method: "DELETE" })
+      .then(() => { setSelectedRootId(""); setThread([]); refreshAll(); })
+      .catch(e => alert(e.message));
   };
 
   const toggleCheck = (node) => sf(API + "/check?id=" + encodeURIComponent(node.id), {
@@ -2446,57 +2646,158 @@ export default function My_Inform({ user }) {
     return Array.from(seen.values()).sort();
   }, [constants.products, listProductOptions, lotMatrix.products]);
 
+  const commonProductOptions = useMemo(() => {
+    const seen = new Map();
+    [
+      ...(constants.products || []),
+      ...listProductOptions,
+      ...(products || []).map(p => typeof p === "string" ? p : p.product).filter(Boolean),
+      ...((lotMatrix.products || []).map(p => p.product).filter(Boolean)),
+    ].forEach(raw => {
+      const p = stripMlPrefix(String(raw || "").trim());
+      if (p && p !== "미지정") seen.set(p.toLowerCase(), p);
+    });
+    return Array.from(seen.values()).sort();
+  }, [constants.products, listProductOptions, products, lotMatrix.products]);
+
+  const filteredLotMatrix = useMemo(() => {
+    const productSet = new Set(uniqueClean(sharedFilters.products).map(p => stripMlPrefix(p).toLowerCase()));
+    const moduleSet = new Set(uniqueClean(sharedFilters.modules));
+    const statusSet = new Set(uniqueClean(sharedFilters.statuses));
+    const lotQ = (sharedFilters.lot || "").trim().toLowerCase();
+    const modules = (lotMatrix.module_order || []).filter(m => !moduleSet.size || moduleSet.has(m));
+    const productsOut = (lotMatrix.products || [])
+      .filter(p => !productSet.size || productSet.has(stripMlPrefix(p.product || "").toLowerCase()))
+      .map(product => ({
+        ...product,
+        lots: (product.lots || []).filter(lot => {
+          if (lotQ && !String(lot.root_lot_id || "").toLowerCase().includes(lotQ)) return false;
+          if (!statusSet.size) return true;
+          return modules.some(m => {
+            const state = (lot.modules || {})[m]?.state || "pending";
+            return statusSet.has(state) || (state !== "completed" && statusSet.has("pending"));
+          });
+        }),
+      }))
+      .filter(product => product.lots.length > 0);
+    productsOut.forEach(product => {
+      const totals = {};
+      (product.lots || []).forEach(lot => {
+        modules.forEach(module => {
+          totals[module] = (totals[module] || 0) + matrixCellCount((lot.modules || {})[module]);
+        });
+      });
+      product.module_totals = totals;
+    });
+    return { products: productsOut, module_order: modules };
+  }, [lotMatrix, sharedFilters]);
+
+  const filteredModuleSummary = useMemo(() => {
+    const moduleSet = new Set(uniqueClean(sharedFilters.modules));
+    return (moduleSummary || []).filter(row => !moduleSet.size || moduleSet.has(row.module));
+  }, [moduleSummary, sharedFilters.modules]);
+
   const filteredListRoots = useMemo(() => {
-    const q = (listFilters.query || "").trim().toLowerCase();
-    const start = listFilters.start || "";
-    const end = listFilters.end || "";
+    const lotQ = (sharedFilters.lot || "").trim().toLowerCase();
+    const productSet = new Set(uniqueClean(sharedFilters.products).map(p => stripMlPrefix(p).toLowerCase()));
+    const moduleSet = new Set(uniqueClean(sharedFilters.modules));
+    const statusSet = new Set(uniqueClean(sharedFilters.statuses));
     return (listRoots || []).filter(r => {
-      const hay = [
-        informTitle(r), r.module, r.flow_status, r.product, r.root_lot_id,
-        r.lot_id, r.fab_lot_id_at_save, lotSearchText(r), r.author,
-      ].filter(Boolean).join(" ").toLowerCase();
-      if (q && !hay.includes(q)) return false;
-      if (listFilters.module && (r.module || "기타") !== listFilters.module) return false;
-      if (listFilters.status) {
+      if (!dateInSharedPeriod(_entryLastUpdateForUi(r), sharedFilters)) return false;
+      if (productSet.size && !productSet.has(stripMlPrefix(r.product || "").toLowerCase())) return false;
+      if (moduleSet.size && !moduleSet.has(r.module || "기타")) return false;
+      if (statusSet.size) {
         const st = r.flow_status || "received";
-        if (listFilters.status === "pending") {
-          if (st === "completed") return false;
-        } else if (st !== listFilters.status) return false;
+        const pending = st !== "completed";
+        if (!statusSet.has(st) && !(pending && statusSet.has("pending"))) return false;
       }
-      if (listFilters.product && stripMlPrefix(r.product || "") !== listFilters.product) return false;
-      if (listFilters.root_lot && !String(r.root_lot_id || r.lot_id || "").toLowerCase().includes(listFilters.root_lot.toLowerCase())) return false;
-      if (listFilters.fab_lot && !lotSearchText(r).toLowerCase().includes(listFilters.fab_lot.toLowerCase())) return false;
-      if (listFilters.author && !String(r.author || "").toLowerCase().includes(listFilters.author.toLowerCase())) return false;
-      const day = String(r.created_at || "").slice(0, 10);
-      if (start && day && day < start) return false;
-      if (end && day && day > end) return false;
+      if (lotQ && !lotSearchText(r).toLowerCase().includes(lotQ)) return false;
       return true;
     });
-  }, [listRoots, listFilters]);
+  }, [listRoots, sharedFilters]);
 
   const setListFilter = (key, value) => setListFilters(f => ({ ...f, [key]: value }));
 
   const filterListByMatrixLot = (product, lot) => {
     const rootLot = String(lot?.root_lot_id || "").trim();
     const prod = stripMlPrefix(String(product || "").trim());
-    setListFilters(f => ({
+    setSharedFilters(f => ({
       ...f,
-      product: prod && prod !== "미지정" ? prod : "",
-      root_lot: rootLot,
-      fab_lot: "",
+      products: prod && prod !== "미지정" ? [prod] : [],
+      lot: rootLot,
     }));
+    setActiveTab("inform");
   };
 
-  const openLotMatrixCell = (lot, cell) => {
-    const informId = String(cell?.inform_id || "").trim();
+  const openLotMatrixCell = (product, lot, module, cell) => {
     const rootLot = String(lot?.root_lot_id || "").trim();
-    if (!informId || !rootLot) return;
-    setSelectedRootId(informId);
-    setDetailTab("body");
+    if (!rootLot) return;
+    const initialRoots = (cell?.recent || []).map(r => ({
+      id: r.inform_id,
+      root_lot_id: rootLot,
+      lot_id: rootLot,
+      product,
+      module,
+      reason: r.reason || "",
+      text: r.body_preview || "",
+      author: r.author || "",
+      created_at: r.updated_at || "",
+      flow_status: r.state || "received",
+    }));
+    setDrawerMode("cell");
+    setDrawerBackMode("");
+    setCellDrawer({ product, lot, module, cell: cell || { inform_count: 0, recent: [] }, roots: initialRoots, loading: true });
+    setSelectedRootId("");
     setSelectedLot(rootLot);
     sf(API + "/by-lot?lot_id=" + encodeURIComponent(rootLot))
-      .then(d => { setThread(d.informs || []); setLotWafers(d.wafers || []); })
-      .catch(() => {});
+      .then(d => {
+        const roots = (d.informs || [])
+          .filter(x => !x.parent_id && (x.module || "기타") === module)
+          .sort((a, b) => String(_entryLastUpdateForUi(b)).localeCompare(String(_entryLastUpdateForUi(a))));
+        setThread(d.informs || []);
+        setLotWafers(d.wafers || []);
+        setCellDrawer(cur => cur ? { ...cur, roots, loading: false, byLot: d } : cur);
+      })
+      .catch(() => setCellDrawer(cur => cur ? { ...cur, loading: false } : cur));
+  };
+
+  const openLotForStrip = (product, lot) => {
+    const rootLot = String(lot?.root_lot_id || "").trim();
+    if (!rootLot) return;
+    setDrawerMode("lot");
+    setDrawerBackMode("");
+    setSelectedRootId("");
+    setSelectedLot(rootLot);
+    setLotDrawerModule("");
+    setLotDrawer({ product, lot, root_lot_id: rootLot, informs: [], loading: true, module_counts: {}, available_modules: lotMatrix.module_order || [] });
+    sf(API + "/by-lot?lot_id=" + encodeURIComponent(rootLot))
+      .then(d => {
+        setThread(d.informs || []);
+        setLotWafers(d.wafers || []);
+        setLotDrawer({
+          product,
+          lot,
+          root_lot_id: d.root_lot_id || rootLot,
+          informs: d.informs || [],
+          loading: false,
+          module_counts: d.module_counts || {},
+          informed_modules: d.informed_modules || [],
+          available_modules: d.available_modules || lotMatrix.module_order || [],
+          wafers: d.wafers || [],
+        });
+      })
+      .catch(() => setLotDrawer(cur => cur ? { ...cur, loading: false } : cur));
+  };
+
+  const toggleSharedModule = (module) => {
+    const mod = String(module || "").trim();
+    if (!mod) return;
+    setSharedFilters(f => {
+      const cur = new Set(f.modules || []);
+      if (cur.has(mod)) cur.delete(mod);
+      else cur.add(mod);
+      return { ...f, modules: Array.from(cur) };
+    });
   };
 
   useEffect(() => {
@@ -2595,14 +2896,15 @@ export default function My_Inform({ user }) {
 
   return (
     <div className="flow-connected-page" style={{
-      display: "grid",
-      gridTemplateColumns: "360px minmax(0,1fr)",
       height: "calc(100vh - 52px)",
       background: "var(--bg-primary)",
       color: "var(--text-primary)",
       fontSize: 14,
       position: "relative",
       overflow: "hidden",
+      display: "flex",
+      flexDirection: "column",
+      minWidth: 0,
     }}>
       <PageGear title="인폼 설정" canEdit={isAdmin} position="bottom-right">
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
@@ -2673,98 +2975,137 @@ export default function My_Inform({ user }) {
         )}
       </PageGear>
 
-      <aside style={{ borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <div style={{ padding: 12, borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 14, fontWeight: 900 }}>인폼</div>
-            <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>
-              모듈 요약 → 리스트 → 상세
-            </div>
-          </div>
-          <button type="button" onClick={openCreateWizard} title="신규 인폼 등록"
-            style={{ marginLeft: "auto", width: 32, height: 32, borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontSize: 20, fontWeight: 800, cursor: "pointer", lineHeight: 1 }}>
-            +
-          </button>
-        </div>
-        {!myMods.all_rounder && (
-          <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)", fontSize: 14, lineHeight: 1.4 }}>
-            내 담당: {(myMods.modules || []).length ? (myMods.modules || []).join(", ") : "미지정"}
-          </div>
-        )}
-        <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-          {[
-            ["summary", "모듈별 진행 요약"],
-            ["matrix", "랏별 진행 매트릭스"],
-          ].map(([key, label]) => (
-            <button key={key} type="button" onClick={() => setSummaryTab(key)}
+      <header style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 12, padding: "12px 16px 8px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: 3, borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
+          {INFORM_TABS.map(([key, label]) => (
+            <button key={key} type="button" onClick={() => setActiveTab(key)}
               style={{
-                minWidth: 0,
-                padding: "7px 8px",
-                borderRadius: 8,
-                border: "1px solid " + (summaryTab === key ? "var(--accent)" : "var(--border)"),
-                background: summaryTab === key ? "var(--accent)" : "var(--bg-primary)",
-                color: summaryTab === key ? "#fff" : "var(--text-secondary)",
+                minWidth: 82,
+                height: 34,
+                borderRadius: 7,
+                border: "1px solid " + (activeTab === key ? "var(--accent)" : "transparent"),
+                background: activeTab === key ? "var(--accent)" : "transparent",
+                color: activeTab === key ? "#fff" : "var(--text-secondary)",
                 fontSize: 14,
-                fontWeight: 800,
+                fontWeight: 900,
                 cursor: "pointer",
-                whiteSpace: "normal",
-                lineHeight: 1.2,
               }}>
               {label}
             </button>
           ))}
         </div>
-        {summaryTab === "summary" ? (
-          <ModuleProgressSummary
-            rows={moduleSummary}
-            activeModule={listFilters.module}
-            onPick={(module) => setListFilter("module", listFilters.module === module ? "" : module)}
-          />
-        ) : (
+        {!myMods.all_rounder && (
+          <div style={{ color: "var(--text-secondary)", fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            내 담당: {(myMods.modules || []).length ? (myMods.modules || []).join(", ") : "미지정"}
+          </div>
+        )}
+        <button type="button" onClick={openCreateWizard} title="신규 인폼 등록"
+          style={{ marginLeft: "auto", width: 36, height: 36, borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontSize: 22, fontWeight: 900, cursor: "pointer", lineHeight: 1 }}>
+          +
+        </button>
+      </header>
+
+      <CommonInformFilters
+        tab={activeTab}
+        filters={sharedFilters}
+        setFilters={setSharedFilters}
+        products={commonProductOptions}
+        modules={constants.modules || []}
+      />
+
+      <main style={{ flex: 1, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
+        {activeTab === "inform" && (
+          <section style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+            <div style={{ flex: "0 0 auto", padding: "9px 16px", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid var(--border)", color: "var(--text-secondary)", background: "var(--bg-secondary)" }}>
+              <span>{filteredListRoots.length}건 표시 / 전체 {listRoots.length}건</span>
+              <span style={{ marginLeft: "auto", display: "inline-flex", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+                {["table", "card"].map(modeKey => (
+                  <button key={modeKey} type="button" onClick={() => setInformViewMode(modeKey)}
+                    style={{ padding: "5px 10px", border: "none", borderRight: modeKey === "table" ? "1px solid var(--border)" : "none", background: informViewMode === modeKey ? "var(--accent)" : "var(--bg-primary)", color: informViewMode === modeKey ? "#fff" : "var(--text-secondary)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
+                    {modeKey === "table" ? "표" : "카드"}
+                  </button>
+                ))}
+              </span>
+            </div>
+            {informViewMode === "card" ? (
+              <InformCardList roots={filteredListRoots} selectedId={selectedRootId} onOpen={openRootForDetail} />
+            ) : (
+              <InformVirtualList roots={filteredListRoots} selectedId={selectedRootId} onOpen={openRootForDetail} />
+            )}
+          </section>
+        )}
+        {activeTab === "audit" && (
+          <AuditLogList rows={auditRows} loading={auditLoading} onOpen={openAuditRow} />
+        )}
+        {activeTab === "matrix" && (
           <LotProgressMatrix
-            matrix={lotMatrix}
+            matrix={filteredLotMatrix}
             loading={lotMatrixLoading}
-            filters={lotMatrixFilters}
-            setFilters={setLotMatrixFilters}
+            filters={{ states: [] }}
+            setFilters={() => {}}
             productOptions={matrixProductOptions}
             onOpenCell={openLotMatrixCell}
             onPickLot={filterListByMatrixLot}
+            onOpenLot={openLotForStrip}
+            activeModules={sharedFilters.modules || []}
+            onToggleModule={toggleSharedModule}
+            showControls={false}
           />
         )}
-        <InformFilterPanel
-          filters={listFilters}
-          setFilter={setListFilter}
-          modules={constants.modules || []}
-          products={listProductOptions}
-          onReset={() => setListFilters({ query: "", module: "", status: "", product: "", root_lot: "", fab_lot: "", author: "", start: "", end: "" })}
-        />
-        <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)", fontSize: 14 }}>
-          {filteredListRoots.length}건 표시 / 전체 {listRoots.length}건
-        </div>
-        <InformVirtualList
-          roots={filteredListRoots}
-          selectedId={selectedRootId}
-          onOpen={openRootForDetail}
-        />
-      </aside>
-
-      <main style={{ minWidth: 0, overflow: "hidden", display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
-        <InformDetailPane
-          root={selectedRoot}
-          thread={thread}
-          childrenByParent={childrenByParent}
-          constants={constants}
-          user={user}
-          tab={detailTab}
-          setTab={setDetailTab}
-          onReply={reply}
-          onDelete={del}
-          onToggleCheck={toggleCheck}
-          onEdit={editInform}
-          onChangeStatus={changeStatus}
-          onOpenMail={(root) => setMailDialogRoot(root)}
-        />
+        {activeTab === "modules" && (
+          <ModuleSummaryTab
+            rows={filteredModuleSummary}
+            onPick={(module) => {
+              setSharedFilters(f => ({ ...f, modules: [module] }));
+              setActiveTab("inform");
+            }}
+          />
+        )}
       </main>
+
+      {(selectedRoot || drawerMode === "cell" || drawerMode === "lot") && (
+        <InformDrawer onClose={() => { setSelectedRootId(""); setDrawerMode("detail"); setDrawerBackMode(""); setCellDrawer(null); setLotDrawer(null); }}>
+          {drawerMode === "cell" && (
+            <CellInformStackPane
+              context={cellDrawer}
+              onOpenDetail={(root) => openRootFromDrawerStack(root, "cell")}
+            />
+          )}
+          {drawerMode === "lot" && (
+            <LotInformStripPane
+              context={lotDrawer}
+              activeModule={lotDrawerModule}
+              setActiveModule={setLotDrawerModule}
+              onOpenDetail={(root) => openRootFromDrawerStack(root, "lot")}
+            />
+          )}
+          {drawerMode === "detail" && selectedRoot && (
+            <>
+              {drawerBackMode && (
+                <button type="button" onClick={() => { setDrawerMode(drawerBackMode); setSelectedRootId(""); setDrawerBackMode(""); }}
+                  style={{ flex: "0 0 auto", alignSelf: "flex-start", margin: "10px 12px 0", padding: "5px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800, fontSize: 14 }}>
+                  ← 뒤로
+                </button>
+              )}
+              <InformDetailPane
+                root={selectedRoot}
+                thread={thread}
+                childrenByParent={childrenByParent}
+                constants={constants}
+                user={user}
+                tab={detailTab}
+                setTab={setDetailTab}
+                onReply={reply}
+                onDelete={del}
+                onToggleCheck={toggleCheck}
+                onEdit={editInform}
+                onChangeStatus={changeStatus}
+                onOpenMail={(root) => setMailDialogRoot(root)}
+              />
+            </>
+          )}
+        </InformDrawer>
+      )}
 
       {creating && (
         <InformWizard
@@ -2797,916 +3138,6 @@ export default function My_Inform({ user }) {
     </div>
   );
 
-  return (
-    <div className="flow-connected-page" style={{ display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)", position: "relative" }}>
-      <PageGear title="인폼 설정" canEdit={isAdmin} position="bottom-right">
-        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
-          모듈 표시 순서를 관리합니다 (Lot 뷰에서 이 순서대로 그룹핑).
-        </div>
-        {!modDraft && (
-          <button onClick={() => setModDraft([...(constants.modules || [])])} disabled={!isAdmin}
-            style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
-            📋 모듈 순서 편집 ({(constants.modules || []).length})
-          </button>
-        )}
-        {modDraft && (
-          <div>
-            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6 }}>드래그 대신 ↑↓ 버튼으로 순서 조정</div>
-            <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-              {modDraft.map((m, i) => (
-                <div key={m + i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", borderBottom: "1px solid var(--border)", fontSize: 14, fontFamily: "monospace" }}>
-                  <span style={{ width: 20, color: "var(--text-secondary)" }}>{i + 1}</span>
-                  <span style={{ flex: 1 }}>{m}</span>
-                  <button onClick={() => moveMod(i, -1)} style={{ padding: "1px 6px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 3, cursor: "pointer" }}>↑</button>
-                  <button onClick={() => moveMod(i, 1)} style={{ padding: "1px 6px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 3, cursor: "pointer" }}>↓</button>
-                  <button onClick={() => setModDraft(modDraft.filter((_, j) => j !== i))} style={{ padding: "1px 6px", fontSize: 14, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", borderRadius: 3, cursor: "pointer" }}>×</button>
-                </div>
-              ))}
-            </div>
-            {/* v8.8.27: controlled input + 명시적 '+' 버튼. 저장 버튼도 pending 값을 흡수. */}
-            <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-              <input value={modNewName} onChange={e => setModNewName(e.target.value)}
-                placeholder="새 모듈 이름 (Enter 또는 + 버튼)"
-                style={{ flex: 1, minWidth: 120, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }}
-                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addPendingMod(); } }} />
-              <button onClick={addPendingMod} title="모듈 추가"
-                style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>+</button>
-              <button onClick={saveModuleOrder} style={{ padding: "4px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>저장</button>
-              <button onClick={() => { setModDraft(null); setModNewName(""); }} style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
-            </div>
-          </div>
-        )}
-        {/* v8.8.13: admin 전용 — 유저별 인폼 모듈 조회 권한 편집. */}
-        {isAdmin && <UserModulePermsPanel allModules={constants.modules || []} />}
-        {/* v8.8.17: admin 전용 — 사유별 메일 제목/본문 템플릿 편집. */}
-        {isAdmin && (
-          <ReasonTemplatesPanel
-            reasons={constants.reasons || []}
-            templates={constants.reason_templates || {}}
-            onSave={(rt) => {
-              sf(API + "/config", { method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ reason_templates: rt }) })
-                .then(d => setConstants(c => ({ ...c, reason_templates: (d.config && d.config.reason_templates) || rt })))
-                .catch(e => alert("저장 실패: " + e.message));
-            }}
-          />
-        )}
-      </PageGear>
-      {/* Sidebar */}
-      <div style={{ width: 312, minWidth: 280, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
-        <div style={{ minHeight: 46, padding: "10px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, background: "var(--bg-secondary)" }}>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)" }}>인폼 로그</div>
-            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 1 }}>제품 · Lot · Wafer 이슈 기록</div>
-          </div>
-          <span style={{ marginLeft: "auto" }}><Button variant="primary" onClick={() => {
-            // v8.8.3 bugfix: 폼 열기 전 /config 를 갱신해 product 카탈로그를 최신화.
-            sf(API + "/config").then(d => setConstants(c => ({
-              ...c,
-              modules: d.modules || c.modules,
-              reasons: d.reasons || c.reasons,
-              products: d.products || c.products,
-              raw_db_root: d.raw_db_root ?? c.raw_db_root,
-            }))).catch(() => {});
-            setCreating(true);
-          }}>+ 신규</Button></span>
-        </div>
-
-        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {modeButton("all",     "전체",    "최근 루트 인폼 (역할 필터 적용)")}
-          {modeButton("product", "제품",  "제품 → Lot → Wafer drill-down")}
-          {modeButton("lot",     "Lot",    "LOT 으로 전체 인폼 검색")}
-          {modeButton("gantt",   "이력 타임라인", "시간순 이력 타임라인 (등록·확인·메일·댓글)")}
-          {/* v8.7.8: wafer 모드 제거 — product/lot drill-down 으로 통합. */}
-        </div>
-
-        <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)" }}>
-          <input value={search} onChange={e => setSearch(e.target.value)}
-            placeholder={mode === "lot" ? "lot_id 검색..."
-                       : mode === "product" ? "product 검색..."
-                       : "검색 (해당 모드에서는 미사용)"}
-            style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" }} />
-        </div>
-
-        {/* 담당 모듈 요약 */}
-        {!myMods.all_rounder && (
-          <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)" }}>
-            내 담당: {(myMods.modules || []).length === 0 ? "없음 (Admin→그룹에서 설정)"
-                                                          : (myMods.modules || []).join(", ")}
-          </div>
-        )}
-        {myMods.all_rounder && (
-          <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)" }}>
-            <Pill tone="ok">전체 담당</Pill>
-            <span style={{ marginLeft: 6 }}>admin 권한으로 모든 모듈을 열람합니다.</span>
-          </div>
-        )}
-
-        <div style={{ flex: 1, overflowY: "auto" }}>
-          {(mode === "all" || mode === "gantt") && (
-            <div style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>
-              메인 패널에서 목록을 확인하세요
-            </div>
-          )}
-          {(mode === "wafer" || mode === "lot" || mode === "product") && sidebarItems.length === 0 && (
-            <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>기록 없음</div>
-          )}
-          {(mode === "wafer" || mode === "lot" || mode === "product") && sidebarItems.map(it => (
-            <div key={it.key} onClick={() => setSelected(it.key)}
-              style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", cursor: "pointer",
-                       background: selectedKey === it.key ? "var(--bg-hover)" : "transparent" }}>
-              <div style={{ fontSize: 14, fontWeight: 600, fontFamily: "monospace" }}>{it.label}</div>
-              <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 2 }}>{it.sub}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* v8.8.0: 제품별 담당자 — 사이드바 하단 폴더블. 모든 유저가 +추가/수정/삭제 가능.
-            v8.8.3: 제품 목록을 새 인폼 폼과 동일 소스(카탈로그+실제 기록+담당자 등록)로 통일.
-                    `+제품` 버튼은 단순 담당자 모달을 여는 게 아니라 /products/add 로 카탈로그에 등록
-                    → 새 인폼 폼 드롭다운에도 즉시 반영. 각 행에 `🗑` 제거 버튼 추가. */}
-        <div style={{ borderTop: "2px solid var(--border)", maxHeight: 360, overflowY: "auto", background: "var(--bg-tertiary)" }}>
-          <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace" }}>👥 제품 · 담당자</span>
-            {(() => {
-              // v9.0.0: stripMlPrefix 로 ML_TABLE_PRODA 와 PRODA 를 같은 제품으로 병합.
-              //   dedup key = stripMlPrefix(t).toLowerCase() — raw 'ML_TABLE_PRODA'/'PRODA'/'PRODA ' 모두 "proda" 로 통일.
-              const raw = [
-                ...(constants.products || []),
-                ...(products || []).map(p => typeof p === "string" ? p : p.product).filter(Boolean),
-                ...Object.keys(productContacts || {}),
-              ];
-              const seen = new Map();
-              raw.forEach(s => { if (typeof s !== "string") return; const t = s.trim(); if (!t) return; const stripped = stripMlPrefix(t); const k = stripped.toLowerCase(); if (!seen.has(k)) seen.set(k, stripped); });
-              return <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{seen.size} 제품</span>;
-            })()}
-          </div>
-          {(() => {
-            // v9.0.0: 위와 동일 — stripMlPrefix 기반 dedup key. 표시명도 stripped 로.
-            const raw = [
-              ...(constants.products || []),
-              ...(products || []).map(p => typeof p === "string" ? p : p.product).filter(Boolean),
-              ...Object.keys(productContacts || {}),
-            ];
-            const seen = new Map();
-            raw.forEach(s => { if (typeof s !== "string") return; const t = s.trim(); if (!t) return; const stripped = stripMlPrefix(t); const k = stripped.toLowerCase(); if (!seen.has(k)) seen.set(k, stripped); });
-            const unified = Array.from(seen.values()).sort();
-            if (unified.length === 0) {
-              return (
-                <div style={{ padding: 14, fontSize: 14, color: "var(--text-secondary)", textAlign: "center" }}>
-                  등록된 제품 없음 — 아래 + 로 추가
-                </div>
-              );
-            }
-            return unified.map(prod => {
-              // v9.0.0: contacts 와 catalog 조회도 stripped/ML_TABLE_ 양쪽 변형 지원.
-              const mlKey = `ML_TABLE_${prod}`;
-              const arr = (productContacts[prod] || productContacts[mlKey] || []);
-              const open = !!openContactProducts[prod];
-              const cat = constants.products || [];
-              const inCatalog = cat.includes(prod) || cat.includes(mlKey);
-              return (
-                <div key={prod} style={{ borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ padding: "6px 10px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer", background: open ? "var(--bg-secondary)" : "transparent" }}
-                       onClick={() => setOpenContactProducts(o => ({ ...o, [prod]: !o[prod] }))}>
-                    <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{open ? "▼" : "▶"}</span>
-                    <span title={prod} style={{ flex: 1, fontSize: 14, fontWeight: 600, fontFamily: "monospace" }}>{stripMlPrefix(prod)}</span>
-                    <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{arr.length}</span>
-                    {/* v8.8.13: 두 버튼(+ / 👥) 통합 — 사람 앞에 '+' 가 붙은 단일 추가 버튼. bulk 모달에서 유저/그룹 선택. */}
-                    <span onClick={(e) => { e.stopPropagation(); openBulkPick(prod); }}
-                          title="담당자 추가 — 유저/그룹에서 일괄 선택"
-                          style={{ fontSize: 14, padding: "1px 8px", borderRadius: 4, background: "var(--accent)", color: "#fff", fontWeight: 700, cursor: "pointer" }}>+👤</span>
-                    {/* v8.8.12: 삭제 버튼 항상 노출. catalog 에 있으면 /products/delete,
-                          productContacts 만 있으면 해당 제품의 contacts 를 모두 개별 삭제해 key 제거. */}
-                    <span onClick={(e) => {
-                            e.stopPropagation();
-                            if (!window.confirm(`"${prod}" 을(를) 제거하시겠어요?\n(담당자 목록 + 카탈로그 등록 모두 삭제. 기존 인폼 레코드는 유지.)`)) return;
-                            const contacts = (productContacts[prod] || []);
-                            const delContactReqs = contacts.map(c =>
-                              sf("/api/informs/product-contacts/delete?id=" + encodeURIComponent(c.id) + "&product=" + encodeURIComponent(prod), { method: "POST" }).catch(() => {})
-                            );
-                            Promise.all(delContactReqs).then(() => {
-                              if (inCatalog) {
-                                postJson(API + "/products/delete", { product: prod })
-                                  .then(d => setConstants(c => ({ ...c, products: d.products || c.products })))
-                                  .catch(() => {});
-                              }
-                              loadProductContacts();
-                            });
-                          }}
-                          title="제품 삭제 (담당자 + 카탈로그)"
-                          style={{ fontSize: 14, padding: "1px 6px", borderRadius: 4, background: "transparent", color: "#ef4444", fontWeight: 700, cursor: "pointer", border: "1px solid #ef4444" }}>🗑</span>
-                  </div>
-                  {open && arr.length === 0 && (
-                    <div style={{ padding: "6px 14px 8px 24px", fontSize: 14, color: "var(--text-secondary)" }}>담당자 없음</div>
-                  )}
-                  {open && arr.map(c => (
-                    <div key={c.id} style={{ padding: "5px 14px 5px 24px", display: "flex", flexDirection: "column", borderTop: "1px dashed var(--border)" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                        <span style={{ fontSize: 14, fontWeight: 600 }}>{c.name}</span>
-                        {c.role && <span style={{ fontSize: 14, padding: "1px 5px", borderRadius: 6, background: "var(--accent)22", color: "var(--accent)", fontWeight: 700 }}>{c.role}</span>}
-                        <span style={{ flex: 1 }} />
-                        <span onClick={() => setEditContact({ id: c.id, product: prod, name: c.name, role: c.role || "", email: c.email || "", phone: c.phone || "", note: c.note || "" })}
-                              style={{ fontSize: 14, color: "var(--text-secondary)", cursor: "pointer" }}>수정</span>
-                        <span onClick={() => deleteContact(prod, c.id)}
-                              style={{ fontSize: 14, color: "#ef4444", cursor: "pointer" }}>삭제</span>
-                      </div>
-                      {(c.email || c.phone) && (
-                        <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", marginTop: 1 }}>
-                          {c.email}{c.email && c.phone ? " · " : ""}{c.phone}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              );
-            });
-          })()}
-          <div style={{ padding: 8, display: "flex", gap: 6 }}>
-            <input id="__pc_new_prod" placeholder="신규 제품명 (카탈로그 등록)"
-              style={{ flex: 1, minWidth: 0, padding: "5px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  const v = e.target.value.trim();
-                  if (!v) return;
-                  addCatalogProduct(v, {
-                    onAdded: (_product, d) => {
-                      setConstants(c => ({ ...c, products: d.products || c.products }));
-                      e.target.value = "";
-                    },
-                  })
-                    .catch(err => alert(err.message));
-                }
-              }} />
-            <button onClick={() => {
-              const inp = document.getElementById("__pc_new_prod");
-              const v = (inp?.value || "").trim();
-              if (!v) return;
-              addCatalogProduct(v, {
-                onAdded: (_product, d) => {
-                  setConstants(c => ({ ...c, products: d.products || c.products }));
-                  if (inp) inp.value = "";
-                },
-              })
-                .catch(err => alert(err.message));
-            }} style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>+제품</button>
-          </div>
-        </div>
-      </div>
-
-      {/* v8.8.0: 담당자 추가/수정 모달 */}
-      {/* v8.8.0: 표 붙여넣기 모달 — TSV/CSV → embed_table */}
-      {pasteOpen && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 3100, display: "flex", alignItems: "center", justifyContent: "center" }}
-             onClick={() => setPasteOpen(false)}>
-          <div onClick={(e) => e.stopPropagation()}
-               style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18, width: 640, maxWidth: "94vw" }}>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📋 표 붙여넣기 (TSV/CSV)</div>
-            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
-              Excel/SplitTable 셀 영역을 복사한 뒤 아래에 Ctrl+V. 첫 줄이 컬럼명. 세트명을 지정하면 LocalStorage 에 저장되어 다음에 재사용 가능.
-            </div>
-            {loadPasteSets().length > 0 && (
-              <div style={{ marginBottom: 8, padding: 8, background: "var(--bg-card)", borderRadius: 6, fontSize: 14 }}>
-                <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>저장된 세트 ({loadPasteSets().length})</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                  {loadPasteSets().map(s => (
-                    <span key={s.name} onClick={() => {
-                      setForm(f => ({ ...f, attach_embed: true, embed: { source: s.name, columns: s.columns, rows: s.rows, note: `${s.rows.length} rows reused` } }));
-                      setPasteOpen(false);
-                    }}
-                    style={{ padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer", background: "var(--accent-glow)", color: "var(--accent)", fontWeight: 600 }}
-                    title={`${s.product || ""} · ${s.rows.length} rows · ${s.saved_at?.slice(0,16)}`}>{s.name}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-            <input value={pasteSetName} onChange={e => setPasteSetName(e.target.value)}
-              placeholder="세트 이름 (선택, 비우면 1회용)"
-              style={{ width: "100%", padding: "6px 10px", marginBottom: 6, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, boxSizing: "border-box" }} />
-            <textarea value={pasteText} onChange={e => setPasteText(e.target.value)}
-              placeholder="여기에 Ctrl+V (첫 줄 = 헤더, 탭 또는 콤마 구분)"
-              rows={10}
-              style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }} />
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
-              <button onClick={() => { setPasteOpen(false); setPasteText(""); setPasteSetName(""); }}
-                style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
-              <button onClick={applyPasteAsEmbed}
-                style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>본문에 첨부</button>
-            </div>
-          </div>
-        </div>
-      )}
-      {/* v8.8.2: 유저/그룹 혼합 일괄 추가 모달 */}
-      {bulkPickProduct && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 3050, display: "flex", alignItems: "center", justifyContent: "center" }}
-             onClick={() => !bulkBusy && setBulkPickProduct("")}>
-          <div onClick={(e) => e.stopPropagation()}
-               style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18, width: 620, maxWidth: "94vw", maxHeight: "86vh", display: "flex", flexDirection: "column" }}>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6, fontFamily: "monospace" }}>
-              👥 일괄 담당자 추가 <span style={{ color: "var(--accent)" }}>· {bulkPickProduct}</span>
-            </div>
-            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10 }}>
-              개별 유저와 그룹을 혼합해 선택할 수 있습니다. 이미 등록된 담당자(동일 username/email) 는 자동으로 건너뜁니다. admin/test 계정은 제외됩니다.
-            </div>
-            <div style={{ display: "flex", gap: 10, flex: 1, minHeight: 280 }}>
-              {/* 유저 풀 */}
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
-                <div style={{ padding: "6px 10px", fontSize: 14, fontWeight: 700, background: "var(--bg-primary)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between" }}>
-                  <span>👤 유저 ({bulkEligibleUsers.length})</span>
-                  <span style={{ color: "var(--accent)", cursor: "pointer", fontWeight: 600 }}
-                        onClick={() => setBulkSelUsers(bulkSelUsers.length === bulkEligibleUsers.length ? [] : bulkEligibleUsers.map(u => u.username))}>
-                    {bulkSelUsers.length === bulkEligibleUsers.length ? "전체 해제" : "전체 선택"}
-                  </span>
-                </div>
-                <div style={{ flex: 1, overflowY: "auto" }}>
-                  {bulkEligibleUsers.map(u => {
-                    const sel = bulkSelUsers.includes(u.username);
-                    return (
-                      <div key={u.username} onClick={() => setBulkSelUsers(sel ? bulkSelUsers.filter(x => x !== u.username) : [...bulkSelUsers, u.username])}
-                           style={{ padding: "5px 10px", fontSize: 14, cursor: "pointer", background: sel ? "var(--accent-glow)" : "transparent", borderBottom: "1px dashed var(--border)", display: "flex", alignItems: "center", gap: 6 }}>
-                        <input type="checkbox" readOnly checked={sel} />
-                        <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{u.username}</span>
-                        {u.email && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>· {u.email}</span>}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              {/* 그룹 풀 */}
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
-                <div style={{ padding: "6px 10px", fontSize: 14, fontWeight: 700, background: "var(--bg-primary)", borderBottom: "1px solid var(--border)" }}>
-                  🏷 그룹 ({bulkGroups.length}) — 선택 시 해당 그룹 멤버 전체 합류
-                </div>
-                <div style={{ flex: 1, overflowY: "auto" }}>
-                  {bulkGroups.map(g => {
-                    const sel = bulkSelGroups.includes(g.id);
-                    return (
-                      <div key={g.id} onClick={() => setBulkSelGroups(sel ? bulkSelGroups.filter(x => x !== g.id) : [...bulkSelGroups, g.id])}
-                           style={{ padding: "5px 10px", fontSize: 14, cursor: "pointer", background: sel ? "var(--accent-glow)" : "transparent", borderBottom: "1px dashed var(--border)", display: "flex", alignItems: "center", gap: 6 }}>
-                        <input type="checkbox" readOnly checked={sel} />
-                        <span style={{ fontWeight: 600 }}>{g.name}</span>
-                        <span style={{ fontSize: 14, color: "var(--text-secondary)", marginLeft: "auto" }}>{(g.members || []).length}명</span>
-                      </div>
-                    );
-                  })}
-                  {bulkGroups.length === 0 && <div style={{ padding: 18, fontSize: 14, color: "var(--text-secondary)", textAlign: "center" }}>볼 수 있는 그룹 없음</div>}
-                </div>
-              </div>
-            </div>
-            <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>역할(선택):</span>
-              <input value={bulkRole} onChange={(e) => setBulkRole(e.target.value)}
-                     placeholder="예: PIE, 측정 (비우면 유저 기본 role)"
-                     style={{ flex: 1, padding: "5px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
-            </div>
-            <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>
-                선택: 유저 {bulkSelUsers.length} · 그룹 {bulkSelGroups.length}
-              </span>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => !bulkBusy && setBulkPickProduct("")}
-                  style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: bulkBusy ? "not-allowed" : "pointer" }}>취소</button>
-                <button onClick={runBulkAdd} disabled={bulkBusy}
-                  style={{ padding: "6px 16px", borderRadius: 5, border: "none", background: bulkBusy ? "var(--border)" : "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: bulkBusy ? "not-allowed" : "pointer" }}>
-                  {bulkBusy ? "추가 중…" : "일괄 추가"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      {editContact && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3000 }}
-             onClick={() => setEditContact(null)}>
-          <div onClick={(e) => e.stopPropagation()}
-               style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18, width: 380, maxWidth: "92vw" }}>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, fontFamily: "monospace" }}>
-              {editContact.id ? "✏ 담당자 수정" : "+ 담당자 추가"} <span style={{ color: "var(--accent)" }}>· {editContact.product}</span>
-            </div>
-            {/* v8.8.17: 아이디(username=email) + 역할 2필드로 간소화.
-                  이메일/전화/메모 제거 — username 이 곧 사내 메일이므로 이메일 컬럼 불필요. */}
-            {[
-              ["name", "아이디 (필수 · 사내 email id)"],
-              ["role", "역할 (예: PIE, 측정)"],
-            ].map(([k, ph]) => (
-              <input key={k} placeholder={ph}
-                value={editContact[k] || ""}
-                onChange={(e) => setEditContact({ ...editContact, [k]: e.target.value })}
-                style={{ display: "block", width: "100%", padding: "8px 10px", marginBottom: 8, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, boxSizing: "border-box" }} />
-            ))}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button onClick={() => setEditContact(null)}
-                style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
-              <button onClick={saveContact}
-                style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>저장</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Main */}
-      <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
-        {creating && (
-          <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18, marginBottom: 18 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>새 인폼</div>
-            {/* v8.7.9: product + lot_id 2개만. wafer_id 제거. lot_id 는 root/fab 어느 쪽이든 OK — 앞 5자가 root_lot_id. */}
-            {/* v8.8.1: 제품명은 등록된 카탈로그(선택), Lot 은 RAWDATA_DB 에서 로드(선택 + 자유입력 병행). */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-              <div style={{ display: "flex", gap: 6 }}>
-                <select value={form.product}
-                  onChange={e => {
-                    const p = e.target.value;
-                    setForm({ ...form, product: p, lot_id: "" });
-                    if (p) {
-                      sf(API + "/product-lots?product=" + encodeURIComponent(p))
-                        .then(d => setProductLots({ product: p, lots: d.lots || [], source: d.source || "" }))
-                        .catch(() => setProductLots({ product: p, lots: [], source: "" }));
-                    } else {
-                      setProductLots({ product: "", lots: [], source: "" });
-                    }
-                  }}
-                  style={{ flex: 1, padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }}>
-                  <option value="">-- 제품 선택 --</option>
-                  {/* v9.0.0: 드롭다운도 stripMlPrefix 기반 dedup — "ML_TABLE_PRODA" 와 "PRODA" 를 하나로.
-                      value 는 stripped (사용자가 택한 canonical name) 로 통일 — 저장 시 BE 가 ML_TABLE_ 접두어 자동 보강. */}
-                  {(() => {
-                    const raw = [
-                      ...(constants.products || []),
-                      ...(products || []).map(p => (typeof p === "string" ? p : p.product)).filter(Boolean),
-                      ...Object.keys(productContacts || {}),
-                    ];
-                    const seen = new Map();
-                    raw.forEach(s => { if (typeof s !== "string") return; const t = s.trim(); if (!t) return; const stripped = stripMlPrefix(t); const k = stripped.toLowerCase(); if (!seen.has(k)) seen.set(k, stripped); });
-                    return Array.from(seen.values()).sort().map(p => <option key={p} value={p}>{p}</option>);
-                  })()}
-                </select>
-                {/* v8.8.3: 제품 등록/제거를 admin 제한 해제 — 사이드바 카탈로그와 동일 권한. */}
-                <button type="button"
-                  title="제품 추가 (카탈로그 등록)"
-                  onClick={() => {
-                    const v = (prompt("새 제품명:") || "").trim();
-                    if (!v) return;
-                    addCatalogProduct(v, {
-                      onAdded: (_product, d) => {
-                        setConstants(c => ({ ...c, products: d.products || c.products }));
-                        setForm(f => ({ ...f, product: v }));
-                      },
-                      onDuplicate: (existing) => setForm(f => ({ ...f, product: existing })),
-                    })
-                      .catch(e => alert(e.message));
-                  }}
-                  style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer" }}>+</button>
-                {form.product && (constants.products || []).includes(form.product) && (
-                  <button type="button"
-                    title="선택된 제품을 카탈로그에서 제거"
-                    onClick={() => {
-                      const v = form.product;
-                      if (!window.confirm(`"${v}" 을(를) 카탈로그에서 제거할까요?`)) return;
-                      postJson(API + "/products/delete", { product: v })
-                        .then(d => {
-                          setConstants(c => ({ ...c, products: d.products || c.products }));
-                          setForm(f => ({ ...f, product: "" }));
-                        })
-                        .catch(e => alert(e.message));
-                    }}
-                    style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 14, cursor: "pointer" }}>−</button>
-                )}
-              </div>
-              {/* v8.8.29: Lot 선택 = 타이핑 검색 콤보박스 + 직접 입력 토글.
-                     - 타이핑하면 root_lot_id / fab_lot_id 양쪽에서 부분일치 필터.
-                     - 포커스/타이핑 시 드롭다운 노출. 외부 클릭 시 닫힘.
-                     - 값 선택해도 input 에 그대로 남음 — 다음 검색은 그 위에서 덮어쓰기.
-                     - ✏ 직접 토글은 히스토리 호환 (표시만 바뀌고 동작은 동일). */}
-              <LotCombobox
-                value={form.lot_id}
-                onChange={(v) => setForm({ ...form, lot_id: v })}
-                options={lotOptions}
-                productSelected={!!form.product}
-                manualMode={!!form._lotManual}
-                onToggleManual={() => setForm(f => ({ ...f, _lotManual: !f._lotManual }))}
-              />
-            </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-              <select value={form.module} onChange={e => setForm({ ...form, module: e.target.value })}
-                style={{ padding: "8px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }}>
-                <option value="">-- 모듈 --</option>{constants.modules.map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
-              <div title="카테고리는 현재 PEMS 고정"
-                style={{ display: "inline-flex", alignItems: "center", padding: "8px 12px", borderRadius: 999, border: "1px solid rgba(37,99,235,0.28)", background: "rgba(59,130,246,0.10)", color: "#2563eb", fontSize: 14, fontWeight: 700 }}>
-                PEMS
-              </div>
-              {/* v8.8.8: SplitTable 변경요청 체크박스 제거 — fab_lot_id 입력 시 자동으로 SplitTable 스냅샷 attach. */}
-            </div>
-            <textarea value={form.text} onChange={e => setForm({ ...form, text: e.target.value })} rows={4}
-              onPaste={handleBodyPaste}
-              placeholder="인폼 내용 (배경, 영향, 조치 요청 등) — Ctrl+V 로 이미지도 바로 붙여넣을 수 있어요"
-              style={{ width: "100%", padding: 10, borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, resize: "vertical", boxSizing: "border-box", lineHeight: 1.5 }} />
-            {/* SplitTable 스냅샷: 기본은 ALL 자동 첨부, 컬럼 선택 시 CUSTOM 스코프로 축소. */}
-            <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 14 }}>
-              <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>
-                SplitTable 스냅샷 <span style={{ fontWeight: 400, color: "var(--text-tertiary, var(--text-secondary))" }}>{embedCustomCols.length > 0 ? "CUSTOM 컬럼만 첨부" : "기본 ALL 자동 첨부"}</span>
-              </span>
-              <button type="button" onClick={() => setEmbedCustomOpen(!embedCustomOpen)}
-                style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: embedCustomOpen ? "var(--accent-glow)" : "var(--bg-card)", color: embedCustomOpen ? "var(--accent)" : "var(--text-primary)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
-                {embedCustomOpen ? "▼" : "▶"} 컬럼 편집{embedCustomCols.length > 0 ? ` · ${embedCustomCols.length}개 선택` : " · 미선택"}
-              </button>
-              <button type="button" onClick={() => setSnapshotTick(x => x + 1)}
-                title="스냅샷 재조회 — lot/컬럼 변경 없이도 서버에서 다시 가져옴"
-                style={{ padding: "2px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
-                스냅샷 조회
-              </button>
-            </div>
-            {/* v8.8.16: 인라인 CUSTOM 편집기 — SplitTable 사이드바와 동일 UX.
-                v8.8.19: SplitTable 공용 CUSTOM set 드롭다운 + 새 set 저장. 양방향 공유. */}
-            {embedCustomOpen && (
-              <div style={{ marginTop: 6, padding: "8px 10px", borderRadius: 5, border: "1px dashed var(--border)", background: "var(--bg-card)", fontSize: 14 }}>
-                {/* v8.8.19: SplitTable 공용 CUSTOM set 선택/저장 행 */}
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 600 }}>공용 CUSTOM set:</span>
-                  <select value={embedCustomName} onChange={e => {
-                      const nm = e.target.value;
-                      setEmbedCustomName(nm);
-                      if (nm) {
-                        const found = (customsList || []).find(c => c.name === nm);
-                        if (found && Array.isArray(found.columns)) {
-                          setEmbedCustomCols(found.columns.slice());
-                        }
-                      }
-                    }}
-                    style={{ padding: "2px 6px", fontSize: 14, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", borderRadius: 3, maxWidth: 180 }}>
-                    <option value="">-- 선택 (직접 편집) --</option>
-                    {(customsList || []).map(c => <option key={c.name} value={c.name}>{c.name} ({(c.columns||[]).length})</option>)}
-                  </select>
-                  <button type="button" disabled={!embedCustomCols.length}
-                    onClick={() => {
-                      const nm = prompt("저장할 CUSTOM set 이름:", embedCustomName || "");
-                      if (!nm) return;
-                      postJson("/api/splittable/customs/save", {
-                        name: nm, username: user?.username || "",
-                        columns: embedCustomCols, expected_version: null,
-                      }).then(r => {
-                        if (r && r.conflict) { alert("이미 같은 이름의 set 이 있고 버전이 다릅니다. 이름을 바꾸거나 다시 시도."); return; }
-                        sf("/api/splittable/customs").then(d => setCustomsList(d.customs || []));
-                        setEmbedCustomName(nm);
-                        alert(`CUSTOM set '${nm}' 저장됨. SplitTable 과 공유.`);
-                      }).catch(e => alert("저장 실패: " + (e.message || e)));
-                    }}
-                    style={{ padding: "2px 8px", fontSize: 14, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", borderRadius: 3, cursor: embedCustomCols.length ? "pointer" : "not-allowed", fontWeight: 600 }}>
-                    💾 set 저장
-                  </button>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                  <span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>
-                    인라인 CUSTOM 컬럼 선택 · {embedCustomCols.length}/{embedSchemaCols.length}
-                  </span>
-                  <span style={{ marginLeft: "auto", fontSize: 14, color: "var(--text-secondary)" }}>
-                    {embedCustomName ? `set='${embedCustomName}' (SplitTable 공유)` : "저장하지 않은 상태 — 이 인폼에만 적용됨"}
-                  </span>
-                </div>
-                <input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)}
-                  placeholder="컬럼 검색..." style={{ width: "100%", padding: "4px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, marginBottom: 4, boxSizing: "border-box" }} />
-                {(() => {
-                  // v8.8.19: PRODUCT / ROOT_LOT_ID / WAFER_ID / lot_id / fab_lot_id 는 자동 포함 기본 컬럼 → CUSTOM pool 에서 제외.
-                  const HIDDEN = new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
-                  const pool = (() => { const seen = new Set(); const out = [];
-                    for (const c of [...embedSchemaCols, ...embedCustomCols]) {
-                      const key = String(c).toLowerCase();
-                      if (!seen.has(c) && !HIDDEN.has(key)) { seen.add(c); out.push(c); }
-                    } return out; })();
-                  const filtered = embedCustomSearch
-                    ? pool.filter(c => c.toLowerCase().includes(embedCustomSearch.toLowerCase()))
-                    : pool;
-                  return (<>
-                    <div style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
-                      <button type="button" onClick={() => setEmbedCustomCols(Array.from(new Set([...embedCustomCols, ...filtered])))}
-                        style={{ padding: "2px 8px", borderRadius: 3, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
-                        ✓ 전체 체크{embedCustomSearch ? ` (${filtered.length})` : ""}
-                      </button>
-                      <button type="button" onClick={() => {
-                          if (embedCustomSearch) { const fs = new Set(filtered); setEmbedCustomCols(embedCustomCols.filter(c => !fs.has(c))); }
-                          else setEmbedCustomCols([]);
-                        }}
-                        style={{ padding: "2px 8px", borderRadius: 3, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
-                        ✕ 전체 제거
-                      </button>
-                    </div>
-                    <div style={{ maxHeight: 140, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, padding: 2, background: "var(--bg-primary)" }}>
-                      {filtered.length === 0 && <div style={{ padding: 6, fontStyle: "italic", color: "var(--text-secondary)" }}>
-                        {embedSchemaCols.length === 0 ? "제품 스키마 로딩 중..." : "검색 결과 없음"}
-                      </div>}
-                      {filtered.map(c => {
-                        const on = embedCustomCols.includes(c);
-                        return (<div key={c} onClick={() => {
-                            if (on) setEmbedCustomCols(embedCustomCols.filter(x => x !== c));
-                            else setEmbedCustomCols([...embedCustomCols, c]);
-                          }}
-                          style={{ padding: "2px 6px", cursor: "pointer", color: on ? "var(--accent)" : "var(--text-secondary)", fontFamily: "monospace" }}>
-                          {on ? "✓ " : "  "}{c}
-                        </div>);
-                      })}
-                    </div>
-                  </>);
-                })()}
-                {/* 선택된 컬럼 pill 표시 */}
-                {embedCustomCols.length > 0 && (
-                  <div style={{ marginTop: 6 }}>
-                    <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2, fontWeight: 600 }}>선택됨 ({embedCustomCols.length})</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-                      {embedCustomCols.map(c => (
-                        <span key={c} title={c}
-                          style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "1px 5px", borderRadius: 3, fontSize: 14, background: "var(--accent-glow)", color: "var(--accent)", fontFamily: "monospace" }}>
-                          {c}<span onClick={() => setEmbedCustomCols(embedCustomCols.filter(x => x !== c))}
-                            style={{ cursor: "pointer", fontSize: 14, lineHeight: 1, marginLeft: 2, color: "#ef4444" }} title="제거">×</span>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div style={{ marginTop: 6, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>이미지: 본문에 <b>Ctrl+V</b> 로 바로 붙여넣기 (markdown 으로 inline 삽입)</span>
-              {uploadingMain && <span style={{ fontSize: 14, color: "var(--accent)" }}>업로드중…</span>}
-              {embedFetching && <span style={{ fontSize: 14, color: "var(--accent)" }}>SplitTable 스냅샷 로딩…</span>}
-              {form.attach_embed && hasEmbedSnapshot(form.embed) && (
-                <span style={{ fontSize: 14, color: "#16a34a", fontWeight: 600 }}>
-                  ✓ SplitTable 자동 첨부 ({embedSnapshotRowCount(form.embed)} rows)
-                  <button type="button" onClick={() => setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }))}
-                    style={{ marginLeft: 6, border: "none", background: "transparent", color: "#ef4444", cursor: "pointer" }}>×</button>
-                </span>
-              )}
-            </div>
-            {createImages.length > 0 && (
-              <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {createImages.map((im, i) => (
-                  <span key={i} style={{ fontSize: 14, padding: "2px 6px", borderRadius: 3, background: "var(--bg-primary)", border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <img src={authSrc(im.url)} alt="" style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 2 }} />
-                    <span style={{ fontFamily: "monospace" }}>{im.filename}</span>
-                    <button onClick={() => setCreateImages(createImages.filter((_, j) => j !== i))}
-                      style={{ border: "none", background: "transparent", color: "#ef4444", cursor: "pointer", padding: 0 }}>×</button>
-                  </span>
-                ))}
-              </div>
-            )}
-            {form.attach_embed && hasEmbedSnapshot(form.embed) && (
-              <div style={{ marginTop: 6 }}>
-                <EmbedTableView embed={form.embed} product={form.product} />
-              </div>
-            )}
-            {/* v8.8.8: Split Table 변경 수동 입력 블록 제거 — fab_lot_id 기반 자동 스냅샷으로 대체. */}
-            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <button onClick={create} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 600, cursor: "pointer" }}>등록</button>
-              <button onClick={() => { setCreating(false); setMsg(""); }} style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>취소</button>
-              {msg && <span style={{ fontSize: 14, color: "#ef4444", alignSelf: "center" }}>{msg}</span>}
-            </div>
-          </div>
-        )}
-
-        {/* v8.8.8: 모듈 필터 칩 제거 — 모듈 개념이 인폼에서 덜 쓰여서 불필요. 향후 필요 시 사이드바로 이전. */}
-
-        {/* 메인 컨텐츠 */}
-        {mode === "gantt" && (
-          <>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, color: "var(--text-secondary)" }}>📜 이력 타임라인 — 시간순 로그</div>
-            <TimelineLog
-              thread={thread}
-              onOpen={(r) => {
-                const rawLot = (r?.lot_id || "").trim();
-                setSelectedLot((r.root_lot_id || (isFabLotInput(rawLot) ? rawLot.slice(0, 5) : rawLot)));
-                setMode("lot");
-              }}
-            />
-          </>
-        )}
-
-        {mode === "all" && (
-          <>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>최근 인폼</div>
-              <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>
-                · {applyModFilter(rootsSorted).length}건
-                {(moduleFilter.length > 0 || productFilter.length > 0) && <span style={{ color: "var(--accent)", marginLeft: 4 }}>(필터됨)</span>}
-              </span>
-              {(moduleFilter.length > 0 || productFilter.length > 0) && (
-                <button onClick={resetInformFilters}
-                  style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>필터 초기화</button>
-              )}
-            </div>
-            {/* v8.8.15: 모듈 nav 스타일 필터 — 토글 pill (checkbox 제거). */}
-            {(() => {
-              const allowed = moduleFilterOptions;
-              if (allowed.length === 0) return null;
-              const allOn = allowed.length > 0 && allowed.every(m => moduleFilter.includes(m));
-              return (
-                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "8px 10px", borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)", marginBottom: 8 }}>
-                  <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 800, marginRight: 4 }}>모듈</span>
-                  <button onClick={() => setModuleFilter(allOn ? [] : [...allowed])}
-                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (allOn ? "var(--accent)" : "var(--border)"), background: allOn ? "var(--accent)" : "var(--bg-primary)", color: allOn ? "#fff" : "var(--text-secondary)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
-                    전체
-                  </button>
-                  {allowed.map(m => {
-                    const on = moduleFilter.includes(m);
-                    return (
-                      <button key={m} onClick={() => setModuleFilter(on ? moduleFilter.filter(x => x !== m) : [...moduleFilter, m])}
-                        style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)" : "var(--bg-primary)", color: on ? "#fff" : "var(--text-secondary)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
-                        {m}
-                      </button>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-            {/* v9.0.0: 제품 nav 필터 — canonical (ML_TABLE_ 제거) 기준 dedup. "전체" 는 모든 제품 체크 토글. */}
-            {(() => {
-              if (presentProducts.length === 0) return null;
-              const allSelected = presentProducts.length > 0 && presentProducts.every(p => productFilter.includes(p));
-              return (
-                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "8px 10px", borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)", marginBottom: 12 }}>
-                  <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 800, marginRight: 4 }}>제품</span>
-                  <button onClick={() => setProductFilter(allSelected ? [] : presentProducts)}
-                    title={allSelected ? "전체 해제 → 아무것도 표시 안됨" : "모든 제품 선택"}
-                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (allSelected ? "var(--accent)" : "var(--border)"), background: allSelected ? "var(--accent)" : "var(--bg-primary)", color: allSelected ? "#fff" : "var(--text-secondary)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
-                    전체
-                  </button>
-                  {presentProducts.map(p => {
-                    const on = productFilter.includes(p);
-                    return (
-                      <button key={p} onClick={() => setProductFilter(on ? productFilter.filter(x => x !== p) : [...productFilter, p])}
-                        title={p}
-                        style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid " + (on ? "var(--accent)" : "var(--border)"), background: on ? "var(--accent)" : "var(--bg-primary)", color: on ? "#fff" : "var(--text-secondary)", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "monospace" }}>
-                        {p}
-                      </button>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-            {applyModFilter(rootsSorted).length === 0 && (
-              (!moduleFilter?.length && !productFilter?.length)
-                ? <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>
-                    <div style={{ fontSize: 14, marginBottom: 6 }}>필터를 하나 이상 선택하세요.</div>
-                    <div style={{ fontSize: 14 }}>위 📁 모듈 · 📦 제품 pill 중 최소 1개 이상 체크해야 인폼이 표시됩니다.</div>
-                  </div>
-                : <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>인폼 없음.</div>
-            )}
-            {applyModFilter(rootsSorted).map(r => (
-              <CompactRow key={r.id} root={r} onOpen={() => openRootDetail(r)} />
-            ))}
-          </>
-        )}
-
-        {mode === "mine" && (
-          <>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>
-              내 모듈 인폼 {myMods.all_rounder
-                ? <span style={{ fontSize: 14, color: "#22c55e", marginLeft: 6 }}>(전체 담당)</span>
-                : <span style={{ fontSize: 14, color: "var(--text-secondary)", marginLeft: 6 }}>({(myMods.modules || []).join(", ") || "모듈 미배정"})</span>}
-            </div>
-            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10 }}>
-              나의 그룹 담당 모듈에 해당하는 루트 인폼만 노출됩니다. {isAdmin ? "admin 은 모듈 필터 칩으로 단일 모듈을 좁혀 볼 수 있습니다." : ""}
-            </div>
-            {applyModFilter(rootsSorted).length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>해당 없음.</div>}
-            {applyModFilter(rootsSorted).map(r => (
-              <CompactRow key={r.id} root={r}
-                onOpen={() => openRootDetail(r)} />
-            ))}
-          </>
-        )}
-
-        {mode === "product" && selectedProduct && (
-          <>
-            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6, fontFamily: "monospace" }}>
-              📦 {selectedProduct}
-              <span style={{ fontSize: 14, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
-                — 이 제품 인폼 {rootsSorted.length}건 · drill-down 가능
-              </span>
-            </div>
-            {/* v8.7.6: 제품 선택 시 Lot 리스트 drill-down */}
-            {(() => {
-              const lotMap = {};
-              for (const r of applyModFilter(rootsSorted)) {
-                const lid = r.lot_id || "(lot 미지정)";
-                (lotMap[lid] = lotMap[lid] || []).push(r);
-              }
-              const lotKeys = Object.keys(lotMap).sort();
-              if (lotKeys.length === 0) {
-                return <div style={{ padding: 20, color: "var(--text-secondary)", fontSize: 14 }}>해당 제품 인폼 없음.</div>;
-              }
-              return lotKeys.map(lid => {
-                const lotRoots = lotMap[lid];
-                const waferSet = Array.from(new Set(lotRoots.map(r => r.wafer_id).filter(Boolean))).sort();
-                return (
-                  <div key={lid} style={{ marginBottom: 12, padding: 10, borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card)" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                      <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace" }}>
-                        <span style={{ color: "var(--accent)" }}>[{selectedProduct}]</span> {lid}
-                      </span>
-                      <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>· {lotRoots.length}건</span>
-                      <span style={{ flex: 1 }} />
-                      <span onClick={() => {
-                        const rawLot = String(lid || "").trim();
-                        setSelectedLot(isFabLotInput(rawLot) ? rawLot.slice(0, 5) : rawLot);
-                        setMode("lot");
-                      }}
-                            style={{ fontSize: 14, color: "var(--accent)", textDecoration: "underline", cursor: "pointer" }}>Lot 전용 뷰 ↗</span>
-                    </div>
-                    {waferSet.length > 0 && (
-                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
-                        {waferSet.slice(0, 30).map(w => (
-                          <span key={w} onClick={() => { setSelectedWafer(w); setMode("wafer"); }}
-                                style={{ padding: "2px 8px", borderRadius: 999, fontSize: 14, fontFamily: "monospace", cursor: "pointer",
-                                         background: "var(--accent-glow)", color: "var(--accent)", border: "1px solid var(--accent)" }}>
-                            {w}
-                          </span>
-                        ))}
-                        {waferSet.length > 30 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>+{waferSet.length - 30}</span>}
-                      </div>
-                    )}
-                    {lotRoots.slice(0, 5).map(r => (
-                      <CompactRow key={r.id} root={r}
-                        onOpen={() => openRootDetail(r)} />
-                    ))}
-                  </div>
-                );
-              });
-            })()}
-          </>
-        )}
-
-        {mode === "lot" && selectedLot && (
-          <>
-            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6, fontFamily: "monospace" }}>
-              🧾 Lot: {selectedLot}
-              <span style={{ fontSize: 14, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
-                — wafer {lotWafers.length}개 · inform {thread.length}건
-              </span>
-            </div>
-            {lotWafers.length > 0 && (
-              <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10, fontFamily: "monospace" }}>
-                연결 wafer: {lotWafers.join(", ")}
-              </div>
-            )}
-            <LotModuleSummary thread={thread} modules={constants.modules} />
-            <PlanSummaryCard thread={thread} />
-            <SplitNotesCard notes={splitNotes} root_lot_id={selectedLot} />
-            {(() => {
-              const grouped = {};
-              for (const r of applyModFilter(rootsSorted)) {
-                const m = r.module || "(미지정)";
-                (grouped[m] = grouped[m] || []).push(r);
-              }
-              const order = [...(constants.modules || []), "(미지정)"];
-              const modKeys = Object.keys(grouped).sort((a, b) => {
-                const ia = order.indexOf(a); const ib = order.indexOf(b);
-                return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
-              });
-              if (modKeys.length === 0) return <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>해당 없음.</div>;
-              return modKeys.map(mk => (
-                <div key={mk} style={{ marginBottom: 22, padding: 10, borderRadius: 8, background: "var(--bg-card)", border: "1px solid var(--border)" }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8, fontFamily: "monospace", color: "var(--accent)" }}>
-                    ▣ {mk} <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 500, marginLeft: 6 }}>{grouped[mk].length}건</span>
-                  </div>
-                  {grouped[mk].map(r => (
-                    <div key={r.id} style={{ marginBottom: 14, paddingBottom: 10, borderBottom: "1px dashed var(--border)" }}>
-                      {/* v8.8.13: 외부 wafer 라벨 제거 — RootHeader 안에 wafer 가 이미 렌더됨 (중복 방지). */}
-                      <RootHeader root={r} onChangeStatus={changeStatus} user={user} />
-                      <ThreadNode node={r} childrenByParent={childrenByParent}
-                        onReply={reply} onDelete={del} onToggleCheck={toggleCheck}
-                        user={user} depth={0} constants={constants} />
-                    </div>
-                  ))}
-                </div>
-              ));
-            })()}
-          </>
-        )}
-
-        {mode === "wafer" && selectedWafer && (
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12, fontFamily: "monospace" }}>{selectedWafer}</div>
-            <PlanSummaryCard thread={thread} />
-            {rootsSorted.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>아직 인폼 없음.</div>}
-            {rootsSorted.map(r => (
-              <div key={r.id} style={{ marginBottom: 16 }}>
-                <RootHeader root={r} onChangeStatus={changeStatus} user={user} />
-                <ThreadNode node={r} childrenByParent={childrenByParent}
-                  onReply={reply} onDelete={del} onToggleCheck={toggleCheck}
-                  onEdit={editInform}
-                  user={user} depth={0} constants={constants} />
-              </div>
-            ))}
-          </div>
-        )}
-
-        {mode !== "all" && mode !== "mine" && mode !== "gantt" && !selectedKey && !creating && (
-          <div style={{ padding: 60, textAlign: "center", color: "var(--text-secondary)" }}>
-            좌측에서 항목을 선택하거나 <span onClick={() => setCreating(true)} style={{ color: "var(--accent)", cursor: "pointer" }}>+ 신규 인폼</span> 을 등록하세요.
-          </div>
-        )}
-      </div>
-    </div>
-  );
 }
 
 /* v8.7.9 — 시간순 이력 타임라인 (간트바 대신).
@@ -4180,6 +3611,312 @@ function LotPill({ root }) {
   );
 }
 
+function CommonInformFilters({ tab, filters, setFilters, products, modules }) {
+  const [lotDraft, setLotDraft] = useState(filters.lot || "");
+  useEffect(() => setLotDraft(filters.lot || ""), [filters.lot]);
+  useEffect(() => {
+    const h = setTimeout(() => {
+      setFilters(f => f.lot === lotDraft ? f : { ...f, lot: lotDraft });
+    }, 250);
+    return () => clearTimeout(h);
+  }, [lotDraft]);
+
+  const update = (patch) => setFilters(f => ({ ...f, ...patch }));
+  const addToken = (key, value) => {
+    const v = String(value || "").trim();
+    if (!v) return;
+    setFilters(f => ({ ...f, [key]: uniqueClean([...(f[key] || []), v]) }));
+  };
+  const removeToken = (key, value) => {
+    setFilters(f => ({ ...f, [key]: (f[key] || []).filter(x => x !== value) }));
+  };
+  const reset = () => setFilters(DEFAULT_SHARED_FILTERS);
+  const statusOptions = [
+    ["received", "접수"],
+    ["in_progress", "진행중"],
+    ["completed", "완료"],
+    ["pending", "대기"],
+  ];
+  const showStatus = tab === "inform" || tab === "matrix";
+  const showModules = tab !== "modules";
+  const showProducts = tab !== "modules";
+  const showTypes = tab === "audit";
+  const pickerStyle = inputStyle({ width: 148, fontSize: 13, padding: "6px 8px" });
+  return (
+    <div style={{ flex: "0 0 auto", padding: "10px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      {showProducts && (
+        <select value="" onChange={e => addToken("products", e.target.value)} style={pickerStyle}>
+          <option value="">제품 추가</option>
+          {(products || []).map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+      )}
+      {showModules && (
+        <select value="" onChange={e => addToken("modules", e.target.value)} style={pickerStyle}>
+          <option value="">모듈 추가</option>
+          {(modules || []).map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+      )}
+      {showStatus && (
+        <select value="" onChange={e => addToken("statuses", e.target.value)} style={pickerStyle}>
+          <option value="">상태 추가</option>
+          {statusOptions.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+      )}
+      {showTypes && (
+        <select value="" onChange={e => addToken("types", e.target.value)} style={pickerStyle}>
+          <option value="">유형 추가</option>
+          {AUDIT_TYPES.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        </select>
+      )}
+      {tab !== "modules" && (
+        <input value={lotDraft} onChange={e => setLotDraft(e.target.value)}
+          placeholder="lot 검색"
+          style={inputStyle({ width: 180, fontSize: 13, padding: "6px 8px", fontFamily: "monospace" })} />
+      )}
+      <div style={{ display: "inline-flex", gap: 4, alignItems: "center", border: "1px solid var(--border)", borderRadius: 8, padding: 2, background: "var(--bg-primary)" }}>
+        {["7", "30", "90", "custom"].map(v => (
+          <button key={v} type="button" onClick={() => update({ period: v })}
+            style={{ padding: "5px 8px", borderRadius: 6, border: "none", background: filters.period === v ? "var(--accent)" : "transparent", color: filters.period === v ? "#fff" : "var(--text-secondary)", fontWeight: 800, cursor: "pointer", fontSize: 13 }}>
+            {v === "custom" ? "직접" : `${v}일`}
+          </button>
+        ))}
+      </div>
+      {filters.period === "custom" && (
+        <>
+          <input type="date" value={filters.start || ""} onChange={e => update({ start: e.target.value })} style={inputStyle({ width: 138, fontSize: 13, padding: "6px 8px" })} />
+          <input type="date" value={filters.end || ""} onChange={e => update({ end: e.target.value })} style={inputStyle({ width: 138, fontSize: 13, padding: "6px 8px" })} />
+        </>
+      )}
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", minWidth: 0 }}>
+        {(filters.products || []).map(v => <FilterChip key={`p:${v}`} label={`제품 ${v}`} onRemove={() => removeToken("products", v)} />)}
+        {(filters.modules || []).map(v => <FilterChip key={`m:${v}`} label={`모듈 ${v}`} onRemove={() => removeToken("modules", v)} />)}
+        {(filters.statuses || []).map(v => <FilterChip key={`s:${v}`} label={`상태 ${(statusOptions.find(x => x[0] === v) || [v, v])[1]}`} onRemove={() => removeToken("statuses", v)} />)}
+        {(filters.types || []).map(v => <FilterChip key={`t:${v}`} label={`유형 ${(AUDIT_TYPES.find(x => x[0] === v) || [v, v])[1]}`} onRemove={() => removeToken("types", v)} />)}
+        {filters.lot && <FilterChip label={`lot ${filters.lot}`} onRemove={() => { setLotDraft(""); update({ lot: "" }); }} />}
+      </div>
+      <button type="button" onClick={reset} title="필터 초기화"
+        style={{ marginLeft: "auto", padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800, fontSize: 14 }}>
+        필터 초기화
+      </button>
+    </div>
+  );
+}
+
+function FilterChip({ label, onRemove }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, minHeight: 27, maxWidth: 220, padding: "3px 7px", borderRadius: 999, border: "1px solid var(--border)", background: "var(--bg-tertiary)", color: "var(--text-secondary)", fontSize: 13, fontWeight: 800 }}>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+      <button type="button" onClick={onRemove} title="필터 해제"
+        style={{ border: "none", background: "transparent", color: BAD.fg, cursor: "pointer", fontWeight: 900, padding: 0, lineHeight: 1 }}>
+        x
+      </button>
+    </span>
+  );
+}
+
+function InformDrawer({ children, onClose }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 2600, pointerEvents: "none" }}>
+      <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(15,23,42,0.18)", pointerEvents: "auto" }} />
+      <aside style={{ position: "absolute", top: 0, right: 0, bottom: 0, width: "min(480px, 96vw)", background: "var(--bg-primary)", borderLeft: "1px solid var(--border)", boxShadow: "-14px 0 30px rgba(15,23,42,0.24)", pointerEvents: "auto", display: "flex", flexDirection: "column" }}>
+        <button type="button" onClick={onClose} title="닫기"
+          style={{ position: "absolute", top: 10, right: 10, zIndex: 3, width: 30, height: 30, borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-secondary)", cursor: "pointer", fontSize: 18 }}>
+          x
+        </button>
+        {children}
+      </aside>
+    </div>
+  );
+}
+
+function InformCardList({ roots, selectedId, onOpen }) {
+  return (
+    <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 12, background: "var(--bg-primary)" }}>
+      {roots.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "var(--text-secondary)" }}>조건에 맞는 인폼이 없어요</div>}
+      {roots.map(root => (
+        <div key={root.id} style={{ outline: selectedId === root.id ? "2px solid var(--accent)" : "none", borderRadius: 8 }}>
+          <CompactRow root={root} onOpen={() => onOpen(root)} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InformStackCard({ root, allInforms, onOpen }) {
+  const replies = (allInforms || []).filter(x => x.parent_id === root.id).length;
+  const mailCount = (root.mail_history || []).length;
+  const attachCount = (root.images || []).length + (root.embed_table ? 1 : 0);
+  const meta = LOT_MATRIX_STATES[root.flow_status || "received"] || LOT_MATRIX_STATES.received;
+  const preview = String(root.text || "").trim().replace(/\s+/g, " ").slice(0, 80);
+  return (
+    <button type="button" onClick={() => onOpen(root)}
+      style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", cursor: "pointer", textAlign: "left", display: "grid", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+        <span style={{ width: 7, height: 7, borderRadius: 999, background: meta.fg, flex: "0 0 auto" }} />
+        <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{String(_entryLastUpdateForUi(root) || root.created_at || "").replace("T", " ").slice(0, 16)}</span>
+        <span style={{ color: "var(--text-secondary)" }}>{root.author || "-"}</span>
+        <span style={{ marginLeft: "auto" }}><StatusBadge status={root.flow_status || "received"} /></span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+        <ModulePill module={root.module || "기타"} />
+        {root.reason && <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{root.reason}</span>}
+      </div>
+      <div style={{ color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{preview || "(내용 없음)"}</div>
+      <div style={{ display: "flex", gap: 10, color: "var(--text-secondary)", fontSize: 13 }}>
+        <span>💬 {replies}</span>
+        <span>✉ {mailCount}</span>
+        <span>📎 {attachCount}</span>
+      </div>
+    </button>
+  );
+}
+
+function CellInformStackPane({ context, onOpenDetail }) {
+  const product = stripMlPrefix(context?.product || "");
+  const lot = context?.lot?.root_lot_id || "";
+  const module = context?.module || "";
+  const roots = context?.roots || [];
+  const count = Number(context?.cell?.inform_count ?? roots.length);
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: "0 0 auto", padding: "16px 44px 12px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+        <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1.3 }}>{product || "미지정"} · {lot || "-"} · {module || "기타"}</div>
+        <div style={{ marginTop: 6, color: "var(--text-secondary)", fontWeight: 800 }}>{count}건 인폼</div>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 12, display: "grid", alignContent: "start", gap: 8 }}>
+        {context?.loading && <div style={{ color: "var(--text-secondary)" }}>loading...</div>}
+        {!context?.loading && roots.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "var(--text-secondary)" }}>이 모듈에 인폼된 기록이 없어요</div>}
+        {roots.map(root => <InformStackCard key={root.id} root={root} allInforms={context?.byLot?.informs || roots} onOpen={onOpenDetail} />)}
+      </div>
+    </div>
+  );
+}
+
+function LotInformStripPane({ context, activeModule, setActiveModule, onOpenDetail }) {
+  const informs = context?.informs || [];
+  const roots = informs.filter(x => !x.parent_id);
+  const modules = context?.available_modules || [];
+  const counts = context?.module_counts || {};
+  const selectedRoots = roots
+    .filter(x => !activeModule || (x.module || "기타") === activeModule)
+    .sort((a, b) => String(_entryLastUpdateForUi(b)).localeCompare(String(_entryLastUpdateForUi(a))));
+  const product = stripMlPrefix(context?.product || roots.find(x => x.product)?.product || "");
+  const rootLot = context?.root_lot_id || context?.lot?.root_lot_id || "";
+  const fabLots = uniqueClean(roots.flatMap(r => splitFabLotsFromNode(r))).filter(v => v !== rootLot);
+  const informed = modules.filter(m => Number(counts[m] || 0) > 0).length;
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: "0 0 auto", padding: "16px 44px 12px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 18, fontWeight: 900 }}>{product || "미지정"}</span>
+          <span style={{ fontSize: 18, fontWeight: 900, fontFamily: "monospace", color: "var(--accent)" }}>{rootLot || "-"}</span>
+          <span style={{ color: "var(--text-secondary)", fontWeight: 800 }}>{informed}/{modules.length || 0} 모듈 인폼</span>
+        </div>
+        {fabLots.length > 0 && (
+          <div style={{ marginTop: 7, display: "flex", gap: 5, flexWrap: "wrap" }}>
+            {fabLots.slice(0, 8).map(v => <span key={v} style={{ padding: "2px 7px", borderRadius: 999, border: "1px solid var(--border)", background: "var(--bg-tertiary)", color: "var(--text-secondary)", fontFamily: "monospace", fontSize: 13 }}>{v}</span>)}
+          </div>
+        )}
+      </div>
+      <div style={{ flex: "0 0 auto", padding: 12, borderBottom: "1px solid var(--border)", display: "flex", gap: 6, flexWrap: "wrap", background: "var(--bg-secondary)" }}>
+        <button type="button" onClick={() => setActiveModule("")}
+          style={{ padding: "5px 9px", borderRadius: 999, border: "1px solid " + (!activeModule ? "var(--accent)" : "var(--border)"), background: !activeModule ? "var(--accent)" : "var(--bg-primary)", color: !activeModule ? "#fff" : "var(--text-secondary)", fontWeight: 900, cursor: "pointer" }}>
+          전체 {roots.length}
+        </button>
+        {modules.map(module => {
+          const n = Number(counts[module] || 0);
+          const mc = moduleColor(module);
+          const active = activeModule === module;
+          return (
+            <button key={module} type="button" onClick={() => setActiveModule(active ? "" : module)}
+              style={{ padding: "5px 9px", borderRadius: 999, border: "1px solid " + (n ? mc : "var(--border)"), background: active ? mc : (n ? mc + "22" : "transparent"), color: active ? "#fff" : (n ? mc : "var(--text-secondary)"), fontWeight: 900, cursor: "pointer", fontFamily: "monospace" }}>
+              {module} {n || "—"}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 12, display: "grid", alignContent: "start", gap: 8 }}>
+        {context?.loading && <div style={{ color: "var(--text-secondary)" }}>loading...</div>}
+        {!context?.loading && selectedRoots.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "var(--text-secondary)" }}>이 모듈에 인폼된 기록이 없어요</div>}
+        {selectedRoots.map(root => <InformStackCard key={root.id} root={root} allInforms={informs} onOpen={onOpenDetail} />)}
+      </div>
+    </div>
+  );
+}
+
+function AuditLogList({ rows, loading, onOpen }) {
+  const typeMeta = {
+    status_change: { label: "상태변경", icon: "●", color: WARN.fg },
+    mail: { label: "메일", icon: "✉", color: INFO.fg },
+    comment: { label: "댓글", icon: "💬", color: PURPLE.fg },
+    edit: { label: "수정", icon: "✎", color: TEAL.fg },
+    create: { label: "생성", icon: "+", color: OK.fg },
+    delete: { label: "삭제", icon: "x", color: BAD.fg },
+  };
+  return (
+    <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "var(--bg-secondary)" }}>
+      {loading && <div style={{ padding: 16, color: "var(--text-secondary)" }}>loading...</div>}
+      {!loading && rows.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "var(--text-secondary)" }}>조건에 맞는 활동 로그가 없어요</div>}
+      {rows.map((row, i) => {
+        const meta = typeMeta[row.type] || { label: row.type || "이벤트", icon: "·", color: NEUTRAL.fg };
+        const lot = [stripMlPrefix(row.product || ""), row.root_lot_id || row.lot_id || row.fab_lot_id_at_save || ""].filter(Boolean).join(" · ") || "-";
+        return (
+          <button key={row.id || i} type="button" onClick={() => onOpen(row)}
+            style={{ width: "100%", minHeight: 52, padding: "7px 16px", border: "none", borderBottom: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", display: "grid", gridTemplateColumns: "148px 112px minmax(180px, 1fr) 116px 112px minmax(0, 1.4fr)", gap: 8, alignItems: "center", cursor: "pointer", textAlign: "left", fontSize: 14 }}>
+            <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{String(row.at || "").replace("T", " ").slice(0, 16)}</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: meta.color, fontWeight: 900 }}>
+              <span>{meta.icon}</span>{meta.label}
+            </span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>{lot}</span>
+            <ModulePill module={row.module || "기타"} />
+            <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.actor || "-"}</span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.summary || "-"}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ModuleSummaryTab({ rows, onPick }) {
+  const list = Array.isArray(rows) ? rows : [];
+  return (
+    <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16, background: "var(--bg-primary)" }}>
+      {list.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "var(--text-secondary)" }}>모듈 요약이 없어요</div>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
+        {list.map(row => {
+          const received = Number(row.received || 0);
+          const completed = Number(row.completed || 0);
+          const inProgress = Number(row.in_progress || 0);
+          const pending = Number(row.pending || 0);
+          const total = received + completed + inProgress;
+          const doneRate = total ? Math.round((completed / total) * 100) : 0;
+          const mc = moduleColor(row.module);
+          return (
+            <button key={row.module} type="button" onClick={() => onPick(row.module)}
+              style={{ minHeight: 132, padding: 12, borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", textAlign: "left", cursor: "pointer", display: "grid", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 8, height: 8, borderRadius: 999, background: mc }} />
+                <span style={{ fontSize: 16, fontWeight: 900, fontFamily: "monospace" }}>{row.module}</span>
+                <span style={{ marginLeft: "auto", color: "var(--text-secondary)", fontFamily: "monospace" }}>{doneRate}%</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, color: "var(--text-secondary)" }}>
+                <span>받음 {received}</span>
+                <span>완료 {completed}</span>
+                <span>진행중 {inProgress}</span>
+                <span>대기 {pending}</span>
+              </div>
+              <div style={{ height: 7, borderRadius: 999, background: "var(--bg-primary)", overflow: "hidden" }}>
+                <div style={{ width: `${doneRate}%`, height: "100%", background: doneRate >= 100 ? OK.fg : mc }} />
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ModuleProgressSummary({ rows, activeModule, onPick }) {
   const list = Array.isArray(rows) ? rows : [];
   return (
@@ -4237,9 +3974,37 @@ const LOT_MATRIX_STATES = {
   pending: { label: "대기", mark: "—", bg: "#f3f4f6", fg: "#6b7280" },
 };
 
-function LotProgressMatrix({ matrix, loading, filters, setFilters, productOptions, onOpenCell, onPickLot }) {
+function colorWithAlpha(color, alpha) {
+  const raw = String(color || "").trim();
+  if (/^#[0-9a-f]{6}$/i.test(raw)) {
+    const n = parseInt(raw.slice(1), 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+  }
+  const rgb = raw.match(/^rgba?\(([^)]+)\)$/i);
+  if (rgb) {
+    const parts = rgb[1].split(",").slice(0, 3).map(x => x.trim());
+    return `rgba(${parts.join(",")},${alpha})`;
+  }
+  return alpha <= 0 ? "var(--bg-primary)" : raw;
+}
+
+function matrixCountAlpha(count) {
+  if (count <= 0) return 0;
+  if (count <= 2) return 0.15;
+  if (count <= 5) return 0.30;
+  return 0.50;
+}
+
+function matrixCellCount(cell) {
+  if (!cell) return 0;
+  const n = Number(cell.inform_count);
+  return Number.isFinite(n) ? n : 1;
+}
+
+function LotProgressMatrix({ matrix, loading, filters, setFilters, productOptions, onOpenCell, onPickLot, onOpenLot, activeModules = [], onToggleModule, showControls = true }) {
   const modules = Array.isArray(matrix?.module_order) ? matrix.module_order : [];
   const activeStates = new Set(filters.states || []);
+  const activeModuleSet = new Set(activeModules || []);
   const setFilter = (key, value) => setFilters(prev => ({ ...prev, [key]: value }));
   const toggleState = (state) => {
     setFilters(prev => {
@@ -4258,15 +4023,25 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
       }),
     }))
     .filter(product => product.lots.length > 0);
+  const visibleModuleTotals = {};
+  visibleProducts.forEach(product => {
+    (product.lots || []).forEach(lot => {
+      modules.forEach(module => {
+        visibleModuleTotals[module] = (visibleModuleTotals[module] || 0) + matrixCellCount((lot.modules || {})[module]);
+      });
+    });
+  });
   const lotCount = visibleProducts.reduce((sum, product) => sum + product.lots.length, 0);
   const cellTitle = (module, cell) => {
-    if (!cell) return "";
-    const time = String(cell.updated_at || cell.created_at || "").replace("T", " ").slice(0, 16) || "-";
+    const count = matrixCellCount(cell);
+    const recent = (cell?.recent || [cell]).filter(Boolean)[0] || {};
+    const time = String(recent.updated_at || cell?.updated_at || cell?.created_at || "").replace("T", " ").slice(0, 16) || "-";
     return [
       `모듈: ${module}`,
-      `작성자: ${cell.author || "-"}`,
+      `인폼 ${count}건`,
+      `최근 작성자: ${recent.author || cell?.author || "-"}`,
       `시간: ${time}`,
-      `사유: ${cell.reason || "-"}`,
+      `사유: ${recent.reason || cell?.reason || "-"}`,
     ].join("\n");
   };
   const progressWidth = (progress) => {
@@ -4276,7 +4051,7 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
   };
   const headStyle = {
     position: "sticky", top: 0, zIndex: 5,
-    height: 30, padding: "4px 5px",
+    height: 38, padding: "4px 5px",
     borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)",
     background: "var(--bg-secondary)", color: "var(--text-secondary)",
     fontSize: 12, fontWeight: 900, textAlign: "center",
@@ -4299,8 +4074,8 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
     overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
   };
   return (
-    <div style={{ padding: 12, borderBottom: "1px solid var(--border)", display: "grid", gap: 8 }}>
-      <div style={{ display: "grid", gap: 7 }}>
+    <div style={{ flex: 1, minHeight: 0, padding: 12, borderBottom: "1px solid var(--border)", display: "grid", gridTemplateRows: showControls ? "auto minmax(0,1fr)" : "minmax(0,1fr)", gap: 8, background: "var(--bg-primary)" }}>
+      {showControls && <div style={{ display: "grid", gap: 7 }}>
         <select value={filters.product || ""} onChange={e => setFilter("product", e.target.value)} style={inputStyle({ fontSize: 13, padding: "6px 8px" })}>
           <option value="">제품 전체</option>
           {(productOptions || []).map(product => <option key={product} value={product}>{product}</option>)}
@@ -4332,8 +4107,8 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
             {loading ? "loading" : `${lotCount} lots`}
           </span>
         </div>
-      </div>
-      <div style={{ maxHeight: 292, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)" }}>
+      </div>}
+      <div style={{ minHeight: 0, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)" }}>
         {visibleProducts.length === 0 ? (
           <div style={{ padding: 18, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>
             검색 조건에 맞는 lot 이 없어요
@@ -4344,11 +4119,13 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
               <tr>
                 <th style={leftHeadStyle}>root_lot_id</th>
                 {modules.map(module => (
-                  <th key={module} title={module} style={{ ...headStyle, width: 46, minWidth: 46, maxWidth: 46 }}>
-                    <span style={{ display: "block", maxWidth: 38, overflow: "hidden", textOverflow: "ellipsis" }}>{module}</span>
+                  <th key={module} title={`${module}\nΣ ${visibleModuleTotals[module] || 0}`} onClick={() => onToggleModule && onToggleModule(module)}
+                    style={{ ...headStyle, width: 50, minWidth: 50, maxWidth: 50, cursor: onToggleModule ? "pointer" : "default", color: activeModuleSet.has(module) ? "var(--accent)" : "var(--text-secondary)" }}>
+                    <span style={{ display: "block", maxWidth: 42, overflow: "hidden", textOverflow: "ellipsis" }}>{module}</span>
+                    <span style={{ display: "block", marginTop: 1, fontSize: 11, color: activeModuleSet.has(module) ? "var(--accent)" : "var(--text-muted)" }}>Σ {visibleModuleTotals[module] || 0}</span>
                   </th>
                 ))}
-                <th style={{ ...headStyle, width: 82, minWidth: 82 }}>진행도</th>
+                <th style={{ ...headStyle, width: 70, minWidth: 70 }}>진행도</th>
               </tr>
             </thead>
             <tbody>
@@ -4369,16 +4146,28 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
                         fontWeight: 900,
                         fontFamily: "monospace",
                       }}>
-                      {stripMlPrefix(product.product || "미지정")} · {product.lots.length}
+                      {stripMlPrefix(product.product || "미지정")} · {product.lots.length} · 인폼 {modules.reduce((sum, m) => sum + Number((product.module_totals || {})[m] || 0), 0)} 건
                     </td>
                   </tr>
                   {product.lots.map(lot => (
-                    <tr key={`${product.product}:${lot.root_lot_id}`} onClick={() => onPickLot(product.product, lot)}
+                    <tr key={`${product.product}:${lot.root_lot_id}`} onClick={() => onOpenLot ? onOpenLot(product.product, lot) : onPickLot(product.product, lot)}
                       style={{ cursor: "pointer" }}>
-                      <td title={lot.root_lot_id} style={leftCellStyle}>{lot.root_lot_id}</td>
+                      <td title={lot.root_lot_id} style={leftCellStyle}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, width: "100%" }}>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{lot.root_lot_id}</span>
+                          <button type="button" title="인폼 탭에서 이 lot 필터"
+                            onClick={e => { e.stopPropagation(); onPickLot(product.product, lot); }}
+                            style={{ width: 16, height: 22, border: "none", background: "transparent", color: "var(--accent)", cursor: "pointer", padding: 0, fontWeight: 900 }}>
+                            ↗
+                          </button>
+                        </span>
+                      </td>
                       {modules.map(module => {
                         const cell = (lot.modules || {})[module];
-                        const meta = cell ? (LOT_MATRIX_STATES[cell.state] || LOT_MATRIX_STATES.pending) : null;
+                        const state = cell?.state || "pending";
+                        const meta = LOT_MATRIX_STATES[state] || LOT_MATRIX_STATES.pending;
+                        const count = matrixCellCount(cell);
+                        const mc = moduleColor(module);
                         return (
                           <td key={module}
                             style={{
@@ -4392,32 +4181,32 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
                               borderRight: "1px solid var(--border)",
                               background: "var(--bg-primary)",
                             }}>
-                            {cell && (
-                              <button type="button" title={cellTitle(module, cell)}
-                                onClick={e => { e.stopPropagation(); onOpenCell(lot, cell); }}
-                                style={{
-                                  width: 38,
-                                  height: 24,
-                                  borderRadius: 6,
-                                  border: "1px solid " + meta.fg + "44",
-                                  background: meta.bg,
-                                  color: meta.fg,
-                                  fontSize: 14,
-                                  lineHeight: "20px",
-                                  fontWeight: 900,
-                                  cursor: "pointer",
-                                  padding: 0,
-                                }}>
-                                {meta.mark}
-                              </button>
-                            )}
+                            <button type="button" title={cellTitle(module, cell)}
+                              onClick={e => { e.stopPropagation(); onOpenCell(product.product, lot, module, cell); }}
+                              style={{
+                                position: "relative",
+                                width: 42,
+                                height: 28,
+                                borderRadius: 6,
+                                border: "1px solid " + (count ? colorWithAlpha(mc, 0.42) : "var(--border)"),
+                                background: count ? colorWithAlpha(mc, matrixCountAlpha(count)) : "var(--bg-primary)",
+                                color: count ? mc : "var(--text-muted)",
+                                fontSize: 14,
+                                lineHeight: "24px",
+                                fontWeight: 900,
+                                cursor: "pointer",
+                                padding: 0,
+                              }}>
+                              {count || "—"}
+                              <span style={{ position: "absolute", top: 3, right: 3, width: 6, height: 6, borderRadius: 999, background: count ? meta.fg : "var(--border)" }} />
+                            </button>
                           </td>
                         );
                       })}
                       <td style={{
                         height: 32,
-                        width: 82,
-                        padding: "4px 7px",
+                        width: 70,
+                        padding: "4px 6px",
                         borderBottom: "1px solid var(--border)",
                         background: "var(--bg-primary)",
                         fontSize: 12,
@@ -4511,7 +4300,7 @@ function InformVirtualList({ roots, selectedId, onOpen }) {
   return (
     <div ref={ref} onScroll={e => setScrollTop(e.currentTarget.scrollTop)}
       style={{ flex: 1, overflow: "auto", minHeight: 0, background: "var(--bg-secondary)" }}>
-      {count === 0 && <div style={{ padding: 24, textAlign: "center", color: "var(--text-secondary)" }}>조건에 맞는 인폼이 없습니다.</div>}
+      {count === 0 && <div style={{ padding: 24, textAlign: "center", color: "var(--text-secondary)" }}>조건에 맞는 인폼이 없어요</div>}
       <div style={{ height: count * rowHeight, position: "relative" }}>
         <div style={{ transform: `translateY(${start * rowHeight}px)` }}>
           {visible.map(root => (
@@ -4578,6 +4367,7 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
   ];
   const lotText = informLotDisplay(root, { maxFabLots: 8 }) || "-";
   const completed = root.flow_status === "completed";
+  const canEditDelete = user?.role === "admin" || userMatches(user?.username, root.author);
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
       <div style={{ padding: 16, borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
@@ -4595,6 +4385,17 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button type="button" disabled={!canEditDelete} onClick={() => {
+              const next = window.prompt("인폼 본문 수정", root.text || "");
+              if (next !== null) onEdit(root.id, { text: next });
+            }}
+              style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: canEditDelete ? "var(--text-primary)" : "var(--text-muted)", fontWeight: 800, cursor: canEditDelete ? "pointer" : "not-allowed", fontSize: 14 }}>
+              수정
+            </button>
+            <button type="button" disabled={!canEditDelete} onClick={() => onDelete(root.id)}
+              style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid " + BAD.fg, background: "transparent", color: canEditDelete ? BAD.fg : "var(--text-muted)", fontWeight: 800, cursor: canEditDelete ? "pointer" : "not-allowed", fontSize: 14 }}>
+              삭제
+            </button>
             <button type="button" onClick={() => onChangeStatus(root.id, completed ? "received" : "completed", "")}
               style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid " + (completed ? WARN.fg : OK.fg), background: completed ? "transparent" : OK.fg, color: completed ? WARN.fg : "#fff", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
               {completed ? "완료 해제" : "완료"}

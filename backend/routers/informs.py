@@ -69,6 +69,7 @@ router = APIRouter(prefix="/api/informs", tags=["informs"])
 INFORMS_DIR = PATHS.data_root / "informs"
 INFORMS_DIR.mkdir(parents=True, exist_ok=True)
 INFORMS_FILE = INFORMS_DIR / "informs.json"
+INFORM_AUDIT_FILE = INFORMS_DIR / "audit_log.json"
 CONFIG_FILE = INFORMS_DIR / "config.json"
 UPLOADS_DIR = INFORMS_DIR / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -369,6 +370,70 @@ def _find(items: list, iid: str) -> Optional[dict]:
     return next((x for x in items if x.get("id") == iid), None)
 
 
+def _is_deleted(entry: dict) -> bool:
+    return bool((entry or {}).get("deleted") or (entry or {}).get("deleted_at"))
+
+
+def _without_deleted(items: list, include_deleted: bool = False) -> list:
+    if include_deleted:
+        return list(items or [])
+    return [x for x in (items or []) if not _is_deleted(x)]
+
+
+def _actor_from_subject(subject, fallback: str = "") -> str:
+    try:
+        state_user = getattr(getattr(subject, "state", None), "user", None)
+        if isinstance(state_user, dict) and state_user.get("username"):
+            return str(state_user["username"])
+        if isinstance(subject, str) and subject:
+            return subject
+    except Exception:
+        pass
+    return fallback or "anonymous"
+
+
+def _load_inform_audit() -> list:
+    rows = load_json(INFORM_AUDIT_FILE, [])
+    return rows if isinstance(rows, list) else []
+
+
+def _save_inform_audit(rows: list) -> None:
+    save_json(INFORM_AUDIT_FILE, list(rows or [])[-10000:], indent=2)
+
+
+def _audit_record(subject, typ: str, target: Optional[dict], payload: Optional[dict] = None,
+                  summary: str = "", at: str = "") -> dict:
+    """Append an inform-scoped audit row and mirror it to the global activity log."""
+    target = target or {}
+    payload = payload if isinstance(payload, dict) else {}
+    row = {
+        "id": f"aud_{datetime.datetime.now().strftime('%y%m%d')}_{uuid.uuid4().hex[:8]}",
+        "type": str(typ or "").strip() or "event",
+        "actor": _actor_from_subject(subject, str(payload.get("actor") or "")),
+        "target_id": target.get("id") or payload.get("target_id") or "",
+        "inform_id": target.get("id") or payload.get("target_id") or "",
+        "product": _canonical_product(target.get("product") or payload.get("product") or ""),
+        "root_lot_id": target.get("root_lot_id") or payload.get("root_lot_id") or "",
+        "lot_id": target.get("lot_id") or payload.get("lot_id") or "",
+        "fab_lot_id_at_save": target.get("fab_lot_id_at_save") or payload.get("fab_lot_id_at_save") or "",
+        "module": target.get("module") or payload.get("module") or "",
+        "summary": str(summary or payload.get("summary") or "")[:500],
+        "payload": payload,
+        "at": at or _now(),
+    }
+    try:
+        rows = _load_inform_audit()
+        rows.append(row)
+        _save_inform_audit(rows)
+    except Exception:
+        pass
+    try:
+        _audit(subject, f"inform:{row['type']}", detail=row["summary"] or f"id={row['inform_id']}", tab="inform")
+    except Exception:
+        pass
+    return row
+
+
 def _looks_like_fab_lot(lot_id: str) -> bool:
     """FAB lot 은 보통 split suffix(. / _ / -) 를 포함한다.
 
@@ -560,6 +625,34 @@ def _lot_matrix_cell(entry: dict) -> dict:
     }
 
 
+def _lot_matrix_recent_item(entry: dict) -> dict:
+    return {
+        "inform_id": entry.get("id") or "",
+        "author": entry.get("author") or "",
+        "updated_at": _entry_last_update(entry) or entry.get("created_at") or "",
+        "state": _lot_matrix_state(entry),
+        "reason": entry.get("reason") or "",
+        "body_preview": str(entry.get("text") or "").strip().replace("\n", " ")[:80],
+    }
+
+
+def _merge_lot_matrix_cell(prev: Optional[dict], entry: dict) -> dict:
+    cell = _lot_matrix_cell(entry)
+    recent = [_lot_matrix_recent_item(entry)]
+    if prev:
+        count = int(prev.get("inform_count") or 1) + 1
+        recent = [*(prev.get("recent") or []), *recent]
+        recent.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
+        # Keep legacy state priority for existing callers while exposing latest rows in recent[].
+        base = dict(cell if _lot_matrix_cell_key(cell) >= _lot_matrix_cell_key(prev) else prev)
+    else:
+        count = 1
+        base = cell
+    base["inform_count"] = count
+    base["recent"] = recent[:5]
+    return base
+
+
 def _lot_matrix_cell_key(cell: dict) -> tuple[int, str]:
     return (
         _LOT_MATRIX_STATE_RANK.get(str(cell.get("state") or ""), 0),
@@ -647,6 +740,9 @@ def _upgrade(entry: dict) -> dict:
     entry.setdefault("auto_generated", False)
     entry.setdefault("deadline", "")  # v8.7.1: 이슈 마감일 (YYYY-MM-DD 또는 "")
     entry.setdefault("group_ids", [])  # v8.7.6: 그룹 가시성
+    entry.setdefault("deleted", False)
+    entry.setdefault("deleted_at", "")
+    entry.setdefault("deleted_by", "")
     # v8.8.2: status_history 의 `prev` 필드 backfill — legacy 엔트리는
     # prev 가 없어 "확인 취소" 이벤트가 TimelineLog 에서 사라졌다.
     hist = entry.get("status_history") or []
@@ -981,7 +1077,7 @@ def module_summary(request: Request, days: int = Query(30, ge=1, le=3650)):
         mod: {"module": mod, "received": 0, "completed": 0, "in_progress": 0, "pending": 0}
         for mod in ordered
     }
-    items = _load_upgraded()
+    items = _without_deleted(_load_upgraded())
     for entry in items:
         if entry.get("parent_id"):
             continue
@@ -1029,7 +1125,7 @@ def lot_matrix(
     module_seen = set(module_order)
     products_by_key: dict[str, dict] = {}
 
-    for entry in _load_upgraded():
+    for entry in _without_deleted(_load_upgraded()):
         if entry.get("parent_id"):
             continue
         if not _visible_to(entry, me["username"], me.get("role", "user"), my_mods):
@@ -1054,7 +1150,11 @@ def lot_matrix(
 
         product_label = prod or "미지정"
         product_key = product_label.casefold()
-        product_bucket = products_by_key.setdefault(product_key, {"product": product_label, "lots_by_key": {}})
+        product_bucket = products_by_key.setdefault(product_key, {
+            "product": product_label,
+            "lots_by_key": {},
+            "module_totals": {},
+        })
         lot_bucket = product_bucket["lots_by_key"].setdefault(root_lot, {
             "root_lot_id": root_lot,
             "modules": {},
@@ -1062,12 +1162,13 @@ def lot_matrix(
             "last_update": "",
         })
 
-        cell = _lot_matrix_cell(entry)
         prev = lot_bucket["modules"].get(mod)
-        if prev is None or _lot_matrix_cell_key(cell) >= _lot_matrix_cell_key(prev):
-            lot_bucket["modules"][mod] = cell
-        if cell["updated_at"] > lot_bucket["last_update"]:
-            lot_bucket["last_update"] = cell["updated_at"]
+        cell = _merge_lot_matrix_cell(prev, entry)
+        lot_bucket["modules"][mod] = cell
+        product_bucket["module_totals"][mod] = int(product_bucket["module_totals"].get(mod) or 0) + 1
+        latest_update = str((_lot_matrix_recent_item(entry)).get("updated_at") or "")
+        if latest_update > lot_bucket["last_update"]:
+            lot_bucket["last_update"] = latest_update
 
     products_out: list[dict] = []
     for product_bucket in products_by_key.values():
@@ -1081,10 +1182,120 @@ def lot_matrix(
             lot_bucket["progress"] = {"done": done, "total": len(module_order)}
             lots.append(lot_bucket)
         lots.sort(key=lambda x: (x.get("last_update") or "", x.get("root_lot_id") or ""), reverse=True)
-        products_out.append({"product": product_bucket["product"], "lots": lots})
+        products_out.append({
+            "product": product_bucket["product"],
+            "lots": lots,
+            "module_totals": product_bucket.get("module_totals") or {},
+        })
 
     products_out.sort(key=lambda x: str(x.get("product") or "").casefold())
     return {"products": products_out, "module_order": module_order}
+
+
+_AUDIT_TYPE_ALIASES = {
+    "상태변경": "status_change",
+    "상태": "status_change",
+    "메일": "mail",
+    "댓글": "comment",
+    "수정": "edit",
+    "생성": "create",
+    "삭제": "delete",
+    "status": "status_change",
+    "status_change": "status_change",
+    "mail": "mail",
+    "comment": "comment",
+    "edit": "edit",
+    "create": "create",
+    "delete": "delete",
+}
+
+
+@router.get("/audit-log")
+def audit_log(
+    request: Request,
+    products: List[str] = Query(default=[]),
+    products_bracket: List[str] = Query(default=[], alias="products[]"),
+    modules: List[str] = Query(default=[]),
+    modules_bracket: List[str] = Query(default=[], alias="modules[]"),
+    lot_search: str = Query(""),
+    days: int = Query(30, ge=1, le=3650),
+    types: List[str] = Query(default=[]),
+    types_bracket: List[str] = Query(default=[], alias="types[]"),
+    start: str = Query(""),
+    end: str = Query(""),
+):
+    me = current_user(request)
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
+    items = _load_upgraded()
+    targets = {
+        str(x.get("id") or ""): x
+        for x in items
+        if x.get("id") and _visible_to(x, me["username"], me.get("role", "user"), my_mods)
+    }
+
+    product_filter = {
+        _canonical_product(str(p or "")).casefold()
+        for p in [*products, *products_bracket]
+        if str(p or "").strip()
+    }
+    module_filter = {str(m or "").strip() for m in [*modules, *modules_bracket] if str(m or "").strip()}
+    type_filter = {
+        _AUDIT_TYPE_ALIASES.get(str(t or "").strip(), str(t or "").strip())
+        for t in [*types, *types_bracket]
+        if str(t or "").strip()
+    }
+    lot_q = str(lot_search or "").strip().casefold()
+    now = datetime.datetime.now()
+    cutoff = now - datetime.timedelta(days=days)
+    start_day = str(start or "").strip()[:10]
+    end_day = str(end or "").strip()[:10]
+
+    def in_window(row: dict) -> bool:
+        raw = str(row.get("at") or "")
+        day = raw[:10]
+        if start_day and day and day < start_day:
+            return False
+        if end_day and day and day > end_day:
+            return False
+        if start_day or end_day:
+            return True
+        dt = _parse_iso_datetime(raw)
+        return True if dt is None else dt >= cutoff
+
+    out = []
+    for idx, row in enumerate(_load_inform_audit()):
+        if not isinstance(row, dict):
+            continue
+        inform_id = str(row.get("inform_id") or row.get("target_id") or "")
+        target = targets.get(inform_id)
+        if inform_id and target is None:
+            continue
+        enriched = {**row, "_idx": idx}
+        if target:
+            for key in ("product", "root_lot_id", "lot_id", "fab_lot_id_at_save", "module"):
+                enriched[key] = enriched.get(key) or target.get(key) or ""
+            enriched["deleted"] = _is_deleted(target)
+        typ = _AUDIT_TYPE_ALIASES.get(str(enriched.get("type") or "").strip(), str(enriched.get("type") or "").strip())
+        enriched["type"] = typ
+        prod = _canonical_product(enriched.get("product") or "").casefold()
+        if product_filter and prod not in product_filter:
+            continue
+        if module_filter and str(enriched.get("module") or "").strip() not in module_filter:
+            continue
+        if type_filter and typ not in type_filter:
+            continue
+        if lot_q:
+            hay = " ".join(str(enriched.get(k) or "") for k in ("root_lot_id", "lot_id", "fab_lot_id_at_save")).casefold()
+            if lot_q not in hay:
+                continue
+        if not in_window(enriched):
+            continue
+        out.append(enriched)
+
+    out.sort(key=lambda x: (str(x.get("at") or ""), int(x.get("_idx") or 0)), reverse=True)
+    for row in out:
+        row.pop("_idx", None)
+    return {"audit": out, "logs": out, "count": len(out)}
 
 
 @router.post("/modules/knob-map")
@@ -1548,8 +1759,10 @@ def serve_image(request: Request, uid: str, name: str):
 
 
 @router.get("")
-def list_by_wafer(wafer_id: str = Query(..., min_length=1)):
-    items = [x for x in _load_upgraded() if _wafer_matches(x.get("wafer_id"), wafer_id)]
+def list_by_wafer(wafer_id: str = Query(..., min_length=1),
+                  include_deleted: bool = Query(False)):
+    include_deleted = include_deleted if isinstance(include_deleted, bool) else False
+    items = [x for x in _without_deleted(_load_upgraded(), include_deleted) if _wafer_matches(x.get("wafer_id"), wafer_id)]
     items.sort(key=lambda x: x.get("created_at", ""))
     return {"informs": items, "module_summary": _module_progress_summary(items)}
 
@@ -1642,14 +1855,16 @@ def sidebar(request: Request,
             lot_limit: int = Query(1000, ge=1, le=10000)):
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
-    return _sidebar_payload(_load_upgraded(), me, my_mods, wafer_limit, product_limit, lot_limit)
+    return _sidebar_payload(_without_deleted(_load_upgraded()), me, my_mods, wafer_limit, product_limit, lot_limit)
 
 
 @router.get("/recent")
-def recent_roots(request: Request, limit: int = Query(50, ge=1, le=500)):
+def recent_roots(request: Request, limit: int = Query(50, ge=1, le=500),
+                 include_deleted: bool = Query(False)):
+    include_deleted = include_deleted if isinstance(include_deleted, bool) else False
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
-    items = _load_upgraded()
+    items = _without_deleted(_load_upgraded(), include_deleted)
     roots = [x for x in items if not x.get("parent_id")]
     roots = [x for x in roots if _visible_to(x, me["username"], me.get("role", "user"), my_mods)]
     roots.sort(key=lambda x: x.get("created_at", ""), reverse=True)
@@ -1660,7 +1875,7 @@ def recent_roots(request: Request, limit: int = Query(50, ge=1, le=500)):
 def list_wafers(request: Request, limit: int = Query(500, ge=1, le=5000)):
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
-    items = _load_upgraded()
+    items = _without_deleted(_load_upgraded())
     seen: dict = {}
     for x in items:
         w = x.get("wafer_id")
@@ -1688,11 +1903,13 @@ def list_wafers(request: Request, limit: int = Query(500, ge=1, le=5000)):
 
 
 @router.get("/by-lot")
-def by_lot(request: Request, lot_id: str = Query(..., min_length=1)):
+def by_lot(request: Request, lot_id: str = Query(..., min_length=1),
+           include_deleted: bool = Query(False)):
     """Lot/root/fab id 매칭. DB 원본 root_lot_id 보존 + legacy 5자 prefix 호환."""
+    include_deleted = include_deleted if isinstance(include_deleted, bool) else False
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
-    items = _load_upgraded()
+    items = _without_deleted(_load_upgraded(), include_deleted)
     query = (lot_id or "").strip()
     root = _root_lot_from_values(query)
     root_prefix = root if len(root) <= 5 else ""
@@ -1706,6 +1923,17 @@ def by_lot(request: Request, lot_id: str = Query(..., min_length=1)):
     hits.sort(key=lambda x: x.get("created_at", ""))
     wafers = sorted({x.get("wafer_id") for x in hits if x.get("wafer_id")})
     lots = sorted({x.get("lot_id") for x in hits if x.get("lot_id")})
+    module_counts: dict[str, int] = {}
+    for x in hits:
+        if x.get("parent_id"):
+            continue
+        mod = str(x.get("module") or "").strip() or "기타"
+        module_counts[mod] = module_counts.get(mod, 0) + 1
+    informed_modules = sorted(module_counts, key=lambda m: (-module_counts[m], m))
+    available_modules = _lot_matrix_module_order()
+    for mod in informed_modules:
+        if mod not in available_modules:
+            available_modules.append(mod)
     return {
         "informs": hits,
         "wafers": wafers,
@@ -1713,15 +1941,20 @@ def by_lot(request: Request, lot_id: str = Query(..., min_length=1)):
         "root_lot_id": root,
         "count": len(hits),
         "module_summary": _module_progress_summary(hits),
+        "informed_modules": informed_modules,
+        "available_modules": available_modules,
+        "module_counts": module_counts,
     }
 
 
 @router.get("/by-product")
 def by_product(request: Request, product: str = Query(..., min_length=1),
-               limit: int = Query(500, ge=1, le=5000)):
+               limit: int = Query(500, ge=1, le=5000),
+               include_deleted: bool = Query(False)):
+    include_deleted = include_deleted if isinstance(include_deleted, bool) else False
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
-    items = _load_upgraded()
+    items = _without_deleted(_load_upgraded(), include_deleted)
     want = _canonical_product(product)
     hits = [x for x in items if _canonical_product(x.get("product") or "") == want]
     hits = [x for x in hits if _visible_to(x, me["username"], me.get("role", "user"), my_mods)]
@@ -1737,7 +1970,7 @@ def my_informs(request: Request, limit: int = Query(200, ge=1, le=2000)):
     me = current_user(request)
     role = me.get("role", "user")
     my_mods = user_modules(me["username"], role)
-    items = _load_upgraded()
+    items = _without_deleted(_load_upgraded())
     roots = [x for x in items if not x.get("parent_id")]
     if role == "admin" or "__all__" in my_mods:
         vis = roots
@@ -1763,7 +1996,7 @@ def list_products(request: Request):
     """
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
-    items = _load_upgraded()
+    items = _without_deleted(_load_upgraded())
     seen: dict = {}
     for x in items:
         p = x.get("product")
@@ -1794,7 +2027,7 @@ def list_lots(request: Request):
     """
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
-    items = _load_upgraded()
+    items = _without_deleted(_load_upgraded())
     seen: dict = {}
     for x in items:
         l = x.get("lot_id")
@@ -1940,8 +2173,14 @@ def create_inform(req: InformCreate, request: Request):
     }
     items.append(entry)
     _save(items)
-    _audit(request, "inform:reply" if req.parent_id else "inform:create",
-           detail=f"wafer={wid} module={entry['module']} lot={inherit_lot}", tab="inform")
+    _audit_record(
+        request,
+        "comment" if req.parent_id else "create",
+        entry,
+        {"parent_id": req.parent_id or "", "root": bool(is_root)},
+        f"{'댓글' if req.parent_id else '생성'} · {entry['module'] or '-'} · {inherit_lot or wid}",
+        at=now,
+    )
     return {"ok": True, "inform": entry}
 
 
@@ -2014,6 +2253,9 @@ def auto_log_splittable_change(author: str, product: str, lot_id: str,
         }
         items.append(entry)
         _save(items)
+        _audit_record(author or "system", "create", entry,
+                      {"auto_generated": True, "cell_key": cell_key, "action": action},
+                      f"SplitTable 자동기록 · {col}", at=now)
     except Exception:
         # 자동기록 실패로 인해 plan 저장까지 실패시키면 안 됨.
         pass
@@ -2021,29 +2263,35 @@ def auto_log_splittable_change(author: str, product: str, lot_id: str,
 
 @router.post("/delete")
 def delete_inform(request: Request, id: str = Query(...)):
-    """v8.8.12: 공동편집 정책 확장 — 원작성자 / admin / 동일 모듈 담당자 모두 삭제 가능.
-    자식 있으면 무결성 차단."""
+    return _delete_inform_by_id(id, request)
+
+
+@router.delete("/{inform_id}")
+def delete_inform_rest(inform_id: str, request: Request):
+    return _delete_inform_by_id(inform_id, request)
+
+
+def _delete_inform_by_id(id: str, request: Request):
+    """Soft-delete an inform. Only the original author or admin can delete."""
     me = current_user(request)
     items = _load_upgraded()
     target = _find(items, id)
     if not target:
         raise HTTPException(404)
+    if _is_deleted(target):
+        return {"ok": True, "noop": True, "inform": target}
     role = me.get("role", "user")
-    my_mods = user_modules(me["username"], role)
-    allowed = (
-        target.get("author") == me["username"]
-        or role == "admin"
-        or _can_moderate(target, me["username"], role, my_mods)
-    )
+    allowed = target.get("author") == me["username"] or role == "admin"
     if not allowed:
-        raise HTTPException(403, "삭제 권한이 없습니다 (작성자/admin/모듈담당자).")
-    has_child = any(x.get("parent_id") == id for x in items)
-    if has_child:
-        raise HTTPException(400, "답글이 달린 글은 삭제할 수 없습니다.")
-    items = [x for x in items if x.get("id") != id]
+        raise HTTPException(403, "삭제 권한이 없습니다 (작성자/admin).")
+    now = _now()
+    target["deleted"] = True
+    target["deleted_at"] = now
+    target["deleted_by"] = me["username"]
+    target["updated_at"] = now
     _save(items)
-    _audit(request, "inform:delete", detail=f"id={id} by={me['username']}", tab="inform")
-    return {"ok": True}
+    _audit_record(request, "delete", target, {"deleted_at": now}, f"삭제 · id={id}", at=now)
+    return {"ok": True, "inform": target}
 
 
 class InformEditReq(BaseModel):
@@ -2055,6 +2303,16 @@ class InformEditReq(BaseModel):
 
 @router.post("/edit")
 def edit_inform(req: InformEditReq, request: Request, id: str = Query(...)):
+    return _edit_inform_by_id(id, req, request)
+
+
+@router.post("/{inform_id}/edit")
+@router.put("/{inform_id}/edit")
+def edit_inform_rest(inform_id: str, req: InformEditReq, request: Request):
+    return _edit_inform_by_id(inform_id, req, request)
+
+
+def _edit_inform_by_id(id: str, req: InformEditReq, request: Request):
     """v8.8.12: 등록된 인폼의 본문/모듈/사유 수정.
     작성자 본인 또는 admin 은 수정 가능. 다른 사용자는 답글로 보완한다."""
     me = current_user(request)
@@ -2062,9 +2320,11 @@ def edit_inform(req: InformEditReq, request: Request, id: str = Query(...)):
     target = _find(items, id)
     if not target:
         raise HTTPException(404)
+    if _is_deleted(target):
+        raise HTTPException(404)
     if me.get("role") != "admin" and target.get("author") != me["username"]:
         raise HTTPException(403, "작성자 또는 admin만 수정할 수 있습니다. 내용 보완은 답글로 추가하세요.")
-    now = datetime.datetime.now().isoformat()
+    now = _now()
     hist = target.get("edit_history") or []
     changed = []
     if req.text is not None and (req.text or "").strip() != (target.get("text") or ""):
@@ -2091,9 +2351,13 @@ def edit_inform(req: InformEditReq, request: Request, id: str = Query(...)):
     target["edit_history"] = hist[-200:]
     target["updated_at"] = now
     _save(items)
-    _audit(request, "inform:edit",
-           detail=f"id={id} by={me['username']} fields={','.join(changed)}", tab="inform")
-    return {"ok": True, "changed": changed}
+    diff = [
+        h for h in hist[-len(changed):]
+        if isinstance(h, dict) and h.get("field") in changed
+    ]
+    _audit_record(request, "edit", target, {"fields": changed, "diff": diff},
+                  f"수정 · {','.join(changed)}", at=now)
+    return {"ok": True, "changed": changed, "inform": target}
 
 
 @router.post("/check")
@@ -2104,13 +2368,17 @@ def check_inform(req: CheckReq, request: Request, id: str = Query(...)):
     target = _find(items, id)
     if not target:
         raise HTTPException(404)
+    if _is_deleted(target):
+        raise HTTPException(404)
     if not _can_moderate(target, me["username"], me.get("role", "user"), my_mods):
         raise HTTPException(403, "모듈 담당자만 체크할 수 있습니다.")
     target["checked"] = bool(req.checked)
     target["checked_by"] = me["username"] if req.checked else ""
     target["checked_at"] = _now() if req.checked else ""
     _save(items)
-    _audit(request, "inform:check", detail=f"id={id} checked={target['checked']}", tab="inform")
+    _audit_record(request, "status_change", target, {"checked": target["checked"]},
+                  f"체크 {'완료' if target['checked'] else '해제'} · id={id}",
+                  at=target["checked_at"] or _now())
     return {"ok": True, "inform": target}
 
 
@@ -2125,6 +2393,8 @@ def set_status(req: StatusReq, request: Request, id: str = Query(...)):
     items = _load_upgraded()
     target = _find(items, id)
     if not target:
+        raise HTTPException(404)
+    if _is_deleted(target):
         raise HTTPException(404)
     if target.get("parent_id"):
         raise HTTPException(400, "status 는 루트 인폼에만 적용됩니다.")
@@ -2143,7 +2413,9 @@ def set_status(req: StatusReq, request: Request, id: str = Query(...)):
                  "at": _now(), "note": note})
     target["status_history"] = hist
     _save(items)
-    _audit(request, "inform:status", detail=f"id={id} prev={prev_status} status={st}", tab="inform")
+    _audit_record(request, "status_change", target,
+                  {"prev": prev_status, "status": st, "note": note},
+                  f"상태변경 · {prev_status or '-'} → {st}", at=hist[-1]["at"])
     return {"ok": True, "inform": target}
 
 
@@ -2156,6 +2428,8 @@ def set_deadline(req: DeadlineReq, request: Request, id: str = Query(...)):
     target = _find(items, id)
     if not target:
         raise HTTPException(404)
+    if _is_deleted(target):
+        raise HTTPException(404)
     if target.get("parent_id"):
         raise HTTPException(400, "deadline 은 루트 인폼에만 설정 가능합니다.")
     if not _can_moderate(target, me["username"], me.get("role", "user"), my_mods):
@@ -2163,7 +2437,8 @@ def set_deadline(req: DeadlineReq, request: Request, id: str = Query(...)):
     dl = _validate_deadline(req.deadline)
     target["deadline"] = dl
     _save(items)
-    _audit(request, "inform:deadline", detail=f"id={id} deadline={dl or '(clear)'}", tab="inform")
+    _audit_record(request, "edit", target, {"field": "deadline", "deadline": dl},
+                  f"마감일 변경 · {dl or '해제'}")
     return {"ok": True, "inform": target}
 
 
@@ -3527,6 +3802,8 @@ def mail_preview(inform_id: str, request: Request, body: str = Query(""),
     target = _find(items, inform_id)
     if not target:
         raise HTTPException(404)
+    if _is_deleted(target):
+        raise HTTPException(404)
     pc_data = _load_product_contacts()
     pc_list = (pc_data.get("products") or {}).get(target.get("product", ""), []) or []
     cfg = _load_mail_cfg()
@@ -3695,6 +3972,8 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
     target = _find(items, inform_id)
     if not target:
         raise HTTPException(404, "인폼을 찾을 수 없습니다.")
+    if _is_deleted(target):
+        raise HTTPException(404, "인폼을 찾을 수 없습니다.")
     if me.get("role") != "admin" and target.get("author") != me.get("username"):
         raise HTTPException(403, "작성자 또는 admin 만 인폼 메일을 발송할 수 있습니다.")
 
@@ -3832,7 +4111,9 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
     })
     target["mail_history"] = hist[-20:]  # keep last 20
     _save(items)
-    _audit(request, "inform:mail-send", detail=f"id={inform_id} n_to={len(to_list)} dry={dry_run}", tab="inform")
+    _audit_record(request, "mail", target,
+                  {"to_count": len(to_list), "subject": subject, "dry_run": dry_run},
+                  f"메일 · {subject}", at=hist[-1]["at"])
     return {
         "ok": True,
         "to": to_list,
@@ -3852,6 +4133,8 @@ def attach_splittable(req: SplitChange, request: Request, id: str = Query(...)):
     target = _find(items, id)
     if not target:
         raise HTTPException(404)
+    if _is_deleted(target):
+        raise HTTPException(404)
     if not _can_moderate(target, me["username"], me.get("role", "user"), my_mods):
         raise HTTPException(403)
     target["splittable_change"] = {
@@ -3861,4 +4144,7 @@ def attach_splittable(req: SplitChange, request: Request, id: str = Query(...)):
         "applied": bool(req.applied),
     }
     _save(items)
+    _audit_record(request, "edit", target,
+                  {"field": "splittable_change", "value": target["splittable_change"]},
+                  f"SplitTable 변경요청 · {target['splittable_change']['column']}")
     return {"ok": True, "inform": target}
