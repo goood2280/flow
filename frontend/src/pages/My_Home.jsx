@@ -110,6 +110,8 @@ function FlowiConsole({onNavigate,user}){
     created_record:m.result?.tool?.created_record||null,
     missing:m.result?.tool?.missing||[],
     arguments_choices:m.result?.tool?.arguments_choices||{},
+    missing_freetext:m.result?.tool?.missing_freetext||m.result?.missing_freetext||[],
+    last_partial_prompt:m.result?.tool?.last_partial_prompt||m.result?.last_partial_prompt||"",
     walkthrough:m.result?.tool?.walkthrough||{},
     slots:m.result?.tool?.slots||{},
     filters:m.result?.tool?.filters||{},
@@ -238,6 +240,9 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
   const choices=Array.isArray(tool?.clarification?.choices)?tool.clarification.choices.slice(0,3):[];
   const argumentChoices=tool.arguments_choices||result.arguments_choices||{};
   const hasArgumentChoices=argumentChoices&&Array.isArray(argumentChoices.fields)&&argumentChoices.fields.length>0;
+  const missingFreetext=Array.isArray(tool.missing_freetext)?tool.missing_freetext:(Array.isArray(result.missing_freetext)?result.missing_freetext:[]);
+  const hasMissingFreetext=missingFreetext.length>0;
+  const partialPrompt=tool.last_partial_prompt||result.last_partial_prompt||prompt;
   const walkthrough=tool.walkthrough||{};
   const workflow=tool.workflow_state||result.workflow_state||{};
   const nextActions=(Array.isArray(tool.next_actions)?tool.next_actions:(Array.isArray(result.next_actions)?result.next_actions:[])).filter(a=>a&&a.type!=="respond_with_prompt").slice(0,6);
@@ -246,7 +251,7 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
   const chartSessionId=tool?.chart_session_id||chartResult?.chart_session_id||"";
   const summary=flowiResultSummary(tool,result);
   const actions=flowiResultActions(tool,table,chartResult,onNavigate);
-  const emptyHint=!result.answer&&(tool.missing||hasArgumentChoices)
+  const emptyHint=!result.answer&&(tool.missing||hasArgumentChoices||hasMissingFreetext)
     ?"필요한 조건이 조금 더 있어요. 아래 선택지나 직접 입력으로 이어서 알려주세요."
     :"표시할 결과가 비어 있습니다. 조건을 조금 더 좁혀서 다시 물어봐 주세요.";
   return(<div style={{width:"100%",boxSizing:"border-box",marginTop:embedded?0:12,border:embedded?"1px solid #2a2a2a":"1px solid #333",borderRadius:10,padding:12,background:"#111",overflow:"hidden"}}>
@@ -272,8 +277,9 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
     {walkthrough&&walkthrough.session_id&&<FlowiWalkthrough data={walkthrough}/>}
     {isAdmin&&nextActions.length>0&&<FlowiNextActions actions={nextActions} onNavigate={onNavigate} onChoice={onChoice}/>}
     <FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>
-    {choices.length>0&&!hasArgumentChoices&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice} onNavigate={onNavigate}/>}
-    {hasArgumentChoices&&<FlowiArgumentChoices data={argumentChoices} basePrompt={prompt} onChoice={onChoice}/>}
+    {choices.length>0&&!hasArgumentChoices&&!hasMissingFreetext&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice} onNavigate={onNavigate}/>}
+    {hasArgumentChoices&&<FlowiArgumentChoices data={argumentChoices} basePrompt={partialPrompt} onChoice={onChoice}/>}
+    {hasMissingFreetext&&<FlowiMissingFreetext fields={missingFreetext} basePrompt={partialPrompt} onChoice={onChoice}/>}
   </div>);
 }
 
@@ -548,6 +554,39 @@ function FlowiArgumentChoices({data,basePrompt,onChoice}){
           <div style={{display:"flex",gap:6,minWidth:0,alignItems:"stretch"}}>
             <input value={free[f.field]||""} onChange={e=>setFree(v=>({...v,[f.field]:e.target.value}))} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();submit(f.field,free[f.field]||"");}}} placeholder={f.free_input_label||"직접 입력"} style={{flex:1,minWidth:0,border:"1px solid #333",borderRadius:7,background:"#171717",color:"#e5e5e5",fontSize:14,padding:"8px 10px",fontFamily:"'JetBrains Mono',monospace",boxSizing:"border-box"}}/>
             <button type="button" onClick={()=>submit(f.field,free[f.field]||"")} style={{border:"1px solid #f97316",borderRadius:7,background:"#2a2a2a",color:"#f97316",fontSize:14,fontWeight:900,padding:"8px 12px",cursor:"pointer",fontFamily:"'JetBrains Mono',monospace"}}>보내기</button>
+          </div>
+        </div>;
+      })}
+    </div>
+  </div>);
+}
+
+function FlowiMissingFreetext({fields,basePrompt,onChoice}){
+  const items=Array.isArray(fields)?fields.filter(Boolean):[];
+  const[values,setValues]=useState({});
+  if(!items.length)return null;
+  const submit=(item)=>{
+    const key=item.key||item.label||"value";
+    const val=String(values[key]||"").trim();
+    if(!val)return;
+    const q=String(basePrompt||"").trim();
+    const label=String(item.label||key||"내용").trim();
+    if(onChoice)onChoice(q?`${q} ${label}: ${val}`:`${label}: ${val}`);
+  };
+  return(<div style={{marginTop:12,border:"1px solid #333",borderRadius:8,background:"#151515",padding:"10px 11px"}}>
+    <div style={{display:"grid",gap:9}}>
+      {items.map(item=>{
+        const key=item.key||item.label||"value";
+        return <div key={key} style={{display:"grid",gap:6}}>
+          <label style={{fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace"}}>{item.label||flowiFieldQuestion(key)}</label>
+          <div style={{display:"flex",gap:6,minWidth:0,alignItems:"stretch"}}>
+            <input value={values[key]||""}
+              onChange={e=>setValues(v=>({...v,[key]:e.target.value}))}
+              onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();submit(item);}else if(e.key==="Escape"){e.preventDefault();setValues(v=>({...v,[key]:""}));}}}
+              placeholder={item.placeholder||"내용을 입력해 주세요"}
+              autoFocus={items.length===1}
+              style={{flex:1,minWidth:0,border:"1px solid #333",borderRadius:7,background:"#171717",color:"#e5e5e5",fontSize:14,padding:"8px 10px",fontFamily:"'JetBrains Mono',monospace",boxSizing:"border-box"}}/>
+            <button type="button" onClick={()=>submit(item)} style={{border:"1px solid #f97316",borderRadius:7,background:"#2a2a2a",color:"#f97316",fontSize:14,fontWeight:900,padding:"8px 12px",cursor:"pointer",fontFamily:"'JetBrains Mono',monospace"}}>보내기</button>
           </div>
         </div>;
       })}
