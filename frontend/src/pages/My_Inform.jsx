@@ -1644,6 +1644,10 @@ export default function My_Inform({ user }) {
   const [lotWafers, setLotWafers] = useState([]);    // lot 모드에서 포함된 wafer 들
   const [listRoots, setListRoots] = useState([]);
   const [moduleSummary, setModuleSummary] = useState([]);
+  const [summaryTab, setSummaryTab] = useState("matrix");
+  const [lotMatrix, setLotMatrix] = useState({ products: [], module_order: [] });
+  const [lotMatrixLoading, setLotMatrixLoading] = useState(false);
+  const [lotMatrixFilters, setLotMatrixFilters] = useState({ product: "", search: "", states: [] });
   const [selectedRootId, setSelectedRootId] = useState("");
   const [detailTab, setDetailTab] = useState("body");
   const [listFilters, setListFilters] = useState({
@@ -1713,6 +1717,21 @@ export default function My_Inform({ user }) {
       .catch(() => setModuleSummary([]));
   };
 
+  const loadLotMatrix = () => {
+    const q = new URLSearchParams();
+    q.set("days", "90");
+    if ((lotMatrixFilters.product || "").trim()) q.set("product", lotMatrixFilters.product.trim());
+    if ((lotMatrixFilters.search || "").trim()) q.set("search", lotMatrixFilters.search.trim());
+    setLotMatrixLoading(true);
+    return sf(API + "/lot-matrix?" + q.toString())
+      .then(d => setLotMatrix({
+        products: Array.isArray(d.products) ? d.products : [],
+        module_order: Array.isArray(d.module_order) ? d.module_order : [],
+      }))
+      .catch(() => setLotMatrix({ products: [], module_order: [] }))
+      .finally(() => setLotMatrixLoading(false));
+  };
+
   const loadInformList = () => {
     sf(API + "/recent?limit=500")
       .then(d => setListRoots(d.informs || []))
@@ -1772,6 +1791,10 @@ export default function My_Inform({ user }) {
     loadInformList();
     loadModuleSummary();
   }, []);
+
+  useEffect(() => {
+    loadLotMatrix();
+  }, [lotMatrixFilters.product, lotMatrixFilters.search]);
 
   /* Load constants + my modules */
   useEffect(() => {
@@ -1934,6 +1957,7 @@ export default function My_Inform({ user }) {
     loadSidebar();
     loadInformList();
     loadModuleSummary();
+    loadLotMatrix();
     const selected = listRoots.find(x => x.id === selectedRootId) || thread.find(x => x.id === selectedRootId);
     const rawLot = String(selected?.lot_id || "").trim();
     const lotForDetail = selected?.root_lot_id || selectedLot || (isFabLotInput(rawLot) ? rawLot.slice(0, 5) : rawLot);
@@ -2409,6 +2433,19 @@ export default function My_Inform({ user }) {
     return Array.from(seen.values()).sort();
   }, [listRoots]);
 
+  const matrixProductOptions = useMemo(() => {
+    const seen = new Map();
+    [
+      ...(constants.products || []),
+      ...listProductOptions,
+      ...((lotMatrix.products || []).map(p => p.product).filter(Boolean)),
+    ].forEach(raw => {
+      const p = stripMlPrefix(String(raw || "").trim());
+      if (p && p !== "미지정") seen.set(p.toLowerCase(), p);
+    });
+    return Array.from(seen.values()).sort();
+  }, [constants.products, listProductOptions, lotMatrix.products]);
+
   const filteredListRoots = useMemo(() => {
     const q = (listFilters.query || "").trim().toLowerCase();
     const start = listFilters.start || "";
@@ -2438,6 +2475,29 @@ export default function My_Inform({ user }) {
   }, [listRoots, listFilters]);
 
   const setListFilter = (key, value) => setListFilters(f => ({ ...f, [key]: value }));
+
+  const filterListByMatrixLot = (product, lot) => {
+    const rootLot = String(lot?.root_lot_id || "").trim();
+    const prod = stripMlPrefix(String(product || "").trim());
+    setListFilters(f => ({
+      ...f,
+      product: prod && prod !== "미지정" ? prod : "",
+      root_lot: rootLot,
+      fab_lot: "",
+    }));
+  };
+
+  const openLotMatrixCell = (lot, cell) => {
+    const informId = String(cell?.inform_id || "").trim();
+    const rootLot = String(lot?.root_lot_id || "").trim();
+    if (!informId || !rootLot) return;
+    setSelectedRootId(informId);
+    setDetailTab("body");
+    setSelectedLot(rootLot);
+    sf(API + "/by-lot?lot_id=" + encodeURIComponent(rootLot))
+      .then(d => { setThread(d.informs || []); setLotWafers(d.wafers || []); })
+      .catch(() => {});
+  };
 
   useEffect(() => {
     if (productFilterInit) return;
@@ -2631,11 +2691,46 @@ export default function My_Inform({ user }) {
             내 담당: {(myMods.modules || []).length ? (myMods.modules || []).join(", ") : "미지정"}
           </div>
         )}
-        <ModuleProgressSummary
-          rows={moduleSummary}
-          activeModule={listFilters.module}
-          onPick={(module) => setListFilter("module", listFilters.module === module ? "" : module)}
-        />
+        <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          {[
+            ["summary", "모듈별 진행 요약"],
+            ["matrix", "랏별 진행 매트릭스"],
+          ].map(([key, label]) => (
+            <button key={key} type="button" onClick={() => setSummaryTab(key)}
+              style={{
+                minWidth: 0,
+                padding: "7px 8px",
+                borderRadius: 8,
+                border: "1px solid " + (summaryTab === key ? "var(--accent)" : "var(--border)"),
+                background: summaryTab === key ? "var(--accent)" : "var(--bg-primary)",
+                color: summaryTab === key ? "#fff" : "var(--text-secondary)",
+                fontSize: 14,
+                fontWeight: 800,
+                cursor: "pointer",
+                whiteSpace: "normal",
+                lineHeight: 1.2,
+              }}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {summaryTab === "summary" ? (
+          <ModuleProgressSummary
+            rows={moduleSummary}
+            activeModule={listFilters.module}
+            onPick={(module) => setListFilter("module", listFilters.module === module ? "" : module)}
+          />
+        ) : (
+          <LotProgressMatrix
+            matrix={lotMatrix}
+            loading={lotMatrixLoading}
+            filters={lotMatrixFilters}
+            setFilters={setLotMatrixFilters}
+            productOptions={matrixProductOptions}
+            onOpenCell={openLotMatrixCell}
+            onPickLot={filterListByMatrixLot}
+          />
+        )}
         <InformFilterPanel
           filters={listFilters}
           setFilter={setListFilter}
@@ -4130,6 +4225,219 @@ function ModuleProgressSummary({ rows, activeModule, onPick }) {
             </button>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+const LOT_MATRIX_STATES = {
+  completed: { label: "완료", mark: "✓", bg: "#dcfce7", fg: "#15803d" },
+  in_progress: { label: "진행중", mark: "◯", bg: "#fed7aa", fg: "#c2410c" },
+  received: { label: "접수", mark: "◎", bg: "#dbeafe", fg: "#1d4ed8" },
+  pending: { label: "대기", mark: "—", bg: "#f3f4f6", fg: "#6b7280" },
+};
+
+function LotProgressMatrix({ matrix, loading, filters, setFilters, productOptions, onOpenCell, onPickLot }) {
+  const modules = Array.isArray(matrix?.module_order) ? matrix.module_order : [];
+  const activeStates = new Set(filters.states || []);
+  const setFilter = (key, value) => setFilters(prev => ({ ...prev, [key]: value }));
+  const toggleState = (state) => {
+    setFilters(prev => {
+      const cur = new Set(prev.states || []);
+      if (cur.has(state)) cur.delete(state);
+      else cur.add(state);
+      return { ...prev, states: Array.from(cur) };
+    });
+  };
+  const visibleProducts = (matrix?.products || [])
+    .map(product => ({
+      ...product,
+      lots: (product.lots || []).filter(lot => {
+        if (activeStates.size === 0) return true;
+        return Object.values(lot.modules || {}).some(cell => activeStates.has(cell?.state));
+      }),
+    }))
+    .filter(product => product.lots.length > 0);
+  const lotCount = visibleProducts.reduce((sum, product) => sum + product.lots.length, 0);
+  const cellTitle = (module, cell) => {
+    if (!cell) return "";
+    const time = String(cell.updated_at || cell.created_at || "").replace("T", " ").slice(0, 16) || "-";
+    return [
+      `모듈: ${module}`,
+      `작성자: ${cell.author || "-"}`,
+      `시간: ${time}`,
+      `사유: ${cell.reason || "-"}`,
+    ].join("\n");
+  };
+  const progressWidth = (progress) => {
+    const done = Number(progress?.done || 0);
+    const total = Number(progress?.total || 0);
+    return total ? Math.max(0, Math.min(100, Math.round((done / total) * 100))) : 0;
+  };
+  const headStyle = {
+    position: "sticky", top: 0, zIndex: 5,
+    height: 30, padding: "4px 5px",
+    borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)",
+    background: "var(--bg-secondary)", color: "var(--text-secondary)",
+    fontSize: 12, fontWeight: 900, textAlign: "center",
+    whiteSpace: "nowrap",
+  };
+  const leftHeadStyle = {
+    ...headStyle,
+    left: 0,
+    zIndex: 7,
+    minWidth: 104,
+    textAlign: "left",
+  };
+  const leftCellStyle = {
+    position: "sticky", left: 0, zIndex: 3,
+    height: 32, width: 104, maxWidth: 104,
+    padding: "0 8px",
+    borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)",
+    background: "var(--bg-secondary)",
+    fontFamily: "monospace", fontSize: 13, fontWeight: 900,
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  };
+  return (
+    <div style={{ padding: 12, borderBottom: "1px solid var(--border)", display: "grid", gap: 8 }}>
+      <div style={{ display: "grid", gap: 7 }}>
+        <select value={filters.product || ""} onChange={e => setFilter("product", e.target.value)} style={inputStyle({ fontSize: 13, padding: "6px 8px" })}>
+          <option value="">제품 전체</option>
+          {(productOptions || []).map(product => <option key={product} value={product}>{product}</option>)}
+        </select>
+        <input value={filters.search || ""} onChange={e => setFilter("search", e.target.value)}
+          placeholder="root_lot_id 검색"
+          style={inputStyle({ fontSize: 13, padding: "6px 8px", fontFamily: "monospace" })} />
+        <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+          {["received", "in_progress", "completed"].map(state => {
+            const meta = LOT_MATRIX_STATES[state];
+            const on = activeStates.has(state);
+            return (
+              <button key={state} type="button" onClick={() => toggleState(state)}
+                style={{
+                  padding: "4px 7px",
+                  borderRadius: 999,
+                  border: "1px solid " + (on ? meta.fg : "var(--border)"),
+                  background: on ? meta.bg : "var(--bg-primary)",
+                  color: on ? meta.fg : "var(--text-secondary)",
+                  fontSize: 12,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                }}>
+                {meta.mark} {meta.label}
+              </button>
+            );
+          })}
+          <span style={{ marginLeft: "auto", color: "var(--text-secondary)", fontSize: 12, fontFamily: "monospace" }}>
+            {loading ? "loading" : `${lotCount} lots`}
+          </span>
+        </div>
+      </div>
+      <div style={{ maxHeight: 292, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)" }}>
+        {visibleProducts.length === 0 ? (
+          <div style={{ padding: 18, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>
+            검색 조건에 맞는 lot 이 없어요
+          </div>
+        ) : (
+          <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "max-content", minWidth: "100%", tableLayout: "fixed" }}>
+            <thead>
+              <tr>
+                <th style={leftHeadStyle}>root_lot_id</th>
+                {modules.map(module => (
+                  <th key={module} title={module} style={{ ...headStyle, width: 46, minWidth: 46, maxWidth: 46 }}>
+                    <span style={{ display: "block", maxWidth: 38, overflow: "hidden", textOverflow: "ellipsis" }}>{module}</span>
+                  </th>
+                ))}
+                <th style={{ ...headStyle, width: 82, minWidth: 82 }}>진행도</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleProducts.map(product => (
+                <React.Fragment key={product.product || "미지정"}>
+                  <tr>
+                    <td colSpan={modules.length + 2}
+                      style={{
+                        position: "sticky",
+                        left: 0,
+                        zIndex: 2,
+                        height: 30,
+                        padding: "5px 8px",
+                        borderBottom: "1px solid var(--border)",
+                        background: "var(--bg-tertiary)",
+                        color: "var(--text-primary)",
+                        fontSize: 13,
+                        fontWeight: 900,
+                        fontFamily: "monospace",
+                      }}>
+                      {stripMlPrefix(product.product || "미지정")} · {product.lots.length}
+                    </td>
+                  </tr>
+                  {product.lots.map(lot => (
+                    <tr key={`${product.product}:${lot.root_lot_id}`} onClick={() => onPickLot(product.product, lot)}
+                      style={{ cursor: "pointer" }}>
+                      <td title={lot.root_lot_id} style={leftCellStyle}>{lot.root_lot_id}</td>
+                      {modules.map(module => {
+                        const cell = (lot.modules || {})[module];
+                        const meta = cell ? (LOT_MATRIX_STATES[cell.state] || LOT_MATRIX_STATES.pending) : null;
+                        return (
+                          <td key={module}
+                            style={{
+                              height: 32,
+                              width: 46,
+                              minWidth: 46,
+                              maxWidth: 46,
+                              padding: 0,
+                              textAlign: "center",
+                              borderBottom: "1px solid var(--border)",
+                              borderRight: "1px solid var(--border)",
+                              background: "var(--bg-primary)",
+                            }}>
+                            {cell && (
+                              <button type="button" title={cellTitle(module, cell)}
+                                onClick={e => { e.stopPropagation(); onOpenCell(lot, cell); }}
+                                style={{
+                                  width: 38,
+                                  height: 24,
+                                  borderRadius: 6,
+                                  border: "1px solid " + meta.fg + "44",
+                                  background: meta.bg,
+                                  color: meta.fg,
+                                  fontSize: 14,
+                                  lineHeight: "20px",
+                                  fontWeight: 900,
+                                  cursor: "pointer",
+                                  padding: 0,
+                                }}>
+                                {meta.mark}
+                              </button>
+                            )}
+                          </td>
+                        );
+                      })}
+                      <td style={{
+                        height: 32,
+                        width: 82,
+                        padding: "4px 7px",
+                        borderBottom: "1px solid var(--border)",
+                        background: "var(--bg-primary)",
+                        fontSize: 12,
+                        fontFamily: "monospace",
+                        color: "var(--text-secondary)",
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <span style={{ fontWeight: 900, color: "var(--text-primary)" }}>{lot.progress?.done || 0}/{lot.progress?.total || modules.length}</span>
+                          <span style={{ flex: 1, height: 5, borderRadius: 999, background: "var(--bg-tertiary)", overflow: "hidden" }}>
+                            <span style={{ display: "block", height: "100%", width: `${progressWidth(lot.progress)}%`, background: OK.fg }} />
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );

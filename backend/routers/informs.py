@@ -475,6 +475,98 @@ def _module_progress_summary(items: list, modules: Optional[list[str]] = None) -
     }
 
 
+def _parse_iso_datetime(value) -> Optional[datetime.datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _entry_last_update(entry: dict) -> str:
+    candidates = [
+        str(entry.get("created_at") or ""),
+        str(entry.get("checked_at") or ""),
+    ]
+    for h in entry.get("status_history") or []:
+        if isinstance(h, dict):
+            candidates.append(str(h.get("at") or ""))
+    for h in entry.get("edit_history") or []:
+        if isinstance(h, dict):
+            candidates.append(str(h.get("at") or ""))
+    return max([x for x in candidates if x] or [""])
+
+
+def _lot_matrix_state(entry: dict) -> str:
+    status = str(entry.get("flow_status") or "").strip()
+    if status == "completed":
+        return "completed"
+    if status in ("reviewing", "in_progress"):
+        return "in_progress"
+    if status == "received":
+        return "received"
+    return "pending"
+
+
+_LOT_MATRIX_STATE_RANK = {"pending": 0, "received": 1, "in_progress": 2, "completed": 3}
+
+
+def _lot_matrix_module_order() -> list[str]:
+    admin_order: list[str] = []
+    seen: set[str] = set()
+
+    def add(target: list[str], raw) -> None:
+        mod = str(raw or "").strip()
+        if not mod or mod in seen:
+            return
+        seen.add(mod)
+        target.append(mod)
+
+    for modules in (_get_inform_user_mods() or {}).values():
+        if not isinstance(modules, list):
+            continue
+        for mod in modules:
+            add(admin_order, mod)
+
+    cfg_modules = _load_config().get("modules") or []
+    if admin_order:
+        ordered = list(admin_order)
+        for mod in cfg_modules:
+            add(ordered, mod)
+        return ordered
+
+    ordered: list[str] = []
+    for mod in (cfg_modules or DEFAULT_MODULES):
+        add(ordered, mod)
+    return ordered or list(DEFAULT_MODULES)
+
+
+def _lot_matrix_cell(entry: dict) -> dict:
+    state = _lot_matrix_state(entry)
+    return {
+        "state": state,
+        "inform_id": entry.get("id") or "",
+        "checked_at": entry.get("checked_at") or "",
+        "created_at": entry.get("created_at") or "",
+        "updated_at": _entry_last_update(entry),
+        "author": entry.get("author") or "",
+        "reason": entry.get("reason") or "",
+        "text": entry.get("text") or "",
+    }
+
+
+def _lot_matrix_cell_key(cell: dict) -> tuple[int, str]:
+    return (
+        _LOT_MATRIX_STATE_RANK.get(str(cell.get("state") or ""), 0),
+        str(cell.get("updated_at") or cell.get("created_at") or ""),
+    )
+
+
 def _add_unique_text(out: list[str], seen: set[str], value) -> None:
     s = str(value or "").strip()
     if not s or s in ("—", "-", "None", "null"):
@@ -911,6 +1003,88 @@ def module_summary(request: Request, days: int = Query(30, ge=1, le=3650)):
             buckets[mod]["received"] = int(buckets[mod]["received"]) + 1
             buckets[mod]["pending"] = int(buckets[mod]["pending"]) + 1
     return [buckets[m] for m in ordered]
+
+
+@router.get("/lot-matrix")
+def lot_matrix(
+    request: Request,
+    product: str = Query(""),
+    days: int = Query(90, ge=1, le=3650),
+    search: str = Query(""),
+):
+    """Product/root-lot x module progress matrix for the left Inform pane."""
+    me = current_user(request)
+    my_mods = _effective_modules(me["username"], me.get("role", "user"))
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
+    want_product = _canonical_product(product or "")
+    root_query = str(search or "").strip().casefold()
+
+    def in_window(entry: dict) -> bool:
+        dt = _parse_iso_datetime(_entry_last_update(entry) or entry.get("created_at"))
+        if dt is None:
+            return True
+        return dt >= cutoff
+
+    module_order = _lot_matrix_module_order()
+    module_seen = set(module_order)
+    products_by_key: dict[str, dict] = {}
+
+    for entry in _load_upgraded():
+        if entry.get("parent_id"):
+            continue
+        if not _visible_to(entry, me["username"], me.get("role", "user"), my_mods):
+            continue
+        if not in_window(entry):
+            continue
+
+        prod = _canonical_product(entry.get("product") or "")
+        if want_product and prod.casefold() != want_product.casefold():
+            continue
+
+        root_lot = str(entry.get("root_lot_id") or _root_lot_from_values(entry.get("lot_id") or "", entry.get("embed_table"))).strip()
+        if not root_lot:
+            continue
+        if root_query and root_query not in root_lot.casefold():
+            continue
+
+        mod = str(entry.get("module") or "").strip() or "기타"
+        if mod not in module_seen:
+            module_seen.add(mod)
+            module_order.append(mod)
+
+        product_label = prod or "미지정"
+        product_key = product_label.casefold()
+        product_bucket = products_by_key.setdefault(product_key, {"product": product_label, "lots_by_key": {}})
+        lot_bucket = product_bucket["lots_by_key"].setdefault(root_lot, {
+            "root_lot_id": root_lot,
+            "modules": {},
+            "progress": {"done": 0, "total": 0},
+            "last_update": "",
+        })
+
+        cell = _lot_matrix_cell(entry)
+        prev = lot_bucket["modules"].get(mod)
+        if prev is None or _lot_matrix_cell_key(cell) >= _lot_matrix_cell_key(prev):
+            lot_bucket["modules"][mod] = cell
+        if cell["updated_at"] > lot_bucket["last_update"]:
+            lot_bucket["last_update"] = cell["updated_at"]
+
+    products_out: list[dict] = []
+    for product_bucket in products_by_key.values():
+        lots = []
+        for lot_bucket in product_bucket["lots_by_key"].values():
+            done = sum(
+                1
+                for mod in module_order
+                if (lot_bucket["modules"].get(mod) or {}).get("state") == "completed"
+            )
+            lot_bucket["progress"] = {"done": done, "total": len(module_order)}
+            lots.append(lot_bucket)
+        lots.sort(key=lambda x: (x.get("last_update") or "", x.get("root_lot_id") or ""), reverse=True)
+        products_out.append({"product": product_bucket["product"], "lots": lots})
+
+    products_out.sort(key=lambda x: str(x.get("product") or "").casefold())
+    return {"products": products_out, "module_order": module_order}
 
 
 @router.post("/modules/knob-map")
