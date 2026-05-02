@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -776,6 +777,39 @@ def test_flowi_function_call_preview_keeps_wafer_slots_1_to_25(monkeypatch):
     assert args["plan_assignments"][0]["wafers"] == [str(i) for i in range(1, 11)]
     assert "1000" not in {wf for item in args["plan_assignments"] for wf in item["wafers"]}
     assert any("1~25" in w for w in out["validation"]["warnings"])
+
+
+def test_flowi_function_call_preview_uses_freetext_missing_for_inform_note(monkeypatch):
+    monkeypatch.setattr(llm_router.product_config, "load_all", lambda _root: {"PRODA": {"product": "PRODA"}})
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [])
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda _kind: [])
+
+    out = llm_router._structure_flowi_function_call("A1001 인폼로그 남겨줘")
+
+    assert out["selected_function"]["name"] == "register_inform_log"
+    assert "note" in out["validation"]["missing"]
+    assert out["missing_freetext"] == [{
+        "key": "note",
+        "label": "인폼 내용",
+        "placeholder": "메모를 적어주세요(예: GATE 모듈 인폼)",
+    }]
+    assert out["arguments_choices"] == {}
+    assert "필수값 이어서 입력" not in json.dumps(out.get("arguments_choices") or {}, ensure_ascii=False)
+
+
+def test_flowi_missing_classification_keeps_freetext_out_of_argument_choices(monkeypatch):
+    monkeypatch.setattr(llm_router.product_config, "load_all", lambda _root: {"PRODA": {"product": "PRODA"}})
+    monkeypatch.setattr(llm_router, "_flowi_inform_modules", lambda: ["GATE", "STI", "PC"])
+
+    free = llm_router._flowi_missing_freetext(["note", "reason", "keyword", "knob_value", "내용", "사유"])
+    assert [item["key"] for item in free] == ["note", "reason", "keyword", "knob_value"]
+    assert llm_router._flowi_arguments_choices(["note", "reason", "keyword", "knob_value"], "prompt", {}) == {}
+
+    catalog = llm_router._flowi_arguments_choices(["product", "module", "source_type", "step"], "prompt", {"product": "PRODA"})
+    fields = {field["field"]: field for field in catalog["fields"]}
+    assert set(fields) == {"product", "module", "source_type", "step"}
+    assert [choice["value"] for choice in fields["module"]["choices"][:3]] == ["GATE", "STI", "PC"]
+    assert [choice["value"] for choice in fields["source_type"]["choices"][:3]] == ["FAB", "ET", "INLINE"]
 
 
 def test_flowi_function_catalog_routes_required_acceptance_patterns(monkeypatch):

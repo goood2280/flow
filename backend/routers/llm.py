@@ -1604,11 +1604,108 @@ def _flowi_choice(field: str, idx: int, label: str, value: str, *, prompt_prefix
     }
 
 
+_FLOWI_FREETEXT_MISSING_KEYS = {
+    "note",
+    "reason",
+    "사유",
+    "내용",
+    "memo",
+    "메모",
+    "comment",
+    "코멘트",
+    "knob_value",
+    "keyword",
+    "title",
+    "description",
+    "entries",
+}
+
+_FLOWI_FREETEXT_KEY_ALIASES = {
+    "인폼 내용": "note",
+    "내용": "note",
+    "메모": "memo",
+    "사유": "reason",
+    "코멘트": "comment",
+    "comment": "comment",
+    "memo": "memo",
+    "description": "description",
+    "desc": "description",
+}
+
+
+def _flowi_missing_key(field: str) -> str:
+    raw = str(field or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    return _FLOWI_FREETEXT_KEY_ALIASES.get(raw) or _FLOWI_FREETEXT_KEY_ALIASES.get(lowered) or lowered
+
+
+def _flowi_is_freetext_missing(field: str) -> bool:
+    raw = str(field or "").strip()
+    key = _flowi_missing_key(raw)
+    if key in _FLOWI_FREETEXT_MISSING_KEYS:
+        return True
+    return any(token in raw for token in ("내용", "사유", "메모", "코멘트"))
+
+
+def _flowi_freetext_label(field: str) -> str:
+    key = _flowi_missing_key(field)
+    labels = {
+        "note": "인폼 내용",
+        "reason": "사유",
+        "memo": "메모",
+        "comment": "코멘트",
+        "knob_value": "KNOB 값",
+        "keyword": "검색 키워드",
+        "title": "제목",
+        "description": "설명",
+        "entries": "모듈별 내용",
+    }
+    return labels.get(key) or str(field or "").strip() or "내용"
+
+
+def _flowi_freetext_placeholder(field: str) -> str:
+    key = _flowi_missing_key(field)
+    placeholders = {
+        "note": "메모를 적어주세요(예: GATE 모듈 인폼)",
+        "reason": "사유를 적어주세요(예: split 변경 공유)",
+        "memo": "메모를 적어주세요",
+        "comment": "코멘트를 적어주세요",
+        "knob_value": "KNOB 값을 입력해 주세요(예: PPID_24_3)",
+        "keyword": "찾을 키워드를 입력해 주세요",
+        "title": "제목을 입력해 주세요",
+        "description": "설명을 입력해 주세요",
+        "entries": "예: GATE는 test1, STI는 test2",
+    }
+    return placeholders.get(key) or f"{_flowi_freetext_label(field)}을 입력해 주세요"
+
+
+def _flowi_missing_freetext(missing: list[str]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for field in missing or []:
+        if not _flowi_is_freetext_missing(field):
+            continue
+        key = _flowi_missing_key(field) or str(field or "").strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "key": key,
+            "label": _flowi_freetext_label(field),
+            "placeholder": _flowi_freetext_placeholder(field),
+        })
+    return out
+
+
 def _flowi_arguments_choices(missing: list[str], prompt: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     args = arguments if isinstance(arguments, dict) else {}
     fields: list[dict[str, Any]] = []
     for field in missing:
         key = str(field or "")
+        if _flowi_is_freetext_missing(key):
+            continue
         values: list[str] = []
         placeholder = ""
         if key == "product":
@@ -1656,7 +1753,7 @@ def _flowi_arguments_choices(missing: list[str], prompt: str, arguments: dict[st
                 "prompt": prompt,
             })
         fields.append({"field": key, "question": _flowi_field_question(key), "choices": choices[:4], "free_input_label": placeholder})
-    return {"message": "또는 직접 입력해 주세요", "fields": fields}
+    return {"message": "또는 직접 입력해 주세요", "fields": fields} if fields else {}
 
 
 def _flowi_reason(text: str) -> str:
@@ -1997,6 +2094,13 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
     module = _flowi_module_token(text)
     split_set = _flowi_split_set_token(text)
     note = _flowi_note_extract(text)
+    if note and resolved_product:
+        note = re.sub(
+            rf"(?:\s+(?:product|제품)\s*[:=]\s*)?{re.escape(resolved_product)}\s*$",
+            "",
+            note,
+            flags=re.I,
+        ).strip()
     knob_value = _flowi_knob_value_token(text)
     batch_entries = _flowi_parse_inform_batch_entries(text)
     source_type = next((s for s in source_types if s in {"FAB", "INLINE", "ET", "VM", "EDS"}), "")
@@ -2103,6 +2207,11 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
         missing.append("source_type")
     if "keyword" in required and not arguments.get("keyword"):
         missing.append("keyword")
+    if selected_name == "register_inform_log" and not batch_entries:
+        if not arguments.get("note"):
+            missing.append("note")
+        elif not resolved_product:
+            missing.append("product")
     if selected_name == "query_wafer_split_at_step" and not resolved_product:
         missing.insert(0, "product")
     if selected_name == "compose_inform_module_mail" and "module" in missing:
@@ -2117,6 +2226,7 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
         warnings.append("product를 찾지 못하면 YAML/product directory 기준 후보 선택이 필요합니다.")
     selected["reason"] = _flowi_reason(selected.get("reason") or "")
     arguments_choices = _flowi_arguments_choices(missing, text, arguments) if missing else {}
+    missing_freetext = _flowi_missing_freetext(missing) if missing else []
     validation = {
         "valid": not missing,
         "missing": missing,
@@ -2141,6 +2251,8 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
         },
         "validation": validation,
         "arguments_choices": arguments_choices,
+        "missing_freetext": missing_freetext,
+        "last_partial_prompt": text,
         "free_input_hint": "또는 직접 입력해 주세요" if missing else "",
         "feature_candidates": _matched_feature_entrypoints(text, limit=3),
         "slot_summary": slots,
@@ -2166,6 +2278,9 @@ def _flowi_preview_tool(preview: dict[str, Any], *, answer: str = "") -> dict[st
         "missing": missing,
         "arguments": args,
         "arguments_choices": preview.get("arguments_choices") or {},
+        "missing_freetext": preview.get("missing_freetext") or [],
+        "last_partial_prompt": preview.get("last_partial_prompt") or preview.get("prompt") or "",
+        "arguments_partial": args,
         "validation": validation,
         "slots": {
             "product": args.get("product") or "",
@@ -7385,29 +7500,19 @@ def _flowi_app_write_missing(
     choices: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     title = _feature_title(feature)
-    choice_rows = choices if choices else [
-        {
-            "id": "provide_missing",
-            "label": "1",
-            "title": "필수값 이어서 입력",
-            "recommended": True,
-            "description": f"부족한 값({', '.join(missing)})을 추가해 같은 등록 요청을 이어갑니다.",
-            "prompt": f"{title} 등록 필수값: ",
-        }
-    ]
-    return {
+    choice_rows = choices if choices else []
+    tool = {
         "handled": True,
         "intent": f"{feature}_create_needs_context",
         "action": "collect_required_fields",
         "answer": f"{title} 등록에 필요한 조건이 부족합니다. 추가로 필요한 값: {', '.join(missing)}",
         "feature": feature,
         "missing": missing,
+        "missing_freetext": _flowi_missing_freetext(missing),
+        "arguments_choices": _flowi_arguments_choices(missing, prompt, {"product": product, "lot_ids": lots, "wafer_ids": wafers}),
+        "last_partial_prompt": prompt,
         "pending_prompt": prompt,
         "slots": {"product": product, "lots": lots, "wafers": wafers},
-        "clarification": {
-            "question": f"{title} 등록을 계속하려면 {', '.join(missing)} 값을 알려주세요.",
-            "choices": choice_rows[:3],
-        },
         "table": {
             "kind": "flowi_app_write_missing",
             "title": "Registration needs more context",
@@ -7421,6 +7526,12 @@ def _flowi_app_write_missing(
             "total": 3,
         },
     }
+    if choice_rows:
+        tool["clarification"] = {
+            "question": f"{title} 등록을 계속하려면 {', '.join(missing)} 값을 알려주세요.",
+            "choices": choice_rows[:3],
+        }
+    return tool
 
 
 def _flowi_app_create_missing(feature: str, prompt: str, product: str, lots: list[str], wafers: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
@@ -12648,7 +12759,12 @@ def _flowi_result_status(tool: dict[str, Any], llm_info: dict[str, Any] | None =
         return "error"
     if isinstance(llm_info, dict) and llm_info.get("error"):
         return "error"
-    if isinstance(tool, dict) and (tool.get("missing") or (tool.get("validation") or {}).get("missing") or tool.get("arguments_choices")):
+    if isinstance(tool, dict) and (
+        tool.get("missing")
+        or (tool.get("validation") or {}).get("missing")
+        or tool.get("arguments_choices")
+        or tool.get("missing_freetext")
+    ):
         return "missing"
     if isinstance(tool, dict) and ((tool.get("clarification") or {}).get("choices")):
         return "missing"
@@ -12782,6 +12898,10 @@ def _attach_flowi_trace(
         _finalize_flowi_tool(tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
         result["workflow_state"] = tool.get("workflow_state")
         result["next_actions"] = tool.get("next_actions")
+        if tool.get("last_partial_prompt"):
+            result["last_partial_prompt"] = tool.get("last_partial_prompt")
+        if isinstance(tool.get("missing_freetext"), list):
+            result["missing_freetext"] = tool.get("missing_freetext") or []
         if isinstance(result.get("agent_api"), dict):
             result["agent_api"]["workflow_state"] = tool.get("workflow_state") or {}
             result["agent_api"]["next_actions"] = tool.get("next_actions") or []
@@ -12825,6 +12945,8 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "created_records",
     "missing",
     "arguments_choices",
+    "missing_freetext",
+    "last_partial_prompt",
     "inform_preview",
     "mail_preview",
     "walkthrough",
@@ -12857,6 +12979,10 @@ def _flowi_home_response_for_role(result: dict[str, Any], me: dict[str, Any]) ->
         out["blocked"] = True
     if result.get("reject_reason"):
         out["reject_reason"] = result.get("reject_reason")
+    if result.get("last_partial_prompt"):
+        out["last_partial_prompt"] = result.get("last_partial_prompt")
+    if isinstance(result.get("missing_freetext"), list):
+        out["missing_freetext"] = result.get("missing_freetext") or []
     tool = result.get("tool") if isinstance(result.get("tool"), dict) else {}
     public_tool = {key: deepcopy(tool[key]) for key in _FLOWI_HOME_USER_TOOL_KEYS if key in tool}
     clarification = public_tool.get("clarification") if isinstance(public_tool.get("clarification"), dict) else {}
