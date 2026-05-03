@@ -321,6 +321,70 @@ def test_root_lot_candidate_search_reaches_beyond_empty_preview(tmp_path, monkey
     assert searched["candidates"] == ["R1199"]
 
 
+def test_root_scoped_fab_candidates_keep_all_fab_history_lots(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["A1003", "A1003", "A1003", "A1003", "A1003"],
+        "lot_id": ["A1003A.2", "A1003A.3", "A1003B.2", "A1003C.1", "A1003C.2"],
+        "wafer_id": [1, 2, 3, 4, 5],
+        "KNOB_ALPHA": ["ON", "OFF", "ON", "OFF", "ON"],
+    }).write_parquet(tmp_path / "ML_TABLE_MULTI.parquet")
+
+    fab_root = tmp_path / "1.RAWDATA_DB_FAB" / "MULTI" / "date=20260430"
+    fab_root.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["A1003", "A1003", "A1003", "A1003", "A1003", "A1003"],
+        "fab_lot_id": ["A1003A.1", "A1003A.2", "A1003A.3", "A1003B.2", "A1003C.1", "A1003C.2"],
+        "wafer_id": [1, 1, 2, 3, 4, 5],
+        "tkout_time": [
+            "2026-04-30T10:00:00",
+            "2026-04-30T11:00:00",
+            "2026-04-30T12:00:00",
+            "2026-04-30T13:00:00",
+            "2026-04-30T14:00:00",
+            "2026-04-30T15:00:00",
+        ],
+    }).write_parquet(fab_root / "part_0.parquet")
+
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    splittable._LOT_LOOKUP_CACHE.clear()
+    splittable._RGLOB_CACHE.clear()
+    splittable._DB_ROOTS_CACHE.clear()
+
+    result = splittable.get_lot_candidates(
+        product="ML_TABLE_MULTI",
+        col="fab_lot_id",
+        prefix="A1003A",
+        limit=20,
+        source="auto",
+        root_lot_id="A1003",
+    )
+
+    assert result["candidates"] == ["A1003A.2", "A1003A.3"]
+
+    unscoped = splittable.get_lot_candidates(
+        product="ML_TABLE_MULTI",
+        col="fab_lot_id",
+        prefix="A1003",
+        limit=20,
+        source="auto",
+        root_lot_id="",
+    )
+
+    assert unscoped["candidates"] == ["A1003A.2", "A1003A.3", "A1003B.2", "A1003C.1", "A1003C.2"]
+
+    root_all = splittable.get_lot_candidates(
+        product="ML_TABLE_MULTI",
+        col="fab_lot_id",
+        prefix="A1003",
+        limit=20,
+        source="auto",
+        root_lot_id="A1003",
+    )
+
+    assert root_all["candidates"] == ["A1003A.2", "A1003A.3", "A1003B.2", "A1003C.1", "A1003C.2"]
+
+
 def test_root_lot_view_handles_categorical_fab_partitions(tmp_path, monkeypatch):
     pl.DataFrame({
         "root_lot_id": ["R9000", "R9000"],
@@ -387,10 +451,10 @@ def test_fab_lot_id_is_exposed_when_fab_source_uses_lot_id(tmp_path, monkeypatch
     fab_root = tmp_path / "1.RAWDATA_DB_FAB" / "STD" / "date=20240420"
     fab_root.mkdir(parents=True)
     pl.DataFrame({
-        "root_lot_id": ["R9100", "R9100"],
-        "lot_id": ["F9100A.1", "F9100A.1"],
-        "wafer_id": [1, 2],
-        "tkout_time": ["2024-04-20T10:00:00", "2024-04-20T10:01:00"],
+        "root_lot_id": ["R9100", "R9100", "R9100"],
+        "lot_id": ["F9100_OLD", "F9100A.1", "F9100A.2"],
+        "wafer_id": [1, 1, 2],
+        "tkout_time": ["2024-04-20T09:00:00", "2024-04-20T10:00:00", "2024-04-20T10:01:00"],
     }).write_parquet(fab_root / "part_0.parquet")
 
     monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
@@ -413,8 +477,21 @@ def test_fab_lot_id_is_exposed_when_fab_source_uses_lot_id(tmp_path, monkeypatch
     )
 
     assert "fab_lot_id" in schema_names
-    assert result["header_groups"] == [{"label": "F9100A.1", "span": 2}]
-    assert result["available_fab_lots"] == ["F9100A.1"]
+    assert result["header_groups"] == [
+        {"label": "F9100A.1", "span": 1},
+        {"label": "F9100A.2", "span": 1},
+    ]
+    assert result["available_fab_lots"] == ["F9100A.1", "F9100A.2"]
+
+    candidates = splittable.get_lot_candidates(
+        product="ML_TABLE_STD",
+        col="fab_lot_id",
+        prefix="F9100",
+        limit=20,
+        source="auto",
+        root_lot_id="R9100",
+    )
+    assert candidates["candidates"] == ["F9100A.1", "F9100A.2"]
 
 
 def test_match_cache_supplies_fab_lot_without_rescanning_source(tmp_path, monkeypatch):
@@ -446,6 +523,14 @@ def test_match_cache_supplies_fab_lot_without_rescanning_source(tmp_path, monkey
     built = splittable.refresh_match_cache(product="ML_TABLE_CACHE", force=True)
     assert built["products"][0]["ok"] is True
     assert built["products"][0]["row_count"] == 2
+    fab_candidates = splittable.get_lot_candidates(
+        product="ML_TABLE_CACHE",
+        col="fab_lot_id",
+        prefix="F9200",
+        limit=20,
+        source="auto",
+        root_lot_id="R9200",
+    )
 
     def fail_scan(_source):
         raise AssertionError("raw FAB source should not be scanned when cache exists")
@@ -462,14 +547,6 @@ def test_match_cache_supplies_fab_lot_without_rescanning_source(tmp_path, monkey
         history_mode="all",
         fab_lot_id="",
         custom_cols="",
-    )
-    fab_candidates = splittable.get_lot_candidates(
-        product="ML_TABLE_CACHE",
-        col="fab_lot_id",
-        prefix="F9200",
-        limit=20,
-        source="auto",
-        root_lot_id="R9200",
     )
 
     assert result["header_groups"] == [{"label": "F9200A.1", "span": 2}]
