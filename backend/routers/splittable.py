@@ -39,6 +39,7 @@ from core.utils import (
     _STR, is_cat, find_lot_wafer_cols, load_json, save_json, safe_id,
     csv_response, csv_writer_bytes,
 )
+from core.splittable_sets_cache import invalidate as invalidate_splittable_sets_cache
 
 # v8.8.26: override CI 매칭 진단 — 실패 경로/스키마 mismatch 를 로그로 가시화.
 logger = logging.getLogger("flow.splittable")
@@ -2945,6 +2946,7 @@ def save_paste_set(req: PasteSetSaveReq):
             "created": now, "updated": now,
         })
     _save_paste_sets(items)
+    invalidate_splittable_sets_cache(req.product or "")
     return {"ok": True, "count": len(items)}
 
 
@@ -2968,6 +2970,7 @@ def delete_paste_set(req: PasteSetDeleteReq):
     if len(items) == before:
         raise HTTPException(404, "paste set not found")
     _save_paste_sets(items)
+    invalidate_splittable_sets_cache(req.product or "")
     return {"ok": True, "removed": before - len(items)}
 
 
@@ -2995,6 +2998,7 @@ def paste_set_to_custom(req: PasteSetDeleteReq):
         "version": int((existing or {}).get("version", 0)) + 1,
         "source": "paste-set", "paste_id": src.get("id", ""),
     })
+    invalidate_splittable_sets_cache(req.product or "")
     return {"ok": True, "custom_name": name}
 
 
@@ -3043,6 +3047,7 @@ def save_custom(req: CustomSaveReq):
         "name": req.name, "username": req.username, "columns": req.columns,
         "created": created, "updated": now, "version": new_v,
     })
+    invalidate_splittable_sets_cache()
     return {"ok": True, "version": new_v}
 
 
@@ -3069,6 +3074,7 @@ def delete_custom(req: CustomDeleteReq):
     except Exception:
         pass
     fp.unlink(missing_ok=True)
+    invalidate_splittable_sets_cache()
     return {"ok": True}
 
 
@@ -4690,6 +4696,8 @@ def _fab_source_context(product: str) -> dict:
                     or _pick_first_present_ci(("wafer_id", "wafer"), fab_names)
         fab_col = _resolve_source_col_name((ov.get("fab_col") or "").strip(), fab_names) \
                   or _pick_first_present_ci(_FAB_COL_CANDIDATES, fab_names)
+        ts_col = _resolve_source_col_name((ov.get("ts_col") or "").strip(), fab_names) \
+                 or _pick_ts_col(fab_names)
         if not root_col or not fab_col:
             return {}
         return {
@@ -4699,6 +4707,7 @@ def _fab_source_context(product: str) -> dict:
             "root_col": root_col,
             "wafer_col": wafer_col,
             "fab_col": fab_col,
+            "ts_col": ts_col,
             "columns": fab_names,
         }
     except Exception as e:
@@ -4745,8 +4754,14 @@ def _merge_wafer_scope(user_wafer_ids: str, source_wafers: list[str]) -> str:
 
 
 def _fab_history_scope(product: str, root_lot_id: str = "", fab_lot_id: str = "",
-                       prefix: str = "", limit: int = 500) -> dict:
-    """Query raw FAB history without collapsing to latest row per wafer."""
+                       prefix: str = "", limit: int = 500,
+                       prefer_raw_latest: bool = False) -> dict:
+    """Query FAB history as current SplitTable lot identity.
+
+    Candidate LOT_ID values must follow the same contract as ML_TABLE/SplitTable:
+    pick the latest FAB row per root_lot_id + wafer_id first, then expose the
+    resulting fab_lot_id/lot_id set.
+    """
     root_lot_id = root_lot_id if isinstance(root_lot_id, str) else ""
     fab_lot_id = fab_lot_id if isinstance(fab_lot_id, str) else ""
     prefix = prefix if isinstance(prefix, str) else ""
@@ -4762,6 +4777,7 @@ def _fab_history_scope(product: str, root_lot_id: str = "", fab_lot_id: str = ""
         fab_lot_id.strip(),
         prefix.strip(),
         limit,
+        bool(prefer_raw_latest),
     )
     cached = _lot_lookup_cache_get(cache_key)
     if cached is not None:
@@ -4770,14 +4786,15 @@ def _fab_history_scope(product: str, root_lot_id: str = "", fab_lot_id: str = ""
     def finish(payload: dict) -> dict:
         return _lot_lookup_cache_set(cache_key, payload)
 
-    cached_scope = _fab_history_scope_from_cache(
-        product, root_lot_id=root_lot_id, fab_lot_id=fab_lot_id,
-        prefix=prefix, limit=limit,
-    )
-    if cached_scope is not None:
-        has_explicit_scope = bool(root_lot_id.strip() or fab_lot_id.strip())
-        if cached_scope.get("candidates") or not has_explicit_scope:
-            return finish(cached_scope)
+    if not prefer_raw_latest:
+        cached_scope = _fab_history_scope_from_cache(
+            product, root_lot_id=root_lot_id, fab_lot_id=fab_lot_id,
+            prefix=prefix, limit=limit,
+        )
+        if cached_scope is not None:
+            has_explicit_scope = bool(root_lot_id.strip() or fab_lot_id.strip())
+            if cached_scope.get("candidates") or not has_explicit_scope:
+                return finish(cached_scope)
 
     ctx = _fab_source_context(product)
     if not ctx:
@@ -4785,18 +4802,27 @@ def _fab_history_scope(product: str, root_lot_id: str = "", fab_lot_id: str = ""
     root_col = ctx["root_col"]
     fab_col = ctx["fab_col"]
     wafer_col = ctx.get("wafer_col") or ""
+    ts_col = ctx.get("ts_col") or ""
     select_exprs = [
         pl.col(root_col).cast(_STR, strict=False).alias("root"),
         pl.col(fab_col).cast(_STR, strict=False).alias("fab"),
     ]
     if wafer_col:
         select_exprs.append(pl.col(wafer_col).cast(_STR, strict=False).alias("wafer"))
+    if ts_col:
+        select_exprs.append(pl.col(ts_col).cast(_STR, strict=False).alias("ts"))
     q = ctx["lf"].select(select_exprs)
     q = q.filter(pl.col("root").is_not_null() & pl.col("fab").is_not_null())
     root_scope = (root_lot_id or "").strip()
     fab_scope = (fab_lot_id or "").strip()
     if root_scope:
         q = q.filter(_join_key_expr("root") == root_scope.upper())
+    latest_subset = ["root"] + (["wafer"] if wafer_col else [])
+    if ts_col:
+        q = q.sort("ts", descending=True, nulls_last=True)
+        q = q.unique(subset=latest_subset, keep="first", maintain_order=True)
+    else:
+        q = q.unique(subset=latest_subset, keep="last", maintain_order=True)
     if fab_scope:
         q = q.filter(_join_key_expr("fab") == fab_scope.upper())
     elif prefix.strip():
@@ -5478,13 +5504,26 @@ def get_lot_candidates(
             }
     if col.casefold() in {c.casefold() for c in _FAB_COL_CANDIDATES}:
         main = _main_table_candidates(product, col, prefix=prefix, limit=limit, root_lot_id=root_scope)
-        hist = _fab_history_scope(product, root_lot_id=root_scope, prefix=prefix, limit=limit)
+        hist = _fab_history_scope(
+            product,
+            root_lot_id=root_scope,
+            prefix=prefix,
+            limit=limit,
+            prefer_raw_latest=bool(root_scope or str(prefix or "").strip()),
+        )
         main_candidates = main.get("candidates") or []
         hist_candidates = hist.get("candidates") or []
-        if main_candidates:
-            main_keys = {str(v).upper() for v in main_candidates}
-            hist_candidates = [v for v in hist_candidates if str(v).upper() in main_keys]
-        merged = _merge_candidate_values(main_candidates, hist_candidates, limit=limit)
+        if root_scope and hist_candidates:
+            # A root can legitimately span multiple operational fab_lot_id values.
+            # Keep the FAB history set authoritative for scoped lookups; intersecting
+            # with ML_TABLE lot_id/fab_lot_id collapses cases like A1003A.2/A1003A.3.
+            merged = _merge_candidate_values(hist_candidates, limit=limit)
+        else:
+            # Unscoped Inform LOT_ID search must also surface operational FAB
+            # history lots that are not present in the current ML_TABLE render.
+            # Intersecting here made searches such as "A1003" show only
+            # A1003A.1 while hiding related A1003A.2/A1003A.3 entries.
+            merged = _merge_candidate_values(main_candidates, hist_candidates, limit=limit)
         if merged:
             return {
                 "col": col,
