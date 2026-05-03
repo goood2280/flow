@@ -272,7 +272,7 @@ FLOWI_FUNCTION_FEW_SHOTS = [
     },
 ]
 FLOWI_DEFAULT_SYSTEM_PROMPT = (
-    "Flowi는 사내 Flow 홈 화면의 반도체 공정 데이터 분석가입니다. 답변은 짧고 실행 가능하게 작성합니다. "
+    "Flowi는 사내 Flow 앱을 이해하고 사용자 권한 안에서 작업하는 반도체 공정 데이터 운영 에이전트입니다. 답변은 짧고 실행 가능하게 작성합니다. "
     "사용자 Markdown 정보가 있으면 담당 제품, 관심 공정, 선호 출력 방식을 반영합니다. "
     "요청이 애매하면 바로 실행한다고 말하지 말고 1/2/3 형태의 선택지를 제시합니다. "
     "먼저 사내 naming rule을 적용해 자연어를 function arguments JSON으로 구조화한 뒤, 그 파라미터와 답변이 어긋나지 않게 합니다. "
@@ -281,6 +281,8 @@ FLOWI_DEFAULT_SYSTEM_PROMPT = (
     "#6, WF6, WAFER 6, slot 6, 6번 slot, 6번장, 6장은 wafer_id=6으로 해석하며 wafer_id는 1~25만 유효한 물리 slot으로 봅니다. "
     "step_id는 영문 2자 + 숫자 6자리만 step으로 해석하고, 그 외에는 등록된 func_step 이름과 정확히 맞을 때만 step 후보로 봅니다. "
     "FAB은 최신 route/progress 이력, ET는 기본 median, INLINE은 기본 avg이며 raw INLINE은 shot_x/shot_y가 아니라 subitem_id를 shot 구분자로 봅니다. "
+    "SplitTable을 보여줄 때는 홈에서 따로 재구성하지 않고 SplitTable 화면 API의 headers, header_groups, rows, cell key, actual/plan/mismatch 결과를 기준으로 표시합니다. "
+    "SplitTable/Inform 같은 앱 데이터 쓰기는 draft와 확인 선택지를 먼저 만들고, 확인 후에만 저장합니다. "
     "일반 사용자의 원 data DB 또는 Files 수정/삭제/저장/업로드는 차단합니다. "
     "admin 파일 변경은 서버의 FLOWI_FILE_OP 단위기능 결과가 제공된 경우에만 그 결과를 설명합니다."
 )
@@ -396,6 +398,21 @@ FLOWI_FEATURE_ALIASES = {
     "tablemap": ["table map", "tablemap", "테이블맵", "관계", "relation", "join", "column map", "컬럼"],
     "devguide": ["devguide", "개발", "api", "문서", "가이드", "architecture"],
 }
+FLOWI_CORE_AGENT_FEATURES = ("filebrowser", "splittable", "inform")
+FLOWI_CORE_FEATURE_TERMS = {
+    "filebrowser": (
+        "파일탐색기", "파일 탐색기", "filebrowser", "file browser", "files", "parquet", "csv",
+        "스키마", "schema", "컬럼", "column", "row preview", "preview row", "db preview",
+    ),
+    "splittable": (
+        "스플릿테이블", "스플릿 테이블", "splittable", "split table", "knob", "mask",
+        "plan", "actual", "custom set", "custom", "mismatch", "plan vs actual",
+    ),
+    "inform": (
+        "인폼로그", "인폼 로그", "inform log", "inform", "인폼", "모듈 인폼",
+        "메일", "mail preview", "통보 메일",
+    ),
+}
 FLOWI_DEFAULT_TABS = {
     "filebrowser", "dashboard", "splittable", "ettime", "waferlayout",
     "tracker", "inform", "meeting", "calendar", "diagnosis",
@@ -477,6 +494,23 @@ FLOWI_UNIT_ACTIONS = {
         "outputs": ["doc entry", "API references"],
     },
 }
+
+
+def _flowi_core_feature_hint(prompt: str) -> str:
+    text = str(prompt or "")
+    low = text.lower()
+    scores: dict[str, int] = {}
+    for key, terms in FLOWI_CORE_FEATURE_TERMS.items():
+        score = 0
+        for term in terms:
+            needle = term.lower()
+            if needle and (needle in low or term in text):
+                score += 4 if len(needle) > 3 else 2
+        if score:
+            scores[key] = score
+    if not scores:
+        return ""
+    return sorted(scores.items(), key=lambda item: (-item[1], FLOWI_CORE_AGENT_FEATURES.index(item[0])))[0][0]
 
 FLOWI_CHART_TERMS = {
     "차트", "그래프", "scatter", "산점도", "corr", "correlation", "상관", "피팅", "fitting",
@@ -641,7 +675,7 @@ _FLOWI_APP_MODIFY_TERMS = (
     "delete", "remove", "edit", "update", "modify", "replace", "archive",
 )
 _FLOWI_APP_WRITE_HINTS = {
-    "inform": ("인폼", "inform"),
+    "inform": ("인폼", "inform", "모듈 전달", "모듈전달", "module transfer", "module handoff"),
     "tracker": ("이슈추적", "이슈 추적", "이슈", "issue", "tracker", "트래커"),
     "meeting": ("회의", "아젠다", "회의록", "agenda", "meeting"),
     "calendar": ("일정", "캘린더", "변경점", "calendar"),
@@ -1193,11 +1227,16 @@ def _matched_feature_entrypoints(
     allowed_keys: set[str] | None = None,
 ) -> list[dict[str, str]]:
     text = str(prompt or "")
+    if _is_current_fab_lot_prompt(text):
+        if allowed_keys is not None and "filebrowser" not in allowed_keys:
+            return []
+        return [dict(item) for item in FLOWI_FEATURE_ENTRYPOINTS if item.get("key") == "filebrowser"][:1]
     prompt_l = text.lower()
     prompt_u = _upper(text)
     toks = {_upper(t) for t in _tokens(prompt)}
     has_create = any(term in prompt_l or term in text for term in _FLOWI_APP_CREATE_TERMS)
     has_chart = _contains_chart_intent(text) or any(t in prompt_l or t in text for t in ("trend", "추세", "시계열", "그려", "그래프"))
+    core_hint = _flowi_core_feature_hint(text)
     scored: list[tuple[int, dict[str, str]]] = []
     for item in FLOWI_FEATURE_ENTRYPOINTS:
         if allowed_keys is not None and item["key"] not in allowed_keys:
@@ -1207,6 +1246,11 @@ def _matched_feature_entrypoints(
         if item["key"].lower() in prompt_l or item["title"].lower() in prompt_l:
             score += 4
         key = item["key"]
+        if core_hint:
+            if key == core_hint:
+                score += 20
+            elif key not in FLOWI_CORE_AGENT_FEATURES:
+                score -= 4
         if key == "dashboard" and has_chart:
             score += 8
         if key == "tracker" and any(t in prompt_l or t in text for t in ("이슈", "issue", "tracker", "트래커", "모니터링", "analysis")):
@@ -1444,6 +1488,7 @@ def _flowi_note_extract(prompt: str) -> str:
     for pat in (
         r"(?:내용은|내용\s*[:=])\s*[\"']?(.+?)[\"']?\s*$",
         r"(?:사유는|사유\s*[:=])\s*[\"']?(.+?)[\"']?\s*$",
+        r"(?:인폼로그|인폼|inform(?:\s+log)?)\s*(?:으로|로)?\s*[\"']?(.+?)[\"']?\s*(?:등록|생성|추가|남겨|기록|올려)(?:해줘|해주세요|합니다|해)?\s*$",
     ):
         m = re.search(pat, text, flags=re.I | re.S)
         if m:
@@ -1466,6 +1511,8 @@ def _flowi_parse_inform_batch_entries(prompt: str) -> list[dict[str, Any]]:
     mod_pat = "|".join(re.escape(alias) for _module, alias in aliases)
     pattern = re.compile(rf"(?P<module>{mod_pat})\s*(?:는|은|:|=)\s*(?P<split>[A-Za-z0-9_.-]+)", re.I)
     for m in pattern.finditer(text):
+        if m.start("module") > 0 and re.match(r"[A-Za-z0-9_]", text[m.start("module") - 1]):
+            continue
         raw_mod = m.group("module") or ""
         module = next((mod for mod, alias in aliases if alias.lower() == raw_mod.lower()), raw_mod)
         split = (m.group("split") or "").strip(" .,;:()[]{}")
@@ -1823,7 +1870,19 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
     source_types = _flowi_source_type_tokens(text)
     mail_terms = ("메일", "통보", "알림", "공지", "보내", "발송", "mail", "notice", "notify")
     inform_terms = ("인폼", "inform", "등록", "기록", "남겨", "올려")
+    inform_transfer_terms = ("모듈 전달", "모듈전달", "module transfer", "module handoff")
     batch_entries = _flowi_parse_inform_batch_entries(text)
+    if entries and (entries[0].get("key") or "") == "tablemap":
+        primary = entries[0]
+        return {
+            "name": "route_flowi_feature",
+            "feature": "tablemap",
+            "intent": "tablemap_guidance",
+            "confidence": 0.75,
+            "reason": f"{primary.get('title') or primary.get('key')} feature keyword match",
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
     if _is_current_fab_lot_prompt(text):
         return {
             "name": "query_current_fab_lot_from_fab_db",
@@ -1845,7 +1904,11 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
             "side_effect": "confirm_before_write",
             "invalid_wafers": invalid_wafers,
         }
-    if any(t in text or t in up for t in ("인폼전체", "전체 작성", "전부 작성", "다 작성", "통째로", "모든 모듈")):
+    wants_inform_walkthrough = (
+        any(t in text or t in up for t in ("인폼전체", "전체 작성", "전부 작성", "다 작성", "통째로", "모든 모듈"))
+        or (("인폼" in text or "inform" in text.lower()) and any(t in text for t in ("남기고싶", "남기고 싶", "작성하고싶", "작성하고 싶")))
+    )
+    if wants_inform_walkthrough:
         return {
             "name": "register_inform_walkthrough",
             "feature": "inform",
@@ -1865,7 +1928,11 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
             "requires_confirmation": False,
             "side_effect": "none",
         }
-    if (wafers or invalid_wafers) and step and (root_lots or fab_lots or lots) and any(t in text.lower() or t in text for t in ("split", "스플릿", "진행", "뭘로", "뭐 했", "적용된")):
+    has_split_lookup = (
+        bool(re.search(r"(?<![A-Za-z0-9_])split(?!\s*table|[A-Za-z0-9_])", text, flags=re.I))
+        or any(t in text for t in ("스플릿이", "스플릿 어떻게", "뭘로", "뭐 했", "적용된", "진행했", "진행했어"))
+    )
+    if step and (root_lots or fab_lots or lots) and has_split_lookup:
         return {
             "name": "query_wafer_split_at_step",
             "feature": "splittable",
@@ -1905,8 +1972,10 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
             "requires_confirmation": True,
             "side_effect": "confirm_before_write",
         }
-    has_inform_word = "인폼" in text or "inform" in text.lower()
-    if any(t in text.lower() or t in text for t in inform_terms) and (has_inform_word or module or batch_entries):
+    has_inform_word = "인폼" in text or "inform" in text.lower() or any(t in text.lower() or t in text for t in inform_transfer_terms)
+    has_inform_create = any(t in text.lower() or t in text for t in _FLOWI_APP_CREATE_TERMS + _FLOWI_APP_WRITE_TERMS)
+    has_inform_request = has_inform_create or "남기" in text or "전달" in text or "해줘" in text or "해주세요" in text
+    if has_inform_word and has_inform_request and (has_inform_word or module or batch_entries):
         is_batch = len(batch_entries) >= 2 or any(t in text for t in ("다 만들어", "전부 등록", "각각", "다 등록"))
         return {
             "name": "register_inform_log",
@@ -1937,28 +2006,36 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
             "requires_confirmation": False,
             "side_effect": "none",
         }
-    preview_show = (
-        "보여줘" in text
-        and any(s in {"FAB", "ET", "INLINE", "VM", "EDS"} for s in source_types)
-        and not any(t in text.lower() or t in text for t in ("스플릿테이블", "split table", "splittable"))
+    schema_requested = (
+        any(t in text.lower() or t in text for t in ("컬럼", "어떤 column", "있는지", "schema", "스키마"))
+        or (
+            _flowi_core_feature_hint(text) == "filebrowser"
+            and any(t in text.lower() or t in text for t in ("찾아", "검색"))
+        )
     )
-    if (preview_show or any(t in text.lower() or t in text for t in ("파일", "preview", "db", "row", "schema", "최근", "latest", "파일탐색기", "파일 탐색기"))) and source_types:
-        return {
-            "name": "preview_filebrowser_data",
-            "feature": "filebrowser",
-            "intent": "filebrowser_data_preview",
-            "confidence": 0.75,
-            "reason": _flowi_reason("파일/DB row preview"),
-            "requires_confirmation": False,
-            "side_effect": "none",
-        }
-    if any(t in text.lower() or t in text for t in ("컬럼", "찾아", "검색", "어떤 column", "있는지", "schema")):
+    if schema_requested:
         return {
             "name": "search_filebrowser_schema",
             "feature": "filebrowser",
             "intent": "filebrowser_schema_search",
             "confidence": 0.7,
             "reason": _flowi_reason("파일/DB schema 컬럼 검색"),
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
+    preview_show = (
+        "보여줘" in text
+        and any(s in {"FAB", "ET", "INLINE", "VM", "EDS"} for s in source_types)
+        and not any(t in text.lower() or t in text for t in ("스플릿테이블", "split table", "splittable"))
+    )
+    preview_requested = preview_show or any(t in text.lower() or t in text for t in ("파일", "preview", "db", "row", "최근", "latest", "파일탐색기", "파일 탐색기"))
+    if preview_requested:
+        return {
+            "name": "preview_filebrowser_data",
+            "feature": "filebrowser",
+            "intent": "filebrowser_data_preview",
+            "confidence": 0.75,
+            "reason": _flowi_reason("파일/DB row preview"),
             "requires_confirmation": False,
             "side_effect": "none",
         }
@@ -2015,8 +2092,8 @@ def _flowi_function_schema(name: str) -> dict[str, Any]:
             "required": ["keyword"],
         },
         "query_wafer_split_at_step": {
-            "description": "특정 wafer가 특정 function step에서 받은 KNOB/MASK 조합(split)을 조회한다.",
-            "required": ["root_lot_ids 또는 fab_lot_ids", "wafer_ids", "step"],
+            "description": "특정 lot 또는 wafer가 특정 function step에서 받은 KNOB/MASK/FAB 조합(split)을 SplitTable 화면 기준으로 조회한다.",
+            "required": ["root_lot_ids 또는 fab_lot_ids", "step"],
         },
         "find_lots_by_knob_value": {
             "description": "특정 step에서 특정 KNOB value를 받은 lot/wafer를 찾아 FAB 진행 위치와 join한다.",
@@ -2028,7 +2105,7 @@ def _flowi_function_schema(name: str) -> dict[str, Any]:
         },
         "register_inform_walkthrough": {
             "description": "모듈별 인폼 전체 작성 multi-turn walkthrough를 시작/진행/확인한다.",
-            "required": ["root_lot_ids"],
+            "required": ["root_lot_ids 또는 fab_lot_ids"],
         },
         "build_dashboard_metric_chart": {
             "description": "ET/INLINE/VM/EDS/FAB 데이터를 읽어 Dashboard 차트용 query arguments를 만든다.",
@@ -2130,6 +2207,24 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
         "read_only": True,
         "side_effect": selected.get("side_effect") or "none",
     }
+    if selected_name in {"register_inform_log", "register_inform_walkthrough", "compose_inform_module_mail"} and not resolved_product:
+        lots_for_product = list(dict.fromkeys(
+            [str(x) for x in (arguments["root_lot_ids"] or []) if str(x).strip()]
+            + [str(x) for x in (arguments["fab_lot_ids"] or []) if str(x).strip()]
+            + [str(x) for x in (arguments["lot_ids"] or []) if str(x).strip()]
+        ))
+        candidates = _resolve_products_for_lots(lots_for_product, kinds=("FAB", "ML_TABLE"), limit=4) if lots_for_product else []
+        products = []
+        seen_products: set[str] = set()
+        for row in candidates:
+            prod = str(row.get("product") or "").strip()
+            if prod and prod not in seen_products:
+                seen_products.add(prod)
+                products.append(prod)
+        if len(products) == 1:
+            resolved_product = products[0]
+            arguments["product"] = resolved_product
+            arguments["product_source"] = "lot_candidate"
     if step:
         arguments["step"] = step
     if group:
@@ -2208,10 +2303,12 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
     if "keyword" in required and not arguments.get("keyword"):
         missing.append("keyword")
     if selected_name == "register_inform_log" and not batch_entries:
-        if not arguments.get("note"):
+        if not arguments.get("module"):
+            missing.append("module")
+        if not arguments.get("split_set"):
+            missing.append("split_set")
+        if not arguments.get("note") and not arguments.get("reason"):
             missing.append("note")
-        elif not resolved_product:
-            missing.append("product")
     if selected_name == "query_wafer_split_at_step" and not resolved_product:
         missing.insert(0, "product")
     if selected_name == "compose_inform_module_mail" and "module" in missing:
@@ -2267,6 +2364,15 @@ def _flowi_preview_tool(preview: dict[str, Any], *, answer: str = "") -> dict[st
     validation = preview.get("validation") if isinstance(preview.get("validation"), dict) else {}
     missing = validation.get("missing") if isinstance(validation.get("missing"), list) else []
     rows = [{"field": k, "value": json.dumps(v, ensure_ascii=False, default=str) if isinstance(v, (dict, list)) else v} for k, v in args.items() if v not in (None, "", [], {})]
+    last_partial_prompt = preview.get("last_partial_prompt") or preview.get("prompt") or ""
+    slots = {
+        "product": args.get("product") or "",
+        "root_lot_ids": args.get("root_lot_ids") or [],
+        "fab_lot_ids": args.get("fab_lot_ids") or [],
+        "wafer_ids": args.get("wafer_ids") or [],
+        "step": args.get("step") or "",
+        "module": args.get("module") or "",
+    }
     tool = {
         "handled": True,
         "intent": selected.get("intent") or selected.get("name") or "flowi_function_preview",
@@ -2277,19 +2383,13 @@ def _flowi_preview_tool(preview: dict[str, Any], *, answer: str = "") -> dict[st
         "side_effect": selected.get("side_effect") or "none",
         "missing": missing,
         "arguments": args,
+        "arguments_partial": args,
         "arguments_choices": preview.get("arguments_choices") or {},
         "missing_freetext": preview.get("missing_freetext") or [],
-        "last_partial_prompt": preview.get("last_partial_prompt") or preview.get("prompt") or "",
-        "arguments_partial": args,
+        "last_partial_prompt": last_partial_prompt,
+        "pending_prompt": last_partial_prompt if missing else "",
         "validation": validation,
-        "slots": {
-            "product": args.get("product") or "",
-            "root_lot_ids": args.get("root_lot_ids") or [],
-            "fab_lot_ids": args.get("fab_lot_ids") or [],
-            "wafer_ids": args.get("wafer_ids") or [],
-            "step": args.get("step") or "",
-            "module": args.get("module") or "",
-        },
+        "slots": slots,
         "table": {
             "kind": "flowi_function_arguments",
             "title": selected.get("name") or "Flowi function arguments",
@@ -2318,7 +2418,7 @@ def _unit_feature_guidance(
 ) -> dict:
     entries = _matched_feature_entrypoints(prompt, limit=3, allowed_keys=allowed_keys)
     if not entries:
-        fallback = [FLOWI_FEATURE_ENTRYPOINTS[2], FLOWI_FEATURE_ENTRYPOINTS[7], FLOWI_FEATURE_ENTRYPOINTS[1]]
+        fallback = [item for key in FLOWI_CORE_AGENT_FEATURES for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] == key]
         entries = [item for item in fallback if allowed_keys is None or item["key"] in allowed_keys]
     if not entries:
         return {
@@ -2332,7 +2432,7 @@ def _unit_feature_guidance(
     action = FLOWI_UNIT_ACTIONS.get(primary["key"], {})
     slots = _slot_summary(prompt, product)
     missing = []
-    if primary["key"] in {"splittable", "ettime"}:
+    if primary["key"] == "ettime":
         if not slots.get("product"):
             missing.append("product")
         if not slots.get("lots"):
@@ -2385,7 +2485,8 @@ def _unit_feature_guidance(
 
 def _feature_context(prompt: str, allowed_keys: set[str] | None = None) -> str:
     matches = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
-    items = matches or [item for item in FLOWI_FEATURE_ENTRYPOINTS[:6] if allowed_keys is None or item["key"] in allowed_keys]
+    core_items = [item for key in FLOWI_CORE_AGENT_FEATURES for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] == key and (allowed_keys is None or key in allowed_keys)]
+    items = matches or core_items or [item for item in FLOWI_FEATURE_ENTRYPOINTS[:6] if allowed_keys is None or item["key"] in allowed_keys]
     summary = "\n".join(
         f"- {it['title']}({it['key']}): {it['description']} 시작 질문 예시: {it['prompt']}"
         for it in items
@@ -3140,7 +3241,14 @@ def _configured_product_names() -> dict[str, str]:
     try:
         for root in _db_root_candidates("FAB"):
             for child in root.iterdir():
-                if child.is_dir() and child.name:
+                child_name = str(child.name or "").strip()
+                child_u = _upper(child_name)
+                if (
+                    child.is_dir()
+                    and child_name
+                    and "RAWDATA_DB" not in child_u
+                    and child_u not in {"FAB", "ET", "INLINE", "VM", "EDS", "MATCHING", "_BACKUPS"}
+                ):
                     products.setdefault(_upper(child.name), child.name)
     except Exception:
         pass
@@ -3248,6 +3356,40 @@ def _classified_lot_tokens(prompt: str) -> dict[str, list[str]]:
                 seen.add(tok)
                 bucket.append(tok)
     return {"root_lot_ids": root_ids, "fab_lot_ids": fab_ids}
+
+
+def _flowi_root_from_fab_lot(value: str) -> str:
+    text = _upper(value).strip()
+    if not text or "." not in text:
+        return ""
+    head = text.split(".", 1)[0]
+    return head[:5] if len(head) >= 5 else ""
+
+
+def _flowi_lot_scope_terms(*groups: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        key = _upper(text)
+        if key not in seen:
+            seen.add(key)
+            out.append(text)
+        root = _flowi_root_from_fab_lot(text)
+        if root and root not in seen:
+            seen.add(root)
+            out.append(root)
+
+    for group in groups:
+        if isinstance(group, (list, tuple, set)):
+            for item in group:
+                add(item)
+        else:
+            add(group)
+    return out
 
 
 def _is_step_id_token(tok: str) -> bool:
@@ -5670,7 +5812,7 @@ def _flowi_field_question(field: str) -> str:
         "metrics_or_items": "어느 항목인가요?",
         "knob_value": "어떤 KNOB 값인가요?",
         "source_type": "어느 Source인가요?",
-        "split_set": "어느 Split인가요?",
+        "split_set": "SplitTable은 어떤 Split으로 진행할까요?",
         "note": "어떤 내용을 남길까요?",
         "entries": "모듈별 Split을 어떻게 넣을까요?",
         "wafer_ids": "어느 Wafer인가요?",
@@ -5863,15 +6005,52 @@ def _is_current_fab_lot_prompt(prompt: str) -> bool:
         return False
     mentions_fab_lot = any(t in low for t in ("fab_lot", "fab lot", "fab-lot", "fablot"))
     mentions_lot_id_with_fab = "fab" in low and ("lot id" in low or "lot_id" in low)
-    if not (mentions_fab_lot or mentions_lot_id_with_fab):
+    mentions_current_lot_id = any(t in low for t in ("lot_id", "lot id", "lotid")) and "fab" not in low
+    if not (mentions_fab_lot or mentions_lot_id_with_fab or mentions_current_lot_id):
         return False
     return any(t in low or t in text for t in ("현재", "지금", "current", "now", "뭐야", "무엇", "알려", "찾", "조회", "확인"))
+
+
+def _flowi_current_lot_id_requested(prompt: str) -> bool:
+    low = str(prompt or "").lower()
+    return any(t in low for t in ("lot_id", "lot id", "lotid")) and not any(
+        t in low for t in ("fab_lot", "fab lot", "fab-lot", "fablot")
+    )
+
+
+def _flowi_exact_lot_scope_expr(cols: list[str], root_lots: list[str], fab_lots: list[str], lots: list[str]):
+    root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+    lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+    fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
+    expr = None
+
+    def add(piece):
+        nonlocal expr
+        if piece is not None:
+            expr = piece if expr is None else (expr | piece)
+
+    roots = [_upper(v) for v in (root_lots or []) if _upper(v)]
+    fabs = [_upper(v) for v in (fab_lots or []) if _upper(v)]
+    other_lots = [_upper(v) for v in (lots or []) if _upper(v)]
+    if roots and root_col:
+        add(pl.col(root_col).cast(_STR, strict=False).str.to_uppercase().is_in(roots))
+    if fabs:
+        if fab_col:
+            add(pl.col(fab_col).cast(_STR, strict=False).str.to_uppercase().is_in(fabs))
+        if lot_col:
+            add(pl.col(lot_col).cast(_STR, strict=False).str.to_uppercase().is_in(fabs))
+    if other_lots and not (roots or fabs):
+        add(_or_contains([c for c in (root_col, lot_col, fab_col) if c], other_lots))
+    return expr
 
 
 def _handle_current_fab_lot_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     if not _is_current_fab_lot_prompt(prompt):
         return {"handled": False}
     lots = _lot_tokens(prompt)
+    classified = _classified_lot_tokens(prompt)
+    roots = [str(x) for x in classified.get("root_lot_ids") or []]
+    fabs = [str(x) for x in classified.get("fab_lot_ids") or []]
     product_hint, candidate_tool = _product_or_candidate_tool(
         prompt, product, lots, kinds=("FAB",), intent="current_fab_lot_lookup"
     )
@@ -5912,7 +6091,11 @@ def _handle_current_fab_lot_lookup(prompt: str, product: str, max_rows: int) -> 
         aliases = _product_aliases(product_hint)
         if aliases and product_col:
             lf = lf.filter(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
-        lf = _source_filter_lots(lf, cols, lots)
+        lot_expr = _flowi_exact_lot_scope_expr(cols, roots, fabs, lots)
+        if lot_expr is not None:
+            lf = lf.filter(lot_expr)
+        else:
+            lf = _source_filter_lots(lf, cols, lots)
         if wafers and wafer_col:
             wf_expr = _wafer_match_expr(wafer_col, wafers)
             if wf_expr is not None:
@@ -5951,25 +6134,34 @@ def _handle_current_fab_lot_lookup(prompt: str, product: str, max_rows: int) -> 
     cols_out = ["product", "root_lot_id", "wafer_id", "fab_lot_id", "lot_id", "step_id", "process_id", "time"]
     rows = [{k: r.get(k, "") for k in cols_out} for r in rows_all[:max(1, min(max_rows, 25))]]
     wafer_label = f" wafer #{current.get('wafer_id')}" if current.get("wafer_id") else ""
-    answer = (
-        f"{current.get('product') or product_hint} {current.get('root_lot_id') or lots[0]}{wafer_label}의 현재 fab_lot_id는 "
-        f"`{current.get('fab_lot_id')}`입니다."
-    )
+    wants_lot_id = _flowi_current_lot_id_requested(prompt)
+    if wants_lot_id:
+        answer = (
+            f"{current.get('product') or product_hint} {current.get('root_lot_id') or lots[0]}{wafer_label}의 현재 lot_id는 "
+            f"`{current.get('lot_id') or current.get('fab_lot_id')}`입니다."
+        )
+    else:
+        answer = (
+            f"{current.get('product') or product_hint} {current.get('root_lot_id') or lots[0]}{wafer_label}의 현재 fab_lot_id는 "
+            f"`{current.get('fab_lot_id')}`입니다."
+        )
     if current.get("time") or current.get("step_id"):
         answer += f" 기준 row: step_id={current.get('step_id') or '-'}, time={current.get('time') or '-'}."
+    if current.get("root_lot_id") or current.get("wafer_id"):
+        answer += " 기준 SQL: root_lot_id/wafer_id 조건 후 tkout_time 최신 row."
     return {
         "handled": True,
         "intent": "current_fab_lot_lookup",
         "action": "query_current_fab_lot_from_fab_db",
         "answer": answer,
         "table": {"kind": "current_fab_lot_lookup", "title": "Current FAB lot", "placement": "below", "columns": _table_columns(cols_out), "rows": rows, "total": len(rows_all)},
-        "filters": {"product": product_hint, "lots": lots, "wafers": wafers, "source": "FAB"},
+        "filters": {"product": product_hint, "root_lot_ids": roots, "fab_lot_ids": fabs, "lots": lots, "wafers": wafers, "source": "FAB", "latest_order": "tkout_time desc"},
         "feature": "filebrowser",
     }
 
 
 def _resolve_products_for_lots(lots: list[str], *, kinds: tuple[str, ...] = ("FAB", "ET", "INLINE", "ML_TABLE"), limit: int = 12) -> list[dict[str, Any]]:
-    clean_lots = [x for x in dict.fromkeys(_text(v) for v in lots) if x]
+    clean_lots = _flowi_lot_scope_terms([x for x in dict.fromkeys(_text(v) for v in lots) if x])
     if not clean_lots:
         return []
     out: dict[str, dict[str, Any]] = {}
@@ -6058,6 +6250,8 @@ def _product_or_candidate_tool(prompt: str, product: str, lots: list[str], *, ki
             "intent": intent,
             "action": "clarify_product",
             "answer": "같은 lot/root_lot_id가 여러 product에서 발견됐습니다. product를 선택한 뒤 다시 진행해주세요.",
+            "missing": ["product"],
+            "pending_prompt": prompt.strip(),
             "clarification": {"question": "어느 product 기준으로 볼까요?", "choices": choices},
             "table": {
                 "kind": "flowi_product_candidates",
@@ -6785,7 +6979,9 @@ def _flowi_splittable_note_intent(prompt: str) -> bool:
     has_split = any(t in low or t in text for t in ("split table", "splittable", "스플릿", "스플릿테이블", "스플릿 테이블"))
     has_note = any(t in low or t in text for t in ("꼬리표", "태그", "tag", "메모", "memo", "코멘트", "comment"))
     has_write = any(t in low or t in text for t in _FLOWI_APP_WRITE_TERMS + _FLOWI_APP_CREATE_TERMS)
-    return bool(has_split and has_note and has_write)
+    has_lot_wafer = bool(_lot_tokens(text) and _wafer_tokens(text))
+    issue_like = any(t in low or t in text for t in ("이상있", "이상 있", "문제", "불량", "issue", "fail", "failure"))
+    return bool(has_note and has_write and (has_split or (_product_hint(text) and has_lot_wafer) or (has_lot_wafer and not issue_like)))
 
 
 def _clean_flowi_splittable_note_text(candidate: str, prompt: str) -> str:
@@ -6800,6 +6996,8 @@ def _clean_flowi_splittable_note_text(candidate: str, prompt: str) -> str:
         text = re.sub(re.escape(term), " ", text, flags=re.I)
     for lot in _lot_tokens(prompt):
         text = re.sub(rf"\b{re.escape(lot)}\b\s*(?:에|에는|으로|로|를|을|은|는)?", " ", text, flags=re.I)
+    text = re.sub(r"#\s*\d{1,4}\s*(?:번|번\s*WF|WF|WAFER|웨이퍼|에|에는|으로|로|를|을|은|는)?", " ", text, flags=re.I)
+    text = re.sub(r"\b(?:WF|WAFER|W)\s*0?\d{1,4}\b\s*(?:에|에는|으로|로|를|을|은|는)?", " ", text, flags=re.I)
     product = _product_hint(prompt)
     if product:
         text = re.sub(rf"\b{re.escape(product)}\b\s*(?:에|에는|으로|로|를|을|은|는)?", " ", text, flags=re.I)
@@ -6850,9 +7048,10 @@ def _flowi_splittable_product_id(product: str) -> str:
     return f"ML_TABLE_{raw}"
 
 
-def _flowi_splittable_note_confirm_text(product: str, root_lot_id: str, text: str) -> str:
+def _flowi_splittable_note_confirm_text(product: str, root_lot_id: str, text: str, scope: str = "lot", wafers: list[str] | None = None) -> str:
     basis = re.sub(r"\s+", " ", str(text or "")).strip()[:80]
-    return f"SPLITTABLE_NOTE_CONFIRM::{product}::{root_lot_id}::{basis}"
+    wf = ",".join(str(w) for w in (wafers or []) if str(w).strip())
+    return f"SPLITTABLE_NOTE_CONFIRM::{product}::{root_lot_id}::{scope}::{wf}::{basis}"
 
 
 def _flowi_splittable_note_table(rows: list[dict[str, Any]], title: str = "SplitTable lot note") -> dict[str, Any]:
@@ -6890,6 +7089,7 @@ def _flowi_splittable_note_payload(prompt: str, me: dict[str, Any]) -> tuple[dic
     root_lots = classified.get("root_lot_ids") or []
     fab_lots = classified.get("fab_lot_ids") or []
     root_lot_id = root_lots[0] if root_lots else ((fab_lots[0][:5] if fab_lots else "") or (_lot_tokens(prompt)[0] if _lot_tokens(prompt) else ""))
+    wafer_ids = _wafer_tokens(prompt)
     note_text = _flowi_prompt_splittable_note_text(prompt)
     product = _flowi_splittable_product_id(_product_hint(prompt))
     missing: list[str] = []
@@ -6923,18 +7123,21 @@ def _flowi_splittable_note_payload(prompt: str, me: dict[str, Any]) -> tuple[dic
     if missing:
         return None, _flowi_app_write_missing("splittable", missing, prompt, product, [root_lot_id] if root_lot_id else [], [])
     return {
-        "scope": "lot",
+        "scope": "wafer" if wafer_ids else "lot",
         "product": product,
         "root_lot_id": root_lot_id,
+        "wafer_ids": wafer_ids,
         "text": note_text,
         "username": me.get("username") or "user",
     }, None
 
 
-def _save_flowi_splittable_lot_note(payload: dict[str, Any]) -> dict[str, Any]:
+def _save_flowi_splittable_note(payload: dict[str, Any]) -> dict[str, Any]:
     from routers import splittable as splittable_router
     product = _flowi_splittable_product_id(payload.get("product") or "")
     root_lot_id = _upper(payload.get("root_lot_id") or "")
+    scope = str(payload.get("scope") or "lot").strip()
+    wafer_ids = [str(w).strip() for w in (payload.get("wafer_ids") or []) if str(w).strip()]
     text = str(payload.get("text") or "").strip()
     username = _safe_username(payload.get("username") or "user")
     if not product:
@@ -6945,14 +7148,27 @@ def _save_flowi_splittable_lot_note(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("꼬리표 내용이 비어 있습니다.")
     if len(text) > 2000:
         raise ValueError("꼬리표 내용은 2000자 이하로 입력해주세요.")
+    if scope == "wafer":
+        if not wafer_ids:
+            raise ValueError("wafer scope에는 wafer_id가 필요합니다.")
+        wafer_id = _normalize_wafer_id(wafer_ids[0])
+        if not wafer_id:
+            raise ValueError("유효한 wafer_id가 필요합니다.")
+        key = splittable_router._notes_key_wafer(product, root_lot_id, wafer_id)
+    else:
+        scope = "lot"
+        wafer_id = ""
+        key = splittable_router._notes_key_lot(product, root_lot_id)
     entry = {
         "id": splittable_router._new_note_id(),
-        "scope": "lot",
-        "key": splittable_router._notes_key_lot(product, root_lot_id),
+        "scope": scope,
+        "key": key,
         "text": text,
         "username": username,
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if wafer_id:
+        entry["wafer_id"] = wafer_id
     entries = splittable_router._load_notes()
     entries.append(entry)
     splittable_router._save_notes(entries)
@@ -6982,7 +7198,7 @@ def _flowi_splittable_plan_intent(prompt: str) -> bool:
     if _FLOWI_SPLITTABLE_PLAN_MARKER in text.upper():
         return True
     has_plan = any(t in low or t in text for t in ("plan", "플랜", "계획"))
-    has_knob_or_split = any(t in low or t in text for t in ("knob", "노브", "스플릿", "splittable", "split table"))
+    has_knob_or_split = any(t in low or t in text for t in ("knob", "노브", "스플릿", "splittable", "split table")) or bool(_flowi_func_step_token(text))
     has_write = any(t in low or t in text for t in ("넣어", "입력", "저장", "등록", "plan해", "plan 해", "set", "save"))
     return bool(has_plan and has_knob_or_split and has_write)
 
@@ -7005,6 +7221,16 @@ def _flowi_plan_table(rows: list[dict[str, Any]], title: str = "SplitTable plan 
 
 def _flowi_plan_value_from_tail(tail: str) -> str:
     text = re.sub(r"\s+", " ", str(tail or "")).strip()
+    step = _flowi_func_step_token(text)
+    if step:
+        text = re.sub(re.escape(step), " ", text, flags=re.I)
+    text = re.sub(r"\b\d+\.\d+\s+[A-Z][A-Z0-9_/]*\b", " ", text, flags=re.I)
+    text = re.sub(r"\b(?:까지|부터|은|는|에|으로|로|값|value)\b", " ", text, flags=re.I)
+    m = re.search(r"\b([A-Za-z0-9_.-]{1,60})\s*(?:로|으로)?\s*(?:plan|플랜|계획)", text, flags=re.I)
+    if m:
+        val = m.group(1).strip(" .,:;")
+        if _upper(val) not in {"PLAN", "SAVE", "SET", "KNOB", "WF", "WAFER"}:
+            return val[:80]
     text = re.sub(r"^(?:은|는|에|으로|로|:|=|-)\s*", "", text)
     m = re.search(r"([A-Za-z0-9_.-]{1,60})", text)
     if not m:
@@ -7096,6 +7322,115 @@ def _flowi_splittable_plan_product_choices(prompt: str, candidates: list[dict[st
     return choices[:3]
 
 
+def _flowi_pick_plan_row_from_view(rows: list[dict[str, Any]], prompt: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    planable = [
+        row for row in rows
+        if isinstance(row, dict) and any(bool(c.get("can_plan")) for c in (row.get("cells") or []) if isinstance(c, dict))
+    ]
+    if not planable:
+        return None, []
+    terms = _flowi_knob_tokens(prompt)
+    up = _upper(prompt)
+    explicit_terms = set()
+    for term in terms:
+        explicit_terms.add(_upper(term))
+        if not _upper(term).startswith("KNOB_"):
+            explicit_terms.add("KNOB_" + _upper(term))
+    for m in re.finditer(r"\b([A-Z])\s+KNOB\b|\bKNOB[_\s-]?([A-Z0-9]+)\b", up):
+        raw = m.group(1) or m.group(2) or ""
+        if raw:
+            explicit_terms.add("KNOB_" + raw)
+    if explicit_terms:
+        exact = []
+        for row in planable:
+            text = _upper(" ".join([str(row.get("parameter") or ""), str(row.get("display") or "")]))
+            if any(term and term in text for term in explicit_terms):
+                exact.append(row)
+        if exact:
+            return exact[0], exact
+    return (planable[0], planable) if len(planable) == 1 else (None, planable)
+
+
+def _flowi_plan_column_choices(prompt: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    choices = []
+    for row in rows[:3]:
+        param = str(row.get("parameter") or "")
+        display = str(row.get("display") or param)
+        choices.append({
+            "id": f"plan_col_{len(choices) + 1}",
+            "label": str(len(choices) + 1),
+            "title": display,
+            "recommended": len(choices) == 0,
+            "description": f"{param} 컬럼에 plan을 넣습니다.",
+            "prompt": f"{prompt.strip()} {param}",
+        })
+    return choices
+
+
+def _flowi_build_plan_from_splittable_view(
+    product: str,
+    root_lot_id: str,
+    prompt: str,
+    assignments: list[dict[str, Any]],
+    invalid_wafers: list[str],
+    me: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    step = _flowi_func_step_token(prompt)
+    args = {"product": product, "root_lot_ids": [root_lot_id], "wafer_ids": [], "step": step}
+    view_tool = _flowi_query_splittable_view_tool(args, product, prompt, max_rows=80)
+    if not view_tool.get("handled"):
+        return None, None
+    split_rows = (view_tool.get("split_view") or {}).get("rows") or []
+    picked, candidates = _flowi_pick_plan_row_from_view(split_rows, prompt)
+    if not picked and candidates:
+        return None, _flowi_app_write_missing(
+            "splittable",
+            ["KNOB/FAB plan 컬럼"],
+            prompt,
+            product,
+            [root_lot_id],
+            _wafer_tokens(prompt),
+            choices=_flowi_plan_column_choices(prompt, candidates),
+        )
+    if not picked:
+        return None, None
+    header_to_idx = {
+        str(h).lstrip("#"): i
+        for i, h in enumerate((view_tool.get("split_view") or {}).get("headers") or [])
+    }
+    cells = picked.get("cells") if isinstance(picked.get("cells"), list) else []
+    plans: dict[str, str] = {}
+    summary_parts = []
+    for item in assignments:
+        value = str(item.get("value") or "").strip()
+        wafers = [wf for wf in (item.get("wafers") or []) if _normalize_wafer_id(wf)]
+        if not value or not wafers:
+            continue
+        saved = 0
+        for wf in wafers:
+            idx = header_to_idx.get(str(wf))
+            cell = cells[idx] if idx is not None and idx < len(cells) and isinstance(cells[idx], dict) else {}
+            key = str(cell.get("key") or "").strip()
+            if key and cell.get("can_plan"):
+                plans[key] = value
+                saved += 1
+        summary_parts.append(f"{item.get('label')}: {value} ({saved}wf)")
+    if not plans:
+        return None, _flowi_app_write_missing("splittable", ["SplitTable 화면 기준 plan 가능한 cell"], prompt, product, [root_lot_id], _wafer_tokens(prompt))
+    return {
+        "product": product,
+        "root_lot_id": root_lot_id,
+        "knob": picked.get("parameter") or "",
+        "plans": plans,
+        "assignments": assignments,
+        "summary": summary_parts,
+        "invalid_wafers": invalid_wafers,
+        "username": me.get("username") or "user",
+        "knob_candidates": [row.get("parameter") for row in candidates if isinstance(row, dict)][:12],
+        "source": "splittable.view",
+    }, None
+
+
 def _flowi_build_splittable_plan_payload(prompt: str, me: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     lots = _lot_tokens(prompt)
     classified = _classified_lot_tokens(prompt)
@@ -7133,6 +7468,11 @@ def _flowi_build_splittable_plan_payload(prompt: str, me: dict[str, Any]) -> tup
         missing.append("wafer별 plan 값")
     if missing:
         return None, _flowi_app_write_missing("splittable", missing, prompt, product, [root_lot_id] if root_lot_id else [], _wafer_tokens(prompt))
+    view_draft, view_missing = _flowi_build_plan_from_splittable_view(product, root_lot_id, prompt, assignments, invalid_wafers, me)
+    if view_missing:
+        return None, view_missing
+    if view_draft:
+        return view_draft, None
     files = _ml_files(product)
     if not files:
         return None, {
@@ -7328,7 +7668,9 @@ def _handle_splittable_note_request(prompt: str, me: dict[str, Any], allowed_key
         product = _flowi_splittable_product_id(payload.get("product") or "")
         root_lot_id = _upper(payload.get("root_lot_id") or "")
         note_text = str(payload.get("text") or "").strip()
-        expected = _flowi_splittable_note_confirm_text(product, root_lot_id, note_text)
+        scope = str(payload.get("scope") or "lot").strip() or "lot"
+        wafer_ids = [str(w).strip() for w in (payload.get("wafer_ids") or []) if str(w).strip()]
+        expected = _flowi_splittable_note_confirm_text(product, root_lot_id, note_text, scope, wafer_ids)
         if str(payload.get("confirm") or "").strip() != expected:
             return {
                 "handled": True,
@@ -7344,7 +7686,7 @@ def _handle_splittable_note_request(prompt: str, me: dict[str, Any], allowed_key
                         "label": "1",
                         "title": "꼬리표 등록",
                         "recommended": True,
-                        "description": f"{product} / {root_lot_id}에 `{note_text[:80]}` 등록",
+                        "description": f"{product} / {root_lot_id}{' #' + ',#'.join(wafer_ids) if wafer_ids else ''}에 `{note_text[:80]}` 등록",
                         "prompt": f"{_FLOWI_SPLITTABLE_NOTE_MARKER} {json.dumps({**payload, 'product': product, 'root_lot_id': root_lot_id, 'confirm': expected}, ensure_ascii=False)}",
                     }, {
                         "id": "cancel_splittable_note",
@@ -7358,11 +7700,13 @@ def _handle_splittable_note_request(prompt: str, me: dict[str, Any], allowed_key
                     {"field": "status", "value": "confirmation_required"},
                     {"field": "product", "value": product},
                     {"field": "root_lot_id", "value": root_lot_id},
+                    {"field": "scope", "value": scope},
+                    {"field": "wafer_ids", "value": ", ".join(wafer_ids)},
                     {"field": "note", "value": note_text},
                 ]),
             }
         try:
-            entry = _save_flowi_splittable_lot_note({**payload, "product": product, "root_lot_id": root_lot_id})
+            entry = _save_flowi_splittable_note({**payload, "product": product, "root_lot_id": root_lot_id, "scope": scope, "wafer_ids": wafer_ids})
         except Exception as e:
             return {
                 "handled": True,
@@ -7384,6 +7728,8 @@ def _handle_splittable_note_request(prompt: str, me: dict[str, Any], allowed_key
                 {"field": "id", "value": entry.get("id") or ""},
                 {"field": "product", "value": product},
                 {"field": "root_lot_id", "value": root_lot_id},
+                {"field": "scope", "value": entry.get("scope") or ""},
+                {"field": "wafer_id", "value": entry.get("wafer_id") or ""},
                 {"field": "note", "value": entry.get("text") or ""},
             ]),
         }
@@ -7393,7 +7739,7 @@ def _handle_splittable_note_request(prompt: str, me: dict[str, Any], allowed_key
         return missing_tool
     if not draft:
         return {"handled": False}
-    expected = _flowi_splittable_note_confirm_text(draft["product"], draft["root_lot_id"], draft["text"])
+    expected = _flowi_splittable_note_confirm_text(draft["product"], draft["root_lot_id"], draft["text"], draft.get("scope") or "lot", draft.get("wafer_ids") or [])
     confirm_payload = {**draft, "confirm": expected}
     return {
         "handled": True,
@@ -7402,7 +7748,7 @@ def _handle_splittable_note_request(prompt: str, me: dict[str, Any], allowed_key
         "requires_confirmation": True,
         "answer": "스플릿 테이블 lot 꼬리표 등록 준비가 됐습니다. 확인 선택을 누르면 실제로 등록합니다.",
         "feature": "splittable",
-        "slots": {"product": draft["product"], "lots": [draft["root_lot_id"]], "wafers": []},
+        "slots": {"product": draft["product"], "lots": [draft["root_lot_id"]], "wafers": draft.get("wafer_ids") or []},
         "clarification": {
             "question": "이 꼬리표를 스플릿 테이블 lot에 등록할까요?",
             "choices": [{
@@ -7410,7 +7756,7 @@ def _handle_splittable_note_request(prompt: str, me: dict[str, Any], allowed_key
                 "label": "1",
                 "title": "꼬리표 등록",
                 "recommended": True,
-                "description": f"{draft['product']} / {draft['root_lot_id']}에 `{draft['text'][:80]}` 등록",
+                "description": f"{draft['product']} / {draft['root_lot_id']}{' #' + ',#'.join(draft.get('wafer_ids') or []) if draft.get('wafer_ids') else ''}에 `{draft['text'][:80]}` 등록",
                 "prompt": f"{_FLOWI_SPLITTABLE_NOTE_MARKER} {json.dumps(confirm_payload, ensure_ascii=False)}",
             }, {
                 "id": "cancel_splittable_note",
@@ -7424,6 +7770,8 @@ def _handle_splittable_note_request(prompt: str, me: dict[str, Any], allowed_key
             {"field": "status", "value": "draft_ready"},
             {"field": "product", "value": draft["product"]},
             {"field": "root_lot_id", "value": draft["root_lot_id"]},
+            {"field": "scope", "value": draft.get("scope") or "lot"},
+            {"field": "wafer_ids", "value": ", ".join(draft.get("wafer_ids") or [])},
             {"field": "note", "value": draft["text"]},
             {"field": "policy", "value": "스플릿 테이블 권한이 있는 사용자는 lot 꼬리표를 확인 후 등록할 수 있습니다. DB/Files 원본은 수정하지 않습니다."},
         ]),
@@ -7896,6 +8244,111 @@ def _flowi_pending_create_from_context(agent_context: dict[str, Any] | None) -> 
     return {}
 
 
+def _flowi_pending_core_skill_from_context(agent_context: dict[str, Any] | None) -> dict[str, Any]:
+    messages = _flowi_context_messages(agent_context)
+    for msg in reversed(messages):
+        feature = str(msg.get("feature") or "").strip()
+        if feature not in FLOWI_CORE_AGENT_FEATURES:
+            continue
+        missing = msg.get("missing") if isinstance(msg.get("missing"), list) else []
+        if not missing:
+            validation = msg.get("validation") if isinstance(msg.get("validation"), dict) else {}
+            missing = validation.get("missing") if isinstance(validation.get("missing"), list) else []
+        pending_prompt = str(msg.get("pending_prompt") or msg.get("last_partial_prompt") or "").strip()
+        if not pending_prompt:
+            workflow = msg.get("workflow_state") if isinstance(msg.get("workflow_state"), dict) else {}
+            pending_prompt = str(workflow.get("last_prompt") or "").strip()
+        if not pending_prompt or not missing:
+            continue
+        return {
+            "feature": feature,
+            "action": str(msg.get("action") or "").strip(),
+            "missing": missing,
+            "pending_prompt": pending_prompt,
+        }
+    return {}
+
+
+def _flowi_looks_like_core_missing_followup(prompt: str, pending: dict[str, Any]) -> bool:
+    text = str(prompt or "").strip()
+    if not text:
+        return False
+    if text.startswith(_FLOWI_INFORM_CONFIRM_MARKER) or text.startswith(_FLOWI_INFORM_WALKTHROUGH_MARKER):
+        return False
+    missing = {_flowi_missing_key(x) for x in (pending.get("missing") or [])}
+    if len(text) > 160 and not (":" in text or missing & {"note", "reason", "entries"}):
+        return False
+    entries = _matched_feature_entrypoints(text, limit=1)
+    source_value_followup = "source_type" in missing and bool(_flowi_source_type_tokens(text))
+    if (
+        entries
+        and entries[0].get("key") != pending.get("feature")
+        and not (missing & {"note", "reason", "entries", "comment"})
+        and not source_value_followup
+    ):
+        return False
+    return True
+
+
+def _flowi_is_splittable_source_followup(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return any(t in low or t in text for t in ("스플릿테이블", "스플릿 테이블", "split table", "splittable", "ml_table", "ml table"))
+
+
+def _flowi_format_core_missing_followup(prompt: str, pending: dict[str, Any]) -> str:
+    text = str(prompt or "").strip()
+    if not text or re.search(r"[:=]", text):
+        return text
+    missing = [_flowi_missing_key(x) for x in (pending.get("missing") or [])]
+    first = missing[0] if missing else ""
+    feature = str(pending.get("feature") or "")
+    if first == "product" and feature == "splittable" and _flowi_is_splittable_source_followup(text):
+        return "ML_TABLE"
+    if first == "module":
+        return f"module: {text}"
+    if first == "split_set":
+        return f"split_set: {text}"
+    if first in {"note", "reason"}:
+        return f"내용: {text}" if first == "note" else f"reason: {text}"
+    if first == "product":
+        return f"product: {text}"
+    if first in {"root_lot_ids", "root_lot_id", "lot_ids", "fab_lot_ids", "root_lot_id_or_fab_lot_id"}:
+        return f"lot: {text}"
+    if first == "source_type":
+        return f"source_type: {text}"
+    return text
+
+
+def _flowi_resolve_pending_core_prompt(
+    prompt: str,
+    agent_context: dict[str, Any] | None,
+    allowed_keys: set[str] | None,
+) -> str:
+    pending = _flowi_pending_core_skill_from_context(agent_context)
+    if not pending:
+        return prompt
+    feature = str(pending.get("feature") or "")
+    if allowed_keys is not None and feature not in allowed_keys:
+        return prompt
+    if not _flowi_looks_like_core_missing_followup(prompt, pending):
+        return prompt
+    followup = _flowi_format_core_missing_followup(prompt, pending)
+    combined = (str(pending.get("pending_prompt") or "").strip() + "\n" + followup).strip()
+    if not combined:
+        return prompt
+    preview = _structure_flowi_function_call(combined, product="", max_rows=12)
+    selected = preview.get("selected_function") if isinstance(preview.get("selected_function"), dict) else {}
+    if str(selected.get("feature") or "") != feature:
+        return prompt
+    pending_action = str(pending.get("action") or "").strip()
+    selected_action = str(selected.get("name") or "").strip()
+    loose_actions = {"route_flowi_feature", "open_filebrowser", "open_splittable", "open_inform"}
+    if pending_action and selected_action and pending_action != selected_action and pending_action not in loose_actions:
+        return prompt
+    return combined
+
+
 def _handle_app_write_missing_followup(prompt: str, me: dict[str, Any], agent_context: dict[str, Any] | None, allowed_keys: set[str] | None = None) -> dict[str, Any]:
     if _is_app_write_status_followup(prompt):
         return {"handled": False}
@@ -8151,11 +8604,16 @@ def _flowi_inform_summary_intent(prompt: str) -> bool:
     low = text.lower()
     if not any(term in low or term in text for term in ("inform", "인폼", "공지", "공유")):
         return False
-    if _detect_app_write_feature(text) and _flowi_app_write_mode(text):
+    if (
+        (_detect_app_write_feature(text) and _flowi_app_write_mode(text))
+        or any(term in low or term in text for term in _FLOWI_APP_WRITE_TERMS + _FLOWI_APP_CREATE_TERMS)
+        or "해줘" in text
+        or "해주세요" in text
+    ):
         return False
     return any(term in low or term in text for term in (
         "현황", "상태", "요약", "누락", "미등록", "미완료", "전체", "모듈", "관리",
-        "status", "summary", "missing", "module",
+        "보여", "조회", "검색", "확인", "목록", "리스트", "로그", "status", "summary", "missing", "module", "list", "show",
     ))
 
 
@@ -10554,6 +11012,7 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
     if "KNOB" not in up and "노브" not in prompt:
         return {"handled": False}
     lot_matches = _lot_tokens(prompt)
+    lot_scope_matches = _flowi_lot_scope_terms(lot_matches)
     files = _ml_files(product)
     if not files:
         return {
@@ -10579,9 +11038,9 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
     filters = []
     if aliases and product_col:
         filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
-    if lot_matches:
+    if lot_scope_matches:
         lot_cols = [c for c in (root_col, lot_col, fab_col) if c]
-        lot_expr = _or_contains(lot_cols, lot_matches)
+        lot_expr = _or_contains(lot_cols, lot_scope_matches)
         if lot_expr is not None:
             filters.append(lot_expr)
     step = _flowi_func_step_token(prompt)
@@ -10630,7 +11089,7 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
             "knobs": [],
         }
 
-    q_tokens = set(_query_tokens(prompt)) - set(lot_matches)
+    q_tokens = set(_query_tokens(prompt)) - set(lot_matches) - set(lot_scope_matches)
     selected_knobs = []
     for col in knob_cols:
         body = _upper(col.replace("KNOB_", ""))
@@ -10738,7 +11197,7 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
         "knobs": summaries,
         "highlight": highlight,
         "table": table,
-        "filters": {"lot": lot_matches, "product": sorted(aliases), "step": step, "group": group},
+        "filters": {"lot": lot_matches, "lot_scope": lot_scope_matches, "product": sorted(aliases), "step": step, "group": group, "source": "ML_TABLE"},
     }, "table", prompt=prompt, highlight=highlight)
 
 
@@ -11274,14 +11733,170 @@ def _handle_fab_progress_query(prompt: str, product: str, max_rows: int) -> dict
     }, "lot_list", prompt=prompt)
 
 
+def _flowi_splittable_view_to_inline(view: dict[str, Any], *, step: str = "", max_rows: int = 12) -> tuple[dict[str, Any], dict[str, Any]]:
+    headers = [str(h) for h in (view.get("headers") or [])]
+    raw_rows = view.get("rows") if isinstance(view.get("rows"), list) else []
+    step_u = _upper(step)
+    wanted_prefixes = ("KNOB_", "MASK_", "FAB_")
+
+    def row_text(row: dict[str, Any]) -> str:
+        return _upper(" ".join([
+            str(row.get("_param") or row.get("parameter") or ""),
+            str(row.get("_display") or row.get("display") or ""),
+        ]))
+
+    candidates = [
+        row for row in raw_rows
+        if isinstance(row, dict) and _upper(row.get("_param") or row.get("parameter") or "").startswith(wanted_prefixes)
+    ]
+    if step_u:
+        matched = [row for row in candidates if step_u in row_text(row)]
+        if matched:
+            candidates = matched
+    limit_rows = max(1, min(80, int(max_rows or 12) * 6))
+    split_rows: list[dict[str, Any]] = []
+    flat_rows: list[dict[str, Any]] = []
+    for row in candidates[:limit_rows]:
+        param = str(row.get("_param") or row.get("parameter") or "")
+        display = str(row.get("_display") or row.get("display") or param)
+        cells_src = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
+        cells: list[dict[str, Any]] = []
+        for idx, header in enumerate(headers):
+            src = cells_src.get(str(idx)) if isinstance(cells_src.get(str(idx)), dict) else {}
+            actual = src.get("actual")
+            plan = src.get("plan")
+            cells.append({
+                "wafer_id": header.lstrip("#"),
+                "actual": "" if actual is None else str(actual),
+                "plan": "" if plan is None else str(plan),
+                "mismatch": bool(src.get("mismatch")),
+                "highlight": bool(src.get("mismatch")),
+                "key": src.get("key") or "",
+                "can_plan": bool(src.get("can_plan")),
+            })
+            if actual not in (None, "") or plan not in (None, ""):
+                flat_rows.append({
+                    "product": view.get("product") or "",
+                    "root_lot_id": view.get("root_lot_id") or "",
+                    "fab_lot_id": (view.get("wafer_fab_list") or [""] * len(headers))[idx] if idx < len(view.get("wafer_fab_list") or []) else "",
+                    "wafer_id": header.lstrip("#"),
+                    "step": step or "",
+                    "parameter": param,
+                    "display": display,
+                    "actual": "" if actual is None else str(actual),
+                    "plan": "" if plan is None else str(plan),
+                    "mismatch": bool(src.get("mismatch")),
+                    "cell_key": src.get("key") or "",
+                })
+        split_rows.append({"parameter": param, "display": display, "cells": cells})
+    split_view = {
+        "kind": "splittable_view",
+        "title": "SplitTable view",
+        "headers": headers,
+        "header_groups": view.get("header_groups") or [],
+        "wafer_fab_list": view.get("wafer_fab_list") or [],
+        "rows": split_rows,
+        "total": len(flat_rows) if flat_rows else sum(len(r.get("cells") or []) for r in split_rows),
+        "row_label": "KNOB/MASK/FAB",
+        "source": "splittable.view",
+        "lot_warn": view.get("lot_warn") or "",
+        "available_fab_lots": view.get("available_fab_lots") or [],
+    }
+    cols_out = ["product", "root_lot_id", "fab_lot_id", "wafer_id", "step", "parameter", "display", "actual", "plan", "mismatch", "cell_key"]
+    table = {
+        "kind": "splittable_view_rows",
+        "title": "SplitTable rows",
+        "placement": "below",
+        "columns": _table_columns(cols_out),
+        "rows": [{k: r.get(k, "") for k in cols_out} for r in flat_rows[:max(1, min(160, int(max_rows or 12) * 12))]],
+        "total": len(flat_rows),
+        "source": "splittable.view",
+    }
+    return split_view, table
+
+
+def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, prompt: str, max_rows: int) -> dict[str, Any]:
+    root = next((str(x).strip() for x in (args.get("root_lot_ids") or []) if str(x).strip()), "")
+    fab = next((str(x).strip() for x in (args.get("fab_lot_ids") or []) if str(x).strip()), "")
+    wafer_ids = ",".join(str(w) for w in (args.get("wafer_ids") or []) if str(w).strip())
+    if not root and not fab:
+        return {"handled": False}
+    product_for_view = _flowi_splittable_product_id(product_hint or args.get("product") or "")
+    if not product_for_view:
+        return {"handled": False}
+    try:
+        from routers import splittable as splittable_router
+        view = splittable_router.view_split(
+            product=product_for_view,
+            root_lot_id=root,
+            wafer_ids=wafer_ids,
+            prefix="KNOB,MASK,FAB",
+            custom_name="",
+            view_mode="all",
+            history_mode="all",
+            fab_lot_id=fab,
+            custom_cols="",
+            request=None,
+        )
+    except Exception:
+        return {"handled": False}
+    if not isinstance(view, dict):
+        return {"handled": False}
+    split_view, table = _flowi_splittable_view_to_inline(view, step=str(args.get("step") or ""), max_rows=max_rows)
+    answer = (
+        f"{product_for_view} {view.get('root_lot_id') or root or fab} SplitTable 화면 기준으로 "
+        f"{len(split_view.get('rows') or [])}개 row를 조회했습니다."
+    )
+    if not (split_view.get("rows") or []):
+        answer = view.get("msg") or "SplitTable 화면 기준으로 표시할 split row를 찾지 못했습니다."
+    if view.get("lot_warn"):
+        answer += f" {view.get('lot_warn')}"
+    return _flowi_set_inline_type({
+        "handled": True,
+        "intent": "wafer_split_at_step",
+        "action": "query_wafer_split_at_step",
+        "answer": answer,
+        "feature": "splittable",
+        "split_view": split_view,
+        "table": table,
+        "filters": {
+            "product": product_for_view,
+            "root_lot_ids": [root] if root else [],
+            "fab_lot_ids": [fab] if fab else [],
+            "wafer_ids": args.get("wafer_ids") or [],
+            "step": args.get("step") or "",
+            "source": "splittable.view",
+        },
+        "splittable_view": view,
+    }, "split_view", prompt=prompt)
+
+
 def _handle_wafer_split_at_step(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     preview = _structure_flowi_function_call(prompt, product=product, max_rows=max_rows)
     if ((preview.get("selected_function") or {}).get("name") != "query_wafer_split_at_step"):
         return {"handled": False}
     args = ((preview.get("function_call") or {}).get("function") or {}).get("arguments") or {}
-    if (preview.get("validation") or {}).get("missing"):
-        return _flowi_preview_tool(preview, answer="wafer split 조회에 필요한 값을 보완해 주세요.")
+    missing = list((preview.get("validation") or {}).get("missing") or [])
     product_hint = str(args.get("product") or product or "")
+    lots_for_product = _flowi_lot_scope_terms(
+        args.get("root_lot_ids") or [],
+        args.get("fab_lot_ids") or [],
+        args.get("lot_ids") or [],
+    )
+    if "product" in missing:
+        resolved_product, candidate_tool = _product_or_candidate_tool(prompt, product, lots_for_product, kinds=("ML_TABLE", "FAB"), intent="wafer_split_at_step")
+        if candidate_tool:
+            candidate_tool.setdefault("feature", "splittable")
+            return candidate_tool
+        if resolved_product:
+            product_hint = resolved_product
+            args["product"] = resolved_product
+            missing = [m for m in missing if m != "product"]
+    if missing:
+        return _flowi_preview_tool(preview, answer="wafer split 조회에 필요한 값을 보완해 주세요.")
+    view_tool = _flowi_query_splittable_view_tool(args, product_hint, prompt, max_rows)
+    if view_tool.get("handled"):
+        return view_tool
     files = _ml_files(product_hint)
     if not files:
         return {"handled": True, "intent": "wafer_split_at_step", "action": "query_wafer_split_at_step", "answer": "ML_TABLE parquet을 찾지 못했습니다.", "feature": "splittable"}
@@ -11928,13 +12543,19 @@ def _flowi_draft_id() -> str:
 def _flowi_inform_entry_preview(args: dict[str, Any], entry_args: dict[str, Any] | None = None) -> dict[str, Any]:
     entry_args = entry_args if isinstance(entry_args, dict) else {}
     lot = ""
-    root_lots = [str(x) for x in (args.get("root_lot_ids") or []) if str(x or "").strip()]
-    fab_lots = [str(x) for x in (args.get("fab_lot_ids") or []) if str(x or "").strip()]
+    root_lots = [str(x) for x in (entry_args.get("root_lot_ids") or args.get("root_lot_ids") or []) if str(x or "").strip()]
+    fab_lots = [str(x) for x in (entry_args.get("fab_lot_ids") or args.get("fab_lot_ids") or []) if str(x or "").strip()]
+    entry_root = str(entry_args.get("root_lot_id") or "").strip()
+    entry_fab = str(entry_args.get("fab_lot_id") or "").strip()
+    if entry_root:
+        root_lots = [entry_root]
+    if entry_fab:
+        fab_lots = [entry_fab]
     if fab_lots:
         lot = fab_lots[0]
     elif root_lots:
         lot = root_lots[0]
-    wafer_ids = [str(x) for x in (args.get("wafer_ids") or []) if str(x or "").strip()]
+    wafer_ids = [str(x) for x in (entry_args.get("wafer_ids") or args.get("wafer_ids") or []) if str(x or "").strip()]
     module = str(entry_args.get("module") or args.get("module") or "").strip()
     split_set = str(entry_args.get("split_set") or args.get("split_set") or "").strip()
     note = str(entry_args.get("note") or args.get("note") or "").strip()
@@ -11954,6 +12575,36 @@ def _flowi_inform_entry_preview(args: dict[str, Any], entry_args: dict[str, Any]
         "note": note,
         "missing": missing,
     }
+
+
+def _flowi_inform_lot_scopes(args: dict[str, Any]) -> list[dict[str, str]]:
+    scopes: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for root in [str(x).strip() for x in (args.get("root_lot_ids") or []) if str(x).strip()]:
+        key = (root, "")
+        if key not in seen:
+            seen.add(key)
+            scopes.append({"root_lot_id": root, "fab_lot_id": ""})
+    for fab in [str(x).strip() for x in (args.get("fab_lot_ids") or []) if str(x).strip()]:
+        root = fab.split(".", 1)[0][:5] if fab else ""
+        key = (root, fab)
+        if key not in seen:
+            seen.add(key)
+            scopes.append({"root_lot_id": root, "fab_lot_id": fab})
+    if not scopes:
+        scopes.append({"root_lot_id": "", "fab_lot_id": ""})
+    return scopes
+
+
+def _flowi_expand_inform_entries(args: dict[str, Any], raw_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    base_entries = raw_entries if raw_entries else [{}]
+    scopes = _flowi_inform_lot_scopes(args)
+    entries: list[dict[str, Any]] = []
+    for scope in scopes:
+        for raw in base_entries:
+            merged = {**(raw if isinstance(raw, dict) else {}), **scope}
+            entries.append(_flowi_inform_entry_preview(args, merged))
+    return entries
 
 
 def _flowi_save_inform_draft(args: dict[str, Any], entries: list[dict[str, Any]], username: str) -> dict[str, Any]:
@@ -12092,12 +12743,18 @@ def _handle_flowi_register_inform_log(prompt: str, product: str, max_rows: int, 
     args = ((preview.get("function_call") or {}).get("function") or {}).get("arguments") or {}
     missing = list((preview.get("validation") or {}).get("missing") or [])
     if missing:
+        if len(missing) > 1:
+            first_missing = missing[:1]
+            preview = deepcopy(preview)
+            validation = dict(preview.get("validation") or {})
+            validation["missing"] = first_missing
+            validation["valid"] = False
+            preview["validation"] = validation
+            preview["arguments_choices"] = _flowi_arguments_choices(first_missing, prompt, args)
+            preview["missing_freetext"] = _flowi_missing_freetext(first_missing)
         return _flowi_preview_tool(preview, answer="인폼 등록 초안에 필요한 값을 선택해 주세요.")
     raw_entries = args.get("entries") if isinstance(args.get("entries"), list) else []
-    if raw_entries:
-        entries = [_flowi_inform_entry_preview(args, e if isinstance(e, dict) else {}) for e in raw_entries]
-    else:
-        entries = [_flowi_inform_entry_preview(args, {})]
+    entries = _flowi_expand_inform_entries(args, [e for e in raw_entries if isinstance(e, dict)])
     draft = _flowi_save_inform_draft(args, entries, me.get("username") or "user")
     first_entry = entries[0] if entries else {}
     mail_preview = _flowi_build_mail_preview_for_draft({
@@ -12175,11 +12832,12 @@ def _flowi_walkthrough_response(state: dict[str, Any], answer: str = "") -> dict
     entries = state.get("entries") if isinstance(state.get("entries"), list) else []
     remaining = state.get("modules_remaining") if isinstance(state.get("modules_remaining"), list) else []
     choices = _flowi_split_set_choice_values(3)
+    split_question = f"{current}의 SplitTable은 어떤 Split으로 진행할까요?" if current else "이대로 등록할까요?"
     tool = {
         "handled": True,
         "intent": "inform_walkthrough",
         "action": "register_inform_walkthrough",
-        "answer": answer or (f"{current}는 뭘로 할까요?" if current else f"현재 {len(entries)}개 entry가 있습니다. 이대로 등록할까요?"),
+        "answer": answer or (split_question if current else f"현재 {len(entries)}개 entry가 있습니다. 이대로 등록할까요?"),
         "feature": "inform",
         "requires_confirmation": True,
         "side_effect": "confirm_before_write",
@@ -12189,12 +12847,13 @@ def _flowi_walkthrough_response(state: dict[str, Any], answer: str = "") -> dict
             "current_module": current,
             "entries": entries,
             "modules_remaining": remaining,
-            "next_question": f"{current}는 뭘로 할까요?" if current else "이대로 등록할까요?",
+            "next_question": split_question,
         },
         "slots": {
             "session_id": state.get("session_id"),
             "product": state.get("product") or "",
             "root_lot_ids": state.get("root_lot_ids") or [],
+            "fab_lot_ids": state.get("fab_lot_ids") or [],
             "current_module": current,
         },
         "arguments_choices": {
@@ -12226,18 +12885,34 @@ def _flowi_walkthrough_response(state: dict[str, Any], answer: str = "") -> dict
 
 def _flowi_start_walkthrough(args: dict[str, Any], me: dict[str, Any]) -> dict[str, Any]:
     modules = _flowi_inform_modules()
+    root_lot_ids = [str(x).strip() for x in (args.get("root_lot_ids") or []) if str(x).strip()]
+    fab_lot_ids = [str(x).strip() for x in (args.get("fab_lot_ids") or []) if str(x).strip()]
+    product = str(args.get("product") or "").strip()
+    if not product:
+        lots_for_product = root_lot_ids + fab_lot_ids
+        candidates = _resolve_products_for_lots(lots_for_product, kinds=("FAB", "ML_TABLE"), limit=4) if lots_for_product else []
+        products = []
+        seen: set[str] = set()
+        for row in candidates:
+            prod = str(row.get("product") or "").strip()
+            if prod and prod not in seen:
+                seen.add(prod)
+                products.append(prod)
+        if len(products) == 1:
+            product = products[0]
     state = {
         "kind": "inform_walkthrough",
         "session_id": "walk_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8],
         "username": me.get("username") or "user",
-        "root_lot_ids": args.get("root_lot_ids") or [],
-        "product": args.get("product") or "",
+        "root_lot_ids": root_lot_ids,
+        "fab_lot_ids": fab_lot_ids,
+        "product": product,
         "modules_remaining": modules[1:],
         "current_module": modules[0] if modules else "",
         "entries": [],
     }
     _flowi_save_inform_state(state)
-    return _flowi_walkthrough_response(state, f"{state['current_module']}는 뭘로 할까요? (예: test1)")
+    return _flowi_walkthrough_response(state, f"{state['current_module']}의 SplitTable은 어떤 Split으로 진행할까요? (예: test1)")
 
 
 def _flowi_walkthrough_next_module(state: dict[str, Any]) -> None:
@@ -12280,21 +12955,27 @@ def _flowi_resolve_walkthrough_state(state: dict[str, Any], prompt: str, me: dic
         for tok in clean.split():
             if tok and tok not in {"이건", "일단", "생략할게", "넘어가", "안", "해"} and not _flowi_module_token(tok):
                 split_values.append(tok.strip())
-    if any(t in low or t in text for t in ("생략", "skip", "넘어가", "안 해", "안해")) and not split_values:
+    if any(t in low or t in text for t in ("생략", "skip", "넘어가", "안 해", "안해", "비우고", "빈값")) and not split_values:
         _flowi_walkthrough_next_module(state)
         _flowi_save_inform_state(state)
         return _flowi_walkthrough_response(state)
+    lot_scopes = _flowi_inform_lot_scopes(state)
     for split_val in split_values[:4]:
-        state.setdefault("entries", []).append({
-            "product": state.get("product") or "",
-            "root_lot_id": (state.get("root_lot_ids") or [""])[0],
-            "lot_id": (state.get("root_lot_ids") or [""])[0],
-            "module": current,
-            "split_set": split_val,
-            "reason": split_val,
-            "note": note,
-            "missing": [],
-        })
+        for scope in lot_scopes:
+            root = str(scope.get("root_lot_id") or "").strip()
+            fab = str(scope.get("fab_lot_id") or "").strip()
+            lot_id = fab or root
+            state.setdefault("entries", []).append({
+                "product": state.get("product") or "",
+                "root_lot_id": root,
+                "fab_lot_id": fab,
+                "lot_id": lot_id,
+                "module": current,
+                "split_set": split_val,
+                "reason": split_val,
+                "note": note,
+                "missing": [],
+            })
     if split_values:
         _flowi_walkthrough_next_module(state)
     _flowi_save_inform_state(state)
@@ -12340,14 +13021,76 @@ def _handle_flowi_inform_walkthrough_chat(prompt: str, product: str, max_rows: i
     return _flowi_start_walkthrough(args, me)
 
 
+def _flowi_context_product_hint(agent_context: dict[str, Any] | None) -> str:
+    for msg in reversed(_flowi_context_messages(agent_context)):
+        containers: list[dict[str, Any]] = []
+        for key in ("filters", "slots", "arguments_partial", "arguments"):
+            value = msg.get(key)
+            if isinstance(value, dict):
+                containers.append(value)
+        workflow = msg.get("workflow_state") if isinstance(msg.get("workflow_state"), dict) else {}
+        for key in ("slots", "filters", "arguments"):
+            value = workflow.get(key)
+            if isinstance(value, dict):
+                containers.append(value)
+        for container in containers:
+            product = str(container.get("product") or "").strip()
+            if product:
+                return product
+    return ""
+
+
+def _flowi_context_prefers_splittable(agent_context: dict[str, Any] | None) -> bool:
+    score = 0
+    for msg in reversed(_flowi_context_messages(agent_context)[-8:]):
+        feature = str(msg.get("feature") or "").strip()
+        action = str(msg.get("action") or "").strip()
+        intent = str(msg.get("intent") or "").strip()
+        filters = msg.get("filters") if isinstance(msg.get("filters"), dict) else {}
+        if feature == "splittable":
+            score += 2
+        if action in {"query_wafer_split_at_step", "query_lot_knobs_from_ml_table", "find_lots_by_knob_value"}:
+            score += 2
+        if intent in {"wafer_split_at_step", "lot_knobs", "knob_value_lot_search", "splittable_plan_mismatch"}:
+            score += 2
+        if str(filters.get("source") or "").lower() in {"splittable.view", "ml_table"}:
+            score += 1
+        if str(filters.get("product") or "").upper().startswith("ML_TABLE_"):
+            score += 1
+    return score >= 2
+
+
+def _flowi_should_continue_splittable_context(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    up = _upper(text)
+    if any(t in low or t in text for t in ("인폼", "inform", "메일", "현재 lot_id", "current lot_id", "fab_lot", "fab lot", "파일탐색기", "filebrowser")):
+        return False
+    if any(t in {"FAB", "ET", "INLINE", "VM"} for t in _flowi_source_type_tokens(text)) and not any(t in low or t in text for t in ("split", "스플릿", "knob", "노브", "ml_table")):
+        return False
+    if any(t in low or t in text for t in ("split", "스플릿", "knob", "노브", "plan", "actual", "mask")):
+        return False
+    return bool((_lot_tokens(text) or _flowi_func_step_token(text)) and any(t in low or t in text for t in ("어떻게", "뭐", "무엇", "보여", "확인", "조회", "값", "?")))
+
+
 def _handle_flowi_query(
     prompt: str,
     product: str = "",
     max_rows: int = 12,
     allowed_keys: set[str] | None = None,
     username: str = "flowi",
+    agent_context: dict[str, Any] | None = None,
 ) -> dict:
-    product = _product_hint(prompt, product)
+    context_product = _flowi_context_product_hint(agent_context)
+    product = _product_hint(prompt, product) or context_product
+    if _flowi_context_prefers_splittable(agent_context) and _flowi_should_continue_splittable_context(prompt):
+        prompt = f"{prompt} Split"
+    if any(term in str(prompt or "").lower() or term in str(prompt or "") for term in ("테이블맵", "테이블 맵", "tablemap", "table map")):
+        tablemap_allowed = {"tablemap"} if allowed_keys is None or "tablemap" in allowed_keys else set()
+        return _unit_feature_guidance(prompt, product, max_rows=max_rows, allowed_keys=tablemap_allowed)
+    early_matches = _matched_feature_entrypoints(prompt, limit=1, allowed_keys=allowed_keys)
+    if early_matches and (early_matches[0].get("key") or "") == "tablemap":
+        return _unit_feature_guidance(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys)
     if allowed_keys is None or {"filebrowser", "dashboard", "splittable", "ettime", "waferlayout"} & set(allowed_keys):
         fab_lot_out = _handle_current_fab_lot_lookup(prompt, product, max_rows)
         if fab_lot_out.get("handled"):
@@ -12521,6 +13264,13 @@ def _flowi_output_summary(tool: dict[str, Any]) -> dict[str, Any]:
 def _flowi_waiting_for(tool: dict[str, Any]) -> str:
     if tool.get("blocked"):
         return "permission_or_policy"
+    if (
+        tool.get("missing")
+        or (tool.get("validation") or {}).get("missing")
+        or tool.get("arguments_choices")
+        or tool.get("missing_freetext")
+    ):
+        return "required_fields"
     if tool.get("requires_confirmation"):
         return "user_confirmation"
     clarification = tool.get("clarification") if isinstance(tool.get("clarification"), dict) else {}
@@ -12535,6 +13285,8 @@ def _flowi_workflow_status(tool: dict[str, Any]) -> str:
     if tool.get("blocked"):
         return "blocked"
     waiting = _flowi_waiting_for(tool)
+    if waiting == "required_fields":
+        return "awaiting_fields"
     if waiting == "user_confirmation":
         return "awaiting_confirmation"
     if waiting == "user_choice":
@@ -12944,9 +13696,12 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "created_record",
     "created_records",
     "missing",
+    "arguments",
+    "arguments_partial",
     "arguments_choices",
     "missing_freetext",
     "last_partial_prompt",
+    "pending_prompt",
     "inform_preview",
     "mail_preview",
     "walkthrough",
@@ -13029,6 +13784,7 @@ def _run_flowi_chat(
     agent_context = agent_context if isinstance(agent_context, dict) else {}
 
     allowed_keys = _allowed_flowi_feature_keys(me)
+    prompt = _flowi_resolve_pending_core_prompt(prompt, agent_context, allowed_keys)
     admin_block = _flowi_home_admin_function_block(prompt, me)
     if admin_block.get("handled"):
         answer = admin_block["answer"]
@@ -13577,7 +14333,7 @@ def _run_flowi_chat(
     elif meeting_tool.get("handled"):
         tool = meeting_tool
     else:
-        tool = _handle_flowi_query(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys, username=username)
+        tool = _handle_flowi_query(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys, username=username, agent_context=agent_context)
     entries = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
     if entries:
         tool["feature_entrypoints"] = entries
@@ -13678,6 +14434,8 @@ def _run_flowi_chat(
 def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
     """Keep local chart/tablemap results fast and avoid delaying visible payloads."""
     intent = str(tool.get("intent") or "")
+    if intent == "current_fab_lot_lookup":
+        return True
     if intent.startswith("dashboard_") or intent == "tablemap_guidance":
         return True
     if intent == "meeting_recall_summary":

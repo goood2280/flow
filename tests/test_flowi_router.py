@@ -187,6 +187,7 @@ def test_flowi_splittable_plan_confirms_and_saves_wafer_range(tmp_path, monkeypa
     plan_dir.mkdir(parents=True)
     monkeypatch.setattr(llm_router, "_ml_files", lambda _product="": [ml_fp])
     monkeypatch.setattr(splittable_router, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable_router, "view_split", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("view unavailable in fallback test")))
     monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
 
     draft = llm_router._handle_splittable_plan_request(
@@ -214,6 +215,244 @@ def test_flowi_splittable_plan_confirms_and_saves_wafer_range(tmp_path, monkeypa
     assert plans["A1000|11|KNOB_A"]["value"] == "DGD"
     assert plans["A1000|25|KNOB_A"]["value"] == "DGD"
     assert "A1000|1000|KNOB_A" not in plans
+
+
+def test_flowi_splittable_query_uses_view_split_source(monkeypatch):
+    from routers import splittable as splittable_router
+
+    def fake_view_split(**kwargs):
+        assert kwargs["product"] == "ML_TABLE_PRODX"
+        assert kwargs["root_lot_id"] == "R1000"
+        assert kwargs["wafer_ids"] == ""
+        return {
+            "product": "ML_TABLE_PRODX",
+            "root_lot_id": "R1000",
+            "headers": ["#1", "#2"],
+            "header_groups": [{"label": "R1000A.1", "span": 2}],
+            "wafer_fab_list": ["R1000A.1", "R1000A.1"],
+            "available_fab_lots": ["R1000A.1"],
+            "rows": [{
+                "_param": "KNOB_SORT",
+                "_display": "24.0 SORT / KNOB_SORT",
+                "_cells": {
+                    "0": {"actual": "AAA", "plan": "", "key": "R1000|1|KNOB_SORT", "can_plan": True, "mismatch": False},
+                    "1": {"actual": "BBB", "plan": "AAA", "key": "R1000|2|KNOB_SORT", "can_plan": True, "mismatch": True},
+                },
+            }],
+        }
+
+    monkeypatch.setattr(splittable_router, "view_split", fake_view_split)
+
+    out = _handle_flowi_query(
+        "PRODX R1000 24.0 SORT Split 어떻게 되어있어?",
+        "",
+        12,
+        allowed_keys={"splittable"},
+    )
+
+    assert out["handled"] is True
+    assert out["type"] == "split_view"
+    assert out["filters"]["source"] == "splittable.view"
+    assert out["split_view"]["headers"] == ["#1", "#2"]
+    assert out["split_view"]["header_groups"] == [{"label": "R1000A.1", "span": 2}]
+    assert out["split_view"]["rows"][0]["cells"][1]["key"] == "R1000|2|KNOB_SORT"
+    assert out["split_view"]["rows"][0]["cells"][1]["mismatch"] is True
+
+
+def test_flowi_splittable_fab_lot_split_resolves_product_from_ml_table(monkeypatch):
+    from routers import splittable as splittable_router
+
+    def fake_resolve(lots, *, kinds, limit=12):
+        assert "A1004A.2" in lots
+        assert "A1004" in lots
+        assert "ML_TABLE" in kinds
+        return [{"product": "PRODX", "sources": "ML_TABLE", "lots": "A1004", "row_count": 25}]
+
+    def fake_view_split(**kwargs):
+        assert kwargs["product"] == "ML_TABLE_PRODX"
+        assert kwargs["fab_lot_id"] == "A1004A.2"
+        return {
+            "product": "ML_TABLE_PRODX",
+            "root_lot_id": "A1004",
+            "headers": ["#6"],
+            "header_groups": [{"label": "A1004A.2", "span": 1}],
+            "wafer_fab_list": ["A1004A.2"],
+            "rows": [{
+                "_param": "KNOB_24.0 SORT",
+                "_display": "24.0 SORT / KNOB",
+                "_cells": {"0": {"actual": "AAA", "plan": "", "key": "A1004|6|KNOB_24.0 SORT", "can_plan": True, "mismatch": False}},
+            }],
+        }
+
+    monkeypatch.setattr(llm_router, "_resolve_products_for_lots", fake_resolve)
+    monkeypatch.setattr(splittable_router, "view_split", fake_view_split)
+
+    out = _handle_flowi_query(
+        "A1004A.2 24.0 SORT Split 어떻게돼?",
+        "",
+        12,
+        allowed_keys={"splittable"},
+    )
+
+    assert out["handled"] is True
+    assert out["type"] == "split_view"
+    assert out["filters"]["product"] == "ML_TABLE_PRODX"
+    assert out["filters"]["source"] == "splittable.view"
+
+
+def test_flowi_splittable_context_keeps_ambiguous_followup_on_split_table(monkeypatch):
+    from routers import splittable as splittable_router
+
+    monkeypatch.setattr(llm_router, "_resolve_products_for_lots", lambda *_args, **_kwargs: [{"product": "PRODX", "sources": "ML_TABLE", "lots": "R1000", "row_count": 2}])
+    monkeypatch.setattr(splittable_router, "view_split", lambda **kwargs: {
+        "product": kwargs["product"],
+        "root_lot_id": kwargs["root_lot_id"],
+        "headers": ["#1"],
+        "rows": [{
+            "_param": "KNOB_SORT",
+            "_display": "24.0 SORT / KNOB_SORT",
+            "_cells": {"0": {"actual": "AAA", "plan": "", "key": "R1000|1|KNOB_SORT", "can_plan": True, "mismatch": False}},
+        }],
+    })
+    ctx = {"messages": [{
+        "role": "assistant",
+        "feature": "splittable",
+        "action": "query_wafer_split_at_step",
+        "intent": "wafer_split_at_step",
+        "filters": {"product": "ML_TABLE_PRODX", "source": "splittable.view"},
+    }]}
+
+    out = _handle_flowi_query(
+        "R1000 24.0 SORT 어떻게돼?",
+        "",
+        12,
+        allowed_keys={"splittable"},
+        agent_context=ctx,
+    )
+
+    assert out["handled"] is True
+    assert out["action"] == "query_wafer_split_at_step"
+    assert out["filters"]["source"] == "splittable.view"
+
+
+def test_flowi_splittable_source_followup_replays_pending_split_query(monkeypatch):
+    from routers import splittable as splittable_router
+
+    monkeypatch.setattr(llm_router, "_resolve_products_for_lots", lambda lots, **_kwargs: [{"product": "PRODX", "sources": "ML_TABLE", "lots": ",".join(lots), "row_count": 1}])
+    monkeypatch.setattr(splittable_router, "view_split", lambda **kwargs: {
+        "product": kwargs["product"],
+        "root_lot_id": "A1004",
+        "headers": ["#2"],
+        "header_groups": [{"label": "A1004A.2", "span": 1}],
+        "wafer_fab_list": ["A1004A.2"],
+        "rows": [{
+            "_param": "KNOB_24.0 SORT",
+            "_display": "24.0 SORT / KNOB",
+            "_cells": {"0": {"actual": "AAA", "plan": "", "key": "A1004|2|KNOB_24.0 SORT", "can_plan": True, "mismatch": False}},
+        }],
+    })
+    ctx = {"messages": [{
+        "role": "assistant",
+        "feature": "splittable",
+        "action": "query_wafer_split_at_step",
+        "intent": "wafer_split_at_step",
+        "missing": ["product"],
+        "pending_prompt": "A1004A.2 24.0 SORT Split 어떻게돼?",
+    }]}
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+
+    result = _run_flowi_chat(
+        prompt="스플릿테이블이야",
+        product="",
+        max_rows=12,
+        me={"username": "hol", "role": "user"},
+        agent_context=ctx,
+    )
+    out = result["tool"]
+
+    assert out["handled"] is True
+    assert out["type"] == "split_view"
+    assert out["action"] == "query_wafer_split_at_step"
+    assert out["filters"]["product"] == "ML_TABLE_PRODX"
+    assert out["filters"]["source"] == "splittable.view"
+
+
+def test_flowi_splittable_plan_uses_view_cell_keys(tmp_path, monkeypatch):
+    from routers import splittable as splittable_router
+
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable_router, "PLAN_DIR", plan_dir)
+
+    def fake_view_split(**_kwargs):
+        return {
+            "product": "ML_TABLE_PRODX",
+            "root_lot_id": "R1000",
+            "headers": ["#1", "#2", "#3"],
+            "rows": [{
+                "_param": "KNOB_SORT",
+                "_display": "24.0 SORT / KNOB_SORT",
+                "_cells": {
+                    "0": {"actual": "", "plan": "", "key": "R1000|1|KNOB_SORT", "can_plan": True, "mismatch": False},
+                    "1": {"actual": "", "plan": "", "key": "R1000|2|KNOB_SORT", "can_plan": True, "mismatch": False},
+                    "2": {"actual": "", "plan": "", "key": "R1000|3|KNOB_SORT", "can_plan": True, "mismatch": False},
+                },
+            }],
+        }
+
+    monkeypatch.setattr(splittable_router, "view_split", fake_view_split)
+
+    draft = llm_router._handle_splittable_plan_request(
+        "PRODX R1000 #1~2까지 24.0 SORT AAA로 plan 넣어줘",
+        me={"username": "planner", "role": "user"},
+        allowed_keys={"splittable"},
+    )
+
+    assert draft["intent"] == "splittable_plan_confirm"
+    assert draft["table"]["rows"][3]["value"] == "KNOB_SORT"
+    confirm_prompt = draft["clarification"]["choices"][0]["prompt"]
+
+    saved = llm_router._handle_splittable_plan_request(
+        confirm_prompt,
+        me={"username": "planner", "role": "user"},
+        allowed_keys={"splittable"},
+    )
+    data = splittable_router.load_json(plan_dir / "ML_TABLE_PRODX.json", {})
+
+    assert saved["intent"] == "splittable_plan_saved"
+    assert data["plans"]["R1000|1|KNOB_SORT"]["value"] == "AAA"
+    assert data["plans"]["R1000|2|KNOB_SORT"]["value"] == "AAA"
+    assert "R1000|3|KNOB_SORT" not in data["plans"]
+
+
+def test_flowi_splittable_wafer_note_confirms_and_saves(tmp_path, monkeypatch):
+    from routers import splittable as splittable_router
+
+    notes_file = tmp_path / "notes.json"
+    monkeypatch.setattr(splittable_router, "NOTES_FILE", notes_file)
+
+    draft = llm_router._handle_splittable_note_request(
+        "PRODX R1000 #6 이상WF 꼬리표 달아줘",
+        me={"username": "planner", "role": "user"},
+        allowed_keys={"splittable"},
+    )
+
+    assert draft["intent"] == "splittable_lot_note_create_draft"
+    assert draft["slots"]["wafers"] == ["6"]
+    assert any(row["field"] == "scope" and row["value"] == "wafer" for row in draft["table"]["rows"])
+    confirm_prompt = draft["clarification"]["choices"][0]["prompt"]
+
+    saved = llm_router._handle_splittable_note_request(
+        confirm_prompt,
+        me={"username": "planner", "role": "user"},
+        allowed_keys={"splittable"},
+    )
+    notes = splittable_router._load_notes()
+
+    assert saved["intent"] == "splittable_lot_note_create"
+    assert notes[0]["scope"] == "wafer"
+    assert notes[0]["wafer_id"] == "6"
+    assert notes[0]["text"] == "이상WF"
 
 
 def test_flowi_chart_request_computes_inline_et_scatter(tmp_path, monkeypatch):
@@ -734,6 +973,57 @@ def test_flowi_current_fab_lot_lookup_uses_fab_db_not_et_report(tmp_path, monkey
     assert "ET Report" not in out["answer"]
 
 
+def test_flowi_current_lot_id_lookup_uses_latest_tkout_time(tmp_path, monkeypatch):
+    fab_dir = tmp_path / "1.RAWDATA_DB_FAB" / "PRODA" / "date=20260429"
+    fab_dir.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "LOT_OLD", "fab_lot_id": "FAB_OLD", "wafer_id": "21", "step_id": "AA230400", "tkout_time": "2026-04-29T08:00:00"},
+        {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "LOT_NEW", "fab_lot_id": "FAB_NEW", "wafer_id": "21", "step_id": "AA240000", "tkout_time": "2026-04-29T10:00:00"},
+        {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "LOT_OTHER_WF", "fab_lot_id": "FAB_OTHER", "wafer_id": "22", "step_id": "AA250000", "tkout_time": "2026-04-29T11:00:00"},
+    ]).write_parquet(fab_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_FAB"] if kind.upper() == "FAB" else [])
+
+    out = _handle_flowi_query(
+        "PRODA A1000 #21 현재 lot_id가 뭐야?",
+        "",
+        12,
+        allowed_keys={"filebrowser"},
+    )
+
+    assert out["handled"] is True
+    assert out["action"] == "query_current_fab_lot_from_fab_db"
+    assert out["table"]["rows"][0]["lot_id"] == "LOT_NEW"
+    assert out["table"]["rows"][0]["wafer_id"] == "21"
+    assert "현재 lot_id" in out["answer"]
+    assert "tkout_time 최신 row" in out["answer"]
+
+
+def test_flowi_current_lot_id_chat_keeps_local_fab_answer_when_llm_available(tmp_path, monkeypatch):
+    fab_dir = tmp_path / "1.RAWDATA_DB_FAB" / "PRODA" / "date=20260429"
+    fab_dir.mkdir(parents=True)
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "LOT_OLD", "fab_lot_id": "FAB_OLD", "wafer_id": "21", "step_id": "AA230400", "tkout_time": "2026-04-29T08:00:00"},
+        {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "LOT_NEW", "fab_lot_id": "FAB_NEW", "wafer_id": "21", "step_id": "AA240000", "tkout_time": "2026-04-29T10:00:00"},
+    ]).write_parquet(fab_dir / "part.parquet")
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda kind: [tmp_path / "1.RAWDATA_DB_FAB"] if kind.upper() == "FAB" else [])
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(llm_router.llm_adapter, "complete", lambda *_args, **_kwargs: {"ok": True, "text": "ET 레포트 열기"})
+
+    out = _run_flowi_chat(
+        prompt="PRODA A1000 #21 현재 lot_id가 뭐야?",
+        product="",
+        max_rows=12,
+        me={"username": "hol", "role": "user"},
+    )
+
+    assert out["tool"]["intent"] == "current_fab_lot_lookup"
+    assert out["tool"]["table"]["rows"][0]["lot_id"] == "LOT_NEW"
+    assert out["llm"]["skipped"] == "deterministic_tool_result"
+    assert "현재 lot_id" in out["answer"]
+    assert "ET 레포트" not in out["answer"]
+
+
 def test_flowi_parses_yaml_product_fab_lot_and_wafer_aliases(monkeypatch):
     monkeypatch.setattr(llm_router.product_config, "load_all", lambda _root: {"GAA2N": {"product": "GAA2N"}})
     monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [])
@@ -787,13 +1077,14 @@ def test_flowi_function_call_preview_uses_freetext_missing_for_inform_note(monke
     out = llm_router._structure_flowi_function_call("A1001 인폼로그 남겨줘")
 
     assert out["selected_function"]["name"] == "register_inform_log"
-    assert "note" in out["validation"]["missing"]
+    assert out["validation"]["missing"] == ["module", "split_set", "note"]
     assert out["missing_freetext"] == [{
         "key": "note",
         "label": "인폼 내용",
         "placeholder": "메모를 적어주세요(예: GATE 모듈 인폼)",
     }]
-    assert out["arguments_choices"] == {}
+    fields = out["arguments_choices"]["fields"]
+    assert [f["field"] for f in fields] == ["module", "split_set"]
     assert "필수값 이어서 입력" not in json.dumps(out.get("arguments_choices") or {}, ensure_ascii=False)
 
 
@@ -1117,7 +1408,7 @@ def test_flowi_agent_chat_creates_inform_record(tmp_path, monkeypatch):
 
     out = llm_router.flowi_agent_chat(
         llm_router.FlowiAgentChatReq(
-            prompt="PRODA A1000 #1 인폼 등록, module: ET, reason: PEMS, 내용: Gate CD 이상 확인 필요",
+            prompt="PRODA A1000 #1 인폼 등록, module: ET, split_set: test1, reason: PEMS, 내용: Gate CD 이상 확인 필요",
             source_ai="codex",
             client_run_id="run-2",
         ),
@@ -1149,6 +1440,159 @@ def test_flowi_agent_chat_creates_inform_record(tmp_path, monkeypatch):
     assert saved[0]["module"] == "ET"
     assert saved[0]["reason"] == "PEMS"
     assert saved[0]["fab_lot_id_at_save"] == "FAB1000.1"
+
+
+def test_flowi_agent_chat_creates_multi_lot_same_inform_draft(tmp_path, monkeypatch):
+    from routers import informs as informs_router
+
+    informs_file = tmp_path / "informs.json"
+    monkeypatch.setattr(informs_router, "INFORMS_FILE", informs_file)
+    monkeypatch.setattr(informs_router, "_INFORMS_CACHE_SIG", None)
+    monkeypatch.setattr(informs_router, "_INFORMS_CACHE_ITEMS", None)
+    monkeypatch.setattr(informs_router, "_resolve_fab_lot_snapshot", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(llm_router, "current_user", lambda _request: {"username": "lotmgr", "role": "admin"})
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+
+    out = llm_router.flowi_agent_chat(
+        llm_router.FlowiAgentChatReq(
+            prompt="PRODA A1000 A1001 A1002 GATE 모듈 인폼해줘 test1 스플릿으로 선택해줘 내용은 동일 설정 공유",
+            source_ai="codex",
+            client_run_id="run-multi",
+        ),
+        object(),
+    )
+
+    assert out["ok"] is True
+    assert out["tool"]["intent"] == "inform_log_batch_draft"
+    assert len(out["tool"]["inform_preview"]) == 3
+    assert {row["root_lot_id"] for row in out["tool"]["inform_preview"]} == {"A1000", "A1001", "A1002"}
+    assert informs_router._load_upgraded() == []
+
+    confirm_prompt = out["tool"]["clarification"]["choices"][0]["prompt"]
+    confirmed = llm_router.flowi_agent_chat(
+        llm_router.FlowiAgentChatReq(
+            prompt=confirm_prompt,
+            source_ai="codex",
+            client_run_id="run-multi-confirm",
+        ),
+        object(),
+    )
+    saved = informs_router._load_upgraded()
+
+    assert confirmed["tool"]["intent"] == "inform_log_registered"
+    assert len(saved) == 3
+    assert {row["root_lot_id"] for row in saved} == {"A1000", "A1001", "A1002"}
+    assert {row["module"] for row in saved} == {"GATE"}
+    assert {row["text"] for row in saved} == {"동일 설정 공유"}
+
+
+def test_flowi_inform_walkthrough_accepts_fab_lot_id_without_root_choice(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm_router, "FLOWI_INFORM_SESSION_DIR", tmp_path / "flowi_inform_sessions")
+    monkeypatch.setattr(llm_router, "_flowi_inform_modules", lambda: ["GATE", "STI"])
+    monkeypatch.setattr(llm_router, "_resolve_products_for_lots", lambda *_args, **_kwargs: [{"product": "PRODA"}])
+
+    out = llm_router._handle_flowi_inform_walkthrough_chat(
+        "A1003B.2 인폼남기고싶어",
+        "",
+        12,
+        me={"username": "hol", "role": "user"},
+        allowed_keys={"inform"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "inform_walkthrough"
+    assert out["slots"]["fab_lot_ids"] == ["A1003B.2"]
+    assert not out.get("missing")
+    assert "어느 Root Lot" not in out["answer"]
+
+    state = llm_router._flowi_load_inform_state(out["session_id"])
+    resolved = llm_router._flowi_resolve_walkthrough_state(state, "test1로 해줘", {"username": "hol", "role": "user"})
+    updated = llm_router._flowi_load_inform_state(out["session_id"])
+
+    assert resolved["intent"] == "inform_walkthrough"
+    assert updated["entries"][0]["root_lot_id"] == "A1003"
+    assert updated["entries"][0]["fab_lot_id"] == "A1003B.2"
+    assert updated["entries"][0]["lot_id"] == "A1003B.2"
+    assert updated["entries"][0]["split_set"] == "test1"
+
+
+def test_flowi_gpt_oss_120b_style_inform_lot_only_asks_slots_to_result(tmp_path, monkeypatch):
+    from routers import informs as informs_router
+
+    informs_file = tmp_path / "informs.json"
+    monkeypatch.setattr(informs_router, "INFORMS_FILE", informs_file)
+    monkeypatch.setattr(informs_router, "_INFORMS_CACHE_SIG", None)
+    monkeypatch.setattr(informs_router, "_INFORMS_CACHE_ITEMS", None)
+    monkeypatch.setattr(llm_router, "FLOWI_INFORM_SESSION_DIR", tmp_path / "flowi_inform_sessions")
+    monkeypatch.setattr(llm_router, "_flowi_inform_modules", lambda: ["GATE", "STI", "PC"])
+    monkeypatch.setattr(llm_router, "_resolve_products_for_lots", lambda *_args, **_kwargs: [{"product": "PRODA"}])
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(llm_router.llm_adapter, "complete", lambda *_args, **_kwargs: {"ok": True, "text": "wrong external polish"})
+
+    me = {"username": "hol", "role": "user"}
+
+    first = _run_flowi_chat(prompt="A1003B.2 모듈 전달 남겨줘", product="", max_rows=12, me=me)
+    assert first["tool"]["intent"] == "inform_log_draft"
+    assert first["tool"]["missing"] == ["module"]
+    assert first["tool"]["arguments_choices"]["fields"][0]["field"] == "module"
+
+    ctx1 = {"messages": [
+        {"role": "user", "prompt": "A1003B.2 모듈 전달 남겨줘"},
+        {
+            "role": "assistant",
+            "intent": first["tool"]["intent"],
+            "feature": first["tool"]["feature"],
+            "action": first["tool"]["action"],
+            "missing": first["tool"]["missing"],
+            "pending_prompt": first["tool"]["pending_prompt"],
+            "workflow_state": first["workflow_state"],
+        },
+    ]}
+    second = _run_flowi_chat(prompt="GATE", product="", max_rows=12, me=me, agent_context=ctx1)
+    assert second["tool"]["missing"] == ["split_set"]
+    assert second["tool"]["arguments_choices"]["fields"][0]["field"] == "split_set"
+
+    ctx2 = {"messages": [*ctx1["messages"], {"role": "user", "prompt": "GATE"}, {
+        "role": "assistant",
+        "intent": second["tool"]["intent"],
+        "feature": second["tool"]["feature"],
+        "action": second["tool"]["action"],
+        "missing": second["tool"]["missing"],
+        "pending_prompt": second["tool"]["pending_prompt"],
+        "workflow_state": second["workflow_state"],
+    }]}
+    third = _run_flowi_chat(prompt="test1", product="", max_rows=12, me=me, agent_context=ctx2)
+    assert third["tool"]["missing"] == ["note"]
+    assert third["tool"]["missing_freetext"][0]["key"] == "note"
+
+    ctx3 = {"messages": [*ctx2["messages"], {"role": "user", "prompt": "test1"}, {
+        "role": "assistant",
+        "intent": third["tool"]["intent"],
+        "feature": third["tool"]["feature"],
+        "action": third["tool"]["action"],
+        "missing": third["tool"]["missing"],
+        "pending_prompt": third["tool"]["pending_prompt"],
+        "workflow_state": third["workflow_state"],
+    }]}
+    fourth = _run_flowi_chat(prompt="모듈 전달 테스트", product="", max_rows=12, me=me, agent_context=ctx3)
+    assert fourth["tool"]["requires_confirmation"] is True
+    assert fourth["tool"]["inform_preview"][0]["module"] == "GATE"
+    assert fourth["tool"]["inform_preview"][0]["split_set"] == "test1"
+    assert fourth["tool"]["inform_preview"][0]["fab_lot_id"] == "A1003B.2"
+    assert fourth["tool"]["inform_preview"][0]["note"] == "모듈 전달 테스트"
+    assert informs_router._load_upgraded() == []
+
+    confirm_prompt = fourth["tool"]["clarification"]["choices"][0]["prompt"]
+    confirmed = _run_flowi_chat(prompt=confirm_prompt, product="", max_rows=12, me=me)
+    saved = informs_router._load_upgraded()
+
+    assert confirmed["tool"]["intent"] == "inform_log_registered"
+    assert len(saved) == 1
+    assert saved[0]["module"] == "GATE"
+    assert saved[0]["lot_id"] == "A1003B.2"
+    assert saved[0]["root_lot_id"] == "A1003"
+    assert saved[0]["text"] == "모듈 전달 테스트"
 
 
 def test_flowi_fab_step_eta_estimates_from_historical_lots(tmp_path, monkeypatch):
