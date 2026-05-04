@@ -1,4 +1,4 @@
-"""routers/informs.py v8.7.0 — 모듈 인폼 시스템 (역할 뷰 + 체크 + flow 상태 + SplitTable 연동 + 이미지 첨부 + 설정형 모듈/사유 + SplitTable 자동기록).
+"""routers/informs.py v8.7.0 — 모듈 인폼 시스템 (역할 뷰 + 체크 + flow 상태 + SplitTable 연동 + 이미지 첨부 + 설정형 모듈/사유).
 
 스키마 ({data_root}/informs/informs.json):
   [{
@@ -3230,11 +3230,10 @@ def create_inform(req: InformCreate, request: Request):
 def auto_log_splittable_change(author: str, product: str, lot_id: str,
                                cell_key: str, old_value, new_value, action: str = "set",
                                fab_lot_id: str = "") -> None:
-    """SplitTable plan 변경이 일어나면 해당 lot 에 자동 인폼 루트를 남긴다.
+    """Legacy helper to mirror a SplitTable plan change into an Inform root.
 
-    - wafer_id 가 없으면 lot_id 를 placeholder 로 사용 (스레드는 lot 뷰에서 묶여 보임).
-    - module 은 cell_key prefix 로 추정 (KNOB/MASK/FAB → 기타). 추후 룰 확장.
-    - auto_generated=True 로 표시 → FE 에서 시스템 발행 카드로 렌더.
+    SplitTable plan saves no longer call this helper; it remains for older
+    internal callers that explicitly request an Inform mirror.
     """
     try:
         items = _load_upgraded()
@@ -3253,7 +3252,7 @@ def auto_log_splittable_change(author: str, product: str, lot_id: str,
         else:
             mod = ""
         now = _now()
-        text = f"[SplitTable 자동기록] {action} · {col} · {old_value!r} → {new_value!r}"
+        text = f"SplitTable plan 변경 · {action} · {col} · {old_value!r} → {new_value!r}"
         fab_snapshot = (fab_lot_id or "").strip() or _resolve_fab_lot_snapshot(product, root_lot, cell_wafer)
         embed = None
         try:
@@ -3297,9 +3296,9 @@ def auto_log_splittable_change(author: str, product: str, lot_id: str,
         _save(items)
         _audit_record(author or "system", "create", entry,
                       {"auto_generated": True, "cell_key": cell_key, "action": action},
-                      f"SplitTable 자동기록 · {col}", at=now)
+                      f"SplitTable plan 변경 · {col}", at=now)
     except Exception:
-        # 자동기록 실패로 인해 plan 저장까지 실패시키면 안 됨.
+        # Explicit mirror failures must not break the caller's plan save path.
         pass
 
 
@@ -4470,6 +4469,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
                 has_plan = _st_has_value(plan)
                 disp = str(actual) if has_actual else ""
                 plan_diff = has_plan and has_actual and str(plan) != str(actual)
+                plan_applied = has_plan and has_actual and str(plan) == str(actual)
                 plan_only = has_plan and not has_actual
                 cell_plan_style = ""
                 if plan_diff:
@@ -4477,6 +4477,12 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
                     disp_html = (
                         f"<span style='color:#dc2626;font-weight:700'>✗ {esc(disp)}"
                         f"<span style='font-size:{_MAIL_MIN_FONT};color:#ef4444'> (≠{esc(str(plan))})</span></span>"
+                    )
+                elif plan_applied:
+                    cell_plan_style = "border-left:3px solid #16a34a;font-weight:700;"
+                    disp_html = (
+                        f"<span style='color:#15803d;font-weight:700'>✓ {esc(str(plan))}"
+                        f"<span style='font-size:{_MAIL_MIN_FONT};color:#15803d'> (plan 적용)</span></span>"
                     )
                 elif plan_only:
                     cell_plan_style = "border-left:3px solid #f97316;font-style:italic;font-weight:700;"
@@ -4696,6 +4702,18 @@ MAIL_CONTENT_MAX = 2 * 1024 * 1024          # 2 MB HTML body
 MAIL_ATTACH_MAX  = 10 * 1024 * 1024         # 10 MB total attachments
 
 
+def _snapshot_plan_cell_text(actual: Any, plan: Any) -> str:
+    actual_text = "" if actual is None else str(actual)
+    plan_text = "" if plan is None else str(plan)
+    if plan_text and actual_text and plan_text != actual_text:
+        return f"{actual_text} -> {plan_text}"
+    if plan_text and actual_text and plan_text == actual_text:
+        return f"{plan_text} (plan 적용)"
+    if plan_text:
+        return f"[plan] {plan_text}"
+    return actual_text
+
+
 def _inform_snapshot_simple_sheets(target: dict) -> list[dict]:
     rows1 = [["Field", "Value"]]
     meta_keys = ("id", "product", "module", "reason", "root_lot_id", "lot_id",
@@ -4759,10 +4777,7 @@ def _inform_snapshot_simple_sheets(target: dict) -> list[dict]:
                 cell = cells.get(i) or cells.get(str(i)) or {}
                 actual = cell.get("actual")
                 plan = cell.get("plan")
-                if plan not in (None, "") and str(plan) != str(actual if actual is not None else ""):
-                    out.append(f"{'' if actual is None else actual} -> {plan}")
-                else:
-                    out.append("" if actual is None else str(actual))
+                out.append(_snapshot_plan_cell_text(actual, plan))
             rows2.append(out)
         sheets.append({"title": "SplitTable Snapshot", "rows": rows2, "merges": merges})
     elif embed.get("columns") or embed.get("rows"):
@@ -4863,10 +4878,7 @@ def _build_inform_snapshot_xlsx(target: dict) -> Optional[tuple]:
                     cell = cells.get(i) or cells.get(str(i)) or {}
                     actual = cell.get("actual")
                     plan = cell.get("plan")
-                    if plan not in (None, "") and str(plan) != str(actual if actual is not None else ""):
-                        out.append(f"{'' if actual is None else actual} -> {plan}")
-                    else:
-                        out.append("" if actual is None else str(actual))
+                    out.append(_snapshot_plan_cell_text(actual, plan))
                 ws2.append(out)
         elif embed.get("columns") or embed.get("rows"):
             ws2 = wb.create_sheet("Embedded Table")

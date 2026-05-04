@@ -519,7 +519,7 @@ function stPlanStyle(cell) {
   const hasPlan = hasStValue(cell.plan);
   const hasActual = hasStValue(cell.actual);
   if (hasPlan && hasActual) {
-    if (String(cell.plan) === String(cell.actual)) return {};
+    if (String(cell.plan) === String(cell.actual)) return { borderLeft: `3px solid ${OK.fg}`, fontWeight: 700 };
     return { borderLeft: `3px solid ${BAD.fg}`, boxShadow: `inset 0 0 0 1px ${BAD.fg}66` };
   }
   if (hasPlan) return { borderLeft: `3px solid ${WARN.fg}`, fontStyle: "italic", fontWeight: 700 };
@@ -792,14 +792,17 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
                     const hasActual = hasStValue(cell.actual);
                     const isPlanOnly = hasPlan && !hasActual;
                     const isMismatch = hasPlan && hasActual && String(cell.plan) !== String(cell.actual);
+                    const isAppliedPlan = hasPlan && hasActual && String(cell.plan) === String(cell.actual);
                     const display = hasActual ? String(cell.actual) : "";
                     return (
                       <td key={ci} style={{ ...stCellStyle, ...bg, ...plan }}>
                         {isMismatch
                           ? <span style={{ color: "#dc2626", fontWeight: 700 }}>{"✗ "}{display}<span style={{ fontSize: 14, color: "rgba(239,68,68,0.95)" }}>{" (≠" + cell.plan + ")"}</span></span>
-                          : isPlanOnly
-                            ? <span style={{ fontStyle: "italic", fontWeight: 700 }}>{"📌 "}{cell.plan}</span>
-                            : display}
+                          : isAppliedPlan
+                            ? <span style={{ color: OK.fg, fontWeight: 700 }}>{"✓ "}{String(cell.plan)}<span style={{ fontSize: 14, color: OK.fg }}>{" (plan 적용)"}</span></span>
+                            : isPlanOnly
+                              ? <span style={{ fontStyle: "italic", fontWeight: 700 }}>{"📌 "}{cell.plan}</span>
+                              : display}
                       </td>
                     );
                   })}

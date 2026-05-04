@@ -5082,37 +5082,6 @@ def _invalidate_plan_risk_cache(product: str) -> None:
             _PLAN_RISK_CACHE.pop(key, None)
 
 
-def _auto_log_saved_plans(req: "PlanReq", entries: list[tuple[str, object, object]]) -> None:
-    """Mirror changed SplitTable plans into Inform Log after the plan file is saved."""
-    if not entries:
-        return
-    try:
-        from routers.informs import auto_log_splittable_change
-    except Exception as e:
-        logger.warning("SplitTable plan Inform auto-log import failed: %s: %s", type(e).__name__, e)
-        return
-    for ck, old, new in entries:
-        if old == new:
-            continue
-        try:
-            parts = str(ck or "").split("|")
-            root_lot_id = str(req.root_lot_id or (parts[0] if parts else "") or "").strip()
-            fab_lot_id = _resolve_fab_lot_for_cell(req.product, ck, root_lot_id)
-            auto_log_splittable_change(
-                author=req.username,
-                product=req.product,
-                lot_id=root_lot_id,
-                cell_key=ck,
-                old_value=old,
-                new_value=new,
-                action="set",
-                fab_lot_id=fab_lot_id,
-            )
-        except Exception as e:
-            logger.warning("SplitTable plan Inform auto-log failed (cell=%s) %s: %s",
-                           ck, type(e).__name__, e)
-
-
 def refresh_plan_risk_cache(product: str = "", force: bool = False) -> dict:
     products = [product] if str(product or "").strip() else []
     if not products:
@@ -6173,7 +6142,7 @@ def save_plan(req: PlanReq):
     data = load_json(pf, {"plans": {}, "history": []})
     data.setdefault("history", [])
     now = datetime.datetime.now().isoformat()
-    auto_entries = []
+    changed_entries = []
     # v8.8.33: my_plan_changed 이벤트 대상자 수집.
     #   같은 cell 에 과거 plan 이 있었으면 그 plan 을 만든 user 에게 "내 plan 이 변경됨" 알림.
     original_owners: dict[str, str] = {}
@@ -6188,14 +6157,14 @@ def save_plan(req: PlanReq):
             "cell": ck, "old": old, "new": val, "user": req.username,
             "time": now, "action": "set", "root_lot_id": req.root_lot_id,
         })
-        auto_entries.append((ck, old, val))
+        changed_entries.append((ck, old, val))
     data["history"] = data["history"][-1000:]
     save_json(pf, data)
     _invalidate_plan_risk_cache(req.product)
     # v8.8.33: notify 이벤트 — 본인이 아닌 원 소유자에게만.
     try:
         from core.notify import emit_event
-        for ck, old, val in auto_entries:
+        for ck, old, val in changed_entries:
             if old == val:
                 continue
             target = original_owners.get(ck)
@@ -6219,7 +6188,8 @@ def save_plan(req: PlanReq):
             )
     except Exception:
         pass
-    _auto_log_saved_plans(req, auto_entries)
+    # Plan saves stay in SplitTable history/notifications only; Inform snapshots
+    # are attached explicitly from Inform so users do not get extra auto cards.
     _audit_user(req.username, "splittable:plan_save",
                 detail=f"product={req.product} saved={len(req.plans)} rejected={len(rejected)}",
                 tab="splittable")
