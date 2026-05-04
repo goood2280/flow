@@ -143,6 +143,7 @@ def build_splittable_embed(
             "rows": rows_all,
             "wafer_fab_list": list(view.get("wafer_fab_list") or []),
             "header_groups": list(view.get("header_groups") or []),
+            "row_labels": dict(view.get("row_labels") or {}),
             "root_lot_id": root_key,
         },
         "st_scope": {
