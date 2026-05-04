@@ -66,6 +66,74 @@ def _cell_text(cell: dict[str, Any]) -> str:
     return plan_text or actual_text
 
 
+def _embed_from_view(
+    ml_product: str,
+    lot: str,
+    custom: list[str],
+    fab_input: bool,
+    view: dict[str, Any],
+    *,
+    scope_label: str | None = None,
+    current_view: bool = False,
+) -> dict[str, Any]:
+    if not isinstance(view, dict):
+        view = {}
+
+    headers = list(view.get("headers") or [])
+    rows_all = list(view.get("rows") or [])
+    root_key = str(view.get("root_lot_id") or _root_fallback(lot)).strip()
+
+    if custom:
+        keep = set(custom)
+        by_param = {
+            str(row.get("_param") or ""): row
+            for row in rows_all
+            if isinstance(row, dict) and str(row.get("_param") or "") in keep
+        }
+        rows_all = [by_param.get(col) or {"_param": col, "_cells": {}} for col in custom]
+    else:
+        rows_all = rows_all[:120]
+
+    legacy_rows = []
+    for row in rows_all:
+        if not isinstance(row, dict):
+            continue
+        cells = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
+        legacy_row = [str(row.get("_param") or "")]
+        for idx, _header in enumerate(headers):
+            cell = cells.get(str(idx)) or cells.get(idx) or {}
+            legacy_row.append(_cell_text(cell if isinstance(cell, dict) else {}))
+        legacy_rows.append(legacy_row)
+
+    label = scope_label or (f"CUSTOM({len(custom)})" if custom else "ALL")
+    lot_label = f"fab_lot={lot}" if fab_input else f"root_lot={lot}"
+    note = view.get("msg") or f"{len(rows_all)} params · {lot_label} · scope={label}"
+    st_scope = {
+        "prefix": "" if custom else "ALL",
+        "custom_name": "",
+        "inline_cols": custom,
+    }
+    if current_view:
+        st_scope["snapshot_source"] = "current_splittable"
+        st_scope["lot_id"] = lot
+
+    return {
+        "source": f"SplitTable/{strip_ml_prefix(ml_product)} @ {lot} · {label}",
+        "columns": ["parameter", *headers],
+        "rows": legacy_rows,
+        "note": str(note or "")[:500],
+        "st_view": {
+            "headers": headers,
+            "rows": rows_all,
+            "wafer_fab_list": list(view.get("wafer_fab_list") or []),
+            "header_groups": list(view.get("header_groups") or []),
+            "row_labels": dict(view.get("row_labels") or {}),
+            "root_lot_id": root_key,
+        },
+        "st_scope": st_scope,
+    }
+
+
 def _load_view(**kwargs) -> dict[str, Any]:
     from routers.splittable import view_split
 
@@ -102,55 +170,33 @@ def build_splittable_embed(
         fab_lot_id=lot if fab_input else "",
         custom_cols=",".join(custom),
     )
-    if not isinstance(view, dict):
-        view = {}
+    return _embed_from_view(ml_product, lot, custom, fab_input, view)
 
-    headers = list(view.get("headers") or [])
-    rows_all = list(view.get("rows") or [])
-    root_key = str(view.get("root_lot_id") or _root_fallback(lot)).strip()
 
-    if custom:
-        keep = set(custom)
-        by_param = {
-            str(row.get("_param") or ""): row
-            for row in rows_all
-            if isinstance(row, dict) and str(row.get("_param") or "") in keep
-        }
-        rows_all = [by_param.get(col) or {"_param": col, "_cells": {}} for col in custom]
-    else:
-        rows_all = rows_all[:120]
+def build_splittable_embed_from_view(
+    product: str,
+    lot_id: str,
+    view: dict[str, Any],
+    custom_cols: Iterable[str] | str | None = None,
+    is_fab_lot: bool | None = None,
+) -> dict[str, Any]:
+    """Build an Inform embed from the already-rendered SplitTable view payload."""
 
-    legacy_rows = []
-    for row in rows_all:
-        if not isinstance(row, dict):
-            continue
-        cells = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
-        legacy_row = [str(row.get("_param") or "")]
-        for idx, _header in enumerate(headers):
-            cell = cells.get(str(idx)) or cells.get(idx) or {}
-            legacy_row.append(_cell_text(cell if isinstance(cell, dict) else {}))
-        legacy_rows.append(legacy_row)
+    ml_product = ml_product_name(product)
+    lot = str(lot_id or "").strip()
+    if not ml_product:
+        raise HTTPException(400, "product is required")
+    if not lot:
+        raise HTTPException(400, "lot_id is required")
 
-    scope_label = f"CUSTOM({len(custom)})" if custom else "ALL"
-    lot_label = f"fab_lot={lot}" if fab_input else f"root_lot={lot}"
-    note = view.get("msg") or f"{len(rows_all)} params · {lot_label} · scope={scope_label}"
-
-    return {
-        "source": f"SplitTable/{strip_ml_prefix(ml_product)} @ {lot} · {scope_label}",
-        "columns": ["parameter", *headers],
-        "rows": legacy_rows,
-        "note": str(note or "")[:500],
-        "st_view": {
-            "headers": headers,
-            "rows": rows_all,
-            "wafer_fab_list": list(view.get("wafer_fab_list") or []),
-            "header_groups": list(view.get("header_groups") or []),
-            "row_labels": dict(view.get("row_labels") or {}),
-            "root_lot_id": root_key,
-        },
-        "st_scope": {
-            "prefix": "" if custom else "ALL",
-            "custom_name": "",
-            "inline_cols": custom,
-        },
-    }
+    custom = _clean_custom_cols(custom_cols)
+    fab_input = looks_like_fab_lot(lot) if is_fab_lot is None else bool(is_fab_lot)
+    return _embed_from_view(
+        ml_product,
+        lot,
+        custom,
+        fab_input,
+        view,
+        scope_label="CURRENT",
+        current_view=True,
+    )

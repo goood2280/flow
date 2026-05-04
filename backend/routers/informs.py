@@ -64,7 +64,10 @@ from core.auth import current_user, require_admin, require_page_admin
 from core.audit import record as _audit
 from core.splittable_sets_cache import list_sets as list_cached_splittable_sets
 from app_v2.shared.source_adapter import resolve_column
-from app_v2.modules.informs.splittable_embed import build_splittable_embed
+from app_v2.modules.informs.splittable_embed import (
+    build_splittable_embed,
+    build_splittable_embed_from_view,
+)
 from routers.groups import user_modules
 
 router = APIRouter(prefix="/api/informs", tags=["informs"])
@@ -1922,6 +1925,7 @@ class SplitTableSnapshotReq(BaseModel):
     lot_id: str
     custom_cols: List[str] = []
     is_fab_lot: Optional[bool] = None
+    current_view: Optional[dict] = None
 
 
 class ProductReq(BaseModel):
@@ -2428,12 +2432,21 @@ def save_settings_compat(req: ConfigReq, _admin=Depends(require_page_admin("info
 def splittable_snapshot(req: SplitTableSnapshotReq, request: Request):
     """Build the Inform SplitTable embed via the app_v2 service layer."""
     current_user(request)
-    embed = build_splittable_embed(
-        product=req.product,
-        lot_id=req.lot_id,
-        custom_cols=req.custom_cols,
-        is_fab_lot=req.is_fab_lot,
-    )
+    if req.current_view:
+        embed = build_splittable_embed_from_view(
+            product=req.product,
+            lot_id=req.lot_id,
+            view=req.current_view,
+            custom_cols=req.custom_cols,
+            is_fab_lot=req.is_fab_lot,
+        )
+    else:
+        embed = build_splittable_embed(
+            product=req.product,
+            lot_id=req.lot_id,
+            custom_cols=req.custom_cols,
+            is_fab_lot=req.is_fab_lot,
+        )
     return {"ok": True, "embed": embed}
 
 

@@ -9,7 +9,10 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
-from app_v2.modules.informs.splittable_embed import build_splittable_embed  # noqa: E402
+from app_v2.modules.informs.splittable_embed import (  # noqa: E402
+    build_splittable_embed,
+    build_splittable_embed_from_view,
+)
 from backend.routers import informs  # noqa: E402
 
 
@@ -65,6 +68,37 @@ def test_splittable_embed_service_builds_inform_snapshot_for_fab_lot():
     assert embed["st_view"]["header_groups"] == [{"label": "A1000A.1", "span": 2}]
     assert embed["st_view"]["row_labels"] == {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"}
     assert embed["st_scope"]["inline_cols"] == ["KNOB_GATE", "MASK_ID"]
+
+
+def test_splittable_embed_from_current_view_preserves_plan_cells():
+    embed = build_splittable_embed_from_view(
+        "PRODA",
+        "A1000",
+        {
+            "headers": ["#1", "#2"],
+            "root_lot_id": "A1000",
+            "header_groups": [{"label": "A1000A.1", "span": 2}],
+            "wafer_fab_list": ["A1000A.1", "A1000A.1"],
+            "rows": [
+                {
+                    "_param": "KNOB_GATE",
+                    "_display": "KNOB_GATE",
+                    "_cells": {
+                        "0": {"actual": "R1", "plan": "R2"},
+                        "1": {"actual": None, "plan": "R3"},
+                    },
+                },
+            ],
+        },
+        custom_cols=["KNOB_GATE"],
+    )
+
+    assert embed["source"] == "SplitTable/PRODA @ A1000 · CURRENT"
+    assert embed["rows"][0] == ["KNOB_GATE", "R1 → R2", "R3"]
+    assert embed["st_view"]["rows"][0]["_cells"]["0"]["plan"] == "R2"
+    assert embed["st_view"]["rows"][0]["_cells"]["1"]["plan"] == "R3"
+    assert embed["st_scope"]["snapshot_source"] == "current_splittable"
+    assert embed["st_scope"]["lot_id"] == "A1000"
 
 
 def test_create_inform_keeps_service_snapshot_fab_lot_labels(tmp_path, monkeypatch):
