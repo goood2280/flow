@@ -4123,6 +4123,10 @@ def _st_cell_bg(val: str, uniq_map: dict, pname: str) -> str:
     return f"background:{c['bg']};color:{c['fg']};"
 
 
+def _st_has_value(val: Any) -> bool:
+    return val is not None and val != "" and str(val) not in ("None", "null")
+
+
 def _st_build_uniq_map(rows_st: list, headers: list) -> dict:
     """각 KNOB/MASK parameter 행에 대해 value → 등장 순서 인덱스를 기록. stCellBg 조회용."""
     out: dict = {}
@@ -4135,7 +4139,7 @@ def _st_build_uniq_map(rows_st: list, headers: list) -> dict:
         for i in range(len(headers or [])):
             cell = cells.get(i) or cells.get(str(i)) or {}
             for v in (cell.get("actual"), cell.get("plan")):
-                if v is None or v == "":
+                if not _st_has_value(v):
                     continue
                 s = str(v)
                 if s not in seen:
@@ -4277,6 +4281,10 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
     lot_id_label = ", ".join(lot_id_values[:3])
     if len(lot_id_values) > 3:
         lot_id_label += f" +{len(lot_id_values) - 3}"
+    row_labels = st.get("row_labels") or {}
+    root_row_label = str(row_labels.get("root_lot_id") or "root_lot_id")
+    lot_row_label = str(row_labels.get("lot_id") or "lot_id")
+    param_row_label = str(row_labels.get("parameter") or "항목")
     src = str(embed.get("source") or "")
     m = re.search(r"SplitTable/([^ @·]+)", src)
     product = (m.group(1).strip() if m else "").strip()
@@ -4385,48 +4393,6 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             "</div>"
         )
 
-    def _plan_summary_html() -> str:
-        if not rows_st or not headers:
-            return ""
-        out = []
-        for idx, wafer in enumerate(headers):
-            plans = []
-            for r in rows_st:
-                cells = r.get("_cells") or {}
-                cell = cells.get(idx) or cells.get(str(idx)) or {}
-                plan = cell.get("plan")
-                if plan in (None, ""):
-                    continue
-                plans.append({
-                    "parameter": str(r.get("_param") or ""),
-                    "actual": "" if cell.get("actual") in (None, "") else str(cell.get("actual")),
-                    "plan": str(plan),
-                })
-            for p in plans:
-                out.append(
-                    "<tr>"
-                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;font-weight:700;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(str(wafer or ''))}</td>"
-                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(p['parameter'])}</td>"
-                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#6b7280;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(p['actual'] or '—')}</td>"
-                    f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#ea580c;font-weight:700;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(p['plan'])}</td>"
-                    "</tr>"
-                )
-        if not out:
-            return ""
-        th = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
-              f"font-size:{_MAIL_MIN_FONT};color:#1f2937;text-align:left;font-family:monospace;"
-              "white-space:normal;word-break:break-word;overflow-wrap:anywhere;")
-        return (
-            "<div style='margin-top:8px;'>"
-            f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;margin-bottom:4px;'>📋 Wafer별 적용 plan 요약</div>"
-            f"<table style='border-collapse:collapse;font-size:{_MAIL_MIN_FONT};max-width:100%;table-layout:fixed;'>"
-            "<thead><tr>"
-            f"<th style='{th}'>wafer</th><th style='{th}'>parameter</th><th style='{th}'>actual</th><th style='{th}'>plan</th>"
-            "</tr></thead>"
-            f"<tbody>{''.join(out)}</tbody></table>"
-            "</div>"
-        )
-
     def _wrap(body_rows_html: str, head_cells: list[str], truncated: bool,
               highlight_col_indices: Optional[set[int]] = None) -> str:
         first_col_style, data_col_style = _mail_fit_col_styles(max(0, len(head_cells) - 1))
@@ -4454,7 +4420,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             f"{colgroup}"
             f"<thead>{thead}</thead>"
             f"<tbody>{body_rows_html}</tbody>"
-            f"</table></div>{trunc_html}{_attached_sets_html()}{_plan_summary_html()}{_lineage_summary_html()}"
+            f"</table></div>{trunc_html}{_attached_sets_html()}{_lineage_summary_html()}"
         )
 
     if rows_st and headers:
@@ -4491,7 +4457,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         body_parts = []
         for r in shown:
             param_raw = str(r.get("_param", ""))
-            param = esc(str(r.get("_display") or param_raw or "").replace("KNOB_", "").replace("MASK_", "").replace("INLINE_", "").replace("VM_", ""))
+            param = esc(re.sub(r"^[A-Z]+_", "", str(r.get("_display") or param_raw or "")))
             cells = r.get("_cells") or {}
             row_highlight = _is_module_highlight_param(param_raw, highlight_knobs)
             hilite = _MODULE_KNOB_HILITE if row_highlight else ""
@@ -4500,26 +4466,37 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
                 cell = cells.get(i) or cells.get(str(i)) or {}
                 actual = cell.get("actual")
                 plan = cell.get("plan")
-                disp = "" if actual is None or actual == "" else str(actual)
-                plan_diff = plan is not None and plan != "" and plan != actual
+                has_actual = _st_has_value(actual)
+                has_plan = _st_has_value(plan)
+                disp = str(actual) if has_actual else ""
+                plan_diff = has_plan and has_actual and str(plan) != str(actual)
+                plan_only = has_plan and not has_actual
+                cell_plan_style = ""
                 if plan_diff:
-                    disp_html = f"{esc(disp)} <span style='color:#ea580c;font-weight:700'>→ {esc(str(plan))}</span>"
+                    cell_plan_style = "border-left:3px solid #ef4444;box-shadow:inset 0 0 0 1px rgba(239,68,68,0.45);"
+                    disp_html = (
+                        f"<span style='color:#dc2626;font-weight:700'>✗ {esc(disp)}"
+                        f"<span style='font-size:{_MAIL_MIN_FONT};color:#ef4444'> (≠{esc(str(plan))})</span></span>"
+                    )
+                elif plan_only:
+                    cell_plan_style = "border-left:3px solid #f97316;font-style:italic;font-weight:700;"
+                    disp_html = f"<span style='font-style:italic;font-weight:700'>📌 {esc(str(plan))}</span>"
                 else:
                     disp_html = esc(disp)
                 # plan 이 있으면 plan 기준으로 컬러링해 SplitTable unique 색상과 맞춘다.
-                paint_val = plan if plan not in (None, "") else actual
+                paint_val = plan if has_plan else actual
                 cell_bg = _st_cell_bg(paint_val, uniq_map, param_raw)
-                tds.append(f"<td style='{td_cell_base}{data_col_style}{cell_bg}{hilite}'>{disp_html}</td>")
+                tds.append(f"<td style='{td_cell_base}{data_col_style}{cell_bg}{hilite}{cell_plan_style}'>{disp_html}</td>")
             body_parts.append("<tr>" + "".join(tds) + "</tr>")
 
         thead_parts = [
             "<tr>"
-            f"<th style='{th_label}'>root_lot_id</th>"
+            f"<th style='{th_label}'>{esc(root_row_label)}</th>"
             f"<th colspan='{max(1, len(headers))}' style='{th_root}{_mail_data_col_style(data_col_style, len(headers))}'>{esc(root_lot_id or '—')}</th>"
             "</tr>"
         ]
         if header_groups:
-            cells = [f"<th style='{th_label}'>lot_id</th>"]
+            cells = [f"<th style='{th_label}'>{esc(lot_row_label)}</th>"]
             for g in header_groups:
                 span = max(1, int(g.get("span") or 1))
                 cells.append(f"<th colspan='{span}' style='{th_group}{_mail_data_col_style(data_col_style, span)}'>{esc(str(g.get('label') or '—'))}</th>")
@@ -4527,11 +4504,11 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         else:
             thead_parts.append(
                 "<tr>"
-                f"<th style='{th_label}'>lot_id</th>"
+                f"<th style='{th_label}'>{esc(lot_row_label)}</th>"
                 f"<th colspan='{max(1, len(headers))}' style='{th_group}{_mail_data_col_style(data_col_style, len(headers))}'>{esc(lot_id_label or '—')}</th>"
                 "</tr>"
             )
-        head_cells = ["항목"] + [esc(h or "") for h in headers]
+        head_cells = [esc(param_row_label)] + [esc(h or "") for h in headers]
         thead_parts.append("<tr>" + "".join(
             f"<th style='{th_style}{first_col_style if i == 0 else data_col_style}'>{c}</th>"
             for i, c in enumerate(head_cells)
@@ -4547,7 +4524,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         )
         return (
             f"{hdr}{note_html}"
-            f"{table_html}{trunc_html}{_attached_sets_html()}{_plan_summary_html()}{_lineage_summary_html()}"
+            f"{table_html}{trunc_html}{_attached_sets_html()}{_lineage_summary_html()}"
         )
 
     # Legacy 2D path.
@@ -4748,14 +4725,18 @@ def _inform_snapshot_simple_sheets(target: dict) -> list[dict]:
     if headers or rows:
         rows2 = []
         merges = []
+        row_labels = st.get("row_labels") or {}
+        root_row_label = str(row_labels.get("root_lot_id") or "root_lot_id")
+        lot_row_label = str(row_labels.get("lot_id") or "lot_id")
+        param_row_label = str(row_labels.get("parameter") or "항목")
         root_lot_id = str(st.get("root_lot_id") or "").strip()
         if root_lot_id:
-            rows2.append(["", root_lot_id, *["" for _ in headers[1:]]])
+            rows2.append([root_row_label, root_lot_id, *["" for _ in headers[1:]]])
             if headers:
                 merges.append((len(rows2), 2, len(rows2), len(headers) + 1))
         header_groups = _split_table_header_groups(st)
         if header_groups:
-            out = [""]
+            out = [lot_row_label]
             col = 2
             merge_row = len(rows2) + 1
             for group in header_groups:
@@ -4765,9 +4746,13 @@ def _inform_snapshot_simple_sheets(target: dict) -> list[dict]:
                     merges.append((merge_row, col, merge_row, col + span - 1))
                 col += span
             rows2.append(out[:len(headers) + 1])
-        rows2.append(["parameter", *headers])
+        elif root_lot_id or headers:
+            rows2.append([lot_row_label, "-", *["" for _ in headers[1:]]])
+            if headers:
+                merges.append((len(rows2), 2, len(rows2), len(headers) + 1))
+        rows2.append([param_row_label, *headers])
         for row in rows:
-            label = str(row.get("_param") or row.get("_display") or "")
+            label = re.sub(r"^[A-Z]+_", "", str(row.get("_display") or row.get("_param") or ""))
             cells = row.get("_cells") or {}
             out = [label]
             for i, _ in enumerate(headers):
@@ -4843,13 +4828,17 @@ def _build_inform_snapshot_xlsx(target: dict) -> Optional[tuple]:
         if headers or rows:
             ws2 = wb.create_sheet("SplitTable Snapshot")
             header_groups = _split_table_header_groups(st)
+            row_labels = st.get("row_labels") or {}
+            root_row_label = str(row_labels.get("root_lot_id") or "root_lot_id")
+            lot_row_label = str(row_labels.get("lot_id") or "lot_id")
+            param_row_label = str(row_labels.get("parameter") or "항목")
             root_lot_id = str(st.get("root_lot_id") or "").strip()
             if root_lot_id:
-                ws2.append(["", root_lot_id, *["" for _ in headers[1:]]])
+                ws2.append([root_row_label, root_lot_id, *["" for _ in headers[1:]]])
                 if headers:
                     ws2.merge_cells(start_row=ws2.max_row, start_column=2, end_row=ws2.max_row, end_column=len(headers) + 1)
             if header_groups:
-                row = [""]
+                row = [lot_row_label]
                 for group in header_groups:
                     span = max(1, int(group.get("span") or 1))
                     row.extend([str(group.get("label") or ""), *["" for _ in range(span - 1)]])
@@ -4861,9 +4850,13 @@ def _build_inform_snapshot_xlsx(target: dict) -> Optional[tuple]:
                     if span > 1:
                         ws2.merge_cells(start_row=merge_row, start_column=col, end_row=merge_row, end_column=col + span - 1)
                     col += span
-            ws2.append(["parameter", *headers])
+            elif root_lot_id or headers:
+                ws2.append([lot_row_label, "-", *["" for _ in headers[1:]]])
+                if headers:
+                    ws2.merge_cells(start_row=ws2.max_row, start_column=2, end_row=ws2.max_row, end_column=len(headers) + 1)
+            ws2.append([param_row_label, *headers])
             for row in rows:
-                label = str(row.get("_param") or row.get("_display") or "")
+                label = re.sub(r"^[A-Z]+_", "", str(row.get("_display") or row.get("_param") or ""))
                 cells = row.get("_cells") or {}
                 out = [label]
                 for i, _ in enumerate(headers):

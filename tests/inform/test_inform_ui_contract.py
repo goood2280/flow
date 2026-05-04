@@ -59,3 +59,25 @@ def test_inform_wizard_mail_note_is_plain_top_block():
     assert 'fontSize: "12pt"' in src
     assert 'background: "#fffbeb"' not in src
     assert 'borderLeft: "4px solid #f59e0b"' not in src
+
+
+def test_inform_splittable_embed_matches_split_table_header_and_plan_contract():
+    src = MY_INFORM.read_text(encoding="utf-8")
+
+    for token in [
+        "const firstColWidth = 288",
+        "const dataColWidth = 115",
+        'const rootRowLabel = rowLabels.root_lot_id || "root_lot_id"',
+        'const lotRowLabel = rowLabels.lot_id || "lot_id"',
+        'const paramRowLabel = rowLabels.parameter || "항목"',
+        "const hasRootRow = hasLotContext",
+        "const hasLotRow = hasLotContext || headerGroups.length > 0",
+        'String(r._display || r._param || "").replace(/^[A-Z]+_/, "")',
+        "const isPlanOnly = hasPlan && !hasActual",
+        "const isMismatch = hasPlan && hasActual && String(cell.plan) !== String(cell.actual)",
+    ]:
+        assert token in src
+
+    assert 'root_lot_id</span> {rootLotId || "-"}' not in src
+    assert 'lot_id</span> {lotIdLabel || "-"}' not in src
+    assert "Wafer별 적용 plan 요약" not in src

@@ -502,8 +502,11 @@ const ST_CELL_COLORS = [
   { bg: "rgba(244,204,204,0.95)", fg: "rgba(117,25,76,0.95)" },
 ];
 const ST_COLOR_PREFIXES = ["KNOB", "MASK"];
+function hasStValue(v) {
+  return v != null && v !== "" && v !== "None" && v !== "null";
+}
 function stCellBg(val, uniq, pname) {
-  if (!val || val === "None" || val === "null") return {};
+  if (!hasStValue(val)) return {};
   const pn = (pname || "").toUpperCase();
   if (!ST_COLOR_PREFIXES.some(p => pn.startsWith(p + "_"))) return {};
   const s = String(val);
@@ -513,32 +516,14 @@ function stCellBg(val, uniq, pname) {
 }
 function stPlanStyle(cell) {
   if (!cell) return {};
-  if (cell.plan && cell.actual) {
+  const hasPlan = hasStValue(cell.plan);
+  const hasActual = hasStValue(cell.actual);
+  if (hasPlan && hasActual) {
     if (String(cell.plan) === String(cell.actual)) return {};
     return { borderLeft: `3px solid ${BAD.fg}`, boxShadow: `inset 0 0 0 1px ${BAD.fg}66` };
   }
-  if (cell.plan) return { borderLeft: `3px solid ${WARN.fg}`, fontStyle: "italic", fontWeight: 700 };
+  if (hasPlan) return { borderLeft: `3px solid ${WARN.fg}`, fontStyle: "italic", fontWeight: 700 };
   return {};
-}
-
-function summarizePlanByWafer(st) {
-  const headers = st?.headers || [];
-  const rows = st?.rows || [];
-  if (!headers.length || !rows.length) return [];
-  const perWafer = headers.map((wafer, idx) => {
-    const plans = [];
-    rows.forEach((r) => {
-      const cell = (r._cells && (r._cells[idx] || r._cells[String(idx)])) || {};
-      if (cell?.plan == null || cell.plan === "") return;
-      plans.push({
-        parameter: String(r._param || ""),
-        actual: cell.actual == null ? "" : String(cell.actual),
-        plan: String(cell.plan),
-      });
-    });
-    return { wafer, plans };
-  }).filter(x => x.plans.length > 0);
-  return perWafer;
 }
 
 function splitTableHeaderGroups(st) {
@@ -702,26 +687,43 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
   // v8.8.11: st_view(SplitTable /view 응답) 가 있으면 컬러링 + plan pin 동일 렌더.
   const st = embed.st_view;
   if (st && st.headers && st.rows) {
-    const planSummary = summarizePlanByWafer(st);
     const headers = st.headers || [];
-    const allowHorizontalScroll = headers.length > 30;
-    const stScrollerStyle = { ...scrollerStyle, overflowX: allowHorizontalScroll ? "auto" : "hidden" };
-    const stTableStyle = allowHorizontalScroll ? { ...tableStyle, width: "max-content" } : tableStyle;
+    const firstColWidth = 288;
+    const dataColWidth = 115;
+    const stScrollerStyle = { ...scrollerStyle, overflow: "auto", border: "1px solid #555", borderRadius: 0 };
+    const stTableWidth = firstColWidth + Math.max(headers.length, 1) * dataColWidth;
+    const stTableStyle = {
+      borderCollapse: "collapse",
+      fontSize: 14,
+      background: "var(--bg-card)",
+      tableLayout: "fixed",
+      width: stTableWidth,
+      minWidth: stTableWidth,
+      fontFamily: "inherit",
+    };
     const headerGroups = splitTableHeaderGroups(st);
     const rootLotId = String(st.root_lot_id || "").trim();
     const lotIdValues = [...new Set(headerGroups.map(g => String(g?.label || "").trim()).filter(Boolean))];
     const lotIdLabel = lotIdValues.join(", ");
     const hasLotContext = !!(rootLotId || lotIdLabel);
-    const rootHeaderHeight = hasLotContext ? 44 : 0;
-    const groupHeaderHeight = headerGroups.length ? 30 : 0;
-    const waferTop = rootHeaderHeight + groupHeaderHeight;
+    const rowLabels = st.row_labels || {};
+    const rootRowLabel = rowLabels.root_lot_id || "root_lot_id";
+    const lotRowLabel = rowLabels.lot_id || "lot_id";
+    const paramRowLabel = rowLabels.parameter || "항목";
+    const hasRootRow = hasLotContext;
+    const hasLotRow = hasLotContext || headerGroups.length > 0;
+    const rootHeaderHeight = hasRootRow ? 32 : 0;
+    const lotHeaderHeight = hasLotRow ? 24 : 0;
+    const waferTop = rootHeaderHeight + lotHeaderHeight;
     const lotContextTitle = `root_lot_id: ${rootLotId || "-"}\nlot_id: ${lotIdLabel || "-"}`;
-    const rootLeftStyle = { border: "1px solid var(--border)", padding: "3px 4px", background: "var(--bg-secondary)", position: "sticky", top: 0, left: 0, zIndex: 5, width: 170, maxWidth: 170, height: rootHeaderHeight, fontSize: 11, lineHeight: 1.25, whiteSpace: "normal", wordBreak: "break-word" };
-    const rootHeadStyle = { border: "1px solid var(--border)", padding: "3px 4px", background: "var(--bg-secondary)", color: "var(--accent)", textAlign: "center", position: "sticky", top: 0, zIndex: 4, fontWeight: 800, fontSize: 11, fontFamily: "monospace", height: rootHeaderHeight, wordBreak: "break-all" };
-    const groupLeftStyle = { border: "1px solid var(--border)", padding: 0, background: "var(--bg-tertiary)", position: "sticky", top: rootHeaderHeight, left: 0, zIndex: 5, width: 170, maxWidth: 170 };
-    const groupHeadStyle = { border: "1px solid var(--border)", padding: "3px 4px", background: "var(--bg-tertiary)", color: "rgba(251,191,36,0.95)", textAlign: "center", position: "sticky", top: rootHeaderHeight, zIndex: 4, fontWeight: 800, fontSize: 11, fontFamily: "monospace", whiteSpace: "normal", wordBreak: "break-all" };
-    const waferLeftStyle = { ...leftHeadStyle, top: waferTop };
-    const waferHeadStyle = { ...headStyle, top: waferTop };
+    const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, lineHeight: 1.25, color: "var(--text-secondary)", fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word" };
+    const rootHeadStyle = { boxSizing: "border-box", height: rootHeaderHeight, textAlign: "center", padding: "0 8px", lineHeight: `${rootHeaderHeight - 1}px`, fontWeight: 700, fontSize: 14, color: "var(--accent)", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, zIndex: 4, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
+    const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, color: "var(--text-secondary)", fontWeight: 800 };
+    const lotHeadStyle = { boxSizing: "border-box", height: lotHeaderHeight, textAlign: "center", padding: "0 6px", fontWeight: 800, fontSize: 14, color: "var(--text-primary)", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, zIndex: 4, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
+    const waferLeftStyle = { textAlign: "left", padding: "8px 10px", fontWeight: 700, fontSize: 14, color: "var(--accent)", border: "1px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, left: 0, zIndex: 5, width: firstColWidth, minWidth: firstColWidth };
+    const waferHeadStyle = { textAlign: "center", padding: "6px 8px", fontWeight: 600, fontSize: 14, color: "var(--text-secondary)", border: "1px solid #555", borderBottom: "2px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, zIndex: 3, whiteSpace: "normal", wordBreak: "break-word", minWidth: 100 };
+    const paramCellStyle = { padding: "6px 10px", fontWeight: 600, fontSize: 14, color: "var(--text-primary)", border: "1px solid #555", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 2, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35 };
+    const stCellStyle = { background: "var(--bg-card)", color: "var(--text-primary)", padding: "4px 8px", border: "1px solid #555", textAlign: "center", fontSize: 14, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35, position: "relative" };
     // uniqueMap 계산: param 별 값 → 인덱스.
     const uniq = {};
     for (const r of st.rows) {
@@ -730,7 +732,7 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
       const seen = {};
       Object.values(r._cells || {}).forEach(c => {
         [c?.actual, c?.plan].forEach(v => {
-          if (v == null || v === "") return;
+          if (!hasStValue(v)) return;
           const s = String(v);
           if (!(s in seen)) seen[s] = Object.keys(seen).length;
         });
@@ -745,31 +747,34 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
         {embed.note && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6 }}>
           <span style={{ padding: "2px 7px", borderRadius: 999, border: "1px solid var(--border)", background: "var(--bg-tertiary)", fontFamily: "monospace" }}>
-            {Math.min(headers.length, 30)}/{headers.length} wafer 표시{allowHorizontalScroll ? " · 가로 스크롤" : ""}
+            {headers.length} wafer 표시{headers.length ? " · 가로 스크롤" : ""}
           </span>
         </div>
         <div style={stScrollerStyle}>
           <table style={stTableStyle}>
+            <colgroup>
+              <col style={{ width: firstColWidth }} />
+              {headers.map((_, i) => <col key={i} style={{ width: dataColWidth }} />)}
+            </colgroup>
             <thead>
-              {hasLotContext && (
+              {hasRootRow && (
                 <tr>
-                  <th style={rootLeftStyle} title={lotContextTitle}>
-                    <div><span style={{ color: "var(--text-secondary)", fontWeight: 700 }}>root_lot_id</span> {rootLotId || "-"}</div>
-                    <div><span style={{ color: "var(--text-secondary)", fontWeight: 700 }}>lot_id</span> {lotIdLabel || "-"}</div>
-                  </th>
+                  <th style={rootLeftStyle} title={lotContextTitle}>{rootRowLabel}</th>
                   <th colSpan={headers.length || 1} style={rootHeadStyle}>{rootLotId || lotIdLabel}</th>
                 </tr>
               )}
-              {headerGroups.length > 0 && (
+              {hasLotRow && (
                 <tr>
-                  <th style={groupLeftStyle}></th>
-                  {headerGroups.map((g, i) => (
-                    <th key={i} colSpan={g.span} style={groupHeadStyle} title={g.label}>{g.label}</th>
-                  ))}
+                  <th style={lotLeftStyle} title={lotContextTitle}>{lotRowLabel}</th>
+                  {headerGroups.length > 0
+                    ? headerGroups.map((g, i) => (
+                      <th key={i} colSpan={g.span} style={lotHeadStyle} title={g.label}>{g.label}</th>
+                    ))
+                    : <th colSpan={headers.length || 1} style={lotHeadStyle} title={lotIdLabel}>{lotIdLabel || "-"}</th>}
                 </tr>
               )}
               <tr>
-                <th style={waferLeftStyle}>parameter</th>
+                <th style={waferLeftStyle}>{paramRowLabel}</th>
                 {headers.map((h, i) => (
                   <th key={i} style={waferHeadStyle}>{h}</th>
                 ))}
@@ -778,21 +783,23 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
             <tbody>
               {st.rows.map((r, ri) => (
                 <tr key={ri}>
-                  <td style={leftCellStyle}>{r._param}</td>
+                  <td style={paramCellStyle}>{String(r._display || r._param || "").replace(/^[A-Z]+_/, "")}</td>
                   {headers.map((_, ci) => {
-                    const cell = (r._cells && r._cells[ci]) || {};
-                    const bg = stCellBg(cell.plan ?? cell.actual, uniq, r._param);
+                    const cell = (r._cells && (r._cells[ci] || r._cells[String(ci)])) || {};
+                    const bg = stCellBg(hasStValue(cell.plan) ? cell.plan : cell.actual, uniq, r._param);
                     const plan = stPlanStyle(cell);
-                    const isPlan = !!cell.plan;
-                    const display = (cell.actual != null && cell.actual !== "") ? String(cell.actual)
-                      : (cell.plan != null ? String(cell.plan) : "");
+                    const hasPlan = hasStValue(cell.plan);
+                    const hasActual = hasStValue(cell.actual);
+                    const isPlanOnly = hasPlan && !hasActual;
+                    const isMismatch = hasPlan && hasActual && String(cell.plan) !== String(cell.actual);
+                    const display = hasActual ? String(cell.actual) : "";
                     return (
-                      <td key={ci} style={{ ...cellStyle, ...bg, ...plan }}>
-                        {isPlan && <span title="plan" style={{ marginRight: 3 }}>📌</span>}
-                        {display}
-                        {isPlan && cell.plan !== cell.actual && cell.actual != null && cell.actual !== "" && (
-                          <span style={{ marginLeft: 3, color: WARN.fg, fontWeight: 700 }}>→{cell.plan}</span>
-                        )}
+                      <td key={ci} style={{ ...stCellStyle, ...bg, ...plan }}>
+                        {isMismatch
+                          ? <span style={{ color: "#dc2626", fontWeight: 700 }}>{"✗ "}{display}<span style={{ fontSize: 14, color: "rgba(239,68,68,0.95)" }}>{" (≠" + cell.plan + ")"}</span></span>
+                          : isPlanOnly
+                            ? <span style={{ fontStyle: "italic", fontWeight: 700 }}>{"📌 "}{cell.plan}</span>
+                            : display}
                       </td>
                     );
                   })}
@@ -801,33 +808,6 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
             </tbody>
           </table>
         </div>
-        {planSummary.length > 0 && (
-          <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>📋 Wafer별 적용 plan 요약</div>
-            <div style={{ maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-card)" }}>
-              <table style={{ ...tableStyle, width: "100%" }}>
-                <thead>
-                  <tr>
-                    <th style={{ ...headStyle, textAlign: "left", minWidth: 84 }}>wafer</th>
-                    <th style={{ ...headStyle, textAlign: "left", minWidth: 220 }}>parameter</th>
-                    <th style={{ ...headStyle, textAlign: "left", minWidth: 140 }}>actual</th>
-                    <th style={{ ...headStyle, textAlign: "left", minWidth: 140 }}>plan</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {planSummary.flatMap(({ wafer, plans }) => plans.map((p, i) => (
-                    <tr key={`${wafer}-${p.parameter}-${i}`}>
-                      <td style={{ ...cellStyle, textAlign: "left", fontWeight: 700 }}>{wafer}</td>
-                      <td style={{ ...cellStyle, textAlign: "left" }}>{p.parameter}</td>
-                      <td style={{ ...cellStyle, textAlign: "left", color: "var(--text-secondary)" }}>{p.actual || "—"}</td>
-                      <td style={{ ...cellStyle, textAlign: "left", color: "rgba(234,88,12,0.95)", fontWeight: 700 }}>{p.plan}</td>
-                    </tr>
-                  )))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
         {lineageSummary.length > 0 && (
           <div style={{ marginTop: 10 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 6 }}>🧭 Parameter별 적용 step 요약</div>

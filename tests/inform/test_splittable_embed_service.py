@@ -23,6 +23,7 @@ def test_splittable_embed_service_builds_inform_snapshot_for_fab_lot():
             "root_lot_id": "A1000",
             "header_groups": [{"label": "A1000A.1", "span": 2}],
             "wafer_fab_list": ["A1000A.1", "A1000A.1"],
+            "row_labels": {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"},
             "rows": [
                 {
                     "_param": "KNOB_GATE",
@@ -62,6 +63,7 @@ def test_splittable_embed_service_builds_inform_snapshot_for_fab_lot():
     assert embed["rows"][0] == ["KNOB_GATE", "R1 → R2", "R1"]
     assert embed["st_view"]["root_lot_id"] == "A1000"
     assert embed["st_view"]["header_groups"] == [{"label": "A1000A.1", "span": 2}]
+    assert embed["st_view"]["row_labels"] == {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"}
     assert embed["st_scope"]["inline_cols"] == ["KNOB_GATE", "MASK_ID"]
 
 
@@ -168,6 +170,33 @@ def test_inform_mail_splittable_snapshot_html_uses_single_scrollable_header_tabl
     assert "A1000A.2" in html
     assert "root_lot_id</span> A1000" not in html
     assert "lot_id</span> A1000A.1" not in html
+
+
+def test_inform_mail_splittable_snapshot_html_renders_plan_cells_like_split_table():
+    embed = {
+        "source": "SplitTable/NO_META @ A1000 · CUSTOM(2)",
+        "st_view": {
+            "root_lot_id": "A1000",
+            "headers": ["#1", "#2"],
+            "header_groups": [{"label": "A1000A.1", "span": 2}],
+            "row_labels": {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"},
+            "rows": [{
+                "_param": "KNOB_GATE",
+                "_cells": {
+                    "0": {"actual": "R1", "plan": "R2"},
+                    "1": {"actual": None, "plan": "R3"},
+                },
+            }],
+        },
+    }
+
+    html = informs._render_embed_table_html(embed)
+
+    assert "✗ R1" in html
+    assert "(≠R2)" in html
+    assert "📌 R3" in html
+    assert "→ R2" not in html
+    assert "Wafer별 적용 plan 요약" not in html
 
 
 def test_inform_mail_body_links_go_flow_in_new_tab():
