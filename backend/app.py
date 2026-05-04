@@ -80,6 +80,26 @@ from app_v2.runtime.startup import ensure_seed_admin, start_background_services
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("flow")
 
+
+def _no_store_file_response(path: Path, media_type: str | None = None) -> FileResponse:
+    response = FileResponse(str(path), media_type=media_type)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
+class FlowStaticFiles(StaticFiles):
+    """Serve built assets without sticky browser caching.
+
+    Vite file names are hash-based, but this internal app is frequently rebuilt
+    in-place while a browser tab stays open. Revalidation prevents a stale main
+    bundle from asking for page chunks that no longer exist after a rebuild.
+    """
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+        return response
+
 # v8.4.6: /docs, /redoc, /openapi.json disabled — API 스펙 무인증 노출 차단
 app = FastAPI(
     title="flow",
@@ -218,7 +238,7 @@ def serve_version():
     for name in ("VERSION.json", "version.json"):
         vp = base / name
         if vp.exists():
-            return FileResponse(str(vp), media_type="application/json")
+            return _no_store_file_response(vp, media_type="application/json")
     return {"version": "unknown"}
 
 
@@ -272,7 +292,7 @@ def runtime_roots():
 DIST = Path(__file__).parent.parent / "frontend" / "dist"
 if DIST.exists():
     if (DIST / "assets").exists():
-        app.mount("/assets", StaticFiles(directory=str(DIST / "assets")), name="assets")
+        app.mount("/assets", FlowStaticFiles(directory=str(DIST / "assets")), name="assets")
 
     @app.get("/{path:path}")
     def serve_spa(path: str):
@@ -283,9 +303,11 @@ if DIST.exists():
             fp = (DIST / path).resolve()
             fp.relative_to(DIST.resolve())
         except (ValueError, OSError):
-            return FileResponse(str(DIST / "index.html"))
+            return _no_store_file_response(DIST / "index.html")
         if fp.is_file():
+            if fp.name == "index.html":
+                return _no_store_file_response(fp)
             return FileResponse(str(fp))
-        return FileResponse(str(DIST / "index.html"))
+        return _no_store_file_response(DIST / "index.html")
 
 ensure_seed_admin(logger)

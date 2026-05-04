@@ -1,0 +1,27 @@
+{
+  "kind": "inform_draft",
+  "draft_id": "draft_20260503T230421_8e2afc21",
+  "session_id": "draft_20260503T230421_8e2afc21",
+  "username": "lotmgr",
+  "product": "PRODA",
+  "root_lot_ids": [
+    "A1000"
+  ],
+  "fab_lot_ids": [],
+  "entries": [
+    {
+      "product": "PRODA",
+      "root_lot_id": "A1000",
+      "fab_lot_id": "",
+      "lot_id": "A1000",
+      "wafer_id": "1",
+      "module": "ET",
+      "split_set": "test1",
+      "reason": "PEMS",
+      "note": "Gate CD 이상 확인 필요",
+      "missing": []
+    }
+  ],
+  "created_at": "2026-05-03T23:04:21.246218+00:00",
+  "last_active_at": "2026-05-03T23:04:21.249902+00:00"
+}

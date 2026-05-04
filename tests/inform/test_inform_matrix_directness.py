@@ -19,7 +19,8 @@ def _install_directness_fixtures(monkeypatch):
             "id": f"gate_{i}",
             "product": "PRODA",
             "root_lot_id": "R1000",
-            "lot_id": "R1000",
+            "lot_id": "R1000A.1",
+            "fab_lot_id_at_save": "R1000A.1",
             "module": "GATE",
             "reason": f"R{i}",
             "text": f"body {i}",
@@ -33,7 +34,8 @@ def _install_directness_fixtures(monkeypatch):
             "id": "sti_0",
             "product": "PRODA",
             "root_lot_id": "R1000",
-            "lot_id": "R1000",
+            "lot_id": "R1000A.1",
+            "fab_lot_id_at_save": "R1000A.1",
             "module": "STI",
             "reason": "S",
             "text": "sti",
@@ -45,7 +47,8 @@ def _install_directness_fixtures(monkeypatch):
             "id": "pc_hidden",
             "product": "PRODA",
             "root_lot_id": "R1000",
-            "lot_id": "R1000",
+            "lot_id": "R1000A.1",
+            "fab_lot_id_at_save": "R1000A.1",
             "module": "PC",
             "reason": "P",
             "text": "pc",
@@ -57,7 +60,8 @@ def _install_directness_fixtures(monkeypatch):
             "id": "other_lot",
             "product": "PRODA",
             "root_lot_id": "R2000",
-            "lot_id": "R2000",
+            "lot_id": "R2000A.1",
+            "fab_lot_id_at_save": "R2000A.1",
             "module": "GATE",
             "reason": "O",
             "text": "other",
@@ -93,7 +97,7 @@ def test_lot_matrix_cell_count_recent_totals_and_visibility(monkeypatch):
 def test_by_lot_module_counts_and_informed_modules_frequency(monkeypatch):
     _install_directness_fixtures(monkeypatch)
 
-    out = informs.by_lot(object(), lot_id="R1000", include_deleted=False)
+    out = informs.by_lot(object(), lot_id="R1000A.1", include_deleted=False)
 
     assert out["module_counts"] == {"GATE": 7, "STI": 1}
     assert out["informed_modules"] == ["GATE", "STI"]

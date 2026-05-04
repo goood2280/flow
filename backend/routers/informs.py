@@ -37,7 +37,9 @@ import html as _html
 import json as _json
 import mimetypes
 import re
+import statistics
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -60,6 +62,7 @@ from core.product_dedup import canonical_product, find_duplicate_product, normal
 from core.utils import load_json, save_json
 from core.auth import current_user, require_admin, require_page_admin
 from core.audit import record as _audit
+from core.splittable_sets_cache import list_sets as list_cached_splittable_sets
 from app_v2.shared.source_adapter import resolve_column
 from app_v2.modules.informs.splittable_embed import build_splittable_embed
 from routers.groups import user_modules
@@ -79,14 +82,19 @@ MODULE_KNOB_MAP_FILE = PATHS.data_root / "inform_module_knob_map.json"
 # Default 모듈·사유. config.json 에 저장된 값이 있으면 그것을 우선.
 DEFAULT_MODULES = ["GATE", "STI", "PC", "MOL", "BEOL", "ET", "EDS", "S-D Epi", "Spacer", "Well", "기타"]
 DEFAULT_REASONS = ["PEMS"]  # v9.0.1: 단일 사유 — split table plan 인폼이 주 용도. 추가 사유는 admin 에서 등록.
-# v8.7.9: 플로우 단순화 — 접수(received) → 완료(completed) 2단계.
-# 과거 reviewing/in_progress 가 들어온 경우는 호환을 위해 수용.
-FLOW_STATUSES = ["received", "completed"]
-FLOW_STATUSES_LEGACY = ["received", "reviewing", "in_progress", "completed"]
+# v9.x: 등록 → 메일완료 → 등록적용확인 3단계.
+# 과거 received/reviewing/in_progress/completed 는 읽기/상태변경에서 호환 수용.
+FLOW_STATUSES = ["registered", "mail_completed", "apply_confirmed"]
+FLOW_STATUSES_LEGACY = [
+    *FLOW_STATUSES,
+    "received", "reviewing", "in_progress", "completed",
+]
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8 MB/이미지
 _INFORMS_CACHE_SIG: tuple[float, int] | None = None
 _INFORMS_CACHE_ITEMS: list | None = None
+INFORM_DASHBOARD_CACHE_TTL = 60.0
+_INFORM_DASHBOARD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def _load_config() -> dict:
@@ -470,10 +478,52 @@ def _wafer_key(value) -> str:
         return text.upper()
 
 
+def _split_saved_ids(value) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw_value) -> None:
+        for raw in re.split(r"[,;/\s]+", str(raw_value or "")):
+            text = raw.strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            add(item)
+    else:
+        add(value)
+    return out
+
+
+def _entry_wafer_ids(entry: dict) -> list[str]:
+    values = _split_saved_ids((entry or {}).get("wafer_ids_at_save"))
+    if values:
+        return values
+    return _split_saved_ids((entry or {}).get("wafer_id"))
+
+
 def _wafer_matches(value, query) -> bool:
-    key = _wafer_key(value)
     target = _wafer_key(query)
-    return bool(key and target and key == target)
+    if not target:
+        return False
+    for part in _split_saved_ids(value):
+        key = _wafer_key(part)
+        if key and key == target:
+            return True
+    return False
+
+
+def _entry_wafer_matches(entry: dict, query) -> bool:
+    target = _wafer_key(query)
+    if not target:
+        return False
+    return any(_wafer_key(w) == target for w in _entry_wafer_ids(entry))
 
 
 def _module_progress_summary(items: list, modules: Optional[list[str]] = None) -> dict:
@@ -503,9 +553,9 @@ def _module_progress_summary(items: list, modules: Optional[list[str]] = None) -
                 ca = str(entry.get("checked_at") or ts)
                 if ca > checked_at:
                     checked_at = ca
-            if entry.get("flow_status") == "completed":
-                hist = [h for h in (entry.get("status_history") or []) if isinstance(h, dict) and h.get("status") == "completed"]
-                ca = str((hist[-1].get("at") if hist else "") or ts)
+            if _is_apply_confirmed(entry):
+                hist_times = _status_history_times(entry, {"apply_confirmed"})
+                ca = str((hist_times[-1] if hist_times else "") or ts)
                 if ca > completed_at:
                     completed_at = ca
             for mh in entry.get("mail_history") or []:
@@ -515,7 +565,7 @@ def _module_progress_summary(items: list, modules: Optional[list[str]] = None) -
         completed = bool(completed_at)
         rows.append({
             "module": mod,
-            "status": "missing" if not has_inform else ("completed" if completed else "received"),
+            "status": "missing" if not has_inform else ("apply_confirmed" if completed else "registered"),
             "has_inform": has_inform,
             "completed": completed,
             "count": len(entries),
@@ -536,7 +586,7 @@ def _module_progress_summary(items: list, modules: Optional[list[str]] = None) -
         "missing_modules": missing,
         "pending_modules": pending,
         "inform_count": len(items or []),
-        "open_count": sum(1 for x in (items or []) if (x or {}).get("flow_status") != "completed"),
+        "open_count": sum(1 for x in (items or []) if not _is_apply_confirmed(x or {})),
     }
 
 
@@ -553,6 +603,20 @@ def _parse_iso_datetime(value) -> Optional[datetime.datetime]:
         return None
 
 
+_INFORM_ALL_DAYS = 36500
+
+
+def _normalize_inform_days(days, default: int = _INFORM_ALL_DAYS) -> int:
+    raw = getattr(days, "default", days)
+    try:
+        n = int(raw)
+    except Exception:
+        return default
+    if n <= 0:
+        return 0
+    return min(n, default)
+
+
 def _entry_last_update(entry: dict) -> str:
     candidates = [
         str(entry.get("created_at") or ""),
@@ -567,18 +631,47 @@ def _entry_last_update(entry: dict) -> str:
     return max([x for x in candidates if x] or [""])
 
 
+def _canonical_flow_status(value: str, entry: Optional[dict] = None) -> str:
+    raw = str(value or "").strip()
+    if raw in FLOW_STATUSES:
+        return raw
+    if raw == "completed":
+        return "apply_confirmed"
+    if raw in ("reviewing", "in_progress"):
+        return "mail_completed"
+    if raw in ("received", ""):
+        if entry and (entry.get("mail_history") or []):
+            return "mail_completed"
+        return "registered"
+    return "registered"
+
+
+def _is_apply_confirmed(entry: dict) -> bool:
+    return _canonical_flow_status((entry or {}).get("flow_status"), entry) == "apply_confirmed"
+
+
+def _status_history_times(entry: dict, statuses: set[str]) -> list[str]:
+    out: list[str] = []
+    for h in (entry or {}).get("status_history") or []:
+        if not isinstance(h, dict):
+            continue
+        if _canonical_flow_status(h.get("status")) in statuses:
+            at = str(h.get("at") or "")
+            if at:
+                out.append(at)
+    return out
+
+
 def _lot_matrix_state(entry: dict) -> str:
-    status = str(entry.get("flow_status") or "").strip()
-    if status == "completed":
-        return "completed"
-    if status in ("reviewing", "in_progress"):
-        return "in_progress"
-    if status == "received":
-        return "received"
-    return "pending"
+    return _canonical_flow_status((entry or {}).get("flow_status"), entry) or "registered"
 
 
-_LOT_MATRIX_STATE_RANK = {"pending": 0, "received": 1, "in_progress": 2, "completed": 3}
+_LOT_MATRIX_STATE_RANK = {
+    "pending": 0,
+    "registered": 1,
+    "mail_completed": 2,
+    "apply_confirmed": 3,
+}
 
 
 def _lot_matrix_module_order() -> list[str]:
@@ -660,6 +753,91 @@ def _lot_matrix_cell_key(cell: dict) -> tuple[int, str]:
     )
 
 
+def _root_lot_module_count_map(items: list[dict]) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    for entry in items or []:
+        if entry.get("parent_id"):
+            continue
+        mod = str(entry.get("module") or "").strip() or "기타"
+        for lot_key in _inform_fab_lots(entry):
+            if not lot_key:
+                continue
+            bucket = out.setdefault(lot_key, {})
+            bucket[mod] = bucket.get(mod, 0) + 1
+    return out
+
+
+def _attach_root_lot_module_counts(roots: list[dict], visible_roots: list[dict]) -> list[dict]:
+    counts_by_lot = _root_lot_module_count_map(visible_roots)
+    out = []
+    for root in roots or []:
+        row = dict(root)
+        fab_lots = _inform_fab_lots(row)
+        lot_key = fab_lots[0] if fab_lots else str(row.get("lot_id") or row.get("root_lot_id") or "").strip()
+        counts = dict(counts_by_lot.get(lot_key) or {})
+        row["fab_lot_id"] = lot_key
+        row["matrix_lot_id"] = lot_key
+        row["root_lot_module_counts"] = counts
+        row["informed_modules"] = sorted(counts, key=lambda m: (-counts[m], m))
+        row["attachments"] = _attachment_view(row)
+        out.append(row)
+    return out
+
+
+def _thread_stats(items: list[dict]) -> dict[str, dict[str, Any]]:
+    by_id = {str(x.get("id")): x for x in items or [] if x.get("id")}
+    roots: dict[str, str] = {}
+
+    def root_id(entry: dict) -> str:
+        eid = str(entry.get("id") or "")
+        if eid in roots:
+            return roots[eid]
+        cur = entry
+        seen: set[str] = set()
+        while cur.get("parent_id"):
+            pid = str(cur.get("parent_id") or "")
+            if not pid or pid in seen or pid not in by_id:
+                break
+            seen.add(pid)
+            cur = by_id[pid]
+        rid = str(cur.get("id") or eid)
+        for sid in seen:
+            roots[sid] = rid
+        roots[eid] = rid
+        return rid
+
+    stats: dict[str, dict[str, Any]] = {}
+    for entry in items or []:
+        rid = root_id(entry)
+        bucket = stats.setdefault(rid, {"reply_count": 0, "thread_updated_at": ""})
+        if entry.get("parent_id"):
+            bucket["reply_count"] += 1
+        for ts in [
+            entry.get("created_at"),
+            entry.get("updated_at"),
+            entry.get("checked_at"),
+            *[h.get("at") for h in (entry.get("status_history") or []) if isinstance(h, dict)],
+            *[h.get("at") or h.get("sent_at") for h in (entry.get("mail_history") or []) if isinstance(h, dict)],
+            *[h.get("at") for h in (entry.get("edit_history") or []) if isinstance(h, dict)],
+        ]:
+            if ts and str(ts) > bucket["thread_updated_at"]:
+                bucket["thread_updated_at"] = str(ts)
+    return stats
+
+
+def _attach_thread_stats(roots: list[dict], items: list[dict]) -> list[dict]:
+    stats = _thread_stats(items)
+    out = []
+    for root in roots or []:
+        row = dict(root)
+        stat = stats.get(str(row.get("id") or "")) or {}
+        row["reply_count"] = int(stat.get("reply_count") or 0)
+        row["thread_updated_at"] = stat.get("thread_updated_at") or row.get("updated_at") or row.get("created_at") or ""
+        row["attachments"] = _attachment_view(row)
+        out.append(row)
+    return out
+
+
 def _add_unique_text(out: list[str], seen: set[str], value) -> None:
     s = str(value or "").strip()
     if not s or s in ("—", "-", "None", "null"):
@@ -732,7 +910,7 @@ def _upgrade(entry: dict) -> dict:
     entry.setdefault("checked", False)
     entry.setdefault("checked_by", "")
     entry.setdefault("checked_at", "")
-    entry.setdefault("flow_status", "received" if not entry.get("parent_id") else "")
+    entry.setdefault("flow_status", "registered" if not entry.get("parent_id") else "")
     entry.setdefault("status_history", [])
     entry.setdefault("splittable_change", None)
     entry.setdefault("images", [])
@@ -754,8 +932,9 @@ def _upgrade(entry: dict) -> dict:
         if "prev" not in h:
             h["prev"] = last_status
             dirty = True
-        # received 이면서 이전이 completed 였다면 자동으로 "확인 취소" note 부여.
-        if (h.get("status") == "received" and last_status == "completed"
+        # received/registered 이면서 이전이 completed/apply_confirmed 였다면 자동으로 "확인 취소" note 부여.
+        if (_canonical_flow_status(h.get("status")) == "registered"
+                and _canonical_flow_status(last_status) == "apply_confirmed"
                 and not h.get("note")):
             h["note"] = "확인 취소"
             dirty = True
@@ -831,6 +1010,661 @@ def _root_id(items: list, entry: dict) -> str:
             break
         cur = parent
     return cur.get("id", "") if cur else ""
+
+
+# ── Dashboard data adapter ─────────────────────────────────────────────
+_INFORM_DASHBOARD_METRICS = {
+    "count",
+    "resolution_rate",
+    "first_reply_h",
+    "mail_rate",
+    "attach_rate",
+    "pending_age",
+}
+_INFORM_DASHBOARD_GROUPBYS = {
+    "module",
+    "product",
+    "root_lot",
+    "fab_lot",
+    "author",
+    "status",
+    "date_day",
+    "date_week",
+    "date_month",
+    "hour_of_day",
+    "day_of_week",
+}
+_INFORM_DASHBOARD_STATUSES = ["registered", "mail_completed", "apply_confirmed"]
+_INFORM_DASHBOARD_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_INFORM_DASHBOARD_COLORS = [
+    "#2563eb", "#dc2626", "#16a34a", "#ca8a04", "#7c3aed", "#0891b2",
+    "#db2777", "#4b5563", "#ea580c", "#059669", "#9333ea", "#0f766e",
+]
+
+
+def _inform_dashboard_file_sig() -> tuple[float, int]:
+    try:
+        st = INFORMS_FILE.stat()
+        return (st.st_mtime, st.st_size)
+    except Exception:
+        return (0.0, 0)
+
+
+def _inform_dashboard_clone(payload: dict) -> dict:
+    try:
+        return _json.loads(_json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        return dict(payload or {})
+
+
+def _inform_dashboard_color(label: str) -> str:
+    text = str(label or "")
+    if not text:
+        return _INFORM_DASHBOARD_COLORS[0]
+    idx = sum(ord(ch) for ch in text) % len(_INFORM_DASHBOARD_COLORS)
+    return _INFORM_DASHBOARD_COLORS[idx]
+
+
+def _inform_period_cutoff(period: str, now: datetime.datetime) -> Optional[datetime.datetime]:
+    p = str(period or "all").strip().lower()
+    days = {"7d": 7, "30d": 30, "90d": 90}.get(p)
+    if not days:
+        return None
+    return now - datetime.timedelta(days=days)
+
+
+def _inform_root_id_fast(by_id: dict[str, dict], entry: dict) -> str:
+    eid = str((entry or {}).get("id") or "")
+    cur = entry or {}
+    seen: set[str] = set()
+    while cur.get("parent_id"):
+        pid = str(cur.get("parent_id") or "")
+        if not pid or pid in seen or pid not in by_id:
+            break
+        seen.add(pid)
+        cur = by_id[pid]
+    return str(cur.get("id") or eid)
+
+
+def _inform_visible_threads(items: list[dict], request: Optional[Request]) -> tuple[list[dict], dict[str, list[dict]], dict[str, Any]]:
+    by_id = {str(x.get("id") or ""): x for x in (items or []) if x.get("id")}
+    root_ids = {str(x.get("id") or "") for x in items or [] if x.get("id") and not x.get("parent_id")}
+    if request is not None:
+        me = current_user(request)
+        role = me.get("role", "user")
+        username = me.get("username", "")
+        my_mods = _effective_modules(username, role)
+        visible_ids = {
+            rid
+            for rid in root_ids
+            if _visible_to(by_id.get(rid) or {}, username, role, my_mods)
+        }
+        scope = {
+            "username": username,
+            "role": role,
+            "modules": sorted(my_mods),
+        }
+    else:
+        visible_ids = set(root_ids)
+        scope = {"username": "__dashboard__", "role": "system", "modules": ["__all__"]}
+
+    roots: list[dict] = []
+    children_by_root: dict[str, list[dict]] = {}
+    for entry in items or []:
+        rid = _inform_root_id_fast(by_id, entry)
+        if not rid or rid not in visible_ids:
+            continue
+        if entry.get("parent_id"):
+            children_by_root.setdefault(rid, []).append(entry)
+        elif str(entry.get("id") or "") in visible_ids:
+            roots.append(entry)
+    for children in children_by_root.values():
+        children.sort(key=lambda x: str(x.get("created_at") or ""))
+    return roots, children_by_root, scope
+
+
+def _inform_fab_lots(entry: dict) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        val = str(value or "").strip()
+        if not val:
+            return
+        key = val.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(val)
+
+    def add_many(value: Any) -> None:
+        for raw in _split_saved_ids(value):
+            add(raw)
+
+    add_many((entry or {}).get("fab_lot_id_at_save"))
+    if out:
+        return out
+    for val in _extract_fab_lots_from_embed((entry or {}).get("embed_table")):
+        add(val)
+    if not out:
+        fallback = str((entry or {}).get("lot_id") or "").strip()
+        if fallback:
+            add(fallback)
+    if not out:
+        add((entry or {}).get("root_lot_id"))
+    return out
+
+
+def _inform_has_attachment(entry: dict) -> bool:
+    if (entry or {}).get("images"):
+        return True
+    embed = (entry or {}).get("embed_table")
+    if isinstance(embed, dict):
+        if embed.get("attached_sets"):
+            return True
+        if embed.get("columns") or embed.get("rows") or embed.get("st_view"):
+            return True
+    attachments = (entry or {}).get("attachments")
+    return bool(attachments)
+
+
+def _inform_thread_has_mail(root: dict, children: list[dict]) -> bool:
+    return any((entry or {}).get("mail_history") for entry in [root, *(children or [])])
+
+
+def _inform_thread_has_attachment(root: dict, children: list[dict]) -> bool:
+    return any(_inform_has_attachment(entry) for entry in [root, *(children or [])])
+
+
+def _inform_first_reply_hours(root: dict, children: list[dict]) -> Optional[float]:
+    start = _parse_iso_datetime((root or {}).get("created_at"))
+    if start is None:
+        return None
+    first: Optional[datetime.datetime] = None
+    for child in children or []:
+        dt = _parse_iso_datetime(child.get("created_at"))
+        if dt is None or dt < start:
+            continue
+        if first is None or dt < first:
+            first = dt
+    if first is None:
+        return None
+    return max(0.0, (first - start).total_seconds() / 3600.0)
+
+
+def _inform_pending_age_hours(root: dict, now: datetime.datetime) -> Optional[float]:
+    if _is_apply_confirmed(root or {}):
+        return None
+    start = _parse_iso_datetime((root or {}).get("created_at"))
+    if start is None:
+        return None
+    return max(0.0, (now - start).total_seconds() / 3600.0)
+
+
+def _inform_group_values(root: dict, groupby: str, dt: Optional[datetime.datetime]) -> list[str]:
+    g = str(groupby or "module").strip() or "module"
+    if g == "module":
+        value = str(root.get("module") or "").strip() or "기타"
+    elif g == "product":
+        value = _canonical_product(root.get("product") or "") or "미지정"
+    elif g == "root_lot":
+        value = str(root.get("root_lot_id") or _root_lot_from_values(root.get("lot_id") or "", root.get("embed_table"))).strip() or "미지정"
+    elif g == "fab_lot":
+        vals = _inform_fab_lots(root)
+        return vals or ["미지정"]
+    elif g == "author":
+        value = str(root.get("author") or "").strip() or "미지정"
+    elif g == "status":
+        value = _canonical_flow_status(root.get("flow_status"), root)
+    elif g == "date_day":
+        value = dt.strftime("%Y-%m-%d") if dt else "미지정"
+    elif g == "date_week":
+        if dt:
+            iso = dt.isocalendar()
+            value = f"{iso.year}-W{iso.week:02d}"
+        else:
+            value = "미지정"
+    elif g == "date_month":
+        value = dt.strftime("%Y-%m") if dt else "미지정"
+    elif g == "hour_of_day":
+        value = f"{dt.hour:02d}" if dt else "미지정"
+    elif g == "day_of_week":
+        value = _INFORM_DASHBOARD_DAYS[dt.weekday()] if dt else "미지정"
+    else:
+        value = "미지정"
+    return [value]
+
+
+def _inform_group_sort_key(groupby: str, value: str) -> tuple:
+    v = str(value or "")
+    if groupby in {"date_day", "date_week", "date_month"}:
+        return (0, v)
+    if groupby == "hour_of_day":
+        try:
+            return (0, int(v))
+        except Exception:
+            return (1, v)
+    if groupby == "day_of_week":
+        if v in _INFORM_DASHBOARD_DAYS:
+            return (0, _INFORM_DASHBOARD_DAYS.index(v))
+        return (1, v)
+    if groupby == "status":
+        if v in _INFORM_DASHBOARD_STATUSES:
+            return (0, _INFORM_DASHBOARD_STATUSES.index(v))
+        return (1, v)
+    return (0, v.casefold())
+
+
+def _inform_dashboard_filtered_roots(
+    roots: list[dict],
+    product: str,
+    module: str,
+    period: str,
+    now: datetime.datetime,
+) -> list[tuple[dict, Optional[datetime.datetime]]]:
+    cutoff = _inform_period_cutoff(period, now)
+    want_product = _canonical_product(product or "").casefold()
+    want_module = str(module or "").strip().casefold()
+    out: list[tuple[dict, Optional[datetime.datetime]]] = []
+    for root in roots or []:
+        prod = _canonical_product(root.get("product") or "")
+        if want_product and prod.casefold() != want_product:
+            continue
+        mod = str(root.get("module") or "").strip()
+        if want_module and mod.casefold() != want_module:
+            continue
+        dt = _parse_iso_datetime(root.get("created_at"))
+        if cutoff is not None and dt is not None and dt < cutoff:
+            continue
+        out.append((root, dt))
+    return out
+
+
+def _inform_dashboard_pending_table(
+    roots_with_dt: list[tuple[dict, Optional[datetime.datetime]]],
+    now: datetime.datetime,
+    top_n: Optional[int],
+) -> dict:
+    rows: list[dict[str, Any]] = []
+    for root, dt in roots_with_dt:
+        age = _inform_pending_age_hours(root, now)
+        if age is None:
+            continue
+        root_lot = str(root.get("root_lot_id") or _root_lot_from_values(root.get("lot_id") or "", root.get("embed_table"))).strip()
+        rows.append({
+            "root_lot": root_lot,
+            "fab_lot": ", ".join(_inform_fab_lots(root)),
+            "모듈": str(root.get("module") or "").strip() or "기타",
+            "작성자": str(root.get("author") or "").strip() or "미지정",
+            "경과시간(h)": round(age, 1),
+            "제목": str(root.get("text") or "").strip().replace("\n", " ")[:120],
+            "상태": _canonical_flow_status(root.get("flow_status"), root),
+            "created_at": (dt.isoformat(timespec="seconds") if dt else str(root.get("created_at") or "")),
+            "inform_id": root.get("id") or "",
+        })
+    rows.sort(key=lambda r: float(r.get("경과시간(h)") or 0.0), reverse=True)
+    if top_n:
+        rows = rows[:max(1, int(top_n))]
+    columns = ["root_lot", "fab_lot", "모듈", "작성자", "경과시간(h)", "제목", "상태", "created_at"]
+    return {
+        "points": rows,
+        "series_order": [],
+        "meta": {
+            "metric": "pending_age",
+            "groupby": "pending_table",
+            "unit": "hour",
+            "table_columns": columns,
+            "total": len(rows),
+        },
+    }
+
+
+def _inform_dashboard_reply_buckets(
+    roots_with_dt: list[tuple[dict, Optional[datetime.datetime]]],
+    children_by_root: dict[str, list[dict]],
+) -> dict:
+    buckets = [
+        ("0-1h", 0.0, 1.0),
+        ("1-4h", 1.0, 4.0),
+        ("4-24h", 4.0, 24.0),
+        ("24-72h", 24.0, 72.0),
+        ("72h+", 72.0, None),
+        ("답글 없음", None, None),
+    ]
+    counts = {label: 0 for label, _lo, _hi in buckets}
+    for root, _dt in roots_with_dt:
+        h = _inform_first_reply_hours(root, children_by_root.get(str(root.get("id") or "")) or [])
+        label = "답글 없음"
+        if h is not None:
+            for cand, lo, hi in buckets:
+                if lo is None:
+                    continue
+                if h >= lo and (hi is None or h < hi):
+                    label = cand
+                    break
+        counts[label] += 1
+    points = [{"x": label, "label": label, "y": counts[label]} for label, _lo, _hi in buckets]
+    return {
+        "points": points,
+        "series_order": [],
+        "meta": {
+            "metric": "first_reply_h",
+            "groupby": "first_reply_bucket",
+            "unit": "count",
+            "total": sum(counts.values()),
+        },
+    }
+
+
+def _inform_dashboard_attach_mail_rate(
+    roots_with_dt: list[tuple[dict, Optional[datetime.datetime]]],
+    children_by_root: dict[str, list[dict]],
+) -> dict:
+    total = len(roots_with_dt)
+    attach = 0
+    mail = 0
+    for root, _dt in roots_with_dt:
+        children = children_by_root.get(str(root.get("id") or "")) or []
+        if _inform_thread_has_attachment(root, children):
+            attach += 1
+        if _inform_thread_has_mail(root, children):
+            mail += 1
+    denom = total or 1
+    points = [
+        {"x": "첨부 있음", "label": "첨부 있음", "y": round(attach / denom * 100.0, 2), "count": attach, "total": total, "series": "attach_rate", "color": "attach_rate"},
+        {"x": "메일 발송", "label": "메일 발송", "y": round(mail / denom * 100.0, 2), "count": mail, "total": total, "series": "mail_rate", "color": "mail_rate"},
+    ]
+    return {
+        "points": points,
+        "series_order": ["attach_rate", "mail_rate"],
+        "meta": {
+            "metric": "attach_mail_rate",
+            "groupby": "rate_kind",
+            "unit": "percent",
+            "total": total,
+        },
+    }
+
+
+def _inform_dashboard_categorical_heatmap(
+    roots_with_dt: list[tuple[dict, Optional[datetime.datetime]]],
+    x_groupby: str,
+    y_groupby: str,
+    metric: str,
+    children_by_root: dict[str, list[dict]],
+    now: datetime.datetime,
+    top_n: Optional[int],
+) -> dict:
+    xg = x_groupby if x_groupby in _INFORM_DASHBOARD_GROUPBYS else "module"
+    yg = y_groupby if y_groupby in _INFORM_DASHBOARD_GROUPBYS else "root_lot"
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    y_totals: dict[str, float] = {}
+    for root, dt in roots_with_dt:
+        rid = str(root.get("id") or "")
+        children = children_by_root.get(rid) or []
+        xs = _inform_group_values(root, xg, dt)
+        ys = _inform_group_values(root, yg, dt)
+        for xv in xs:
+            for yv in ys:
+                bucket = buckets.setdefault((xv, yv), {
+                    "total": 0,
+                    "completed": 0,
+                    "mail": 0,
+                    "attach": 0,
+                    "reply_hours": [],
+                    "pending_hours": [],
+                })
+                _inform_dashboard_add_root(bucket, root, children, now)
+                y_totals[yv] = y_totals.get(yv, 0.0) + 1
+    keep_y = set(y_totals)
+    if top_n and len(keep_y) > int(top_n):
+        keep_y = {
+            y for y, _cnt in sorted(y_totals.items(), key=lambda kv: (-kv[1], _inform_group_sort_key(yg, kv[0])))[:int(top_n)]
+        }
+    x_values = sorted({x for x, y in buckets if y in keep_y}, key=lambda v: _inform_group_sort_key(xg, v))
+    y_values = sorted(keep_y, key=lambda v: (-y_totals.get(v, 0), _inform_group_sort_key(yg, v))) if top_n else sorted(keep_y, key=lambda v: _inform_group_sort_key(yg, v))
+    points = []
+    for (xv, yv), bucket in buckets.items():
+        if yv not in keep_y:
+            continue
+        val = _inform_dashboard_metric_value(bucket, metric)
+        points.append({
+            "x": xv,
+            "y": yv,
+            "cnt": round(float(val), 2) if isinstance(val, float) else val,
+            "label": f"{yv} / {xv}",
+        })
+    points.sort(key=lambda p: (_inform_group_sort_key(yg, p["y"]), _inform_group_sort_key(xg, p["x"])))
+    return {
+        "points": points,
+        "series_order": [],
+        "meta": {
+            "metric": metric,
+            "groupby": f"{xg}x{yg}",
+            "unit": _inform_dashboard_metric_unit(metric),
+            "heatmap_meta": {
+                "kind": "categorical",
+                "x_values": x_values,
+                "y_values": y_values,
+                "x_label": xg,
+                "y_label": yg,
+            },
+        },
+    }
+
+
+def _inform_dashboard_add_root(bucket: dict[str, Any], root: dict, children: list[dict], now: datetime.datetime) -> None:
+    bucket["total"] = int(bucket.get("total") or 0) + 1
+    if _is_apply_confirmed(root):
+        bucket["completed"] = int(bucket.get("completed") or 0) + 1
+    if _inform_thread_has_mail(root, children):
+        bucket["mail"] = int(bucket.get("mail") or 0) + 1
+    if _inform_thread_has_attachment(root, children):
+        bucket["attach"] = int(bucket.get("attach") or 0) + 1
+    reply_h = _inform_first_reply_hours(root, children)
+    if reply_h is not None:
+        bucket.setdefault("reply_hours", []).append(reply_h)
+    pending_h = _inform_pending_age_hours(root, now)
+    if pending_h is not None:
+        bucket.setdefault("pending_hours", []).append(pending_h)
+
+
+def _inform_dashboard_metric_unit(metric: str) -> str:
+    if metric in {"resolution_rate", "mail_rate", "attach_rate"}:
+        return "percent"
+    if metric in {"first_reply_h", "pending_age"}:
+        return "hour"
+    return "count"
+
+
+def _inform_dashboard_metric_value(bucket: dict[str, Any], metric: str) -> float | int:
+    total = int(bucket.get("total") or 0)
+    if metric == "count":
+        return total
+    if metric == "resolution_rate":
+        return round((int(bucket.get("completed") or 0) / total * 100.0) if total else 0.0, 2)
+    if metric == "mail_rate":
+        return round((int(bucket.get("mail") or 0) / total * 100.0) if total else 0.0, 2)
+    if metric == "attach_rate":
+        return round((int(bucket.get("attach") or 0) / total * 100.0) if total else 0.0, 2)
+    if metric == "first_reply_h":
+        vals = [float(v) for v in bucket.get("reply_hours") or []]
+        return round((sum(vals) / len(vals)) if vals else 0.0, 2)
+    if metric == "pending_age":
+        vals = [float(v) for v in bucket.get("pending_hours") or []]
+        return round((sum(vals) / len(vals)) if vals else 0.0, 2)
+    return total
+
+
+def build_inform_dashboard_data(
+    metric: str = "count",
+    groupby: str = "module",
+    period: str = "all",
+    product: str = "",
+    module: str = "",
+    request: Optional[Request] = None,
+    items: Optional[list[dict]] = None,
+    x_groupby: str = "",
+    y_groupby: str = "",
+    series_groupby: str = "",
+    top_n: Optional[int] = None,
+    chart_type: str = "",
+) -> dict:
+    """Return dashboard-ready Inform aggregate data.
+
+    The public endpoint exposes the stable metric/groupby/period/product/module
+    contract. Extra parameters are used by dashboard presets for series and
+    categorical heatmaps while preserving the same points/series/meta shape.
+    """
+    metric = str(metric or "count").strip() or "count"
+    groupby = str(groupby or "module").strip() or "module"
+    period = str(period or "all").strip().lower() or "all"
+    x_groupby = str(x_groupby or "").strip()
+    y_groupby = str(y_groupby or "").strip()
+    series_groupby = str(series_groupby or "").strip()
+    chart_type = str(chart_type or "").strip()
+    if metric not in _INFORM_DASHBOARD_METRICS and metric not in {"attach_mail_rate"}:
+        raise HTTPException(400, f"unsupported metric: {metric}")
+    if groupby not in _INFORM_DASHBOARD_GROUPBYS and groupby not in {"first_reply_bucket", "pending_table", "rate_kind"}:
+        raise HTTPException(400, f"unsupported groupby: {groupby}")
+    if period not in {"all", "7d", "30d", "90d"}:
+        raise HTTPException(400, "period must be all/7d/30d/90d")
+    try:
+        top_n_int = int(top_n) if top_n not in (None, "", 0) else None
+    except Exception:
+        top_n_int = None
+
+    raw_items = _without_deleted(items if items is not None else _load_upgraded())
+    roots, children_by_root, scope = _inform_visible_threads(raw_items, request)
+    cache_key = ""
+    if items is None:
+        cache_key = _json.dumps({
+            "sig": _inform_dashboard_file_sig(),
+            "metric": metric,
+            "groupby": groupby,
+            "period": period,
+            "product": _canonical_product(product or ""),
+            "module": module or "",
+            "x_groupby": x_groupby,
+            "y_groupby": y_groupby,
+            "series_groupby": series_groupby,
+            "top_n": top_n_int,
+            "chart_type": chart_type,
+            "scope": scope,
+        }, ensure_ascii=False, sort_keys=True)
+        cached = _INFORM_DASHBOARD_CACHE.get(cache_key)
+        if cached and time.time() - cached[0] <= INFORM_DASHBOARD_CACHE_TTL:
+            return _inform_dashboard_clone(cached[1])
+
+    now = datetime.datetime.now()
+    roots_with_dt = _inform_dashboard_filtered_roots(roots, product, module, period, now)
+
+    if metric == "attach_mail_rate" or groupby == "rate_kind":
+        payload = _inform_dashboard_attach_mail_rate(roots_with_dt, children_by_root)
+    elif groupby == "first_reply_bucket":
+        payload = _inform_dashboard_reply_buckets(roots_with_dt, children_by_root)
+    elif groupby == "pending_table" or chart_type == "table":
+        payload = _inform_dashboard_pending_table(roots_with_dt, now, top_n_int)
+    elif x_groupby and y_groupby:
+        payload = _inform_dashboard_categorical_heatmap(
+            roots_with_dt, x_groupby, y_groupby, metric, children_by_root, now, top_n_int
+        )
+    else:
+        buckets: dict[tuple[str, str], dict[str, Any]] = {}
+        for root, dt in roots_with_dt:
+            rid = str(root.get("id") or "")
+            children = children_by_root.get(rid) or []
+            series_values = _inform_group_values(root, series_groupby, dt) if series_groupby else [""]
+            for xv in _inform_group_values(root, groupby, dt):
+                for sv in series_values:
+                    bucket = buckets.setdefault((xv, sv), {
+                        "total": 0,
+                        "completed": 0,
+                        "mail": 0,
+                        "attach": 0,
+                        "reply_hours": [],
+                        "pending_hours": [],
+                    })
+                    _inform_dashboard_add_root(bucket, root, children, now)
+
+        points: list[dict[str, Any]] = []
+        series_seen: list[str] = []
+        for (xv, sv), bucket in buckets.items():
+            value = _inform_dashboard_metric_value(bucket, metric)
+            point: dict[str, Any] = {
+                "x": xv,
+                "label": xv,
+                "y": value,
+                "count": int(bucket.get("total") or 0),
+                "color": sv or (xv if groupby == "module" else ""),
+            }
+            if sv:
+                point["series"] = sv
+                if sv not in series_seen:
+                    series_seen.append(sv)
+            if metric == "first_reply_h":
+                vals = [float(v) for v in bucket.get("reply_hours") or []]
+                point["median"] = round(statistics.median(vals), 2) if vals else 0.0
+            points.append(point)
+
+        if top_n_int:
+            points.sort(key=lambda p: (-float(p.get("y") or 0.0), _inform_group_sort_key(groupby, p.get("x") or "")))
+            points = points[:max(1, top_n_int)]
+        else:
+            points.sort(key=lambda p: (_inform_group_sort_key(groupby, p.get("x") or ""), _inform_group_sort_key(series_groupby, p.get("series") or "")))
+        series_order = sorted(series_seen, key=lambda s: _inform_group_sort_key(series_groupby, s)) if series_groupby else []
+        payload = {
+            "points": points,
+            "series_order": series_order,
+            "meta": {
+                "metric": metric,
+                "groupby": groupby,
+                "series_groupby": series_groupby,
+                "unit": _inform_dashboard_metric_unit(metric),
+            },
+        }
+
+    payload.setdefault("points", [])
+    payload.setdefault("series_order", [])
+    payload.setdefault("meta", {})
+    payload["meta"] = {
+        **(payload.get("meta") or {}),
+        "period": period,
+        "product": _canonical_product(product or ""),
+        "module": module or "",
+        "total_roots": len(roots_with_dt),
+        "generated_at": now.isoformat(timespec="seconds"),
+    }
+    if cache_key:
+        _INFORM_DASHBOARD_CACHE[cache_key] = (time.time(), _inform_dashboard_clone(payload))
+    return payload
+
+
+@router.get("/dashboard-data")
+def dashboard_data(
+    request: Request,
+    metric: str = Query("count"),
+    groupby: str = Query("module"),
+    period: str = Query("all"),
+    product: str = Query(""),
+    module: str = Query(""),
+    x_groupby: str = Query(""),
+    y_groupby: str = Query(""),
+    series_groupby: str = Query(""),
+    top_n: int = Query(0, ge=0, le=500),
+):
+    return build_inform_dashboard_data(
+        metric=metric,
+        groupby=groupby,
+        period=period,
+        product=product,
+        module=module,
+        request=request,
+        x_groupby=x_groupby,
+        y_groupby=y_groupby,
+        series_groupby=series_groupby,
+        top_n=top_n or None,
+    )
 
 
 # ── Pydantic ───────────────────────────────────────────────────────────
@@ -930,6 +1764,105 @@ def _resolve_fab_lot_snapshot(product: str, lot_id: str, wafer_id: str) -> str:
         return ""
 
 
+def _first_saved_id(value) -> str:
+    vals = _split_saved_ids(value)
+    return vals[0] if vals else ""
+
+
+def _embed_lot_identity(embed: Optional[dict], fab_lot_id: str = "") -> dict[str, Any]:
+    if not isinstance(embed, dict):
+        return {"root_lot_id": "", "wafer_ids": [], "matched_fab": False}
+    st = embed.get("st_view") or {}
+    if not isinstance(st, dict):
+        return {"root_lot_id": "", "wafer_ids": [], "matched_fab": False}
+    root_lot = str(st.get("root_lot_id") or "").strip()
+    headers = [str(v or "").strip() for v in (st.get("headers") or [])]
+    wafer_fabs = [str(v or "").strip() for v in (st.get("wafer_fab_list") or [])]
+    fab = str(fab_lot_id or "").strip()
+    wafers: list[str] = []
+    matched = False
+    if fab and len(headers) == len(wafer_fabs):
+        for idx, wafer_fab in enumerate(wafer_fabs):
+            if wafer_fab.casefold() != fab.casefold():
+                continue
+            matched = True
+            wafer = headers[idx].strip()
+            if wafer:
+                wafers.append(wafer)
+    elif not fab:
+        wafers = [h for h in headers if h]
+    return {
+        "root_lot_id": root_lot,
+        "wafer_ids": list(dict.fromkeys(wafers)),
+        "matched_fab": matched,
+    }
+
+
+def _fab_lot_scope_snapshot(product: str, fab_lot_id: str) -> dict[str, Any]:
+    fab = str(fab_lot_id or "").strip()
+    if not product or not fab:
+        return {}
+    try:
+        from routers.splittable import _fab_history_scope
+        scope = _fab_history_scope(product, fab_lot_id=fab, limit=1000) or {}
+        return {
+            "root_ids": [str(v).strip() for v in (scope.get("root_ids") or []) if str(v or "").strip()],
+            "wafer_ids": [str(v).strip() for v in (scope.get("wafer_ids") or []) if str(v or "").strip()],
+            "source": scope.get("source") or ("match_cache" if scope.get("cache") else "fab_history"),
+        }
+    except Exception:
+        return {}
+
+
+def _resolve_lot_identity_snapshot(
+    product: str,
+    lot_id: str,
+    requested_wafer_id: str,
+    embed: Optional[dict],
+    explicit_fab_lot_id: str = "",
+) -> dict[str, Any]:
+    """Resolve and freeze the LOT_ID -> ROOT_LOT_ID/WAFER_ID mapping at create time."""
+    lot = str(lot_id or "").strip()
+    requested_wafers = _split_saved_ids(requested_wafer_id)
+    explicit_fab = _first_saved_id(explicit_fab_lot_id)
+    fab = explicit_fab or (lot if _looks_like_fab_lot(lot) else "")
+    root_hint = "" if fab else _root_lot_from_values(lot, embed)
+    if not fab and root_hint:
+        fab = _resolve_fab_lot_snapshot(product, root_hint, requested_wafers[0] if requested_wafers else "")
+
+    scope = _fab_lot_scope_snapshot(product, fab) if fab else {}
+    embed_meta = _embed_lot_identity(embed, fab)
+    root_ids = list(dict.fromkeys(scope.get("root_ids") or []))
+    wafer_ids = list(dict.fromkeys(requested_wafers or (scope.get("wafer_ids") or [])))
+    source = str(scope.get("source") or "")
+
+    if not root_ids and (not fab or embed_meta.get("matched_fab")) and embed_meta.get("root_lot_id"):
+        root_ids = [embed_meta["root_lot_id"]]
+        source = source or "embed"
+    if not wafer_ids and (not fab or embed_meta.get("matched_fab")):
+        wafer_ids = list(dict.fromkeys(embed_meta.get("wafer_ids") or []))
+        if wafer_ids:
+            source = source or "embed"
+    if not root_ids and root_hint:
+        root_ids = [root_hint]
+        source = source or "fallback"
+    if not root_ids and lot:
+        root_ids = [_root_lot_from_values(lot)]
+        source = source or "fallback"
+    if not fab:
+        embed_fabs = _extract_fab_lots_from_embed(embed)
+        fab = ", ".join(embed_fabs)
+
+    return {
+        "root_lot_id": root_ids[0] if root_ids else "",
+        "root_lot_ids": root_ids,
+        "wafer_id": ", ".join(wafer_ids),
+        "wafer_ids": wafer_ids,
+        "fab_lot_id": explicit_fab_lot_id.strip() or fab,
+        "source": source or "unknown",
+    }
+
+
 class ImageRef(BaseModel):
     filename: str
     url: str
@@ -946,6 +1879,7 @@ class EmbedTable(BaseModel):
     #   st_scope: {prefix, custom_name, inline_cols} — 어떤 범위로 찍혔는지 재생 가능.
     st_view: Optional[dict] = None
     st_scope: Optional[dict] = None
+    attached_sets: List[dict] = []
 
 
 class InformCreate(BaseModel):
@@ -960,6 +1894,7 @@ class InformCreate(BaseModel):
     splittable_change: Optional[SplitChange] = None
     images: List[ImageRef] = []
     embed_table: Optional[EmbedTable] = None
+    attached_sets: List[dict] = []
     # v8.7.9: deadline 필드 폐기. 호환을 위해 스키마에 남겨 두되 저장하지 않음.
     deadline: str = ""
     group_ids: List[str] = []  # v8.7.6: 그룹 가시성 필터. 비어 있으면 public (모듈 규칙만 적용)
@@ -996,6 +1931,80 @@ class ProductReq(BaseModel):
 class StatusReq(BaseModel):
     status: str
     note: str = ""
+
+
+def _sanitize_attached_sets(rows: list[dict] | None) -> list[dict]:
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        columns = [str(c) for c in (row.get("columns") or [])][:80]
+        data_rows = []
+        for values in (row.get("rows") or [])[:200]:
+            if isinstance(values, list):
+                data_rows.append([str(v) if v is not None else "" for v in values[:80]])
+        out.append({
+            "id": str(row.get("id") or "")[:160],
+            "name": str(row.get("name") or "")[:160],
+            "source": str(row.get("source") or "")[:40],
+            "columns_count": int(row.get("columns_count") or len(columns) or 0),
+            "wafer_count": int(row.get("wafer_count") or len(data_rows) or 0),
+            "updated_at": str(row.get("updated_at") or "")[:80],
+            "owner": str(row.get("owner") or "")[:80],
+            "columns": columns,
+            "rows": data_rows,
+        })
+    return out[:20]
+
+
+def _sanitize_embed_table(embed_table: Optional[EmbedTable]) -> Optional[dict]:
+    if not embed_table:
+        return None
+    attached_sets = _sanitize_attached_sets(embed_table.attached_sets or [])
+    if not (embed_table.columns or embed_table.rows or embed_table.st_view or embed_table.st_scope or attached_sets):
+        return None
+    cols = [str(c) for c in (embed_table.columns or [])][:80]
+    rows = []
+    for r in (embed_table.rows or [])[:200]:
+        rows.append([str(x) if x is not None else "" for x in (r or [])[:80]])
+    return {
+        "source": (embed_table.source or "").strip()[:160],
+        "columns": cols,
+        "rows": rows,
+        "note": (embed_table.note or "").strip()[:500],
+        "st_view": embed_table.st_view or None,
+        "st_scope": embed_table.st_scope or None,
+        "attached_sets": attached_sets,
+    }
+
+
+def _embed_with_attached_sets(embed: Optional[dict], attached_sets: list[dict] | None) -> Optional[dict]:
+    attached = _sanitize_attached_sets(attached_sets or [])
+    if not attached:
+        return embed
+    base = dict(embed or {})
+    current = [x for x in (base.get("attached_sets") or []) if isinstance(x, dict)]
+    seen = {(str(x.get("source") or ""), str(x.get("id") or x.get("name") or "")) for x in current}
+    for item in attached:
+        key = (str(item.get("source") or ""), str(item.get("id") or item.get("name") or ""))
+        if key not in seen:
+            current.append(item)
+            seen.add(key)
+    first = next((x for x in current if x.get("columns") and x.get("rows")), None)
+    if first and not base.get("columns") and not base.get("rows"):
+        base["columns"] = list(first.get("columns") or [])
+        base["rows"] = list(first.get("rows") or [])
+    base["attached_sets"] = current
+    base["source"] = str(base.get("source") or "SplitTable selected sets")
+    base["note"] = str(base.get("note") or f"{len(current)} selected set(s) attached")
+    return base
+
+
+def _attachment_view(entry: dict) -> list[dict]:
+    embed = entry.get("embed_table") if isinstance(entry, dict) else {}
+    if not isinstance(embed, dict):
+        return []
+    return [dict(x) for x in (embed.get("attached_sets") or []) if isinstance(x, dict)]
 
 
 class CheckReq(BaseModel):
@@ -1044,20 +2053,23 @@ def get_module_knob_map(request: Request):
 
 
 @router.get("/modules/summary")
-def module_summary(request: Request, days: int = Query(30, ge=1, le=3650)):
+def module_summary(request: Request, days: int = Query(_INFORM_ALL_DAYS, ge=0, le=_INFORM_ALL_DAYS)):
     """Module-wise Inform counts for the left summary pane.
 
     Shape is intentionally a plain list for the frontend contract:
-    [{module, received, completed, in_progress, pending}].
+    [{module, registered, mail_completed, apply_confirmed, pending}].
     """
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
+    days = _normalize_inform_days(days)
     now = datetime.datetime.now()
-    cutoff = now - datetime.timedelta(days=days)
+    cutoff = None if days <= 0 or days >= _INFORM_ALL_DAYS else now - datetime.timedelta(days=days)
 
     def in_window(entry: dict) -> bool:
         raw = str(entry.get("created_at") or "")
         if not raw:
+            return True
+        if cutoff is None:
             return True
         try:
             ts = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
@@ -1073,10 +2085,20 @@ def module_summary(request: Request, days: int = Query(30, ge=1, le=3650)):
         if str(m or "").strip()
     ]
     ordered = list(dict.fromkeys(cfg_modules))
-    buckets: dict[str, dict[str, int | str]] = {
-        mod: {"module": mod, "received": 0, "completed": 0, "in_progress": 0, "pending": 0}
-        for mod in ordered
-    }
+    def empty_bucket(mod: str) -> dict[str, int | str]:
+        return {
+            "module": mod,
+            "registered": 0,
+            "mail_completed": 0,
+            "apply_confirmed": 0,
+            "pending": 0,
+            # Legacy aliases for older UI/tests.
+            "received": 0,
+            "in_progress": 0,
+            "completed": 0,
+        }
+
+    buckets: dict[str, dict[str, int | str]] = {mod: empty_bucket(mod) for mod in ordered}
     items = _without_deleted(_load_upgraded())
     for entry in items:
         if entry.get("parent_id"):
@@ -1087,15 +2109,18 @@ def module_summary(request: Request, days: int = Query(30, ge=1, le=3650)):
             continue
         mod = str(entry.get("module") or "").strip() or "기타"
         if mod not in buckets:
-            buckets[mod] = {"module": mod, "received": 0, "completed": 0, "in_progress": 0, "pending": 0}
+            buckets[mod] = empty_bucket(mod)
             ordered.append(mod)
-        status = str(entry.get("flow_status") or "received")
-        if status == "completed":
+        status = _canonical_flow_status(entry.get("flow_status"), entry)
+        if status == "apply_confirmed":
+            buckets[mod]["apply_confirmed"] = int(buckets[mod]["apply_confirmed"]) + 1
             buckets[mod]["completed"] = int(buckets[mod]["completed"]) + 1
-        elif status in ("in_progress", "reviewing"):
+        elif status == "mail_completed":
+            buckets[mod]["mail_completed"] = int(buckets[mod]["mail_completed"]) + 1
             buckets[mod]["in_progress"] = int(buckets[mod]["in_progress"]) + 1
             buckets[mod]["pending"] = int(buckets[mod]["pending"]) + 1
         else:
+            buckets[mod]["registered"] = int(buckets[mod]["registered"]) + 1
             buckets[mod]["received"] = int(buckets[mod]["received"]) + 1
             buckets[mod]["pending"] = int(buckets[mod]["pending"]) + 1
     return [buckets[m] for m in ordered]
@@ -1105,19 +2130,22 @@ def module_summary(request: Request, days: int = Query(30, ge=1, le=3650)):
 def lot_matrix(
     request: Request,
     product: str = Query(""),
-    days: int = Query(90, ge=1, le=3650),
+    days: int = Query(_INFORM_ALL_DAYS, ge=0, le=_INFORM_ALL_DAYS),
     search: str = Query(""),
 ):
-    """Product/root-lot x module progress matrix for the left Inform pane."""
+    """Product/fab-lot x module progress matrix for the left Inform pane."""
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
-    cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
+    days = _normalize_inform_days(days)
+    cutoff = None if days <= 0 or days >= _INFORM_ALL_DAYS else datetime.datetime.now() - datetime.timedelta(days=days)
     want_product = _canonical_product(product or "")
-    root_query = str(search or "").strip().casefold()
+    lot_query = str(search or "").strip().casefold()
 
     def in_window(entry: dict) -> bool:
         dt = _parse_iso_datetime(_entry_last_update(entry) or entry.get("created_at"))
         if dt is None:
+            return True
+        if cutoff is None:
             return True
         return dt >= cutoff
 
@@ -1137,10 +2165,10 @@ def lot_matrix(
         if want_product and prod.casefold() != want_product.casefold():
             continue
 
-        root_lot = str(entry.get("root_lot_id") or _root_lot_from_values(entry.get("lot_id") or "", entry.get("embed_table"))).strip()
-        if not root_lot:
+        lot_keys = _inform_fab_lots(entry)
+        if not lot_keys:
             continue
-        if root_query and root_query not in root_lot.casefold():
+        if lot_query and not any(lot_query in lot_key.casefold() for lot_key in lot_keys):
             continue
 
         mod = str(entry.get("module") or "").strip() or "기타"
@@ -1155,20 +2183,27 @@ def lot_matrix(
             "lots_by_key": {},
             "module_totals": {},
         })
-        lot_bucket = product_bucket["lots_by_key"].setdefault(root_lot, {
-            "root_lot_id": root_lot,
-            "modules": {},
-            "progress": {"done": 0, "total": 0},
-            "last_update": "",
-        })
-
-        prev = lot_bucket["modules"].get(mod)
-        cell = _merge_lot_matrix_cell(prev, entry)
-        lot_bucket["modules"][mod] = cell
-        product_bucket["module_totals"][mod] = int(product_bucket["module_totals"].get(mod) or 0) + 1
+        root_lot = str(entry.get("root_lot_id") or _root_lot_from_values(entry.get("lot_id") or "", entry.get("embed_table"))).strip()
         latest_update = str((_lot_matrix_recent_item(entry)).get("updated_at") or "")
-        if latest_update > lot_bucket["last_update"]:
-            lot_bucket["last_update"] = latest_update
+        for lot_key in lot_keys:
+            lot_bucket = product_bucket["lots_by_key"].setdefault(lot_key, {
+                "root_lot_id": lot_key,  # legacy FE key; value is now the FAB lot matrix key.
+                "lot_id": lot_key,
+                "fab_lot_id": lot_key,
+                "source_root_lot_id": root_lot,
+                "modules": {},
+                "progress": {"done": 0, "total": 0},
+                "last_update": "",
+            })
+            if root_lot and not lot_bucket.get("source_root_lot_id"):
+                lot_bucket["source_root_lot_id"] = root_lot
+
+            prev = lot_bucket["modules"].get(mod)
+            cell = _merge_lot_matrix_cell(prev, entry)
+            lot_bucket["modules"][mod] = cell
+            product_bucket["module_totals"][mod] = int(product_bucket["module_totals"].get(mod) or 0) + 1
+            if latest_update > lot_bucket["last_update"]:
+                lot_bucket["last_update"] = latest_update
 
     products_out: list[dict] = []
     for product_bucket in products_by_key.values():
@@ -1177,11 +2212,11 @@ def lot_matrix(
             done = sum(
                 1
                 for mod in module_order
-                if (lot_bucket["modules"].get(mod) or {}).get("state") == "completed"
+                if (lot_bucket["modules"].get(mod) or {}).get("state") == "apply_confirmed"
             )
             lot_bucket["progress"] = {"done": done, "total": len(module_order)}
             lots.append(lot_bucket)
-        lots.sort(key=lambda x: (x.get("last_update") or "", x.get("root_lot_id") or ""), reverse=True)
+        lots.sort(key=lambda x: (x.get("last_update") or "", x.get("fab_lot_id") or x.get("lot_id") or ""), reverse=True)
         products_out.append({
             "product": product_bucket["product"],
             "lots": lots,
@@ -1218,7 +2253,7 @@ def audit_log(
     modules: List[str] = Query(default=[]),
     modules_bracket: List[str] = Query(default=[], alias="modules[]"),
     lot_search: str = Query(""),
-    days: int = Query(30, ge=1, le=3650),
+    days: int = Query(_INFORM_ALL_DAYS, ge=0, le=_INFORM_ALL_DAYS),
     types: List[str] = Query(default=[]),
     types_bracket: List[str] = Query(default=[], alias="types[]"),
     start: str = Query(""),
@@ -1245,8 +2280,9 @@ def audit_log(
         if str(t or "").strip()
     }
     lot_q = str(lot_search or "").strip().casefold()
+    days = _normalize_inform_days(days)
     now = datetime.datetime.now()
-    cutoff = now - datetime.timedelta(days=days)
+    cutoff = None if days <= 0 or days >= _INFORM_ALL_DAYS else now - datetime.timedelta(days=days)
     start_day = str(start or "").strip()[:10]
     end_day = str(end or "").strip()[:10]
 
@@ -1258,6 +2294,8 @@ def audit_log(
         if end_day and day and day > end_day:
             return False
         if start_day or end_day:
+            return True
+        if cutoff is None:
             return True
         dt = _parse_iso_datetime(raw)
         return True if dt is None else dt >= cutoff
@@ -1397,6 +2435,12 @@ def splittable_snapshot(req: SplitTableSnapshotReq, request: Request):
         is_fab_lot=req.is_fab_lot,
     )
     return {"ok": True, "embed": embed}
+
+
+@router.get("/splittable-sets")
+def splittable_sets(request: Request, product: str = Query("")):
+    current_user(request)
+    return list_cached_splittable_sets(product)
 
 
 # v8.8.13: 유저별 인폼 모듈 조회 권한 엔드포인트 ────────────────────────
@@ -1762,7 +2806,7 @@ def serve_image(request: Request, uid: str, name: str):
 def list_by_wafer(wafer_id: str = Query(..., min_length=1),
                   include_deleted: bool = Query(False)):
     include_deleted = include_deleted if isinstance(include_deleted, bool) else False
-    items = [x for x in _without_deleted(_load_upgraded(), include_deleted) if _wafer_matches(x.get("wafer_id"), wafer_id)]
+    items = [x for x in _without_deleted(_load_upgraded(), include_deleted) if _entry_wafer_matches(x, wafer_id)]
     items.sort(key=lambda x: x.get("created_at", ""))
     return {"informs": items, "module_summary": _module_progress_summary(items)}
 
@@ -1780,9 +2824,10 @@ def _sidebar_payload(items: list, me: dict, my_mods: set,
             continue
         ts = x.get("created_at", "")
 
-        w = x.get("wafer_id")
-        wk = _wafer_key(w)
-        if wk:
+        for w in _entry_wafer_ids(x):
+            wk = _wafer_key(w)
+            if not wk:
+                continue
             cur = wafers_seen.get(wk)
             if cur is None:
                 wafers_seen[wk] = {
@@ -1809,30 +2854,26 @@ def _sidebar_payload(items: list, me: dict, my_mods: set,
                 if ts > ps["last"]:
                     ps["last"] = ts
 
-        l = x.get("lot_id")
-        if l:
-            root = x.get("root_lot_id") or _root_lot_from_values(l)
-            if root:
-                ls = lots_seen.setdefault(root, {
-                    "lot_id": root,
-                    "root_lot_id": root,
-                    "count": 0,
-                    "last": "",
-                    "product": x.get("product", ""),
-                    "fab_lots": set(),
-                })
-                ls["count"] += 1
-                if ts > ls["last"]:
-                    ls["last"] = ts
-                if x.get("product"):
-                    ls["product"] = x.get("product")
-                fab_lots = _extract_fab_lots_from_embed(x.get("embed_table")) or []
-                if x.get("fab_lot_id_at_save"):
-                    fab_lots.extend([p.strip() for p in str(x.get("fab_lot_id_at_save")).split(",") if p.strip()])
-                if not fab_lots:
-                    fab_lots = [l]
-                for fl in fab_lots:
-                    ls["fab_lots"].add(fl)
+        source_root = str(x.get("root_lot_id") or _root_lot_from_values(x.get("lot_id") or "", x.get("embed_table"))).strip()
+        for lot_key in _inform_fab_lots(x):
+            ls = lots_seen.setdefault(lot_key, {
+                "lot_id": lot_key,
+                "fab_lot_id": lot_key,
+                "root_lot_id": lot_key,
+                "source_root_lot_id": source_root,
+                "count": 0,
+                "last": "",
+                "product": x.get("product", ""),
+                "fab_lots": set(),
+            })
+            ls["count"] += 1
+            if ts > ls["last"]:
+                ls["last"] = ts
+            if x.get("product"):
+                ls["product"] = x.get("product")
+            if source_root:
+                ls["source_root_lot_id"] = source_root
+            ls["fab_lots"].add(lot_key)
 
     for p in _fab_db_products():
         key = p.lower()
@@ -1867,8 +2908,9 @@ def recent_roots(request: Request, limit: int = Query(50, ge=1, le=500),
     items = _without_deleted(_load_upgraded(), include_deleted)
     roots = [x for x in items if not x.get("parent_id")]
     roots = [x for x in roots if _visible_to(x, me["username"], me.get("role", "user"), my_mods)]
-    roots.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return {"informs": roots[:limit]}
+    roots = _attach_thread_stats(roots, items)
+    roots.sort(key=lambda x: x.get("thread_updated_at") or x.get("created_at", ""), reverse=True)
+    return {"informs": _attach_root_lot_module_counts(roots[:limit], roots)}
 
 
 @router.get("/wafers")
@@ -1878,26 +2920,26 @@ def list_wafers(request: Request, limit: int = Query(500, ge=1, le=5000)):
     items = _without_deleted(_load_upgraded())
     seen: dict = {}
     for x in items:
-        w = x.get("wafer_id")
-        wk = _wafer_key(w)
-        if not wk:
-            continue
         if not _visible_to(x, me["username"], me.get("role", "user"), my_mods):
             continue
-        cur = seen.get(wk)
         ts = x.get("created_at", "")
-        if cur is None or ts > cur.get("last", ""):
-            if cur is None:
-                seen[wk] = {"wafer_id": w, "wafer_key": wk, "last": ts, "count": 0, "lot_id": x.get("lot_id", ""),
-                            "product": x.get("product", "")}
-            else:
-                cur["last"] = ts
-                cur["wafer_id"] = w
-                if x.get("lot_id"):
-                    cur["lot_id"] = x.get("lot_id")
-                if x.get("product"):
-                    cur["product"] = x.get("product")
-        seen[wk]["count"] = seen[wk].get("count", 0) + 1
+        for w in _entry_wafer_ids(x):
+            wk = _wafer_key(w)
+            if not wk:
+                continue
+            cur = seen.get(wk)
+            if cur is None or ts > cur.get("last", ""):
+                if cur is None:
+                    seen[wk] = {"wafer_id": w, "wafer_key": wk, "last": ts, "count": 0, "lot_id": x.get("lot_id", ""),
+                                "product": x.get("product", "")}
+                else:
+                    cur["last"] = ts
+                    cur["wafer_id"] = w
+                    if x.get("lot_id"):
+                        cur["lot_id"] = x.get("lot_id")
+                    if x.get("product"):
+                        cur["product"] = x.get("product")
+            seen[wk]["count"] = seen[wk].get("count", 0) + 1
     arr = sorted(seen.values(), key=lambda v: v.get("last", ""), reverse=True)
     return {"wafers": arr[:limit]}
 
@@ -1905,24 +2947,25 @@ def list_wafers(request: Request, limit: int = Query(500, ge=1, le=5000)):
 @router.get("/by-lot")
 def by_lot(request: Request, lot_id: str = Query(..., min_length=1),
            include_deleted: bool = Query(False)):
-    """Lot/root/fab id 매칭. DB 원본 root_lot_id 보존 + legacy 5자 prefix 호환."""
+    """FAB lot id 매칭. root_lot_id 는 저장 메타로만 보존한다."""
     include_deleted = include_deleted if isinstance(include_deleted, bool) else False
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _without_deleted(_load_upgraded(), include_deleted)
     query = (lot_id or "").strip()
-    root = _root_lot_from_values(query)
-    root_prefix = root if len(root) <= 5 else ""
-    hits = [x for x in items if (
-        (x.get("root_lot_id") or _root_lot_from_values(x.get("lot_id") or "")) == root
-        or (root_prefix and (x.get("root_lot_id") or "").startswith(root_prefix))
-        or (query and (x.get("lot_id") or "") == query)
-        or (query and (x.get("fab_lot_id_at_save") or "") == query)
-    )]
+
+    def matches(entry: dict) -> bool:
+        if not query:
+            return False
+        q = query.casefold()
+        return any(str(v or "").strip().casefold() == q for v in _inform_fab_lots(entry))
+
+    hits = [x for x in items if matches(x)]
     hits = [x for x in hits if _visible_to(x, me["username"], me.get("role", "user"), my_mods)]
+    hits = _attach_thread_stats(hits, hits)
     hits.sort(key=lambda x: x.get("created_at", ""))
-    wafers = sorted({x.get("wafer_id") for x in hits if x.get("wafer_id")})
-    lots = sorted({x.get("lot_id") for x in hits if x.get("lot_id")})
+    wafers = sorted({wafer for x in hits for wafer in _entry_wafer_ids(x)}, key=_wafer_key)
+    lots = sorted({lot for x in hits for lot in _inform_fab_lots(x)})
     module_counts: dict[str, int] = {}
     for x in hits:
         if x.get("parent_id"):
@@ -1938,7 +2981,9 @@ def by_lot(request: Request, lot_id: str = Query(..., min_length=1),
         "informs": hits,
         "wafers": wafers,
         "lots": lots,
-        "root_lot_id": root,
+        "lot_id": query,
+        "fab_lot_id": query,
+        "root_lot_id": query,
         "count": len(hits),
         "module_summary": _module_progress_summary(hits),
         "informed_modules": informed_modules,
@@ -1960,8 +3005,9 @@ def by_product(request: Request, product: str = Query(..., min_length=1),
     hits = [x for x in hits if _visible_to(x, me["username"], me.get("role", "user"), my_mods)]
     # 루트 우선 최근순
     roots = [x for x in hits if not x.get("parent_id")]
-    roots.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return {"informs": roots[:limit], "count": len(roots)}
+    roots = _attach_thread_stats(roots, hits)
+    roots.sort(key=lambda x: x.get("thread_updated_at") or x.get("created_at", ""), reverse=True)
+    return {"informs": _attach_root_lot_module_counts(roots[:limit], roots), "count": len(roots)}
 
 
 @router.get("/my")
@@ -1979,8 +3025,9 @@ def my_informs(request: Request, limit: int = Query(200, ge=1, le=2000)):
             x for x in roots
             if (x.get("module") in my_mods) or x.get("author") == me["username"]
         ]
-    vis.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return {"informs": vis[:limit], "all_rounder": role == "admin" or "__all__" in my_mods,
+    vis = _attach_thread_stats(vis, items)
+    vis.sort(key=lambda x: x.get("thread_updated_at") or x.get("created_at", ""), reverse=True)
+    return {"informs": _attach_root_lot_module_counts(vis[:limit], vis), "all_rounder": role == "admin" or "__all__" in my_mods,
             "my_modules": [] if "__all__" in my_mods else sorted(my_mods)}
 
 
@@ -2022,42 +3069,34 @@ def list_products(request: Request):
 
 @router.get("/lots")
 def list_lots(request: Request):
-    """v8.7.9: root_lot_id 기준으로 그룹핑. 각 root 아래에 포함된 fab_lots 와 합계.
-    하위 호환: lot_id 에 root_lot_id 를 넣어 기존 FE 의 selectedLot 흐름이 그대로 동작.
-    """
+    """FAB_LOT_ID/LOT_ID 기준으로 그룹핑한다."""
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _without_deleted(_load_upgraded())
     seen: dict = {}
     for x in items:
-        l = x.get("lot_id")
-        if not l:
-            continue
         if not _visible_to(x, me["username"], me.get("role", "user"), my_mods):
             continue
-        root = x.get("root_lot_id") or _root_lot_from_values(l)
-        if not root:
-            continue
-        s = seen.setdefault(root, {
-            "lot_id": root,              # FE 호환: selectedLot 키
-            "root_lot_id": root,
-            "count": 0, "last": "",
-            "product": x.get("product", ""),
-            "fab_lots": set(),
-        })
-        s["count"] += 1
         ts = x.get("created_at", "")
-        if ts > s["last"]:
-            s["last"] = ts
-        if x.get("product"):
-            s["product"] = x.get("product")
-        fab_lots = _extract_fab_lots_from_embed(x.get("embed_table")) or []
-        if x.get("fab_lot_id_at_save"):
-            fab_lots.extend([p.strip() for p in str(x.get("fab_lot_id_at_save")).split(",") if p.strip()])
-        if not fab_lots:
-            fab_lots = [l]
-        for fl in fab_lots:
-            s["fab_lots"].add(fl)
+        source_root = str(x.get("root_lot_id") or _root_lot_from_values(x.get("lot_id") or "", x.get("embed_table"))).strip()
+        for lot_key in _inform_fab_lots(x):
+            s = seen.setdefault(lot_key, {
+                "lot_id": lot_key,
+                "fab_lot_id": lot_key,
+                "root_lot_id": lot_key,
+                "source_root_lot_id": source_root,
+                "count": 0, "last": "",
+                "product": x.get("product", ""),
+                "fab_lots": set(),
+            })
+            s["count"] += 1
+            if ts > s["last"]:
+                s["last"] = ts
+            if x.get("product"):
+                s["product"] = x.get("product")
+            if source_root:
+                s["source_root_lot_id"] = source_root
+            s["fab_lots"].add(lot_key)
     arr = []
     for s in seen.values():
         s["fab_lots"] = sorted(s["fab_lots"])
@@ -2069,13 +3108,11 @@ def list_lots(request: Request):
 @router.post("")
 def create_inform(req: InformCreate, request: Request):
     me = current_user(request)
-    # v8.7.9: wafer_id 는 선택. 없으면 lot_id 로 자동 채움. 둘 다 없고 parent 도 없으면 400.
+    # wafer_id 는 생성 시점의 LOT_ID 매핑 snapshot 이다. 없다고 lot_id 로 대체하지 않는다.
     requested_wafer_id = (req.wafer_id or "").strip()
     wid = requested_wafer_id
     lot_for_fallback = (req.lot_id or "").strip()
-    if not wid:
-        wid = lot_for_fallback
-    if not wid and not req.parent_id:
+    if not lot_for_fallback and not wid and not req.parent_id:
         raise HTTPException(400, "lot_id (또는 wafer_id) 가 필요합니다.")
     items = _load_upgraded()
 
@@ -2086,6 +3123,8 @@ def create_inform(req: InformCreate, request: Request):
         parent = _find(items, req.parent_id)
         if not parent:
             raise HTTPException(404, "parent not found")
+        if not wid:
+            wid = str(parent.get("wafer_id") or "").strip()
         if parent.get("wafer_id") != wid:
             raise HTTPException(400, "parent wafer mismatch")
         # 자식은 부모 lot/product 상속 (입력 없을 때)
@@ -2112,64 +3151,67 @@ def create_inform(req: InformCreate, request: Request):
             "size": max(0, int(im.size or 0)),
         })
 
-    embed = None
-    if req.embed_table and (req.embed_table.columns or req.embed_table.rows
-                             or req.embed_table.st_view or req.embed_table.st_scope):
-        # v8.8.33: st_view 만 있고 rows 가 비어도 embed 로 저장 — 빈 스냅샷도 보존 (컬럼은 찍혀야 plan 입력 가능).
-        cols = [str(c) for c in (req.embed_table.columns or [])][:40]
-        rows = []
-        for r in (req.embed_table.rows or [])[:200]:
-            if isinstance(r, list):
-                rows.append([("" if v is None else str(v)) for v in r[:len(cols) if cols else 40]])
-        embed = {
-            "source": (req.embed_table.source or "").strip()[:160],
-            "columns": cols,
-            "rows": rows,
-            "note": (req.embed_table.note or "").strip()[:500],
-            # v8.8.33: SplitTable 원형 + scope 저장.
-            "st_view": req.embed_table.st_view or None,
-            "st_scope": req.embed_table.st_scope or None,
-        }
+    embed = _embed_with_attached_sets(_sanitize_embed_table(req.embed_table), req.attached_sets)
 
     now = _now()
     is_root = not req.parent_id
-    # root_lot_id 는 DB/SplitTable 에서 보이는 값을 그대로 보존한다.
-    root_lot = _root_lot_from_values(inherit_lot, embed)
-    embed_fabs = _extract_fab_lots_from_embed(embed)
+    identity_snapshot = _resolve_lot_identity_snapshot(
+        inherit_product,
+        inherit_lot,
+        requested_wafer_id,
+        embed,
+        req.fab_lot_id_at_save,
+    )
+    root_lot = identity_snapshot.get("root_lot_id") or _root_lot_from_values(inherit_lot, None)
+    wid = identity_snapshot.get("wafer_id") or wid
     fab_snapshot = (
-        (req.fab_lot_id_at_save or "").strip()
-        or _resolve_fab_lot_snapshot(inherit_product, inherit_lot, requested_wafer_id)
-        or ", ".join(embed_fabs)
+        str(identity_snapshot.get("fab_lot_id") or "").strip()
+        or (req.fab_lot_id_at_save or "").strip()
+        or _resolve_fab_lot_snapshot(inherit_product, root_lot, requested_wafer_id)
+        or ", ".join(_extract_fab_lots_from_embed(embed))
     )
     entry = {
         "id": _new_id(),
         "parent_id": req.parent_id or None,
         "wafer_id": wid,
+        "wafer_ids_at_save": list(identity_snapshot.get("wafer_ids") or _split_saved_ids(wid)),
         "lot_id": inherit_lot,
         "root_lot_id": root_lot,
+        "root_lot_ids_at_save": list(identity_snapshot.get("root_lot_ids") or ([root_lot] if root_lot else [])),
         "product": inherit_product,
         "module": (req.module or "").strip(),
-        "reason": (req.reason or "").strip(),
+        "reason": (req.reason or "").strip() or "PEMS",
         "text": (req.text or "").strip(),
         "author": me["username"],
         "created_at": now,
         "checked": False,
         "checked_by": "",
         "checked_at": "",
-        "flow_status": "received" if is_root else "",
+        "flow_status": "registered" if is_root else "",
         "status_history": (
-            [{"status": "received", "actor": me["username"], "at": now, "note": "created"}]
+            [{"status": "registered", "actor": me["username"], "at": now, "note": "created"}]
             if is_root else []
         ),
         "splittable_change": sc,
         "images": imgs,
         "embed_table": embed,
+        "attachments": _attachment_view({"embed_table": embed}),
         "auto_generated": False,
         # v8.7.9: deadline 필드 폐기 — 저장하지 않음.
         "group_ids": [str(g).strip() for g in (req.group_ids or []) if g and str(g).strip()],
         # v8.8.15: fab_lot_id 스냅샷 — FE 가 SplitTable 맥락에서 resolve 해서 보내준 값.
         #   없으면 BE 에서 resolve 시도 (product + lot_id 기준으로 ML_TABLE 의 최신 fab_lot_id 조회).
         "fab_lot_id_at_save": fab_snapshot,
+        "lot_identity_snapshot": {
+            "lot_id": inherit_lot,
+            "fab_lot_id": fab_snapshot,
+            "root_lot_id": root_lot,
+            "root_lot_ids": list(identity_snapshot.get("root_lot_ids") or ([root_lot] if root_lot else [])),
+            "wafer_id": wid,
+            "wafer_ids": list(identity_snapshot.get("wafer_ids") or _split_saved_ids(wid)),
+            "source": identity_snapshot.get("source") or "",
+            "created_at": now,
+        },
     }
     items.append(entry)
     _save(items)
@@ -2237,8 +3279,8 @@ def auto_log_splittable_change(author: str, product: str, lot_id: str,
             "author": author or "system",
             "created_at": now,
             "checked": False, "checked_by": "", "checked_at": "",
-            "flow_status": "received",
-            "status_history": [{"status": "received", "actor": author or "system",
+            "flow_status": "registered",
+            "status_history": [{"status": "registered", "actor": author or "system",
                                 "at": now, "note": "auto from SplitTable"}],
             "splittable_change": {
                 "column": col,
@@ -2298,6 +3340,7 @@ class InformEditReq(BaseModel):
     text: Optional[str] = None
     module: Optional[str] = None
     reason: Optional[str] = None
+    embed_table: Optional[EmbedTable] = None
     # wafer_id / lot_id / product 는 변경 불가 (스레드/매칭 깨짐 방지).
 
 
@@ -2346,6 +3389,18 @@ def _edit_inform_by_id(id: str, req: InformEditReq, request: Request):
         hist.append({"at": now, "actor": me["username"], "field": "reason",
                      "before": before, "after": target["reason"], "kind": "edit"})
         changed.append("reason")
+    fields_set = getattr(req, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(req, "__fields_set__", set())
+    if "embed_table" in fields_set:
+        before_count = len((target.get("embed_table") or {}).get("attached_sets") or []) if isinstance(target.get("embed_table"), dict) else 0
+        target["embed_table"] = _sanitize_embed_table(req.embed_table)
+        target["attachments"] = _attachment_view(target)
+        after_count = len((target.get("embed_table") or {}).get("attached_sets") or []) if isinstance(target.get("embed_table"), dict) else 0
+        hist.append({"at": now, "actor": me["username"], "field": "embed_table",
+                     "before": f"{before_count} attached sets", "after": f"{after_count} attached sets",
+                     "kind": "edit"})
+        changed.append("embed_table")
     if not changed:
         return {"ok": True, "noop": True}
     target["edit_history"] = hist[-200:]
@@ -2384,10 +3439,10 @@ def check_inform(req: CheckReq, request: Request, id: str = Query(...)):
 
 @router.post("/status")
 def set_status(req: StatusReq, request: Request, id: str = Query(...)):
-    st = (req.status or "").strip()
-    # v8.7.9: 2단계 플로우. legacy reviewing/in_progress 는 completed 전 단계로 허용하되 권장하지 않음.
-    if st not in FLOW_STATUSES_LEGACY:
+    raw_status = (req.status or "").strip()
+    if raw_status not in FLOW_STATUSES_LEGACY:
         raise HTTPException(400, f"invalid status; must be one of {FLOW_STATUSES_LEGACY}")
+    st = _canonical_flow_status(raw_status)
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _load_upgraded()
@@ -2400,14 +3455,15 @@ def set_status(req: StatusReq, request: Request, id: str = Query(...)):
         raise HTTPException(400, "status 는 루트 인폼에만 적용됩니다.")
     if not _can_moderate(target, me["username"], me.get("role", "user"), my_mods):
         raise HTTPException(403, "모듈 담당자만 상태를 변경할 수 있습니다.")
-    prev_status = target.get("flow_status") or ""
+    prev_status = _canonical_flow_status(target.get("flow_status"), target)
+    if raw_status == "registered" and prev_status == "apply_confirmed" and (target.get("mail_history") or []):
+        st = "mail_completed"
     if prev_status == st:
         return {"ok": True, "inform": target}
     target["flow_status"] = st
     hist = target.get("status_history") or []
     note = (req.note or "").strip()
-    # v8.8.1: 확인 취소(completed→received) 이력 라벨링.
-    if prev_status == "completed" and st == "received" and not note:
+    if prev_status == "apply_confirmed" and st != "apply_confirmed" and not note:
         note = "확인 취소"
     hist.append({"status": st, "prev": prev_status, "actor": me["username"],
                  "at": _now(), "note": note})
@@ -2884,7 +3940,7 @@ def _thread_text(items: list, root_id: str) -> str:
     def dump(node: dict, depth: int):
         prefix = "  " * depth
         ts = (node.get("created_at") or "")[:16].replace("T", " ")
-        lines.append(f"{prefix}[{ts}] {node.get('author','?')} · {node.get('module','')} / {node.get('reason','')}")
+        lines.append(f"{prefix}[{ts}] {node.get('author','?')} · {node.get('module','')}")
         body = (node.get("text") or "").strip()
         for ln in body.splitlines() or [""]:
             lines.append(f"{prefix}  {ln}")
@@ -2917,7 +3973,6 @@ def _thread_html(items: list, root_id: str) -> str:
         ts = (node.get("created_at") or "")[:16].replace("T", " ")
         author = esc(node.get("author", "?"))
         module = esc(node.get("module", ""))
-        reason = esc(node.get("reason", ""))
         status = esc(node.get("flow_status", ""))
         body_lines = (node.get("text") or "").splitlines()
         body_html = "<br/>".join(esc(ln) for ln in body_lines) or "<i style='color:#999'>(본문 없음)</i>"
@@ -2938,7 +3993,6 @@ def _thread_html(items: list, root_id: str) -> str:
             f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin-bottom:4px;'>"
             f"<b style='color:#1f2937'>{author}</b> · {esc(ts)} · "
             f"<span style='color:#f97316'>{module}</span>"
-            + (f" / {reason}" if reason else "")
             + (f" · <span style='padding:1px 6px;border-radius:10px;background:#e0f2fe;color:#0369a1;font-size:{_MAIL_MIN_FONT};'>{status}</span>" if status else "")
             + f"</div>"
             f"<div style='line-height:1.55'>{body_html}</div>"
@@ -2970,7 +4024,7 @@ _ST_CELL_COLORS = [
     {"bg": "#F4CCCC", "fg": "#75194C"},
 ]
 _GO_FLOW_URL = "http://go/flow"
-_MAIL_MIN_FONT = "10pt"
+_MAIL_MIN_FONT = "11px"
 
 
 def _mail_fit_col_styles(data_columns: int) -> tuple[str, str]:
@@ -3005,6 +4059,14 @@ def _mail_data_col_style(data_col_style: str, span: int = 1) -> str:
 def _mail_scroll_col_styles(data_columns: int) -> tuple[str, str]:
     """Fixed pixel columns for horizontally scrollable SplitTable mail snapshots."""
     n = max(1, int(data_columns or 0))
+    if n <= 30:
+        first_pct = 18.0 if n >= 16 else 22.0
+        data_pct = (100.0 - first_pct) / n
+        break_style = "white-space:normal;word-break:break-word;overflow-wrap:anywhere;vertical-align:top;box-sizing:border-box;"
+        return (
+            f"width:{first_pct:.2f}%;max-width:{first_pct:.2f}%;{break_style}",
+            f"width:{data_pct:.2f}%;max-width:{data_pct:.2f}%;{break_style}",
+        )
     first_px = 180
     data_px = 72 if n >= 16 else 86
     break_style = "white-space:normal;word-break:break-word;overflow-wrap:anywhere;vertical-align:top;box-sizing:border-box;"
@@ -3016,6 +4078,11 @@ def _mail_scroll_col_styles(data_columns: int) -> tuple[str, str]:
 
 def _mail_scroll_table_style(data_columns: int) -> str:
     n = max(1, int(data_columns or 0))
+    if n <= 30:
+        return (
+            f"border-collapse:collapse;font-size:{_MAIL_MIN_FONT};width:100%;max-width:100%;"
+            "table-layout:fixed;mso-table-lspace:0pt;mso-table-rspace:0pt;"
+        )
     data_px = 72 if n >= 16 else 86
     total_px = 180 + data_px * n
     return (
@@ -3077,7 +4144,7 @@ def _st_build_uniq_map(rows_st: list, headers: list) -> dict:
     return out
 
 
-_MODULE_KNOB_HILITE = "background:#fff7cc;border:2px solid #ca8a04;"
+_MODULE_KNOB_HILITE = ""
 
 
 def _is_module_highlight_param(param: str, highlight_knobs: set[str]) -> bool:
@@ -3133,21 +4200,7 @@ def _default_mail_subject(root: dict) -> str:
 
 
 def _default_mail_prose(root: dict, sender_username: str = "") -> str:
-    module = str(root.get("module") or "").strip() or "담당"
-    reason = str(root.get("reason") or "").strip() or "-"
-    sender = str(sender_username or "").strip() or "랏관리팀"
-    created_raw = str(root.get("created_at") or "").strip()
-    created = created_raw.replace("T", " ")[:16] if created_raw else "-"
-    lots = _inform_lot_ids(root)
-    lot_list = ", ".join(lots) if lots else "-"
-    return "\n".join([
-        f"안녕하세요. {module}팀에 다음과 같이 plan 을 적용할 예정입니다.",
-        "",
-        f"사유: {reason}",
-        f"작성자: {sender}",
-        f"작성시간: {created}",
-        f"Lot 리스트: {lot_list}",
-    ])
+    return str((root or {}).get("text") or "").strip()
 
 
 def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: str = "") -> str:
@@ -3162,6 +4215,53 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
     esc = _html.escape
     # Mail recipients need the business table, not internal Flow/SplitTable source labels.
     # Keep source/note out of the HTML body to avoid exposing IDs, scope strings, or cache details.
+    attached_sets = [x for x in (embed.get("attached_sets") or []) if isinstance(x, dict)]
+
+    def _attached_sets_html() -> str:
+        # Attached custom-set metadata is kept on the Inform detail record, but
+        # recipients should only see the LOT-specific SplitTable snapshot.
+        return ""
+        if not attached_sets:
+            return ""
+        chunks = []
+        for item in attached_sets[:8]:
+            name = esc(str(item.get("name") or "set"))
+            source = esc(str(item.get("source") or "set"))
+            cols = [str(c) for c in (item.get("columns") or [])][:80]
+            rows = [r for r in (item.get("rows") or []) if isinstance(r, list)][:max_rows]
+            if not cols:
+                chunks.append(
+                    f"<div style='margin:8px 0;padding:6px 8px;border:1px solid #d1d5db;border-radius:4px;'>"
+                    f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;'>📋 {name} <span style='color:#6b7280;font-weight:400;'>({source})</span></div>"
+                    f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;'>columns {int(item.get('columns_count') or 0)} · rows {int(item.get('wafer_count') or 0)}</div>"
+                    "</div>"
+                )
+                continue
+            data_cols = max(0, len(cols) - 1)
+            first_col_style, data_col_style = _mail_fit_col_styles(data_cols)
+            colgroup = _mail_colgroup_html(first_col_style, data_col_style, data_cols)
+            th = (f"border:1px solid #d1d5db;padding:2px 3px;background:#f3f4f6;font-size:{_MAIL_MIN_FONT};"
+                  "font-family:monospace;text-align:left;white-space:normal;word-break:break-all;overflow-wrap:anywhere;")
+            td = (f"border:1px solid #d1d5db;padding:2px 3px;font-size:{_MAIL_MIN_FONT};"
+                  "font-family:monospace;text-align:left;white-space:normal;word-break:break-all;overflow-wrap:anywhere;")
+            head = "<tr>" + "".join(
+                f"<th style='{th}{first_col_style if i == 0 else data_col_style}'>{esc(c)}</th>"
+                for i, c in enumerate(cols)
+            ) + "</tr>"
+            body = "".join(
+                "<tr>" + "".join(
+                    f"<td style='{td}{first_col_style if i == 0 else data_col_style}'>{esc(str(v if v is not None else ''))}</td>"
+                    for i, v in enumerate(row[:len(cols)])
+                ) + "</tr>"
+                for row in rows
+            )
+            chunks.append(
+                f"<div style='margin:10px 0;'>"
+                f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;margin-bottom:4px;'>📋 {name} <span style='color:#6b7280;font-weight:400;'>({source})</span></div>"
+                f"<table style='border-collapse:collapse;font-size:{_MAIL_MIN_FONT};width:100%;max-width:100%;table-layout:fixed;'>{colgroup}<thead>{head}</thead><tbody>{body}</tbody></table>"
+                "</div>"
+            )
+        return "".join(chunks)
 
     # Try st_view first.
     st = embed.get("st_view") or {}
@@ -3354,7 +4454,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             f"{colgroup}"
             f"<thead>{thead}</thead>"
             f"<tbody>{body_rows_html}</tbody>"
-            f"</table></div>{trunc_html}{_plan_summary_html()}{_lineage_summary_html()}"
+            f"</table></div>{trunc_html}{_attached_sets_html()}{_plan_summary_html()}{_lineage_summary_html()}"
         )
 
     if rows_st and headers:
@@ -3447,14 +4547,16 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         )
         return (
             f"{hdr}{note_html}"
-            f"{table_html}{trunc_html}{_plan_summary_html()}{_lineage_summary_html()}"
+            f"{table_html}{trunc_html}{_attached_sets_html()}{_plan_summary_html()}{_lineage_summary_html()}"
         )
 
     # Legacy 2D path.
+    if attached_sets and not rows_st and str(embed.get("source") or "").startswith("SplitTable selected sets"):
+        return ""
     cols = embed.get("columns") or []
     rows2d = embed.get("rows") or []
     if not cols and not rows2d:
-        return ""
+        return _attached_sets_html()
     truncated = len(rows2d) > max_rows
     shown = rows2d[:max_rows]
     first_col_style, data_col_style = _mail_fit_col_styles(max(0, len(cols) - 1))
@@ -3508,12 +4610,16 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         )
     meta_tbl = "<table style='border-collapse:collapse;border:1px solid #d1d5db;margin:10px 0;width:100%;max-width:560px;'>" + "".join(meta_rows) + "</table>"
     prose_block = ""
-    prose_text = extra_prose if (extra_prose or "").strip() else _default_mail_prose(root, sender_username)
+    # Keep the mail body anchored to the inform note. If the caller explicitly
+    # supplies prose use it; otherwise use only the saved note, not a generated
+    # greeting/template.
+    prose_text = extra_prose if (extra_prose or "").strip() else str(root.get("text") or "")
     if prose_text.strip():
         safe = _html.escape(prose_text).replace("\n", "<br/>")
         prose_block = (
-            f"<div style='margin:12px 0;padding:10px 12px;background:#fffbeb;border-left:4px solid #f59e0b;"
-            f"border-radius:4px;font-size:{_MAIL_MIN_FONT};color:#78350f;'>{safe}</div>"
+            "<div style='margin:0 0 12px 0;padding:0;background:transparent;border:none;"
+            "font-size:12pt;line-height:1.45;color:#1f2937;'>"
+            f"{safe}</div>"
         )
     # v8.8.1: 발송 요청자(hol) 자동 명시 제거.
     contacts_block = ""
@@ -3544,9 +4650,9 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
     )
     return (
         "<div style='font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1f2937;width:100%;max-width:none;margin:0;'>"
-        f"{meta_tbl}"
-        f"{contacts_block}"
         f"{prose_block}"
+        f"{contacts_block}"
+        f"{meta_tbl}"
         f"{embed_html}"
         f"{thread_block}"
         "<hr style='border:none;border-top:1px solid #e5e7eb;margin:18px 0 8px 0;'/>"
@@ -4110,10 +5216,24 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
         "subject": subject,
     })
     target["mail_history"] = hist[-20:]  # keep last 20
+    mail_at = hist[-1]["at"]
+    prev_status = _canonical_flow_status(target.get("flow_status"), target)
+    if prev_status != "apply_confirmed":
+        target["flow_status"] = "mail_completed"
+        status_hist = target.get("status_history") or []
+        if not status_hist or _canonical_flow_status(status_hist[-1].get("status")) != "mail_completed":
+            status_hist.append({
+                "status": "mail_completed",
+                "prev": prev_status,
+                "actor": me.get("username", ""),
+                "at": mail_at,
+                "note": "mail sent",
+            })
+            target["status_history"] = status_hist
     _save(items)
     _audit_record(request, "mail", target,
                   {"to_count": len(to_list), "subject": subject, "dry_run": dry_run},
-                  f"메일 · {subject}", at=hist[-1]["at"])
+                  f"메일 · {subject}", at=mail_at)
     return {
         "ok": True,
         "to": to_list,

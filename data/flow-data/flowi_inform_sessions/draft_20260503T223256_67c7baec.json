@@ -1,0 +1,40 @@
+{
+  "kind": "inform_draft",
+  "draft_id": "draft_20260503T223256_67c7baec",
+  "session_id": "draft_20260503T223256_67c7baec",
+  "username": "hol",
+  "product": "",
+  "root_lot_ids": [],
+  "fab_lot_ids": [
+    "A1004A.2",
+    "A1004A.3"
+  ],
+  "entries": [
+    {
+      "product": "",
+      "root_lot_id": "A1004",
+      "fab_lot_id": "A1004A.2",
+      "lot_id": "A1004A.2",
+      "wafer_id": "A1004A.2",
+      "module": "BEOL",
+      "split_set": "",
+      "reason": "Flow-i 인폼",
+      "note": "beol 인폼 남깁니다",
+      "missing": []
+    },
+    {
+      "product": "",
+      "root_lot_id": "A1004",
+      "fab_lot_id": "A1004A.3",
+      "lot_id": "A1004A.3",
+      "wafer_id": "A1004A.3",
+      "module": "BEOL",
+      "split_set": "",
+      "reason": "Flow-i 인폼",
+      "note": "beol 인폼 남깁니다",
+      "missing": []
+    }
+  ],
+  "created_at": "2026-05-03T22:32:56.162644+00:00",
+  "last_active_at": "2026-05-03T22:32:56.162644+00:00"
+}

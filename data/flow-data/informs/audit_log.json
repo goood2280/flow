@@ -1,0 +1,1468 @@
+[
+  {
+    "id": "aud_260503_facae96d",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_629ec3",
+    "inform_id": "inf_260503_629ec3",
+    "product": "PRODA",
+    "root_lot_id": "A1004",
+    "lot_id": "A1004A.2",
+    "fab_lot_id_at_save": "A1004A.2",
+    "module": "PC",
+    "summary": "생성 · PC · A1004A.2",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:40:40"
+  },
+  {
+    "id": "aud_260503_e8b26a8a",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_39762e",
+    "inform_id": "inf_260503_39762e",
+    "product": "PRODA",
+    "root_lot_id": "LOT029AA",
+    "lot_id": "LOT029AA",
+    "fab_lot_id_at_save": "LOT029AA.1, LOT029AA.2",
+    "module": "ET",
+    "summary": "생성 · ET · LOT029AA",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:53:39"
+  },
+  {
+    "id": "aud_260503_48047890",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_e60c5f",
+    "inform_id": "inf_260503_e60c5f",
+    "product": "INF",
+    "root_lot_id": "R9600",
+    "lot_id": "R9600",
+    "fab_lot_id_at_save": "F9600_NEW",
+    "module": "ET",
+    "summary": "생성 · ET · R9600",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:53:40"
+  },
+  {
+    "id": "aud_260503_b67023c9",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_d57332",
+    "inform_id": "inf_260503_d57332",
+    "product": "PRODA",
+    "root_lot_id": "R9700",
+    "lot_id": "F9700A.1",
+    "fab_lot_id_at_save": "F9700A.1",
+    "module": "GATE",
+    "summary": "생성 · GATE · F9700A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:53:40"
+  },
+  {
+    "id": "aud_260503_e0d88e56",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_73c739",
+    "inform_id": "inf_260503_73c739",
+    "product": "PRODA",
+    "root_lot_id": "R9700",
+    "lot_id": "F9700A.1",
+    "fab_lot_id_at_save": "F9700A.1",
+    "module": "STI",
+    "summary": "생성 · STI · F9700A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:53:40"
+  },
+  {
+    "id": "aud_260503_1f5873f9",
+    "type": "mail",
+    "actor": "anonymous",
+    "target_id": "inf_gate",
+    "inform_id": "inf_gate",
+    "product": "PRODA",
+    "root_lot_id": "R1000",
+    "lot_id": "R1000",
+    "fab_lot_id_at_save": "",
+    "module": "GATE",
+    "summary": "메일 · [plan 적용 통보] PRODA R1000 - GATE",
+    "payload": {
+      "to_count": 2,
+      "subject": "[plan 적용 통보] PRODA R1000 - GATE",
+      "dry_run": true
+    },
+    "at": "2026-05-03T10:53:41"
+  },
+  {
+    "id": "aud_260503_28b773e7",
+    "type": "mail",
+    "actor": "anonymous",
+    "target_id": "inf_gate",
+    "inform_id": "inf_gate",
+    "product": "PRODA",
+    "root_lot_id": "R1000",
+    "lot_id": "R1000",
+    "fab_lot_id_at_save": "",
+    "module": "GATE",
+    "summary": "메일 · [plan 적용 통보] PRODA R1000 - GATE",
+    "payload": {
+      "to_count": 1,
+      "subject": "[plan 적용 통보] PRODA R1000 - GATE",
+      "dry_run": true
+    },
+    "at": "2026-05-03T10:53:41"
+  },
+  {
+    "id": "aud_260503_167dff24",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_e443ad",
+    "inform_id": "inf_260503_e443ad",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000A.1",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "생성 · KNOB · A1000A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:53:43"
+  },
+  {
+    "id": "aud_260503_2ba24fe4",
+    "type": "create",
+    "actor": "tester",
+    "target_id": "inf_260503_df4e90",
+    "inform_id": "inf_260503_df4e90",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "SplitTable 자동기록 · KNOB_GATE",
+    "payload": {
+      "auto_generated": true,
+      "cell_key": "A1000|1|KNOB_GATE",
+      "action": "set"
+    },
+    "at": "2026-05-03T10:53:43"
+  },
+  {
+    "id": "aud_260503_07560f0c",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_dfb025",
+    "inform_id": "inf_260503_dfb025",
+    "product": "PRODA",
+    "root_lot_id": "LOT029AA",
+    "lot_id": "LOT029AA",
+    "fab_lot_id_at_save": "LOT029AA.1, LOT029AA.2",
+    "module": "ET",
+    "summary": "생성 · ET · LOT029AA",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:55:01"
+  },
+  {
+    "id": "aud_260503_4308b886",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_ad396f",
+    "inform_id": "inf_260503_ad396f",
+    "product": "INF",
+    "root_lot_id": "R9600",
+    "lot_id": "R9600",
+    "fab_lot_id_at_save": "F9600_NEW",
+    "module": "ET",
+    "summary": "생성 · ET · R9600",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:55:01"
+  },
+  {
+    "id": "aud_260503_487c6e95",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_c07515",
+    "inform_id": "inf_260503_c07515",
+    "product": "PRODA",
+    "root_lot_id": "R9700",
+    "lot_id": "F9700A.1",
+    "fab_lot_id_at_save": "F9700A.1",
+    "module": "GATE",
+    "summary": "생성 · GATE · F9700A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:55:01"
+  },
+  {
+    "id": "aud_260503_e60e0a9f",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_3ad91a",
+    "inform_id": "inf_260503_3ad91a",
+    "product": "PRODA",
+    "root_lot_id": "R9700",
+    "lot_id": "F9700A.1",
+    "fab_lot_id_at_save": "F9700A.1",
+    "module": "STI",
+    "summary": "생성 · STI · F9700A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:55:01"
+  },
+  {
+    "id": "aud_260503_04db9e2e",
+    "type": "mail",
+    "actor": "anonymous",
+    "target_id": "inf_gate",
+    "inform_id": "inf_gate",
+    "product": "PRODA",
+    "root_lot_id": "R1000",
+    "lot_id": "R1000",
+    "fab_lot_id_at_save": "",
+    "module": "GATE",
+    "summary": "메일 · [plan 적용 통보] PRODA R1000 - GATE",
+    "payload": {
+      "to_count": 2,
+      "subject": "[plan 적용 통보] PRODA R1000 - GATE",
+      "dry_run": true
+    },
+    "at": "2026-05-03T10:55:02"
+  },
+  {
+    "id": "aud_260503_9e33974b",
+    "type": "mail",
+    "actor": "anonymous",
+    "target_id": "inf_gate",
+    "inform_id": "inf_gate",
+    "product": "PRODA",
+    "root_lot_id": "R1000",
+    "lot_id": "R1000",
+    "fab_lot_id_at_save": "",
+    "module": "GATE",
+    "summary": "메일 · [plan 적용 통보] PRODA R1000 - GATE",
+    "payload": {
+      "to_count": 1,
+      "subject": "[plan 적용 통보] PRODA R1000 - GATE",
+      "dry_run": true
+    },
+    "at": "2026-05-03T10:55:02"
+  },
+  {
+    "id": "aud_260503_629b92ce",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_449eab",
+    "inform_id": "inf_260503_449eab",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000A.1",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "생성 · KNOB · A1000A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:55:04"
+  },
+  {
+    "id": "aud_260503_dd45951e",
+    "type": "create",
+    "actor": "tester",
+    "target_id": "inf_260503_e0ffb7",
+    "inform_id": "inf_260503_e0ffb7",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "SplitTable 자동기록 · KNOB_GATE",
+    "payload": {
+      "auto_generated": true,
+      "cell_key": "A1000|1|KNOB_GATE",
+      "action": "set"
+    },
+    "at": "2026-05-03T10:55:05"
+  },
+  {
+    "id": "aud_260503_01a84c50",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_7091c9",
+    "inform_id": "inf_260503_7091c9",
+    "product": "PRODA",
+    "root_lot_id": "LOT029AA",
+    "lot_id": "LOT029AA",
+    "fab_lot_id_at_save": "LOT029AA.1, LOT029AA.2",
+    "module": "ET",
+    "summary": "생성 · ET · LOT029AA",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:55:45"
+  },
+  {
+    "id": "aud_260503_19728d44",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_6965bb",
+    "inform_id": "inf_260503_6965bb",
+    "product": "INF",
+    "root_lot_id": "R9600",
+    "lot_id": "R9600",
+    "fab_lot_id_at_save": "F9600_NEW",
+    "module": "ET",
+    "summary": "생성 · ET · R9600",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:55:45"
+  },
+  {
+    "id": "aud_260503_5d79ebbb",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_8cbf02",
+    "inform_id": "inf_260503_8cbf02",
+    "product": "PRODA",
+    "root_lot_id": "R9700",
+    "lot_id": "F9700A.1",
+    "fab_lot_id_at_save": "F9700A.1",
+    "module": "GATE",
+    "summary": "생성 · GATE · F9700A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:55:45"
+  },
+  {
+    "id": "aud_260503_8bec9798",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_8f1a89",
+    "inform_id": "inf_260503_8f1a89",
+    "product": "PRODA",
+    "root_lot_id": "R9700",
+    "lot_id": "F9700A.1",
+    "fab_lot_id_at_save": "F9700A.1",
+    "module": "STI",
+    "summary": "생성 · STI · F9700A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:55:46"
+  },
+  {
+    "id": "aud_260503_2eb1cd51",
+    "type": "mail",
+    "actor": "anonymous",
+    "target_id": "inf_gate",
+    "inform_id": "inf_gate",
+    "product": "PRODA",
+    "root_lot_id": "R1000",
+    "lot_id": "R1000",
+    "fab_lot_id_at_save": "",
+    "module": "GATE",
+    "summary": "메일 · [plan 적용 통보] PRODA R1000 - GATE",
+    "payload": {
+      "to_count": 2,
+      "subject": "[plan 적용 통보] PRODA R1000 - GATE",
+      "dry_run": true
+    },
+    "at": "2026-05-03T10:55:46"
+  },
+  {
+    "id": "aud_260503_bd4bb25d",
+    "type": "mail",
+    "actor": "anonymous",
+    "target_id": "inf_gate",
+    "inform_id": "inf_gate",
+    "product": "PRODA",
+    "root_lot_id": "R1000",
+    "lot_id": "R1000",
+    "fab_lot_id_at_save": "",
+    "module": "GATE",
+    "summary": "메일 · [plan 적용 통보] PRODA R1000 - GATE",
+    "payload": {
+      "to_count": 1,
+      "subject": "[plan 적용 통보] PRODA R1000 - GATE",
+      "dry_run": true
+    },
+    "at": "2026-05-03T10:55:46"
+  },
+  {
+    "id": "aud_260503_b84d36fa",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_9ccf01",
+    "inform_id": "inf_260503_9ccf01",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000A.1",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "생성 · KNOB · A1000A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:55:48"
+  },
+  {
+    "id": "aud_260503_2a3375b4",
+    "type": "create",
+    "actor": "tester",
+    "target_id": "inf_260503_a88517",
+    "inform_id": "inf_260503_a88517",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "SplitTable 자동기록 · KNOB_GATE",
+    "payload": {
+      "auto_generated": true,
+      "cell_key": "A1000|1|KNOB_GATE",
+      "action": "set"
+    },
+    "at": "2026-05-03T10:55:49"
+  },
+  {
+    "id": "aud_260503_0a45953c",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_35e7fb",
+    "inform_id": "inf_260503_35e7fb",
+    "product": "PRODA",
+    "root_lot_id": "LOT029AA",
+    "lot_id": "LOT029AA",
+    "fab_lot_id_at_save": "LOT029AA.1, LOT029AA.2",
+    "module": "ET",
+    "summary": "생성 · ET · LOT029AA",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:56:28"
+  },
+  {
+    "id": "aud_260503_c898e24e",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_d473a9",
+    "inform_id": "inf_260503_d473a9",
+    "product": "INF",
+    "root_lot_id": "R9600",
+    "lot_id": "R9600",
+    "fab_lot_id_at_save": "F9600_NEW",
+    "module": "ET",
+    "summary": "생성 · ET · R9600",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:56:28"
+  },
+  {
+    "id": "aud_260503_2200bdd4",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_08cbc1",
+    "inform_id": "inf_260503_08cbc1",
+    "product": "PRODA",
+    "root_lot_id": "R9700",
+    "lot_id": "F9700A.1",
+    "fab_lot_id_at_save": "F9700A.1",
+    "module": "GATE",
+    "summary": "생성 · GATE · F9700A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:56:28"
+  },
+  {
+    "id": "aud_260503_333a80f2",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_c5b429",
+    "inform_id": "inf_260503_c5b429",
+    "product": "PRODA",
+    "root_lot_id": "R9700",
+    "lot_id": "F9700A.1",
+    "fab_lot_id_at_save": "F9700A.1",
+    "module": "STI",
+    "summary": "생성 · STI · F9700A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:56:28"
+  },
+  {
+    "id": "aud_260503_2a8f24eb",
+    "type": "mail",
+    "actor": "anonymous",
+    "target_id": "inf_gate",
+    "inform_id": "inf_gate",
+    "product": "PRODA",
+    "root_lot_id": "R1000",
+    "lot_id": "R1000",
+    "fab_lot_id_at_save": "",
+    "module": "GATE",
+    "summary": "메일 · [plan 적용 통보] PRODA R1000 - GATE",
+    "payload": {
+      "to_count": 2,
+      "subject": "[plan 적용 통보] PRODA R1000 - GATE",
+      "dry_run": true
+    },
+    "at": "2026-05-03T10:56:29"
+  },
+  {
+    "id": "aud_260503_50893ee8",
+    "type": "mail",
+    "actor": "anonymous",
+    "target_id": "inf_gate",
+    "inform_id": "inf_gate",
+    "product": "PRODA",
+    "root_lot_id": "R1000",
+    "lot_id": "R1000",
+    "fab_lot_id_at_save": "",
+    "module": "GATE",
+    "summary": "메일 · [plan 적용 통보] PRODA R1000 - GATE",
+    "payload": {
+      "to_count": 1,
+      "subject": "[plan 적용 통보] PRODA R1000 - GATE",
+      "dry_run": true
+    },
+    "at": "2026-05-03T10:56:29"
+  },
+  {
+    "id": "aud_260503_0092dfa1",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_648463",
+    "inform_id": "inf_260503_648463",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000A.1",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "생성 · KNOB · A1000A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:56:31"
+  },
+  {
+    "id": "aud_260503_b26d1758",
+    "type": "create",
+    "actor": "tester",
+    "target_id": "inf_260503_0b213d",
+    "inform_id": "inf_260503_0b213d",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "SplitTable 자동기록 · KNOB_GATE",
+    "payload": {
+      "auto_generated": true,
+      "cell_key": "A1000|1|KNOB_GATE",
+      "action": "set"
+    },
+    "at": "2026-05-03T10:56:31"
+  },
+  {
+    "id": "aud_260503_74f64270",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_607a4e",
+    "inform_id": "inf_260503_607a4e",
+    "product": "PRODA",
+    "root_lot_id": "LOT029AA",
+    "lot_id": "LOT029AA",
+    "fab_lot_id_at_save": "LOT029AA.1, LOT029AA.2",
+    "module": "ET",
+    "summary": "생성 · ET · LOT029AA",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:57:26"
+  },
+  {
+    "id": "aud_260503_d027aeee",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_2726f0",
+    "inform_id": "inf_260503_2726f0",
+    "product": "INF",
+    "root_lot_id": "R9600",
+    "lot_id": "R9600",
+    "fab_lot_id_at_save": "F9600_NEW",
+    "module": "ET",
+    "summary": "생성 · ET · R9600",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:57:27"
+  },
+  {
+    "id": "aud_260503_7374e74e",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_d2715c",
+    "inform_id": "inf_260503_d2715c",
+    "product": "PRODA",
+    "root_lot_id": "R9700",
+    "lot_id": "F9700A.1",
+    "fab_lot_id_at_save": "F9700A.1",
+    "module": "GATE",
+    "summary": "생성 · GATE · F9700A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:57:27"
+  },
+  {
+    "id": "aud_260503_ce594988",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_8dd26e",
+    "inform_id": "inf_260503_8dd26e",
+    "product": "PRODA",
+    "root_lot_id": "R9700",
+    "lot_id": "F9700A.1",
+    "fab_lot_id_at_save": "F9700A.1",
+    "module": "STI",
+    "summary": "생성 · STI · F9700A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:57:27"
+  },
+  {
+    "id": "aud_260503_aa3c4ae1",
+    "type": "mail",
+    "actor": "anonymous",
+    "target_id": "inf_gate",
+    "inform_id": "inf_gate",
+    "product": "PRODA",
+    "root_lot_id": "R1000",
+    "lot_id": "R1000",
+    "fab_lot_id_at_save": "",
+    "module": "GATE",
+    "summary": "메일 · [plan 적용 통보] PRODA R1000 - GATE",
+    "payload": {
+      "to_count": 2,
+      "subject": "[plan 적용 통보] PRODA R1000 - GATE",
+      "dry_run": true
+    },
+    "at": "2026-05-03T10:57:27"
+  },
+  {
+    "id": "aud_260503_30131114",
+    "type": "mail",
+    "actor": "anonymous",
+    "target_id": "inf_gate",
+    "inform_id": "inf_gate",
+    "product": "PRODA",
+    "root_lot_id": "R1000",
+    "lot_id": "R1000",
+    "fab_lot_id_at_save": "",
+    "module": "GATE",
+    "summary": "메일 · [plan 적용 통보] PRODA R1000 - GATE",
+    "payload": {
+      "to_count": 1,
+      "subject": "[plan 적용 통보] PRODA R1000 - GATE",
+      "dry_run": true
+    },
+    "at": "2026-05-03T10:57:27"
+  },
+  {
+    "id": "aud_260503_f625d9f3",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_e100b1",
+    "inform_id": "inf_260503_e100b1",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000A.1",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "생성 · KNOB · A1000A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T10:57:27"
+  },
+  {
+    "id": "aud_260503_fcb3a68f",
+    "type": "create",
+    "actor": "tester",
+    "target_id": "inf_260503_c4c0ed",
+    "inform_id": "inf_260503_c4c0ed",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "SplitTable 자동기록 · KNOB_GATE",
+    "payload": {
+      "auto_generated": true,
+      "cell_key": "A1000|1|KNOB_GATE",
+      "action": "set"
+    },
+    "at": "2026-05-03T10:57:27"
+  },
+  {
+    "id": "aud_260503_90b82dec",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_629ec3",
+    "inform_id": "inf_260503_629ec3",
+    "product": "PRODA",
+    "root_lot_id": "A1004",
+    "lot_id": "A1004A.2",
+    "fab_lot_id_at_save": "A1004A.2",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_629ec3",
+    "payload": {
+      "deleted_at": "2026-05-03T11:00:33"
+    },
+    "at": "2026-05-03T11:00:33"
+  },
+  {
+    "id": "aud_260503_cbd06c0a",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_8f6dd8",
+    "inform_id": "inf_260503_8f6dd8",
+    "product": "PRODA",
+    "root_lot_id": "A1004",
+    "lot_id": "A1004B.2",
+    "fab_lot_id_at_save": "A1004B.2",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_8f6dd8",
+    "payload": {
+      "deleted_at": "2026-05-03T11:00:37"
+    },
+    "at": "2026-05-03T11:00:37"
+  },
+  {
+    "id": "aud_260503_0d0a85b1",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_425e74",
+    "inform_id": "inf_260503_425e74",
+    "product": "PRODA",
+    "root_lot_id": "A1004",
+    "lot_id": "A1004B.1",
+    "fab_lot_id_at_save": "A1004B.1",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_425e74",
+    "payload": {
+      "deleted_at": "2026-05-03T11:00:39"
+    },
+    "at": "2026-05-03T11:00:39"
+  },
+  {
+    "id": "aud_260503_5c495c2d",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_36dc00",
+    "inform_id": "inf_260503_36dc00",
+    "product": "PRODA",
+    "root_lot_id": "A1002",
+    "lot_id": "A1002",
+    "fab_lot_id_at_save": "A1002A.2",
+    "module": "GATE",
+    "summary": "삭제 · id=inf_260503_36dc00",
+    "payload": {
+      "deleted_at": "2026-05-03T11:00:42"
+    },
+    "at": "2026-05-03T11:00:42"
+  },
+  {
+    "id": "aud_260503_fa68e968",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_1c502b",
+    "inform_id": "inf_260503_1c502b",
+    "product": "PRODA",
+    "root_lot_id": "A1002",
+    "lot_id": "A1002",
+    "fab_lot_id_at_save": "A1002A.2",
+    "module": "GATE",
+    "summary": "삭제 · id=inf_260503_1c502b",
+    "payload": {
+      "deleted_at": "2026-05-03T11:00:43"
+    },
+    "at": "2026-05-03T11:00:43"
+  },
+  {
+    "id": "aud_260503_9ba05f0f",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_fab7ab",
+    "inform_id": "inf_260503_fab7ab",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000A.1",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "생성 · KNOB · A1000A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T11:07:46"
+  },
+  {
+    "id": "aud_260503_5fb49625",
+    "type": "create",
+    "actor": "tester",
+    "target_id": "inf_260503_c8e2ba",
+    "inform_id": "inf_260503_c8e2ba",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "SplitTable 자동기록 · KNOB_GATE",
+    "payload": {
+      "auto_generated": true,
+      "cell_key": "A1000|1|KNOB_GATE",
+      "action": "set"
+    },
+    "at": "2026-05-03T11:07:46"
+  },
+  {
+    "id": "aud_260503_a8ba1dcb",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_0e674c",
+    "inform_id": "inf_260503_0e674c",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000A.1",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "생성 · KNOB · A1000A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T11:28:45"
+  },
+  {
+    "id": "aud_260503_b8801870",
+    "type": "create",
+    "actor": "tester",
+    "target_id": "inf_260503_25752a",
+    "inform_id": "inf_260503_25752a",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "SplitTable 자동기록 · KNOB_GATE",
+    "payload": {
+      "auto_generated": true,
+      "cell_key": "A1000|1|KNOB_GATE",
+      "action": "set"
+    },
+    "at": "2026-05-03T11:28:46"
+  },
+  {
+    "id": "aud_260503_31905f99",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_ffefd5",
+    "inform_id": "inf_260503_ffefd5",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000A.1",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "생성 · KNOB · A1000A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T11:29:13"
+  },
+  {
+    "id": "aud_260503_4cd926f2",
+    "type": "create",
+    "actor": "tester",
+    "target_id": "inf_260503_cb7810",
+    "inform_id": "inf_260503_cb7810",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "SplitTable 자동기록 · KNOB_GATE",
+    "payload": {
+      "auto_generated": true,
+      "cell_key": "A1000|1|KNOB_GATE",
+      "action": "set"
+    },
+    "at": "2026-05-03T11:29:14"
+  },
+  {
+    "id": "aud_260503_1ed2182c",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_ad69d5",
+    "inform_id": "inf_260503_ad69d5",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000A.1",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "생성 · KNOB · A1000A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T11:30:15"
+  },
+  {
+    "id": "aud_260503_80adae3c",
+    "type": "create",
+    "actor": "tester",
+    "target_id": "inf_260503_b146c2",
+    "inform_id": "inf_260503_b146c2",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "SplitTable 자동기록 · KNOB_GATE",
+    "payload": {
+      "auto_generated": true,
+      "cell_key": "A1000|1|KNOB_GATE",
+      "action": "set"
+    },
+    "at": "2026-05-03T11:30:15"
+  },
+  {
+    "id": "aud_260503_4f4d4b00",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_33baf4",
+    "inform_id": "inf_260503_33baf4",
+    "product": "PRODA",
+    "root_lot_id": "A1001",
+    "lot_id": "A1001B.1",
+    "fab_lot_id_at_save": "A1001B.1",
+    "module": "PC",
+    "summary": "생성 · PC · A1001B.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T11:40:45"
+  },
+  {
+    "id": "aud_260503_2ae897fb",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_56e72e",
+    "inform_id": "inf_260503_56e72e",
+    "product": "PRODA",
+    "root_lot_id": "A1003",
+    "lot_id": "A1003A.1",
+    "fab_lot_id_at_save": "A1003A.1",
+    "module": "PC",
+    "summary": "생성 · PC · A1003A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T11:40:45"
+  },
+  {
+    "id": "aud_260503_e1033e0c",
+    "type": "create",
+    "actor": "anonymous",
+    "target_id": "inf_260503_3bb16d",
+    "inform_id": "inf_260503_3bb16d",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000A.1",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "생성 · KNOB · A1000A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T11:42:23"
+  },
+  {
+    "id": "aud_260503_6175b9d9",
+    "type": "create",
+    "actor": "tester",
+    "target_id": "inf_260503_b80c1a",
+    "inform_id": "inf_260503_b80c1a",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000",
+    "fab_lot_id_at_save": "A1000A.1",
+    "module": "KNOB",
+    "summary": "SplitTable 자동기록 · KNOB_GATE",
+    "payload": {
+      "auto_generated": true,
+      "cell_key": "A1000|1|KNOB_GATE",
+      "action": "set"
+    },
+    "at": "2026-05-03T11:42:24"
+  },
+  {
+    "id": "aud_260503_df52a582",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_29b03c",
+    "inform_id": "inf_260503_29b03c",
+    "product": "PRODA",
+    "root_lot_id": "A1002",
+    "lot_id": "A1002C.1",
+    "fab_lot_id_at_save": "A1002C.1",
+    "module": "PC",
+    "summary": "생성 · PC · A1002C.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T11:44:52"
+  },
+  {
+    "id": "aud_260503_a59aa62f",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_121845",
+    "inform_id": "inf_260503_121845",
+    "product": "PRODA",
+    "root_lot_id": "A1005",
+    "lot_id": "A1005C.1",
+    "fab_lot_id_at_save": "A1005C.1",
+    "module": "PC",
+    "summary": "생성 · PC · A1005C.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T11:44:53"
+  },
+  {
+    "id": "aud_260503_d5e42a5c",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_cb6a50",
+    "inform_id": "inf_260503_cb6a50",
+    "product": "PRODA",
+    "root_lot_id": "A1003",
+    "lot_id": "A1003A.3",
+    "fab_lot_id_at_save": "A1003A.3",
+    "module": "PC",
+    "summary": "생성 · PC · A1003A.3",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T13:42:44"
+  },
+  {
+    "id": "aud_260503_8cca0959",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_7e413c",
+    "inform_id": "inf_260503_7e413c",
+    "product": "PRODA",
+    "root_lot_id": "A1003",
+    "lot_id": "A1003C.2",
+    "fab_lot_id_at_save": "A1003C.2",
+    "module": "PC",
+    "summary": "생성 · PC · A1003C.2",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T13:42:45"
+  },
+  {
+    "id": "aud_260503_9eae512e",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_4c2b4b",
+    "inform_id": "inf_260503_4c2b4b",
+    "product": "PRODA",
+    "root_lot_id": "A1003",
+    "lot_id": "A1003C.1",
+    "fab_lot_id_at_save": "A1003C.1",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_4c2b4b",
+    "payload": {
+      "deleted_at": "2026-05-03T13:42:49"
+    },
+    "at": "2026-05-03T13:42:49"
+  },
+  {
+    "id": "aud_260503_79cfa84c",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_cb6a50",
+    "inform_id": "inf_260503_cb6a50",
+    "product": "PRODA",
+    "root_lot_id": "A1003",
+    "lot_id": "A1003A.3",
+    "fab_lot_id_at_save": "A1003A.3",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_cb6a50",
+    "payload": {
+      "deleted_at": "2026-05-03T13:42:52"
+    },
+    "at": "2026-05-03T13:42:52"
+  },
+  {
+    "id": "aud_260503_eb2f713e",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_121845",
+    "inform_id": "inf_260503_121845",
+    "product": "PRODA",
+    "root_lot_id": "A1005",
+    "lot_id": "A1005C.1",
+    "fab_lot_id_at_save": "A1005C.1",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_121845",
+    "payload": {
+      "deleted_at": "2026-05-03T13:42:54"
+    },
+    "at": "2026-05-03T13:42:54"
+  },
+  {
+    "id": "aud_260503_2a920e74",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_29b03c",
+    "inform_id": "inf_260503_29b03c",
+    "product": "PRODA",
+    "root_lot_id": "A1002",
+    "lot_id": "A1002C.1",
+    "fab_lot_id_at_save": "A1002C.1",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_29b03c",
+    "payload": {
+      "deleted_at": "2026-05-03T13:42:56"
+    },
+    "at": "2026-05-03T13:42:56"
+  },
+  {
+    "id": "aud_260503_cbcc9b24",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_33baf4",
+    "inform_id": "inf_260503_33baf4",
+    "product": "PRODA",
+    "root_lot_id": "A1001",
+    "lot_id": "A1001B.1",
+    "fab_lot_id_at_save": "A1001B.1",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_33baf4",
+    "payload": {
+      "deleted_at": "2026-05-03T13:42:57"
+    },
+    "at": "2026-05-03T13:42:57"
+  },
+  {
+    "id": "aud_260503_00c71be2",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_319341",
+    "inform_id": "inf_260503_319341",
+    "product": "PRODA",
+    "root_lot_id": "A1004",
+    "lot_id": "A1004B.1",
+    "fab_lot_id_at_save": "A1004B.1",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_319341",
+    "payload": {
+      "deleted_at": "2026-05-03T13:42:59"
+    },
+    "at": "2026-05-03T13:42:59"
+  },
+  {
+    "id": "aud_260503_9fc99acf",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_7e413c",
+    "inform_id": "inf_260503_7e413c",
+    "product": "PRODA",
+    "root_lot_id": "A1003",
+    "lot_id": "A1003C.2",
+    "fab_lot_id_at_save": "A1003C.2",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_7e413c",
+    "payload": {
+      "deleted_at": "2026-05-03T13:43:01"
+    },
+    "at": "2026-05-03T13:43:01"
+  },
+  {
+    "id": "aud_260503_780a98d5",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_56e72e",
+    "inform_id": "inf_260503_56e72e",
+    "product": "PRODA",
+    "root_lot_id": "A1003",
+    "lot_id": "A1003A.1",
+    "fab_lot_id_at_save": "A1003A.1",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_56e72e",
+    "payload": {
+      "deleted_at": "2026-05-03T13:43:03"
+    },
+    "at": "2026-05-03T13:43:03"
+  },
+  {
+    "id": "aud_260503_ad38600e",
+    "type": "delete",
+    "actor": "hol",
+    "target_id": "inf_260503_95f5fe",
+    "inform_id": "inf_260503_95f5fe",
+    "product": "PRODA",
+    "root_lot_id": "A1004",
+    "lot_id": "A1004B.1",
+    "fab_lot_id_at_save": "A1004B.1",
+    "module": "PC",
+    "summary": "삭제 · id=inf_260503_95f5fe",
+    "payload": {
+      "deleted_at": "2026-05-03T13:43:04"
+    },
+    "at": "2026-05-03T13:43:04"
+  },
+  {
+    "id": "aud_260503_23b91285",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_f8bdcb",
+    "inform_id": "inf_260503_f8bdcb",
+    "product": "PRODA",
+    "root_lot_id": "A1001",
+    "lot_id": "A1001B.1",
+    "fab_lot_id_at_save": "A1001B.1",
+    "module": "STI",
+    "summary": "생성 · STI · A1001B.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T13:43:29"
+  },
+  {
+    "id": "aud_260503_8604ae4f",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_f72e9d",
+    "inform_id": "inf_260503_f72e9d",
+    "product": "PRODA",
+    "root_lot_id": "A1003",
+    "lot_id": "A1003A.1",
+    "fab_lot_id_at_save": "A1003A.1",
+    "module": "STI",
+    "summary": "생성 · STI · A1003A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T13:43:30"
+  },
+  {
+    "id": "aud_260503_c5c060e6",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_2c7303",
+    "inform_id": "inf_260503_2c7303",
+    "product": "PRODA",
+    "root_lot_id": "A1002",
+    "lot_id": "A1002C.1",
+    "fab_lot_id_at_save": "A1002C.1",
+    "module": "STI",
+    "summary": "생성 · STI · A1002C.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T13:43:30"
+  },
+  {
+    "id": "aud_260503_7f0f1893",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_4f1ea0",
+    "inform_id": "inf_260503_4f1ea0",
+    "product": "PRODA",
+    "root_lot_id": "A1000",
+    "lot_id": "A1000A.3",
+    "fab_lot_id_at_save": "A1000A.3",
+    "module": "STI",
+    "summary": "생성 · STI · A1000A.3",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T13:43:30"
+  },
+  {
+    "id": "aud_260503_42e3c4f0",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_c7b1f2",
+    "inform_id": "inf_260503_c7b1f2",
+    "product": "PRODA",
+    "root_lot_id": "A1002",
+    "lot_id": "A1002C.1",
+    "fab_lot_id_at_save": "A1002C.1",
+    "module": "MOL",
+    "summary": "생성 · MOL · A1002C.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T13:43:58"
+  },
+  {
+    "id": "aud_260503_330919d3",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_52f42c",
+    "inform_id": "inf_260503_52f42c",
+    "product": "PRODA",
+    "root_lot_id": "A1003",
+    "lot_id": "A1003A.1",
+    "fab_lot_id_at_save": "A1003A.1",
+    "module": "MOL",
+    "summary": "생성 · MOL · A1003A.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T13:43:58"
+  },
+  {
+    "id": "aud_260503_a2d60a6e",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_74de4a",
+    "inform_id": "inf_260503_74de4a",
+    "product": "PRODA",
+    "root_lot_id": "A1001",
+    "lot_id": "A1001B.1",
+    "fab_lot_id_at_save": "A1001B.1",
+    "module": "MOL",
+    "summary": "생성 · MOL · A1001B.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T13:43:58"
+  },
+  {
+    "id": "aud_260503_aa6d6eb6",
+    "type": "create",
+    "actor": "hol",
+    "target_id": "inf_260503_ac188b",
+    "inform_id": "inf_260503_ac188b",
+    "product": "PRODA",
+    "root_lot_id": "A1004",
+    "lot_id": "A1004B.1",
+    "fab_lot_id_at_save": "A1004B.1",
+    "module": "MOL",
+    "summary": "생성 · MOL · A1004B.1",
+    "payload": {
+      "parent_id": "",
+      "root": true
+    },
+    "at": "2026-05-03T13:43:59"
+  },
+  {
+    "id": "aud_260503_a42cdda7",
+    "type": "status_change",
+    "actor": "hol",
+    "target_id": "inf_260503_f72e9d",
+    "inform_id": "inf_260503_f72e9d",
+    "product": "PRODA",
+    "root_lot_id": "A1003",
+    "lot_id": "A1003A.1",
+    "fab_lot_id_at_save": "A1003A.1",
+    "module": "STI",
+    "summary": "상태변경 · registered → apply_confirmed",
+    "payload": {
+      "prev": "registered",
+      "status": "apply_confirmed",
+      "note": ""
+    },
+    "at": "2026-05-03T13:44:15"
+  },
+  {
+    "id": "aud_260503_350f1f49",
+    "type": "status_change",
+    "actor": "hol",
+    "target_id": "inf_260503_52f42c",
+    "inform_id": "inf_260503_52f42c",
+    "product": "PRODA",
+    "root_lot_id": "A1003",
+    "lot_id": "A1003A.1",
+    "fab_lot_id_at_save": "A1003A.1",
+    "module": "MOL",
+    "summary": "상태변경 · registered → apply_confirmed",
+    "payload": {
+      "prev": "registered",
+      "status": "apply_confirmed",
+      "note": ""
+    },
+    "at": "2026-05-03T13:44:19"
+  }
+]

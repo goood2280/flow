@@ -1,0 +1,27 @@
+{
+  "kind": "inform_draft",
+  "draft_id": "draft_20260503T225028_b9971a43",
+  "session_id": "draft_20260503T225028_b9971a43",
+  "username": "hol",
+  "product": "PRODA",
+  "root_lot_ids": [],
+  "fab_lot_ids": [
+    "A1003B.2"
+  ],
+  "entries": [
+    {
+      "product": "PRODA",
+      "root_lot_id": "A1003",
+      "fab_lot_id": "A1003B.2",
+      "lot_id": "A1003B.2",
+      "wafer_id": "A1003B.2",
+      "module": "GATE",
+      "split_set": "test1",
+      "reason": "test1",
+      "note": "모듈 전달 테스트",
+      "missing": []
+    }
+  ],
+  "created_at": "2026-05-03T22:50:28.558497+00:00",
+  "last_active_at": "2026-05-03T22:50:28.561475+00:00"
+}

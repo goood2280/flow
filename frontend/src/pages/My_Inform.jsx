@@ -259,7 +259,7 @@ function parseInformFiltersFromUrl() {
     filters: {
       products: parseCsvParam(params, "products"),
       modules: parseCsvParam(params, "modules"),
-      statuses: parseCsvParam(params, "statuses"),
+      statuses: parseCsvParam(params, "statuses").filter(v => v !== "pending"),
       lot: params.get("lot") || "",
       types: parseCsvParam(params, "types"),
     },
@@ -273,7 +273,7 @@ function syncInformQuery(tab, filters) {
   const setArray = (key, arr) => {
     params.delete(key);
     params.delete(`${key}[]`);
-    uniqueClean(arr).forEach(v => params.append(key, v));
+    uniqueClean(arr).filter(v => key !== "statuses" || v !== "pending").forEach(v => params.append(key, v));
   };
   setArray("products", filters.products);
   setArray("modules", filters.modules);
@@ -427,18 +427,22 @@ function moduleColor(name) {
   return FALLBACK_PALETTE[Math.abs(h) % FALLBACK_PALETTE.length];
 }
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, compact = false }) {
   const normalized = normalizeFlowStatus(status);
   const m = STATUS_META[normalized] || { label: status || "-", color: "var(--text-secondary)", dot: "·" };
+  const label = compact && normalized === "apply_confirmed" ? "적용확인" : m.label;
   return (
-    <span style={{
+    <span title={m.label} style={{
       display: "inline-flex", alignItems: "center", gap: 4,
+      minWidth: 0, maxWidth: compact ? 86 : "100%",
       padding: "2px 8px", borderRadius: 6,
       background: m.color + "16", color: m.color,
       border: "1px solid " + m.color + "33",
       fontSize: 14, fontWeight: 700,
+      lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
     }}>
-      <span>{m.dot}</span>{m.label}
+      <span style={{ flex: "0 0 auto" }}>{m.dot}</span>
+      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
     </span>
   );
 }
@@ -1781,7 +1785,7 @@ function LotModuleSummary({ thread, modules }) {
               <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", whiteSpace: "nowrap" }}>
                 <span style={{ color: r.hasInform ? OK.fg : "var(--text-tertiary, var(--text-secondary))", fontWeight: 700 }}>{r.hasInform ? "등록" : "미등록"}</span>
                 <span style={{ color: r.mailCount ? INFO.fg : "var(--text-tertiary, var(--text-secondary))" }}>메일 {r.mailCount || 0}</span>
-                <span style={{ color: done ? OK.fg : "var(--text-tertiary, var(--text-secondary))" }}>{done ? "확인" : "대기"}</span>
+                {done && <span style={{ color: OK.fg }}>확인</span>}
               </div>
             </div>
           );
@@ -2780,8 +2784,7 @@ export default function My_Inform({ user }) {
       if (moduleSet.size && !moduleSet.has(r.module || "기타")) return false;
       if (statusSet.size) {
         const st = normalizeFlowStatus(r.flow_status, r);
-        const pending = st !== "apply_confirmed";
-        if (!statusSet.has(st) && !(pending && statusSet.has("pending"))) return false;
+        if (!statusSet.has(st)) return false;
       }
       if (lotQ && !lotSearchText(r).toLowerCase().includes(lotQ)) return false;
       return true;
@@ -3542,7 +3545,6 @@ function CommonInformFilters({ tab, filters, setFilters, products, modules }) {
     ["registered", "등록"],
     ["mail_completed", "메일완료"],
     ["apply_confirmed", "등록적용확인"],
-    ["pending", "대기"],
   ];
   const showStatus = tab === "inform" || tab === "matrix";
   const showTypes = tab === "audit";
@@ -3637,7 +3639,6 @@ const LOT_MATRIX_STATES = {
   apply_confirmed: { label: "등록적용확인", mark: "✓", bg: "#dcfce7", fg: "#15803d" },
   mail_completed: { label: "메일완료", mark: "◯", bg: "#fed7aa", fg: "#c2410c" },
   registered: { label: "등록", mark: "◎", bg: "#dbeafe", fg: "#1d4ed8" },
-  pending: { label: "대기", mark: "—", bg: "#f3f4f6", fg: "#6b7280" },
 };
 
 function colorWithAlpha(color, alpha) {
@@ -3830,8 +3831,8 @@ function LotProgressMatrix({ matrix, loading, filters, setFilters, productOption
                       </td>
                       {modules.map(module => {
                         const cell = (lot.modules || {})[module];
-                        const state = cell?.state || "pending";
-                        const meta = LOT_MATRIX_STATES[state] || LOT_MATRIX_STATES.pending;
+                        const state = cell?.state || "";
+                        const meta = LOT_MATRIX_STATES[state] || { fg: "var(--border)" };
                         const count = matrixCellCount(cell);
                         const mc = moduleColor(module);
                         return (
@@ -3931,8 +3932,8 @@ function InformVirtualList({ roots, selectedId, onOpen }) {
             <col style={{ width: 90 }} />
             <col style={{ width: 100 }} />
             <col />
-            <col style={{ width: 70 }} />
-            <col style={{ width: 60 }} />
+            <col style={{ width: 96 }} />
+            <col style={{ width: 84 }} />
             <col style={{ width: 110 }} />
             <col style={{ width: 100 }} />
             <col style={{ width: 90 }} />
@@ -3983,7 +3984,6 @@ function InformListRow({ root, selected, onOpen }) {
   const attachCount = (root.images || []).length + embedCount + attachedSets;
   const module = root.module || "기타";
   const mc = moduleColor(module);
-  const meta = STATUS_META[status] || { label: status || "-", color: "var(--text-secondary)" };
   const cellStyle = {
     padding: "6px 8px",
     borderBottom: "1px solid var(--border)",
@@ -4019,11 +4019,8 @@ function InformListRow({ root, selected, onOpen }) {
           {informTitle(root)}
         </span>
       </td>
-      <td style={cellStyle}>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", color: meta.color, fontWeight: 900 }}>
-          <span style={{ width: 6, height: 6, borderRadius: 999, background: meta.color, flex: "0 0 auto" }} />
-          {meta.label}
-        </span>
+      <td style={{ ...cellStyle, minWidth: 0, overflow: "hidden" }}>
+        <StatusBadge status={status} compact />
       </td>
       <td title={root.author || ""} style={{ ...cellStyle, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{root.author || "-"}</td>
       <td title={(root.thread_updated_at || root.created_at || "").replace("T", " ").slice(0, 16)} style={{ ...cellStyle, fontFamily: "monospace", whiteSpace: "nowrap" }}>{relativeTime(root.thread_updated_at || root.created_at)}</td>

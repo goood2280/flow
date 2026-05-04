@@ -1,0 +1,27 @@
+{
+  "kind": "inform_draft",
+  "draft_id": "draft_20260503T224737_5f5ec129",
+  "session_id": "draft_20260503T224737_5f5ec129",
+  "username": "hol",
+  "product": "PRODA",
+  "root_lot_ids": [],
+  "fab_lot_ids": [
+    "A1003B.2"
+  ],
+  "entries": [
+    {
+      "product": "PRODA",
+      "root_lot_id": "A1003",
+      "fab_lot_id": "A1003B.2",
+      "lot_id": "A1003B.2",
+      "wafer_id": "A1003B.2",
+      "module": "ET",
+      "split_set": "test1",
+      "reason": "test1",
+      "note": "",
+      "missing": []
+    }
+  ],
+  "created_at": "2026-05-03T22:47:37.319838+00:00",
+  "last_active_at": "2026-05-03T22:47:37.322516+00:00"
+}

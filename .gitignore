@@ -34,6 +34,9 @@ _patch_*.py
 _patch_*.json
 _run_*.py
 _build_*.json
+.codex_task_*.txt
+_codex_*.sh
+_test_vertex_*.py
 
 # Secrets / local credentials
 .env

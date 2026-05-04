@@ -1252,6 +1252,16 @@ def _resolve_simple_y_expr(pool, raw: str) -> str:
 class ChartConfig(BaseModel):
     id: str = ""
     title: str = ""
+    source: str = ""  # inform = use /api/informs/dashboard-data adapter
+    metric: str = ""
+    groupby: str = ""
+    period: str = "all"
+    inform_product: str = ""
+    inform_module: str = ""
+    x_groupby: str = ""
+    y_groupby: str = ""
+    series_groupby: str = ""
+    top_n: Optional[int] = None
     source_type: str = ""
     root: str = ""
     product: str = ""
@@ -1609,6 +1619,33 @@ def _compute_chart(cfg: dict) -> dict:
     result = {"chart_id": chart_id, "config": cfg, "points": [], "total": 0,
               "computed_at": datetime.datetime.now().isoformat(), "error": None}
     try:
+        if str(cfg.get("source") or "").strip().lower() == "inform":
+            from routers.informs import build_inform_dashboard_data
+            payload = build_inform_dashboard_data(
+                metric=cfg.get("metric") or "count",
+                groupby=cfg.get("groupby") or "module",
+                period=cfg.get("period") or "all",
+                product=cfg.get("inform_product") or "",
+                module=cfg.get("inform_module") or "",
+                x_groupby=cfg.get("x_groupby") or "",
+                y_groupby=cfg.get("y_groupby") or "",
+                series_groupby=cfg.get("series_groupby") or "",
+                top_n=cfg.get("top_n"),
+                chart_type=cfg.get("chart_type") or "",
+            )
+            result["points"] = payload.get("points") or []
+            result["total"] = len(result["points"])
+            result["chart_type"] = cfg.get("chart_type") or ""
+            result["series_order"] = payload.get("series_order") or []
+            result["meta"] = payload.get("meta") or {}
+            heatmap_meta = (payload.get("meta") or {}).get("heatmap_meta") or {}
+            if heatmap_meta:
+                result["heatmap_meta"] = heatmap_meta
+            table_columns = (payload.get("meta") or {}).get("table_columns") or []
+            if table_columns:
+                result["table_columns"] = table_columns
+            return result
+
         # v7.2: If reformatter rules exist for this product, we need FULL schema (not pushed-down),
         # because rules may reference raw columns (ITEM_ID, VALUE, A/B/C/D) that chart doesn't.
         product_name = cfg.get("product", "") or (cfg.get("file", "").rsplit("_", 1)[-1].split(".")[0] if cfg.get("file") else "")

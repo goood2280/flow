@@ -468,3 +468,301 @@
 - intent: et_wafer_median
 - llm_used: 
 - answer: ET 레포트 단위기능으로 처리하는 요청입니다. - 실행 경로: query_et - 필요한 조건: product, root_lot_id or lot_id, step_id, item_id - 현재 감지: product=PRODA, lot=A1000, step=- - 추가로 필요: step_id Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.
+
+### 2026-05-01T22:45:13.288631+00:00 - chat
+- prompt: PRODA A1001 10.0 CONTACT에 plan 세운거 다 제대로 됐어?
+- intent: splittable_guidance
+- llm_used: True
+- answer: 다음과 같이 처리 중입니다. - 상태 요약: PRODA A1001 10.0 CONTACT에 대한 plan은 스플릿 테이블로 확인하는 중이며, 실행 경로는 open_splittable입니다. DB/파일 원본 수정은 하지 않습니다. - 현재 감지 정보: product=PRODA, lot=A1001, step=-, terms=A1001, CONTACT, PLAN - 필요한 조건(다음 실행 시 요구): product, root_lot_id, wafer_id 또는 all, KNOB/MASK/FAB 등 파라미터 접두사 - 다음 가능한 작업(다음 액션) 1) open_splittable: 스플릿 테이블 열기 2) inspect_table: 표 확인 원하시는 실행을 골라 주시면 바로 진행하겠습니다.
+
+### 2026-05-01T22:46:11.452638+00:00 - chat
+- prompt: PRODA A1001 plan 세운거 뭐있어?
+- intent: splittable_guidance
+- llm_used: True
+- answer: 현재 로컬 결과에 따르면 PRODA A1001의 PLAN은 스플릿 테이블 열기(open_splittable) 경로로 처리 준비 중입니다. 감지 정보: product=PRODA, lot=A1001, terms=PLAN. DB/파일 원본은 수정하지 않습니다. 다음 중 실행할 항목을 선택해 주세요: 1) open_splittable로 열기 (현재 감지 정보로 바로 진행) 2) inspect_table로 표 확인 (계산된 plan vs actual 매트릭스 확인) 3) 추가 조건 지정하기 (예: wafer_id/all, KNOB/MASK/FAB 접두사 등 파라미터 보완) 원하시는 번호를 알려주시면 바로 진행하겠습니다.
+
+### 2026-05-01T22:46:38.952137+00:00 - chat
+- prompt: 2
+- intent: splittable_guidance
+- llm_used: 
+- answer: 스플릿 테이블 단위기능으로 처리하는 요청입니다. - 실행 경로: open_splittable - 필요한 조건: product, root_lot_id, wafer_id or all, parameter prefix such as KNOB/MASK/FAB - 현재 감지: product=-, lot=-, step=- - 추가로 필요: product, root_lot_id/lot_id Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.
+
+### 2026-05-01T22:47:21.524678+00:00 - chat
+- prompt: A1001 plan 세운거 보여줘
+- intent: splittable_guidance
+- llm_used: True
+- answer: 요약 - 로컬 결과로 A1001 PLAN 관련 작업을 준비 중입니다. 다만 product가 아직 입력되지 않아 바로 실행은 불가합니다. - 감지 정보: lot = A1001, terms = [A1001, PLAN], intent = splittable_guidance 다음 중에서 선택해 주세요 (1/2/3) 1) open_splittable — 스플릿 테이블 열기 - 필요 입력: product, root_lot_id(A1001), wafer_id 또는 all, KNOB/MASK/FAB 등의 프리픽스 2) inspect_table — 표 확인 - 현재 로컬 표를 확인합니다. product 미입력 상태에서도 표 내용을 볼 수 있습니다. 3) product 지정 후 진행 - 예: product을 명시하고 진행하기 원하시면 제품명을 입력해 주세요. 그 즉시 open_splittable로 진행합니다.
+
+### 2026-05-01T22:47:54.215902+00:00 - chat
+- prompt: PRODA야 2
+- intent: splittable_guidance
+- llm_used: 
+- answer: 스플릿 테이블 단위기능으로 처리하는 요청입니다. - 실행 경로: open_splittable - 필요한 조건: product, root_lot_id, wafer_id or all, parameter prefix such as KNOB/MASK/FAB - 현재 감지: product=PRODA, lot=-, step=- - 추가로 필요: root_lot_id/lot_id Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.
+
+### 2026-05-02T10:59:42.133662+00:00 - chat
+- prompt: A1001 인폼로그 남기고싶어
+- intent: inform_guidance
+- llm_used: True
+- answer: 현재 감지 정보: lot=A1001, terms=A1001. 필요한 값은 product, root_lot_id, message/reason입니다. 다음 중 하나를 선택해 주세요. 1) product를 입력하고 바로 인폼 로그 생성(open_inform) 진행 - 예시: PRODA 2) root_lot_id를 A1001로 확정하고 message/reason를 입력해 주세요 - 메시지 내용 예시를 함께 보내주시면 바로 구성합니다. 3) 메시지 본문 초안이 필요하면 템플릿으로 제안해 드립니다 - 원하시는 톤/목적(공유, 기록, 특정 이슈 언급 등)을 알려주시면 맞춤 템플릿을 드립니다. 선택 번호를 알려주시면 바로 진행하겠습니다. 필요 시 표 확인(inspect_table) 옵션도 함께 안내드릴게요.
+
+### 2026-05-02T11:01:22.571413+00:00 - app_write_draft
+- prompt: A1001 인폼로그 남겨줘
+- intent: inform_create_needs_context
+- feature: inform
+- answer: 인폼 로그 등록에 필요한 조건이 부족합니다. 추가로 필요한 값: 인폼 내용
+
+### 2026-05-02T11:01:24.923566+00:00 - app_write_draft
+- prompt: 인폼 로그 등록 필수값:
+- intent: inform_create_needs_context
+- feature: inform
+- answer: 인폼 로그 등록에 필요한 조건이 부족합니다. 추가로 필요한 값: lot_id 또는 wafer_id
+
+### 2026-05-02T11:01:37.476186+00:00 - app_write_missing_followup
+- prompt: PRODA A1001
+- intent: inform_create_from_missing_context
+- feature: inform
+- answer: 부족한 값을 반영해서 등록했습니다. 인폼을 바로 등록했습니다. - id: inf_260502_64b8f8 - lot/wafer: A1001 / A1001 - 내용: 로그
+
+### 2026-05-03T12:45:50.721016+00:00 - chat
+- prompt: A1003 인폼 작성하고싶어
+- intent: inform_guidance
+- selected_function: open_inform
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: success
+- elapsed_ms: 11597
+- llm_used: 
+- answer: 인폼 로그 단위기능으로 처리하는 요청입니다. - 실행 경로: open_inform - 필요한 조건: product, root_lot_id, message/reason - 현재 감지: product=-, lot=A1003, step=- Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.
+
+### 2026-05-03T13:44:11.148130+00:00 - chat
+- prompt: 파일탐색기에서 최근 10행 보여줘
+- intent: filebrowser_data_preview
+- selected_function: preview_filebrowser_data
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: missing
+- elapsed_ms: 10698
+- llm_used: 
+- answer: DB preview에 필요한 source/product를 보완해 주세요.
+
+### 2026-05-03T13:44:20.280072+00:00 - chat
+- prompt: 파일탐색기에서 최근 10행 보여줘 PRODA
+- intent: filebrowser_data_preview
+- selected_function: preview_filebrowser_data
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: missing
+- elapsed_ms: 9086
+- llm_used: 
+- answer: DB preview에 필요한 source/product를 보완해 주세요.
+
+### 2026-05-03T13:44:36.263688+00:00 - chat
+- prompt: 파일탐색기에서 최근 10행 보여줘 PRODA FAB
+- intent: filebrowser_data_preview
+- selected_function: preview_filebrowser_data
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: success
+- elapsed_ms: 15964
+- llm_used: 
+- answer: DB preview 실패: did not find column step_seq, consider passing `missing_columns='insert'`
+
+### 2026-05-03T13:46:39.695786+00:00 - chat
+- prompt: PRODA A1003 인폼 남기고싶어
+- intent: inform_guidance
+- selected_function: open_inform
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: success
+- elapsed_ms: 8446
+- llm_used: 
+- answer: 인폼 로그 단위기능으로 처리하는 요청입니다. - 실행 경로: open_inform - 필요한 조건: product, root_lot_id, message/reason - 현재 감지: product=PRODA, lot=A1003, step=- Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.
+
+### 2026-05-03T13:46:54.520742+00:00 - chat
+- prompt: PRODA A1003 인폼 남기고싶어
+- intent: inform_guidance
+- selected_function: open_inform
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: success
+- elapsed_ms: 8563
+- llm_used: 
+- answer: 인폼 로그 단위기능으로 처리하는 요청입니다. - 실행 경로: open_inform - 필요한 조건: product, root_lot_id, message/reason - 현재 감지: product=PRODA, lot=A1003, step=- Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.
+
+### 2026-05-03T14:43:47.948808+00:00 - chat
+- prompt: A1001A.1 #8,9 24.0 SORT AAA로 plan 짜줘
+- intent: splittable_guidance
+- selected_function: open_splittable
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: error
+- elapsed_ms: 26774
+- llm_used: 
+- answer: 스플릿 테이블 단위기능으로 처리하는 요청입니다. - 실행 경로: open_splittable - 필요한 조건: product, root_lot_id, wafer_id or all, parameter prefix such as KNOB/MASK/FAB - 현재 감지: product=-, lot=A1001A.1, step=24.0 SORT Flowi는 조회/요약/표시만 수행하고 DB/Files 원본은 수정하지 않습니다.
+
+### 2026-05-03T14:44:25.404891+00:00 - chat
+- prompt: PRODA A1000 #21 현재 lot_id가 뭐야
+- intent: current_fab_lot_lookup
+- selected_function: current_fab_lot_lookup
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: error
+- elapsed_ms: 14800
+- llm_used: 
+- answer: FAB DB fab_lot_id 조회 실패: extra column in file outside of expected schema: process_id, hint: specify this column in the schema, or pass extra_columns='ignore' in scan options. File containing extra column: 'D:/TEST_Making_Video/semi_all/flow/data/Fab/1.RAWDATA_DB_FAB/PRODA/date=20240418/part_0.parquet'.
+
+### 2026-05-03T14:44:54.352371+00:00 - splittable_lot_note
+- prompt: A1001 #6 이상WF 꼬리표 달아줘
+- intent: splittable_lot_note_create_draft
+- feature: splittable
+- answer: 스플릿 테이블 lot 꼬리표 등록 준비가 됐습니다. 확인 선택을 누르면 실제로 등록합니다.
+
+### 2026-05-03T14:45:06.015237+00:00 - splittable_lot_note
+- prompt: FLOWI_SPLITTABLE_NOTE {"scope": "wafer", "product": "ML_TABLE_PRODA", "root_lot_id": "A1001", "wafer_ids": ["6"], "text": "이상WF", "username": "hol", "confirm": "SPLITTABLE_NOTE_CONFIRM::ML_TABLE_PRODA::A1001::wafer::6::이상WF"}
+- intent: splittable_lot_note_create
+- feature: splittable
+- answer: 스플릿 테이블 꼬리표를 등록했습니다. - product: ML_TABLE_PRODA - lot: A1001 - 내용: 이상WF
+
+### 2026-05-03T14:46:37.326639+00:00 - chat
+- prompt: A1001 24.0 SORT Split 어떻게돼?
+- intent: wafer_split_at_step
+- selected_function: query_wafer_split_at_step
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: success
+- elapsed_ms: 5402
+- llm_used: 
+- answer: ML_TABLE_PRODA A1001 SplitTable 화면 기준으로 3개 row를 조회했습니다.
+
+### 2026-05-03T14:47:12.884315+00:00 - inform_walkthrough
+- prompt: A1003B.2 인폼남기고싶어
+- intent: inform_walkthrough_start
+- answer: 인폼 전체 작성에 필요한 root lot을 알려주세요.
+
+### 2026-05-03T14:47:21.344306+00:00 - inform_walkthrough
+- prompt: A1003B.2 인폼남기고싶어 A1003B.2 인폼남기고싶어 A1001
+- intent: inform_walkthrough
+- answer: GATE는 뭘로 할까요? (예: test1)
+
+### 2026-05-03T14:47:54.314800+00:00 - inform_walkthrough
+- prompt: A1003B.2 인폼남기고싶어 A1003B.2 인폼남기고싶어 A1001 test1
+- intent: inform_walkthrough
+- answer: STI는 뭘로 할까요?
+
+### 2026-05-03T14:47:57.003727+00:00 - inform_walkthrough
+- prompt: A1003B.2 인폼남기고싶어 A1003B.2 인폼남기고싶어 A1001 test1 test1
+- intent: inform_walkthrough
+- answer: PC는 뭘로 할까요?
+
+### 2026-05-03T14:47:59.810413+00:00 - inform_walkthrough
+- prompt: A1003B.2 인폼남기고싶어 A1003B.2 인폼남기고싶어 A1001 test1 test1 test
+- intent: inform_walkthrough
+- answer: MOL는 뭘로 할까요?
+
+### 2026-05-03T22:31:40.204035+00:00 - inform_log_draft
+- prompt: A1004A.2 A1004A.3 인폼 남겨줘
+- intent: inform_log_draft
+- answer: 인폼 등록 초안에 필요한 값을 선택해 주세요.
+
+### 2026-05-03T22:31:56.059825+00:00 - inform_log_draft
+- prompt: A1004A.2 A1004A.3 인폼 남겨줘 BEOL
+- intent: inform_log_draft
+- answer: 인폼 등록 초안에 필요한 값을 선택해 주세요.
+
+### 2026-05-03T22:32:08.880439+00:00 - inform_log_draft
+- prompt: A1004A.2 A1004A.3 인폼 남겨줘
+- intent: inform_log_draft
+- answer: 인폼 등록 초안에 필요한 값을 선택해 주세요.
+
+### 2026-05-03T22:32:22.048366+00:00 - inform_log_draft
+- prompt: A1004A.2 A1004A.3 인폼 남겨줘 A1004A.2 A1004A.3 인폼 남겨줘 BEOL
+- intent: inform_log_draft
+- answer: 인폼 등록 초안에 필요한 값을 선택해 주세요.
+
+### 2026-05-03T22:32:56.182642+00:00 - inform_log_draft
+- prompt: A1004A.2 A1004A.3 인폼 남겨줘 A1004A.2 A1004A.3 인폼 남겨줘 BEOL A1004A.2 A1004A.3 인폼 남겨줘 A1004A.2 A1004A.3 인폼 남겨줘 BEOL 인폼 내용: beol 인폼 남깁니다
+- intent: inform_log_batch_draft
+- answer: 인폼 2건을 등록 전 미리보기로 만들었습니다. 확인 전에는 저장하지 않습니다.
+
+### 2026-05-03T22:33:02.369063+00:00 - inform_log_draft
+- prompt: FLOWI_INFORM_CONFIRM {"draft_id": "draft_20260503T223256_67c7baec", "confirm": true}
+- intent: inform_log_registered
+- answer: 인폼 2건을 등록했습니다.
+
+### 2026-05-03T22:36:14.669214+00:00 - chat
+- prompt: A1004A.2 24.0 SORT Split 어떻게돼?
+- intent: wafer_split_at_step
+- selected_function: query_wafer_split_at_step
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: missing
+- elapsed_ms: 7996
+- llm_used: 
+- answer: wafer split 조회에 필요한 값을 보완해 주세요.
+
+### 2026-05-03T22:36:40.562787+00:00 - chat
+- prompt: A1004A.2 24.0 SORT Split 어떻게돼? A1004A.2 24.0 SORT Split 어떻게돼? 1.RAWDATA_DB_FAB
+- intent: wafer_split_at_step
+- selected_function: query_wafer_split_at_step
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: missing
+- elapsed_ms: 21381
+- llm_used: 
+- answer: wafer split 조회에 필요한 값을 보완해 주세요.
+
+### 2026-05-03T22:37:30.805176+00:00 - chat
+- prompt: A1004A.2 24.0 SORT Split 어떻게돼? A1004A.2 24.0 SORT Split 어떻게돼? 1.RAWDATA_DB_FAB A1004A.2 24.0 SORT Split 어떻게돼? A1004A.2 24.0 SORT Split 어떻게돼? 1.RAWDATA_DB_FAB 1.RAWDATA_DB_FAB
+- intent: wafer_split_at_step
+- selected_function: query_wafer_split_at_step
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: missing
+- elapsed_ms: 46567
+- llm_used: 
+- answer: wafer split 조회에 필요한 값을 보완해 주세요.
+
+### 2026-05-03T22:38:39.011383+00:00 - app_write_draft
+- prompt: A1004A.2에 이상랏이라고 꼬리표 달아줘
+- intent: lot_wafer_annotation_draft
+- feature: tracker
+- answer: 이 요청은 기존 기록의 수정/변경 또는 권한 확인이 필요한 작업입니다. 변경 전에는 반드시 대상 화면에서 권한과 내용을 확인해야 합니다. 원본 DB/Files는 수정하지 않습니다.
+
+### 2026-05-03T22:41:34.694810+00:00 - chat
+- prompt: A1004A.2 이상 랏이라고 노트 달아줘
+- intent: lot_anomaly_summary
+- selected_function: lot_anomaly_summary
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: success
+- elapsed_ms: 113797
+- llm_used: True
+- answer: 요청하신 A1004A.2 이상 랏 노트: ET/INLINE 로우를 찾지 못했습니다. 추가 정보가 필요합니다. 아래 중 빠진 조건을 하나 선택해 주세요. 1) product와 root_lot_id를 알려주기 2) wafer_id를 알려주기 3) step 또는 item 정보를 알려주기 답은 1/2/3 중 하나로 보내 주세요.
+
+### 2026-05-03T22:42:06.893029+00:00 - app_write_draft
+- prompt: A1004A.2 이상랏이라고 꼬리표달아줘
+- intent: lot_wafer_annotation_draft
+- feature: tracker
+- answer: 이 요청은 기존 기록의 수정/변경 또는 권한 확인이 필요한 작업입니다. 변경 전에는 반드시 대상 화면에서 권한과 내용을 확인해야 합니다. 원본 DB/Files는 수정하지 않습니다.
+
+### 2026-05-03T23:15:59.069104+00:00 - chat
+- prompt: A1004A.2 24.0 SORT Split 어떻게돼?
+- intent: wafer_split_at_step
+- selected_function: query_wafer_split_at_step
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: missing
+- elapsed_ms: 9021
+- llm_used: 
+- answer: wafer split 조회에 필요한 값을 보완해 주세요.
+
+### 2026-05-03T23:16:20.959828+00:00 - chat
+- prompt: A1004A.2 24.0 SORT Split 어떻게돼? product: ML_TABLE 스플릿테이블이야
+- intent: wafer_split_at_step
+- selected_function: query_wafer_split_at_step
+- retrieved_ids: 
+- system_knowledge_ids: 
+- result_status: success
+- elapsed_ms: 11050
+- llm_used: 
+- answer: ML_TABLE parquet을 찾지 못했습니다.
