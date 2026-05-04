@@ -3838,10 +3838,25 @@ def _resolve_mail_recipients(
         _push(em)
     rg_cfg = (cfg or {}).get("recipient_groups") or {}
     for gname in explicit_groups:
+        group_values: list[str] = []
         members = rg_cfg.get(gname) if isinstance(rg_cfg, dict) else None
         if isinstance(members, list):
-            for em in members:
-                _push(str(em))
+            group_values.extend(str(v or "").strip() for v in members if str(v or "").strip())
+        try:
+            from routers.groups import _load as _groups_load
+
+            for group in _groups_load() or []:
+                if not isinstance(group, dict):
+                    continue
+                if str(group.get("name") or "").strip() != gname and str(group.get("id") or "").strip() != gname:
+                    continue
+                group_values.extend(str(v or "").strip() for v in (group.get("members") or []) if str(v or "").strip())
+                group_values.extend(str(v or "").strip() for v in (group.get("extra_emails") or []) if str(v or "").strip())
+                break
+        except Exception:
+            pass
+        for em in _resolve_users_to_emails(group_values):
+            _push(em)
     return to_addrs, auto_rows, False
 
 

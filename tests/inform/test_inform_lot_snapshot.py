@@ -21,6 +21,7 @@ def test_create_inform_preserves_split_table_root_and_fab_lots(tmp_path, monkeyp
     monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
     monkeypatch.setattr(informs, "_resolve_fab_lot_snapshot", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(informs, "_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(informs, "_audit_record", lambda *_args, **_kwargs: {})
 
     req = informs.InformCreate(**{
         "lot_id": "LOT029AA",
@@ -100,6 +101,7 @@ def test_create_inform_resolves_root_only_fab_lot_from_splittable_cache(tmp_path
     monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
     monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
     monkeypatch.setattr(informs, "_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(informs, "_audit_record", lambda *_args, **_kwargs: {})
 
     pl.DataFrame({
         "root_lot_id": ["R9600"],
@@ -148,6 +150,7 @@ def test_create_inform_snapshots_current_fab_lot_root_and_wafers(tmp_path, monke
     monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
     monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
     monkeypatch.setattr(informs, "_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(informs, "_audit_record", lambda *_args, **_kwargs: {})
 
     snapshots = iter([
         {"root_lot_id": "R9700", "root_lot_ids": ["R9700"], "wafer_id": "1", "wafer_ids": ["1"], "fab_lot_id": "F9700A.1", "source": "test"},

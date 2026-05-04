@@ -15,6 +15,7 @@ if str(ROOT / "backend") not in sys.path:
 
 from backend.routers import informs  # noqa: E402
 from routers import auth as auth_router  # noqa: E402
+from routers import groups as groups_router  # noqa: E402
 
 
 def _write_json(path: Path, data) -> None:
@@ -65,6 +66,7 @@ def test_send_mail_auto_groups_empty_recipients_by_inform_module(tmp_path, monke
     monkeypatch.setattr(informs, "_INFORMS_CACHE_ITEMS", None)
     monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "lotmgr"})
     monkeypatch.setattr(informs, "_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(informs, "_audit_record", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(informs, "_build_inform_snapshot_xlsx", lambda _target: None)
     monkeypatch.setattr(auth_router, "read_users", lambda: [
         {"username": "alice", "email": "alice@example.test", "status": "approved", "role": "user"},
@@ -127,6 +129,7 @@ def test_send_mail_explicit_to_users_does_not_auto_group(tmp_path, monkeypatch):
     monkeypatch.setattr(informs, "_INFORMS_CACHE_ITEMS", None)
     monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "lotmgr"})
     monkeypatch.setattr(informs, "_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(informs, "_audit_record", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(informs, "_build_inform_snapshot_xlsx", lambda _target: None)
     monkeypatch.setattr(auth_router, "read_users", lambda: [
         {"username": "alice", "email": "alice@example.test", "status": "approved", "role": "user"},
@@ -149,6 +152,54 @@ def test_send_mail_explicit_to_users_does_not_auto_group(tmp_path, monkeypatch):
 
     assert res["auto_module_used"] is False
     assert res["to"] == ["manual@example.test"]
+
+
+def test_send_mail_resolves_public_mail_group_members_and_extras(tmp_path, monkeypatch):
+    admin_settings = tmp_path / "admin_settings.json"
+    informs_file = tmp_path / "informs.json"
+    _write_json(admin_settings, {
+        "mail": {
+            "enabled": True,
+            "api_url": "dry-run",
+            "from_addr": "flow@example.test",
+            "domain": "example.test",
+        },
+    })
+    monkeypatch.setattr(informs, "ADMIN_SETTINGS_FILE", admin_settings)
+    monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
+    monkeypatch.setattr(informs, "_INFORMS_CACHE_SIG", None)
+    monkeypatch.setattr(informs, "_INFORMS_CACHE_ITEMS", None)
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "lotmgr"})
+    monkeypatch.setattr(informs, "_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(informs, "_audit_record", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(informs, "_build_inform_snapshot_xlsx", lambda _target: None)
+    monkeypatch.setattr(auth_router, "read_users", lambda: [
+        {"username": "alice", "email": "alice@example.test", "status": "approved", "role": "user"},
+        {"username": "bob", "email": "", "status": "approved", "role": "user"},
+    ])
+    monkeypatch.setattr(groups_router, "_load", lambda: [{
+        "id": "grp_process",
+        "name": "Process Owners",
+        "members": ["alice", "bob"],
+        "extra_emails": ["vendor@example.test"],
+    }])
+    informs._save([{
+        "id": "inf_gate",
+        "product": "PRODA",
+        "root_lot_id": "R1000",
+        "lot_id": "R1000",
+        "module": "GATE",
+        "reason": "PEMS",
+        "author": "writer",
+        "created_at": "2026-04-30T10:20:00",
+        "mail_history": [],
+    }])
+
+    req = informs.SendMailReq(groups=["Process Owners"])
+    res = informs.send_mail("inf_gate", req, _request())
+
+    assert res["auto_module_used"] is False
+    assert res["to"] == ["alice@example.test", "bob@example.test", "vendor@example.test"]
 
 
 def test_mail_preview_uses_same_auto_module_recipients(tmp_path, monkeypatch):

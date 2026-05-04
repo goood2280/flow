@@ -1242,7 +1242,7 @@ function DeadlineBadge({ deadline, onChange, canEdit }) {
 }
 
 /* 루트 인폼 머리에 붙는 상태 패널 (flow 진행 + 이력) */
-function MailDialog({ root, user, reasonTemplates, onClose }) {
+function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) {
   // v8.7.2: 인폼 → 사내 메일 API 로 HTML 본문 전송 (multipart).
   // v8.8.3: 공용 메일그룹(/api/mail-groups/list) 도 함께 노출 — 만들어진 그룹이 드롭다운에 안 뜨던 문제 해결.
   //          + 새 그룹 관리 서브 모달(z-index 10001 로 메일 다이얼로그 위에 올라오게).
@@ -1250,10 +1250,11 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
   const [recipients, setRecipients] = useState([]);
   const [groups, setGroups] = useState({});          // {groupName: [emails]}
   const [publicGroups, setPublicGroups] = useState([]); // v8.8.3: 공용 메일 그룹 목록 [{id,name,members,extra_emails}]
-  const [pickedUsers, setPickedUsers] = useState([]);   // usernames
-  const [pickedGroups, setPickedGroups] = useState([]); // group names
-  const _defSubject = "";
-  const _defBody = "";
+  const mailPrefill = initialSelection || root?.__mail_prefill || {};
+  const [pickedUsers, setPickedUsers] = useState(() => Array.isArray(mailPrefill.to_users) ? mailPrefill.to_users : []);   // usernames
+  const [pickedGroups, setPickedGroups] = useState(() => Array.isArray(mailPrefill.groups) ? mailPrefill.groups : []); // group names
+  const _defSubject = String(mailPrefill.subject || "");
+  const _defBody = String(mailPrefill.body || "");
   const [subject, setSubject] = useState(_defSubject);
   const [body, setBody] = useState(_defBody);
   const [statusCode, setStatusCode] = useState("");
@@ -1261,7 +1262,14 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
   //   이유: 인폼 자체가 대화 스레드인데 메일 본문에 다시 넣으면 중복/용량 증가.
   //   필요 시 수신자가 인폼 페이지에서 직접 열람 (첨부 xlsx 로도 핵심은 전달).
   const includeThread = false;
-  const [extraEmails, setExtraEmails] = useState("");
+  const [extraEmails, setExtraEmails] = useState(() => {
+    const extras = Array.isArray(mailPrefill.extra_emails) ? mailPrefill.extra_emails : [];
+    const fallbackTo = !mailPrefill.to_users?.length && !mailPrefill.groups?.length && Array.isArray(mailPrefill.to)
+      ? mailPrefill.to
+      : [];
+    if (fallbackTo.length) return uniqueClean([...extras, ...fallbackTo]).join(", ");
+    return extras.join(", ");
+  });
   const [attachments, setAttachments] = useState([]); // inform image URLs to include
   const [filter, setFilter] = useState("");
   const [sending, setSending] = useState(false);
@@ -1285,6 +1293,8 @@ function MailDialog({ root, user, reasonTemplates, onClose }) {
       q.set("body", body || "");
       q.set("subject", subject || "");
       computedEmails().forEach(em => q.append("to", em));
+      pickedUsers.forEach(un => q.append("to_users", un));
+      pickedGroups.forEach(g => q.append("groups", g));
       sf(API + "/" + encodeURIComponent(root.id) + "/mail-preview?" + q.toString())
         .then(d => setPreview(d)).catch(() => setPreview(null));
     }, 250);
@@ -2009,6 +2019,7 @@ export default function My_Inform({ user }) {
         if (Array.isArray(draft?.wizardSelectedSetIds)) setWizardSelectedSetIds(draft.wizardSelectedSetIds);
         if (Array.isArray(draft?.embedCustomCols)) setEmbedCustomCols(draft.embedCustomCols);
         if (draft?.wizardMailDraft) setWizardMailDraft(draft.wizardMailDraft);
+        if (draft?.wizardMailMeta) setWizardMailMeta(draft.wizardMailMeta);
       }
     } catch (_) {}
     setCreating(true);
@@ -2288,7 +2299,7 @@ export default function My_Inform({ user }) {
         product: mlProd,
         lot_id: targetLot,
         custom_cols: customCols,
-        is_fab_lot: isFabLotInput(targetLot, lotOptions),
+        is_fab_lot: (form.fab_lot_ids || []).includes(targetLot) || isFabLotInput(targetLot, lotOptions),
       });
       const embed = d?.embed || emptyEmbedTable();
       return {
@@ -2310,7 +2321,7 @@ export default function My_Inform({ user }) {
         body.embed_table = await buildEmbedForLot(targetLot);
         body.attached_sets = attachedSetsForSubmit();
       }
-      if (isFabLotInput(targetLot, lotOptions)) body.fab_lot_id_at_save = targetLot;
+      if ((form.fab_lot_ids || []).includes(targetLot) || isFabLotInput(targetLot, lotOptions)) body.fab_lot_id_at_save = targetLot;
       return body;
     };
     const requests = submitTargets.map(async targetLot => sf(API, {
@@ -2324,15 +2335,30 @@ export default function My_Inform({ user }) {
       setWizardAttachMode("sets");
       setWizardSelectedSetIds([]);
       setWizardMailDraft({ subject: "", body: "", generatedFor: "" });
+      setWizardMailMeta({ recipients: [], knobMap: {} });
       setWizardLotSearch("");
       setCreating(false); setMsg("");
       try { localStorage.removeItem(WIZARD_DRAFT_KEY); } catch (_) {}
       const created = results.find(r => r?.inform)?.inform;
       if (created?.id) {
+        const selectedTo = uniqueClean(wizardMailMeta?.to || wizardMailMeta?.recipients || []);
+        const selectedUsers = uniqueClean(wizardMailMeta?.to_users || []);
+        const selectedGroups = uniqueClean(wizardMailMeta?.groups || []);
+        const selectedExtras = uniqueClean(wizardMailMeta?.extra_emails || []);
+        const hasMailPrefill = selectedTo.length > 0 || selectedUsers.length > 0 || selectedGroups.length > 0 || selectedExtras.length > 0;
+        const mailPrefill = hasMailPrefill ? {
+          to: selectedTo,
+          to_users: selectedUsers,
+          groups: selectedGroups,
+          extra_emails: selectedExtras,
+          subject: wizardMailMeta?.subject || wizardMailDraft.subject || "",
+          body: wizardMailMeta?.body || wizardMailDraft.body || form.text || "",
+        } : null;
         setSelectedRootId(created.id);
-        setDetailTab("body");
+        setDetailTab(hasMailPrefill ? "mail" : "body");
         setSelectedLot(detailLotId(created) || submitTargets[0]);
         loadDetailForRoot(created);
+        if (mailPrefill) setMailDialogRoot({ ...created, __mail_prefill: mailPrefill });
       }
       setTimeout(refreshAll, 50);
     }).catch(e => setMsg(e.message));
@@ -2454,7 +2480,7 @@ export default function My_Inform({ user }) {
     const customCols = (wizardAttachMode === "knob" ? (Array.isArray(embedCustomCols) ? embedCustomCols : []) : [])
       .map(c => String(c || "").trim())
       .filter(Boolean);
-    const isFabLot = isFabLotInput(lot, lotOptions);
+    const isFabLot = (form.fab_lot_ids || []).includes(lot) || isFabLotInput(lot, lotOptions);
     const handle = setTimeout(() => {
       setEmbedFetching(true);
       postJson("/api/informs/splittable-snapshot", {
@@ -2544,9 +2570,10 @@ export default function My_Inform({ user }) {
         wizardSelectedSetIds,
         embedCustomCols,
         wizardMailDraft,
+        wizardMailMeta,
       }));
     } catch (_) {}
-  }, [creating, form, createImages, wizardStep, wizardAttachMode, wizardSelectedSetIds, embedCustomCols, wizardMailDraft]);
+  }, [creating, form, createImages, wizardStep, wizardAttachMode, wizardSelectedSetIds, embedCustomCols, wizardMailDraft, wizardMailMeta]);
 
   useEffect(() => {
     if (!creating || wizardStep !== 3) return;
@@ -3194,6 +3221,7 @@ export default function My_Inform({ user }) {
           mailDraft={wizardMailDraft}
           setMailDraft={setWizardMailDraft}
           mailMeta={wizardMailMeta}
+          setMailMeta={setWizardMailMeta}
           user={user}
           msg={msg}
           setMsg={setMsg}
@@ -4351,7 +4379,7 @@ function InformWizard({
   form, setForm, constants, products, productContacts, lotOptions, fabSearch, setFabSearch, step, setStep,
   attachMode, setAttachMode, selectedSetIds, setSelectedSetIds, embedFetching, embedSchemaCols,
   embedCustomCols, setEmbedCustomCols, embedCustomSearch, setEmbedCustomSearch,
-  setSnapshotTick, mailDraft, setMailDraft, mailMeta, user, msg, setMsg, onSubmit, onClose,
+  setSnapshotTick, mailDraft, setMailDraft, mailMeta, setMailMeta, user, msg, setMsg, onSubmit, onClose,
 }) {
   const productOptions = Array.from(new Set((products || []).map(p => stripMlPrefix(String(p || "").trim())).filter(Boolean))).sort();
   const steps = ["lot 선택", "모듈 + 내용", "SplitTable 첨부", "메일 미리보기", "검토 + 등록"];
@@ -4369,6 +4397,7 @@ function InformWizard({
   const [pickedMailGroups, setPickedMailGroups] = useState([]);
   const [extraMailEmails, setExtraMailEmails] = useState("");
   const [mailUserSearch, setMailUserSearch] = useState("");
+  const mailMetaHydratedRef = useRef(false);
   const loadSetRows = () => {
     const raw = String(form.product || "").trim();
     if (!raw) { setSetRows([]); return Promise.resolve([]); }
@@ -4395,6 +4424,12 @@ function InformWizard({
     sf(API + "/recipients").then(d => setMailRecipients(d.recipients || [])).catch(() => setMailRecipients([]));
     sf(API + "/mail-groups").then(d => setMailGroups(d.groups || {})).catch(() => setMailGroups({}));
     sf("/api/mail-groups/list").then(d => setPublicMailGroups(d.groups || [])).catch(() => setPublicMailGroups([]));
+    if (mailMeta && !mailMetaHydratedRef.current) {
+      setPickedMailUsers(Array.isArray(mailMeta.to_users) ? mailMeta.to_users : []);
+      setPickedMailGroups(Array.isArray(mailMeta.groups) ? mailMeta.groups : []);
+      setExtraMailEmails(Array.isArray(mailMeta.extra_emails) ? mailMeta.extra_emails.join(", ") : "");
+      mailMetaHydratedRef.current = true;
+    }
   }, [step]);
   const selectedSetRows = (setRows || []).filter(s => (selectedSetIds || []).includes(s.id));
   useEffect(() => {
@@ -4436,7 +4471,7 @@ function InformWizard({
       product: mlProd,
       lot_id: lot,
       custom_cols: snapshotCols,
-      is_fab_lot: isFabLotInput(lot, lotOptions),
+      is_fab_lot: (form.fab_lot_ids || []).includes(lot) || isFabLotInput(lot, lotOptions),
     })
       .then(d => {
         if (!alive) return;
@@ -4581,6 +4616,32 @@ function InformWizard({
     .map(k => productContacts?.[k])
     .find(v => Array.isArray(v)) || [];
   const mailSizeKb = Math.max(0.1, Math.round((new Blob([mailPreviewText]).size / 1024) * 10) / 10);
+  useEffect(() => {
+    if (step !== 3 && step !== 4) return;
+    const extras = String(extraMailEmails || "")
+      .split(/[,\s;]+/)
+      .map(s => s.trim())
+      .filter(s => s && s.includes("@"));
+    setMailMeta?.({
+      __hydrated: true,
+      to: selectedMailEmails,
+      recipients: selectedMailEmails,
+      to_users: pickedMailUsers,
+      groups: pickedMailGroups,
+      extra_emails: extras,
+      subject: mailSubject,
+      body: mailDraft.body || mailPreviewText,
+    });
+  }, [
+    step,
+    selectedMailEmails.join("|"),
+    pickedMailUsers.join("|"),
+    pickedMailGroups.join("|"),
+    extraMailEmails,
+    mailSubject,
+    mailDraft.body,
+    mailPreviewText,
+  ]);
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 3200, background: "rgba(0,0,0,0.62)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <div onClick={e => e.stopPropagation()} style={{ width: "min(980px,96vw)", maxHeight: "92vh", overflow: "auto", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 10, padding: 16 }}>
