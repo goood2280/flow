@@ -67,6 +67,7 @@ export default function My_SplitTable({user}){
   const[noteFilter,setNoteFilter]=useState(null); // {scope, key} or null = all
   const[noteDraft,setNoteDraft]=useState("");
   const[noteDraftScope,setNoteDraftScope]=useState(null);  // {scope, product, root_lot_id, wafer_id, param}
+  const[expandedNoteId,setExpandedNoteId]=useState("");
   // v8.8.13: 노트 drawer 내부 검색 (wafer id / param 이름 / text 부분일치)
   const[noteSearch,setNoteSearch]=useState("");
   const[tab,setTab]=useState("view");const[history,setHistory]=useState([]);
@@ -567,18 +568,22 @@ export default function My_SplitTable({user}){
       _cells: nextCells,
     };
   });
-  const firstVisibleFabLotForInform=()=>{
-    const groups=Array.isArray(data?.header_groups)?data.header_groups:[];
-    for(const g of groups){
-      const label=String(g?.label||"").trim();
-      if(label&&label!=="-"&&label!=="—")return label;
-    }
-    const fabs=Array.isArray(data?.wafer_fab_list)?data.wafer_fab_list:[];
-    for(const v of fabs){
+  const uniqueVisibleFabLotsForInform=()=>{
+    const out=[];const seen=new Set();
+    const add=(v)=>{
       const label=String(v||"").trim();
-      if(label&&label!=="-"&&label!=="—")return label;
-    }
-    return "";
+      if(!label||label==="-"||label==="—")return;
+      const key=label.toLowerCase();
+      if(seen.has(key))return;
+      seen.add(key);out.push(label);
+    };
+    (Array.isArray(data?.header_groups)?data.header_groups:[]).forEach(g=>add(g?.label));
+    (Array.isArray(data?.wafer_fab_list)?data.wafer_fab_list:[]).forEach(add);
+    (Array.isArray(data?.available_fab_lots)?data.available_fab_lots:[]).forEach(add);
+    return out;
+  };
+  const firstVisibleFabLotForInform=()=>{
+    return uniqueVisibleFabLotsForInform()[0]||"";
   };
   const startInformFromCurrentSnapshot=()=>{
     const rows=currentRowsForInformSnapshot();
@@ -586,10 +591,17 @@ export default function My_SplitTable({user}){
     const rootLot=String(data.root_lot_id||lotId||"").trim();
     const typedFabLot=String(fabLotId||"").trim();
     const typedLot=String(lotId||"").trim();
-    const viewFabLot=firstVisibleFabLotForInform();
-    const targetLot=String(typedFabLot||viewFabLot||(/[._\-/]/.test(typedLot)?typedLot:"")).trim();
+    const visibleFabLots=uniqueVisibleFabLotsForInform();
+    const viewFabLot=visibleFabLots[0]||firstVisibleFabLotForInform();
+    const typedLotIsFab=/[._\-/]/.test(typedLot);
+    const rootOnly=!!typedLot&&!typedFabLot&&!typedLotIsFab;
+    const selectedFabLots=typedFabLot
+      ? [typedFabLot]
+      : (typedLotIsFab ? [typedLot] : visibleFabLots);
+    const targetLot=String(typedFabLot||(rootOnly?(rootLot||typedLot):viewFabLot)||(typedLotIsFab?typedLot:"")).trim();
     if(!targetLot){alert("SplitTable 의 lot_id/fab_lot_id 를 먼저 선택하세요.");return;}
-    const targetIsFab=!!(typedFabLot||viewFabLot)||/[._\-/]/.test(targetLot);
+    const targetIsFab=!rootOnly&&Boolean(typedFabLot||viewFabLot||/[._\-/]/.test(targetLot));
+    const draftFabLots=rootOnly?selectedFabLots:selectedFabLots.slice(0,1);
     const rowParams=rows.map(r=>String(r?._param||"").trim()).filter(Boolean);
     const pendingCount=Object.keys(pendingPlans).length;
     const currentView={
@@ -613,8 +625,8 @@ export default function My_SplitTable({user}){
       const draft={
         form:{
           wafer_id:"",
-          lot_id:targetLot,
-          fab_lot_ids:targetIsFab?[targetLot]:[],
+          lot_id:draftFabLots[0]||targetLot,
+          fab_lot_ids:draftFabLots,
           product:stripMlPrefix(selProd),
           module:"",
           reason:"PEMS",
@@ -1879,7 +1891,7 @@ export default function My_SplitTable({user}){
       return(<div style={{position:"fixed",top:0,right:0,bottom:0,width:420,background:"var(--bg-secondary)",borderLeft:"1px solid var(--border)",zIndex:2000,display:"flex",flexDirection:"column",boxShadow:"-4px 0 16px rgba(0,0,0,0.35)"}}>
         <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>📝 {title}</div>
-          <span onClick={()=>{setNotesOpen(false);setNoteDraft("");setNoteFilter(null);setNoteDraftScope(null);setNoteSearch("");}} style={{cursor:"pointer",fontSize:18,color:"var(--text-secondary)"}}>✕</span>
+          <span onClick={()=>{setNotesOpen(false);setNoteDraft("");setNoteFilter(null);setNoteDraftScope(null);setNoteSearch("");setExpandedNoteId("");}} style={{cursor:"pointer",fontSize:18,color:"var(--text-secondary)"}}>✕</span>
         </div>
         {/* scope 필터 칩 — 전체 / wafer / param / lot (global 제거) */}
         <div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",display:"flex",gap:4,flexWrap:"wrap",fontSize:14,color:"var(--text-secondary)"}}>
@@ -1927,12 +1939,16 @@ export default function My_SplitTable({user}){
               :n.scope==="lot"?{bg:"rgba(22,163,74,0.95)",txt:`📦 ${lotOf}`}
               :{bg:"rgba(107,114,128,0.95)",txt:n.scope};
             const time=(n.created_at||"").replace("T"," ").slice(5,16);
-            return(<div key={n.id} title={n.text} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 6px",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)",fontSize:14,minHeight:26}}>
-              <span style={{flexShrink:0,fontSize:14,fontWeight:700,padding:"1px 6px",borderRadius:8,background:badge.bg,color:"var(--bg-secondary)",whiteSpace:"nowrap"}}>{badge.txt}</span>
-              <span style={{flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",color:"var(--text-primary)"}}>{n.text}</span>
-              <span style={{flexShrink:0,fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{n.username}</span>
-              <span style={{flexShrink:0,fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{time}</span>
-              {mine&&<span onClick={()=>deleteNote(n.id)} title="작성자만 삭제 가능" style={{flexShrink:0,cursor:"pointer",fontSize:14,color:"rgba(239,68,68,0.95)",padding:"0 4px"}}>×</span>}
+            const expanded=expandedNoteId===n.id;
+            return(<div key={n.id} title={expanded?"클릭해서 접기":"클릭해서 전체 내용 보기"} onClick={()=>setExpandedNoteId(expanded?"":n.id)} style={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:expanded?6:0,padding:"4px 6px",borderRadius:4,background:expanded?"var(--bg-secondary)":"var(--bg-card)",border:"1px solid var(--border)",fontSize:14,minHeight:26,cursor:"pointer"}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
+                <span style={{flexShrink:0,fontSize:14,fontWeight:700,padding:"1px 6px",borderRadius:8,background:badge.bg,color:"var(--bg-secondary)",whiteSpace:"nowrap"}}>{badge.txt}</span>
+                <span style={{flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",color:"var(--text-primary)"}}>{n.text}</span>
+                <span style={{flexShrink:0,fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{n.username}</span>
+                <span style={{flexShrink:0,fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{time}</span>
+                {mine&&<span onClick={e=>{e.stopPropagation();deleteNote(n.id);}} title="작성자만 삭제 가능" style={{flexShrink:0,cursor:"pointer",fontSize:14,color:"rgba(239,68,68,0.95)",padding:"0 4px"}}>×</span>}
+              </div>
+              {expanded&&<div style={{whiteSpace:"pre-wrap",wordBreak:"break-word",lineHeight:1.45,color:"var(--text-primary)",padding:"4px 6px 6px 6px",borderTop:"1px dashed var(--border)"}}>{n.text}</div>}
             </div>);
           })}
         </div>
