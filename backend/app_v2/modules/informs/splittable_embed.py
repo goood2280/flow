@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 
 ViewLoader = Callable[..., dict[str, Any]]
+PlanColumnLoader = Callable[[str, str], list[str]]
 
 
 def strip_ml_prefix(value: str) -> str:
@@ -67,6 +68,50 @@ def _clean_custom_cols(values: Iterable[str] | str | None) -> list[str]:
             continue
         seen.add(text)
         out.append(text)
+    return out
+
+
+def _merge_cols(*groups: Iterable[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for value in group or []:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def _plan_columns_for_root(ml_product: str, root_lot_id: str, limit: int = 80) -> list[str]:
+    root = str(root_lot_id or "").strip()
+    if not root:
+        return []
+    try:
+        from core.utils import load_json
+        from routers.splittable import PLAN_DIR
+
+        plans = load_json(PLAN_DIR / f"{ml_product}.json", {}).get("plans", {})
+    except Exception:
+        return []
+    if not isinstance(plans, dict):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for cell_key, info in plans.items():
+        parts = str(cell_key or "").split("|", 2)
+        if len(parts) != 3 or parts[0] != root:
+            continue
+        value = info.get("value") if isinstance(info, dict) else None
+        if not _has_st_value(value):
+            continue
+        col = parts[2].strip()
+        if col and col not in seen:
+            seen.add(col)
+            out.append(col)
+            if len(out) >= limit:
+                break
     return out
 
 
@@ -188,6 +233,7 @@ def build_splittable_embed(
     custom_cols: Iterable[str] | str | None = None,
     is_fab_lot: bool | None = None,
     view_loader: ViewLoader | None = None,
+    plan_column_loader: PlanColumnLoader | None = None,
 ) -> dict[str, Any]:
     """Build the exact Inform embed payload from the SplitTable view pipeline."""
 
@@ -201,18 +247,30 @@ def build_splittable_embed(
     custom = _clean_custom_cols(custom_cols)
     fab_input = looks_like_fab_lot(lot) if is_fab_lot is None else bool(is_fab_lot)
     loader = view_loader or _load_view
-    view = loader(
-        product=ml_product,
-        root_lot_id="" if fab_input else lot,
-        wafer_ids="",
-        prefix="ALL",
-        custom_name="",
-        view_mode="all",
-        history_mode="all",
-        fab_lot_id=lot if fab_input else "",
-        custom_cols=",".join(custom),
-    )
-    return _embed_from_view(ml_product, lot, custom, fab_input, view)
+    def load_for(cols: list[str]) -> dict[str, Any]:
+        return loader(
+            product=ml_product,
+            root_lot_id="" if fab_input else lot,
+            wafer_ids="",
+            prefix="ALL",
+            custom_name="",
+            view_mode="all",
+            history_mode="all",
+            fab_lot_id=lot if fab_input else "",
+            custom_cols=",".join(cols),
+        )
+
+    view = load_for(custom)
+    effective_custom = list(custom)
+    if custom and (view_loader is None or plan_column_loader is not None):
+        root_key = str(view.get("root_lot_id") or _root_fallback(lot)).strip()
+        extra_plan_cols = (plan_column_loader or _plan_columns_for_root)(ml_product, root_key)
+        merged = _merge_cols(custom, extra_plan_cols)
+        if len(merged) > len(effective_custom):
+            view = load_for(merged)
+            effective_custom = merged
+
+    return _embed_from_view(ml_product, lot, effective_custom, fab_input, view)
 
 
 def build_splittable_embed_from_view(

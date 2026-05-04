@@ -101,6 +101,46 @@ def test_splittable_embed_from_current_view_preserves_plan_cells():
     assert embed["st_scope"]["lot_id"] == "A1000"
 
 
+def test_splittable_embed_custom_snapshot_appends_saved_plan_columns():
+    calls = []
+
+    def fake_view_loader(**kwargs):
+        calls.append(kwargs)
+        cols = [c for c in str(kwargs.get("custom_cols") or "").split(",") if c]
+        rows = []
+        if "KNOB_GATE" in cols:
+            rows.append({
+                "_param": "KNOB_GATE",
+                "_cells": {"0": {"actual": "R1", "plan": None}},
+            })
+        if "KNOB_PLAN_LATE" in cols:
+            rows.append({
+                "_param": "KNOB_PLAN_LATE",
+                "_cells": {"0": {"actual": None, "plan": "R_PLAN"}},
+            })
+        return {
+            "headers": ["#1"],
+            "root_lot_id": "A1000",
+            "rows": rows,
+        }
+
+    embed = build_splittable_embed(
+        "PRODA",
+        "A1000",
+        custom_cols=["KNOB_GATE"],
+        view_loader=fake_view_loader,
+        plan_column_loader=lambda _product, _root: ["KNOB_PLAN_LATE"],
+    )
+
+    assert [c["custom_cols"] for c in calls] == [
+        "KNOB_GATE",
+        "KNOB_GATE,KNOB_PLAN_LATE",
+    ]
+    assert [r["_param"] for r in embed["st_view"]["rows"]] == ["KNOB_GATE", "KNOB_PLAN_LATE"]
+    assert embed["rows"][-1] == ["KNOB_PLAN_LATE", "R_PLAN"]
+    assert embed["st_scope"]["inline_cols"] == ["KNOB_GATE", "KNOB_PLAN_LATE"]
+
+
 def test_splittable_embed_from_current_view_uses_first_fab_lot_when_lot_blank():
     embed = build_splittable_embed_from_view(
         "PRODA",
