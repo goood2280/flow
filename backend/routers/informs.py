@@ -2172,8 +2172,17 @@ def lot_matrix(
         lot_keys = _inform_fab_lots(entry)
         if not lot_keys:
             continue
-        if lot_query and not any(lot_query in lot_key.casefold() for lot_key in lot_keys):
-            continue
+        root_lot = str(entry.get("root_lot_id") or _root_lot_from_values(entry.get("lot_id") or "", entry.get("embed_table"))).strip()
+        if lot_query:
+            hay = [
+                root_lot,
+                entry.get("root_lot_id"),
+                entry.get("lot_id"),
+                entry.get("fab_lot_id_at_save"),
+                *lot_keys,
+            ]
+            if not any(lot_query in str(value or "").casefold() for value in hay):
+                continue
 
         mod = str(entry.get("module") or "").strip() or "기타"
         if mod not in module_seen:
@@ -2187,7 +2196,6 @@ def lot_matrix(
             "lots_by_key": {},
             "module_totals": {},
         })
-        root_lot = str(entry.get("root_lot_id") or _root_lot_from_values(entry.get("lot_id") or "", entry.get("embed_table"))).strip()
         latest_update = str((_lot_matrix_recent_item(entry)).get("updated_at") or "")
         for lot_key in lot_keys:
             lot_bucket = product_bucket["lots_by_key"].setdefault(lot_key, {
@@ -4470,7 +4478,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         body_parts = []
         for r in shown:
             param_raw = str(r.get("_param", ""))
-            param = esc(re.sub(r"^[A-Z]+_", "", str(r.get("_display") or param_raw or "")))
+            param = esc(str(r.get("_display") or param_raw or ""))
             cells = r.get("_cells") or {}
             row_highlight = _is_module_highlight_param(param_raw, highlight_knobs)
             hilite = _MODULE_KNOB_HILITE if row_highlight else ""

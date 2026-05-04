@@ -119,8 +119,35 @@ function lotCandidateRootScope(lot) {
   return isFabLotInput(s) ? "" : s;
 }
 
+function mergeLotCandidateOptions(...groups) {
+  const out = [];
+  const seen = new Set();
+  groups.forEach(group => {
+    const type = group?.type || "fab";
+    (group?.candidates || []).forEach(v => {
+      const value = String(v || "").trim();
+      if (!value) return;
+      const key = value.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({ value, type });
+    });
+  });
+  return out;
+}
+
 function matrixLotId(lot) {
   return String(lot?.fab_lot_id || lot?.matrix_lot_id || lot?.lot_id || lot?.root_lot_id || "").trim();
+}
+
+function matrixLotSearchText(lot) {
+  return [
+    matrixLotId(lot),
+    lot?.source_root_lot_id,
+    lot?.root_lot_id,
+    lot?.lot_id,
+    lot?.fab_lot_id,
+  ].filter(Boolean).join(" ");
 }
 
 function detailLotId(node) {
@@ -2453,16 +2480,18 @@ export default function My_Inform({ user }) {
     const prod = (form.product || "").trim();
     if (!prod) { setLotOptions([]); return; }
     const mlProd = prod.startsWith("ML_TABLE_") ? prod : `ML_TABLE_${prod}`;
-    sf(`/api/splittable/lot-candidates?product=${encodeURIComponent(mlProd)}&col=fab_lot_id&limit=${LOT_CANDIDATE_LIMIT}`)
-      .then(fr => {
-      const out = [];
-      const seen = new Set();
-      for (const v of (fr.candidates || [])) {
-        const s = String(v || "").trim();
-        if (s && !seen.has(s)) { seen.add(s); out.push({ value: s, type: "fab" }); }
-      }
-      setLotOptions(out);
-    }).catch(() => setLotOptions([]));
+    let alive = true;
+    const base = `/api/splittable/lot-candidates?product=${encodeURIComponent(mlProd)}&limit=${LOT_CANDIDATE_LIMIT}`;
+    Promise.all([
+      sf(`${base}&col=fab_lot_id`).then(d => ({ type: "fab", candidates: d.candidates || [] })).catch(() => ({ type: "fab", candidates: [] })),
+      sf(`${base}&col=root_lot_id`).then(d => ({ type: "root", candidates: d.candidates || [] })).catch(() => ({ type: "root", candidates: [] })),
+    ]).then(groups => {
+      if (!alive) return;
+      setLotOptions(mergeLotCandidateOptions(...groups));
+    }).catch(() => {
+      if (alive) setLotOptions([]);
+    });
+    return () => { alive = false; };
   }, [form.product]);
 
   // 입력 중인 LOT_ID prefix 를 서버에서도 보강 조회한다. 초기 후보 밖의 LOT도 검색 가능하게 한다.
@@ -2475,20 +2504,27 @@ export default function My_Inform({ user }) {
     let alive = true;
     let url = `/api/splittable/lot-candidates?product=${encodeURIComponent(mlProd)}&col=fab_lot_id&prefix=${encodeURIComponent(rawLot)}&limit=${LOT_CANDIDATE_LIMIT}`;
     if (rootScope) url += `&root_lot_id=${encodeURIComponent(rootScope)}`;
-    sf(url)
-      .then(d => {
+    const rootUrl = `/api/splittable/lot-candidates?product=${encodeURIComponent(mlProd)}&col=root_lot_id&prefix=${encodeURIComponent(rawLot)}&limit=${LOT_CANDIDATE_LIMIT}`;
+    Promise.all([
+      sf(url).then(d => ({ type: "fab", candidates: d.candidates || [] })).catch(() => ({ type: "fab", candidates: [] })),
+      sf(rootUrl).then(d => ({ type: "root", candidates: d.candidates || [] })).catch(() => ({ type: "root", candidates: [] })),
+    ])
+      .then(groups => {
         if (!alive) return;
-        const scoped = (d.candidates || []).map(v => String(v || "").trim()).filter(Boolean);
+        const scoped = mergeLotCandidateOptions(...groups);
         setLotOptions(prev => {
+          if (!scoped.length) return prev;
           const needle = rawLot.toLowerCase();
           const out = (prev || []).filter(o => !String(o.value || "").trim().toLowerCase().includes(needle));
           const idxByValue = new Map(out.map((o, i) => [String(o.value || "").trim().toLowerCase(), i]));
-          for (const value of scoped) {
+          for (const item of scoped) {
+            const value = String(item.value || "").trim();
+            if (!value) continue;
             const key = value.toLowerCase();
             const idx = idxByValue.get(key);
             if (idx === undefined) {
               idxByValue.set(key, out.length);
-              out.push({ value, type: "fab" });
+              out.push(item);
             }
           }
           return out;
@@ -2759,7 +2795,7 @@ export default function My_Inform({ user }) {
       .map(product => ({
         ...product,
         lots: (product.lots || []).filter(lot => {
-          if (lotQ && !matrixLotId(lot).toLowerCase().includes(lotQ)) return false;
+          if (lotQ && !matrixLotSearchText(lot).toLowerCase().includes(lotQ)) return false;
           return true;
         }),
       }))
@@ -4451,7 +4487,7 @@ function InformWizard({
       ? newSetCols.filter(x => x !== col)
       : [...newSetCols, col]);
   };
-  const fabLotOptions = (lotOptions || []).filter(o => o.type === "fab");
+  const fabLotOptions = lotOptions || [];
   const lotIdFilterText = String(fabSearch || "").trim().toLowerCase();
   const visibleFabOptions = fabLotOptions
     .filter(o => !lotIdFilterText || String(o.value || "").toLowerCase().includes(lotIdFilterText));
