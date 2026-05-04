@@ -75,6 +75,8 @@ def test_inform_splittable_embed_matches_split_table_header_and_plan_contract():
         'String(r._display || r._param || "").replace(/^[A-Z]+_/, "")',
         "const isPlanOnly = hasPlan && !hasActual",
         "const isMismatch = hasPlan && hasActual && String(cell.plan) !== String(cell.actual)",
+        "const isAppliedPlan = hasPlan && hasActual && String(cell.plan) === String(cell.actual)",
+        '" (plan 적용)"',
     ]:
         assert token in src
 

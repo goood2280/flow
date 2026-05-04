@@ -61,6 +61,8 @@ def _cell_text(cell: dict[str, Any]) -> str:
     plan_text = "" if plan is None else str(plan)
     if plan_text and actual_text and plan_text != actual_text:
         return f"{actual_text} → {plan_text}"
+    if plan_text and actual_text and plan_text == actual_text:
+        return f"✓ {plan_text} (plan 적용)"
     return plan_text or actual_text
 
 

@@ -29,7 +29,7 @@ def test_splittable_embed_service_builds_inform_snapshot_for_fab_lot():
                     "_param": "KNOB_GATE",
                     "_cells": {
                         "0": {"actual": "R1", "plan": "R2"},
-                        "1": {"actual": "R1", "plan": ""},
+                        "1": {"actual": "R1", "plan": "R1"},
                     },
                 },
                 {
@@ -60,7 +60,7 @@ def test_splittable_embed_service_builds_inform_snapshot_for_fab_lot():
     }]
     assert embed["source"] == "SplitTable/PRODA @ A1000A.1 · CUSTOM(2)"
     assert embed["columns"] == ["parameter", "#1", "#2"]
-    assert embed["rows"][0] == ["KNOB_GATE", "R1 → R2", "R1"]
+    assert embed["rows"][0] == ["KNOB_GATE", "R1 → R2", "✓ R1 (plan 적용)"]
     assert embed["st_view"]["root_lot_id"] == "A1000"
     assert embed["st_view"]["header_groups"] == [{"label": "A1000A.1", "span": 2}]
     assert embed["st_view"]["row_labels"] == {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"}
@@ -179,14 +179,15 @@ def test_inform_mail_splittable_snapshot_html_renders_plan_cells_like_split_tabl
         "source": "SplitTable/NO_META @ A1000 · CUSTOM(2)",
         "st_view": {
             "root_lot_id": "A1000",
-            "headers": ["#1", "#2"],
-            "header_groups": [{"label": "A1000A.1", "span": 2}],
+            "headers": ["#1", "#2", "#3"],
+            "header_groups": [{"label": "A1000A.1", "span": 3}],
             "row_labels": {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"},
             "rows": [{
                 "_param": "KNOB_GATE",
                 "_cells": {
                     "0": {"actual": "R1", "plan": "R2"},
                     "1": {"actual": None, "plan": "R3"},
+                    "2": {"actual": "R4", "plan": "R4"},
                 },
             }],
         },
@@ -197,6 +198,8 @@ def test_inform_mail_splittable_snapshot_html_renders_plan_cells_like_split_tabl
     assert "✗ R1" in html
     assert "(≠R2)" in html
     assert "📌 R3" in html
+    assert "✓ R4" in html
+    assert "plan 적용" in html
     assert "→ R2" not in html
     assert "Wafer별 적용 plan 요약" not in html
 

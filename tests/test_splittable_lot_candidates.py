@@ -70,7 +70,7 @@ def test_operational_history_matches_saved_full_inform_root(tmp_path, monkeypatc
     assert items[0]["detail"] == "plan saved"
 
 
-def test_save_plan_auto_logs_inform_after_plan_file_is_saved(tmp_path, monkeypatch):
+def test_save_plan_does_not_auto_log_inform(tmp_path, monkeypatch):
     plan_dir = tmp_path / "flow-data" / "splittable"
     plan_dir.mkdir(parents=True)
     monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
@@ -79,19 +79,8 @@ def test_save_plan_auto_logs_inform_after_plan_file_is_saved(tmp_path, monkeypat
 
     calls = []
 
-    def fake_auto_log(author, product, lot_id, cell_key, old_value, new_value, action="set", fab_lot_id=""):
-        saved = json.loads((plan_dir / "ML_TABLE_PRODA.json").read_text(encoding="utf-8"))
-        assert saved["plans"][cell_key]["value"] == "R2"
-        calls.append({
-            "author": author,
-            "product": product,
-            "lot_id": lot_id,
-            "cell_key": cell_key,
-            "old_value": old_value,
-            "new_value": new_value,
-            "action": action,
-            "fab_lot_id": fab_lot_id,
-        })
+    def fake_auto_log(*args, **kwargs):
+        calls.append((args, kwargs))
 
     monkeypatch.setattr(informs, "auto_log_splittable_change", fake_auto_log)
 
@@ -103,16 +92,9 @@ def test_save_plan_auto_logs_inform_after_plan_file_is_saved(tmp_path, monkeypat
     ))
 
     assert result == {"ok": True, "saved": 1, "rejected": []}
-    assert calls == [{
-        "author": "tester",
-        "product": "ML_TABLE_PRODA",
-        "lot_id": "A1000",
-        "cell_key": "A1000|1|KNOB_GATE",
-        "old_value": None,
-        "new_value": "R2",
-        "action": "set",
-        "fab_lot_id": "FAB1000.1",
-    }]
+    saved = json.loads((plan_dir / "ML_TABLE_PRODA.json").read_text(encoding="utf-8"))
+    assert saved["plans"]["A1000|1|KNOB_GATE"]["value"] == "R2"
+    assert calls == []
 
 
 def test_view_includes_related_tracker_issues_for_root_lot(tmp_path, monkeypatch):
