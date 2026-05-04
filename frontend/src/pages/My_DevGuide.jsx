@@ -84,7 +84,7 @@ start_background_services(logger)`}</Code>
         <Code>{`flow/
 ├── app.py                   # uvicorn shim
 ├── setup.py                 # self-contained installer
-├── VERSION.json             # 버전 + changelog
+├── VERSION.json             # 버전 메타
 │
 ├── backend/
 │   ├── app.py               # FastAPI app assembly

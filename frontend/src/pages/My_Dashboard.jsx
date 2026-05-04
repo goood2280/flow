@@ -49,13 +49,54 @@ const MARK_STROKE = "rgba(251,191,36,0.95)";
 const CHART_WIDTH_UNITS = [[1, "S"], [2, "M"], [3, "L"], [4, "XL"]];
 const CHART_HEIGHT_UNITS = [1, 2, 3, 4];
 const DEFAULT_CHART_FORM = {
-  title: "", source_type: "", root: "", product: "", file: "", x_col: "", y_expr: "",
+  title: "", source: "", metric: "count", groupby: "module", period: "all",
+  inform_product: "", inform_module: "", x_groupby: "", y_groupby: "", series_groupby: "", top_n: null,
+  source_type: "", root: "", product: "", file: "", x_col: "", y_expr: "",
   time_col: "", days: null, chart_type: "scatter", filter_expr: "", agg_col: "",
   agg_method: "", color_col: "", x_label: "", y_label: "", bin_count: 10,
   bin_width: null, visible_to: "all", no_schedule: false, exclude_null: true,
   point_size: 3, opacity: 0.7, sort_x: false, limit_points: null, joins: [],
   group_ids: [], group: "", width: 2, height: 1,
 };
+const INFORM_METRIC_OPTIONS = [
+  ["count", "인폼 카운트"],
+  ["resolution_rate", "처리율"],
+  ["first_reply_h", "첫 답글 시간"],
+  ["mail_rate", "메일 발송률"],
+  ["attach_rate", "첨부율"],
+  ["pending_age", "미해결 경과시간"],
+  ["attach_mail_rate", "첨부/메일 발송률"],
+];
+const INFORM_GROUPBY_OPTIONS = [
+  ["module", "모듈"],
+  ["product", "제품"],
+  ["root_lot", "Root Lot"],
+  ["fab_lot", "Fab Lot"],
+  ["author", "작성자"],
+  ["status", "상태"],
+  ["date_day", "일"],
+  ["date_week", "주"],
+  ["date_month", "월"],
+  ["hour_of_day", "시간대"],
+  ["day_of_week", "요일"],
+  ["first_reply_bucket", "응답시간 버킷"],
+  ["pending_table", "오래된 미해결"],
+  ["rate_kind", "비율 항목"],
+];
+const INFORM_CHART_PRESETS = [
+  { id: "module-count", label: "모듈별 인폼 카운트", description: "모듈별 루트 인폼 수를 비교합니다.", cfg: { source: "inform", source_type: "inform", title: "모듈별 인폼 카운트", chart_type: "bar", metric: "count", groupby: "module", period: "all", group: "인폼", width: 2, height: 1, x_label: "module", y_label: "count" } },
+  { id: "daily-trend", label: "일별 인폼 추이", description: "일 단위 인폼 발생 추이를 모듈 시리즈로 봅니다.", cfg: { source: "inform", source_type: "inform", title: "일별 인폼 추이", chart_type: "line", metric: "count", groupby: "date_day", series_groupby: "module", period: "all", group: "인폼", width: 2, height: 1, x_label: "date", y_label: "count" } },
+  { id: "product-donut", label: "제품별 인폼 분포", description: "제품별 인폼 비중을 도넛으로 표시합니다.", cfg: { source: "inform", source_type: "inform", title: "제품별 인폼 분포", chart_type: "donut", metric: "count", groupby: "product", period: "all", group: "인폼", width: 1, height: 1 } },
+  { id: "status-daily", label: "상태별 일별 분포", description: "일별 인폼 수를 상태 시리즈로 나눠 봅니다.", cfg: { source: "inform", source_type: "inform", title: "상태별 일별 분포", chart_type: "bar", metric: "count", groupby: "date_day", series_groupby: "status", period: "all", group: "인폼", width: 2, height: 1, x_label: "date", y_label: "count" } },
+  { id: "lot-module-heatmap", label: "랏×모듈 매트릭스 미니", description: "상위 20개 Lot의 모듈별 인폼 카운트를 봅니다.", cfg: { source: "inform", source_type: "inform", title: "랏×모듈 매트릭스 미니", chart_type: "heatmap", metric: "count", groupby: "root_lot", x_groupby: "module", y_groupby: "root_lot", top_n: 20, period: "all", group: "인폼", width: 2, height: 2, x_label: "module", y_label: "root_lot" } },
+  { id: "reply-buckets", label: "응답 시간 분포", description: "첫 답글까지 걸린 시간을 버킷으로 집계합니다.", cfg: { source: "inform", source_type: "inform", title: "응답 시간 분포", chart_type: "binning", metric: "first_reply_h", groupby: "first_reply_bucket", period: "all", group: "인폼", width: 2, height: 1, x_label: "reply bucket", y_label: "count" } },
+  { id: "resolution-trend", label: "처리율 추이", description: "일별 completed 비율을 추적으로 표시합니다.", cfg: { source: "inform", source_type: "inform", title: "처리율 추이", chart_type: "line", metric: "resolution_rate", groupby: "date_day", period: "all", group: "인폼", width: 2, height: 1, x_label: "date", y_label: "%" } },
+  { id: "author-top", label: "작성자별 인폼 top10", description: "작성자별 인폼 수 상위 10명을 파레토로 봅니다.", cfg: { source: "inform", source_type: "inform", title: "작성자별 인폼 top10", chart_type: "pareto", metric: "count", groupby: "author", top_n: 10, period: "all", group: "인폼", width: 2, height: 1 } },
+  { id: "activity-heatmap", label: "활동 heatmap", description: "요일과 시간대별 인폼 발생 패턴을 봅니다.", cfg: { source: "inform", source_type: "inform", title: "활동 heatmap", chart_type: "heatmap", metric: "count", groupby: "hour_of_day", x_groupby: "hour_of_day", y_groupby: "day_of_week", period: "all", group: "인폼", width: 2, height: 2, x_label: "hour", y_label: "day" } },
+  { id: "module-product-heatmap", label: "모듈×제품 카운트", description: "모듈과 제품 조합별 인폼 수를 봅니다.", cfg: { source: "inform", source_type: "inform", title: "모듈×제품 카운트", chart_type: "heatmap", metric: "count", groupby: "module", x_groupby: "module", y_groupby: "product", period: "all", group: "인폼", width: 2, height: 2, x_label: "module", y_label: "product" } },
+  { id: "attach-mail-rate", label: "첨부/메일 발송률", description: "첨부가 있는 인폼과 메일 발송 인폼 비율을 봅니다.", cfg: { source: "inform", source_type: "inform", title: "첨부/메일 발송률", chart_type: "donut", metric: "attach_mail_rate", groupby: "rate_kind", period: "all", group: "인폼", width: 1, height: 1 } },
+  { id: "old-pending", label: "오래된 미해결 인폼", description: "경과시간이 긴 미완료 인폼을 표로 확인합니다.", cfg: { source: "inform", source_type: "inform", title: "오래된 미해결 인폼", chart_type: "table", metric: "pending_age", groupby: "pending_table", top_n: 20, period: "all", group: "인폼", width: 2, height: 2 } },
+];
 const SPOTFIRE_GROUPS = ["FAB", "ET", "INLINE", "VM", "EDS", "KNOB", "MASK", "SPC"];
 const SPOTFIRE_CHART_TYPES = ["scatter", "boxplot", "trend", "correlation_matrix", "wafer_map", "classification", "stacked_bar"];
 const SOURCE_BADGE = {
@@ -671,6 +712,7 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
   const svgRef = useRef(null);
   const rawType = cfg.chart_type || "scatter";
   const type = rawType === "step_knob_binning" ? "combo" : rawType;
+  const isInformChart = String(cfg.source || "").toLowerCase() === "inform";
   points = Array.isArray(points) ? points : [];
   const chartBoxHeight = Math.max(240, Number(canvasHeight) || 340);
   const plotBoxHeight = Math.max(180, chartBoxHeight - 68);
@@ -699,6 +741,7 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
   const Header = <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", margin: "-12px -14px 8px", borderRadius: "8px 8px 0 0", background: "rgba(15,23,42,0.035)", borderBottom: "1px solid var(--border)" }}>
     {title && <div style={{ fontSize: 14, fontWeight: 800, fontFamily: "monospace", color: "var(--text-primary)" }}>{title}</div>}
     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      {isInformChart && <span style={{ fontSize: 13, fontWeight: 800, color: "#0f766e", background: "rgba(20,184,166,0.12)", border: "1px solid rgba(20,184,166,0.32)", borderRadius: 4, padding: "1px 6px" }}>📋 인폼</span>}
       {cfg._oos > 0 && <span style={{ fontSize: 14, fontWeight: 700, color: WHITE, background: BAD.fg, borderRadius: 4, padding: "1px 5px" }}>OOS: {cfg._oos}</span>}
       <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{points.length.toLocaleString()} 개 점</span>
       {computedAt && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{timeAgo(computedAt)}</span>}
@@ -1006,6 +1049,49 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
   /* ── Heatmap (2D binned grid) ── */
   if (type === "heatmap") {
     const meta = cfg._heatmap_meta || {};
+    if (meta.kind === "categorical") {
+      const xValues = (Array.isArray(meta.x_values) && meta.x_values.length ? meta.x_values : [...new Set(points.map(p => String(p.x || "")))].filter(Boolean)).slice(0, 40);
+      const yValues = (Array.isArray(meta.y_values) && meta.y_values.length ? meta.y_values : [...new Set(points.map(p => String(p.y || "")))].filter(Boolean)).slice(0, 40);
+      const valueMap = new Map(points.map(p => [`${p.x}|||${p.y}`, p]));
+      const maxCnt = Math.max(1, ...points.map(p => num(p.cnt)));
+      const W = 560, H = Math.max(320, plotBoxHeight);
+      const pad = { t: 20, r: 58, b: 78, l: 112 };
+      const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+      const cellW = cw / Math.max(1, xValues.length);
+      const cellH = ch / Math.max(1, yValues.length);
+      const heatColor = (cnt) => {
+        if (!cnt) return "rgba(148,163,184,0.08)";
+        const t = Math.pow(num(cnt) / maxCnt, 0.62);
+        const r = Math.round(37 + 210 * t);
+        const g = Math.round(99 + 70 * (1 - Math.abs(t - 0.45)));
+        const b = Math.round(235 - 170 * t);
+        return `rgb(${r},${g},${b})`;
+      };
+      return (<div style={panelStyle()}>
+        {Header}{Tip}
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} ref={svgRef} onMouseLeave={() => setTip(null)} style={{ display: "block" }}>
+          {yValues.map((yv, yi) => xValues.map((xv, xi) => {
+            const p = valueMap.get(`${xv}|||${yv}`) || { x: xv, y: yv, cnt: 0 };
+            const x = pad.l + xi * cellW;
+            const y = pad.t + yi * cellH;
+            return <rect key={`${xv}-${yv}`} x={x} y={y} width={Math.max(1, cellW - 1)} height={Math.max(1, cellH - 1)} fill={heatColor(p.cnt)} rx={2}
+              onMouseMove={e => { const r = svgRef.current.getBoundingClientRect(); setTip({ x: e.clientX - r.left, y: e.clientY - r.top, lines: [`${meta.y_label || "Y"}: ${yv}`, `${meta.x_label || "X"}: ${xv}`, `값: ${fmt(p.cnt)}`] }); }}
+              style={{ cursor: "pointer" }} />;
+          }))}
+          {yValues.map((yv, yi) => <text key={yv} x={pad.l - 8} y={pad.t + yi * cellH + cellH / 2 + 3} textAnchor="end" fill="var(--text-secondary)" fontSize={9}>{String(yv).slice(0, 18)}</text>)}
+          {xValues.map((xv, xi) => {
+            const x = pad.l + xi * cellW + cellW / 2;
+            const y = pad.t + ch + 12;
+            return <text key={xv} x={x} y={y} textAnchor="end" fill="var(--text-secondary)" fontSize={8} transform={`rotate(-55,${x},${y})`}>{String(xv).slice(0, 16)}</text>;
+          })}
+          <line x1={pad.l} y1={pad.t} x2={pad.l} y2={pad.t + ch} stroke="var(--text-secondary)" strokeWidth={0.5} opacity={0.5} />
+          <line x1={pad.l} y1={pad.t + ch} x2={pad.l + cw} y2={pad.t + ch} stroke="var(--text-secondary)" strokeWidth={0.5} opacity={0.5} />
+          {(meta.x_label || xL) && <text x={pad.l + cw / 2} y={H - 4} textAnchor="middle" fill="var(--accent)" fontSize={12} fontWeight={700}>{meta.x_label || xL}</text>}
+          {(meta.y_label || yL) && <text x={12} y={pad.t + ch / 2} transform={`rotate(-90,12,${pad.t + ch / 2})`} fill="var(--accent)" fontSize={12} fontWeight={700} textAnchor="middle">{meta.y_label || yL}</text>}
+          <text x={W - pad.r + 18} y={pad.t + 8} fill="var(--text-secondary)" fontSize={9}>max {fmt(maxCnt)}</text>
+        </svg>
+      </div>);
+    }
     const maxCnt = Math.max(1, ...points.map(p => num(p.cnt)));
     const nBins = meta.n_bins || 20;
     const W = 420, H = Math.max(320, plotBoxHeight);
@@ -1476,6 +1562,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
   // v8.5.0: 내가 속한 그룹 목록 (관리자는 전체).
   const [myGroups, setMyGroups] = useState([]);
   const u = (k, v) => setForm({ ...form, [k]: v });
+  const isInformSource = String(form.source || "").toLowerCase() === "inform";
   useEffect(() => { sf(API + "/products").then(d => setSources(d.products || [])).catch(() => { }); }, []);
   useEffect(() => { sf("/api/groups/list").then(d => setMyGroups(d.groups || [])).catch(() => setMyGroups([])); }, []);
   // v8.8.2: /columns URL builder — base_file/root_parquet/hive 공통 진입점. 소스 타입 누락돼도 file 또는 root+product 로 fallback.
@@ -1493,15 +1580,17 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
     return null;
   };
   useEffect(() => {
+    if (isInformSource) { setColumns([]); setColumnsError(""); setColumnsLoading(false); return; }
     const url = colUrl(form);
     if (!url) { setColumns([]); setColumnsError(""); setColumnsLoading(false); return; }
     setColumnsLoading(true); setColumnsError("");
     sf(url)
       .then(d => { setColumns(d.columns || []); setColumnsLoading(false); })
       .catch(e => { setColumns([]); setColumnsError((e && e.message) || "컬럼 로드 실패"); setColumnsLoading(false); });
-  }, [form.root, form.product, form.file, form.source_type]);
+  }, [form.root, form.product, form.file, form.source_type, isInformSource]);
   // v8.4.3: join 소스별 columns 프리페치. 소스 바뀌거나 추가될 때만 조회.
   useEffect(() => {
+    if (isInformSource) return;
     (form.joins || []).forEach((j, i) => {
       if (joinColumns[i] && joinColumns[i]._for === JSON.stringify({ s: j.source_type, r: j.root, p: j.product, f: j.file })) return;
       const sig = JSON.stringify({ s: j.source_type, r: j.root, p: j.product, f: j.file });
@@ -1509,7 +1598,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
       if (!q) return;
       sf(q).then(d => setJoinColumns(prev => ({ ...prev, [i]: Object.assign([...(d.columns || [])], { _for: sig }) }))).catch(() => { });
     });
-  }, [JSON.stringify((form.joins || []).map(j => ({ s: j.source_type, r: j.root, p: j.product, f: j.file })))]);
+  }, [JSON.stringify((form.joins || []).map(j => ({ s: j.source_type, r: j.root, p: j.product, f: j.file }))), isInformSource]);
   // Main + joined columns — joined 은 suffix 붙여 중복 방지, X/Y/Filter/색상 등 어디서든 선택 가능.
   const allColumns = useMemo(() => {
     const out = [...columns];
@@ -1533,9 +1622,9 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
   };
   const doSave = () => {
     const payload = { ...form };
-    ["days", "bin_count", "point_size", "limit_points", "width", "height"].forEach(k => { if (payload[k] === "" || payload[k] === undefined) payload[k] = null; else if (typeof payload[k] === "string") payload[k] = parseInt(payload[k]) || null; });
+    ["days", "bin_count", "point_size", "limit_points", "width", "height", "top_n"].forEach(k => { if (payload[k] === "" || payload[k] === undefined) payload[k] = null; else if (typeof payload[k] === "string") payload[k] = parseInt(payload[k]) || null; });
     ["bin_width", "opacity", "usl", "lsl", "target"].forEach(k => { if (payload[k] === "" || payload[k] === undefined) payload[k] = null; else if (typeof payload[k] === "string") payload[k] = parseFloat(payload[k]) || null; });
-    delete payload._spc; delete payload._oos;
+    delete payload._spc; delete payload._oos; delete payload._heatmap_meta; delete payload._inform_meta;
     onSave(payload);
   };
   const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
@@ -1581,6 +1670,50 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
           {CHART_HEIGHT_UNITS.map(v => <option key={v} value={v}>{v}</option>)}
         </select></div>
     </div>
+    {isInformSource ? (
+      <div style={{ marginBottom: 10, padding: 12, borderRadius: 8, border: "1px solid rgba(20,184,166,0.28)", background: "rgba(20,184,166,0.07)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
+          <span style={{ fontSize: 14, fontWeight: 800, color: "#0f766e" }}>📋 인폼 데이터</span>
+          <span style={{ fontSize: 13, color: "var(--text-secondary)", fontFamily: "monospace" }}>{form.period || "all"}</span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 8, marginBottom: 8 }}>
+          <div><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Metric</div>
+            <select value={form.metric || "count"} onChange={e => u("metric", e.target.value)} style={S}>
+              {INFORM_METRIC_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+            </select></div>
+          <div><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Group by</div>
+            <select value={form.groupby || "module"} onChange={e => u("groupby", e.target.value)} style={S}>
+              {INFORM_GROUPBY_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+            </select></div>
+          <div><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Period</div>
+            <select value={form.period || "all"} onChange={e => u("period", e.target.value)} style={S}>
+              <option value="all">전체</option><option value="7d">최근 7일</option><option value="30d">최근 30일</option><option value="90d">최근 90일</option>
+            </select></div>
+          <div><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Top N</div>
+            <input type="number" min="0" value={form.top_n || ""} onChange={e => u("top_n", e.target.value)} placeholder="전체" style={S} /></div>
+          <div><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Product filter</div>
+            <input value={form.inform_product || ""} onChange={e => u("inform_product", e.target.value)} placeholder="전체" style={S} /></div>
+          <div><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Module filter</div>
+            <input value={form.inform_module || ""} onChange={e => u("inform_module", e.target.value)} placeholder="전체" style={S} /></div>
+          <div><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>X group</div>
+            <select value={form.x_groupby || ""} onChange={e => u("x_groupby", e.target.value)} style={S}>
+              <option value="">사용 안 함</option>{INFORM_GROUPBY_OPTIONS.filter(([v]) => !["first_reply_bucket","pending_table","rate_kind"].includes(v)).map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+            </select></div>
+          <div><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Y group</div>
+            <select value={form.y_groupby || ""} onChange={e => u("y_groupby", e.target.value)} style={S}>
+              <option value="">사용 안 함</option>{INFORM_GROUPBY_OPTIONS.filter(([v]) => !["first_reply_bucket","pending_table","rate_kind"].includes(v)).map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+            </select></div>
+          <div><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Series group</div>
+            <select value={form.series_groupby || ""} onChange={e => u("series_groupby", e.target.value)} style={S}>
+              <option value="">사용 안 함</option>{INFORM_GROUPBY_OPTIONS.filter(([v]) => !["first_reply_bucket","pending_table","rate_kind"].includes(v)).map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+            </select></div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>X 라벨</div><input value={form.x_label || ""} onChange={e => u("x_label", e.target.value)} style={S} /></div>
+          <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Y 라벨</div><input value={form.y_label || ""} onChange={e => u("y_label", e.target.value)} style={S} /></div>
+        </div>
+      </div>
+    ) : <>
     <div style={{ marginBottom: 8 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>데이터 소스</div>
       <select value={curLabel} onChange={e => selectSource(e.target.value)} style={S}>
         <option value="">-- 선택 --</option>
@@ -1715,6 +1848,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
       {form.chart_type === "binning" && <div style={{ flex: 1 }}><div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2 }}>Bin 너비</div>
         <input type="number" step="0.01" value={form.bin_width || ""} onChange={e => u("bin_width", e.target.value)} style={S} placeholder="자동" /></div>}
     </div>}
+    </>}
         {/* Advanced options */}
     <div style={{ marginBottom: 8 }}>
       <span onClick={() => setShowAdv(!showAdv)} style={{ fontSize: 14, color: "var(--accent)", cursor: "pointer" }}>{showAdv ? "▼" : "▶"} 고급 설정</span>
@@ -1807,7 +1941,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
       </div>}
     </div>
     {/* Preview */}
-    <div style={{ marginBottom: 12 }}>
+    {!isInformSource && <div style={{ marginBottom: 12 }}>
       <button onClick={runPreview} disabled={prevLoading} style={{ padding: "6px 16px", borderRadius: 5, border: `1px solid ${BLUE.fg}`, background: BLUE.bg, color: BLUE.fg, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
         {prevLoading ? "..." : "미리보기 (10행)"}</button>
       {preview && !preview.error && <div style={{ marginTop: 8, background: "var(--bg-primary)", borderRadius: 6, border: "1px solid var(--border)", padding: 8, maxHeight: 180, overflow: "auto" }}>
@@ -1818,12 +1952,69 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
         </table>
       </div>}
       {preview?.error && <div style={{ marginTop: 6, fontSize: 14, color: BAD.fg }}>{preview.error}</div>}
-    </div>
+    </div>}
     <div style={{ display: "flex", gap: 8 }}>
       <button onClick={doSave} style={{ flex: 1, padding: 8, borderRadius: 6, border: "none", background: "var(--accent)", color: WHITE, fontWeight: 600, cursor: "pointer" }}>저장</button>
       <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>취소</button>
     </div>
   </div>);
+}
+
+function InformPresetThumb({ chartType }) {
+  const bars = [22, 38, 28, 50, 34];
+  if (chartType === "donut") {
+    return <div style={{ height: 64, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ width: 46, height: 46, borderRadius: "50%", background: `conic-gradient(${BLUE.fg} 0 42%, ${GREEN.fg} 42% 72%, ${WARN.fg} 72% 100%)`, display: "grid", placeItems: "center" }}>
+        <div style={{ width: 24, height: 24, borderRadius: "50%", background: "var(--bg-card)" }} />
+      </div>
+    </div>;
+  }
+  if (chartType === "heatmap") {
+    return <div style={{ height: 64, display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 3 }}>
+      {Array.from({ length: 24 }).map((_, i) => <span key={i} style={{ borderRadius: 3, background: SERIES[(i + Math.floor(i / 6)) % SERIES.length], opacity: 0.18 + ((i * 7) % 9) / 12 }} />)}
+    </div>;
+  }
+  if (chartType === "table") {
+    return <div style={{ height: 64, display: "grid", gridTemplateRows: "repeat(5,1fr)", gap: 4 }}>
+      {Array.from({ length: 5 }).map((_, i) => <span key={i} style={{ borderRadius: 4, background: i === 0 ? "rgba(20,184,166,0.18)" : "rgba(148,163,184,0.16)", border: "1px solid rgba(148,163,184,0.20)" }} />)}
+    </div>;
+  }
+  if (chartType === "line") {
+    return <svg viewBox="0 0 120 64" width="100%" height={64}>
+      <polyline points="6,48 30,38 54,42 78,22 112,28" fill="none" stroke={BLUE.fg} strokeWidth="3" />
+      {[6,30,54,78,112].map((x, i) => <circle key={x} cx={x} cy={[48,38,42,22,28][i]} r="3" fill={GREEN.fg} />)}
+    </svg>;
+  }
+  return <div style={{ height: 64, display: "flex", alignItems: "end", gap: 6 }}>
+    {bars.map((h, i) => <span key={i} style={{ flex: 1, height: h, borderRadius: "4px 4px 2px 2px", background: SERIES[i % SERIES.length], opacity: 0.78 }} />)}
+  </div>;
+}
+
+function InformPresetLibrary({ open, onClose, onAdd }) {
+  if (!open) return null;
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.46)", zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ width: "min(1180px, 96vw)", maxHeight: "88vh", overflow: "auto", borderRadius: 10, border: "1px solid var(--border)", background: "var(--bg-secondary)", boxShadow: "0 24px 60px rgba(15,23,42,0.28)", padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 900, color: "var(--text-primary)" }}>인폼 차트 라이브러리</div>
+            <div style={{ marginTop: 3, fontSize: 14, color: "var(--text-secondary)" }}>12개 preset · period 기본 전체</div>
+          </div>
+          <button onClick={onClose} style={{ border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-secondary)", borderRadius: 6, padding: "6px 10px", cursor: "pointer" }}>닫기</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 12 }}>
+          {INFORM_CHART_PRESETS.map((preset) => (
+            <div key={preset.id} style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)", padding: 12, minWidth: 0, display: "flex", flexDirection: "column", gap: 9 }}>
+              <InformPresetThumb chartType={preset.cfg.chart_type} />
+              <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={preset.label}>{preset.label}</div>
+              <div style={{ minHeight: 36, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.4 }}>{preset.description}</div>
+              <button onClick={() => onAdd(preset)} style={{ marginTop: "auto", border: "none", borderRadius: 6, padding: "7px 10px", cursor: "pointer", background: "var(--accent)", color: WHITE, fontWeight: 800 }}>추가</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ═══ Main Dashboard ═══ */
@@ -1835,6 +2026,7 @@ export default function My_Dashboard({ user }) {
   const [snapshots, setSnapshots] = useState({});
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
+  const [informLibraryOpen, setInformLibraryOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const isAdmin = user?.role === "admin";
   const canEdit = isAdmin || user?.chart_edit === true;  // admin or chart_edit permission
@@ -1866,6 +2058,18 @@ export default function My_Dashboard({ user }) {
   }, []);
   useEffect(() => { load(); const ms = Math.max(1, refreshMin) * 60 * 1000; const iv = setInterval(load, ms); return () => clearInterval(iv); }, [refreshMin]);
   const saveChart = (form) => sf(API + "/charts/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) }).then(() => { setEditing(null); load(); }).catch(e => alert(e.message));
+  const addInformPreset = (preset) => {
+    const cfg = {
+      ...DEFAULT_CHART_FORM,
+      ...(preset?.cfg || {}),
+      id: "",
+      source: "inform",
+      source_type: "inform",
+      no_schedule: false,
+    };
+    setInformLibraryOpen(false);
+    saveChart(cfg);
+  };
   const deleteChart = (id) => { if (!confirm("삭제하시겠습니까?")) return; sf(API + "/charts/delete?chart_id=" + id, { method: "POST" }).then(load); };
   const doRefresh = () => { setRefreshing(true); sf(API + "/refresh", { method: "POST" }).then(() => setTimeout(() => { load(); setRefreshing(false); }, 3000)).catch(() => setRefreshing(false)); };
 
@@ -2158,6 +2362,7 @@ export default function My_Dashboard({ user }) {
           <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>밀도</span>
           {[["compact","촘촘"],["comfortable","기본"],["presentation","넓게"]].map(([k,l])=><span key={k} onClick={()=>{setLayoutDensity(k);localStorage.setItem("flow_dash_density",k);}} style={{cursor:"pointer",fontSize:14,padding:"2px 8px",borderRadius:4,background:layoutDensity===k?"var(--accent-glow)":"transparent",color:layoutDensity===k?"var(--accent)":"var(--text-secondary)",fontWeight:layoutDensity===k?700:500}}>{l}</span>)}
         </div>
+        {canEdit && <Button variant="subtle" onClick={() => setInformLibraryOpen(true)}>+ 인폼 차트 추가</Button>}
         {canEdit && <Button variant="primary" onClick={() => setEditing({})}>+ 차트 추가</Button>}
         {/* v8.7.4: 전 탭 톱니 좌하단 통일 */}
         <PageGear title="대시보드 설정" canEdit={isAdmin} position="bottom-left">
@@ -2171,6 +2376,7 @@ export default function My_Dashboard({ user }) {
       </div>}
     />
     {editing !== null && <ChartEditor cfg={editing} onSave={saveChart} onClose={() => setEditing(null)} isAdmin={isAdmin} />}
+    <InformPresetLibrary open={informLibraryOpen} onClose={() => setInformLibraryOpen(false)} onAdd={addInformPreset} />
     <div style={{ paddingRight: 2 }}>
     <DashboardSectionNav
       view={dashboardView}

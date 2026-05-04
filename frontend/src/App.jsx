@@ -11,7 +11,22 @@ import { sf, postJson } from "./lib/api";
 class ErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { error: null }; }
   static getDerivedStateFromError(error) { return { error }; }
-  componentDidCatch(error, info) { console.error("[flow page crash]", error, info); }
+  componentDidCatch(error, info) {
+    console.error("[flow page crash]", error, info);
+    const msg = String(error?.message || error || "");
+    const chunkLike = /dynamically imported|module script|loading chunk|failed to fetch/i.test(msg);
+    if (chunkLike) {
+      try {
+        const key = "flow:chunk-reload:" + window.location.pathname;
+        if (sessionStorage.getItem(key) !== "1") {
+          sessionStorage.setItem(key, "1");
+          window.location.reload();
+        }
+      } catch (_) {
+        window.location.reload();
+      }
+    }
+  }
   render() {
     if (this.state.error) {
       return (<div style={{padding:"40px 32px",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif",maxWidth:720}}>
@@ -24,6 +39,52 @@ class ErrorBoundary extends Component {
     }
     return this.props.children;
   }
+}
+
+function PageLoadingFallback({ tab }) {
+  const [stalled, setStalled] = useState(false);
+
+  useEffect(() => {
+    setStalled(false);
+    const id = setTimeout(() => {
+      const key = "flow:page-reload:" + (tab || window.location.pathname || "home");
+      try {
+        if (sessionStorage.getItem(key) !== "1") {
+          sessionStorage.setItem(key, "1");
+          window.location.reload();
+          return;
+        }
+      } catch (_) {
+        // If sessionStorage is blocked, fall through to the recovery panel.
+      }
+      setStalled(true);
+    }, 9000);
+    return () => clearTimeout(id);
+  }, [tab]);
+
+  if (!stalled) return <Loading text="페이지 로딩..." />;
+  return (
+    <div style={{padding:32,maxWidth:520,margin:"64px auto",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif"}}>
+      <div style={{fontSize:16,fontWeight:900,color:"var(--accent)",marginBottom:8}}>페이지 파일을 다시 확인해야 합니다</div>
+      <div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.6,marginBottom:16}}>
+        앱이 갱신된 직후 브라우저가 이전 화면 파일을 들고 있으면 페이지 로딩이 멈출 수 있습니다.
+      </div>
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--accent)",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:800,cursor:"pointer",marginRight:8}}
+      >
+        다시 불러오기
+      </button>
+      <button
+        type="button"
+        onClick={() => { window.history.replaceState({}, "", "/"); window.location.reload(); }}
+        style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:"pointer"}}
+      >
+        홈으로 복구
+      </button>
+    </div>
+  );
 }
 
 function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
@@ -520,7 +581,7 @@ export default function App() {
       <div style={{flex:1,minHeight:0,overflow:tab==="dashboard"?"hidden":"auto"}}>
         {Page ? (
           <ErrorBoundary key={tab}>
-            <Suspense fallback={<Loading text="페이지 로딩..." />}>
+            <Suspense fallback={<PageLoadingFallback tab={tab} />}>
               <Page onNavigate={nav} user={user} />
             </Suspense>
           </ErrorBoundary>

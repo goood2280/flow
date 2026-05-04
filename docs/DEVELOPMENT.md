@@ -87,7 +87,7 @@
 - 개발자가 따라야 할 절차가 바뀌면 이 문서를 수정한다.
 - 화면별 목표나 추가 기준이 바뀌면 `docs/FEATURE_GOALS.md`를 수정한다.
 - 사내 포트/root/백업/preflight가 바뀌면 `docs/SOFT_LANDING_INTERNAL.md`를 수정한다.
-- 긴 changelog는 `VERSION.json`에 두고 README에는 최신 요약만 둔다.
+- 버전 메타는 `VERSION.json`에 두고 README에는 실행/구조 정보만 둔다.
 
 ## Test And Verify
 

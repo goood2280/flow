@@ -18,7 +18,8 @@ def _install_matrix_fixtures(monkeypatch):
             "id": "gate_completed",
             "product": "ML_TABLE_PRODA",
             "root_lot_id": "R1000",
-            "lot_id": "R1000",
+            "lot_id": "R1000A.1",
+            "fab_lot_id_at_save": "R1000A.1",
             "module": "GATE",
             "reason": "PEMS",
             "author": "alice",
@@ -30,7 +31,8 @@ def _install_matrix_fixtures(monkeypatch):
             "id": "gate_received_newer",
             "product": "PRODA",
             "root_lot_id": "R1000",
-            "lot_id": "R1000",
+            "lot_id": "R1000A.1",
+            "fab_lot_id_at_save": "R1000A.1",
             "module": "GATE",
             "reason": "PEMS",
             "author": "bob",
@@ -41,7 +43,8 @@ def _install_matrix_fixtures(monkeypatch):
             "id": "sti_received",
             "product": "PRODA",
             "root_lot_id": "R1000",
-            "lot_id": "R1000",
+            "lot_id": "R1000A.1",
+            "fab_lot_id_at_save": "R1000A.1",
             "module": "STI",
             "reason": "PEMS",
             "author": "carol",
@@ -52,7 +55,8 @@ def _install_matrix_fixtures(monkeypatch):
             "id": "pc_progress",
             "product": "PRODA",
             "root_lot_id": "R1000",
-            "lot_id": "R1000",
+            "lot_id": "R1000A.1",
+            "fab_lot_id_at_save": "R1000A.1",
             "module": "PC",
             "reason": "PEMS",
             "author": "dave",
@@ -63,7 +67,8 @@ def _install_matrix_fixtures(monkeypatch):
             "id": "other_lot",
             "product": "PRODA",
             "root_lot_id": "R1010",
-            "lot_id": "R1010",
+            "lot_id": "R1010A.1",
+            "fab_lot_id_at_save": "R1010A.1",
             "module": "GATE",
             "reason": "PEMS",
             "author": "erin",
@@ -74,7 +79,8 @@ def _install_matrix_fixtures(monkeypatch):
             "id": "old_excluded",
             "product": "PRODA",
             "root_lot_id": "R9999",
-            "lot_id": "R9999",
+            "lot_id": "R9999A.1",
+            "fab_lot_id_at_save": "R9999A.1",
             "module": "GATE",
             "reason": "PEMS",
             "author": "frank",
@@ -95,15 +101,15 @@ def test_lot_matrix_shape_state_priority_and_progress(monkeypatch):
 
     assert out["module_order"] == ["GATE", "STI", "PC"]
     assert out["products"][0]["product"] == "PRODA"
-    lots = {row["root_lot_id"]: row for row in out["products"][0]["lots"]}
-    assert set(lots) == {"R1000", "R1010"}
+    lots = {row["fab_lot_id"]: row for row in out["products"][0]["lots"]}
+    assert set(lots) == {"R1000A.1", "R1010A.1"}
 
-    r1000 = lots["R1000"]
+    r1000 = lots["R1000A.1"]
     assert r1000["progress"] == {"done": 1, "total": 3}
-    assert r1000["modules"]["GATE"]["state"] == "completed"
+    assert r1000["modules"]["GATE"]["state"] == "apply_confirmed"
     assert r1000["modules"]["GATE"]["inform_id"] == "gate_completed"
-    assert r1000["modules"]["STI"]["state"] == "received"
-    assert r1000["modules"]["PC"]["state"] == "in_progress"
+    assert r1000["modules"]["STI"]["state"] == "registered"
+    assert r1000["modules"]["PC"]["state"] == "mail_completed"
     assert r1000["last_update"] == "2099-01-11T11:00:00"
 
 
@@ -111,7 +117,7 @@ def test_lot_matrix_product_days_and_search_filters(monkeypatch):
     _install_matrix_fixtures(monkeypatch)
 
     searched = informs.lot_matrix(object(), product="PRODA", days=3650, search="101")
-    assert [row["root_lot_id"] for row in searched["products"][0]["lots"]] == ["R1010"]
+    assert [row["fab_lot_id"] for row in searched["products"][0]["lots"]] == ["R1010A.1"]
 
     missing_product = informs.lot_matrix(object(), product="PRODB", days=3650, search="")
     assert missing_product["products"] == []
@@ -127,4 +133,62 @@ def test_lot_matrix_is_readable_by_non_admin_user(monkeypatch):
 
     out = informs.lot_matrix(object(), product="PRODA", days=3650, search="100")
 
-    assert out["products"][0]["lots"][0]["root_lot_id"] == "R1000"
+    assert out["products"][0]["lots"][0]["fab_lot_id"] == "R1000A.1"
+
+
+def test_lot_matrix_expands_legacy_multi_fab_snapshot(monkeypatch):
+    items = [
+        {
+            "id": "multi",
+            "product": "PRODA",
+            "root_lot_id": "R3000",
+            "lot_id": "R3000",
+            "fab_lot_id_at_save": "R3000A.1, R3000A.2",
+            "module": "GATE",
+            "reason": "PEMS",
+            "author": "alice",
+            "flow_status": "received",
+            "created_at": "2099-01-12T09:00:00",
+        },
+    ]
+    monkeypatch.setattr(informs, "_load_upgraded", lambda: items)
+    monkeypatch.setattr(informs, "_load_config", lambda: {"modules": ["GATE"]})
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
+
+    out = informs.lot_matrix(object(), product="PRODA", days=3650, search="R3000A")
+
+    lots = {row["fab_lot_id"]: row for row in out["products"][0]["lots"]}
+    assert set(lots) == {"R3000A.1", "R3000A.2"}
+
+
+def test_lot_matrix_prefers_saved_fab_lot_over_embed_lot_labels(monkeypatch):
+    items = [
+        {
+            "id": "split_one",
+            "product": "PRODA",
+            "root_lot_id": "R4000",
+            "lot_id": "R4000A.1",
+            "fab_lot_id_at_save": "R4000A.1",
+            "module": "GATE",
+            "reason": "PEMS",
+            "author": "alice",
+            "flow_status": "received",
+            "created_at": "2099-01-12T09:00:00",
+            "embed_table": {
+                "st_view": {
+                    "header_groups": [
+                        {"label": "R4000A.1", "span": 1},
+                        {"label": "R4000A.2", "span": 1},
+                    ],
+                    "wafer_fab_list": ["R4000A.1", "R4000A.2"],
+                },
+            },
+        },
+    ]
+    monkeypatch.setattr(informs, "_load_upgraded", lambda: items)
+    monkeypatch.setattr(informs, "_load_config", lambda: {"modules": ["GATE"]})
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
+
+    out = informs.lot_matrix(object(), product="PRODA", days=3650, search="R4000")
+
+    assert [row["fab_lot_id"] for row in out["products"][0]["lots"]] == ["R4000A.1"]

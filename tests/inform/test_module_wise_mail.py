@@ -88,6 +88,9 @@ def test_send_mail_auto_groups_empty_recipients_by_inform_module(tmp_path, monke
     assert res["auto_module_used"] is True
     assert res["to"] == ["alice@example.test", "bob@example.test"]
     assert res["subject"] == "[plan 적용 통보] PRODA R1000 - GATE"
+    saved = informs._load()[0]
+    assert saved["flow_status"] == "mail_completed"
+    assert saved["status_history"][-1]["status"] == "mail_completed"
     payload = res["preview_data"]
     assert payload["receiverList"] == [
         {"email": "alice@example.test", "recipientType": "TO", "seq": 1},
@@ -95,11 +98,13 @@ def test_send_mail_auto_groups_empty_recipients_by_inform_module(tmp_path, monke
     ]
 
     html = payload["content"]
-    assert "안녕하세요. GATE팀에 다음과 같이 plan 을 적용할 예정입니다." in html
-    assert "사유: PEMS" in html
-    assert "작성자: lotmgr" in html
-    assert "작성시간: 2026-04-30 10:20" in html
-    assert "Lot 리스트: R1000" in html
+    assert "안녕하세요" not in html
+    assert "사유: PEMS" not in html
+    assert "작성자" in html
+    assert "writer" in html
+    assert "작성시간" in html
+    assert "2026-04-30 10:20" in html
+    assert "Lot 리스트" not in html
 
 
 def test_send_mail_explicit_to_users_does_not_auto_group(tmp_path, monkeypatch):
@@ -181,7 +186,7 @@ def test_mail_preview_uses_same_auto_module_recipients(tmp_path, monkeypatch):
     assert preview["subject"] == "[plan 적용 통보] PRODA R1000 - GATE"
 
 
-def test_module_knob_highlight_renders_yellow_cells(tmp_path, monkeypatch):
+def test_module_knob_highlight_does_not_render_yellow_cells(tmp_path, monkeypatch):
     knob_map = tmp_path / "inform_module_knob_map.json"
     _write_json(knob_map, {"GATE": ["GATE_DOSE"]})
     monkeypatch.setattr(informs, "MODULE_KNOB_MAP_FILE", knob_map)
@@ -198,11 +203,10 @@ def test_module_knob_highlight_renders_yellow_cells(tmp_path, monkeypatch):
     }
 
     html = informs._render_embed_table_html(embed, module="GATE")
-    plain = informs._render_embed_table_html(embed, module="STI")
 
-    assert "background:#fff7cc" in html
-    assert "border:2px solid #ca8a04" in html
-    assert "background:#fff7cc" not in plain
+    assert "GATE_DOSE" in html
+    assert "background:#fff7cc" not in html
+    assert "border:2px solid #ca8a04" not in html
 
 
 def test_module_recipient_and_knob_map_apis(tmp_path, monkeypatch):

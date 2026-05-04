@@ -53,7 +53,7 @@ def test_module_summary_shape_counts_and_days_filter(monkeypatch):
     rows = informs.module_summary(object(), days=3650)
 
     assert rows == [
-        {"module": "GATE", "received": 1, "completed": 0, "in_progress": 1, "pending": 2},
-        {"module": "PC", "received": 0, "completed": 1, "in_progress": 0, "pending": 0},
-        {"module": "ET", "received": 0, "completed": 0, "in_progress": 0, "pending": 0},
+        {"module": "GATE", "registered": 1, "mail_completed": 1, "apply_confirmed": 0, "pending": 2, "received": 1, "in_progress": 1, "completed": 0},
+        {"module": "PC", "registered": 0, "mail_completed": 0, "apply_confirmed": 1, "pending": 0, "received": 0, "in_progress": 0, "completed": 1},
+        {"module": "ET", "registered": 0, "mail_completed": 0, "apply_confirmed": 0, "pending": 0, "received": 0, "in_progress": 0, "completed": 0},
     ]

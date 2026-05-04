@@ -7,7 +7,7 @@ Fab data analytics + plan vs actual tracking platform.
 - 현재 버전: **v9.0.4**
 - 기본 실행 포트: **8080**
 - 기본 admin: `hol / hol12345!`
-- 상세 변경 이력: [VERSION.json](VERSION.json)
+- 버전 메타: [VERSION.json](VERSION.json)
 
 ## 먼저 읽을 것
 
@@ -27,7 +27,7 @@ Fab data analytics + plan vs actual tracking platform.
 
 | 페이지 | 현재 역할 |
 |---|---|
-| 홈 | 버전, changelog, contact bell, 공지 배너, Flow-i 대화형 프롬프트/LLM 연결 상태 |
+| 홈 | 버전, contact bell, 공지 배너, Flow-i 대화형 프롬프트/LLM 연결 상태 |
 | 파일탐색기 | DB root 파일 탐색, parquet/CSV preview, SQL filter, S3 동기화 상태, 기본 샘플 로드 |
 | 대시보드 | chart, fab progress, alert watch, snapshot, admin section visibility, lazy filter/join projection |
 | 스플릿 테이블 | root/fab lot cache, wafer 축 plan vs actual, diff, notes, related issues, XLSX export |
@@ -161,12 +161,6 @@ python -m pytest tests
 ```bash
 git diff --check
 ```
-
-## Latest Changes
-
-**9.0.4 (2026-04-29)**: Flow-i 홈 프롬프트를 대화형으로 정리하고 LLM 연결 확인/모델 표시/컨텍스트 전달을 보강했다. SplitTable/Tracker는 root_lot_id↔fab_lot_id 캐시와 수동 스캔, LOT 노트/related issue, 댓글·대댓글 삭제 권한을 정리했다. Dashboard/FileBrowser는 대용량 parquet 대응을 위해 lazy filter, join projection, preview/download cap을 보강했고, Admin monitor와 공통 Loading UX도 운영 기준으로 맞췄다.
-
-전체 내역은 [VERSION.json](VERSION.json)을 기준으로 한다.
 
 ## License
 

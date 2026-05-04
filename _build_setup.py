@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Builder: walks the flow source tree and emits setup.py as a
-self-contained installer (gzip+base64 embedded payloads).
+"""Build the Flow self-contained installer.
 
 Run from the flow/ directory:
 
@@ -9,51 +8,11 @@ Run from the flow/ directory:
 Output: overwrites setup.py at the repo root. Version is read from
 VERSION.json, so bump that first.
 
-v8.8.3 — 데이터 보존 whitelist 명시화.
-v8.8.16 — 파일탐색기 S3 동기화 설정(data_root/s3_ingest/*) 누락 보완.
-v8.8.17 — **데이터 보존 재설계 (code-only replacement)**:
-  1) 추출 직전 data_root 전체를 외부 디렉토리(~/.flow_backups/)에 자동 스냅샷.
-     (백업 디렉토리 이름은 기존 사용자 환경 호환성 위해 유지 — 이전 버전 스냅샷 복구 가능.)
-  2) 추출 후 data_root 의 모든 파일 SHA-256 diff 검증 — 변경된 파일이 있으면
-     즉시 스냅샷에서 복구하고 loud 경고.
-  3) `python setup.py restore [latest|<timestamp>]` 커맨드로 수동 복구 가능.
-  4) _write 가드는 기존 5레이어 유지 + logging 강화.
-  사용자 생성 데이터는 *절대* 번들에 포함되지 않으며, 기존 설치 위에
-  setup.py 를 재실행해도 아래 경로/패턴은 덮어쓰기 되지 않습니다:
-
-    1) 파일탐색기 S3 동기화 설정
-       - {data_root}/s3_ingest/config.json     (동기화 항목 목록 · target/s3_url/interval)
-       - {data_root}/s3_ingest/status.json     (마지막 실행 상태)
-       - {data_root}/s3_ingest/history.jsonl   (실행 이력)
-       - {data_root}/admin_settings.json       (AWS creds/프로파일 등)
-       - {data_root}/s3_sync_*.json, {data_root}/logs/s3_*.jsonl  (레거시)
-    2) 가입한 사용자 목록
-       - {data_root}/users.csv
-       - {data_root}/sessions/*.json, {data_root}/sessions/tokens.json
-    3) 만든 그룹들
-       - {data_root}/groups/groups.json
-       - {data_root}/mail_groups/*.json
-    4) 인폼 설정 (제품 카탈로그, DB루트, 모듈순서 등)
-       - {data_root}/informs/informs.json
-       - {data_root}/informs/config.json
-       - {data_root}/informs/product_contacts.json
-       - {data_root}/informs/*.json
-    5) 기타 config.json / admin_settings.json / 사용자 생성 데이터
-       - {data_root}/admin_settings.json
-       - {data_root}/settings.json
-       - {data_root}/dbmap/**      (TableMap 버전/아카이브)
-       - {data_root}/splittable/** (notes, source_config, ML_TABLE_*)
-       - {data_root}/dashboard_*.json
-       - {data_root}/tracker/**
-       - {data_root}/calendar/**, {data_root}/meetings/**, {data_root}/messages/**
-       - {data_root}/shares.json, {data_root}/uploads/**, {data_root}/logs/**
-       - {base_root} 전체 (Base/*.csv, *.parquet — 사용자 추가 rulebook)
-       - {db_root} 전체 (DB/** — 대용량 원천)
-       - {wafer_map_root} 전체
-
-  {data_root} 해석 순서:
-     FLOW_DATA_ROOT → (prod auto) → ./data/flow-data
-  모두 보호. 경로 정규화로 심볼릭링크 우회도 차단.
+The installer embeds source files only. It never bundles or overwrites
+runtime data under data/, FLOW_DATA_ROOT, FLOW_DB_ROOT, or
+FLOW_WAFER_MAP_ROOT. Before extraction it snapshots small config/state
+files to ~/.flow_backups and can restore them with
+`python setup.py restore [latest|<timestamp>]`.
 """
 import base64
 import gzip
@@ -86,10 +45,8 @@ INCLUDE_DIRS = [
 
 INCLUDE_FILES = [
     'README.md',
-    'CHANGELOG.md',
     'package.json',
     'package-lock.json',
-    # v8.7.6: VERSION.json / CHANGELOG.md 는 반드시 포함 — 홈 화면에 최신 버전·로그 표시용.
     'VERSION.json',
     'app.py',
     # Root import shims keep direct path/importlib loads stable after setup.py
@@ -183,11 +140,11 @@ def to_rel_posix(p):
 
 
 def installer_version_meta(version: dict) -> dict:
-    """Keep setup.py release text concise; detailed notes stay in CHANGELOG/Home."""
+    """Keep setup.py release text concise; VERSION.json remains the source."""
     return {
         "version": version.get("version", ""),
         "codename": version.get("codename", "flow"),
-        "changelog": [{
+        "release_notes": [{
             "version": version.get("version", ""),
             "date": version.get("date", ""),
             "title": "Flow app 운영 개선 통합 요약",
@@ -195,7 +152,7 @@ def installer_version_meta(version: dict) -> dict:
             "changes": [
                 "SplitTable, Tracker, Inform, Dashboard, Admin, Flow-i/LLM 연동, 대용량 DB 대응을 운영 흐름 기준으로 통합 정리.",
                 "사용자 데이터는 setup.py 번들에 포함하지 않고 기존 data/Base, data/DB, data/flow-data 및 설정/로그/캐시 파일을 보존.",
-                "세부 버전별 내역은 앱의 최근 변경사항, CHANGELOG.md, VERSION.json에서 확인.",
+                "버전 정보와 배포 메타는 VERSION.json을 기준으로 확인.",
             ],
         }],
     }
@@ -335,7 +292,7 @@ _PROTECTED_SEGMENTS = {{
 
 _ALLOWED_TOP_LEVEL = {{
     'backend', 'frontend', 'docs', 'scripts', 'app_v2', 'core', 'routers',
-    'app.py', 'README.md', 'CHANGELOG.md', 'VERSION.json', 'requirements.txt',
+    'app.py', 'README.md', 'VERSION.json', 'requirements.txt',
 }}
 
 

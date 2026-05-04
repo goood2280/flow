@@ -9,14 +9,15 @@
 | 1 | [../README.md](../README.md) | 설치, 실행, 전체 구조를 빠르게 확인할 때 |
 | 2 | [PRODUCT_PHILOSOPHY.md](PRODUCT_PHILOSOPHY.md) | 앱이 어떤 문제를 풀어야 하는지 정렬할 때 |
 | 3 | [FEATURE_GOALS.md](FEATURE_GOALS.md) | 화면별 목표와 기능 추가 기준을 볼 때 |
-| 4 | [ARCHITECTURE.md](ARCHITECTURE.md) | backend/frontend/data 구조와 책임 경계를 볼 때 |
-| 5 | [SEMICONDUCTOR_DIAGNOSIS_RCA.md](SEMICONDUCTOR_DIAGNOSIS_RCA.md) | 진단/RCA 지식, RAG Update, reformatter/TEG 반영 구조를 볼 때 |
-| 6 | [RAG/SEMICONDUCTOR_RAG_OPERATIONS.md](RAG/SEMICONDUCTOR_RAG_OPERATIONS.md) | 사내 지식/심층리서치를 Flow-i RAG에 넣고 검증하는 방법을 볼 때 |
-| 7 | [FLOW_UI_SYSTEM.md](FLOW_UI_SYSTEM.md) | Flow 전체 화면의 공통 UI 규칙과 표준 인폼 로그 화면을 볼 때 |
-| 8 | [WEB_CONCURRENCY_BUNDLE_GUIDE.md](WEB_CONCURRENCY_BUNDLE_GUIDE.md) | 동시성/번들 분리 후 웹 기능 사용법을 설명할 때 |
-| 9 | [DEVELOPMENT.md](DEVELOPMENT.md) | 코드를 수정하기 전 범위, 검증, 문서 반영 기준을 볼 때 |
-| 10 | [SOFT_LANDING_INTERNAL.md](SOFT_LANDING_INTERNAL.md) | 사내 서버 반입, 포트, data_root 보존, preflight를 볼 때 |
-| 11 | [PORTABLE_DEMO_DATA.md](PORTABLE_DEMO_DATA.md) | 사내/외부 이동 가능한 demo data 전략과 공개 반도체 데이터 후보를 볼 때 |
+| 4 | [flowi-core/README.md](flowi-core/README.md) | FileBrowser/SplitTable/Inform Log 중심으로 줄여서 이어받을 때 |
+| 5 | [ARCHITECTURE.md](ARCHITECTURE.md) | backend/frontend/data 구조와 책임 경계를 볼 때 |
+| 6 | [SEMICONDUCTOR_DIAGNOSIS_RCA.md](SEMICONDUCTOR_DIAGNOSIS_RCA.md) | 진단/RCA 지식, RAG Update, reformatter/TEG 반영 구조를 볼 때 |
+| 7 | [RAG/SEMICONDUCTOR_RAG_OPERATIONS.md](RAG/SEMICONDUCTOR_RAG_OPERATIONS.md) | 사내 지식/심층리서치를 Flow-i RAG에 넣고 검증하는 방법을 볼 때 |
+| 8 | [FLOW_UI_SYSTEM.md](FLOW_UI_SYSTEM.md) | Flow 전체 화면의 공통 UI 규칙과 표준 인폼 로그 화면을 볼 때 |
+| 9 | [WEB_CONCURRENCY_BUNDLE_GUIDE.md](WEB_CONCURRENCY_BUNDLE_GUIDE.md) | 동시성/번들 분리 후 웹 기능 사용법을 설명할 때 |
+| 10 | [DEVELOPMENT.md](DEVELOPMENT.md) | 코드를 수정하기 전 범위, 검증, 문서 반영 기준을 볼 때 |
+| 11 | [SOFT_LANDING_INTERNAL.md](SOFT_LANDING_INTERNAL.md) | 사내 서버 반입, 포트, data_root 보존, preflight를 볼 때 |
+| 12 | [PORTABLE_DEMO_DATA.md](PORTABLE_DEMO_DATA.md) | 사내/외부 이동 가능한 demo data 전략과 공개 반도체 데이터 후보를 볼 때 |
 
 소유자에게 구조와 요청 방법을 설명해야 하면 [OWNER_ARCHITECTURE_UPDATE_REPORT.md](OWNER_ARCHITECTURE_UPDATE_REPORT.md)를 사용한다.
 
@@ -48,6 +49,6 @@ python3 scripts/preflight_internal.py --write-probe
 
 - 새 문서를 만들기 전에 이 디렉터리의 기존 문서에 흡수 가능한지 확인한다.
 - 진입점 문서(`../README.md`, `docs/README.md`)는 링크와 실행 경로 중심으로 유지한다.
-- 긴 changelog는 `VERSION.json`에 둔다.
+- 버전 메타는 `VERSION.json`에 둔다.
 - 긴 분석 전문, 임시 계획, 생성 요청 캡처는 `archive/`로 보낸다.
 - `docs/README.md`는 100줄 이내로 유지한다.
