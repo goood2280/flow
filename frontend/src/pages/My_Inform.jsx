@@ -1855,6 +1855,7 @@ export default function My_Inform({ user }) {
   const [wizardSelectedSetIds, setWizardSelectedSetIds] = useState([]);
   const [wizardMailDraft, setWizardMailDraft] = useState({ subject: "", body: "", generatedFor: "" });
   const [wizardMailMeta, setWizardMailMeta] = useState({ recipients: [], knobMap: {} });
+  const wizardMailMetaRef = useRef({ recipients: [], knobMap: {} });
   const [mailDialogRoot, setMailDialogRoot] = useState(null);
 
   const [creating, setCreating] = useState(false);
@@ -1887,6 +1888,44 @@ export default function My_Inform({ user }) {
   const [bulkSelGroups, setBulkSelGroups] = useState([]);
   const [bulkRole, setBulkRole] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
+
+  const setWizardMailMetaSynced = (next) => {
+    if (typeof next === "function") {
+      setWizardMailMeta((prev) => {
+        const raw = next(prev) || {};
+        const resolved = raw && typeof raw === "object" ? raw : { recipients: [], knobMap: {} };
+        wizardMailMetaRef.current = resolved;
+        return resolved;
+      });
+      return;
+    }
+    const resolved = next && typeof next === "object" ? next : { recipients: [], knobMap: {} };
+    wizardMailMetaRef.current = resolved;
+    setWizardMailMeta(resolved);
+  };
+
+  const resolveWizardMailMetaForSubmit = () => {
+    const live = wizardMailMetaRef.current && typeof wizardMailMetaRef.current === "object" ? wizardMailMetaRef.current : {};
+    const selectedTo = uniqueClean(
+      (Array.isArray(live.to) && live.to.length) ? live.to : (Array.isArray(live.recipients) ? live.recipients : [])
+    );
+    return {
+      to: selectedTo,
+      recipients: selectedTo,
+      to_users: uniqueClean(Array.isArray(live.to_users) ? live.to_users : []),
+      groups: uniqueClean(Array.isArray(live.groups) ? live.groups : []),
+      extra_emails: uniqueClean(Array.isArray(live.extra_emails) ? live.extra_emails : []),
+      subject: String(live.subject || wizardMailDraft?.subject || "").trim(),
+      body: String(live.body || wizardMailDraft?.body || form.text || "").trim(),
+      __hydrated: Boolean(live.__hydrated),
+    };
+  };
+
+  useEffect(() => {
+    wizardMailMetaRef.current = wizardMailMeta && typeof wizardMailMeta === "object"
+      ? wizardMailMeta
+      : { recipients: [], knobMap: {} };
+  }, [wizardMailMeta]);
 
   const isAdmin = user?.role === "admin";
   const addCatalogProduct = async (rawProduct, { onAdded, onDuplicate } = {}) => {
@@ -1996,6 +2035,8 @@ export default function My_Inform({ user }) {
   };
 
   const openCreateWizard = () => {
+    setWizardMailDraft({ subject: "", body: "", generatedFor: "" });
+    setWizardMailMetaSynced({ recipients: [], knobMap: {} });
     setWizardLotSearch("");
     sf(API + "/config").then(d => setConstants(c => ({
       ...c,
@@ -2019,7 +2060,7 @@ export default function My_Inform({ user }) {
         if (Array.isArray(draft?.wizardSelectedSetIds)) setWizardSelectedSetIds(draft.wizardSelectedSetIds);
         if (Array.isArray(draft?.embedCustomCols)) setEmbedCustomCols(draft.embedCustomCols);
         if (draft?.wizardMailDraft) setWizardMailDraft(draft.wizardMailDraft);
-        if (draft?.wizardMailMeta) setWizardMailMeta(draft.wizardMailMeta);
+        if (draft?.wizardMailMeta) setWizardMailMetaSynced(draft.wizardMailMeta);
       }
     } catch (_) {}
     setCreating(true);
@@ -2335,24 +2376,25 @@ export default function My_Inform({ user }) {
       setWizardAttachMode("sets");
       setWizardSelectedSetIds([]);
       setWizardMailDraft({ subject: "", body: "", generatedFor: "" });
-      setWizardMailMeta({ recipients: [], knobMap: {} });
+      setWizardMailMetaSynced({ recipients: [], knobMap: {} });
       setWizardLotSearch("");
       setCreating(false); setMsg("");
       try { localStorage.removeItem(WIZARD_DRAFT_KEY); } catch (_) {}
       const created = results.find(r => r?.inform)?.inform;
       if (created?.id) {
-        const selectedTo = uniqueClean(wizardMailMeta?.to || wizardMailMeta?.recipients || []);
-        const selectedUsers = uniqueClean(wizardMailMeta?.to_users || []);
-        const selectedGroups = uniqueClean(wizardMailMeta?.groups || []);
-        const selectedExtras = uniqueClean(wizardMailMeta?.extra_emails || []);
+        const resolvedMailMeta = resolveWizardMailMetaForSubmit();
+        const selectedTo = uniqueClean(resolvedMailMeta?.to || []);
+        const selectedUsers = uniqueClean(resolvedMailMeta?.to_users || []);
+        const selectedGroups = uniqueClean(resolvedMailMeta?.groups || []);
+        const selectedExtras = uniqueClean(resolvedMailMeta?.extra_emails || []);
         const hasMailPrefill = selectedTo.length > 0 || selectedUsers.length > 0 || selectedGroups.length > 0 || selectedExtras.length > 0;
         const mailPrefill = hasMailPrefill ? {
           to: selectedTo,
           to_users: selectedUsers,
           groups: selectedGroups,
           extra_emails: selectedExtras,
-          subject: wizardMailMeta?.subject || wizardMailDraft.subject || "",
-          body: wizardMailMeta?.body || wizardMailDraft.body || form.text || "",
+          subject: resolvedMailMeta?.subject || wizardMailDraft.subject || "",
+          body: resolvedMailMeta?.body || wizardMailDraft.body || form.text || "",
         } : null;
         setSelectedRootId(created.id);
         setDetailTab(hasMailPrefill ? "mail" : "body");
@@ -2580,7 +2622,7 @@ export default function My_Inform({ user }) {
     const mod = (form.module || "").trim();
     const selectedLots = uniqueClean(form.fab_lot_ids || []);
     const lotLabel = selectedLots[0] || form.lot_id || "";
-    setWizardMailMeta({ recipients: [], knobMap: {} });
+    setWizardMailMetaSynced({ recipients: [], knobMap: {} });
     const key = [form.product, selectedLots.join(","), lotLabel, mod, form.text].join("|");
     setWizardMailDraft(d => {
       if (d.generatedFor === key && d.subject) return { ...d, body: form.text || "", generatedFor: key };
@@ -3221,12 +3263,17 @@ export default function My_Inform({ user }) {
           mailDraft={wizardMailDraft}
           setMailDraft={setWizardMailDraft}
           mailMeta={wizardMailMeta}
-          setMailMeta={setWizardMailMeta}
+          setMailMeta={setWizardMailMetaSynced}
           user={user}
           msg={msg}
           setMsg={setMsg}
           onSubmit={() => create().catch(() => {})}
-          onClose={() => { setCreating(false); setWizardLotSearch(""); setMsg(""); }}
+          onClose={() => {
+            setCreating(false);
+            setWizardLotSearch("");
+            setMsg("");
+            setWizardMailMetaSynced({ recipients: [], knobMap: {} });
+          }}
         />
       )}
       {mailDialogRoot && <MailDialog root={mailDialogRoot} user={user} reasonTemplates={constants.reason_templates || {}} onClose={() => setMailDialogRoot(null)} />}
@@ -4617,7 +4664,7 @@ function InformWizard({
     .find(v => Array.isArray(v)) || [];
   const mailSizeKb = Math.max(0.1, Math.round((new Blob([mailPreviewText]).size / 1024) * 10) / 10);
   useEffect(() => {
-    if (step !== 3 && step !== 4) return;
+    if (!setMailMeta) return;
     const extras = String(extraMailEmails || "")
       .split(/[,\s;]+/)
       .map(s => s.trim())

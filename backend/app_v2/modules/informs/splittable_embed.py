@@ -24,7 +24,15 @@ def ml_product_name(product: str) -> str:
 
 def looks_like_fab_lot(lot_id: str) -> bool:
     text = str(lot_id or "").strip()
-    return bool(text and re.search(r"[._\-/]", text))
+    if not text:
+        return False
+    if re.search(r"[._\-/]", text):
+        return True
+    # Root/FAB token styles often include dot/hash-like suffixes after root.
+    # Keep this in sync with frontend heuristics so both paths behave similarly.
+    if re.search(r"(?i)^[a-z0-9]+[._\-/][a-z0-9]+$", text):
+        return True
+    return False
 
 
 def _root_fallback(lot_id: str) -> str:
@@ -35,6 +43,16 @@ def _root_fallback(lot_id: str) -> str:
         first = re.split(r"[._\-/]", text, maxsplit=1)[0].strip()
         return first or text[:5]
     return text
+
+
+def _tokenize_lot_id(value: str) -> tuple[str, str]:
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    if re.search(r"[._\-/]", text):
+        root = re.split(r"[._\-/]", text, maxsplit=1)[0].strip()
+        return root, text[len(root):].strip()
+    return text, ""
 
 
 def _first_lot_from_view(view: dict[str, Any]) -> str:
@@ -51,6 +69,50 @@ def _first_lot_from_view(view: dict[str, Any]) -> str:
         if label and label not in {"-", "—"}:
             return label
     return ""
+
+
+def _normalize_root(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text in {"-", "—"}:
+        return ""
+    return _root_fallback(text)
+
+
+def _plan_root_candidates(lot: str, view: dict[str, Any]) -> list[str]:
+    """Resolve plan lookup roots robustly for mixed root/fab inputs."""
+    out: list[str] = []
+    seen: set[str] = set()
+    root_hint, lot_suffix = _tokenize_lot_id(lot)
+    explicit_root = _root_fallback(lot)
+
+    def add(candidate: Any) -> None:
+        root = _normalize_root(candidate)
+        if not root or root in seen:
+            return
+        seen.add(root)
+        out.append(root)
+
+    add(view.get("root_lot_id") if isinstance(view, dict) else "")
+    add(explicit_root)
+    if lot_suffix:
+        add(root_hint)
+    add(_first_lot_from_view(view) if isinstance(view, dict) else "")
+    if isinstance(view, dict):
+        for value in view.get("wafer_fab_list") or []:
+            add(value)
+    if out and out[0]:
+        # legacy alias: root 자체가 root/lot 둘 다 있을 때 양쪽 키로도 탐색.
+        return out + [_root_fallback(r) for r in out if _root_fallback(r) not in seen]
+    return out
+
+
+def _plans_for_roots(ml_product: str, roots: list[str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for root in roots:
+        for cell_key, value in _plans_for_root(ml_product, root).items():
+            if cell_key not in out:
+                out[str(cell_key)] = value
+    return out
 
 
 def _clean_custom_cols(values: Iterable[str] | str | None) -> list[str]:
@@ -155,13 +217,16 @@ def _apply_saved_plans(ml_product: str, lot: str, view: dict[str, Any]) -> dict[
 
     if not isinstance(view, dict):
         return view
-    root_key = str(view.get("root_lot_id") or _root_fallback(lot)).strip()
-    plans = _plans_for_root(ml_product, root_key)
+    root_key = _normalize_root(view.get("root_lot_id") or lot)
+    roots = _plan_root_candidates(lot, view)
+    plans = _plans_for_roots(ml_product, roots)
     if not plans:
         return view
 
     headers = list(view.get("headers") or [])
     rows = view.get("rows") if isinstance(view.get("rows"), list) else []
+    lot_root_hint, _ = _tokenize_lot_id(lot)
+    inferred_root_hint = _normalize_root(lot_root_hint or root_key or "")
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -186,7 +251,10 @@ def _apply_saved_plans(ml_product: str, lot: str, view: dict[str, Any]) -> dict[
             if plan is None:
                 wafer_key = _wafer_key_from_header(header)
                 if wafer_key:
-                    cell_key = f"{root_key}|{wafer_key}|{param}"
+                    fallback_root = root_key or (roots[0] if roots else "")
+                    if not fallback_root:
+                        fallback_root = inferred_root_hint
+                    cell_key = f"{fallback_root}|{wafer_key}|{param}" if fallback_root else ""
                     plan = plans.get(cell_key)
             if plan is None:
                 continue
@@ -407,12 +475,32 @@ def build_splittable_embed_from_view(
 
     custom = _clean_custom_cols(custom_cols)
     fab_input = (True if derived_from_view else looks_like_fab_lot(lot)) if is_fab_lot is None else bool(is_fab_lot)
+    snapshot_view = view if isinstance(view, dict) else {}
+    if not isinstance(snapshot_view, dict):
+        snapshot_view = {}
+    if isinstance(snapshot_view.get("headers"), list):
+        snapshot_view["headers"] = list(snapshot_view.get("headers") or [])
+    else:
+        snapshot_view["headers"] = []
+    if not isinstance(snapshot_view.get("rows"), list):
+        snapshot_view["rows"] = []
+    if not isinstance(snapshot_view.get("wafer_fab_list"), list):
+        snapshot_view["wafer_fab_list"] = []
+    if not isinstance(snapshot_view.get("header_groups"), list):
+        snapshot_view["header_groups"] = []
+    if not isinstance(snapshot_view.get("row_labels"), dict):
+        snapshot_view["row_labels"] = {}
+    if not snapshot_view.get("root_lot_id"):
+        inferred = _normalize_root(snapshot_view.get("root_lot_id") or _first_lot_from_view(snapshot_view) or lot)
+        snapshot_view["root_lot_id"] = inferred
+    snapshot_view["root_lot_id"] = _normalize_root(snapshot_view.get("root_lot_id"))
+    snapshot_view = _apply_saved_plans(ml_product, lot, snapshot_view)
     return _embed_from_view(
         ml_product,
         lot,
         custom,
         fab_input,
-        view,
+        snapshot_view,
         scope_label="CURRENT",
         current_view=True,
     )

@@ -43,6 +43,89 @@ const CATEGORIES = [
   { id: "admin", icon: "🔒", label: "관리 도구", desc: "매칭, 룰북, 지식 주입 도구입니다. admin에게만 열립니다.", adminOnly: true },
 ];
 
+const WORKFLOW_STAGE_ICON = {
+  input_prompt: "🧩",
+  slot_extract: "🧠",
+  intent_infer: "🧭",
+  arguments: "🧾",
+  dispatch: "⚙️",
+  cross_db_join: "🔗",
+  polish: "✨",
+  response: "📤",
+};
+
+const WORKFLOW_STATUS_HINT = {
+  input: "요청 수신",
+  parse: "구문/slot 정규화",
+  choose: "의도 라우팅",
+  map: "인자 정형화",
+  run: "도구 실행",
+  join: "DB join/차트 준비",
+  polish: "LLM 정리",
+  output: "답변 합성",
+};
+
+function workflowStageIcon(key = "") {
+  return WORKFLOW_STAGE_ICON[String(key || "").trim()] || "🔹";
+}
+
+function flowListFromStages(stages) {
+  if (!Array.isArray(stages)) return [];
+  return stages
+    .map((s) => ({
+      ...s,
+      key: s?.key || `stage-${Math.random()}`,
+      label: String(s?.label || "unnamed"),
+      description: String(s?.description || ""),
+      modules: Array.isArray(s?.modules) ? s.modules : [],
+      knowledgeSources: Array.isArray(s?.knowledge_sources) ? s.knowledge_sources : [],
+    }))
+    .filter((s) => s.label || s.description || s.modules.length || s.knowledgeSources.length);
+}
+
+function WorkflowChainGraph({ stages = [] }) {
+  const list = flowListFromStages(stages);
+  if (!list.length) return null;
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-start", overflowX: "auto", paddingBottom: 4 }}>
+        {list.map((stage, idx) => {
+          const isLast = idx === list.length - 1;
+          const moduleCount = Array.isArray(stage.modules) ? stage.modules.length : 0;
+          const sourceCount = Array.isArray(stage.knowledgeSources) ? stage.knowledgeSources.length : 0;
+          const hint = idx === 0 ? "input" : idx === list.length - 1 ? "output" : idx < 3 ? "parse" : idx < 5 ? "map" : idx < 7 ? "run" : "output";
+          return (
+            <div key={stage.key} style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 180 }}>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-secondary)", padding: 10, minWidth: 180, maxWidth: 240 }}>
+                <div style={{ display: "grid", gap: 6 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ fontSize: 13, color: uxColors.textSub, fontFamily: "monospace" }}>{String(idx + 1).padStart(2, "0")} · {WORKFLOW_STATUS_HINT[hint] || "stage"}</div>
+                    <span style={{ fontSize: 20 }}>{workflowStageIcon(stage.key)}</span>
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 900, color: uxColors.text }}>{stage.label}</div>
+                  <div style={{ fontSize: 12, color: uxColors.textSub, lineHeight: 1.45 }}>{stage.description}</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+                    <span style={{ border: "1px solid #2f2f2f", borderRadius: 999, padding: "2px 6px", fontSize: 12, color: uxColors.textSub }}>module {moduleCount}</span>
+                    <span style={{ border: "1px solid #2f2f2f", borderRadius: 999, padding: "2px 6px", fontSize: 12, color: uxColors.textSub }}>source {sourceCount}</span>
+                  </div>
+                </div>
+              </div>
+              {!isLast && (
+                <div style={{ color: uxColors.textSub, fontFamily: "monospace", fontSize: 18, whiteSpace: "nowrap", lineHeight: 1.3, transform: "translateY(22px)" }}>→</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 7, fontSize: 13, color: uxColors.textSub }}>
+        <span style={{ fontFamily: "monospace" }}>{list.length}단계</span>
+        <span>·</span>
+        <span>연결: API 입력 → 규칙/slot → intent/arg → tool dispatch → join/polish → 응답</span>
+      </div>
+    </div>
+  );
+}
+
 function parseGridText(text) {
   const body = String(text || "").trim();
   if (!body) return { columns: ["col_1"], rows: [[""]] };
@@ -140,9 +223,12 @@ function WorkflowPanel() {
   return (
     <CategoryFrame category={CATEGORIES[0]} right={<Pill tone="accent">{data?.stage_count || 0} stages</Pill>}>
       {err && <Banner tone="bad">{err}</Banner>}
-      <Panel title="Flowi pipeline stage" subtitle="입력 prompt에서 응답까지 이어지는 단일 chain">
+      <Panel title="Flowi LangChain chain" subtitle="입력 prompt부터 응답 렌더링까지 연결되는 주 flow를 표시합니다.">
+        <WorkflowChainGraph stages={data?.stages || []} />
+      </Panel>
+      <Panel title="Flowi pipeline stage" subtitle="상세 모듈/knowledge 매핑">
         <div style={{ display: "grid", gap: 10 }}>
-          {(data?.stages || []).map((stage, idx) => (
+          {flowListFromStages(data?.stages || []).map((stage, idx) => (
             <div key={stage.key} style={{ border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", padding: 12 }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
                 <Pill tone="accent">{String(idx + 1).padStart(2, "0")}</Pill>
