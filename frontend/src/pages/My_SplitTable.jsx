@@ -4,6 +4,9 @@ import { sf, dl } from "../lib/api";
 import { useUserRole } from "../lib/permissions";
 import { statusPalette, chartPalette } from "../components/UXKit";
 const API="/api/splittable";
+const INFORM_API="/api/informs";
+const INFORM_WIZARD_DRAFT_KEY="flow_inform_wizard_draft_v1";
+const INFORM_WIZARD_OPEN_KEY="flow_inform_open_wizard_v1";
 const OK = statusPalette.ok;
 const WARN = statusPalette.warn;
 const BAD = statusPalette.bad;
@@ -50,7 +53,7 @@ export default function My_SplitTable({user}){
   const[viewMode,setViewMode]=useState("all");
   const[showParamMeta,setShowParamMeta]=useState(false);
   const[showLineageSummary,setShowLineageSummary]=useState(false);
-  const[data,setData]=useState(null);const[loading,setLoading]=useState(false);
+  const[data,setData]=useState(null);const[loading,setLoading]=useState(false);const[informSnapshotBusy,setInformSnapshotBusy]=useState(false);
   const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});
   const[showConfirm,setShowConfirm]=useState(false);
   // dbl-click inline edit: {cellKey, value, suggestions, param}
@@ -544,6 +547,83 @@ export default function My_SplitTable({user}){
     sf(API+"/plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,plans:plansToSave,username:user?.username||"",root_lot_id:lotId})})
       .then(()=>{primePlanValueCache(plansToSave);setShowConfirm(false);setEditing(false);loadView();if(isLotHistoryMode(histMode))loadOperationalHistory();}).catch(e=>alert(e.message));};
   const deletePlan=(ck)=>{if(!confirm("Delete?"))return;sf(API+"/plan/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,cell_keys:[ck],username:user?.username||""})}).then(loadView);};
+  const currentRowsForInformSnapshot=()=>{
+    const rows=Array.isArray(data?.rows)?data.rows:[];
+    if(viewMode!=="diff")return rows;
+    return rows.filter(r=>{
+      const vs=Object.values(r._cells||{}).map(c=>c?.actual).filter(v=>v!=null&&v!==""&&v!=="None"&&v!=="null");
+      return new Set(vs).size>=2;
+    });
+  };
+  const rowsWithPendingPlans=(rows)=>rows.map(row=>{
+    const nextCells={};
+    Object.entries(row._cells||{}).forEach(([ci,cell])=>{
+      const pendingPlan=pendingValueFor(cell);
+      nextCells[String(ci)]=pendingPlan!==undefined?{...cell,plan:pendingPlan}:{...cell};
+    });
+    return {
+      _param: row._param,
+      _display: row._display,
+      _cells: nextCells,
+    };
+  });
+  const startInformFromCurrentSnapshot=()=>{
+    const rows=currentRowsForInformSnapshot();
+    if(!selProd||!data||!rows.length){alert("먼저 SplitTable 을 조회하세요.");return;}
+    const rootLot=String(data.root_lot_id||lotId||"").trim();
+    const targetLot=String(fabLotId||lotId||rootLot||"").trim();
+    if(!targetLot){alert("lot 을 먼저 선택하세요.");return;}
+    const rowParams=rows.map(r=>String(r?._param||"").trim()).filter(Boolean);
+    const pendingCount=Object.keys(pendingPlans).length;
+    const currentView={
+      headers:Array.isArray(data.headers)?data.headers:[],
+      rows:rowsWithPendingPlans(rows),
+      wafer_fab_list:Array.isArray(data.wafer_fab_list)?data.wafer_fab_list:[],
+      header_groups:Array.isArray(data.header_groups)?data.header_groups:[],
+      row_labels:data.row_labels||{"root_lot_id":"root_lot_id","lot_id":"lot_id","parameter":"항목"},
+      root_lot_id:rootLot,
+      msg:`${rows.length} params · current SplitTable${pendingCount?` · pending plan ${pendingCount}건 포함`:""}`,
+    };
+    setInformSnapshotBusy(true);
+    sf(INFORM_API+"/splittable-snapshot",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+      product:selProd,
+      lot_id:targetLot,
+      custom_cols:rowParams,
+      is_fab_lot:/[._\-/]/.test(targetLot),
+      current_view:currentView,
+    })}).then(d=>{
+      const embed=d?.embed||{};
+      const isFab=/[._\-/]/.test(targetLot);
+      const draft={
+        form:{
+          wafer_id:"",
+          lot_id:targetLot,
+          fab_lot_ids:isFab?[targetLot]:[],
+          product:stripMlPrefix(selProd),
+          module:"",
+          reason:"PEMS",
+          text:"",
+          deadline:"",
+          attach_split:false,
+          split:{column:"",old_value:"",new_value:""},
+          attach_embed:true,
+          embed,
+        },
+        createImages:[],
+        wizardStep:1,
+        wizardAttachMode:"knob",
+        wizardSelectedSetIds:[],
+        embedCustomCols:rowParams,
+        wizardMailDraft:{subject:"",body:"",generatedFor:""},
+      };
+      try{
+        localStorage.setItem(INFORM_WIZARD_DRAFT_KEY,JSON.stringify(draft));
+        localStorage.setItem(INFORM_WIZARD_OPEN_KEY,"1");
+      }catch(_){}
+      window.dispatchEvent(new CustomEvent("flow:navigate",{detail:{tab:"inform",search:"?inform_tab=inform&create=1"}}));
+    }).catch(e=>alert("Inform 스냅샷 생성 실패: "+(e?.message||e)))
+      .finally(()=>setInformSnapshotBusy(false));
+  };
 
   // v8.6.1: 낙관적 잠금 — 동일 name 의 기존 custom version 을 expected_version 으로 첨부.
   // 충돌(다른 사용자 저장) 시 conflict 응답 → confirm 으로 덮어쓸지 reload 할지 선택.
@@ -1302,6 +1382,11 @@ export default function My_SplitTable({user}){
             {/* v8.4.9-b: 노트 드로어 토글 */}
             <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 항목 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid #3b82f6",background:"transparent",color:"rgba(59,130,246,0.95)",fontSize:14,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>{notes.length}</span>}</button>
           </>}
+          <button onClick={startInformFromCurrentSnapshot} disabled={informSnapshotBusy||!data?.rows?.length}
+            title="현재 SplitTable 화면을 plan 포함 snapshot 으로 Inform 작성에 첨부"
+            style={{padding:"4px 12px",borderRadius:4,border:"1px solid rgba(139,92,246,0.95)",background:"transparent",color:"rgba(139,92,246,0.95)",fontSize:14,fontWeight:600,cursor:informSnapshotBusy||!data?.rows?.length?"not-allowed":"pointer",opacity:informSnapshotBusy||!data?.rows?.length?0.5:1}}>
+            {informSnapshotBusy?"Inform 준비...":"Inform 스냅샷"}
+          </button>
         </div>
       </div>
       {loading?<div style={{padding:40,textAlign:"center"}}><Loading text="Loading..."/></div>

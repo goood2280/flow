@@ -19,6 +19,7 @@ export const WIZARD_BACKEND_CALLS = [
   "POST /api/informs",
 ];
 const WIZARD_DRAFT_KEY = "flow_inform_wizard_draft_v1";
+const WIZARD_OPEN_KEY = "flow_inform_open_wizard_v1";
 const LOT_CANDIDATE_LIMIT = 20000;
 const OK = statusPalette.ok;
 const WARN = statusPalette.warn;
@@ -1987,6 +1988,19 @@ export default function My_Inform({ user }) {
   };
 
   useEffect(() => {
+    let shouldOpen = false;
+    try {
+      shouldOpen = localStorage.getItem(WIZARD_OPEN_KEY) === "1";
+      if (shouldOpen) localStorage.removeItem(WIZARD_OPEN_KEY);
+    } catch (_) {}
+    try {
+      const params = new URLSearchParams(window.location.search);
+      shouldOpen = shouldOpen || params.get("create") === "1";
+    } catch (_) {}
+    if (shouldOpen) openCreateWizard();
+  }, []);
+
+  useEffect(() => {
     loadInformList();
     loadAuditLog();
   }, []);
@@ -2231,6 +2245,11 @@ export default function My_Inform({ user }) {
     const buildEmbedForLot = async (targetLot) => {
       if (!form.attach_embed || !hasEmbedSnapshot(form.embed)) return null;
       const attached = attachedSetsForSubmit();
+      const currentScope = form.embed?.st_scope?.snapshot_source === "current_splittable";
+      const currentScopeLot = String(form.embed?.st_scope?.lot_id || form.lot_id || "").trim();
+      if (currentScope && (!currentScopeLot || String(targetLot || "").trim() === currentScopeLot)) {
+        return { ...(form.embed || emptyEmbedTable()), attached_sets: attached };
+      }
       const customCols = customColsForEmbed();
       if (!customCols.length) {
         return { ...(form.embed || emptyEmbedTable()), attached_sets: attached };
