@@ -142,6 +142,25 @@ def _row_has_plan(row: dict[str, Any]) -> bool:
     )
 
 
+def _view_plan_cell_count(view: dict[str, Any], cols: Iterable[str] | None = None) -> int:
+    if not isinstance(view, dict):
+        return 0
+    wanted = {str(c or "").strip() for c in (cols or []) if str(c or "").strip()}
+    count = 0
+    for row in view.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        if wanted and str(row.get("_param") or "") not in wanted:
+            continue
+        cells = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
+        count += sum(
+            1
+            for cell in cells.values()
+            if isinstance(cell, dict) and _has_st_value(cell.get("plan"))
+        )
+    return count
+
+
 def _embed_from_view(
     ml_product: str,
     lot: str,
@@ -247,21 +266,24 @@ def build_splittable_embed(
     custom = _clean_custom_cols(custom_cols)
     fab_input = looks_like_fab_lot(lot) if is_fab_lot is None else bool(is_fab_lot)
     loader = view_loader or _load_view
-    def load_for(cols: list[str]) -> dict[str, Any]:
+    def load_for(cols: list[str], *, root_scope: str = "", fab_scope: str = "") -> dict[str, Any]:
+        use_fab_scope = fab_scope if fab_scope or root_scope else (lot if fab_input else "")
+        use_root_scope = root_scope if root_scope or fab_scope else ("" if fab_input else lot)
         return loader(
             product=ml_product,
-            root_lot_id="" if fab_input else lot,
+            root_lot_id=use_root_scope,
             wafer_ids="",
             prefix="ALL",
             custom_name="",
             view_mode="all",
             history_mode="all",
-            fab_lot_id=lot if fab_input else "",
+            fab_lot_id=use_fab_scope,
             custom_cols=",".join(cols),
         )
 
     view = load_for(custom)
     effective_custom = list(custom)
+    extra_plan_cols: list[str] = []
     if custom and (view_loader is None or plan_column_loader is not None):
         root_key = str(view.get("root_lot_id") or _root_fallback(lot)).strip()
         extra_plan_cols = (plan_column_loader or _plan_columns_for_root)(ml_product, root_key)
@@ -269,6 +291,10 @@ def build_splittable_embed(
         if len(merged) > len(effective_custom):
             view = load_for(merged)
             effective_custom = merged
+        if fab_input and root_key and extra_plan_cols:
+            root_view = load_for(effective_custom, root_scope=root_key, fab_scope="")
+            if _view_plan_cell_count(root_view, extra_plan_cols) > _view_plan_cell_count(view, extra_plan_cols):
+                view = root_view
 
     return _embed_from_view(ml_product, lot, effective_custom, fab_input, view)
 
