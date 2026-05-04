@@ -115,6 +115,89 @@ def _plan_columns_for_root(ml_product: str, root_lot_id: str, limit: int = 80) -
     return out
 
 
+def _plans_for_root(ml_product: str, root_lot_id: str) -> dict[str, Any]:
+    root = str(root_lot_id or "").strip()
+    if not root:
+        return {}
+    try:
+        from core.utils import load_json
+        from routers.splittable import PLAN_DIR
+
+        plans = load_json(PLAN_DIR / f"{ml_product}.json", {}).get("plans", {})
+    except Exception:
+        return {}
+    if not isinstance(plans, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for cell_key, info in plans.items():
+        parts = str(cell_key or "").split("|", 2)
+        if len(parts) != 3 or parts[0] != root:
+            continue
+        value = info.get("value") if isinstance(info, dict) else None
+        if _has_st_value(value):
+            out[str(cell_key)] = value
+    return out
+
+
+def _wafer_key_from_header(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"^(?:#|WAFER|WF|W)\s*", "", text, flags=re.I).strip()
+    if re.fullmatch(r"\d+", text or ""):
+        try:
+            return str(int(text))
+        except Exception:
+            return text
+    return text
+
+
+def _apply_saved_plans(ml_product: str, lot: str, view: dict[str, Any]) -> dict[str, Any]:
+    """Ensure Inform snapshots carry the saved SplitTable plan layer."""
+
+    if not isinstance(view, dict):
+        return view
+    root_key = str(view.get("root_lot_id") or _root_fallback(lot)).strip()
+    plans = _plans_for_root(ml_product, root_key)
+    if not plans:
+        return view
+
+    headers = list(view.get("headers") or [])
+    rows = view.get("rows") if isinstance(view.get("rows"), list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        param = str(row.get("_param") or "").strip()
+        if not param:
+            continue
+        cells = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
+        if not isinstance(row.get("_cells"), dict):
+            row["_cells"] = cells
+        for ci, header in enumerate(headers):
+            idx_key = str(ci)
+            cell = cells.get(idx_key) or cells.get(ci)
+            if not isinstance(cell, dict):
+                cell = {}
+                cells[idx_key] = cell
+            elif idx_key not in cells:
+                cells[idx_key] = cell
+            if _has_st_value(cell.get("plan")):
+                continue
+            cell_key = str(cell.get("key") or "").strip()
+            plan = plans.get(cell_key) if cell_key else None
+            if plan is None:
+                wafer_key = _wafer_key_from_header(header)
+                if wafer_key:
+                    cell_key = f"{root_key}|{wafer_key}|{param}"
+                    plan = plans.get(cell_key)
+            if plan is None:
+                continue
+            cell["plan"] = plan
+            if cell_key and not cell.get("key"):
+                cell["key"] = cell_key
+            actual = cell.get("actual")
+            cell["mismatch"] = bool(_has_st_value(actual) and str(actual) != str(plan))
+    return view
+
+
 def _cell_text(cell: dict[str, Any]) -> str:
     actual = cell.get("actual")
     plan = cell.get("plan")
@@ -269,7 +352,7 @@ def build_splittable_embed(
     def load_for(cols: list[str], *, root_scope: str = "", fab_scope: str = "") -> dict[str, Any]:
         use_fab_scope = fab_scope if fab_scope or root_scope else (lot if fab_input else "")
         use_root_scope = root_scope if root_scope or fab_scope else ("" if fab_input else lot)
-        return loader(
+        view = loader(
             product=ml_product,
             root_lot_id=use_root_scope,
             wafer_ids="",
@@ -280,6 +363,9 @@ def build_splittable_embed(
             fab_lot_id=use_fab_scope,
             custom_cols=",".join(cols),
         )
+        if view_loader is None:
+            view = _apply_saved_plans(ml_product, lot, view)
+        return view
 
     view = load_for(custom)
     effective_custom = list(custom)

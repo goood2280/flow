@@ -15,7 +15,7 @@ def test_inform_wizard_five_step_backend_contract_order():
         '"/api/informs/config"',
         '"/api/splittable/lot-candidates"',
         "mergeLotCandidateOptions",
-        "&col=root_lot_id",
+        "&col=lot_id",
         "prefix=${encodeURIComponent(rawLot)}",
         "lotCandidateRootScope(rawLot)",
         "root_lot_id=${encodeURIComponent(rootScope)}",
@@ -34,7 +34,7 @@ def test_inform_wizard_five_step_backend_contract_order():
         "LOT_ID 검색 (입력 즉시 필터)",
         "체크된 LOT_ID",
         'const lotIdFilterText = String(fabSearch || "").trim().toLowerCase();',
-        "const fabLotOptions = lotOptions || [];",
+        'const fabLotOptions = (lotOptions || []).filter(o => o.type !== "root");',
         "const needle = rawLot.toLowerCase();",
         'filter(o => !String(o.value || "").trim().toLowerCase().includes(needle))',
         'return { ...f, lot_id: nextFabs[0] || "", fab_lot_ids: nextFabs };',
@@ -46,6 +46,7 @@ def test_inform_wizard_five_step_backend_contract_order():
         assert token in src
     assert ".slice(0, 500)" not in src
     assert "fabSearch || form.lot_id" not in src
+    assert "&col=root_lot_id" not in src
 
     ordered = [
         '"/api/informs/config"',

@@ -2477,7 +2477,7 @@ export default function My_Inform({ user }) {
     // v8.8.16: snapshotTick 변경 시에도 재fetch — 사용자가 Search 버튼으로 명시적 갱신.
   }, [form.product, form.lot_id, creating, embedCustomCols, snapshotTick, lotOptions, wizardAttachMode]);
 
-  // SplitTable 의 lot-candidates 로 제품 내 LOT_ID 후보 fetch → 신규 인폼 선택 소스.
+  // SplitTable 의 lot-candidates 로 제품 내 LOT_ID 후보만 fetch → 신규 인폼 선택 소스.
   useEffect(() => {
     const prod = (form.product || "").trim();
     if (!prod) { setLotOptions([]); return; }
@@ -2485,8 +2485,7 @@ export default function My_Inform({ user }) {
     let alive = true;
     const base = `/api/splittable/lot-candidates?product=${encodeURIComponent(mlProd)}&limit=${LOT_CANDIDATE_LIMIT}`;
     Promise.all([
-      sf(`${base}&col=fab_lot_id`).then(d => ({ type: "fab", candidates: d.candidates || [] })).catch(() => ({ type: "fab", candidates: [] })),
-      sf(`${base}&col=root_lot_id`).then(d => ({ type: "root", candidates: d.candidates || [] })).catch(() => ({ type: "root", candidates: [] })),
+      sf(`${base}&col=lot_id`).then(d => ({ type: "fab", candidates: d.candidates || [] })).catch(() => ({ type: "fab", candidates: [] })),
     ]).then(groups => {
       if (!alive) return;
       setLotOptions(mergeLotCandidateOptions(...groups));
@@ -2504,12 +2503,10 @@ export default function My_Inform({ user }) {
     const mlProd = prod.startsWith("ML_TABLE_") ? prod : `ML_TABLE_${prod}`;
     const rootScope = lotCandidateRootScope(rawLot);
     let alive = true;
-    let url = `/api/splittable/lot-candidates?product=${encodeURIComponent(mlProd)}&col=fab_lot_id&prefix=${encodeURIComponent(rawLot)}&limit=${LOT_CANDIDATE_LIMIT}`;
+    let url = `/api/splittable/lot-candidates?product=${encodeURIComponent(mlProd)}&col=lot_id&prefix=${encodeURIComponent(rawLot)}&limit=${LOT_CANDIDATE_LIMIT}`;
     if (rootScope) url += `&root_lot_id=${encodeURIComponent(rootScope)}`;
-    const rootUrl = `/api/splittable/lot-candidates?product=${encodeURIComponent(mlProd)}&col=root_lot_id&prefix=${encodeURIComponent(rawLot)}&limit=${LOT_CANDIDATE_LIMIT}`;
     Promise.all([
       sf(url).then(d => ({ type: "fab", candidates: d.candidates || [] })).catch(() => ({ type: "fab", candidates: [] })),
-      sf(rootUrl).then(d => ({ type: "root", candidates: d.candidates || [] })).catch(() => ({ type: "root", candidates: [] })),
     ])
       .then(groups => {
         if (!alive) return;
@@ -4489,7 +4486,7 @@ function InformWizard({
       ? newSetCols.filter(x => x !== col)
       : [...newSetCols, col]);
   };
-  const fabLotOptions = lotOptions || [];
+  const fabLotOptions = (lotOptions || []).filter(o => o.type !== "root");
   const lotIdFilterText = String(fabSearch || "").trim().toLowerCase();
   const visibleFabOptions = fabLotOptions
     .filter(o => !lotIdFilterText || String(o.value || "").toLowerCase().includes(lotIdFilterText));

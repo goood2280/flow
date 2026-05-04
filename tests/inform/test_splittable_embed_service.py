@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
+from app_v2.modules.informs import splittable_embed as embed_service  # noqa: E402
 from app_v2.modules.informs.splittable_embed import (  # noqa: E402
     build_splittable_embed,
     build_splittable_embed_from_view,
@@ -246,6 +247,32 @@ def test_splittable_embed_keeps_plan_rows_after_default_snapshot_limit():
     assert len(embed["st_view"]["rows"]) == 121
     assert embed["st_view"]["rows"][-1]["_param"] == "KNOB_PLAN_LATE"
     assert embed["rows"][-1] == ["KNOB_PLAN_LATE", "R_PLAN"]
+
+
+def test_splittable_embed_overlays_saved_plans_when_view_omits_plan(monkeypatch):
+    monkeypatch.setattr(embed_service, "_plans_for_root", lambda _product, _root: {
+        "A1000|1|KNOB_GATE": "R2",
+        "A1000|2|KNOB_GATE": "R3",
+    })
+    view = {
+        "headers": ["#1", "#2"],
+        "root_lot_id": "A1000",
+        "rows": [{
+            "_param": "KNOB_GATE",
+            "_cells": {
+                "0": {"actual": "R1", "key": "A1000|1|KNOB_GATE"},
+                "1": {"actual": None},
+            },
+        }],
+    }
+
+    out = embed_service._apply_saved_plans("ML_TABLE_PRODA", "A1000", view)
+
+    cells = out["rows"][0]["_cells"]
+    assert cells["0"]["plan"] == "R2"
+    assert cells["0"]["mismatch"] is True
+    assert cells["1"]["plan"] == "R3"
+    assert cells["1"]["key"] == "A1000|2|KNOB_GATE"
 
 
 def test_create_inform_keeps_service_snapshot_fab_lot_labels(tmp_path, monkeypatch):
