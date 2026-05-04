@@ -82,6 +82,21 @@ def _cell_text(cell: dict[str, Any]) -> str:
     return plan_text or actual_text
 
 
+def _has_st_value(value: Any) -> bool:
+    text = "" if value is None else str(value)
+    return bool(text and text not in {"None", "null"})
+
+
+def _row_has_plan(row: dict[str, Any]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    cells = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
+    return any(
+        isinstance(cell, dict) and _has_st_value(cell.get("plan"))
+        for cell in cells.values()
+    )
+
+
 def _embed_from_view(
     ml_product: str,
     lot: str,
@@ -108,7 +123,18 @@ def _embed_from_view(
         }
         rows_all = [by_param.get(col) or {"_param": col, "_cells": {}} for col in custom]
     else:
-        rows_all = rows_all[:120]
+        head = rows_all[:120]
+        seen = {str(row.get("_param") or "") for row in head if isinstance(row, dict)}
+        plan_tail = []
+        for row in rows_all[120:]:
+            if not isinstance(row, dict):
+                continue
+            param = str(row.get("_param") or "")
+            if param in seen or not _row_has_plan(row):
+                continue
+            seen.add(param)
+            plan_tail.append(row)
+        rows_all = [*head, *plan_tail[:80]]
 
     legacy_rows = []
     for row in rows_all:

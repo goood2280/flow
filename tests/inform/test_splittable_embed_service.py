@@ -122,6 +122,31 @@ def test_splittable_embed_from_current_view_uses_first_fab_lot_when_lot_blank():
     assert embed["st_scope"]["lot_id"] == "A1000A.1"
 
 
+def test_splittable_embed_keeps_plan_rows_after_default_snapshot_limit():
+    rows = [
+        {"_param": f"KNOB_{idx:03d}", "_cells": {"0": {"actual": f"R{idx}"}}}
+        for idx in range(130)
+    ]
+    rows.append({
+        "_param": "KNOB_PLAN_LATE",
+        "_cells": {"0": {"actual": None, "plan": "R_PLAN"}},
+    })
+
+    embed = build_splittable_embed_from_view(
+        "PRODA",
+        "A1000",
+        {
+            "headers": ["#1"],
+            "root_lot_id": "A1000",
+            "rows": rows,
+        },
+    )
+
+    assert len(embed["st_view"]["rows"]) == 121
+    assert embed["st_view"]["rows"][-1]["_param"] == "KNOB_PLAN_LATE"
+    assert embed["rows"][-1] == ["KNOB_PLAN_LATE", "R_PLAN"]
+
+
 def test_create_inform_keeps_service_snapshot_fab_lot_labels(tmp_path, monkeypatch):
     informs_file = tmp_path / "informs.json"
     monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
