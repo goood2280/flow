@@ -36,6 +36,22 @@ def _root_fallback(lot_id: str) -> str:
     return text
 
 
+def _first_lot_from_view(view: dict[str, Any]) -> str:
+    if not isinstance(view, dict):
+        return ""
+    for group in view.get("header_groups") or []:
+        if not isinstance(group, dict):
+            continue
+        label = str(group.get("label") or "").strip()
+        if label and label not in {"-", "—"}:
+            return label
+    for value in view.get("wafer_fab_list") or []:
+        label = str(value or "").strip()
+        if label and label not in {"-", "—"}:
+            return label
+    return ""
+
+
 def _clean_custom_cols(values: Iterable[str] | str | None) -> list[str]:
     if values is None:
         return []
@@ -184,13 +200,17 @@ def build_splittable_embed_from_view(
 
     ml_product = ml_product_name(product)
     lot = str(lot_id or "").strip()
+    derived_from_view = False
     if not ml_product:
         raise HTTPException(400, "product is required")
+    if not lot:
+        lot = _first_lot_from_view(view)
+        derived_from_view = bool(lot)
     if not lot:
         raise HTTPException(400, "lot_id is required")
 
     custom = _clean_custom_cols(custom_cols)
-    fab_input = looks_like_fab_lot(lot) if is_fab_lot is None else bool(is_fab_lot)
+    fab_input = (True if derived_from_view else looks_like_fab_lot(lot)) if is_fab_lot is None else bool(is_fab_lot)
     return _embed_from_view(
         ml_product,
         lot,

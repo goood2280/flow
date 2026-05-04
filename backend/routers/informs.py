@@ -1922,7 +1922,7 @@ class ModuleKnobMapReq(BaseModel):
 
 class SplitTableSnapshotReq(BaseModel):
     product: str
-    lot_id: str
+    lot_id: str = ""
     custom_cols: List[str] = []
     is_fab_lot: Optional[bool] = None
     current_view: Optional[dict] = None
@@ -3124,13 +3124,14 @@ def create_inform(req: InformCreate, request: Request):
     # wafer_id 는 생성 시점의 LOT_ID 매핑 snapshot 이다. 없다고 lot_id 로 대체하지 않는다.
     requested_wafer_id = (req.wafer_id or "").strip()
     wid = requested_wafer_id
-    lot_for_fallback = (req.lot_id or "").strip()
+    req_fab_lot = _first_saved_id(req.fab_lot_id_at_save)
+    lot_for_fallback = (req.lot_id or "").strip() or req_fab_lot
     if not lot_for_fallback and not wid and not req.parent_id:
         raise HTTPException(400, "lot_id (또는 wafer_id) 가 필요합니다.")
     items = _load_upgraded()
 
     # parent 검증 + 상속 (lot_id / product).
-    inherit_lot = (req.lot_id or "").strip()
+    inherit_lot = (req.lot_id or "").strip() or req_fab_lot
     inherit_product = (req.product or "").strip()
     if req.parent_id:
         parent = _find(items, req.parent_id)

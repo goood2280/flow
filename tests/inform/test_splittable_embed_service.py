@@ -101,6 +101,27 @@ def test_splittable_embed_from_current_view_preserves_plan_cells():
     assert embed["st_scope"]["lot_id"] == "A1000"
 
 
+def test_splittable_embed_from_current_view_uses_first_fab_lot_when_lot_blank():
+    embed = build_splittable_embed_from_view(
+        "PRODA",
+        "",
+        {
+            "headers": ["#1", "#2"],
+            "root_lot_id": "A1000",
+            "header_groups": [{"label": "A1000A.1", "span": 2}],
+            "wafer_fab_list": ["A1000A.1", "A1000A.1"],
+            "rows": [{"_param": "KNOB_GATE", "_cells": {"0": {"actual": "R1"}}}],
+        },
+        custom_cols=["KNOB_GATE"],
+        is_fab_lot=None,
+    )
+
+    assert embed["source"] == "SplitTable/PRODA @ A1000A.1 · CURRENT"
+    assert embed["note"] == "1 params · fab_lot=A1000A.1 · scope=CURRENT"
+    assert embed["st_view"]["root_lot_id"] == "A1000"
+    assert embed["st_scope"]["lot_id"] == "A1000A.1"
+
+
 def test_create_inform_keeps_service_snapshot_fab_lot_labels(tmp_path, monkeypatch):
     informs_file = tmp_path / "informs.json"
     monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
