@@ -192,3 +192,27 @@ def test_lot_matrix_prefers_saved_fab_lot_over_embed_lot_labels(monkeypatch):
     out = informs.lot_matrix(object(), product="PRODA", days=3650, search="R4000")
 
     assert [row["fab_lot_id"] for row in out["products"][0]["lots"]] == ["R4000A.1"]
+
+
+def test_lot_matrix_search_matches_root_when_fab_lot_label_differs(monkeypatch):
+    items = [
+        {
+            "id": "root_search",
+            "product": "PRODA",
+            "root_lot_id": "ROOT777",
+            "lot_id": "OPER_A.1",
+            "fab_lot_id_at_save": "OPER_A.1",
+            "module": "GATE",
+            "reason": "PEMS",
+            "author": "alice",
+            "flow_status": "received",
+            "created_at": "2099-01-12T09:00:00",
+        },
+    ]
+    monkeypatch.setattr(informs, "_load_upgraded", lambda: items)
+    monkeypatch.setattr(informs, "_load_config", lambda: {"modules": ["GATE"]})
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
+
+    out = informs.lot_matrix(object(), product="PRODA", days=3650, search="ROOT777")
+
+    assert out["products"][0]["lots"][0]["fab_lot_id"] == "OPER_A.1"
