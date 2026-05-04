@@ -12,10 +12,15 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
-from routers import splittable  # noqa: E402
+from routers import informs, splittable  # noqa: E402
 
 
-def test_root_lot_candidates_prefer_renderable_mltable_roots():
+def test_root_lot_candidates_prefer_renderable_mltable_roots(tmp_path, monkeypatch):
+    monkeypatch.setattr(splittable, "MATCH_CACHE_DIR", tmp_path / "match_cache")
+    splittable._LOT_LOOKUP_CACHE.clear()
+    splittable._RGLOB_CACHE.clear()
+    splittable._DB_ROOTS_CACHE.clear()
+
     result = splittable.get_lot_candidates(
         product="ML_TABLE_PRODA",
         col="root_lot_id",
@@ -63,6 +68,51 @@ def test_operational_history_matches_saved_full_inform_root(tmp_path, monkeypatc
     assert len(items) == 1
     assert items[0]["source"] == "inform"
     assert items[0]["detail"] == "plan saved"
+
+
+def test_save_plan_auto_logs_inform_after_plan_file_is_saved(tmp_path, monkeypatch):
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "_audit_user", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(splittable, "_resolve_fab_lot_for_cell", lambda *_args, **_kwargs: "FAB1000.1")
+
+    calls = []
+
+    def fake_auto_log(author, product, lot_id, cell_key, old_value, new_value, action="set", fab_lot_id=""):
+        saved = json.loads((plan_dir / "ML_TABLE_PRODA.json").read_text(encoding="utf-8"))
+        assert saved["plans"][cell_key]["value"] == "R2"
+        calls.append({
+            "author": author,
+            "product": product,
+            "lot_id": lot_id,
+            "cell_key": cell_key,
+            "old_value": old_value,
+            "new_value": new_value,
+            "action": action,
+            "fab_lot_id": fab_lot_id,
+        })
+
+    monkeypatch.setattr(informs, "auto_log_splittable_change", fake_auto_log)
+
+    result = splittable.save_plan(splittable.PlanReq(
+        product="ML_TABLE_PRODA",
+        root_lot_id="A1000",
+        username="tester",
+        plans={"A1000|1|KNOB_GATE": "R2"},
+    ))
+
+    assert result == {"ok": True, "saved": 1, "rejected": []}
+    assert calls == [{
+        "author": "tester",
+        "product": "ML_TABLE_PRODA",
+        "lot_id": "A1000",
+        "cell_key": "A1000|1|KNOB_GATE",
+        "old_value": None,
+        "new_value": "R2",
+        "action": "set",
+        "fab_lot_id": "FAB1000.1",
+    }]
 
 
 def test_view_includes_related_tracker_issues_for_root_lot(tmp_path, monkeypatch):

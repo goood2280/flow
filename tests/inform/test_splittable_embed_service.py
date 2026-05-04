@@ -72,6 +72,7 @@ def test_create_inform_keeps_service_snapshot_fab_lot_labels(tmp_path, monkeypat
     monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
     monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
     monkeypatch.setattr(informs, "_resolve_fab_lot_snapshot", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(informs, "_audit_record", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(informs, "_audit", lambda *_args, **_kwargs: None)
 
     embed = build_splittable_embed(
@@ -105,6 +106,7 @@ def test_create_inform_keeps_service_snapshot_fab_lot_labels(tmp_path, monkeypat
 def test_auto_log_splittable_change_attaches_changed_column_snapshot(tmp_path, monkeypatch):
     informs_file = tmp_path / "informs.json"
     monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
+    monkeypatch.setattr(informs, "_audit_record", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(informs, "build_splittable_embed", lambda **kwargs: {
         "source": "SplitTable/PRODA @ A1000 · CUSTOM(1)",
         "columns": ["parameter", "#1"],
