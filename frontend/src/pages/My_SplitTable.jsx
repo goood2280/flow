@@ -567,12 +567,29 @@ export default function My_SplitTable({user}){
       _cells: nextCells,
     };
   });
+  const firstVisibleFabLotForInform=()=>{
+    const groups=Array.isArray(data?.header_groups)?data.header_groups:[];
+    for(const g of groups){
+      const label=String(g?.label||"").trim();
+      if(label&&label!=="-"&&label!=="—")return label;
+    }
+    const fabs=Array.isArray(data?.wafer_fab_list)?data.wafer_fab_list:[];
+    for(const v of fabs){
+      const label=String(v||"").trim();
+      if(label&&label!=="-"&&label!=="—")return label;
+    }
+    return "";
+  };
   const startInformFromCurrentSnapshot=()=>{
     const rows=currentRowsForInformSnapshot();
     if(!selProd||!data||!rows.length){alert("먼저 SplitTable 을 조회하세요.");return;}
     const rootLot=String(data.root_lot_id||lotId||"").trim();
-    const targetLot=String(fabLotId||lotId||rootLot||"").trim();
-    if(!targetLot){alert("lot 을 먼저 선택하세요.");return;}
+    const typedFabLot=String(fabLotId||"").trim();
+    const typedLot=String(lotId||"").trim();
+    const viewFabLot=firstVisibleFabLotForInform();
+    const targetLot=String(typedFabLot||viewFabLot||(/[._\-/]/.test(typedLot)?typedLot:"")).trim();
+    if(!targetLot){alert("SplitTable 의 lot_id/fab_lot_id 를 먼저 선택하세요.");return;}
+    const targetIsFab=!!(typedFabLot||viewFabLot)||/[._\-/]/.test(targetLot);
     const rowParams=rows.map(r=>String(r?._param||"").trim()).filter(Boolean);
     const pendingCount=Object.keys(pendingPlans).length;
     const currentView={
@@ -589,16 +606,15 @@ export default function My_SplitTable({user}){
       product:selProd,
       lot_id:targetLot,
       custom_cols:rowParams,
-      is_fab_lot:/[._\-/]/.test(targetLot),
+      is_fab_lot:targetIsFab,
       current_view:currentView,
     })}).then(d=>{
       const embed=d?.embed||{};
-      const isFab=/[._\-/]/.test(targetLot);
       const draft={
         form:{
           wafer_id:"",
           lot_id:targetLot,
-          fab_lot_ids:isFab?[targetLot]:[],
+          fab_lot_ids:targetIsFab?[targetLot]:[],
           product:stripMlPrefix(selProd),
           module:"",
           reason:"PEMS",

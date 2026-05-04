@@ -99,7 +99,7 @@ export default function My_FileBrowser({user,onNavigate}){
     const l=s3Light(name);
     if(!l?.freshLabel||l.freshLabel==="-")return null;
     return (
-      <span title={l.tip} style={{fontSize:14,fontFamily:"monospace",fontWeight:700,color:l.latestItemStale?"#ef4444":"#64748b",flexShrink:0,maxWidth:72,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+      <span title={l.tip} style={{fontSize:11,fontFamily:"monospace",fontWeight:700,color:l.latestItemStale?"#ef4444":"#64748b",flexShrink:0,maxWidth:62,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
         {l.freshLabel}
       </span>
     );
@@ -343,8 +343,10 @@ export default function My_FileBrowser({user,onNavigate}){
   const chipActive={...chipS,background:"var(--accent-glow)",borderColor:"var(--accent)",color:"var(--accent)",fontWeight:600};
   const chipInactive={...chipS,background:"var(--bg-hover)",color:"var(--text-secondary)"};
   const sidebarText={flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"};
-  const sidebarMeta={fontSize:14,color:"#64748b",flexShrink:0,maxWidth:72,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"};
+  const sidebarMeta={fontSize:11,color:"#64748b",flexShrink:0,maxWidth:82,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontFamily:"monospace"};
   const sidebarRowBase={display:"flex",alignItems:"center",gap:6,minWidth:0,overflow:"hidden"};
+  const sidebarStack={display:"flex",flexDirection:"column",gap:2,flex:1,minWidth:0,overflow:"hidden"};
+  const sidebarMetaLine={display:"flex",alignItems:"center",gap:6,minWidth:0,overflow:"hidden",lineHeight:1.15};
 
   return(
     <div style={{display:"flex",height:"calc(100vh - 52px)",fontFamily:"'Pretendard',sans-serif",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
@@ -384,12 +386,12 @@ export default function My_FileBrowser({user,onNavigate}){
                 {/* v8.7.5: Base 단일 파일도 S3 신호등 표시 (다운로드/업로드 양방향). */}
                 {lightDot(fileKey)}
                 <span style={{flexShrink:0,lineHeight:1.5}}>{icon}</span>
-                <span style={{display:"flex",flexDirection:"column",gap:2,flex:1,minWidth:0}}>
+                <span style={sidebarStack}>
                   <span style={sidebarText} title={f.name}>{f.name}</span>
-                  <span style={{display:"flex",alignItems:"center",gap:6,minWidth:0,overflow:"hidden"}}>
+                  <span style={sidebarMetaLine}>
                     {lightFreshText(fileKey)}
                     {/* v8.7.7: `db` 소스 태그 제거 — Base 단일 파일은 소스 구분 없이 한 번만 표시. */}
-                    <span style={{fontSize:14,padding:"1px 4px",borderRadius:3,background:extColor+"22",color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>{f.ext}</span>
+                    <span style={{fontSize:11,padding:"1px 4px",borderRadius:3,background:extColor+"22",color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>{f.ext}</span>
                     <span style={sidebarMeta}>{formatSize(f.size)}</span>
                   </span>
                 </span>
@@ -408,36 +410,48 @@ export default function My_FileBrowser({user,onNavigate}){
             {roots.map(r=>{
               // v8.4.3: icon + level badge 제거 — 깔끔한 이름만.
               return (
-              <div key={r.name} onClick={()=>{setSelRoot(r.name);setSelectedCols([]);}} title={r.description||""} style={{...sidebarRowBase,padding:"8px 12px",borderRadius:6,cursor:"pointer",fontSize:14,
+              <div key={r.name} onClick={()=>{setSelRoot(r.name);setSelectedCols([]);}} title={r.description||""} style={{...sidebarRowBase,alignItems:"flex-start",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:14,
                 background:selRoot===r.name?"var(--bg-hover)":"transparent",fontWeight:selRoot===r.name?600:400,color:selRoot===r.name?"var(--accent)":"var(--text-primary)"}}>
                 {lightDot(r.name)}
-                <span style={sidebarText}>{r.canonical||r.name}</span>
-                {lightFreshText(r.name)}
-                <span style={{...sidebarMeta,maxWidth:44,textAlign:"right"}}>{r.parquet_count}</span>
+                <span style={sidebarStack}>
+                  <span style={sidebarText}>{r.canonical||r.name}</span>
+                  <span style={sidebarMetaLine}>
+                    {lightFreshText(r.name)}
+                    <span style={{...sidebarMeta,maxWidth:60}}>파일 {r.parquet_count}</span>
+                  </span>
+                </span>
               </div>);
             })}
           </div>
           {products.length>0&&<div style={{flex:1,overflow:"auto",borderTop:"1px solid var(--border)",padding:"4px 8px"}}>
             <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>제품</div>
             {products.map(p=>(
-              <div key={p.name} onClick={()=>{setSelectedCols([]);setSql("");loadHiveView(selRoot,p.name,"",[],{full:true,page:0});}} style={{...sidebarRowBase,padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
+              <div key={p.name} onClick={()=>{setSelectedCols([]);setSql("");loadHiveView(selRoot,p.name,"",[],{full:true,page:0});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
                 background:selProd===p.name?"var(--bg-hover)":"transparent",color:selProd===p.name?"var(--accent)":"var(--text-primary)"}}>
                 {/* v8.8.2: 제품별 S3 신호등 — 본인 설정 없으면 상위 DB 에서 상속. */}
                 {lightDot(selRoot+"/"+p.name)}
-                <span style={sidebarText}>{p.name}</span>
-                {lightFreshText(selRoot+"/"+p.name)}
-                <span style={sidebarMeta}>{p.latest_date}</span>
+                <span style={sidebarStack}>
+                  <span style={sidebarText} title={p.name}>{p.name}</span>
+                  <span style={sidebarMetaLine}>
+                    {lightFreshText(selRoot+"/"+p.name)}
+                    <span style={sidebarMeta}>{p.latest_date}</span>
+                  </span>
+                </span>
               </div>))}
           </div>}
           {rootPqs.length>0&&<div style={{borderTop:"1px solid var(--border)",padding:"4px 8px",maxHeight:200,overflow:"auto"}}>
             <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>루트 Parquet</div>
             {rootPqs.map(f=>(
-              <div key={f.name} onClick={()=>{setSelectedCols([]);loadRootPqView(f.name,"");}} style={{...sidebarRowBase,padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
+              <div key={f.name} onClick={()=>{setSelectedCols([]);loadRootPqView(f.name,"");}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
                 background:selRootPq===f.name?"var(--bg-hover)":"transparent",color:selRootPq===f.name?"var(--accent)":"var(--text-primary)"}}>
                 {lightDot(f.name)}
-                <span style={sidebarText}>📊 {f.name}</span>
-                {lightFreshText(f.name)}
-                <span style={sidebarMeta}>{formatSize(f.size)}</span>
+                <span style={sidebarStack}>
+                  <span style={sidebarText} title={f.name}>📊 {f.name}</span>
+                  <span style={sidebarMetaLine}>
+                    {lightFreshText(f.name)}
+                    <span style={sidebarMeta}>{formatSize(f.size)}</span>
+                  </span>
+                </span>
               </div>))}
           </div>}
         </>}
