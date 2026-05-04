@@ -5082,6 +5082,37 @@ def _invalidate_plan_risk_cache(product: str) -> None:
             _PLAN_RISK_CACHE.pop(key, None)
 
 
+def _auto_log_saved_plans(req: "PlanReq", entries: list[tuple[str, object, object]]) -> None:
+    """Mirror changed SplitTable plans into Inform Log after the plan file is saved."""
+    if not entries:
+        return
+    try:
+        from routers.informs import auto_log_splittable_change
+    except Exception as e:
+        logger.warning("SplitTable plan Inform auto-log import failed: %s: %s", type(e).__name__, e)
+        return
+    for ck, old, new in entries:
+        if old == new:
+            continue
+        try:
+            parts = str(ck or "").split("|")
+            root_lot_id = str(req.root_lot_id or (parts[0] if parts else "") or "").strip()
+            fab_lot_id = _resolve_fab_lot_for_cell(req.product, ck, root_lot_id)
+            auto_log_splittable_change(
+                author=req.username,
+                product=req.product,
+                lot_id=root_lot_id,
+                cell_key=ck,
+                old_value=old,
+                new_value=new,
+                action="set",
+                fab_lot_id=fab_lot_id,
+            )
+        except Exception as e:
+            logger.warning("SplitTable plan Inform auto-log failed (cell=%s) %s: %s",
+                           ck, type(e).__name__, e)
+
+
 def refresh_plan_risk_cache(product: str = "", force: bool = False) -> dict:
     products = [product] if str(product or "").strip() else []
     if not products:
@@ -6188,8 +6219,7 @@ def save_plan(req: PlanReq):
             )
     except Exception:
         pass
-    # SplitTable plan changes stay in SplitTable history/notifications only.
-    # They no longer create InformLog entries automatically.
+    _auto_log_saved_plans(req, auto_entries)
     _audit_user(req.username, "splittable:plan_save",
                 detail=f"product={req.product} saved={len(req.plans)} rejected={len(rejected)}",
                 tab="splittable")
