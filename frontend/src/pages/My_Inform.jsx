@@ -2264,13 +2264,15 @@ export default function My_Inform({ user }) {
       const attached = attachedSetsForSubmit();
       return uniqueClean([
         ...((form.embed?.st_scope?.inline_cols || []).map(c => String(c || "").trim())),
+        ...(Array.isArray(embedCustomCols) ? embedCustomCols : []),
         ...attached
           .filter(s => s.source === "custom" || !(s.rows || []).length)
           .flatMap(s => s.columns || []),
       ]).filter(c => c && c !== "parameter" && !String(c).startsWith("#"));
     };
+    const shouldAttachKnobSnapshot = wizardAttachMode === "knob" && embedCustomCols.length > 0;
     const buildEmbedForLot = async (targetLot) => {
-      if (!form.attach_embed || !hasEmbedSnapshot(form.embed)) return null;
+      if (!shouldAttachKnobSnapshot && (!form.attach_embed || !hasEmbedSnapshot(form.embed))) return null;
       const attached = attachedSetsForSubmit();
       const currentScope = form.embed?.st_scope?.snapshot_source === "current_splittable";
       const currentScopeLot = String(form.embed?.st_scope?.lot_id || form.lot_id || "").trim();
@@ -2304,7 +2306,7 @@ export default function My_Inform({ user }) {
       if (form.attach_split && (form.split.column || form.split.new_value)) {
         body.splittable_change = { ...form.split, applied: false };
       }
-      if (form.attach_embed && hasEmbedSnapshot(form.embed)) {
+      if ((form.attach_embed && hasEmbedSnapshot(form.embed)) || shouldAttachKnobSnapshot) {
         body.embed_table = await buildEmbedForLot(targetLot);
         body.attached_sets = attachedSetsForSubmit();
       }
