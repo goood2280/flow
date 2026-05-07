@@ -127,7 +127,7 @@ const NAV_GROUPS = [
   { id: "data", label: "데이터", keys: ["filebrowser", "dashboard", "splittable", "ettime", "waferlayout"] },
   { id: "work", label: "업무", keys: ["inform", "tracker", "meeting", "calendar"] },
   { id: "agent", label: "에이전트", keys: ["diagnosis"], direct: true },
-  { id: "admin", label: "관리", keys: ["tablemap", "admin", "devguide"] },
+  { id: "admin", label: "관리", keys: ["admin", "devguide"] },
 ];
 
 function buildNavGroups(visibleTabs) {

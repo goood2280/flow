@@ -1216,6 +1216,74 @@ def import_table(req: ImportReq):
     return save_table(tr)
 
 
+@router.get("/ontology")
+def ontology_graph():
+    """Semiconductor ontology/lineage graph for agents and future TableMap viewer.
+
+    This is intentionally read-only and file-presence aware. It does not try to
+    edit or version files; FileBrowser EDM owns that workflow.
+    """
+    db_root = _db_root()
+
+    def exists(rel: str) -> bool:
+        try:
+            return (db_root / rel).is_file()
+        except Exception:
+            return False
+
+    nodes = [
+        {"id": "identity:product", "label": "product", "kind": "identity", "status": "canonical"},
+        {"id": "identity:root_lot_id", "label": "root_lot_id", "kind": "identity", "status": "canonical"},
+        {"id": "identity:wafer_id", "label": "wafer_id", "kind": "identity", "status": "canonical"},
+        {"id": "identity:lot_wf", "label": "LOT_WF", "kind": "identity", "status": "derived"},
+        {"id": "source:FAB", "label": "FAB", "kind": "source", "grain": "wafer/step"},
+        {"id": "source:ET", "label": "ET", "kind": "source", "grain": "shot/item"},
+        {"id": "source:INLINE", "label": "INLINE", "kind": "source", "grain": "shot/item"},
+        {"id": "source:VM", "label": "VM", "kind": "source", "grain": "wafer"},
+        {"id": "file:step_matching.csv", "label": "step_matching.csv", "kind": "edm_file", "exists": exists("step_matching.csv")},
+        {"id": "file:knob_ppid.csv", "label": "knob_ppid.csv", "kind": "edm_file", "exists": exists("knob_ppid.csv")},
+        {"id": "file:inline_item_map.csv", "label": "inline_item_map.csv", "kind": "edm_file", "exists": exists("inline_item_map.csv")},
+        {"id": "file:inline_subitem_pos.csv", "label": "inline_subitem_pos.csv", "kind": "edm_file", "exists": exists("inline_subitem_pos.csv")},
+        {"id": "file:inline_matching.csv", "label": "inline_matching.csv", "kind": "edm_file", "exists": exists("inline_matching.csv")},
+        {"id": "file:vm_matching.csv", "label": "vm_matching.csv", "kind": "edm_file", "exists": exists("vm_matching.csv")},
+        {"id": "file:product_config/products.yaml", "label": "products.yaml", "kind": "edm_file", "exists": (PATHS.data_root / "product_config" / "products.yaml").is_file()},
+        {"id": "concept:step_id", "label": "step_id", "kind": "concept"},
+        {"id": "concept:function_step", "label": "function_step", "kind": "concept"},
+        {"id": "concept:module", "label": "module", "kind": "concept"},
+        {"id": "concept:ppid", "label": "ppid", "kind": "concept"},
+        {"id": "concept:knob", "label": "knob", "kind": "concept"},
+        {"id": "concept:subitem_id", "label": "subitem_id", "kind": "concept"},
+        {"id": "concept:shot_position", "label": "shot position", "kind": "concept"},
+        {"id": "concept:item_id", "label": "item_id", "kind": "concept"},
+        {"id": "concept:teg_layout", "label": "TEG / wafer layout", "kind": "concept"},
+        {"id": "feature:ML_TABLE", "label": "ML_TABLE_<PRODUCT>", "kind": "derived_table", "grain": "wafer"},
+    ]
+    edges = [
+        {"from": "identity:root_lot_id", "to": "identity:lot_wf", "label": "with wafer_id"},
+        {"from": "identity:wafer_id", "to": "identity:lot_wf", "label": "with root_lot_id"},
+        {"from": "source:FAB", "to": "concept:step_id", "label": "contains"},
+        {"from": "concept:step_id", "to": "file:step_matching.csv", "label": "mapped by"},
+        {"from": "file:step_matching.csv", "to": "concept:function_step", "label": "normalizes"},
+        {"from": "concept:function_step", "to": "concept:module", "label": "groups into"},
+        {"from": "source:FAB", "to": "concept:ppid", "label": "contains"},
+        {"from": "concept:ppid", "to": "file:knob_ppid.csv", "label": "mapped by"},
+        {"from": "file:knob_ppid.csv", "to": "concept:knob", "label": "defines"},
+        {"from": "source:INLINE", "to": "concept:subitem_id", "label": "contains"},
+        {"from": "concept:subitem_id", "to": "file:inline_subitem_pos.csv", "label": "position by"},
+        {"from": "file:inline_subitem_pos.csv", "to": "concept:shot_position", "label": "resolves"},
+        {"from": "source:INLINE", "to": "concept:item_id", "label": "contains"},
+        {"from": "concept:item_id", "to": "file:inline_item_map.csv", "label": "mapped by"},
+        {"from": "concept:item_id", "to": "file:inline_matching.csv", "label": "function item by"},
+        {"from": "source:VM", "to": "file:vm_matching.csv", "label": "step mapping by"},
+        {"from": "file:product_config/products.yaml", "to": "concept:teg_layout", "label": "declares"},
+        {"from": "source:FAB", "to": "feature:ML_TABLE", "label": "features"},
+        {"from": "source:ET", "to": "feature:ML_TABLE", "label": "features"},
+        {"from": "source:INLINE", "to": "feature:ML_TABLE", "label": "features"},
+        {"from": "source:VM", "to": "feature:ML_TABLE", "label": "features"},
+    ]
+    return {"ok": True, "nodes": nodes, "edges": edges, "identity": ["product", "root_lot_id", "wafer_id"], "owner": "tablemap_ontology_view"}
+
+
 # ── Data Lineage (v8.6.3) ─────────────────────────────────────────────
 # 명시적 relations 외에, 노드 이름 휴리스틱으로 dataflow 를 추론한다.
 # 핵심 룰: ML_TABLE_PROD* 는 ET / INLINE / EDS / KNOB / MASK / FAB / VM 소스로부터 파생.

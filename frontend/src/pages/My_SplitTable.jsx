@@ -419,7 +419,7 @@ export default function My_SplitTable({user}){
       .then(d=>{
         setRbRowCols(d.columns||[]);
         // required 는 FE 스키마 (product는 자동 스코프)
-        const reqMap={knob_ppid:["feature_name","function_step"],step_matching:["step_id","func_step"],inline_matching:["step_id","item_id"],vm_matching:["feature_name","step_id"]};
+        const reqMap={knob_ppid:["product","feature_name","function_step","operator","category"],step_matching:["product","step_id","function_step"],inline_matching:["step_id","item_id"],vm_matching:["feature_name","step_id"]};
         setRbRowReq(reqMap[kind]||[]);
         // 현재 제품 행만 골라 편집 대상으로. 공용(product 빈값) 행은 read-only 프리뷰 뒤에.
         const prodRows=(d.rows||[]).filter(r=>(r.product||"")===selProd).map(r=>({...r}));
@@ -1209,13 +1209,13 @@ export default function My_SplitTable({user}){
           })()}
 
           {/* v8.8.9: Column/step rulebook — prefix 별 섹션 분리.
-                KNOB: knob_ppid.csv (feature→func_step 조합/연산자/ppid) + step_matching.csv (func_step→step_id 확장)
+                KNOB: ppid_knob.csv (feature→func_step + condition operator) + step_matching.csv (func_step→step_id 확장)
                 INLINE: inline_matching.csv (item_id/step_id/desc) — INLINE_<item_id> 가 해당 step 에서 측정
                 VM: vm_matching.csv (feature_name/step_desc/step_id) — VM_<feature_name> 이 해당 step 에서 예측
              */}
           {selProd && (() => {
             const rulebookSpecs={
-              knob_ppid:{file:"knob_ppid.csv",color:"rgba(251,191,36,0.95)",roles:[["feature","feature_col"],["func_step","func_step_col"],["rule_order","rule_order_col"],["ppid","ppid_col"],["operator","operator_col"],["category","category_col"],["use","use_col"],["product","product_col"]]},
+              knob_ppid:{file:"ppid_knob.csv",color:"rgba(251,191,36,0.95)",roles:[["feature","feature_col"],["func_step","func_step_col"],["rule_order","rule_order_col"],["operator","operator_col"],["cell_value","category_col"],["product","product_col"]]},
               step_matching:{file:"step_matching.csv",color:"rgba(96,165,250,0.95)",roles:[["step_id","step_id_col"],["func_step","func_step_col"],["module","module_col"],["product","product_col"]]},
               inline_matching:{file:"inline_matching.csv",color:"rgba(16,185,129,0.95)",roles:[["item_id","item_id_col"],["step_id","step_id_col"],["item_desc","item_desc_col"],["product","product_col"]]},
               vm_matching:{file:"vm_matching.csv",color:"rgba(196,181,253,0.95)",roles:[["feature","feature_col"],["step_desc","step_desc_col"],["step_id","step_id_col"],["product","product_col"]]},
@@ -1286,7 +1286,7 @@ export default function My_SplitTable({user}){
                 <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginBottom:8}}>📘 컬럼/공정 연결 규칙 — {selProd}</div>
                 <div style={{marginBottom:8,padding:"8px 10px",borderRadius:6,background:"var(--bg-secondary)",border:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
                   <div>기본값은 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>같은 이름의 Base 파일</span>과 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>기본 열 이름</span>을 자동으로 사용합니다.</div>
-                  <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>KNOB_*</span> 는 조건 항목을 <span style={{fontFamily:"monospace"}}>knob_ppid.csv</span> 와 <span style={{fontFamily:"monospace"}}>step_matching.csv</span> 로 function_step / step_id 에 연결합니다.</div>
+                  <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>KNOB_*</span> 는 조건 항목을 <span style={{fontFamily:"monospace"}}>ppid_knob.csv</span> 와 <span style={{fontFamily:"monospace"}}>step_matching.csv</span> 로 function_step / step_id 에 연결합니다.</div>
                   <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>INLINE_*</span>, <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>VM_*</span> 은 측정/예측 항목을 각 matching 파일로 step_id 에 연결합니다.</div>
                   <div>열 이름이 다르거나 다른 Base 데이터와 연결해야 하면 각 섹션의 <b>편집</b> / <b>🔧 컬럼</b>에서 역할과 실제 CSV 헤더를 바꾸면 됩니다.</div>
                 </div>
@@ -1294,7 +1294,7 @@ export default function My_SplitTable({user}){
                 {/* ── KNOB 섹션 ───────────────────────────── */}
                 <div style={{marginBottom:10,padding:"6px 8px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid rgba(251,191,36,0.3)"}}>
                   <SectionHeader title="🔧 KNOB_*" count={knobEntries.length}
-                    files={["knob_ppid.csv", "step_matching.csv"]}
+                    files={["ppid_knob.csv", "step_matching.csv"]}
                     editKinds={["knob_ppid","step_matching"]} />
                   <RulebookSourceSummary kinds={["knob_ppid","step_matching"]}/>
                   {knobEntries.length===0 && (
@@ -1307,13 +1307,13 @@ export default function My_SplitTable({user}){
                         <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:1,lineHeight:1.4}}>
                           {(meta.groups || []).map((g, gi) => (
                             <div key={gi} style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:1}}>
-                              <span style={{padding:"0 3px",background:"rgba(59,130,246,0.15)",color:"rgba(59,130,246,0.95)",borderRadius:2,fontFamily:"monospace",fontWeight:700}}>#{g.rule_order}</span>
+                              <span style={{padding:"0 3px",background:"rgba(59,130,246,0.15)",color:"rgba(59,130,246,0.95)",borderRadius:2,fontFamily:"monospace",fontWeight:700}}>{g.rule_order}</span>
                               <span style={{fontFamily:"monospace",fontWeight:600,color:"var(--text-primary)"}}>{g.func_step}</span>
                               {Array.isArray(g.modules) && g.modules.length > 0 && g.modules.map((mod) => (
                                 <span key={mod} style={{padding:"0 4px",background:"rgba(16,185,129,0.14)",color:"rgba(16,185,129,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{mod}</span>
                               ))}
-                              {g.operator && <span style={{opacity:0.55}}>{g.operator}</span>}
-                              {g.ppid && <span style={{fontFamily:"monospace",opacity:0.7}}>[{g.ppid}]</span>}
+                              {g.category && <span style={{padding:"0 4px",background:"rgba(251,191,36,0.12)",color:"rgba(251,191,36,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{g.category}</span>}
+                              {g.operator && <span style={{padding:"0 4px",background:"rgba(96,165,250,0.12)",color:"rgba(96,165,250,0.95)",borderRadius:999,fontFamily:"monospace",fontWeight:700}}>{g.operator}</span>}
                               <span style={{flex:"1 1 100%",marginLeft:12,fontFamily:"monospace",fontSize:14,color:"var(--text-secondary)"}}>
                                 → [{(g.step_ids || []).join(", ") || "—"}]
                               </span>
@@ -1621,27 +1621,16 @@ export default function My_SplitTable({user}){
                 </div>
                 {/* v8.4.9: + 결합이면 줄바꿈. step_id 는 파란 pill 로 대비 강화.
                     KNOB/INLINE/VM는 '항목명 클릭' 방식으로 전환되어 인라인 정보 노출을 억제한다. */}
-                {showParamMeta && !showMatchInfo && Array.isArray(knobLookup(row._param)?.groups) && knobLookup(row._param).groups.length > 0 && (
+                {showParamMeta && Array.isArray(rowKnob?.groups) && rowKnob.groups.length > 0 && (
                   <div style={{fontSize:14,fontWeight:400,lineHeight:1.5,marginTop:4,fontFamily:"monospace"}}>
-                    {knobLookup(row._param).groups.map((g, gi) => (
+                    {rowKnob.groups.map((g, gi) => (
                       <div key={gi} style={{marginTop:gi>0?4:0,padding:"4px 6px",borderRadius:4,background:"rgba(251,191,36,0.06)",border:"1px solid rgba(251,191,36,0.18)"}}>
                         <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4}}>
-                        {gi > 0 && <span style={{color:"rgba(239,68,68,0.95)",fontWeight:800,fontSize:14,marginRight:2}}>+</span>}
-                        <span style={{color:"rgba(251,191,36,0.95)",fontWeight:700}}>{g.func_step}</span>
-                        {Array.isArray(g.modules) && g.modules.length > 0 && g.modules.map((mod) => (
-                          <span key={mod} style={{padding:"0 6px",borderRadius:999,background:"rgba(16,185,129,0.14)",border:"1px solid rgba(16,185,129,0.35)",color:"rgba(16,185,129,0.95)",fontWeight:700,fontSize:14}}>{mod}</span>
-                        ))}
+                          {(Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:[]).map((sid, si) => (
+                            <span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.18)",border:"1px solid rgba(96,165,250,0.5)",color:"rgba(147,197,253,0.95)",fontWeight:800,fontSize:14,letterSpacing:0.3}}>{sid}({g.func_step || "-"})</span>
+                          ))}
+                          {!(Array.isArray(g.step_ids)&&g.step_ids.length) && <span title="step_matching.csv 에 연결된 step_id가 없습니다." style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>step_matching 없음 ({g.func_step || "-"})</span>}
                         </div>
-                        {Array.isArray(g.step_ids) && g.step_ids.length > 0 && (
-                          <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:4,marginTop:4}}>
-                            <span style={{color:"var(--text-secondary)",fontSize:14}}>step_id</span>
-                            <span style={{display:"inline-flex",flexWrap:"wrap",gap:3}}>
-                            {g.step_ids.map((sid, si) => (
-                              <span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.18)",border:"1px solid rgba(96,165,250,0.5)",color:"rgba(147,197,253,0.95)",fontWeight:700,fontSize:14,letterSpacing:0.3}}>{sid}</span>
-                            ))}
-                            </span>
-                          </div>
-                        )}
                       </div>
                     ))}
                   </div>
@@ -2250,15 +2239,19 @@ export default function My_SplitTable({user}){
                     <div key={`${rbMatchParam}-${gi}`} style={{padding:"8px 10px",borderRadius:6,border:"1px solid rgba(251,191,36,0.35)",background:"var(--bg-card)"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:4}}>
                         <span style={{padding:"0 4px",background:"rgba(59,130,246,0.12)",borderRadius:2,fontFamily:"monospace",fontWeight:700}}>{g.rule_order ?? "-"}</span>
-                        <span style={{color:"rgba(251,191,36,0.95)",fontWeight:700,fontFamily:"monospace"}}>{g.func_step || "-"}</span>
+                        <span style={{color:"var(--text-secondary)",fontSize:14}}>function_step</span>
+                        <span style={{color:"rgba(251,191,36,0.95)",fontWeight:800,fontFamily:"monospace"}}>{g.func_step || "-"}</span>
                         {Array.isArray(g.modules) && g.modules.map(mod => <span key={mod} style={{padding:"0 5px",borderRadius:999,border:"1px solid rgba(16,185,129,0.35)",background:"rgba(16,185,129,0.1)",color:"rgba(16,185,129,0.95)",fontWeight:700,fontSize:14}}>{mod}</span>)}
                       </div>
                       <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-                        <span style={{color:"var(--text-secondary)",fontSize:14}}>operator</span>
+                        <span style={{color:"var(--text-secondary)",fontSize:14}}>condition</span>
                         <span style={{color:"var(--text-secondary)",fontFamily:"monospace"}}>{g.operator || "-"}</span>
-                        <span style={{color:"var(--text-secondary)",fontSize:14}}>ppid</span>
-                        <span style={{fontFamily:"monospace"}}>{g.ppid || "-"}</span>
-                        {(Array.isArray(g.step_ids) ? g.step_ids : []).map((sid) => <span key={sid} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.15)",color:"rgba(96,165,250,0.95)",border:"1px solid rgba(96,165,250,0.45)",fontWeight:700,fontSize:14}}>{sid}</span>)}
+                        <span style={{color:"var(--text-secondary)",fontSize:14}}>cell value</span>
+                        <span style={{fontFamily:"monospace"}}>{g.category || "-"}</span>
+                        <span style={{flexBasis:"100%",height:0}}/>
+                        <span style={{color:"var(--text-secondary)",fontSize:14}}>step_id</span>
+                        {(Array.isArray(g.step_ids) ? g.step_ids : []).map((sid) => <span key={sid} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.15)",color:"rgba(96,165,250,0.95)",border:"1px solid rgba(96,165,250,0.45)",fontWeight:700,fontSize:14,fontFamily:"monospace"}}>{sid} ({g.func_step || "-"})</span>)}
+                        {!(Array.isArray(g.step_ids) && g.step_ids.length) && <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>step_matching 없음</span>}
                       </div>
                     </div>
                   ))}

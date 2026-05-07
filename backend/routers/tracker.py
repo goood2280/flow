@@ -33,7 +33,6 @@ TRACKER_SERVICE = TrackerService(TrackerIssueRepository(ISSUES_FILE))
 migrate_tracker_issues_file(reason="router_import", actor="tracker_router")
 # v8.1.5: categories can now be mixed list of str or {name, color}
 DEFAULT_CATS = [
-    {"name": "Analysis", "color": "#3b82f6"},
     {"name": "Monitor", "color": "#a855f7"},
     {"name": "Equipment", "color": "#f97316"},
     {"name": "Process", "color": "#10b981"},
@@ -59,6 +58,18 @@ def _hash_color(name: str) -> str:
     return f"hsl({abs(h) % 360}, 58%, 58%)"
 
 
+def _hidden_category_name(name: str) -> bool:
+    low = (name or "").strip().lower()
+    if not low:
+        return False
+    try:
+        from core.lot_step import tracker_role_names_config
+        analysis = str((tracker_role_names_config() or {}).get("analysis") or "Analysis").strip().lower()
+    except Exception:
+        analysis = "analysis"
+    return low in {"analysis", analysis}
+
+
 def _normalize_cats(raw):
     """Accept list of str or {name,color[,source]}; return list of {name,color,source}.
     v8.8.33: source 필드 (fab|et|both|auto) — Lot step 추적 모드. 미지정 시 auto.
@@ -67,11 +78,11 @@ def _normalize_cats(raw):
     for item in raw or []:
         if isinstance(item, str):
             nm = item.strip()
-            if nm:
+            if nm and not _hidden_category_name(nm):
                 out.append({"name": nm, "color": _hash_color(nm), "source": "auto"})
         elif isinstance(item, dict):
             nm = (item.get("name") or "").strip()
-            if nm:
+            if nm and not _hidden_category_name(nm):
                 src = (item.get("source") or "auto").lower().strip()
                 if src not in ("fab", "et", "both", "auto"):
                     src = "auto"
@@ -173,7 +184,7 @@ def _category_source(category: str, default: str = "auto") -> str:
 
 
 def _tracker_mltable_lot_candidates(product: str, prefix: str = "", limit: int = 200) -> list[dict]:
-    """Use SplitTable's warmed ML_TABLE/FAB match cache for Tracker dropdowns."""
+    """Use the SplitTable-cycle LOT progress file cache for Tracker lot_id dropdowns."""
     prod = str(product or "").strip()
     if not prod:
         return []
@@ -182,54 +193,10 @@ def _tracker_mltable_lot_candidates(product: str, prefix: str = "", limit: int =
     except Exception:
         limit = 200
     try:
-        from routers import splittable
+        from core.lot_progress_cache import lot_id_candidates
+        return lot_id_candidates(product=prod, prefix=prefix, limit=limit)
     except Exception:
         return []
-    ml_product = prod if prod.upper().startswith("ML_TABLE_") else f"ML_TABLE_{prod}"
-    out: list[dict] = []
-    seen: set[tuple[str, str]] = set()
-
-    def add_rows(values, typ: str, source_root: str) -> None:
-        for value in values or []:
-            text = str(value or "").strip()
-            if not text:
-                continue
-            key = (typ, text.upper())
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append({"value": text, "type": typ, "source_root": source_root or "ML_TABLE"})
-            if len(out) >= limit:
-                return
-
-    root_limit = max(1, limit // 2)
-    try:
-        roots = splittable.get_lot_candidates(
-            product=ml_product,
-            col="root_lot_id",
-            prefix=prefix,
-            limit=root_limit,
-            source="auto",
-            root_lot_id="",
-        )
-        add_rows(roots.get("candidates") or [], "root_lot_id", roots.get("fab_source") or roots.get("source") or "ML_TABLE")
-    except Exception:
-        pass
-
-    remaining = max(1, limit - len(out))
-    try:
-        fabs = splittable.get_lot_candidates(
-            product=ml_product,
-            col="fab_lot_id",
-            prefix=prefix,
-            limit=remaining,
-            source="auto",
-            root_lot_id="",
-        )
-        add_rows(fabs.get("candidates") or [], "fab_lot_id", fabs.get("fab_source") or fabs.get("source") or "ML_TABLE")
-    except Exception:
-        pass
-    return out[:limit]
 
 
 def _save(issues):
@@ -1064,9 +1031,18 @@ def lot_step(request: Request,
         if not lot_id:
             lot_id = root_lot_id
         root_lot_id = ""
-    snap = lot_step_snapshot(product=product, root_lot_id=root_lot_id,
-                             lot_id=lot_id, wafer_id=wafer_id, source=source,
-                             source_root=source_root)
+    snap = {}
+    if source == "fab":
+        try:
+            from core.lot_progress_cache import lot_progress_snapshot
+            snap = lot_progress_snapshot(product=product, root_lot_id=root_lot_id,
+                                         lot_id=lot_id, wafer_id=wafer_id)
+        except Exception:
+            snap = {}
+    if not ((snap.get("fab") or {}).get("step_id")):
+        snap = lot_step_snapshot(product=product, root_lot_id=root_lot_id,
+                                 lot_id=lot_id, wafer_id=wafer_id, source=source,
+                                 source_root=source_root)
     return {
         "source": source,
         "source_root": source_root,
@@ -1090,6 +1066,7 @@ def lot_check_all(req: LotCheckAllReq, request: Request):
         snapshot_row_fields,
         _is_root_lot_id,
     )
+    from core.lot_progress_cache import lot_progress_snapshot
 
     me = current_user(request)
     issues = filter_by_visibility(_load(), me["username"], me.get("role", "user"), key="group_ids")
@@ -1143,7 +1120,12 @@ def lot_check_all(req: LotCheckAllReq, request: Request):
             if not row_lot:
                 row_lot = row_root
             row_root = ""
-        snap = lot_step_snapshot(
+        snap = lot_progress_snapshot(
+            product=product,
+            root_lot_id=row_root,
+            lot_id=row_lot,
+            wafer_id=wid,
+        ) if source == "fab" else lot_step_snapshot(
             product=product,
             root_lot_id=row_root,
             lot_id=row_lot,
@@ -1151,6 +1133,15 @@ def lot_check_all(req: LotCheckAllReq, request: Request):
             source=source,
             source_root=source_root,
         )
+        if source == "fab" and not ((snap.get("fab") or {}).get("step_id")):
+            snap = lot_step_snapshot(
+                product=product,
+                root_lot_id=row_root,
+                lot_id=row_lot,
+                wafer_id=wid,
+                source=source,
+                source_root=source_root,
+            )
         row_fields = snapshot_row_fields(snap)
         fab = (snap.get("fab") or {})
         row_product = monitor_prod or product or str(fab.get("product") or "").strip()
@@ -1325,6 +1316,7 @@ def check_lot_watches(request: Request, _a=Depends(require_admin)):
         source_root_for_context,
         _is_root_lot_id,
     )
+    from core.lot_progress_cache import lot_progress_snapshot
     from core.notify import emit_event
     from core.tracker_scheduler import _mark_watch_fired, _recipient_payload, _unique_list, scheduler_config
     from core.tracker_templates import render_tracker_mail, tracker_mail_context
@@ -1388,12 +1380,22 @@ def check_lot_watches(request: Request, _a=Depends(require_admin)):
             if watch.get("source") != watch_source:
                 watch["source"] = watch_source
                 changed_issue_ids.add(iss["id"])
-            snap = lot_step_snapshot(
+            snap = lot_progress_snapshot(
+                product=product,
+                root_lot_id=root, lot_id=lid, wafer_id=wid,
+            ) if resolved_source == "fab" else lot_step_snapshot(
                 product=product,
                 root_lot_id=root, lot_id=lid, wafer_id=wid,
                 source=resolved_source,
                 source_root=source_root,
             )
+            if resolved_source == "fab" and not ((snap.get("fab") or {}).get("step_id")):
+                snap = lot_step_snapshot(
+                    product=product,
+                    root_lot_id=root, lot_id=lid, wafer_id=wid,
+                    source=resolved_source,
+                    source_root=source_root,
+                )
             checked_at = datetime.datetime.now().isoformat(timespec="seconds")
             cmp = compare_to_watch(
                 snap,

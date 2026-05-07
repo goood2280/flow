@@ -23,14 +23,13 @@ const FEATURE_GUIDES={
   filebrowser:{icon:"📂",title:"파일 브라우저",steps:["좌측 사이드바에서 DB 선택","하위 Product/파일 선택 시 데이터 자동 로드","SQL 입력창에 필터 입력 (예: PRODUCT_TYPE == 'A', LOT_ID LIKE '%ABC%')","컬럼 선택 → CSV 다운로드 버튼"]},
   dashboard:{icon:"📊",title:"대시보드",steps:["데이터 소스 선택 (DB / Root Parquet / Product)","차트 타입: scatter / line / bar / pie / binning","X/Y 컬럼 선택 + 필터 SQL 입력","Days 옵션으로 기간 제한, binning 은 bin_count/bin_width 조정"]},
   splittable:{icon:"🗂️",title:"스플릿 테이블",steps:["Product 선택 → Root Lot + Wafer IDs 입력 → 검색","Plan 입력 모드: 편집 클릭 후 셀 클릭하여 계획값 입력","셀 색: 회색(없음) / 주황(plan만) / 파스텔(actual) / 초록(match) / 빨강(mismatch)","이력 탭에서 변경 이력 확인"]},
-  diagnosis:{icon:"🤖",title:"에이전트",steps:["Flow-i가 RCA·차트·데이터 확인을 수행할 때 쓰는 참조 지식 확인","RAG 반영 문서 / 표 지식 / TableMap / Source Profile 연결 구조 검토","Admin은 품질 피드백, golden workflow, LLM 설정을 같은 화면에서 관리"]},
+  diagnosis:{icon:"🤖",title:"에이전트",steps:["Flow-i가 RCA·차트·데이터 확인을 수행할 때 쓰는 참조 지식 확인","RAG 반영 문서 / 표 지식 / 온톨로지 / Source Profile 연결 구조 검토","Admin은 품질 피드백, golden workflow, LLM 설정을 같은 화면에서 관리"]},
   tracker:{icon:"📋",title:"트래커",steps:["이슈 게시판 — 제목 + 본문 + 이미지 업로드","Lot/Wafer 범위 지정 (Excel 붙여넣기 지원)","댓글 + 중첩 답글 + 이미지","Gantt 뷰로 전체 진행 현황 확인"]},
   inform:{icon:"📢",title:"인폼 로그",steps:["제품/lot 선택 후 인폼 등록","SplitTable 스냅샷 자동 첨부 확인","댓글 스레드와 담당자 흐름 추적","필요 시 메일 미리보기 후 발송"]},
   meeting:{icon:"🗓",title:"회의관리",steps:["회의 선택 또는 신규 회의 생성","아젠다/회의록/결정사항 입력","액션아이템과 달력 연동 확인","필요 시 메일로 회의록 공유"]},
   calendar:{icon:"📅",title:"변경점 관리",steps:["월별 변경 일정 확인","카테고리별 이벤트 필터","회의 액션/결정사항 연동 확인","상태(pending/in_progress/done) 관리"]},
   ettime:{icon:"⏱️",title:"ET 레포트",steps:["lot/root_lot_id 기준 조회","fab_lot_id + step별 ET 패키지 확인","상세 breakdown 표 확인","CSV/PDF 리포트 다운로드"]},
   waferlayout:{icon:"🧭",title:"WF Layout",steps:["제품별 wafer layout 불러오기","shot/chip/TEG 배치 확인","edge shot 후보 검토","layout 저장 및 재검증"]},
-  tablemap:{icon:"🗺️",title:"테이블 맵",steps:["DB 간 관계 그래프 조회","노드 더블클릭 → 상세 정보","관계선 drag-drop 으로 편집"]},
   devguide:{icon:"📖",title:"개발 가이드",steps:["아키텍처 다이어그램","API 엔드포인트 문서","Gotchas / 코드 규칙"]},
 };
 function FlowiConsole({onNavigate,user,onActiveChange}){
@@ -123,7 +122,14 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
     setMessages(prev=>[...prev,userMsg]);
     setActive(true);setBusy(true);setErr("");setLastPrompt(q);
     const started=Date.now();
-    postJson("/api/llm/flowi/chat",{prompt:q,product:"",max_rows:12,context})
+    let endpoint="/api/llm/flowi/chat";
+    let body={prompt:q,product:"",max_rows:12,context};
+    if(q.toUpperCase().startsWith("FLOWI_EDM_PROPOSE ")){
+      endpoint="/api/llm/flowi/edm/propose";
+      try{body=JSON.parse(q.slice("FLOWI_EDM_PROPOSE ".length).trim());}
+      catch(e){setErr("FLOWI_EDM_PROPOSE JSON parse 실패: "+e.message);setBusy(false);return;}
+    }
+    postJson(endpoint,body)
       .then(d=>{
         const enriched={...(d||{}),elapsed_ms:Date.now()-started};
         const sid=enriched?.tool?.chart_session_id||enriched?.tool?.chart_result?.chart_session_id||"";
@@ -239,6 +245,7 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
     </div>}
     {walkthrough&&walkthrough.session_id&&<FlowiWalkthrough data={walkthrough}/>}
     {isAdmin&&nextActions.length>0&&<FlowiNextActions actions={nextActions} onNavigate={onNavigate} onChoice={onChoice}/>}
+    {isAdmin&&result.proposal&&result.confirm&&<FlowiEdmProposal result={result}/>}
     <FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>
     {choices.length>0&&!hasArgumentChoices&&!hasMissingFreetext&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice} onNavigate={onNavigate}/>}
     {hasArgumentChoices&&<FlowiArgumentChoices data={argumentChoices} basePrompt={partialPrompt} onChoice={onChoice}/>}
@@ -576,6 +583,35 @@ function FlowiNextActions({actions,onNavigate,onChoice}){
         </button>;
       })}
     </div>
+  </div>);
+}
+
+function FlowiEdmProposal({result}){
+  const proposal=result.proposal||{};
+  const confirm=result.confirm||"";
+  const[busy,setBusy]=useState(false);
+  const[execResult,setExecResult]=useState(null);
+  const[err,setErr]=useState("");
+  const run=()=>{
+    if(!proposal.action_id||!confirm||busy)return;
+    if(!window.confirm(`${proposal.summary||proposal.action_type}\n\nEDM 작업을 실행할까요?`))return;
+    setBusy(true);setErr("");
+    postJson("/api/llm/flowi/edm/execute",{proposal_id:proposal.action_id,confirm})
+      .then(setExecResult)
+      .catch(e=>setErr(e.message||String(e)))
+      .finally(()=>setBusy(false));
+  };
+  return(<div style={{marginTop:10,border:"1px solid #7c2d12",borderRadius:8,background:"#1f130b",padding:"9px 10px"}}>
+    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+      <b style={{fontSize:14,color:"#fb923c",fontFamily:"monospace"}}>EDM proposal</b>
+      <span style={{fontSize:14,color:"#e5e5e5",fontFamily:"monospace"}}>{proposal.action_type}</span>
+      {proposal.file&&<span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>{proposal.file}</span>}
+      <button onClick={run} disabled={busy||!!execResult?.ok} style={{marginLeft:"auto",padding:"4px 10px",borderRadius:5,border:"none",background:execResult?.ok?"#64748b":"#f97316",color:"#fff",fontSize:14,fontWeight:800,cursor:busy||execResult?.ok?"default":"pointer"}}>{busy?"실행중":execResult?.ok?"실행됨":"확인 실행"}</button>
+    </div>
+    <div style={{fontSize:14,color:"#d4d4d4",marginTop:6,lineHeight:1.5}}>{proposal.summary}</div>
+    <div style={{fontSize:12,color:"#a3a3a3",marginTop:5,fontFamily:"monospace"}}>confirm {confirm}</div>
+    {err&&<div style={{fontSize:14,color:"#fca5a5",marginTop:6}}>{err}</div>}
+    {execResult&&<pre style={{margin:"8px 0 0",maxHeight:160,overflow:"auto",fontSize:12,color:"#d4d4d4",whiteSpace:"pre-wrap"}}>{JSON.stringify(execResult.result||execResult,null,2)}</pre>}
   </div>);
 }
 
@@ -968,7 +1004,6 @@ export default function My_Home({onNavigate,user}){
     {key:"calendar",   icon:"📅",title:"변경점 관리",desc:"달력·카테고리·회의 연동"},
     {key:"ettime",     icon:"⏱️",title:"ET 레포트",desc:"fab_lot_id + step 기준 elapsed 분석"},
     {key:"waferlayout",icon:"🧭",title:"WF Layout",desc:"제품별 wafer/shot/chip layout 검토"},
-    {key:"tablemap",   icon:"🗺️",title:"테이블 맵",desc:"DB 관계 그래프",adminOnly:true},
     {key:"admin",      icon:"⚙️",title:"관리자",desc:"사용자, 권한, 모니터",adminOnly:true},
     {key:"devguide",   icon:"📖",title:"개발자 가이드",desc:"아키텍처, API 레퍼런스"},
   ];

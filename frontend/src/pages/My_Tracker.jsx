@@ -166,10 +166,19 @@ function isMonitorCategory(category, roleNames = {}) {
   return String(category || "").trim().toLowerCase() === monitorName;
 }
 
+function isAnalysisCategory(category, roleNames = {}) {
+  const analysisName = String(roleNames?.analysis || "Analysis").trim().toLowerCase();
+  const value = String(category || "").trim().toLowerCase();
+  return value === "analysis" || value === analysisName;
+}
+
+function visibleTrackerCategories(cats = [], roleNames = {}) {
+  return (Array.isArray(cats) ? cats : []).filter(c => !isAnalysisCategory(c?.name || c, roleNames));
+}
+
 function trackerCategorySource(category, roleNames = {}, cats = []) {
   const c = String(category || "").trim().toLowerCase();
   if (c === String(roleNames?.monitor || "Monitor").trim().toLowerCase()) return "fab";
-  if (c === String(roleNames?.analysis || "Analysis").trim().toLowerCase()) return "et";
   const cat = (Array.isArray(cats) ? cats : []).find(x => String(x?.name || "").trim().toLowerCase() === c);
   const src = String(cat?.source || "").trim().toLowerCase();
   if (["fab", "et", "both", "auto"].includes(src)) return src;
@@ -269,8 +278,8 @@ function DescEditor({ value, onChange, placeholder }) {
 
 /* ─── Lot/Wafer Editable Table ─── */
 // v8.8.33: currentStep 맵 + step watcher 통합.
-//   - root_lot_id 가 5자리면 FAB 최신 step 을 root 기준으로 조회, 그 외엔 lot_id.
-//   - Monitor 는 FAB step 만, Analysis/ET 계열은 ET 측정 패키지도 함께 조회.
+//   - 새 입력은 lot_id 기준. 기존 이슈의 root_lot_id 는 조회 호환용으로만 유지.
+//   - Monitor 는 FAB step 만, ET source 계열은 ET 측정 패키지도 함께 조회.
 //   - 특정 step 설정 + 메일 옵션 인라인 저장.
 function LotTable({ lots, setLots, readOnly, issueId, product, category, roleNames, cats }) {
   const [stepData, setStepData] = useState({});  // {rowIdx: {fab:{...}, et:[...]} }
@@ -377,11 +386,12 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
         return {
           product: (parts[0] || "").trim(),
           monitor_prod: (parts[0] || "").trim(),
-          root_lot_id: (parts[1] || "").trim(),
+          root_lot_id: "",
+          lot_id: (parts[1] || "").trim(),
           wafer_id: (parts[2] || "").trim(),
           comment: (parts[3] || "").trim(),
         };
-      }).filter(r => r.product || r.root_lot_id || r.wafer_id);
+      }).filter(r => r.product || r.lot_id || r.wafer_id);
       setLots(prev => [...prev, ...newRows]);
     }
   };
@@ -454,7 +464,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   };
 
   const removeRow = (idx) => setLots(prev => prev.filter((_, i) => i !== idx));
-  const addRow = () => setLots(prev => [...prev, { product: "", monitor_prod: "", root_lot_id: "", wafer_id: "", comment: "" }]);
+  const addRow = () => setLots(prev => [...prev, { product: "", monitor_prod: "", root_lot_id: "", lot_id: "", wafer_id: "", comment: "" }]);
 
   const cellStyle = {
     padding: "5px 8px", borderBottom: "1px solid var(--border)", fontSize: 14,
@@ -480,17 +490,15 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   const categorySource = trackerCategorySource(category, roleNames, cats);
   const monitorMode = isMonitorCategory(category, roleNames);
   const showEtColumn = readOnly && (categorySource === "et" || categorySource === "both");
-  const showStepColumn = readOnly && (categorySource === "fab" || categorySource === "both" || categorySource === "auto");
+  const showStepColumn = (readOnly || monitorMode) && (categorySource === "fab" || categorySource === "both" || categorySource === "auto");
   const readOnlyColSpan = 4 + (showStepColumn ? 1 : 0) + (showEtColumn ? 1 : 0) + 1 + 2;
-  const baseHeaders = monitorMode
-    ? ["prod", "lot_id", "wafer_id", "comment"]
-    : ["PROD", "root_lot_id / fab_lot_id(lot_id)", "Wafer", "코멘트"];
+  const baseHeaders = ["product", "lot_id", "wafer_id", "comment"];
 
   // v8.8.5: 빈 상태 플레이스홀더 행 대신, 항상 테이블 형태 유지 + 맨 아래 [+ 행추가] 빈 행.
   //   - readOnly 가 아닐 때: 데이터 행들 아래에 "+ 버튼만 있는 빈 셀 행" 하나 (여기 클릭 = addRow).
   //   - 외부 상단 `+ 행 추가` 버튼은 제거 — 테이블 안 한 곳에서만 추가.
   // v9.0.0: watch 저장 핸들러.
-  //   - category.source 기반 자동 결정 (Monitor=fab, Analysis=et). 행별 수동 변경은 UI 에서 허용하지 않음.
+  //   - category.source 기반 자동 결정 (Monitor=fab, ET source=et). 행별 수동 변경은 UI 에서 허용하지 않음.
   //   - v9.0.0 fix: sf() 로 교체 — 이전 raw fetch 는 세션 토큰 미주입으로 401 → 메일 체크 저장이 조용히 실패.
   const saveWatch = (i, patch) => {
     if (!issueId) return;
@@ -501,7 +509,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
       target_step_id: watch.target_step_id || "",
       target_et_step_id: watch.target_et_step_id || "",
       target_et_seqs: watch.target_et_seqs || "",
-      // v9.0.0: source 는 카테고리에서 가져옴. category prop 이 "Monitor"/"Analysis" 면 자동 fab/et 결정.
+      // v9.0.0: source 는 카테고리에서 가져옴. Monitor 는 FAB 로 강제.
       source: isMonitorCategory(category, roleNames) ? "fab" : ((patch.source) || watch.source || (categorySource === "et" ? "et" : "fab")),
     };
     sf(API + "/lot-watch", {
@@ -516,7 +524,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   return (
     <div onPaste={!readOnly ? handlePaste : undefined}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>Product / root_lot_id·lot_id / Wafer ({lots.length})</span>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>product / lot_id / wafer_id ({lots.length})</span>
         {readOnly ? (
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{batchBusy ? `0/${lots.length} 완료` : `${batchDone}/${lots.length} 완료`}</span>
@@ -525,12 +533,12 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
               {batchBusy ? "조회 중..." : "전체 조회"}
             </button>
           </div>
-        ) : <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>Excel TSV 붙여넣기 지원 · PRODUCT / root_lot_id·lot_id / WAFER / COMMENT 순서</span>}
+        ) : <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>Excel TSV 붙여넣기 지원 · product / lot_id / wafer_id / comment 순서</span>}
       </div>
       {!readOnly && (
         <>
           <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>
-            PROD를 먼저 선택하면 해당 PROD의 root_lot_id / fab_lot_id(lot_id) 후보가 아래 선택 목록에 표시됩니다.
+            product를 먼저 선택하면 해당 product의 lot_id 후보가 입력 중 자동 필터링됩니다.
           </div>
         </>
       )}
@@ -540,8 +548,8 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
             {baseHeaders.map(h => (
               <th key={h} style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{h}</th>
             ))}
+            {showStepColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{monitorMode ? "step_id(func_step)" : "step_id > func_step"}</th>}
             {readOnly && <>
-              {showStepColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{monitorMode ? "step_id(func_step)" : "step_id > func_step"}</th>}
               {showEtColumn && <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>ET 측정</th>}
               <th style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", position: "sticky", top: 0, zIndex: 1 }}>watch</th>
             </>}
@@ -558,6 +566,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
               const et = Array.isArray(step.et) ? step.et : [];
               const watch = l.watch || {};
               const rowProduct = l.product || l.monitor_prod || "";
+              const lotValue = l.lot_id || l.root_lot_id || "";
               const stepInfo = trackerStepInfo(l, fab, et);
               const currentStepText = formatTrackerStep(l, fab, et);
               const stepIdText = stepInfo.stepId ? (stepInfo.seq !== null && stepInfo.seq !== "" ? `${stepInfo.stepId} / seq ${stepInfo.seq}` : stepInfo.stepId) : "";
@@ -583,34 +592,37 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                       const v = e.target.value;
                       updateRow(i, { product: v, monitor_prod: v, root_lot_id: "", lot_id: "" });
                       setLotOptions(prev => ({ ...prev, [i]: [] }));
-                      if (v) loadLotOptions(i, { ...l, product: v, monitor_prod: v, root_lot_id: "" }, "");
+                      if (v) loadLotOptions(i, { ...l, product: v, monitor_prod: v, root_lot_id: "", lot_id: "" }, "");
                     }}
                     style={sheetInput}>
-                    <option value="">PROD 선택</option>
+                    <option value="">product 선택</option>
                     {productChoices(rowProduct).map(p => <option key={p} value={p}>{p}</option>)}
                   </select>
                 )}</td>
-                <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 210 }}>{readOnly ? (l.root_lot_id || l.lot_id) : (
-                  <select value={l.root_lot_id || ""}
+                <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 210 }}>{readOnly ? (l.lot_id || l.root_lot_id) : (
+                  <>
+                  <input value={lotValue}
+                    list={`tracker-lot-candidates-${i}`}
                     disabled={!rowProduct}
                     onFocus={() => { if (rowProduct && !(lotOptions[i] || []).length) loadLotOptions(i, l, ""); }}
                     onChange={e => {
                       const v = e.target.value;
-                      updateRow(i, { root_lot_id: v, lot_id: v });
+                      updateRow(i, { root_lot_id: "", lot_id: v });
+                      if (rowProduct) loadLotOptions(i, { ...l, root_lot_id: "", lot_id: v }, v);
                     }}
-                    style={{ ...sheetInput, color: rowProduct ? "var(--text-primary)" : "var(--text-secondary)", cursor: rowProduct ? "pointer" : "not-allowed" }}>
-                    <option value="">{rowProduct ? "root/fab lot 선택" : "PROD 먼저 선택"}</option>
-                    {lotChoices(i, l.root_lot_id || l.lot_id).map((c, j) => (
-                      <option key={`${c.type || "lot"}-${c.value}-${j}`} value={c.value}>
-                        {c.value}{c.type ? ` · ${c.type}` : ""}{c.source_root ? ` · ${c.source_root}` : ""}
-                      </option>
+                    onBlur={() => { if (monitorMode && lotValue) fetchStep(i, { ...l, root_lot_id: "", lot_id: lotValue }); }}
+                    placeholder={rowProduct ? "lot_id 입력/검색" : "product 먼저 선택"}
+                    style={{ ...sheetInput, color: rowProduct ? "var(--text-primary)" : "var(--text-secondary)", cursor: rowProduct ? "text" : "not-allowed" }} />
+                  <datalist id={`tracker-lot-candidates-${i}`}>
+                    {lotChoices(i, lotValue).map((c, j) => (
+                      <option key={`${c.type || "lot"}-${c.value}-${j}`} value={c.value} label={`${c.type || "lot"}${c.source_root ? ` · ${c.source_root}` : ""}`} />
                     ))}
-                  </select>
+                  </datalist>
+                  </>
                 )}</td>
-                <td style={readOnly ? cellStyle : { ...sheetCell, width: 100 }}>{readOnly ? l.wafer_id : <input value={l.wafer_id || ""} onChange={e => updateCell(i, "wafer_id", e.target.value)} style={sheetInput} placeholder="all / 1,2 / 1~10" />}</td>
+                <td style={readOnly ? cellStyle : { ...sheetCell, width: 100 }}>{readOnly ? l.wafer_id : <input value={l.wafer_id || ""} onChange={e => updateCell(i, "wafer_id", e.target.value)} onBlur={() => { if (monitorMode && (l.root_lot_id || l.lot_id)) fetchStep(i, l); }} style={sheetInput} placeholder="all / 1,2 / 1~10" />}</td>
                 <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 180 }}>{readOnly ? l.comment : <input value={l.comment || ""} onChange={e => updateCell(i, "comment", e.target.value)} style={sheetInput} placeholder="comment" />}</td>
-                {readOnly && <>
-                  {showStepColumn && <td style={cellStyle}>
+                {showStepColumn && <td style={cellStyle}>
                     {busyRow === i ? <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>…</span>
                       : monitorMode ? (
                         <span title={stepTitle} style={{ display: "inline-block", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: 14, color: compactStepText === "조회 필요" ? "var(--text-secondary)" : "var(--accent)", fontWeight: compactStepText === "조회 필요" ? 500 : 800 }}>
@@ -632,7 +644,14 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                           <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>갱신 {checkedAt ? String(checkedAt).slice(0, 16) : "-"}{scanStatus === "no_match" ? " · DB 매칭 없음" : ""}</span>
                         </div>
                       )}
+                    {!readOnly && (
+                      <button onClick={() => fetchStep(i, l)} disabled={busyRow === i || !(l.root_lot_id || l.lot_id)}
+                        style={{ marginLeft: 8, padding: "3px 7px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", fontSize: 14, cursor: busyRow === i || !(l.root_lot_id || l.lot_id) ? "not-allowed" : "pointer" }}>
+                        조회
+                      </button>
+                    )}
                   </td>}
+                {readOnly && <>
                   {showEtColumn && <td style={cellStyle}>
                     <div
                       title={etStatus.title || (et.length > 0 ? etStepSummaries(l, et).slice(0, 5).map(formatEtSummaryLine).join("\n") : (l.et_last_time || l.last_checked_at || ""))}
@@ -653,14 +672,14 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                     </div>
                   </td>}
                   <td style={cellStyle}>
-                    {/* v9.0.0: watch source 는 category 기반 자동 결정 (Monitor→FAB, Analysis→ET).
+                    {/* v9.0.0: watch source 는 category 기반 자동 결정 (Monitor→FAB, ET source→ET).
                         사용자는 target step (FAB) 또는 자동 이력 관측 (ET) + 메일 체크만 설정. */}
                     {(() => {
                       const effSrc = isMonitorCategory(category, roleNames) ? "fab" : (watch.source || (categorySource === "et" ? "et" : "fab"));
                       const isEt = effSrc === "et";
                       return (
                         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, flexWrap: "wrap" }}>
-                          <span title={isEt ? "Analysis 카테고리: ET 측정 이력 감지" : "Monitor 카테고리: FAB step 도달 감지"}
+                          <span title={isEt ? "ET source 카테고리: ET 측정 이력 감지" : "Monitor 카테고리: FAB step 도달 감지"}
                                 style={{ padding: "3px 8px", fontSize: 14, fontWeight: 700, borderRadius: 4, background: isEt ? "#ec4899" : "#3b82f6", color: "#fff" }}>
                             {isEt ? "ET" : "FAB"}
                           </span>
@@ -719,7 +738,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
               <tr onClick={addRow} style={{ cursor: "pointer" }}
                   title="클릭 또는 + 로 행 추가 · Excel TSV 붙여넣기 지원">
                 <td colSpan={4} style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 14, background: "var(--bg-tertiary)", opacity: 0.7, fontFamily: "monospace" }}>
-                  {lots.length === 0 ? "Excel 붙여넣기 (PRODUCT \t root_lot_id/lot_id \t WAFER_ID \t COMMENT) 또는 + 로 행 추가" : "(빈 행)"}
+                  {lots.length === 0 ? "Excel 붙여넣기 (product \t lot_id \t wafer_id \t comment) 또는 + 로 행 추가" : "(빈 행)"}
                 </td>
                 <td style={{ ...cellStyle, textAlign: "center", background: "var(--bg-tertiary)" }}>
                   <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, borderRadius: "50%", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 700, lineHeight: 1 }}>+</span>
@@ -797,6 +816,7 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
   const [myGroups, setMyGroups] = useState([]); const [groupIds, setGroupIds] = useState([]);
   useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#64748b" } : c))).catch(() => { }); }, []);
   useEffect(() => { sf("/api/groups/list").then(d => setMyGroups(d.groups || [])).catch(() => setMyGroups([])); }, []);
+  const visibleCats = visibleTrackerCategories(cats, roleNames);
   const S = { width: "100%", padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
   return (
     <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 20, marginBottom: 20 }}>
@@ -810,7 +830,7 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
         </select>
         <select value={category} onChange={e => setCategory(e.target.value)} style={{ ...S, width: "auto" }}>
           <option value="">-- 카테고리 필수 --</option>
-          {cats.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+          {visibleCats.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
         </select>
       </div>
       {/* Related Links */}
@@ -938,7 +958,7 @@ export default function My_Tracker({ user }) {
   const [editMode, setEditMode] = useState(false); const [editTitle, setEditTitle] = useState(""); const [editDesc, setEditDesc] = useState(""); const [editPrio, setEditPrio] = useState("normal");
   // v8.8.13: 수정 시 카테고리도 변경 가능하도록 state 추가.
   const [editCategory, setEditCategory] = useState("");
-  const [trackerPageConfig, setTrackerPageConfig] = useState({ role_names: { monitor: "Monitor", analysis: "Analysis" } });
+  const [trackerPageConfig, setTrackerPageConfig] = useState({ role_names: { monitor: "Monitor" } });
   const [issueMailGroups, setIssueMailGroups] = useState([]);
   const isAdmin = user?.role === "admin";
   const statusColor = { in_progress: "#f97316", closed: "#22c55e" };
@@ -953,13 +973,13 @@ export default function My_Tracker({ user }) {
   }, []);
   const loadTrackerPageConfig = useCallback(() => {
     return sf(API + "/db-sources").then(d => setTrackerPageConfig({
-      role_names: d.role_names || { monitor: d.monitor_name || "Monitor", analysis: d.analysis_name || "Analysis" },
+      role_names: { monitor: d.role_names?.monitor || d.monitor_name || "Monitor" },
       mail_templates: d.mail_templates || {},
       template_variables: d.template_variables || [],
     })).catch(() => {});
   }, []);
   useEffect(() => { loadTrackerPageConfig(); }, [loadTrackerPageConfig]);
-  const roleNames = trackerPageConfig.role_names || { monitor: "Monitor", analysis: "Analysis" };
+  const roleNames = trackerPageConfig.role_names || { monitor: "Monitor" };
   const hashColor = (name) => { let h = 0; for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0; return `hsl(${Math.abs(h) % 360}, 58%, 58%)`; };
   const catColor = (name) => { if (!name) return "#64748b"; const c = cats.find(x => x.name === name); return (c && c.color) || hashColor(name); };
 
@@ -1266,6 +1286,10 @@ function TrackerSettings({ isAdmin, onChanged }) {
   const [dbBusy, setDbBusy] = useState(false);
   const [mailPreview, setMailPreview] = useState(null);
   const [previewBusy, setPreviewBusy] = useState("");
+  const [lotProgressRows, setLotProgressRows] = useState([]);
+  const [lotProgressMeta, setLotProgressMeta] = useState({});
+  const [lotProgressFilter, setLotProgressFilter] = useState("");
+  const [lotProgressBusy, setLotProgressBusy] = useState(false);
   const load = () => sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#64748b" } : c)));
   const loadScheduler = () => sf(API + "/scheduler").then(d => setSched({
     enabled: d.enabled !== false,
@@ -1290,8 +1314,25 @@ function TrackerSettings({ isAdmin, onChanged }) {
     default_mail_templates: d.default_mail_templates || {},
     template_variables: d.template_variables || [],
   }));
+  const loadLotProgressTable = (prefixValue = lotProgressFilter) => {
+    const params = new URLSearchParams();
+    const prefix = String(prefixValue || "").trim();
+    if (prefix) params.set("prefix", prefix);
+    params.set("limit", "500");
+    setLotProgressBusy(true);
+    return sf("/api/lot-progress/table?" + params.toString())
+      .then(d => {
+        setLotProgressRows(Array.isArray(d?.items) ? d.items : []);
+        setLotProgressMeta({ generated_at: d?.generated_at || "", count: d?.count || 0, total: d?.total || 0 });
+      })
+      .catch(() => {
+        setLotProgressRows([]);
+        setLotProgressMeta({});
+      })
+      .finally(() => setLotProgressBusy(false));
+  };
   // fix: arrow+Promise → Promise 가 cleanup 에 저장되어 unmount 시 crash 방지.
-  useEffect(() => { load(); loadScheduler().catch(() => {}); loadDbSources().catch(() => {}); }, []);
+  useEffect(() => { load(); loadScheduler().catch(() => {}); loadDbSources().catch(() => {}); loadLotProgressTable("").catch(() => {}); }, []);
   const save = (next) => sf(API + "/categories/save", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next),
   }).then(() => { setMsg("저장 완료"); load(); if (onChanged) onChanged(); }).catch(e => setMsg(e.message));
@@ -1345,6 +1386,14 @@ function TrackerSettings({ isAdmin, onChanged }) {
         setSchedMsg(d?.run?.ok === false ? (d.run.last_error || "스캔 실패") : "즉시 스캔 완료");
       }).catch(e => setSchedMsg(e.message)).finally(() => setSchedBusy(false));
   };
+  const refreshLotProgressNow = () => {
+    if (!isAdmin || lotProgressBusy) return;
+    setLotProgressBusy(true);
+    sf("/api/lot-progress/refresh", { method: "POST" })
+      .then(() => loadLotProgressTable(lotProgressFilter))
+      .catch(() => setLotProgressRows([]))
+      .finally(() => setLotProgressBusy(false));
+  };
   const saveDbSources = () => {
     if (!isAdmin || dbBusy) return;
     setDbBusy(true);
@@ -1378,7 +1427,7 @@ function TrackerSettings({ isAdmin, onChanged }) {
     }).catch(e => setDbMsg(e.message)).finally(() => setDbBusy(false));
   };
   const status = sched.status || {};
-  const dbRootOptions = Array.from(new Set([...(dbSources.roots || []), dbSources.monitor, dbSources.analysis].filter(Boolean)));
+  const dbRootOptions = Array.from(new Set([...(dbSources.roots || []), dbSources.monitor].filter(Boolean)));
   const updateMailTemplate = (kind, field, value) => {
     setDbSources(prev => ({
       ...prev,
@@ -1439,27 +1488,12 @@ function TrackerSettings({ isAdmin, onChanged }) {
             {dbRootOptions.map(root => <option key={root} value={root}>{root}</option>)}
           </select>
         </label>
-        <label style={{ display: "grid", gridTemplateColumns: "70px 1fr", gap: 8, alignItems: "center", fontSize: 14, color: "var(--text-secondary)" }}>
-          Analysis명
-          <input value={dbSources.analysis_name || ""} disabled={!isAdmin || dbBusy}
-            onChange={e => setDbSources(prev => ({ ...prev, analysis_name: e.target.value }))}
-            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
-        </label>
-        <label style={{ display: "grid", gridTemplateColumns: "70px 1fr", gap: 8, alignItems: "center", fontSize: 14, color: "var(--text-secondary)" }}>
-          Analysis DB
-          <select value={dbSources.analysis || ""} disabled={!isAdmin || dbBusy}
-            onChange={e => setDbSources(prev => ({ ...prev, analysis: e.target.value }))}
-            style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }}>
-            {dbRootOptions.map(root => <option key={root} value={root}>{root}</option>)}
-          </select>
-        </label>
         <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4 }}>메일 템플릿</div>
         <div style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.5 }}>
           사용 변수: {templateVars.map(v => `{${v}}`).join(" ")}
         </div>
         {[
           ["monitor", dbSources.monitor_name || "Monitor"],
-          ["analysis", dbSources.analysis_name || "Analysis"],
         ].map(([kind, label]) => (
           <div key={kind} style={{ display: "grid", gap: 4, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
@@ -1475,7 +1509,7 @@ function TrackerSettings({ isAdmin, onChanged }) {
               style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
             <textarea value={dbSources.mail_templates?.[kind]?.body || ""} disabled={!isAdmin || dbBusy}
               onChange={e => updateMailTemplate(kind, "body", e.target.value)}
-              rows={kind === "analysis" ? 6 : 5}
+              rows={5}
               placeholder="<p>{reason}</p>"
               style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, minHeight: 86, resize: "vertical", fontFamily: "monospace" }} />
             <button onClick={() => previewMailTemplate(kind)} disabled={!!previewBusy}
@@ -1524,15 +1558,6 @@ function TrackerSettings({ isAdmin, onChanged }) {
             style={{ width: 70, padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
           분
         </label>
-        <label title="Analysis ET step에서 seq/pt 구성이 이 시간 동안 변하지 않으면 측정 완료 알림" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, color: "var(--text-secondary)" }}>
-          ET 완료 딜레이
-          <input type="number" min={sched.min_et_stable_delay_minutes || 1} max={sched.max_et_stable_delay_minutes || 1440}
-            value={sched.et_stable_delay_minutes}
-            disabled={!isAdmin || schedBusy}
-            onChange={e => setSched(prev => ({ ...prev, et_stable_delay_minutes: e.target.value }))}
-            style={{ width: 70, padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
-          분
-        </label>
         <button onClick={saveScheduler} disabled={!isAdmin || schedBusy}
           style={{ padding: "6px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: isAdmin && !schedBusy ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.55 }}>
           저장
@@ -1544,10 +1569,51 @@ function TrackerSettings({ isAdmin, onChanged }) {
         <span>watch {status.watches_checked ?? 0} / 알림 {status.notify_count ?? 0}</span>
         <span>상태 {status.running ? "실행 중" : (status.ok === false ? "오류" : "대기")} / 메일 {status.mail_count ?? 0}</span>
         <span>자동 갱신 {sched.enabled === false ? "꺼짐" : `${sched.interval_minutes ?? 30}분마다`}</span>
-        <span>ET 완료 딜레이 {sched.et_stable_delay_minutes ?? 180}분</span>
       </div>
       {status.last_error && <div style={{ marginBottom: 10, fontSize: 14, color: "#ef4444" }}>{status.last_error}</div>}
       {schedMsg && <div style={{ marginBottom: 12, fontSize: 14, color: schedMsg.includes("완료") ? "#22c55e" : "#ef4444" }}>{schedMsg}</div>}
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>LOT_WF 현재 위치 파일</div>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
+        <input value={lotProgressFilter} onChange={e => setLotProgressFilter(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") loadLotProgressTable(e.currentTarget.value); }}
+          placeholder="lot_id 또는 root_lot_id prefix"
+          style={{ flex: 1, padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
+        <button onClick={() => loadLotProgressTable(lotProgressFilter)} disabled={lotProgressBusy}
+          style={{ padding: "6px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, cursor: lotProgressBusy ? "not-allowed" : "pointer" }}>
+          조회
+        </button>
+        <button onClick={refreshLotProgressNow} disabled={!isAdmin || lotProgressBusy}
+          style={{ padding: "6px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: isAdmin && !lotProgressBusy ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.55 }}>
+          파일 갱신
+        </button>
+      </div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6 }}>
+        기준 {fmtTime(lotProgressMeta.generated_at)} · 표시 {lotProgressMeta.count ?? lotProgressRows.length} / 전체 {lotProgressMeta.total ?? "-"}
+      </div>
+      <div style={{ maxHeight: 220, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, marginBottom: 14 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+          <thead>
+            <tr>
+              {["root_lot_id", "wafer_id", "lot_id", "step_id", "func_step"].map(h => (
+                <th key={h} style={{ position: "sticky", top: 0, textAlign: "left", padding: "7px 8px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {lotProgressRows.length ? lotProgressRows.map((r, i) => (
+              <tr key={`${r.root_lot_id}-${r.wafer_id}-${r.lot_id}-${i}`}>
+                <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{r.root_lot_id || "-"}</td>
+                <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{r.wafer_id || "-"}</td>
+                <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{r.lot_id || "-"}</td>
+                <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{r.step_id || "-"}</td>
+                <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{r.func_step || r.function_step || "-"}</td>
+              </tr>
+            )) : (
+              <tr><td colSpan={5} style={{ padding: 12, color: "var(--text-secondary)", textAlign: "center" }}>{lotProgressBusy ? "조회 중..." : "표시할 행 없음"}</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>카테고리 관리</div>
       {!isAdmin && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>편집은 관리자만 가능합니다.</div>}
       <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
@@ -1573,7 +1639,6 @@ function TrackerSettings({ isAdmin, onChanged }) {
       {msg && <div style={{ marginTop: 8, fontSize: 14, color: msg === "저장 완료" ? "#22c55e" : "#ef4444" }}>{msg}</div>}
       <div style={{ marginTop: 16, padding: 10, background: "var(--bg-primary)", borderRadius: 6, fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.6 }}>
         • 카테고리 색상은 이슈 리스트/간트 차트 bar/카테고리 chip 에 반영됩니다.<br/>
-        • Analysis ET 알림은 새 step 1회와 seq/pt 안정화 완료 기준으로 동작합니다.<br/>
         • 일반 유저는 현재 카테고리 목록만 조회 가능.
       </div>
     </div>

@@ -291,14 +291,14 @@ def _natural_param_key(name: str):
     return (1, (), tuple(tail), pfx.lower())
 
 
-# v8.8.14: ML_TABLE 컬럼 display rename — rule_order + func_step 을 feature 앞에
-#   끼워 넣어 SplitTable 헤더에서 "어느 공정 step 의 feature 인지" 한눈에 보이게 함.
+# v8.8.14/v9.0.7: ML_TABLE 컬럼 display rename.
+#   KNOB 는 원래 feature 명(예: KNOB_1.0 STI)을 유지한다. 적용 공정 정보는
+#   ppid_knob.csv + step_matching.csv detail panel 에서만 보여준다.
 #   규칙:
-#     KNOB_<feature>   + knob_meta 매칭 시 → KNOB_{rule_order:.1f}_{func_step_label}_<feature>
+#     KNOB_<feature>   → 표시명 유지
 #     INLINE_<item_id> + inline_meta 매칭 시 → INLINE_{step_id}_<item_id>     (step_id 가 숫자일 때 자연 정렬 유리)
 #     VM_<feature>     + vm_meta   매칭 시 → VM_{step_id}_<feature>
 #     매칭 실패/메타 없음 → 원본 그대로.
-#   rule_order 가 여러 group 이면 min() 값, func_step 은 '+' 로 join (중복 제거).
 #   display 이름만 바꾸고 원본 col 이름(`_param`) 은 그대로 보존 → plan/notes/
 #   knob_meta lookup 이 깨지지 않음.
 def _safe_step_segment(s: str) -> str:
@@ -306,6 +306,33 @@ def _safe_step_segment(s: str) -> str:
     if not s:
         return ""
     return _re.sub(r"[^A-Za-z0-9]+", "_", str(s)).strip("_")
+
+
+_RULE_ORDER_RE = _re.compile(r"^R(\d+)$", _re.I)
+
+
+def _rule_order_label(raw: object, fallback_idx: int = 1) -> str:
+    text = str(raw or "").strip().upper()
+    if text == "RO":
+        return "RO"
+    m = _RULE_ORDER_RE.match(text)
+    if m:
+        return f"R{int(m.group(1))}"
+    if text.isdigit():
+        return f"R{int(text)}"
+    return text or f"R{max(1, fallback_idx)}"
+
+
+def _rule_order_sort_key(label: object) -> tuple[int, int, str]:
+    text = str(label or "").strip().upper()
+    if text == "RO":
+        return (1, 0, text)
+    m = _RULE_ORDER_RE.match(text)
+    if m:
+        return (0, int(m.group(1)), text)
+    if text.isdigit():
+        return (0, int(text), text)
+    return (0, 999999, text)
 
 
 def _product_aliases(product: str) -> set[str]:
@@ -467,25 +494,7 @@ def _build_col_rename_map(selected_cols: list, product: str) -> dict:
         # 사내 CSV 는 "KNOB_FOO" 같은 prefix 포함 형태와 "FOO" 같은 prefix 없는 형태가 혼재할 수 있음.
         # 두 가지 모두 시도 (full col → tail 순).
         if pfx_u == "KNOB":
-            meta = _meta_get(knob_meta, col, tail)
-            if not meta:
-                continue
-            if meta.get("inferred"):
-                continue
-            groups = meta.get("groups") or []
-            if not groups:
-                continue
-            step_segs: list = []
-            seen: set = set()
-            for g in groups:
-                seg = _safe_step_segment(g.get("func_step") or "")
-                if seg and seg not in seen:
-                    seen.add(seg)
-                    step_segs.append(seg)
-            if not step_segs:
-                continue
-            step_label = "+".join(step_segs)
-            out[col] = f"KNOB_{step_label}_{tail}"
+            continue
         elif pfx_u == "INLINE":
             meta = _meta_get(inline_meta, col, tail)
             if not meta:
@@ -1925,13 +1934,13 @@ def get_prefixes():
 
 # ── KNOB metadata (v8.4.7) ───────────────────────────────────────────
 # Reverse-lookup helper used by SplitTable UI:
-#   knob_ppid.csv:      feature_name, function_step, rule_order, ppid, operator, category, use
-#   step_matching.csv:  step_id, func_step
-# For each KNOB feature_name (product-scoped), we group the knob_ppid rules in
+#   ppid_knob.csv:      product, feature_name, function_step, rule_order, operator, category
+#                        category = SplitTable cell value such as PPID_01_2
+#   step_matching.csv:  product, step_id, function_step
+# For each KNOB feature_name (product-scoped), we group the ppid_knob rules in
 # rule_order, expand each function_step back to its matching step_ids, and
 # produce both a structured `groups` payload and a ready-to-render `label`:
 #   GATE_PATTERN (AA200030/AA200040/AA200050) + PC_ETCH (AA200100/AA200110)
-# Combine operator for `label` follows knob_ppid.operator (empty = terminator).
 def _load_csv_rows(fp: Path) -> list[dict]:
     if not fp.is_file():
         return []
@@ -2236,7 +2245,8 @@ def _inferred_stage_meta(product: str, prefix: str) -> dict[str, dict]:
 def _build_knob_meta(product: str = "") -> dict:
     base = _base_root()
     matching = _load_csv_rows(base / "step_matching.csv")
-    knob_rules = _load_csv_rows(base / "knob_ppid.csv")
+    ppid_knob_fp = base / "ppid_knob.csv"
+    knob_rules = _load_csv_rows(ppid_knob_fp if ppid_knob_fp.is_file() else base / "knob_ppid.csv")
     # v8.8.10: 역할→컬럼명 매핑 soft-landing. 사내 CSV 의 컬럼 이름이 달라도 schema 만 바꾸면 됨.
     sm = _sch("step_matching")
     km = _sch("knob_ppid")
@@ -2269,9 +2279,6 @@ def _build_knob_meta(product: str = "") -> dict:
     # feature_name → groups (sorted by rule_order)
     feats: dict[str, list[dict]] = {}
     for r in knob_rules:
-        use_val = (r.get(km.get("use_col", "use")) or "Y").strip().upper()
-        if use_val == "N":
-            continue
         p_col = km.get("product_col", "product")
         row_prod = str(r.get(p_col) or "").strip()
         if prod_aliases and row_prod and row_prod.upper() not in prod_aliases:
@@ -2280,13 +2287,11 @@ def _build_knob_meta(product: str = "") -> dict:
         fstep = (r.get(km.get("func_step_col", "function_step")) or "").strip()
         if not fname or not fstep:
             continue
-        try:
-            order = int(r.get(km.get("rule_order_col", "rule_order")) or 0)
-        except Exception:
-            order = 0
+        order_label = _rule_order_label(r.get(km.get("rule_order_col", "rule_order")), len(feats.get(fname, [])) + 1)
         feats.setdefault(fname, []).append({
             "func_step": fstep,
-            "rule_order": order,
+            "rule_order": order_label,
+            "rule_order_sort": _rule_order_sort_key(order_label),
             "ppid": (r.get(km.get("ppid_col", "ppid")) or "").strip(),
             "operator": (r.get(km.get("operator_col", "operator")) or "").strip(),
             "category": (r.get(km.get("category_col", "category")) or "").strip(),
@@ -2297,7 +2302,7 @@ def _build_knob_meta(product: str = "") -> dict:
     # Sort each feature's groups by rule_order + build a human label
     out: dict[str, dict] = {}
     for fname, groups in feats.items():
-        groups.sort(key=lambda g: g["rule_order"])
+        groups.sort(key=lambda g: g.get("rule_order_sort") or _rule_order_sort_key(g.get("rule_order")))
         parts: list[str] = []
         feat_modules: list[str] = []
         for i, g in enumerate(groups):
@@ -2318,15 +2323,18 @@ def _build_knob_meta(product: str = "") -> dict:
             else:
                 seg = f"{g['func_step']} ({'/'.join(sids)})"
             parts.append(seg)
-            # operator 은 "다음 그룹과의 결합 연산자" — 마지막 그룹은 종결자라 무시
             if i < len(groups) - 1:
-                op = (g.get("operator") or "+").strip() or "+"
-                parts.append(f" {op} ")
+                parts.append(" + ")
         out[fname] = {
             "groups": groups,
             "label": "".join(parts),
             "modules": feat_modules,
         }
+        # SplitTable rows carry the physical ML_TABLE column name
+        # (for example `KNOB_5.0 PC`), while ppid_knob.csv stores only the
+        # feature tail (`5.0 PC`).  Expose both keys so row click / tooltip /
+        # display-rename paths all resolve to the same explicit ppid_knob rule.
+        out[f"KNOB_{fname}"] = out[fname]
     for key, meta in _inferred_stage_meta(product, "KNOB").items():
         out.setdefault(key, meta)
     return out
@@ -2629,12 +2637,11 @@ _DEFAULT_RULEBOOK_SCHEMA = {
         "ppid_col":       "ppid",
         "operator_col":   "operator",
         "category_col":   "category",
-        "use_col":        "use",
         "product_col":    "product",
     },
     "step_matching": {
         "step_id_col":   "step_id",
-        "func_step_col": "func_step",
+        "func_step_col": "function_step",
         "product_col":   "product",
         "module_col":    "module",
     },
@@ -2717,15 +2724,15 @@ def save_rulebook_schema(
 #   스키마는 _build_knob_meta 가 읽는 컬럼과 동일해야 함.
 _RULEBOOK_FILES = {
     "knob_ppid": {
-        "filename": "knob_ppid.csv",
-        "cols": ["product", "ppid", "knob_name", "knob_value", "feature_name",
-                 "function_step", "rule_order", "operator", "category", "use"],
-        "required": ["product", "ppid"],
+        "filename": "ppid_knob.csv",
+        "legacy_filename": "knob_ppid.csv",
+        "cols": ["product", "feature_name", "function_step", "rule_order", "operator", "category"],
+        "required": ["product", "feature_name", "function_step", "operator", "category"],
     },
     "step_matching": {
         "filename": "step_matching.csv",
-        "cols": ["step_id", "func_step", "product", "module"],
-        "required": ["step_id", "func_step", "product"],
+        "cols": ["product", "step_id", "function_step", "module"],
+        "required": ["product", "step_id", "function_step"],
     },
     # v8.8.9: INLINE / VM 매칭도 동일 CRUD 로 관리.
     #   inline_matching.csv: (process_id, item_id, item_desc) — INLINE_<item_id> 측정 메타.
@@ -2747,7 +2754,12 @@ def _rulebook_path(kind: str) -> Path:
     meta = _RULEBOOK_FILES.get(kind)
     if not meta:
         raise HTTPException(400, f"unknown rulebook: {kind}")
-    return _base_root() / meta["filename"]
+    root = _base_root()
+    primary = root / meta["filename"]
+    if primary.exists() or not meta.get("legacy_filename"):
+        return primary
+    legacy = root / str(meta.get("legacy_filename") or "")
+    return legacy if legacy.exists() else primary
 
 
 @router.get("/rulebook")
@@ -4185,6 +4197,12 @@ def _run_started_match_cache_job(products: list[str], force: bool, reason: str =
                 refresh_plan_risk_cache(force=False)
             except Exception as e:
                 logger.warning("SplitTable plan risk cache refresh after match cache failed: %s", e)
+        if not _MATCH_CACHE_STOP.is_set():
+            try:
+                from core.lot_progress_cache import refresh_lot_progress_cache
+                refresh_lot_progress_cache(force=force)
+            except Exception as e:
+                logger.warning("LOT progress cache refresh after SplitTable match cache failed: %s", e)
     finally:
         _match_cache_job_update(
             running=False,

@@ -4,7 +4,128 @@ import S3StatusLight from "../components/S3StatusLight";
 import { sf } from "../lib/api";
 const API="/api/filebrowser";
 const PAGE_SIZE=200;
+const BASE_EDIT_FILE_EXTS = new Set(["csv","parquet"]);
+const BASE_EDIT_FILE_SOURCES = new Set(["base_root","db_root"]);
+const canEditBaseMeta=(meta)=>{
+  if(!meta) return false;
+  if(!BASE_EDIT_FILE_EXTS.has((meta.ext||"").toLowerCase())) return false;
+  if(!meta.source) return true;
+  return BASE_EDIT_FILE_SOURCES.has(meta.source);
+};
+const detectDelimiterFromGridText=(text)=>{
+  const normalize=(raw)=>{
+    if(raw==null)return"";
+    return String(raw).replace(/\r/g,"");
+  };
+  const parse=(delimiter)=>{
+    const rows=[]; let row=[]; let cell=""; let inQuote=false;
+    const src=normalize(text);
+    for(let i=0;i<src.length;i++){
+      const ch=src[i], nx=src[i+1];
+      if(inQuote){
+        if(ch==='"'){
+          if(nx==='"'){cell+='"'; i++; }
+          else inQuote=false;
+        }else cell+=ch;
+      }else{
+        if(ch===delimiter){
+          row.push(cell); cell="";
+        }else if(ch==='"'){
+          inQuote=true;
+        }else if(ch==="\n"){
+          row.push(cell); rows.push(row); row=[]; cell="";
+        }else{
+          cell+=ch;
+        }
+      }
+    }
+    row.push(cell);
+    while(rows.length&&rows[rows.length-1].every(v=>v===""))rows.pop();
+    return rows;
+  };
+  const tab=parse("\t");
+  if(text.includes("\t")||tab.some(r=>r.length>1))return[tab,"tab"];
+  return[parse(","),"comma"];
+};
+const normalizeGridRows=(rows,width,fill="")=>{
+  return rows.map(r=>{
+    const src=(r||[]).map(v=>v==null?"":String(v));
+    if(src.length<width)return src.concat(Array(width-src.length).fill(fill));
+    if(src.length>width)return src.slice(0,width);
+    return src;
+  });
+};
+const isHeaderMatch=(pastedRows,cols)=>{
+  if(!pastedRows||!pastedRows.length||!cols.length)return false;
+  const first=(pastedRows[0]||[]).map(v=>String(v||"").trim().toLowerCase()).filter(Boolean);
+  if(!first.length)return false;
+  if(first.length>cols.length)return false;
+  for(let i=0;i<first.length;i++){
+    if(first[i]!==String(cols[i]||"").trim().toLowerCase())return false;
+  }
+  return true;
+};
+const csvEscape=(value,delimiter)=>{
+  const text=value==null?"":String(value);
+  if(text==="")return"";
+  if(/[",\n\r\t]/.test(text) || text.includes(delimiter)){
+    return "\""+text.replace(/"/g,'""')+"\"";
+  }
+  return text;
+};
+const buildSaveText=(cols,rows,delimiter,includeHeader)=>{
+  const delim=delimiter==="tab"?"\t":",";
+  const source = includeHeader ? [cols, ...rows] : rows;
+  return source.map(r=>r.map(v=>csvEscape(v,delim)).join(delim)).join("\n");
+};
+const defaultDelimiterForFile=(file)=>{
+  const name=String(file||"").toLowerCase();
+  if(name.endsWith(".csv"))return"comma";
+  return"tab";
+};
+const normalizePageableSource = (file) => (file||"");
 function formatSize(b){if(!b)return"-";if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB";}
+function revStyle(rev){
+  if(rev==="추가")return{bg:"#dcfce7",fg:"#166534",line:"#22c55e"};
+  if(rev==="삭제")return{bg:"#fee2e2",fg:"#991b1b",line:"#ef4444"};
+  if(rev==="수정")return{bg:"#fef9c3",fg:"#854d0e",line:"#eab308"};
+  return{bg:"var(--bg-primary)",fg:"var(--text-primary)",line:"var(--border)"};
+}
+function versionChangeLabel(summary){
+  const s=summary&&typeof summary==="object"?summary:{};
+  const modified=Number(s.modified_rows||0);
+  const added=Number(s.added_rows||0);
+  const deleted=Number(s.deleted_rows||0);
+  const parts=[];
+  if(modified)parts.push(`수정 ${modified}행`);
+  if(added)parts.push(`추가 ${added}행`);
+  if(deleted)parts.push(`삭제 ${deleted}행`);
+  const colDelta=Number(s.columns_delta||0);
+  if(colDelta)parts.push(`${colDelta>0?"+":""}${colDelta}열`);
+  if(parts.length)return parts.join(" / ");
+  const raw=String(s.label||"");
+  if(raw==="initial snapshot")return"초기 버전";
+  if(raw==="content updated")return"내용 수정";
+  if(raw==="no data change")return"변경 없음";
+  if(/cells changed/i.test(raw)||/\brows\b/i.test(raw)){
+    const rd=Number(s.rows_delta||0);
+    if(rd>0)return`추가 ${rd}행`;
+    if(rd<0)return`삭제 ${Math.abs(rd)}행`;
+    return"내용 수정";
+  }
+  return raw||"-";
+}
+function diffTableCountLabel(diffTable){
+  const c=diffTable?.counts||{};
+  const modified=Number(c.modified||0);
+  const added=Number(c.added||0);
+  const deleted=Number(c.deleted||0);
+  const parts=[];
+  if(modified)parts.push(`수정 ${modified}행`);
+  if(added)parts.push(`추가 ${added}행`);
+  if(deleted)parts.push(`삭제 ${deleted}행`);
+  return parts.join(" / ");
+}
 
 function LazyAwsPanel({ user, compact = false }) {
   const [Comp, setComp] = useState(null);
@@ -32,10 +153,31 @@ export default function My_FileBrowser({user,onNavigate}){
   // v4.1: raw preview for json/md so the main pane can render them natively
   // (pretty-printed JSON / markdown-as-pre) instead of stuffing text into the table.
   const[baseRaw,setBaseRaw]=useState(null);
+  const[selBaseMeta,setSelBaseMeta]=useState(null);
   // Column selection state
   const[selectedCols,setSelectedCols]=useState([]);const[colSelectMode,setColSelectMode]=useState(false);
   const[page,setPage]=useState(0);
   const[error,setError]=useState("");
+  const[isBaseEditing,setIsBaseEditing]=useState(false);
+  const[editRows,setEditRows]=useState([]);
+  const[editCols,setEditCols]=useState([]);
+  const[editOriginRows,setEditOriginRows]=useState([]);
+  const[pasteMode,setPasteMode]=useState("replace");
+  const[saveDelimiter,setSaveDelimiter]=useState("tab");
+  const[includeHeader,setIncludeHeader]=useState(true);
+  const[selectedEditCell,setSelectedEditCell]=useState({r:0,c:0});
+  const[baseVersions,setBaseVersions]=useState([]);
+  const[baseVersionCap,setBaseVersionCap]=useState(30);
+  const[baseVersioned,setBaseVersioned]=useState(false);
+  const[baseVersionLoading,setBaseVersionLoading]=useState(false);
+  const[baseVersionMsg,setBaseVersionMsg]=useState("");
+  const[baseVersionPreview,setBaseVersionPreview]=useState(null);
+  const[baseVersionPreviewLoading,setBaseVersionPreviewLoading]=useState(false);
+  const[baseVersionFilter,setBaseVersionFilter]=useState("");
+  const[rawEditing,setRawEditing]=useState(false);
+  const[rawEditText,setRawEditText]=useState("");
+  const[schemaSnapshotMsg,setSchemaSnapshotMsg]=useState("");
+  const[schemaSnapshots,setSchemaSnapshots]=useState([]);
   // S3 sync status map (public endpoint) — powers sidebar traffic-light dots
   const[s3Status,setS3Status]=useState({});
   useEffect(()=>{
@@ -107,6 +249,136 @@ export default function My_FileBrowser({user,onNavigate}){
 
   // S3 ingest admin modal state
   const isAdmin=user?.role==="admin";
+  const pageAdmins=(user?.page_admins)||[];
+  const isFileBrowserAdmin=isAdmin
+    || (Array.isArray(pageAdmins)&&pageAdmins.includes("filebrowser"))
+    || (!!pageAdmins?.filebrowser===true)
+    || (typeof pageAdmins==="string"&&pageAdmins.split(",").map(s=>s.trim()).includes("filebrowser"));
+  const loadBaseVersions=useCallback((file=selBaseFile)=>{
+    if(!file){
+      setBaseVersions([]);setBaseVersioned(false);setBaseVersionMsg("");
+      return Promise.resolve(null);
+    }
+    setBaseVersionLoading(true);
+    return sf(API+"/base-file/versions?file="+encodeURIComponent(file))
+      .then(d=>{
+        setBaseVersions(d.versions||[]);
+        setBaseVersionCap(d.cap||30);
+        setBaseVersioned(!!d.versioned);
+        setBaseVersionMsg("");
+        return d;
+      })
+      .catch(e=>{
+        setBaseVersions([]);
+        setBaseVersioned(false);
+        setBaseVersionMsg(e.message||"버전 이력 로드 실패");
+        return null;
+      })
+      .finally(()=>setBaseVersionLoading(false));
+  },[selBaseFile]);
+  useEffect(()=>{
+    if(mode==="base"&&selBaseFile)loadBaseVersions(selBaseFile);
+    else{setBaseVersions([]);setBaseVersioned(false);setBaseVersionMsg("");setBaseVersionPreview(null);setRawEditing(false);setRawEditText("");}
+  },[mode,selBaseFile,loadBaseVersions]);
+  const previewBaseVersion=async(version)=>{
+    if(!selBaseFile||!version)return;
+    setBaseVersionPreviewLoading(true);
+    setBaseVersionMsg("");
+    try{
+      const d=await sf(API+"/base-file/version-content?file="+encodeURIComponent(selBaseFile)+"&version="+encodeURIComponent(version));
+      setBaseVersionPreview(d);
+    }catch(e){setBaseVersionMsg(e.message||"버전 미리보기 실패");}
+    finally{setBaseVersionPreviewLoading(false);}
+  };
+  const migrateLegacyHistory=async()=>{
+    if(!selBaseFile)return;
+    if(!isFileBrowserAdmin){alert("Admin 또는 FileBrowser page_admin 만 migration 할 수 있습니다.");return;}
+    const note=window.prompt("legacy .history migration 사유를 입력하세요.", "Migrate legacy .history to EDM versions");
+    if(note===null)return;
+    try{
+      const d=await sf(API+"/base-file/migrate-history",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({file:selBaseFile,username:user?.username||"",note})});
+      setBaseVersionMsg(`migration 완료 · migrated ${d.migrated||0} / skipped ${d.skipped||0}`);
+      loadBaseVersions(selBaseFile);
+    }catch(e){setBaseVersionMsg(e.message||"migration 실패");}
+  };
+  const rollbackBaseVersion=async(version)=>{
+    if(!selBaseFile||!version)return;
+    if(!isFileBrowserAdmin){alert("Admin 또는 FileBrowser page_admin 만 롤백할 수 있습니다.");return;}
+    if(!window.confirm(`${selBaseFile}\n${version} 버전으로 롤백하시겠습니까?\n현재 파일은 pre-rollback 버전으로 먼저 보존됩니다.`))return;
+    const note=window.prompt("롤백 사유를 입력하세요.", `Rollback to ${version}`);
+    if(note===null)return;
+    try{
+      const d=await sf(API+"/base-file/rollback",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({file:selBaseFile,version,username:user?.username||"",note})});
+      setBaseVersionMsg(`롤백 완료: ${d.rolled_back_to||version}`);
+      setIsBaseEditing(false);
+      setData(null);setBaseRaw(null);
+      setBaseVersionPreview(null);
+      loadBaseVersions(selBaseFile);
+      loadBaseFileView(selBaseFile,{});
+    }catch(e){setBaseVersionMsg(e.message||"롤백 실패");}
+  };
+  const canEditRawBase=mode==="base"&&!!baseRaw&&baseVersioned&&isFileBrowserAdmin&&["yaml","json","md","txt"].includes(String(baseRaw.kind||"").toLowerCase());
+  const saveRawBaseFile=async()=>{
+    if(!canEditRawBase||!selBaseFile)return;
+    const note=window.prompt("변경 사유를 입력하세요.", "Raw EDM edit");
+    if(note===null)return;
+    try{
+      const d=await sf(API+"/base-file/text-save",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({file:selBaseFile,text:rawEditText,username:user?.username||"",note})});
+      setBaseVersionMsg(`저장 완료${d.version?.version?`: ${d.version.version}`:""}`);
+      setRawEditing(false);
+      setBaseRaw(null);
+      loadBaseVersions(selBaseFile);
+      loadBaseFileView(selBaseFile,{});
+    }catch(e){setBaseVersionMsg(e.message||"저장 실패");}
+  };
+  const saveSchemaSnapshot=async()=>{
+    const cols=(data?.all_columns||data?.columns||[]).map(c=>String(c||"")).filter(Boolean);
+    if(!cols.length){setSchemaSnapshotMsg("저장할 schema column 이 없습니다.");return;}
+    const isDbMode=mode!=="base"&&mode!=="root";
+    const colLower=new Map(cols.map(c=>[c.toLowerCase(),c]));
+    const joinKeyCandidates=["product","process_id","root_lot_id","lot_id","wafer_id","lot_wf","LOT_WF","shot_x","shot_y","item_id","step_id","step_seq","subitem_id"];
+    const joinKeys=joinKeyCandidates.map(k=>colLower.get(k.toLowerCase())).filter(Boolean);
+    const grain=colLower.has("shot_x")&&colLower.has("shot_y")?"shot":(colLower.has("wafer_id")?"wafer":(colLower.has("root_lot_id")||colLower.has("lot_id")?"lot":"row"));
+    const sourceType=mode==="base"?"base_file":(mode==="root"?"root_parquet":"db_product");
+    const body={
+      source_type:sourceType,
+      root:isDbMode?selRoot:"",
+      product:isDbMode?selProd:"",
+      file:mode==="base"?selBaseFile:(mode==="root"?selRootPq:""),
+      columns:cols,
+      dtypes:data?.dtypes||{},
+      grain,
+      join_keys:joinKeys,
+      total_rows:data?.total_rows,
+      username:user?.username||"",
+      note:"FileBrowser schema snapshot",
+    };
+    try{
+      const d=await sf(API+"/schema/snapshot",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      const added=d.diff?.added_columns?.length||0,removed=d.diff?.removed_columns?.length||0,dtype=d.diff?.dtype_changes?.length||0;
+      setSchemaSnapshotMsg(`schema 저장 완료 · added ${added} / removed ${removed} / dtype ${dtype}`);
+      loadSchemaSnapshots(body);
+    }catch(e){setSchemaSnapshotMsg(e.message||"schema 저장 실패");}
+  };
+  const loadSchemaSnapshots=async(sourceBody=null)=>{
+    const isDbMode=mode!=="base"&&mode!=="root";
+    const body=sourceBody||{
+      source_type:mode==="base"?"base_file":(mode==="root"?"root_parquet":"db_product"),
+      root:isDbMode?selRoot:"",
+      product:isDbMode?selProd:"",
+      file:mode==="base"?selBaseFile:(mode==="root"?selRootPq:""),
+    };
+    const q=new URLSearchParams({source_type:body.source_type||"",root:body.root||"",product:body.product||"",file:body.file||""});
+    try{
+      const d=await sf(API+"/schema/snapshots?"+q.toString());
+      setSchemaSnapshots(d.snapshots||[]);
+      const added=d.diff?.added_columns?.length||0,removed=d.diff?.removed_columns?.length||0,dtype=d.diff?.dtype_changes?.length||0;
+      setSchemaSnapshotMsg((d.snapshots||[]).length?`schema 이력 ${(d.snapshots||[]).length}개 · latest diff +${added}/-${removed} dtype ${dtype}`:"schema 이력이 없습니다.");
+    }catch(e){setSchemaSnapshotMsg(e.message||"schema 이력 로드 실패");}
+  };
   const[s3Open,setS3Open]=useState(false);
   const[s3Items,setS3Items]=useState([]);
   const[s3Avail,setS3Avail]=useState({dbs:[],root_parquets:[]});
@@ -173,7 +445,9 @@ export default function My_FileBrowser({user,onNavigate}){
       if(!r.ok){const d=await r.json().catch(()=>({}));alert(d.detail||"삭제 실패");return;}
       // 리스트 즉시 반영 + 선택 상태 정리
       setBaseFiles(prev=>prev.filter(f=>f.name!==name));
-      if(selBaseFile===name){setSelBaseFile("");setData(null);setBaseRaw(null);}
+    if(selBaseFile===name){setSelBaseFile("");setData(null);setBaseRaw(null);setBaseVersions([]);setBaseVersioned(false);setBaseVersionPreview(null);setRawEditing(false);setRawEditText("");}
+    if(selBaseMeta?.name===name)setSelBaseMeta(null);
+    setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     }catch(e){alert("삭제 실패: "+(e?.message||e));}
   };
 
@@ -201,10 +475,22 @@ export default function My_FileBrowser({user,onNavigate}){
 
   // v4.1: Base-file preview loader (parquet/csv/json/md).
   // 단일 파일은 바로 내용을 보여준다. ML_TABLE_* 는 서버에서 기본 200행 preview만 유지한다.
+  const syncBaseEditState=(d)=>{
+    const cols=(d.showing_cols||d.columns||[]);
+    const rows=(d.data||[]).map(r=>cols.map(c=>{
+      const v=r?.[c];
+      return v===null||v===undefined?"":String(v);
+    }));
+    setEditCols(cols);
+    setEditRows(rows);
+    setEditOriginRows(rows.map(r=>r.slice()));
+  };
+
   const loadBaseFileView=(file,{full=true,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
     setPage(pageArg);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
+    setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     const params={file,rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,meta_only:!full,_ts:Date.now()};
     const url=buildUrl(API+"/base-file-view",params);
     sf(url).then(d=>{
@@ -218,6 +504,7 @@ export default function My_FileBrowser({user,onNavigate}){
         setData(null);
       }else{
         setData(d);
+        syncBaseEditState(d);
       }
       setLoading(false);
     }).catch(e=>{setError(e.message);setLoading(false);});
@@ -251,6 +538,7 @@ export default function My_FileBrowser({user,onNavigate}){
   // 첫 클릭부터 샘플 row를 로드한다. SQL/SELECT/페이지 이동도 같은 page slice 경로를 사용.
   const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
+    setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     setPage(pageArg);
     const sc=selColsOverride||selectedCols;
     const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:20,select_cols:sc.length?sc.join(","):"",meta_only:!full};
@@ -260,6 +548,7 @@ export default function My_FileBrowser({user,onNavigate}){
 
   const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
+    setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     setPage(pageArg);
     const sc=selColsOverride||selectedCols;
     const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):"",meta_only:!full};
@@ -269,6 +558,10 @@ export default function My_FileBrowser({user,onNavigate}){
 
   // v8.8.16: "실행" 클릭 = 실제 행 조회 트리거. meta_only 없이 호출 → 서버에서 collect.
   const applySql=()=>{
+    if(mode==="base"&&isBaseEditing){
+      setError("편집 모드에서는 SQL 실행이 비활성됩니다.");
+      return;
+    }
     if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql,null,{full:true,page:0});
     else if(mode==="base"&&selBaseFile){
       // Base JSON/md files have no SQL surface — silently ignore. Tabular
@@ -279,9 +572,160 @@ export default function My_FileBrowser({user,onNavigate}){
       setPage(0);
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
         select_cols:selectedCols.length?selectedCols.join(","):""});
-      sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
+      sf(url).then(d=>{setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
     else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,null,{full:true,page:0});
+  };
+
+  const baseFileExt=(selBaseMeta?.ext||"").toLowerCase();
+  const baseFileEditable = canEditBaseMeta(selBaseMeta);
+  const canEditCurrentBase=mode==="base"&&!!selBaseFile&&!baseRaw&&baseFileEditable&&isFileBrowserAdmin;
+  const baseFileComplete = !!data&&(data.single_file_full_read||(data.total_rows||0)<= (data.showing||0));
+
+  const startBaseEdit=()=>{
+    if(!canEditCurrentBase||!data){
+      setError("현재 파일은 편집 대상이 아닙니다.");
+      return;
+    }
+    if(!baseFileComplete){
+      setError("미리보기 행 수가 전체를 포함하지 않습니다. 전체 조회 후 편집을 진행하세요.");
+      return;
+    }
+    if(!editCols.length){
+      setError("열 정보가 없어 편집을 시작할 수 없습니다.");
+      return;
+    }
+    setError("");
+    setPasteMode("replace");
+    setSaveDelimiter(defaultDelimiterForFile(selBaseFile));
+    setIncludeHeader(true);
+    setSelectedEditCell({r:0,c:0});
+    setIsBaseEditing(true);
+    setTab("data");
+  };
+
+  const cancelBaseEdit=()=>{
+    setEditRows(editOriginRows.map(r=>r.slice()));
+    setIsBaseEditing(false);
+    setSelectedEditCell({r:0,c:0});
+  };
+
+  const restoreBaseEdit=()=>{
+    setEditRows(editOriginRows.map(r=>r.slice()));
+    setSelectedEditCell({r:0,c:0});
+  };
+
+  const addBaseEditRow=()=>{
+    if(!canEditCurrentBase||!isBaseEditing)return;
+    if(!editCols.length){
+      setError("열 정보가 없어 새 행을 추가할 수 없습니다.");
+      return;
+    }
+    setEditRows(prev=>{
+      const next=[...prev,Array(editCols.length).fill("")];
+      setSelectedEditCell({r:next.length-1,c:0});
+      return next;
+    });
+  };
+
+  const deleteBaseEditRow=(targetR=selectedEditCell.r)=>{
+    if(!canEditCurrentBase||!isBaseEditing)return;
+    setEditRows(prev=>{
+      if(!prev.length)return prev;
+      const idx=Math.max(0,Math.min(targetR,prev.length-1));
+      const next=prev.filter((_,i)=>i!==idx);
+      const nextR=next.length?Math.min(idx,next.length-1):0;
+      setSelectedEditCell(cur=>({r:nextR,c:Math.max(0,Math.min(cur.c||0,editCols.length-1))}));
+      return next;
+    });
+  };
+
+  const patchBaseCell=(r,c,val)=>{
+    setEditRows(prev=>{
+      const next=prev.map(x=>x.slice());
+      while(next.length<=r)next.push(Array(editCols.length).fill(""));
+      while(next[r].length<editCols.length)next[r].push("");
+      next[r][c]=val;
+      return next;
+    });
+  };
+
+  const pasteBaseRows=(rowsRaw)=>{
+    if(!canEditCurrentBase||!isBaseEditing)return;
+    let rows=rowsRaw||[];
+    if(isHeaderMatch(rows,editCols)){
+      rows=rows.slice(1);
+    }
+    if(!rows.length)return;
+    const normalized=normalizeGridRows(rows,editCols.length,"");
+    setEditRows(prev=>{
+      let next=prev.map(x=>x.slice());
+      const startR=pasteMode==="append"?(next.length):(Math.max(0,Math.min(selectedEditCell.r,next.length-1)));
+      const startC=pasteMode==="append"?0:Math.max(0,Math.min(selectedEditCell.c,editCols.length-1));
+      normalized.forEach((row,ri)=>{
+        const targetR=startR+ri;
+        while(next.length<=targetR)next.push(Array(editCols.length).fill(""));
+        for(let ci=0;ci<Math.min(editCols.length,row.length);ci++){
+          if(startC+ci>=editCols.length)break;
+          next[targetR][startC+ci]=row[ci];
+        }
+      });
+      return next;
+    });
+  };
+
+  const onBasePaste=(e)=>{
+    if(!isBaseEditing)return;
+    e.preventDefault();
+    const text=e.clipboardData?.getData("text/plain")||"";
+    if(!text.trim())return;
+    const [rows]=detectDelimiterFromGridText(text);
+    pasteBaseRows(rows);
+  };
+
+  const saveBaseEdit=async()=>{
+    if(!canEditCurrentBase||!isBaseEditing){setError("현재 편집 상태가 아닙니다.");return;}
+    if(!editCols.length){setError("열이 없습니다.");return;}
+    const csvText=buildSaveText(editCols,editRows,saveDelimiter,includeHeader);
+    const note=window.prompt("변경 사유를 입력하세요.", "Grid EDM edit");
+    if(note===null)return;
+    const payload=JSON.stringify({
+      file:selBaseFile,
+      mode:"replace",
+      csv_text:csvText,
+      delimiter:saveDelimiter,
+      include_header:includeHeader,
+      note,
+    });
+    const candidates=[API+"/base-file/save",API+"/base-file-save"];
+    let r=null;
+    for(const p of candidates){
+      // API not-found 대비: /base-file-save alias도 순차 시도
+      r=await fetch(p,{method:"POST",headers:{"Content-Type":"application/json"},body:payload});
+      if(r && r.status!==404) break;
+    }
+    if(!r){setError("저장 요청 준비 중 오류가 발생했습니다.");return;}
+    if(!r.ok){
+      const d=await r.json().catch(()=>({}));
+      if(r.status===404){
+        const detail = (d && typeof d.detail === "string") ? d.detail.trim() : "";
+        if(detail && detail !== "API not found"){
+          setError(`${detail} (${r.url})`);
+        }else{
+          setError(`API not found: ${r.url}`);
+        }
+      }else{
+        setError(d.detail||("저장 실패 ("+r.status+")"));
+      }
+      return;
+    }
+    try{
+      await r.json().catch(()=>null);
+      const reloadState={full:true,page:0};
+      setIsBaseEditing(false);
+      loadBaseVersions(selBaseFile);
+      loadBaseFileView(selBaseFile,reloadState);
+    }catch(e){setError(e?.message||"저장 처리 중 오류");}
   };
 
   const toggleCol=(col)=>{
@@ -293,6 +737,10 @@ export default function My_FileBrowser({user,onNavigate}){
 
   const reloadWithCols=(cols)=>{
     // v8.4.4: Base 모드도 select_cols 적용되도록 분기 추가
+    if(mode==="base"&&isBaseEditing){
+      setError("편집 모드에서는 컬럼 선택이 비활성됩니다.");
+      return;
+    }
     if(mode==="rootpq"&&selRootPq){loadRootPqView(selRootPq,sql,cols,{full:true,page:0});}
     else if(mode==="base"&&selBaseFile){
       if(baseRaw)return; // json/md 는 컬럼 선택 불가 — baseRaw 상태로 판단
@@ -300,7 +748,7 @@ export default function My_FileBrowser({user,onNavigate}){
       setPage(0);
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
         select_cols:cols.length?cols.join(","):""});
-      sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
+      sf(url).then(d=>{setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
     else if(selRoot&&selProd){loadHiveView(selRoot,selProd,sql,cols,{full:true,page:0});}
   };
@@ -326,18 +774,26 @@ export default function My_FileBrowser({user,onNavigate}){
   };
 
   const gotoPage=(nextPage)=>{
+    if(mode==="base"&&isBaseEditing){
+      setError("편집 모드에서는 페이지 이동이 비활성됩니다.");
+      return;
+    }
     const p=Math.max(0,nextPage);
     if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql,selectedCols,{full:true,page:p});
     else if(mode==="base"&&selBaseFile&&!baseRaw){
       setLoading(true);setError("");setTab("data");setPage(p);
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:p,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
         select_cols:selectedCols.length?selectedCols.join(","):""});
-      sf(url).then(d=>{setData(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
+      sf(url).then(d=>{setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     } else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,selectedCols,{full:true,page:p});
   };
 
   const allCols=data?.all_columns||data?.columns||[];
   const filteredCols=colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols;
+  const canEnterBaseEdit = canEditCurrentBase && baseFileComplete;
+  const isBaseEditingMode = mode==="base"&&isBaseEditing;
+  const baseEditingTabs = isBaseEditingMode ? ["data"] : ["data","columns"];
+  const showBasePager = !data?.meta_only && !isBaseEditingMode;
 
   const chipS={display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:4,fontSize:14,cursor:"pointer",marginRight:4,marginBottom:4,border:"1px solid var(--border)",transition:"all 0.15s"};
   const chipActive={...chipS,background:"var(--accent-glow)",borderColor:"var(--accent)",color:"var(--accent)",fontWeight:600};
@@ -347,6 +803,21 @@ export default function My_FileBrowser({user,onNavigate}){
   const sidebarRowBase={display:"flex",alignItems:"center",gap:6,minWidth:0,overflow:"hidden"};
   const sidebarStack={display:"flex",flexDirection:"column",gap:2,flex:1,minWidth:0,overflow:"hidden"};
   const sidebarMetaLine={display:"flex",alignItems:"center",gap:6,minWidth:0,overflow:"hidden",lineHeight:1.15};
+  const baseEditWrap={overflow:"auto",maxHeight:"calc(100vh - 320px)",border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-primary)"};
+  const baseReadWrap={...baseEditWrap,maxHeight:"calc(100vh - 280px)"};
+  const baseEditTable={width:"100%",borderCollapse:"separate",borderSpacing:0,fontSize:13,fontFamily:"ui-monospace,SFMono-Regular,Menlo,Consolas,monospace",background:"var(--bg-primary)"};
+  const baseEditHeaderCell={padding:"6px 10px",height:34,fontWeight:700,fontSize:13,color:"var(--text-secondary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",
+    background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:6,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:84};
+  const baseEditCornerCell={...baseEditHeaderCell,textAlign:"center",width:76,left:0,zIndex:7};
+  const baseEditHeaderInput={...baseEditHeaderCell, fontWeight:700,textAlign:"left",minWidth:160,paddingRight:24};
+  const baseEditRowCell={padding:0,borderBottom:"1px solid var(--border)",borderRight:"1px solid var(--border)",background:"var(--bg-primary)",height:34};
+  const baseEditIndexBody={...baseEditRowCell,position:"sticky",left:0,zIndex:5,textAlign:"center",color:"var(--text-secondary)",fontSize:12,letterSpacing:0.2};
+  const baseEditCellInput={width:"100%",height:"100%",padding:"0 10px",border:"none",outline:"none",background:"transparent",color:"var(--text-primary)",fontSize:13,fontFamily:"inherit",boxSizing:"border-box"};
+  const baseEditCellActive={boxShadow:`inset 0 0 0 2px var(--accent)`,background:"#dbeafe",zIndex:2};
+  const baseReadCell={...baseEditRowCell,padding:"0 10px",fontSize:13,color:"var(--text-primary)",height:34,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"};
+  const baseReadIndexCell={...baseEditIndexBody,padding:"0 10px",height:34,width:54,textAlign:"center",fontSize:13};
+  const baseEditRowHighlight={background:"rgba(59,130,246,0.12)"};
+  const baseEditColHighlight={background:"rgba(59,130,246,0.09)"};
 
   return(
     <div style={{display:"flex",height:"calc(100vh - 52px)",fontFamily:"'Pretendard',sans-serif",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
@@ -360,7 +831,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {scopes.map(s=>{
             const active=scope===s.key;const disabled=s.exists===false;
             return(<span key={s.key} className={"filebrowser-scope-option filebrowser-scope-"+s.key} data-scope={s.key} data-active={active?"1":"0"}
-              onClick={()=>{if(disabled)return;setScope(s.key);setData(null);setBaseRaw(null);setError("");setSelProd("");setSelRootPq("");setSelBaseFile("");setSelectedCols([]);}}
+              onClick={()=>{if(disabled)return;setScope(s.key);setData(null);setBaseRaw(null);setSelBaseMeta(null);setError("");setSelProd("");setSelRootPq("");setSelBaseFile("");setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setSelectedCols([]);}}
               title={s.description+(disabled?"\n(경로 없음 — admin_settings 확인)":"")}
               style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"center",padding:"6px 8px",borderRadius:5,fontSize:14,cursor:disabled?"not-allowed":"pointer",fontWeight:active?700:500,
                 background:active?"var(--accent-glow)":"var(--bg-hover)",color:disabled?"var(--text-secondary)":(active?"var(--accent)":"var(--text-primary)"),
@@ -379,7 +850,8 @@ export default function My_FileBrowser({user,onNavigate}){
               const isSel=selBaseFile===fileKey;
               const extColor={parquet:"#10b981",csv:"#3b82f6",json:"#f59e0b",md:"#94a3b8",yaml:"#eab308",yml:"#eab308"}[f.ext]||"#64748b";
               const icon={parquet:"📊",csv:"📋",json:"🔧",md:"📄",yaml:"⚙️",yml:"⚙️"}[f.ext]||"📁";
-              return(<div key={fileKey} className="filebrowser-base-file" data-file={fileKey} data-ext={f.ext} onClick={()=>{setSelectedCols([]);loadBaseFileView(fileKey);}}
+              return(<div key={fileKey} className="filebrowser-base-file" data-file={fileKey} data-ext={f.ext}
+                onClick={()=>{setSelectedCols([]);setSelBaseMeta(f);loadBaseFileView(fileKey);setIsBaseEditing(false);setError("");setData(null);setBaseRaw(null);setEditCols([]);setEditRows([]);setEditOriginRows([]);}}
                 title={(f.description||f.name)+(f.role?`\n${f.role}`:"")}
                 style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
                   background:isSel?"var(--bg-hover)":"transparent",color:isSel?"var(--accent)":"var(--text-primary)"}}>
@@ -462,14 +934,16 @@ export default function My_FileBrowser({user,onNavigate}){
         <div style={{padding:"10px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",gap:8,alignItems:"center"}}>
           <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",flexShrink:0}}>SQL:</span>
           <input value={sql} onChange={e=>setSql(e.target.value)} placeholder="예: PRODUCT LIKE '%ABC%' 또는 col == 'value'"
+            disabled={mode==="base"&&isBaseEditing}
             style={{flex:1,padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",outline:"none"}}
             onKeyDown={e=>e.key==="Enter"&&applySql()}/>
-          <button onClick={applySql} style={{padding:"6px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"}}>실행</button>
-          {data&&<button onClick={downloadCsv} style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer"}}>⬇ CSV</button>}
+          <button onClick={applySql} disabled={mode==="base"&&isBaseEditing}
+            style={{padding:"6px 14px",borderRadius:5,border:"none",background:mode==="base"&&isBaseEditing?"var(--border)": "var(--accent)",color:mode==="base"&&isBaseEditing?"var(--text-secondary)":"#fff",fontSize:14,fontWeight:600,cursor:mode==="base"&&isBaseEditing?"default":"pointer"}}>실행</button>
+          {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={downloadCsv} style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer"}}>⬇ CSV</button>}
         </div>
 
         {/* Selected columns chips */}
-        {selectedCols.length>0&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+        {!isBaseEditing&&selectedCols.length>0&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
           <span style={{fontSize:14,color:"var(--text-secondary)",fontWeight:600,flexShrink:0}}>SELECT:</span>
           {selectedCols.map(c=><span key={c} style={chipActive} onClick={()=>toggleCol(c)}>{c} ×</span>)}
           <button onClick={applySelectedCols} style={{padding:"3px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"}}>적용</button>
@@ -499,6 +973,75 @@ export default function My_FileBrowser({user,onNavigate}){
         {/* Content */}
         <div style={{flex:1,overflow:"auto",padding:16}}>
           {loading&&<div style={{padding:40,textAlign:"center"}}><Loading text="로딩 중..."/></div>}
+          {mode==="base"&&selBaseFile&&<div style={{margin:"10px 12px 0",padding:12,border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-secondary)"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:8}}>
+              <b style={{fontSize:14}}>EDM Version History</b>
+              <span style={{fontSize:12,color:baseVersioned?"var(--accent)":"var(--text-secondary)",fontFamily:"monospace"}}>
+                {baseVersioned?`versioned · ${baseVersions.length}/${baseVersionCap}`:"preview only"}
+              </span>
+              {(baseVersionLoading||baseVersionPreviewLoading)&&<span style={{fontSize:12,color:"var(--text-secondary)"}}>loading...</span>}
+              {baseVersionMsg&&<span style={{fontSize:12,color:baseVersionMsg.includes("완료")?"#22c55e":"#ef4444"}}>{baseVersionMsg}</span>}
+              <input value={baseVersionFilter} onChange={e=>setBaseVersionFilter(e.target.value)} placeholder="filter actor/action/note" style={{marginLeft:"auto",padding:"3px 7px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,width:170}}/>
+              <button onClick={()=>loadBaseVersions(selBaseFile)} style={{padding:"3px 8px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>새로고침</button>
+            </div>
+            {baseVersioned&&baseVersions.length===0&&<div style={{fontSize:12,color:"var(--text-secondary)"}}>아직 저장된 이전 버전이 없습니다. 다음 저장부터 수정 전 snapshot 이 남습니다.</div>}
+            {baseVersions.length>0&&<div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:150,overflow:"auto"}}>
+              {baseVersions.filter(v=>{
+                const q=baseVersionFilter.trim().toLowerCase();
+                if(!q)return true;
+                return [v.version,v.actor,v.action,v.note,v.created_at].some(x=>String(x||"").toLowerCase().includes(q));
+              }).map(v=><div key={v.version} style={{display:"grid",gridTemplateColumns:"58px minmax(120px,0.9fr) minmax(130px,1fr) 136px 90px 62px 74px",gap:8,alignItems:"center",fontSize:12,padding:"5px 6px",border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-primary)"}}>
+                <span style={{fontFamily:"monospace",fontWeight:900,color:String(v.version||"").startsWith("legacy_")?"#a855f7":"var(--accent)"}} title={v.storage_version||v.version}>{String(v.version||"-").startsWith("legacy_")?"legacy":v.version}</span>
+                <span style={{color:"var(--text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={`${v.version} · ${v.action||"edit"}`}>{v.note||v.action||"edit"}</span>
+                <span style={{color:"#eab308",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontFamily:"monospace"}} title={JSON.stringify(v.change_summary||{})}>{versionChangeLabel(v.change_summary)}</span>
+                <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{(v.created_at||"").replace("T"," ").slice(0,16)||"-"}</span>
+                <span style={{color:"var(--text-secondary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.actor||"-"}</span>
+                <button onClick={()=>previewBaseVersion(v.version)} style={{padding:"3px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>보기</button>
+                <button onClick={()=>rollbackBaseVersion(v.version)} disabled={!isFileBrowserAdmin} style={{padding:"3px 7px",borderRadius:4,border:"1px solid #ef4444",background:"transparent",color:isFileBrowserAdmin?"#ef4444":"var(--text-secondary)",fontSize:12,cursor:isFileBrowserAdmin?"pointer":"not-allowed"}}>롤백</button>
+              </div>)}
+            </div>}
+            {baseVersionPreview&&<div style={{marginTop:10,border:"1px solid var(--border)",borderRadius:6,overflow:"hidden",background:"var(--bg-primary)"}}>
+              <div style={{display:"flex",gap:8,alignItems:"center",padding:"7px 9px",borderBottom:"1px solid var(--border)",fontSize:12,flexWrap:"wrap"}}>
+                <b style={{fontFamily:"monospace",color:"var(--accent)"}}>{baseVersionPreview.version}</b>
+                <span style={{color:"var(--text-secondary)"}}>{baseVersionPreview.kind||"file"} preview</span>
+                {baseVersionPreview.diff&&<span style={{color:baseVersionPreview.diff.checksum_equal?"#22c55e":"#eab308"}}>
+                  {baseVersionPreview.diff.checksum_equal?"현재와 동일":"현재와 다름"}
+                  {diffTableCountLabel(baseVersionPreview.diff_table)?` · ${diffTableCountLabel(baseVersionPreview.diff_table)}`:""}
+                </span>}
+                <button onClick={()=>setBaseVersionPreview(null)} style={{marginLeft:"auto",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>닫기</button>
+              </div>
+              {baseVersionPreview.diff&&(baseVersionPreview.diff.added_columns_in_current?.length||baseVersionPreview.diff.removed_columns_from_current?.length)?<div style={{padding:"6px 9px",fontSize:12,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)"}}>
+                {baseVersionPreview.diff.added_columns_in_current?.length?`현재에만 있는 컬럼: ${baseVersionPreview.diff.added_columns_in_current.slice(0,12).join(", ")}${baseVersionPreview.diff.added_columns_in_current.length>12?"...":""}`:""}
+                {baseVersionPreview.diff.added_columns_in_current?.length&&baseVersionPreview.diff.removed_columns_from_current?.length?" / ":""}
+                {baseVersionPreview.diff.removed_columns_from_current?.length?`버전에만 있는 컬럼: ${baseVersionPreview.diff.removed_columns_from_current.slice(0,12).join(", ")}${baseVersionPreview.diff.removed_columns_from_current.length>12?"...":""}`:""}
+              </div>:null}
+              {baseVersionPreview.diff_table?.rows?.length?<div style={{maxHeight:320,overflow:"auto"}}>
+                <div style={{padding:"6px 9px",fontSize:12,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)",display:"flex",gap:10,flexWrap:"wrap"}}>
+                  <b style={{color:"var(--text-primary)"}}>직전 버전 대비 변경점</b>
+                  <span>수정 {baseVersionPreview.diff_table.counts?.modified||0}</span>
+                  <span>추가 {baseVersionPreview.diff_table.counts?.added||0}</span>
+                  <span>삭제 {baseVersionPreview.diff_table.counts?.deleted||0}</span>
+                  {baseVersionPreview.diff_table.truncated&&<span style={{color:"#ef4444"}}>일부만 표시됨</span>}
+                </div>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead><tr>{(baseVersionPreview.diff_table.columns||[]).map(c=><th key={c} style={{position:"sticky",top:0,background:"var(--bg-secondary)",borderBottom:"1px solid var(--border)",padding:5,textAlign:"left",zIndex:1}}>{c==="changed_cols"?"변경컬럼":c}</th>)}</tr></thead>
+                  <tbody>{baseVersionPreview.diff_table.rows.map((r,i)=>{
+                    const st=revStyle(r.rev);
+                    const changed=new Set(r._changed_cols||[]);
+                    return <tr key={i} style={{background:st.bg,color:st.fg,borderLeft:"4px solid "+st.line}}>{(baseVersionPreview.diff_table.columns||[]).map((c,ci)=>{
+                      const isChanged=changed.has(c)&&r.rev==="수정";
+                      return <td key={c} style={{borderBottom:"1px solid #00000018",padding:5,fontFamily:ci<=1?"monospace":"inherit",fontWeight:c==="rev"||isChanged?800:500,background:isChanged?"#fde68a":undefined,color:st.fg,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={String(r[c]??"")}>{String(r[c]??"")}</td>;
+                    })}</tr>;
+                  })}</tbody>
+                </table>
+              </div>:null}
+              {!baseVersionPreview.diff_table&&baseVersionPreview.text!=null?<pre style={{margin:0,padding:10,maxHeight:260,overflow:"auto",fontSize:12,lineHeight:1.45,whiteSpace:"pre-wrap",color:"var(--text-primary)"}}>{baseVersionPreview.text}</pre>:null}
+              {!baseVersionPreview.diff_table&&baseVersionPreview.rows?.length?<div style={{maxHeight:260,overflow:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr>{(baseVersionPreview.columns||[]).map(c=><th key={c} style={{position:"sticky",top:0,background:"var(--bg-secondary)",borderBottom:"1px solid var(--border)",padding:5,textAlign:"left"}}>{c}</th>)}</tr></thead>
+                <tbody>{baseVersionPreview.rows.map((r,i)=><tr key={i}>{(baseVersionPreview.columns||[]).map(c=><td key={c} style={{borderBottom:"1px solid var(--border)",padding:5}}>{String(r[c]??"")}</td>)}</tr>)}</tbody></table>
+              </div>:null}
+            </div>}
+          </div>}
           {!loading&&!data&&!baseRaw&&!error&&<div style={{padding:60,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>사이드바에서 제품 또는 루트 parquet 을 선택하세요</div>}
           {!loading&&baseRaw&&<div className="filebrowser-base-raw" data-kind={baseRaw.kind}>
             <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
@@ -507,15 +1050,22 @@ export default function My_FileBrowser({user,onNavigate}){
                 {baseRaw.kind==="json"?"JSON":baseRaw.kind==="yaml"?"YAML":"Markdown"} | {formatSize(baseRaw.size)}{baseRaw.truncated?" | 일부만 표시됨":""}
                 {baseRaw.top_keys?.length&&<span style={{color:"var(--accent)",marginLeft:8}}>top: {baseRaw.top_keys.slice(0,6).join(", ")}{baseRaw.top_keys.length>6?"…":""}</span>}
               </span>
+              {canEditRawBase&&!rawEditing&&<button onClick={()=>{setRawEditText(baseRaw.text||"");setRawEditing(true);}} style={{padding:"4px 10px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:12,fontWeight:700,cursor:"pointer"}}>편집</button>}
+              {rawEditing&&<>
+                <button onClick={saveRawBaseFile} style={{padding:"4px 10px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>저장</button>
+                <button onClick={()=>{setRawEditing(false);setRawEditText("");}} style={{padding:"4px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>취소</button>
+              </>}
             </div>
-            <pre style={{margin:0,padding:12,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6,fontSize:14,lineHeight:1.5,fontFamily:"monospace",color:"var(--text-primary)",whiteSpace:"pre-wrap",wordBreak:"break-word",maxHeight:"calc(100vh - 240px)",overflow:"auto"}}>
-              <code>{baseRaw.text}</code>
-            </pre>
+            {rawEditing?<textarea value={rawEditText} onChange={e=>setRawEditText(e.target.value)} spellCheck={false}
+              style={{width:"100%",minHeight:"55vh",boxSizing:"border-box",margin:0,padding:12,background:"var(--bg-card)",border:"1px solid var(--accent)",borderRadius:6,fontSize:14,lineHeight:1.5,fontFamily:"monospace",color:"var(--text-primary)",resize:"vertical"}}/>:
+              <pre style={{margin:0,padding:12,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6,fontSize:14,lineHeight:1.5,fontFamily:"monospace",color:"var(--text-primary)",whiteSpace:"pre-wrap",wordBreak:"break-word",maxHeight:"calc(100vh - 240px)",overflow:"auto"}}>
+                <code>{baseRaw.text}</code>
+              </pre>}
           </div>}
-          {!loading&&data&&<>
-            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
-              {/* v8.8.31: 어떤 datalake 소스(FAB/INLINE/ET) 인지 한눈에 보이게 배지.
-                   selRoot 이 "1.RAWDATA_DB_FAB" / "_INLINE" / "_ET" 로 끝나는지 판정. */}
+            {!loading&&data&&<>
+              <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
+                {/* v8.8.31: 어떤 datalake 소스(FAB/INLINE/ET) 인지 한눈에 보이게 배지.
+                     selRoot 이 "1.RAWDATA_DB_FAB" / "_INLINE" / "_ET" 로 끝나는지 판정. */}
               {selRoot && (()=>{
                 const name=(selRoot||"").toUpperCase();
                 let label="",bg="",fg="";
@@ -527,43 +1077,136 @@ export default function My_FileBrowser({user,onNavigate}){
                   style={{fontSize:14,fontWeight:700,fontFamily:"monospace",padding:"3px 10px",borderRadius:4,background:bg,color:fg,letterSpacing:0.5}}>{label}</span>;
               })()}
               <span style={{fontSize:14,fontWeight:600,flex:"1 1 220px",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={selProd||selRootPq||selBaseFile}>{selProd||selRootPq||selBaseFile}</span>
-              <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6,flexShrink:0}}>
-                {data.meta_only
-                  ?<>스키마만 로드 · {data.total_cols}열 <span style={{color:"var(--accent)",fontWeight:600}}>| SQL 실행 또는 컬럼 SELECT 적용 시 데이터 조회</span></>
-                  :<>{data.latest_preview?<><span style={{color:"var(--accent)",fontWeight:700}}>최신 {data.showing}행</span>{data.latest_order_col?<> · 기준 {data.latest_order_col}</>:null} | </>:null}{data.total_rows?.toLocaleString()}행 × {data.total_cols}열 | 표시 {data.showing}
-                     {data.selected_cols&&<span style={{color:"var(--accent)"}}> | {selectedCols.length||String(data.selected_cols).split(",").filter(Boolean).length}열 선택됨</span>}
-                     {data.truncated_cols&&<span style={{color:"var(--accent)"}}> | 기본 미리보기 {data.preview_cols}열</span>}</>}
-                {data.source_modified&&<span title={data.source_path||""}> | 수정 {new Date(data.source_modified*1000).toLocaleString()}</span>}
-              </span>
-              {!data.meta_only&&<div style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:"auto"}}>
-                <button onClick={()=>gotoPage((data.page??page)-1)} disabled={(data.page??page)<=0}
-                  style={{padding:"4px 9px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:(data.page??page)<=0?"default":"pointer",opacity:(data.page??page)<=0?0.45:1}}>이전</button>
-                <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>page {(data.page??page)+1}</span>
-                <button onClick={()=>gotoPage((data.page??page)+1)} disabled={!data.has_more}
-                  style={{padding:"4px 9px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:data.has_more?"pointer":"default",opacity:data.has_more?1:0.45}}>다음</button>
-              </div>}
-            </div>
-            {/* Tabs: Data + Columns */}
-            <div style={{display:"flex",gap:0,borderBottom:"1px solid var(--border)",marginBottom:12}}>
-              {["data","columns"].map(t=>(<div key={t} onClick={()=>setTab(t)} style={{padding:"8px 16px",fontSize:14,cursor:"pointer",fontWeight:tab===t?600:400,
-                borderBottom:tab===t?"2px solid var(--accent)":"2px solid transparent",color:tab===t?"var(--text-primary)":"var(--text-secondary)"}}>
-                {t==="data"?"데이터 ("+data.showing+")":"컬럼 ("+allCols.length+")"}</div>))}
-            </div>
-            {tab==="data"&&<div style={{overflow:"auto",maxHeight:"calc(100vh - 280px)"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
-                <thead><tr><th style={{textAlign:"left",padding:"6px 10px",fontWeight:600,fontSize:14,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)",background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:1}}>#</th>
-                  {(data.showing_cols||data.columns||[]).map((c,i)=><th key={i} style={{textAlign:"left",padding:"6px 10px",fontWeight:600,fontSize:14,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)",background:"var(--bg-tertiary)",position:"sticky",top:0,zIndex:1,whiteSpace:"nowrap"}}>{c}</th>)}</tr></thead>
-                <tbody>{data.data?.map((row,ri)=>(
-                  <tr key={ri}><td style={{padding:"4px 10px",borderBottom:"1px solid var(--border)",color:"#64748b",fontSize:14}}>{ri+1}</td>
-                    {(data.showing_cols||data.columns||[]).map((c,ci)=><td key={ci} style={{padding:"4px 10px",borderBottom:"1px solid var(--border)",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={String(row[c]||"")}>
-                      {row[c]===null?<span style={{color:"#64748b"}}>null</span>:String(row[c])}</td>)}</tr>))}</tbody>
-              </table></div>}
-            {tab==="columns"&&<div>
-              <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
-                <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색..."
-                  style={{flex:1,padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none"}}/>
-                {selectedCols.length>0&&<span style={{fontSize:14,color:"var(--accent)",fontWeight:600}}>{selectedCols.length}개 선택됨</span>}
+                <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6,flexShrink:0}}>
+                  {data.meta_only
+                    ?<>스키마만 로드 · {data.total_cols}열 <span style={{color:"var(--accent)",fontWeight:600}}>| SQL 실행 또는 컬럼 SELECT 적용 시 데이터 조회</span></>
+                    :<>{data.latest_preview?<><span style={{color:"var(--accent)",fontWeight:700}}>최신 {data.showing}행</span>{data.latest_order_col?<> · 기준 {data.latest_order_col}</>:null} | </>:null}{data.total_rows?.toLocaleString()}행 × {data.total_cols}열 | 표시 {data.showing}
+                       {data.selected_cols&&<span style={{color:"var(--accent)"}}> | {selectedCols.length||String(data.selected_cols).split(",").filter(Boolean).length}열 선택됨</span>}
+                       {data.truncated_cols&&<span style={{color:"var(--accent)"}}> | 기본 미리보기 {data.preview_cols}열</span>}</>}
+                  {data.source_modified&&<span title={data.source_path||""}> | 수정 {new Date(data.source_modified*1000).toLocaleString()}</span>}
+                </span>
+                <div style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:"auto",flexWrap:"wrap"}}>
+                  {mode==="base"&&isFileBrowserAdmin&&BASE_EDIT_FILE_EXTS.has(baseFileExt)&&baseFileEditable&&
+                    <button onClick={startBaseEdit} disabled={!canEnterBaseEdit}
+                      title={!canEnterBaseEdit?(baseFileComplete? "편집 대상이 아닙니다. (Base/db_root 단일 CSV, Parquet만 가능)": "미리보기 전체 행이 필요합니다. 전체 조회 후 시작하세요.")
+                      : "클립보드로 붙여넣고 저장할 수 있습니다."}
+                      style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--accent)",background:canEnterBaseEdit?"var(--accent)":"transparent",color:canEnterBaseEdit?"#fff":"var(--text-secondary)",fontSize:14,fontWeight:600,cursor:canEnterBaseEdit?"pointer":"default"}}>편집</button>}
+                  {isBaseEditingMode&&<>
+                    <button onClick={saveBaseEdit} style={{padding:"5px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer"}}>저장</button>
+                    <button onClick={restoreBaseEdit} style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>원본복원</button>
+                    <button onClick={cancelBaseEdit} style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>취소</button>
+                    <span style={{fontSize:13,color:"var(--text-secondary)",display:"inline-flex",gap:6,alignItems:"center"}}>
+                      <span>붙여넣기:</span>
+                      <select value={pasteMode} onChange={e=>setPasteMode(e.target.value)} style={{padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}>
+                        <option value="replace">replace</option>
+                        <option value="append">append</option>
+                      </select>
+                    </span>
+                    <span style={{fontSize:13,color:"var(--text-secondary)",display:"inline-flex",gap:6,alignItems:"center"}}>
+                      <span>저장 구분자:</span>
+                      <select value={saveDelimiter} onChange={e=>setSaveDelimiter(e.target.value)} style={{padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}>
+                        <option value="tab">tab</option>
+                        <option value="comma">comma</option>
+                        <option value="auto">auto</option>
+                      </select>
+                    </span>
+                    <label style={{fontSize:13,color:"var(--text-secondary)",display:"inline-flex",gap:6,alignItems:"center",cursor:"pointer",lineHeight:1.2}}>
+                      <input type="checkbox" checked={includeHeader} onChange={e=>setIncludeHeader(e.target.checked)}
+                        style={{width:14,height:14}}/> 헤더 포함</label>
+                    <span style={{padding:"2px 8px",borderRadius:4,border:"1px dashed var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:12}}>Ctrl+V 붙여넣기 안내</span>
+                  </>}
+                  {showBasePager&&<>
+                    <button onClick={()=>gotoPage((data.page??page)-1)} disabled={(data.page??page)<=0}
+                      style={{padding:"4px 9px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:(data.page??page)<=0?"default":"pointer",opacity:(data.page??page)<=0?0.45:1}}>이전</button>
+                    <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>page {(data.page??page)+1}</span>
+                    <button onClick={()=>gotoPage((data.page??page)+1)} disabled={!data.has_more}
+                      style={{padding:"4px 9px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:data.has_more?"pointer":"default",opacity:data.has_more?1:0.45}}>다음</button>
+                  </>}
+                </div>
               </div>
+              {/* Tabs: Data + Columns */}
+              <div style={{display:"flex",gap:0,borderBottom:"1px solid var(--border)",marginBottom:12}}>
+                {baseEditingTabs.map(t=>(<div key={t} onClick={()=>setTab(t)} style={{padding:"8px 16px",fontSize:14,cursor:"pointer",fontWeight:tab===t?600:400,
+                  borderBottom:tab===t?"2px solid var(--accent)":"2px solid transparent",color:tab===t?"var(--text-primary)":"var(--text-secondary)"}}>
+                  {t==="data"?"데이터 ("+data.showing+")":"컬럼 ("+allCols.length+")"}</div>))}
+              </div>
+              {tab==="data"&&isBaseEditingMode&&<>
+                <div style={{margin:"0 0 8px",fontSize:12,color:"var(--text-secondary)"}}>
+                  셀 기준 붙여넣기: 입력 중인 셀을 시작점으로 반영되며, 첫 행 헤더가 기존 헤더와 일치하면 자동으로 제외됩니다.
+                </div>
+                <div style={baseEditWrap} onPaste={onBasePaste}>
+                  <table style={baseEditTable}>
+                    <thead><tr>
+                      <th style={baseEditCornerCell}>#</th>
+                      {editCols.map((c,i)=>{
+                        const isColActive = isBaseEditingMode&&selectedEditCell.c===i;
+                        return <th key={i}
+                          style={{...baseEditHeaderInput,background:isColActive? "#dbeafe":"var(--bg-tertiary)"}}>
+                          {c}
+                        </th>;
+                      })}
+                    </tr></thead>
+                    <tbody>{editRows.length?editRows.map((row,ri)=>(
+                      <tr key={ri}>
+                        <td style={{...baseEditIndexBody, background:ri===selectedEditCell.r?baseEditRowHighlight.background||"rgba(59,130,246,0.12)":"var(--bg-tertiary)",padding:"0 6px"}}>
+                          <span style={{display:"inline-flex",alignItems:"center",justifyContent:"space-between",gap:6,width:"100%"}}>
+                            <span>{ri+1}</span>
+                            <button type="button" onClick={(e)=>{e.stopPropagation();deleteBaseEditRow(ri);}}
+                              title={`${ri+1}행 삭제`}
+                              style={{width:22,height:22,borderRadius:4,border:"1px solid #ef444455",background:"#fee2e2",color:"#991b1b",fontSize:12,fontWeight:800,cursor:"pointer",lineHeight:1}}>
+                              ×
+                            </button>
+                          </span>
+                        </td>
+                        {editCols.map((_,ci)=>{
+                          const isRowActive = ri===selectedEditCell.r;
+                          const isColActive = ci===selectedEditCell.c;
+                          const isActiveCell = isRowActive&&isColActive;
+                          const baseCellStyle={...baseEditRowCell,background:isActiveCell?baseEditCellActive.background: isRowActive?baseEditRowHighlight.background:isColActive?baseEditColHighlight.background:undefined};
+                          return <td key={ci}
+                            style={baseCellStyle}
+                            onClick={()=>setSelectedEditCell({r:ri,c:ci})}>
+                            <input value={String(row?.[ci]||"")} onChange={(e)=>patchBaseCell(ri,ci,e.target.value)}
+                              onFocus={()=>setSelectedEditCell({r:ri,c:ci})}
+                              onPaste={onBasePaste}
+                              style={{...baseEditCellInput,...(isActiveCell?baseEditCellActive:{})}}
+                              title={row?.[ci]||""}/>
+                          </td>;
+                        })}
+                      </tr>)):<tr><td colSpan={Math.max(editCols.length+1,1)} style={{padding:"20px",textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>
+                        데이터가 비어 있습니다. Ctrl+V로 붙여넣기 하거나 직접 입력해 저장하세요.
+                      </td></tr>}</tbody>
+                  </table>
+                </div>
+                <div style={{display:"flex",justifyContent:"flex-start",marginTop:10,gap:8}}>
+                  <button onClick={addBaseEditRow} disabled={!editCols.length}
+                    style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--bg-card)",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:!editCols.length?"default":"pointer",opacity:!editCols.length?0.45:1}}>
+                    행 추가
+                  </button>
+                  <button onClick={()=>deleteBaseEditRow()} disabled={!editRows.length}
+                    style={{padding:"6px 12px",borderRadius:5,border:"1px solid #ef4444",background:"#fee2e2",color:"#991b1b",fontSize:14,fontWeight:700,cursor:!editRows.length?"default":"pointer",opacity:!editRows.length?0.45:1}}>
+                    선택 행 삭제
+                  </button>
+                </div>
+              </>}
+              {tab==="data"&&!isBaseEditingMode&&<div style={baseReadWrap}>
+                <table style={baseEditTable}>
+                  <thead><tr>
+                    <th style={baseReadIndexCell}>#</th>
+                    {(data.showing_cols||data.columns||[]).map((c,i)=><th key={i} style={{...baseEditHeaderInput,minWidth:160}}>{c}</th>)}</tr></thead>
+                    <tbody>{data.data?.map((row,ri)=>(
+                      <tr key={ri}><td style={{...baseReadIndexCell,color:"#64748b"}}>{ri+1}</td>
+                        {(data.showing_cols||data.columns||[]).map((c,ci)=><td key={ci}
+                          style={baseReadCell}
+                          title={String(row[c]||"")}>
+                          {row[c]===null?<span style={{color:"#64748b"}}>null</span>:String(row[c])}</td>)}</tr>))}</tbody>
+                </table></div>}
+              {tab==="columns"&&!isBaseEditingMode&&<div>
+                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
+                  <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색..."
+                    style={{flex:1,padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none"}}/>
+                  {selectedCols.length>0&&<span style={{fontSize:14,color:"var(--accent)",fontWeight:600}}>{selectedCols.length}개 선택됨</span>}
+                </div>
               <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:8,padding:"4px 0",lineHeight:1.6}}>
                 클릭 → SQL 필터에 추가 | ☑ 체크 → 해당 열만 선택해서 보기
               </div>

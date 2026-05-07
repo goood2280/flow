@@ -1040,6 +1040,70 @@ function ProductConfigPanel({canManage,onChanged}){
   </div>);
 }
 
+function OntologyPanel({ontology,onReload}){
+  const nodes=ontology?.nodes||[];
+  const edges=ontology?.edges||[];
+  const byId=new Map(nodes.map(n=>[n.id,n]));
+  const kinds=[...new Set(nodes.map(n=>n.kind||"other"))];
+  const kindColor=(kind)=>{
+    if(kind==="identity")return"#0ea5e9";
+    if(kind==="source")return"#10b981";
+    if(kind==="edm_file")return"#eab308";
+    if(kind==="concept")return"#a855f7";
+    if(kind==="derived_table")return"#f97316";
+    return"#64748b";
+  };
+  return(<div style={{display:"grid",gridTemplateColumns:"minmax(280px,0.8fr) minmax(420px,1.2fr)",gap:14}}>
+    <div style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:8,padding:14}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}>
+        <div>
+          <div style={{fontSize:15,fontWeight:800,color:"var(--accent)",fontFamily:"monospace"}}>Agent Ontology</div>
+          <div style={{fontSize:13,color:"var(--text-secondary)"}}>Flow-i와 분석 기능이 공유하는 반도체 데이터 관계입니다.</div>
+        </div>
+        <button onClick={onReload} style={{padding:"5px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:13,cursor:"pointer"}}>새로고침</button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(100px,1fr))",gap:8,marginBottom:12}}>
+        <div style={{border:"1px solid var(--border)",borderRadius:6,padding:9,background:"var(--bg-card)"}}>
+          <div style={{fontSize:12,color:"var(--text-secondary)",fontWeight:800}}>NODES</div>
+          <div style={{fontSize:20,fontWeight:900,fontFamily:"monospace",color:"var(--accent)"}}>{nodes.length}</div>
+        </div>
+        <div style={{border:"1px solid var(--border)",borderRadius:6,padding:9,background:"var(--bg-card)"}}>
+          <div style={{fontSize:12,color:"var(--text-secondary)",fontWeight:800}}>EDGES</div>
+          <div style={{fontSize:20,fontWeight:900,fontFamily:"monospace",color:"var(--accent)"}}>{edges.length}</div>
+        </div>
+      </div>
+      {kinds.map(kind=><div key={kind} style={{marginBottom:12}}>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:5}}>
+          <span style={{width:9,height:9,borderRadius:999,background:kindColor(kind),display:"inline-block"}}/>
+          <b style={{fontSize:13,textTransform:"uppercase",color:"var(--text-secondary)"}}>{kind}</b>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          {nodes.filter(n=>(n.kind||"other")===kind).map(n=><div key={n.id} title={n.id} style={{display:"flex",alignItems:"center",gap:8,border:"1px solid var(--border)",borderRadius:5,padding:"6px 8px",background:"var(--bg-card)",fontSize:13}}>
+            <span style={{fontFamily:"monospace",fontWeight:800,color:kindColor(kind),minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{n.label||n.id}</span>
+            {n.exists===false&&<span style={{marginLeft:"auto",fontSize:11,color:"#ef4444",fontWeight:800}}>missing</span>}
+            {n.exists===true&&<span style={{marginLeft:"auto",fontSize:11,color:"#22c55e",fontWeight:800}}>exists</span>}
+          </div>)}
+        </div>
+      </div>)}
+    </div>
+    <div style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:8,padding:14}}>
+      <div style={{fontSize:15,fontWeight:800,color:"var(--text-primary)",marginBottom:10}}>Lineage / semantic edges</div>
+      <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:"calc(100vh - 260px)",overflow:"auto"}}>
+        {edges.map((e,i)=>{
+          const from=byId.get(e.from)||{label:e.from,kind:"other"};
+          const to=byId.get(e.to)||{label:e.to,kind:"other"};
+          return(<div key={`${e.from}_${e.to}_${i}`} style={{display:"grid",gridTemplateColumns:"minmax(120px,1fr) 110px minmax(120px,1fr)",gap:8,alignItems:"center",border:"1px solid var(--border)",borderRadius:6,padding:"8px 10px",background:"var(--bg-card)",fontSize:13}}>
+            <span title={e.from} style={{fontFamily:"monospace",fontWeight:800,color:kindColor(from.kind),overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{from.label||e.from}</span>
+            <span style={{textAlign:"center",color:"var(--text-secondary)",fontSize:12,fontWeight:800}}>{e.label||"relates"}</span>
+            <span title={e.to} style={{fontFamily:"monospace",fontWeight:800,color:kindColor(to.kind),overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{to.label||e.to}</span>
+          </div>);
+        })}
+        {!edges.length&&<div style={{padding:40,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>ontology edge가 없습니다.</div>}
+      </div>
+    </div>
+  </div>);
+}
+
 // ─── Main component ─────────────────────────────────────
 export default function My_TableMap({user}){
   const[config,setConfig]=useState({nodes:[],relations:[]});
@@ -1065,6 +1129,7 @@ export default function My_TableMap({user}){
     })}).then(r=>{alert(`임포트 완료 — ${r.id} (CSV: ${r.csv_path?.split(/[\\\/]/).pop()||""})`);setShowImport(false);setImportForm({source:"",name:"",display_name:"",rows_limit:1000});loadAll();}).catch(e=>alert(e.message));
   };
   const[view,setView]=useState("graph");
+  const[ontology,setOntology]=useState({nodes:[],edges:[]});
   const[editingRelation,setEditingRelation]=useState(null);
   const canManage = canManagePage(user, "tablemap");
   const isAdmin=isAdminUser(user);
@@ -1072,7 +1137,9 @@ export default function My_TableMap({user}){
   const[showLineage,setShowLineage]=useState(false);
   const[lineageData,setLineageData]=useState({edges:[],stats:{}});
   const loadLineage=()=>sf(API+"/lineage").then(d=>setLineageData(d||{edges:[],stats:{}})).catch(()=>setLineageData({edges:[],stats:{}}));
+  const loadOntology=()=>sf(API+"/ontology").then(d=>setOntology(d||{nodes:[],edges:[]})).catch(()=>setOntology({nodes:[],edges:[]}));
   useEffect(()=>{if(showLineage)loadLineage();},[showLineage]);
+  useEffect(()=>{if(view==="ontology")loadOntology();},[view]);
 
   const loadAll=()=>{
     sf(API+"/config").then(setConfig).catch(()=>{});
@@ -1082,6 +1149,7 @@ export default function My_TableMap({user}){
     sf(API+"/product-configs").then(d=>setProductConfigs(d.configs||[])).catch(()=>{});
     sf(API+"/product-pages").then(d=>setHiddenProductPages(d.hidden_product_pages||[])).catch(()=>setHiddenProductPages([]));
     if(showLineage)loadLineage();
+    if(view==="ontology")loadOntology();
   };
   useEffect(()=>{loadAll();},[]);
   useEffect(()=>{
@@ -1436,7 +1504,7 @@ export default function My_TableMap({user}){
         <span>테이블 맵</span>
       </div>
       <div style={{display:"flex",gap:4,alignItems:"center"}}>
-        {[["graph","그래프"],["manage","관리"],["configs","YAML"]].map(([k,l])=>(
+        {[["graph","그래프"],["ontology","Ontology"],["manage","관리"],["configs","YAML"]].map(([k,l])=>(
           <span key={k} onClick={()=>setView(k)} style={{padding:"4px 12px",borderRadius:4,fontSize:14,cursor:"pointer",fontWeight:view===k?600:400,background:view===k?"var(--accent-glow)":"transparent",color:view===k?"var(--accent)":"var(--text-secondary)"}}>{l}</span>))}
         {/* v8.8.13: 계보 탭 제거 — relation 편집 시 컬럼 매칭 표로 대체. */}
       </div>
@@ -1517,6 +1585,8 @@ export default function My_TableMap({user}){
         </div>
       </div>}
     </div>
+
+    {view==="ontology"&&<OntologyPanel ontology={ontology} onReload={loadOntology}/>}
 
     {view==="graph"&&<GraphView config={filteredConfig} groups={visibleGroups} tables={visibleTables} onNodeClick={onNodeClick} onNodeDblClick={onNodeDblClick} onAddRelation={onAddRelation} onSavePosition={savePosition}
       onSaveRelationPosition={saveRelationPosition}

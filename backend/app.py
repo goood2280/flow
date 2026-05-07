@@ -153,6 +153,20 @@ def _allowed_methods_for_path(path: str, method: str) -> set[str]:
     return allowed
 
 
+def _api_route_exists(full_path: str) -> bool:
+    target = f"/{full_path.lstrip('/')}"
+    norm_target = target.rstrip("/")
+    for route in app.routes:
+        route_path = getattr(route, "path", None)
+        route_fmt = getattr(route, "path_format", None)
+        for candidate in (route_path, route_fmt):
+            if not candidate:
+                continue
+            if candidate.rstrip("/") == norm_target:
+                return True
+    return False
+
+
 def _compat_api_path(path: str) -> str:
     """Map legacy singular/plural API prefixes to their canonical routers."""
     compat_prefixes = {
@@ -169,6 +183,25 @@ def _compat_api_path(path: str) -> str:
         return "/api/tracker/issues"
     if path.startswith("issues/"):
         return "/api/tracker/issues/" + path[len("issues/"):]
+
+    if path.startswith("filebrowser/base-file-save"):
+        suffix = path[len("filebrowser/base-file-save"):]
+        canonical = "/api/filebrowser/base-file/save" + suffix
+        legacy = "/api/filebrowser/base-file-save" + suffix
+        if _api_route_exists(canonical):
+            return canonical
+        if _api_route_exists(legacy):
+            return legacy
+        return canonical
+    if path.startswith("filebrowser/base-file/save"):
+        suffix = path[len("filebrowser/base-file/save"):]
+        canonical = "/api/filebrowser/base-file/save" + suffix
+        legacy = "/api/filebrowser/base-file-save" + suffix
+        if _api_route_exists(canonical):
+            return canonical
+        if _api_route_exists(legacy):
+            return legacy
+        return legacy
     return ""
 
 

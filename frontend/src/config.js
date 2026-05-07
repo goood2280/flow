@@ -14,7 +14,6 @@ export const TABS = [
   {key:"calendar",label:"변경점 관리",icon:"📅",group:"tool"},
   {key:"ettime",label:"ET 레포트",icon:"⏱️",group:"data",defaultTab:true},
   {key:"waferlayout",label:"웨이퍼 레이아웃",icon:"🧭",group:"data",defaultTab:true},
-  {key:"tablemap",label:"테이블맵",icon:"🔗",group:"tool",adminOnly:true},
   {key:"admin",label:"관리자",icon:"⚙️",group:"system",adminOnly:true},
   {key:"devguide",label:"개발자 가이드",icon:"📖",group:"system",restrictedSetting:"devguide_allowed"},
 ];

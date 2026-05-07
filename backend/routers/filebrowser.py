@@ -1,6 +1,6 @@
 """routers/filebrowser.py v4.1.1 (v8.8.3) - lazy parquet + CSV + SQL, single DB root.
 
-Root-level DB files (matching_step.csv, knob_ppid.csv, ML_TABLE_*.parquet,
+Root-level DB files (matching_step.csv, ppid_knob.csv, ML_TABLE_*.parquet,
 features_*.parquet, _uniques.json) are exposed through the legacy "base_file"
 source type. Internally PATHS.base_root is a compatibility alias to PATHS.db_root.
 
@@ -20,11 +20,17 @@ Legacy `/roots` (no `scope` param) keeps its v7.1 shape — DB-canonical only.
 import json
 import logging
 import datetime
+import csv
+import io
+import os
 import re
 import copy
+import hashlib
+import tempfile
 import time
 from pathlib import Path
 import sys
+import shutil
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _APP_ROOT = _BACKEND_ROOT.parent
@@ -37,6 +43,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 import polars as pl
 from core import duckdb_engine
+from core import s3_sync as _s3
 from core.paths import PATHS
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_named_child
 from core.utils import (
@@ -45,6 +52,7 @@ from core.utils import (
     DATA_EXTENSIONS, count_data_files, iter_source_product_dirs,
     data_files_limited, source_data_files,
 )
+from app_v2.shared.contracts import FileVersionMeta
 
 logger = logging.getLogger("flow.fb")
 router = APIRouter(prefix="/api/filebrowser", tags=["filebrowser"])
@@ -56,6 +64,15 @@ MAX_CSV_DOWNLOAD_BYTES = 100_000_000
 DEFAULT_CSV_DOWNLOAD_MAX_ROWS = 100_000
 MAX_CSV_DOWNLOAD_MAX_ROWS = 500_000
 MAX_CSV_DOWNLOAD_AUTO_COLUMNS = 200
+BASE_FILE_EDIT_MAX_BYTES = 25_000_000
+BASE_FILE_EDIT_MAX_ROWS = 200_000
+BASE_EDIT_ALLOWED_EXTENSIONS = {".csv", ".parquet"}
+BASE_EDIT_HISTORY_DIR = ".history"
+BASE_EDIT_RESERVED_PREFIXES = {"product_config", "reformatter", "uploads"}
+BASE_VERSION_DIR = PATHS.data_root / "file_versions"
+BASE_VERSION_CAP = 50
+SCHEMA_PROFILE_DIR = PATHS.data_root / "schema_profiles"
+SCHEMA_PROFILE_CAP = 30
 LATEST_PREVIEW_ROWS = 200
 LATEST_PREVIEW_MAX_FILES = 4
 LIST_CACHE_TTL_SEC = 5.0
@@ -165,8 +182,13 @@ CORE_BASE_FILES = {
     },
     "knob_ppid.csv": {
         "role": "FAB PPID -> KNOB",
-        "description": "FAB ppid 를 knob_name/knob_value 로 변환",
+        "description": "Legacy FAB ppid 를 knob_name/knob_value 로 변환",
         "order": 40,
+    },
+    "ppid_knob.csv": {
+        "role": "KNOB -> function_step",
+        "description": "SplitTable KNOB feature 를 적용 function_step 으로 연결",
+        "order": 41,
     },
     "mask.csv": {
         "role": "RETICLE -> MASK",
@@ -183,6 +205,17 @@ CORE_BASE_FILES = {
         "description": "step_id 를 func_step/module 로 정규화",
         "order": 70,
     },
+}
+
+EDM_VERSIONED_SINGLE_FILES = {
+    "inline_subitem_pos.csv",
+    "inline_item_map.csv",
+    "inline_matching.csv",
+    "knob_ppid.csv",
+    "ppid_knob.csv",
+    "mask.csv",
+    "vm_matching.csv",
+    "step_matching.csv",
 }
 
 
@@ -213,6 +246,742 @@ def _core_file_meta(name: str) -> dict | None:
             "order": 86,
         }
     return CORE_BASE_FILES.get(low)
+
+
+def _visible_single_file(path: Path) -> bool:
+    """Only expose physical files that actually exist in DB/Base root."""
+    if not path.is_file():
+        return False
+    ext = path.suffix.lower()
+    if ext not in BASE_EXTENSIONS:
+        return False
+    return _core_file_meta(path.name) is not None
+
+
+def _parse_tab_or_csv(text: str, delimiter: str) -> tuple[list[list[str]], str]:
+    normalized = str(text or "")
+    if not normalized:
+        return [], delimiter
+
+    def _read(d: str, strict: bool = True) -> list[list[str]]:
+        try:
+            reader = csv.reader(io.StringIO(normalized), delimiter=d, quotechar='"', doublequote=True)
+            rows = [list(r) for r in reader]
+        except Exception:
+            if strict:
+                raise
+            return []
+        while rows and all(str(v or "").strip() == "" for v in rows[-1]):
+            rows.pop()
+        return rows
+
+    requested = (delimiter or "auto").lower()
+    if requested in {"tab", "\t", "\\t"}:
+        return _read("\t"), "tab"
+    if requested in {"comma", ",", "csv"}:
+        return _read(","), "comma"
+
+    # auto: 우선 탭 파서, 실패/의미없는 분리면 CSV 파서로 폴백.
+    try:
+        tab_rows = _read("\t")
+    except Exception:
+        tab_rows = []
+    if ("\t" in normalized) or any(len(r) > 1 for r in tab_rows):
+        return tab_rows, "tab"
+    return _read("," , strict=False), "comma"
+
+
+def _normalize_rows(rows: list[list[str]], width: int, fill: str = "") -> tuple[list[list[str]], int]:
+    norm: list[list[str]] = []
+    for r in rows:
+        rr = ["" if v is None else str(v) for v in (r or [])]
+        if len(rr) < width:
+            rr = rr + [fill] * (width - len(rr))
+        elif len(rr) > width:
+            rr = rr[:width]
+        norm.append(rr)
+    return norm, width
+
+
+def _resolve_base_file_for_edit(file: str) -> Path:
+    name = (file or "").strip()
+    if not name:
+        raise HTTPException(400, "file is required")
+    rel = Path(name)
+    if rel.is_absolute() or any(p in {"", ".", ".."} for p in rel.parts):
+        raise HTTPException(400, "Invalid file path")
+    if rel.parts and rel.parts[0] in BASE_EDIT_RESERVED_PREFIXES:
+        raise HTTPException(400, f"Editing scope mismatch: {rel.parts[0]}/* is not a single Base/DB file")
+
+    base_root = _base_root()
+    db_root = _db_root()
+    for candidate_root in (base_root, db_root):
+        if not candidate_root.is_dir():
+            continue
+        cand = (candidate_root / rel).resolve()
+        try:
+            cand.relative_to(candidate_root.resolve())
+        except ValueError:
+            continue
+        if cand.suffix.lower() not in BASE_EDIT_ALLOWED_EXTENSIONS:
+            raise HTTPException(400, f"Unsupported file type: {cand.suffix}")
+        if cand.is_file():
+            return cand
+
+    raise HTTPException(404, f"Base file not found in Base/DB root: {file}")
+
+
+def _resolve_base_file_for_version(file: str) -> Path:
+    name = (file or "").strip()
+    if not name:
+        raise HTTPException(400, "file is required")
+    rel = Path(name)
+    if rel.is_absolute() or any(p in {"", ".", ".."} for p in rel.parts):
+        raise HTTPException(400, "Invalid file path")
+    if rel.parts and rel.parts[0] == "product_config":
+        if len(rel.parts) != 2 or rel.parts[1].startswith("."):
+            raise HTTPException(400, "Invalid product config path")
+        root = (PATHS.data_root / "product_config").resolve()
+        cand = (root / rel.parts[1]).resolve()
+        try:
+            cand.relative_to(root)
+        except ValueError:
+            raise HTTPException(400, "Invalid product config path")
+        if cand.is_file() and cand.suffix.lower() in PRODUCT_CONFIG_EXTENSIONS:
+            return cand
+        raise HTTPException(404, f"Product config not found: {file}")
+    if rel.parts and rel.parts[0] == "reformatter":
+        if len(rel.parts) != 2 or rel.parts[1].startswith("."):
+            raise HTTPException(400, "Invalid reformatter path")
+        root = (PATHS.data_root / "reformatter").resolve()
+        requested = rel.parts[1]
+        candidates = [root / requested]
+        if requested.lower().endswith(".csv"):
+            candidates.append(root / (Path(requested).stem + ".json"))
+        for cand0 in candidates:
+            cand = cand0.resolve()
+            try:
+                cand.relative_to(root)
+            except ValueError:
+                continue
+            if cand.is_file() and cand.suffix.lower() in {".csv", ".json"}:
+                return cand
+        raise HTTPException(404, f"Reformatter file not found: {file}")
+    return _resolve_base_file_for_edit(file)
+
+
+def _base_file_versioned(file: str, target: Path | None = None) -> bool:
+    rel = str(file or "").strip().replace("\\", "/").lower()
+    name = Path(rel).name.lower()
+    if name in EDM_VERSIONED_SINGLE_FILES:
+        return True
+    if rel == "product_config/products.yaml":
+        return True
+    if rel.startswith("reformatter/") and name.endswith((".csv", ".json")):
+        return True
+    if target is not None and target.name.lower() in EDM_VERSIONED_SINGLE_FILES:
+        return True
+    return False
+
+
+def _version_file_id(file: str) -> str:
+    rel = str(file or "").strip().replace("\\", "/")
+    rel = rel.strip("/")
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "__", rel)
+    return safe.strip("._-") or "base_file"
+
+
+def _version_dir(file: str) -> Path:
+    return BASE_VERSION_DIR / _version_file_id(file)
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return "sha256:" + h.hexdigest()
+
+
+def _next_file_version(vdir: Path) -> int:
+    try:
+        nums = []
+        for fp in vdir.glob("v*.meta.json"):
+            stem = fp.name.split(".", 1)[0]
+            try:
+                nums.append(int(stem.lstrip("v")))
+            except ValueError:
+                pass
+        return (max(nums) if nums else 0) + 1
+    except Exception:
+        return 1
+
+
+def _next_semver(vdir: Path, *, rows: int | None = None, columns: int | None = None) -> str:
+    metas = []
+    try:
+        for fp in vdir.glob("v*.meta.json"):
+            try:
+                meta = json.loads(fp.read_text(encoding="utf-8"))
+                sem = str(meta.get("display_version") or "")
+                m = re.match(r"^v(\d+)\.(\d+)$", sem)
+                if m:
+                    metas.append((int(m.group(1)), int(m.group(2)), meta))
+            except Exception:
+                continue
+    except Exception:
+        metas = []
+    if not metas:
+        return "v1.0"
+    major, minor, latest = sorted(metas, key=lambda x: (x[0], x[1]))[-1]
+    prev_rows = latest.get("rows")
+    prev_cols = latest.get("columns")
+    if (rows is not None and prev_rows is not None and rows != prev_rows) or (columns is not None and prev_cols is not None and columns != prev_cols):
+        return f"v{major + 1}.0"
+    return f"v{major}.{minor + 1}"
+
+
+def _cap_file_versions(vdir: Path) -> None:
+    try:
+        metas = sorted(vdir.glob("v*.meta.json"), key=lambda p: p.stat().st_mtime)
+        excess = len(metas) - BASE_VERSION_CAP
+        if excess <= 0:
+            return
+        for meta_fp in metas[:excess]:
+            try:
+                meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+            except Exception:
+                meta = {}
+            content = meta.get("content_file") or meta_fp.name.replace(".meta.json", meta_fp.suffix)
+            for fp in (vdir / str(content), meta_fp):
+                try:
+                    if fp.exists():
+                        fp.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _file_shape(path: Path) -> tuple[int | None, int | None]:
+    try:
+        ext = path.suffix.lower()
+        if ext in {".csv", ".parquet"}:
+            lf = scan_one_file(path)
+            if lf is None:
+                return None, None
+            cols = list(lf.collect_schema().names())
+            rows = int(lf.select(pl.len()).collect().item())
+            return rows, len(cols)
+    except Exception:
+        pass
+    return None, None
+
+
+def _file_profile(path: Path) -> dict:
+    profile = {
+        "size": None,
+        "checksum": "",
+        "rows": None,
+        "columns": [],
+        "column_count": None,
+    }
+    try:
+        profile["size"] = path.stat().st_size
+        profile["checksum"] = _file_sha256(path)
+    except Exception:
+        pass
+    try:
+        if path.suffix.lower() in {".csv", ".parquet"}:
+            lf = scan_one_file(path)
+            if lf is not None:
+                cols = list(lf.collect_schema().names())
+                profile["columns"] = cols
+                profile["column_count"] = len(cols)
+                profile["rows"] = int(lf.select(pl.len()).collect().item())
+    except Exception:
+        pass
+    return profile
+
+
+def _profile_diff(current: dict, version: dict) -> dict:
+    cur_cols = [str(c) for c in (current.get("columns") or [])]
+    ver_cols = [str(c) for c in (version.get("columns") or [])]
+    cur_set = set(cur_cols)
+    ver_set = set(ver_cols)
+    cur_size = current.get("size")
+    ver_size = version.get("size")
+    cur_rows = current.get("rows")
+    ver_rows = version.get("rows")
+    return {
+        "checksum_equal": bool(current.get("checksum") and current.get("checksum") == version.get("checksum")),
+        "size_delta": (cur_size - ver_size) if isinstance(cur_size, int) and isinstance(ver_size, int) else None,
+        "rows_delta": (cur_rows - ver_rows) if isinstance(cur_rows, int) and isinstance(ver_rows, int) else None,
+        "columns_delta": len(cur_cols) - len(ver_cols) if cur_cols or ver_cols else None,
+        "added_columns_in_current": [c for c in cur_cols if c not in ver_set],
+        "removed_columns_from_current": [c for c in ver_cols if c not in cur_set],
+    }
+
+
+def _latest_version_content(vdir: Path) -> Path | None:
+    metas = []
+    try:
+        for fp in vdir.glob("v*.meta.json"):
+            try:
+                meta = json.loads(fp.read_text(encoding="utf-8"))
+                m = re.match(r"^v(\d+)$", str(meta.get("version") or fp.name.split(".", 1)[0]))
+                idx = int(m.group(1)) if m else 0
+                content = vdir / str(meta.get("content_file") or "")
+                if content.exists():
+                    metas.append((idx, content))
+            except Exception:
+                continue
+    except Exception:
+        return None
+    return sorted(metas, key=lambda x: x[0])[-1][1] if metas else None
+
+
+def _snapshot_change_summary(current: Path, previous: Path | None) -> dict:
+    if previous is None or not previous.exists():
+        return {"label": "초기 버전", "rows_delta": None, "columns_delta": None, "changed_cells": None, "added_rows": 0, "deleted_rows": 0, "modified_rows": 0}
+    cur_profile = _file_profile(current)
+    prev_profile = _file_profile(previous)
+    diff = _profile_diff(cur_profile, prev_profile)
+    table_diff = _diff_table_between(current, previous)
+    counts = table_diff.get("counts") if isinstance(table_diff, dict) else {}
+    added_rows = int(counts.get("added") or 0) if isinstance(counts, dict) else 0
+    deleted_rows = int(counts.get("deleted") or 0) if isinstance(counts, dict) else 0
+    modified_rows = int(counts.get("modified") or 0) if isinstance(counts, dict) else 0
+    changed_cells = None
+    try:
+        if current.suffix.lower() in {".csv", ".parquet"} and previous.suffix.lower() in {".csv", ".parquet"}:
+            cur = read_one_file(current)
+            prev = read_one_file(previous)
+            if cur is not None and prev is not None:
+                common_cols = [c for c in cur.columns if c in prev.columns]
+                h = min(cur.height, prev.height)
+                changed = 0
+                if common_cols and h:
+                    cur_s = cur.select([pl.col(c).cast(pl.Utf8, strict=False).alias(c) for c in common_cols]).head(h)
+                    prev_s = prev.select([pl.col(c).cast(pl.Utf8, strict=False).alias(c) for c in common_cols]).head(h)
+                    for c in common_cols:
+                        changed += int((cur_s[c] != prev_s[c]).sum())
+                changed_cells = changed
+    except Exception:
+        changed_cells = None
+    parts = []
+    if modified_rows:
+        parts.append(f"수정 {modified_rows}행")
+    if added_rows:
+        parts.append(f"추가 {added_rows}행")
+    if deleted_rows:
+        parts.append(f"삭제 {deleted_rows}행")
+    if diff.get("columns_delta") not in (None, 0):
+        parts.append(("+" if diff["columns_delta"] > 0 else "") + f"{diff['columns_delta']}열")
+    if diff.get("added_columns_in_current"):
+        parts.append("컬럼추가 " + ",".join(diff["added_columns_in_current"][:3]))
+    if diff.get("removed_columns_from_current"):
+        parts.append("컬럼삭제 " + ",".join(diff["removed_columns_from_current"][:3]))
+    return {
+        "label": " / ".join(parts) if parts else "내용 수정" if not diff.get("checksum_equal") else "변경 없음",
+        "rows_delta": diff.get("rows_delta"),
+        "columns_delta": diff.get("columns_delta"),
+        "changed_cells": changed_cells,
+        "added_rows": added_rows,
+        "deleted_rows": deleted_rows,
+        "modified_rows": modified_rows,
+        "added_columns": diff.get("added_columns_in_current") or [],
+        "removed_columns": diff.get("removed_columns_from_current") or [],
+        "checksum_equal": diff.get("checksum_equal"),
+    }
+
+
+def _version_number(version: str) -> int:
+    m = re.match(r"^v(\d+)$", str(version or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _previous_version_content(file: str, storage_version: str) -> Path | None:
+    target_num = _version_number(storage_version)
+    if target_num <= 1:
+        return None
+    vdir = _version_dir(file)
+    candidates = []
+    for meta_fp in vdir.glob("v*.meta.json"):
+        try:
+            meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        version = str(meta.get("version") or meta_fp.name.split(".", 1)[0])
+        num = _version_number(version)
+        content = vdir / str(meta.get("content_file") or "")
+        if num and num < target_num and content.exists():
+            candidates.append((num, content))
+    return sorted(candidates, key=lambda x: x[0])[-1][1] if candidates else None
+
+
+def _table_rows_for_diff(path: Path, limit: int = 20000) -> tuple[list[str], list[dict[str, str]]]:
+    df = read_one_file(path)
+    if df is None:
+        return [], []
+    if df.height > limit:
+        df = df.head(limit)
+    cols = [str(c) for c in df.columns]
+    df = df.select([pl.col(c).cast(pl.Utf8, strict=False).fill_null("").alias(c) for c in cols])
+    rows = [{c: str(row.get(c) or "") for c in cols} for row in df.to_dicts()]
+    return cols, rows
+
+
+def _infer_diff_keys(columns: list[str]) -> list[str]:
+    by_lower = {c.lower(): c for c in columns}
+    candidates = [
+        ["product", "step_id"],
+        ["product", "ppid"],
+        ["product", "item_id"],
+        ["process_id", "item_id"],
+        ["product", "feature_name"],
+        ["step_id"],
+        ["item_id"],
+    ]
+    for keys in candidates:
+        if all(k in by_lower for k in keys):
+            return [by_lower[k] for k in keys]
+    return [columns[0]] if columns else []
+
+
+def _diff_table_between(current: Path, previous: Path | None, max_changes: int = 1000) -> dict | None:
+    if previous is None or not previous.exists():
+        return None
+    if current.suffix.lower() not in {".csv", ".parquet"} or previous.suffix.lower() not in {".csv", ".parquet"}:
+        return None
+    try:
+        cur_cols, cur_rows = _table_rows_for_diff(current)
+        prev_cols, prev_rows = _table_rows_for_diff(previous)
+    except Exception:
+        return None
+    all_cols = list(dict.fromkeys([*cur_cols, *prev_cols]))
+    if not all_cols:
+        return None
+    key_cols = _infer_diff_keys(all_cols)
+    if not key_cols:
+        key_cols = ["__row_index"]
+
+    def row_key(row: dict[str, str], idx: int):
+        if key_cols == ["__row_index"]:
+            return (idx,)
+        return tuple(row.get(k, "") for k in key_cols)
+
+    cur_map = {row_key(r, i): r for i, r in enumerate(cur_rows)}
+    prev_map = {row_key(r, i): r for i, r in enumerate(prev_rows)}
+    keys = list(dict.fromkeys([*cur_map.keys(), *prev_map.keys()]))
+    out_rows = []
+    counts = {"added": 0, "deleted": 0, "modified": 0, "unchanged": 0}
+    for key in keys:
+        cur = cur_map.get(key)
+        prev = prev_map.get(key)
+        if cur is not None and prev is None:
+            counts["added"] += 1
+            row = {"rev": "추가", "changed_cols": "ALL", **{c: cur.get(c, "") for c in all_cols}, "_changed_cols": all_cols}
+        elif cur is None and prev is not None:
+            counts["deleted"] += 1
+            row = {"rev": "삭제", "changed_cols": "ALL", **{c: prev.get(c, "") for c in all_cols}, "_changed_cols": all_cols}
+        else:
+            changed = [c for c in all_cols if (cur or {}).get(c, "") != (prev or {}).get(c, "")]
+            if not changed:
+                counts["unchanged"] += 1
+                continue
+            counts["modified"] += 1
+            row = {"rev": "수정", "changed_cols": ", ".join(changed[:12]), **{c: (cur or {}).get(c, "") for c in all_cols}, "_changed_cols": changed}
+        out_rows.append(row)
+        if len(out_rows) >= max_changes:
+            break
+    return {
+        "kind": "version_diff_table",
+        "title": "직전 버전 대비 변경점",
+        "columns": ["rev", "changed_cols", *all_cols],
+        "key_columns": key_cols,
+        "rows": out_rows,
+        "counts": counts,
+        "truncated": len(out_rows) >= max_changes,
+    }
+
+
+def _snapshot_base_file_version(
+    target: Path,
+    file: str,
+    *,
+    actor: str = "",
+    action: str = "edit",
+    note: str = "",
+) -> dict | None:
+    if not target.exists() or not _base_file_versioned(file, target):
+        return None
+    vdir = _version_dir(file)
+    vdir.mkdir(parents=True, exist_ok=True)
+    vnum = _next_file_version(vdir)
+    version = f"v{vnum}"
+    previous_content = _latest_version_content(vdir)
+    content_name = f"{version}{target.suffix.lower() or '.bin'}"
+    content_fp = vdir / content_name
+    shutil.copy2(target, content_fp)
+    rows, cols = _file_shape(target)
+    display_version = _next_semver(vdir, rows=rows, columns=cols)
+    change_summary = _snapshot_change_summary(target, previous_content)
+    meta = {
+        "version": version,
+        "display_version": display_version,
+        "file": file,
+        "artifact_type": "edm_single_file",
+        "actor": actor or "",
+        "action": action,
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "size": target.stat().st_size,
+        "rows": rows,
+        "columns": cols,
+        "checksum": _file_sha256(target),
+        "source_path": str(target),
+        "content_file": content_name,
+        "note": note or "",
+        "change_summary": change_summary,
+    }
+    (vdir / f"{version}.meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    _cap_file_versions(vdir)
+    return meta
+
+
+def _list_base_file_versions(file: str) -> list[dict]:
+    vdir = _version_dir(file)
+    if not vdir.is_dir():
+        return []
+    rows = []
+    for meta_fp in sorted(vdir.glob("v*.meta.json"), key=lambda p: (p.stat().st_mtime, p.name), reverse=True):
+        try:
+            meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        storage_version = meta.get("version") or meta_fp.name.split(".", 1)[0]
+        change_summary = meta.get("change_summary") or {}
+        if not any(change_summary.get(k) for k in ("added_rows", "deleted_rows", "modified_rows")):
+            content_fp = vdir / str(meta.get("content_file") or "")
+            try:
+                diff_table = _diff_table_between(content_fp, _previous_version_content(file, storage_version))
+                counts = diff_table.get("counts") if isinstance(diff_table, dict) else {}
+                if isinstance(counts, dict):
+                    added_rows = int(counts.get("added") or 0)
+                    deleted_rows = int(counts.get("deleted") or 0)
+                    modified_rows = int(counts.get("modified") or 0)
+                    parts = []
+                    if modified_rows:
+                        parts.append(f"수정 {modified_rows}행")
+                    if added_rows:
+                        parts.append(f"추가 {added_rows}행")
+                    if deleted_rows:
+                        parts.append(f"삭제 {deleted_rows}행")
+                    if parts:
+                        change_summary = {
+                            **change_summary,
+                            "label": " / ".join(parts),
+                            "added_rows": added_rows,
+                            "deleted_rows": deleted_rows,
+                            "modified_rows": modified_rows,
+                        }
+            except Exception:
+                pass
+        rows.append(FileVersionMeta(**{
+            "version": meta.get("display_version") or meta.get("version") or meta_fp.name.split(".", 1)[0],
+            "storage_version": storage_version,
+            "file": meta.get("file") or file,
+            "artifact_type": meta.get("artifact_type") or "edm_single_file",
+            "actor": meta.get("actor") or "",
+            "action": meta.get("action") or "edit",
+            "created_at": meta.get("created_at") or "",
+            "size": meta.get("size"),
+            "rows": meta.get("rows"),
+            "columns": meta.get("columns"),
+            "checksum": meta.get("checksum") or "",
+            "note": meta.get("note") or "",
+            "change_summary": change_summary,
+        }).dict())
+    return rows
+
+
+def _legacy_history_versions(target: Path, file: str) -> list[dict]:
+    hist_dir = target.parent / BASE_EDIT_HISTORY_DIR
+    if not hist_dir.is_dir():
+        return []
+    rows = []
+    suffix = "_" + target.name
+    for fp in sorted(hist_dir.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+        if not fp.is_file() or not fp.name.endswith(suffix):
+            continue
+        ts_token = fp.name[: -len(suffix)]
+        created = ""
+        try:
+            created = datetime.datetime.strptime(ts_token, "%Y%m%d-%H%M%S").isoformat(timespec="seconds")
+        except Exception:
+            created = datetime.datetime.fromtimestamp(fp.stat().st_mtime).isoformat(timespec="seconds")
+        rows_count, cols_count = _file_shape(fp)
+        try:
+            checksum = _file_sha256(fp)
+            size = fp.stat().st_size
+        except Exception:
+            checksum = ""
+            size = None
+        rows.append(FileVersionMeta(**{
+            "version": "legacy_" + fp.name,
+            "storage_version": "legacy_" + fp.name,
+            "file": file,
+            "artifact_type": "legacy_history",
+            "actor": "",
+            "action": "legacy-backup",
+            "created_at": created,
+            "size": size,
+            "rows": rows_count,
+            "columns": cols_count,
+            "checksum": checksum,
+            "note": "Legacy .history backup",
+        }).dict())
+    return rows
+
+
+def _resolve_base_version_content(file: str, version: str, target: Path) -> tuple[Path, dict]:
+    clean_version = safe_filename(version)
+    if re.match(r"^v\d+\.\d+$", clean_version):
+        vdir = _version_dir(file)
+        for meta_fp in vdir.glob("v*.meta.json"):
+            try:
+                meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if str(meta.get("display_version") or "") == clean_version:
+                clean_version = str(meta.get("version") or meta_fp.name.split(".", 1)[0])
+                break
+    if clean_version.startswith("legacy_"):
+        legacy_name = clean_version[len("legacy_"):]
+        hist_root = (target.parent / BASE_EDIT_HISTORY_DIR).resolve()
+        cand = (hist_root / legacy_name).resolve()
+        try:
+            cand.relative_to(hist_root)
+        except ValueError:
+            raise HTTPException(400, "Invalid legacy version path")
+        if not cand.is_file() or not cand.name.endswith("_" + target.name):
+            raise HTTPException(404, f"Legacy version not found: {version}")
+        meta = next((v for v in _legacy_history_versions(target, file) if v.get("version") == clean_version), None) or {
+            "version": clean_version,
+            "file": file,
+            "artifact_type": "legacy_history",
+            "action": "legacy-backup",
+        }
+        return cand, meta
+    vdir = _version_dir(file)
+    meta_fp = vdir / f"{clean_version}.meta.json"
+    if not meta_fp.exists():
+        raise HTTPException(404, f"Version not found: {version}")
+    try:
+        meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(500, "Cannot read version metadata")
+    content_fp = vdir / str(meta.get("content_file") or "")
+    if not content_fp.exists():
+        raise HTTPException(404, "Version content missing")
+    return content_fp, meta
+
+
+def _migrate_legacy_history(target: Path, file: str, *, actor: str = "", note: str = "") -> dict:
+    if not _base_file_versioned(file, target):
+        raise HTTPException(400, "This file is not configured for EDM version migration")
+    hist_dir = target.parent / BASE_EDIT_HISTORY_DIR
+    if not hist_dir.is_dir():
+        return {"migrated": 0, "skipped": 0}
+    existing_checksums = {str(v.get("checksum") or "") for v in _list_base_file_versions(file)}
+    migrated = 0
+    skipped = 0
+    suffix = "_" + target.name
+    vdir = _version_dir(file)
+    vdir.mkdir(parents=True, exist_ok=True)
+    for fp in sorted(hist_dir.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0):
+        if not fp.is_file() or not fp.name.endswith(suffix):
+            continue
+        checksum = _file_sha256(fp)
+        if checksum in existing_checksums:
+            skipped += 1
+            continue
+        version = f"v{_next_file_version(vdir)}"
+        content_name = f"{version}{target.suffix.lower() or '.bin'}"
+        shutil.copy2(fp, vdir / content_name)
+        rows, cols = _file_shape(fp)
+        display_version = _next_semver(vdir, rows=rows, columns=cols)
+        try:
+            ts_token = fp.name[: -len(suffix)]
+            created_at = datetime.datetime.strptime(ts_token, "%Y%m%d-%H%M%S").isoformat(timespec="seconds")
+        except Exception:
+            created_at = datetime.datetime.fromtimestamp(fp.stat().st_mtime).isoformat(timespec="seconds")
+        meta = {
+            "version": version,
+            "display_version": display_version,
+            "file": file,
+            "artifact_type": "edm_single_file",
+            "actor": actor or "",
+            "action": "system_import",
+            "created_at": created_at,
+            "size": fp.stat().st_size,
+            "rows": rows,
+            "columns": cols,
+            "checksum": checksum,
+            "source_path": str(target),
+            "content_file": content_name,
+            "note": note or f"Migrated from legacy .history: {fp.name}",
+            "change_summary": {"label": "migrated legacy backup"},
+        }
+        (vdir / f"{version}.meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        existing_checksums.add(checksum)
+        migrated += 1
+    _cap_file_versions(vdir)
+    return {"migrated": migrated, "skipped": skipped}
+
+
+def _write_text_atomic(target: Path, payload: str):
+    payload_bytes = payload.encode("utf-8")
+    if len(payload_bytes) > BASE_FILE_EDIT_MAX_BYTES:
+        raise HTTPException(400, f"Replace payload too large: {len(payload_bytes):,} bytes (max {BASE_FILE_EDIT_MAX_BYTES:,})")
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "wb") as fp_out:
+            fp_out.write(payload_bytes)
+        os.replace(tmp_name, target)
+    finally:
+        try:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        except Exception:
+            pass
+
+
+def _write_parquet_atomic(target: Path, df: "pl.DataFrame"):
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    try:
+        os.close(fd)
+        df.write_parquet(tmp_name)
+        os.replace(tmp_name, target)
+    finally:
+        try:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        except Exception:
+            pass
+
+
+def _ensure_base_file_backup(target: Path) -> str | None:
+    try:
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_root = target.parent / BASE_EDIT_HISTORY_DIR
+        backup_root.mkdir(exist_ok=True)
+        backup = backup_root / f"{ts}_{target.name}"
+        shutil.copy2(target, backup)
+        return str(backup)
+    except Exception as e:
+        logger.warning("base-file/save backup skipped file=%s: %s", target, e)
+        return None
 
 
 def _db_root():
@@ -452,12 +1221,10 @@ def base_files():
             except OSError:
                 continue
             if f.is_file():
+                if not _visible_single_file(f):
+                    continue
                 ext = f.suffix.lower()
-                if ext not in BASE_EXTENSIONS:
-                    continue
                 meta = _core_file_meta(f.name)
-                if not meta:
-                    continue
                 files.append({
                     "name": f.name,
                     "path": f.name,
@@ -482,12 +1249,10 @@ def base_files():
         for f in sorted(db_root.iterdir()):
             if not f.is_file():
                 continue
+            if not _visible_single_file(f):
+                continue
             ext = f.suffix.lower()
-            if ext not in (".csv", ".parquet"):
-                continue
             meta = _core_file_meta(f.name)
-            if not meta:
-                continue
             if f.name.lower() in seen_names:
                 continue
             try:
@@ -508,81 +1273,6 @@ def base_files():
                 "order": meta["order"],
             })
             seen_names.add(f.name.lower())
-
-    pc_dir = PATHS.data_root / "product_config"
-    if pc_dir.is_dir():
-        for f in sorted(pc_dir.iterdir(), key=lambda p: p.name.lower()):
-            if not f.is_file() or f.suffix.lower() not in PRODUCT_CONFIG_EXTENSIONS:
-                continue
-            try:
-                stat = f.stat()
-            except OSError:
-                continue
-            files.append({
-                "name": f.name,
-                "path": f"product_config/{f.name}",
-                "size": stat.st_size,
-                "modified": stat.st_mtime,
-                "ext": f.suffix.lower().lstrip("."),
-                "kind": "file",
-                "source": "product_config",
-                "role": "Product YAML",
-                "description": "제품별 설정 YAML",
-                "order": 90,
-            })
-
-    rf_dir = PATHS.data_root / "reformatter"
-    if rf_dir.is_dir():
-        rf_files = sorted(
-            [p for p in rf_dir.iterdir() if p.is_file() and p.suffix.lower() in (".csv", ".json")],
-            key=lambda p: (p.stem.lower(), 0 if p.suffix.lower() == ".csv" else 1),
-        )
-        seen_rf_products: set[str] = set()
-        for f in rf_files:
-            product_key = f.stem.lower()
-            if product_key in seen_rf_products:
-                continue
-            seen_rf_products.add(product_key)
-            try:
-                stat = f.stat()
-            except OSError:
-                continue
-            display_name = f"{f.stem}.csv"
-            files.append({
-                "name": display_name,
-                "path": f"reformatter/{display_name}",
-                "size": stat.st_size,
-                "modified": stat.st_mtime,
-                "ext": "csv",
-                "kind": "file",
-                "source": "reformatter",
-                "storage_ext": f.suffix.lower().lstrip("."),
-                "role": "제품 reformatter",
-                "description": "제품별 ET report index/reformatter CSV",
-                "order": 80,
-            })
-
-    upload_dir = PATHS.upload_dir
-    if upload_dir.is_dir():
-        for f in sorted(upload_dir.iterdir(), key=lambda p: p.name.lower()):
-            if not f.is_file() or f.name.startswith(".") or f.suffix.lower() not in (".csv", ".json", ".txt"):
-                continue
-            try:
-                stat = f.stat()
-            except OSError:
-                continue
-            files.append({
-                "name": f.name,
-                "path": f"uploads/{f.name}",
-                "size": stat.st_size,
-                "modified": stat.st_mtime,
-                "ext": f.suffix.lower().lstrip("."),
-                "kind": "file",
-                "source": "uploads",
-                "role": "Flow-i registered file",
-                "description": "Flow-i가 확인 후 Files 영역에 등록한 단일 파일",
-                "order": 5,
-            })
 
     files.sort(key=lambda x: (x.get("order", 999), x["name"].lower()))
     return _list_cache_set(cache_key, {"files": files, "dirs": dirs,
@@ -1811,6 +2501,466 @@ def download_history(request: Request, username: str = Query(""), limit: int = Q
 class BaseDeleteReq(BaseModel):
     file: str
     username: str = ""
+
+
+class BaseFileSaveReq(BaseModel):
+    file: str
+    mode: str = "replace"
+    csv_text: str = ""
+    delimiter: str = "auto"
+    include_header: bool = True
+    note: str = ""
+
+
+class BaseTextFileSaveReq(BaseModel):
+    file: str
+    text: str = ""
+    username: str = ""
+    note: str = ""
+
+
+class BaseHistoryMigrateReq(BaseModel):
+    file: str
+    username: str = ""
+    note: str = ""
+
+
+class SchemaSnapshotReq(BaseModel):
+    source_type: str = ""
+    root: str = ""
+    product: str = ""
+    file: str = ""
+    columns: list[str] = []
+    dtypes: dict[str, str] = {}
+    grain: str = ""
+    join_keys: list[str] = []
+    total_rows: int | None = None
+    username: str = ""
+    note: str = ""
+
+
+class BaseFileRollbackReq(BaseModel):
+    file: str
+    version: str
+    username: str = ""
+    note: str = ""
+
+
+def _save_base_file(req: BaseFileSaveReq, request: Request):
+    from core.auth import current_user, is_page_admin
+    me = current_user(request)
+    if (me.get("role") or "") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
+        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+
+    if (req.mode or "").strip().lower() != "replace":
+        raise HTTPException(400, "Only mode='replace' is supported")
+    text = (req.csv_text or "").strip()
+    if not text and req.include_header is False:
+        raise HTTPException(400, "csv_text is required")
+
+    if len((req.csv_text or "").encode("utf-8")) > BASE_FILE_EDIT_MAX_BYTES:
+        raise HTTPException(
+            413,
+            f"CSV payload too large: {len((req.csv_text or '').encode('utf-8')):,} bytes (max {BASE_FILE_EDIT_MAX_BYTES:,})",
+        )
+
+    fp = _resolve_base_file_for_edit(req.file)
+    ext = fp.suffix.lower()
+    if ext not in BASE_EDIT_ALLOWED_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file type: {ext}")
+
+    rows, used_delim = _parse_tab_or_csv(req.csv_text or "", req.delimiter)
+    if req.include_header and rows:
+        header = [str(x).strip() for x in rows[0]]
+        data_rows = rows[1:]
+    else:
+        header = []
+        data_rows = rows
+
+    schema_rows = []
+    try:
+        lf = scan_one_file(fp)
+        if lf is not None:
+            schema_rows = list(lf.collect_schema().names())
+    except Exception:
+        schema_rows = []
+
+    if not header and schema_rows:
+        header = list(schema_rows)
+    if not header:
+        header = [f"col_{i + 1}" for i in range(max((len(r) for r in data_rows), default=1))]
+
+    data_rows, _ = _normalize_rows(data_rows, len(header), "")
+    if len(data_rows) > BASE_FILE_EDIT_MAX_ROWS:
+        raise HTTPException(413, f"Row count too large: {len(data_rows):,} rows (max {BASE_FILE_EDIT_MAX_ROWS:,})")
+
+    backup = None
+    version_meta = None
+    try:
+        backup = _ensure_base_file_backup(fp)
+    except Exception:
+        backup = None
+    try:
+        version_meta = _snapshot_base_file_version(
+            fp,
+            req.file,
+            actor=me.get("username") or "",
+            action="edit",
+            note=req.note or "FileBrowser single-file edit",
+        )
+    except Exception as e:
+        logger.warning("base-file/save version snapshot skipped file=%s: %s", fp, e)
+
+    try:
+        if ext == ".csv":
+            out = io.StringIO()
+            writer = csv.writer(out, delimiter="\t" if used_delim == "tab" else ",", lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
+            out_rows = [header] if req.include_header else []
+            out_rows.extend(data_rows)
+            for row in out_rows:
+                writer.writerow(["" if v is None else str(v) for v in row])
+            _write_text_atomic(fp, out.getvalue())
+        else:
+            data_map = {col: [r[i] if i < len(r) else "" for r in data_rows] for i, col in enumerate(header)}
+            df = pl.DataFrame(data_map if data_map else {col: pl.Series([]) for col in header})
+            if header:
+                for col in header:
+                    df = df.with_columns(pl.col(col).cast(pl.Utf8, strict=False))
+            _write_parquet_atomic(fp, df)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Save failed: {e}")
+
+    try:
+        sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, fp)
+        jsonl_append(PATHS.activity_log, {
+            "username": me.get("username") or "",
+            "action": "filebrowser:base-file:save",
+            "tab": "filebrowser",
+            "detail": f"file={req.file} rows={len(data_rows)} cols={len(header)} version={(version_meta or {}).get('version', '')}",
+        })
+        return {
+            "ok": True,
+            "file": req.file,
+            "backup": backup,
+            "source_path": str(fp),
+            "source_modified": fp.stat().st_mtime,
+            "delimiter": used_delim,
+            "rows": len(data_rows),
+            "cols": len(header),
+            "version": version_meta,
+            "s3_sync": sync_result,
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read result after save: {e}")
+
+
+@router.post("/base-file/save")
+@router.post("/base-file/save/")
+@router.post("/base-file-save")
+def save_base_file(req: BaseFileSaveReq, request: Request):
+    """Replace a Base-scope single CSV/Parquet file with pasted text."""
+    return _save_base_file(req, request)
+
+
+@router.post("/base-file/text-save")
+def save_base_text_file(req: BaseTextFileSaveReq, request: Request):
+    from core.auth import current_user, is_page_admin
+    me = current_user(request)
+    if (me.get("role") or "") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
+        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+    target = _resolve_base_file_for_version(req.file)
+    if not _base_file_versioned(req.file, target):
+        raise HTTPException(400, "This file is not configured for EDM text editing")
+    if target.suffix.lower() not in {".json", ".yaml", ".yml", ".md", ".txt", ".csv"}:
+        raise HTTPException(400, f"Unsupported text file type: {target.suffix}")
+    if len((req.text or "").encode("utf-8")) > BASE_FILE_EDIT_MAX_BYTES:
+        raise HTTPException(413, f"Text payload too large (max {BASE_FILE_EDIT_MAX_BYTES:,} bytes)")
+    if target.suffix.lower() == ".json":
+        try:
+            json.loads(req.text or "")
+        except Exception as e:
+            raise HTTPException(400, f"Invalid JSON: {e}")
+    if target.suffix.lower() in {".yaml", ".yml"}:
+        try:
+            import yaml  # type: ignore
+            yaml.safe_load(req.text or "")
+        except ImportError:
+            pass
+        except Exception as e:
+            raise HTTPException(400, f"Invalid YAML: {e}")
+    version_meta = _snapshot_base_file_version(
+        target,
+        req.file,
+        actor=req.username or me.get("username") or "",
+        action="edit",
+        note=req.note or "FileBrowser raw text edit",
+    )
+    try:
+        _write_text_atomic(target, req.text or "")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Text save failed: {e}")
+    sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, target)
+    jsonl_append(PATHS.activity_log, {
+        "username": req.username or me.get("username") or "",
+        "action": "filebrowser:base-file:text-save",
+        "tab": "filebrowser",
+        "detail": f"file={req.file} version={(version_meta or {}).get('version', '')}",
+    })
+    return {
+        "ok": True,
+        "file": req.file,
+        "source_path": str(target),
+        "source_modified": target.stat().st_mtime,
+        "version": version_meta,
+        "size": target.stat().st_size,
+        "s3_sync": sync_result,
+    }
+
+
+@router.get("/base-file/versions")
+def base_file_versions(request: Request, file: str = Query(...)):
+    from core.auth import current_user
+    current_user(request)
+    fp = _resolve_base_file_for_version(file)
+    versions = _list_base_file_versions(file)
+    versions.sort(key=lambda v: str(v.get("created_at") or ""), reverse=True)
+    return {
+        "ok": True,
+        "file": file,
+        "versioned": _base_file_versioned(file, fp),
+        "cap": BASE_VERSION_CAP,
+        "versions": versions[:BASE_VERSION_CAP],
+    }
+
+
+@router.get("/base-file/version-content")
+def base_file_version_content(request: Request, file: str = Query(...), version: str = Query(...)):
+    from core.auth import current_user
+    current_user(request)
+    target = _resolve_base_file_for_version(file)
+    clean_version = safe_filename(version)
+    content_fp, meta = _resolve_base_version_content(file, clean_version, target)
+    storage_version = str(meta.get("version") or clean_version)
+    previous_fp = _previous_version_content(file, storage_version)
+    ext = content_fp.suffix.lower()
+    out = {"ok": True, "file": file, "version": clean_version, "meta": meta, "kind": ext.lstrip(".")}
+    out["current_profile"] = _file_profile(target)
+    out["version_profile"] = _file_profile(content_fp)
+    out["diff"] = _profile_diff(out["current_profile"], out["version_profile"])
+    out["diff_table"] = _diff_table_between(content_fp, previous_fp)
+    if ext in {".csv", ".txt", ".json", ".yaml", ".yml", ".md"}:
+        raw = content_fp.read_text(encoding="utf-8", errors="replace")
+        out["text"] = raw[:100_000]
+        out["truncated"] = len(raw) > 100_000
+    elif ext == ".parquet":
+        lf = scan_one_file(content_fp)
+        cols = list(lf.collect_schema().names()) if lf is not None else []
+        sample = lf.head(50).collect().to_dicts() if lf is not None else []
+        out["columns"] = cols
+        out["rows"] = serialize_rows(sample)
+    return out
+
+
+@router.post("/base-file/rollback")
+def rollback_base_file(req: BaseFileRollbackReq, request: Request):
+    from core.auth import current_user, is_page_admin
+    me = current_user(request)
+    if (me.get("role") or "") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
+        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+    target = _resolve_base_file_for_version(req.file)
+    if not _base_file_versioned(req.file, target):
+        raise HTTPException(400, "This file is not configured for EDM version rollback")
+    clean_version = safe_filename(req.version)
+    content_fp, meta = _resolve_base_version_content(req.file, clean_version, target)
+    if content_fp.suffix.lower() != target.suffix.lower():
+        raise HTTPException(400, "Version file type does not match current file")
+    pre = _snapshot_base_file_version(
+        target,
+        req.file,
+        actor=req.username or me.get("username") or "",
+        action="pre-rollback",
+        note=f"Before rollback to {clean_version}",
+    )
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.rollback.", suffix=".tmp", dir=str(target.parent))
+    try:
+        os.close(fd)
+        shutil.copy2(content_fp, tmp_name)
+        os.replace(tmp_name, target)
+    finally:
+        try:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        except Exception:
+            pass
+    applied = _snapshot_base_file_version(
+        target,
+        req.file,
+        actor=req.username or me.get("username") or "",
+        action="rollback",
+        note=req.note or f"Rolled back to {clean_version}",
+    )
+    sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, target)
+    jsonl_append(PATHS.activity_log, {
+        "username": req.username or me.get("username") or "",
+        "action": "filebrowser:base-file:rollback",
+        "tab": "filebrowser",
+        "detail": f"file={req.file} version={clean_version}",
+    })
+    return {"ok": True, "file": req.file, "rolled_back_to": clean_version, "pre_rollback": pre, "version": applied, "s3_sync": sync_result}
+
+
+@router.post("/base-file/migrate-history")
+def migrate_base_file_history(req: BaseHistoryMigrateReq, request: Request):
+    from core.auth import current_user, is_page_admin
+    me = current_user(request)
+    if (me.get("role") or "") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
+        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+    target = _resolve_base_file_for_version(req.file)
+    result = _migrate_legacy_history(
+        target,
+        req.file,
+        actor=req.username or me.get("username") or "",
+        note=req.note or "",
+    )
+    jsonl_append(PATHS.activity_log, {
+        "username": req.username or me.get("username") or "",
+        "action": "filebrowser:base-file:migrate-history",
+        "tab": "filebrowser",
+        "detail": f"file={req.file} migrated={result.get('migrated')} skipped={result.get('skipped')}",
+    })
+    return {"ok": True, "file": req.file, **result}
+
+
+def _schema_source_id(req: SchemaSnapshotReq) -> str:
+    parts = [
+        str(req.source_type or "").strip() or "source",
+        str(req.root or "").strip(),
+        str(req.product or "").strip(),
+        str(req.file or "").strip(),
+    ]
+    raw = "::".join(p for p in parts if p)
+    return re.sub(r"[^A-Za-z0-9_.-]+", "__", raw).strip("._-")[:180] or "source"
+
+
+def _schema_diff(current_cols: list[str], previous_cols: list[str]) -> dict:
+    cur = [str(c) for c in current_cols if str(c).strip()]
+    prev = [str(c) for c in previous_cols if str(c).strip()]
+    prev_set = set(prev)
+    cur_set = set(cur)
+    return {
+        "added_columns": [c for c in cur if c not in prev_set],
+        "removed_columns": [c for c in prev if c not in cur_set],
+        "column_count_delta": len(cur) - len(prev),
+        "unchanged": cur == prev,
+    }
+
+
+def _schema_snapshot_diff(current: dict | None, previous: dict | None) -> dict:
+    current = current or {}
+    previous = previous or {}
+    diff = _schema_diff(current.get("columns", []) or [], previous.get("columns", []) or [])
+    cur_dtypes = current.get("dtypes") if isinstance(current.get("dtypes"), dict) else {}
+    prev_dtypes = previous.get("dtypes") if isinstance(previous.get("dtypes"), dict) else {}
+    common = [c for c in (current.get("columns") or []) if c in prev_dtypes]
+    diff["dtype_changes"] = [
+        {"column": c, "before": prev_dtypes.get(c), "after": cur_dtypes.get(c)}
+        for c in common
+        if cur_dtypes.get(c) is not None and prev_dtypes.get(c) is not None and cur_dtypes.get(c) != prev_dtypes.get(c)
+    ]
+    cur_keys = [str(x) for x in (current.get("join_keys") or [])]
+    prev_keys = [str(x) for x in (previous.get("join_keys") or [])]
+    diff["added_join_keys"] = [k for k in cur_keys if k not in set(prev_keys)]
+    diff["removed_join_keys"] = [k for k in prev_keys if k not in set(cur_keys)]
+    diff["grain_changed"] = bool(previous and str(current.get("grain") or "") != str(previous.get("grain") or ""))
+    diff["unchanged"] = bool(
+        diff.get("unchanged")
+        and not diff["dtype_changes"]
+        and not diff["added_join_keys"]
+        and not diff["removed_join_keys"]
+        and not diff["grain_changed"]
+    )
+    return diff
+
+
+@router.post("/schema/snapshot")
+def save_schema_snapshot(req: SchemaSnapshotReq, request: Request):
+    from core.auth import current_user
+    me = current_user(request)
+    cols = []
+    seen = set()
+    for col in req.columns or []:
+        name = str(col or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            cols.append(name)
+    if not cols:
+        raise HTTPException(400, "columns are required")
+    sid = _schema_source_id(req)
+    SCHEMA_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    fp = SCHEMA_PROFILE_DIR / f"{sid}.json"
+    try:
+        payload = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else {"source_id": sid, "snapshots": []}
+    except Exception:
+        payload = {"source_id": sid, "snapshots": []}
+    snapshots = payload.get("snapshots") if isinstance(payload.get("snapshots"), list) else []
+    previous = snapshots[0] if snapshots else None
+    snap = {
+        "schema_version": f"s{len(snapshots) + 1}",
+        "source_id": sid,
+        "source_type": req.source_type,
+        "root": req.root,
+        "product": req.product,
+        "file": req.file,
+        "columns": cols,
+        "dtypes": {str(k): str(v) for k, v in (req.dtypes or {}).items() if str(k).strip()},
+        "grain": req.grain,
+        "join_keys": [str(k) for k in (req.join_keys or []) if str(k).strip()],
+        "column_count": len(cols),
+        "total_rows": req.total_rows,
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "actor": req.username or me.get("username") or "",
+        "note": req.note or "",
+        "checksum": "sha256:" + hashlib.sha256("\n".join(cols).encode("utf-8")).hexdigest(),
+    }
+    diff = _schema_snapshot_diff(snap, previous if isinstance(previous, dict) else None)
+    payload["source_id"] = sid
+    payload["snapshots"] = [snap] + snapshots[: SCHEMA_PROFILE_CAP - 1]
+    _write_text_atomic(fp, json.dumps(payload, ensure_ascii=False, indent=2))
+    jsonl_append(PATHS.activity_log, {
+        "username": req.username or me.get("username") or "",
+        "action": "filebrowser:schema:snapshot",
+        "tab": "filebrowser",
+        "detail": f"source={sid} columns={len(cols)} added={len(diff['added_columns'])} removed={len(diff['removed_columns'])}",
+    })
+    return {"ok": True, "source_id": sid, "snapshot": snap, "previous": previous, "diff": diff, "count": len(payload["snapshots"])}
+
+
+@router.get("/schema/snapshots")
+def schema_snapshots(
+    request: Request,
+    source_type: str = Query(""),
+    root: str = Query(""),
+    product: str = Query(""),
+    file: str = Query(""),
+):
+    from core.auth import current_user
+    current_user(request)
+    req = SchemaSnapshotReq(source_type=source_type, root=root, product=product, file=file)
+    sid = _schema_source_id(req)
+    fp = SCHEMA_PROFILE_DIR / f"{sid}.json"
+    try:
+        payload = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else {"source_id": sid, "snapshots": []}
+    except Exception:
+        payload = {"source_id": sid, "snapshots": []}
+    snapshots = payload.get("snapshots") if isinstance(payload.get("snapshots"), list) else []
+    latest = snapshots[0] if snapshots else None
+    previous = snapshots[1] if len(snapshots) > 1 else None
+    diff = _schema_snapshot_diff(latest if isinstance(latest, dict) else None, previous if isinstance(previous, dict) else None)
+    return {"ok": True, "source_id": sid, "snapshots": snapshots, "latest": latest, "previous": previous, "diff": diff}
 
 
 @router.post("/base-file/delete")

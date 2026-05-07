@@ -5,7 +5,7 @@ import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
 import { sf, dl, postJson, userLabel, userMatches } from "../lib/api";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
-const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","ettime","waferlayout","tracker","inform","meeting","calendar","tablemap","devguide"];
+const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","ettime","waferlayout","tracker","inform","meeting","calendar","devguide"];
 // v8.7.5: u.tabs 는 string 이지만 legacy json 에서 array 로 저장된 기록이 있을 수 있어
 // "r.split is not a function" 방지를 위해 정규화 헬퍼를 둔다.
 function _tabsToArray(v){
@@ -648,7 +648,6 @@ export default function My_Admin({user}){
 const PAGE_IDS=[
   ["filebrowser","파일탐색기"],["dashboard","대시보드"],["splittable","스플릿 테이블"],
   ["tracker","이슈 추적"],["informs","인폼 로그"],["meetings","회의관리"],["calendar","변경점 관리"],
-  ["tablemap","테이블맵"],
   ["spc","SPC"],["ettime","ET 레포트"],["wafer_map","웨이퍼 맵"],
   ["messages","문의함"],["groups","그룹"],
 ];

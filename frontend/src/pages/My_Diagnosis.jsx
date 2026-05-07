@@ -14,6 +14,7 @@ import {
   uxColors,
 } from "../components/UXKit";
 import { LlmCfgPanel } from "./My_Admin";
+import AgentKnowledgeVault from "./My_Knowledge";
 
 const SAMPLE_PROMPT = "GAA nFET short Lg에서 DIBL과 SS가 증가했고 CA_RS도 올랐어. 원인 후보와 확인 차트 보여줘.";
 const FUNCTION_TEST_PROMPT = "PRODA A1000 #6 현재 fab lot id가 뭐야?";
@@ -401,7 +402,7 @@ function PromptPanel() {
   );
 }
 
-function KnowledgePanel({ isAdmin }) {
+function KnowledgePanel({ user, isAdmin }) {
   const [q, setQ] = useState("");
   const [tag, setTag] = useState("");
   const [kind, setKind] = useState("all");
@@ -484,6 +485,9 @@ function KnowledgePanel({ isAdmin }) {
           ) : <EmptyState title="선택된 지식 없음" hint="왼쪽 리스트에서 카드를 선택하세요." />}
         </Panel>
       </div>
+      <Panel title="Agent Knowledge Vault / Ontology" subtitle="에이전트가 참고하는 raw event, wiki, ontology graph를 같은 화면에서 관리합니다.">
+        <AgentKnowledgeVault user={user} embedded />
+      </Panel>
     </CategoryFrame>
   );
 }
@@ -952,7 +956,7 @@ export default function My_Diagnosis({ user }) {
           <div style={{ display: active === "workflow" ? "block" : "none" }}><WorkflowPanel /></div>
           <div style={{ display: active === "persona" ? "block" : "none" }}><PersonaPanel /></div>
           <div style={{ display: active === "prompt" ? "block" : "none" }}><PromptPanel /></div>
-          <div style={{ display: active === "knowledge" ? "block" : "none" }}><KnowledgePanel isAdmin={isAdmin} /></div>
+          <div style={{ display: active === "knowledge" ? "block" : "none" }}><KnowledgePanel user={user} isAdmin={isAdmin} /></div>
           <div style={{ display: active === "recent" ? "block" : "none" }}><RecentRagPanel user={user} /></div>
           <div style={{ display: active === "item" ? "block" : "none" }}><ItemRulesPanel /></div>
           <div style={{ display: active === "llm" ? "block" : "none" }}><LlmPanel isAdmin={isAdmin} /></div>

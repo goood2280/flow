@@ -2529,7 +2529,7 @@ def _can_flowi_file_write(me: dict[str, Any]) -> bool:
 def _flowi_file_roots() -> list[tuple[str, Path]]:
     roots: list[tuple[str, Path]] = []
     seen: set[str] = set()
-    for label, root in (("Files", PATHS.upload_dir),):
+    for label, root in (("Files", PATHS.db_root),):
         try:
             root = Path(root)
             key = str(root.resolve()) if root.exists() else str(root)
@@ -3020,10 +3020,10 @@ def _write_flowi_registered_data(draft: dict[str, Any]) -> tuple[Path, int, int]
     rel = _flowi_rel_file_path(draft.get("path"))
     if rel.suffix.lower() not in {".csv", ".json", ".txt"}:
         raise ValueError("데이터 등록은 csv/json/txt 파일만 허용합니다.")
-    root = PATHS.upload_dir.resolve()
+    root = PATHS.db_root.resolve()
     target = (root / rel).resolve()
     if not _is_relative_to(target, root):
-        raise ValueError("대상 경로가 Files 루트를 벗어납니다.")
+        raise ValueError("대상 경로가 DB/Fab 루트를 벗어납니다.")
     if target.exists() and not bool(draft.get("overwrite")):
         raise FileExistsError(f"대상 파일이 이미 존재합니다: {rel.as_posix()}")
     columns = [str(c) for c in (draft.get("columns") or [])]
@@ -14980,3 +14980,178 @@ def flowi_agent_chat(req: FlowiAgentChatReq, request: Request):
         client_run_id=req.client_run_id,
         agent_context=req.context,
     )
+
+
+# --- Flow-i EDM proposals -------------------------------------------------
+# Home Agent write bridge for FileBrowser EDM actions.  These endpoints keep
+# write operations behind an explicit proposal + confirmation boundary; the
+# actual file/schema mutations remain owned by FileBrowser's deterministic APIs.
+FLOWI_EDM_PROPOSAL_DIR = PATHS.cache_dir / "flowi_edm_proposals"
+
+
+class FlowiEdmProposalReq(BaseModel):
+    action_type: str = "rollback_file"  # rollback_file | edit_file | save_schema_snapshot
+    file: str = ""
+    version: str = ""
+    text: str = ""
+    note: str = ""
+    schema: dict[str, Any] = Field(default_factory=dict)
+    target: dict[str, Any] = Field(default_factory=dict)
+
+
+class FlowiEdmExecuteReq(BaseModel):
+    proposal_id: str
+    confirm: str = ""
+
+
+def _flowi_edm_proposal_path(proposal_id: str) -> Path:
+    clean = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(proposal_id or "")).strip("._-")
+    if not clean:
+        raise HTTPException(400, "proposal_id is required")
+    FLOWI_EDM_PROPOSAL_DIR.mkdir(parents=True, exist_ok=True)
+    return FLOWI_EDM_PROPOSAL_DIR / f"{clean}.json"
+
+
+def _flowi_edm_confirm_text(action_type: str, file: str, version: str = "") -> str:
+    import hashlib as _hashlib
+    raw = f"{action_type}|{file}|{version}".encode("utf-8")
+    return "CONFIRM_FLOWI_EDM_" + _hashlib.sha256(raw).hexdigest()[:12].upper()
+
+
+def _flowi_edm_can_write(me: dict[str, Any]) -> bool:
+    username = me.get("username") or ""
+    return (me.get("role") == "admin") or is_page_admin(username, "filebrowser")
+
+
+@router.post("/flowi/edm/propose")
+def flowi_edm_propose(req: FlowiEdmProposalReq, request: Request):
+    me = current_user(request)
+    action_type = str(req.action_type or "").strip()
+    if action_type not in {"rollback_file", "edit_file", "save_schema_snapshot"}:
+        raise HTTPException(400, f"unsupported EDM action: {action_type}")
+    if action_type in {"rollback_file", "edit_file"} and not str(req.file or "").strip():
+        raise HTTPException(400, "file is required")
+    if action_type == "rollback_file" and not str(req.version or "").strip():
+        raise HTTPException(400, "version is required")
+    if action_type == "edit_file" and req.text == "":
+        raise HTTPException(400, "text is required")
+    if action_type == "save_schema_snapshot" and not (req.schema.get("columns") or []):
+        raise HTTPException(400, "schema.columns is required")
+
+    from app_v2.shared.contracts import AgentActionProposal, FlowEntityKey
+
+    proposal_id = "edm_" + datetime.now().strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    confirm = _flowi_edm_confirm_text(action_type, req.file, req.version)
+    risk = "admin_change" if action_type in {"rollback_file", "edit_file"} else "write"
+    summary = {
+        "rollback_file": f"Rollback EDM file {req.file} to {req.version}",
+        "edit_file": f"Save EDM text file {req.file}",
+        "save_schema_snapshot": "Save FileBrowser schema snapshot",
+    }[action_type]
+    proposal = AgentActionProposal(
+        action_id=proposal_id,
+        action_type=action_type,
+        target=FlowEntityKey(**(req.target or {})),
+        file=req.file,
+        summary=summary,
+        payload={
+            "file": req.file,
+            "version": req.version,
+            "text": req.text,
+            "note": req.note,
+            "schema": req.schema,
+        },
+        requires_confirmation=True,
+        risk_level=risk,
+    ).dict()
+    stored = {
+        "proposal": proposal,
+        "confirm": confirm,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": me.get("username") or "user",
+        "executed": False,
+    }
+    save_json(_flowi_edm_proposal_path(proposal_id), stored, indent=2)
+    return {
+        "ok": True,
+        "proposal": proposal,
+        "requires_confirmation": True,
+        "confirm": confirm,
+        "choices": [{
+            "id": "confirm_flowi_edm",
+            "title": "확인 후 실행",
+            "description": "이 값을 그대로 confirm으로 보내면 FileBrowser EDM deterministic API가 실행됩니다.",
+            "prompt": confirm,
+        }],
+    }
+
+
+@router.post("/flowi/edm/execute")
+def flowi_edm_execute(req: FlowiEdmExecuteReq, request: Request):
+    me = current_user(request)
+    fp = _flowi_edm_proposal_path(req.proposal_id)
+    stored = load_json(fp, None)
+    if not isinstance(stored, dict):
+        raise HTTPException(404, "proposal not found")
+    if stored.get("executed"):
+        raise HTTPException(409, "proposal already executed")
+    expected = str(stored.get("confirm") or "")
+    if str(req.confirm or "").strip() != expected:
+        return {
+            "ok": False,
+            "requires_confirmation": True,
+            "expected_confirm": expected,
+            "received_confirm": req.confirm,
+        }
+    proposal = stored.get("proposal") if isinstance(stored.get("proposal"), dict) else {}
+    action_type = str(proposal.get("action_type") or "")
+    payload = proposal.get("payload") if isinstance(proposal.get("payload"), dict) else {}
+    if action_type in {"rollback_file", "edit_file"} and not _flowi_edm_can_write(me):
+        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+
+    from routers import filebrowser as fb
+
+    if action_type == "rollback_file":
+        result = fb.rollback_base_file(
+            fb.BaseFileRollbackReq(
+                file=str(payload.get("file") or ""),
+                version=str(payload.get("version") or ""),
+                username=me.get("username") or "user",
+                note=str(payload.get("note") or "Flow-i EDM rollback"),
+            ),
+            request,
+        )
+    elif action_type == "edit_file":
+        result = fb.save_base_text_file(
+            fb.BaseTextFileSaveReq(
+                file=str(payload.get("file") or ""),
+                text=str(payload.get("text") or ""),
+                username=me.get("username") or "user",
+                note=str(payload.get("note") or "Flow-i EDM text edit"),
+            ),
+            request,
+        )
+    elif action_type == "save_schema_snapshot":
+        schema = payload.get("schema") if isinstance(payload.get("schema"), dict) else {}
+        result = fb.save_schema_snapshot(
+            fb.SchemaSnapshotReq(
+                source_type=str(schema.get("source_type") or ""),
+                root=str(schema.get("root") or ""),
+                product=str(schema.get("product") or ""),
+                file=str(schema.get("file") or ""),
+                columns=list(schema.get("columns") or []),
+                total_rows=schema.get("total_rows"),
+                username=me.get("username") or "user",
+                note=str(payload.get("note") or "Flow-i schema snapshot"),
+            ),
+            request,
+        )
+    else:
+        raise HTTPException(400, f"unsupported EDM action: {action_type}")
+
+    stored["executed"] = True
+    stored["executed_at"] = datetime.now(timezone.utc).isoformat()
+    stored["executed_by"] = me.get("username") or "user"
+    stored["result"] = result
+    save_json(fp, stored, indent=2)
+    return {"ok": True, "proposal_id": req.proposal_id, "action_type": action_type, "result": result}
