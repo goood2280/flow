@@ -542,6 +542,7 @@ export default function App() {
     user,
     tab,
     dark,
+    authReady,
     setDark,
     notifs,
     showPw,
@@ -554,6 +555,7 @@ export default function App() {
     refreshNotifications,
   } = useFlowShell();
 
+  if (!authReady) return <Loading text="세션 확인..." />;
   if (!user) return <My_Login onLogin={handleLogin} />;
 
   const Page = PAGE_MAP[tab];

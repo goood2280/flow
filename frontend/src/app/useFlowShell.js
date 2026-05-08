@@ -79,6 +79,17 @@ function readStoredUser() {
   return null;
 }
 
+function mergeSessionUser(storedUser, sessionUser) {
+  return {
+    ...(storedUser || {}),
+    username: sessionUser.username,
+    role: sessionUser.role || storedUser?.role || "user",
+    name: sessionUser.name ?? storedUser?.name ?? "",
+    email: sessionUser.email ?? storedUser?.email ?? "",
+    tabs: sessionUser.tabs || storedUser?.tabs || "",
+  };
+}
+
 function toTabList(userTabs) {
   if (Array.isArray(userTabs)) return userTabs;
   if (typeof userTabs === "string") return userTabs.split(",");
@@ -93,6 +104,7 @@ export function useFlowShell() {
   const [userTabs, setUserTabs] = useState("__all__");
   const [showPw, setShowPw] = useState(false);
   const [sidebarPolicy, setSidebarPolicy] = useState({ devguide_allowed: false });
+  const [authReady, setAuthReady] = useState(false);
 
   const handleLogout = useCallback(() => {
     try {
@@ -101,6 +113,7 @@ export function useFlowShell() {
       // Best-effort revoke only.
     }
     setUser(null);
+    setUserTabs("__all__");
     localStorage.removeItem("hol_user");
   }, []);
 
@@ -124,11 +137,46 @@ export function useFlowShell() {
   useIdleLogout(handleLogout);
 
   useEffect(() => {
-    setUser(readStoredUser());
     setDark(localStorage.getItem("hol_dark") !== "false");
-    const onExpire = () => setUser(null);
+    let cancelled = false;
+    const onExpire = () => {
+      setUser(null);
+      setUserTabs("__all__");
+      localStorage.removeItem("hol_user");
+      setAuthReady(true);
+    };
     window.addEventListener("flow:session-expired", onExpire);
-    return () => window.removeEventListener("flow:session-expired", onExpire);
+    const stored = readStoredUser();
+    if (!stored) {
+      setAuthReady(true);
+      return () => window.removeEventListener("flow:session-expired", onExpire);
+    }
+    sf("/api/auth/me")
+      .then((data) => {
+        if (cancelled) return;
+        if (!data?.authenticated || !data?.username) {
+          localStorage.removeItem("hol_user");
+          setUser(null);
+          setUserTabs("__all__");
+          setAuthReady(true);
+          return;
+        }
+        const nextUser = mergeSessionUser(stored, data);
+        localStorage.setItem("hol_user", JSON.stringify(nextUser));
+        setUser(nextUser);
+        if (nextUser.tabs) setUserTabs(nextUser.tabs);
+        setAuthReady(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setUser(null);
+        setUserTabs("__all__");
+        setAuthReady(true);
+      });
+    return () => {
+      cancelled = true;
+      window.removeEventListener("flow:session-expired", onExpire);
+    };
   }, []);
 
   useEffect(() => {
@@ -247,6 +295,7 @@ export function useFlowShell() {
     user,
     tab,
     dark,
+    authReady,
     setDark,
     notifs,
     showPw,

@@ -42,6 +42,7 @@ SESSION_TOUCH_GRACE = 60              # 마지막 touch 이후 60초 내 재요�
 AUTH_EXEMPT_API_PATHS = {
     "/api/auth/login",
     "/api/auth/register",
+    "/api/auth/me",
     "/api/auth/reset-request",
     "/api/auth/forgot-password",
     "/api/auth/logout",        # logout 은 토큰이 이미 만료되었을 수도 있으므로 exempt

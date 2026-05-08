@@ -175,18 +175,23 @@ def set_name(req: SetNameReq, request: Request):
 
 @router.get("/me")
 def me(request: Request):
-    """v8.8.27: 현재 로그인 유저 정보(이름 포함)."""
-    me = auth_core.current_user(request)
+    """현재 로그인 유저 정보. Bootstrap probe 이므로 무효 세션은 200/false 로 반환."""
+    token = request.headers.get("x-session-token") or request.headers.get("X-Session-Token")
+    me = auth_core.validate_token(token or "")
+    if not me:
+        return {"authenticated": False}
     users = read_users()
     for u in users:
         if u["username"] == me["username"]:
             return {
+                "authenticated": True,
                 "username": u["username"],
                 "role": u.get("role", "user"),
                 "name": u.get("name", ""),
                 "email": u.get("email", ""),
+                "tabs": "__all__" if u.get("role") == "admin" else u.get("tabs", ""),
             }
-    raise HTTPException(404, "User not found")
+    return {"authenticated": False}
 
 
 @router.post("/reset-request")
