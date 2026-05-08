@@ -9,7 +9,7 @@ import time
 
 from core.paths import PATHS
 from core.product_dedup import normalize_products
-from core.utils import load_json, save_json
+from core.utils import append_text_line, load_json, save_json
 
 logger = logging.getLogger("flow.product_dedup_sched")
 
@@ -21,9 +21,7 @@ _CONFIG_FILE = PATHS.data_root / "informs" / "config.json"
 
 
 def _append_log(message: str) -> None:
-    _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(_LOG_FILE, "a", encoding="utf-8") as fp:
-        fp.write(message.rstrip() + "\n")
+    append_text_line(_LOG_FILE, message.rstrip())
 
 
 def run_product_dedup_once(now: dt.datetime | None = None) -> dict:

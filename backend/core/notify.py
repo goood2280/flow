@@ -9,6 +9,7 @@ v7.0: emit_event(event_type, actor, target_user, payload) 단일 진입점 +
 import json, datetime, csv, uuid
 from pathlib import Path
 from core.paths import PATHS
+from core.utils import append_text_line
 
 NOTIFY_DIR = PATHS.data_root / "notifications"
 NOTIFY_DIR.mkdir(parents=True, exist_ok=True)
@@ -109,8 +110,7 @@ def send_notify(to_user: str, title: str, body: str, type: str = "info"):
     entry = {"id": str(uuid.uuid4())[:8], "title": title, "body": body,
              "type": type, "read": False,
              "timestamp": datetime.datetime.now().isoformat()}
-    with open(fp, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    append_text_line(fp, json.dumps(entry, ensure_ascii=False))
 
 
 def send_to_admins(title: str, body: str, type: str = "approval"):
@@ -196,8 +196,7 @@ def emit_event(event_type: str, actor: str = "", target_user: str = "",
         "timestamp": datetime.datetime.now().isoformat(),
     }
     fp = NOTIFY_DIR / f"{target_user}.jsonl"
-    with open(fp, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    append_text_line(fp, json.dumps(entry, ensure_ascii=False))
     return True
 
 

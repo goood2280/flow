@@ -1,11 +1,59 @@
 """core/utils.py v4.0.0 - shared backend helpers
 Extracted common patterns from routers to reduce duplication.
 """
-import json, datetime, re, io, csv as csv_mod, time
+import contextlib
+import datetime
+import io
+import json
+import re
+import threading
+import time
+import csv as csv_mod
 from pathlib import Path
 from fastapi import HTTPException
 import polars as pl
 from core.paths import PATHS
+
+try:
+    import fcntl
+except Exception:  # pragma: no cover - Windows compatibility
+    fcntl = None
+
+_APPEND_LOCKS: dict[str, threading.Lock] = {}
+_APPEND_LOCKS_GUARD = threading.Lock()
+
+
+def _get_append_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _APPEND_LOCKS_GUARD:
+        lock = _APPEND_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _APPEND_LOCKS[key] = lock
+        return lock
+
+
+@contextlib.contextmanager
+def _locked_append_file(path: Path):
+    """Append to a file with a process-safe lock when fcntl is available."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = _get_append_lock(path)
+    with lock:
+        with open(path, "a", encoding="utf-8") as fp:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+                except Exception:
+                    pass
+            try:
+                yield fp
+                fp.flush()
+            finally:
+                if fcntl is not None:
+                    try:
+                        fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -710,9 +758,14 @@ def jsonl_append(path: Path, entry: dict, add_timestamp: bool = True):
     """Append one JSON entry as a line."""
     if add_timestamp and "timestamp" not in entry:
         entry = {**entry, "timestamp": datetime.datetime.now().isoformat()}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
+    with _locked_append_file(path) as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def append_text_line(path: Path, text: str) -> None:
+    """Append a raw text line to a file, shared-safe among multiprocess callers."""
+    with _locked_append_file(path) as f:
+        f.write(str(text) + "\n")
 
 
 def jsonl_read(path: Path, limit: int = 200, filter_fn=None):
