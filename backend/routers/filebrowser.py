@@ -1347,6 +1347,17 @@ def list_scopes():
     return {"scopes": scopes}
 
 
+@router.get("/scopes/roots")
+def list_scope_roots():
+    """Backward-compat path for clients calling `/scopes/roots`.
+
+    Some mobile/automation callers still target this legacy route shape. Keep it
+    aligned with `/roots` behavior to avoid 404 regressions while preserving the
+    newer API surface.
+    """
+    return list_roots()
+
+
 @router.get("/base-files")
 def base_files():
     """v4.1: List top-level files under the Base root (single-file layout).
