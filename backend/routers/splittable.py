@@ -4983,8 +4983,52 @@ def _merge_candidate_values(*groups, limit: int = 500) -> list[str]:
     return out
 
 
+def _plan_product_name(product: str) -> str:
+    raw = str(product or "").strip()
+    canonical = _canonical_mltable_product_name(raw, allow_bare=True)
+    return canonical or safe_id(raw or "product")
+
+
 def _plan_history_path(product: str) -> Path:
-    return PLAN_DIR / f"{product}.json"
+    return PLAN_DIR / f"{_plan_product_name(product)}.json"
+
+
+def _plan_alias_paths(product: str) -> list[Path]:
+    """Plan store aliases kept for older callers that used bare product names."""
+    canonical = _plan_history_path(product)
+    out = [canonical]
+    raw = str(product or "").strip()
+    if raw:
+        legacy = PLAN_DIR / f"{safe_id(raw)}.json"
+        if legacy != canonical:
+            out.insert(0, legacy)
+    return out
+
+
+def _load_plan_data(product: str) -> dict:
+    merged = {"plans": {}, "history": []}
+    seen_history: set[str] = set()
+    for fp in _plan_alias_paths(product):
+        data = load_json(fp, {}) if fp.exists() else {}
+        if not isinstance(data, dict):
+            continue
+        plans = data.get("plans")
+        if isinstance(plans, dict):
+            merged["plans"].update(plans)
+        hist = data.get("history")
+        if isinstance(hist, list):
+            for row in hist:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    key = json.dumps(row, sort_keys=True, ensure_ascii=False, default=str)
+                except Exception:
+                    key = str(row)
+                if key in seen_history:
+                    continue
+                seen_history.add(key)
+                merged["history"].append(row)
+    return merged
 
 
 def _plan_risk_cache_key(product: str, include_deleted: bool) -> tuple[str, bool]:
@@ -4995,7 +5039,9 @@ def _plan_risk_cache_key(product: str, include_deleted: bool) -> tuple[str, bool
         return (str(fp), bool(include_deleted))
 
 
-def _plan_risk_cache_sig(fp: Path) -> tuple[str, float, int]:
+def _plan_risk_cache_sig(fp: Path | list[Path]) -> tuple:
+    if isinstance(fp, list):
+        return tuple(_plan_risk_cache_sig(p) for p in fp)
     try:
         st = fp.stat()
         return (str(fp.resolve()), st.st_mtime, st.st_size)
@@ -5102,16 +5148,16 @@ def _build_plan_risk_payload(hist: list, include_deleted: bool = False) -> dict:
 
 
 def _get_plan_risk_payload(product: str, include_deleted: bool = False, force: bool = False) -> dict:
-    fp = _plan_history_path(product)
-    if not fp.exists():
+    paths = _plan_alias_paths(product)
+    if not any(fp.exists() for fp in paths):
         return _empty_plan_risk_payload(cache=True)
-    sig = _plan_risk_cache_sig(fp)
+    sig = _plan_risk_cache_sig(paths)
     key = _plan_risk_cache_key(product, include_deleted)
     with _PLAN_RISK_CACHE_LOCK:
         cached = _PLAN_RISK_CACHE.get(key)
         if cached and not force and cached.get("_sig") == sig:
             return cached
-    data = load_json(fp, {})
+    data = _load_plan_data(product)
     hist = data.get("history", []) if isinstance(data, dict) else []
     payload = _build_plan_risk_payload(hist if isinstance(hist, list) else [], include_deleted=include_deleted)
     payload.update({
@@ -5718,7 +5764,7 @@ def get_column_values(product: str = Query(...), col: str = Query(...), limit: i
         pass
     # Union with plan values stored under this column
     try:
-        plans = load_json(PLAN_DIR / f"{product}.json", {}).get("plans", {})
+        plans = _load_plan_data(product).get("plans", {})
         for ck, pv in plans.items():
             # ck format: root_lot_id|wafer_id|col_name
             parts = str(ck).split("|")
@@ -6051,7 +6097,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             header_groups = []
 
         # Load plans
-        plans = load_json(PLAN_DIR / f"{product}.json", {}).get("plans", {})
+        plans = _load_plan_data(product).get("plans", {})
 
         rows = []
         df_cols_set = set(df.columns)
@@ -6197,8 +6243,8 @@ def save_plan(req: PlanReq):
     if rejected and not req.plans:
         raise HTTPException(400, f"Plan not allowed for: {', '.join(rejected)}. Only {'/'.join(PLAN_ALLOWED_PREFIXES)} columns.")
 
-    pf = PLAN_DIR / f"{req.product}.json"
-    data = load_json(pf, {"plans": {}, "history": []})
+    pf = _plan_history_path(req.product)
+    data = _load_plan_data(req.product)
     data.setdefault("history", [])
     now = datetime.datetime.now().isoformat()
     changed_entries = []
@@ -6263,10 +6309,10 @@ class PlanDeleteReq(BaseModel):
 
 @router.post("/plan/delete")
 def delete_plan(req: PlanDeleteReq):
-    pf = PLAN_DIR / f"{req.product}.json"
-    if not pf.exists():
+    pf = _plan_history_path(req.product)
+    if not any(p.exists() for p in _plan_alias_paths(req.product)):
         raise HTTPException(404)
-    data = load_json(pf, {})
+    data = _load_plan_data(req.product)
     now = datetime.datetime.now().isoformat()
     deleted = []
     for ck in req.cell_keys:
@@ -6290,10 +6336,9 @@ def delete_plan(req: PlanDeleteReq):
 @router.get("/history")
 def get_history(product: str = Query(...), root_lot_id: str = Query(""),
                 limit: int = Query(500)):
-    pf = PLAN_DIR / f"{product}.json"
-    if not pf.exists():
+    if not any(p.exists() for p in _plan_alias_paths(product)):
         return {"history": []}
-    data = load_json(pf, {})
+    data = _load_plan_data(product)
     hist = data.get("history", [])
     if root_lot_id:
         hist = [h for h in hist
@@ -6337,10 +6382,9 @@ def get_history_final(request: Request, product: str = Query(...), root_lot_id: 
 @router.get("/history-csv")
 def download_history_csv(product: str = Query(...)):
     """Admin: download full history as CSV."""
-    pf = PLAN_DIR / f"{product}.json"
-    if not pf.exists():
+    if not any(p.exists() for p in _plan_alias_paths(product)):
         raise HTTPException(404, "No history")
-    hist = load_json(pf, {}).get("history", [])
+    hist = _load_plan_data(product).get("history", [])
     if not hist:
         raise HTTPException(404, "No history entries")
 
@@ -6425,7 +6469,7 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
         fab_row = [wf2fab.get(w, "") for w in wf_sorted]
         wf_idx = {v: i for i, v in enumerate(wf_sorted)}
 
-        plans = load_json(PLAN_DIR / f"{product}.json", {}).get("plans", {})
+        plans = _load_plan_data(product).get("plans", {})
 
         output = io.StringIO()
         writer = csv_mod.writer(output)
@@ -6511,7 +6555,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     wf_sorted = sorted(wf_uniq, key=lambda w: (wf2fab.get(w, "~"), w))
     wf_idx = {v: i for i, v in enumerate(wf_sorted)}
 
-    plans = load_json(PLAN_DIR / f"{product}.json", {}).get("plans", {})
+    plans = _load_plan_data(product).get("plans", {})
 
     if openpyxl_error is not None:
         try:
@@ -6771,10 +6815,9 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
 
 @router.get("/plans-csv")
 def export_plans_csv(product: str = Query(...)):
-    pf = PLAN_DIR / f"{product}.json"
-    if not pf.exists():
+    if not any(p.exists() for p in _plan_alias_paths(product)):
         raise HTTPException(404, "No plans")
-    plans = load_json(pf, {}).get("plans", {})
+    plans = _load_plan_data(product).get("plans", {})
     if not plans:
         raise HTTPException(404, "No plans saved")
 

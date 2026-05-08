@@ -275,6 +275,24 @@ def test_splittable_embed_overlays_saved_plans_when_view_omits_plan(monkeypatch)
     assert cells["1"]["key"] == "A1000|2|KNOB_GATE"
 
 
+def test_splittable_embed_appends_saved_plan_only_rows(monkeypatch):
+    monkeypatch.setattr(embed_service, "_plans_for_root", lambda _product, _root: {
+        "A1000|1|KNOB_PLAN_ONLY": "R9",
+    })
+    view = {
+        "headers": ["#1"],
+        "root_lot_id": "A1000",
+        "rows": [{"_param": "KNOB_GATE", "_cells": {"0": {"actual": "R1"}}}],
+    }
+
+    out = embed_service._apply_saved_plans("ML_TABLE_PRODA", "A1000", view)
+
+    assert [row["_param"] for row in out["rows"]] == ["KNOB_GATE", "KNOB_PLAN_ONLY"]
+    plan_row = out["rows"][1]
+    assert plan_row["_cells"]["0"]["plan"] == "R9"
+    assert plan_row["_cells"]["0"]["actual"] is None
+
+
 def test_create_inform_keeps_service_snapshot_fab_lot_labels(tmp_path, monkeypatch):
     informs_file = tmp_path / "informs.json"
     monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)

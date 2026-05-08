@@ -110,8 +110,28 @@ def _plans_for_roots(ml_product: str, roots: list[str]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for root in roots:
         for cell_key, value in _plans_for_root(ml_product, root).items():
-            if cell_key not in out:
-                out[str(cell_key)] = value
+            for key in _plan_key_aliases(cell_key):
+                if key not in out:
+                    out[key] = value
+    return out
+
+
+def _plan_key_aliases(cell_key: Any) -> list[str]:
+    text = str(cell_key or "").strip()
+    if not text:
+        return []
+    out = [text]
+    parts = text.split("|", 2)
+    if len(parts) == 3:
+        root = _normalize_root(parts[0])
+        wafer = _wafer_key_from_header(parts[1]) or str(parts[1] or "").strip()
+        param = str(parts[2] or "").strip()
+        for key in (
+            f"{root}|{wafer}|{param}" if root and wafer and param else "",
+            f"{root}|{parts[1]}|{param}" if root and parts[1] and param else "",
+        ):
+            if key and key not in out:
+                out.append(key)
     return out
 
 
@@ -151,10 +171,9 @@ def _plan_columns_for_root(ml_product: str, root_lot_id: str, limit: int = 80) -
     if not root:
         return []
     try:
-        from core.utils import load_json
-        from routers.splittable import PLAN_DIR
+        from routers.splittable import _load_plan_data
 
-        plans = load_json(PLAN_DIR / f"{ml_product}.json", {}).get("plans", {})
+        plans = _load_plan_data(ml_product).get("plans", {})
     except Exception:
         return []
     if not isinstance(plans, dict):
@@ -182,10 +201,9 @@ def _plans_for_root(ml_product: str, root_lot_id: str) -> dict[str, Any]:
     if not root:
         return {}
     try:
-        from core.utils import load_json
-        from routers.splittable import PLAN_DIR
+        from routers.splittable import _load_plan_data
 
-        plans = load_json(PLAN_DIR / f"{ml_product}.json", {}).get("plans", {})
+        plans = _load_plan_data(ml_product).get("plans", {})
     except Exception:
         return {}
     if not isinstance(plans, dict):
@@ -263,7 +281,58 @@ def _apply_saved_plans(ml_product: str, lot: str, view: dict[str, Any]) -> dict[
                 cell["key"] = cell_key
             actual = cell.get("actual")
             cell["mismatch"] = bool(_has_st_value(actual) and str(actual) != str(plan))
+    _append_missing_plan_rows(view, plans)
     return view
+
+
+def _append_missing_plan_rows(view: dict[str, Any], plans: dict[str, Any], limit: int = 80) -> None:
+    headers = list(view.get("headers") or [])
+    rows = view.get("rows") if isinstance(view.get("rows"), list) else []
+    if not headers or not isinstance(rows, list):
+        return
+    existing = {
+        str(row.get("_param") or "").strip()
+        for row in rows
+        if isinstance(row, dict) and str(row.get("_param") or "").strip()
+    }
+    header_to_idx: dict[str, str] = {}
+    for ci, header in enumerate(headers):
+        wafer = _wafer_key_from_header(header)
+        if wafer:
+            header_to_idx.setdefault(wafer, str(ci))
+    if not header_to_idx:
+        return
+    by_param: dict[str, dict[str, dict[str, Any]]] = {}
+    for raw_key, plan in plans.items():
+        if not _has_st_value(plan):
+            continue
+        parts = str(raw_key or "").split("|", 2)
+        if len(parts) != 3:
+            continue
+        param = parts[2].strip()
+        if not param or param in existing:
+            continue
+        wafer = _wafer_key_from_header(parts[1])
+        idx = header_to_idx.get(wafer)
+        if idx is None:
+            continue
+        bucket = by_param.setdefault(param, {})
+        bucket[idx] = {
+            "actual": None,
+            "plan": plan,
+            "key": f"{parts[0]}|{wafer}|{param}",
+            "can_plan": True,
+            "mismatch": False,
+        }
+    appended = 0
+    for param, cells in by_param.items():
+        if not cells:
+            continue
+        rows.append({"_param": param, "_display": param, "_cells": cells})
+        existing.add(param)
+        appended += 1
+        if appended >= limit:
+            break
 
 
 def _cell_text(cell: dict[str, Any]) -> str:

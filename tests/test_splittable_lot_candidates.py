@@ -97,6 +97,25 @@ def test_save_plan_does_not_auto_log_inform(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_save_plan_uses_canonical_flow_data_plan_file(tmp_path, monkeypatch):
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "_audit_user", lambda *_args, **_kwargs: None)
+
+    result = splittable.save_plan(splittable.PlanReq(
+        product="PRODA",
+        root_lot_id="A1000",
+        username="tester",
+        plans={"A1000|1|KNOB_GATE": "R2"},
+    ))
+
+    assert result["saved"] == 1
+    assert not (plan_dir / "PRODA.json").exists()
+    saved = splittable._load_plan_data("ML_TABLE_PRODA")
+    assert saved["plans"]["A1000|1|KNOB_GATE"]["value"] == "R2"
+
+
 def test_view_includes_related_tracker_issues_for_root_lot(tmp_path, monkeypatch):
     pl.DataFrame({
         "root_lot_id": ["LOT900AA", "LOT900AA"],

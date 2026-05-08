@@ -350,6 +350,33 @@ def test_base_files_exposes_step_cache_file_and_preview(monkeypatch, tmp_path):
     assert preview["data"][0]["updated_at"] == "2026-04-28T09:00:00"
 
 
+def test_base_files_builds_step_cache_file(monkeypatch, tmp_path):
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "product": ["PRODA", "PRODA"],
+        "lot_id": ["L1000", "L1000"],
+        "step_id": ["STEP_010", "STEP_020"],
+        "time": ["2026-04-28T08:00:00", "2026-04-28T09:00:00"],
+    }).write_parquet(fp)
+
+    class DummyPaths:
+        pass
+
+    dummy_paths = DummyPaths()
+    dummy_paths.base_root = tmp_path
+    dummy_paths.db_root = tmp_path
+    dummy_paths.data_root = tmp_path
+    dummy_paths.upload_dir = tmp_path / "uploads"
+    dummy_paths.upload_dir.mkdir()
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    filebrowser._LIST_CACHE.clear()
+
+    listed = filebrowser.base_files()
+    cache_rows = [row for row in listed["files"] if row.get("source") == "cache"]
+
+    assert [row["path"] for row in cache_rows] == [f"cache/{fp.name}.latest_step_by_lot.parquet"]
+
+
 def test_base_file_view_reads_entire_non_ml_single_file(monkeypatch, tmp_path):
     fp = tmp_path / "matching_step.parquet"
     pl.DataFrame({f"c{i:02d}": [i, i + 10, i + 20] for i in range(12)}).write_parquet(fp)

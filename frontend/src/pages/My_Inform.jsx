@@ -2317,9 +2317,7 @@ export default function My_Inform({ user }) {
       return uniqueClean([
         ...((form.embed?.st_scope?.inline_cols || []).map(c => String(c || "").trim())),
         ...(Array.isArray(embedCustomCols) ? embedCustomCols : []),
-        ...attached
-          .filter(s => s.source === "custom" || !(s.rows || []).length)
-          .flatMap(s => s.columns || []),
+        ...attached.flatMap(s => s.columns || []),
       ]).filter(c => c && c !== "parameter" && !String(c).startsWith("#"));
     };
     const shouldAttachKnobSnapshot = wizardAttachMode === "knob" && embedCustomCols.length > 0;
@@ -4506,9 +4504,7 @@ function InformWizard({
       note: `${attached.length} selected set(s) attached`,
       attached_sets: attached,
     };
-    const snapshotCols = uniqueClean(selectedSetRows
-      .filter(s => s.source === "custom" || !(s.rows || []).length)
-      .flatMap(s => s.columns || []));
+    const snapshotCols = uniqueClean(selectedSetRows.flatMap(s => s.columns || []));
     const prod = String(form.product || "").trim();
     const lot = String(form.lot_id || "").trim();
     if (!prod || !lot || snapshotCols.length === 0) {

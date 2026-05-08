@@ -332,6 +332,31 @@ def _single_file_cache_entries(root: Path, source_root: str) -> list[dict]:
     return out
 
 
+def _single_file_step_cache_candidate(path: Path) -> bool:
+    if not path.is_file() or path.suffix.lower() not in {".csv", ".parquet"}:
+        return False
+    meta = _core_file_meta(path.name)
+    if not meta:
+        return False
+    return meta.get("role") in {"ML_TABLE parquet", "Feature parquet", "Parquet file", "CSV file"}
+
+
+def _refresh_single_file_step_caches(root: Path) -> None:
+    if not root.is_dir():
+        return
+    try:
+        items = sorted(root.iterdir(), key=lambda p: p.name.lower())
+    except Exception:
+        return
+    for item in items:
+        if not _visible_single_file(item) or not _single_file_step_cache_candidate(item):
+            continue
+        try:
+            _build_single_file_step_cache(item)
+        except Exception as e:
+            logger.warning("single-file latest-step cache skipped (%s): %s", item, e)
+
+
 def _ensure_single_file_cache_dirs(base_root: Path, db_root: Path) -> None:
     for root in (base_root, db_root):
         if not root.is_dir():
@@ -1421,7 +1446,17 @@ def base_files():
     base_root = _base_root()
     db_root = _db_root()
     _ensure_single_file_cache_dirs(base_root, db_root)
-    cache_key = ("base_files", _path_sig(base_root), _path_sig(_db_root()), _path_sig(PATHS.upload_dir))
+    _refresh_single_file_step_caches(base_root)
+    if db_root != base_root:
+        _refresh_single_file_step_caches(db_root)
+    cache_key = (
+        "base_files",
+        _path_sig(base_root),
+        _path_sig(_db_root()),
+        _path_sig(_single_file_cache_dir(base_root)),
+        _path_sig(_single_file_cache_dir(db_root)),
+        _path_sig(PATHS.upload_dir),
+    )
     cached = _list_cache_get(cache_key)
     if cached is not None:
         return cached
@@ -1701,6 +1736,11 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         raise HTTPException(400, f"Unsupported ext for preview: {ext}")
     # v8.4.3 OOM-aware — lazy scan 동일.
     try:
+        if _single_file_step_cache_candidate(fp):
+            try:
+                _build_single_file_step_cache(fp)
+            except Exception:
+                pass
         if ext == ".csv":
             try:
                 st = fp.stat()
@@ -2903,6 +2943,9 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
             cache_result = _matching_cache.refresh_matching_csv(fp)
             if not cache_result.get("ok", False):
                 logger.warning("filebrowser base-file/save cache refresh failed: %s", cache_result)
+        step_cache_result = None
+        if _single_file_step_cache_candidate(fp):
+            step_cache_result = _build_single_file_step_cache(fp, force=True)
         sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, fp)
         jsonl_append(PATHS.activity_log, {
             "username": me.get("username") or "",
@@ -2921,6 +2964,7 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
             "cols": len(header),
             "version": version_meta,
             "cache_rows": (cache_result or {}).get("rows"),
+            "step_cache_rows": (step_cache_result or {}).get("rows"),
             "s3_sync": sync_result,
         }
     except Exception as e:
