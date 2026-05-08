@@ -358,6 +358,34 @@ class BackupRestoreReq(BaseModel):
 class BulkUsersReq(BaseModel):
     text: str
     default_password: str = "1111"
+    default_tabs: Any = None
+
+
+BULK_DEFAULT_USER_TABS = [
+    "filebrowser", "dashboard", "splittable", "diagnosis", "ettime",
+    "waferlayout", "inform", "meeting", "calendar",
+]
+BULK_ALLOWED_USER_TABS = set(BULK_DEFAULT_USER_TABS + ["tracker", "devguide"])
+
+
+def _normalize_bulk_tabs_csv(raw: Any, fallback: Optional[List[str]] = None) -> str:
+    if isinstance(raw, str):
+        parts = raw.split(",")
+    elif isinstance(raw, list):
+        parts = raw
+    else:
+        parts = []
+    out = []
+    seen = set()
+    for part in parts:
+        tab = str(part or "").strip()
+        if not tab or tab not in BULK_ALLOWED_USER_TABS or tab in seen:
+            continue
+        seen.add(tab)
+        out.append(tab)
+    if not out:
+        out = list(fallback or BULK_DEFAULT_USER_TABS)
+    return ",".join(out)
 
 
 @router.post("/tracker-schema-migrate")
@@ -535,7 +563,8 @@ def bulk_create_users(req: BulkUsersReq, request: Request, _admin=Depends(requir
     existing = {str(u.get("username") or "").strip().lower() for u in users}
     created = []
     skipped = []
-    default_tabs = "filebrowser,dashboard,splittable,diagnosis,ettime,waferlayout,inform,meeting,calendar"
+    default_tabs = _normalize_bulk_tabs_csv(req.default_tabs)
+    default_tabs_list = default_tabs.split(",")
 
     for idx, parts in enumerate(body, start=1):
       vals = [str(x or "").strip() for x in parts]
@@ -545,7 +574,7 @@ def bulk_create_users(req: BulkUsersReq, request: Request, _admin=Depends(requir
           name = (data.get("name") or "").strip()
           email = (data.get("email") or "").strip()
           role = (data.get("role") or "user").strip() or "user"
-          tabs = (data.get("tabs") or default_tabs).strip() or default_tabs
+          tabs = (data.get("tabs") or "").strip()
       else:
           name = vals[0] if len(vals) >= 1 else ""
           username = vals[1] if len(vals) >= 2 else (vals[0] if len(vals) >= 1 else "")
@@ -556,11 +585,11 @@ def bulk_create_users(req: BulkUsersReq, request: Request, _admin=Depends(requir
           if "@" in third:
               email = third
               role = vals[3] if len(vals) >= 4 and vals[3] else "user"
-              tabs = vals[4] if len(vals) >= 5 and vals[4] else default_tabs
+              tabs = vals[4] if len(vals) >= 5 and vals[4] else ""
           else:
               email = ""
               role = third or "user"
-              tabs = vals[3] if len(vals) >= 4 and vals[3] and "," in vals[3] else default_tabs
+              tabs = vals[3] if len(vals) >= 4 and vals[3] and "," in vals[3] else ""
       username = username.strip()
       if not username:
           skipped.append({"row": idx, "reason": "missing username"})
@@ -572,6 +601,7 @@ def bulk_create_users(req: BulkUsersReq, request: Request, _admin=Depends(requir
       if email and "@" not in email:
           email = ""
       role = role if role in {"user", "admin"} else "user"
+      tabs = _normalize_bulk_tabs_csv(tabs, default_tabs_list)
       user_row = {
           "username": username,
           "password_hash": hash_password(default_pw),
@@ -584,7 +614,7 @@ def bulk_create_users(req: BulkUsersReq, request: Request, _admin=Depends(requir
       }
       users.append(user_row)
       existing.add(key)
-      created.append({"username": username, "name": name, "role": role})
+      created.append({"username": username, "name": name, "role": role, "tabs": tabs})
 
     write_users(users)
     _audit(request, "admin:bulk-users", detail=f"created={len(created)} skipped={len(skipped)} pw={default_pw}", tab="admin")

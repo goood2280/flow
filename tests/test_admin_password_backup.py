@@ -79,3 +79,33 @@ def test_admin_reset_password_emails_domain_address(monkeypatch):
     assert sent[0]["kwargs"]["receiver_usernames"] == ["alice"]
     assert "RESET_TOKEN" in sent[0]["kwargs"]["content"]
     assert sent[0]["result"]["payload"]["receiverList"][0]["email"] == "alice@company.co.kr"
+
+
+def test_admin_bulk_users_applies_selected_default_tabs(monkeypatch):
+    users = []
+    writes = []
+
+    def fake_write_users(next_users):
+        writes.append([dict(u) for u in next_users])
+        users[:] = [dict(u) for u in next_users]
+
+    monkeypatch.setattr(admin, "read_users", lambda: users)
+    monkeypatch.setattr(admin, "write_users", fake_write_users)
+    monkeypatch.setattr(admin, "_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(auth_core, "hash_password", lambda pw: f"hashed:{pw}")
+
+    result = admin.bulk_create_users(
+        admin.BulkUsersReq(
+            text="name\tusername\trole\ttabs\nAlpha\talpha\tuser\tsplittable,calendar\nBeta\tbeta\tuser\t",
+            default_password="1111",
+            default_tabs=["dashboard", "inform"],
+        ),
+        object(),
+    )
+
+    assert result["ok"] is True
+    assert [row["username"] for row in result["created"]] == ["alpha", "beta"]
+    assert users[0]["tabs"] == "splittable,calendar"
+    assert users[1]["tabs"] == "dashboard,inform"
+    assert users[1]["password_hash"] == "hashed:1111"
+    assert writes

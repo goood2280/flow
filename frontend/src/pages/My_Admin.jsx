@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Component } from "react";
+import { useState, useEffect, useRef, useMemo, Component } from "react";
 import Loading from "../components/Loading";
 import { PageHeader, TabStrip, Button, Banner, Pill, statusPalette, chartPalette } from "../components/UXKit";
 import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
@@ -6,12 +6,68 @@ import { sf, dl, postJson, userLabel, userMatches } from "../lib/api";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
 const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","ettime","waferlayout","tracker","inform","meeting","calendar","devguide"];
+const BULK_DEFAULT_TABS=["filebrowser","dashboard","splittable","diagnosis","ettime","waferlayout","inform","meeting","calendar"];
+const BULK_HEADER_KEYS=new Set(["name","username","email","role","tabs"]);
 // v8.7.5: u.tabs 는 string 이지만 legacy json 에서 array 로 저장된 기록이 있을 수 있어
 // "r.split is not a function" 방지를 위해 정규화 헬퍼를 둔다.
 function _tabsToArray(v){
   if(Array.isArray(v))return v.filter(Boolean).map(String);
   if(typeof v==="string"&&v)return v.split(",").map(s=>s.trim()).filter(Boolean);
   return ["filebrowser","dashboard","splittable"];
+}
+function _cleanTabs(v){
+  const arr=Array.isArray(v)?v:(typeof v==="string"?v.split(","):[]);
+  const seen=new Set();
+  return arr.map(s=>String(s||"").trim()).filter((s)=>s&&ALL_TABS.includes(s)&&!seen.has(s)&&seen.add(s));
+}
+function _splitBulkRow(line){
+  return String(line||"").includes("\t")?String(line||"").split("\t"):String(line||"").split(",");
+}
+function _parseBulkUsers(text,defaultTabs=[]){
+  const lines=String(text||"").replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n").filter(ln=>ln.trim());
+  if(!lines.length)return{hasHeader:false,rows:[]};
+  const rawRows=lines.map(_splitBulkRow);
+  const header=rawRows[0].map(x=>String(x||"").trim().toLowerCase());
+  const hasHeader=header.some(x=>BULK_HEADER_KEYS.has(x));
+  const body=hasHeader?rawRows.slice(1):rawRows;
+  const fallbackTabs=_cleanTabs(defaultTabs);
+  return{hasHeader,rows:body.map((parts,i)=>{
+    const vals=parts.map(x=>String(x||"").trim());
+    let name="",username="",email="",role="user",tabs="";
+    if(hasHeader){
+      const data={};
+      header.forEach((h,idx)=>{data[h]=vals[idx]||"";});
+      name=data.name||"";
+      username=data.username||"";
+      email=data.email||"";
+      role=data.role||"user";
+      tabs=data.tabs||"";
+    }else{
+      name=vals[0]||"";
+      username=vals[1]||(vals[0]||"");
+      const third=vals[2]||"";
+      if(third.includes("@")){
+        email=third;
+        role=vals[3]||"user";
+        tabs=vals[4]||"";
+      }else{
+        role=third||"user";
+        tabs=(vals[3]||"").includes(",")?vals[3]:"";
+      }
+    }
+    role=role==="admin"?"admin":"user";
+    const rowTabs=_cleanTabs(tabs);
+    const effectiveTabs=rowTabs.length?rowTabs:fallbackTabs;
+    return{
+      row:hasHeader?i+2:i+1,
+      name,
+      username,
+      email,
+      role,
+      tabs:effectiveTabs,
+      tabsSource:rowTabs.length?"row":"default",
+    };
+  })};
 }
 function _arr(v){return Array.isArray(v)?v:[];}
 function _obj(v){return v&&typeof v==="object"&&!Array.isArray(v)?v:{};}
@@ -120,6 +176,7 @@ export default function My_Admin({user}){
   const[etDlHistory,setEtDlHistory]=useState([]);
   const[editPerm,setEditPerm]=useState(null);const[permTabs,setPermTabs]=useState([]);
   const[bulkUsersText,setBulkUsersText]=useState("name\tusername\trole\n홍길동\thong\tuser");
+  const[bulkUsersDefaultTabs,setBulkUsersDefaultTabs]=useState(BULK_DEFAULT_TABS);
   const[bulkUsersResult,setBulkUsersResult]=useState(null);
   const[bulkUsersBusy,setBulkUsersBusy]=useState(false);
   // v8.7.1: Admin Activity Log 필터
@@ -210,11 +267,12 @@ export default function My_Admin({user}){
   const submitBulkUsers=()=>{
     const text=String(bulkUsersText||"").trim();
     if(!text)return alert("붙여넣을 사용자 행이 없습니다.");
+    if(!bulkDefaultTabs.length)return alert("기본 권한을 하나 이상 선택하세요.");
     setBulkUsersBusy(true);
     sf("/api/admin/bulk-users",{
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({text,default_password:"1111"})
+      body:JSON.stringify({text,default_password:"1111",default_tabs:bulkDefaultTabs})
     }).then((d)=>{
       setBulkUsersResult(d||{});
       load();
@@ -261,6 +319,22 @@ export default function My_Admin({user}){
     })),
   ].sort((a,b)=>String(b.timestamp||"").localeCompare(String(a.timestamp||"")));
   const resourceChartHours=resWindow==="7d"?168:24;
+  const bulkDefaultTabs=_cleanTabs(bulkUsersDefaultTabs);
+  const bulkParsed=useMemo(()=>_parseBulkUsers(bulkUsersText,bulkDefaultTabs),[bulkUsersText,bulkDefaultTabs.join(",")]);
+  const bulkPreviewRows=useMemo(()=>{
+    const existing=new Set(_arr(users).map(u=>String(u?.username||"").trim().toLowerCase()).filter(Boolean));
+    const seen=new Set();
+    return _arr(bulkParsed.rows).map((row)=>{
+      const key=String(row.username||"").trim().toLowerCase();
+      let issue="";
+      if(!key)issue="아이디 누락";
+      else if(existing.has(key))issue="기존 사용자";
+      else if(seen.has(key))issue="중복 행";
+      else seen.add(key);
+      return{...row,issue};
+    });
+  },[bulkParsed.rows,users]);
+  const bulkCreatableCount=bulkPreviewRows.filter(row=>!row.issue).length;
 
   return(
     <div style={{padding:"24px 32px",background:"var(--bg-primary)",minHeight:"calc(100vh - 52px)",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif"}}>
@@ -320,32 +394,91 @@ export default function My_Admin({user}){
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:10}}>
               <div>
                 <div style={{fontSize:14,fontWeight:700}}>사용자 일괄 생성</div>
-                <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:4}}>엑셀에서 `name / username / role`만 복붙하면 됩니다. 메일 주소는 메일 API domain 설정으로 username에서 자동 조합됩니다.</div>
+                <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:4}}>엑셀에서 `name / username / role`을 붙여넣으면 표로 미리 확인하고, 선택한 기본 권한으로 생성합니다.</div>
               </div>
-              <Button variant="primary" onClick={submitBulkUsers} disabled={bulkUsersBusy}>{bulkUsersBusy?"생성 중...":"일괄 생성"}</Button>
+              <Button variant="primary" onClick={submitBulkUsers} disabled={bulkUsersBusy||!bulkCreatableCount}>{bulkUsersBusy?"생성 중...":`일괄 생성 ${bulkCreatableCount}건`}</Button>
             </div>
             {bulkUsersResult&&<Banner tone={_arr(bulkUsersResult.skipped).length?"warn":"ok"} style={{marginBottom:10}}>
               생성 {_arr(bulkUsersResult.created).length}건 / 건너뜀 {_arr(bulkUsersResult.skipped).length}건 / 기본 비밀번호 {bulkUsersResult.default_password||"1111"}
             </Banner>}
-            <textarea
-              value={bulkUsersText}
-              onChange={(e)=>setBulkUsersText(e.target.value)}
-              spellCheck={false}
-              style={{width:"100%",minHeight:220,resize:"vertical",padding:"12px 14px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,lineHeight:1.5,fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",outline:"none"}}
-            />
-            {bulkUsersResult&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:10}}>
-              <div style={{padding:12,borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
-                <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",marginBottom:6}}>생성된 사용자</div>
-                <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-                  {_arr(bulkUsersResult.created).length?_arr(bulkUsersResult.created).map((row,idx)=><Pill key={idx} tone="ok">{row.username}</Pill>):<span style={{fontSize:14,color:"var(--text-secondary)"}}>없음</span>}
+            <div style={{display:"grid",gap:10}}>
+              <label style={{display:"grid",gap:6}}>
+                <span style={{display:"flex",alignItems:"center",gap:8,fontSize:14,color:"var(--text-secondary)"}}>
+                  붙여넣기 원본
+                  <Pill tone={bulkParsed.hasHeader?"info":"neutral"}>{bulkParsed.hasHeader?"헤더 인식":"헤더 없음"}</Pill>
+                </span>
+                <textarea
+                  value={bulkUsersText}
+                  onChange={(e)=>setBulkUsersText(e.target.value)}
+                  spellCheck={false}
+                  style={{width:"100%",minHeight:78,resize:"vertical",padding:"10px 12px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,lineHeight:1.45,fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",outline:"none"}}
+                />
+              </label>
+              <div style={{border:"1px solid var(--border)",borderRadius:8,overflow:"hidden",background:"var(--bg-primary)"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,padding:"8px 10px",borderBottom:"1px solid var(--border)",background:"var(--bg-tertiary)"}}>
+                  <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)"}}>기본 권한</div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                    <Button variant="subtle" onClick={()=>setBulkUsersDefaultTabs(BULK_DEFAULT_TABS)}>기본값</Button>
+                    <Button variant="subtle" onClick={()=>setBulkUsersDefaultTabs(ALL_TABS)}>전체</Button>
+                  </div>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(128px,1fr))",gap:6,padding:10}}>
+                  {ALL_TABS.map(t=><label key={t} style={{display:"flex",alignItems:"center",gap:7,fontSize:14,color:"var(--text-secondary)",cursor:"pointer",minWidth:0}}>
+                    <input
+                      type="checkbox"
+                      checked={bulkDefaultTabs.includes(t)}
+                      onChange={(e)=>{
+                        const next=e.target.checked?[...bulkDefaultTabs,t]:bulkDefaultTabs.filter(x=>x!==t);
+                        setBulkUsersDefaultTabs(ALL_TABS.filter(x=>next.includes(x)));
+                      }}
+                      style={{accentColor:"var(--accent)",flexShrink:0}}
+                    />
+                    <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t}</span>
+                  </label>)}
                 </div>
               </div>
-              <div style={{padding:12,borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>
-                <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",marginBottom:6}}>건너뜀</div>
-                <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:120,overflow:"auto"}}>
-                  {_arr(bulkUsersResult.skipped).length?_arr(bulkUsersResult.skipped).map((row,idx)=><div key={idx} style={{fontSize:14,color:"var(--text-secondary)"}}>row {row.row}: {row.username||"-"} / {row.reason}</div>):<span style={{fontSize:14,color:"var(--text-secondary)"}}>없음</span>}
-                </div>
+              <div style={{border:"1px solid var(--border)",borderRadius:8,overflow:"auto",background:"var(--bg-primary)",maxHeight:260}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+                  <thead><tr>{["행","이름","아이디","역할","적용 권한","상태"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap",position:"sticky",top:0,zIndex:1}}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {!bulkPreviewRows.length&&<tr><td colSpan={6} style={{padding:24,textAlign:"center",color:"var(--text-secondary)"}}>붙여넣은 사용자 행이 없습니다.</td></tr>}
+                    {bulkPreviewRows.map((row,idx)=><tr key={idx}>
+                      <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{row.row}</td>
+                      <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>{row.name||"-"}</td>
+                      <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{row.username||"-"}</td>
+                      <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)"}}><Pill tone={row.role==="admin"?"warn":"neutral"}>{row.role}</Pill></td>
+                      <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",minWidth:180}}>
+                        {row.role==="admin"?<Pill tone="warn">관리자 전체</Pill>:<div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                          <Pill tone={row.tabsSource==="row"?"info":"accent"}>{row.tabsSource==="row"?"행 지정":"기본"}</Pill>
+                          {row.tabs.slice(0,3).map(t=><Pill key={t} tone="neutral">{t}</Pill>)}
+                          {row.tabs.length>3&&<Pill tone="neutral">+{row.tabs.length-3}</Pill>}
+                        </div>}
+                      </td>
+                      <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)"}}><Pill tone={row.issue?"warn":"ok"}>{row.issue||"생성 예정"}</Pill></td>
+                    </tr>)}
+                  </tbody>
+                </table>
               </div>
+            </div>
+            {bulkUsersResult&&<div style={{border:"1px solid var(--border)",borderRadius:8,overflow:"auto",marginTop:10,background:"var(--bg-primary)",maxHeight:180}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+                <thead><tr>{["결과","행","아이디","상세"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 10px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap",position:"sticky",top:0,zIndex:1}}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {!_arr(bulkUsersResult.created).length&&!_arr(bulkUsersResult.skipped).length&&<tr><td colSpan={4} style={{padding:18,textAlign:"center",color:"var(--text-secondary)"}}>결과 없음</td></tr>}
+                  {_arr(bulkUsersResult.created).map((row,idx)=><tr key={`c-${idx}`}>
+                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)"}}><Pill tone="ok">생성</Pill></td>
+                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>-</td>
+                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{row.username}</td>
+                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{row.role} · {row.name||"-"}</td>
+                  </tr>)}
+                  {_arr(bulkUsersResult.skipped).map((row,idx)=><tr key={`s-${idx}`}>
+                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)"}}><Pill tone="warn">건너뜀</Pill></td>
+                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{row.row}</td>
+                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{row.username||"-"}</td>
+                    <td style={{padding:"7px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{row.reason}</td>
+                  </tr>)}
+                </tbody>
+              </table>
             </div>}
           </div>
           <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
