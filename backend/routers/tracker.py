@@ -183,6 +183,33 @@ def _category_source(category: str, default: str = "auto") -> str:
     return src if src in ("fab", "et", "both", "auto") else "auto"
 
 
+def _normalize_lot_candidate_rows(raw: list[dict], limit: int) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in raw:
+        lot_id = str(
+            item.get("lot_id")
+            or item.get("fab_lot_id")
+            or item.get("root_lot_id")
+            or item.get("value")
+            or ""
+        ).strip()
+        if not lot_id:
+            continue
+        key = lot_id.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        row = dict(item)
+        row["type"] = "lot_id"
+        row["lot_id"] = lot_id
+        row["value"] = lot_id
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _tracker_mltable_lot_candidates(product: str, prefix: str = "", limit: int = 200) -> list[dict]:
     """Use the SplitTable-cycle LOT progress file cache for Tracker lot_id dropdowns."""
     prod = str(product or "").strip()
@@ -194,9 +221,35 @@ def _tracker_mltable_lot_candidates(product: str, prefix: str = "", limit: int =
         limit = 200
     try:
         from core.lot_progress_cache import lot_id_candidates
-        return lot_id_candidates(product=prod, prefix=prefix, limit=limit)
+        raw = lot_id_candidates(product=prod, prefix=prefix, limit=limit)
     except Exception:
         return []
+    return _normalize_lot_candidate_rows(raw or [], limit=limit)
+
+
+def _tracker_lot_lookup_parts(row: dict) -> tuple[str, str]:
+    from core.lot_step import _is_root_lot_id
+    raw = dict(row or {})
+    root = str(raw.get("root_lot_id") or "").strip()
+    lot = str(raw.get("lot_id") or "").strip()
+    if root and not _is_root_lot_id(root):
+        if not lot:
+            lot = root
+        root = ""
+    elif not root and lot and _is_root_lot_id(lot):
+        root = lot
+        lot = ""
+    return root, lot
+
+
+def _persist_tracker_lot_status_rows(rows: list[dict], source: str = "tracker") -> None:
+    if not rows:
+        return
+    try:
+        from core.lot_progress_cache import upsert_tracker_lot_status_rows
+        upsert_tracker_lot_status_rows(rows, source=source)
+    except Exception:
+        return
 
 
 def _save(issues):
@@ -660,6 +713,7 @@ def tracker_lot_candidates(request: Request,
         prefix=prefix,
         limit=max(1, min(500, int(limit or 200))),
     )
+    candidates = _normalize_lot_candidate_rows(candidates or [], limit=max(1, min(500, int(limit or 200))))
     if candidates:
         cache_name = "et_lot" if any(c.get("cache") == "et_lot" for c in candidates) else ""
         return {
@@ -776,7 +830,16 @@ def create_issue(req: IssueCreate, request: Request):
             name = _save_image(img)
             if name:
                 img_names.append(name)
-    lots = [normalize_lot_row({**lot, "username": req.username, "added": now.isoformat()}) for lot in req.lots]
+    lots = [
+        normalize_lot_row({
+            **lot,
+            "username": req.username,
+            "added": now.isoformat(),
+            "product": lot.get("product") or lot.get("monitor_prod") or "",
+            **({"root_lot_id": lot.get("root_lot_id") or "", "lot_id": lot.get("lot_id") or ""}),
+        })
+        for lot in req.lots
+    ]
     result = TRACKER_SERVICE.create_legacy_issue(
         issue_id=iid,
         title=req.title,
@@ -1080,17 +1143,12 @@ def lot_check_all(req: LotCheckAllReq, request: Request):
     lots = []
     for lot in original_lots:
         lot = normalize_lot_row(lot)
-        root = (lot.get("root_lot_id") or "").strip()
-        lid = (lot.get("lot_id") or "").strip()
+        root, lid = _tracker_lot_lookup_parts(lot)
         wid = str(lot.get("wafer_id") or "").strip()
         monitor_prod = (lot.get("product") or lot.get("monitor_prod") or "").strip()
         product = monitor_prod or (iss.get("product") or "")
         row_root = root
         row_lot = lid
-        if row_root and not _is_root_lot_id(row_root):
-            if not row_lot:
-                row_lot = row_root
-            row_root = ""
         lots.extend(
             normalize_lot_row(row)
             for row in expand_lot_row_for_wafer_selection(
@@ -1109,17 +1167,12 @@ def lot_check_all(req: LotCheckAllReq, request: Request):
     updated_lots = []
     for idx, lot in enumerate(lots):
         lot = normalize_lot_row(lot)
-        root = (lot.get("root_lot_id") or "").strip()
-        lid = (lot.get("lot_id") or "").strip()
+        root, lid = _tracker_lot_lookup_parts(lot)
         wid = str(lot.get("wafer_id") or "").strip()
         monitor_prod = (lot.get("product") or lot.get("monitor_prod") or "").strip()
         product = monitor_prod or (iss.get("product") or "")
         row_root = root
         row_lot = lid
-        if row_root and not _is_root_lot_id(row_root):
-            if not row_lot:
-                row_lot = row_root
-            row_root = ""
         snap = lot_progress_snapshot(
             product=product,
             root_lot_id=row_root,
@@ -1221,6 +1274,7 @@ def lot_check_all(req: LotCheckAllReq, request: Request):
             issue_data=next_issue,
             username=me.get("username") or "system",
         )
+    _persist_tracker_lot_status_rows(updated_lots, source="tracker-check-all")
     return {
         "ok": True,
         "issue_id": req.issue_id,
@@ -1330,16 +1384,11 @@ def check_lot_watches(request: Request, _a=Depends(require_admin)):
         expanded_lots = []
         for raw_lot in iss.get("lots") or []:
             lot = normalize_lot_row(raw_lot)
-            root = (lot.get("root_lot_id") or "").strip()
-            lid = (lot.get("lot_id") or "").strip()
+            root, lid = _tracker_lot_lookup_parts(lot)
             wid = str(lot.get("wafer_id") or "").strip()
             product = (lot.get("product") or lot.get("monitor_prod") or iss.get("product") or "").strip()
             row_root = root
             row_lot = lid
-            if row_root and not _is_root_lot_id(row_root):
-                if not row_lot:
-                    row_lot = row_root
-                row_root = ""
             expanded_lots.extend(
                 normalize_lot_row(row)
                 for row in expand_lot_row_for_wafer_selection(
@@ -1360,14 +1409,9 @@ def check_lot_watches(request: Request, _a=Depends(require_admin)):
             if not watch:
                 continue
             # watch 가 설정된 lot 만. Monitor 카테고리는 기존 저장 watch 가 ET 여도 FAB 로 강제한다.
-            root = (lot.get("root_lot_id") or "").strip()
-            lid = (lot.get("lot_id") or "").strip()
+            root, lid = _tracker_lot_lookup_parts(lot)
             wid = str(lot.get("wafer_id") or "").strip()
             product = (lot.get("product") or lot.get("monitor_prod") or iss.get("product") or "").strip()
-            if root and not _is_root_lot_id(root):
-                if not lid:
-                    lid = root
-                root = ""
             resolved_source = _category_source(iss.get("category") or "", watch.get("source") or "auto")
             if resolved_source in ("both", "auto"):
                 watch_source = (watch.get("source") or "fab").lower().strip()
@@ -1494,6 +1538,7 @@ def check_lot_watches(request: Request, _a=Depends(require_admin)):
             iss["updated_at"] = datetime.datetime.now().isoformat()
             changed_issue_ids.add(iss["id"])
     if changed_issue_ids:
+        tracker_rows: list[dict] = []
         for iss in issues:
             if iss.get("id") not in changed_issue_ids:
                 continue
@@ -1502,6 +1547,8 @@ def check_lot_watches(request: Request, _a=Depends(require_admin)):
                 issue_data=iss,
                 username="system",
             )
+            tracker_rows.extend([normalize_lot_row(l) for l in iss.get("lots") or []])
+        _persist_tracker_lot_status_rows(tracker_rows, source="tracker-watch")
     return {"ok": True, "fired": fired, "fire_count": len(fired)}
 
 

@@ -33,9 +33,25 @@ LOT_WF_SCHEMA_DEFAULTS = {
 }
 
 
+def _is_root_like(value: str) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and len(text) == 5 and text.isalnum()
+
+
 def normalize_lot_row(row: dict | None) -> dict:
     src = dict(row or {})
     out = dict(src)
+    lot_id = str(src.get("lot_id") or "").strip()
+    root_lot_id = str(src.get("root_lot_id") or "").strip()
+    if lot_id and root_lot_id and not _is_root_like(root_lot_id):
+        # Keep malformed root_lot_id as lot_id when it was actually a lot value.
+        lot_id = root_lot_id
+        root_lot_id = ""
+    if root_lot_id and not lot_id and not _is_root_like(root_lot_id):
+        lot_id = root_lot_id
+        root_lot_id = ""
+    out["lot_id"] = lot_id
+    out["root_lot_id"] = root_lot_id
     legacy_seq = src.get("current_step_seq", src.get("step_seq"))
     legacy_et_seq = src.get("et_last_seq", src.get("step_seq"))
     legacy_et_time = src.get("et_last_time", src.get("last_move_at"))

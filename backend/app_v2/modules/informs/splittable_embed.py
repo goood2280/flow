@@ -75,7 +75,7 @@ def _normalize_root(value: Any) -> str:
     text = str(value or "").strip()
     if not text or text in {"-", "—"}:
         return ""
-    return _root_fallback(text)
+    return _root_fallback(text).upper()
 
 
 def _plan_root_candidates(lot: str, view: dict[str, Any]) -> list[str]:
@@ -102,7 +102,7 @@ def _plan_root_candidates(lot: str, view: dict[str, Any]) -> list[str]:
             add(value)
     if out and out[0]:
         # legacy alias: root 자체가 root/lot 둘 다 있을 때 양쪽 키로도 탐색.
-        return out + [_root_fallback(r) for r in out if _root_fallback(r) not in seen]
+        return out + [_normalize_root(r) for r in out if _normalize_root(r) not in seen]
     return out
 
 
@@ -147,7 +147,7 @@ def _merge_cols(*groups: Iterable[str]) -> list[str]:
 
 
 def _plan_columns_for_root(ml_product: str, root_lot_id: str, limit: int = 80) -> list[str]:
-    root = str(root_lot_id or "").strip()
+    root = _normalize_root(root_lot_id)
     if not root:
         return []
     try:
@@ -163,7 +163,7 @@ def _plan_columns_for_root(ml_product: str, root_lot_id: str, limit: int = 80) -
     seen: set[str] = set()
     for cell_key, info in plans.items():
         parts = str(cell_key or "").split("|", 2)
-        if len(parts) != 3 or parts[0] != root:
+        if len(parts) != 3 or _normalize_root(parts[0]) != root:
             continue
         value = info.get("value") if isinstance(info, dict) else None
         if not _has_st_value(value):
@@ -178,7 +178,7 @@ def _plan_columns_for_root(ml_product: str, root_lot_id: str, limit: int = 80) -
 
 
 def _plans_for_root(ml_product: str, root_lot_id: str) -> dict[str, Any]:
-    root = str(root_lot_id or "").strip()
+    root = _normalize_root(root_lot_id)
     if not root:
         return {}
     try:
@@ -193,7 +193,7 @@ def _plans_for_root(ml_product: str, root_lot_id: str) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for cell_key, info in plans.items():
         parts = str(cell_key or "").split("|", 2)
-        if len(parts) != 3 or parts[0] != root:
+        if len(parts) != 3 or _normalize_root(parts[0]) != root:
             continue
         value = info.get("value") if isinstance(info, dict) else None
         if _has_st_value(value):

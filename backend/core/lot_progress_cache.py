@@ -42,6 +42,12 @@ def cache_file() -> Path:
     return _cache_dir() / "lot_wf_current.json"
 
 
+def lot_status_cache_file() -> Path:
+    fp = PATHS.data_root / "tracker" / "lot_status_cache.json"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    return fp
+
+
 def _now_iso() -> str:
     return dt.datetime.now().isoformat(timespec="seconds")
 
@@ -96,6 +102,106 @@ def _norm_wafer(value) -> str:
 
 def _sort_time(row: dict) -> str:
     return _safe_text(row.get("tkout_time") or row.get("tkin_time") or row.get("time"))
+
+
+def _lot_status_time(row: dict) -> str:
+    return _safe_text(row.get("time") or row.get("last_checked_at") or row.get("last_move_at") or row.get("tkout_time") or row.get("tkin_time"))
+
+
+def _lot_status_key(row: dict) -> tuple[str, str, str]:
+    return (
+        _norm_key(row.get("product")),
+        _norm_key(row.get("lot_id")),
+        _norm_key(row.get("wafer_id")),
+    )
+
+
+def _tracker_status_row(row: dict, *, source: str = "tracker") -> dict | None:
+    if not isinstance(row, dict):
+        return None
+    lot_id = _safe_text(row.get("lot_id") or row.get("fab_lot_id") or row.get("root_lot_id"))
+    if not lot_id:
+        return None
+    wafer_id = _norm_wafer(row.get("wafer_id"))
+    step_id = _safe_text(
+        row.get("step_id")
+        or row.get("current_step")
+        or row.get("current_step_id")
+    )
+    function_step = _safe_text(
+        row.get("function_step")
+        or row.get("current_function_step")
+        or row.get("func_step")
+        or row.get("et_last_function_step")
+        or ""
+    )
+    time_value = _lot_status_time(row)
+    return {
+        "cache_source": str(source or "tracker").strip() or "tracker",
+        "product": _safe_text(row.get("product") or row.get("process_id")),
+        "process_id": _safe_text(row.get("process_id") or row.get("product")),
+        "root_lot_id": _safe_text(row.get("root_lot_id")),
+        "lot_id": lot_id,
+        "wafer_id": wafer_id,
+        "step_id": step_id,
+        "function_step": function_step,
+        "func_step": function_step,
+        "time": time_value,
+        "source_root": _safe_text(row.get("source_root") or row.get("last_scan_source_root") or FAB_ROOT),
+        "eqp_id": _safe_text(row.get("eqp_id")),
+        "chamber_id": _safe_text(row.get("chamber_id")),
+        "ppid": _safe_text(row.get("ppid")),
+    }
+
+
+def _load_tracker_lot_status_state() -> dict:
+    fp = lot_status_cache_file()
+    if not fp.is_file():
+        return {"version": CACHE_VERSION, "generated_at": "", "items": [], "count": 0}
+    try:
+        return json.loads(fp.read_text(encoding="utf-8"))
+    except Exception:
+        return {"version": CACHE_VERSION, "generated_at": "", "items": [], "count": 0}
+
+
+def upsert_tracker_lot_status_rows(rows: list[dict], source: str = "tracker") -> dict:
+    fp = lot_status_cache_file()
+    state = _load_tracker_lot_status_state()
+    merged: dict[tuple[str, str, str], dict] = {}
+    for row in state.get("items") or []:
+        row_norm = _tracker_status_row(dict(row), source=row.get("cache_source") or "tracker")
+        if row_norm is None:
+            continue
+        merged[_lot_status_key(row_norm)] = row_norm
+    for row in rows or []:
+        row_norm = _tracker_status_row(dict(row), source=source)
+        if row_norm is None:
+            continue
+        key = _lot_status_key(row_norm)
+        current = merged.get(key)
+        if current is None or _lot_status_time(row_norm) >= _lot_status_time(current):
+            merged[key] = row_norm
+    out = sorted(
+        merged.values(),
+        key=lambda row: (_lot_status_time(row), _norm_key(row.get("product")), _norm_key(row.get("lot_id")), _wafer_sort_value(row.get("wafer_id"))),
+        reverse=True,
+    )
+    state = {
+        "version": CACHE_VERSION,
+        "generated_at": _now_iso(),
+        "source": str(source or "tracker").strip() or "tracker",
+        "count": len(out),
+        "items": out,
+        "count_by_product": len({(item.get("product") or "").strip() for item in out}),
+    }
+    tmp = fp.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(fp)
+    return state
+
+
+def _save_tracker_lot_status_cache(rows: list[dict], source: str = "tracker") -> dict:
+    return upsert_tracker_lot_status_rows(rows, source=source)
 
 
 def _wafer_sort_value(value) -> int:
@@ -279,6 +385,7 @@ def refresh_lot_progress_cache(force: bool = False) -> dict:
             "errors": errors,
             "items": items,
         }
+        _save_tracker_lot_status_cache(items, source="lot_progress_cache")
         tmp = cache_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(cache_path)
