@@ -15,6 +15,7 @@ def start_background_services(logger) -> None:
     """Start optional background schedulers without blocking app startup."""
 
     light_starters = (
+        ("filebrowser cache cleanup", "routers.filebrowser", "cleanup_legacy_cache_roots"),
         ("backup scheduler", "core.backup", "start_scheduler"),
         ("valve watch scheduler", "core.valve_watch", "start_scheduler"),
         ("product dedup scheduler", "scheduler", "start_scheduler"),

@@ -12,8 +12,9 @@ import polars as pl
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from core import knowledge_vault as kv
 from core import semiconductor_knowledge as semi
-from core.auth import current_user, require_admin
+from core.auth import current_user, is_page_admin, require_admin
 from core.paths import PATHS
 from core.utils import load_json, save_json
 from routers import llm as flowi_llm
@@ -72,6 +73,25 @@ class KnowledgeIngestReq(BaseModel):
     doc_type: str = "internal_knowledge"
     content: str = ""
     file_name: str = ""
+
+
+class AgentWikiSourceReq(BaseModel):
+    source_type: str = "markdown"
+    source_id: str = ""
+    title: str = ""
+    content: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+class AgentWikiIngestReq(BaseModel):
+    source_ids: list[str] = Field(default_factory=list)
+    source_type: str = "markdown"
+    doc_id: str = ""
+    title: str = ""
+    summary: str = ""
+    body: str = ""
+    content: str = ""
+    tags: list[str] = Field(default_factory=list)
 
 
 def _now_iso() -> str:
@@ -135,6 +155,16 @@ def _backup_state(kind: str, current: Any) -> str:
 
 def _require_agent_admin(request: Request) -> dict[str, Any]:
     return require_admin(request)
+
+
+def _require_agent_wiki_admin(request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    if me.get("role") == "admin":
+        return me
+    username = me.get("username") or ""
+    if is_page_admin(username, "diagnosis") or is_page_admin(username, "knowledge"):
+        return me
+    raise HTTPException(403, "admin or diagnosis/knowledge page admin only")
 
 
 def _activity_rows(limit: int = 1000) -> list[dict[str, Any]]:
@@ -490,6 +520,117 @@ def recent_rag(
         if len(traces) >= limit:
             break
     return {"ok": True, "limit": limit, "user": target_user, "traces": traces}
+
+
+@router.get("/wiki/sources")
+def agent_wiki_sources(
+    request: Request,
+    q: str = Query("", max_length=200),
+    source_type: str = Query("", max_length=80),
+    limit: int = Query(100, ge=1, le=1000),
+):
+    current_user(request)
+    return {"ok": True, "sources": kv.list_agent_wiki_sources(q=q, source_type=source_type, limit=limit)}
+
+
+@router.post("/wiki/sources")
+def agent_wiki_create_source(req: AgentWikiSourceReq, request: Request):
+    me = _require_agent_wiki_admin(request)
+    data = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    data["actor"] = me.get("username") or "admin"
+    try:
+        source = kv.register_agent_wiki_source(data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "source": source}
+
+
+@router.get("/wiki/source")
+def agent_wiki_source(request: Request, source_id: str = Query(..., min_length=1)):
+    current_user(request)
+    source = kv.get_agent_wiki_source(source_id)
+    if not source:
+        raise HTTPException(404, "Agent Wiki source not found")
+    return {"ok": True, "source": source}
+
+
+@router.post("/wiki/ingest/preview")
+def agent_wiki_ingest_preview(req: AgentWikiIngestReq, request: Request):
+    current_user(request)
+    data = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    try:
+        preview = kv.preview_agent_wiki_ingest(data)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "preview": preview}
+
+
+@router.post("/wiki/ingest/commit")
+def agent_wiki_ingest_commit(req: AgentWikiIngestReq, request: Request):
+    me = _require_agent_wiki_admin(request)
+    data = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    data["actor"] = me.get("username") or "admin"
+    try:
+        result = kv.commit_agent_wiki_ingest(data)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, **result}
+
+
+@router.get("/wiki/pages")
+def agent_wiki_pages(
+    request: Request,
+    q: str = Query("", max_length=200),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    current_user(request)
+    return {"ok": True, "pages": kv.list_agent_wiki_pages(q=q, limit=limit)}
+
+
+@router.get("/wiki/page")
+def agent_wiki_page(request: Request, doc_id: str = Query(..., min_length=1)):
+    current_user(request)
+    doc = kv.get_doc(doc_id)
+    if not doc or doc.get("kind") != "agent_wiki":
+        raise HTTPException(404, "Agent Wiki page not found")
+    return {"ok": True, "page": doc}
+
+
+@router.get("/wiki/search")
+def agent_wiki_search(
+    request: Request,
+    q: str = Query(..., min_length=1, max_length=200),
+    limit: int = Query(30, ge=1, le=100),
+):
+    current_user(request)
+    return {"ok": True, "query": q, "results": kv.search_agent_wiki(q=q, limit=limit)}
+
+
+@router.get("/wiki/log")
+def agent_wiki_log(
+    request: Request,
+    limit: int = Query(100, ge=1, le=1000),
+    action: str = Query("", max_length=80),
+):
+    current_user(request)
+    return {"ok": True, "logs": kv.list_wiki_log(limit=limit, action=action)}
+
+
+@router.post("/wiki/lint")
+def agent_wiki_lint(request: Request):
+    me = _require_agent_wiki_admin(request)
+    result = kv.lint_agent_wiki()
+    kv.append_wiki_log({
+        "action": "lint",
+        "actor": me.get("username") or "admin",
+        "message": "Ran Agent Wiki lint",
+        "meta": result.get("counts") or {},
+    })
+    return result
 
 
 @router.get("/item-rules")

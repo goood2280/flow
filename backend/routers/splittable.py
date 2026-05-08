@@ -130,6 +130,7 @@ def _lot_lookup_cache_set(key: tuple, payload: dict) -> dict:
 PLAN_DIR = PATHS.data_root / "splittable"
 PLAN_DIR.mkdir(parents=True, exist_ok=True)
 MATCH_CACHE_DIR = PLAN_DIR / "match_cache"
+MATCH_CACHE_STATE_FILE = PLAN_DIR / "match_cache_state.json"
 MATCH_CACHE_VERSION = 3
 MATCH_CACHE_REFRESH_MINUTES_DEFAULT = 30
 MATCH_CACHE_REFRESH_MINUTES_MIN = 30
@@ -138,6 +139,18 @@ MATCH_CACHE_ROOT_COL = "__cache_root_lot_id"
 MATCH_CACHE_WAFER_COL = "__cache_wafer_id"
 MATCH_CACHE_FAB_COL = "__cache_fab_lot_id"
 MATCH_CACHE_TS_COL = "__cache_ts"
+LATEST_LOT_STEP_CACHE_FILE = "lot_progress_latest_lot_by_root_wafer.parquet"
+LEGACY_LATEST_LOT_STEP_CACHE_FILE = "splittable_latest_lot_step.parquet"
+LATEST_LOT_STEP_CACHE_COLUMNS = [
+    "product",
+    "root_lot_id",
+    "wafer_id",
+    "lot_id",
+    "step_id",
+    "function_step",
+    "tkout_time",
+    "update_time",
+]
 _MATCH_CACHE_THREAD: threading.Thread | None = None
 _MATCH_CACHE_STARTED = False
 _MATCH_CACHE_STOP = threading.Event()
@@ -3586,6 +3599,66 @@ def _match_cache_refresh_minutes() -> int:
     return max(MATCH_CACHE_REFRESH_MINUTES_MIN, min(MATCH_CACHE_REFRESH_MINUTES_MAX, value))
 
 
+def _latest_lot_step_cache_path() -> Path:
+    return _db_base() / "cache" / LATEST_LOT_STEP_CACHE_FILE
+
+
+def _legacy_latest_lot_step_cache_path() -> Path:
+    return _db_base() / "cache" / LEGACY_LATEST_LOT_STEP_CACHE_FILE
+
+
+def _cleanup_legacy_latest_lot_step_cache() -> None:
+    try:
+        _legacy_latest_lot_step_cache_path().unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _empty_latest_lot_step_frame() -> pl.DataFrame:
+    return pl.DataFrame({col: [] for col in LATEST_LOT_STEP_CACHE_COLUMNS})
+
+
+def _match_cache_state() -> dict:
+    data = load_json(MATCH_CACHE_STATE_FILE, {}) if MATCH_CACHE_STATE_FILE.is_file() else {}
+    return data if isinstance(data, dict) else {}
+
+
+def _match_cache_global_fresh(now: float | None = None) -> dict:
+    now = time.time() if now is None else float(now)
+    state = _match_cache_state()
+    last = 0.0
+    try:
+        last = float(state.get("last_refresh_epoch") or 0)
+    except Exception:
+        last = 0.0
+    interval_s = _match_cache_refresh_minutes() * 60
+    cache_fp = _latest_lot_step_cache_path()
+    fresh = bool(last and cache_fp.is_file() and (now - last) < interval_s)
+    return {
+        "fresh": fresh,
+        "last_refresh_epoch": last or None,
+        "last_refresh_at": state.get("last_refresh_at") or "",
+        "age_seconds": max(0, int(now - last)) if last else None,
+        "next_refresh_at": datetime.datetime.fromtimestamp(last + interval_s).isoformat(timespec="seconds") if last else "",
+        "cache_path": str(cache_fp),
+        "cache_exists": cache_fp.is_file(),
+        "interval_minutes": _match_cache_refresh_minutes(),
+    }
+
+
+def _mark_match_cache_refreshed(export_result: dict) -> None:
+    now = time.time()
+    state = {
+        "last_refresh_epoch": now,
+        "last_refresh_at": datetime.datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+        "cache_path": export_result.get("path") or str(_latest_lot_step_cache_path()),
+        "row_count": int(export_result.get("row_count") or 0),
+        "products": export_result.get("products") or [],
+        "updated_at": export_result.get("cache_updated_at") or "",
+    }
+    save_json(MATCH_CACHE_STATE_FILE, state)
+
+
 def _float_env_clamped(name: str, default: float, lo: float, hi: float) -> float:
     try:
         value = float(os.environ.get(name, "") or default)
@@ -3715,8 +3788,9 @@ def _write_match_cache_lazyframe(q, tmp: Path) -> int:
     df = None
     try:
         try:
-            df = q.collect(streaming=True)
-        except TypeError:
+            from core.parquet_perf import collect_streaming
+            df = collect_streaming(q)
+        except Exception:
             df = q.collect()
         df.write_parquet(tmp)
         return int(df.height)
@@ -3795,6 +3869,305 @@ def _match_cache_current(product: str) -> dict | None:
                        ml_product, type(e).__name__, e)
         return None
     return {"product": ml_product, "ov": ov, "fab_source": fab_source, "path": fp, "meta": meta, "lf": lf}
+
+
+def _latest_cache_product_values(product: str) -> set[str]:
+    raw = str(product or "").strip()
+    if not raw:
+        return set()
+    canonical = _canonical_mltable_product_name(raw, allow_bare=True) or raw
+    values = {raw.upper(), canonical.upper()}
+    if canonical.upper().startswith("ML_TABLE_"):
+        bare = canonical[len("ML_TABLE_"):].strip()
+        if bare:
+            values.add(bare.upper())
+    else:
+        values.add(f"ML_TABLE_{canonical}".upper())
+    return values
+
+
+def _latest_lot_step_cache_lf(product: str = ""):
+    fp = _latest_lot_step_cache_path()
+    if not fp.is_file():
+        return None
+    try:
+        lf = _cast_cats_lazy(_scan_parquet_compat(str(fp)))
+        names = lf.collect_schema().names()
+    except Exception as e:
+        logger.warning("SplitTable latest lot-step cache scan failed (%s) %s: %s",
+                       fp, type(e).__name__, e)
+        return None
+    if product and "product" in names:
+        values = _latest_cache_product_values(product)
+        if values:
+            lf = lf.filter(pl.col("product").cast(_STR, strict=False).str.to_uppercase().is_in(sorted(values)))
+    return lf
+
+
+def _filter_latest_lot_step_cache(lf, *, root_lot_id: str = "", fab_lot_id: str = "",
+                                  wafer_ids: str = ""):
+    try:
+        names = lf.collect_schema().names()
+    except Exception:
+        names = []
+    root_scope = str(root_lot_id or "").strip()
+    fab_scope = str(fab_lot_id or "").strip()
+    wafer_scope = str(wafer_ids or "").strip()
+    if root_scope and "root_lot_id" in names:
+        lf = lf.filter(_join_key_expr("root_lot_id") == root_scope.upper())
+    if fab_scope:
+        fab_filters = []
+        if "lot_id" in names:
+            fab_filters.append(_join_key_expr("lot_id") == fab_scope.upper())
+        if fab_filters:
+            expr = fab_filters[0]
+            for item in fab_filters[1:]:
+                expr = expr | item
+            lf = lf.filter(expr)
+    if wafer_scope and "wafer_id" in names:
+        wf_list = [w.strip() for w in wafer_scope.split(",") if w.strip()]
+        try:
+            wf_ints = [int(w) for w in wf_list]
+            wf_strs = set()
+            for n in wf_ints:
+                wf_strs.update([str(n), f"{n:02d}", f"W{n}", f"W{n:02d}"])
+            lf = lf.filter(
+                pl.col("wafer_id").cast(_STR, strict=False).is_in(list(wf_strs))
+                | pl.col("wafer_id").cast(pl.Int64, strict=False).is_in(wf_ints)
+            )
+        except ValueError:
+            lf = lf.filter(pl.col("wafer_id").cast(_STR, strict=False).is_in(wf_list))
+    return lf
+
+
+def _latest_lot_step_cache_source(product: str, current: dict | None = None) -> str:
+    source = str((current or {}).get("fab_source") or "").strip()
+    if source:
+        return source
+    try:
+        source = _auto_derive_fab_source(product)
+    except Exception:
+        source = ""
+    return source or "lot_progress_latest_cache"
+
+
+def _fab_history_scope_from_latest_cache(product: str, root_lot_id: str = "", fab_lot_id: str = "",
+                                         prefix: str = "", limit: int = 500) -> dict | None:
+    cache_lf = _latest_lot_step_cache_lf(product)
+    if cache_lf is None:
+        return None
+    current = _match_cache_current(product)
+    source = _latest_lot_step_cache_source(product, current)
+    try:
+        names = cache_lf.collect_schema().names()
+    except Exception:
+        return None
+    if not {"root_lot_id", "lot_id"}.issubset(set(names)):
+        return None
+    q = _filter_latest_lot_step_cache(
+        cache_lf,
+        root_lot_id=root_lot_id,
+        fab_lot_id=fab_lot_id,
+    ).select([
+        pl.col("root_lot_id").cast(_STR, strict=False).alias("root"),
+        pl.col("lot_id").cast(_STR, strict=False).alias("fab"),
+        *([pl.col("wafer_id").cast(_STR, strict=False).alias("wafer")] if "wafer_id" in names else []),
+    ]).filter(pl.col("root").is_not_null() & pl.col("fab").is_not_null())
+    root_scope = str(root_lot_id or "").strip()
+    fab_scope = str(fab_lot_id or "").strip()
+    if fab_scope:
+        q = q.filter(_join_key_expr("fab") == fab_scope.upper())
+    elif str(prefix or "").strip():
+        q = q.filter(_contains_literal_ci_expr("fab", prefix))
+    try:
+        fabs = _limited_unique_values(
+            q,
+            "fab",
+            prefix="",
+            limit=limit,
+            preview_only=not bool(root_scope or fab_scope or str(prefix or "").strip()),
+        )
+        roots: list[str] = [root_scope] if root_scope else []
+        wafers: list[str] = []
+        if fab_scope and fabs:
+            meta_cols = [pl.col("root")]
+            if "wafer" in q.collect_schema().names():
+                meta_cols.append(pl.col("wafer"))
+            meta_df = q.select(meta_cols).unique().collect()
+            roots = sorted({s for s in (_clean_str(v) for v in meta_df["root"].to_list()) if s})
+            if "wafer" in meta_df.columns:
+                wafers = sorted({s for s in (_clean_str(v) for v in meta_df["wafer"].to_list()) if s}, key=_wafer_sort_key)
+    except Exception as e:
+        logger.warning("_fab_history_scope_from_latest_cache 실패 (product=%s) %s: %s",
+                       product, type(e).__name__, e)
+        return None
+    return {
+        "candidates": fabs,
+        "root_ids": roots,
+        "wafer_ids": wafers,
+        "source": source,
+        "cache": True,
+    }
+
+
+def _fab_history_root_candidates_from_latest_cache(product: str, prefix: str = "", limit: int = 500) -> dict | None:
+    cache_lf = _latest_lot_step_cache_lf(product)
+    if cache_lf is None:
+        return None
+    current = _match_cache_current(product)
+    source = _latest_lot_step_cache_source(product, current)
+    try:
+        names = cache_lf.collect_schema().names()
+    except Exception:
+        return None
+    if "root_lot_id" not in names:
+        return None
+    try:
+        values = _limited_unique_values(cache_lf, "root_lot_id", prefix=prefix, limit=limit)
+    except Exception as e:
+        logger.warning("_fab_history_root_candidates_from_latest_cache 실패 (product=%s) %s: %s",
+                       product, type(e).__name__, e)
+        return None
+    return {"candidates": values, "source": source, "cache": True}
+
+
+def _fab_lot_snapshot_from_latest_cache(product: str, root_lot_id: str, wafer_id: str = "") -> str:
+    root = str(root_lot_id or "").strip()
+    if not root:
+        return ""
+    cache_lf = _latest_lot_step_cache_lf(product)
+    if cache_lf is None:
+        return ""
+    try:
+        names = cache_lf.collect_schema().names()
+    except Exception:
+        return ""
+    if "lot_id" not in names:
+        return ""
+    q = (
+        _filter_latest_lot_step_cache(cache_lf, root_lot_id=root, wafer_ids=str(wafer_id or ""))
+        .select([
+            pl.col("lot_id").cast(_STR, strict=False).alias("fab"),
+            *([pl.col("tkout_time").cast(_STR, strict=False).alias("ts")] if "tkout_time" in names else []),
+        ])
+        .filter(pl.col("fab").is_not_null() & (pl.col("fab") != ""))
+    )
+    if "ts" in q.collect_schema().names():
+        q = q.sort("ts", descending=True, nulls_last=True)
+    else:
+        q = q.sort("fab")
+    try:
+        df = q.head(1).collect()
+    except Exception as e:
+        logger.warning("_fab_lot_snapshot_from_latest_cache 실패 (product=%s root=%s wafer=%s) %s: %s",
+                       product, root_lot_id, wafer_id, type(e).__name__, e)
+        return ""
+    if df.is_empty():
+        return ""
+    return _clean_str(df.item(0, 0))
+
+
+def export_latest_lot_step_cache(products: list[str] | None = None, *, update_state: bool = False) -> dict:
+    """Export product match caches into the canonical latest lot/step parquet."""
+    raw_products = [p for p in (products or _match_cache_products("")) if p]
+    cache_updated_at = datetime.datetime.now().isoformat(timespec="seconds")
+    frames = []
+    exported_products: list[str] = []
+    skipped: list[dict] = []
+    for raw_product in raw_products:
+        current = _match_cache_current(raw_product)
+        if not current:
+            skipped.append({"product": raw_product, "reason": "match_cache_missing"})
+            continue
+        lf = current.get("lf")
+        product = current.get("product") or raw_product
+        try:
+            names = lf.collect_schema().names()
+        except Exception as e:
+            skipped.append({"product": product, "reason": f"schema_failed: {type(e).__name__}"})
+            continue
+        if MATCH_CACHE_ROOT_COL not in names or MATCH_CACHE_FAB_COL not in names:
+            skipped.append({"product": product, "reason": "required_columns_missing"})
+            continue
+        exprs = [
+            pl.lit(product).alias("product"),
+            pl.col(MATCH_CACHE_ROOT_COL).cast(_STR, strict=False).alias("root_lot_id"),
+            (
+                pl.col(MATCH_CACHE_WAFER_COL).cast(_STR, strict=False).alias("wafer_id")
+                if MATCH_CACHE_WAFER_COL in names else pl.lit("").alias("wafer_id")
+            ),
+            pl.col(MATCH_CACHE_FAB_COL).cast(_STR, strict=False).alias("lot_id"),
+            (
+                pl.col("step_id").cast(_STR, strict=False).alias("step_id")
+                if "step_id" in names else pl.lit("").alias("step_id")
+            ),
+            pl.lit("").alias("function_step"),
+            (
+                pl.col(MATCH_CACHE_TS_COL).cast(_STR, strict=False).alias("tkout_time")
+                if MATCH_CACHE_TS_COL in names else pl.lit("").alias("tkout_time")
+            ),
+            pl.lit(cache_updated_at).alias("update_time"),
+        ]
+        frames.append(lf.select(exprs))
+        exported_products.append(product)
+    fp = _latest_lot_step_cache_path()
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    _cleanup_legacy_latest_lot_step_cache()
+    if frames:
+        q = pl.concat(frames)
+        q = q.filter(
+            pl.col("product").is_not_null()
+            & (pl.col("product") != "")
+            & pl.col("root_lot_id").is_not_null()
+            & (pl.col("root_lot_id") != "")
+            & pl.col("lot_id").is_not_null()
+            & (pl.col("lot_id") != "")
+        )
+        q = (
+            q.sort("tkout_time", descending=True, nulls_last=True)
+             .unique(subset=["product", "root_lot_id", "wafer_id"], keep="first", maintain_order=True)
+             .sort(["product", "root_lot_id", "wafer_id"])
+        )
+        try:
+            from core.parquet_perf import collect_streaming
+            df = collect_streaming(q)
+        except Exception:
+            df = q.collect()
+        function_steps = []
+        step_meta_cache: dict[tuple[str, str], str] = {}
+        try:
+            from core.lot_step import lookup_step_meta
+        except Exception:
+            lookup_step_meta = None
+        for product_value, step_value in df.select(["product", "step_id"]).iter_rows():
+            product_text = str(product_value or "")
+            step_text = str(step_value or "").strip()
+            key = (product_text, step_text)
+            if key not in step_meta_cache:
+                meta = lookup_step_meta(product=product_text, step_id=step_text) if lookup_step_meta and step_text else {}
+                step_meta_cache[key] = str((meta or {}).get("function_step") or (meta or {}).get("func_step") or "")
+            function_steps.append(step_meta_cache[key])
+        df = df.with_columns(pl.Series("function_step", function_steps)).select(LATEST_LOT_STEP_CACHE_COLUMNS)
+    else:
+        df = _empty_latest_lot_step_frame()
+    tmp = fp.with_suffix(fp.suffix + ".tmp")
+    try:
+        tmp.unlink(missing_ok=True)
+    except Exception:
+        pass
+    df.write_parquet(tmp)
+    tmp.replace(fp)
+    result = {
+        "ok": True,
+        "path": str(fp),
+        "row_count": int(df.height),
+        "products": exported_products,
+        "skipped": skipped,
+        "cache_updated_at": cache_updated_at,
+    }
+    if update_state:
+        _mark_match_cache_refreshed(result)
+    return result
 
 
 def _resolve_match_cache_columns(ov: dict, main_names_list: list[str], fab_schema_names: list[str]) -> dict:
@@ -3947,6 +4320,15 @@ def _cached_fab_projection(product: str, ov: dict, fab_source: str, main_names_l
 
 def _fab_history_scope_from_cache(product: str, root_lot_id: str = "", fab_lot_id: str = "",
                                   prefix: str = "", limit: int = 500) -> dict | None:
+    latest = _fab_history_scope_from_latest_cache(
+        product,
+        root_lot_id=root_lot_id,
+        fab_lot_id=fab_lot_id,
+        prefix=prefix,
+        limit=limit,
+    )
+    if latest is not None:
+        return latest
     current = _match_cache_current(product)
     if not current:
         return None
@@ -3997,6 +4379,9 @@ def _fab_history_scope_from_cache(product: str, root_lot_id: str = "", fab_lot_i
 
 
 def _fab_history_root_candidates_from_cache(product: str, prefix: str = "", limit: int = 500) -> dict | None:
+    latest = _fab_history_root_candidates_from_latest_cache(product, prefix=prefix, limit=limit)
+    if latest is not None:
+        return latest
     current = _match_cache_current(product)
     if not current:
         return None
@@ -4017,6 +4402,9 @@ def _fab_history_root_candidates_from_cache(product: str, prefix: str = "", limi
 
 
 def _fab_lot_snapshot_from_cache(product: str, root_lot_id: str, wafer_id: str = "") -> str:
+    latest = _fab_lot_snapshot_from_latest_cache(product, root_lot_id, wafer_id)
+    if latest:
+        return latest
     current = _match_cache_current(product)
     root = str(root_lot_id or "").strip()
     if not current or not root:
@@ -4186,6 +4574,21 @@ def _refresh_match_cache_products(products: list[str], force: bool = False) -> d
     return {"ok": any(r.get("ok") for r in results), "products": results, "interval_minutes": _match_cache_refresh_minutes()}
 
 
+def _canonical_product_set(products: list[str]) -> set[str]:
+    out = set()
+    for p in products or []:
+        text = _canonical_mltable_product_name(p, allow_bare=True) or str(p or "").strip()
+        if text:
+            out.add(text.upper())
+    return out
+
+
+def _match_cache_products_cover_all(products: list[str]) -> bool:
+    expected = _canonical_product_set(_match_cache_products(""))
+    got = _canonical_product_set(products)
+    return bool(expected) and expected.issubset(got)
+
+
 def refresh_match_cache(product: str = "", force: bool = False, max_products: int | None = None) -> dict:
     """Build persisted FAB root/fab/wafer connection tables for SplitTable.
 
@@ -4199,7 +4602,15 @@ def refresh_match_cache(product: str = "", force: bool = False, max_products: in
             products = products[:n]
         except Exception:
             pass
-    return _refresh_match_cache_products(products, force=force)
+    result = _refresh_match_cache_products(products, force=force)
+    try:
+        export_products = _match_cache_products("") or products
+        export = export_latest_lot_step_cache(products=export_products, update_state=_match_cache_products_cover_all(products))
+        result["latest_cache"] = export
+    except Exception as e:
+        logger.warning("SplitTable unified latest cache export failed: %s", e, exc_info=True)
+        result["latest_cache"] = {"ok": False, "reason": f"{type(e).__name__}: {e}"}
+    return result
 
 
 def _run_started_match_cache_job(products: list[str], force: bool, reason: str = "manual",
@@ -4238,6 +4649,15 @@ def _run_started_match_cache_job(products: list[str], force: bool, reason: str =
                 refresh_plan_risk_cache(force=False)
             except Exception as e:
                 logger.warning("SplitTable plan risk cache refresh after match cache failed: %s", e)
+        if products and not _MATCH_CACHE_STOP.is_set():
+            try:
+                export_products = _match_cache_products("") or products
+                export_latest_lot_step_cache(
+                    products=export_products,
+                    update_state=_match_cache_products_cover_all(products),
+                )
+            except Exception as e:
+                logger.warning("SplitTable unified latest cache export after match cache failed: %s", e)
         if not _MATCH_CACHE_STOP.is_set():
             try:
                 from core.lot_progress_cache import refresh_lot_progress_cache
@@ -4302,15 +4722,20 @@ def _seconds_until_next_match_cache_tick() -> float:
 def _match_cache_loop() -> None:
     while not _MATCH_CACHE_STOP.is_set():
         try:
-            products = _match_cache_products("")
-            started, _status = _begin_match_cache_job(products, force=False, reason="scheduler")
-            if started:
-                _run_started_match_cache_job(
-                    products,
-                    force=False,
-                    reason="scheduler",
-                    refresh_plan_risk=True,
-                )
+            freshness = _match_cache_global_fresh()
+            if freshness.get("fresh"):
+                logger.info("SplitTable match cache scheduler skipped; latest cache fresh until %s",
+                            freshness.get("next_refresh_at") or "")
+            else:
+                products = _match_cache_products("")
+                started, _status = _begin_match_cache_job(products, force=False, reason="scheduler")
+                if started:
+                    _run_started_match_cache_job(
+                        products,
+                        force=False,
+                        reason="scheduler",
+                        refresh_plan_risk=True,
+                    )
         except Exception as e:
             logger.warning("SplitTable match cache scheduler tick failed: %s", e)
         wait_s = _seconds_until_next_match_cache_tick()
@@ -4374,6 +4799,7 @@ def match_cache_status(request: Request, product: str = Query("")):
         "enabled": enabled,
         "interval_minutes": _match_cache_refresh_minutes(),
         "products": rows,
+        "latest_cache": _match_cache_global_fresh(),
         "job": _match_cache_job_status(),
     }
 

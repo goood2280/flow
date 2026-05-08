@@ -1,0 +1,45 @@
+# Inform Log
+
+Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, 후속 대화와 근거 snapshot을 thread로 남기는 화면이다.
+
+## Owns
+
+- lot/root 단위 inform thread
+- module, reason, deadline, status, 담당자 기록
+- PEMS reason chip, 사용자 입력 reason, 이미지/첨부 roundtrip
+- SplitTable CUSTOM snapshot embed
+- module-wise mail compose/send
+- Dashboard inform widget용 요약 데이터
+
+## Does Not Own
+
+- SplitTable plan 자체 편집
+- 원본 파일 수정
+- 회의록/캘린더 액션의 주 저장소 역할
+- 내부 source/scope/id를 메일 본문에 노출하는 것
+
+## Code Entrypoints
+
+| Layer | Path |
+|---|---|
+| Frontend page | `frontend/src/pages/My_Inform.jsx` |
+| Standard screen | `frontend/src/components/FlowInformStandardScreen.jsx` |
+| Main router | `backend/routers/informs.py` |
+| Extra router | `backend/routers/informs_extra.py` |
+| Module layer | `backend/app_v2/modules/informs/` |
+| Inform data | `data/flow-data/informs/` |
+| Flow-i guide | `data/flow-data/flowi_agent_features/inform.md` |
+
+## Guardrails
+
+- product가 불명확하면 생성 전에 후보를 확인한다.
+- message/reason이 없으면 빈 inform을 만들지 않는다.
+- 메일에는 제목, 대상, 본문, Flow link만 남긴다.
+- 첨부와 메일 실패는 UI에서 복구 가능한 상태로 보여준다.
+
+## Verify
+
+```bash
+git diff --check
+cd frontend && npm run build
+```

@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import polars as pl
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -57,3 +59,59 @@ def test_lot_progress_summary_returns_wafers_and_steps(monkeypatch):
         ("1", "STEP_010", "STI"),
         ("2", "STEP_020", "GATE"),
     ]
+
+
+def test_export_lot_progress_parquet_writes_readable_latest_lot_file(monkeypatch, tmp_path):
+    data_root = tmp_path / "flow-data"
+    db_root = tmp_path / "Fab"
+    db_root.mkdir()
+
+    class DummyPaths:
+        def __init__(self):
+            self.cache_dir = data_root / "cache"
+            self.db_cache_dir = db_root / "cache"
+
+        @property
+        def data_root(self):
+            return data_root
+
+        @property
+        def db_root(self):
+            return db_root
+
+    monkeypatch.setattr(cache, "PATHS", DummyPaths())
+
+    state = {
+        "generated_at": "2026-05-08T10:00:00",
+        "items": [
+            {
+                "product": "PRODA",
+                "process_id": "PRDA",
+                "root_lot_id": "A1000",
+                "lot_id": "A1000A.2",
+                "wafer_id": "W01",
+                "step_id": "STEP_020",
+                "func_step": "GATE",
+                "tkout_time": "2026-05-08T09:00:00",
+            }
+        ],
+    }
+
+    out = cache.export_lot_progress_parquet(state)
+    df = pl.read_parquet(cache.filebrowser_cache_parquet_file())
+
+    assert out["rows"] == 1
+    assert df.columns == [
+        "product", "root_lot_id", "wafer_id", "lot_id",
+        "step_id", "function_step", "tkout_time", "update_time",
+    ]
+    assert df.select(["product", "root_lot_id", "wafer_id", "lot_id", "step_id", "function_step", "tkout_time", "update_time"]).to_dicts() == [{
+        "product": "PRODA",
+        "root_lot_id": "A1000",
+        "wafer_id": "1",
+        "lot_id": "A1000A.2",
+        "step_id": "STEP_020",
+        "function_step": "GATE",
+        "tkout_time": "2026-05-08T09:00:00",
+        "update_time": "2026-05-08T10:00:00",
+    }]

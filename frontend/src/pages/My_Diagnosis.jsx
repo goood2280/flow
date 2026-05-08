@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { postJson, qs, sf } from "../lib/api";
+import { canManagePage } from "../lib/permissions";
 import {
   Banner,
   Button,
@@ -42,6 +43,7 @@ const CATEGORIES = [
   { id: "item", icon: "06", label: "Item 해석", desc: "semiconductor_knowledge 기반 item 의미와 knob/mask/step 변환 룰을 표로 봅니다." },
   { id: "llm", icon: "07", label: "LLM 설정", desc: "모델, endpoint, timeout, provider, auth mode를 확인하고 admin은 바로 수정합니다." },
   { id: "admin", icon: "🔒", label: "관리 도구", desc: "매칭, 룰북, 지식 주입 도구입니다. admin에게만 열립니다.", adminOnly: true },
+  { id: "wiki", icon: "09", label: "Wiki 운영", desc: "raw source를 등록하고 maintained wiki, 검색, 로그, lint를 운영합니다." },
 ];
 
 const WORKFLOW_STAGE_ICON = {
@@ -54,6 +56,10 @@ const WORKFLOW_STAGE_ICON = {
   polish: "✨",
   response: "📤",
 };
+
+function categoryFor(id) {
+  return CATEGORIES.find((item) => item.id === id) || CATEGORIES[0];
+}
 
 const WORKFLOW_STATUS_HINT = {
   input: "요청 수신",
@@ -155,6 +161,10 @@ function listText(v, max = 4) {
   const arr = Array.isArray(v) ? v : [];
   if (!arr.length) return "-";
   return arr.slice(0, max).map((x) => typeof x === "string" ? x : (x?.title || x?.id || x?.target || x?.source || "")).filter(Boolean).join(", ") + (arr.length > max ? ` +${arr.length - max}` : "");
+}
+
+function splitCommaTags(v) {
+  return String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
 }
 
 function JsonBlock({ value, maxHeight = 360 }) {
@@ -488,6 +498,286 @@ function KnowledgePanel({ user, isAdmin }) {
       <Panel title="Agent Knowledge Vault / Ontology" subtitle="에이전트가 참고하는 raw event, wiki, ontology graph를 같은 화면에서 관리합니다.">
         <AgentKnowledgeVault user={user} embedded />
       </Panel>
+    </CategoryFrame>
+  );
+}
+
+function AgentWikiPanel({ canManage }) {
+  const [sources, setSources] = useState([]);
+  const [pages, setPages] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [selectedSource, setSelectedSource] = useState(null);
+  const [selectedPage, setSelectedPage] = useState(null);
+  const [sourceForm, setSourceForm] = useState({ source_type: "markdown", title: "", tags: "", content: "" });
+  const [preview, setPreview] = useState(null);
+  const [searchQ, setSearchQ] = useState("");
+  const [searchRows, setSearchRows] = useState([]);
+  const [lint, setLint] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box", fontSize: 14 };
+
+  const load = () => {
+    setBusy(true);
+    Promise.all([
+      sf("/api/agent/wiki/sources?limit=80"),
+      sf("/api/agent/wiki/pages?limit=120"),
+      sf("/api/agent/wiki/log?limit=80"),
+    ])
+      .then(([s, p, l]) => {
+        setSources(s.sources || []);
+        setPages(p.pages || []);
+        setLogs(l.logs || []);
+        setMsg("");
+      })
+      .catch((e) => setMsg("오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const registerSource = () => {
+    if (!canManage) return;
+    const content = sourceForm.content.trim();
+    if (!content) {
+      setMsg("source content가 필요합니다.");
+      return;
+    }
+    setBusy(true);
+    postJson("/api/agent/wiki/sources", {
+      source_type: sourceForm.source_type || "markdown",
+      title: sourceForm.title || "Agent Wiki Source",
+      tags: splitCommaTags(sourceForm.tags),
+      content,
+    })
+      .then((d) => {
+        setSelectedSource(d.source || null);
+        setSourceForm((f) => ({ ...f, content: "" }));
+        setMsg(`source 등록됨: ${d.source?.source_id || "-"}`);
+        load();
+      })
+      .catch((e) => setMsg("오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const previewIngest = () => {
+    const sourceIds = selectedSource?.source_id ? [selectedSource.source_id] : [];
+    const content = sourceIds.length ? "" : sourceForm.content.trim();
+    if (!sourceIds.length && !content) {
+      setMsg("선택된 source 또는 본문이 필요합니다.");
+      return;
+    }
+    setBusy(true);
+    postJson("/api/agent/wiki/ingest/preview", {
+      source_ids: sourceIds,
+      title: sourceForm.title || selectedSource?.title || "",
+      tags: splitCommaTags(sourceForm.tags),
+      content,
+    })
+      .then((d) => {
+        setPreview(d.preview || null);
+        setMsg("preview 생성됨");
+      })
+      .catch((e) => setMsg("오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const commitIngest = () => {
+    if (!canManage || !preview) return;
+    const sourceIds = Array.isArray(preview.source_ids) ? preview.source_ids : [];
+    setBusy(true);
+    postJson("/api/agent/wiki/ingest/commit", {
+      source_ids: sourceIds,
+      doc_id: preview.doc_id,
+      title: preview.title,
+      summary: preview.summary,
+      body: preview.body,
+      tags: preview.tags || splitCommaTags(sourceForm.tags),
+      content: sourceIds.length ? "" : sourceForm.content.trim(),
+    })
+      .then((d) => {
+        setSelectedPage(d.doc || null);
+        setMsg(`wiki page 저장됨: ${d.doc?.doc_id || "-"}`);
+        load();
+      })
+      .catch((e) => setMsg("오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const openPage = (row) => {
+    const docId = row?.doc_id || row?.id;
+    if (!docId) return;
+    setBusy(true);
+    sf("/api/agent/wiki/page" + qs({ doc_id: docId }))
+      .then((d) => setSelectedPage(d.page || null))
+      .catch((e) => setMsg("오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const runSearch = () => {
+    const q = searchQ.trim();
+    if (!q) return;
+    setBusy(true);
+    sf("/api/agent/wiki/search" + qs({ q, limit: 50 }))
+      .then((d) => setSearchRows(d.results || []))
+      .catch((e) => setMsg("오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const runLint = () => {
+    if (!canManage) return;
+    setBusy(true);
+    postJson("/api/agent/wiki/lint", {})
+      .then((d) => {
+        setLint(d);
+        setMsg("lint 완료");
+        sf("/api/agent/wiki/log?limit=80").then((x) => setLogs(x.logs || [])).catch(() => {});
+      })
+      .catch((e) => setMsg("오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const lintCounts = lint?.counts || {};
+  return (
+    <CategoryFrame category={categoryFor("wiki")} right={<Pill tone={canManage ? "accent" : "neutral"}>{canManage ? "manage" : "read only"}</Pill>}>
+      {msg && <Banner tone={msg.startsWith("오류") ? "bad" : msg.includes("필요") ? "warn" : "ok"}>{msg}</Banner>}
+      <Panel title="Sources" subtitle="raw source는 append-only로 저장하고 wiki page의 입력으로 사용합니다.">
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(320px,0.95fr)", gap: 12, alignItems: "start" }}>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 150px", gap: 8 }}>
+              <Field label="source title">
+                <input value={sourceForm.title} onChange={(e) => setSourceForm({ ...sourceForm, title: e.target.value })} style={inputStyle} placeholder="회의록, spec, RCA 메모" />
+              </Field>
+              <Field label="type">
+                <select value={sourceForm.source_type} onChange={(e) => setSourceForm({ ...sourceForm, source_type: e.target.value })} style={inputStyle}>
+                  <option value="markdown">markdown</option>
+                  <option value="text">text</option>
+                  <option value="meeting_note">meeting_note</option>
+                  <option value="rca_report">rca_report</option>
+                </select>
+              </Field>
+            </div>
+            <Field label="tags">
+              <input value={sourceForm.tags} onChange={(e) => setSourceForm({ ...sourceForm, tags: e.target.value })} style={inputStyle} placeholder="DIBL, CA, GAA" />
+            </Field>
+            <Field label="source content">
+              <textarea value={sourceForm.content} onChange={(e) => setSourceForm({ ...sourceForm, content: e.target.value })} rows={8} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55 }} />
+            </Field>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              {canManage && <Button variant="primary" onClick={registerSource} disabled={busy || !sourceForm.content.trim()}>Source 등록</Button>}
+              <Button onClick={previewIngest} disabled={busy || (!selectedSource && !sourceForm.content.trim())}>Ingest Preview</Button>
+              {canManage && <Button variant="primary" onClick={commitIngest} disabled={busy || !preview}>Commit Wiki</Button>}
+              {selectedSource && <Pill tone="accent">{selectedSource.source_id}</Pill>}
+            </div>
+          </div>
+          <DataTable
+            rows={sources}
+            empty="등록된 source가 없습니다."
+            onRowClick={setSelectedSource}
+            maxHeight={360}
+            columns={[
+              { key: "created_at", label: "time", width: 128, render: (r) => String(r.created_at || "").replace("T", " ").slice(0, 16) },
+              { key: "title", label: "title" },
+              { key: "source_type", label: "type", width: 110 },
+              { key: "content_chars", label: "chars", width: 80 },
+              { key: "tags", label: "tags", render: (r) => listText(r.tags, 3) },
+            ]}
+          />
+        </div>
+      </Panel>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(320px,0.9fr)", gap: 12, alignItems: "start" }}>
+        <Panel title="Ingest Preview" subtitle="commit 전 생성될 maintained markdown page입니다.">
+          {preview ? (
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <Pill tone="accent">{preview.doc_id}</Pill>
+                <Pill tone="neutral">{preview.content_chars || 0} chars</Pill>
+                <Pill tone="info">{preview.source_count || 0} sources</Pill>
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 900 }}>{preview.title}</div>
+              <div style={{ fontSize: 14, color: uxColors.textSub, lineHeight: 1.55 }}>{preview.summary}</div>
+              <pre style={{ margin: 0, maxHeight: 360, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.55, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 5, padding: 10 }}>{preview.body}</pre>
+            </div>
+          ) : <EmptyState title="preview 없음" hint="source를 선택하거나 본문을 입력한 뒤 preview를 실행하세요." />}
+        </Panel>
+        <Panel title="Wiki Pages" subtitle="Agent Wiki kind로 저장된 maintained page 목록">
+          <DataTable
+            rows={pages}
+            empty="Agent Wiki page가 없습니다."
+            onRowClick={openPage}
+            maxHeight={430}
+            columns={[
+              { key: "title", label: "title" },
+              { key: "updated_at", label: "updated", width: 128, render: (r) => String(r.updated_at || "").replace("T", " ").slice(0, 16) },
+              { key: "source_ids", label: "sources", render: (r) => listText(r.source_ids, 2) },
+              { key: "tags", label: "tags", render: (r) => listText(r.tags, 3) },
+            ]}
+          />
+        </Panel>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.95fr) minmax(320px,1.05fr)", gap: 12, alignItems: "start" }}>
+        <Panel title="Wiki Search" subtitle="wiki_index 기반 검색과 page drill-down">
+          <div style={{ display: "flex", gap: 8, alignItems: "end", marginBottom: 10 }}>
+            <Field label="query">
+              <input value={searchQ} onChange={(e) => setSearchQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && runSearch()} style={{ ...inputStyle, minWidth: 260 }} placeholder="DIBL, source id, summary" />
+            </Field>
+            <Button variant="primary" onClick={runSearch} disabled={busy || !searchQ.trim()}>검색</Button>
+          </div>
+          <DataTable
+            rows={searchRows}
+            empty="검색 결과가 없습니다."
+            onRowClick={openPage}
+            maxHeight={320}
+            columns={[
+              { key: "score", label: "score", width: 70 },
+              { key: "title", label: "title" },
+              { key: "snippet", label: "snippet" },
+            ]}
+          />
+        </Panel>
+        <Panel title="Page Detail" subtitle={selectedPage?.doc_id || "선택된 page 없음"}>
+          {selectedPage ? (
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <Pill tone="accent">{selectedPage.kind}</Pill>
+                <Pill tone="neutral">{selectedPage.path || "-"}</Pill>
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 900 }}>{selectedPage.title}</div>
+              <div style={{ fontSize: 14, color: uxColors.textSub, lineHeight: 1.55 }}>{selectedPage.summary}</div>
+              <pre style={{ margin: 0, maxHeight: 420, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.55, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 5, padding: 10 }}>{selectedPage.body}</pre>
+            </div>
+          ) : <EmptyState title="page detail 없음" hint="page 목록 또는 search 결과에서 하나를 선택하세요." />}
+        </Panel>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(320px,0.85fr)", gap: 12, alignItems: "start" }}>
+        <Panel title="Log" subtitle="source_register, ingest_commit, lint 기록">
+          <DataTable
+            rows={logs}
+            empty="Agent Wiki log가 없습니다."
+            maxHeight={320}
+            columns={[
+              { key: "created_at", label: "time", width: 128, render: (r) => String(r.created_at || "").replace("T", " ").slice(0, 16) },
+              { key: "action", label: "action", width: 120 },
+              { key: "actor", label: "actor", width: 100 },
+              { key: "doc_id", label: "doc/source", render: (r) => r.doc_id || listText(r.source_ids, 1) },
+              { key: "message", label: "message" },
+            ]}
+          />
+        </Panel>
+        <Panel title="Lint" subtitle="orphan, broken link, stale summary, contradiction 후보">
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              {canManage && <Button variant="primary" onClick={runLint} disabled={busy}>Lint 실행</Button>}
+              {!canManage && <Pill tone="neutral">read only</Pill>}
+              {Object.entries(lintCounts).map(([k, v]) => <Pill key={k} tone={v ? "warn" : "neutral"}>{k}: {v}</Pill>)}
+            </div>
+            {lint ? <JsonBlock value={lint} maxHeight={300} /> : <EmptyState title="lint 결과 없음" hint="관리 권한이 있으면 lint를 실행할 수 있습니다." />}
+          </div>
+        </Panel>
+      </div>
     </CategoryFrame>
   );
 }
@@ -941,15 +1231,16 @@ function KnowledgeIngestAssistant() {
 export default function My_Diagnosis({ user }) {
   const [active, setActive] = useState("workflow");
   const isAdmin = user?.role === "admin";
+  const canManageWiki = canManagePage(user, "diagnosis") || canManagePage(user, "knowledge");
   const activeCategory = CATEGORIES.find((item) => item.id === active) || CATEGORIES[0];
   useEffect(() => {
     if (active === "admin" && !isAdmin) setActive("workflow");
   }, [active, isAdmin]);
   return (
     <PageShell>
-      <PageHeader title="에이전트" subtitle="Flowi agent workflow, persona, RAG, item rules, LLM, admin tools" />
+      <PageHeader title="에이전트" subtitle="Flowi agent workflow, persona, RAG, Agent Wiki, item rules, LLM, admin tools" />
       <div style={{ padding: 12, display: "grid", gridTemplateColumns: "250px minmax(0,1fr)", gap: 12, alignItems: "start" }}>
-        <Panel title="카테고리" subtitle="8개 영역" bodyStyle={{ padding: 10 }}>
+        <Panel title="카테고리" subtitle="9개 영역" bodyStyle={{ padding: 10 }}>
           <CategoryNav active={active} onChange={setActive} isAdmin={isAdmin} />
         </Panel>
         <div style={{ minWidth: 0 }}>
@@ -961,6 +1252,7 @@ export default function My_Diagnosis({ user }) {
           <div style={{ display: active === "item" ? "block" : "none" }}><ItemRulesPanel /></div>
           <div style={{ display: active === "llm" ? "block" : "none" }}><LlmPanel isAdmin={isAdmin} /></div>
           <div style={{ display: active === "admin" ? "block" : "none" }}><AdminToolsPanel isAdmin={isAdmin} /></div>
+          <div style={{ display: active === "wiki" ? "block" : "none" }}><AgentWikiPanel canManage={canManageWiki} /></div>
           {!activeCategory && <EmptyState title="카테고리를 선택하세요." />}
         </div>
       </div>

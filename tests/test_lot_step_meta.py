@@ -37,6 +37,32 @@ def test_lookup_step_meta_reads_func_step_from_step_matching():
     assert meta["func_step"] == "SD_EPI"
 
 
+def test_latest_fab_step_prefers_canonical_lot_progress_cache(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    pl.DataFrame({
+        "product": ["ML_TABLE_PRODA"],
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "lot_id": ["F1000A.1"],
+        "step_id": ["STEP_CACHE"],
+        "function_step": ["CACHE_FUNC"],
+        "tkout_time": ["2026-05-08T10:00:00"],
+        "update_time": ["2026-05-08T10:05:00"],
+    }).write_parquet(cache_dir / "lot_progress_latest_lot_by_root_wafer.parquet")
+    import core.lot_step as lot_step
+    monkeypatch.setattr(lot_step, "_get_db_root", lambda: tmp_path)
+
+    out = latest_fab_step(product="PRODA", root_lot_id="A1000", wafer_id="W01", source_root="missing")
+
+    assert out["step_id"] == "STEP_CACHE"
+    assert out["function_step"] == "CACHE_FUNC"
+    assert out["func_step"] == "CACHE_FUNC"
+    assert out["lot_id"] == "F1000A.1"
+    assert out["wafer_id"] == "1"
+    assert out["source"] == "lot_progress_latest_cache"
+
+
 def test_lookup_step_meta_reads_func_step_from_vehicle_matching(monkeypatch, tmp_path):
     db = tmp_path / "DB"
     db.mkdir()

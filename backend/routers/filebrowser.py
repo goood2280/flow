@@ -31,6 +31,8 @@ import time
 from pathlib import Path
 import sys
 import shutil
+import math
+import functools
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _APP_ROOT = _BACKEND_ROOT.parent
@@ -82,9 +84,20 @@ MAX_WAFER_ID = 25
 _SINGLE_FILE_STEP_CACHE_DIR = "cache"
 _SINGLE_FILE_STEP_CACHE_FILE = "latest_step_by_lot.parquet"
 _SINGLE_FILE_STEP_CACHE_VERSION = 2
+_SINGLE_FILE_LATEST_LOT_CACHE_FILE = "latest_lot_by_root_wafer.parquet"
+_SINGLE_FILE_LATEST_LOT_CACHE_VERSION = 1
+_CANONICAL_LOT_PROGRESS_CACHE_FILE = "lot_progress_latest_lot_by_root_wafer.parquet"
 _SINGLE_FILE_PREVIEW_MAX_BYTES = 64 * 1024 * 1024
 _SORT_STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 _LIST_CACHE: dict[tuple, tuple[float, object]] = {}
+FILEBROWSER_SETTINGS_FILE = "filebrowser_settings.json"
+DEFAULT_CSV_FULL_READ_MAX_BYTES = 10 * 1024 * 1024
+MAX_CSV_FULL_READ_MAX_BYTES = 100 * 1024 * 1024
+DEFAULT_FILEBROWSER_SETTINGS = {
+    "csv_full_read_max_bytes": DEFAULT_CSV_FULL_READ_MAX_BYTES,
+    "csv_rules": {},
+    "hidden_db_dirs": ["cache", "reformatter"],
+}
 
 _DATE_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})[-_]?(\d{2})[-_]?(\d{2})(?!\d)")
 _LATEST_COLUMN_PRIORITY = (
@@ -281,6 +294,14 @@ def _single_file_step_cache_meta(fp: Path) -> Path:
     return _single_file_step_cache_parquet(fp).with_suffix(".meta.json")
 
 
+def _single_file_latest_lot_cache_parquet(fp: Path) -> Path:
+    return _single_file_cache_dir(fp.parent) / f"{_single_file_cache_stem(fp)}.{_SINGLE_FILE_LATEST_LOT_CACHE_FILE}"
+
+
+def _single_file_latest_lot_cache_meta(fp: Path) -> Path:
+    return _single_file_latest_lot_cache_parquet(fp).with_suffix(".meta.json")
+
+
 def _single_file_col(columns: list[str], candidates: tuple[str, ...] | list[str]) -> str:
     by_lower = {str(c).lower(): str(c) for c in columns}
     for candidate in candidates:
@@ -301,19 +322,69 @@ def _single_file_cache_state(fp: Path) -> dict | None:
     return state if isinstance(state, dict) else None
 
 
+def _single_file_latest_lot_cache_state(fp: Path) -> dict | None:
+    meta_fp = _single_file_latest_lot_cache_meta(fp)
+    if not meta_fp.is_file():
+        return None
+    try:
+        state = json.loads(meta_fp.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _cache_entry_meta(fp: Path) -> dict:
+    name = fp.name
+    if name == _CANONICAL_LOT_PROGRESS_CACHE_FILE:
+        return {
+            "role": "latest lot/step cache",
+            "description": "root_lot_id/wafer_id별 최신 lot_id/step_id 공용 parquet 캐시",
+            "order": 0,
+        }
+    return {
+        "role": "cache parquet",
+        "description": "File Browser에서 열람 가능한 parquet 캐시",
+        "order": 5,
+    }
+
+
+def _cleanup_legacy_single_file_cache(root: Path) -> None:
+    cache = _single_file_cache_dir(root)
+    if not cache.is_dir():
+        return
+    nested = cache / _SINGLE_FILE_STEP_CACHE_DIR
+    if nested.is_dir():
+        try:
+            shutil.rmtree(nested)
+        except Exception as e:
+            logger.warning("legacy nested cache cleanup skipped (%s): %s", nested, e)
+    legacy_re = re.compile(r".*\.(?:latest_step_by_lot|latest_lot_by_root_wafer)\.(?:parquet|json|meta\.json)$")
+    for fp in list(cache.iterdir()):
+        if not fp.is_file():
+            continue
+        name = fp.name
+        if name == _CANONICAL_LOT_PROGRESS_CACHE_FILE:
+            continue
+        if name == "splittable_latest_lot_step.parquet" or legacy_re.match(name):
+            try:
+                fp.unlink()
+            except Exception as e:
+                logger.warning("legacy cache cleanup skipped (%s): %s", fp, e)
+
+
 def _single_file_cache_entries(root: Path, source_root: str) -> list[dict]:
     cache = _single_file_cache_dir(root)
     if not cache.is_dir():
         return []
+    _cleanup_legacy_single_file_cache(root)
     out: list[dict] = []
-    pattern = f"*.{_SINGLE_FILE_STEP_CACHE_FILE}"
-    for fp in sorted(cache.glob(pattern), key=lambda p: p.name.lower()):
-        if not fp.is_file():
-            continue
+    fp = cache / _CANONICAL_LOT_PROGRESS_CACHE_FILE
+    if fp.is_file():
         try:
             stat = fp.stat()
         except OSError:
-            continue
+            return []
+        meta = _cache_entry_meta(fp)
         rel = f"{_SINGLE_FILE_STEP_CACHE_DIR}/{fp.name}"
         out.append({
             "name": rel,
@@ -325,16 +396,25 @@ def _single_file_cache_entries(root: Path, source_root: str) -> list[dict]:
             "source": "cache",
             "source_root": source_root,
             "source_path": str(fp),
-            "role": "latest step cache",
-            "description": "product/lot_id별 latest_step_id와 updated_at 캐시",
-            "order": 1,
+            "role": meta["role"],
+            "description": meta["description"],
+            "order": meta["order"],
             "editable": False,
         })
     return out
 
 
+def _is_inside_single_file_cache(path: Path) -> bool:
+    try:
+        return path.parent.name == _SINGLE_FILE_STEP_CACHE_DIR or path.parent.parent.name == _SINGLE_FILE_STEP_CACHE_DIR
+    except Exception:
+        return False
+
+
 def _single_file_step_cache_candidate(path: Path) -> bool:
     if not path.is_file() or path.suffix.lower() not in {".csv", ".parquet"}:
+        return False
+    if _is_inside_single_file_cache(path):
         return False
     meta = _core_file_meta(path.name)
     if not meta:
@@ -343,38 +423,30 @@ def _single_file_step_cache_candidate(path: Path) -> bool:
 
 
 def _refresh_single_file_step_caches(root: Path) -> None:
-    if not root.is_dir():
-        return
-    try:
-        items = sorted(root.iterdir(), key=lambda p: p.name.lower())
-    except Exception:
-        return
-    for item in items:
-        if not _visible_single_file(item) or not _single_file_step_cache_candidate(item):
-            continue
-        try:
-            _build_single_file_step_cache(item)
-        except Exception as e:
-            logger.warning("single-file latest-step cache skipped (%s): %s", item, e)
+    _cleanup_legacy_single_file_cache(root)
 
 
 def _ensure_single_file_cache_dirs(base_root: Path, db_root: Path) -> None:
     for root in (base_root, db_root):
-        if not root.is_dir():
-            continue
-        has_single = False
+        _cleanup_legacy_single_file_cache(root)
+
+
+def cleanup_legacy_cache_roots() -> dict:
+    roots: list[Path] = []
+    for raw in (PATHS.base_root, PATHS.db_root):
         try:
-            for item in root.iterdir():
-                if item.is_file() and _visible_single_file(item):
-                    has_single = True
-                    break
+            root = Path(raw)
         except Exception:
             continue
-        if has_single:
-            try:
-                _single_file_cache_dir(root).mkdir(parents=True, exist_ok=True)
-            except Exception:
-                pass
+        if root in roots:
+            continue
+        roots.append(root)
+        _cleanup_legacy_single_file_cache(root)
+    return {
+        "ok": True,
+        "roots": [str(root) for root in roots],
+        "canonical": _CANONICAL_LOT_PROGRESS_CACHE_FILE,
+    }
 
 
 def _build_single_file_step_cache(fp: Path, force: bool = False) -> dict:
@@ -474,6 +546,131 @@ def _build_single_file_step_cache(fp: Path, force: bool = False) -> dict:
             "product_col": product_col,
             "lot_col": lot_col,
             "step_col": step_col,
+            "time_col": time_col,
+        }
+        _write_text_atomic(meta_fp, json.dumps(state, ensure_ascii=False, indent=2))
+        return {"ok": True, "ready": True, "cached": False, "rows": int(df.height)}
+    except Exception as e:
+        return {"ok": False, "ready": False, "reason": f"write failed: {e}"}
+
+
+def _single_file_product_label(fp: Path) -> str:
+    stem = str(fp.stem or "").strip()
+    if stem.upper().startswith("ML_TABLE_"):
+        return stem[len("ML_TABLE_"):]
+    return stem
+
+
+def _build_single_file_latest_lot_cache(fp: Path, force: bool = False) -> dict:
+    if fp.suffix.lower() not in {".csv", ".parquet"}:
+        return {"ok": False, "ready": False, "reason": "unsupported extension"}
+    try:
+        st = fp.stat()
+    except Exception:
+        return {"ok": False, "ready": False, "reason": "file stat failed"}
+    cache_fp = _single_file_latest_lot_cache_parquet(fp)
+    meta_fp = _single_file_latest_lot_cache_meta(fp)
+    try:
+        cache_fp.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return {"ok": False, "ready": False, "reason": "cache dir create failed"}
+    if not force:
+        state = _single_file_latest_lot_cache_state(fp)
+        if state and state.get("version") == _SINGLE_FILE_LATEST_LOT_CACHE_VERSION:
+            if state.get("source_size") == st.st_size and state.get("source_mtime_ns") == int(st.st_mtime_ns):
+                if state.get("ready"):
+                    return {"ok": True, "ready": True, "cached": True, "rows": int(state.get("rows") or 0)}
+                return {"ok": False, "ready": False, "cached": True, "reason": state.get("reason")}
+    lf = scan_one_file(fp)
+    if lf is None:
+        return {"ok": False, "ready": False, "reason": "scan failed"}
+    try:
+        schema = lf.collect_schema()
+        columns = list(schema.names())
+    except Exception as e:
+        return {"ok": False, "ready": False, "reason": f"schema failed: {e}"}
+    product_col = _single_file_col(columns, ("product", "product_id", "prod_id", "productid"))
+    root_col = _single_file_col(columns, ("root_lot_id", "root_lot", "lot_root_id", "root_lotid"))
+    wafer_col = _single_file_col(columns, ("wafer_id", "wf_id", "wafer"))
+    lot_col = _single_file_col(columns, ("lot_id", "fab_lot_id", "lot", "lotid", "fab_lot"))
+    time_col = _single_file_col(columns, _LATEST_COLUMN_PRIORITY)
+    if not (root_col and wafer_col and lot_col):
+        state = {
+            "version": _SINGLE_FILE_LATEST_LOT_CACHE_VERSION,
+            "ready": False,
+            "reason": "missing columns",
+            "source_path": str(fp),
+            "source_size": st.st_size,
+            "source_mtime_ns": int(st.st_mtime_ns),
+            "source_columns": columns,
+            "cache_generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        _write_text_atomic(meta_fp, json.dumps(state, ensure_ascii=False, indent=2))
+        return {"ok": False, "ready": False, "reason": "missing columns"}
+    try:
+        cache_updated_at = datetime.datetime.now().isoformat(timespec="seconds")
+        product_expr = (
+            pl.col(product_col).cast(pl.Utf8, strict=False).fill_null("").str.strip_chars().alias("product")
+            if product_col
+            else pl.lit(_single_file_product_label(fp)).alias("product")
+        )
+        select_exprs = [
+            product_expr,
+            pl.col(root_col).cast(pl.Utf8, strict=False).fill_null("").str.strip_chars().alias("root_lot_id"),
+            pl.col(wafer_col).cast(pl.Utf8, strict=False).fill_null("").str.strip_chars().alias("wafer_id"),
+            pl.col(lot_col).cast(pl.Utf8, strict=False).fill_null("").str.strip_chars().alias("lot_id"),
+        ]
+        if time_col:
+            select_exprs.append(pl.col(time_col).cast(pl.Utf8, strict=False).fill_null("").str.strip_chars().alias("updated_at"))
+        else:
+            select_exprs.append(pl.lit("").alias("updated_at"))
+        q = lf.select(select_exprs)
+        q = q.filter(
+            pl.col("root_lot_id").is_not_null() & (pl.col("root_lot_id") != "")
+            & pl.col("wafer_id").is_not_null() & (pl.col("wafer_id") != "")
+            & pl.col("lot_id").is_not_null() & (pl.col("lot_id") != "")
+        )
+        if time_col:
+            q = q.sort(["product", "root_lot_id", "wafer_id", "updated_at", "lot_id"])
+            q = q.group_by(["product", "root_lot_id", "wafer_id"]).agg([
+                pl.col("lot_id").last().alias("lot_id"),
+                pl.col("updated_at").last().alias("updated_at"),
+            ])
+        else:
+            q = q.sort(["product", "root_lot_id", "wafer_id", "lot_id"])
+            q = q.group_by(["product", "root_lot_id", "wafer_id"]).agg([
+                pl.col("lot_id").last().alias("lot_id"),
+                pl.lit("").first().alias("updated_at"),
+            ])
+        q = q.with_columns([
+            pl.col("lot_id").alias("latest_lot_id"),
+            pl.lit(cache_updated_at).alias("cache_updated_at"),
+            pl.col("wafer_id").cast(pl.Int64, strict=False).alias("__wafer_sort"),
+        ]).sort(["product", "root_lot_id", "__wafer_sort", "wafer_id"]).drop("__wafer_sort")
+        try:
+            from core.parquet_perf import collect_streaming
+            df = collect_streaming(q)
+        except Exception:
+            df = q.collect()
+        df = df.select(["product", "root_lot_id", "wafer_id", "lot_id", "latest_lot_id", "updated_at", "cache_updated_at"])
+    except Exception as e:
+        return {"ok": False, "ready": False, "reason": f"build failed: {e}"}
+    try:
+        _write_parquet_atomic(cache_fp, df)
+        state = {
+            "version": _SINGLE_FILE_LATEST_LOT_CACHE_VERSION,
+            "ready": True,
+            "source_path": str(fp),
+            "source_size": st.st_size,
+            "source_mtime_ns": int(st.st_mtime_ns),
+            "rows": int(df.height),
+            "cache_path": str(cache_fp),
+            "cache_file": cache_fp.name,
+            "cache_generated_at": cache_updated_at,
+            "product_col": product_col,
+            "root_col": root_col,
+            "wafer_col": wafer_col,
+            "lot_col": lot_col,
             "time_col": time_col,
         }
         _write_text_atomic(meta_fp, json.dumps(state, ensure_ascii=False, indent=2))
@@ -593,6 +790,678 @@ def _resolve_base_file_for_version(file: str) -> Path:
                 return cand
         raise HTTPException(404, f"Reformatter file not found: {file}")
     return _resolve_base_file_for_edit(file)
+
+
+def _filebrowser_settings_path() -> Path:
+    return PATHS.data_root / FILEBROWSER_SETTINGS_FILE
+
+
+def _clean_rule_file_key(file: str) -> str:
+    name = str(file or "").strip().replace("\\", "/")
+    if not name:
+        raise HTTPException(400, "CSV rule file key is required")
+    rel = Path(name)
+    if rel.is_absolute() or any(p in {"", ".", ".."} for p in rel.parts):
+        raise HTTPException(400, f"Invalid CSV rule file key: {file}")
+    return "/".join(rel.parts)
+
+
+def _clean_string_list(value, *, lower: bool = False) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw = re.split(r"[,\n]", value)
+    elif isinstance(value, (list, tuple, set)):
+        raw = list(value)
+    else:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        key = text.lower() if lower else text
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key if lower else text)
+    return out
+
+
+def _normalize_unique_keys(value) -> list[list[str]]:
+    if value is None:
+        return []
+    raw = value
+    if isinstance(raw, str):
+        raw = [line for line in raw.splitlines() if line.strip()]
+    if not isinstance(raw, list):
+        return []
+    out: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for item in raw:
+        if isinstance(item, str):
+            cols = _clean_string_list(item)
+        elif isinstance(item, (list, tuple)):
+            cols = _clean_string_list(list(item))
+        elif isinstance(item, dict):
+            cols = _clean_string_list(item.get("columns") or item.get("keys") or [])
+        else:
+            cols = []
+        if not cols:
+            continue
+        key = tuple(cols)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cols)
+    return out
+
+
+def _normalize_enums(value) -> dict[str, list[str]]:
+    if not value:
+        return {}
+    raw: dict = {}
+    if isinstance(value, dict):
+        raw = value
+    elif isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            col = str(item.get("column") or "").strip()
+            if col:
+                raw[col] = item.get("values") or item.get("allowed") or []
+    out: dict[str, list[str]] = {}
+    for col, vals in raw.items():
+        name = str(col or "").strip()
+        if not name:
+            continue
+        if isinstance(vals, str):
+            allowed = [v.strip() for v in re.split(r"[|,\n]", vals) if v.strip()]
+        elif isinstance(vals, (list, tuple, set)):
+            allowed = [str(v).strip() for v in vals if str(v).strip()]
+        else:
+            allowed = []
+        if allowed:
+            out[name] = allowed
+    return out
+
+
+def _normalize_numeric(value) -> dict[str, dict]:
+    if not value:
+        return {}
+    raw: dict = {}
+    if isinstance(value, dict):
+        raw = value
+    elif isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            col = str(item.get("column") or "").strip()
+            if col:
+                raw[col] = item
+    out: dict[str, dict] = {}
+    for col, spec in raw.items():
+        name = str(col or "").strip()
+        if not name:
+            continue
+        if not isinstance(spec, dict):
+            spec = {}
+        clean: dict = {}
+        for key in ("min", "max"):
+            raw_v = spec.get(key)
+            if raw_v in (None, ""):
+                continue
+            try:
+                clean[key] = float(raw_v)
+            except Exception:
+                raise HTTPException(400, f"Invalid numeric.{name}.{key}: {raw_v}")
+        if bool(spec.get("integer")):
+            clean["integer"] = True
+        out[name] = clean
+    return out
+
+
+def _normalize_regex(value) -> dict[str, str]:
+    if not value:
+        return {}
+    raw: dict = {}
+    if isinstance(value, dict):
+        raw = value
+    elif isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            col = str(item.get("column") or "").strip()
+            if col:
+                raw[col] = item.get("pattern") or item.get("regex") or ""
+    out: dict[str, str] = {}
+    for col, pattern in raw.items():
+        name = str(col or "").strip()
+        pat = str(pattern.get("pattern") if isinstance(pattern, dict) else pattern or "").strip()
+        if not name or not pat:
+            continue
+        try:
+            re.compile(pat)
+        except re.error as e:
+            raise HTTPException(400, f"Invalid regex for {name}: {e}")
+        out[name] = pat
+    return out
+
+
+def _normalize_date_columns(value) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, dict):
+        return _clean_string_list(list(value.keys()))
+    if isinstance(value, list):
+        cols = []
+        for item in value:
+            if isinstance(item, dict):
+                cols.append(item.get("column") or item.get("col") or "")
+            else:
+                cols.append(item)
+        return _clean_string_list(cols)
+    return _clean_string_list(value)
+
+
+def _normalize_conditions(value) -> list[dict]:
+    if not value:
+        return []
+    raw = value
+    if isinstance(raw, str):
+        raw = [line for line in raw.splitlines() if line.strip()]
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if isinstance(item, str):
+            expr, msg = item, ""
+        elif isinstance(item, dict):
+            expr = item.get("expr") or item.get("where") or item.get("selector") or ""
+            msg = item.get("message") or item.get("label") or ""
+        else:
+            continue
+        expr = str(expr or "").strip()
+        if not expr:
+            continue
+        if ";" in expr or "__" in expr:
+            raise HTTPException(400, f"Unsafe condition expression: {expr}")
+        try:
+            pl.sql_expr(expr)
+        except Exception as e:
+            raise HTTPException(400, f"Invalid condition expression '{expr}': {e}")
+        out.append({"expr": expr, "message": str(msg or "").strip()})
+    return out
+
+
+def _normalize_sort(value) -> list[dict]:
+    if not value:
+        return []
+    raw = value
+    if isinstance(raw, str):
+        raw = [line for line in raw.splitlines() if line.strip()]
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if isinstance(item, str):
+            parts = [p for p in re.split(r"[\s,]+", item.strip()) if p]
+            spec = {
+                "column": parts[0] if len(parts) >= 1 else "",
+                "direction": parts[1] if len(parts) >= 2 else "asc",
+                "type": parts[2] if len(parts) >= 3 else "string",
+                "nulls": parts[3] if len(parts) >= 4 else "last",
+            }
+        elif isinstance(item, dict):
+            spec = item
+        else:
+            continue
+        col = str(spec.get("column") or spec.get("col") or "").strip()
+        if not col:
+            continue
+        direction = str(spec.get("direction") or spec.get("dir") or "asc").strip().lower()
+        typ = str(spec.get("type") or "string").strip().lower()
+        nulls = str(spec.get("nulls") or "last").strip().lower()
+        if direction not in {"asc", "ascending", "desc", "descending"}:
+            raise HTTPException(400, f"Invalid sort direction for {col}: {direction}")
+        if typ not in {"string", "text", "numeric", "number", "integer", "date", "datetime"}:
+            raise HTTPException(400, f"Invalid sort type for {col}: {typ}")
+        if nulls not in {"first", "last", "nulls_first", "nulls_last"}:
+            raise HTTPException(400, f"Invalid sort nulls for {col}: {nulls}")
+        out.append({
+            "column": col,
+            "direction": "desc" if direction.startswith("desc") else "asc",
+            "type": "numeric" if typ in {"number", "integer"} else ("date" if typ == "datetime" else typ),
+            "nulls": "first" if nulls.endswith("first") else "last",
+        })
+    return out
+
+
+def _normalize_csv_rule(raw) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    rule: dict = {}
+    for key in ("required_columns", "not_empty"):
+        vals = _clean_string_list(raw.get(key))
+        if vals:
+            rule[key] = vals
+    unique_keys = _normalize_unique_keys(raw.get("unique_keys"))
+    if unique_keys:
+        rule["unique_keys"] = unique_keys
+    enums = _normalize_enums(raw.get("enums"))
+    if enums:
+        rule["enums"] = enums
+    numeric = _normalize_numeric(raw.get("numeric"))
+    if numeric:
+        rule["numeric"] = numeric
+    date_cols = _normalize_date_columns(raw.get("date"))
+    if date_cols:
+        rule["date"] = date_cols
+    regexes = _normalize_regex(raw.get("regex"))
+    if regexes:
+        rule["regex"] = regexes
+    conditions = _normalize_conditions(raw.get("conditions"))
+    if conditions:
+        rule["conditions"] = conditions
+    sort_rule = _normalize_sort(raw.get("sort"))
+    if sort_rule:
+        rule["sort"] = sort_rule
+    return rule
+
+
+def _normalize_csv_rules(raw_rules) -> dict[str, dict]:
+    if not isinstance(raw_rules, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for file, rule in raw_rules.items():
+        key = _clean_rule_file_key(str(file or ""))
+        clean = _normalize_csv_rule(rule)
+        if clean:
+            out[key] = clean
+    return out
+
+
+def _normalize_filebrowser_settings(raw) -> dict:
+    data = copy.deepcopy(DEFAULT_FILEBROWSER_SETTINGS)
+    if not isinstance(raw, dict):
+        return data
+    try:
+        max_bytes = int(raw.get("csv_full_read_max_bytes", data["csv_full_read_max_bytes"]))
+    except Exception:
+        raise HTTPException(400, "csv_full_read_max_bytes must be an integer")
+    data["csv_full_read_max_bytes"] = max(0, min(MAX_CSV_FULL_READ_MAX_BYTES, max_bytes))
+    data["csv_rules"] = _normalize_csv_rules(raw.get("csv_rules") or {})
+    hidden = _clean_string_list(raw.get("hidden_db_dirs"), lower=True)
+    data["hidden_db_dirs"] = hidden if hidden else list(DEFAULT_FILEBROWSER_SETTINGS["hidden_db_dirs"])
+    return data
+
+
+def _load_filebrowser_settings() -> dict:
+    path = _filebrowser_settings_path()
+    if not path.is_file():
+        return copy.deepcopy(DEFAULT_FILEBROWSER_SETTINGS)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        logger.warning("filebrowser settings read failed: %s", path)
+        return copy.deepcopy(DEFAULT_FILEBROWSER_SETTINGS)
+    try:
+        return _normalize_filebrowser_settings(raw)
+    except HTTPException:
+        logger.warning("filebrowser settings invalid, using defaults: %s", path)
+        return copy.deepcopy(DEFAULT_FILEBROWSER_SETTINGS)
+
+
+def _save_filebrowser_settings(settings: dict) -> None:
+    path = _filebrowser_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(_normalize_filebrowser_settings(settings), ensure_ascii=False, indent=2)
+    _write_text_atomic(path, payload + "\n")
+
+
+def _hidden_db_dir_names(settings: dict | None = None) -> set[str]:
+    settings = settings or _load_filebrowser_settings()
+    return {str(v or "").strip().casefold() for v in (settings.get("hidden_db_dirs") or []) if str(v or "").strip()}
+
+
+def _csv_rule_for_file(file: str, settings: dict | None = None) -> dict:
+    settings = settings or _load_filebrowser_settings()
+    rules = settings.get("csv_rules") or {}
+    try:
+        key = _clean_rule_file_key(file)
+    except HTTPException:
+        return {}
+    return copy.deepcopy(rules.get(key) or rules.get(Path(key).name) or {})
+
+
+def _csv_rule_summary(rule: dict) -> dict | None:
+    if not rule:
+        return None
+    return {
+        "required_columns": len(rule.get("required_columns") or []),
+        "not_empty": len(rule.get("not_empty") or []),
+        "unique_keys": len(rule.get("unique_keys") or []),
+        "enums": len(rule.get("enums") or {}),
+        "numeric": len(rule.get("numeric") or {}),
+        "date": len(rule.get("date") or []),
+        "regex": len(rule.get("regex") or {}),
+        "conditions": len(rule.get("conditions") or []),
+        "sort": len(rule.get("sort") or []),
+    }
+
+
+def _can_manage_filebrowser(me: dict) -> bool:
+    if (me.get("role") or "") == "admin":
+        return True
+    try:
+        from core.auth import is_page_admin
+        return is_page_admin(me.get("username") or "", "filebrowser")
+    except Exception:
+        return False
+
+
+def _require_filebrowser_manager(request: Request) -> dict:
+    from core.auth import current_user
+    me = current_user(request)
+    if not _can_manage_filebrowser(me):
+        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+    return me
+
+
+def _parse_datetime_like(value: str) -> datetime.datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    iso = text.replace("Z", "+00:00")
+    try:
+        return datetime.datetime.fromisoformat(iso)
+    except Exception:
+        pass
+    for fmt in (
+        "%Y-%m-%d", "%Y/%m/%d", "%Y%m%d",
+        "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M",
+        "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
+        try:
+            return datetime.datetime.strptime(text, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _csv_rows_to_frame(header: list[str], data_rows: list[list[str]]) -> pl.DataFrame:
+    cols = [str(c or "").strip() for c in header]
+    data = {
+        col: [row[i] if i < len(row) else "" for row in data_rows]
+        for i, col in enumerate(cols)
+        if col
+    }
+    if not data:
+        return pl.DataFrame()
+    return pl.DataFrame(data)
+
+
+def _csv_validation_error(errors: list[dict], rule: str, message: str, *,
+                          row: int | None = None, column: str = "", value=None,
+                          max_errors: int = 200) -> None:
+    if len(errors) >= max_errors:
+        return
+    item = {"rule": rule, "message": message}
+    if row is not None:
+        item["row"] = int(row)
+    if column:
+        item["column"] = column
+    if value is not None:
+        item["value"] = "" if value is None else str(value)
+    errors.append(item)
+
+
+def _validate_csv_rule(header: list[str], data_rows: list[list[str]], rule: dict) -> dict:
+    header = [str(c or "").strip() for c in header]
+    data_rows, _ = _normalize_rows(data_rows, len(header), "")
+    errors: list[dict] = []
+    seen_header: set[str] = set()
+    for col in header:
+        if col in seen_header:
+            _csv_validation_error(errors, "columns", f"Duplicate column: {col}", column=col)
+        seen_header.add(col)
+    columns = set(header)
+
+    def _missing(col: str, rule_name: str) -> bool:
+        if col in columns:
+            return False
+        _csv_validation_error(errors, rule_name, f"Missing column: {col}", column=col)
+        return True
+
+    for col in rule.get("required_columns") or []:
+        _missing(str(col), "required_columns")
+
+    col_idx = {c: i for i, c in enumerate(header)}
+    for col in rule.get("not_empty") or []:
+        col = str(col)
+        if _missing(col, "not_empty"):
+            continue
+        idx = col_idx[col]
+        for row_no, row in enumerate(data_rows, start=1):
+            val = row[idx] if idx < len(row) else ""
+            if str(val or "").strip() == "":
+                _csv_validation_error(errors, "not_empty", f"{col} must not be empty", row=row_no, column=col, value=val)
+
+    for combo in rule.get("unique_keys") or []:
+        cols = [str(c) for c in (combo or [])]
+        if any(_missing(c, "unique_keys") for c in cols):
+            continue
+        indexes = [col_idx[c] for c in cols]
+        seen: dict[tuple[str, ...], int] = {}
+        for row_no, row in enumerate(data_rows, start=1):
+            key = tuple(str(row[i] if i < len(row) else "").strip() for i in indexes)
+            if all(v == "" for v in key):
+                continue
+            if key in seen:
+                _csv_validation_error(
+                    errors,
+                    "unique_keys",
+                    f"Duplicate key {cols}: first row {seen[key]}, duplicate row {row_no}",
+                    row=row_no,
+                    column=",".join(cols),
+                    value="|".join(key),
+                )
+            else:
+                seen[key] = row_no
+
+    for col, allowed in (rule.get("enums") or {}).items():
+        col = str(col)
+        if _missing(col, "enums"):
+            continue
+        idx = col_idx[col]
+        allowed_set = {str(v) for v in (allowed or [])}
+        for row_no, row in enumerate(data_rows, start=1):
+            val = str(row[idx] if idx < len(row) else "").strip()
+            if val == "":
+                continue
+            if val not in allowed_set:
+                _csv_validation_error(errors, "enums", f"{col} must be one of {sorted(allowed_set)}", row=row_no, column=col, value=val)
+
+    for col, spec in (rule.get("numeric") or {}).items():
+        col = str(col)
+        if _missing(col, "numeric"):
+            continue
+        idx = col_idx[col]
+        spec = spec or {}
+        for row_no, row in enumerate(data_rows, start=1):
+            val = str(row[idx] if idx < len(row) else "").strip()
+            if val == "":
+                continue
+            try:
+                num = float(val)
+            except Exception:
+                _csv_validation_error(errors, "numeric", f"{col} must be numeric", row=row_no, column=col, value=val)
+                continue
+            if not math.isfinite(num):
+                _csv_validation_error(errors, "numeric", f"{col} must be finite", row=row_no, column=col, value=val)
+                continue
+            if spec.get("integer") and not num.is_integer():
+                _csv_validation_error(errors, "numeric", f"{col} must be an integer", row=row_no, column=col, value=val)
+            if spec.get("min") is not None and num < float(spec["min"]):
+                _csv_validation_error(errors, "numeric", f"{col} must be >= {spec['min']}", row=row_no, column=col, value=val)
+            if spec.get("max") is not None and num > float(spec["max"]):
+                _csv_validation_error(errors, "numeric", f"{col} must be <= {spec['max']}", row=row_no, column=col, value=val)
+
+    for col in rule.get("date") or []:
+        col = str(col)
+        if _missing(col, "date"):
+            continue
+        idx = col_idx[col]
+        for row_no, row in enumerate(data_rows, start=1):
+            val = str(row[idx] if idx < len(row) else "").strip()
+            if val == "":
+                continue
+            if _parse_datetime_like(val) is None:
+                _csv_validation_error(errors, "date", f"{col} must parse as a date/time", row=row_no, column=col, value=val)
+
+    for col, pattern in (rule.get("regex") or {}).items():
+        col = str(col)
+        if _missing(col, "regex"):
+            continue
+        idx = col_idx[col]
+        compiled = re.compile(str(pattern))
+        for row_no, row in enumerate(data_rows, start=1):
+            val = str(row[idx] if idx < len(row) else "")
+            if val == "":
+                continue
+            if compiled.fullmatch(val) is None:
+                _csv_validation_error(errors, "regex", f"{col} does not match /{pattern}/", row=row_no, column=col, value=val)
+
+    if rule.get("conditions"):
+        try:
+            df = _csv_rows_to_frame(header, data_rows)
+            if df.height:
+                df = df.with_row_index("__row_nr", offset=1)
+        except Exception as e:
+            df = pl.DataFrame()
+            _csv_validation_error(errors, "conditions", f"Cannot build condition frame: {e}")
+        for condition in rule.get("conditions") or []:
+            expr = str((condition or {}).get("expr") or "").strip()
+            if not expr or df.is_empty():
+                continue
+            try:
+                violated = df.filter(pl.sql_expr(expr)).select("__row_nr").head(200)
+                for item in violated.to_dicts():
+                    row_no = int(item.get("__row_nr") or 0)
+                    _csv_validation_error(
+                        errors,
+                        "conditions",
+                        (condition or {}).get("message") or f"Condition selected row: {expr}",
+                        row=row_no,
+                    )
+            except Exception as e:
+                _csv_validation_error(errors, "conditions", f"Condition failed '{expr}': {e}")
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "error_count": len(errors),
+        "truncated": len(errors) >= 200,
+        "rows": len(data_rows),
+        "columns": len(header),
+    }
+
+
+def _sort_cast_value(value: str, typ: str):
+    text = str(value or "").strip()
+    if text == "":
+        return None
+    if typ == "numeric":
+        try:
+            num = float(text)
+            return num if math.isfinite(num) else None
+        except Exception:
+            return None
+    if typ == "date":
+        return _parse_datetime_like(text)
+    return text
+
+
+def _compare_values(left, right) -> int:
+    if left == right:
+        return 0
+    try:
+        return -1 if left < right else 1
+    except Exception:
+        ls, rs = str(left), str(right)
+        if ls == rs:
+            return 0
+        return -1 if ls < rs else 1
+
+
+def _apply_csv_sort_rule(header: list[str], data_rows: list[list[str]], rule: dict) -> list[list[str]]:
+    sort_rule = rule.get("sort") or []
+    if not sort_rule:
+        return data_rows
+    header = [str(c or "").strip() for c in header]
+    data_rows, _ = _normalize_rows(data_rows, len(header), "")
+    col_idx = {c: i for i, c in enumerate(header)}
+    missing = [str(item.get("column") or "") for item in sort_rule if str(item.get("column") or "") not in col_idx]
+    if missing:
+        raise HTTPException(400, f"Sort column not found: {', '.join(missing)}")
+
+    def _cmp(left_item, right_item):
+        left_i, left_row = left_item
+        right_i, right_row = right_item
+        for spec in sort_rule:
+            col = str(spec.get("column") or "")
+            idx = col_idx[col]
+            typ = str(spec.get("type") or "string")
+            nulls = str(spec.get("nulls") or "last")
+            direction = str(spec.get("direction") or "asc")
+            lv = _sort_cast_value(left_row[idx] if idx < len(left_row) else "", typ)
+            rv = _sort_cast_value(right_row[idx] if idx < len(right_row) else "", typ)
+            lnull, rnull = lv is None, rv is None
+            if lnull or rnull:
+                if lnull and rnull:
+                    continue
+                return -1 if (lnull and nulls == "first") or (rnull and nulls == "last") else 1
+            comp = _compare_values(lv, rv)
+            if comp:
+                return -comp if direction == "desc" else comp
+        return left_i - right_i
+
+    return [row for _, row in sorted(enumerate(data_rows), key=functools.cmp_to_key(_cmp))]
+
+
+def _validate_and_sort_csv_rows(file: str, header: list[str], data_rows: list[list[str]]) -> tuple[list[list[str]], dict]:
+    rule = _csv_rule_for_file(file)
+    if not rule:
+        return data_rows, {
+            "ok": True,
+            "errors": [],
+            "error_count": 0,
+            "truncated": False,
+            "rows": len(data_rows),
+            "columns": len(header),
+            "rule_applied": False,
+            "rule_summary": None,
+        }
+    validation = _validate_csv_rule(header, data_rows, rule)
+    validation["rule_applied"] = True
+    validation["rule_summary"] = _csv_rule_summary(rule)
+    if not validation.get("ok"):
+        return data_rows, validation
+    sorted_rows = _apply_csv_sort_rule(header, data_rows, rule)
+    validation["sorted"] = bool(rule.get("sort"))
+    return sorted_rows, validation
+
+
+def _rows_to_csv_text(header: list[str], data_rows: list[list[str]], delimiter: str, include_header: bool = True) -> str:
+    out = io.StringIO()
+    writer = csv.writer(out, delimiter="\t" if delimiter == "tab" else ",", lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
+    if include_header:
+        writer.writerow(["" if v is None else str(v) for v in header])
+    for row in data_rows:
+        writer.writerow(["" if v is None else str(v) for v in row])
+    return out.getvalue()
 
 
 def _base_file_versioned(file: str, target: Path | None = None) -> bool:
@@ -1350,13 +2219,16 @@ def list_roots(all: bool = Query(False)):
     DB_BASE = _db_root()
     if not DB_BASE.exists():
         return {"roots": []}
-    cache_key = ("roots", bool(all), _path_sig(DB_BASE))
+    hidden_db_dirs = _hidden_db_dir_names()
+    cache_key = ("roots", bool(all), _path_sig(DB_BASE), tuple(sorted(hidden_db_dirs)))
     cached = _list_cache_get(cache_key)
     if cached is not None:
         return cached
     for d in sorted(DB_BASE.iterdir()):
         # v8.1.2: explicit file skip — root-level single files go via Base only (v8.7.6).
         if not d.is_dir():
+            continue
+        if d.name.casefold() in hidden_db_dirs:
             continue
         # v8.8.7: 숨김/시스템 폴더 스킵 (.trash, .git, __pycache__, 밑줄 시작 관리자용 등).
         if d.name.startswith(".") or d.name.startswith("__") or d.name.startswith("_"):
@@ -1451,6 +2323,12 @@ def base_files():
     base_root = _base_root()
     db_root = _db_root()
     _ensure_single_file_cache_dirs(base_root, db_root)
+    if hasattr(PATHS, "cache_dir") and hasattr(PATHS, "db_cache_dir"):
+        try:
+            from core import lot_progress_cache as _lot_progress_cache
+            _lot_progress_cache.export_lot_progress_parquet()
+        except Exception as e:
+            logger.warning("lot-progress parquet cache export skipped: %s", e)
     _refresh_single_file_step_caches(base_root)
     if db_root != base_root:
         _refresh_single_file_step_caches(db_root)
@@ -1468,12 +2346,13 @@ def base_files():
     files, dirs = [], []
     if base_root.is_dir():
         cache = _single_file_cache_dir(base_root)
-        if cache.is_dir():
+        cache_entries = _single_file_cache_entries(base_root, "base_root")
+        if cache_entries:
             try:
                 cst = cache.stat()
                 dirs.append({
                     "name": _SINGLE_FILE_STEP_CACHE_DIR,
-                    "path": f"base_root:{_SINGLE_FILE_STEP_CACHE_DIR}",
+                    "path": _SINGLE_FILE_STEP_CACHE_DIR,
                     "size": 0,
                     "modified": cst.st_mtime,
                     "ext": "dir",
@@ -1486,7 +2365,7 @@ def base_files():
                 })
             except Exception:
                 pass
-        files.extend(_single_file_cache_entries(base_root, "base_root"))
+            files.extend(cache_entries)
     if base_root.is_dir():
         for f in sorted(base_root.iterdir(), key=lambda p: (not p.is_file(), p.name.lower())):
             try:
@@ -1518,12 +2397,13 @@ def base_files():
     # (db) 를 노출하던 것도 제거 — 사용자 입장에서 Base 단일 파일은 "한 번만" 보여야 함.
     if db_root.is_dir() and db_root != base_root:
         cache = _single_file_cache_dir(db_root)
-        if cache.is_dir():
+        db_cache_entries = _single_file_cache_entries(db_root, "db_root")
+        if db_cache_entries:
             try:
                 cst = cache.stat()
                 dirs.append({
                     "name": _SINGLE_FILE_STEP_CACHE_DIR,
-                    "path": f"db_root:{_SINGLE_FILE_STEP_CACHE_DIR}",
+                    "path": _SINGLE_FILE_STEP_CACHE_DIR,
                     "size": 0,
                     "modified": cst.st_mtime,
                     "ext": "dir",
@@ -1537,7 +2417,7 @@ def base_files():
             except Exception:
                 pass
         seen_cache_paths = {f["path"].lower() for f in files if f.get("source") == "cache"}
-        for entry in _single_file_cache_entries(db_root, "db_root"):
+        for entry in db_cache_entries:
             if entry["path"].lower() in seen_cache_paths:
                 continue
             files.append(entry)
@@ -1572,6 +2452,10 @@ def base_files():
             })
             seen_names.add(f.name.lower())
     files.sort(key=lambda x: (x.get("order", 999), x["name"].lower()))
+    deduped_dirs = {}
+    for d in dirs:
+        deduped_dirs.setdefault(str(d.get("name") or "").lower(), d)
+    dirs = list(deduped_dirs.values())
     dirs.sort(key=lambda x: (x.get("source", ""), x["name"]))
     return _list_cache_set(cache_key, {"files": dirs + files, "dirs": dirs,
             "path": str(base_root) if base_root.is_dir() else "",
@@ -1601,6 +2485,9 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     db_root = _db_root()
     fp = None
     rel = Path(file)
+    if rel.parts and rel.parts[0] == _SINGLE_FILE_STEP_CACHE_DIR:
+        if len(rel.parts) != 2 or rel.name != _CANONICAL_LOT_PROGRESS_CACHE_FILE:
+            raise HTTPException(404, f"Cache file not found: {file}")
     if rel.parts and rel.parts[0] == "product_config":
         if len(rel.parts) != 2 or rel.parts[1].startswith(".") or rel.parts[1] in ("", ".", ".."):
             raise HTTPException(400, "Invalid product config path")
@@ -1741,18 +2628,6 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         raise HTTPException(400, f"Unsupported ext for preview: {ext}")
     # v8.4.3 OOM-aware — lazy scan 동일.
     try:
-        if _single_file_step_cache_candidate(fp):
-            try:
-                _build_single_file_step_cache(fp)
-            except Exception:
-                pass
-        if ext == ".csv":
-            try:
-                st = fp.stat()
-                if st.st_size >= _SINGLE_FILE_PREVIEW_MAX_BYTES:
-                    _build_single_file_step_cache(fp)
-            except Exception:
-                pass
         if meta_only and ext == ".parquet":
             try:
                 from core.parquet_perf import read_meta
@@ -1775,6 +2650,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                     "source_path": str(fp),
                     "source_size": fp.stat().st_size,
                     "source_modified": fp.stat().st_mtime,
+                    "csv_rule_summary": None,
                 }
         lf = scan_one_file(fp)
         if lf is None:
@@ -1800,6 +2676,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 "meta_only": True,
                 "page": page, "page_size": page_size, "has_more": False,
                 "meta_cached": bool(cached_meta),
+                "csv_rule_summary": _csv_rule_summary(_csv_rule_for_file(file)) if ext == ".csv" else None,
             }
         cached_meta = None
         if ext == ".parquet":
@@ -1809,7 +2686,15 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             except Exception:
                 cached_meta = None
         ml_table = _is_ml_table_file(fp)
-        full_single_file = (not ml_table) and ext != ".csv"
+        settings = _load_filebrowser_settings()
+        csv_rule_summary = _csv_rule_summary(_csv_rule_for_file(file, settings)) if ext == ".csv" else None
+        csv_full_read = False
+        if ext == ".csv":
+            try:
+                csv_full_read = fp.stat().st_size <= int(settings.get("csv_full_read_max_bytes") or 0)
+            except Exception:
+                csv_full_read = False
+        full_single_file = csv_full_read or (ext != ".csv" and ((not ml_table) or _has_view_filter(sql, select_cols)))
         if full_single_file:
             resp = _run_view_lazy_full(
                 lf, sql, select_cols,
@@ -1823,6 +2708,8 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             resp["source_path"] = str(fp)
             resp["source_size"] = fp.stat().st_size
             resp["source_modified"] = fp.stat().st_mtime
+            resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
+            resp["csv_rule_summary"] = csv_rule_summary
             return resp
         rows = min(int(rows or 200), 200)
         page_size = min(int(page_size or 200), 200)
@@ -1838,6 +2725,8 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 resp["source_path"] = str(fp)
                 resp["source_size"] = fp.stat().st_size
                 resp["source_modified"] = fp.stat().st_mtime
+                resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
+                resp["csv_rule_summary"] = csv_rule_summary
                 return resp
             except Exception as e:
                 if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
@@ -1856,6 +2745,8 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         resp["source_path"] = str(fp)
         resp["source_size"] = fp.stat().st_size
         resp["source_modified"] = fp.stat().st_mtime
+        resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
+        resp["csv_rule_summary"] = csv_rule_summary
         return resp
     except HTTPException:
         raise
@@ -2822,6 +3713,19 @@ class BaseFileSaveReq(BaseModel):
     note: str = ""
 
 
+class FileBrowserSettingsReq(BaseModel):
+    csv_full_read_max_bytes: int = DEFAULT_CSV_FULL_READ_MAX_BYTES
+    csv_rules: dict = {}
+    hidden_db_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["hidden_db_dirs"]
+
+
+class BaseFileValidateReq(BaseModel):
+    file: str
+    csv_text: str = ""
+    delimiter: str = "auto"
+    include_header: bool = True
+
+
 class BaseTextFileSaveReq(BaseModel):
     file: str
     text: str = ""
@@ -2854,6 +3758,74 @@ class BaseFileRollbackReq(BaseModel):
     version: str
     username: str = ""
     note: str = ""
+
+
+@router.get("/settings")
+def filebrowser_settings(request: Request):
+    from core.auth import current_user
+    me = current_user(request)
+    settings = _load_filebrowser_settings()
+    return {
+        **settings,
+        "can_manage": _can_manage_filebrowser(me),
+        "max_csv_full_read_max_bytes": MAX_CSV_FULL_READ_MAX_BYTES,
+    }
+
+
+@router.post("/settings")
+def save_filebrowser_settings(req: FileBrowserSettingsReq, request: Request):
+    me = _require_filebrowser_manager(request)
+    dump = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    settings = _normalize_filebrowser_settings(dump)
+    _save_filebrowser_settings(settings)
+    jsonl_append(PATHS.activity_log, {
+        "username": me.get("username") or "",
+        "action": "filebrowser:settings:save",
+        "tab": "filebrowser",
+        "detail": f"csv_rules={len(settings.get('csv_rules') or {})} hidden_db_dirs={len(settings.get('hidden_db_dirs') or [])} csv_full_read_max_bytes={settings.get('csv_full_read_max_bytes')}",
+    })
+    return {**settings, "ok": True, "can_manage": True}
+
+
+@router.post("/base-file/validate")
+def validate_base_file_csv(req: BaseFileValidateReq, request: Request):
+    _require_filebrowser_manager(request)
+    fp = _resolve_base_file_for_edit(req.file)
+    if fp.suffix.lower() != ".csv":
+        raise HTTPException(400, "CSV validation is available for .csv files only")
+    text = req.csv_text or ""
+    if not text:
+        try:
+            if fp.stat().st_size > BASE_FILE_EDIT_MAX_BYTES:
+                raise HTTPException(413, f"CSV too large for validation (max {BASE_FILE_EDIT_MAX_BYTES:,} bytes)")
+            text = fp.read_text(encoding="utf-8")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(400, f"Cannot read CSV: {e}")
+    rows, used_delim = _parse_tab_or_csv(text, req.delimiter)
+    if req.include_header and rows:
+        header = [str(x).strip() for x in rows[0]]
+        data_rows = rows[1:]
+    else:
+        try:
+            lf = scan_one_file(fp)
+            header = list(lf.collect_schema().names()) if lf is not None else []
+        except Exception:
+            header = []
+        data_rows = rows
+    if not header:
+        header = [f"col_{i + 1}" for i in range(max((len(r) for r in data_rows), default=1))]
+    data_rows, _ = _normalize_rows(data_rows, len(header), "")
+    sorted_rows, result = _validate_and_sort_csv_rows(req.file, header, data_rows)
+    result.update({
+        "file": req.file,
+        "delimiter": used_delim,
+        "columns_list": header,
+        "preview_rows": [dict(zip(header, row)) for row in sorted_rows[:20]],
+        "sorted_csv_text": _rows_to_csv_text(header, sorted_rows, used_delim, include_header=req.include_header) if result.get("ok") else "",
+    })
+    return result
 
 
 def _save_base_file(req: BaseFileSaveReq, request: Request):
@@ -2903,6 +3875,25 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
     data_rows, _ = _normalize_rows(data_rows, len(header), "")
     if len(data_rows) > BASE_FILE_EDIT_MAX_ROWS:
         raise HTTPException(413, f"Row count too large: {len(data_rows):,} rows (max {BASE_FILE_EDIT_MAX_ROWS:,})")
+    csv_validation = {
+        "ok": True,
+        "rule_applied": False,
+        "rule_summary": None,
+        "sorted": False,
+        "errors": [],
+        "error_count": 0,
+    }
+    if ext == ".csv":
+        data_rows, csv_validation = _validate_and_sort_csv_rows(req.file, header, data_rows)
+        if not csv_validation.get("ok"):
+            raise HTTPException(400, {
+                "message": "CSV validation failed",
+                "file": req.file,
+                "errors": csv_validation.get("errors") or [],
+                "error_count": csv_validation.get("error_count") or 0,
+                "truncated": bool(csv_validation.get("truncated")),
+                "rule_summary": csv_validation.get("rule_summary"),
+            })
 
     backup = None
     version_meta = None
@@ -2923,13 +3914,7 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
 
     try:
         if ext == ".csv":
-            out = io.StringIO()
-            writer = csv.writer(out, delimiter="\t" if used_delim == "tab" else ",", lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
-            out_rows = [header] if req.include_header else []
-            out_rows.extend(data_rows)
-            for row in out_rows:
-                writer.writerow(["" if v is None else str(v) for v in row])
-            _write_text_atomic(fp, out.getvalue())
+            _write_text_atomic(fp, _rows_to_csv_text(header, data_rows, used_delim, include_header=req.include_header))
         else:
             data_map = {col: [r[i] if i < len(r) else "" for r in data_rows] for i, col in enumerate(header)}
             df = pl.DataFrame(data_map if data_map else {col: pl.Series([]) for col in header})
@@ -2948,9 +3933,6 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
             cache_result = _matching_cache.refresh_matching_csv(fp)
             if not cache_result.get("ok", False):
                 logger.warning("filebrowser base-file/save cache refresh failed: %s", cache_result)
-        step_cache_result = None
-        if _single_file_step_cache_candidate(fp):
-            step_cache_result = _build_single_file_step_cache(fp, force=True)
         sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, fp)
         jsonl_append(PATHS.activity_log, {
             "username": me.get("username") or "",
@@ -2969,8 +3951,9 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
             "cols": len(header),
             "version": version_meta,
             "cache_rows": (cache_result or {}).get("rows"),
-            "step_cache_rows": (step_cache_result or {}).get("rows"),
+            "step_cache_rows": None,
             "s3_sync": sync_result,
+            "csv_validation": csv_validation,
         }
     except Exception as e:
         raise HTTPException(500, f"Failed to read result after save: {e}")

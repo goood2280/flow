@@ -38,6 +38,7 @@ ET_LOT_CACHE_VERSION = 1
 ET_LOT_CACHE_DEFAULT_MINUTES = 30
 ET_LOT_CACHE_MIN_MINUTES = 30
 ET_LOT_CACHE_MAX_MINUTES = 60
+LOT_PROGRESS_LATEST_CACHE_FILE = "lot_progress_latest_lot_by_root_wafer.parquet"
 _ET_LOT_CACHE_THREAD: threading.Thread | None = None
 _ET_LOT_CACHE_STARTED = False
 _ET_LOT_CACHE_STOP = threading.Event()
@@ -51,6 +52,110 @@ def _get_db_root() -> Path:
         return resolve_existing_root("db", PATHS.db_root)
     except Exception:
         return PATHS.db_root
+
+
+def _lot_progress_latest_cache_path() -> Path:
+    return _get_db_root() / "cache" / LOT_PROGRESS_LATEST_CACHE_FILE
+
+
+def _latest_cache_product_values(product: str = "") -> set[str]:
+    raw = str(product or "").strip().upper()
+    if not raw:
+        return set()
+    values = {raw}
+    if raw.startswith("ML_TABLE_"):
+        bare = raw[len("ML_TABLE_"):].strip()
+        if bare:
+            values.add(bare)
+    else:
+        values.add(f"ML_TABLE_{raw}")
+    for alias in _product_aliases(raw):
+        values.add(alias.upper())
+        if not alias.upper().startswith("ML_TABLE_"):
+            values.add(f"ML_TABLE_{alias.upper()}")
+    return values
+
+
+def _latest_fab_step_from_lot_progress_cache(product: str = "", root_lot_id: str = "",
+                                             lot_id: str = "", wafer_id: str = "") -> dict:
+    fp = _lot_progress_latest_cache_path()
+    if not fp.is_file():
+        return {}
+    try:
+        import polars as pl
+    except Exception:
+        return {}
+    try:
+        lf = pl.scan_parquet(str(fp))
+        schema = lf.collect_schema().names()
+    except Exception:
+        return {}
+    if "step_id" not in schema or "root_lot_id" not in schema:
+        return {}
+    filters = []
+    product_values = _latest_cache_product_values(product)
+    if product_values and "product" in schema:
+        filters.append(pl.col("product").cast(pl.Utf8, strict=False).str.to_uppercase().is_in(sorted(product_values)))
+    root_text = str(root_lot_id or "").strip()
+    lot_text = str(lot_id or "").strip()
+    if root_text:
+        filters.append(pl.col("root_lot_id").cast(pl.Utf8, strict=False) == root_text)
+    elif lot_text:
+        lot_filters = [pl.col("root_lot_id").cast(pl.Utf8, strict=False) == lot_text]
+        if "lot_id" in schema:
+            lot_filters.append(pl.col("lot_id").cast(pl.Utf8, strict=False) == lot_text)
+        expr = lot_filters[0]
+        for item in lot_filters[1:]:
+            expr = expr | item
+        filters.append(expr)
+    wafer_text = str(wafer_id or "").strip()
+    wafer_values = parse_wafer_selection(wafer_text)
+    if wafer_text and not _is_all_wafer_id(wafer_text) and not wafer_values:
+        return {}
+    if wafer_values and "wafer_id" in schema:
+        wafer_expr = _wafer_filter_expr(pl, "wafer_id", wafer_values)
+        if wafer_expr is not None:
+            filters.append(wafer_expr)
+    if filters:
+        expr = filters[0]
+        for item in filters[1:]:
+            expr = expr & item
+        lf = lf.filter(expr)
+    select_cols = [
+        c for c in ("product", "root_lot_id", "wafer_id", "lot_id", "step_id", "function_step", "tkout_time", "update_time")
+        if c in schema
+    ]
+    if not select_cols:
+        return {}
+    q = lf.select(select_cols).filter(pl.col("step_id").is_not_null() & (pl.col("step_id").cast(pl.Utf8, strict=False) != ""))
+    if "tkout_time" in select_cols:
+        q = q.sort("tkout_time", descending=True, nulls_last=True)
+    try:
+        df = q.head(1).collect()
+    except Exception:
+        return {}
+    if df.is_empty():
+        return {}
+    row = df.to_dicts()[0]
+    step_id = str(row.get("step_id") or "").strip()
+    if not step_id:
+        return {}
+    meta = lookup_step_meta(product=product or row.get("product") or "", step_id=step_id)
+    function_step = str(row.get("function_step") or meta.get("function_step") or meta.get("func_step") or "").strip()
+    return {
+        "step_id": step_id,
+        "time": row.get("tkout_time"),
+        "product": row.get("product"),
+        "lot_id": row.get("lot_id"),
+        "fab_lot_id": row.get("lot_id"),
+        "root_lot_id": row.get("root_lot_id"),
+        "wafer_id": row.get("wafer_id"),
+        "tkout_time": row.get("tkout_time"),
+        "update_time": row.get("update_time"),
+        **meta,
+        **({"function_step": function_step, "func_step": function_step} if function_step else {}),
+        "source": "lot_progress_latest_cache",
+    }
 
 
 def _settings_file() -> Path:
@@ -1437,6 +1542,14 @@ def latest_fab_step(product: str = "", root_lot_id: str = "", lot_id: str = "",
         import polars as pl
     except Exception:
         return {}
+    cached = _latest_fab_step_from_lot_progress_cache(
+        product=product,
+        root_lot_id=root_lot_id,
+        lot_id=lot_id,
+        wafer_id=wafer_id,
+    )
+    if cached:
+        return cached
     root_name = str(source_root or "").strip() or FAB_ROOT
     files = _parquet_files(root_name, product, source="fab")
     if not files:

@@ -201,6 +201,30 @@ def _fmt_iso_epoch(value: float) -> str | None:
         return None
 
 
+def _item_due_state(item: Dict[str, Any], status: Dict[str, Any] | None = None,
+                    now: float | None = None) -> Dict[str, Any]:
+    """Return per-item scheduler due state from interval and last_start/end."""
+    status = status or {}
+    now = time.time() if now is None else float(now)
+    try:
+        interval_min = int(item.get("interval_min", 0) or 0)
+    except Exception:
+        interval_min = 0
+    last_raw = status.get("last_end") or status.get("last_start")
+    last_ts = _parse_iso_ts(last_raw)
+    if interval_min <= 0:
+        return {"due": False, "next_due": None, "age_seconds": int(now - last_ts) if last_ts else None}
+    if not last_ts:
+        return {"due": True, "next_due": _fmt_iso_epoch(now), "age_seconds": None}
+    age = max(0, now - last_ts)
+    next_ts = last_ts + interval_min * 60
+    return {
+        "due": age >= interval_min * 60,
+        "next_due": _fmt_iso_epoch(next_ts),
+        "age_seconds": int(age),
+    }
+
+
 def _aggregate_child_statuses(by_target: Dict[str, Dict[str, Any]]) -> None:
     """Create synthetic parent lights when only child DB targets are configured.
 
@@ -271,6 +295,8 @@ def _aggregate_child_statuses(by_target: Dict[str, Dict[str, Any]]) -> None:
             "latest_item_stale_6h": any(bool(c.get("latest_item_stale_6h")) for c in children),
             "latest_item_scan_error": None,
             "next_due": _fmt_iso_epoch(min(next_times)) if next_times else None,
+            "due": any(bool(c.get("due")) for c in children),
+            "age_seconds": max((int(c.get("age_seconds") or 0) for c in children if c.get("age_seconds") is not None), default=None),
             "aggregate": True,
             "child_targets": len(children),
         }
@@ -474,18 +500,9 @@ def _scheduler_loop():
             for item in cfg.get("items", []):
                 if not item.get("enabled", True):
                     continue
-                iv = int(item.get("interval_min", 0) or 0)
-                if iv <= 0:
-                    continue
                 st = status.get(item["id"], {})
-                last_end = st.get("last_end") or st.get("last_start")
-                last_ts = 0.0
-                if last_end:
-                    try:
-                        last_ts = datetime.datetime.fromisoformat(last_end).timestamp()
-                    except Exception:
-                        last_ts = 0.0
-                if now - last_ts >= iv * 60:
+                due = _item_due_state(item, st, now)
+                if due.get("due"):
                     _schedule_run(item["id"])
         except Exception:
             pass
@@ -512,10 +529,14 @@ def list_items(username: str = Query("")):
     cfg = _load_cfg()
     status = _load_status()
     out = []
+    now = time.time()
     for it in cfg.get("items", []):
         merged = dict(it)
-        merged["status"] = status.get(it["id"], {})
+        st = status.get(it["id"], {})
+        due = _item_due_state(it, st, now)
+        merged["status"] = st
         merged["is_running"] = it["id"] in _RUNNING
+        merged.update(due)
         # backward compat: ensure endpoint_url always present in response
         merged.setdefault("endpoint_url", "")
         out.append(merged)
@@ -830,11 +851,13 @@ def status_by_target():
     cfg = _load_cfg()
     status = _load_status()
     by_target: Dict[str, Dict[str, Any]] = {}
+    now = time.time()
     for it in cfg.get("items", []):
         tgt = it.get("target", "")
         if not tgt:
             continue
         st = status.get(it["id"], {}) or {}
+        due = _item_due_state(it, st, now)
         is_running = it["id"] in _RUNNING or st.get("last_status") == "running"
         info = {
             "kind": it.get("kind", "db"),
@@ -848,19 +871,11 @@ def status_by_target():
             "last_duration_sec": st.get("last_duration_sec"),
             "is_running": bool(is_running),
         }
+        info.update(due)
         info.update(_latest_local_item_info(tgt))
-        iv = info["interval_min"]
         last_end = info["last_end"] or info["last_start"]
-        if iv > 0 and last_end:
-            try:
-                last_ts = datetime.datetime.fromisoformat(last_end)
-                info["next_due"] = (last_ts + datetime.timedelta(minutes=iv)).isoformat(timespec="seconds")
-            except Exception:
-                info["next_due"] = None
-        else:
-            info["next_due"] = None
         last_ts = _parse_iso_ts(last_end)
-        sync_recent_6h = bool(last_ts and (time.time() - last_ts) <= 6 * 3600)
+        sync_recent_6h = bool(last_ts and (now - last_ts) <= 6 * 3600)
         stale_item = bool(info.get("latest_item_stale_6h"))
         # Downloaded files can legitimately keep the source object's older
         # mtime.  A successful recent sync is fresh even when the newest local

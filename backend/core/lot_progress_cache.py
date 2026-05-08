@@ -42,6 +42,16 @@ def cache_file() -> Path:
     return _cache_dir() / "lot_wf_current.json"
 
 
+def cache_parquet_file() -> Path:
+    return _cache_dir() / "lot_wf_current.parquet"
+
+
+def filebrowser_cache_parquet_file() -> Path:
+    fp = PATHS.db_cache_dir / "lot_progress_latest_lot_by_root_wafer.parquet"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    return fp
+
+
 def lot_status_cache_file() -> Path:
     fp = PATHS.data_root / "tracker" / "lot_status_cache.json"
     fp.parent.mkdir(parents=True, exist_ok=True)
@@ -201,6 +211,65 @@ def _wafer_sort_value(value) -> int:
         return int(_norm_wafer(value) or 0)
     except Exception:
         return 999999
+
+
+def _lot_progress_parquet_rows(state: dict) -> list[dict]:
+    generated_at = _safe_text((state or {}).get("generated_at"))
+    rows: list[dict] = []
+    for item in (state or {}).get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        lot_id = _safe_text(item.get("lot_id"))
+        function_step = _safe_text(item.get("function_step") or item.get("func_step"))
+        rows.append({
+            "product": _safe_text(item.get("product")),
+            "root_lot_id": _safe_text(item.get("root_lot_id")),
+            "wafer_id": _norm_wafer(item.get("wafer_id")),
+            "lot_id": lot_id,
+            "step_id": _safe_text(item.get("step_id")),
+            "function_step": function_step,
+            "tkout_time": _safe_text(item.get("tkout_time")),
+            "update_time": generated_at,
+        })
+    rows.sort(key=lambda row: (_norm_key(row.get("product")), _norm_key(row.get("root_lot_id")), _wafer_sort_value(row.get("wafer_id"))))
+    return rows
+
+
+def _write_lot_progress_parquet(target: Path, rows: list[dict]) -> None:
+    import polars as pl  # type: ignore
+
+    columns = [
+        "product", "root_lot_id", "wafer_id", "lot_id",
+        "step_id", "function_step", "tkout_time", "update_time",
+    ]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if rows:
+        df = pl.DataFrame(rows).select(columns)
+    else:
+        df = pl.DataFrame({col: [] for col in columns})
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    df.write_parquet(tmp)
+    tmp.replace(target)
+
+
+def export_lot_progress_parquet(state: dict | None = None) -> dict:
+    """Export the JSON LOT_WF cache as viewable parquet files."""
+    if state is None:
+        fp = cache_file()
+        if fp.is_file():
+            try:
+                state = json.loads(fp.read_text(encoding="utf-8"))
+            except Exception:
+                state = None
+        if not isinstance(state, dict):
+            state = load_lot_progress_cache()
+    rows = _lot_progress_parquet_rows(state or {})
+    paths = [cache_parquet_file(), filebrowser_cache_parquet_file()]
+    written: list[str] = []
+    for target in paths:
+        _write_lot_progress_parquet(target, rows)
+        written.append(str(target))
+    return {"ok": True, "rows": len(rows), "paths": written}
 
 
 def _step_matching_paths() -> list[Path]:
@@ -397,6 +466,10 @@ def refresh_lot_progress_cache(force: bool = False) -> dict:
         tmp = cache_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(cache_path)
+        try:
+            export_lot_progress_parquet(state)
+        except Exception as exc:
+            logger.warning("LOT_WF parquet export failed: %s", exc)
         _CACHE_STATE = state
         return dict(state)
 

@@ -84,6 +84,102 @@ const defaultDelimiterForFile=(file)=>{
   if(name.endsWith(".csv"))return"comma";
   return"tab";
 };
+const splitRuleList=(value)=>String(value||"").split(/[\n,]/).map(v=>v.trim()).filter(Boolean);
+const joinRuleList=(value)=>Array.isArray(value)?value.join(", "):"";
+const parseUniqueKeys=(text)=>String(text||"").split(/\n/).map(line=>line.split(",").map(v=>v.trim()).filter(Boolean)).filter(cols=>cols.length);
+const formatUniqueKeys=(value)=>Array.isArray(value)?value.map(cols=>(cols||[]).join(", ")).join("\n"):"";
+const parseEnumLines=(text)=>{
+  const out={};
+  String(text||"").split(/\n/).forEach(line=>{
+    const [col,...rest]=line.split("=");
+    const key=String(col||"").trim();
+    if(!key)return;
+    const vals=rest.join("=").split(/[|,]/).map(v=>v.trim()).filter(Boolean);
+    if(vals.length)out[key]=vals;
+  });
+  return out;
+};
+const formatEnumLines=(value)=>Object.entries(value||{}).map(([col,vals])=>`${col}=${(vals||[]).join("|")}`).join("\n");
+const parseNumericLines=(text)=>{
+  const out={};
+  String(text||"").split(/\n/).forEach(line=>{
+    const parts=line.trim().split(/\s+/).filter(Boolean);
+    const col=parts.shift();
+    if(!col)return;
+    const spec={};
+    parts.forEach(part=>{
+      const [k,v]=part.split("=");
+      if(k==="min"&&v!=="")spec.min=Number(v);
+      else if(k==="max"&&v!=="")spec.max=Number(v);
+      else if(k==="integer")spec.integer=String(v||"true").toLowerCase()!=="false";
+    });
+    out[col]=spec;
+  });
+  return out;
+};
+const formatNumericLines=(value)=>Object.entries(value||{}).map(([col,spec])=>{
+  const parts=[col];
+  if(spec?.min!==undefined)parts.push(`min=${spec.min}`);
+  if(spec?.max!==undefined)parts.push(`max=${spec.max}`);
+  if(spec?.integer)parts.push("integer=true");
+  return parts.join(" ");
+}).join("\n");
+const parseRegexLines=(text)=>{
+  const out={};
+  String(text||"").split(/\n/).forEach(line=>{
+    const [col,...rest]=line.split("=");
+    const key=String(col||"").trim();
+    const pattern=rest.join("=").trim();
+    if(key&&pattern)out[key]=pattern;
+  });
+  return out;
+};
+const formatRegexLines=(value)=>Object.entries(value||{}).map(([col,pattern])=>`${col}=${pattern}`).join("\n");
+const parseConditionLines=(text)=>String(text||"").split(/\n/).map(line=>{
+  const [expr,...rest]=line.split("=>");
+  return {expr:String(expr||"").trim(),message:rest.join("=>").trim()};
+}).filter(x=>x.expr);
+const formatConditionLines=(value)=>Array.isArray(value)?value.map(x=>`${x.expr||""}${x.message?" => "+x.message:""}`).join("\n"):"";
+const parseSortLines=(text)=>String(text||"").split(/\n/).map(line=>{
+  const [column,direction="asc",type="string",nulls="last"]=line.trim().split(/\s+/).filter(Boolean);
+  return column?{column,direction,type,nulls}:null;
+}).filter(Boolean);
+const formatSortLines=(value)=>Array.isArray(value)?value.map(x=>[x.column,x.direction||"asc",x.type||"string",x.nulls||"last"].filter(Boolean).join(" ")).join("\n"):"";
+const emptyRuleForm=()=>({required_columns:"",not_empty:"",unique_keys:"",enums:"",numeric:"",date:"",regex:"",conditions:"",sort:""});
+const ruleToForm=(rule={})=>({
+  required_columns:joinRuleList(rule.required_columns),
+  not_empty:joinRuleList(rule.not_empty),
+  unique_keys:formatUniqueKeys(rule.unique_keys),
+  enums:formatEnumLines(rule.enums),
+  numeric:formatNumericLines(rule.numeric),
+  date:joinRuleList(rule.date),
+  regex:formatRegexLines(rule.regex),
+  conditions:formatConditionLines(rule.conditions),
+  sort:formatSortLines(rule.sort),
+});
+const formToRule=(form={})=>{
+  const rule={};
+  const required=splitRuleList(form.required_columns);
+  const notEmpty=splitRuleList(form.not_empty);
+  const unique=parseUniqueKeys(form.unique_keys);
+  const enums=parseEnumLines(form.enums);
+  const numeric=parseNumericLines(form.numeric);
+  const date=splitRuleList(form.date);
+  const regex=parseRegexLines(form.regex);
+  const conditions=parseConditionLines(form.conditions);
+  const sort=parseSortLines(form.sort);
+  if(required.length)rule.required_columns=required;
+  if(notEmpty.length)rule.not_empty=notEmpty;
+  if(unique.length)rule.unique_keys=unique;
+  if(Object.keys(enums).length)rule.enums=enums;
+  if(Object.keys(numeric).length)rule.numeric=numeric;
+  if(date.length)rule.date=date;
+  if(Object.keys(regex).length)rule.regex=regex;
+  if(conditions.length)rule.conditions=conditions;
+  if(sort.length)rule.sort=sort;
+  return rule;
+};
+const ruleCount=(summary={})=>Object.values(summary||{}).reduce((sum,v)=>sum+Number(v||0),0);
 const normalizePageableSource = (file) => (file||"");
 function formatSize(b){if(!b)return"-";if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB";}
 function revStyle(rev){
@@ -151,6 +247,7 @@ export default function My_FileBrowser({user,onNavigate}){
   // `scopes` keyed array from /api/filebrowser/scopes; `scope` = active key.
   const[scopes,setScopes]=useState([]);const[scope,setScope]=useState("DB");
   const[baseFiles,setBaseFiles]=useState([]);const[selBaseFile,setSelBaseFile]=useState("");
+  const[baseDir,setBaseDir]=useState("");
   // v4.1: raw preview for json/md so the main pane can render them natively
   // (pretty-printed JSON / markdown-as-pre) instead of stuffing text into the table.
   const[baseRaw,setBaseRaw]=useState(null);
@@ -391,6 +488,89 @@ export default function My_FileBrowser({user,onNavigate}){
   const[s3Detail,setS3Detail]=useState(null); // show last_output_tail
   const[s3Now,setS3Now]=useState(Date.now());
   const[s3Profiles,setS3Profiles]=useState([]); // v8.7.9 AWS profile (key) list
+  const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_rules:{},hidden_db_dirs:["cache","reformatter"],can_manage:false});
+  const[fbThresholdMb,setFbThresholdMb]=useState("10");
+  const[fbHiddenDbDirsText,setFbHiddenDbDirsText]=useState("cache\nreformatter");
+  const[fbSettingsMsg,setFbSettingsMsg]=useState("");
+  const[fbSettingsLoading,setFbSettingsLoading]=useState(false);
+  const[fbSelectedFile,setFbSelectedFile]=useState("");
+  const[fbRuleForm,setFbRuleForm]=useState(emptyRuleForm());
+  const[fbValidation,setFbValidation]=useState(null);
+
+  const csvBaseFiles=(baseFiles||[]).filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
+  const selectFileRule=(file,settings=fbSettings)=>{
+    const key=String(file||"");
+    setFbSelectedFile(key);
+    setFbValidation(null);
+    setFbRuleForm(ruleToForm((settings?.csv_rules||{})[key]||{}));
+  };
+  const loadFilebrowserSettings=async()=>{
+    if(!isFileBrowserAdmin)return;
+    setFbSettingsLoading(true);
+    try{
+      let localCsvFiles=csvBaseFiles;
+      if(!localCsvFiles.length){
+        const bf=await sf(API+"/base-files?_ts="+Date.now()).catch(()=>({files:[]}));
+        const files=bf.files||[];
+        setBaseFiles(files);
+        localCsvFiles=files.filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
+      }
+      const d=await sf(API+"/settings");
+      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??10485760,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||["cache","reformatter"],can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes};
+      setFbSettings(settings);
+      setFbThresholdMb(String(((Number(settings.csv_full_read_max_bytes)||0)/1048576).toFixed(2)).replace(/\.00$/,""));
+      setFbHiddenDbDirsText((settings.hidden_db_dirs||[]).join("\n"));
+      const currentCsv=(selBaseMeta&&(selBaseMeta.ext||"").toLowerCase()==="csv")?String(selBaseMeta.path||selBaseMeta.name||""):"";
+      const target=fbSelectedFile||currentCsv||localCsvFiles[0]?.path||localCsvFiles[0]?.name||"";
+      if(target)selectFileRule(target,settings);
+      setFbSettingsMsg("");
+    }catch(e){
+      setFbSettingsMsg(e.message||"파일 설정 로드 실패");
+    }finally{
+      setFbSettingsLoading(false);
+    }
+  };
+  const saveFilebrowserSettings=async()=>{
+    const nextRules={...(fbSettings.csv_rules||{})};
+    if(fbSelectedFile){
+      const rule=formToRule(fbRuleForm);
+      if(Object.keys(rule).length)nextRules[fbSelectedFile]=rule;
+      else delete nextRules[fbSelectedFile];
+    }
+    const thresholdBytes=Math.max(0,Math.round(Number(fbThresholdMb||0)*1048576));
+    setFbSettingsLoading(true);
+    try{
+      const hiddenDbDirs=String(fbHiddenDbDirsText||"").split(/[\n,]/).map(v=>v.trim()).filter(Boolean);
+      const d=await sf(API+"/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({csv_full_read_max_bytes:thresholdBytes,csv_rules:nextRules,hidden_db_dirs:hiddenDbDirs})});
+      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??thresholdBytes,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||hiddenDbDirs,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes};
+      setFbSettings(settings);
+      setFbThresholdMb(String(((Number(settings.csv_full_read_max_bytes)||0)/1048576).toFixed(2)).replace(/\.00$/,""));
+      setFbHiddenDbDirsText((settings.hidden_db_dirs||[]).join("\n"));
+      selectFileRule(fbSelectedFile,settings);
+      setFbSettingsMsg("파일 설정 저장 완료");
+      sf(API+"/roots?_ts="+Date.now()).then(r=>setRoots(r.roots||[])).catch(()=>{});
+    }catch(e){
+      setFbSettingsMsg(e.message||"파일 설정 저장 실패");
+    }finally{
+      setFbSettingsLoading(false);
+    }
+  };
+  const testFileRule=async()=>{
+    if(!fbSelectedFile){setFbSettingsMsg("CSV 파일을 먼저 선택하세요.");return;}
+    const sameOpen=mode==="base"&&selBaseFile===fbSelectedFile&&editCols.length;
+    const csvText=sameOpen?buildSaveText(editCols,editRows,saveDelimiter,includeHeader):"";
+    setFbSettingsLoading(true);
+    try{
+      const d=await sf(API+"/base-file/validate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:fbSelectedFile,csv_text:csvText,delimiter:sameOpen?saveDelimiter:"auto",include_header:sameOpen?includeHeader:true})});
+      setFbValidation(d);
+      setFbSettingsMsg(d.ok?`검증 통과 · rows ${d.rows||0}${d.sorted?" · 정렬 적용":""}`:`검증 실패 · ${d.error_count||0}건`);
+    }catch(e){
+      setFbValidation({ok:false,errors:[{message:e.message||"검증 실패"}]});
+      setFbSettingsMsg(e.message||"검증 실패");
+    }finally{
+      setFbSettingsLoading(false);
+    }
+  };
 
   // Poll s3 items/history while modal open
   useEffect(()=>{
@@ -406,6 +586,15 @@ export default function My_FileBrowser({user,onNavigate}){
     const t=setInterval(()=>{loadItems();if(s3Tab==="history")loadHist();},5000);
     return()=>clearInterval(t);
   },[s3Open,s3Tab,s3Tick,isAdmin,user?.username]);
+
+  useEffect(()=>{
+    if(s3Open&&!isAdmin&&s3Tab!=="file")setS3Tab("file");
+  },[s3Open,isAdmin,s3Tab]);
+
+  useEffect(()=>{
+    if(!s3Open||!isFileBrowserAdmin)return;
+    loadFilebrowserSettings();
+  },[s3Open,isFileBrowserAdmin]);
 
   // 1s ticker for ETA countdown (only while modal open)
   useEffect(()=>{if(!s3Open)return;const t=setInterval(()=>setS3Now(Date.now()),1000);return()=>clearInterval(t);},[s3Open]);
@@ -428,6 +617,16 @@ export default function My_FileBrowser({user,onNavigate}){
   };
   const s3FmtETA=(item)=>{
     const iv=Number(item.interval_min||0);if(iv<=0)return"수동";
+    if(item.due)return"지금 실행 예정";
+    if(item.next_due){
+      const dueMs=new Date(item.next_due).getTime();
+      if(!isNaN(dueMs)){
+        const diff=dueMs-s3Now;
+        if(diff<=0)return"지금 실행 예정";
+        const m=Math.floor(diff/60000),s=Math.floor((diff%60000)/1000);
+        return m>=60?Math.floor(m/60)+"시간 "+(m%60)+"분":m+"분 "+s+"초";
+      }
+    }
     const st=item.status||{};const last=st.last_end||st.last_start;
     if(!last)return"지금 실행 예정";
     const lastMs=new Date(last).getTime();if(isNaN(lastMs))return"-";
@@ -600,8 +799,22 @@ export default function My_FileBrowser({user,onNavigate}){
   const baseFileEditable = canEditBaseMeta(selBaseMeta);
   const canEditCurrentBase=mode==="base"&&!!selBaseFile&&!baseRaw&&baseFileEditable&&isFileBrowserAdmin;
   const baseFileComplete = !!data&&(data.single_file_full_read||(data.total_rows||0)<= (data.showing||0));
-  const baseItems = baseFiles || [];
-  const baseFileCount = baseItems.filter(f => (f?.kind || "file").toLowerCase() !== "dir").length;
+  const basePathOf=(f)=>String(f?.path||f?.name||"").replace(/\\/g,"/");
+  const baseAllItems = baseFiles || [];
+  const baseItems = baseDir
+    ? [
+        {name:"상위 폴더",path:"__base_dir_up__",kind:"dir_up",ext:"dir",description:"상위 폴더로 이동"},
+        ...baseAllItems.filter(f => (f?.kind || "file").toLowerCase() !== "dir" && basePathOf(f).startsWith(baseDir+"/"))
+      ]
+    : baseAllItems.filter(f => {
+        const kind=(f?.kind || "file").toLowerCase();
+        if(kind==="dir")return true;
+        return !basePathOf(f).includes("/");
+      });
+  const baseFileCount = baseItems.filter(f => {
+    const kind=(f?.kind || "file").toLowerCase();
+    return kind !== "dir" && kind !== "dir_up";
+  }).length;
 
   const startBaseEdit=()=>{
     if(!canEditCurrentBase||!data){
@@ -814,7 +1027,11 @@ export default function My_FileBrowser({user,onNavigate}){
   const canEnterBaseEdit = canEditCurrentBase && baseFileComplete;
   const isBaseEditingMode = mode==="base"&&isBaseEditing;
   const baseEditingTabs = isBaseEditingMode ? ["data"] : ["data","columns"];
-  const showBasePager = !data?.meta_only && !isBaseEditingMode;
+  const showBasePager = !data?.meta_only && !isBaseEditingMode && !(mode==="base"&&data?.single_file_full_read);
+  const settingsTabs=[
+    ...(isAdmin?[{k:"items",l:"항목 ("+s3Items.length+")"},{k:"add",l:"+ 추가"},{k:"history",l:"이력"},{k:"aws",l:"AWS 설정"}]:[]),
+    {k:"file",l:"파일 설정"},
+  ];
 
   const chipS={display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:4,fontSize:14,cursor:"pointer",marginRight:4,marginBottom:4,border:"1px solid var(--border)",transition:"all 0.15s"};
   const chipActive={...chipS,background:"var(--accent-glow)",borderColor:"var(--accent)",color:"var(--accent)",fontWeight:600};
@@ -852,7 +1069,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {scopes.map(s=>{
             const active=scope===s.key;const disabled=s.exists===false;
             return(<span key={s.key} className={"filebrowser-scope-option filebrowser-scope-"+s.key} data-scope={s.key} data-active={active?"1":"0"}
-              onClick={()=>{if(disabled)return;setScope(s.key);setData(null);setBaseRaw(null);setSelBaseMeta(null);setError("");setSelProd("");setSelRootPq("");setSelBaseFile("");setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setSelectedCols([]);}}
+              onClick={()=>{if(disabled)return;setScope(s.key);setBaseDir("");setData(null);setBaseRaw(null);setSelBaseMeta(null);setError("");setSelProd("");setSelRootPq("");setSelBaseFile("");setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setSelectedCols([]);}}
               title={s.description+(disabled?"\n(경로 없음 — admin_settings 확인)":"")}
               style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"center",padding:"6px 8px",borderRadius:5,fontSize:14,cursor:disabled?"not-allowed":"pointer",fontWeight:active?700:500,
                 background:active?"var(--accent-glow)":"var(--bg-hover)",color:disabled?"var(--text-secondary)":(active?"var(--accent)":"var(--text-primary)"),
@@ -864,38 +1081,51 @@ export default function My_FileBrowser({user,onNavigate}){
         {sideLoading?<div style={{padding:20}}><Loading text="로딩 중..." size="sm"/></div>:scope==="Base"?<>
           {/* Root-level DB files — legacy scope key remains "Base" for compatibility. */}
           <div style={{flex:1,overflow:"auto",padding:"6px 8px"}}>
-            <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>운영 파일 ({baseFileCount})</div>
+            <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>{baseDir||"운영 파일"} ({baseFileCount})</div>
             {baseItems.length===0&&<div style={{padding:"10px 12px",fontSize:14,color:"var(--text-secondary)"}}>표시할 ML_TABLE / 매칭 CSV / 제품 YAML / reformatter CSV 가 없습니다.</div>}
             {baseItems.map(f=>{
               const fileKey=f.path||f.name;
               const isSel=selBaseFile===fileKey;
               const kind=(f.kind||"file").toLowerCase();
               const isDir=kind==="dir";
+              const isDirUp=kind==="dir_up";
               const extColor={parquet:"#10b981",csv:"#3b82f6",json:"#f59e0b",md:"#94a3b8",yaml:"#eab308",yml:"#eab308",dir:"#94a3b8"}[f.ext]||"#64748b";
-              const icon={parquet:"📊",csv:"📋",json:"🔧",md:"📄",yaml:"⚙️",yml:"⚙️",dir:"📂"}[f.ext]||"📁";
+              const icon=isDirUp?"↩":({parquet:"📊",csv:"📋",json:"🔧",md:"📄",yaml:"⚙️",yml:"⚙️",dir:"📂"}[f.ext]||"📁");
+              const displayName=baseDir&&!isDirUp?String(fileKey).replace(new RegExp("^"+baseDir.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"/"),""):f.name;
               const titlePath=[f.name];
-              if(f.source && f.source!=="file")titlePath.push("("+f.source+")");
               return(<div key={fileKey} className="filebrowser-base-file" data-file={fileKey} data-ext={f.ext}
                 onClick={()=>{
-                  if(isDir){
+                  if(isDirUp){
+                    setBaseDir("");
                     setSelBaseMeta(null);
                     setSelBaseFile("");
+                    setData(null);
+                    setBaseRaw(null);
+                    return;
+                  }
+                  if(isDir){
+                    const nextDir=String(f.name||"").replace(/^.*:/,"").replace(/^\/+|\/+$/g,"");
+                    setBaseDir(nextDir||"cache");
+                    setSelBaseMeta(null);
+                    setSelBaseFile("");
+                    setData(null);
+                    setBaseRaw(null);
                     return;
                   }
                   setSelectedCols([]);setSelBaseMeta(f);loadBaseFileView(fileKey);setIsBaseEditing(false);setError("");setData(null);setBaseRaw(null);setEditCols([]);setEditRows([]);setEditOriginRows([]);
                 }}
                 title={(f.description||titlePath.join(" "))+ (f.role?`\n${f.role}`:"")}
-                style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:(isDir?"default":"pointer"),fontSize:14,marginBottom:1,
+                style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
                   background:isSel?"var(--bg-hover)":"transparent",color:isSel?"var(--accent)":"var(--text-primary)"}}>
                 {/* v8.7.5: Base 단일 파일도 S3 신호등 표시 (다운로드/업로드 양방향). */}
-                {!isDir&&lightDot(fileKey)}
+                {!isDir&&!isDirUp&&lightDot(fileKey)}
                 <span style={{flexShrink:0,lineHeight:1.5}}>{icon}</span>
                 <span style={sidebarStack}>
-                  <span style={sidebarText} title={f.name}>{f.name}{f.source&&f.source!=="file"&&` (${f.source})`}</span>
+                  <span style={sidebarText} title={displayName}>{displayName}</span>
                   <span style={sidebarMetaLine}>
-                    {!isDir&&lightFreshText(fileKey)}
+                    {!isDir&&!isDirUp&&lightFreshText(fileKey)}
                     {/* v8.7.7: `db` 소스 태그 제거 — Base 단일 파일은 소스 구분 없이 한 번만 표시. */}
-                    {!isDir&&<>
+                    {!isDir&&!isDirUp&&<>
                       <span style={{fontSize:11,padding:"1px 4px",borderRadius:3,background:extColor+"22",color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>{f.ext}</span>
                       <span style={sidebarMeta}>{formatSize(f.size)}</span>
                     </>}
@@ -1010,7 +1240,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {loading&&<div style={{padding:40,textAlign:"center"}}><Loading text="로딩 중..."/></div>}
           {mode==="base"&&selBaseFile&&<div style={{margin:"10px 12px 0",padding:12,border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-secondary)"}}>
             <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:8}}>
-              <b style={{fontSize:14}}>EDM Version History</b>
+              <b style={{fontSize:14}}>Version History</b>
               <span style={{fontSize:12,color:baseVersioned?"var(--accent)":"var(--text-secondary)",fontFamily:"monospace"}}>
                 {baseVersioned?`versioned · ${baseVersions.length}/${baseVersionCap}`:"preview only"}
               </span>
@@ -1120,6 +1350,9 @@ export default function My_FileBrowser({user,onNavigate}){
                        {data.truncated_cols&&<span style={{color:"var(--accent)"}}> | 기본 미리보기 {data.preview_cols}열</span>}</>}
                   {data.source_modified&&<span title={data.source_path||""}> | 수정 {new Date(data.source_modified*1000).toLocaleString()}</span>}
                 </span>
+                {mode==="base"&&data.csv_rule_summary&&ruleCount(data.csv_rule_summary)>0&&<span title={JSON.stringify(data.csv_rule_summary)} style={{fontSize:12,fontWeight:700,padding:"4px 9px",borderRadius:5,background:"#22c55e22",color:"#16a34a",fontFamily:"monospace"}}>
+                  CSV rule {ruleCount(data.csv_rule_summary)}{data.csv_rule_summary.sort?` · sort ${data.csv_rule_summary.sort}`:""}
+                </span>}
                 <div style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:"auto",flexWrap:"wrap"}}>
                   {mode==="base"&&isFileBrowserAdmin&&BASE_EDIT_FILE_EXTS.has(baseFileExt)&&baseFileEditable&&
                     <button onClick={startBaseEdit} disabled={!canEnterBaseEdit}
@@ -1276,23 +1509,73 @@ export default function My_FileBrowser({user,onNavigate}){
         </div>
       </div>
       {/* v8.7.5: Admin S3 ingest gear — PageGear 스타일 통일 · 좌하단 */}
-      {isAdmin&&<>
-        <div onClick={()=>setS3Open(!s3Open)} title="S3 동기화 / AWS 설정 (admin)" style={{position:"fixed",bottom:16,left:16,width:40,height:40,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,boxShadow:"0 2px 8px rgba(0,0,0,0.3)",fontSize:18}}>⚙️</div>
+      {isFileBrowserAdmin&&<>
+        <div onClick={()=>{if(!s3Open&&!isAdmin)setS3Tab("file");setS3Open(!s3Open);}} title={isAdmin?"파일 설정 / S3 동기화 / AWS 설정":"파일 설정"} style={{position:"fixed",bottom:16,left:16,width:40,height:40,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,boxShadow:"0 2px 8px rgba(0,0,0,0.3)",fontSize:18}}>⚙️</div>
         {s3Open&&<>
           <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:98}} onClick={()=>{setS3Open(false);setS3Form(null);setS3Detail(null);}}/>
           <div style={{position:"fixed",top:"50%",left:"50%",transform:"translate(-50%,-50%)",width:"min(780px,94vw)",maxHeight:"86vh",background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:10,zIndex:99,display:"flex",flexDirection:"column",boxShadow:"0 16px 48px rgba(0,0,0,0.6)"}}>
             <div style={{display:"flex",alignItems:"center",padding:"12px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",borderRadius:"10px 10px 0 0"}}>
-              <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",flex:1}}>S3 동기화 설정 — aws s3 cp/sync</span>
+              <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",flex:1}}>{s3Tab==="file"?"FileBrowser 파일 설정":"S3 동기화 설정 — aws s3 cp/sync"}</span>
               {!s3AwsOk&&<span style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"#ef444422",color:"#ef4444",marginRight:8}}>aws CLI 미설치</span>}
               <span onClick={()=>{setS3Open(false);setS3Form(null);setS3Detail(null);}} style={{cursor:"pointer",color:"var(--text-secondary)",fontSize:18,padding:"0 4px"}}>✕</span>
             </div>
             {/* Tabs */}
             <div style={{display:"flex",gap:4,padding:"8px 12px",borderBottom:"1px solid var(--border)",background:"var(--bg-primary)"}}>
-              {[{k:"items",l:"항목 ("+s3Items.length+")"},{k:"add",l:"+ 추가"},{k:"history",l:"이력"},{k:"aws",l:"AWS 설정"}].map(t=>(
+              {settingsTabs.map(t=>(
                 <span key={t.k} onClick={()=>{setS3Tab(t.k);if(t.k==="add")setS3Form({id:"",kind:"db",target:"",s3_url:"",command:"sync",direction:"download",extra_args:"",endpoint_url:"",profile:"",interval_min:0,enabled:true});}} style={{padding:"5px 12px",borderRadius:5,fontSize:14,cursor:"pointer",fontWeight:s3Tab===t.k?700:500,background:s3Tab===t.k?"var(--accent-glow)":"transparent",color:s3Tab===t.k?"var(--accent)":"var(--text-secondary)"}}>{t.l}</span>
               ))}
             </div>
             <div style={{flex:1,overflow:"auto",padding:"12px 16px"}}>
+              {s3Tab==="file"&&<div style={{display:"grid",gridTemplateColumns:"minmax(180px,240px) 1fr",gap:14,fontSize:14}}>
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
+                    CSV 전체 표시 기준 (MB)
+                    <input type="number" min={0} step={0.5} value={fbThresholdMb} onChange={e=>setFbThresholdMb(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
+                  </label>
+                  <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
+                    DB 숨김 폴더
+                    <textarea value={fbHiddenDbDirsText} onChange={e=>setFbHiddenDbDirsText(e.target.value)} rows={3} spellCheck={false} placeholder={"cache\nreformatter"} style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
+                  </label>
+                  <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
+                    Base CSV
+                    <select value={fbSelectedFile} onChange={e=>selectFileRule(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}>
+                      <option value="">CSV 선택</option>
+                      {csvBaseFiles.map(f=><option key={f.path||f.name} value={f.path||f.name}>{f.path||f.name}</option>)}
+                    </select>
+                  </label>
+                  <button onClick={testFileRule} disabled={!fbSelectedFile||fbSettingsLoading} style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:!fbSelectedFile||fbSettingsLoading?"default":"pointer",opacity:!fbSelectedFile||fbSettingsLoading?0.5:1}}>검증 테스트</button>
+                  <button onClick={saveFilebrowserSettings} disabled={fbSettingsLoading} style={{padding:"8px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:800,cursor:fbSettingsLoading?"default":"pointer",opacity:fbSettingsLoading?0.5:1}}>저장</button>
+                  <button onClick={()=>selectFileRule(fbSelectedFile,{...fbSettings,csv_rules:{...(fbSettings.csv_rules||{}),[fbSelectedFile]:{}}})} disabled={!fbSelectedFile} style={{padding:"7px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:!fbSelectedFile?"default":"pointer"}}>규칙 비우기</button>
+                  {fbSettingsMsg&&<div style={{padding:9,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:fbSettingsMsg.includes("실패")||fbSettingsMsg.includes("오류")?"#ef4444":"var(--text-secondary)",lineHeight:1.45}}>{fbSettingsMsg}</div>}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,alignItems:"start"}}>
+                  {[
+                    ["required_columns","필수 컬럼","id, name"],
+                    ["not_empty","빈 값 금지","id, name"],
+                    ["unique_keys","중복 금지 키","product, lot_id, wafer_id"],
+                    ["enums","허용값","status=OK|NG|HOLD"],
+                    ["numeric","숫자","rank min=1 max=999 integer=true"],
+                    ["date","날짜/시간 컬럼","created_at, updated_at"],
+                    ["regex","정규식","code=[A-Z]{2}\\d{2}"],
+                    ["conditions","위반 row selector","end_time < start_time => 종료가 시작보다 빠름"],
+                    ["sort","저장 정렬","rank asc numeric last"],
+                  ].map(([key,label,ph])=><label key={key} style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
+                    {label}
+                    <textarea value={fbRuleForm[key]||""} onChange={e=>setFbRuleForm(f=>({...f,[key]:e.target.value}))} placeholder={ph} rows={key==="conditions"||key==="sort"?3:2} spellCheck={false}
+                      style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
+                  </label>)}
+                  {fbValidation&&<div style={{gridColumn:"1 / -1",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)",overflow:"hidden"}}>
+                    <div style={{padding:"8px 10px",borderBottom:"1px solid var(--border)",fontWeight:800,color:fbValidation.ok?"#16a34a":"#ef4444"}}>{fbValidation.ok?"검증 통과":"검증 오류"} · {fbValidation.error_count||0}건</div>
+                    {fbValidation.errors?.length?<div style={{maxHeight:170,overflow:"auto"}}>
+                      {fbValidation.errors.slice(0,50).map((err,i)=><div key={i} style={{display:"grid",gridTemplateColumns:"54px 100px 1fr",gap:8,padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:12}}>
+                        <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{err.row?`row ${err.row}`:"-"}</span>
+                        <span style={{fontFamily:"monospace",color:"var(--accent)"}}>{err.column||err.rule}</span>
+                        <span>{err.message}</span>
+                      </div>)}
+                    </div>:<div style={{padding:"8px 10px",fontSize:12,color:"var(--text-secondary)"}}>저장 시 같은 규칙과 정렬이 적용됩니다.</div>}
+                  </div>}
+                </div>
+              </div>}
               {/* ITEMS tab */}
               {s3Tab==="items"&&<>
                 {s3Items.length===0?<div style={{padding:30,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>설정된 S3 동기화 항목이 없습니다. <b>+ 추가</b> 를 클릭해 생성하세요.</div>

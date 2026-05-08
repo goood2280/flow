@@ -16,6 +16,28 @@ if str(ROOT / "backend") not in sys.path:
 from routers import s3_ingest  # noqa: E402
 
 
+def test_item_due_state_uses_last_end_and_interval():
+    now = datetime.datetime(2026, 5, 8, 12, 0, 0).timestamp()
+    item = {"interval_min": 30}
+
+    fresh = s3_ingest._item_due_state(
+        item,
+        {"last_start": "2026-05-08T11:00:00", "last_end": "2026-05-08T11:45:00"},
+        now,
+    )
+    stale = s3_ingest._item_due_state(item, {"last_end": "2026-05-08T11:20:00"}, now)
+    never = s3_ingest._item_due_state(item, {}, now)
+    manual = s3_ingest._item_due_state({"interval_min": 0}, {"last_end": "2026-05-08T10:00:00"}, now)
+
+    assert fresh["due"] is False
+    assert fresh["age_seconds"] == 15 * 60
+    assert fresh["next_due"] == "2026-05-08T12:15:00"
+    assert stale["due"] is True
+    assert never["due"] is True
+    assert manual["due"] is False
+    assert manual["next_due"] is None
+
+
 def test_recent_download_sync_is_not_stale_item(tmp_path, monkeypatch):
     target_dir = tmp_path / "DB1"
     target_dir.mkdir()

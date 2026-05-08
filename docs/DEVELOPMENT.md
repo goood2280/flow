@@ -21,6 +21,7 @@
 | 작업 | 먼저 볼 파일 |
 |---|---|
 | 앱 실행/배포 | `README.md`, `docs/SOFT_LANDING_INTERNAL.md` |
+| 기능 책임 확인 | `docs/features/README.md`, 해당 `docs/features/<feature>.md` |
 | 탭/페이지 추가 | `frontend/src/config.js`, `frontend/src/app/pageRegistry.jsx` |
 | 페이지 로직 수정 | `frontend/src/pages/My_*.jsx`, 필요한 경우 local subfolder |
 | API 수정 | `backend/routers/<feature>.py` |
@@ -83,6 +84,7 @@
 기능 변경 후 문서가 필요한 경우:
 
 - 실행/진입 경로가 바뀌면 `README.md`와 `docs/README.md`를 수정한다.
+- 화면/기능의 책임, 코드 진입점, 검증 포인트가 바뀌면 `docs/features/<feature>.md`를 수정한다.
 - 책임 경계나 폴더 구조가 바뀌면 `docs/ARCHITECTURE.md`를 수정한다.
 - 개발자가 따라야 할 절차가 바뀌면 이 문서를 수정한다.
 - 화면별 목표나 추가 기준이 바뀌면 `docs/FEATURE_GOALS.md`를 수정한다.

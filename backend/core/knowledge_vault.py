@@ -24,11 +24,14 @@ from core.paths import PATHS
 KNOWLEDGE_ROOT = PATHS.data_root / "knowledge"
 RAW_DIR = KNOWLEDGE_ROOT / "raw"
 EVENT_DIR = RAW_DIR / "events"
+SOURCE_DIR = RAW_DIR / "sources"
 WIKI_DIR = KNOWLEDGE_ROOT / "wiki"
 GRAPH_DIR = KNOWLEDGE_ROOT / "graph"
 INDEX_DIR = KNOWLEDGE_ROOT / "index"
 EVENTS_JSONL = EVENT_DIR / "events.jsonl"
+SOURCES_JSONL = SOURCE_DIR / "sources.jsonl"
 WIKI_INDEX_FILE = INDEX_DIR / "wiki_index.json"
+WIKI_LOG_JSONL = INDEX_DIR / "wiki_log.jsonl"
 GRAPH_FILE = GRAPH_DIR / "graph.json"
 
 DEFAULT_ONTOLOGY_NODES = [
@@ -58,7 +61,7 @@ DEFAULT_ONTOLOGY_EDGES = [
 
 
 def ensure_dirs() -> None:
-    for d in (KNOWLEDGE_ROOT, RAW_DIR, EVENT_DIR, WIKI_DIR, GRAPH_DIR, INDEX_DIR):
+    for d in (KNOWLEDGE_ROOT, RAW_DIR, EVENT_DIR, SOURCE_DIR, WIKI_DIR, GRAPH_DIR, INDEX_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -115,6 +118,44 @@ def _append_jsonl(path: Path, row: dict[str, Any]) -> None:
     ensure_dirs()
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+
+
+def _read_jsonl(path: Path, limit: int = 1000) -> list[dict[str, Any]]:
+    ensure_dirs()
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text("utf-8").splitlines()
+    except Exception:
+        return []
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+        if len(rows) >= max(1, min(limit, 5000)):
+            break
+    return rows
+
+
+def _clean_tags(tags: Any) -> list[str]:
+    values = tags if isinstance(tags, list) else ([tags] if tags not in (None, "") else [])
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        out.append(text[:80])
+        if len(out) >= 30:
+            break
+    return out
 
 
 def _frontmatter(meta: dict[str, Any]) -> str:
@@ -182,6 +223,109 @@ def _event_markdown(row: dict[str, Any]) -> str:
         "",
     ]
     return _frontmatter(meta) + "\n".join(body)
+
+
+def _source_markdown(row: dict[str, Any], content: str) -> str:
+    meta = {
+        "source_id": row.get("source_id"),
+        "source_type": row.get("source_type"),
+        "title": row.get("title"),
+        "actor": row.get("actor"),
+        "created_at": row.get("created_at"),
+        "tags": row.get("tags") or [],
+        "checksum": row.get("checksum"),
+        "content_chars": row.get("content_chars"),
+    }
+    return _frontmatter(meta) + (content or "").rstrip() + "\n"
+
+
+def register_agent_wiki_source(source: dict[str, Any]) -> dict[str, Any]:
+    """Append an immutable Agent Wiki source under raw/sources."""
+    ensure_dirs()
+    content = str(source.get("content") or "").strip()
+    if not content:
+        raise ValueError("content is required")
+    now = source.get("created_at") or now_iso()
+    source_type = safe_id(source.get("source_type") or "markdown", fallback="markdown")
+    title = str(source.get("title") or source.get("file_name") or "Agent Wiki Source").strip()[:220]
+    checksum = hashlib.sha256(content.encode("utf-8", "ignore")).hexdigest()
+    stamp = _dt.datetime.now().strftime("%Y%m%d%H%M%S")
+    requested_id = safe_id(source.get("source_id") or "", fallback="")
+    source_id = requested_id or f"src_{stamp}_{_hash_text(title + checksum, 8)}"
+    source_id = safe_id(source_id, fallback=f"src_{_hash_text(checksum)}")
+    day = str(now)[:10] or _dt.datetime.now().strftime("%Y-%m-%d")
+    base_source_id = source_id
+    raw_path = SOURCE_DIR / day / f"{source_id}.md"
+    counter = 1
+    while raw_path.exists():
+        source_id = safe_id(f"{base_source_id}_{_hash_text(checksum + str(counter), 6)}", fallback=f"src_{_hash_text(checksum)}")
+        raw_path = SOURCE_DIR / day / f"{source_id}.md"
+        counter += 1
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "source_id": source_id,
+        "source_type": source_type,
+        "title": title,
+        "actor": str(source.get("actor") or ""),
+        "created_at": now,
+        "tags": _clean_tags(source.get("tags") or []),
+        "checksum": checksum,
+        "content_chars": len(content),
+        "content_preview": _snippet(content, "", 260),
+    }
+    raw_path.write_text(_source_markdown(row, content), encoding="utf-8")
+    row["raw_path"] = str(raw_path.relative_to(KNOWLEDGE_ROOT))
+    _append_jsonl(SOURCES_JSONL, row)
+    append_wiki_log({
+        "action": "source_register",
+        "actor": row.get("actor") or "",
+        "source_ids": [source_id],
+        "title": title,
+        "message": f"Registered Agent Wiki source {source_id}",
+    })
+    return row
+
+
+def list_agent_wiki_sources(q: str = "", source_type: str = "", limit: int = 100) -> list[dict[str, Any]]:
+    q_l = str(q or "").strip().lower()
+    type_filter = str(source_type or "").strip()
+    out: list[dict[str, Any]] = []
+    for row in _read_jsonl(SOURCES_JSONL, limit=5000):
+        if type_filter and str(row.get("source_type") or "") != type_filter:
+            continue
+        if q_l:
+            hay = " ".join([
+                str(row.get("source_id") or ""),
+                str(row.get("title") or ""),
+                str(row.get("content_preview") or ""),
+                " ".join(map(str, row.get("tags") or [])),
+            ]).lower()
+            if q_l not in hay:
+                continue
+        out.append(row)
+        if len(out) >= max(1, min(limit, 1000)):
+            break
+    return out
+
+
+def get_agent_wiki_source(source_id: str) -> dict[str, Any] | None:
+    target = safe_id(source_id, fallback="")
+    if not target:
+        return None
+    for row in _read_jsonl(SOURCES_JSONL, limit=5000):
+        if str(row.get("source_id") or "") != target:
+            continue
+        raw_path = row.get("raw_path") or ""
+        fp = KNOWLEDGE_ROOT / raw_path
+        content = ""
+        if fp.is_file():
+            try:
+                meta, content = _read_frontmatter(fp.read_text("utf-8"))
+                row = {**row, **{k: v for k, v in meta.items() if k not in row or not row.get(k)}}
+            except Exception:
+                content = ""
+        return {**row, "content": content}
+    return None
 
 
 def append_event(event: KnowledgeEvent | dict[str, Any]) -> dict[str, Any]:
@@ -333,6 +477,11 @@ def _refresh_wiki_index() -> list[dict[str, Any]]:
         row = _doc_from_path(fp)
         if row:
             brief = {k: row.get(k) for k in ("doc_id", "kind", "title", "summary", "updated_at", "entity", "tags", "path")}
+            source_ids = row.get("frontmatter", {}).get("source_ids")
+            if isinstance(source_ids, list):
+                brief["source_ids"] = source_ids
+            if row.get("source_event_ids"):
+                brief["source_event_ids"] = row.get("source_event_ids")
             docs.append(brief)
     _atomic_json(WIKI_INDEX_FILE, {"updated_at": now_iso(), "docs": docs})
     return docs
@@ -351,6 +500,7 @@ def list_docs(kind: str = "", q: str = "", limit: int = 200) -> list[dict[str, A
                 str(row.get("title") or ""),
                 str(row.get("summary") or ""),
                 " ".join(map(str, row.get("tags") or [])),
+                " ".join(map(str, row.get("source_ids") or [])),
             ]).lower()
             if q_l not in hay:
                 continue
@@ -434,6 +584,306 @@ def search(q: str, scope: str = "all", limit: int = 30) -> list[dict[str, Any]]:
             })
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
     return results[: max(1, min(limit, 100))]
+
+
+def append_wiki_log(entry: dict[str, Any]) -> dict[str, Any]:
+    ensure_dirs()
+    seed = {
+        "created_at": entry.get("created_at") or now_iso(),
+        "action": entry.get("action") or "wiki_event",
+        "actor": entry.get("actor") or "",
+        "doc_id": entry.get("doc_id") or "",
+        "source_ids": entry.get("source_ids") or [],
+        "title": entry.get("title") or "",
+        "message": entry.get("message") or "",
+        "meta": entry.get("meta") or {},
+    }
+    seed["log_id"] = entry.get("log_id") or f"log_{_dt.datetime.now().strftime('%Y%m%d%H%M%S')}_{_hash_text(json.dumps(seed, ensure_ascii=False, sort_keys=True, default=str), 8)}"
+    _append_jsonl(WIKI_LOG_JSONL, seed)
+    return seed
+
+
+def list_wiki_log(limit: int = 100, action: str = "") -> list[dict[str, Any]]:
+    rows = _read_jsonl(WIKI_LOG_JSONL, limit=max(limit, 100))
+    action_filter = str(action or "").strip()
+    out = [row for row in rows if not action_filter or str(row.get("action") or "") == action_filter]
+    return out[: max(1, min(limit, 1000))]
+
+
+def _summary_from_text(text: str, limit: int = 260) -> str:
+    cleaned = re.sub(r"\s+", " ", text or "").strip()
+    if not cleaned:
+        return ""
+    chunks = re.split(r"(?<=[.!?。])\s+|\n{2,}", cleaned)
+    selected = next((chunk.strip(" #-\t") for chunk in chunks if len(chunk.strip()) >= 20), cleaned)
+    return selected[:limit].rstrip()
+
+
+def _key_points(text: str, limit: int = 6) -> list[str]:
+    points: list[str] = []
+    for line in str(text or "").splitlines():
+        item = line.strip()
+        if not item or item.startswith("#") or item in {"---"}:
+            continue
+        item = re.sub(r"^[-*+\d.)\s]+", "", item).strip()
+        if len(item) < 12:
+            continue
+        points.append(item[:220])
+        if len(points) >= limit:
+            break
+    if points:
+        return points
+    for part in re.split(r"(?<=[.!?。])\s+", str(text or "")):
+        item = part.strip()
+        if len(item) >= 12:
+            points.append(item[:220])
+        if len(points) >= limit:
+            break
+    return points
+
+
+def _agent_wiki_doc_id(title: str, source_ids: list[str], content: str) -> str:
+    basis = "|".join(source_ids) or content[:500]
+    return safe_id(f"agent_wiki_{title}_{_hash_text(basis, 8)}", fallback=f"agent_wiki_{_hash_text(basis or title)}")
+
+
+def _agent_wiki_related(title: str, tags: list[str], exclude_doc_id: str = "", limit: int = 8) -> list[dict[str, Any]]:
+    tokens = {t.lower() for t in tags if t}
+    tokens.update(x.lower() for x in re.findall(r"[A-Za-z0-9_가-힣]{3,}", title or "")[:8])
+    rows: list[dict[str, Any]] = []
+    for row in list_docs(kind="agent_wiki", limit=1000):
+        if exclude_doc_id and row.get("doc_id") == exclude_doc_id:
+            continue
+        hay = " ".join([
+            str(row.get("title") or ""),
+            str(row.get("summary") or ""),
+            " ".join(map(str, row.get("tags") or [])),
+        ]).lower()
+        score = sum(1 for token in tokens if token and token in hay)
+        if score:
+            rows.append({**row, "score": score})
+    rows.sort(key=lambda r: (r.get("score") or 0, str(r.get("updated_at") or "")), reverse=True)
+    return rows[:limit]
+
+
+def preview_agent_wiki_ingest(req: dict[str, Any]) -> dict[str, Any]:
+    """Build a deterministic Agent Wiki page preview without writing raw/wiki files."""
+    source_ids = [safe_id(x, fallback="") for x in (req.get("source_ids") or []) if safe_id(x, fallback="")]
+    sources: list[dict[str, Any]] = []
+    chunks: list[str] = []
+    for source_id in source_ids:
+        source = get_agent_wiki_source(source_id)
+        if not source:
+            raise FileNotFoundError(f"source not found: {source_id}")
+        sources.append(source)
+        if source.get("content"):
+            chunks.append(str(source.get("content") or ""))
+    direct_content = str(req.get("content") or "").strip()
+    if direct_content:
+        chunks.append(direct_content)
+    if not chunks:
+        raise ValueError("source_ids or content is required")
+    content = "\n\n".join(chunks).strip()
+    tags = _clean_tags([*(req.get("tags") or []), *(tag for source in sources for tag in (source.get("tags") or []))])
+    title = str(req.get("title") or "").strip()
+    if not title:
+        title = str((sources[0].get("title") if sources else "") or "").strip()
+    if not title:
+        title = _summary_from_text(content, limit=80) or "Agent Wiki Page"
+    doc_id = safe_id(req.get("doc_id") or "", fallback="") or _agent_wiki_doc_id(title, source_ids, content)
+    summary = str(req.get("summary") or "").strip() or _summary_from_text(content)
+    points = _key_points(content)
+    source_lines = [
+        f"- `{source.get('source_id')}` - {source.get('title') or source.get('raw_path') or ''}".rstrip()
+        for source in sources
+    ]
+    if direct_content and not sources:
+        source_lines.append("- direct preview content")
+    related = _agent_wiki_related(title, tags, exclude_doc_id=doc_id)
+    related_lines = [f"- [[{row.get('doc_id')}]] {row.get('title') or row.get('doc_id')}" for row in related]
+    body_parts = [
+        "## Summary",
+        "",
+        summary or "-",
+        "",
+        "## Maintained Notes",
+        "",
+        *(f"- {point}" for point in points),
+        "",
+        "## Sources",
+        "",
+        *(source_lines or ["- no source registered"]),
+    ]
+    if related_lines:
+        body_parts.extend(["", "## Related Pages", "", *related_lines])
+    return {
+        "doc_id": doc_id,
+        "kind": "agent_wiki",
+        "title": title[:220],
+        "summary": summary,
+        "body": "\n".join(body_parts).rstrip() + "\n",
+        "tags": tags,
+        "source_ids": source_ids,
+        "source_count": len(source_ids),
+        "content_chars": len(content),
+        "related_pages": related,
+    }
+
+
+def commit_agent_wiki_ingest(req: dict[str, Any]) -> dict[str, Any]:
+    """Commit raw source if needed, wiki page, index refresh, and append-only log."""
+    source_ids = [safe_id(x, fallback="") for x in (req.get("source_ids") or []) if safe_id(x, fallback="")]
+    direct_content = str(req.get("content") or "").strip()
+    if direct_content and not source_ids:
+        source = register_agent_wiki_source({
+            "source_type": req.get("source_type") or "markdown",
+            "title": req.get("title") or "Agent Wiki Source",
+            "content": direct_content,
+            "tags": req.get("tags") or [],
+            "actor": req.get("actor") or "",
+        })
+        source_ids = [source["source_id"]]
+        req = {**req, "source_ids": source_ids, "content": ""}
+    preview = preview_agent_wiki_ingest(req)
+    if str(req.get("summary") or "").strip():
+        preview["summary"] = str(req.get("summary") or "").strip()
+    if str(req.get("body") or "").strip():
+        preview["body"] = str(req.get("body") or "").strip() + "\n"
+    doc = KnowledgeDoc(
+        doc_id=preview["doc_id"],
+        kind="agent_wiki",
+        title=preview["title"],
+        summary=preview["summary"],
+        body=preview["body"],
+        actor=str(req.get("actor") or ""),
+        tags=preview["tags"],
+        source_event_ids=[],
+        frontmatter={
+            "schema_type": "agent_llm_wiki_page_v1",
+            "source_ids": source_ids,
+            "content_chars": preview.get("content_chars") or 0,
+        },
+    )
+    saved = upsert_doc(doc)
+    log = append_wiki_log({
+        "action": "ingest_commit",
+        "actor": req.get("actor") or "",
+        "doc_id": saved.get("doc_id") or preview["doc_id"],
+        "source_ids": source_ids,
+        "title": saved.get("title") or preview["title"],
+        "message": f"Committed Agent Wiki page {saved.get('doc_id') or preview['doc_id']}",
+        "meta": {"path": saved.get("path") or "", "source_count": len(source_ids)},
+    })
+    return {"doc": saved, "preview": preview, "log": log}
+
+
+def list_agent_wiki_pages(q: str = "", limit: int = 200) -> list[dict[str, Any]]:
+    return list_docs(kind="agent_wiki", q=q, limit=limit)
+
+
+def search_agent_wiki(q: str, limit: int = 30) -> list[dict[str, Any]]:
+    q_l = str(q or "").strip().lower()
+    if not q_l:
+        return []
+    results: list[dict[str, Any]] = []
+    for row in list_docs(kind="agent_wiki", limit=1000):
+        hay = " ".join([
+            str(row.get("doc_id") or ""),
+            str(row.get("title") or ""),
+            str(row.get("summary") or ""),
+            " ".join(map(str, row.get("tags") or [])),
+            " ".join(map(str, row.get("source_ids") or [])),
+        ]).lower()
+        if q_l not in hay:
+            continue
+        score = hay.count(q_l) + (3 if q_l in str(row.get("title") or "").lower() else 0)
+        doc = get_doc(str(row.get("doc_id") or ""))
+        text = " ".join([row.get("title") or "", row.get("summary") or "", (doc or {}).get("body") or ""])
+        results.append({
+            "result_type": "wiki",
+            "id": row.get("doc_id") or "",
+            "doc_id": row.get("doc_id") or "",
+            "title": row.get("title") or row.get("doc_id") or "",
+            "summary": row.get("summary") or "",
+            "snippet": _snippet(text, q_l),
+            "score": float(score),
+            "path": row.get("path") or "",
+            "tags": row.get("tags") or [],
+            "source_ids": row.get("source_ids") or [],
+        })
+    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return results[: max(1, min(limit, 100))]
+
+
+def lint_agent_wiki() -> dict[str, Any]:
+    docs = [get_doc(row.get("doc_id") or "") for row in list_agent_wiki_pages(limit=1000)]
+    docs = [doc for doc in docs if doc]
+    ids = {str(doc.get("doc_id") or "") for doc in docs}
+    inbound: dict[str, int] = {doc_id: 0 for doc_id in ids}
+    broken_links: list[dict[str, Any]] = []
+    missing_sources: list[dict[str, Any]] = []
+    stale_summaries: list[dict[str, Any]] = []
+    title_groups: dict[str, list[dict[str, Any]]] = {}
+    for doc in docs:
+        doc_id = str(doc.get("doc_id") or "")
+        body = str(doc.get("body") or "")
+        for target in re.findall(r"\[\[([^\]|#]+)", body):
+            target_id = safe_id(target, fallback="")
+            if not target_id:
+                continue
+            if target_id in inbound:
+                inbound[target_id] += 1
+            elif not get_doc(target_id):
+                broken_links.append({"doc_id": doc_id, "target": target_id})
+        frontmatter = doc.get("frontmatter") if isinstance(doc.get("frontmatter"), dict) else {}
+        source_ids = frontmatter.get("source_ids") if isinstance(frontmatter.get("source_ids"), list) else []
+        latest_source_at = ""
+        for source_id in source_ids:
+            source = get_agent_wiki_source(str(source_id))
+            if not source:
+                missing_sources.append({"doc_id": doc_id, "source_id": source_id})
+                continue
+            latest_source_at = max(latest_source_at, str(source.get("created_at") or ""))
+        summary = str(doc.get("summary") or "").strip()
+        updated_at = str(doc.get("updated_at") or "")
+        if not summary:
+            stale_summaries.append({"doc_id": doc_id, "reason": "summary is empty"})
+        elif latest_source_at and updated_at and latest_source_at > updated_at:
+            stale_summaries.append({"doc_id": doc_id, "reason": "source is newer than wiki page", "source_created_at": latest_source_at, "updated_at": updated_at})
+        key = re.sub(r"[^a-z0-9가-힣]+", "", str(doc.get("title") or "").lower())
+        if key:
+            title_groups.setdefault(key, []).append(doc)
+    orphan_pages = [
+        {"doc_id": doc_id, "inbound_links": count}
+        for doc_id, count in inbound.items()
+        if count == 0
+    ]
+    contradiction_candidates: list[dict[str, Any]] = []
+    for group in title_groups.values():
+        summaries = {str(doc.get("summary") or "").strip().lower() for doc in group if str(doc.get("summary") or "").strip()}
+        if len(group) > 1 and len(summaries) > 1:
+            contradiction_candidates.append({
+                "title": group[0].get("title") or "",
+                "doc_ids": [doc.get("doc_id") for doc in group],
+                "reason": "same normalized title with different summaries",
+            })
+    return {
+        "ok": True,
+        "checked_at": now_iso(),
+        "broken_links": broken_links,
+        "missing_sources": missing_sources,
+        "orphan_pages": orphan_pages,
+        "stale_summaries": stale_summaries,
+        "contradiction_candidates": contradiction_candidates,
+        "counts": {
+            "pages": len(docs),
+            "broken_links": len(broken_links),
+            "missing_sources": len(missing_sources),
+            "orphan_pages": len(orphan_pages),
+            "stale_summaries": len(stale_summaries),
+            "contradiction_candidates": len(contradiction_candidates),
+        },
+    }
 
 
 def _node(nodes: dict[str, dict[str, Any]], node_id: str, label: str, kind: str, **extra: Any) -> None:
@@ -520,17 +970,22 @@ def status() -> dict[str, Any]:
     ensure_dirs()
     docs = list_docs(limit=1000)
     events = list_events(limit=1000)
+    sources = list_agent_wiki_sources(limit=1000)
     graph = get_graph(rebuild_if_missing=False)
     return {
         "ok": True,
         "root": str(KNOWLEDGE_ROOT),
         "raw_dir": str(RAW_DIR),
+        "source_dir": str(SOURCE_DIR),
         "wiki_dir": str(WIKI_DIR),
         "graph_file": str(GRAPH_FILE),
         "index_file": str(WIKI_INDEX_FILE),
+        "wiki_log_file": str(WIKI_LOG_JSONL),
         "counts": {
             "docs": len(docs),
             "events": len(events),
+            "sources": len(sources),
+            "agent_wiki_pages": len([row for row in docs if row.get("kind") == "agent_wiki"]),
             "graph_nodes": len(graph.get("nodes") or []),
             "graph_edges": len(graph.get("edges") or []),
         },

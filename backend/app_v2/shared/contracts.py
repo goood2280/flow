@@ -113,6 +113,8 @@ class KnowledgeEvent(BaseModel):
         "meeting",
         "report",
         "agent_action",
+        "agent_wiki_source",
+        "agent_wiki_ingest",
         "manual",
         "system",
     ] = "manual"
@@ -139,6 +141,7 @@ class KnowledgeDoc(BaseModel):
         "meeting",
         "report",
         "decision",
+        "agent_wiki",
         "ontology",
         "manual",
     ] = "manual"

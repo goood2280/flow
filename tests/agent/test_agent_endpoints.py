@@ -31,6 +31,29 @@ def req(role: str = "user", username: str = "alice"):
     return DummyRequest({"username": username, "role": role})
 
 
+def _install_agent_wiki_tmp(monkeypatch, tmp_path):
+    root = tmp_path / "knowledge"
+    raw = root / "raw"
+    event = raw / "events"
+    source = raw / "sources"
+    wiki = root / "wiki"
+    graph = root / "graph"
+    index = root / "index"
+    monkeypatch.setattr(agent.kv, "KNOWLEDGE_ROOT", root)
+    monkeypatch.setattr(agent.kv, "RAW_DIR", raw)
+    monkeypatch.setattr(agent.kv, "EVENT_DIR", event)
+    monkeypatch.setattr(agent.kv, "SOURCE_DIR", source)
+    monkeypatch.setattr(agent.kv, "WIKI_DIR", wiki)
+    monkeypatch.setattr(agent.kv, "GRAPH_DIR", graph)
+    monkeypatch.setattr(agent.kv, "INDEX_DIR", index)
+    monkeypatch.setattr(agent.kv, "EVENTS_JSONL", event / "events.jsonl")
+    monkeypatch.setattr(agent.kv, "SOURCES_JSONL", source / "sources.jsonl")
+    monkeypatch.setattr(agent.kv, "WIKI_INDEX_FILE", index / "wiki_index.json")
+    monkeypatch.setattr(agent.kv, "WIKI_LOG_JSONL", index / "wiki_log.jsonl")
+    monkeypatch.setattr(agent.kv, "GRAPH_FILE", graph / "graph.json")
+    return root
+
+
 def test_agent_workflow_shape():
     out = agent.agent_workflow(req())
 
@@ -137,3 +160,78 @@ def test_admin_tools_require_admin_and_ingest_to_temp(tmp_path, monkeypatch):
     assert ingested["ok"] is True
     assert ingested["structured"]["chunk_count"] >= 1
     assert listed["rows"][0]["title"] == "테스트 지식"
+
+
+def test_agent_wiki_source_ingest_search_log_lint(tmp_path, monkeypatch):
+    root = _install_agent_wiki_tmp(monkeypatch, tmp_path)
+
+    with pytest.raises(HTTPException) as denied:
+        agent.agent_wiki_create_source(
+            agent.AgentWikiSourceReq(title="DIBL memo", content="DIBL source"),
+            req(role="user"),
+        )
+    assert denied.value.status_code == 403
+
+    created = agent.agent_wiki_create_source(
+        agent.AgentWikiSourceReq(
+            source_type="markdown",
+            title="DIBL memo",
+            content="# DIBL memo\n\nDIBL increases when CA resistance and short channel effects worsen.",
+            tags=["DIBL", "CA"],
+        ),
+        req(role="admin", username="root"),
+    )
+    source = created["source"]
+    assert (root / source["raw_path"]).is_file()
+
+    listed_sources = agent.agent_wiki_sources(req(), q="DIBL", source_type="", limit=20)
+    assert listed_sources["sources"][0]["source_id"] == source["source_id"]
+
+    preview = agent.agent_wiki_ingest_preview(
+        agent.AgentWikiIngestReq(source_ids=[source["source_id"]], title="DIBL maintained wiki", tags=["RCA"]),
+        req(role="user"),
+    )
+    assert preview["ok"] is True
+    assert preview["preview"]["kind"] == "agent_wiki"
+    assert "DIBL" in preview["preview"]["summary"]
+
+    with pytest.raises(HTTPException) as commit_denied:
+        agent.agent_wiki_ingest_commit(
+            agent.AgentWikiIngestReq(source_ids=[source["source_id"]], title="DIBL maintained wiki"),
+            req(role="user"),
+        )
+    assert commit_denied.value.status_code == 403
+
+    committed = agent.agent_wiki_ingest_commit(
+        agent.AgentWikiIngestReq(
+            source_ids=[source["source_id"]],
+            doc_id=preview["preview"]["doc_id"],
+            title=preview["preview"]["title"],
+            summary=preview["preview"]["summary"],
+            body=preview["preview"]["body"],
+            tags=preview["preview"]["tags"],
+        ),
+        req(role="admin", username="root"),
+    )
+    doc = committed["doc"]
+    assert doc["kind"] == "agent_wiki"
+    assert (root / doc["path"]).is_file()
+    assert (root / "index" / "wiki_index.json").is_file()
+
+    search = agent.agent_wiki_search(req(), q="DIBL", limit=20)
+    assert search["results"]
+    assert search["results"][0]["doc_id"] == doc["doc_id"]
+
+    page = agent.agent_wiki_page(req(), doc_id=doc["doc_id"])
+    assert page["page"]["frontmatter"]["source_ids"] == [source["source_id"]]
+
+    logs = agent.agent_wiki_log(req(), limit=20, action="")
+    assert {row["action"] for row in logs["logs"]} >= {"source_register", "ingest_commit"}
+
+    with pytest.raises(HTTPException) as lint_denied:
+        agent.agent_wiki_lint(req(role="user"))
+    assert lint_denied.value.status_code == 403
+
+    lint = agent.agent_wiki_lint(req(role="admin", username="root"))
+    assert lint["ok"] is True
+    assert lint["counts"]["pages"] == 1

@@ -661,10 +661,15 @@ def test_match_cache_keeps_latest_fab_lot_per_root_wafer(tmp_path, monkeypatch):
 
     fab_root = tmp_path / "1.RAWDATA_DB_FAB" / "LATEST" / "date=20240422"
     fab_root.mkdir(parents=True)
+    (tmp_path / "step_matching.csv").write_text(
+        "product,step_id,function_step\nLATEST,STEP_OLD,OLD_FUNC\nLATEST,STEP_NEW,GATE\nLATEST,STEP_W2,ETCH\n",
+        encoding="utf-8",
+    )
     pl.DataFrame({
         "root_lot_id": ["R9400", "R9400", "R9400"],
         "lot_id": ["F9400_OLD", "F9400_NEW", "F9400_W2"],
         "wafer_id": [1, 1, 2],
+        "step_id": ["STEP_OLD", "STEP_NEW", "STEP_W2"],
         "tkout_time": [
             "2024-04-22T08:00:00",
             "2024-04-22T12:00:00",
@@ -678,12 +683,16 @@ def test_match_cache_keeps_latest_fab_lot_per_root_wafer(tmp_path, monkeypatch):
     monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
     monkeypatch.setattr(splittable, "MATCH_CACHE_DIR", cache_dir)
     monkeypatch.setattr(splittable, "SOURCE_CFG", source_cfg)
+    import core.lot_step as lot_step
+    monkeypatch.setattr(lot_step, "_get_db_root", lambda: tmp_path)
     splittable._LOT_LOOKUP_CACHE.clear()
     splittable._RGLOB_CACHE.clear()
     splittable._DB_ROOTS_CACHE.clear()
 
     built = splittable.refresh_match_cache(product="ML_TABLE_LATEST", force=True)
     cache_df = pl.read_parquet(cache_dir / "ML_TABLE_LATEST.parquet")
+    latest_path = tmp_path / "cache" / "lot_progress_latest_lot_by_root_wafer.parquet"
+    latest_df = pl.read_parquet(latest_path).sort("wafer_id")
     result = splittable.view_split(
         product="ML_TABLE_LATEST",
         root_lot_id="R9400",
@@ -707,6 +716,32 @@ def test_match_cache_keeps_latest_fab_lot_per_root_wafer(tmp_path, monkeypatch):
 
     assert built["products"][0]["ok"] is True
     assert built["products"][0]["row_count"] == 2
+    assert built["latest_cache"]["row_count"] == 2
+    assert built["latest_cache"]["path"] == str(latest_path)
+    assert not (tmp_path / "cache" / "splittable_latest_lot_step.parquet").exists()
+    assert latest_df.columns == [
+        "product", "root_lot_id", "wafer_id", "lot_id",
+        "step_id", "function_step", "tkout_time", "update_time",
+    ]
+    assert latest_df.select(["root_lot_id", "wafer_id", "lot_id", "step_id", "function_step", "tkout_time"]).to_dicts() == [
+        {
+            "root_lot_id": "R9400",
+            "wafer_id": "1",
+            "lot_id": "F9400_NEW",
+            "step_id": "STEP_NEW",
+            "function_step": "GATE",
+            "tkout_time": "2024-04-22T12:00:00",
+        },
+        {
+            "root_lot_id": "R9400",
+            "wafer_id": "2",
+            "lot_id": "F9400_W2",
+            "step_id": "STEP_W2",
+            "function_step": "ETCH",
+            "tkout_time": "2024-04-22T09:00:00",
+        },
+    ]
+    assert all(row["update_time"] for row in latest_df.select("update_time").to_dicts())
     assert cache_df["__cache_fab_lot_id"].to_list() == ["F9400_NEW", "F9400_W2"]
     assert result["header_groups"] == [
         {"label": "F9400_NEW", "span": 1},
