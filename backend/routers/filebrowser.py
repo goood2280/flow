@@ -43,6 +43,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 import polars as pl
 from core import duckdb_engine
+from core import matching_cache as _matching_cache
 from core import s3_sync as _s3
 from core.paths import PATHS
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_named_child
@@ -2827,6 +2828,11 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
         raise HTTPException(400, f"Save failed: {e}")
 
     try:
+        cache_result = None
+        if _matching_cache.is_matching_file(fp):
+            cache_result = _matching_cache.refresh_matching_csv(fp)
+            if not cache_result.get("ok", False):
+                logger.warning("filebrowser base-file/save cache refresh failed: %s", cache_result)
         sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, fp)
         jsonl_append(PATHS.activity_log, {
             "username": me.get("username") or "",
@@ -2844,6 +2850,7 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
             "rows": len(data_rows),
             "cols": len(header),
             "version": version_meta,
+            "cache_rows": (cache_result or {}).get("rows"),
             "s3_sync": sync_result,
         }
     except Exception as e:

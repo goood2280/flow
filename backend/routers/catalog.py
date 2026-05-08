@@ -16,6 +16,7 @@ from typing import List, Dict, Any
 import polars as pl
 
 from core.paths import PATHS
+from core import matching_cache as _matching_cache
 from core.domain import (
     MATCHING_TABLES,
     PROCESS_AREAS,
@@ -55,7 +56,9 @@ def matching_list():
         rows = 0; cols = []
         if exists:
             try:
-                df = pl.read_csv(fp, infer_schema_length=200)
+                df = _matching_cache.read_matching_csv(fp)
+                if df is None:
+                    df = pl.read_csv(fp, infer_schema_length=200)
                 rows = df.height
                 cols = list(df.columns)
             except Exception as e:
@@ -82,7 +85,9 @@ def matching_preview(name: str = Query(...), rows: int = Query(30)):
     if not fp.exists():
         return {"columns": [], "rows": []}
     try:
-        df = pl.read_csv(fp, infer_schema_length=500)
+        df = _matching_cache.read_matching_csv(fp)
+        if df is None:
+            df = pl.read_csv(fp, infer_schema_length=500)
         return {"columns": list(df.columns), "rows": df.head(rows).to_dicts(), "total": df.height}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -105,11 +110,29 @@ def matching_save(req: MatchSave):
         # v8.2.1: matching_step — auto-fill `area` from canonical_step where blank.
         if req.name == "matching_step" and rows:
             rows = seed_area_rows(rows)
+        rows, duplicate_rows = _matching_cache.dedupe_rows(
+            rows,
+            key_cols=(meta.get("keys") or []),
+            required_cols=meta.get("required_cols", []),
+            strict_required=True,
+        )
         # Ensure all required cols are present in at least one row (or create from keys)
         df = pl.from_dicts(rows) if rows else pl.DataFrame(schema={c: pl.Utf8 for c in meta.get("required_cols", [])})
         df.write_csv(fp)
+        cache_result = _matching_cache.refresh_matching_csv(fp)
+        if not cache_result.get("ok", False):
+            logger.warning("catalog matching cache refresh failed: %s", cache_result)
         sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, fp)
-        return {"ok": True, "rows": df.height, "path": str(fp), "s3_sync": sync_result}
+        return {
+            "ok": True,
+            "rows": df.height,
+            "deduped_rows": duplicate_rows,
+            "path": str(fp),
+            "cache_rows": cache_result.get("rows"),
+            "s3_sync": sync_result,
+        }
+    except ValueError as e:
+        raise HTTPException(400, f"validation failed: {e}")
     except Exception as e:
         raise HTTPException(500, f"save failed: {e}")
 

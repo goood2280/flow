@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Optional, Set, Tuple
 import polars as pl
 
+from core import matching_cache
+
 logger = logging.getLogger("flow.matching")
 
 
@@ -28,6 +30,11 @@ _CSV_CACHE: dict = {}
 def _read_csv_cached(fp: Path) -> Optional[pl.DataFrame]:
     if not fp.exists():
         return None
+    # Fast path: use DuckDB cache for matching files to avoid repeated CSV parsing.
+    cached = matching_cache.read_matching_csv(fp)
+    if cached is not None:
+        return cached
+
     try:
         mt = fp.stat().st_mtime
         cached = _CSV_CACHE.get(str(fp))

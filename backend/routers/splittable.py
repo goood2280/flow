@@ -34,6 +34,7 @@ from app_v2.shared.source_adapter import resolve_existing_root, resolve_column
 from core.audit import record_user as _audit_user
 from core.auth import current_user, require_admin, is_page_admin, require_page_admin
 from core.domain import classify_process_area
+from core import matching_cache as _matching_cache
 from core import s3_sync as _s3
 from core.utils import (
     _STR, is_cat, find_lot_wafer_cols, load_json, save_json, safe_id,
@@ -2587,16 +2588,16 @@ def infer_step_mapping(request: Request, product: str = Query(...), kind: str = 
     base = _base_root()
     csv_name = "inline_matching.csv" if kind == "inline" else "vm_matching.csv"
     csv_fp = base / csv_name
+    rulebook_meta = _RULEBOOK_FILES["inline_matching" if kind == "inline" else "vm_matching"]
+    id_col = "item_id" if kind == "inline" else "feature_name"
     existing = _load_csv_rows(csv_fp)
-    existing_keys = set()
-    for r in existing:
-        iid = (r.get("item_id") or r.get("feature_name") or "").strip()
-        p_col = (r.get("product") or "").strip()
-        if iid:
-            existing_keys.add((iid, p_col))
     added = []
     for iid, sid in winners.items():
-        if (iid, product) in existing_keys:
+        iid = str(iid or "").strip()
+        sid = str(sid or "").strip()
+        if not iid:
+            continue
+        if (product, iid) in {(str(r.get("product") or "").strip(), str(r.get(id_col) or "").strip()) for r in existing}:
             continue
         if kind == "inline":
             existing.append({"product": product, "item_id": iid, "step_id": sid, "item_desc": ""})
@@ -2605,10 +2606,20 @@ def infer_step_mapping(request: Request, product: str = Query(...), kind: str = 
         added.append((iid, sid))
     if not added:
         return {"ok": True, "added": 0, "total": len(winners), "note": "모두 기존에 등록됨"}
+    try:
+        final_rows, dedupe_rows = _matching_cache.dedupe_rows(
+            existing,
+            key_cols=[k for k in rulebook_meta.get("cols", []) if k],
+            required_cols=rulebook_meta.get("required", []),
+            strict_required=True,
+        )
+    except ValueError as e:
+        raise HTTPException(400, f"validation failed: {e}")
+
     # write back — header = union of all keys
     import csv as _csv
     all_keys: list = []
-    for r in existing:
+    for r in final_rows:
         for k in r.keys():
             if k not in all_keys:
                 all_keys.append(k)
@@ -2617,12 +2628,22 @@ def infer_step_mapping(request: Request, product: str = Query(...), kind: str = 
         with open(csv_fp, "w", encoding="utf-8", newline="") as f:
             w = _csv.DictWriter(f, fieldnames=all_keys)
             w.writeheader()
-            for r in existing:
+            for r in final_rows:
                 w.writerow({k: r.get(k, "") for k in all_keys})
+        cache_result = _matching_cache.refresh_matching_csv(csv_fp)
+        if not cache_result.get("ok", False):
+            logger.warning("infer_step_mapping cache refresh failed: %s", cache_result)
     except Exception as e:
         raise HTTPException(500, f"csv write failed: {e}")
-    return {"ok": True, "added": len(added), "total": len(winners),
-            "csv": str(csv_fp.name), "sample_added": added[:10]}
+    return {
+        "ok": True,
+        "added": len(added),
+        "deduped_rows": dedupe_rows,
+        "total": len(winners),
+        "cache_rows": cache_result.get("rows"),
+        "csv": str(csv_fp.name),
+        "sample_added": added[:10],
+    }
 
 
 # v8.8.10: Rulebook "컬럼 역할 → 실제 컬럼명" 매핑 저장소 (soft-landing).
@@ -2794,17 +2815,16 @@ def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_
         raise HTTPException(400, f"unknown rulebook: {req.kind}")
     fp = _rulebook_path(req.kind)
     cols = meta["cols"]
-    req_cols = meta["required"]
-
-    # normalize incoming rows — drop empty, enforce required fields.
-    cleaned = []
-    for r in (req.rows or []):
-        if not isinstance(r, dict):
-            continue
-        nr = {c: str(r.get(c, "") or "").strip() for c in cols}
-        if any(not nr.get(c) for c in req_cols):
-            continue
-        cleaned.append(nr)
+    req_cols = meta.get("required", [])
+    try:
+        cleaned, dedupe_rows = _matching_cache.dedupe_rows(
+            req.rows,
+            key_cols=cols,
+            required_cols=req_cols,
+            strict_required=True,
+        )
+    except ValueError as e:
+        raise HTTPException(400, f"validation failed: {e}")
 
     # merge with existing if product-scoped.
     if req.product:
@@ -2817,6 +2837,16 @@ def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_
     else:
         final = cleaned
 
+    try:
+        final, dedupe_rows_after = _matching_cache.dedupe_rows(
+            final,
+            key_cols=cols,
+            required_cols=req_cols,
+            strict_required=True,
+        )
+    except ValueError as e:
+        raise HTTPException(400, f"validation failed: {e}")
+
     # ensure column order
     import io as _io
     buf = _io.StringIO()
@@ -2826,11 +2856,22 @@ def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_
         w.writerow({c: r.get(c, "") for c in cols})
     fp.parent.mkdir(parents=True, exist_ok=True)
     fp.write_text(buf.getvalue(), encoding="utf-8", newline="")
+    cache_result = _matching_cache.refresh_matching_csv(fp)
+    if not cache_result.get("ok", False):
+        logger.warning("rulebook save cache refresh failed: %s", cache_result)
     _audit_user(req.username or (me.get("username") if isinstance(me, dict) else ""),
                 "splittable:rulebook_save",
                 detail=f"kind={req.kind} product={req.product} rows={len(final)}")
     sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, fp)
-    return {"ok": True, "kind": req.kind, "product": req.product, "saved_rows": len(final), "s3_sync": sync_result}
+    return {
+        "ok": True,
+        "kind": req.kind,
+        "product": req.product,
+        "saved_rows": len(final),
+        "deduped_rows": dedupe_rows + dedupe_rows_after,
+        "cache_rows": cache_result.get("rows"),
+        "s3_sync": sync_result,
+    }
 
 
 @router.get("/knob-meta")
