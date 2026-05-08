@@ -77,6 +77,10 @@ LATEST_PREVIEW_ROWS = 200
 LATEST_PREVIEW_MAX_FILES = 4
 LIST_CACHE_TTL_SEC = 5.0
 MAX_WAFER_ID = 25
+_SINGLE_FILE_STEP_CACHE_DIR = "cache"
+_SINGLE_FILE_STEP_CACHE_FILE = "latest_step_by_lot.parquet"
+_SINGLE_FILE_STEP_CACHE_VERSION = 1
+_SINGLE_FILE_PREVIEW_MAX_BYTES = 64 * 1024 * 1024
 _SORT_STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 _LIST_CACHE: dict[tuple, tuple[float, object]] = {}
 
@@ -256,6 +260,148 @@ def _visible_single_file(path: Path) -> bool:
     if ext not in BASE_EXTENSIONS:
         return False
     return _core_file_meta(path.name) is not None
+
+
+def _single_file_cache_dir(root: Path) -> Path:
+    return root / _SINGLE_FILE_STEP_CACHE_DIR
+
+
+def _single_file_cache_stem(path: Path) -> str:
+    stem = path.name if path.is_file() else str(path)
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(stem).strip()).strip("._-") or "single_file"
+
+
+def _single_file_step_cache_parquet(fp: Path) -> Path:
+    return _single_file_cache_dir(fp.parent) / f"{_single_file_cache_stem(fp)}.{_SINGLE_FILE_STEP_CACHE_FILE}"
+
+
+def _single_file_step_cache_meta(fp: Path) -> Path:
+    return _single_file_step_cache_parquet(fp).with_suffix(".meta.json")
+
+
+def _single_file_col(columns: list[str], candidates: tuple[str, ...] | list[str]) -> str:
+    by_lower = {str(c).lower(): str(c) for c in columns}
+    for candidate in candidates:
+        key = by_lower.get(str(candidate).lower())
+        if key:
+            return key
+    return ""
+
+
+def _single_file_cache_state(fp: Path) -> dict | None:
+    meta_fp = _single_file_step_cache_meta(fp)
+    if not meta_fp.is_file():
+        return None
+    try:
+        state = json.loads(meta_fp.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _ensure_single_file_cache_dirs(base_root: Path, db_root: Path) -> None:
+    for root in (base_root, db_root):
+        if not root.is_dir():
+            continue
+        has_single = False
+        try:
+            for item in root.iterdir():
+                if item.is_file() and _visible_single_file(item):
+                    has_single = True
+                    break
+        except Exception:
+            continue
+        if has_single:
+            try:
+                _single_file_cache_dir(root).mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+
+def _build_single_file_step_cache(fp: Path, force: bool = False) -> dict:
+    if fp.suffix.lower() not in {".csv", ".parquet"}:
+        return {"ok": False, "ready": False, "reason": "unsupported extension"}
+    try:
+        st = fp.stat()
+    except Exception:
+        return {"ok": False, "ready": False, "reason": "file stat failed"}
+    cache_fp = _single_file_step_cache_parquet(fp)
+    meta_fp = _single_file_step_cache_meta(fp)
+    try:
+        cache_fp.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return {"ok": False, "ready": False, "reason": "cache dir create failed"}
+    if not force:
+        state = _single_file_cache_state(fp)
+        if state and state.get("version") == _SINGLE_FILE_STEP_CACHE_VERSION:
+            if state.get("source_size") == st.st_size and state.get("source_mtime_ns") == int(st.st_mtime_ns):
+                if state.get("ready"):
+                    return {"ok": True, "ready": True, "cached": True, "rows": int(state.get("rows") or 0)}
+                return {"ok": False, "ready": False, "cached": True, "reason": state.get("reason")}
+    lf = scan_one_file(fp)
+    if lf is None:
+        return {"ok": False, "ready": False, "reason": "scan failed"}
+    try:
+        schema = lf.collect_schema()
+        columns = list(schema.names())
+    except Exception as e:
+        return {"ok": False, "ready": False, "reason": f"schema failed: {e}"}
+    product_col = _single_file_col(columns, ("product", "product_id", "prod_id", "productid"))
+    lot_col = _single_file_col(columns, ("lot", "lot_id", "lotid", "lot_no", "root_lot_id", "fab_lot_id"))
+    step_col = _single_file_col(columns, ("step_id", "step", "function_step", "func_step"))
+    if not (product_col and lot_col and step_col):
+        state = {
+            "version": _SINGLE_FILE_STEP_CACHE_VERSION,
+            "ready": False,
+            "reason": "missing columns",
+            "source_path": str(fp),
+            "source_size": st.st_size,
+            "source_mtime_ns": int(st.st_mtime_ns),
+            "source_columns": columns,
+        }
+        _write_text_atomic(meta_fp, json.dumps(state, ensure_ascii=False, indent=2))
+        return {"ok": False, "ready": False, "reason": "missing columns"}
+    try:
+        q = lf.select([
+            pl.col(product_col).cast(pl.Utf8, strict=False).str.strip_chars().alias("product"),
+            pl.col(lot_col).cast(pl.Utf8, strict=False).str.strip_chars().alias("lot_id"),
+            pl.col(step_col).cast(pl.Utf8, strict=False).str.strip_chars().alias("step_id"),
+        ])
+        q = q.filter(
+            pl.col("product").is_not_null() & (pl.col("product") != "")
+            & pl.col("lot_id").is_not_null() & (pl.col("lot_id") != "")
+            & pl.col("step_id").is_not_null() & (pl.col("step_id") != "")
+        )
+        q = q.group_by(["product", "lot_id"]).agg(pl.col("step_id").max().alias("latest_step_id")).sort(["product", "lot_id"])
+        try:
+            from core.parquet_perf import collect_streaming
+            df = collect_streaming(q)
+        except Exception:
+            df = q.collect()
+        df = df.select(["product", "lot_id", "latest_step_id"])
+    except Exception as e:
+        return {"ok": False, "ready": False, "reason": f"build failed: {e}"}
+    try:
+        _write_parquet_atomic(cache_fp, df)
+        state = {
+            "version": _SINGLE_FILE_STEP_CACHE_VERSION,
+            "ready": True,
+            "source_path": str(fp),
+            "source_size": st.st_size,
+            "source_mtime_ns": int(st.st_mtime_ns),
+            "rows": int(df.height),
+            "cache_path": str(cache_fp),
+            "cache_file": cache_fp.name,
+            "cache_generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "product_col": product_col,
+            "lot_col": lot_col,
+            "step_col": step_col,
+        }
+        _write_text_atomic(meta_fp, json.dumps(state, ensure_ascii=False, indent=2))
+        return {"ok": True, "ready": True, "cached": False, "rows": int(df.height)}
+    except Exception as e:
+        return {"ok": False, "ready": False, "reason": f"write failed: {e}"}
+
 
 
 def _parse_tab_or_csv(text: str, delimiter: str) -> tuple[list[list[str]], str]:
@@ -1209,11 +1355,33 @@ def base_files():
     Directories and legacy helper files remain on disk but are not surfaced here.
     """
     base_root = _base_root()
+    db_root = _db_root()
+    _ensure_single_file_cache_dirs(base_root, db_root)
     cache_key = ("base_files", _path_sig(base_root), _path_sig(_db_root()), _path_sig(PATHS.upload_dir))
     cached = _list_cache_get(cache_key)
     if cached is not None:
         return cached
     files, dirs = [], []
+    if base_root.is_dir():
+        cache = _single_file_cache_dir(base_root)
+        if cache.is_dir():
+            try:
+                cst = cache.stat()
+                dirs.append({
+                    "name": _SINGLE_FILE_STEP_CACHE_DIR,
+                    "path": f"base_root:{_SINGLE_FILE_STEP_CACHE_DIR}",
+                    "size": 0,
+                    "modified": cst.st_mtime,
+                    "ext": "dir",
+                    "kind": "dir",
+                    "source": "base_root",
+                    "source_path": str(base_root),
+                    "description": "single-file step cache",
+                    "role": "cache",
+                    "order": 0,
+                })
+            except Exception:
+                pass
     if base_root.is_dir():
         for f in sorted(base_root.iterdir(), key=lambda p: (not p.is_file(), p.name.lower())):
             try:
@@ -1243,8 +1411,27 @@ def base_files():
     # v8.7.6: 단일 parquet 도 동일 — 폴더(hive/flat) 구조만 DB 섹션에 노출됨.
     # v8.7.7: 같은 파일명이 base_root 와 db_root 양쪽에 있으면 dedup. UI 에 소스 태그
     # (db) 를 노출하던 것도 제거 — 사용자 입장에서 Base 단일 파일은 "한 번만" 보여야 함.
+    if db_root.is_dir() and db_root != base_root:
+        cache = _single_file_cache_dir(db_root)
+        if cache.is_dir():
+            try:
+                cst = cache.stat()
+                dirs.append({
+                    "name": _SINGLE_FILE_STEP_CACHE_DIR,
+                    "path": f"db_root:{_SINGLE_FILE_STEP_CACHE_DIR}",
+                    "size": 0,
+                    "modified": cst.st_mtime,
+                    "ext": "dir",
+                    "kind": "dir",
+                    "source": "db_root",
+                    "source_path": str(db_root),
+                    "description": "single-file step cache",
+                    "role": "cache",
+                    "order": 0,
+                })
+            except Exception:
+                pass
     seen_names = {f["name"].lower() for f in files}
-    db_root = _db_root()
     if db_root.is_dir() and db_root.resolve() != base_root.resolve():
         for f in sorted(db_root.iterdir()):
             if not f.is_file():
@@ -1273,9 +1460,9 @@ def base_files():
                 "order": meta["order"],
             })
             seen_names.add(f.name.lower())
-
     files.sort(key=lambda x: (x.get("order", 999), x["name"].lower()))
-    return _list_cache_set(cache_key, {"files": files, "dirs": dirs,
+    dirs.sort(key=lambda x: (x.get("source", ""), x["name"]))
+    return _list_cache_set(cache_key, {"files": dirs + files, "dirs": dirs,
             "path": str(base_root) if base_root.is_dir() else "",
             "exists": base_root.is_dir() or bool(files)})
 
@@ -1443,6 +1630,13 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         raise HTTPException(400, f"Unsupported ext for preview: {ext}")
     # v8.4.3 OOM-aware — lazy scan 동일.
     try:
+        if ext == ".csv":
+            try:
+                st = fp.stat()
+                if st.st_size >= _SINGLE_FILE_PREVIEW_MAX_BYTES:
+                    _build_single_file_step_cache(fp)
+            except Exception:
+                pass
         if meta_only and ext == ".parquet":
             try:
                 from core.parquet_perf import read_meta
@@ -1499,7 +1693,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             except Exception:
                 cached_meta = None
         ml_table = _is_ml_table_file(fp)
-        full_single_file = (not ml_table) or _has_view_filter(sql, select_cols)
+        full_single_file = (not ml_table) and ext != ".csv"
         if full_single_file:
             resp = _run_view_lazy_full(
                 lf, sql, select_cols,
@@ -2890,6 +3084,125 @@ def _schema_snapshot_diff(current: dict | None, previous: dict | None) -> dict:
 def save_schema_snapshot(req: SchemaSnapshotReq, request: Request):
     from core.auth import current_user
     me = current_user(request)
+    cols = []
+    seen = set()
+    for col in req.columns or []:
+        name = str(col or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            cols.append(name)
+    if not cols:
+        raise HTTPException(400, "columns are required")
+    sid = _schema_source_id(req)
+    SCHEMA_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    fp = SCHEMA_PROFILE_DIR / f"{sid}.json"
+    try:
+        payload = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else {"source_id": sid, "snapshots": []}
+    except Exception:
+        payload = {"source_id": sid, "snapshots": []}
+    snapshots = payload.get("snapshots") if isinstance(payload.get("snapshots"), list) else []
+    previous = snapshots[0] if snapshots else None
+    snap = {
+        "schema_version": f"s{len(snapshots) + 1}",
+        "source_id": sid,
+        "source_type": req.source_type,
+        "root": req.root,
+        "product": req.product,
+        "file": req.file,
+        "columns": cols,
+        "dtypes": {str(k): str(v) for k, v in (req.dtypes or {}).items() if str(k).strip()},
+        "grain": req.grain,
+        "join_keys": [str(k) for k in (req.join_keys or []) if str(k).strip()],
+        "column_count": len(cols),
+        "total_rows": req.total_rows,
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "actor": req.username or me.get("username") or "",
+        "note": req.note or "",
+        "checksum": "sha256:" + hashlib.sha256("\n".join(cols).encode("utf-8")).hexdigest(),
+    }
+    diff = _schema_snapshot_diff(snap, previous if isinstance(previous, dict) else None)
+    payload["source_id"] = sid
+    payload["snapshots"] = [snap] + snapshots[: SCHEMA_PROFILE_CAP - 1]
+    _write_text_atomic(fp, json.dumps(payload, ensure_ascii=False, indent=2))
+    jsonl_append(PATHS.activity_log, {
+        "username": req.username or me.get("username") or "",
+        "action": "filebrowser:schema:snapshot",
+        "tab": "filebrowser",
+        "detail": f"source={sid} columns={len(cols)} added={len(diff['added_columns'])} removed={len(diff['removed_columns'])}",
+    })
+    return {"ok": True, "source_id": sid, "snapshot": snap, "previous": previous, "diff": diff, "count": len(payload["snapshots"])}
+
+
+@router.get("/schema/snapshots")
+def schema_snapshots(
+    request: Request,
+    source_type: str = Query(""),
+    root: str = Query(""),
+    product: str = Query(""),
+    file: str = Query(""),
+):
+    from core.auth import current_user
+    current_user(request)
+    req = SchemaSnapshotReq(source_type=source_type, root=root, product=product, file=file)
+    sid = _schema_source_id(req)
+    fp = SCHEMA_PROFILE_DIR / f"{sid}.json"
+    try:
+        payload = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else {"source_id": sid, "snapshots": []}
+    except Exception:
+        payload = {"source_id": sid, "snapshots": []}
+    snapshots = payload.get("snapshots") if isinstance(payload.get("snapshots"), list) else []
+    latest = snapshots[0] if snapshots else None
+    previous = snapshots[1] if len(snapshots) > 1 else None
+    diff = _schema_snapshot_diff(latest if isinstance(latest, dict) else None, previous if isinstance(previous, dict) else None)
+    return {"ok": True, "source_id": sid, "snapshots": snapshots, "latest": latest, "previous": previous, "diff": diff}
+
+
+@router.post("/base-file/delete")
+def delete_base_file(req: BaseDeleteReq, request: Request):
+    """Delete only Files/upload single files. DB root is read-only for everyone."""
+    from core.auth import current_user, is_page_admin
+    me = current_user(request)
+    if (me.get("role") or "") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
+        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+    name = (req.file or "").strip()
+    if not name or "/" in name or "\\" in name or ".." in name or name.startswith("."):
+        raise HTTPException(400, "Invalid filename")
+
+    allowed_ext = {".csv", ".json", ".txt"}
+    host_root = PATHS.upload_dir
+    fp = (host_root / name).resolve()
+    try:
+        fp.relative_to(host_root.resolve())
+    except ValueError:
+        raise HTTPException(400, "Invalid filename")
+    if not fp.is_file():
+        raise HTTPException(404, f"Not found in Files uploads: {name}")
+    if fp.suffix.lower() not in allowed_ext:
+        raise HTTPException(400, f"Unsupported file type: {fp.suffix}")
+
+    try:
+        trash = host_root / ".trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        archived = trash / f"{ts}_{name}"
+        fp.rename(archived)
+        logger.info(f"base-file/delete uploads: {name} → {archived} (by {me.get('username')})")
+        return {"ok": True, "file": name, "archived": str(archived), "host": host_root.name}
+    except Exception as e:
+        raise HTTPException(500, f"Delete failed: {e}")
+
+
+@router.get("/sql-guide")
+def sql_guide():
+    return {"examples": [
+        {"desc": "Equal", "sql": "col_name == 'value'"},
+        {"desc": "LIKE", "sql": "col_name LIKE '%pattern%'"},
+        {"desc": "NOT LIKE", "sql": "col_name NOT LIKE '%X%'"},
+        {"desc": "IN", "sql": "col_name.is_in(['A','B'])"},
+        {"desc": "AND", "sql": "(col_a > 1) & (col_b == 'X')"},
+        {"desc": "BETWEEN", "sql": "(col >= 0.1) & (col <= 0.9)"},
+    ]}
+t_user(request)
     cols = []
     seen = set()
     for col in req.columns or []:

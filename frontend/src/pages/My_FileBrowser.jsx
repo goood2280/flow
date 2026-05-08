@@ -581,6 +581,8 @@ export default function My_FileBrowser({user,onNavigate}){
   const baseFileEditable = canEditBaseMeta(selBaseMeta);
   const canEditCurrentBase=mode==="base"&&!!selBaseFile&&!baseRaw&&baseFileEditable&&isFileBrowserAdmin;
   const baseFileComplete = !!data&&(data.single_file_full_read||(data.total_rows||0)<= (data.showing||0));
+  const baseItems = baseFiles || [];
+  const baseFileCount = baseItems.filter(f => (f?.kind || "file").toLowerCase() !== "dir").length;
 
   const startBaseEdit=()=>{
     if(!canEditCurrentBase||!data){
@@ -843,32 +845,46 @@ export default function My_FileBrowser({user,onNavigate}){
         {sideLoading?<div style={{padding:20}}><Loading text="로딩 중..." size="sm"/></div>:scope==="Base"?<>
           {/* Root-level DB files — legacy scope key remains "Base" for compatibility. */}
           <div style={{flex:1,overflow:"auto",padding:"6px 8px"}}>
-            <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>운영 파일 ({baseFiles.length})</div>
-            {baseFiles.length===0&&<div style={{padding:"10px 12px",fontSize:14,color:"var(--text-secondary)"}}>표시할 ML_TABLE / 매칭 CSV / 제품 YAML / reformatter CSV 가 없습니다.</div>}
-            {baseFiles.map(f=>{
+            <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>운영 파일 ({baseFileCount})</div>
+            {baseItems.length===0&&<div style={{padding:"10px 12px",fontSize:14,color:"var(--text-secondary)"}}>표시할 ML_TABLE / 매칭 CSV / 제품 YAML / reformatter CSV 가 없습니다.</div>}
+            {baseItems.map(f=>{
               const fileKey=f.path||f.name;
               const isSel=selBaseFile===fileKey;
-              const extColor={parquet:"#10b981",csv:"#3b82f6",json:"#f59e0b",md:"#94a3b8",yaml:"#eab308",yml:"#eab308"}[f.ext]||"#64748b";
-              const icon={parquet:"📊",csv:"📋",json:"🔧",md:"📄",yaml:"⚙️",yml:"⚙️"}[f.ext]||"📁";
+              const kind=(f.kind||"file").toLowerCase();
+              const isDir=kind==="dir";
+              const extColor={parquet:"#10b981",csv:"#3b82f6",json:"#f59e0b",md:"#94a3b8",yaml:"#eab308",yml:"#eab308",dir:"#94a3b8"}[f.ext]||"#64748b";
+              const icon={parquet:"📊",csv:"📋",json:"🔧",md:"📄",yaml:"⚙️",yml:"⚙️",dir:"📂"}[f.ext]||"📁";
+              const titlePath=[f.name];
+              if(f.source && f.source!=="file")titlePath.push("("+f.source+")");
               return(<div key={fileKey} className="filebrowser-base-file" data-file={fileKey} data-ext={f.ext}
-                onClick={()=>{setSelectedCols([]);setSelBaseMeta(f);loadBaseFileView(fileKey);setIsBaseEditing(false);setError("");setData(null);setBaseRaw(null);setEditCols([]);setEditRows([]);setEditOriginRows([]);}}
-                title={(f.description||f.name)+(f.role?`\n${f.role}`:"")}
-                style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
+                onClick={()=>{
+                  if(isDir){
+                    setSelBaseMeta(null);
+                    setSelBaseFile("");
+                    return;
+                  }
+                  setSelectedCols([]);setSelBaseMeta(f);loadBaseFileView(fileKey);setIsBaseEditing(false);setError("");setData(null);setBaseRaw(null);setEditCols([]);setEditRows([]);setEditOriginRows([]);
+                }}
+                title={(f.description||titlePath.join(" "))+ (f.role?`\n${f.role}`:"")}
+                style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:(isDir?"default":"pointer"),fontSize:14,marginBottom:1,
                   background:isSel?"var(--bg-hover)":"transparent",color:isSel?"var(--accent)":"var(--text-primary)"}}>
                 {/* v8.7.5: Base 단일 파일도 S3 신호등 표시 (다운로드/업로드 양방향). */}
-                {lightDot(fileKey)}
+                {!isDir&&lightDot(fileKey)}
                 <span style={{flexShrink:0,lineHeight:1.5}}>{icon}</span>
                 <span style={sidebarStack}>
-                  <span style={sidebarText} title={f.name}>{f.name}</span>
+                  <span style={sidebarText} title={f.name}>{f.name}{f.source&&f.source!=="file"&&` (${f.source})`}</span>
                   <span style={sidebarMetaLine}>
-                    {lightFreshText(fileKey)}
+                    {!isDir&&lightFreshText(fileKey)}
                     {/* v8.7.7: `db` 소스 태그 제거 — Base 단일 파일은 소스 구분 없이 한 번만 표시. */}
-                    <span style={{fontSize:11,padding:"1px 4px",borderRadius:3,background:extColor+"22",color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>{f.ext}</span>
-                    <span style={sidebarMeta}>{formatSize(f.size)}</span>
+                    {!isDir&&<>
+                      <span style={{fontSize:11,padding:"1px 4px",borderRadius:3,background:extColor+"22",color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>{f.ext}</span>
+                      <span style={sidebarMeta}>{formatSize(f.size)}</span>
+                    </>}
+                    {isDir&&<span style={{fontSize:11,padding:"1px 4px",borderRadius:3,background:extColor+"22",color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>DIR</span>}
                   </span>
                 </span>
                 {/* DB/root 원본은 read-only. Flow-i가 Files 영역에 등록한 uploads 파일만 삭제 가능. */}
-                {isAdmin&&f.source==="uploads"&&<span
+                {isAdmin&&!isDir&&f.source==="uploads"&&<span
                   onClick={(e)=>{e.stopPropagation();deleteBaseFile(f.name);}}
                   title={"Files 등록 파일 삭제 (admin) — "+f.name+" 을 .trash 로 이동"}
                   style={{fontSize:14,lineHeight:1,padding:"1px 5px",borderRadius:3,cursor:"pointer",color:"#ef4444",border:"1px solid #ef444455",background:"transparent",flexShrink:0}}>
