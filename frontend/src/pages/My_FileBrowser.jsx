@@ -452,18 +452,36 @@ export default function My_FileBrowser({user,onNavigate}){
   };
 
   useEffect(()=>{
-    // v4.1: boot-load scopes + DB listings in parallel. Base listing is lazy
-    // (loaded only when user switches scope) to keep the default cold-start fast.
-    Promise.all([
-      sf(API+"/scopes").catch(()=>({scopes:[{key:"DB",label:"DB",exists:true,icon:"🗄️"}]})),
-      sf(API+"/roots"),
-      sf(API+"/root-parquets"),
-    ]).then(([sc,r,rp])=>{
-      setScopes(sc.scopes||[]);
-      setRoots(r.roots||[]);setRootPqs(rp.files||[]);
-      if(r.roots?.length)setSelRoot(r.roots[0].name);
+  // v4.1: boot-load scopes + DB listings in parallel. Base listing is lazy
+  // (loaded only when user switches scope) to keep the default cold-start fast.
+  const loadInitial = async () => {
+    try {
+      const sc = await sf(API+"/scopes").catch(()=>({scopes:[{key:"DB",label:"DB",exists:true,icon:"🗄️"}]}));
+      const scopesPayload = sc.scopes || [];
+      setScopes(scopesPayload);
+      let rp = await sf(API+"/roots");
+      const rp2 = await sf(API+"/root-parquets");
+      if (!rp.roots?.length) {
+        const baseScope = scopesPayload.find((s) => s?.key === "Base") || {};
+        if (baseScope?.exists) {
+          rp = await sf(API+"/roots?all=1").catch(() => rp);
+        }
+      }
+      setRoots(rp.roots||[]);
+      setRootPqs(rp2.files||[]);
+      if(rp.roots?.length)setSelRoot(rp.roots[0].name);
+      const rootScope = scopesPayload.find((s) => s?.key === "DB") || {};
+      const baseScope = scopesPayload.find((s) => s?.key === "Base") || {};
+      const nextScope = (rootScope?.exists && (rp?.roots||[]).length > 0)
+        ? "DB"
+        : (baseScope?.exists ? "Base" : (scopesPayload[0]?.key || "DB"));
+      setScope(nextScope);
       setSideLoading(false);
-    }).catch(()=>setSideLoading(false));
+    } catch (_) {
+      setSideLoading(false);
+    }
+  };
+  loadInitial();
   },[]);
 
   // v4.1: when user switches to Base scope, fetch /base-files (idempotent).

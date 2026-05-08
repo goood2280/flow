@@ -1854,7 +1854,8 @@ def _resolve_lot_identity_snapshot(
         source = source or "fallback"
     if not fab:
         embed_fabs = _extract_fab_lots_from_embed(embed)
-        fab = ", ".join(embed_fabs)
+        if len(embed_fabs) == 1:
+            fab = embed_fabs[0]
 
     return {
         "root_lot_id": root_ids[0] if root_ids else "",
@@ -3174,6 +3175,7 @@ def create_inform(req: InformCreate, request: Request):
         })
 
     embed = _embed_with_attached_sets(_sanitize_embed_table(req.embed_table), req.attached_sets)
+    embed_fabs = _extract_fab_lots_from_embed(embed)
 
     now = _now()
     is_root = not req.parent_id
@@ -3190,7 +3192,7 @@ def create_inform(req: InformCreate, request: Request):
         str(identity_snapshot.get("fab_lot_id") or "").strip()
         or (req.fab_lot_id_at_save or "").strip()
         or _resolve_fab_lot_snapshot(inherit_product, root_lot, requested_wafer_id)
-        or ", ".join(_extract_fab_lots_from_embed(embed))
+        or (embed_fabs[0] if len(embed_fabs) == 1 else "")
     )
     entry = {
         "id": _new_id(),

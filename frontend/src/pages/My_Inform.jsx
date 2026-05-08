@@ -2350,8 +2350,9 @@ export default function My_Inform({ user }) {
       };
     };
     const buildBody = async (targetLot) => {
+      const lot = String(targetLot || "").trim();
       const body = {
-        wafer_id: "", lot_id: targetLot, product: form.product.trim(),
+        wafer_id: "", lot_id: lot, product: form.product.trim(),
         module: form.module, reason: "PEMS", text: form.text, parent_id: null,
         images: createImages,
       };
@@ -2362,7 +2363,9 @@ export default function My_Inform({ user }) {
         body.embed_table = await buildEmbedForLot(targetLot);
         body.attached_sets = attachedSetsForSubmit();
       }
-      if ((form.fab_lot_ids || []).includes(targetLot) || isFabLotInput(targetLot, lotOptions)) body.fab_lot_id_at_save = targetLot;
+      if (lot) {
+        body.fab_lot_id_at_save = lot;
+      }
       return body;
     };
     const requests = submitTargets.map(async targetLot => sf(API, {
