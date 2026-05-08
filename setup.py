@@ -16,7 +16,7 @@ Run the server afterwards:
 
 Login: hol / hol12345!  (override with FLOW_ADMIN_PW)
 
-This file embeds 191 source files as gzip+base64 blobs. Data
+This file embeds 192 source files as gzip+base64 blobs. Data
 (data/Base, data/DB, data/flow-data — users.csv, groups, informs,
 admin_settings, tracker, splittable, meetings, calendar, messages,
 dbmap, S3 sync config, …) is NEVER bundled and NEVER overwritten —
@@ -14584,6 +14584,50 @@ FILES = {
         'jqAU+KWbzwEdgQ5xXvLiYZVUw3KL+0QLrQ4UcWwVBC4ET9BimXdGkSpS77cCsAUmMK2/mvhz'
         'ZfCvaXTwTyf9ckl3w78IDLQc/IF2Bu0ccdOQ2/yJhuHsvK2SCs0ixfipuAfOBoW41P8DpE1P'
         '9tASAAA='
+    ),
+    'docs/TROUBLESHOOTING_ERROR_SUMMARY.md': (
+        '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'
     ),
     'docs/WEB_CONCURRENCY_BUNDLE_GUIDE.md': (
         'H4sIAAAAAAACA6VcW3Mbx5V+56/oiqpSlhckfE2ltLarJFlyFOu2In3ZJ2AIDMlZAhhkZkiJ'
