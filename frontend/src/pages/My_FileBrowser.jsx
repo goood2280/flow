@@ -8,6 +8,7 @@ const BASE_EDIT_FILE_EXTS = new Set(["csv","parquet"]);
 const BASE_EDIT_FILE_SOURCES = new Set(["base_root","db_root"]);
 const canEditBaseMeta=(meta)=>{
   if(!meta) return false;
+  if(meta.editable===false) return false;
   if(!BASE_EDIT_FILE_EXTS.has((meta.ext||"").toLowerCase())) return false;
   if(!meta.source) return true;
   return BASE_EDIT_FILE_SOURCES.has(meta.source);

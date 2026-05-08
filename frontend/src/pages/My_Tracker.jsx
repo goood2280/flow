@@ -1594,7 +1594,7 @@ function TrackerSettings({ isAdmin, onChanged }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead>
             <tr>
-              {["root_lot_id", "wafer_id", "lot_id", "step_id", "func_step"].map(h => (
+              {["product", "root_lot_id", "wafer_id", "lot_id", "step_id", "func_step", "updated_at"].map(h => (
                 <th key={h} style={{ position: "sticky", top: 0, textAlign: "left", padding: "7px 8px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{h}</th>
               ))}
             </tr>
@@ -1602,14 +1602,16 @@ function TrackerSettings({ isAdmin, onChanged }) {
           <tbody>
             {lotProgressRows.length ? lotProgressRows.map((r, i) => (
               <tr key={`${r.root_lot_id}-${r.wafer_id}-${r.lot_id}-${i}`}>
+                <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{r.product || "-"}</td>
                 <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{r.root_lot_id || "-"}</td>
                 <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{r.wafer_id || "-"}</td>
                 <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{r.lot_id || "-"}</td>
                 <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{r.step_id || "-"}</td>
                 <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{r.func_step || r.function_step || "-"}</td>
+                <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontFamily: "monospace", whiteSpace: "nowrap" }}>{fmtTime(r.time || r.updated_at || r.tkout_time || r.tkin_time)}</td>
               </tr>
             )) : (
-              <tr><td colSpan={5} style={{ padding: 12, color: "var(--text-secondary)", textAlign: "center" }}>{lotProgressBusy ? "조회 중..." : "표시할 행 없음"}</td></tr>
+              <tr><td colSpan={7} style={{ padding: 12, color: "var(--text-secondary)", textAlign: "center" }}>{lotProgressBusy ? "조회 중..." : "표시할 행 없음"}</td></tr>
             )}
           </tbody>
         </table>

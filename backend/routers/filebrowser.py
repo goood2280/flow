@@ -69,7 +69,7 @@ BASE_FILE_EDIT_MAX_BYTES = 25_000_000
 BASE_FILE_EDIT_MAX_ROWS = 200_000
 BASE_EDIT_ALLOWED_EXTENSIONS = {".csv", ".parquet"}
 BASE_EDIT_HISTORY_DIR = ".history"
-BASE_EDIT_RESERVED_PREFIXES = {"product_config", "reformatter", "uploads"}
+BASE_EDIT_RESERVED_PREFIXES = {"product_config", "reformatter", "uploads", "cache"}
 BASE_VERSION_DIR = PATHS.data_root / "file_versions"
 BASE_VERSION_CAP = 50
 SCHEMA_PROFILE_DIR = PATHS.data_root / "schema_profiles"
@@ -80,7 +80,7 @@ LIST_CACHE_TTL_SEC = 5.0
 MAX_WAFER_ID = 25
 _SINGLE_FILE_STEP_CACHE_DIR = "cache"
 _SINGLE_FILE_STEP_CACHE_FILE = "latest_step_by_lot.parquet"
-_SINGLE_FILE_STEP_CACHE_VERSION = 1
+_SINGLE_FILE_STEP_CACHE_VERSION = 2
 _SINGLE_FILE_PREVIEW_MAX_BYTES = 64 * 1024 * 1024
 _SORT_STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 _LIST_CACHE: dict[tuple, tuple[float, object]] = {}
@@ -300,6 +300,38 @@ def _single_file_cache_state(fp: Path) -> dict | None:
     return state if isinstance(state, dict) else None
 
 
+def _single_file_cache_entries(root: Path, source_root: str) -> list[dict]:
+    cache = _single_file_cache_dir(root)
+    if not cache.is_dir():
+        return []
+    out: list[dict] = []
+    pattern = f"*.{_SINGLE_FILE_STEP_CACHE_FILE}"
+    for fp in sorted(cache.glob(pattern), key=lambda p: p.name.lower()):
+        if not fp.is_file():
+            continue
+        try:
+            stat = fp.stat()
+        except OSError:
+            continue
+        rel = f"{_SINGLE_FILE_STEP_CACHE_DIR}/{fp.name}"
+        out.append({
+            "name": rel,
+            "path": rel,
+            "size": stat.st_size,
+            "modified": stat.st_mtime,
+            "ext": fp.suffix.lower().lstrip("."),
+            "kind": "file",
+            "source": "cache",
+            "source_root": source_root,
+            "source_path": str(fp),
+            "role": "latest step cache",
+            "description": "product/lot_id별 latest_step_id와 updated_at 캐시",
+            "order": 1,
+            "editable": False,
+        })
+    return out
+
+
 def _ensure_single_file_cache_dirs(base_root: Path, db_root: Path) -> None:
     for root in (base_root, db_root):
         if not root.is_dir():
@@ -350,6 +382,7 @@ def _build_single_file_step_cache(fp: Path, force: bool = False) -> dict:
     product_col = _single_file_col(columns, ("product", "product_id", "prod_id", "productid"))
     lot_col = _single_file_col(columns, ("lot", "lot_id", "lotid", "lot_no", "root_lot_id", "fab_lot_id"))
     step_col = _single_file_col(columns, ("step_id", "step", "function_step", "func_step"))
+    time_col = _single_file_col(columns, _LATEST_COLUMN_PRIORITY)
     if not (product_col and lot_col and step_col):
         state = {
             "version": _SINGLE_FILE_STEP_CACHE_VERSION,
@@ -359,27 +392,45 @@ def _build_single_file_step_cache(fp: Path, force: bool = False) -> dict:
             "source_size": st.st_size,
             "source_mtime_ns": int(st.st_mtime_ns),
             "source_columns": columns,
+            "cache_generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
         }
         _write_text_atomic(meta_fp, json.dumps(state, ensure_ascii=False, indent=2))
         return {"ok": False, "ready": False, "reason": "missing columns"}
     try:
-        q = lf.select([
+        cache_updated_at = datetime.datetime.now().isoformat(timespec="seconds")
+        select_exprs = [
             pl.col(product_col).cast(pl.Utf8, strict=False).str.strip_chars().alias("product"),
             pl.col(lot_col).cast(pl.Utf8, strict=False).str.strip_chars().alias("lot_id"),
             pl.col(step_col).cast(pl.Utf8, strict=False).str.strip_chars().alias("step_id"),
-        ])
+        ]
+        if time_col:
+            select_exprs.append(pl.col(time_col).cast(pl.Utf8, strict=False).fill_null("").str.strip_chars().alias("updated_at"))
+        else:
+            select_exprs.append(pl.lit("").alias("updated_at"))
+        q = lf.select(select_exprs)
         q = q.filter(
             pl.col("product").is_not_null() & (pl.col("product") != "")
             & pl.col("lot_id").is_not_null() & (pl.col("lot_id") != "")
             & pl.col("step_id").is_not_null() & (pl.col("step_id") != "")
         )
-        q = q.group_by(["product", "lot_id"]).agg(pl.col("step_id").max().alias("latest_step_id")).sort(["product", "lot_id"])
+        if time_col:
+            q = q.sort(["product", "lot_id", "updated_at", "step_id"])
+            q = q.group_by(["product", "lot_id"]).agg([
+                pl.col("step_id").last().alias("latest_step_id"),
+                pl.col("updated_at").last().alias("updated_at"),
+            ])
+        else:
+            q = q.group_by(["product", "lot_id"]).agg([
+                pl.col("step_id").max().alias("latest_step_id"),
+                pl.lit("").first().alias("updated_at"),
+            ])
+        q = q.with_columns(pl.lit(cache_updated_at).alias("cache_updated_at")).sort(["product", "lot_id"])
         try:
             from core.parquet_perf import collect_streaming
             df = collect_streaming(q)
         except Exception:
             df = q.collect()
-        df = df.select(["product", "lot_id", "latest_step_id"])
+        df = df.select(["product", "lot_id", "latest_step_id", "updated_at", "cache_updated_at"])
     except Exception as e:
         return {"ok": False, "ready": False, "reason": f"build failed: {e}"}
     try:
@@ -393,10 +444,11 @@ def _build_single_file_step_cache(fp: Path, force: bool = False) -> dict:
             "rows": int(df.height),
             "cache_path": str(cache_fp),
             "cache_file": cache_fp.name,
-            "cache_generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "cache_generated_at": cache_updated_at,
             "product_col": product_col,
             "lot_col": lot_col,
             "step_col": step_col,
+            "time_col": time_col,
         }
         _write_text_atomic(meta_fp, json.dumps(state, ensure_ascii=False, indent=2))
         return {"ok": True, "ready": True, "cached": False, "rows": int(df.height)}
@@ -1394,6 +1446,7 @@ def base_files():
                 })
             except Exception:
                 pass
+        files.extend(_single_file_cache_entries(base_root, "base_root"))
     if base_root.is_dir():
         for f in sorted(base_root.iterdir(), key=lambda p: (not p.is_file(), p.name.lower())):
             try:
@@ -1443,7 +1496,13 @@ def base_files():
                 })
             except Exception:
                 pass
-    seen_names = {f["name"].lower() for f in files}
+        seen_cache_paths = {f["path"].lower() for f in files if f.get("source") == "cache"}
+        for entry in _single_file_cache_entries(db_root, "db_root"):
+            if entry["path"].lower() in seen_cache_paths:
+                continue
+            files.append(entry)
+            seen_cache_paths.add(entry["path"].lower())
+    seen_names = {f["name"].lower() for f in files if f.get("source") != "cache"}
     if db_root.is_dir() and db_root.resolve() != base_root.resolve():
         for f in sorted(db_root.iterdir()):
             if not f.is_file():
