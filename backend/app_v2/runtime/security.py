@@ -13,6 +13,13 @@ QUERY_TOKEN_PREFIXES = (
     "/api/informs/files/",
     "/api/tracker/image",
     "/api/meetings/stream",
+    "/api/admin/my-notifications",
+    "/api/admin/all-notifications",
+    "/api/admin/mark-read",
+    "/api/admin/mark-read-batch",
+    "/api/admin/dismiss",
+    "/api/admin/dismiss-batch",
+    "/api/admin/notify-rules",
 )
 
 

@@ -74,6 +74,10 @@ class _Paths:
         return _get_db_root()
 
     @property
+    def db_cache_dir(self) -> Path:
+        return self.db_root / "cache"
+
+    @property
     def base_root(self) -> Path:
         """Compatibility alias for DB root (see core.roots.get_base_root)."""
         return _get_base_root()
@@ -91,6 +95,8 @@ class _Paths:
         self.data_root.mkdir(parents=True, exist_ok=True)
         for d in [self.log_dir, self.upload_dir, self.cache_dir]:
             d.mkdir(parents=True, exist_ok=True)
+        if self.db_root.is_dir():
+            self.db_cache_dir.mkdir(parents=True, exist_ok=True)
         # Do not create db_root here. The DB root is operator-owned source data;
         # creating an empty fallback directory can hide a misconfigured real DB.
         if not self.users_csv.exists():
