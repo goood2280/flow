@@ -377,6 +377,20 @@ def test_base_files_builds_step_cache_file(monkeypatch, tmp_path):
     assert [row["path"] for row in cache_rows] == [f"cache/{fp.name}.latest_step_by_lot.parquet"]
 
 
+def test_base_file_versioned_allows_any_single_csv_under_5mb(tmp_path):
+    fp = tmp_path / "custom_lookup.csv"
+    fp.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    assert filebrowser._base_file_versioned(fp.name, fp) is True
+
+
+def test_base_file_versioned_rejects_single_csv_over_5mb(tmp_path):
+    fp = tmp_path / "large_lookup.csv"
+    fp.write_bytes(b"x" * (filebrowser.EDM_VERSION_MAX_CSV_BYTES + 1))
+
+    assert filebrowser._base_file_versioned(fp.name, fp) is False
+
+
 def test_base_file_view_reads_entire_non_ml_single_file(monkeypatch, tmp_path):
     fp = tmp_path / "matching_step.parquet"
     pl.DataFrame({f"c{i:02d}": [i, i + 10, i + 20] for i in range(12)}).write_parquet(fp)

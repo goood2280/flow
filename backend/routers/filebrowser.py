@@ -72,6 +72,7 @@ BASE_EDIT_HISTORY_DIR = ".history"
 BASE_EDIT_RESERVED_PREFIXES = {"product_config", "reformatter", "uploads", "cache"}
 BASE_VERSION_DIR = PATHS.data_root / "file_versions"
 BASE_VERSION_CAP = 50
+EDM_VERSION_MAX_CSV_BYTES = 5_000_000
 SCHEMA_PROFILE_DIR = PATHS.data_root / "schema_profiles"
 SCHEMA_PROFILE_CAP = 30
 LATEST_PREVIEW_ROWS = 200
@@ -597,13 +598,17 @@ def _resolve_base_file_for_version(file: str) -> Path:
 def _base_file_versioned(file: str, target: Path | None = None) -> bool:
     rel = str(file or "").strip().replace("\\", "/").lower()
     name = Path(rel).name.lower()
-    if name in EDM_VERSIONED_SINGLE_FILES:
-        return True
     if rel == "product_config/products.yaml":
         return True
-    if rel.startswith("reformatter/") and name.endswith((".csv", ".json")):
+    if rel.startswith("reformatter/") and name.endswith(".json"):
         return True
-    if target is not None and target.name.lower() in EDM_VERSIONED_SINGLE_FILES:
+    if target is not None and target.is_file() and target.suffix.lower() == ".csv":
+        try:
+            return target.stat().st_size <= EDM_VERSION_MAX_CSV_BYTES
+        except Exception:
+            return False
+    if target is None and name in EDM_VERSIONED_SINGLE_FILES:
+        # Compatibility fallback for callers that only ask by legacy file name.
         return True
     return False
 

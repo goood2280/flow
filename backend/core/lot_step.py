@@ -1351,11 +1351,20 @@ def _step_meta_paths() -> list[Path]:
             roots.append(root)
     paths = []
     for root in roots:
-        for name in ("step_matching.csv", "matching_step.csv"):
+        for name in ("Vehicle_matching.csv", "vehicle_matching.csv", "step_matching.csv", "matching_step.csv"):
             fp = root / name
             if fp.is_file() and fp not in paths:
                 paths.append(fp)
     return paths
+
+
+def _row_ci(row: dict, *names: str):
+    lookup = {str(k or "").strip().lower(): v for k, v in (row or {}).items()}
+    for name in names:
+        key = str(name or "").strip().lower()
+        if key in lookup:
+            return lookup.get(key)
+    return ""
 
 
 def _read_step_meta_rows() -> list[dict]:
@@ -1370,24 +1379,23 @@ def _read_step_meta_rows() -> list[dict]:
             with open(fp, "r", encoding="utf-8-sig", newline="") as f:
                 for row in csv.DictReader(f):
                     r = {str(k or "").strip(): (v if v is not None else "") for k, v in (row or {}).items()}
-                    step_id = (r.get("step_id") or r.get("raw_step_id") or "").strip()
+                    step_id = str(_row_ci(r, "step_id", "raw_step_id", "step") or "").strip()
                     func_step = (
-                        r.get("func_step")
-                        or r.get("function_step")
-                        or r.get("canonical_step")
+                        _row_ci(r, "func_step", "function_step", "func step", "canonical_step", "step_function")
                         or ""
-                    ).strip()
+                    )
+                    func_step = str(func_step or "").strip()
                     if not step_id or not func_step:
                         continue
                     rows.append({
                         "step_id": step_id,
-                        "product": (r.get("product") or "").strip(),
+                        "product": str(_row_ci(r, "product", "process_id", "prod") or "").strip(),
                         "function_step": func_step,
                         "func_step": func_step,
-                        "canonical_step": (r.get("canonical_step") or "").strip(),
-                        "module": (r.get("module") or r.get("area") or "").strip(),
-                        "area": (r.get("area") or "").strip(),
-                        "step_class": (r.get("step_class") or r.get("step_type") or "").strip(),
+                        "canonical_step": str(_row_ci(r, "canonical_step") or "").strip(),
+                        "module": str(_row_ci(r, "module", "area") or "").strip(),
+                        "area": str(_row_ci(r, "area") or "").strip(),
+                        "step_class": str(_row_ci(r, "step_class", "step_type") or "").strip(),
                     })
         except Exception as e:
             logger.warning(f"step meta CSV load failed {fp}: {e}")

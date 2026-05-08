@@ -28,3 +28,25 @@ def test_empty_categories_file_falls_back_to_default_categories(monkeypatch):
     cats = tracker._load_cats()
 
     assert [c["name"] for c in cats[:2]] == ["Analysis", "Monitor"]
+
+
+def test_monitor_lot_rows_expand_from_lot_progress_cache(monkeypatch):
+    from core import lot_progress_cache
+
+    monkeypatch.setattr(
+        lot_progress_cache,
+        "lot_progress_summary",
+        lambda **_kwargs: {
+            "rows": [
+                {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "A1000A.1", "wafer_id": "1", "step_id": "STEP_010", "func_step": "STI", "update_time": "2026-05-08T10:00:00"},
+                {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "A1000A.1", "wafer_id": "2", "step_id": "STEP_020", "func_step": "GATE", "update_time": "2026-05-08T11:00:00"},
+            ]
+        },
+    )
+
+    rows = tracker._expand_monitor_lot_rows_from_cache([{"lot_id": "A1000A.1"}], category="Monitor")
+
+    assert [(r["wafer_id"], r["current_step"], r["func_step"]) for r in rows] == [
+        ("1", "STEP_010", "STI"),
+        ("2", "STEP_020", "GATE"),
+    ]

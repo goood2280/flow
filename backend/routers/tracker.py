@@ -114,6 +114,14 @@ def _public_tracker_cats():
     return [c for c in cats if str(c.get("name") or "").strip().lower() == monitor_name]
 
 
+def _default_monitor_category() -> str:
+    try:
+        from core.lot_step import tracker_role_names_config
+        return str((tracker_role_names_config() or {}).get("monitor") or "Monitor").strip() or "Monitor"
+    except Exception:
+        return "Monitor"
+
+
 def _load_cats():
     """Returns list of {name, color} dicts (v8.1.5). Legacy str list auto-upgraded on read."""
     raw = load_json(CATS_FILE, DEFAULT_CATS)
@@ -223,8 +231,6 @@ def _normalize_lot_candidate_rows(raw: list[dict], limit: int) -> list[dict]:
 def _tracker_mltable_lot_candidates(product: str, prefix: str = "", limit: int = 200) -> list[dict]:
     """Use the SplitTable-cycle LOT progress file cache for Tracker lot_id dropdowns."""
     prod = str(product or "").strip()
-    if not prod:
-        return []
     try:
         limit = max(1, min(500, int(limit or 200)))
     except Exception:
@@ -260,6 +266,55 @@ def _persist_tracker_lot_status_rows(rows: list[dict], source: str = "tracker") 
         upsert_tracker_lot_status_rows(rows, source=source)
     except Exception:
         return
+
+
+def _expand_monitor_lot_rows_from_cache(rows: list[dict], *, category: str = "", issue_product: str = "") -> list[dict]:
+    """For Monitor issues, allow entry by lot_id only and expand to wafer rows from cache."""
+    if _category_source(category or _default_monitor_category(), "fab") != "fab":
+        return rows
+    try:
+        from core.lot_progress_cache import lot_progress_summary
+    except Exception:
+        return rows
+    out: list[dict] = []
+    for raw in rows or []:
+        row = dict(raw or {})
+        lot_id = str(row.get("lot_id") or row.get("fab_lot_id") or row.get("root_lot_id") or "").strip()
+        wafer_id = str(row.get("wafer_id") or "").strip()
+        if not lot_id or wafer_id:
+            out.append(row)
+            continue
+        product = str(row.get("product") or row.get("monitor_prod") or issue_product or "").strip()
+        try:
+            summary = lot_progress_summary(lot_id=lot_id, product=product)
+        except Exception:
+            summary = {}
+        summary_rows = [r for r in (summary.get("rows") or []) if isinstance(r, dict)]
+        if not summary_rows:
+            out.append(row)
+            continue
+        for item in summary_rows:
+            func_step = str(item.get("func_step") or "").strip()
+            step_id = str(item.get("step_id") or "").strip()
+            update_time = str(item.get("update_time") or "").strip()
+            row_product = str(item.get("product") or product or "").strip()
+            out.append({
+                **row,
+                "product": row_product,
+                "monitor_prod": row_product,
+                "root_lot_id": str(item.get("root_lot_id") or row.get("root_lot_id") or "").strip(),
+                "lot_id": str(item.get("lot_id") or lot_id).strip(),
+                "wafer_id": str(item.get("wafer_id") or "").strip(),
+                "current_step": step_id or None,
+                "current_function_step": func_step or None,
+                "function_step": func_step or None,
+                "func_step": func_step or None,
+                "last_move_at": update_time or row.get("last_move_at") or None,
+                "last_scan_source": "fab",
+                "last_scan_source_root": str(item.get("source_root") or row.get("last_scan_source_root") or ""),
+                "last_scan_status": "ok",
+            })
+    return out
 
 
 def _save(issues):
@@ -696,7 +751,7 @@ def tracker_lot_candidates(request: Request,
     current_user(request)
     resolved_source = _category_source(category, source)
     source_root = source_root_for_context(resolved_source, category)
-    if not (product or "").strip():
+    if not (product or "").strip() and resolved_source == "et":
         return {
             "source": resolved_source,
             "source_root": source_root,
@@ -736,6 +791,32 @@ def tracker_lot_candidates(request: Request,
         "source": resolved_source,
         "source_root": source_root,
         "candidates": candidates,
+    }
+
+
+@router.get("/lot-summary")
+def tracker_lot_summary(request: Request,
+                        lot_id: str = Query(""),
+                        product: str = Query(""),
+                        category: str = Query(""),
+                        source: str = Query("auto"),
+                        limit: int = Query(500)):
+    current_user(request)
+    if not (lot_id or "").strip():
+        return {"ok": True, "lot_id": "", "wafer_count": 0, "wafer_ids": [], "rows": []}
+    resolved_source = _category_source(category or _default_monitor_category(), source)
+    if resolved_source != "fab":
+        return {"ok": True, "source": resolved_source, "lot_id": lot_id, "wafer_count": 0, "wafer_ids": [], "rows": []}
+    from core.lot_progress_cache import lot_progress_summary
+    summary = lot_progress_summary(
+        lot_id=lot_id,
+        product=product,
+        limit=max(1, min(1000, int(limit or 500))),
+    )
+    return {
+        **summary,
+        "source": resolved_source,
+        "source_root": "lot_progress_cache",
     }
 
 
@@ -829,7 +910,7 @@ def create_issue(req: IssueCreate, request: Request):
     me = current_user(request)
     req.username = me.get("username") or ""
     if not (req.category or "").strip():
-        raise HTTPException(400, "카테고리를 지정해주세요.")
+        req.category = _default_monitor_category()
     issues = _load()
     now = datetime.datetime.now()
     iid = f"ISS-{now.strftime('%y%m%d')}-{uuid.uuid4().hex[:4].upper()}"
@@ -840,6 +921,10 @@ def create_issue(req: IssueCreate, request: Request):
             name = _save_image(img)
             if name:
                 img_names.append(name)
+    expanded_rows = _expand_monitor_lot_rows_from_cache(
+        req.lots,
+        category=req.category or _default_monitor_category(),
+    )
     lots = [
         normalize_lot_row({
             **lot,
@@ -848,7 +933,7 @@ def create_issue(req: IssueCreate, request: Request):
             "product": lot.get("product") or lot.get("monitor_prod") or "",
             **({"root_lot_id": lot.get("root_lot_id") or "", "lot_id": lot.get("lot_id") or ""}),
         })
-        for lot in req.lots
+        for lot in expanded_rows
     ]
     result = TRACKER_SERVICE.create_legacy_issue(
         issue_id=iid,
@@ -1070,10 +1155,19 @@ def delete_comment(req: CommentDeleteReq, request: Request):
 def bulk_lots(req: LotBulkReq, request: Request):
     me = current_user(request)
     req.username = me.get("username") or ""
+    issues = _load()
+    iss = next((i for i in issues if i.get("id") == req.issue_id), None)
+    rows = req.rows
+    if iss:
+        rows = _expand_monitor_lot_rows_from_cache(
+            req.rows,
+            category=iss.get("category") or _default_monitor_category(),
+            issue_product=iss.get("product") or "",
+        )
     result = TRACKER_SERVICE.add_legacy_lots(
         issue_id=req.issue_id,
         username=req.username,
-        rows=req.rows,
+        rows=rows,
     )
     if not result.ok:
         raise HTTPException(404, result.error)

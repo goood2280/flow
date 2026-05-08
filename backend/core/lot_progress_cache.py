@@ -101,16 +101,16 @@ def _norm_wafer(value) -> str:
 
 
 def _sort_time(row: dict) -> str:
-    return _safe_text(row.get("tkout_time") or row.get("tkin_time") or row.get("time"))
+    return _safe_text(row.get("update_time") or row.get("tkout_time") or row.get("tkin_time") or row.get("time"))
 
 
 def _lot_status_time(row: dict) -> str:
-    return _safe_text(row.get("time") or row.get("last_checked_at") or row.get("last_move_at") or row.get("tkout_time") or row.get("tkin_time"))
+    return _safe_text(row.get("update_time") or row.get("time") or row.get("last_checked_at") or row.get("last_move_at") or row.get("tkout_time") or row.get("tkin_time"))
 
 
 def _lot_status_key(row: dict) -> tuple[str, str, str]:
     return (
-        _norm_key(row.get("product")),
+        _norm_key(row.get("root_lot_id")),
         _norm_key(row.get("lot_id")),
         _norm_key(row.get("wafer_id")),
     )
@@ -123,6 +123,8 @@ def _tracker_status_row(row: dict, *, source: str = "tracker") -> dict | None:
     if not lot_id:
         return None
     wafer_id = _norm_wafer(row.get("wafer_id"))
+    if not wafer_id:
+        return None
     step_id = _safe_text(
         row.get("step_id")
         or row.get("current_step")
@@ -137,20 +139,12 @@ def _tracker_status_row(row: dict, *, source: str = "tracker") -> dict | None:
     )
     time_value = _lot_status_time(row)
     return {
-        "cache_source": str(source or "tracker").strip() or "tracker",
-        "product": _safe_text(row.get("product") or row.get("process_id")),
-        "process_id": _safe_text(row.get("process_id") or row.get("product")),
         "root_lot_id": _safe_text(row.get("root_lot_id")),
-        "lot_id": lot_id,
         "wafer_id": wafer_id,
+        "lot_id": lot_id,
         "step_id": step_id,
-        "function_step": function_step,
         "func_step": function_step,
-        "time": time_value,
-        "source_root": _safe_text(row.get("source_root") or row.get("last_scan_source_root") or FAB_ROOT),
-        "eqp_id": _safe_text(row.get("eqp_id")),
-        "chamber_id": _safe_text(row.get("chamber_id")),
-        "ppid": _safe_text(row.get("ppid")),
+        "update_time": time_value,
     }
 
 
@@ -169,7 +163,7 @@ def upsert_tracker_lot_status_rows(rows: list[dict], source: str = "tracker") ->
     state = _load_tracker_lot_status_state()
     merged: dict[tuple[str, str, str], dict] = {}
     for row in state.get("items") or []:
-        row_norm = _tracker_status_row(dict(row), source=row.get("cache_source") or "tracker")
+        row_norm = _tracker_status_row(dict(row), source="tracker")
         if row_norm is None:
             continue
         merged[_lot_status_key(row_norm)] = row_norm
@@ -183,16 +177,14 @@ def upsert_tracker_lot_status_rows(rows: list[dict], source: str = "tracker") ->
             merged[key] = row_norm
     out = sorted(
         merged.values(),
-        key=lambda row: (_lot_status_time(row), _norm_key(row.get("product")), _norm_key(row.get("lot_id")), _wafer_sort_value(row.get("wafer_id"))),
+        key=lambda row: (_lot_status_time(row), _norm_key(row.get("root_lot_id")), _norm_key(row.get("lot_id")), _wafer_sort_value(row.get("wafer_id"))),
         reverse=True,
     )
     state = {
         "version": CACHE_VERSION,
         "generated_at": _now_iso(),
-        "source": str(source or "tracker").strip() or "tracker",
         "count": len(out),
         "items": out,
-        "count_by_product": len({(item.get("product") or "").strip() for item in out}),
     }
     tmp = fp.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -220,7 +212,13 @@ def _step_matching_paths() -> list[Path]:
             continue
         if p not in roots:
             roots.append(p)
-    names = ["step_matching.csv", "matching_step.csv", "step_function.csv"]
+    names = [
+        "Vehicle_matching.csv",
+        "vehicle_matching.csv",
+        "step_matching.csv",
+        "matching_step.csv",
+        "step_function.csv",
+    ]
     out: list[Path] = []
     for root in roots:
         for name in names:
@@ -228,6 +226,15 @@ def _step_matching_paths() -> list[Path]:
             if path not in out:
                 out.append(path)
     return out
+
+
+def _row_ci(row: dict, *names: str):
+    lookup = {str(k or "").strip().lower(): v for k, v in (row or {}).items()}
+    for name in names:
+        key = str(name or "").strip().lower()
+        if key in lookup:
+            return lookup.get(key)
+    return ""
 
 
 def load_step_matching() -> tuple[dict[tuple[str, str], str], dict[str, str]]:
@@ -240,10 +247,10 @@ def load_step_matching() -> tuple[dict[tuple[str, str], str], dict[str, str]]:
             with path.open("r", encoding="utf-8-sig", newline="") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    product = _norm_key(row.get("product") or row.get("process_id") or row.get("prod"))
-                    step_id = _norm_key(row.get("step_id") or row.get("step"))
+                    product = _norm_key(_row_ci(row, "product", "process_id", "prod"))
+                    step_id = _norm_key(_row_ci(row, "step_id", "raw_step_id", "step"))
                     function_step = _safe_text(
-                        row.get("function_step") or row.get("func_step") or row.get("step_function")
+                        _row_ci(row, "func_step", "function_step", "func step", "canonical_step", "step_function")
                     )
                     if not step_id or not function_step:
                         continue
@@ -355,6 +362,7 @@ def refresh_lot_progress_cache(force: bool = False) -> dict:
                             "tkin_time": _safe_text(raw.get("tkin_time")),
                             "tkout_time": _safe_text(raw.get("tkout_time")),
                             "time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
+                            "update_time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
                             "eqp_id": _safe_text(raw.get("eqp_id")),
                             "chamber_id": _safe_text(raw.get("chamber_id")),
                             "ppid": _safe_text(raw.get("ppid")),
@@ -466,6 +474,59 @@ def lookup_lot_progress(
     return rows[:cap]
 
 
+def lot_progress_summary(
+    *,
+    lot_id: str = "",
+    root_lot_id: str = "",
+    product: str = "",
+    limit: int = 500,
+    max_age_seconds: int | None = None,
+) -> dict:
+    rows = lookup_lot_progress(
+        product=product,
+        lot_id=lot_id,
+        root_lot_id=root_lot_id,
+        limit=limit,
+        max_age_seconds=max_age_seconds,
+    )
+    rows = sorted(rows, key=lambda row: _wafer_sort_value(row.get("wafer_id")))
+    lean_rows = []
+    for row in rows:
+        lean_rows.append({
+            "product": _safe_text(row.get("product") or row.get("process_id")),
+            "root_lot_id": _safe_text(row.get("root_lot_id")),
+            "wafer_id": _norm_wafer(row.get("wafer_id")),
+            "lot_id": _safe_text(row.get("lot_id")),
+            "step_id": _safe_text(row.get("step_id")),
+            "func_step": _safe_text(row.get("func_step") or row.get("function_step")),
+            "update_time": _lot_status_time(row),
+        })
+    wafer_ids: list[str] = []
+    seen_wafers: set[str] = set()
+    for row in lean_rows:
+        wafer = row.get("wafer_id") or ""
+        if not wafer or wafer in seen_wafers:
+            continue
+        seen_wafers.add(wafer)
+        wafer_ids.append(wafer)
+    latest = sorted(lean_rows, key=lambda row: _lot_status_time(row), reverse=True)[0] if lean_rows else {}
+    root_values = [r.get("root_lot_id") for r in lean_rows if r.get("root_lot_id")]
+    lot_values = [r.get("lot_id") for r in lean_rows if r.get("lot_id")]
+    product_values = [r.get("product") for r in lean_rows if r.get("product")]
+    return {
+        "ok": True,
+        "lot_id": lot_values[0] if lot_values else _safe_text(lot_id),
+        "root_lot_id": root_values[0] if root_values and len(set(root_values)) == 1 else "",
+        "product": product_values[0] if product_values and len(set(product_values)) == 1 else "",
+        "wafer_count": len(wafer_ids),
+        "wafer_ids": wafer_ids,
+        "step_id": latest.get("step_id") or "",
+        "func_step": latest.get("func_step") or "",
+        "update_time": latest.get("update_time") or "",
+        "rows": lean_rows,
+    }
+
+
 def lot_id_candidates(
     *,
     product: str = "",
@@ -504,7 +565,7 @@ def lot_id_candidates(
             "root_lot_id": item.get("root_lot_id") or "",
             "step_id": item.get("step_id") or "",
             "function_step": item.get("function_step") or item.get("func_step") or "",
-            "time": item.get("time") or item.get("tkout_time") or item.get("tkin_time") or "",
+            "time": item.get("update_time") or item.get("time") or item.get("tkout_time") or item.get("tkin_time") or "",
             "cache": "lot_progress",
         })
         if len(out) >= limit:
@@ -535,7 +596,7 @@ def lot_progress_snapshot(
     row = rows[0]
     fab = {
         **row,
-        "time": row.get("time") or row.get("tkout_time") or row.get("tkin_time") or "",
+        "time": row.get("update_time") or row.get("time") or row.get("tkout_time") or row.get("tkin_time") or "",
         "cache_source": "lot_progress_cache",
     }
     return {"fab": fab, "et": [], "cache": {"hit": True, "generated_at": load_lot_progress_cache(max_age_seconds=max_age_seconds).get("generated_at")}}
