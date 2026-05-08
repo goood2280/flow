@@ -33,12 +33,22 @@ TRACKER_SERVICE = TrackerService(TrackerIssueRepository(ISSUES_FILE))
 migrate_tracker_issues_file(reason="router_import", actor="tracker_router")
 # v8.1.5: categories can now be mixed list of str or {name, color}
 DEFAULT_CATS = [
+    {"name": "Analysis", "color": "hsl(330, 58%, 58%)"},
     {"name": "Monitor", "color": "#a855f7"},
-    {"name": "Equipment", "color": "#f97316"},
-    {"name": "Process", "color": "#10b981"},
-    {"name": "Quality", "color": "#ef4444"},
-    {"name": "Other", "color": "#64748b"},
 ]
+
+
+def _allowed_tracker_category_names() -> set[str]:
+    """Keep Tracker 카테고리 정책을 monitor 중심으로 유지한다."""
+    names = {"monitor", "analysis"}
+    try:
+        from core.lot_step import tracker_role_names_config
+        cfg = tracker_role_names_config()
+        names.add(str(cfg.get("monitor") or "Monitor").strip().lower())
+        names.add(str(cfg.get("analysis") or "Analysis").strip().lower())
+    except Exception:
+        pass
+    return names
 
 
 def _load():
@@ -58,31 +68,20 @@ def _hash_color(name: str) -> str:
     return f"hsl({abs(h) % 360}, 58%, 58%)"
 
 
-def _hidden_category_name(name: str) -> bool:
-    low = (name or "").strip().lower()
-    if not low:
-        return False
-    try:
-        from core.lot_step import tracker_role_names_config
-        analysis = str((tracker_role_names_config() or {}).get("analysis") or "Analysis").strip().lower()
-    except Exception:
-        analysis = "analysis"
-    return low in {"analysis", analysis}
-
-
 def _normalize_cats(raw):
     """Accept list of str or {name,color[,source]}; return list of {name,color,source}.
     v8.8.33: source 필드 (fab|et|both|auto) — Lot step 추적 모드. 미지정 시 auto.
     """
+    allowed = _allowed_tracker_category_names()
     out = []
     for item in raw or []:
         if isinstance(item, str):
             nm = item.strip()
-            if nm and not _hidden_category_name(nm):
+            if nm and (nm.strip().lower() in allowed):
                 out.append({"name": nm, "color": _hash_color(nm), "source": "auto"})
         elif isinstance(item, dict):
             nm = (item.get("name") or "").strip()
-            if nm and not _hidden_category_name(nm):
+            if nm and (nm.strip().lower() in allowed):
                 src = (item.get("source") or "auto").lower().strip()
                 if src not in ("fab", "et", "both", "auto"):
                     src = "auto"
@@ -102,6 +101,17 @@ def _normalize_cats(raw):
                         pass
                 out.append(row)
     return out
+
+
+def _public_tracker_cats():
+    """현재 이슈추적 UI/설정에서 보여줄 monitor 전용 카테고리 목록."""
+    cats = _load_cats()
+    try:
+        from core.lot_step import tracker_role_names_config
+        monitor_name = str((tracker_role_names_config() or {}).get("monitor") or "Monitor").strip().lower()
+    except Exception:
+        monitor_name = "monitor"
+    return [c for c in cats if str(c.get("name") or "").strip().lower() == monitor_name]
 
 
 def _load_cats():
@@ -385,7 +395,7 @@ class TrackerMailPreviewReq(BaseModel):
 @router.get("/categories")
 def get_categories():
     """v8.1.5: Returns list of {name, color}. Legacy str list auto-upgraded."""
-    return {"categories": _load_cats()}
+    return {"categories": _public_tracker_cats()}
 
 
 @router.get("/scheduler")
@@ -524,7 +534,7 @@ def get_tracker_db_sources(request: Request):
 def get_tracker_settings_compat(request: Request):
     """Compatibility settings payload for PageGear builds expecting one endpoint."""
     return {
-        "categories": _load_cats(),
+        "categories": _public_tracker_cats(),
         "db_sources": get_tracker_db_sources(request),
         "scheduler": get_tracker_scheduler(request),
     }
@@ -535,7 +545,7 @@ def tracker_bootstrap(request: Request):
     """Root compatibility payload for clients probing /api/tracker."""
     return {
         "ok": True,
-        "categories": _load_cats(),
+        "categories": _public_tracker_cats(),
         "issues": list_issues(request).get("issues", []),
         "db_sources": get_tracker_db_sources(request),
         "scheduler": get_tracker_scheduler(request),
