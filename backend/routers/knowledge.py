@@ -127,3 +127,39 @@ def graph():
 @router.post("/graph/rebuild", dependencies=[Depends(_require_knowledge_admin)])
 def graph_rebuild():
     return {"ok": True, "graph": kv.rebuild_graph()}
+
+
+class OntologyPayload(BaseModel):
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.get("/ontology")
+def ontology_get():
+    """Return the active ontology (AI-generated if saved, else default)."""
+    saved = kv.load_ai_ontology()
+    if saved and saved.get("nodes"):
+        return {"source": "ai_ontology", "nodes": saved.get("nodes", []), "edges": saved.get("edges", [])}
+    return {"source": "default_ontology", "nodes": kv.DEFAULT_ONTOLOGY_NODES, "edges": kv.DEFAULT_ONTOLOGY_EDGES}
+
+
+@router.post("/ontology/ai-generate", dependencies=[Depends(_require_knowledge_admin)])
+def ontology_ai_generate():
+    """Ask the connected LLM to classify a fresh ontology from current wiki docs.
+
+    Returns a preview only — the admin must call /ontology/save to persist.
+    """
+    return kv.generate_ai_ontology()
+
+
+@router.post("/ontology/save", dependencies=[Depends(_require_knowledge_admin)])
+def ontology_save(req: OntologyPayload, request: Request):
+    me = current_user(request)
+    record = kv.save_ai_ontology(req.model_dump(), actor=me.get("username") or "system")
+    return {"ok": True, "saved": record, "graph": kv.rebuild_graph()}
+
+
+@router.post("/ontology/clear", dependencies=[Depends(_require_knowledge_admin)])
+def ontology_clear():
+    removed = kv.clear_ai_ontology()
+    return {"ok": True, "cleared": removed, "graph": kv.rebuild_graph()}

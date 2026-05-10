@@ -28,11 +28,18 @@ SOURCE_DIR = RAW_DIR / "sources"
 WIKI_DIR = KNOWLEDGE_ROOT / "wiki"
 GRAPH_DIR = KNOWLEDGE_ROOT / "graph"
 INDEX_DIR = KNOWLEDGE_ROOT / "index"
+ONTOLOGY_DIR = KNOWLEDGE_ROOT / "ontology"
 EVENTS_JSONL = EVENT_DIR / "events.jsonl"
 SOURCES_JSONL = SOURCE_DIR / "sources.jsonl"
 WIKI_INDEX_FILE = INDEX_DIR / "wiki_index.json"
 WIKI_LOG_JSONL = INDEX_DIR / "wiki_log.jsonl"
 GRAPH_FILE = GRAPH_DIR / "graph.json"
+AI_ONTOLOGY_FILE = ONTOLOGY_DIR / "ai_ontology.json"
+
+_ALLOWED_ONTOLOGY_KINDS = {
+    "identity", "process", "module", "material", "metric", "split",
+    "work", "output", "event", "concept", "actor", "tool", "other",
+}
 
 DEFAULT_ONTOLOGY_NODES = [
     {"id": "product", "label": "product", "kind": "identity"},
@@ -60,8 +67,193 @@ DEFAULT_ONTOLOGY_EDGES = [
 ]
 
 
+def _safe_concept_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    return re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_")[:64]
+
+
+def _normalize_ontology_payload(payload: Any) -> dict[str, Any]:
+    """Coerce arbitrary input (e.g., LLM JSON) into a strict ontology shape.
+
+    Drops nodes/edges with missing/invalid fields. Edges referencing unknown
+    nodes are discarded. Kinds outside `_ALLOWED_ONTOLOGY_KINDS` collapse to
+    "concept".
+    """
+    if not isinstance(payload, dict):
+        return {"nodes": [], "edges": []}
+    raw_nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
+    raw_edges = payload.get("edges") if isinstance(payload.get("edges"), list) else []
+    nodes: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in raw_nodes:
+        if not isinstance(item, dict):
+            continue
+        node_id = _safe_concept_id(item.get("id") or item.get("label"))
+        if not node_id or node_id in seen_ids:
+            continue
+        label = str(item.get("label") or node_id).strip()[:120]
+        kind = str(item.get("kind") or "concept").strip().lower()
+        if kind not in _ALLOWED_ONTOLOGY_KINDS:
+            kind = "concept"
+        nodes.append({"id": node_id, "label": label, "kind": kind})
+        seen_ids.add(node_id)
+    edges: list[dict[str, Any]] = []
+    seen_edges: set[tuple[str, str, str]] = set()
+    for item in raw_edges:
+        if not isinstance(item, dict):
+            continue
+        src = _safe_concept_id(item.get("source"))
+        tgt = _safe_concept_id(item.get("target"))
+        if not src or not tgt or src == tgt or src not in seen_ids or tgt not in seen_ids:
+            continue
+        relation = str(item.get("relation") or "relates_to").strip()[:60] or "relates_to"
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            continue
+        seen_edges.add(key)
+        edges.append({"source": src, "target": tgt, "relation": relation})
+    return {"nodes": nodes[:120], "edges": edges[:320]}
+
+
+def load_ai_ontology() -> dict[str, Any] | None:
+    """Return stored AI ontology payload (raw on-disk dict) or None if not saved."""
+    if not AI_ONTOLOGY_FILE.is_file():
+        return None
+    try:
+        text = AI_ONTOLOGY_FILE.read_text(encoding="utf-8")
+        data = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    payload = data.get("ontology") if isinstance(data.get("ontology"), dict) else data
+    return _normalize_ontology_payload(payload)
+
+
+def save_ai_ontology(payload: dict[str, Any], *, actor: str = "system", source: str = "ai_llm") -> dict[str, Any]:
+    ensure_dirs()
+    normalized = _normalize_ontology_payload(payload)
+    record = {
+        "saved_at": now_iso(),
+        "actor": actor,
+        "source": source,
+        "ontology": normalized,
+    }
+    _atomic_json(AI_ONTOLOGY_FILE, record)
+    return record
+
+
+def clear_ai_ontology() -> bool:
+    if AI_ONTOLOGY_FILE.is_file():
+        try:
+            AI_ONTOLOGY_FILE.unlink()
+            return True
+        except Exception:
+            return False
+    return False
+
+
+def _extract_json_block(text: str) -> str:
+    """Pull the first {...} JSON object substring from an LLM response."""
+    if not text:
+        return ""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", cleaned)
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+    start = cleaned.find("{")
+    if start < 0:
+        return ""
+    depth = 0
+    for i in range(start, len(cleaned)):
+        ch = cleaned[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return cleaned[start:i + 1]
+    return ""
+
+
+def _build_ontology_prompt(docs: list[dict[str, Any]]) -> str:
+    lines = []
+    for d in docs[:80]:
+        doc_id = str(d.get("doc_id") or "").strip()
+        if not doc_id:
+            continue
+        title = str(d.get("title") or doc_id).strip()
+        summary = str(d.get("summary") or "").strip().replace("\n", " ")[:240]
+        tags = d.get("tags") if isinstance(d.get("tags"), list) else []
+        tag_text = ", ".join(str(t) for t in tags if t)[:120]
+        kind = str(d.get("kind") or "").strip()
+        lines.append(f"- {doc_id} ({kind}) — {title} :: {summary} :: tags=[{tag_text}]")
+    body = "\n".join(lines) or "(empty wiki)"
+    allowed_kinds = ", ".join(sorted(_ALLOWED_ONTOLOGY_KINDS))
+    return (
+        "당신은 사내 반도체 데이터 ontology editor 입니다. "
+        "아래 wiki 문서 목록을 보고 concept-level ontology graph 를 JSON 한 덩어리로만 출력하세요. "
+        "코드 블록·해설·여백 없이 단일 JSON object 만 출력하세요.\n\n"
+        "각 문서를 하나의 concept node 후보로 보고, 의미에 따라 kind 를 다음 중 하나로 분류하세요: "
+        f"{allowed_kinds}.\n"
+        "edges 는 의미 관계를 가진 source/target/relation 만 남기세요 (자체 루프 금지). "
+        "node id 는 영문/숫자/언더스코어만, 60자 이내. relation 은 영문 소문자 + 언더스코어 1~3 단어 (예: contains, follows, replaces, contacted_by).\n\n"
+        "wiki 문서 목록:\n" + body + "\n\n"
+        "출력 형식:\n"
+        "{\"nodes\": [{\"id\": \"...\", \"label\": \"...\", \"kind\": \"...\"}, ...],\n"
+        " \"edges\": [{\"source\": \"...\", \"target\": \"...\", \"relation\": \"...\"}, ...]}\n"
+    )
+
+
+def generate_ai_ontology(*, max_docs: int = 80) -> dict[str, Any]:
+    """Ask the configured LLM for a fresh ontology classification.
+
+    Returns dict with keys:
+        ok (bool), ontology (normalized), prompt_chars, raw_text, error,
+        sample_docs (count fed to the LLM).
+    Caller decides whether to persist via save_ai_ontology(...).
+    """
+    from core import llm_adapter
+    docs = list_docs(limit=max_docs)
+    if not docs:
+        return {"ok": False, "error": "no wiki docs to classify", "ontology": {"nodes": [], "edges": []}, "sample_docs": 0}
+    if not llm_adapter.is_available():
+        return {"ok": False, "error": "llm not configured or disabled", "ontology": {"nodes": [], "edges": []}, "sample_docs": len(docs)}
+    prompt = _build_ontology_prompt(docs)
+    sys_prompt = (
+        "You output a single JSON object. No code fences, no commentary. "
+        "Keys: nodes (list of {id,label,kind}), edges (list of {source,target,relation})."
+    )
+    result = llm_adapter.complete(prompt, system=sys_prompt, timeout=40)
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error") or "llm error", "ontology": {"nodes": [], "edges": []}, "sample_docs": len(docs), "prompt_chars": len(prompt)}
+    text = str(result.get("text") or "")
+    block = _extract_json_block(text) or text
+    try:
+        parsed = json.loads(block)
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"llm output not parseable JSON: {e}",
+            "ontology": {"nodes": [], "edges": []},
+            "sample_docs": len(docs),
+            "prompt_chars": len(prompt),
+            "raw_text": text[:2000],
+        }
+    normalized = _normalize_ontology_payload(parsed)
+    return {
+        "ok": True,
+        "ontology": normalized,
+        "sample_docs": len(docs),
+        "prompt_chars": len(prompt),
+        "raw_text": text[:2000],
+    }
+
+
 def ensure_dirs() -> None:
-    for d in (KNOWLEDGE_ROOT, RAW_DIR, EVENT_DIR, SOURCE_DIR, WIKI_DIR, GRAPH_DIR, INDEX_DIR):
+    for d in (KNOWLEDGE_ROOT, RAW_DIR, EVENT_DIR, SOURCE_DIR, WIKI_DIR, GRAPH_DIR, INDEX_DIR, ONTOLOGY_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -906,14 +1098,23 @@ def _edge(edges: dict[str, dict[str, Any]], source: str, target: str, relation: 
     edges.setdefault(edge_id, _dump_model(KnowledgeEdge(edge_id=edge_id, source=source, target=target, relation=relation, evidence=evidence)))
 
 
+def _active_ontology() -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    """Return (nodes, edges, source) — AI ontology if saved, else built-in default."""
+    ai = load_ai_ontology()
+    if ai and isinstance(ai.get("nodes"), list) and ai["nodes"]:
+        return ai["nodes"], list(ai.get("edges") or []), "ai_ontology"
+    return DEFAULT_ONTOLOGY_NODES, DEFAULT_ONTOLOGY_EDGES, "default_ontology"
+
+
 def rebuild_graph() -> dict[str, Any]:
     ensure_dirs()
     nodes: dict[str, dict[str, Any]] = {}
     edges: dict[str, dict[str, Any]] = {}
-    for item in DEFAULT_ONTOLOGY_NODES:
-        _node(nodes, "concept:" + item["id"], item["label"], item["kind"])
-    for item in DEFAULT_ONTOLOGY_EDGES:
-        _edge(edges, "concept:" + item["source"], "concept:" + item["target"], item["relation"], "default_ontology")
+    ont_nodes, ont_edges, ont_source = _active_ontology()
+    for item in ont_nodes:
+        _node(nodes, "concept:" + str(item.get("id") or ""), item.get("label") or item.get("id") or "", item.get("kind") or "concept")
+    for item in ont_edges:
+        _edge(edges, "concept:" + str(item.get("source") or ""), "concept:" + str(item.get("target") or ""), item.get("relation") or "relates_to", ont_source)
 
     docs = list_docs(limit=1000)
     events = list_events(limit=1000)
@@ -942,7 +1143,7 @@ def rebuild_graph() -> dict[str, Any]:
         "nodes": list(nodes.values()),
         "edges": list(edges.values()),
         "counts": {"nodes": len(nodes), "edges": len(edges), "docs": len(docs), "events": len(events)},
-        "ontology": {"nodes": DEFAULT_ONTOLOGY_NODES, "edges": DEFAULT_ONTOLOGY_EDGES},
+        "ontology": {"nodes": list(ont_nodes), "edges": list(ont_edges), "source": ont_source},
     }
     _atomic_json(GRAPH_FILE, graph)
     return graph

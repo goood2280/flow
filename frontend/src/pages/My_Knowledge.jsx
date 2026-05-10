@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { sf } from "../lib/api";
 import { canManagePage } from "../lib/permissions";
 
@@ -142,8 +142,9 @@ function computeForceLayout(nodes,edges,width,height,nodeW,nodeH){
 }
 
 const KG_NODE_W=152,KG_NODE_H=38;
+const KG_ZOOM_MIN=0.3,KG_ZOOM_MAX=3,KG_VIEWPORT_H=560;
 
-function KnowledgeGraphView({graph}){
+function KnowledgeGraphView({graph,viewportHeight=KG_VIEWPORT_H}){
   const nodes=Array.isArray(graph?.nodes)?graph.nodes:[];
   const edges=Array.isArray(graph?.edges)?graph.edges:[];
   const layout=useMemo(()=>{
@@ -156,72 +157,156 @@ function KnowledgeGraphView({graph}){
     const positions=computeForceLayout(nodes,validEdges,baseW,baseH,KG_NODE_W,KG_NODE_H);
     return {positions,width:baseW,height:baseH,validEdges};
   },[graph]);
+
+  const wrapRef=useRef(null);
+  const [view,setView]=useState({scale:1,tx:0,ty:0});
+  const viewRef=useRef(view);viewRef.current=view;
+  const dragRef=useRef(null);
+
+  const fitToContainer=()=>{
+    const el=wrapRef.current;
+    if(!el||!layout)return;
+    const cw=el.clientWidth||layout.width;
+    const ch=viewportHeight;
+    const sx=cw/layout.width;
+    const sy=ch/layout.height;
+    const s=Math.min(sx,sy,1);
+    const tx=(cw-layout.width*s)/2;
+    const ty=(ch-layout.height*s)/2;
+    setView({scale:s,tx,ty});
+  };
+
+  // fit on first layout
+  useEffect(()=>{fitToContainer();/* eslint-disable-next-line react-hooks/exhaustive-deps */},[layout]);
+
+  // wheel zoom — attach as non-passive so we can preventDefault page scroll
+  useEffect(()=>{
+    const el=wrapRef.current;
+    if(!el)return;
+    const onWheel=(e)=>{
+      e.preventDefault();
+      const rect=el.getBoundingClientRect();
+      const cx=e.clientX-rect.left;
+      const cy=e.clientY-rect.top;
+      const v=viewRef.current;
+      const factor=Math.exp(-e.deltaY*0.0015);
+      const newScale=Math.max(KG_ZOOM_MIN,Math.min(KG_ZOOM_MAX,v.scale*factor));
+      const ratio=newScale/v.scale;
+      setView({scale:newScale,tx:cx-(cx-v.tx)*ratio,ty:cy-(cy-v.ty)*ratio});
+    };
+    el.addEventListener("wheel",onWheel,{passive:false});
+    return ()=>el.removeEventListener("wheel",onWheel);
+  },[]);
+
+  const onMouseDown=(e)=>{
+    if(e.button!==0)return;
+    dragRef.current={x:e.clientX,y:e.clientY,tx:view.tx,ty:view.ty};
+  };
+  const onMouseMove=(e)=>{
+    if(!dragRef.current)return;
+    setView((v)=>({...v,tx:dragRef.current.tx+(e.clientX-dragRef.current.x),ty:dragRef.current.ty+(e.clientY-dragRef.current.y)}));
+  };
+  const onMouseUp=()=>{dragRef.current=null;};
+
+  const zoomBy=(factor)=>{
+    setView((v)=>{
+      const cw=wrapRef.current?.clientWidth||layout?.width||800;
+      const ch=viewportHeight;
+      const cx=cw/2,cy=ch/2;
+      const newScale=Math.max(KG_ZOOM_MIN,Math.min(KG_ZOOM_MAX,v.scale*factor));
+      const ratio=newScale/v.scale;
+      return {scale:newScale,tx:cx-(cx-v.tx)*ratio,ty:cy-(cy-v.ty)*ratio};
+    });
+  };
+
   if(!nodes.length){
     return <div style={{padding:28,textAlign:"center",color:"var(--text-secondary)"}}>그래프 노드가 없습니다. Admin은 Bootstrap 또는 Graph Rebuild 로 시작하세요.</div>;
   }
   const {positions,width,height,validEdges}=layout;
   const NODE_W=KG_NODE_W,NODE_H=KG_NODE_H;
-  return <div style={{overflow:"auto",padding:"4px"}}>
-    <svg width={width} height={height} style={{minWidth:"100%",background:"var(--bg-primary)",display:"block"}}>
-      <defs>
-        <marker id="kg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-secondary)" opacity="0.8"/>
-        </marker>
-        <filter id="kg-node-shadow" x="-20%" y="-20%" width="140%" height="140%">
-          <feDropShadow dx="0" dy="1" stdDeviation="1.2" floodOpacity="0.18"/>
-        </filter>
-      </defs>
-      {validEdges.map((e,i)=>{
-        const s=positions.get(e.source);
-        const t=positions.get(e.target);
-        if(!s||!t)return null;
-        const dx=t.x-s.x,dy=t.y-s.y;
-        const dist=Math.sqrt(dx*dx+dy*dy)||1;
-        const ux=dx/dist,uy=dy/dist;
-        // clip endpoints to the rectangle border (axis-aligned box-ray intersection)
-        const halfW=NODE_W/2,halfH=NODE_H/2;
-        const clipScale=(hx,hy)=>{
-          const tx=hx/Math.max(1e-3,Math.abs(ux));
-          const ty=hy/Math.max(1e-3,Math.abs(uy));
-          return Math.min(tx,ty);
-        };
-        const scale=clipScale(halfW+2,halfH+2);
-        const sx=s.x+ux*scale;
-        const sy=s.y+uy*scale;
-        const tx=t.x-ux*scale;
-        const ty=t.y-uy*scale;
-        const mx=(sx+tx)/2;
-        const my=(sy+ty)/2;
-        // perpendicular offset for label
-        const px=-uy*10,py=ux*10;
-        const labelText=String(e.relation||e.label||"");
-        const labelW=labelText?Math.max(28,labelText.length*6.2+12):0;
-        return <g key={(e.edge_id||(e.source+"-"+e.target+"-"+i))}>
-          <line x1={sx} y1={sy} x2={tx} y2={ty} stroke="var(--text-secondary)" strokeWidth="1.25" opacity="0.55" markerEnd="url(#kg-arrow)"/>
-          {labelText&&<g>
-            <rect x={mx+px-labelW/2} y={my+py-8} width={labelW} height={15} rx={4} fill="var(--bg-primary)" stroke="var(--border)" strokeWidth="0.8" opacity="0.92"/>
-            <text x={mx+px} y={my+py+3} textAnchor="middle" fontSize="10" fill="var(--text-secondary)" style={{pointerEvents:"none"}}>{labelText}</text>
-          </g>}
-        </g>;
-      })}
-      {nodes.map(n=>{
-        const p=positions.get(n.id);
-        if(!p)return null;
-        const k=n.kind||n.type||"node";
-        const color=kindColor(k);
-        const label=n.label||n.id;
-        const labelShort=label.length>20?label.slice(0,20)+"…":label;
-        return <g key={"n-"+n.id} transform={`translate(${p.x}, ${p.y})`} filter="url(#kg-node-shadow)">
-          <title>{label} ({k}){n.summary?" — "+n.summary:""}</title>
-          <rect x={-NODE_W/2} y={-NODE_H/2} width={NODE_W} height={NODE_H} rx={7} fill="var(--bg-secondary)" stroke={color} strokeWidth="1.5"/>
-          <rect x={-NODE_W/2} y={-NODE_H/2} width={6} height={NODE_H} fill={color} rx={2}/>
-          <text x={-NODE_W/2+14} y={-2} fontSize="11" fontWeight="700" fill="var(--text-primary)">{labelShort}</text>
-          <text x={-NODE_W/2+14} y={12} fontSize="9" fill="var(--text-secondary)" fontFamily="monospace">{k}</text>
-        </g>;
-      })}
-    </svg>
-    <div style={{fontSize:12,color:"var(--text-secondary)",padding:"6px 10px",display:"flex",gap:14,flexWrap:"wrap"}}>
-      <span>{nodes.length} 노드 · {validEdges.length} 엣지 · force-directed 자동 배치 + 충돌 해소</span>
+  const ctrlBtn={padding:"3px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:13,cursor:"pointer",fontWeight:700};
+  return <div style={{position:"relative",border:"1px solid var(--border)",borderRadius:8,overflow:"hidden",background:"var(--bg-primary)"}}>
+    <div style={{position:"absolute",top:8,right:10,zIndex:2,display:"flex",gap:6,alignItems:"center",background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:6,padding:"4px 6px",boxShadow:"0 2px 6px rgba(0,0,0,0.15)"}}>
+      <button type="button" onClick={()=>zoomBy(1/1.25)} style={ctrlBtn} title="축소">−</button>
+      <span style={{fontSize:12,fontFamily:"monospace",color:"var(--text-secondary)",minWidth:42,textAlign:"center"}}>{Math.round(view.scale*100)}%</span>
+      <button type="button" onClick={()=>zoomBy(1.25)} style={ctrlBtn} title="확대">+</button>
+      <button type="button" onClick={fitToContainer} style={ctrlBtn} title="전체 화면에 맞춤">맞춤</button>
+      <button type="button" onClick={()=>setView({scale:1,tx:0,ty:0})} style={ctrlBtn} title="100% 원본 비율">1:1</button>
+    </div>
+    <div style={{position:"absolute",bottom:8,left:10,zIndex:2,fontSize:11,color:"var(--text-secondary)",background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:5,padding:"3px 7px",opacity:0.92,pointerEvents:"none"}}>
+      휠 = 줌 · 드래그 = 이동 · 노드 hover = 상세
+    </div>
+    <div
+      ref={wrapRef}
+      style={{width:"100%",height:viewportHeight,cursor:dragRef.current?"grabbing":"grab",overflow:"hidden",position:"relative",userSelect:"none"}}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp}
+      onMouseLeave={onMouseUp}
+    >
+      <svg width="100%" height="100%" style={{display:"block"}}>
+        <defs>
+          <marker id="kg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-secondary)" opacity="0.8"/>
+          </marker>
+          <filter id="kg-node-shadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="1" stdDeviation="1.2" floodOpacity="0.18"/>
+          </filter>
+        </defs>
+        <g transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
+          <rect x="0" y="0" width={width} height={height} fill="transparent"/>
+          {validEdges.map((e,i)=>{
+            const s=positions.get(e.source);
+            const t=positions.get(e.target);
+            if(!s||!t)return null;
+            const dx=t.x-s.x,dy=t.y-s.y;
+            const dist=Math.sqrt(dx*dx+dy*dy)||1;
+            const ux=dx/dist,uy=dy/dist;
+            // clip endpoints to the rectangle border (axis-aligned box-ray intersection)
+            const halfW=NODE_W/2,halfH=NODE_H/2;
+            const clipScale=(hx,hy)=>{
+              const txx=hx/Math.max(1e-3,Math.abs(ux));
+              const tyy=hy/Math.max(1e-3,Math.abs(uy));
+              return Math.min(txx,tyy);
+            };
+            const scale=clipScale(halfW+2,halfH+2);
+            const sx=s.x+ux*scale;
+            const sy=s.y+uy*scale;
+            const tx=t.x-ux*scale;
+            const ty=t.y-uy*scale;
+            const mx=(sx+tx)/2;
+            const my=(sy+ty)/2;
+            const px=-uy*10,py=ux*10;
+            const labelText=String(e.relation||e.label||"");
+            const labelW=labelText?Math.max(28,labelText.length*6.2+12):0;
+            return <g key={(e.edge_id||(e.source+"-"+e.target+"-"+i))}>
+              <line x1={sx} y1={sy} x2={tx} y2={ty} stroke="var(--text-secondary)" strokeWidth="1.25" opacity="0.55" markerEnd="url(#kg-arrow)"/>
+              {labelText&&<g>
+                <rect x={mx+px-labelW/2} y={my+py-8} width={labelW} height={15} rx={4} fill="var(--bg-primary)" stroke="var(--border)" strokeWidth="0.8" opacity="0.92"/>
+                <text x={mx+px} y={my+py+3} textAnchor="middle" fontSize="10" fill="var(--text-secondary)" style={{pointerEvents:"none"}}>{labelText}</text>
+              </g>}
+            </g>;
+          })}
+          {nodes.map(n=>{
+            const p=positions.get(n.id);
+            if(!p)return null;
+            const k=n.kind||n.type||"node";
+            const color=kindColor(k);
+            const label=n.label||n.id;
+            const labelShort=label.length>20?label.slice(0,20)+"…":label;
+            return <g key={"n-"+n.id} transform={`translate(${p.x}, ${p.y})`} filter="url(#kg-node-shadow)">
+              <title>{label} ({k}){n.summary?" — "+n.summary:""}</title>
+              <rect x={-NODE_W/2} y={-NODE_H/2} width={NODE_W} height={NODE_H} rx={7} fill="var(--bg-secondary)" stroke={color} strokeWidth="1.5"/>
+              <rect x={-NODE_W/2} y={-NODE_H/2} width={6} height={NODE_H} fill={color} rx={2}/>
+              <text x={-NODE_W/2+14} y={-2} fontSize="11" fontWeight="700" fill="var(--text-primary)">{labelShort}</text>
+              <text x={-NODE_W/2+14} y={12} fontSize="9" fill="var(--text-secondary)" fontFamily="monospace">{k}</text>
+            </g>;
+          })}
+        </g>
+      </svg>
+    </div>
+    <div style={{fontSize:12,color:"var(--text-secondary)",padding:"6px 10px",display:"flex",gap:14,flexWrap:"wrap",borderTop:"1px solid var(--border)",background:"var(--bg-secondary)"}}>
+      <span>{nodes.length} 노드 · {validEdges.length} 엣지 · force-directed + 충돌 해소</span>
       {Array.from(new Set(nodes.map(n=>n.kind||n.type||"node"))).slice(0,10).map(k=>(
         <span key={k} style={{display:"inline-flex",alignItems:"center",gap:4}}>
           <span style={{width:10,height:10,borderRadius:2,background:kindColor(k)}}/>{k}
@@ -253,6 +338,9 @@ export default function My_Knowledge({user,embedded=false}){
   const [docs,setDocs]=useState([]);
   const [events,setEvents]=useState([]);
   const [graph,setGraph]=useState(null);
+  const [activeOntology,setActiveOntology]=useState(null);
+  const [ontologyPreview,setOntologyPreview]=useState(null);
+  const [ontologyBusy,setOntologyBusy]=useState(false);
   const [searchQ,setSearchQ]=useState("");
   const [searchResults,setSearchResults]=useState([]);
   const [selectedDoc,setSelectedDoc]=useState(null);
@@ -277,11 +365,13 @@ export default function My_Knowledge({user,embedded=false}){
       sf(API+"/wiki?limit=200"),
       sf(API+"/events?limit=100"),
       sf(API+"/graph"),
-    ]).then(([st,w,e,g])=>{
+      sf(API+"/ontology").catch(()=>null),
+    ]).then(([st,w,e,g,o])=>{
       setStatus(st);
       setDocs(w.docs||[]);
       setEvents(e.events||[]);
       setGraph(g);
+      setActiveOntology(o||null);
       setMsg("");
     }).catch(e=>setMsg(e.message||"로드 실패"))
       .finally(()=>setBusy(false));
@@ -290,7 +380,8 @@ export default function My_Knowledge({user,embedded=false}){
   useEffect(()=>{load();},[]);
 
   const counts=status?.counts||{};
-  const ontology=status?.ontology||{};
+  const ontology=activeOntology||status?.ontology||{};
+  const ontologySource=activeOntology?.source||(status?.ontology?.source)||"default_ontology";
   const nodeKindCounts=useMemo(()=>{
     const out={};
     for(const n of graph?.nodes||[])out[n.kind]=(out[n.kind]||0)+1;
@@ -309,6 +400,54 @@ export default function My_Knowledge({user,embedded=false}){
     setBusy(true);
     sf(API+"/graph/rebuild",{method:"POST"}).then(d=>{setGraph(d.graph);setMsg("Graph rebuild 완료");})
       .catch(e=>setMsg(e.message||"graph rebuild 실패")).finally(()=>setBusy(false));
+  };
+
+  const generateAiOntology=()=>{
+    if(!canManage)return;
+    setOntologyBusy(true);
+    setMsg("");
+    sf(API+"/ontology/ai-generate",{method:"POST"})
+      .then(d=>{
+        if(d?.ok){
+          setOntologyPreview(d.ontology||{nodes:[],edges:[]});
+          setMsg(`AI 분류 완료: ${d.ontology?.nodes?.length||0} concept · ${d.ontology?.edges?.length||0} relation`);
+        }else{
+          setMsg("AI 분류 실패: "+(d?.error||"unknown"));
+        }
+      })
+      .catch(e=>setMsg(e.message||"AI 분류 실패"))
+      .finally(()=>setOntologyBusy(false));
+  };
+
+  const saveAiOntology=()=>{
+    if(!canManage||!ontologyPreview)return;
+    setOntologyBusy(true);
+    setMsg("");
+    sf(API+"/ontology/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(ontologyPreview)})
+      .then(d=>{
+        setActiveOntology({source:"ai_ontology",nodes:ontologyPreview.nodes||[],edges:ontologyPreview.edges||[]});
+        setOntologyPreview(null);
+        if(d?.graph)setGraph(d.graph);
+        setMsg("AI ontology 저장 완료");
+      })
+      .catch(e=>setMsg(e.message||"AI ontology 저장 실패"))
+      .finally(()=>setOntologyBusy(false));
+  };
+
+  const clearAiOntology=()=>{
+    if(!canManage)return;
+    if(!confirm("저장된 AI ontology 를 지우고 기본 분류로 돌아갑니다. 계속할까요?"))return;
+    setOntologyBusy(true);
+    setMsg("");
+    sf(API+"/ontology/clear",{method:"POST"})
+      .then(d=>{
+        setOntologyPreview(null);
+        if(d?.graph)setGraph(d.graph);
+        sf(API+"/ontology").then(o=>setActiveOntology(o||null)).catch(()=>{});
+        setMsg(d?.cleared?"기본 ontology 로 복원":"저장된 AI ontology 가 없습니다");
+      })
+      .catch(e=>setMsg(e.message||"clear 실패"))
+      .finally(()=>setOntologyBusy(false));
   };
 
   const runSearch=()=>{
@@ -463,13 +602,33 @@ export default function My_Knowledge({user,embedded=false}){
       </div>}
 
       {tab==="ontology"&&<div style={{display:"grid",gap:14}}>
+        <div style={{...card,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+          <div style={{display:"flex",flexDirection:"column",gap:2}}>
+            <div style={{fontSize:14,fontWeight:900}}>Ontology 분류</div>
+            <div style={{fontSize:12,color:"var(--text-secondary)"}}>현재 적용 중: <b style={{color:ontologySource==="ai_ontology"?"#10b981":"var(--accent)"}}>{ontologySource}</b> · {(ontology.nodes||[]).length} concept · {(ontology.edges||[]).length} relation</div>
+          </div>
+          <div style={{marginLeft:"auto",display:"flex",gap:8,flexWrap:"wrap"}}>
+            {canManage&&<button onClick={generateAiOntology} disabled={ontologyBusy} style={{...btn(false),background:"var(--accent-glow)",color:"var(--accent)"}}>{ontologyBusy?"AI 호출 중":"AI 로 분류 생성"}</button>}
+            {canManage&&ontologyPreview&&<button onClick={saveAiOntology} disabled={ontologyBusy} style={{...btn(true),background:"#10b981",borderColor:"#10b981",color:"#fff"}}>Preview 저장</button>}
+            {canManage&&ontologyPreview&&<button onClick={()=>setOntologyPreview(null)} disabled={ontologyBusy} style={btn(false)}>Preview 취소</button>}
+            {canManage&&ontologySource==="ai_ontology"&&<button onClick={clearAiOntology} disabled={ontologyBusy} style={btn(false)}>기본 분류로 복원</button>}
+            {!canManage&&<span style={{fontSize:12,color:"var(--text-secondary)"}}>읽기 모드</span>}
+          </div>
+        </div>
+        {ontologyPreview&&<div style={{...card,padding:0,overflow:"hidden",borderColor:"#10b981"}}>
+          <div style={{padding:"8px 12px",borderBottom:"1px solid var(--border)",background:"rgba(16,185,129,0.1)",fontSize:13,display:"flex",alignItems:"center",gap:10}}>
+            <b style={{color:"#10b981"}}>AI 생성 Preview</b>
+            <span style={{color:"var(--text-secondary)"}}>{(ontologyPreview.nodes||[]).length} concept · {(ontologyPreview.edges||[]).length} relation · 저장 전까지 적용 안 됨</span>
+          </div>
+          <KnowledgeGraphView graph={ontologyPreview} viewportHeight={460}/>
+        </div>}
         <div style={{...card,padding:0,overflow:"hidden"}}>
-          <div style={{padding:"10px 12px",borderBottom:"1px solid var(--border)",background:"var(--bg-tertiary)",fontSize:13}}><b>Ontology 그래프</b> <span style={{color:"var(--text-secondary)",marginLeft:6}}>concept 노드와 의미 관계 edge 를 시각화합니다.</span></div>
+          <div style={{padding:"10px 12px",borderBottom:"1px solid var(--border)",background:"var(--bg-tertiary)",fontSize:13}}><b>현재 적용 Ontology</b> <span style={{color:"var(--text-secondary)",marginLeft:6}}>concept 노드와 의미 관계 edge 를 시각화합니다. 휠로 확대/축소, 드래그로 이동.</span></div>
           <KnowledgeGraphView graph={ontology} />
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-          <div style={card}><div style={{fontWeight:900,marginBottom:10}}>Concept nodes</div>{(ontology.nodes||[]).map(n=><div key={n.id} style={{fontSize:14,padding:"6px 0",borderBottom:"1px solid var(--border)"}}><b>{n.label}</b> <span style={{color:"var(--text-secondary)"}}>({n.kind})</span></div>)}{!(ontology.nodes||[]).length&&<div style={{fontSize:13,color:"var(--text-secondary)"}}>concept 노드 없음.</div>}</div>
-          <div style={card}><div style={{fontWeight:900,marginBottom:10}}>Concept edges</div>{(ontology.edges||[]).map((e,i)=><div key={i} style={{fontSize:14,padding:"6px 0",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{e.source} -[{e.relation}]-&gt; {e.target}</div>)}{!(ontology.edges||[]).length&&<div style={{fontSize:13,color:"var(--text-secondary)"}}>concept edge 없음.</div>}</div>
+          <div style={card}><div style={{fontWeight:900,marginBottom:10}}>Concept nodes ({(ontology.nodes||[]).length})</div>{(ontology.nodes||[]).map(n=><div key={n.id} style={{fontSize:14,padding:"6px 0",borderBottom:"1px solid var(--border)"}}><b>{n.label}</b> <span style={{color:"var(--text-secondary)"}}>({n.kind})</span></div>)}{!(ontology.nodes||[]).length&&<div style={{fontSize:13,color:"var(--text-secondary)"}}>concept 노드 없음.</div>}</div>
+          <div style={card}><div style={{fontWeight:900,marginBottom:10}}>Concept edges ({(ontology.edges||[]).length})</div>{(ontology.edges||[]).map((e,i)=><div key={i} style={{fontSize:14,padding:"6px 0",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{e.source} -[{e.relation}]-&gt; {e.target}</div>)}{!(ontology.edges||[]).length&&<div style={{fontSize:13,color:"var(--text-secondary)"}}>concept edge 없음.</div>}</div>
         </div>
       </div>}
 
