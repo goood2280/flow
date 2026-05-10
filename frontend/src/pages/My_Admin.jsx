@@ -1507,9 +1507,9 @@ function MailCfgPanel(){
 // ── v9.0.4: Flowi LLM 설정 — admin token 을 서버 설정에 저장하고 사용자는 실행만 한다. ──
 export function LlmCfgPanel(){
   const FALLBACK_LLM_DEFAULTS={
-    openai:{enabled:false,api_url:"https://api.openai.com/v1",model:"gpt-5-nano",mode:"fast",admin_token:"",provider:"openai",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20},
-    openai_compatible:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"openai_compatible",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:30},
-    local:{enabled:false,api_url:"",model:"GPT-OSS-120B",mode:"fast",admin_token:"",provider:"local",auth_mode:"none",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
+    openai:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"openai",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20},
+    openai_compatible:{enabled:false,api_url:"",model:"gpt-oss-120b",mode:"fast",admin_token:"",provider:"openai_compatible",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
+    local:{enabled:false,api_url:"",model:"gpt-oss-120b",mode:"fast",admin_token:"",provider:"local",auth_mode:"none",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
     generic:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"generic",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20},
     playground:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"playground",auth_mode:"dep_ticket",system_name:"playground",user_id:"",user_type:"",format:"openai",timeout_s:20},
   };
@@ -1671,13 +1671,13 @@ export function LlmCfgPanel(){
       </div>
       <div>
         <div style={L}>API URL</div>
-        <input value={cfg.api_url} onChange={e=>patch({api_url:e.target.value})} placeholder={provider==="openai"?"https://api.openai.com/v1":(isLocal?"http://llm.internal/v1":"https://llm.internal/v1/chat/completions")} style={I}/>
+        <input value={cfg.api_url} onChange={e=>patch({api_url:e.target.value})} placeholder={isLocal?"http://llm.internal/v1":"https://llm.internal/v1/chat/completions"} style={I}/>
       </div>
     </div>
     <div style={{display:"grid",gridTemplateColumns:isPlayground||!showMode?"2fr 1fr 1fr":"2fr 1fr 1fr 1fr",gap:10}}>
       <div>
         <div style={L}>Model</div>
-        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder={provider==="openai"?"gpt-5-nano":(isLocal?"GPT-OSS-120B":"internal-model")} style={I}/>
+        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder={isLocal||provider==="openai_compatible"?"gpt-oss-120b":"internal-model"} style={I}/>
       </div>
       {showMode&&<div>
         <div style={L}>Mode</div>
@@ -1741,10 +1741,6 @@ export function LlmCfgPanel(){
 function DataRootsPanel(){
   const[eff,setEff]=useState({db_root:"",sources:{}});
   const[form,setForm]=useState({db_root:""});
-  const[splitRefresh,setSplitRefresh]=useState(30);
-  const[etRefresh,setEtRefresh]=useState(30);
-  const[cacheBusy,setCacheBusy]=useState("");
-  const[cacheStatus,setCacheStatus]=useState({fab:[],et:[],fabJob:null,etEnabled:false});
   const[backup,setBackup]=useState({path:"",interval_hours:24,keep:5,enabled:true,last:{}});
   const[backupList,setBackupList]=useState([]);
   const[bkBusy,setBkBusy]=useState(false);
@@ -1754,19 +1750,8 @@ function DataRootsPanel(){
     sf("/api/admin/settings").then(d=>{
       const dr=d.data_roots||{db_root:"",sources:{}};
       setEff(dr);
-      setSplitRefresh(Math.max(30,Math.min(60,Number(d.splittable_match_refresh_minutes)||30)));
-      setEtRefresh(Math.max(30,Math.min(60,Number(d.tracker_et_match_refresh_minutes)||30)));
       if(d.backup)setBackup(prev=>({...prev,...d.backup}));
     }).catch(e=>setMsg("로드 오류: "+e.message));
-    Promise.all([
-      sf("/api/splittable/match-cache/status").catch(()=>({products:[]})),
-      sf("/api/tracker/et-lot-cache/status").catch(()=>({products:[]})),
-    ]).then(([fab,et])=>setCacheStatus({
-      fab:fab.products||[],
-      et:et.products||[],
-      fabJob:fab.job||null,
-      etEnabled:et.enabled!==false,
-    })).catch(()=>{});
     sf("/api/admin/backup/status").then(d=>{
       if(d.settings)setBackup(b=>({...b,...d.settings}));
       setBackupList(d.backups||[]);
@@ -1808,8 +1793,6 @@ function DataRootsPanel(){
         body:JSON.stringify({
           dashboard_refresh_minutes: cur.dashboard_refresh_minutes??10,
           dashboard_bg_refresh_minutes: cur.dashboard_bg_refresh_minutes??10,
-          splittable_match_refresh_minutes: Number(splitRefresh)||30,
-          tracker_et_match_refresh_minutes: Number(etRefresh)||30,
           data_roots: {db_root:form.db_root||""},
         })});
     }).then(()=>{setMsg("저장되었습니다. 새 요청부터 적용됩니다.");setForm({db_root:""});reload();})
@@ -1837,20 +1820,6 @@ function DataRootsPanel(){
       <div style={H} data-dr-effective={key}>현재 effective: {currentEff} <span style={{opacity:0.7}}>{hint}</span></div>
     </div>);
   };
-  const runCacheRefresh=(kind)=>{
-    const url=kind==="et"?"/api/tracker/et-lot-cache/refresh":"/api/splittable/match-cache/refresh";
-    setCacheBusy(kind);setMsg("");
-    sf(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({force:true})})
-      .then(r=>{
-        if(r.disabled)setMsg("ET 캐시는 현재 꺼져 있습니다.");
-        else if(r.queued)setMsg(`${kind==="et"?"ET":"FAB"} 캐시 스캔 예약됨: ${(r.products||[]).length}개 제품`);
-        else if(r.running)setMsg(`${kind==="et"?"ET":"FAB"} 캐시 스캔이 이미 실행 중입니다.`);
-        else setMsg(`${kind==="et"?"ET":"FAB"} 캐시 스캔 완료: ${(r.products||[]).filter(x=>x.ok).length}/${(r.products||[]).length}`);
-        reload();
-      })
-      .catch(e=>setMsg("캐시 스캔 오류: "+e.message))
-      .finally(()=>setCacheBusy(""));
-  };
   return(<div data-admin-panel="data_roots" style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:760}}>
     <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>📂 데이터 루트 (소프트랜딩)</div>
     <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:16,lineHeight:1.5}}>
@@ -1863,46 +1832,6 @@ function DataRootsPanel(){
       DB 루트는 이미 존재하는 디렉터리만 저장됩니다. 빈 값으로 저장하면 오버라이드가 제거되고 env/default 로 돌아갑니다.
     </div>
     {field("db_root","DB 루트","FLOW_DB_ROOT")}
-    <div style={{marginTop:18,paddingTop:16,borderTop:"1px solid var(--border)"}}>
-      <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>🧩 SplitTable 매칭 캐시</div>
-      <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.5}}>
-        FAB DB 를 주기적으로 스캔해 root_lot_id ↔ fab_lot_id 연결 테이블을 미리 만듭니다.
-        SplitTable 조회는 이 캐시를 먼저 사용하고, 캐시가 없을 때만 원천 DB 로 폴백합니다.
-      </div>
-      <div style={L}>갱신 주기 (분)</div>
-      <input type="number" min={30} max={60} value={splitRefresh}
-        onChange={e=>setSplitRefresh(Math.max(30,Math.min(60,Number(e.target.value)||30)))}
-        style={{...I,maxWidth:140}}/>
-      <div style={H}>30~60분 범위. 저장 후 백그라운드 스케줄러의 다음 tick부터 적용됩니다.</div>
-      <div style={{display:"flex",gap:8,alignItems:"center",marginTop:10,flexWrap:"wrap"}}>
-        <button onClick={()=>runCacheRefresh("fab")} disabled={cacheBusy==="fab"}
-          style={{padding:"6px 12px",borderRadius:6,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:cacheBusy==="fab"?"wait":"pointer"}}>
-          {cacheBusy==="fab"?"FAB 스캔 중...":"FAB 수동 스캔"}
-        </button>
-        <span style={{fontSize:14,color:"var(--text-secondary)"}}>
-          캐시 {cacheStatus.fab?.length||0}개 제품{cacheStatus.fabJob?.running?` · 진행 ${cacheStatus.fabJob.done||0}/${cacheStatus.fabJob.total||0}`:""}
-        </span>
-      </div>
-    </div>
-    <div style={{marginTop:18,paddingTop:16,borderTop:"1px solid var(--border)"}}>
-      <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>🧪 Tracker Analysis ET 캐시</div>
-      <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.5}}>
-        ET DB 를 주기적으로 스캔해 root_lot_id / fab_lot_id / lot_id 후보를 미리 저장합니다.
-        이슈추적 Analysis 의 lot 선택 목록은 이 캐시를 먼저 사용합니다.
-      </div>
-      <div style={L}>갱신 주기 (분)</div>
-      <input type="number" min={30} max={60} value={etRefresh}
-        onChange={e=>setEtRefresh(Math.max(30,Math.min(60,Number(e.target.value)||30)))}
-        style={{...I,maxWidth:140}}/>
-      <div style={H}>30~60분 범위. 저장 후 ET 캐시 스케줄러의 다음 tick부터 적용됩니다.</div>
-      <div style={{display:"flex",gap:8,alignItems:"center",marginTop:10,flexWrap:"wrap"}}>
-        <button onClick={()=>runCacheRefresh("et")} disabled={cacheBusy==="et"||cacheStatus.etEnabled===false}
-          style={{padding:"6px 12px",borderRadius:6,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:cacheBusy==="et"?"wait":cacheStatus.etEnabled===false?"not-allowed":"pointer",opacity:cacheStatus.etEnabled===false?0.55:1}}>
-          {cacheStatus.etEnabled===false?"ET 캐시 꺼짐":cacheBusy==="et"?"ET 스캔 중...":"ET 수동 스캔"}
-        </button>
-        <span style={{fontSize:14,color:"var(--text-secondary)"}}>캐시 {cacheStatus.et?.length||0}개 제품</span>
-      </div>
-    </div>
     <div style={{display:"flex",gap:8,marginTop:16,alignItems:"center"}}>
       <button data-dr-btn="save" onClick={save} disabled={busy}
         style={{padding:"8px 20px",borderRadius:6,border:"none",background:"var(--accent)",color:WHITE,fontWeight:600,cursor:busy?"default":"pointer",opacity:busy?0.5:1}}>

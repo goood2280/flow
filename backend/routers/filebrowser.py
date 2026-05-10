@@ -75,6 +75,7 @@ BASE_EDIT_RESERVED_PREFIXES = {"product_config", "reformatter", "uploads", "cach
 BASE_VERSION_DIR = PATHS.data_root / "file_versions"
 BASE_VERSION_CAP = 50
 EDM_VERSION_MAX_CSV_BYTES = 5_000_000
+SINGLE_FILE_FOLDER_TEXT_EXTENSIONS = {".json", ".yaml", ".yml", ".md", ".txt"}
 SCHEMA_PROFILE_DIR = PATHS.data_root / "schema_profiles"
 SCHEMA_PROFILE_CAP = 30
 LATEST_PREVIEW_ROWS = 200
@@ -82,6 +83,7 @@ LATEST_PREVIEW_MAX_FILES = 4
 LIST_CACHE_TTL_SEC = 5.0
 MAX_WAFER_ID = 25
 _SINGLE_FILE_STEP_CACHE_DIR = "cache"
+_SINGLE_FILE_FOLDER_MAX_FILES = 1000
 _SINGLE_FILE_STEP_CACHE_FILE = "latest_step_by_lot.parquet"
 _SINGLE_FILE_STEP_CACHE_VERSION = 2
 _SINGLE_FILE_LATEST_LOT_CACHE_FILE = "latest_lot_by_root_wafer.parquet"
@@ -97,6 +99,7 @@ DEFAULT_FILEBROWSER_SETTINGS = {
     "csv_full_read_max_bytes": DEFAULT_CSV_FULL_READ_MAX_BYTES,
     "csv_rules": {},
     "hidden_db_dirs": ["cache", "reformatter"],
+    "versioned_single_file_dirs": ["reformatter"],
 }
 
 _DATE_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})[-_]?(\d{2})[-_]?(\d{2})(?!\d)")
@@ -348,6 +351,160 @@ def _cache_entry_meta(fp: Path) -> dict:
     }
 
 
+def _single_file_folder_names(settings: dict | None = None) -> set[str]:
+    settings = settings or _load_filebrowser_settings()
+    names = {_SINGLE_FILE_STEP_CACHE_DIR}
+    names.update(_hidden_db_dir_names(settings))
+    clean: set[str] = set()
+    for raw in names:
+        name = str(raw or "").strip().strip("/\\").casefold()
+        if not name or name in {".", ".."} or "/" in name or "\\" in name:
+            continue
+        clean.add(name)
+    return clean
+
+
+def _versioned_single_file_dir_names(settings: dict | None = None) -> set[str]:
+    settings = settings or _load_filebrowser_settings()
+    names = _clean_string_list(settings.get("versioned_single_file_dirs"), lower=True)
+    return {
+        name
+        for name in names
+        if name and name != _SINGLE_FILE_STEP_CACHE_DIR and "/" not in name and "\\" not in name
+    }
+
+
+def _single_file_folder_meta(fp: Path, folder_name: str) -> dict:
+    if folder_name == _SINGLE_FILE_STEP_CACHE_DIR:
+        return _cache_entry_meta(fp)
+    return {
+        "role": "single-file data",
+        "description": f"Admin 설정 폴더({folder_name}) 안의 단일 운영 파일",
+        "order": 8,
+    }
+
+
+def _single_file_folder_extensions(folder_name: str) -> set[str]:
+    folder_key = str(folder_name or "").strip().casefold()
+    if folder_key == _SINGLE_FILE_STEP_CACHE_DIR:
+        return set(DATA_EXTENSIONS)
+    return set(DATA_EXTENSIONS) | SINGLE_FILE_FOLDER_TEXT_EXTENSIONS
+
+
+def _single_file_folder_path(root: Path, folder_name: str) -> Path:
+    folder_key = str(folder_name or "").strip()
+    direct = root / folder_key
+    if direct.is_dir():
+        return direct
+    ci = resolve_named_child(root, folder_key)
+    if ci is not None and ci.is_dir():
+        return ci
+    return direct
+
+
+def _single_file_folder_entries(
+    root: Path,
+    source_root: str,
+    folder_name: str,
+    *,
+    versioned_dirs: set[str] | None = None,
+) -> list[dict]:
+    folder_key = str(folder_name or "").strip().casefold()
+    if not folder_key:
+        return []
+    versioned_dirs = versioned_dirs or set()
+    folder = _single_file_folder_path(root, folder_key)
+    if not folder.is_dir():
+        return []
+    if folder_key == _SINGLE_FILE_STEP_CACHE_DIR:
+        _cleanup_legacy_single_file_cache(root)
+    out: list[dict] = []
+    try:
+        candidates = sorted(
+            (fp for fp in folder.rglob("*") if fp.is_file() and fp.suffix.lower() in _single_file_folder_extensions(folder_key)),
+            key=lambda p: str(p.relative_to(root)).lower(),
+        )
+    except Exception:
+        candidates = []
+    for fp in candidates[:_SINGLE_FILE_FOLDER_MAX_FILES]:
+        try:
+            stat = fp.stat()
+            rel = "/".join(fp.relative_to(root).parts)
+        except Exception:
+            continue
+        meta = _single_file_folder_meta(fp, folder_key)
+        out.append({
+            "name": rel,
+            "path": rel,
+            "size": stat.st_size,
+            "modified": stat.st_mtime,
+            "ext": fp.suffix.lower().lstrip("."),
+            "kind": "file",
+            "source": "cache" if folder_key == _SINGLE_FILE_STEP_CACHE_DIR else "single_file_dir",
+            "source_root": source_root,
+            "source_path": str(fp),
+            "role": meta["role"],
+            "description": meta["description"],
+            "order": meta["order"],
+            "editable": False if folder_key == _SINGLE_FILE_STEP_CACHE_DIR else bool(folder_key in versioned_dirs),
+            "versioned": bool(folder_key in versioned_dirs),
+        })
+    return out
+
+
+def _single_file_folder_dir_entry(root: Path, source_root: str, folder_name: str, entries: list[dict]) -> dict | None:
+    if not entries:
+        return None
+    folder_key = str(folder_name or "").strip().casefold()
+    folder = _single_file_folder_path(root, folder_key)
+    try:
+        stat = folder.stat()
+    except Exception:
+        return None
+    return {
+        "name": folder_key,
+        "path": folder_key,
+        "size": 0,
+        "modified": stat.st_mtime,
+        "ext": "dir",
+        "kind": "dir",
+        "source": source_root,
+        "source_path": str(root),
+        "description": "single-file folder",
+        "role": "cache" if folder_key == _SINGLE_FILE_STEP_CACHE_DIR else "single-file folder",
+        "order": 0 if folder_key == _SINGLE_FILE_STEP_CACHE_DIR else 7,
+    }
+
+
+def _single_file_folder_sigs(root: Path, folder_names: set[str]) -> tuple:
+    return tuple((name, _path_sig(_single_file_folder_path(root, name))) for name in sorted(folder_names))
+
+
+def _resolve_single_file_folder_data_path(file: str, roots: tuple[Path, ...], folder_names: set[str]) -> Path | None:
+    rel = Path(str(file or "").strip())
+    if not rel.parts:
+        return None
+    folder_key = str(rel.parts[0] or "").casefold()
+    if folder_key not in folder_names:
+        return None
+    if rel.is_absolute() or any(part in {"", ".", ".."} for part in rel.parts):
+        raise HTTPException(400, "Invalid single-file folder path")
+    if rel.suffix.lower() not in _single_file_folder_extensions(folder_key):
+        return None
+    for root in roots:
+        if not root.is_dir():
+            continue
+        folder = _single_file_folder_path(root, folder_key)
+        cand = (folder / Path(*rel.parts[1:])).resolve()
+        try:
+            cand.relative_to(root.resolve())
+        except ValueError:
+            continue
+        if cand.is_file():
+            return cand
+    return None
+
+
 def _cleanup_legacy_single_file_cache(root: Path) -> None:
     cache = _single_file_cache_dir(root)
     if not cache.is_dir():
@@ -373,35 +530,7 @@ def _cleanup_legacy_single_file_cache(root: Path) -> None:
 
 
 def _single_file_cache_entries(root: Path, source_root: str) -> list[dict]:
-    cache = _single_file_cache_dir(root)
-    if not cache.is_dir():
-        return []
-    _cleanup_legacy_single_file_cache(root)
-    out: list[dict] = []
-    fp = cache / _CANONICAL_LOT_PROGRESS_CACHE_FILE
-    if fp.is_file():
-        try:
-            stat = fp.stat()
-        except OSError:
-            return []
-        meta = _cache_entry_meta(fp)
-        rel = f"{_SINGLE_FILE_STEP_CACHE_DIR}/{fp.name}"
-        out.append({
-            "name": rel,
-            "path": rel,
-            "size": stat.st_size,
-            "modified": stat.st_mtime,
-            "ext": fp.suffix.lower().lstrip("."),
-            "kind": "file",
-            "source": "cache",
-            "source_root": source_root,
-            "source_path": str(fp),
-            "role": meta["role"],
-            "description": meta["description"],
-            "order": meta["order"],
-            "editable": False,
-        })
-    return out
+    return _single_file_folder_entries(root, source_root, _SINGLE_FILE_STEP_CACHE_DIR)
 
 
 def _is_inside_single_file_cache(path: Path) -> bool:
@@ -732,6 +861,13 @@ def _resolve_base_file_for_edit(file: str) -> Path:
     rel = Path(name)
     if rel.is_absolute() or any(p in {"", ".", ".."} for p in rel.parts):
         raise HTTPException(400, "Invalid file path")
+    settings = _load_filebrowser_settings()
+    versioned_dirs = _versioned_single_file_dir_names(settings)
+    folder_fp = _resolve_single_file_folder_data_path(file, (_base_root(), _db_root()), versioned_dirs)
+    if folder_fp is not None:
+        return folder_fp
+    if rel.parts and str(rel.parts[0]).casefold() in _single_file_folder_names(settings):
+        raise HTTPException(400, f"This folder is read-only in File Browser: {rel.parts[0]}")
     if rel.parts and rel.parts[0] in BASE_EDIT_RESERVED_PREFIXES:
         raise HTTPException(400, f"Editing scope mismatch: {rel.parts[0]}/* is not a single Base/DB file")
 
@@ -760,6 +896,10 @@ def _resolve_base_file_for_version(file: str) -> Path:
     rel = Path(name)
     if rel.is_absolute() or any(p in {"", ".", ".."} for p in rel.parts):
         raise HTTPException(400, "Invalid file path")
+    settings = _load_filebrowser_settings()
+    folder_fp = _resolve_single_file_folder_data_path(file, (_base_root(), _db_root()), _single_file_folder_names(settings))
+    if folder_fp is not None:
+        return folder_fp
     if rel.parts and rel.parts[0] == "product_config":
         if len(rel.parts) != 2 or rel.parts[1].startswith("."):
             raise HTTPException(400, "Invalid product config path")
@@ -995,7 +1135,10 @@ def _normalize_conditions(value) -> list[dict]:
     return out
 
 
-def _normalize_sort(value) -> list[dict]:
+_ORDER_SPEC_TYPES = {"string", "text", "numeric", "number", "integer", "date", "datetime", "leading_number", "rule_order"}
+
+
+def _normalize_order_specs(value, *, label: str) -> list[dict]:
     if not value:
         return []
     raw = value
@@ -1024,17 +1167,47 @@ def _normalize_sort(value) -> list[dict]:
         typ = str(spec.get("type") or "string").strip().lower()
         nulls = str(spec.get("nulls") or "last").strip().lower()
         if direction not in {"asc", "ascending", "desc", "descending"}:
-            raise HTTPException(400, f"Invalid sort direction for {col}: {direction}")
-        if typ not in {"string", "text", "numeric", "number", "integer", "date", "datetime"}:
-            raise HTTPException(400, f"Invalid sort type for {col}: {typ}")
+            raise HTTPException(400, f"Invalid {label} direction for {col}: {direction}")
+        if typ not in _ORDER_SPEC_TYPES:
+            raise HTTPException(400, f"Invalid {label} type for {col}: {typ}")
         if nulls not in {"first", "last", "nulls_first", "nulls_last"}:
-            raise HTTPException(400, f"Invalid sort nulls for {col}: {nulls}")
+            raise HTTPException(400, f"Invalid {label} nulls for {col}: {nulls}")
+        if typ in {"number", "integer"}:
+            typ = "numeric"
+        elif typ == "datetime":
+            typ = "date"
+        elif typ == "text":
+            typ = "string"
         out.append({
             "column": col,
             "direction": "desc" if direction.startswith("desc") else "asc",
-            "type": "numeric" if typ in {"number", "integer"} else ("date" if typ == "datetime" else typ),
+            "type": typ,
             "nulls": "first" if nulls.endswith("first") else "last",
         })
+    return out
+
+
+def _normalize_sort(value) -> list[dict]:
+    return _normalize_order_specs(value, label="sort")
+
+
+def _normalize_ordered_by(value) -> dict:
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        specs = _normalize_order_specs(
+            value.get("keys") or value.get("sort") or value.get("order") or [],
+            label="ordered_by",
+        )
+        group_by = _clean_string_list(value.get("group_by") or value.get("groups"))
+    else:
+        specs = _normalize_order_specs(value, label="ordered_by")
+        group_by = []
+    if not specs:
+        return {}
+    out = {"keys": specs}
+    if group_by:
+        out["group_by"] = group_by
     return out
 
 
@@ -1067,6 +1240,9 @@ def _normalize_csv_rule(raw) -> dict:
     sort_rule = _normalize_sort(raw.get("sort"))
     if sort_rule:
         rule["sort"] = sort_rule
+    ordered_by = _normalize_ordered_by(raw.get("ordered_by"))
+    if ordered_by:
+        rule["ordered_by"] = ordered_by
     return rule
 
 
@@ -1094,6 +1270,12 @@ def _normalize_filebrowser_settings(raw) -> dict:
     data["csv_rules"] = _normalize_csv_rules(raw.get("csv_rules") or {})
     hidden = _clean_string_list(raw.get("hidden_db_dirs"), lower=True)
     data["hidden_db_dirs"] = hidden if hidden else list(DEFAULT_FILEBROWSER_SETTINGS["hidden_db_dirs"])
+    raw_versioned = raw.get("versioned_single_file_dirs", data["versioned_single_file_dirs"])
+    versioned = [
+        name for name in _clean_string_list(raw_versioned, lower=True)
+        if name and name != _SINGLE_FILE_STEP_CACHE_DIR and "/" not in name and "\\" not in name
+    ]
+    data["versioned_single_file_dirs"] = versioned
     return data
 
 
@@ -1147,6 +1329,7 @@ def _csv_rule_summary(rule: dict) -> dict | None:
         "date": len(rule.get("date") or []),
         "regex": len(rule.get("regex") or {}),
         "conditions": len(rule.get("conditions") or []),
+        "ordered_by": len((rule.get("ordered_by") or {}).get("keys") or []),
         "sort": len(rule.get("sort") or []),
     }
 
@@ -1159,6 +1342,20 @@ def _can_manage_filebrowser(me: dict) -> bool:
         return is_page_admin(me.get("username") or "", "filebrowser")
     except Exception:
         return False
+
+
+def _require_filebrowser_user(request: Request | None) -> dict:
+    if request is None:
+        return {}
+    from core.auth import current_user
+    return current_user(request)
+
+
+def _require_filebrowser_admin(request: Request | None) -> dict:
+    me = _require_filebrowser_user(request)
+    if me and me.get("role") != "admin":
+        raise HTTPException(403, "admin only")
+    return me
 
 
 def _require_filebrowser_manager(request: Request) -> dict:
@@ -1347,17 +1544,48 @@ def _validate_csv_rule(header: list[str], data_rows: list[list[str]], rule: dict
             if not expr or df.is_empty():
                 continue
             try:
-                violated = df.filter(pl.sql_expr(expr)).select("__row_nr").head(200)
+                checked = df.with_columns(pl.sql_expr(expr).alias("__condition_ok"))
+                violated = checked.filter(~pl.col("__condition_ok").fill_null(False)).select("__row_nr").head(200)
                 for item in violated.to_dicts():
                     row_no = int(item.get("__row_nr") or 0)
                     _csv_validation_error(
                         errors,
                         "conditions",
-                        (condition or {}).get("message") or f"Condition selected row: {expr}",
+                        (condition or {}).get("message") or f"Condition must be true: {expr}",
                         row=row_no,
                     )
             except Exception as e:
                 _csv_validation_error(errors, "conditions", f"Condition failed '{expr}': {e}")
+
+    ordered_by = rule.get("ordered_by") or {}
+    order_specs = ordered_by.get("keys") or []
+    if order_specs:
+        group_by = [str(c) for c in (ordered_by.get("group_by") or [])]
+        needed_cols = [str(item.get("column") or "") for item in order_specs] + group_by
+        missing = [c for c in needed_cols if c and c not in col_idx]
+        for col in missing:
+            _csv_validation_error(errors, "ordered_by", f"Missing column: {col}", column=col)
+        if not missing:
+            prev_row = None
+            prev_row_no = 0
+            prev_group = None
+            group_idx = [col_idx[c] for c in group_by]
+            for row_no, row in enumerate(data_rows, start=1):
+                group_key = tuple(str(row[i] if i < len(row) else "") for i in group_idx) if group_idx else None
+                if prev_row is not None and (not group_idx or group_key == prev_group):
+                    comp = _compare_rows_by_specs(col_idx, prev_row, row, order_specs)
+                    if comp > 0:
+                        _csv_validation_error(
+                            errors,
+                            "ordered_by",
+                            f"Rows must be ordered by {', '.join(str(s.get('column') or '') for s in order_specs)}",
+                            row=row_no,
+                            column=",".join(str(s.get("column") or "") for s in order_specs),
+                            value=f"previous row {prev_row_no}",
+                        )
+                prev_row = row
+                prev_row_no = row_no
+                prev_group = group_key
 
     return {
         "ok": not errors,
@@ -1381,6 +1609,26 @@ def _sort_cast_value(value: str, typ: str):
             return None
     if typ == "date":
         return _parse_datetime_like(text)
+    if typ == "leading_number":
+        m = re.match(r"^\s*([+-]?\d+(?:\.\d+)?)", text)
+        if not m:
+            return None
+        try:
+            num = float(m.group(1))
+            return num if math.isfinite(num) else None
+        except Exception:
+            return None
+    if typ == "rule_order":
+        up = text.upper()
+        if up == "RO":
+            return (1, 0)
+        m = re.fullmatch(r"R(\d+)", up)
+        if not m:
+            return None
+        try:
+            return (0, int(m.group(1)))
+        except Exception:
+            return None
     return text
 
 
@@ -1394,6 +1642,27 @@ def _compare_values(left, right) -> int:
         if ls == rs:
             return 0
         return -1 if ls < rs else 1
+
+
+def _compare_rows_by_specs(col_idx: dict[str, int], left_row: list[str], right_row: list[str], specs: list[dict]) -> int:
+    for spec in specs:
+        col = str(spec.get("column") or "")
+        idx = col_idx[col]
+        typ = str(spec.get("type") or "string")
+        nulls = str(spec.get("nulls") or "last")
+        direction = str(spec.get("direction") or "asc")
+        lv = _sort_cast_value(left_row[idx] if idx < len(left_row) else "", typ)
+        rv = _sort_cast_value(right_row[idx] if idx < len(right_row) else "", typ)
+        lnull, rnull = lv is None, rv is None
+        if lnull or rnull:
+            if lnull and rnull:
+                continue
+            comp = -1 if (lnull and nulls == "first") or (rnull and nulls == "last") else 1
+        else:
+            comp = _compare_values(lv, rv)
+        if comp:
+            return -comp if direction == "desc" else comp
+    return 0
 
 
 def _apply_csv_sort_rule(header: list[str], data_rows: list[list[str]], rule: dict) -> list[list[str]]:
@@ -1410,22 +1679,9 @@ def _apply_csv_sort_rule(header: list[str], data_rows: list[list[str]], rule: di
     def _cmp(left_item, right_item):
         left_i, left_row = left_item
         right_i, right_row = right_item
-        for spec in sort_rule:
-            col = str(spec.get("column") or "")
-            idx = col_idx[col]
-            typ = str(spec.get("type") or "string")
-            nulls = str(spec.get("nulls") or "last")
-            direction = str(spec.get("direction") or "asc")
-            lv = _sort_cast_value(left_row[idx] if idx < len(left_row) else "", typ)
-            rv = _sort_cast_value(right_row[idx] if idx < len(right_row) else "", typ)
-            lnull, rnull = lv is None, rv is None
-            if lnull or rnull:
-                if lnull and rnull:
-                    continue
-                return -1 if (lnull and nulls == "first") or (rnull and nulls == "last") else 1
-            comp = _compare_values(lv, rv)
-            if comp:
-                return -comp if direction == "desc" else comp
+        comp = _compare_rows_by_specs(col_idx, left_row, right_row, sort_rule)
+        if comp:
+            return comp
         return left_i - right_i
 
     return [row for _, row in sorted(enumerate(data_rows), key=functools.cmp_to_key(_cmp))]
@@ -1467,6 +1723,21 @@ def _rows_to_csv_text(header: list[str], data_rows: list[list[str]], delimiter: 
 def _base_file_versioned(file: str, target: Path | None = None) -> bool:
     rel = str(file or "").strip().replace("\\", "/").lower()
     name = Path(rel).name.lower()
+    parts = Path(rel).parts
+    folder = str(parts[0]).casefold() if parts else ""
+    if folder == _SINGLE_FILE_STEP_CACHE_DIR:
+        return False
+    if folder and folder in _versioned_single_file_dir_names():
+        if target is None:
+            return True
+        if not target.is_file():
+            return False
+        if target.suffix.lower() == ".csv":
+            try:
+                return target.stat().st_size <= EDM_VERSION_MAX_CSV_BYTES
+            except Exception:
+                return False
+        return target.suffix.lower() in {".parquet", ".json", ".yaml", ".yml", ".md", ".txt"}
     if rel == "product_config/products.yaml":
         return True
     if rel.startswith("reformatter/") and name.endswith(".json"):
@@ -2193,8 +2464,9 @@ def _path_sig(path: Path) -> tuple:
 
 
 @router.get("/domain")
-def domain_info():
+def domain_info(request: Request = None):
     """v7.2: Expose canonical domain model to frontend (level hierarchy, granularity, DB registry)."""
+    _require_filebrowser_user(request)
     from core.domain import DB_REGISTRY, VISIBLE_CANONICAL, LEVEL_ORDER
     return {
         "dbs": {k: v for k, v in DB_REGISTRY.items() if k in VISIBLE_CANONICAL or k == "ML_TABLE"},
@@ -2204,7 +2476,7 @@ def domain_info():
 
 
 @router.get("/roots")
-def list_roots(all: bool = Query(False)):
+def list_roots(request: Request = None, all: bool = Query(False)):
     """v7.1: only canonical whitelisted DBs (FAB/VM/MASK/KNOB/INLINE/ET/YLD/ML_TABLE).
 
     Pass ?all=1 to bypass the whitelist (admin diagnostics).
@@ -2213,6 +2485,7 @@ def list_roots(all: bool = Query(False)):
     판단 규칙 — 디렉토리 자체 또는 하위에 parquet/csv 데이터 파일이 존재하면
     whitelist 바깥이어도 DB 로 간주. 루트의 단일 파일은 (신규 정책) Base 섹션에서만 보여줌.
     """
+    _require_filebrowser_user(request)
     from core.utils import detect_structure
     from core.domain import is_visible_root, is_visible_file, canonical_name, DB_REGISTRY
     result = []
@@ -2273,12 +2546,13 @@ def list_roots(all: bool = Query(False)):
 
 
 @router.get("/scopes")
-def list_scopes():
+def list_scopes(request: Request = None):
     """v4.1: Enumerate top-level data scopes for the sidebar switcher.
 
     Returns `DB` (Hive-flat source tree) and `Files` (DB root-level files).
     The API key remains "Base" for frontend compatibility.
     """
+    _require_filebrowser_user(request)
     scopes = []
     db_root = _db_root()
     scopes.append({
@@ -2302,26 +2576,96 @@ def list_scopes():
 
 
 @router.get("/scopes/roots")
-def list_scope_roots():
+def list_scope_roots(request: Request = None):
     """Backward-compat path for clients calling `/scopes/roots`.
 
     Some mobile/automation callers still target this legacy route shape. Keep it
     aligned with `/roots` behavior to avoid 404 regressions while preserving the
     newer API surface.
     """
-    return list_roots()
+    return list_roots(request=request)
+
+
+class CacheMatchRefreshReq(BaseModel):
+    target: str = "fab"
+    product: str = ""
+    source_root: str = ""
+    force: bool = True
+
+
+def _cache_match_target(raw: str) -> str:
+    target = str(raw or "").strip().lower()
+    if target in {"fab", "splittable", "split", "match"}:
+        return "fab"
+    if target in {"et", "tracker", "analysis"}:
+        return "et"
+    raise HTTPException(400, "target must be fab or et")
+
+
+@router.get("/cache/match/status")
+def cache_match_status(request: Request, target: str = Query("fab"), product: str = Query(""), source_root: str = Query("")):
+    _require_filebrowser_user(request)
+    target = _cache_match_target(target)
+    if target == "fab":
+        from routers import splittable as _splittable
+        cache_status = _splittable._latest_lot_step_cache_status(product)
+        job = _splittable._match_cache_job_status()
+        return {
+            "ok": True,
+            "target": "fab",
+            "unit_action": "filebrowser.cache.match.status",
+            "enabled": True,
+            "products": cache_status.get("products") or [],
+            "row_count": int(cache_status.get("product_row_count") if product else cache_status.get("row_count") or 0),
+            "total_row_count": int(cache_status.get("row_count") or 0),
+            "cache_path": cache_status.get("cache_path", ""),
+            "updated_at": cache_status.get("updated_at") or "",
+            "running": bool(job.get("running")),
+            "job": job,
+        }
+    from core.lot_step import et_lot_cache_status
+    data = et_lot_cache_status(product=product, source_root=source_root)
+    return {"ok": True, "target": "et", "unit_action": "filebrowser.cache.match.status", **data}
+
+
+@router.post("/cache/match/refresh")
+def cache_match_refresh(req: CacheMatchRefreshReq, request: Request):
+    _require_filebrowser_admin(request)
+    target = _cache_match_target(req.target)
+    if target == "fab":
+        from routers import splittable as _splittable
+        result = _splittable.enqueue_match_cache_refresh(product=req.product or "", force=bool(req.force), reason="filebrowser")
+        return {"target": "fab", "unit_action": "filebrowser.cache.match.refresh", **result}
+    from core.runtime_limits import tracker_et_lot_cache_enabled
+    from core.lot_step import refresh_et_lot_cache
+    if not tracker_et_lot_cache_enabled():
+        return {
+            "ok": False,
+            "target": "et",
+            "unit_action": "filebrowser.cache.match.refresh",
+            "disabled": True,
+            "enabled": False,
+            "products": [],
+            "detail": "Tracker ET lot cache is disabled. Set FLOW_ENABLE_TRACKER_ET_LOT_CACHE=1 to enable it.",
+        }
+    result = refresh_et_lot_cache(product=req.product or "", source_root=req.source_root or "", force=bool(req.force))
+    return {"target": "et", "unit_action": "filebrowser.cache.match.refresh", **result}
 
 
 @router.get("/base-files")
-def base_files():
+def base_files(request: Request = None):
     """v4.1: List top-level files under the Base root (single-file layout).
 
     Returns only the operational files needed by the current ML_TABLE workflow:
     ML_TABLE_*.parquet, the small matching CSVs, and product_config/products.yaml.
     Directories and legacy helper files remain on disk but are not surfaced here.
     """
+    _require_filebrowser_user(request)
     base_root = _base_root()
     db_root = _db_root()
+    settings = _load_filebrowser_settings()
+    single_file_folders = _single_file_folder_names(settings)
+    versioned_dirs = _versioned_single_file_dir_names(settings)
     _ensure_single_file_cache_dirs(base_root, db_root)
     if hasattr(PATHS, "cache_dir") and hasattr(PATHS, "db_cache_dir"):
         try:
@@ -2334,38 +2678,47 @@ def base_files():
         _refresh_single_file_step_caches(db_root)
     cache_key = (
         "base_files",
+        tuple(sorted(single_file_folders)),
+        tuple(sorted(versioned_dirs)),
         _path_sig(base_root),
         _path_sig(_db_root()),
-        _path_sig(_single_file_cache_dir(base_root)),
-        _path_sig(_single_file_cache_dir(db_root)),
+        _single_file_folder_sigs(base_root, single_file_folders),
+        _single_file_folder_sigs(db_root, single_file_folders),
         _path_sig(PATHS.upload_dir),
     )
     cached = _list_cache_get(cache_key)
     if cached is not None:
         return cached
     files, dirs = [], []
-    if base_root.is_dir():
-        cache = _single_file_cache_dir(base_root)
-        cache_entries = _single_file_cache_entries(base_root, "base_root")
-        if cache_entries:
-            try:
-                cst = cache.stat()
-                dirs.append({
-                    "name": _SINGLE_FILE_STEP_CACHE_DIR,
-                    "path": _SINGLE_FILE_STEP_CACHE_DIR,
-                    "size": 0,
-                    "modified": cst.st_mtime,
-                    "ext": "dir",
-                    "kind": "dir",
-                    "source": "base_root",
-                    "source_path": str(base_root),
-                    "description": "single-file step cache",
-                    "role": "cache",
-                    "order": 0,
-                })
-            except Exception:
-                pass
-            files.extend(cache_entries)
+    seen_folder_paths: set[str] = set()
+    seen_dir_paths: set[str] = set()
+
+    def _add_single_file_folder_entries(root: Path, source_root: str) -> None:
+        if not root.is_dir():
+            return
+        for folder_name in sorted(single_file_folders):
+            entries = _single_file_folder_entries(
+                root,
+                source_root,
+                folder_name,
+                versioned_dirs=versioned_dirs,
+            )
+            if not entries:
+                continue
+            dir_entry = _single_file_folder_dir_entry(root, source_root, folder_name, entries)
+            if dir_entry:
+                dir_key = str(dir_entry.get("path") or "").lower()
+                if dir_key and dir_key not in seen_dir_paths:
+                    dirs.append(dir_entry)
+                    seen_dir_paths.add(dir_key)
+            for entry in entries:
+                entry_key = str(entry.get("path") or "").lower()
+                if entry_key in seen_folder_paths:
+                    continue
+                files.append(entry)
+                seen_folder_paths.add(entry_key)
+
+    _add_single_file_folder_entries(base_root, "base_root")
     if base_root.is_dir():
         for f in sorted(base_root.iterdir(), key=lambda p: (not p.is_file(), p.name.lower())):
             try:
@@ -2396,32 +2749,7 @@ def base_files():
     # v8.7.7: 같은 파일명이 base_root 와 db_root 양쪽에 있으면 dedup. UI 에 소스 태그
     # (db) 를 노출하던 것도 제거 — 사용자 입장에서 Base 단일 파일은 "한 번만" 보여야 함.
     if db_root.is_dir() and db_root != base_root:
-        cache = _single_file_cache_dir(db_root)
-        db_cache_entries = _single_file_cache_entries(db_root, "db_root")
-        if db_cache_entries:
-            try:
-                cst = cache.stat()
-                dirs.append({
-                    "name": _SINGLE_FILE_STEP_CACHE_DIR,
-                    "path": _SINGLE_FILE_STEP_CACHE_DIR,
-                    "size": 0,
-                    "modified": cst.st_mtime,
-                    "ext": "dir",
-                    "kind": "dir",
-                    "source": "db_root",
-                    "source_path": str(db_root),
-                    "description": "single-file step cache",
-                    "role": "cache",
-                    "order": 0,
-                })
-            except Exception:
-                pass
-        seen_cache_paths = {f["path"].lower() for f in files if f.get("source") == "cache"}
-        for entry in db_cache_entries:
-            if entry["path"].lower() in seen_cache_paths:
-                continue
-            files.append(entry)
-            seen_cache_paths.add(entry["path"].lower())
+        _add_single_file_folder_entries(db_root, "db_root")
     seen_names = {f["name"].lower() for f in files if f.get("source") != "cache"}
     if db_root.is_dir() and db_root.resolve() != base_root.resolve():
         for f in sorted(db_root.iterdir()):
@@ -2469,13 +2797,15 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                    engine: str = Query("auto"),
                    meta_only: bool = Query(False),
                    page: int = Query(0, ge=0),
-                   page_size: int = Query(200, ge=1, le=1000)):
+                   page_size: int = Query(200, ge=1, le=1000),
+                   request: Request = None):
     """v4.1: Preview a file under the Base root.
 
     Parquet/CSV use the same lazy reader path as `/root-parquet-view`; JSON
     files are returned as-is (truncated to first 2KB preview + full size) so
     `_uniques.json` can be inspected.
     """
+    _require_filebrowser_user(request)
     rows = rows if isinstance(rows, int) else 200
     cols = cols if isinstance(cols, int) else 10
     # Guard against path traversal — allow base_root, and also db_root-level
@@ -2485,10 +2815,13 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     db_root = _db_root()
     fp = None
     rel = Path(file)
-    if rel.parts and rel.parts[0] == _SINGLE_FILE_STEP_CACHE_DIR:
-        if len(rel.parts) != 2 or rel.name != _CANONICAL_LOT_PROGRESS_CACHE_FILE:
-            raise HTTPException(404, f"Cache file not found: {file}")
-    if rel.parts and rel.parts[0] == "product_config":
+    settings = _load_filebrowser_settings()
+    single_file_folders = _single_file_folder_names(settings)
+    if rel.parts and str(rel.parts[0]).casefold() in single_file_folders:
+        fp = _resolve_single_file_folder_data_path(file, (base_root, db_root), single_file_folders)
+        if fp is None:
+            raise HTTPException(404, f"Single-file folder item not found: {file}")
+    if fp is None and rel.parts and rel.parts[0] == "product_config":
         if len(rel.parts) != 2 or rel.parts[1].startswith(".") or rel.parts[1] in ("", ".", ".."):
             raise HTTPException(400, "Invalid product config path")
         pc_root = (PATHS.data_root / "product_config").resolve()
@@ -2501,7 +2834,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             fp = cand
         else:
             raise HTTPException(404, f"Product config not found: {file}")
-    elif rel.parts and rel.parts[0] == "uploads":
+    elif fp is None and rel.parts and rel.parts[0] == "uploads":
         if len(rel.parts) != 2 or rel.parts[1].startswith(".") or rel.parts[1] in ("", ".", ".."):
             raise HTTPException(400, "Invalid uploads path")
         up_root = PATHS.upload_dir.resolve()
@@ -2514,7 +2847,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             fp = cand
         else:
             raise HTTPException(404, f"Registered file not found: {file}")
-    elif rel.parts and rel.parts[0] == "reformatter":
+    elif fp is None and rel.parts and rel.parts[0] == "reformatter":
         suffix = Path(rel.parts[1]).suffix.lower()
         if len(rel.parts) != 2 or rel.parts[1].startswith(".") or rel.parts[1] in ("", ".", "..") or suffix not in (".csv", ".json"):
             raise HTTPException(400, "Invalid reformatter path")
@@ -2686,7 +3019,6 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             except Exception:
                 cached_meta = None
         ml_table = _is_ml_table_file(fp)
-        settings = _load_filebrowser_settings()
         csv_rule_summary = _csv_rule_summary(_csv_rule_for_file(file, settings)) if ext == ".csv" else None
         csv_full_read = False
         if ext == ".csv":
@@ -2694,7 +3026,11 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 csv_full_read = fp.stat().st_size <= int(settings.get("csv_full_read_max_bytes") or 0)
             except Exception:
                 csv_full_read = False
-        full_single_file = csv_full_read or (ext != ".csv" and ((not ml_table) or _has_view_filter(sql, select_cols)))
+        # CSV under the configured byte threshold is safe to read fully for
+        # editing. Parquet single files default to a 200-row page first, even
+        # when they are cache/config artifacts; SQL/column selection remains an
+        # explicit full-file query.
+        full_single_file = csv_full_read or (ext == ".parquet" and _has_view_filter(sql, select_cols))
         if full_single_file:
             resp = _run_view_lazy_full(
                 lf, sql, select_cols,
@@ -3513,7 +3849,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
         except Exception:
             cached_meta = None
         ml_table = _is_ml_table_file(fp)
-        full_single_file = (not ml_table) or _has_view_filter(sql, select_cols)
+        full_single_file = _has_view_filter(sql, select_cols)
         if full_single_file:
             return _run_view_lazy_full(
                 lf, sql, select_cols,
@@ -3717,6 +4053,7 @@ class FileBrowserSettingsReq(BaseModel):
     csv_full_read_max_bytes: int = DEFAULT_CSV_FULL_READ_MAX_BYTES
     csv_rules: dict = {}
     hidden_db_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["hidden_db_dirs"]
+    versioned_single_file_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["versioned_single_file_dirs"]
 
 
 class BaseFileValidateReq(BaseModel):
@@ -3782,7 +4119,7 @@ def save_filebrowser_settings(req: FileBrowserSettingsReq, request: Request):
         "username": me.get("username") or "",
         "action": "filebrowser:settings:save",
         "tab": "filebrowser",
-        "detail": f"csv_rules={len(settings.get('csv_rules') or {})} hidden_db_dirs={len(settings.get('hidden_db_dirs') or [])} csv_full_read_max_bytes={settings.get('csv_full_read_max_bytes')}",
+        "detail": f"csv_rules={len(settings.get('csv_rules') or {})} hidden_db_dirs={len(settings.get('hidden_db_dirs') or [])} versioned_dirs={len(settings.get('versioned_single_file_dirs') or [])} csv_full_read_max_bytes={settings.get('csv_full_read_max_bytes')}",
     })
     return {**settings, "ok": True, "can_manage": True}
 
@@ -4029,12 +4366,13 @@ def base_file_versions(request: Request, file: str = Query(...)):
     from core.auth import current_user
     current_user(request)
     fp = _resolve_base_file_for_version(file)
-    versions = _list_base_file_versions(file)
+    versioned = _base_file_versioned(file, fp)
+    versions = _list_base_file_versions(file) if versioned else []
     versions.sort(key=lambda v: str(v.get("created_at") or ""), reverse=True)
     return {
         "ok": True,
         "file": file,
-        "versioned": _base_file_versioned(file, fp),
+        "versioned": versioned,
         "cap": BASE_VERSION_CAP,
         "versions": versions[:BASE_VERSION_CAP],
     }

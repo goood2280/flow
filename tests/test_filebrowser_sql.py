@@ -48,6 +48,98 @@ class _DummyPaths:
         self.log_dir.mkdir(exist_ok=True)
 
 
+def test_filebrowser_read_scope_endpoints_require_current_user(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    seen = []
+
+    def fake_current_user(request):
+        seen.append(request)
+        return {"username": "viewer", "role": "user"}
+
+    monkeypatch.setattr(auth_core, "current_user", fake_current_user)
+    req = _Request("viewer", "user")
+
+    scopes = filebrowser.list_scopes(req)
+    domain = filebrowser.domain_info(req)
+
+    assert [item["key"] for item in scopes["scopes"]] == ["DB", "Base"]
+    assert "dbs" in domain
+    assert seen == [req, req]
+
+
+def test_filebrowser_base_file_view_requires_current_user(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    (tmp_path / "lookup.csv").write_text("lot,value\nA1000,1\n", encoding="utf-8")
+    seen = []
+
+    def fake_current_user(request):
+        seen.append(request)
+        return {"username": "viewer", "role": "user"}
+
+    monkeypatch.setattr(auth_core, "current_user", fake_current_user)
+    req = _Request("viewer", "user")
+
+    preview = filebrowser.base_file_view(file="lookup.csv", rows=10, cols=5, request=req)
+
+    assert seen == [req]
+    assert preview["kind"] == "table"
+    assert preview["file"] == "lookup.csv"
+    assert preview["columns"] == ["lot", "value"]
+
+
+def test_filebrowser_cache_match_status_and_refresh_contract(monkeypatch):
+    import routers.splittable as splittable
+
+    seen = []
+
+    def fake_current_user(request):
+        seen.append(request)
+        return {"username": "admin", "role": "admin"}
+
+    monkeypatch.setattr(auth_core, "current_user", fake_current_user)
+    monkeypatch.setattr(
+        splittable,
+        "_latest_lot_step_cache_status",
+        lambda product="": {
+            "products": ["PRODA"],
+            "row_count": 7,
+            "product_row_count": 3,
+            "cache_path": "/cache/current.parquet",
+            "updated_at": "2026-05-10T00:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(splittable, "_match_cache_job_status", lambda: {"running": False})
+    monkeypatch.setattr(
+        splittable,
+        "enqueue_match_cache_refresh",
+        lambda **kwargs: {"ok": True, "queued": True, "products": [kwargs.get("product") or "ALL"]},
+    )
+    req = _Request("admin", "admin")
+
+    status = filebrowser.cache_match_status(req, target="fab", product="PRODA")
+    refreshed = filebrowser.cache_match_refresh(
+        filebrowser.CacheMatchRefreshReq(target="fab", product="PRODA", force=True),
+        req,
+    )
+
+    assert status["unit_action"] == "filebrowser.cache.match.status"
+    assert status["row_count"] == 3
+    assert refreshed["unit_action"] == "filebrowser.cache.match.refresh"
+    assert refreshed["queued"] is True
+    assert seen == [req, req]
+
+
+def test_filebrowser_cache_refresh_requires_admin(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+
+    with pytest.raises(HTTPException) as exc:
+        filebrowser.cache_match_refresh(filebrowser.CacheMatchRefreshReq(target="fab"), _Request("viewer", "user"))
+
+    assert exc.value.status_code == 403
+
+
 def test_sql_view_scans_all_partitions_and_filters_before_projection(monkeypatch):
     calls = []
 
@@ -509,6 +601,144 @@ def test_base_files_exposes_readable_lot_progress_cache(monkeypatch, tmp_path):
     }]
 
 
+def test_cache_folder_files_are_readable_single_files_without_versions(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    csv_fp = cache_dir / "small_cache.csv"
+    csv_fp.write_text("id,value\n1,a\n2,b\n", encoding="utf-8")
+    pq_fp = cache_dir / "wide_cache.parquet"
+    pl.DataFrame({"id": list(range(250)), "value": [f"v{i}" for i in range(250)]}).write_parquet(pq_fp)
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    filebrowser._LIST_CACHE.clear()
+
+    listed = filebrowser.base_files()
+    paths = {row["path"]: row for row in listed["files"]}
+
+    assert "cache/small_cache.csv" in paths
+    assert "cache/wide_cache.parquet" in paths
+    assert paths["cache/small_cache.csv"]["editable"] is False
+    assert paths["cache/wide_cache.parquet"]["versioned"] is False
+
+    parquet_preview = filebrowser.base_file_view(
+        file="cache/wide_cache.parquet",
+        sql="",
+        rows=200,
+        cols=10,
+        select_cols="",
+        engine="auto",
+        meta_only=False,
+        page=0,
+        page_size=200,
+    )
+    assert parquet_preview["showing"] == 200
+    assert parquet_preview.get("single_file_full_read") is not True
+    assert parquet_preview["has_more"] is True
+
+    versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="cache/wide_cache.parquet")
+    assert versions["versioned"] is False
+    assert versions["versions"] == []
+
+
+def test_admin_configured_folder_can_be_versioned_single_file(monkeypatch, tmp_path):
+    secret_dir = tmp_path / "secret"
+    secret_dir.mkdir()
+    fp = secret_dir / "lookup.csv"
+    fp.write_text("id,value\n1,a\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    filebrowser._LIST_CACHE.clear()
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "csv_rules": {},
+        "hidden_db_dirs": ["cache", "secret"],
+        "versioned_single_file_dirs": ["secret", "cache"],
+    })
+
+    listed = filebrowser.base_files()
+    rows = [row for row in listed["files"] if row.get("path") == "secret/lookup.csv"]
+
+    assert rows and rows[0]["editable"] is True
+    assert rows[0]["versioned"] is True
+    versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="secret/lookup.csv")
+    assert versions["versioned"] is True
+    assert "cache" not in filebrowser._load_filebrowser_settings()["versioned_single_file_dirs"]
+
+
+def test_default_reformatter_folder_versions_json_and_csv(monkeypatch, tmp_path):
+    reformatter_dir = tmp_path / "reformatter"
+    reformatter_dir.mkdir()
+    (reformatter_dir / "PRODA0.json").write_text('{"rules": []}\n', encoding="utf-8")
+    (reformatter_dir / "PRODA0.csv").write_text("item,rank\nb,2\na,1\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    filebrowser._LIST_CACHE.clear()
+
+    listed = filebrowser.base_files()
+    paths = {row["path"]: row for row in listed["files"]}
+
+    assert paths["reformatter/PRODA0.json"]["versioned"] is True
+    assert paths["reformatter/PRODA0.json"]["editable"] is True
+    assert paths["reformatter/PRODA0.csv"]["versioned"] is True
+    assert paths["reformatter/PRODA0.csv"]["editable"] is True
+
+    json_preview = filebrowser.base_file_view(file="reformatter/PRODA0.json")
+    csv_preview = filebrowser.base_file_view(file="reformatter/PRODA0.csv")
+    json_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="reformatter/PRODA0.json")
+    csv_versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="reformatter/PRODA0.csv")
+
+    assert json_preview["kind"] == "json"
+    assert csv_preview["kind"] == "table"
+    assert json_versions["versioned"] is True
+    assert csv_versions["versioned"] is True
+
+
+def test_reformatter_csv_save_applies_file_rule_and_versions_under_flow_data(monkeypatch, tmp_path):
+    reformatter_dir = tmp_path / "reformatter"
+    reformatter_dir.mkdir()
+    fp = reformatter_dir / "PRODA0.csv"
+    fp.write_text("item,rank\nb,2\na,1\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(filebrowser, "BASE_VERSION_DIR", tmp_path / "file_versions")
+    monkeypatch.setattr(filebrowser._s3, "sync_saved_path", lambda *_args, **_kwargs: {"ok": True, "skipped": True})
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "hidden_db_dirs": ["cache", "reformatter"],
+        "versioned_single_file_dirs": ["reformatter"],
+        "csv_rules": {
+            "reformatter/PRODA0.csv": {
+                "required_columns": ["item", "rank"],
+                "sort": [{"column": "rank", "direction": "asc", "type": "numeric", "nulls": "last"}],
+            }
+        },
+    })
+
+    saved = filebrowser._save_base_file(
+        filebrowser.BaseFileSaveReq(
+            file="reformatter/PRODA0.csv",
+            csv_text="item,rank\nb,2\na,1\n",
+            delimiter="comma",
+            include_header=True,
+            note="update reformatter csv",
+        ),
+        _Request("admin", "admin"),
+    )
+
+    rows = list(csv.DictReader(fp.open(encoding="utf-8")))
+    version_dir = tmp_path / "file_versions" / "reformatter__PRODA0.csv"
+
+    assert saved["csv_validation"]["sorted"] is True
+    assert saved["version"]["file"] == "reformatter/PRODA0.csv"
+    assert [row["item"] for row in rows] == ["a", "b"]
+    assert (version_dir / "v1.csv").is_file()
+    assert (version_dir / "v1.meta.json").is_file()
+
+
 def test_base_file_versioned_allows_any_single_csv_under_5mb(tmp_path):
     fp = tmp_path / "custom_lookup.csv"
     fp.write_text("a,b\n1,2\n", encoding="utf-8")
@@ -523,9 +753,9 @@ def test_base_file_versioned_rejects_single_csv_over_5mb(tmp_path):
     assert filebrowser._base_file_versioned(fp.name, fp) is False
 
 
-def test_base_file_view_reads_entire_non_ml_single_file(monkeypatch, tmp_path):
+def test_base_file_view_parquet_defaults_to_200_row_preview(monkeypatch, tmp_path):
     fp = tmp_path / "matching_step.parquet"
-    pl.DataFrame({f"c{i:02d}": [i, i + 10, i + 20] for i in range(12)}).write_parquet(fp)
+    pl.DataFrame({f"c{i:02d}": [i + row for row in range(250)] for i in range(12)}).write_parquet(fp)
 
     class DummyPaths:
         pass
@@ -548,12 +778,11 @@ def test_base_file_view_reads_entire_non_ml_single_file(monkeypatch, tmp_path):
         page_size=200,
     )
 
-    assert result["single_file_full_read"] is True
-    assert result["showing"] == 3
-    assert result["total_rows"] == 3
-    assert result["has_more"] is False
-    assert len(result["showing_cols"]) == 12
-    assert result["truncated_cols"] is False
+    assert result.get("single_file_full_read") is not True
+    assert result["showing"] == 200
+    assert result["has_more"] is True
+    assert len(result["showing_cols"]) == 10
+    assert result["truncated_cols"] is True
 
 
 def test_base_file_view_reads_small_csv_fully_and_threshold_falls_back(monkeypatch, tmp_path):
@@ -671,6 +900,14 @@ def test_filebrowser_settings_gate_allows_page_admin(monkeypatch, tmp_path):
     assert saved["csv_rules"]["rules.csv"]["required_columns"] == ["id"]
 
 
+def test_setup_preserves_filebrowser_settings_file():
+    setup_text = (ROOT / "setup.py").read_text(encoding="utf-8")
+    build_text = (ROOT / "_build_setup.py").read_text(encoding="utf-8")
+
+    assert "'filebrowser_settings.json'" in setup_text
+    assert "'filebrowser_settings.json'" in build_text
+
+
 def test_roots_hide_default_and_configured_db_dirs(monkeypatch, tmp_path):
     dummy_paths = _DummyPaths(tmp_path)
     monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
@@ -715,6 +952,93 @@ def test_csv_rule_validation_reports_supported_failures():
     assert {"not_empty", "unique_keys", "enums", "numeric", "regex", "conditions"}.issubset(
         {err["rule"] for err in result["errors"]}
     )
+
+
+def test_csv_conditions_are_and_pass_conditions():
+    rule = filebrowser._normalize_csv_rule({
+        "conditions": [
+            {"expr": "status != 'BAD'", "message": "BAD status is blocked"},
+            {"expr": "end_time >= start_time", "message": "end must be after start"},
+        ],
+    })
+
+    ok = filebrowser._validate_csv_rule(
+        ["status", "start_time", "end_time"],
+        [
+            ["OK", "2026-01-01", "2026-01-02"],
+            ["HOLD", "2026-01-03", "2026-01-03"],
+        ],
+        rule,
+    )
+    failed = filebrowser._validate_csv_rule(
+        ["status", "start_time", "end_time"],
+        [
+            ["BAD", "2026-01-01", "2026-01-02"],
+            ["OK", "2026-01-03", "2026-01-02"],
+        ],
+        rule,
+    )
+
+    assert ok["ok"] is True
+    assert failed["ok"] is False
+    assert [err["row"] for err in failed["errors"] if err["rule"] == "conditions"] == [1, 2]
+
+
+def test_csv_ordered_by_validates_product_feature_and_rule_order():
+    rule = filebrowser._normalize_csv_rule({
+        "ordered_by": {
+            "keys": [
+                {"column": "product", "type": "string"},
+                {"column": "feature_name", "type": "leading_number"},
+                {"column": "rule_order", "type": "rule_order"},
+            ]
+        }
+    })
+    header = ["product", "feature_name", "rule_order"]
+    ok_rows = [
+        ["PRODA", "2.0 WELL", "RO"],
+        ["PRODA", "5.0 PC", "R1"],
+        ["PRODA", "5.0 PC", "R2"],
+        ["PRODA", "5.0 PC", "RO"],
+        ["PRODB", "1.0 STI", "RO"],
+    ]
+
+    product_bad = filebrowser._validate_csv_rule(header, [["PRODB", "1.0 STI", "RO"], ["PRODA", "1.0 STI", "RO"]], rule)
+    feature_bad = filebrowser._validate_csv_rule(header, [["PRODA", "10.0 CONTACT", "RO"], ["PRODA", "2.0 WELL", "RO"]], rule)
+    rule_bad = filebrowser._validate_csv_rule(header, [["PRODA", "5.0 PC", "RO"], ["PRODA", "5.0 PC", "R1"]], rule)
+
+    assert filebrowser._validate_csv_rule(header, ok_rows, rule)["ok"] is True
+    assert product_bad["errors"][0]["rule"] == "ordered_by"
+    assert feature_bad["errors"][0]["rule"] == "ordered_by"
+    assert rule_bad["errors"][0]["rule"] == "ordered_by"
+
+
+def test_csv_sort_supports_product_feature_number_and_rule_order():
+    rule = filebrowser._normalize_csv_rule({
+        "sort": [
+            {"column": "product", "type": "string"},
+            {"column": "feature_name", "type": "leading_number"},
+            {"column": "rule_order", "type": "rule_order"},
+        ]
+    })
+    header = ["product", "feature_name", "rule_order"]
+    rows = [
+        ["PRODB", "1.0 STI", "RO"],
+        ["PRODA", "10.0 CONTACT", "RO"],
+        ["PRODA", "5.0 PC", "RO"],
+        ["PRODA", "5.0 PC", "R2"],
+        ["PRODA", "5.0 PC", "R1"],
+    ]
+
+    sorted_rows = filebrowser._apply_csv_sort_rule(header, rows, rule)
+
+    assert sorted_rows == [
+        ["PRODA", "5.0 PC", "R1"],
+        ["PRODA", "5.0 PC", "R2"],
+        ["PRODA", "5.0 PC", "RO"],
+        ["PRODA", "10.0 CONTACT", "RO"],
+        ["PRODB", "1.0 STI", "RO"],
+    ]
 
 
 def test_csv_rule_blocks_save_and_sort_rule_reorders_physical_csv(monkeypatch, tmp_path):

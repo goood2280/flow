@@ -8,6 +8,7 @@ const BASE_EDIT_FILE_EXTS = new Set(["csv","parquet"]);
 const BASE_EDIT_FILE_SOURCES = new Set(["base_root","db_root"]);
 const canEditBaseMeta=(meta)=>{
   if(!meta) return false;
+  if(meta.editable===true) return true;
   if(meta.editable===false) return false;
   if(!BASE_EDIT_FILE_EXTS.has((meta.ext||"").toLowerCase())) return false;
   if(!meta.source) return true;
@@ -145,7 +146,15 @@ const parseSortLines=(text)=>String(text||"").split(/\n/).map(line=>{
   return column?{column,direction,type,nulls}:null;
 }).filter(Boolean);
 const formatSortLines=(value)=>Array.isArray(value)?value.map(x=>[x.column,x.direction||"asc",x.type||"string",x.nulls||"last"].filter(Boolean).join(" ")).join("\n"):"";
-const emptyRuleForm=()=>({required_columns:"",not_empty:"",unique_keys:"",enums:"",numeric:"",date:"",regex:"",conditions:"",sort:""});
+const parseOrderedByLines=(text)=>{
+  const keys=parseSortLines(text);
+  return keys.length?{keys}:null;
+};
+const formatOrderedByLines=(value)=>{
+  if(Array.isArray(value))return formatSortLines(value);
+  return formatSortLines(value?.keys||[]);
+};
+const emptyRuleForm=()=>({required_columns:"",not_empty:"",unique_keys:"",enums:"",numeric:"",date:"",regex:"",conditions:"",ordered_by:"",sort:""});
 const ruleToForm=(rule={})=>({
   required_columns:joinRuleList(rule.required_columns),
   not_empty:joinRuleList(rule.not_empty),
@@ -155,6 +164,7 @@ const ruleToForm=(rule={})=>({
   date:joinRuleList(rule.date),
   regex:formatRegexLines(rule.regex),
   conditions:formatConditionLines(rule.conditions),
+  ordered_by:formatOrderedByLines(rule.ordered_by),
   sort:formatSortLines(rule.sort),
 });
 const formToRule=(form={})=>{
@@ -167,6 +177,7 @@ const formToRule=(form={})=>{
   const date=splitRuleList(form.date);
   const regex=parseRegexLines(form.regex);
   const conditions=parseConditionLines(form.conditions);
+  const orderedBy=parseOrderedByLines(form.ordered_by);
   const sort=parseSortLines(form.sort);
   if(required.length)rule.required_columns=required;
   if(notEmpty.length)rule.not_empty=notEmpty;
@@ -176,6 +187,7 @@ const formToRule=(form={})=>{
   if(date.length)rule.date=date;
   if(Object.keys(regex).length)rule.regex=regex;
   if(conditions.length)rule.conditions=conditions;
+  if(orderedBy)rule.ordered_by=orderedBy;
   if(sort.length)rule.sort=sort;
   return rule;
 };
@@ -488,14 +500,18 @@ export default function My_FileBrowser({user,onNavigate}){
   const[s3Detail,setS3Detail]=useState(null); // show last_output_tail
   const[s3Now,setS3Now]=useState(Date.now());
   const[s3Profiles,setS3Profiles]=useState([]); // v8.7.9 AWS profile (key) list
-  const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_rules:{},hidden_db_dirs:["cache","reformatter"],can_manage:false});
+  const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_rules:{},hidden_db_dirs:["cache","reformatter"],versioned_single_file_dirs:["reformatter"],can_manage:false});
   const[fbThresholdMb,setFbThresholdMb]=useState("10");
   const[fbHiddenDbDirsText,setFbHiddenDbDirsText]=useState("cache\nreformatter");
+  const[fbVersionedDirsText,setFbVersionedDirsText]=useState("reformatter");
   const[fbSettingsMsg,setFbSettingsMsg]=useState("");
   const[fbSettingsLoading,setFbSettingsLoading]=useState(false);
   const[fbSelectedFile,setFbSelectedFile]=useState("");
   const[fbRuleForm,setFbRuleForm]=useState(emptyRuleForm());
   const[fbValidation,setFbValidation]=useState(null);
+  const[fbCacheStatus,setFbCacheStatus]=useState({fab:null,et:null});
+  const[fbCacheBusy,setFbCacheBusy]=useState("");
+  const[fbCacheMsg,setFbCacheMsg]=useState("");
 
   const csvBaseFiles=(baseFiles||[]).filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
   const selectFileRule=(file,settings=fbSettings)=>{
@@ -516,41 +532,48 @@ export default function My_FileBrowser({user,onNavigate}){
         localCsvFiles=files.filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
       }
       const d=await sf(API+"/settings");
-      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??10485760,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||["cache","reformatter"],can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes};
+      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??10485760,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||["cache","reformatter"],versioned_single_file_dirs:d.versioned_single_file_dirs||["reformatter"],can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes};
       setFbSettings(settings);
       setFbThresholdMb(String(((Number(settings.csv_full_read_max_bytes)||0)/1048576).toFixed(2)).replace(/\.00$/,""));
       setFbHiddenDbDirsText((settings.hidden_db_dirs||[]).join("\n"));
+      setFbVersionedDirsText((settings.versioned_single_file_dirs||[]).join("\n"));
       const currentCsv=(selBaseMeta&&(selBaseMeta.ext||"").toLowerCase()==="csv")?String(selBaseMeta.path||selBaseMeta.name||""):"";
       const target=fbSelectedFile||currentCsv||localCsvFiles[0]?.path||localCsvFiles[0]?.name||"";
       if(target)selectFileRule(target,settings);
       setFbSettingsMsg("");
     }catch(e){
-      setFbSettingsMsg(e.message||"파일 설정 로드 실패");
+      setFbSettingsMsg(e.message||"설정 로드 실패");
     }finally{
       setFbSettingsLoading(false);
     }
   };
-  const saveFilebrowserSettings=async()=>{
+  const saveFilebrowserSettings=async(section="file")=>{
+    const isFileSection=section==="file";
     const nextRules={...(fbSettings.csv_rules||{})};
-    if(fbSelectedFile){
+    if(isFileSection&&fbSelectedFile){
       const rule=formToRule(fbRuleForm);
       if(Object.keys(rule).length)nextRules[fbSelectedFile]=rule;
       else delete nextRules[fbSelectedFile];
     }
-    const thresholdBytes=Math.max(0,Math.round(Number(fbThresholdMb||0)*1048576));
+    const thresholdBytes=isFileSection
+      ? Math.max(0,Math.round(Number(fbThresholdMb||0)*1048576))
+      : Number(fbSettings.csv_full_read_max_bytes||10485760);
     setFbSettingsLoading(true);
     try{
       const hiddenDbDirs=String(fbHiddenDbDirsText||"").split(/[\n,]/).map(v=>v.trim()).filter(Boolean);
-      const d=await sf(API+"/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({csv_full_read_max_bytes:thresholdBytes,csv_rules:nextRules,hidden_db_dirs:hiddenDbDirs})});
-      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??thresholdBytes,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||hiddenDbDirs,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes};
+      const versionedSingleFileDirs=String(fbVersionedDirsText||"").split(/[\n,]/).map(v=>v.trim()).filter(Boolean);
+      const d=await sf(API+"/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({csv_full_read_max_bytes:thresholdBytes,csv_rules:nextRules,hidden_db_dirs:hiddenDbDirs,versioned_single_file_dirs:versionedSingleFileDirs})});
+      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??thresholdBytes,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||hiddenDbDirs,versioned_single_file_dirs:d.versioned_single_file_dirs||versionedSingleFileDirs,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes};
       setFbSettings(settings);
       setFbThresholdMb(String(((Number(settings.csv_full_read_max_bytes)||0)/1048576).toFixed(2)).replace(/\.00$/,""));
       setFbHiddenDbDirsText((settings.hidden_db_dirs||[]).join("\n"));
+      setFbVersionedDirsText((settings.versioned_single_file_dirs||[]).join("\n"));
       selectFileRule(fbSelectedFile,settings);
-      setFbSettingsMsg("파일 설정 저장 완료");
+      setFbSettingsMsg(isFileSection?"파일 설정 저장 완료":"폴더 설정 저장 완료");
       sf(API+"/roots?_ts="+Date.now()).then(r=>setRoots(r.roots||[])).catch(()=>{});
+      sf(API+"/base-files?_ts="+Date.now()).then(r=>setBaseFiles(r.files||[])).catch(()=>{});
     }catch(e){
-      setFbSettingsMsg(e.message||"파일 설정 저장 실패");
+      setFbSettingsMsg(e.message||(isFileSection?"파일 설정 저장 실패":"폴더 설정 저장 실패"));
     }finally{
       setFbSettingsLoading(false);
     }
@@ -571,6 +594,30 @@ export default function My_FileBrowser({user,onNavigate}){
       setFbSettingsLoading(false);
     }
   };
+  const loadFilebrowserCacheStatus=async()=>{
+    try{
+      const [fab,et]=await Promise.all([
+        sf(API+"/cache/match/status?target=fab").catch(e=>({ok:false,target:"fab",error:e.message})),
+        sf(API+"/cache/match/status?target=et").catch(e=>({ok:false,target:"et",error:e.message})),
+      ]);
+      setFbCacheStatus({fab,et});
+    }catch(_){}
+  };
+  const refreshFilebrowserCache=async(target)=>{
+    setFbCacheBusy(target);setFbCacheMsg("");
+    try{
+      const d=await sf(API+"/cache/match/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target,force:true})});
+      if(d.disabled)setFbCacheMsg(`${target.toUpperCase()} 캐시가 비활성화되어 있습니다.`);
+      else if(d.queued)setFbCacheMsg(`${target.toUpperCase()} 캐시 갱신 예약됨`);
+      else if(d.running)setFbCacheMsg(`${target.toUpperCase()} 캐시 갱신 실행 중`);
+      else setFbCacheMsg(`${target.toUpperCase()} 캐시 갱신 완료`);
+      loadFilebrowserCacheStatus();
+    }catch(e){
+      setFbCacheMsg(e.message||"캐시 갱신 실패");
+    }finally{
+      setFbCacheBusy("");
+    }
+  };
 
   // Poll s3 items/history while modal open
   useEffect(()=>{
@@ -588,13 +635,17 @@ export default function My_FileBrowser({user,onNavigate}){
   },[s3Open,s3Tab,s3Tick,isAdmin,user?.username]);
 
   useEffect(()=>{
-    if(s3Open&&!isAdmin&&s3Tab!=="file")setS3Tab("file");
+    if(s3Open&&!isAdmin&&!["folder","file","cache"].includes(s3Tab))setS3Tab("folder");
   },[s3Open,isAdmin,s3Tab]);
 
   useEffect(()=>{
     if(!s3Open||!isFileBrowserAdmin)return;
     loadFilebrowserSettings();
   },[s3Open,isFileBrowserAdmin]);
+
+  useEffect(()=>{
+    if(s3Open&&s3Tab==="cache")loadFilebrowserCacheStatus();
+  },[s3Open,s3Tab]);
 
   // 1s ticker for ETA countdown (only while modal open)
   useEffect(()=>{if(!s3Open)return;const t=setInterval(()=>setS3Now(Date.now()),1000);return()=>clearInterval(t);},[s3Open]);
@@ -1030,8 +1081,11 @@ export default function My_FileBrowser({user,onNavigate}){
   const showBasePager = !data?.meta_only && !isBaseEditingMode && !(mode==="base"&&data?.single_file_full_read);
   const settingsTabs=[
     ...(isAdmin?[{k:"items",l:"항목 ("+s3Items.length+")"},{k:"add",l:"+ 추가"},{k:"history",l:"이력"},{k:"aws",l:"AWS 설정"}]:[]),
+    {k:"cache",l:"캐시"},
+    {k:"folder",l:"폴더 설정"},
     {k:"file",l:"파일 설정"},
   ];
+  const settingsTitle=s3Tab==="folder"?"FileBrowser 폴더 설정":(s3Tab==="file"?"FileBrowser 파일 설정":(s3Tab==="cache"?"FileBrowser 캐시 운영":"S3 동기화 설정 — aws s3 cp/sync"));
 
   const chipS={display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:4,fontSize:14,cursor:"pointer",marginRight:4,marginBottom:4,border:"1px solid var(--border)",transition:"all 0.15s"};
   const chipActive={...chipS,background:"var(--accent-glow)",borderColor:"var(--accent)",color:"var(--accent)",fontWeight:600};
@@ -1331,7 +1385,7 @@ export default function My_FileBrowser({user,onNavigate}){
               <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
                 {/* v8.8.31: 어떤 datalake 소스(FAB/INLINE/ET) 인지 한눈에 보이게 배지.
                      selRoot 이 "1.RAWDATA_DB_FAB" / "_INLINE" / "_ET" 로 끝나는지 판정. */}
-              {selRoot && (()=>{
+              {mode==="hive" && selRoot && (()=>{
                 const name=(selRoot||"").toUpperCase();
                 let label="",bg="",fg="";
                 if(name.endsWith("_FAB")||name.endsWith(".RAWDATA_DB_FAB")){label="FAB";bg="#3b82f622";fg="#1d4ed8";}
@@ -1510,12 +1564,12 @@ export default function My_FileBrowser({user,onNavigate}){
       </div>
       {/* v8.7.5: Admin S3 ingest gear — PageGear 스타일 통일 · 좌하단 */}
       {isFileBrowserAdmin&&<>
-        <div onClick={()=>{if(!s3Open&&!isAdmin)setS3Tab("file");setS3Open(!s3Open);}} title={isAdmin?"파일 설정 / S3 동기화 / AWS 설정":"파일 설정"} style={{position:"fixed",bottom:16,left:16,width:40,height:40,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,boxShadow:"0 2px 8px rgba(0,0,0,0.3)",fontSize:18}}>⚙️</div>
+        <div onClick={()=>{if(!s3Open&&!isAdmin)setS3Tab("folder");setS3Open(!s3Open);}} title={isAdmin?"폴더 설정 / 파일 설정 / S3 동기화 / AWS 설정":"폴더 설정 / 파일 설정"} style={{position:"fixed",bottom:16,left:16,width:40,height:40,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,boxShadow:"0 2px 8px rgba(0,0,0,0.3)",fontSize:18}}>⚙️</div>
         {s3Open&&<>
           <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:98}} onClick={()=>{setS3Open(false);setS3Form(null);setS3Detail(null);}}/>
           <div style={{position:"fixed",top:"50%",left:"50%",transform:"translate(-50%,-50%)",width:"min(780px,94vw)",maxHeight:"86vh",background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:10,zIndex:99,display:"flex",flexDirection:"column",boxShadow:"0 16px 48px rgba(0,0,0,0.6)"}}>
             <div style={{display:"flex",alignItems:"center",padding:"12px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",borderRadius:"10px 10px 0 0"}}>
-              <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",flex:1}}>{s3Tab==="file"?"FileBrowser 파일 설정":"S3 동기화 설정 — aws s3 cp/sync"}</span>
+              <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",flex:1}}>{settingsTitle}</span>
               {!s3AwsOk&&<span style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"#ef444422",color:"#ef4444",marginRight:8}}>aws CLI 미설치</span>}
               <span onClick={()=>{setS3Open(false);setS3Form(null);setS3Detail(null);}} style={{cursor:"pointer",color:"var(--text-secondary)",fontSize:18,padding:"0 4px"}}>✕</span>
             </div>
@@ -1526,6 +1580,53 @@ export default function My_FileBrowser({user,onNavigate}){
               ))}
             </div>
             <div style={{flex:1,overflow:"auto",padding:"12px 16px"}}>
+              {s3Tab==="cache"&&<div style={{display:"grid",gap:12,fontSize:14}}>
+                {[
+                  ["fab","SplitTable 매칭 캐시","root_lot_id ↔ fab_lot_id 연결 캐시",fbCacheStatus.fab],
+                  ["et","Tracker Analysis ET 캐시","ET lot 후보/진행 후보 캐시",fbCacheStatus.et],
+                ].map(([target,title,desc,status])=>(
+                  <div key={target} style={{display:"grid",gap:8,padding:"10px 12px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
+                    <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",flexWrap:"wrap"}}>
+                      <div>
+                        <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>{title}</div>
+                        <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:2}}>{desc}</div>
+                      </div>
+                      <button onClick={()=>refreshFilebrowserCache(target)} disabled={!isAdmin||fbCacheBusy===target}
+                        title={!isAdmin?"admin only":"캐시 수동 갱신"}
+                        style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:800,cursor:!isAdmin?"not-allowed":fbCacheBusy===target?"wait":"pointer",opacity:!isAdmin?0.5:1}}>
+                        {fbCacheBusy===target?"갱신 중":"수동 갱신"}
+                      </button>
+                    </div>
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap",fontFamily:"monospace",fontSize:13,color:"var(--text-secondary)"}}>
+                      <span>target={target}</span>
+                      <span>products={(status?.products||[]).length}</span>
+                      <span>rows={status?.row_count??status?.total_row_count??0}</span>
+                      <span>updated={status?.updated_at||status?.latest_updated_at||"-"}</span>
+                      {status?.running&&<span style={{color:"#f59e0b"}}>running</span>}
+                      {status?.enabled===false&&<span style={{color:"#ef4444"}}>disabled</span>}
+                    </div>
+                    {status?.cache_path&&<div style={{fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",overflowWrap:"anywhere"}}>{status.cache_path}</div>}
+                    {status?.error&&<div style={{fontSize:13,color:"#ef4444"}}>{status.error}</div>}
+                  </div>
+                ))}
+                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                  <button onClick={loadFilebrowserCacheStatus} style={{padding:"7px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:"pointer"}}>상태 새로고침</button>
+                  {fbCacheMsg&&<span style={{fontSize:14,color:fbCacheMsg.includes("실패")||fbCacheMsg.includes("비활성")?"#ef4444":"var(--text-secondary)"}}>{fbCacheMsg}</span>}
+                </div>
+              </div>}
+              {s3Tab==="folder"&&<div style={{maxWidth:520,display:"flex",flexDirection:"column",gap:10,fontSize:14}}>
+                <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
+                  Files로 노출할 DB 폴더
+                  <textarea value={fbHiddenDbDirsText} onChange={e=>setFbHiddenDbDirsText(e.target.value)} rows={4} spellCheck={false} placeholder={"cache\nreformatter"} style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
+                </label>
+                <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
+                  폴더 안 파일 버전 관리
+                  <textarea value={fbVersionedDirsText} onChange={e=>setFbVersionedDirsText(e.target.value)} rows={3} spellCheck={false} placeholder={"reformatter"} style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
+                </label>
+                <div style={{fontSize:12,color:"var(--text-secondary)",lineHeight:1.45}}>버전 이력은 flow-data/file_versions에 저장되고, 파일 목록에는 별도 파일로 노출되지 않습니다.</div>
+                <button onClick={()=>saveFilebrowserSettings("folder")} disabled={fbSettingsLoading} style={{alignSelf:"flex-start",padding:"8px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:800,cursor:fbSettingsLoading?"default":"pointer",opacity:fbSettingsLoading?0.5:1}}>저장</button>
+                {fbSettingsMsg&&<div style={{padding:9,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:fbSettingsMsg.includes("실패")||fbSettingsMsg.includes("오류")?"#ef4444":"var(--text-secondary)",lineHeight:1.45}}>{fbSettingsMsg}</div>}
+              </div>}
               {s3Tab==="file"&&<div style={{display:"grid",gridTemplateColumns:"minmax(180px,240px) 1fr",gap:14,fontSize:14}}>
                 <div style={{display:"flex",flexDirection:"column",gap:10}}>
                   <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
@@ -1533,18 +1634,14 @@ export default function My_FileBrowser({user,onNavigate}){
                     <input type="number" min={0} step={0.5} value={fbThresholdMb} onChange={e=>setFbThresholdMb(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
                   </label>
                   <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                    DB 숨김 폴더
-                    <textarea value={fbHiddenDbDirsText} onChange={e=>setFbHiddenDbDirsText(e.target.value)} rows={3} spellCheck={false} placeholder={"cache\nreformatter"} style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
-                  </label>
-                  <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                    Base CSV
+                    CSV 파일
                     <select value={fbSelectedFile} onChange={e=>selectFileRule(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}>
                       <option value="">CSV 선택</option>
                       {csvBaseFiles.map(f=><option key={f.path||f.name} value={f.path||f.name}>{f.path||f.name}</option>)}
                     </select>
                   </label>
                   <button onClick={testFileRule} disabled={!fbSelectedFile||fbSettingsLoading} style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:!fbSelectedFile||fbSettingsLoading?"default":"pointer",opacity:!fbSelectedFile||fbSettingsLoading?0.5:1}}>검증 테스트</button>
-                  <button onClick={saveFilebrowserSettings} disabled={fbSettingsLoading} style={{padding:"8px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:800,cursor:fbSettingsLoading?"default":"pointer",opacity:fbSettingsLoading?0.5:1}}>저장</button>
+                  <button onClick={()=>saveFilebrowserSettings("file")} disabled={fbSettingsLoading} style={{padding:"8px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:800,cursor:fbSettingsLoading?"default":"pointer",opacity:fbSettingsLoading?0.5:1}}>저장</button>
                   <button onClick={()=>selectFileRule(fbSelectedFile,{...fbSettings,csv_rules:{...(fbSettings.csv_rules||{}),[fbSelectedFile]:{}}})} disabled={!fbSelectedFile} style={{padding:"7px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:!fbSelectedFile?"default":"pointer"}}>규칙 비우기</button>
                   {fbSettingsMsg&&<div style={{padding:9,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:fbSettingsMsg.includes("실패")||fbSettingsMsg.includes("오류")?"#ef4444":"var(--text-secondary)",lineHeight:1.45}}>{fbSettingsMsg}</div>}
                 </div>
@@ -1557,11 +1654,12 @@ export default function My_FileBrowser({user,onNavigate}){
                     ["numeric","숫자","rank min=1 max=999 integer=true"],
                     ["date","날짜/시간 컬럼","created_at, updated_at"],
                     ["regex","정규식","code=[A-Z]{2}\\d{2}"],
-                    ["conditions","위반 row selector","end_time < start_time => 종료가 시작보다 빠름"],
-                    ["sort","저장 정렬","rank asc numeric last"],
+                    ["conditions","AND 통과 조건","end_time >= start_time => 종료가 시작보다 빠를 수 없습니다"],
+                    ["ordered_by","정렬 검증","product asc string last\nfeature_name asc leading_number last\nrule_order asc rule_order last"],
+                    ["sort","저장 정렬","product asc string last\nfeature_name asc leading_number last\nrule_order asc rule_order last"],
                   ].map(([key,label,ph])=><label key={key} style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
                     {label}
-                    <textarea value={fbRuleForm[key]||""} onChange={e=>setFbRuleForm(f=>({...f,[key]:e.target.value}))} placeholder={ph} rows={key==="conditions"||key==="sort"?3:2} spellCheck={false}
+                    <textarea value={fbRuleForm[key]||""} onChange={e=>setFbRuleForm(f=>({...f,[key]:e.target.value}))} placeholder={ph} rows={key==="conditions"||key==="ordered_by"||key==="sort"?3:2} spellCheck={false}
                       style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
                   </label>)}
                   {fbValidation&&<div style={{gridColumn:"1 / -1",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)",overflow:"hidden"}}>
