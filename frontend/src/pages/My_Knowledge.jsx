@@ -22,69 +22,165 @@ function Field({label,children}){
   </label>;
 }
 
+const KIND_COLORS={
+  identity:"#3b82f6",
+  process:"#8b5cf6",
+  split:"#ec4899",
+  work:"#f97316",
+  output:"#10b981",
+  wiki_doc:"#22c55e",
+  event:"#94a3b8",
+  product:"#f59e0b",
+  lot:"#0ea5e9",
+  wafer:"#a855f7",
+};
+function kindColor(k){return KIND_COLORS[k]||"var(--accent)";}
+
+function computeForceLayout(nodes,edges,width,height){
+  const ids=nodes.map(n=>n.id);
+  const adj=new Map(ids.map(id=>[id,new Set()]));
+  for(const e of edges){
+    if(adj.has(e.source)&&adj.has(e.target)){
+      adj.get(e.source).add(e.target);
+      adj.get(e.target).add(e.source);
+    }
+  }
+  // deterministic initial positions: golden-angle spiral so layout is stable
+  const positions=new Map();
+  const phi=Math.PI*(3-Math.sqrt(5));
+  const cx=width/2,cy=height/2;
+  const R=Math.min(width,height)*0.42;
+  nodes.forEach((n,i)=>{
+    const r=R*Math.sqrt((i+0.5)/nodes.length);
+    const a=i*phi;
+    positions.set(n.id,{x:cx+r*Math.cos(a),y:cy+r*Math.sin(a)});
+  });
+  const n=nodes.length||1;
+  const area=width*height;
+  const k=Math.sqrt(area/n)*0.85; // ideal edge length
+  const iterations=180;
+  for(let iter=0;iter<iterations;iter++){
+    const t=Math.max(0.02,1-iter/iterations);
+    const force=new Map(ids.map(id=>[id,{fx:0,fy:0}]));
+    // repulsion (all pairs)
+    for(let i=0;i<nodes.length;i++){
+      for(let j=i+1;j<nodes.length;j++){
+        const a=positions.get(nodes[i].id);
+        const b=positions.get(nodes[j].id);
+        let dx=a.x-b.x;
+        let dy=a.y-b.y;
+        let d2=dx*dx+dy*dy;
+        if(d2<0.01){dx=((i*7+3)%5)-2.5;dy=((j*11+5)%5)-2.5;d2=dx*dx+dy*dy+0.01;}
+        const d=Math.sqrt(d2);
+        const f=(k*k)/d;
+        const fx=(dx/d)*f,fy=(dy/d)*f;
+        force.get(nodes[i].id).fx+=fx;force.get(nodes[i].id).fy+=fy;
+        force.get(nodes[j].id).fx-=fx;force.get(nodes[j].id).fy-=fy;
+      }
+    }
+    // attraction along edges
+    for(const e of edges){
+      const a=positions.get(e.source);
+      const b=positions.get(e.target);
+      if(!a||!b)continue;
+      const dx=a.x-b.x,dy=a.y-b.y;
+      const d=Math.sqrt(dx*dx+dy*dy)||0.01;
+      const f=(d*d)/k;
+      const fx=(dx/d)*f,fy=(dy/d)*f;
+      force.get(e.source).fx-=fx;force.get(e.source).fy-=fy;
+      force.get(e.target).fx+=fx;force.get(e.target).fy+=fy;
+    }
+    // centering pull (keeps disconnected nodes from drifting away)
+    for(const nd of nodes){
+      const p=positions.get(nd.id);
+      force.get(nd.id).fx+=(cx-p.x)*0.01;
+      force.get(nd.id).fy+=(cy-p.y)*0.01;
+    }
+    // apply
+    const maxStep=Math.min(width,height)*0.18*t;
+    for(const nd of nodes){
+      const p=positions.get(nd.id);
+      const f=force.get(nd.id);
+      const m=Math.sqrt(f.fx*f.fx+f.fy*f.fy)||0.01;
+      const step=Math.min(m,maxStep);
+      p.x+=(f.fx/m)*step;
+      p.y+=(f.fy/m)*step;
+      p.x=Math.max(70,Math.min(width-70,p.x));
+      p.y=Math.max(40,Math.min(height-40,p.y));
+    }
+  }
+  return positions;
+}
+
 function KnowledgeGraphView({graph}){
   const nodes=Array.isArray(graph?.nodes)?graph.nodes:[];
   const edges=Array.isArray(graph?.edges)?graph.edges:[];
+  const layout=useMemo(()=>{
+    if(!nodes.length)return null;
+    // size the canvas based on node count: more nodes → larger area
+    const baseW=Math.max(720,Math.min(1400,260+nodes.length*45));
+    const baseH=Math.max(440,Math.min(900,220+nodes.length*30));
+    const validEdges=edges.filter(e=>e&&e.source&&e.target);
+    const positions=computeForceLayout(nodes,validEdges,baseW,baseH);
+    return {positions,width:baseW,height:baseH,validEdges};
+  },[graph]);
   if(!nodes.length){
     return <div style={{padding:28,textAlign:"center",color:"var(--text-secondary)"}}>그래프 노드가 없습니다. Admin은 Bootstrap 또는 Graph Rebuild 로 시작하세요.</div>;
   }
-  const byKind=new Map();
-  for(const n of nodes){
-    const k=n.kind||n.type||"node";
-    if(!byKind.has(k))byKind.set(k,[]);
-    byKind.get(k).push(n);
-  }
-  const sortedKinds=Array.from(byKind.keys()).sort((a,b)=>byKind.get(b).length-byKind.get(a).length);
-  const MAX_PER_KIND=8;
-  const positions=new Map();
-  const COL_W=Math.max(180,Math.min(240,Math.floor(900/Math.max(1,sortedKinds.length))));
-  const ROW_H=58;
-  const HDR=34;
-  const PAD_X=20;
-  const totalW=PAD_X*2+sortedKinds.length*COL_W;
-  const maxItems=Math.max(...sortedKinds.map(k=>Math.min(byKind.get(k).length,MAX_PER_KIND)),1);
-  const height=HDR+maxItems*ROW_H+24;
-  sortedKinds.forEach((kind,idx)=>{
-    const x=PAD_X+(idx+0.5)*COL_W;
-    const items=byKind.get(kind).slice(0,MAX_PER_KIND);
-    items.forEach((n,ni)=>{
-      const y=HDR+(ni+0.5)*ROW_H;
-      positions.set(n.id,{x,y,kind,label:n.label||n.id,detail:n.summary||n.title||""});
-    });
-  });
-  const limitedEdges=edges.filter(e=>positions.has(e.source)&&positions.has(e.target));
-  return <div style={{overflowX:"auto",padding:"4px"}}>
-    <svg width={totalW} height={height} style={{minWidth:"100%",background:"var(--bg-primary)"}}>
-      {sortedKinds.map((kind,idx)=>(
-        <g key={"kind-"+kind}>
-          <text x={PAD_X+(idx+0.5)*COL_W} y={20} textAnchor="middle" fontSize="12" fontWeight="800" fill="var(--accent)">{kind}</text>
-          <text x={PAD_X+(idx+0.5)*COL_W} y={32} textAnchor="middle" fontSize="10" fill="var(--text-secondary)">{byKind.get(kind).length} nodes</text>
-        </g>
-      ))}
-      {limitedEdges.map((e,i)=>{
+  const {positions,width,height,validEdges}=layout;
+  const NODE_W=148,NODE_H=34;
+  return <div style={{overflow:"auto",padding:"4px"}}>
+    <svg width={width} height={height} style={{minWidth:"100%",background:"var(--bg-primary)",display:"block"}}>
+      <defs>
+        <marker id="kg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-secondary)" opacity="0.7"/>
+        </marker>
+      </defs>
+      {validEdges.map((e,i)=>{
         const s=positions.get(e.source);
         const t=positions.get(e.target);
         if(!s||!t)return null;
-        const mx=(s.x+t.x)/2;
-        const my=Math.min(s.y,t.y)-Math.min(40,Math.abs(s.x-t.x)/3+12);
+        // shorten line so arrow lands just outside the target box
+        const dx=t.x-s.x,dy=t.y-s.y;
+        const dist=Math.sqrt(dx*dx+dy*dy)||1;
+        const ux=dx/dist,uy=dy/dist;
+        const sx=s.x+ux*(NODE_W*0.42);
+        const sy=s.y+uy*(NODE_H*0.62);
+        const tx=t.x-ux*(NODE_W*0.42);
+        const ty=t.y-uy*(NODE_H*0.62);
+        const mx=(sx+tx)/2;
+        const my=(sy+ty)/2;
+        // perpendicular offset for label to avoid overlapping the line
+        const px=-uy*8,py=ux*8;
         return <g key={(e.edge_id||(e.source+"-"+e.target+"-"+i))}>
-          <path d={`M ${s.x} ${s.y} Q ${mx} ${my}, ${t.x} ${t.y}`} stroke="var(--text-secondary)" fill="none" strokeWidth="1.2" opacity="0.55"/>
-          <text x={mx} y={my+10} textAnchor="middle" fontSize="10" fill="var(--text-secondary)">{e.relation||e.label||""}</text>
+          <line x1={sx} y1={sy} x2={tx} y2={ty} stroke="var(--text-secondary)" strokeWidth="1.2" opacity="0.55" markerEnd="url(#kg-arrow)"/>
+          {(e.relation||e.label)&&<text x={mx+px} y={my+py} textAnchor="middle" fontSize="10" fill="var(--text-secondary)" style={{pointerEvents:"none"}}>{e.relation||e.label}</text>}
         </g>;
       })}
-      {Array.from(positions.entries()).map(([id,p])=>{
-        const labelShort=p.label.length>22?p.label.slice(0,22)+"…":p.label;
-        return <g key={"n-"+id} transform={`translate(${p.x}, ${p.y})`}>
-          <title>{p.label}{p.detail?" — "+p.detail:""}</title>
-          <rect x={-(COL_W/2-12)} y={-18} width={COL_W-24} height={36} rx={6} fill="var(--bg-secondary)" stroke="var(--accent)" strokeWidth="1.2"/>
-          <text x={0} y={-2} textAnchor="middle" fontSize="11" fontWeight="700" fill="var(--text-primary)">{labelShort}</text>
-          <text x={0} y={12} textAnchor="middle" fontSize="9" fill="var(--text-secondary)" fontFamily="monospace">{id.length>26?id.slice(0,26)+"…":id}</text>
+      {nodes.map(n=>{
+        const p=positions.get(n.id);
+        if(!p)return null;
+        const k=n.kind||n.type||"node";
+        const color=kindColor(k);
+        const label=n.label||n.id;
+        const labelShort=label.length>20?label.slice(0,20)+"…":label;
+        return <g key={"n-"+n.id} transform={`translate(${p.x}, ${p.y})`}>
+          <title>{label} ({k}){n.summary?" — "+n.summary:""}</title>
+          <rect x={-NODE_W/2} y={-NODE_H/2} width={NODE_W} height={NODE_H} rx={6} fill="var(--bg-secondary)" stroke={color} strokeWidth="1.4"/>
+          <rect x={-NODE_W/2} y={-NODE_H/2} width={5} height={NODE_H} fill={color}/>
+          <text x={-NODE_W/2+12} y={-2} fontSize="11" fontWeight="700" fill="var(--text-primary)">{labelShort}</text>
+          <text x={-NODE_W/2+12} y={11} fontSize="9" fill="var(--text-secondary)" fontFamily="monospace">{k}</text>
         </g>;
       })}
     </svg>
-    {(edges.length>limitedEdges.length||sortedKinds.some(k=>byKind.get(k).length>MAX_PER_KIND))&&(
-      <div style={{fontSize:12,color:"var(--text-secondary)",padding:"6px 10px"}}>kind 당 최대 {MAX_PER_KIND}개 노드만 표시. 전체 {nodes.length} 노드 · {edges.length} 엣지.</div>
-    )}
+    <div style={{fontSize:12,color:"var(--text-secondary)",padding:"6px 10px",display:"flex",gap:14,flexWrap:"wrap"}}>
+      <span>{nodes.length} 노드 · {validEdges.length} 엣지 · force-directed 자동 배치</span>
+      {Array.from(new Set(nodes.map(n=>n.kind||n.type||"node"))).slice(0,10).map(k=>(
+        <span key={k} style={{display:"inline-flex",alignItems:"center",gap:4}}>
+          <span style={{width:10,height:10,borderRadius:2,background:kindColor(k)}}/>{k}
+        </span>
+      ))}
+    </div>
   </div>;
 }
 

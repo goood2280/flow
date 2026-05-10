@@ -477,9 +477,16 @@ def _refresh_wiki_index() -> list[dict[str, Any]]:
         row = _doc_from_path(fp)
         if row:
             brief = {k: row.get(k) for k in ("doc_id", "kind", "title", "summary", "updated_at", "entity", "tags", "path")}
-            source_ids = row.get("frontmatter", {}).get("source_ids")
+            fm = row.get("frontmatter") if isinstance(row.get("frontmatter"), dict) else {}
+            source_ids = fm.get("source_ids")
             if isinstance(source_ids, list):
                 brief["source_ids"] = source_ids
+            related = fm.get("related_doc_ids")
+            if isinstance(related, list) and related:
+                brief["related_doc_ids"] = [str(x) for x in related if x]
+            relations = fm.get("relations")
+            if isinstance(relations, dict) and relations:
+                brief["relations"] = {str(k): str(v) for k, v in relations.items() if k}
             if row.get("source_event_ids"):
                 brief["source_event_ids"] = row.get("source_event_ids")
             docs.append(brief)
@@ -910,11 +917,20 @@ def rebuild_graph() -> dict[str, Any]:
 
     docs = list_docs(limit=1000)
     events = list_events(limit=1000)
+    doc_ids_present = {str(row.get("doc_id") or "") for row in docs}
     for row in docs:
         doc_id = "doc:" + str(row.get("doc_id") or "")
         _node(nodes, doc_id, row.get("title") or row.get("doc_id") or "", "wiki_doc", doc_kind=row.get("kind"), path=row.get("path"))
         ent = row.get("entity") or {}
         _attach_entity(nodes, edges, doc_id, ent, "documents")
+        related = row.get("related_doc_ids") if isinstance(row.get("related_doc_ids"), list) else []
+        relations_map = row.get("relations") if isinstance(row.get("relations"), dict) else {}
+        for ref in related:
+            ref_id = str(ref or "").strip()
+            if not ref_id or ref_id not in doc_ids_present:
+                continue
+            relation = str(relations_map.get(ref_id) or "relates_to").strip() or "relates_to"
+            _edge(edges, doc_id, "doc:" + ref_id, relation, "frontmatter:related_doc_ids")
     for row in events:
         event_id = "event:" + str(row.get("event_id") or "")
         _node(nodes, event_id, row.get("title") or row.get("event_id") or "", "event", source_type=row.get("source_type"), path=row.get("raw_path"))
