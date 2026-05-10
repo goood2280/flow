@@ -10,7 +10,7 @@
   {
     "enabled":   bool,
     "api_url":   str,            # POST 대상 (예: https://llm.internal/v1/chat)
-    "model":     str,            # e.g. "internal-7b"
+    "model":     str,            # e.g. "gpt-oss-120b"
     "mode":      str,            # e.g. "fast"
     "admin_token": str,           # admin-managed credential shared by users
     "provider":  "generic"|"openai"|"openai_compatible"|"local"|"playground",
@@ -100,8 +100,8 @@ def _raw_config() -> Dict[str, Any]:
     merged["system_name"] = str(merged.get("system_name") or "").strip()
     if provider == "playground" and not merged["system_name"]:
         merged["system_name"] = "playground"
-    if provider == "local" and not merged["model"]:
-        merged["model"] = "GPT-OSS-120B"
+    if provider in {"local", "openai_compatible"} and not merged["model"]:
+        merged["model"] = "gpt-oss-120b"
     merged["user_id"] = str(merged.get("user_id") or "").strip()
     merged["user_type"] = str(merged.get("user_type") or "").strip()
     merged["format"] = (merged.get("format") or "openai").strip() or "openai"

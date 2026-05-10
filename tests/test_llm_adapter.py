@@ -9,12 +9,35 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
+from core import llm_adapter  # noqa: E402
 from core.llm_adapter import (  # noqa: E402
     _build_request_body,
     _build_request_headers,
     _extract_response_text,
     _openai_chat_url,
 )
+
+
+def test_openai_compatible_blank_model_defaults_to_internal_gpt_oss(monkeypatch):
+    monkeypatch.setattr(
+        llm_adapter,
+        "load_json",
+        lambda *_args, **_kwargs: {
+            "llm": {
+                "enabled": True,
+                "api_url": "http://llm.internal/v1",
+                "provider": "openai_compatible",
+                "format": "openai",
+                "model": "",
+            }
+        },
+    )
+
+    cfg = llm_adapter.get_config(redact=False)
+
+    assert cfg["provider"] == "openai_compatible"
+    assert cfg["model"] == "gpt-oss-120b"
+    assert cfg["format"] == "openai"
 
 
 def test_openai_format_accepts_v1_base_url():

@@ -101,16 +101,16 @@ LLM_PROFILE_KEYS = (
 )
 LLM_PROVIDER_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "openai": {
-        "enabled": False, "api_url": "https://api.openai.com/v1", "model": "gpt-5-nano",
+        "enabled": False, "api_url": "", "model": "",
         "mode": "fast", "admin_token": "", "provider": "openai", "auth_mode": "bearer",
         "system_name": "", "user_id": "", "user_type": "", "headers": {},
         "format": "openai", "extra_body": {}, "timeout_s": 20,
     },
     "openai_compatible": {
-        "enabled": False, "api_url": "", "model": "", "mode": "fast",
+        "enabled": False, "api_url": "", "model": "gpt-oss-120b", "mode": "fast",
         "admin_token": "", "provider": "openai_compatible", "auth_mode": "bearer",
         "system_name": "", "user_id": "", "user_type": "", "headers": {},
-        "format": "openai", "extra_body": {}, "timeout_s": 30,
+        "format": "openai", "extra_body": {}, "timeout_s": 60,
     },
     "local": {
         "enabled": False, "api_url": "", "model": "GPT-OSS-120B", "mode": "fast",
@@ -288,8 +288,8 @@ def _normalize_llm_profile(raw: Any = None, provider_hint: str = "") -> Dict[str
         out["auth_mode"] = str(_llm_defaults(provider).get("auth_mode") or "bearer")
     if provider == "playground" and not out["system_name"]:
         out["system_name"] = "playground"
-    if provider == "local" and not out["model"]:
-        out["model"] = "GPT-OSS-120B"
+    if provider in {"local", "openai_compatible"} and not out["model"]:
+        out["model"] = "gpt-oss-120b"
     out["enabled"] = bool(out.get("enabled"))
     if not isinstance(out.get("headers"), dict):
         out["headers"] = {}
