@@ -22,6 +22,72 @@ function Field({label,children}){
   </label>;
 }
 
+function KnowledgeGraphView({graph}){
+  const nodes=Array.isArray(graph?.nodes)?graph.nodes:[];
+  const edges=Array.isArray(graph?.edges)?graph.edges:[];
+  if(!nodes.length){
+    return <div style={{padding:28,textAlign:"center",color:"var(--text-secondary)"}}>그래프 노드가 없습니다. Admin은 Bootstrap 또는 Graph Rebuild 로 시작하세요.</div>;
+  }
+  const byKind=new Map();
+  for(const n of nodes){
+    const k=n.kind||n.type||"node";
+    if(!byKind.has(k))byKind.set(k,[]);
+    byKind.get(k).push(n);
+  }
+  const sortedKinds=Array.from(byKind.keys()).sort((a,b)=>byKind.get(b).length-byKind.get(a).length);
+  const MAX_PER_KIND=8;
+  const positions=new Map();
+  const COL_W=Math.max(180,Math.min(240,Math.floor(900/Math.max(1,sortedKinds.length))));
+  const ROW_H=58;
+  const HDR=34;
+  const PAD_X=20;
+  const totalW=PAD_X*2+sortedKinds.length*COL_W;
+  const maxItems=Math.max(...sortedKinds.map(k=>Math.min(byKind.get(k).length,MAX_PER_KIND)),1);
+  const height=HDR+maxItems*ROW_H+24;
+  sortedKinds.forEach((kind,idx)=>{
+    const x=PAD_X+(idx+0.5)*COL_W;
+    const items=byKind.get(kind).slice(0,MAX_PER_KIND);
+    items.forEach((n,ni)=>{
+      const y=HDR+(ni+0.5)*ROW_H;
+      positions.set(n.id,{x,y,kind,label:n.label||n.id,detail:n.summary||n.title||""});
+    });
+  });
+  const limitedEdges=edges.filter(e=>positions.has(e.source)&&positions.has(e.target));
+  return <div style={{overflowX:"auto",padding:"4px"}}>
+    <svg width={totalW} height={height} style={{minWidth:"100%",background:"var(--bg-primary)"}}>
+      {sortedKinds.map((kind,idx)=>(
+        <g key={"kind-"+kind}>
+          <text x={PAD_X+(idx+0.5)*COL_W} y={20} textAnchor="middle" fontSize="12" fontWeight="800" fill="var(--accent)">{kind}</text>
+          <text x={PAD_X+(idx+0.5)*COL_W} y={32} textAnchor="middle" fontSize="10" fill="var(--text-secondary)">{byKind.get(kind).length} nodes</text>
+        </g>
+      ))}
+      {limitedEdges.map((e,i)=>{
+        const s=positions.get(e.source);
+        const t=positions.get(e.target);
+        if(!s||!t)return null;
+        const mx=(s.x+t.x)/2;
+        const my=Math.min(s.y,t.y)-Math.min(40,Math.abs(s.x-t.x)/3+12);
+        return <g key={(e.edge_id||(e.source+"-"+e.target+"-"+i))}>
+          <path d={`M ${s.x} ${s.y} Q ${mx} ${my}, ${t.x} ${t.y}`} stroke="var(--text-secondary)" fill="none" strokeWidth="1.2" opacity="0.55"/>
+          <text x={mx} y={my+10} textAnchor="middle" fontSize="10" fill="var(--text-secondary)">{e.relation||e.label||""}</text>
+        </g>;
+      })}
+      {Array.from(positions.entries()).map(([id,p])=>{
+        const labelShort=p.label.length>22?p.label.slice(0,22)+"…":p.label;
+        return <g key={"n-"+id} transform={`translate(${p.x}, ${p.y})`}>
+          <title>{p.label}{p.detail?" — "+p.detail:""}</title>
+          <rect x={-(COL_W/2-12)} y={-18} width={COL_W-24} height={36} rx={6} fill="var(--bg-secondary)" stroke="var(--accent)" strokeWidth="1.2"/>
+          <text x={0} y={-2} textAnchor="middle" fontSize="11" fontWeight="700" fill="var(--text-primary)">{labelShort}</text>
+          <text x={0} y={12} textAnchor="middle" fontSize="9" fill="var(--text-secondary)" fontFamily="monospace">{id.length>26?id.slice(0,26)+"…":id}</text>
+        </g>;
+      })}
+    </svg>
+    {(edges.length>limitedEdges.length||sortedKinds.some(k=>byKind.get(k).length>MAX_PER_KIND))&&(
+      <div style={{fontSize:12,color:"var(--text-secondary)",padding:"6px 10px"}}>kind 당 최대 {MAX_PER_KIND}개 노드만 표시. 전체 {nodes.length} 노드 · {edges.length} 엣지.</div>
+    )}
+  </div>;
+}
+
 function inputStyle(multiline=false){
   return {
     width:"100%",
@@ -231,18 +297,37 @@ export default function My_Knowledge({user,embedded=false}){
         <div style={card}>
           <div style={{fontWeight:900,marginBottom:10}}>Node kinds</div>
           {Object.entries(nodeKindCounts).map(([k,v])=><div key={k} style={{display:"flex",justifyContent:"space-between",fontSize:14,padding:"5px 0",borderBottom:"1px solid var(--border)"}}><span>{k}</span><b>{v}</b></div>)}
+          {!Object.keys(nodeKindCounts).length&&<div style={{fontSize:13,color:"var(--text-secondary)"}}>그래프 노드가 없습니다.</div>}
         </div>
-        <div style={{...card,padding:0,overflow:"hidden"}}>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-            <thead><tr style={{background:"var(--bg-tertiary)",color:"var(--text-secondary)"}}><th style={{padding:9,textAlign:"left"}}>source</th><th style={{padding:9,textAlign:"left"}}>relation</th><th style={{padding:9,textAlign:"left"}}>target</th></tr></thead>
-            <tbody>{(graph?.edges||[]).slice(0,300).map(e=><tr key={e.edge_id}><td style={{padding:9,borderTop:"1px solid var(--border)",fontFamily:"monospace"}}>{e.source}</td><td style={{padding:9,borderTop:"1px solid var(--border)",color:"var(--accent)",fontWeight:700}}>{e.relation}</td><td style={{padding:9,borderTop:"1px solid var(--border)",fontFamily:"monospace"}}>{e.target}</td></tr>)}</tbody>
-          </table>
+        <div style={{display:"grid",gap:12}}>
+          <div style={{...card,padding:0,overflow:"hidden"}}>
+            <div style={{padding:"10px 12px",borderBottom:"1px solid var(--border)",background:"var(--bg-tertiary)",display:"flex",alignItems:"center",gap:8,fontSize:13}}>
+              <b>연결 그래프</b>
+              <span style={{color:"var(--text-secondary)"}}>kind 별로 노드를 배치하고 edge 를 곡선으로 연결합니다.</span>
+              <span style={{marginLeft:"auto",color:"var(--text-secondary)",fontFamily:"monospace",fontSize:12}}>{graph?.nodes?.length||0} nodes · {graph?.edges?.length||0} edges</span>
+            </div>
+            <KnowledgeGraphView graph={graph} />
+          </div>
+          <div style={{...card,padding:0,overflow:"hidden"}}>
+            <div style={{padding:"8px 12px",borderBottom:"1px solid var(--border)",background:"var(--bg-tertiary)",fontSize:13}}><b>Edge 목록</b> <span style={{color:"var(--text-secondary)",marginLeft:6}}>그래프와 같은 edge 를 표로 다시 확인합니다.</span></div>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+              <thead><tr style={{background:"var(--bg-tertiary)",color:"var(--text-secondary)"}}><th style={{padding:9,textAlign:"left"}}>source</th><th style={{padding:9,textAlign:"left"}}>relation</th><th style={{padding:9,textAlign:"left"}}>target</th></tr></thead>
+              <tbody>{(graph?.edges||[]).slice(0,300).map(e=><tr key={e.edge_id}><td style={{padding:9,borderTop:"1px solid var(--border)",fontFamily:"monospace"}}>{e.source}</td><td style={{padding:9,borderTop:"1px solid var(--border)",color:"var(--accent)",fontWeight:700}}>{e.relation}</td><td style={{padding:9,borderTop:"1px solid var(--border)",fontFamily:"monospace"}}>{e.target}</td></tr>)}</tbody>
+            </table>
+            {!(graph?.edges||[]).length&&<div style={{padding:18,textAlign:"center",color:"var(--text-secondary)"}}>Edge 가 없습니다.</div>}
+          </div>
         </div>
       </div>}
 
-      {tab==="ontology"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-        <div style={card}><div style={{fontWeight:900,marginBottom:10}}>Concept nodes</div>{(ontology.nodes||[]).map(n=><div key={n.id} style={{fontSize:14,padding:"6px 0",borderBottom:"1px solid var(--border)"}}><b>{n.label}</b> <span style={{color:"var(--text-secondary)"}}>({n.kind})</span></div>)}</div>
-        <div style={card}><div style={{fontWeight:900,marginBottom:10}}>Concept edges</div>{(ontology.edges||[]).map((e,i)=><div key={i} style={{fontSize:14,padding:"6px 0",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{e.source} -[{e.relation}]-&gt; {e.target}</div>)}</div>
+      {tab==="ontology"&&<div style={{display:"grid",gap:14}}>
+        <div style={{...card,padding:0,overflow:"hidden"}}>
+          <div style={{padding:"10px 12px",borderBottom:"1px solid var(--border)",background:"var(--bg-tertiary)",fontSize:13}}><b>Ontology 그래프</b> <span style={{color:"var(--text-secondary)",marginLeft:6}}>concept 노드와 의미 관계 edge 를 시각화합니다.</span></div>
+          <KnowledgeGraphView graph={ontology} />
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+          <div style={card}><div style={{fontWeight:900,marginBottom:10}}>Concept nodes</div>{(ontology.nodes||[]).map(n=><div key={n.id} style={{fontSize:14,padding:"6px 0",borderBottom:"1px solid var(--border)"}}><b>{n.label}</b> <span style={{color:"var(--text-secondary)"}}>({n.kind})</span></div>)}{!(ontology.nodes||[]).length&&<div style={{fontSize:13,color:"var(--text-secondary)"}}>concept 노드 없음.</div>}</div>
+          <div style={card}><div style={{fontWeight:900,marginBottom:10}}>Concept edges</div>{(ontology.edges||[]).map((e,i)=><div key={i} style={{fontSize:14,padding:"6px 0",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{e.source} -[{e.relation}]-&gt; {e.target}</div>)}{!(ontology.edges||[]).length&&<div style={{fontSize:13,color:"var(--text-secondary)"}}>concept edge 없음.</div>}</div>
+        </div>
       </div>}
 
       {tab==="write"&&canManage&&<div style={{...card,maxWidth:900}}>

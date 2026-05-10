@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { postJson, qs, sf } from "../lib/api";
 import { canManagePage } from "../lib/permissions";
 import {
@@ -36,11 +36,18 @@ const QUICK_PROMPTS = [
 ];
 
 const AGENT_TABS = [
-  { k: "loop", l: "실행 루프" },
-  { k: "wiki", l: "Wiki Graph" },
-  { k: "schema", l: "Schema 관계" },
-  { k: "ai", l: "AI 연결" },
+  { k: "loop", l: "실행 흐름" },
+  { k: "wiki", l: "지식 위키" },
+  { k: "schema", l: "스키마 관계" },
+  { k: "ai", l: "LLM 연결" },
 ];
+
+const AGENT_TAB_HINT = {
+  loop: "프롬프트를 보내면 오케스트레이터 라우팅과 단위기능 호출이 한 화면에서 보입니다. 이전에 실행한 프롬프트는 아래 ‘프롬프트 기록’ 카드에서 다시 확인하거나 재실행할 수 있습니다.",
+  wiki: "Agent가 참고하는 raw source, maintained wiki page, ingest 로그, lint 결과를 한 곳에서 운영합니다.",
+  schema: "DB product와 단일파일 사이의 join key 후보를 preview로 보고, admin이 확인 저장한 relation만 운영 graph로 남깁니다.",
+  ai: "Flow-i가 호출하는 사내 LLM endpoint의 상태와 설정을 확인합니다. admin은 endpoint/모델/timeout을 바로 수정할 수 있습니다.",
+};
 
 const CATEGORIES = [
   { id: "workflow", icon: "01", label: "워크플로우", desc: "Flowi가 자연어를 받아 안전한 단위기능과 응답으로 바꾸는 전체 pipeline입니다." },
@@ -1277,59 +1284,134 @@ function SchemaRelationSourceFields({ title, value, onChange, files = [] }) {
   );
 }
 
-function SchemaRelationGraph({ graph, isAdmin = false, onDelete = null }) {
-  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
-  const edges = Array.isArray(graph?.edges) ? graph.edges : [];
-  const nodeMap = nodes.reduce((acc, node) => {
-    acc[node.id] = node;
-    return acc;
-  }, {});
-  return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={{ display: "grid", gap: 10 }}>
-        {edges.map((edge) => {
-          const source = nodeMap[edge.source] || { id: edge.source, label: edge.source, type: "source" };
-          const target = nodeMap[edge.target] || { id: edge.target, label: edge.target, type: "source" };
-          return (
-            <div key={edge.id || `${edge.source}-${edge.target}-${edge.label}`} style={{ display: "grid", gridTemplateColumns: "minmax(160px,1fr) 160px minmax(160px,1fr)", gap: 10, alignItems: "stretch" }}>
-              {[source, target].map((node, idx) => (
-                <div key={`${edge.id || edge.label}-${idx}`} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, background: "var(--bg-secondary)", minHeight: 74 }}>
-                  <div style={{ fontSize: 12, color: uxColors.textSub, fontFamily: "monospace" }}>{node.type || "source"}</div>
-                  <div style={{ fontSize: 15, fontWeight: 900, wordBreak: "break-word", marginTop: 4 }}>{node.label || node.id}</div>
-                  <div style={{ fontSize: 11, color: uxColors.textSub, fontFamily: "monospace", wordBreak: "break-all", marginTop: 4 }}>{node.id}</div>
-                </div>
-              )).reduce((acc, nodeCard, idx) => {
-                if (idx === 0) {
-                  acc.push(nodeCard);
-                  acc.push(
-                    <div key={`${edge.id || edge.label}-rel`} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, background: "var(--bg-primary)", display: "grid", alignContent: "center", justifyItems: "center", gap: 6, textAlign: "center" }}>
-                      <Pill tone={edge.status === "confirmed" ? "ok" : "warn"}>{edge.status || "candidate"}</Pill>
-                      <div style={{ fontSize: 13, fontWeight: 900, fontFamily: "monospace", wordBreak: "break-word" }}>{edge.label || "-"}</div>
-                      <div style={{ fontSize: 12, color: uxColors.textSub }}>score {edge.confidence ?? "-"}</div>
-                    </div>
-                  );
-                } else {
-                  acc.push(nodeCard);
-                }
-                return acc;
-              }, [])}
-            </div>
-          );
-        })}
-        {!edges.length && <EmptyState title="relation graph 없음" hint="Preview를 저장하면 source 간 join edge가 표시됩니다." />}
+function confidenceColor(cf) {
+  const v = Number(cf) || 0;
+  if (v >= 0.9) return "#22c55e";
+  if (v >= 0.8) return "#3b82f6";
+  if (v >= 0.7) return "#f59e0b";
+  return "#ef4444";
+}
+
+function SchemaRelationGraph({ candidates = [], onDismiss = null, onConfirm = null, showLegend = true }) {
+  const visible = (candidates || []).filter((c) => c && c.left_source_id && c.right_source_id && c.left_column && c.right_column);
+  if (!visible.length) {
+    return <EmptyState icon="○" title="관계 그래프가 비어 있습니다" hint="Preview 실행 또는 후보 추가가 필요합니다." />;
+  }
+
+  const leftMap = new Map();
+  const rightMap = new Map();
+  for (const c of visible) {
+    if (!leftMap.has(c.left_source_id)) leftMap.set(c.left_source_id, { id: c.left_source_id, label: c.left_label || c.left_source_id, source_type: c.left_source_type, cols: [] });
+    if (!rightMap.has(c.right_source_id)) rightMap.set(c.right_source_id, { id: c.right_source_id, label: c.right_label || c.right_source_id, source_type: c.right_source_type, cols: [] });
+    const L = leftMap.get(c.left_source_id);
+    const R = rightMap.get(c.right_source_id);
+    if (!L.cols.find((x) => x.name === c.left_column)) L.cols.push({ name: c.left_column, dtype: c.left_dtype });
+    if (!R.cols.find((x) => x.name === c.right_column)) R.cols.push({ name: c.right_column, dtype: c.right_dtype });
+  }
+  const leftSources = Array.from(leftMap.values());
+  const rightSources = Array.from(rightMap.values());
+
+  const ROW = 30;
+  const HDR = 36;
+  const PAD = 12;
+  const COL_W = 280;
+  const GAP = 200;
+
+  const yOf = new Map();
+  let leftCursor = 0;
+  for (const src of leftSources) {
+    let y = leftCursor + HDR;
+    for (const col of src.cols) {
+      yOf.set(`L::${src.id}::${col.name}`, y + ROW / 2);
+      y += ROW;
+    }
+    src._height = HDR + src.cols.length * ROW;
+    leftCursor = y + PAD;
+  }
+  let rightCursor = 0;
+  for (const src of rightSources) {
+    let y = rightCursor + HDR;
+    for (const col of src.cols) {
+      yOf.set(`R::${src.id}::${col.name}`, y + ROW / 2);
+      y += ROW;
+    }
+    src._height = HDR + src.cols.length * ROW;
+    rightCursor = y + PAD;
+  }
+  const height = Math.max(leftCursor, rightCursor, 220);
+  const totalW = COL_W * 2 + GAP;
+
+  const renderSourceBox = (src, side) => (
+    <div key={src.id} style={{ width: COL_W, marginBottom: PAD, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden", background: "var(--bg-secondary)" }}>
+      <div style={{ height: HDR, display: "flex", alignItems: "center", gap: 8, padding: "0 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)" }}>
+        <Pill tone={String(src.source_type || "").toLowerCase() === "db" ? "accent" : "info"}>{src.source_type || "src"}</Pill>
+        <span style={{ fontSize: 13, fontWeight: 800, color: uxColors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={src.label}>{src.label}</span>
+        <span style={{ marginLeft: "auto", fontSize: 11, color: uxColors.textSub, fontFamily: "monospace" }}>{src.cols.length} col</span>
       </div>
-      <DataTable
-        rows={edges}
-        empty="edge가 없습니다."
-        columns={[
-          { key: "source", label: "source", width: 160, render: (r) => nodeMap[r.source]?.label || r.source },
-          { key: "target", label: "target", width: 160, render: (r) => nodeMap[r.target]?.label || r.target },
-          { key: "label", label: "relation" },
-          { key: "confidence", label: "score", width: 80 },
-          { key: "status", label: "status", width: 100, render: (r) => <Pill tone={r.status === "confirmed" ? "ok" : "warn"}>{r.status || "-"}</Pill> },
-          ...(isAdmin && onDelete ? [{ key: "delete", label: "", width: 82, render: (r) => <Button variant="danger" onClick={() => onDelete(r)}>삭제</Button> }] : []),
-        ]}
-      />
+      {src.cols.map((col, ci) => (
+        <div key={col.name} style={{ height: ROW, display: "flex", alignItems: "center", justifyContent: side === "left" ? "space-between" : "flex-start", gap: 8, padding: "0 10px", borderTop: ci ? "1px solid var(--border)" : undefined, background: "var(--bg-primary)" }}>
+          {side === "right" && <span style={{ width: 8, height: 8, borderRadius: 999, background: uxColors.accent, flexShrink: 0 }} />}
+          <span style={{ fontSize: 13, fontFamily: "monospace", color: uxColors.text, fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={col.name}>{col.name}</span>
+          <span style={{ fontSize: 11, color: uxColors.textSub, fontFamily: "monospace" }}>{col.dtype || ""}</span>
+          {side === "left" && <span style={{ width: 8, height: 8, borderRadius: 999, background: uxColors.accent, flexShrink: 0 }} />}
+        </div>
+      ))}
+    </div>
+  );
+
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      {showLegend && (
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", fontSize: 12, color: uxColors.textSub }}>
+          <span>왼쪽 컬럼을 기준으로 오른쪽 컬럼이 연결됩니다. 선 색은 신뢰도, 가운데 점수, 점수 옆 ✕ 는 후보에서 제거.</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 16, height: 3, background: "#22c55e", borderRadius: 2 }} />≥0.9</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 16, height: 3, background: "#3b82f6", borderRadius: 2 }} />≥0.8</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 16, height: 3, background: "#f59e0b", borderRadius: 2 }} />≥0.7</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 16, height: 3, background: "#ef4444", borderRadius: 2 }} />&lt;0.7</span>
+        </div>
+      )}
+      <div style={{ overflowX: "auto" }}>
+        <div style={{ position: "relative", width: totalW, minHeight: height + 8, paddingTop: 4 }}>
+          <div style={{ position: "absolute", left: 0, top: 4, width: COL_W, display: "flex", flexDirection: "column" }}>
+            {leftSources.map((src) => renderSourceBox(src, "left"))}
+          </div>
+          <svg style={{ position: "absolute", left: COL_W, top: 4, width: GAP, height, overflow: "visible" }} viewBox={`0 0 ${GAP} ${height}`}>
+            {visible.map((c) => {
+              const yL = yOf.get(`L::${c.left_source_id}::${c.left_column}`);
+              const yR = yOf.get(`R::${c.right_source_id}::${c.right_column}`);
+              if (yL == null || yR == null) return null;
+              const color = confidenceColor(c.confidence || 0);
+              const mid = GAP / 2;
+              const labelX = mid;
+              const labelY = (yL + yR) / 2;
+              return (
+                <g key={c.relation_id}>
+                  <path d={`M 0 ${yL} C ${mid} ${yL}, ${mid} ${yR}, ${GAP} ${yR}`} stroke={color} fill="none" strokeWidth={Math.max(1.5, 1 + (Number(c.confidence) || 0.7) * 1.6)} opacity="0.92" />
+                  <g>
+                    <rect x={labelX - 24} y={labelY - 9} width={48} height={18} rx={4} fill="var(--bg-primary)" stroke={color} strokeWidth="1" />
+                    <text x={labelX} y={labelY + 4} textAnchor="middle" fontSize="11" fontWeight="700" fill={color}>{(Number(c.confidence) || 0).toFixed(2)}</text>
+                  </g>
+                  {onConfirm && c.status !== "confirmed" && (
+                    <g style={{ cursor: "pointer" }} onClick={() => onConfirm(c)}>
+                      <circle cx={labelX - 38} cy={labelY} r={9} fill="var(--bg-primary)" stroke="#22c55e" strokeWidth="1" />
+                      <text x={labelX - 38} y={labelY + 4} textAnchor="middle" fontSize="11" fontWeight="800" fill="#22c55e">✓</text>
+                    </g>
+                  )}
+                  {onDismiss && (
+                    <g style={{ cursor: "pointer" }} onClick={() => onDismiss(c)}>
+                      <circle cx={labelX + 38} cy={labelY} r={9} fill="var(--bg-primary)" stroke="#ef4444" strokeWidth="1" />
+                      <text x={labelX + 38} y={labelY + 4} textAnchor="middle" fontSize="12" fontWeight="800" fill="#ef4444">×</text>
+                    </g>
+                  )}
+                </g>
+              );
+            })}
+          </svg>
+          <div style={{ position: "absolute", left: COL_W + GAP, top: 4, width: COL_W, display: "flex", flexDirection: "column" }}>
+            {rightSources.map((src) => renderSourceBox(src, "right"))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1343,6 +1425,8 @@ function SchemaRelationsPanel({ isAdmin }) {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [dismissedIds, setDismissedIds] = useState(new Set());
+  const [showAlternatives, setShowAlternatives] = useState(false);
   const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box", fontSize: 14 };
 
   const loadGraph = () => {
@@ -1358,23 +1442,58 @@ function SchemaRelationsPanel({ isAdmin }) {
     loadGraph();
   }, []);
 
+  const allCandidates = Array.isArray(preview?.candidates) ? preview.candidates : [];
+  const sourceRows = Array.isArray(preview?.sources) ? preview.sources : [];
+
+  const primaryCandidates = useMemo(() => {
+    const best = new Map();
+    for (const c of allCandidates) {
+      if (!c?.left_source_id || !c?.left_column) continue;
+      const key = `${c.left_source_id}::${c.left_column}`;
+      const prev = best.get(key);
+      if (!prev || (Number(c.confidence) || 0) > (Number(prev.confidence) || 0)) {
+        best.set(key, c);
+      }
+    }
+    return Array.from(best.values()).sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0));
+  }, [allCandidates]);
+
+  const filteredCandidates = useMemo(() => {
+    const source = showAlternatives ? allCandidates : primaryCandidates;
+    return source.filter((c) => !dismissedIds.has(c.relation_id));
+  }, [allCandidates, primaryCandidates, showAlternatives, dismissedIds]);
+
+  const alternativeCount = Math.max(0, allCandidates.length - primaryCandidates.length);
+
+  const dismissCandidate = (candidate) => {
+    if (!candidate?.relation_id) return;
+    setDismissedIds((cur) => {
+      const next = new Set(cur);
+      next.add(candidate.relation_id);
+      return next;
+    });
+  };
+
+  const restoreDismissed = () => setDismissedIds(new Set());
+
   const runPreview = () => {
     setBusy(true);
     setMsg("");
     postJson("/api/agent/schema-relations/preview", { sources: [left, right], max_candidates: 40, sample_rows: 20 })
       .then((d) => {
         setPreview(d);
-        setMsg(`preview 후보 ${d.candidates?.length || 0}개`);
+        setDismissedIds(new Set());
+        setMsg(`preview 후보 ${d.candidates?.length || 0}개 (왼쪽 컬럼 기준 ${(new Set((d.candidates || []).map((c) => `${c.left_source_id}::${c.left_column}`))).size}개)`);
       })
       .catch((e) => setMsg("preview 오류: " + (e.message || e)))
       .finally(() => setBusy(false));
   };
 
   const saveCandidates = () => {
-    if (!isAdmin || !preview?.candidates?.length) return;
+    if (!isAdmin || !filteredCandidates.length) return;
     setBusy(true);
     setMsg("");
-    postJson("/api/agent/schema-relations/save", { candidates: preview.candidates, note })
+    postJson("/api/agent/schema-relations/save", { candidates: filteredCandidates, note })
       .then((d) => {
         setGraph(d);
         setMsg(`저장됨: ${d.saved_count || 0} relation`);
@@ -1384,7 +1503,7 @@ function SchemaRelationsPanel({ isAdmin }) {
   };
 
   const deleteRelation = (edge) => {
-    const relationId = edge?.id;
+    const relationId = edge?.relation_id || edge?.id;
     if (!isAdmin || !relationId) return;
     if (!confirm("저장된 relation 정의만 삭제합니다. 원본 DB/단일파일은 수정하지 않습니다. 계속할까요?")) return;
     setBusy(true);
@@ -1398,38 +1517,34 @@ function SchemaRelationsPanel({ isAdmin }) {
       .finally(() => setBusy(false));
   };
 
-  const candidateRows = Array.isArray(preview?.candidates) ? preview.candidates : [];
-  const sourceRows = Array.isArray(preview?.sources) ? preview.sources : [];
+  const savedRelations = Array.isArray(graph?.relations) ? graph.relations : [];
+
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      {msg && <Banner tone={msg.includes("오류") ? "bad" : msg.includes("저장") ? "ok" : "info"}>{msg}</Banner>}
+      {msg && <Banner tone={msg.includes("오류") ? "bad" : msg.includes("저장") || msg.includes("삭제") ? "ok" : "info"}>{msg}</Banner>}
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 12, alignItems: "start" }}>
-        <SchemaRelationSourceFields title="Source A" value={left} onChange={setLeft} files={baseFiles} />
-        <SchemaRelationSourceFields title="Source B" value={right} onChange={setRight} files={baseFiles} />
+        <SchemaRelationSourceFields title="Source A (왼쪽 기준)" value={left} onChange={setLeft} files={baseFiles} />
+        <SchemaRelationSourceFields title="Source B (오른쪽 매칭)" value={right} onChange={setRight} files={baseFiles} />
       </div>
 
-      <Panel title="Relation Preview" subtitle="컬럼명, dtype, key alias, 가능한 sample overlap 기준으로 후보만 생성합니다. 저장 전까지 운영 relation graph에 반영되지 않습니다.">
+      <Panel
+        title="Relation Preview"
+        subtitle="왼쪽 컬럼을 기준으로 오른쪽에서 가장 점수가 높은 매칭만 남깁니다. ✕ 로 후보를 제거하고, ‘대체 후보 보기’ 로 같은 왼쪽 컬럼의 다른 매칭을 검토할 수 있습니다."
+        right={<Pill tone="accent">{filteredCandidates.length} / {allCandidates.length}</Pill>}
+      >
         <div style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap", marginBottom: 10 }}>
           <Button variant="primary" onClick={runPreview} disabled={busy}>{busy ? "처리 중" : "Preview 생성"}</Button>
           <Field label="admin save note">
             <input value={note} onChange={(e) => setNote(e.target.value)} style={{ ...inputStyle, minWidth: 260 }} placeholder="저장 근거/확인 메모" />
           </Field>
-          <Button variant="primary" onClick={saveCandidates} disabled={!isAdmin || busy || !candidateRows.length}>확인 후보 저장</Button>
+          <Button variant="primary" onClick={saveCandidates} disabled={!isAdmin || busy || !filteredCandidates.length}>확인 후보 저장</Button>
+          <Button variant={showAlternatives ? "primary" : "subtle"} onClick={() => setShowAlternatives((v) => !v)} disabled={!alternativeCount}>
+            {showAlternatives ? "대표 매칭만 보기" : `대체 후보 보기${alternativeCount ? ` (+${alternativeCount})` : ""}`}
+          </Button>
+          {dismissedIds.size > 0 && <Button variant="subtle" onClick={restoreDismissed}>제거 취소 ({dismissedIds.size})</Button>}
           {!isAdmin && <Pill tone="neutral">admin만 저장</Pill>}
         </div>
-        <DataTable
-          rows={candidateRows}
-          empty="Preview를 실행하면 관계 후보가 표시됩니다."
-          columns={[
-            { key: "left_column", label: "left column", width: 150 },
-            { key: "right_column", label: "right column", width: 150 },
-            { key: "canonical_key", label: "key", width: 120 },
-            { key: "confidence", label: "score", width: 80 },
-            { key: "left_dtype", label: "left dtype", width: 100 },
-            { key: "right_dtype", label: "right dtype", width: 100 },
-            { key: "evidence", label: "evidence", render: (r) => listText(r.evidence, 3) },
-          ]}
-        />
+        <SchemaRelationGraph candidates={filteredCandidates} onDismiss={isAdmin ? dismissCandidate : null} />
       </Panel>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.85fr) minmax(0,1.15fr)", gap: 12, alignItems: "start" }}>
@@ -1445,17 +1560,49 @@ function SchemaRelationsPanel({ isAdmin }) {
             ]}
           />
         </Panel>
-        <Panel title="Preview Graph" subtitle="저장 전 후보 graph">
-          <SchemaRelationGraph graph={preview?.graph || {}} />
+        <Panel
+          title="후보 표"
+          subtitle="graph 의 동일 후보를 표로 다시 확인합니다. ✕ 으로 후보를 제거할 수 있습니다."
+        >
+          <DataTable
+            rows={filteredCandidates}
+            empty="Preview를 실행하면 관계 후보가 표시됩니다."
+            columns={[
+              { key: "left_column", label: "left column", width: 150 },
+              { key: "right_column", label: "right column", width: 150 },
+              { key: "canonical_key", label: "key", width: 110 },
+              { key: "confidence", label: "score", width: 70, render: (r) => <Pill tone={(Number(r.confidence) || 0) >= 0.9 ? "ok" : (Number(r.confidence) || 0) >= 0.8 ? "info" : "warn"}>{(Number(r.confidence) || 0).toFixed(2)}</Pill> },
+              { key: "left_dtype", label: "left dtype", width: 90 },
+              { key: "right_dtype", label: "right dtype", width: 90 },
+              { key: "evidence", label: "evidence", render: (r) => listText(r.evidence, 3) },
+              ...(isAdmin ? [{ key: "dismiss", label: "", width: 70, render: (r) => <Button variant="subtle" onClick={() => dismissCandidate(r)} title="후보에서 제거">✕</Button> }] : []),
+            ]}
+          />
         </Panel>
       </div>
 
       <Panel
         title="Saved Relation Graph"
-        subtitle="Admin이 확인 저장한 relation만 표시합니다. 삭제해도 원본 DB/단일파일은 수정하지 않습니다."
-        right={<Pill tone="accent">{graph?.relations?.length || 0} saved</Pill>}
+        subtitle="Admin이 확인 저장한 relation만 표시합니다. graph 의 ✕ 또는 표의 삭제 버튼으로 정의를 제거할 수 있고, 원본 DB/단일파일은 건드리지 않습니다."
+        right={<Pill tone="accent">{savedRelations.length} saved</Pill>}
       >
-        <SchemaRelationGraph graph={graph?.graph || {}} isAdmin={isAdmin} onDelete={deleteRelation} />
+        <SchemaRelationGraph candidates={savedRelations} onDismiss={isAdmin ? deleteRelation : null} showLegend={false} />
+        {isAdmin && savedRelations.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            <DataTable
+              rows={savedRelations}
+              empty=""
+              columns={[
+                { key: "left_label", label: "left source", width: 160 },
+                { key: "left_column", label: "left column", width: 140 },
+                { key: "right_label", label: "right source", width: 160 },
+                { key: "right_column", label: "right column", width: 140 },
+                { key: "confidence", label: "score", width: 70, render: (r) => (Number(r.confidence) || 0).toFixed(2) },
+                { key: "delete", label: "", width: 80, render: (r) => <Button variant="danger" onClick={() => deleteRelation(r)}>삭제</Button> },
+              ]}
+            />
+          </div>
+        )}
       </Panel>
     </div>
   );
@@ -1734,6 +1881,57 @@ function activationStatusTone(status) {
   return "neutral";
 }
 
+function historyStatusTone(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "ready" || s === "done" || s === "completed") return "ok";
+  if (s === "needs_input" || s === "awaiting_confirmation" || s === "waiting") return "warn";
+  if (s === "blocked" || s === "error") return "bad";
+  return "neutral";
+}
+
+function truncateText(value, limit) {
+  const text = String(value || "");
+  if (!text) return "-";
+  return text.length > limit ? text.slice(0, limit) + "…" : text;
+}
+
+function PromptHistoryPanel({ entries = [], onSelect, onRerun, activePrompt, busy = false }) {
+  const rows = entries.map((entry, idx) => ({
+    ...entry,
+    no: idx + 1,
+    timeShort: String(entry.ts || "").replace("T", " ").slice(5, 16),
+    promptShort: truncateText(entry.prompt, 110),
+    answerShort: truncateText(entry.answer || entry.error, 90),
+    missingText: entry.missing && entry.missing.length ? entry.missing.join(", ") : "-",
+  }));
+  return (
+    <Panel
+      title="프롬프트 기록"
+      subtitle="이 세션에서 실행한 프롬프트와 결과를 최신순으로 보여줍니다. 행을 클릭하면 입력창에 채워지고, 재실행 버튼으로 같은 prompt 를 다시 보낼 수 있습니다."
+      right={<Pill tone={busy ? "warn" : "accent"}>{busy ? "실행 중" : `${entries.length} 건`}</Pill>}
+    >
+      <DataTable
+        rows={rows}
+        empty="아직 실행한 프롬프트가 없습니다. 위쪽 입력창에서 prompt 를 보내 보세요."
+        onRowClick={(row) => onSelect?.(row.prompt)}
+        rowStyle={(row) => row.prompt === activePrompt ? { background: "var(--accent-glow)" } : undefined}
+        maxHeight={360}
+        columns={[
+          { key: "no", label: "#", width: 44 },
+          { key: "timeShort", label: "time", width: 110 },
+          { key: "promptShort", label: "prompt" },
+          { key: "feature", label: "feature", width: 130, render: (r) => <Pill tone="accent">{r.feature || "-"}</Pill> },
+          { key: "action", label: "action", width: 180 },
+          { key: "status", label: "status", width: 120, render: (r) => <Pill tone={historyStatusTone(r.status)}>{r.status || "-"}</Pill> },
+          { key: "missingText", label: "missing", width: 140 },
+          { key: "answerShort", label: "answer / error" },
+          { key: "rerun", label: "", width: 88, render: (r) => <Button variant="subtle" onClick={(e) => { e?.stopPropagation?.(); onRerun?.(r.prompt); }}>재실행</Button> },
+        ]}
+      />
+    </Panel>
+  );
+}
+
 function FlowiOrchestratorPreview({ rows = [], busy = false, onSelectPrompt }) {
   const featureCounts = rows.reduce((acc, row) => {
     const key = row.feature || "general";
@@ -1772,37 +1970,30 @@ function FlowiOrchestratorPreview({ rows = [], busy = false, onSelectPrompt }) {
 
 function FlowiExecutionPanel({ user }) {
   const [prompt, setPrompt] = useState(FUNCTION_TEST_PROMPT);
-  const [promptChoice, setPromptChoice] = useState(FUNCTION_TEST_PROMPT);
   const [result, setResult] = useState(null);
   const [promptHistory, setPromptHistory] = useState([]);
-  const [activationRows, setActivationRows] = useState([]);
-  const [activationBusy, setActivationBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box", fontSize: 14 };
 
-  const samplePrompts = QUICK_PROMPTS.slice(1).map((item) => item.prompt);
-  const collectPreviewPrompts = (primaryPrompt = prompt, history = promptHistory) => {
-    const ordered = [primaryPrompt, ...history, ...samplePrompts].map((x) => String(x || "").trim()).filter(Boolean);
-    return ordered.filter((item, idx) => ordered.indexOf(item) === idx).slice(0, 10);
-  };
-  const refreshActivationPreview = (primaryPrompt = prompt, history = promptHistory) => {
-    const prompts = collectPreviewPrompts(primaryPrompt, history);
-    if (!prompts.length) return;
-    setActivationBusy(true);
-    postJson("/api/llm/flowi/orchestrator/preview", {
-      prompts,
-      product: "",
-      max_rows: 12,
-    })
-      .then((d) => setActivationRows(Array.isArray(d.rows) ? d.rows : []))
-      .catch((e) => setErr(e.message || String(e)))
-      .finally(() => setActivationBusy(false));
-  };
-  const rememberPrompt = (body) => {
-    const nextHistory = [body, ...promptHistory.filter((item) => item !== body)].slice(0, 5);
-    setPromptHistory(nextHistory);
-    return nextHistory;
+  const rememberPrompt = (body, data, errMessage = "") => {
+    const tool = data?.tool || {};
+    const workflow = data?.workflow_state || tool.workflow_state || {};
+    const entry = {
+      id: `h_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      ts: new Date().toISOString(),
+      prompt: body,
+      feature: tool.feature || workflow.feature || "-",
+      action: tool.action || workflow.action || tool.intent || "-",
+      intent: tool.intent || workflow.intent || "-",
+      status: errMessage
+        ? "error"
+        : (workflow.status || (tool.blocked ? "blocked" : (data ? "done" : "waiting"))),
+      missing: Array.isArray(tool.missing) ? tool.missing.map(String) : [],
+      error: errMessage,
+      answer: data?.answer || tool.answer || "",
+    };
+    setPromptHistory((cur) => [entry, ...cur.filter((item) => item.prompt !== body)].slice(0, 12));
   };
   const run = (overridePrompt = "") => {
     const body = String(overridePrompt || prompt).trim();
@@ -1820,21 +2011,16 @@ function FlowiExecutionPanel({ user }) {
     })
       .then((d) => {
         setResult(d);
-        const nextHistory = rememberPrompt(body);
-        refreshActivationPreview(body, nextHistory);
+        rememberPrompt(body, d);
       })
-      .catch((e) => setErr(e.message || String(e)))
+      .catch((e) => {
+        const msg = e.message || String(e);
+        setErr(msg);
+        rememberPrompt(body, null, msg);
+      })
       .finally(() => setBusy(false));
   };
   useEffect(() => { run(); }, []);
-  const choosePrompt = (value) => {
-    const next = String(value || "").trim();
-    setPromptChoice(next);
-    if (next) {
-      setPrompt(next);
-      refreshActivationPreview(next);
-    }
-  };
 
   const tool = result?.tool || {};
   const workflow = result?.workflow_state || tool.workflow_state || {};
@@ -1855,24 +2041,21 @@ function FlowiExecutionPanel({ user }) {
         right={<Pill tone={statusTone}>{workflow.status || (result ? "done" : "ready")}</Pill>}
       >
         {err && <Banner tone="bad">{err}</Banner>}
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(260px,1fr) minmax(170px,240px) auto", gap: 8, alignItems: "end" }}>
-          <Field label="prompt">
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(260px,1fr) auto", gap: 8, alignItems: "end" }}>
+          <Field label="prompt" hint="자연어 그대로 입력하세요. 이전에 실행한 prompt 는 아래 ‘프롬프트 기록’ 카드에서 다시 선택할 수 있습니다.">
             <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55 }} />
           </Field>
-          <Field label="예시 prompt">
-            <select value={promptChoice} onChange={(e) => choosePrompt(e.target.value)} style={inputStyle}>
-              <option value="">직접 입력</option>
-              {QUICK_PROMPTS.slice(1).map((item) => <option key={item.label} value={item.prompt}>{item.label}</option>)}
-            </select>
-          </Field>
-          <Button variant="primary" onClick={run} disabled={busy || !prompt.trim()}>{busy ? "실행 중" : "실행"}</Button>
-        </div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
-          {QUICK_PROMPTS.slice(1, 6).map((item) => <Button key={item.label} variant="subtle" onClick={() => { setPrompt(item.prompt); refreshActivationPreview(item.prompt); }}>{item.label}</Button>)}
+          <Button variant="primary" onClick={() => run()} disabled={busy || !prompt.trim()}>{busy ? "실행 중" : "실행"}</Button>
         </div>
       </Panel>
 
-      <FlowiOrchestratorPreview rows={activationRows} busy={activationBusy} onSelectPrompt={(text) => { setPrompt(text); refreshActivationPreview(text); }} />
+      <PromptHistoryPanel
+        entries={promptHistory}
+        activePrompt={prompt}
+        busy={busy}
+        onSelect={(text) => setPrompt(text)}
+        onRerun={(text) => run(text)}
+      />
 
       <Panel title="Activation Map (5단계)" subtitle="현재 실행한 프롬프트 하나의 전달 경로와 활성 action입니다.">
         <FlowiActivationMap trace={trace} result={result} prompt={prompt} />
@@ -1955,16 +2138,18 @@ export default function My_Diagnosis({ user }) {
   const [tab, setTab] = useState("loop");
   const isAdminUser = user?.role === "admin";
   const canManageWiki = canManagePage(user, "diagnosis") || canManagePage(user, "knowledge");
+  const tabHint = AGENT_TAB_HINT[tab];
   return (
     <PageShell>
       <PageHeader title="에이전트" subtitle="Flow-i orchestrator가 프롬프트를 기능별 단위기능으로 라우팅하고 실행한 흐름을 확인합니다." />
       <div style={{ padding: 12, display: "grid", gap: 12 }}>
         <TabStrip items={AGENT_TABS} active={tab} onChange={setTab} />
+        {tabHint && <Banner tone="info">{tabHint}</Banner>}
         {tab === "loop" && <FlowiExecutionPanel user={user} />}
         {tab === "wiki" && (
           <div style={{ display: "grid", gap: 12 }}>
             <AgentWikiPanel canManage={canManageWiki} />
-            <Panel title="Knowledge Vault Graph" subtitle="Agent Wiki와 함께 지식 source/page/log/graph를 확인합니다.">
+            <Panel title="Knowledge Vault Graph" subtitle="Agent Wiki와 함께 지식 source/page/log/graph를 같이 봅니다. raw event, ontology 카드도 같은 화면에서 확인할 수 있습니다.">
               <AgentKnowledgeVault user={user} embedded />
             </Panel>
           </div>
