@@ -1854,8 +1854,8 @@ def _resolve_lot_identity_snapshot(
         source = source or "fallback"
     if not fab:
         embed_fabs = _extract_fab_lots_from_embed(embed)
-        if len(embed_fabs) == 1:
-            fab = embed_fabs[0]
+        if embed_fabs:
+            fab = ", ".join(embed_fabs)
 
     return {
         "root_lot_id": root_ids[0] if root_ids else "",
