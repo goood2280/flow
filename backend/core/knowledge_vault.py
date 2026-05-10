@@ -207,6 +207,166 @@ def _build_ontology_prompt(docs: list[dict[str, Any]]) -> str:
     )
 
 
+_ALLOWED_DOC_KINDS = {
+    "product", "lot", "wafer", "knob", "issue", "meeting",
+    "report", "decision", "agent_wiki", "ontology", "manual",
+}
+
+
+def _normalize_doc_draft(payload: Any, hint_doc_id: str, hint_tags: list[str], existing_doc_ids: set[str]) -> dict[str, Any]:
+    """Clean LLM output and merge with user-provided hints (hints win for tags/doc_id)."""
+    if not isinstance(payload, dict):
+        payload = {}
+    title = str(payload.get("title") or "").strip()[:200]
+    summary = str(payload.get("summary") or "").strip().replace("\n", " ")[:400]
+    kind_raw = str(payload.get("kind") or "manual").strip().lower()
+    kind = kind_raw if kind_raw in _ALLOWED_DOC_KINDS else "manual"
+
+    ai_tags = payload.get("tags") if isinstance(payload.get("tags"), list) else []
+    merged_tags: list[str] = []
+    seen_tag: set[str] = set()
+    for t in list(hint_tags or []) + list(ai_tags):
+        ts = str(t or "").strip()
+        if ts and ts.lower() not in seen_tag:
+            merged_tags.append(ts[:40])
+            seen_tag.add(ts.lower())
+
+    entity_raw = payload.get("entity") if isinstance(payload.get("entity"), dict) else {}
+    entity = {
+        "product": str(entity_raw.get("product") or "").strip()[:60],
+        "root_lot_id": str(entity_raw.get("root_lot_id") or "").strip()[:60],
+        "wafer_id": str(entity_raw.get("wafer_id") or "").strip()[:60],
+    }
+
+    related_ai = payload.get("related_doc_ids") if isinstance(payload.get("related_doc_ids"), list) else []
+    related: list[str] = []
+    for ref in related_ai:
+        rs = str(ref or "").strip()
+        if rs and rs != hint_doc_id and rs in existing_doc_ids and rs not in related:
+            related.append(rs)
+        if len(related) >= 24:
+            break
+
+    relations_ai = payload.get("relations") if isinstance(payload.get("relations"), dict) else {}
+    relations: dict[str, str] = {}
+    for ref in related:
+        rel = str(relations_ai.get(ref) or "relates_to").strip().lower()[:60] or "relates_to"
+        relations[ref] = rel
+
+    return {
+        "ok": True,
+        "title": title or (hint_doc_id or "Untitled"),
+        "summary": summary,
+        "kind": kind,
+        "tags": merged_tags[:20],
+        "entity": entity,
+        "related_doc_ids": related,
+        "relations": relations,
+    }
+
+
+def _build_doc_metadata_prompt(body: str, doc_id: str, tags: list[str], existing_docs: list[dict[str, Any]]) -> str:
+    existing_lines: list[str] = []
+    for d in existing_docs[:60]:
+        did = str(d.get("doc_id") or "").strip()
+        if not did:
+            continue
+        title = str(d.get("title") or did).strip()
+        kind = str(d.get("kind") or "").strip()
+        existing_lines.append(f"- {did} ({kind}) — {title}")
+    existing_summary = "\n".join(existing_lines) or "(없음)"
+    allowed_kinds = ", ".join(sorted(_ALLOWED_DOC_KINDS))
+    tag_hint = ", ".join(str(t) for t in (tags or []) if t) or "(없음)"
+    body_text = (body or "").strip()
+    if len(body_text) > 6000:
+        body_text = body_text[:6000] + "\n... (생략)"
+    return (
+        "당신은 사내 반도체 wiki editor 입니다. "
+        "다음 본문을 읽고 frontmatter 메타데이터와 다른 wiki 문서와의 의미 관계를 JSON 으로만 출력하세요. "
+        "코드블록·해설·여백 없이 단일 JSON object 만 출력합니다.\n\n"
+        f"입력 doc_id: {doc_id or '(자동 생성)'}\n"
+        f"사용자가 넣은 tags: {tag_hint}\n\n"
+        f"본문 ({len(body or '')} chars):\n{body_text}\n\n"
+        f"기존 wiki 문서 (관계 후보로만 사용):\n{existing_summary}\n\n"
+        "규칙:\n"
+        f"- kind 는 다음 중 하나만: {allowed_kinds}.\n"
+        "- entity 의 product/root_lot_id/wafer_id 는 본문에 명시되어 있을 때만 채우고, 불확실하면 빈 문자열.\n"
+        "- tags 는 사용자 tag 를 보존하고 본문에 등장하는 핵심 키워드 1~6개를 추가.\n"
+        "- related_doc_ids 는 위 목록에 있는 doc_id 만 (없으면 빈 배열). relations 는 doc_id → 짧은 관계 라벨 (영문 소문자/언더스코어, 예: includes, follows, replaces, contacted_by).\n\n"
+        "출력 형식:\n"
+        "{\"title\":\"...\",\"summary\":\"한 줄 요약\",\"kind\":\"...\","
+        "\"tags\":[\"...\"],\"entity\":{\"product\":\"\",\"root_lot_id\":\"\",\"wafer_id\":\"\"},"
+        "\"related_doc_ids\":[\"...\"],\"relations\":{\"doc_id\":\"relation\"}}"
+    )
+
+
+def draft_doc_metadata(body: str, *, doc_id: str = "", tags: list[str] | None = None) -> dict[str, Any]:
+    """Ask the configured LLM to extract metadata + relations from a wiki body.
+
+    Returns dict {ok, ...draft fields, error?, raw_text?}.
+    """
+    from core import llm_adapter
+    body_text = (body or "").strip()
+    if not body_text:
+        return {"ok": False, "error": "body required"}
+    if not llm_adapter.is_available():
+        return {"ok": False, "error": "llm not configured or disabled"}
+    existing = list_docs(limit=200)
+    existing_ids = {str(d.get("doc_id") or "").strip() for d in existing if d.get("doc_id")}
+    prompt = _build_doc_metadata_prompt(body_text, doc_id, tags or [], existing)
+    sys_prompt = (
+        "You output a single JSON object with keys: title, summary, kind, tags, entity, "
+        "related_doc_ids, relations. No code fences, no commentary."
+    )
+    result = llm_adapter.complete(prompt, system=sys_prompt, timeout=30)
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error") or "llm error"}
+    text = str(result.get("text") or "")
+    block = _extract_json_block(text) or text
+    try:
+        parsed = json.loads(block)
+    except Exception as e:
+        return {"ok": False, "error": f"llm output not parseable JSON: {e}", "raw_text": text[:2000]}
+    normalized = _normalize_doc_draft(parsed, doc_id, tags or [], existing_ids)
+    normalized["prompt_chars"] = len(prompt)
+    normalized["raw_text"] = text[:2000]
+    return normalized
+
+
+def ai_upsert_doc(*, body: str, doc_id: str = "", tags: list[str] | None = None, actor: str = "") -> dict[str, Any]:
+    """Full pipeline: draft metadata via LLM, save the doc, refresh the graph.
+
+    Returns {ok, doc, draft, graph_counts} or {ok:false, error}.
+    """
+    draft = draft_doc_metadata(body, doc_id=doc_id, tags=tags or [])
+    if not draft.get("ok"):
+        return draft
+    fm = {
+        "related_doc_ids": draft.get("related_doc_ids") or [],
+        "relations": draft.get("relations") or {},
+        "ai_drafted": True,
+    }
+    doc = KnowledgeDoc(
+        doc_id=doc_id or "",
+        kind=draft.get("kind") or "manual",
+        title=draft.get("title") or "Untitled",
+        summary=draft.get("summary") or "",
+        body=body or "",
+        actor=actor or "",
+        entity=FlowEntityKey(**(draft.get("entity") or {})),
+        tags=draft.get("tags") or [],
+        frontmatter=fm,
+    )
+    saved = upsert_doc(doc)
+    graph = rebuild_graph()
+    return {
+        "ok": True,
+        "doc": saved,
+        "draft": draft,
+        "graph_counts": graph.get("counts", {}),
+    }
+
+
 def generate_ai_ontology(*, max_docs: int = 80) -> dict[str, Any]:
     """Ask the configured LLM for a fresh ontology classification.
 

@@ -112,6 +112,29 @@ def wiki_upsert(req: KnowledgeDocSaveReq, request: Request):
     return {"ok": True, "doc": kv.upsert_doc(doc)}
 
 
+class WikiAiDraftReq(BaseModel):
+    doc_id: str = ""
+    tags: list[str] = Field(default_factory=list)
+    body: str = ""
+
+
+@router.post("/wiki/ai-draft", dependencies=[Depends(_require_knowledge_admin)])
+def wiki_ai_draft(req: WikiAiDraftReq):
+    """Ask the LLM to fill title/summary/kind/entity/relations from a wiki body. Preview only."""
+    if not req.body or not req.body.strip():
+        raise HTTPException(400, "body required")
+    return kv.draft_doc_metadata(req.body, doc_id=req.doc_id, tags=req.tags)
+
+
+@router.post("/wiki/ai-upsert", dependencies=[Depends(_require_knowledge_admin)])
+def wiki_ai_upsert(req: WikiAiDraftReq, request: Request):
+    """One-shot: AI fills metadata + relations, then save and rebuild graph."""
+    if not req.body or not req.body.strip():
+        raise HTTPException(400, "body required")
+    me = current_user(request)
+    return kv.ai_upsert_doc(body=req.body, doc_id=req.doc_id, tags=req.tags, actor=me.get("username") or "system")
+
+
 @router.get("/search")
 def search(q: str = Query(..., min_length=1), scope: str = "all", limit: int = Query(30, ge=1, le=100)):
     if scope not in {"all", "wiki", "event"}:

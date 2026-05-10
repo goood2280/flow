@@ -341,6 +341,9 @@ export default function My_Knowledge({user,embedded=false}){
   const [activeOntology,setActiveOntology]=useState(null);
   const [ontologyPreview,setOntologyPreview]=useState(null);
   const [ontologyBusy,setOntologyBusy]=useState(false);
+  const [docDraft,setDocDraft]=useState(null);
+  const [docBusy,setDocBusy]=useState(false);
+  const [docManualMode,setDocManualMode]=useState(false);
   const [searchQ,setSearchQ]=useState("");
   const [searchResults,setSearchResults]=useState([]);
   const [selectedDoc,setSelectedDoc]=useState(null);
@@ -481,6 +484,44 @@ export default function My_Knowledge({user,embedded=false}){
     sf(API+"/wiki/upsert",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
       .then(d=>{setMsg("문서 저장 완료: "+(d.doc?.doc_id||""));setForm({...form,doc_id:d.doc?.doc_id||form.doc_id});load();})
       .catch(e=>setMsg(e.message||"문서 저장 실패")).finally(()=>setBusy(false));
+  };
+
+  const aiDraftDoc=()=>{
+    if(!canManage)return;
+    if(!form.body.trim()){setMsg("body 가 필요합니다 (AI 가 본문을 읽고 분류합니다).");return;}
+    setDocBusy(true);
+    setMsg("");
+    sf(API+"/wiki/ai-draft",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({doc_id:form.doc_id.trim(),tags:splitTags(form.tags),body:form.body})})
+      .then(d=>{
+        if(d?.ok){
+          setDocDraft(d);
+          setMsg("AI 분석 완료. 미리보기 확인 후 저장하세요.");
+        }else{
+          setMsg("AI 분석 실패: "+(d?.error||"unknown"));
+        }
+      })
+      .catch(e=>setMsg(e.message||"AI 분석 실패"))
+      .finally(()=>setDocBusy(false));
+  };
+
+  const aiUpsertDoc=()=>{
+    if(!canManage)return;
+    if(!form.body.trim()){setMsg("body 가 필요합니다.");return;}
+    setDocBusy(true);
+    setMsg("");
+    sf(API+"/wiki/ai-upsert",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({doc_id:form.doc_id.trim(),tags:splitTags(form.tags),body:form.body})})
+      .then(d=>{
+        if(d?.ok){
+          setMsg("AI 저장 완료: "+(d.doc?.doc_id||""));
+          setDocDraft(null);
+          setForm({...form,doc_id:d.doc?.doc_id||form.doc_id});
+          load();
+        }else{
+          setMsg("AI 저장 실패: "+(d?.error||"unknown"));
+        }
+      })
+      .catch(e=>setMsg(e.message||"AI 저장 실패"))
+      .finally(()=>setDocBusy(false));
   };
 
   const card={background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:10,padding:14};
@@ -632,20 +673,62 @@ export default function My_Knowledge({user,embedded=false}){
         </div>
       </div>}
 
-      {tab==="write"&&canManage&&<div style={{...card,maxWidth:900}}>
-        <div style={{fontSize:17,fontWeight:900,marginBottom:14}}>Wiki 문서 생성/수정</div>
-        <div style={{display:"grid",gap:10}}>
-          <Field label="doc_id"><input value={form.doc_id} onChange={e=>setForm({...form,doc_id:e.target.value})} placeholder="비우면 자동 생성" style={inputStyle()}/></Field>
-          <Field label="kind"><select value={form.kind} onChange={e=>setForm({...form,kind:e.target.value})} style={inputStyle()}>{KIND_OPTIONS.map(k=><option key={k} value={k}>{k}</option>)}</select></Field>
-          <Field label="title"><input value={form.title} onChange={e=>setForm({...form,title:e.target.value})} style={inputStyle()}/></Field>
-          <Field label="summary"><input value={form.summary} onChange={e=>setForm({...form,summary:e.target.value})} style={inputStyle()}/></Field>
-          <Field label="product"><input value={form.product} onChange={e=>setForm({...form,product:e.target.value})} style={inputStyle()}/></Field>
-          <Field label="root_lot_id"><input value={form.root_lot_id} onChange={e=>setForm({...form,root_lot_id:e.target.value})} style={inputStyle()}/></Field>
-          <Field label="wafer_id"><input value={form.wafer_id} onChange={e=>setForm({...form,wafer_id:e.target.value})} style={inputStyle()}/></Field>
-          <Field label="tags"><input value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})} placeholder="comma separated" style={inputStyle()}/></Field>
-          <Field label="body"><textarea value={form.body} onChange={e=>setForm({...form,body:e.target.value})} rows={12} style={inputStyle(true)}/></Field>
-          <div style={{display:"flex",justifyContent:"flex-end"}}><button onClick={saveDoc} disabled={busy} style={{...btn(true),background:"var(--accent)",color:"#fff"}}>저장</button></div>
+      {tab==="write"&&canManage&&<div style={{display:"grid",gap:14,maxWidth:980}}>
+        <div style={card}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+            <div>
+              <div style={{fontSize:17,fontWeight:900}}>Wiki 문서 생성/수정</div>
+              <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:2}}>{docManualMode?"수동 입력 모드 — 모든 필드를 직접 채웁니다.":"본문만 적으면 사내 AI 가 title/summary/kind/entity/related docs 를 채우고 ontology 그래프에 반영합니다."}</div>
+            </div>
+            <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}}>
+              <span style={{fontSize:12,color:"var(--text-secondary)"}}>입력 방식</span>
+              <button type="button" onClick={()=>{setDocManualMode(false);setDocDraft(null);}} style={btn(!docManualMode)}>AI 자동</button>
+              <button type="button" onClick={()=>{setDocManualMode(true);setDocDraft(null);}} style={btn(docManualMode)}>수동</button>
+            </div>
+          </div>
+
+          {!docManualMode&&<div style={{display:"grid",gap:10}}>
+            <Field label="doc_id"><input value={form.doc_id} onChange={e=>setForm({...form,doc_id:e.target.value})} placeholder="비우면 본문 기준으로 자동 생성" style={inputStyle()}/></Field>
+            <Field label="tags"><input value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})} placeholder="comma separated (AI 가 본문 키워드 자동 추가)" style={inputStyle()}/></Field>
+            <Field label="body (본문 — Markdown OK)"><textarea value={form.body} onChange={e=>setForm({...form,body:e.target.value})} rows={14} placeholder="본문을 그대로 적으세요. AI 가 읽고 title, summary, kind, product/lot/wafer, 다른 wiki 문서와의 관계를 채웁니다." style={inputStyle(true)}/></Field>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap"}}>
+              <button onClick={aiDraftDoc} disabled={docBusy||!form.body.trim()} style={btn(false)}>{docBusy?"AI 분석 중":"AI 분석 (미리보기)"}</button>
+              <button onClick={aiUpsertDoc} disabled={docBusy||!form.body.trim()} style={{...btn(true),background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"}}>{docBusy?"저장 중":"AI 분석 + 저장"}</button>
+            </div>
+          </div>}
+
+          {docManualMode&&<div style={{display:"grid",gap:10}}>
+            <Field label="doc_id"><input value={form.doc_id} onChange={e=>setForm({...form,doc_id:e.target.value})} placeholder="비우면 자동 생성" style={inputStyle()}/></Field>
+            <Field label="kind"><select value={form.kind} onChange={e=>setForm({...form,kind:e.target.value})} style={inputStyle()}>{KIND_OPTIONS.map(k=><option key={k} value={k}>{k}</option>)}</select></Field>
+            <Field label="title"><input value={form.title} onChange={e=>setForm({...form,title:e.target.value})} style={inputStyle()}/></Field>
+            <Field label="summary"><input value={form.summary} onChange={e=>setForm({...form,summary:e.target.value})} style={inputStyle()}/></Field>
+            <Field label="product"><input value={form.product} onChange={e=>setForm({...form,product:e.target.value})} style={inputStyle()}/></Field>
+            <Field label="root_lot_id"><input value={form.root_lot_id} onChange={e=>setForm({...form,root_lot_id:e.target.value})} style={inputStyle()}/></Field>
+            <Field label="wafer_id"><input value={form.wafer_id} onChange={e=>setForm({...form,wafer_id:e.target.value})} style={inputStyle()}/></Field>
+            <Field label="tags"><input value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})} placeholder="comma separated" style={inputStyle()}/></Field>
+            <Field label="body"><textarea value={form.body} onChange={e=>setForm({...form,body:e.target.value})} rows={12} style={inputStyle(true)}/></Field>
+            <div style={{display:"flex",justifyContent:"flex-end"}}><button onClick={saveDoc} disabled={busy} style={{...btn(true),background:"var(--accent)",color:"#fff"}}>저장</button></div>
+          </div>}
         </div>
+
+        {!docManualMode&&docDraft&&<div style={{...card,borderColor:"var(--accent)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+            <div style={{fontSize:14,fontWeight:900,color:"var(--accent)"}}>AI 분석 결과 (미리보기)</div>
+            <span style={{fontSize:12,color:"var(--text-secondary)"}}>저장 전까지는 wiki/그래프에 반영되지 않습니다.</span>
+            <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+              <button onClick={aiUpsertDoc} disabled={docBusy} style={{...btn(true),background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"}}>이대로 저장</button>
+              <button onClick={()=>setDocDraft(null)} disabled={docBusy} style={btn(false)}>닫기</button>
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"140px 1fr",gap:8,fontSize:14}}>
+            <div style={{color:"var(--text-secondary)"}}>title</div><div><b>{docDraft.title||"(없음)"}</b></div>
+            <div style={{color:"var(--text-secondary)"}}>summary</div><div>{docDraft.summary||"(없음)"}</div>
+            <div style={{color:"var(--text-secondary)"}}>kind</div><div><span style={{padding:"2px 7px",borderRadius:999,background:"var(--accent-glow)",color:"var(--accent)",fontWeight:800,fontSize:12}}>{docDraft.kind}</span></div>
+            <div style={{color:"var(--text-secondary)"}}>tags</div><div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{(docDraft.tags||[]).map(t=><span key={t} style={{padding:"2px 7px",borderRadius:4,background:"var(--bg-tertiary)",fontSize:12}}>{t}</span>)}{!(docDraft.tags||[]).length&&<span style={{color:"var(--text-secondary)"}}>(없음)</span>}</div>
+            <div style={{color:"var(--text-secondary)"}}>entity</div><div style={{fontFamily:"monospace",fontSize:13}}>{[docDraft.entity?.product,docDraft.entity?.root_lot_id,docDraft.entity?.wafer_id].filter(Boolean).join(" / ")||"(빈 entity)"}</div>
+            <div style={{color:"var(--text-secondary)"}}>related docs</div><div style={{display:"grid",gap:4}}>{(docDraft.related_doc_ids||[]).map(rid=><div key={rid} style={{fontSize:13,fontFamily:"monospace"}}><b>{rid}</b> <span style={{color:"var(--accent)"}}>[{docDraft.relations?.[rid]||"relates_to"}]</span></div>)}{!(docDraft.related_doc_ids||[]).length&&<span style={{color:"var(--text-secondary)"}}>연결된 기존 문서 없음</span>}</div>
+          </div>
+        </div>}
       </div>}
 
       {tab==="doc"&&<div style={card}>
