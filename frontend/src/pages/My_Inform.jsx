@@ -6,6 +6,8 @@
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { sf, authSrc, postJson, userLabel, userMatches } from "../lib/api";
 import PageGear from "../components/PageGear";
+import Modal from "../components/Modal";
+import { toast } from "../components/Toast";
 import { Button, Pill, statusPalette, chartPalette } from "../components/UXKit";
 
 const API = "/api/informs";
@@ -1005,7 +1007,7 @@ function ThreadNode({
         const res = await sf("/api/informs/upload", { method: "POST", body: fd });
         uploaded.push({ filename: res.filename, url: res.url, size: res.size });
       } catch (e) {
-        alert("업로드 실패: " + e.message);
+        toast.error("업로드 실패: " + e.message);
       }
     }
     setReplyImages((prev) => [...prev, ...uploaded]);
@@ -1380,8 +1382,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
   const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
 
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 10, padding: 18, width: "96%", maxWidth: 1180, maxHeight: "94vh", overflow: "auto", color: "var(--text-primary)" }}>
+    <Modal open onClose={onClose} width={1180} zIndex={9999}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <div style={{ fontSize: 15, fontWeight: 700 }}>✉ 인폼 메일 보내기 <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-secondary)" }}>(최대 199명 · 본문 2MB · 첨부 10MB)</span></div>
           <span onClick={onClose} style={{ cursor: "pointer", fontSize: 18 }}>✕</span>
@@ -1429,10 +1430,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
 
         {/* v8.8.3: 공용 메일 그룹 관리 서브모달 — z-index 10001 로 부모 MailDialog(9999) 위에 확실히 올라옴. */}
         {showMgr && (
-          <div onClick={() => setShowMgr(false)}
-               style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10001, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-            <div onClick={e => e.stopPropagation()}
-                 style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 8, padding: 16, width: "90%", maxWidth: 560, color: "var(--text-primary)" }}>
+          <Modal open onClose={() => setShowMgr(false)} width={560} zIndex={10001}>
               <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
                 <div style={{ fontSize: 14, fontWeight: 700 }}>📮 공용 메일 그룹 관리</div>
                 <span style={{ flex: 1 }} />
@@ -1450,11 +1448,11 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
               <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
                 <button type="button" onClick={() => {
                   const nm = (newGroupName || "").trim();
-                  if (!nm) { alert("그룹 이름을 입력하세요"); return; }
+                  if (!nm) { toast.warn("그룹 이름을 입력하세요"); return; }
                   const extras = (newGroupEmails || "").split(/[,\s;]+/).map(s => s.trim()).filter(s => s && s.includes("@"));
                   postJson("/api/mail-groups/create", { name: nm, extra_emails: extras, members: [] })
-                    .then(() => { setNewGroupName(""); setNewGroupEmails(""); reloadGroups(); })
-                    .catch(e => alert(e.message));
+                    .then(() => { setNewGroupName(""); setNewGroupEmails(""); reloadGroups(); toast.ok("그룹 생성됨"); })
+                    .catch(e => toast.error(e.message));
                 }}
                   style={{ padding: "6px 14px", borderRadius: 4, border: "none", background: "var(--accent)", color: WHITE, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>+ 그룹 생성</button>
               </div>
@@ -1474,7 +1472,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
                       if (!window.confirm(`그룹 "${g.name}" 삭제?`)) return;
                       sf("/api/mail-groups/delete?id=" + encodeURIComponent(g.id), { method: "POST" })
                         .then(() => reloadGroups())
-                        .catch(e => alert(e.message));
+                        .catch(e => toast.error(e.message));
                     }} style={{ cursor: "pointer", color: BAD.fg, fontSize: 14, fontWeight: 600 }}>삭제</span>
                   </div>
                 ))}
@@ -1483,8 +1481,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
                 <button type="button" onClick={() => setShowMgr(false)}
                   style={{ padding: "6px 14px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>닫기</button>
               </div>
-            </div>
-          </div>
+          </Modal>
         )}
 
         {/* Individual recipient picker */}
@@ -1609,8 +1606,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
           <button disabled={sending} onClick={doSend} style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: sending ? "var(--text-secondary)" : "var(--accent)", color: WHITE, fontWeight: 600, cursor: sending ? "wait" : "pointer" }}>{sending ? "전송 중…" : `📧 ${effectiveEmailCount}명에게 전송`}</button>
           <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}>닫기</button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -1940,7 +1936,7 @@ export default function My_Inform({ user }) {
       if (String(error?.message || "").includes("duplicate_product") || existing) {
         const target = existing || product;
         setMsg("기존 제품으로 이동");
-        try { window.alert("기존 제품으로 이동"); } catch (_) {}
+        try { toast.info("기존 제품으로 이동"); } catch (_) {}
         if (onDuplicate) onDuplicate(target);
         return { duplicate: true, existing_product: target };
       }
@@ -2203,7 +2199,7 @@ export default function My_Inform({ user }) {
   const saveContact = () => {
     if (!editContact) return;
     const { id, product, name, role, email, phone, note } = editContact;
-    if (!product || !name) { alert("product/name 필수"); return; }
+    if (!product || !name) { toast.warn("product/name 필수"); return; }
     const url = id
       ? "/api/informs/product-contacts/update?id=" + encodeURIComponent(id)
       : "/api/informs/product-contacts";
@@ -2220,13 +2216,13 @@ export default function My_Inform({ user }) {
         setEditContact(null);
         loadProductContacts();
       })
-      .catch(e => alert("저장 실패: " + (e.message || e)));
+      .catch(e => toast.error("저장 실패: " + (e.message || e)));
   };
   const deleteContact = (product, id) => {
     if (!confirm("담당자를 삭제하시겠어요?")) return;
     postJson("/api/informs/product-contacts/delete?id=" + encodeURIComponent(id) + "&product=" + encodeURIComponent(product), {})
       .then(() => loadProductContacts())
-      .catch(e => alert("삭제 실패: " + (e.message || e)));
+      .catch(e => toast.error("삭제 실패: " + (e.message || e)));
   };
 
   // v8.8.2: 유저/그룹 혼합 일괄 추가 모달.
@@ -2239,7 +2235,7 @@ export default function My_Inform({ user }) {
   };
   const runBulkAdd = () => {
     if (!bulkPickProduct) return;
-    if (bulkSelUsers.length === 0 && bulkSelGroups.length === 0) { alert("유저 또는 그룹을 선택하세요."); return; }
+    if (bulkSelUsers.length === 0 && bulkSelGroups.length === 0) { toast.warn("유저 또는 그룹을 선택하세요."); return; }
     setBulkBusy(true);
     postJson("/api/informs/product-contacts/bulk-add", {
       product: bulkPickProduct,
@@ -2257,11 +2253,11 @@ export default function My_Inform({ user }) {
             .catch(() => {});
         }
         const msg = `추가 ${r.added?.length || 0}명 / 스킵 ${r.skipped?.length || 0}명 (중복/차단).`;
-        alert(msg);
+        toast.ok(msg);
         setBulkPickProduct("");
         loadProductContacts();
       })
-      .catch(e => { setBulkBusy(false); alert("추가 실패: " + (e.message || e)); });
+      .catch(e => { setBulkBusy(false); toast.error("추가 실패: " + (e.message || e)); });
   };
 
   const refreshAll = () => {
@@ -2435,7 +2431,7 @@ export default function My_Inform({ user }) {
         const res = await sf("/api/informs/upload", { method: "POST", body: fd });
         out.push({ filename: res.filename, url: res.url, size: res.size });
         inserted += `\n![${res.filename}](${res.url})\n`;
-      } catch (err) { alert("붙여넣기 업로드 실패: " + err.message); }
+      } catch (err) { toast.error("붙여넣기 업로드 실패: " + err.message); }
     }
     // 본문 inline 삽입 (커서 위치 보존).
     setForm(f => {
@@ -2457,7 +2453,7 @@ export default function My_Inform({ user }) {
         fd.append("file", f);
         const res = await sf("/api/informs/upload", { method: "POST", body: fd });
         out.push({ filename: res.filename, url: res.url, size: res.size });
-      } catch (e) { alert("업로드 실패: " + e.message); }
+      } catch (e) { toast.error("업로드 실패: " + e.message); }
     }
     setCreateImages((prev) => [...prev, ...out]);
     setUploadingMain(false);
@@ -2636,7 +2632,7 @@ export default function My_Inform({ user }) {
   // 빈 history 인 경우 명시적으로 알림 + paste 폴백 제안.
   const embedFromSplitTable = async () => {
     const prod = (form.product || "").trim();
-    if (!prod) { alert("product 를 먼저 입력하세요."); return; }
+    if (!prod) { toast.warn("product 를 먼저 입력하세요."); return; }
     setEmbedFetching(true);
     try {
       const hist = await sf("/api/splittable/history?product=" + encodeURIComponent(prod) + "&limit=100");
@@ -2666,7 +2662,7 @@ export default function My_Inform({ user }) {
         },
       }));
     } catch (e) {
-      alert("SplitTable 가져오기 실패: " + e.message);
+      toast.error("SplitTable 가져오기 실패: " + e.message);
     } finally { setEmbedFetching(false); }
   };
 
@@ -2689,9 +2685,9 @@ export default function My_Inform({ user }) {
   useEffect(() => { if (pasteOpen) reloadPasteSets(); }, [pasteOpen, form.product]);
   const applyPasteAsEmbed = () => {
     const txt = (pasteText || "").trim();
-    if (!txt) { alert("표 데이터를 먼저 붙여넣으세요"); return; }
+    if (!txt) { toast.warn("표 데이터를 먼저 붙여넣으세요"); return; }
     const lines = txt.split(/\r?\n/).filter(l => l.length);
-    if (lines.length < 2) { alert("최소 2줄 (헤더 + 1행) 이 필요합니다"); return; }
+    if (lines.length < 2) { toast.warn("최소 2줄 (헤더 + 1행) 이 필요합니다"); return; }
     const sep = lines[0].includes("\t") ? "\t" : (lines[0].includes(",") ? "," : "\t");
     const cols = lines[0].split(sep);
     const rows = lines.slice(1).map(l => l.split(sep));
@@ -2762,24 +2758,24 @@ export default function My_Inform({ user }) {
     if (!confirm("삭제하시겠습니까? (작성자/admin만 가능 · 목록에서는 숨김 처리)")) return;
     sf(API + "/" + encodeURIComponent(id), { method: "DELETE" })
       .then(() => { setSelectedRootId(""); setThread([]); refreshAll(); })
-      .catch(e => alert(e.message));
+      .catch(e => toast.error(e.message));
   };
 
   const toggleCheck = (node) => sf(API + "/check?id=" + encodeURIComponent(node.id), {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ checked: !node.checked }),
-  }).then(refreshAll).catch(e => alert(e.message));
+  }).then(refreshAll).catch(e => toast.error(e.message));
 
   // 작성자/admin 본문 수정. text/module/reason 만 바뀌고 embed/시각 은 원본 유지 (스냅샷 잠금).
   const editInform = (id, patch) => sf(API + "/edit?id=" + encodeURIComponent(id), {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch || {}),
-  }).then(refreshAll).catch(e => alert(e.message));
+  }).then(refreshAll).catch(e => toast.error(e.message));
 
   const changeStatus = (id, status, note) => sf(API + "/status?id=" + encodeURIComponent(id), {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status, note: note || "" }),
-  }).then(refreshAll).catch(e => alert(e.message));
+  }).then(refreshAll).catch(e => toast.error(e.message));
 
   // v8.7.9: deadline 폐지. 기존 changeDeadline 은 사용되지 않아 제거.
 
@@ -3063,7 +3059,7 @@ export default function My_Inform({ user }) {
         setConstants(c => ({ ...c, modules: d.config?.modules || finalList }));
         setModDraft(null); setModNewName("");
       })
-      .catch(e => alert("모듈 순서 저장 실패: " + (e.message || e)));
+      .catch(e => toast.error("모듈 순서 저장 실패: " + (e.message || e)));
   };
   const moveMod = (i, delta) => {
     if (!Array.isArray(modDraft)) return;
@@ -3099,7 +3095,7 @@ export default function My_Inform({ user }) {
           })}
           onDelete={(product) => postJson(API + "/products/delete", { product })
             .then(d => setConstants(c => ({ ...c, products: d.products || c.products })))
-            .catch(e => alert("제품 삭제 실패: " + (e.message || e)))}
+            .catch(e => toast.error("제품 삭제 실패: " + (e.message || e)))}
         />
         <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
           <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
@@ -3140,7 +3136,11 @@ export default function My_Inform({ user }) {
         {isAdmin && <UserModulePermsPanel allModules={constants.modules || []} />}
       </PageGear>
 
-      <header style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 12, padding: "12px 16px 8px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+      <header className="flow-surface-header" style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 12, padding: "12px 16px 8px 18px", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+        <div style={{ display: "grid", gap: 1, minWidth: 118 }}>
+          <span style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)" }}>인폼 로그</span>
+          <span style={{ fontSize: 12, color: "var(--text-secondary)", fontFamily: "monospace" }}>{activeTab}</span>
+        </div>
         <div style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: 3, borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
           {INFORM_TABS.map(([key, label]) => (
             <button key={key} type="button" onClick={() => setActiveTab(key)}
@@ -3507,7 +3507,7 @@ function UserModulePermsPanel({ allModules }) {
     setLoading(true);
     sf("/api/informs/user-modules").then(d => {
       setUsers(d.users || []); setLoading(false);
-    }).catch(e => { setLoading(false); alert("로드 실패: " + (e.message || e)); });
+    }).catch(e => { setLoading(false); toast.error("로드 실패: " + (e.message || e)); });
   };
   useEffect(() => { load(); }, []);
   const toggleOne = (username, module, on) => {
@@ -3522,7 +3522,7 @@ function UserModulePermsPanel({ allModules }) {
     setSavingFor(username);
     sf("/api/informs/user-modules/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, modules: [] }) })
       .then(() => { setSavingFor(""); load(); })
-      .catch(e => { setSavingFor(""); alert("초기화 실패: " + (e.message || e)); });
+      .catch(e => { setSavingFor(""); toast.error("초기화 실패: " + (e.message || e)); });
   };
   const persist = (username, modules) => {
     setSavingFor(username);
@@ -3530,7 +3530,7 @@ function UserModulePermsPanel({ allModules }) {
     setUsers(list => list.map(u => u.username === username ? { ...u, modules, has_setting: true } : u));
     sf("/api/informs/user-modules/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, modules }) })
       .then(() => setSavingFor(""))
-      .catch(e => { setSavingFor(""); alert("저장 실패: " + (e.message || e)); load(); });
+      .catch(e => { setSavingFor(""); toast.error("저장 실패: " + (e.message || e)); load(); });
   };
   const filtered = q ? users.filter(u => (u.username || "").toLowerCase().includes(q.toLowerCase()) || (u.email || "").toLowerCase().includes(q.toLowerCase())) : users;
   return (
@@ -4398,7 +4398,7 @@ function ProductCatalogPanel({ products, canEdit, onAdd, onDelete }) {
   const add = () => {
     const v = draft.trim();
     if (!v) return;
-    Promise.resolve(onAdd(v)).then(() => setDraft("")).catch(e => alert(e.message || e));
+    Promise.resolve(onAdd(v)).then(() => setDraft("")).catch(e => toast.error(e.message || e));
   };
   return (
     <div>
@@ -4689,8 +4689,7 @@ function InformWizard({
     mailPreviewText,
   ]);
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 3200, background: "rgba(0,0,0,0.62)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div onClick={e => e.stopPropagation()} style={{ width: "min(980px,96vw)", maxHeight: "92vh", overflow: "auto", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 10, padding: 16 }}>
+    <Modal open onClose={onClose} width={980} zIndex={3200}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
           <div style={{ fontSize: 16, fontWeight: 900 }}>신규 인폼 등록</div>
           <div style={{ marginLeft: "auto", color: "var(--text-secondary)" }}>draft 자동 저장</div>
@@ -5040,7 +5039,6 @@ function InformWizard({
               style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 900, cursor: "pointer", fontSize: 14 }}>등록</button>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

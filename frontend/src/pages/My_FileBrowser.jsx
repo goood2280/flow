@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import Loading from "../components/Loading";
 import S3StatusLight from "../components/S3StatusLight";
+import Modal from "../components/Modal";
+import { toast } from "../components/Toast";
 import { sf } from "../lib/api";
 const API="/api/filebrowser";
 const PAGE_SIZE=200;
@@ -402,7 +404,7 @@ export default function My_FileBrowser({user,onNavigate}){
   };
   const migrateLegacyHistory=async()=>{
     if(!selBaseFile)return;
-    if(!isFileBrowserAdmin){alert("Admin 또는 FileBrowser page_admin 만 migration 할 수 있습니다.");return;}
+    if(!isFileBrowserAdmin){toast.warn("Admin 또는 FileBrowser page_admin 만 migration 할 수 있습니다.");return;}
     const note=window.prompt("legacy .history migration 사유를 입력하세요.", "Migrate legacy .history to EDM versions");
     if(note===null)return;
     try{
@@ -414,7 +416,7 @@ export default function My_FileBrowser({user,onNavigate}){
   };
   const rollbackBaseVersion=async(version)=>{
     if(!selBaseFile||!version)return;
-    if(!isFileBrowserAdmin){alert("Admin 또는 FileBrowser page_admin 만 롤백할 수 있습니다.");return;}
+    if(!isFileBrowserAdmin){toast.warn("Admin 또는 FileBrowser page_admin 만 롤백할 수 있습니다.");return;}
     if(!window.confirm(`${selBaseFile}\n${version} 버전으로 롤백하시겠습니까?\n현재 파일은 pre-rollback 버전으로 먼저 보존됩니다.`))return;
     const note=window.prompt("롤백 사유를 입력하세요.", `Rollback to ${version}`);
     if(note===null)return;
@@ -651,20 +653,20 @@ export default function My_FileBrowser({user,onNavigate}){
   useEffect(()=>{if(!s3Open)return;const t=setInterval(()=>setS3Now(Date.now()),1000);return()=>clearInterval(t);},[s3Open]);
 
   const s3Save=async(form)=>{
-    if(!form.target||!form.s3_url){alert("target 과 s3_url 은 필수입니다");return;}
+    if(!form.target||!form.s3_url){toast.warn("target 과 s3_url 은 필수입니다");return;}
     const body={...form,username:user?.username||""};
     const r=await fetch("/api/s3ingest/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-    if(!r.ok){const d=await r.json().catch(()=>({detail:"저장 실패"}));alert(d.detail||"저장 실패");return;}
+    if(!r.ok){const d=await r.json().catch(()=>({detail:"저장 실패"}));toast.error(d.detail||"저장 실패");return;}
     setS3Form(null);setS3Tab("items");setS3Tick(x=>x+1);
   };
   const s3Delete=async(id)=>{
     if(!window.confirm("이 S3 동기화 항목을 삭제하시겠습니까?\n("+id+")"))return;
     const r=await fetch("/api/s3ingest/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",id})});
-    if(r.ok)setS3Tick(x=>x+1);else{const d=await r.json().catch(()=>({}));alert(d.detail||"삭제 실패");}
+    if(r.ok)setS3Tick(x=>x+1);else{const d=await r.json().catch(()=>({}));toast.error(d.detail||"삭제 실패");}
   };
   const s3Run=async(id)=>{
     const r=await fetch("/api/s3ingest/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",id})});
-    if(r.ok)setS3Tick(x=>x+1);else{const d=await r.json().catch(()=>({}));alert(d.detail||"실행 실패");}
+    if(r.ok)setS3Tick(x=>x+1);else{const d=await r.json().catch(()=>({}));toast.error(d.detail||"실행 실패");}
   };
   const s3FmtETA=(item)=>{
     const iv=Number(item.interval_min||0);if(iv<=0)return"수동";
@@ -689,17 +691,17 @@ export default function My_FileBrowser({user,onNavigate}){
 
   // v8.8.3: Admin Base 단일파일 원본 삭제 (archive to .trash). host_root 자동 감지.
   const deleteBaseFile=async(name)=>{
-    if(!isAdmin){alert("Admin 만 삭제할 수 있습니다.");return;}
+    if(!isAdmin){toast.warn("Admin 만 삭제할 수 있습니다.");return;}
     if(!window.confirm("정말 이 Base 단일 파일을 삭제하시겠습니까?\n"+name+"\n\n.trash 폴더로 이동됩니다 (복구 가능)."))return;
     try{
       const r=await fetch(API+"/base-file/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:name,username:user?.username||""})});
-      if(!r.ok){const d=await r.json().catch(()=>({}));alert(d.detail||"삭제 실패");return;}
+      if(!r.ok){const d=await r.json().catch(()=>({}));toast.error(d.detail||"삭제 실패");return;}
       // 리스트 즉시 반영 + 선택 상태 정리
       setBaseFiles(prev=>prev.filter(f=>f.name!==name));
     if(selBaseFile===name){setSelBaseFile("");setData(null);setBaseRaw(null);setBaseVersions([]);setBaseVersioned(false);setBaseVersionPreview(null);setRawEditing(false);setRawEditText("");}
     if(selBaseMeta?.name===name)setSelBaseMeta(null);
     setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
-    }catch(e){alert("삭제 실패: "+(e?.message||e));}
+    }catch(e){toast.error("삭제 실패: "+(e?.message||e));}
   };
 
   useEffect(()=>{
@@ -1054,7 +1056,7 @@ export default function My_FileBrowser({user,onNavigate}){
     if(mode==="base")url+="&file="+encodeURIComponent(selBaseFile);
     else if(mode==="rootpq")url+="&file="+encodeURIComponent(selRootPq);
     else url+="&root="+encodeURIComponent(selRoot)+"&product="+encodeURIComponent(selProd);
-    fetch(url).then(r=>{if(!r.ok)return r.json().then(d=>{alert(d.detail||"다운로드 실패");throw new Error();});
+    fetch(url).then(r=>{if(!r.ok)return r.json().then(d=>{toast.error(d.detail||"다운로드 실패");throw new Error();});
       return r.blob();}).then(blob=>{const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='data.csv';a.click();}).catch(()=>{});
   };
 
@@ -1112,11 +1114,12 @@ export default function My_FileBrowser({user,onNavigate}){
   const baseEditColHighlight={background:"rgba(59,130,246,0.09)"};
 
   return(
-    <div style={{display:"flex",height:"calc(100vh - 52px)",fontFamily:"'Pretendard',sans-serif",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
+    <div className="flow-connected-page" style={{display:"flex",height:"calc(100vh - 52px)",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
       {/* Sidebar */}
       <div style={{width:260,minWidth:260,borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",background:"var(--bg-secondary)",overflow:"hidden"}}>
-        <div style={{padding:"14px 16px 10px",borderBottom:"1px solid var(--border)",fontSize:14,fontWeight:700,color:"var(--text-secondary)",textTransform:"uppercase",letterSpacing:"0.04em"}}>
-          <span>파일탐색기</span>
+        <div className="flow-sidebar-header" style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",fontSize:14,fontWeight:700,color:"var(--text-secondary)"}}>
+          <span className="flow-sidebar-header-title">파일탐색기</span>
+          <div className="flow-sidebar-header-meta">{scope==="Base"?baseFileCount:products.length} items</div>
         </div>
         {/* Scope switcher (DB / root-level files). Shown only when backend reports 2+ scopes. */}
         {scopes.length>=2&&<div className="filebrowser-scope-switcher" style={{display:"flex",gap:4,padding:"6px 10px",borderBottom:"1px solid var(--border)"}}>
@@ -1566,8 +1569,8 @@ export default function My_FileBrowser({user,onNavigate}){
       {isFileBrowserAdmin&&<>
         <div onClick={()=>{if(!s3Open&&!isAdmin)setS3Tab("folder");setS3Open(!s3Open);}} title={isAdmin?"폴더 설정 / 파일 설정 / S3 동기화 / AWS 설정":"폴더 설정 / 파일 설정"} style={{position:"fixed",bottom:16,left:16,width:40,height:40,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,boxShadow:"0 2px 8px rgba(0,0,0,0.3)",fontSize:18}}>⚙️</div>
         {s3Open&&<>
-          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:98}} onClick={()=>{setS3Open(false);setS3Form(null);setS3Detail(null);}}/>
-          <div style={{position:"fixed",top:"50%",left:"50%",transform:"translate(-50%,-50%)",width:"min(780px,94vw)",maxHeight:"86vh",background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:10,zIndex:99,display:"flex",flexDirection:"column",boxShadow:"0 16px 48px rgba(0,0,0,0.6)"}}>
+          <Modal open onClose={()=>{setS3Open(false);setS3Form(null);setS3Detail(null);}} width={780} zIndex={98}>
+          <div style={{display:"flex",flexDirection:"column",maxHeight:"86vh"}}>
             <div style={{display:"flex",alignItems:"center",padding:"12px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",borderRadius:"10px 10px 0 0"}}>
               <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",flex:1}}>{settingsTitle}</span>
               {!s3AwsOk&&<span style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"#ef444422",color:"#ef4444",marginRight:8}}>aws CLI 미설치</span>}
@@ -1805,17 +1808,19 @@ export default function My_FileBrowser({user,onNavigate}){
               {s3Tab==="aws"&&<LazyAwsPanel user={user} compact={true} />}
             </div>
           </div>
+          </Modal>
           {/* Detail log overlay */}
-          {s3Detail&&<>
-            <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:100}} onClick={()=>setS3Detail(null)}/>
-            <div style={{position:"fixed",top:"50%",left:"50%",transform:"translate(-50%,-50%)",width:"min(700px,90vw)",maxHeight:"70vh",background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:10,zIndex:101,display:"flex",flexDirection:"column"}}>
+          {s3Detail&&(
+            <Modal open onClose={()=>setS3Detail(null)} width={700} zIndex={100}>
+            <div style={{display:"flex",flexDirection:"column",maxHeight:"70vh"}}>
               <div style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center"}}>
                 <span style={{flex:1,fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{s3Detail.id} — exit={s3Detail.exit}</span>
                 <span onClick={()=>setS3Detail(null)} style={{cursor:"pointer",fontSize:16,color:"var(--text-secondary)"}}>✕</span>
               </div>
               <pre style={{flex:1,overflow:"auto",margin:0,padding:12,fontSize:14,fontFamily:"monospace",color:"var(--text-primary)",background:"var(--bg-primary)",whiteSpace:"pre-wrap",wordBreak:"break-all"}}>{s3Detail.tail||"(출력 없음)"}</pre>
             </div>
-          </>}
+            </Modal>
+          )}
         </>}
       </>}
     </div>);

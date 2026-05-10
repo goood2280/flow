@@ -14642,6 +14642,89 @@ def _flowi_trace_call_graph(
     }
 
 
+def _flowi_trace_persona_snapshot() -> dict[str, Any]:
+    persona = _flowi_persona_config()
+    return {
+        "label": FLOWI_AGENT_PERSONA.get("label") or "",
+        "role": FLOWI_AGENT_PERSONA.get("role") or "",
+        "prompt_source": persona.get("source") or "default",
+        "system_prompt_chars": len(str(persona.get("active_system_prompt") or "")),
+        "must_not_chars": len(str(persona.get("must_not") or "")),
+        "principle_count": len(FLOWI_AGENT_PERSONA.get("principles") or []),
+        "public_note": "내부 사고과정이 아니라 현재 적용된 persona/system prompt cache의 공개 요약입니다.",
+    }
+
+
+def _flowi_trace_prompt_cache(allowed_keys: set[str]) -> dict[str, Any]:
+    feature_docs: list[str] = []
+    try:
+        if FLOWI_AGENT_FEATURE_GUIDE_DIR.is_dir():
+            allowed = set(allowed_keys or set())
+            for fp in sorted(FLOWI_AGENT_FEATURE_GUIDE_DIR.glob("*.md")):
+                stem = fp.stem
+                if not allowed or stem in allowed:
+                    feature_docs.append(fp.name)
+    except Exception:
+        feature_docs = []
+    return {
+        "allowed_features": sorted(allowed_keys),
+        "feature_entrypoint_count": len([item for item in FLOWI_FEATURE_ENTRYPOINTS if item.get("key") in allowed_keys]),
+        "feature_docs": feature_docs[:12],
+        "few_shot_count": len(FLOWI_FUNCTION_FEW_SHOTS),
+        "promoted_knowledge_count": len(_flowi_promoted_knowledge_items(limit=200)),
+        "cache_scope": "feature docs, few-shot examples, promoted knowledge summaries",
+    }
+
+
+def _flowi_trace_subagent_context(tool: dict[str, Any], api_calls: list[dict[str, Any]]) -> dict[str, Any]:
+    feature_calls = [call for call in api_calls if call.get("stage") == "feature_api"]
+    first_api = feature_calls[0] if feature_calls else {}
+    handler_action = str(tool.get("action") or tool.get("intent") or "")
+    unit_action = _flowi_driver_contract_action(handler_action, str(tool.get("intent") or ""), str(tool.get("feature") or ""))
+    context = {
+        "feature_subagent": tool.get("feature") or "general",
+        "intent": tool.get("intent") or "general",
+        "handler_action": handler_action,
+        "unit_action": unit_action,
+        "api_or_handler": first_api.get("path") or first_api.get("callee") or "",
+        "payload_summary": _flowi_activation_payload_summary(tool),
+        "source_profile": tool.get("source_profile") if isinstance(tool.get("source_profile"), dict) else {},
+        "deterministic_handler": True,
+    }
+    if isinstance(tool.get("slots"), dict):
+        context["slots"] = {k: v for k, v in tool.get("slots", {}).items() if v not in (None, "", [], {})}
+    if isinstance(tool.get("filters"), dict):
+        context["filters"] = {k: v for k, v in tool.get("filters", {}).items() if v not in (None, "", [], {})}
+    return context
+
+
+def _flowi_trace_clarification_loop(tool: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    clarification = tool.get("clarification") if isinstance(tool.get("clarification"), dict) else {}
+    choices = clarification.get("choices") if isinstance(clarification.get("choices"), list) else []
+    safe_choices = []
+    for choice in choices[:5]:
+        if not isinstance(choice, dict):
+            continue
+        safe_choices.append({
+            key: choice.get(key)
+            for key in ("id", "label", "title", "description", "prompt", "value", "recommended")
+            if key in choice
+        })
+    missing = _flowi_trace_missing_slots(tool)
+    status = _flowi_activation_status(tool, result)
+    handler_action = str(tool.get("action") or tool.get("intent") or "")
+    return {
+        "status": status,
+        "needs_input": status == "needs_input",
+        "question": clarification.get("question") or ("필수 입력값을 보완해 주세요." if missing else ""),
+        "missing": missing,
+        "choices": safe_choices,
+        "next_unit_action": _flowi_driver_contract_action(handler_action, str(tool.get("intent") or ""), str(tool.get("feature") or "")),
+        "pending_prompt": str(tool.get("pending_prompt") or tool.get("last_partial_prompt") or (tool.get("workflow_state") or {}).get("last_prompt") or "")[:1000],
+        "user_answer": "",
+    }
+
+
 def _flowi_public_trace(
     *,
     prompt: str,
@@ -14783,6 +14866,10 @@ def _flowi_public_trace(
         "visible": True,
         "note": "사고과정 원문이 아니라 사용자가 검증할 수 있는 실행 흐름 요약입니다.",
         "activation": call_graph.get("activation") or {},
+        "persona_snapshot": _flowi_trace_persona_snapshot(),
+        "prompt_cache": _flowi_trace_prompt_cache(allowed_keys),
+        "subagent_context": _flowi_trace_subagent_context(tool, api_calls),
+        "clarification_loop": _flowi_trace_clarification_loop(tool, result),
         "steps": steps,
         "api_calls": api_calls,
         "call_graph": call_graph,
@@ -14817,6 +14904,14 @@ def _attach_flowi_trace(
         result=result,
         agent_context=agent_context,
     )
+    clarification_loop = result["trace"].get("clarification_loop") if isinstance(result.get("trace"), dict) else {}
+    if isinstance(clarification_loop, dict) and clarification_loop.get("needs_input"):
+        result["needs_input"] = True
+        result["question"] = clarification_loop.get("question") or ""
+        result["missing"] = clarification_loop.get("missing") or []
+        result["choices"] = clarification_loop.get("choices") or []
+        result["next_unit_action"] = clarification_loop.get("next_unit_action") or ""
+        result["pending_prompt"] = clarification_loop.get("pending_prompt") or result.get("pending_prompt") or ""
     return result
 
 

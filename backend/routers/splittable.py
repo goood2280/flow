@@ -26,7 +26,7 @@ for _path in (_APP_ROOT, _BACKEND_ROOT):
     sys.path.insert(0, _raw)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List
 import polars as pl
 from core.paths import PATHS
@@ -727,11 +727,146 @@ class NoteSaveReq(BaseModel):
     param: str = ""            # scope == "param" / "param_global" 일 때
     text: str
     username: str = ""
+    images: list[dict] = Field(default_factory=list)
 
 
 class NoteDeleteReq(BaseModel):
     id: str
     username: str = ""
+
+
+class NoteCommentReq(BaseModel):
+    note_id: str
+    text: str = ""
+    username: str = ""
+    images: list[dict] = Field(default_factory=list)
+
+
+def _clean_note_text(text: str) -> str:
+    return (text or "").replace("\u200b", "").strip()
+
+
+def _normalize_note_image(raw) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    url = (
+        raw.get("url")
+        or raw.get("downloadUrl")
+        or raw.get("fileUrl")
+        or ((raw.get("attachment") or {}).get("downloadUrl") if isinstance(raw.get("attachment"), dict) else "")
+        or ((raw.get("file") or {}).get("fileUrl") if isinstance(raw.get("file"), dict) else "")
+    )
+    url = str(url or "").strip().split("?", 1)[0]
+    if url.startswith("api/informs/files/"):
+        url = "/" + url
+    elif url.startswith("files/"):
+        url = "/api/informs/" + url
+    if not url.startswith("/api/informs/files/"):
+        return None
+    filename = (
+        raw.get("filename")
+        or raw.get("name")
+        or raw.get("displayName")
+        or Path(url).name
+        or "image"
+    )
+    try:
+        size = int(raw.get("size") or raw.get("bytes") or 0)
+    except Exception:
+        size = 0
+    return {"filename": Path(str(filename)).name or "image", "url": url, "size": max(0, size)}
+
+
+def _normalize_note_images(images) -> list[dict]:
+    out = []
+    seen = set()
+    for raw in images or []:
+        item = _normalize_note_image(raw)
+        if not item:
+            continue
+        key = item["url"]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out[:12]
+
+
+def _normalize_note_entry(entry: dict) -> dict:
+    e = dict(entry or {})
+    e["text"] = _clean_note_text(str(e.get("text") or ""))
+    e["images"] = _normalize_note_images(e.get("images") or [])
+    comments = []
+    for raw in e.get("comments") or []:
+        if not isinstance(raw, dict):
+            continue
+        c = dict(raw)
+        c["text"] = _clean_note_text(str(c.get("text") or ""))
+        c["images"] = _normalize_note_images(c.get("images") or [])
+        comments.append(c)
+    e["comments"] = comments
+    return e
+
+
+def _note_scope_parts(entry: dict) -> tuple[str, str, str]:
+    key = str(entry.get("key") or "")
+    scope = entry.get("scope")
+    parts = key.split("__")
+    if scope == "lot" and len(parts) >= 3:
+        return parts[0], parts[2], ""
+    if scope in ("wafer", "param") and len(parts) >= 3:
+        return parts[0], parts[1], str(parts[2]).replace("W", "", 1)
+    return "", "", ""
+
+
+def _notify_tracker_owner_for_note(entry: dict, actor: str) -> None:
+    try:
+        from core.notify import emit_event
+        from core.mail import send_mail
+        product, root_lot_id, wafer_id = _note_scope_parts(entry)
+        if not product or not root_lot_id:
+            return
+        tracker_items = load_json(TRACKER_ISSUES_FILE, [])
+        for issue in tracker_items or []:
+            base_target = str(issue.get("username") or "").strip()
+            if not base_target or base_target == actor:
+                continue
+            matched = False
+            for row in issue.get("lots") or []:
+                row_product = str(row.get("product") or issue.get("product") or "")
+                row_root = str(row.get("root_lot_id") or "")
+                row_wafer = _normalize_wafer_id(row.get("wafer_id"))
+                if row_product and row_product not in (product, product.replace("ML_TABLE_", "")):
+                    continue
+                if not _root_lot_matches(row_root, root_lot_id):
+                    continue
+                if wafer_id and row_wafer and row_wafer != _normalize_wafer_id(wafer_id):
+                    continue
+                matched = True
+                break
+            if not matched:
+                continue
+            title = f"FLOW 알림 - {issue.get('title') or issue.get('id') or 'SplitTable note'}"
+            body = f"{actor} 님이 SplitTable 노트를 추가했습니다. lot={root_lot_id}" + (f" wf={wafer_id}" if wafer_id else "")
+            emit_event(
+                "my_tracker_lot_note",
+                actor=actor,
+                target_user=base_target,
+                title=title,
+                body=body,
+                payload={"issue_id": issue.get("id"), "product": product, "root_lot_id": root_lot_id, "wafer_id": wafer_id, "note_id": entry.get("id")},
+            )
+            mail_watch = issue.get("mail_watch") if isinstance(issue.get("mail_watch"), dict) else {}
+            if mail_watch.get("enabled"):
+                send_mail(
+                    sender_username=actor or "flow",
+                    receiver_usernames=[base_target],
+                    extra_emails=[],
+                    title=title,
+                    content=body,
+                )
+    except Exception:
+        pass
 
 
 @router.get("/notes")
@@ -765,6 +900,7 @@ def list_notes(product: str = Query(""), root_lot_id: str = Query(""), username:
         lot_pfx = _notes_product_lot_prefix(product)
         entries = [e for e in entries
                    if str(e.get("key", "")).startswith(pg_pfx) or str(e.get("key", "")).startswith(lot_pfx)]
+    entries = [_normalize_note_entry(e) for e in entries]
     entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
     return {"notes": entries, "total": len(entries)}
 
@@ -777,8 +913,9 @@ def save_note(req: NoteSaveReq, request: Request):
     scope = (req.scope or "").strip()
     if scope not in ("wafer", "param", "lot", "param_global"):
         raise HTTPException(400, "scope must be 'wafer'|'param'|'lot'|'param_global'")
-    text = (req.text or "").strip()
-    if not text:
+    images = _normalize_note_images(req.images)
+    text = _clean_note_text(req.text)
+    if not text and not images:
         raise HTTPException(400, "empty text")
     if len(text) > 2000:
         raise HTTPException(400, "text too long (max 2000 chars)")
@@ -805,13 +942,41 @@ def save_note(req: NoteSaveReq, request: Request):
         "scope": scope,
         "key": key,
         "text": text,
+        "images": images,
+        "comments": [],
         "username": username,
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
     entries = _load_notes()
     entries.append(entry)
     _save_notes(entries)
+    _notify_tracker_owner_for_note(entry, username)
     return {"ok": True, "entry": entry}
+
+
+@router.post("/notes/comment")
+def add_note_comment(req: NoteCommentReq, request: Request):
+    from core.auth import current_user as _cu
+    me = _cu(request)
+    username = me.get("username") or req.username or "anonymous"
+    text = _clean_note_text(req.text)
+    images = _normalize_note_images(req.images)
+    if not text and not images:
+        raise HTTPException(400, "empty text")
+    entries = _load_notes()
+    target = next((e for e in entries if e.get("id") == req.note_id), None)
+    if not target:
+        raise HTTPException(404, "note not found")
+    comment = {
+        "id": "c_" + datetime.datetime.now().strftime("%y%m%d%H%M%S%f"),
+        "text": text,
+        "images": images,
+        "username": username,
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    target.setdefault("comments", []).append(comment)
+    _save_notes(entries)
+    return {"ok": True, "comment": comment}
 
 
 @router.post("/notes/delete")

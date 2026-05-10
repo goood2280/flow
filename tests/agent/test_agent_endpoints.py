@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+import polars as pl
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -235,3 +236,66 @@ def test_agent_wiki_source_ingest_search_log_lint(tmp_path, monkeypatch):
     lint = agent.agent_wiki_lint(req(role="admin", username="root"))
     assert lint["ok"] is True
     assert lint["counts"]["pages"] == 1
+
+
+def test_schema_relation_preview_and_admin_save_do_not_touch_sources(tmp_path, monkeypatch):
+    db_root = tmp_path / "db"
+    product_dir = db_root / "PRODA"
+    product_dir.mkdir(parents=True)
+    fab_file = product_dir / "part_0.parquet"
+    ml_file = db_root / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "A1001"],
+        "wafer_id": [1, 2],
+        "step_id": ["AA", "BB"],
+    }).write_parquet(fab_file)
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "A1002"],
+        "wafer_id": [1, 3],
+        "knob": ["K1", "K2"],
+    }).write_parquet(ml_file)
+    before = {fab_file: fab_file.stat().st_mtime_ns, ml_file: ml_file.stat().st_mtime_ns}
+    relation_file = tmp_path / "flow-data" / "schema_relations.json"
+    monkeypatch.setattr(agent, "SCHEMA_RELATION_FILE", relation_file)
+    monkeypatch.setattr(agent, "_relation_resolve_root", lambda _raw, default=None: db_root)
+
+    preview = agent.schema_relation_preview(
+        agent.SchemaRelationPreviewReq(sources=[
+            agent.SchemaRelationSource(source_type="db", root="db_root", product="PRODA", label="FAB PRODA"),
+            agent.SchemaRelationSource(source_type="file", root="db_root", file="ML_TABLE_PRODA.parquet", label="ML_TABLE PRODA"),
+        ]),
+        req(role="user"),
+    )
+
+    assert preview["ok"] is True
+    assert preview["preview_only"] is True
+    assert preview["saved"] is False
+    assert not relation_file.exists()
+    assert any(row["left_column"] == "root_lot_id" and row["right_column"] == "root_lot_id" for row in preview["candidates"])
+
+    with pytest.raises(HTTPException) as denied:
+        agent.schema_relation_save(agent.SchemaRelationSaveReq(candidates=preview["candidates"]), req(role="user"))
+    assert denied.value.status_code == 403
+
+    saved = agent.schema_relation_save(
+        agent.SchemaRelationSaveReq(candidates=preview["candidates"][:2], note="checked in test"),
+        req(role="admin", username="root"),
+    )
+
+    assert saved["ok"] is True
+    assert saved["raw_sources_mutated"] is False
+    assert relation_file.exists()
+    assert all(path.stat().st_mtime_ns == mtime for path, mtime in before.items())
+
+    graph = agent.schema_relation_graph(req(role="user"))
+    assert graph["relations"]
+    assert graph["graph"]["edges"]
+
+    deleted = agent.schema_relation_delete(
+        agent.SchemaRelationDeleteReq(relation_ids=[graph["relations"][0]["relation_id"]], note="wrong edge"),
+        req(role="admin", username="root"),
+    )
+    assert deleted["ok"] is True
+    assert deleted["raw_sources_mutated"] is False
+    assert len(deleted["relations"]) == len(graph["relations"]) - 1
+    assert all(path.stat().st_mtime_ns == mtime for path, mtime in before.items())

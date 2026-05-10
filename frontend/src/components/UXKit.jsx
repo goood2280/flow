@@ -152,12 +152,12 @@ export function TabStrip({ items = [], active, onChange, right = null }) {
 // 페이지 최상단 compact header (RootHeader 와 함께). left/center/right slot.
 export function PageHeader({ title, subtitle, right, style = {} }) {
   return (
-    <div style={{
+    <div className="flow-surface-header" style={{
       display: "flex", alignItems: "center", gap: 12,
-      padding: "8px 14px", borderBottom: `1px solid ${c.border}`,
+      padding: "8px 14px 8px 18px", borderBottom: `1px solid ${c.border}`,
       background: c.bg2, minHeight: 34, ...style,
     }}>
-      {title && <span style={{ fontSize: 14, fontWeight: 700, color: c.textSub }}>{uiLabel(title)}</span>}
+      {title && <span style={{ fontSize: 14, fontWeight: 800, color: c.text }}>{uiLabel(title)}</span>}
       {subtitle && <span style={{ fontSize: 14, color: c.textSub }}>{subtitle}</span>}
       {right != null && <span style={{ marginLeft: "auto" }}>{right}</span>}
     </div>

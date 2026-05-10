@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import Loading from "../components/Loading";
-import { sf, dl } from "../lib/api";
+import Modal from "../components/Modal";
+import { toast } from "../components/Toast";
+import { authSrc, sf, dl } from "../lib/api";
 import { useUserRole } from "../lib/permissions";
 import { statusPalette, chartPalette } from "../components/UXKit";
 const API="/api/splittable";
@@ -69,6 +71,8 @@ export default function My_SplitTable({user}){
   const[notesOpen,setNotesOpen]=useState(false);
   const[noteFilter,setNoteFilter]=useState(null); // {scope, key} or null = all
   const[noteDraft,setNoteDraft]=useState("");
+  const[noteImages,setNoteImages]=useState([]);
+  const[noteUploading,setNoteUploading]=useState(false);
   const[noteDraftScope,setNoteDraftScope]=useState(null);  // {scope, product, root_lot_id, wafer_id, param}
   const[expandedNoteId,setExpandedNoteId]=useState("");
   // v8.8.13: 노트 drawer 내부 검색 (wafer id / param 이름 / text 부분일치)
@@ -198,7 +202,7 @@ export default function My_SplitTable({user}){
   // v4.1: Features loader — wide ET⋈INLINE sample (default 200 rows, 40 cols).
   const loadFeatures=()=>{setFeaturesLoading(true);
     sf(API+"/features?rows=200&cols=40").then(d=>{setFeatures(d);setFeaturesLoading(false);})
-      .catch(e=>{alert(e.message);setFeaturesLoading(false);});};
+      .catch(e=>{toast.error(e.message);setFeaturesLoading(false);});};
   // v4.1: Uniques catalog — _uniques.json as-is. Runs once alongside products.
   const loadUniques=()=>sf(API+"/uniques").then(d=>setUniques(d.uniques||{})).catch(()=>setUniques({}));
   const normalizeOverrideConfig=(raw)=>{
@@ -230,17 +234,17 @@ export default function My_SplitTable({user}){
       .then(r=>{
         const rows=r.products||[];
         if(r.queued){
-          alert(`FAB 매칭 캐시 스캔 예약됨: ${rows.length}개 제품`);
+          toast.info(`FAB 매칭 캐시 스캔 예약됨: ${rows.length}개 제품`);
         }else if(r.running){
-          alert("FAB 매칭 캐시 스캔이 이미 실행 중입니다.");
+          toast.warn("FAB 매칭 캐시 스캔이 이미 실행 중입니다.");
         }else{
           const ok=rows.filter(x=>x.ok).length;
-          alert(`FAB 매칭 캐시 스캔 완료: ${ok}/${rows.length}`);
+          toast.ok(`FAB 매칭 캐시 스캔 완료: ${ok}/${rows.length}`);
         }
         reloadMlMatch();
         if(loadView&&(lotId.trim()||fabLotId.trim())) loadView();
       })
-      .catch(e=>alert("FAB 매칭 캐시 스캔 실패: "+(e?.message||e)))
+      .catch(e=>toast.error("FAB 매칭 캐시 스캔 실패: "+(e?.message||e)))
       .finally(()=>setFabCacheBusy(false));
   };
   useEffect(()=>{
@@ -400,7 +404,7 @@ export default function My_SplitTable({user}){
     sf(API+"/rulebook/schema/save",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({kind:rbEditKind,mapping:rbDraftMap,username:user?.username||""})})
       .then(()=>{setRbEditKind(null);reloadRbSchema();loadView&&loadView();})
-      .catch(e=>alert("저장 실패: "+e.message));
+      .catch(e=>toast.error("저장 실패: "+e.message));
   };
   // v9.0.5: KNOB/INLINE/VM Index 클릭 시 매칭 규칙 미리보기 모달.
   const[rbMatchKind,setRbMatchKind]=useState(null); // "knob_ppid" | "inline_matching" | "vm_matching" | null
@@ -413,7 +417,7 @@ export default function My_SplitTable({user}){
   const[rbRowRows,setRbRowRows]=useState([]);
   const[rbRowSaving,setRbRowSaving]=useState(false);
   const openRowEditor=(kind)=>{
-    if(!selProd){alert("먼저 제품을 선택하세요.");return;}
+    if(!selProd){toast.warn("먼저 제품을 선택하세요.");return;}
     setRbRowKind(kind);setRbRowRows([]);setRbRowCols([]);setRbRowReq([]);
     sf(API+"/rulebook?kind="+encodeURIComponent(kind)+"&product="+encodeURIComponent(selProd))
       .then(d=>{
@@ -425,7 +429,7 @@ export default function My_SplitTable({user}){
         const prodRows=(d.rows||[]).filter(r=>(r.product||"")===selProd).map(r=>({...r}));
         setRbRowRows(prodRows);
       })
-      .catch(e=>{alert("Rulebook 로드 실패: "+e.message);setRbRowKind(null);});
+      .catch(e=>{toast.error("Rulebook 로드 실패: "+e.message);setRbRowKind(null);});
   };
   const rbAddRow=()=>{const blank={};(rbRowCols||[]).forEach(c=>{blank[c]=c==="product"?(selProd||""):"";});setRbRowRows(rs=>[...rs,blank]);};
   const rbUpdateCell=(i,col,v)=>{setRbRowRows(rs=>rs.map((r,idx)=>idx===i?{...r,[col]:v}:r));};
@@ -433,7 +437,7 @@ export default function My_SplitTable({user}){
   const rbSaveRows=()=>{if(!rbRowKind||!selProd)return;
     // validate required
     const bad=rbRowRows.findIndex(r=>(rbRowReq||[]).some(c=>!String(r[c]||"").trim()));
-    if(bad>=0){alert(`행 ${bad+1}: 필수 컬럼 누락 (${rbRowReq.join(", ")})`);return;}
+    if(bad>=0){toast.warn(`행 ${bad+1}: 필수 컬럼 누락 (${rbRowReq.join(", ")})`);return;}
     setRbRowSaving(true);
     sf(API+"/rulebook/save",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({kind:rbRowKind,rows:rbRowRows,product:selProd,username:user?.username||""})})
@@ -443,7 +447,7 @@ export default function My_SplitTable({user}){
         if(rbRowKind==="vm_matching"){sf(API+"/vm-meta?product="+encodeURIComponent(selProd)).then(d=>setVmMeta(d.items||{})).catch(()=>{});}
         loadView&&loadView();
       })
-      .catch(e=>alert("저장 실패: "+e.message))
+      .catch(e=>toast.error("저장 실패: "+e.message))
       .finally(()=>setRbRowSaving(false));
   };
   const openRuleMatchView=(kind,param)=>{
@@ -507,17 +511,52 @@ export default function My_SplitTable({user}){
         setFabSuggestions(d.available_fab_lots);
       }
       setLoading(false);setPendingPlans({});clearCellSelection();reloadNotes();
-    }).catch(e=>{alert(e.message);setLoading(false);});};
+    }).catch(e=>{toast.error(e.message);setLoading(false);});};
   // v8.4.9-b: Notes reload — 로트가 정해지면 해당 로트 범위로 가져옴.
   const reloadNotes=()=>{const prod=selProd, lot=lotId;if(!prod||!lot){setNotes([]);return;}
     sf(API+"/notes?product="+encodeURIComponent(prod)+"&root_lot_id="+encodeURIComponent(lot))
       .then(d=>setNotes(d.notes||[])).catch(()=>setNotes([]));};
-  const addNote=()=>{const txt=(noteDraft||"").trim();const sc=noteDraftScope;if(!txt||!sc)return;
-    sf(API+"/notes/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...sc,text:txt,username:user?.username||""})})
-      .then(()=>{setNoteDraft("");reloadNotes();}).catch(e=>alert("노트 저장 실패: "+e.message));};
+  const normalizeNoteFile=(f,i=0)=>{
+    const extFromType=(f?.type||"").split("/")[1]||"png";
+    const hasExt=/\.[A-Za-z0-9]{2,5}$/.test(f?.name||"");
+    return hasExt?f:new File([f],`note_${Date.now()}_${i}.${extFromType}`,{type:f?.type||"image/png"});
+  };
+  const uploadNoteFiles=async(files)=>{
+    const list=Array.from(files||[]).filter(f=>/^image\//.test(f?.type||""));
+    if(!list.length)return;
+    setNoteUploading(true);
+    const uploaded=[];
+    for(let i=0;i<list.length;i++){
+      try{
+        const fd=new FormData();
+        fd.append("file",normalizeNoteFile(list[i],i));
+        const res=await sf("/api/informs/upload",{method:"POST",body:fd});
+        uploaded.push({filename:res.filename,url:res.url,size:res.size});
+      }catch(e){toast.error("이미지 업로드 실패: "+(e.message||e));}
+    }
+    if(uploaded.length)setNoteImages(prev=>[...prev,...uploaded].slice(0,12));
+    setNoteUploading(false);
+  };
+  const handleNotePaste=(e)=>{
+    const items=e.clipboardData?.items||[];
+    const files=[];
+    for(const it of items){
+      if(it.kind==="file"&&/^image\//.test(it.type||"")){
+        const f=it.getAsFile();
+        if(f)files.push(f);
+      }
+    }
+    if(!files.length)return;
+    e.preventDefault();
+    uploadNoteFiles(files);
+  };
+  const clearNoteDraft=()=>{setNoteDraft("");setNoteImages([]);setNoteDraftScope(null);};
+  const addNote=()=>{const txt=(noteDraft||"").trim();const sc=noteDraftScope;if((!txt&&noteImages.length===0)||!sc)return;
+    sf(API+"/notes/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...sc,text:txt,images:noteImages,username:user?.username||""})})
+      .then(()=>{setNoteDraft("");setNoteImages([]);reloadNotes();}).catch(e=>toast.error("노트 저장 실패: "+e.message));};
   const deleteNote=(id)=>{if(!confirm("삭제?"))return;
     sf(API+"/notes/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,username:user?.username||""})})
-      .then(()=>reloadNotes()).catch(e=>alert("삭제 실패: "+e.message));};
+      .then(()=>reloadNotes()).catch(e=>toast.error("삭제 실패: "+e.message));};
   const notesForWafer=(wid)=>notes.filter(n=>n.scope==="wafer"&&n.key===`${selProd}__${lotId}__W${wid}`);
   const notesForParam=(param)=>notes.filter(n=>n.scope==="param"&&n.key.endsWith(`__${param}`)&&n.key.startsWith(`${selProd}__${lotId}__W`));
   // v8.4.9-c: 특정 (wafer × param) 셀용 메모 — 행/열 교차 단위.
@@ -578,7 +617,7 @@ export default function My_SplitTable({user}){
   const savePlans=()=>{if(!Object.keys(pendingPlans).length)return;
     const plansToSave={...pendingPlans};
     sf(API+"/plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,plans:plansToSave,username:user?.username||"",root_lot_id:lotId})})
-      .then(()=>{primePlanValueCache(plansToSave);setShowConfirm(false);setEditing(false);loadView();if(isLotHistoryMode(histMode))loadOperationalHistory();}).catch(e=>alert(e.message));};
+      .then(()=>{primePlanValueCache(plansToSave);setShowConfirm(false);setEditing(false);loadView();if(isLotHistoryMode(histMode))loadOperationalHistory();}).catch(e=>toast.error(e.message));};
   const deletePlan=(ck)=>{if(!confirm("Delete?"))return;sf(API+"/plan/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,cell_keys:[ck],username:user?.username||""})}).then(loadView);};
   const currentRowsForInformSnapshot=()=>{
     const rows=Array.isArray(data?.rows)?data.rows:[];
@@ -621,7 +660,7 @@ export default function My_SplitTable({user}){
   };
   const startInformFromCurrentSnapshot=()=>{
     const rows=currentRowsForInformSnapshot();
-    if(!selProd||!data||!rows.length){alert("먼저 SplitTable 을 조회하세요.");return;}
+    if(!selProd||!data||!rows.length){toast.warn("먼저 SplitTable 을 조회하세요.");return;}
     const rootLot=String(data.root_lot_id||lotId||"").trim();
     const typedFabLot=String(fabLotId||"").trim();
     const typedLot=String(lotId||"").trim();
@@ -633,7 +672,7 @@ export default function My_SplitTable({user}){
       ? [typedFabLot]
       : (typedLotIsFab ? [typedLot] : visibleFabLots);
     const targetLot=String(typedFabLot||(rootOnly?(rootLot||typedLot):viewFabLot)||(typedLotIsFab?typedLot:"")).trim();
-    if(!targetLot){alert("SplitTable 의 lot_id/fab_lot_id 를 먼저 선택하세요.");return;}
+    if(!targetLot){toast.warn("SplitTable 의 lot_id/fab_lot_id 를 먼저 선택하세요.");return;}
     const targetIsFab=!rootOnly&&Boolean(typedFabLot||viewFabLot||/[._\-/]/.test(targetLot));
     const draftFabLots=rootOnly?selectedFabLots:selectedFabLots.slice(0,1);
     const rowParams=rows.map(r=>String(r?._param||"").trim()).filter(Boolean);
@@ -683,7 +722,7 @@ export default function My_SplitTable({user}){
         localStorage.setItem(INFORM_WIZARD_OPEN_KEY,"1");
       }catch(_){}
       window.dispatchEvent(new CustomEvent("flow:navigate",{detail:{tab:"inform",search:"?inform_tab=inform&create=1"}}));
-    }).catch(e=>alert("Inform 스냅샷 생성 실패: "+(e?.message||e)))
+    }).catch(e=>toast.error("Inform 스냅샷 생성 실패: "+(e?.message||e)))
       .finally(()=>setInformSnapshotBusy(false));
   };
 
@@ -706,10 +745,10 @@ export default function My_SplitTable({user}){
           return;
         }
         reloadCustoms();setSelCustom(customName);setIsCustomMode(true);
-      }).catch(e=>alert("저장 실패: "+(e.message||e)));};
+      }).catch(e=>toast.error("저장 실패: "+(e.message||e)));};
   const deleteCustom=(name)=>{if(!confirm("Delete '"+name+"'?"))return;
     sf(API+"/customs/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,username:user?.username||""})})
-      .then(()=>{reloadCustoms();if(selCustom===name)setSelCustom("");}).catch(e=>alert(e.message));};
+      .then(()=>{reloadCustoms();if(selCustom===name)setSelCustom("");}).catch(e=>toast.error(e.message));};
   const selectCustomSet=(c)=>{
     // v8.8.33: 저장 set 에서 기본 식별자(root_lot_id/wafer_id/lot_id/fab_lot_id/product) 자동 제거 — 자동 첨부되는 컬럼.
     const _drop=new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
@@ -724,7 +763,7 @@ export default function My_SplitTable({user}){
   const savePrecision=()=>{
     sf(API+"/precision/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({precision:precisionDraft})})
       .then(d=>{setPrecision(d.precision||{});setPrecisionDraft(d.precision||{});})
-      .catch(e=>alert(e.message));
+      .catch(e=>toast.error(e.message));
   };
   const removePrefix=(p)=>{if(!confirm("Remove "+p+"?"))return;const next=prefixes.filter(x=>x!==p);
     sf(API+"/prefixes/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prefixes:next})}).then(()=>setPrefixes(next));};
@@ -797,12 +836,15 @@ export default function My_SplitTable({user}){
   const S={padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none"};
   const chipS=(active)=>({padding:"3px 8px",borderRadius:4,fontSize:14,cursor:"pointer",fontWeight:active?700:400,background:active?"var(--accent-glow)":"var(--bg-hover)",color:active?"var(--accent)":"var(--text-secondary)",border:active?"1px solid var(--accent)":"1px solid transparent"});
 
-  return(<div style={{display:"flex",height:"calc(100vh - 52px)",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
+  return(<div className="flow-connected-page" style={{display:"flex",height:"calc(100vh - 52px)",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
     {/* v8.4.9-c: 셀 hover 시 빈 💬+ 배지 페이드인 */}
     <style>{`.stm-cell:hover .stm-note-btn{opacity:1 !important;}`}</style>
     {/* Sidebar */}
     <div style={{width:250,minWidth:250,borderRight:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",flexDirection:"column",overflow:"auto",position:"relative"}}>
-      <div style={{padding:"12px 14px",borderBottom:"1px solid var(--border)",fontSize:14,fontWeight:700,color:"var(--text-secondary)"}}>스플릿 테이블</div>
+      <div className="flow-sidebar-header" style={{padding:"12px 14px",borderBottom:"1px solid var(--border)",fontSize:14,fontWeight:700,color:"var(--text-secondary)"}}>
+        <span className="flow-sidebar-header-title">스플릿 테이블</span>
+        <div className="flow-sidebar-header-meta">{visibleProducts.length} products</div>
+      </div>
       <div style={{padding:"8px 12px"}}><div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4}}>PRODUCT</div>
         <select value={selProd} onChange={e=>setSelProd(e.target.value)} style={{...S,width:"100%"}}>{visibleProducts.map(p=><option key={p.name} value={p.name}>{stripMlPrefix(p.name)}</option>)}</select></div>
       {/* Lot ID dropdown */}
@@ -899,7 +941,7 @@ export default function My_SplitTable({user}){
       {/* Settings gear */}
       {canManage&&<div>
         <div onClick={()=>setShowSettings(!showSettings)} style={{position:"fixed",bottom:16,left:16,width:40,height:40,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,boxShadow:"0 2px 8px rgba(0,0,0,0.3)",fontSize:18}} title="Admin settings">⚙️</div>
-        {showSettings&&<><div style={{position:"fixed",inset:0,zIndex:98}} onClick={()=>setShowSettings(false)}/><div style={{position:"fixed",left:"50%",top:"50%",transform:"translate(-50%, -50%)",background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:12,padding:16,width:"min(920px, calc(100vw - 32px))",maxHeight:"84vh",overflow:"auto",zIndex:99,boxShadow:"0 16px 48px rgba(0,0,0,0.55)"}}>
+        {showSettings&&<Modal open onClose={()=>setShowSettings(false)} width={920} zIndex={98}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>Split Table 설정</span>
             <span onClick={()=>setShowSettings(false)} style={{cursor:"pointer",color:"var(--text-secondary)",fontSize:16}}>✕</span>
@@ -1047,14 +1089,14 @@ export default function My_SplitTable({user}){
             };
             const applyLink=async()=>{
               if(draftOverrideMode==="manual"&&!currentManualFabSource){
-                alert("수동 연결은 DB 경로를 먼저 선택해야 합니다.");
+                toast.warn("수동 연결은 DB 경로를 먼저 선택해야 합니다.");
                 return;
               }
               if(draftOverrideMode==="auto"&&!autoFabSource){
-                alert("자동 매칭 후보가 없습니다. 수동 연결로 DB 경로를 선택하세요.");
+                toast.warn("자동 매칭 후보가 없습니다. 수동 연결로 DB 경로를 선택하세요.");
                 return;
               }
-              if(preview.error&&!previewApiMissing){alert("현재 연결 미리보기가 유효하지 않습니다. 자동 경로나 수동 DB 경로를 다시 확인하세요.");return;}
+              if(preview.error&&!previewApiMissing){toast.error("현재 연결 미리보기가 유효하지 않습니다. 자동 경로나 수동 DB 경로를 다시 확인하세요.");return;}
               const nextRootCol=String(selectedRootCol||"").trim();
               const nextWfCol=String(selectedWfCol||"").trim();
               const nextFabCol=String(selectedFabCol||"").trim();
@@ -1079,9 +1121,9 @@ export default function My_SplitTable({user}){
               setLotOverrides(nextOverrides);
               try{
                 await persistLotOverrides(nextOverrides);
-                alert("✔ 연결 저장됨. 다음 조회부터 바로 적용됩니다.");
+                toast.ok("연결 저장됨. 다음 조회부터 바로 적용됩니다.");
               }catch(e){
-                alert("저장 실패: "+(e?.message||e));
+                toast.error("저장 실패: "+(e?.message||e));
               }
             };
             const selectS={...S,width:"100%",fontSize:14,fontFamily:"monospace"};
@@ -1381,7 +1423,7 @@ export default function My_SplitTable({user}){
           </div>
           </>}
           <button onClick={()=>setShowSettings(false)} style={{width:"100%",padding:"8px",borderRadius:6,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontWeight:600,fontSize:14,cursor:"pointer"}}>{settingsTab==="advanced"?"고급 설정 닫기":"닫기"}</button>
-        </div></>}
+        </Modal>}
       </div>}
     </div>
     {/* Main */}
@@ -1403,7 +1445,7 @@ export default function My_SplitTable({user}){
               (ov.tried_candidates && ov.tried_candidates.length) ? `\n[탐색 경로]\n  - ${ov.tried_candidates.join("\n  - ")}` : ""
             ].filter(Boolean).join("");
             return <span title={detail}
-              onClick={()=>alert(detail)}
+              onClick={()=>toast.error(detail)}
               style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"rgba(239,68,68,0.15)",color:"rgba(239,68,68,0.95)",border:"1px solid #ef4444",cursor:"help"}}>⚠ FAB 연동 꺼짐 (상세)</span>;
           }
           if(!ov.enabled){
@@ -1438,8 +1480,8 @@ export default function My_SplitTable({user}){
             <button onClick={()=>{setEditing(false);setPendingPlans({});setActiveCell(null);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>Cancel</button>
           </>:<>
             {/* v8.4.9: window.open → dl() — 새 탭은 토큰 헤더가 안 붙어 401. blob 다운로드로 전환. */}
-            <button onClick={()=>{const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>alert("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ CSV</button>
-            <button onClick={()=>{const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.xlsx`).catch(e=>alert("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"rgba(16,185,129,0.95)",fontSize:14,cursor:"pointer"}} title="XLSX (fab_lot_id 병합)">⬇ XLSX</button>
+            <button onClick={()=>{const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>toast.error("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ CSV</button>
+            <button onClick={()=>{const url=API+"/download-xlsx?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.xlsx`).catch(e=>toast.error("XLSX 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid #10b981",background:"transparent",color:"rgba(16,185,129,0.95)",fontSize:14,cursor:"pointer"}} title="XLSX (fab_lot_id 병합)">⬇ XLSX</button>
             <button onClick={()=>{setEditing(true);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Edit</button>
             {/* v8.4.9-b: 노트 드로어 토글 */}
             <button onClick={()=>{setNoteFilter(null);setNotesOpen(true);}} title="wafer 태그 · 항목 메모" style={{padding:"4px 12px",borderRadius:4,border:"1px solid #3b82f6",background:"transparent",color:"rgba(59,130,246,0.95)",fontSize:14,fontWeight:600,cursor:"pointer",display:"inline-flex",gap:4,alignItems:"center"}}>📝 노트{notes.length>0&&<span style={{padding:"0 6px",borderRadius:10,background:"rgba(59,130,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>{notes.length}</span>}</button>
@@ -1764,7 +1806,7 @@ export default function My_SplitTable({user}){
             </label>
           ))}
           {isFinalHistoryMode(histMode)&&histFinal.drift_count>0&&<span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"rgba(239,68,68,0.13)",color:"rgba(239,68,68,0.95)",fontWeight:600}}>⚠ drift {histFinal.drift_count}/{histFinal.total_cells}</span>}
-          {isAdmin&&<button onClick={()=>dl(API+"/history-csv?product="+encodeURIComponent(selProd), `splittable_history_${selProd}.csv`).catch(e=>alert("이력 CSV 다운로드 실패: "+e.message))} style={{marginLeft:"auto",padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ History CSV</button>}
+          {isAdmin&&<button onClick={()=>dl(API+"/history-csv?product="+encodeURIComponent(selProd), `splittable_history_${selProd}.csv`).catch(e=>toast.error("이력 CSV 다운로드 실패: "+e.message))} style={{marginLeft:"auto",padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ History CSV</button>}
         </div>
         {isLotHistoryMode(histMode)&&lotId.trim()&&(
           <div style={{marginBottom:16,padding:12,borderRadius:8,background:"var(--bg-card)",border:"1px solid var(--border)"}}>
@@ -1943,8 +1985,7 @@ export default function My_SplitTable({user}){
       })():null}
     </div>
     {activeCell&&(()=>{const sugg=suggestionValuesFor(activeCell.param,colValCache[activeCell.param]||[]);const commit=(v)=>{const t=(v??"").trim();if(t)setPendingPlans(p=>({...p,[activeCell.key]:t}));setActiveCell(null);};
-      return <div style={{position:"fixed",inset:0,zIndex:9998,background:"rgba(0,0,0,0.55)",display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setActiveCell(null)}>
-        <div onClick={e=>e.stopPropagation()} style={{background:"var(--bg-secondary)",borderRadius:10,padding:18,width:360,border:"1px solid var(--border)"}}>
+      return <Modal open onClose={()=>setActiveCell(null)} width={360} zIndex={9998}>
           <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontFamily:"monospace"}}>{activeCell.key.split("|").slice(0,2).join(" · ")}</div>
           <div style={{fontSize:14,fontWeight:700,marginBottom:10,color:"var(--accent)",fontFamily:"monospace"}}>{activeCell.param}</div>
           <input autoFocus value={activeCell.value} onChange={e=>setActiveCell(c=>({...c,value:e.target.value}))}
@@ -1962,17 +2003,15 @@ export default function My_SplitTable({user}){
             <button onClick={()=>commit(activeCell.value)} style={{flex:1,padding:"8px 12px",borderRadius:6,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontWeight:600,cursor:"pointer",fontSize:14}}>Apply</button>
             <button onClick={()=>setActiveCell(null)} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:14}}>Cancel</button>
           </div>
-        </div>
-      </div>;})()}
-    {showConfirm&&<div style={{position:"fixed",inset:0,zIndex:9999,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setShowConfirm(false)}>
-      <div onClick={e=>e.stopPropagation()} style={{background:"var(--bg-secondary)",borderRadius:12,padding:24,width:400,border:"1px solid var(--border)",maxHeight:"80vh",overflow:"auto"}}>
+      </Modal>;})()}
+    {showConfirm&&<Modal open onClose={()=>setShowConfirm(false)} width={400} zIndex={9999}>
         <div style={{fontSize:16,fontWeight:700,marginBottom:12}}>Confirm Changes</div>
         <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:16}}>{Object.keys(pendingPlans).length} cells will be updated</div>
         {Object.entries(pendingPlans).map(([k,v])=>(<div key={k} style={{fontSize:14,padding:"4px 0",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between"}}><span style={{fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis"}}>{k.split("|").pop()}</span><span style={{color:"rgba(249,115,22,0.95)",fontWeight:600}}>{v}</span></div>))}
         <div style={{display:"flex",gap:8,marginTop:16}}>
           <button onClick={savePlans} style={{flex:1,padding:10,borderRadius:6,border:"none",background:"rgba(34,197,94,0.95)",color:"var(--bg-secondary)",fontWeight:600,cursor:"pointer"}}>Confirm</button>
           <button onClick={()=>setShowConfirm(false)} style={{padding:"10px 20px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>Cancel</button>
-        </div></div></div>}
+        </div></Modal>}
 
     {/* v8.8.13: Notes 드로어 — 3종 scope(wafer/param/lot) 통합 뷰.
          - global(param_global) UI 제거: 필요성 낮고 뷰를 단순하게 유지.
@@ -2062,15 +2101,33 @@ export default function My_SplitTable({user}){
               :{bg:"rgba(107,114,128,0.95)",txt:n.scope};
             const time=(n.created_at||"").replace("T"," ").slice(5,16);
             const expanded=expandedNoteId===n.id;
+            const imgs=Array.isArray(n.images)?n.images:[];
+            const comments=Array.isArray(n.comments)?n.comments:[];
             return(<div key={n.id} title={expanded?"클릭해서 접기":"클릭해서 전체 내용 보기"} onClick={()=>setExpandedNoteId(expanded?"":n.id)} style={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:expanded?6:0,padding:"4px 6px",borderRadius:4,background:expanded?"var(--bg-secondary)":"var(--bg-card)",border:"1px solid var(--border)",fontSize:14,minHeight:26,cursor:"pointer"}}>
               <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
                 <span style={{flexShrink:0,fontSize:14,fontWeight:700,padding:"1px 6px",borderRadius:8,background:badge.bg,color:"var(--bg-secondary)",whiteSpace:"nowrap"}}>{badge.txt}</span>
-                <span style={{flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",color:"var(--text-primary)"}}>{n.text}</span>
+                <span style={{flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",color:"var(--text-primary)"}}>{n.text||"(이미지)"}</span>
+                {imgs.length>0&&<span style={{flexShrink:0,fontSize:14,padding:"1px 6px",borderRadius:8,background:"rgba(59,130,246,0.15)",color:"rgba(59,130,246,0.95)",fontWeight:700}}>이미지 {imgs.length}</span>}
+                {comments.length>0&&<span style={{flexShrink:0,fontSize:14,padding:"1px 6px",borderRadius:8,background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontWeight:700}}>답글 {comments.length}</span>}
                 <span style={{flexShrink:0,fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{n.username}</span>
                 <span style={{flexShrink:0,fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{time}</span>
                 {mine&&<span onClick={e=>{e.stopPropagation();deleteNote(n.id);}} title="작성자만 삭제 가능" style={{flexShrink:0,cursor:"pointer",fontSize:14,color:"rgba(239,68,68,0.95)",padding:"0 4px"}}>×</span>}
               </div>
-              {expanded&&<div style={{whiteSpace:"pre-wrap",wordBreak:"break-word",lineHeight:1.45,color:"var(--text-primary)",padding:"4px 6px 6px 6px",borderTop:"1px dashed var(--border)"}}>{n.text}</div>}
+              {expanded&&<div style={{display:"grid",gap:8,padding:"4px 6px 6px 6px",borderTop:"1px dashed var(--border)"}}>
+                {n.text&&<div style={{whiteSpace:"pre-wrap",wordBreak:"break-word",lineHeight:1.45,color:"var(--text-primary)"}}>{n.text}</div>}
+                {imgs.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(96px,1fr))",gap:6}}>
+                  {imgs.map((im,ii)=><a key={ii} href={authSrc(im.url)} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()} title={im.filename||"image"} style={{border:"1px solid var(--border)",borderRadius:4,overflow:"hidden",background:"var(--bg-primary)",height:86,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    <img src={authSrc(im.url)} alt={im.filename||"note image"} style={{maxWidth:"100%",maxHeight:"100%",objectFit:"contain",display:"block"}}/>
+                  </a>)}
+                </div>}
+                {comments.length>0&&<div style={{display:"grid",gap:5}}>
+                  {comments.map(c=><div key={c.id||c.created_at} style={{padding:"5px 7px",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)"}}>
+                    <div style={{display:"flex",gap:6,color:"var(--text-secondary)",fontSize:12,marginBottom:3}}><span>{c.username||"-"}</span><span>{(c.created_at||"").replace("T"," ").slice(5,16)}</span></div>
+                    {c.text&&<div style={{whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{c.text}</div>}
+                    {Array.isArray(c.images)&&c.images.length>0&&<div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:5}}>{c.images.map((im,ii)=><a key={ii} href={authSrc(im.url)} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()}><img src={authSrc(im.url)} alt={im.filename||"comment image"} style={{width:64,height:48,objectFit:"cover",border:"1px solid var(--border)",borderRadius:4}}/></a>)}</div>}
+                  </div>)}
+                </div>}
+              </div>}
             </div>);
           })}
         </div>
@@ -2088,18 +2145,31 @@ export default function My_SplitTable({user}){
             {noteDraftScope.scope==="param"&&<span>wafer:
               <input value={noteDraftScope.wafer_id||""} onChange={e=>setNoteDraftScope({...noteDraftScope,wafer_id:e.target.value})} placeholder="wafer_id" style={{marginLeft:4,width:70,padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
             </span>}
-            <span style={{marginLeft:"auto"}}><span onClick={()=>setNoteDraftScope(null)} style={{cursor:"pointer",color:"var(--text-secondary)",fontSize:14}}>✕ 취소</span></span>
+            <span style={{marginLeft:"auto"}}><span onClick={clearNoteDraft} style={{cursor:"pointer",color:"var(--text-secondary)",fontSize:14}}>✕ 취소</span></span>
           </div>
-          <textarea value={noteDraft} onChange={e=>setNoteDraft(e.target.value)} placeholder="새 노트 내용…" rows={2}
+          <textarea value={noteDraft} onChange={e=>setNoteDraft(e.target.value)} onPaste={handleNotePaste} placeholder="새 노트 내용…"
+            rows={2}
             style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,resize:"vertical",fontFamily:"inherit"}}/>
-          <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
+          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+            <label style={{padding:"4px 9px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:noteUploading?"wait":"pointer"}}>
+              이미지
+              <input type="file" accept="image/*" multiple disabled={noteUploading} onChange={e=>{uploadNoteFiles(e.target.files);e.target.value="";}} style={{display:"none"}}/>
+            </label>
+            {noteUploading&&<span style={{fontSize:14,color:"var(--accent)"}}>업로드 중...</span>}
+            {noteImages.map((im,i)=><span key={im.url||i} style={{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:14}}>
+              <img src={authSrc(im.url)} alt="" style={{width:24,height:18,objectFit:"cover",borderRadius:3}}/>
+              <span style={{maxWidth:110,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{im.filename||"image"}</span>
+              <span onClick={()=>setNoteImages(prev=>prev.filter((_,idx)=>idx!==i))} style={{cursor:"pointer",color:"var(--text-secondary)"}}>×</span>
+            </span>)}
+            <span style={{marginLeft:"auto",display:"inline-flex",gap:6}}>
             {(() => {
               const sc = noteDraftScope.scope;
               const need = sc==="param" ? !!(noteDraftScope.wafer_id||"").trim() : true;
-              const canSave = !!noteDraft.trim() && need;
+              const canSave = (!!noteDraft.trim() || noteImages.length>0) && need && !noteUploading;
               return <button onClick={addNote} disabled={!canSave}
                 style={{padding:"5px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:canSave?"pointer":"not-allowed",opacity:canSave?1:0.5}}>저장 ({me||"anonymous"})</button>;
             })()}
+            </span>
           </div>
         </div>}
         {!noteDraftScope&&<div style={{padding:"8px 16px",borderTop:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.5}}>
@@ -2110,10 +2180,7 @@ export default function My_SplitTable({user}){
 
     {/* v8.8.10: Rulebook 컬럼 매핑 편집 modal — 역할 → 실제 CSV 컬럼명 조정. soft-landing. */}
     {rbEditKind && (
-      <div onClick={()=>setRbEditKind(null)}
-           style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:3000,display:"flex",alignItems:"center",justifyContent:"center"}}>
-        <div onClick={e=>e.stopPropagation()}
-             style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:10,padding:18,width:500,maxWidth:"92vw",color:"var(--text-primary)"}}>
+      <Modal open onClose={()=>setRbEditKind(null)} width={500} zIndex={3000}>
           <div style={{display:"flex",alignItems:"center",marginBottom:10}}>
             <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>🔧 컬럼 매핑 — {rbEditKind}</div>
             <span style={{flex:1}}/>
@@ -2144,15 +2211,12 @@ export default function My_SplitTable({user}){
             <button onClick={saveSchemaEdit}
               style={{padding:"6px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>저장</button>
           </div>
-        </div>
-      </div>
+      </Modal>
     )}
     {/* v8.8.15: Rulebook 행 CRUD modal — 제품 스코프 행 편집. 공용(product 빈값) 행은 여기서 건드리지 않음. */}
     {rbRowKind && (
-      <div onClick={()=>!rbRowSaving&&setRbRowKind(null)}
-           style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:3000,display:"flex",alignItems:"center",justifyContent:"center"}}>
-        <div onClick={e=>e.stopPropagation()}
-             style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:10,padding:18,width:920,maxWidth:"96vw",maxHeight:"88vh",display:"flex",flexDirection:"column",color:"var(--text-primary)"}}>
+      <Modal open onClose={()=>!rbRowSaving&&setRbRowKind(null)} width={920} zIndex={3000} closeOnBackdrop={!rbRowSaving}>
+        <div style={{display:"flex",flexDirection:"column",maxHeight:"82vh"}}>
           <div style={{display:"flex",alignItems:"center",marginBottom:10,gap:8}}>
             <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>📘 Rulebook 편집 — {rbRowKind}</div>
             <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>product = {selProd}</span>
@@ -2215,13 +2279,12 @@ export default function My_SplitTable({user}){
               style={{padding:"6px 16px",borderRadius:4,border:"none",background:rbRowSaving?"var(--border)":"var(--accent)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:rbRowSaving?"wait":"pointer"}}>{rbRowSaving?"저장 중…":`저장 (${rbRowRows.length}행)`}</button>
           </div>
         </div>
-      </div>
+      </Modal>
     )}
     {/* v9.0.5: Rulebook 규칙 미리보기 modal — 인덱스(KNOB/INLINE/VM) 클릭 시 연결 규칙 표시. */}
     {rbMatchKind && (
-      <div onClick={closeRuleMatchView}
-           style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",zIndex:3001,display:"flex",alignItems:"center",justifyContent:"center"}}>
-        <div onClick={e=>e.stopPropagation()} style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:10,padding:18,width:860,maxWidth:"94vw",maxHeight:"86vh",display:"flex",flexDirection:"column",color:"var(--text-primary)"}}>
+      <Modal open onClose={closeRuleMatchView} width={860} zIndex={3001}>
+        <div style={{display:"flex",flexDirection:"column",maxHeight:"82vh"}}>
           <div style={{display:"flex",alignItems:"center",marginBottom:10,gap:8}}>
             <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>🔎 {rbMatchTitle} 매칭 규칙</div>
             <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--bg-card)",color:"var(--text-secondary)",fontFamily:"monospace"}}>{rbMatchParam}</span>
@@ -2306,7 +2369,7 @@ export default function My_SplitTable({user}){
             <div style={{padding:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:14}}>매칭 데이터가 없습니다.</div>
           )}
         </div>
-      </div>
+      </Modal>
     )}
   </div>);
 }

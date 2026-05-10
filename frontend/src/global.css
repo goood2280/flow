@@ -357,6 +357,130 @@ samp,
   --radius-lg: 5px;
   --control-radius: var(--radius-md);
   --surface-radius: var(--radius-lg);
+  font-family: var(--font-sans) !important;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.flow-connected-page *,
+.flow-connected-page button,
+.flow-connected-page input,
+.flow-connected-page select,
+.flow-connected-page textarea {
+  font-family: inherit;
+}
+
+.flow-connected-page button,
+.flow-connected-page input,
+.flow-connected-page select,
+.flow-connected-page textarea {
+  font-size: 14px !important;
+  letter-spacing: 0 !important;
+}
+
+.flow-connected-page button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 10px;
+  line-height: 1.2;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.flow-connected-page input:not([type="checkbox"]):not([type="radio"]),
+.flow-connected-page select {
+  min-height: 32px;
+  padding: 6px 10px !important;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.25;
+}
+
+.flow-connected-page textarea {
+  padding: 8px 10px !important;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.45;
+}
+
+.flow-connected-page input[type="checkbox"],
+.flow-connected-page input[type="radio"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.flow-connected-page table {
+  font-size: 14px;
+}
+
+.flow-connected-page th {
+  font-size: 14px !important;
+  font-weight: 700 !important;
+}
+
+.flow-connected-page td {
+  font-size: 14px;
+}
+
+.flow-connected-page [data-active] {
+  min-height: 32px;
+  align-items: center;
+  border-radius: var(--control-radius) var(--control-radius) 0 0 !important;
+}
+
+.flow-connected-page .flow-surface-header,
+.flow-connected-page .flow-sidebar-header {
+  position: relative !important;
+  min-height: 46px !important;
+  background: linear-gradient(180deg, var(--bg-secondary), var(--bg-primary)) !important;
+  box-shadow: inset 0 -1px 0 var(--border) !important;
+}
+
+.flow-connected-page .flow-surface-header::before,
+.flow-connected-page .flow-sidebar-header::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+}
+
+.flow-connected-page .flow-sidebar-header {
+  padding: 12px 16px 12px 18px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 14px !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
+.flow-connected-page .flow-sidebar-header-title {
+  display: block;
+  font-family: var(--font-sans) !important;
+  font-size: 14px !important;
+  line-height: 1.2 !important;
+  color: var(--text-primary) !important;
+  font-weight: 800 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
+.flow-connected-page .flow-sidebar-header-meta {
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 12px !important;
+  line-height: 1.2 !important;
+  font-family: var(--font-mono) !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
 }
 
 .flow-connected-page .flow-panel,

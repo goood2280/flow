@@ -9,6 +9,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { sf, postJson } from "../lib/api";
 import PageGear from "../components/PageGear";
+import Modal from "../components/Modal";
+import { toast } from "../components/Toast";
 import { Button, EmptyState, PageHeader, Pill } from "../components/UXKit";
 
 const API = "/api/calendar";
@@ -129,9 +131,9 @@ export default function My_Calendar({ user }) {
   const save = () => {
     if (!selected) return;
     const t = (selected.title || "").trim();
-    if (!t) { alert("제목을 입력하세요"); return; }
+    if (!t) { toast.warn("제목을 입력하세요"); return; }
     if ((selected.source_type || "manual") !== "manual" && !selected._new) {
-      alert("회의에서 auto-sync 된 이벤트는 회의관리에서 수정해주세요.");
+      toast.warn("회의에서 auto-sync 된 이벤트는 회의관리에서 수정해주세요.");
       return;
     }
     if (selected._new) {
@@ -139,8 +141,8 @@ export default function My_Calendar({ user }) {
         date: selected.date, end_date: selected.end_date || "",
         title: t, body: selected.body || "", category: selected.category || "",
         group_ids: selected.group_ids || [],
-      }).then(d => { setSelected(d.event); reload(); })
-        .catch(e => alert(e.message || "생성 실패"));
+      }).then(d => { setSelected(d.event); reload(); toast.ok("이벤트 생성됨"); })
+        .catch(e => toast.error(e.message || "생성 실패"));
     } else {
       postJson(`${API}/event/update`, {
         id: selected.id, version: selected.version,
@@ -149,8 +151,8 @@ export default function My_Calendar({ user }) {
         group_ids: selected.group_ids || [],
       }).then(d => {
         if (d.conflict) { setConflict(d.event); return; }
-        setSelected(d.event); reload();
-      }).catch(e => alert(e.message || "저장 실패"));
+        setSelected(d.event); reload(); toast.ok("이벤트 저장됨");
+      }).catch(e => toast.error(e.message || "저장 실패"));
     }
   };
 
@@ -161,13 +163,13 @@ export default function My_Calendar({ user }) {
   const remove = () => {
     if (!selected?.id) { setSelected(null); return; }
     if ((selected.source_type || "manual") !== "manual") {
-      alert("회의 auto-sync 이벤트는 회의관리에서 해당 결정/액션을 삭제해주세요.");
+      toast.warn("회의 auto-sync 이벤트는 회의관리에서 해당 결정/액션을 삭제해주세요.");
       return;
     }
     if (!confirm("이 이벤트를 삭제하시겠습니까?")) return;
     sf(`${API}/event/delete?id=${encodeURIComponent(selected.id)}`, { method: "POST" })
-      .then(() => { setSelected(null); reload(); })
-      .catch(e => alert(e.message));
+      .then(() => { setSelected(null); reload(); toast.ok("이벤트 삭제됨"); })
+      .catch(e => toast.error(e.message));
   };
 
   const runSearch = () => {
@@ -189,8 +191,8 @@ export default function My_Calendar({ user }) {
   };
   const saveCats = () => {
     postJson(`${API}/categories/save`, { categories: draftCats })
-      .then(d => { setCats(d.categories || []); setEditCats(false); })
-      .catch(e => alert(e.message));
+      .then(d => { setCats(d.categories || []); setEditCats(false); toast.ok("카테고리 저장됨"); })
+      .catch(e => toast.error(e.message));
   };
 
   const renderOccurrence = (occ) => {
@@ -481,10 +483,7 @@ export default function My_Calendar({ user }) {
         </div>
       )}
 
-      {editCats && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setEditCats(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ width: 480, maxWidth: "90%", background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: 18 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, fontFamily: "monospace", color: "var(--accent)" }}>🎨 카테고리 관리</div>
+      <Modal open={editCats} onClose={() => setEditCats(false)} title="🎨 카테고리 관리" width={480}>
             {!isAdmin && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>(관리자만 저장할 수 있습니다 — 보기 전용)</div>}
             {draftCats.map((c, i) => (
               <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
@@ -501,9 +500,7 @@ export default function My_Calendar({ user }) {
               <button onClick={() => setEditCats(false)} style={smallBtn}>닫기</button>
               {isAdmin && <button onClick={saveCats} style={smallBtnPrimary}>저장</button>}
             </div>
-          </div>
-        </div>
-      )}
+      </Modal>
     </div>
   );
 }

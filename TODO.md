@@ -24,6 +24,10 @@
 
 ## Done
 
+- [x] (Codex) Agent 탭을 `실행 루프 / Wiki Graph / Schema 관계 / AI 연결` 소탭으로 재구성하고, trace 공개 요약(persona/prompt cache/subagent/clarification loop), prompt-only 실행 루프(product override 제거), schema relation preview/admin save graph/delete를 추가.
+- [x] (Codex) 6개 기능 페이지 UI quick-win 적용 — ToastHost 추가, 대상 페이지 `alert()` 제거, Calendar/Meeting/FileBrowser/Inform/SplitTable 중앙 모달을 `Modal.jsx`로 통일, PageGear 좌하단 위치 반영, Vite dist stale chunk 정리.
+- [x] (Codex) Flow 앱 visible chrome 통일 — 공통 header/sidebar accent bar, title/meta 라인, `PageHeader` 표면 톤을 6개 기능 페이지에 적용.
+- [x] (Codex) SplitTable 노트 이미지 회귀 복구 — 이미지 업로드/붙여넣기, 이미지-only 노트 저장, 썸네일/확대 링크, legacy image shape normalization.
 - [x] (Codex) Agent 탭을 Diagnosis와 시각적으로 분리하고, Activation Map 5단계 카드와 prompt drop-down, Trace Steps 표시를 단일 페이지 흐름으로 정리 (`docs/features/flowi-agent.md` Agent Tab UX, Acceptance Criteria 충족)
 - [x] (Codex) `/flowi/agent/chat` 응답에 `trace.steps`와 `trace.activation`(=`trace.call_graph.activation`)을 항상 채우고, orchestrator preview row를 contract unit action schema로 정렬.
 - [x] (Codex) Inform / SplitTable / FileBrowser Agent unit action handler 메타데이터를 각 feature md의 Agent Driver Contract 표에 맞춰 노출.

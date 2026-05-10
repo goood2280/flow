@@ -25,6 +25,7 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 AGENT_BACKUP_DIR = PATHS.data_root / "agent_backups"
 AGENT_ADMIN_STATE_FILE = PATHS.data_root / "agent_admin_tools.json"
 AGENT_KNOWLEDGE_RAW_DIR = PATHS.data_root / "knowledge" / "raw"
+SCHEMA_RELATION_FILE = PATHS.data_root / "schema_relations.json"
 
 
 class PromptPreviewReq(BaseModel):
@@ -94,6 +95,30 @@ class AgentWikiIngestReq(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class SchemaRelationSource(BaseModel):
+    source_type: str = "file"  # file | db
+    root: str = ""
+    product: str = ""
+    file: str = ""
+    label: str = ""
+
+
+class SchemaRelationPreviewReq(BaseModel):
+    sources: list[SchemaRelationSource] = Field(default_factory=list)
+    max_candidates: int = 30
+    sample_rows: int = 20
+
+
+class SchemaRelationSaveReq(BaseModel):
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    note: str = ""
+
+
+class SchemaRelationDeleteReq(BaseModel):
+    relation_ids: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -117,6 +142,277 @@ def _summary_text(*values: Any, limit: int = 240) -> str:
         for v in values
     )
     return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _relation_safe_relpath(raw: str) -> Path:
+    text = str(raw or "").strip().replace("\\", "/")
+    if not text or text.startswith("/") or text.startswith(".") or ".." in Path(text).parts:
+        raise HTTPException(400, "invalid relation source path")
+    return Path(text)
+
+
+def _relation_source_id(src: SchemaRelationSource, resolved: Path | None = None) -> str:
+    source_type = str(src.source_type or "file").strip().lower()
+    if source_type == "db":
+        label = "::".join([source_type, src.root or "db_root", src.product or (resolved.name if resolved else "")])
+    else:
+        label = "::".join([source_type, src.root or "base_root", src.file or (resolved.name if resolved else "")])
+    return _safe_slug(label, "schema_source")
+
+
+def _relation_resolve_root(raw: str, *, default: Path | None = None) -> Path:
+    text = str(raw or "").strip()
+    if not text or text in {"db", "db_root"}:
+        return PATHS.db_root.resolve()
+    if text in {"base", "base_root"}:
+        return PATHS.base_root.resolve()
+    rel = Path(text.replace("\\", "/"))
+    if rel.is_absolute():
+        cand = rel.resolve()
+        if _is_relative_to(cand, PATHS.db_root) or _is_relative_to(cand, PATHS.data_root):
+            return cand
+        raise HTTPException(400, "root must be inside configured data/db roots")
+    base = (default or PATHS.db_root).resolve()
+    cand = (base / rel).resolve()
+    if not _is_relative_to(cand, base):
+        raise HTTPException(400, "invalid root path")
+    return cand
+
+
+def _relation_resolve_source_files(src: SchemaRelationSource, *, limit: int = 8) -> tuple[Path, list[Path]]:
+    source_type = str(src.source_type or "file").strip().lower()
+    if source_type == "db":
+        root = _relation_resolve_root(src.root, default=PATHS.db_root)
+        product = str(src.product or "").strip()
+        target = (root / product).resolve() if product else root.resolve()
+        if not _is_relative_to(target, root) or not target.exists():
+            raise HTTPException(404, f"DB schema source not found: {src.root}/{src.product}".strip("/"))
+        if target.is_file():
+            files = [target] if target.suffix.lower() in {".csv", ".parquet"} else []
+        else:
+            files = sorted(target.rglob("*.parquet"))[:limit]
+            if not files:
+                files = sorted(target.rglob("*.csv"))[:limit]
+        if not files:
+            raise HTTPException(404, f"No csv/parquet files found for schema source: {target}")
+        return target, files
+
+    rel = _relation_safe_relpath(src.file)
+    roots = [_relation_resolve_root(src.root, default=PATHS.db_root)] if src.root else [PATHS.base_root.resolve(), PATHS.db_root.resolve()]
+    for root in roots:
+        cand = (root / rel).resolve()
+        if _is_relative_to(cand, root) and cand.is_file() and cand.suffix.lower() in {".csv", ".parquet"}:
+            return cand, [cand]
+    raise HTTPException(404, f"Single-file schema source not found: {src.file}")
+
+
+def _relation_scan_file(fp: Path) -> pl.LazyFrame:
+    suffix = fp.suffix.lower()
+    if suffix == ".parquet":
+        return pl.scan_parquet(str(fp))
+    if suffix == ".csv":
+        return pl.scan_csv(str(fp), infer_schema_length=5000, try_parse_dates=False)
+    raise HTTPException(400, f"Unsupported schema source: {fp.suffix}")
+
+
+def _relation_dtype_family(dtype: Any) -> str:
+    text = str(dtype or "").lower()
+    if any(x in text for x in ("int", "float", "decimal", "number")):
+        return "number"
+    if any(x in text for x in ("date", "time")):
+        return "time"
+    if any(x in text for x in ("bool",)):
+        return "bool"
+    return "string"
+
+
+_RELATION_ALIASES = {
+    "product": {"product", "prod", "device"},
+    "root_lot_id": {"rootlotid", "root_lot_id", "rootlot", "lot", "lot_id", "lotid"},
+    "fab_lot_id": {"fablotid", "fab_lot_id", "currentlotid", "current_lot_id"},
+    "wafer_id": {"waferid", "wafer_id", "wf", "wf_id", "wfid"},
+    "lot_wf": {"lotwf", "lot_wf", "lotwafer", "lot_wafer"},
+    "step_id": {"stepid", "step_id", "processstep", "process_step"},
+    "function_step": {"functionstep", "function_step", "funcstep", "func_step", "module"},
+    "ppid": {"ppid", "recipe", "recipe_id"},
+    "knob": {"knob", "knob_name", "split", "split_id"},
+    "item": {"item", "item_id", "parameter", "metric"},
+}
+
+
+def _relation_norm_col(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+
+
+def _relation_canonical_col(name: str) -> str:
+    norm = _relation_norm_col(name)
+    for canonical, aliases in _RELATION_ALIASES.items():
+        if norm in aliases:
+            return canonical
+    if norm.endswith("id") and len(norm) > 3:
+        return norm
+    return ""
+
+
+def _relation_read_source(src: SchemaRelationSource, *, sample_rows: int = 20) -> dict[str, Any]:
+    target, files = _relation_resolve_source_files(src)
+    first = files[0]
+    lf = _relation_scan_file(first)
+    schema = lf.collect_schema()
+    columns = list(schema.names())
+    dtypes = {name: str(schema[name]) for name in columns}
+    key_columns = [c for c in columns if _relation_canonical_col(c)][:20]
+    sample_values: dict[str, list[str]] = {}
+    if key_columns and sample_rows > 0:
+        try:
+            df = lf.select(key_columns).head(min(max(int(sample_rows), 1), 50)).collect()
+            for col in key_columns:
+                vals = []
+                for value in df.get_column(col).drop_nulls().unique().head(6).to_list():
+                    text = str(value).strip()
+                    if text:
+                        vals.append(text[:80])
+                sample_values[col] = vals
+        except Exception:
+            sample_values = {}
+    source_id = _relation_source_id(src, target)
+    return {
+        "source_id": source_id,
+        "source_type": str(src.source_type or "file").strip().lower(),
+        "label": src.label or src.product or src.file or target.name,
+        "root": src.root,
+        "product": src.product,
+        "file": src.file,
+        "resolved_path": str(target),
+        "files_scanned": len(files),
+        "columns": columns,
+        "dtypes": dtypes,
+        "key_columns": key_columns,
+        "sample_values": sample_values,
+    }
+
+
+def _relation_candidate_id(candidate: dict[str, Any]) -> str:
+    raw = "::".join([
+        str(candidate.get("left_source_id") or ""),
+        str(candidate.get("left_column") or ""),
+        str(candidate.get("right_source_id") or ""),
+        str(candidate.get("right_column") or ""),
+        str(candidate.get("relation_type") or ""),
+    ])
+    import hashlib
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:18]
+
+
+def _relation_candidate_graph(relations: list[dict[str, Any]]) -> dict[str, Any]:
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+    for row in relations:
+        left_id = str(row.get("left_source_id") or "")
+        right_id = str(row.get("right_source_id") or "")
+        if not left_id or not right_id:
+            continue
+        nodes.setdefault(left_id, {"id": left_id, "label": row.get("left_label") or left_id, "type": row.get("left_source_type") or "source"})
+        nodes.setdefault(right_id, {"id": right_id, "label": row.get("right_label") or right_id, "type": row.get("right_source_type") or "source"})
+        edges.append({
+            "id": row.get("relation_id") or _relation_candidate_id(row),
+            "source": left_id,
+            "target": right_id,
+            "label": f"{row.get('left_column')} = {row.get('right_column')}",
+            "relation_type": row.get("relation_type") or "join_key",
+            "confidence": row.get("confidence"),
+            "status": row.get("status") or "candidate",
+        })
+    return {"nodes": list(nodes.values()), "edges": edges, "layout": "schema_relation_graph"}
+
+
+def _relation_candidates(profiles: list[dict[str, Any]], *, limit: int = 30) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for i, left in enumerate(profiles):
+        for right in profiles[i + 1:]:
+            right_by_norm: dict[str, list[str]] = {}
+            right_by_canon: dict[str, list[str]] = {}
+            for col in right.get("columns") or []:
+                right_by_norm.setdefault(_relation_norm_col(col), []).append(col)
+                canon = _relation_canonical_col(col)
+                if canon:
+                    right_by_canon.setdefault(canon, []).append(col)
+            for left_col in (left.get("columns") or [])[:180]:
+                norm = _relation_norm_col(left_col)
+                canon = _relation_canonical_col(left_col)
+                matches = set(right_by_norm.get(norm, []))
+                if canon:
+                    matches.update(right_by_canon.get(canon, []))
+                for right_col in list(matches)[:4]:
+                    left_dtype = (left.get("dtypes") or {}).get(left_col)
+                    right_dtype = (right.get("dtypes") or {}).get(right_col)
+                    dtype_match = _relation_dtype_family(left_dtype) == _relation_dtype_family(right_dtype)
+                    exact = norm == _relation_norm_col(right_col)
+                    confidence = 0.72
+                    evidence = []
+                    if exact:
+                        confidence += 0.18
+                        evidence.append("normalized column name match")
+                    if canon:
+                        confidence += 0.08
+                        evidence.append(f"known join-key alias: {canon}")
+                    if dtype_match:
+                        confidence += 0.03
+                        evidence.append(f"dtype compatible: {_relation_dtype_family(left_dtype)}")
+                    left_samples = (left.get("sample_values") or {}).get(left_col) or []
+                    right_samples = (right.get("sample_values") or {}).get(right_col) or []
+                    overlap = sorted(set(left_samples) & set(right_samples))[:5]
+                    if overlap:
+                        confidence += 0.05
+                        evidence.append(f"sample overlap: {', '.join(overlap[:3])}")
+                    row = {
+                        "left_source_id": left.get("source_id"),
+                        "left_label": left.get("label"),
+                        "left_source_type": left.get("source_type"),
+                        "left_column": left_col,
+                        "left_dtype": left_dtype,
+                        "right_source_id": right.get("source_id"),
+                        "right_label": right.get("label"),
+                        "right_source_type": right.get("source_type"),
+                        "right_column": right_col,
+                        "right_dtype": right_dtype,
+                        "canonical_key": canon or norm,
+                        "relation_type": "join_key",
+                        "confidence": round(min(confidence, 0.99), 2),
+                        "evidence": evidence or ["heuristic column similarity"],
+                        "left_sample": left_samples[:5],
+                        "right_sample": right_samples[:5],
+                        "status": "preview",
+                    }
+                    row["relation_id"] = _relation_candidate_id(row)
+                    candidates.append(row)
+    candidates.sort(key=lambda r: (float(r.get("confidence") or 0), bool(r.get("left_sample") and r.get("right_sample"))), reverse=True)
+    dedup: dict[str, dict[str, Any]] = {}
+    for row in candidates:
+        dedup.setdefault(str(row.get("relation_id")), row)
+    return list(dedup.values())[: max(1, min(int(limit or 30), 100))]
+
+
+def _schema_relations_payload() -> dict[str, Any]:
+    data = load_json(SCHEMA_RELATION_FILE, {"relations": []})
+    if not isinstance(data, dict):
+        data = {"relations": []}
+    if not isinstance(data.get("relations"), list):
+        data["relations"] = []
+    return data
+
+
+def _public_schema_relations() -> list[dict[str, Any]]:
+    payload = _schema_relations_payload()
+    return [row for row in payload.get("relations") or [] if isinstance(row, dict)]
 
 
 def _hit(item: dict[str, Any], needle: str, tag: str) -> bool:
@@ -320,6 +616,145 @@ def prompt_preview(req: PromptPreviewReq, request: Request):
         if item.get("name") == selected.get("name") or item.get("intent") == selected.get("intent")
     ][:3]
     return out
+
+
+@router.post("/schema-relations/preview")
+def schema_relation_preview(req: SchemaRelationPreviewReq, request: Request):
+    """Preview join/relation candidates from DB and single-file schemas.
+
+    This endpoint only reads configured DB/base files. It never writes relation
+    definitions or mutates source data; `/schema-relations/save` is the admin
+    confirmation boundary.
+    """
+    current_user(request)
+    sources = [src for src in (req.sources or []) if (src.product or src.file or src.root)]
+    if len(sources) < 2:
+        raise HTTPException(400, "at least two schema sources are required")
+    profiles: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for src in sources[:6]:
+        try:
+            profiles.append(_relation_read_source(src, sample_rows=req.sample_rows))
+        except HTTPException as exc:
+            errors.append({
+                "source": src.model_dump() if hasattr(src, "model_dump") else src.dict(),
+                "status": exc.status_code,
+                "detail": exc.detail,
+            })
+    if len(profiles) < 2:
+        raise HTTPException(400, {"message": "not enough readable schema sources", "errors": errors})
+    candidates = _relation_candidates(profiles, limit=req.max_candidates)
+    return {
+        "ok": True,
+        "preview_only": True,
+        "saved": False,
+        "sources": profiles,
+        "errors": errors,
+        "candidates": candidates,
+        "graph": _relation_candidate_graph(candidates),
+        "saved_graph": _relation_candidate_graph(_public_schema_relations()),
+    }
+
+
+@router.get("/schema-relations/graph")
+def schema_relation_graph(request: Request):
+    current_user(request)
+    relations = _public_schema_relations()
+    return {
+        "ok": True,
+        "relations": relations,
+        "graph": _relation_candidate_graph(relations),
+        "storage": "data/flow-data/schema_relations.json",
+    }
+
+
+@router.post("/schema-relations/save")
+def schema_relation_save(req: SchemaRelationSaveReq, request: Request):
+    me = require_admin(request)
+    candidates = [row for row in (req.candidates or []) if isinstance(row, dict)]
+    if not candidates:
+        raise HTTPException(400, "candidates are required")
+    payload = _schema_relations_payload()
+    existing = {
+        str(row.get("relation_id") or _relation_candidate_id(row)): row
+        for row in (payload.get("relations") or [])
+        if isinstance(row, dict)
+    }
+    now = _now_iso()
+    saved: list[dict[str, Any]] = []
+    allowed_keys = {
+        "relation_id", "left_source_id", "left_label", "left_source_type", "left_column", "left_dtype",
+        "right_source_id", "right_label", "right_source_type", "right_column", "right_dtype",
+        "canonical_key", "relation_type", "confidence", "evidence", "left_sample", "right_sample",
+    }
+    for candidate in candidates[:100]:
+        row = {key: candidate.get(key) for key in allowed_keys if key in candidate}
+        if not row.get("left_source_id") or not row.get("right_source_id") or not row.get("left_column") or not row.get("right_column"):
+            continue
+        row["relation_type"] = row.get("relation_type") or "join_key"
+        row["relation_id"] = row.get("relation_id") or _relation_candidate_id(row)
+        row["status"] = "confirmed"
+        row["confirmed_by"] = me.get("username") or ""
+        row["confirmed_at"] = now
+        row["note"] = str(req.note or "")[:500]
+        existing[str(row["relation_id"])] = row
+        saved.append(row)
+    if not saved:
+        raise HTTPException(400, "no valid relation candidates")
+    payload["relations"] = sorted(existing.values(), key=lambda r: str(r.get("confirmed_at") or ""), reverse=True)
+    payload["updated_at"] = now
+    payload["updated_by"] = me.get("username") or ""
+    SCHEMA_RELATION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    save_json(SCHEMA_RELATION_FILE, payload, indent=2)
+    return {
+        "ok": True,
+        "saved_count": len(saved),
+        "relations": payload["relations"],
+        "graph": _relation_candidate_graph(payload["relations"]),
+        "storage": "data/flow-data/schema_relations.json",
+        "raw_sources_mutated": False,
+    }
+
+
+@router.post("/schema-relations/delete")
+def schema_relation_delete(req: SchemaRelationDeleteReq, request: Request):
+    me = require_admin(request)
+    relation_ids = {str(x or "").strip() for x in (req.relation_ids or []) if str(x or "").strip()}
+    if not relation_ids:
+        raise HTTPException(400, "relation_ids are required")
+    payload = _schema_relations_payload()
+    before = [row for row in (payload.get("relations") or []) if isinstance(row, dict)]
+    kept = [row for row in before if str(row.get("relation_id") or "") not in relation_ids]
+    removed = [row for row in before if str(row.get("relation_id") or "") in relation_ids]
+    if not removed:
+        raise HTTPException(404, "relation not found")
+    now = _now_iso()
+    payload["relations"] = kept
+    payload["updated_at"] = now
+    payload["updated_by"] = me.get("username") or ""
+    deleted_log = payload.get("deleted_relations") if isinstance(payload.get("deleted_relations"), list) else []
+    for row in removed:
+        deleted_log.insert(0, {
+            "relation_id": row.get("relation_id") or "",
+            "left_source_id": row.get("left_source_id") or "",
+            "left_column": row.get("left_column") or "",
+            "right_source_id": row.get("right_source_id") or "",
+            "right_column": row.get("right_column") or "",
+            "deleted_by": me.get("username") or "",
+            "deleted_at": now,
+            "note": str(req.note or "")[:500],
+        })
+    payload["deleted_relations"] = deleted_log[:200]
+    SCHEMA_RELATION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    save_json(SCHEMA_RELATION_FILE, payload, indent=2)
+    return {
+        "ok": True,
+        "deleted_count": len(removed),
+        "relations": kept,
+        "graph": _relation_candidate_graph(kept),
+        "storage": "data/flow-data/schema_relations.json",
+        "raw_sources_mutated": False,
+    }
 
 
 def _agent_feature_items() -> list[dict[str, Any]]:

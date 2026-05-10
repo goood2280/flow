@@ -2379,6 +2379,10 @@ def test_flowi_chat_returns_public_execution_trace(monkeypatch):
     assert graph["activation"]["action"] == "splittable.view"
     assert graph["activation"]["handler_action"] == "query_splittable_view"
     assert out["trace"]["activation"] == graph["activation"]
+    assert out["trace"]["persona_snapshot"]["role"] == "semiconductor_process_data_analyst"
+    assert "feature_docs" in out["trace"]["prompt_cache"]
+    assert out["trace"]["subagent_context"]["unit_action"] == "splittable.view"
+    assert out["trace"]["clarification_loop"]["status"] in {"needs_input", "done", "awaiting_confirmation"}
     assert any(node["type"] == "fastapi" for node in graph["nodes"])
     assert any(node["type"] == "feature_subagent" and "splittable" in node["title"] for node in graph["nodes"])
 
@@ -2563,6 +2567,9 @@ def test_flowi_agent_chat_accepts_codex_source_and_returns_web_actions(monkeypat
     assert out["agent_api"]["source_ai"] == "codex"
     assert out["agent_api"]["auth_user"] == "codex_tester"
     assert out["workflow_state"]["status"] == "awaiting_fields"
+    assert out["needs_input"] is True
+    assert out["trace"]["clarification_loop"]["needs_input"] is True
+    assert out["trace"]["clarification_loop"]["next_unit_action"] == "splittable.view"
     assert out["agent_api"]["workflow_state"]["intent"] == out["tool"]["intent"]
     assert out["tool"]["action"] == "query_splittable_view"
     assert out["trace"]["api_calls"][0]["path"] == "/api/llm/flowi/agent/chat"

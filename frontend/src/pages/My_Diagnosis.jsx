@@ -11,6 +11,7 @@ import {
   PageShell,
   Panel,
   Pill,
+  TabStrip,
   formControlStyle,
   uxColors,
 } from "../components/UXKit";
@@ -32,6 +33,13 @@ const QUICK_PROMPTS = [
   { label: "Q6", prompt: "PRODA A1000A.3 GATE 모듈 인폼해줘 test1 스플릿으로 선택해줘 내용은 GATE 모듈인폼입니다." },
   { label: "Q7", prompt: "A1003 GATE는 test1 STI는 test2 이런식으로 A1003에 대해서 인폼로그 다 만들어줘" },
   { label: "Q8", prompt: "A1004 인폼전체 작성해줘" },
+];
+
+const AGENT_TABS = [
+  { k: "loop", l: "실행 루프" },
+  { k: "wiki", l: "Wiki Graph" },
+  { k: "schema", l: "Schema 관계" },
+  { k: "ai", l: "AI 연결" },
 ];
 
 const CATEGORIES = [
@@ -340,7 +348,6 @@ function PersonaPanel() {
 
 function PromptPanel() {
   const [prompt, setPrompt] = useState(SAMPLE_PROMPT);
-  const [product, setProduct] = useState("");
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -348,7 +355,7 @@ function PromptPanel() {
   const run = () => {
     setBusy(true);
     setErr("");
-    postJson("/api/agent/prompt-preview", { prompt, product, max_rows: 20 })
+    postJson("/api/agent/prompt-preview", { prompt, product: "", max_rows: 20 })
       .then(setResult)
       .catch((e) => setErr(e.message || String(e)))
       .finally(() => setBusy(false));
@@ -360,12 +367,9 @@ function PromptPanel() {
   return (
     <CategoryFrame category={CATEGORIES[2]} right={<Pill tone={result?.validation?.valid ? "ok" : "neutral"}>{result ? (result.validation?.valid ? "valid" : "missing") : "ready"}</Pill>}>
       <Panel title="Live prompt demo" subtitle="기존 Intent / slot 해석과 function-call preview를 통합했습니다.">
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 160px", gap: 10, alignItems: "end" }}>
+        <div style={{ display: "grid", gap: 10, alignItems: "end" }}>
           <Field label="prompt">
             <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55 }} />
-          </Field>
-          <Field label="product override">
-            <input value={product} onChange={(e) => setProduct(e.target.value)} style={inputStyle} placeholder="optional" />
           </Field>
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
@@ -385,7 +389,6 @@ function PromptPanel() {
               </div>
               <DataTable
                 rows={[
-                  { key: "product", value: result?.slots?.product || args.product || "-" },
                   { key: "root_lot", value: listText(result?.slots?.root_lot_ids || args.root_lot_ids) },
                   { key: "fab_lot", value: listText(result?.slots?.fab_lot_ids || args.fab_lot_ids) },
                   { key: "wafer", value: listText(result?.slots?.wafers || args.wafer_ids) },
@@ -1234,6 +1237,230 @@ function KnowledgeIngestAssistant() {
   );
 }
 
+function SchemaRelationSourceFields({ title, value, onChange, files = [] }) {
+  const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box", fontSize: 14 };
+  const update = (patch) => onChange?.({ ...value, ...patch });
+  const isDb = value.source_type === "db";
+  return (
+    <Panel title={title} subtitle={isDb ? "DB product/root schema" : "root-level single file schema"}>
+      <div style={{ display: "grid", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "140px minmax(0,1fr)", gap: 8 }}>
+          <Field label="source type">
+            <select value={value.source_type || "file"} onChange={(e) => update({ source_type: e.target.value })} style={inputStyle}>
+              <option value="db">DB product</option>
+              <option value="file">단일파일</option>
+            </select>
+          </Field>
+          <Field label="label">
+            <input value={value.label || ""} onChange={(e) => update({ label: e.target.value })} style={inputStyle} placeholder="graph label optional" />
+          </Field>
+        </div>
+        <Field label={isDb ? "root (예: 1.RAWDATA_DB_FAB)" : "root"}>
+          <input value={value.root || ""} onChange={(e) => update({ root: e.target.value })} style={inputStyle} placeholder={isDb ? "1.RAWDATA_DB_FAB 또는 db_root" : "db_root/base_root 또는 비움"} />
+        </Field>
+        {isDb ? (
+          <Field label="product">
+            <input value={value.product || ""} onChange={(e) => update({ product: e.target.value })} style={inputStyle} placeholder="PRODA" />
+          </Field>
+        ) : (
+          <Field label="file">
+            <select value={value.file || ""} onChange={(e) => update({ file: e.target.value })} style={inputStyle}>
+              <option value="">-- base file 선택 --</option>
+              {files.map((file) => (
+                <option key={file.path || file.name} value={file.path || file.name}>{file.name || file.path}</option>
+              ))}
+            </select>
+          </Field>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function SchemaRelationGraph({ graph, isAdmin = false, onDelete = null }) {
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph?.edges) ? graph.edges : [];
+  const nodeMap = nodes.reduce((acc, node) => {
+    acc[node.id] = node;
+    return acc;
+  }, {});
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <div style={{ display: "grid", gap: 10 }}>
+        {edges.map((edge) => {
+          const source = nodeMap[edge.source] || { id: edge.source, label: edge.source, type: "source" };
+          const target = nodeMap[edge.target] || { id: edge.target, label: edge.target, type: "source" };
+          return (
+            <div key={edge.id || `${edge.source}-${edge.target}-${edge.label}`} style={{ display: "grid", gridTemplateColumns: "minmax(160px,1fr) 160px minmax(160px,1fr)", gap: 10, alignItems: "stretch" }}>
+              {[source, target].map((node, idx) => (
+                <div key={`${edge.id || edge.label}-${idx}`} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, background: "var(--bg-secondary)", minHeight: 74 }}>
+                  <div style={{ fontSize: 12, color: uxColors.textSub, fontFamily: "monospace" }}>{node.type || "source"}</div>
+                  <div style={{ fontSize: 15, fontWeight: 900, wordBreak: "break-word", marginTop: 4 }}>{node.label || node.id}</div>
+                  <div style={{ fontSize: 11, color: uxColors.textSub, fontFamily: "monospace", wordBreak: "break-all", marginTop: 4 }}>{node.id}</div>
+                </div>
+              )).reduce((acc, nodeCard, idx) => {
+                if (idx === 0) {
+                  acc.push(nodeCard);
+                  acc.push(
+                    <div key={`${edge.id || edge.label}-rel`} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, background: "var(--bg-primary)", display: "grid", alignContent: "center", justifyItems: "center", gap: 6, textAlign: "center" }}>
+                      <Pill tone={edge.status === "confirmed" ? "ok" : "warn"}>{edge.status || "candidate"}</Pill>
+                      <div style={{ fontSize: 13, fontWeight: 900, fontFamily: "monospace", wordBreak: "break-word" }}>{edge.label || "-"}</div>
+                      <div style={{ fontSize: 12, color: uxColors.textSub }}>score {edge.confidence ?? "-"}</div>
+                    </div>
+                  );
+                } else {
+                  acc.push(nodeCard);
+                }
+                return acc;
+              }, [])}
+            </div>
+          );
+        })}
+        {!edges.length && <EmptyState title="relation graph 없음" hint="Preview를 저장하면 source 간 join edge가 표시됩니다." />}
+      </div>
+      <DataTable
+        rows={edges}
+        empty="edge가 없습니다."
+        columns={[
+          { key: "source", label: "source", width: 160, render: (r) => nodeMap[r.source]?.label || r.source },
+          { key: "target", label: "target", width: 160, render: (r) => nodeMap[r.target]?.label || r.target },
+          { key: "label", label: "relation" },
+          { key: "confidence", label: "score", width: 80 },
+          { key: "status", label: "status", width: 100, render: (r) => <Pill tone={r.status === "confirmed" ? "ok" : "warn"}>{r.status || "-"}</Pill> },
+          ...(isAdmin && onDelete ? [{ key: "delete", label: "", width: 82, render: (r) => <Button variant="danger" onClick={() => onDelete(r)}>삭제</Button> }] : []),
+        ]}
+      />
+    </div>
+  );
+}
+
+function SchemaRelationsPanel({ isAdmin }) {
+  const [left, setLeft] = useState({ source_type: "db", root: "1.RAWDATA_DB_FAB", product: "PRODA", file: "", label: "FAB PRODA" });
+  const [right, setRight] = useState({ source_type: "file", root: "", product: "", file: "ML_TABLE_PRODA.parquet", label: "ML_TABLE PRODA" });
+  const [baseFiles, setBaseFiles] = useState([]);
+  const [preview, setPreview] = useState(null);
+  const [graph, setGraph] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box", fontSize: 14 };
+
+  const loadGraph = () => {
+    sf("/api/agent/schema-relations/graph")
+      .then(setGraph)
+      .catch((e) => setMsg("graph 로드 오류: " + (e.message || e)));
+  };
+
+  useEffect(() => {
+    sf("/api/filebrowser/base-files")
+      .then((d) => setBaseFiles((d.files || []).filter((file) => ["csv", "parquet"].includes(String(file.ext || "").toLowerCase()))))
+      .catch(() => setBaseFiles([]));
+    loadGraph();
+  }, []);
+
+  const runPreview = () => {
+    setBusy(true);
+    setMsg("");
+    postJson("/api/agent/schema-relations/preview", { sources: [left, right], max_candidates: 40, sample_rows: 20 })
+      .then((d) => {
+        setPreview(d);
+        setMsg(`preview 후보 ${d.candidates?.length || 0}개`);
+      })
+      .catch((e) => setMsg("preview 오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const saveCandidates = () => {
+    if (!isAdmin || !preview?.candidates?.length) return;
+    setBusy(true);
+    setMsg("");
+    postJson("/api/agent/schema-relations/save", { candidates: preview.candidates, note })
+      .then((d) => {
+        setGraph(d);
+        setMsg(`저장됨: ${d.saved_count || 0} relation`);
+      })
+      .catch((e) => setMsg("저장 오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const deleteRelation = (edge) => {
+    const relationId = edge?.id;
+    if (!isAdmin || !relationId) return;
+    if (!confirm("저장된 relation 정의만 삭제합니다. 원본 DB/단일파일은 수정하지 않습니다. 계속할까요?")) return;
+    setBusy(true);
+    setMsg("");
+    postJson("/api/agent/schema-relations/delete", { relation_ids: [relationId], note })
+      .then((d) => {
+        setGraph(d);
+        setMsg(`삭제됨: ${d.deleted_count || 0} relation`);
+      })
+      .catch((e) => setMsg("삭제 오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const candidateRows = Array.isArray(preview?.candidates) ? preview.candidates : [];
+  const sourceRows = Array.isArray(preview?.sources) ? preview.sources : [];
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      {msg && <Banner tone={msg.includes("오류") ? "bad" : msg.includes("저장") ? "ok" : "info"}>{msg}</Banner>}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 12, alignItems: "start" }}>
+        <SchemaRelationSourceFields title="Source A" value={left} onChange={setLeft} files={baseFiles} />
+        <SchemaRelationSourceFields title="Source B" value={right} onChange={setRight} files={baseFiles} />
+      </div>
+
+      <Panel title="Relation Preview" subtitle="컬럼명, dtype, key alias, 가능한 sample overlap 기준으로 후보만 생성합니다. 저장 전까지 운영 relation graph에 반영되지 않습니다.">
+        <div style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap", marginBottom: 10 }}>
+          <Button variant="primary" onClick={runPreview} disabled={busy}>{busy ? "처리 중" : "Preview 생성"}</Button>
+          <Field label="admin save note">
+            <input value={note} onChange={(e) => setNote(e.target.value)} style={{ ...inputStyle, minWidth: 260 }} placeholder="저장 근거/확인 메모" />
+          </Field>
+          <Button variant="primary" onClick={saveCandidates} disabled={!isAdmin || busy || !candidateRows.length}>확인 후보 저장</Button>
+          {!isAdmin && <Pill tone="neutral">admin만 저장</Pill>}
+        </div>
+        <DataTable
+          rows={candidateRows}
+          empty="Preview를 실행하면 관계 후보가 표시됩니다."
+          columns={[
+            { key: "left_column", label: "left column", width: 150 },
+            { key: "right_column", label: "right column", width: 150 },
+            { key: "canonical_key", label: "key", width: 120 },
+            { key: "confidence", label: "score", width: 80 },
+            { key: "left_dtype", label: "left dtype", width: 100 },
+            { key: "right_dtype", label: "right dtype", width: 100 },
+            { key: "evidence", label: "evidence", render: (r) => listText(r.evidence, 3) },
+          ]}
+        />
+      </Panel>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.85fr) minmax(0,1.15fr)", gap: 12, alignItems: "start" }}>
+        <Panel title="Schema Sources" subtitle="Preview에 사용한 schema와 key 후보">
+          <DataTable
+            rows={sourceRows}
+            empty="schema source 없음"
+            columns={[
+              { key: "label", label: "label" },
+              { key: "source_type", label: "type", width: 80 },
+              { key: "columns", label: "cols", width: 70, render: (r) => (r.columns || []).length },
+              { key: "key_columns", label: "key columns", render: (r) => listText(r.key_columns, 5) },
+            ]}
+          />
+        </Panel>
+        <Panel title="Preview Graph" subtitle="저장 전 후보 graph">
+          <SchemaRelationGraph graph={preview?.graph || {}} />
+        </Panel>
+      </div>
+
+      <Panel
+        title="Saved Relation Graph"
+        subtitle="Admin이 확인 저장한 relation만 표시합니다. 삭제해도 원본 DB/단일파일은 수정하지 않습니다."
+        right={<Pill tone="accent">{graph?.relations?.length || 0} saved</Pill>}
+      >
+        <SchemaRelationGraph graph={graph?.graph || {}} isAdmin={isAdmin} onDelete={deleteRelation} />
+      </Panel>
+    </div>
+  );
+}
+
 function compactToolPayload(tool = {}) {
   const keep = {};
   ["action", "intent", "feature", "arguments", "filters", "slots", "missing", "validation", "clarification", "requires_confirmation", "blocked", "reject_reason"].forEach((key) => {
@@ -1438,6 +1665,68 @@ function FlowiActivationMap({ trace, result, prompt }) {
   );
 }
 
+function FlowiPublicContext({ trace }) {
+  const persona = trace?.persona_snapshot || {};
+  const promptCache = trace?.prompt_cache || {};
+  const subagent = trace?.subagent_context || {};
+  const loop = trace?.clarification_loop || {};
+  const rows = [
+    { section: "persona", key: "role", value: persona.role || "-" },
+    { section: "persona", key: "prompt_source", value: persona.prompt_source || "-" },
+    { section: "prompt_cache", key: "allowed_features", value: listText(promptCache.allowed_features, 8) },
+    { section: "prompt_cache", key: "feature_docs", value: listText(promptCache.feature_docs, 5) },
+    { section: "subagent", key: "feature_subagent", value: subagent.feature_subagent || "-" },
+    { section: "subagent", key: "unit_action", value: subagent.unit_action || "-" },
+    { section: "subagent", key: "api_or_handler", value: subagent.api_or_handler || "-" },
+  ];
+  const choiceRows = Array.isArray(loop.choices) ? loop.choices.map((choice, idx) => ({ no: idx + 1, ...choice })) : [];
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <Panel title="Persona / Prompt Cache / Subagent Context" subtitle="서버가 공개해도 되는 system/persona cache와 deterministic handler 요약입니다.">
+        <DataTable
+          rows={rows}
+          columns={[
+            { key: "section", label: "section", width: 130 },
+            { key: "key", label: "key", width: 170 },
+            { key: "value", label: "value" },
+          ]}
+        />
+      </Panel>
+      <Panel
+        title="재질문 / Missing Slot Loop"
+        subtitle="needs_input 상태에서 question, missing, choices, next unit action, pending prompt를 표시합니다."
+        right={<Pill tone={loop.needs_input ? "warn" : "neutral"}>{loop.status || "ready"}</Pill>}
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.85fr) minmax(0,1.15fr)", gap: 12, alignItems: "start" }}>
+          <DataTable
+            rows={[
+              { key: "question", value: loop.question || "-" },
+              { key: "missing", value: listText(loop.missing, 8) },
+              { key: "next_unit_action", value: loop.next_unit_action || "-" },
+              { key: "pending_prompt", value: loop.pending_prompt || "-" },
+            ]}
+            columns={[
+              { key: "key", label: "field", width: 150 },
+              { key: "value", label: "value" },
+            ]}
+          />
+          <DataTable
+            rows={choiceRows}
+            empty="선택지가 필요한 상태가 아닙니다."
+            columns={[
+              { key: "no", label: "#", width: 44 },
+              { key: "label", label: "label", width: 100 },
+              { key: "title", label: "title" },
+              { key: "prompt", label: "prompt" },
+              { key: "recommended", label: "rec", width: 70, render: (r) => r.recommended ? "yes" : "" },
+            ]}
+          />
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
 function activationStatusTone(status) {
   if (status === "ready" || status === "done") return "ok";
   if (status === "needs_input" || status === "awaiting_confirmation" || status === "waiting") return "warn";
@@ -1483,7 +1772,6 @@ function FlowiOrchestratorPreview({ rows = [], busy = false, onSelectPrompt }) {
 
 function FlowiExecutionPanel({ user }) {
   const [prompt, setPrompt] = useState(FUNCTION_TEST_PROMPT);
-  const [product, setProduct] = useState("");
   const [promptChoice, setPromptChoice] = useState(FUNCTION_TEST_PROMPT);
   const [result, setResult] = useState(null);
   const [promptHistory, setPromptHistory] = useState([]);
@@ -1504,7 +1792,7 @@ function FlowiExecutionPanel({ user }) {
     setActivationBusy(true);
     postJson("/api/llm/flowi/orchestrator/preview", {
       prompts,
-      product,
+      product: "",
       max_rows: 12,
     })
       .then((d) => setActivationRows(Array.isArray(d.rows) ? d.rows : []))
@@ -1526,7 +1814,7 @@ function FlowiExecutionPanel({ user }) {
       prompt: body,
       source_ai: "agent_page",
       client_run_id: `agent_page_${Date.now()}`,
-      product,
+      product: "",
       max_rows: 12,
       context: { type: "agent_execution_flow", surface: "agent_page" },
     })
@@ -1567,7 +1855,7 @@ function FlowiExecutionPanel({ user }) {
         right={<Pill tone={statusTone}>{workflow.status || (result ? "done" : "ready")}</Pill>}
       >
         {err && <Banner tone="bad">{err}</Banner>}
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(260px,1fr) minmax(170px,220px) 150px auto", gap: 8, alignItems: "end" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(260px,1fr) minmax(170px,240px) auto", gap: 8, alignItems: "end" }}>
           <Field label="prompt">
             <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55 }} />
           </Field>
@@ -1576,9 +1864,6 @@ function FlowiExecutionPanel({ user }) {
               <option value="">직접 입력</option>
               {QUICK_PROMPTS.slice(1).map((item) => <option key={item.label} value={item.prompt}>{item.label}</option>)}
             </select>
-          </Field>
-          <Field label="product">
-            <input value={product} onChange={(e) => setProduct(e.target.value)} style={inputStyle} placeholder="optional" />
           </Field>
           <Button variant="primary" onClick={run} disabled={busy || !prompt.trim()}>{busy ? "실행 중" : "실행"}</Button>
         </div>
@@ -1592,6 +1877,8 @@ function FlowiExecutionPanel({ user }) {
       <Panel title="Activation Map (5단계)" subtitle="현재 실행한 프롬프트 하나의 전달 경로와 활성 action입니다.">
         <FlowiActivationMap trace={trace} result={result} prompt={prompt} />
       </Panel>
+
+      <FlowiPublicContext trace={trace} />
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.9fr) minmax(0,1.1fr)", gap: 12, alignItems: "start" }}>
         <Panel title="오케스트레이터 판단" subtitle="프롬프트를 어떤 기능별 단위기능으로 보냈는지">
@@ -1665,11 +1952,25 @@ function FlowiExecutionPanel({ user }) {
 }
 
 export default function My_Diagnosis({ user }) {
+  const [tab, setTab] = useState("loop");
+  const isAdminUser = user?.role === "admin";
+  const canManageWiki = canManagePage(user, "diagnosis") || canManagePage(user, "knowledge");
   return (
     <PageShell>
       <PageHeader title="에이전트" subtitle="Flow-i orchestrator가 프롬프트를 기능별 단위기능으로 라우팅하고 실행한 흐름을 확인합니다." />
       <div style={{ padding: 12, display: "grid", gap: 12 }}>
-        <FlowiExecutionPanel user={user} />
+        <TabStrip items={AGENT_TABS} active={tab} onChange={setTab} />
+        {tab === "loop" && <FlowiExecutionPanel user={user} />}
+        {tab === "wiki" && (
+          <div style={{ display: "grid", gap: 12 }}>
+            <AgentWikiPanel canManage={canManageWiki} />
+            <Panel title="Knowledge Vault Graph" subtitle="Agent Wiki와 함께 지식 source/page/log/graph를 확인합니다.">
+              <AgentKnowledgeVault user={user} embedded />
+            </Panel>
+          </div>
+        )}
+        {tab === "schema" && <SchemaRelationsPanel isAdmin={isAdminUser} />}
+        {tab === "ai" && <LlmPanel isAdmin={isAdminUser} />}
       </div>
     </PageShell>
   );

@@ -1,6 +1,7 @@
-/* PageGear.jsx v8.8.3 — 페이지별 공용 톱니(⚙️) 설정 패널.
- * v8.8.3: FileBrowser S3 ⚙️ 스타일과 100% 통일 (40px · ⚙️ emoji · 우하단 default).
- *   - 이전 v8.8.1 은 36px + ⚙ (no emoji) 으로 파일탐색기와 어긋남. 전 탭 한 방에 수렴.
+/* PageGear.jsx — 페이지별 공용 톱니(⚙️) 설정 패널.
+ * 스타일은 40 × 40 / ⚙️ emoji / 그림자로 FileBrowser 자체 톱니(좌하단)와 통일.
+ * 위치는 페이지가 명시한 position 을 우선한다. 우측 상세 패널을 두는 페이지는
+ * bottom-left 를 지정해 우측 콘텐츠(삭제/저장 버튼 등)를 가리지 않는다.
  */
 import { useEffect, useRef, useState } from "react";
 
@@ -14,7 +15,7 @@ import { useEffect, useRef, useState } from "react";
  *   - title:   string. drawer 제목.
  *   - children:React. 패널 내용 (설정 폼).
  *   - canEdit: boolean. false 면 disabled 배지.
- *   - position: "bottom-right" (default, v8.8.3 통일) | "top-right" | "bottom-left" | "inline".
+ *   - position: "bottom-left" (default) | "bottom-right" | "top-right" | "inline".
  *
  * 특징:
  *   - 버튼: 40 x 40, ⚙️ emoji, 보더/그림자 FileBrowser S3 gear 와 동일.
@@ -22,7 +23,7 @@ import { useEffect, useRef, useState } from "react";
  *   - ESC 또는 외부 클릭 시 닫힘.
  *   - z-index 50 (모달·dropdown 아래).
  */
-export default function PageGear({ title = "설정", children, canEdit = true, position = "bottom-right" }) {
+export default function PageGear({ title = "설정", children, canEdit = true, position = "bottom-left" }) {
   const [open, setOpen] = useState(false);
   const drawerRef = useRef(null);
   useEffect(() => {
@@ -34,17 +35,16 @@ export default function PageGear({ title = "설정", children, canEdit = true, p
     return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("mousedown", onClick); };
   }, [open]);
 
-  // v8.8.3: 전 탭이 bottom-right 로 통일 (FileBrowser ⚙️ 와 일치). position prop 은
-  // 후방 호환을 위해 남겨두되, 특이 케이스(inline) 가 아니면 bottom-right 로 정규화.
-  const normalized = (position === "inline" || position === "top-right")
-    ? position
-    : "bottom-right";
+  const validPositions = new Set(["bottom-left", "bottom-right", "top-right", "inline"]);
+  const normalized = validPositions.has(position) ? position : "bottom-left";
 
   const pos = normalized === "inline"
     ? { position: "relative" }
     : normalized === "top-right"
       ? { position: "absolute", top: 14, right: 16 }
-      : { position: "fixed", bottom: 16, right: 16 };  // bottom-right (default)
+      : normalized === "bottom-right"
+        ? { position: "fixed", bottom: 16, right: 16 }
+        : { position: "fixed", bottom: 16, left: 16 };
 
   return (
     <>

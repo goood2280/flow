@@ -4,6 +4,7 @@ import ComingSoon from "./components/ComingSoon";
 import Loading from "./components/Loading";
 import Modal from "./components/Modal";
 import BrandLogo from "./components/BrandLogo";
+import { ToastHost, toast } from "./components/Toast";
 import { PAGE_MAP } from "./app/pageRegistry";
 import { useFlowShell } from "./app/useFlowShell";
 import { sf, postJson } from "./lib/api";
@@ -258,19 +259,19 @@ function ContactButton({ user }) {
     const t = msg.trim(); if (!t) return;
     postJson("/api/messages/send", { username: user.username, text: t })
       .then(() => { setMsg(""); loadThread(); loadUnread(); })
-      .catch(e => alert(e?.message || "전송 실패"));
+      .catch(e => toast.error(e?.message || "전송 실패"));
   };
   const reply = () => {
     const t = replyMsg.trim(); if (!t || !selThreadUser) return;
     postJson("/api/messages/admin/reply", { admin: user.username, to_user: selThreadUser, text: t })
       .then(() => { setReplyMsg(""); loadAdminThread(selThreadUser); loadAdminThreads(); })
-      .catch(e => alert(e?.message || "답장 실패"));
+      .catch(e => toast.error(e?.message || "답장 실패"));
   };
   const postNotice = () => {
     if (!noticeTitle.trim() && !noticeBody.trim()) return;
     postJson("/api/messages/admin/notice_create", { author: user.username, title: noticeTitle.trim(), body: noticeBody.trim() })
-      .then(() => { setNoticeTitle(""); setNoticeBody(""); loadNotices(); alert("공지 등록됨"); })
-      .catch(e => alert(e?.message || "공지 등록 실패"));
+      .then(() => { setNoticeTitle(""); setNoticeBody(""); loadNotices(); toast.ok("공지 등록됨"); })
+      .catch(e => toast.error(e?.message || "공지 등록 실패"));
   };
   const deleteNotice = (id) => {
     if (!confirm("삭제?")) return;
@@ -443,11 +444,11 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
   const toggle = (id) => { if(!id) return; setSel(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; }); };
   const dismissSel = () => {
     const ids = [...sel].filter(Boolean);
-    if (!ids.length) { alert("선택된 항목이 없습니다"); return; }
+    if (!ids.length) { toast.warn("선택된 항목이 없습니다"); return; }
     // Mark as read — removes from bell count but keeps history in Admin
     postJson("/api/admin/mark-read-batch", { username: user.username, ids })
       .then(() => { setSel(new Set()); onDismiss(); window.dispatchEvent(new CustomEvent("hol:notif-refresh")); })
-      .catch(e => alert("실패: " + (e.message || "알 수 없는 오류")));
+      .catch(e => toast.error("실패: " + (e.message || "알 수 없는 오류")));
   };
   const recent = notifs.slice(-8).reverse();
   const typeColor = { approval: "#f59e0b", message: "#3b82f6", info: "#6b7280" };
@@ -590,6 +591,7 @@ export default function App() {
         ) : <ComingSoon name={tabInfo?.label || tab} />}
       </div>
       {showPw && <PwModal user={user} onClose={()=>setShowPw(false)} />}
+      <ToastHost />
       {/* v8.4.9: floating 오렌지 톱니 전면 제거.
           각 페이지는 자체 in-page ⚙️ 아이콘(예: SplitTable 상단 prefix 관리)을 가짐.
           관리자 전역 설정(dashboard refresh, data_roots 등)은 관리자 탭의 해당 서브탭으로 이미 이관됨. */}

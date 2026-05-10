@@ -8,6 +8,8 @@
 */
 import { useEffect, useMemo, useState, useRef } from "react";
 import PageGear from "../components/PageGear";
+import Modal from "../components/Modal";
+import { toast } from "../components/Toast";
 import { authSrc, sf, postJson, userLabel } from "../lib/api";
 
 const API = "/api/meetings";
@@ -253,7 +255,7 @@ export default function My_Meeting({ user }) {
   const toggleWeekday = (arr, d) => arr.includes(d) ? arr.filter(x => x !== d) : [...arr, d].sort();
   const submitCreate = () => {
     const t = draft.title.trim();
-    if (!t) { alert("회의 제목을 입력하세요"); return; }
+    if (!t) { toast.warn("회의 제목을 입력하세요"); return; }
     postJson(`${API}/create`, {
       title: t,
       owner: (draft.owner || me).trim(),
@@ -277,7 +279,7 @@ export default function My_Meeting({ user }) {
       reload();
       setSelectedId(d.meeting?.id || null);
       setSelectedSid(d.meeting?.sessions?.[0]?.id || null);
-    }).catch(e => alert(e.message || "생성 실패"));
+    }).catch(e => toast.error(e.message || "생성 실패"));
   };
 
   // ── Meeting meta edit ──
@@ -309,14 +311,14 @@ export default function My_Meeting({ user }) {
       },
       group_ids: metaDraft.group_ids || [],  /* v8.8.3 */
     }).then(() => { setEditingMeta(false); setMetaDraft(null); reload(); })
-      .catch(e => alert(e.message || "저장 실패"));
+      .catch(e => toast.error(e.message || "저장 실패"));
   };
   const removeMeeting = () => {
     if (!selected) return;
     if (!confirm(`회의 "${selected.title}" 을(를) 삭제할까요? 연동된 달력 이벤트도 제거됩니다.`)) return;
     sf(`${API}/delete?id=${encodeURIComponent(selected.id)}`, { method: "POST" })
       .then(() => { setSelectedId(null); setSelectedSid(null); reload(); })
-      .catch(e => alert(e.message));
+      .catch(e => toast.error(e.message));
   };
 
   // ── Sessions ──
@@ -326,22 +328,22 @@ export default function My_Meeting({ user }) {
     const sched = (dtStr || "").trim().replace(" ", "T");
     postJson(`${API}/session/add`, { meeting_id: selected.id, scheduled_at: sched })
       .then(d => { reload(); setSelectedSid(d.session?.id || null); })
-      .catch(e => alert(e.message || "차수 추가 실패"));
+      .catch(e => toast.error(e.message || "차수 추가 실패"));
   };
   const updateSessionMeta = (patch) => {
     if (!selected || !selectedSession) return;
     postJson(`${API}/session/update`, {
       meeting_id: selected.id, session_id: selectedSession.id, ...patch,
-    }).then(() => reload()).catch(e => alert(e.message));
+    }).then(() => reload()).catch(e => toast.error(e.message));
   };
   const removeSession = () => {
     if (!selected || !selectedSession) return;
-    if ((selected.sessions || []).length <= 1) { alert("마지막 차수는 삭제할 수 없습니다. 회의 자체를 삭제하세요."); return; }
+    if ((selected.sessions || []).length <= 1) { toast.warn("마지막 차수는 삭제할 수 없습니다. 회의 자체를 삭제하세요."); return; }
     if (!confirm(`${selectedSession.idx}차 차수를 삭제할까요?`)) return;
     sf(`${API}/session/delete?meeting_id=${encodeURIComponent(selected.id)}&session_id=${encodeURIComponent(selectedSession.id)}`,
        { method: "POST" })
       .then(() => { setSelectedSid(null); reload(); })
-      .catch(e => alert(e.message));
+      .catch(e => toast.error(e.message));
   };
 
   // v8.8.13: 이슈 가져오기 — 회의 group_ids 와 교집합 있는 이슈만 후보로 노출.
@@ -359,7 +361,7 @@ export default function My_Meeting({ user }) {
         return iGids.some(g => meetGids.has(g));
       });
       setIssuePickerList(list); setIssuePickerBusy(false);
-    }).catch(e => { setIssuePickerBusy(false); alert("이슈 목록 로드 실패: " + (e.message || e)); });
+    }).catch(e => { setIssuePickerBusy(false); toast.error("이슈 목록 로드 실패: " + (e.message || e)); });
   };
   const attachIssueToAgenda = (issueId) => {
     // 상세로 description/links 채움.
@@ -380,14 +382,14 @@ export default function My_Meeting({ user }) {
       });
       setIssueDetails(prev => ({ ...prev, [String(iss.id || issueId)]: iss }));
       setIssuePickerOpen(false);
-    }).catch(e => alert("이슈 상세 로드 실패: " + (e.message || e)));
+    }).catch(e => toast.error("이슈 상세 로드 실패: " + (e.message || e)));
   };
 
   // ── Agenda CRUD ──
   const addAgenda = () => {
     if (!selected || !selectedSession) return;
     const t = agendaDraft.title.trim();
-    if (!t) { alert("아젠다 제목을 입력하세요"); return; }
+    if (!t) { toast.warn("아젠다 제목을 입력하세요"); return; }
     postJson(`${API}/agenda/add`, {
       meeting_id: selected.id, session_id: selectedSession.id,
       title: t,
@@ -399,7 +401,7 @@ export default function My_Meeting({ user }) {
     }).then(() => {
       setAgendaDraft({ title: "", description: "", link: "", owner: "", issue_ref: null });
       reload();
-    }).catch(e => alert(e.message || "추가 실패"));
+    }).catch(e => toast.error(e.message || "추가 실패"));
   };
   const startEditAgenda = (a) => {
     setEditingAgendaId(a.id);
@@ -415,14 +417,14 @@ export default function My_Meeting({ user }) {
       owner: agendaEditDraft.owner,
       issue_ref: agendaEditDraft.issue_ref || null,
     }).then(() => { setEditingAgendaId(null); setAgendaEditDraft(null); reload(); })
-      .catch(e => alert(e.message || "수정 실패"));
+      .catch(e => toast.error(e.message || "수정 실패"));
   };
   const removeAgenda = (a) => {
     if (!selected || !selectedSession) return;
     if (!confirm(`아젠다 "${a.title}" 을(를) 삭제할까요?`)) return;
     sf(`${API}/agenda/delete?meeting_id=${encodeURIComponent(selected.id)}&session_id=${encodeURIComponent(selectedSession.id)}&agenda_id=${encodeURIComponent(a.id)}`,
       { method: "POST" })
-      .then(() => reload()).catch(e => alert(e.message));
+      .then(() => reload()).catch(e => toast.error(e.message));
   };
 
   // ── Minutes ──
@@ -467,7 +469,7 @@ export default function My_Meeting({ user }) {
       setAppendText(""); setAppendBusy(false); reload();
     }).catch(e => {
       setAppendBusy(false);
-      alert(e.message || "추가 실패 (그룹 멤버만 가능합니다)");
+      toast.error(e.message || "추가 실패 (그룹 멤버만 가능합니다)");
     });
   };
   const deleteAppend = (appendId) => {
@@ -475,7 +477,7 @@ export default function My_Meeting({ user }) {
     if (!window.confirm("이 추가글을 삭제할까요? (작성자 본인 또는 주관자만 가능)")) return;
     postJson(`${API}/minutes/append/delete`, {
       meeting_id: selected.id, session_id: selectedSession.id, append_id: appendId,
-    }).then(() => reload()).catch(e => alert(e.message || "삭제 실패"));
+    }).then(() => reload()).catch(e => toast.error(e.message || "삭제 실패"));
   };
 
   const submitMinutes = () => {
@@ -503,11 +505,11 @@ export default function My_Meeting({ user }) {
       setEditingMinutes(false); setMinutesDraft(null); reload();
       // v8.7.9: surface calendar sync failure loudly — v8.7.8 silently swallowed it.
       if (r && r.calendar_sync && r.calendar_sync.ok === false) {
-        alert(`달력 auto-sync 실패: ${r.calendar_sync.error || "unknown"}\n(결정사항·액션아이템이 달력에 반영되지 않았습니다.)`);
+        toast.error(`달력 auto-sync 실패: ${r.calendar_sync.error || "unknown"}\n(결정사항·액션아이템이 달력에 반영되지 않았습니다.)`);
       }
       if (r && r.mail) {
-        if (r.mail.ok) alert(`메일 발송 완료${r.mail.dry_run ? " (dry-run)" : ""} · ${(r.mail.to || []).length}명`);
-        else alert(`메일 발송 실패: ${r.mail.error || "unknown"}`);
+        if (r.mail.ok) toast.ok(`메일 발송 완료${r.mail.dry_run ? " (dry-run)" : ""} · ${(r.mail.to || []).length}명`);
+        else toast.error(`메일 발송 실패: ${r.mail.error || "unknown"}`);
       }
     }).catch(e => {
       // v8.8.15: 409 conflict — 다른 사람이 먼저 저장. 서버 최신본 보여주고 병합 옵션 제공.
@@ -525,13 +527,13 @@ export default function My_Meeting({ user }) {
         if (keep) {
           // 최신 rev 으로 갱신 후 재시도
           setMinutesDraft(d => d ? { ...d, base_rev: Number(serverRev) } : d);
-          alert("base_rev 을 최신으로 갱신했습니다. 다시 [저장] 버튼을 눌러주세요.");
+          toast.info("base_rev 을 최신으로 갱신했습니다. 다시 [저장] 버튼을 눌러주세요.", 6000);
         } else {
           setEditingMinutes(false); setMinutesDraft(null); reload();
         }
         return;
       }
-      alert(msg || "저장 실패");
+      toast.error(msg || "저장 실패");
     });
   };
 
@@ -539,7 +541,7 @@ export default function My_Meeting({ user }) {
   // v8.7.6: 결정사항은 별도 마감일을 받지 않음 — 무조건 해당 회의 세션 날짜로 달력에 등록.
   const pushDecision = (d) => {
     if (!selected || !selectedSession || !d?.id) {
-      alert("결정사항을 먼저 저장해야 달력에 등록할 수 있습니다.");
+      toast.warn("결정사항을 먼저 저장해야 달력에 등록할 수 있습니다.");
       return;
     }
     const due = selectedSession.scheduled_at
@@ -548,29 +550,29 @@ export default function My_Meeting({ user }) {
     postJson(`${API}/decision/push`, {
       meeting_id: selected.id, session_id: selectedSession.id,
       decision_id: d.id, due,
-    }).then(() => reload()).catch(e => alert(e.message || "달력 등록 실패"));
+    }).then(() => reload()).catch(e => toast.error(e.message || "달력 등록 실패"));
   };
   const unpushDecision = (d) => {
     if (!selected || !selectedSession || !d?.id) return;
     if (!confirm("결정사항의 달력 등록을 해제할까요?")) return;
     postJson(`${API}/decision/unpush`, {
       meeting_id: selected.id, session_id: selectedSession.id, decision_id: d.id,
-    }).then(() => reload()).catch(e => alert(e.message || "해제 실패"));
+    }).then(() => reload()).catch(e => toast.error(e.message || "해제 실패"));
   };
 
   const pushAction = (ai) => {
     if (!selected || !selectedSession || !ai?.id) return;
-    if (!ai.text || !ai.due) { alert("액션아이템에 내용과 마감일(due)이 모두 필요합니다."); return; }
+    if (!ai.text || !ai.due) { toast.warn("액션아이템에 내용과 마감일(due)이 모두 필요합니다."); return; }
     postJson(`${API}/action/push`, {
       meeting_id: selected.id, session_id: selectedSession.id, action_item_id: ai.id,
-    }).then(() => reload()).catch(e => alert(e.message || "달력 등록 실패"));
+    }).then(() => reload()).catch(e => toast.error(e.message || "달력 등록 실패"));
   };
   const unpushAction = (ai) => {
     if (!selected || !selectedSession || !ai?.id) return;
     if (!confirm("달력 등록을 해제할까요? 달력 이벤트가 삭제됩니다.")) return;
     postJson(`${API}/action/unpush`, {
       meeting_id: selected.id, session_id: selectedSession.id, action_item_id: ai.id,
-    }).then(() => reload()).catch(e => alert(e.message || "해제 실패"));
+    }).then(() => reload()).catch(e => toast.error(e.message || "해제 실패"));
   };
 
   const recurrenceSummary = (r) => {
@@ -587,9 +589,12 @@ export default function My_Meeting({ user }) {
     <div className="flow-connected-page" style={{ position: "relative", display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
       {/* Left list */}
       <div style={{ width: 340, minWidth: 300, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
-        <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
+        <div className="flow-sidebar-header" style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>회의 관리</span>
+            <div style={{ minWidth: 0 }}>
+              <span className="flow-sidebar-header-title" style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>회의 관리</span>
+              <div className="flow-sidebar-header-meta">{filtered.length} / {meetings.length} meetings</div>
+            </div>
             <span style={{ flex: 1 }} />
             <button onClick={() => setCreating(true)} style={btnPrimary}>+ 새 회의</button>
           </div>
@@ -1264,8 +1269,7 @@ export default function My_Meeting({ user }) {
 
       {/* v8.8.13: 이슈 가져오기 picker modal — 같은 그룹 이슈 → agendaDraft 자동 채움. */}
       {issuePickerOpen && (
-        <div style={modalBack} onClick={() => setIssuePickerOpen(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ ...modalCard, width: 640, maxWidth: "94vw" }}>
+        <Modal open={issuePickerOpen} onClose={() => setIssuePickerOpen(false)} width={640}>
             <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: "#8b5cf6", fontFamily: "monospace", flex: 1 }}>📎 이슈에서 가져오기</div>
               <span onClick={() => setIssuePickerOpen(false)} style={{ cursor: "pointer", fontSize: 18, color: "var(--text-secondary)" }}>✕</span>
@@ -1321,14 +1325,12 @@ export default function My_Meeting({ user }) {
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
               <button onClick={() => setIssuePickerOpen(false)} style={btnGhost}>닫기</button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
 
       {/* Create modal */}
       {creating && (
-        <div style={modalBack} onClick={() => setCreating(false)}>
-          <div onClick={e => e.stopPropagation()} style={modalCard}>
+        <Modal open={creating} onClose={() => setCreating(false)} width={520}>
             <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", marginBottom: 12 }}>+ 새 회의 생성</div>
             <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "8px 10px", alignItems: "center" }}>
               <span style={lbl}>제목 *</span>
@@ -1392,8 +1394,7 @@ export default function My_Meeting({ user }) {
               <button onClick={() => setCreating(false)} style={btnGhost}>취소</button>
               <button onClick={submitCreate} style={btnPrimary}>생성</button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
 
       {/* v8.7.7: 메일 그룹 관리 모달 */}
@@ -1420,8 +1421,8 @@ export default function My_Meeting({ user }) {
           onClose={() => setSendDialog(null)}
           onSent={(r) => {
             setSendDialog(null);
-            if (r?.mail?.ok) alert(`메일 발송 완료${r.mail.dry_run ? " (dry-run)" : ""} · ${(r.mail.to || []).length}명`);
-            else alert(`메일 발송 실패: ${r?.mail?.error || "unknown"}`);
+            if (r?.mail?.ok) toast.ok(`메일 발송 완료${r.mail.dry_run ? " (dry-run)" : ""} · ${(r.mail.to || []).length}명`);
+            else toast.error(`메일 발송 실패: ${r?.mail?.error || "unknown"}`);
           }}
         />
       )}
@@ -1487,8 +1488,8 @@ function MeetingCategoryEditor({ categories, setCategories, isAdmin }) {
       body: JSON.stringify({ categories: draft }),
     }).then(r => r.json()).then(d => {
       if (d.ok) { setCategories(d.categories || draft); setDraft(null); }
-      else alert(d.detail || "저장 실패");
-    }).catch(e => alert("저장 실패: " + e.message));
+      else toast.error(d.detail || "저장 실패");
+    }).catch(e => toast.error("저장 실패: " + e.message));
   };
   const move = (i, delta) => {
     const j = i + delta; if (j < 0 || j >= draft.length) return;
@@ -1537,15 +1538,13 @@ const lbl = { fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospa
 const val = { fontSize: 14, color: "var(--text-primary)" };
 const btnPrimary = { padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" };
 const btnGhost = { padding: "5px 12px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer" };
-const btnDanger = { padding: "5px 10px", borderRadius: 5, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 14, cursor: "pointer" };
+const btnDanger = { padding: "5px 10px", borderRadius: 5, border: "1px solid var(--bad,#ef4444)", background: "transparent", color: "var(--bad,#ef4444)", fontSize: 14, cursor: "pointer" };
 const btnTiny = { padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" };
-const btnTinyDanger = { padding: "2px 10px", borderRadius: 4, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", fontSize: 14, cursor: "pointer" };
+const btnTinyDanger = { padding: "2px 10px", borderRadius: 4, border: "1px solid var(--bad,#ef4444)", background: "transparent", color: "var(--bad,#ef4444)", fontSize: 14, cursor: "pointer" };
 const editLink = { fontSize: 14, color: "var(--accent)", cursor: "pointer", textDecoration: "underline" };
-const delLink = { fontSize: 14, color: "#ef4444", cursor: "pointer", textDecoration: "underline" };
+const delLink = { fontSize: 14, color: "var(--bad,#ef4444)", cursor: "pointer", textDecoration: "underline" };
 const th = { padding: "6px 8px", textAlign: "left", fontSize: 14, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)", fontWeight: 600 };
 const td = { padding: "6px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
-const modalBack = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" };
-const modalCard = { width: 520, maxWidth: "92%", padding: 18, borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" };
 
 // v8.7.6: 액션아이템 간트 차트 (모든 회의·차수 취합). SVG 기반.
 function ActionItemsGantt({ meetings, onPickMeeting }) {
@@ -1689,8 +1688,7 @@ function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
   const inp2 = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" };
   return (
     // v8.8.3: z-index 10001 — SendMailDialog(9999) 위에 확실히 올라오도록.
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 10001, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} style={{ width: 720, maxWidth: "94%", maxHeight: "86vh", overflow: "auto", padding: 18, borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+    <Modal open onClose={onClose} width={720} zIndex={10001}>
         <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
           <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", flex: 1 }}>공용 메일 그룹 관리</span>
           <button onClick={startCreate} style={{ padding: "4px 12px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: "pointer" }}>+ 새 그룹</button>
@@ -1748,7 +1746,7 @@ function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
                     ? <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>그룹관리 탭</span>
                     : <>
                         <span onClick={() => startEdit(g)} style={{ fontSize: 14, color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}>편집</span>
-                        <span onClick={() => remove(g)} style={{ fontSize: 14, color: "#ef4444", cursor: "pointer", textDecoration: "underline" }}>삭제</span>
+                        <span onClick={() => remove(g)} style={{ fontSize: 14, color: "var(--bad,#ef4444)", cursor: "pointer", textDecoration: "underline" }}>삭제</span>
                       </>
                   }
                 </div>
@@ -1757,8 +1755,7 @@ function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
             );
           })}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -1779,8 +1776,7 @@ function SendMailDialog({ meeting, session, mailGroups, mailRecipients, draft, o
   };
   const inp3 = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" };
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} style={{ width: 620, maxWidth: "94%", padding: 18, borderRadius: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+    <Modal open onClose={onClose} width={620}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📧 {session.idx}차 회의록 메일 발송</div>
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10 }}>
           "{meeting.title}" · {session.idx}차 의 아젠다 + 회의록 + 액션아이템을 HTML 메일로 전송합니다.
@@ -1813,12 +1809,11 @@ function SendMailDialog({ meeting, session, mailGroups, mailRecipients, draft, o
         <div style={{ marginTop: 8 }}>
           <input value={draft.mail_to} onChange={e => onChange({ mail_to: e.target.value })} placeholder="추가 이메일 (콤마/공백 구분)" style={inp3} />
         </div>
-        {err && <div style={{ marginTop: 8, fontSize: 14, color: "#ef4444" }}>{err}</div>}
+        {err && <div style={{ marginTop: 8, fontSize: 14, color: "var(--bad,#ef4444)" }}>{err}</div>}
         <div style={{ marginTop: 14, display: "flex", gap: 6, justifyContent: "flex-end" }}>
           <button onClick={onClose} style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer" }} disabled={busy}>취소</button>
           <button onClick={submit} style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: busy ? "wait" : "pointer" }} disabled={busy}>{busy ? "발송 중…" : "📧 발송"}</button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

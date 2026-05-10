@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Loading from "../components/Loading";
 import PageGear from "../components/PageGear";
+import { toast } from "../components/Toast";
 import { Button, EmptyState, Pill, TabStrip } from "../components/UXKit";
 import { authSrc, sf as apiSf } from "../lib/api";
 const API = "/api/tracker";
@@ -1048,7 +1049,7 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={() => {
           if (!title.trim()) return;
-          if (!category) { alert("카테고리를 지정해주세요."); return; }
+          if (!category) { toast.warn("카테고리를 지정해주세요."); return; }
           onSubmit({ title, description: desc, priority, category, images: [], lots: expandLotsForSubmit(lots), links: links.filter(l => l.trim()), group_ids: groupIds });
         }}
           style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 600, cursor: "pointer" }}>생성</button>
@@ -1194,7 +1195,7 @@ export default function My_Tracker({ user }) {
       setReplyDrafts(m => ({ ...m, [parentIndex]: "" }));
       loadDetail(selected.id);
       load();
-    }).catch(e => alert(e.message || "대댓글 저장 실패"));
+    }).catch(e => toast.error(e.message || "대댓글 저장 실패"));
   };
   const canDeleteCommentItem = (item) => isAdmin || String(item?.username || "") === String(user?.username || "");
   const deleteCommentItem = (commentIndex, replyIndex = null) => {
@@ -1212,17 +1213,17 @@ export default function My_Tracker({ user }) {
     }).then(() => {
       loadDetail(selected.id);
       load();
-    }).catch(e => alert(e.message || "댓글 삭제 실패"));
+    }).catch(e => toast.error(e.message || "댓글 삭제 실패"));
   };
   const deleteIssue = () => { if (!confirm("이 이슈를 삭제할까요?")) return; sf(API + "/delete?issue_id=" + selected.id, { method: "POST" }).then(() => { setSelected(null); load(); }); };
   const canEdit = selected && (selected.username === user?.username || isAdmin);
   const startEdit = () => { if (!canEdit) return; setEditMode(true); setEditTitle(selected.title); setEditDesc(selected.description_html || selected.description || ""); setEditPrio(selected.priority || "normal"); setEditCategory(selected.category || ""); };
   const saveEdit = () => {
     if (!editTitle.trim()) return;
-    if (!editCategory) { alert("카테고리를 지정해주세요."); return; }
+    if (!editCategory) { toast.warn("카테고리를 지정해주세요."); return; }
     // v8.8.13: category 도 payload 에 포함 — 이전에는 FE 에서 누락되어 수정 불가였음.
     sf(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: selected.id, title: editTitle, description: editDesc, priority: editPrio, category: editCategory }) })
-      .then(() => { setEditMode(false); loadDetail(selected.id); load(); }).catch(e => alert(e.message));
+      .then(() => { setEditMode(false); loadDetail(selected.id); load(); }).catch(e => toast.error(e.message));
   };
   const saveIssueMail = (patch) => {
     if (!selected) return;
@@ -1239,9 +1240,9 @@ export default function My_Tracker({ user }) {
     }).catch(e => {
       const msg = String(e?.message || "");
       if (/method not allowed/i.test(msg)) {
-        alert("메일 설정 API는 POST /api/tracker/issue-mail 입니다. 현재 실행 중인 backend가 이전 버전이거나 다른 포트에 연결된 상태라서 서버 재시작이 필요합니다.");
+        toast.error("메일 설정 API는 POST /api/tracker/issue-mail 입니다. 현재 실행 중인 backend가 이전 버전이거나 다른 포트에 연결된 상태라서 서버 재시작이 필요합니다.");
       } else {
-        alert(msg || "메일 설정 저장 실패");
+        toast.error(msg || "메일 설정 저장 실패");
       }
     });
   };
@@ -1256,8 +1257,11 @@ export default function My_Tracker({ user }) {
     <div className="flow-connected-page" style={{ display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
       {/* Sidebar */}
       <div style={{ width: 400, minWidth: 350, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", background: "var(--bg-secondary)" }}>
-        <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>이슈 추적</span>
+        <div className="flow-sidebar-header" style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ minWidth: 0 }}>
+            <span className="flow-sidebar-header-title" style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>이슈 추적</span>
+            <div className="flow-sidebar-header-meta">{filteredIssues.length} / {issues.length} issues</div>
+          </div>
           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
             <Pill tone="neutral">{filteredIssues.length}</Pill>
             <Button variant="primary" onClick={() => setCreating(!creating)}>+ 새 이슈</Button>
