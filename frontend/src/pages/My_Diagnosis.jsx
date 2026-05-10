@@ -175,6 +175,12 @@ function JsonBlock({ value, maxHeight = 360 }) {
   );
 }
 
+function compactJsonText(value, limit = 180) {
+  if (value === undefined || value === null || value === "") return "-";
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
 function CategoryNav({ active, onChange, isAdmin }) {
   return (
     <div style={{ display: "grid", gap: 6 }}>
@@ -1228,33 +1234,442 @@ function KnowledgeIngestAssistant() {
   );
 }
 
+function compactToolPayload(tool = {}) {
+  const keep = {};
+  ["action", "intent", "feature", "arguments", "filters", "slots", "missing", "validation", "clarification", "requires_confirmation", "blocked", "reject_reason"].forEach((key) => {
+    if (tool && tool[key] !== undefined && tool[key] !== null && tool[key] !== "" && !(Array.isArray(tool[key]) && !tool[key].length)) keep[key] = tool[key];
+  });
+  return keep;
+}
+
+function flowiOutputRows(result = {}) {
+  const tool = result?.tool || {};
+  const workflow = result?.workflow_state || tool.workflow_state || {};
+  const table = tool.table || tool.samples_table || tool.stats_table || null;
+  const chart = tool.chart_result || tool.chart || null;
+  const rows = [
+    { key: "workflow_state", value: workflow.status || "-" },
+    { key: "waiting_for", value: workflow.waiting_for || "-" },
+    { key: "answer", value: result.answer || tool.answer || "-" },
+  ];
+  if (table) rows.push({ key: "table", value: `${table.kind || table.title || "table"} · ${table.total ?? table.rows?.length ?? 0} rows` });
+  if (chart) rows.push({ key: "chart", value: chart.title || chart.kind || chart.status || "chart result" });
+  if (Array.isArray(result.next_actions) && result.next_actions.length) rows.push({ key: "next_actions", value: listText(result.next_actions.map((x) => x.title || x.id), 4) });
+  if (tool.draft_id || tool.session_id) rows.push({ key: "draft/session", value: tool.draft_id || tool.session_id });
+  return rows;
+}
+
+const CALL_NODE_TONE = {
+  input: { border: "#6b7280", bg: "rgba(107,114,128,.10)" },
+  fastapi: { border: "#2563eb", bg: "rgba(37,99,235,.12)" },
+  orchestrator: { border: "#7c3aed", bg: "rgba(124,58,237,.12)" },
+  guardrail: { border: "#ca8a04", bg: "rgba(202,138,4,.12)" },
+  feature_subagent: { border: "#0891b2", bg: "rgba(8,145,178,.12)" },
+  api_call: { border: "#16a34a", bg: "rgba(22,163,74,.12)" },
+  result: { border: "#0f766e", bg: "rgba(15,118,110,.12)" },
+  answer: { border: "#4b5563", bg: "rgba(75,85,99,.12)" },
+};
+
+function callStatusTone(status) {
+  if (status === "done") return "ok";
+  if (status === "blocked" || status === "error") return "bad";
+  if (status === "waiting") return "warn";
+  return "neutral";
+}
+
+function FlowiCallGraph({ trace }) {
+  const graph = trace?.call_graph || {};
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  if (!nodes.length) return <EmptyState title="호출 그래프 없음" hint="실행 후 FastAPI와 기능 핸들러 흐름이 표시됩니다." />;
+  const edgeFrom = (id) => edges.find((edge) => edge.source === id);
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "stretch", overflowX: "auto", paddingBottom: 4 }}>
+        {nodes.map((node, idx) => {
+          const tone = CALL_NODE_TONE[node.type] || CALL_NODE_TONE.result;
+          const edge = edgeFrom(node.id);
+          const isLast = idx === nodes.length - 1;
+          return (
+            <div key={node.id || idx} style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 190 }}>
+              <div style={{ minWidth: 190, maxWidth: 230, minHeight: 122, border: `1px solid ${tone.border}`, borderRadius: 8, background: tone.bg, padding: 10, display: "grid", gap: 8, alignContent: "start" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 12, color: uxColors.textSub, fontFamily: "monospace" }}>{String(idx + 1).padStart(2, "0")} · {node.type || "node"}</span>
+                  <Pill tone={callStatusTone(node.status)}>{node.status || "-"}</Pill>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 900, color: uxColors.text, lineHeight: 1.3 }}>{node.title || node.id}</div>
+                <div style={{ fontSize: 12, color: uxColors.textSub, lineHeight: 1.45, wordBreak: "break-word" }}>{node.detail || "-"}</div>
+              </div>
+              {!isLast && (
+                <div style={{ display: "grid", justifyItems: "center", alignContent: "center", gap: 4, minWidth: 48 }}>
+                  <span style={{ color: uxColors.textSub, fontFamily: "monospace", fontSize: 18 }}>→</span>
+                  <span style={{ color: uxColors.textSub, fontSize: 11, maxWidth: 68, textAlign: "center", overflowWrap: "anywhere" }}>{edge?.label || ""}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function flowiApiCallRows(trace) {
+  const calls = Array.isArray(trace?.api_calls) ? trace.api_calls : [];
+  return calls.map((call, idx) => ({
+    no: idx + 1,
+    stage: call.stage || "-",
+    method: call.method || "-",
+    target: call.path || call.callee || call.name || "-",
+    callee: call.callee || "-",
+    purpose: call.purpose || "-",
+    output: call.output || "-",
+    status: call.status || "-",
+    payload: compactJsonText(call.payload || {}, 160),
+  }));
+}
+
+function flowiActivation(trace, result, prompt) {
+  const graph = trace?.call_graph || {};
+  const activation = trace?.activation || graph.activation || {};
+  const tool = result?.tool || {};
+  const workflow = result?.workflow_state || tool.workflow_state || {};
+  const calls = Array.isArray(trace?.api_calls) ? trace.api_calls : [];
+  const featureCall = calls.find((call) => call.stage === "feature_api") || {};
+  const missing = Array.isArray(activation.missing) ? activation.missing
+    : Array.isArray(tool.missing) ? tool.missing
+    : Array.isArray(tool.validation?.missing) ? tool.validation.missing
+    : [];
+  return {
+    prompt: activation.prompt || prompt || "-",
+    endpoint: activation.endpoint || calls[0]?.path || "/api/llm/flowi/agent/chat",
+    intent: activation.intent || tool.intent || workflow.intent || "-",
+    feature: activation.feature || tool.feature || workflow.feature || "-",
+    action: activation.action || tool.unit_action || workflow.unit_action || tool.action || workflow.action || tool.intent || "-",
+    api: activation.api || featureCall.path || featureCall.callee || "-",
+    handler: activation.handler || featureCall.callee || tool.action || "-",
+    status: activation.status || workflow.status || "-",
+    output: activation.output || result?.answer || tool.answer || "-",
+    nextAction: activation.next_action || (Array.isArray(result?.next_actions) && result.next_actions[0]?.title) || "-",
+    missing,
+    cause: activation.cause || tool.reject_reason || (missing.length ? "필수 slot 부족" : ""),
+  };
+}
+
+function FlowiActivationMap({ trace, result, prompt }) {
+  const active = flowiActivation(trace, result, prompt);
+  const hasResult = Boolean(result);
+  const cards = [
+    {
+      step: "01",
+      title: "에이전트가 받은 prompt",
+      value: active.prompt,
+      meta: active.endpoint,
+      type: "input",
+      status: hasResult ? "done" : "waiting",
+    },
+    {
+      step: "02",
+      title: "오케스트레이터 판단",
+      value: `intent=${active.intent}`,
+      meta: `feature=${active.feature} / action=${active.action}`,
+      type: "orchestrator",
+      status: active.status,
+    },
+    {
+      step: "03",
+      title: "활성화된 기능",
+      value: active.feature,
+      meta: active.handler || active.api,
+      type: "feature_subagent",
+      status: active.status,
+    },
+    {
+      step: "04",
+      title: "호출된 API / handler",
+      value: active.api,
+      meta: active.output,
+      type: "api_call",
+      status: active.status,
+    },
+    {
+      step: "05",
+      title: "호출 결과",
+      value: active.output,
+      meta: `next=${active.nextAction || "-"}${active.missing.length ? ` / missing=${active.missing.join(", ")}` : ""}`,
+      type: "result",
+      status: active.status,
+    },
+  ];
+  const showIssue = ["needs_input", "awaiting_confirmation", "blocked", "error", "waiting"].includes(String(active.status || ""));
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {showIssue && (
+        <Banner tone={active.status === "blocked" || active.status === "error" ? "bad" : "warn"}>
+          {active.cause || active.status} {active.missing.length ? `· missing: ${active.missing.join(", ")}` : ""}
+        </Banner>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+        {cards.map((card, idx) => {
+          const tone = CALL_NODE_TONE[card.type] || CALL_NODE_TONE.result;
+          return (
+            <div key={card.step} style={{ border: `1px solid ${tone.border}`, background: tone.bg, borderRadius: 8, padding: 12, minHeight: 136, display: "grid", gap: 8, alignContent: "start" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 12, color: uxColors.textSub, fontFamily: "monospace" }}>{card.step}</span>
+                <Pill tone={callStatusTone(card.status)}>{card.status || "-"}</Pill>
+              </div>
+              <div style={{ fontSize: 13, color: uxColors.textSub, fontWeight: 800 }}>{card.title}</div>
+              <div style={{ fontSize: idx === 0 ? 14 : 16, color: uxColors.text, fontWeight: 900, lineHeight: 1.4, wordBreak: "break-word" }}>{card.value || "-"}</div>
+              <div style={{ fontSize: 12, color: uxColors.textSub, lineHeight: 1.45, wordBreak: "break-word" }}>{card.meta || "-"}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", color: uxColors.textSub, fontSize: 13 }}>
+        <span style={{ fontFamily: "monospace" }}>prompt</span>
+        <span>→</span>
+        <span style={{ fontFamily: "monospace" }}>orchestrator</span>
+        <span>→</span>
+        <span style={{ fontFamily: "monospace" }}>{active.feature}</span>
+        <span>→</span>
+        <span style={{ fontFamily: "monospace" }}>{active.action}</span>
+      </div>
+    </div>
+  );
+}
+
+function activationStatusTone(status) {
+  if (status === "ready" || status === "done") return "ok";
+  if (status === "needs_input" || status === "awaiting_confirmation" || status === "waiting") return "warn";
+  if (status === "error" || status === "blocked") return "bad";
+  return "neutral";
+}
+
+function FlowiOrchestratorPreview({ rows = [], busy = false, onSelectPrompt }) {
+  const featureCounts = rows.reduce((acc, row) => {
+    const key = row.feature || "general";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  return (
+    <Panel
+      title="프롬프트별 오케스트레이터 활성화"
+      subtitle="예시/실행 프롬프트가 어떤 기능 subagent와 action을 켜는지 dry-run으로 비교합니다."
+      right={<Pill tone={busy ? "warn" : "accent"}>{busy ? "previewing" : `${rows.length} prompts`}</Pill>}
+    >
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+        {Object.entries(featureCounts).map(([featureName, count]) => (
+          <Pill key={featureName} tone="info">{featureName} {count}</Pill>
+        ))}
+        {!rows.length && <Pill tone="neutral">no preview</Pill>}
+      </div>
+      <DataTable
+        rows={rows.map((row, idx) => ({ no: idx + 1, ...row, missingText: Array.isArray(row.missing) && row.missing.length ? row.missing.join(", ") : "-" }))}
+        empty="프롬프트 예시를 불러오는 중입니다."
+        columns={[
+          { key: "no", label: "#", width: 44 },
+          { key: "prompt", label: "prompt" },
+          { key: "feature", label: "feature", width: 130, render: (r) => <Pill tone="accent">{r.feature || "-"}</Pill> },
+          { key: "action", label: "action", width: 210 },
+          { key: "status", label: "status", width: 120, render: (r) => <Pill tone={activationStatusTone(r.status)}>{r.status || "-"}</Pill> },
+          { key: "api", label: "api / data", width: 190 },
+          { key: "missingText", label: "missing", width: 150 },
+          { key: "select", label: "", width: 82, render: (r) => <Button variant="subtle" onClick={() => onSelectPrompt?.(r.prompt)}>선택</Button> },
+        ]}
+      />
+    </Panel>
+  );
+}
+
+function FlowiExecutionPanel({ user }) {
+  const [prompt, setPrompt] = useState(FUNCTION_TEST_PROMPT);
+  const [product, setProduct] = useState("");
+  const [promptChoice, setPromptChoice] = useState(FUNCTION_TEST_PROMPT);
+  const [result, setResult] = useState(null);
+  const [promptHistory, setPromptHistory] = useState([]);
+  const [activationRows, setActivationRows] = useState([]);
+  const [activationBusy, setActivationBusy] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box", fontSize: 14 };
+
+  const samplePrompts = QUICK_PROMPTS.slice(1).map((item) => item.prompt);
+  const collectPreviewPrompts = (primaryPrompt = prompt, history = promptHistory) => {
+    const ordered = [primaryPrompt, ...history, ...samplePrompts].map((x) => String(x || "").trim()).filter(Boolean);
+    return ordered.filter((item, idx) => ordered.indexOf(item) === idx).slice(0, 10);
+  };
+  const refreshActivationPreview = (primaryPrompt = prompt, history = promptHistory) => {
+    const prompts = collectPreviewPrompts(primaryPrompt, history);
+    if (!prompts.length) return;
+    setActivationBusy(true);
+    postJson("/api/llm/flowi/orchestrator/preview", {
+      prompts,
+      product,
+      max_rows: 12,
+    })
+      .then((d) => setActivationRows(Array.isArray(d.rows) ? d.rows : []))
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setActivationBusy(false));
+  };
+  const rememberPrompt = (body) => {
+    const nextHistory = [body, ...promptHistory.filter((item) => item !== body)].slice(0, 5);
+    setPromptHistory(nextHistory);
+    return nextHistory;
+  };
+  const run = (overridePrompt = "") => {
+    const body = String(overridePrompt || prompt).trim();
+    if (!body) return;
+    if (body !== prompt) setPrompt(body);
+    setBusy(true);
+    setErr("");
+    postJson("/api/llm/flowi/agent/chat", {
+      prompt: body,
+      source_ai: "agent_page",
+      client_run_id: `agent_page_${Date.now()}`,
+      product,
+      max_rows: 12,
+      context: { type: "agent_execution_flow", surface: "agent_page" },
+    })
+      .then((d) => {
+        setResult(d);
+        const nextHistory = rememberPrompt(body);
+        refreshActivationPreview(body, nextHistory);
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(false));
+  };
+  useEffect(() => { run(); }, []);
+  const choosePrompt = (value) => {
+    const next = String(value || "").trim();
+    setPromptChoice(next);
+    if (next) {
+      setPrompt(next);
+      refreshActivationPreview(next);
+    }
+  };
+
+  const tool = result?.tool || {};
+  const workflow = result?.workflow_state || tool.workflow_state || {};
+  const trace = result?.trace || {};
+  const traceSteps = Array.isArray(trace?.steps) ? trace.steps : [];
+  const apiRows = flowiApiCallRows(trace);
+  const feature = tool.feature || workflow.feature || "-";
+  const action = tool.action || workflow.action || tool.intent || "-";
+  const intent = tool.intent || workflow.intent || "-";
+  const statusTone = tool.blocked ? "bad" : workflow.status === "ready" || workflow.status === "completed" ? "ok" : workflow.waiting_for ? "warn" : "neutral";
+  const callPayload = compactToolPayload(tool);
+
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <Panel
+        title="Flow-i 실행 흐름"
+        subtitle="입력 prompt에서 오케스트레이터 판단, 기능별 단위기능 호출, 결과까지 한 번에 확인합니다."
+        right={<Pill tone={statusTone}>{workflow.status || (result ? "done" : "ready")}</Pill>}
+      >
+        {err && <Banner tone="bad">{err}</Banner>}
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(260px,1fr) minmax(170px,220px) 150px auto", gap: 8, alignItems: "end" }}>
+          <Field label="prompt">
+            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55 }} />
+          </Field>
+          <Field label="예시 prompt">
+            <select value={promptChoice} onChange={(e) => choosePrompt(e.target.value)} style={inputStyle}>
+              <option value="">직접 입력</option>
+              {QUICK_PROMPTS.slice(1).map((item) => <option key={item.label} value={item.prompt}>{item.label}</option>)}
+            </select>
+          </Field>
+          <Field label="product">
+            <input value={product} onChange={(e) => setProduct(e.target.value)} style={inputStyle} placeholder="optional" />
+          </Field>
+          <Button variant="primary" onClick={run} disabled={busy || !prompt.trim()}>{busy ? "실행 중" : "실행"}</Button>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+          {QUICK_PROMPTS.slice(1, 6).map((item) => <Button key={item.label} variant="subtle" onClick={() => { setPrompt(item.prompt); refreshActivationPreview(item.prompt); }}>{item.label}</Button>)}
+        </div>
+      </Panel>
+
+      <FlowiOrchestratorPreview rows={activationRows} busy={activationBusy} onSelectPrompt={(text) => { setPrompt(text); refreshActivationPreview(text); }} />
+
+      <Panel title="Activation Map (5단계)" subtitle="현재 실행한 프롬프트 하나의 전달 경로와 활성 action입니다.">
+        <FlowiActivationMap trace={trace} result={result} prompt={prompt} />
+      </Panel>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.9fr) minmax(0,1.1fr)", gap: 12, alignItems: "start" }}>
+        <Panel title="오케스트레이터 판단" subtitle="프롬프트를 어떤 기능별 단위기능으로 보냈는지">
+          <DataTable
+            rows={[
+              { key: "user", value: user?.username || "-" },
+              { key: "intent", value: intent },
+              { key: "feature_subagent", value: feature },
+              { key: "unit_action", value: action },
+              { key: "requires_confirmation", value: tool.requires_confirmation ? "true" : "false" },
+              { key: "blocked", value: tool.blocked ? (tool.reject_reason || "true") : "false" },
+            ]}
+            columns={[
+              { key: "key", label: "field", width: 170 },
+              { key: "value", label: "value" },
+            ]}
+          />
+        </Panel>
+
+        <Panel title="단위기능 콜" subtitle="서버가 검증한 tool payload 요약">
+          <JsonBlock value={callPayload} maxHeight={330} />
+        </Panel>
+      </div>
+
+      <Panel title="API 호출 그래프" subtitle="FastAPI endpoint에서 오케스트레이터, 기능 subagent, 내부 API/data 조회, 답변 payload까지의 흐름입니다.">
+        <FlowiCallGraph trace={trace} />
+      </Panel>
+
+      <Panel title="FastAPI / handler 호출" subtitle="각 단계가 어떤 endpoint, handler, cache/table을 사용했는지 확인합니다.">
+        <DataTable
+          rows={apiRows}
+          empty="아직 API 호출 내역이 없습니다."
+          columns={[
+            { key: "no", label: "#", width: 46 },
+            { key: "stage", label: "stage", width: 110 },
+            { key: "method", label: "method", width: 84 },
+            { key: "target", label: "target" },
+            { key: "purpose", label: "purpose" },
+            { key: "output", label: "output", width: 180 },
+            { key: "status", label: "status", width: 96, render: (r) => <Pill tone={callStatusTone(r.status)}>{r.status || "-"}</Pill> },
+          ]}
+        />
+      </Panel>
+
+      <Panel title="진행 단계" subtitle="사용자에게 공개 가능한 실행 trace입니다.">
+        <DataTable
+          rows={traceSteps.map((step, idx) => ({ ...step, no: idx + 1, stage: step.stage || step.key || step.label, title: step.title || step.label || step.key }))}
+          empty="아직 실행 trace가 없습니다."
+          columns={[
+            { key: "no", label: "#", width: 48 },
+            { key: "stage", label: "stage", width: 120 },
+            { key: "title", label: "title", width: 150 },
+            { key: "status", label: "status", width: 90, render: (r) => <Pill tone={r.status === "done" ? "ok" : r.status === "blocked" || r.status === "error" ? "bad" : r.status === "skipped" ? "neutral" : "warn"}>{r.status || "-"}</Pill> },
+            { key: "detail", label: "detail" },
+          ]}
+        />
+      </Panel>
+
+      <Panel title="결과" subtitle="answer, table/chart, 다음 액션 요약">
+        <DataTable
+          rows={flowiOutputRows(result || {})}
+          empty="실행 후 결과가 표시됩니다."
+          columns={[
+            { key: "key", label: "field", width: 150 },
+            { key: "value", label: "value" },
+          ]}
+        />
+      </Panel>
+    </div>
+  );
+}
+
 export default function My_Diagnosis({ user }) {
-  const [active, setActive] = useState("workflow");
-  const isAdmin = user?.role === "admin";
-  const canManageWiki = canManagePage(user, "diagnosis") || canManagePage(user, "knowledge");
-  const activeCategory = CATEGORIES.find((item) => item.id === active) || CATEGORIES[0];
-  useEffect(() => {
-    if (active === "admin" && !isAdmin) setActive("workflow");
-  }, [active, isAdmin]);
   return (
     <PageShell>
-      <PageHeader title="에이전트" subtitle="Flowi agent workflow, persona, RAG, Agent Wiki, item rules, LLM, admin tools" />
-      <div style={{ padding: 12, display: "grid", gridTemplateColumns: "250px minmax(0,1fr)", gap: 12, alignItems: "start" }}>
-        <Panel title="카테고리" subtitle="9개 영역" bodyStyle={{ padding: 10 }}>
-          <CategoryNav active={active} onChange={setActive} isAdmin={isAdmin} />
-        </Panel>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: active === "workflow" ? "block" : "none" }}><WorkflowPanel /></div>
-          <div style={{ display: active === "persona" ? "block" : "none" }}><PersonaPanel /></div>
-          <div style={{ display: active === "prompt" ? "block" : "none" }}><PromptPanel /></div>
-          <div style={{ display: active === "knowledge" ? "block" : "none" }}><KnowledgePanel user={user} isAdmin={isAdmin} /></div>
-          <div style={{ display: active === "recent" ? "block" : "none" }}><RecentRagPanel user={user} /></div>
-          <div style={{ display: active === "item" ? "block" : "none" }}><ItemRulesPanel /></div>
-          <div style={{ display: active === "llm" ? "block" : "none" }}><LlmPanel isAdmin={isAdmin} /></div>
-          <div style={{ display: active === "admin" ? "block" : "none" }}><AdminToolsPanel isAdmin={isAdmin} /></div>
-          <div style={{ display: active === "wiki" ? "block" : "none" }}><AgentWikiPanel canManage={canManageWiki} /></div>
-          {!activeCategory && <EmptyState title="카테고리를 선택하세요." />}
-        </div>
+      <PageHeader title="에이전트" subtitle="Flow-i orchestrator가 프롬프트를 기능별 단위기능으로 라우팅하고 실행한 흐름을 확인합니다." />
+      <div style={{ padding: 12, display: "grid", gap: 12 }}>
+        <FlowiExecutionPanel user={user} />
       </div>
     </PageShell>
   );

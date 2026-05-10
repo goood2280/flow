@@ -424,6 +424,15 @@ FLOWI_UNIT_ACTIONS = {
     "filebrowser": {
         "intent": "filebrowser_guidance",
         "action": "open_filebrowser",
+        "agent_driver_actions": [
+            "filebrowser.scopes",
+            "filebrowser.list",
+            "filebrowser.preview",
+            "filebrowser.lot_progress.latest",
+            "filebrowser.csv.rules.read",
+            "filebrowser.cache.match.refresh",
+            "filebrowser.cache.match.status",
+        ],
         "needs": ["source/root", "product or file", "optional SQL/filter"],
         "outputs": ["table preview", "selected columns", "CSV download"],
     },
@@ -436,6 +445,14 @@ FLOWI_UNIT_ACTIONS = {
     "splittable": {
         "intent": "splittable_guidance",
         "action": "open_splittable",
+        "agent_driver_actions": [
+            "splittable.view",
+            "splittable.knob.summary",
+            "splittable.plan.compare",
+            "splittable.notes.list",
+            "splittable.notes.save",
+            "splittable.export.snapshot",
+        ],
         "needs": ["product", "root_lot_id", "wafer_id or all", "parameter prefix such as KNOB/MASK/FAB"],
         "outputs": ["plan vs actual matrix", "mismatch cells", "notes"],
     },
@@ -454,6 +471,15 @@ FLOWI_UNIT_ACTIONS = {
     "inform": {
         "intent": "inform_guidance",
         "action": "open_inform",
+        "agent_driver_actions": [
+            "inform.draft.start",
+            "inform.draft.resolve",
+            "inform.draft.confirm",
+            "inform.thread.list",
+            "inform.thread.read",
+            "inform.search",
+            "inform.embed.splittable",
+        ],
         "needs": ["product", "root_lot_id", "message/reason"],
         "outputs": ["inform thread", "split table snapshot", "mail preview"],
     },
@@ -706,7 +732,7 @@ _STOP_TOKENS = {
     "어떻게", "몇이야", "처리", "데이터", "조회", "보여줘",
     "현재", "기준", "확인", "언제", "어디", "도착", "얼마나", "걸렸어",
 }
-_FLOWI_NON_LOT_TOKENS = {"SPLIT", "TEST", "PLAN", "ACTUAL"}
+_FLOWI_NON_LOT_TOKENS = {"SPLIT", "TABLE", "TEST", "PLAN", "ACTUAL", "VIEW", "SHOW", "CUSTOM", "SET"}
 
 
 def _text(raw: Any) -> str:
@@ -1297,7 +1323,7 @@ def _slot_summary(prompt: str, product: str = "") -> dict[str, Any]:
 
 def _flowi_product_resolution(prompt: str, explicit: str = "") -> dict[str, Any]:
     product = _product_hint(prompt, explicit)
-    configured = _configured_product_names()
+    configured = {} if explicit else _configured_product_names()
     source = "missing"
     if explicit:
         source = "explicit"
@@ -1447,7 +1473,7 @@ def _flowi_metric_token(prompt: str) -> str:
 def _flowi_knob_value_token(prompt: str) -> str:
     text = str(prompt or "")
     for pat in (
-        r"\b(PPID_\d+_\d+)\b",
+        r"(?<![A-Za-z0-9_])(PPID_\d+_\d+)(?![A-Za-z0-9_])",
         r"(?:knob_value|KNOB_VALUE|값|value)\s*[:=]\s*([A-Za-z0-9_.-]+)",
         r"\b([A-Za-z0-9_.-]+)\s*인\s*자재",
     ):
@@ -1474,7 +1500,9 @@ def _flowi_split_set_token(prompt: str) -> str:
     patterns = [
         r"([^\s,;:/=]+)\s*스플릿(?:으로)?\s*선택",
         r"([^\s,;:/=]+)\s*split(?:으로)?\s*선택",
+        r"([^\s,;:/=]+)\s*(?:커스텀\s*세트|custom\s*set)(?:으로|로)?",
         r"(?:split|split_set|스플릿)\s*[:=]\s*([^\s,;]+)",
+        r"(?:custom_set|custom\s*set|커스텀\s*세트)\s*[:=]\s*([^\s,;]+)",
     ]
     for pat in patterns:
         m = re.search(pat, text, flags=re.I)
@@ -1494,6 +1522,32 @@ def _flowi_note_extract(prompt: str) -> str:
         if m:
             return re.sub(r"\s+", " ", (m.group(1) or "").strip(" \t\r\n\"'")).strip()[:1000]
     return ""
+
+
+def _flowi_recipient_tokens(prompt: str) -> list[str]:
+    text = str(prompt or "")
+    out: list[str] = []
+    seen: set[str] = set()
+    for email in re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", text):
+        key = email.casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(email)
+    for pat in (
+        r"(?:수신처|받는\s*사람|recipient|recipients|to)\s*[:=]\s*([^\n;]+)",
+        r"([A-Za-z0-9_.@+-]+)\s*(?:에게|한테)\s*(?:인폼|inform|메일|mail)",
+    ):
+        for m in re.finditer(pat, text, flags=re.I):
+            raw = (m.group(1) or "").strip()
+            for piece in re.split(r"[,/]\s*|\s+", raw):
+                val = piece.strip(" .,;:()[]{}")
+                if not val or _upper(val) in _STOP_TOKENS:
+                    continue
+                key = val.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    out.append(val)
+    return out[:12]
 
 
 def _flowi_parse_inform_batch_entries(prompt: str) -> list[dict[str, Any]]:
@@ -1764,6 +1818,10 @@ def _flowi_arguments_choices(missing: list[str], prompt: str, arguments: dict[st
         elif key == "module":
             values = _flowi_inform_modules()[:3]
             placeholder = "다른 모듈 입력"
+        elif key == "recipients":
+            module_recipients = _flowi_module_recipients(str(args.get("module") or "")) if "_flowi_module_recipients" in globals() else []
+            values = [str(r.get("email") or r.get("name") or "").strip() for r in module_recipients if isinstance(r, dict) and str(r.get("email") or r.get("name") or "").strip()][:3]
+            placeholder = "수신처 직접 입력"
         elif key == "step":
             values = _flowi_step_choice_values(str(args.get("product") or ""), 3)
             placeholder = "step 직접 입력"
@@ -1854,6 +1912,35 @@ def _flowi_complete_json(messages: list[dict[str, Any]], schema_dict: dict[str, 
     return None
 
 
+def _flowi_explicit_splittable_view_prompt(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return any(
+        term in low or term in text
+        for term in ("split table", "splittable", "스플릿테이블", "스플릿 테이블")
+    )
+
+
+def _flowi_current_step_prompt(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if not _lot_tokens(text):
+        return False
+    if any(t in low for t in ("lot_id", "lot id", "fab_lot", "fab lot", "fab-lot", "fablot")):
+        return False
+    has_current = any(t in low or t in text for t in ("현재", "지금", "current", "now", "어디"))
+    has_step = any(t in low or t in text for t in ("step", "function_step", "func_step", "스텝", "공정"))
+    return has_current and has_step
+
+
+def _flowi_tracker_lot_purpose_prompt(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if not _lot_tokens(text):
+        return False
+    return any(t in low or t in text for t in ("무슨랏", "무슨 랏", "무슨 lot", "어떤랏", "어떤 랏", "목적", "purpose", "뭐하는", "무엇하는"))
+
+
 def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, Any]:
     text = str(prompt or "")
     up = _upper(text)
@@ -1890,6 +1977,26 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
             "intent": "current_fab_lot_lookup",
             "confidence": 0.94,
             "reason": _flowi_reason("현재 fab_lot_id 조회로 판단"),
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
+    if _flowi_current_step_prompt(text):
+        return {
+            "name": "query_lot_current_step_from_progress_cache",
+            "feature": "filebrowser",
+            "intent": "lot_current_step_lookup",
+            "confidence": 0.92,
+            "reason": _flowi_reason("FileBrowser latest progress cache에서 현재 step 조회"),
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
+    if _flowi_tracker_lot_purpose_prompt(text):
+        return {
+            "name": "query_tracker_lot_purpose",
+            "feature": "tracker",
+            "intent": "tracker_lot_purpose_lookup",
+            "confidence": 0.86,
+            "reason": _flowi_reason("이슈추적 lot 목적 조회"),
             "requires_confirmation": False,
             "side_effect": "none",
         }
@@ -1942,7 +2049,17 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
             "requires_confirmation": False,
             "side_effect": "none",
         }
-    if step and knob_value and not (root_lots or fab_lots or lots) and any(t in text or t in text.lower() for t in ("인 자재", "가장 빠", "어디에 있", "어디", "진행 중", "받은 lot", "lot")):
+    if _flowi_explicit_splittable_view_prompt(text) and (root_lots or fab_lots or lots):
+        return {
+            "name": "query_splittable_view",
+            "feature": "splittable",
+            "intent": "splittable_view",
+            "confidence": 0.88,
+            "reason": _flowi_reason("SplitTable 화면 조회"),
+            "requires_confirmation": False,
+            "side_effect": "none",
+        }
+    if step and knob_value and not (root_lots or fab_lots or lots) and any(t in text or t in text.lower() or t in up for t in ("인 자재", "가장 빠", "어디에 있", "어디", "진행 중", "받은 lot", "lot", "WF", "WAFER", "웨이퍼")):
         return {
             "name": "find_lots_by_knob_value",
             "feature": "splittable",
@@ -2095,6 +2212,14 @@ def _flowi_function_schema(name: str) -> dict[str, Any]:
             "description": "특정 lot 또는 wafer가 특정 function step에서 받은 KNOB/MASK/FAB 조합(split)을 SplitTable 화면 기준으로 조회한다.",
             "required": ["root_lot_ids 또는 fab_lot_ids", "step"],
         },
+        "query_lot_current_step_from_progress_cache": {
+            "description": "FileBrowser latest progress cache에서 root_lot_id/lot_id/wafer_id 기준 현재 step_id와 function_step을 조회한다.",
+            "required": ["root_lot_ids 또는 fab_lot_ids"],
+        },
+        "query_splittable_view": {
+            "description": "SplitTable 화면 API 기준으로 lot/fab lot의 KNOB/MASK/FAB matrix를 조회한다.",
+            "required": ["product", "root_lot_ids 또는 fab_lot_ids"],
+        },
         "find_lots_by_knob_value": {
             "description": "특정 step에서 특정 KNOB value를 받은 lot/wafer를 찾아 FAB 진행 위치와 join한다.",
             "required": ["step", "knob_value"],
@@ -2113,6 +2238,10 @@ def _flowi_function_schema(name: str) -> dict[str, Any]:
         },
         "query_fab_progress": {
             "description": "FAB route/progress DB에서 현재 step, fab lot, 시간 이력을 조회한다.",
+            "required": ["lot_ids"],
+        },
+        "query_tracker_lot_purpose": {
+            "description": "Tracker 이슈의 lot 목적/purpose 행을 lot_id 기준으로 조회한다.",
             "required": ["lot_ids"],
         },
         "route_flowi_feature": {
@@ -2179,6 +2308,7 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
             flags=re.I,
         ).strip()
     knob_value = _flowi_knob_value_token(text)
+    recipients = _flowi_recipient_tokens(text)
     batch_entries = _flowi_parse_inform_batch_entries(text)
     source_type = next((s for s in source_types if s in {"FAB", "INLINE", "ET", "VM", "EDS"}), "")
     keyword = ""
@@ -2196,6 +2326,7 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
         "fab_lot_ids": classified.get("fab_lot_ids") or [],
         "lot_ids": slots.get("lots") or [],
         "wafer_ids": wafers,
+        "lot_wf_ids": _flowi_lot_wf_ids(classified.get("root_lot_ids") or [], classified.get("fab_lot_ids") or [], wafers),
         "step_ids": slots.get("steps") or [],
         "source_types": source_types,
         "metrics_or_items": metric_names,
@@ -2241,6 +2372,8 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
         arguments["split_set"] = split_set
     if note:
         arguments["note"] = note
+    if recipients:
+        arguments["recipients"] = recipients
     if selected_name == "register_inform_log" and "_flowi_prompt_field" in globals():
         reason_val = _flowi_prompt_field(text, ("reason", "사유"))
         if reason_val:
@@ -2309,6 +2442,8 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
             missing.append("split_set")
         if not arguments.get("note") and not arguments.get("reason"):
             missing.append("note")
+        if not arguments.get("recipients") and not arguments.get("module"):
+            missing.append("recipients")
     if selected_name == "query_wafer_split_at_step" and not resolved_product:
         missing.insert(0, "product")
     if selected_name == "compose_inform_module_mail" and "module" in missing:
@@ -3261,12 +3396,22 @@ def _is_product_token(tok: str) -> bool:
         return False
     if key.startswith(("ML_TABLE_", "PRODUCT_", "PROD")):
         return True
+    if "_" in key or "." in key:
+        return False
+    if len(key) < 4:
+        return False
+    if key in {"GATE", "STI", "MOL", "BEOL", "FEOL", "SORT", "MODULE", "SPLIT", "CUSTOM", "INFORM"}:
+        return False
     return key in _configured_product_names()
 
 
 def _is_root_lot_token(tok: str) -> bool:
     key = _upper(tok)
-    return bool(re.fullmatch(r"[A-Z0-9]{5}", key or "") and re.search(r"[A-Z]", key or ""))
+    return bool(
+        re.fullmatch(r"[A-Z0-9]{5}", key or "")
+        and re.search(r"[A-Z]", key or "")
+        and re.search(r"\d", key or "")
+    )
 
 
 def _is_fab_lot_token(tok: str) -> bool:
@@ -3297,12 +3442,14 @@ def _product_aliases(product: str) -> set[str]:
 def _product_hint(prompt: str, explicit: str = "") -> str:
     if explicit:
         return explicit
-    configured = _configured_product_names()
-    for tok in _tokens(prompt):
-        if tok in configured:
-            return configured[tok]
+    toks = _tokens(prompt)
+    for tok in toks:
         if tok.startswith(("ML_TABLE_", "PRODUCT_", "PROD")):
             return tok
+    configured = _configured_product_names()
+    for tok in toks:
+        if tok in configured:
+            return configured[tok]
     return ""
 
 
@@ -3311,8 +3458,6 @@ def _lot_tokens(prompt: str) -> list[str]:
     seen = set()
     title_tokens = _title_hint_tokens(prompt)
     for tok in _tokens(prompt):
-        if _is_product_token(tok):
-            continue
         if tok in _FLOWI_NON_LOT_TOKENS or re.fullmatch(r"TEST\d+", tok, flags=re.I):
             continue
         if tok in title_tokens:
@@ -3324,6 +3469,8 @@ def _lot_tokens(prompt: str) -> list[str]:
         )
         legacy_lot_like = bool(re.fullmatch(r"[A-Z]\d{4,}(?:[A-Z])?(?:\.\d+)?", tok))
         if (is_root_like or is_fab_like or legacy_lot_like) and tok not in seen:
+            if _is_product_token(tok):
+                continue
             seen.add(tok)
             out.append(tok)
     return out
@@ -3334,27 +3481,39 @@ def _classified_lot_tokens(prompt: str) -> dict[str, list[str]]:
     fab_ids: list[str] = []
     seen_root: set[str] = set()
     seen_fab: set[str] = set()
+
+    def add_root(raw: Any) -> None:
+        root = _upper(raw)
+        if root and root not in seen_root:
+            seen_root.add(root)
+            root_ids.append(root)
+
     for tok in _tokens(prompt):
-        if _is_product_token(tok):
-            continue
         if tok in _FLOWI_NON_LOT_TOKENS or re.fullmatch(r"TEST\d+", tok, flags=re.I):
             continue
         if _is_root_lot_token(tok):
-            if tok not in seen_root:
-                seen_root.add(tok)
-                root_ids.append(tok)
+            if _is_product_token(tok):
+                continue
+            add_root(tok)
             continue
         if _is_fab_lot_token(tok) or (len(tok) >= 6 and _is_mixed_alnum_token(tok) and not re.fullmatch(r"[A-Z]{2,5}\d{4,}", tok)):
+            if _is_product_token(tok):
+                continue
             if tok not in seen_fab:
                 seen_fab.add(tok)
                 fab_ids.append(tok)
             continue
         if re.fullmatch(r"[A-Z]\d{4,}(?:[A-Z])?(?:\.\d+)?", tok):
+            if _is_product_token(tok):
+                continue
             bucket = fab_ids if "." in tok or len(tok) >= 6 else root_ids
             seen = seen_fab if bucket is fab_ids else seen_root
             if tok not in seen:
                 seen.add(tok)
                 bucket.append(tok)
+            continue
+    for fab in fab_ids:
+        add_root(_flowi_root_from_fab_lot(fab))
     return {"root_lot_ids": root_ids, "fab_lot_ids": fab_ids}
 
 
@@ -3389,6 +3548,31 @@ def _flowi_lot_scope_terms(*groups: Any) -> list[str]:
                 add(item)
         else:
             add(group)
+    return out
+
+
+def _flowi_lot_wf_id(root_lot_id: Any, wafer_id: Any) -> str:
+    root = _upper(root_lot_id)
+    wafer = _normalize_wafer_id(wafer_id)
+    return f"{root}_{wafer}" if root and wafer else ""
+
+
+def _flowi_lot_wf_ids(root_lot_ids: list[Any], fab_lot_ids: list[Any], wafer_ids: list[Any]) -> list[str]:
+    roots: list[str] = []
+    seen_roots: set[str] = set()
+    for raw in [*(root_lot_ids or []), *(_flowi_root_from_fab_lot(str(f)) for f in (fab_lot_ids or []))]:
+        root = _upper(raw)
+        if root and root not in seen_roots:
+            seen_roots.add(root)
+            roots.append(root)
+    out: list[str] = []
+    seen: set[str] = set()
+    for root in roots:
+        for wafer in wafer_ids or []:
+            lot_wf = _flowi_lot_wf_id(root, wafer)
+            if lot_wf and lot_wf not in seen:
+                seen.add(lot_wf)
+                out.append(lot_wf)
     return out
 
 
@@ -5640,7 +5824,11 @@ def _filter_files_by_product(files: list[Path], product: str) -> list[Path]:
 def _scan_parquet(files: list[Path]) -> pl.LazyFrame:
     if not files:
         raise HTTPException(404, "읽을 parquet 파일이 없습니다")
-    lf = pl.scan_parquet([str(p) for p in files])
+    paths = [str(p) for p in files]
+    try:
+        lf = pl.scan_parquet(paths, missing_columns="insert", extra_columns="ignore")
+    except TypeError:
+        lf = pl.scan_parquet(paths)
     try:
         from core.utils import filter_valid_wafer_ids_lazy
         return filter_valid_wafer_ids_lazy(lf)
@@ -5807,6 +5995,7 @@ def _flowi_field_question(field: str) -> str:
         "fab_lot_ids": "어느 Fab Lot인가요?",
         "root_lot_id_or_fab_lot_id": "어느 Lot인가요?",
         "module": "어느 모듈인가요?",
+        "recipients": "수신처는 누구인가요?",
         "step": "어느 Step인가요?",
         "metric": "어느 항목인가요?",
         "metrics_or_items": "어느 항목인가요?",
@@ -5905,6 +6094,167 @@ def _flowi_set_inline_type(tool: dict[str, Any], tool_type: str = "", *, prompt:
         tool["highlight"] = True
     tool.setdefault("inline_summary", _flowi_inline_summary(tool))
     return tool
+
+
+def _flowi_feature_for_function(function_name: str, selected: dict[str, Any] | None = None) -> str:
+    if isinstance(selected, dict) and selected.get("feature"):
+        return str(selected.get("feature") or "")
+    name = str(function_name or "")
+    if name in {"query_current_fab_lot_from_fab_db", "query_lot_current_step_from_progress_cache", "preview_filebrowser_data", "search_filebrowser_schema"}:
+        return "filebrowser"
+    if name in {"query_splittable_view", "query_wafer_split_at_step", "query_lot_knobs_from_ml_table", "find_lots_by_knob_value", "preview_splittable_plan_update"}:
+        return "splittable"
+    if name in {"register_inform_log", "register_inform_walkthrough", "compose_inform_module_mail", "summarize_inform_modules"}:
+        return "inform"
+    if name == "query_tracker_lot_purpose":
+        return "tracker"
+    if name == "build_dashboard_metric_chart":
+        return "dashboard"
+    if name == "semiconductor_diagnosis":
+        return "diagnosis"
+    return ""
+
+
+def _flowi_api_target_for_function(function_name: str, feature: str = "") -> dict[str, str]:
+    name = str(function_name or "")
+    if name == "query_current_fab_lot_from_fab_db":
+        return {"api": "data/Fab", "handler": "_handle_current_fab_lot_lookup"}
+    if name == "query_lot_current_step_from_progress_cache":
+        return {"api": "data/flow-data/cache/lot_progress/lot_wf_current.parquet", "handler": "_handle_current_step_from_progress_cache"}
+    if name in {"query_splittable_view", "query_wafer_split_at_step"}:
+        return {"api": "/api/splittable/view", "handler": "routers.splittable.view_split"}
+    if name == "query_lot_knobs_from_ml_table":
+        return {"api": "data/flow-data/splittable/match_cache/ML_TABLE_<product>.parquet", "handler": "_handle_knob_query"}
+    if name == "find_lots_by_knob_value":
+        return {"api": "ML_TABLE + latest progress cache", "handler": "_handle_find_lots_by_knob_value"}
+    if name == "register_inform_log":
+        return {"api": "/api/informs", "handler": "_handle_flowi_register_inform_log"}
+    if name == "query_tracker_lot_purpose":
+        return {"api": "/api/tracker/issues", "handler": "_handle_tracker_lot_purpose_lookup"}
+    if name == "build_dashboard_metric_chart":
+        return {"api": "/api/dashboard/chart", "handler": "_handle_dashboard_chart_plan"}
+    return {"api": feature or "local handler", "handler": name}
+
+
+def _flowi_driver_contract_action(action: str = "", intent: str = "", feature: str = "") -> str:
+    """Map internal Flow-i handlers to the Agent Driver Contract action keys."""
+    name = str(action or "")
+    intent = str(intent or "")
+    feature = str(feature or "")
+    if name in {"query_current_fab_lot_from_fab_db", "query_lot_current_step_from_progress_cache"}:
+        return "filebrowser.lot_progress.latest"
+    if name == "preview_filebrowser_data":
+        return "filebrowser.preview"
+    if name == "search_filebrowser_schema":
+        return "filebrowser.preview"
+    if name in {"query_splittable_view", "query_wafer_split_at_step"}:
+        return "splittable.view"
+    if name == "query_lot_knobs_from_ml_table":
+        return "splittable.knob.summary"
+    if name == "preview_splittable_plan_update":
+        return "splittable.plan.compare"
+    if name == "register_inform_log":
+        return "inform.draft.start"
+    if name == "register_inform_walkthrough":
+        return "inform.draft.start"
+    if name == "compose_inform_module_mail":
+        return "inform.draft.resolve"
+    if name == "summarize_inform_modules":
+        return "inform.thread.list"
+    if feature in {"filebrowser", "splittable", "inform"} and intent:
+        return f"{feature}.{intent}".replace("_", ".")
+    return name or intent or "general"
+
+
+def _flowi_orchestrator_activation_preview(prompt: str, product: str = "", max_rows: int = 12) -> dict[str, Any]:
+    preview = _structure_flowi_function_call(prompt, product=product, max_rows=max_rows)
+    selected = preview.get("selected_function") if isinstance(preview.get("selected_function"), dict) else {}
+    function = (preview.get("function_call") or {}).get("function") if isinstance(preview.get("function_call"), dict) else {}
+    args = function.get("arguments") if isinstance(function, dict) else {}
+    args = args if isinstance(args, dict) else {}
+    validation = preview.get("validation") if isinstance(preview.get("validation"), dict) else {}
+    missing = validation.get("missing") if isinstance(validation.get("missing"), list) else []
+    action = str(selected.get("name") or (function.get("name") if isinstance(function, dict) else "") or "")
+    feature = _flowi_feature_for_function(action, selected)
+    unit_action = _flowi_driver_contract_action(action, str(selected.get("intent") or ""), feature)
+    target = _flowi_api_target_for_function(action, feature)
+    if selected.get("requires_confirmation"):
+        status = "awaiting_confirmation"
+    elif missing:
+        status = "needs_input"
+    else:
+        status = "ready"
+    candidates = []
+    for entry in preview.get("feature_candidates") or []:
+        if not isinstance(entry, dict) or not entry.get("key"):
+            continue
+        candidates.append({
+            "key": entry.get("key"),
+            "title": entry.get("title") or entry.get("key"),
+            "active": entry.get("key") == feature,
+        })
+    if feature and not any(c.get("key") == feature for c in candidates):
+        candidates.insert(0, {"key": feature, "title": feature, "active": True})
+    return {
+        "prompt": preview.get("prompt") or str(prompt or ""),
+        "intent": selected.get("intent") or action or "general",
+        "feature": feature or "general",
+        "action": unit_action or action or "general",
+        "handler_action": action or "",
+        "unit_action": unit_action,
+        "api": target.get("api") or "",
+        "handler": target.get("handler") or "",
+        "status": status,
+        "missing": missing,
+        "requires_confirmation": bool(selected.get("requires_confirmation")),
+        "side_effect": selected.get("side_effect") or "none",
+        "confidence": selected.get("confidence"),
+        "reason": selected.get("reason") or "",
+        "arguments": {
+            "product": args.get("product") or "",
+            "root_lot_ids": args.get("root_lot_ids") or [],
+            "fab_lot_ids": args.get("fab_lot_ids") or [],
+            "wafer_ids": args.get("wafer_ids") or [],
+            "step": args.get("step") or "",
+            "module": args.get("module") or "",
+            "knob_value": args.get("knob_value") or "",
+        },
+        "candidates": candidates[:4],
+    }
+
+
+def _flowi_orchestrator_activation_previews(prompts: list[str], product: str = "", max_rows: int = 12) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in prompts:
+        prompt = str(raw or "").strip()
+        if not prompt or prompt in seen:
+            continue
+        seen.add(prompt)
+        try:
+            row = _flowi_orchestrator_activation_preview(prompt, product=product, max_rows=max_rows)
+        except Exception as e:
+            row = {
+                "prompt": prompt,
+                "intent": "preview_error",
+                "feature": "flowi",
+                "action": "orchestrator_preview",
+                "unit_action": "flowi.orchestrator.preview",
+                "api": "",
+                "handler": "",
+                "status": "error",
+                "missing": [],
+                "requires_confirmation": False,
+                "side_effect": "none",
+                "confidence": None,
+                "reason": str(e),
+                "arguments": {},
+                "candidates": [],
+            }
+        rows.append(row)
+        if len(rows) >= 12:
+            break
+    return rows
 
 
 def _fab_files(product: str = "") -> list[Path]:
@@ -6047,34 +6397,49 @@ def _flowi_exact_lot_scope_expr(cols: list[str], root_lots: list[str], fab_lots:
 def _handle_current_fab_lot_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     if not _is_current_fab_lot_prompt(prompt):
         return {"handled": False}
+    action = "query_current_fab_lot_from_fab_db"
     lots = _lot_tokens(prompt)
     classified = _classified_lot_tokens(prompt)
     roots = [str(x) for x in classified.get("root_lot_ids") or []]
     fabs = [str(x) for x in classified.get("fab_lot_ids") or []]
+    wafers = _wafer_tokens(prompt)
     product_hint, candidate_tool = _product_or_candidate_tool(
         prompt, product, lots, kinds=("FAB",), intent="current_fab_lot_lookup"
     )
+    slots = {
+        "product": product_hint,
+        "root_lot_ids": roots,
+        "fab_lot_ids": fabs,
+        "lot_ids": lots,
+        "wafer_ids": wafers,
+    }
     if candidate_tool:
+        candidate_tool.setdefault("action", action)
+        candidate_tool.setdefault("slots", slots)
         return candidate_tool
     if not product_hint:
         return {
             "handled": True,
             "intent": "current_fab_lot_lookup",
-            "action": "collect_required_fields",
+            "action": action,
             "answer": "현재 fab_lot_id를 FAB DB에서 찾으려면 product가 필요합니다. 예: `PRODA A1000 #6 현재 fab lot id가 뭐야?`",
             "missing": ["product"],
+            "slots": slots,
             "feature": "filebrowser",
         }
     files = _fab_files(product_hint)
+    slots["product"] = product_hint
     if not files:
         return {
             "handled": True,
             "intent": "current_fab_lot_lookup",
+            "action": action,
             "answer": f"{product_hint} FAB parquet을 찾지 못했습니다. DB root와 product명을 확인해주세요.",
             "table": {"kind": "current_fab_lot_lookup", "title": "Current FAB lot", "placement": "below", "columns": _table_columns(["message"]), "rows": [{"message": "FAB not found"}], "total": 0},
+            "slots": slots,
+            "filters": {"product": product_hint, "root_lot_ids": roots, "fab_lot_ids": fabs, "lots": lots, "wafers": wafers, "source": "FAB"},
             "feature": "filebrowser",
         }
-    wafers = _wafer_tokens(prompt)
     try:
         lf = _scan_parquet(files)
         cols = _schema_names(lf)
@@ -6087,7 +6452,15 @@ def _handle_current_fab_lot_lookup(prompt: str, product: str, max_rows: int) -> 
         process_col = _ci_col(cols, "process_id", "PROCESS_ID")
         time_col = _ci_col(cols, "tkout_time", "TKOUT_TIME", "time", "TIME", "timestamp", "TIMESTAMP", "move_time", "MOVE_TIME", "updated_at", "UPDATED_AT")
         if not fab_col or not (root_col or lot_col):
-            return {"handled": True, "intent": "current_fab_lot_lookup", "answer": "FAB 데이터에서 root_lot_id/lot_id/fab_lot_id 컬럼을 찾지 못했습니다.", "feature": "filebrowser"}
+            return {
+                "handled": True,
+                "intent": "current_fab_lot_lookup",
+                "action": action,
+                "answer": "FAB 데이터에서 root_lot_id/lot_id/fab_lot_id 컬럼을 찾지 못했습니다.",
+                "slots": slots,
+                "filters": {"product": product_hint, "root_lot_ids": roots, "fab_lot_ids": fabs, "lots": lots, "wafers": wafers, "source": "FAB"},
+                "feature": "filebrowser",
+            }
         aliases = _product_aliases(product_hint)
         if aliases and product_col:
             lf = lf.filter(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
@@ -6114,16 +6487,26 @@ def _handle_current_fab_lot_lookup(prompt: str, product: str, max_rows: int) -> 
         ]
         df = lf.select(exprs).drop_nulls(subset=["fab_lot_id"]).limit(50000).collect()
     except Exception as e:
-        return {"handled": True, "intent": "current_fab_lot_lookup", "answer": f"FAB DB fab_lot_id 조회 실패: {e}", "feature": "filebrowser"}
+        return {
+            "handled": True,
+            "intent": "current_fab_lot_lookup",
+            "action": action,
+            "answer": f"FAB DB fab_lot_id 조회 실패: {e}",
+            "slots": slots,
+            "filters": {"product": product_hint, "root_lot_ids": roots, "fab_lot_ids": fabs, "lots": lots, "wafers": wafers, "source": "FAB"},
+            "feature": "filebrowser",
+        }
     rows_all = [r for r in df.to_dicts() if _text(r.get("fab_lot_id"))]
     if not rows_all:
         wafer_text = f" wafer #{', #'.join(wafers)}" if wafers else ""
         return {
             "handled": True,
             "intent": "current_fab_lot_lookup",
+            "action": action,
             "answer": f"{product_hint} {', '.join(lots)}{wafer_text}에 해당하는 FAB row를 찾지 못했습니다.",
             "table": {"kind": "current_fab_lot_lookup", "title": "Current FAB lot", "placement": "below", "columns": _table_columns(["message"]), "rows": [{"message": "No FAB row matched"}], "total": 0},
             "filters": {"product": product_hint, "lots": lots, "wafers": wafers},
+            "slots": slots,
             "feature": "filebrowser",
         }
     def sort_key(row: dict[str, Any]):
@@ -6152,12 +6535,235 @@ def _handle_current_fab_lot_lookup(prompt: str, product: str, max_rows: int) -> 
     return {
         "handled": True,
         "intent": "current_fab_lot_lookup",
-        "action": "query_current_fab_lot_from_fab_db",
+        "action": action,
         "answer": answer,
         "table": {"kind": "current_fab_lot_lookup", "title": "Current FAB lot", "placement": "below", "columns": _table_columns(cols_out), "rows": rows, "total": len(rows_all)},
         "filters": {"product": product_hint, "root_lot_ids": roots, "fab_lot_ids": fabs, "lots": lots, "wafers": wafers, "source": "FAB", "latest_order": "tkout_time desc"},
+        "slots": slots,
         "feature": "filebrowser",
     }
+
+
+def _flowi_latest_progress_cache_row(
+    *,
+    product: str = "",
+    root_lot_id: str = "",
+    lot_id: str = "",
+    wafer_id: str = "",
+    lot_wf: str = "",
+) -> dict[str, Any]:
+    try:
+        from core.lot_progress_cache import lot_progress_snapshot
+        snapshot = lot_progress_snapshot(
+            product=product or "",
+            root_lot_id=root_lot_id or "",
+            lot_id=lot_id or "",
+            wafer_id=wafer_id or "",
+            lot_wf=lot_wf or "",
+            max_age_seconds=365 * 24 * 60 * 60,
+        )
+    except Exception:
+        return {}
+    if not isinstance(snapshot, dict) or not (snapshot.get("cache") or {}).get("hit"):
+        return {}
+    fab = snapshot.get("fab") if isinstance(snapshot.get("fab"), dict) else {}
+    if not fab:
+        return {}
+    root = _text(fab.get("root_lot_id") or root_lot_id)
+    wafer = _normalize_wafer_id(fab.get("wafer_id") or wafer_id) or _text(fab.get("wafer_id") or wafer_id)
+    step_id = _text(fab.get("step_id") or fab.get("current_step") or "")
+    function_step = _text(fab.get("function_step") or fab.get("func_step") or fab.get("current_function_step") or "")
+    row = {
+        "product": _text(fab.get("product") or product),
+        "root_lot_id": root,
+        "wafer_id": wafer,
+        "lot_wf": _text(fab.get("lot_wf") or lot_wf or _flowi_lot_wf_id(root, wafer)),
+        "lot_id": _text(fab.get("lot_id") or lot_id),
+        "fab_lot_id": _text(fab.get("fab_lot_id") or fab.get("lot_id") or lot_id),
+        "step_id": step_id,
+        "function_step": function_step,
+        "func_step": function_step,
+        "update_time": _text(fab.get("update_time") or fab.get("time") or fab.get("tkout_time") or fab.get("tkin_time")),
+        "cache_source": _text(fab.get("cache_source") or (snapshot.get("cache") or {}).get("source") or "filebrowser_latest"),
+        "source_root": _text((snapshot.get("cache") or {}).get("source_root") or fab.get("source_root")),
+        "step_rank": _step_rank_key(step_id),
+    }
+    return row
+
+
+def _flowi_progress_for_lot_rows(product: str, rows: list[dict[str, Any]], *, limit: int = 500) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    roots_needing_fallback: list[str] = []
+    for row in rows[:max(1, min(limit, 2000))]:
+        root = _text(row.get("root_lot_id"))
+        wafer = _normalize_wafer_id(row.get("wafer_id")) or _text(row.get("wafer_id"))
+        lot_wf = _text(row.get("lot_wf") or _flowi_lot_wf_id(root, wafer))
+        hit = _flowi_latest_progress_cache_row(
+            product=product or row.get("product") or "",
+            root_lot_id=root,
+            lot_id=row.get("fab_lot_id") or row.get("lot_id") or "",
+            wafer_id=wafer,
+            lot_wf=lot_wf,
+        )
+        if hit:
+            out[lot_wf or f"{root}_{wafer}"] = hit
+            continue
+        if root:
+            roots_needing_fallback.append(root)
+    missing_roots = [r for r in dict.fromkeys(roots_needing_fallback) if r]
+    if missing_roots:
+        fallback = _latest_fab_steps_for_roots(product, missing_roots, limit=limit)
+        for row in rows:
+            root = _text(row.get("root_lot_id"))
+            wafer = _normalize_wafer_id(row.get("wafer_id")) or _text(row.get("wafer_id"))
+            lot_wf = _text(row.get("lot_wf") or _flowi_lot_wf_id(root, wafer))
+            if lot_wf in out or root not in fallback:
+                continue
+            fab = fallback.get(root) or {}
+            function_step = _text(fab.get("func_step") or fab.get("function_step") or "")
+            out[lot_wf] = {
+                "product": fab.get("product") or product or row.get("product") or "",
+                "root_lot_id": root,
+                "wafer_id": _normalize_wafer_id(fab.get("wafer_id") or wafer) or _text(fab.get("wafer_id") or wafer),
+                "lot_wf": lot_wf,
+                "lot_id": fab.get("lot_id") or row.get("lot_id") or "",
+                "fab_lot_id": fab.get("fab_lot_id") or row.get("fab_lot_id") or row.get("lot_id") or "",
+                "step_id": fab.get("step_id") or "",
+                "function_step": function_step,
+                "func_step": function_step,
+                "update_time": fab.get("time") or "",
+                "cache_source": "fab_scan_fallback",
+                "step_rank": fab.get("step_rank") or _step_rank_key(fab.get("step_id")),
+            }
+    return out
+
+
+def _handle_current_step_from_progress_cache(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    if not _flowi_current_step_prompt(prompt):
+        return {"handled": False}
+    preview = _structure_flowi_function_call(prompt, product=product, max_rows=max_rows)
+    if ((preview.get("selected_function") or {}).get("name") != "query_lot_current_step_from_progress_cache"):
+        return {"handled": False}
+    args = ((preview.get("function_call") or {}).get("function") or {}).get("arguments") or {}
+    roots = [str(x).strip() for x in (args.get("root_lot_ids") or []) if str(x).strip()]
+    fabs = [str(x).strip() for x in (args.get("fab_lot_ids") or []) if str(x).strip()]
+    lots = [str(x).strip() for x in (args.get("lot_ids") or []) if str(x).strip()]
+    wafers = [str(x).strip() for x in (args.get("wafer_ids") or []) if str(x).strip()]
+    product_hint = str(args.get("product") or product or "").strip()
+    lookup_lot = fabs[0] if fabs else next((x for x in lots if "." in x), "")
+    root = roots[0] if roots else (_flowi_root_from_fab_lot(lookup_lot) if lookup_lot else (lots[0] if lots else ""))
+    wafer = wafers[0] if wafers else ""
+    row = _flowi_latest_progress_cache_row(
+        product=product_hint,
+        root_lot_id=root,
+        lot_id=lookup_lot,
+        wafer_id=wafer,
+        lot_wf=_flowi_lot_wf_id(root, wafer),
+    )
+    cols_out = ["product", "root_lot_id", "wafer_id", "lot_wf", "lot_id", "fab_lot_id", "step_id", "function_step", "update_time", "cache_source"]
+    if not row:
+        target = lookup_lot or root or (lots[0] if lots else "")
+        wf_text = f" #{wafer}" if wafer else ""
+        return {
+            "handled": True,
+            "intent": "lot_current_step_lookup",
+            "action": "query_lot_current_step_from_progress_cache",
+            "answer": f"{target}{wf_text}는 FileBrowser latest progress cache에서 현재 step을 찾지 못했습니다.",
+            "feature": "filebrowser",
+            "table": {"kind": "lot_current_step_lookup", "title": "Current lot step", "placement": "below", "columns": _table_columns(cols_out), "rows": [], "total": 0, "source": "filebrowser_latest"},
+            "filters": {"product": product_hint, "root_lot_ids": roots, "fab_lot_ids": fabs, "wafer_ids": wafers, "source": "filebrowser_latest"},
+        }
+    answer = (
+        f"{row.get('root_lot_id') or root} #{row.get('wafer_id') or wafer} 현재 step은 "
+        f"step_id={row.get('step_id') or '-'}"
+        f"{(' / function_step=' + row.get('function_step')) if row.get('function_step') else ''} 입니다."
+    )
+    if row.get("update_time"):
+        answer += f" 최신 cache 시간: {row.get('update_time')}."
+    return _flowi_set_inline_type({
+        "handled": True,
+        "intent": "lot_current_step_lookup",
+        "action": "query_lot_current_step_from_progress_cache",
+        "answer": answer,
+        "feature": "filebrowser",
+        "lot_list": [{
+            "product": row.get("product") or product_hint,
+            "root_lot": row.get("root_lot_id") or "",
+            "fab_lot": row.get("fab_lot_id") or row.get("lot_id") or "",
+            "wafer": row.get("wafer_id") or "",
+            "current_step": row.get("step_id") or "",
+            "current_function_step": row.get("function_step") or "",
+            "tkout_time": row.get("update_time") or "",
+        }],
+        "table": {"kind": "lot_current_step_lookup", "title": "Current lot step", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: row.get(k, "") for k in cols_out}], "total": 1, "source": "filebrowser_latest"},
+        "filters": {"product": product_hint, "root_lot_ids": roots, "fab_lot_ids": fabs, "wafer_ids": wafers, "lot_wf_ids": args.get("lot_wf_ids") or [], "source": "filebrowser_latest"},
+    }, "lot_list", prompt=prompt)
+
+
+def _handle_tracker_lot_purpose_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    if not _flowi_tracker_lot_purpose_prompt(prompt):
+        return {"handled": False}
+    preview = _structure_flowi_function_call(prompt, product=product, max_rows=max_rows)
+    if ((preview.get("selected_function") or {}).get("name") != "query_tracker_lot_purpose"):
+        return {"handled": False}
+    args = ((preview.get("function_call") or {}).get("function") or {}).get("arguments") or {}
+    lots = [str(x).strip() for x in (args.get("fab_lot_ids") or args.get("lot_ids") or args.get("root_lot_ids") or []) if str(x).strip()]
+    target = lots[0] if lots else ""
+    target_u = _upper(target)
+    root = _flowi_root_from_fab_lot(target) or (target if _is_root_lot_token(target) else "")
+    rows: list[dict[str, Any]] = []
+    try:
+        from routers import tracker as tracker_router
+        issues = tracker_router._load()
+    except Exception:
+        issues = []
+    for issue in issues or []:
+        if not isinstance(issue, dict):
+            continue
+        for lot in issue.get("lots") or []:
+            if not isinstance(lot, dict):
+                continue
+            candidates = {
+                _upper(lot.get("lot_id")),
+                _upper(lot.get("fab_lot_id")),
+                _upper(lot.get("root_lot_id")),
+            }
+            exact = bool(target_u and target_u in candidates)
+            root_match = bool(root and not exact and _upper(lot.get("root_lot_id")) == _upper(root) and "." not in target)
+            if not (exact or root_match):
+                continue
+            purpose = _text(lot.get("purpose"))
+            if not purpose:
+                continue
+            rows.append({
+                "issue_id": issue.get("id") or "",
+                "title": issue.get("title") or "",
+                "status": issue.get("status") or "",
+                "category": issue.get("category") or "",
+                "root_lot_id": lot.get("root_lot_id") or "",
+                "lot_id": lot.get("lot_id") or "",
+                "fab_lot_id": lot.get("fab_lot_id") or "",
+                "wafer_id": lot.get("wafer_id") or "",
+                "purpose": purpose,
+                "progress_note": lot.get("progress_note") or "",
+            })
+    limit = max(1, min(80, int(max_rows or 12) * 4))
+    cols_out = ["issue_id", "title", "status", "category", "root_lot_id", "lot_id", "fab_lot_id", "wafer_id", "purpose", "progress_note"]
+    if not rows:
+        answer = f"{target or '해당 lot'}은 이슈추적에서 목적이 보이지 않습니다."
+    elif len(rows) == 1:
+        answer = f"{target or rows[0].get('lot_id') or rows[0].get('root_lot_id')}은 이슈추적 기준 `{rows[0].get('purpose')}` 목적입니다."
+    else:
+        answer = f"{target or '해당 lot'}은 이슈추적에 목적이 {len(rows)}개 있어 확인이 필요합니다."
+    return _flowi_set_inline_type({
+        "handled": True,
+        "intent": "tracker_lot_purpose_lookup",
+        "action": "query_tracker_lot_purpose",
+        "answer": answer,
+        "feature": "tracker",
+        "table": {"kind": "tracker_lot_purpose_lookup", "title": "Tracker lot purpose", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:limit]], "total": len(rows)},
+        "filters": {"lot_ids": lots, "root_lot_id": root, "source": "tracker.issues"},
+    }, "table", prompt=prompt)
 
 
 def _resolve_products_for_lots(lots: list[str], *, kinds: tuple[str, ...] = ("FAB", "ET", "INLINE", "ML_TABLE"), limit: int = 12) -> list[dict[str, Any]]:
@@ -8961,6 +9567,7 @@ def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict
     lot_col = _ci_col(cols, "lot_id", "LOT_ID")
     fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
     wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+    lot_wf_col = _ci_col(cols, "lot_wf", "LOT_WF")
     if not root_col:
         return {"handled": True, "intent": "knob_fastest_lot", "answer": "ML_TABLE에 root_lot_id 컬럼이 없어 FAB 진행 위치를 연결할 수 없습니다."}
     knob_cols = [c for c in cols if _upper(c).startswith("KNOB_")]
@@ -8978,6 +9585,10 @@ def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict
             filters.append(lot_expr)
     for expr in filters:
         lf = lf.filter(expr)
+    step = _flowi_func_step_token(prompt)
+    step_expr = _flowi_step_filter_expr(cols, step)
+    if step_expr is not None:
+        lf = lf.filter(step_expr)
 
     terms = _flowi_knob_query_terms(prompt, lots, [])
     if not terms:
@@ -9025,9 +9636,12 @@ def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict
             & (pl.col(knob_col).cast(_STR, strict=False).str.strip_chars() != "")
             & (~pl.col(knob_col).cast(_STR, strict=False).is_in(["None", "null"]))
         )
-    keep = [c for c in (product_col, root_col, lot_col, fab_col, wafer_col, knob_col) if c]
+    keep = [c for c in (product_col, root_col, lot_col, fab_col, wafer_col, lot_wf_col, knob_col) if c]
     try:
-        df = scoped.select([pl.col(c).cast(_STR, strict=False).alias(c) for c in keep]).limit(5000).collect()
+        exprs = [pl.col(c).cast(_STR, strict=False).alias(c) for c in keep]
+        if not lot_wf_col and root_col and wafer_col:
+            exprs.append(_lot_wf_expr(root_col, wafer_col).alias("lot_wf"))
+        df = scoped.select(exprs).limit(5000).collect()
     except Exception as e:
         logger.warning("flowi fastest knob ML scan failed: %s", e)
         return {"handled": True, "intent": "knob_fastest_lot", "answer": f"ML_TABLE KNOB 조회 실패: {e}"}
@@ -9050,9 +9664,14 @@ def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict
         root = _text(row.get(root_col))
         if not root:
             continue
-        rec = grouped.setdefault(root, {
+        wafer = _normalize_wafer_id(row.get(wafer_col)) if wafer_col else ""
+        lot_wf = _text(row.get(lot_wf_col)) if lot_wf_col else _text(row.get("lot_wf") or _flowi_lot_wf_id(root, wafer))
+        key = lot_wf or f"{root}_{wafer}"
+        rec = grouped.setdefault(key, {
             "product": _text(row.get(product_col)) or _core_product_name(product),
             "root_lot_id": root,
+            "wafer_id": wafer,
+            "lot_wf": lot_wf,
             "lot_id": _text(row.get(lot_col)),
             "fab_lot_id": _text(row.get(fab_col)),
             "knob": knob_col,
@@ -9068,21 +9687,23 @@ def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict
             rec["lot_id"] = _text(row.get(lot_col))
         if not rec.get("fab_lot_id") and _text(row.get(fab_col)):
             rec["fab_lot_id"] = _text(row.get(fab_col))
-    roots = list(grouped.keys())[:200]
-    fab_steps = _latest_fab_steps_for_roots(product or (next(iter(grouped.values())).get("product") or ""), roots, limit=300)
+    progress_rows = list(grouped.values())
+    progress_product = product or (next(iter(grouped.values())).get("product") or "")
+    progress_by_lot_wf = _flowi_progress_for_lot_rows(progress_product, progress_rows, limit=300)
     rows = []
-    for root, rec in grouped.items():
-        fab = fab_steps.get(root) or {}
+    for lot_wf, rec in grouped.items():
+        fab = progress_by_lot_wf.get(lot_wf) or {}
         wafers = sorted(rec.pop("wafers"), key=lambda x: (len(x), x))
         row = {
             **rec,
             "wafer_ids": ",".join(wafers[:12]),
             "current_step_id": fab.get("step_id") or "",
-            "func_step": fab.get("func_step") or "",
+            "func_step": fab.get("function_step") or fab.get("func_step") or "",
             "fab_lot_current": fab.get("fab_lot_id") or rec.get("fab_lot_id") or "",
             "current_lot_id": fab.get("lot_id") or rec.get("lot_id") or "",
             "current_wafer_id": fab.get("wafer_id") or "",
-            "tkout_time": fab.get("time") or "",
+            "tkout_time": fab.get("update_time") or "",
+            "progress_source": fab.get("cache_source") or "",
             "_rank": fab.get("step_rank") or (-1,),
         }
         rows.append(row)
@@ -9091,8 +9712,8 @@ def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict
         row.pop("_rank", None)
     shown = rows[:max(1, min(40, max_rows))]
     cols_out = [
-        "product", "root_lot_id", "knob", "knob_value", "wafer_count",
-        "current_step_id", "func_step", "fab_lot_current", "current_lot_id", "tkout_time",
+        "product", "root_lot_id", "wafer_id", "lot_wf", "knob", "knob_value", "wafer_count",
+        "current_step_id", "func_step", "fab_lot_current", "current_lot_id", "tkout_time", "progress_source",
     ]
     top = shown[0] if shown else {}
     answer = (
@@ -9107,6 +9728,7 @@ def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict
         "intent": "knob_fastest_lot",
         "action": "query_knob_fastest_fab_step",
         "answer": answer,
+        "feature": "splittable",
         "table": {
             "kind": "knob_fastest_lot",
             "title": f"{knob_col} fastest FAB step",
@@ -9115,7 +9737,7 @@ def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict
             "rows": [{k: row.get(k, "") for k in cols_out} for row in shown],
             "total": len(rows),
         },
-        "filters": {"product": sorted(aliases), "lot": lots, "knob": knob_col, "values": value_filter, "knob_candidates": knob_candidates[:12]},
+        "filters": {"product": sorted(aliases), "lot": lots, "step": step, "knob": knob_col, "values": value_filter, "knob_candidates": knob_candidates[:12], "source": "ML_TABLE+filebrowser_latest_progress"},
     }
 
 
@@ -11178,6 +11800,52 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
             "values": [{"value": r.get("value"), "count": int(r.get("len") or 0), "wafers": wafer_by_value.get(_text(r.get("value")), [])} for r in values[:5]],
         })
 
+    custom_set_rows: list[dict[str, Any]] = []
+    custom_set_columns: list[dict[str, str]] = []
+    table_knobs_for_sets = selected_knobs[: max(1, min(8, max_rows))]
+    if wafer_col and table_knobs_for_sets:
+        display_names = [col.replace("KNOB_", "", 1) for col in table_knobs_for_sets]
+        grouped: dict[tuple[str, ...], list[str]] = {}
+        for row in df.select([wafer_col, *table_knobs_for_sets]).to_dicts():
+            wafer = _normalize_wafer_id(row.get(wafer_col)) or _text(row.get(wafer_col))
+            if not wafer:
+                continue
+            signature = tuple(_text(row.get(col)) for col in table_knobs_for_sets)
+            grouped.setdefault(signature, []).append(wafer)
+        def first_wafer(items: list[str]) -> int:
+            nums = [int(w) for w in items if str(w).isdigit()]
+            return min(nums) if nums else 999
+        ordered_groups = sorted(grouped.items(), key=lambda kv: (first_wafer(kv[1]), kv[0]))
+        for idx, (signature, wafers_for_set) in enumerate(ordered_groups, start=1):
+            wafers_sorted = sorted(set(wafers_for_set), key=lambda w: int(w) if str(w).isdigit() else 999)
+            row = {
+                "custom_set": f"custom_set_{idx}",
+                "wafer_count": len(wafers_sorted),
+                "wafer_ids": ", ".join(f"#{w}" for w in wafers_sorted),
+                "knob_signature": ", ".join(
+                    f"{name}={value or '(empty)'}"
+                    for name, value in zip(display_names, signature)
+                ),
+            }
+            for name, value in zip(display_names, signature):
+                row[name] = value or "(empty)"
+            custom_set_rows.append(row)
+        custom_set_columns = [
+            {"key": "custom_set", "label": "CUSTOM_SET"},
+            {"key": "wafer_count", "label": "WF_COUNT"},
+            {"key": "wafer_ids", "label": "WAFERS"},
+            *({"key": name, "label": name} for name in display_names),
+            {"key": "knob_signature", "label": "KNOB_SIGNATURE"},
+        ]
+    custom_set_table = {
+        "kind": "custom_set_preview",
+        "title": f"{', '.join(lot_matches)} KNOB custom sets",
+        "placement": "below",
+        "columns": custom_set_columns,
+        "rows": custom_set_rows,
+        "total": len(custom_set_rows),
+    } if custom_set_rows else None
+
     lot_label = ", ".join(lot_matches)
     preview = summaries[:max_rows]
     lines = []
@@ -11188,6 +11856,18 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
         )
         lines.append(f"- {item.get('display_name')}: {val_txt}")
     answer = f"{lot_label} KNOB 요약입니다. {df.height} wafer row 기준, {len(summaries)}개 KNOB 중 {len(preview)}개를 표시합니다.\n" + "\n".join(lines)
+    prefer_custom_set = bool(custom_set_table) and not highlight and any(t in prompt for t in ("구성", "커스텀", "세트", "custom", "set", "어떻게"))
+    if prefer_custom_set:
+        set_lines = [
+            f"- {row.get('custom_set')}: {row.get('knob_signature')} / {row.get('wafer_ids')}"
+            for row in custom_set_rows[:max(1, min(6, max_rows))]
+        ]
+        answer = (
+            f"{lot_label} KNOB 구성은 custom set 기준으로 보는 것이 가장 좋습니다. "
+            f"{df.height} wafer row를 {len(custom_set_rows)}개 custom set으로 묶었습니다.\n"
+            + "\n".join(set_lines)
+        )
+    primary_table = custom_set_table if prefer_custom_set else table
     return _flowi_set_inline_type({
         "handled": True,
         "intent": "lot_knobs",
@@ -11195,8 +11875,10 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
         "answer": answer,
         "feature": "splittable",
         "knobs": summaries,
+        "custom_sets": custom_set_rows,
         "highlight": highlight,
-        "table": table,
+        "table": primary_table,
+        "wafer_table": table if primary_table is custom_set_table else None,
         "filters": {"lot": lot_matches, "lot_scope": lot_scope_matches, "product": sorted(aliases), "step": step, "group": group, "source": "ML_TABLE"},
     }, "table", prompt=prompt, highlight=highlight)
 
@@ -11733,11 +12415,26 @@ def _handle_fab_progress_query(prompt: str, product: str, max_rows: int) -> dict
     }, "lot_list", prompt=prompt)
 
 
-def _flowi_splittable_view_to_inline(view: dict[str, Any], *, step: str = "", max_rows: int = 12) -> tuple[dict[str, Any], dict[str, Any]]:
+def _flowi_splittable_prefixes_from_args(args: dict[str, Any], prompt: str) -> list[str]:
+    group = str(args.get("group") or _flowi_group_token(prompt) or "").strip().upper()
+    if group in {"KNOB", "MASK", "FAB", "INLINE", "VM"}:
+        return [group]
+    return ["KNOB", "MASK", "FAB"]
+
+
+def _flowi_splittable_view_to_inline(
+    view: dict[str, Any],
+    *,
+    step: str = "",
+    max_rows: int = 12,
+    prefixes: list[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     headers = [str(h) for h in (view.get("headers") or [])]
     raw_rows = view.get("rows") if isinstance(view.get("rows"), list) else []
     step_u = _upper(step)
-    wanted_prefixes = ("KNOB_", "MASK_", "FAB_")
+    normalized_prefixes = [str(p or "").strip().upper() for p in (prefixes or ["KNOB", "MASK", "FAB"]) if str(p or "").strip()]
+    wanted_prefixes = tuple(f"{p}_" for p in normalized_prefixes) or ("KNOB_", "MASK_", "FAB_")
+    row_label = "/".join(normalized_prefixes) if normalized_prefixes else "KNOB/MASK/FAB"
 
     def row_text(row: dict[str, Any]) -> str:
         return _upper(" ".join([
@@ -11797,7 +12494,7 @@ def _flowi_splittable_view_to_inline(view: dict[str, Any], *, step: str = "", ma
         "wafer_fab_list": view.get("wafer_fab_list") or [],
         "rows": split_rows,
         "total": len(flat_rows) if flat_rows else sum(len(r.get("cells") or []) for r in split_rows),
-        "row_label": "KNOB/MASK/FAB",
+        "row_label": row_label,
         "source": "splittable.view",
         "lot_warn": view.get("lot_warn") or "",
         "available_fab_lots": view.get("available_fab_lots") or [],
@@ -11824,13 +12521,15 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
     product_for_view = _flowi_splittable_product_id(product_hint or args.get("product") or "")
     if not product_for_view:
         return {"handled": False}
+    prefixes = _flowi_splittable_prefixes_from_args(args, prompt)
+    prefix_filter = ",".join(prefixes)
     try:
         from routers import splittable as splittable_router
         view = splittable_router.view_split(
             product=product_for_view,
             root_lot_id=root,
             wafer_ids=wafer_ids,
-            prefix="KNOB,MASK,FAB",
+            prefix=prefix_filter,
             custom_name="",
             view_mode="all",
             history_mode="all",
@@ -11842,9 +12541,16 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
         return {"handled": False}
     if not isinstance(view, dict):
         return {"handled": False}
-    split_view, table = _flowi_splittable_view_to_inline(view, step=str(args.get("step") or ""), max_rows=max_rows)
+    split_view, table = _flowi_splittable_view_to_inline(
+        view,
+        step=str(args.get("step") or ""),
+        max_rows=max_rows,
+        prefixes=prefixes,
+    )
+    intent = "wafer_split_at_step" if args.get("step") else "splittable_view"
+    action = "query_wafer_split_at_step" if args.get("step") else "query_splittable_view"
     answer = (
-        f"{product_for_view} {view.get('root_lot_id') or root or fab} SplitTable 화면 기준으로 "
+        f"{product_for_view} {view.get('root_lot_id') or root or fab} SplitTable {prefix_filter} 기준으로 "
         f"{len(split_view.get('rows') or [])}개 row를 조회했습니다."
     )
     if not (split_view.get("rows") or []):
@@ -11853,8 +12559,8 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
         answer += f" {view.get('lot_warn')}"
     return _flowi_set_inline_type({
         "handled": True,
-        "intent": "wafer_split_at_step",
-        "action": "query_wafer_split_at_step",
+        "intent": intent,
+        "action": action,
         "answer": answer,
         "feature": "splittable",
         "split_view": split_view,
@@ -11865,6 +12571,7 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
             "fab_lot_ids": [fab] if fab else [],
             "wafer_ids": args.get("wafer_ids") or [],
             "step": args.get("step") or "",
+            "prefix": prefix_filter,
             "source": "splittable.view",
         },
         "splittable_view": view,
@@ -11873,7 +12580,7 @@ def _flowi_query_splittable_view_tool(args: dict[str, Any], product_hint: str, p
 
 def _handle_wafer_split_at_step(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     preview = _structure_flowi_function_call(prompt, product=product, max_rows=max_rows)
-    if ((preview.get("selected_function") or {}).get("name") != "query_wafer_split_at_step"):
+    if ((preview.get("selected_function") or {}).get("name") not in {"query_wafer_split_at_step", "query_splittable_view"}):
         return {"handled": False}
     args = ((preview.get("function_call") or {}).get("function") or {}).get("arguments") or {}
     missing = list((preview.get("validation") or {}).get("missing") or [])
@@ -11908,6 +12615,7 @@ def _handle_wafer_split_at_step(prompt: str, product: str, max_rows: int) -> dic
         lot_col = _ci_col(cols, "lot_id", "LOT_ID")
         fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
         wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+        lot_wf_col = _ci_col(cols, "lot_wf", "LOT_WF")
         if product_hint and product_col:
             lf = lf.filter(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(_product_aliases(product_hint))))
         lot_expr = _flowi_lot_filter_expr(cols, args.get("root_lot_ids") or [], args.get("fab_lot_ids") or [])
@@ -11989,6 +12697,7 @@ def _handle_find_lots_by_knob_value(prompt: str, product: str, max_rows: int) ->
         lot_col = _ci_col(cols, "lot_id", "LOT_ID")
         fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
         wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+        lot_wf_col = _ci_col(cols, "lot_wf", "LOT_WF")
         if product_hint and product_col:
             lf = lf.filter(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(_product_aliases(product_hint))))
         step_expr = _flowi_step_filter_expr(cols, str(args.get("step") or ""))
@@ -12002,8 +12711,11 @@ def _handle_find_lots_by_knob_value(prompt: str, product: str, max_rows: int) ->
         if expr is None:
             return {"handled": True, "intent": "knob_value_lot_search", "action": "find_lots_by_knob_value", "answer": "ML_TABLE에서 KNOB/MASK 컬럼을 찾지 못했습니다.", "feature": "splittable"}
         scoped = lf.filter(expr)
-        keep = [c for c in (product_col, root_col, lot_col, fab_col, wafer_col) if c] + knob_cols
-        df = scoped.select([pl.col(c).cast(_STR, strict=False).alias(c) for c in keep]).limit(10000).collect()
+        keep = [c for c in (product_col, root_col, lot_col, fab_col, wafer_col, lot_wf_col) if c] + knob_cols
+        exprs = [pl.col(c).cast(_STR, strict=False).alias(c) for c in keep]
+        if not lot_wf_col and root_col and wafer_col:
+            exprs.append(_lot_wf_expr(root_col, wafer_col).alias("lot_wf"))
+        df = scoped.select(exprs).limit(10000).collect()
     except Exception as e:
         return {"handled": True, "intent": "knob_value_lot_search", "action": "find_lots_by_knob_value", "answer": f"KNOB value 역검색 실패: {e}", "feature": "splittable"}
     grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -12013,6 +12725,7 @@ def _handle_find_lots_by_knob_value(prompt: str, product: str, max_rows: int) ->
                 continue
             root = _text(row.get(root_col)) if root_col else ""
             wafer = _text(row.get(wafer_col)) if wafer_col else ""
+            lot_wf = _text(row.get(lot_wf_col)) if lot_wf_col else _text(row.get("lot_wf") or _flowi_lot_wf_id(root, wafer))
             key = (root, wafer, col)
             grouped[key] = {
                 "product": _text(row.get(product_col)) if product_col else product_hint,
@@ -12020,28 +12733,46 @@ def _handle_find_lots_by_knob_value(prompt: str, product: str, max_rows: int) ->
                 "lot_id": _text(row.get(lot_col)) if lot_col else "",
                 "fab_lot_id": _text(row.get(fab_col)) if fab_col else "",
                 "wafer_id": wafer,
+                "lot_wf": lot_wf,
                 "step": args.get("step") or "",
                 "knob": col,
                 "knob_value": knob_value,
             }
     rows = list(grouped.values())
-    fab_steps = _latest_fab_steps_for_roots(product_hint, [r["root_lot_id"] for r in rows if r.get("root_lot_id")], limit=1000)
+    progress_by_lot_wf = _flowi_progress_for_lot_rows(product_hint, rows, limit=1000)
     for row in rows:
-        fab = fab_steps.get(row.get("root_lot_id")) or {}
+        lot_wf = row.get("lot_wf") or _flowi_lot_wf_id(row.get("root_lot_id"), row.get("wafer_id"))
+        fab = progress_by_lot_wf.get(lot_wf) or {}
+        row["lot_wf"] = lot_wf
         row["current_step"] = fab.get("step_id") or ""
-        row["current_func_step"] = fab.get("func_step") or ""
-        row["tkout_time"] = fab.get("time") or ""
-    rows.sort(key=lambda r: (_step_rank_key(r.get("current_step")), str(r.get("tkout_time") or "")), reverse=True)
+        row["current_func_step"] = fab.get("function_step") or fab.get("func_step") or ""
+        row["current_lot_id"] = fab.get("lot_id") or row.get("lot_id") or ""
+        row["current_fab_lot_id"] = fab.get("fab_lot_id") or row.get("fab_lot_id") or ""
+        row["tkout_time"] = fab.get("update_time") or ""
+        row["progress_source"] = fab.get("cache_source") or ""
+        row["_rank"] = fab.get("step_rank") or _step_rank_key(row.get("current_step"))
+    rows.sort(key=lambda r: (tuple(r.get("_rank") or (-1,)), str(r.get("tkout_time") or "")), reverse=True)
+    for row in rows:
+        row.pop("_rank", None)
     limit = max(1, min(100, int(args.get("limit") or max_rows or 10)))
-    cols_out = ["product", "root_lot_id", "lot_id", "fab_lot_id", "wafer_id", "step", "knob", "knob_value", "current_step", "current_func_step", "tkout_time"]
+    cols_out = ["product", "root_lot_id", "wafer_id", "lot_wf", "lot_id", "fab_lot_id", "step", "knob", "knob_value", "current_step", "current_func_step", "current_lot_id", "current_fab_lot_id", "tkout_time", "progress_source"]
     answer = f"{args.get('step')}에서 {knob_value} 값을 받은 lot/wafer {len(rows)}건을 FAB 진행 위치와 연결했습니다." if rows else f"{knob_value} 조건의 lot을 찾지 못했습니다."
+    if rows and any(t in str(prompt or "") for t in ("가장 빠", "제일 빠", "앞선")):
+        top = rows[0]
+        answer = (
+            f"{args.get('step')}에서 {knob_value} 값을 받은 WF 중 가장 앞선 후보는 "
+            f"{top.get('lot_wf') or '-'} / step_id={top.get('current_step') or '-'}"
+            f"{(' / function_step=' + top.get('current_func_step')) if top.get('current_func_step') else ''} 입니다."
+        )
     lot_list = [
         {
             "product": r.get("product") or product_hint,
             "root_lot": r.get("root_lot_id") or "",
             "fab_lot": r.get("fab_lot_id") or r.get("lot_id") or "",
             "wafer": r.get("wafer_id") or "",
+            "lot_wf": r.get("lot_wf") or "",
             "current_step": r.get("current_step") or r.get("current_func_step") or "",
+            "current_function_step": r.get("current_func_step") or "",
             "tkout_time": r.get("tkout_time") or "",
             "knob": r.get("knob") or "",
             "knob_value": r.get("knob_value") or knob_value,
@@ -12560,6 +13291,8 @@ def _flowi_inform_entry_preview(args: dict[str, Any], entry_args: dict[str, Any]
     split_set = str(entry_args.get("split_set") or args.get("split_set") or "").strip()
     note = str(entry_args.get("note") or args.get("note") or "").strip()
     reason = str(entry_args.get("reason") or args.get("reason") or split_set or "Flow-i 인폼").strip()
+    recipients = entry_args.get("recipients") if isinstance(entry_args.get("recipients"), list) else args.get("recipients")
+    recipients = [str(x).strip() for x in (recipients or []) if str(x).strip()]
     missing = []
     if not module:
         missing.append("module")
@@ -12573,6 +13306,7 @@ def _flowi_inform_entry_preview(args: dict[str, Any], entry_args: dict[str, Any]
         "split_set": split_set,
         "reason": reason,
         "note": note,
+        "recipients": recipients,
         "missing": missing,
     }
 
@@ -12580,12 +13314,16 @@ def _flowi_inform_entry_preview(args: dict[str, Any], entry_args: dict[str, Any]
 def _flowi_inform_lot_scopes(args: dict[str, Any]) -> list[dict[str, str]]:
     scopes: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
+    fab_values = [str(x).strip() for x in (args.get("fab_lot_ids") or []) if str(x).strip()]
+    fab_roots = {fab.split(".", 1)[0][:5] for fab in fab_values if fab}
     for root in [str(x).strip() for x in (args.get("root_lot_ids") or []) if str(x).strip()]:
+        if root in fab_roots:
+            continue
         key = (root, "")
         if key not in seen:
             seen.add(key)
             scopes.append({"root_lot_id": root, "fab_lot_id": ""})
-    for fab in [str(x).strip() for x in (args.get("fab_lot_ids") or []) if str(x).strip()]:
+    for fab in fab_values:
         root = fab.split(".", 1)[0][:5] if fab else ""
         key = (root, fab)
         if key not in seen:
@@ -12617,6 +13355,7 @@ def _flowi_save_inform_draft(args: dict[str, Any], entries: list[dict[str, Any]]
         "product": args.get("product") or "",
         "root_lot_ids": args.get("root_lot_ids") or [],
         "fab_lot_ids": args.get("fab_lot_ids") or [],
+        "recipients": args.get("recipients") or [],
         "entries": entries,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -12697,7 +13436,7 @@ def _flowi_confirm_inform_draft(draft_id: str, confirm: bool, me: dict[str, Any]
             "intent": "inform_log_confirm_blocked",
             "action": "confirm_inform_draft",
             "blocked": True,
-            "answer": "누락 항목이 있어 등록하지 않았습니다. module/split/note 선택지를 먼저 보완해 주세요.",
+            "answer": "누락 항목이 있어 등록하지 않았습니다. module/split/note/recipients 선택지를 먼저 보완해 주세요.",
             "feature": "inform",
             "draft_id": draft_id,
             "entries": state.get("entries") or [],
@@ -12769,7 +13508,7 @@ def _handle_flowi_register_inform_log(prompt: str, product: str, max_rows: int, 
         "created_at": datetime.now(timezone.utc).isoformat(),
         "fab_lot_id_at_save": first_entry.get("fab_lot_id") or "",
     }, username=me.get("username") or "user") if first_entry.get("module") else {}
-    cols_out = ["product", "root_lot_id", "fab_lot_id", "lot_id", "module", "split_set", "reason", "note", "missing"]
+    cols_out = ["product", "root_lot_id", "fab_lot_id", "lot_id", "module", "split_set", "reason", "note", "recipients", "missing"]
     confirm_payload = {"draft_id": draft.get("draft_id"), "confirm": True}
     cancel_payload = {"draft_id": draft.get("draft_id"), "confirm": False}
     missing_entry_count = sum(1 for e in entries if e.get("missing"))
@@ -13049,9 +13788,9 @@ def _flowi_context_prefers_splittable(agent_context: dict[str, Any] | None) -> b
         filters = msg.get("filters") if isinstance(msg.get("filters"), dict) else {}
         if feature == "splittable":
             score += 2
-        if action in {"query_wafer_split_at_step", "query_lot_knobs_from_ml_table", "find_lots_by_knob_value"}:
+        if action in {"query_wafer_split_at_step", "query_splittable_view", "query_lot_knobs_from_ml_table", "find_lots_by_knob_value"}:
             score += 2
-        if intent in {"wafer_split_at_step", "lot_knobs", "knob_value_lot_search", "splittable_plan_mismatch"}:
+        if intent in {"wafer_split_at_step", "splittable_view", "lot_knobs", "knob_value_lot_search", "splittable_plan_mismatch"}:
             score += 2
         if str(filters.get("source") or "").lower() in {"splittable.view", "ml_table"}:
             score += 1
@@ -13091,19 +13830,26 @@ def _handle_flowi_query(
     early_matches = _matched_feature_entrypoints(prompt, limit=1, allowed_keys=allowed_keys)
     if early_matches and (early_matches[0].get("key") or "") == "tablemap":
         return _unit_feature_guidance(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys)
+    if allowed_keys is None or "tracker" in allowed_keys:
+        tracker_purpose_out = _handle_tracker_lot_purpose_lookup(prompt, product, max_rows)
+        if tracker_purpose_out.get("handled"):
+            return tracker_purpose_out
     if allowed_keys is None or {"filebrowser", "dashboard", "splittable", "ettime", "waferlayout"} & set(allowed_keys):
         fab_lot_out = _handle_current_fab_lot_lookup(prompt, product, max_rows)
         if fab_lot_out.get("handled"):
             return fab_lot_out
+        current_step_out = _handle_current_step_from_progress_cache(prompt, product, max_rows)
+        if current_step_out.get("handled"):
+            return current_step_out
+        knob_value_out = _handle_find_lots_by_knob_value(prompt, product, max_rows)
+        if knob_value_out.get("handled"):
+            return knob_value_out
         metric_step_out = _handle_metric_at_step(prompt, product, max_rows)
         if metric_step_out.get("handled"):
             return metric_step_out
         wafer_split_out = _handle_wafer_split_at_step(prompt, product, max_rows)
         if wafer_split_out.get("handled"):
             return wafer_split_out
-        knob_value_out = _handle_find_lots_by_knob_value(prompt, product, max_rows)
-        if knob_value_out.get("handled"):
-            return knob_value_out
         mismatch_out = _handle_splittable_plan_mismatch_query(prompt, product, max_rows)
         if mismatch_out.get("handled"):
             return mismatch_out
@@ -13222,13 +13968,28 @@ def _flowi_agent_actions(tool: dict[str, Any]) -> list[dict[str, Any]]:
             })
     unit_action = tool.get("action")
     if unit_action:
+        contract_action = _flowi_driver_contract_action(
+            str(unit_action or ""),
+            str(tool.get("intent") or ""),
+            str(tool.get("feature") or ""),
+        )
         actions.append({
             "type": "flowi_unit_action",
             "action": unit_action,
+            "unit_action": contract_action,
             "intent": tool.get("intent") or "",
             "slots": tool.get("slots") or {},
             "filters": tool.get("filters") or {},
         })
+        if contract_action and contract_action != unit_action:
+            actions.append({
+                "type": "agent_driver_action",
+                "action": contract_action,
+                "handler_action": unit_action,
+                "intent": tool.get("intent") or "",
+                "slots": tool.get("slots") or {},
+                "filters": tool.get("filters") or {},
+            })
     return actions
 
 
@@ -13523,6 +14284,364 @@ def _flowi_result_status(tool: dict[str, Any], llm_info: dict[str, Any] | None =
     return "success"
 
 
+def _flowi_trace_result_endpoint(result: dict[str, Any]) -> str:
+    return "/api/llm/flowi/agent/chat" if isinstance(result.get("agent_api"), dict) else "/api/llm/flowi/chat"
+
+
+def _flowi_trace_status(tool: dict[str, Any]) -> str:
+    status = _flowi_workflow_status(tool)
+    if status == "blocked":
+        return "blocked"
+    if status.startswith("awaiting") or status.startswith("needs"):
+        return "waiting"
+    return "done"
+
+
+def _flowi_activation_status(tool: dict[str, Any], result: dict[str, Any] | None = None) -> str:
+    if tool.get("blocked"):
+        return "blocked"
+    llm = (result or {}).get("llm") if isinstance((result or {}).get("llm"), dict) else {}
+    if llm.get("error") and not tool.get("handled"):
+        return "error"
+    waiting = _flowi_waiting_for(tool)
+    if waiting == "required_fields":
+        return "needs_input"
+    if waiting == "user_confirmation":
+        return "awaiting_confirmation"
+    if waiting in {"user_choice", "more_context"}:
+        return "needs_input"
+    return "done" if tool.get("handled", True) else "ready"
+
+
+def _flowi_trace_missing_slots(tool: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in out:
+            out.append(text[:80])
+
+    for value in tool.get("missing") or []:
+        add(value)
+    validation = tool.get("validation") if isinstance(tool.get("validation"), dict) else {}
+    for value in validation.get("missing") or []:
+        add(value)
+    for item in tool.get("missing_freetext") or []:
+        if isinstance(item, dict):
+            add(item.get("field") or item.get("key"))
+        else:
+            add(item)
+    for item in tool.get("arguments_choices") or []:
+        if isinstance(item, dict):
+            add(item.get("field") or item.get("key"))
+    return out[:12]
+
+
+def _flowi_activation_payload_summary(tool: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for src_key in ("arguments", "filters", "slots"):
+        src = tool.get(src_key) if isinstance(tool.get(src_key), dict) else {}
+        for key in ("product", "root_lot_id", "root_lot_ids", "fab_lot_id", "fab_lot_ids", "wafer_id", "wafer_ids", "module", "step", "source_type", "target"):
+            value = src.get(key)
+            if value not in (None, "", [], {}):
+                payload[key] = value
+    return payload
+
+
+def _flowi_next_action_label(result: dict[str, Any], tool: dict[str, Any]) -> str:
+    next_actions = result.get("next_actions") if isinstance(result.get("next_actions"), list) else []
+    if next_actions:
+        first = next_actions[0]
+        if isinstance(first, dict):
+            return str(first.get("title") or first.get("id") or "next action")
+    waiting = _flowi_waiting_for(tool)
+    if waiting:
+        return waiting
+    return "show_answer"
+
+
+def _flowi_trace_output_label(tool: dict[str, Any]) -> str:
+    output = _flowi_output_summary(tool)
+    parts: list[str] = []
+    table = output.get("table") if isinstance(output.get("table"), dict) else {}
+    chart = output.get("chart") if isinstance(output.get("chart"), dict) else {}
+    if table:
+        parts.append(f"{table.get('kind') or 'table'} {table.get('total', 0)} rows")
+    if chart:
+        parts.append(chart.get("title") or chart.get("kind") or "chart")
+    if output.get("has_rows"):
+        rows = tool.get("rows") if isinstance(tool.get("rows"), list) else []
+        parts.append(f"rows {len(rows)}")
+    if output.get("has_knobs"):
+        knobs = tool.get("knobs") if isinstance(tool.get("knobs"), list) else []
+        parts.append(f"knobs {len(knobs)}")
+    if not parts and tool.get("answer"):
+        parts.append("answer text")
+    return ", ".join(parts) or "pending result"
+
+
+def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(tool, dict) or tool.get("blocked"):
+        return []
+    action = str(tool.get("action") or "")
+    intent = str(tool.get("intent") or "")
+    feature = str(tool.get("feature") or "")
+    status = _flowi_trace_status(tool)
+    output = _flowi_trace_output_label(tool)
+    filters = tool.get("filters") if isinstance(tool.get("filters"), dict) else {}
+    slots = tool.get("slots") if isinstance(tool.get("slots"), dict) else {}
+    args = tool.get("arguments") if isinstance(tool.get("arguments"), dict) else {}
+    calls: list[dict[str, Any]] = []
+
+    def add(
+        *,
+        name: str,
+        method: str = "internal",
+        path: str = "",
+        callee: str = "",
+        purpose: str = "",
+        payload: dict[str, Any] | None = None,
+        output_label: str | None = None,
+    ) -> None:
+        calls.append({
+            "stage": "feature_api",
+            "feature": feature or "flowi",
+            "action": action or intent,
+            "name": name,
+            "method": method,
+            "path": path,
+            "callee": callee,
+            "purpose": purpose,
+            "payload": payload or {},
+            "output": output_label or output,
+            "status": status,
+        })
+
+    if action in {"query_splittable_view", "query_wafer_split_at_step"} or intent in {"splittable_view", "wafer_split_at_step"}:
+        add(
+            name="SplitTable view",
+            method="GET",
+            path="/api/splittable/view",
+            callee="routers.splittable.view_split",
+            purpose="product/root/wafer/step/prefix 조건으로 split table row를 조회",
+            payload={k: args.get(k) or filters.get(k) or slots.get(k) for k in ("product", "root_lot_id", "fab_lot_id", "wafer_id", "step", "prefix") if (args.get(k) or filters.get(k) or slots.get(k))},
+        )
+    elif action == "query_lot_current_step_from_progress_cache" or intent == "lot_current_step_lookup":
+        add(
+            name="Latest progress cache",
+            method="internal",
+            path="data/flow-data/cache/lot_progress/lot_wf_current.parquet",
+            callee="core.lot_progress_cache.lot_progress_snapshot",
+            purpose="root_lot_id와 wafer_id로 최신 step_id/function_step 조회",
+            payload={k: (args.get(k) or slots.get(k)) for k in ("product", "root_lot_ids", "wafer_ids", "lot_wf_ids") if (args.get(k) or slots.get(k))},
+        )
+    elif action == "find_lots_by_knob_value" or intent == "knob_value_lot_search":
+        add(
+            name="ML_TABLE KNOB search",
+            method="internal",
+            path="data/flow-data/splittable/match_cache/ML_TABLE_<product>.parquet",
+            callee="_handle_find_lots_by_knob_value",
+            purpose="ML_TABLE에서 KNOB 값과 step 조건에 맞는 lot_wf 후보 검색",
+            payload={k: args.get(k) or filters.get(k) for k in ("product", "step", "knob_value", "sort") if (args.get(k) or filters.get(k))},
+        )
+        add(
+            name="Progress join",
+            method="internal",
+            path="data/flow-data/cache/lot_progress/lot_wf_current.parquet",
+            callee="_flowi_progress_for_lot_rows",
+            purpose="검색된 lot_wf 후보를 최신 FAB 진행 step과 연결",
+            payload={"join_key": "lot_wf"},
+        )
+    elif action == "query_tracker_lot_purpose" or intent == "tracker_lot_purpose_lookup":
+        add(
+            name="Tracker issue load",
+            method="GET",
+            path="/api/tracker/issues",
+            callee="routers.tracker._load",
+            purpose="issue lots에서 lot_id/fab_lot_id 목적 purpose 조회",
+            payload={k: (args.get(k) or slots.get(k)) for k in ("root_lot_ids", "fab_lot_ids", "lot_ids") if (args.get(k) or slots.get(k))},
+        )
+    elif action == "register_inform_log" or intent.startswith("inform_log"):
+        add(
+            name="Inform draft",
+            method="internal",
+            path="/api/informs",
+            callee="_handle_flowi_register_inform_log",
+            purpose="module/content/recipient/lot scope를 검증하고 저장 전 draft 또는 confirmation 생성",
+            payload={k: args.get(k) for k in ("product", "root_lot_ids", "fab_lot_ids", "wafer_ids", "module", "split_set", "recipients") if args.get(k)},
+        )
+    elif action in {"query_current_fab_lot", "query_current_fab_lot_from_fab_db"} or intent == "current_fab_lot_lookup":
+        add(
+            name="FAB current lot lookup",
+            method="internal",
+            path="data/Fab",
+            callee="_handle_current_fab_lot_lookup",
+            purpose="FAB snapshot에서 현재 fab_lot_id를 조회",
+            payload={k: (args.get(k) or slots.get(k)) for k in ("product", "root_lot_ids", "fab_lot_ids", "lot_ids", "wafer_ids") if (args.get(k) or slots.get(k))},
+        )
+    elif feature:
+        add(
+            name=f"{feature} handler",
+            callee=action or intent,
+            purpose="선택된 feature handler가 local result를 생성",
+            payload={"intent": intent, "action": action},
+        )
+    return calls[:4]
+
+
+def _flowi_trace_api_calls(
+    *,
+    result: dict[str, Any],
+    tool: dict[str, Any],
+    prompt: str,
+    allowed_keys: set[str],
+) -> list[dict[str, Any]]:
+    endpoint = _flowi_trace_result_endpoint(result)
+    status = _flowi_trace_status(tool)
+    calls: list[dict[str, Any]] = [
+        {
+            "stage": "ingress",
+            "feature": "llm",
+            "action": "flowi_agent_chat" if endpoint.endswith("/agent/chat") else "flowi_chat",
+            "name": "Flow-i FastAPI endpoint",
+            "method": "POST",
+            "path": endpoint,
+            "callee": "flowi_agent_chat" if endpoint.endswith("/agent/chat") else "flowi_chat",
+            "purpose": "prompt, product, context를 받아 인증된 Flow-i 실행 요청으로 변환",
+            "payload": {"prompt_chars": len(prompt or ""), "allowed_features": len(allowed_keys)},
+            "output": "request accepted",
+            "status": "done",
+        },
+        {
+            "stage": "orchestrator",
+            "feature": "flowi",
+            "action": tool.get("action") or tool.get("intent") or "",
+            "name": "Flow-i orchestrator",
+            "method": "internal",
+            "path": "backend/routers/llm.py",
+            "callee": "_run_flowi_chat",
+            "purpose": "권한, slot, intent, feature handler, LLM polish 여부를 결정",
+            "payload": {
+                "intent": tool.get("intent") or "",
+                "feature": tool.get("feature") or "",
+                "missing": tool.get("missing") or [],
+            },
+            "output": f"workflow={_flowi_workflow_status(tool)}",
+            "status": status,
+        },
+    ]
+    calls.extend(_flowi_trace_feature_api_calls(tool))
+    calls.append({
+        "stage": "response",
+        "feature": "flowi",
+        "action": "render_response",
+        "name": "Answer composer",
+        "method": "internal",
+        "path": "Flow-i response payload",
+        "callee": "_attach_flowi_trace",
+        "purpose": "tool result, clarification, next actions, trace를 화면 응답으로 패키징",
+        "payload": {"llm_used": bool((result.get("llm") or {}).get("used")) if isinstance(result.get("llm"), dict) else False},
+        "output": _flowi_trace_output_label(tool),
+        "status": "done" if status != "blocked" else "blocked",
+    })
+    return calls[:8]
+
+
+def _flowi_trace_call_graph(
+    *,
+    api_calls: list[dict[str, Any]],
+    tool: dict[str, Any],
+    result: dict[str, Any],
+    prompt: str,
+) -> dict[str, Any]:
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+
+    def add_node(node_id: str, node_type: str, title: str, detail: str, status: str = "done") -> None:
+        if any(n.get("id") == node_id for n in nodes):
+            return
+        nodes.append({"id": node_id, "type": node_type, "title": title, "detail": detail, "status": status})
+
+    def add_edge(source: str, target: str, label: str = "") -> None:
+        if source == target:
+            return
+        edges.append({"source": source, "target": target, "label": label})
+
+    status = _flowi_trace_status(tool)
+    endpoint = next((c for c in api_calls if c.get("stage") == "ingress"), {})
+    orchestrator = next((c for c in api_calls if c.get("stage") == "orchestrator"), {})
+    feature_calls = [c for c in api_calls if c.get("stage") == "feature_api"]
+    prompt_text = str(prompt or "").strip()
+    activated_feature = str(tool.get("feature") or (feature_calls[0].get("feature") if feature_calls else "") or "general")
+    handler_action = str(tool.get("action") or tool.get("intent") or "")
+    activated_action = _flowi_driver_contract_action(handler_action, str(tool.get("intent") or ""), activated_feature)
+    first_api = feature_calls[0] if feature_calls else {}
+
+    add_node("prompt", "input", "Prompt 전달", prompt_text[:260] or "빈 prompt", "done")
+    add_node("fastapi", "fastapi", endpoint.get("path") or _flowi_trace_result_endpoint(result), endpoint.get("purpose") or "FastAPI request", endpoint.get("status") or "done")
+    add_node(
+        "orchestrator",
+        "orchestrator",
+        "오케스트레이터 판단",
+        f"intent={tool.get('intent') or 'general'}, action={tool.get('action') or '-'}",
+        orchestrator.get("status") or status,
+    )
+    add_node(
+        "guardrail",
+        "guardrail",
+        "Schema / permission check",
+        "필수 slot, 권한, 저장 전 확인 상태 검증",
+        "blocked" if tool.get("blocked") else ("waiting" if _flowi_waiting_for(tool) else "done"),
+    )
+    add_edge("prompt", "fastapi", "POST")
+    add_edge("fastapi", "orchestrator", "request")
+    add_edge("orchestrator", "guardrail", "validate")
+
+    previous = "guardrail"
+    if feature_calls:
+        feature_name = str(tool.get("feature") or feature_calls[0].get("feature") or "feature")
+        add_node("feature", "feature_subagent", f"{feature_name} subagent", str(tool.get("action") or tool.get("intent") or ""), status)
+        add_edge(previous, "feature", "dispatch")
+        previous = "feature"
+        for idx, call in enumerate(feature_calls, start=1):
+            node_id = f"api_{idx}"
+            title = call.get("name") or call.get("callee") or f"API {idx}"
+            detail = call.get("path") or call.get("callee") or call.get("purpose") or ""
+            add_node(node_id, "api_call", title, detail, call.get("status") or status)
+            add_edge(previous, node_id, call.get("method") or "call")
+            previous = node_id
+    elif not tool.get("blocked"):
+        add_node("feature", "feature_subagent", str(tool.get("feature") or "general subagent"), str(tool.get("action") or tool.get("intent") or ""), status)
+        add_edge(previous, "feature", "dispatch")
+        previous = "feature"
+
+    add_node("result", "result", "Tool result", _flowi_trace_output_label(tool), "done" if not tool.get("blocked") else "blocked")
+    add_node("answer", "answer", "Answer payload", "answer, table/chart, clarification, next_actions를 반환", "done" if not tool.get("blocked") else "blocked")
+    add_edge(previous, "result", "return")
+    add_edge("result", "answer", "compose")
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "layout": "linear_dag",
+        "activation": {
+            "prompt": prompt_text[:1000],
+            "endpoint": endpoint.get("path") or _flowi_trace_result_endpoint(result),
+            "intent": str(tool.get("intent") or "general"),
+            "feature": activated_feature,
+            "action": activated_action,
+            "handler_action": handler_action,
+            "api": first_api.get("path") or first_api.get("callee") or "",
+            "handler": first_api.get("callee") or activated_action,
+            "status": _flowi_activation_status(tool, result),
+            "output": _flowi_trace_output_label(tool),
+            "payload_summary": _flowi_activation_payload_summary(tool),
+            "next_action": _flowi_next_action_label(result, tool),
+            "missing": _flowi_trace_missing_slots(tool),
+            "cause": str(tool.get("reject_reason") or tool.get("detail") or ""),
+        },
+    }
+
+
 def _flowi_public_trace(
     *,
     prompt: str,
@@ -13586,55 +14705,87 @@ def _flowi_public_trace(
     if llm.get("blocked"):
         llm_detail = "권한/보호 정책으로 LLM 보정 없이 종료"
 
+    ts = datetime.now(timezone.utc).isoformat()
     steps = [
         {
             "key": "receive",
+            "stage": "receive",
+            "title": "요청 접수",
             "label": "요청 접수",
             "status": "done",
             "detail": f"prompt {len(prompt or '')} chars, context {len(context_messages)} messages",
+            "ts": ts,
         },
         {
             "key": "auth",
+            "stage": "auth",
+            "title": "사용자/권한 확인",
             "label": "사용자/권한 확인",
             "status": "done",
             "detail": f"허용 기능 {len(allowed_keys)}개",
+            "ts": ts,
         },
         {
             "key": "route",
+            "stage": "route",
+            "title": "의도/단위기능 선택",
             "label": "의도/단위기능 선택",
             "status": "done",
             "detail": f"intent={intent}" + (f", action={action}" if action else ""),
+            "ts": ts,
         },
         {
             "key": "guardrail",
+            "stage": "guardrail",
+            "title": "권한/쓰기 보호",
             "label": "권한/쓰기 보호",
             "status": guard_status,
             "detail": guard_detail,
+            "ts": ts,
         },
         {
             "key": "tool",
+            "stage": "tool",
+            "title": "DB/cache/tool 실행",
             "label": "DB/cache/tool 실행",
             "status": "skipped" if tool.get("blocked") else "done",
             "detail": ", ".join(output_bits),
+            "ts": ts,
         },
         {
             "key": "llm",
+            "stage": "llm",
+            "title": "LLM 답변 정리",
             "label": "LLM 답변 정리",
             "status": llm_status,
             "detail": llm_detail,
+            "ts": ts,
         },
         {
             "key": "render",
+            "stage": "render",
+            "title": "화면 출력 준비",
             "label": "화면 출력 준비",
             "status": "done",
             "detail": ", ".join(output_bits),
+            "ts": ts,
         },
     ]
+    api_calls = _flowi_trace_api_calls(
+        result=result,
+        tool=tool,
+        prompt=prompt,
+        allowed_keys=allowed_keys,
+    )
+    call_graph = _flowi_trace_call_graph(api_calls=api_calls, tool=tool, result=result, prompt=prompt)
     return {
         "kind": "public_execution_trace",
         "visible": True,
         "note": "사고과정 원문이 아니라 사용자가 검증할 수 있는 실행 흐름 요약입니다.",
+        "activation": call_graph.get("activation") or {},
         "steps": steps,
+        "api_calls": api_calls,
+        "call_graph": call_graph,
     }
 
 
@@ -13680,6 +14831,7 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "table",
     "rows",
     "knobs",
+    "custom_sets",
     "lot_list",
     "split_view",
     "chart",
@@ -13691,6 +14843,7 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "fit",
     "stats_table",
     "samples_table",
+    "wafer_table",
     "module_summary",
     "summary",
     "created_record",
@@ -14444,7 +15597,7 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
         return True
     if intent.startswith("inform_"):
         return True
-    if intent in {"lot_knobs", "splittable_plan_mismatch", "wafer_split_at_step", "knob_value_lot_search", "metric_at_step_lookup", "fab_progress_lookup", "filebrowser_data_preview", "filebrowser_schema_search"}:
+    if intent in {"lot_knobs", "splittable_view", "splittable_plan_mismatch", "wafer_split_at_step", "knob_value_lot_search", "metric_at_step_lookup", "fab_progress_lookup", "lot_current_step_lookup", "tracker_lot_purpose_lookup", "filebrowser_data_preview", "filebrowser_schema_search"}:
         return True
     if isinstance(tool.get("chart_result"), dict):
         return True
@@ -14533,6 +15686,12 @@ class FlowiVerifyReq(BaseModel):
 
 class FlowiFunctionCallPreviewReq(BaseModel):
     prompt: str
+    product: str = ""
+    max_rows: int = 12
+
+
+class FlowiActivationPreviewReq(BaseModel):
+    prompts: list[str] = Field(default_factory=list)
     product: str = ""
     max_rows: int = 12
 
@@ -14631,6 +15790,27 @@ def flowi_function_call_preview(req: FlowiFunctionCallPreviewReq, _admin=Depends
         product=(req.product or "").strip(),
         max_rows=req.max_rows,
     )
+
+
+@router.post("/flowi/orchestrator/preview")
+def flowi_orchestrator_preview(req: FlowiActivationPreviewReq, request: Request):
+    current_user(request)
+    prompts = [str(p or "").strip() for p in (req.prompts or []) if str(p or "").strip()]
+    if not prompts:
+        raise HTTPException(400, "prompts are required")
+    rows = _flowi_orchestrator_activation_previews(
+        prompts,
+        product=(req.product or "").strip(),
+        max_rows=req.max_rows,
+    )
+    features = Counter(str(row.get("feature") or "general") for row in rows)
+    return {
+        "ok": True,
+        "mode": "dry_run",
+        "count": len(rows),
+        "features": [{"feature": key, "count": count} for key, count in features.most_common()],
+        "rows": rows,
+    }
 
 
 @router.get("/flowi/persona-card")

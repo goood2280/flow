@@ -16,7 +16,7 @@ if str(ROOT / "backend") not in sys.path:
 
 from app_v2.modules.tracker.repository import TrackerIssueRepository  # noqa: E402
 from app_v2.modules.tracker.service import TrackerService  # noqa: E402
-from routers import splittable, tracker  # noqa: E402
+from routers import informs, splittable, tracker  # noqa: E402
 
 
 def test_splittable_view_route_renders_fixture_table(tmp_path, monkeypatch):
@@ -61,7 +61,7 @@ def test_splittable_lot_note_uses_lot_id_without_extra_prefix():
     assert splittable._notes_key_lot("PRODA", "A1000") == "PRODA__LOT__A1000"
     ui = (ROOT / "frontend" / "src" / "pages" / "My_SplitTable.jsx").read_text(encoding="utf-8")
     assert "A{lotId}" not in ui
-    assert "+ LOT 노트 ({lotId})" in ui
+    assert "+ LOT 노트 ({drawerRoot})" in ui
 
 
 def test_home_flowi_empty_chat_greeting_copy():
@@ -73,6 +73,24 @@ def test_home_flowi_empty_chat_greeting_copy():
     assert "연결끊김" in ui
     assert "flowiStartle" not in ui
     assert "READYING" not in ui
+
+
+def test_agent_page_focuses_on_flowi_execution_trace():
+    ui = (ROOT / "frontend" / "src" / "pages" / "My_Diagnosis.jsx").read_text(encoding="utf-8")
+    assert "Flow-i 실행 흐름" in ui
+    assert "프롬프트별 오케스트레이터 활성화" in ui
+    assert "/api/llm/flowi/orchestrator/preview" in ui
+    assert "Activation Map (5단계)" in ui
+    assert "에이전트가 받은 prompt" in ui
+    assert "활성화된 기능" in ui
+    assert "호출 결과" in ui
+    assert "예시 prompt" in ui
+    assert "API 호출 그래프" in ui
+    assert "FastAPI / handler 호출" in ui
+    assert "call_graph" in ui
+    assert "/api/llm/flowi/agent/chat" in ui
+    assert "feature_subagent" in ui
+    assert "Flowi agent workflow, persona, RAG" not in ui
 
 
 def test_common_loading_component_shows_progress_cues():
@@ -160,6 +178,151 @@ def test_tracker_issue_routes_round_trip_against_configured_store(tmp_path, monk
     )
     fetched = tracker.get_issue(object(), issue_id=issue_id)
     assert len(fetched["issue"]["comments"]) == 1
+
+
+def test_tracker_comment_alert_title_and_mail_gate(tmp_path, monkeypatch):
+    import core.mail as flow_mail
+    import core.notify as flow_notify
+
+    tracker_dir = tmp_path / "tracker"
+    issues_file = tracker_dir / "issues.json"
+    cats_file = tracker_dir / "categories.json"
+    cats_file.parent.mkdir(parents=True)
+    cats_file.write_text(json.dumps([{"name": "Monitor", "color": "#3b82f6"}]), encoding="utf-8")
+
+    monkeypatch.setattr(tracker, "TRACKER_DIR", tracker_dir)
+    monkeypatch.setattr(tracker, "IMG_DIR", tracker_dir / "images")
+    monkeypatch.setattr(tracker, "ISSUES_FILE", issues_file)
+    monkeypatch.setattr(tracker, "CATS_FILE", cats_file)
+    monkeypatch.setattr(tracker, "TRACKER_SERVICE", TrackerService(TrackerIssueRepository(issues_file)))
+
+    events = []
+    mails = []
+    monkeypatch.setattr(flow_notify, "emit_event", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(flow_mail, "send_mail", lambda **kwargs: mails.append(kwargs) or {"ok": True})
+
+    monkeypatch.setattr(tracker, "current_user", lambda _request: {"username": "issue_owner", "role": "admin"})
+    created = tracker.create_issue(
+        tracker.IssueCreate(title="Mail gate issue", description="mail gate", category="Monitor"),
+        object(),
+    )
+    issue_id = created["id"]
+
+    monkeypatch.setattr(tracker, "current_user", lambda _request: {"username": "commenter", "role": "user"})
+    tracker.add_comment(tracker.CommentReq(issue_id=issue_id, text="first alert comment"), object())
+
+    assert events[-1][0][0] == "my_tracker_comment"
+    assert events[-1][1]["target_user"] == "issue_owner"
+    assert events[-1][1]["title"].startswith("FLOW 알림 - ")
+    assert "/ 이슈 댓글 · Mail gate issue" in events[-1][1]["title"]
+    assert mails == []
+
+    issues = json.loads(issues_file.read_text(encoding="utf-8"))
+    issues[0]["mail_watch"] = {"enabled": True, "mail_group_ids": []}
+    issues_file.write_text(json.dumps(issues), encoding="utf-8")
+
+    tracker.add_comment(tracker.CommentReq(issue_id=issue_id, text="mail enabled comment"), object())
+
+    assert len(mails) == 1
+    assert mails[0]["receiver_usernames"] == ["issue_owner"]
+    assert mails[0]["title"].startswith("FLOW 알림 - ")
+    assert "/ 이슈 댓글 · Mail gate issue" in mails[0]["title"]
+
+
+def test_splittable_note_images_comments_and_tracker_owner_alert(tmp_path, monkeypatch):
+    import core.auth as flow_auth
+    import core.mail as flow_mail
+    import core.notify as flow_notify
+
+    notes_file = tmp_path / "notes.json"
+    tracker_file = tmp_path / "issues.json"
+    tracker_file.write_text(json.dumps([{
+        "id": "ISS-NOTE",
+        "title": "Tagged lot issue",
+        "username": "issue_owner",
+        "product": "PRODA",
+        "mail_watch": {"enabled": True, "mail_group_ids": []},
+        "lots": [{"product": "PRODA", "root_lot_id": "R1000", "wafer_id": "3"}],
+    }]), encoding="utf-8")
+
+    monkeypatch.setattr(splittable, "NOTES_FILE", notes_file)
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tracker_file)
+    monkeypatch.setattr(flow_auth, "current_user", lambda _request: {"username": "note_writer", "role": "user"})
+    monkeypatch.setattr(splittable, "current_user", lambda _request: {"username": "note_writer", "role": "user"})
+
+    events = []
+    mails = []
+    monkeypatch.setattr(flow_notify, "emit_event", lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(flow_mail, "send_mail", lambda **kwargs: mails.append(kwargs) or {"ok": True})
+
+    saved = splittable.save_note(
+        splittable.NoteSaveReq(
+            scope="wafer",
+            product="PRODA",
+            root_lot_id="R1000",
+            wafer_id="3",
+            text="\u200B",
+            images=[{"filename": "../paste.png", "url": "/api/informs/files/up_1/paste.png?t=token", "size": 42}],
+        ),
+        object(),
+    )
+    note_id = saved["entry"]["id"]
+
+    assert saved["entry"]["images"][0]["filename"] == "paste.png"
+    assert saved["entry"]["images"][0]["url"] == "/api/informs/files/up_1/paste.png"
+    assert saved["entry"]["text"] == ""
+    assert events[-1][0][0] == "my_tracker_lot_note"
+    assert events[-1][1]["target_user"] == "issue_owner"
+    assert events[-1][1]["title"].startswith("FLOW 알림 - ")
+    assert mails[-1]["receiver_usernames"] == ["issue_owner"]
+
+    commented = splittable.add_note_comment(
+        splittable.NoteCommentReq(
+            note_id=note_id,
+            text="\u200B",
+            images=[{"filename": "reply.png", "url": "/api/informs/files/up_2/reply.png", "size": 7}],
+        ),
+        object(),
+    )
+    notes = splittable._load_notes()
+
+    assert commented["comment"]["images"][0]["filename"] == "reply.png"
+    assert notes[0]["comments"][0]["text"] == ""
+    assert len(mails) == 1
+
+
+def test_splittable_notes_response_normalizes_legacy_image_shapes(tmp_path, monkeypatch):
+    notes_file = tmp_path / "notes.json"
+    notes_file.write_text(json.dumps({"entries": [{
+        "id": "n_legacy",
+        "scope": "lot",
+        "key": "PRODA__LOT__R1000",
+        "text": "\u200B",
+        "username": "hol",
+        "created_at": "2026-05-09T16:37:15",
+        "images": [{"attachment": {"downloadUrl": "/api/informs/files/up_3/paste.png?t=token"}, "displayName": "paste.png"}],
+        "comments": [{
+            "id": "c_legacy",
+            "text": "\u200B",
+            "images": [{"file": {"fileUrl": "files/up_4/reply.png"}, "name": "reply.png"}],
+        }],
+    }]}), encoding="utf-8")
+    monkeypatch.setattr(splittable, "NOTES_FILE", notes_file)
+
+    result = splittable.list_notes(product="PRODA", root_lot_id="R1000")
+    note = result["notes"][0]
+
+    assert note["text"] == ""
+    assert note["images"] == [{"filename": "paste.png", "url": "/api/informs/files/up_3/paste.png", "size": 0}]
+    assert note["comments"][0]["text"] == ""
+    assert note["comments"][0]["images"] == [{"filename": "reply.png", "url": "/api/informs/files/up_4/reply.png", "size": 0}]
+
+
+def test_inform_upload_infers_image_extension_from_mime_for_pasted_images():
+    assert informs._image_upload_ext("", "image/png") == ".png"
+    assert informs._image_upload_ext("clipboard", "image/jpeg") == ".jpg"
+    assert informs._image_upload_ext("already.webp", "") == ".webp"
+    assert informs._image_upload_ext("not-image", "application/octet-stream") == ""
 
 
 def test_tracker_lot_step_route_reads_configured_fab_db(tmp_path, monkeypatch):
