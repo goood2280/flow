@@ -36,15 +36,8 @@ const KIND_COLORS={
 };
 function kindColor(k){return KIND_COLORS[k]||"var(--accent)";}
 
-function computeForceLayout(nodes,edges,width,height){
+function computeForceLayout(nodes,edges,width,height,nodeW,nodeH){
   const ids=nodes.map(n=>n.id);
-  const adj=new Map(ids.map(id=>[id,new Set()]));
-  for(const e of edges){
-    if(adj.has(e.source)&&adj.has(e.target)){
-      adj.get(e.source).add(e.target);
-      adj.get(e.target).add(e.source);
-    }
-  }
   // deterministic initial positions: golden-angle spiral so layout is stable
   const positions=new Map();
   const phi=Math.PI*(3-Math.sqrt(5));
@@ -57,12 +50,13 @@ function computeForceLayout(nodes,edges,width,height){
   });
   const n=nodes.length||1;
   const area=width*height;
-  const k=Math.sqrt(area/n)*0.85; // ideal edge length
-  const iterations=180;
+  const k=Math.sqrt(area/n)*0.95; // ideal edge length — slightly longer for breathing room
+  const iterations=240;
+  const minSep=Math.max(nodeW,nodeH)*1.05;
   for(let iter=0;iter<iterations;iter++){
     const t=Math.max(0.02,1-iter/iterations);
     const force=new Map(ids.map(id=>[id,{fx:0,fy:0}]));
-    // repulsion (all pairs)
+    // repulsion (all pairs) — stronger near-field push so boxes don't sit on top of each other
     for(let i=0;i<nodes.length;i++){
       for(let j=i+1;j<nodes.length;j++){
         const a=positions.get(nodes[i].id);
@@ -72,7 +66,8 @@ function computeForceLayout(nodes,edges,width,height){
         let d2=dx*dx+dy*dy;
         if(d2<0.01){dx=((i*7+3)%5)-2.5;dy=((j*11+5)%5)-2.5;d2=dx*dx+dy*dy+0.01;}
         const d=Math.sqrt(d2);
-        const f=(k*k)/d;
+        let f=(k*k)/d;
+        if(d<minSep){f+=(minSep-d)*(minSep-d)*1.2;}
         const fx=(dx/d)*f,fy=(dy/d)*f;
         force.get(nodes[i].id).fx+=fx;force.get(nodes[i].id).fy+=fy;
         force.get(nodes[j].id).fx-=fx;force.get(nodes[j].id).fy-=fy;
@@ -93,8 +88,8 @@ function computeForceLayout(nodes,edges,width,height){
     // centering pull (keeps disconnected nodes from drifting away)
     for(const nd of nodes){
       const p=positions.get(nd.id);
-      force.get(nd.id).fx+=(cx-p.x)*0.01;
-      force.get(nd.id).fy+=(cy-p.y)*0.01;
+      force.get(nd.id).fx+=(cx-p.x)*0.008;
+      force.get(nd.id).fy+=(cy-p.y)*0.008;
     }
     // apply
     const maxStep=Math.min(width,height)*0.18*t;
@@ -105,56 +100,108 @@ function computeForceLayout(nodes,edges,width,height){
       const step=Math.min(m,maxStep);
       p.x+=(f.fx/m)*step;
       p.y+=(f.fy/m)*step;
-      p.x=Math.max(70,Math.min(width-70,p.x));
-      p.y=Math.max(40,Math.min(height-40,p.y));
+      p.x=Math.max(nodeW/2+8,Math.min(width-nodeW/2-8,p.x));
+      p.y=Math.max(nodeH/2+8,Math.min(height-nodeH/2-8,p.y));
     }
+  }
+  // post-process: hard rectangle collision resolution so boxes never overlap
+  const padX=18,padY=14;
+  for(let iter=0;iter<120;iter++){
+    let anyOverlap=false;
+    for(let i=0;i<nodes.length;i++){
+      for(let j=i+1;j<nodes.length;j++){
+        const a=positions.get(nodes[i].id);
+        const b=positions.get(nodes[j].id);
+        let dx=b.x-a.x,dy=b.y-a.y;
+        const overlapX=(nodeW+padX)-Math.abs(dx);
+        const overlapY=(nodeH+padY)-Math.abs(dy);
+        if(overlapX>0&&overlapY>0){
+          anyOverlap=true;
+          if(Math.abs(dx)<0.5)dx=((i*13+7)%7)-3;
+          if(Math.abs(dy)<0.5)dy=((j*17+11)%7)-3;
+          if(overlapX<overlapY){
+            const push=(overlapX/2)+0.6;
+            const sign=dx>=0?1:-1;
+            a.x-=sign*push;b.x+=sign*push;
+          }else{
+            const push=(overlapY/2)+0.6;
+            const sign=dy>=0?1:-1;
+            a.y-=sign*push;b.y+=sign*push;
+          }
+        }
+      }
+    }
+    for(const nd of nodes){
+      const p=positions.get(nd.id);
+      p.x=Math.max(nodeW/2+8,Math.min(width-nodeW/2-8,p.x));
+      p.y=Math.max(nodeH/2+8,Math.min(height-nodeH/2-8,p.y));
+    }
+    if(!anyOverlap)break;
   }
   return positions;
 }
+
+const KG_NODE_W=152,KG_NODE_H=38;
 
 function KnowledgeGraphView({graph}){
   const nodes=Array.isArray(graph?.nodes)?graph.nodes:[];
   const edges=Array.isArray(graph?.edges)?graph.edges:[];
   const layout=useMemo(()=>{
     if(!nodes.length)return null;
-    // size the canvas based on node count: more nodes → larger area
-    const baseW=Math.max(720,Math.min(1400,260+nodes.length*45));
-    const baseH=Math.max(440,Math.min(900,220+nodes.length*30));
+    // canvas size scales with sqrt(N) so each node gets predictable breathing room
+    const sqrtN=Math.sqrt(Math.max(1,nodes.length));
+    const baseW=Math.max(880,Math.min(1600,320+sqrtN*220));
+    const baseH=Math.max(560,Math.min(1100,200+sqrtN*200));
     const validEdges=edges.filter(e=>e&&e.source&&e.target);
-    const positions=computeForceLayout(nodes,validEdges,baseW,baseH);
+    const positions=computeForceLayout(nodes,validEdges,baseW,baseH,KG_NODE_W,KG_NODE_H);
     return {positions,width:baseW,height:baseH,validEdges};
   },[graph]);
   if(!nodes.length){
     return <div style={{padding:28,textAlign:"center",color:"var(--text-secondary)"}}>그래프 노드가 없습니다. Admin은 Bootstrap 또는 Graph Rebuild 로 시작하세요.</div>;
   }
   const {positions,width,height,validEdges}=layout;
-  const NODE_W=148,NODE_H=34;
+  const NODE_W=KG_NODE_W,NODE_H=KG_NODE_H;
   return <div style={{overflow:"auto",padding:"4px"}}>
     <svg width={width} height={height} style={{minWidth:"100%",background:"var(--bg-primary)",display:"block"}}>
       <defs>
-        <marker id="kg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-secondary)" opacity="0.7"/>
+        <marker id="kg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-secondary)" opacity="0.8"/>
         </marker>
+        <filter id="kg-node-shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="1" stdDeviation="1.2" floodOpacity="0.18"/>
+        </filter>
       </defs>
       {validEdges.map((e,i)=>{
         const s=positions.get(e.source);
         const t=positions.get(e.target);
         if(!s||!t)return null;
-        // shorten line so arrow lands just outside the target box
         const dx=t.x-s.x,dy=t.y-s.y;
         const dist=Math.sqrt(dx*dx+dy*dy)||1;
         const ux=dx/dist,uy=dy/dist;
-        const sx=s.x+ux*(NODE_W*0.42);
-        const sy=s.y+uy*(NODE_H*0.62);
-        const tx=t.x-ux*(NODE_W*0.42);
-        const ty=t.y-uy*(NODE_H*0.62);
+        // clip endpoints to the rectangle border (axis-aligned box-ray intersection)
+        const halfW=NODE_W/2,halfH=NODE_H/2;
+        const clipScale=(hx,hy)=>{
+          const tx=hx/Math.max(1e-3,Math.abs(ux));
+          const ty=hy/Math.max(1e-3,Math.abs(uy));
+          return Math.min(tx,ty);
+        };
+        const scale=clipScale(halfW+2,halfH+2);
+        const sx=s.x+ux*scale;
+        const sy=s.y+uy*scale;
+        const tx=t.x-ux*scale;
+        const ty=t.y-uy*scale;
         const mx=(sx+tx)/2;
         const my=(sy+ty)/2;
-        // perpendicular offset for label to avoid overlapping the line
-        const px=-uy*8,py=ux*8;
+        // perpendicular offset for label
+        const px=-uy*10,py=ux*10;
+        const labelText=String(e.relation||e.label||"");
+        const labelW=labelText?Math.max(28,labelText.length*6.2+12):0;
         return <g key={(e.edge_id||(e.source+"-"+e.target+"-"+i))}>
-          <line x1={sx} y1={sy} x2={tx} y2={ty} stroke="var(--text-secondary)" strokeWidth="1.2" opacity="0.55" markerEnd="url(#kg-arrow)"/>
-          {(e.relation||e.label)&&<text x={mx+px} y={my+py} textAnchor="middle" fontSize="10" fill="var(--text-secondary)" style={{pointerEvents:"none"}}>{e.relation||e.label}</text>}
+          <line x1={sx} y1={sy} x2={tx} y2={ty} stroke="var(--text-secondary)" strokeWidth="1.25" opacity="0.55" markerEnd="url(#kg-arrow)"/>
+          {labelText&&<g>
+            <rect x={mx+px-labelW/2} y={my+py-8} width={labelW} height={15} rx={4} fill="var(--bg-primary)" stroke="var(--border)" strokeWidth="0.8" opacity="0.92"/>
+            <text x={mx+px} y={my+py+3} textAnchor="middle" fontSize="10" fill="var(--text-secondary)" style={{pointerEvents:"none"}}>{labelText}</text>
+          </g>}
         </g>;
       })}
       {nodes.map(n=>{
@@ -164,17 +211,17 @@ function KnowledgeGraphView({graph}){
         const color=kindColor(k);
         const label=n.label||n.id;
         const labelShort=label.length>20?label.slice(0,20)+"…":label;
-        return <g key={"n-"+n.id} transform={`translate(${p.x}, ${p.y})`}>
+        return <g key={"n-"+n.id} transform={`translate(${p.x}, ${p.y})`} filter="url(#kg-node-shadow)">
           <title>{label} ({k}){n.summary?" — "+n.summary:""}</title>
-          <rect x={-NODE_W/2} y={-NODE_H/2} width={NODE_W} height={NODE_H} rx={6} fill="var(--bg-secondary)" stroke={color} strokeWidth="1.4"/>
-          <rect x={-NODE_W/2} y={-NODE_H/2} width={5} height={NODE_H} fill={color}/>
-          <text x={-NODE_W/2+12} y={-2} fontSize="11" fontWeight="700" fill="var(--text-primary)">{labelShort}</text>
-          <text x={-NODE_W/2+12} y={11} fontSize="9" fill="var(--text-secondary)" fontFamily="monospace">{k}</text>
+          <rect x={-NODE_W/2} y={-NODE_H/2} width={NODE_W} height={NODE_H} rx={7} fill="var(--bg-secondary)" stroke={color} strokeWidth="1.5"/>
+          <rect x={-NODE_W/2} y={-NODE_H/2} width={6} height={NODE_H} fill={color} rx={2}/>
+          <text x={-NODE_W/2+14} y={-2} fontSize="11" fontWeight="700" fill="var(--text-primary)">{labelShort}</text>
+          <text x={-NODE_W/2+14} y={12} fontSize="9" fill="var(--text-secondary)" fontFamily="monospace">{k}</text>
         </g>;
       })}
     </svg>
     <div style={{fontSize:12,color:"var(--text-secondary)",padding:"6px 10px",display:"flex",gap:14,flexWrap:"wrap"}}>
-      <span>{nodes.length} 노드 · {validEdges.length} 엣지 · force-directed 자동 배치</span>
+      <span>{nodes.length} 노드 · {validEdges.length} 엣지 · force-directed 자동 배치 + 충돌 해소</span>
       {Array.from(new Set(nodes.map(n=>n.kind||n.type||"node"))).slice(0,10).map(k=>(
         <span key={k} style={{display:"inline-flex",alignItems:"center",gap:4}}>
           <span style={{width:10,height:10,borderRadius:2,background:kindColor(k)}}/>{k}
