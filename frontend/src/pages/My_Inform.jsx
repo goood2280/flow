@@ -2358,7 +2358,7 @@ export default function My_Inform({ user }) {
         body.attached_sets = attachedSetsForSubmit();
       }
       if (lot) {
-        body.fab_lot_id_at_save = lot;
+        body.fab_lot_id_at_save = targetLot;
       }
       return body;
     };

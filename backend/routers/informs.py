@@ -100,6 +100,19 @@ INFORM_DASHBOARD_CACHE_TTL = 60.0
 _INFORM_DASHBOARD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
+def _image_upload_ext(filename: str, content_type: str = "") -> str:
+    ext = Path(filename or "").suffix.lower()
+    if ext in ALLOWED_IMAGE_EXTS:
+        return ext
+    mime = (content_type or "").split(";", 1)[0].strip().lower()
+    if not mime.startswith("image/"):
+        return ""
+    guessed = (mimetypes.guess_extension(mime) or "").lower()
+    if guessed in {".jpe", ".jpeg"}:
+        return ".jpg"
+    return guessed if guessed in ALLOWED_IMAGE_EXTS else ""
+
+
 def _load_config() -> dict:
     data = load_json(CONFIG_FILE, {})
     if not isinstance(data, dict):
@@ -2713,7 +2726,7 @@ def _safe_filename(name: str) -> str:
     return name[-120:] or "file"
 
 
-async def _read_upload_payload(request: Request) -> tuple[str, bytes]:
+async def _read_upload_payload(request: Request) -> tuple[str, bytes, str]:
     """Read multipart field `file` without a FastAPI File dependency.
 
     Using `UploadFile = File(...)` makes FastAPI validate python-multipart at
@@ -2733,19 +2746,20 @@ async def _read_upload_payload(request: Request) -> tuple[str, bytes]:
     if file is None or not hasattr(file, "read"):
         raise HTTPException(400, "file 필드가 필요합니다.")
     filename = str(getattr(file, "filename", "") or "")
+    content_type = str(getattr(file, "content_type", "") or "")
     data_or_coro = file.read()
     data = await data_or_coro if hasattr(data_or_coro, "__await__") else data_or_coro
     if isinstance(data, str):
         data = data.encode("utf-8")
-    return filename, bytes(data or b"")
+    return filename, bytes(data or b""), content_type
 
 
 @router.post("/upload")
 async def upload_image(request: Request):
     """인폼용 이미지 업로드. 유저당 세션으로만 가능 (current_user 검증)."""
     me = current_user(request)
-    filename, data = await _read_upload_payload(request)
-    ext = Path(filename or "").suffix.lower()
+    filename, data, content_type = await _read_upload_payload(request)
+    ext = _image_upload_ext(filename, content_type)
     if ext not in ALLOWED_IMAGE_EXTS:
         raise HTTPException(400, f"이미지 형식만 업로드 가능합니다 ({', '.join(sorted(ALLOWED_IMAGE_EXTS))}).")
     if len(data) > MAX_UPLOAD_BYTES:
@@ -2781,7 +2795,7 @@ async def upload_attachment(request: Request):
     """메일 첨부용 범용 업로드. 실행 가능한 확장자(.exe/.bat/...)는 차단.
     반환 URL 은 이미지 업로드와 동일 경로 규약 → 기존 send-mail attachment resolver 재사용."""
     me = current_user(request)
-    filename, data = await _read_upload_payload(request)
+    filename, data, _content_type = await _read_upload_payload(request)
     ext = Path(filename or "").suffix.lower()
     if ext in _ATTACHMENT_BLOCKED_EXTS:
         raise HTTPException(400, f"보안상 업로드 차단된 확장자: {ext}")

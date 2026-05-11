@@ -1671,6 +1671,7 @@ const CALL_NODE_TONE = {
   result: { border: "#0f766e", bg: "rgba(15,118,110,.12)" },
   answer: { border: "#4b5563", bg: "rgba(75,85,99,.12)" },
 };
+const ORCHESTRATOR_PREVIEW_ENDPOINT = "/api/llm/flowi/orchestrator/preview";
 
 function callStatusTone(status) {
   if (status === "done") return "ok";
@@ -1848,6 +1849,7 @@ function FlowiPublicContext({ trace }) {
   const rows = [
     { section: "persona", key: "role", value: persona.role || "-" },
     { section: "persona", key: "prompt_source", value: persona.prompt_source || "-" },
+    { section: "orchestrator", key: "preview_endpoint", value: ORCHESTRATOR_PREVIEW_ENDPOINT },
     { section: "prompt_cache", key: "allowed_features", value: listText(promptCache.allowed_features, 8) },
     { section: "prompt_cache", key: "feature_docs", value: listText(promptCache.feature_docs, 5) },
     { section: "subagent", key: "feature_subagent", value: subagent.feature_subagent || "-" },
@@ -1969,7 +1971,7 @@ function FlowiOrchestratorPreview({ rows = [], busy = false, onSelectPrompt }) {
   return (
     <Panel
       title="프롬프트별 오케스트레이터 활성화"
-      subtitle="예시/실행 프롬프트가 어떤 기능 subagent와 action을 켜는지 dry-run으로 비교합니다."
+      subtitle="예시 prompt/실행 prompt가 어떤 기능 subagent와 action을 켜는지 dry-run으로 비교합니다."
       right={<Pill tone={busy ? "warn" : "accent"}>{busy ? "previewing" : `${rows.length} prompts`}</Pill>}
     >
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>

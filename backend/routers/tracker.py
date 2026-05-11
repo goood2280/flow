@@ -1029,6 +1029,9 @@ def add_comment(req: CommentReq, request: Request):
             if u:
                 targets.add(u)
         preview = (req.text or "")[:80]
+        issue_title = iss.get("title") or iss["id"]
+        alert_title = f"FLOW 알림 - {issue_title} / 이슈 댓글 · {issue_title}"
+        alert_body = f"{req.username or ''} · {preview}"
         for tgt in targets:
             if tgt == req.username:
                 continue
@@ -1036,11 +1039,25 @@ def add_comment(req: CommentReq, request: Request):
                 "my_tracker_comment",
                 actor=req.username or "",
                 target_user=tgt,
-                title=f"[이슈 댓글] {iss.get('title') or iss['id']}",
-                body=f"{req.username or ''} · {preview}",
+                title=alert_title,
+                body=alert_body,
                 payload={"issue_id": iss["id"], "text": preview,
                          "lot_id": req.lot_id, "wafer_id": req.wafer_id},
             )
+        mail_watch = _issue_mail_watch(iss)
+        if mail_watch.get("enabled"):
+            from core.mail import send_mail
+            from core.tracker_scheduler import _recipient_payload
+            recipients = _recipient_payload(targets, mail_watch.get("mail_group_ids") or [])
+            mail_targets = [u for u in (recipients.get("users") or []) if u != req.username]
+            if mail_targets or recipients.get("extra_emails"):
+                send_mail(
+                    sender_username=req.username or "flow",
+                    receiver_usernames=mail_targets,
+                    extra_emails=recipients.get("extra_emails") or [],
+                    title=alert_title,
+                    content=alert_body,
+                )
     except Exception:
         pass
     return {"ok": True}

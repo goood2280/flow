@@ -2020,6 +2020,7 @@ export default function My_SplitTable({user}){
     {notesOpen && (()=>{
       // param_global 은 목록에서 완전 제외 (전역 태그 제거 요구).
       const base=notes.filter(n=>n.scope!=="param_global");
+      const drawerRoot=lotId;
       let filtered=(!noteFilter)?base
         :noteFilter.scope==="wafer"?base.filter(n=>n.scope==="wafer"&&n.key===noteFilter.key)
         :noteFilter.scope==="cell"?base.filter(n=>n.scope==="param"&&n.key===`${selProd}__${lotId}__W${noteFilter.wafer_id}__${noteFilter.param}`)
@@ -2083,7 +2084,7 @@ export default function My_SplitTable({user}){
         {lotId && !noteDraftScope && (
           <div style={{padding:"6px 16px",borderBottom:"1px dashed var(--border)",display:"flex",gap:6,fontSize:14}}>
             <button onClick={()=>setNoteDraftScope({scope:"lot",product:selProd,root_lot_id:lotId})}
-              style={{padding:"3px 10px",borderRadius:4,border:"1px solid #16a34a",background:"transparent",color:"rgba(22,163,74,0.95)",fontSize:14,cursor:"pointer"}}>+ LOT 노트 ({lotId})</button>
+              style={{padding:"3px 10px",borderRadius:4,border:"1px solid #16a34a",background:"transparent",color:"rgba(22,163,74,0.95)",fontSize:14,cursor:"pointer"}}>+ LOT 노트 ({drawerRoot})</button>
           </div>
         )}
         <div style={{flex:1,overflow:"auto",padding:"8px 14px",display:"flex",flexDirection:"column",gap:4}}>
