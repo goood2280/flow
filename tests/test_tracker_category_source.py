@@ -53,6 +53,24 @@ def test_monitor_lot_rows_expand_from_lot_progress_cache(monkeypatch):
     ]
 
 
+def test_tracker_lot_candidate_normalizer_keeps_full_fab_lot_id():
+    rows = tracker._normalize_lot_candidate_rows(
+        [
+            {
+                "value": "A1000A.1",
+                "type": "lot_id",
+                "root_lot_id": "A1000",
+                "product": "PRODA",
+            }
+        ],
+        limit=10,
+    )
+
+    assert rows[0]["value"] == "A1000A.1"
+    assert rows[0]["lot_id"] == "A1000A.1"
+    assert rows[0]["root_lot_id"] == "A1000"
+
+
 def test_tracker_scheduler_fab_scan_prefers_lot_progress_cache(monkeypatch, tmp_path):
     from core import lot_progress_cache, lot_step, tracker_scheduler
     from core import paths as core_paths

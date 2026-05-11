@@ -4522,7 +4522,7 @@ def _selected_columns(all_columns: list[str], select_cols: str, preview_cols: in
 
 
 def _lazy_filter_expr(sql: str, columns: list[str]):
-    s = (sql or "").strip()
+    s = _normalize_wafer_sql_filter(sql, columns)
     if not s:
         return None
     try:
@@ -4547,7 +4547,8 @@ _AI_SQL_IGNORE_TOKENS = {
     *_SQL_EXPR_IGNORE_TOKENS,
     "and", "or", "not", "like", "ilike", "between", "in", "is",
     "null", "true", "false", "where", "is_in", "is_null", "is_not_null",
-    "str", "contains", "starts_with", "ends_with", "cast", "as",
+    "str", "contains", "starts_with", "ends_with", "cast", "try_cast", "as",
+    "bigint", "int64", "integer", "int", "double", "float",
 }
 
 
@@ -4583,6 +4584,51 @@ def _sql_missing_columns(expr: str, columns: list[str]) -> list[str]:
     return missing
 
 
+_AI_SQL_COMPARE_RE = re.compile(
+    r"\b(?P<col>[A-Za-z_][A-Za-z0-9_]*)\s*"
+    r"(?P<op>>=|<=|<>|!=|==|=|>|<)\s*"
+    r"(?P<rhs>'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|"
+    r"\d{4}[-/.]\d{1,2}(?:[-/.]\d{1,2})?(?:[T\s]\d{1,2}:\d{1,2}(?::\d{1,2})?)?|"
+    r"-?\d+(?:\.\d+)?)",
+    re.I,
+)
+
+
+def _unquote_ai_sql_literal(raw: str) -> tuple[str, bool]:
+    text = str(raw or "").strip()
+    if len(text) >= 2 and text[0] == "'" and text[-1] == "'":
+        return text[1:-1].replace("''", "'"), True
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        return text[1:-1].replace('""', '"'), True
+    return text, False
+
+
+def _validate_ai_sql_date_literals(sql: str, columns: list[str]) -> None:
+    lookup = _column_lookup(columns)
+    date_cols = {
+        lookup.get(str(col).casefold(), str(col)).casefold()
+        for col in columns
+        if _looks_date_like_column(str(col))
+    }
+    if not date_cols:
+        return
+    for match in _AI_SQL_COMPARE_RE.finditer(str(sql or "")):
+        col = lookup.get(match.group("col").casefold(), match.group("col"))
+        if col.casefold() not in date_cols:
+            continue
+        value, quoted = _unquote_ai_sql_literal(match.group("rhs"))
+        compact_or_partial = bool(re.fullmatch(r"\d{4}(?:[-/.]?\d{1,2})?", value))
+        compact_ymd = bool(re.fullmatch(r"\d{8}", value))
+        slash_or_dot_date = bool(re.fullmatch(r"\d{4}[/.]\d{1,2}[/.]\d{1,2}(?:[T\s].*)?", value))
+        bare_number = (not quoted) and bool(re.fullmatch(r"-?\d+(?:\.\d+)?", value))
+        bare_date = (not quoted) and bool(re.fullmatch(r"\d{4}[-/.]\d{1,2}(?:[-/.]\d{1,2})?(?:[T\s].*)?", value))
+        if compact_or_partial or compact_ymd or slash_or_dot_date or bare_number or bare_date:
+            raise ValueError(
+                "AI SQL date/time filters must use complete quoted ISO literals "
+                "such as '2024-04-20' or '2024-04-20T13:30:00'"
+            )
+
+
 def _extract_llm_sql_text(raw_text: str, plan: dict) -> str:
     if isinstance(plan, dict):
         for key in ("sql", "filter", "where", "expression", "expr"):
@@ -4606,9 +4652,166 @@ def _validate_ai_sql_filter(raw_sql: str, columns: list[str]) -> tuple[str, list
     missing = _sql_missing_columns(sql, columns)
     if missing:
         raise ValueError("AI SQL referenced unknown column(s): " + ", ".join(missing[:8]))
+    _validate_ai_sql_date_literals(sql, columns)
     duckdb_engine.normalize_filter_expr(sql)
     _lazy_filter_expr(sql, columns or ["value"])
     return sql, warnings
+
+
+def _read_sql_token(sql: str, start: int) -> tuple[int, int, str] | None:
+    text = str(sql or "")
+    idx = start
+    while idx < len(text) and text[idx].isspace():
+        idx += 1
+    if idx >= len(text):
+        return None
+    if text[idx] in {"'", '"'}:
+        quote = text[idx]
+        end = idx + 1
+        value_chars: list[str] = []
+        while end < len(text):
+            ch = text[end]
+            if ch == quote:
+                if end + 1 < len(text) and text[end + 1] == quote:
+                    value_chars.append(quote)
+                    end += 2
+                    continue
+                return idx, end + 1, "".join(value_chars)
+            value_chars.append(ch)
+            end += 1
+        return None
+    match = re.match(r"[#A-Za-z0-9_.+-]+", text[idx:])
+    if not match:
+        return None
+    return idx, idx + match.end(), match.group(0)
+
+
+def _mask_sql_literals(sql: str) -> str:
+    text = str(sql or "")
+    out = list(text)
+    idx = 0
+    while idx < len(text):
+        if text[idx] not in {"'", '"'}:
+            idx += 1
+            continue
+        quote = text[idx]
+        idx += 1
+        while idx < len(text):
+            out[idx] = " "
+            if text[idx] == quote:
+                if idx + 1 < len(text) and text[idx + 1] == quote:
+                    out[idx + 1] = " "
+                    idx += 2
+                    continue
+                idx += 1
+                break
+            idx += 1
+    return "".join(out)
+
+
+def _wafer_literal_number(raw: str) -> int | None:
+    text = str(raw or "").strip().strip("'\"").upper()
+    text = re.sub(r"^(?:#|WAFER|WF|W)\s*", "", text)
+    if not re.fullmatch(r"\d+", text):
+        return None
+    value = int(text)
+    return value if value >= 1 else None
+
+
+def _split_sql_list_values(body: str) -> list[str]:
+    values: list[str] = []
+    idx = 0
+    text = str(body or "")
+    while idx < len(text):
+        while idx < len(text) and text[idx] in {" ", "\t", "\n", "\r", ","}:
+            idx += 1
+        token = _read_sql_token(text, idx)
+        if token is None:
+            return []
+        _start, end, value = token
+        values.append(value)
+        idx = end
+        while idx < len(text) and text[idx].isspace():
+            idx += 1
+        if idx < len(text) and text[idx] == ",":
+            idx += 1
+            continue
+        if idx < len(text):
+            return []
+    return values
+
+
+def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
+    start, end = span
+    return any(not (end <= old_start or start >= old_end) for old_start, old_end in spans)
+
+
+def _normalize_wafer_sql_filter(sql: str, columns: list[str] | tuple[str, ...] | None) -> str:
+    text = str(sql or "").strip()
+    wafer_col = _wafer_column(list(columns or []))
+    if not text or not wafer_col:
+        return text
+    col_pat = re.escape(wafer_col)
+    cast_col = lambda col: f"CAST({col} AS BIGINT)"
+    mask = _mask_sql_literals(text)
+    replacements: list[tuple[int, int, str]] = []
+    occupied: list[tuple[int, int]] = []
+
+    for match in re.finditer(rf"(?<![A-Za-z0-9_])(?P<col>{col_pat})(?![A-Za-z0-9_])\s+(?P<neg>NOT\s+)?IN\s*\((?P<body>[^)]*)\)", mask, flags=re.I):
+        span = match.span()
+        if _overlaps(span, occupied):
+            continue
+        body_start, body_end = match.span("body")
+        values = _split_sql_list_values(text[body_start:body_end])
+        nums = [_wafer_literal_number(value) for value in values]
+        if not nums or any(num is None for num in nums):
+            continue
+        op = "NOT IN" if match.group("neg") else "IN"
+        replacement = f"{cast_col(match.group('col'))} {op} ({', '.join(str(num) for num in nums if num is not None)})"
+        replacements.append((span[0], span[1], replacement))
+        occupied.append(span)
+
+    for match in re.finditer(rf"(?<![A-Za-z0-9_])(?P<col>{col_pat})(?![A-Za-z0-9_])\s+BETWEEN\s+", mask, flags=re.I):
+        start = match.start()
+        first = _read_sql_token(text, match.end())
+        if not first:
+            continue
+        and_match = re.match(r"\s+AND\s+", mask[first[1]:], flags=re.I)
+        if not and_match:
+            continue
+        second = _read_sql_token(text, first[1] + and_match.end())
+        if not second:
+            continue
+        nums = [_wafer_literal_number(first[2]), _wafer_literal_number(second[2])]
+        if any(num is None for num in nums):
+            continue
+        span = (start, second[1])
+        if _overlaps(span, occupied):
+            continue
+        replacement = f"{cast_col(match.group('col'))} BETWEEN {nums[0]} AND {nums[1]}"
+        replacements.append((span[0], span[1], replacement))
+        occupied.append(span)
+
+    for match in re.finditer(rf"(?<![A-Za-z0-9_])(?P<col>{col_pat})(?![A-Za-z0-9_])\s*(?P<op>>=|<=|<>|!=|==|=|>|<)\s*", mask, flags=re.I):
+        token = _read_sql_token(text, match.end())
+        if not token:
+            continue
+        num = _wafer_literal_number(token[2])
+        if num is None:
+            continue
+        span = (match.start(), token[1])
+        if _overlaps(span, occupied):
+            continue
+        replacement = f"{cast_col(match.group('col'))} {match.group('op')} {num}"
+        replacements.append((span[0], span[1], replacement))
+        occupied.append(span)
+
+    if not replacements:
+        return text
+    out = text
+    for start, end, replacement in sorted(replacements, key=lambda item: item[0], reverse=True):
+        out = out[:start] + replacement + out[end:]
+    return out.strip()
 
 
 _AI_SQL_COLUMN_ALIASES = {
@@ -4671,6 +4874,89 @@ def _sql_literal_for_filter(value: str, columns: list[str]) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+def _ai_sql_time_from_suffix(text: str) -> tuple[int, int, int] | None:
+    suffix = str(text or "")[:64]
+    cut = re.search(r"(?:이후|이전|부터|까지|만|행|필터|그리고|또|,|;|\n)", suffix, flags=re.I)
+    if cut:
+        suffix = suffix[:cut.start()]
+    meridiem_match = re.search(r"\b(AM|PM|A\.M\.|P\.M\.)\b|오전|오후", suffix, flags=re.I)
+    meridiem = meridiem_match.group(0).casefold().replace(".", "") if meridiem_match else ""
+    match = re.search(r"(?<!\d)(\d{1,2})\s*:\s*(\d{1,2})(?:\s*:\s*(\d{1,2}))?(?!\d)", suffix)
+    if not match:
+        match = re.search(r"(?<!\d)(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분?)?(?:\s*(\d{1,2})\s*초)?", suffix)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    second = int(match.group(3) or 0)
+    if meridiem in {"pm", "오후"} and hour < 12:
+        hour += 12
+    if meridiem in {"am", "오전"} and hour == 12:
+        hour = 0
+    if hour > 23 or minute > 59 or second > 59:
+        return None
+    return hour, minute, second
+
+
+def _ai_sql_datetime_value(year: int, month: int = 1, day: int = 1,
+                           time_value: tuple[int, int, int] | None = None) -> str | None:
+    try:
+        if time_value:
+            hour, minute, second = time_value
+            return datetime.datetime(year, month, day, hour, minute, second).isoformat(timespec="seconds")
+        return datetime.date(year, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def _extract_ai_sql_datetime_values(text: str) -> list[str]:
+    src = str(text or "")
+    candidates: list[tuple[int, int, int, str]] = []
+
+    def add(start: int, end: int, precision: int, value: str | None) -> None:
+        if value:
+            candidates.append((start, end, precision, value))
+
+    for match in re.finditer(r"(?<!\d)((?:19|20|21)\d{2})\s*년\s*(?:(\d{1,2})\s*월\s*)?(?:(\d{1,2})\s*일)?", src):
+        year = int(match.group(1))
+        month = int(match.group(2) or 1)
+        day = int(match.group(3) or 1)
+        time_value = _ai_sql_time_from_suffix(src[match.end():]) if match.group(3) else None
+        precision = 4 if time_value else (3 if match.group(3) else (2 if match.group(2) else 1))
+        add(match.start(), match.end(), precision, _ai_sql_datetime_value(year, month, day, time_value))
+
+    for match in re.finditer(r"(?<!\d)((?:19|20|21)\d{2})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?(?!\d)", src):
+        year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3) or 1)
+        time_value = _ai_sql_time_from_suffix(src[match.end():]) if match.group(3) else None
+        precision = 4 if time_value else (3 if match.group(3) else 2)
+        add(match.start(), match.end(), precision, _ai_sql_datetime_value(year, month, day, time_value))
+
+    for match in re.finditer(r"(?<!\d)((?:19|20|21)\d{2})(\d{2})(\d{2})(?!\d)", src):
+        year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3))
+        time_value = _ai_sql_time_from_suffix(src[match.end():])
+        precision = 4 if time_value else 3
+        add(match.start(), match.end(), precision, _ai_sql_datetime_value(year, month, day, time_value))
+
+    for match in re.finditer(r"(?<![A-Za-z0-9_])((?:19|20|21)\d{2})(?:\s*년)?(?![A-Za-z0-9_])", src):
+        year = int(match.group(1))
+        add(match.start(), match.end(), 1, _ai_sql_datetime_value(year))
+
+    selected: list[tuple[int, int, str]] = []
+    for start, end, _precision, value in sorted(candidates, key=lambda item: (-item[2], item[0], item[1])):
+        if any(not (end <= old_start or start >= old_end) for old_start, old_end, _old_value in selected):
+            continue
+        selected.append((start, end, value))
+    out: list[str] = []
+    for _start, _end, value in sorted(selected, key=lambda item: item[0]):
+        if value not in out:
+            out.append(value)
+    return out
+
+
 def _fallback_values(text: str, columns: list[str]) -> list[str]:
     blocked = {c.casefold() for c in columns}
     blocked.update(_AI_SQL_IGNORE_TOKENS)
@@ -4718,7 +5004,7 @@ def _fallback_window(prompt: str, column: str) -> str:
         return prompt
     start, end = min(spans, key=lambda item: item[0])
     tail = prompt[end:end + 120]
-    cut = re.search(r"(?:이고|그리고|,|;|\n|\bAND\b|\bOR\b)", tail, flags=re.I)
+    cut = re.search(r"(?:이고|이면서|그리고|또|,|;|\n|\bAND\b|\bOR\b)", tail, flags=re.I)
     if cut:
         tail = tail[:cut.start()]
     return prompt[start:end] + tail
@@ -4736,7 +5022,8 @@ def _fallback_ai_sql(prompt: str, columns: list[str]) -> str:
     for col in hits:
         window = _fallback_window(prompt, col)
         wlow = window.casefold()
-        values = _fallback_values(window, columns)
+        date_values = _extract_ai_sql_datetime_values(window) if _looks_date_like_column(col) else []
+        values = date_values or _fallback_values(window, columns)
         less_match = re.search(r"(-?\d+(?:\.\d+)?)\s*보다\s*(?:작|낮)", window)
         greater_match = re.search(r"(-?\d+(?:\.\d+)?)\s*보다\s*(?:큰|크|높)", window)
         le_match = re.search(r"(-?\d+(?:\.\d+)?)\s*이하", window)
@@ -4795,6 +5082,9 @@ def _fallback_ai_sql(prompt: str, columns: list[str]) -> str:
             continue
         if ("이후" in wlow or "after" in wlow) and values:
             clauses.append(f"{col} >= {_sql_literal_for_filter(values[0], columns)}")
+            continue
+        if ("이전" in wlow or "before" in wlow) and values:
+            clauses.append(f"{col} <= {_sql_literal_for_filter(values[0], columns)}")
             continue
         if ("아닌" in wlow or "!=" in wlow or "not " in wlow) and values:
             clauses.append(f"{col} != {_sql_literal_for_filter(values[0], columns)}")
@@ -4917,7 +5207,7 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
 
     sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
     if sql and sql.strip():
-        df = apply_sql_like(df, sql)
+        df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, all_columns))
         total = df.height
     latest_order_col = _latest_order_column(all_columns) if latest_first else ""
     if latest_order_col and latest_order_col in df.columns:
@@ -4957,9 +5247,10 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
     sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
     latest_order_col = _latest_order_column(all_columns) if latest_first else ""
     wafer_where = _duckdb_valid_wafer_where(all_columns)
+    user_where = _normalize_wafer_sql_filter(sql, all_columns)
     show_plus, _all_cols, _schema = duckdb_engine.query_files(
         files,
-        where=_combine_where(sql, wafer_where),
+        where=_combine_where(user_where, wafer_where),
         select_cols=sel,
         limit=page_size + 1,
         offset=offset,
@@ -5066,7 +5357,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
                 df = collect_streaming(lf)
             except Exception:
                 df = lf.collect()
-            df = apply_sql_like(df, sql)
+            df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, all_columns))
             total = df.height
             if latest_order_col and latest_order_col in df.columns:
                 df = df.sort(
@@ -5569,7 +5860,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
 
         df, _wafer_filtered = _filter_valid_wafers_df(df)
         if sql.strip():
-            df = apply_sql_like(df, sql)
+            df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, list(df.columns)))
         if select_cols.strip():
             sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(df.columns)]
             if sel:

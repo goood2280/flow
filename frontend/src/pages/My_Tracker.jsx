@@ -225,7 +225,7 @@ function expandLotsForSubmit(lots = []) {
   (Array.isArray(lots) ? lots : []).forEach(lot => {
     const { _summary, _summaryRows, ...base } = lot || {};
     const rows = Array.isArray(_summaryRows) ? _summaryRows : [];
-    const hasBaseValue = ["product", "monitor_prod", "root_lot_id", "lot_id", "wafer_id", "comment"].some(k => String(base?.[k] || "").trim());
+    const hasBaseValue = ["product", "monitor_prod", "root_lot_id", "lot_id", "wafer_id", "purpose", "comment"].some(k => String(base?.[k] || "").trim());
     if (!rows.length && !hasBaseValue) return;
     if (!rows.length) {
       out.push(base);
@@ -441,6 +441,7 @@ function LotTable({ lots, setLots, readOnly, issueId, product, category, roleNam
 function LotTableInner({ lots, setLots, readOnly, issueId, product, category, roleNames, cats, stepData, setStepData, busyRow, setBusyRow, fetchStep, fetchAllSteps, batchBusy, batchDone }) {
   const [productOptions, setProductOptions] = useState([]);
   const [lotOptions, setLotOptions] = useState({});
+  const [openLotDrop, setOpenLotDrop] = useState(null);
   const categorySource = trackerCategorySource(category, roleNames, cats);
   const monitorMode = isMonitorCategory(category, roleNames);
   const createMonitorMode = !readOnly && monitorMode;
@@ -456,24 +457,28 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
       const newRows = lines.map(line => {
         const parts = line.split("\t");
         if (createMonitorMode) {
+          const multi = parts.length > 1;
           return {
-            product: "",
-            monitor_prod: "",
+            product: multi ? (parts[0] || "").trim() : "",
+            monitor_prod: multi ? (parts[0] || "").trim() : "",
             root_lot_id: "",
-            lot_id: (parts[0] || "").trim(),
+            lot_id: (multi ? parts[1] : parts[0] || "").trim(),
             wafer_id: "",
-            comment: "",
+            purpose: (parts[2] || "").trim(),
+            comment: (parts[3] || "").trim(),
           };
         }
+        const hasPurposeColumn = parts.length >= 5;
         return {
           product: (parts[0] || "").trim(),
           monitor_prod: (parts[0] || "").trim(),
           root_lot_id: "",
           lot_id: (parts[1] || "").trim(),
           wafer_id: (parts[2] || "").trim(),
-          comment: (parts[3] || "").trim(),
+          purpose: (hasPurposeColumn ? parts[3] : "").trim(),
+          comment: (parts[hasPurposeColumn ? 4 : 3] || "").trim(),
         };
-      }).filter(r => r.product || r.lot_id || r.wafer_id);
+      }).filter(r => r.product || r.lot_id || r.wafer_id || r.purpose || r.comment);
       setLots(prev => [...prev, ...newRows]);
     }
   };
@@ -537,13 +542,13 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   }, [readOnly, category, setLots, setBusyRow, setStepData]);
 
   useEffect(() => {
-    if (readOnly || createMonitorMode) return;
+    if (readOnly) return;
     const params = new URLSearchParams();
     if (category) params.set("category", category);
     sf(API + "/products?" + params.toString())
       .then(d => setProductOptions(Array.isArray(d?.products) ? d.products : []))
       .catch(() => setProductOptions([]));
-  }, [readOnly, createMonitorMode, category]);
+  }, [readOnly, category]);
   const loadLotOptions = useCallback((idx, row, prefixValue = "") => {
     if (readOnly) return;
     const params = new URLSearchParams();
@@ -586,18 +591,81 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
       out.push({ value: cur, type: "current" });
     }
     rows.forEach(c => {
-      const value = String(c?.value || "").trim();
+      const value = String(c?.value || c || "").trim();
       if (!value) return;
       const key = value.toUpperCase();
       if (seen.has(key)) return;
       seen.add(key);
-      out.push(c);
+      out.push(typeof c === "object" ? c : { value, type: "lot_id" });
     });
     return out;
   };
 
+  const lotChoiceRows = (idx, current) => {
+    const q = String(current || "").trim().toLowerCase();
+    const rows = lotChoices(idx, current);
+    if (!q) return rows;
+    return rows.filter(c => {
+      const value = String(c?.value || "").toLowerCase();
+      const root = String(c?.root_lot_id || "").toLowerCase();
+      const prod = String(c?.product || "").toLowerCase();
+      return value.includes(q) || root.includes(q) || prod.includes(q);
+    });
+  };
+  const lotChoiceMeta = (c) => [
+    c?.product,
+    c?.root_lot_id ? `root ${c.root_lot_id}` : "",
+    c?.step_id,
+    c?.source_root,
+  ].filter(Boolean).join(" · ");
+  const renderLotInput = ({ idx, row, value, disabled, placeholder, onValueChange, onPick, onBlur }) => {
+    const choices = lotChoiceRows(idx, value);
+    const isOpen = openLotDrop === idx && !disabled && choices.length > 0;
+    return (
+      <div style={{ position: "relative", width: "100%" }}>
+        <input value={value}
+          disabled={disabled}
+          onFocus={() => {
+            if (!disabled) {
+              setOpenLotDrop(idx);
+              if (!(lotOptions[idx] || []).length) loadLotOptions(idx, row, value);
+            }
+          }}
+          onChange={e => {
+            const v = e.target.value;
+            setOpenLotDrop(idx);
+            onValueChange(v);
+          }}
+          onBlur={e => {
+            const nextValue = e.target.value;
+            setTimeout(() => setOpenLotDrop(cur => cur === idx ? null : cur), 140);
+            if (onBlur) onBlur(nextValue);
+          }}
+          placeholder={placeholder}
+          style={{ ...sheetInput, color: disabled ? "var(--text-secondary)" : "var(--text-primary)", cursor: disabled ? "not-allowed" : "text" }} />
+        {isOpen && (
+          <div style={{ maxHeight: 170, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)", marginTop: 2 }}>
+            {choices.slice(0, 80).map((c, j) => (
+              <div key={`${c.type || "lot"}-${c.value}-${j}`}
+                onMouseDown={e => {
+                  e.preventDefault();
+                  onPick(c);
+                  setOpenLotDrop(null);
+                }}
+                style={{ padding: "6px 10px", fontSize: 14, cursor: "pointer", borderBottom: "1px solid var(--border)", color: "var(--text-primary)" }}
+                onMouseEnter={e => e.currentTarget.style.background = "var(--bg-hover)"}
+                onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                <div style={{ fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.value}</div>
+                {lotChoiceMeta(c) && <div style={{ marginTop: 2, fontSize: 14, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{lotChoiceMeta(c)}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
   const removeRow = (idx) => setLots(prev => prev.filter((_, i) => i !== idx));
-  const addRow = () => setLots(prev => [...prev, { product: "", monitor_prod: "", root_lot_id: "", lot_id: "", wafer_id: "", comment: "" }]);
+  const addRow = () => setLots(prev => [...prev, { product: "", monitor_prod: "", root_lot_id: "", lot_id: "", wafer_id: "", purpose: "", comment: "" }]);
 
   const cellStyle = {
     padding: "5px 8px", borderBottom: "1px solid var(--border)", fontSize: 14,
@@ -622,8 +690,8 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   };
   const showEtColumn = readOnly && (categorySource === "et" || categorySource === "both");
   const showStepColumn = !createMonitorMode && (readOnly || monitorMode) && (categorySource === "fab" || categorySource === "both" || categorySource === "auto");
-  const readOnlyColSpan = 4 + (showStepColumn ? 1 : 0) + (showEtColumn ? 1 : 0) + 1 + 2;
-  const baseHeaders = createMonitorMode ? ["lot_id", "wafer_ids", "step_id(func_step)"] : ["product", "lot_id", "wafer_id", "comment"];
+  const baseHeaders = createMonitorMode ? ["product", "lot_id", "purpose", "comment", "wafer_ids", "step_id(func_step)"] : ["product", "lot_id", "wafer_id", "purpose", "comment"];
+  const readOnlyColSpan = baseHeaders.length + (showStepColumn ? 1 : 0) + (showEtColumn ? 1 : 0) + 3;
 
   // v8.8.5: 빈 상태 플레이스홀더 행 대신, 항상 테이블 형태 유지 + 맨 아래 [+ 행추가] 빈 행.
   //   - readOnly 가 아닐 때: 데이터 행들 아래에 "+ 버튼만 있는 빈 셀 행" 하나 (여기 클릭 = addRow).
@@ -655,7 +723,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   return (
     <div onPaste={!readOnly ? handlePaste : undefined}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>product / lot_id / wafer_id ({lots.length})</span>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>product / lot_id / purpose / comment ({lots.length})</span>
         {readOnly ? (
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{batchBusy ? `0/${lots.length} 완료` : `${batchDone}/${lots.length} 완료`}</span>
@@ -664,12 +732,12 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
               {batchBusy ? "조회 중..." : "전체 조회"}
             </button>
           </div>
-        ) : <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{createMonitorMode ? "lot_id 입력 후 wafer/step 자동 조회" : "Excel TSV 붙여넣기 지원 · product / lot_id / wafer_id / comment 순서"}</span>}
+        ) : <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{createMonitorMode ? "product와 lot_id 입력 후 wafer/step 자동 조회" : "Excel TSV 붙여넣기 지원 · product / lot_id / wafer_id / purpose / comment 순서"}</span>}
       </div>
       {!readOnly && (
         <>
           <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>
-            {createMonitorMode ? "Monitor 이슈는 lot_id만 입력하면 cache에서 wafer 매수, wafer 번호, step_id, func_step을 불러옵니다." : "product를 먼저 선택하면 해당 product의 lot_id 후보가 입력 중 자동 필터링됩니다."}
+            {createMonitorMode ? "Monitor 이슈는 product와 lot_id를 기준으로 cache에서 wafer 매수, wafer 번호, step_id, func_step을 불러옵니다. purpose와 comment는 별도 관리 컬럼입니다." : "product를 먼저 선택하면 해당 product의 lot_id 후보가 입력 중 자동 필터링됩니다."}
           </div>
         </>
       )}
@@ -721,29 +789,49 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                 const summaryTitle = stepSummaryTitle(summaryRows) || stepTitle;
                 return (
                   <tr key={i}>
-                    <td style={{ ...sheetCell, minWidth: 240 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <input value={lotValue}
-                          list={`tracker-lot-candidates-${i}`}
-                          onFocus={() => { if (!(lotOptions[i] || []).length) loadLotOptions(i, l, ""); }}
-                          onChange={e => {
-                            const v = e.target.value;
+                    <td style={{ ...sheetCell, minWidth: 150 }}>
+                      <select value={rowProduct}
+                        onChange={e => {
+                          const v = e.target.value;
+                          updateRow(i, { product: v, monitor_prod: v, root_lot_id: "", lot_id: "", wafer_id: "", _summary: null, _summaryRows: [] });
+                          setLotOptions(prev => ({ ...prev, [i]: [] }));
+                          loadLotOptions(i, { ...l, product: v, monitor_prod: v, root_lot_id: "", lot_id: "" }, "");
+                        }}
+                        style={sheetInput}>
+                        <option value="">product 선택</option>
+                        {productChoices(rowProduct).map(p => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                    </td>
+                    <td style={{ ...sheetCell, minWidth: 260 }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                        {renderLotInput({
+                          idx: i,
+                          row: l,
+                          value: lotValue,
+                          disabled: false,
+                          placeholder: "lot_id 입력/검색",
+                          onValueChange: v => {
                             updateRow(i, { root_lot_id: "", lot_id: v, wafer_id: "", _summary: null, _summaryRows: [] });
                             loadLotOptions(i, { ...l, root_lot_id: "", lot_id: v }, v);
-                          }}
-                          onBlur={() => fetchLotSummary(i, { ...l, root_lot_id: "", lot_id: lotValue })}
-                          placeholder="lot_id 입력"
-                          style={sheetInput} />
+                          },
+                          onPick: c => {
+                            const v = String(c?.value || "").trim();
+                            updateRow(i, { product: c?.product || rowProduct || "", monitor_prod: c?.product || rowProduct || "", root_lot_id: "", lot_id: v, wafer_id: "", _summary: null, _summaryRows: [] });
+                            fetchLotSummary(i, { ...l, product: c?.product || rowProduct || "", monitor_prod: c?.product || rowProduct || "", root_lot_id: "", lot_id: v });
+                          },
+                          onBlur: v => fetchLotSummary(i, { ...l, root_lot_id: "", lot_id: v }),
+                        })}
                         <button onClick={() => fetchLotSummary(i, l)} disabled={busyRow === i || !lotValue}
                           style={{ marginRight: 6, padding: "3px 7px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", fontSize: 14, cursor: busyRow === i || !lotValue ? "not-allowed" : "pointer", flexShrink: 0 }}>
                           {busyRow === i ? "…" : "조회"}
                         </button>
                       </div>
-                      <datalist id={`tracker-lot-candidates-${i}`}>
-                        {lotChoices(i, lotValue).map((c, j) => (
-                          <option key={`${c.type || "lot"}-${c.value}-${j}`} value={c.value} label={`${c.type || "lot"}${c.source_root ? ` · ${c.source_root}` : ""}`} />
-                        ))}
-                      </datalist>
+                    </td>
+                    <td style={{ ...sheetCell, minWidth: 170 }}>
+                      <input value={l.purpose || ""} onChange={e => updateCell(i, "purpose", e.target.value)} style={sheetInput} placeholder="purpose" />
+                    </td>
+                    <td style={{ ...sheetCell, minWidth: 180 }}>
+                      <input value={l.comment || ""} onChange={e => updateCell(i, "comment", e.target.value)} style={sheetInput} placeholder="comment" />
                     </td>
                     <td title={Array.isArray(summary?.wafer_ids) ? summary.wafer_ids.join(", ") : ""} style={{ ...cellStyle, minWidth: 180, fontFamily: "monospace", color: summaryRows.length ? "var(--accent)" : "var(--text-secondary)", fontWeight: summaryRows.length ? 800 : 500 }}>
                       {waferSummaryText(summary)}
@@ -773,27 +861,26 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                   </select>
                 )}</td>
                 <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 210 }}>{readOnly ? (l.lot_id || l.root_lot_id) : (
-                  <>
-                  <input value={lotValue}
-                    list={`tracker-lot-candidates-${i}`}
-                    disabled={!rowProduct}
-                    onFocus={() => { if (rowProduct && !(lotOptions[i] || []).length) loadLotOptions(i, l, ""); }}
-                    onChange={e => {
-                      const v = e.target.value;
+                  renderLotInput({
+                    idx: i,
+                    row: l,
+                    value: lotValue,
+                    disabled: !rowProduct,
+                    placeholder: rowProduct ? "lot_id 입력/검색" : "product 먼저 선택",
+                    onValueChange: v => {
                       updateRow(i, { root_lot_id: "", lot_id: v });
                       if (rowProduct) loadLotOptions(i, { ...l, root_lot_id: "", lot_id: v }, v);
-                    }}
-                    onBlur={() => { if (monitorMode && lotValue) fetchStep(i, { ...l, root_lot_id: "", lot_id: lotValue }); }}
-                    placeholder={rowProduct ? "lot_id 입력/검색" : "product 먼저 선택"}
-                    style={{ ...sheetInput, color: rowProduct ? "var(--text-primary)" : "var(--text-secondary)", cursor: rowProduct ? "text" : "not-allowed" }} />
-                  <datalist id={`tracker-lot-candidates-${i}`}>
-                    {lotChoices(i, lotValue).map((c, j) => (
-                      <option key={`${c.type || "lot"}-${c.value}-${j}`} value={c.value} label={`${c.type || "lot"}${c.source_root ? ` · ${c.source_root}` : ""}`} />
-                    ))}
-                  </datalist>
-                  </>
+                    },
+                    onPick: c => {
+                      const v = String(c?.value || "").trim();
+                      updateRow(i, { root_lot_id: "", lot_id: v });
+                      if (monitorMode) fetchStep(i, { ...l, root_lot_id: "", lot_id: v });
+                    },
+                    onBlur: v => { if (monitorMode && v) fetchStep(i, { ...l, root_lot_id: "", lot_id: v }); },
+                  })
                 )}</td>
                 <td style={readOnly ? cellStyle : { ...sheetCell, width: 100 }}>{readOnly ? l.wafer_id : <input value={l.wafer_id || ""} onChange={e => updateCell(i, "wafer_id", e.target.value)} onBlur={() => { if (monitorMode && (l.root_lot_id || l.lot_id)) fetchStep(i, l); }} style={sheetInput} placeholder="all / 1,2 / 1~10" />}</td>
+                <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 170 }}>{readOnly ? (l.purpose || "") : <input value={l.purpose || ""} onChange={e => updateCell(i, "purpose", e.target.value)} style={sheetInput} placeholder="purpose" />}</td>
                 <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 180 }}>{readOnly ? l.comment : <input value={l.comment || ""} onChange={e => updateCell(i, "comment", e.target.value)} style={sheetInput} placeholder="comment" />}</td>
                 {showStepColumn && <td style={cellStyle}>
                     {busyRow === i ? <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>…</span>
@@ -910,8 +997,8 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
             {!readOnly && (
               <tr onClick={addRow} style={{ cursor: "pointer" }}
                   title="클릭 또는 + 로 행 추가 · Excel TSV 붙여넣기 지원">
-                <td colSpan={createMonitorMode ? 3 : 4} style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 14, background: "var(--bg-tertiary)", opacity: 0.7, fontFamily: "monospace" }}>
-                  {lots.length === 0 ? (createMonitorMode ? "lot_id 입력 행 추가" : "Excel 붙여넣기 (product \t lot_id \t wafer_id \t comment) 또는 + 로 행 추가") : "(빈 행)"}
+                <td colSpan={baseHeaders.length} style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 14, background: "var(--bg-tertiary)", opacity: 0.7, fontFamily: "monospace" }}>
+                  {lots.length === 0 ? (createMonitorMode ? "product / lot_id / purpose / comment 입력 행 추가" : "Excel 붙여넣기 (product \\t lot_id \\t wafer_id \\t purpose \\t comment) 또는 + 로 행 추가") : "(빈 행)"}
                 </td>
                 <td style={{ ...cellStyle, textAlign: "center", background: "var(--bg-tertiary)" }}>
                   <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, borderRadius: "50%", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 700, lineHeight: 1 }}>+</span>

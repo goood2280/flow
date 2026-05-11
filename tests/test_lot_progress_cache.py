@@ -61,6 +61,29 @@ def test_lot_progress_summary_returns_wafers_and_steps(monkeypatch):
     ]
 
 
+def test_lot_progress_candidates_expose_full_lot_id(monkeypatch):
+    monkeypatch.setattr(cache, "load_lot_progress_cache", lambda max_age_seconds=None: {
+        "items": [
+            {
+                "product": "PRODA",
+                "root_lot_id": "A1000",
+                "lot_id": "A1000A.1",
+                "wafer_id": "1",
+                "step_id": "STEP_010",
+                "func_step": "STI",
+                "time": "2026-05-08T10:00:00",
+            }
+        ]
+    })
+
+    rows = cache.lot_id_candidates(product="PRODA")
+
+    assert rows[0]["value"] == "A1000A.1"
+    assert rows[0]["lot_id"] == "A1000A.1"
+    assert rows[0]["fab_lot_id"] == "A1000A.1"
+    assert rows[0]["root_lot_id"] == "A1000"
+
+
 def test_export_lot_progress_parquet_writes_readable_latest_lot_file(monkeypatch, tmp_path):
     data_root = tmp_path / "flow-data"
     db_root = tmp_path / "Fab"

@@ -24,6 +24,9 @@
 
 ## Done
 
+- [x] (Codex) Tracker 새 이슈 lot 입력 표에 product/purpose/comment 복구, SplitTable식 lot_id 후보 목록 적용, fab_lot_id 후보가 root 5자리로 잘리지 않게 수정.
+- [x] (Codex) FileBrowser SQL/AI SQL의 `wafer_id` 조건을 string 저장 타입에서도 숫자 의미로 실행되도록 정규화.
+- [x] (Codex) FileBrowser AI SQL 날짜/시간 자연어 필터가 월·일·시·분·초를 quoted ISO literal로 보존하도록 보강하고, LLM의 연도-only 오역을 deterministic fallback으로 교정.
 - [x] (Codex) FileBrowser fast preview / full CSV download / AI SQL draft evaluation 구현 — preview 200행 고정, CSV 다운로드는 500k/100MB 한도까지, `/sql/llm/draft` + live eval/fallback 검증.
 - [x] (Codex) FileBrowser 파일설정 LLM 규칙 초안을 전문가형 prompt/fallback으로 보강하고, 생성 초안 요약/JSON 미리보기와 초안 적용 흐름을 추가.
 - [x] (Codex) Agent LLM runtime 설정을 Google Cloud Vertex AI Flash 계열로 전환 — `openai_compatible` / `google/gemini-2.5-flash` / `us-central1` endpoint 사용.

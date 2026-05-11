@@ -632,6 +632,8 @@ def lot_id_candidates(
         out.append({
             "value": lot_id,
             "type": "lot_id",
+            "lot_id": lot_id,
+            "fab_lot_id": lot_id,
             "source_root": item.get("source_root") or FAB_ROOT,
             "product": item.get("product") or "",
             "process_id": item.get("process_id") or "",

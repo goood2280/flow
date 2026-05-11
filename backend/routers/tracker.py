@@ -210,11 +210,14 @@ def _normalize_lot_candidate_rows(raw: list[dict], limit: int) -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
     for item in raw:
+        candidate_type = str(item.get("type") or "").strip()
+        explicit_value = str(item.get("value") or "").strip()
         lot_id = str(
-            item.get("lot_id")
-            or item.get("fab_lot_id")
+            item.get("fab_lot_id")
+            or item.get("lot_id")
+            or (explicit_value if candidate_type in {"fab_lot_id", "lot_id"} else "")
+            or explicit_value
             or item.get("root_lot_id")
-            or item.get("value")
             or ""
         ).strip()
         if not lot_id:

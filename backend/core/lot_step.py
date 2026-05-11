@@ -1269,7 +1269,7 @@ def lot_id_candidates(product: str = "", source_root: str = "", source: str = "a
         except Exception:
             continue
         lf_filtered = _apply_lot_filters(lf, schema, product=product)
-        for col in ("root_lot_id", "fab_lot_id", "lot_id"):
+        for col in ("fab_lot_id", "lot_id", "root_lot_id"):
             if col not in schema:
                 continue
             try:

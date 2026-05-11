@@ -669,6 +669,67 @@ def test_filebrowser_sql_llm_draft_falls_back_when_llm_unavailable(monkeypatch):
     assert out["sql"] == "root_lot_id = 'A1000' AND wafer_id = 21"
 
 
+def test_filebrowser_sql_llm_draft_fallback_preserves_korean_date(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="root_lot_id가 B1000이고 wafer_id 가 3인거 필터링해줘 또 tkout_time이 2024년 4월 20일 이후인거만",
+            columns=["root_lot_id", "wafer_id", "tkout_time"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["fallback"] is True
+    assert out["sql"] == "root_lot_id = 'B1000' AND wafer_id = 3 AND tkout_time >= '2024-04-20'"
+
+
+def test_filebrowser_sql_llm_draft_fallback_preserves_korean_datetime(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="tkout_time이 2024년 4월 20일 오후 2시 5분 6초 이후인 행",
+            columns=["root_lot_id", "wafer_id", "tkout_time"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["fallback"] is True
+    assert out["sql"] == "tkout_time >= '2024-04-20T14:05:06'"
+
+
+def test_filebrowser_sql_llm_draft_rejects_year_only_date_and_falls_back(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "text": json.dumps({"sql": "root_lot_id = 'B1000' AND wafer_id >= 3 AND tkout_time >= 2024"}),
+        },
+    )
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="root_lot_id가 B1000이고 wafer_id 가 3인거 필터링해줘 또 tkout_time이 2024년 4월 20일 이후인거만",
+            columns=["root_lot_id", "wafer_id", "tkout_time"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["fallback"] is True
+    assert out["llm"]["used"] is True
+    assert out["sql"] == "root_lot_id = 'B1000' AND wafer_id = 3 AND tkout_time >= '2024-04-20'"
+    assert "date/time filters" in "\n".join(out["warnings"])
+
+
 def test_filebrowser_sql_llm_draft_fallback_handles_root_lot_wafer_step(monkeypatch):
     monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
     monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
@@ -809,6 +870,57 @@ def test_filebrowser_lazy_view_normalizes_wafer_ids_before_sql():
         {"wafer_id": "1", "value": 10},
         {"wafer_id": "25", "value": 20},
         {"wafer_id": "25", "value": 999},
+    ]
+
+
+def test_filebrowser_lazy_view_filters_string_wafer_id_with_numeric_sql():
+    lf = pl.DataFrame({
+        "root_lot_id": ["LOT"] * 4,
+        "wafer_id": ["1", "3", "10", "25"],
+        "value": [1, 3, 10, 25],
+    }).lazy()
+
+    result = filebrowser._run_view_lazy(
+        lf,
+        sql="wafer_id >= 3",
+        select_cols="wafer_id,value",
+        rows=20,
+        page=0,
+        page_size=20,
+        preview_cols=5,
+    )
+
+    assert result["data"] == [
+        {"wafer_id": "3", "value": 3},
+        {"wafer_id": "10", "value": 10},
+        {"wafer_id": "25", "value": 25},
+    ]
+
+
+def test_filebrowser_dataframe_view_filters_string_wafer_id_with_numeric_sql():
+    df = pl.DataFrame({
+        "root_lot_id": ["LOT"] * 4,
+        "wafer_id": ["1", "3", "10", "25"],
+        "value": [1, 3, 10, 25],
+    })
+
+    result = filebrowser._run_view(df, sql="wafer_id = 3", select_cols="wafer_id,value", rows=20)
+
+    assert result["data"] == [{"wafer_id": "3", "value": 3}]
+
+
+def test_filebrowser_wafer_sql_normalizer_handles_in_and_prefixed_literals():
+    df = pl.DataFrame({
+        "root_lot_id": ["LOT"] * 4,
+        "wafer_id": ["1", "3", "10", "25"],
+        "value": [1, 3, 10, 25],
+    })
+
+    result = filebrowser._run_view(df, sql="wafer_id IN ('WF03', 10)", select_cols="wafer_id,value", rows=20)
+
+    assert result["data"] == [
+        {"wafer_id": "3", "value": 3},
+        {"wafer_id": "10", "value": 10},
     ]
 
 
