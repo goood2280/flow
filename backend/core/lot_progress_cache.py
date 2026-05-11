@@ -213,6 +213,36 @@ def _wafer_sort_value(value) -> int:
         return 999999
 
 
+def compress_wafer_ids(values) -> str:
+    numeric: list[int] = []
+    labels: list[str] = []
+    seen_labels: set[str] = set()
+    for value in values or []:
+        wafer = _norm_wafer(value)
+        if not wafer:
+            continue
+        if re.fullmatch(r"\d+", wafer):
+            numeric.append(int(wafer))
+            continue
+        key = wafer.upper()
+        if key not in seen_labels:
+            seen_labels.add(key)
+            labels.append(wafer)
+    numbers = sorted(set(numeric))
+    parts: list[str] = []
+    idx = 0
+    while idx < len(numbers):
+        start = numbers[idx]
+        end = start
+        while idx + 1 < len(numbers) and numbers[idx + 1] == end + 1:
+            idx += 1
+            end = numbers[idx]
+        parts.append(str(start) if start == end else f"{start}~{end}")
+        idx += 1
+    parts.extend(labels)
+    return f"#{','.join(parts)}" if parts else ""
+
+
 def _lot_progress_parquet_rows(state: dict) -> list[dict]:
     generated_at = _safe_text((state or {}).get("generated_at"))
     rows: list[dict] = []
@@ -593,6 +623,7 @@ def lot_progress_summary(
         "product": product_values[0] if product_values and len(set(product_values)) == 1 else "",
         "wafer_count": len(wafer_ids),
         "wafer_ids": wafer_ids,
+        "wafer_label": compress_wafer_ids(wafer_ids),
         "step_id": latest.get("step_id") or "",
         "func_step": latest.get("func_step") or "",
         "update_time": latest.get("update_time") or "",

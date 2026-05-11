@@ -59,6 +59,13 @@ export default function My_Calendar({ user }) {
   const [cats, setCats] = useState([]);
   const [meetings, setMeetings] = useState([]);
   const [meetingFilter, setMeetingFilter] = useState("all"); // "all" | "none-manual" | meeting_id
+  const [askMeetings, setAskMeetings] = useState([]);
+  const [askMeetingId, setAskMeetingId] = useState("");
+  const [askSessionId, setAskSessionId] = useState("all");
+  const [askQuestion, setAskQuestion] = useState("회의록, 결정사항, 액션아이템, 아젠다를 확인해줘");
+  const [askBusy, setAskBusy] = useState(false);
+  const [askResult, setAskResult] = useState(null);
+  const [askLlmAvailable, setAskLlmAvailable] = useState(false);
   const [selected, setSelected] = useState(null);
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState(null);
@@ -80,12 +87,25 @@ export default function My_Calendar({ user }) {
       .catch(() => setEvents([]))
       .finally(() => setLoading(false));
     sf(`${API}/meetings`).then(d => setMeetings(d.meetings || [])).catch(() => setMeetings([]));
+    sf("/api/meetings/list").then(d => {
+      const list = d.meetings || [];
+      setAskMeetings(list);
+      setAskMeetingId(cur => (cur && list.some(m => m.id === cur)) ? cur : (list[0]?.id || ""));
+    }).catch(() => { setAskMeetings([]); setAskMeetingId(""); });
   };
   const reloadCats = () => sf(`${API}/categories`).then(d => setCats(d.categories || [])).catch(() => setCats([]));
 
   useEffect(() => { reload(); }, [monthStr]);
   useEffect(() => { reloadCats(); }, []);
   useEffect(() => { sf("/api/groups/list").then(d => setMyGroups(d.groups || [])).catch(() => setMyGroups([])); }, []);
+  useEffect(() => { sf("/api/llm/status").then(d => setAskLlmAvailable(!!d.available)).catch(() => setAskLlmAvailable(false)); }, []);
+  useEffect(() => {
+    if (meetingFilter === "all" || meetingFilter === "manual") return;
+    if (askMeetings.some(m => m.id === meetingFilter)) {
+      setAskMeetingId(meetingFilter);
+      setAskSessionId("all");
+    }
+  }, [meetingFilter, askMeetings]);
 
   const filteredEvents = useMemo(() => {
     if (meetingFilter === "all") return events;
@@ -94,6 +114,30 @@ export default function My_Calendar({ user }) {
   }, [events, meetingFilter]);
 
   const grid = useMemo(() => buildMonthGrid(view), [view]);
+  const askMeeting = useMemo(() => askMeetings.find(m => m.id === askMeetingId) || null, [askMeetings, askMeetingId]);
+  useEffect(() => {
+    if (!askMeeting) return;
+    if (askSessionId === "all") return;
+    if (!(askMeeting.sessions || []).some(s => s.id === askSessionId)) setAskSessionId("all");
+  }, [askMeeting, askSessionId]);
+  useEffect(() => { setAskResult(null); }, [askMeetingId, askSessionId]);
+
+  const runMeetingAsk = () => {
+    const question = (askQuestion || "").trim();
+    if (!askMeetingId) { toast.warn("회의를 선택하세요"); return; }
+    if (!question) { toast.warn("질문을 입력하세요"); return; }
+    setAskBusy(true);
+    postJson("/api/meetings/ask", {
+      meeting_id: askMeetingId,
+      session_id: askSessionId,
+      question,
+    }).then(d => setAskResult(d))
+      .catch(e => {
+        setAskResult(null);
+        toast.error(e.message || "회의 확인 실패");
+      })
+      .finally(() => setAskBusy(false));
+  };
 
   // Expand events to occurrences per date (handles end_date).
   // Returns { [ymd]: [{event, kind:'single'|'start'|'middle'|'end', dayIdx}] }
@@ -355,6 +399,21 @@ export default function My_Calendar({ user }) {
               </div>
             </div>
           )}
+          <MeetingAskPanel
+            meetings={askMeetings}
+            selectedMeeting={askMeeting}
+            meetingId={askMeetingId}
+            sessionId={askSessionId}
+            question={askQuestion}
+            busy={askBusy}
+            result={askResult}
+            llmAvailable={askLlmAvailable}
+            onMeetingChange={(id) => { setAskMeetingId(id); setAskSessionId("all"); }}
+            onSessionChange={setAskSessionId}
+            onQuestionChange={setAskQuestion}
+            onAsk={runMeetingAsk}
+            onUsePrompt={setAskQuestion}
+          />
         </div>
       </div>
 
@@ -502,6 +561,96 @@ export default function My_Calendar({ user }) {
             </div>
       </Modal>
     </div>
+  );
+}
+
+function askSessionLabel(session) {
+  if (!session) return "";
+  const idx = session.idx || "";
+  const base = idx ? `${idx}차` : (session.id || "차수");
+  const sched = (session.scheduled_at || "").replace("T", " ").slice(0, 16);
+  return sched ? `${base} · ${sched}` : base;
+}
+
+function MeetingAskPanel({
+  meetings,
+  selectedMeeting,
+  meetingId,
+  sessionId,
+  question,
+  busy,
+  result,
+  llmAvailable,
+  onMeetingChange,
+  onSessionChange,
+  onQuestionChange,
+  onAsk,
+  onUsePrompt,
+}) {
+  const sessions = selectedMeeting?.sessions || [];
+  const disabled = busy || !meetingId || !(question || "").trim();
+  return (
+    <section style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-primary)" }}>{llmAvailable ? "회의별 LLM 확인" : "회의별 저장 데이터 확인"}</div>
+        {!result && <Pill tone={llmAvailable ? "accent" : "neutral"}>{llmAvailable ? "LLM 연결됨" : "LLM 미연결"}</Pill>}
+        {result?.llm && <Pill tone={result.llm.used ? "accent" : "neutral"}>{result.llm.used ? "LLM 답변" : "저장 데이터 답변"}</Pill>}
+        {result?.scope && <Pill tone="info">{result.scope === "session" ? "차수 범위" : "회의 전체"}</Pill>}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, alignItems: "start" }}>
+        <select value={meetingId} onChange={e => onMeetingChange(e.target.value)} style={inp}>
+          {(!meetings || meetings.length === 0) && <option value="">회의 없음</option>}
+          {(meetings || []).map(m => <option key={m.id} value={m.id}>{m.title || m.id}</option>)}
+        </select>
+        <select value={sessionId} onChange={e => onSessionChange(e.target.value)} style={inp} disabled={!selectedMeeting}>
+          <option value="all">전체 차수</option>
+          {sessions.map(s => <option key={s.id} value={s.id}>{askSessionLabel(s)}</option>)}
+        </select>
+        <textarea
+          value={question}
+          onChange={e => onQuestionChange(e.target.value)}
+          onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") onAsk(); }}
+          rows={2}
+          spellCheck={false}
+          placeholder="회의 내용 질문"
+          style={{ ...inp, minHeight: 38, resize: "vertical", fontFamily: "inherit", lineHeight: 1.45 }}
+        />
+        <Button variant="primary" onClick={onAsk} disabled={disabled} style={{ minHeight: 38 }}>{busy ? "확인 중…" : "확인"}</Button>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+        {[
+          ["회의록, 결정사항, 액션아이템, 아젠다를 확인해줘", "전체 확인"],
+          ["액션아이템 담당자와 마감일을 알려줘", "액션"],
+          ["결정사항만 정리해줘", "결정"],
+          ["어떤 아젠다가 있었는지 알려줘", "아젠다"],
+        ].map(([prompt, label]) => (
+          <button key={label} onClick={() => onUsePrompt(prompt)} style={{
+            padding: "3px 8px", borderRadius: 4, border: "1px solid var(--border)",
+            background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer",
+          }}>{label}</button>
+        ))}
+      </div>
+      {result && (
+        <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-secondary)", overflow: "hidden" }}>
+          <div style={{ padding: "7px 10px", borderBottom: "1px solid var(--border)", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>{result.meeting?.title || "회의 답변"}</span>
+            {(result.sources || []).map(src => (
+              <Pill key={src.session_id || src.label} tone="neutral">
+                {src.label} · 아젠다 {src.agendas} · 결정 {src.decisions} · 액션 {src.action_items}
+              </Pill>
+            ))}
+          </div>
+          <div style={{ padding: 12, whiteSpace: "pre-wrap", lineHeight: 1.6, color: "var(--text-primary)", fontSize: 14 }}>
+            {result.answer || "확인된 답변이 없습니다."}
+          </div>
+          {result.llm?.error && (
+            <div style={{ padding: "0 12px 10px", color: "var(--text-secondary)", fontSize: 14 }}>
+              LLM 대체 답변: {result.llm.error}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

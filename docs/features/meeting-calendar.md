@@ -7,6 +7,8 @@ Meeting은 회의, agenda, minutes, decision, action item을 남기고 Calendar�
 - 회의 차수, agenda, minutes, decision, action item
 - tracker issue import
 - meeting mail compose/send
+- meeting mail preview and selectable content sections
+- calendar 하단 meeting ask assistant (`/api/meetings/ask`) — visible meeting의 agenda/minutes/decision/action item read-only 질의
 - calendar 월 grid, pending/in_progress/done 상태
 - meeting action과 tracker/calendar 상태 동기화
 
@@ -31,6 +33,11 @@ Meeting은 회의, agenda, minutes, decision, action item을 남기고 Calendar�
 
 - meeting write와 calendar push는 분리된 service 경계로 다룬다.
 - 이미지가 큰 mail은 텍스트 요약과 링크 중심으로 보낸다.
+- tracker issue import는 현재 Tracker issue와 lot progress cache 기준으로 `issue_ref.lots`를 다시 hydrate한다.
+- Monitor issue lot은 Meeting agenda에서도 입력된 `lot_id` 1행과 compact Qty/wafer/step 요약을 유지한다.
+- imported tracker issue의 lot table은 agenda card와 신규 agenda draft preview에서 바로 보여야 한다.
+- meeting mail preview는 실제 send와 같은 HTML builder를 사용하고, agenda/minutes/decisions/action items 포함 여부는 모두 기본 on이다.
+- meeting ask assistant는 `_meeting_visible` 권한을 재사용하고 회의 데이터를 쓰지 않는다. LLM 미설정/실패 시 저장 데이터 기반 fallback 답변을 반환한다.
 - calendar 항목은 자체 입력인지 외부 push인지 출처를 유지한다.
 - 원본 entity와 동기화되는 상태 변경은 충돌 가능성을 고려한다.
 

@@ -1252,7 +1252,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
   const [recipients, setRecipients] = useState([]);
   const [groups, setGroups] = useState({});          // {groupName: [emails]}
   const [publicGroups, setPublicGroups] = useState([]); // v8.8.3: 공용 메일 그룹 목록 [{id,name,members,extra_emails}]
-  const mailPrefill = initialSelection || root?.__mail_prefill || {};
+  const mailPrefill = initialSelection || root?.__mail_prefill || root?.mail_draft || {};
   const [pickedUsers, setPickedUsers] = useState(() => Array.isArray(mailPrefill.to_users) ? mailPrefill.to_users : []);   // usernames
   const [pickedGroups, setPickedGroups] = useState(() => Array.isArray(mailPrefill.groups) ? mailPrefill.groups : []); // group names
   const _defSubject = String(mailPrefill.subject || "");
@@ -1321,7 +1321,8 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
     if (!pg) return [];
     const out = new Set();
     (pg.members || []).forEach(un => {
-      const em = recipients.find(r => r.username === un)?.email;
+      const r = recipients.find(r => r.username === un);
+      const em = r?.effective_email || r?.email;
       if (em && em.includes("@")) out.add(em);
     });
     (pg.extra_emails || []).forEach(em => { if (em && em.includes("@")) out.add(em); });
@@ -1492,10 +1493,11 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
           </div>
           <div style={{ maxHeight: 140, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)" }}>
             {visibleList.length === 0 && <div style={{ padding: 14, textAlign: "center", fontSize: 14, color: "var(--text-secondary)" }}>유저가 없습니다.</div>}
-            {/* v8.8.27: 이름(실명) + username 동시 표시 — 동명이인 구분. BE 는 admin/hol/test/비email 이미 필터. */}
+            {/* 이름(실명) + username 동시 표시 — 동명이인 구분. email 미설정 유저도 flow-data/users.csv 기준으로 검색 후보에 노출. */}
             {visibleList.map(r => {
               const on = pickedUsers.includes(r.username);
               const nm = (r.name || "").trim();
+              const em = r.effective_email || r.email || "";
               return (
                 <div key={r.username} onClick={() => toggleUser(r.username)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 14, cursor: "pointer", background: on ? "rgba(59,130,246,0.12)" : "transparent", borderBottom: "1px solid var(--border)" }}>
                   <input type="checkbox" checked={on} readOnly />
@@ -1503,6 +1505,9 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
                     ? <><span style={{ fontWeight: 600 }}>{nm}</span>
                         <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>({r.username})</span></>
                     : <span style={{ fontWeight: 600 }}>{r.username}</span>}
+                  <span style={{ marginLeft: "auto", fontSize: 14, color: em ? "var(--text-secondary)" : WARN.fg, fontFamily: "monospace" }}>
+                    {em || "email 미설정"}
+                  </span>
                 </div>
               );
             })}
@@ -2292,6 +2297,8 @@ export default function My_Inform({ user }) {
     const fabTargets = uniqueClean(form.fab_lot_ids || []);
     const lot = (form.lot_id || "").trim() || (fabTargets[0] || "");
     const submitTargets = fabTargets.length ? fabTargets : [lot];
+    const multiSubmit = submitTargets.length > 1;
+    const mailMetaForSubmit = resolveWizardMailMetaForSubmit();
     if (!form.product.trim()) { setMsg("product 를 선택해 주세요."); return Promise.reject(new Error("product required")); }
     if (!lot) { setMsg("lot 을 선택해 주세요."); return Promise.reject(new Error("lot required")); }
     if (!form.module) { setMsg("module 을 선택해 주세요."); return Promise.reject(new Error("module required")); }
@@ -2322,7 +2329,7 @@ export default function My_Inform({ user }) {
       const attached = attachedSetsForSubmit();
       const currentScope = form.embed?.st_scope?.snapshot_source === "current_splittable";
       const currentScopeLot = String(form.embed?.st_scope?.lot_id || form.lot_id || "").trim();
-      if (currentScope && (!currentScopeLot || String(targetLot || "").trim() === currentScopeLot)) {
+      if (!multiSubmit && currentScope && (!currentScopeLot || String(targetLot || "").trim() === currentScopeLot)) {
         return { ...(form.embed || emptyEmbedTable()), attached_sets: attached };
       }
       const customCols = customColsForEmbed();
@@ -2360,6 +2367,16 @@ export default function My_Inform({ user }) {
       if (lot) {
         body.fab_lot_id_at_save = targetLot;
       }
+      if (
+        (mailMetaForSubmit.to || []).length ||
+        (mailMetaForSubmit.to_users || []).length ||
+        (mailMetaForSubmit.groups || []).length ||
+        (mailMetaForSubmit.extra_emails || []).length ||
+        mailMetaForSubmit.subject ||
+        mailMetaForSubmit.body
+      ) {
+        body.mail_draft = mailMetaForSubmit;
+      }
       return body;
     };
     const requests = submitTargets.map(async targetLot => sf(API, {
@@ -2379,7 +2396,7 @@ export default function My_Inform({ user }) {
       try { localStorage.removeItem(WIZARD_DRAFT_KEY); } catch (_) {}
       const created = results.find(r => r?.inform)?.inform;
       if (created?.id) {
-        const resolvedMailMeta = resolveWizardMailMetaForSubmit();
+        const resolvedMailMeta = mailMetaForSubmit;
         const selectedTo = uniqueClean(resolvedMailMeta?.to || []);
         const selectedUsers = uniqueClean(resolvedMailMeta?.to_users || []);
         const selectedGroups = uniqueClean(resolvedMailMeta?.groups || []);
@@ -4280,9 +4297,10 @@ function MailPreviewPanel({ root, onOpenMail }) {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [preview, setPreview] = useState(null);
+  const draft = root?.mail_draft || {};
   useEffect(() => {
-    setSubject("");
-    setBody("");
+    setSubject(String((root?.mail_draft || {}).subject || ""));
+    setBody(String((root?.mail_draft || {}).body || ""));
   }, [root?.id]);
   useEffect(() => {
     if (!root?.id) return;
@@ -4290,21 +4308,37 @@ function MailPreviewPanel({ root, onOpenMail }) {
       const q = new URLSearchParams();
       q.set("subject", subject || "");
       q.set("body", body || "");
+      (draft.to || draft.recipients || []).forEach(em => q.append("to", em));
+      (draft.to_users || []).forEach(un => q.append("to_users", un));
+      (draft.groups || []).forEach(g => q.append("groups", g));
+      (draft.extra_emails || []).forEach(em => q.append("to", em));
       sf(API + "/" + encodeURIComponent(root.id) + "/mail-preview?" + q.toString())
         .then(d => setPreview(d))
         .catch(() => setPreview(null));
     }, 250);
     return () => clearTimeout(h);
-  }, [root?.id, subject, body]);
+  }, [root?.id, subject, body, JSON.stringify(draft)]);
   const history = root.mail_history || [];
+  const savedTargets = uniqueClean([
+    ...((draft.to_users || []).map(v => `user:${v}`)),
+    ...((draft.groups || []).map(v => `group:${v}`)),
+    ...((draft.extra_emails || []).map(v => `mail:${v}`)),
+    ...((draft.to || draft.recipients || []).map(v => `mail:${v}`)),
+  ]);
   return (
     <div style={{ display: "grid", gap: 12 }}>
       <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
           <div style={{ fontWeight: 900 }}>수신자 미리보기</div>
           <span style={{ color: "var(--text-secondary)" }}>{(preview?.resolved_recipients || []).length}명</span>
+          {savedTargets.length > 0 && <span style={{ color: "var(--text-secondary)" }}>저장 대상 {savedTargets.length}개</span>}
           <button type="button" onClick={onOpenMail} style={{ marginLeft: "auto", padding: "6px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>전송 창 열기</button>
         </div>
+        {savedTargets.length > 0 && (
+          <div style={{ marginBottom: 6, color: "var(--text-secondary)", fontFamily: "monospace", lineHeight: 1.5 }}>
+            {(draft.groups || []).map(g => `[group] ${g}`).concat(draft.to_users || []).concat(draft.extra_emails || []).join(", ")}
+          </div>
+        )}
         <div style={{ color: "var(--text-secondary)", fontFamily: "monospace", lineHeight: 1.5 }}>
           {(preview?.resolved_recipients || []).slice(0, 12).join(", ") || "모듈 수신자 없음"}
           {(preview?.resolved_recipients || []).length > 12 ? ` +${preview.resolved_recipients.length - 12}` : ""}
@@ -4947,7 +4981,7 @@ function InformWizard({
                         <label key={r.username} style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 34, padding: "5px 9px", borderBottom: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", cursor: "pointer" }}>
                           <input type="checkbox" checked={on} onChange={() => toggleMailUser(r.username)} />
                           <span style={{ fontWeight: 800 }}>{nm || r.username}</span>
-                          <span style={{ color: "var(--text-secondary)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nm ? `(${r.username}) ` : ""}{em}</span>
+                          <span style={{ color: em ? "var(--text-secondary)" : WARN.fg, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nm ? `(${r.username}) ` : ""}{em || "email 미설정"}</span>
                         </label>
                       );
                     })}

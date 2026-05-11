@@ -33,6 +33,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - 저장 전 product, lot, wafer 범위를 확정한다.
 - plan 변경은 preview와 확인 단계를 거친다.
 - Inform snapshot과 SplitTable의 root/fab/wafer 표시 규칙을 맞춘다.
+- Inform용 fab lot snapshot은 선택된 fab lot의 header/wafer scope를 유지하고, root plan overlay는 해당 scope의 wafer cell에만 적용한다.
 - cache/parquet 변경은 runtime 산출물과 코드 변경을 분리해서 설명한다.
 
 ## Verify

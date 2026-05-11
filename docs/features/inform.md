@@ -8,7 +8,9 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - module, reason, deadline, status, 담당자 기록
 - PEMS reason chip, 사용자 입력 reason, 이미지/첨부 roundtrip
 - SplitTable CUSTOM snapshot embed
+- multi-selected fab lot별 독립 SplitTable snapshot embed
 - module-wise mail compose/send
+- 신규 등록 시 선택한 mail users/groups/extra emails를 Inform `mail_draft`로 저장해 등록 후 메일 탭과 발송창에서 이어 쓴다.
 - Dashboard inform widget용 요약 데이터
 
 ## Does Not Own
@@ -34,6 +36,8 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 
 - product가 불명확하면 생성 전에 후보를 확인한다.
 - message/reason이 없으면 빈 inform을 만들지 않는다.
+- 여러 fab lot을 선택해 생성할 때 각 Inform의 `lot_id`와 `fab_lot_id_at_save`는 선택한 target lot과 같아야 한다.
+- 수신자 후보는 `data/flow-data/users.csv`, 그룹 후보는 `data/flow-data/groups/groups.json`을 기준으로 한다.
 - 메일에는 제목, 대상, 본문, Flow link만 남긴다.
 - 첨부와 메일 실패는 UI에서 복구 가능한 상태로 보여준다.
 

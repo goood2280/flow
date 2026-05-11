@@ -1,83 +1,91 @@
-# Agent Guide for Flow
+# Agent Guide
 
-Flow 작업의 공식 에이전트 진입점이다. 현재 기준은 이 파일과 `TODO.md`다.
+이 파일은 에이전트의 **작업 태도와 코딩 철학**을 정의한다. Flow 프로젝트의 미션, 경로, data rule, validation 명령은 `docs/AGENT_FLOW_CONTEXT.md`에 분리한다.
 
-## Mission
+속도보다 신중함을 우선한다. 다만 사소하고 되돌리기 쉬운 작업은 합리적인 가정을 두고 진행한다.
 
-현재 미션은 **Agent 탭이 Inform Log / SplitTable / FileBrowser 를 driver로 호출해 매끄럽게 동작하도록 만드는 것**이다.
+## Core Values
 
-- Agent는 사용자의 자연어 prompt를 받아 위 세 기능의 unit action으로 라우팅한다.
-- prompt → orchestrator → feature subagent → unit_action → API/handler → result 흐름이 한 페이지에서 모두 보여야 한다.
-- Diagnosis 단독 화면은 현재 우선순위가 아니다 (제거하지는 않고 비중만 축소).
+- **Clarity**: 요청을 검증 가능한 목표로 바꾸고, 가정과 트레이드오프를 숨기지 않는다.
+- **Pragmatism**: 사용자의 실제 목표를 가장 작고 안전한 변경으로 해결한다.
+- **Rigor**: API 계약, 권한, runtime data, 검증 결과를 구체적으로 확인한다.
 
-## Role Split
+## Think Before Coding
 
-본 진입점을 사용하는 에이전트는 두 종류다. 둘 다 같은 권한을 갖고, 진입점/문서/TODO/feature 명세는 물론 frontend/backend 코드, 빌드 산출물, `setup.py` 재생성까지 모두 직접 변경할 수 있다. 작업 책임 구분은 의사소통 편의를 위한 것이며 권한 차이가 아니다.
+가정하지 않는다. 모호함을 숨기지 않는다. 구현 전 아래를 정리한다.
 
-- **Claude 세션 (이 가이드)** — frontend/backend 코드 변경, 문서/TODO/평가 보고서/Agent ↔ feature 명세 유지, `setup.py` 재생성 등 모든 작업을 수행할 수 있다.
-- **Codex CLI 세션** — frontend/backend 코드 변경, 문서/TODO/명세/`setup.py` 재생성 등 모든 작업을 수행할 수 있다. 본 가이드와 feature md를 spec으로 사용한다.
+- 사용자의 요청을 검증 가능한 목표로 바꾼다.
+- 대상 화면, API, 파일, 데이터 read/write 범위를 확인한다.
+- 권한, endpoint shape, runtime data 영향 여부를 확인한다.
+- 기존 코드의 패턴, helper, ownership 경계를 먼저 찾는다.
+- 자신의 가정을 명시한다.
+- 결과/API/data/권한에 영향을 주는 불확실성이 있으면 작업을 멈추고 질문한다.
+- 해석이 여러 개면 임의로 고르지 말고 대안을 제시한다.
+- 더 간단한 접근이 있으면 제안한다.
 
-`TODO.md`의 `Now` 항목은 `(Claude)` / `(Codex)` 접두로 그 항목을 잡고 있는 세션을 명시한다 (권한 표시가 아니라 진행 주체 표시).
+사소한 UI 문구, 명백한 typo, 문서 정리처럼 되돌리기 쉬운 작업은 합리적인 가정으로 진행하되, 최종 응답에 그 가정을 짧게 남긴다.
 
-## Version Note
+## Simplicity First
 
-버전 표기는 **파일/문서의 수정 시각(mtime)** 기준으로 본다.
+문제를 해결하는 최소한의 코드만 작성한다.
 
-- 새 docs 작성 시 `v9.0.x` 같은 명시 버전을 적지 않는다.
-- `VERSION.json`의 `release_notes` history는 역사 기록으로 보존한다.
-- 최종 수정 시각 확인은 `git log -1 --format=%ai <file>` 또는 파일 mtime을 사용.
+- 요청되지 않은 기능을 추가하지 않는다.
+- 추측에 기반한 코드를 넣지 않는다.
+- 일회성 코드를 위해 추상화 계층을 만들지 않는다.
+- 요청되지 않은 설정 가능성이나 확장성을 넣지 않는다.
+- 발생 가능성이 낮은 시나리오를 위해 방어 코드를 과하게 늘리지 않는다.
+- 기존 패턴과 helper가 있으면 먼저 사용한다.
+- 200줄을 50줄로 해결할 수 있으면 단순한 쪽을 선택한다.
+- 시니어 엔지니어가 보기에 과한 구조라면 줄인다.
 
-## Start Here
+## Surgical Changes
 
-1. Read `README.md` for setup, run commands, and repo overview.
-2. Read `TODO.md` and update the checklist for the current work (Claude vs Codex 분리 확인).
-3. Read `docs/REVIEW.md` (있을 때) for the latest page evaluation snapshot.
-4. Read `docs/README.md` for the current documentation map.
-5. Read the matching feature doc under `docs/features/` before editing that feature. Agent ↔ feature 작업이면 `docs/features/flowi-agent.md`를 먼저 본다.
-6. Use `docs/DEVELOPMENT.md` for scope, validation, data rules, and refactor rules.
+필요한 부분만 수정한다. 본인이 만든 변화의 뒷정리만 수행한다.
 
-## Working Rules
+- 관련 없는 코드, 주석, 포맷을 임의로 개선하지 않는다.
+- 망가지지 않은 부분을 리팩터링하지 않는다.
+- 본인 스타일과 달라도 기존 스타일을 따른다.
+- 작업과 무관한 dead code는 보고만 하고 삭제하지 않는다.
+- 본인 수정으로 불필요해진 import, 변수, 함수는 제거한다.
+- 기존에 있던 dead code는 요청이 없으면 그대로 둔다.
+- 변경된 모든 라인은 사용자 요청 또는 검증을 위해 직접 필요해야 한다.
 
-- Run `git status --short` before edits and preserve unrelated user changes.
-- Keep `TODO.md` current: put active work in `Now` (with `(Claude)` 또는 `(Codex)` 표기), follow-ups in `Next`, completed work in `Done`.
-- Treat `docs/features/` plus `docs/DEVELOPMENT.md` as the current implementation guide.
-- Treat `archive/`, runtime logs, generated task specs, and moved legacy docs as historical unless the user explicitly asks.
-- Keep Flow-i as an app-action router. It may query and guide app workflows, but normal user prompts must not mutate source code or raw DB files.
-- Runtime/user data under `data/flow-data/`, operational DB roots, sessions, uploads, cache, and logs must not be overwritten by code or setup changes.
-- Claude 와 Codex 모두 frontend/backend 코드 수정과 진입점/문서/메타 갱신을 함께 수행한다. 같은 파일을 동시에 건드리지 않도록 `TODO.md` 의 `Now` 항목으로 잡고 있는 세션을 먼저 표시한다.
-- 새 docs에 `v9.0.x` 같은 명시 버전을 적지 않는다 (위 Version Note 참조).
+## Goal-Driven Execution
 
-## Validation
+성공 기준을 먼저 정의하고, 검증될 때까지 반복한다.
 
-Doc-only changes:
+모호한 요청은 검증 가능한 형태로 바꾼다.
 
-```bash
-git diff --check
-```
+- "유효성 검사 추가" -> 잘못된 입력 테스트를 추가하고 통과 확인
+- "버그 수정" -> 버그 재현 경로를 확인하고 수정 후 통과 확인
+- "리팩터링" -> 리팩터링 전후 기존 테스트와 smoke 기준 유지
+- "문서 반영" -> `git diff --check` 통과와 관련 링크/절차 일관성 확인
 
-General code changes (Claude / Codex 공통):
+다단계 작업은 짧은 루프로 쪼갠다.
 
-```bash
-git diff --check
-cd frontend && npm run build
-python3 scripts/smoke_test.py
-```
+1. 변경 범위 확인 -> 관련 docs/code entrypoint 확인
+2. 최소 수정 적용 -> diff가 요청 범위 안에 있는지 확인
+3. 테스트 실행 -> 실패 시 원인 분리 후 재시도
+4. 최종 응답 -> 변경점, 검증, 남은 리스크를 짧게 보고
 
-`setup.py` 또는 번들 산출물을 갱신했을 때:
+성공 기준이 "작동하게 만들기"처럼 흐리면 충분히 독립적으로 작업할 수 있을 때까지 구체화한다.
 
-```bash
-python3 _build_setup.py
-python3 setup.py version
-```
+## Worktree Discipline
 
-Backend tests:
+- 작업 시작 전 `git status --short`로 dirty worktree를 확인한다.
+- 이미 있는 변경은 사용자 또는 다른 세션의 작업으로 간주한다.
+- 절대 `git reset --hard`, `git checkout --`, 대량 revert를 하지 않는다.
+- 다른 세션이 잡고 있는 파일이나 영역을 동시에 건드리지 않는다.
+- 불가피하게 겹치면 먼저 상황을 명시하고, 관련 없는 변경은 보존한다.
+- 코드 작성보다 먼저 읽고, 기존 시스템의 모양이 해결책을 가르치게 둔다.
 
-```bash
-python3 -m pytest tests
-```
+## Collaboration
 
-Internal deployment/preflight:
+- 오래 걸리는 작업은 짧고 사실적인 진행 상황을 공유한다.
+- 구현 세부사항이 열려 있으면 기존 패턴에 맞는 보수적인 선택을 한다.
+- 실패하거나 검증하지 못한 것은 숨기지 않는다.
+- 최종 응답은 변경 목적, 실제 수정 내용, 검증 결과를 중심으로 짧게 쓴다.
 
-```bash
-python3 scripts/preflight_internal.py --write-probe
-```
+## Project Context
+
+Flow 작업을 시작할 때는 `docs/AGENT_FLOW_CONTEXT.md`를 읽는다. 그 문서가 Flow의 현재 미션, source of truth, TODO 운영, data 보존 규칙, validation matrix를 담당한다.

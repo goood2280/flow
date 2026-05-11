@@ -277,7 +277,7 @@ def _scan_once() -> dict:
             source_root_for_context,
             snapshot_row_fields,
         )
-        from core.lot_progress_cache import lot_progress_snapshot
+        from core.lot_progress_cache import compress_wafer_ids, lot_progress_snapshot, lot_progress_summary
         from core.notify import emit_event
         from core.tracker_schema import normalize_lot_row
         from core.tracker_templates import render_tracker_mail, tracker_mail_context
@@ -340,6 +340,9 @@ def _scan_once() -> dict:
                     row_lot = row_root
                 row_root = ""
             product = (lot.get("product") or lot.get("monitor_prod") or iss.get("product") or "").strip()
+            if source == "fab":
+                expanded_lots.append(lot)
+                continue
             expanded_lots.extend(
                 normalize_lot_row(row)
                 for row in expand_lot_row_for_wafer_selection(
@@ -374,6 +377,42 @@ def _scan_once() -> dict:
                 row_root = ""
             product = (lot.get("product") or lot.get("monitor_prod") or iss.get("product") or "").strip()
             checked_at = _now_iso()
+            if source == "fab":
+                try:
+                    summary_info = lot_progress_summary(
+                        product=product,
+                        root_lot_id=row_root,
+                        lot_id=row_lot,
+                    )
+                except Exception:
+                    summary_info = {}
+                summary_rows = [r for r in (summary_info.get("rows") or []) if isinstance(r, dict)]
+                wafer_ids = [str(w or "").strip() for w in (summary_info.get("wafer_ids") or []) if str(w or "").strip()]
+                if not wafer_ids:
+                    seen_wafers: set[str] = set()
+                    for item in summary_rows:
+                        wafer = str(item.get("wafer_id") or "").strip()
+                        if wafer and wafer not in seen_wafers:
+                            seen_wafers.add(wafer)
+                            wafer_ids.append(wafer)
+                if summary_rows:
+                    latest = sorted(summary_rows, key=lambda r: str(r.get("update_time") or ""), reverse=True)[0]
+                    lot = normalize_lot_row({
+                        **lot,
+                        "product": summary_info.get("product") or latest.get("product") or product,
+                        "monitor_prod": summary_info.get("product") or latest.get("product") or product,
+                        "root_lot_id": summary_info.get("root_lot_id") or latest.get("root_lot_id") or row_root,
+                        "lot_id": lot.get("lot_id") or row_lot,
+                        "wafer_ids": wafer_ids,
+                        "wafer_count": int(summary_info.get("wafer_count") or len(wafer_ids) or 0),
+                        "wafer_label": summary_info.get("wafer_label") or compress_wafer_ids(wafer_ids),
+                        "lot_progress_rows": summary_rows,
+                    })
+                    root = (lot.get("root_lot_id") or "").strip()
+                    lid = (lot.get("lot_id") or "").strip()
+                    row_root = root
+                    row_lot = lid
+                    product = (lot.get("product") or lot.get("monitor_prod") or product).strip()
             try:
                 snap = lot_progress_snapshot(
                     product=product,

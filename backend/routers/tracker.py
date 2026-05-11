@@ -276,20 +276,49 @@ def _persist_tracker_lot_status_rows(rows: list[dict], source: str = "tracker") 
         return
 
 
-def _expand_monitor_lot_rows_from_cache(rows: list[dict], *, category: str = "", issue_product: str = "") -> list[dict]:
-    """For Monitor issues, allow entry by lot_id only and expand to wafer rows from cache."""
+def _status_rows_from_lots(rows: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        nested = [r for r in (row.get("lot_progress_rows") or []) if isinstance(r, dict)]
+        if nested:
+            out.extend(nested)
+        else:
+            out.append(row)
+    return out
+
+
+def _latest_summary_row(rows: list[dict]) -> dict:
+    clean = [r for r in (rows or []) if isinstance(r, dict)]
+    if not clean:
+        return {}
+    return sorted(clean, key=lambda r: str(r.get("update_time") or ""), reverse=True)[0]
+
+
+def _lot_row_identity(row: dict) -> tuple[str, str, str]:
+    raw = row or {}
+    lot_id = str(raw.get("lot_id") or raw.get("fab_lot_id") or "").strip().upper()
+    root_lot_id = str(raw.get("root_lot_id") or "").strip().upper()
+    wafer_id = str(raw.get("wafer_id") or "").strip().upper()
+    if not lot_id and root_lot_id:
+        lot_id = root_lot_id
+    return lot_id, root_lot_id, wafer_id
+
+
+def _hydrate_monitor_lot_rows_from_cache(rows: list[dict], *, category: str = "", issue_product: str = "") -> list[dict]:
+    """For Monitor issues, keep one row per entered lot_id and attach cache summary metadata."""
     if _category_source(category or _default_monitor_category(), "fab") != "fab":
-        return rows
+        return [normalize_lot_row(dict(row or {})) for row in (rows or [])]
     try:
-        from core.lot_progress_cache import lot_progress_summary
+        from core.lot_progress_cache import compress_wafer_ids, lot_progress_summary
     except Exception:
-        return rows
+        return [normalize_lot_row(dict(row or {})) for row in (rows or [])]
     out: list[dict] = []
     for raw in rows or []:
-        row = dict(raw or {})
+        row = normalize_lot_row(dict(raw or {}))
         lot_id = str(row.get("lot_id") or row.get("fab_lot_id") or row.get("root_lot_id") or "").strip()
-        wafer_id = str(row.get("wafer_id") or "").strip()
-        if not lot_id or wafer_id:
+        if not lot_id:
             out.append(row)
             continue
         product = str(row.get("product") or row.get("monitor_prod") or issue_product or "").strip()
@@ -298,31 +327,65 @@ def _expand_monitor_lot_rows_from_cache(rows: list[dict], *, category: str = "",
         except Exception:
             summary = {}
         summary_rows = [r for r in (summary.get("rows") or []) if isinstance(r, dict)]
+        wafer_ids = [str(w or "").strip() for w in (summary.get("wafer_ids") or []) if str(w or "").strip()]
+        if not wafer_ids:
+            seen_wafers: set[str] = set()
+            for item in summary_rows:
+                wafer = str(item.get("wafer_id") or "").strip()
+                if wafer and wafer not in seen_wafers:
+                    seen_wafers.add(wafer)
+                    wafer_ids.append(wafer)
+        wafer_label = str(summary.get("wafer_label") or "").strip() or compress_wafer_ids(wafer_ids)
+        latest = _latest_summary_row(summary_rows)
+        row_product = str(summary.get("product") or latest.get("product") or product or "").strip()
+        root_lot_id = str(summary.get("root_lot_id") or latest.get("root_lot_id") or row.get("root_lot_id") or "").strip()
+        hydrated = {
+            **row,
+            "product": row_product or row.get("product") or row.get("monitor_prod") or "",
+            "monitor_prod": row_product or row.get("monitor_prod") or row.get("product") or "",
+            "root_lot_id": root_lot_id,
+            "lot_id": lot_id,
+            "wafer_ids": wafer_ids,
+            "wafer_label": wafer_label,
+            "wafer_count": int(summary.get("wafer_count") or len(wafer_ids) or 0),
+            "lot_progress_rows": summary_rows,
+            "current_step": str(summary.get("step_id") or latest.get("step_id") or row.get("current_step") or "").strip() or None,
+            "current_function_step": str(summary.get("func_step") or latest.get("func_step") or latest.get("function_step") or row.get("current_function_step") or "").strip() or None,
+            "function_step": str(summary.get("func_step") or latest.get("func_step") or latest.get("function_step") or row.get("function_step") or "").strip() or None,
+            "func_step": str(summary.get("func_step") or latest.get("func_step") or latest.get("function_step") or row.get("func_step") or "").strip() or None,
+            "last_move_at": str(summary.get("update_time") or latest.get("update_time") or row.get("last_move_at") or "").strip() or None,
+            "last_scan_source": "fab",
+            "last_scan_source_root": "lot_progress_cache",
+            "last_scan_status": "ok" if summary_rows else "no_match",
+        }
         if not summary_rows:
-            out.append(row)
-            continue
-        for item in summary_rows:
-            func_step = str(item.get("func_step") or "").strip()
-            step_id = str(item.get("step_id") or "").strip()
-            update_time = str(item.get("update_time") or "").strip()
-            row_product = str(item.get("product") or product or "").strip()
-            out.append({
-                **row,
-                "product": row_product,
-                "monitor_prod": row_product,
-                "root_lot_id": str(item.get("root_lot_id") or row.get("root_lot_id") or "").strip(),
-                "lot_id": str(item.get("lot_id") or lot_id).strip(),
-                "wafer_id": str(item.get("wafer_id") or "").strip(),
-                "current_step": step_id or None,
-                "current_function_step": func_step or None,
-                "function_step": func_step or None,
-                "func_step": func_step or None,
-                "last_move_at": update_time or row.get("last_move_at") or None,
-                "last_scan_source": "fab",
-                "last_scan_source_root": str(item.get("source_root") or row.get("last_scan_source_root") or ""),
-                "last_scan_status": "ok",
-            })
+            hydrated["lot_progress_rows"] = []
+        out.append(normalize_lot_row(hydrated))
     return out
+
+
+def _expand_monitor_lot_rows_from_cache(rows: list[dict], *, category: str = "", issue_product: str = "") -> list[dict]:
+    """Compatibility wrapper: Monitor rows are summarized, not wafer-expanded."""
+    return _hydrate_monitor_lot_rows_from_cache(rows, category=category, issue_product=issue_product)
+
+
+def _merge_lot_update_rows(existing: list[dict], incoming: list[dict], *, category: str, issue_product: str, username: str) -> list[dict]:
+    existing_by_key = {_lot_row_identity(row): normalize_lot_row(row) for row in (existing or []) if isinstance(row, dict)}
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    merged: list[dict] = []
+    for row in incoming or []:
+        raw = dict(row or {})
+        base = existing_by_key.get(_lot_row_identity(raw), {})
+        next_row = normalize_lot_row({
+            **base,
+            **raw,
+            "username": raw.get("username") or base.get("username") or username,
+            "added": raw.get("added") or base.get("added") or now,
+        })
+        if base.get("watch") and "watch" not in raw:
+            next_row["watch"] = base["watch"]
+        merged.append(next_row)
+    return _hydrate_monitor_lot_rows_from_cache(merged, category=category, issue_product=issue_product)
 
 
 def _save(issues):
@@ -392,6 +455,7 @@ class IssueUpdate(BaseModel):
     category: Optional[str] = None
     username: str = ""
     group_ids: Optional[List[str]] = None
+    lots: Optional[List[dict]] = None
 
 class CommentReq(BaseModel):
     issue_id: str
@@ -929,7 +993,7 @@ def create_issue(req: IssueCreate, request: Request):
             name = _save_image(img)
             if name:
                 img_names.append(name)
-    expanded_rows = _expand_monitor_lot_rows_from_cache(
+    hydrated_rows = _hydrate_monitor_lot_rows_from_cache(
         req.lots,
         category=req.category or _default_monitor_category(),
     )
@@ -941,7 +1005,7 @@ def create_issue(req: IssueCreate, request: Request):
             "product": lot.get("product") or lot.get("monitor_prod") or "",
             **({"root_lot_id": lot.get("root_lot_id") or "", "lot_id": lot.get("lot_id") or ""}),
         })
-        for lot in expanded_rows
+        for lot in hydrated_rows
     ]
     result = TRACKER_SERVICE.create_legacy_issue(
         issue_id=iid,
@@ -979,6 +1043,20 @@ def update_issue(req: IssueUpdate, request: Request):
     status_changed = False
     if req.status is not None:
         status_changed = (old_status != req.status)
+    fields_set_raw = getattr(req, "model_fields_set", None)
+    if fields_set_raw is None:
+        fields_set_raw = getattr(req, "__fields_set__", set())
+    fields_set = set(fields_set_raw or set())
+    next_lots = None
+    if "lots" in fields_set:
+        next_category = req.category if req.category is not None else iss.get("category") or _default_monitor_category()
+        next_lots = _merge_lot_update_rows(
+            iss.get("lots") or [],
+            req.lots or [],
+            category=next_category,
+            issue_product=iss.get("product") or "",
+            username=req.username,
+        )
     result = TRACKER_SERVICE.update_legacy_issue(
         issue_id=req.issue_id,
         username=req.username,
@@ -988,6 +1066,7 @@ def update_issue(req: IssueUpdate, request: Request):
         priority=req.priority,
         category=req.category,
         group_ids=req.group_ids,
+        lots=next_lots,
         append_images=desc_images,
     )
     if not result.ok:
@@ -1182,7 +1261,7 @@ def bulk_lots(req: LotBulkReq, request: Request):
     iss = next((i for i in issues if i.get("id") == req.issue_id), None)
     rows = req.rows
     if iss:
-        rows = _expand_monitor_lot_rows_from_cache(
+        rows = _hydrate_monitor_lot_rows_from_cache(
             req.rows,
             category=iss.get("category") or _default_monitor_category(),
             issue_product=iss.get("product") or "",
@@ -1270,6 +1349,13 @@ def lot_check_all(req: LotCheckAllReq, request: Request):
     lots = []
     for lot in original_lots:
         lot = normalize_lot_row(lot)
+        if source == "fab":
+            lots.extend(_hydrate_monitor_lot_rows_from_cache(
+                [lot],
+                category=iss.get("category") or _default_monitor_category(),
+                issue_product=iss.get("product") or "",
+            ))
+            continue
         root, lid = _tracker_lot_lookup_parts(lot)
         wid = str(lot.get("wafer_id") or "").strip()
         monitor_prod = (lot.get("product") or lot.get("monitor_prod") or "").strip()
@@ -1401,7 +1487,7 @@ def lot_check_all(req: LotCheckAllReq, request: Request):
             issue_data=next_issue,
             username=me.get("username") or "system",
         )
-    _persist_tracker_lot_status_rows(updated_lots, source="tracker-check-all")
+    _persist_tracker_lot_status_rows(_status_rows_from_lots(updated_lots), source="tracker-check-all")
     return {
         "ok": True,
         "issue_id": req.issue_id,
@@ -1511,6 +1597,13 @@ def check_lot_watches(request: Request, _a=Depends(require_admin)):
         expanded_lots = []
         for raw_lot in iss.get("lots") or []:
             lot = normalize_lot_row(raw_lot)
+            if source_for_issue == "fab":
+                expanded_lots.extend(_hydrate_monitor_lot_rows_from_cache(
+                    [lot],
+                    category=iss.get("category") or _default_monitor_category(),
+                    issue_product=iss.get("product") or "",
+                ))
+                continue
             root, lid = _tracker_lot_lookup_parts(lot)
             wid = str(lot.get("wafer_id") or "").strip()
             product = (lot.get("product") or lot.get("monitor_prod") or iss.get("product") or "").strip()
@@ -1674,7 +1767,7 @@ def check_lot_watches(request: Request, _a=Depends(require_admin)):
                 issue_data=iss,
                 username="system",
             )
-            tracker_rows.extend([normalize_lot_row(l) for l in iss.get("lots") or []])
+            tracker_rows.extend(_status_rows_from_lots([normalize_lot_row(l) for l in iss.get("lots") or []]))
         _persist_tracker_lot_status_rows(tracker_rows, source="tracker-watch")
     return {"ok": True, "fired": fired, "fire_count": len(fired)}
 

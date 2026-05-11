@@ -194,8 +194,43 @@ function monitorCategoryName(roleNames = {}, cats = []) {
 
 function waferSummaryText(summary) {
   const wafers = Array.isArray(summary?.wafer_ids) ? summary.wafer_ids : [];
-  if (!wafers.length) return "조회 전";
-  return `${Number(summary?.wafer_count || wafers.length)}매 · ${wafers.join(", ")}`;
+  const label = String(summary?.wafer_label || compressWaferIds(wafers) || "").trim();
+  const count = Number(summary?.wafer_count || wafers.length || 0);
+  if (!count && !label) return "조회 전";
+  return `Qty ${count || wafers.length}매${label ? ` · ${label}` : ""}`;
+}
+
+function compressWaferIds(values = []) {
+  const nums = [];
+  const labels = [];
+  const seenLabels = new Set();
+  (Array.isArray(values) ? values : String(values || "").split(/[,;\s]+/)).forEach(v => {
+    const raw = String(v || "").trim();
+    if (!raw) return;
+    const core = raw.replace(/^(#|WAFER|WF|W)\s*/i, "").trim();
+    if (/^\d+$/.test(core)) {
+      nums.push(Number(core));
+      return;
+    }
+    const key = raw.toUpperCase();
+    if (!seenLabels.has(key)) {
+      seenLabels.add(key);
+      labels.push(raw);
+    }
+  });
+  const sorted = Array.from(new Set(nums)).sort((a, b) => a - b);
+  const parts = [];
+  for (let i = 0; i < sorted.length; i += 1) {
+    const start = sorted[i];
+    let end = start;
+    while (i + 1 < sorted.length && sorted[i + 1] === end + 1) {
+      i += 1;
+      end = sorted[i];
+    }
+    parts.push(start === end ? `${start}` : `${start}~${end}`);
+  }
+  parts.push(...labels);
+  return parts.length ? `#${parts.join(",")}` : "";
 }
 
 function stepSummaryText(rows = []) {
@@ -227,28 +262,29 @@ function expandLotsForSubmit(lots = []) {
     const rows = Array.isArray(_summaryRows) ? _summaryRows : [];
     const hasBaseValue = ["product", "monitor_prod", "root_lot_id", "lot_id", "wafer_id", "purpose", "comment"].some(k => String(base?.[k] || "").trim());
     if (!rows.length && !hasBaseValue) return;
-    if (!rows.length) {
-      out.push(base);
-      return;
-    }
-    rows.forEach(r => {
-      const func = r?.func_step || r?.function_step || "";
-      out.push({
-        ...base,
-        product: r?.product || base.product || base.monitor_prod || "",
-        monitor_prod: r?.product || base.monitor_prod || base.product || "",
-        root_lot_id: r?.root_lot_id || base.root_lot_id || "",
-        lot_id: r?.lot_id || base.lot_id || "",
-        wafer_id: r?.wafer_id || "",
-        current_step: r?.step_id || base.current_step || "",
-        current_function_step: func || base.current_function_step || "",
-        function_step: func || base.function_step || "",
-        func_step: func || base.func_step || "",
-        last_move_at: r?.update_time || base.last_move_at || "",
-        last_scan_source: "fab",
-        last_scan_source_root: base.last_scan_source_root || "lot_progress_cache",
-        last_scan_status: r?.step_id ? "ok" : (base.last_scan_status || ""),
-      });
+    const first = rows[0] || {};
+    const latest = rows.slice().sort((a, b) => String(b?.update_time || "").localeCompare(String(a?.update_time || "")))[0] || first;
+    const wafers = Array.isArray(_summary?.wafer_ids) ? _summary.wafer_ids : rows.map(r => r?.wafer_id).filter(Boolean);
+    const func = latest?.func_step || latest?.function_step || "";
+    out.push({
+      ...base,
+      product: _summary?.product || latest?.product || base.product || base.monitor_prod || "",
+      monitor_prod: _summary?.product || latest?.product || base.monitor_prod || base.product || "",
+      root_lot_id: _summary?.root_lot_id || latest?.root_lot_id || base.root_lot_id || "",
+      lot_id: _summary?.lot_id || latest?.lot_id || base.lot_id || "",
+      wafer_id: base.wafer_id || "",
+      wafer_ids: wafers,
+      wafer_count: Number(_summary?.wafer_count || wafers.length || 0),
+      wafer_label: _summary?.wafer_label || compressWaferIds(wafers),
+      lot_progress_rows: rows,
+      current_step: _summary?.step_id || latest?.step_id || base.current_step || "",
+      current_function_step: _summary?.func_step || func || base.current_function_step || "",
+      function_step: _summary?.func_step || func || base.function_step || "",
+      func_step: _summary?.func_step || func || base.func_step || "",
+      last_move_at: _summary?.update_time || latest?.update_time || base.last_move_at || "",
+      last_scan_source: rows.length ? "fab" : (base.last_scan_source || ""),
+      last_scan_source_root: rows.length ? "lot_progress_cache" : (base.last_scan_source_root || ""),
+      last_scan_status: rows.length ? "ok" : (base.last_scan_status || ""),
     });
   });
   return out;
@@ -399,6 +435,10 @@ function LotTable({ lots, setLots, readOnly, issueId, product, category, roleNam
           ...lot,
           product: rowProduct,
           monitor_prod: rowProduct,
+          wafer_ids: Array.isArray(row.wafer_ids) ? row.wafer_ids : (Array.isArray(lot.wafer_ids) ? lot.wafer_ids : []),
+          wafer_count: Number(row.wafer_count || lot.wafer_count || 0),
+          wafer_label: row.wafer_label || lot.wafer_label || "",
+          lot_progress_rows: Array.isArray(row.lot_progress_rows) ? row.lot_progress_rows : (Array.isArray(lot.lot_progress_rows) ? lot.lot_progress_rows : []),
           current_step: row.current_step || "",
           current_function_step: row.current_function_step || row.function_step || row.func_step || "",
           function_step: row.function_step || row.current_function_step || row.func_step || "",
@@ -511,7 +551,11 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
           monitor_prod: first.product || rowProduct || "",
           root_lot_id: d?.root_lot_id || first.root_lot_id || row?.root_lot_id || "",
           lot_id: d?.lot_id || first.lot_id || lotId,
-          wafer_id: Array.isArray(d?.wafer_ids) ? d.wafer_ids.join(",") : (row?.wafer_id || ""),
+          wafer_id: row?.wafer_id || "",
+          wafer_ids: Array.isArray(d?.wafer_ids) ? d.wafer_ids : [],
+          wafer_count: Number(d?.wafer_count || 0),
+          wafer_label: d?.wafer_label || compressWaferIds(d?.wafer_ids || []),
+          lot_progress_rows: rows,
           current_step: first.step_id || "",
           current_function_step: func || "",
           function_step: func || "",
@@ -690,7 +734,11 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
   };
   const showEtColumn = readOnly && (categorySource === "et" || categorySource === "both");
   const showStepColumn = !createMonitorMode && (readOnly || monitorMode) && (categorySource === "fab" || categorySource === "both" || categorySource === "auto");
-  const baseHeaders = createMonitorMode ? ["product", "lot_id", "purpose", "comment", "wafer_ids", "step_id(func_step)"] : ["product", "lot_id", "wafer_id", "purpose", "comment"];
+  const baseHeaders = createMonitorMode
+    ? ["product", "lot_id", "purpose", "comment", "wafer_ids", "step_id(func_step)"]
+    : monitorMode
+    ? ["product", "lot_id", "wafer_ids", "purpose", "comment"]
+    : ["product", "lot_id", "wafer_id", "purpose", "comment"];
   const readOnlyColSpan = baseHeaders.length + (showStepColumn ? 1 : 0) + (showEtColumn ? 1 : 0) + 3;
 
   // v8.8.5: 빈 상태 플레이스홀더 행 대신, 항상 테이블 형태 유지 + 맨 아래 [+ 행추가] 빈 행.
@@ -775,7 +823,9 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
               const scanStatus = l.last_scan_status || "";
               const scanRoot = l.last_scan_source_root || "";
               const etStatus = getEtStatus(l, et);
+              const lotProgressRows = Array.isArray(l.lot_progress_rows) ? l.lot_progress_rows : [];
               const stepTitle = [
+                lotProgressRows.length ? stepSummaryTitle(lotProgressRows) : "",
                 stepIdText && `step_id: ${stepIdText}`,
                 stepInfo.funcStep && `func_step: ${stepInfo.funcStep}`,
                 lastMoveAt && `step time: ${lastMoveAt}`,
@@ -879,7 +929,10 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                     onBlur: v => { if (monitorMode && v) fetchStep(i, { ...l, root_lot_id: "", lot_id: v }); },
                   })
                 )}</td>
-                <td style={readOnly ? cellStyle : { ...sheetCell, width: 100 }}>{readOnly ? l.wafer_id : <input value={l.wafer_id || ""} onChange={e => updateCell(i, "wafer_id", e.target.value)} onBlur={() => { if (monitorMode && (l.root_lot_id || l.lot_id)) fetchStep(i, l); }} style={sheetInput} placeholder="all / 1,2 / 1~10" />}</td>
+                <td style={readOnly ? { ...cellStyle, minWidth: monitorMode ? 170 : undefined, fontFamily: monitorMode ? "monospace" : undefined, color: monitorMode ? "var(--accent)" : undefined, fontWeight: monitorMode ? 800 : undefined } : { ...sheetCell, width: 100 }}
+                    title={monitorMode ? (Array.isArray(l.wafer_ids) ? l.wafer_ids.join(", ") : "") : ""}>
+                  {readOnly ? (monitorMode ? waferSummaryText(l) : l.wafer_id) : <input value={l.wafer_id || ""} onChange={e => updateCell(i, "wafer_id", e.target.value)} onBlur={() => { if (monitorMode && (l.root_lot_id || l.lot_id)) fetchStep(i, l); }} style={sheetInput} placeholder="all / 1,2 / 1~10" />}
+                </td>
                 <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 170 }}>{readOnly ? (l.purpose || "") : <input value={l.purpose || ""} onChange={e => updateCell(i, "purpose", e.target.value)} style={sheetInput} placeholder="purpose" />}</td>
                 <td style={readOnly ? cellStyle : { ...sheetCell, minWidth: 180 }}>{readOnly ? l.comment : <input value={l.comment || ""} onChange={e => updateCell(i, "comment", e.target.value)} style={sheetInput} placeholder="comment" />}</td>
                 {showStepColumn && <td style={cellStyle}>
@@ -1221,7 +1274,7 @@ export default function My_Tracker({ user }) {
   const [filter, setFilter] = useState(""); const [comment, setComment] = useState(""); const [search, setSearch] = useState("");
   const [replyDrafts, setReplyDrafts] = useState({});
   const [viewTab, setViewTab] = useState("list");
-  const [editMode, setEditMode] = useState(false); const [editTitle, setEditTitle] = useState(""); const [editDesc, setEditDesc] = useState(""); const [editPrio, setEditPrio] = useState("normal");
+  const [editMode, setEditMode] = useState(false); const [editTitle, setEditTitle] = useState(""); const [editDesc, setEditDesc] = useState(""); const [editPrio, setEditPrio] = useState("normal"); const [editLots, setEditLots] = useState([]);
   // v8.8.13: 수정 시 카테고리도 변경 가능하도록 state 추가.
   const [editCategory, setEditCategory] = useState("");
   const [trackerPageConfig, setTrackerPageConfig] = useState({ role_names: { monitor: "Monitor" } });
@@ -1304,12 +1357,12 @@ export default function My_Tracker({ user }) {
   };
   const deleteIssue = () => { if (!confirm("이 이슈를 삭제할까요?")) return; sf(API + "/delete?issue_id=" + selected.id, { method: "POST" }).then(() => { setSelected(null); load(); }); };
   const canEdit = selected && (selected.username === user?.username || isAdmin);
-  const startEdit = () => { if (!canEdit) return; setEditMode(true); setEditTitle(selected.title); setEditDesc(selected.description_html || selected.description || ""); setEditPrio(selected.priority || "normal"); setEditCategory(selected.category || ""); };
+  const startEdit = () => { if (!canEdit) return; setEditMode(true); setEditTitle(selected.title); setEditDesc(selected.description_html || selected.description || ""); setEditPrio(selected.priority || "normal"); setEditCategory(selected.category || ""); setEditLots((selected.lots || []).map(l => ({ ...l }))); };
   const saveEdit = () => {
     if (!editTitle.trim()) return;
     if (!editCategory) { toast.warn("카테고리를 지정해주세요."); return; }
     // v8.8.13: category 도 payload 에 포함 — 이전에는 FE 에서 누락되어 수정 불가였음.
-    sf(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: selected.id, title: editTitle, description: editDesc, priority: editPrio, category: editCategory }) })
+    sf(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: selected.id, title: editTitle, description: editDesc, priority: editPrio, category: editCategory, lots: editLots }) })
       .then(() => { setEditMode(false); loadDetail(selected.id); load(); }).catch(e => toast.error(e.message));
   };
   const saveIssueMail = (patch) => {
@@ -1403,7 +1456,7 @@ export default function My_Tracker({ user }) {
                 : <span style={{ fontSize: 18, fontWeight: 700 }}>{selected.title}</span>}
               {canEdit && !editMode && <span onClick={startEdit} style={{ cursor: "pointer", fontSize: 14, color: "var(--accent)", padding: "4px 8px", borderRadius: 4, background: "var(--accent-glow)" }}>수정</span>}
               {editMode && <span onClick={saveEdit} style={{ cursor: "pointer", fontSize: 14, color: "#22c55e", padding: "4px 8px", borderRadius: 4, background: "#22c55e22", fontWeight: 600 }}>저장</span>}
-              {editMode && <span onClick={() => setEditMode(false)} style={{ cursor: "pointer", fontSize: 14, color: "var(--text-secondary)", padding: "4px 8px", borderRadius: 4, background: "var(--bg-hover)" }}>취소</span>}
+              {editMode && <span onClick={() => { setEditMode(false); setEditLots([]); }} style={{ cursor: "pointer", fontSize: 14, color: "var(--text-secondary)", padding: "4px 8px", borderRadius: 4, background: "var(--bg-hover)" }}>취소</span>}
               {canEdit && <span onClick={deleteIssue} style={{ cursor: "pointer", fontSize: 14, color: "#ef4444", padding: "4px 8px", borderRadius: 4, background: "#ef444411" }}>삭제</span>}
               <select value={selected.status} onChange={e => updateStatus(selected.id, e.target.value)} style={{ padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14, marginLeft: "auto" }}>
                 {[["in_progress","진행중"], ["closed","완료"]].map(([v,lbl]) => <option key={v} value={v}>{lbl}</option>)}
@@ -1464,8 +1517,27 @@ export default function My_Tracker({ user }) {
                 </div>
               ))}
             </div>}
+            {editMode && editLots.length > 0 && <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: "var(--text-secondary)" }}>LOT purpose/comment 수정</div>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "auto", background: "var(--bg-card)" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+                  <thead><tr>
+                    {["product", "lot_id", "wafer_ids", "purpose", "comment"].map(h => <th key={h} style={{ textAlign: "left", padding: "7px 9px", borderBottom: "1px solid var(--border)", background: "var(--bg-tertiary)", color: "var(--text-secondary)", fontFamily: "monospace" }}>{h}</th>)}
+                  </tr></thead>
+                  <tbody>{editLots.map((lot, i) => (
+                    <tr key={`${lot.lot_id || lot.root_lot_id || i}-${i}`}>
+                      <td style={{ padding: "6px 9px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{lot.product || lot.monitor_prod || "-"}</td>
+                      <td style={{ padding: "6px 9px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{lot.lot_id || lot.root_lot_id || "-"}</td>
+                      <td title={Array.isArray(lot.wafer_ids) ? lot.wafer_ids.join(", ") : ""} style={{ padding: "6px 9px", borderBottom: "1px solid var(--border)", fontFamily: "monospace", color: "var(--accent)", fontWeight: 700 }}>{waferSummaryText(lot)}</td>
+                      <td style={{ padding: 0, borderBottom: "1px solid var(--border)" }}><input value={lot.purpose || ""} onChange={e => setEditLots(prev => prev.map((r, idx) => idx === i ? { ...r, purpose: e.target.value } : r))} style={{ width: "100%", boxSizing: "border-box", border: "none", padding: "8px 9px", background: "transparent", color: "var(--text-primary)", fontSize: 14 }} /></td>
+                      <td style={{ padding: 0, borderBottom: "1px solid var(--border)" }}><input value={lot.comment || ""} onChange={e => setEditLots(prev => prev.map((r, idx) => idx === i ? { ...r, comment: e.target.value } : r))} style={{ width: "100%", boxSizing: "border-box", border: "none", padding: "8px 9px", background: "transparent", color: "var(--text-primary)", fontSize: 14 }} /></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            </div>}
             {/* Lots table */}
-            {selected.lots?.length > 0 && <div style={{ marginBottom: 16 }}>
+            {!editMode && selected.lots?.length > 0 && <div style={{ marginBottom: 16 }}>
               <LotTable lots={selected.lots} setLots={(fn) => {
                 // readonly 이긴 하지만 watch 저장 후 로컬 반영 위해 setLots 는 유용.
                 if (typeof fn === "function") {

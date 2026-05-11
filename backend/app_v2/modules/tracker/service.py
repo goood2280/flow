@@ -91,6 +91,7 @@ class TrackerService:
         priority=None,
         category=None,
         group_ids=None,
+        lots=None,
         append_images=None,
     ):
         patch = {}
@@ -104,6 +105,8 @@ class TrackerService:
             patch["category"] = category
         if group_ids is not None:
             patch["group_ids"] = list(group_ids)
+        if lots is not None:
+            patch["lots"] = list(lots)
         if status is not None:
             patch["status"] = status
             if status == "closed":

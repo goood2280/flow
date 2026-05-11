@@ -101,6 +101,15 @@ def test_common_loading_component_shows_progress_cues():
     assert "데이터 준비 중" in ui
 
 
+def test_meeting_issue_import_renders_lot_table():
+    ui = (ROOT / "frontend" / "src" / "pages" / "My_Meeting.jsx").read_text(encoding="utf-8")
+    assert "function IssueLotTable" in ui
+    assert "data-testid=\"meeting-issue-lot-table\"" in ui
+    assert "LOT 테이블" in ui
+    assert "mergeIssueForDisplay(a.issue_ref" in ui
+    assert "mergeIssueForDisplay(agendaDraft.issue_ref" in ui
+
+
 def test_tracker_issue_routes_round_trip_against_configured_store(tmp_path, monkeypatch):
     tracker_dir = tmp_path / "tracker"
     issues_file = tracker_dir / "issues.json"

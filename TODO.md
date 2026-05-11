@@ -24,6 +24,11 @@
 
 ## Done
 
+- [x] (Codex) 변경점 관리 하단에 회의별 LLM 질의 패널 추가 — Meeting read-only ask API + Calendar UI.
+- [x] (Codex) Meeting 이슈 가져오기 후 agenda 카드와 draft preview에 Tracker LOT table 표시.
+- [x] (Codex) Inform 신규 등록 mail group/recipient 연결 및 flow-data 기반 수신자 검색 복구.
+- [x] (Codex) Flow lot scope, Tracker Monitor lot summary, Meeting issue import/mail preview fix.
+- [x] (Codex) `AGENTS.md`를 Karpathy-style 전역 코딩 규율 + Flow 프로젝트 규칙 구조로 정리.
 - [x] (Codex) README를 현재 구조 기준으로 갱신하고 GitHub main push 재현 절차/하네스 구조를 문서화.
 - [x] (Codex) Tracker 새 이슈 lot 입력 표에 product/purpose/comment 복구, SplitTable식 lot_id 후보 목록 적용, fab_lot_id 후보가 root 5자리로 잘리지 않게 수정.
 - [x] (Codex) FileBrowser SQL/AI SQL의 `wafer_id` 조건을 string 저장 타입에서도 숫자 의미로 실행되도록 정규화.

@@ -362,25 +362,6 @@ def _row_has_plan(row: dict[str, Any]) -> bool:
     )
 
 
-def _view_plan_cell_count(view: dict[str, Any], cols: Iterable[str] | None = None) -> int:
-    if not isinstance(view, dict):
-        return 0
-    wanted = {str(c or "").strip() for c in (cols or []) if str(c or "").strip()}
-    count = 0
-    for row in view.get("rows") or []:
-        if not isinstance(row, dict):
-            continue
-        if wanted and str(row.get("_param") or "") not in wanted:
-            continue
-        cells = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
-        count += sum(
-            1
-            for cell in cells.values()
-            if isinstance(cell, dict) and _has_st_value(cell.get("plan"))
-        )
-    return count
-
-
 def _embed_from_view(
     ml_product: str,
     lot: str,
@@ -514,10 +495,6 @@ def build_splittable_embed(
         if len(merged) > len(effective_custom):
             view = load_for(merged)
             effective_custom = merged
-        if fab_input and root_key and extra_plan_cols:
-            root_view = load_for(effective_custom, root_scope=root_key, fab_scope="")
-            if _view_plan_cell_count(root_view, extra_plan_cols) > _view_plan_cell_count(view, extra_plan_cols):
-                view = root_view
 
     return _embed_from_view(ml_product, lot, effective_custom, fab_input, view)
 

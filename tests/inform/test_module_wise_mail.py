@@ -154,6 +154,69 @@ def test_send_mail_explicit_to_users_does_not_auto_group(tmp_path, monkeypatch):
     assert res["to"] == ["manual@example.test"]
 
 
+def test_create_inform_persists_mail_draft_targets(tmp_path, monkeypatch):
+    informs_file = tmp_path / "informs.json"
+    monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
+    monkeypatch.setattr(informs, "_INFORMS_CACHE_SIG", None)
+    monkeypatch.setattr(informs, "_INFORMS_CACHE_ITEMS", None)
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "lotmgr"})
+    monkeypatch.setattr(informs, "_audit_record", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(informs, "_resolve_fab_lot_snapshot", lambda *_args, **_kwargs: "")
+
+    created = informs.create_inform(
+        informs.InformCreate(
+            lot_id="R1000",
+            product="PRODA",
+            module="GATE",
+            reason="PEMS",
+            text="body",
+            mail_draft={
+                "to": ["direct@example.test", "not-email"],
+                "to_users": ["alice", "alice", "bob"],
+                "groups": ["Process Owners", "Process Owners"],
+                "extra_emails": ["vendor@example.test"],
+                "subject": "Custom subject",
+                "body": "Custom body",
+            },
+        ),
+        _request(),
+    )["inform"]
+
+    assert created["mail_draft"] == {
+        "to": ["direct@example.test"],
+        "recipients": [],
+        "to_users": ["alice", "bob"],
+        "groups": ["Process Owners"],
+        "extra_emails": ["vendor@example.test"],
+        "subject": "Custom subject",
+        "body": "Custom body",
+    }
+    saved = json.loads(informs_file.read_text("utf-8"))
+    assert saved[0]["mail_draft"]["to_users"] == ["alice", "bob"]
+    assert saved[0]["mail_draft"]["groups"] == ["Process Owners"]
+
+
+def test_inform_recipients_lists_approved_users_without_email(monkeypatch):
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "user", "username": "viewer"})
+    monkeypatch.setattr(informs, "_load_mail_cfg", lambda: {})
+    monkeypatch.setattr(auth_router, "read_users", lambda: [
+        {"username": "hong", "email": "", "status": "approved", "role": "user", "name": "홍길동"},
+        {"username": "alice", "email": "alice@example.test", "status": "approved", "role": "user", "name": "Alice"},
+        {"username": "pending", "email": "pending@example.test", "status": "pending", "role": "user", "name": "Pending"},
+        {"username": "hol", "email": "", "status": "approved", "role": "admin", "name": "Admin"},
+    ])
+
+    rows = informs.list_recipients(_request())["recipients"]
+
+    by_name = {r["username"]: r for r in rows}
+    assert "hong" in by_name
+    assert by_name["hong"]["email_missing"] is True
+    assert by_name["hong"]["effective_email"] == ""
+    assert by_name["alice"]["email_missing"] is False
+    assert "pending" not in by_name
+    assert "hol" not in by_name
+
+
 def test_send_mail_resolves_public_mail_group_members_and_extras(tmp_path, monkeypatch):
     admin_settings = tmp_path / "admin_settings.json"
     informs_file = tmp_path / "informs.json"

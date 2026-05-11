@@ -7,16 +7,17 @@
 | 순서 | 문서 | 언제 읽나 |
 |---:|---|---|
 | 1 | [../README.md](../README.md) | 설치, 실행, 기본 구조를 빠르게 확인할 때 |
-| 2 | [features/README.md](features/README.md) | 화면/기능별 책임과 코드 진입점을 볼 때 |
-| 3 | [ARCHITECTURE.md](ARCHITECTURE.md) | backend/frontend/data 책임 경계를 볼 때 |
-| 4 | [DEVELOPMENT.md](DEVELOPMENT.md) | 수정 전 체크, 검증 명령, 리팩터 기준을 볼 때 |
-| 5 | [GITHUB_MAIN_PUSH.md](GITHUB_MAIN_PUSH.md) | 로컬 상태를 GitHub `origin/main`에 올릴 때 |
-| 6 | [FEATURE_GOALS.md](FEATURE_GOALS.md) | 화면별 추가 기준을 한 번에 비교할 때 |
-| 7 | [PRODUCT_PHILOSOPHY.md](PRODUCT_PHILOSOPHY.md) | 제품 방향과 판단 기준을 정렬할 때 |
-| 8 | [SEMICONDUCTOR_DIAGNOSIS_RCA.md](SEMICONDUCTOR_DIAGNOSIS_RCA.md) | 진단/RCA 지식 구조를 볼 때 |
-| 9 | [RAG/SEMICONDUCTOR_RAG_OPERATIONS.md](RAG/SEMICONDUCTOR_RAG_OPERATIONS.md) | 사내 지식/RAG 입력과 검증 절차를 볼 때 |
-| 10 | [FLOW_UI_SYSTEM.md](FLOW_UI_SYSTEM.md) | 공통 UI 규칙과 표준 inform 화면을 볼 때 |
-| 11 | [SOFT_LANDING_INTERNAL.md](SOFT_LANDING_INTERNAL.md) | 사내 서버 반입, root 보존, preflight를 볼 때 |
+| 2 | [AGENT_FLOW_CONTEXT.md](AGENT_FLOW_CONTEXT.md) | 에이전트가 Flow 프로젝트 맥락과 data rule을 확인할 때 |
+| 3 | [features/README.md](features/README.md) | 화면/기능별 책임과 코드 진입점을 볼 때 |
+| 4 | [ARCHITECTURE.md](ARCHITECTURE.md) | backend/frontend/data 책임 경계를 볼 때 |
+| 5 | [DEVELOPMENT.md](DEVELOPMENT.md) | 수정 전 체크, 검증 명령, 리팩터 기준을 볼 때 |
+| 6 | [GITHUB_MAIN_PUSH.md](GITHUB_MAIN_PUSH.md) | 로컬 상태를 GitHub `origin/main`에 올릴 때 |
+| 7 | [FEATURE_GOALS.md](FEATURE_GOALS.md) | 화면별 추가 기준을 한 번에 비교할 때 |
+| 8 | [PRODUCT_PHILOSOPHY.md](PRODUCT_PHILOSOPHY.md) | 제품 방향과 판단 기준을 정렬할 때 |
+| 9 | [SEMICONDUCTOR_DIAGNOSIS_RCA.md](SEMICONDUCTOR_DIAGNOSIS_RCA.md) | 진단/RCA 지식 구조를 볼 때 |
+| 10 | [RAG/SEMICONDUCTOR_RAG_OPERATIONS.md](RAG/SEMICONDUCTOR_RAG_OPERATIONS.md) | 사내 지식/RAG 입력과 검증 절차를 볼 때 |
+| 11 | [FLOW_UI_SYSTEM.md](FLOW_UI_SYSTEM.md) | 공통 UI 규칙과 표준 inform 화면을 볼 때 |
+| 12 | [SOFT_LANDING_INTERNAL.md](SOFT_LANDING_INTERNAL.md) | 사내 서버 반입, root 보존, preflight를 볼 때 |
 
 ## Current Docs
 

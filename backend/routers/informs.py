@@ -1912,12 +1912,47 @@ class InformCreate(BaseModel):
     images: List[ImageRef] = []
     embed_table: Optional[EmbedTable] = None
     attached_sets: List[dict] = []
+    mail_draft: Optional[dict] = None
     # v8.7.9: deadline 필드 폐기. 호환을 위해 스키마에 남겨 두되 저장하지 않음.
     deadline: str = ""
     group_ids: List[str] = []  # v8.7.6: 그룹 가시성 필터. 비어 있으면 public (모듈 규칙만 적용)
     # v8.8.15: 저장 시점의 fab_lot_id 스냅샷 — FE SplitTable 맥락에서 resolve 된 값.
     #   이후 ML_TABLE 이 재빌드되어 fab_lot_id 매핑이 바뀌어도, 인폼이 가리키던 fab_lot_id 는 보존된다.
     fab_lot_id_at_save: str = ""
+
+
+def _clean_inform_mail_draft(raw: Optional[dict]) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+
+    def _clean_list(key: str, *, emails_only: bool = False) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for value in raw.get(key) or []:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            if emails_only and "@" not in text:
+                continue
+            marker = text.lower() if emails_only else text
+            if marker in seen:
+                continue
+            seen.add(marker)
+            out.append(text)
+        return out
+
+    draft = {
+        "to": _clean_list("to", emails_only=True),
+        "recipients": _clean_list("recipients", emails_only=True),
+        "to_users": _clean_list("to_users"),
+        "groups": _clean_list("groups"),
+        "extra_emails": _clean_list("extra_emails", emails_only=True),
+        "subject": str(raw.get("subject") or "").strip()[:300],
+        "body": str(raw.get("body") or "").strip()[:5000],
+    }
+    has_target = any(draft[k] for k in ("to", "recipients", "to_users", "groups", "extra_emails"))
+    has_content = bool(draft["subject"] or draft["body"])
+    return draft if has_target or has_content else {}
 
 
 class ConfigReq(BaseModel):
@@ -3203,6 +3238,7 @@ def create_inform(req: InformCreate, request: Request):
 
     embed = _embed_with_attached_sets(_sanitize_embed_table(req.embed_table), req.attached_sets)
     embed_fabs = _extract_fab_lots_from_embed(embed)
+    mail_draft = _clean_inform_mail_draft(req.mail_draft)
 
     now = _now()
     is_root = not req.parent_id
@@ -3247,6 +3283,7 @@ def create_inform(req: InformCreate, request: Request):
         "images": imgs,
         "embed_table": embed,
         "attachments": _attachment_view({"embed_table": embed}),
+        "mail_draft": mail_draft,
         "auto_generated": False,
         # v8.7.9: deadline 필드 폐기 — 저장하지 않음.
         "group_ids": [str(g).strip() for g in (req.group_ids or []) if g and str(g).strip()],
@@ -3953,6 +3990,8 @@ def list_recipients(request: Request):
     v8.8.22: admin 메일 도메인(admin_settings.mail.domain) 이 설정돼 있으면
       `<username>@<domain>` 으로 자동 합성. users.csv 에 email 이 안 적혀 있어도
       개별 유저가 picker 에 정상 노출되어 "리스트가 비어 있음" 문제 해결.
+    v8.8.34: email/domain 이 아직 없어도 승인 유저는 검색 후보로 노출한다.
+      발송 가능 여부는 effective_email/email_missing 으로 구분하고, 실제 메일 resolve 는 send-mail 단계에서 검증한다.
     """
     _ = current_user(request)  # enforce login
     from routers.auth import read_users
@@ -3976,16 +4015,15 @@ def list_recipients(request: Request):
             eff = f"{un}@{_domain}"
         else:
             eff = ""
-        # v8.8.21: 인폼 메일 수신자 picker 에서는 admin/hol/test 계정 + 이메일 해결 불가 계정
-        #   (_is_blocked_contact 기준) 은 아예 제외. FE 가 "(no email)" 을 표시할 상황이 없어진다.
+        # 인폼 메일 수신자 picker 에서는 시스템/테스트 계정만 제외한다.
+        # 이메일이 아직 없어도 flow-data/users.csv 의 승인 유저는 검색 후보로 보여준다.
         if _is_blocked_contact(un, u):
-            continue
-        if not eff:
             continue
         out.append({
             "username": un,
             "email": em,
             "effective_email": eff,
+            "email_missing": not bool(eff),
             "role": u.get("role", ""),
             # v8.8.27: 이름(실명) 라벨. FE 가 `{name} ({username})` 로 표시.
             "name": (u.get("name") or "").strip(),
@@ -5287,6 +5325,15 @@ def send_mail(inform_id: str, req: SendMailReq, request: Request):
         "subject": subject,
     })
     target["mail_history"] = hist[-20:]  # keep last 20
+    latest_draft = _clean_inform_mail_draft({
+        "to": list(req.to or []),
+        "to_users": list(req.to_users or []),
+        "groups": list(req.groups or []),
+        "subject": subject,
+        "body": req.body or "",
+    })
+    if latest_draft:
+        target["mail_draft"] = latest_draft
     mail_at = hist[-1]["at"]
     prev_status = _canonical_flow_status(target.get("flow_status"), target)
     if prev_status != "apply_confirmed":

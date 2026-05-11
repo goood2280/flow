@@ -51,7 +51,7 @@ import datetime
 from pathlib import Path
 import sys
 import uuid
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _APP_ROOT = _BACKEND_ROOT.parent
@@ -373,6 +373,72 @@ def _go_flow_link(issue_id: str = "") -> str:
     return "http://go/flow"
 
 
+def _latest_lot_summary_row(rows: list[dict]) -> dict:
+    clean = [r for r in (rows or []) if isinstance(r, dict)]
+    if not clean:
+        return {}
+    return sorted(clean, key=lambda r: str(r.get("update_time") or ""), reverse=True)[0]
+
+
+def _hydrate_issue_lots_for_meeting(issue: dict) -> list[dict]:
+    lots = [dict(row or {}) for row in (issue.get("lots") or []) if isinstance(row, dict)]
+    if not lots:
+        return []
+    try:
+        from routers import tracker as tracker_router
+        is_monitor = tracker_router._category_source(issue.get("category") or "", "fab") == "fab"
+    except Exception:
+        is_monitor = True
+    if not is_monitor:
+        return lots
+    try:
+        from core.lot_progress_cache import compress_wafer_ids, lot_progress_summary
+    except Exception:
+        return lots
+    out: list[dict] = []
+    for lot in lots:
+        lot_id = str(lot.get("lot_id") or lot.get("fab_lot_id") or lot.get("root_lot_id") or "").strip()
+        if not lot_id:
+            out.append(lot)
+            continue
+        product = str(lot.get("product") or lot.get("monitor_prod") or issue.get("product") or "").strip()
+        try:
+            summary = lot_progress_summary(lot_id=lot_id, product=product)
+        except Exception:
+            summary = {}
+        rows = [r for r in (summary.get("rows") or []) if isinstance(r, dict)]
+        wafers = [str(w or "").strip() for w in (summary.get("wafer_ids") or []) if str(w or "").strip()]
+        if not wafers:
+            seen_wafers: set[str] = set()
+            for item in rows:
+                wafer = str(item.get("wafer_id") or "").strip()
+                if wafer and wafer not in seen_wafers:
+                    seen_wafers.add(wafer)
+                    wafers.append(wafer)
+        latest = _latest_lot_summary_row(rows)
+        func = str(summary.get("func_step") or latest.get("func_step") or latest.get("function_step") or lot.get("current_function_step") or "").strip()
+        out.append({
+            **lot,
+            "product": summary.get("product") or latest.get("product") or product or lot.get("product") or lot.get("monitor_prod") or "",
+            "monitor_prod": summary.get("product") or latest.get("product") or product or lot.get("monitor_prod") or lot.get("product") or "",
+            "root_lot_id": summary.get("root_lot_id") or latest.get("root_lot_id") or lot.get("root_lot_id") or "",
+            "lot_id": lot_id,
+            "wafer_ids": wafers,
+            "wafer_count": int(summary.get("wafer_count") or len(wafers) or 0),
+            "wafer_label": summary.get("wafer_label") or compress_wafer_ids(wafers),
+            "lot_progress_rows": rows,
+            "current_step": summary.get("step_id") or latest.get("step_id") or lot.get("current_step") or "",
+            "current_function_step": func,
+            "function_step": func,
+            "func_step": func,
+            "last_move_at": summary.get("update_time") or latest.get("update_time") or lot.get("last_move_at") or "",
+            "last_scan_source": "fab",
+            "last_scan_source_root": "lot_progress_cache",
+            "last_scan_status": "ok" if rows else "no_match",
+        })
+    return out
+
+
 def _hydrate_tracker_issue_ref(issue_ref: Optional[dict]) -> Optional[dict]:
     """Keep imported tracker issue text/images with the agenda snapshot."""
     if not isinstance(issue_ref, dict):
@@ -390,6 +456,7 @@ def _hydrate_tracker_issue_ref(issue_ref: Optional[dict]) -> Optional[dict]:
         if iss:
             desc = str(iss.get("description") or "")
             images = list(iss.get("images") or [])
+            lots = _hydrate_issue_lots_for_meeting(iss)
             snap.update({
                 "title": iss.get("title") or snap.get("title") or "",
                 "status": iss.get("status") or snap.get("status") or "",
@@ -401,8 +468,8 @@ def _hydrate_tracker_issue_ref(issue_ref: Optional[dict]) -> Optional[dict]:
                 "images": images or list(snap.get("images") or []),
                 "image_count": len(images or snap.get("images") or []),
                 "links": list(iss.get("links") or snap.get("links") or []),
-                "lots": list(iss.get("lots") or snap.get("lots") or []),
-                "lot_count": len(iss.get("lots") or snap.get("lots") or []),
+                "lots": lots or list(snap.get("lots") or []),
+                "lot_count": len(lots or snap.get("lots") or []),
                 "comment_count": len(iss.get("comments") or []),
                 "updated_at": iss.get("updated_at") or iss.get("created") or iss.get("timestamp") or snap.get("updated_at") or "",
             })
@@ -449,50 +516,61 @@ def _agenda_issue_mail_html(a: dict) -> str:
     return "".join(parts)
 
 
-def _meeting_mail_html(meeting: dict, session: dict, mail_body: str = "") -> str:
+def _meeting_mail_html(
+    meeting: dict,
+    session: dict,
+    mail_body: str = "",
+    *,
+    include_agenda: bool = True,
+    include_minutes: bool = True,
+    include_decisions: bool = True,
+    include_action_items: bool = True,
+) -> str:
     """아젠다 + (선택) 메일 본문 + 결정사항 + 액션아이템 단일 HTML 메일 조립.
 
     v8.8.16: 공동 작성된 minutes.body 를 자동으로 끌어오던 것을 제거.
       - 주관자가 mail_body 파라미터로 명시적으로 작성한 텍스트만 사용.
-      - mail_body 가 비면 메일 본문 섹션 자체가 생략된다 (아젠다/결정/액션만 발송).
+      - mail_body 가 비면 저장된 minutes.body 를 메일 본문으로 사용한다.
     """
     esc = _html.escape
     agendas = session.get("agendas") or []
     minutes = session.get("minutes") or {}
     decisions = minutes.get("decisions") or []
     actions = minutes.get("action_items") or []
-    rows_ag = ""
-    for i, a in enumerate(agendas, 1):
-        link = a.get("link") or ""
-        link_html = f'<br/><a href="{esc(link)}" style="font-size:11px;color:#ea580c;">🔗 {esc(link)}</a>' if link else ""
-        issue_html = _agenda_issue_mail_html(a if isinstance(a, dict) else {})
-        rows_ag += (
-            f"<tr><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;width:26px;'>#{i}</td>"
-            f"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>"
-            f"<b>{esc(a.get('title',''))}</b>"
-            + (f"<div style='font-size:11px;color:#6b7280;margin-top:2px;line-height:1.45'>{esc(_brief_text(a.get('description',''), 500))}</div>" if a.get('description') else "")
-            + link_html
-            + issue_html
-            + f"</td><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;font-family:monospace;font-size:11px;color:#374151;'>{esc(a.get('owner',''))}</td></tr>"
+    ag_tbl = ""
+    if include_agenda:
+        rows_ag = ""
+        for i, a in enumerate(agendas, 1):
+            link = a.get("link") or ""
+            link_html = f'<br/><a href="{esc(link)}" style="font-size:11px;color:#ea580c;">🔗 {esc(link)}</a>' if link else ""
+            issue_html = _agenda_issue_mail_html(a if isinstance(a, dict) else {})
+            rows_ag += (
+                f"<tr><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;width:26px;'>#{i}</td>"
+                f"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>"
+                f"<b>{esc(a.get('title',''))}</b>"
+                + (f"<div style='font-size:11px;color:#6b7280;margin-top:2px;line-height:1.45'>{esc(_brief_text(a.get('description',''), 500))}</div>" if a.get('description') else "")
+                + link_html
+                + issue_html
+                + f"</td><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;font-family:monospace;font-size:11px;color:#374151;'>{esc(a.get('owner',''))}</td></tr>"
+            )
+        ag_tbl = (
+            "<h3 style='font-size:13px;margin:14px 0 6px;color:#374151;'>📋 아젠다</h3>"
+            "<table style='width:100%;border-collapse:collapse;border:1px solid #e5e7eb;'>"
+            "<thead><tr style='background:#f3f4f6;font-size:11px;color:#6b7280;'>"
+            "<th style='text-align:left;padding:6px 10px;'>#</th>"
+            "<th style='text-align:left;padding:6px 10px;'>제목 · 설명</th>"
+            "<th style='text-align:left;padding:6px 10px;width:100px;'>담당</th>"
+            f"</tr></thead><tbody>{rows_ag or '<tr><td colspan=3 style=padding:10px;color:#9ca3af;>(아젠다 없음)</td></tr>'}</tbody></table>"
         )
-    ag_tbl = (
-        "<h3 style='font-size:13px;margin:14px 0 6px;color:#374151;'>📋 아젠다</h3>"
-        "<table style='width:100%;border-collapse:collapse;border:1px solid #e5e7eb;'>"
-        "<thead><tr style='background:#f3f4f6;font-size:11px;color:#6b7280;'>"
-        "<th style='text-align:left;padding:6px 10px;'>#</th>"
-        "<th style='text-align:left;padding:6px 10px;'>제목 · 설명</th>"
-        "<th style='text-align:left;padding:6px 10px;width:100px;'>담당</th>"
-        f"</tr></thead><tbody>{rows_ag or '<tr><td colspan=3 style=padding:10px;color:#9ca3af;>(아젠다 없음)</td></tr>'}</tbody></table>"
-    )
     body_html = ""
     # v9.0.1: 회의록 정리 본문(공동 편집 minutes.body) 을 메일에 자동 포함 — 사용자 요구.
     #   주관자가 mail_body 를 명시적으로 적었으면 그게 우선, 비어있으면 minutes.body 폴백.
     mail_body_clean = (mail_body or "").strip()
-    if not mail_body_clean:
+    if include_minutes and not mail_body_clean:
         minutes_body = (minutes.get("body") or "").strip()
         if minutes_body:
             mail_body_clean = minutes_body
-    if mail_body_clean:
+    if include_minutes and mail_body_clean:
         body_lines = mail_body_clean.splitlines()
         body_html = (
             "<h3 style='font-size:13px;margin:14px 0 6px;color:#374151;'>📝 메일 본문</h3>"
@@ -500,7 +578,7 @@ def _meeting_mail_html(meeting: dict, session: dict, mail_body: str = "") -> str
             + "<br/>".join(esc(ln) for ln in body_lines) + "</div>"
         )
     dec_html = ""
-    if decisions:
+    if include_decisions and decisions:
         dec_rows = ""
         for d in decisions:
             if isinstance(d, str):
@@ -510,7 +588,7 @@ def _meeting_mail_html(meeting: dict, session: dict, mail_body: str = "") -> str
                 dec_rows += f"<li style='margin:4px 0'>{esc(d.get('text',''))}{due}</li>"
         dec_html = f"<h3 style='font-size:13px;margin:14px 0 6px;color:#374151;'>⚡ 결정사항</h3><ul style='margin:0;padding-left:20px;font-size:12px;'>{dec_rows}</ul>"
     act_html = ""
-    if actions:
+    if include_action_items and actions:
         rows_a = ""
         for a in actions:
             rows_a += (
@@ -564,47 +642,125 @@ def _encode_multipart(fields: Dict[str, str], files: List[tuple]) -> tuple:
     return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
-def _send_minutes_mail(meeting: dict, session: dict, *,
-                        to_addrs: List[str], subject: str, actor: str,
-                        mail_body: str = "") -> dict:
-    """사내 메일 API 로 회의록 HTML 전송. 설정 미비/에러 시 {ok:False, error} 반환.
-
-    v8.8.16: mail_body 를 명시적으로 받아 _meeting_mail_html 에 전달.
-      호출자가 비워 두면 메일 본문 섹션 없이 아젠다/결정/액션만 포함된다.
-    """
-    cfg = _load_mail_cfg()
-    if not cfg.get("enabled") or not (cfg.get("api_url") or "").strip():
-        return {"ok": False, "error": "메일 API 가 설정되지 않았습니다 (Admin > 메일 API)."}
+def _dedupe_mail_addrs(to_addrs: List[str]) -> List[str]:
     uniq: List[str] = []
     seen: set = set()
-    for em in to_addrs:
+    for em in to_addrs or []:
         em = (em or "").strip()
         if em and "@" in em and em not in seen:
             seen.add(em)
             uniq.append(em)
-    if not uniq:
-        return {"ok": False, "error": "수신자 이메일이 없습니다."}
-    if len(uniq) > MAIL_MAX_RECIPIENTS:
-        return {"ok": False, "error": f"수신자는 최대 {MAIL_MAX_RECIPIENTS}명까지 허용됩니다 (현재 {len(uniq)}명)."}
-    html_body = _meeting_mail_html(meeting, session, mail_body=mail_body)
-    if len(html_body.encode("utf-8")) > MAIL_CONTENT_MAX:
-        return {"ok": False, "error": "메일 본문이 2MB 한도를 초과했습니다."}
+    return uniq
+
+
+def _mail_options_kwargs(
+    *,
+    include_agenda: bool = True,
+    include_minutes: bool = True,
+    include_decisions: bool = True,
+    include_action_items: bool = True,
+) -> dict:
+    return {
+        "include_agenda": bool(include_agenda),
+        "include_minutes": bool(include_minutes),
+        "include_decisions": bool(include_decisions),
+        "include_action_items": bool(include_action_items),
+    }
+
+
+def _build_minutes_mail_preview(
+    meeting: dict,
+    session: dict,
+    *,
+    to_addrs: List[str],
+    subject: str,
+    mail_body: str = "",
+    include_agenda: bool = True,
+    include_minutes: bool = True,
+    include_decisions: bool = True,
+    include_action_items: bool = True,
+) -> dict:
+    cfg = _load_mail_cfg()
+    uniq = _dedupe_mail_addrs(to_addrs)
+    html_body = _meeting_mail_html(
+        meeting,
+        session,
+        mail_body=mail_body,
+        **_mail_options_kwargs(
+            include_agenda=include_agenda,
+            include_minutes=include_minutes,
+            include_decisions=include_decisions,
+            include_action_items=include_action_items,
+        ),
+    )
     receiver_list = [{"email": em, "recipientType": "TO", "seq": i + 1} for i, em in enumerate(uniq)]
     _sender_addr = (cfg.get("from_addr") or "").strip()
     data_obj: Dict[str, Any] = {
-        "content":           html_body,
-        "receiverList":      receiver_list,
-        # v8.8.24: camelCase 표준 + legacy 소문자 양쪽 주입 (core/mail.send_mail 과 통일).
+        "content": html_body,
+        "receiverList": receiver_list,
         "senderMailAddress": _sender_addr,
         "senderMailaddress": _sender_addr,
-        "statusCode":        (cfg.get("status_code") or "").strip(),
-        "title":             subject or f"[flow 회의록] {meeting.get('title','')} · {session.get('idx','')}차",
+        "statusCode": (cfg.get("status_code") or "").strip(),
+        "title": subject or f"[flow 회의록] {meeting.get('title','')} · {session.get('idx','')}차",
     }
     extra = cfg.get("extra_data") or {}
     if isinstance(extra, dict):
         for k, v in extra.items():
             if k and k not in data_obj:
                 data_obj[k] = v
+    mail_send_string = _json.dumps(data_obj, ensure_ascii=False)
+    return {
+        "ok": True,
+        "to": uniq,
+        "subject": data_obj["title"],
+        "content": html_body,
+        "html": html_body,
+        "preview_data": data_obj,
+        "preview_data_wrapped": {"mailSendString": mail_send_string},
+        "mailSendString": mail_send_string,
+        "content_options": _mail_options_kwargs(
+            include_agenda=include_agenda,
+            include_minutes=include_minutes,
+            include_decisions=include_decisions,
+            include_action_items=include_action_items,
+        ),
+    }
+
+
+def _send_minutes_mail(meeting: dict, session: dict, *,
+                        to_addrs: List[str], subject: str, actor: str,
+                        mail_body: str = "",
+                        include_agenda: bool = True,
+                        include_minutes: bool = True,
+                        include_decisions: bool = True,
+                        include_action_items: bool = True) -> dict:
+    """사내 메일 API 로 회의록 HTML 전송. 설정 미비/에러 시 {ok:False, error} 반환.
+
+    v8.8.16: mail_body 를 명시적으로 받아 _meeting_mail_html 에 전달.
+      호출자가 비워 두면 저장된 minutes.body 를 메일 본문으로 사용한다.
+    """
+    cfg = _load_mail_cfg()
+    if not cfg.get("enabled") or not (cfg.get("api_url") or "").strip():
+        return {"ok": False, "error": "메일 API 가 설정되지 않았습니다 (Admin > 메일 API)."}
+    preview = _build_minutes_mail_preview(
+        meeting,
+        session,
+        to_addrs=to_addrs,
+        subject=subject,
+        mail_body=mail_body,
+        include_agenda=include_agenda,
+        include_minutes=include_minutes,
+        include_decisions=include_decisions,
+        include_action_items=include_action_items,
+    )
+    uniq = preview["to"]
+    if not uniq:
+        return {"ok": False, "error": "수신자 이메일이 없습니다."}
+    if len(uniq) > MAIL_MAX_RECIPIENTS:
+        return {"ok": False, "error": f"수신자는 최대 {MAIL_MAX_RECIPIENTS}명까지 허용됩니다 (현재 {len(uniq)}명)."}
+    html_body = preview["content"]
+    if len(html_body.encode("utf-8")) > MAIL_CONTENT_MAX:
+        return {"ok": False, "error": "메일 본문이 2MB 한도를 초과했습니다."}
     headers = {}
     cfg_headers = cfg.get("headers") or {}
     if isinstance(cfg_headers, dict):
@@ -616,11 +772,12 @@ def _send_minutes_mail(meeting: dict, session: dict, *,
     #   form field 로 직접 전송. 이전에는 flat `data` 필드에 data_obj 를 그대로
     #   보냈는데, 서버 스펙이 `mailSendString` 키를 요구해 회의록 메일이 누락되던
     #   문제가 있었음 (informs 쪽은 v8.8.21 부터 래핑했지만 meetings 는 미적용).
-    mail_send_string = _json.dumps(data_obj, ensure_ascii=False)
+    mail_send_string = preview["mailSendString"]
     if url.lower() == "dry-run":
         return {"ok": True, "dry_run": True, "to": uniq,
-                "subject": data_obj["title"], "preview_data": data_obj,
-                "preview_data_wrapped": {"mailSendString": mail_send_string}}
+                "subject": preview["subject"], "content": html_body,
+                "preview_data": preview["preview_data"],
+                "preview_data_wrapped": preview["preview_data_wrapped"]}
     fields = {"mailSendString": mail_send_string}
     body_bytes, content_type = _encode_multipart(fields, [])
     hdrs_out = dict(headers); hdrs_out["Content-Type"] = content_type
@@ -630,7 +787,7 @@ def _send_minutes_mail(meeting: dict, session: dict, *,
             status = resp.status
             text = resp.read(2048).decode("utf-8", errors="replace")
         return {"ok": status < 400, "status": status, "response": text[:512], "to": uniq,
-                "subject": data_obj["title"]}
+                "subject": preview["subject"], "content": html_body}
     except urllib.error.HTTPError as e:
         det = ""
         try: det = e.read(512).decode("utf-8", errors="replace")
@@ -639,9 +796,6 @@ def _send_minutes_mail(meeting: dict, session: dict, *,
     except Exception as e:
         return {"ok": False, "error": f"메일 전송 실패: {e}"}
 
-
-# Any 는 typing 으로 이미 import 되어 있지 않음 — meetings.py 위쪽 import 에 추가 필요.
-from typing import Any  # noqa: E402
 
 router = APIRouter(prefix="/api/meetings", tags=["meetings"])
 
@@ -981,8 +1135,18 @@ class MinutesSave(BaseModel):
     #   FE 는 409 응답의 current_body/rev 로 머지하거나 user 에게 경고한 뒤 다시 저장.
     base_rev: Optional[int] = None
     # v8.8.16: 메일 전용 본문 — 공동 작성된 minutes.body 와 분리해 주관자가 직접 작성.
-    #   비우고 send_mail=True 면 메일에 본문 섹션 없이 아젠다/결정/액션만 나감.
+    #   비우고 send_mail=True 면 저장된 minutes.body 를 메일 본문으로 사용.
     mail_body: Optional[str] = ""
+    include_agenda: Optional[bool] = True
+    include_minutes: Optional[bool] = True
+    include_decisions: Optional[bool] = True
+    include_action_items: Optional[bool] = True
+
+
+class MeetingAskReq(BaseModel):
+    meeting_id: str
+    session_id: Optional[str] = ""
+    question: str
 
 
 # ── permission helpers ─────────────────────────────────────────────
@@ -1064,6 +1228,248 @@ def _my_meeting_group_ids(username: str, role: str) -> set:
         return set()
 
 
+def _ask_clip(value: Any, limit: int = 700) -> str:
+    text = _plain_text_from_html(str(value or ""))
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _ask_session_label(session: dict) -> str:
+    idx = session.get("idx")
+    label = f"{idx}차" if idx not in (None, "", 0) else str(session.get("id") or "차수")
+    sched = (session.get("scheduled_at") or "").replace("T", " ")[:16]
+    return f"{label}{(' · ' + sched) if sched else ''}"
+
+
+def _ask_decision_text(item: Any) -> str:
+    if isinstance(item, str):
+        return _ask_clip(item, 500)
+    if not isinstance(item, dict):
+        return ""
+    text = _ask_clip(item.get("text") or "", 500)
+    if not text:
+        return ""
+    due = _ask_clip(item.get("due") or "", 40)
+    return f"{text}{(' · 마감 ' + due) if due else ''}"
+
+
+def _ask_action_text(item: dict) -> str:
+    if not isinstance(item, dict):
+        return ""
+    text = _ask_clip(item.get("text") or "", 500)
+    if not text:
+        return ""
+    bits = []
+    owner = _ask_clip(item.get("owner") or "", 80)
+    due = _ask_clip(item.get("due") or "", 40)
+    status = _ask_clip(item.get("status") or "", 40)
+    if owner:
+        bits.append(f"담당 {owner}")
+    if due:
+        bits.append(f"마감 {due}")
+    if status:
+        bits.append(f"상태 {status}")
+    return f"{text}{(' · ' + ' · '.join(bits)) if bits else ''}"
+
+
+def _ask_agenda_text(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {"title": "", "description": "", "owner": "", "link": "", "issue": ""}
+    issue = item.get("issue_ref") if isinstance(item.get("issue_ref"), dict) else {}
+    issue_id = _ask_clip(issue.get("issue_id") or issue.get("id") or "", 80)
+    issue_title = _ask_clip(issue.get("title") or "", 180)
+    issue_text = ""
+    if issue_id or issue_title:
+        issue_text = f"{issue_id}{(': ' + issue_title) if issue_title else ''}"
+    return {
+        "title": _ask_clip(item.get("title") or "", 220),
+        "description": _ask_clip(item.get("description") or "", 500),
+        "owner": _ask_clip(item.get("owner") or "", 80),
+        "link": _ask_clip(item.get("link") or "", 240),
+        "issue": issue_text,
+    }
+
+
+def _build_meeting_ask_summary(meeting: dict, sessions: list[dict]) -> dict:
+    session_rows = []
+    for session in sessions:
+        minutes = session.get("minutes") if isinstance(session.get("minutes"), dict) else {}
+        agendas = [_ask_agenda_text(a) for a in (session.get("agendas") or []) if isinstance(a, dict)]
+        decisions = [_ask_decision_text(d) for d in (minutes.get("decisions") or [])]
+        decisions = [d for d in decisions if d]
+        actions = [_ask_action_text(a) for a in (minutes.get("action_items") or []) if isinstance(a, dict)]
+        actions = [a for a in actions if a]
+        appendix = []
+        for row in minutes.get("body_appendix") or []:
+            if not isinstance(row, dict):
+                continue
+            text = _ask_clip(row.get("text") or "", 500)
+            if text:
+                appendix.append({
+                    "author": _ask_clip(row.get("author") or "", 80),
+                    "at": _ask_clip(row.get("at") or "", 80),
+                    "text": text,
+                })
+        session_rows.append({
+            "id": session.get("id") or "",
+            "idx": session.get("idx"),
+            "label": _ask_session_label(session),
+            "scheduled_at": session.get("scheduled_at") or "",
+            "status": session.get("status") or "",
+            "agendas": agendas,
+            "minutes_body": _ask_clip(minutes.get("body") or "", 1200),
+            "minutes_appendix": appendix,
+            "decisions": decisions,
+            "action_items": actions,
+        })
+    return {
+        "meeting": {
+            "id": meeting.get("id") or "",
+            "title": meeting.get("title") or "",
+            "owner": meeting.get("owner") or "",
+            "status": meeting.get("status") or "",
+            "category": meeting.get("category") or "",
+        },
+        "sessions": session_rows,
+    }
+
+
+def _meeting_ask_context_text(summary: dict, limit: int = 12000) -> str:
+    meeting = summary.get("meeting") or {}
+    lines = [
+        f"회의: {meeting.get('title') or meeting.get('id')}",
+        f"주관: {meeting.get('owner') or '-'} / 상태: {meeting.get('status') or '-'}",
+    ]
+    for session in summary.get("sessions") or []:
+        lines.append("")
+        lines.append(f"[{session.get('label')}] 상태: {session.get('status') or '-'}")
+        agendas = session.get("agendas") or []
+        lines.append(f"아젠다({len(agendas)}건):")
+        for idx, agenda in enumerate(agendas, 1):
+            parts = [agenda.get("title") or "(제목 없음)"]
+            if agenda.get("owner"):
+                parts.append(f"담당 {agenda['owner']}")
+            if agenda.get("description"):
+                parts.append(agenda["description"])
+            if agenda.get("issue"):
+                parts.append(f"연결 이슈 {agenda['issue']}")
+            lines.append(f"- #{idx} " + " · ".join(parts))
+        if session.get("minutes_body"):
+            lines.append("회의록:")
+            lines.append(session["minutes_body"])
+        appendix = session.get("minutes_appendix") or []
+        if appendix:
+            lines.append("추가 회의록:")
+            for row in appendix:
+                who = row.get("author") or "작성자 미상"
+                lines.append(f"- {who}: {row.get('text') or ''}")
+        decisions = session.get("decisions") or []
+        lines.append(f"결정사항({len(decisions)}건):")
+        for idx, text in enumerate(decisions, 1):
+            lines.append(f"- #{idx} {text}")
+        actions = session.get("action_items") or []
+        lines.append(f"액션아이템({len(actions)}건):")
+        for idx, text in enumerate(actions, 1):
+            lines.append(f"- #{idx} {text}")
+    text = "\n".join(lines).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n...(context truncated)"
+
+
+def _fallback_meeting_answer(question: str, summary: dict) -> str:
+    q = (question or "").lower()
+    want_agenda = any(k in q for k in ("agenda", "아젠다", "안건"))
+    want_minutes = any(k in q for k in ("minutes", "회의록", "내용", "요약"))
+    want_decisions = any(k in q for k in ("decision", "결정", "결론"))
+    want_actions = any(k in q for k in ("action", "액션", "todo", "할일", "마감"))
+    if not any((want_agenda, want_minutes, want_decisions, want_actions)):
+        want_agenda = want_minutes = want_decisions = want_actions = True
+
+    meeting = summary.get("meeting") or {}
+    title = meeting.get("title") or meeting.get("id") or "선택한 회의"
+    lines = [f"{title}에서 확인한 내용입니다."]
+    found = False
+    for session in summary.get("sessions") or []:
+        lines.append("")
+        lines.append(f"[{session.get('label')}]")
+        if want_agenda:
+            agendas = session.get("agendas") or []
+            lines.append(f"아젠다: {len(agendas)}건")
+            for idx, agenda in enumerate(agendas[:8], 1):
+                detail = agenda.get("description") or agenda.get("issue") or ""
+                owner = f" · 담당 {agenda['owner']}" if agenda.get("owner") else ""
+                lines.append(f"- #{idx} {agenda.get('title') or '(제목 없음)'}{owner}{(' · ' + detail) if detail else ''}")
+            if len(agendas) > 8:
+                lines.append(f"- ...외 {len(agendas) - 8}건")
+            found = found or bool(agendas)
+        if want_minutes:
+            body = session.get("minutes_body") or ""
+            appendix = session.get("minutes_appendix") or []
+            if body:
+                lines.append(f"회의록: {body}")
+                found = True
+            for row in appendix[:4]:
+                lines.append(f"추가 회의록: {row.get('author') or '-'} · {row.get('text') or ''}")
+                found = True
+        if want_decisions:
+            decisions = session.get("decisions") or []
+            lines.append(f"결정사항: {len(decisions)}건")
+            for idx, text in enumerate(decisions[:8], 1):
+                lines.append(f"- #{idx} {text}")
+            if len(decisions) > 8:
+                lines.append(f"- ...외 {len(decisions) - 8}건")
+            found = found or bool(decisions)
+        if want_actions:
+            actions = session.get("action_items") or []
+            lines.append(f"액션아이템: {len(actions)}건")
+            for idx, text in enumerate(actions[:8], 1):
+                lines.append(f"- #{idx} {text}")
+            if len(actions) > 8:
+                lines.append(f"- ...외 {len(actions) - 8}건")
+            found = found or bool(actions)
+    if not found:
+        lines.append("")
+        lines.append("선택한 범위에서 저장된 아젠다, 회의록, 결정사항, 액션아이템을 찾지 못했습니다.")
+    return "\n".join(lines).strip()
+
+
+def _meeting_ask_llm_answer(question: str, summary: dict) -> tuple[str, dict]:
+    llm_info = {"available": False, "used": False}
+    fallback = _fallback_meeting_answer(question, summary)
+    try:
+        from core import llm_adapter
+        llm_info["available"] = bool(llm_adapter.is_available())
+        if not llm_info["available"]:
+            return fallback, llm_info
+        context = _meeting_ask_context_text(summary)
+        if not context:
+            return fallback, llm_info
+        system = (
+            "당신은 Flow 회의록 질의 도우미다. 제공된 회의 데이터 안에서만 한국어로 답한다. "
+            "근거가 없으면 없다고 말하고 추측하지 않는다. 결정사항, 액션아이템, 아젠다를 구분해 간결하게 정리한다."
+        )
+        prompt = _json.dumps({
+            "question": question,
+            "meeting_context": context,
+            "answer_rules": [
+                "회의 데이터 밖의 사실은 만들지 않는다.",
+                "질문이 특정 항목을 묻더라도 관련된 결정사항/액션아이템/아젠다가 있으면 함께 짚는다.",
+                "담당자, 마감일, 차수, 일정이 있으면 유지한다.",
+            ],
+        }, ensure_ascii=False)
+        out = llm_adapter.complete(prompt, system=system, timeout=20)
+        if out.get("ok") and (out.get("text") or "").strip():
+            llm_info["used"] = True
+            return (out.get("text") or "").strip(), llm_info
+        llm_info["error"] = out.get("error") or "empty llm response"
+        return fallback, llm_info
+    except Exception as exc:
+        llm_info["error"] = str(exc)
+        return fallback, llm_info
+
+
 @router.get("/list")
 def list_meetings(
     request: Request,
@@ -1086,6 +1492,56 @@ def list_meetings(
         return (latest, m.get("created_at") or "")
     items.sort(key=_sort_key, reverse=True)
     return {"meetings": items}
+
+
+@router.post("/ask")
+def ask_meeting(req: MeetingAskReq, request: Request):
+    me = current_user(request)
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(400, "question required")
+    if len(question) > 1000:
+        question = question[:1000].rstrip()
+    meeting_id = (req.meeting_id or "").strip()
+    if not meeting_id:
+        raise HTTPException(400, "meeting_id required")
+    role = me.get("role", "user")
+    my_gids = _my_meeting_group_ids(me["username"], role)
+    items = _load()
+    _, meeting = _find(items, meeting_id)
+    if not meeting:
+        raise HTTPException(404, "meeting not found")
+    if not _meeting_visible(meeting, me["username"], role, my_gids):
+        raise HTTPException(403, "이 회의를 볼 수 없습니다.")
+
+    session_id = (req.session_id or "").strip()
+    sessions = [s for s in (meeting.get("sessions") or []) if isinstance(s, dict)]
+    if session_id and session_id not in {"all", "__all__"}:
+        _, session = _find_session(meeting, session_id)
+        if not session:
+            raise HTTPException(404, "session not found")
+        sessions = [session]
+    summary = _build_meeting_ask_summary(meeting, sessions)
+    answer, llm_info = _meeting_ask_llm_answer(question, summary)
+    source_rows = []
+    for session in summary.get("sessions") or []:
+        source_rows.append({
+            "session_id": session.get("id") or "",
+            "label": session.get("label") or "",
+            "agendas": len(session.get("agendas") or []),
+            "decisions": len(session.get("decisions") or []),
+            "action_items": len(session.get("action_items") or []),
+            "has_minutes": bool(session.get("minutes_body") or session.get("minutes_appendix")),
+        })
+    return {
+        "ok": True,
+        "answer": answer,
+        "llm": llm_info,
+        "meeting": summary.get("meeting") or {},
+        "sessions": summary.get("sessions") or [],
+        "sources": source_rows,
+        "scope": "session" if session_id and session_id not in {"all", "__all__"} else "meeting",
+    }
 
 
 @router.get("/{mid}")
@@ -1638,7 +2094,11 @@ def save_minutes(req: MinutesSave, request: Request):
         subject = (req.mail_subject or "").strip()
         mail_result = _send_minutes_mail(m, s, to_addrs=to_addrs, subject=subject,
                                           actor=me["username"],
-                                          mail_body=(req.mail_body or ""))
+                                          mail_body=(req.mail_body or ""),
+                                          include_agenda=req.include_agenda is not False,
+                                          include_minutes=req.include_minutes is not False,
+                                          include_decisions=req.include_decisions is not False,
+                                          include_action_items=req.include_action_items is not False)
         _audit(request, "meetings:minutes_mail",
                detail=f"meeting={m['id']} session={s['id']} ok={mail_result.get('ok')} n={len(to_addrs)}",
                tab="meetings")
@@ -1944,10 +2404,20 @@ class SessionSendMailReq(BaseModel):
     mail_subject: Optional[str] = ""
     # v8.8.16: 메일 전용 본문 (공동 작성된 minutes.body 와 분리).
     mail_body: Optional[str] = ""
+    include_agenda: Optional[bool] = True
+    include_minutes: Optional[bool] = True
+    include_decisions: Optional[bool] = True
+    include_action_items: Optional[bool] = True
 
 
-@router.post("/session/send-mail")
-def session_send_mail(req: SessionSendMailReq, request: Request):
+class SessionMailPreviewReq(SessionSendMailReq):
+    body: Optional[str] = None
+    decisions: Optional[List] = None
+    action_items: Optional[List[ActionItem]] = None
+    mail_groups: Optional[List[str]] = None
+
+
+def _resolve_session_mail_context(req: SessionSendMailReq, request: Request) -> tuple[dict, dict, dict, List[str]]:
     me = current_user(request)
     items = _load()
     midx, m = _find(items, req.meeting_id)
@@ -1964,10 +2434,78 @@ def session_send_mail(req: SessionSendMailReq, request: Request):
             to_addrs.append(em)
     to_addrs += _resolve_users_to_emails(list(req.mail_to_users or []))
     to_addrs += _resolve_mail_group_ids_to_emails(list(req.mail_group_ids or []))
+    return me, m, s, to_addrs
+
+
+@router.post("/session/mail-preview")
+def session_mail_preview(req: SessionMailPreviewReq, request: Request):
+    _me, m, s, to_addrs = _resolve_session_mail_context(req, request)
+    preview_session = dict(s)
+    fields_set_raw = getattr(req, "model_fields_set", None)
+    if fields_set_raw is None:
+        fields_set_raw = getattr(req, "__fields_set__", set())
+    fields_set = set(fields_set_raw or set())
+    if {"body", "decisions", "action_items"} & fields_set:
+        minutes = dict(s.get("minutes") or {})
+        if "body" in fields_set:
+            minutes["body"] = (req.body or "").strip()
+        if "decisions" in fields_set:
+            minutes["decisions"] = _ensure_decision_objects(req.decisions or [])
+        if "action_items" in fields_set:
+            action_items = []
+            for ai in (req.action_items or []):
+                text = (ai.text or "").strip()
+                if not text:
+                    continue
+                action_items.append({
+                    "id": (ai.id or "").strip(),
+                    "text": text,
+                    "owner": (ai.owner or "").strip(),
+                    "due": (ai.due or "").strip(),
+                    "group_ids": [str(g).strip() for g in (ai.group_ids or []) if str(g).strip()],
+                })
+            minutes["action_items"] = _ensure_action_item_ids(action_items)
+            gids_collected: set = set()
+            for ai in action_items:
+                for gid in (ai.get("group_ids") or []):
+                    gids_collected.add(gid)
+            to_addrs += _resolve_group_members_to_emails(list(gids_collected))
+        preview_session["minutes"] = minutes
+    cfg_rg = (_load_mail_cfg().get("recipient_groups") or {})
+    if isinstance(cfg_rg, dict):
+        for gname in (req.mail_groups or []):
+            members = cfg_rg.get(gname) or []
+            if isinstance(members, list):
+                for em in members:
+                    em = str(em).strip()
+                    if em and "@" in em:
+                        to_addrs.append(em)
+    subject = (req.mail_subject or "").strip()
+    preview = _build_minutes_mail_preview(
+        m,
+        preview_session,
+        to_addrs=to_addrs,
+        subject=subject,
+        mail_body=(req.mail_body or ""),
+        include_agenda=req.include_agenda is not False,
+        include_minutes=req.include_minutes is not False,
+        include_decisions=req.include_decisions is not False,
+        include_action_items=req.include_action_items is not False,
+    )
+    return {"ok": True, "mail": preview}
+
+
+@router.post("/session/send-mail")
+def session_send_mail(req: SessionSendMailReq, request: Request):
+    me, m, s, to_addrs = _resolve_session_mail_context(req, request)
     subject = (req.mail_subject or "").strip()
     result = _send_minutes_mail(m, s, to_addrs=to_addrs, subject=subject,
                                 actor=me["username"],
-                                mail_body=(req.mail_body or ""))
+                                mail_body=(req.mail_body or ""),
+                                include_agenda=req.include_agenda is not False,
+                                include_minutes=req.include_minutes is not False,
+                                include_decisions=req.include_decisions is not False,
+                                include_action_items=req.include_action_items is not False)
     _audit(request, "meetings:session_send_mail",
            detail=f"meeting={m['id']} session={s['id']} ok={result.get('ok')} n={len(to_addrs)}",
            tab="meetings")

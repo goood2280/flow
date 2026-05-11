@@ -75,12 +75,198 @@ function issueSnapshot(iss, fallbackId = "") {
     updated_at: iss?.updated_at || iss?.created || iss?.timestamp || "",
   };
 }
-function lotWfText(lot) {
+function compressWaferIds(values = []) {
+  const nums = [];
+  const labels = [];
+  const seenLabels = new Set();
+  (Array.isArray(values) ? values : String(values || "").split(/[,;\s]+/)).forEach(v => {
+    const raw = String(v || "").trim();
+    if (!raw) return;
+    const core = raw.replace(/^(#|WAFER|WF|W)\s*/i, "").trim();
+    if (/^\d+$/.test(core)) {
+      nums.push(Number(core));
+      return;
+    }
+    const key = raw.toUpperCase();
+    if (!seenLabels.has(key)) {
+      seenLabels.add(key);
+      labels.push(raw);
+    }
+  });
+  const sorted = Array.from(new Set(nums)).sort((a, b) => a - b);
+  const parts = [];
+  for (let i = 0; i < sorted.length; i += 1) {
+    const start = sorted[i];
+    let end = start;
+    while (i + 1 < sorted.length && sorted[i + 1] === end + 1) {
+      i += 1;
+      end = sorted[i];
+    }
+    parts.push(start === end ? `${start}` : `${start}~${end}`);
+  }
+  parts.push(...labels);
+  return parts.length ? `#${parts.join(",")}` : "";
+}
+function lotProduct(lot) {
   const product = lot?.product || lot?.monitor_prod || "-";
-  const root = lot?.root_lot_id || lot?.lot_id || "-";
-  const wafer = lot?.wafer_id || "-";
-  const step = lot?.current_step ? ` · ${lot.current_step}${lot.current_function_step ? ` > ${lot.current_function_step}` : ""}` : "";
-  return `${product} · ${root} · WF ${wafer}${step}`;
+  return product || "-";
+}
+function lotIdText(lot) {
+  const lotId = lot?.lot_id || lot?.root_lot_id || "-";
+  return lotId || "-";
+}
+function lotWaferLabel(lot) {
+  const wafers = Array.isArray(lot?.wafer_ids) ? lot.wafer_ids : [];
+  return lot?.wafer_label || compressWaferIds(wafers) || (lot?.wafer_id ? `#${lot.wafer_id}` : "-");
+}
+function lotQty(lot) {
+  const wafers = Array.isArray(lot?.wafer_ids) ? lot.wafer_ids : [];
+  const qty = Number(lot?.wafer_count || wafers.length || (lot?.wafer_id ? 1 : 0));
+  return Number.isFinite(qty) && qty > 0 ? qty : 0;
+}
+function lotStepText(lot) {
+  const func = lot?.current_function_step || lot?.function_step || lot?.func_step || "";
+  if (lot?.current_step) return `${lot.current_step}${func ? `(${func})` : ""}`;
+  return func || "-";
+}
+function lotWfText(lot) {
+  const product = lotProduct(lot);
+  const lotId = lotIdText(lot);
+  const waferLabel = lotWaferLabel(lot);
+  const qty = lotQty(lot);
+  const step = lotStepText(lot);
+  return `${product} · ${lotId} · Qty ${qty}매 · ${waferLabel}${step !== "-" ? ` · ${step}` : ""}`;
+}
+function mergeIssueForDisplay(issueRef, issueDetail) {
+  const ref = issueRef || {};
+  const detail = issueDetail || {};
+  const merged = { ...ref, ...detail };
+  const refLots = Array.isArray(ref.lots) ? ref.lots : [];
+  const detailLots = Array.isArray(detail.lots) ? detail.lots : [];
+  merged.lots = refLots.length ? refLots : detailLots;
+  if (!Array.isArray(merged.links)) {
+    merged.links = Array.isArray(ref.links) ? ref.links : [];
+  }
+  return merged;
+}
+const DEFAULT_MAIL_OPTIONS = {
+  include_agenda: true,
+  include_minutes: true,
+  include_decisions: true,
+  include_action_items: true,
+};
+const MAIL_CONTENT_OPTIONS = [
+  ["include_agenda", "아젠다"],
+  ["include_minutes", "회의록"],
+  ["include_decisions", "결정사항"],
+  ["include_action_items", "액션아이템"],
+];
+function mailOptionsPayload(draft = {}) {
+  return {
+    include_agenda: draft.include_agenda !== false,
+    include_minutes: draft.include_minutes !== false,
+    include_decisions: draft.include_decisions !== false,
+    include_action_items: draft.include_action_items !== false,
+  };
+}
+function parseMailToText(value) {
+  return (value || "").split(/[,;\s]+/).map(s => s.trim()).filter(s => s && s.includes("@"));
+}
+function MailContentOptions({ draft, onChange }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      <span style={{ ...lbl, minWidth: 68 }}>메일 내용</span>
+      {MAIL_CONTENT_OPTIONS.map(([key, label]) => (
+        <label key={key} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 14, color: "var(--text-secondary)" }}>
+          <input type="checkbox" checked={(draft || {})[key] !== false} onChange={e => onChange({ [key]: e.target.checked })} />
+          {label}
+        </label>
+      ))}
+    </div>
+  );
+}
+function MailPreviewPanel({ mail }) {
+  if (!mail) return null;
+  const html = mail.html || mail.content || "";
+  const to = Array.isArray(mail.to) ? mail.to : [];
+  return (
+    <div style={{ marginTop: 8, padding: 8, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)" }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>{mail.subject || "메일 미리보기"}</div>
+      <div style={{ marginTop: 2, fontSize: 14, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        수신 {to.length}명{to.length ? ` · ${to.join(", ")}` : ""}
+      </div>
+      <iframe
+        title="메일 미리보기"
+        srcDoc={html}
+        sandbox=""
+        style={{ marginTop: 8, width: "100%", height: 320, border: "1px solid var(--border)", borderRadius: 4, background: "#fff" }}
+      />
+    </div>
+  );
+}
+function IssueLotTable({ lots, compact = false }) {
+  const rows = Array.isArray(lots) ? lots.filter(lot => lot && typeof lot === "object") : [];
+  if (!rows.length) return null;
+  const cellBase = {
+    padding: compact ? "5px 7px" : "6px 8px",
+    borderTop: "1px solid var(--border)",
+    color: "var(--text-primary)",
+    verticalAlign: "top",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  };
+  const headBase = {
+    padding: compact ? "5px 7px" : "6px 8px",
+    color: "var(--text-secondary)",
+    fontWeight: 700,
+    textAlign: "left",
+    borderBottom: "1px solid var(--border)",
+    background: "var(--bg-secondary)",
+  };
+  return (
+    <div data-testid="meeting-issue-lot-table" style={{ marginTop: 8, borderTop: "1px dashed rgba(139,92,246,0.32)", paddingTop: 7 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)", marginBottom: 5 }}>
+        LOT 테이블 ({rows.length})
+      </div>
+      <div style={{ overflow: "auto", maxHeight: compact ? 220 : 320, border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-primary)" }}>
+        <table style={{ width: "100%", minWidth: 760, tableLayout: "fixed", borderCollapse: "collapse", fontSize: 13 }}>
+          <colgroup>
+            <col style={{ width: "12%" }} />
+            <col style={{ width: "19%" }} />
+            <col style={{ width: "24%" }} />
+            <col style={{ width: "18%" }} />
+            <col style={{ width: "12%" }} />
+            <col style={{ width: "15%" }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th style={headBase}>Product</th>
+              <th style={headBase}>LOT_ID</th>
+              <th style={headBase}>Qty / Wafer</th>
+              <th style={headBase}>Step</th>
+              <th style={headBase}>Purpose</th>
+              <th style={headBase}>Comment</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((lot, idx) => {
+              const waferText = `${lotQty(lot) ? `Qty ${lotQty(lot)}매` : "Qty -"} · ${lotWaferLabel(lot)}`;
+              return (
+                <tr key={`${lotIdText(lot)}-${idx}`} title={lotWfText(lot)}>
+                  <td style={{ ...cellBase, fontFamily: "monospace", whiteSpace: "nowrap" }}>{lotProduct(lot)}</td>
+                  <td style={{ ...cellBase, fontFamily: "monospace", whiteSpace: "nowrap" }}>{lotIdText(lot)}</td>
+                  <td style={{ ...cellBase, fontFamily: "monospace", whiteSpace: "nowrap" }}>{waferText}</td>
+                  <td style={{ ...cellBase, whiteSpace: "nowrap" }}>{lotStepText(lot)}</td>
+                  <td style={{ ...cellBase, whiteSpace: "nowrap" }}>{lot?.purpose || "-"}</td>
+                  <td style={{ ...cellBase, whiteSpace: "normal", wordBreak: "break-word" }}>{lot?.comment || "-"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 export default function My_Meeting({ user }) {
@@ -121,6 +307,8 @@ export default function My_Meeting({ user }) {
   const [appendBusy, setAppendBusy] = useState(false);
   const [minutesDraft, setMinutesDraft] = useState(null);
   const [editingMinutes, setEditingMinutes] = useState(false);
+  const [minutesMailPreview, setMinutesMailPreview] = useState(null);
+  const [minutesMailPreviewBusy, setMinutesMailPreviewBusy] = useState(false);
   // v8.8.6: SSE 내부 ref — useEffect 가 editingMinutes 상태를 stale 없이 참조.
   const editingMinutesRef = useRef(false);
   useEffect(() => { editingMinutesRef.current = editingMinutes; }, [editingMinutes]);
@@ -442,11 +630,13 @@ export default function My_Meeting({ user }) {
       mail_group_ids: [],   // v8.7.7: 공용 메일 그룹 선택
       mail_to: "",
       mail_subject: "",
-      // v8.8.16: 공동 작성 본문과 독립된 메일 전용 본문. 빈 채로 두면 메일 본문 섹션 생략.
+      // v8.8.16: 메일 전용 본문. 빈 채로 두면 저장된 회의록 본문을 사용.
       mail_body: "",
+      ...DEFAULT_MAIL_OPTIONS,
       // v8.8.15: OT-lite — 편집 시작 시점의 서버 rev 스냅샷. 저장 때 base_rev 로 전송.
       base_rev: Number(m.rev || 0),
     });
+    setMinutesMailPreview(null);
     setEditingMinutes(true);
   };
   // v8.7.5: decisions 는 {id, text, due, calendar_*} 객체. 편집 시 text 만 다룸.
@@ -480,10 +670,35 @@ export default function My_Meeting({ user }) {
     }).then(() => reload()).catch(e => toast.error(e.message || "삭제 실패"));
   };
 
+  const buildMinutesMailPreviewPayload = () => {
+    if (!selected || !selectedSession || !minutesDraft) return;
+    return {
+      meeting_id: selected.id, session_id: selectedSession.id,
+      body: minutesDraft.body,
+      decisions: minutesDraft.decisions,
+      action_items: minutesDraft.action_items.map(a => ({
+        id: a.id || "", text: a.text, owner: a.owner, due: a.due, group_ids: a.group_ids || [],
+      })),
+      mail_to_users: minutesDraft.mail_to_users || [],
+      mail_groups: minutesDraft.mail_groups || [],
+      mail_group_ids: minutesDraft.mail_group_ids || [],
+      mail_to: parseMailToText(minutesDraft.mail_to || ""),
+      mail_subject: minutesDraft.mail_subject || "",
+      mail_body: minutesDraft.mail_body || "",
+      ...mailOptionsPayload(minutesDraft),
+    };
+  };
+  const previewMinutesMail = () => {
+    const payload = buildMinutesMailPreviewPayload();
+    if (!payload) return;
+    setMinutesMailPreviewBusy(true);
+    postJson(`${API}/session/mail-preview`, payload)
+      .then(r => setMinutesMailPreview(r.mail || null))
+      .catch(e => toast.error(e.message || "메일 미리보기 실패"))
+      .finally(() => setMinutesMailPreviewBusy(false));
+  };
   const submitMinutes = () => {
     if (!selected || !selectedSession || !minutesDraft) return;
-    const mailTo = (minutesDraft.mail_to || "")
-      .split(/[,;\s]+/).map(s => s.trim()).filter(s => s && s.includes("@"));
     postJson(`${API}/minutes/save`, {
       meeting_id: selected.id, session_id: selectedSession.id,
       body: minutesDraft.body,
@@ -495,14 +710,15 @@ export default function My_Meeting({ user }) {
       mail_to_users: minutesDraft.mail_to_users || [],
       mail_groups: minutesDraft.mail_groups || [],
       mail_group_ids: minutesDraft.mail_group_ids || [],
-      mail_to: mailTo,
+      mail_to: parseMailToText(minutesDraft.mail_to || ""),
       mail_subject: minutesDraft.mail_subject || "",
       // v8.8.15: OT-lite — 편집 시작 시점의 rev 을 함께 전송. 서버 rev 과 다르면 409.
       base_rev: Number(minutesDraft.base_rev || 0),
-      // v8.8.16: 메일 전용 본문 — BE 가 minutes.body 대신 이걸 사용. 빈 문자열이면 본문 섹션 생략.
+      // v8.8.16: 메일 전용 본문. 빈 문자열이면 저장된 회의록 본문을 사용.
       mail_body: minutesDraft.mail_body || "",
+      ...mailOptionsPayload(minutesDraft),
     }).then(r => {
-      setEditingMinutes(false); setMinutesDraft(null); reload();
+      setEditingMinutes(false); setMinutesDraft(null); setMinutesMailPreview(null); reload();
       // v8.7.9: surface calendar sync failure loudly — v8.7.8 silently swallowed it.
       if (r && r.calendar_sync && r.calendar_sync.ok === false) {
         toast.error(`달력 auto-sync 실패: ${r.calendar_sync.error || "unknown"}\n(결정사항·액션아이템이 달력에 반영되지 않았습니다.)`);
@@ -842,7 +1058,7 @@ export default function My_Meeting({ user }) {
                         )}
                         {a.description && <div style={{ fontSize: 14, color: "var(--text-primary)", marginBottom: 4, whiteSpace: "pre-wrap", paddingLeft: 34 }}>{a.description}</div>}
                         {a.issue_ref?.issue_id && (() => {
-                          const issue = issueDetails[String(a.issue_ref.issue_id)] || a.issue_ref || null;
+                          const issue = mergeIssueForDisplay(a.issue_ref, issueDetails[String(a.issue_ref.issue_id)]);
                           const issueLinks = Array.isArray(issue?.links) ? issue.links : [];
                           const issueLots = Array.isArray(issue?.lots) ? issue.lots : [];
                           const issueImages = trackerImages(issue);
@@ -853,8 +1069,8 @@ export default function My_Meeting({ user }) {
                               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
                                 <span style={{ fontSize: 14, fontWeight: 700, color: "#8b5cf6" }}>연결 이슈</span>
                                 <span style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)" }}>#{a.issue_ref.issue_id}</span>
-                                {a.issue_ref.category && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 999, background: "var(--bg-card)", color: "var(--text-secondary)" }}>{a.issue_ref.category}</span>}
-                                {a.issue_ref.status && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 999, background: "rgba(245,158,11,0.16)", color: "#b45309" }}>{a.issue_ref.status}</span>}
+                                {issue.category && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 999, background: "var(--bg-card)", color: "var(--text-secondary)" }}>{issue.category}</span>}
+                                {issue.status && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 999, background: "rgba(245,158,11,0.16)", color: "#b45309" }}>{issue.status}</span>}
                                 <a href={trackerHref} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("flow:navigate", { detail: { tab: "tracker", search: trackerSearch } })); }} style={{ fontSize: 14, color: "var(--accent)", textDecoration: "underline" }}>트래커에서 열기</a>
                               </div>
                               {issue?.title && <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>{issue.title}</div>}
@@ -893,19 +1109,7 @@ export default function My_Meeting({ user }) {
                                   ))}
                                 </div>
                               )}
-                              {issueLots.length > 0 && (
-                                <div style={{ marginTop: 8, borderTop: "1px dashed rgba(139,92,246,0.32)", paddingTop: 7 }}>
-                                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)", marginBottom: 4 }}>관련 LOT_WF ({issueLots.length})</div>
-                                  <div style={{ display: "grid", gap: 3, maxHeight: 96, overflow: "auto" }}>
-                                    {issueLots.slice(0, 30).map((lot, li) => (
-                                      <div key={li} title={lotWfText(lot)} style={{ fontSize: 14, color: "var(--text-primary)", fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                        {lotWfText(lot)}
-                                      </div>
-                                    ))}
-                                    {issueLots.length > 30 && <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>+ {issueLots.length - 30} rows</div>}
-                                  </div>
-                                </div>
-                              )}
+                              <IssueLotTable lots={issueLots} />
                             </div>
                           );
                         })()}
@@ -937,8 +1141,9 @@ export default function My_Meeting({ user }) {
                   </div>
                   <textarea value={agendaDraft.description} onChange={e => setAgendaDraft({ ...agendaDraft, description: e.target.value })} rows={2} placeholder="설명 (선택)" style={{ ...inp, marginTop: 6, resize: "vertical", fontFamily: "inherit" }} />
                   {agendaDraft.issue_ref?.issue_id && (() => {
-                    const issue = issueDetails[String(agendaDraft.issue_ref.issue_id)] || agendaDraft.issue_ref;
+                    const issue = mergeIssueForDisplay(agendaDraft.issue_ref, issueDetails[String(agendaDraft.issue_ref.issue_id)]);
                     const issueImages = trackerImages(issue);
+                    const issueLots = Array.isArray(issue?.lots) ? issue.lots : [];
                     return (
                       <div style={{ marginTop: 6, padding: 10, borderRadius: 6, border: "1px solid rgba(139,92,246,0.28)", background: "rgba(139,92,246,0.06)" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
@@ -969,6 +1174,7 @@ export default function My_Meeting({ user }) {
                             })}
                           </div>
                         )}
+                        <IssueLotTable lots={issueLots} compact />
                       </div>
                     );
                   })()}
@@ -1012,7 +1218,8 @@ export default function My_Meeting({ user }) {
                   {/* v8.7.7: 저장된 차수는 메일만 재발송 가능 */}
                   {canEditMinutes(selected) && !editingMinutes && selectedSession.minutes && (
                     <button onClick={() => setSendDialog({
-                      mail_group_ids: [], mail_to_users: [], mail_to: "", mail_subject: "",
+                      mail_group_ids: [], mail_to_users: [], mail_to: "", mail_subject: "", mail_body: "",
+                      ...DEFAULT_MAIL_OPTIONS,
                     })} style={{ ...btnGhost, marginLeft: 6 }}>📧 메일 발송</button>
                   )}
                 </div>
@@ -1177,11 +1384,12 @@ export default function My_Meeting({ user }) {
                     <div style={{ marginTop: 6, padding: 10, border: "1px solid var(--accent)", borderRadius: 6, background: "var(--bg-card)" }}>
                       <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, fontWeight: 600 }}>
                         <input type="checkbox" checked={!!minutesDraft.send_mail} onChange={e => setMinutesDraft({ ...minutesDraft, send_mail: e.target.checked })} />
-                        📧 저장과 동시에 아젠다+회의록+액션아이템을 메일로 발송
+                        📧 저장과 동시에 회의록 메일 발송
                       </label>
                       {minutesDraft.send_mail && (
                         <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
                           <input value={minutesDraft.mail_subject} onChange={e => setMinutesDraft({ ...minutesDraft, mail_subject: e.target.value })} placeholder={`메일 제목 (기본: [flow 회의록] ${selected.title} · ${selectedSession.idx}차)`} style={inp} />
+                          <MailContentOptions draft={minutesDraft} onChange={patch => setMinutesDraft({ ...minutesDraft, ...patch })} />
                           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                             <span style={{ ...lbl, minWidth: 68 }}>수신 유저</span>
                             {mailRecipients.length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>(승인된 유저 없음)</span>}
@@ -1228,11 +1436,11 @@ export default function My_Meeting({ user }) {
                           <div style={{ fontSize: 14, color: "var(--text-secondary)" }}>
                             * 액션아이템에 지정된 그룹 멤버의 이메일도 자동 포함됩니다.
                           </div>
-                          {/* v8.8.16: 메일 전용 본문 — 공동 작성된 minutes.body 와 분리. 빈 채 발송하면 메일에 본문 섹션 없음. */}
+                          {/* v8.8.16: 메일 전용 본문. 비우면 저장된 회의록 본문을 메일 본문으로 사용한다. */}
                           <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 5, border: "1px dashed var(--border)", background: "var(--bg-primary)" }}>
                             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: "var(--text-secondary)" }}>📝 메일 본문 (선택)</div>
                             <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>
-                              공동 작성된 회의록 본문은 메일에 자동 첨부되지 않습니다. 아래는 참고용이고, 메일에 넣을 내용은 아래 텍스트 영역에 직접 작성하세요.
+                              비워두면 저장된 회의록 본문을 사용하고, 입력하면 이 내용이 본문 섹션에 들어갑니다.
                             </div>
                             {minutesDraft.body && (
                               <details style={{ marginBottom: 6 }}>
@@ -1249,15 +1457,22 @@ export default function My_Meeting({ user }) {
                             <textarea value={minutesDraft.mail_body || ""}
                               onChange={e => setMinutesDraft({ ...minutesDraft, mail_body: e.target.value })}
                               rows={4}
-                              placeholder="메일에 넣을 본문 내용 (비워두면 아젠다/결정사항/액션아이템만 발송)"
+                              placeholder="메일 본문 내용 (비워두면 회의록 본문 사용)"
                               style={{ ...inp, width: "100%", resize: "vertical", fontFamily: "inherit", boxSizing: "border-box" }} />
                           </div>
+                          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                            <button type="button" onClick={previewMinutesMail} disabled={minutesMailPreviewBusy}
+                              style={{ ...btnGhost, cursor: minutesMailPreviewBusy ? "wait" : "pointer", opacity: minutesMailPreviewBusy ? 0.7 : 1 }}>
+                              {minutesMailPreviewBusy ? "미리보기 생성 중..." : "메일 미리보기"}
+                            </button>
+                          </div>
+                          <MailPreviewPanel mail={minutesMailPreview} />
                         </div>
                       )}
                     </div>
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={submitMinutes} style={btnPrimary}>저장 (status → 완료){minutesDraft.send_mail ? " + 메일" : ""}</button>
-                      <button onClick={() => { setEditingMinutes(false); setMinutesDraft(null); }} style={btnGhost}>취소</button>
+                      <button onClick={() => { setEditingMinutes(false); setMinutesDraft(null); setMinutesMailPreview(null); }} style={btnGhost}>취소</button>
                     </div>
                   </div>
                 )}
@@ -1762,26 +1977,42 @@ function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
 // v8.7.7: 저장된 차수 메일 재발송 (minutes 수정 없이 send-mail 만 호출).
 function SendMailDialog({ meeting, session, mailGroups, mailRecipients, draft, onChange, onOpenManager, onClose, onSent }) {
   const [busy, setBusy] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [preview, setPreview] = useState(null);
   const [err, setErr] = useState("");
+  const payload = () => ({
+    meeting_id: meeting.id, session_id: session.id,
+    mail_group_ids: draft.mail_group_ids || [],
+    mail_to_users: draft.mail_to_users || [],
+    mail_to: parseMailToText(draft.mail_to || ""),
+    mail_subject: draft.mail_subject || "",
+    mail_body: draft.mail_body || "",
+    ...mailOptionsPayload(draft),
+  });
+  const loadPreview = () => {
+    setPreviewBusy(true); setErr("");
+    postJson("/api/meetings/session/mail-preview", payload())
+      .then(r => setPreview(r.mail || null))
+      .catch(e => setErr(e.message || "미리보기 실패"))
+      .finally(() => setPreviewBusy(false));
+  };
   const submit = () => {
-    const mailTo = (draft.mail_to || "").split(/[,;\s]+/).map(s => s.trim()).filter(s => s && s.includes("@"));
     setBusy(true); setErr("");
-    postJson("/api/meetings/session/send-mail", {
-      meeting_id: meeting.id, session_id: session.id,
-      mail_group_ids: draft.mail_group_ids || [],
-      mail_to_users: draft.mail_to_users || [],
-      mail_to: mailTo,
-      mail_subject: draft.mail_subject || "",
-    }).then(onSent).catch(e => { setErr(e.message || "발송 실패"); setBusy(false); });
+    postJson("/api/meetings/session/send-mail", payload())
+      .then(onSent)
+      .catch(e => { setErr(e.message || "발송 실패"); setBusy(false); });
   };
   const inp3 = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" };
   return (
     <Modal open onClose={onClose} width={620}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📧 {session.idx}차 회의록 메일 발송</div>
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10 }}>
-          "{meeting.title}" · {session.idx}차 의 아젠다 + 회의록 + 액션아이템을 HTML 메일로 전송합니다.
+          "{meeting.title}" · {session.idx}차 회의록을 HTML 메일로 전송합니다.
         </div>
         <input value={draft.mail_subject} onChange={e => onChange({ mail_subject: e.target.value })} placeholder={`메일 제목 (기본: [flow 회의록] ${meeting.title} · ${session.idx}차)`} style={inp3} />
+        <div style={{ marginTop: 8 }}>
+          <MailContentOptions draft={draft} onChange={onChange} />
+        </div>
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 10, marginBottom: 4 }}>📮 메일 그룹</div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
           {(mailGroups || []).length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>(없음)</span>}
@@ -1809,6 +2040,19 @@ function SendMailDialog({ meeting, session, mailGroups, mailRecipients, draft, o
         <div style={{ marginTop: 8 }}>
           <input value={draft.mail_to} onChange={e => onChange({ mail_to: e.target.value })} placeholder="추가 이메일 (콤마/공백 구분)" style={inp3} />
         </div>
+        <div style={{ marginTop: 8 }}>
+          <textarea value={draft.mail_body || ""}
+            onChange={e => onChange({ mail_body: e.target.value })}
+            rows={4}
+            placeholder="메일 본문 내용 (비워두면 저장된 회의록 본문 사용)"
+            style={{ ...inp3, resize: "vertical", fontFamily: "inherit" }} />
+        </div>
+        <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={loadPreview} style={{ padding: "5px 12px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: previewBusy ? "wait" : "pointer", opacity: previewBusy ? 0.7 : 1 }} disabled={previewBusy}>
+            {previewBusy ? "미리보기 생성 중..." : "메일 미리보기"}
+          </button>
+        </div>
+        <MailPreviewPanel mail={preview} />
         {err && <div style={{ marginTop: 8, fontSize: 14, color: "var(--bad,#ef4444)" }}>{err}</div>}
         <div style={{ marginTop: 14, display: "flex", gap: 6, justifyContent: "flex-end" }}>
           <button onClick={onClose} style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer" }} disabled={busy}>취소</button>
