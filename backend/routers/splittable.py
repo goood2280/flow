@@ -4335,6 +4335,77 @@ def export_latest_lot_step_cache(products: list[str] | None = None, *, update_st
     return result
 
 
+def _latest_lot_step_cache_status(product: str = "") -> dict:
+    """Return a non-throwing status summary for the canonical FAB match cache."""
+    fp = _latest_lot_step_cache_path()
+    freshness = _match_cache_global_fresh()
+    state = _match_cache_state()
+    base = {
+        "ok": True,
+        "cache_path": str(fp),
+        "cache_exists": fp.is_file(),
+        "row_count": 0,
+        "product_row_count": 0,
+        "products": [],
+        "updated_at": state.get("updated_at") or state.get("last_refresh_at") or "",
+        "latest_updated_at": state.get("updated_at") or "",
+        "last_refresh_at": state.get("last_refresh_at") or "",
+        "interval_minutes": _match_cache_refresh_minutes(),
+        "latest_cache": freshness,
+    }
+    if not fp.is_file():
+        return base
+    try:
+        lf = _latest_lot_step_cache_lf("")
+        if lf is None:
+            return {**base, "ok": False, "error": "latest cache is not readable"}
+        names = lf.collect_schema().names()
+        total_df = lf.select(pl.len().alias("row_count")).collect()
+        row_count = int(total_df.item(0, 0) or 0)
+        products: list[str] = []
+        if "product" in names:
+            prod_df = (
+                lf.select(pl.col("product").cast(_STR, strict=False).alias("product"))
+                .filter(pl.col("product").is_not_null() & (pl.col("product") != ""))
+                .unique()
+                .sort("product")
+                .head(500)
+                .collect()
+            )
+            products = [str(v) for v in prod_df["product"].to_list() if str(v or "").strip()]
+        product_row_count = row_count
+        if str(product or "").strip():
+            product_row_count = 0
+            if "product" in names:
+                product_lf = _latest_lot_step_cache_lf(product)
+                if product_lf is not None:
+                    product_row_count = int(product_lf.select(pl.len().alias("row_count")).collect().item(0, 0) or 0)
+        updated_at = base["updated_at"]
+        if "update_time" in names:
+            try:
+                value = lf.select(pl.col("update_time").cast(_STR, strict=False).max().alias("updated_at")).collect().item(0, 0)
+                if value:
+                    updated_at = str(value)
+            except Exception:
+                pass
+        if not updated_at:
+            try:
+                updated_at = datetime.datetime.fromtimestamp(fp.stat().st_mtime).isoformat(timespec="seconds")
+            except Exception:
+                updated_at = ""
+        return {
+            **base,
+            "row_count": row_count,
+            "product_row_count": product_row_count,
+            "products": products,
+            "updated_at": updated_at,
+            "latest_updated_at": updated_at,
+        }
+    except Exception as e:
+        logger.warning("SplitTable latest lot-step cache status failed (%s) %s: %s", fp, type(e).__name__, e)
+        return {**base, "ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 def _resolve_match_cache_columns(ov: dict, main_names_list: list[str], fab_schema_names: list[str]) -> dict:
     main_names = set(main_names_list)
     fab_names = set(fab_schema_names)

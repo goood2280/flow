@@ -1416,7 +1416,7 @@ function SchemaRelationGraph({ candidates = [], onDismiss = null, onConfirm = nu
   );
 }
 
-function SchemaRelationsPanel({ isAdmin }) {
+function SchemaRelationsPanel({ canManage }) {
   const [left, setLeft] = useState({ source_type: "db", root: "1.RAWDATA_DB_FAB", product: "PRODA", file: "", label: "FAB PRODA" });
   const [right, setRight] = useState({ source_type: "file", root: "", product: "", file: "ML_TABLE_PRODA.parquet", label: "ML_TABLE PRODA" });
   const [baseFiles, setBaseFiles] = useState([]);
@@ -1428,6 +1428,7 @@ function SchemaRelationsPanel({ isAdmin }) {
   const [dismissedIds, setDismissedIds] = useState(new Set());
   const [showAlternatives, setShowAlternatives] = useState(false);
   const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box", fontSize: 14 };
+  const canEditRelations = !!canManage;
 
   const loadGraph = () => {
     sf("/api/agent/schema-relations/graph")
@@ -1476,6 +1477,16 @@ function SchemaRelationsPanel({ isAdmin }) {
 
   const restoreDismissed = () => setDismissedIds(new Set());
 
+  const updateCandidate = (relationId, patch) => {
+    if (!relationId) return;
+    setPreview((cur) => {
+      const candidates = (cur?.candidates || []).map((row) => (
+        row.relation_id === relationId ? { ...row, ...patch, status: "edited" } : row
+      ));
+      return { ...(cur || {}), candidates };
+    });
+  };
+
   const runPreview = () => {
     setBusy(true);
     setMsg("");
@@ -1489,8 +1500,21 @@ function SchemaRelationsPanel({ isAdmin }) {
       .finally(() => setBusy(false));
   };
 
+  const runScan = () => {
+    setBusy(true);
+    setMsg("");
+    postJson("/api/agent/schema-relations/scan", { max_sources: 32, max_candidates: 100, sample_rows: 20 })
+      .then((d) => {
+        setPreview(d);
+        setDismissedIds(new Set());
+        setMsg(`전체 스캔: source ${d.discovered_count || d.sources?.length || 0}개, relation 후보 ${d.candidates?.length || 0}개`);
+      })
+      .catch((e) => setMsg("scan 오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
   const saveCandidates = () => {
-    if (!isAdmin || !filteredCandidates.length) return;
+    if (!canEditRelations || !filteredCandidates.length) return;
     setBusy(true);
     setMsg("");
     postJson("/api/agent/schema-relations/save", { candidates: filteredCandidates, note })
@@ -1504,7 +1528,7 @@ function SchemaRelationsPanel({ isAdmin }) {
 
   const deleteRelation = (edge) => {
     const relationId = edge?.relation_id || edge?.id;
-    if (!isAdmin || !relationId) return;
+    if (!canEditRelations || !relationId) return;
     if (!confirm("저장된 relation 정의만 삭제합니다. 원본 DB/단일파일은 수정하지 않습니다. 계속할까요?")) return;
     setBusy(true);
     setMsg("");
@@ -1534,17 +1558,19 @@ function SchemaRelationsPanel({ isAdmin }) {
       >
         <div style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap", marginBottom: 10 }}>
           <Button variant="primary" onClick={runPreview} disabled={busy}>{busy ? "처리 중" : "Preview 생성"}</Button>
-          <Field label="admin save note">
+          <Button variant="primary" onClick={runScan} disabled={busy}>{busy ? "처리 중" : "전체 스캔"}</Button>
+          <Field label="save note">
             <input value={note} onChange={(e) => setNote(e.target.value)} style={{ ...inputStyle, minWidth: 260 }} placeholder="저장 근거/확인 메모" />
           </Field>
-          <Button variant="primary" onClick={saveCandidates} disabled={!isAdmin || busy || !filteredCandidates.length}>확인 후보 저장</Button>
+          <Button variant="primary" onClick={saveCandidates} disabled={!canEditRelations || busy || !filteredCandidates.length}>확인 후보 저장</Button>
           <Button variant={showAlternatives ? "primary" : "subtle"} onClick={() => setShowAlternatives((v) => !v)} disabled={!alternativeCount}>
             {showAlternatives ? "대표 매칭만 보기" : `대체 후보 보기${alternativeCount ? ` (+${alternativeCount})` : ""}`}
           </Button>
           {dismissedIds.size > 0 && <Button variant="subtle" onClick={restoreDismissed}>제거 취소 ({dismissedIds.size})</Button>}
-          {!isAdmin && <Pill tone="neutral">admin만 저장</Pill>}
+          <Pill tone="info">원본 DB/파일 read-only</Pill>
+          {!canEditRelations && <Pill tone="neutral">admin / 위임 권한만 저장</Pill>}
         </div>
-        <SchemaRelationGraph candidates={filteredCandidates} onDismiss={isAdmin ? dismissCandidate : null} />
+        <SchemaRelationGraph candidates={filteredCandidates} onDismiss={canEditRelations ? dismissCandidate : null} />
       </Panel>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.85fr) minmax(0,1.15fr)", gap: 12, alignItems: "start" }}>
@@ -1568,14 +1594,16 @@ function SchemaRelationsPanel({ isAdmin }) {
             rows={filteredCandidates}
             empty="Preview를 실행하면 관계 후보가 표시됩니다."
             columns={[
-              { key: "left_column", label: "left column", width: 150 },
-              { key: "right_column", label: "right column", width: 150 },
-              { key: "canonical_key", label: "key", width: 110 },
-              { key: "confidence", label: "score", width: 70, render: (r) => <Pill tone={(Number(r.confidence) || 0) >= 0.9 ? "ok" : (Number(r.confidence) || 0) >= 0.8 ? "info" : "warn"}>{(Number(r.confidence) || 0).toFixed(2)}</Pill> },
+              { key: "left_label", label: "left source", width: 130 },
+              { key: "left_column", label: "left column", width: 160, render: (r) => canEditRelations ? <input value={r.left_column || ""} onChange={(e) => updateCandidate(r.relation_id, { left_column: e.target.value })} style={{ ...inputStyle, minWidth: 130 }} /> : (r.left_column || "") },
+              { key: "right_label", label: "right source", width: 130 },
+              { key: "right_column", label: "right column", width: 160, render: (r) => canEditRelations ? <input value={r.right_column || ""} onChange={(e) => updateCandidate(r.relation_id, { right_column: e.target.value })} style={{ ...inputStyle, minWidth: 130 }} /> : (r.right_column || "") },
+              { key: "canonical_key", label: "key", width: 130, render: (r) => canEditRelations ? <input value={r.canonical_key || ""} onChange={(e) => updateCandidate(r.relation_id, { canonical_key: e.target.value })} style={{ ...inputStyle, minWidth: 100 }} /> : (r.canonical_key || "") },
+              { key: "confidence", label: "score", width: 110, render: (r) => canEditRelations ? <input type="number" min="0" max="1" step="0.01" value={r.confidence ?? 0} onChange={(e) => updateCandidate(r.relation_id, { confidence: Number(e.target.value) })} style={{ ...inputStyle, minWidth: 78 }} /> : <Pill tone={(Number(r.confidence) || 0) >= 0.9 ? "ok" : (Number(r.confidence) || 0) >= 0.8 ? "info" : "warn"}>{(Number(r.confidence) || 0).toFixed(2)}</Pill> },
               { key: "left_dtype", label: "left dtype", width: 90 },
               { key: "right_dtype", label: "right dtype", width: 90 },
               { key: "evidence", label: "evidence", render: (r) => listText(r.evidence, 3) },
-              ...(isAdmin ? [{ key: "dismiss", label: "", width: 70, render: (r) => <Button variant="subtle" onClick={() => dismissCandidate(r)} title="후보에서 제거">✕</Button> }] : []),
+              ...(canEditRelations ? [{ key: "dismiss", label: "", width: 70, render: (r) => <Button variant="subtle" onClick={() => dismissCandidate(r)} title="후보에서 제거">✕</Button> }] : []),
             ]}
           />
         </Panel>
@@ -1583,11 +1611,11 @@ function SchemaRelationsPanel({ isAdmin }) {
 
       <Panel
         title="Saved Relation Graph"
-        subtitle="Admin이 확인 저장한 relation만 표시합니다. graph 의 ✕ 또는 표의 삭제 버튼으로 정의를 제거할 수 있고, 원본 DB/단일파일은 건드리지 않습니다."
+        subtitle="엔지니어가 확인 저장한 relation만 표시합니다. graph 의 ✕ 또는 표의 삭제 버튼으로 정의를 제거할 수 있고, 원본 DB/단일파일은 건드리지 않습니다."
         right={<Pill tone="accent">{savedRelations.length} saved</Pill>}
       >
-        <SchemaRelationGraph candidates={savedRelations} onDismiss={isAdmin ? deleteRelation : null} showLegend={false} />
-        {isAdmin && savedRelations.length > 0 && (
+        <SchemaRelationGraph candidates={savedRelations} onDismiss={canEditRelations ? deleteRelation : null} showLegend={false} />
+        {canEditRelations && savedRelations.length > 0 && (
           <div style={{ marginTop: 10 }}>
             <DataTable
               rows={savedRelations}
@@ -1899,15 +1927,15 @@ function PromptHistoryPanel({ entries = [], onSelect, onRerun, activePrompt, bus
   const rows = entries.map((entry, idx) => ({
     ...entry,
     no: idx + 1,
-    timeShort: String(entry.ts || "").replace("T", " ").slice(5, 16),
+    timeShort: String(entry.ts || entry.timestamp || "").replace("T", " ").slice(5, 16),
     promptShort: truncateText(entry.prompt, 110),
-    answerShort: truncateText(entry.answer || entry.error, 90),
+    answerShort: truncateText(entry.answer || entry.answer_excerpt || entry.error, 90),
     missingText: entry.missing && entry.missing.length ? entry.missing.join(", ") : "-",
   }));
   return (
     <Panel
       title="프롬프트 기록"
-      subtitle="이 세션에서 실행한 프롬프트와 결과를 최신순으로 보여줍니다. 행을 클릭하면 입력창에 채워지고, 재실행 버튼으로 같은 prompt 를 다시 보낼 수 있습니다."
+      subtitle="flow-data에 저장된 실행 프롬프트와 결과를 최신순으로 보여줍니다. 행을 클릭하면 입력창에 채워지고, 재실행 버튼으로 같은 prompt 를 다시 보낼 수 있습니다."
       right={<Pill tone={busy ? "warn" : "accent"}>{busy ? "실행 중" : `${entries.length} 건`}</Pill>}
     >
       <DataTable
@@ -1973,8 +2001,33 @@ function FlowiExecutionPanel({ user }) {
   const [result, setResult] = useState(null);
   const [promptHistory, setPromptHistory] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [err, setErr] = useState("");
   const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box", fontSize: 14 };
+
+  const loadPromptHistory = () => {
+    setHistoryBusy(true);
+    return sf("/api/agent/prompt-history" + qs({ limit: 50 }))
+      .then((d) => {
+        const rows = Array.isArray(d?.rows) ? d.rows : [];
+        setPromptHistory(rows.map((row, idx) => ({
+          id: row.id || `server_${idx}_${row.timestamp || row.ts || ""}`,
+          ts: row.ts || row.timestamp || "",
+          prompt: row.prompt || "",
+          feature: row.feature || "-",
+          action: row.action || row.selected_function || row.intent || "-",
+          intent: row.intent || "-",
+          status: row.status || row.result_status || "-",
+          missing: Array.isArray(row.missing) ? row.missing.map(String) : [],
+          answer: row.answer || row.answer_excerpt || "",
+          source_ai: row.source_ai || "",
+          client_run_id: row.client_run_id || "",
+          elapsed_ms: row.elapsed_ms,
+        })));
+      })
+      .catch(() => {})
+      .finally(() => setHistoryBusy(false));
+  };
 
   const rememberPrompt = (body, data, errMessage = "") => {
     const tool = data?.tool || {};
@@ -1993,7 +2046,7 @@ function FlowiExecutionPanel({ user }) {
       error: errMessage,
       answer: data?.answer || tool.answer || "",
     };
-    setPromptHistory((cur) => [entry, ...cur.filter((item) => item.prompt !== body)].slice(0, 12));
+    setPromptHistory((cur) => [entry, ...cur].slice(0, 50));
   };
   const run = (overridePrompt = "") => {
     const body = String(overridePrompt || prompt).trim();
@@ -2012,6 +2065,7 @@ function FlowiExecutionPanel({ user }) {
       .then((d) => {
         setResult(d);
         rememberPrompt(body, d);
+        loadPromptHistory();
       })
       .catch((e) => {
         const msg = e.message || String(e);
@@ -2020,7 +2074,10 @@ function FlowiExecutionPanel({ user }) {
       })
       .finally(() => setBusy(false));
   };
-  useEffect(() => { run(); }, []);
+  useEffect(() => {
+    loadPromptHistory();
+    run();
+  }, []);
 
   const tool = result?.tool || {};
   const workflow = result?.workflow_state || tool.workflow_state || {};
@@ -2052,7 +2109,7 @@ function FlowiExecutionPanel({ user }) {
       <PromptHistoryPanel
         entries={promptHistory}
         activePrompt={prompt}
-        busy={busy}
+        busy={busy || historyBusy}
         onSelect={(text) => setPrompt(text)}
         onRerun={(text) => run(text)}
       />
@@ -2154,7 +2211,7 @@ export default function My_Diagnosis({ user }) {
             </Panel>
           </div>
         )}
-        {tab === "schema" && <SchemaRelationsPanel isAdmin={isAdminUser} />}
+        {tab === "schema" && <SchemaRelationsPanel canManage={canManageWiki} />}
         {tab === "ai" && <LlmPanel isAdmin={isAdminUser} />}
       </div>
     </PageShell>

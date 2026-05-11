@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -28,8 +29,8 @@ class DummyRequest:
         self.headers = {}
 
 
-def req(role: str = "user", username: str = "alice"):
-    return DummyRequest({"username": username, "role": role})
+def req(role: str = "user", username: str = "alice", page_admins: list[str] | None = None):
+    return DummyRequest({"username": username, "role": role, "page_admins": page_admins or []})
 
 
 def _install_agent_wiki_tmp(monkeypatch, tmp_path):
@@ -135,6 +136,45 @@ def test_recent_rag_shape_and_user_scope(tmp_path, monkeypatch):
     assert out["user"] == "alice"
     assert len(out["traces"]) == 1
     assert out["traces"][0]["retrieved_ids"] == ["KC1"]
+
+
+def test_prompt_history_reads_flow_data_activity(tmp_path, monkeypatch):
+    activity = tmp_path / "flowi_activity.jsonl"
+    rows = [
+        {
+            "timestamp": "2026-05-01T00:01:00+00:00",
+            "username": "alice",
+            "event": "chat",
+            "fields": {
+                "prompt": "A1001 24.SORT KNOB 스플릿테이블로 보여줘",
+                "feature": "splittable",
+                "intent": "wafer_split_at_step",
+                "selected_function": "query_wafer_split_at_step",
+                "result_status": "success",
+                "elapsed_ms": 22,
+                "answer": "snapshot ready",
+                "source_ai": "agent_page",
+                "client_run_id": "agent_page_1",
+            },
+        },
+        {
+            "timestamp": "2026-05-01T00:02:00+00:00",
+            "username": "bob",
+            "event": "chat",
+            "fields": {"prompt": "hidden", "selected_function": "x"},
+        },
+    ]
+    activity.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+    monkeypatch.setattr(agent.flowi_llm, "FLOWI_ACTIVITY_FILE", activity)
+
+    out = agent.prompt_history(req(username="alice"), limit=20, user="bob")
+
+    assert out["ok"] is True
+    assert out["user"] == "alice"
+    assert len(out["rows"]) == 1
+    assert out["rows"][0]["prompt"].startswith("A1001")
+    assert out["rows"][0]["feature"] == "splittable"
+    assert out["rows"][0]["source_ai"] == "agent_page"
 
 
 def test_admin_tools_require_admin_and_ingest_to_temp(tmp_path, monkeypatch):
@@ -276,14 +316,16 @@ def test_schema_relation_preview_and_admin_save_do_not_touch_sources(tmp_path, m
     with pytest.raises(HTTPException) as denied:
         agent.schema_relation_save(agent.SchemaRelationSaveReq(candidates=preview["candidates"]), req(role="user"))
     assert denied.value.status_code == 403
+    monkeypatch.setattr(agent, "is_page_admin", lambda username, page: username == "engineer" and page in {"diagnosis", "knowledge"})
 
     saved = agent.schema_relation_save(
-        agent.SchemaRelationSaveReq(candidates=preview["candidates"][:2], note="checked in test"),
-        req(role="admin", username="root"),
+        agent.SchemaRelationSaveReq(candidates=preview["candidates"][:2], note="checked by engineer"),
+        req(role="user", username="engineer"),
     )
 
     assert saved["ok"] is True
     assert saved["raw_sources_mutated"] is False
+    assert saved["relations"][0]["confirmed_by"] == "engineer"
     assert relation_file.exists()
     assert all(path.stat().st_mtime_ns == mtime for path, mtime in before.items())
 
@@ -293,9 +335,29 @@ def test_schema_relation_preview_and_admin_save_do_not_touch_sources(tmp_path, m
 
     deleted = agent.schema_relation_delete(
         agent.SchemaRelationDeleteReq(relation_ids=[graph["relations"][0]["relation_id"]], note="wrong edge"),
-        req(role="admin", username="root"),
+        req(role="user", username="engineer"),
     )
     assert deleted["ok"] is True
     assert deleted["raw_sources_mutated"] is False
     assert len(deleted["relations"]) == len(graph["relations"]) - 1
     assert all(path.stat().st_mtime_ns == mtime for path, mtime in before.items())
+
+
+def test_schema_relation_scan_discovers_db_and_single_files(tmp_path, monkeypatch):
+    db_root = tmp_path / "db"
+    fab_dir = db_root / "1.RAWDATA_DB_FAB" / "PRODA"
+    fab_dir.mkdir(parents=True)
+    pl.DataFrame({"root_lot_id": ["A1000"], "wafer_id": [1], "step_id": ["AA"]}).write_parquet(fab_dir / "part.parquet")
+    pl.DataFrame({"root_lot_id": ["A1000"], "wafer_id": [1], "KNOB_A": ["ON"]}).write_parquet(db_root / "ML_TABLE_PRODA.parquet")
+    relation_file = tmp_path / "flow-data" / "schema_relations.json"
+    monkeypatch.setattr(agent, "SCHEMA_RELATION_FILE", relation_file)
+
+    monkeypatch.setattr(agent, "PATHS", SimpleNamespace(data_root=tmp_path / "flow-data", db_root=db_root, base_root=db_root))
+
+    out = agent.schema_relation_scan(agent.SchemaRelationScanReq(max_sources=10, max_candidates=20), req(role="user"))
+
+    assert out["ok"] is True
+    assert out["preview_only"] is True
+    assert out["discovered_count"] >= 2
+    assert any({c["left_source_type"], c["right_source_type"]} == {"db", "file"} for c in out["candidates"])
+    assert not relation_file.exists()

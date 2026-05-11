@@ -305,6 +305,29 @@ def test_flowi_explicit_knob_split_table_calls_view_split_with_knob_prefix(monke
     assert out["split_view"]["rows"][0]["parameter"] == "KNOB_ALPHA"
 
 
+def test_flowi_root_only_splittable_asks_product_and_filters_dot_step(monkeypatch):
+    def fake_resolve(lots, *, kinds, limit=12):
+        assert "A1001" in lots
+        assert "ML_TABLE" in kinds
+        return [{"product": "PRODA", "sources": "ML_TABLE", "lots": "A1001", "row_count": 25}]
+
+    monkeypatch.setattr(llm_router, "_resolve_products_for_lots", fake_resolve)
+
+    out = _handle_flowi_query(
+        "A1001 24.SORT KNOB 스플릿테이블로 보여줘.",
+        "",
+        12,
+        allowed_keys={"splittable"},
+    )
+
+    assert out["handled"] is True
+    assert out["action"] == "clarify_product"
+    assert out["feature"] == "splittable"
+    assert out["missing"] == ["product"]
+    assert out["slots"]["step"] == "24.0 SORT"
+    assert out["clarification"]["choices"][0]["prompt"].startswith("PRODA A1001 24.SORT")
+
+
 def test_flowi_splittable_fab_lot_split_resolves_product_from_ml_table(monkeypatch):
     from routers import splittable as splittable_router
 
@@ -1412,6 +1435,14 @@ def test_flowi_inform_batch_and_edge_choices(monkeypatch):
     assert split["selected_function"]["name"] == "query_wafer_split_at_step"
     assert split["validation"]["missing"][0] == "product"
     assert split["arguments_choices"]["fields"][0]["field"] == "product"
+
+    dot_step = llm_router._structure_flowi_function_call("A1001 24.SORT KNOB 스플릿테이블로 보여줘.")
+    dot_args = dot_step["function_call"]["function"]["arguments"]
+    assert dot_step["selected_function"]["name"] == "query_splittable_view"
+    assert dot_args["root_lot_ids"] == ["A1001"]
+    assert dot_args["step"] == "24.0 SORT"
+    assert dot_args["group"] == "KNOB"
+    assert dot_step["validation"]["missing"][0] == "product"
 
     invalid = llm_router._structure_flowi_function_call("A1002 #26 24.0 SORT Split")
     assert invalid["selected_function"]["invalid_wafers"] == ["26"]

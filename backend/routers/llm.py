@@ -1428,10 +1428,11 @@ def _flowi_module_token(prompt: str) -> str:
 
 def _flowi_func_step_token(prompt: str) -> str:
     text = str(prompt or "")
-    m = re.search(r"(\d+\.\d+)\s+([A-Z][A-Z0-9_/]*)", text, flags=re.I)
+    m = re.search(r"(?<![A-Z0-9_.#-])(\d{1,3})(?:\.(\d+))?(?:\s+|\s*\.\s*)([A-Z][A-Z0-9_/]*)(?![A-Z0-9_/])", text, flags=re.I)
     if not m:
         return ""
-    return f"{m.group(1)} {m.group(2).upper()}"
+    decimal = m.group(2) if m.group(2) is not None else "0"
+    return f"{m.group(1)}.{decimal} {m.group(3).upper()}"
 
 
 def _flowi_metric_agg(prompt: str) -> str:
@@ -3354,12 +3355,24 @@ def _is_mixed_alnum_token(tok: str) -> bool:
     return bool(re.fullmatch(r"[A-Z0-9]+", tok or "") and re.search(r"[A-Z]", tok or "") and re.search(r"\d", tok or ""))
 
 
+def _is_flowi_product_choice_name(name: str) -> bool:
+    raw = str(name or "").strip()
+    key = _upper(raw)
+    if not raw or raw.startswith("."):
+        return False
+    if key in {"CACHE", "HISTORY", "LOGS", "REPORTS", "TEMP", "TMP"}:
+        return False
+    if key.startswith(("_", ".")) or key.endswith(("_CACHE", "_BACKUP", "_BACKUPS")):
+        return False
+    return True
+
+
 def _configured_product_names() -> dict[str, str]:
     products: dict[str, str] = {}
     try:
         for key, cfg in (product_config.load_all(PATHS.data_root) or {}).items():
             name = str((cfg or {}).get("product") or key or "").strip()
-            if name:
+            if name and _is_flowi_product_choice_name(name):
                 products[_upper(name)] = name
                 products[_upper(f"ML_TABLE_{name}")] = name
     except Exception:
@@ -3371,8 +3384,9 @@ def _configured_product_names() -> dict[str, str]:
             continue
         if stem.upper().startswith("ML_TABLE_"):
             name = stem[len("ML_TABLE_"):]
-            products.setdefault(_upper(name), name)
-            products.setdefault(_upper(stem), name)
+            if _is_flowi_product_choice_name(name):
+                products.setdefault(_upper(name), name)
+                products.setdefault(_upper(stem), name)
     try:
         for root in _db_root_candidates("FAB"):
             for child in root.iterdir():
@@ -3381,6 +3395,7 @@ def _configured_product_names() -> dict[str, str]:
                 if (
                     child.is_dir()
                     and child_name
+                    and _is_flowi_product_choice_name(child_name)
                     and "RAWDATA_DB" not in child_u
                     and child_u not in {"FAB", "ET", "INLINE", "VM", "EDS", "MATCHING", "_BACKUPS"}
                 ):
@@ -6552,6 +6567,27 @@ def _flowi_latest_progress_cache_row(
     wafer_id: str = "",
     lot_wf: str = "",
 ) -> dict[str, Any]:
+    def normalize_row(fab: dict[str, Any], *, cache_source: str, source_root: str = "") -> dict[str, Any]:
+        root = _text(fab.get("root_lot_id") or root_lot_id)
+        wafer = _normalize_wafer_id(fab.get("wafer_id") or wafer_id) or _text(fab.get("wafer_id") or wafer_id)
+        step_id = _text(fab.get("step_id") or fab.get("current_step") or "")
+        function_step = _text(fab.get("function_step") or fab.get("func_step") or fab.get("current_function_step") or "")
+        return {
+            "product": _text(fab.get("product") or product),
+            "root_lot_id": root,
+            "wafer_id": wafer,
+            "lot_wf": _text(fab.get("lot_wf") or lot_wf or _flowi_lot_wf_id(root, wafer)),
+            "lot_id": _text(fab.get("lot_id") or lot_id),
+            "fab_lot_id": _text(fab.get("fab_lot_id") or fab.get("lot_id") or lot_id),
+            "step_id": step_id,
+            "function_step": function_step,
+            "func_step": function_step,
+            "update_time": _text(fab.get("update_time") or fab.get("time") or fab.get("tkout_time") or fab.get("tkin_time")),
+            "cache_source": _text(fab.get("cache_source") or cache_source),
+            "source_root": _text(source_root or fab.get("source_root")),
+            "step_rank": _step_rank_key(step_id),
+        }
+
     try:
         from core.lot_progress_cache import lot_progress_snapshot
         snapshot = lot_progress_snapshot(
@@ -6563,32 +6599,68 @@ def _flowi_latest_progress_cache_row(
             max_age_seconds=365 * 24 * 60 * 60,
         )
     except Exception:
+        snapshot = {}
+    if isinstance(snapshot, dict) and (snapshot.get("cache") or {}).get("hit"):
+        fab = snapshot.get("fab") if isinstance(snapshot.get("fab"), dict) else {}
+        if fab:
+            return normalize_row(
+                fab,
+                cache_source=_text((snapshot.get("cache") or {}).get("source") or "filebrowser_latest"),
+                source_root=_text((snapshot.get("cache") or {}).get("source_root") or ""),
+            )
+    try:
+        from core import lot_progress_cache as progress_cache
+        fp = progress_cache.filebrowser_cache_parquet_file()
+        if not fp or not Path(fp).is_file():
+            return {}
+        lf = pl.scan_parquet(str(fp))
+        cols = _schema_names(lf)
+        product_col = _ci_col(cols, "product", "PRODUCT", "process_id")
+        root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+        wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+        lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+        fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
+        lot_wf_col = _ci_col(cols, "lot_wf", "LOT_WF")
+        step_col = _ci_col(cols, "step_id", "STEP_ID", "current_step")
+        func_col = _ci_col(cols, "function_step", "func_step", "current_function_step")
+        time_col = _ci_col(cols, "update_time", "tkout_time", "time", "tkin_time")
+        expr = None
+        if product and product_col:
+            expr = pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(_product_aliases(product)))
+        if root_lot_id and root_col:
+            piece = pl.col(root_col).cast(_STR, strict=False).str.to_uppercase() == _upper(root_lot_id)
+            expr = piece if expr is None else (expr & piece)
+        if lot_id and (lot_col or fab_col):
+            lot_expr = _or_contains([c for c in (lot_col, fab_col, root_col) if c], [lot_id])
+            if lot_expr is not None:
+                expr = lot_expr if expr is None else (expr & lot_expr)
+        if wafer_id and wafer_col:
+            wf_expr = _wafer_match_expr(wafer_col, [wafer_id])
+            if wf_expr is not None:
+                expr = wf_expr if expr is None else (expr & wf_expr)
+        if lot_wf and lot_wf_col:
+            piece = pl.col(lot_wf_col).cast(_STR, strict=False).str.to_uppercase() == _upper(lot_wf)
+            expr = piece if expr is None else (expr & piece)
+        if expr is not None:
+            lf = lf.filter(expr)
+        exprs = [
+            pl.col(product_col).cast(_STR, strict=False).alias("product") if product_col else pl.lit(product or "").alias("product"),
+            pl.col(root_col).cast(_STR, strict=False).alias("root_lot_id") if root_col else pl.lit(root_lot_id or "").alias("root_lot_id"),
+            _wafer_key_expr(wafer_col).alias("wafer_id") if wafer_col else pl.lit(wafer_id or "").alias("wafer_id"),
+            pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf") if lot_wf_col else pl.lit(lot_wf or "").alias("lot_wf"),
+            pl.col(lot_col).cast(_STR, strict=False).alias("lot_id") if lot_col else pl.lit(lot_id or "").alias("lot_id"),
+            pl.col(fab_col).cast(_STR, strict=False).alias("fab_lot_id") if fab_col else pl.lit("").alias("fab_lot_id"),
+            pl.col(step_col).cast(_STR, strict=False).alias("step_id") if step_col else pl.lit("").alias("step_id"),
+            pl.col(func_col).cast(_STR, strict=False).alias("function_step") if func_col else pl.lit("").alias("function_step"),
+            pl.col(time_col).cast(_STR, strict=False).alias("update_time") if time_col else pl.lit("").alias("update_time"),
+        ]
+        rows = lf.select(exprs).limit(20).collect().to_dicts()
+    except Exception:
         return {}
-    if not isinstance(snapshot, dict) or not (snapshot.get("cache") or {}).get("hit"):
+    if not rows:
         return {}
-    fab = snapshot.get("fab") if isinstance(snapshot.get("fab"), dict) else {}
-    if not fab:
-        return {}
-    root = _text(fab.get("root_lot_id") or root_lot_id)
-    wafer = _normalize_wafer_id(fab.get("wafer_id") or wafer_id) or _text(fab.get("wafer_id") or wafer_id)
-    step_id = _text(fab.get("step_id") or fab.get("current_step") or "")
-    function_step = _text(fab.get("function_step") or fab.get("func_step") or fab.get("current_function_step") or "")
-    row = {
-        "product": _text(fab.get("product") or product),
-        "root_lot_id": root,
-        "wafer_id": wafer,
-        "lot_wf": _text(fab.get("lot_wf") or lot_wf or _flowi_lot_wf_id(root, wafer)),
-        "lot_id": _text(fab.get("lot_id") or lot_id),
-        "fab_lot_id": _text(fab.get("fab_lot_id") or fab.get("lot_id") or lot_id),
-        "step_id": step_id,
-        "function_step": function_step,
-        "func_step": function_step,
-        "update_time": _text(fab.get("update_time") or fab.get("time") or fab.get("tkout_time") or fab.get("tkin_time")),
-        "cache_source": _text(fab.get("cache_source") or (snapshot.get("cache") or {}).get("source") or "filebrowser_latest"),
-        "source_root": _text((snapshot.get("cache") or {}).get("source_root") or fab.get("source_root")),
-        "step_rank": _step_rank_key(step_id),
-    }
-    return row
+    rows.sort(key=lambda r: (_parse_flowi_datetime(r.get("update_time")) or datetime.min, _text(r.get("step_id"))), reverse=True)
+    return normalize_row(rows[0], cache_source="filebrowser_latest", source_root=str(fp))
 
 
 def _flowi_progress_for_lot_rows(product: str, rows: list[dict[str, Any]], *, limit: int = 500) -> dict[str, dict[str, Any]]:
@@ -6831,43 +6903,57 @@ def _resolve_products_for_lots(lots: list[str], *, kinds: tuple[str, ...] = ("FA
     return rows[:limit]
 
 
-def _product_or_candidate_tool(prompt: str, product: str, lots: list[str], *, kinds: tuple[str, ...], intent: str) -> tuple[str, dict[str, Any] | None]:
+def _flowi_product_candidate_tool(prompt: str, candidates: list[dict[str, Any]], *, intent: str, answer: str = "") -> dict[str, Any] | None:
+    rows = [row for row in (candidates or []) if _is_flowi_product_choice_name(str(row.get("product") or ""))]
+    if not rows:
+        return None
+    choices = [
+        {
+            "id": f"product_{i}",
+            "label": str(i + 1),
+            "title": row["product"],
+            "recommended": i == 0,
+            "description": f"{row['sources']}에서 {row['row_count']} row 후보",
+            "prompt": f"{row['product']} {prompt.strip()}",
+        }
+        for i, row in enumerate(rows[:4])
+    ]
+    return {
+        "handled": True,
+        "intent": intent,
+        "action": "clarify_product",
+        "answer": answer or "같은 lot/root_lot_id가 여러 product에서 발견됐습니다. product를 선택한 뒤 다시 진행해주세요.",
+        "missing": ["product"],
+        "pending_prompt": prompt.strip(),
+        "clarification": {"question": "어느 product 기준으로 볼까요?", "choices": choices},
+        "table": {
+            "kind": "flowi_product_candidates",
+            "title": "Product candidates by lot",
+            "placement": "below",
+            "columns": _table_columns(["product", "sources", "lots", "row_count"]),
+            "rows": rows,
+            "total": len(rows),
+        },
+    }
+
+
+def _product_or_candidate_tool(prompt: str, product: str, lots: list[str], *, kinds: tuple[str, ...], intent: str, ask_if_any: bool = False) -> tuple[str, dict[str, Any] | None]:
     product_hint = _product_hint(prompt, product)
     if product_hint:
         return product_hint, None
     candidates = _resolve_products_for_lots(lots, kinds=kinds)
+    candidates = [row for row in candidates if _is_flowi_product_choice_name(str(row.get("product") or ""))]
+    if ask_if_any:
+        return "", _flowi_product_candidate_tool(
+            prompt,
+            candidates,
+            intent=intent,
+            answer="product가 없는 SplitTable 요청입니다. 어느 product 기준으로 볼지 선택해주세요.",
+        )
     if len(candidates) == 1:
         return candidates[0]["product"], None
     if len(candidates) > 1:
-        rows = candidates
-        choices = [
-            {
-                "id": f"product_{i}",
-                "label": str(i + 1),
-                "title": row["product"],
-                "recommended": i == 0,
-                "description": f"{row['sources']}에서 {row['row_count']} row 후보",
-                "prompt": f"{row['product']} {prompt.strip()}",
-            }
-            for i, row in enumerate(rows[:4])
-        ]
-        return "", {
-            "handled": True,
-            "intent": intent,
-            "action": "clarify_product",
-            "answer": "같은 lot/root_lot_id가 여러 product에서 발견됐습니다. product를 선택한 뒤 다시 진행해주세요.",
-            "missing": ["product"],
-            "pending_prompt": prompt.strip(),
-            "clarification": {"question": "어느 product 기준으로 볼까요?", "choices": choices},
-            "table": {
-                "kind": "flowi_product_candidates",
-                "title": "Product candidates by lot",
-                "placement": "below",
-                "columns": _table_columns(["product", "sources", "lots", "row_count"]),
-                "rows": rows,
-                "total": len(rows),
-            },
-        }
+        return "", _flowi_product_candidate_tool(prompt, candidates, intent=intent)
     return "", None
 
 
@@ -12591,9 +12677,25 @@ def _handle_wafer_split_at_step(prompt: str, product: str, max_rows: int) -> dic
         args.get("lot_ids") or [],
     )
     if "product" in missing:
-        resolved_product, candidate_tool = _product_or_candidate_tool(prompt, product, lots_for_product, kinds=("ML_TABLE", "FAB"), intent="wafer_split_at_step")
+        root_only = bool(args.get("root_lot_ids") or args.get("lot_ids")) and not bool(args.get("fab_lot_ids"))
+        resolved_product, candidate_tool = _product_or_candidate_tool(
+            prompt,
+            product,
+            lots_for_product,
+            kinds=("ML_TABLE", "FAB"),
+            intent="wafer_split_at_step",
+            ask_if_any=root_only,
+        )
         if candidate_tool:
             candidate_tool.setdefault("feature", "splittable")
+            candidate_tool.setdefault("arguments", args)
+            candidate_tool.setdefault("slots", {
+                "product": "",
+                "root_lot_ids": args.get("root_lot_ids") or [],
+                "fab_lot_ids": args.get("fab_lot_ids") or [],
+                "wafer_ids": args.get("wafer_ids") or [],
+                "step": args.get("step") or "",
+            })
             return candidate_tool
         if resolved_product:
             product_hint = resolved_product

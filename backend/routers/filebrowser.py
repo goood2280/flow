@@ -53,7 +53,7 @@ from core.utils import (
     cast_cats, read_source, lazy_read_source, read_one_file, scan_one_file, apply_sql_like, serialize_rows,
     jsonl_append, jsonl_read, csv_response, safe_filename,
     DATA_EXTENSIONS, count_data_files, iter_source_product_dirs,
-    data_files_limited, source_data_files,
+    data_files_limited, source_data_files, load_json, save_json,
 )
 from app_v2.shared.contracts import FileVersionMeta
 
@@ -2593,6 +2593,11 @@ class CacheMatchRefreshReq(BaseModel):
     force: bool = True
 
 
+class CacheMatchSettingsReq(BaseModel):
+    target: str = "fab"
+    interval_minutes: int = 30
+
+
 def _cache_match_target(raw: str) -> str:
     target = str(raw or "").strip().lower()
     if target in {"fab", "splittable", "split", "match"}:
@@ -2602,30 +2607,106 @@ def _cache_match_target(raw: str) -> str:
     raise HTTPException(400, "target must be fab or et")
 
 
+def _cache_settings_file() -> Path:
+    return PATHS.data_root / "settings.json"
+
+
+def _clamp_splittable_match_interval(value) -> int:
+    try:
+        from routers import splittable as _splittable
+        lo = int(getattr(_splittable, "MATCH_CACHE_REFRESH_MINUTES_MIN", 30))
+        hi = int(getattr(_splittable, "MATCH_CACHE_REFRESH_MINUTES_MAX", 60))
+        default = int(getattr(_splittable, "MATCH_CACHE_REFRESH_MINUTES_DEFAULT", 30))
+    except Exception:
+        lo, hi, default = 30, 60, 30
+    try:
+        minutes = int(value)
+    except Exception:
+        minutes = default
+    return max(lo, min(hi, minutes))
+
+
 @router.get("/cache/match/status")
 def cache_match_status(request: Request, target: str = Query("fab"), product: str = Query(""), source_root: str = Query("")):
     _require_filebrowser_user(request)
     target = _cache_match_target(target)
     if target == "fab":
         from routers import splittable as _splittable
+        try:
+            from core.runtime_limits import splittable_match_cache_enabled
+            scheduler_enabled = splittable_match_cache_enabled()
+        except Exception:
+            scheduler_enabled = True
         cache_status = _splittable._latest_lot_step_cache_status(product)
         job = _splittable._match_cache_job_status()
+        latest_cache = cache_status.get("latest_cache") or _splittable._match_cache_global_fresh()
         return {
-            "ok": True,
+            "ok": bool(cache_status.get("ok", True)),
             "target": "fab",
+            "mode": "scheduled",
             "unit_action": "filebrowser.cache.match.status",
             "enabled": True,
+            "manual_enabled": True,
+            "schedule_enabled": bool(scheduler_enabled),
+            "scheduler_enabled": bool(scheduler_enabled),
+            "interval_minutes": int(cache_status.get("interval_minutes") or latest_cache.get("interval_minutes") or 30),
+            "interval_min": int(cache_status.get("interval_minutes") or latest_cache.get("interval_minutes") or 30),
+            "interval_min_minutes": 30,
+            "interval_max_minutes": 60,
+            "next_refresh_at": latest_cache.get("next_refresh_at") or "",
+            "last_refresh_at": latest_cache.get("last_refresh_at") or cache_status.get("last_refresh_at") or "",
+            "latest_cache": latest_cache,
             "products": cache_status.get("products") or [],
-            "row_count": int(cache_status.get("product_row_count") if product else cache_status.get("row_count") or 0),
+            "row_count": int((cache_status.get("product_row_count") if product else cache_status.get("row_count")) or 0),
             "total_row_count": int(cache_status.get("row_count") or 0),
             "cache_path": cache_status.get("cache_path", ""),
             "updated_at": cache_status.get("updated_at") or "",
             "running": bool(job.get("running")),
             "job": job,
+            **({"error": cache_status.get("error")} if cache_status.get("error") else {}),
         }
     from core.lot_step import et_lot_cache_status
     data = et_lot_cache_status(product=product, source_root=source_root)
-    return {"ok": True, "target": "et", "unit_action": "filebrowser.cache.match.status", **data}
+    return {
+        **data,
+        "ok": True,
+        "target": "et",
+        "mode": "manual",
+        "unit_action": "filebrowser.cache.match.status",
+        "enabled": True,
+        "manual_enabled": True,
+        "schedule_enabled": False,
+        "scheduler_enabled": bool(data.get("enabled")),
+    }
+
+
+@router.post("/cache/match/settings")
+def cache_match_settings(req: CacheMatchSettingsReq, request: Request):
+    me = _require_filebrowser_admin(request)
+    target = _cache_match_target(req.target)
+    if target != "fab":
+        return {
+            "ok": True,
+            "target": "et",
+            "mode": "manual",
+            "manual_enabled": True,
+            "schedule_enabled": False,
+            "detail": "Tracker Analysis ET cache is manual-only.",
+        }
+    minutes = _clamp_splittable_match_interval(req.interval_minutes)
+    settings_path = _cache_settings_file()
+    current = load_json(settings_path, {})
+    if not isinstance(current, dict):
+        current = {}
+    current["splittable_match_refresh_minutes"] = minutes
+    save_json(settings_path, current, indent=2)
+    jsonl_append(PATHS.activity_log, {
+        "username": me.get("username") or "",
+        "action": "filebrowser:cache-settings:save",
+        "tab": "filebrowser",
+        "detail": f"splittable_match_refresh_minutes={minutes}",
+    })
+    return cache_match_status(request=request, target="fab")
 
 
 @router.post("/cache/match/refresh")
@@ -2636,20 +2717,16 @@ def cache_match_refresh(req: CacheMatchRefreshReq, request: Request):
         from routers import splittable as _splittable
         result = _splittable.enqueue_match_cache_refresh(product=req.product or "", force=bool(req.force), reason="filebrowser")
         return {"target": "fab", "unit_action": "filebrowser.cache.match.refresh", **result}
-    from core.runtime_limits import tracker_et_lot_cache_enabled
     from core.lot_step import refresh_et_lot_cache
-    if not tracker_et_lot_cache_enabled():
-        return {
-            "ok": False,
-            "target": "et",
-            "unit_action": "filebrowser.cache.match.refresh",
-            "disabled": True,
-            "enabled": False,
-            "products": [],
-            "detail": "Tracker ET lot cache is disabled. Set FLOW_ENABLE_TRACKER_ET_LOT_CACHE=1 to enable it.",
-        }
     result = refresh_et_lot_cache(product=req.product or "", source_root=req.source_root or "", force=bool(req.force))
-    return {"target": "et", "unit_action": "filebrowser.cache.match.refresh", **result}
+    return {
+        "target": "et",
+        "mode": "manual",
+        "manual_enabled": True,
+        "schedule_enabled": False,
+        "unit_action": "filebrowser.cache.match.refresh",
+        **result,
+    }
 
 
 @router.get("/base-files")

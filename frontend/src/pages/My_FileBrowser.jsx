@@ -514,6 +514,8 @@ export default function My_FileBrowser({user,onNavigate}){
   const[fbCacheStatus,setFbCacheStatus]=useState({fab:null,et:null});
   const[fbCacheBusy,setFbCacheBusy]=useState("");
   const[fbCacheMsg,setFbCacheMsg]=useState("");
+  const[fbCacheInterval,setFbCacheInterval]=useState("30");
+  const[fbCacheSettingsBusy,setFbCacheSettingsBusy]=useState(false);
 
   const csvBaseFiles=(baseFiles||[]).filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
   const selectFileRule=(file,settings=fbSettings)=>{
@@ -603,7 +605,21 @@ export default function My_FileBrowser({user,onNavigate}){
         sf(API+"/cache/match/status?target=et").catch(e=>({ok:false,target:"et",error:e.message})),
       ]);
       setFbCacheStatus({fab,et});
+      if(fab?.interval_minutes)setFbCacheInterval(String(fab.interval_minutes));
     }catch(_){}
+  };
+  const saveFilebrowserCacheSchedule=async()=>{
+    setFbCacheSettingsBusy(true);setFbCacheMsg("");
+    try{
+      const d=await sf(API+"/cache/match/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:"fab",interval_minutes:Number(fbCacheInterval||30)})});
+      if(d?.interval_minutes)setFbCacheInterval(String(d.interval_minutes));
+      setFbCacheStatus(s=>({...s,fab:d}));
+      setFbCacheMsg(`FAB 자동 갱신 주기 ${d?.interval_minutes||fbCacheInterval}분 저장됨`);
+    }catch(e){
+      setFbCacheMsg(e.message||"캐시 설정 저장 실패");
+    }finally{
+      setFbCacheSettingsBusy(false);
+    }
   };
   const refreshFilebrowserCache=async(target)=>{
     setFbCacheBusy(target);setFbCacheMsg("");
@@ -646,7 +662,10 @@ export default function My_FileBrowser({user,onNavigate}){
   },[s3Open,isFileBrowserAdmin]);
 
   useEffect(()=>{
-    if(s3Open&&s3Tab==="cache")loadFilebrowserCacheStatus();
+    if(!(s3Open&&s3Tab==="cache"))return;
+    loadFilebrowserCacheStatus();
+    const t=setInterval(loadFilebrowserCacheStatus,15000);
+    return()=>clearInterval(t);
   },[s3Open,s3Tab]);
 
   // 1s ticker for ETA countdown (only while modal open)
@@ -1587,31 +1606,57 @@ export default function My_FileBrowser({user,onNavigate}){
                 {[
                   ["fab","SplitTable 매칭 캐시","root_lot_id ↔ fab_lot_id 연결 캐시",fbCacheStatus.fab],
                   ["et","Tracker Analysis ET 캐시","ET lot 후보/진행 후보 캐시",fbCacheStatus.et],
-                ].map(([target,title,desc,status])=>(
-                  <div key={target} style={{display:"grid",gap:8,padding:"10px 12px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
-                    <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",flexWrap:"wrap"}}>
-                      <div>
-                        <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>{title}</div>
-                        <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:2}}>{desc}</div>
+                ].map(([target,title,desc,status])=>{
+                  const isFab=target==="fab";
+                  const intervalMin=status?.interval_min_minutes||30;
+                  const intervalMax=status?.interval_max_minutes||60;
+                  const nextAt=status?.next_refresh_at||status?.latest_cache?.next_refresh_at||"";
+                  const nextLabel=nextAt?String(nextAt).slice(0,16).replace("T"," "):"-";
+                  const scheduleOn=isFab&&status?.schedule_enabled!==false;
+                  return(
+                    <div key={target} style={{display:"grid",gap:8,padding:"10px 12px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
+                      <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",flexWrap:"wrap"}}>
+                        <div>
+                          <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>{title}</div>
+                          <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:2}}>{desc}</div>
+                        </div>
+                        <button onClick={()=>refreshFilebrowserCache(target)} disabled={!isAdmin||fbCacheBusy===target}
+                          title={!isAdmin?"admin only":"캐시 수동 갱신"}
+                          style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:800,cursor:!isAdmin?"not-allowed":fbCacheBusy===target?"wait":"pointer",opacity:!isAdmin?0.5:1}}>
+                          {fbCacheBusy===target?"갱신 중":"수동 갱신"}
+                        </button>
                       </div>
-                      <button onClick={()=>refreshFilebrowserCache(target)} disabled={!isAdmin||fbCacheBusy===target}
-                        title={!isAdmin?"admin only":"캐시 수동 갱신"}
-                        style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:800,cursor:!isAdmin?"not-allowed":fbCacheBusy===target?"wait":"pointer",opacity:!isAdmin?0.5:1}}>
-                        {fbCacheBusy===target?"갱신 중":"수동 갱신"}
-                      </button>
+                      {isFab?(
+                        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                          <span style={{fontSize:13,color:"var(--text-secondary)",fontWeight:700}}>자동 주기</span>
+                          <input type="number" min={intervalMin} max={intervalMax} step="1" value={fbCacheInterval}
+                            onChange={e=>setFbCacheInterval(e.target.value)}
+                            disabled={!isAdmin||fbCacheSettingsBusy}
+                            style={{width:82,padding:"5px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}/>
+                          <span style={{fontSize:13,color:"var(--text-secondary)"}}>분</span>
+                          <button onClick={saveFilebrowserCacheSchedule} disabled={!isAdmin||fbCacheSettingsBusy}
+                            style={{padding:"5px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:13,fontWeight:700,cursor:!isAdmin?"not-allowed":fbCacheSettingsBusy?"wait":"pointer",opacity:!isAdmin?0.5:1}}>
+                            {fbCacheSettingsBusy?"저장 중":"저장"}
+                          </button>
+                          <span style={{fontSize:13,color:scheduleOn?"var(--text-secondary)":"#ef4444"}}>다음 {nextLabel}</span>
+                        </div>
+                      ):(
+                        <div style={{fontSize:13,color:"var(--text-secondary)",fontWeight:700}}>수동 전용</div>
+                      )}
+                      <div style={{display:"flex",gap:8,flexWrap:"wrap",fontFamily:"monospace",fontSize:13,color:"var(--text-secondary)"}}>
+                        <span>target={target}</span>
+                        <span>mode={isFab?"scheduled":"manual"}</span>
+                        <span>products={(status?.products||[]).length}</span>
+                        <span>rows={status?.row_count??status?.total_row_count??0}</span>
+                        <span>updated={status?.updated_at||status?.latest_updated_at||"-"}</span>
+                        {status?.running&&<span style={{color:"#f59e0b"}}>running</span>}
+                        {isFab&&status?.schedule_enabled===false&&<span style={{color:"#ef4444"}}>scheduler off</span>}
+                      </div>
+                      {status?.cache_path&&<div style={{fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",overflowWrap:"anywhere"}}>{status.cache_path}</div>}
+                      {status?.error&&<div style={{fontSize:13,color:"#ef4444"}}>{status.error}</div>}
                     </div>
-                    <div style={{display:"flex",gap:8,flexWrap:"wrap",fontFamily:"monospace",fontSize:13,color:"var(--text-secondary)"}}>
-                      <span>target={target}</span>
-                      <span>products={(status?.products||[]).length}</span>
-                      <span>rows={status?.row_count??status?.total_row_count??0}</span>
-                      <span>updated={status?.updated_at||status?.latest_updated_at||"-"}</span>
-                      {status?.running&&<span style={{color:"#f59e0b"}}>running</span>}
-                      {status?.enabled===false&&<span style={{color:"#ef4444"}}>disabled</span>}
-                    </div>
-                    {status?.cache_path&&<div style={{fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",overflowWrap:"anywhere"}}>{status.cache_path}</div>}
-                    {status?.error&&<div style={{fontSize:13,color:"#ef4444"}}>{status.error}</div>}
-                  </div>
-                ))}
+                  );
+                })}
                 <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
                   <button onClick={loadFilebrowserCacheStatus} style={{padding:"7px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:"pointer"}}>상태 새로고침</button>
                   {fbCacheMsg&&<span style={{fontSize:14,color:fbCacheMsg.includes("실패")||fbCacheMsg.includes("비활성")?"#ef4444":"var(--text-secondary)"}}>{fbCacheMsg}</span>}

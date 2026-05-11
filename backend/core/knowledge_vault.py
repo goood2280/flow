@@ -1137,7 +1137,10 @@ def commit_agent_wiki_ingest(req: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_agent_wiki_pages(q: str = "", limit: int = 200) -> list[dict[str, Any]]:
-    return list_docs(kind="agent_wiki", q=q, limit=limit)
+    rows = list_docs(q=q, limit=max(limit, 200))
+    rows.sort(key=lambda r: str(r.get("updated_at") or ""), reverse=True)
+    rows.sort(key=lambda r: 0 if r.get("kind") == "agent_wiki" else 1)
+    return rows[: max(1, min(limit, 1000))]
 
 
 def search_agent_wiki(q: str, limit: int = 30) -> list[dict[str, Any]]:
@@ -1145,9 +1148,10 @@ def search_agent_wiki(q: str, limit: int = 30) -> list[dict[str, Any]]:
     if not q_l:
         return []
     results: list[dict[str, Any]] = []
-    for row in list_docs(kind="agent_wiki", limit=1000):
+    for row in list_docs(limit=1000):
         hay = " ".join([
             str(row.get("doc_id") or ""),
+            str(row.get("kind") or ""),
             str(row.get("title") or ""),
             str(row.get("summary") or ""),
             " ".join(map(str, row.get("tags") or [])),
@@ -1162,6 +1166,7 @@ def search_agent_wiki(q: str, limit: int = 30) -> list[dict[str, Any]]:
             "result_type": "wiki",
             "id": row.get("doc_id") or "",
             "doc_id": row.get("doc_id") or "",
+            "kind": row.get("kind") or "",
             "title": row.get("title") or row.get("doc_id") or "",
             "summary": row.get("summary") or "",
             "snippet": _snippet(text, q_l),

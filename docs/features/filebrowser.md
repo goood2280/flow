@@ -9,8 +9,8 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - read-only SQL/filter/download preview
 - S3 동기화 상태와 로컬 cache 파일 접근성 확인
 - `data/flow-data/cache/lot_progress/lot_wf_current.parquet`처럼 runtime에서 생성된 parquet preview
-- **🧩 SplitTable 매칭 캐시** (`data/flow-data/splittable/match_cache/ML_TABLE_<PRODUCT>.json`) — 목록/preview/수동 갱신 진입점. 이전 Admin 패널을 대체.
-- **🧪 Tracker Analysis ET 캐시** (`data/flow-data/tracker/...` 후보 목록 parquet/json) — 목록/preview/수동 갱신 진입점.
+- **🧩 SplitTable 매칭 캐시** (`data/flow-data/splittable/match_cache/ML_TABLE_<PRODUCT>.json`) — 목록/preview/자동 주기 갱신 상태/수동 갱신 진입점. 이전 Admin 패널을 대체.
+- **🧪 Tracker Analysis ET 캐시** (`data/flow-data/tracker/...` 후보 목록 parquet/json) — 목록/preview/수동 갱신 진입점. ET 캐시는 현재 자동 스케줄을 켜지 않는다.
 
 ## Does Not Own
 
@@ -34,6 +34,8 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - Runtime state와 cache는 `FLOW_DATA_ROOT` 또는 `data/flow-data/`에서 온다.
 - lot progress cache는 root lot id, wafer id별 최신 lot id를 parquet로 볼 수 있어야 한다.
 - cache 파일도 일반 파일처럼 목록 진입, schema 확인, preview가 가능해야 한다.
+- SplitTable 매칭 캐시는 기본적으로 backend scheduler가 `settings.json.splittable_match_refresh_minutes` 주기에 맞춰 계속 갱신한다. FileBrowser 캐시 탭에서는 이 주기와 다음 예정 시각을 보여주고, admin은 별도 수동 갱신도 실행할 수 있다.
+- Tracker Analysis ET 캐시는 현재 수동 갱신만 지원한다. background scheduler는 opt-in 상태로 유지한다.
 - Flow-i의 현재 step 질문은 FAB 원본 재스캔보다 `lot_progress_latest_lot_by_root_wafer.parquet`를 우선 사용해 `step_id`와 `function_step`을 답한다.
 
 ## File Settings
@@ -89,8 +91,8 @@ Agent 탭(Flow-i)이 FileBrowser를 driver로 호출할 때 사용하는 unit ac
 | `filebrowser.preview` | `scope`, `path`, `rows?`, `cols?` | schema + sample preview | user | `scope`, `path` |
 | `filebrowser.lot_progress.latest` | `root_lot_id`, `wafer_id?` | `step_id`, `function_step`, `lot_id`, source path | user | `root_lot_id` |
 | `filebrowser.csv.rules.read` | `csv_name` | `csv_rules` 정의 (filebrowser_settings.json) | user | `csv_name` |
-| `filebrowser.cache.match.refresh` | `target ∈ {fab, et}` | refresh job status (캐시 manual scan) | admin | `target` |
-| `filebrowser.cache.match.status` | `target ∈ {fab, et}` | 마지막 갱신 시각, 제품 수, 진행 카운트 | user | `target` |
+| `filebrowser.cache.match.refresh` | `target ∈ {fab, et}` | refresh job status (FAB은 자동 주기와 별도 수동 job, ET는 수동 scan) | admin | `target` |
+| `filebrowser.cache.match.status` | `target ∈ {fab, et}` | 마지막 갱신 시각, 제품 수, 진행 카운트, FAB `interval_minutes`/`next_refresh_at` | user | `target` |
 
 자연어 예시 → action 매핑:
 - `A1000 #21 현재 step이 어디야` → `filebrowser.lot_progress.latest` (`lot_progress_latest_lot_by_root_wafer.parquet` 우선)

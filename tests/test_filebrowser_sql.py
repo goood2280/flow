@@ -131,6 +131,86 @@ def test_filebrowser_cache_match_status_and_refresh_contract(monkeypatch):
     assert seen == [req, req]
 
 
+def test_splittable_latest_lot_step_cache_status_reads_canonical_cache(monkeypatch, tmp_path):
+    import routers.splittable as splittable
+
+    cache_path = tmp_path / "lot_progress_latest_lot_by_root_wafer.parquet"
+    pl.DataFrame({
+        "product": ["ML_TABLE_PRODA", "ML_TABLE_PRODA", "ML_TABLE_PRODB"],
+        "root_lot_id": ["A1000", "A1001", "B1000"],
+        "wafer_id": ["1", "2", "1"],
+        "lot_id": ["F1000", "F1001", "F2000"],
+        "step_id": ["S1", "S2", "S3"],
+        "function_step": ["AA", "BB", "CC"],
+        "tkout_time": ["2026-05-10T00:00:00", "2026-05-10T01:00:00", "2026-05-10T02:00:00"],
+        "update_time": ["2026-05-10T03:00:00", "2026-05-10T03:00:00", "2026-05-10T04:00:00"],
+    }).write_parquet(cache_path)
+    monkeypatch.setattr(splittable, "_latest_lot_step_cache_path", lambda: cache_path)
+    monkeypatch.setattr(splittable, "_match_cache_state", lambda: {"last_refresh_at": "2026-05-10T04:00:00"})
+    monkeypatch.setattr(splittable, "_match_cache_refresh_minutes", lambda: 30)
+
+    status = splittable._latest_lot_step_cache_status(product="PRODA")
+
+    assert status["ok"] is True
+    assert status["row_count"] == 3
+    assert status["product_row_count"] == 2
+    assert status["products"] == ["ML_TABLE_PRODA", "ML_TABLE_PRODB"]
+    assert status["updated_at"] == "2026-05-10T04:00:00"
+
+
+def test_filebrowser_cache_match_settings_updates_fab_interval(monkeypatch, tmp_path):
+    import routers.splittable as splittable
+
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(filebrowser, "PATHS", _DummyPaths(tmp_path))
+    monkeypatch.setattr(
+        splittable,
+        "_latest_lot_step_cache_status",
+        lambda product="": {
+            "ok": True,
+            "products": [],
+            "row_count": 0,
+            "product_row_count": 0,
+            "cache_path": str(tmp_path / "cache.parquet"),
+            "interval_minutes": 45,
+            "latest_cache": {"interval_minutes": 45, "next_refresh_at": "2026-05-10T04:30:00"},
+        },
+    )
+    monkeypatch.setattr(splittable, "_match_cache_job_status", lambda: {"running": False})
+
+    out = filebrowser.cache_match_settings(
+        filebrowser.CacheMatchSettingsReq(target="fab", interval_minutes=45),
+        _Request("admin", "admin"),
+    )
+
+    saved = json.loads((tmp_path / "settings.json").read_text("utf-8"))
+    assert saved["splittable_match_refresh_minutes"] == 45
+    assert out["target"] == "fab"
+    assert out["interval_minutes"] == 45
+    assert out["schedule_enabled"] is True
+
+
+def test_filebrowser_et_cache_refresh_is_manual_even_when_scheduler_disabled(monkeypatch):
+    from core import lot_step
+
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(
+        lot_step,
+        "refresh_et_lot_cache",
+        lambda **kwargs: {"ok": True, "products": [{"product": kwargs.get("product"), "ok": True}], "source_root": kwargs.get("source_root")},
+    )
+
+    out = filebrowser.cache_match_refresh(
+        filebrowser.CacheMatchRefreshReq(target="et", product="PRODA", source_root="ET_MEASURE", force=True),
+        _Request("admin", "admin"),
+    )
+
+    assert out["target"] == "et"
+    assert out["mode"] == "manual"
+    assert out["schedule_enabled"] is False
+    assert out["products"][0]["product"] == "PRODA"
+
+
 def test_filebrowser_cache_refresh_requires_admin(monkeypatch):
     monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
 

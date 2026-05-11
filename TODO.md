@@ -24,6 +24,8 @@
 
 ## Done
 
+- [x] (Codex) FileBrowser 캐시 탭에서 SplitTable 매칭 캐시 자동 주기/수동 갱신을 분리하고 status HTTP 500을 복구. Tracker Analysis ET 캐시는 자동 scheduler 없이 수동 갱신만 허용.
+- [x] (Codex) Agent prompt history를 `data/flow-data/flowi_activity.jsonl`에서 다시 불러오고, Schema 관계 전체 스캔/엔지니어 편집 저장, Wiki/Vault 공통 지식 목록 노출, `A1001 24.SORT KNOB` SplitTable product clarification 라우팅을 추가.
 - [x] (Codex) Agent 탭을 `실행 루프 / Wiki Graph / Schema 관계 / AI 연결` 소탭으로 재구성하고, trace 공개 요약(persona/prompt cache/subagent/clarification loop), prompt-only 실행 루프(product override 제거), schema relation preview/admin save graph/delete를 추가.
 - [x] (Codex) 6개 기능 페이지 UI quick-win 적용 — ToastHost 추가, 대상 페이지 `alert()` 제거, Calendar/Meeting/FileBrowser/Inform/SplitTable 중앙 모달을 `Modal.jsx`로 통일, PageGear 좌하단 위치 반영, Vite dist stale chunk 정리.
 - [x] (Codex) Flow 앱 visible chrome 통일 — 공통 header/sidebar accent bar, title/meta 라인, `PageHeader` 표면 톤을 6개 기능 페이지에 적용.

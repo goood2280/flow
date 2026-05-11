@@ -101,7 +101,8 @@ def gather_files():
             # v8.8.16: users 관련 변형 / S3 sync / 회의록 state 파일까지 확장.
             if p.name.lower() in {'users.csv', 'users.json', 'users_cache.json',
                                    'groups.json', 'admin_settings.json',
-                                   'settings.json', 'shares.json', 'informs.json',
+                                   'settings.json', 'filebrowser_settings.json',
+                                   'shares.json', 'informs.json',
                                    'product_contacts.json', 'notes.json',
                                    'source_config.json', 'dashboard_snapshots.json',
                                    'dashboard_charts.json', 'meetings.json',
@@ -242,6 +243,7 @@ _PROTECTED_BASENAMES = {{
     'tokens.json', 'sessions.json', 'session_tokens.json',
     # 그룹/설정
     'groups.json', 'admin_settings.json', 'settings.json',
+    'filebrowser_settings.json',
     'shares.json', 'informs.json', 'config.json', 'product_contacts.json',
     'mail_groups.json', 'mail_config.json',
     # SplitTable / Dashboard / 인폼 state

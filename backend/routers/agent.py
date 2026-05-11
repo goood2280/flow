@@ -109,6 +109,12 @@ class SchemaRelationPreviewReq(BaseModel):
     sample_rows: int = 20
 
 
+class SchemaRelationScanReq(BaseModel):
+    max_sources: int = 24
+    max_candidates: int = 100
+    sample_rows: int = 20
+
+
 class SchemaRelationSaveReq(BaseModel):
     candidates: list[dict[str, Any]] = Field(default_factory=list)
     note: str = ""
@@ -300,6 +306,53 @@ def _relation_read_source(src: SchemaRelationSource, *, sample_rows: int = 20) -
     }
 
 
+def _relation_discover_sources(*, max_sources: int = 24) -> list[SchemaRelationSource]:
+    sources: list[SchemaRelationSource] = []
+    seen: set[str] = set()
+
+    def add(src: SchemaRelationSource) -> None:
+        key = json.dumps(src.model_dump() if hasattr(src, "model_dump") else src.dict(), sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            return
+        seen.add(key)
+        sources.append(src)
+
+    db_root = PATHS.db_root.resolve()
+    try:
+        for db_dir in sorted([p for p in db_root.iterdir() if p.is_dir()], key=lambda p: p.name.lower()):
+            name_u = _safe_slug(db_dir.name).upper()
+            if db_dir.name.startswith((".", "_")) or name_u in {"CACHE", "HISTORY", "BACKUPS"}:
+                continue
+            products = [p for p in db_dir.iterdir() if p.is_dir()] if "RAWDATA_DB" in name_u else []
+            for product_dir in sorted(products, key=lambda p: p.name.lower()):
+                if product_dir.name.startswith((".", "_")):
+                    continue
+                add(SchemaRelationSource(
+                    source_type="db",
+                    root=db_dir.name,
+                    product=product_dir.name,
+                    label=f"{db_dir.name.replace('1.RAWDATA_DB_', '')} {product_dir.name}",
+                ))
+    except Exception:
+        pass
+
+    for root_label, root in (("base_root", PATHS.base_root.resolve()), ("db_root", db_root)):
+        try:
+            for fp in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+                if not fp.is_file() or fp.name.startswith((".", "_")) or fp.suffix.lower() not in {".csv", ".parquet"}:
+                    continue
+                add(SchemaRelationSource(
+                    source_type="file",
+                    root=root_label,
+                    file=fp.name,
+                    label=fp.stem,
+                ))
+        except Exception:
+            continue
+
+    return sources[:max(2, min(int(max_sources or 24), 80))]
+
+
 def _relation_candidate_id(candidate: dict[str, Any]) -> str:
     raw = "::".join([
         str(candidate.get("left_source_id") or ""),
@@ -401,6 +454,40 @@ def _relation_candidates(profiles: list[dict[str, Any]], *, limit: int = 30) -> 
     return list(dedup.values())[: max(1, min(int(limit or 30), 100))]
 
 
+def _relation_preview_from_sources(
+    sources: list[SchemaRelationSource],
+    *,
+    max_candidates: int = 30,
+    sample_rows: int = 20,
+    db_file_only: bool = False,
+) -> dict[str, Any]:
+    profiles: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for src in sources[:80]:
+        try:
+            profiles.append(_relation_read_source(src, sample_rows=sample_rows))
+        except HTTPException as exc:
+            errors.append({
+                "source": src.model_dump() if hasattr(src, "model_dump") else src.dict(),
+                "status": exc.status_code,
+                "detail": exc.detail,
+            })
+    if len(profiles) < 2:
+        raise HTTPException(400, {"message": "not enough readable schema sources", "errors": errors})
+    candidate_limit = max_candidates * 3 if db_file_only else max_candidates
+    candidates = _relation_candidates(profiles, limit=candidate_limit)
+    if db_file_only:
+        candidates = [
+            row for row in candidates
+            if {str(row.get("left_source_type") or ""), str(row.get("right_source_type") or "")} == {"db", "file"}
+        ][:max(1, min(int(max_candidates or 30), 100))]
+    return {
+        "profiles": profiles,
+        "errors": errors,
+        "candidates": candidates,
+    }
+
+
 def _schema_relations_payload() -> dict[str, Any]:
     data = load_json(SCHEMA_RELATION_FILE, {"relations": []})
     if not isinstance(data, dict):
@@ -461,6 +548,10 @@ def _require_agent_wiki_admin(request: Request) -> dict[str, Any]:
     if is_page_admin(username, "diagnosis") or is_page_admin(username, "knowledge"):
         return me
     raise HTTPException(403, "admin or diagnosis/knowledge page admin only")
+
+
+def _require_agent_schema_admin(request: Request) -> dict[str, Any]:
+    return _require_agent_wiki_admin(request)
 
 
 def _activity_rows(limit: int = 1000) -> list[dict[str, Any]]:
@@ -630,26 +721,46 @@ def schema_relation_preview(req: SchemaRelationPreviewReq, request: Request):
     sources = [src for src in (req.sources or []) if (src.product or src.file or src.root)]
     if len(sources) < 2:
         raise HTTPException(400, "at least two schema sources are required")
-    profiles: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
-    for src in sources[:6]:
-        try:
-            profiles.append(_relation_read_source(src, sample_rows=req.sample_rows))
-        except HTTPException as exc:
-            errors.append({
-                "source": src.model_dump() if hasattr(src, "model_dump") else src.dict(),
-                "status": exc.status_code,
-                "detail": exc.detail,
-            })
-    if len(profiles) < 2:
-        raise HTTPException(400, {"message": "not enough readable schema sources", "errors": errors})
-    candidates = _relation_candidates(profiles, limit=req.max_candidates)
+    preview = _relation_preview_from_sources(
+        sources[:6],
+        max_candidates=req.max_candidates,
+        sample_rows=req.sample_rows,
+    )
+    candidates = preview["candidates"]
     return {
         "ok": True,
         "preview_only": True,
         "saved": False,
-        "sources": profiles,
-        "errors": errors,
+        "sources": preview["profiles"],
+        "errors": preview["errors"],
+        "candidates": candidates,
+        "graph": _relation_candidate_graph(candidates),
+        "saved_graph": _relation_candidate_graph(_public_schema_relations()),
+    }
+
+
+@router.post("/schema-relations/scan")
+def schema_relation_scan(req: SchemaRelationScanReq, request: Request):
+    """Scan configured DB products and root-level single files for relation candidates."""
+    current_user(request)
+    sources = _relation_discover_sources(max_sources=req.max_sources)
+    if len(sources) < 2:
+        raise HTTPException(400, "not enough DB/file schema sources to scan")
+    preview = _relation_preview_from_sources(
+        sources,
+        max_candidates=req.max_candidates,
+        sample_rows=req.sample_rows,
+        db_file_only=True,
+    )
+    candidates = preview["candidates"]
+    return {
+        "ok": True,
+        "mode": "scan",
+        "preview_only": True,
+        "saved": False,
+        "discovered_count": len(sources),
+        "sources": preview["profiles"],
+        "errors": preview["errors"],
         "candidates": candidates,
         "graph": _relation_candidate_graph(candidates),
         "saved_graph": _relation_candidate_graph(_public_schema_relations()),
@@ -670,7 +781,7 @@ def schema_relation_graph(request: Request):
 
 @router.post("/schema-relations/save")
 def schema_relation_save(req: SchemaRelationSaveReq, request: Request):
-    me = require_admin(request)
+    me = _require_agent_schema_admin(request)
     candidates = [row for row in (req.candidates or []) if isinstance(row, dict)]
     if not candidates:
         raise HTTPException(400, "candidates are required")
@@ -685,14 +796,19 @@ def schema_relation_save(req: SchemaRelationSaveReq, request: Request):
     allowed_keys = {
         "relation_id", "left_source_id", "left_label", "left_source_type", "left_column", "left_dtype",
         "right_source_id", "right_label", "right_source_type", "right_column", "right_dtype",
-        "canonical_key", "relation_type", "confidence", "evidence", "left_sample", "right_sample",
+        "canonical_key", "relation_type", "confidence", "evidence", "left_sample", "right_sample", "status",
     }
     for candidate in candidates[:100]:
         row = {key: candidate.get(key) for key in allowed_keys if key in candidate}
         if not row.get("left_source_id") or not row.get("right_source_id") or not row.get("left_column") or not row.get("right_column"):
             continue
+        row["left_column"] = str(row.get("left_column") or "").strip()
+        row["right_column"] = str(row.get("right_column") or "").strip()
+        row["canonical_key"] = str(row.get("canonical_key") or _relation_canonical_col(row["left_column"]) or _relation_norm_col(row["left_column"]))[:120]
+        if not row["left_column"] or not row["right_column"]:
+            continue
         row["relation_type"] = row.get("relation_type") or "join_key"
-        row["relation_id"] = row.get("relation_id") or _relation_candidate_id(row)
+        row["relation_id"] = _relation_candidate_id(row)
         row["status"] = "confirmed"
         row["confirmed_by"] = me.get("username") or ""
         row["confirmed_at"] = now
@@ -718,7 +834,7 @@ def schema_relation_save(req: SchemaRelationSaveReq, request: Request):
 
 @router.post("/schema-relations/delete")
 def schema_relation_delete(req: SchemaRelationDeleteReq, request: Request):
-    me = require_admin(request)
+    me = _require_agent_schema_admin(request)
     relation_ids = {str(x or "").strip() for x in (req.relation_ids or []) if str(x or "").strip()}
     if not relation_ids:
         raise HTTPException(400, "relation_ids are required")
@@ -957,6 +1073,54 @@ def recent_rag(
     return {"ok": True, "limit": limit, "user": target_user, "traces": traces}
 
 
+@router.get("/prompt-history")
+def prompt_history(
+    request: Request,
+    limit: int = Query(50, ge=1, le=100),
+    user: str = Query("", max_length=120),
+):
+    me = current_user(request)
+    username = me.get("username") or "user"
+    requested_user = str(user or "").strip()
+    target_user = requested_user if (me.get("role") == "admin" and requested_user) else username
+    rows = _activity_rows(max(300, limit * 8))
+    history: list[dict[str, Any]] = []
+    for rec in sorted(rows, key=lambda r: str(r.get("timestamp") or ""), reverse=True):
+        if rec.get("username") != target_user:
+            continue
+        fields = rec.get("fields") if isinstance(rec.get("fields"), dict) else {}
+        prompt = str(fields.get("prompt") or fields.get("prompt_excerpt") or "").strip()
+        if not prompt:
+            continue
+        status = fields.get("result_status") or rec.get("result_status") or ""
+        if not status:
+            status = "blocked" if fields.get("blocked") else "done"
+        missing = fields.get("missing") or fields.get("missing_fields") or []
+        if not isinstance(missing, list):
+            missing = [missing] if missing else []
+        history.append({
+            "id": f"{rec.get('timestamp') or ''}:{len(history)}",
+            "timestamp": rec.get("timestamp") or "",
+            "ts": rec.get("timestamp") or "",
+            "user": rec.get("username") or "",
+            "event": rec.get("event") or "",
+            "prompt": prompt,
+            "feature": fields.get("feature") or "",
+            "intent": fields.get("intent") or "",
+            "action": fields.get("selected_function") or fields.get("action") or fields.get("intent") or rec.get("event") or "",
+            "status": status,
+            "missing": [str(x) for x in missing if str(x).strip()],
+            "answer": fields.get("answer") or fields.get("answer_excerpt") or "",
+            "answer_excerpt": str(fields.get("answer") or fields.get("answer_excerpt") or "")[:800],
+            "elapsed_ms": fields.get("elapsed_ms") or rec.get("elapsed_ms"),
+            "source_ai": fields.get("source_ai") or "",
+            "client_run_id": fields.get("client_run_id") or "",
+        })
+        if len(history) >= limit:
+            break
+    return {"ok": True, "limit": limit, "user": target_user, "rows": history}
+
+
 @router.get("/wiki/sources")
 def agent_wiki_sources(
     request: Request,
@@ -1030,8 +1194,8 @@ def agent_wiki_pages(
 def agent_wiki_page(request: Request, doc_id: str = Query(..., min_length=1)):
     current_user(request)
     doc = kv.get_doc(doc_id)
-    if not doc or doc.get("kind") != "agent_wiki":
-        raise HTTPException(404, "Agent Wiki page not found")
+    if not doc:
+        raise HTTPException(404, "Knowledge Vault page not found")
     return {"ok": True, "page": doc}
 
 
