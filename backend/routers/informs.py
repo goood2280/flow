@@ -2726,6 +2726,19 @@ def _safe_filename(name: str) -> str:
     return name[-120:] or "file"
 
 
+def _image_upload_ext(filename: str, content_type: str = "") -> str:
+    ext = Path(filename or "").suffix.lower()
+    if ext in ALLOWED_IMAGE_EXTS:
+        return ext
+    mime = str(content_type or "").split(";", 1)[0].strip().lower()
+    if not mime.startswith("image/"):
+        return ""
+    guessed = (mimetypes.guess_extension(mime) or "").lower()
+    if guessed == ".jpe":
+        guessed = ".jpg"
+    return guessed if guessed in ALLOWED_IMAGE_EXTS else ""
+
+
 async def _read_upload_payload(request: Request) -> tuple[str, bytes, str]:
     """Read multipart field `file` without a FastAPI File dependency.
 

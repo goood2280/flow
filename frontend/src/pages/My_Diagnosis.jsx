@@ -20,6 +20,7 @@ import AgentKnowledgeVault from "./My_Knowledge";
 
 const SAMPLE_PROMPT = "GAA nFET short Lg에서 DIBL과 SS가 증가했고 CA_RS도 올랐어. 원인 후보와 확인 차트 보여줘.";
 const FUNCTION_TEST_PROMPT = "PRODA A1000 #6 현재 fab lot id가 뭐야?";
+const FLOWI_ORCHESTRATOR_PREVIEW_API = "/api/llm/flowi/orchestrator/preview";
 const DEFAULT_TABLE_CONTENT = "step_id,step_name,func_step\nAA200000,channel release etch,\nAB300000,inner spacer recess,\nCA100000,CA contact etch,";
 
 const QUICK_PROMPTS = [

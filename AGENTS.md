@@ -12,12 +12,12 @@ Flow 작업의 공식 에이전트 진입점이다. 현재 기준은 이 파일�
 
 ## Role Split
 
-본 진입점을 사용하는 에이전트는 두 종류다. 작업이 어느 쪽에 속하는지 먼저 확인한다.
+본 진입점을 사용하는 에이전트는 두 종류다. 둘 다 같은 권한을 갖고, 진입점/문서/TODO/feature 명세는 물론 frontend/backend 코드, 빌드 산출물, `setup.py` 재생성까지 모두 직접 변경할 수 있다. 작업 책임 구분은 의사소통 편의를 위한 것이며 권한 차이가 아니다.
 
-- **Claude 세션 (이 가이드)** — 진입점/문서/TODO/평가 보고서/Agent ↔ feature 명세 유지. 코드 자체 변경은 하지 않는다.
-- **Codex CLI 세션** — 실제 frontend/backend 코드 변경 (Agent 페이지 UX 보강, backend trace 보강, feature handler 견고화 등). 본 가이드와 feature md를 spec으로 사용한다.
+- **Claude 세션 (이 가이드)** — frontend/backend 코드 변경, 문서/TODO/평가 보고서/Agent ↔ feature 명세 유지, `setup.py` 재생성 등 모든 작업을 수행할 수 있다.
+- **Codex CLI 세션** — frontend/backend 코드 변경, 문서/TODO/명세/`setup.py` 재생성 등 모든 작업을 수행할 수 있다. 본 가이드와 feature md를 spec으로 사용한다.
 
-`TODO.md`의 `Now` 항목은 `(Claude)` / `(Codex)` 접두로 책임을 명시한다.
+`TODO.md`의 `Now` 항목은 `(Claude)` / `(Codex)` 접두로 그 항목을 잡고 있는 세션을 명시한다 (권한 표시가 아니라 진행 주체 표시).
 
 ## Version Note
 
@@ -44,23 +44,30 @@ Flow 작업의 공식 에이전트 진입점이다. 현재 기준은 이 파일�
 - Treat `archive/`, runtime logs, generated task specs, and moved legacy docs as historical unless the user explicitly asks.
 - Keep Flow-i as an app-action router. It may query and guide app workflows, but normal user prompts must not mutate source code or raw DB files.
 - Runtime/user data under `data/flow-data/`, operational DB roots, sessions, uploads, cache, and logs must not be overwritten by code or setup changes.
-- Feature 코드 수정은 Codex CLI 세션에서 진행한다. Claude 세션은 `docs/`, `AGENTS.md`, `TODO.md`, `README.md`, `VERSION.json` 등 진입점/문서/메타만 직접 편집한다.
+- Claude 와 Codex 모두 frontend/backend 코드 수정과 진입점/문서/메타 갱신을 함께 수행한다. 같은 파일을 동시에 건드리지 않도록 `TODO.md` 의 `Now` 항목으로 잡고 있는 세션을 먼저 표시한다.
 - 새 docs에 `v9.0.x` 같은 명시 버전을 적지 않는다 (위 Version Note 참조).
 
 ## Validation
 
-Doc-only changes (Claude 세션이 주로 사용):
+Doc-only changes:
 
 ```bash
 git diff --check
 ```
 
-General code changes (Codex 세션):
+General code changes (Claude / Codex 공통):
 
 ```bash
 git diff --check
 cd frontend && npm run build
 python3 scripts/smoke_test.py
+```
+
+`setup.py` 또는 번들 산출물을 갱신했을 때:
+
+```bash
+python3 _build_setup.py
+python3 setup.py version
 ```
 
 Backend tests:

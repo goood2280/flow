@@ -164,6 +164,11 @@ def _issue_mail_watch(issue: dict) -> dict:
     }
 
 
+def _flow_alert_title(kind: str, issue: dict) -> str:
+    title = str(issue.get("title") or issue.get("id") or "").strip()
+    return f"FLOW 알림 - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} / {kind} · {title}"
+
+
 def _comment_count(issue: dict) -> int:
     total = 0
     for c in issue.get("comments") or []:
@@ -1029,12 +1034,10 @@ def add_comment(req: CommentReq, request: Request):
             if u:
                 targets.add(u)
         preview = (req.text or "")[:80]
-        issue_title = iss.get("title") or iss["id"]
-        alert_title = f"FLOW 알림 - {issue_title} / 이슈 댓글 · {issue_title}"
+        target_list = sorted(tgt for tgt in targets if tgt and tgt != req.username)
+        alert_title = _flow_alert_title("이슈 댓글", iss)
         alert_body = f"{req.username or ''} · {preview}"
-        for tgt in targets:
-            if tgt == req.username:
-                continue
+        for tgt in target_list:
             emit_event(
                 "my_tracker_comment",
                 actor=req.username or "",
@@ -1045,11 +1048,11 @@ def add_comment(req: CommentReq, request: Request):
                          "lot_id": req.lot_id, "wafer_id": req.wafer_id},
             )
         mail_watch = _issue_mail_watch(iss)
-        if mail_watch.get("enabled"):
+        if mail_watch.get("enabled") and target_list:
             from core.mail import send_mail
             from core.tracker_scheduler import _recipient_payload
-            recipients = _recipient_payload(targets, mail_watch.get("mail_group_ids") or [])
-            mail_targets = [u for u in (recipients.get("users") or []) if u != req.username]
+            recipients = _recipient_payload(target_list, mail_watch.get("mail_group_ids") or [])
+            mail_targets = recipients.get("users") or []
             if mail_targets or recipients.get("extra_emails"):
                 send_mail(
                     sender_username=req.username or "flow",
