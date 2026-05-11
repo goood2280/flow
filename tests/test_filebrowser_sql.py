@@ -90,8 +90,8 @@ def test_filebrowser_base_file_view_requires_current_user(monkeypatch, tmp_path)
     assert preview["columns"] == ["lot", "value"]
 
 
-def test_filebrowser_cache_match_status_and_refresh_contract(monkeypatch):
-    import routers.splittable as splittable
+def test_filebrowser_db_cache_status_and_refresh_contract(monkeypatch):
+    from core import db_cache
 
     seen = []
 
@@ -101,34 +101,41 @@ def test_filebrowser_cache_match_status_and_refresh_contract(monkeypatch):
 
     monkeypatch.setattr(auth_core, "current_user", fake_current_user)
     monkeypatch.setattr(
-        splittable,
-        "_latest_lot_step_cache_status",
-        lambda product="": {
+        db_cache,
+        "db_cache_status",
+        lambda target: {
+            "ok": True,
+            "target": target,
             "products": ["PRODA"],
             "row_count": 7,
-            "product_row_count": 3,
-            "cache_path": "/cache/current.parquet",
+            "cache_path": "/cache/et_lot_step_seq_summary.parquet",
             "updated_at": "2026-05-10T00:00:00+00:00",
+            "unit_action": "filebrowser.cache.db.status",
         },
     )
-    monkeypatch.setattr(splittable, "_match_cache_job_status", lambda: {"running": False})
     monkeypatch.setattr(
-        splittable,
-        "enqueue_match_cache_refresh",
-        lambda **kwargs: {"ok": True, "queued": True, "products": [kwargs.get("product") or "ALL"]},
+        db_cache,
+        "refresh_db_cache",
+        lambda target, **kwargs: {
+            "ok": True,
+            "target": target,
+            "unit_action": "filebrowser.cache.db.refresh",
+            "row_count": 7,
+            "products": [kwargs.get("product") or "ALL"],
+        },
     )
     req = _Request("admin", "admin")
 
-    status = filebrowser.cache_match_status(req, target="fab", product="PRODA")
+    status = filebrowser.cache_match_status(req, target="et_lot_step_seq", product="PRODA")
     refreshed = filebrowser.cache_match_refresh(
-        filebrowser.CacheMatchRefreshReq(target="fab", product="PRODA", force=True),
+        filebrowser.CacheMatchRefreshReq(target="et_lot_step_seq", product="PRODA", force=True),
         req,
     )
 
-    assert status["unit_action"] == "filebrowser.cache.match.status"
-    assert status["row_count"] == 3
-    assert refreshed["unit_action"] == "filebrowser.cache.match.refresh"
-    assert refreshed["queued"] is True
+    assert status["unit_action"] == "filebrowser.cache.db.status"
+    assert status["row_count"] == 7
+    assert refreshed["unit_action"] == "filebrowser.cache.db.refresh"
+    assert refreshed["products"] == ["PRODA"]
     assert seen == [req, req]
 
 
@@ -159,57 +166,77 @@ def test_splittable_latest_lot_step_cache_status_reads_canonical_cache(monkeypat
     assert status["updated_at"] == "2026-05-10T04:00:00"
 
 
-def test_filebrowser_cache_match_settings_updates_fab_interval(monkeypatch, tmp_path):
-    import routers.splittable as splittable
+def test_filebrowser_cache_settings_updates_lot_progress_interval(monkeypatch, tmp_path):
+    from core import lot_progress_cache
 
     monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
     monkeypatch.setattr(filebrowser, "PATHS", _DummyPaths(tmp_path))
-    monkeypatch.setattr(
-        splittable,
-        "_latest_lot_step_cache_status",
-        lambda product="": {
-            "ok": True,
-            "products": [],
-            "row_count": 0,
-            "product_row_count": 0,
-            "cache_path": str(tmp_path / "cache.parquet"),
-            "interval_minutes": 45,
-            "latest_cache": {"interval_minutes": 45, "next_refresh_at": "2026-05-10T04:30:00"},
-        },
-    )
-    monkeypatch.setattr(splittable, "_match_cache_job_status", lambda: {"running": False})
+    monkeypatch.setattr(lot_progress_cache, "cache_file", lambda: tmp_path / "lot_wf_current.json")
+    monkeypatch.setattr(lot_progress_cache, "filebrowser_cache_parquet_file", lambda: tmp_path / "lot_progress_latest_lot_by_root_wafer.parquet")
+    monkeypatch.setattr(lot_progress_cache, "cache_status", lambda: {"ok": True, "interval_minutes": 45, "scheduler_started": True})
 
     out = filebrowser.cache_match_settings(
-        filebrowser.CacheMatchSettingsReq(target="fab", interval_minutes=45),
+        filebrowser.CacheMatchSettingsReq(target="lot_progress", interval_minutes=45),
         _Request("admin", "admin"),
     )
 
     saved = json.loads((tmp_path / "settings.json").read_text("utf-8"))
-    assert saved["splittable_match_refresh_minutes"] == 45
-    assert out["target"] == "fab"
+    assert saved["lot_progress_refresh_minutes"] == 45
+    assert out["target"] == "lot_progress"
     assert out["interval_minutes"] == 45
     assert out["schedule_enabled"] is True
 
 
-def test_filebrowser_et_cache_refresh_is_manual_even_when_scheduler_disabled(monkeypatch):
-    from core import lot_step
+def test_filebrowser_db_cache_refresh_is_manual(monkeypatch):
+    from core import db_cache
 
     monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
     monkeypatch.setattr(
-        lot_step,
-        "refresh_et_lot_cache",
-        lambda **kwargs: {"ok": True, "products": [{"product": kwargs.get("product"), "ok": True}], "source_root": kwargs.get("source_root")},
+        db_cache,
+        "refresh_db_cache",
+        lambda target, **kwargs: {"ok": True, "target": target, "mode": "manual", "schedule_enabled": False, "products": [{"product": kwargs.get("product"), "ok": True}]},
     )
 
     out = filebrowser.cache_match_refresh(
-        filebrowser.CacheMatchRefreshReq(target="et", product="PRODA", source_root="ET_MEASURE", force=True),
+        filebrowser.CacheMatchRefreshReq(target="et_lot_step_seq", product="PRODA", source_root="ET_MEASURE", force=True),
         _Request("admin", "admin"),
     )
 
-    assert out["target"] == "et"
+    assert out["target"] == "et_lot_step_seq"
     assert out["mode"] == "manual"
     assert out["schedule_enabled"] is False
     assert out["products"][0]["product"] == "PRODA"
+
+
+def test_db_cache_builds_et_step_seq_point_summary(monkeypatch, tmp_path):
+    from core import db_cache
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(db_cache, "PATHS", dummy_paths)
+    et_dir = tmp_path / "1.RAWDATA_DB_ET" / "PRODA"
+    et_dir.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "A1000", "A1000", "A1000"],
+        "lot_id": ["A1000A.1", "A1000A.1", "A1000A.1", "A1000A.1"],
+        "wafer_id": ["1", "1", "2", "2"],
+        "step_id": ["EA10", "EA10", "EA20", "EA20"],
+        "step_seq": ["N01", "N01", "N02", "N02"],
+        "tkout_time": ["2024-04-20T01:00:00", "2024-04-20T01:00:00", "2024-04-20T02:00:00", "2024-04-20T02:00:00"],
+        "value": [1.0, 2.0, 3.0, 4.0],
+    }).write_parquet(et_dir / "part_0.parquet")
+
+    out = db_cache.refresh_db_cache("et_lot_step_seq", product="PRODA")
+    df = pl.read_parquet(db_cache.cache_file("et_lot_step_seq"))
+
+    assert out["ok"] is True
+    assert out["row_count"] == 1
+    row = df.to_dicts()[0]
+    assert row["lot_id"] == "A1000A.1"
+    assert row["step_seq_list"] == "N01,N02"
+    assert row["step_seq_pt_list"] == "N01(2pt), N02(2pt)"
+    assert row["step_id_list"] == "EA10,EA20"
+    assert row["point_count"] == 4
+    assert row["tkout_time"] == "2024-04-20T02:00:00"
 
 
 def test_filebrowser_lot_progress_cache_status_and_refresh_contract(monkeypatch, tmp_path):

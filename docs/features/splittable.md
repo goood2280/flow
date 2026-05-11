@@ -8,7 +8,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - KNOB/MASK/CUSTOM set plan과 actual 비교
 - final value, drift, diff, notes, related issue
 - XLSX export와 Inform Log용 SplitTable snapshot 생성
-- `data/flow-data/splittable/match_cache/`의 match cache 사용
+- `data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`의 root/wafer별 최신 `lot_id`를 사용한 fab lot label 표시
 
 ## Does Not Own
 
@@ -34,6 +34,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - plan 변경은 preview와 확인 단계를 거친다.
 - Inform snapshot과 SplitTable의 root/fab/wafer 표시 규칙을 맞춘다.
 - Inform용 fab lot snapshot은 선택된 fab lot의 header/wafer scope를 유지하고, root plan overlay는 해당 scope의 wafer cell에만 적용한다.
+- fab lot 연결은 SplitTable 전용 match cache를 만들지 않고 LOT 진행 최신 캐시를 우선 사용한다. 캐시가 없거나 scope가 맞지 않으면 기존 FAB source raw scan으로 fallback한다.
 - cache/parquet 변경은 runtime 산출물과 코드 변경을 분리해서 설명한다.
 
 ## Verify

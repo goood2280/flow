@@ -24,6 +24,7 @@
 
 ## Done
 
+- [x] (Codex) FileBrowser 캐시를 LOT 진행 최신 캐시 중심으로 정리하고, ET/INLINE/VM allowlist DB 파생 캐시 생성/검증 시나리오를 추가.
 - [x] (Codex) 변경점 관리 하단에 회의별 LLM 질의 패널 추가 — Meeting read-only ask API + Calendar UI.
 - [x] (Codex) Meeting 이슈 가져오기 후 agenda 카드와 draft preview에 Tracker LOT table 표시.
 - [x] (Codex) Inform 신규 등록 mail group/recipient 연결 및 flow-data 기반 수신자 검색 복구.

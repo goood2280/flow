@@ -4041,24 +4041,23 @@ def _match_cache_current(product: str) -> dict | None:
 
 def _match_cache_response_meta(product: str) -> dict:
     """Small response payload for UI badges and Agent trace tables."""
-    current = _match_cache_current(product)
-    if not current:
-        return {"hit": False, "source": "match_cache"}
-    meta = current.get("meta") or {}
-    return {
-        "hit": True,
-        "source": "match_cache",
-        "product": current.get("product") or "",
-        "fab_source": current.get("fab_source") or meta.get("fab_source") or "",
-        "path": str(current.get("path") or ""),
-        "built_at": meta.get("built_at") or "",
-        "row_count": int(meta.get("row_count") or 0),
-        "join_keys": list(meta.get("join_keys") or []),
-        "override_cols": list(meta.get("override_cols") or []),
-        "fab_col": meta.get("fab_col") or "fab_lot_id",
-        "ts_col": meta.get("ts_col") or "",
-        "dedup_keys": list(meta.get("dedup_keys") or []),
-    }
+    status = _latest_lot_step_cache_status(product)
+    if status.get("cache_exists") and int(status.get("product_row_count") or status.get("row_count") or 0) > 0:
+        return {
+            "hit": True,
+            "source": "lot_progress_latest_cache",
+            "product": _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip(),
+            "fab_source": "lot_progress_latest_lot_by_root_wafer",
+            "path": status.get("cache_path") or str(_latest_lot_step_cache_path()),
+            "built_at": status.get("updated_at") or status.get("latest_updated_at") or "",
+            "row_count": int(status.get("product_row_count") or status.get("row_count") or 0),
+            "join_keys": ["root_lot_id", "wafer_id"],
+            "override_cols": ["lot_id", "fab_lot_id"],
+            "fab_col": "lot_id",
+            "ts_col": "tkout_time",
+            "dedup_keys": ["product", "root_lot_id", "wafer_id"],
+        }
+    return {"hit": False, "source": "lot_progress_latest_cache"}
 
 
 def _ensure_match_cache_current(product: str, *, force: bool = False) -> dict | None:
@@ -4165,14 +4164,7 @@ def _filter_latest_lot_step_cache(lf, *, root_lot_id: str = "", fab_lot_id: str 
 
 
 def _latest_lot_step_cache_source(product: str, current: dict | None = None) -> str:
-    source = str((current or {}).get("fab_source") or "").strip()
-    if source:
-        return source
-    try:
-        source = _auto_derive_fab_source(product)
-    except Exception:
-        source = ""
-    return source or "lot_progress_latest_cache"
+    return "lot_progress_latest_cache"
 
 
 def _fab_history_scope_from_latest_cache(product: str, root_lot_id: str = "", fab_lot_id: str = "",
@@ -4180,8 +4172,7 @@ def _fab_history_scope_from_latest_cache(product: str, root_lot_id: str = "", fa
     cache_lf = _latest_lot_step_cache_lf(product)
     if cache_lf is None:
         return None
-    current = _match_cache_current(product)
-    source = _latest_lot_step_cache_source(product, current)
+    source = _latest_lot_step_cache_source(product)
     try:
         names = cache_lf.collect_schema().names()
     except Exception:
@@ -4238,8 +4229,7 @@ def _fab_history_root_candidates_from_latest_cache(product: str, prefix: str = "
     cache_lf = _latest_lot_step_cache_lf(product)
     if cache_lf is None:
         return None
-    current = _match_cache_current(product)
-    source = _latest_lot_step_cache_source(product, current)
+    source = _latest_lot_step_cache_source(product)
     try:
         names = cache_lf.collect_schema().names()
     except Exception:
@@ -4545,6 +4535,73 @@ def _join_fab_projection_into_main(lf, main_names: set[str], fab_proj, join_keys
         # expose the legacy view label so SplitTable grouping/export still works.
         lf = lf.with_columns(pl.col(joined_lot_col).cast(_STR, strict=False).alias("fab_lot_id"))
     return lf
+
+
+def _latest_lot_progress_projection(product: str, main_names_list: list[str],
+                                    root_lot_id: str = "", fab_lot_id: str = "",
+                                    wafer_ids: str = "") -> dict | None:
+    """Use the canonical LOT progress cache as SplitTable's lot identity source."""
+    cache_lf = _latest_lot_step_cache_lf(product)
+    if cache_lf is None:
+        return None
+    main_names = set(main_names_list)
+    root_key = _ci_resolve_in("root_lot_id", main_names_list) or _pick_first_present_ci(("root_lot_id",), main_names_list)
+    wafer_key = (
+        _ci_resolve_in("wafer_id", main_names_list)
+        or _pick_first_present_ci(("wafer_id", "wf_id", "wafer"), main_names_list)
+    )
+    if not root_key or root_key not in main_names:
+        return None
+    join_keys = [root_key]
+    if wafer_key and wafer_key in main_names:
+        join_keys.append(wafer_key)
+    try:
+        names = cache_lf.collect_schema().names()
+    except Exception:
+        return None
+    if not {"root_lot_id", "lot_id"}.issubset(set(names)):
+        return None
+    q = _filter_latest_lot_step_cache(
+        cache_lf,
+        root_lot_id=root_lot_id,
+        fab_lot_id=fab_lot_id,
+        wafer_ids=wafer_ids,
+    )
+    join_aliases = [(k, f"__join_key_{i}") for i, k in enumerate(join_keys)]
+    exprs = []
+    for source_col, (_main_key, tmp) in zip(["root_lot_id", "wafer_id"], join_aliases):
+        if source_col not in names:
+            return None
+        exprs.append(_join_key_expr(source_col).alias(tmp))
+    exprs.extend([
+        pl.col("lot_id").cast(_STR, strict=False).alias("lot_id"),
+        pl.col("lot_id").cast(_STR, strict=False).alias("fab_lot_id"),
+        (
+            pl.col("tkout_time").cast(_STR, strict=False).alias(MATCH_CACHE_TS_COL)
+            if "tkout_time" in names else pl.lit("").alias(MATCH_CACHE_TS_COL)
+        ),
+    ])
+    try:
+        proj = (
+            q.select(exprs)
+            .filter(pl.col("lot_id").is_not_null() & (pl.col("lot_id") != ""))
+            .sort(MATCH_CACHE_TS_COL, descending=True, nulls_last=True)
+            .unique(subset=[tmp for _k, tmp in join_aliases], keep="first", maintain_order=True)
+            .select([tmp for _k, tmp in join_aliases] + ["lot_id", "fab_lot_id"])
+        )
+    except Exception as e:
+        logger.warning("latest LOT progress projection failed (product=%s) %s: %s",
+                       product, type(e).__name__, e)
+        return None
+    return {
+        "lf": proj,
+        "join_keys": join_keys,
+        "override_cols": ["lot_id", "fab_lot_id"],
+        "meta": {
+            "source": "lot_progress_latest_cache",
+            "path": str(_latest_lot_step_cache_path()),
+        },
+    }
 
 
 def _filter_match_cache_scope(cache_lf, root_lot_id: str = "", fab_lot_id: str = "",
@@ -6090,21 +6147,12 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
                 logger.warning("_scan_product: main scope filter 실패 (product=%s root=%s wafer=%s) %s: %s",
                                product, root_lot_id, wafer_ids, type(e).__name__, e)
 
-        cached = _cached_fab_projection(
-            product, ov, fab_source, main_names_list,
+        cached = _latest_lot_progress_projection(
+            product, main_names_list,
             root_lot_id=root_lot_id,
             fab_lot_id=fab_lot_id,
             wafer_ids=wafer_ids,
         )
-        if not cached and (root_lot_id or fab_lot_id or wafer_ids):
-            ensured = _ensure_match_cache_current(product)
-            if ensured:
-                cached = _cached_fab_projection(
-                    product, ov, fab_source, main_names_list,
-                    root_lot_id=root_lot_id,
-                    fab_lot_id=fab_lot_id,
-                    wafer_ids=wafer_ids,
-                )
         if cached:
             return _join_fab_projection_into_main(
                 lf, set(main_names_list), cached["lf"],

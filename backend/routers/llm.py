@@ -430,8 +430,10 @@ FLOWI_UNIT_ACTIONS = {
             "filebrowser.preview",
             "filebrowser.lot_progress.latest",
             "filebrowser.csv.rules.read",
-            "filebrowser.cache.match.refresh",
-            "filebrowser.cache.match.status",
+            "filebrowser.cache.lot_progress.refresh",
+            "filebrowser.cache.lot_progress.status",
+            "filebrowser.cache.db.refresh",
+            "filebrowser.cache.db.status",
         ],
         "needs": ["source/root", "product or file", "optional SQL/filter"],
         "outputs": ["table preview", "selected columns", "CSV download"],
@@ -6135,11 +6137,11 @@ def _flowi_api_target_for_function(function_name: str, feature: str = "") -> dic
     if name == "query_current_fab_lot_from_fab_db":
         return {"api": "data/Fab", "handler": "_handle_current_fab_lot_lookup"}
     if name == "query_lot_current_step_from_progress_cache":
-        return {"api": "data/flow-data/cache/lot_progress/lot_wf_current.parquet", "handler": "_handle_current_step_from_progress_cache"}
+        return {"api": "data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet", "handler": "_handle_current_step_from_progress_cache"}
     if name in {"query_splittable_view", "query_wafer_split_at_step"}:
         return {"api": "/api/splittable/view", "handler": "routers.splittable.view_split"}
     if name == "query_lot_knobs_from_ml_table":
-        return {"api": "data/flow-data/splittable/match_cache/ML_TABLE_<product>.parquet", "handler": "_handle_knob_query"}
+        return {"api": "data/Fab/ML_TABLE_<product>.parquet", "handler": "_handle_knob_query"}
     if name == "find_lots_by_knob_value":
         return {"api": "ML_TABLE + latest progress cache", "handler": "_handle_find_lots_by_knob_value"}
     if name == "register_inform_log":
@@ -11184,28 +11186,27 @@ def _handle_split_fab_lot_basis(prompt: str, product: str, max_rows: int) -> dic
     if product_hint:
         try:
             from routers import splittable as splittable_router
-            current = splittable_router._match_cache_current(product_hint)
-            interval = splittable_router._match_cache_refresh_minutes()
-            if current:
-                meta = current.get("meta") or {}
+            cache_status = splittable_router._latest_lot_step_cache_status(product_hint)
+            interval = int(cache_status.get("interval_minutes") or 30)
+            if cache_status.get("cache_exists"):
                 rows.append({
-                    "product": current.get("product") or product_hint,
-                    "basis": "SplitTable match cache",
-                    "built_at": meta.get("built_at") or "",
+                    "product": product_hint,
+                    "basis": "LOT progress latest cache",
+                    "built_at": cache_status.get("updated_at") or cache_status.get("latest_updated_at") or "",
                     "interval_minutes": interval,
-                    "fab_source": current.get("fab_source") or "",
-                    "fab_col": meta.get("fab_col") or "fab_lot_id",
-                    "ts_col": meta.get("ts_col") or "",
-                    "join_keys": ", ".join(meta.get("join_keys") or []),
-                    "row_count": int(meta.get("row_count") or 0),
-                    "path": str(current.get("path") or ""),
+                    "fab_source": "lot_progress_latest_lot_by_root_wafer",
+                    "fab_col": "lot_id",
+                    "ts_col": "tkout_time",
+                    "join_keys": "root_lot_id, wafer_id",
+                    "row_count": int(cache_status.get("product_row_count") or cache_status.get("row_count") or 0),
+                    "path": cache_status.get("cache_path") or "",
                     "status": "cache_current",
                 })
             else:
                 meta = splittable_router._resolve_override_meta_light(product_hint)
                 rows.append({
                     "product": product_hint,
-                    "basis": "SplitTable FAB override metadata",
+                    "basis": "LOT progress latest cache",
                     "built_at": "",
                     "interval_minutes": interval,
                     "fab_source": meta.get("fab_source") or "",
@@ -11221,7 +11222,7 @@ def _handle_split_fab_lot_basis(prompt: str, product: str, max_rows: int) -> dic
     else:
         rows.append({
             "product": "",
-            "basis": "SplitTable match cache",
+            "basis": "LOT progress latest cache",
             "built_at": "",
             "interval_minutes": "",
             "fab_source": "product 필요",
@@ -11235,9 +11236,9 @@ def _handle_split_fab_lot_basis(prompt: str, product: str, max_rows: int) -> dic
     cols_out = ["product", "basis", "built_at", "interval_minutes", "fab_source", "fab_col", "ts_col", "join_keys", "row_count", "path", "status"]
     row = rows[0]
     answer = (
-        f"SplitTable fab_lot_id는 FAB source를 ML_TABLE join key에 맞춰 붙인 match cache 기준입니다. "
+        f"SplitTable fab_lot_id는 LOT 진행 최신 캐시의 root_lot_id/wafer_id별 최신 lot_id 기준입니다. "
         f"{row.get('product') or 'product 미지정'} cache built_at={row.get('built_at') or '-'}, "
-        f"fab_col={row.get('fab_col') or 'fab_lot_id'}, ts_col={row.get('ts_col') or 'last/원천 순서'}."
+        f"fab_col={row.get('fab_col') or 'lot_id'}, ts_col={row.get('ts_col') or 'tkout_time'}."
     )
     return {
         "handled": True,
@@ -14532,7 +14533,7 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
         add(
             name="Latest progress cache",
             method="internal",
-            path="data/flow-data/cache/lot_progress/lot_wf_current.parquet",
+            path="data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet",
             callee="core.lot_progress_cache.lot_progress_snapshot",
             purpose="root_lot_id와 wafer_id로 최신 step_id/function_step 조회",
             payload={k: (args.get(k) or slots.get(k)) for k in ("product", "root_lot_ids", "wafer_ids", "lot_wf_ids") if (args.get(k) or slots.get(k))},
@@ -14541,7 +14542,7 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
         add(
             name="ML_TABLE KNOB search",
             method="internal",
-            path="data/flow-data/splittable/match_cache/ML_TABLE_<product>.parquet",
+            path="data/Fab/ML_TABLE_<product>.parquet",
             callee="_handle_find_lots_by_knob_value",
             purpose="ML_TABLE에서 KNOB 값과 step 조건에 맞는 lot_wf 후보 검색",
             payload={k: args.get(k) or filters.get(k) for k in ("product", "step", "knob_value", "sort") if (args.get(k) or filters.get(k))},
@@ -14549,7 +14550,7 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
         add(
             name="Progress join",
             method="internal",
-            path="data/flow-data/cache/lot_progress/lot_wf_current.parquet",
+            path="data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet",
             callee="_flowi_progress_for_lot_rows",
             purpose="검색된 lot_wf 후보를 최신 FAB 진행 step과 연결",
             payload={"join_key": "lot_wf"},

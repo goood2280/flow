@@ -31,7 +31,7 @@ def test_root_lot_candidates_prefer_renderable_mltable_roots(tmp_path, monkeypat
     )
 
     assert result["source"] == "mltable"
-    assert result["fab_source"] == "1.RAWDATA_DB_FAB/PRODA"
+    assert result["fab_source"] == "lot_progress_latest_cache"
     assert "A1000" in result["candidates"]
     assert "A0001" not in result["candidates"]
 
@@ -212,7 +212,7 @@ def test_lot_ids_do_not_suggest_fab_roots_that_cannot_render():
     result = splittable.get_lot_ids(product="ML_TABLE_PRODA", limit=20)
 
     assert result["fallback"] == ""
-    assert result["fab_source"] == "1.RAWDATA_DB_FAB/PRODA"
+    assert result["fab_source"] == "lot_progress_latest_cache"
     assert "A1000" in result["lot_ids"]
     assert "A0001" not in result["lot_ids"]
 
@@ -606,7 +606,7 @@ def test_match_cache_supplies_fab_lot_without_rescanning_source(tmp_path, monkey
     assert fab_candidates["fab_source"] == "1.RAWDATA_DB_FAB/CACHE"
 
 
-def test_view_builds_match_cache_before_raw_override_fallback(tmp_path, monkeypatch):
+def test_view_uses_lot_progress_cache_before_raw_override_fallback(tmp_path, monkeypatch):
     pl.DataFrame({
         "root_lot_id": ["R9250", "R9250"],
         "wafer_id": [1, 2],
@@ -632,6 +632,18 @@ def test_view_builds_match_cache_before_raw_override_fallback(tmp_path, monkeypa
     splittable._RGLOB_CACHE.clear()
     splittable._DB_ROOTS_CACHE.clear()
     splittable._MATCH_CACHE_AUTO_BUILD_MISS.clear()
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    pl.DataFrame({
+        "product": ["ML_TABLE_AUTOCACHE", "ML_TABLE_AUTOCACHE"],
+        "root_lot_id": ["R9250", "R9250"],
+        "wafer_id": ["1", "2"],
+        "lot_id": ["F9250A.1", "F9250A.2"],
+        "step_id": ["", ""],
+        "function_step": ["", ""],
+        "tkout_time": ["2024-04-20T10:00:00", "2024-04-20T10:01:00"],
+        "update_time": ["2024-04-20T10:02:00", "2024-04-20T10:02:00"],
+    }).write_parquet(cache_root / "lot_progress_latest_lot_by_root_wafer.parquet")
 
     result = splittable.view_split(
         product="ML_TABLE_AUTOCACHE",
@@ -645,9 +657,8 @@ def test_view_builds_match_cache_before_raw_override_fallback(tmp_path, monkeypa
         custom_cols="",
     )
 
-    assert (cache_dir / "ML_TABLE_AUTOCACHE.parquet").is_file()
     assert result["match_cache"]["hit"] is True
-    assert result["match_cache"]["source"] == "match_cache"
+    assert result["match_cache"]["source"] == "lot_progress_latest_cache"
     assert result["header_groups"] == [
         {"label": "F9250A.1", "span": 1},
         {"label": "F9250A.2", "span": 1},

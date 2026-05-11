@@ -1288,7 +1288,7 @@ def admin_tools_status(request: Request):
 
 
 def _ml_table_paths(product: str = "") -> list[Path]:
-    roots = [PATHS.db_root, PATHS.data_root / "splittable" / "match_cache"]
+    roots = [PATHS.db_root]
     seen: set[Path] = set()
     paths: list[Path] = []
     product_u = str(product or "").strip().upper()

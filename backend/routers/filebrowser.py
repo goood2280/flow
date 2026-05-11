@@ -3441,14 +3441,14 @@ def list_scope_roots(request: Request = None):
 
 
 class CacheMatchRefreshReq(BaseModel):
-    target: str = "fab"
+    target: str = "lot_progress"
     product: str = ""
     source_root: str = ""
     force: bool = True
 
 
 class CacheMatchSettingsReq(BaseModel):
-    target: str = "fab"
+    target: str = "lot_progress"
     interval_minutes: int = 30
 
 
@@ -3461,27 +3461,27 @@ class CacheLlmRefreshReq(BaseModel):
 
 def _cache_match_target(raw: str) -> str:
     target = str(raw or "").strip().lower()
-    if target in {"fab", "splittable", "split", "match"}:
-        return "fab"
-    if target in {"et", "tracker", "analysis"}:
-        return "et"
     if target in {"lot_progress", "progress", "latest", "latest_lot", "current_lot", "current_step", "lot_wf"}:
         return "lot_progress"
-    raise HTTPException(400, "target must be fab, et, or lot_progress")
+    try:
+        from core import db_cache
+        return db_cache.normalize_target(target)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 def _cache_settings_file() -> Path:
     return PATHS.data_root / "settings.json"
 
 
-def _clamp_splittable_match_interval(value) -> int:
+def _clamp_lot_progress_interval(value) -> int:
     try:
-        from routers import splittable as _splittable
-        lo = int(getattr(_splittable, "MATCH_CACHE_REFRESH_MINUTES_MIN", 30))
-        hi = int(getattr(_splittable, "MATCH_CACHE_REFRESH_MINUTES_MAX", 60))
-        default = int(getattr(_splittable, "MATCH_CACHE_REFRESH_MINUTES_DEFAULT", 30))
+        from core import lot_progress_cache as _lot_progress_cache
+        lo = int(getattr(_lot_progress_cache, "CACHE_REFRESH_MINUTES_MIN", 1))
+        hi = int(getattr(_lot_progress_cache, "CACHE_REFRESH_MINUTES_MAX", 1440))
+        default = int(getattr(_lot_progress_cache, "CACHE_REFRESH_MINUTES_DEFAULT", 30))
     except Exception:
-        lo, hi, default = 30, 60, 30
+        lo, hi, default = 1, 1440, 30
     try:
         minutes = int(value)
     except Exception:
@@ -3511,6 +3511,7 @@ def _lot_progress_cache_status() -> dict:
 
     json_fp = _lot_progress_cache.cache_file()
     parquet_fp = _lot_progress_cache.filebrowser_cache_parquet_file()
+    core_status = _lot_progress_cache.cache_status()
     state = load_json(json_fp, {}) if json_fp.is_file() else {}
     if not isinstance(state, dict):
         state = {}
@@ -3540,12 +3541,13 @@ def _lot_progress_cache_status() -> dict:
             return {
                 "ok": False,
                 "target": "lot_progress",
-                "mode": "manual",
-                "unit_action": "filebrowser.cache.match.status",
+                "mode": "scheduled",
+                "unit_action": "filebrowser.cache.lot_progress.status",
                 "enabled": True,
                 "manual_enabled": True,
-                "schedule_enabled": False,
-                "scheduler_enabled": False,
+                "schedule_enabled": True,
+                "scheduler_enabled": bool(core_status.get("scheduler_started")),
+                "interval_minutes": int(core_status.get("interval_minutes") or _lot_progress_cache.lot_progress_cache_refresh_minutes()),
                 "cache_path": str(parquet_fp),
                 "json_cache_path": str(json_fp),
                 "cache_exists": parquet_fp.is_file(),
@@ -3556,15 +3558,30 @@ def _lot_progress_cache_status() -> dict:
             }
     if not updated_at:
         updated_at = _cache_mtime_iso(parquet_fp) or _cache_mtime_iso(json_fp)
+    interval_minutes = int(core_status.get("interval_minutes") or _lot_progress_cache.lot_progress_cache_refresh_minutes())
+    next_refresh_at = ""
+    if updated_at:
+        try:
+            next_refresh_at = (
+                datetime.datetime.fromisoformat(updated_at)
+                + datetime.timedelta(minutes=interval_minutes)
+            ).isoformat(timespec="seconds")
+        except Exception:
+            next_refresh_at = ""
     return {
         "ok": True,
         "target": "lot_progress",
-        "mode": "manual",
-        "unit_action": "filebrowser.cache.match.status",
+        "mode": "scheduled",
+        "unit_action": "filebrowser.cache.lot_progress.status",
         "enabled": True,
         "manual_enabled": True,
-        "schedule_enabled": False,
-        "scheduler_enabled": False,
+        "schedule_enabled": True,
+        "scheduler_enabled": bool(core_status.get("scheduler_started")),
+        "interval_minutes": interval_minutes,
+        "interval_min": interval_minutes,
+        "interval_min_minutes": int(getattr(_lot_progress_cache, "CACHE_REFRESH_MINUTES_MIN", 1)),
+        "interval_max_minutes": int(getattr(_lot_progress_cache, "CACHE_REFRESH_MINUTES_MAX", 1440)),
+        "next_refresh_at": next_refresh_at,
         "cache_path": str(parquet_fp),
         "json_cache_path": str(json_fp),
         "cache_exists": parquet_fp.is_file(),
@@ -3581,21 +3598,9 @@ def _refresh_filebrowser_cache_target(target: str, *, product: str = "", source_
     target = _cache_match_target(target)
     product = _cache_safe_text(product, 120)
     source_root = _cache_safe_text(source_root, 160)
-    if target == "fab":
-        from routers import splittable as _splittable
-        result = _splittable.enqueue_match_cache_refresh(product=product or "", force=bool(force), reason=reason or "filebrowser")
-        return {"target": "fab", "unit_action": "filebrowser.cache.match.refresh", **result}
-    if target == "et":
-        from core.lot_step import refresh_et_lot_cache
-        result = refresh_et_lot_cache(product=product or "", source_root=source_root or "", force=bool(force))
-        return {
-            "target": "et",
-            "mode": "manual",
-            "manual_enabled": True,
-            "schedule_enabled": False,
-            "unit_action": "filebrowser.cache.match.refresh",
-            **result,
-        }
+    if target != "lot_progress":
+        from core import db_cache
+        return db_cache.refresh_db_cache(target, product=product or "", force=bool(force))
     from core import lot_progress_cache as _lot_progress_cache
     state = _lot_progress_cache.refresh_lot_progress_cache(force=bool(force))
     export = _lot_progress_cache.export_lot_progress_parquet(state)
@@ -3603,9 +3608,9 @@ def _refresh_filebrowser_cache_target(target: str, *, product: str = "", source_
     return {
         "ok": True,
         "target": "lot_progress",
-        "mode": "manual",
+        "mode": "scheduled",
         "manual_enabled": True,
-        "schedule_enabled": False,
+        "schedule_enabled": True,
         "unit_action": "filebrowser.cache.lot_progress.refresh",
         "row_count": row_count,
         "total_row_count": row_count,
@@ -3646,13 +3651,14 @@ def _cache_prompt_target(prompt: str) -> str:
         "현재 step", "현재 스텝", "최신 lot", "최신 랏", "진행 캐시",
     )):
         return "lot_progress"
-    if any(token in low or token in text for token in ("et", "analysis", "tracker analysis", "분석 et")):
-        return "et"
     if any(token in low or token in text for token in (
-        "splittable", "split table", "스플릿테이블", "스플릿 테이블", "match cache",
-        "매칭 캐시", "fab_lot", "fab lot", "root_lot",
+        "step_seq", "step seq", "step-seq", "et", "analysis", "분석 et",
     )):
-        return "fab"
+        return "et_lot_step_seq"
+    if any(token in low or token in text for token in ("inline", "item_id", "subitem", "inline item")):
+        return "inline_lot_item"
+    if any(token in low or token in text for token in ("vm", "model_id", "run_id", "vm model")):
+        return "vm_lot_model"
     return ""
 
 
@@ -3675,16 +3681,17 @@ def _cache_llm_plan(prompt: str, *, product: str = "", source_root: str = "") ->
         if prompt and llm_info["available"]:
             system = _filebrowser_agent_prompt("cache_refresh.system", (
                 "You classify a Flow FileBrowser cache refresh request. "
-                "Return only JSON. Allowed target values are: lot_progress, fab, et. "
+                "Return only JSON. Allowed target values are: lot_progress, et_lot_step_seq, inline_lot_item, vm_lot_model. "
                 "lot_progress means lot_progress_latest_lot_by_root_wafer / lot_wf_current. "
-                "fab means SplitTable root_lot_id to fab_lot_id match cache. "
-                "et means Tracker Analysis ET cache. Do not invent paths."
+                "et_lot_step_seq means ET lot_id/root_lot_id step_seq summary with point counts. "
+                "inline_lot_item means INLINE lot item summary. "
+                "vm_lot_model means VM lot model/run summary. Do not invent paths."
             ))
             ask = json.dumps({
                 "user_prompt": prompt,
                 "product_hint": product,
                 "source_root_hint": source_root,
-                "schema": {"target": "lot_progress|fab|et", "product": "optional", "source_root": "optional", "reason": "short"},
+                "schema": {"target": "lot_progress|et_lot_step_seq|inline_lot_item|vm_lot_model", "product": "optional", "source_root": "optional", "reason": "short"},
             }, ensure_ascii=False)
             out = llm_adapter.complete(ask, system=system, timeout=8)
             llm_info["used"] = bool(out.get("ok") and out.get("text"))
@@ -3709,88 +3716,42 @@ def _cache_llm_plan(prompt: str, *, product: str = "", source_root: str = "") ->
 
 
 @router.get("/cache/match/status")
-def cache_match_status(request: Request, target: str = Query("fab"), product: str = Query(""), source_root: str = Query("")):
+def cache_match_status(request: Request, target: str = Query("lot_progress"), product: str = Query(""), source_root: str = Query("")):
     _require_filebrowser_user(request)
     target = _cache_match_target(target)
     if target == "lot_progress":
         return _lot_progress_cache_status()
-    if target == "fab":
-        from routers import splittable as _splittable
-        try:
-            from core.runtime_limits import splittable_match_cache_enabled
-            scheduler_enabled = splittable_match_cache_enabled()
-        except Exception:
-            scheduler_enabled = True
-        cache_status = _splittable._latest_lot_step_cache_status(product)
-        job = _splittable._match_cache_job_status()
-        latest_cache = cache_status.get("latest_cache") or _splittable._match_cache_global_fresh()
-        return {
-            "ok": bool(cache_status.get("ok", True)),
-            "target": "fab",
-            "mode": "scheduled",
-            "unit_action": "filebrowser.cache.match.status",
-            "enabled": True,
-            "manual_enabled": True,
-            "schedule_enabled": bool(scheduler_enabled),
-            "scheduler_enabled": bool(scheduler_enabled),
-            "interval_minutes": int(cache_status.get("interval_minutes") or latest_cache.get("interval_minutes") or 30),
-            "interval_min": int(cache_status.get("interval_minutes") or latest_cache.get("interval_minutes") or 30),
-            "interval_min_minutes": 30,
-            "interval_max_minutes": 60,
-            "next_refresh_at": latest_cache.get("next_refresh_at") or "",
-            "last_refresh_at": latest_cache.get("last_refresh_at") or cache_status.get("last_refresh_at") or "",
-            "latest_cache": latest_cache,
-            "products": cache_status.get("products") or [],
-            "row_count": int((cache_status.get("product_row_count") if product else cache_status.get("row_count")) or 0),
-            "total_row_count": int(cache_status.get("row_count") or 0),
-            "cache_path": cache_status.get("cache_path", ""),
-            "updated_at": cache_status.get("updated_at") or "",
-            "running": bool(job.get("running")),
-            "job": job,
-            **({"error": cache_status.get("error")} if cache_status.get("error") else {}),
-        }
-    from core.lot_step import et_lot_cache_status
-    data = et_lot_cache_status(product=product, source_root=source_root)
-    return {
-        **data,
-        "ok": True,
-        "target": "et",
-        "mode": "manual",
-        "unit_action": "filebrowser.cache.match.status",
-        "enabled": True,
-        "manual_enabled": True,
-        "schedule_enabled": False,
-        "scheduler_enabled": bool(data.get("enabled")),
-    }
+    from core import db_cache
+    return db_cache.db_cache_status(target)
 
 
 @router.post("/cache/match/settings")
 def cache_match_settings(req: CacheMatchSettingsReq, request: Request):
     me = _require_filebrowser_admin(request)
     target = _cache_match_target(req.target)
-    if target != "fab":
+    if target != "lot_progress":
         return {
             "ok": True,
-            "target": "et",
+            "target": target,
             "mode": "manual",
             "manual_enabled": True,
             "schedule_enabled": False,
-            "detail": "Tracker Analysis ET cache is manual-only.",
+            "detail": "DB-derived caches are manual-only.",
         }
-    minutes = _clamp_splittable_match_interval(req.interval_minutes)
+    minutes = _clamp_lot_progress_interval(req.interval_minutes)
     settings_path = _cache_settings_file()
     current = load_json(settings_path, {})
     if not isinstance(current, dict):
         current = {}
-    current["splittable_match_refresh_minutes"] = minutes
+    current["lot_progress_refresh_minutes"] = minutes
     save_json(settings_path, current, indent=2)
     jsonl_append(PATHS.activity_log, {
         "username": me.get("username") or "",
         "action": "filebrowser:cache-settings:save",
         "tab": "filebrowser",
-        "detail": f"splittable_match_refresh_minutes={minutes}",
+        "detail": f"lot_progress_refresh_minutes={minutes}",
     })
-    return cache_match_status(request=request, target="fab")
+    return cache_match_status(request=request, target="lot_progress")
 
 
 @router.post("/cache/match/refresh")
@@ -3815,7 +3776,7 @@ def cache_llm_refresh(req: CacheLlmRefreshReq, request: Request):
     plan = _cache_llm_plan(prompt, product=req.product or "", source_root=req.source_root or "")
     target = plan.get("target") or ""
     if not target:
-        raise HTTPException(400, "LLM/cache prompt must resolve to lot_progress, fab, or et")
+        raise HTTPException(400, "LLM/cache prompt must resolve to an allowlisted cache target")
     result = _refresh_filebrowser_cache_target(
         target,
         product=plan.get("product") or req.product or "",

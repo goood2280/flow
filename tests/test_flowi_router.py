@@ -2213,23 +2213,18 @@ def test_flowi_wafer_map_similarity_asks_for_target_item(tmp_path, monkeypatch):
     assert out["clarification"]["choices"]
 
 
-def test_flowi_splittable_fab_lot_basis_uses_match_cache(monkeypatch, tmp_path):
+def test_flowi_splittable_fab_lot_basis_uses_lot_progress_cache(monkeypatch, tmp_path):
     import routers.splittable as splittable_router
 
-    cache_path = tmp_path / "ML_TABLE_PRODX.parquet"
-    monkeypatch.setattr(splittable_router, "_match_cache_current", lambda product: {
-        "product": "ML_TABLE_PRODX",
-        "fab_source": "1.RAWDATA_DB_FAB/PRODX",
-        "path": cache_path,
-        "meta": {
-            "built_at": "2026-04-29T10:00:00",
-            "row_count": 123,
-            "join_keys": ["root_lot_id", "wafer_id"],
-            "fab_col": "fab_lot_id",
-            "ts_col": "tkout_time",
-        },
+    cache_path = tmp_path / "lot_progress_latest_lot_by_root_wafer.parquet"
+    monkeypatch.setattr(splittable_router, "_latest_lot_step_cache_status", lambda product: {
+        "cache_exists": True,
+        "cache_path": str(cache_path),
+        "updated_at": "2026-04-29T10:00:00",
+        "row_count": 123,
+        "product_row_count": 123,
+        "interval_minutes": 30,
     })
-    monkeypatch.setattr(splittable_router, "_match_cache_refresh_minutes", lambda: 30)
 
     out = _handle_flowi_query(
         "PRODX 스플릿 테이블 fab_lot_id 언제 업데이트 기준이야?",
@@ -2243,6 +2238,7 @@ def test_flowi_splittable_fab_lot_basis_uses_match_cache(monkeypatch, tmp_path):
     row = out["table"]["rows"][0]
     assert row["built_at"] == "2026-04-29T10:00:00"
     assert row["interval_minutes"] == 30
+    assert row["basis"] == "LOT progress latest cache"
     assert row["ts_col"] == "tkout_time"
 
 

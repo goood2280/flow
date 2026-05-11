@@ -68,7 +68,13 @@ def lot_progress_cache_refresh_minutes() -> int:
         data = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.is_file() else {}
     except Exception:
         data = {}
-    raw = data.get("splittable_match_refresh_minutes", CACHE_REFRESH_MINUTES_DEFAULT) if isinstance(data, dict) else CACHE_REFRESH_MINUTES_DEFAULT
+    if isinstance(data, dict):
+        raw = data.get(
+            "lot_progress_refresh_minutes",
+            data.get("splittable_match_refresh_minutes", CACHE_REFRESH_MINUTES_DEFAULT),
+        )
+    else:
+        raw = CACHE_REFRESH_MINUTES_DEFAULT
     try:
         value = int(raw)
     except Exception:

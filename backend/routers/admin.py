@@ -64,7 +64,8 @@ ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
 DEFAULT_SETTINGS = {
     "dashboard_refresh_minutes": 10,  # auto-refresh interval (frontend)
     "dashboard_bg_refresh_minutes": 10,  # backend scheduled recompute (if any)
-    "splittable_match_refresh_minutes": 30,  # FAB root/fab_lot cache rebuild interval
+    "lot_progress_refresh_minutes": 30,  # LOT progress latest cache rebuild interval
+    "splittable_match_refresh_minutes": 30,  # legacy compatibility only
     "tracker_et_match_refresh_minutes": 30,  # ET root/fab_lot cache rebuild interval
     "dashboard_fab_progress": {
         "reference_step_id": "AA200000",
@@ -970,6 +971,7 @@ class FlowiDefaultsReq(BaseModel):
 class SettingsSaveReq(BaseModel):
     dashboard_refresh_minutes: int = 10
     dashboard_bg_refresh_minutes: int = 10
+    lot_progress_refresh_minutes: Optional[int] = None
     splittable_match_refresh_minutes: Optional[int] = None
     tracker_et_match_refresh_minutes: Optional[int] = None
     dashboard_sections: Optional[Dict[str, bool]] = None
@@ -999,7 +1001,7 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
     flowi_defaults_in = data.pop("flowi_defaults", None)
     flowi_persona_in = data.pop("flowi_persona", None)
     devguide_in = data.pop("devguide_user", None)
-    # Clamp to sane bounds: dashboard 1..240 minutes, SplitTable match cache 30..60 minutes.
+    # Clamp to sane bounds: dashboard 1..240 minutes, LOT progress cache 1..1440 minutes.
     for k in ("dashboard_refresh_minutes", "dashboard_bg_refresh_minutes"):
         v = data.get(k, 10)
         try:
@@ -1007,6 +1009,12 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
         except Exception:
             v = 10
         data[k] = max(1, min(240, v))
+    if "lot_progress_refresh_minutes" in data:
+        try:
+            lot_progress_minutes = int(data.get("lot_progress_refresh_minutes", 30))
+        except Exception:
+            lot_progress_minutes = 30
+        data["lot_progress_refresh_minutes"] = max(1, min(1440, lot_progress_minutes))
     if "splittable_match_refresh_minutes" in data:
         try:
             st_match = int(data.get("splittable_match_refresh_minutes", 30))

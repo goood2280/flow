@@ -79,15 +79,15 @@ def heavy_background_jobs_enabled() -> bool:
 def splittable_match_cache_enabled() -> bool:
     """Whether the managed SplitTable FAB match-cache scheduler may run.
 
-    Unlike broad dashboard/tracker scanners, this cache is paced product by
-    product so SplitTable can keep its root_lot_id/fab_lot_id lookup warm on
-    small servers.
+    Disabled by default. SplitTable now uses the shared LOT progress latest
+    cache for root_lot_id/wafer_id -> lot_id, and the old product match-cache
+    builder is kept only as an explicit compatibility path.
     """
     if "FLOW_ENABLE_SPLITTABLE_MATCH_CACHE" in os.environ:
         return _env_flag("FLOW_ENABLE_SPLITTABLE_MATCH_CACHE")
     if "FLOW_DISABLE_SPLITTABLE_MATCH_CACHE" in os.environ:
         return not _env_flag("FLOW_DISABLE_SPLITTABLE_MATCH_CACHE")
-    return True
+    return False
 
 
 def tracker_et_lot_cache_enabled() -> bool:
