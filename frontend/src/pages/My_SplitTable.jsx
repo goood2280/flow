@@ -125,11 +125,12 @@ export default function My_SplitTable({user}){
   // v8.7.8: ML_TABLE auto-match — selProd 에서 파생 제품명 → 상위폴더 매칭 후보.
   // v8.8.3: auto_path / effective_fab_source / manual_override 도 받아서 상태 표시에 사용.
   // v8.8.5: override resolve meta(ts_col/fab_col/scanned_files/row_count/sample/error) 까지 풀세트.
-  const[mlMatch,setMlMatch]=useState({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false,override:null});
-  useEffect(()=>{if(!selProd){setMlMatch({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false,override:null});return;}
+  const toMlMatch=(d={})=>({pro:d.derived_product||"",matches:d.matches||[],auto_path:d.auto_path||"",effective_fab_source:d.effective_fab_source||"",manual_override:!!d.manual_override,override:d.override||null,match_cache:d.match_cache||null});
+  const[mlMatch,setMlMatch]=useState(()=>toMlMatch());
+  useEffect(()=>{if(!selProd){setMlMatch(toMlMatch());return;}
     sf(API+"/ml-table-match?product="+encodeURIComponent(selProd))
-      .then(d=>setMlMatch({pro:d.derived_product||"",matches:d.matches||[],auto_path:d.auto_path||"",effective_fab_source:d.effective_fab_source||"",manual_override:!!d.manual_override,override:d.override||null}))
-      .catch(()=>setMlMatch({pro:"",matches:[],auto_path:"",effective_fab_source:"",manual_override:false,override:null}));
+      .then(d=>setMlMatch(toMlMatch(d)))
+      .catch(()=>setMlMatch(toMlMatch()));
   },[selProd,lotOverrides]);
   const deriveProductFolder=(prod)=>{
     const p=String(prod||"").trim();
@@ -217,7 +218,7 @@ export default function My_SplitTable({user}){
   }).catch(()=>({}));
   const reloadMlMatch=()=>{if(!selProd)return Promise.resolve();
     return sf(API+"/ml-table-match?product="+encodeURIComponent(selProd))
-      .then(d=>setMlMatch({pro:d.derived_product||"",matches:d.matches||[],auto_path:d.auto_path||"",effective_fab_source:d.effective_fab_source||"",manual_override:!!d.manual_override,override:d.override||null}))
+      .then(d=>setMlMatch(toMlMatch(d)))
       .catch(()=>{});
   };
   const persistLotOverrides=async(nextLotOverrides)=>{
@@ -1434,7 +1435,15 @@ export default function My_SplitTable({user}){
         <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"2px 8px",borderRadius:4}}>
           {isCustomMode?"CUSTOM"+(selCustom?": "+selCustom:""):selPrefixes.join("+")}</span>
         {/* v8.8.5: 상단 fab_source 배지 — Fab Lot ID 가 어디서 join 되어 왔는지 한눈에 확인. */}
-        {(data?.override||mlMatch.override) && (()=>{const ov=data?.override||mlMatch.override;
+        {(data?.match_cache||mlMatch.match_cache||data?.override||mlMatch.override) && (()=>{const cache=(data?.match_cache?.hit?data.match_cache:(mlMatch.match_cache?.hit?mlMatch.match_cache:null));
+          if(cache){
+            const title=`cache_path: ${cache.path||"(없음)"}\nfab_source: ${cache.fab_source||""}\nfab_col: ${cache.fab_col||"fab_lot_id"} · ts_col: ${cache.ts_col||"(없음)"}\njoin_keys: [${(cache.join_keys||[]).join(", ")}]\nbuilt_at: ${cache.built_at||"(없음)"}\nrows: ${cache.row_count||0}`;
+            return <span title={title} style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:"rgba(59,130,246,0.12)",color:"rgba(37,99,235,0.95)",border:"1px solid rgba(59,130,246,0.65)",fontFamily:"monospace",cursor:"help"}}>
+              💾 cache 저장 · {cache.fab_source||"FAB"} · {cache.fab_col||"fab_lot_id"}@{cache.ts_col||"last"}
+            </span>;
+          }
+          const ov=data?.override||mlMatch.override;
+          if(!ov) return null;
           if(ov.error){
             // v8.8.19: fab_source off 툴팁에 탐색한 경로/db_root 까지 노출 + 클릭 시 상세 표시.
             const detail = [

@@ -277,6 +277,7 @@ def _scan_once() -> dict:
             source_root_for_context,
             snapshot_row_fields,
         )
+        from core.lot_progress_cache import lot_progress_snapshot
         from core.notify import emit_event
         from core.tracker_schema import normalize_lot_row
         from core.tracker_templates import render_tracker_mail, tracker_mail_context
@@ -374,7 +375,12 @@ def _scan_once() -> dict:
             product = (lot.get("product") or lot.get("monitor_prod") or iss.get("product") or "").strip()
             checked_at = _now_iso()
             try:
-                snap = lot_step_snapshot(
+                snap = lot_progress_snapshot(
+                    product=product,
+                    root_lot_id=row_root,
+                    lot_id=row_lot,
+                    wafer_id=wid,
+                ) if source == "fab" else lot_step_snapshot(
                     product=product,
                     root_lot_id=row_root,
                     lot_id=row_lot,
@@ -382,6 +388,15 @@ def _scan_once() -> dict:
                     source=source,
                     source_root=source_root,
                 )
+                if source == "fab" and not ((snap.get("fab") or {}).get("step_id")):
+                    snap = lot_step_snapshot(
+                        product=product,
+                        root_lot_id=row_root,
+                        lot_id=row_lot,
+                        wafer_id=wid,
+                        source=source,
+                        source_root=source_root,
+                    )
             except Exception as e:
                 snap = {}
                 logger.warning(f"lot_step_snapshot failed issue={iss.get('id')} lot={root or lid}: {e}")

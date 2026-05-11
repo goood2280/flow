@@ -606,6 +606,72 @@ def test_match_cache_supplies_fab_lot_without_rescanning_source(tmp_path, monkey
     assert fab_candidates["fab_source"] == "1.RAWDATA_DB_FAB/CACHE"
 
 
+def test_view_builds_match_cache_before_raw_override_fallback(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["R9250", "R9250"],
+        "wafer_id": [1, 2],
+        "KNOB_ALPHA": ["ON", "OFF"],
+    }).write_parquet(tmp_path / "ML_TABLE_AUTOCACHE.parquet")
+
+    fab_root = tmp_path / "1.RAWDATA_DB_FAB" / "AUTOCACHE" / "date=20240420"
+    fab_root.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["R9250", "R9250"],
+        "lot_id": ["F9250A.1", "F9250A.2"],
+        "wafer_id": [1, 2],
+        "tkout_time": ["2024-04-20T10:00:00", "2024-04-20T10:01:00"],
+    }).write_parquet(fab_root / "part_0.parquet")
+
+    cache_dir = tmp_path / "flow-data" / "splittable" / "match_cache"
+    source_cfg = tmp_path / "flow-data" / "splittable" / "source_config.json"
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "MATCH_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(splittable, "SOURCE_CFG", source_cfg)
+    splittable._LOT_LOOKUP_CACHE.clear()
+    splittable._RGLOB_CACHE.clear()
+    splittable._DB_ROOTS_CACHE.clear()
+    splittable._MATCH_CACHE_AUTO_BUILD_MISS.clear()
+
+    result = splittable.view_split(
+        product="ML_TABLE_AUTOCACHE",
+        root_lot_id="R9250",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert (cache_dir / "ML_TABLE_AUTOCACHE.parquet").is_file()
+    assert result["match_cache"]["hit"] is True
+    assert result["match_cache"]["source"] == "match_cache"
+    assert result["header_groups"] == [
+        {"label": "F9250A.1", "span": 1},
+        {"label": "F9250A.2", "span": 1},
+    ]
+
+    def fail_scan(_source):
+        raise AssertionError("raw FAB source should not be scanned after auto cache build")
+
+    monkeypatch.setattr(splittable, "_scan_fab_source", fail_scan)
+    cached_result = splittable.view_split(
+        product="ML_TABLE_AUTOCACHE",
+        root_lot_id="R9250",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+    assert cached_result["match_cache"]["hit"] is True
+    assert cached_result["header_groups"] == result["header_groups"]
+
+
 def test_match_cache_searches_entire_fab_db_when_product_folder_is_missing(tmp_path, monkeypatch):
     pl.DataFrame({
         "root_lot_id": ["R9300", "R9300"],

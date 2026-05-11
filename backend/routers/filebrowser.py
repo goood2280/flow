@@ -93,6 +93,8 @@ _SINGLE_FILE_PREVIEW_MAX_BYTES = 64 * 1024 * 1024
 _SORT_STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 _LIST_CACHE: dict[tuple, tuple[float, object]] = {}
 FILEBROWSER_SETTINGS_FILE = "filebrowser_settings.json"
+FILEBROWSER_AGENT_PROMPTS_FILE = "filebrowser_agent_prompts.json"
+FILEBROWSER_AGENT_PROMPTS_DEFAULT_FILE = _BACKEND_ROOT / "core" / "filebrowser_agent_prompts.default.json"
 DEFAULT_CSV_FULL_READ_MAX_BYTES = 10 * 1024 * 1024
 MAX_CSV_FULL_READ_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_FILEBROWSER_SETTINGS = {
@@ -936,6 +938,51 @@ def _filebrowser_settings_path() -> Path:
     return PATHS.data_root / FILEBROWSER_SETTINGS_FILE
 
 
+def _filebrowser_agent_prompts_path() -> Path:
+    return PATHS.data_root / FILEBROWSER_AGENT_PROMPTS_FILE
+
+
+def _read_json_file_safe(path: Path) -> dict:
+    try:
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        logger.warning("json read failed: %s", path)
+    return {}
+
+
+def _deep_merge_dict(base: dict, override: dict) -> dict:
+    out = copy.deepcopy(base) if isinstance(base, dict) else {}
+    if not isinstance(override, dict):
+        return out
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dict(out.get(key) or {}, value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def _load_filebrowser_agent_prompts() -> dict:
+    default = _read_json_file_safe(FILEBROWSER_AGENT_PROMPTS_DEFAULT_FILE)
+    runtime = _read_json_file_safe(_filebrowser_agent_prompts_path())
+    return _deep_merge_dict(default, runtime)
+
+
+def _filebrowser_agent_prompt(key: str, fallback: str) -> str:
+    cfg = _load_filebrowser_agent_prompts()
+    raw = cfg.get(key)
+    if raw is None and "." in key:
+        section, field = key.split(".", 1)
+        node = cfg.get(section)
+        if isinstance(node, dict):
+            raw = node.get(field)
+    text = str(raw or "").strip()
+    return text or fallback
+
+
 def _clean_rule_file_key(file: str) -> str:
     name = str(file or "").strip().replace("\\", "/")
     if not name:
@@ -1332,6 +1379,813 @@ def _csv_rule_summary(rule: dict) -> dict | None:
         "ordered_by": len((rule.get("ordered_by") or {}).get("keys") or []),
         "sort": len(rule.get("sort") or []),
     }
+
+
+_CSV_RULE_ALLOWED_KEYS = {
+    "required_columns", "not_empty", "unique_keys", "enums", "numeric",
+    "date", "regex", "conditions", "ordered_by", "sort",
+}
+_SQL_EXPR_IGNORE_TOKENS = {
+    "and", "or", "not", "is", "in", "null", "true", "false", "none",
+    "case", "when", "then", "else", "end", "as", "cast", "between",
+    "like", "ilike", "str", "int", "float", "date", "datetime",
+    "abs", "round", "ceil", "floor", "min", "max", "sum", "mean", "avg",
+    "lower", "upper", "contains", "starts_with", "ends_with", "is_null",
+    "is_not_null", "fill_null", "strptime", "len",
+}
+
+
+def _settings_context_columns(columns, sample_rows=None) -> list[str]:
+    out = _clean_string_list(columns)
+    seen = {c.casefold() for c in out}
+    if not out and isinstance(sample_rows, list):
+        for row in sample_rows[:5]:
+            if not isinstance(row, dict):
+                continue
+            for key in row.keys():
+                text = str(key or "").strip()
+                if text and text.casefold() not in seen:
+                    seen.add(text.casefold())
+                    out.append(text)
+    return out[:500]
+
+
+def _column_lookup(columns: list[str]) -> dict[str, str]:
+    return {str(c).casefold(): str(c) for c in columns or [] if str(c or "").strip()}
+
+
+def _draft_warning(warnings: list[str], message: str) -> None:
+    text = str(message or "").strip()
+    if text and text not in warnings:
+        warnings.append(text)
+
+
+def _canon_rule_column(column: str, lookup: dict[str, str], warnings: list[str], context: str) -> str:
+    text = str(column or "").strip()
+    if not text:
+        return ""
+    if not lookup:
+        return text
+    hit = lookup.get(text.casefold())
+    if hit:
+        return hit
+    _draft_warning(warnings, f"{context}: unknown column removed: {text}")
+    return ""
+
+
+def _filter_rule_column_list(values, lookup: dict[str, str], warnings: list[str], context: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        col = _canon_rule_column(value, lookup, warnings, context)
+        key = col.casefold()
+        if col and key not in seen:
+            seen.add(key)
+            out.append(col)
+    return out
+
+
+def _filter_rule_dict_by_column(value: dict, lookup: dict[str, str], warnings: list[str], context: str) -> dict:
+    out: dict = {}
+    for col, spec in (value or {}).items():
+        clean = _canon_rule_column(col, lookup, warnings, context)
+        if clean:
+            out[clean] = spec
+    return out
+
+
+def _filter_unique_keys(value: list[list[str]], lookup: dict[str, str], warnings: list[str]) -> list[list[str]]:
+    out: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for combo in value or []:
+        cols: list[str] = []
+        missing = False
+        for col in combo or []:
+            clean = _canon_rule_column(col, lookup, warnings, "unique_keys")
+            if not clean:
+                missing = True
+            elif clean not in cols:
+                cols.append(clean)
+        if missing:
+            _draft_warning(warnings, f"unique_keys: combo removed because it referenced a missing column: {combo}")
+            continue
+        key = tuple(cols)
+        if cols and key not in seen:
+            seen.add(key)
+            out.append(cols)
+    return out
+
+
+def _condition_references_missing_columns(expr: str, lookup: dict[str, str]) -> list[str]:
+    if not lookup:
+        return []
+    scrubbed = re.sub(r"'[^']*'|\"[^\"]*\"", " ", str(expr or ""))
+    tokens = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", scrubbed)
+    missing: list[str] = []
+    for token in tokens:
+        key = token.casefold()
+        if key in lookup or key in _SQL_EXPR_IGNORE_TOKENS:
+            continue
+        if token not in missing:
+            missing.append(token)
+    return missing
+
+
+def _filter_conditions(value: list[dict], lookup: dict[str, str], warnings: list[str]) -> list[dict]:
+    out: list[dict] = []
+    for item in value or []:
+        expr = str((item or {}).get("expr") or "").strip()
+        missing = _condition_references_missing_columns(expr, lookup)
+        if missing:
+            _draft_warning(warnings, f"conditions: expression removed because columns were not found: {', '.join(missing)}")
+            continue
+        out.append(item)
+    return out
+
+
+def _filter_order_specs(value: list[dict], lookup: dict[str, str], warnings: list[str], context: str) -> list[dict]:
+    out: list[dict] = []
+    for item in value or []:
+        clean = _canon_rule_column((item or {}).get("column") or "", lookup, warnings, context)
+        if clean:
+            out.append({**item, "column": clean})
+    return out
+
+
+def _normalize_csv_rule_draft(raw, *, columns=None) -> tuple[dict, list[str]]:
+    warnings: list[str] = []
+    if not isinstance(raw, dict):
+        return {}, ["LLM draft did not return a csv_rules object."]
+    lookup = _column_lookup(_settings_context_columns(columns))
+    unknown = sorted(str(k) for k in raw.keys() if str(k) not in _CSV_RULE_ALLOWED_KEYS)
+    for key in unknown:
+        _draft_warning(warnings, f"unsupported key removed: {key}")
+
+    rule: dict = {}
+    for key in ("required_columns", "not_empty"):
+        vals = _filter_rule_column_list(_clean_string_list(raw.get(key)), lookup, warnings, key)
+        if vals:
+            rule[key] = vals
+
+    try:
+        unique_keys = _filter_unique_keys(_normalize_unique_keys(raw.get("unique_keys")), lookup, warnings)
+        if unique_keys:
+            rule["unique_keys"] = unique_keys
+    except HTTPException as exc:
+        _draft_warning(warnings, str(exc.detail))
+
+    try:
+        enums = _filter_rule_dict_by_column(_normalize_enums(raw.get("enums")), lookup, warnings, "enums")
+        if enums:
+            rule["enums"] = enums
+    except HTTPException as exc:
+        _draft_warning(warnings, str(exc.detail))
+
+    try:
+        numeric = _filter_rule_dict_by_column(_normalize_numeric(raw.get("numeric")), lookup, warnings, "numeric")
+        if numeric:
+            rule["numeric"] = numeric
+    except HTTPException as exc:
+        _draft_warning(warnings, str(exc.detail))
+
+    date_cols = _filter_rule_column_list(_normalize_date_columns(raw.get("date")), lookup, warnings, "date")
+    if date_cols:
+        rule["date"] = date_cols
+
+    try:
+        regexes = _filter_rule_dict_by_column(_normalize_regex(raw.get("regex")), lookup, warnings, "regex")
+        if regexes:
+            rule["regex"] = regexes
+    except HTTPException as exc:
+        _draft_warning(warnings, str(exc.detail))
+
+    try:
+        conditions = _filter_conditions(_normalize_conditions(raw.get("conditions")), lookup, warnings)
+        if conditions:
+            rule["conditions"] = conditions
+    except HTTPException as exc:
+        _draft_warning(warnings, str(exc.detail))
+
+    try:
+        sort_rule = _filter_order_specs(_normalize_sort(raw.get("sort")), lookup, warnings, "sort")
+        if sort_rule:
+            rule["sort"] = sort_rule
+    except HTTPException as exc:
+        _draft_warning(warnings, str(exc.detail))
+
+    try:
+        ordered_by = _normalize_ordered_by(raw.get("ordered_by"))
+        if ordered_by:
+            keys = _filter_order_specs(ordered_by.get("keys") or [], lookup, warnings, "ordered_by")
+            group_by = _filter_rule_column_list(ordered_by.get("group_by") or [], lookup, warnings, "ordered_by.group_by")
+            if keys:
+                rule["ordered_by"] = {"keys": keys, **({"group_by": group_by} if group_by else {})}
+    except HTTPException as exc:
+        _draft_warning(warnings, str(exc.detail))
+
+    return rule, warnings
+
+
+def _safe_sample_rows(rows, *, max_rows: int = 5, max_cols: int = 40, max_value_len: int = 120) -> list[dict]:
+    out: list[dict] = []
+    if not isinstance(rows, list):
+        return out
+    for row in rows[:max_rows]:
+        if not isinstance(row, dict):
+            continue
+        clean: dict = {}
+        for idx, (key, value) in enumerate(row.items()):
+            if idx >= max_cols:
+                break
+            text = str(value if value is not None else "")
+            clean[str(key)[:120]] = text[:max_value_len]
+        out.append(clean)
+    return out
+
+
+def _settings_column_profiles(columns: list[str], sample_rows: list[dict]) -> list[dict]:
+    profiles: list[dict] = []
+    for col in columns[:80]:
+        values: list[str] = []
+        for row in sample_rows[:10]:
+            if not isinstance(row, dict):
+                continue
+            value = row.get(col)
+            if value is None:
+                for key, raw in row.items():
+                    if str(key).casefold() == col.casefold():
+                        value = raw
+                        break
+            text = str(value if value is not None else "").strip()
+            if text:
+                values.append(text[:80])
+        unique = []
+        seen = set()
+        for value in values:
+            key = value.casefold()
+            if key not in seen:
+                seen.add(key)
+                unique.append(value)
+        numeric_count = 0
+        integer_count = 0
+        for value in values:
+            try:
+                parsed = float(value)
+            except Exception:
+                continue
+            numeric_count += 1
+            if parsed.is_integer():
+                integer_count += 1
+        inferred = "string"
+        if values and numeric_count == len(values):
+            inferred = "integer" if integer_count == len(values) else "numeric"
+        elif re.search(r"(date|time|_dt$|^dt_|created|updated|start|end)", col, flags=re.I):
+            inferred = "date"
+        profiles.append({
+            "column": col,
+            "sample_values": unique[:8],
+            "non_empty_sample_count": len(values),
+            "sample_unique_count": len(unique),
+            "inferred_type": inferred,
+        })
+    return profiles
+
+
+def _settings_llm_rule_candidate(plan: dict, file_key: str) -> dict:
+    if not isinstance(plan, dict):
+        return {}
+    csv_rules = plan.get("csv_rules")
+    if isinstance(csv_rules, dict):
+        for key in (file_key, Path(file_key).name):
+            item = csv_rules.get(key)
+            if isinstance(item, dict):
+                return item
+        for item in csv_rules.values():
+            if isinstance(item, dict):
+                return item
+    for key in ("draft", "rule", "csv_rule"):
+        item = plan.get(key)
+        if isinstance(item, dict):
+            return item
+    if any(key in plan for key in _CSV_RULE_ALLOWED_KEYS):
+        return plan
+    return {}
+
+
+def _settings_prompt_has_duplicate_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return any(term in low or term in text for term in (
+        "unique", "duplicate", "duplicated", "dedupe", "same row", "same combination",
+        "중복", "유니크", "같은 행", "똑같은 행", "동일한 행", "같은 조합", "조합이 중복",
+    ))
+
+
+def _prompt_identifier_tokens(prompt: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_]*", str(prompt or "")):
+        key = token.casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(token)
+    return out
+
+
+def _resolve_prompt_rule_columns(prompt: str, columns: list[str]) -> tuple[list[str], list[str]]:
+    lookup = _column_lookup(columns)
+    aliases = {
+        "product": ("product", "product_id", "prod_id", "prod"),
+        "prod": ("product", "product_id", "prod_id", "prod"),
+        "lot": ("lot_id", "fab_lot_id", "lot", "lotid"),
+        "lot_id": ("lot_id", "fab_lot_id", "lot", "lotid"),
+        "fab_lot": ("fab_lot_id", "lot_id", "fab_lot", "lot"),
+        "fab_lot_id": ("fab_lot_id", "lot_id", "fab_lot", "lot"),
+        "wafer": ("wafer_id", "wf_id", "wafer"),
+        "wafer_id": ("wafer_id", "wf_id", "wafer"),
+        "wf": ("wafer_id", "wf_id", "wafer"),
+        "wf_id": ("wafer_id", "wf_id", "wafer"),
+        "root_lot": ("root_lot_id", "root_lot", "lot_root_id"),
+        "root_lot_id": ("root_lot_id", "root_lot", "lot_root_id"),
+    }
+    resolved: list[str] = []
+    missing: list[str] = []
+    for token in _prompt_identifier_tokens(prompt):
+        key = token.casefold()
+        candidates = (key, key.replace(" ", "_"), *(aliases.get(key) or ()))
+        hit = ""
+        for cand in candidates:
+            if cand in lookup:
+                hit = lookup[cand]
+                break
+        if hit:
+            if hit not in resolved:
+                resolved.append(hit)
+            continue
+        if "_" in token or key in aliases:
+            missing.append(token)
+    return resolved, missing
+
+
+def _settings_prompt_has_enum_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    english = bool(re.search(r"\b(enum|allowed|allowlist|only)\b", low) or "one of" in low or "must be" in low)
+    korean = any(term in text for term in ("허용", "허용값", "중 하나", "중에", "만 있어야", "만 가능", "만 허용", " 또는 "))
+    return english or korean
+
+
+def _prompt_enum_values(prompt: str, target_column: str, columns: list[str]) -> list[str]:
+    text = str(prompt or "")
+    tail = text
+    for needle in (target_column, target_column.replace("_", " ")):
+        m = re.search(re.escape(needle), text, flags=re.I)
+        if m:
+            tail = text[m.end():]
+            break
+    column_tokens = {c.casefold() for c in columns}
+    column_tokens.update(c.casefold().replace("_", " ") for c in columns)
+    stop = {
+        "or", "and", "only", "must", "be", "one", "of", "in", "value", "values",
+        "enum", "allowed", "allowlist", "operator", "column", "col",
+    }
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]*", tail):
+        clean = token.strip().strip(".,;:()[]{}")
+        key = clean.casefold()
+        if not clean or key in stop or key in column_tokens:
+            continue
+        if key not in seen:
+            seen.add(key)
+            out.append(clean)
+    return out[:50]
+
+
+def _has_not_empty_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return any(term in low or term in text for term in (
+        "not empty", "non-empty", "not blank", "blank", "empty",
+        "빈 값", "비어", "비면", "공백", "값이 있", "값은 있",
+    ))
+
+
+def _has_required_column_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return any(term in low or term in text for term in (
+        "required column", "must exist", "must have", "column must", "required",
+        "필수 컬럼", "컬럼은 반드시", "컬럼이 반드시", "컬럼 있어야", "컬럼은 있어야",
+    ))
+
+
+def _has_numeric_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if re.search(r"\b(numeric|number|integer|float|min|max)\b", low) or ">=" in text or "<=" in text:
+        return True
+    if "정수" in text:
+        return True
+    if re.search(r"-?\d+(?:\.\d+)?\s*(?:이상|이하|초과|미만)", text):
+        return True
+    return any(term in text for term in (
+        "숫자여야", "숫자 이어야", "숫자이어야", "숫자로", "숫자 값", "숫자값", "숫자 컬럼", "숫자만",
+    ))
+
+
+def _numeric_rule_from_prompt(prompt: str, target: str) -> dict:
+    text = str(prompt or "")
+    low = text.lower()
+    spec: dict = {}
+    if "integer" in low or "정수" in text:
+        spec["integer"] = True
+    min_match = re.search(r"(-?\d+(?:\.\d+)?)\s*(?:이상|>=|부터)", text)
+    max_match = re.search(r"(-?\d+(?:\.\d+)?)\s*(?:이하|<=|까지)", text)
+    if min_match:
+        val = float(min_match.group(1))
+        spec["min"] = int(val) if val.is_integer() else val
+    if max_match:
+        val = float(max_match.group(1))
+        spec["max"] = int(val) if val.is_integer() else val
+    if spec or _has_numeric_intent(prompt):
+        return {target: spec}
+    return {}
+
+
+def _has_regex_format_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return bool(re.search(r"\b(regex|regexp|pattern|format)\b", low)) or any(term in text for term in (
+        "정규식", "패턴", "형식", "포맷", "같은", "처럼", "이어야", "있어야",
+    ))
+
+
+def _regex_rule_from_prompt(prompt: str, resolved: list[str]) -> dict:
+    text = str(prompt or "")
+    low = text.lower()
+    out: dict = {}
+    for col in resolved:
+        key = col.casefold()
+        has_rule_pattern = (
+            "r숫자" in low
+            or "r 숫자" in low
+            or (
+                _has_regex_format_intent(prompt)
+                and bool(re.search(r"\bR\d+\b", text, flags=re.I))
+                and bool(re.search(r"\bRO\b", text, flags=re.I))
+            )
+        )
+        if key == "rule_order" and has_rule_pattern:
+            out[col] = r"R\d+|RO"
+        elif key in {"feature_name", "feature"} and any(term in text for term in ("앞에", "선행", "첫")) and "숫자" in text:
+            out[col] = r"\d+(?:\.\d+)?\s+.+"
+        elif key == "category" and "ppid" in low and "숫자" in text:
+            out[col] = r"^PPID_\d+_\d+$"
+        elif key == "function_step" and "대문자" in text and ("underscore" in low or "언더" in text or "_" in text):
+            out[col] = r"^[A-Z_]+$"
+    return out
+
+
+def _condition_rules_from_prompt(prompt: str, resolved: list[str]) -> list[dict]:
+    text = str(prompt or "")
+    if len(resolved) < 2:
+        return []
+    if any(term in text for term in ("빠르면 안", "보다 빠르", "이전이면 안", "작으면 안")):
+        left = resolved[0]
+        right = resolved[1]
+        return [{"expr": f"{left} >= {right}", "message": f"{left} must be >= {right}"}]
+    return []
+
+
+def _sort_rule_from_prompt(prompt: str, columns: list[str], resolved: list[str]) -> dict:
+    text = str(prompt or "")
+    low = text.lower()
+    has_sort = bool(re.search(r"\b(sort|ordered|order by)\b", low))
+    has_sort = has_sort or any(term in text for term in (
+        "정렬", "순서대로", "오름차순", "내림차순", "정렬되어", "정렬됐", "정렬되었",
+    ))
+    has_sort = has_sort or (
+        any(term in text for term in ("앞에 숫자", "앞 숫자", "선행 숫자", "숫자에 따라서", "숫자 기준"))
+        and any(term in text for term in ("해줘", "정렬", "오름차순", "내림차순", "기준", "따라서"))
+    )
+    if not has_sort:
+        return {}
+    specs = _fallback_sort_specs(prompt, resolved or columns, expert=False)
+    if not specs:
+        return {}
+    if any(term in low or term in text for term in ("검증", "validate", "현재 행 순서", "정렬되어")) and not any(term in text for term in ("저장", "save")):
+        return {"ordered_by": {"keys": specs}}
+    return {"sort": specs}
+
+
+def _settings_prompt_explicit_rule(prompt: str, columns: list[str], current_rule: dict,
+                                   warnings: list[str]) -> dict | None:
+    rule: dict = {}
+    explicit_seen = False
+    resolved, missing = _resolve_prompt_rule_columns(prompt, columns)
+
+    if _settings_prompt_has_duplicate_intent(prompt):
+        if resolved or missing:
+            explicit_seen = True
+            if missing:
+                _draft_warning(warnings, f"unique_keys prompt referenced missing column(s): {', '.join(missing)}")
+            if len(resolved) >= 2:
+                rule["unique_keys"] = [resolved]
+            else:
+                _draft_warning(warnings, "duplicate prompt did not resolve to a usable unique key.")
+
+    if resolved and _has_required_column_intent(prompt):
+        explicit_seen = True
+        rule["required_columns"] = resolved
+
+    if resolved and _has_not_empty_intent(prompt):
+        explicit_seen = True
+        rule["not_empty"] = resolved
+
+    numeric_cols: set[str] = set()
+    if resolved and _has_numeric_intent(prompt):
+        explicit_seen = True
+        target = resolved[0]
+        numeric = _numeric_rule_from_prompt(prompt, target)
+        if numeric:
+            rule.setdefault("numeric", {}).update(numeric)
+            numeric_cols.add(target)
+
+    sort_rule = _sort_rule_from_prompt(prompt, columns, resolved)
+    regex_rules = {} if sort_rule and not _has_regex_format_intent(prompt) else _regex_rule_from_prompt(prompt, resolved)
+    if regex_rules:
+        explicit_seen = True
+        rule.setdefault("regex", {}).update(regex_rules)
+
+    conditions = _condition_rules_from_prompt(prompt, resolved)
+    if conditions:
+        explicit_seen = True
+        rule["conditions"] = conditions
+
+    if sort_rule:
+        explicit_seen = True
+        rule.update(sort_rule)
+
+    if _settings_prompt_has_enum_intent(prompt) and resolved:
+        target = resolved[0]
+        if target not in numeric_cols and target not in regex_rules:
+            explicit_seen = True
+            values = _prompt_enum_values(prompt, target, columns)
+            if values:
+                rule.setdefault("enums", {})[target] = values
+            else:
+                _draft_warning(warnings, f"enums prompt did not include allowed values for {target}.")
+
+    return rule if explicit_seen else None
+
+
+def _fallback_sort_direction(prompt: str) -> str:
+    text = str(prompt or "")
+    low = text.lower()
+    desc_terms = (
+        "desc", "descending", "내림차순", "역순", "큰순", "큰 순",
+        "높은순", "높은 순", "많은순", "많은 순",
+    )
+    if any(term in low or term in text for term in desc_terms):
+        return "desc"
+    return "asc"
+
+
+def _fallback_sort_type(prompt: str, column: str) -> str:
+    text = str(prompt or "")
+    low = text.lower()
+    column_l = str(column or "").casefold()
+    if column_l in {"rule_order", "ruleorder", "order", "sort_order"}:
+        return "rule_order"
+    leading_number_terms = (
+        "leading number", "prefix number", "prefix numeric",
+        "앞에 숫자", "앞 숫자", "선행 숫자", "첫 숫자", "숫자에 따라서", "숫자 기준",
+    )
+    if column_l in {"feature_name", "feature", "step_name", "function_step"}:
+        return "leading_number"
+    return "string"
+
+
+def _settings_prompt_wants_expert(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return any(term in low or term in text for term in (
+        "expert", "comprehensive", "detailed", "strict", "all possible", "as much as possible",
+        "전문가", "상세", "자세", "가능한", "가능한거", "가능한 것", "전체", "꼼꼼", "강하게",
+        "다 짜", "다 만들어", "최대한",
+    ))
+
+
+def _sample_values_for_column(sample_rows: list[dict] | None, column: str) -> list[str]:
+    values: list[str] = []
+    for row in (sample_rows or [])[:20]:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get(column)
+        if raw is None:
+            for key, value in row.items():
+                if str(key).casefold() == str(column).casefold():
+                    raw = value
+                    break
+        text = str(raw if raw is not None else "").strip()
+        if text:
+            values.append(text)
+    return values
+
+
+def _sample_unique_values(values: list[str], limit: int = 20) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        key = text.casefold()
+        if text and key not in seen:
+            seen.add(key)
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _numeric_spec_from_values(values: list[str]) -> dict | None:
+    parsed: list[float] = []
+    for value in values:
+        try:
+            parsed.append(float(str(value).strip()))
+        except Exception:
+            return None
+    if not parsed:
+        return None
+    out: dict = {"integer": all(v.is_integer() for v in parsed)}
+    out["min"] = int(min(parsed)) if out["integer"] else min(parsed)
+    out["max"] = int(max(parsed)) if out["integer"] else max(parsed)
+    return out
+
+
+def _looks_date_like_column(column: str) -> bool:
+    return bool(re.search(r"(date|time|_dt$|^dt_|created|updated|start|end)", str(column or ""), flags=re.I))
+
+
+def _fallback_sort_specs(prompt: str, columns: list[str], *, expert: bool = False) -> list[dict]:
+    lookup = _column_lookup(columns)
+    low = str(prompt or "").casefold()
+    direction = _fallback_sort_direction(prompt)
+    mentioned = [
+        col for col in columns
+        if col.casefold() in low or col.casefold().replace("_", " ") in low
+    ]
+    if not mentioned and any(term in str(prompt or "") for term in ("앞에 숫자", "앞 숫자", "선행 숫자")):
+        feature_col = lookup.get("feature_name")
+        if feature_col:
+            mentioned = [feature_col]
+    if mentioned:
+        candidates = mentioned
+    elif expert:
+        candidates = [lookup[col] for col in ("product", "feature_name", "rule_order") if col in lookup]
+        if not candidates:
+            candidates = [lookup[col] for col in ("rank", "order", "sort_order", "seq", "sequence", "priority") if col in lookup]
+    else:
+        candidates = [lookup[col] for col in ("product", "feature_name", "rule_order") if col in lookup]
+    specs: list[dict] = []
+    seen: set[str] = set()
+    for col in candidates:
+        key = col.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        specs.append({
+            "column": col,
+            "direction": direction,
+            "type": _fallback_sort_type(prompt, col),
+            "nulls": "last",
+        })
+    return specs
+
+
+def _fallback_unique_keys(columns: list[str]) -> list[list[str]]:
+    lookup = _column_lookup(columns)
+    combos: list[list[str]] = []
+    for combo in (
+        ("id",),
+        ("key",),
+        ("product", "feature_name", "rule_order"),
+        ("product", "lot_id", "wafer_id"),
+        ("root_lot_id", "wafer_id"),
+        ("lot_id", "wafer_id"),
+        ("product", "feature_name"),
+    ):
+        cols = [lookup[c] for c in combo if c in lookup]
+        if len(cols) == len(combo):
+            combos.append(cols)
+    return combos[:2]
+
+
+def _fallback_regex_rules(columns: list[str], sample_rows: list[dict] | None) -> dict[str, str]:
+    lookup = _column_lookup(columns)
+    regexes: dict[str, str] = {}
+    feature_col = lookup.get("feature_name")
+    if feature_col:
+        values = _sample_values_for_column(sample_rows, feature_col)
+        if not values or any(re.match(r"^\d+(?:\.\d+)?\s+\S+", value) for value in values):
+            regexes[feature_col] = r"\d+(?:\.\d+)?\s+.+"
+    rule_col = lookup.get("rule_order")
+    if rule_col:
+        values = _sample_values_for_column(sample_rows, rule_col)
+        if not values or all(re.match(r"^R\d+$|^RO$", value, flags=re.I) for value in values):
+            regexes[rule_col] = r"R\d+|RO"
+    return regexes
+
+
+def _fallback_numeric_rules(columns: list[str], sample_rows: list[dict] | None) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    numeric_name_re = re.compile(r"(rank|order|sort|seq|count|cnt|qty|num|number|idx|index|priority|score|value|rate|ratio|pct|percent|min|max|limit)", re.I)
+    for col in columns:
+        values = _sample_values_for_column(sample_rows, col)
+        spec = _numeric_spec_from_values(values)
+        if spec and (numeric_name_re.search(col) or values):
+            out[col] = spec
+    return out
+
+
+def _fallback_enum_rules(columns: list[str], sample_rows: list[dict] | None) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    enum_name_re = re.compile(r"(status|state|type|category|cat|operator|mode|flag|yn|use|enabled|result|pass|fail)", re.I)
+    for col in columns:
+        if not enum_name_re.search(col):
+            continue
+        values = _sample_unique_values(_sample_values_for_column(sample_rows, col), limit=16)
+        if values and len(values) <= 12:
+            out[col] = values
+    return out
+
+
+def _fallback_condition_rules(columns: list[str]) -> list[dict]:
+    lookup = _column_lookup(columns)
+    conditions: list[dict] = []
+    for start_key, end_key in (
+        ("start_time", "end_time"),
+        ("start_date", "end_date"),
+        ("from_time", "to_time"),
+        ("begin_time", "end_time"),
+    ):
+        if start_key in lookup and end_key in lookup:
+            conditions.append({
+                "expr": f"{lookup[end_key]} >= {lookup[start_key]}",
+                "message": f"{lookup[end_key]} must be >= {lookup[start_key]}",
+            })
+            break
+    return conditions
+
+
+def _settings_draft_fallback_rule(prompt: str, columns: list[str], current_rule: dict, warnings: list[str],
+                                  sample_rows: list[dict] | None = None) -> dict:
+    rule = copy.deepcopy(current_rule) if isinstance(current_rule, dict) else {}
+    low = str(prompt or "").lower()
+    expert = _settings_prompt_wants_expert(prompt)
+    if not columns:
+        _draft_warning(warnings, "No columns were supplied, so only schema-level cleanup was applied.")
+        return rule
+    if expert or any(token in low for token in ("required", "필수", "must have")):
+        rule["required_columns"] = columns
+    if expert or any(token in low for token in ("not empty", "non-empty", "blank", "빈 값", "비어")):
+        if sample_rows and expert:
+            non_empty_cols = [col for col in columns if _sample_values_for_column(sample_rows, col)]
+            rule["not_empty"] = non_empty_cols or columns
+        else:
+            rule["not_empty"] = columns
+    if (expert or any(token in low for token in ("unique", "duplicate", "중복", "유니크"))) and not rule.get("unique_keys"):
+        unique_keys = _fallback_unique_keys(columns)
+        if unique_keys:
+            rule["unique_keys"] = unique_keys
+    if expert:
+        enums = _fallback_enum_rules(columns, sample_rows)
+        if enums and not rule.get("enums"):
+            rule["enums"] = enums
+        numeric = _fallback_numeric_rules(columns, sample_rows)
+        if numeric and not rule.get("numeric"):
+            rule["numeric"] = numeric
+        date_cols = [col for col in columns if _looks_date_like_column(col)]
+        if date_cols and not rule.get("date"):
+            rule["date"] = date_cols
+        regexes = _fallback_regex_rules(columns, sample_rows)
+        if regexes and not rule.get("regex"):
+            rule["regex"] = regexes
+        conditions = _fallback_condition_rules(columns)
+        if conditions and not rule.get("conditions"):
+            rule["conditions"] = conditions
+    if (expert or any(token in low or token in str(prompt or "") for token in (
+        "sort", "order", "정렬", "순서", "오름차순", "내림차순", "앞에 숫자", "앞 숫자", "선행 숫자",
+    ))) and not rule.get("sort") and not rule.get("ordered_by"):
+        specs = _fallback_sort_specs(prompt, columns, expert=expert)
+        if specs:
+            rule["ordered_by"] = {"keys": specs}
+            rule["sort"] = specs
+    if not rule:
+        _draft_warning(warnings, "LLM unavailable or empty; no deterministic draft could be inferred.")
+    else:
+        _draft_warning(warnings, "LLM unavailable or empty; deterministic keyword draft was used.")
+    return rule
 
 
 def _can_manage_filebrowser(me: dict) -> bool:
@@ -2598,13 +3452,22 @@ class CacheMatchSettingsReq(BaseModel):
     interval_minutes: int = 30
 
 
+class CacheLlmRefreshReq(BaseModel):
+    prompt: str = ""
+    product: str = ""
+    source_root: str = ""
+    force: bool = True
+
+
 def _cache_match_target(raw: str) -> str:
     target = str(raw or "").strip().lower()
     if target in {"fab", "splittable", "split", "match"}:
         return "fab"
     if target in {"et", "tracker", "analysis"}:
         return "et"
-    raise HTTPException(400, "target must be fab or et")
+    if target in {"lot_progress", "progress", "latest", "latest_lot", "current_lot", "current_step", "lot_wf"}:
+        return "lot_progress"
+    raise HTTPException(400, "target must be fab, et, or lot_progress")
 
 
 def _cache_settings_file() -> Path:
@@ -2626,10 +3489,231 @@ def _clamp_splittable_match_interval(value) -> int:
     return max(lo, min(hi, minutes))
 
 
+def _cache_safe_text(value, max_len: int = 160) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"[\x00\r\n]+", " ", text)
+    return text[:max(1, max_len)].strip()
+
+
+def _cache_mtime_iso(fp: Path) -> str:
+    try:
+        if fp.is_file():
+            return datetime.datetime.fromtimestamp(fp.stat().st_mtime).isoformat(timespec="seconds")
+    except Exception:
+        pass
+    return ""
+
+
+def _lot_progress_cache_status() -> dict:
+    from core import lot_progress_cache as _lot_progress_cache
+
+    json_fp = _lot_progress_cache.cache_file()
+    parquet_fp = _lot_progress_cache.filebrowser_cache_parquet_file()
+    state = load_json(json_fp, {}) if json_fp.is_file() else {}
+    if not isinstance(state, dict):
+        state = {}
+    row_count = int(state.get("count") or 0)
+    products: list[str] = []
+    updated_at = str(state.get("generated_at") or "")
+    if parquet_fp.is_file():
+        try:
+            lf = pl.scan_parquet(str(parquet_fp))
+            names = lf.collect_schema().names()
+            row_count = int(lf.select(pl.len().alias("row_count")).collect().item(0, 0) or row_count)
+            if "product" in names:
+                prod_df = (
+                    lf.select(pl.col("product").cast(_SORT_STR, strict=False).alias("product"))
+                    .filter(pl.col("product").is_not_null() & (pl.col("product") != ""))
+                    .unique()
+                    .sort("product")
+                    .head(500)
+                    .collect()
+                )
+                products = [str(v) for v in prod_df["product"].to_list() if str(v or "").strip()]
+            if "update_time" in names:
+                value = lf.select(pl.col("update_time").cast(_SORT_STR, strict=False).max().alias("updated_at")).collect().item(0, 0)
+                if value:
+                    updated_at = str(value)
+        except Exception as e:
+            return {
+                "ok": False,
+                "target": "lot_progress",
+                "mode": "manual",
+                "unit_action": "filebrowser.cache.match.status",
+                "enabled": True,
+                "manual_enabled": True,
+                "schedule_enabled": False,
+                "scheduler_enabled": False,
+                "cache_path": str(parquet_fp),
+                "json_cache_path": str(json_fp),
+                "cache_exists": parquet_fp.is_file(),
+                "row_count": row_count,
+                "products": products,
+                "updated_at": updated_at or _cache_mtime_iso(parquet_fp),
+                "error": f"{type(e).__name__}: {e}",
+            }
+    if not updated_at:
+        updated_at = _cache_mtime_iso(parquet_fp) or _cache_mtime_iso(json_fp)
+    return {
+        "ok": True,
+        "target": "lot_progress",
+        "mode": "manual",
+        "unit_action": "filebrowser.cache.match.status",
+        "enabled": True,
+        "manual_enabled": True,
+        "schedule_enabled": False,
+        "scheduler_enabled": False,
+        "cache_path": str(parquet_fp),
+        "json_cache_path": str(json_fp),
+        "cache_exists": parquet_fp.is_file(),
+        "row_count": row_count,
+        "total_row_count": row_count,
+        "products": products,
+        "updated_at": updated_at,
+        "latest_updated_at": updated_at,
+    }
+
+
+def _refresh_filebrowser_cache_target(target: str, *, product: str = "", source_root: str = "",
+                                      force: bool = True, reason: str = "filebrowser") -> dict:
+    target = _cache_match_target(target)
+    product = _cache_safe_text(product, 120)
+    source_root = _cache_safe_text(source_root, 160)
+    if target == "fab":
+        from routers import splittable as _splittable
+        result = _splittable.enqueue_match_cache_refresh(product=product or "", force=bool(force), reason=reason or "filebrowser")
+        return {"target": "fab", "unit_action": "filebrowser.cache.match.refresh", **result}
+    if target == "et":
+        from core.lot_step import refresh_et_lot_cache
+        result = refresh_et_lot_cache(product=product or "", source_root=source_root or "", force=bool(force))
+        return {
+            "target": "et",
+            "mode": "manual",
+            "manual_enabled": True,
+            "schedule_enabled": False,
+            "unit_action": "filebrowser.cache.match.refresh",
+            **result,
+        }
+    from core import lot_progress_cache as _lot_progress_cache
+    state = _lot_progress_cache.refresh_lot_progress_cache(force=bool(force))
+    export = _lot_progress_cache.export_lot_progress_parquet(state)
+    row_count = int((state or {}).get("count") or export.get("rows") or 0)
+    return {
+        "ok": True,
+        "target": "lot_progress",
+        "mode": "manual",
+        "manual_enabled": True,
+        "schedule_enabled": False,
+        "unit_action": "filebrowser.cache.lot_progress.refresh",
+        "row_count": row_count,
+        "total_row_count": row_count,
+        "updated_at": (state or {}).get("generated_at") or "",
+        "cache_path": str(_lot_progress_cache.filebrowser_cache_parquet_file()),
+        "json_cache_path": str(_lot_progress_cache.cache_file()),
+        "paths": export.get("paths") or [],
+        "files_scanned": int((state or {}).get("files_scanned") or 0),
+        "rows_seen": int((state or {}).get("rows_seen") or 0),
+        "errors": list((state or {}).get("errors") or [])[:20],
+    }
+
+
+def _cache_llm_json(text: str) -> dict:
+    raw = str(text or "").strip()
+    if not raw:
+        return {}
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.S).strip()
+    candidates = [raw]
+    m = re.search(r"\{[\s\S]*\}", raw)
+    if m:
+        candidates.append(m.group(0))
+    for item in candidates:
+        try:
+            parsed = json.loads(item)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _cache_prompt_target(prompt: str) -> str:
+    text = str(prompt or "")
+    low = text.lower()
+    if any(token in low or token in text for token in (
+        "lot_progress", "lot progress", "lot_wf_current", "latest_lot", "latest lot",
+        "현재 step", "현재 스텝", "최신 lot", "최신 랏", "진행 캐시",
+    )):
+        return "lot_progress"
+    if any(token in low or token in text for token in ("et", "analysis", "tracker analysis", "분석 et")):
+        return "et"
+    if any(token in low or token in text for token in (
+        "splittable", "split table", "스플릿테이블", "스플릿 테이블", "match cache",
+        "매칭 캐시", "fab_lot", "fab lot", "root_lot",
+    )):
+        return "fab"
+    return ""
+
+
+def _normalize_cache_plan_target(raw: str) -> str:
+    try:
+        return _cache_match_target(raw)
+    except HTTPException:
+        return ""
+
+
+def _cache_llm_plan(prompt: str, *, product: str = "", source_root: str = "") -> dict:
+    prompt = _cache_safe_text(prompt, 2000)
+    product = _cache_safe_text(product, 120)
+    source_root = _cache_safe_text(source_root, 160)
+    plan: dict = {}
+    llm_info = {"available": False, "used": False, "error": ""}
+    try:
+        from core import llm_adapter
+        llm_info["available"] = bool(llm_adapter.is_available())
+        if prompt and llm_info["available"]:
+            system = _filebrowser_agent_prompt("cache_refresh.system", (
+                "You classify a Flow FileBrowser cache refresh request. "
+                "Return only JSON. Allowed target values are: lot_progress, fab, et. "
+                "lot_progress means lot_progress_latest_lot_by_root_wafer / lot_wf_current. "
+                "fab means SplitTable root_lot_id to fab_lot_id match cache. "
+                "et means Tracker Analysis ET cache. Do not invent paths."
+            ))
+            ask = json.dumps({
+                "user_prompt": prompt,
+                "product_hint": product,
+                "source_root_hint": source_root,
+                "schema": {"target": "lot_progress|fab|et", "product": "optional", "source_root": "optional", "reason": "short"},
+            }, ensure_ascii=False)
+            out = llm_adapter.complete(ask, system=system, timeout=8)
+            llm_info["used"] = bool(out.get("ok") and out.get("text"))
+            if out.get("error"):
+                llm_info["error"] = str(out.get("error") or "")
+            if out.get("text"):
+                plan = _cache_llm_json(str(out.get("text") or ""))
+    except Exception as e:
+        llm_info["error"] = f"{type(e).__name__}: {e}"
+    target = _normalize_cache_plan_target(str(plan.get("target") or ""))
+    fallback_target = _cache_prompt_target(prompt)
+    if not target:
+        target = fallback_target
+    return {
+        "target": target,
+        "product": _cache_safe_text(plan.get("product") or product, 120),
+        "source_root": _cache_safe_text(plan.get("source_root") or source_root, 160),
+        "reason": _cache_safe_text(plan.get("reason") or ("deterministic fallback" if fallback_target else ""), 240),
+        "llm": llm_info,
+        "raw_plan": {k: plan.get(k) for k in ("target", "product", "source_root", "reason") if k in plan},
+    }
+
+
 @router.get("/cache/match/status")
 def cache_match_status(request: Request, target: str = Query("fab"), product: str = Query(""), source_root: str = Query("")):
     _require_filebrowser_user(request)
     target = _cache_match_target(target)
+    if target == "lot_progress":
+        return _lot_progress_cache_status()
     if target == "fab":
         from routers import splittable as _splittable
         try:
@@ -2713,19 +3797,49 @@ def cache_match_settings(req: CacheMatchSettingsReq, request: Request):
 def cache_match_refresh(req: CacheMatchRefreshReq, request: Request):
     _require_filebrowser_admin(request)
     target = _cache_match_target(req.target)
-    if target == "fab":
-        from routers import splittable as _splittable
-        result = _splittable.enqueue_match_cache_refresh(product=req.product or "", force=bool(req.force), reason="filebrowser")
-        return {"target": "fab", "unit_action": "filebrowser.cache.match.refresh", **result}
-    from core.lot_step import refresh_et_lot_cache
-    result = refresh_et_lot_cache(product=req.product or "", source_root=req.source_root or "", force=bool(req.force))
+    return _refresh_filebrowser_cache_target(
+        target,
+        product=req.product or "",
+        source_root=req.source_root or "",
+        force=bool(req.force),
+        reason="filebrowser",
+    )
+
+
+@router.post("/cache/llm/refresh")
+def cache_llm_refresh(req: CacheLlmRefreshReq, request: Request):
+    me = _require_filebrowser_admin(request)
+    prompt = _cache_safe_text(req.prompt, 2000)
+    if not prompt:
+        raise HTTPException(400, "prompt is required")
+    plan = _cache_llm_plan(prompt, product=req.product or "", source_root=req.source_root or "")
+    target = plan.get("target") or ""
+    if not target:
+        raise HTTPException(400, "LLM/cache prompt must resolve to lot_progress, fab, or et")
+    result = _refresh_filebrowser_cache_target(
+        target,
+        product=plan.get("product") or req.product or "",
+        source_root=plan.get("source_root") or req.source_root or "",
+        force=bool(req.force),
+        reason="filebrowser_llm",
+    )
+    try:
+        jsonl_append(PATHS.activity_log, {
+            "username": me.get("username") or "",
+            "action": "filebrowser:cache-llm-refresh",
+            "tab": "filebrowser",
+            "detail": f"target={target} product={plan.get('product') or ''}",
+        })
+    except Exception:
+        pass
     return {
-        "target": "et",
-        "mode": "manual",
-        "manual_enabled": True,
-        "schedule_enabled": False,
-        "unit_action": "filebrowser.cache.match.refresh",
         **result,
+        "ok": bool(result.get("ok", True)),
+        "unit_action": "filebrowser.cache.llm.refresh",
+        "target": target,
+        "plan": plan,
+        "llm": plan.get("llm") or {},
+        "result": result,
     }
 
 
@@ -2885,6 +3999,8 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     _require_filebrowser_user(request)
     rows = rows if isinstance(rows, int) else 200
     cols = cols if isinstance(cols, int) else 10
+    page, page_size, _offset = _preview_page_args(rows, page_size)
+    rows = page_size
     # Guard against path traversal — allow base_root, and also db_root-level
     # single files (CSV/Parquet). v8.7.7: parquet 도 허용 (base-files 에 노출되므로
     # 미리보기도 가능해야 함).
@@ -3104,10 +4220,9 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             except Exception:
                 csv_full_read = False
         # CSV under the configured byte threshold is safe to read fully for
-        # editing. Parquet single files default to a 200-row page first, even
-        # when they are cache/config artifacts; SQL/column selection remains an
-        # explicit full-file query.
-        full_single_file = csv_full_read or (ext == ".parquet" and _has_view_filter(sql, select_cols))
+        # editing only on the initial open. SQL/column selection uses the same
+        # capped preview path as DB sources so the page stays responsive.
+        full_single_file = csv_full_read and not _has_view_filter(sql, select_cols)
         if full_single_file:
             resp = _run_view_lazy_full(
                 lf, sql, select_cols,
@@ -3124,8 +4239,6 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
             resp["csv_rule_summary"] = csv_rule_summary
             return resp
-        rows = min(int(rows or 200), 200)
-        page_size = min(int(page_size or 200), 200)
         if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
             try:
                 resp = _run_view_duckdb(
@@ -3140,7 +4253,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 resp["source_modified"] = fp.stat().st_mtime
                 resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
                 resp["csv_rule_summary"] = csv_rule_summary
-                return resp
+                return _mark_preview_capped(resp)
             except Exception as e:
                 if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
                     raise HTTPException(400, f"DuckDB query failed: {e}")
@@ -3160,7 +4273,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         resp["source_modified"] = fp.stat().st_mtime
         resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
         resp["csv_rule_summary"] = csv_rule_summary
-        return resp
+        return _mark_preview_capped(resp)
     except HTTPException:
         raise
     except Exception as e:
@@ -3256,6 +4369,25 @@ def _page_args(page: int = 0, page_size: int = 200) -> tuple[int, int, int]:
     except Exception:
         page_size = 200
     return page, page_size, page * page_size
+
+
+def _preview_page_args(rows: int = LATEST_PREVIEW_ROWS, page_size: int = LATEST_PREVIEW_ROWS) -> tuple[int, int, int]:
+    try:
+        capped = min(LATEST_PREVIEW_ROWS, max(1, int(page_size or rows or LATEST_PREVIEW_ROWS)))
+    except Exception:
+        capped = LATEST_PREVIEW_ROWS
+    return 0, capped, 0
+
+
+def _mark_preview_capped(resp: dict) -> dict:
+    if not isinstance(resp, dict):
+        return resp
+    resp["page"] = 0
+    resp["has_more"] = False
+    resp["preview_row_limit"] = LATEST_PREVIEW_ROWS
+    resp["download_max_rows"] = MAX_CSV_DOWNLOAD_MAX_ROWS
+    resp["download_max_bytes"] = MAX_CSV_DOWNLOAD_BYTES
+    return resp
 
 
 def _resolve_product_dir_fast(root: str, product: str) -> Path | None:
@@ -3401,6 +4533,375 @@ def _lazy_filter_expr(sql: str, columns: list[str]):
             return eval(s, {"__builtins__": {}, "pl": pl}, ns)  # noqa: S307
         except Exception as eval_err:
             raise HTTPException(400, f"SQL error: {sql_err} | expr error: {eval_err}")
+
+
+_AI_SQL_FORBIDDEN_RE = re.compile(
+    r";|--|/\*|\*/|\b("
+    r"ATTACH|CALL|COPY|CREATE|DELETE|DETACH|DROP|EXPORT|FROM|GROUP\s+BY|"
+    r"IMPORT|INSERT|INSTALL|JOIN|LIMIT|LOAD|OFFSET|ORDER\s+BY|PRAGMA|"
+    r"SELECT|SET|TRUNCATE|UPDATE|VACUUM|WITH"
+    r")\b",
+    re.I,
+)
+_AI_SQL_IGNORE_TOKENS = {
+    *_SQL_EXPR_IGNORE_TOKENS,
+    "and", "or", "not", "like", "ilike", "between", "in", "is",
+    "null", "true", "false", "where", "is_in", "is_null", "is_not_null",
+    "str", "contains", "starts_with", "ends_with", "cast", "as",
+}
+
+
+def _strip_sql_literals(expr: str) -> str:
+    return re.sub(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"", " ", str(expr or ""))
+
+
+def _canonicalize_sql_columns(expr: str, columns: list[str]) -> str:
+    lookup = _column_lookup(columns)
+    if not lookup:
+        return str(expr or "").strip()
+    parts = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", str(expr or ""))
+    for idx in range(0, len(parts), 2):
+        parts[idx] = re.sub(
+            r"\b[A-Za-z_][A-Za-z0-9_]*\b",
+            lambda m: lookup.get(m.group(0).casefold(), m.group(0)),
+            parts[idx],
+        )
+    return "".join(parts).strip()
+
+
+def _sql_missing_columns(expr: str, columns: list[str]) -> list[str]:
+    lookup = _column_lookup(columns)
+    if not lookup:
+        return []
+    missing: list[str] = []
+    for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", _strip_sql_literals(expr)):
+        key = token.casefold()
+        if key in lookup or key in _AI_SQL_IGNORE_TOKENS:
+            continue
+        if token not in missing:
+            missing.append(token)
+    return missing
+
+
+def _extract_llm_sql_text(raw_text: str, plan: dict) -> str:
+    if isinstance(plan, dict):
+        for key in ("sql", "filter", "where", "expression", "expr"):
+            val = plan.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    text = str(raw_text or "").strip()
+    text = re.sub(r"^```(?:sql|json)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
+    return text
+
+
+def _validate_ai_sql_filter(raw_sql: str, columns: list[str]) -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    sql = str(raw_sql or "").strip()
+    sql = re.sub(r"^where\s+", "", sql, flags=re.I).strip()
+    if not sql:
+        raise ValueError("LLM did not return a SQL filter expression")
+    if _AI_SQL_FORBIDDEN_RE.search(sql):
+        raise ValueError("AI SQL must be a read-only filter expression, not a full SQL statement")
+    sql = _canonicalize_sql_columns(sql, columns)
+    missing = _sql_missing_columns(sql, columns)
+    if missing:
+        raise ValueError("AI SQL referenced unknown column(s): " + ", ".join(missing[:8]))
+    duckdb_engine.normalize_filter_expr(sql)
+    _lazy_filter_expr(sql, columns or ["value"])
+    return sql, warnings
+
+
+_AI_SQL_COLUMN_ALIASES = {
+    "product": ("product", "제품"),
+    "lot_id": ("lot_id", "lot id", "랏"),
+    "root_lot_id": ("root_lot_id", "root lot", "root_lot", "루트 랏", "루트랏"),
+    "wafer_id": ("wafer_id", "wafer", "wf", "웨이퍼"),
+    "step_id": ("step_id", "step id", "스텝"),
+    "function_step": ("function_step", "function step", "func step"),
+    "ppid": ("ppid",),
+    "feature_name": ("feature_name", "feature name", "feature"),
+    "knob_name": ("knob_name", "knob name"),
+    "knob_value": ("knob_value", "knob value"),
+    "category": ("category",),
+    "item_id": ("item_id", "item id"),
+    "item_desc": ("item_desc", "item desc", "description", "desc"),
+    "subitem_id": ("subitem_id", "subitem id", "subitem"),
+    "shot_x": ("shot_x", "shot x"),
+    "shot_y": ("shot_y", "shot y"),
+    "value": ("value", "값"),
+    "rank": ("rank", "순위"),
+    "lsl": ("lsl",),
+    "usl": ("usl",),
+    "tkout_time": ("tkout_time", "tkout time"),
+    "update_time": ("update_time", "update time"),
+    "measure_time": ("measure_time", "measure time", "측정 시간"),
+}
+
+
+def _all_ai_sql_alias_tokens() -> set[str]:
+    out: set[str] = set()
+    for aliases in _AI_SQL_COLUMN_ALIASES.values():
+        for alias in aliases:
+            text = str(alias).casefold()
+            out.add(text)
+            out.update(part for part in re.split(r"[^a-z0-9_]+", text) if part)
+    return out
+
+
+def _alias_span(prompt: str, alias: str) -> tuple[int, int] | None:
+    alias = str(alias or "")
+    if not alias:
+        return None
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_ ]*", alias):
+        pattern = r"(?<![A-Za-z0-9_])" + re.escape(alias) + r"(?![A-Za-z0-9_])"
+        match = re.search(pattern, prompt, flags=re.I)
+        return match.span() if match else None
+    idx = prompt.casefold().find(alias.casefold())
+    return (idx, idx + len(alias)) if idx >= 0 else None
+
+
+def _sql_literal_for_filter(value: str, columns: list[str]) -> str:
+    text = str(value or "").strip().strip("'\"")
+    if not text:
+        return "''"
+    if text.casefold() in {c.casefold() for c in columns}:
+        return _column_lookup(columns).get(text.casefold(), text)
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+        return text
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _fallback_values(text: str, columns: list[str]) -> list[str]:
+    blocked = {c.casefold() for c in columns}
+    blocked.update(_AI_SQL_IGNORE_TOKENS)
+    blocked.update(_all_ai_sql_alias_tokens())
+    blocked.update({"and", "or", "null", "not", "like", "true", "false"})
+    values: list[str] = []
+    for raw in re.findall(r"'([^']+)'|\"([^\"]+)\"|(\d{4}-\d{2}-\d{2})|([A-Za-z][A-Za-z0-9_.-]*|-?\d+(?:\.\d+)?)", text):
+        val = next((item for item in raw if item), "")
+        if not val:
+            continue
+        if val.casefold() in blocked:
+            continue
+        if val not in values:
+            values.append(val)
+    return values[:4]
+
+
+def _fallback_column_hits(prompt: str, columns: list[str]) -> list[str]:
+    lookup = _column_lookup(columns)
+    hits: list[str] = []
+    for col in columns:
+        canonical = lookup.get(str(col).casefold(), str(col))
+        aliases = _AI_SQL_COLUMN_ALIASES.get(str(col).casefold(), (str(col),))
+        matched = False
+        for alias in aliases:
+            span = _alias_span(prompt, alias)
+            if span is None:
+                continue
+            if str(col).casefold() == "lot_id":
+                prefix = prompt[max(0, span[0] - 8):span[0]].casefold().strip()
+                if prefix.endswith("root") or prefix.endswith("루트"):
+                    continue
+            matched = True
+            break
+        if matched:
+            if canonical not in hits:
+                hits.append(canonical)
+    return hits
+
+
+def _fallback_window(prompt: str, column: str) -> str:
+    aliases = _AI_SQL_COLUMN_ALIASES.get(str(column).casefold(), (str(column),))
+    spans = [span for alias in aliases for span in [_alias_span(prompt, alias)] if span is not None]
+    if not spans:
+        return prompt
+    start, end = min(spans, key=lambda item: item[0])
+    tail = prompt[end:end + 120]
+    cut = re.search(r"(?:이고|그리고|,|;|\n|\bAND\b|\bOR\b)", tail, flags=re.I)
+    if cut:
+        tail = tail[:cut.start()]
+    return prompt[start:end] + tail
+
+
+def _fallback_ai_sql(prompt: str, columns: list[str]) -> str:
+    prompt = str(prompt or "").strip()
+    if not prompt or not columns:
+        return ""
+    hits = _fallback_column_hits(prompt, columns)
+    if not hits:
+        return ""
+    low = prompt.casefold()
+    clauses: list[str] = []
+    for col in hits:
+        window = _fallback_window(prompt, col)
+        wlow = window.casefold()
+        values = _fallback_values(window, columns)
+        less_match = re.search(r"(-?\d+(?:\.\d+)?)\s*보다\s*(?:작|낮)", window)
+        greater_match = re.search(r"(-?\d+(?:\.\d+)?)\s*보다\s*(?:큰|크|높)", window)
+        le_match = re.search(r"(-?\d+(?:\.\d+)?)\s*이하", window)
+        ge_match = re.search(r"(-?\d+(?:\.\d+)?)\s*이상", window)
+        if less_match and greater_match:
+            clauses.append(f"{col} < {_sql_literal_for_filter(less_match.group(1), columns)}")
+            clauses.append(f"{col} > {_sql_literal_for_filter(greater_match.group(1), columns)}")
+            continue
+        if greater_match and le_match:
+            clauses.append(f"{col} > {_sql_literal_for_filter(greater_match.group(1), columns)}")
+            clauses.append(f"{col} <= {_sql_literal_for_filter(le_match.group(1), columns)}")
+            continue
+        if ge_match and le_match:
+            clauses.append(f"{col} >= {_sql_literal_for_filter(ge_match.group(1), columns)}")
+            clauses.append(f"{col} <= {_sql_literal_for_filter(le_match.group(1), columns)}")
+            continue
+        if "null이 아닌" in wlow or "비어있지" in wlow or "not null" in wlow:
+            clauses.append(f"{col} IS NOT NULL")
+            continue
+        if "null" in wlow and ("아닌" in wlow or "not" in wlow):
+            clauses.append(f"{col} IS NOT NULL")
+            continue
+        if col.casefold() == "value":
+            other_cols = [c for c in ("lsl", "usl") if c in {x.casefold() for x in columns} and c in wlow]
+            if other_cols and ("보다 작은" in wlow or "작은" in wlow or "less" in wlow):
+                clauses.append(f"{col} < {_column_lookup(columns).get(other_cols[0], other_cols[0])}")
+                continue
+            if other_cols and ("보다 큰" in wlow or "큰" in wlow or "greater" in wlow):
+                clauses.append(f"{col} > {_column_lookup(columns).get(other_cols[0], other_cols[0])}")
+                continue
+        if ("포함" in wlow or "들어가" in wlow or "contains" in wlow) and values:
+            safe = values[0].replace("'", "''")
+            clauses.append(f"{col} LIKE '%{safe}%'")
+            continue
+        if ("시작" in wlow or "starts" in wlow) and values:
+            safe = values[0].replace("'", "''")
+            clauses.append(f"{col} LIKE '{safe}%'")
+            continue
+        if ("또는" in wlow or " or " in wlow) and len(values) >= 2:
+            vals = ", ".join(_sql_literal_for_filter(v, columns) for v in values[:4])
+            clauses.append(f"{col} IN ({vals})")
+            continue
+        if ("이상" in wlow or ">=" in wlow) and values:
+            clauses.append(f"{col} >= {_sql_literal_for_filter(values[0], columns)}")
+            if ("이하" in wlow or "<=" in wlow) and len(values) >= 2:
+                clauses.append(f"{col} <= {_sql_literal_for_filter(values[1], columns)}")
+            continue
+        if ("이하" in wlow or "<=" in wlow) and values:
+            clauses.append(f"{col} <= {_sql_literal_for_filter(values[0], columns)}")
+            continue
+        if ("보다 큰" in wlow or "초과" in wlow or ">" in wlow or "greater" in wlow) and values:
+            clauses.append(f"{col} > {_sql_literal_for_filter(values[0], columns)}")
+            continue
+        if ("보다 작은" in wlow or "미만" in wlow or "<" in wlow or "less" in wlow) and values:
+            clauses.append(f"{col} < {_sql_literal_for_filter(values[0], columns)}")
+            continue
+        if ("이후" in wlow or "after" in wlow) and values:
+            clauses.append(f"{col} >= {_sql_literal_for_filter(values[0], columns)}")
+            continue
+        if ("아닌" in wlow or "!=" in wlow or "not " in wlow) and values:
+            clauses.append(f"{col} != {_sql_literal_for_filter(values[0], columns)}")
+            continue
+        if values:
+            clauses.append(f"{col} = {_sql_literal_for_filter(values[0], columns)}")
+    unique: list[str] = []
+    for clause in clauses:
+        if clause not in unique:
+            unique.append(clause)
+    if not unique:
+        return ""
+    joiner = " OR " if " 또는 " in low and len(unique) <= 2 else " AND "
+    return joiner.join(unique)
+
+
+def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
+                              current_sql: str = "", scope: str = "",
+                              root: str = "", product: str = "",
+                              file: str = "") -> dict:
+    prompt = _cache_safe_text(natural_language, 2000)
+    if not prompt:
+        raise HTTPException(400, "natural_language is required")
+    columns = _settings_context_columns(columns)
+    current_sql = _cache_safe_text(current_sql, 1000)
+    context = {
+        "scope": _cache_safe_text(scope, 80),
+        "root": _cache_safe_text(root, 160),
+        "product": _cache_safe_text(product, 160),
+        "file": _cache_safe_text(file, 240),
+    }
+    warnings: list[str] = []
+    llm_info = {"available": False, "used": False, "error": ""}
+    raw_text = ""
+    plan: dict = {}
+    try:
+        from core import llm_adapter
+        llm_info["available"] = bool(llm_adapter.is_available())
+        if llm_info["available"]:
+            system = _filebrowser_agent_prompt("sql_draft.system", (
+                "You write Flow FileBrowser SQL filter expressions. Return only JSON. "
+                "The output must be a single read-only WHERE/filter expression in the sql field. "
+                "Use only provided columns. Do not return SELECT, FROM, JOIN, ORDER BY, LIMIT, "
+                "DDL, DML, comments, semicolons, markdown, or explanation. "
+                "Prefer SQL syntax: =, !=, >, >=, <, <=, LIKE, NOT LIKE, IN (...), "
+                "IS NULL, IS NOT NULL, AND, OR."
+            ))
+            ask = json.dumps({
+                "natural_language": prompt,
+                "current_sql": current_sql,
+                "columns": columns[:200],
+                "context": context,
+                "response_schema": {"sql": "column = 'value' AND other_col > 0", "notes": "optional short note"},
+            }, ensure_ascii=False)
+            out = llm_adapter.complete(ask, system=system, timeout=20)
+            raw_text = str(out.get("text") or "")
+            llm_info["used"] = bool(out.get("ok") and raw_text.strip())
+            if out.get("error"):
+                llm_info["error"] = str(out.get("error") or "")
+            if raw_text:
+                plan = _cache_llm_json(raw_text)
+        else:
+            warnings.append("LLM is not configured.")
+    except Exception as exc:
+        llm_info["error"] = f"{type(exc).__name__}: {exc}"
+    if llm_info.get("error"):
+        warnings.append(f"LLM failed: {llm_info['error']}")
+    raw_sql = _extract_llm_sql_text(raw_text, plan)
+    try:
+        sql, validate_warnings = _validate_ai_sql_filter(raw_sql, columns)
+        warnings.extend(validate_warnings)
+    except Exception as exc:
+        fallback = _fallback_ai_sql(prompt, columns)
+        if fallback:
+            try:
+                sql, validate_warnings = _validate_ai_sql_filter(fallback, columns)
+                return {
+                    "ok": True,
+                    "saved": False,
+                    "unit_action": "filebrowser.sql.llm.draft",
+                    "sql": sql,
+                    "warnings": [*warnings, f"LLM draft was not usable: {exc}", "deterministic fallback used"],
+                    "columns": columns,
+                    "llm": llm_info,
+                    "fallback": True,
+                }
+            except Exception as fallback_exc:
+                warnings.append(f"deterministic fallback failed: {fallback_exc}")
+        return {
+            "ok": False,
+            "saved": False,
+            "unit_action": "filebrowser.sql.llm.draft",
+            "sql": "",
+            "warnings": [*warnings, str(exc)],
+            "columns": columns,
+            "llm": llm_info,
+        }
+    return {
+        "ok": True,
+        "saved": False,
+        "unit_action": "filebrowser.sql.llm.draft",
+        "sql": sql,
+        "warnings": warnings,
+        "columns": columns,
+        "llm": llm_info,
+        "fallback": False,
+    }
 
 
 def _run_view(df, sql: str, select_cols: str, rows: int,
@@ -3726,6 +5227,8 @@ def view_product(root: str = Query(...), product: str = Query(...),
     try:
         from core.utils import lazy_read_source
         from core.parquet_perf import has_date_filter
+        page, page_size, _offset = _preview_page_args(rows, page_size)
+        rows = page_size
         if meta_only:
             fast_meta = _fast_product_meta_response(root, product, cols, page=page, page_size=page_size)
             if fast_meta is not None:
@@ -3747,11 +5250,11 @@ def view_product(root: str = Query(...), product: str = Query(...),
             files = source_data_files(root=root, product=product)
             if duckdb_engine.should_use_duckdb(files, engine=engine, sql=sql, select_cols=select_cols):
                 try:
-                    return _run_view_duckdb(
+                    return _mark_preview_capped(_run_view_duckdb(
                         files, sql, select_cols, rows,
                         page=page, page_size=page_size, preview_cols=cols,
                         latest_first=False, latest_preview=False,
-                    )
+                    ))
                 except Exception as e:
                     if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
                         raise HTTPException(400, f"DuckDB query failed: {e}")
@@ -3762,9 +5265,9 @@ def view_product(root: str = Query(...), product: str = Query(...),
             latest_only=latest_preview,
         )
         if lf is not None:
-            return _run_view_lazy(lf, sql, select_cols, rows, meta_only=meta_only,
-                                  page=page, page_size=page_size, preview_cols=cols,
-                                  latest_first=latest_preview, latest_preview=latest_preview)
+            return _mark_preview_capped(_run_view_lazy(lf, sql, select_cols, rows, meta_only=meta_only,
+                                                       page=page, page_size=page_size, preview_cols=cols,
+                                                       latest_first=latest_preview, latest_preview=latest_preview))
         # Fallback — legacy DF 경로
         df = read_source(root=root, product=product)
         if meta_only:
@@ -3777,8 +5280,8 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 "data": [], "showing": 0, "meta_only": True,
                 "page": page, "page_size": page_size, "has_more": False,
             }
-        return _run_view(df, sql, select_cols, rows, page=page, page_size=page_size,
-                         preview_cols=cols, latest_first=latest_preview, latest_preview=latest_preview)
+        return _mark_preview_capped(_run_view(df, sql, select_cols, rows, page=page, page_size=page_size,
+                                              preview_cols=cols, latest_first=latest_preview, latest_preview=latest_preview))
     except HTTPException:
         raise
     except Exception as e:
@@ -3897,6 +5400,8 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
     if not fp.is_file():
         raise HTTPException(404)
     try:
+        page, page_size, _offset = _preview_page_args(rows, page_size)
+        rows = page_size
         # v8.4.3 OOM-aware: lazy scan — full read 회피. 10GB+ parquet 도 안전.
         lf = scan_one_file(fp)
         if lf is None:
@@ -3925,22 +5430,13 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
             cached_meta = read_meta(fp)
         except Exception:
             cached_meta = None
-        ml_table = _is_ml_table_file(fp)
-        full_single_file = _has_view_filter(sql, select_cols)
-        if full_single_file:
-            return _run_view_lazy_full(
-                lf, sql, select_cols,
-                preview_cols=cols if ml_table else None,
-            )
-        rows = min(int(rows or 200), 200)
-        page_size = min(int(page_size or 200), 200)
         if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
             try:
-                return _run_view_duckdb(
+                return _mark_preview_capped(_run_view_duckdb(
                     [fp], sql, select_cols, rows,
                     page=page, page_size=page_size, cached_meta=cached_meta,
                     preview_cols=cols,
-                )
+                ))
             except Exception as e:
                 if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
                     raise HTTPException(400, f"DuckDB query failed: {e}")
@@ -3953,7 +5449,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
         resp["all_columns"] = all_cols_full
         resp["total_cols"] = len(all_cols_full)
         resp["dtypes"] = schema_full
-        return resp
+        return _mark_preview_capped(resp)
     except HTTPException:
         raise
     except Exception as e:
@@ -4133,6 +5629,24 @@ class FileBrowserSettingsReq(BaseModel):
     versioned_single_file_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["versioned_single_file_dirs"]
 
 
+class FileBrowserSettingsLlmDraftReq(BaseModel):
+    file: str = ""
+    prompt: str = ""
+    columns: list[str] = []
+    sample_rows: list[dict] = []
+    current_rule: dict = {}
+
+
+class FileBrowserSqlLlmDraftReq(BaseModel):
+    natural_language: str = ""
+    columns: list[str] = []
+    current_sql: str = ""
+    scope: str = ""
+    root: str = ""
+    product: str = ""
+    file: str = ""
+
+
 class BaseFileValidateReq(BaseModel):
     file: str
     csv_text: str = ""
@@ -4184,6 +5698,121 @@ def filebrowser_settings(request: Request):
         "can_manage": _can_manage_filebrowser(me),
         "max_csv_full_read_max_bytes": MAX_CSV_FULL_READ_MAX_BYTES,
     }
+
+
+@router.post("/settings/llm/draft")
+def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request: Request):
+    _require_filebrowser_manager(request)
+    file_key = _clean_rule_file_key(req.file)
+    prompt = _cache_safe_text(req.prompt, 2000)
+    if not prompt:
+        raise HTTPException(400, "prompt is required")
+    sample_rows = _safe_sample_rows(req.sample_rows)
+    columns = _settings_context_columns(req.columns, sample_rows)
+    current_rule, current_warnings = _normalize_csv_rule_draft(req.current_rule or {}, columns=columns)
+    warnings: list[str] = list(current_warnings)
+    llm_info = {"available": False, "used": False, "error": ""}
+    plan: dict = {}
+    try:
+        from core import llm_adapter
+        llm_info["available"] = bool(llm_adapter.is_available())
+        if llm_info["available"]:
+            system = _filebrowser_agent_prompt("settings_draft.system", (
+                "You are an expert Flow FileBrowser CSV rule designer. Return only JSON. "
+                "Use only supplied columns and only csv_rules keys: required_columns, not_empty, "
+                "unique_keys, enums, numeric, date, regex, conditions, ordered_by, sort. "
+                "Draft the most detailed safe rule set the prompt supports. "
+                "ordered_by validates existing row order; sort physically reorders rows on save. "
+                "Order spec type must be one of string, numeric, date, leading_number, rule_order. "
+                "conditions must be simple Polars SQL boolean expressions over supplied columns. "
+                "Do not write files, source code, paths, shell commands, or unsupported keys."
+            ))
+            ask = json.dumps({
+                "file": file_key,
+                "user_prompt": prompt,
+                "expert_mode": _settings_prompt_wants_expert(prompt),
+                "columns": columns[:200],
+                "column_profiles": _settings_column_profiles(columns, sample_rows),
+                "sample_rows": sample_rows,
+                "current_rule": current_rule,
+                "rule_engine_capabilities": {
+                    "required_columns": "listed columns must exist",
+                    "not_empty": "listed columns cannot be blank",
+                    "unique_keys": "each listed column combo must be unique",
+                    "enums": "column value must be one of the listed strings",
+                    "numeric": "min/max/integer checks",
+                    "date": "date/time parse check",
+                    "regex": "Python regex full-row value pattern check",
+                    "conditions": "AND-style row pass conditions; every expression must be true",
+                    "ordered_by": "validate current CSV row order; keys may include group_by",
+                    "sort": "reorder rows during save using the same key shape",
+                },
+                "response_schema": {
+                    "csv_rules": {
+                        file_key: {
+                            "required_columns": ["column"],
+                            "not_empty": ["column"],
+                            "unique_keys": [["column_a", "column_b"]],
+                            "enums": {"column": ["allowed"]},
+                            "numeric": {"column": {"min": 0, "max": 1, "integer": False}},
+                            "date": ["column"],
+                            "regex": {"column": "pattern"},
+                            "conditions": [{"expr": "column != ''", "message": "message"}],
+                            "ordered_by": {"keys": [{"column": "column", "direction": "asc", "type": "string", "nulls": "last"}]},
+                            "sort": [{"column": "column", "direction": "asc", "type": "string", "nulls": "last"}],
+                        }
+                    },
+                    "warnings": ["optional warning"],
+                },
+            }, ensure_ascii=False)
+            out = llm_adapter.complete(ask, system=system, timeout=30)
+            llm_info["used"] = bool(out.get("ok") and out.get("text"))
+            if out.get("error"):
+                llm_info["error"] = str(out.get("error") or "")
+            if out.get("text"):
+                plan = _cache_llm_json(str(out.get("text") or ""))
+    except Exception as exc:
+        llm_info["error"] = f"{type(exc).__name__}: {exc}"
+    if llm_info.get("available") and not llm_info.get("used") and llm_info.get("error"):
+        _draft_warning(warnings, f"LLM failed: {llm_info['error']}")
+    for item in (plan.get("warnings") if isinstance(plan, dict) else []) or []:
+        _draft_warning(warnings, str(item))
+    explicit_rule = _settings_prompt_explicit_rule(prompt, columns, current_rule, warnings)
+    if explicit_rule is not None:
+        raw_rule = explicit_rule
+    else:
+        raw_rule = _settings_llm_rule_candidate(plan, file_key)
+        if not raw_rule:
+            raw_rule = _settings_draft_fallback_rule(prompt, columns, current_rule, warnings, sample_rows)
+    draft, draft_warnings = _normalize_csv_rule_draft(raw_rule, columns=columns)
+    for item in draft_warnings:
+        _draft_warning(warnings, item)
+    return {
+        "ok": True,
+        "saved": False,
+        "file": file_key,
+        "unit_action": "filebrowser.settings.llm.draft",
+        "draft": draft,
+        "csv_rules": {file_key: draft} if draft else {},
+        "warnings": warnings,
+        "columns": columns,
+        "llm": llm_info,
+        "raw_plan": {k: plan.get(k) for k in ("csv_rules", "draft", "rule", "warnings") if isinstance(plan, dict) and k in plan},
+    }
+
+
+@router.post("/sql/llm/draft")
+def filebrowser_sql_llm_draft(req: FileBrowserSqlLlmDraftReq, request: Request):
+    _require_filebrowser_user(request)
+    return _draft_filebrowser_ai_sql(
+        natural_language=req.natural_language,
+        columns=req.columns or [],
+        current_sql=req.current_sql,
+        scope=req.scope,
+        root=req.root,
+        product=req.product,
+        file=req.file,
+    )
 
 
 @router.post("/settings")

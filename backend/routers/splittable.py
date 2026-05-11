@@ -155,6 +155,8 @@ _MATCH_CACHE_THREAD: threading.Thread | None = None
 _MATCH_CACHE_STARTED = False
 _MATCH_CACHE_STOP = threading.Event()
 _MATCH_CACHE_BUILD_LOCK = threading.Lock()
+_MATCH_CACHE_AUTO_BUILD_MISS_TTL_SEC = 120.0
+_MATCH_CACHE_AUTO_BUILD_MISS: dict[str, tuple[float, str]] = {}
 _MATCH_CACHE_JOB_LOCK = threading.Lock()
 _MATCH_CACHE_JOB_THREAD: threading.Thread | None = None
 _MATCH_CACHE_JOB_STATE: dict = {
@@ -1500,6 +1502,7 @@ def ml_table_match(product: str = Query(...), detail: bool = False):
         "manual_override": bool(manual_fs),
         "effective_fab_source": effective,
         "override": override_meta,
+        "match_cache": _match_cache_response_meta(p),
     }
 
 
@@ -4036,6 +4039,62 @@ def _match_cache_current(product: str) -> dict | None:
     return {"product": ml_product, "ov": ov, "fab_source": fab_source, "path": fp, "meta": meta, "lf": lf}
 
 
+def _match_cache_response_meta(product: str) -> dict:
+    """Small response payload for UI badges and Agent trace tables."""
+    current = _match_cache_current(product)
+    if not current:
+        return {"hit": False, "source": "match_cache"}
+    meta = current.get("meta") or {}
+    return {
+        "hit": True,
+        "source": "match_cache",
+        "product": current.get("product") or "",
+        "fab_source": current.get("fab_source") or meta.get("fab_source") or "",
+        "path": str(current.get("path") or ""),
+        "built_at": meta.get("built_at") or "",
+        "row_count": int(meta.get("row_count") or 0),
+        "join_keys": list(meta.get("join_keys") or []),
+        "override_cols": list(meta.get("override_cols") or []),
+        "fab_col": meta.get("fab_col") or "fab_lot_id",
+        "ts_col": meta.get("ts_col") or "",
+        "dedup_keys": list(meta.get("dedup_keys") or []),
+    }
+
+
+def _ensure_match_cache_current(product: str, *, force: bool = False) -> dict | None:
+    """Ensure the product FAB projection is persisted before falling back to raw scan."""
+    current = _match_cache_current(product)
+    if current:
+        return current
+    ml_product, ov, fab_source = _current_fab_override(product)
+    if not ml_product:
+        return None
+    if not fab_source and not _global_fab_source_paths(""):
+        return None
+    config_key = _match_cache_config_key(ml_product, ov, fab_source)
+    missed = _MATCH_CACHE_AUTO_BUILD_MISS.get(ml_product)
+    now = time.time()
+    if (
+        not force
+        and missed
+        and missed[1] == config_key
+        and now - missed[0] < _MATCH_CACHE_AUTO_BUILD_MISS_TTL_SEC
+    ):
+        return None
+    try:
+        result = _refresh_match_cache_products([ml_product], force=force)
+        if not result.get("ok"):
+            _MATCH_CACHE_AUTO_BUILD_MISS[ml_product] = (now, config_key)
+            return None
+        _MATCH_CACHE_AUTO_BUILD_MISS.pop(ml_product, None)
+        return _match_cache_current(ml_product)
+    except Exception as e:
+        logger.warning("SplitTable match cache auto-build failed (product=%s) %s: %s",
+                       ml_product, type(e).__name__, e, exc_info=True)
+        _MATCH_CACHE_AUTO_BUILD_MISS[ml_product] = (now, config_key)
+        return None
+
+
 def _latest_cache_product_values(product: str) -> set[str]:
     raw = str(product or "").strip()
     if not raw:
@@ -5538,15 +5597,15 @@ def _fab_history_scope(product: str, root_lot_id: str = "", fab_lot_id: str = ""
     fab_scope = (fab_lot_id or "").strip()
     if root_scope:
         q = q.filter(_join_key_expr("root") == root_scope.upper())
+    if fab_scope:
+        q = q.filter(_join_key_expr("fab") == fab_scope.upper())
     latest_subset = ["root"] + (["wafer"] if wafer_col else [])
     if ts_col:
         q = q.sort("ts", descending=True, nulls_last=True)
         q = q.unique(subset=latest_subset, keep="first", maintain_order=True)
     else:
         q = q.unique(subset=latest_subset, keep="last", maintain_order=True)
-    if fab_scope:
-        q = q.filter(_join_key_expr("fab") == fab_scope.upper())
-    elif prefix.strip():
+    if not fab_scope and prefix.strip():
         q = q.filter(_contains_literal_ci_expr("fab", prefix))
     try:
         fabs = _limited_unique_values(
@@ -6037,6 +6096,15 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
             fab_lot_id=fab_lot_id,
             wafer_ids=wafer_ids,
         )
+        if not cached and (root_lot_id or fab_lot_id or wafer_ids):
+            ensured = _ensure_match_cache_current(product)
+            if ensured:
+                cached = _cached_fab_projection(
+                    product, ov, fab_source, main_names_list,
+                    root_lot_id=root_lot_id,
+                    fab_lot_id=fab_lot_id,
+                    wafer_ids=wafer_ids,
+                )
         if cached:
             return _join_fab_projection_into_main(
                 lf, set(main_names_list), cached["lf"],
@@ -6875,6 +6943,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             "plan_allowed_prefixes": PLAN_ALLOWED_PREFIXES,
             "mismatch_count": len(mismatches),
             "override": override_meta,
+            "match_cache": _match_cache_response_meta(product),
             "lot_warn": _lot_warn,
             "related_issues": _related_tracker_issues(product, root_lot_id, viewer_username, viewer_role),
         }

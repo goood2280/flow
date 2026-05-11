@@ -17,6 +17,7 @@ if str(ROOT / "backend") not in sys.path:
 
 from core import utils  # noqa: E402
 from core import duckdb_engine  # noqa: E402
+from core import llm_adapter  # noqa: E402
 from core import auth as auth_core  # noqa: E402
 from routers import filebrowser  # noqa: E402
 
@@ -209,6 +210,480 @@ def test_filebrowser_et_cache_refresh_is_manual_even_when_scheduler_disabled(mon
     assert out["mode"] == "manual"
     assert out["schedule_enabled"] is False
     assert out["products"][0]["product"] == "PRODA"
+
+
+def test_filebrowser_lot_progress_cache_status_and_refresh_contract(monkeypatch, tmp_path):
+    from core import lot_progress_cache
+
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    json_fp = tmp_path / "lot_wf_current.json"
+    parquet_fp = tmp_path / "lot_progress_latest_lot_by_root_wafer.parquet"
+    json_fp.write_text(json.dumps({"generated_at": "2026-05-10T01:00:00", "count": 1}), encoding="utf-8")
+    pl.DataFrame({
+        "product": ["PRODA"],
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "lot_id": ["A1000A.1"],
+        "step_id": ["ST01"],
+        "function_step": ["24.SORT"],
+        "tkout_time": ["2026-05-10T00:00:00"],
+        "update_time": ["2026-05-10T01:00:00"],
+    }).write_parquet(parquet_fp)
+    monkeypatch.setattr(lot_progress_cache, "cache_file", lambda: json_fp)
+    monkeypatch.setattr(lot_progress_cache, "filebrowser_cache_parquet_file", lambda: parquet_fp)
+    monkeypatch.setattr(
+        lot_progress_cache,
+        "refresh_lot_progress_cache",
+        lambda force=False: {"generated_at": "2026-05-10T02:00:00", "count": 2, "files_scanned": 3, "rows_seen": 4, "errors": []},
+    )
+    monkeypatch.setattr(lot_progress_cache, "export_lot_progress_parquet", lambda state=None: {"ok": True, "rows": 2, "paths": [str(parquet_fp)]})
+
+    status = filebrowser.cache_match_status(_Request("admin", "admin"), target="lot_progress")
+    refreshed = filebrowser.cache_match_refresh(
+        filebrowser.CacheMatchRefreshReq(target="lot_progress", force=True),
+        _Request("admin", "admin"),
+    )
+
+    assert status["target"] == "lot_progress"
+    assert status["row_count"] == 1
+    assert status["products"] == ["PRODA"]
+    assert refreshed["unit_action"] == "filebrowser.cache.lot_progress.refresh"
+    assert refreshed["row_count"] == 2
+    assert refreshed["paths"] == [str(parquet_fp)]
+
+
+def test_filebrowser_cache_llm_refresh_uses_llm_target_allowlist(monkeypatch):
+    from core import llm_adapter
+
+    events = []
+    calls = []
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *args, **kwargs: {"ok": True, "text": '{"target":"lot_progress","reason":"latest lot cache"}'},
+    )
+    monkeypatch.setattr(filebrowser, "jsonl_append", lambda path, row: events.append(row))
+
+    def fake_refresh(target, **kwargs):
+        calls.append((target, kwargs))
+        return {"ok": True, "target": target, "unit_action": "filebrowser.cache.lot_progress.refresh", "row_count": 9}
+
+    monkeypatch.setattr(filebrowser, "_refresh_filebrowser_cache_target", fake_refresh)
+
+    out = filebrowser.cache_llm_refresh(
+        filebrowser.CacheLlmRefreshReq(prompt="lot_progress_latest_lot 캐시 만들어줘", product="PRODA", force=True),
+        _Request("admin", "admin"),
+    )
+
+    assert out["unit_action"] == "filebrowser.cache.llm.refresh"
+    assert out["target"] == "lot_progress"
+    assert out["llm"]["used"] is True
+    assert calls[0][0] == "lot_progress"
+    assert calls[0][1]["product"] == "PRODA"
+    assert events[-1]["action"] == "filebrowser:cache-llm-refresh"
+
+
+def test_filebrowser_settings_llm_draft_sanitizes_csv_rules(monkeypatch):
+    from core import llm_adapter
+
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "text": json.dumps({
+                "csv_rules": {
+                    "ppid_knob.csv": {
+                        "required_columns": ["product", "missing_col"],
+                        "not_empty": ["feature_name"],
+                        "unique_keys": [["product", "missing_col"]],
+                        "enums": {"operator": ["eq"], "ghost": ["x"]},
+                        "conditions": [
+                            {"expr": "product != ''", "message": "product required"},
+                            {"expr": "missing_col != ''", "message": "bad"},
+                        ],
+                        "sort": [{"column": "ghost", "direction": "asc", "type": "string", "nulls": "last"}],
+                        "write_path": "/tmp/unsafe",
+                    }
+                },
+                "warnings": ["model warning"],
+            })
+        },
+    )
+
+    out = filebrowser.filebrowser_settings_llm_draft(
+        filebrowser.FileBrowserSettingsLlmDraftReq(
+            file="ppid_knob.csv",
+            prompt="필수 컬럼과 unique key 초안",
+            columns=["product", "feature_name", "operator"],
+            sample_rows=[{"product": "PRODA", "feature_name": "24 SORT", "operator": "eq"}],
+            current_rule={},
+        ),
+        _Request("admin", "admin"),
+    )
+
+    draft = out["draft"]
+    warning_text = "\n".join(out["warnings"])
+    assert out["unit_action"] == "filebrowser.settings.llm.draft"
+    assert out["saved"] is False
+    assert out["llm"]["used"] is True
+    assert draft["required_columns"] == ["product"]
+    assert draft["not_empty"] == ["feature_name"]
+    assert "unique_keys" not in draft
+    assert draft["enums"] == {"operator": ["eq"]}
+    assert draft["conditions"] == [{"expr": "product != ''", "message": "product required"}]
+    assert "sort" not in draft
+    assert "write_path" in warning_text
+    assert "missing_col" in warning_text
+    assert "ghost" in warning_text
+
+
+def test_filebrowser_settings_llm_draft_fallback_understands_leading_number_desc(monkeypatch):
+    from core import llm_adapter
+
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *args, **kwargs: {"ok": False, "text": "", "error": "timeout"},
+    )
+
+    out = filebrowser.filebrowser_settings_llm_draft(
+        filebrowser.FileBrowserSettingsLlmDraftReq(
+            file="ppid_knob.csv",
+            prompt="feature_name열에 앞에 숫자에 따라서 내림차순으로 해줘",
+            columns=["product", "feature_name", "operator"],
+            sample_rows=[{"product": "PRODA", "feature_name": "24 SORT", "operator": "eq"}],
+            current_rule={},
+        ),
+        _Request("admin", "admin"),
+    )
+
+    assert out["llm"]["available"] is True
+    assert out["llm"]["used"] is False
+    assert out["draft"]["sort"] == [
+        {"column": "feature_name", "direction": "desc", "type": "leading_number", "nulls": "last"}
+    ]
+    assert "ordered_by" not in out["draft"]
+    warning_text = "\n".join(out["warnings"])
+    assert "LLM failed: timeout" in warning_text
+
+
+def test_filebrowser_settings_llm_draft_expert_fallback_builds_detailed_rules(monkeypatch):
+    from core import llm_adapter
+
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_settings_llm_draft(
+        filebrowser.FileBrowserSettingsLlmDraftReq(
+            file="ppid_knob.csv",
+            prompt="적용규칙에 대해서 전문가처럼 가능한거 전부 상세하게 짜줘",
+            columns=[
+                "product", "feature_name", "function_step", "rule_order",
+                "operator", "category", "rank", "start_time", "end_time",
+            ],
+            sample_rows=[{
+                "product": "PRODA",
+                "feature_name": "24 SORT",
+                "function_step": "SORT",
+                "rule_order": "R1",
+                "operator": "eq",
+                "category": "KNOB",
+                "rank": "1",
+                "start_time": "2026-05-01",
+                "end_time": "2026-05-02",
+            }],
+            current_rule={},
+        ),
+        _Request("admin", "admin"),
+    )
+
+    draft = out["draft"]
+    assert "product" in draft["required_columns"]
+    assert "feature_name" in draft["not_empty"]
+    assert draft["unique_keys"][0] == ["product", "feature_name", "rule_order"]
+    assert draft["enums"]["operator"] == ["eq"]
+    assert draft["numeric"]["rank"]["integer"] is True
+    assert "start_time" in draft["date"]
+    assert draft["regex"]["feature_name"] == r"\d+(?:\.\d+)?\s+.+"
+    assert draft["conditions"] == [{"expr": "end_time >= start_time", "message": "end_time must be >= start_time"}]
+    assert draft["sort"] == [
+        {"column": "product", "direction": "asc", "type": "string", "nulls": "last"},
+        {"column": "feature_name", "direction": "asc", "type": "leading_number", "nulls": "last"},
+        {"column": "rule_order", "direction": "asc", "type": "rule_order", "nulls": "last"},
+    ]
+
+
+def test_filebrowser_settings_llm_draft_explicit_duplicate_prompt_overrides_llm_noise(monkeypatch):
+    from core import llm_adapter
+
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "text": json.dumps({
+                "csv_rules": {
+                    "lot.csv": {
+                        "required_columns": ["product", "feature_name"],
+                        "not_empty": ["product", "feature_name"],
+                        "enums": {"operator": ["eq"]},
+                    }
+                }
+            }),
+        },
+    )
+
+    out = filebrowser.filebrowser_settings_llm_draft(
+        filebrowser.FileBrowserSettingsLlmDraftReq(
+            file="lot.csv",
+            prompt="product, lot_id, wafer_id가 다 똑같은 행이 있어서는 안돼",
+            columns=["product", "lot_id", "wafer_id", "feature_name", "operator"],
+            sample_rows=[{"product": "PRODA", "lot_id": "A1000.1", "wafer_id": "21"}],
+            current_rule={},
+        ),
+        _Request("admin", "admin"),
+    )
+
+    assert out["llm"]["used"] is True
+    assert out["draft"] == {"unique_keys": [["product", "lot_id", "wafer_id"]]}
+    assert out["warnings"] == []
+
+
+def test_filebrowser_settings_llm_draft_explicit_duplicate_prompt_warns_missing_columns(monkeypatch):
+    from core import llm_adapter
+
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_settings_llm_draft(
+        filebrowser.FileBrowserSettingsLlmDraftReq(
+            file="ppid_knob.csv",
+            prompt="product, lot_id, wafer_id가 다 똑같은 행이 있어서는 안돼",
+            columns=["product", "feature_name", "operator"],
+            sample_rows=[{"product": "PRODA", "feature_name": "24 SORT", "operator": "eq"}],
+            current_rule={"required_columns": ["product", "feature_name"], "enums": {"operator": ["eq"]}},
+        ),
+        _Request("admin", "admin"),
+    )
+
+    assert out["draft"] == {}
+    warning_text = "\n".join(out["warnings"])
+    assert "lot_id" in warning_text
+    assert "wafer_id" in warning_text
+    assert "unique key" in warning_text
+
+
+def test_filebrowser_settings_llm_draft_explicit_enum_prompt_overrides_llm_noise(monkeypatch):
+    from core import llm_adapter
+
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "text": json.dumps({
+                "csv_rules": {
+                    "ppid_knob.csv": {
+                        "required_columns": ["product", "feature_name", "function_step", "rule_order", "operator", "category"],
+                        "not_empty": ["product", "feature_name", "function_step", "rule_order", "operator", "category"],
+                        "unique_keys": [["product", "feature_name", "function_step", "rule_order"]],
+                        "enums": {"operator": ["eq", "neq"]},
+                    }
+                }
+            }),
+        },
+    )
+
+    out = filebrowser.filebrowser_settings_llm_draft(
+        filebrowser.FileBrowserSettingsLlmDraftReq(
+            file="ppid_knob.csv",
+            prompt="operator는 eq나 neq만 있어야해",
+            columns=["product", "feature_name", "function_step", "rule_order", "operator", "category"],
+            sample_rows=[{"operator": "eq"}],
+            current_rule={},
+        ),
+        _Request("admin", "admin"),
+    )
+
+    assert out["llm"]["used"] is True
+    assert out["draft"] == {"enums": {"operator": ["eq", "neq"]}}
+    assert out["warnings"] == []
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        ("ppid는 비어있으면 안돼", {"not_empty": ["ppid"]}),
+        (
+            "product feature_name function_step rule_order operator category 값은 비어있으면 안돼",
+            {"not_empty": ["product", "feature_name", "function_step", "rule_order", "operator", "category"]},
+        ),
+        (
+            "product feature_name function_step rule_order operator category 컬럼은 반드시 있어야해",
+            {"required_columns": ["product", "feature_name", "function_step", "rule_order", "operator", "category"]},
+        ),
+        ("rank는 1 이상 숫자 정수여야해", {"numeric": {"rank": {"min": 1, "integer": True}}}),
+        ("knob_value는 숫자여야 하고 0 이상 100 이하만 허용해", {"numeric": {"knob_value": {"min": 0, "max": 100}}}),
+        ("rule_order는 R1 R2 R3 같은 R숫자 또는 RO만 가능해", {"regex": {"rule_order": r"R\d+|RO"}}),
+        ("rule_order는 RO 또는 R1만 허용해", {"enums": {"rule_order": ["RO", "R1"]}}),
+        ("feature_name은 앞에 24 SORT처럼 숫자와 공정명이 있어야해", {"regex": {"feature_name": r"\d+(?:\.\d+)?\s+.+"}}),
+        ("category는 PPID_05_1 같은 PPID_숫자_숫자 형식이어야해", {"regex": {"category": r"^PPID_\d+_\d+$"}}),
+        ("function_step은 대문자와 underscore 형식이어야해", {"regex": {"function_step": r"^[A-Z_]+$"}}),
+        ("end_time은 start_time보다 빠르면 안돼", {"conditions": [{"expr": "end_time >= start_time", "message": "end_time must be >= start_time"}]}),
+        (
+            "product 오름차순, feature_name 앞 숫자 오름차순, rule_order 순서대로 저장 정렬해줘",
+            {"sort": [
+                {"column": "product", "direction": "asc", "type": "string", "nulls": "last"},
+                {"column": "feature_name", "direction": "asc", "type": "leading_number", "nulls": "last"},
+                {"column": "rule_order", "direction": "asc", "type": "rule_order", "nulls": "last"},
+            ]},
+        ),
+        (
+            "현재 행 순서가 product, feature_name, rule_order 기준으로 정렬되어 있는지 검증해줘",
+            {"ordered_by": {"keys": [
+                {"column": "product", "direction": "asc", "type": "string", "nulls": "last"},
+                {"column": "feature_name", "direction": "asc", "type": "leading_number", "nulls": "last"},
+                {"column": "rule_order", "direction": "asc", "type": "rule_order", "nulls": "last"},
+            ]}},
+        ),
+        ("knob_name과 knob_value는 빈 값이 있으면 안돼", {"not_empty": ["knob_name", "knob_value"]}),
+    ],
+)
+def test_filebrowser_settings_llm_draft_explicit_single_intents_stay_minimal(monkeypatch, prompt, expected):
+    from core import llm_adapter
+
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "text": json.dumps({
+                "csv_rules": {
+                    "ppid_knob.csv": {
+                        "required_columns": ["product", "feature_name", "function_step", "rule_order", "operator", "category"],
+                        "not_empty": ["product", "feature_name", "function_step", "rule_order", "operator", "category"],
+                        "unique_keys": [["product", "feature_name", "function_step", "rule_order"]],
+                        "enums": {"operator": ["eq", "neq"]},
+                    }
+                }
+            }),
+        },
+    )
+
+    out = filebrowser.filebrowser_settings_llm_draft(
+        filebrowser.FileBrowserSettingsLlmDraftReq(
+            file="ppid_knob.csv",
+            prompt=prompt,
+            columns=[
+                "product", "feature_name", "function_step", "rule_order", "operator", "category",
+                "ppid", "rank", "knob_name", "knob_value", "start_time", "end_time",
+            ],
+            sample_rows=[{"product": "PRODA", "feature_name": "24 SORT", "operator": "eq"}],
+            current_rule={},
+        ),
+        _Request("admin", "admin"),
+    )
+
+    assert out["llm"]["used"] is True
+    assert out["draft"] == expected
+
+
+def test_filebrowser_sql_llm_draft_writes_filter_only(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {"ok": True, "text": json.dumps({"sql": "lot_id = 'A1000' AND wafer_id = 21"})},
+    )
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="A1000 wafer 21만 보여줘",
+            columns=["LOT_ID", "wafer_id", "step_id", "value"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["unit_action"] == "filebrowser.sql.llm.draft"
+    assert out["sql"] == "LOT_ID = 'A1000' AND wafer_id = 21"
+    assert out["llm"]["used"] is True
+
+
+@pytest.mark.parametrize("bad_sql", [
+    "SELECT * FROM source WHERE lot_id = 'A1000'",
+    "value > 3; DROP TABLE source",
+    "missing_col = 'x'",
+])
+def test_filebrowser_sql_llm_draft_rejects_unsafe_or_unknown_columns(monkeypatch, bad_sql):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {"ok": True, "text": json.dumps({"sql": bad_sql})},
+    )
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="bad sql",
+            columns=["lot_id", "wafer_id", "value"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is False
+    assert out["sql"] == ""
+    assert out["warnings"]
+
+
+def test_filebrowser_sql_llm_draft_falls_back_when_llm_unavailable(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="root lot이 A1000이고 wafer 21",
+            columns=["root_lot_id", "wafer_id", "step_id"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["fallback"] is True
+    assert out["llm"]["used"] is False
+    assert out["sql"] == "root_lot_id = 'A1000' AND wafer_id = 21"
+
+
+def test_filebrowser_sql_llm_draft_fallback_handles_root_lot_wafer_step(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="root lot id 가 A1000 이고 wafer id가 21 이면서 step_id가 AA100240 행들을 찾아줘",
+            columns=["root_lot_id", "lot_id", "wafer_id", "step_id", "product"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["fallback"] is True
+    assert out["sql"] == "root_lot_id = 'A1000' AND wafer_id = 21 AND step_id = 'AA100240'"
 
 
 def test_filebrowser_cache_refresh_requires_admin(monkeypatch):
@@ -714,7 +1189,8 @@ def test_cache_folder_files_are_readable_single_files_without_versions(monkeypat
     )
     assert parquet_preview["showing"] == 200
     assert parquet_preview.get("single_file_full_read") is not True
-    assert parquet_preview["has_more"] is True
+    assert parquet_preview["has_more"] is False
+    assert parquet_preview["preview_row_limit"] == 200
 
     versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="cache/wide_cache.parquet")
     assert versions["versioned"] is False
@@ -860,7 +1336,8 @@ def test_base_file_view_parquet_defaults_to_200_row_preview(monkeypatch, tmp_pat
 
     assert result.get("single_file_full_read") is not True
     assert result["showing"] == 200
-    assert result["has_more"] is True
+    assert result["has_more"] is False
+    assert result["preview_row_limit"] == 200
     assert len(result["showing_cols"]) == 10
     assert result["truncated_cols"] is True
 
@@ -903,7 +1380,8 @@ def test_base_file_view_reads_small_csv_fully_and_threshold_falls_back(monkeypat
 
     assert paged.get("single_file_full_read") is not True
     assert paged["showing"] == 200
-    assert paged["has_more"] is True
+    assert paged["has_more"] is False
+    assert paged["preview_row_limit"] == 200
 
 
 def test_base_file_view_ml_table_defaults_to_200_then_full_on_column_filter(monkeypatch, tmp_path):
@@ -934,7 +1412,7 @@ def test_base_file_view_ml_table_defaults_to_200_then_full_on_column_filter(monk
         page_size=200,
     )
     assert preview["showing"] == 200
-    assert preview["has_more"] is True
+    assert preview["has_more"] is False
     assert preview.get("single_file_full_read") is not True
 
     selected = filebrowser.base_file_view(
@@ -948,11 +1426,12 @@ def test_base_file_view_ml_table_defaults_to_200_then_full_on_column_filter(monk
         page=0,
         page_size=200,
     )
-    assert selected["single_file_full_read"] is True
-    assert selected["showing"] == 250
+    assert selected.get("single_file_full_read") is not True
+    assert selected["showing"] == 200
     assert selected["has_more"] is False
     assert selected["columns"] == ["value"]
-    assert selected["data"][-1] == {"value": 249}
+    assert selected["preview_row_limit"] == 200
+    assert selected["data"][-1] == {"value": 199}
 
 
 def test_filebrowser_settings_gate_allows_page_admin(monkeypatch, tmp_path):

@@ -102,6 +102,7 @@ def gather_files():
             if p.name.lower() in {'users.csv', 'users.json', 'users_cache.json',
                                    'groups.json', 'admin_settings.json',
                                    'settings.json', 'filebrowser_settings.json',
+                                   'filebrowser_agent_prompts.json',
                                    'shares.json', 'informs.json',
                                    'product_contacts.json', 'notes.json',
                                    'source_config.json', 'dashboard_snapshots.json',
@@ -243,7 +244,7 @@ _PROTECTED_BASENAMES = {{
     'tokens.json', 'sessions.json', 'session_tokens.json',
     # 그룹/설정
     'groups.json', 'admin_settings.json', 'settings.json',
-    'filebrowser_settings.json',
+    'filebrowser_settings.json', 'filebrowser_agent_prompts.json',
     'shares.json', 'informs.json', 'config.json', 'product_contacts.json',
     'mail_groups.json', 'mail_config.json',
     # SplitTable / Dashboard / 인폼 state
@@ -838,6 +839,21 @@ def _seed_semiconductor_flow_data() -> None:
     print(f"[seed] semiconductor RCA seed installed: {dst}")
 
 
+def _seed_filebrowser_agent_prompts() -> None:
+    """Install FileBrowser LLM prompt defaults only when the runtime copy is absent."""
+    src = ROOT / 'backend' / 'core' / 'filebrowser_agent_prompts.default.json'
+    if not src.is_file():
+        return
+    flow_root = Path(os.environ.get('FLOW_DATA_ROOT') or (ROOT / 'data' / 'flow-data')).resolve()
+    dst = flow_root / 'filebrowser_agent_prompts.json'
+    if dst.exists():
+        print(f"[seed] FileBrowser agent prompts preserved: {dst}")
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(src.read_bytes())
+    print(f"[seed] FileBrowser agent prompts installed: {dst}")
+
+
 def extract() -> int:
     # v8.8.17: 추출 직전 data_root 스냅샷 (~/.flow_backups/v<ver>-<stamp>/).
     # 스냅샷 실패/없음이면 snap=None 으로 계속 진행 — 신규 설치는 보호할 게 없음.
@@ -880,6 +896,10 @@ def extract() -> int:
         _seed_semiconductor_flow_data()
     except Exception as e:
         print(f"[seed] WARN semiconductor RCA seed install failed: {e}")
+    try:
+        _seed_filebrowser_agent_prompts()
+    except Exception as e:
+        print(f"[seed] WARN FileBrowser agent prompts install failed: {e}")
     print(f"\\n[extract] flow v{VERSION} - {len(FILES)} files processed -> {ROOT}")
     print(f"[extract] user data preservation: snapshot @ ~/.flow_backups/ + "
           f"5-layer _write guard + post-extract SHA-256 verify/restore.")

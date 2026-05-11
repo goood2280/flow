@@ -24,6 +24,13 @@
 
 ## Done
 
+- [x] (Codex) FileBrowser fast preview / full CSV download / AI SQL draft evaluation 구현 — preview 200행 고정, CSV 다운로드는 500k/100MB 한도까지, `/sql/llm/draft` + live eval/fallback 검증.
+- [x] (Codex) FileBrowser 파일설정 LLM 규칙 초안을 전문가형 prompt/fallback으로 보강하고, 생성 초안 요약/JSON 미리보기와 초안 적용 흐름을 추가.
+- [x] (Codex) Agent LLM runtime 설정을 Google Cloud Vertex AI Flash 계열로 전환 — `openai_compatible` / `google/gemini-2.5-flash` / `us-central1` endpoint 사용.
+- [x] (Codex) Agent LLM runtime 설정을 OpenAI API + GPT OSS 120B급 모델로 채움 — 기존 admin token을 보존하고 active provider/model/api_url을 `openai` / `gpt-5.4-mini` / `https://api.openai.com/v1`로 정렬.
+- [x] (Codex) FileBrowser file-settings LLM draft endpoint/UI, FileBrowser prompt seed, Tracker scheduler lot_progress cache 우선 조회를 추가.
+- [x] (Codex) FileBrowser 캐시 탭에 `lot_progress_latest_lot_by_root_wafer` 수동 생성과 LLM allowlist 기반 캐시 생성 prompt 추가.
+- [x] (Codex) SplitTable FAB lot 표시가 manual 컬럼오버라이드로 보이는 회귀 수정 — `/view`에서 match cache를 우선 생성/사용하고 UI 배지는 cache hit를 우선 표시.
 - [x] (Codex) FileBrowser 캐시 탭에서 SplitTable 매칭 캐시 자동 주기/수동 갱신을 분리하고 status HTTP 500을 복구. Tracker Analysis ET 캐시는 자동 scheduler 없이 수동 갱신만 허용.
 - [x] (Codex) Agent prompt history를 `data/flow-data/flowi_activity.jsonl`에서 다시 불러오고, Schema 관계 전체 스캔/엔지니어 편집 저장, Wiki/Vault 공통 지식 목록 노출, `A1001 24.SORT KNOB` SplitTable product clarification 라우팅을 추가.
 - [x] (Codex) Agent 탭을 `실행 루프 / Wiki Graph / Schema 관계 / AI 연결` 소탭으로 재구성하고, trace 공개 요약(persona/prompt cache/subagent/clarification loop), prompt-only 실행 루프(product override 제거), schema relation preview/admin save graph/delete를 추가.

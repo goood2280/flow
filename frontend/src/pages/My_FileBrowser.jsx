@@ -193,7 +193,59 @@ const formToRule=(form={})=>{
   if(sort.length)rule.sort=sort;
   return rule;
 };
+const mergeRuleList=(a=[],b=[])=>{
+  const out=[];const seen=new Set();
+  [...(a||[]),...(b||[])].forEach(v=>{const text=String(v||"").trim();const key=text.toLowerCase();if(text&&!seen.has(key)){seen.add(key);out.push(text);}});
+  return out;
+};
+const mergeUniqueKeys=(a=[],b=[])=>{
+  const out=[];const seen=new Set();
+  [...(a||[]),...(b||[])].forEach(cols=>{
+    const clean=(cols||[]).map(v=>String(v||"").trim()).filter(Boolean);
+    const key=clean.map(v=>v.toLowerCase()).join("\u0001");
+    if(clean.length&&!seen.has(key)){seen.add(key);out.push(clean);}
+  });
+  return out;
+};
+const mergeRuleMaps=(a={},b={})=>({...a,...b});
+const mergeEnumMaps=(a={},b={})=>{
+  const out={...a};
+  Object.entries(b||{}).forEach(([col,vals])=>{out[col]=mergeRuleList(out[col]||[],vals||[]);});
+  return out;
+};
+const mergeConditions=(a=[],b=[])=>{
+  const out=[];const seen=new Set();
+  [...(a||[]),...(b||[])].forEach(x=>{const item={expr:String(x?.expr||"").trim(),message:String(x?.message||"").trim()};const key=item.expr+"\u0001"+item.message;if(item.expr&&!seen.has(key)){seen.add(key);out.push(item);}});
+  return out;
+};
+const mergeCsvRule=(base={},draft={})=>{
+  const out={...base};
+  const listKeys=["required_columns","not_empty","date"];
+  listKeys.forEach(k=>{if(draft[k]?.length)out[k]=mergeRuleList(out[k]||[],draft[k]);});
+  if(draft.unique_keys?.length)out.unique_keys=mergeUniqueKeys(out.unique_keys||[],draft.unique_keys);
+  if(draft.enums&&Object.keys(draft.enums).length)out.enums=mergeEnumMaps(out.enums||{},draft.enums);
+  ["numeric","regex"].forEach(k=>{if(draft[k]&&Object.keys(draft[k]).length)out[k]=mergeRuleMaps(out[k]||{},draft[k]);});
+  if(draft.conditions?.length)out.conditions=mergeConditions(out.conditions||[],draft.conditions);
+  if(draft.ordered_by?.keys?.length)out.ordered_by=draft.ordered_by;
+  if(draft.sort?.length)out.sort=draft.sort;
+  return out;
+};
 const ruleCount=(summary={})=>Object.values(summary||{}).reduce((sum,v)=>sum+Number(v||0),0);
+const ruleSummaryGroups=(rule={})=>{
+  const groups=[];
+  const list=(key,label,values)=>{if(values?.length)groups.push({key,label,items:values.map(v=>String(v))});};
+  list("required_columns","필수 컬럼",rule.required_columns||[]);
+  list("not_empty","빈 값 금지",rule.not_empty||[]);
+  if(rule.unique_keys?.length)groups.push({key:"unique_keys",label:"Unique key",items:rule.unique_keys.map(cols=>(cols||[]).join(" + "))});
+  if(rule.enums&&Object.keys(rule.enums).length)groups.push({key:"enums",label:"Enum",items:Object.entries(rule.enums).map(([col,vals])=>`${col}: ${(vals||[]).join("|")}`)});
+  if(rule.numeric&&Object.keys(rule.numeric).length)groups.push({key:"numeric",label:"Numeric",items:Object.entries(rule.numeric).map(([col,spec])=>`${col}${spec?.min!==undefined?" min="+spec.min:""}${spec?.max!==undefined?" max="+spec.max:""}${spec?.integer?" integer":""}`)});
+  list("date","Date",rule.date||[]);
+  if(rule.regex&&Object.keys(rule.regex).length)groups.push({key:"regex",label:"Regex",items:Object.entries(rule.regex).map(([col,pattern])=>`${col}: ${pattern}`)});
+  if(rule.conditions?.length)groups.push({key:"conditions",label:"Condition",items:rule.conditions.map(x=>`${x.expr||""}${x.message?" => "+x.message:""}`)});
+  if(rule.ordered_by?.keys?.length)groups.push({key:"ordered_by",label:"Ordered by",items:rule.ordered_by.keys.map(x=>[x.column,x.direction||"asc",x.type||"string",x.nulls||"last"].join(" "))});
+  if(rule.sort?.length)groups.push({key:"sort",label:"Save sort",items:rule.sort.map(x=>[x.column,x.direction||"asc",x.type||"string",x.nulls||"last"].join(" "))});
+  return groups;
+};
 const normalizePageableSource = (file) => (file||"");
 function formatSize(b){if(!b)return"-";if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB";}
 function revStyle(rev){
@@ -511,17 +563,29 @@ export default function My_FileBrowser({user,onNavigate}){
   const[fbSelectedFile,setFbSelectedFile]=useState("");
   const[fbRuleForm,setFbRuleForm]=useState(emptyRuleForm());
   const[fbValidation,setFbValidation]=useState(null);
-  const[fbCacheStatus,setFbCacheStatus]=useState({fab:null,et:null});
+  const[fbSettingsLlmPrompt,setFbSettingsLlmPrompt]=useState("현재 CSV 컬럼 기준으로 필수 컬럼, 빈 값 금지, unique key, 정렬 규칙 초안 만들어줘");
+  const[fbSettingsLlmBusy,setFbSettingsLlmBusy]=useState(false);
+  const[fbSettingsLlmDraft,setFbSettingsLlmDraft]=useState(null);
+  const[fbCacheStatus,setFbCacheStatus]=useState({fab:null,et:null,lot_progress:null});
   const[fbCacheBusy,setFbCacheBusy]=useState("");
   const[fbCacheMsg,setFbCacheMsg]=useState("");
   const[fbCacheInterval,setFbCacheInterval]=useState("30");
   const[fbCacheSettingsBusy,setFbCacheSettingsBusy]=useState(false);
+  const[fbCacheLlmPrompt,setFbCacheLlmPrompt]=useState("lot_progress_latest_lot_by_root_wafer 캐시 만들어줘");
+  const[fbCacheLlmProduct,setFbCacheLlmProduct]=useState("");
+  const[fbCacheLlmBusy,setFbCacheLlmBusy]=useState(false);
+  const[fbCacheLlmResult,setFbCacheLlmResult]=useState(null);
+  const[aiSqlOpen,setAiSqlOpen]=useState(false);
+  const[aiSqlPrompt,setAiSqlPrompt]=useState("");
+  const[aiSqlBusy,setAiSqlBusy]=useState(false);
+  const[aiSqlResult,setAiSqlResult]=useState(null);
 
   const csvBaseFiles=(baseFiles||[]).filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
   const selectFileRule=(file,settings=fbSettings)=>{
     const key=String(file||"");
     setFbSelectedFile(key);
     setFbValidation(null);
+    setFbSettingsLlmDraft(null);
     setFbRuleForm(ruleToForm((settings?.csv_rules||{})[key]||{}));
   };
   const loadFilebrowserSettings=async()=>{
@@ -598,13 +662,59 @@ export default function My_FileBrowser({user,onNavigate}){
       setFbSettingsLoading(false);
     }
   };
+  const loadFileRuleDraftContext=async()=>{
+    if(mode==="base"&&selBaseFile===fbSelectedFile){
+      const columns=(data?.all_columns||data?.columns||editCols||[]).map(c=>String(c||"")).filter(Boolean);
+      const sampleRows=(data?.data||[]).slice(0,5);
+      if(columns.length||sampleRows.length)return{columns,sample_rows:sampleRows};
+    }
+    try{
+      const q=new URLSearchParams({file:fbSelectedFile,rows:"20",cols:"80",meta_only:"false",_ts:String(Date.now())});
+      const d=await sf(API+"/base-file-view?"+q.toString());
+      return{columns:(d.all_columns||d.columns||[]).map(c=>String(c||"")).filter(Boolean),sample_rows:(d.data||[]).slice(0,5)};
+    }catch(_){
+      return{columns:[],sample_rows:[]};
+    }
+  };
+  const draftFileRuleByLlm=async()=>{
+    if(!fbSelectedFile){setFbSettingsMsg("CSV 파일을 먼저 선택하세요.");return;}
+    const prompt=String(fbSettingsLlmPrompt||"").trim();
+    if(!prompt){setFbSettingsMsg("규칙 초안 prompt를 입력하세요.");return;}
+    setFbSettingsLlmBusy(true);setFbSettingsMsg("");setFbSettingsLlmDraft(null);
+    try{
+      const ctx=await loadFileRuleDraftContext();
+      const d=await sf(API+"/settings/llm/draft",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+        file:fbSelectedFile,
+        prompt,
+        columns:ctx.columns||[],
+        sample_rows:ctx.sample_rows||[],
+        current_rule:formToRule(fbRuleForm),
+      })});
+      setFbSettingsLlmDraft(d);
+      const warnCount=(d.warnings||[]).length;
+      setFbSettingsMsg(`규칙 초안 생성 완료${warnCount?` · warnings ${warnCount}`:""}`);
+    }catch(e){
+      setFbSettingsLlmDraft({ok:false,error:e.message||"규칙 초안 생성 실패"});
+      setFbSettingsMsg(e.message||"규칙 초안 생성 실패");
+    }finally{
+      setFbSettingsLlmBusy(false);
+    }
+  };
+  const applyFileRuleDraft=()=>{
+    const draft=fbSettingsLlmDraft?.draft||fbSettingsLlmDraft?.csv_rules?.[fbSelectedFile]||null;
+    if(!draft)return;
+    setFbRuleForm(ruleToForm(mergeCsvRule(formToRule(fbRuleForm),draft)));
+    setFbValidation(null);
+    setFbSettingsMsg("초안을 기존 form에 병합했습니다. 저장을 눌러야 반영됩니다.");
+  };
   const loadFilebrowserCacheStatus=async()=>{
     try{
-      const [fab,et]=await Promise.all([
+      const [fab,et,lotProgress]=await Promise.all([
         sf(API+"/cache/match/status?target=fab").catch(e=>({ok:false,target:"fab",error:e.message})),
         sf(API+"/cache/match/status?target=et").catch(e=>({ok:false,target:"et",error:e.message})),
+        sf(API+"/cache/match/status?target=lot_progress").catch(e=>({ok:false,target:"lot_progress",error:e.message})),
       ]);
-      setFbCacheStatus({fab,et});
+      setFbCacheStatus({fab,et,lot_progress:lotProgress});
       if(fab?.interval_minutes)setFbCacheInterval(String(fab.interval_minutes));
     }catch(_){}
   };
@@ -634,6 +744,25 @@ export default function My_FileBrowser({user,onNavigate}){
       setFbCacheMsg(e.message||"캐시 갱신 실패");
     }finally{
       setFbCacheBusy("");
+    }
+  };
+  const refreshFilebrowserCacheByLlm=async()=>{
+    const prompt=String(fbCacheLlmPrompt||"").trim();
+    if(!prompt){setFbCacheMsg("LLM 캐시 prompt를 입력하세요.");return;}
+    setFbCacheLlmBusy(true);setFbCacheMsg("");setFbCacheLlmResult(null);
+    try{
+      const d=await sf(API+"/cache/llm/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt,product:fbCacheLlmProduct,force:true})});
+      setFbCacheLlmResult(d);
+      const target=d?.target||d?.result?.target||"cache";
+      if(d?.queued)setFbCacheMsg(`${target} 캐시 갱신 예약됨`);
+      else if(d?.running)setFbCacheMsg(`${target} 캐시 갱신 실행 중`);
+      else setFbCacheMsg(`${target} 캐시 생성 요청 완료`);
+      loadFilebrowserCacheStatus();
+    }catch(e){
+      setFbCacheMsg(e.message||"LLM 캐시 생성 실패");
+      setFbCacheLlmResult({ok:false,error:e.message||"LLM 캐시 생성 실패"});
+    }finally{
+      setFbCacheLlmBusy(false);
     }
   };
 
@@ -867,6 +996,39 @@ export default function My_FileBrowser({user,onNavigate}){
     else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,null,{full:true,page:0});
   };
 
+  const draftAiSql=async()=>{
+    const prompt=String(aiSqlPrompt||"").trim();
+    if(!prompt){toast.warn("자연어 조건을 입력하세요.");return;}
+    const columns=(data?.all_columns||data?.columns||[]).map(c=>String(c||"")).filter(Boolean);
+    if(!columns.length){toast.warn("먼저 DB나 파일을 열어 컬럼을 로드하세요.");return;}
+    setAiSqlBusy(true);setAiSqlResult(null);
+    try{
+      const body={
+        natural_language:prompt,
+        columns,
+        current_sql:sql||"",
+        scope:mode,
+        root:selRoot||"",
+        product:selProd||"",
+        file:selBaseFile||selRootPq||"",
+      };
+      const d=await sf(API+"/sql/llm/draft",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      setAiSqlResult(d);
+      if(d.ok&&d.sql){
+        setSql(d.sql);
+        toast.ok("AI SQL 초안을 입력창에 넣었습니다.");
+      }else{
+        toast.warn((d.warnings||[])[0]||"AI SQL 초안 생성 실패");
+      }
+    }catch(e){
+      const msg=e.message||"AI SQL 초안 생성 실패";
+      setAiSqlResult({ok:false,warnings:[msg]});
+      toast.error(msg);
+    }finally{
+      setAiSqlBusy(false);
+    }
+  };
+
   const baseFileExt=(selBaseMeta?.ext||"").toLowerCase();
   const baseFileEditable = canEditBaseMeta(selBaseMeta);
   const canEditCurrentBase=mode==="base"&&!!selBaseFile&&!baseRaw&&baseFileEditable&&isFileBrowserAdmin;
@@ -1070,7 +1232,7 @@ export default function My_FileBrowser({user,onNavigate}){
   };
 
   const downloadCsv=()=>{
-    let url=API+"/download-csv?username="+(user?.username||"anon")+"&sql="+encodeURIComponent(sql);
+    let url=API+"/download-csv?username="+(user?.username||"anon")+"&max_rows=500000&sql="+encodeURIComponent(sql);
     if(selectedCols.length)url+="&select_cols="+encodeURIComponent(selectedCols.join(","));
     if(mode==="base")url+="&file="+encodeURIComponent(selBaseFile);
     else if(mode==="rootpq")url+="&file="+encodeURIComponent(selRootPq);
@@ -1096,10 +1258,14 @@ export default function My_FileBrowser({user,onNavigate}){
 
   const allCols=data?.all_columns||data?.columns||[];
   const filteredCols=colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols;
+  const fbActiveRule=formToRule(fbRuleForm);
+  const fbActiveRuleGroups=ruleSummaryGroups(fbActiveRule);
+  const fbDraftRule=fbSettingsLlmDraft?.draft||fbSettingsLlmDraft?.csv_rules?.[fbSelectedFile]||null;
+  const fbDraftRuleGroups=fbDraftRule?ruleSummaryGroups(fbDraftRule):[];
   const canEnterBaseEdit = canEditCurrentBase && baseFileComplete;
   const isBaseEditingMode = mode==="base"&&isBaseEditing;
   const baseEditingTabs = isBaseEditingMode ? ["data"] : ["data","columns"];
-  const showBasePager = !data?.meta_only && !isBaseEditingMode && !(mode==="base"&&data?.single_file_full_read);
+  const showBasePager = false;
   const settingsTabs=[
     ...(isAdmin?[{k:"items",l:"항목 ("+s3Items.length+")"},{k:"add",l:"+ 추가"},{k:"history",l:"이력"},{k:"aws",l:"AWS 설정"}]:[]),
     {k:"cache",l:"캐시"},
@@ -1280,7 +1446,10 @@ export default function My_FileBrowser({user,onNavigate}){
             onKeyDown={e=>e.key==="Enter"&&applySql()}/>
           <button onClick={applySql} disabled={mode==="base"&&isBaseEditing}
             style={{padding:"6px 14px",borderRadius:5,border:"none",background:mode==="base"&&isBaseEditing?"var(--border)": "var(--accent)",color:mode==="base"&&isBaseEditing?"var(--text-secondary)":"#fff",fontSize:14,fontWeight:600,cursor:mode==="base"&&isBaseEditing?"default":"pointer"}}>실행</button>
-          {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={downloadCsv} style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer"}}>⬇ CSV</button>}
+          <button onClick={()=>{setAiSqlOpen(true);setAiSqlResult(null);}} disabled={!data||mode==="base"&&isBaseEditing}
+            style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:!data||mode==="base"&&isBaseEditing?"default":"pointer",opacity:!data||mode==="base"&&isBaseEditing?0.5:1}}>AI SQL</button>
+          {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={downloadCsv} title="표시는 200행, CSV는 서버 허용 한도까지 다운로드합니다." style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer"}}>CSV</button>}
+          {data&&!(mode==="base"&&isBaseEditing)&&<span style={{fontSize:12,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>CSV 최대 50만행/100MB</span>}
         </div>
 
         {/* Selected columns chips */}
@@ -1421,7 +1590,7 @@ export default function My_FileBrowser({user,onNavigate}){
                 <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6,flexShrink:0}}>
                   {data.meta_only
                     ?<>스키마만 로드 · {data.total_cols}열 <span style={{color:"var(--accent)",fontWeight:600}}>| SQL 실행 또는 컬럼 SELECT 적용 시 데이터 조회</span></>
-                    :<>{data.latest_preview?<><span style={{color:"var(--accent)",fontWeight:700}}>최신 {data.showing}행</span>{data.latest_order_col?<> · 기준 {data.latest_order_col}</>:null} | </>:null}{data.total_rows?.toLocaleString()}행 × {data.total_cols}열 | 표시 {data.showing}
+                    :<>{data.latest_preview?<><span style={{color:"var(--accent)",fontWeight:700}}>최신 {data.showing}행</span>{data.latest_order_col?<> · 기준 {data.latest_order_col}</>:null} | </>:<><span style={{color:"var(--accent)",fontWeight:700}}>표시 {data.showing}행</span>{data.preview_row_limit?<> · 최대 {data.preview_row_limit}행</>:null} | </>}{data.total_rows?.toLocaleString()}행 × {data.total_cols}열
                        {data.selected_cols&&<span style={{color:"var(--accent)"}}> | {selectedCols.length||String(data.selected_cols).split(",").filter(Boolean).length}열 선택됨</span>}
                        {data.truncated_cols&&<span style={{color:"var(--accent)"}}> | 기본 미리보기 {data.preview_cols}열</span>}</>}
                   {data.source_modified&&<span title={data.source_path||""}> | 수정 {new Date(data.source_modified*1000).toLocaleString()}</span>}
@@ -1584,6 +1753,27 @@ export default function My_FileBrowser({user,onNavigate}){
           </>}
         </div>
       </div>
+      {aiSqlOpen&&(
+        <Modal open onClose={()=>setAiSqlOpen(false)} title="AI SQL 작성" width={560} zIndex={101}>
+          <div style={{display:"grid",gap:10,fontSize:14,color:"var(--text-primary)"}}>
+            <textarea value={aiSqlPrompt} onChange={e=>setAiSqlPrompt(e.target.value)} rows={4} spellCheck={false}
+              placeholder="예: PRODA 제품에서 wafer 21이고 step이 ETCH인 행"
+              style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"8px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"inherit",lineHeight:1.45,outline:"none"}}/>
+            <div style={{display:"flex",alignItems:"center",gap:8,justifyContent:"space-between",flexWrap:"wrap"}}>
+              <span style={{fontSize:12,color:"var(--text-secondary)"}}>결과는 SQL 입력창에만 들어갑니다. 실행은 직접 누르세요.</span>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>setAiSqlOpen(false)} style={{padding:"7px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>닫기</button>
+                <button onClick={draftAiSql} disabled={aiSqlBusy} style={{padding:"7px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:700,cursor:aiSqlBusy?"wait":"pointer",opacity:aiSqlBusy?0.6:1}}>{aiSqlBusy?"작성 중":"작성"}</button>
+              </div>
+            </div>
+            {aiSqlResult&&<div style={{display:"grid",gap:5,padding:9,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",fontSize:12,fontFamily:"monospace",color:aiSqlResult.ok===false?"#ef4444":"var(--text-secondary)",lineHeight:1.45}}>
+              <span>llm={aiSqlResult.llm?.used?"used":(aiSqlResult.llm?.available?"available":"fallback")} · saved=false</span>
+              {aiSqlResult.sql&&<span style={{color:"var(--accent)"}}>{aiSqlResult.sql}</span>}
+              {(aiSqlResult.warnings||[]).slice(0,4).map((w,i)=><span key={i}>warn: {w}</span>)}
+            </div>}
+          </div>
+        </Modal>
+      )}
       {/* v8.7.5: Admin S3 ingest gear — PageGear 스타일 통일 · 좌하단 */}
       {isFileBrowserAdmin&&<>
         <div onClick={()=>{if(!s3Open&&!isAdmin)setS3Tab("folder");setS3Open(!s3Open);}} title={isAdmin?"폴더 설정 / 파일 설정 / S3 동기화 / AWS 설정":"폴더 설정 / 파일 설정"} style={{position:"fixed",bottom:16,left:16,width:40,height:40,borderRadius:"50%",background:"var(--bg-secondary)",border:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:97,boxShadow:"0 2px 8px rgba(0,0,0,0.3)",fontSize:18}}>⚙️</div>
@@ -1604,6 +1794,7 @@ export default function My_FileBrowser({user,onNavigate}){
             <div style={{flex:1,overflow:"auto",padding:"12px 16px"}}>
               {s3Tab==="cache"&&<div style={{display:"grid",gap:12,fontSize:14}}>
                 {[
+                  ["lot_progress","LOT 진행 최신 캐시","lot_progress_latest_lot_by_root_wafer / lot_wf_current",fbCacheStatus.lot_progress],
                   ["fab","SplitTable 매칭 캐시","root_lot_id ↔ fab_lot_id 연결 캐시",fbCacheStatus.fab],
                   ["et","Tracker Analysis ET 캐시","ET lot 후보/진행 후보 캐시",fbCacheStatus.et],
                 ].map(([target,title,desc,status])=>{
@@ -1657,6 +1848,34 @@ export default function My_FileBrowser({user,onNavigate}){
                     </div>
                   );
                 })}
+                <div style={{display:"grid",gap:8,padding:"10px 12px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
+                  <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",flexWrap:"wrap"}}>
+                    <div>
+                      <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>LLM 캐시 생성</div>
+                      <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:2}}>연결된 LLM이 target을 고르고 서버 allowlist handler가 실행</div>
+                    </div>
+                    <button onClick={refreshFilebrowserCacheByLlm} disabled={!isAdmin||fbCacheLlmBusy}
+                      title={!isAdmin?"admin only":"LLM prompt로 캐시 생성"}
+                      style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:800,cursor:!isAdmin?"not-allowed":fbCacheLlmBusy?"wait":"pointer",opacity:!isAdmin?0.5:1}}>
+                      {fbCacheLlmBusy?"요청 중":"실행"}
+                    </button>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"minmax(220px,1fr) 160px",gap:8}}>
+                    <input value={fbCacheLlmPrompt} onChange={e=>setFbCacheLlmPrompt(e.target.value)}
+                      placeholder="예: lot_progress_latest_lot 캐시 만들어줘"
+                      disabled={!isAdmin||fbCacheLlmBusy}
+                      style={{minWidth:0,padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}/>
+                    <input value={fbCacheLlmProduct} onChange={e=>setFbCacheLlmProduct(e.target.value)}
+                      placeholder="product optional"
+                      disabled={!isAdmin||fbCacheLlmBusy}
+                      style={{minWidth:0,padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}/>
+                  </div>
+                  {fbCacheLlmResult&&<div style={{display:"grid",gap:4,fontSize:13,color:fbCacheLlmResult.ok===false?"#ef4444":"var(--text-secondary)",fontFamily:"monospace"}}>
+                    <span>target={fbCacheLlmResult.target||fbCacheLlmResult.result?.target||"-"} · llm={fbCacheLlmResult.llm?.used?"used":(fbCacheLlmResult.llm?.available?"available":"fallback")}</span>
+                    <span>reason={(fbCacheLlmResult.plan?.reason||fbCacheLlmResult.error||"-")}</span>
+                    {fbCacheLlmResult.cache_path&&<span style={{overflowWrap:"anywhere"}}>{fbCacheLlmResult.cache_path}</span>}
+                  </div>}
+                </div>
                 <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
                   <button onClick={loadFilebrowserCacheStatus} style={{padding:"7px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:"pointer"}}>상태 새로고침</button>
                   {fbCacheMsg&&<span style={{fontSize:14,color:fbCacheMsg.includes("실패")||fbCacheMsg.includes("비활성")?"#ef4444":"var(--text-secondary)"}}>{fbCacheMsg}</span>}
@@ -1691,9 +1910,52 @@ export default function My_FileBrowser({user,onNavigate}){
                   <button onClick={testFileRule} disabled={!fbSelectedFile||fbSettingsLoading} style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:!fbSelectedFile||fbSettingsLoading?"default":"pointer",opacity:!fbSelectedFile||fbSettingsLoading?0.5:1}}>검증 테스트</button>
                   <button onClick={()=>saveFilebrowserSettings("file")} disabled={fbSettingsLoading} style={{padding:"8px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:800,cursor:fbSettingsLoading?"default":"pointer",opacity:fbSettingsLoading?0.5:1}}>저장</button>
                   <button onClick={()=>selectFileRule(fbSelectedFile,{...fbSettings,csv_rules:{...(fbSettings.csv_rules||{}),[fbSelectedFile]:{}}})} disabled={!fbSelectedFile} style={{padding:"7px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:!fbSelectedFile?"default":"pointer"}}>규칙 비우기</button>
+                  <div style={{display:"grid",gap:7,padding:"9px 10px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
+                    <div style={{fontSize:13,fontWeight:800,color:"var(--text-primary)"}}>LLM으로 규칙 초안</div>
+                    <textarea value={fbSettingsLlmPrompt} onChange={e=>setFbSettingsLlmPrompt(e.target.value)} rows={3} spellCheck={false} disabled={!fbSelectedFile||fbSettingsLlmBusy}
+                      style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
+                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                      <button onClick={draftFileRuleByLlm} disabled={!fbSelectedFile||fbSettingsLlmBusy} style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:13,fontWeight:800,cursor:!fbSelectedFile?"default":fbSettingsLlmBusy?"wait":"pointer",opacity:!fbSelectedFile||fbSettingsLlmBusy?0.55:1}}>{fbSettingsLlmBusy?"작성 중":"초안 생성"}</button>
+                      <button onClick={applyFileRuleDraft} disabled={!fbDraftRule} style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:13,fontWeight:700,cursor:!fbDraftRule?"default":"pointer",opacity:!fbDraftRule?0.55:1}}>초안 적용</button>
+                    </div>
+                    {fbSettingsLlmDraft&&<div style={{display:"grid",gap:4,fontSize:12,color:fbSettingsLlmDraft.ok===false?"var(--danger,#ef4444)":"var(--text-secondary)",fontFamily:"monospace",lineHeight:1.4}}>
+                      <span>llm={fbSettingsLlmDraft.llm?.used?"used":(fbSettingsLlmDraft.llm?.available?"available":"fallback")} · saved={String(!!fbSettingsLlmDraft.saved)}</span>
+                      {(fbSettingsLlmDraft.warnings||[]).slice(0,4).map((w,i)=><span key={i}>warn: {w}</span>)}
+                      {fbSettingsLlmDraft.error&&<span>{fbSettingsLlmDraft.error}</span>}
+                      {fbDraftRule&&<div style={{display:"grid",gap:6,marginTop:4,padding:8,border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-primary)",fontFamily:"inherit"}}>
+                        <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}>
+                          <span style={{fontWeight:800,color:"var(--text-primary)"}}>초안 미리보기</span>
+                          <span style={{color:"var(--text-secondary)"}}>{fbDraftRuleGroups.length} groups</span>
+                        </div>
+                        {fbDraftRuleGroups.length?<div style={{display:"grid",gap:5}}>
+                          {fbDraftRuleGroups.map(group=><div key={group.key} style={{display:"grid",gap:3}}>
+                            <span style={{fontWeight:800,color:"var(--accent)",textTransform:"uppercase"}}>{group.label}</span>
+                            {group.items.slice(0,8).map((item,i)=><span key={i} style={{color:"var(--text-primary)",overflowWrap:"anywhere"}}>{item}</span>)}
+                            {group.items.length>8&&<span style={{color:"var(--text-secondary)"}}>+{group.items.length-8}</span>}
+                          </div>)}
+                        </div>:<span>적용할 규칙이 없습니다.</span>}
+                        <details>
+                          <summary style={{cursor:"pointer",fontWeight:800,color:"var(--text-secondary)"}}>JSON</summary>
+                          <pre style={{margin:"6px 0 0",maxHeight:220,overflow:"auto",whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.45,color:"var(--text-primary)"}}>{JSON.stringify(fbDraftRule,null,2)}</pre>
+                        </details>
+                      </div>}
+                    </div>}
+                  </div>
                   {fbSettingsMsg&&<div style={{padding:9,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:fbSettingsMsg.includes("실패")||fbSettingsMsg.includes("오류")?"#ef4444":"var(--text-secondary)",lineHeight:1.45}}>{fbSettingsMsg}</div>}
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,alignItems:"start"}}>
+                  <div style={{gridColumn:"1 / -1",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)",overflow:"hidden"}}>
+                    <div style={{padding:"8px 10px",borderBottom:"1px solid var(--border)",fontWeight:800,color:"var(--text-primary)"}}>적용 규칙</div>
+                    {fbActiveRuleGroups.length?<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:8,padding:10}}>
+                      {fbActiveRuleGroups.map(group=><div key={group.key} style={{display:"grid",gap:5,minWidth:0}}>
+                        <div style={{fontSize:12,fontWeight:800,color:"var(--text-secondary)",textTransform:"uppercase"}}>{group.label}</div>
+                        <div style={{display:"flex",gap:5,flexWrap:"wrap",minWidth:0}}>
+                          {group.items.slice(0,12).map((item,i)=><span key={i} title={item} style={{maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,fontFamily:"monospace"}}>{item}</span>)}
+                          {group.items.length>12&&<span style={{padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:12}}>+{group.items.length-12}</span>}
+                        </div>
+                      </div>)}
+                    </div>:<div style={{padding:"9px 10px",fontSize:12,color:"var(--text-secondary)"}}>현재 form에 적용된 CSV 규칙이 없습니다.</div>}
+                  </div>
                   {[
                     ["required_columns","필수 컬럼","id, name"],
                     ["not_empty","빈 값 금지","id, name"],
