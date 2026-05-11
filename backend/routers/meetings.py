@@ -1378,6 +1378,17 @@ def _meeting_ask_context_text(summary: dict, limit: int = 12000) -> str:
     return text[:limit].rstrip() + "\n...(context truncated)"
 
 
+def _meeting_ask_has_content(summary: dict) -> bool:
+    for session in summary.get("sessions") or []:
+        if session.get("agendas"):
+            return True
+        if session.get("minutes_body") or session.get("minutes_appendix"):
+            return True
+        if session.get("decisions") or session.get("action_items"):
+            return True
+    return False
+
+
 def _fallback_meeting_answer(question: str, summary: dict) -> str:
     q = (question or "").lower()
     want_agenda = any(k in q for k in ("agenda", "아젠다", "안건"))
@@ -1435,12 +1446,27 @@ def _fallback_meeting_answer(question: str, summary: dict) -> str:
     return "\n".join(lines).strip()
 
 
+def _meeting_ask_safe_llm_error(error: Any) -> tuple[str, str]:
+    text = str(error or "").strip()
+    low = text.lower()
+    if "401" in low or "invalid authentication" in low or "unauthorized" in low:
+        return "auth", "LLM 인증 설정을 확인하세요. 저장 데이터 답변을 사용했습니다."
+    if "timeout" in low or "timed out" in low:
+        return "timeout", "LLM 응답 시간이 초과되어 저장 데이터 답변을 사용했습니다."
+    if not text:
+        return "empty", "LLM 응답이 비어 있어 저장 데이터 답변을 사용했습니다."
+    return "error", "LLM 호출에 실패해 저장 데이터 답변을 사용했습니다."
+
+
 def _meeting_ask_llm_answer(question: str, summary: dict) -> tuple[str, dict]:
     llm_info = {"available": False, "used": False}
     fallback = _fallback_meeting_answer(question, summary)
     try:
         from core import llm_adapter
         llm_info["available"] = bool(llm_adapter.is_available())
+        if not _meeting_ask_has_content(summary):
+            llm_info["skipped"] = "no_meeting_content"
+            return fallback, llm_info
         if not llm_info["available"]:
             return fallback, llm_info
         context = _meeting_ask_context_text(summary)
@@ -1463,10 +1489,14 @@ def _meeting_ask_llm_answer(question: str, summary: dict) -> tuple[str, dict]:
         if out.get("ok") and (out.get("text") or "").strip():
             llm_info["used"] = True
             return (out.get("text") or "").strip(), llm_info
-        llm_info["error"] = out.get("error") or "empty llm response"
+        code, safe_error = _meeting_ask_safe_llm_error(out.get("error") or "empty llm response")
+        llm_info["error_code"] = code
+        llm_info["error"] = safe_error
         return fallback, llm_info
     except Exception as exc:
-        llm_info["error"] = str(exc)
+        code, safe_error = _meeting_ask_safe_llm_error(exc)
+        llm_info["error_code"] = code
+        llm_info["error"] = safe_error
         return fallback, llm_info
 
 

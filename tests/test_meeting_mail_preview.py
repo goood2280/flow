@@ -166,6 +166,61 @@ def test_meeting_ask_fallback_reads_agenda_decision_action(monkeypatch):
     assert "Send inform mail" in answer
 
 
+def test_meeting_ask_skips_llm_when_session_has_no_content(monkeypatch):
+    from core import llm_adapter
+
+    meeting = {
+        **_ask_fixture(),
+        "sessions": [{
+            "id": "SS-EMPTY",
+            "idx": 1,
+            "scheduled_at": "2026-05-12T11:36:00",
+            "status": "scheduled",
+            "agendas": [],
+            "minutes": None,
+        }],
+    }
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("LLM should not be called")),
+    )
+
+    summary = meetings._build_meeting_ask_summary(meeting, meeting["sessions"])
+    answer, llm = meetings._meeting_ask_llm_answer("아젠다 확인", summary)
+
+    assert llm == {"available": True, "used": False, "skipped": "no_meeting_content"}
+    assert "아젠다: 0건" in answer
+    assert "저장된 아젠다" in answer
+
+
+def test_meeting_ask_sanitizes_llm_auth_error(monkeypatch):
+    from core import llm_adapter
+
+    meeting = _ask_fixture()
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "error": 'HTTP 401: [{ "error": { "message": "Request had invalid authentication credentials" } }]',
+        },
+    )
+
+    summary = meetings._build_meeting_ask_summary(meeting, meeting["sessions"])
+    answer, llm = meetings._meeting_ask_llm_answer("아젠다 확인", summary)
+
+    assert "Mask change review" in answer
+    assert llm["available"] is True
+    assert llm["used"] is False
+    assert llm["error_code"] == "auth"
+    assert llm["error"] == "LLM 인증 설정을 확인하세요. 저장 데이터 답변을 사용했습니다."
+    assert "HTTP 401" not in llm["error"]
+    assert "invalid authentication" not in llm["error"].lower()
+
+
 def test_meeting_ask_endpoint_enforces_visibility(monkeypatch):
     hidden = {
         **_ask_fixture(),

@@ -593,7 +593,7 @@ function MeetingAskPanel({
     <section style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
         <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-primary)" }}>{llmAvailable ? "회의별 LLM 확인" : "회의별 저장 데이터 확인"}</div>
-        {!result && <Pill tone={llmAvailable ? "accent" : "neutral"}>{llmAvailable ? "LLM 연결됨" : "LLM 미연결"}</Pill>}
+        {!result && <Pill tone={llmAvailable ? "accent" : "neutral"}>{llmAvailable ? "LLM 설정됨" : "LLM 미설정"}</Pill>}
         {result?.llm && <Pill tone={result.llm.used ? "accent" : "neutral"}>{result.llm.used ? "LLM 답변" : "저장 데이터 답변"}</Pill>}
         {result?.scope && <Pill tone="info">{result.scope === "session" ? "차수 범위" : "회의 전체"}</Pill>}
       </div>
