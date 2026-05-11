@@ -24,6 +24,7 @@
 
 ## Done
 
+- [x] (Codex) README를 현재 구조 기준으로 갱신하고 GitHub main push 재현 절차/하네스 구조를 문서화.
 - [x] (Codex) Tracker 새 이슈 lot 입력 표에 product/purpose/comment 복구, SplitTable식 lot_id 후보 목록 적용, fab_lot_id 후보가 root 5자리로 잘리지 않게 수정.
 - [x] (Codex) FileBrowser SQL/AI SQL의 `wafer_id` 조건을 string 저장 타입에서도 숫자 의미로 실행되도록 정규화.
 - [x] (Codex) FileBrowser AI SQL 날짜/시간 자연어 필터가 월·일·시·분·초를 quoted ISO literal로 보존하도록 보강하고, LLM의 연도-only 오역을 deterministic fallback으로 교정.
