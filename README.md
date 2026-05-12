@@ -114,6 +114,8 @@ python3 setup.py version
 ```bash
 git status --short --branch
 git fetch origin
+python3 _build_setup.py
+python3 setup.py version
 git add -A
 git commit -m "..."
 git push origin main

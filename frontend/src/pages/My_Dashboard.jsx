@@ -29,7 +29,6 @@ if(typeof document!=="undefined"&&!document.getElementById("dash-styles")){
 }
 const API = "/api/dashboard";
 const sf = (url, o) => apiSf(url, o);
-const DASHBOARD_SECTIONS_DEFAULT = { charts: true, progress: false, alerts: false };
 const SERIES = chartPalette.series;
 const PASTELS = chartPalette.pastel;
 const BAD = statusPalette.bad;
@@ -45,8 +44,6 @@ const TEAL = { fg: chartPalette.series[11], bg: `${chartPalette.series[11]}22` }
 const WHITE = "var(--bg-secondary)";
 const MUTED_DARK = "rgba(17,24,39,0.92)";
 const SOFT_TEXT = "rgba(229,231,235,0.94)";
-const DIM_TEXT = "rgba(156,163,175,0.95)";
-const DIVIDER_DARK = "rgba(68,68,68,0.85)";
 const MARK_STROKE = "rgba(251,191,36,0.95)";
 const CHART_WIDTH_UNITS = [[1, "S"], [2, "M"], [3, "L"], [4, "XL"]];
 const CHART_HEIGHT_UNITS = [1, 2, 3, 4];
@@ -99,6 +96,10 @@ const INFORM_CHART_PRESETS = [
   { id: "attach-mail-rate", label: "첨부/메일 발송률", description: "첨부가 있는 인폼과 메일 발송 인폼 비율을 봅니다.", cfg: { source: "inform", source_type: "inform", title: "첨부/메일 발송률", chart_type: "donut", metric: "attach_mail_rate", groupby: "rate_kind", period: "all", group: "인폼", width: 1, height: 1 } },
   { id: "old-pending", label: "오래된 미해결 인폼", description: "경과시간이 긴 미완료 인폼을 표로 확인합니다.", cfg: { source: "inform", source_type: "inform", title: "오래된 미해결 인폼", chart_type: "table", metric: "pending_age", groupby: "pending_table", top_n: 20, period: "all", group: "인폼", width: 2, height: 2 } },
 ];
+const GENERAL_DASHBOARD_CHART_TYPES = [
+  "scatter", "line", "bar", "area", "combo", "pie", "donut", "binning",
+  "pareto", "box", "treemap", "heatmap", "wafer_map", "table", "cross_table",
+];
 const SPOTFIRE_GROUPS = ["FAB", "ET", "INLINE", "VM", "EDS", "KNOB", "MASK", "SPC"];
 const SPOTFIRE_CHART_TYPES = ["scatter", "boxplot", "trend", "correlation_matrix", "wafer_map", "classification", "stacked_bar"];
 const SOURCE_BADGE = {
@@ -134,6 +135,7 @@ const DEFAULT_SPOTFIRE_CARD = {
   loading: false,
   error: "",
 };
+const DASHBOARD_LAYOUT_META = { row: 440, gap: 14 };
 
 function chartTypeLabel(type) {
   return ({
@@ -696,6 +698,79 @@ function TrendAlertPanel({ loading, alerts }) {
         </div>
       )}
     </div>
+  );
+}
+
+function DashboardOverviewPanel({ llmStatus, groups, charts, phaseGroups, metaLoading }) {
+  const cfg = llmStatus?.config || {};
+  const flowi = llmStatus?.flowi || {};
+  const allowed = Array.isArray(flowi.allowed_features) ? flowi.allowed_features : [];
+  const dashboardLlm = allowed.includes("dashboard");
+  const groupCards = useMemo(() => {
+    const byId = new Map((groups || []).map((g) => [String(g.id || ""), g]));
+    const cards = new Map();
+    let publicCount = 0;
+    const publicPhases = new Set();
+    (charts || []).forEach((chart) => {
+      const ids = Array.isArray(chart.group_ids) ? chart.group_ids.map((v) => String(v || "").trim()).filter(Boolean) : [];
+      const phase = chart.group || "기타";
+      if (!ids.length) {
+        publicCount += 1;
+        publicPhases.add(phase);
+        return;
+      }
+      ids.forEach((id) => {
+        const group = byId.get(id) || {};
+        if (!cards.has(id)) cards.set(id, { id, name: group.name || id, count: 0, phases: new Set() });
+        const card = cards.get(id);
+        card.count += 1;
+        card.phases.add(phase);
+      });
+    });
+    const out = [...cards.values()].map((card) => ({ ...card, phases: [...card.phases].sort() })).sort((a, b) => a.name.localeCompare(b.name));
+    if (publicCount) out.unshift({ id: "public", name: "공개", count: publicCount, phases: [...publicPhases].sort() });
+    return out;
+  }, [groups, charts]);
+  const phaseLabels = (phaseGroups || []).map((g) => `${g.name} ${g.charts.length}`).join(" · ");
+  return (
+    <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 14 }}>
+      <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)", padding: 14, minWidth: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)" }}>LLM</div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <Pill tone={metaLoading ? "neutral" : llmStatus?.available ? "ok" : "warn"}>{metaLoading ? "확인 중" : llmStatus?.available ? "available" : "unavailable"}</Pill>
+            <Pill tone={dashboardLlm ? "accent" : "neutral"}>dashboard {dashboardLlm ? "on" : "off"}</Pill>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "80px minmax(0,1fr)", gap: "6px 10px", fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
+          <span>provider</span><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-primary)" }}>{cfg.provider || "-"}</span>
+          <span>model</span><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-primary)" }}>{cfg.model || "-"}</span>
+          <span>features</span><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-primary)" }}>{allowed.length ? allowed.join(", ") : "-"}</span>
+        </div>
+      </div>
+      <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)", padding: 14, minWidth: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)" }}>그룹 대시보드</div>
+          <Pill tone="info">{charts.length} charts</Pill>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {groupCards.length ? groupCards.map((card) => (
+            <div key={card.id} title={card.phases.join(", ")} style={{ minWidth: 150, maxWidth: 260, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg-card)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{card.name}</span>
+                <span style={{ fontSize: 14, color: "var(--accent)", fontFamily: "monospace", fontWeight: 900 }}>{card.count}</span>
+              </div>
+              <div style={{ marginTop: 4, fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {card.phases.slice(0, 3).join(", ") || "기타"}{card.phases.length > 3 ? ` +${card.phases.length - 3}` : ""}
+              </div>
+            </div>
+          )) : (
+            <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>표시 가능한 그룹 대시보드 없음</div>
+          )}
+        </div>
+        {!!phaseLabels && <div style={{ marginTop: 8, fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{phaseLabels}</div>}
+      </div>
+    </section>
   );
 }
 
@@ -2004,25 +2079,146 @@ function InformPresetThumb({ chartType }) {
   </div>;
 }
 
-function InformPresetLibrary({ open, onClose, onAdd }) {
+function dashboardChartTypeFromFlowi(rawType) {
+  const raw = String(rawType || "").trim().replace(/^dashboard_/, "");
+  if (!raw) return "scatter";
+  if (raw === "boxplot" || raw === "box") return "box";
+  if (raw === "trend" || raw === "line") return "line";
+  if (raw === "group_bar" || raw === "stacked_bar") return "bar";
+  if (raw === "correlation_matrix") return "heatmap";
+  if (raw === "wafer_map") return "wafer_map";
+  return GENERAL_DASHBOARD_CHART_TYPES.includes(raw) ? raw : "scatter";
+}
+
+function isSaveableDashboardChartConfig(cfg) {
+  if (!cfg || typeof cfg !== "object") return false;
+  if (String(cfg.source || "").toLowerCase() === "inform") return true;
+  const hasSource = !!(cfg.source_type && (cfg.file || (cfg.root && cfg.product)));
+  if (!hasSource) return false;
+  const type = String(cfg.chart_type || "scatter");
+  if (["table", "cross_table"].includes(type)) return true;
+  if (["pie", "donut", "treemap", "pareto", "binning"].includes(type)) return !!(cfg.x_col || cfg.agg_col || cfg.groupby);
+  return !!(cfg.x_col && (cfg.y_expr || cfg.agg_col || type === "wafer_map"));
+}
+
+function flowiChartDraftFromResponse(response, prompt) {
+  const tool = (response?.tool && typeof response.tool === "object") ? response.tool : (response || {});
+  const chartResult = (tool.chart_result && typeof tool.chart_result === "object") ? tool.chart_result : {};
+  const chart = (tool.chart && typeof tool.chart === "object") ? tool.chart : {};
+  const rawConfig = (
+    (tool.chart_config && typeof tool.chart_config === "object" && tool.chart_config)
+    || (tool.dashboard_chart_config && typeof tool.dashboard_chart_config === "object" && tool.dashboard_chart_config)
+    || (tool.config && typeof tool.config === "object" && tool.config)
+    || {}
+  );
+  const isDashboardTool = tool.feature === "dashboard" || chartResult.kind || chart.kind || tool.chart_session_id || tool.chart_config || tool.dashboard_chart_config;
+  if (!isDashboardTool) return null;
+  const chartType = dashboardChartTypeFromFlowi(rawConfig.chart_type || tool.chart_type || chartResult.chart_type || chartResult.kind || chart.kind);
+  const slots = (tool.slots && typeof tool.slots === "object") ? tool.slots : {};
+  const title = rawConfig.title || chartResult.title || chart.title || `${chartTypeLabel(chartType)} draft`;
+  const draft = {
+    ...rawConfig,
+    id: "",
+    title,
+    chart_type: chartType,
+    group: rawConfig.group || "AI",
+    product: rawConfig.product || slots.product || rawConfig.product_hint || "",
+    width: rawConfig.width || (["heatmap", "wafer_map", "cross_table", "table"].includes(chartType) ? 2 : 2),
+    height: rawConfig.height || (["heatmap", "wafer_map", "cross_table", "table"].includes(chartType) ? 2 : 1),
+    x_label: rawConfig.x_label || chartResult.x_label || "",
+    y_label: rawConfig.y_label || chartResult.y_label || "",
+    chart_session_id: tool.chart_session_id || chartResult.chart_session_id || "",
+    flowi_prompt: prompt || "",
+  };
+  if (!draft.x_col && typeof rawConfig.x === "string" && rawConfig.x && !rawConfig.x.startsWith("$")) draft.x_col = rawConfig.x;
+  if (!draft.y_expr && typeof rawConfig.y === "string" && rawConfig.y && !rawConfig.y.startsWith("$")) draft.y_expr = rawConfig.y;
+  if (!draft.color_col && rawConfig.color_by && !["none", "lot_id"].includes(String(rawConfig.color_by))) draft.color_col = String(rawConfig.color_by);
+  if (!draft.agg_method && rawConfig.agg && !["raw", "none"].includes(String(rawConfig.agg))) draft.agg_method = String(rawConfig.agg);
+  return draft;
+}
+
+function ChartAddLibrary({ open, onClose, onSelectType, onAddInform, onAiDraft }) {
+  const [prompt, setPrompt] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [llmStatus, setLlmStatus] = useState(null);
+  useEffect(() => {
+    if (!open) return;
+    setPrompt("");
+    setAiError("");
+    sf("/api/llm/status").then(setLlmStatus).catch(() => setLlmStatus(null));
+  }, [open]);
+  const runAiDraft = () => {
+    const text = prompt.trim();
+    if (!text) {
+      setAiError("prompt를 입력해주세요.");
+      return;
+    }
+    setAiLoading(true);
+    setAiError("");
+    sf("/api/llm/flowi/agent/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: text,
+        source_ai: "dashboard_chart_add",
+        client_run_id: `dashboard_chart_${Date.now()}`,
+        max_rows: 12,
+        context: { type: "dashboard_chart_add" },
+      }),
+    }).then((data) => {
+      const draft = flowiChartDraftFromResponse(data, text);
+      if (!draft) {
+        throw new Error(data?.answer || "dashboard chart draft를 만들지 못했습니다.");
+      }
+      onAiDraft(draft);
+      onClose();
+    }).catch((e) => {
+      setAiError(e.message || String(e));
+    }).finally(() => setAiLoading(false));
+  };
   if (!open) return null;
   return (
     <Modal open={open} onClose={onClose} width={1180} zIndex={60}>
       <div style={{ overflow: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 900, color: "var(--text-primary)" }}>인폼 차트 라이브러리</div>
-            <div style={{ marginTop: 3, fontSize: 14, color: "var(--text-secondary)" }}>12개 preset · period 기본 전체</div>
+            <div style={{ fontSize: 18, fontWeight: 900, color: "var(--text-primary)" }}>차트 추가</div>
+            <div style={{ marginTop: 3, fontSize: 14, color: "var(--text-secondary)" }}>일반 차트 · 인폼 preset · AI draft</div>
           </div>
           <button onClick={onClose} style={{ border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-secondary)", borderRadius: 6, padding: "6px 10px", cursor: "pointer" }}>닫기</button>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 12 }}>
+        <section style={{ marginBottom: 18, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)", padding: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)" }}>AI로 차트 만들기</div>
+            <Pill tone={llmStatus?.available ? "ok" : "neutral"}>{llmStatus?.available ? "available" : "draft"}</Pill>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, alignItems: "start" }}>
+            <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={3} placeholder="PRODA INLINE CD trend" style={{ width: "100%", resize: "vertical", minHeight: 70, boxSizing: "border-box", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)", color: "var(--text-primary)", padding: "8px 10px", fontSize: 14, fontFamily: "inherit" }} />
+            <button onClick={runAiDraft} disabled={aiLoading || !prompt.trim()} style={{ border: "none", borderRadius: 6, padding: "9px 14px", cursor: aiLoading ? "wait" : "pointer", background: "var(--accent)", color: WHITE, fontWeight: 900, minWidth: 96 }}>
+              {aiLoading ? "생성 중" : "생성"}
+            </button>
+          </div>
+          {aiError && <div style={{ marginTop: 8, color: BAD.fg, fontSize: 14 }}>{aiError}</div>}
+        </section>
+        <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)", marginBottom: 8 }}>일반 차트</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 18 }}>
+          {GENERAL_DASHBOARD_CHART_TYPES.map((type) => (
+            <button key={type} onClick={() => onSelectType(type)} style={{ textAlign: "left", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)", color: "var(--text-primary)", padding: 10, cursor: "pointer", minHeight: 118 }}>
+              <InformPresetThumb chartType={type} />
+              <div style={{ marginTop: 7, fontSize: 14, fontWeight: 900 }}>{chartTypeLabel(type)}</div>
+              <div style={{ marginTop: 2, fontSize: 13, color: "var(--text-secondary)", fontFamily: "monospace" }}>{type}</div>
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)", marginBottom: 8 }}>인폼 preset</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 12 }}>
           {INFORM_CHART_PRESETS.map((preset) => (
             <div key={preset.id} style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)", padding: 12, minWidth: 0, display: "flex", flexDirection: "column", gap: 9 }}>
               <InformPresetThumb chartType={preset.cfg.chart_type} />
               <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={preset.label}>{preset.label}</div>
               <div style={{ minHeight: 36, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.4 }}>{preset.description}</div>
-              <button onClick={() => onAdd(preset)} style={{ marginTop: "auto", border: "none", borderRadius: 6, padding: "7px 10px", cursor: "pointer", background: "var(--accent)", color: WHITE, fontWeight: 800 }}>추가</button>
+              <button onClick={() => onAddInform(preset)} style={{ marginTop: "auto", border: "none", borderRadius: 6, padding: "7px 10px", cursor: "pointer", background: "var(--accent)", color: WHITE, fontWeight: 800 }}>추가</button>
             </div>
           ))}
         </div>
@@ -2040,7 +2236,7 @@ export default function My_Dashboard({ user }) {
   const [snapshots, setSnapshots] = useState({});
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
-  const [informLibraryOpen, setInformLibraryOpen] = useState(false);
+  const [chartLibraryOpen, setChartLibraryOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const isAdmin = user?.role === "admin";
   const canEdit = isAdmin || user?.chart_edit === true;  // admin or chart_edit permission
@@ -2059,15 +2255,6 @@ export default function My_Dashboard({ user }) {
   useEffect(() => {
     sf("/api/admin/settings").then(s => {
       if (s && typeof s.dashboard_refresh_minutes === "number") setRefreshMin(s.dashboard_refresh_minutes);
-      if (s?.dashboard_sections && typeof s.dashboard_sections === "object") {
-        setDashboardSections({ ...DASHBOARD_SECTIONS_DEFAULT, ...s.dashboard_sections });
-      }
-      if (s?.dashboard_fab_progress && typeof s.dashboard_fab_progress === "object") {
-        const fp = s.dashboard_fab_progress;
-        if (fp.reference_step_id) setReferenceStepId(String(fp.reference_step_id).toUpperCase());
-        if (typeof fp.sample_lots === "number") setSampleLots(Math.max(1, Math.min(50, fp.sample_lots)));
-        if (typeof fp.days === "number") setProgressDays(Math.max(1, Math.min(365, fp.days)));
-      }
     }).catch(() => {});
   }, []);
   useEffect(() => { load(); const ms = Math.max(1, refreshMin) * 60 * 1000; const iv = setInterval(load, ms); return () => clearInterval(iv); }, [refreshMin]);
@@ -2081,36 +2268,35 @@ export default function My_Dashboard({ user }) {
       source_type: "inform",
       no_schedule: false,
     };
-    setInformLibraryOpen(false);
+    setChartLibraryOpen(false);
     saveChart(cfg);
+  };
+  const openChartTypeDraft = (chartType) => {
+    const type = String(chartType || "scatter");
+    setChartLibraryOpen(false);
+    setEditing({
+      chart_type: type,
+      title: chartTypeLabel(type),
+      group: "차트",
+      width: ["heatmap", "wafer_map", "table", "cross_table"].includes(type) ? 2 : 2,
+      height: ["heatmap", "wafer_map", "table", "cross_table"].includes(type) ? 2 : 1,
+    });
+  };
+  const openAiChartDraft = (draft) => {
+    const cfg = { ...draft };
+    if (isSaveableDashboardChartConfig(cfg) && confirm("생성된 차트 설정을 바로 저장할까요?")) {
+      saveChart(cfg);
+      return;
+    }
+    setEditing(cfg);
   };
   const deleteChart = (id) => { if (!confirm("삭제하시겠습니까?")) return; sf(API + "/charts/delete?chart_id=" + id, { method: "POST" }).then(load); };
   const doRefresh = () => { setRefreshing(true); sf(API + "/refresh", { method: "POST" }).then(() => setTimeout(() => { load(); setRefreshing(false); }, 3000)).catch(() => setRefreshing(false)); };
 
   const [expanded, setExpanded] = useState(null); // chart id for fullscreen view
-  // v8.4.8: Group visibility + size resize + marks→filter chart
-  const [hiddenGroups, setHiddenGroups] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("flow_dash_hidden_groups") || "[]")); }
-    catch { return new Set(); }
-  });
-  const [layoutDensity, setLayoutDensity] = useState(() => localStorage.getItem("flow_dash_density") || "comfortable");
-  const [dashProducts, setDashProducts] = useState([]);
+  // v8.4.8: marks→filter chart
   const [focusProduct, setFocusProduct] = useState("");
-  const [targetStepId, setTargetStepId] = useState("");
-  const [lotQuery, setLotQuery] = useState("");
-  const [progressDays, setProgressDays] = useState(30);
-  const [sampleLots, setSampleLots] = useState(3);
-  const [referenceStepId, setReferenceStepId] = useState("AA200000");
-  const [knobCol, setKnobCol] = useState("KNOB_5.0 PC");
-  const [knobValue, setKnobValue] = useState("");
-  const [fabProgress, setFabProgress] = useState(null);
-  const [fabSummary, setFabSummary] = useState(null);
-  const [fabLoading, setFabLoading] = useState(false);
-  const [speedFilter, setSpeedFilter] = useState("all");
-  const [trendAlerts, setTrendAlerts] = useState([]);
-  const [trendLoading, setTrendLoading] = useState(false);
-  const [dashboardView, setDashboardView] = useState(() => localStorage.getItem("flow_dashboard_view") || "charts");
-  const [dashboardSections, setDashboardSections] = useState(DASHBOARD_SECTIONS_DEFAULT);
+  const dashboardView = "charts";
   const [spotfireGroup, setSpotfireGroup] = useState(() => localStorage.getItem("flow_spotfire_group") || "ET");
   const [spotfireItems, setSpotfireItems] = useState([]);
   const [spotfireSearch, setSpotfireSearch] = useState("");
@@ -2127,18 +2313,7 @@ export default function My_Dashboard({ user }) {
   });
   const [spotfireTheme, setSpotfireTheme] = useState(() => localStorage.getItem("flow_spotfire_theme") || "dark");
   const [chartDefaults, setChartDefaults] = useState({});
-  const visibleSections = isAdmin
-    ? { charts: true, progress: true, alerts: true }
-    : { ...DASHBOARD_SECTIONS_DEFAULT, ...dashboardSections };
-  const toggleGroup = (g) => setHiddenGroups(prev => {
-    const s = new Set(prev); s.has(g) ? s.delete(g) : s.add(g);
-    localStorage.setItem("flow_dash_hidden_groups", JSON.stringify([...s]));
-    return s;
-  });
-  const resizeChart = (c, w, h) => sf(API + "/charts/save", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...c, width: w, height: h })
-  }).then(load).catch(e => toast.error(e.message));
+  const analysisWorkspaceEnabled = false;
 
   const updateSpotfireCard = (id, patch) => {
     setSpotfireCards(prev => prev.map(c => c.id === id ? { ...c, ...(typeof patch === "function" ? patch(c) : patch) } : c));
@@ -2218,12 +2393,12 @@ export default function My_Dashboard({ user }) {
     }
   };
 
-  // Filter charts by visibility + group hide
+  // Filter charts by permission; the page always shows every visible group.
   const visibleByVis = charts.filter(c => !(c.visible_to === "admin" && !isAdmin));
   const groupCounts = {};
   visibleByVis.forEach(c => { const g = c.group || "기타"; groupCounts[g] = (groupCounts[g] || 0) + 1; });
   const groupNames = Object.keys(groupCounts).sort();
-  const visibleCharts = visibleByVis.filter(c => !hiddenGroups.has(c.group || "기타"));
+  const visibleCharts = visibleByVis;
   const chartPhaseGroups = useMemo(() => {
     const idx = new Map();
     const out = [];
@@ -2238,41 +2413,13 @@ export default function My_Dashboard({ user }) {
     });
     return out;
   }, [visibleCharts]);
-  const snapshotStamp = useMemo(
-    () => Object.values(snapshots || {}).map((s) => `${s?.computed_at || ""}:${s?.oos_count || 0}:${(s?.trend_alert || {}).count || 0}`).join("|"),
-    [snapshots]
-  );
-  const densityMeta = {
-    compact: { row: 360, gap: 12, label: "촘촘함" },
-    comfortable: { row: 440, gap: 14, label: "기본" },
-    presentation: { row: 540, gap: 18, label: "넓게" },
-  }[layoutDensity] || { row: 440, gap: 14, label: "기본" };
+  const densityMeta = DASHBOARD_LAYOUT_META;
   useEffect(() => {
-    localStorage.setItem("flow_dashboard_view", dashboardView);
-  }, [dashboardView]);
-  useEffect(() => {
-    const allowed = Object.entries(visibleSections).filter(([, on]) => on).map(([key]) => key);
-    if (!allowed.includes(dashboardView)) setDashboardView(allowed[0] || "charts");
-  }, [dashboardView, visibleSections.charts, visibleSections.progress, visibleSections.alerts]);
-  useEffect(() => {
-    sf(API + "/products").then((d) => {
-      const vals = new Set();
-      (d.products || []).forEach((s) => {
-        const cand = String(s.product || "").trim();
-        if (cand) vals.add(cand);
-      });
-      const arr = [...vals].sort();
-      setDashProducts(arr);
-      if (!focusProduct && arr.length) setFocusProduct(arr[0]);
-    }).catch(() => setDashProducts([]));
-  }, [visibleSections.charts]);
-
-  useEffect(() => {
-    if (dashboardView !== "charts") return;
+    if (!analysisWorkspaceEnabled || dashboardView !== "charts") return;
     const q = new URLSearchParams({ group: spotfireGroup, product: focusProduct || "" });
     sf(API + "/items?" + q.toString()).then(d => setSpotfireItems(d.items || [])).catch(() => setSpotfireItems([]));
     localStorage.setItem("flow_spotfire_group", spotfireGroup);
-  }, [dashboardView, spotfireGroup, focusProduct]);
+  }, [analysisWorkspaceEnabled, dashboardView, spotfireGroup, focusProduct]);
 
   useEffect(() => {
     if (dashboardView !== "charts") return;
@@ -2280,6 +2427,7 @@ export default function My_Dashboard({ user }) {
   }, [dashboardView]);
 
   useEffect(() => {
+    if (!analysisWorkspaceEnabled) return;
     localStorage.setItem("flow_spotfire_cards", JSON.stringify(spotfireCards.map(c => ({ ...c, loading: false }))));
     const t = setTimeout(() => {
       sf(API + "/layout", {
@@ -2289,48 +2437,17 @@ export default function My_Dashboard({ user }) {
       }).catch(() => {});
     }, 700);
     return () => clearTimeout(t);
-  }, [spotfireCards, activeSpotfireCard]);
+  }, [analysisWorkspaceEnabled, spotfireCards, activeSpotfireCard]);
 
   useEffect(() => {
+    if (!analysisWorkspaceEnabled) return;
     localStorage.setItem("flow_spotfire_active_card", activeSpotfireCard);
-  }, [activeSpotfireCard]);
+  }, [analysisWorkspaceEnabled, activeSpotfireCard]);
 
   useEffect(() => {
+    if (!analysisWorkspaceEnabled) return;
     localStorage.setItem("flow_spotfire_theme", spotfireTheme);
-  }, [spotfireTheme]);
-
-  useEffect(() => {
-    if (!visibleSections.progress || !focusProduct) return;
-    if (!String(lotQuery || "").trim()) {
-      setFabProgress(null);
-      setFabSummary(null);
-      setFabLoading(false);
-      return;
-    }
-    setFabLoading(true);
-    const q = new URLSearchParams({ product: focusProduct, days: String(progressDays || 30), limit: "24", sample_lots: String(sampleLots || 3), reference_step_id: referenceStepId || "AA200000" });
-    if (targetStepId) q.set("target_step_id", targetStepId);
-    if (lotQuery) q.set("lot_query", lotQuery);
-    if (knobCol) q.set("knob_col", knobCol);
-    if (knobValue) q.set("knob_value", knobValue);
-    Promise.all([
-      sf(API + "/fab-progress?" + q.toString()).catch(() => null),
-      sf(API + "/summary?product=" + encodeURIComponent(focusProduct)).catch(() => null),
-    ]).then(([progress, summary]) => {
-      setFabProgress(progress);
-      setFabSummary(summary);
-    }).finally(() => setFabLoading(false));
-  }, [visibleSections.progress, focusProduct, targetStepId, lotQuery, progressDays, sampleLots, referenceStepId, knobCol, knobValue]);
-
-  useEffect(() => {
-    if (!visibleSections.alerts) {
-      setTrendAlerts([]);
-      setTrendLoading(false);
-      return;
-    }
-    setTrendLoading(true);
-    sf(API + "/trend-alerts?limit=8").then((d) => setTrendAlerts(d.alerts || [])).catch(() => setTrendAlerts([])).finally(() => setTrendLoading(false));
-  }, [visibleSections.alerts, charts.length, snapshotStamp]);
+  }, [analysisWorkspaceEnabled, spotfireTheme]);
 
   // Marks → new chart filter (사용자 요구: 마킹한 것으로 옆에 차트 만들기)
   const makeFilteredChart = () => {
@@ -2360,7 +2477,7 @@ export default function My_Dashboard({ user }) {
   <div style={{ padding: "16px 18px", background: "var(--bg-primary)", color: "var(--text-primary)", maxWidth: "none", margin: 0, height: "100%", minHeight: 0, overflow: "auto", boxSizing: "border-box" }}>
     <PageHeader
       title="대시보드"
-      subtitle={`차트 ${visibleCharts.length}개 · 그룹 ${groupNames.length}개 · 밀도 ${densityMeta.label}`}
+      subtitle={`차트 ${visibleCharts.length}개 · 그룹 ${groupNames.length}개`}
       style={{ marginBottom: 16, borderRadius: 10, border: `1px solid ${uxColors.border}` }}
       right={<div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         {marks.size > 0 && (
@@ -2372,106 +2489,20 @@ export default function My_Dashboard({ user }) {
           </div>
         )}
         {isAdmin && <Button variant="subtle" onClick={doRefresh} disabled={refreshing}>{refreshing ? "계산 중..." : "전체 새로고침"}</Button>}
-        <div style={{ minWidth: 210 }}>
-          <TabStrip
-            items={[{k:"compact",l:"촘촘"},{k:"comfortable",l:"기본"},{k:"presentation",l:"넓게"}]}
-            active={layoutDensity}
-            onChange={(k)=>{setLayoutDensity(k);localStorage.setItem("flow_dash_density",k);}}
-          />
-        </div>
-        {canEdit && <Button variant="subtle" onClick={() => setInformLibraryOpen(true)}>+ 인폼 차트 추가</Button>}
-        {canEdit && <Button variant="primary" onClick={() => setEditing({})}>+ 차트 추가</Button>}
+        {canEdit && <Button variant="primary" onClick={() => setChartLibraryOpen(true)}>+ 차트 추가</Button>}
         {/* v8.7.4: 전 탭 톱니 좌하단 통일 */}
         <PageGear title="대시보드 설정" canEdit={isAdmin} position="bottom-left">
           <DashboardSettings isAdmin={isAdmin} refreshMin={refreshMin} setRefreshMin={setRefreshMin}
-            sections={dashboardSections} setSections={setDashboardSections}
-            fabReferenceStep={referenceStepId} setFabReferenceStep={setReferenceStepId}
-            fabSampleLots={sampleLots} setFabSampleLots={setSampleLots}
-            fabDays={progressDays} setFabDays={setProgressDays}
             chartDefaults={chartDefaults} setChartDefaults={setChartDefaults} />
         </PageGear>
       </div>}
     />
     {editing !== null && <ChartEditor cfg={editing} onSave={saveChart} onClose={() => setEditing(null)} isAdmin={isAdmin} />}
-    <InformPresetLibrary open={informLibraryOpen} onClose={() => setInformLibraryOpen(false)} onAdd={addInformPreset} />
+    <ChartAddLibrary open={chartLibraryOpen} onClose={() => setChartLibraryOpen(false)} onSelectType={openChartTypeDraft} onAddInform={addInformPreset} onAiDraft={openAiChartDraft} />
     <div style={{ paddingRight: 2 }}>
-    <DashboardSectionNav
-      view={dashboardView}
-      setView={setDashboardView}
-      counts={{ charts: visibleCharts.length, products: dashProducts.length, alerts: trendAlerts.length }}
-      sections={visibleSections}
-    />
-
-    {dashboardView === "progress" && visibleSections.progress && (
-      <FabProgressPanel
-        loading={fabLoading}
-        data={fabProgress}
-        summary={fabSummary}
-        speedFilter={speedFilter}
-        setSpeedFilter={setSpeedFilter}
-        product={focusProduct}
-        setProduct={setFocusProduct}
-        products={dashProducts}
-        targetStepId={targetStepId}
-        setTargetStepId={setTargetStepId}
-        lotQuery={lotQuery}
-        setLotQuery={setLotQuery}
-        progressDays={progressDays}
-        setProgressDays={setProgressDays}
-        sampleLots={sampleLots}
-        referenceStepId={referenceStepId}
-        knobCol={knobCol}
-        setKnobCol={setKnobCol}
-        knobValue={knobValue}
-        setKnobValue={setKnobValue}
-      />
-    )}
-    {dashboardView === "alerts" && visibleSections.alerts && <TrendAlertPanel loading={trendLoading} alerts={trendAlerts} />}
-
-    {dashboardView === "charts" && (
-      <SpotfireDashboardPanel
-        group={spotfireGroup}
-        setGroup={setSpotfireGroup}
-        items={spotfireItems}
-        search={spotfireSearch}
-        setSearch={setSpotfireSearch}
-        selectedItems={selectedItems}
-        onSelectItem={handleSpotfireSelect}
-        cards={spotfireCards}
-        activeCardId={activeSpotfireCard}
-        setActiveCardId={setActiveSpotfireCard}
-        addCard={addSpotfireCard}
-        removeCard={removeSpotfireCard}
-        duplicateCard={duplicateSpotfireCard}
-        updateCard={updateSpotfireCard}
-        runCard={runSpotfireCard}
-        theme={spotfireTheme}
-        setTheme={setSpotfireTheme}
-        product={focusProduct}
-      />
-    )}
-
-    {/* v8.4.8: 그룹 필터 칩 (그룹이 1개 이상이면 노출). 클릭해서 숨김/표시 토글. */}
-    {dashboardView === "charts" && groupNames.length > 1 && <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12, alignItems: "center" }}>
-      <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", marginRight: 4 }}>그룹:</span>
-      {groupNames.map(g => {
-        const hidden = hiddenGroups.has(g);
-        return <span key={g} onClick={() => toggleGroup(g)} style={{
-          cursor: "pointer", padding: "3px 10px", borderRadius: 12, fontSize: 14, fontFamily: "monospace",
-          border: "1px solid " + (hidden ? "var(--border)" : "var(--accent)"),
-          background: hidden ? "transparent" : "var(--accent-glow)",
-          color: hidden ? "var(--text-secondary)" : "var(--accent)",
-          fontWeight: hidden ? 400 : 700, opacity: hidden ? 0.6 : 1,
-        }} title={hidden ? `${g} 표시` : `${g} 숨기기`}>
-          {hidden ? "○" : "●"} {g} <span style={{ fontSize: 14, opacity: 0.7 }}>({groupCounts[g]})</span>
-        </span>;
-      })}
-      {hiddenGroups.size > 0 && <span onClick={() => { setHiddenGroups(new Set()); localStorage.setItem("flow_dash_hidden_groups", "[]"); }}
-        style={{ cursor: "pointer", fontSize: 14, color: "var(--accent)", marginLeft: 8 }}>모두 표시</span>}
-    </div>}
 
     {dashboardView === "charts" && visibleCharts.length === 0 && !editing && <div style={{ textAlign: "center", padding: 60, color: "var(--text-secondary)" }}>차트 없음.{canEdit ? " + 차트 추가 를 클릭하세요." : ""}</div>}
-    {/* 그룹/페이즈별 섹션 안에서 각 차트 카드가 선택한 크기만큼 실제 캔버스도 같이 커진다. */}
+    {/* 그룹/페이즈별 섹션 안에서 저장된 차트 크기대로 캔버스를 배치한다. */}
     {dashboardView === "charts" && <div style={{ display: "grid", gap: densityMeta.gap + 4, paddingBottom: 12 }}>
       {chartPhaseGroups.map(({ name, charts: phaseCharts }) => (
         <section key={name} style={{ display: "grid", gap: 8 }}>
@@ -2501,25 +2532,12 @@ export default function My_Dashboard({ user }) {
           </span>
           <span style={{ display: "flex", gap: 4, alignItems: "center" }}>
             {snap?.error && <span style={{ color: BAD.fg }} title={snap.error}>오류</span>}
-            <span style={{fontSize:14,fontFamily:"monospace",color:"var(--text-secondary)"}}>{w}×{h}</span>
             {isAdmin && (isAdminChart
               ? <span style={{ fontSize: 14, fontWeight: 700, color: PURPLE.fg, background: PURPLE.soft, padding: "1px 5px", borderRadius: 3, border: `1px solid ${PURPLE.border}` }}>관리자</span>
               : <span style={{ fontSize: 14, fontWeight: 700, color: GREEN.fg, background: GREEN.soft, padding: "1px 5px", borderRadius: 3, border: `1px solid ${GREEN.border}` }}>사용자</span>)}
           </span>
         </div>
         <div className="chart-actions" style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 4, alignItems: "center" }}>
-          {/* v8.4.8: 크기 피커 — S/M/L/XL (width) × 1/2/3/4 (height) */}
-          {canEdit && <span onClick={e => e.stopPropagation()} style={{ display: "inline-flex", gap: 2, padding: "2px 4px", background: "rgba(0,0,0,0.55)", borderRadius: 4 }} title="크기 조절">
-            <span style={{ fontSize: 14, color: DIM_TEXT, padding: "1px 2px" }}>W</span>
-            {CHART_WIDTH_UNITS.map(([wv, wl]) => (
-              <span key={wv} onClick={() => resizeChart(c, wv, h)} style={{ cursor: "pointer", fontSize: 14, fontWeight: 700, padding: "1px 5px", borderRadius: 3, color: w === wv ? WHITE : DIM_TEXT, background: w === wv ? "var(--accent)" : "transparent" }}>{wl}</span>
-            ))}
-            <span style={{ width: 1, background: DIVIDER_DARK, margin: "2px 2px" }} />
-            <span style={{ fontSize: 14, color: DIM_TEXT, padding: "1px 2px" }}>H</span>
-            {CHART_HEIGHT_UNITS.map(hv => (
-              <span key={hv} onClick={() => resizeChart(c, w, hv)} style={{ cursor: "pointer", fontSize: 14, fontWeight: 700, padding: "1px 5px", borderRadius: 3, color: h === hv ? WHITE : DIM_TEXT, background: h === hv ? BLUE.fg : "transparent" }}>{hv}</span>
-            ))}
-          </span>}
           <span onClick={(e) => { e.stopPropagation(); setExpanded(c.id); }} style={{ cursor: "pointer", fontSize: 14, color: WHITE, padding: "3px 8px", background: "var(--accent)", borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>확대</span>
           {canEdit && <>
             <span onClick={(e) => { e.stopPropagation(); setEditing(c); }} style={{ cursor: "pointer", fontSize: 14, color: WHITE, padding: "3px 8px", background: BLUE.fg, borderRadius: 4, fontWeight: 600, boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}>편집</span>
@@ -2867,32 +2885,17 @@ function spotfireTd(dark) {
 }
 
 /* ═══ v8.5.2 Dashboard Settings panel (PageGear 내부) ═══ */
-function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSections, fabReferenceStep, setFabReferenceStep, fabSampleLots, setFabSampleLots, fabDays, setFabDays, chartDefaults, setChartDefaults }) {
+function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, chartDefaults, setChartDefaults }) {
   const [val, setVal] = useState(refreshMin);
   const [bgVal, setBgVal] = useState(10);
-  const [sectionDraft, setSectionDraft] = useState({ ...DASHBOARD_SECTIONS_DEFAULT, ...(sections || {}) });
-  const [fabDraft, setFabDraft] = useState({ reference_step_id: fabReferenceStep || "AA200000", sample_lots: fabSampleLots || 3, days: fabDays || 30 });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
   useEffect(() => {
     sf("/api/admin/settings").then(s => {
       if (typeof s.dashboard_refresh_minutes === "number") setVal(s.dashboard_refresh_minutes);
       if (typeof s.dashboard_bg_refresh_minutes === "number") setBgVal(s.dashboard_bg_refresh_minutes);
-      if (s?.dashboard_sections && typeof s.dashboard_sections === "object") {
-        setSectionDraft({ ...DASHBOARD_SECTIONS_DEFAULT, ...s.dashboard_sections });
-      }
-      if (s?.dashboard_fab_progress && typeof s.dashboard_fab_progress === "object") {
-        setFabDraft({
-          reference_step_id: String(s.dashboard_fab_progress.reference_step_id || "AA200000").toUpperCase(),
-          sample_lots: Number(s.dashboard_fab_progress.sample_lots || 3),
-          days: Number(s.dashboard_fab_progress.days || 30),
-        });
-      }
     }).catch(() => {});
   }, []);
-  useEffect(() => {
-    setSectionDraft({ ...DASHBOARD_SECTIONS_DEFAULT, ...(sections || {}) });
-  }, [sections?.charts, sections?.progress, sections?.alerts]);
   const save = () => {
     setSaving(true); setMsg("");
     sf("/api/admin/settings/save", {
@@ -2900,25 +2903,14 @@ function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSe
       body: JSON.stringify({
         dashboard_refresh_minutes: Number(val) || 10,
         dashboard_bg_refresh_minutes: Number(bgVal) || 10,
-        dashboard_sections: sectionDraft,
-        dashboard_fab_progress: {
-          reference_step_id: String(fabDraft.reference_step_id || "AA200000").trim().toUpperCase(),
-          sample_lots: Math.max(1, Math.min(50, Number(fabDraft.sample_lots) || 3)),
-          days: Math.max(1, Math.min(365, Number(fabDraft.days) || 30)),
-        },
       }),
     }).then(() => {
       setMsg("저장 완료");
       setRefreshMin(Number(val) || 10);
-      setSections && setSections(sectionDraft);
-      setFabReferenceStep && setFabReferenceStep(String(fabDraft.reference_step_id || "AA200000").trim().toUpperCase());
-      setFabSampleLots && setFabSampleLots(Math.max(1, Math.min(50, Number(fabDraft.sample_lots) || 3)));
-      setFabDays && setFabDays(Math.max(1, Math.min(365, Number(fabDraft.days) || 30)));
     })
       .catch(e => setMsg(e.message))
       .finally(() => setSaving(false));
   };
-  const toggleSection = (key) => setSectionDraft(prev => ({ ...prev, [key]: !prev[key] }));
   return (
     <div>
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>자동 새로고침 주기 (분)</div>
@@ -2930,42 +2922,6 @@ function DashboardSettings({ isAdmin, refreshMin, setRefreshMin, sections, setSe
       <input type="number" min={1} max={240} value={bgVal} onChange={e => setBgVal(e.target.value)} disabled={!isAdmin}
         style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
       <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>백엔드가 각 차트 스냅샷을 재계산하는 주기.</div>
-
-      <div style={{ fontSize: 14, fontWeight: 600, marginTop: 14, marginBottom: 6 }}>일반 사용자 대시보드 공개 섹션</div>
-      <div style={{ display: "grid", gap: 6 }}>
-        {[
-          ["charts", "차트"],
-          ["progress", "FAB 진행"],
-          ["alerts", "알림 감시"],
-        ].map(([key, label]) => (
-          <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", fontSize: 14, cursor: isAdmin ? "pointer" : "default" }}>
-            <input type="checkbox" checked={sectionDraft[key] !== false} disabled={!isAdmin} onChange={() => toggleSection(key)} />
-            <span style={{ fontWeight: 700 }}>{label}</span>
-            {key !== "charts" && <span style={{ marginLeft: "auto", fontSize: 14, color: "var(--text-secondary)" }}>기본 비공개</span>}
-          </label>
-        ))}
-      </div>
-      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>관리자는 설정과 관계없이 모든 섹션을 볼 수 있습니다.</div>
-
-      <div style={{ fontSize: 14, fontWeight: 600, marginTop: 14, marginBottom: 6 }}>FAB Progress 검색 기준</div>
-      <div style={{ display: "grid", gap: 8 }}>
-        <label style={{ display: "grid", gap: 4, fontSize: 14, color: "var(--text-secondary)" }}>
-          기준 step_id
-          <input value={fabDraft.reference_step_id} onChange={e => setFabDraft(prev => ({ ...prev, reference_step_id: e.target.value.toUpperCase() }))} disabled={!isAdmin}
-            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
-        </label>
-        <label style={{ display: "grid", gap: 4, fontSize: 14, color: "var(--text-secondary)" }}>
-          평균 기준 최근 랏 수
-          <input type="number" min={1} max={50} value={fabDraft.sample_lots} onChange={e => setFabDraft(prev => ({ ...prev, sample_lots: e.target.value }))} disabled={!isAdmin}
-            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
-        </label>
-        <label style={{ display: "grid", gap: 4, fontSize: 14, color: "var(--text-secondary)" }}>
-          FAB 검색 기간(days)
-          <input type="number" min={1} max={365} value={fabDraft.days} onChange={e => setFabDraft(prev => ({ ...prev, days: e.target.value }))} disabled={!isAdmin}
-            style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
-        </label>
-      </div>
-      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>검색한 lot과 비교할 기준선입니다. 예: AA200000 통과 최근 5개 랏 평균.</div>
 
       <DashboardDefaultsEditor isAdmin={isAdmin} defaults={chartDefaults || {}} setDefaults={setChartDefaults} />
 

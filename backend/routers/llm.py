@@ -3860,6 +3860,7 @@ def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = ""
     tool.update({
         "chart_type": chart_type,
         "config": config,
+        "chart_config": config,
         "data": data,
         "fit": fit,
         "stats_table": stats_table,
@@ -3869,6 +3870,7 @@ def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = ""
         chart_result.update({
             "chart_type": chart_type,
             "config": config,
+            "chart_config": config,
             "fit_params": fit,
             "stats_table": stats_table,
             "chart_session_id": session_id,
@@ -3932,6 +3934,7 @@ def _handle_dashboard_chart_refine(prompt: str, me: dict[str, Any], agent_contex
         "action": "refine_chart_session",
         "feature": "dashboard",
         "answer": "차트 설정을 수정했습니다.",
+        "chart_config": refined.get("config") if isinstance(refined, dict) else {},
         **refined,
     }
 
@@ -15114,6 +15117,7 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "chart_result",
     "chart_type",
     "chart_session_id",
+    "chart_config",
     "config",
     "data",
     "fit",

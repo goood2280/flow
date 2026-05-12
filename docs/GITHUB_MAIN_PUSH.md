@@ -7,6 +7,7 @@
 - 기본 브랜치는 `main`.
 - 원격은 `origin`이고 URL은 `https://github.com/goood2280/flow.git`.
 - 로컬 작업트리 변경을 사용자가 "지금 로컬한 것"으로 요청하면 코드, 문서, runtime/cache 파일까지 포함해 커밋한다.
+- GitHub `main`에 푸시하는 커밋은 항상 `_build_setup.py`로 재생성한 최신 `setup.py`를 포함한다.
 - runtime/user data를 임의로 되돌리지 않는다. `git diff --check`가 runtime 기록 파일의 trailing whitespace 때문에 실패하더라도, 요청이 로컬 상태 보존이면 파일 내용을 임의 정리하지 않는다.
 - WSL Git에 GitHub credential이 없을 수 있다. 이 경우 Windows Git credential을 쓰는 `git.exe push origin main`이 동작한다.
 
@@ -29,7 +30,16 @@ git rev-list --left-right --count main...origin/main
 
 출력이 `0 0`이면 로컬/원격 커밋 차이가 없다. 앞 숫자가 0보다 크면 로컬이 앞선 것이고, 뒤 숫자가 0보다 크면 원격이 앞선 것이다. 원격이 앞선 상태에서는 먼저 충돌 가능성을 확인한다.
 
-3. 변경 내용을 한 번 요약한다.
+3. `setup.py`를 재생성하고 버전 출력을 확인한다.
+
+```bash
+python3 _build_setup.py
+python3 setup.py version
+```
+
+이 단계는 source/doc 변경이 작아도 GitHub `main` 푸시 전에는 항상 실행한다. 생성된 `setup.py` diff를 커밋에 포함한다.
+
+4. 변경 내용을 한 번 요약한다.
 
 ```bash
 git diff --stat
@@ -39,7 +49,7 @@ git diff --check
 
 `git diff --check` 실패가 소스 코드 공백 오류인지, runtime 기록 파일의 기존 형식 문제인지 구분한다. 사용자가 로컬 상태 그대로 푸시를 요청한 경우 runtime 파일을 임의 정리하지 않는다.
 
-4. 전체 변경을 스테이징하고 커밋한다.
+5. 전체 변경을 스테이징하고 커밋한다.
 
 ```bash
 git add -A
@@ -56,7 +66,7 @@ git add -A
 git commit -m "Refresh runtime cache state"
 ```
 
-5. GitHub `main`으로 푸시한다.
+6. GitHub `main`으로 푸시한다.
 
 ```bash
 git push origin main
@@ -74,7 +84,7 @@ Windows Git credential을 사용한다.
 git.exe push origin main
 ```
 
-6. 푸시 결과를 검증한다.
+7. 푸시 결과를 검증한다.
 
 ```bash
 git status --short --branch
