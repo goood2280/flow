@@ -15,10 +15,14 @@ const c = {
   bg2: "var(--bg-secondary)",
   bg3: "var(--bg-tertiary)",
   bgHover: "var(--bg-hover)",
-  ok: "#22c55e",
-  warn: "#f97316",
-  bad: "#ef4444",
-  info: "#3b82f6",
+  brand: "var(--brand)",
+  ok: "var(--ok)",
+  warn: "var(--warn)",
+  bad: "var(--danger)",
+  danger: "var(--danger)",
+  info: "var(--info)",
+  violet: "var(--violet)",
+  pink: "var(--pink)",
 };
 
 export const uxColors = c;
@@ -62,17 +66,21 @@ export const formControlStyle = {
 };
 
 export const chartPalette = {
-  series: ["#6366f1","#f59e0b","#ec4899","#10b981","#3b82f6","#ef4444","#8b5cf6","#06b6d4","#f97316","#84cc16","#a855f7","#14b8a6","#e11d48","#0ea5e9","#d946ef"],
+  series: ["#6366f1","#f59e0b","#ec4899","#10b981","#3b82f6","#ef4444","#8b5cf6","#06b6d4","#E25822","#84cc16","#a855f7","#14b8a6","#e11d48","#0ea5e9","#d946ef"],
   pastel: ["#818cf8","#fbbf24","#f472b6","#34d399","#60a5fa","#f87171","#a78bfa","#22d3ee","#fb923c","#a3e635","#c084fc","#2dd4bf","#fb7185","#38bdf8","#e879f9"],
   heat: ["#dbeafe","#93c5fd","#60a5fa","#3b82f6","#1d4ed8","#1e3a8a"],
 };
 
 // 상태 팔레트 (SplitTable stCellBg 기반) — knob/mask/fab/action 공통 톤.
 export const statusPalette = {
-  ok: { bg: "#22c55e22", fg: "#22c55e" },
-  warn: { bg: "#f9731622", fg: "#f97316" },
-  bad: { bg: "#ef444422", fg: "#ef4444" },
-  info: { bg: "#3b82f622", fg: "#3b82f6" },
+  ok: { bg: "var(--ok-50)", fg: "var(--ok)", line: "var(--ok-line)" },
+  warn: { bg: "var(--warn-50)", fg: "var(--warn)", line: "var(--warn-line)" },
+  bad: { bg: "var(--danger-50)", fg: "var(--danger)", line: "var(--danger-line)" },
+  danger: { bg: "var(--danger-50)", fg: "var(--danger)", line: "var(--danger-line)" },
+  info: { bg: "var(--info-50)", fg: "var(--info)", line: "var(--info-line)" },
+  brand: { bg: "var(--brand-50)", fg: "var(--brand)", line: "var(--brand-line)" },
+  violet: { bg: "var(--violet-50)", fg: "var(--violet)", line: "var(--violet-line)" },
+  pink: { bg: "var(--pink-50)", fg: "var(--pink)", line: "var(--pink-line)" },
   neutral: { bg: "var(--bg-tertiary)", fg: "var(--text-secondary)" },
   accent: { bg: "var(--accent-glow)", fg: "var(--accent)" },
 };
@@ -80,22 +88,24 @@ export const statusPalette = {
 
 // ── Pill ───────────────────────────────────────────────
 // FileBrowser/SplitTable 의 작은 라벨 pill 표준.
-// tone: "neutral"|"accent"|"ok"|"warn"|"bad"|"info"
+// tone: "neutral"|"accent"|"brand"|"ok"|"warn"|"bad"|"danger"|"info"|"violet"|"pink"
 // size: "sm"|"md"
-export function Pill({ children, tone = "neutral", size = "sm", title, onClick, style = {} }) {
+export function Pill({ children, tone = "neutral", size = "sm", title, onClick, className = "", style = {} }) {
   const p = statusPalette[tone] || statusPalette.neutral;
   const sizeMap = {
     sm: { fontSize: 14, padding: "1px 6px", borderRadius: 3 },
     md: { fontSize: 14, padding: "2px 8px", borderRadius: 4 },
   };
+  const toneClass = tone === "neutral" ? "" : ` pill--${tone}`;
   return (
     <span
+      className={`pill${toneClass}${className ? ` ${className}` : ""}`}
       title={title}
       onClick={onClick}
       style={{
         ...sizeMap[size],
-        background: p.bg,
-        color: p.fg,
+        "--pill-bg": p.bg,
+        "--pill-fg": p.fg,
         fontWeight: 600,
         cursor: onClick ? "pointer" : undefined,
         whiteSpace: "nowrap",
@@ -103,6 +113,95 @@ export function Pill({ children, tone = "neutral", size = "sm", title, onClick, 
       }}
     >{children}</span>
   );
+}
+
+export function Card({ title, right, children, padding = 16, className = "", style = {}, bodyStyle = {} }) {
+  return (
+    <section className={`card${className ? ` ${className}` : ""}`} style={{ padding, ...style }}>
+      {(title || right) && (
+        <div className="card__head">
+          {title && <div className="card__title">{uiLabel(title)}</div>}
+          {right != null && <div className="card__right">{right}</div>}
+        </div>
+      )}
+      <div style={bodyStyle}>{children}</div>
+    </section>
+  );
+}
+
+export function Chip({ mono = true, title, children, className = "", style = {} }) {
+  return (
+    <span className={`chip${className ? ` ${className}` : ""}`} title={title} style={{ fontFamily: mono ? "var(--font-mono)" : "inherit", ...style }}>
+      {children}
+    </span>
+  );
+}
+
+export function TableWrap({ maxHeight, children, className = "", style = {} }) {
+  return (
+    <div className={`tablewrap${className ? ` ${className}` : ""}`} style={{ maxHeight, ...style }}>
+      {children}
+    </div>
+  );
+}
+
+export function Tbl({ children, className = "", style = {}, ...props }) {
+  return <table className={`tbl${className ? ` ${className}` : ""}`} style={style} {...props}>{children}</table>;
+}
+
+export function Filter({ value = "", onChange, options = [], placeholder = "전체", className = "", style = {}, ...props }) {
+  const hasValue = value !== "" && value !== null && value !== undefined;
+  return (
+    <select
+      className={`filter${hasValue ? " has-value" : ""}${className ? ` ${className}` : ""}`}
+      value={value}
+      onChange={onChange}
+      style={style}
+      {...props}
+    >
+      {placeholder != null && <option value="">{placeholder}</option>}
+      {options.map((opt) => {
+        const value = typeof opt === "object" ? opt.value : opt;
+        const label = typeof opt === "object" ? opt.label : opt;
+        return <option key={String(value)} value={value}>{label}</option>;
+      })}
+    </select>
+  );
+}
+
+export function Btn({ variant = "outline", size = "md", children, className = "", disabled, ...props }) {
+  const variantClass = variant === "primary" ? "btn--primary"
+    : variant === "danger" ? "btn--danger"
+    : variant === "ghost" ? "btn--ghost"
+    : "btn--outline";
+  const sizeClass = size === "sm" ? " btn--sm" : "";
+  return (
+    <button className={`btn ${variantClass}${sizeClass}${className ? ` ${className}` : ""}`} disabled={disabled} {...props}>
+      {children}
+    </button>
+  );
+}
+
+export function Avatar({ name = "", tone, title, className = "", style = {} }) {
+  const text = String(name || "?").trim();
+  let idx = Number(tone);
+  if (!Number.isFinite(idx)) {
+    idx = [...text].reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % 5;
+  }
+  const initial = text ? [...text][0].toUpperCase() : "?";
+  return <span className={`av c${idx + 1}${className ? ` ${className}` : ""}`} title={title || text} style={style}>{initial}</span>;
+}
+
+export function Input({ className = "", style = {}, ...props }) {
+  return <input className={`input${className ? ` ${className}` : ""}`} style={style} {...props} />;
+}
+
+export function Select({ className = "", style = {}, children, ...props }) {
+  return <select className={`select${className ? ` ${className}` : ""}`} style={style} {...props}>{children}</select>;
+}
+
+export function Textarea({ className = "", style = {}, ...props }) {
+  return <textarea className={`textarea${className ? ` ${className}` : ""}`} style={style} {...props} />;
 }
 
 
@@ -337,6 +436,7 @@ export function Field({ label, children, hint, style = {} }) {
 }
 
 export default {
-  Pill, StatusDot, TabStrip, PageHeader, PageShell, Toolbar, Panel, Banner, TwoCol, DataTable, Button, EmptyState, Field,
+  Pill, Card, Chip, TableWrap, Tbl, Filter, Btn, Avatar, Input, Select, Textarea,
+  StatusDot, TabStrip, PageHeader, PageShell, Toolbar, Panel, Banner, TwoCol, DataTable, Button, EmptyState, Field,
   statusPalette, formControlStyle,
 };

@@ -152,14 +152,17 @@ def test_filebrowser_cache_settings_updates_lot_progress_interval(monkeypatch, t
     monkeypatch.setattr(lot_progress_cache, "cache_status", lambda: {"ok": True, "interval_minutes": 45, "scheduler_started": True})
 
     out = filebrowser.cache_match_settings(
-        filebrowser.CacheMatchSettingsReq(target="lot_progress", interval_minutes=45),
+        filebrowser.CacheMatchSettingsReq(target="lot_progress", interval_minutes=45, auto_s3_upload_on_save=True),
         _Request("admin", "admin"),
     )
 
     saved = json.loads((tmp_path / "settings.json").read_text("utf-8"))
+    fb_saved = json.loads((tmp_path / "filebrowser_settings.json").read_text("utf-8"))
     assert saved["lot_progress_refresh_minutes"] == 45
+    assert fb_saved["auto_s3_upload_on_save"] is True
     assert out["target"] == "lot_progress"
     assert out["interval_minutes"] == 45
+    assert out["auto_s3_upload_on_save"] is True
     assert out["schedule_enabled"] is True
 
 
@@ -245,6 +248,7 @@ def test_filebrowser_lot_progress_cache_status_and_refresh_contract(monkeypatch,
     assert refreshed["unit_action"] == "filebrowser.cache.lot_progress.refresh"
     assert refreshed["row_count"] == 2
     assert refreshed["paths"] == [str(parquet_fp)]
+    assert refreshed["s3_sync"]["status"] == "disabled_by_filebrowser_setting"
 
 
 def test_filebrowser_cache_llm_refresh_uses_llm_target_allowlist(monkeypatch):
@@ -617,6 +621,52 @@ def test_filebrowser_sql_llm_draft_writes_filter_only(monkeypatch):
     assert out["unit_action"] == "filebrowser.sql.llm.draft"
     assert out["sql"] == "LOT_ID = 'A1000' AND wafer_id = 21"
     assert out["llm"]["used"] is True
+    assert out["resolved_columns"] == ["wafer_id"]
+
+
+def test_filebrowser_sql_llm_draft_reports_prompt_column_resolution(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="root_lot_id가 A1000이고 wafer_id가 21이고 ghost_col도 확인",
+            columns=["root_lot_id", "wafer_id", "step_id"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["resolved_columns"] == ["root_lot_id", "wafer_id"]
+    assert out["unknown_column_terms"] == ["ghost_col"]
+    assert "A1000" in out["value_terms"]
+
+
+def test_filebrowser_sql_llm_draft_sends_schema_samples_and_reports_values(monkeypatch):
+    calls = []
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+
+    def fake_complete(ask, **_kwargs):
+        calls.append(json.loads(ask))
+        return {"ok": True, "text": json.dumps({"sql": "step_id = 'ETCH'", "resolved_values": ["ETCH"]})}
+
+    monkeypatch.setattr(llm_adapter, "complete", fake_complete)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="step_id가 ETCH인 행",
+            columns=["step_id", "value"],
+            dtypes={"step_id": "String", "value": "Float64"},
+            sample_rows=[{"step_id": "ETCH", "value": 1.2}],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["resolved_values"] == ["ETCH"]
+    assert calls[0]["schema"][0] == {"name": "step_id", "dtype": "String", "sample_values": ["ETCH"]}
+    assert calls[0]["sample_rows"] == [{"step_id": "ETCH", "value": "1.2"}]
 
 
 @pytest.mark.parametrize("bad_sql", [
@@ -1068,7 +1118,7 @@ def test_base_file_meta_only_uses_cached_parquet_metadata(monkeypatch, tmp_path)
     assert result["data"] == []
 
 
-def test_base_files_cleans_legacy_cache_and_exposes_only_canonical(monkeypatch, tmp_path):
+def test_base_files_hides_legacy_cache_and_cleanup_api_deletes_candidates(monkeypatch, tmp_path):
     fp = tmp_path / "ML_TABLE_PRODA.parquet"
     pl.DataFrame({
         "product": ["PRODA", "PRODA", "PRODA"],
@@ -1128,7 +1178,19 @@ def test_base_files_cleans_legacy_cache_and_exposes_only_canonical(monkeypatch, 
     assert [row["path"] for row in listed["dirs"]] == ["cache"]
     assert [row["path"] for row in cache_rows] == ["cache/lot_progress_latest_lot_by_root_wafer.parquet"]
     assert cache_rows[0]["editable"] is False
-    assert not nested.exists()
+    assert nested.exists()
+    for legacy in legacy_files:
+        assert legacy.exists()
+    candidates = filebrowser.cache_cleanup_candidates(_Request("admin", "admin"))["candidates"]
+    relpaths = {row["relpath"] for row in candidates}
+    assert "cache/ML_TABLE_PRODA.parquet.latest_step_by_lot.parquet" in relpaths
+    assert "cache/lot_progress_latest_lot_by_root_wafer.parquet" not in relpaths
+    cleaned = filebrowser.cache_cleanup(
+        filebrowser.CacheCleanupReq(paths=[row["path"] for row in candidates]),
+        _Request("admin", "admin"),
+    )
+    assert cleaned["ok"] is True
+    assert len(cleaned["deleted"]) == len(candidates)
     for legacy in legacy_files:
         assert not legacy.exists()
     preview = filebrowser.base_file_view(
@@ -1211,6 +1273,24 @@ def test_base_file_view_does_not_build_single_file_derived_cache(monkeypatch, tm
 
     assert preview["data"][0]["step_id"] == "STEP_010"
     assert not (tmp_path / "cache" / f"{fp.name}.latest_step_by_lot.parquet").exists()
+
+
+def test_single_file_step_cache_fills_product_from_ml_table_name(monkeypatch, tmp_path):
+    fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "lot_id": ["L1000", "L1000"],
+        "step_id": ["STEP_010", "STEP_020"],
+        "time": ["2026-04-28T08:00:00", "2026-04-28T09:00:00"],
+    }).write_parquet(fp)
+
+    out = filebrowser._build_single_file_step_cache(fp, force=True)
+    df = pl.read_parquet(tmp_path / "cache" / f"{fp.name}.latest_step_by_lot.parquet")
+    meta = json.loads((tmp_path / "cache" / f"{fp.name}.latest_step_by_lot.meta.json").read_text("utf-8"))
+
+    assert out["ok"] is True
+    assert df.to_dicts()[0]["product"] == "PRODA"
+    assert meta["product_col"] == ""
+    assert meta["rows"] == 1
 
 
 def test_base_files_exposes_readable_lot_progress_cache(monkeypatch, tmp_path):
@@ -1296,6 +1376,16 @@ def test_cache_folder_exposes_only_lot_progress_latest_cache(monkeypatch, tmp_pa
     assert "cache/lot_progress_latest_lot_by_root_wafer.parquet" in paths
     assert "cache/small_cache.csv" not in paths
     assert "cache/wide_cache.parquet" not in paths
+    assert csv_fp.exists()
+    assert pq_fp.exists()
+    candidates = filebrowser.cache_cleanup_candidates(_Request("admin", "admin"))["candidates"]
+    relpaths = {row["relpath"] for row in candidates}
+    assert {"cache/small_cache.csv", "cache/wide_cache.parquet"}.issubset(relpaths)
+    cleaned = filebrowser.cache_cleanup(
+        filebrowser.CacheCleanupReq(paths=["cache/small_cache.csv", "cache/wide_cache.parquet"]),
+        _Request("admin", "admin"),
+    )
+    assert cleaned["ok"] is True
     assert not csv_fp.exists()
     assert not pq_fp.exists()
 
@@ -1416,6 +1506,45 @@ def test_reformatter_csv_save_applies_file_rule_and_versions_under_flow_data(mon
     assert [row["item"] for row in rows] == ["a", "b"]
     assert (version_dir / "v1.csv").is_file()
     assert (version_dir / "v1.meta.json").is_file()
+
+
+def test_base_file_save_reports_added_rows_in_version_diff(monkeypatch, tmp_path):
+    reformatter_dir = tmp_path / "reformatter"
+    reformatter_dir.mkdir()
+    fp = reformatter_dir / "PRODA0.csv"
+    fp.write_text("item,rank\na,1\n", encoding="utf-8")
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(filebrowser, "BASE_VERSION_DIR", tmp_path / "file_versions")
+    monkeypatch.setattr(filebrowser._s3, "sync_saved_path", lambda *_args, **_kwargs: {"ok": True, "skipped": True})
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "hidden_db_dirs": ["cache", "reformatter"],
+        "versioned_single_file_dirs": ["reformatter"],
+        "csv_rules": {},
+    })
+
+    saved = filebrowser._save_base_file(
+        filebrowser.BaseFileSaveReq(
+            file="reformatter/PRODA0.csv",
+            csv_text="item,rank\na,1\nb,2\n",
+            delimiter="comma",
+            include_header=True,
+            note="append row",
+        ),
+        _Request("admin", "admin"),
+    )
+    versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="reformatter/PRODA0.csv")
+    preview = filebrowser.base_file_version_content(
+        _Request("admin", "admin"),
+        file="reformatter/PRODA0.csv",
+        version=versions["versions"][0]["version"],
+    )
+
+    assert saved["version"]["change_summary"]["added_rows"] == 1
+    assert versions["versions"][0]["change_summary"]["label"] == "추가 1행"
+    assert preview["diff_table"]["counts"]["added"] == 1
 
 
 def test_base_file_versioned_allows_any_single_csv_under_5mb(tmp_path):
@@ -1572,6 +1701,7 @@ def test_filebrowser_settings_gate_allows_page_admin(monkeypatch, tmp_path):
     saved = filebrowser.save_filebrowser_settings(
         filebrowser.FileBrowserSettingsReq(
             csv_full_read_max_bytes=2048,
+            csv_download_max_rows=12345,
             csv_rules={"rules.csv": {"required_columns": ["id"]}},
         ),
         _Request("fb_mgr", "user"),
@@ -1579,6 +1709,7 @@ def test_filebrowser_settings_gate_allows_page_admin(monkeypatch, tmp_path):
 
     assert saved["ok"] is True
     assert saved["csv_full_read_max_bytes"] == 2048
+    assert saved["csv_download_max_rows"] == 12345
     assert saved["csv_rules"]["rules.csv"]["required_columns"] == ["id"]
 
 

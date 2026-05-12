@@ -4,11 +4,11 @@
  * 삭제 정책: 작성자 본인만 (관리자도 불가) — 서버에서도 동일하게 강제됨.
  */
 import React, { useEffect, useMemo, useState, useRef } from "react";
-import { sf, authSrc, postJson, userLabel, userMatches } from "../lib/api";
+import { sf, authSrc, postJson, qs, userLabel, userMatches } from "../lib/api";
 import PageGear from "../components/PageGear";
 import Modal from "../components/Modal";
 import { toast } from "../components/Toast";
-import { Button, Pill, statusPalette, chartPalette } from "../components/UXKit";
+import { Button, Card, Chip, Pill, TableWrap, Tbl, statusPalette, chartPalette } from "../components/UXKit";
 
 const API = "/api/informs";
 export const WIZARD_STEPS = ["lot", "module", "splittable", "mail_preview", "review"];
@@ -18,7 +18,7 @@ export const WIZARD_BACKEND_CALLS = [
   "/api/informs/splittable-snapshot",
   "/api/informs/recipients",
   "/api/informs/mail-groups",
-  "POST /api/informs",
+  "POST /api/informs/bulk-create",
 ];
 const WIZARD_DRAFT_KEY = "flow_inform_wizard_draft_v1";
 const WIZARD_OPEN_KEY = "flow_inform_open_wizard_v1";
@@ -188,9 +188,9 @@ function parseDuplicateProductError(error) {
 }
 
 const STATUS_META = {
-  registered:      { label: "등록", color: INFO.fg, dot: "○" },
-  mail_completed:  { label: "메일완료", color: WARN.fg, dot: "◑" },
-  apply_confirmed: { label: "등록적용확인", color: OK.fg, dot: "●" },
+  registered:      { label: "등록", tone: "info", color: INFO.fg, dot: "○" },
+  mail_completed:  { label: "메일완료", tone: "brand", color: WARN.fg, dot: "◑" },
+  apply_confirmed: { label: "등록적용확인", tone: "ok", color: OK.fg, dot: "●" },
 };
 const STATUS_ORDER = ["registered", "mail_completed", "apply_confirmed"];
 
@@ -459,21 +459,13 @@ function moduleColor(name) {
 
 function StatusBadge({ status, compact = false }) {
   const normalized = normalizeFlowStatus(status);
-  const m = STATUS_META[normalized] || { label: status || "-", color: "var(--text-secondary)", dot: "·" };
+  const m = STATUS_META[normalized] || { label: status || "-", tone: "neutral", color: "var(--text-secondary)", dot: "·" };
   const label = compact && normalized === "apply_confirmed" ? "적용확인" : m.label;
   return (
-    <span title={m.label} style={{
-      display: "inline-flex", alignItems: "center", gap: 4,
-      minWidth: 0, maxWidth: compact ? 86 : "100%",
-      padding: "2px 8px", borderRadius: 6,
-      background: m.color + "16", color: m.color,
-      border: "1px solid " + m.color + "33",
-      fontSize: 14, fontWeight: 700,
-      lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-    }}>
+    <Pill tone={m.tone} title={m.label} style={{ minWidth: 0, maxWidth: compact ? 86 : "100%", lineHeight: 1.2 }}>
       <span style={{ flex: "0 0 auto" }}>{m.dot}</span>
       <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
-    </span>
+    </Pill>
   );
 }
 
@@ -603,9 +595,10 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
       setKnobMeta({}); setVmMeta({}); setInlineMeta({});
       return;
     }
-    fetch(`/api/splittable/knob-meta?product=${encodeURIComponent(effectiveProduct)}`).then(r => r.json()).then(d => setKnobMeta(d.features || {})).catch(() => setKnobMeta({}));
-    fetch(`/api/splittable/vm-meta?product=${encodeURIComponent(effectiveProduct)}`).then(r => r.json()).then(d => setVmMeta(d.items || {})).catch(() => setVmMeta({}));
-    fetch(`/api/splittable/inline-meta?product=${encodeURIComponent(effectiveProduct)}`).then(r => r.json()).then(d => setInlineMeta(d.items || {})).catch(() => setInlineMeta({}));
+    const metaQs = qs({ product: effectiveProduct });
+    sf(`/api/splittable/knob-meta${metaQs}`).then(d => setKnobMeta(d.features || {})).catch(() => setKnobMeta({}));
+    sf(`/api/splittable/vm-meta${metaQs}`).then(d => setVmMeta(d.items || {})).catch(() => setVmMeta({}));
+    sf(`/api/splittable/inline-meta${metaQs}`).then(d => setInlineMeta(d.items || {})).catch(() => setInlineMeta({}));
   }, [effectiveProduct]);
   const vmLookup = (param) => { if (!param) return null; const tail = String(param).replace(/^VM_/, ""); return vmMeta[param] || vmMeta[tail] || null; };
   const inlineLookup = (param) => { if (!param) return null; const tail = String(param).replace(/^INLINE_/, ""); return inlineMeta[param] || inlineMeta[tail] || null; };
@@ -827,7 +820,7 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
                     return (
                       <td key={ci} style={{ ...stCellStyle, ...bg, ...plan }}>
                         {isMismatch
-                          ? <span style={{ color: "#dc2626", fontWeight: 700 }}>{"✗ "}{display}<span style={{ fontSize: 14, color: "rgba(239,68,68,0.95)" }}>{" (≠" + cell.plan + ")"}</span></span>
+                          ? <span style={{ color: "var(--danger)", fontWeight: 700 }}>{"✗ "}{display}<span style={{ fontSize: 14, color: "var(--danger)" }}>{" (≠" + cell.plan + ")"}</span></span>
                           : isAppliedPlan
                             ? <span style={{ color: OK.fg, fontWeight: 700 }}>{"✓ "}{String(cell.plan)}<span style={{ fontSize: 14, color: OK.fg }}>{" (plan 적용)"}</span></span>
                             : isPlanOnly
@@ -1243,6 +1236,71 @@ function DeadlineBadge({ deadline, onChange, canEdit }) {
   );
 }
 
+function MailDialogPreviewPanel({ preview, subject, effectiveEmailCount, inlineImages, attachments, onToggleAttach }) {
+  return (
+    <>
+      {preview?.html_body && (
+        <details style={{ marginBottom: 10, border: "1px solid var(--border)", borderRadius: 5, padding: "4px 10px", background: "var(--bg-card)" }} open>
+          <summary style={{ fontSize: 14, fontWeight: 600, cursor: "pointer", color: "var(--accent)" }}>
+            👁️ 메일 미리보기 · 제목 [{subject || preview.subject || "자동"}] · 수신자 {effectiveEmailCount}명
+          </summary>
+          <div style={{ marginTop: 6, marginBottom: 6, display: "flex", gap: 8, flexWrap: "wrap", fontSize: 14 }}>
+            <span style={{ padding: "3px 8px", borderRadius: 999, background: INFO.bg, color: INFO.fg, border: `1px solid ${INFO.fg}55` }}>
+              본문 {formatBytes(preview.html_size_bytes)}
+            </span>
+            <span style={{ padding: "3px 8px", borderRadius: 999, background: GREEN.bg, color: "rgba(5,150,105,0.95)", border: "1px solid rgba(5,150,105,0.28)" }}>
+              자동 첨부 {formatBytes(preview.attachment_total_bytes)}
+            </span>
+            <span style={{ padding: "3px 8px", borderRadius: 999, background: WARN.bg, color: "rgba(180,83,9,0.95)", border: "1px solid rgba(180,83,9,0.28)" }}>
+              SplitTable xlsx {(preview.auto_attachments || []).length}개
+            </span>
+          </div>
+          <div style={{ minHeight: "60vh", maxHeight: "70vh", overflowY: "auto", overflowX: "hidden", width: "100%", background: WHITE, color: "var(--text-primary)", padding: 10, border: "1px solid var(--border)", borderRadius: 4 }}
+               dangerouslySetInnerHTML={{ __html: preview.html_body }} />
+        </details>
+      )}
+      {preview?.html_over_limit && (
+        <div style={{ marginBottom: 8, padding: "6px 10px", border: `1px solid ${BAD.fg}`, background: BAD.bg, borderRadius: 4, color: BAD.fg, fontSize: 14 }}>
+          ⚠ 메일 본문 HTML 크기 {preview.html_size_kb}KB — 2MB 한도 초과. SplitTable 컬럼 수를 줄이거나 본문을 단축해야 발송 가능합니다.
+        </div>
+      )}
+      {preview && preview.html_size_kb != null && !preview.html_over_limit && (
+        <div style={{ marginBottom: 8, fontSize: 14, color: "var(--text-secondary)" }}>
+          📦 HTML 본문 크기: {preview.html_size_kb}KB / {Math.round((preview.html_size_limit_bytes || 2097152) / 1024)}KB
+        </div>
+      )}
+      {inlineImages.length > 0 && <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>📎 첨부 이미지 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(각 파일 10MB 한도 · 총합 제한)</span></div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {inlineImages.map(img => {
+            const on = attachments.includes(img.url);
+            return <span key={img.url} onClick={() => onToggleAttach(img.url)} style={{
+              padding: "4px 10px", borderRadius: 4, fontSize: 14,
+              background: on ? "rgba(16,185,129,0.15)" : "var(--bg-card)",
+              color: on ? OK.fg : "var(--text-primary)",
+              border: "1px solid " + (on ? OK.fg : "var(--border)"),
+              cursor: "pointer",
+            }}>{on ? "✔" : "＋"} {img.filename || img.url.split("/").pop()}</span>;
+          })}
+        </div>
+      </div>}
+      {preview?.auto_attachments?.length > 0 && (
+        <div style={{ marginBottom: 10, padding: 8, borderRadius: 5, background: GREEN.soft, border: `1px solid ${OK.fg}` }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: OK.fg }}>📎 자동 첨부 (SplitTable 스냅샷 xlsx)</div>
+          {preview.auto_attachments.map((a, i) => (
+            <div key={i} style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", marginTop: 2 }}>
+              · {a.name} ({formatBytes(a.bytes)})
+            </div>
+          ))}
+          <div style={{ marginTop: 6, fontSize: 14, color: "var(--text-secondary)" }}>
+            총 첨부 용량: {formatBytes(preview.attachment_total_bytes)}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 /* 루트 인폼 머리에 붙는 상태 패널 (flow 진행 + 이력) */
 function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) {
   // v8.7.2: 인폼 → 사내 메일 API 로 HTML 본문 전송 (multipart).
@@ -1499,7 +1557,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
               const nm = (r.name || "").trim();
               const em = r.effective_email || r.email || "";
               return (
-                <div key={r.username} onClick={() => toggleUser(r.username)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 14, cursor: "pointer", background: on ? "rgba(59,130,246,0.12)" : "transparent", borderBottom: "1px solid var(--border)" }}>
+                <div key={r.username} onClick={() => toggleUser(r.username)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", fontSize: 14, cursor: "pointer", background: on ? "var(--info-50)" : "transparent", borderBottom: "1px solid var(--border)" }}>
                   <input type="checkbox" checked={on} readOnly />
                   {nm
                     ? <><span style={{ fontWeight: 600 }}>{nm}</span>
@@ -1538,71 +1596,14 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
             </div>
           )}
         </div>
-        {/* v8.8.21: 실시간 미리보기 — 실제 보낼 HTML body, 수신자, 담당자 라인을 한눈에. */}
-        {preview?.html_body && (
-          <details style={{ marginBottom: 10, border: "1px solid var(--border)", borderRadius: 5, padding: "4px 10px", background: "var(--bg-card)" }} open>
-            <summary style={{ fontSize: 14, fontWeight: 600, cursor: "pointer", color: "var(--accent)" }}>
-              👁️ 메일 미리보기 · 제목 [{subject || preview.subject || "자동"}] · 수신자 {effectiveEmailCount}명
-            </summary>
-            <div style={{ marginTop: 6, marginBottom: 6, display: "flex", gap: 8, flexWrap: "wrap", fontSize: 14 }}>
-              <span style={{ padding: "3px 8px", borderRadius: 999, background: INFO.bg, color: INFO.fg, border: `1px solid ${INFO.fg}55` }}>
-                본문 {formatBytes(preview.html_size_bytes)}
-              </span>
-              <span style={{ padding: "3px 8px", borderRadius: 999, background: GREEN.bg, color: "rgba(5,150,105,0.95)", border: "1px solid rgba(5,150,105,0.28)" }}>
-                자동 첨부 {formatBytes(preview.attachment_total_bytes)}
-              </span>
-              <span style={{ padding: "3px 8px", borderRadius: 999, background: WARN.bg, color: "rgba(180,83,9,0.95)", border: "1px solid rgba(180,83,9,0.28)" }}>
-                SplitTable xlsx {(preview.auto_attachments || []).length}개
-              </span>
-            </div>
-            <div style={{ minHeight: "60vh", maxHeight: "70vh", overflowY: "auto", overflowX: "hidden", width: "100%", background: WHITE, color: "var(--text-primary)", padding: 10, border: "1px solid var(--border)", borderRadius: 4 }}
-                 dangerouslySetInnerHTML={{ __html: preview.html_body }} />
-          </details>
-        )}
-        {/* v8.8.30: 스레드 포함 옵션 제거 — 메일 본문은 제품/Lot/작성자/작성시간 + SplitTable 스냅샷 중심으로 간결화. */}
-        {preview?.html_over_limit && (
-          <div style={{ marginBottom: 8, padding: "6px 10px", border: `1px solid ${BAD.fg}`, background: BAD.bg, borderRadius: 4, color: BAD.fg, fontSize: 14 }}>
-            ⚠ 메일 본문 HTML 크기 {preview.html_size_kb}KB — 2MB 한도 초과. SplitTable 컬럼 수를 줄이거나 본문을 단축해야 발송 가능합니다.
-          </div>
-        )}
-        {preview && preview.html_size_kb != null && !preview.html_over_limit && (
-          <div style={{ marginBottom: 8, fontSize: 14, color: "var(--text-secondary)" }}>
-            📦 HTML 본문 크기: {preview.html_size_kb}KB / {Math.round((preview.html_size_limit_bytes || 2097152) / 1024)}KB
-          </div>
-        )}
-
-        {inlineImages.length > 0 && <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>📎 첨부 이미지 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(각 파일 10MB 한도 · 총합 제한)</span></div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {inlineImages.map(img => {
-              const on = attachments.includes(img.url);
-              return <span key={img.url} onClick={() => toggleAttach(img.url)} style={{
-                padding: "4px 10px", borderRadius: 4, fontSize: 14,
-                background: on ? "rgba(16,185,129,0.15)" : "var(--bg-card)",
-                color: on ? OK.fg : "var(--text-primary)",
-                border: "1px solid " + (on ? OK.fg : "var(--border)"),
-                cursor: "pointer",
-              }}>{on ? "✔" : "＋"} {img.filename || img.url.split("/").pop()}</span>;
-            })}
-          </div>
-        </div>}
-
-        {/* v8.8.21: 직접 파일첨부 UI 제거 → 인폼 스냅샷 xlsx 자동 첨부로 대체.
-             인폼에 담긴 제품/lot/wafer + splittable_change + body 를 SplitTable 엑셀 형식으로
-             BE 가 렌더 → 메일 files 에 자동 포함 된다. 인라인 이미지 첨부는 그대로 유지. */}
-        {preview?.auto_attachments?.length > 0 && (
-          <div style={{ marginBottom: 10, padding: 8, borderRadius: 5, background: GREEN.soft, border: `1px solid ${OK.fg}` }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: OK.fg }}>📎 자동 첨부 (SplitTable 스냅샷 xlsx)</div>
-            {preview.auto_attachments.map((a, i) => (
-              <div key={i} style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", marginTop: 2 }}>
-                · {a.name} ({formatBytes(a.bytes)})
-              </div>
-            ))}
-            <div style={{ marginTop: 6, fontSize: 14, color: "var(--text-secondary)" }}>
-              총 첨부 용량: {formatBytes(preview.attachment_total_bytes)}
-            </div>
-          </div>
-        )}
+        <MailDialogPreviewPanel
+          preview={preview}
+          subject={subject}
+          effectiveEmailCount={effectiveEmailCount}
+          inlineImages={inlineImages}
+          attachments={attachments}
+          onToggleAttach={toggleAttach}
+        />
 
         {error && <div style={{ padding: "6px 10px", background: BAD.bg, color: BAD.fg, border: `1px solid ${BAD.fg}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>⚠ {error}</div>}
         {sent && <div style={{ padding: "6px 10px", background: GREEN.bg, color: OK.fg, border: `1px solid ${OK.fg}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>✔ 전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}
@@ -1641,8 +1642,8 @@ function RootHeader({ root, onChangeStatus, user }) {
       <div style={{ flex: 1 }} />
       <span onClick={() => setOpenMail(true)}
         title={lastMailAt ? `최근 메일: ${(lastMailAt || "").replace("T"," ").slice(0,16)}` : "사내 메일 API 로 이 인폼 내용 전송"}
-        style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--accent)",
-                 background: "rgba(249,115,22,0.08)", color: "var(--accent)",
+        style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--brand-line)",
+                 background: "var(--brand-50)", color: "var(--brand)",
                  fontSize: 14, fontWeight: 700, cursor: "pointer", userSelect: "none", lineHeight: 1.3 }}>
         ✉ 메일{mailCount > 0 && ` (${mailCount})`}
       </span>
@@ -2379,11 +2380,10 @@ export default function My_Inform({ user }) {
       }
       return body;
     };
-    const requests = submitTargets.map(async targetLot => sf(API, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(await buildBody(targetLot)),
-    }));
-    return Promise.all(requests).then((results) => {
+    const payloads = [];
+    for (const targetLot of submitTargets) payloads.push(await buildBody(targetLot));
+    return postJson(API + "/bulk-create", { informs: payloads }).then((bulk) => {
+      const results = (bulk.informs || []).map(inform => ({ inform }));
       setForm(defaultInformForm());
       setCreateImages([]);
       setWizardStep(0);
@@ -3403,25 +3403,25 @@ function TimelineLog({ thread, onOpen }) {
   }, [events, lotQ]);
 
   return (
-    <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-secondary)", padding: 10, fontFamily: "monospace" }}>
+    <Card style={{ fontFamily: "monospace" }} padding={10}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
         <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>📜 이력 타임라인 ({filtered.length}{lotQ ? ` / ${events.length}` : ""}건)</span>
         <input value={lotQ} onChange={e => setLotQ(e.target.value)}
           placeholder="🔎 Lot 검색 (root_lot_id 또는 fab_lot_id 부분일치)"
           style={{ flex: 1, minWidth: 220, padding: "5px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
-        {lotQ && <span onClick={() => setLotQ("")} style={{ cursor: "pointer", color: "#ef4444", fontSize: 14 }}>✕ 초기화</span>}
+        {lotQ && <span onClick={() => setLotQ("")} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14 }}>✕ 초기화</span>}
       </div>
       <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>작성 / 수정 / 이행(확인·완료) — 누가 언제 무엇을 했는지 시간순. Lot 입력 시 해당 Lot 만 필터링.</div>
       {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>{lotQ ? `'${lotQ}' 매칭 이력 없음.` : "이력 없음."}</div>}
       {filtered.map((e, i) => {
         const mc = moduleColor(e.module);
-        const kindColor = e.kind === "인폼" ? "#3b82f6"
-          : e.kind === "담당자확인" ? "#22c55e"
-          : e.kind === "확인취소" ? "#ef4444"
-          : e.kind === "메일" ? "#f59e0b"
-          : e.kind === "댓글" ? "#8b5cf6"
-          : e.kind === "체크" ? "#14b8a6"
-          : "#64748b";
+        const kindTone = e.kind === "인폼" ? "info"
+          : e.kind === "담당자확인" ? "ok"
+          : e.kind === "확인취소" ? "danger"
+          : e.kind === "메일" ? "warn"
+          : e.kind === "댓글" ? "violet"
+          : e.kind === "체크" ? "brand"
+          : "neutral";
         const lotLabel = e.product && e.lot ? `[${e.product}] ${e.lot}` : (e.lot || e.product || "-");
         return (
           <div key={i} onClick={() => onOpen && onOpen(e.node)} style={{
@@ -3432,13 +3432,13 @@ function TimelineLog({ thread, onOpen }) {
             <span style={{ color: "var(--text-secondary)", minWidth: 115 }}>{(e.at || "").replace("T", " ").slice(0, 16)}</span>
             <span style={{ minWidth: 56, color: mc, fontWeight: 700 }}>{e.module || "-"}</span>
             <span title={lotLabel} style={{ minWidth: 220, maxWidth: 360, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lotLabel}</span>
-            <span style={{ padding: "1px 8px", borderRadius: 999, background: kindColor + "22", color: kindColor, fontWeight: 700, fontSize: 14 }}>{e.kind}</span>
+            <Pill tone={kindTone}>{e.kind}</Pill>
             <span style={{ color: "var(--text-primary)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.summary}</span>
             <span style={{ color: "var(--text-secondary)", fontSize: 14 }}>· {e.actor || "-"}</span>
           </div>
         );
       })}
-    </div>
+    </Card>
   );
 }
 
@@ -3570,10 +3570,10 @@ function UserModulePermsPanel({ allModules }) {
             <div key={u.username} style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", opacity: busy ? 0.6 : 1 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace" }}>{u.username}</span>
-                {u.role === "admin" && <span style={{ fontSize: 14, padding: "1px 5px", borderRadius: 8, background: "#ef444422", color: "#ef4444", fontWeight: 700 }}>admin</span>}
+                {u.role === "admin" && <Pill tone="danger">admin</Pill>}
                 {u.email && <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{u.email}</span>}
                 <span style={{ flex: 1 }} />
-                <span style={{ fontSize: 14, color: u.has_setting ? "#16a34a" : "var(--text-secondary)" }}>
+                <span style={{ fontSize: 14, color: u.has_setting ? "var(--ok)" : "var(--text-secondary)" }}>
                   {u.has_setting ? `✓ 설정됨 (${(u.modules || []).length})` : "기본(그룹 기반)"}
                 </span>
                 <span onClick={() => setAllFor(u.username, !allOn)}
@@ -3581,7 +3581,7 @@ function UserModulePermsPanel({ allModules }) {
                   {allOn ? "전체 해제" : "전체 선택"}
                 </span>
                 {u.has_setting && <span onClick={() => clearFor(u.username)}
-                  style={{ fontSize: 14, padding: "1px 6px", borderRadius: 4, cursor: "pointer", border: "1px solid #ef4444", color: "#ef4444" }}
+                  style={{ fontSize: 14, padding: "1px 6px", borderRadius: 4, cursor: "pointer", border: "1px solid var(--danger)", color: "var(--danger)" }}
                   title="이 유저의 권한 설정을 초기화 (groups 기반으로 복귀)">× 초기화</span>}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -4052,10 +4052,10 @@ function InformVirtualList({ roots, selectedId, onOpen }) {
     whiteSpace: "nowrap",
   };
   return (
-    <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "var(--bg-secondary)" }}>
+    <TableWrap style={{ flex: 1, minHeight: 0, border: "none", borderRadius: 0, background: "var(--bg-secondary)" }}>
       {roots.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "var(--text-secondary)" }}>조건에 맞는 인폼이 없어요</div>}
       {roots.length > 0 && (
-        <table style={tableStyle}>
+        <Tbl style={tableStyle}>
           <colgroup>
             <col style={{ width: 6 }} />
             <col style={{ width: 190 }} />
@@ -4087,9 +4087,9 @@ function InformVirtualList({ roots, selectedId, onOpen }) {
               <InformListRow key={root.id} root={root} selected={selectedId === root.id} onOpen={() => onOpen(root)} />
             ))}
           </tbody>
-        </table>
+        </Tbl>
       )}
-    </div>
+    </TableWrap>
   );
 }
 
@@ -4179,7 +4179,7 @@ function InformFullDetail({ root, onBack, children }) {
         </span>
         {root && (
           <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end", minWidth: 0 }}>
-            {root.product && <span style={{ padding: "2px 8px", borderRadius: 999, background: "var(--accent-glow)", color: "var(--accent)", border: "1px solid rgba(249,115,22,0.24)", fontFamily: "monospace", fontSize: 14, fontWeight: 800 }}>{stripMlPrefix(root.product)}</span>}
+            {root.product && <Chip style={{ background: "var(--brand-50)", borderColor: "var(--brand-line)", color: "var(--brand)", fontWeight: 800 }}>{stripMlPrefix(root.product)}</Chip>}
             <LotPill root={root} />
             <ModulePill module={root.module || "기타"} solid />
             <StatusBadge status={normalizeFlowStatus(root.flow_status, root)} />
@@ -4232,7 +4232,7 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
               <ModulePill module={root.module || "기타"} />
               <StatusBadge status={status} />
               <LotPill root={root} />
-              {root.product && <span style={{ padding: "2px 8px", borderRadius: 999, background: "var(--accent-glow)", color: "var(--accent)", border: "1px solid rgba(249,115,22,0.24)", fontFamily: "monospace", fontSize: 14 }}>{stripMlPrefix(root.product)}</span>}
+              {root.product && <Chip style={{ background: "var(--brand-50)", borderColor: "var(--brand-line)", color: "var(--brand)" }}>{stripMlPrefix(root.product)}</Chip>}
               <span style={{ color: "var(--text-secondary)", fontSize: 14 }}>{root.author || "-"} · {relativeTime(root.created_at)}</span>
             </div>
           </div>
@@ -4873,10 +4873,10 @@ function InformWizard({
               </div>
             )}
             {attachMode === "knob" && (
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--bg-card)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--bg-card)", display: "grid", gap: 8, maxHeight: 420, overflow: "hidden" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <b>KNOB / CUSTOM 컬럼 직접 첨부</b>
-                  <span style={{ color: "var(--text-secondary)" }}>기본 0개 선택</span>
+                  <span style={{ color: "var(--text-secondary)" }}>선택 {embedCustomCols.length}개</span>
                   <button type="button" onClick={() => setEmbedCustomCols(filteredCols)}
                     style={{ marginLeft: "auto", padding: "5px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800 }}>
                     전체 선택
@@ -4886,36 +4886,55 @@ function InformWizard({
                     선택 해제
                   </button>
                 </div>
-                <input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)} placeholder="KNOB / CUSTOM 컬럼 검색" style={inputStyle({ marginBottom: 8 })} />
-                <div style={{ maxHeight: 230, overflow: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 4 }}>
+                <input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)} placeholder="KNOB / CUSTOM 컬럼 검색" style={inputStyle()} />
+                {embedCustomCols.length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", maxHeight: 70, overflow: "auto", padding: 8, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
+                    {embedCustomCols.map(c => (
+                      <button key={c} type="button" onClick={() => toggleCol(c)}
+                        style={{ maxWidth: "100%", padding: "3px 7px", borderRadius: 7, border: "1px solid var(--accent)", background: "var(--accent-glow)", color: "var(--accent)", cursor: "pointer", fontFamily: "monospace", fontWeight: 900, whiteSpace: "normal", wordBreak: "break-all", overflowWrap: "anywhere", textAlign: "left" }}>
+                        {c} ×
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div style={{ maxHeight: 230, overflow: "auto", display: "grid", gridTemplateColumns: "1fr", gap: 2, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
                   {filteredCols.map(c => {
                     const on = embedCustomCols.includes(c);
                     return (
-                      <label key={c} style={{ display: "flex", gap: 5, alignItems: "center", padding: "4px 6px", borderRadius: 6, background: on ? "var(--accent-glow)" : "transparent", cursor: "pointer", fontFamily: "monospace" }}>
+                      <label key={c} style={{ display: "flex", gap: 7, alignItems: "center", minHeight: 32, padding: "5px 8px", borderBottom: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", cursor: "pointer", fontFamily: "monospace", minWidth: 0 }}>
                         <input type="checkbox" checked={on} onChange={() => toggleCol(c)} />
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c}</span>
+                        <span style={{ minWidth: 0, whiteSpace: "normal", wordBreak: "break-all", overflowWrap: "anywhere" }}>{c}</span>
                       </label>
                     );
                   })}
                 </div>
-                <div style={{ marginTop: 8, color: "var(--text-secondary)" }}>선택 {embedCustomCols.length}개</div>
               </div>
             )}
             {attachMode === "new" && (
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--bg-card)", display: "grid", gap: 8 }}>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--bg-card)", display: "grid", gap: 8, maxHeight: 420, overflow: "hidden" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <b>새 커스텀 세트 만들기</b>
                   <span style={{ color: "var(--text-secondary)" }}>만든 뒤 자동 선택</span>
                 </div>
                 <input value={newSetName} onChange={e => setNewSetName(e.target.value)} placeholder="세트 이름" style={inputStyle()} />
                 <input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)} placeholder="컬럼 검색" style={inputStyle()} />
-                <div style={{ maxHeight: 230, overflow: "auto", display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 4, border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--bg-primary)" }}>
+                {newSetCols.length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", maxHeight: 64, overflow: "auto", padding: 8, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
+                    {newSetCols.map(c => (
+                      <button key={c} type="button" onClick={() => toggleNewCol(c)}
+                        style={{ maxWidth: "100%", padding: "3px 7px", borderRadius: 7, border: "1px solid var(--accent)", background: "var(--accent-glow)", color: "var(--accent)", cursor: "pointer", fontFamily: "monospace", fontWeight: 900, whiteSpace: "normal", wordBreak: "break-all", overflowWrap: "anywhere", textAlign: "left" }}>
+                        {c} ×
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div style={{ maxHeight: 230, overflow: "auto", display: "grid", gridTemplateColumns: "1fr", gap: 2, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)" }}>
                   {filteredNewCols.map(c => {
                     const on = newSetCols.includes(c);
                     return (
-                      <label key={c} style={{ display: "flex", gap: 5, alignItems: "center", padding: "4px 6px", borderRadius: 6, background: on ? "var(--accent-glow)" : "transparent", cursor: "pointer", fontFamily: "monospace" }}>
+                      <label key={c} style={{ display: "flex", gap: 7, alignItems: "center", minHeight: 32, padding: "5px 8px", borderBottom: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", cursor: "pointer", fontFamily: "monospace", minWidth: 0 }}>
                         <input type="checkbox" checked={on} onChange={() => toggleNewCol(c)} />
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c}</span>
+                        <span style={{ minWidth: 0, whiteSpace: "normal", wordBreak: "break-all", overflowWrap: "anywhere" }}>{c}</span>
                       </label>
                     );
                   })}
@@ -5011,7 +5030,7 @@ function InformWizard({
                 )}
                 <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.45, fontSize: "12pt", color: "#1f2937" }}>{mailPreviewText || "(note 없음)"}</div>
                 {wizardProductContacts.length > 0 && (
-                  <div style={{ padding: "10px 12px", background: "#f0fdf4", borderLeft: "4px solid #16a34a", borderRadius: 4, color: "#14532d", fontWeight: 800 }}>
+                  <div style={{ padding: "10px 12px", background: "var(--ok-50)", borderLeft: "4px solid var(--ok)", borderRadius: 4, color: "var(--ok)", fontWeight: 800 }}>
                     제품 담당자 : {wizardProductContacts.map(c => c.name && c.email ? `${c.name} <${c.email}>` : (c.name || c.email)).filter(Boolean).join(", ")}
                   </div>
                 )}
@@ -5024,7 +5043,7 @@ function InformWizard({
                       ["작성시간", new Date().toLocaleString()],
                     ].filter(([, v]) => v).map(([k, v]) => (
                       <tr key={k}>
-                        <td style={{ padding: "4px 10px", color: "#6b7280", background: "#f3f4f6", width: 90 }}>{k}</td>
+                        <td style={{ padding: "4px 10px", color: "var(--muted)", background: "var(--bg-tertiary)", width: 90 }}>{k}</td>
                         <td style={{ padding: "4px 10px", color: "#1f2937", fontFamily: "monospace" }}>{v}</td>
                       </tr>
                     ))}

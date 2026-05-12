@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
 import Loading from "../components/Loading";
+import Modal from "../components/Modal";
 import PageGear from "../components/PageGear";
 import { PageHeader, TabStrip, Pill, Button, statusPalette, uxColors, chartPalette } from "../components/UXKit";
 import { sf as apiSf } from "../lib/api";
+import { toast } from "../components/Toast";
 // Inject chart hover styles once
 if(typeof document!=="undefined"&&!document.getElementById("dash-styles")){
   const s=document.createElement("style");s.id="dash-styles";
@@ -12,13 +14,13 @@ if(typeof document!=="undefined"&&!document.getElementById("dash-styles")){
     .chart-card{box-shadow:0 8px 22px rgba(15,23,42,0.06)}
     .chart-card:hover{box-shadow:0 12px 30px rgba(15,23,42,0.10)}
     .chart-phase-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));align-content:start}
-    .spotfire-shell{background:#0e1116;color:#fff;border:1px solid #2a2a2a;border-radius:10px;overflow:hidden}
+    .spotfire-shell{background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:10px;overflow:hidden}
     .spotfire-shell.light{background:var(--bg-secondary);color:var(--text-primary)}
     .spotfire-item-row{height:34px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:0 10px;border-bottom:1px solid rgba(255,255,255,.045);cursor:pointer}
     .spotfire-item-row:hover{background:rgba(59,130,246,.10)}
-    .spotfire-card{border:1px solid #2a2a2a;border-radius:10px;background:#121722;min-width:0;overflow:hidden}
+    .spotfire-card{border:1px solid var(--border);border-radius:10px;background:var(--bg-secondary);min-width:0;overflow:hidden}
     .spotfire-shell.light .spotfire-card{background:var(--bg-card);border-color:var(--border)}
-    .spotfire-select,.spotfire-input{border:1px solid #2a2a2a;border-radius:6px;background:#0e1116;color:#fff;font-size:14px;padding:7px 9px;box-sizing:border-box}
+    .spotfire-select,.spotfire-input{border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);font-size:14px;padding:7px 9px;box-sizing:border-box}
     .spotfire-shell.light .spotfire-select,.spotfire-shell.light .spotfire-input{background:var(--bg-secondary);color:var(--text-primary);border-color:var(--border)}
     @media (max-width: 920px){.chart-phase-grid>.chart-card{grid-column:span 12!important}}
     @media (max-width: 980px){.spotfire-layout{grid-template-columns:1fr!important}.spotfire-side{position:relative!important;top:auto!important;max-height:none!important}}
@@ -100,15 +102,27 @@ const INFORM_CHART_PRESETS = [
 const SPOTFIRE_GROUPS = ["FAB", "ET", "INLINE", "VM", "EDS", "KNOB", "MASK", "SPC"];
 const SPOTFIRE_CHART_TYPES = ["scatter", "boxplot", "trend", "correlation_matrix", "wafer_map", "classification", "stacked_bar"];
 const SOURCE_BADGE = {
-  FAB: "#3b82f6",
-  ET: "#ec4899",
-  INLINE: "#10b981",
-  VM: "#a855f7",
-  EDS: "#f97316",
-  KNOB: "#eab308",
-  MASK: "#ef4444",
-  SPC: "#14b8a6",
+  FAB: statusPalette.info.fg,
+  ET: chartPalette.series[2],
+  INLINE: statusPalette.ok.fg,
+  VM: chartPalette.series[10],
+  EDS: chartPalette.series[8],
+  KNOB: statusPalette.warn.fg,
+  MASK: statusPalette.bad.fg,
+  SPC: chartPalette.series[11],
 };
+const SPOTFIRE_ACTIVE = statusPalette.warn.fg;
+const SPOTFIRE_BAD = statusPalette.bad.fg;
+const SPOTFIRE_INFO = statusPalette.info.fg;
+const SPOTFIRE_OK = statusPalette.ok.fg;
+const SPOTFIRE_DARK_BORDER = "#2a2a2a";
+const SPOTFIRE_DARK_MUTED = "#9ca3af";
+const SPOTFIRE_DARK_TEXT = "#e5e7eb";
+const SPOTFIRE_DARK_SUBTLE = "#d1d5db";
+const SPOTFIRE_NEUTRAL = "#64748b";
+const SPOTFIRE_AXIS = "#94a3b8";
+const SPOTFIRE_DARK_GRID = "#1f2937";
+const SPOTFIRE_CHART_PALETTE = [chartPalette.series[4], chartPalette.series[8], chartPalette.series[3], chartPalette.series[5], chartPalette.series[10], chartPalette.series[1], chartPalette.series[11]];
 const DEFAULT_SPOTFIRE_CARD = {
   id: "spotfire-1",
   title: "Chart 1",
@@ -1993,8 +2007,8 @@ function InformPresetThumb({ chartType }) {
 function InformPresetLibrary({ open, onClose, onAdd }) {
   if (!open) return null;
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.46)", zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div style={{ width: "min(1180px, 96vw)", maxHeight: "88vh", overflow: "auto", borderRadius: 10, border: "1px solid var(--border)", background: "var(--bg-secondary)", boxShadow: "0 24px 60px rgba(15,23,42,0.28)", padding: 18 }}>
+    <Modal open={open} onClose={onClose} width={1180} zIndex={60}>
+      <div style={{ overflow: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 900, color: "var(--text-primary)" }}>인폼 차트 라이브러리</div>
@@ -2013,7 +2027,7 @@ function InformPresetLibrary({ open, onClose, onAdd }) {
           ))}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -2057,7 +2071,7 @@ export default function My_Dashboard({ user }) {
     }).catch(() => {});
   }, []);
   useEffect(() => { load(); const ms = Math.max(1, refreshMin) * 60 * 1000; const iv = setInterval(load, ms); return () => clearInterval(iv); }, [refreshMin]);
-  const saveChart = (form) => sf(API + "/charts/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) }).then(() => { setEditing(null); load(); }).catch(e => alert(e.message));
+  const saveChart = (form) => sf(API + "/charts/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) }).then(() => { setEditing(null); load(); }).catch(e => toast.error(e.message));
   const addInformPreset = (preset) => {
     const cfg = {
       ...DEFAULT_CHART_FORM,
@@ -2124,7 +2138,7 @@ export default function My_Dashboard({ user }) {
   const resizeChart = (c, w, h) => sf(API + "/charts/save", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...c, width: w, height: h })
-  }).then(load).catch(e => alert(e.message));
+  }).then(load).catch(e => toast.error(e.message));
 
   const updateSpotfireCard = (id, patch) => {
     setSpotfireCards(prev => prev.map(c => c.id === id ? { ...c, ...(typeof patch === "function" ? patch(c) : patch) } : c));
@@ -2358,9 +2372,12 @@ export default function My_Dashboard({ user }) {
           </div>
         )}
         {isAdmin && <Button variant="subtle" onClick={doRefresh} disabled={refreshing}>{refreshing ? "계산 중..." : "전체 새로고침"}</Button>}
-        <div style={{ display: "inline-flex", gap: 4, alignItems: "center", padding: "4px 6px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)" }}>
-          <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>밀도</span>
-          {[["compact","촘촘"],["comfortable","기본"],["presentation","넓게"]].map(([k,l])=><span key={k} onClick={()=>{setLayoutDensity(k);localStorage.setItem("flow_dash_density",k);}} style={{cursor:"pointer",fontSize:14,padding:"2px 8px",borderRadius:4,background:layoutDensity===k?"var(--accent-glow)":"transparent",color:layoutDensity===k?"var(--accent)":"var(--text-secondary)",fontWeight:layoutDensity===k?700:500}}>{l}</span>)}
+        <div style={{ minWidth: 210 }}>
+          <TabStrip
+            items={[{k:"compact",l:"촘촘"},{k:"comfortable",l:"기본"},{k:"presentation",l:"넓게"}]}
+            active={layoutDensity}
+            onChange={(k)=>{setLayoutDensity(k);localStorage.setItem("flow_dash_density",k);}}
+          />
         </div>
         {canEdit && <Button variant="subtle" onClick={() => setInformLibraryOpen(true)}>+ 인폼 차트 추가</Button>}
         {canEdit && <Button variant="primary" onClick={() => setEditing({})}>+ 차트 추가</Button>}
@@ -2521,8 +2538,8 @@ export default function My_Dashboard({ user }) {
     {expanded && (() => {
       const c = charts.find(ch => ch.id === expanded); const snap = snapshots[expanded];
       if (!c) return null;
-      return (<div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }} onClick={() => setExpanded(null)}>
-        <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg-secondary)", borderRadius: 12, padding: 24, width: "95vw", maxWidth: 1200, maxHeight: "90vh", overflow: "auto", border: "1px solid var(--border)" }}>
+      return (<Modal open onClose={() => setExpanded(null)} width={1200} zIndex={9999}>
+        <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "monospace", color: "var(--accent)" }}>{c.title}</div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -2542,7 +2559,7 @@ export default function My_Dashboard({ user }) {
             </details>
           )}
         </div>
-      </div>);
+      </Modal>);
     })()}
   </div>
   </SelectionContext.Provider>);
@@ -2556,23 +2573,23 @@ function SpotfireDashboardPanel({
   const dark = theme !== "light";
   return (
     <section className={`spotfire-shell ${dark ? "" : "light"}`} style={{ marginBottom: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}`, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: `1px solid ${dark ? SPOTFIRE_DARK_BORDER : "var(--border)"}`, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
           <div style={{ fontSize: 16, fontWeight: 900 }}>Analysis Workspace</div>
-          <div style={{ fontSize: 14, color: dark ? "#9ca3af" : "var(--text-secondary)" }}>{product || "product 미선택"} · selected {selectedItems.length}</div>
+          <div style={{ fontSize: 14, color: dark ? SPOTFIRE_DARK_MUTED : "var(--text-secondary)" }}>{product || "product 미선택"} · selected {selectedItems.length}</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <button type="button" onClick={addCard} style={spotfireButton("#3b82f6")}>+ 카드</button>
-          <button type="button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} style={spotfireButton(dark ? "#10b981" : "#0f172a")}>{dark ? "라이트" : "다크"}</button>
+          <button type="button" onClick={addCard} style={spotfireButton(SPOTFIRE_INFO)}>+ 카드</button>
+          <button type="button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} style={spotfireButton(dark ? SPOTFIRE_OK : "#0f172a")}>{dark ? "라이트" : "다크"}</button>
         </div>
       </div>
       <div className="spotfire-layout" style={{ display: "grid", gridTemplateColumns: "300px minmax(0,1fr)", gap: 0 }}>
-        <aside className="spotfire-side" style={{ borderRight: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}`, minHeight: 520, maxHeight: 760, position: "sticky", top: 0, alignSelf: "start" }}>
+        <aside className="spotfire-side" style={{ borderRight: `1px solid ${dark ? SPOTFIRE_DARK_BORDER : "var(--border)"}`, minHeight: 520, maxHeight: 760, position: "sticky", top: 0, alignSelf: "start" }}>
           <div style={{ padding: 12, display: "grid", gap: 10 }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 5 }}>
               {SPOTFIRE_GROUPS.map(g => (
                 <button key={g} type="button" onClick={() => setGroup(g)}
-                  style={{ border: `1px solid ${group === g ? (SOURCE_BADGE[g] || "#f97316") : (dark ? "#2a2a2a" : "var(--border)")}`, background: group === g ? `${SOURCE_BADGE[g] || "#f97316"}22` : "transparent", color: group === g ? (SOURCE_BADGE[g] || "#f97316") : (dark ? "#d1d5db" : "var(--text-secondary)"), borderRadius: 6, padding: "7px 0", fontSize: 14, fontWeight: 800, cursor: "pointer" }}>
+                  style={{ border: `1px solid ${group === g ? (SOURCE_BADGE[g] || SPOTFIRE_ACTIVE) : (dark ? SPOTFIRE_DARK_BORDER : "var(--border)")}`, background: group === g ? `${SOURCE_BADGE[g] || SPOTFIRE_ACTIVE}22` : "transparent", color: group === g ? (SOURCE_BADGE[g] || SPOTFIRE_ACTIVE) : (dark ? SPOTFIRE_DARK_SUBTLE : "var(--text-secondary)"), borderRadius: 6, padding: "7px 0", fontSize: 14, fontWeight: 800, cursor: "pointer" }}>
                   {g}
                 </button>
               ))}
@@ -2618,20 +2635,20 @@ function VirtualItemList({ items, search, selectedItems, onSelectItem, dark }) {
   const slice = filtered.slice(start, start + visibleCount);
   const selectedSet = new Set((selectedItems || []).map(i => `${i.source_type}:${i.key}`));
   return (
-    <div ref={ref} onScroll={e => setScrollTop(e.currentTarget.scrollTop)} style={{ height: viewH, overflow: "auto", borderTop: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}` }}>
+    <div ref={ref} onScroll={e => setScrollTop(e.currentTarget.scrollTop)} style={{ height: viewH, overflow: "auto", borderTop: `1px solid ${dark ? SPOTFIRE_DARK_BORDER : "var(--border)"}` }}>
       <div style={{ height: filtered.length * rowH, position: "relative" }}>
         <div style={{ position: "absolute", top: start * rowH, left: 0, right: 0 }}>
           {slice.map((item, i) => {
             const idx = start + i;
             const key = `${item.source_type}:${item.key}`;
             const selected = selectedSet.has(key);
-            const color = SOURCE_BADGE[item.source_type] || "#64748b";
+            const color = SOURCE_BADGE[item.source_type] || SPOTFIRE_NEUTRAL;
             return (
               <div key={key} className="spotfire-item-row" onClick={e => onSelectItem(item, idx, e)}
-                style={{ background: selected ? `${color}26` : "transparent", color: dark ? "#e5e7eb" : "var(--text-primary)" }}>
+                style={{ background: selected ? `${color}26` : "transparent", color: dark ? SPOTFIRE_DARK_TEXT : "var(--text-primary)" }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, fontWeight: 800 }}>{item.label || item.key}</div>
-                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, color: dark ? "#9ca3af" : "var(--text-secondary)", fontFamily: "monospace" }}>{item.key}</div>
+                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 14, color: dark ? SPOTFIRE_DARK_MUTED : "var(--text-secondary)", fontFamily: "monospace" }}>{item.key}</div>
                 </div>
                 <span style={{ fontSize: 14, borderRadius: 999, padding: "2px 7px", color, border: `1px solid ${color}66`, background: `${color}16`, fontWeight: 900 }}>{item.source_type}</span>
               </div>
@@ -2639,7 +2656,7 @@ function VirtualItemList({ items, search, selectedItems, onSelectItem, dark }) {
           })}
         </div>
       </div>
-      {filtered.length === 0 && <div style={{ padding: 18, fontSize: 14, color: dark ? "#9ca3af" : "var(--text-secondary)" }}>항목 없음</div>}
+      {filtered.length === 0 && <div style={{ padding: 18, fontSize: 14, color: dark ? SPOTFIRE_DARK_MUTED : "var(--text-secondary)" }}>항목 없음</div>}
     </div>
   );
 }
@@ -2660,8 +2677,8 @@ function SpotfireChartCard({ card, active, setActive, updateCard, removeCard, du
     if (value === "delete") removeCard(card.id);
   };
   return (
-    <article className="spotfire-card" onClick={setActive} style={{ gridColumn: `span ${colSpan}`, minHeight: minH, outline: active ? "2px solid #f97316" : "none" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", padding: "10px 12px", borderBottom: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}` }}>
+    <article className="spotfire-card" onClick={setActive} style={{ gridColumn: `span ${colSpan}`, minHeight: minH, outline: active ? `2px solid ${SPOTFIRE_ACTIVE}` : "none" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", padding: "10px 12px", borderBottom: `1px solid ${dark ? SPOTFIRE_DARK_BORDER : "var(--border)"}` }}>
         <input value={card.title || ""} onChange={e => updateCard(card.id, { title: e.target.value })} className="spotfire-input" style={{ flex: 1, minWidth: 0, fontWeight: 900 }} />
         <select className="spotfire-select" value={card.chart_type || "scatter"} onChange={e => { const next = { ...card, chart_type: e.target.value }; updateCard(card.id, { chart_type: e.target.value }); if ((card.selected || []).length) runCard(next, card.selected); }}>
           {SPOTFIRE_CHART_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
@@ -2676,12 +2693,12 @@ function SpotfireChartCard({ card, active, setActive, updateCard, removeCard, du
           <option value="delete">삭제</option>
         </select>
       </div>
-      {card.editing && <div style={{ padding: 10, display: "grid", gap: 8, borderBottom: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}` }}>
+      {card.editing && <div style={{ padding: 10, display: "grid", gap: 8, borderBottom: `1px solid ${dark ? SPOTFIRE_DARK_BORDER : "var(--border)"}` }}>
         <textarea value={JSON.stringify(card.config || {}, null, 2)} onChange={e => {
           try { updateCard(card.id, { config: JSON.parse(e.target.value) }); } catch (_) {}
         }} rows={5} className="spotfire-input" style={{ fontFamily: "monospace", resize: "vertical" }} />
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {["1x1", "2x1", "1x2", "2x2"].map(s => <button key={s} type="button" onClick={() => updateCard(card.id, { size: s })} style={spotfireButton(size === s ? "#f97316" : "#374151")}>{s}</button>)}
+          {["1x1", "2x1", "1x2", "2x2"].map(s => <button key={s} type="button" onClick={() => updateCard(card.id, { size: s })} style={spotfireButton(size === s ? SPOTFIRE_ACTIVE : "#374151")}>{s}</button>)}
         </div>
       </div>}
       <div style={{ padding: 12 }}>
@@ -2705,7 +2722,7 @@ function SpotfireChartViz({ card, dark }) {
   }
   if (panels.length) {
     return <div style={{ display: "grid", gridTemplateColumns: panels.length < 4 ? "repeat(2,minmax(0,1fr))" : "repeat(2,minmax(0,1fr))", gap: 10 }}>
-      {panels.map(p => <div key={p.group} style={{ border: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}`, borderRadius: 8, padding: 8 }}>
+      {panels.map(p => <div key={p.group} style={{ border: `1px solid ${dark ? SPOTFIRE_DARK_BORDER : "var(--border)"}`, borderRadius: 8, padding: 8 }}>
         <div style={{ fontSize: 14, fontWeight: 900, marginBottom: 6 }}>{p.group}</div>
         <ScatterSvg points={p.points || []} fit={p.fit_params} dark={dark} height={220} />
       </div>)}
@@ -2714,7 +2731,7 @@ function SpotfireChartViz({ card, dark }) {
   return (
     <div>
       <ScatterSvg points={pts} fit={result.fit_params || result.fit} dark={dark} height={300} />
-      <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap", fontSize: 14, color: dark ? "#9ca3af" : "var(--text-secondary)", fontFamily: "monospace" }}>
+      <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap", fontSize: 14, color: dark ? SPOTFIRE_DARK_MUTED : "var(--text-secondary)", fontFamily: "monospace" }}>
         <span style={spotfireChip(dark)}>n={pts.length}</span>
         {result.corr != null && <span style={spotfireChip(dark)}>corr={fmt(result.corr)}</span>}
         {(result.fit_params || result.fit)?.r2 != null && <span style={spotfireChip(dark)}>R²={fmt((result.fit_params || result.fit).r2)}</span>}
@@ -2735,26 +2752,26 @@ function ScatterSvg({ points, fit, dark, height = 300 }) {
   const sx = v => pad.l + (Number(v) - minX) / rx * (W - pad.l - pad.r);
   const sy = v => pad.t + (H - pad.t - pad.b) - (Number(v) - minY) / ry * (H - pad.t - pad.b);
   const fitOk = fit && Number.isFinite(Number(fit.slope)) && Number.isFinite(Number(fit.intercept));
-  const palette = ["#3b82f6", "#f97316", "#10b981", "#ef4444", "#a855f7", "#eab308", "#14b8a6"];
+  const palette = SPOTFIRE_CHART_PALETTE;
   const colorVals = [...new Set(pts.map(p => String(p.color_value || "")).filter(Boolean))];
-  const colorFor = p => colorVals.length ? palette[Math.max(0, colorVals.indexOf(String(p.color_value || ""))) % palette.length] : "#3b82f6";
+  const colorFor = p => colorVals.length ? palette[Math.max(0, colorVals.indexOf(String(p.color_value || ""))) % palette.length] : SPOTFIRE_INFO;
   return (
     <svg data-spotfire-chart="1" viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: "block" }}>
       {[0, 0.25, 0.5, 0.75, 1].map(f => {
         const y = pad.t + (H - pad.t - pad.b) * (1 - f);
-        return <g key={`y${f}`}><line x1={pad.l} x2={W - pad.r} y1={y} y2={y} stroke={dark ? "#2a2a2a" : "#d1d5db"} strokeDasharray="3,4" /><text x={pad.l - 8} y={y + 4} textAnchor="end" fontSize="12" fill={dark ? "#9ca3af" : "#64748b"}>{fmt(minY + ry * f)}</text></g>;
+        return <g key={`y${f}`}><line x1={pad.l} x2={W - pad.r} y1={y} y2={y} stroke={dark ? SPOTFIRE_DARK_BORDER : "#d1d5db"} strokeDasharray="3,4" /><text x={pad.l - 8} y={y + 4} textAnchor="end" fontSize="12" fill={dark ? SPOTFIRE_DARK_MUTED : SPOTFIRE_NEUTRAL}>{fmt(minY + ry * f)}</text></g>;
       })}
       {[0, 0.5, 1].map(f => {
         const x = pad.l + (W - pad.l - pad.r) * f;
-        return <g key={`x${f}`}><line y1={pad.t} y2={H - pad.b} x1={x} x2={x} stroke={dark ? "#1f2937" : "#e5e7eb"} strokeDasharray="2,5" /><text x={x} y={H - 16} textAnchor="middle" fontSize="12" fill={dark ? "#9ca3af" : "#64748b"}>{fmt(minX + rx * f)}</text></g>;
+        return <g key={`x${f}`}><line y1={pad.t} y2={H - pad.b} x1={x} x2={x} stroke={dark ? SPOTFIRE_DARK_GRID : "#e5e7eb"} strokeDasharray="2,5" /><text x={x} y={H - 16} textAnchor="middle" fontSize="12" fill={dark ? SPOTFIRE_DARK_MUTED : SPOTFIRE_NEUTRAL}>{fmt(minX + rx * f)}</text></g>;
       })}
-      <line x1={pad.l} x2={W - pad.r} y1={H - pad.b} y2={H - pad.b} stroke={dark ? "#6b7280" : "#94a3b8"} />
-      <line x1={pad.l} x2={pad.l} y1={pad.t} y2={H - pad.b} stroke={dark ? "#6b7280" : "#94a3b8"} />
-      {fitOk && <line x1={sx(minX)} y1={sy(Number(fit.slope) * minX + Number(fit.intercept))} x2={sx(maxX)} y2={sy(Number(fit.slope) * maxX + Number(fit.intercept))} stroke="#ef4444" strokeWidth="2" strokeDasharray="7,4" />}
+      <line x1={pad.l} x2={W - pad.r} y1={H - pad.b} y2={H - pad.b} stroke={dark ? "#6b7280" : SPOTFIRE_AXIS} />
+      <line x1={pad.l} x2={pad.l} y1={pad.t} y2={H - pad.b} stroke={dark ? "#6b7280" : SPOTFIRE_AXIS} />
+      {fitOk && <line x1={sx(minX)} y1={sy(Number(fit.slope) * minX + Number(fit.intercept))} x2={sx(maxX)} y2={sy(Number(fit.slope) * maxX + Number(fit.intercept))} stroke={SPOTFIRE_BAD} strokeWidth="2" strokeDasharray="7,4" />}
       {pts.slice(0, 1200).map((p, i) => <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r="3.4" fill={colorFor(p)} opacity=".82">
         <title>{`${p.label || ""}\nX=${p.x}\nY=${p.y}${p.color_value ? `\ncolor=${p.color_value}` : ""}`}</title>
       </circle>)}
-      {fitOk && fit.r2 != null && <text x={W - pad.r - 4} y={pad.t + 14} textAnchor="end" fontSize="14" fill="#ef4444">R² {fmt(fit.r2)}</text>}
+      {fitOk && fit.r2 != null && <text x={W - pad.r - 4} y={pad.t + 14} textAnchor="end" fontSize="14" fill={SPOTFIRE_BAD}>R² {fmt(fit.r2)}</text>}
     </svg>
   );
 }
@@ -2837,16 +2854,16 @@ function spotfireButton(color) {
   return { border: "0", borderRadius: 6, background: color, color: "#fff", padding: "8px 10px", fontSize: 14, fontWeight: 900, cursor: "pointer" };
 }
 function spotfireEmpty(dark) {
-  return { minHeight: 170, display: "flex", alignItems: "center", justifyContent: "center", border: `1px dashed ${dark ? "#374151" : "var(--border)"}`, borderRadius: 8, color: dark ? "#9ca3af" : "var(--text-secondary)", fontSize: 14, textAlign: "center", padding: 12 };
+  return { minHeight: 170, display: "flex", alignItems: "center", justifyContent: "center", border: `1px dashed ${dark ? "#374151" : "var(--border)"}`, borderRadius: 8, color: dark ? SPOTFIRE_DARK_MUTED : "var(--text-secondary)", fontSize: 14, textAlign: "center", padding: 12 };
 }
 function spotfireChip(dark) {
-  return { border: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}`, borderRadius: 999, padding: "2px 7px" };
+  return { border: `1px solid ${dark ? SPOTFIRE_DARK_BORDER : "var(--border)"}`, borderRadius: 999, padding: "2px 7px" };
 }
 function spotfireTh(dark) {
-  return { textAlign: "left", padding: "6px 8px", borderBottom: `1px solid ${dark ? "#2a2a2a" : "var(--border)"}`, color: dark ? "#9ca3af" : "var(--text-secondary)", whiteSpace: "nowrap" };
+  return { textAlign: "left", padding: "6px 8px", borderBottom: `1px solid ${dark ? SPOTFIRE_DARK_BORDER : "var(--border)"}`, color: dark ? SPOTFIRE_DARK_MUTED : "var(--text-secondary)", whiteSpace: "nowrap" };
 }
 function spotfireTd(dark) {
-  return { padding: "6px 8px", borderBottom: `1px solid ${dark ? "#1f2937" : "var(--border)"}`, color: dark ? "#e5e7eb" : "var(--text-primary)", whiteSpace: "nowrap" };
+  return { padding: "6px 8px", borderBottom: `1px solid ${dark ? SPOTFIRE_DARK_GRID : "var(--border)"}`, color: dark ? SPOTFIRE_DARK_TEXT : "var(--text-primary)", whiteSpace: "nowrap" };
 }
 
 /* ═══ v8.5.2 Dashboard Settings panel (PageGear 내부) ═══ */
@@ -3002,7 +3019,7 @@ function DashboardDefaultsEditor({ isAdmin, defaults, setDefaults }) {
       </select>
       <textarea value={text} onChange={e => setText(e.target.value)} disabled={!isAdmin} rows={8}
         style={{ marginTop: 8, width: "100%", padding: "8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace", resize: "vertical", boxSizing: "border-box" }} />
-      {isAdmin && <button type="button" onClick={save} style={{ marginTop: 8, width: "100%", padding: "8px 12px", borderRadius: 6, border: "none", background: "#3b82f6", color: WHITE, fontWeight: 700, fontSize: 14, cursor: "pointer" }}>차트 기본 설정 저장</button>}
+      {isAdmin && <button type="button" onClick={save} style={{ marginTop: 8, width: "100%", padding: "8px 12px", borderRadius: 6, border: "none", background: SPOTFIRE_INFO, color: WHITE, fontWeight: 700, fontSize: 14, cursor: "pointer" }}>차트 기본 설정 저장</button>}
       {msg && <div style={{ marginTop: 6, color: msg.includes("완료") ? OK.fg : BAD.fg, fontSize: 14 }}>{msg}</div>}
     </div>
   );

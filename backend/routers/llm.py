@@ -6272,6 +6272,86 @@ def _flowi_orchestrator_activation_previews(prompts: list[str], product: str = "
     return rows
 
 
+def _flowi_deterministic_missing_guesses(prompt: str, row: dict[str, Any]) -> dict[str, str]:
+    text = str(prompt or "")
+    args = row.get("arguments") if isinstance(row.get("arguments"), dict) else {}
+    guesses: dict[str, str] = {}
+    for raw in row.get("missing") or []:
+        field = _flowi_missing_key(str(raw or "")) or str(raw or "").strip()
+        value: Any = ""
+        if field == "product":
+            match = re.search(r"\b(PROD[A-Z0-9_]+)\b", text, flags=re.I)
+            value = match.group(1).upper() if match else args.get("product")
+        elif field in {"root_lot_id", "root_lot_ids", "root_lot_id_or_fab_lot_id", "root_lot_id/lot_id"}:
+            roots = args.get("root_lot_ids") or re.findall(r"\b([A-Z][0-9]{4,}[A-Z]?(?:\.\d+)?)\b", text)
+            value = ", ".join(str(x) for x in roots[:3]) if isinstance(roots, list) else str(roots or "")
+        elif field in {"fab_lot_id", "fab_lot_ids"}:
+            lots = args.get("fab_lot_ids") or re.findall(r"\b([A-Z][0-9]{4,}[A-Z]?\.\d+)\b", text)
+            value = ", ".join(str(x) for x in lots[:3]) if isinstance(lots, list) else str(lots or "")
+        elif field in {"wafer_id", "wafer_ids"}:
+            wafers = args.get("wafer_ids") or _wafer_tokens(text)
+            value = ", ".join(str(x) for x in wafers[:5]) if isinstance(wafers, list) else str(wafers or "")
+        elif field in {"step", "step_id"}:
+            value = args.get("step") or (_flowi_func_step_token(text) or "")
+        elif field in {"module"}:
+            value = args.get("module") or (_flowi_module_token(text) or "")
+        elif field in {"knob_value"}:
+            value = args.get("knob_value") or ""
+        elif field in {"metric", "metrics_or_items", "item_id"}:
+            value = args.get("metric") or args.get("item_id") or ""
+        if value not in (None, "", [], {}):
+            guesses[str(raw)] = str(value)
+    return guesses
+
+
+def _flowi_guess_missing_for_preview(prompt: str, row: dict[str, Any]) -> dict[str, Any]:
+    missing = [str(x or "").strip() for x in (row.get("missing") or []) if str(x or "").strip()]
+    if not missing:
+        return {}
+    values = _flowi_deterministic_missing_guesses(prompt, row)
+    rationale = "prompt에서 직접 확인 가능한 product/lot/wafer/module token을 우선 채웠습니다."
+    if llm_adapter.is_available():
+        schema = {
+            "values": {field: "string value or empty string" for field in missing[:8]},
+            "rationale": "short Korean sentence; no hidden reasoning",
+        }
+        ask = (
+            "다음 Flow-i dry-run 결과의 missing slot 값을 추정해 주세요. "
+            "응답은 JSON 하나만 반환하고 내부 추론은 쓰지 마세요. "
+            "확실하지 않은 값은 빈 문자열로 두세요.\n"
+            + json.dumps({
+                "prompt": prompt,
+                "missing": missing[:8],
+                "current_arguments": row.get("arguments") if isinstance(row.get("arguments"), dict) else {},
+                "schema": schema,
+            }, ensure_ascii=False, default=str)
+        )
+        out = llm_adapter.complete(
+            ask,
+            system="Return compact JSON only. Do not include chain-of-thought.",
+            timeout=8,
+        )
+        if out.get("ok"):
+            raw = str(out.get("text") or "").strip()
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.S).strip()
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, dict):
+                    llm_values = obj.get("values") if isinstance(obj.get("values"), dict) else {}
+                    for key, value in llm_values.items():
+                        text = str(value or "").strip()
+                        if text:
+                            values[str(key)] = text[:200]
+                    llm_rationale = str(obj.get("rationale") or "").strip()
+                    if llm_rationale:
+                        rationale = llm_rationale[:240]
+            except Exception:
+                pass
+    if not values:
+        rationale = "자동으로 확정할 값이 없어 직접 입력이 필요합니다."
+    return {"values": values, "rationale": rationale}
+
+
 def _fab_files(product: str = "") -> list[Path]:
     files: list[Path] = []
     for root in _db_root_candidates("FAB"):
@@ -15890,6 +15970,7 @@ class FlowiActivationPreviewReq(BaseModel):
     prompts: list[str] = Field(default_factory=list)
     product: str = ""
     max_rows: int = 12
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class FlowiFeedbackReq(BaseModel):
@@ -15999,6 +16080,11 @@ def flowi_orchestrator_preview(req: FlowiActivationPreviewReq, request: Request)
         product=(req.product or "").strip(),
         max_rows=req.max_rows,
     )
+    if isinstance(req.context, dict) and req.context.get("ask_llm_to_guess_missing"):
+        for row in rows:
+            guessed = _flowi_guess_missing_for_preview(str(row.get("prompt") or ""), row)
+            if guessed:
+                row["guessed"] = guessed
     features = Counter(str(row.get("feature") or "general") for row in rows)
     return {
         "ok": True,

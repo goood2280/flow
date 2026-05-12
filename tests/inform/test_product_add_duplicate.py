@@ -41,3 +41,35 @@ def test_product_add_collection_post_compat(tmp_path, monkeypatch):
     resp = informs.add_product_collection_compat(informs.ProductReq(product="ML_TABLE_PRODA"), object())
 
     assert resp["products"] == ["PRODA"]
+
+
+def test_inform_product_candidates_come_from_fab_db_only(tmp_path, monkeypatch):
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps({"products": ["LEGACY_ONLY"]}), encoding="utf-8")
+    fab_root = tmp_path / "Fab" / "1.RAWDATA_DB_FAB"
+    (fab_root / "ML_TABLE_PRODA").mkdir(parents=True)
+    (fab_root / "PRODB").mkdir(parents=True)
+
+    class DummyPaths:
+        db_root = tmp_path / "Fab"
+
+    monkeypatch.setattr(informs, "CONFIG_FILE", cfg_file)
+    monkeypatch.setattr(informs, "PATHS", DummyPaths())
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
+    monkeypatch.setattr(informs, "_effective_modules", lambda _username, _role: {"__all__"})
+    monkeypatch.setattr(informs, "_load_upgraded", lambda: [
+        {"product": "PRODA", "created_at": "2026-05-01T00:00:00", "id": "a"},
+        {"product": "LEGACY_ONLY", "created_at": "2026-05-02T00:00:00", "id": "b"},
+    ])
+
+    cfg = informs.get_config()
+    products = informs.list_products(object())["products"]
+    sidebar = informs._sidebar_payload(
+        [{"product": "PRODA", "created_at": "2026-05-01T00:00:00"}, {"product": "LEGACY_ONLY", "created_at": "2026-05-02T00:00:00"}],
+        {"username": "tester", "role": "admin"},
+        {"__all__"},
+    )
+
+    assert cfg["products"] == ["PRODA", "PRODB"]
+    assert [row["product"] for row in products] == ["PRODA", "PRODB"]
+    assert {row["product"] for row in sidebar["products"]} == {"PRODA", "PRODB"}

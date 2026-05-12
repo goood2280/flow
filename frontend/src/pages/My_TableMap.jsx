@@ -3,12 +3,21 @@ import { useState, useEffect, useRef } from "react";
 // v8.8.2: S3StatusLight 제거 — S3 상태는 File Browser 에서만 관리.
 import { sf } from "../lib/api";
 import { canManagePage, isAdmin as isAdminUser } from "../lib/permissions";
-import { Pill } from "../components/UXKit";
+import { Pill, statusPalette, chartPalette } from "../components/UXKit";
+import { toast } from "../components/Toast";
+import Modal from "../components/Modal";
 const API="/api/dbmap";
 
-const NODE_COLORS={table:"#f97316",group:"#a855f7",db_ref:"#3b82f6"};
+const TABLE_COLOR=chartPalette.series[8];
+const GROUP_COLOR=chartPalette.series[10];
+const LINEAGE_COLOR=chartPalette.series[7];
+const SELECTED_STROKE=chartPalette.pastel[1];
+const TEXT_ON_LIGHT="#111827";
+const TEXT_ON_DARK="#f9fafb";
+const NEUTRAL_HEX="#64748b";
+const NODE_COLORS={table:TABLE_COLOR,group:GROUP_COLOR,db_ref:statusPalette.info.fg};
 // Table type colors (overrides default table color based on table_type)
-const TABLE_TYPE_COLORS={data:"#f97316",matching:"#10b981",rulebook:"#eab308"};
+const TABLE_TYPE_COLORS={data:TABLE_COLOR,matching:statusPalette.ok.fg,rulebook:statusPalette.warn.fg};
 
 function splitRelationCols(value){
   const text=String(value||"").trim();
@@ -23,11 +32,10 @@ function splitRelationCols(value){
 if(typeof document!=="undefined"&&!document.getElementById("tm-styles")){
   const s=document.createElement("style");s.id="tm-styles";
   s.textContent=`
-.tm-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.8)!important;z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px}
-.tm-modal{background:var(--bg-secondary,var(--bg-primary,#fff))!important;border-radius:12px;padding:20px;border:1px solid var(--border,#d1d5db)!important;color:var(--text-primary,#111827)!important}
-.tm-modal select option{background:var(--bg-primary,#fff);color:var(--text-primary,#111827)}
-.tm-modal input::placeholder,.tm-modal textarea::placeholder{color:var(--text-secondary,#6b7280)}
-.tm-modal h1,.tm-modal h2,.tm-modal h3,.tm-modal h4{color:var(--text-primary,#111827)}
+    .tm-modal{background:var(--bg-secondary)!important;border-radius:12px;padding:20px;border:1px solid var(--border)!important;color:var(--text-primary)!important}
+.tm-modal select option{background:var(--bg-primary);color:var(--text-primary)}
+.tm-modal input::placeholder,.tm-modal textarea::placeholder{color:var(--text-secondary)}
+.tm-modal h1,.tm-modal h2,.tm-modal h3,.tm-modal h4{color:var(--text-primary)}
 `;
   document.head.appendChild(s);
 }
@@ -242,15 +250,15 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
   };
   const resolveNodeColor=(node,fallback,refObj)=>safeColor(node?.color||refObj?.color,fallback);
   const textOnColor=(value)=>{
-    const hex=safeColor(value,"#1f2937").slice(1);
+    const hex=safeColor(value,TEXT_ON_LIGHT).slice(1);
     const r=parseInt(hex.slice(0,2),16),g=parseInt(hex.slice(2,4),16),b=parseInt(hex.slice(4,6),16);
     const lum=(0.2126*r+0.7152*g+0.0722*b)/255;
-    return lum>0.58?"#111827":"#f9fafb";
+    return lum>0.58?TEXT_ON_LIGHT:TEXT_ON_DARK;
   };
   const ColorPicker=({node,color,x,y})=>{
     if(!canManage||!onSetNodeColor||!node)return null;
     return(<foreignObject x={x} y={y} width={22} height={22}>
-      <input xmlns="http://www.w3.org/1999/xhtml" type="color" value={safeColor(color,"#f97316")}
+      <input xmlns="http://www.w3.org/1999/xhtml" type="color" value={safeColor(color,TABLE_COLOR)}
         title="노드 색상 지정"
         onMouseDown={e=>e.stopPropagation()}
         onClick={e=>e.stopPropagation()}
@@ -293,7 +301,7 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
         <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
           <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)" opacity="0.8"/></marker>
         <marker id="arrow-lineage" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="#06b6d4" opacity="0.85"/></marker>
+          <path d="M 0 0 L 10 5 L 0 10 z" fill={LINEAGE_COLOR} opacity="0.85"/></marker>
       </defs>
 
       <rect data-zoom-bg="1" x={0} y={0} width={1320} height={1320} fill="transparent" />
@@ -301,7 +309,7 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
       {/* Group bounding boxes with member tables rendered inside */}
       {groupNodes.map(gn=>{
         const gp=getNodePos(gn);const grp=(groups||[]).find(g=>g.id===gn.ref_id);
-        const groupColor=resolveNodeColor(gn,"#a855f7",grp);
+        const groupColor=resolveNodeColor(gn,GROUP_COLOR,grp);
         const members=grp?groupMembers[grp.id]||[]:[];
         const groupProducts=[...(Array.isArray(gn.products)?gn.products:[])].filter(p=>p&&String(p).toLowerCase()!=="common");
         const HEADER=28,INNER_PAD=12,COL_GAP=8;
@@ -338,21 +346,21 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
             const memberNode=config.nodes.find(n=>n.kind==="table"&&n.ref_id===m.id)||{id:"member_"+m.id,kind:"table",ref_id:m.id,name:m.name};
             const isSel=selectedNodeId===memberNode.id;
             const tType=m.table_type||"data";
-            const tColor=resolveNodeColor(memberNode,TABLE_TYPE_COLORS[tType]||"#f97316",m);
+            const tColor=resolveNodeColor(memberNode,TABLE_TYPE_COLORS[tType]||TABLE_COLOR,m);
             return(<g key={m.id} transform={`translate(${mx},${my})`}
               onMouseDown={e=>{e.stopPropagation();}}
               onClick={e=>{e.stopPropagation();onNodeClick(memberNode);}}
               onDoubleClick={e=>{e.stopPropagation();if(onNodeDblClick)onNodeDblClick(memberNode);}}
               onContextMenu={e=>{e.preventDefault();e.stopPropagation();if(onMemberContext)onMemberContext(memberNode,m);}}
               style={{cursor:"pointer"}}>
-              <rect width={NW} height={NH} rx={6} fill="var(--bg-card,var(--bg-secondary,#fff))" stroke={isSel?"#fbbf24":tColor} strokeWidth={isSel?2.3:1.3}/>
+              <rect width={NW} height={NH} rx={6} fill="var(--bg-card,var(--bg-secondary,#fff))" stroke={isSel?SELECTED_STROKE:tColor} strokeWidth={isSel?2.3:1.3}/>
               <rect x={0} y={0} width={5} height={NH} rx={3} fill={tColor}/>
               <text x={14} y={20} fill="var(--text-primary,#111827)" fontSize={10.5} fontWeight={800}>{(m.display_name||m.name||"?").slice(0,17)}</text>
               <text x={14} y={36} fill="var(--text-secondary,#6b7280)" fontSize={8.5} fontWeight={700}>{tType} · {m.rows?.length||0}r · {m.columns?.length||0}c</text>
               <ColorPicker node={memberNode} color={tColor} x={NW-24} y={NH-23}/>
             </g>);
           })}
-          {members.length===0&&<text x={gp.x+bw/2} y={gp.y+48} fill="#a855f744" fontSize={10} textAnchor="middle">빈 그룹</text>}
+          {members.length===0&&<text x={gp.x+bw/2} y={gp.y+48} fill={GROUP_COLOR+"44"} fontSize={10} textAnchor="middle">빈 그룹</text>}
         </g>);
       })}
 
@@ -398,7 +406,7 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
              style={{cursor:"grab"}}>
             <title>{`${a.name||r.from} -> ${b.name||r.to}\n${pairRows.map(p=>`${p.from||"-"} -> ${p.to||"-"}`).join("\n")}${compactDesc?`\n${compactDesc}`:""}`}</title>
             <rect x={relX-3} y={relY-3} width={relW+6} height={relH+6} rx={relH/2+3} fill="var(--accent)" opacity={isRelSel?0.2:0.08}/>
-            <rect x={relX} y={relY} width={relW} height={relH} rx={relH/2} fill="var(--bg-card,var(--bg-secondary,#fff))" stroke={isRelSel?"#fbbf24":"var(--accent)"} strokeOpacity={0.9} strokeWidth={isRelSel?2.2:1.4}/>
+            <rect x={relX} y={relY} width={relW} height={relH} rx={relH/2} fill="var(--bg-card,var(--bg-secondary,#fff))" stroke={isRelSel?SELECTED_STROKE:"var(--accent)"} strokeOpacity={0.9} strokeWidth={isRelSel?2.2:1.4}/>
             <text x={relX+16} y={relY+21} fill="var(--accent)" fontSize={10} fontWeight={900} style={{fontFamily:"monospace"}}>REL</text>
             <line x1={relX+43} y1={relY+8} x2={relX+43} y2={relY+26} stroke="var(--border)" strokeWidth={1}/>
             <text x={relX+55} y={relY+21} fill="var(--text-primary)" fontSize={10} fontWeight={900} style={{fontFamily:"monospace"}}>{pairCount}</text>
@@ -429,9 +437,9 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
         const bx1=bb.cx-bb.hw*(dx/len)*0.95,by1=bb.cy-bb.hh*(dy/len)*0.95;
         const mx=(ax1+bx1)/2,my=(ay1+by1)/2;
         return(<g key={"lin_"+i} style={{pointerEvents:"none"}}>
-          <line x1={ax1} y1={ay1} x2={bx1} y2={by1} stroke="#06b6d4" strokeWidth={1.6} strokeOpacity={0.75} strokeDasharray="6,4" markerEnd="url(#arrow-lineage)"/>
-          <rect x={mx-(e.reason.length*3.2)} y={my-7} width={e.reason.length*6.4} height={14} rx={3} fill="rgba(6,182,212,0.15)" stroke="#06b6d4" strokeOpacity={0.5}/>
-          <text x={mx} y={my+3} textAnchor="middle" fill="#06b6d4" fontSize={9} fontWeight={700} style={{fontFamily:"monospace"}}>{e.reason}</text>
+          <line x1={ax1} y1={ay1} x2={bx1} y2={by1} stroke={LINEAGE_COLOR} strokeWidth={1.6} strokeOpacity={0.75} strokeDasharray="6,4" markerEnd="url(#arrow-lineage)"/>
+          <rect x={mx-(e.reason.length*3.2)} y={my-7} width={e.reason.length*6.4} height={14} rx={3} fill={LINEAGE_COLOR+"26"} stroke={LINEAGE_COLOR} strokeOpacity={0.5}/>
+          <text x={mx} y={my+3} textAnchor="middle" fill={LINEAGE_COLOR} fontSize={9} fontWeight={700} style={{fontFamily:"monospace"}}>{e.reason}</text>
         </g>);
       })}
 
@@ -441,16 +449,16 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
         const isDb=n.kind==="db_ref";
         const nodeProducts=[...(Array.isArray(n.products)?n.products:[]).concat(n.product?[n.product]:[])].filter(p=>p&&String(p).toLowerCase()!=="common");
         // For tables, use table_type color; otherwise default color
-        let color=NODE_COLORS[n.kind]||"#888", typeLabel="table";
+        let color=NODE_COLORS[n.kind]||NEUTRAL_HEX, typeLabel="table";
         if(n.kind==="table"){
           const tbl=(tables||[]).find(t=>t.id===n.ref_id);
           const tType=tbl?.table_type||"data";
-          color=resolveNodeColor(n,TABLE_TYPE_COLORS[tType]||"#f97316",tbl);
+          color=resolveNodeColor(n,TABLE_TYPE_COLORS[tType]||TABLE_COLOR,tbl);
           typeLabel=tType;
         }else{
           color=resolveNodeColor(n,color,null);
         }
-        const sw=isSel?3:relStart?.id===n.id?3:1.5;const sc=isSel?"#fbbf24":relStart?.id===n.id?"#fbbf24":color;
+        const sw=isSel?3:relStart?.id===n.id?3:1.5;const sc=isSel?SELECTED_STROKE:relStart?.id===n.id?SELECTED_STROKE:color;
         return(<g key={n.id} transform={`translate(${p.x},${p.y})`}
           onMouseDown={e=>onNodeMouseDown(e,n)} onClick={e=>onNodeClickHandler(e,n)}
           onDoubleClick={e=>onNodeDblClickHandler(e,n)}
@@ -560,12 +568,8 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
         try{navigator.clipboard.writeText(tsv);}catch{
           const ta=document.createElement("textarea");ta.value=tsv;document.body.appendChild(ta);ta.select();document.execCommand("copy");ta.remove();
         }
-        // Small visual hint
         const sel=r2-r1+1,selC=c2-c1+1;
-        const tip=document.createElement("div");
-        tip.textContent=`✔ 복사됨 (${sel}행 × ${selC}열)`;
-        tip.style.cssText="position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#10b981;color:#fff;padding:8px 16px;border-radius:6px;z-index:99999;font-size:14px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,0.4)";
-        document.body.appendChild(tip);setTimeout(()=>tip.remove(),1400);
+        toast.ok(`복사됨 (${sel}행 × ${selC}열)`, 1400);
         e.preventDefault();
       }
     };
@@ -601,7 +605,7 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
 
   const doSave=()=>{
     setSaveErrors([]);
-    if(!form.name.trim()){alert("이름을 입력하세요");return;}
+    if(!form.name.trim()){toast.warn("이름을 입력하세요");return;}
     // Strip blank-name columns before send (UI ghost column guard)
     const cleanCols=(form.columns||[]).filter(c=>(c.name||"").trim());
     const errs=runValidation();
@@ -630,7 +634,7 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
         }));
         setPreviewVer(v);
       })
-      .catch(e=>alert(e?.message||"미리보기 로드 실패"));
+      .catch(e=>toast.error(e?.message||"미리보기 로드 실패"));
   };
   const clearPreview=()=>{
     if(!form.id)return;
@@ -638,12 +642,11 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
   };
   const rollbackTo=(v)=>{if(!confirm(`${v} 로 롤백하시겠습니까? (현재 상태는 rollback 직전 snapshot 으로 보존됩니다)`))return;
     sf(API+"/versions/rollback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({table_id:form.id,version:v,username:user?.username||""})})
-      .then(()=>{sf(API+"/tables/"+form.id).then(d=>setForm(d));sf(API+"/versions/"+form.id).then(d=>setVersions(d.versions||[]));}).catch(e=>alert(e.message));};
+      .then(()=>{sf(API+"/tables/"+form.id).then(d=>setForm(d));sf(API+"/versions/"+form.id).then(d=>setVersions(d.versions||[]));}).catch(e=>toast.error(e.message));};
 
   const S={width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none"};
 
-  return(<div className="tm-overlay" onClick={onClose}>
-    <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:"90%",maxWidth:900,maxHeight:"90vh",overflow:"auto"}}>
+  return(<Modal open onClose={onClose} width={900} zIndex={9999}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <div style={{fontSize:16,fontWeight:700,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
           <span>{form.id?"테이블 편집":"새 테이블"}</span>
@@ -901,7 +904,7 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
         {form.id&&isAdmin&&<button onClick={()=>{if(confirm("삭제할까요? (데이터는 아카이브됩니다)"))onDelete(form.id);}} style={{padding:"8px 16px",borderRadius:6,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",cursor:"pointer"}}>삭제</button>}
         <button onClick={onClose} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>닫기</button>
       </div>
-    </div></div>);
+    </Modal>);
 }
 
 // ─── Group Editor ──────────────────────────────────────
@@ -912,8 +915,7 @@ function GroupEditor({group,onSave,onClose}){
   const updateCol=(i,k,v)=>{const cols=[...form.columns];cols[i]={...cols[i],[k]:v};u("columns",cols);};
   const delCol=(i)=>u("columns",form.columns.filter((_,j)=>j!==i));
   const S={width:"100%",padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none"};
-  return(<div className="tm-overlay" onClick={onClose}>
-    <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:"90%",maxWidth:600}}>
+  return(<Modal open onClose={onClose} width={600} zIndex={9999}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <div style={{fontSize:16,fontWeight:700}}>{form.id?"그룹 편집":"새 테이블 그룹"}</div>
         <span onClick={onClose} style={{cursor:"pointer",fontSize:18}}>✕</span>
@@ -940,7 +942,7 @@ function GroupEditor({group,onSave,onClose}){
         <button onClick={()=>onSave(form)} style={{padding:"8px 20px",borderRadius:6,border:"none",background:"var(--accent)",color:"#fff",fontWeight:600,cursor:"pointer"}}>저장</button>
         <button onClick={onClose} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>취소</button>
       </div>
-  </div></div>);
+  </Modal>);
 }
 
 // ─── Product YAML Configs ─────────────────────────────────
@@ -1121,12 +1123,12 @@ export default function My_TableMap({user}){
   const[productConfigLoading,setProductConfigLoading]=useState(false);
   useEffect(()=>{if(showImport)sf(API+"/db-sources").then(d=>setImportSrcs(d.sources||[])).catch(()=>{});},[showImport]);
   const doImport=()=>{
-    const src=importSrcs.find(s=>s.label===importForm.source);if(!src){alert("소스를 선택하세요");return;}
+    const src=importSrcs.find(s=>s.label===importForm.source);if(!src){toast.warn("소스를 선택하세요");return;}
     const name=(importForm.name||"").trim()||(src.file?src.file.split(".")[0]:src.product||"imported");
     sf("/api/dbmap/tables/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
       source_type:src.source_type,file:src.file||"",root:src.root||"",product:src.product||"",
       name,display_name:importForm.display_name,rows_limit:importForm.rows_limit||1000,username:user?.username||"",
-    })}).then(r=>{alert(`임포트 완료 — ${r.id} (CSV: ${r.csv_path?.split(/[\\\/]/).pop()||""})`);setShowImport(false);setImportForm({source:"",name:"",display_name:"",rows_limit:1000});loadAll();}).catch(e=>alert(e.message));
+    })}).then(r=>{toast.ok(`임포트 완료 — ${r.id} (CSV: ${r.csv_path?.split(/[\\\/]/).pop()||""})`);setShowImport(false);setImportForm({source:"",name:"",display_name:"",rows_limit:1000});loadAll();}).catch(e=>toast.error(e.message));
   };
   const[view,setView]=useState("graph");
   const[ontology,setOntology]=useState({nodes:[],edges:[]});
@@ -1208,13 +1210,13 @@ export default function My_TableMap({user}){
         setHiddenProductPages(hidden);
         if(String(productFilter).toLowerCase()===String(product).toLowerCase())setProductFilter("ALL");
       })
-      .catch(e=>alert(e.message||"제품 페이지 삭제 실패"));
+      .catch(e=>toast.error(e.message||"제품 페이지 삭제 실패"));
   };
   const unhideProductPage=(product)=>{
     if(!canManage||!product)return;
     sf(API+"/product-pages/unhide",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product})})
       .then(d=>setHiddenProductPages(d.hidden_product_pages||[]))
-      .catch(e=>alert(e.message||"제품 페이지 복원 실패"));
+      .catch(e=>toast.error(e.message||"제품 페이지 복원 실패"));
   };
 
   const buildProductGraph=()=>{
@@ -1286,17 +1288,17 @@ export default function My_TableMap({user}){
   const cfg=selectedProductConfig||{};
   const cfgListCount=(k)=>Array.isArray(cfg[k])?cfg[k].length:0;
   const cfgObjCount=(k)=>cfg[k]&&typeof cfg[k]==="object"&&!Array.isArray(cfg[k])?Object.keys(cfg[k]).length:0;
-  const saveTable=(payload)=>sf(API+"/tables/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(r=>{const msgs=[];if(r.csv_path&&!r.csv_path.startsWith("CSV write"))msgs.push("📄 "+r.csv_path.split("/").pop()+" saved to DB root (see File Browser → Root Parquets)");else if(r.csv_path)msgs.push("⚠ "+r.csv_path);if(r.aws_result)msgs.push("AWS: "+r.aws_result);if(msgs.length)alert(msgs.join("\n"));setEditingTable(null);loadAll();}).catch(e=>{
+  const saveTable=(payload)=>sf(API+"/tables/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(r=>{const msgs=[];if(r.csv_path&&!r.csv_path.startsWith("CSV write"))msgs.push("📄 "+r.csv_path.split("/").pop()+" saved to DB root (see File Browser → Root Parquets)");else if(r.csv_path)msgs.push("⚠ "+r.csv_path);if(r.aws_result)msgs.push("AWS: "+r.aws_result);if(msgs.length)toast.info(msgs.join("\n"));setEditingTable(null);loadAll();}).catch(e=>{
     // v8.7.2: bubble up validation errors to TableEditor instead of alerting.
     const msg=String(e?.message||"저장 실패");
     if(msg.startsWith("VALIDATION_FAILED")){
       const messages=msg.split("\n").slice(1).filter(Boolean);
       const err=new Error("validation failed");err.messages=messages;throw err;
     }
-    alert(msg);throw e;
+    toast.error(msg);throw e;
   });
-  const deleteTable=(id)=>sf(API+"/tables/delete?table_id="+id,{method:"POST"}).then(()=>{setEditingTable(null);loadAll();}).catch(e=>alert(e.message));
-  const saveGroup=(payload)=>sf(API+"/groups/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(()=>{setEditingGroup(null);loadAll();}).catch(e=>alert(e.message));
+  const deleteTable=(id)=>sf(API+"/tables/delete?table_id="+id,{method:"POST"}).then(()=>{setEditingTable(null);loadAll();}).catch(e=>toast.error(e.message));
+  const saveGroup=(payload)=>sf(API+"/groups/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(()=>{setEditingGroup(null);loadAll();}).catch(e=>toast.error(e.message));
   const deleteGroup=(id)=>{if(!confirm("그룹을 삭제할까요? (아카이브됨)"))return;sf(API+"/groups/delete?group_id="+id,{method:"POST"}).then(loadAll);};
   const addDbRef=(src)=>sf(API+"/db-ref/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(src)}).then(()=>{setPickingDb(false);loadAll();});
   const deleteDbRef=(nid)=>{if(!confirm("맵에서 DB 참조 제거? (실제 DB 는 영향 없음)"))return;sf(API+"/db-ref/delete?node_id="+nid,{method:"POST"}).then(loadAll);};
@@ -1308,7 +1310,7 @@ export default function My_TableMap({user}){
     if(!canManage||!node)return;
     sf(API+"/node/color",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:node.id,ref_id:node.ref_id||"",color})})
       .then(loadAll)
-      .catch(e=>alert(e.message||"색상 저장 실패"));
+      .catch(e=>toast.error(e.message||"색상 저장 실패"));
   };
   const[selectedNode,setSelectedNode]=useState(null);
   const[dbInfo,setDbInfo]=useState(null); // DB ref detail modal
@@ -1335,8 +1337,8 @@ export default function My_TableMap({user}){
         const newName=base+idx;
         sf(API+"/tables/save",{method:"POST",headers:{"Content-Type":"application/json"},
           body:JSON.stringify({id:"",name:newName,group_id:gid,columns:[],rows:[],table_type:"data",username:user?.username||""})
-        }).then(()=>{loadAll();}).catch(e=>alert("멤버 테이블 생성 실패: "+(e.message||e)));
-      }).catch(e=>alert("그룹 조회 실패: "+(e.message||e)));
+        }).then(()=>{loadAll();}).catch(e=>toast.error("멤버 테이블 생성 실패: "+(e.message||e)));
+      }).catch(e=>toast.error("그룹 조회 실패: "+(e.message||e)));
     }
     else if(node.kind==="db_ref"){
       setSelectedNode(node);
@@ -1345,7 +1347,7 @@ export default function My_TableMap({user}){
   };
   // v8.8.13: 그룹 편집 명시적 진입점 — 사이드 패널에서 호출.
   const openGroupEditor=(refId)=>{sf(API+"/groups/"+refId).then(d=>setEditingGroup(d)).catch(()=>{});};
-  const saveDbDesc=()=>{if(!dbInfo)return;sf(API+"/db-ref/description",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:dbInfo.node_id,description:dbDesc})}).then(()=>{setDbInfo(null);setSelectedNode(null);loadAll();}).catch(e=>alert(e.message));};
+  const saveDbDesc=()=>{if(!dbInfo)return;sf(API+"/db-ref/description",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:dbInfo.node_id,description:dbDesc})}).then(()=>{setDbInfo(null);setSelectedNode(null);loadAll();}).catch(e=>toast.error(e.message));};
   // Delete key removes DB ref from map (not actual DB)
   useEffect(()=>{
     const h=(e)=>{
@@ -1403,7 +1405,7 @@ export default function My_TableMap({user}){
         })
       });
       loadAll();
-    }catch(e){ alert("그룹 편입 실패: "+(e.message||e)); }
+    }catch(e){ toast.error("그룹 편입 실패: "+(e.message||e)); }
   };
   const onMemberContext=(memberNode, tbl)=>{
     if(!isAdmin) return;
@@ -1484,7 +1486,7 @@ export default function My_TableMap({user}){
     const to_col=pairs.map(p=>p.to_col.trim()).join(", ");
     sf(API+"/relations/save",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({id:editRel.id||"",from_id:editRel.from_id,to_id:editRel.to_id,from_col,to_col,description:relForm.description||""})
-    }).then(()=>{setEditRel(null);loadAll();}).catch(e=>alert(e.message));
+    }).then(()=>{setEditRel(null);loadAll();}).catch(e=>toast.error(e.message));
   };
   const delRelation=(rid)=>sf(API+"/relations/delete?relation_id="+rid,{method:"POST"}).then(loadAll);
   const closeRelationModal=()=>{setEditRel(null);setAutoMatchInfo(null);};
@@ -1604,8 +1606,7 @@ export default function My_TableMap({user}){
       }}/>}
     {/* v8.8.13: 계보 상태바 제거 */}
     {/* DB ref detail modal */}
-    {dbInfo&&<div className="tm-overlay" onClick={()=>{setDbInfo(null);setSelectedNode(null);}}>
-      <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:"90%",maxWidth:600,maxHeight:"85vh",overflow:"auto"}}>
+    {dbInfo&&<Modal open onClose={()=>{setDbInfo(null);setSelectedNode(null);}} width={600} zIndex={9999}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
           <div style={{fontSize:16,fontWeight:700,color:"#3b82f6"}}>🗄️ {dbInfo.name}</div>
           <span onClick={()=>{setDbInfo(null);setSelectedNode(null);}} style={{cursor:"pointer",fontSize:18}}>✕</span>
@@ -1643,8 +1644,7 @@ export default function My_TableMap({user}){
           <button onClick={()=>{setDbInfo(null);setSelectedNode(null);}} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>닫기</button>
           {isAdmin&&<button onClick={()=>{if(confirm("맵에서 제거할까요? (DB 데이터는 영향 없음)")){sf(API+"/db-ref/delete?node_id="+dbInfo.node_id,{method:"POST"}).then(()=>{setDbInfo(null);setSelectedNode(null);loadAll();});}}} style={{marginLeft:"auto",padding:"8px 16px",borderRadius:6,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",cursor:"pointer",fontSize:14}}>맵에서 해제</button>}
         </div>
-      </div>
-    </div>}
+    </Modal>}
 
     {view==="manage"&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:12}}>
       {visibleGroups.map(g=>(<div key={g.id} style={{background:"var(--bg-secondary)",borderRadius:8,border:"1px solid #a855f7",padding:12}}>
@@ -1686,8 +1686,7 @@ export default function My_TableMap({user}){
     </div>}
 
     {/* Relation node click opens a clean matched-column table. Admin editing is an explicit mode. */}
-    {editRel&&<div className="tm-overlay" onClick={closeRelationModal}>
-      <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:680,maxWidth:"94vw"}}>
+    {editRel&&<Modal open onClose={closeRelationModal} width={680} zIndex={9999}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:14}}>
           <div>
             <div style={{fontSize:15,fontWeight:800}}>관계 매칭</div>
@@ -1775,12 +1774,10 @@ export default function My_TableMap({user}){
           {canManage&&editRel.id&&<button onClick={()=>{delRelation(editRel.id);closeRelationModal();}} style={{padding:"8px 16px",borderRadius:6,border:"1px solid #ef4444",background:"transparent",color:"#ef4444",cursor:"pointer"}}>삭제</button>}
           <button onClick={closeRelationModal} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>{relationEditing?"취소":"닫기"}</button>
         </div>
-      </div>
-    </div>}
+    </Modal>}
     {editingTable&&<TableEditor table={editingTable} groups={groups} onSave={saveTable} onDelete={deleteTable} onClose={()=>setEditingTable(null)} user={user}/>}
     {editingGroup&&<GroupEditor group={editingGroup} onSave={saveGroup} onClose={()=>setEditingGroup(null)}/>}
-    {showImport&&<div className="tm-overlay" onClick={()=>setShowImport(false)}>
-      <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:"90%",maxWidth:560}}>
+    {showImport&&<Modal open onClose={()=>setShowImport(false)} width={560} zIndex={9999}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
           <div style={{fontSize:16,fontWeight:700}}>기존 데이터 임포트</div>
           <span onClick={()=>setShowImport(false)} style={{cursor:"pointer",fontSize:18}}>✕</span>
@@ -1805,10 +1802,8 @@ export default function My_TableMap({user}){
           <button onClick={doImport} style={{flex:1,padding:10,borderRadius:6,border:"none",background:"#10b981",color:"#fff",fontWeight:600,cursor:"pointer"}}>임포트</button>
           <button onClick={()=>setShowImport(false)} style={{padding:"10px 20px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>취소</button>
         </div>
-      </div>
-    </div>}
-    {pickingDb&&<div className="tm-overlay" onClick={()=>setPickingDb(false)}>
-      <div onClick={e=>e.stopPropagation()} className="tm-modal" style={{width:"80%",maxWidth:600,maxHeight:"80vh",overflow:"auto"}}>
+    </Modal>}
+    {pickingDb&&<Modal open onClose={()=>setPickingDb(false)} width={600} zIndex={9999}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
           <div style={{fontSize:16,fontWeight:700}}>DB 참조 고정</div>
           <span onClick={()=>setPickingDb(false)} style={{cursor:"pointer",fontSize:18}}>✕</span>
@@ -1817,6 +1812,6 @@ export default function My_TableMap({user}){
         {dbSources.map(s=><div key={s.label} onClick={()=>addDbRef(s)} style={{padding:"8px 12px",background:"var(--bg-card,var(--bg-primary,#fff))",color:"var(--text-primary,#111827)",borderRadius:6,marginBottom:4,cursor:"pointer",fontSize:14,fontWeight:600,border:"1px solid var(--border)"}}>
           {s.label} <span style={{fontSize:14,color:"var(--accent,#ea580c)",fontWeight:700}}>[{s.source_type}]</span>
         </div>)}
-      </div></div>}
+    </Modal>}
   </div>);
 }

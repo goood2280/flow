@@ -1574,6 +1574,49 @@ def ask_meeting(req: MeetingAskReq, request: Request):
     }
 
 
+# v8.8.6: 회의록 동시편집 — SSE 스트림. 브라우저 EventSource 는 커스텀 헤더 불가 →
+# `?t=<session_token>` fallback 을 app.py `_QUERY_TOKEN_PREFIXES` 에서 허용함.
+# FastAPI는 등록 순서대로 라우트를 매칭하므로, 이 static GET 라우트는 `/{mid}`보다
+# 먼저 등록해야 `/stream`이 meeting id로 해석되지 않는다.
+@router.get("/stream")
+async def stream_minutes(request: Request, meeting_id: str = Query(...)):
+    me = current_user(request)
+    role = me.get("role", "user")
+    my_gids = _my_meeting_group_ids(me["username"], role)
+    items = _load()
+    _, m = _find(items, meeting_id)
+    if not m:
+        raise HTTPException(404, "meeting not found")
+    if not _meeting_visible(m, me["username"], role, my_gids):
+        raise HTTPException(403, "not visible")
+
+    async def _gen():
+        q = await _mtg_subscribe(meeting_id)
+        try:
+            yield f"event: hello\ndata: {_json.dumps({'meeting_id': meeting_id, 'viewer': me['username']})}\n\n"
+            while True:
+                try:
+                    payload = await _asyncio.wait_for(q.get(), timeout=25.0)
+                    yield f"event: update\ndata: {_json.dumps(payload)}\n\n"
+                except _asyncio.TimeoutError:
+                    # keep-alive ping (25s) — proxy 중간 끊김 방지.
+                    yield "event: ping\ndata: {}\n\n"
+                if await request.is_disconnected():
+                    break
+        finally:
+            await _mtg_unsubscribe(meeting_id, q)
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.get("/{mid}")
 def get_meeting(mid: str, request: Request):
     me = current_user(request)
@@ -2540,42 +2583,3 @@ def session_send_mail(req: SessionSendMailReq, request: Request):
            detail=f"meeting={m['id']} session={s['id']} ok={result.get('ok')} n={len(to_addrs)}",
            tab="meetings")
     return {"ok": bool(result.get("ok")), "mail": result}
-
-
-# v8.8.6: 회의록 동시편집 — SSE 스트림. 브라우저 EventSource 는 커스텀 헤더 불가 →
-# `?t=<session_token>` fallback 을 app.py `_QUERY_TOKEN_PREFIXES` 에서 허용함.
-@router.get("/stream")
-async def stream_minutes(request: Request, meeting_id: str = Query(...)):
-    me = current_user(request)
-    items = _load()
-    _, m = _find(items, meeting_id)
-    if not m:
-        raise HTTPException(404, "meeting not found")
-    if not _meeting_visible(m, me):
-        raise HTTPException(403, "not visible")
-
-    async def _gen():
-        q = await _mtg_subscribe(meeting_id)
-        try:
-            yield f"event: hello\ndata: {_json.dumps({'meeting_id': meeting_id, 'viewer': me['username']})}\n\n"
-            while True:
-                try:
-                    payload = await _asyncio.wait_for(q.get(), timeout=25.0)
-                    yield f"event: update\ndata: {_json.dumps(payload)}\n\n"
-                except _asyncio.TimeoutError:
-                    # keep-alive ping (25s) — proxy 중간 끊김 방지.
-                    yield "event: ping\ndata: {}\n\n"
-                if await request.is_disconnected():
-                    break
-        finally:
-            await _mtg_unsubscribe(meeting_id, q)
-
-    return StreamingResponse(
-        _gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
-    )

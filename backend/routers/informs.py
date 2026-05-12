@@ -35,10 +35,12 @@
 import datetime
 import html as _html
 import json as _json
+import logging
 import mimetypes
 import re
 import statistics
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -71,6 +73,7 @@ from app_v2.modules.informs.splittable_embed import (
 from routers.groups import user_modules
 
 router = APIRouter(prefix="/api/informs", tags=["informs"])
+logger = logging.getLogger(__name__)
 
 INFORMS_DIR = PATHS.data_root / "informs"
 INFORMS_DIR.mkdir(parents=True, exist_ok=True)
@@ -81,6 +84,10 @@ UPLOADS_DIR = INFORMS_DIR / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
 MODULE_KNOB_MAP_FILE = PATHS.data_root / "inform_module_knob_map.json"
+SPLITTABLE_SNAPSHOT_CACHE_TTL_SEC = 20
+_SPLITTABLE_SNAPSHOT_CACHE: dict[str, tuple[float, dict]] = {}
+_SPLITTABLE_SNAPSHOT_INFLIGHT: dict[str, dict] = {}
+_SPLITTABLE_SNAPSHOT_LOCK = threading.Lock()
 
 # Default 모듈·사유. config.json 에 저장된 값이 있으면 그것을 우선.
 DEFAULT_MODULES = ["GATE", "STI", "PC", "MOL", "BEOL", "ET", "EDS", "S-D Epi", "Spacer", "Well", "기타"]
@@ -170,7 +177,7 @@ def _fab_db_products() -> list[str]:
 def _merged_catalog_products(extra: list[str] | None = None) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
-    for src in [*(_load_config().get("products") or []), *_fab_db_products(), *(extra or [])]:
+    for src in _fab_db_products():
         name = _canonical_product(str(src or ""))
         if not name:
             continue
@@ -251,16 +258,21 @@ def _inform_user_mods_path():
     return ADMIN_SETTINGS_FILE
 
 
-def _read_admin_settings() -> dict:
+def _read_admin_settings(*, strict: bool = False) -> dict:
     p = _inform_user_mods_path()
     try:
-        if p.is_file():
-            with open(p, "r", encoding="utf-8") as f:
-                d = _json.load(f)
-                return d if isinstance(d, dict) else {}
-    except Exception:
+        if not p.is_file():
+            return {}
+        with open(p, "r", encoding="utf-8") as f:
+            d = _json.load(f)
+        if isinstance(d, dict):
+            return d
+        raise ValueError("admin settings root must be an object")
+    except Exception as exc:
+        logger.warning("inform admin settings read failed path=%s", p, exc_info=True)
+        if strict:
+            raise HTTPException(500, f"admin_settings.json 읽기 실패: {exc}") from exc
         return {}
-    return {}
 
 
 def _write_admin_settings(cfg: dict) -> None:
@@ -272,8 +284,8 @@ def _write_admin_settings(cfg: dict) -> None:
     _os.replace(tmp, p)
 
 
-def _get_inform_user_mods() -> dict:
-    d = _read_admin_settings()
+def _get_inform_user_mods(*, strict: bool = False) -> dict:
+    d = _read_admin_settings(strict=strict)
     um = d.get(_INFORM_USER_MODS_KEY) or {}
     return um if isinstance(um, dict) else {}
 
@@ -450,11 +462,21 @@ def _audit_record(subject, typ: str, target: Optional[dict], payload: Optional[d
         rows.append(row)
         _save_inform_audit(rows)
     except Exception:
-        pass
+        logger.warning(
+            "inform audit log write failed inform_id=%s type=%s",
+            row["inform_id"],
+            row["type"],
+            exc_info=True,
+        )
     try:
         _audit(subject, f"inform:{row['type']}", detail=row["summary"] or f"id={row['inform_id']}", tab="inform")
     except Exception:
-        pass
+        logger.warning(
+            "inform global audit mirror failed inform_id=%s type=%s",
+            row["inform_id"],
+            row["type"],
+            exc_info=True,
+        )
     return row
 
 
@@ -1921,6 +1943,10 @@ class InformCreate(BaseModel):
     fab_lot_id_at_save: str = ""
 
 
+class InformBulkCreateReq(BaseModel):
+    informs: List[InformCreate] = []
+
+
 def _clean_inform_mail_draft(raw: Optional[dict]) -> dict:
     if not isinstance(raw, dict):
         return {}
@@ -2485,26 +2511,72 @@ def save_settings_compat(req: ConfigReq, _admin=Depends(require_page_admin("info
     return save_config_endpoint(req, _admin)
 
 
-@router.post("/splittable-snapshot")
-def splittable_snapshot(req: SplitTableSnapshotReq, request: Request):
-    """Build the Inform SplitTable embed via the app_v2 service layer."""
-    current_user(request)
+def _splittable_snapshot_cache_key(req: SplitTableSnapshotReq) -> str:
+    payload = {
+        "product": req.product,
+        "lot_id": req.lot_id,
+        "custom_cols": sorted(str(c) for c in (req.custom_cols or [])),
+        "is_fab_lot": req.is_fab_lot,
+        "current_view": req.current_view or None,
+    }
+    return _json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _build_splittable_snapshot_embed(req: SplitTableSnapshotReq) -> dict:
     if req.current_view:
-        embed = build_splittable_embed_from_view(
+        return build_splittable_embed_from_view(
             product=req.product,
             lot_id=req.lot_id,
             view=req.current_view,
             custom_cols=req.custom_cols,
             is_fab_lot=req.is_fab_lot,
         )
-    else:
-        embed = build_splittable_embed(
-            product=req.product,
-            lot_id=req.lot_id,
-            custom_cols=req.custom_cols,
-            is_fab_lot=req.is_fab_lot,
-        )
-    return {"ok": True, "embed": embed}
+    return build_splittable_embed(
+        product=req.product,
+        lot_id=req.lot_id,
+        custom_cols=req.custom_cols,
+        is_fab_lot=req.is_fab_lot,
+    )
+
+
+@router.post("/splittable-snapshot")
+def splittable_snapshot(req: SplitTableSnapshotReq, request: Request):
+    """Build the Inform SplitTable embed via the app_v2 service layer."""
+    current_user(request)
+    key = _splittable_snapshot_cache_key(req)
+    now = time.time()
+    with _SPLITTABLE_SNAPSHOT_LOCK:
+        cached = _SPLITTABLE_SNAPSHOT_CACHE.get(key)
+        if cached and now - cached[0] <= SPLITTABLE_SNAPSHOT_CACHE_TTL_SEC:
+            return {"ok": True, "embed": cached[1], "cached": True}
+        inflight = _SPLITTABLE_SNAPSHOT_INFLIGHT.get(key)
+        if inflight is None:
+            event = threading.Event()
+            _SPLITTABLE_SNAPSHOT_INFLIGHT[key] = {"event": event}
+            owner = True
+        else:
+            event = inflight["event"]
+            owner = False
+    if not owner:
+        event.wait(SPLITTABLE_SNAPSHOT_CACHE_TTL_SEC)
+        with _SPLITTABLE_SNAPSHOT_LOCK:
+            cached = _SPLITTABLE_SNAPSHOT_CACHE.get(key)
+            if cached and time.time() - cached[0] <= SPLITTABLE_SNAPSHOT_CACHE_TTL_SEC:
+                return {"ok": True, "embed": cached[1], "cached": True, "coalesced": True}
+        raise HTTPException(503, "SplitTable snapshot is still building")
+    try:
+        embed = _build_splittable_snapshot_embed(req)
+        with _SPLITTABLE_SNAPSHOT_LOCK:
+            _SPLITTABLE_SNAPSHOT_CACHE[key] = (time.time(), embed)
+            for old_key, (ts, _embed) in list(_SPLITTABLE_SNAPSHOT_CACHE.items()):
+                if time.time() - ts > SPLITTABLE_SNAPSHOT_CACHE_TTL_SEC:
+                    _SPLITTABLE_SNAPSHOT_CACHE.pop(old_key, None)
+        return {"ok": True, "embed": embed, "cached": False}
+    finally:
+        with _SPLITTABLE_SNAPSHOT_LOCK:
+            inflight = _SPLITTABLE_SNAPSHOT_INFLIGHT.pop(key, None)
+            if inflight:
+                inflight["event"].set()
 
 
 @router.get("/splittable-sets")
@@ -2527,7 +2599,7 @@ def list_user_modules(request: Request):
     if me.get("role") != "admin":
         raise HTTPException(403, "admin only")
     from routers.auth import read_users
-    um = _get_inform_user_mods()
+    um = _get_inform_user_mods(strict=True)
     out = []
     for u in read_users():
         if u.get("status") != "approved":
@@ -2556,7 +2628,7 @@ def save_user_modules(req: UserModulesSaveReq, request: Request):
     uname = (req.username or "").strip()
     if not uname:
         raise HTTPException(400, "username required")
-    cfg = _read_admin_settings()
+    cfg = _read_admin_settings(strict=True)
     um = dict(cfg.get(_INFORM_USER_MODS_KEY) or {})
     mods = [str(m).strip() for m in (req.modules or []) if str(m).strip()]
     um[uname] = list(dict.fromkeys(mods))
@@ -2576,7 +2648,7 @@ def clear_user_modules(req: UserModulesSaveReq, request: Request):
     uname = (req.username or "").strip()
     if not uname:
         raise HTTPException(400, "username required")
-    cfg = _read_admin_settings()
+    cfg = _read_admin_settings(strict=True)
     um = dict(cfg.get(_INFORM_USER_MODS_KEY) or {})
     um.pop(uname, None)
     cfg[_INFORM_USER_MODS_KEY] = um
@@ -2902,6 +2974,8 @@ def _sidebar_payload(items: list, me: dict, my_mods: set,
     wafers_seen: dict = {}
     products_seen: dict = {}
     lots_seen: dict = {}
+    fab_products = _fab_db_products()
+    fab_lookup = {item.lower(): item for item in fab_products}
 
     for x in items:
         if not _visible_to(x, username, role, my_mods):
@@ -2931,9 +3005,9 @@ def _sidebar_payload(items: list, me: dict, my_mods: set,
         p = x.get("product")
         if p and isinstance(p, str):
             canon = _canonical_product(p)
-            if canon:
+            if canon and canon.lower() in fab_lookup:
                 key = canon.lower()
-                ps = products_seen.setdefault(key, {"product": canon, "count": 0, "last": ""})
+                ps = products_seen.setdefault(key, {"product": fab_lookup[key], "count": 0, "last": ""})
                 ps["count"] += 1
                 if ts > ps["last"]:
                     ps["last"] = ts
@@ -2959,7 +3033,7 @@ def _sidebar_payload(items: list, me: dict, my_mods: set,
                 ls["source_root_lot_id"] = source_root
             ls["fab_lots"].add(lot_key)
 
-    for p in _fab_db_products():
+    for p in fab_products:
         key = p.lower()
         products_seen.setdefault(key, {"product": p, "count": 0, "last": ""})
 
@@ -3128,6 +3202,8 @@ def list_products(request: Request):
     me = current_user(request)
     my_mods = _effective_modules(me["username"], me.get("role", "user"))
     items = _without_deleted(_load_upgraded())
+    fab_products = _fab_db_products()
+    fab_lookup = {p.lower(): p for p in fab_products}
     seen: dict = {}
     for x in items:
         p = x.get("product")
@@ -3139,12 +3215,14 @@ def list_products(request: Request):
         if not canon:
             continue
         key = canon.lower()
-        s = seen.setdefault(key, {"product": canon, "count": 0, "last": ""})
+        if key not in fab_lookup:
+            continue
+        s = seen.setdefault(key, {"product": fab_lookup[key], "count": 0, "last": ""})
         s["count"] += 1
         ts = x.get("created_at", "")
         if ts > s["last"]:
             s["last"] = ts
-    for p in _fab_db_products():
+    for p in fab_products:
         key = p.lower()
         seen.setdefault(key, {"product": p, "count": 0, "last": ""})
     arr = sorted(seen.values(), key=lambda v: (v["last"], v["product"]), reverse=True)
@@ -3189,9 +3267,7 @@ def list_lots(request: Request):
     return {"lots": arr}
 
 
-@router.post("")
-def create_inform(req: InformCreate, request: Request):
-    me = current_user(request)
+def _build_inform_entry(req: InformCreate, request: Request, me: dict, items: list) -> tuple[dict, dict]:
     # wafer_id 는 생성 시점의 LOT_ID 매핑 snapshot 이다. 없다고 lot_id 로 대체하지 않는다.
     requested_wafer_id = (req.wafer_id or "").strip()
     wid = requested_wafer_id
@@ -3199,7 +3275,6 @@ def create_inform(req: InformCreate, request: Request):
     lot_for_fallback = (req.lot_id or "").strip() or req_fab_lot
     if not lot_for_fallback and not wid and not req.parent_id:
         raise HTTPException(400, "lot_id (또는 wafer_id) 가 필요합니다.")
-    items = _load_upgraded()
 
     # parent 검증 + 상속 (lot_id / product).
     inherit_lot = (req.lot_id or "").strip() or req_fab_lot
@@ -3301,17 +3376,46 @@ def create_inform(req: InformCreate, request: Request):
             "created_at": now,
         },
     }
+    audit = {
+        "type": "comment" if req.parent_id else "create",
+        "payload": {"parent_id": req.parent_id or "", "root": bool(is_root)},
+        "summary": f"{'댓글' if req.parent_id else '생성'} · {entry['module'] or '-'} · {inherit_lot or wid}",
+        "at": now,
+    }
+    return entry, audit
+
+
+@router.post("")
+def create_inform(req: InformCreate, request: Request):
+    me = current_user(request)
+    items = _load_upgraded()
+    entry, audit = _build_inform_entry(req, request, me, items)
     items.append(entry)
     _save(items)
-    _audit_record(
-        request,
-        "comment" if req.parent_id else "create",
-        entry,
-        {"parent_id": req.parent_id or "", "root": bool(is_root)},
-        f"{'댓글' if req.parent_id else '생성'} · {entry['module'] or '-'} · {inherit_lot or wid}",
-        at=now,
-    )
+    _audit_record(request, audit["type"], entry, audit["payload"], audit["summary"], at=audit["at"])
     return {"ok": True, "inform": entry}
+
+
+@router.post("/bulk-create")
+def bulk_create_informs(req: InformBulkCreateReq, request: Request):
+    me = current_user(request)
+    payloads = list(req.informs or [])
+    if not payloads:
+        raise HTTPException(400, "informs is required")
+    if len(payloads) > 100:
+        raise HTTPException(413, "bulk-create accepts at most 100 informs")
+    items = _load_upgraded()
+    created: list[dict] = []
+    audits: list[dict] = []
+    for payload in payloads:
+        entry, audit = _build_inform_entry(payload, request, me, items)
+        items.append(entry)
+        created.append(entry)
+        audits.append(audit)
+    _save(items)
+    for entry, audit in zip(created, audits):
+        _audit_record(request, audit["type"], entry, audit["payload"], audit["summary"], at=audit["at"])
+    return {"ok": True, "informs": created}
 
 
 # ── Auto-log helper (다른 라우터가 import) ─────────────────────────────

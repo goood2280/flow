@@ -125,6 +125,22 @@ class SchemaRelationDeleteReq(BaseModel):
     note: str = ""
 
 
+class SchemaDocAiDraftReq(BaseModel):
+    body: str = ""
+    hint_relation_id: str = ""
+    hint_columns: list[str] = Field(default_factory=list)
+
+
+class SchemaDocAiUpsertReq(SchemaDocAiDraftReq):
+    wiki_doc: dict[str, Any] = Field(default_factory=dict)
+    column_catalog_stubs: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SchemaDocScanSourcesReq(BaseModel):
+    max_sources: int = 24
+    sample_rows: int = 20
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -258,6 +274,16 @@ def _relation_norm_col(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
 
 
+def _schema_column_name(name: str) -> str:
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", text)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    text = re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_").lower()
+    return text[:120]
+
+
 def _relation_canonical_col(name: str) -> str:
     norm = _relation_norm_col(name)
     for canonical, aliases in _RELATION_ALIASES.items():
@@ -268,6 +294,244 @@ def _relation_canonical_col(name: str) -> str:
     return ""
 
 
+def _schema_column_aliases(row: dict[str, Any]) -> set[str]:
+    aliases = {
+        _relation_norm_col(row.get("column") or ""),
+        _relation_norm_col(row.get("canonical_alias") or ""),
+    }
+    for raw in row.get("raw_names") or []:
+        aliases.add(_relation_norm_col(raw))
+    return {x for x in aliases if x}
+
+
+def _source_relation_id_candidates(src: SchemaRelationSource, target: Path | None = None) -> set[str]:
+    values = {
+        src.label,
+        src.product,
+        src.file,
+        target.name if target else "",
+        target.stem if target and target.is_file() else "",
+    }
+    out: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        out.add(text)
+        if "." in text:
+            out.add(text.rsplit(".", 1)[0])
+    return {x for x in out if x}
+
+
+def _catalog_entries_for_source(src: SchemaRelationSource, target: Path | None = None) -> list[dict[str, Any]]:
+    candidates = {x.lower() for x in _source_relation_id_candidates(src, target)}
+    if not candidates:
+        return []
+    return [
+        row for row in _public_column_catalog()
+        if str(row.get("relation_id") or "").strip().lower() in candidates
+    ]
+
+
+def _catalog_find_column(relation_id: str, column: str) -> dict[str, Any] | None:
+    rel = str(relation_id or "").strip().lower()
+    col_norm = _relation_norm_col(column)
+    if not rel or not col_norm:
+        return None
+    for row in _public_column_catalog():
+        if str(row.get("relation_id") or "").strip().lower() != rel:
+            continue
+        if col_norm in _schema_column_aliases(row):
+            return row
+    return None
+
+
+def _schema_known_relation_ids(*, include_discovered: bool = False) -> list[str]:
+    payload = _schema_relations_payload()
+    ids: set[str] = set()
+    for row in payload.get("relations") or []:
+        if not isinstance(row, dict):
+            continue
+        for key in ("relation_id", "left_label", "right_label", "left_source_id", "right_source_id"):
+            value = str(row.get(key) or "").strip()
+            if value:
+                ids.add(value)
+    for row in payload.get("column_catalog") or []:
+        if isinstance(row, dict) and str(row.get("relation_id") or "").strip():
+            ids.add(str(row.get("relation_id") or "").strip())
+    if include_discovered:
+        try:
+            for src in _relation_discover_sources(max_sources=80):
+                ids.update(_source_relation_id_candidates(src))
+        except Exception:
+            pass
+    return sorted(ids, key=str.lower)
+
+
+def _profile_relation_id(profile: dict[str, Any]) -> str:
+    source_type = str(profile.get("source_type") or "").strip().lower()
+    if source_type == "file":
+        file_name = str(profile.get("file") or "").strip()
+        if file_name:
+            return Path(file_name).stem
+    for key in ("product", "label", "source_id"):
+        value = str(profile.get(key) or "").strip()
+        if value:
+            return Path(value).stem if "." in value else value
+    return ""
+
+
+def _catalog_stubs_from_profiles(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stubs: list[dict[str, Any]] = []
+    for profile in profiles:
+        relation_id = _profile_relation_id(profile)
+        if not relation_id:
+            continue
+        dtypes = profile.get("dtypes") if isinstance(profile.get("dtypes"), dict) else {}
+        samples = profile.get("sample_values") if isinstance(profile.get("sample_values"), dict) else {}
+        for col in profile.get("columns") or []:
+            column = _relation_canonical_col(col) or _schema_column_name(col)
+            if not column:
+                continue
+            stubs.append({
+                "relation_id": relation_id,
+                "column": column,
+                "raw_names": [col],
+                "dtype": _relation_dtype_family(dtypes.get(col)),
+                "canonical_alias": column,
+                "unit": None,
+                "fk": None,
+                "sample_values": samples.get(col) or [],
+                "wiki_doc_id": "",
+            })
+    return stubs
+
+
+def _column_candidate(row: dict[str, Any], *, source: str, score: float, wiki_doc: dict[str, Any] | None = None) -> dict[str, Any]:
+    doc = wiki_doc or {}
+    wiki_doc_id = str(row.get("wiki_doc_id") or doc.get("doc_id") or "").strip()
+    return {
+        "relation_id": row.get("relation_id") or "",
+        "column": row.get("column") or "",
+        "raw_names": row.get("raw_names") or [],
+        "dtype": row.get("dtype") or "",
+        "canonical_alias": row.get("canonical_alias") or row.get("column") or "",
+        "unit": row.get("unit"),
+        "fk": row.get("fk"),
+        "sample_values": row.get("sample_values") or [],
+        "wiki_doc_id": wiki_doc_id,
+        "wiki_title": doc.get("title") or "",
+        "wiki_summary": doc.get("summary") or "",
+        "source": source,
+        "score": score,
+    }
+
+
+def _fallback_alias_candidates(term: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    term_norm = _relation_norm_col(term)
+    if not term_norm:
+        return []
+    canonical_matches: list[str] = []
+    for canonical, aliases in _RELATION_ALIASES.items():
+        alias_norms = {_relation_norm_col(x) for x in aliases}
+        if term_norm == _relation_norm_col(canonical) or term_norm in alias_norms or any(alias and (alias in term_norm or term_norm in alias) for alias in alias_norms):
+            canonical_matches.append(canonical)
+    out: list[dict[str, Any]] = []
+    for canonical in canonical_matches:
+        canonical_norm = _relation_norm_col(canonical)
+        matched = [
+            row for row in _public_column_catalog()
+            if canonical_norm in _schema_column_aliases(row)
+        ]
+        if matched:
+            out.extend(_column_candidate(row, source="alias_catalog", score=0.55) for row in matched)
+        else:
+            out.append(_column_candidate(
+                {
+                    "relation_id": "",
+                    "column": canonical,
+                    "canonical_alias": canonical,
+                    "raw_names": [],
+                    "dtype": "",
+                    "sample_values": [],
+                    "wiki_doc_id": "",
+                },
+                source="alias_fallback",
+                score=0.35,
+            ))
+    dedup: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in out:
+        dedup.setdefault((str(row.get("relation_id") or ""), str(row.get("column") or ""), str(row.get("source") or "")), row)
+    return sorted(dedup.values(), key=lambda r: float(r.get("score") or 0), reverse=True)[: max(1, min(limit, 50))]
+
+
+def resolve_term_to_columns(term: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    """Resolve a natural-language term to schema column candidates.
+
+    Wiki schema_doc hits are the primary signal. The hardcoded alias table is
+    only used when no schema_doc matches the term.
+    """
+    q = str(term or "").strip()
+    if not q:
+        return []
+    docs = kv.list_docs(kind="schema_doc", q=q, limit=max(limit, 20))
+    if len(docs) < limit:
+        term_norm = _relation_norm_col(q)
+        seen_doc_ids = {str(row.get("doc_id") or "") for row in docs}
+        for row in kv.list_docs(kind="schema_doc", limit=1000):
+            doc_id = str(row.get("doc_id") or "")
+            if not doc_id or doc_id in seen_doc_ids:
+                continue
+            hay_norm = _relation_norm_col(" ".join([
+                str(row.get("doc_id") or ""),
+                str(row.get("title") or ""),
+                str(row.get("summary") or ""),
+                " ".join(map(str, row.get("tags") or [])),
+                str(row.get("relation_id") or ""),
+                " ".join(map(str, row.get("column_refs") or [])),
+            ]))
+            if term_norm and term_norm in hay_norm:
+                docs.append(row)
+                seen_doc_ids.add(doc_id)
+            if len(docs) >= limit:
+                break
+    candidates: list[dict[str, Any]] = []
+    for brief in docs:
+        doc = kv.get_doc(str(brief.get("doc_id") or "")) or brief
+        fm = doc.get("frontmatter") if isinstance(doc.get("frontmatter"), dict) else {}
+        relation_id = str(fm.get("relation_id") or brief.get("relation_id") or "").strip()
+        refs = fm.get("column_refs") if isinstance(fm.get("column_refs"), list) else brief.get("column_refs") if isinstance(brief.get("column_refs"), list) else []
+        if not refs and relation_id:
+            refs = [f"{relation_id}.{row.get('column')}" for row in _public_column_catalog() if str(row.get("relation_id") or "").strip() == relation_id]
+        for ref in refs:
+            text = str(ref or "").strip()
+            if "." not in text:
+                continue
+            rel, col = text.split(".", 1)
+            catalog_row = _catalog_find_column(rel, col) or {
+                "relation_id": rel,
+                "column": col,
+                "canonical_alias": col,
+                "raw_names": [],
+                "dtype": "",
+                "unit": None,
+                "fk": None,
+                "sample_values": [],
+                "wiki_doc_id": doc.get("doc_id") or "",
+            }
+            candidates.append(_column_candidate(catalog_row, source="schema_doc", score=0.9, wiki_doc=doc))
+    if not docs:
+        candidates.extend(_fallback_alias_candidates(q, limit=limit))
+    dedup: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in candidates:
+        key = (str(row.get("relation_id") or ""), str(row.get("column") or ""))
+        if not key[1]:
+            continue
+        if key not in dedup or float(row.get("score") or 0) > float(dedup[key].get("score") or 0):
+            dedup[key] = row
+    return sorted(dedup.values(), key=lambda r: float(r.get("score") or 0), reverse=True)[: max(1, min(limit, 50))]
+
+
 def _relation_read_source(src: SchemaRelationSource, *, sample_rows: int = 20) -> dict[str, Any]:
     target, files = _relation_resolve_source_files(src)
     first = files[0]
@@ -275,12 +539,15 @@ def _relation_read_source(src: SchemaRelationSource, *, sample_rows: int = 20) -
     schema = lf.collect_schema()
     columns = list(schema.names())
     dtypes = {name: str(schema[name]) for name in columns}
-    key_columns = [c for c in columns if _relation_canonical_col(c)][:20]
+    catalog_entries = _catalog_entries_for_source(src, target)
+    catalog_aliases = {alias for row in catalog_entries for alias in _schema_column_aliases(row)}
+    key_columns = [c for c in columns if _relation_canonical_col(c) or _relation_norm_col(c) in catalog_aliases][:30]
     sample_values: dict[str, list[str]] = {}
-    if key_columns and sample_rows > 0:
+    sample_columns = list(dict.fromkeys([*key_columns, *columns[:120]]))
+    if sample_columns and sample_rows > 0:
         try:
-            df = lf.select(key_columns).head(min(max(int(sample_rows), 1), 50)).collect()
-            for col in key_columns:
+            df = lf.select(sample_columns).head(min(max(int(sample_rows), 1), 50)).collect()
+            for col in sample_columns:
                 vals = []
                 for value in df.get_column(col).drop_nulls().unique().head(6).to_list():
                     text = str(value).strip()
@@ -289,6 +556,26 @@ def _relation_read_source(src: SchemaRelationSource, *, sample_rows: int = 20) -
                 sample_values[col] = vals
         except Exception:
             sample_values = {}
+    catalog_warnings: list[dict[str, Any]] = []
+    for row in catalog_entries:
+        matched = [col for col in columns if _relation_norm_col(col) in _schema_column_aliases(row)]
+        if not matched:
+            catalog_warnings.append({
+                "relation_id": row.get("relation_id") or "",
+                "column": row.get("column") or "",
+                "warning": "catalog column not found in scanned source",
+            })
+            continue
+        scanned_dtype = dtypes.get(matched[0]) or ""
+        catalog_dtype = str(row.get("dtype") or "").strip()
+        if catalog_dtype and scanned_dtype and _relation_dtype_family(catalog_dtype) != _relation_dtype_family(scanned_dtype):
+            catalog_warnings.append({
+                "relation_id": row.get("relation_id") or "",
+                "column": row.get("column") or "",
+                "warning": "catalog dtype differs from scanned dtype",
+                "catalog_dtype": catalog_dtype,
+                "scanned_dtype": scanned_dtype,
+            })
     source_id = _relation_source_id(src, target)
     return {
         "source_id": source_id,
@@ -303,6 +590,8 @@ def _relation_read_source(src: SchemaRelationSource, *, sample_rows: int = 20) -
         "dtypes": dtypes,
         "key_columns": key_columns,
         "sample_values": sample_values,
+        "column_catalog": catalog_entries,
+        "catalog_warnings": catalog_warnings,
     }
 
 
@@ -363,6 +652,16 @@ def _relation_candidate_id(candidate: dict[str, Any]) -> str:
     ])
     import hashlib
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:18]
+
+
+def _relation_candidate_rationale(row: dict[str, Any]) -> str:
+    evidence = [str(x) for x in (row.get("evidence") or []) if str(x or "").strip()]
+    left = f"{row.get('left_label') or row.get('left_source_id')}.{row.get('left_column')}"
+    right = f"{row.get('right_label') or row.get('right_source_id')}.{row.get('right_column')}"
+    score = float(row.get("confidence") or 0)
+    if evidence:
+        return f"{left} 와 {right} 는 {', '.join(evidence[:3])} 근거로 join key 후보입니다. 신뢰도 {score:.2f}."
+    return f"{left} 와 {right} 는 컬럼명/타입 유사도 기반 join key 후보입니다. 신뢰도 {score:.2f}."
 
 
 def _relation_candidate_graph(relations: list[dict[str, Any]]) -> dict[str, Any]:
@@ -445,6 +744,7 @@ def _relation_candidates(profiles: list[dict[str, Any]], *, limit: int = 30) -> 
                         "right_sample": right_samples[:5],
                         "status": "preview",
                     }
+                    row["rationale"] = _relation_candidate_rationale(row)
                     row["relation_id"] = _relation_candidate_id(row)
                     candidates.append(row)
     candidates.sort(key=lambda r: (float(r.get("confidence") or 0), bool(r.get("left_sample") and r.get("right_sample"))), reverse=True)
@@ -489,17 +789,24 @@ def _relation_preview_from_sources(
 
 
 def _schema_relations_payload() -> dict[str, Any]:
-    data = load_json(SCHEMA_RELATION_FILE, {"relations": []})
+    data = load_json(SCHEMA_RELATION_FILE, {"relations": [], "column_catalog": []})
     if not isinstance(data, dict):
-        data = {"relations": []}
+        data = {"relations": [], "column_catalog": []}
     if not isinstance(data.get("relations"), list):
         data["relations"] = []
+    if not isinstance(data.get("column_catalog"), list):
+        data["column_catalog"] = []
     return data
 
 
 def _public_schema_relations() -> list[dict[str, Any]]:
     payload = _schema_relations_payload()
     return [row for row in payload.get("relations") or [] if isinstance(row, dict)]
+
+
+def _public_column_catalog() -> list[dict[str, Any]]:
+    payload = _schema_relations_payload()
+    return [row for row in payload.get("column_catalog") or [] if isinstance(row, dict)]
 
 
 def _hit(item: dict[str, Any], needle: str, tag: str) -> bool:
@@ -771,11 +1078,89 @@ def schema_relation_scan(req: SchemaRelationScanReq, request: Request):
 def schema_relation_graph(request: Request):
     current_user(request)
     relations = _public_schema_relations()
+    column_catalog = _public_column_catalog()
     return {
         "ok": True,
         "relations": relations,
+        "column_catalog": column_catalog,
         "graph": _relation_candidate_graph(relations),
         "storage": "data/flow-data/schema_relations.json",
+    }
+
+
+@router.get("/resolve_term")
+def resolve_term(request: Request, q: str = Query(..., min_length=1, max_length=200), limit: int = Query(5, ge=1, le=50)):
+    current_user(request)
+    return {"ok": True, "query": q, "candidates": resolve_term_to_columns(q, limit=limit)}
+
+
+@router.post("/schema_doc/ai-draft")
+def schema_doc_ai_draft(req: SchemaDocAiDraftReq, request: Request):
+    _require_agent_wiki_admin(request)
+    if not (req.body or "").strip():
+        raise HTTPException(400, "body is required")
+    known_relations = _schema_known_relation_ids(include_discovered=True)
+    if req.hint_relation_id and req.hint_relation_id not in known_relations:
+        known_relations.append(req.hint_relation_id)
+    return kv.draft_schema_doc_metadata(
+        req.body,
+        hint_relation_id=req.hint_relation_id,
+        hint_columns=req.hint_columns,
+        known_relations=known_relations,
+    )
+
+
+@router.post("/schema_doc/ai-upsert")
+def schema_doc_ai_upsert(req: SchemaDocAiUpsertReq, request: Request):
+    me = _require_agent_wiki_admin(request)
+    if req.wiki_doc:
+        return kv.commit_schema_doc_draft(
+            wiki_doc=req.wiki_doc,
+            column_catalog_stubs=req.column_catalog_stubs,
+            actor=me.get("username") or "admin",
+        )
+    if not (req.body or "").strip():
+        raise HTTPException(400, "body or wiki_doc is required")
+    known_relations = _schema_known_relation_ids(include_discovered=True)
+    if req.hint_relation_id and req.hint_relation_id not in known_relations:
+        known_relations.append(req.hint_relation_id)
+    return kv.ai_upsert_schema_doc(
+        body=req.body,
+        hint_relation_id=req.hint_relation_id,
+        hint_columns=req.hint_columns,
+        actor=me.get("username") or "admin",
+        known_relations=known_relations,
+    )
+
+
+@router.post("/schema_doc/scan_sources")
+def schema_doc_scan_sources(req: SchemaDocScanSourcesReq, request: Request):
+    me = _require_agent_wiki_admin(request)
+    sources = _relation_discover_sources(max_sources=req.max_sources)
+    if not sources:
+        raise HTTPException(400, "no schema sources discovered")
+    profiles: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for src in sources:
+        try:
+            profiles.append(_relation_read_source(src, sample_rows=req.sample_rows))
+        except HTTPException as exc:
+            errors.append({
+                "source": src.model_dump() if hasattr(src, "model_dump") else src.dict(),
+                "status": exc.status_code,
+                "detail": exc.detail,
+            })
+    stubs = _catalog_stubs_from_profiles(profiles)
+    catalog = kv.merge_schema_column_catalog(stubs, actor=me.get("username") or "admin", sync_existing=True)
+    return {
+        "ok": True,
+        "discovered_count": len(sources),
+        "profile_count": len(profiles),
+        "stub_count": len(stubs),
+        "sources": profiles,
+        "errors": errors,
+        "catalog": catalog,
+        "raw_sources_mutated": False,
     }
 
 
@@ -796,7 +1181,7 @@ def schema_relation_save(req: SchemaRelationSaveReq, request: Request):
     allowed_keys = {
         "relation_id", "left_source_id", "left_label", "left_source_type", "left_column", "left_dtype",
         "right_source_id", "right_label", "right_source_type", "right_column", "right_dtype",
-        "canonical_key", "relation_type", "confidence", "evidence", "left_sample", "right_sample", "status",
+        "canonical_key", "relation_type", "confidence", "evidence", "rationale", "left_sample", "right_sample", "status",
     }
     for candidate in candidates[:100]:
         row = {key: candidate.get(key) for key in allowed_keys if key in candidate}

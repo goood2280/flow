@@ -9,6 +9,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - PEMS reason chip, 사용자 입력 reason, 이미지/첨부 roundtrip
 - SplitTable CUSTOM snapshot embed
 - multi-selected fab lot별 독립 SplitTable snapshot embed
+- 다중 fab lot 등록용 `POST /api/informs/bulk-create` 순서 보존 저장
 - module-wise mail compose/send
 - 신규 등록 시 선택한 mail users/groups/extra emails를 Inform `mail_draft`로 저장해 등록 후 메일 탭과 발송창에서 이어 쓴다.
 - Dashboard inform widget용 요약 데이터
@@ -35,9 +36,13 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 ## Guardrails
 
 - product가 불명확하면 생성 전에 후보를 확인한다.
+- `/config`, `/products`, sidebar product 후보는 `1.RAWDATA_DB_FAB/<product folder>` 기준으로만 만든다. 기존 Inform record의 `product` 값은 보존하지만 FAB DB에 없는 product는 신규 선택/필터 후보에 넣지 않는다.
 - message/reason이 없으면 빈 inform을 만들지 않는다.
 - 여러 fab lot을 선택해 생성할 때 각 Inform의 `lot_id`와 `fab_lot_id_at_save`는 선택한 target lot과 같아야 한다.
+- 다중 fab lot 등록은 frontend 개별 POST 병렬 호출이 아니라 `/api/informs/bulk-create`로 보내며, 응답 `informs` 순서는 요청 순서와 같아야 한다.
+- SplitTable snapshot endpoint는 같은 product/lot/custom_cols 요청이 겹치면 짧은 in-memory cache로 중복 계산을 피하되, 저장되는 embed payload shape는 유지한다.
 - 수신자 후보는 `data/flow-data/users.csv`, 그룹 후보는 `data/flow-data/groups/groups.json`을 기준으로 한다.
+- `admin_settings.json` 읽기 실패 시 user-modules 조회/저장은 빈 설정으로 진행하지 않고 HTTP detail과 warning log를 남긴다.
 - 메일에는 제목, 대상, 본문, Flow link만 남긴다.
 - 첨부와 메일 실패는 UI에서 복구 가능한 상태로 보여준다.
 

@@ -85,10 +85,53 @@ def _save_status(st):
     save_json(STATUS_FILE, st, indent=2)
 
 
-def _update_status(item_id: str, **patch):
+def _normalize_direction(value: str | None) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"upload", "push"}:
+        return "upload"
+    return "download"
+
+
+def _item_direction(item: Dict[str, Any] | None = None, direction: str | None = None) -> str:
+    return _normalize_direction(direction or ((item or {}).get("direction") if item else "download"))
+
+
+def _status_for_item(status: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
+    base = status.get(item.get("id"), {}) or {}
+    if not isinstance(base, dict):
+        return {}
+    direction = _item_direction(item)
+    directions = base.get("directions") or {}
+    if isinstance(directions, dict):
+        slot = directions.get(direction) or {}
+        if isinstance(slot, dict) and slot:
+            merged = {k: v for k, v in base.items() if k != "directions"}
+            merged.update(slot)
+            return merged
+    return base
+
+
+def _update_status(item_id: str, direction: str | None = None, **patch):
     st = _load_status()
     cur = st.get(item_id, {})
-    cur.update(patch)
+    if not isinstance(cur, dict):
+        cur = {}
+    if direction:
+        dir_key = _normalize_direction(direction)
+        directions = cur.get("directions")
+        if not isinstance(directions, dict):
+            directions = {}
+        slot = directions.get(dir_key)
+        if not isinstance(slot, dict):
+            slot = {}
+        slot.update(patch)
+        slot["direction"] = dir_key
+        directions[dir_key] = slot
+        cur.update(patch)
+        cur["direction"] = dir_key
+        cur["directions"] = directions
+    else:
+        cur.update(patch)
     st[item_id] = cur
     _save_status(st)
 
@@ -278,13 +321,15 @@ def _aggregate_child_statuses(by_target: Dict[str, Dict[str, Any]]) -> None:
                 interval = 0
             if interval > 0:
                 intervals.append(interval)
+        child_freshness = [str(c.get("freshness_state") or "").strip() for c in children]
+        child_stale = any(state == "stale_item" for state in child_freshness)
         aggregate = {
             "kind": "aggregate",
             "direction": directions[0] if len(directions) == 1 else "mixed",
             "enabled": all(bool(c.get("enabled", True)) for c in children),
             "interval_min": min(intervals) if intervals else 0,
             "last_status": "ok" if last_status == "running" else last_status,
-            "last_end": _fmt_iso_epoch(min(last_times)) if last_times else None,
+            "last_end": _fmt_iso_epoch(max(last_times)) if last_times else None,
             "last_start": None,
             "last_exit_code": None,
             "last_duration_sec": None,
@@ -292,7 +337,7 @@ def _aggregate_child_statuses(by_target: Dict[str, Dict[str, Any]]) -> None:
             "latest_item_at": _fmt_iso_epoch(max(latest_item_times)) if latest_item_times else None,
             "latest_item_relpath": f"{len(children)} child targets",
             "latest_item_age_hours": None,
-            "latest_item_stale_6h": any(bool(c.get("latest_item_stale_6h")) for c in children),
+            "latest_item_stale_6h": child_stale,
             "latest_item_scan_error": None,
             "next_due": _fmt_iso_epoch(min(next_times)) if next_times else None,
             "due": any(bool(c.get("due")) for c in children),
@@ -302,6 +347,8 @@ def _aggregate_child_statuses(by_target: Dict[str, Dict[str, Any]]) -> None:
         }
         if aggregate["is_running"]:
             aggregate["freshness_state"] = "running"
+        elif child_stale:
+            aggregate["freshness_state"] = "stale_item"
         elif aggregate["last_status"] == "ok":
             aggregate["freshness_state"] = "ok"
         elif aggregate["last_status"] == "never":
@@ -432,12 +479,14 @@ def _run_item_blocking(item_id: str):
     item = next((x for x in cfg.get("items", []) if x.get("id") == item_id), None)
     if not item:
         return
-    _update_status(item_id, last_start=_now_iso(), last_status="running")
+    direction = _item_direction(item)
+    _update_status(item_id, direction=direction, last_start=_now_iso(), last_status="running")
 
     try:
         args, _local = _build_cmd(item)
     except HTTPException as e:
         _update_status(item_id,
+                       direction=direction,
                        last_status="error",
                        last_output_tail=f"validation failed: {e.detail}",
                        last_end=_now_iso(),
@@ -464,6 +513,7 @@ def _run_item_blocking(item_id: str):
 
     dur = int(time.time() - t0)
     _update_status(item_id,
+                   direction=direction,
                    last_end=_now_iso(),
                    last_status=status,
                    last_exit_code=exit_code,
@@ -500,7 +550,7 @@ def _scheduler_loop():
             for item in cfg.get("items", []):
                 if not item.get("enabled", True):
                     continue
-                st = status.get(item["id"], {})
+                st = _status_for_item(status, item)
                 due = _item_due_state(item, st, now)
                 if due.get("due"):
                     _schedule_run(item["id"])
@@ -532,7 +582,7 @@ def list_items(username: str = Query("")):
     now = time.time()
     for it in cfg.get("items", []):
         merged = dict(it)
-        st = status.get(it["id"], {})
+        st = _status_for_item(status, it)
         due = _item_due_state(it, st, now)
         merged["status"] = st
         merged["is_running"] = it["id"] in _RUNNING
@@ -719,10 +769,23 @@ def s3_health():
             return "yellow", t, f, last_ts_, stale
         return "green", t, f, last_ts_, stale
 
-    pull_entries = [e for e in history if (e.get("direction") or "pull") == "pull"]
-    push_entries = [e for e in history if e.get("direction") == "push"]
+    pull_entries = [e for e in history if _normalize_direction(e.get("direction")) == "download"]
+    push_entries = [e for e in history if _normalize_direction(e.get("direction")) == "upload"]
     download_light, d_total, d_fails, d_last, d_stale = _compute_light(pull_entries)
     upload_light, u_total, u_fails, u_last, u_stale = _compute_light(push_entries)
+    status = _load_status()
+    status_times = {"download": [], "upload": []}
+    for item in items:
+        st = _status_for_item(status, item)
+        direction = _item_direction(item)
+        last = st.get("last_end") or st.get("last_start")
+        ts = _parse_iso_ts(last)
+        if ts:
+            status_times.setdefault(direction, []).append((ts, last))
+    if status_times.get("download"):
+        d_last = max(status_times["download"], key=lambda x: x[0])[1]
+    if status_times.get("upload"):
+        u_last = max(status_times["upload"], key=lambda x: x[0])[1]
 
     # 기존 호환성: 전체 기준 light.
     recent = history[-10:]
@@ -856,7 +919,7 @@ def status_by_target():
         tgt = it.get("target", "")
         if not tgt:
             continue
-        st = status.get(it["id"], {}) or {}
+        st = _status_for_item(status, it)
         due = _item_due_state(it, st, now)
         is_running = it["id"] in _RUNNING or st.get("last_status") == "running"
         info = {

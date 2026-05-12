@@ -1,8 +1,29 @@
 import { useState, useEffect, useRef } from "react";
 import BrandLogo from "../components/BrandLogo";
-import { postJson } from "../lib/api";
+import { postJson, sf } from "../lib/api";
 import { isAdmin as isAdminUser, isPageAdmin } from "../lib/permissions";
+import { toast } from "../components/Toast";
+import { PageHeader, statusPalette } from "../components/UXKit";
 const B="#ea580c",M="#f97316",L="#fb923c",D="#9a3412",BK="#171717",W="#fff7ed",PK="#fda4af",G="#fbbf24";
+const HOME_UI={
+  accent:statusPalette.warn.fg,
+  accentBg:statusPalette.warn.bg,
+  ok:statusPalette.ok.fg,
+  okBg:statusPalette.ok.bg,
+  bad:statusPalette.bad.fg,
+  badBg:statusPalette.bad.bg,
+  text:"var(--text-primary,#e5e5e5)",
+  textSub:"var(--text-secondary,#a3a3a3)",
+  textDim:"#737373",
+  textSoft:"#d4d4d4",
+  border:"var(--border,#333)",
+  borderStrong:"#333",
+  borderSoft:"#2a2a2a",
+  card:"var(--bg-card,#2a2a2a)",
+  panel:"#111",
+  panelSoft:"#151515",
+  terminal:"#171717",
+};
 
 // v8.3.3: PF_HOME / PixelGlyph / HomeBrandLogo extracted to shared ../components/BrandLogo.jsx.
 // Home uses <BrandLogo size="home"/>; nav uses <BrandLogo size="nav"/> (see App.jsx).
@@ -14,9 +35,9 @@ const EC=[[6,3,B],[6,4,M],[6,5,L],[6,6,L],[6,7,L],[6,8,L],[6,9,L],[6,10,L],[6,11
 const AD=[[7,1,M],[7,2,M],[8,1,B],[7,13,M],[7,14,M],[8,14,B]];
 const AW=[[7,1,M],[7,2,M],[8,1,B],[5,13,M],[5,14,G],[6,13,M],[6,14,B]];
 function Holli({size=72}){const[fr,setFr]=useState("idle");const t=useRef(null);useEffect(()=>{const loop=()=>{t.current=setTimeout(()=>{if(Math.random()<0.6){setFr("blink");setTimeout(()=>{setFr("idle");loop();},150);}else{setFr("wave");setTimeout(()=>{setFr("idle");loop();},600);}},1500+Math.random()*2500);};loop();return()=>clearTimeout(t.current);},[]);const px=[...BASE_PX,...(fr==="blink"?EC:EO),...(fr==="wave"?AW:AD)];return(<div style={{animation:fr==="idle"?"holBob 2s ease-in-out infinite":"none"}}><style>{`@keyframes holBob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}@keyframes holBlink{0%,100%{opacity:1}50%{opacity:0}}`}</style><svg width={size} height={size} viewBox="0 0 16 16" style={{imageRendering:"pixelated"}}>{px.map(([r,c,color],i)=><rect key={i} x={c} y={r} width={1} height={1} fill={color}/>)}</svg></div>);}
-function Cli({cmd,output,delay=0}){const line=`> flow ${cmd}`;const parts=[{text:">",color:"#f97316"},{text:" flow ",color:"#737373"},{text:cmd,color:"#e5e5e5"}];const[show,setShow]=useState(delay===0);const[typedLen,setTypedLen]=useState(0);const[done,setDone]=useState(false);useEffect(()=>{if(delay){const t=setTimeout(()=>setShow(true),delay);return()=>clearTimeout(t);}},[delay]);useEffect(()=>{if(!show)return;setTypedLen(0);setDone(false);let i=0;const iv=setInterval(()=>{i++;setTypedLen(i);if(i>=line.length){clearInterval(iv);setTimeout(()=>setDone(true),100);}},30);return()=>clearInterval(iv);},[show,line]);if(!show)return null;let remain=typedLen;return(<div style={{marginBottom:4,fontFamily:"'JetBrains Mono',monospace",fontSize:14,lineHeight:1.7}}>{parts.map((p,idx)=>{const s=p.text.slice(0,Math.max(0,Math.min(p.text.length,remain)));remain-=s.length;return s?<span key={idx} style={{color:p.color}}>{s}</span>:null;})}{!done&&<span style={{display:"inline-block",width:8,height:14,background:"#f97316",marginLeft:2,animation:"holBlink 0.6s step-end infinite"}}/>}{done&&output&&<div style={{color:"#a3a3a3",paddingLeft:20,fontSize:14}}>{output}</div>}</div>);}
-function WelcomeType({name}){const full=`${name}님, 안녕하세요`;const[len,setLen]=useState(0);useEffect(()=>{const t=setTimeout(()=>{let i=0;const iv=setInterval(()=>{i++;setLen(i);if(i>=full.length)clearInterval(iv);},70);return()=>clearInterval(iv);},800);return()=>clearTimeout(t);},[full]);return(<span><span style={{color:"#e5e5e5",fontWeight:700}}>{full.slice(0,len)}</span></span>);}
-function Card({icon,title,desc,tag,onClick,width=220}){return(<div onClick={onClick} onMouseEnter={e=>{e.currentTarget.style.borderColor="#f97316";e.currentTarget.style.background="#f9731610";}} onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--border,#333)";e.currentTarget.style.background="var(--bg-card,#2a2a2a)";}} style={{background:"var(--bg-card,#2a2a2a)",borderRadius:12,padding:"20px 24px",cursor:onClick?"pointer":"default",border:"1px solid var(--border,#333)",transition:"all 0.2s",position:"relative",width,boxSizing:"border-box"}}>{tag&&<span style={{position:"absolute",top:12,right:12,fontSize:14,fontWeight:700,padding:"2px 6px",borderRadius:3,background:"#f9731622",color:"#f97316",fontFamily:"monospace",textTransform:"uppercase"}}>{tag}</span>}<div style={{fontSize:28,marginBottom:10}}>{icon}</div><div style={{fontSize:14,fontWeight:700,color:"var(--text-primary,#e5e5e5)",marginBottom:6,fontFamily:"'JetBrains Mono',monospace"}}>{title}</div><div style={{fontSize:14,color:"var(--text-secondary,#a3a3a3)",lineHeight:1.6}}>{desc}</div></div>);}
+function Cli({cmd,output,delay=0}){const line=`> flow ${cmd}`;const parts=[{text:">",color:HOME_UI.accent},{text:" flow ",color:HOME_UI.textDim},{text:cmd,color:HOME_UI.text}];const[show,setShow]=useState(delay===0);const[typedLen,setTypedLen]=useState(0);const[done,setDone]=useState(false);useEffect(()=>{if(delay){const t=setTimeout(()=>setShow(true),delay);return()=>clearTimeout(t);}},[delay]);useEffect(()=>{if(!show)return;setTypedLen(0);setDone(false);let i=0;const iv=setInterval(()=>{i++;setTypedLen(i);if(i>=line.length){clearInterval(iv);setTimeout(()=>setDone(true),100);}},30);return()=>clearInterval(iv);},[show,line]);if(!show)return null;let remain=typedLen;return(<div style={{marginBottom:4,fontFamily:"'JetBrains Mono',monospace",fontSize:14,lineHeight:1.7}}>{parts.map((p,idx)=>{const s=p.text.slice(0,Math.max(0,Math.min(p.text.length,remain)));remain-=s.length;return s?<span key={idx} style={{color:p.color}}>{s}</span>:null;})}{!done&&<span style={{display:"inline-block",width:8,height:14,background:HOME_UI.accent,marginLeft:2,animation:"holBlink 0.6s step-end infinite"}}/>}{done&&output&&<div style={{color:HOME_UI.textSub,paddingLeft:20,fontSize:14}}>{output}</div>}</div>);}
+function WelcomeType({name}){const full=`${name}님, 안녕하세요`;const[len,setLen]=useState(0);useEffect(()=>{const t=setTimeout(()=>{let i=0;const iv=setInterval(()=>{i++;setLen(i);if(i>=full.length)clearInterval(iv);},70);return()=>clearInterval(iv);},800);return()=>clearTimeout(t);},[full]);return(<span><span style={{color:HOME_UI.text,fontWeight:700}}>{full.slice(0,len)}</span></span>);}
+function Card({icon,title,desc,tag,onClick,width=220}){return(<div onClick={onClick} onMouseEnter={e=>{e.currentTarget.style.borderColor=HOME_UI.accent;e.currentTarget.style.background=HOME_UI.accent+"10";}} onMouseLeave={e=>{e.currentTarget.style.borderColor=HOME_UI.border;e.currentTarget.style.background=HOME_UI.card;}} style={{background:HOME_UI.card,borderRadius:12,padding:"20px 24px",cursor:onClick?"pointer":"default",border:`1px solid ${HOME_UI.border}`,transition:"all 0.2s",position:"relative",width,boxSizing:"border-box"}}>{tag&&<span style={{position:"absolute",top:12,right:12,fontSize:14,fontWeight:700,padding:"2px 6px",borderRadius:3,background:HOME_UI.accentBg,color:HOME_UI.accent,fontFamily:"monospace",textTransform:"uppercase"}}>{tag}</span>}<div style={{fontSize:28,marginBottom:10}}>{icon}</div><div style={{fontSize:14,fontWeight:700,color:HOME_UI.text,marginBottom:6,fontFamily:"'JetBrains Mono',monospace"}}>{title}</div><div style={{fontSize:14,color:HOME_UI.textSub,lineHeight:1.6}}>{desc}</div></div>);}
 
 // Feature guide content shown to users (non-admin) instead of release history.
 const FEATURE_GUIDES={
@@ -60,7 +81,7 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
   },[busy]);
   useEffect(()=>{
     let alive=true;
-    fetch("/api/llm/status").then(r=>r.ok?r.json():null).then(d=>{
+    sf("/api/llm/status").then(d=>{
       if(!alive)return;
       const cfg=d?.config||{};
       const model=String(cfg.model||"").trim();
@@ -140,23 +161,23 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
       }).catch(e=>setErr(e.message||String(e))).finally(()=>setBusy(false));
   };
   const connLabel=connState==="checking"?"연결확인중":connState==="connected"?"연결":connState==="disconnected"?"연결끊김":"";
-  const connColor=connState==="connected"?"#22c55e":connState==="checking"?"#f97316":"#ef4444";
+  const connColor=connState==="connected"?HOME_UI.ok:connState==="checking"?HOME_UI.accent:HOME_UI.bad;
   return(<section style={{marginTop:12,fontFamily:"'JetBrains Mono',monospace"}}>
     <style>{`@keyframes flowiPanelWake{0%{opacity:0;transform:translateY(-8px) scaleY(.96)}100%{opacity:1;transform:translateY(0) scaleY(1)}}@keyframes flowiConnBlink{0%,100%{opacity:.45}50%{opacity:1}}`}</style>
     <form onSubmit={e=>{e.preventDefault();activate();}} style={{margin:0}}>
       <div style={{display:"flex",alignItems:"center",gap:7,minWidth:0,fontSize:14,lineHeight:1.7,flexWrap:"wrap"}}>
-        <span style={{color:"#f97316"}}>{">"}</span>
-        <span style={{color:"#737373",whiteSpace:"nowrap"}}>flow-i</span>
+        <span style={{color:HOME_UI.accent}}>{">"}</span>
+        <span style={{color:HOME_UI.textDim,whiteSpace:"nowrap"}}>flow-i</span>
         {active&&connLabel&&<span title={modelLabel?`LLM ${modelLabel}`:"LLM 연결 확인"} style={{display:"inline-flex",alignItems:"center",gap:5,color:connColor,border:`1px solid ${connColor}66`,background:`${connColor}14`,borderRadius:999,padding:"1px 8px",fontSize:14,fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>
           <span style={{width:6,height:6,borderRadius:"50%",background:connColor,animation:connState==="checking"?"flowiConnBlink .75s ease-in-out infinite":"none"}}/>{connLabel}
         </span>}
         {!active&&<button type="submit" aria-label="start flowi"
-          style={{padding:"2px 8px",borderRadius:5,border:"1px solid #333",background:"#171717",color:"#f97316",fontSize:14,fontFamily:"monospace",fontWeight:800,cursor:"pointer"}}>START</button>}
+          style={{padding:"2px 8px",borderRadius:5,border:`1px solid ${HOME_UI.borderStrong}`,background:HOME_UI.terminal,color:HOME_UI.accent,fontSize:14,fontFamily:"monospace",fontWeight:800,cursor:"pointer"}}>START</button>}
         {active&&<button type="button" onClick={close} aria-label="close flowi"
-          style={{padding:"1px 6px",borderRadius:5,border:"1px solid #333",background:"transparent",color:"#737373",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>CLOSE</button>}
+          style={{padding:"1px 6px",borderRadius:5,border:`1px solid ${HOME_UI.borderStrong}`,background:"transparent",color:HOME_UI.textDim,fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>CLOSE</button>}
       </div>
     </form>
-    {active&&<div style={{marginTop:10,border:"1px solid #2a2a2a",borderRadius:10,background:"#101010",overflow:"hidden",animation:"flowiPanelWake .32s ease-out",transformOrigin:"top"}}>
+    {active&&<div style={{marginTop:10,border:`1px solid ${HOME_UI.borderSoft}`,borderRadius:10,background:"#101010",overflow:"hidden",animation:"flowiPanelWake .32s ease-out",transformOrigin:"top"}}>
       <div ref={scrollRef} style={{height:messages.length?520:300,maxHeight:"60vh",overflowY:"auto",padding:"12px 14px",borderBottom:"1px solid #262626",scrollBehavior:"smooth"}}>
         {messages.length===0&&!busy&&<div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",color:"#d4d4d4",fontSize:14,fontWeight:800,textAlign:"center"}}>
           오늘 어떤 도움을 드릴까요?
@@ -166,14 +187,14 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
             <div style={{maxWidth:"92%",background:"#1f130b",border:"1px solid #7c2d12",borderRadius:"10px 10px 2px 10px",padding:"8px 10px",color:"#f5f5f5",fontSize:14,lineHeight:1.55,whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{m.text}</div>
           </div>
           :<div key={m.id} style={{margin:"0 0 16px",maxWidth:"100%"}}>
-            <div style={{fontSize:14,color:"#737373",fontFamily:"monospace",marginBottom:4}}>flow-i{isAdmin&&m.intent?` · ${m.intent}`:""}</div>
+            <div style={{fontSize:14,color:HOME_UI.textDim,fontFamily:"monospace",marginBottom:4}}>flow-i{isAdmin&&m.intent?` · ${m.intent}`:""}</div>
             <FlowiResult busy={false} error="" result={m.result} prompt={m.prompt} onNavigate={onNavigate} onChoice={ask} embedded isAdmin={isAdmin} activeChartSessionId={activeChartSessionId} onUseChartSession={setActiveChartSessionId}/>
           </div>)}
         {busy&&isAdmin&&<FlowiLiveTrace step={liveStep}/>}
       </div>
       <form onSubmit={e=>{e.preventDefault();ask();}} style={{margin:0,padding:"10px 10px 10px 0"}}>
       <div style={{display:"flex",alignItems:"stretch",gap:8,minWidth:0}}>
-        <span style={{color:"#f97316"}}>{">"}</span>
+        <span style={{color:HOME_UI.accent}}>{">"}</span>
         <div style={{position:"relative",flex:1,minWidth:0}}>
           <textarea ref={promptRef} value={prompt} onChange={e=>setPrompt(e.target.value)}
             placeholder=""
@@ -182,15 +203,15 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
             onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();ask();}}}
             style={{width:"100%",minWidth:0,padding:isAdmin?"10px 12px 48px":"10px 12px",borderRadius:8,border:"1px solid #525252",background:"#3a3a3a",color:"#f5f5f5",fontSize:14,lineHeight:1.55,fontFamily:"'JetBrains Mono',monospace",outline:"none",resize:"vertical",boxSizing:"border-box",display:"block"}}/>
           {isAdmin&&<div title="현재 연결 모델과 남은 대화 context 추정치" style={{position:"absolute",right:10,bottom:8,display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",maxWidth:"calc(100% - 20px)",pointerEvents:"none",fontFamily:"'JetBrains Mono',monospace"}}>
-            <span style={{minWidth:0,maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:14,lineHeight:1.1,color:modelLabel?"#d4d4d4":"#737373",border:"1px solid #333",background:"#0f0f0f",borderRadius:999,padding:"6px 9px",fontWeight:900}}>
+            <span style={{minWidth:0,maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:14,lineHeight:1.1,color:modelLabel?HOME_UI.textSoft:HOME_UI.textDim,border:`1px solid ${HOME_UI.borderStrong}`,background:"#0f0f0f",borderRadius:999,padding:"6px 9px",fontWeight:900}}>
               MODEL {modelLabel||"미연결"}
             </span>
-            <span style={{whiteSpace:"nowrap",fontSize:14,lineHeight:1.1,color:contextPct<20?"#fb923c":"#d4d4d4",border:`1px solid ${contextPct<20?"#f9731666":"#333"}`,background:contextPct<20?"#2a1207":"#0f0f0f",borderRadius:999,padding:"6px 9px",fontWeight:900}}>
+            <span style={{whiteSpace:"nowrap",fontSize:14,lineHeight:1.1,color:contextPct<20?"#fb923c":HOME_UI.textSoft,border:`1px solid ${contextPct<20?HOME_UI.accent+"66":HOME_UI.borderStrong}`,background:contextPct<20?"#2a1207":"#0f0f0f",borderRadius:999,padding:"6px 9px",fontWeight:900}}>
               CTX {contextUsed.toLocaleString()} / {CTX_LIMIT.toLocaleString()}
             </span>
           </div>}
         </div>
-        {busy&&<div aria-live="polite" style={{alignSelf:"center",color:"#f97316",fontSize:14,fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>RUNNING</div>}
+        {busy&&<div aria-live="polite" style={{alignSelf:"center",color:HOME_UI.accent,fontSize:14,fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>RUNNING</div>}
       </div>
       </form>
     </div>}
@@ -198,7 +219,7 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
   </section>);
 }
 
-const FLOWI_ACTION_BTN={fontSize:14,color:"#f97316",fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:6,padding:"4px 8px",background:"#1f130b",cursor:"pointer",fontWeight:800,whiteSpace:"nowrap"};
+const FLOWI_ACTION_BTN={fontSize:14,color:HOME_UI.accent,fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:6,padding:"4px 8px",background:"#1f130b",cursor:"pointer",fontWeight:800,whiteSpace:"nowrap"};
 
 function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=false,isAdmin=false,activeChartSessionId="",onUseChartSession=null}){
   if(busy)return <div style={{marginTop:embedded?0:10,fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
@@ -457,7 +478,7 @@ function FlowiTrace({trace}){
   </details>);
 }
 
-const FLOWI_CHOICE_BTN={textAlign:"left",border:"1px solid #f97316",borderRadius:7,background:"#2a2a2a",padding:"8px 12px",cursor:"pointer",color:"#d4d4d4",fontSize:14,fontFamily:"'JetBrains Mono',monospace",lineHeight:1.35};
+const FLOWI_CHOICE_BTN={textAlign:"left",border:`1px solid ${HOME_UI.accent}`,borderRadius:7,background:HOME_UI.card,padding:"8px 12px",cursor:"pointer",color:HOME_UI.textSoft,fontSize:14,fontFamily:"'JetBrains Mono',monospace",lineHeight:1.35};
 
 function FlowiChoices({question,choices,onChoice,onNavigate}){
   return(<div style={{marginTop:12,border:"1px solid #333",borderRadius:8,background:"#151515",padding:"10px 11px"}}>
@@ -1038,10 +1059,7 @@ export default function My_Home({onNavigate,user}){
     </div>}
 
     <div style={{background:"var(--bg-secondary,#262626)",borderRadius:12,border:"1px solid var(--border,#333)",overflow:"hidden"}}>
-      <div style={{padding:"14px 20px",borderBottom:"1px solid var(--border,#333)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <span style={{fontSize:14,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:"var(--accent,#f97316)"}}>{">"} 사용 방법</span>
-        <span style={{fontSize:14,color:"var(--text-secondary)"}}>권한있는 기능 가이드</span>
-      </div>
+      <PageHeader title="사용 방법" subtitle="권한있는 기능 가이드" style={{fontFamily:"'JetBrains Mono',monospace"}} />
       <div style={{padding:"6px 20px 16px"}}>
         {visibleCards.filter(c=>FEATURE_GUIDES[c.key]).map((c,i,arr)=>{const g=FEATURE_GUIDES[c.key];return(<div key={c.key} style={{paddingTop:16,paddingBottom:12,borderBottom:i<arr.length-1?"1px solid var(--border,#333)":"none"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,cursor:"pointer"}} onClick={()=>nav(c.key)}>
@@ -1086,22 +1104,22 @@ function UserContact({user}){
   const[sending,setSending]=useState(false);const[showHistory,setShowHistory]=useState(false);
   const[notices,setNotices]=useState([]);
   const load=()=>{
-    fetch("/api/messages/thread?username="+encodeURIComponent(uname)).then(r=>r.json())
-      .then(d=>{setThread(d||{messages:[]});fetch("/api/messages/mark_read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:uname})}).catch(()=>{});})
+    sf("/api/messages/thread?username="+encodeURIComponent(uname))
+      .then(d=>{setThread(d||{messages:[]});postJson("/api/messages/mark_read",{username:uname}).catch(()=>{});})
       .catch(()=>{});
-    fetch("/api/messages/notices?username="+encodeURIComponent(uname)).then(r=>r.json())
+    sf("/api/messages/notices?username="+encodeURIComponent(uname))
       .then(d=>setNotices(d.notices||[])).catch(()=>{});
   };
   useEffect(()=>{if(uname)load();},[uname]);
   const send=()=>{
     const v=(text||"").trim();if(!v||sending)return;
-    if(v.length>5000){alert("최대 5000자까지 입력 가능합니다.");return;}
+    if(v.length>5000){toast.warn("최대 5000자까지 입력 가능합니다.");return;}
     setSending(true);
-    fetch("/api/messages/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:uname,text:v})})
-      .then(r=>r.json()).then(()=>{setText("");load();}).catch(e=>alert("전송 실패: "+(e.message||e))).finally(()=>setSending(false));
+    postJson("/api/messages/send",{username:uname,text:v})
+      .then(()=>{setText("");load();}).catch(e=>toast.error("전송 실패: "+(e.message||e))).finally(()=>setSending(false));
   };
   const markNoticeRead=(id)=>{
-    fetch("/api/messages/notice_read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:uname,ids:[id]})})
+    postJson("/api/messages/notice_read",{username:uname,ids:[id]})
       .then(()=>setNotices(p=>p.map(x=>x.id===id?{...x,read:true}:x))).catch(()=>{});
   };
   const msgs=thread.messages||[];
@@ -1169,14 +1187,14 @@ function AdminContactInbox({user}){
   const admin=user?.username||"";
   const[threads,setThreads]=useState([]);const[sel,setSel]=useState("");const[thr,setThr]=useState(null);
   const[reply,setReply]=useState("");const[sending,setSending]=useState(false);
-  const loadThreads=()=>fetch("/api/messages/admin/threads?admin="+encodeURIComponent(admin)).then(r=>r.json()).then(d=>setThreads(d.threads||[])).catch(()=>{});
-  const loadThread=(u)=>fetch("/api/messages/admin/thread?admin="+encodeURIComponent(admin)+"&user="+encodeURIComponent(u)).then(r=>r.json()).then(setThr).catch(()=>{});
+  const loadThreads=()=>sf("/api/messages/admin/threads?admin="+encodeURIComponent(admin)).then(d=>setThreads(d.threads||[])).catch(()=>{});
+  const loadThread=(u)=>sf("/api/messages/admin/thread?admin="+encodeURIComponent(admin)+"&user="+encodeURIComponent(u)).then(setThr).catch(()=>{});
   useEffect(()=>{if(admin)loadThreads();},[admin]);
   useEffect(()=>{if(sel)loadThread(sel);else setThr(null);},[sel]);
-  const open=(u)=>{setSel(u);fetch("/api/messages/admin/mark_read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({admin,to_user:u})}).then(loadThreads).catch(()=>{});};
-  const send=()=>{const v=(reply||"").trim();if(!v||!sel||sending)return;if(v.length>5000){alert("최대 5000자");return;}setSending(true);
-    fetch("/api/messages/admin/reply",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({admin,to_user:sel,text:v})})
-      .then(r=>r.json()).then(()=>{setReply("");loadThread(sel);loadThreads();}).catch(e=>alert("실패: "+(e.message||e))).finally(()=>setSending(false));};
+  const open=(u)=>{setSel(u);postJson("/api/messages/admin/mark_read",{admin,to_user:u}).then(loadThreads).catch(()=>{});};
+  const send=()=>{const v=(reply||"").trim();if(!v||!sel||sending)return;if(v.length>5000){toast.warn("최대 5000자");return;}setSending(true);
+    postJson("/api/messages/admin/reply",{admin,to_user:sel,text:v})
+      .then(()=>{setReply("");loadThread(sel);loadThreads();}).catch(e=>toast.error("실패: "+(e.message||e))).finally(()=>setSending(false));};
   const totalUnread=threads.reduce((s,t)=>s+(t.unread_for_admin||0),0);
   return(<div style={{display:"flex",gap:12,minHeight:340}}>
     <div style={{width:240,background:"var(--bg-primary)",borderRadius:8,border:"1px solid var(--border)",overflow:"hidden",display:"flex",flexDirection:"column",flexShrink:0}}>
@@ -1234,17 +1252,17 @@ function AdminContactNotices({user}){
   const admin=user?.username||"";
   const[notices,setNotices]=useState([]);
   const[title,setTitle]=useState("");const[body,setBody]=useState("");const[sending,setSending]=useState(false);
-  const loadNotices=()=>fetch("/api/messages/admin/notices?admin="+encodeURIComponent(admin)).then(r=>r.json()).then(d=>setNotices(d.notices||[])).catch(()=>{});
+  const loadNotices=()=>sf("/api/messages/admin/notices?admin="+encodeURIComponent(admin)).then(d=>setNotices(d.notices||[])).catch(()=>{});
   useEffect(()=>{if(admin){loadNotices();}},[admin]);
   const publish=()=>{
-    const t=title.trim(),b=body.trim();if(!t&&!b){alert("제목 또는 본문을 입력하세요.");return;}
+    const t=title.trim(),b=body.trim();if(!t&&!b){toast.warn("제목 또는 본문을 입력하세요.");return;}
     if(sending)return;setSending(true);
-    fetch("/api/messages/admin/notice_create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({author:admin,title:t,body:b})})
-      .then(r=>r.json()).then(()=>{setTitle("");setBody("");loadNotices();alert("전체 공지가 발행되었습니다.");})
-      .catch(e=>alert("실패: "+(e.message||e))).finally(()=>setSending(false));
+    postJson("/api/messages/admin/notice_create",{author:admin,title:t,body:b})
+      .then(()=>{setTitle("");setBody("");loadNotices();toast.ok("전체 공지가 발행되었습니다.");})
+      .catch(e=>toast.error("실패: "+(e.message||e))).finally(()=>setSending(false));
   };
   const del=(id)=>{if(!confirm("공지사항을 삭제하시겠습니까?"))return;
-    fetch("/api/messages/admin/notice_delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({admin,id})}).then(loadNotices).catch(e=>alert(e.message));};
+    postJson("/api/messages/admin/notice_delete",{admin,id}).then(loadNotices).catch(e=>toast.error(e.message));};
   const S={width:"100%",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none",fontFamily:"'Pretendard',sans-serif",boxSizing:"border-box"};
   return(<div>
     <div style={{background:"var(--bg-primary)",border:"1px solid var(--accent)",borderRadius:8,padding:14,marginBottom:14}}>

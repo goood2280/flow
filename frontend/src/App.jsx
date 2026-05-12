@@ -31,9 +31,9 @@ class ErrorBoundary extends Component {
   render() {
     if (this.state.error) {
       return (<div style={{padding:"40px 32px",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif",maxWidth:720}}>
-        <div style={{fontSize:18,fontWeight:800,color:"#ef4444",marginBottom:8,fontFamily:"'JetBrains Mono',monospace"}}>⚠ 오류가 발생했습니다</div>
+        <div style={{fontSize:18,fontWeight:800,color:"var(--danger)",marginBottom:8,fontFamily:"'JetBrains Mono',monospace"}}>⚠ 오류가 발생했습니다</div>
         <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6}}>이 페이지에서 JavaScript 에러가 발생했습니다. 아래 재시도 버튼을 눌러 다시 렌더링하거나 다른 탭으로 이동하세요.</div>
-        <div style={{fontSize:14,color:"#fbbf24",marginBottom:16,padding:"8px 12px",borderRadius:6,background:"rgba(251,191,36,0.08)",border:"1px solid rgba(251,191,36,0.25)",fontFamily:"monospace",wordBreak:"break-word"}}>{String(this.state.error?.message || this.state.error)}</div>
+        <div style={{fontSize:14,color:"var(--warn)",marginBottom:16,padding:"8px 12px",borderRadius:6,background:"var(--warn-50)",border:"1px solid var(--warn-line)",fontFamily:"monospace",wordBreak:"break-word"}}>{String(this.state.error?.message || this.state.error)}</div>
         <button onClick={()=>this.setState({error:null})} style={{padding:"8px 18px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer",marginRight:8}}>↻ 재시도</button>
         <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>콘솔 (F12) 에서 전체 스택 확인</span>
       </div>);
@@ -115,7 +115,7 @@ function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
           style={{padding:"8px 12px",fontSize:14,cursor:"pointer",color:"var(--text-primary)"}}>
           🔑 비밀번호 변경
         </div>
-        <div onClick={onLogout} style={{padding:"8px 12px",fontSize:14,cursor:"pointer",color:"#ef4444"}}>
+        <div onClick={onLogout} style={{padding:"8px 12px",fontSize:14,cursor:"pointer",color:"var(--danger)"}}>
           ⏻ 로그아웃
         </div>
       </div>}
@@ -126,7 +126,7 @@ function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
 const NAV_GROUPS = [
   { id: "home", label: "홈", keys: ["home"], direct: true },
   { id: "data", label: "데이터", keys: ["filebrowser", "dashboard", "splittable", "ettime", "waferlayout"] },
-  { id: "work", label: "업무", keys: ["inform", "tracker", "meeting", "calendar"] },
+  { id: "work", label: "업무", keys: ["inform", "meeting", "calendar", "tracker"] },
   { id: "agent", label: "에이전트", keys: ["diagnosis"], direct: true },
   { id: "admin", label: "관리", keys: ["admin", "devguide"] },
 ];
@@ -290,7 +290,7 @@ function ContactButton({ user }) {
       <span style={{ fontSize: 14 }}>✉️</span>
       {unread > 0 && <span style={{
         position: "absolute", top: -4, right: -6, fontSize: 14, fontWeight: 700,
-        background: "#3b82f6", color: "#fff", borderRadius: "50%", minWidth: 14, height: 14,
+        background: "var(--info)", color: "#fff", borderRadius: "50%", minWidth: 14, height: 14,
         display: "flex", alignItems: "center", justifyContent: "center", padding: "0 2px"
       }}>{unread > 99 ? "99+" : unread}</span>}
     </div>
@@ -335,7 +335,7 @@ function ContactButton({ user }) {
                 <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>{(n.created || n.ts || "").slice(0, 16).replace("T", " ")}</div>
               </div>
               <div style={{ fontSize: 14, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{n.body}</div>
-              {isAdmin && <div style={{ marginTop: 8 }}><span onClick={() => deleteNotice(n.id)} style={{ fontSize: 14, color: "#ef4444", cursor: "pointer" }}>삭제</span></div>}
+              {isAdmin && <div style={{ marginTop: 8 }}><span onClick={() => deleteNotice(n.id)} style={{ fontSize: 14, color: "var(--danger)", cursor: "pointer" }}>삭제</span></div>}
             </div>))}
           </div>}
           {tab === "inbox" && isAdmin && <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 12, minHeight: 360 }}>
@@ -344,7 +344,7 @@ function ContactButton({ user }) {
               {adminThreads.map(t => (<div key={t.user} onClick={() => loadAdminThread(t.user)} style={{ padding: "8px 10px", borderRadius: 6, cursor: "pointer", background: selThreadUser === t.user ? "var(--accent-glow)" : "transparent", marginBottom: 2 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 14, fontFamily: "monospace", fontWeight: t.unread_for_admin > 0 ? 700 : 400 }}>{t.user}</span>
-                  {t.unread_for_admin > 0 && <span style={{ fontSize: 14, background: "#ef4444", color: "#fff", borderRadius: 8, padding: "1px 6px" }}>{t.unread_for_admin}</span>}
+                  {t.unread_for_admin > 0 && <span style={{ fontSize: 14, background: "var(--danger)", color: "#fff", borderRadius: 8, padding: "1px 6px" }}>{t.unread_for_admin}</span>}
                 </div>
                 <div style={{ fontSize: 14, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.last_body || ""}</div>
               </div>))}
@@ -374,7 +374,7 @@ function ContactButton({ user }) {
               <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 6 }}>기존 공지 ({notices.length})</div>
               {notices.map(n => (<div key={n.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 10px", borderRadius: 5, background: "var(--bg-card)", border: "1px solid var(--border)", marginBottom: 4 }}>
                 <span style={{ fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{n.title}</span>
-                <span onClick={() => deleteNotice(n.id)} style={{ fontSize: 14, color: "#ef4444", cursor: "pointer", marginLeft: 10 }}>삭제</span>
+                <span onClick={() => deleteNotice(n.id)} style={{ fontSize: 14, color: "var(--danger)", cursor: "pointer", marginLeft: 10 }}>삭제</span>
               </div>))}
             </div>
           </div>}
@@ -421,8 +421,8 @@ function NoticeBanner({ user }) {
   const title = (notice.title || "").trim();
   const body = (notice.body || "").trim();
   return (<div style={{
-    padding: "6px 18px", background: "linear-gradient(90deg, rgba(249,115,22,0.15), rgba(249,115,22,0.05))",
-    borderBottom: "1px solid rgba(249,115,22,0.35)", display: "flex", alignItems: "center",
+    padding: "6px 18px", background: "linear-gradient(90deg, var(--brand-50), var(--bg-secondary))",
+    borderBottom: "1px solid var(--brand-line)", display: "flex", alignItems: "center",
     gap: 10, fontSize: 14
   }}>
         <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", flexShrink: 0 }}>📢 {label}</span>
@@ -451,13 +451,13 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
       .catch(e => toast.error("실패: " + (e.message || "알 수 없는 오류")));
   };
   const recent = notifs.slice(-8).reverse();
-  const typeColor = { approval: "#f59e0b", message: "#3b82f6", info: "#6b7280" };
+  const typeColor = { approval: "var(--warn)", message: "var(--info)", info: "var(--muted)" };
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <div onClick={() => setOpen(!open)} style={{ cursor: "pointer", position: "relative" }}>
         <span style={{ fontSize: 14 }}>🔔</span>
         {notifs.length > 0 && <span style={{ position: "absolute", top: -4, right: -6, fontSize: 14, fontWeight: 700,
-          background: "#ef4444", color: "#fff", borderRadius: "50%", minWidth: 14, height: 14, display: "flex",
+          background: "var(--danger)", color: "#fff", borderRadius: "50%", minWidth: 14, height: 14, display: "flex",
           alignItems: "center", justifyContent: "center", padding: "0 2px" }}>
           {notifs.length > 99 ? "99+" : notifs.length}
         </span>}
@@ -485,7 +485,7 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 2 }}>
                   <span style={{ fontSize: 14, fontWeight: 700, color: "#fff", padding: "1px 5px", borderRadius: 3,
-                    background: typeColor[n.type] || "#6b7280", textTransform: "uppercase" }}>{n.type}</span>
+                    background: typeColor[n.type] || "var(--muted)", textTransform: "uppercase" }}>{n.type}</span>
                   <span style={{ fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis",
                     whiteSpace: "nowrap" }}>{n.title}</span>
                 </div>
@@ -533,7 +533,7 @@ function PwModal({ user, onClose }) {
       <button onClick={submit} style={{width:"100%",padding:10,borderRadius:6,border:"none",
         background:"var(--accent)",color:"#fff",fontWeight:600,cursor:"pointer"}}>변경</button>
       {msg && <div style={{marginTop:8,fontSize:14,textAlign:"center",
-        color:msg.includes("변경 완료")?"#22c55e":"#ef4444"}}>{msg}</div>}
+        color:msg.includes("변경 완료")?"var(--ok)":"var(--danger)"}}>{msg}</div>}
     </Modal>
   );
 }

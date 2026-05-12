@@ -11,7 +11,7 @@ import { sf, postJson } from "../lib/api";
 import PageGear from "../components/PageGear";
 import Modal from "../components/Modal";
 import { toast } from "../components/Toast";
-import { Button, EmptyState, PageHeader, Pill } from "../components/UXKit";
+import { Button, Card, Chip, EmptyState, PageHeader, Pill } from "../components/UXKit";
 
 const API = "/api/calendar";
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -160,7 +160,7 @@ export default function My_Calendar({ user }) {
     return m;
   }, [filteredEvents]);
 
-  const catColor = (name) => (cats.find(c => c.name === name)?.color) || "#6b7280";
+  const catColor = (name) => (cats.find(c => c.name === name)?.color) || "var(--muted)";
   const today = ymd(new Date());
 
   const openNew = (date) => {
@@ -259,7 +259,7 @@ export default function My_Calendar({ user }) {
       ? (isDecision ? "● " : isAction ? "📍 " : "") + (e.title || "")
       : (isEnd ? "↘ " : "…");
     // Styles
-    const fill = isAction ? color + "14" : (color + "22");
+    const fill = `color-mix(in srgb, ${color} ${isAction ? 8 : 14}%, transparent)`;
     const border = `1px solid ${color}`;
     const borderLeft = isAction ? `4px solid ${color}` : `3px solid ${color}`;
     return (
@@ -315,10 +315,14 @@ export default function My_Calendar({ user }) {
             </div>
           )}
         />
-        <div style={{ padding: "6px 20px", display: "flex", gap: 14, fontSize: 14, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>
-          <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#3b82f680", border: "1px solid #3b82f6", marginRight: 4, verticalAlign: "middle" }} /> 일반</span>
-          <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#3b82f680", border: "1px solid #3b82f6", marginRight: 4, verticalAlign: "middle" }} /> 결정사항 (N차 회의 결정사항, 회의일자)</span>
-          <span><span style={{ display: "inline-block", width: 10, height: 10, background: "#3b82f620", border: "1px solid #3b82f6", borderLeft: "3px solid #3b82f6", marginRight: 4, verticalAlign: "middle" }} /> 📍 액션아이템 (마감일 단독)</span>
+        <div style={{ padding: "10px 16px 0" }}>
+          <Card padding={10}>
+            <div style={{ display: "flex", gap: 14, fontSize: 14, color: "var(--text-secondary)", flexWrap: "wrap" }}>
+              <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--info-50)", border: "1px solid var(--info)", marginRight: 4, verticalAlign: "middle" }} /> 일반</span>
+              <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--ok-50)", border: "1px solid var(--ok)", marginRight: 4, verticalAlign: "middle" }} /> 결정사항</span>
+              <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--pink-50)", border: "1px solid var(--pink)", borderLeft: "3px solid var(--pink)", marginRight: 4, verticalAlign: "middle" }} /> 📍 액션아이템</span>
+            </div>
+          </Card>
         </div>
 
         <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
@@ -335,7 +339,7 @@ export default function My_Calendar({ user }) {
                   <span style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", minWidth: 90 }}>{e.date}{e.end_date && e.end_date !== e.date ? ` ~ ${e.end_date}` : ""}</span>
                   <span style={{ fontSize: 14, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.title}</span>
                   <Pill tone="neutral">{SOURCE_LABEL[e.source_type || "manual"]}</Pill>
-                  {e.category && <span style={{ fontSize: 14, padding: "2px 8px", borderRadius: 999, background: catColor(e.category) + "33", color: catColor(e.category) }}>{e.category}</span>}
+                  {e.category && <Chip mono={false} style={{ background: `color-mix(in srgb, ${catColor(e.category)} 14%, transparent)`, borderColor: catColor(e.category), color: catColor(e.category) }}>{e.category}</Chip>}
                   <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{e.author}</span>
                 </div>
               ))}
@@ -346,7 +350,7 @@ export default function My_Calendar({ user }) {
                 {WEEKDAYS.map((w, i) => (
                   <div key={w} style={{
                     padding: "6px 8px", fontSize: 14, fontWeight: 700, textAlign: "center",
-                    color: i === 0 ? "#ef4444" : i === 6 ? "#3b82f6" : "var(--text-secondary)",
+                    color: i === 0 ? "var(--danger)" : i === 6 ? "var(--info)" : "var(--ink)",
                     fontFamily: "monospace",
                   }}>{w}</div>
                 ))}
@@ -359,9 +363,9 @@ export default function My_Calendar({ user }) {
                   const occs = byDate[k] || [];
                   return (
                     <div key={i} onClick={() => openNew(k)} style={{
-                      background: isToday ? "var(--accent-glow, rgba(255,94,0,0.08))" : (inMonth ? "var(--bg-secondary)" : "var(--bg-primary)"),
-                      border: isToday ? "2px solid var(--accent)" : "1px solid var(--border)",
-                      boxShadow: isToday ? "0 0 0 3px rgba(255,94,0,0.18), 0 0 12px rgba(255,94,0,0.28)" : "none",
+                      background: isToday ? "var(--brand-50)" : (inMonth ? "var(--bg-secondary)" : "var(--bg-primary)"),
+                      border: isToday ? "2px solid var(--brand)" : "1px solid var(--border)",
+                      boxShadow: isToday ? "0 0 0 3px var(--brand-line)" : "none",
                       borderRadius: 6, padding: 6, cursor: "pointer", overflow: "visible",
                       display: "flex", flexDirection: "column", gap: 3,
                       opacity: inMonth ? 1 : 0.45,
@@ -370,15 +374,15 @@ export default function My_Calendar({ user }) {
                       <div style={{
                         display: "flex", alignItems: "center", gap: 6,
                         fontSize: isToday ? 13 : 11, fontWeight: isToday ? 800 : 500,
-                        color: isToday ? "var(--accent)" : (d.getDay() === 0 ? "#ef4444" : d.getDay() === 6 ? "#3b82f6" : "var(--text-primary)"),
+                        color: isToday ? "var(--brand)" : (d.getDay() === 0 ? "var(--danger)" : d.getDay() === 6 ? "var(--info)" : "var(--ink)"),
                         fontFamily: "monospace",
-                        textShadow: isToday ? "0 0 6px rgba(255,94,0,0.4)" : "none",
+                        textShadow: "none",
                         whiteSpace: "nowrap",
                       }}>
                         <span>{d.getDate()}</span>
                         {isToday && (
                           <span title="오늘" style={{
-                            background: "var(--accent)", color: "#fff",
+                            background: "var(--brand)", color: "#fff",
                             padding: "1px 6px", borderRadius: 999,
                             fontSize: 14, fontWeight: 700, letterSpacing: 0.3,
                             lineHeight: 1.4, fontFamily: "monospace",
@@ -427,7 +431,7 @@ export default function My_Calendar({ user }) {
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
             {conflict && (
-              <div style={{ padding: 10, borderRadius: 6, background: "rgba(239,68,68,0.1)", border: "1px solid #ef4444", fontSize: 14 }}>
+              <div style={{ padding: 10, borderRadius: 6, background: "var(--danger-50)", border: "1px solid var(--danger-line)", fontSize: 14 }}>
                 ⚠ 다른 사용자가 이 이벤트를 수정했습니다.
                 <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
                   <button onClick={acceptServer} style={smallBtnPrimary}>최신 데이터 불러오기</button>
@@ -436,7 +440,7 @@ export default function My_Calendar({ user }) {
               </div>
             )}
             {!selected._new && (selected.source_type || "manual") !== "manual" && (
-              <div style={{ padding: 8, borderRadius: 5, background: "rgba(59,130,246,0.08)", border: "1px dashed #3b82f6", fontSize: 14, color: "var(--text-secondary)" }}>
+              <div style={{ padding: 8, borderRadius: 5, background: "var(--info-50)", border: "1px dashed var(--info-line)", fontSize: 14, color: "var(--text-secondary)" }}>
                 🔗 회의에서 auto-sync 된 이벤트입니다. 수정/삭제는 회의관리의 해당 결정/액션에서.
                 {selected.meeting_ref?.meeting_title && <div style={{ marginTop: 4, fontWeight: 600, color: "var(--accent)" }}>🗓 {selected.meeting_ref.meeting_title}</div>}
               </div>
@@ -537,7 +541,7 @@ export default function My_Calendar({ user }) {
             {(selected._new || (selected.source_type || "manual") === "manual") &&
               <button onClick={save} style={{ flex: 1, padding: "8px 0", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontWeight: 600, cursor: "pointer" }}>{selected._new ? "등록" : "저장"}</button>}
             {!selected._new && (selected.source_type || "manual") === "manual" &&
-              <button onClick={remove} style={{ padding: "8px 14px", borderRadius: 5, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", cursor: "pointer" }}>삭제</button>}
+              <button onClick={remove} style={{ padding: "8px 14px", borderRadius: 5, border: "1px solid var(--danger)", background: "transparent", color: "var(--danger)", cursor: "pointer" }}>삭제</button>}
           </div>
         </div>
       )}
@@ -554,7 +558,7 @@ export default function My_Calendar({ user }) {
                   style={smallBtn} disabled={!isAdmin}>삭제</button>
               </div>
             ))}
-            {isAdmin && <button onClick={() => setDraftCats([...draftCats, { name: "신규", color: "#6b7280" }])} style={{ ...smallBtn, marginTop: 4 }}>+ 카테고리 추가</button>}
+            {isAdmin && <button onClick={() => setDraftCats([...draftCats, { name: "신규", color: "#E25822" }])} style={{ ...smallBtn, marginTop: 4 }}>+ 카테고리 추가</button>}
             <div style={{ display: "flex", gap: 6, marginTop: 14, justifyContent: "flex-end" }}>
               <button onClick={() => setEditCats(false)} style={smallBtn}>닫기</button>
               {isAdmin && <button onClick={saveCats} style={smallBtnPrimary}>저장</button>}

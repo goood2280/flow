@@ -23,6 +23,40 @@ import { useEffect, useRef, useState } from "react";
  *   - ESC 또는 외부 클릭 시 닫힘.
  *   - z-index 50 (모달·dropdown 아래).
  */
+function gearPosition(position) {
+  const validPositions = new Set(["bottom-left", "bottom-right", "top-right", "inline"]);
+  const normalized = validPositions.has(position) ? position : "bottom-left";
+  return normalized === "inline"
+    ? { position: "relative" }
+    : normalized === "top-right"
+      ? { position: "absolute", top: 14, right: 16 }
+      : normalized === "bottom-right"
+        ? { position: "fixed", bottom: 16, right: 16 }
+        : { position: "fixed", bottom: 16, left: 16 };
+}
+
+export function PageGearButton({ title = "설정", canEdit = true, position = "bottom-left", onClick, zIndex = 40, style = {} }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={canEdit ? title : title + " (읽기 전용)"}
+      style={{
+        ...gearPosition(position),
+        zIndex,
+        width: 40, height: 40, borderRadius: "50%",
+        border: "1px solid var(--border)",
+        background: "var(--bg-secondary)",
+        color: "var(--text-secondary)",
+        cursor: "pointer", fontSize: 18,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+        ...style,
+      }}
+    >⚙️</button>
+  );
+}
+
 export default function PageGear({ title = "설정", children, canEdit = true, position = "bottom-left" }) {
   const [open, setOpen] = useState(false);
   const drawerRef = useRef(null);
@@ -35,34 +69,9 @@ export default function PageGear({ title = "설정", children, canEdit = true, p
     return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("mousedown", onClick); };
   }, [open]);
 
-  const validPositions = new Set(["bottom-left", "bottom-right", "top-right", "inline"]);
-  const normalized = validPositions.has(position) ? position : "bottom-left";
-
-  const pos = normalized === "inline"
-    ? { position: "relative" }
-    : normalized === "top-right"
-      ? { position: "absolute", top: 14, right: 16 }
-      : normalized === "bottom-right"
-        ? { position: "fixed", bottom: 16, right: 16 }
-        : { position: "fixed", bottom: 16, left: 16 };
-
   return (
     <>
-      <button
-        onClick={() => setOpen(true)}
-        title={canEdit ? title : title + " (읽기 전용)"}
-        style={{
-          ...pos,
-          zIndex: 40,
-          width: 40, height: 40, borderRadius: "50%",
-          border: "1px solid var(--border)",
-          background: "var(--bg-secondary)",
-          color: "var(--text-secondary)",
-          cursor: "pointer", fontSize: 18,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
-        }}
-      >⚙️</button>
+      <PageGearButton title={title} canEdit={canEdit} position={position} onClick={() => setOpen(true)} />
       {open && (
         <>
           <div style={{

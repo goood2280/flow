@@ -14,7 +14,7 @@ from core import knowledge_vault as kv
 from core.auth import current_user, is_page_admin
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"], dependencies=[Depends(current_user)])
-ALLOWED_DOC_KINDS = {"product", "lot", "wafer", "knob", "issue", "meeting", "report", "decision", "agent_wiki", "ontology", "manual"}
+ALLOWED_DOC_KINDS = {"product", "lot", "wafer", "knob", "issue", "meeting", "report", "decision", "agent_wiki", "schema_doc", "ontology", "manual"}
 
 
 def _dump_model(obj: Any) -> dict[str, Any]:
@@ -144,6 +144,11 @@ def search(q: str = Query(..., min_length=1), scope: str = "all", limit: int = Q
 
 @router.get("/graph")
 def graph():
+    return kv.get_graph()
+
+
+@router.get("/wiki/graph")
+def wiki_graph():
     return kv.get_graph()
 
 

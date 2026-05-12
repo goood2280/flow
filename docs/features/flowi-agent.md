@@ -7,6 +7,7 @@ Flow-i Agent는 사용자의 자연어 요청을 Flow 오케스트레이터가 �
 예시 prompt와 사용자가 실행한 prompt를 `POST /api/llm/flowi/orchestrator/preview` dry-run 결과로 비교하고, 선택한 prompt는 `POST /api/llm/flowi/agent/chat` 실행 결과를 같이 보여준다.
 
 - prompt별 오케스트레이터 활성화 표: prompt, feature subagent, unit action, API/data target, missing field
+- single prompt dry-run은 `context.ask_llm_to_guess_missing=true`일 때 공개 가능한 `guessed.values` / `guessed.rationale`만 보여준다.
 - 입력 prompt와 user
 - 오케스트레이터가 판단한 intent, feature subagent, unit action
 - 실제 전달 prompt, 활성화된 feature/action, 호출 API를 한 줄 흐름으로 보여주는 activation map
@@ -41,6 +42,7 @@ Flow-i Agent는 사용자의 자연어 요청을 Flow 오케스트레이터가 �
 | LLM router | `backend/routers/llm.py` |
 | Agent router | `backend/routers/agent.py` |
 | Knowledge router | `backend/routers/knowledge.py` |
+| Agent tab components | `frontend/src/components/agent/` |
 | Feature prompts | `data/flow-data/flowi_agent_features/` |
 | User notes | `data/flow-data/flowi_users/` |
 | Entry docs | `data/flow-data/flowi_agent_entrypoints.md` |
@@ -128,6 +130,14 @@ Agent 탭은 다음 7개 카드를 한 페이지에서 위에서 아래로 순�
 | 05 result | 호출 결과 | `output`, `status`, `next_action`, `missing` |
 
 `status ∈ {ready, done, needs_input, awaiting_confirmation, blocked, error}`. `needs_input` / `blocked` / `error`인 경우 카드 위에 cause + missing slot을 강조 배너로 표시.
+
+## 용어 해석 (Wiki + Schema Registry)
+
+자연어 용어를 DB 컬럼으로 연결할 때 의미 설명과 구조 메타를 분리한다. Wiki는 `kind=schema_doc` 문서로 DB/테이블/컬럼의 의미, 도메인 설명, 사용 예, 주의사항을 markdown으로 저장하고 frontmatter에 `relation_id`와 `column_refs`(`RELATION.column_name`)를 둔다.
+
+구조 메타는 `data/flow-data/schema_relations.json`의 `column_catalog`에 둔다. 각 항목은 `relation_id`, 정규화된 `column`, `raw_names`, `dtype`, `canonical_alias`, `unit`, `fk`, `sample_values`, `wiki_doc_id`를 가지며, `wiki_doc_id`와 schema_doc의 `column_refs`로 양쪽을 연결한다.
+
+Agent는 `resolve_term_to_columns(term)`에서 `kv.list_docs(kind="schema_doc", q=term)`를 먼저 사용해 wiki hit를 찾고, frontmatter의 `relation_id`/`column_refs`를 `column_catalog`와 매칭해 후보를 만든다. wiki hit가 없을 때만 기존 `_RELATION_ALIASES` fallback을 사용한다. 이 단계는 slot extract/arguments 정형화에서 쓸 lookup이며, cross-DB join과 차트 렌더링 통합은 후속 범위다.
 
 ## Backend Trace Contract
 

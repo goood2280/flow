@@ -8,7 +8,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - parquet/CSV schema, row preview, column 후보 확인
 - read-only SQL/filter/download preview
 - 빠른 화면 표시: DB/Parquet preview와 SQL/컬럼 선택 결과는 브라우저에 최대 200행만 표시한다.
-- CSV 다운로드: 화면 200행 제한과 별개로 서버 허용 한도(최대 500,000행 / 100MB)까지 내려받는다.
+- CSV 다운로드: 화면 200행 제한과 별개로 톱니바퀴의 `csv_download_max_rows` 설정을 `max_rows`로 전달하되, 서버 허용 한도(최대 500,000행 / 100MB)를 넘지 않는다.
 - 연결된 LLM을 통한 자연어 SQL 초안 작성. LLM은 SQL 입력창만 채우며 자동 실행하지 않는다.
 - S3 동기화 상태와 로컬 cache 파일 접근성 확인
 - **LOT 진행 최신 캐시** (`data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`) — FileBrowser, SplitTable, Inform, Tracker, Flow-i current-step 질의가 공유하는 현재 lot/wafer 진행 기준.
@@ -37,9 +37,10 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - lot progress cache는 root lot id, wafer id별 최신 lot id를 parquet로 볼 수 있어야 한다.
 - cache 파일도 일반 파일처럼 목록 진입, schema 확인, preview가 가능해야 한다.
 - FileBrowser 캐시 탭에서 `lot_progress_latest_lot_by_root_wafer.parquet`만 수동 재생성할 수 있다.
-- LOT 진행 최신 캐시는 앱 기동 시 `lot_progress` router가 scheduler를 시작하고, `settings.json.lot_progress_refresh_minutes` 주기에 맞춰 stale 여부를 확인한다. 수동 갱신도 같은 builder를 호출한다.
+- LOT 진행 최신 캐시는 앱 기동 시 `lot_progress` router가 scheduler를 시작하고, `settings.json.lot_progress_refresh_minutes` 주기에 맞춰 stale 여부를 확인한다. 수동 갱신도 같은 builder를 호출한다. builder는 `FLOW_DATA_ROOT/locks/lot_progress_cache.lock` 파일락으로 공유 data root 안에서 단일 실행만 허용하고, `FLOW_DATA_ROOT/logs/lot_progress_cache_refresh.jsonl`에 성공/실패/lock skip 이력을 남긴다.
 - builder는 `1.RAWDATA_DB_FAB/<product folder>/**/*.parquet`를 스캔한다. 여기서 `product` 값은 parquet/DB 컬럼이 아니라 `1.RAWDATA_DB_FAB` 바로 아래의 제품 폴더명이다. 각 row에서 `root_lot_id`, `lot_id`, `wafer_id`, `step_id`, `tkin_time`, `tkout_time`을 읽고, 없는 보조 컬럼(`process_id`, `eqp_id`, `chamber_id`, `ppid`)은 빈 값으로 둔다. 이후 `(제품 폴더명, root_lot_id, wafer_id)`별로 `tkout_time` 또는 `tkin_time`이 가장 최신인 row 하나를 고른다. `step_id`는 가능한 경우 step matching 파일로 `function_step`에 매핑하고, 최종 결과는 `product`, `root_lot_id`, `wafer_id`, `lot_id`, `step_id`, `function_step`, `tkout_time`, `update_time` 컬럼을 가진 `data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`로 저장한다. FileBrowser에 노출되는 캐시는 이 parquet 하나만 canonical이다.
-- SplitTable 매칭 캐시, Tracker Analysis ET 후보 캐시, ET/INLINE/VM 요약 캐시는 FileBrowser 운영 캐시에서 제외한다.
+- SplitTable 매칭 캐시, Tracker Analysis ET 후보 캐시, ET/INLINE/VM 요약 캐시는 FileBrowser 운영 캐시에서 제외한다. legacy/non-canonical cache parquet/csv/json은 목록에서 숨기고, admin이 `/api/filebrowser/cache/cleanup-candidates`와 `/api/filebrowser/cache/cleanup`으로 명시 삭제한다.
+- `filebrowser_settings.json.auto_s3_upload_on_save=true`이면 base file save/text save/rollback과 LOT 진행 캐시 parquet 갱신 후 S3 artifact sync를 호출한다. 꺼져 있으면 저장은 그대로 수행하고 응답 `s3_sync.status`는 `disabled_by_filebrowser_setting`이다.
 - Flow-i의 현재 step 질문은 FAB 원본 재스캔보다 `lot_progress_latest_lot_by_root_wafer.parquet`를 우선 사용해 `step_id`와 `function_step`을 답한다.
 - 연결된 LLM을 통한 캐시 생성은 `lot_progress` 요청 분류에만 사용한다. 실제 파일 쓰기는 서버 handler가 수행하며 임의 경로 생성은 허용하지 않는다.
 - FileBrowser LLM prompt 기본값은 `backend/core/filebrowser_agent_prompts.default.json`에 두고, setup 설치 시 `FLOW_DATA_ROOT/filebrowser_agent_prompts.json`이 없을 때만 복사한다. 운영자가 수정한 runtime prompt는 덮어쓰지 않는다.
@@ -48,8 +49,8 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 
 - DB product / root parquet / base parquet 화면 preview는 최대 200행만 반환한다. UI는 pagination을 숨기고 첫 화면만 보여준다.
 - SQL 실행과 컬럼 선택도 표시 결과는 최대 200행이다. 사용자는 결과가 맞는지 빠르게 확인한 뒤 CSV 다운로드를 실행한다.
-- `/api/filebrowser/download-csv`는 preview row cap을 적용하지 않는다. 대신 기존 안전 한도인 `max_rows <= 500000`, `MAX_CSV_DOWNLOAD_BYTES=100MB`, wide source 컬럼 선택 요구를 따른다.
-- `POST /api/filebrowser/sql/llm/draft`는 자연어와 현재 컬럼 목록을 받아 read-only filter expression 초안만 반환한다. `SELECT/FROM/DDL/DML/세미콜론/없는 컬럼`은 거부한다.
+- `/api/filebrowser/download-csv`는 preview row cap을 적용하지 않는다. 대신 기존 안전 한도인 `max_rows <= 500000`, `MAX_CSV_DOWNLOAD_BYTES=100MB`, wide source 컬럼 선택 요구를 따른다. FileBrowser UI는 저장된 `filebrowser_settings.json.csv_download_max_rows`를 이 `max_rows`로 보낸다.
+- `POST /api/filebrowser/sql/llm/draft`는 자연어와 현재 컬럼 목록, dtype, sample values를 받아 read-only filter expression 초안만 반환한다. 응답은 `resolved_columns`, `unknown_column_terms`, `resolved_values`, `value_terms`, `warnings`를 포함해 prompt의 컬럼/값 해석 상태를 보여준다. `SELECT/FROM/DDL/DML/세미콜론/없는 컬럼`은 거부한다.
 - 날짜/시간형 컬럼(`tkout_time`, `update_time`, `measure_time` 등)의 자연어 조건은 월·일·시·분·초를 보존해 quoted ISO literal(`'2024-04-20'`, `'2024-04-20T14:05:00'`)로 만든다. LLM이 `tkout_time >= 2024`처럼 연도만 남기면 초안을 거부하고 deterministic fallback으로 다시 만든다.
 - `wafer_id`/`wf_id` 조건은 원본 저장 타입이 string이어도 숫자 의미로 실행한다. 예: `wafer_id = 3`, `wafer_id >= 3`, `wafer_id IN ('WF03', 10)`은 실행 전에 numeric cast filter로 정규화된다.
 - AI SQL 초안은 SQL 입력창에만 반영된다. 실제 조회와 다운로드는 사용자가 별도로 실행한다.
@@ -112,9 +113,9 @@ Agent 탭(Flow-i)이 FileBrowser를 driver로 호출할 때 사용하는 unit ac
 | `filebrowser.lot_progress.latest` | `root_lot_id`, `wafer_id?` | `step_id`, `function_step`, `lot_id`, source path | user | `root_lot_id` |
 | `filebrowser.csv.rules.read` | `csv_name` | `csv_rules` 정의 (filebrowser_settings.json) | user | `csv_name` |
 | `filebrowser.csv.rules.draft` | `file`, `prompt`, `columns`, `sample_rows`, `current_rule` | 저장하지 않은 `csv_rules` 초안 + warnings | manager | `file`, `prompt` |
-| `filebrowser.sql.llm.draft` | `natural_language`, `columns`, `current_sql?`, `scope?`, `root?`, `product?`, `file?` | 저장/실행하지 않은 SQL filter 초안 + warnings | user | `natural_language`, `columns` |
-| `filebrowser.cache.lot_progress.refresh` | `target=lot_progress` | LOT 진행 최신 캐시 refresh 결과 | admin | `target` |
-| `filebrowser.cache.lot_progress.status` | `target=lot_progress` | 마지막 갱신 시각, 제품 수, row 수, `interval_minutes`/`next_refresh_at` | user | `target` |
+| `filebrowser.sql.llm.draft` | `natural_language`, `columns`, `dtypes?`, `sample_rows?`, `current_sql?`, `scope?`, `root?`, `product?`, `file?` | 저장/실행하지 않은 SQL filter 초안 + 컬럼/값 후보 + warnings | user | `natural_language`, `columns` |
+| `filebrowser.cache.lot_progress.refresh` | `target=lot_progress` | LOT 진행 최신 캐시 refresh 결과 + `s3_sync` | admin | `target` |
+| `filebrowser.cache.lot_progress.status` | `target=lot_progress` | 마지막 성공/시도 시각, freshness, lock state, 제품 수, row 수, `interval_minutes`/`next_refresh_at` | user | `target` |
 | `filebrowser.cache.llm.refresh` | `prompt`, `product?`, `source_root?`, `force?` | LLM target draft + LOT 진행 최신 캐시 refresh 결과 | admin | `prompt` |
 
 자연어 예시 → action 매핑:

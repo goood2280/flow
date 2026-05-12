@@ -66,6 +66,7 @@ DL_LOG = PATHS.download_log
 MAX_CSV_DOWNLOAD_BYTES = 100_000_000
 DEFAULT_CSV_DOWNLOAD_MAX_ROWS = 100_000
 MAX_CSV_DOWNLOAD_MAX_ROWS = 500_000
+DEFAULT_FILEBROWSER_CSV_DOWNLOAD_ROWS = MAX_CSV_DOWNLOAD_MAX_ROWS
 MAX_CSV_DOWNLOAD_AUTO_COLUMNS = 200
 BASE_FILE_EDIT_MAX_BYTES = 25_000_000
 BASE_FILE_EDIT_MAX_ROWS = 200_000
@@ -99,9 +100,11 @@ DEFAULT_CSV_FULL_READ_MAX_BYTES = 10 * 1024 * 1024
 MAX_CSV_FULL_READ_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_FILEBROWSER_SETTINGS = {
     "csv_full_read_max_bytes": DEFAULT_CSV_FULL_READ_MAX_BYTES,
+    "csv_download_max_rows": DEFAULT_FILEBROWSER_CSV_DOWNLOAD_ROWS,
     "csv_rules": {},
     "hidden_db_dirs": ["cache", "reformatter"],
     "versioned_single_file_dirs": ["reformatter"],
+    "auto_s3_upload_on_save": False,
 }
 
 _DATE_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})[-_]?(\d{2})[-_]?(\d{2})(?!\d)")
@@ -418,14 +421,19 @@ def _single_file_folder_entries(
     folder = _single_file_folder_path(root, folder_key)
     if not folder.is_dir():
         return []
-    if folder_key == _SINGLE_FILE_STEP_CACHE_DIR:
-        _cleanup_legacy_single_file_cache(root)
     out: list[dict] = []
     try:
-        candidates = sorted(
-            (fp for fp in folder.rglob("*") if fp.is_file() and fp.suffix.lower() in _single_file_folder_extensions(folder_key)),
-            key=lambda p: str(p.relative_to(root)).lower(),
-        )
+        raw_candidates = [
+            fp for fp in folder.rglob("*")
+            if fp.is_file() and fp.suffix.lower() in _single_file_folder_extensions(folder_key)
+        ]
+        if folder_key == _SINGLE_FILE_STEP_CACHE_DIR:
+            folder_resolved = folder.resolve()
+            raw_candidates = [
+                fp for fp in raw_candidates
+                if fp.name == _CANONICAL_LOT_PROGRESS_CACHE_FILE and fp.parent.resolve() == folder_resolved
+            ]
+        candidates = sorted(raw_candidates, key=lambda p: str(p.relative_to(root)).lower())
     except Exception:
         candidates = []
     for fp in candidates[:_SINGLE_FILE_FOLDER_MAX_FILES]:
@@ -529,6 +537,105 @@ def _cleanup_legacy_single_file_cache(root: Path) -> None:
             logger.warning("cache cleanup skipped (%s): %s", fp, e)
 
 
+def _cache_cleanup_roots() -> list[Path]:
+    roots: list[Path] = []
+    for raw in (PATHS.base_root, PATHS.db_root):
+        try:
+            root = Path(raw)
+        except Exception:
+            continue
+        try:
+            key = root.resolve()
+        except Exception:
+            key = root
+        if any((existing.resolve() if existing.exists() else existing) == key for existing in roots):
+            continue
+        roots.append(root)
+    return roots
+
+
+def _cache_cleanup_allowed_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    for root in _cache_cleanup_roots():
+        cache_dir = _single_file_cache_dir(root)
+        if cache_dir.is_dir():
+            dirs.append(cache_dir)
+    return dirs
+
+
+def _cache_cleanup_candidate_file(path: Path, cache_dir: Path) -> bool:
+    if not path.is_file():
+        return False
+    if path.name == _CANONICAL_LOT_PROGRESS_CACHE_FILE and path.parent.resolve() == cache_dir.resolve():
+        return False
+    suffix = path.suffix.lower()
+    if suffix in {".parquet", ".csv", ".json", ".jsonl", ".txt", ".meta"}:
+        return True
+    if path.name.endswith(".meta.json"):
+        return True
+    return False
+
+
+def _cache_cleanup_candidates() -> list[dict]:
+    out: list[dict] = []
+    for root in _cache_cleanup_roots():
+        cache_dir = _single_file_cache_dir(root)
+        if not cache_dir.is_dir():
+            continue
+        try:
+            files = sorted(cache_dir.rglob("*"), key=lambda p: str(p.relative_to(root)).lower())
+        except Exception:
+            files = []
+        for fp in files:
+            try:
+                if not _cache_cleanup_candidate_file(fp, cache_dir):
+                    continue
+                stat = fp.stat()
+                rel = "/".join(fp.relative_to(root).parts)
+                out.append({
+                    "path": str(fp),
+                    "relpath": rel,
+                    "root": str(root),
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                    "reason": "legacy_or_noncanonical_cache",
+                })
+            except Exception:
+                continue
+    out.sort(key=lambda row: str(row.get("relpath") or row.get("path") or "").lower())
+    return out
+
+
+def _resolve_cache_cleanup_path(raw_path: str) -> Path:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        raise HTTPException(400, "cleanup path is required")
+    cand = Path(raw)
+    allowed_dirs = _cache_cleanup_allowed_dirs()
+    if not allowed_dirs:
+        raise HTTPException(400, "No cache directory is available")
+    candidates = [cand] if cand.is_absolute() else []
+    if not cand.is_absolute():
+        for root in _cache_cleanup_roots():
+            candidates.append(root / cand)
+            candidates.append(_single_file_cache_dir(root) / cand)
+    for item in candidates:
+        try:
+            resolved = item.resolve()
+        except Exception:
+            continue
+        for cache_dir in allowed_dirs:
+            try:
+                cache_resolved = cache_dir.resolve()
+                resolved.relative_to(cache_resolved)
+            except Exception:
+                continue
+            if not _cache_cleanup_candidate_file(resolved, cache_resolved):
+                raise HTTPException(400, f"Cleanup target is not allowed: {raw}")
+            return resolved
+    raise HTTPException(400, f"Cleanup target must be inside an allowed cache directory: {raw}")
+
+
 def _single_file_cache_entries(root: Path, source_root: str) -> list[dict]:
     return _single_file_folder_entries(root, source_root, _SINGLE_FILE_STEP_CACHE_DIR)
 
@@ -552,12 +659,11 @@ def _single_file_step_cache_candidate(path: Path) -> bool:
 
 
 def _refresh_single_file_step_caches(root: Path) -> None:
-    _cleanup_legacy_single_file_cache(root)
+    return None
 
 
 def _ensure_single_file_cache_dirs(base_root: Path, db_root: Path) -> None:
-    for root in (base_root, db_root):
-        _cleanup_legacy_single_file_cache(root)
+    return None
 
 
 def cleanup_legacy_cache_roots() -> dict:
@@ -610,7 +716,7 @@ def _build_single_file_step_cache(fp: Path, force: bool = False) -> dict:
     lot_col = _single_file_col(columns, ("lot", "lot_id", "lotid", "lot_no", "root_lot_id", "fab_lot_id"))
     step_col = _single_file_col(columns, ("step_id", "step", "function_step", "func_step"))
     time_col = _single_file_col(columns, _LATEST_COLUMN_PRIORITY)
-    if not (product_col and lot_col and step_col):
+    if not (lot_col and step_col):
         state = {
             "version": _SINGLE_FILE_STEP_CACHE_VERSION,
             "ready": False,
@@ -626,7 +732,9 @@ def _build_single_file_step_cache(fp: Path, force: bool = False) -> dict:
     try:
         cache_updated_at = datetime.datetime.now().isoformat(timespec="seconds")
         select_exprs = [
-            pl.col(product_col).cast(pl.Utf8, strict=False).str.strip_chars().alias("product"),
+            pl.col(product_col).cast(pl.Utf8, strict=False).fill_null("").str.strip_chars().alias("product")
+            if product_col
+            else pl.lit(_single_file_product_label(fp)).alias("product"),
             pl.col(lot_col).cast(pl.Utf8, strict=False).str.strip_chars().alias("lot_id"),
             pl.col(step_col).cast(pl.Utf8, strict=False).str.strip_chars().alias("step_id"),
         ]
@@ -687,6 +795,9 @@ def _single_file_product_label(fp: Path) -> str:
     stem = str(fp.stem or "").strip()
     if stem.upper().startswith("ML_TABLE_"):
         return stem[len("ML_TABLE_"):]
+    parent = str(fp.parent.name or "").strip()
+    if parent and parent != _SINGLE_FILE_STEP_CACHE_DIR:
+        return parent
     return stem
 
 
@@ -1312,7 +1423,13 @@ def _normalize_filebrowser_settings(raw) -> dict:
     except Exception:
         raise HTTPException(400, "csv_full_read_max_bytes must be an integer")
     data["csv_full_read_max_bytes"] = max(0, min(MAX_CSV_FULL_READ_MAX_BYTES, max_bytes))
+    try:
+        max_rows = int(raw.get("csv_download_max_rows", data["csv_download_max_rows"]))
+    except Exception:
+        raise HTTPException(400, "csv_download_max_rows must be an integer")
+    data["csv_download_max_rows"] = max(1, min(MAX_CSV_DOWNLOAD_MAX_ROWS, max_rows))
     data["csv_rules"] = _normalize_csv_rules(raw.get("csv_rules") or {})
+    data["auto_s3_upload_on_save"] = bool(raw.get("auto_s3_upload_on_save", data.get("auto_s3_upload_on_save", False)))
     hidden = _clean_string_list(raw.get("hidden_db_dirs"), lower=True)
     data["hidden_db_dirs"] = hidden if hidden else list(DEFAULT_FILEBROWSER_SETTINGS["hidden_db_dirs"])
     raw_versioned = raw.get("versioned_single_file_dirs", data["versioned_single_file_dirs"])
@@ -1345,6 +1462,25 @@ def _save_filebrowser_settings(settings: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(_normalize_filebrowser_settings(settings), ensure_ascii=False, indent=2)
     _write_text_atomic(path, payload + "\n")
+
+
+def _filebrowser_auto_s3_upload_enabled(settings: dict | None = None) -> bool:
+    settings = settings or _load_filebrowser_settings()
+    return bool(settings.get("auto_s3_upload_on_save"))
+
+
+def _filebrowser_s3_sync_for_saved_path(path: Path) -> dict:
+    if not _filebrowser_auto_s3_upload_enabled():
+        return {
+            "ok": True,
+            "status": "disabled_by_filebrowser_setting",
+            "path": str(path),
+        }
+    try:
+        return _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, path)
+    except Exception as exc:
+        logger.warning("filebrowser auto S3 sync failed path=%s: %s", path, exc)
+        return {"ok": False, "status": "error", "path": str(path), "error": str(exc)}
 
 
 def _hidden_db_dir_names(settings: dict | None = None) -> set[str]:
@@ -2970,6 +3106,30 @@ def _snapshot_base_file_version(
     return meta
 
 
+def _attach_post_save_change_summary(file: str, version_meta: dict | None, after_path: Path) -> dict | None:
+    if not isinstance(version_meta, dict):
+        return version_meta
+    vdir = _version_dir(file)
+    content_fp = vdir / str(version_meta.get("content_file") or "")
+    if not content_fp.exists():
+        return version_meta
+    try:
+        change_summary = _snapshot_change_summary(after_path, content_fp)
+        diff_table = _diff_table_between(after_path, content_fp)
+        version_meta = {
+            **version_meta,
+            "change_summary": change_summary,
+            "save_diff_table": diff_table,
+            "post_save_profile": _file_profile(after_path),
+        }
+        meta_fp = vdir / f"{version_meta.get('version')}.meta.json"
+        if meta_fp.is_file():
+            _write_text_atomic(meta_fp, json.dumps(version_meta, ensure_ascii=False, indent=2))
+    except Exception as exc:
+        logger.warning("base-file post-save diff skipped file=%s: %s", after_path, exc)
+    return version_meta
+
+
 def _list_base_file_versions(file: str) -> list[dict]:
     vdir = _version_dir(file)
     if not vdir.is_dir():
@@ -3448,6 +3608,7 @@ class CacheMatchRefreshReq(BaseModel):
 class CacheMatchSettingsReq(BaseModel):
     target: str = "lot_progress"
     interval_minutes: int = 30
+    auto_s3_upload_on_save: bool | None = None
 
 
 class CacheLlmRefreshReq(BaseModel):
@@ -3455,6 +3616,10 @@ class CacheLlmRefreshReq(BaseModel):
     product: str = ""
     source_root: str = ""
     force: bool = True
+
+
+class CacheCleanupReq(BaseModel):
+    paths: list[str] = []
 
 
 def _cache_match_target(raw: str) -> str:
@@ -3553,6 +3718,16 @@ def _lot_progress_cache_status() -> dict:
                 "products": products,
                 "updated_at": updated_at or _cache_mtime_iso(parquet_fp),
                 "error": f"{type(e).__name__}: {e}",
+                "last_success_at": core_status.get("last_success_at") or "",
+                "last_attempt_at": core_status.get("last_attempt_at") or "",
+                "freshness_state": core_status.get("freshness_state") or "error",
+                "refresh_log_path": core_status.get("refresh_log_path") or "",
+                "lock_state": core_status.get("lock_state") or {},
+                "running": bool(core_status.get("running")),
+                "skipped_by_lock": bool(core_status.get("skipped_by_lock")),
+                "files_scanned": int(core_status.get("files_scanned") or 0),
+                "rows_seen": int(core_status.get("rows_seen") or 0),
+                "auto_s3_upload_on_save": _filebrowser_auto_s3_upload_enabled(),
             }
     if not updated_at:
         updated_at = _cache_mtime_iso(parquet_fp) or _cache_mtime_iso(json_fp)
@@ -3588,6 +3763,16 @@ def _lot_progress_cache_status() -> dict:
         "products": products,
         "updated_at": updated_at,
         "latest_updated_at": updated_at,
+        "last_success_at": core_status.get("last_success_at") or "",
+        "last_attempt_at": core_status.get("last_attempt_at") or "",
+        "freshness_state": core_status.get("freshness_state") or "never",
+        "refresh_log_path": core_status.get("refresh_log_path") or "",
+        "lock_state": core_status.get("lock_state") or {},
+        "running": bool(core_status.get("running")),
+        "skipped_by_lock": bool(core_status.get("skipped_by_lock")),
+        "files_scanned": int(core_status.get("files_scanned") or 0),
+        "rows_seen": int(core_status.get("rows_seen") or 0),
+        "auto_s3_upload_on_save": _filebrowser_auto_s3_upload_enabled(),
     }
 
 
@@ -3600,6 +3785,7 @@ def _refresh_filebrowser_cache_target(target: str, *, product: str = "", source_
     state = _lot_progress_cache.refresh_lot_progress_cache(force=bool(force))
     export = _lot_progress_cache.export_lot_progress_parquet(state)
     row_count = int((state or {}).get("count") or export.get("rows") or 0)
+    s3_sync = _filebrowser_s3_sync_for_saved_path(_lot_progress_cache.filebrowser_cache_parquet_file())
     return {
         "ok": True,
         "target": "lot_progress",
@@ -3616,6 +3802,14 @@ def _refresh_filebrowser_cache_target(target: str, *, product: str = "", source_
         "files_scanned": int((state or {}).get("files_scanned") or 0),
         "rows_seen": int((state or {}).get("rows_seen") or 0),
         "errors": list((state or {}).get("errors") or [])[:20],
+        "last_success_at": (state or {}).get("last_success_at") or (state or {}).get("generated_at") or "",
+        "last_attempt_at": (state or {}).get("last_attempt_at") or "",
+        "freshness_state": (state or {}).get("freshness_state") or "ok",
+        "refresh_log_path": (state or {}).get("refresh_log_path") or "",
+        "lock_state": (state or {}).get("lock_state") or {},
+        "running": bool((state or {}).get("running")),
+        "skipped_by_lock": bool((state or {}).get("skipped_by_lock")),
+        "s3_sync": s3_sync,
     }
 
 
@@ -3717,11 +3911,15 @@ def cache_match_settings(req: CacheMatchSettingsReq, request: Request):
         current = {}
     current["lot_progress_refresh_minutes"] = minutes
     save_json(settings_path, current, indent=2)
+    if req.auto_s3_upload_on_save is not None:
+        fb_settings = _load_filebrowser_settings()
+        fb_settings["auto_s3_upload_on_save"] = bool(req.auto_s3_upload_on_save)
+        _save_filebrowser_settings(fb_settings)
     jsonl_append(PATHS.activity_log, {
         "username": me.get("username") or "",
         "action": "filebrowser:cache-settings:save",
         "tab": "filebrowser",
-        "detail": f"lot_progress_refresh_minutes={minutes}",
+        "detail": f"lot_progress_refresh_minutes={minutes} auto_s3_upload_on_save={_filebrowser_auto_s3_upload_enabled()}",
     })
     return cache_match_status(request=request, target="lot_progress")
 
@@ -3737,6 +3935,52 @@ def cache_match_refresh(req: CacheMatchRefreshReq, request: Request):
         force=bool(req.force),
         reason="filebrowser",
     )
+
+
+@router.get("/cache/cleanup-candidates")
+def cache_cleanup_candidates(request: Request):
+    _require_filebrowser_admin(request)
+    return {
+        "ok": True,
+        "canonical": _CANONICAL_LOT_PROGRESS_CACHE_FILE,
+        "candidates": _cache_cleanup_candidates(),
+    }
+
+
+@router.post("/cache/cleanup")
+def cache_cleanup(req: CacheCleanupReq, request: Request):
+    me = _require_filebrowser_admin(request)
+    paths = [str(p or "").strip() for p in (req.paths or []) if str(p or "").strip()]
+    if not paths:
+        raise HTTPException(400, "paths are required")
+    deleted: list[dict] = []
+    errors: list[dict] = []
+    for raw in paths:
+        try:
+            target = _resolve_cache_cleanup_path(raw)
+            size = target.stat().st_size if target.is_file() else 0
+            target.unlink()
+            deleted.append({"path": str(target), "size": size})
+        except HTTPException:
+            raise
+        except Exception as exc:
+            errors.append({"path": raw, "error": str(exc)})
+    try:
+        jsonl_append(PATHS.activity_log, {
+            "username": me.get("username") or "",
+            "action": "filebrowser:cache-cleanup",
+            "tab": "filebrowser",
+            "detail": f"deleted={len(deleted)} errors={len(errors)}",
+        })
+    except Exception:
+        pass
+    return {
+        "ok": not errors,
+        "deleted": deleted,
+        "errors": errors,
+        "canonical": _CANONICAL_LOT_PROGRESS_CACHE_FILE,
+        "candidates": _cache_cleanup_candidates(),
+    }
 
 
 @router.post("/cache/llm/refresh")
@@ -4784,6 +5028,56 @@ def _all_ai_sql_alias_tokens() -> set[str]:
     return out
 
 
+def _ai_sql_column_term(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+
+def _resolve_ai_sql_prompt_columns(prompt: str, columns: list[str]) -> tuple[list[str], list[str]]:
+    if not columns:
+        return [], []
+    lookup = _column_lookup(columns)
+    alias_lookup: dict[str, str] = {}
+    for col in columns:
+        canonical = lookup.get(str(col).casefold(), str(col))
+        aliases = {str(col), str(col).replace("_", " ")}
+        aliases.update(_AI_SQL_COLUMN_ALIASES.get(str(col).casefold(), ()))
+        for alias in aliases:
+            alias_text = str(alias or "").casefold()
+            if not alias_text:
+                continue
+            alias_lookup[alias_text] = canonical
+            alias_norm = _ai_sql_column_term(alias_text)
+            if alias_norm:
+                alias_lookup[alias_norm] = canonical
+            for part in re.split(r"[^a-z0-9_]+", alias_text):
+                if len(part) >= 3:
+                    alias_lookup.setdefault(part, canonical)
+    col_norms = [(_ai_sql_column_term(col), lookup.get(str(col).casefold(), str(col))) for col in columns]
+    resolved: list[str] = []
+    unknown: list[str] = []
+    for token in _prompt_identifier_tokens(prompt):
+        key = token.casefold()
+        if key in _AI_SQL_IGNORE_TOKENS:
+            continue
+        norm = _ai_sql_column_term(token)
+        hit = lookup.get(key) or alias_lookup.get(key) or alias_lookup.get(norm)
+        if not hit and len(norm) >= 3:
+            matches = [col for col_norm, col in col_norms if col_norm and (norm in col_norm or col_norm in norm)]
+            unique = []
+            for col in matches:
+                if col not in unique:
+                    unique.append(col)
+            if len(unique) == 1:
+                hit = unique[0]
+        if hit:
+            if hit not in resolved:
+                resolved.append(hit)
+            continue
+        if "_" in token and token not in unknown:
+            unknown.append(token)
+    return resolved, unknown
+
+
 def _alias_span(prompt: str, alias: str) -> tuple[int, int] | None:
     alias = str(alias or "")
     if not alias:
@@ -5034,7 +5328,45 @@ def _fallback_ai_sql(prompt: str, columns: list[str]) -> str:
     return joiner.join(unique)
 
 
+def _ai_sql_context_columns(columns: list[str], dtypes: dict | None, sample_rows: list[dict] | None) -> list[dict]:
+    dtype_map = {str(k): str(v) for k, v in (dtypes or {}).items()} if isinstance(dtypes, dict) else {}
+    samples: dict[str, list[str]] = {c: [] for c in columns}
+    for row in (sample_rows or [])[:20]:
+        if not isinstance(row, dict):
+            continue
+        for col in columns:
+            if col not in row:
+                continue
+            text = _cache_safe_text(row.get(col), 80)
+            if text and text not in samples[col]:
+                samples[col].append(text)
+    return [
+        {"name": col, "dtype": dtype_map.get(col, ""), "sample_values": samples.get(col, [])[:5]}
+        for col in columns[:200]
+    ]
+
+
+def _plan_value_terms(plan: dict, prompt: str, columns: list[str]) -> tuple[list[str], list[str]]:
+    value_terms = _fallback_values(prompt, columns)
+    for value in _extract_ai_sql_datetime_values(prompt):
+        if value not in value_terms:
+            value_terms.append(value)
+    resolved: list[str] = []
+    if isinstance(plan, dict):
+        raw = plan.get("resolved_values") or plan.get("value_terms") or plan.get("values") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        if isinstance(raw, list):
+            for item in raw:
+                text = _cache_safe_text(item, 120)
+                if text and text not in resolved:
+                    resolved.append(text)
+    return resolved[:20], value_terms[:20]
+
+
 def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
+                              dtypes: dict | None = None,
+                              sample_rows: list[dict] | None = None,
                               current_sql: str = "", scope: str = "",
                               root: str = "", product: str = "",
                               file: str = "") -> dict:
@@ -5049,7 +5381,11 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         "product": _cache_safe_text(product, 160),
         "file": _cache_safe_text(file, 240),
     }
+    column_context = _ai_sql_context_columns(columns, dtypes, sample_rows)
     warnings: list[str] = []
+    resolved_columns, unknown_column_terms = _resolve_ai_sql_prompt_columns(prompt, columns)
+    if unknown_column_terms:
+        warnings.append("Unknown column-like terms: " + ", ".join(unknown_column_terms[:8]))
     llm_info = {"available": False, "used": False, "error": ""}
     raw_text = ""
     plan: dict = {}
@@ -5069,8 +5405,15 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "natural_language": prompt,
                 "current_sql": current_sql,
                 "columns": columns[:200],
+                "schema": column_context,
+                "sample_rows": _safe_sample_rows(sample_rows or [], max_rows=5, max_cols=40, max_value_len=120),
                 "context": context,
-                "response_schema": {"sql": "column = 'value' AND other_col > 0", "notes": "optional short note"},
+                "response_schema": {
+                    "sql": "column = 'value' AND other_col > 0",
+                    "resolved_columns": ["column"],
+                    "resolved_values": ["value"],
+                    "notes": "optional short note",
+                },
             }, ensure_ascii=False)
             out = llm_adapter.complete(ask, system=system, timeout=20)
             raw_text = str(out.get("text") or "")
@@ -5086,6 +5429,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
     if llm_info.get("error"):
         warnings.append(f"LLM failed: {llm_info['error']}")
     raw_sql = _extract_llm_sql_text(raw_text, plan)
+    resolved_values, value_terms = _plan_value_terms(plan, prompt, columns)
     try:
         sql, validate_warnings = _validate_ai_sql_filter(raw_sql, columns)
         warnings.extend(validate_warnings)
@@ -5101,6 +5445,10 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                     "sql": sql,
                     "warnings": [*warnings, f"LLM draft was not usable: {exc}", "deterministic fallback used"],
                     "columns": columns,
+                    "resolved_columns": resolved_columns,
+                    "unknown_column_terms": unknown_column_terms,
+                    "resolved_values": resolved_values,
+                    "value_terms": value_terms,
                     "llm": llm_info,
                     "fallback": True,
                 }
@@ -5113,6 +5461,10 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
             "sql": "",
             "warnings": [*warnings, str(exc)],
             "columns": columns,
+            "resolved_columns": resolved_columns,
+            "unknown_column_terms": unknown_column_terms,
+            "resolved_values": resolved_values,
+            "value_terms": value_terms,
             "llm": llm_info,
         }
     return {
@@ -5122,6 +5474,10 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         "sql": sql,
         "warnings": warnings,
         "columns": columns,
+        "resolved_columns": resolved_columns,
+        "unknown_column_terms": unknown_column_terms,
+        "resolved_values": resolved_values,
+        "value_terms": value_terms,
         "llm": llm_info,
         "fallback": False,
     }
@@ -5908,9 +6264,11 @@ class BaseFileSaveReq(BaseModel):
 
 class FileBrowserSettingsReq(BaseModel):
     csv_full_read_max_bytes: int = DEFAULT_CSV_FULL_READ_MAX_BYTES
+    csv_download_max_rows: int = DEFAULT_FILEBROWSER_CSV_DOWNLOAD_ROWS
     csv_rules: dict = {}
     hidden_db_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["hidden_db_dirs"]
     versioned_single_file_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["versioned_single_file_dirs"]
+    auto_s3_upload_on_save: bool = False
 
 
 class FileBrowserSettingsLlmDraftReq(BaseModel):
@@ -5924,6 +6282,8 @@ class FileBrowserSettingsLlmDraftReq(BaseModel):
 class FileBrowserSqlLlmDraftReq(BaseModel):
     natural_language: str = ""
     columns: list[str] = []
+    dtypes: dict[str, str] = {}
+    sample_rows: list[dict] = []
     current_sql: str = ""
     scope: str = ""
     root: str = ""
@@ -5981,6 +6341,7 @@ def filebrowser_settings(request: Request):
         **settings,
         "can_manage": _can_manage_filebrowser(me),
         "max_csv_full_read_max_bytes": MAX_CSV_FULL_READ_MAX_BYTES,
+        "max_csv_download_max_rows": MAX_CSV_DOWNLOAD_MAX_ROWS,
     }
 
 
@@ -6091,6 +6452,8 @@ def filebrowser_sql_llm_draft(req: FileBrowserSqlLlmDraftReq, request: Request):
     return _draft_filebrowser_ai_sql(
         natural_language=req.natural_language,
         columns=req.columns or [],
+        dtypes=req.dtypes or {},
+        sample_rows=req.sample_rows or [],
         current_sql=req.current_sql,
         scope=req.scope,
         root=req.root,
@@ -6109,7 +6472,7 @@ def save_filebrowser_settings(req: FileBrowserSettingsReq, request: Request):
         "username": me.get("username") or "",
         "action": "filebrowser:settings:save",
         "tab": "filebrowser",
-        "detail": f"csv_rules={len(settings.get('csv_rules') or {})} hidden_db_dirs={len(settings.get('hidden_db_dirs') or [])} versioned_dirs={len(settings.get('versioned_single_file_dirs') or [])} csv_full_read_max_bytes={settings.get('csv_full_read_max_bytes')}",
+        "detail": f"csv_rules={len(settings.get('csv_rules') or {})} hidden_db_dirs={len(settings.get('hidden_db_dirs') or [])} versioned_dirs={len(settings.get('versioned_single_file_dirs') or [])} csv_full_read_max_bytes={settings.get('csv_full_read_max_bytes')} csv_download_max_rows={settings.get('csv_download_max_rows')}",
     })
     return {**settings, "ok": True, "can_manage": True}
 
@@ -6254,13 +6617,15 @@ def _save_base_file(req: BaseFileSaveReq, request: Request):
     except Exception as e:
         raise HTTPException(400, f"Save failed: {e}")
 
+    version_meta = _attach_post_save_change_summary(req.file, version_meta, fp)
+
     try:
         cache_result = None
         if _matching_cache.is_matching_file(fp):
             cache_result = _matching_cache.refresh_matching_csv(fp)
             if not cache_result.get("ok", False):
                 logger.warning("filebrowser base-file/save cache refresh failed: %s", cache_result)
-        sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, fp)
+        sync_result = _filebrowser_s3_sync_for_saved_path(fp)
         jsonl_append(PATHS.activity_log, {
             "username": me.get("username") or "",
             "action": "filebrowser:base-file:save",
@@ -6333,7 +6698,8 @@ def save_base_text_file(req: BaseTextFileSaveReq, request: Request):
         raise
     except Exception as e:
         raise HTTPException(400, f"Text save failed: {e}")
-    sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, target)
+    version_meta = _attach_post_save_change_summary(req.file, version_meta, target)
+    sync_result = _filebrowser_s3_sync_for_saved_path(target)
     jsonl_append(PATHS.activity_log, {
         "username": req.username or me.get("username") or "",
         "action": "filebrowser:base-file:text-save",
@@ -6359,12 +6725,24 @@ def base_file_versions(request: Request, file: str = Query(...)):
     versioned = _base_file_versioned(file, fp)
     versions = _list_base_file_versions(file) if versioned else []
     versions.sort(key=lambda v: str(v.get("created_at") or ""), reverse=True)
+    profile = _file_profile(fp)
+    try:
+        modified_at = datetime.datetime.fromtimestamp(fp.stat().st_mtime).isoformat(timespec="seconds")
+    except Exception:
+        modified_at = ""
     return {
         "ok": True,
         "file": file,
         "versioned": versioned,
         "cap": BASE_VERSION_CAP,
         "versions": versions[:BASE_VERSION_CAP],
+        "current_profile": {
+            "rows": profile.get("rows"),
+            "columns": profile.get("column_count"),
+            "size": profile.get("size"),
+            "modified_at": modified_at,
+            "checksum": profile.get("checksum") or "",
+        },
     }
 
 
@@ -6382,7 +6760,7 @@ def base_file_version_content(request: Request, file: str = Query(...), version:
     out["current_profile"] = _file_profile(target)
     out["version_profile"] = _file_profile(content_fp)
     out["diff"] = _profile_diff(out["current_profile"], out["version_profile"])
-    out["diff_table"] = _diff_table_between(content_fp, previous_fp)
+    out["diff_table"] = meta.get("save_diff_table") or _diff_table_between(content_fp, previous_fp)
     if ext in {".csv", ".txt", ".json", ".yaml", ".yml", ".md"}:
         raw = content_fp.read_text(encoding="utf-8", errors="replace")
         out["text"] = raw[:100_000]
@@ -6434,7 +6812,7 @@ def rollback_base_file(req: BaseFileRollbackReq, request: Request):
         action="rollback",
         note=req.note or f"Rolled back to {clean_version}",
     )
-    sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, target)
+    sync_result = _filebrowser_s3_sync_for_saved_path(target)
     jsonl_append(PATHS.activity_log, {
         "username": req.username or me.get("username") or "",
         "action": "filebrowser:base-file:rollback",

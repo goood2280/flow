@@ -2,9 +2,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import Loading from "../components/Loading";
 import PageGear from "../components/PageGear";
 import { toast } from "../components/Toast";
-import { Button, EmptyState, Pill, TabStrip } from "../components/UXKit";
+import { Button, Card, Chip, Filter, Pill, TabStrip, TableWrap, Tbl } from "../components/UXKit";
 import { authSrc, sf as apiSf } from "../lib/api";
 const API = "/api/tracker";
+const TRACKER_PRIORITY_TONE = { critical: "danger", high: "brand", normal: "info", low: "neutral" };
 // v8.8.3: 인증 헤더 자동 주입을 위해 lib/api.sf 로 교체. legacy 시그니처 유지.
 const sf = (url, o) => apiSf(url, o);
 
@@ -152,14 +153,14 @@ function getEtStatus(lot, et){
       text: first ? formatEtSummaryLine(first) : `측정 완료${lot.et_last_seq !== null && lot.et_last_seq !== undefined && lot.et_last_seq !== "" ? ` · seq ${lot.et_last_seq}` : ""}`,
       lines,
       blocks,
-      color: "var(--ok,#16a34a)",
+      color: "var(--ok)",
       title: detail || (lines.length ? lines.join("\n") : (lot.et_recent_formatted || lot.et_last_time || "")),
     };
   }
   if (lot.last_checked_at) {
-    return { icon: "❌", text: "관련 ET 데이터 없음", color: "var(--bad,#dc2626)" };
+    return { icon: "❌", text: "관련 ET 데이터 없음", color: "var(--danger)" };
   }
-  return { icon: "⏳", text: "모니터 중, 미측정", color: "var(--warn,#d97706)" };
+  return { icon: "⏳", text: "모니터 중, 미측정", color: "var(--warn)" };
 }
 
 function isMonitorCategory(category, roleNames = {}) {
@@ -305,7 +306,7 @@ if(typeof document!=="undefined"&&!document.getElementById("trk-img-styles")){
   s.textContent=`
 .desc-editor img,.desc-view img{max-width:300px!important;border-radius:6px;transition:max-width 0.2s;display:block;margin:4px 0}
 .desc-editor img{cursor:pointer}
-.desc-editor img:hover{outline:2px solid #f97316;outline-offset:2px}
+.desc-editor img:hover{outline:2px solid var(--brand);outline-offset:2px}
 `;
   document.head.appendChild(s);
 }
@@ -789,8 +790,8 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
           </div>
         </>
       )}
-      <div style={{ maxHeight: 260, overflow: "auto", border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-card)" }}>
-        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+      <TableWrap maxHeight={260}>
+        <Tbl style={{ borderCollapse: "separate", borderSpacing: 0 }}>
           <thead><tr>
             {baseHeaders.map(h => (
               <th key={h} style={{ textAlign: "left", padding: "8px 10px", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", fontSize: 14, color: "var(--text-secondary)", fontWeight: 600, fontFamily: "monospace", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 }}>{h}</th>
@@ -890,7 +891,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                       {stepSummaryText(summaryRows)}
                     </td>
                     <td style={{ ...cellStyle, textAlign: "center" }}>
-                      <span onClick={() => removeRow(i)} style={{ cursor: "pointer", color: "#ef4444", fontSize: 14, fontWeight: 700 }}>×</span>
+                      <span onClick={() => removeRow(i)} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14, fontWeight: 700 }}>×</span>
                     </td>
                   </tr>
                 );
@@ -993,7 +994,8 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                       return (
                         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, flexWrap: "wrap" }}>
                           <span title={isEt ? "ET source 카테고리: ET 측정 이력 감지" : "Monitor 카테고리: FAB step 도달 감지"}
-                                style={{ padding: "3px 8px", fontSize: 14, fontWeight: 700, borderRadius: 4, background: isEt ? "#ec4899" : "#3b82f6", color: "#fff" }}>
+                                className={`pill ${isEt ? "pill--pink" : "pill--info"}`}
+                                style={{ padding: "3px 8px", fontSize: 14, fontWeight: 700 }}>
                             {isEt ? "ET" : "FAB"}
                           </span>
                           {!isEt && (
@@ -1037,7 +1039,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                   </td>
                 </>}
                 {!readOnly && <td style={{ ...cellStyle, textAlign: "center" }}>
-                  <span onClick={() => removeRow(i)} style={{ cursor: "pointer", color: "#ef4444", fontSize: 14, fontWeight: 700 }}>×</span>
+                  <span onClick={() => removeRow(i)} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14, fontWeight: 700 }}>×</span>
                 </td>}
                 {readOnly && <>
                   <td style={{ ...cellStyle, color: "var(--text-secondary)", fontSize: 14 }}>{l.username}</td>
@@ -1060,8 +1062,8 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
             )}
             {readOnly && lots.length === 0 && <tr><td colSpan={readOnlyColSpan} style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>Lot/Wafer 데이터 없음</td></tr>}
           </tbody>
-        </table>
-      </div>
+        </Tbl>
+      </TableWrap>
     </div>
   );
 }
@@ -1127,7 +1129,7 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
   const [category, setCategory] = useState(monitorCategoryName(roleNames)); const [cats, setCats] = useState([]);
   // v8.5.0: group visibility
   const [myGroups, setMyGroups] = useState([]); const [groupIds, setGroupIds] = useState([]);
-  useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#64748b" } : c))).catch(() => { }); }, []);
+  useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#E25822" } : c))).catch(() => { }); }, []);
   useEffect(() => { sf("/api/groups/list").then(d => setMyGroups(d.groups || [])).catch(() => setMyGroups([])); }, []);
   const visibleCats = visibleTrackerCategories(cats, roleNames);
   useEffect(() => {
@@ -1161,7 +1163,7 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
         {links.map((lnk, i) => (
           <div key={i} style={{ display: "flex", gap: 6, marginBottom: 4 }}>
             <input value={lnk} onChange={e => { const nl = [...links]; nl[i] = e.target.value; setLinks(nl); }} placeholder="https://... 또는 설명" style={{ ...S, fontSize: 14 }} />
-            {links.length > 1 && <span onClick={() => setLinks(links.filter((_, j) => j !== i))} style={{ cursor: "pointer", color: "#ef4444", fontSize: 14, padding: "6px 4px", flexShrink: 0 }}>✕</span>}
+            {links.length > 1 && <span onClick={() => setLinks(links.filter((_, j) => j !== i))} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14, padding: "6px 4px", flexShrink: 0 }}>✕</span>}
           </div>
         ))}
       </div>
@@ -1204,7 +1206,7 @@ function GanttChart({ issues, onIssueClick }) {
   const [cats, setCats] = useState([]);
   useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "" } : c))).catch(() => { }); }, []);
   const hashColor = (name) => { let h = 0; for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0; return `hsl(${Math.abs(h) % 360}, 58%, 58%)`; };
-  const catColor = (name) => { if (!name) return "#64748b"; const c = cats.find(x => x.name === name); return (c && c.color) || hashColor(name); };
+  const catColor = (name) => { if (!name) return "var(--muted)"; const c = cats.find(x => x.name === name); return (c && c.color) || hashColor(name); };
   const now = new Date(); const [month, setMonth] = useState(now.getMonth()); const [year, setYear] = useState(now.getFullYear());
   // v8.8.13: 간트 전용 검색 필터 (제목/담당자). 좌측 이슈 리스트 검색과 독립.
   const [gQuery, setGQuery] = useState("");
@@ -1220,7 +1222,7 @@ function GanttChart({ issues, onIssueClick }) {
       || (iss.username || "").toLowerCase().includes(q)
       || (iss.category || "").toLowerCase().includes(q);
   });
-  const prioColor = { critical: "#ef4444", high: "#f97316", normal: "#3b82f6", low: "#94a3b8" };
+  const prioColor = { critical: "var(--danger)", high: "var(--brand)", normal: "var(--info)", low: "var(--muted)" };
   const prevM = () => { if (month === 0) { setMonth(11); setYear(y => y - 1); } else setMonth(m => m - 1); };
   const nextM = () => { if (month === 11) { setMonth(0); setYear(y => y + 1); } else setMonth(m => m + 1); };
   return (<div>
@@ -1232,7 +1234,7 @@ function GanttChart({ issues, onIssueClick }) {
       <input value={gQuery} onChange={e => setGQuery(e.target.value)}
         placeholder="🔎 제목 · 담당자 · 카테고리 검색"
         style={{ flex: 1, minWidth: 220, padding: "4px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
-      {gQuery && <span onClick={() => setGQuery("")} style={{ cursor: "pointer", color: "#ef4444", fontSize: 14 }}>✕ 초기화</span>}
+      {gQuery && <span onClick={() => setGQuery("")} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14 }}>✕ 초기화</span>}
       <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{filtered.length}{gQuery ? ` / ${(issues || []).length}` : ""}건</span>
     </div>
     {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>{gQuery ? "매칭 이슈 없음" : "이슈 없음"}</div>}
@@ -1242,7 +1244,7 @@ function GanttChart({ issues, onIssueClick }) {
       <table style={{ borderCollapse: "collapse", fontSize: 14, minWidth: "100%" }}>
         <thead><tr>
           <th style={{ textAlign: "left", padding: "6px 8px", borderBottom: "2px solid var(--border)", background: "var(--bg-tertiary)", position: "sticky", left: 0, zIndex: 2, minWidth: 140 }}>이슈</th>
-          {days.map(d => <th key={d} style={{ padding: "4px 2px", borderBottom: "2px solid var(--border)", background: "var(--bg-tertiary)", minWidth: 20, textAlign: "center", color: new Date(year, month, d).getDay() === 0 ? "#ef4444" : "var(--text-secondary)" }}>{d}</th>)}
+          {days.map(d => <th key={d} style={{ padding: "4px 2px", borderBottom: "2px solid var(--border)", background: "var(--bg-tertiary)", minWidth: 20, textAlign: "center", color: new Date(year, month, d).getDay() === 0 ? "var(--danger)" : "var(--text-secondary)" }}>{d}</th>)}
         </tr></thead>
         <tbody>{filtered.map(iss => {
           const created = new Date(iss.created || iss.timestamp); const ended = iss.closed_at ? new Date(iss.closed_at) : now;
@@ -1257,7 +1259,7 @@ function GanttChart({ issues, onIssueClick }) {
               const inRange = day >= new Date(created.getFullYear(), created.getMonth(), created.getDate()) && day <= new Date(ended.getFullYear(), ended.getMonth(), ended.getDate());
               const isStart = day.toDateString() === created.toDateString(); const isEnd = iss.closed_at && day.toDateString() === ended.toDateString();
               return <td key={d} style={{ borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", padding: 0 }}>
-                {inRange && <div style={{ height: 14, background: iss.category ? catColor(iss.category) : (prioColor[iss.priority] || "#3b82f6"), borderRadius: isStart ? "7px 0 0 7px" : isEnd ? "0 7px 7px 0" : "0", opacity: iss.status === "closed" ? 0.5 : 0.85 }} title={`${iss.title} (${iss.status})`} />}
+                {inRange && <div style={{ height: 14, background: iss.category ? catColor(iss.category) : (prioColor[iss.priority] || "var(--info)"), borderRadius: isStart ? "7px 0 0 7px" : isEnd ? "0 7px 7px 0" : "0", opacity: iss.status === "closed" ? 0.5 : 0.85 }} title={`${iss.title} (${iss.status})`} />}
               </td>;
             })}
           </tr>);
@@ -1280,8 +1282,8 @@ export default function My_Tracker({ user }) {
   const [trackerPageConfig, setTrackerPageConfig] = useState({ role_names: { monitor: "Monitor" } });
   const [issueMailGroups, setIssueMailGroups] = useState([]);
   const isAdmin = user?.role === "admin";
-  const statusColor = { in_progress: "#f97316", closed: "#22c55e" };
-  const prioColor = { critical: "#ef4444", high: "#f97316", normal: "#3b82f6", low: "#94a3b8" };
+  const statusColor = { in_progress: "var(--warn)", closed: "var(--ok)" };
+  const prioColor = { critical: "var(--danger)", high: "var(--brand)", normal: "var(--info)", low: "var(--muted)" };
   // v8.1.5: look up category color from stored list; fall back to hash for orphans
   const [cats, setCats] = useState([]);
   useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "" } : c))).catch(() => { }); }, []);
@@ -1300,7 +1302,7 @@ export default function My_Tracker({ user }) {
   useEffect(() => { loadTrackerPageConfig(); }, [loadTrackerPageConfig]);
   const roleNames = trackerPageConfig.role_names || { monitor: "Monitor" };
   const hashColor = (name) => { let h = 0; for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0; return `hsl(${Math.abs(h) % 360}, 58%, 58%)`; };
-  const catColor = (name) => { if (!name) return "#64748b"; const c = cats.find(x => x.name === name); return (c && c.color) || hashColor(name); };
+  const catColor = (name) => { if (!name) return "var(--muted)"; const c = cats.find(x => x.name === name); return (c && c.color) || hashColor(name); };
 
   const load = () => sf(API + "/issues").then(d => setIssues(d.issues || []));
   useEffect(() => { load(); }, []);
@@ -1396,7 +1398,7 @@ export default function My_Tracker({ user }) {
   return (
     <div className="flow-connected-page" style={{ display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
       {/* Sidebar */}
-      <div style={{ width: 400, minWidth: 350, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", background: "var(--bg-secondary)" }}>
+      <div style={{ width: 320, minWidth: 320, borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", background: "var(--bg-secondary)" }}>
         <div className="flow-sidebar-header" style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ minWidth: 0 }}>
             <span className="flow-sidebar-header-title" style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>이슈 추적</span>
@@ -1422,7 +1424,7 @@ export default function My_Tracker({ user }) {
         <div style={{ display: "flex", gap: 4, padding: "8px 12px", flexWrap: "wrap" }}>
           {["", "in_progress", "closed"].map(s => {
             const label = s === "" ? "전체" : s === "in_progress" ? "진행중" : "완료";
-            return <span key={s} onClick={() => setFilter(s)} style={{ padding: "3px 8px", borderRadius: 4, fontSize: 14, cursor: "pointer", fontWeight: filter === s ? 600 : 400, background: filter === s ? "var(--accent-glow)" : "transparent", color: filter === s ? "var(--accent)" : "var(--text-secondary)" }}>{label}</span>;
+            return <Pill key={s || "all"} tone={filter === s ? "brand" : "neutral"} onClick={() => setFilter(s)}>{label}</Pill>;
           })}
           <span style={{ fontSize: 14, color: "var(--text-secondary)", marginLeft: "auto" }}>{filteredIssues.length}</span>
         </div>
@@ -1430,10 +1432,10 @@ export default function My_Tracker({ user }) {
           {filteredIssues.map(iss => (
             <div key={iss.id} onClick={() => { loadDetail(iss.id); setViewTab("list"); }} style={{ padding: "10px 16px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: selected?.id === iss.id ? "var(--bg-hover)" : "transparent" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-                <span title={iss.category ? `카테고리: ${iss.category}` : `상태: ${iss.status}`} style={{ width: 9, height: 9, borderRadius: "50%", background: iss.category ? catColor(iss.category) : (statusColor[iss.status] || "#666"), flexShrink: 0, border: iss.category ? "1px solid rgba(255,255,255,0.2)" : "none" }} />
-                {iss.category && <span style={{ fontSize: 14, padding: "1px 5px", borderRadius: 3, background: catColor(iss.category) + "22", color: catColor(iss.category), fontWeight: 700, flexShrink: 0, fontFamily: "monospace", letterSpacing: "0.02em" }}>{iss.category}</span>}
+                <span title={iss.category ? `카테고리: ${iss.category}` : `상태: ${iss.status}`} style={{ width: 9, height: 9, borderRadius: "50%", background: iss.category ? catColor(iss.category) : (statusColor[iss.status] || "var(--muted)"), flexShrink: 0, border: iss.category ? "1px solid rgba(255,255,255,0.2)" : "none" }} />
+                {iss.category && <Chip style={{ background: `color-mix(in srgb, ${catColor(iss.category)} 14%, transparent)`, borderColor: catColor(iss.category), color: catColor(iss.category), flexShrink: 0 }}>{iss.category}</Chip>}
                 <span style={{ fontSize: 14, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{iss.title}</span>
-                <span style={{ fontSize: 14, padding: "1px 5px", borderRadius: 3, background: (prioColor[iss.priority] || "#666") + "22", color: prioColor[iss.priority] || "#666", fontWeight: 700 }}>{({low:"낮음",normal:"보통",high:"높음",critical:"긴급"}[iss.priority]) || iss.priority}</span>
+                <Pill tone={TRACKER_PRIORITY_TONE[iss.priority] || "neutral"}>{({low:"낮음",normal:"보통",high:"높음",critical:"긴급"}[iss.priority]) || iss.priority}</Pill>
               </div>
               <div style={{ fontSize: 14, color: "var(--text-secondary)", display: "flex", gap: 8 }}>
                 <span style={{ fontWeight: 500 }}>{iss.username || "?"}</span>
@@ -1449,18 +1451,23 @@ export default function My_Tracker({ user }) {
       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
         {creating && <IssueForm onSubmit={create} onClose={() => setCreating(false)} user={user} roleNames={roleNames} />}
         {viewTab === "gantt" ? <GanttChart issues={issues} onIssueClick={(id) => { loadDetail(id); setViewTab("list"); }} />
-          : selected ? (<div>
+          : selected ? (<div style={{ display: "grid", gap: 16 }}>
+            <Card>
             {/* Header */}
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
               {editMode ? <input value={editTitle} onChange={e => setEditTitle(e.target.value)} style={{ fontSize: 18, fontWeight: 700, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--accent)", background: "var(--bg-primary)", color: "var(--text-primary)", outline: "none", flex: 1 }} />
                 : <span style={{ fontSize: 18, fontWeight: 700 }}>{selected.title}</span>}
               {canEdit && !editMode && <span onClick={startEdit} style={{ cursor: "pointer", fontSize: 14, color: "var(--accent)", padding: "4px 8px", borderRadius: 4, background: "var(--accent-glow)" }}>수정</span>}
-              {editMode && <span onClick={saveEdit} style={{ cursor: "pointer", fontSize: 14, color: "#22c55e", padding: "4px 8px", borderRadius: 4, background: "#22c55e22", fontWeight: 600 }}>저장</span>}
+              {editMode && <Pill tone="ok" onClick={saveEdit}>저장</Pill>}
               {editMode && <span onClick={() => { setEditMode(false); setEditLots([]); }} style={{ cursor: "pointer", fontSize: 14, color: "var(--text-secondary)", padding: "4px 8px", borderRadius: 4, background: "var(--bg-hover)" }}>취소</span>}
-              {canEdit && <span onClick={deleteIssue} style={{ cursor: "pointer", fontSize: 14, color: "#ef4444", padding: "4px 8px", borderRadius: 4, background: "#ef444411" }}>삭제</span>}
-              <select value={selected.status} onChange={e => updateStatus(selected.id, e.target.value)} style={{ padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14, marginLeft: "auto" }}>
-                {[["in_progress","진행중"], ["closed","완료"]].map(([v,lbl]) => <option key={v} value={v}>{lbl}</option>)}
-              </select>
+              {canEdit && <Pill tone="danger" onClick={deleteIssue}>삭제</Pill>}
+              <Filter
+                value={selected.status}
+                onChange={e => updateStatus(selected.id, e.target.value)}
+                options={[{ value: "in_progress", label: "진행중" }, { value: "closed", label: "완료" }]}
+                placeholder={null}
+                style={{ marginLeft: "auto" }}
+              />
             </div>
 
             {/* Meta */}
@@ -1475,6 +1482,7 @@ export default function My_Tracker({ user }) {
               canEdit={canEdit}
               onSave={saveIssueMail}
             />
+            </Card>
 
             {/* Description */}
             {editMode ? (
@@ -1512,15 +1520,15 @@ export default function My_Tracker({ user }) {
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: "var(--text-secondary)" }}>관련 링크</div>
               {selected.links.map((lnk, i) => (
                 <div key={i} style={{ marginBottom: 4 }}>
-                  {lnk.startsWith("http") ? <a href={lnk} target="_blank" rel="noopener noreferrer" style={{ color: "#3b82f6", fontSize: 14, textDecoration: "none", wordBreak: "break-all" }}>{lnk}</a>
+                  {lnk.startsWith("http") ? <a href={lnk} target="_blank" rel="noopener noreferrer" style={{ color: "var(--info)", fontSize: 14, textDecoration: "none", wordBreak: "break-all" }}>{lnk}</a>
                     : <span style={{ fontSize: 14, color: "var(--text-primary)" }}>{lnk}</span>}
                 </div>
               ))}
             </div>}
             {editMode && editLots.length > 0 && <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: "var(--text-secondary)" }}>LOT purpose/comment 수정</div>
-              <div style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "auto", background: "var(--bg-card)" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+              <TableWrap>
+                <Tbl>
                   <thead><tr>
                     {["product", "lot_id", "wafer_ids", "purpose", "comment"].map(h => <th key={h} style={{ textAlign: "left", padding: "7px 9px", borderBottom: "1px solid var(--border)", background: "var(--bg-tertiary)", color: "var(--text-secondary)", fontFamily: "monospace" }}>{h}</th>)}
                   </tr></thead>
@@ -1529,12 +1537,12 @@ export default function My_Tracker({ user }) {
                       <td style={{ padding: "6px 9px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{lot.product || lot.monitor_prod || "-"}</td>
                       <td style={{ padding: "6px 9px", borderBottom: "1px solid var(--border)", fontFamily: "monospace" }}>{lot.lot_id || lot.root_lot_id || "-"}</td>
                       <td title={Array.isArray(lot.wafer_ids) ? lot.wafer_ids.join(", ") : ""} style={{ padding: "6px 9px", borderBottom: "1px solid var(--border)", fontFamily: "monospace", color: "var(--accent)", fontWeight: 700 }}>{waferSummaryText(lot)}</td>
-                      <td style={{ padding: 0, borderBottom: "1px solid var(--border)" }}><input value={lot.purpose || ""} onChange={e => setEditLots(prev => prev.map((r, idx) => idx === i ? { ...r, purpose: e.target.value } : r))} style={{ width: "100%", boxSizing: "border-box", border: "none", padding: "8px 9px", background: "transparent", color: "var(--text-primary)", fontSize: 14 }} /></td>
-                      <td style={{ padding: 0, borderBottom: "1px solid var(--border)" }}><input value={lot.comment || ""} onChange={e => setEditLots(prev => prev.map((r, idx) => idx === i ? { ...r, comment: e.target.value } : r))} style={{ width: "100%", boxSizing: "border-box", border: "none", padding: "8px 9px", background: "transparent", color: "var(--text-primary)", fontSize: 14 }} /></td>
+                      <td style={{ padding: 0, borderBottom: "1px solid var(--border)" }}><input className="input" value={lot.purpose || ""} onChange={e => setEditLots(prev => prev.map((r, idx) => idx === i ? { ...r, purpose: e.target.value } : r))} style={{ width: "100%", boxSizing: "border-box", border: "none", background: "transparent" }} /></td>
+                      <td style={{ padding: 0, borderBottom: "1px solid var(--border)" }}><input className="input" value={lot.comment || ""} onChange={e => setEditLots(prev => prev.map((r, idx) => idx === i ? { ...r, comment: e.target.value } : r))} style={{ width: "100%", boxSizing: "border-box", border: "none", background: "transparent" }} /></td>
                     </tr>
                   ))}</tbody>
-                </table>
-              </div>
+                </Tbl>
+              </TableWrap>
             </div>}
             {/* Lots table */}
             {!editMode && selected.lots?.length > 0 && <div style={{ marginBottom: 16 }}>
@@ -1562,7 +1570,7 @@ export default function My_Tracker({ user }) {
                         border: "1px solid var(--border)", fontFamily: "monospace",
                       }}>🕐 {(c.timestamp || "").replace("T", " ").slice(0, 16) || "시간 없음"}</span>
                       {canDeleteCommentItem(c) && <button type="button" onClick={() => deleteCommentItem(i)}
-                        style={{ padding: "2px 7px", borderRadius: 999, border: "1px solid #ef444455", background: "#ef444411", color: "#ef4444", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>삭제</button>}
+                        style={{ padding: "2px 7px", borderRadius: 999, border: "1px solid var(--danger-line)", background: "var(--danger-50)", color: "var(--danger)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>삭제</button>}
                     </div>
                   </div>
                   <div style={{ fontSize: 14, lineHeight: 1.6 }}>{c.text}</div>
@@ -1575,7 +1583,7 @@ export default function My_Tracker({ user }) {
                           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                             <span title={r.timestamp || ""} style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", whiteSpace: "nowrap" }}>{(r.timestamp || "").replace("T", " ").slice(0, 16) || "시간 없음"}</span>
                             {canDeleteCommentItem(r) && <button type="button" onClick={() => deleteCommentItem(i, ri)}
-                              style={{ padding: "1px 6px", borderRadius: 999, border: "1px solid #ef444455", background: "#ef444411", color: "#ef4444", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>삭제</button>}
+                              style={{ padding: "1px 6px", borderRadius: 999, border: "1px solid var(--danger-line)", background: "var(--danger-50)", color: "var(--danger)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>삭제</button>}
                           </div>
                         </div>
                         <div style={{ fontSize: 14, lineHeight: 1.55 }}>{r.text}</div>
@@ -1605,7 +1613,7 @@ export default function My_Tracker({ user }) {
 function TrackerSettings({ isAdmin, onChanged }) {
   const [cats, setCats] = useState([]);
   const [name, setName] = useState("");
-  const [color, setColor] = useState("#3b82f6");
+  const [color, setColor] = useState("#E25822");
   const [msg, setMsg] = useState("");
   const [sched, setSched] = useState({ enabled: true, interval_minutes: 30, et_stable_delay_minutes: 180, status: {} });
   const [schedMsg, setSchedMsg] = useState("");
@@ -1631,7 +1639,7 @@ function TrackerSettings({ isAdmin, onChanged }) {
   const [lotProgressMeta, setLotProgressMeta] = useState({});
   const [lotProgressFilter, setLotProgressFilter] = useState("");
   const [lotProgressBusy, setLotProgressBusy] = useState(false);
-  const load = () => sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#64748b" } : c)));
+  const load = () => sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#E25822" } : c)));
   const loadScheduler = () => sf(API + "/scheduler").then(d => setSched({
     enabled: d.enabled !== false,
     interval_minutes: Number(d.interval_minutes || 30),
@@ -1877,7 +1885,7 @@ function TrackerSettings({ isAdmin, onChanged }) {
           style={{ justifySelf: "end", padding: "6px 10px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: isAdmin && !dbBusy ? "pointer" : "not-allowed", opacity: isAdmin ? 1 : 0.55 }}>
           페이지 설정 저장
         </button>
-        {dbMsg && <div style={{ fontSize: 14, color: dbMsg.includes("완료") ? "#22c55e" : "#ef4444" }}>{dbMsg}</div>}
+        {dbMsg && <div style={{ fontSize: 14, color: dbMsg.includes("완료") ? "var(--ok)" : "var(--danger)" }}>{dbMsg}</div>}
       </div>
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>자동 갱신</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
@@ -1911,8 +1919,8 @@ function TrackerSettings({ isAdmin, onChanged }) {
         <span>상태 {status.running ? "실행 중" : (status.ok === false ? "오류" : "대기")} / 메일 {status.mail_count ?? 0}</span>
         <span>자동 갱신 {sched.enabled === false ? "꺼짐" : `${sched.interval_minutes ?? 30}분마다`}</span>
       </div>
-      {status.last_error && <div style={{ marginBottom: 10, fontSize: 14, color: "#ef4444" }}>{status.last_error}</div>}
-      {schedMsg && <div style={{ marginBottom: 12, fontSize: 14, color: schedMsg.includes("완료") ? "#22c55e" : "#ef4444" }}>{schedMsg}</div>}
+      {status.last_error && <div style={{ marginBottom: 10, fontSize: 14, color: "var(--danger)" }}>{status.last_error}</div>}
+      {schedMsg && <div style={{ marginBottom: 12, fontSize: 14, color: schedMsg.includes("완료") ? "var(--ok)" : "var(--danger)" }}>{schedMsg}</div>}
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>LOT_WF 현재 위치 파일</div>
       <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
         <input value={lotProgressFilter} onChange={e => setLotProgressFilter(e.target.value)}
@@ -1962,11 +1970,11 @@ function TrackerSettings({ isAdmin, onChanged }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
         {cats.map(c => (
           <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input type="color" value={c.color || "#64748b"} disabled={!isAdmin}
+            <input type="color" value={c.color || "#E25822"} disabled={!isAdmin}
               onChange={e => updColor(c.name, e.target.value)}
               style={{ width: 28, height: 26, border: "1px solid var(--border)", borderRadius: 4, background: "transparent", cursor: isAdmin ? "pointer" : "default" }} />
             <span style={{ flex: 1, fontSize: 14 }}>{c.name}</span>
-            {isAdmin && <span onClick={() => remove(c.name)} style={{ cursor: "pointer", color: "#ef4444", fontSize: 14 }}>삭제</span>}
+            {isAdmin && <span onClick={() => remove(c.name)} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14 }}>삭제</span>}
           </div>
         ))}
       </div>
@@ -1979,7 +1987,7 @@ function TrackerSettings({ isAdmin, onChanged }) {
           <button onClick={add} style={{ padding: "6px 12px", borderRadius: 4, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, cursor: "pointer" }}>추가</button>
         </div>
       )}
-      {msg && <div style={{ marginTop: 8, fontSize: 14, color: msg === "저장 완료" ? "#22c55e" : "#ef4444" }}>{msg}</div>}
+      {msg && <div style={{ marginTop: 8, fontSize: 14, color: msg === "저장 완료" ? "var(--ok)" : "var(--danger)" }}>{msg}</div>}
       <div style={{ marginTop: 16, padding: 10, background: "var(--bg-primary)", borderRadius: 6, fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.6 }}>
         • 카테고리 색상은 이슈 리스트/간트 차트 bar/카테고리 chip 에 반영됩니다.<br/>
         • 일반 유저는 현재 카테고리 목록만 조회 가능.

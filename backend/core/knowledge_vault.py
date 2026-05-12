@@ -35,6 +35,7 @@ WIKI_INDEX_FILE = INDEX_DIR / "wiki_index.json"
 WIKI_LOG_JSONL = INDEX_DIR / "wiki_log.jsonl"
 GRAPH_FILE = GRAPH_DIR / "graph.json"
 AI_ONTOLOGY_FILE = ONTOLOGY_DIR / "ai_ontology.json"
+SCHEMA_RELATION_FILE = PATHS.data_root / "schema_relations.json"
 
 _ALLOWED_ONTOLOGY_KINDS = {
     "identity", "process", "module", "material", "metric", "split",
@@ -209,8 +210,275 @@ def _build_ontology_prompt(docs: list[dict[str, Any]]) -> str:
 
 _ALLOWED_DOC_KINDS = {
     "product", "lot", "wafer", "knob", "issue", "meeting",
-    "report", "decision", "agent_wiki", "ontology", "manual",
+    "report", "decision", "agent_wiki", "schema_doc", "ontology", "manual",
 }
+
+
+def _schema_registry_payload() -> dict[str, Any]:
+    if SCHEMA_RELATION_FILE.is_file():
+        try:
+            data = json.loads(SCHEMA_RELATION_FILE.read_text("utf-8"))
+        except Exception:
+            data = {}
+    else:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if not isinstance(data.get("relations"), list):
+        data["relations"] = []
+    if not isinstance(data.get("column_catalog"), list):
+        data["column_catalog"] = []
+    return data
+
+
+def _write_schema_registry(payload: dict[str, Any]) -> None:
+    SCHEMA_RELATION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SCHEMA_RELATION_FILE.with_suffix(SCHEMA_RELATION_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    tmp.replace(SCHEMA_RELATION_FILE)
+
+
+def _known_relation_map(known_relations: list[Any] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in known_relations or []:
+        if isinstance(item, dict):
+            raw = item.get("relation_id") or item.get("id") or item.get("label") or item.get("name")
+        else:
+            raw = item
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        out[text.lower()] = text
+    return out
+
+
+def _schema_relation_id(value: Any, known: dict[str, str] | None = None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    known = known or {}
+    if known and text.lower() in known:
+        return known[text.lower()]
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("._-")[:120]
+
+
+def _schema_column_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", text)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    text = re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_").lower()
+    return text[:120]
+
+
+def _schema_column_ref(value: Any, *, relation_id: str = "", known: dict[str, str] | None = None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "." in text:
+        rel_raw, col_raw = text.split(".", 1)
+    else:
+        rel_raw, col_raw = relation_id, text
+    rel = _schema_relation_id(rel_raw, known)
+    if known and rel and rel.lower() not in known:
+        return ""
+    col = _schema_column_name(col_raw)
+    if not rel or not col:
+        return ""
+    return f"{rel}.{col}"
+
+
+def _schema_value_list(value: Any, *, limit: int = 12) -> list[str]:
+    values = value if isinstance(value, list) else ([value] if value not in (None, "") else [])
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = str(item or "").strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        out.append(text[:120])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _infer_schema_dtype(text: str) -> str:
+    hay = str(text or "").lower()
+    if any(x in hay for x in ("bool", "boolean", "참/거짓", "true", "false")):
+        return "bool"
+    if any(x in hay for x in ("date", "datetime", "timestamp", "날짜", "시간")):
+        return "time"
+    if any(x in hay for x in ("string", "str", "text", "문자", "문자열")):
+        return "string"
+    if any(x in hay for x in ("float", "double", "decimal", "number", "numeric", "숫자", "정수", "실수")):
+        return "number"
+    return ""
+
+
+def _normalize_schema_catalog_stub(stub: Any, *, relation_id: str = "", known: dict[str, str] | None = None) -> dict[str, Any] | None:
+    if not isinstance(stub, dict):
+        return None
+    known = known or {}
+    rel = _schema_relation_id(stub.get("relation_id") or relation_id, known)
+    if known and rel and rel.lower() not in known:
+        return None
+    raw_names = _schema_value_list(stub.get("raw_names") or stub.get("raw_name") or [])
+    column = _schema_column_name(stub.get("column") or stub.get("canonical_alias") or (raw_names[0] if raw_names else ""))
+    if not rel or not column:
+        return None
+    dtype = str(stub.get("dtype") or "").strip().lower()[:80]
+    if not dtype:
+        dtype = _infer_schema_dtype(" ".join(raw_names + _schema_value_list(stub.get("sample_values") or [])))
+    canonical_alias = _schema_column_name(stub.get("canonical_alias") or column) or column
+    return {
+        "relation_id": rel,
+        "column": column,
+        "raw_names": raw_names,
+        "dtype": dtype,
+        "canonical_alias": canonical_alias,
+        "unit": stub.get("unit") if stub.get("unit") not in ("", []) else None,
+        "fk": stub.get("fk") if stub.get("fk") not in ("", []) else None,
+        "sample_values": _schema_value_list(stub.get("sample_values") or stub.get("samples") or [], limit=20),
+        "wiki_doc_id": str(stub.get("wiki_doc_id") or "").strip(),
+    }
+
+
+def _heuristic_schema_doc_payload(body: str, *, hint_relation_id: str = "", hint_columns: list[str] | None = None, known_relations: list[Any] | None = None) -> dict[str, Any]:
+    known = _known_relation_map(known_relations)
+    body_text = str(body or "")
+    relation_id = _schema_relation_id(hint_relation_id, known)
+    if not relation_id:
+        for key, value in known.items():
+            if key and key in body_text.lower():
+                relation_id = value
+                break
+    if not relation_id:
+        match = re.search(r"\b([A-Z][A-Z0-9_]{2,})\b", body_text)
+        relation_id = _schema_relation_id(match.group(1) if match else "", known)
+
+    raw_columns = _schema_value_list(hint_columns or [], limit=20)
+    for pattern in (
+        r"\b([A-Za-z][A-Za-z0-9_]{2,})\s*(?:라는|이라는)?\s*(?:열|컬럼|column)\b",
+        r"(?:열|컬럼|column)\s*(?:이름은|명은|은|는|:)?\s*`?([A-Za-z][A-Za-z0-9_]{2,})`?",
+    ):
+        for match in re.finditer(pattern, body_text, flags=re.IGNORECASE):
+            raw_columns.append(match.group(1))
+    raw_columns = _schema_value_list(raw_columns, limit=20)
+    column = _schema_column_name(raw_columns[0] if raw_columns else "")
+    sample_values: list[str] = []
+    sample_match = re.search(r"(?:예|sample|samples|example|examples)\s*[:：]\s*([A-Za-z0-9_.\-,\s]+)", body_text, flags=re.IGNORECASE)
+    if sample_match:
+        for token in re.split(r"[\s,]+", sample_match.group(1)):
+            token = token.strip(" .;:")
+            if re.search(r"[A-Za-z0-9]", token):
+                sample_values.append(token)
+    sample_values = _schema_value_list(sample_values, limit=3)
+    dtype = _infer_schema_dtype(body_text)
+    stubs = []
+    if relation_id and column:
+        stubs.append({
+            "relation_id": relation_id,
+            "column": column,
+            "raw_names": raw_columns[:4],
+            "dtype": dtype or "string",
+            "canonical_alias": column,
+            "unit": None,
+            "fk": None,
+            "sample_values": sample_values,
+            "wiki_doc_id": "",
+        })
+    title = f"{relation_id} · {column}" if relation_id and column else (relation_id or "Schema doc")
+    return {
+        "title": title,
+        "summary": _summary_from_text(body_text, limit=220),
+        "kind": "schema_doc",
+        "tags": [x for x in ["schema_doc", relation_id, column] if x],
+        "relation_id": relation_id,
+        "column_refs": [f"{relation_id}.{column}"] if relation_id and column else [],
+        "column_catalog_stubs": stubs,
+    }
+
+
+def _normalize_schema_doc_draft(
+    payload: Any,
+    body: str,
+    *,
+    hint_relation_id: str = "",
+    hint_columns: list[str] | None = None,
+    known_relations: list[Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        payload = {}
+    known = _known_relation_map(known_relations)
+    fallback = _heuristic_schema_doc_payload(
+        body,
+        hint_relation_id=hint_relation_id,
+        hint_columns=hint_columns or [],
+        known_relations=known_relations or [],
+    )
+    payload_fm = payload.get("frontmatter") if isinstance(payload.get("frontmatter"), dict) else {}
+    relation_id = _schema_relation_id(payload.get("relation_id") or payload_fm.get("relation_id") or fallback.get("relation_id") or hint_relation_id, known)
+    if known and relation_id and relation_id.lower() not in known:
+        relation_id = ""
+    title = str(payload.get("title") or fallback.get("title") or "Schema doc").strip()[:220]
+    summary = str(payload.get("summary") or fallback.get("summary") or _summary_from_text(body)).strip()[:400]
+    tags = _clean_tags([*(payload.get("tags") if isinstance(payload.get("tags"), list) else []), *(fallback.get("tags") or [])])
+
+    refs: list[str] = []
+    payload_refs = payload.get("column_refs") if isinstance(payload.get("column_refs"), list) else []
+    fm_refs = payload_fm.get("column_refs") if isinstance(payload_fm.get("column_refs"), list) else []
+    for ref in [*payload_refs, *fm_refs, *(fallback.get("column_refs") or [])]:
+        normalized = _schema_column_ref(ref, relation_id=relation_id, known=known)
+        if normalized and normalized not in refs:
+            refs.append(normalized)
+    for col in hint_columns or []:
+        normalized = _schema_column_ref(col, relation_id=relation_id, known=known)
+        if normalized and normalized not in refs:
+            refs.append(normalized)
+
+    raw_stubs = payload.get("column_catalog_stubs") if isinstance(payload.get("column_catalog_stubs"), list) else []
+    if not raw_stubs:
+        raw_stubs = fallback.get("column_catalog_stubs") or []
+    stubs: list[dict[str, Any]] = []
+    for item in raw_stubs:
+        stub = _normalize_schema_catalog_stub(item, relation_id=relation_id, known=known)
+        if stub:
+            stubs.append(stub)
+            ref = f"{stub['relation_id']}.{stub['column']}"
+            if ref not in refs:
+                refs.append(ref)
+    for ref in refs:
+        rel, col = ref.split(".", 1)
+        if not any(s.get("relation_id") == rel and s.get("column") == col for s in stubs):
+            stub = _normalize_schema_catalog_stub({"relation_id": rel, "column": col, "canonical_alias": col}, known=known)
+            if stub:
+                stubs.append(stub)
+
+    wiki_doc = {
+        "doc_id": str(payload.get("doc_id") or "").strip(),
+        "kind": "schema_doc",
+        "title": title,
+        "summary": summary,
+        "body": str(payload.get("body") or body or "").strip(),
+        "tags": tags[:20],
+        "frontmatter": {
+            "relation_id": relation_id,
+            "column_refs": refs[:50],
+        },
+    }
+    return {
+        "ok": True,
+        "wiki_doc": wiki_doc,
+        "column_catalog_stubs": stubs[:80],
+        "title": title,
+        "summary": summary,
+        "kind": "schema_doc",
+        "tags": tags[:20],
+        "relation_id": relation_id,
+        "column_refs": refs[:50],
+    }
 
 
 def _normalize_doc_draft(payload: Any, hint_doc_id: str, hint_tags: list[str], existing_doc_ids: set[str]) -> dict[str, Any]:
@@ -253,6 +521,16 @@ def _normalize_doc_draft(payload: Any, hint_doc_id: str, hint_tags: list[str], e
         rel = str(relations_ai.get(ref) or "relates_to").strip().lower()[:60] or "relates_to"
         relations[ref] = rel
 
+    frontmatter: dict[str, Any] = {}
+    if kind == "schema_doc":
+        relation_id = _schema_relation_id(payload.get("relation_id") or "")
+        refs: list[str] = []
+        for ref in (payload.get("column_refs") if isinstance(payload.get("column_refs"), list) else []):
+            normalized = _schema_column_ref(ref, relation_id=relation_id)
+            if normalized and normalized not in refs:
+                refs.append(normalized)
+        frontmatter = {"relation_id": relation_id, "column_refs": refs}
+
     return {
         "ok": True,
         "title": title or (hint_doc_id or "Untitled"),
@@ -262,6 +540,7 @@ def _normalize_doc_draft(payload: Any, hint_doc_id: str, hint_tags: list[str], e
         "entity": entity,
         "related_doc_ids": related,
         "relations": relations,
+        "frontmatter": frontmatter,
     }
 
 
@@ -290,6 +569,7 @@ def _build_doc_metadata_prompt(body: str, doc_id: str, tags: list[str], existing
         f"기존 wiki 문서 (관계 후보로만 사용):\n{existing_summary}\n\n"
         "규칙:\n"
         f"- kind 는 다음 중 하나만: {allowed_kinds}.\n"
+        "- schema_doc 는 DB/테이블/컬럼의 의미, 단위, 사용 예, 주의사항을 설명하는 문서일 때만 사용.\n"
         "- entity 의 product/root_lot_id/wafer_id 는 본문에 명시되어 있을 때만 채우고, 불확실하면 빈 문자열.\n"
         "- tags 는 사용자 tag 를 보존하고 본문에 등장하는 핵심 키워드 1~6개를 추가.\n"
         "- related_doc_ids 는 위 목록에 있는 doc_id 만 (없으면 빈 배열). relations 는 doc_id → 짧은 관계 라벨 (영문 소문자/언더스코어, 예: includes, follows, replaces, contacted_by).\n\n"
@@ -333,6 +613,294 @@ def draft_doc_metadata(body: str, *, doc_id: str = "", tags: list[str] | None = 
     return normalized
 
 
+def _build_schema_doc_metadata_prompt(
+    body: str,
+    *,
+    hint_relation_id: str = "",
+    hint_columns: list[str] | None = None,
+    known_relations: list[Any] | None = None,
+) -> str:
+    relation_lines: list[str] = []
+    for item in known_relations or []:
+        if isinstance(item, dict):
+            rid = str(item.get("relation_id") or item.get("id") or item.get("label") or "").strip()
+            label = str(item.get("label") or item.get("name") or "").strip()
+        else:
+            rid = str(item or "").strip()
+            label = ""
+        if rid:
+            relation_lines.append(f"- {rid}" + (f" ({label})" if label and label != rid else ""))
+        if len(relation_lines) >= 120:
+            break
+    relations_text = "\n".join(relation_lines) or "(없음: hint/body 에 명확한 relation_id 가 있을 때만 사용)"
+    hint_cols = ", ".join(str(x) for x in (hint_columns or []) if str(x).strip()) or "(없음)"
+    body_text = (body or "").strip()
+    if len(body_text) > 6000:
+        body_text = body_text[:6000] + "\n... (생략)"
+    return (
+        "당신은 사내 반도체 DB schema wiki editor 입니다. "
+        "사용자가 준 자유 텍스트를 읽고 wiki 문서 draft 와 column_catalog stub 을 JSON object 하나로만 출력하세요. "
+        "코드블록·해설·여백 없이 단일 JSON object 만 출력합니다.\n\n"
+        f"hint_relation_id: {hint_relation_id or '(없음)'}\n"
+        f"hint_columns: {hint_cols}\n\n"
+        "선택 가능한 relation_id 후보:\n"
+        f"{relations_text}\n\n"
+        "규칙:\n"
+        "- kind 는 반드시 schema_doc.\n"
+        "- relation_id 는 위 후보 또는 hint_relation_id/body 에 명확히 등장한 값만 사용. 불확실하면 빈 문자열.\n"
+        "- column_refs 는 relation_id.column_name 형태. column_name 은 snake_case 로 정규화.\n"
+        "- column_catalog_stubs 각 항목은 relation_id, column, raw_names, dtype, canonical_alias, unit, fk, sample_values 를 포함.\n"
+        "- dtype 은 string/number/time/bool 중 가장 가까운 값. sample_values 는 대표값 1~3개만.\n\n"
+        f"본문 ({len(body or '')} chars):\n{body_text}\n\n"
+        "출력 형식:\n"
+        "{\"wiki_doc\":{\"title\":\"...\",\"summary\":\"...\",\"kind\":\"schema_doc\","
+        "\"frontmatter\":{\"relation_id\":\"...\",\"column_refs\":[\"REL.col\"]},\"body\":\"...\",\"tags\":[\"...\"]},"
+        "\"column_catalog_stubs\":[{\"relation_id\":\"...\",\"column\":\"...\",\"raw_names\":[\"...\"],"
+        "\"dtype\":\"string\",\"canonical_alias\":\"...\",\"unit\":null,\"fk\":null,\"sample_values\":[\"...\"]}]}"
+    )
+
+
+def draft_schema_doc_metadata(
+    body: str,
+    *,
+    hint_relation_id: str = "",
+    hint_columns: list[str] | None = None,
+    known_relations: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Draft schema_doc wiki metadata and column_catalog stubs from free text.
+
+    The LLM path is preferred. If the configured LLM is unavailable or returns
+    invalid JSON, a deterministic draft is returned so admins can still review
+    and commit simple schema notes.
+    """
+    from core import llm_adapter
+    body_text = (body or "").strip()
+    if not body_text:
+        return {"ok": False, "error": "body required"}
+    prompt = _build_schema_doc_metadata_prompt(
+        body_text,
+        hint_relation_id=hint_relation_id,
+        hint_columns=hint_columns or [],
+        known_relations=known_relations or [],
+    )
+    llm_error = ""
+    if llm_adapter.is_available():
+        sys_prompt = (
+            "You output a single JSON object with keys: wiki_doc, column_catalog_stubs. "
+            "No code fences, no commentary."
+        )
+        result = llm_adapter.complete(prompt, system=sys_prompt, timeout=30)
+        if result.get("ok"):
+            text = str(result.get("text") or "")
+            block = _extract_json_block(text) or text
+            try:
+                parsed = json.loads(block)
+                payload = parsed.get("wiki_doc") if isinstance(parsed.get("wiki_doc"), dict) else parsed
+                if isinstance(parsed, dict) and isinstance(parsed.get("column_catalog_stubs"), list):
+                    payload = {**payload, "column_catalog_stubs": parsed.get("column_catalog_stubs") or []}
+                normalized = _normalize_schema_doc_draft(
+                    payload,
+                    body_text,
+                    hint_relation_id=hint_relation_id,
+                    hint_columns=hint_columns or [],
+                    known_relations=known_relations or [],
+                )
+                normalized["source_ai"] = True
+                normalized["prompt_chars"] = len(prompt)
+                normalized["raw_text"] = text[:2000]
+                return normalized
+            except Exception as exc:
+                llm_error = f"llm output not parseable JSON: {exc}"
+        else:
+            llm_error = str(result.get("error") or "llm error")
+    else:
+        llm_error = "llm not configured or disabled"
+
+    fallback = _normalize_schema_doc_draft(
+        _heuristic_schema_doc_payload(
+            body_text,
+            hint_relation_id=hint_relation_id,
+            hint_columns=hint_columns or [],
+            known_relations=known_relations or [],
+        ),
+        body_text,
+        hint_relation_id=hint_relation_id,
+        hint_columns=hint_columns or [],
+        known_relations=known_relations or [],
+    )
+    fallback["source_ai"] = False
+    fallback["llm_error"] = llm_error
+    fallback["prompt_chars"] = len(prompt)
+    return fallback
+
+
+def _schema_catalog_key(row: dict[str, Any]) -> tuple[str, str]:
+    return (str(row.get("relation_id") or "").strip().lower(), str(row.get("column") or "").strip().lower())
+
+
+def merge_schema_column_catalog(
+    stubs: list[dict[str, Any]],
+    *,
+    wiki_doc_id: str = "",
+    actor: str = "",
+    sync_existing: bool = False,
+) -> dict[str, Any]:
+    payload = _schema_registry_payload()
+    existing_rows = [row for row in payload.get("column_catalog") or [] if isinstance(row, dict)]
+    by_key = {_schema_catalog_key(row): dict(row) for row in existing_rows if all(_schema_catalog_key(row))}
+    now = now_iso()
+    created = 0
+    updated = 0
+    merged_rows: list[dict[str, Any]] = []
+    for raw in stubs[:500]:
+        stub = _normalize_schema_catalog_stub(raw)
+        if not stub:
+            continue
+        if wiki_doc_id and not stub.get("wiki_doc_id"):
+            stub["wiki_doc_id"] = wiki_doc_id
+        key = _schema_catalog_key(stub)
+        current = by_key.get(key)
+        if not current:
+            row = {**stub, "created_at": now, "updated_at": now, "updated_by": actor or ""}
+            by_key[key] = row
+            merged_rows.append(row)
+            created += 1
+            continue
+        changed = False
+        for field, value in stub.items():
+            if value in ("", None, [], {}):
+                continue
+            current_value = current.get(field)
+            if sync_existing and field in {"dtype"} and current_value != value:
+                current[field] = value
+                changed = True
+            elif sync_existing and field in {"raw_names", "sample_values"}:
+                merged = _schema_value_list([*(current_value if isinstance(current_value, list) else []), *(value if isinstance(value, list) else [])], limit=20)
+                if merged != current_value:
+                    current[field] = merged
+                    changed = True
+            elif current_value in ("", None, [], {}):
+                current[field] = value
+                changed = True
+        if changed:
+            current["updated_at"] = now
+            current["updated_by"] = actor or current.get("updated_by") or ""
+            updated += 1
+        merged_rows.append(current)
+    payload["column_catalog"] = sorted(by_key.values(), key=lambda r: (str(r.get("relation_id") or ""), str(r.get("column") or "")))
+    payload["updated_at"] = now
+    payload["updated_by"] = actor or payload.get("updated_by") or ""
+    _write_schema_registry(payload)
+    return {
+        "ok": True,
+        "created_count": created,
+        "updated_count": updated,
+        "merged_count": len(merged_rows),
+        "column_catalog": payload["column_catalog"],
+        "storage": "data/flow-data/schema_relations.json",
+    }
+
+
+def _schema_doc_default_id(relation_id: str, column_refs: list[str], title: str = "") -> str:
+    column = ""
+    if column_refs:
+        column = column_refs[0].split(".", 1)[1] if "." in column_refs[0] else column_refs[0]
+    if relation_id and column:
+        return safe_id(f"{relation_id.lower()}.{column}", fallback="")
+    return safe_id(f"schema_doc_{title}", fallback="schema_doc")
+
+
+def commit_schema_doc_draft(
+    *,
+    wiki_doc: dict[str, Any],
+    column_catalog_stubs: list[dict[str, Any]] | None = None,
+    actor: str = "",
+) -> dict[str, Any]:
+    doc_payload = wiki_doc if isinstance(wiki_doc, dict) else {}
+    frontmatter = doc_payload.get("frontmatter") if isinstance(doc_payload.get("frontmatter"), dict) else {}
+    relation_id = _schema_relation_id(frontmatter.get("relation_id") or doc_payload.get("relation_id") or "")
+    refs: list[str] = []
+    for ref in (frontmatter.get("column_refs") if isinstance(frontmatter.get("column_refs"), list) else doc_payload.get("column_refs") if isinstance(doc_payload.get("column_refs"), list) else []):
+        normalized = _schema_column_ref(ref, relation_id=relation_id)
+        if normalized and normalized not in refs:
+            refs.append(normalized)
+    stubs: list[dict[str, Any]] = []
+    for item in column_catalog_stubs or []:
+        stub = _normalize_schema_catalog_stub(item, relation_id=relation_id)
+        if stub:
+            stubs.append(stub)
+            ref = f"{stub['relation_id']}.{stub['column']}"
+            if ref not in refs:
+                refs.append(ref)
+            if not relation_id:
+                relation_id = stub["relation_id"]
+    if not refs and relation_id:
+        for stub in stubs:
+            refs.append(f"{stub['relation_id']}.{stub['column']}")
+    for ref in refs:
+        rel, col = ref.split(".", 1)
+        if not any(s.get("relation_id") == rel and s.get("column") == col for s in stubs):
+            stub = _normalize_schema_catalog_stub({"relation_id": rel, "column": col, "canonical_alias": col})
+            if stub:
+                stubs.append(stub)
+    if not relation_id and refs:
+        relation_id = refs[0].split(".", 1)[0]
+    fm = {**frontmatter, "relation_id": relation_id, "column_refs": refs}
+    doc_id = safe_id(doc_payload.get("doc_id") or "", fallback="") or _schema_doc_default_id(relation_id, refs, doc_payload.get("title") or "")
+    doc = KnowledgeDoc(
+        doc_id=doc_id,
+        kind="schema_doc",
+        title=str(doc_payload.get("title") or doc_id).strip()[:220],
+        summary=str(doc_payload.get("summary") or "").strip()[:500],
+        body=str(doc_payload.get("body") or "").strip(),
+        actor=actor or str(doc_payload.get("actor") or ""),
+        tags=_clean_tags(doc_payload.get("tags") or []),
+        frontmatter=fm,
+    )
+    saved = upsert_doc(doc)
+    catalog_result = merge_schema_column_catalog(stubs, wiki_doc_id=saved.get("doc_id") or doc_id, actor=actor)
+    graph = rebuild_graph()
+    append_wiki_log({
+        "action": "schema_doc_upsert",
+        "actor": actor or "",
+        "doc_id": saved.get("doc_id") or doc_id,
+        "title": saved.get("title") or doc.title,
+        "message": f"Committed schema_doc {saved.get('doc_id') or doc_id}",
+        "meta": {"relation_id": relation_id, "column_refs": refs, "catalog_stubs": len(stubs)},
+    })
+    return {
+        "ok": True,
+        "doc": saved,
+        "wiki_doc": saved,
+        "catalog": catalog_result,
+        "graph_counts": graph.get("counts", {}),
+    }
+
+
+def ai_upsert_schema_doc(
+    *,
+    body: str,
+    hint_relation_id: str = "",
+    hint_columns: list[str] | None = None,
+    actor: str = "",
+    known_relations: list[Any] | None = None,
+) -> dict[str, Any]:
+    draft = draft_schema_doc_metadata(
+        body,
+        hint_relation_id=hint_relation_id,
+        hint_columns=hint_columns or [],
+        known_relations=known_relations or [],
+    )
+    if not draft.get("ok"):
+        return draft
+    committed = commit_schema_doc_draft(
+        wiki_doc=draft.get("wiki_doc") or {},
+        column_catalog_stubs=draft.get("column_catalog_stubs") or [],
+        actor=actor,
+    )
+    return {**committed, "draft": draft}
+
+
 def ai_upsert_doc(*, body: str, doc_id: str = "", tags: list[str] | None = None, actor: str = "") -> dict[str, Any]:
     """Full pipeline: draft metadata via LLM, save the doc, refresh the graph.
 
@@ -345,6 +913,7 @@ def ai_upsert_doc(*, body: str, doc_id: str = "", tags: list[str] | None = None,
         "related_doc_ids": draft.get("related_doc_ids") or [],
         "relations": draft.get("relations") or {},
         "ai_drafted": True,
+        **(draft.get("frontmatter") or {}),
     }
     doc = KnowledgeDoc(
         doc_id=doc_id or "",
@@ -839,6 +1408,12 @@ def _refresh_wiki_index() -> list[dict[str, Any]]:
             relations = fm.get("relations")
             if isinstance(relations, dict) and relations:
                 brief["relations"] = {str(k): str(v) for k, v in relations.items() if k}
+            relation_id = fm.get("relation_id")
+            if relation_id:
+                brief["relation_id"] = str(relation_id)
+            column_refs = fm.get("column_refs")
+            if isinstance(column_refs, list) and column_refs:
+                brief["column_refs"] = [str(x) for x in column_refs if x]
             if row.get("source_event_ids"):
                 brief["source_event_ids"] = row.get("source_event_ids")
             docs.append(brief)
@@ -860,6 +1435,8 @@ def list_docs(kind: str = "", q: str = "", limit: int = 200) -> list[dict[str, A
                 str(row.get("summary") or ""),
                 " ".join(map(str, row.get("tags") or [])),
                 " ".join(map(str, row.get("source_ids") or [])),
+                str(row.get("relation_id") or ""),
+                " ".join(map(str, row.get("column_refs") or [])),
             ]).lower()
             if q_l not in hay:
                 continue

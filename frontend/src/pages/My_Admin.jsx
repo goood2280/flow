@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useMemo, Component } from "react";
 import Loading from "../components/Loading";
 import { PageHeader, TabStrip, Button, Banner, Pill, statusPalette, chartPalette } from "../components/UXKit";
+import { toast } from "../components/Toast";
 import { PROCESS_AREAS, areaColor } from "../constants/processAreas";
 import { sf, dl, postJson, userLabel, userMatches } from "../lib/api";
+import LlmCfgPanel from "../components/agent/LlmCfgPanel";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
 const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","ettime","waferlayout","tracker","inform","meeting","calendar","devguide"];
@@ -186,7 +188,7 @@ export default function My_Admin({user}){
   const[inquiry,setInquiry]=useState("");
   const sendInquiry=()=>{
     if(!inquiry.trim())return;
-    sf("/api/admin/send-inquiry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",message:inquiry.trim()})}).then(()=>{setInquiry("");alert("관리자에게 전송되었습니다!");load();}).catch(e=>alert(e.message));
+    sf("/api/admin/send-inquiry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",message:inquiry.trim()})}).then(()=>{setInquiry("");toast.ok("관리자에게 전송되었습니다.");load();}).catch(e=>toast.error(e.message));
   };
   const load=()=>{
     // Load ALL notifications (not just unread) so user can see history
@@ -240,7 +242,7 @@ export default function My_Admin({user}){
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({duration_sec:180,target_pct:85,memory:true})
     }).then(d=>{setFarmStatus(d.state||{});loadSys();})
-      .catch(e=>alert(e.message||"부하 시작 실패"))
+      .catch(e=>toast.error(e.message||"부하 시작 실패"))
       .finally(()=>setLoadBusy(false));
   };
   const stopPaverLoad=()=>{
@@ -248,7 +250,7 @@ export default function My_Admin({user}){
     setLoadBusy(true);
     sf("/api/monitor/load/stop",{method:"POST"})
       .then(d=>{setFarmStatus(d.state||{});loadSys();})
-      .catch(e=>alert(e.message||"부하 중지 실패"))
+      .catch(e=>toast.error(e.message||"부하 중지 실패"))
       .finally(()=>setLoadBusy(false));
   };
   const action=(url,body)=>sf(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(()=>setTimeout(load,500));
@@ -258,16 +260,16 @@ export default function My_Admin({user}){
     sf("/api/admin/reset-password",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username})})
       .then((r)=>{
         const to=_arr(r?.mail_to).join(", ");
-        alert(to?`임시 비밀번호를 발송했습니다: ${to}`:"임시 비밀번호를 발송했습니다.");
+        toast.ok(to?`임시 비밀번호를 발송했습니다: ${to}`:"임시 비밀번호를 발송했습니다.");
         setTimeout(load,500);
       })
-      .catch(e=>alert("비번 초기화 실패: "+e.message));
+      .catch(e=>toast.error("비번 초기화 실패: "+e.message));
   };
   const savePerm=()=>{if(!editPerm)return;sf("/api/admin/set-tabs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm,tabs:permTabs})}).then(()=>{setEditPerm(null);load();setTab("perms");});};
   const submitBulkUsers=()=>{
     const text=String(bulkUsersText||"").trim();
-    if(!text)return alert("붙여넣을 사용자 행이 없습니다.");
-    if(!bulkDefaultTabs.length)return alert("기본 권한을 하나 이상 선택하세요.");
+    if(!text){toast.warn("붙여넣을 사용자 행이 없습니다.");return;}
+    if(!bulkDefaultTabs.length){toast.warn("기본 권한을 하나 이상 선택하세요.");return;}
     setBulkUsersBusy(true);
     sf("/api/admin/bulk-users",{
       method:"POST",
@@ -276,7 +278,7 @@ export default function My_Admin({user}){
     }).then((d)=>{
       setBulkUsersResult(d||{});
       load();
-    }).catch((e)=>alert(e.message)).finally(()=>setBulkUsersBusy(false));
+    }).catch((e)=>toast.error(e.message)).finally(()=>setBulkUsersBusy(false));
   };
   const markRead=(ids)=>{if(!ids.length)return;sf("/api/admin/mark-read-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",ids})}).then(()=>{load();window.dispatchEvent(new CustomEvent("hol:notif-refresh"));}).catch(()=>{});};
   const toggleRead=(n)=>{if(!n.id)return;markRead([n.id]);};
@@ -368,7 +370,7 @@ export default function My_Admin({user}){
             <thead><tr>{["이름","아이디","역할","상태","탭","작업"].map(h=><th key={h} style={{textAlign:"left",padding:"10px 14px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:14,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
             <tbody>{(Array.isArray(users)?users:[]).map((u,i)=><tr key={i}>
               <td style={{padding:"6px 14px",borderBottom:"1px solid var(--border)",fontSize:14}}>
-                <NameInlineEdit u={u} onSave={(nm)=>sf("/api/admin/set-name",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.username,name:nm})}).then(load).catch(e=>alert(e.message))}/>
+                <NameInlineEdit u={u} onSave={(nm)=>sf("/api/admin/set-name",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.username,name:nm})}).then(load).catch(e=>toast.error(e.message))}/>
               </td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14}}>{u.username}</td>
               <td style={{padding:"10px 14px",borderBottom:"1px solid var(--border)"}}>{u.role}</td>
@@ -723,10 +725,11 @@ export default function My_Admin({user}){
         <div style={{marginBottom:16}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,marginBottom:8}}>
             <div style={{fontSize:14,fontWeight:700}}>리소스 차트</div>
-            <div style={{display:"inline-flex",gap:4,padding:2,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
-              {[["24h","24시간"],["7d","7일"]].map(([k,l])=><button key={k} type="button" onClick={()=>setResWindow(k)}
-                style={{border:0,borderRadius:4,padding:"4px 9px",fontSize:14,fontWeight:resWindow===k?700:500,cursor:"pointer",background:resWindow===k?"var(--accent-glow)":"transparent",color:resWindow===k?"var(--accent)":"var(--text-secondary)"}}>{l}</button>)}
-            </div>
+            <TabStrip
+              items={[{k:"24h",l:"24시간"},{k:"7d",l:"7일"}]}
+              active={resWindow}
+              onChange={setResWindow}
+            />
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:12}}>
             <ResourceSparkline label="CPU" rows={resLog} metric="cpu_percent" color={chartPalette.series[4]} hours={resourceChartHours}/>
@@ -1195,8 +1198,11 @@ export function FlowiQualityPanel(){
         <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:3}}>실패 유형을 모아 tool schema, 확인 질문, cache/query 경로, golden workflow를 개선합니다.</div>
       </div>
       <span style={{marginLeft:"auto",fontSize:14,color:"var(--text-secondary)"}}>최근</span>
-      {[7,30,90,180].map(d=><button key={d} type="button" onClick={()=>setDays(d)}
-        style={{padding:"4px 10px",borderRadius:6,border:"1px solid "+(days===d?"var(--accent)":"var(--border)"),background:days===d?"var(--accent-glow)":"transparent",color:days===d?"var(--accent)":"var(--text-secondary)",fontSize:14,fontWeight:days===d?800:500,cursor:"pointer"}}>{d}일</button>)}
+      <TabStrip
+        items={[7,30,90,180].map(d=>({k:String(d),l:`${d}일`}))}
+        active={String(days)}
+        onChange={(k)=>setDays(Number(k))}
+      />
       <Button variant="ghost" onClick={reload}>새로고침</Button>
     </div>
     {err&&<Banner tone="bad">{err}</Banner>}
@@ -1508,238 +1514,6 @@ function MailCfgPanel(){
 }
 
 // ── v9.0.4: Flowi LLM 설정 — admin token 을 서버 설정에 저장하고 사용자는 실행만 한다. ──
-export function LlmCfgPanel(){
-  const FALLBACK_LLM_DEFAULTS={
-    openai:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"openai",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20},
-    openai_compatible:{enabled:false,api_url:"",model:"gpt-oss-120b",mode:"fast",admin_token:"",provider:"openai_compatible",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
-    local:{enabled:false,api_url:"",model:"gpt-oss-120b",mode:"fast",admin_token:"",provider:"local",auth_mode:"none",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
-    generic:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"generic",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20},
-    playground:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"playground",auth_mode:"dep_ticket",system_name:"playground",user_id:"",user_type:"",format:"openai",timeout_s:20},
-  };
-  const PROVIDERS=Object.keys(FALLBACK_LLM_DEFAULTS);
-  const[cfg,setCfg]=useState(FALLBACK_LLM_DEFAULTS.generic);
-  const[profiles,setProfiles]=useState({});
-  const[profileDefaults,setProfileDefaults]=useState({});
-  const[msg,setMsg]=useState("");
-  const[busy,setBusy]=useState(false);
-  const[testBusy,setTestBusy]=useState(false);
-  const[testPrompt,setTestPrompt]=useState("연결 확인입니다. 정상 수신했다면 확인완료 라고만 답하세요.");
-  const[showToken,setShowToken]=useState(false);
-  const cleanProvider=(provider)=>{
-    const p=(provider||"generic").toString().trim();
-    return PROVIDERS.includes(p)?p:"generic";
-  };
-  const providerDefaults=(provider,defaultsMap=profileDefaults)=>{
-    const p=cleanProvider(provider);
-    return {...(FALLBACK_LLM_DEFAULTS[p]||FALLBACK_LLM_DEFAULTS.generic),...((defaultsMap||{})[p]||{})};
-  };
-  const normalizeWithDefaults=(l={},providerHint="",defaultsMap=profileDefaults)=>{
-    const provider=cleanProvider(l.provider||providerHint);
-    const base=providerDefaults(provider,defaultsMap);
-    const out={...base,...l,provider};
-    const timeout=Number(out.timeout_s||base.timeout_s||20);
-    out.enabled=!!out.enabled;
-    out.api_url=(out.api_url||"").toString();
-    out.model=(out.model||"").toString();
-    out.mode=(out.mode||"fast").toString()||"fast";
-    out.admin_token=(out.admin_token||"").toString();
-    out.auth_mode=(out.auth_mode||base.auth_mode||"bearer").toString();
-    if(!["bearer","dep_ticket","none"].includes(out.auth_mode))out.auth_mode=base.auth_mode||"bearer";
-    out.system_name=(out.system_name||(provider==="playground"?"playground":"")).toString();
-    out.user_id=(out.user_id||"").toString();
-    out.user_type=(out.user_type||"").toString();
-    out.format=(out.format||"openai").toString();
-    out.timeout_s=Math.max(3,Math.min(120,Number.isFinite(timeout)?timeout:(base.timeout_s||20)));
-    return out;
-  };
-  const reload=()=>{
-    sf("/api/admin/settings").then(d=>{
-      const defaults=d.llm_profile_defaults||{};
-      const saved=d.llm_profiles||{};
-      const nextProfiles={};
-      Object.entries(saved).forEach(([provider,payload])=>{
-        const normalized=normalizeWithDefaults(payload||{},provider,defaults);
-        nextProfiles[normalized.provider]=normalized;
-      });
-      const active=normalizeWithDefaults(d.llm||{},(d.llm||{}).provider||"generic",defaults);
-      if(active.provider&&!nextProfiles[active.provider])nextProfiles[active.provider]=active;
-      setProfileDefaults(defaults);
-      setProfiles(nextProfiles);
-      setCfg(active);
-    }).catch(e=>setMsg("로드 오류: "+e.message));
-  };
-  useEffect(()=>{reload();},[]);
-  const patch=(next)=>setCfg(c=>{
-    const updated=normalizeWithDefaults({...c,...next},c.provider,profileDefaults);
-    setProfiles(p=>({...p,[updated.provider]:updated}));
-    return updated;
-  });
-  const setProvider=(provider)=>{
-    const nextProvider=cleanProvider(provider);
-    setProfiles(prev=>{
-      const curProvider=cleanProvider(cfg.provider);
-      const withCurrent={...prev,[curProvider]:normalizeWithDefaults(cfg,curProvider,profileDefaults)};
-      const nextCfg=normalizeWithDefaults(withCurrent[nextProvider]||{},nextProvider,profileDefaults);
-      setCfg(nextCfg);
-      return withCurrent;
-    });
-  };
-  const save=()=>{
-    setBusy(true);setMsg("");
-    const active=normalizeWithDefaults(cfg,cfg.provider,profileDefaults);
-    sf("/api/admin/settings").then(cur=>sf("/api/admin/settings/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
-      dashboard_refresh_minutes:cur.dashboard_refresh_minutes??10,
-      dashboard_bg_refresh_minutes:cur.dashboard_bg_refresh_minutes??10,
-      llm:{
-        enabled:!!active.enabled,
-        api_url:active.api_url,
-        model:active.model,
-        mode:active.mode||"fast",
-        admin_token:active.admin_token,
-        provider:active.provider||"generic",
-        auth_mode:active.auth_mode||providerDefaults(active.provider).auth_mode||"bearer",
-        system_name:active.system_name,
-        user_id:active.user_id,
-        user_type:active.user_type,
-        format:active.format||"openai",
-        timeout_s:Number(active.timeout_s)||20,
-      },
-    })})).then(()=>{setMsg("저장됨");reload();}).catch(e=>setMsg("오류: "+e.message)).finally(()=>setBusy(false));
-  };
-  const test=()=>{
-    setTestBusy(true);setMsg("");
-    sf("/api/llm/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:testPrompt||"연결 확인"})})
-      .then(d=>setMsg(d?.ok===false?"테스트 실패: "+(d.error||"unknown"):"테스트 완료: "+String(d?.text||"응답 있음").slice(0,160)))
-      .catch(e=>setMsg("테스트 오류: "+e.message))
-      .finally(()=>setTestBusy(false));
-  };
-  const L={fontSize:14,color:"var(--text-secondary)",marginBottom:4,marginTop:10,fontWeight:600};
-  const I={width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none",boxSizing:"border-box"};
-  const provider=cleanProvider(cfg.provider);
-  const isPlayground=provider==="playground";
-  const isLocal=provider==="local";
-  const showMode=provider==="generic";
-  const authMode=cfg.auth_mode||providerDefaults(provider).auth_mode||"bearer";
-  const previewHeaders={
-    Accept:"application/json",
-    "Content-Type":"application/json",
-    ...(authMode==="bearer"&&cfg.admin_token?{Authorization:"Bearer <admin_token>"}:{}),
-    ...(authMode==="dep_ticket"&&cfg.admin_token?{"x-dep-ticket":"<credential_key>"}:{}),
-    ...(isPlayground?{
-      "Send-System-Name":cfg.system_name||"playground",
-      "User-Id":cfg.user_id||"(입력 필요)",
-      "User-Type":cfg.user_type||"(입력 필요)",
-      "Prompt-Msg-Id":"<uuid4>",
-      "Completion-Msg-Id":"<uuid4>",
-    }:{}),
-  };
-  const previewBody=isPlayground?{
-    model:cfg.model||"(입력 필요)",
-    messages:[{role:"system",content:"You are a helpful assistant."},{role:"user",content:"..."}],
-    temperature:0.5,
-    stream:false,
-  }:{
-    ...(showMode&&cfg.mode?{mode:cfg.mode}:{}),
-    ...(cfg.model?{model:cfg.model}:{}),
-    [cfg.format==="raw"?"prompt":"messages"]:cfg.format==="raw"?"...":[{role:"system",content:"..."},{role:"user",content:"..."}],
-  };
-  const preview={
-    enabled:!!cfg.enabled,
-    request:"POST "+(cfg.api_url||"(설정 필요)"),
-    provider,
-    auth_mode:authMode,
-    headers:previewHeaders,
-    body:previewBody,
-    users:"홈 Flowi 사용자는 별도 LLM token 입력 없이 서버 설정으로 실행",
-  };
-  return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:900}}>
-    <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Flowi LLM 설정</div>
-    <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.6}}>
-      Admin 이 저장한 credential 을 서버에서 사용합니다. 일반 사용자는 홈 Flowi 콘솔에서 질문만 입력하고, 답변과 기능별 표/추천은 홈에서 바로 확인합니다.
-    </div>
-    <label style={{display:"flex",alignItems:"center",gap:6,fontSize:14,marginBottom:6}}>
-      <input type="checkbox" checked={!!cfg.enabled} onChange={e=>patch({enabled:e.target.checked})}/>
-      LLM 기능 활성화
-    </label>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 2fr",gap:10}}>
-      <div>
-        <div style={L}>API Profile</div>
-        <select value={cfg.provider||"generic"} onChange={e=>setProvider(e.target.value)} style={I}>
-          <option value="openai">OpenAI API</option>
-          <option value="openai_compatible">OpenAI 호환 API</option>
-          <option value="local">사내 Local LLM</option>
-          <option value="generic">Custom Generic</option>
-          <option value="playground">사내 Playground API</option>
-        </select>
-      </div>
-      <div>
-        <div style={L}>API URL</div>
-        <input value={cfg.api_url} onChange={e=>patch({api_url:e.target.value})} placeholder={isLocal?"http://llm.internal/v1":"https://llm.internal/v1/chat/completions"} style={I}/>
-      </div>
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:isPlayground||!showMode?"2fr 1fr 1fr":"2fr 1fr 1fr 1fr",gap:10}}>
-      <div>
-        <div style={L}>Model</div>
-        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder={isLocal||provider==="openai_compatible"?"gpt-oss-120b":"internal-model"} style={I}/>
-      </div>
-      {showMode&&<div>
-        <div style={L}>Mode</div>
-        <select value={cfg.mode||"fast"} onChange={e=>patch({mode:e.target.value})} style={I}>
-          <option value="fast">fast</option>
-          <option value="balanced">balanced</option>
-          <option value="quality">quality</option>
-        </select>
-      </div>}
-      <div>
-        <div style={L}>Format</div>
-        <select value={cfg.format||"openai"} onChange={e=>patch({format:e.target.value})} disabled={isPlayground} style={{...I,opacity:isPlayground?0.65:1}}>
-          <option value="openai">openai</option>
-          <option value="raw">raw</option>
-        </select>
-      </div>
-      <div>
-        <div style={L}>Timeout (sec)</div>
-        <input type="number" min={3} max={120} value={cfg.timeout_s||20} onChange={e=>patch({timeout_s:Number(e.target.value)})} style={{...I,fontFamily:"monospace"}}/>
-      </div>
-    </div>
-    <div style={L}>{isPlayground?"Credential Key":"Admin LLM Token"} <span style={{fontWeight:400,color:"var(--text-secondary)"}}>({isPlayground?"x-dep-ticket 로 전송":(authMode==="none"?"인증 없음":"Authorization Bearer 로 전송")})</span></div>
-    <div style={{display:"flex",gap:8}}>
-      <input type={showToken?"text":"password"} value={cfg.admin_token} onChange={e=>patch({admin_token:e.target.value})} placeholder={isPlayground?"사내 credential key":"admin token"} autoComplete="off" style={{...I,fontFamily:"monospace",flex:1}}/>
-      <button type="button" onClick={()=>setShowToken(!showToken)} style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>{showToken?"숨김":"보기"}</button>
-    </div>
-    <div style={{display:isPlayground?"grid":"none",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
-      <div>
-        <div style={L}>Send-System-Name</div>
-        <input value={cfg.system_name} onChange={e=>patch({system_name:e.target.value})} placeholder="playground" style={I}/>
-      </div>
-      <div>
-        <div style={L}>User-Id</div>
-        <input value={cfg.user_id} onChange={e=>patch({user_id:e.target.value})} placeholder="Knox ID" style={I}/>
-      </div>
-      <div>
-        <div style={L}>User-Type</div>
-        <input value={cfg.user_type} onChange={e=>patch({user_type:e.target.value})} placeholder="admin/user type" style={I}/>
-      </div>
-    </div>
-    <div style={{marginTop:18,padding:12,background:"var(--bg-card)",borderRadius:6,border:"1px solid var(--border)"}}>
-      <div style={{fontSize:14,fontWeight:700,marginBottom:6}}>요청 미리보기</div>
-      <pre style={{fontSize:14,lineHeight:1.45,padding:10,background:"var(--bg-primary)",border:"1px solid var(--border)",borderRadius:4,overflow:"auto",maxHeight:260,fontFamily:"monospace",margin:0,color:"var(--text-primary)"}}>
-{JSON.stringify(preview, null, 2)}
-      </pre>
-    </div>
-    <div style={{marginTop:14}}>
-      <div style={L}>테스트 프롬프트</div>
-      <textarea value={testPrompt} onChange={e=>setTestPrompt(e.target.value)} rows={3} style={{...I,resize:"vertical"}}/>
-    </div>
-    <div style={{marginTop:14,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-      <button onClick={save} disabled={busy} style={{padding:"8px 18px",borderRadius:6,border:"none",background:"var(--accent)",color:WHITE,fontWeight:600,cursor:busy?"wait":"pointer"}}>{busy?"저장 중...":"저장"}</button>
-      <button onClick={test} disabled={testBusy||!cfg.enabled||!cfg.api_url} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontWeight:600,cursor:testBusy?"wait":"pointer",opacity:(!cfg.enabled||!cfg.api_url)?0.45:1}}>{testBusy?"테스트 중...":"연결 테스트"}</button>
-      <button onClick={reload} disabled={busy||testBusy} style={{padding:"8px 14px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>새로고침</button>
-      {msg&&<span style={{fontSize:14,color:msg.startsWith("오류")||msg.includes("실패")?BAD.fg:OK.fg}}>{msg}</span>}
-    </div>
-  </div>);
-}
-
 // ── Data Roots Panel (v8.3.0 + backup v8.7.0) ──
 function DataRootsPanel(){
   const[eff,setEff]=useState({db_root:"",sources:{}});
@@ -2039,7 +1813,7 @@ function MatchingPanel(){
       sf("/api/match/area-rollup").then(setRollup).catch(()=>setRollup(null));
     }
   };
-  const download=(name)=>{dl("/api/catalog/matching/download?name="+encodeURIComponent(name), `${name}.csv`).catch(e=>alert("다운로드 실패: "+e.message));};
+  const download=(name)=>{dl("/api/catalog/matching/download?name="+encodeURIComponent(name), `${name}.csv`).catch(e=>toast.error("다운로드 실패: "+e.message));};
   const setAreaEdit=(i,v)=>setEdits(e=>({...e,[i]:v||null}));
   const hasAreaCol=sel==="matching_step"&&preview&&(preview.columns.includes("area")||preview.rows.some(r=>"area" in r));
   const saveAreas=()=>{
@@ -2262,10 +2036,10 @@ function AdminInbox({user}){
   useEffect(()=>{loadThreads();const iv=setInterval(loadThreads,30000);return()=>clearInterval(iv);},[admin]);
   useEffect(()=>{if(sel){loadThread(sel);}else setThr(null);},[sel]);
   const openThread=(u)=>{setSel(u);sf("/api/messages/admin/mark_read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({admin,to_user:u})}).then(loadThreads).catch(()=>{});};
-  const sendReply=()=>{const v=(reply||"").trim();if(!v||!sel||sending)return;if(v.length>5000){alert("최대 5000자");return;}setSending(true);
+  const sendReply=()=>{const v=(reply||"").trim();if(!v||!sel||sending)return;if(v.length>5000){toast.warn("최대 5000자");return;}setSending(true);
     sf("/api/messages/admin/reply",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({admin,to_user:sel,text:v})})
       .then(()=>{setReply("");loadThread(sel);loadThreads();})
-      .catch(e=>alert("실패: "+e.message))
+      .catch(e=>toast.error("실패: "+e.message))
       .finally(()=>setSending(false));};
   const totalUnread=threads.reduce((s,t)=>s+(t.unread_for_admin||0),0);
   return(<div style={{display:"flex",gap:12,height:"calc(100vh - 52px - 80px - 20px)"}}>
@@ -2329,9 +2103,9 @@ function AdminNotices({user}){
   const create=()=>{const t=title.trim(),b=body.trim();if(!t&&!b)return;if(sending)return;setSending(true);
     sf("/api/messages/admin/notice_create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({author:admin,title:t,body:b})})
       .then(()=>{setTitle("");setBody("");setShowNew(false);load();})
-      .catch(e=>alert("실패: "+e.message)).finally(()=>setSending(false));};
+      .catch(e=>toast.error("실패: "+e.message)).finally(()=>setSending(false));};
   const del=(id)=>{if(!confirm("공지사항을 삭제하시겠습니까?"))return;
-    sf("/api/messages/admin/notice_delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({admin,id})}).then(load).catch(e=>alert(e.message));};
+    sf("/api/messages/admin/notice_delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({admin,id})}).then(load).catch(e=>toast.error(e.message));};
   const S={width:"100%",padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none",fontFamily:"'Pretendard',sans-serif",boxSizing:"border-box"};
   return(<div>
     <div style={{display:"flex",alignItems:"center",marginBottom:12}}>
@@ -2505,7 +2279,7 @@ function ExtraEmailAdd({current,onSave}){
   const [v,setV]=useState("");
   const submit=()=>{
     const s=(v||"").trim();
-    if(!s||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s)){alert("이메일 형식이 올바르지 않습니다.");return;}
+    if(!s||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s)){toast.warn("이메일 형식이 올바르지 않습니다.");return;}
     const next=Array.from(new Set([...(current?.extra_emails||[]),s]));
     onSave(next);
     setV("");

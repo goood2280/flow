@@ -10,7 +10,9 @@ import csv
 import datetime as dt
 import json
 import logging
+import os
 import re
+import socket
 import threading
 from pathlib import Path
 from typing import Iterable
@@ -30,6 +32,8 @@ _CACHE_STATE: dict | None = None
 _CACHE_STARTED = False
 _CACHE_STOP = threading.Event()
 _CACHE_THREAD: threading.Thread | None = None
+_CACHE_RUNNING = False
+_CACHE_LAST_SKIPPED_BY_LOCK = False
 
 
 def _cache_dir() -> Path:
@@ -58,8 +62,169 @@ def lot_status_cache_file() -> Path:
     return fp
 
 
+def refresh_lock_file() -> Path:
+    fp = PATHS.data_root / "locks" / "lot_progress_cache.lock"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    return fp
+
+
+def refresh_log_file() -> Path:
+    fp = PATHS.data_root / "logs" / "lot_progress_cache_refresh.jsonl"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    return fp
+
+
 def _now_iso() -> str:
     return dt.datetime.now().isoformat(timespec="seconds")
+
+
+def _append_refresh_log(entry: dict) -> None:
+    try:
+        fp = refresh_log_file()
+        row = {
+            "ts": _now_iso(),
+            "pid": os.getpid(),
+            "host": socket.gethostname(),
+            **(entry or {}),
+        }
+        with fp.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logger.warning("LOT progress refresh log write failed: %s", exc)
+
+
+def _read_refresh_log(limit: int = 500) -> list[dict]:
+    fp = refresh_log_file()
+    if not fp.is_file():
+        return []
+    try:
+        lines = fp.read_text(encoding="utf-8").splitlines()[-max(1, int(limit)):]
+    except Exception:
+        return []
+    out: list[dict] = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(row, dict):
+            out.append(row)
+    return out
+
+
+def _latest_refresh_log(status: str | None = None) -> dict | None:
+    for row in reversed(_read_refresh_log()):
+        if status is None or str(row.get("status") or "") == status:
+            return row
+    return None
+
+
+def _parse_iso_seconds(value: str) -> dt.datetime | None:
+    text = _safe_text(value)
+    if not text:
+        return None
+    try:
+        return dt.datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _try_acquire_refresh_lock():
+    fh = refresh_lock_file().open("a+", encoding="utf-8")
+    try:
+        import fcntl  # type: ignore
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            fh.seek(0)
+            payload = fh.read(1000)
+            fh.close()
+            return None, payload
+    except ImportError:
+        pass
+    fh.seek(0)
+    fh.truncate()
+    fh.write(json.dumps({
+        "pid": os.getpid(),
+        "host": socket.gethostname(),
+        "started_at": _now_iso(),
+    }, ensure_ascii=False))
+    fh.flush()
+    try:
+        os.fsync(fh.fileno())
+    except Exception:
+        pass
+    return fh, ""
+
+
+def _release_refresh_lock(fh) -> None:
+    try:
+        import fcntl  # type: ignore
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        fh.close()
+    except Exception:
+        pass
+
+
+def _lock_state() -> dict:
+    fp = refresh_lock_file()
+    if _CACHE_RUNNING:
+        return {"locked": True, "running": True, "path": str(fp), "owner": ""}
+    owner = ""
+    locked = False
+    if fp.is_file():
+        try:
+            with fp.open("a+", encoding="utf-8") as fh:
+                fh.seek(0)
+                owner = fh.read(1000)
+                try:
+                    import fcntl  # type: ignore
+                    try:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    except BlockingIOError:
+                        locked = True
+                except ImportError:
+                    locked = False
+        except Exception:
+            locked = False
+    return {"locked": locked, "running": locked, "path": str(fp), "owner": owner}
+
+
+def _freshness_state(last_success_at: str, *, running: bool = False, error: bool = False) -> str:
+    if running:
+        return "running"
+    parsed = _parse_iso_seconds(last_success_at)
+    if parsed is None:
+        return "error" if error else "never"
+    age = (dt.datetime.now() - parsed).total_seconds()
+    return "ok" if age <= 6 * 3600 else "stale"
+
+
+def _state_with_runtime(state: dict | None, *, skipped_by_lock: bool = False, error: bool = False) -> dict:
+    out = dict(state or {})
+    latest_attempt = _latest_refresh_log()
+    latest_success = _latest_refresh_log("success")
+    last_attempt_at = _safe_text((latest_attempt or {}).get("ts") or (latest_attempt or {}).get("started_at"))
+    last_success_at = _safe_text((latest_success or {}).get("ts") or (latest_success or {}).get("generated_at"))
+    if not last_success_at:
+        last_success_at = _safe_text(out.get("generated_at"))
+    lock_state = _lock_state()
+    running = bool(_CACHE_RUNNING or lock_state.get("running"))
+    out.update({
+        "last_success_at": last_success_at,
+        "last_attempt_at": last_attempt_at,
+        "freshness_state": _freshness_state(last_success_at, running=running, error=error),
+        "refresh_log_path": str(refresh_log_file()),
+        "lock_state": lock_state,
+        "running": running,
+        "skipped_by_lock": bool(skipped_by_lock or _CACHE_LAST_SKIPPED_BY_LOCK),
+        "row_count": int(out.get("count") or len(out.get("items") or []) or 0),
+    })
+    return out
 
 
 def lot_progress_cache_refresh_minutes() -> int:
@@ -436,8 +601,8 @@ def _fab_product_dirs(fab_root: Path) -> Iterable[Path]:
 
 def refresh_lot_progress_cache(force: bool = False) -> dict:
     """Rebuild the LOT_WF current-position cache from FAB parquet."""
+    global _CACHE_STATE, _CACHE_RUNNING, _CACHE_LAST_SKIPPED_BY_LOCK
     with _CACHE_LOCK:
-        global _CACHE_STATE
         cache_path = cache_file()
         max_age_seconds = lot_progress_cache_refresh_seconds()
         if not force and _CACHE_STATE:
@@ -447,96 +612,155 @@ def refresh_lot_progress_cache(force: bool = False) -> dict:
             except Exception:
                 age = max_age_seconds + 1
             if age <= max_age_seconds:
-                return dict(_CACHE_STATE)
+                _CACHE_LAST_SKIPPED_BY_LOCK = False
+                return _state_with_runtime(_CACHE_STATE)
 
-        db_root = PATHS.db_root
-        fab_root = db_root / FAB_ROOT
-        step_by_product, step_by_id = load_step_matching()
-        latest: dict[tuple[str, str], dict] = {}
-        files_scanned = 0
-        rows_seen = 0
-        errors: list[str] = []
-
-        for product_dir in _fab_product_dirs(fab_root):
-            # Product comes from the FAB DB product folder, not from a parquet column.
-            product = product_dir.name
-            for parquet in product_dir.rglob("*.parquet"):
-                files_scanned += 1
+        lock_fh, lock_owner = _try_acquire_refresh_lock()
+        if lock_fh is None:
+            _CACHE_LAST_SKIPPED_BY_LOCK = True
+            _append_refresh_log({
+                "status": "skipped_by_lock",
+                "reason": "another refresh is running",
+                "lock_owner": lock_owner,
+            })
+            state = _CACHE_STATE
+            if state is None and cache_path.is_file():
                 try:
-                    rows = _read_parquet_rows(parquet)
-                    for raw in rows:
-                        rows_seen += 1
-                        root_lot_id = _safe_text(raw.get("root_lot_id"))
-                        lot_id = _safe_text(raw.get("lot_id"))
-                        wafer_id = _norm_wafer(raw.get("wafer_id"))
-                        step_id = _safe_text(raw.get("step_id"))
-                        if not (root_lot_id and wafer_id and step_id):
-                            continue
-                        process_id = _safe_text(raw.get("process_id"))
-                        product_key = _norm_key(product)
-                        step_key = _norm_key(step_id)
-                        function_step = (
-                            step_by_product.get((product_key, step_key))
-                            or step_by_product.get((_norm_key(process_id), step_key))
-                            or step_by_id.get(step_key)
-                            or ""
-                        )
-                        lot_wf = f"{root_lot_id}_{wafer_id}"
-                        item = {
-                            "product": product,
-                            "process_id": process_id,
-                            "root_lot_id": root_lot_id,
-                            "lot_id": lot_id,
-                            "wafer_id": wafer_id,
-                            "LOT_WF": lot_wf,
-                            "lot_wf": lot_wf,
-                            "step_id": step_id,
-                            "function_step": function_step,
-                            "func_step": function_step,
-                            "tkin_time": _safe_text(raw.get("tkin_time")),
-                            "tkout_time": _safe_text(raw.get("tkout_time")),
-                            "time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
-                            "update_time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
-                            "eqp_id": _safe_text(raw.get("eqp_id")),
-                            "chamber_id": _safe_text(raw.get("chamber_id")),
-                            "ppid": _safe_text(raw.get("ppid")),
-                            "source_root": FAB_ROOT,
-                        }
-                        key = (_norm_key(product), _norm_key(lot_wf))
-                        prev = latest.get(key)
-                        if prev is None or _sort_time(item) >= _sort_time(prev):
-                            latest[key] = item
-                except Exception as exc:
-                    if len(errors) < 20:
-                        errors.append(f"{parquet}: {exc}")
+                    loaded = json.loads(cache_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        state = loaded
+                        _CACHE_STATE = loaded
+                except Exception:
+                    state = None
+            if state is None:
+                state = {
+                    "version": CACHE_VERSION,
+                    "generated_at": "",
+                    "cache_file": str(cache_path),
+                    "count": 0,
+                    "files_scanned": 0,
+                    "rows_seen": 0,
+                    "errors": ["refresh skipped because another process holds the cache lock"],
+                    "items": [],
+                }
+            return _state_with_runtime(state, skipped_by_lock=True)
 
-        items = sorted(
-            latest.values(),
-            key=lambda row: (_norm_key(row.get("product")), _norm_key(row.get("root_lot_id")), _wafer_sort_value(row.get("wafer_id"))),
-        )
-        state = {
-            "version": CACHE_VERSION,
-            "generated_at": _now_iso(),
-            "db_root": str(db_root),
-            "fab_root": str(fab_root),
-            "source_root": FAB_ROOT,
-            "cache_file": str(cache_path),
-            "count": len(items),
-            "files_scanned": files_scanned,
-            "rows_seen": rows_seen,
-            "errors": errors,
-            "items": items,
-        }
-        _save_tracker_lot_status_cache(items, source="lot_progress_cache")
-        tmp = cache_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(cache_path)
+        _CACHE_RUNNING = True
+        _CACHE_LAST_SKIPPED_BY_LOCK = False
+        started_at = _now_iso()
+        _append_refresh_log({"status": "started", "started_at": started_at, "force": bool(force)})
         try:
-            export_lot_progress_parquet(state)
+            db_root = PATHS.db_root
+            fab_root = db_root / FAB_ROOT
+            step_by_product, step_by_id = load_step_matching()
+            latest: dict[tuple[str, str], dict] = {}
+            files_scanned = 0
+            rows_seen = 0
+            errors: list[str] = []
+
+            for product_dir in _fab_product_dirs(fab_root):
+                # Product comes from the FAB DB product folder, not from a parquet column.
+                product = product_dir.name
+                for parquet in product_dir.rglob("*.parquet"):
+                    files_scanned += 1
+                    try:
+                        rows = _read_parquet_rows(parquet)
+                        for raw in rows:
+                            rows_seen += 1
+                            root_lot_id = _safe_text(raw.get("root_lot_id"))
+                            lot_id = _safe_text(raw.get("lot_id"))
+                            wafer_id = _norm_wafer(raw.get("wafer_id"))
+                            step_id = _safe_text(raw.get("step_id"))
+                            if not (root_lot_id and wafer_id and step_id):
+                                continue
+                            process_id = _safe_text(raw.get("process_id"))
+                            product_key = _norm_key(product)
+                            step_key = _norm_key(step_id)
+                            function_step = (
+                                step_by_product.get((product_key, step_key))
+                                or step_by_product.get((_norm_key(process_id), step_key))
+                                or step_by_id.get(step_key)
+                                or ""
+                            )
+                            lot_wf = f"{root_lot_id}_{wafer_id}"
+                            item = {
+                                "product": product,
+                                "process_id": process_id,
+                                "root_lot_id": root_lot_id,
+                                "lot_id": lot_id,
+                                "wafer_id": wafer_id,
+                                "LOT_WF": lot_wf,
+                                "lot_wf": lot_wf,
+                                "step_id": step_id,
+                                "function_step": function_step,
+                                "func_step": function_step,
+                                "tkin_time": _safe_text(raw.get("tkin_time")),
+                                "tkout_time": _safe_text(raw.get("tkout_time")),
+                                "time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
+                                "update_time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
+                                "eqp_id": _safe_text(raw.get("eqp_id")),
+                                "chamber_id": _safe_text(raw.get("chamber_id")),
+                                "ppid": _safe_text(raw.get("ppid")),
+                                "source_root": FAB_ROOT,
+                            }
+                            key = (_norm_key(product), _norm_key(lot_wf))
+                            prev = latest.get(key)
+                            if prev is None or _sort_time(item) >= _sort_time(prev):
+                                latest[key] = item
+                    except Exception as exc:
+                        if len(errors) < 20:
+                            errors.append(f"{parquet}: {exc}")
+
+            items = sorted(
+                latest.values(),
+                key=lambda row: (_norm_key(row.get("product")), _norm_key(row.get("root_lot_id")), _wafer_sort_value(row.get("wafer_id"))),
+            )
+            state = {
+                "version": CACHE_VERSION,
+                "generated_at": _now_iso(),
+                "db_root": str(db_root),
+                "fab_root": str(fab_root),
+                "source_root": FAB_ROOT,
+                "cache_file": str(cache_path),
+                "count": len(items),
+                "files_scanned": files_scanned,
+                "rows_seen": rows_seen,
+                "errors": errors,
+                "items": items,
+            }
+            _save_tracker_lot_status_cache(items, source="lot_progress_cache")
+            tmp = cache_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(cache_path)
+            try:
+                export_lot_progress_parquet(state)
+            except Exception as exc:
+                logger.warning("LOT_WF parquet export failed: %s", exc)
+            _CACHE_STATE = state
+            _append_refresh_log({
+                "status": "success",
+                "started_at": started_at,
+                "generated_at": state.get("generated_at"),
+                "files_scanned": files_scanned,
+                "rows_seen": rows_seen,
+                "row_count": len(items),
+                "errors": len(errors),
+            })
+            _CACHE_RUNNING = False
+            _release_refresh_lock(lock_fh)
+            lock_fh = None
+            return _state_with_runtime(state)
         except Exception as exc:
-            logger.warning("LOT_WF parquet export failed: %s", exc)
-        _CACHE_STATE = state
-        return dict(state)
+            _append_refresh_log({
+                "status": "failure",
+                "started_at": started_at,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            raise
+        finally:
+            _CACHE_RUNNING = False
+            if lock_fh is not None:
+                _release_refresh_lock(lock_fh)
 
 
 def load_lot_progress_cache(max_age_seconds: int | None = None) -> dict:
@@ -747,12 +971,26 @@ def cache_status() -> dict:
     try:
         state = load_lot_progress_cache(max_age_seconds=lot_progress_cache_refresh_seconds())
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "cache_file": str(cache_file())}
+        runtime = _state_with_runtime({}, error=True)
+        return {
+            "ok": False,
+            "error": str(exc),
+            "cache_file": str(cache_file()),
+            "last_success_at": runtime.get("last_success_at", ""),
+            "last_attempt_at": runtime.get("last_attempt_at", ""),
+            "freshness_state": runtime.get("freshness_state", "error"),
+            "refresh_log_path": runtime.get("refresh_log_path", str(refresh_log_file())),
+            "lock_state": runtime.get("lock_state") or {},
+            "running": bool(runtime.get("running")),
+            "skipped_by_lock": bool(runtime.get("skipped_by_lock")),
+        }
+    runtime = _state_with_runtime(state)
     return {
         "ok": True,
         "version": state.get("version"),
         "generated_at": state.get("generated_at"),
         "count": state.get("count", len(state.get("items") or [])),
+        "row_count": runtime.get("row_count", state.get("count", len(state.get("items") or []))),
         "files_scanned": state.get("files_scanned", 0),
         "rows_seen": state.get("rows_seen", 0),
         "errors": state.get("errors") or [],
@@ -760,6 +998,13 @@ def cache_status() -> dict:
         "scheduler_started": _CACHE_STARTED,
         "interval_minutes": lot_progress_cache_refresh_minutes(),
         "interval_seconds": lot_progress_cache_refresh_seconds(),
+        "last_success_at": runtime.get("last_success_at", ""),
+        "last_attempt_at": runtime.get("last_attempt_at", ""),
+        "freshness_state": runtime.get("freshness_state", "never"),
+        "refresh_log_path": runtime.get("refresh_log_path", str(refresh_log_file())),
+        "lock_state": runtime.get("lock_state") or {},
+        "running": bool(runtime.get("running")),
+        "skipped_by_lock": bool(runtime.get("skipped_by_lock")),
     }
 
 

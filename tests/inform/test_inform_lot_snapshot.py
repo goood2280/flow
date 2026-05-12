@@ -54,6 +54,52 @@ def test_create_inform_preserves_split_table_root_and_fab_lots(tmp_path, monkeyp
     assert by_lot["count"] == 1
 
 
+def test_bulk_create_informs_preserves_payload_order(tmp_path, monkeypatch):
+    informs_file = tmp_path / "informs.json"
+    monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
+    monkeypatch.setattr(informs, "_INFORMS_CACHE_SIG", None)
+    monkeypatch.setattr(informs, "_INFORMS_CACHE_ITEMS", None)
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
+    monkeypatch.setattr(informs, "_resolve_lot_identity_snapshot", lambda product, lot, wafer, embed, explicit_fab_lot_id="": {
+        "root_lot_id": lot.split(".")[0],
+        "root_lot_ids": [lot.split(".")[0]],
+        "wafer_id": wafer,
+        "wafer_ids": [wafer] if wafer else [],
+        "fab_lot_id": explicit_fab_lot_id,
+        "source": "test",
+    })
+    monkeypatch.setattr(informs, "_audit_record", lambda *_args, **_kwargs: {})
+
+    out = informs.bulk_create_informs(
+        informs.InformBulkCreateReq(informs=[
+            informs.InformCreate(lot_id="A1000A.2", wafer_id="2", product="PRODA", module="ET", text="second", fab_lot_id_at_save="A1000A.2"),
+            informs.InformCreate(lot_id="A1000A.1", wafer_id="1", product="PRODA", module="GATE", text="first", fab_lot_id_at_save="A1000A.1"),
+        ]),
+        object(),
+    )
+
+    assert [row["lot_id"] for row in out["informs"]] == ["A1000A.2", "A1000A.1"]
+    assert [row["fab_lot_id_at_save"] for row in out["informs"]] == ["A1000A.2", "A1000A.1"]
+    assert [row["wafer_ids_at_save"] for row in out["informs"]] == [["2"], ["1"]]
+    assert [row["lot_id"] for row in informs._load()] == ["A1000A.2", "A1000A.1"]
+
+
+def test_splittable_snapshot_reuses_short_cache(monkeypatch):
+    calls = []
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "user", "username": "tester"})
+    monkeypatch.setattr(informs, "build_splittable_embed", lambda **kwargs: calls.append(kwargs) or {"source": "built", "columns": ["parameter"], "rows": []})
+    informs._SPLITTABLE_SNAPSHOT_CACHE.clear()
+    informs._SPLITTABLE_SNAPSHOT_INFLIGHT.clear()
+
+    req = informs.SplitTableSnapshotReq(product="ML_TABLE_PRODA", lot_id="A1000A.1", custom_cols=["KNOB_GATE"])
+    first = informs.splittable_snapshot(req, object())
+    second = informs.splittable_snapshot(req, object())
+
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert len(calls) == 1
+
+
 def test_inform_wafer_queries_normalize_saved_wafer_forms(monkeypatch):
     items = [
         {"id": "a", "wafer_id": "01", "lot_id": "A1000", "product": "PRODA", "created_at": "2026-04-27T10:00:00"},

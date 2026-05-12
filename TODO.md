@@ -2,28 +2,41 @@
 
 > `Now` 항목은 `(Claude)` / `(Codex)` 접두로 책임을 분리한다. Claude 세션은 진입점/문서/TODO/평가/Agent ↔ feature 명세를 유지하고, Codex CLI 세션은 frontend/backend 코드 자체 변경을 담당한다 (`AGENTS.md` Role Split 참조).
 
-## Now
+## Restart Plan
 
-- [ ] (Codex) UI Quick Win #1 — 모든 `position:fixed` 모달을 `components/Modal.jsx`로 통일. 위반: `My_Calendar.jsx:485`, `My_SplitTable.jsx:1803/1824/1871`, `My_Inform.jsx:1401/1451`, `My_Dashboard.jsx`, `My_FileBrowser.jsx`. z-index 자동화 (`docs/UI_REVIEW.md` 참조)
-- [ ] (Codex) UI Quick Win #2 — hardcoded color hex 일괄 치환 — `My_Home.jsx:5` 개별 변수, `My_Dashboard.jsx:15-22` Spotfire 임베드, `My_Calendar.jsx:335/429/477` `#fff`, `My_Diagnosis.jsx:1263-1270` `CALL_NODE_TONE` → CSS 변수 또는 `uxColors`/`chartPalette` 사용
-- [ ] (Codex) UI Quick Win #3 — `My_Admin.jsx`, `My_Home.jsx` 직접 button 탭을 UXKit `<TabStrip items active onChange />`로 교체
-- [ ] (Codex) UI Quick Win #4 — `alert()` 전면 제거 → UXKit `<Banner tone>` 또는 toast. `My_Calendar.jsx`, `My_Admin.jsx` 우선
-- [ ] (Codex) UI Quick Win #5 — 페이지 헤더 inline `<div>` → `<PageHeader title subtitle right />` 통일. `My_Dashboard.jsx:741` 등 10+ 페이지
-- [ ] (Codex) `fetch(` 직접 호출을 `src/lib/api.js`의 `sf()`로 일괄 정리 — `My_FileBrowser.jsx`(7건), `My_Home.jsx`(13건) 우선
+- 한 번에 한 항목만 `Now`로 올리고, 완료하면 검증 결과와 함께 `Done`으로 이동한다.
+- 기능/API 변경은 관련 `docs/features/<feature>.md`와 endpoint shape를 같이 확인한다.
+- UI-only 변경은 `git diff --check`와 `cd frontend && npm run build`를 기본 검증으로 둔다.
+- backend/API/data 변경은 영향 범위에 맞춰 `python3 -m pytest tests` 또는 `python3 scripts/smoke_test.py`까지 실행한다.
+- 현재 dirty runtime/cache 파일은 기존 세션 산출물로 보고, 해당 작업이 아니면 건드리지 않는다.
+
+## Now
 
 ## Next
 
-- [ ] (Codex) Inform Log 페이지 분해 — thread/list/draft/mail/snapshot 패널 단위로 panel 또는 hook 추출 (5,141줄 → 사용자 흐름 단위)
-- [ ] (Codex) SplitTable 페이지 분해 — matrix/notes/rulebook/embed builder를 독립 컴포넌트로 분리 (2,226줄, useState 74개)
-- [ ] (Codex) Inform 라우터의 silent `try/except: pass` 46건 일괄 정리 — 실패 사유 UI/log 노출
-- [ ] (Codex) FileBrowser/SplitTable/Inform 라우터의 service/repository 계층 도입 — `app_v2/modules/<feature>/`로 점진 이관
-- [ ] (Codex) Admin / Dashboard 페이지 분해 — panel 단위로 분리 (각 ~3,000줄)
-- [ ] (Claude) Agent 미션 정착 후 Diagnosis/Knowledge 본연 흐름 재정리 (`docs/features/diagnosis-knowledge.md` 우선순위 메모 해제)
+- [ ] (Codex) P10 Flow-i backend 구조 분리 — `backend/routers/llm.py`에서 unit action handler 한 묶음을 feature별 module로 추출하고 trace 계약을 유지한다.
+- [ ] (Codex) P11 Admin / Dashboard 페이지 분해 — panel 하나씩 분리하고 기존 API 호출/권한을 유지한다.
+- [ ] (Claude) P12 Agent 미션 정착 후 Diagnosis/Knowledge 본연 흐름 재정리 (`docs/features/diagnosis-knowledge.md` 우선순위 메모 해제).
 - [ ] Keep feature docs current when page/API ownership changes.
 - [ ] Regenerate `setup.py` with `_build_setup.py` after source or bundled doc changes.
 
 ## Done
 
+- [x] (Codex) Meeting SSE `/api/meetings/stream` 404 회귀 수정 — static `/stream` 라우트를 `/{mid}`보다 먼저 등록하고 visibility helper 호출 시그니처를 보정. `setup.py` 재생성. `python3 -m pytest tests/test_meeting_mail_preview.py`, `python3 -m py_compile backend/routers/meetings.py`, 대상 경로 `git diff --check`, `cd frontend && npm run build`, `python3 -m pytest tests`, `python3 setup.py version` 통과. 전체 `git diff --check`는 기존 runtime `data/flow-data/flowi_users/hol.md` trailing whitespace로 실패.
+- [x] (Codex) Flow UI 통합 디자인 시스템 적용 — `#E25822` 브랜드/시맨틱 토큰과 UXKit/global 공통 컴포넌트를 보강하고 Inform/Meeting/Calendar/Diagnosis/Tracker/App의 하드코드 색·표·pill/card 패턴을 정리. 대상 UI 파일 `git diff --check`, `cd frontend && npm run build`, `python3 -m pytest tests` 통과. 전체 `git diff --check`는 기존 runtime `data/flow-data/flowi_users/hol.md` trailing whitespace로 실패. `python3 scripts/smoke_test.py`는 로컬 서버 미기동으로 로그인 단계에서 중단.
+- [x] (Codex) 최근 변경 코드 트림 — Agent legacy 중복 default/LLM panel export 제거, Inform 직접 `fetch()` 3건을 `sf()` helper로 전환, PageGearButton 사용부 inline handler 정리, `s3_sync` silent `pass`를 warning/debug log로 전환. 대상 경로 `git diff --check`, `cd frontend && npm run build`, `python3 -m py_compile backend/core/s3_sync.py backend/core/knowledge_vault.py backend/routers/agent.py backend/routers/filebrowser.py backend/routers/informs.py backend/routers/s3_ingest.py backend/routers/knowledge.py`, `python3 -m pytest tests/agent/test_agent_endpoints.py tests/test_filebrowser_sql.py tests/test_lot_progress_cache.py tests/test_s3_ingest_status.py tests/inform`, `python3 scripts/smoke_test.py` 통과. 전체 `git diff --check`는 기존 runtime `data/flow-data/flowi_users/hol.md` trailing whitespace로 실패.
+- [x] (Codex) Knowledge Wiki + DB Schema 연결 1차 — `schema_doc` kind, `column_catalog`, 용어→컬럼 lookup/admin ingest endpoint, seed 문서/fixture를 추가. `python3 -m py_compile backend/core/knowledge_vault.py backend/routers/agent.py backend/routers/knowledge.py backend/app_v2/shared/contracts.py`, backend import, schema_doc lookup/draft shape, `python3 scripts/smoke_test.py`, frontend build 통과. 전체 `git diff --check`는 기존 `data/flow-data/flowi_users/hol.md` trailing whitespace로 실패했고, 변경 대상 경로 diff check는 통과.
+- [x] (Codex) Flow 에이전트 탭 정돈 — Diagnosis Agent 탭을 Loop/Wiki/Schema/AI 연결 컴포넌트로 분리하고 dry-run thinking, schema scan 승인 UX, LLM 상태/설정, wiki graph를 구현. `npm run build`, `python3 -m py_compile backend/routers/llm.py backend/routers/agent.py backend/routers/knowledge.py`, `python3 scripts/smoke_test.py`, `python3 _build_setup.py && python3 setup.py version` 통과. 전체 `git diff --check`는 runtime hol.md trailing whitespace 때문에 실패, 변경 대상 경로 diff check는 통과.
+- [x] (Codex) P9 FileBrowser 운영 개선 1차 — LOT 진행 캐시 lock/log/status, S3 자동 업로드 토글, version/컬럼/AI SQL UX, 캐시 cleanup API, S3 방향별 상태, CSV 다운로드 row 설정, Inform bulk-create/snapshot cache/UI를 정리. `python3 -m pytest tests/test_s3_ingest_status.py tests/test_filebrowser_sql.py tests/test_lot_progress_cache.py tests/inform`, `git diff --check`, frontend build 통과.
+- [x] (Codex) P8 Inform 라우터 silent failure 정리 1차 — `admin_settings.json` 읽기 실패 시 Inform user-modules 조회/저장/clear 경로가 warning 로그와 HTTP 500 detail을 내고, 감사 로그 `try/except: pass`는 warning 로그로 전환. 깨진 설정 파일이 저장으로 덮어써지지 않게 검증. `python3 -m pytest tests/inform` 통과.
+- [x] (Codex) P7 SplitTable 페이지 분해 — matrix plan 입력 모달을 `SplitTableCellEditor`로 분리해 matrix 본문에서 edit UI를 떼어냄. `git diff --check`, frontend build 통과.
+- [x] (Codex) P6 Inform Log 페이지 분해 — `MailDialog`의 메일 미리보기/본문 크기/인라인 이미지/자동 SplitTable xlsx 첨부 표시 흐름을 `MailDialogPreviewPanel`로 추출. `git diff --check`, frontend build 통과.
+- [x] (Codex) P5 PageHeader/TabStrip 표준화 — `My_Home.jsx`의 사용 방법 header를 `PageHeader`로 교체하고 `My_Admin.jsx` 리소스/품질 기간 선택 및 `My_Dashboard.jsx` 밀도 선택을 `TabStrip`으로 정리. `git diff --check`, frontend build 통과.
+- [x] (Codex) P4 hardcoded color/token 정리 1차 — Home 픽셀 로고 색은 보존하고 Flow-i/Home UI 상태색, Dashboard Spotfire 팔레트, FileBrowser S3/cache 상태색, TableMap graph 색, SplitTable grid 색을 `statusPalette`/`chartPalette`/지역 토큰으로 1차 이관. `git diff --check`, frontend build 통과.
+- [x] (Codex) P3 남은 `position: fixed` 정리 — Dashboard/TableMap 직접 overlay를 `Modal`로 전환하고 SplitTable/FileBrowser 수동 gear button을 공용 `PageGearButton`으로 이동. 대상 4파일 직접 `position: fixed` 0건, `git diff --check`, frontend build 통과.
+- [x] (Codex) P2 `alert()` 제거 1차 — `My_TableMap.jsx`, `My_Admin.jsx`, `My_Home.jsx`, `My_Dashboard.jsx`의 직접 `alert()` 호출을 toast로 전환. 대상 4파일 `rg "alert\\("` 0건, `git diff --check`, frontend build 통과.
+- [x] (Codex) P1 직접 `fetch(` 제거 1차 — `My_FileBrowser.jsx`와 `My_Home.jsx`의 직접 `fetch(`를 `sf()`, `postJson()`, `dl()`로 이관. `rg "fetch\\("` 대상 2파일 0건, `git diff --check`, frontend build 통과.
+- [x] (Codex) P0 Owner Discord request 점검 — FileBrowser sync/cache/CSV/AI SQL/version 편집, Inform snapshot/register/embed UI 흐름 관련 targeted pytest 103개와 frontend build 통과. 즉시 막는 재현 실패가 없어 코드 수정 없음.
 - [x] (Codex) c794c42 GitHub main 배포 준비 — HEAD가 `c794c42`임을 확인하고 setup.py 재생성/검증 후 Discord deploy agent에 commit/push 인계.
 - [x] (Codex) GitHub main 배포 준비 — 로컬 변경 검토, setup.py 재생성, diff/build/pytest/smoke/preflight 검증 완료. 커밋/푸시는 Discord deploy agent가 이어서 수행.
 - [x] (Codex) FileBrowser LOT 진행 최신 캐시 생성 기준 수정 — product는 FAB 제품 폴더명에서 가져오고 FileBrowser cache 폴더는 canonical 최신 cache만 남기며 생성 방식을 자연어로 문서화.

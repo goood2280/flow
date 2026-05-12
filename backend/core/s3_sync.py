@@ -57,6 +57,10 @@ SYNCABLE_DB_ROOT_FILES = {
     "yld_shot_agg.csv",
 }
 
+SYNCABLE_DB_CACHE_FILES = {
+    "lot_progress_latest_lot_by_root_wafer.parquet",
+}
+
 
 def load_config(data_root: Path) -> Dict[str, Any]:
     fp = data_root / "s3_sync.json"
@@ -66,7 +70,8 @@ def load_config(data_root: Path) -> Dict[str, Any]:
         d = json.loads(fp.read_text(encoding="utf-8"))
         merged = DEFAULT_CONFIG.copy(); merged.update(d)
         return merged
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to read S3 sync config %s: %s", fp, exc)
         return DEFAULT_CONFIG.copy()
 
 
@@ -98,8 +103,10 @@ def recent_status(data_root: Path, limit: int = 50) -> List[Dict[str, Any]]:
     lines = fp.read_text(encoding="utf-8").splitlines()[-limit:]
     out = []
     for ln in lines:
-        try: out.append(json.loads(ln))
-        except Exception: pass
+        try:
+            out.append(json.loads(ln))
+        except Exception as exc:
+            logger.debug("Skipping malformed S3 sync status line: %s", exc)
     return out
 
 
@@ -160,6 +167,19 @@ def list_artifacts(data_root: Path, db_root: Path) -> List[Dict[str, Any]]:
                 "sha1": _sha1(fp),
                 "mtime": fp.stat().st_mtime,
             })
+        cache_dir = db_root / "cache"
+        if cache_dir.exists():
+            for name in sorted(SYNCABLE_DB_CACHE_FILES):
+                fp = cache_dir / name
+                if not fp.exists() or not fp.is_file():
+                    continue
+                out.append({
+                    "type": "cache", "product": "",
+                    "path": str(fp), "key": f"cache/{fp.name}",
+                    "size": fp.stat().st_size,
+                    "sha1": _sha1(fp),
+                    "mtime": fp.stat().st_mtime,
+                })
     # product_config (yaml)
     yc_dir = data_root / "product_config"
     if yc_dir.exists():
@@ -181,7 +201,8 @@ def _sha1(fp: Path) -> str:
             for chunk in iter(lambda: f.read(1 << 16), b""):
                 h.update(chunk)
         return h.hexdigest()[:12]
-    except Exception:
+    except Exception as exc:
+        logger.debug("Unable to hash S3 sync artifact %s: %s", fp, exc)
         return ""
 
 
@@ -191,15 +212,17 @@ def artifact_from_path(data_root: Path, db_root: Path, path: Path) -> Optional[D
         return None
     try:
         fp = fp.resolve()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Unable to resolve S3 sync artifact path %s: %s", fp, exc)
     try:
         data_root_r = data_root.resolve()
-    except Exception:
+    except Exception as exc:
+        logger.debug("Unable to resolve S3 sync data root %s: %s", data_root, exc)
         data_root_r = data_root
     try:
         db_root_r = db_root.resolve()
-    except Exception:
+    except Exception as exc:
+        logger.debug("Unable to resolve S3 sync DB root %s: %s", db_root, exc)
         db_root_r = db_root
 
     try:
@@ -216,8 +239,8 @@ def artifact_from_path(data_root: Path, db_root: Path, path: Path) -> Optional[D
                 "path": str(fp), "key": f"product_config/{fp.name}",
                 "size": fp.stat().st_size, "sha1": _sha1(fp), "mtime": fp.stat().st_mtime,
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Path %s is not a data-root S3 artifact: %s", fp, exc)
 
     try:
         rel = fp.relative_to(db_root_r)
@@ -233,8 +256,14 @@ def artifact_from_path(data_root: Path, db_root: Path, path: Path) -> Optional[D
                 "path": str(fp), "key": f"matching/{fp.name}",
                 "size": fp.stat().st_size, "sha1": _sha1(fp), "mtime": fp.stat().st_mtime,
             }
-    except Exception:
-        pass
+        if rel.parts[:1] == ("cache",) and len(rel.parts) == 2 and fp.name in SYNCABLE_DB_CACHE_FILES:
+            return {
+                "type": "cache", "product": "",
+                "path": str(fp), "key": f"cache/{fp.name}",
+                "size": fp.stat().st_size, "sha1": _sha1(fp), "mtime": fp.stat().st_mtime,
+            }
+    except Exception as exc:
+        logger.debug("Path %s is not a db-root S3 artifact: %s", fp, exc)
     return None
 
 

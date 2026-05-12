@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState, useRef } from "react";
 import PageGear from "../components/PageGear";
 import Modal from "../components/Modal";
 import { toast } from "../components/Toast";
+import { Card, Pill, TableWrap, Tbl } from "../components/UXKit";
 import { authSrc, sf, postJson, userLabel } from "../lib/api";
 
 const API = "/api/meetings";
@@ -20,11 +21,17 @@ const SESS_STATUS_LABEL = {
   completed: "완료",
   cancelled: "취소",
 };
+const SESS_STATUS_TONE = {
+  scheduled: "info",
+  in_progress: "warn",
+  completed: "ok",
+  cancelled: "neutral",
+};
 const SESS_STATUS_COLOR = {
-  scheduled: "#3b82f6",
-  in_progress: "#f59e0b",
-  completed: "#22c55e",
-  cancelled: "#6b7280",
+  scheduled: "var(--info)",
+  in_progress: "var(--warn)",
+  completed: "var(--ok)",
+  cancelled: "var(--muted)",
 };
 const MEET_STATUS_LABEL = { active: "활성", archived: "보관", cancelled: "취소" };
 const WEEKDAY_LABEL = ["월", "화", "수", "목", "금", "토", "일"];
@@ -208,28 +215,17 @@ function IssueLotTable({ lots, compact = false }) {
   const rows = Array.isArray(lots) ? lots.filter(lot => lot && typeof lot === "object") : [];
   if (!rows.length) return null;
   const cellBase = {
-    padding: compact ? "5px 7px" : "6px 8px",
-    borderTop: "1px solid var(--border)",
-    color: "var(--text-primary)",
     verticalAlign: "top",
     overflow: "hidden",
     textOverflow: "ellipsis",
   };
-  const headBase = {
-    padding: compact ? "5px 7px" : "6px 8px",
-    color: "var(--text-secondary)",
-    fontWeight: 700,
-    textAlign: "left",
-    borderBottom: "1px solid var(--border)",
-    background: "var(--bg-secondary)",
-  };
   return (
-    <div data-testid="meeting-issue-lot-table" style={{ marginTop: 8, borderTop: "1px dashed rgba(139,92,246,0.32)", paddingTop: 7 }}>
+    <div data-testid="meeting-issue-lot-table" style={{ marginTop: 8, borderTop: "1px dashed var(--violet-line)", paddingTop: 7 }}>
       <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)", marginBottom: 5 }}>
         LOT 테이블 ({rows.length})
       </div>
-      <div style={{ overflow: "auto", maxHeight: compact ? 220 : 320, border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-primary)" }}>
-        <table style={{ width: "100%", minWidth: 760, tableLayout: "fixed", borderCollapse: "collapse", fontSize: 13 }}>
+      <TableWrap maxHeight={compact ? 220 : 320}>
+        <Tbl style={{ minWidth: 760, tableLayout: "fixed", fontSize: 13 }}>
           <colgroup>
             <col style={{ width: "12%" }} />
             <col style={{ width: "19%" }} />
@@ -240,12 +236,12 @@ function IssueLotTable({ lots, compact = false }) {
           </colgroup>
           <thead>
             <tr>
-              <th style={headBase}>Product</th>
-              <th style={headBase}>LOT_ID</th>
-              <th style={headBase}>Qty / Wafer</th>
-              <th style={headBase}>Step</th>
-              <th style={headBase}>Purpose</th>
-              <th style={headBase}>Comment</th>
+              <th>Product</th>
+              <th>LOT_ID</th>
+              <th>Qty / Wafer</th>
+              <th>Step</th>
+              <th>Purpose</th>
+              <th>Comment</th>
             </tr>
           </thead>
           <tbody>
@@ -263,8 +259,8 @@ function IssueLotTable({ lots, compact = false }) {
               );
             })}
           </tbody>
-        </table>
-      </div>
+        </Tbl>
+      </TableWrap>
     </div>
   );
 }
@@ -437,7 +433,7 @@ export default function My_Meeting({ user }) {
     });
   }, [selectedSession]);
 
-  const categoryColor = (name) => (categories.find(c => c.name === name) || {}).color || "#6b7280";
+  const categoryColor = (name) => (categories.find(c => c.name === name) || {}).color || "var(--muted)";
 
   // ── Create new meeting ──
   const toggleWeekday = (arr, d) => arr.includes(d) ? arr.filter(x => x !== d) : [...arr, d].sort();
@@ -804,7 +800,7 @@ export default function My_Meeting({ user }) {
   return (
     <div className="flow-connected-page" style={{ position: "relative", display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
       {/* Left list */}
-      <div style={{ width: 340, minWidth: 300, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
+      <div style={{ width: 320, minWidth: 320, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column" }}>
         <div className="flow-sidebar-header" style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
             <div style={{ minWidth: 0 }}>
@@ -819,12 +815,9 @@ export default function My_Meeting({ user }) {
           <div style={{ marginTop: 8, display: "flex", gap: 4, flexWrap: "wrap" }}>
             {/* v8.8.13: 보관(archived) 제거 — 전체/활성/취소 만. */}
             {["", "active", "cancelled"].map(s => (
-              <span key={s || "all"} onClick={() => setFilterStatus(s)} style={{
-                padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer", fontFamily: "monospace",
-                background: filterStatus === s ? "var(--accent-glow)" : "var(--bg-card)",
-                color: filterStatus === s ? "var(--accent)" : "var(--text-secondary)",
-                border: "1px solid " + (filterStatus === s ? "var(--accent)" : "var(--border)"),
-              }}>{s ? MEET_STATUS_LABEL[s] : "전체"}</span>
+              <Pill key={s || "all"} tone={filterStatus === s ? "brand" : "neutral"} onClick={() => setFilterStatus(s)}>
+                {s ? MEET_STATUS_LABEL[s] : "전체"}
+              </Pill>
             ))}
           </div>
         </div>
@@ -838,7 +831,7 @@ export default function My_Meeting({ user }) {
             const latestStatus = latest?.status || "scheduled";
             // v8.8.28: 카테고리 제거 — 회의 생성 시 자동 배정된 고유 color(MEETING_PALETTE) 만 사용.
             //   legacy 데이터 호환: m.color 없으면 status 색, 그래도 없으면 회색.
-            const color = m.color || SESS_STATUS_COLOR[latestStatus] || "#6b7280";
+            const color = m.color || SESS_STATUS_COLOR[latestStatus] || "var(--muted)";
             return (
               <div key={m.id} onClick={() => { setSelectedId(m.id); setSelectedSid(latest?.id || null); setEditingMeta(false); setEditingMinutes(false); setEditingAgendaId(null); }} style={{
                 margin: "4px 6px", padding: "10px 12px", borderRadius: 6, cursor: "pointer",
@@ -848,7 +841,7 @@ export default function My_Meeting({ user }) {
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                   <span style={{ fontSize: 14, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title}</span>
-                  <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 3, color: SESS_STATUS_COLOR[latestStatus], border: "1px solid " + SESS_STATUS_COLOR[latestStatus] }}>{SESS_STATUS_LABEL[latestStatus]}</span>
+                  <Pill tone={SESS_STATUS_TONE[latestStatus] || "neutral"}>{SESS_STATUS_LABEL[latestStatus]}</Pill>
                 </div>
                 <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <span>👤 {m.owner || "—"}</span>
@@ -875,18 +868,18 @@ export default function My_Meeting({ user }) {
           </div>
         )}
         {viewMode === "list" && selected && (
-          <div style={{ padding: 20, maxWidth: 980 }}>
+          <div style={{ padding: 20, maxWidth: 980, display: "grid", gap: 14 }}>
             {/* Meta */}
-            <div style={{ marginBottom: 14, padding: 16, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+            <Card>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                 {/* v8.8.28: 카테고리 chip 제거 → 회의 고유 color dot 으로 대체. 변경점 달력에도 이 색상이 전파됨. */}
                 {selected.color && (
                   <span title="이 회의의 고유 색상 (변경점 달력에도 동일 색으로 표시)"
                         style={{ width: 14, height: 14, borderRadius: "50%", background: selected.color, display: "inline-block", flexShrink: 0, border: "2px solid rgba(255,255,255,0.2)" }} />
                 )}
-                <span style={{ fontSize: 14, padding: "3px 10px", borderRadius: 999, color: SESS_STATUS_COLOR[(selectedSession?.status) || "scheduled"], border: "1px solid " + SESS_STATUS_COLOR[(selectedSession?.status) || "scheduled"] }}>
+                <Pill tone={SESS_STATUS_TONE[(selectedSession?.status) || "scheduled"] || "neutral"}>
                   차수: {SESS_STATUS_LABEL[(selectedSession?.status) || "scheduled"]}
-                </span>
+                </Pill>
                 <span style={{ fontSize: 18, fontWeight: 700, flex: 1 }}>{selected.title}</span>
                 {canEditMeta(selected) && !editingMeta && <button onClick={startEditMeta} style={btnGhost}>✎ 수정</button>}
                 {canEditMeta(selected) && <button onClick={removeMeeting} style={btnDanger}>삭제</button>}
@@ -972,10 +965,10 @@ export default function My_Meeting({ user }) {
                   </div>
                 </div>
               )}
-            </div>
+            </Card>
 
             {/* Session tabs */}
-            <div style={{ marginBottom: 14, padding: "10px 16px", borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+            <Card padding={12}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", marginRight: 6 }}>차수:</span>
                 {(selected.sessions || []).map(s => {
@@ -988,7 +981,7 @@ export default function My_Meeting({ user }) {
                       color: on ? "var(--accent)" : "var(--text-primary)",
                     }}>
                       {s.idx}차{s.scheduled_at ? ` (${dtPretty(s.scheduled_at).slice(0, 10)})` : ""}
-                      <span style={{ marginLeft: 6, width: 6, height: 6, borderRadius: "50%", background: SESS_STATUS_COLOR[s.status || "scheduled"], display: "inline-block" }} />
+                      <span className="dot2" style={{ marginLeft: 6, width: 6, height: 6, borderRadius: "50%", background: SESS_STATUS_COLOR[s.status || "scheduled"], display: "inline-block" }} />
                     </span>
                   );
                 })}
@@ -1014,11 +1007,11 @@ export default function My_Meeting({ user }) {
                   ) : <span style={val}>{SESS_STATUS_LABEL[selectedSession.status || "scheduled"]}</span>}
                 </div>
               )}
-            </div>
+            </Card>
 
             {selectedSession && (<>
               {/* Agendas */}
-              <div style={{ marginBottom: 14, padding: 16, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+              <Card>
                 <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 10, fontFamily: "monospace" }}>
                   📋 {selectedSession.idx}차 아젠다 ({(selectedSession.agendas || []).length})
                 </div>
@@ -1065,12 +1058,12 @@ export default function My_Meeting({ user }) {
                           const trackerSearch = `?issue_id=${encodeURIComponent(a.issue_ref.issue_id)}`;
                           const trackerHref = `/tracker${trackerSearch}`;
                           return (
-                            <div style={{ marginTop: 6, marginLeft: 34, padding: 10, borderRadius: 6, border: "1px solid rgba(139,92,246,0.28)", background: "rgba(139,92,246,0.06)" }}>
+                            <div style={{ marginTop: 6, marginLeft: 34, padding: 10, borderRadius: 6, border: "1px solid var(--violet-line)", background: "var(--violet-50)" }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-                                <span style={{ fontSize: 14, fontWeight: 700, color: "#8b5cf6" }}>연결 이슈</span>
+                                <span style={{ fontSize: 14, fontWeight: 700, color: "var(--violet)" }}>연결 이슈</span>
                                 <span style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)" }}>#{a.issue_ref.issue_id}</span>
                                 {issue.category && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 999, background: "var(--bg-card)", color: "var(--text-secondary)" }}>{issue.category}</span>}
-                                {issue.status && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 999, background: "rgba(245,158,11,0.16)", color: "#b45309" }}>{issue.status}</span>}
+                                {issue.status && <Pill tone={issue.status === "closed" ? "ok" : "warn"}>{issue.status}</Pill>}
                                 <a href={trackerHref} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("flow:navigate", { detail: { tab: "tracker", search: trackerSearch } })); }} style={{ fontSize: 14, color: "var(--accent)", textDecoration: "underline" }}>트래커에서 열기</a>
                               </div>
                               {issue?.title && <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>{issue.title}</div>}
@@ -1131,7 +1124,7 @@ export default function My_Meeting({ user }) {
                     <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", flex: 1 }}>+ 새 아젠다 추가 (담당자: {(agendaDraft.owner || me)})</div>
                     {/* v8.8.13: 같은 그룹 이슈 불러와서 자동 채움 */}
                     <button onClick={openIssuePicker} title="같은 그룹의 이슈에서 가져오기 (제목·설명·담당자·링크·이미지 자동 채움)"
-                      style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid #8b5cf6", background: "transparent", color: "#8b5cf6", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
+                      style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--violet)", background: "transparent", color: "var(--violet)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
                       📎 이슈 가져오기
                     </button>
                   </div>
@@ -1145,9 +1138,9 @@ export default function My_Meeting({ user }) {
                     const issueImages = trackerImages(issue);
                     const issueLots = Array.isArray(issue?.lots) ? issue.lots : [];
                     return (
-                      <div style={{ marginTop: 6, padding: 10, borderRadius: 6, border: "1px solid rgba(139,92,246,0.28)", background: "rgba(139,92,246,0.06)" }}>
+                      <div style={{ marginTop: 6, padding: 10, borderRadius: 6, border: "1px solid var(--violet-line)", background: "var(--violet-50)" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-                          <span style={{ fontSize: 14, fontWeight: 700, color: "#8b5cf6" }}>가져온 이슈</span>
+                          <span style={{ fontSize: 14, fontWeight: 700, color: "var(--violet)" }}>가져온 이슈</span>
                           <span style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)" }}>#{agendaDraft.issue_ref.issue_id}</span>
                           {issue?.category && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 999, background: "var(--bg-card)", color: "var(--text-secondary)" }}>{issue.category}</span>}
                           {issueImages.length > 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>이미지 {issueImages.length}개 함께 저장</span>}
@@ -1183,15 +1176,15 @@ export default function My_Meeting({ user }) {
                     <button onClick={addAgenda} style={btnPrimary}>+ 추가</button>
                   </div>
                 </div>
-              </div>
+              </Card>
 
               {/* v8.8.6/v8.8.15: 외부 저장 알림 배너 — 편집 중 다른 유저가 저장하면 표시. rev 표시 + "유지하며 rebase" 옵션. */}
               {externalUpdate && editingMinutes && (
-                <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: "rgba(245,158,11,0.12)", border: "1px solid #f59e0b", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 14, color: "#b45309", fontWeight: 700 }}>⚠ 동시편집 감지</span>
+                <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: "var(--warn-50)", border: "1px solid var(--warn-line)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 14, color: "var(--warn)", fontWeight: 700 }}>⚠ 동시편집 감지</span>
                   <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>
                     {externalUpdate.author} 님이 방금 저장함 ({(externalUpdate.at || "").slice(11, 16)})
-                    {externalUpdate.rev !== undefined && <> · <span style={{ fontFamily: "monospace", color: "#b45309", fontWeight: 700 }}>rev {externalUpdate.rev}</span></>}
+                    {externalUpdate.rev !== undefined && <> · <span style={{ fontFamily: "monospace", color: "var(--warn)", fontWeight: 700 }}>rev {externalUpdate.rev}</span></>}
                     · 결정 {externalUpdate.decisions}개 · 액션 {externalUpdate.actions}개
                   </span>
                   <span style={{ flex: 1 }} />
@@ -1202,14 +1195,14 @@ export default function My_Meeting({ user }) {
                   }} title="내 편집 유지 + 서버 rev 에만 맞춰 재동기화 (저장 시 상대 변경 덮어씀)"
                     style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>내 편집 유지 · rebase</button>
                   <button onClick={() => { setExternalUpdate(null); reload(); setEditingMinutes(false); setMinutesDraft(null); }}
-                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid #f59e0b", background: "#f59e0b", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>외부 내용 불러오기</button>
+                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--warn)", background: "var(--warn)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>외부 내용 불러오기</button>
                   <button onClick={() => setExternalUpdate(null)}
                     style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>무시</button>
                 </div>
               )}
 
               {/* Minutes */}
-              <div style={{ marginBottom: 14, padding: 16, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+              <Card>
                 <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
                   <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", flex: 1 }}>📝 {selectedSession.idx}차 회의록</span>
                   {canEditMinutes(selected) && !editingMinutes && (
@@ -1264,7 +1257,7 @@ export default function My_Meeting({ user }) {
                                   <td style={td}>
                                     {obj.calendar_pushed ? (
                                       <div style={{ fontSize: 14, lineHeight: 1.4 }}>
-                                        <span style={{ color: "#22c55e", fontWeight: 600 }}>✓ 등록됨</span>
+                                        <span style={{ color: "var(--ok)", fontWeight: 600 }}>✓ 등록됨</span>
                                         <div style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{obj.calendar_pushed_by} · {dtPretty(obj.calendar_pushed_at)}</div>
                                         <span onClick={() => unpushDecision(obj)} style={delLink}>해제</span>
                                       </div>
@@ -1300,7 +1293,7 @@ export default function My_Meeting({ user }) {
                                 <td style={td}>
                                   {a.calendar_pushed ? (
                                     <div style={{ fontSize: 14, lineHeight: 1.4 }}>
-                                      <span style={{ color: "#22c55e", fontWeight: 600 }}>✓ 등록됨</span>
+                                      <span style={{ color: "var(--ok)", fontWeight: 600 }}>✓ 등록됨</span>
                                       <div style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>
                                         {a.calendar_pushed_by} · {dtPretty(a.calendar_pushed_at)}
                                       </div>
@@ -1476,7 +1469,7 @@ export default function My_Meeting({ user }) {
                     </div>
                   </div>
                 )}
-              </div>
+              </Card>
             </>)}
           </div>
         )}
@@ -1521,12 +1514,12 @@ export default function My_Meeting({ user }) {
                   <div key={iss.id} onClick={() => attachIssueToAgenda(iss.id)}
                     title={`#${iss.id} · ${iss.summary || ""}`}
                     style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 10px", borderBottom: "1px solid var(--border)", cursor: "pointer", fontSize: 14 }}
-                    onMouseEnter={e => e.currentTarget.style.background = "rgba(139,92,246,0.08)"}
+                    onMouseEnter={e => e.currentTarget.style.background = "var(--violet-50)"}
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                     {/* v8.8.28: 왼쪽은 고유번호 대신 최신 수정 시각. */}
                     <span style={{ fontFamily: "monospace", fontSize: 14, color: "var(--text-secondary)", width: 88, flexShrink: 0, whiteSpace: "nowrap" }}>🕘 {fmtUpdated(iss.updated_at)}</span>
                     {iss.category && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 10, background: "var(--bg-card)", color: "var(--text-secondary)", flexShrink: 0 }}>{iss.category}</span>}
-                    {iss.status && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 10, background: iss.status === "closed" ? "#22c55e22" : "#f59e0b22", color: iss.status === "closed" ? "#16a34a" : "#c2410c", flexShrink: 0 }}>{iss.status}</span>}
+                    {iss.status && <Pill tone={iss.status === "closed" ? "ok" : "warn"}>{iss.status}</Pill>}
                     {/* v8.8.28: 제목 + 한 줄 요약 (회색, nowrap ellipsis). title/summary 합쳐서 flex:1. */}
                     <span style={{ flex: 1, minWidth: 0, display: "flex", gap: 8, alignItems: "baseline", overflow: "hidden" }}>
                       <span style={{ color: "var(--text-primary)", fontWeight: 600, flexShrink: 0, maxWidth: "45%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{iss.title || "(제목 없음)"}</span>
@@ -1674,7 +1667,7 @@ function MinutesAppendix({ session, meeting, user, appendText, setAppendText, ap
             <div style={{ flex: 1, fontSize: 14, whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{e.text}</div>
             {canDel && (
               <span onClick={() => onDelete(e.id)} title="삭제"
-                style={{ cursor: "pointer", color: "#ef4444", fontSize: 14, padding: "0 4px", flexShrink: 0 }}>×</span>
+                style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14, padding: "0 4px", flexShrink: 0 }}>×</span>
             )}
           </div>
         );
@@ -1730,16 +1723,16 @@ function MeetingCategoryEditor({ categories, setCategories, isAdmin }) {
             <span style={{ width: 18, fontSize: 14, color: "var(--text-secondary)" }}>{i + 1}</span>
             <input value={c.name} onChange={e => { const n = draft.slice(); n[i] = { ...n[i], name: e.target.value }; setDraft(n); }}
               style={{ flex: 1, padding: "3px 6px", fontSize: 14, border: "1px solid var(--border)", borderRadius: 3, background: "var(--bg-primary)", color: "var(--text-primary)" }} />
-            <input type="color" value={c.color || "#6b7280"} onChange={e => { const n = draft.slice(); n[i] = { ...n[i], color: e.target.value }; setDraft(n); }}
+            <input type="color" value={c.color || "#E25822"} onChange={e => { const n = draft.slice(); n[i] = { ...n[i], color: e.target.value }; setDraft(n); }}
               style={{ width: 32, height: 24, border: "1px solid var(--border)", borderRadius: 3, background: "transparent" }} />
             <button onClick={() => move(i, -1)} style={{ padding: "1px 5px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", borderRadius: 3, cursor: "pointer" }}>↑</button>
             <button onClick={() => move(i, 1)} style={{ padding: "1px 5px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", borderRadius: 3, cursor: "pointer" }}>↓</button>
-            <button onClick={() => setDraft(draft.filter((_, j) => j !== i))} style={{ padding: "1px 5px", fontSize: 14, border: "1px solid #ef4444", background: "transparent", color: "#ef4444", borderRadius: 3, cursor: "pointer" }}>×</button>
+            <button onClick={() => setDraft(draft.filter((_, j) => j !== i))} style={{ padding: "1px 5px", fontSize: 14, border: "1px solid var(--danger)", background: "transparent", color: "var(--danger)", borderRadius: 3, cursor: "pointer" }}>×</button>
           </div>
         ))}
       </div>
       <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-        <button onClick={() => setDraft([...draft, { name: "신규", color: "#6b7280" }])} style={{ padding: "4px 10px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 4, cursor: "pointer" }}>+ 추가</button>
+        <button onClick={() => setDraft([...draft, { name: "신규", color: "#E25822" }])} style={{ padding: "4px 10px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", borderRadius: 4, cursor: "pointer" }}>+ 추가</button>
         <div style={{ flex: 1 }} />
         <button onClick={save} style={{ padding: "4px 12px", fontSize: 14, border: "none", background: "var(--accent)", color: "#fff", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>저장</button>
         <button onClick={() => setDraft(null)} style={{ padding: "4px 12px", fontSize: 14, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", borderRadius: 4, cursor: "pointer" }}>취소</button>
@@ -1753,11 +1746,11 @@ const lbl = { fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospa
 const val = { fontSize: 14, color: "var(--text-primary)" };
 const btnPrimary = { padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" };
 const btnGhost = { padding: "5px 12px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer" };
-const btnDanger = { padding: "5px 10px", borderRadius: 5, border: "1px solid var(--bad,#ef4444)", background: "transparent", color: "var(--bad,#ef4444)", fontSize: 14, cursor: "pointer" };
+const btnDanger = { padding: "5px 10px", borderRadius: 5, border: "1px solid var(--danger)", background: "transparent", color: "var(--danger)", fontSize: 14, cursor: "pointer" };
 const btnTiny = { padding: "2px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" };
-const btnTinyDanger = { padding: "2px 10px", borderRadius: 4, border: "1px solid var(--bad,#ef4444)", background: "transparent", color: "var(--bad,#ef4444)", fontSize: 14, cursor: "pointer" };
+const btnTinyDanger = { padding: "2px 10px", borderRadius: 4, border: "1px solid var(--danger)", background: "transparent", color: "var(--danger)", fontSize: 14, cursor: "pointer" };
 const editLink = { fontSize: 14, color: "var(--accent)", cursor: "pointer", textDecoration: "underline" };
-const delLink = { fontSize: 14, color: "var(--bad,#ef4444)", cursor: "pointer", textDecoration: "underline" };
+const delLink = { fontSize: 14, color: "var(--danger)", cursor: "pointer", textDecoration: "underline" };
 const th = { padding: "6px 8px", textAlign: "left", fontSize: 14, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)", fontWeight: 600 };
 const td = { padding: "6px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
 
@@ -1810,7 +1803,7 @@ function ActionItemsGantt({ meetings, onPickMeeting }) {
     const dt = new Date(d); dt.setMonth(dt.getMonth() + 1);
     d = dt.getTime();
   }
-  const statusColor = (s) => s === "done" ? "#22c55e" : s === "in_progress" ? "#f59e0b" : "#3b82f6";
+  const statusColor = (s) => s === "done" ? "var(--ok)" : s === "in_progress" ? "var(--warn)" : "var(--info)";
   return (
     <div style={{ padding: 16, overflow: "auto" }}>
       <div style={{ marginBottom: 8, fontSize: 14, color: "var(--text-secondary)" }}>
@@ -1839,7 +1832,7 @@ function ActionItemsGantt({ meetings, onPickMeeting }) {
           const x1 = xOf(toDate(r.start));
           const x2 = Math.max(xOf(toDate(r.end)), x1 + 4);
           const overdue = toDate(r.end) < today && r.status !== "done";
-          const fill = overdue ? "#ef4444" : statusColor(r.status);
+          const fill = overdue ? "var(--danger)" : statusColor(r.status);
           return (
             <g key={i}>
               <text x={6} y={y + 13} fontSize="10" fill="var(--text-primary)" fontFamily="monospace" style={{ cursor: "pointer" }}
@@ -1855,10 +1848,10 @@ function ActionItemsGantt({ meetings, onPickMeeting }) {
         })}
       </svg>
       <div style={{ marginTop: 8, fontSize: 14, color: "var(--text-secondary)", display: "flex", gap: 14 }}>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#3b82f6", borderRadius: 2, display: "inline-block" }} />pending</span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#f59e0b", borderRadius: 2, display: "inline-block" }} />in_progress</span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#22c55e", borderRadius: 2, display: "inline-block" }} />done</span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "#ef4444", borderRadius: 2, display: "inline-block" }} />overdue</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "var(--info)", borderRadius: 2, display: "inline-block" }} />pending</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "var(--warn)", borderRadius: 2, display: "inline-block" }} />in_progress</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "var(--ok)", borderRadius: 2, display: "inline-block" }} />done</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 10, height: 10, background: "var(--danger)", borderRadius: 2, display: "inline-block" }} />overdue</span>
         <span style={{ color: "var(--accent)" }}>세로선 = 오늘</span>
       </div>
     </div>
@@ -1961,7 +1954,7 @@ function MailGroupsEditor({ groups, mailRecipients, me, onClose, onReload }) {
                     ? <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>그룹관리 탭</span>
                     : <>
                         <span onClick={() => startEdit(g)} style={{ fontSize: 14, color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}>편집</span>
-                        <span onClick={() => remove(g)} style={{ fontSize: 14, color: "var(--bad,#ef4444)", cursor: "pointer", textDecoration: "underline" }}>삭제</span>
+                        <span onClick={() => remove(g)} style={{ fontSize: 14, color: "var(--danger)", cursor: "pointer", textDecoration: "underline" }}>삭제</span>
                       </>
                   }
                 </div>
@@ -2053,7 +2046,7 @@ function SendMailDialog({ meeting, session, mailGroups, mailRecipients, draft, o
           </button>
         </div>
         <MailPreviewPanel mail={preview} />
-        {err && <div style={{ marginTop: 8, fontSize: 14, color: "var(--bad,#ef4444)" }}>{err}</div>}
+        {err && <div style={{ marginTop: 8, fontSize: 14, color: "var(--danger)" }}>{err}</div>}
         <div style={{ marginTop: 14, display: "flex", gap: 6, justifyContent: "flex-end" }}>
           <button onClick={onClose} style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer" }} disabled={busy}>취소</button>
           <button onClick={submit} style={{ padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: busy ? "wait" : "pointer" }} disabled={busy}>{busy ? "발송 중…" : "📧 발송"}</button>

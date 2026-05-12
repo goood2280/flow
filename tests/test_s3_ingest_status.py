@@ -106,3 +106,72 @@ def test_child_targets_create_parent_aggregate_light():
     assert by_target["FAB"]["child_targets"] == 2
     assert by_target["FAB"]["last_status"] == "ok"
     assert by_target["FAB"]["freshness_state"] == "ok"
+    assert by_target["FAB"]["last_end"] == by_target["FAB/PRODA"]["last_end"]
+
+
+def test_status_by_target_prefers_direction_slot(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.json"
+    status = tmp_path / "status.json"
+    cfg.write_text(json.dumps({
+        "items": [{
+            "id": "db1",
+            "kind": "db",
+            "target": "DB1",
+            "s3_url": "s3://bucket/DB1",
+            "command": "sync",
+            "direction": "upload",
+            "interval_min": 60,
+            "enabled": True,
+        }]
+    }), encoding="utf-8")
+    status.write_text(json.dumps({
+        "db1": {
+            "last_status": "ok",
+            "last_end": "2026-05-08T09:00:00",
+            "directions": {
+                "download": {"last_status": "ok", "last_end": "2026-05-08T10:00:00"},
+                "upload": {"last_status": "error", "last_end": "2026-05-08T11:00:00"},
+            },
+        }
+    }), encoding="utf-8")
+    monkeypatch.setattr(s3_ingest, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(s3_ingest, "STATUS_FILE", status)
+    monkeypatch.setattr(s3_ingest, "_db_root", lambda: tmp_path)
+    monkeypatch.setattr(s3_ingest, "_RUNNING", {})
+
+    item = s3_ingest.status_by_target()["by_target"]["DB1"]
+
+    assert item["direction"] == "upload"
+    assert item["last_status"] == "error"
+    assert item["last_end"] == "2026-05-08T11:00:00"
+
+
+def test_parent_aggregate_uses_child_freshness_state_not_raw_stale_flag():
+    now = datetime.datetime.now()
+    by_target = {
+        "FAB/PRODA": {
+            "direction": "download",
+            "enabled": True,
+            "interval_min": 30,
+            "last_status": "ok",
+            "last_end": (now - datetime.timedelta(minutes=5)).isoformat(timespec="seconds"),
+            "is_running": False,
+            "latest_item_stale_6h": True,
+            "freshness_state": "ok",
+        },
+        "FAB/PRODB": {
+            "direction": "download",
+            "enabled": True,
+            "interval_min": 30,
+            "last_status": "ok",
+            "last_end": (now - datetime.timedelta(minutes=7)).isoformat(timespec="seconds"),
+            "is_running": False,
+            "latest_item_stale_6h": False,
+            "freshness_state": "ok",
+        },
+    }
+
+    s3_ingest._aggregate_child_statuses(by_target)
+
+    assert by_target["FAB"]["latest_item_stale_6h"] is False
+    assert by_target["FAB"]["freshness_state"] == "ok"

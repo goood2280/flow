@@ -142,6 +142,7 @@ class KnowledgeDoc(BaseModel):
         "report",
         "decision",
         "agent_wiki",
+        "schema_doc",
         "ontology",
         "manual",
     ] = "manual"

@@ -23,7 +23,7 @@ def test_inform_wizard_five_step_backend_contract_order():
         '"/api/informs/splittable-snapshot"',
         '"/api/informs/recipients"',
         '"/api/informs/mail-groups"',
-        "Promise.all(requests)",
+        'postJson(API + "/bulk-create"',
         "fab_lot_id_at_save = targetLot",
         "buildEmbedForLot",
         "lot_id: targetLot",
@@ -41,7 +41,7 @@ def test_inform_wizard_five_step_backend_contract_order():
         "여러 LOT_ID 중 가장 위에 선택된 LOT_ID만 미리보기로 표시합니다.",
         'gridTemplateRows: "auto 150px"',
         "height: 150",
-        '"POST /api/informs"',
+        '"POST /api/informs/bulk-create"',
     ]:
         assert token in src
     assert ".slice(0, 500)" not in src
@@ -54,7 +54,7 @@ def test_inform_wizard_five_step_backend_contract_order():
         '"/api/informs/splittable-snapshot"',
         '"/api/informs/recipients"',
         '"/api/informs/mail-groups"',
-        '"POST /api/informs"',
+        '"POST /api/informs/bulk-create"',
     ]
     positions = [src.index(token) for token in ordered]
     assert positions == sorted(positions)

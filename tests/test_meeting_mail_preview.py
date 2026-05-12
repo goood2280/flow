@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -12,6 +13,11 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from routers import meetings  # noqa: E402
+
+
+class _DisconnectedRequest:
+    async def is_disconnected(self):
+        return True
 
 
 def _mail_fixture():
@@ -267,3 +273,24 @@ def test_meeting_ask_endpoint_returns_session_scope(monkeypatch):
         "has_minutes": True,
     }]
     assert "Mask change review" in out["answer"]
+
+
+def test_meeting_stream_route_precedes_dynamic_mid():
+    get_paths = [
+        route.path
+        for route in meetings.router.routes
+        if "GET" in (getattr(route, "methods", None) or set())
+    ]
+
+    assert get_paths.index("/api/meetings/stream") < get_paths.index("/api/meetings/{mid}")
+
+
+def test_meeting_stream_uses_visibility_helper_signature(monkeypatch):
+    meeting = _ask_fixture()
+    monkeypatch.setattr(meetings, "_load", lambda: [meeting])
+    monkeypatch.setattr(meetings, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(meetings, "_my_meeting_group_ids", lambda _username, _role: set())
+
+    response = asyncio.run(meetings.stream_minutes(_DisconnectedRequest(), meeting_id="MT-ASK"))
+
+    assert response.media_type == "text/event-stream"

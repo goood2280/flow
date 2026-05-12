@@ -171,9 +171,15 @@ def test_refresh_lot_progress_cache_uses_fab_product_folder_without_process_id(m
 
     state = cache.refresh_lot_progress_cache(force=True)
     df = pl.read_parquet(cache.filebrowser_cache_parquet_file())
+    status = cache.cache_status()
 
     assert state["count"] == 1
+    assert state["freshness_state"] == "ok"
+    assert state["last_success_at"]
+    assert Path(state["refresh_log_path"]).is_file()
     assert state["items"][0]["product"] == "PRODA"
     assert state["items"][0]["process_id"] == ""
     assert state["items"][0]["lot_id"] == "A1000A.2"
     assert df.to_dicts()[0]["product"] == "PRODA"
+    assert status["row_count"] == 1
+    assert status["freshness_state"] == "ok"
