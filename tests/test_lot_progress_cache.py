@@ -93,6 +93,7 @@ def test_export_lot_progress_parquet_writes_readable_latest_lot_file(monkeypatch
         def __init__(self):
             self.cache_dir = data_root / "cache"
             self.db_cache_dir = db_root / "cache"
+            self.base_root = db_root
 
         @property
         def data_root(self):
@@ -124,6 +125,8 @@ def test_export_lot_progress_parquet_writes_readable_latest_lot_file(monkeypatch
     df = pl.read_parquet(cache.filebrowser_cache_parquet_file())
 
     assert out["rows"] == 1
+    assert out["paths"] == [str(cache.filebrowser_cache_parquet_file())]
+    assert not cache.cache_parquet_file().exists()
     assert df.columns == [
         "product", "root_lot_id", "wafer_id", "lot_id",
         "step_id", "function_step", "tkout_time", "update_time",
@@ -138,3 +141,39 @@ def test_export_lot_progress_parquet_writes_readable_latest_lot_file(monkeypatch
         "tkout_time": "2026-05-08T09:00:00",
         "update_time": "2026-05-08T10:00:00",
     }]
+
+
+def test_refresh_lot_progress_cache_uses_fab_product_folder_without_process_id(monkeypatch, tmp_path):
+    data_root = tmp_path / "flow-data"
+    db_root = tmp_path / "Fab"
+    fab_product = db_root / "1.RAWDATA_DB_FAB" / "PRODA"
+    fab_product.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "A1000"],
+        "lot_id": ["A1000A.1", "A1000A.2"],
+        "wafer_id": ["W01", "W01"],
+        "step_id": ["STEP_010", "STEP_020"],
+        "tkin_time": ["2026-05-08T08:00:00", "2026-05-08T09:00:00"],
+        "tkout_time": ["2026-05-08T08:30:00", "2026-05-08T09:30:00"],
+    }).write_parquet(fab_product / "part.parquet")
+
+    class DummyPaths:
+        def __init__(self):
+            self.cache_dir = data_root / "cache"
+            self.db_cache_dir = db_root / "cache"
+            self.data_root = data_root
+            self.db_root = db_root
+            self.base_root = db_root
+
+    monkeypatch.setattr(cache, "PATHS", DummyPaths())
+    monkeypatch.setattr(cache, "load_step_matching", lambda: ({}, {}))
+    monkeypatch.setattr(cache, "_CACHE_STATE", None)
+
+    state = cache.refresh_lot_progress_cache(force=True)
+    df = pl.read_parquet(cache.filebrowser_cache_parquet_file())
+
+    assert state["count"] == 1
+    assert state["items"][0]["product"] == "PRODA"
+    assert state["items"][0]["process_id"] == ""
+    assert state["items"][0]["lot_id"] == "A1000A.2"
+    assert df.to_dicts()[0]["product"] == "PRODA"

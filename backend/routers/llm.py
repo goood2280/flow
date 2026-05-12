@@ -432,8 +432,6 @@ FLOWI_UNIT_ACTIONS = {
             "filebrowser.csv.rules.read",
             "filebrowser.cache.lot_progress.refresh",
             "filebrowser.cache.lot_progress.status",
-            "filebrowser.cache.db.refresh",
-            "filebrowser.cache.db.status",
         ],
         "needs": ["source/root", "product or file", "optional SQL/filter"],
         "outputs": ["table preview", "selected columns", "CSV download"],

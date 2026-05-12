@@ -23,8 +23,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 
-# v8.8.25: ROOT 자체가 tool worktree 안에 있으면 EXCLUDE_PARTS 가
-# 모든 소스 파일을 걸러버려 빈 번들이 만들어진다. 반드시 main 체크아웃에서 실행.
+# ROOT 자체가 tool worktree 안에 있으면 EXCLUDE_PARTS 가 모든 소스 파일을
+# 걸러버려 빈 번들이 만들어진다. 반드시 main 체크아웃에서 실행.
 if 'worktrees' in ROOT.parts:
     sys.stderr.write(
         f"ERROR: _build_setup.py must run from the main checkout, not a worktree.\n"
@@ -63,8 +63,8 @@ INCLUDE_FILES = [
     # 내부 도메인 지식 파일은 public repo/installer payload 에 유출되어서는 안 됨.
 ]
 
-# v8.8.3: 빌드 시에도 "사용자 데이터로 분류되는 디렉토리/파일은 절대 포함하지 않는다"
-# 를 이중 방어. INCLUDE_DIRS 밑을 rglob 하면서 아래 세그먼트 중 하나라도 있으면 skip.
+# 빌드 시에도 "사용자 데이터로 분류되는 디렉토리/파일은 절대 포함하지 않는다"를
+# 이중 방어. INCLUDE_DIRS 밑을 rglob 하면서 아래 세그먼트 중 하나라도 있으면 skip.
 EXCLUDE_PARTS = {
     '__pycache__', 'node_modules', 'dist', '.git', 'reports',
     # 사용자 데이터 디렉토리 — 빌드 시 번들에서 제외 (런타임엔 _write 가드도 있음)
@@ -96,9 +96,8 @@ def gather_files():
                 continue
             if p.suffix in {'.pyc'}:
                 continue
-            # v8.8.3: 정적 자산으로 위장한 사용자 데이터 차단
+            # 정적 자산으로 위장한 사용자 데이터 차단
             # (예: frontend/src 안에 실수로 users.csv 를 두는 경우)
-            # v8.8.16: users 관련 변형 / S3 sync / 회의록 state 파일까지 확장.
             if p.name.lower() in {'users.csv', 'users.json', 'users_cache.json',
                                    'groups.json', 'admin_settings.json',
                                    'settings.json', 'filebrowser_settings.json',
@@ -175,7 +174,7 @@ def build():
     files_block = "FILES = {\n" + "\n".join(entries) + "\n}\n"
 
     header = f'''#!/usr/bin/env python3
-"""flow (flow) v{version['version']} — self-contained installer.
+"""Flow self-contained installer.
 
 Usage (fresh machine):
 
@@ -221,8 +220,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
-# v8.8.19: Windows cp949 기본 stdout 에서 em-dash/non-ASCII print 가 터지는 것을
-# 방지 — UTF-8 reconfigure (Python 3.7+). 실패해도 조용히 무시.
+# Windows cp949 기본 stdout 에서 em-dash/non-ASCII print 가 터지는 것을
+# 방지 — UTF-8 reconfigure. 실패해도 조용히 무시.
 try:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -236,8 +235,7 @@ CODENAME = "{version.get('codename', 'flow')}"
 VERSION_META = {json.dumps(installer_meta, ensure_ascii=False)}
 
 
-# v8.8.3 — 사용자 데이터 보존 whitelist (덮어쓰기 금지 파일명)
-# v8.8.16 — users 관련 변형 / S3 sync 관련 / 기타 런타임 state 파일 추가.
+# 사용자 데이터 보존 whitelist (덮어쓰기 금지 파일명)
 _PROTECTED_BASENAMES = {{
     # 회원/인증
     'users.csv', 'users.json', 'users_cache.json',
@@ -257,14 +255,13 @@ _PROTECTED_BASENAMES = {{
     # S3 / 로그
     's3_ingest_config.json', 's3_sync.json', 'history.jsonl', 'status.json',
     'activity.jsonl', 'downloads.jsonl', 'resource.jsonl',
-    # v8.8.17 — 캘린더/대시보드 명시적 추가 (flow-data 보존원칙 강화)
+    # 캘린더/대시보드 state
     'calendar.json', 'reformatter.json',
-    # v8.8.18 — 시스템 모니터 state (resource.jsonl 은 이미 위 등록).
+    # 시스템 모니터 state (resource.jsonl 은 이미 위 등록).
     'farm_status.json', 'sysmon_state.json',
 }}
 
-# v8.8.3 — 데이터 루트로 간주되는 세그먼트.
-# v8.8.16 — s3_ingest / reformatter / notifications / cache 추가 보호.
+# 데이터 루트로 간주되는 세그먼트.
 _PROTECTED_SEGMENTS = {{
     'flow-data',    # 사내 운영 데이터 디렉토리
     'informs',        # 인폼 설정/카탈로그/담당자
@@ -284,7 +281,7 @@ _PROTECTED_SEGMENTS = {{
     'Base',           # rulebook / parquet / 사용자 추가 CSV
     'DB',             # Hive-flat 원천 데이터
     'wafer_maps',     # wafer map JSON 라이브러리
-    # v8.8.16 — 재배포 시 초기화되던 항목들.
+    # 재배포 시 초기화되면 안 되는 런타임 항목들.
     's3_ingest',      # 파일탐색기 S3 동기화 config/status/history
     'reformatter',    # 제품별 reformatter 룰
     'notifications',  # 사용자 알림 큐
@@ -304,9 +301,9 @@ def _is_backend_app_v2_source(parts: list[str]) -> bool:
 
 
 def _write(rel: str, gz_b64: str) -> None:
-    # v8.8.3/v8.8.17: 사용자 데이터 보존 가드 — defense in depth.
+    # 사용자 데이터 보존 가드 — defense in depth.
     #
-    # 원칙 (v8.8.17): setup.py 는 **코드만 교체하고 flow-data/ 안의 어떤 파일도
+    # 원칙: setup.py 는 **코드만 교체하고 flow-data/ 안의 어떤 파일도
     # 건드리지 않는다**. FILES dict 는 backend/ frontend/ docs/ app.py 등 소스만 담아야 함.
     # 6개 레이어로 검증 (하나라도 match 하면 쓰기 skip):
     #   L0) top-level 세그먼트가 _ALLOWED_TOP_LEVEL 에 없으면 화이트리스트 위반 → skip
@@ -364,7 +361,7 @@ def _write(rel: str, gz_b64: str) -> None:
             except Exception:
                 pass
 
-    # L6 (v8.8.19): 사내 공유 경로 `/config/work/sharedworkspace/{{flow-data,DB}}`
+    # L6: 사내 공유 경로 `/config/work/sharedworkspace/{{flow-data,DB}}`
     #   환경변수 없이도 절대 덮어쓰지 않는다 — setup.py 가 공유 데이터 휘발시키는
     #   사고 방지. 해당 경로가 실제 존재하지 않으면 아무 효과 없음 (개발 PC 무해).
     try:
@@ -384,7 +381,7 @@ def _write(rel: str, gz_b64: str) -> None:
 
     footer = '''
 
-# ── v8.8.17: 데이터 보존 — 스냅샷 + 검증 + 복구 ────────────────────────────
+# ── 데이터 보존 — 스냅샷 + 검증 + 복구 ───────────────────────────────────
 import hashlib as _hashlib
 import shutil as _shutil
 import time as _time
@@ -395,9 +392,9 @@ def _resolve_data_roots() -> list:
     """보호 대상 루트 디렉토리 목록 (존재하는 것만). FLOW_DATA_ROOT
     환경변수가 있으면 그쪽을, 없으면 ROOT/data 전체.
 
-    v8.8.19: `/config/work/sharedworkspace` 존재 시 사내 공유 경로를 자동 보호
-      (flow-data + DB). 환경변수 없어도 setup.py 가 사용자 데이터를
-      절대 덮어쓰지 않도록 보장.
+    `/config/work/sharedworkspace` 존재 시 사내 공유 경로를 자동 보호
+    (flow-data + DB). 환경변수 없어도 setup.py 가 사용자 데이터를
+    절대 덮어쓰지 않도록 보장.
     """
     roots = []
     for env_key in ("FLOW_DATA_ROOT",):
@@ -406,7 +403,7 @@ def _resolve_data_roots() -> list:
             p = Path(v).resolve()
             if p.is_dir() and p not in roots:
                 roots.append(p)
-    # v8.8.19: 사내 공유 경로 자동 보호.
+    # 사내 공유 경로 자동 보호.
     _shared = Path("/config/work/sharedworkspace")
     if _shared.is_dir():
         for sub in ("flow-data", "DB"):
@@ -435,11 +432,11 @@ def _backups_dir() -> Path:
     return d
 
 
-# v8.8.19 fix: 스냅샷 대상을 **소형 config/state 파일로 한정**.
+# 스냅샷 대상을 **소형 config/state 파일로 한정**.
 #   이전에는 data_root 전체(parquet/CSV 원천 포함 수 GB)를 shutil.copytree 로
 #   통째 복사 → 사내 공유 환경에서 setup.py 가 수 분~수 시간 멈춘 것처럼 보임.
 #
-# ★★★ 핵심 원칙 (v8.8.19, 사용자 지시) ★★★
+# 핵심 원칙
 # 1) DB(`/config/work/sharedworkspace/DB`)와 Base 는 **참조만** 한다.
 # 2) DB/Base 는 스냅샷 백업 대상에서 **완전히 제외** — 복사 시도 자체 금지.
 # 3) parquet/arrow 등 bulk 원천 확장자는 어떤 경로에서도 절대 복사/업로드 금지.
@@ -464,7 +461,7 @@ _SNAPSHOT_MAX_TOTAL_BYTES = 200 * 1024 * 1024  # 루트당 총 200MB 상한 (초
 _SNAPSHOT_MAX_FILES = 20000                   # 루트당 파일 수 상한
 _SNAPSHOT_SKIP_DIRNAMES = {
     '__pycache__', '.trash', 'uploads', 'cache', '_backups',
-    # v8.8.19: **DB 트리는 통째 배제** — parquet hive 원천은 어떤 파일도 복사 금지.
+    # **DB 트리는 통째 배제** — parquet hive 원천은 어떤 파일도 복사 금지.
     'DB', 'wafer_maps', 'parquet', 'Fab',
     # NOTE: 'Base' 는 **제외하지 않음** — Base 안에는 rulebook CSV/JSON/TXT 같은
     #   경량 설정 파일이 있고 이건 백업 대상. 대형 parquet 는 아래 확장자/크기
@@ -516,7 +513,7 @@ def _should_snapshot_file(p: Path) -> bool:
 
 def _file_hashes(root: Path) -> dict:
     """root 아래 스냅샷 대상 파일의 SHA-256 해시 맵. 상대경로 key.
-    v8.8.19: bulk data(parquet 등) 는 해싱 대상이 아니므로 skip.
+    bulk data(parquet 등) 는 해싱 대상이 아니므로 skip.
     """
     out = {}
     if not root.is_dir():
@@ -544,8 +541,8 @@ def _file_hashes(root: Path) -> dict:
 def _snapshot_roots() -> list:
     """스냅샷 대상 루트 — _resolve_data_roots() 중 bulk data root 는 완전히 제외.
 
-    v8.8.19: `/config/work/sharedworkspace/DB` 같은 수 GB 원천 parquet 루트는
-    스냅샷에서 처음부터 배제 (_write L0~L6 가드가 이미 쓰기를 차단).
+    `/config/work/sharedworkspace/DB` 같은 수 GB 원천 parquet 루트는 스냅샷에서
+    처음부터 배제 (_write L0~L6 가드가 이미 쓰기를 차단).
     basename 뿐 아니라 절대 경로 substring 도 체크 (defense in depth).
     """
     out = []
@@ -588,7 +585,7 @@ def _walk_snapshot(root: Path):
 def _snapshot_data() -> Path | None:
     """추출 직전 data_root 스냅샷. 반환: 스냅샷 디렉토리 경로 (없으면 None).
 
-    v8.8.19: **소형 config/state 파일만 복사** — parquet/CSV-bulk/대형 binary 는 skip.
+    **소형 config/state 파일만 복사** — parquet/CSV-bulk/대형 binary 는 skip.
     루트별 진행 상황 즉시 출력 (setup.py 가 멈춰 보이지 않도록).
     """
     roots = _snapshot_roots()
@@ -806,7 +803,7 @@ def _pip_install(pkgs: list[str], timeout: int | None = None) -> int:
 
 
 def _ensure_critical_deps() -> None:
-    """v8.8.2: extract 시에도 엑셀 관련 핵심 의존성은 자동 설치.
+    """extract 시에도 엑셀 관련 핵심 의존성은 자동 설치.
     openpyxl 은 인폼 표 embed / SplitTable 엑셀 export 에서 즉시 사용되므로
     pip install 을 따로 실행하지 않아도 동작해야 한다는 요구에 따른 필수 패키지.
     이미 import 되면 skip."""
@@ -820,7 +817,7 @@ def _ensure_critical_deps() -> None:
     if not missing:
         return
     print(f"[deps] ensure critical: {', '.join(missing)}")
-    # v8.8.19: 오프라인/프록시 환경에서 pip 가 무한 대기하지 않도록 timeout.
+    # 오프라인/프록시 환경에서 pip 가 무한 대기하지 않도록 timeout.
     _pip_install(missing, timeout=180)
 
 
@@ -855,7 +852,7 @@ def _seed_filebrowser_agent_prompts() -> None:
 
 
 def extract() -> int:
-    # v8.8.17: 추출 직전 data_root 스냅샷 (~/.flow_backups/v<ver>-<stamp>/).
+    # 추출 직전 data_root 스냅샷 (~/.flow_backups/v<ver>-<stamp>/).
     # 스냅샷 실패/없음이면 snap=None 으로 계속 진행 — 신규 설치는 보호할 게 없음.
     snap = None
     if os.environ.get("FLOW_SKIP_SNAPSHOT") == "1":
@@ -885,9 +882,9 @@ def extract() -> int:
     )
     for sub in ('data', 'data/flow-data', 'data/Fab', 'reports'):
         (ROOT / sub).mkdir(parents=True, exist_ok=True)
-    # v8.8.2: extract 단독 실행에도 openpyxl 같은 필수 dep 는 자동으로 채워넣음.
+    # extract 단독 실행에도 openpyxl 같은 필수 dep 는 자동으로 채워넣음.
     _ensure_critical_deps()
-    # v8.8.17: 추출 후 data 변조 검증 — 변조된 파일은 즉시 스냅샷에서 복구.
+    # 추출 후 data 변조 검증 — 변조된 파일은 즉시 스냅샷에서 복구.
     try:
         _verify_and_restore(snap)
     except Exception as e:
@@ -912,7 +909,7 @@ def install_deps() -> int:
         'fastapi', 'uvicorn[standard]', 'pandas', 'pyarrow', 'polars', 'numpy',
         'python-multipart', 'boto3', 'scikit-learn', 'scipy',
         'openpyxl', 'xlsxwriter', 'xlrd',
-        'psutil',   # v8.8.18: 시스템 모니터 (core/sysmon.py)
+        'psutil',   # 시스템 모니터 (core/sysmon.py)
     ]
     return _pip_install(pkgs)
 
@@ -962,7 +959,6 @@ COMMANDS = {
     'version':        print_version,
     'sync-version':   sync_version_json,
     'all':            all_steps,
-    # v8.8.17
     'restore':        restore,
     'snapshots':      list_snapshots,
     'snapshot':       lambda: (_snapshot_data() and 0) or 0,

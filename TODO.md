@@ -24,6 +24,10 @@
 
 ## Done
 
+- [x] (Codex) GitHub main 배포 준비 — 로컬 변경 검토, setup.py 재생성, diff/build/pytest/smoke/preflight 검증 완료. 커밋/푸시는 Discord deploy agent가 이어서 수행.
+- [x] (Codex) FileBrowser LOT 진행 최신 캐시 생성 기준 수정 — product는 FAB 제품 폴더명에서 가져오고 FileBrowser cache 폴더는 canonical 최신 cache만 남기며 생성 방식을 자연어로 문서화.
+- [x] (Codex) FileBrowser 다운로드 시 `data type mismatch for column` 오류 수정 — Polars dtype mismatch 시 DuckDB CSV fallback 추가.
+- [x] (Codex) setup builder/generated setup.py의 과거 버전 라벨 설명 정리 — 현재 설치 안내에는 실제 VERSION 값만 남기고 `v8.8.x`식 히스토리 주석 제거.
 - [x] (Codex) FileBrowser 캐시를 LOT 진행 최신 캐시 중심으로 정리하고, ET/INLINE/VM allowlist DB 파생 캐시 생성/검증 시나리오를 추가.
 - [x] (Codex) 변경점 관리 하단에 회의별 LLM 질의 패널 추가 — Meeting read-only ask API + Calendar UI.
 - [x] (Codex) Meeting 이슈 가져오기 후 agenda 카드와 draft preview에 Tracker LOT table 표시.

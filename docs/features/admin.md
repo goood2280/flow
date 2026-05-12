@@ -14,7 +14,7 @@ Admin은 사용자, 권한, 그룹, root, 백업, 메일/API/LLM 설정, 모니�
 - 일반 사용자의 업무 화면 상태 변경
 - raw DB 파일 임의 수정
 - 사용자 대신 issue/inform 업무를 생성하는 기능
-- **캐시 운영 패널** — Admin은 SplitTable 매칭 캐시나 Tracker Analysis ET 캐시를 소유하지 않는다. FileBrowser가 LOT 진행 최신 캐시와 allowlist DB 파생 캐시(`et_lot_step_seq`, `inline_lot_item`, `vm_lot_model`)의 상태/수동 갱신 진입점을 제공한다.
+- **캐시 운영 패널** — Admin은 SplitTable 매칭 캐시나 Tracker Analysis ET 캐시를 소유하지 않는다. FileBrowser가 LOT 진행 최신 캐시의 상태/수동 갱신 진입점을 제공한다.
 
 ## Code Entrypoints
 

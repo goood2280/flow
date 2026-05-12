@@ -517,18 +517,16 @@ def _cleanup_legacy_single_file_cache(root: Path) -> None:
             shutil.rmtree(nested)
         except Exception as e:
             logger.warning("legacy nested cache cleanup skipped (%s): %s", nested, e)
-    legacy_re = re.compile(r".*\.(?:latest_step_by_lot|latest_lot_by_root_wafer)\.(?:parquet|json|meta\.json)$")
     for fp in list(cache.iterdir()):
         if not fp.is_file():
             continue
         name = fp.name
         if name == _CANONICAL_LOT_PROGRESS_CACHE_FILE:
             continue
-        if name == "splittable_latest_lot_step.parquet" or legacy_re.match(name):
-            try:
-                fp.unlink()
-            except Exception as e:
-                logger.warning("legacy cache cleanup skipped (%s): %s", fp, e)
+        try:
+            fp.unlink()
+        except Exception as e:
+            logger.warning("cache cleanup skipped (%s): %s", fp, e)
 
 
 def _single_file_cache_entries(root: Path, source_root: str) -> list[dict]:
@@ -3461,13 +3459,13 @@ class CacheLlmRefreshReq(BaseModel):
 
 def _cache_match_target(raw: str) -> str:
     target = str(raw or "").strip().lower()
-    if target in {"lot_progress", "progress", "latest", "latest_lot", "current_lot", "current_step", "lot_wf"}:
+    if target in {
+        "lot_progress", "progress", "latest", "latest_lot",
+        "latest_lot_by_root_wafer", "lot_progress_latest_lot_by_root_wafer",
+        "current_lot", "current_step", "lot_wf", "lot_wf_current",
+    }:
         return "lot_progress"
-    try:
-        from core import db_cache
-        return db_cache.normalize_target(target)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+    raise HTTPException(400, "Only lot_progress cache is supported in FileBrowser.")
 
 
 def _cache_settings_file() -> Path:
@@ -3598,9 +3596,6 @@ def _refresh_filebrowser_cache_target(target: str, *, product: str = "", source_
     target = _cache_match_target(target)
     product = _cache_safe_text(product, 120)
     source_root = _cache_safe_text(source_root, 160)
-    if target != "lot_progress":
-        from core import db_cache
-        return db_cache.refresh_db_cache(target, product=product or "", force=bool(force))
     from core import lot_progress_cache as _lot_progress_cache
     state = _lot_progress_cache.refresh_lot_progress_cache(force=bool(force))
     export = _lot_progress_cache.export_lot_progress_parquet(state)
@@ -3651,14 +3646,6 @@ def _cache_prompt_target(prompt: str) -> str:
         "현재 step", "현재 스텝", "최신 lot", "최신 랏", "진행 캐시",
     )):
         return "lot_progress"
-    if any(token in low or token in text for token in (
-        "step_seq", "step seq", "step-seq", "et", "analysis", "분석 et",
-    )):
-        return "et_lot_step_seq"
-    if any(token in low or token in text for token in ("inline", "item_id", "subitem", "inline item")):
-        return "inline_lot_item"
-    if any(token in low or token in text for token in ("vm", "model_id", "run_id", "vm model")):
-        return "vm_lot_model"
     return ""
 
 
@@ -3681,17 +3668,14 @@ def _cache_llm_plan(prompt: str, *, product: str = "", source_root: str = "") ->
         if prompt and llm_info["available"]:
             system = _filebrowser_agent_prompt("cache_refresh.system", (
                 "You classify a Flow FileBrowser cache refresh request. "
-                "Return only JSON. Allowed target values are: lot_progress, et_lot_step_seq, inline_lot_item, vm_lot_model. "
-                "lot_progress means lot_progress_latest_lot_by_root_wafer / lot_wf_current. "
-                "et_lot_step_seq means ET lot_id/root_lot_id step_seq summary with point counts. "
-                "inline_lot_item means INLINE lot item summary. "
-                "vm_lot_model means VM lot model/run summary. Do not invent paths."
+                "Return only JSON. The only allowed target value is: lot_progress. "
+                "lot_progress means lot_progress_latest_lot_by_root_wafer. Do not invent paths."
             ))
             ask = json.dumps({
                 "user_prompt": prompt,
                 "product_hint": product,
                 "source_root_hint": source_root,
-                "schema": {"target": "lot_progress|et_lot_step_seq|inline_lot_item|vm_lot_model", "product": "optional", "source_root": "optional", "reason": "short"},
+                "schema": {"target": "lot_progress", "product": "optional", "source_root": "optional", "reason": "short"},
             }, ensure_ascii=False)
             out = llm_adapter.complete(ask, system=system, timeout=8)
             llm_info["used"] = bool(out.get("ok") and out.get("text"))
@@ -3719,25 +3703,13 @@ def _cache_llm_plan(prompt: str, *, product: str = "", source_root: str = "") ->
 def cache_match_status(request: Request, target: str = Query("lot_progress"), product: str = Query(""), source_root: str = Query("")):
     _require_filebrowser_user(request)
     target = _cache_match_target(target)
-    if target == "lot_progress":
-        return _lot_progress_cache_status()
-    from core import db_cache
-    return db_cache.db_cache_status(target)
+    return _lot_progress_cache_status()
 
 
 @router.post("/cache/match/settings")
 def cache_match_settings(req: CacheMatchSettingsReq, request: Request):
     me = _require_filebrowser_admin(request)
     target = _cache_match_target(req.target)
-    if target != "lot_progress":
-        return {
-            "ok": True,
-            "target": target,
-            "mode": "manual",
-            "manual_enabled": True,
-            "schedule_enabled": False,
-            "detail": "DB-derived caches are manual-only.",
-        }
     minutes = _clamp_lot_progress_interval(req.interval_minutes)
     settings_path = _cache_settings_file()
     current = load_json(settings_path, {})
@@ -3776,7 +3748,7 @@ def cache_llm_refresh(req: CacheLlmRefreshReq, request: Request):
     plan = _cache_llm_plan(prompt, product=req.product or "", source_root=req.source_root or "")
     target = plan.get("target") or ""
     if not target:
-        raise HTTPException(400, "LLM/cache prompt must resolve to an allowlisted cache target")
+        raise HTTPException(400, "LLM/cache prompt must resolve to lot_progress")
     result = _refresh_filebrowser_cache_target(
         target,
         product=plan.get("product") or req.product or "",
@@ -5461,6 +5433,48 @@ def _download_lazy_csv(lf: pl.LazyFrame, sql: str, select_cols: str, max_rows: i
     return df, csv_bytes
 
 
+def _is_dtype_mismatch_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".casefold()
+    return any(token in text for token in (
+        "data type mismatch",
+        "dtype mismatch",
+        "schema mismatch",
+        "schemaerror",
+    ))
+
+
+def _download_duckdb_csv(files: list[Path], sql: str, select_cols: str, max_rows: int) -> tuple[pl.DataFrame, bytes]:
+    if not files:
+        raise ValueError("no source files for DuckDB download")
+    all_columns, _schema = duckdb_engine.inspect_files(files)
+    requested = [c.strip() for c in str(select_cols or "").split(",") if c.strip()]
+    selected = [c for c in requested if c in set(all_columns)]
+    if not selected and len(all_columns) > MAX_CSV_DOWNLOAD_AUTO_COLUMNS:
+        raise HTTPException(
+            400,
+            f"CSV 대상이 {len(all_columns)}열입니다. 컬럼 탭에서 필요한 열을 선택한 뒤 다운로드하세요.",
+        )
+    where = _combine_where(
+        _normalize_wafer_sql_filter(sql, all_columns),
+        _duckdb_valid_wafer_where(all_columns),
+    )
+    df, _columns, _schema = duckdb_engine.query_files(
+        files,
+        where=where,
+        select_cols=selected,
+        limit=max_rows + 1,
+    )
+    if df.height > max_rows:
+        raise HTTPException(
+            400,
+            f"CSV 다운로드는 최대 {max_rows:,}행까지 허용됩니다. SQL 필터를 추가하거나 max_rows를 조정하세요.",
+        )
+    csv_bytes = df.write_csv().encode("utf-8")
+    if len(csv_bytes) > MAX_CSV_DOWNLOAD_BYTES:
+        raise HTTPException(400, "CSV too large (>100MB). 컬럼/SQL 필터를 줄여주세요.")
+    return df, csv_bytes
+
+
 @router.get("/view")
 def view_product(root: str = Query(...), product: str = Query(...),
                  sql: str = Query(""), rows: int = Query(200),
@@ -5724,6 +5738,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
     try:
         max_rows = _csv_download_max_rows(max_rows)
         lazy_lf = None
+        source_files: list[Path] = []
         if file:
             rel = Path(file)
             if rel.parts and rel.parts[0] == "reformatter":
@@ -5770,6 +5785,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                         break
                 if fp is None:
                     raise HTTPException(404)
+                source_files = [fp]
                 lazy_lf = scan_one_file(fp)
                 if lazy_lf is None:
                     raise HTTPException(400, f"Cannot read: {file}")
@@ -5786,6 +5802,14 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             if reformatter_rules:
                 df = read_source(root=root, product=product, max_files=None if sql.strip() else 40)
             else:
+                candidate_files = source_data_files(
+                    root=root,
+                    product=product,
+                    max_files=None if sql.strip() else 40,
+                )
+                parquet_files = [fp for fp in candidate_files if fp.suffix.lower() == ".parquet"]
+                csv_files = [fp for fp in candidate_files if fp.suffix.lower() == ".csv"]
+                source_files = parquet_files or csv_files
                 lazy_lf = lazy_read_source(
                     root=root,
                     product=product,
@@ -5798,7 +5822,15 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             raise HTTPException(400, "Specify file or root+product")
 
         if lazy_lf is not None:
-            df, csv_bytes = _download_lazy_csv(lazy_lf, sql, select_cols, max_rows)
+            try:
+                df, csv_bytes = _download_lazy_csv(lazy_lf, sql, select_cols, max_rows)
+            except HTTPException:
+                raise
+            except Exception as e:
+                if not _is_dtype_mismatch_error(e) or not source_files or not duckdb_engine.is_available():
+                    raise
+                logger.warning("polars download fallback to duckdb label=%s: %s", label, e)
+                df, csv_bytes = _download_duckdb_csv(source_files, sql, select_cols, max_rows)
             _log_dl(username, label, sql, df.height, df.width,
                     select_cols=select_cols, size_bytes=len(csv_bytes))
             return csv_response(csv_bytes, label)

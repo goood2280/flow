@@ -300,7 +300,7 @@ def export_lot_progress_parquet(state: dict | None = None) -> dict:
         if not isinstance(state, dict):
             state = load_lot_progress_cache()
     rows = _lot_progress_parquet_rows(state or {})
-    paths = [cache_parquet_file(), filebrowser_cache_parquet_file()]
+    paths = [filebrowser_cache_parquet_file()]
     written: list[str] = []
     for target in paths:
         _write_lot_progress_parquet(target, rows)
@@ -367,16 +367,44 @@ def load_step_matching() -> tuple[dict[tuple[str, str], str], dict[str, str]]:
     return by_product, by_step
 
 
+_FAB_PROGRESS_COLUMNS = [
+    "root_lot_id", "lot_id", "wafer_id", "process_id", "step_id",
+    "tkin_time", "tkout_time", "eqp_id", "chamber_id", "ppid",
+]
+
+
+def _available_fab_progress_columns(path: Path) -> list[str]:
+    try:
+        import polars as pl  # type: ignore
+        schema = pl.read_parquet_schema(str(path))
+        names = set(schema.keys() if hasattr(schema, "keys") else schema)
+        return [col for col in _FAB_PROGRESS_COLUMNS if col in names]
+    except Exception:
+        pass
+    try:
+        import pyarrow.parquet as pq  # type: ignore
+        names = set(pq.ParquetFile(str(path)).schema.names)
+        return [col for col in _FAB_PROGRESS_COLUMNS if col in names]
+    except Exception:
+        return list(_FAB_PROGRESS_COLUMNS)
+
+
+def _fill_missing_progress_columns(row: dict) -> dict:
+    out = dict(row or {})
+    for col in _FAB_PROGRESS_COLUMNS:
+        out.setdefault(col, None)
+    return out
+
+
 def _read_parquet_rows(path: Path) -> Iterable[dict]:
-    columns = [
-        "root_lot_id", "lot_id", "wafer_id", "process_id", "step_id",
-        "tkin_time", "tkout_time", "eqp_id", "chamber_id", "ppid",
-    ]
+    columns = _available_fab_progress_columns(path)
+    if not columns:
+        return
     try:
         import polars as pl  # type: ignore
         df = pl.read_parquet(str(path), columns=columns)
         for row in df.iter_rows(named=True):
-            yield dict(row)
+            yield _fill_missing_progress_columns(row)
         return
     except Exception:
         pass
@@ -384,7 +412,7 @@ def _read_parquet_rows(path: Path) -> Iterable[dict]:
         import pandas as pd  # type: ignore
         df = pd.read_parquet(str(path), columns=columns)
         for row in df.to_dict(orient="records"):
-            yield dict(row)
+            yield _fill_missing_progress_columns(row)
         return
     except Exception:
         pass
@@ -392,7 +420,7 @@ def _read_parquet_rows(path: Path) -> Iterable[dict]:
         import pyarrow.parquet as pq  # type: ignore
         table = pq.read_table(str(path), columns=columns)
         for row in table.to_pylist():
-            yield dict(row)
+            yield _fill_missing_progress_columns(row)
     except Exception as exc:
         logger.warning("FAB parquet read failed: %s (%s)", path, exc)
 
@@ -430,6 +458,7 @@ def refresh_lot_progress_cache(force: bool = False) -> dict:
         errors: list[str] = []
 
         for product_dir in _fab_product_dirs(fab_root):
+            # Product comes from the FAB DB product folder, not from a parquet column.
             product = product_dir.name
             for parquet in product_dir.rglob("*.parquet"):
                 files_scanned += 1

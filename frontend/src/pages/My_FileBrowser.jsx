@@ -566,7 +566,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const[fbSettingsLlmPrompt,setFbSettingsLlmPrompt]=useState("현재 CSV 컬럼 기준으로 필수 컬럼, 빈 값 금지, unique key, 정렬 규칙 초안 만들어줘");
   const[fbSettingsLlmBusy,setFbSettingsLlmBusy]=useState(false);
   const[fbSettingsLlmDraft,setFbSettingsLlmDraft]=useState(null);
-  const[fbCacheStatus,setFbCacheStatus]=useState({lot_progress:null,et_lot_step_seq:null,inline_lot_item:null,vm_lot_model:null});
+  const[fbCacheStatus,setFbCacheStatus]=useState({lot_progress:null});
   const[fbCacheBusy,setFbCacheBusy]=useState("");
   const[fbCacheMsg,setFbCacheMsg]=useState("");
   const[fbCacheInterval,setFbCacheInterval]=useState("30");
@@ -580,10 +580,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const[aiSqlBusy,setAiSqlBusy]=useState(false);
   const[aiSqlResult,setAiSqlResult]=useState(null);
   const fbCacheTargets=[
-    ["lot_progress","LOT 진행 최신 캐시","lot_progress_latest_lot_by_root_wafer / lot_wf_current",fbCacheStatus.lot_progress],
-    ["et_lot_step_seq","ET step_seq 요약 캐시","lot_id별 step_seq(pt) / tkout_time",fbCacheStatus.et_lot_step_seq],
-    ["inline_lot_item","INLINE item 요약 캐시","lot_id별 item_id(pt) / subitem count",fbCacheStatus.inline_lot_item],
-    ["vm_lot_model","VM model 요약 캐시","lot_id별 model/run / tkout_time",fbCacheStatus.vm_lot_model],
+    ["lot_progress","LOT 진행 최신 캐시","lot_progress_latest_lot_by_root_wafer",fbCacheStatus.lot_progress],
   ];
 
   const csvBaseFiles=(baseFiles||[]).filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
@@ -715,13 +712,8 @@ export default function My_FileBrowser({user,onNavigate}){
   };
   const loadFilebrowserCacheStatus=async()=>{
     try{
-      const [lotProgress,etStepSeq,inlineItem,vmModel]=await Promise.all([
-        sf(API+"/cache/match/status?target=lot_progress").catch(e=>({ok:false,target:"lot_progress",error:e.message})),
-        sf(API+"/cache/match/status?target=et_lot_step_seq").catch(e=>({ok:false,target:"et_lot_step_seq",error:e.message})),
-        sf(API+"/cache/match/status?target=inline_lot_item").catch(e=>({ok:false,target:"inline_lot_item",error:e.message})),
-        sf(API+"/cache/match/status?target=vm_lot_model").catch(e=>({ok:false,target:"vm_lot_model",error:e.message})),
-      ]);
-      setFbCacheStatus({lot_progress:lotProgress,et_lot_step_seq:etStepSeq,inline_lot_item:inlineItem,vm_lot_model:vmModel});
+      const lotProgress=await sf(API+"/cache/match/status?target=lot_progress").catch(e=>({ok:false,target:"lot_progress",error:e.message}));
+      setFbCacheStatus({lot_progress:lotProgress});
       if(lotProgress?.interval_minutes)setFbCacheInterval(String(lotProgress.interval_minutes));
     }catch(_){}
   };
@@ -1855,7 +1847,7 @@ export default function My_FileBrowser({user,onNavigate}){
                   <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",flexWrap:"wrap"}}>
                     <div>
                       <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>LLM 캐시 생성</div>
-                      <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:2}}>연결된 LLM이 allowlist target을 고르고 서버 handler가 실행</div>
+                      <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:2}}>연결된 LLM이 LOT 진행 최신 캐시 요청인지 확인하고 서버 handler가 실행</div>
                     </div>
                     <button onClick={refreshFilebrowserCacheByLlm} disabled={!isAdmin||fbCacheLlmBusy}
                       title={!isAdmin?"admin only":"LLM prompt로 캐시 생성"}

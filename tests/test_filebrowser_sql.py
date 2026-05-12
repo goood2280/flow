@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import csv
+import asyncio
 from pathlib import Path
 
 import polars as pl
@@ -90,9 +91,7 @@ def test_filebrowser_base_file_view_requires_current_user(monkeypatch, tmp_path)
     assert preview["columns"] == ["lot", "value"]
 
 
-def test_filebrowser_db_cache_status_and_refresh_contract(monkeypatch):
-    from core import db_cache
-
+def test_filebrowser_rejects_db_derived_cache_targets(monkeypatch):
     seen = []
 
     def fake_current_user(request):
@@ -100,42 +99,19 @@ def test_filebrowser_db_cache_status_and_refresh_contract(monkeypatch):
         return {"username": "admin", "role": "admin"}
 
     monkeypatch.setattr(auth_core, "current_user", fake_current_user)
-    monkeypatch.setattr(
-        db_cache,
-        "db_cache_status",
-        lambda target: {
-            "ok": True,
-            "target": target,
-            "products": ["PRODA"],
-            "row_count": 7,
-            "cache_path": "/cache/et_lot_step_seq_summary.parquet",
-            "updated_at": "2026-05-10T00:00:00+00:00",
-            "unit_action": "filebrowser.cache.db.status",
-        },
-    )
-    monkeypatch.setattr(
-        db_cache,
-        "refresh_db_cache",
-        lambda target, **kwargs: {
-            "ok": True,
-            "target": target,
-            "unit_action": "filebrowser.cache.db.refresh",
-            "row_count": 7,
-            "products": [kwargs.get("product") or "ALL"],
-        },
-    )
     req = _Request("admin", "admin")
 
-    status = filebrowser.cache_match_status(req, target="et_lot_step_seq", product="PRODA")
-    refreshed = filebrowser.cache_match_refresh(
-        filebrowser.CacheMatchRefreshReq(target="et_lot_step_seq", product="PRODA", force=True),
-        req,
-    )
+    with pytest.raises(HTTPException) as status_exc:
+        filebrowser.cache_match_status(req, target="et_lot_step_seq", product="PRODA")
+    with pytest.raises(HTTPException) as refresh_exc:
+        filebrowser.cache_match_refresh(
+            filebrowser.CacheMatchRefreshReq(target="et_lot_step_seq", product="PRODA", force=True),
+            req,
+        )
 
-    assert status["unit_action"] == "filebrowser.cache.db.status"
-    assert status["row_count"] == 7
-    assert refreshed["unit_action"] == "filebrowser.cache.db.refresh"
-    assert refreshed["products"] == ["PRODA"]
+    assert status_exc.value.status_code == 400
+    assert refresh_exc.value.status_code == 400
+    assert "Only lot_progress" in str(status_exc.value.detail)
     assert seen == [req, req]
 
 
@@ -187,25 +163,17 @@ def test_filebrowser_cache_settings_updates_lot_progress_interval(monkeypatch, t
     assert out["schedule_enabled"] is True
 
 
-def test_filebrowser_db_cache_refresh_is_manual(monkeypatch):
-    from core import db_cache
-
+def test_filebrowser_cache_refresh_only_supports_lot_progress(monkeypatch):
     monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
-    monkeypatch.setattr(
-        db_cache,
-        "refresh_db_cache",
-        lambda target, **kwargs: {"ok": True, "target": target, "mode": "manual", "schedule_enabled": False, "products": [{"product": kwargs.get("product"), "ok": True}]},
-    )
 
-    out = filebrowser.cache_match_refresh(
-        filebrowser.CacheMatchRefreshReq(target="et_lot_step_seq", product="PRODA", source_root="ET_MEASURE", force=True),
-        _Request("admin", "admin"),
-    )
+    with pytest.raises(HTTPException) as exc:
+        filebrowser.cache_match_refresh(
+            filebrowser.CacheMatchRefreshReq(target="et_lot_step_seq", product="PRODA", source_root="ET_MEASURE", force=True),
+            _Request("admin", "admin"),
+        )
 
-    assert out["target"] == "et_lot_step_seq"
-    assert out["mode"] == "manual"
-    assert out["schedule_enabled"] is False
-    assert out["products"][0]["product"] == "PRODA"
+    assert exc.value.status_code == 400
+    assert "Only lot_progress" in str(exc.value.detail)
 
 
 def test_db_cache_builds_et_step_seq_point_summary(monkeypatch, tmp_path):
@@ -1121,6 +1089,10 @@ def test_base_files_cleans_legacy_cache_and_exposes_only_canonical(monkeypatch, 
         cache_dir / "ML_TABLE_PRODA.parquet.latest_lot_by_root_wafer.parquet",
         cache_dir / "ML_TABLE_PRODA.parquet.latest_lot_by_root_wafer.meta.json",
         cache_dir / "splittable_latest_lot_step.parquet",
+        cache_dir / "et_lot_step_seq_summary.parquet",
+        cache_dir / "et_lot_step_seq_summary.json",
+        cache_dir / "inline_lot_item_summary.parquet",
+        cache_dir / "vm_lot_model_summary.parquet",
         nested / "lot_progress_latest_lot_by_root_wafer.parquet.latest_step_by_lot.parquet",
     ]
     for legacy in legacy_files:
@@ -1295,13 +1267,24 @@ def test_base_files_exposes_readable_lot_progress_cache(monkeypatch, tmp_path):
     }]
 
 
-def test_cache_folder_files_are_readable_single_files_without_versions(monkeypatch, tmp_path):
+def test_cache_folder_exposes_only_lot_progress_latest_cache(monkeypatch, tmp_path):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     csv_fp = cache_dir / "small_cache.csv"
     csv_fp.write_text("id,value\n1,a\n2,b\n", encoding="utf-8")
     pq_fp = cache_dir / "wide_cache.parquet"
     pl.DataFrame({"id": list(range(250)), "value": [f"v{i}" for i in range(250)]}).write_parquet(pq_fp)
+    canonical = cache_dir / "lot_progress_latest_lot_by_root_wafer.parquet"
+    pl.DataFrame({
+        "product": ["PRODA"],
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "lot_id": ["A1000A.2"],
+        "step_id": ["STEP_CACHE"],
+        "function_step": ["CACHE_FUNC"],
+        "tkout_time": ["2026-05-08T08:55:00"],
+        "update_time": ["2026-05-08T09:00:00"],
+    }).write_parquet(canonical)
 
     dummy_paths = _DummyPaths(tmp_path)
     monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
@@ -1310,13 +1293,14 @@ def test_cache_folder_files_are_readable_single_files_without_versions(monkeypat
     listed = filebrowser.base_files()
     paths = {row["path"]: row for row in listed["files"]}
 
-    assert "cache/small_cache.csv" in paths
-    assert "cache/wide_cache.parquet" in paths
-    assert paths["cache/small_cache.csv"]["editable"] is False
-    assert paths["cache/wide_cache.parquet"]["versioned"] is False
+    assert "cache/lot_progress_latest_lot_by_root_wafer.parquet" in paths
+    assert "cache/small_cache.csv" not in paths
+    assert "cache/wide_cache.parquet" not in paths
+    assert not csv_fp.exists()
+    assert not pq_fp.exists()
 
     parquet_preview = filebrowser.base_file_view(
-        file="cache/wide_cache.parquet",
+        file="cache/lot_progress_latest_lot_by_root_wafer.parquet",
         sql="",
         rows=200,
         cols=10,
@@ -1326,12 +1310,12 @@ def test_cache_folder_files_are_readable_single_files_without_versions(monkeypat
         page=0,
         page_size=200,
     )
-    assert parquet_preview["showing"] == 200
+    assert parquet_preview["showing"] == 1
     assert parquet_preview.get("single_file_full_read") is not True
     assert parquet_preview["has_more"] is False
     assert parquet_preview["preview_row_limit"] == 200
 
-    versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="cache/wide_cache.parquet")
+    versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="cache/lot_progress_latest_lot_by_root_wafer.parquet")
     assert versions["versioned"] is False
     assert versions["versions"] == []
 
@@ -1814,6 +1798,63 @@ def test_download_lazy_csv_applies_sql_projection_and_row_cap():
 
     assert exc.value.status_code == 400
     assert "1" in str(exc.value.detail)
+
+
+def test_download_duckdb_csv_handles_partition_dtype_mismatch(tmp_path):
+    pytest.importorskip("duckdb")
+    files = [tmp_path / "part_a.parquet", tmp_path / "part_b.parquet"]
+    pl.DataFrame({"lot_id": ["A1000"], "mixed": [1]}).write_parquet(files[0])
+    pl.DataFrame({"lot_id": ["A1001"], "mixed": ["two"]}).write_parquet(files[1])
+
+    with pytest.raises(Exception) as exc:
+        filebrowser._download_lazy_csv(pl.scan_parquet([str(fp) for fp in files]), "", "", 10)
+    assert filebrowser._is_dtype_mismatch_error(exc.value)
+
+    df, csv_bytes = filebrowser._download_duckdb_csv(files, "", "", 10)
+
+    rows = sorted(df.to_dicts(), key=lambda row: row["lot_id"])
+    assert rows == [
+        {"lot_id": "A1000", "mixed": "1"},
+        {"lot_id": "A1001", "mixed": "two"},
+    ]
+    assert b"mixed" in csv_bytes
+    assert b"two" in csv_bytes
+
+
+def test_download_csv_falls_back_to_duckdb_for_dtype_mismatch(monkeypatch, tmp_path):
+    pytest.importorskip("duckdb")
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(filebrowser, "DL_LOG", dummy_paths.download_log)
+    monkeypatch.setattr(utils, "PATHS", dummy_paths)
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+
+    product_dir = tmp_path / "ROOT" / "PRODA"
+    product_dir.mkdir(parents=True)
+    pl.DataFrame({"lot_id": ["A1000"], "mixed": [1]}).write_parquet(product_dir / "part_a.parquet")
+    pl.DataFrame({"lot_id": ["A1001"], "mixed": ["two"]}).write_parquet(product_dir / "part_b.parquet")
+
+    response = filebrowser.download_csv(
+        _Request("viewer", "user"),
+        root="ROOT",
+        product="PRODA",
+        file="",
+        sql="",
+        select_cols="",
+        apply_reformatter=True,
+        max_rows=10,
+    )
+
+    async def read_body():
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    body = asyncio.run(read_body())
+    assert response.media_type == "text/csv; charset=utf-8"
+    assert b"mixed" in body
+    assert b"two" in body
 
 
 def test_duckdb_filter_normalization_keeps_where_read_only():
