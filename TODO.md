@@ -24,6 +24,7 @@
 
 ## Done
 
+- [x] (Codex) c794c42 GitHub main 배포 준비 — HEAD가 `c794c42`임을 확인하고 setup.py 재생성/검증 후 Discord deploy agent에 commit/push 인계.
 - [x] (Codex) GitHub main 배포 준비 — 로컬 변경 검토, setup.py 재생성, diff/build/pytest/smoke/preflight 검증 완료. 커밋/푸시는 Discord deploy agent가 이어서 수행.
 - [x] (Codex) FileBrowser LOT 진행 최신 캐시 생성 기준 수정 — product는 FAB 제품 폴더명에서 가져오고 FileBrowser cache 폴더는 canonical 최신 cache만 남기며 생성 방식을 자연어로 문서화.
 - [x] (Codex) FileBrowser 다운로드 시 `data type mismatch for column` 오류 수정 — Polars dtype mismatch 시 DuckDB CSV fallback 추가.
