@@ -2262,9 +2262,22 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
     assignments, invalid_wafers = _flowi_parse_splittable_plan_assignments(text)
     invalid_wafers = sorted(set(invalid_wafers + _flowi_invalid_wafer_mentions(text)), key=lambda x: int(x))
     metrics = _metric_alias_hits(text)
+    source_types = _flowi_source_type_tokens(text)
     selected = _flowi_infer_function_call(text, slots)
     selected_name = str(selected.get("name") or "")
-    if float(selected.get("confidence") or 0) < 0.5:
+    structure_signal = bool(
+        _matched_feature_entrypoints(text, limit=1)
+        or resolved_product
+        or any(classified.get(k) for k in ("root_lot_ids", "fab_lot_ids"))
+        or wafers
+        or assignments
+        or invalid_wafers
+        or metrics
+        or source_types
+        or any(slots.get(k) for k in ("lots", "root_lot_ids", "fab_lot_ids", "steps", "terms"))
+        or _contains_chart_intent(text)
+    )
+    if float(selected.get("confidence") or 0) < 0.5 and structure_signal:
         polished = _flowi_complete_json(
             [{"role": "user", "content": text}],
             {
@@ -2286,7 +2299,6 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
                 selected_name = name
     if invalid_wafers:
         selected["invalid_wafers"] = invalid_wafers
-    source_types = _flowi_source_type_tokens(text)
     if selected_name == "query_current_fab_lot_from_fab_db" and "FAB" not in source_types:
         source_types.insert(0, "FAB")
     if selected_name == "build_dashboard_metric_chart" and not source_types:
@@ -16382,6 +16394,10 @@ def _run_flowi_chat(
 def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
     """Keep local chart/tablemap results fast and avoid delaying visible payloads."""
     intent = str(tool.get("intent") or "")
+    action = str(tool.get("action") or "")
+    table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
+    if intent.endswith("_guidance") or action == "flowi.feature.guidance" or table.get("kind") == "flowi_action_plan":
+        return True
     if intent == "current_fab_lot_lookup":
         return True
     if intent.startswith("dashboard_") or intent == "tablemap_guidance":

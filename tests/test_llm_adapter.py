@@ -162,6 +162,71 @@ def test_vertex_gemini_profile_uses_google_adc_bearer(monkeypatch):
     assert headers["Authorization"] == "Bearer adc-token"
 
 
+def test_vertex_openai_compatible_profile_forces_google_adc(monkeypatch):
+    monkeypatch.setattr(
+        llm_adapter,
+        "load_json",
+        lambda *_args, **_kwargs: {
+            "llm": {
+                "enabled": True,
+                "api_url": "https://aiplatform.googleapis.com/v1/projects/p/locations/us-central1/endpoints/openapi/chat/completions",
+                "model": "google/gemini-2.5-flash",
+                "provider": "openai_compatible",
+                "auth_mode": "bearer",
+                "admin_token": "stale-token",
+                "format": "openai",
+            }
+        },
+    )
+
+    cfg = llm_adapter._raw_config()
+
+    assert cfg["provider"] == "openai_compatible"
+    assert cfg["auth_mode"] == "google_adc"
+    assert cfg["format"] == "openai"
+    assert cfg["admin_token"] == ""
+
+
+def test_google_adc_ignores_stored_admin_token_and_replaces_auth_header(monkeypatch):
+    cfg = {
+        "provider": "openai_compatible",
+        "auth_mode": "google_adc",
+        "admin_token": "stale-token",
+        "headers": {"Authorization": "Bearer {token}", "X-Token": "{token}"},
+        "format": "openai",
+        "extra_body": {},
+        "model": "google/gemini-2.5-flash",
+    }
+    monkeypatch.setattr(llm_adapter, "_google_adc_access_token", lambda *_args, **_kwargs: "adc-token")
+
+    headers = _build_request_headers(cfg, timeout_s=3)
+
+    assert headers["Authorization"] == "Bearer adc-token"
+    assert "stale-token" not in str(headers)
+    assert "X-Token" not in headers
+
+
+def test_google_adc_falls_back_to_gcloud_user_token(monkeypatch):
+    calls = []
+
+    def fake_gcloud(args, *, timeout_s, label):
+        calls.append((args, timeout_s, label))
+        if args == ["auth", "print-access-token"]:
+            return "user-token"
+        return ""
+
+    monkeypatch.setattr(llm_adapter, "_google_auth_adc_access_token", lambda: "")
+    monkeypatch.setattr(llm_adapter, "_gcloud_access_token", fake_gcloud)
+
+    token = llm_adapter._google_adc_access_token(timeout_s=4)
+
+    assert token == "user-token"
+    assert [c[0] for c in calls] == [
+        ["auth", "application-default", "print-access-token"],
+        ["auth", "print-access-token"],
+    ]
+
+
 def test_vertex_gemini_native_body_shape():
     cfg = {
         "provider": "vertex_gemini",

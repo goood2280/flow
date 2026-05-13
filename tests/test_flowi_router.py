@@ -2651,6 +2651,38 @@ def test_flowi_verify_requires_confirmation_text(monkeypatch):
     assert out["error"] == "pong"
 
 
+def test_flowi_home_guidance_does_not_wait_for_llm_polish(monkeypatch):
+    monkeypatch.setattr(llm_router, "current_user", lambda _request: {"username": "home_user", "role": "admin"})
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"diagnosis"})
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_profile_context", lambda _username: "")
+    monkeypatch.setattr(llm_router, "_feature_context", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_router.llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("guidance response should stay deterministic")),
+    )
+    monkeypatch.setattr(
+        llm_router,
+        "_handle_flowi_query",
+        lambda *_args, **_kwargs: {
+            "handled": True,
+            "intent": "diagnosis_guidance",
+            "action": "flowi.feature.guidance",
+            "answer": "가이드 응답",
+            "table": {"kind": "flowi_action_plan", "rows": []},
+        },
+    )
+
+    out = llm_router.flowi_chat(llm_router.FlowiChatReq(prompt="안녕"), request=object())
+
+    assert out["ok"] is True
+    assert out["answer"] == "가이드 응답"
+    assert out["llm"]["used"] is False
+    assert out["llm"]["skipped"] == "deterministic_tool_result"
+
+
 def test_flowi_agent_chat_accepts_codex_source_and_returns_web_actions(monkeypatch):
     monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(llm_router, "_profile_context", lambda _username: "")

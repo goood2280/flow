@@ -1665,6 +1665,86 @@ def test_base_file_save_reports_added_rows_in_version_diff(monkeypatch, tmp_path
     assert preview["diff_table"]["counts"]["added"] == 1
 
 
+def test_version_diff_preserves_duplicate_inferred_key_additions(tmp_path):
+    previous = tmp_path / "v1.csv"
+    current = tmp_path / "current.csv"
+    previous.write_text("product,item_id,value\nPRODA,ITEM_A,base\n", encoding="utf-8")
+    current.write_text(
+        "product,item_id,value\n"
+        "PRODA,ITEM_A,base\n"
+        + "".join(f"PRODA,ITEM_A,new_{idx}\n" for idx in range(6)),
+        encoding="utf-8",
+    )
+
+    diff = filebrowser._diff_table_between(current, previous)
+    summary = filebrowser._snapshot_change_summary(current, previous)
+
+    assert diff["match_strategy"] == "sequence"
+    assert diff["counts"]["added"] == 6
+    assert diff["counts"]["modified"] == 0
+    assert diff["counts"]["deleted"] == 0
+    assert summary["added_rows"] == 6
+
+
+def test_version_diff_counts_modified_deleted_and_added_rows(tmp_path):
+    previous = tmp_path / "v1.csv"
+    current = tmp_path / "current.csv"
+    previous.write_text(
+        "id,name,value\n"
+        + "".join(f"{idx},row_{idx},old_{idx}\n" for idx in range(1, 11)),
+        encoding="utf-8",
+    )
+    current_rows = []
+    for idx in range(1, 9):
+        value = f"new_{idx}" if idx in {2, 5, 7} else f"old_{idx}"
+        current_rows.append(f"{idx},row_{idx},{value}\n")
+    current_rows.extend(f"{idx},row_{idx},old_{idx}\n" for idx in range(11, 15))
+    current.write_text("id,name,value\n" + "".join(current_rows), encoding="utf-8")
+
+    diff = filebrowser._diff_table_between(current, previous)
+
+    assert diff["key_columns"] == ["id"]
+    assert diff["counts"]["modified"] == 3
+    assert diff["counts"]["deleted"] == 2
+    assert diff["counts"]["added"] == 4
+    modified = [row for row in diff["rows"] if row["rev"] == "수정"]
+    assert len(modified) == 3
+    assert all(row["_changed_cols"] == ["value"] for row in modified)
+
+
+def test_version_diff_prefers_configured_csv_unique_keys(monkeypatch, tmp_path):
+    previous = tmp_path / "v1.csv"
+    current = tmp_path / "rules.csv"
+    previous.write_text("product,step,value\nPRODA,S1,10\nPRODA,S2,20\n", encoding="utf-8")
+    current.write_text("product,step,value\nPRODA,S1,11\nPRODA,S3,30\n", encoding="utf-8")
+    monkeypatch.setattr(filebrowser, "PATHS", _DummyPaths(tmp_path))
+    filebrowser._save_filebrowser_settings({
+        "csv_full_read_max_bytes": 10485760,
+        "csv_rules": {"rules.csv": {"unique_keys": [["product", "step"]]}},
+    })
+
+    diff = filebrowser._diff_table_between(current, previous, file="rules.csv")
+
+    assert diff["key_columns"] == ["product", "step"]
+    assert diff["counts"]["modified"] == 1
+    assert diff["counts"]["deleted"] == 1
+    assert diff["counts"]["added"] == 1
+    assert [row["changed_cols"] for row in diff["rows"] if row["rev"] == "수정"] == ["value"]
+
+
+def test_version_diff_reads_wafer_id_rows_without_filtering(tmp_path):
+    previous = tmp_path / "v1.csv"
+    current = tmp_path / "current.csv"
+    previous.write_text("id,wafer_id,value\n1,not_a_wafer,old\n", encoding="utf-8")
+    current.write_text("id,wafer_id,value\n1,not_a_wafer,new\n", encoding="utf-8")
+
+    diff = filebrowser._diff_table_between(current, previous)
+
+    assert diff["counts"]["modified"] == 1
+    assert diff["rows"][0]["wafer_id"] == "not_a_wafer"
+    assert diff["rows"][0]["_changed_cols"] == ["value"]
+
+
 def test_base_file_versioned_allows_any_single_csv_under_5mb(tmp_path):
     fp = tmp_path / "custom_lookup.csv"
     fp.write_text("a,b\n1,2\n", encoding="utf-8")

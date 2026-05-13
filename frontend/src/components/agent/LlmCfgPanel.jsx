@@ -171,7 +171,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     body:previewBody,
     users:"홈 Flowi 사용자는 별도 LLM token 입력 없이 서버 설정으로 실행",
   };
-  return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:900,opacity:readOnly?0.58:1,pointerEvents:readOnly?"none":"auto"}}>
+  return(<div className="llm-cfg-panel" style={{background:"transparent",border:"0",padding:0,maxWidth:"none",opacity:readOnly?0.58:1,pointerEvents:readOnly?"none":"auto"}}>
     <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Flowi LLM 설정</div>
     <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.6}}>
       Admin 이 저장한 credential 을 서버에서 사용합니다. 일반 사용자는 홈 Flowi 콘솔에서 질문만 입력하고, 답변과 기능별 표/추천은 홈에서 바로 확인합니다.

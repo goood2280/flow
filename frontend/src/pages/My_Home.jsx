@@ -53,6 +53,10 @@ const FEATURE_GUIDES={
   waferlayout:{icon:"🧭",title:"WF Layout",steps:["제품별 wafer layout 불러오기","shot/chip/TEG 배치 확인","edge shot 후보 검토","layout 저장 및 재검증"]},
   devguide:{icon:"📖",title:"개발 가이드",steps:["아키텍처 다이어그램","API 엔드포인트 문서","Gotchas / 코드 규칙"]},
 };
+function shortFlowiVerifyError(value){
+  const text=String(value||"").replace(/Bearer\s+[A-Za-z0-9._~+/=-]{12,}/gi,"Bearer <redacted>").replace(/ya29\.[A-Za-z0-9._~+/=-]+/g,"ya29.<redacted>").replace(/sk-[A-Za-z0-9._~+/=-]{12,}/g,"sk-<redacted>").replace(/\s+/g," ").trim();
+  return text.length>120?`${text.slice(0,117)}...`:text;
+}
 function FlowiConsole({onNavigate,user,onActiveChange}){
   const isAdmin=user?.role==="admin";
   const[active,setActive]=useState(false);
@@ -63,6 +67,7 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
   const[lastPrompt,setLastPrompt]=useState("");
   const[err,setErr]=useState("");
   const[modelLabel,setModelLabel]=useState("");
+  const[verifyError,setVerifyError]=useState("");
   const[messages,setMessages]=useState([]);
   const[liveStep,setLiveStep]=useState(0);
   const[activeChartSessionId,setActiveChartSessionId]=useState("");
@@ -86,13 +91,13 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
       const cfg=d?.config||{};
       const model=String(cfg.model||"").trim();
       setModelLabel(d?.available&&model?model:"");
-      if(d&&!d.available)setConnState("disconnected");
+      if(d&&!d.available)setConnState("unavailable");
     }).catch(()=>{if(alive)setModelLabel("");});
     return()=>{alive=false;};
   },[]);
 
   const activate=()=>{
-    setActive(true);setErr("");
+    setActive(true);setErr("");setVerifyError("");
     onActiveChange&&onActiveChange(true);
     const seq=++verifySeq.current;
     setConnState("checking");
@@ -100,9 +105,20 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
       .then(d=>{
         if(seq!==verifySeq.current)return;
         const msg=String(d?.message||d?.text||"");
-        setConnState(d?.ok&&msg.includes("확인완료")?"connected":"disconnected");
+        if(d?.ok&&msg.includes("확인완료")){
+          setConnState("connected");
+          setVerifyError("");
+        }else{
+          setConnState("verify_failed");
+          setVerifyError(shortFlowiVerifyError(d?.error||d?.message||"unknown"));
+        }
       })
-      .catch(()=>{if(seq===verifySeq.current)setConnState("disconnected");});
+      .catch(e=>{
+        if(seq===verifySeq.current){
+          setConnState("verify_failed");
+          setVerifyError(shortFlowiVerifyError(e?.message||"verify request failed"));
+        }
+      });
     return true;
   };
   const close=()=>{setActive(false);setErr("");onActiveChange&&onActiveChange(false);};
@@ -160,16 +176,19 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
         setPrompt("");
       }).catch(e=>setErr(e.message||String(e))).finally(()=>setBusy(false));
   };
-  const connLabel=connState==="checking"?"연결확인중":connState==="connected"?"연결":connState==="disconnected"?"연결끊김":"";
-  const connColor=connState==="connected"?HOME_UI.ok:connState==="checking"?HOME_UI.accent:HOME_UI.bad;
+  const connLabel=connState==="checking"?"연결확인중":connState==="connected"?"연결":connState==="verify_failed"?"LLM 확인 실패":connState==="unavailable"?"LLM 미설정":"";
+  const connColor=connState==="connected"?HOME_UI.ok:connState==="checking"?HOME_UI.accent:connState==="verify_failed"?HOME_UI.accent:HOME_UI.bad;
   return(<section style={{marginTop:12,fontFamily:"'JetBrains Mono',monospace"}}>
     <style>{`@keyframes flowiPanelWake{0%{opacity:0;transform:translateY(-8px) scaleY(.96)}100%{opacity:1;transform:translateY(0) scaleY(1)}}@keyframes flowiConnBlink{0%,100%{opacity:.45}50%{opacity:1}}`}</style>
     <form onSubmit={e=>{e.preventDefault();activate();}} style={{margin:0}}>
       <div style={{display:"flex",alignItems:"center",gap:7,minWidth:0,fontSize:14,lineHeight:1.7,flexWrap:"wrap"}}>
         <span style={{color:HOME_UI.accent}}>{">"}</span>
         <span style={{color:HOME_UI.textDim,whiteSpace:"nowrap"}}>flow-i</span>
-        {active&&connLabel&&<span title={modelLabel?`LLM ${modelLabel}`:"LLM 연결 확인"} style={{display:"inline-flex",alignItems:"center",gap:5,color:connColor,border:`1px solid ${connColor}66`,background:`${connColor}14`,borderRadius:999,padding:"1px 8px",fontSize:14,fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>
+        {active&&connLabel&&<span title={verifyError?`LLM 확인 실패: ${verifyError}`:(modelLabel?`LLM ${modelLabel}`:"LLM 연결 확인")} style={{display:"inline-flex",alignItems:"center",gap:5,color:connColor,border:`1px solid ${connColor}66`,background:`${connColor}14`,borderRadius:999,padding:"1px 8px",fontSize:14,fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>
           <span style={{width:6,height:6,borderRadius:"50%",background:connColor,animation:connState==="checking"?"flowiConnBlink .75s ease-in-out infinite":"none"}}/>{connLabel}
+        </span>}
+        {active&&verifyError&&<span style={{color:HOME_UI.textDim,fontSize:14,fontFamily:"monospace",minWidth:0,maxWidth:420,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+          {verifyError}
         </span>}
         {!active&&<button type="submit" aria-label="start flowi"
           style={{padding:"2px 8px",borderRadius:5,border:`1px solid ${HOME_UI.borderStrong}`,background:HOME_UI.terminal,color:HOME_UI.accent,fontSize:14,fontFamily:"monospace",fontWeight:800,cursor:"pointer"}}>START</button>}

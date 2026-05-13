@@ -75,6 +75,17 @@ _DEFAULT: Dict[str, Any] = {
 }
 
 
+def _is_vertex_openai_compatible_config(cfg: Dict[str, Any]) -> bool:
+    """Detect Google Vertex OpenAI-compatible Gemini endpoint profiles."""
+    url = str(cfg.get("api_url") or "").strip().lower()
+    model = str(cfg.get("model") or "").strip().lower()
+    return (
+        "aiplatform.googleapis.com" in url
+        and "/openapi/" in url
+        and (model.startswith("google/gemini") or model.startswith("gemini"))
+    )
+
+
 def _raw_config() -> Dict[str, Any]:
     try:
         cfg = load_json(ADMIN_SETTINGS_FILE, {}) or {}
@@ -115,6 +126,15 @@ def _raw_config() -> Dict[str, Any]:
         merged["model"] = "gpt-oss-120b"
     if provider == "vertex_gemini" and not merged["model"]:
         merged["model"] = "google/gemini-2.5-flash"
+    if _is_vertex_openai_compatible_config(merged):
+        # Vertex's OpenAI-compatible Gemini endpoint must use a fresh Google
+        # OAuth token. A persisted bearer token expires quickly and causes
+        # Home Flow-i verification to fail with HTTP 401.
+        merged["auth_mode"] = "google_adc"
+        merged["format"] = "openai"
+        if provider == "generic":
+            merged["provider"] = "openai_compatible"
+        merged["admin_token"] = ""
     merged["user_id"] = str(merged.get("user_id") or "").strip()
     merged["user_type"] = str(merged.get("user_type") or "").strip()
     merged["format"] = (merged.get("format") or "openai").strip() or "openai"
@@ -250,8 +270,8 @@ def _replace_header_tokens(value: Any, *, token: str, prompt_msg_id: str,
     return text
 
 
-def _google_adc_access_token(timeout_s: int = 8) -> str:
-    """Return a Google OAuth access token from ADC, without requiring google-auth at import time."""
+def _google_auth_adc_access_token() -> str:
+    """Return a Google OAuth token from google-auth ADC, if available."""
     try:
         import google.auth  # type: ignore
         from google.auth.transport.requests import Request  # type: ignore
@@ -261,30 +281,61 @@ def _google_adc_access_token(timeout_s: int = 8) -> str:
         return str(getattr(creds, "token", "") or "").strip()
     except Exception as import_or_refresh_error:
         logger.debug("google-auth ADC unavailable: %s", import_or_refresh_error)
+        return ""
+
+
+def _gcloud_access_token(args: list[str], *, timeout_s: int, label: str) -> str:
+    """Return a gcloud token without logging stdout or other secret-bearing values."""
+    timeout_i = max(2, min(int(timeout_s or 8), 8))
     try:
         proc = subprocess.run(
-            ["gcloud", "auth", "application-default", "print-access-token"],
+            ["gcloud", *args],
             check=False,
             capture_output=True,
             text=True,
-            timeout=max(2, min(int(timeout_s or 8), 20)),
+            timeout=timeout_i,
         )
         if proc.returncode == 0:
             return str(proc.stdout or "").strip()
-        logger.debug("gcloud ADC token failed: %s", (proc.stderr or "")[:200])
+        logger.debug("%s token failed: %s", label, (proc.stderr or "")[:200])
     except Exception as cli_error:
-        logger.debug("gcloud ADC unavailable: %s", cli_error)
+        logger.debug("%s unavailable: %s", label, cli_error)
+    return ""
+
+
+def _google_adc_access_token(timeout_s: int = 8) -> str:
+    """Return a Google OAuth access token from ADC, without requiring google-auth at import time."""
+    timeout_i = max(2, min(int(timeout_s or 8), 8))
+    token = _google_auth_adc_access_token()
+    if token:
+        return token
+    token = _gcloud_access_token(
+        ["auth", "application-default", "print-access-token"],
+        timeout_s=timeout_i,
+        label="gcloud application-default",
+    )
+    if token:
+        return token
+    token = _gcloud_access_token(
+        ["auth", "print-access-token"],
+        timeout_s=timeout_i,
+        label="gcloud user",
+    )
+    if token:
+        return token
     return ""
 
 
 def _build_request_headers(cfg: Dict[str, Any], *,
                            auth_token: Optional[str] = None,
                            prompt_msg_id: Optional[str] = None,
-                           completion_msg_id: Optional[str] = None) -> Dict[str, str]:
+                           completion_msg_id: Optional[str] = None,
+                           timeout_s: Optional[int] = None) -> Dict[str, str]:
     """Build outbound LLM headers while keeping credentials server-side."""
     prompt_id = prompt_msg_id or str(uuid.uuid4())
     completion_id = completion_msg_id or str(uuid.uuid4())
-    token = str(auth_token or cfg.get("admin_token") or "").strip()
+    auth_mode = str(cfg.get("auth_mode") or "bearer").strip().lower()
+    token = str(auth_token or ("" if auth_mode == "google_adc" else cfg.get("admin_token")) or "").strip()
     headers: Dict[str, str] = {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -304,13 +355,16 @@ def _build_request_headers(cfg: Dict[str, Any], *,
             ),
         )
 
-    auth_mode = str(cfg.get("auth_mode") or "bearer").strip().lower()
     if auth_mode == "bearer" and token:
         _set_header(headers, "Authorization", f"Bearer {token}")
     elif auth_mode == "dep_ticket" and token:
         _set_header(headers, "x-dep-ticket", token)
     elif auth_mode == "google_adc":
-        google_token = token or _google_adc_access_token()
+        for key in [k for k in headers if k.lower() == "authorization"]:
+            headers.pop(key, None)
+        google_token = str(auth_token or "").strip() or _google_adc_access_token(
+            timeout_s=timeout_s or cfg.get("timeout_s") or 8
+        )
         if google_token:
             _set_header(headers, "Authorization", f"Bearer {google_token}")
 
@@ -387,6 +441,17 @@ def _parse_json_object(text: str, *, required: Optional[list[str]] = None,
     return None, last_error
 
 
+def _redact_error_text(text: Any) -> str:
+    """Keep adapter errors useful without returning credential-like strings."""
+    out = str(text or "")
+    if not out:
+        return ""
+    out = re.sub(r"Bearer\s+[A-Za-z0-9._~+/=-]{12,}", "Bearer <redacted>", out, flags=re.I)
+    out = re.sub(r"ya29\.[A-Za-z0-9._~+/=-]+", "ya29.<redacted>", out)
+    out = re.sub(r"sk-[A-Za-z0-9._~+/=-]{12,}", "sk-<redacted>", out)
+    return out[:240]
+
+
 def complete(prompt: str, *, system: Optional[str] = None,
              timeout: Optional[int] = None,
              auth_token: Optional[str] = None) -> Dict[str, Any]:
@@ -406,10 +471,10 @@ def complete(prompt: str, *, system: Optional[str] = None,
         return {"ok": False, "text": "", "error": "llm api_url missing"}
     body = _build_request_body(cfg, prompt, system)
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    hdrs = _build_request_headers(cfg, auth_token=auth_token)
+    to = int(timeout or cfg.get("timeout_s") or 20)
+    hdrs = _build_request_headers(cfg, auth_token=auth_token, timeout_s=to)
     if str(cfg.get("auth_mode") or "").strip().lower() == "google_adc" and "Authorization" not in hdrs:
         return {"ok": False, "text": "", "error": "google adc token unavailable"}
-    to = int(timeout or cfg.get("timeout_s") or 20)
     last_error = ""
     for attempt in range(2):
         try:
@@ -428,8 +493,9 @@ def complete(prompt: str, *, system: Optional[str] = None,
                 detail = e.read(512).decode("utf-8", errors="replace")
             except Exception:
                 pass
-            last_error = f"HTTP {e.code}: {detail[:200]}"
-            logger.warning("llm HTTPError %s: %s", e.code, detail[:200])
+            safe_detail = _redact_error_text(detail)
+            last_error = f"HTTP {e.code}: {safe_detail}"
+            logger.warning("llm HTTPError %s: %s", e.code, safe_detail)
             if e.code == 429 and attempt == 0:
                 try:
                     delay = max(0.2, min(2.5, float(e.headers.get("Retry-After") or 0.8)))
@@ -439,8 +505,8 @@ def complete(prompt: str, *, system: Optional[str] = None,
                 continue
             return {"ok": False, "text": "", "error": last_error, "status_code": e.code}
         except Exception as e:
-            last_error = f"{e}"
-            logger.warning("llm error: %s", e)
+            last_error = _redact_error_text(e)
+            logger.warning("llm error: %s", last_error)
             return {"ok": False, "text": "", "error": last_error}
     return {"ok": False, "text": "", "error": last_error or "llm request failed"}
 

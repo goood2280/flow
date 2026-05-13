@@ -41,18 +41,29 @@ export default function My_Diagnosis({ user }) {
   const isAdminUser = user?.role === "admin";
   const canManageWiki = canManagePage(user, "diagnosis") || canManagePage(user, "knowledge");
   const tabHint = AGENT_TAB_HINT[tab];
+  const activeTab = (
+    <>
+      {tab === "loop" && <LoopTab user={user} />}
+      {tab === "wiki" && <WikiTab user={user} canManage={canManageWiki} />}
+      {tab === "schema" && <SchemaTab canManage={canManageWiki} />}
+      {tab === "ai" && <LlmTab isAdmin={isAdminUser} />}
+    </>
+  );
 
   return (
-    <PageShell>
-      <PageHeader title="에이전트" subtitle="Flow-i orchestrator가 프롬프트를 기능별 단위기능으로 라우팅하고 실행한 흐름을 확인합니다." />
-      <div style={{ padding: 12, display: "grid", gap: 12 }}>
-        <TabStrip items={AGENT_TABS} active={tab} onChange={setTab} />
-        {tabHint && <Banner tone="info">{tabHint}</Banner>}
-        {tab === "loop" && <LoopTab user={user} />}
-        {tab === "wiki" && <WikiTab user={user} canManage={canManageWiki} />}
-        {tab === "schema" && <SchemaTab canManage={canManageWiki} />}
-        {tab === "ai" && <LlmTab isAdmin={isAdminUser} />}
-      </div>
-    </PageShell>
+    <div className="flow-connected-page flow-agent-page" style={{ minHeight: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
+      <PageShell style={{ minHeight: "calc(100vh - 52px)" }}>
+        <PageHeader title="에이전트" subtitle="Flow-i orchestrator가 프롬프트를 기능별 단위기능으로 라우팅하고 실행한 흐름을 확인합니다." />
+        <div className="flow-agent-shell">
+          <div className="flow-agent-tabs">
+            <TabStrip items={AGENT_TABS} active={tab} onChange={setTab} />
+          </div>
+          {tabHint && <Banner tone="info" style={{ borderRadius: 0 }}>{tabHint}</Banner>}
+          <div className="flow-agent-surface">
+            {activeTab}
+          </div>
+        </div>
+      </PageShell>
+    </div>
   );
 }

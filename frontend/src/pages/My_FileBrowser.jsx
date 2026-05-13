@@ -273,8 +273,13 @@ function versionChangeLabel(summary){
   if(modified)parts.push(`수정 ${modified}행`);
   if(added)parts.push(`추가 ${added}행`);
   if(deleted)parts.push(`삭제 ${deleted}행`);
+  const addedCols=Array.isArray(s.added_columns)?s.added_columns.length:Number(s.added_columns||s.added_columns_count||0);
+  const removedCols=Array.isArray(s.removed_columns)?s.removed_columns.length:Number(s.removed_columns||s.removed_columns_count||0);
+  if(addedCols||removedCols){
+    parts.push(`열 ${addedCols?`+${addedCols}`:""}${addedCols&&removedCols?"/":""}${removedCols?`-${removedCols}`:""}`);
+  }
   const colDelta=Number(s.columns_delta||0);
-  if(colDelta)parts.push(`${colDelta>0?"+":""}${colDelta}열`);
+  if(!addedCols&&!removedCols&&colDelta)parts.push(`열 ${colDelta>0?"+":""}${colDelta}`);
   if(parts.length)return parts.join(" / ");
   const raw=String(s.label||"");
   if(raw==="initial snapshot")return"초기 버전";
@@ -297,7 +302,15 @@ function diffTableCountLabel(diffTable){
   if(modified)parts.push(`수정 ${modified}행`);
   if(added)parts.push(`추가 ${added}행`);
   if(deleted)parts.push(`삭제 ${deleted}행`);
+  const addedCols=Number(diffTable?.added_columns?.length||diffTable?.added_columns_count||0);
+  const removedCols=Number(diffTable?.removed_columns?.length||diffTable?.removed_columns_count||0);
+  if(addedCols||removedCols)parts.push(`열 ${addedCols?`+${addedCols}`:""}${addedCols&&removedCols?"/":""}${removedCols?`-${removedCols}`:""}`);
   return parts.join(" / ");
+}
+function tableShapeLabel(profile, label=""){
+  const rows=profile?.rows??"-";
+  const cols=profile?.column_count??profile?.columns??"-";
+  return `${label}${label?" ":""}${rows}행 ${cols}열`;
 }
 
 function LazyAwsPanel({ user, compact = false }) {
@@ -1537,8 +1550,7 @@ export default function My_FileBrowser({user,onNavigate}){
             </div>
             {baseCurrentProfile&&<div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:8,fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace"}}>
               <span>현재 버전</span>
-              <span>rows={baseCurrentProfile.rows??"-"}</span>
-              <span>cols={baseCurrentProfile.columns??"-"}</span>
+              <span>{baseCurrentProfile.rows??"-"}행 / {baseCurrentProfile.columns??"-"}열</span>
               <span>size={formatSize(baseCurrentProfile.size)}</span>
               <span>modified={(baseCurrentProfile.modified_at||"").replace("T"," ").slice(0,16)||"-"}</span>
             </div>}
@@ -1548,12 +1560,11 @@ export default function My_FileBrowser({user,onNavigate}){
                 const q=baseVersionFilter.trim().toLowerCase();
                 if(!q)return true;
                 return [v.version,v.actor,v.action,v.note,v.created_at].some(x=>String(x||"").toLowerCase().includes(q));
-              }).map(v=><div key={v.version} style={{display:"grid",gridTemplateColumns:"58px minmax(120px,0.9fr) minmax(130px,1fr) 64px 58px 72px 136px 82px 58px 70px",gap:8,alignItems:"center",fontSize:12,padding:"5px 6px",border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-primary)"}}>
+              }).map(v=><div key={v.version} style={{display:"grid",gridTemplateColumns:"58px minmax(120px,0.9fr) minmax(130px,1fr) 96px 72px 136px 82px 58px 70px",gap:8,alignItems:"center",fontSize:12,padding:"5px 6px",border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-primary)"}}>
                 <span style={{fontFamily:"monospace",fontWeight:900,color:String(v.version||"").startsWith("legacy_")?"#a855f7":"var(--accent)"}} title={v.storage_version||v.version}>{String(v.version||"-").startsWith("legacy_")?"legacy":v.version}</span>
                 <span style={{color:"var(--text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={`${v.version} · ${v.action||"edit"}`}>{v.note||v.action||"edit"}</span>
                 <span style={{color:"#eab308",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontFamily:"monospace"}} title={JSON.stringify(v.change_summary||{})}>{versionChangeLabel(v.change_summary)}</span>
-                <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>r {v.rows??"-"}</span>
-                <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>c {v.columns??"-"}</span>
+                <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{v.rows??"-"}행 / {v.columns??"-"}열</span>
                 <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{formatSize(v.size)}</span>
                 <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{(v.created_at||"").replace("T"," ").slice(0,16)||"-"}</span>
                 <span style={{color:"var(--text-secondary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.actor||"-"}</span>
@@ -1570,7 +1581,7 @@ export default function My_FileBrowser({user,onNavigate}){
                   {diffTableCountLabel(baseVersionPreview.diff_table)?` · ${diffTableCountLabel(baseVersionPreview.diff_table)}`:""}
                 </span>}
                 <span style={{color:"var(--text-secondary)",fontFamily:"monospace"}}>
-                  current r{baseVersionPreview.current_profile?.rows??"-"}/c{baseVersionPreview.current_profile?.column_count??baseVersionPreview.current_profile?.columns??"-"} · version r{baseVersionPreview.version_profile?.rows??"-"}/c{baseVersionPreview.version_profile?.column_count??baseVersionPreview.version_profile?.columns??"-"}
+                  {tableShapeLabel(baseVersionPreview.current_profile,"현재")} · {tableShapeLabel(baseVersionPreview.version_profile,"버전")}
                 </span>
                 <button onClick={()=>setBaseVersionPreview(null)} style={{marginLeft:"auto",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>닫기</button>
               </div>

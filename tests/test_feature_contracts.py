@@ -70,7 +70,8 @@ def test_home_flowi_empty_chat_greeting_copy():
     assert "flow-i 대화가 여기 이어집니다." not in ui
     assert "/api/llm/flowi/verify" in ui
     assert "연결확인중" in ui
-    assert "연결끊김" in ui
+    assert "LLM 확인 실패" in ui
+    assert "연결끊김" not in ui
     assert "flowiStartle" not in ui
     assert "READYING" not in ui
 

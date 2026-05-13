@@ -679,6 +679,46 @@ table.tbl tbody tr:hover {
   gap: 10px;
 }
 
+.flow-agent-shell {
+  padding: 12px;
+  display: grid;
+  gap: 0;
+}
+
+.flow-agent-tabs {
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  background: var(--bg-secondary);
+}
+
+.flow-agent-surface {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.flow-agent-surface > div {
+  min-width: 0;
+}
+
+.flow-agent-surface .flow-panel {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.flow-agent-surface .flow-panel + .flow-panel {
+  margin-top: -1px;
+}
+
+.flow-agent-surface .llm-cfg-panel {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  max-width: none !important;
+}
+
 .flow-connected-page {
   --radius-sm: 3px;
   --radius-md: 4px;

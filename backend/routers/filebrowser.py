@@ -2820,11 +2820,40 @@ def _cap_file_versions(vdir: Path) -> None:
         pass
 
 
+def _scan_one_file_raw(fp: Path):
+    """Lazy-scan a CSV/parquet without Flow source normalization or wafer filtering."""
+    try:
+        ext = fp.suffix.lower()
+        if ext == ".csv":
+            return pl.scan_csv(str(fp), infer_schema_length=5000, try_parse_dates=False)
+        if ext == ".parquet":
+            return pl.scan_parquet(str(fp))
+    except Exception:
+        return None
+    return None
+
+
+def _read_table_for_diff_frame(path: Path, limit: int = 20000) -> pl.DataFrame | None:
+    lf = _scan_one_file_raw(path)
+    if lf is None:
+        return None
+    try:
+        df = lf.collect()
+        if df.height > limit:
+            df = df.head(limit)
+        cols = [str(c) for c in df.columns]
+        if not cols:
+            return pl.DataFrame()
+        return df.select([pl.col(c).cast(pl.Utf8, strict=False).fill_null("").alias(c) for c in cols])
+    except Exception:
+        return None
+
+
 def _file_shape(path: Path) -> tuple[int | None, int | None]:
     try:
         ext = path.suffix.lower()
         if ext in {".csv", ".parquet"}:
-            lf = scan_one_file(path)
+            lf = _scan_one_file_raw(path)
             if lf is None:
                 return None, None
             cols = list(lf.collect_schema().names())
@@ -2850,7 +2879,7 @@ def _file_profile(path: Path) -> dict:
         pass
     try:
         if path.suffix.lower() in {".csv", ".parquet"}:
-            lf = scan_one_file(path)
+            lf = _scan_one_file_raw(path)
             if lf is not None:
                 cols = list(lf.collect_schema().names())
                 profile["columns"] = cols
@@ -2898,13 +2927,13 @@ def _latest_version_content(vdir: Path) -> Path | None:
     return sorted(metas, key=lambda x: x[0])[-1][1] if metas else None
 
 
-def _snapshot_change_summary(current: Path, previous: Path | None) -> dict:
+def _snapshot_change_summary(current: Path, previous: Path | None, file: str = "") -> dict:
     if previous is None or not previous.exists():
         return {"label": "초기 버전", "rows_delta": None, "columns_delta": None, "changed_cells": None, "added_rows": 0, "deleted_rows": 0, "modified_rows": 0}
     cur_profile = _file_profile(current)
     prev_profile = _file_profile(previous)
     diff = _profile_diff(cur_profile, prev_profile)
-    table_diff = _diff_table_between(current, previous)
+    table_diff = _diff_table_between(current, previous, file=file)
     counts = table_diff.get("counts") if isinstance(table_diff, dict) else {}
     added_rows = int(counts.get("added") or 0) if isinstance(counts, dict) else 0
     deleted_rows = int(counts.get("deleted") or 0) if isinstance(counts, dict) else 0
@@ -2912,8 +2941,8 @@ def _snapshot_change_summary(current: Path, previous: Path | None) -> dict:
     changed_cells = None
     try:
         if current.suffix.lower() in {".csv", ".parquet"} and previous.suffix.lower() in {".csv", ".parquet"}:
-            cur = read_one_file(current)
-            prev = read_one_file(previous)
+            cur = _read_table_for_diff_frame(current)
+            prev = _read_table_for_diff_frame(previous)
             if cur is not None and prev is not None:
                 common_cols = [c for c in cur.columns if c in prev.columns]
                 h = min(cur.height, prev.height)
@@ -2978,35 +3007,137 @@ def _previous_version_content(file: str, storage_version: str) -> Path | None:
 
 
 def _table_rows_for_diff(path: Path, limit: int = 20000) -> tuple[list[str], list[dict[str, str]]]:
-    df = read_one_file(path)
+    df = _read_table_for_diff_frame(path, limit=limit)
     if df is None:
         return [], []
-    if df.height > limit:
-        df = df.head(limit)
     cols = [str(c) for c in df.columns]
-    df = df.select([pl.col(c).cast(pl.Utf8, strict=False).fill_null("").alias(c) for c in cols])
     rows = [{c: str(row.get(c) or "") for c in cols} for row in df.to_dicts()]
     return cols, rows
 
 
-def _infer_diff_keys(columns: list[str]) -> list[str]:
+def _diff_key_candidates(columns: list[str]) -> list[list[str]]:
     by_lower = {c.lower(): c for c in columns}
     candidates = [
+        ["id"],
+        ["key"],
         ["product", "step_id"],
         ["product", "ppid"],
         ["product", "item_id"],
         ["process_id", "item_id"],
+        ["product", "feature_name", "rule_order"],
         ["product", "feature_name"],
+        ["root_lot_id", "wafer_id"],
+        ["lot_id", "wafer_id"],
         ["step_id"],
         ["item_id"],
     ]
+    out: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
     for keys in candidates:
         if all(k in by_lower for k in keys):
-            return [by_lower[k] for k in keys]
-    return [columns[0]] if columns else []
+            combo = tuple(by_lower[k] for k in keys)
+            if combo not in seen:
+                seen.add(combo)
+                out.append(list(combo))
+    if columns:
+        first = (columns[0],)
+        if first not in seen:
+            out.append([columns[0]])
+    return out
 
 
-def _diff_table_between(current: Path, previous: Path | None, max_changes: int = 1000) -> dict | None:
+def _infer_diff_keys(columns: list[str]) -> list[str]:
+    candidates = _diff_key_candidates(columns)
+    return candidates[0] if candidates else []
+
+
+def _diff_file_key_candidates(path: Path, file: str = "") -> list[str]:
+    out: list[str] = []
+
+    def add(value) -> None:
+        text = str(value or "").replace("\\", "/").strip()
+        if text and text not in out:
+            out.append(text)
+
+    add(file)
+    for root in (_db_root(), _base_root(), PATHS.data_root):
+        try:
+            add(path.resolve().relative_to(root.resolve()))
+        except Exception:
+            pass
+    parent_name = path.parent.name
+    if "__" in parent_name:
+        add(parent_name.replace("__", "/"))
+    add(path.name)
+    return out
+
+
+def _csv_rule_unique_key_candidates_for_diff(file: str, current: Path, columns: list[str]) -> list[list[str]]:
+    if current.suffix.lower() != ".csv":
+        return []
+    lookup = _column_lookup(columns)
+    out: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for candidate in _diff_file_key_candidates(current, file=file):
+        try:
+            rule = _csv_rule_for_file(candidate)
+        except Exception:
+            rule = {}
+        for combo in rule.get("unique_keys") or []:
+            cols = [lookup.get(str(col).casefold()) for col in (combo or [])]
+            if not cols or any(not col for col in cols):
+                continue
+            key = tuple(str(col) for col in cols)
+            if key not in seen:
+                seen.add(key)
+                out.append(list(key))
+    return out
+
+
+def _is_clear_diff_key(rows: list[dict[str, str]], key_cols: list[str]) -> bool:
+    if not key_cols:
+        return False
+    seen: set[tuple[str, ...]] = set()
+    for row in rows:
+        key = tuple(str(row.get(col, "")) for col in key_cols)
+        if all(v == "" for v in key):
+            return False
+        if key in seen:
+            return False
+        seen.add(key)
+    return True
+
+
+def _select_diff_key_columns(
+    cur_cols: list[str],
+    prev_cols: list[str],
+    cur_rows: list[dict[str, str]],
+    prev_rows: list[dict[str, str]],
+    *,
+    file: str = "",
+    current: Path,
+) -> tuple[list[str], str]:
+    all_cols = list(dict.fromkeys([*cur_cols, *prev_cols]))
+    both_cols = set(cur_cols) & set(prev_cols)
+    candidates = [
+        *_csv_rule_unique_key_candidates_for_diff(file, current, all_cols),
+        *_diff_key_candidates(all_cols),
+    ]
+    seen: set[tuple[str, ...]] = set()
+    for candidate in candidates:
+        key_cols = [str(c) for c in candidate if str(c).strip()]
+        key = tuple(key_cols)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if not all(col in both_cols for col in key_cols):
+            continue
+        if _is_clear_diff_key(cur_rows, key_cols) and _is_clear_diff_key(prev_rows, key_cols):
+            return key_cols, "unique_key"
+    return ["__row_signature", "__occurrence"], "sequence"
+
+
+def _diff_table_between(current: Path, previous: Path | None, max_changes: int = 1000, file: str = "") -> dict | None:
     if previous is None or not previous.exists():
         return None
     if current.suffix.lower() not in {".csv", ".parquet"} or previous.suffix.lower() not in {".csv", ".parquet"}:
@@ -3019,47 +3150,105 @@ def _diff_table_between(current: Path, previous: Path | None, max_changes: int =
     all_cols = list(dict.fromkeys([*cur_cols, *prev_cols]))
     if not all_cols:
         return None
-    key_cols = _infer_diff_keys(all_cols)
-    if not key_cols:
-        key_cols = ["__row_index"]
-
-    def row_key(row: dict[str, str], idx: int):
-        if key_cols == ["__row_index"]:
-            return (idx,)
-        return tuple(row.get(k, "") for k in key_cols)
-
-    cur_map = {row_key(r, i): r for i, r in enumerate(cur_rows)}
-    prev_map = {row_key(r, i): r for i, r in enumerate(prev_rows)}
-    keys = list(dict.fromkeys([*cur_map.keys(), *prev_map.keys()]))
+    key_cols, match_strategy = _select_diff_key_columns(
+        cur_cols,
+        prev_cols,
+        cur_rows,
+        prev_rows,
+        file=file,
+        current=current,
+    )
+    added_columns = [c for c in cur_cols if c not in set(prev_cols)]
+    removed_columns = [c for c in prev_cols if c not in set(cur_cols)]
     out_rows = []
     counts = {"added": 0, "deleted": 0, "modified": 0, "unchanged": 0}
-    for key in keys:
-        cur = cur_map.get(key)
-        prev = prev_map.get(key)
-        if cur is not None and prev is None:
-            counts["added"] += 1
-            row = {"rev": "추가", "changed_cols": "ALL", **{c: cur.get(c, "") for c in all_cols}, "_changed_cols": all_cols}
-        elif cur is None and prev is not None:
-            counts["deleted"] += 1
-            row = {"rev": "삭제", "changed_cols": "ALL", **{c: prev.get(c, "") for c in all_cols}, "_changed_cols": all_cols}
-        else:
-            changed = [c for c in all_cols if (cur or {}).get(c, "") != (prev or {}).get(c, "")]
-            if not changed:
-                counts["unchanged"] += 1
-                continue
-            counts["modified"] += 1
-            row = {"rev": "수정", "changed_cols": ", ".join(changed[:12]), **{c: (cur or {}).get(c, "") for c in all_cols}, "_changed_cols": changed}
-        out_rows.append(row)
-        if len(out_rows) >= max_changes:
-            break
+
+    def add_output(row: dict) -> None:
+        if len(out_rows) < max_changes:
+            out_rows.append(row)
+
+    def record_added(cur: dict[str, str]) -> None:
+        counts["added"] += 1
+        add_output({"rev": "추가", "changed_cols": "ALL", **{c: cur.get(c, "") for c in all_cols}, "_changed_cols": all_cols})
+
+    def record_deleted(prev: dict[str, str]) -> None:
+        counts["deleted"] += 1
+        add_output({"rev": "삭제", "changed_cols": "ALL", **{c: prev.get(c, "") for c in all_cols}, "_changed_cols": all_cols})
+
+    def record_pair(cur: dict[str, str], prev: dict[str, str]) -> None:
+        changed = [c for c in all_cols if cur.get(c, "") != prev.get(c, "")]
+        if not changed:
+            counts["unchanged"] += 1
+            return
+        counts["modified"] += 1
+        add_output({"rev": "수정", "changed_cols": ", ".join(changed[:12]), **{c: cur.get(c, "") for c in all_cols}, "_changed_cols": changed})
+
+    if match_strategy == "unique_key":
+        def row_key(row: dict[str, str]):
+            return tuple(row.get(k, "") for k in key_cols)
+
+        cur_map = {row_key(r): r for r in cur_rows}
+        prev_map = {row_key(r): r for r in prev_rows}
+        keys = list(dict.fromkeys([*cur_map.keys(), *prev_map.keys()]))
+        for key in keys:
+            cur = cur_map.get(key)
+            prev = prev_map.get(key)
+            if cur is not None and prev is None:
+                record_added(cur)
+            elif cur is None and prev is not None:
+                record_deleted(prev)
+            elif cur is not None and prev is not None:
+                record_pair(cur, prev)
+    elif max(len(prev_rows), len(cur_rows)) > 5000:
+        key_cols = ["__row_index"]
+        match_strategy = "row_index"
+        max_len = max(len(prev_rows), len(cur_rows))
+        for idx in range(max_len):
+            if idx >= len(prev_rows):
+                record_added(cur_rows[idx])
+            elif idx >= len(cur_rows):
+                record_deleted(prev_rows[idx])
+            else:
+                record_pair(cur_rows[idx], prev_rows[idx])
+    else:
+        from difflib import SequenceMatcher
+
+        prev_sigs = [tuple(row.get(c, "") for c in all_cols) for row in prev_rows]
+        cur_sigs = [tuple(row.get(c, "") for c in all_cols) for row in cur_rows]
+        matcher = SequenceMatcher(None, prev_sigs, cur_sigs, autojunk=False)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                counts["unchanged"] += i2 - i1
+            elif tag == "delete":
+                for prev in prev_rows[i1:i2]:
+                    record_deleted(prev)
+            elif tag == "insert":
+                for cur in cur_rows[j1:j2]:
+                    record_added(cur)
+            elif tag == "replace":
+                prev_part = prev_rows[i1:i2]
+                cur_part = cur_rows[j1:j2]
+                pair_count = min(len(prev_part), len(cur_part))
+                for offset in range(pair_count):
+                    record_pair(cur_part[offset], prev_part[offset])
+                for prev in prev_part[pair_count:]:
+                    record_deleted(prev)
+                for cur in cur_part[pair_count:]:
+                    record_added(cur)
+    total_changes = counts["added"] + counts["deleted"] + counts["modified"]
     return {
         "kind": "version_diff_table",
         "title": "직전 버전 대비 변경점",
         "columns": ["rev", "changed_cols", *all_cols],
         "key_columns": key_cols,
+        "match_strategy": match_strategy,
+        "added_columns": added_columns,
+        "removed_columns": removed_columns,
+        "added_columns_count": len(added_columns),
+        "removed_columns_count": len(removed_columns),
         "rows": out_rows,
         "counts": counts,
-        "truncated": len(out_rows) >= max_changes,
+        "truncated": total_changes > max_changes,
     }
 
 
@@ -3083,7 +3272,7 @@ def _snapshot_base_file_version(
     shutil.copy2(target, content_fp)
     rows, cols = _file_shape(target)
     display_version = _next_semver(vdir, rows=rows, columns=cols)
-    change_summary = _snapshot_change_summary(target, previous_content)
+    change_summary = _snapshot_change_summary(target, previous_content, file=file)
     meta = {
         "version": version,
         "display_version": display_version,
@@ -3114,8 +3303,8 @@ def _attach_post_save_change_summary(file: str, version_meta: dict | None, after
     if not content_fp.exists():
         return version_meta
     try:
-        change_summary = _snapshot_change_summary(after_path, content_fp)
-        diff_table = _diff_table_between(after_path, content_fp)
+        change_summary = _snapshot_change_summary(after_path, content_fp, file=file)
+        diff_table = _diff_table_between(after_path, content_fp, file=file)
         version_meta = {
             **version_meta,
             "change_summary": change_summary,
@@ -3145,7 +3334,7 @@ def _list_base_file_versions(file: str) -> list[dict]:
         if not any(change_summary.get(k) for k in ("added_rows", "deleted_rows", "modified_rows")):
             content_fp = vdir / str(meta.get("content_file") or "")
             try:
-                diff_table = _diff_table_between(content_fp, _previous_version_content(file, storage_version))
+                diff_table = _diff_table_between(content_fp, _previous_version_content(file, storage_version), file=file)
                 counts = diff_table.get("counts") if isinstance(diff_table, dict) else {}
                 if isinstance(counts, dict):
                     added_rows = int(counts.get("added") or 0)
@@ -7210,7 +7399,7 @@ def base_file_version_content(request: Request, file: str = Query(...), version:
     out["current_profile"] = _file_profile(target)
     out["version_profile"] = _file_profile(content_fp)
     out["diff"] = _profile_diff(out["current_profile"], out["version_profile"])
-    out["diff_table"] = meta.get("save_diff_table") or _diff_table_between(content_fp, previous_fp)
+    out["diff_table"] = meta.get("save_diff_table") or _diff_table_between(content_fp, previous_fp, file=file)
     if ext in {".csv", ".txt", ".json", ".yaml", ".yml", ".md"}:
         raw = content_fp.read_text(encoding="utf-8", errors="replace")
         out["text"] = raw[:100_000]
