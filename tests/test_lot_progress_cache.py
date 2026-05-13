@@ -269,3 +269,39 @@ def test_refresh_lot_progress_cache_uses_configured_source_root(monkeypatch, tmp
     assert state["count"] == 1
     assert state["items"][0]["product"] == "PROD_LEGACY"
     assert state["items"][0]["lot_id"] == "LEG1000A.1"
+
+
+def test_refresh_lot_progress_cache_auto_uses_short_fab_root(monkeypatch, tmp_path):
+    data_root = tmp_path / "flow-data"
+    db_root = tmp_path / "Fab"
+    fab_product = db_root / "FAB" / "PROD_FAB" / "date=20260513"
+    fab_product.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["FAB1000"],
+        "lot_id": ["FAB1000A.1"],
+        "wafer_id": ["3"],
+        "step_id": ["FAB_STEP"],
+        "tkin_time": ["2026-05-13T08:00:00"],
+        "tkout_time": ["2026-05-13T09:00:00"],
+    }).write_parquet(fab_product / "part.parquet")
+
+    class DummyPaths:
+        def __init__(self):
+            self.cache_dir = data_root / "cache"
+            self.db_cache_dir = db_root / "cache"
+            self.data_root = data_root
+            self.db_root = db_root
+            self.base_root = db_root
+
+    monkeypatch.setattr(cache, "PATHS", DummyPaths())
+    monkeypatch.setattr(cache, "load_step_matching", lambda: ({}, {}))
+    monkeypatch.setattr(cache, "_CACHE_STATE", None)
+
+    state = cache.refresh_lot_progress_cache(force=True)
+    status = cache.cache_status()
+
+    assert state["source_root"] == "FAB"
+    assert state["source_roots"] == ["FAB"]
+    assert state["effective_source_roots"] == ["FAB"]
+    assert state["items"][0]["source_root"] == "FAB"
+    assert any(c["source_root"] == "FAB" and c["exists"] for c in status["source_root_candidates"])

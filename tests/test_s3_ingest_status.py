@@ -175,3 +175,76 @@ def test_parent_aggregate_uses_child_freshness_state_not_raw_stale_flag():
 
     assert by_target["FAB"]["latest_item_stale_6h"] is False
     assert by_target["FAB"]["freshness_state"] == "ok"
+
+
+def test_save_item_reuses_existing_target_and_preserves_last_log(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.json"
+    status = tmp_path / "status.json"
+    cfg.write_text(json.dumps({
+        "items": [{
+            "id": "db1",
+            "kind": "db",
+            "target": "DB1",
+            "s3_url": "s3://bucket/DB1-old",
+            "command": "sync",
+            "direction": "download",
+            "interval_min": 60,
+            "enabled": True,
+        }]
+    }), encoding="utf-8")
+    status.write_text(json.dumps({
+        "db1": {
+            "last_status": "ok",
+            "last_end": "2026-05-08T10:00:00",
+            "last_output_tail": "previous sync complete",
+            "directions": {
+                "download": {
+                    "last_status": "ok",
+                    "last_end": "2026-05-08T10:00:00",
+                    "last_output_tail": "previous sync complete",
+                }
+            },
+        }
+    }), encoding="utf-8")
+    monkeypatch.setattr(s3_ingest, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(s3_ingest, "STATUS_FILE", status)
+    monkeypatch.setattr(s3_ingest, "_is_admin", lambda username: username == "admin")
+    monkeypatch.setattr(s3_ingest, "_db_root", lambda: tmp_path)
+    monkeypatch.setattr(s3_ingest, "_RUNNING", {})
+
+    out = s3_ingest.save_item(s3_ingest.SaveReq(
+        username="admin",
+        kind="db",
+        target="DB1",
+        s3_url="s3://bucket/DB1-new",
+        command="sync",
+        direction="download",
+        interval_min=30,
+        enabled=True,
+    ))
+    item = s3_ingest.list_items(username="admin")["items"][0]
+
+    assert out["id"] == "db1"
+    assert item["s3_url"] == "s3://bucket/DB1-new"
+    assert item["status"]["last_end"] == "2026-05-08T10:00:00"
+    assert item["status"]["last_output_tail"] == "previous sync complete"
+
+
+def test_running_status_keeps_previous_last_log(tmp_path, monkeypatch):
+    status = tmp_path / "status.json"
+    status.write_text(json.dumps({
+        "db1": {
+            "last_status": "ok",
+            "last_end": "2026-05-08T10:00:00",
+            "last_output_tail": "previous sync complete",
+        }
+    }), encoding="utf-8")
+    monkeypatch.setattr(s3_ingest, "STATUS_FILE", status)
+
+    s3_ingest._update_status("db1", direction="download", last_start="2026-05-08T11:00:00", last_status="running")
+    saved = json.loads(status.read_text("utf-8"))
+
+    assert saved["db1"]["last_status"] == "running"
+    assert saved["db1"]["last_end"] == "2026-05-08T10:00:00"
+    assert saved["db1"]["last_output_tail"] == "previous sync complete"
+    assert saved["db1"]["directions"]["download"]["last_status"] == "running"

@@ -149,7 +149,13 @@ def test_filebrowser_cache_settings_updates_lot_progress_interval(monkeypatch, t
     monkeypatch.setattr(filebrowser, "PATHS", _DummyPaths(tmp_path))
     monkeypatch.setattr(lot_progress_cache, "cache_file", lambda: tmp_path / "lot_wf_current.json")
     monkeypatch.setattr(lot_progress_cache, "filebrowser_cache_parquet_file", lambda: tmp_path / "lot_progress_latest_lot_by_root_wafer.parquet")
-    monkeypatch.setattr(lot_progress_cache, "cache_status", lambda: {"ok": True, "interval_minutes": 45, "scheduler_started": True})
+    monkeypatch.setattr(lot_progress_cache, "cache_status", lambda: {
+        "ok": True,
+        "interval_minutes": 45,
+        "scheduler_started": True,
+        "source_root_candidates": [{"source_root": "1.RAWDATA_DB_FAB", "path": str(tmp_path / "1.RAWDATA_DB_FAB"), "exists": True}],
+        "effective_source_roots": ["1.RAWDATA_DB_FAB"],
+    })
 
     out = filebrowser.cache_match_settings(
         filebrowser.CacheMatchSettingsReq(target="lot_progress", interval_minutes=45, source_root="1.RAWDATA_DB_FAB", auto_s3_upload_on_save=True),
@@ -164,6 +170,8 @@ def test_filebrowser_cache_settings_updates_lot_progress_interval(monkeypatch, t
     assert out["target"] == "lot_progress"
     assert out["interval_minutes"] == 45
     assert out["configured_source_root"] == "1.RAWDATA_DB_FAB"
+    assert out["effective_source_roots"] == ["1.RAWDATA_DB_FAB"]
+    assert out["source_root_candidates"][0]["source_root"] == "1.RAWDATA_DB_FAB"
     assert out["auto_s3_upload_on_save"] is True
     assert out["schedule_enabled"] is True
 

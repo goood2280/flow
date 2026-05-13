@@ -12,6 +12,8 @@
 
 ## Now
 
+- [ ] (Codex) FileBrowser LOT cache root resolver and S3 item log persistence - remove fixed FAB root defaults, expose configured/effective roots, keep S3 last logs across item saves.
+
 ## Next
 
 - [ ] (Codex) P10 Flow-i backend 구조 분리 — `backend/routers/llm.py`에서 unit action handler 한 묶음을 feature별 module로 추출하고 trace 계약을 유지한다.

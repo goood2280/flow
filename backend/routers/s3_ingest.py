@@ -636,6 +636,23 @@ class SaveReq(BaseModel):
     enabled: bool = True
 
 
+def _find_existing_item_id(items: list[dict], *, kind: str, target: str, direction: str) -> str:
+    target_key = str(target or "").strip().casefold()
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("kind") or "").strip() != kind:
+            continue
+        if str(item.get("target") or "").strip().casefold() != target_key:
+            continue
+        if _item_direction(item) != direction:
+            continue
+        item_id = str(item.get("id") or "").strip()
+        if item_id:
+            return item_id
+    return ""
+
+
 @router.post("/save")
 def save_item(req: SaveReq):
     _require_admin(req.username)
@@ -651,13 +668,19 @@ def save_item(req: SaveReq):
     if req.kind == "root_parquet" and req.command == "sync":
         raise HTTPException(400, "'sync' is only valid for kind='db'. Use 'cp' for root_parquet.")
 
-    item_id = (req.id or "").strip() or f"{req.kind}_{re.sub(r'[^a-zA-Z0-9]', '_', req.target)[:30]}_{uuid.uuid4().hex[:6]}"
-    if not ID_RE.match(item_id):
-        raise HTTPException(400, f"invalid id: {item_id}")
-
     direction = (req.direction or "download").strip().lower()
     if direction not in {"download", "upload"}:
         raise HTTPException(400, f"invalid direction: {direction!r} (must be 'download' or 'upload')")
+    cfg = _load_cfg()
+    items = cfg.get("items", [])
+    if not isinstance(items, list):
+        items = []
+    requested_id = (req.id or "").strip()
+    item_id = requested_id or _find_existing_item_id(items, kind=req.kind, target=req.target, direction=direction)
+    if not item_id:
+        item_id = f"{req.kind}_{re.sub(r'[^a-zA-Z0-9]', '_', req.target)[:30]}_{uuid.uuid4().hex[:6]}"
+    if not ID_RE.match(item_id):
+        raise HTTPException(400, f"invalid id: {item_id}")
     new_item = {
         "id": item_id,
         "kind": req.kind, "target": req.target,
@@ -670,8 +693,6 @@ def save_item(req: SaveReq):
         "enabled": bool(req.enabled),
     }
 
-    cfg = _load_cfg()
-    items = cfg.get("items", [])
     for i, it in enumerate(items):
         if it.get("id") == item_id:
             items[i] = new_item

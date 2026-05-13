@@ -1904,6 +1904,7 @@ export default function My_FileBrowser({user,onNavigate}){
                   const nextAt=status?.next_refresh_at||status?.latest_cache?.next_refresh_at||"";
                   const nextLabel=nextAt?String(nextAt).slice(0,16).replace("T"," "):"-";
                   const scheduleOn=isScheduled&&status?.schedule_enabled!==false;
+                  const sourceRootOptions=Array.from(new Set((status?.source_root_candidates||[]).map(c=>String(c?.source_root||"").trim()).filter(Boolean)));
                   return(
                     <div key={target} style={{display:"grid",gap:8,padding:"10px 12px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
                       <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",flexWrap:"wrap"}}>
@@ -1928,9 +1929,13 @@ export default function My_FileBrowser({user,onNavigate}){
                           <label style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:13,color:"var(--text-secondary)",fontWeight:700}}>
                             DB root
                             <input value={fbCacheSourceRoot} onChange={e=>setFbCacheSourceRoot(e.target.value)}
+                              list={`${target}-source-root-options`}
                               placeholder="auto"
                               disabled={!isAdmin||fbCacheSettingsBusy}
                               style={{width:190,minWidth:140,padding:"5px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}/>
+                            <datalist id={`${target}-source-root-options`}>
+                              {sourceRootOptions.map(root=><option key={root} value={root}/>)}
+                            </datalist>
                           </label>
                           <label style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:13,color:"var(--text-secondary)",fontWeight:700,cursor:isAdmin?"pointer":"not-allowed"}}>
                             <input type="checkbox" checked={!!fbAutoS3Upload} disabled={!isAdmin||fbCacheSettingsBusy} onChange={e=>setFbAutoS3Upload(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
@@ -1950,7 +1955,8 @@ export default function My_FileBrowser({user,onNavigate}){
                         <span>mode={isScheduled?"scheduled":"manual"}</span>
                         <span>products={(status?.products||[]).length}</span>
                         <span>configured={status?.configured_source_root||"auto"}</span>
-                        <span>source={(status?.source_roots||[]).join(",")||status?.source_root||"-"}</span>
+                        <span>source={(status?.effective_source_roots||status?.source_roots||[]).join(",")||status?.source_root||"-"}</span>
+                        {sourceRootOptions.length>0&&<span>auto={sourceRootOptions.join(",")}</span>}
                         <span>rows={status?.row_count??status?.total_row_count??0}</span>
                         <span>scanned={status?.files_scanned??0}/{status?.rows_seen??0}</span>
                         <span>updated={status?.updated_at||status?.latest_updated_at||"-"}</span>

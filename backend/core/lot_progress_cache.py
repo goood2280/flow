@@ -21,9 +21,7 @@ from core.paths import PATHS
 
 logger = logging.getLogger("flow.lot_progress_cache")
 
-FAB_ROOT = "1.RAWDATA_DB"
-LEGACY_FAB_ROOT = "1.RAWDATA_DB_FAB"
-FAB_ROOT_ALIASES = (FAB_ROOT, LEGACY_FAB_ROOT)
+LOT_PROGRESS_DEFAULT_SOURCE_ROOTS = ("1.RAWDATA_DB", "FAB", "1.RAWDATA_DB_FAB")
 CACHE_VERSION = 1
 CACHE_REFRESH_MINUTES_DEFAULT = 30
 CACHE_REFRESH_MINUTES_MIN = 1
@@ -634,7 +632,8 @@ def _clean_source_root_hint(value: str = "") -> str:
     if not parts:
         return ""
     first = parts[0]
-    if first.upper().startswith("1.RAWDATA_DB"):
+    first_upper = first.upper()
+    if first_upper.startswith("1.RAWDATA_DB") or first_upper == "FAB":
         return first
     return text
 
@@ -643,23 +642,27 @@ def normalize_lot_progress_source_root(value: str = "") -> str:
     return _clean_source_root_hint(value)
 
 
-def _resolve_fab_root(db_root: Path, root_name: str) -> Path | None:
+def _candidate_source_root_path(db_root: Path, root_name: str) -> Path | None:
     name = _clean_source_root_hint(root_name)
     if not name:
         return None
     path = Path(name)
     if path.is_absolute():
-        return path if path.is_dir() else None
+        return path
     try:
         from app_v2.shared.source_adapter import resolve_named_child
         if "/" not in name and "\\" not in name:
             resolved = resolve_named_child(db_root, name)
-            if resolved is not None and resolved.is_dir():
+            if resolved is not None and _path_key(resolved) != _path_key(db_root):
                 return resolved
     except Exception:
         pass
-    cand = db_root / name
-    return cand if cand.is_dir() else None
+    return db_root / name
+
+
+def _resolve_fab_root(db_root: Path, root_name: str) -> Path | None:
+    path = _candidate_source_root_path(db_root, root_name)
+    return path if path is not None and path.is_dir() else None
 
 
 def _source_root_name(path: Path, db_root: Path) -> str:
@@ -684,6 +687,40 @@ def _has_product_parquet_dirs(root: Path) -> bool:
     return False
 
 
+def lot_progress_source_root_candidates(db_root: Path | None = None, source_root: str = "") -> list[dict]:
+    db_root = db_root or PATHS.db_root
+    candidates: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(path: Path | None, name: str, origin: str) -> None:
+        if path is None:
+            return
+        exists = path.is_dir()
+        key = _path_key(path) if exists else str(path).casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append({
+            "source_root": _source_root_name(path, db_root) if exists else name,
+            "path": str(path),
+            "exists": bool(exists),
+            "origin": origin,
+        })
+
+    hint = _clean_source_root_hint(source_root)
+    if hint:
+        _add(_candidate_source_root_path(db_root, hint), hint, "configured")
+    for name in LOT_PROGRESS_DEFAULT_SOURCE_ROOTS:
+        _add(_candidate_source_root_path(db_root, name), name, "auto")
+    db_name = db_root.name
+    db_upper = db_name.upper()
+    if db_upper.startswith("1.RAWDATA_DB"):
+        _add(db_root, db_name, "db_root")
+    if not any(candidate.get("exists") for candidate in candidates) and _has_product_parquet_dirs(db_root):
+        _add(db_root, db_name or str(db_root), "db_root")
+    return candidates
+
+
 def _fab_source_roots(db_root: Path, source_root: str = "") -> list[dict]:
     roots: list[dict] = []
     seen: set[str] = set()
@@ -701,12 +738,9 @@ def _fab_source_roots(db_root: Path, source_root: str = "") -> list[dict]:
     if hint:
         _add(_resolve_fab_root(db_root, hint))
         return roots
-    for name in FAB_ROOT_ALIASES:
-        _add(_resolve_fab_root(db_root, name))
-    if db_root.name.upper().startswith("1.RAWDATA_DB"):
-        _add(db_root)
-    if not roots and _has_product_parquet_dirs(db_root):
-        _add(db_root)
+    for candidate in lot_progress_source_root_candidates(db_root):
+        if candidate.get("exists"):
+            _add(Path(str(candidate.get("path") or "")))
     return roots
 
 
@@ -716,7 +750,7 @@ def _fab_root_names_for_error(source_root: str = "") -> list[str]:
     if hint:
         names.append(hint)
         return names
-    for name in FAB_ROOT_ALIASES:
+    for name in LOT_PROGRESS_DEFAULT_SOURCE_ROOTS:
         if name not in names:
             names.append(name)
     return names
@@ -893,15 +927,18 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> di
             )
             source_roots = [root["source_root"] for root in fab_roots]
             fab_root_paths = [str(root["path"]) for root in fab_roots]
+            source_root_candidates = lot_progress_source_root_candidates(db_root, source_root_hint)
             state = {
                 "version": CACHE_VERSION,
                 "generated_at": _now_iso(),
                 "db_root": str(db_root),
-                "fab_root": fab_root_paths[0] if fab_root_paths else str(db_root / FAB_ROOT),
+                "fab_root": fab_root_paths[0] if fab_root_paths else "",
                 "fab_roots": fab_root_paths,
                 "configured_source_root": source_root_hint,
-                "source_root": source_roots[0] if source_roots else FAB_ROOT,
+                "source_root": source_roots[0] if source_roots else "",
                 "source_roots": source_roots,
+                "effective_source_roots": source_roots,
+                "source_root_candidates": source_root_candidates,
                 "cache_file": str(cache_path),
                 "count": len(items),
                 "files_scanned": files_scanned,
@@ -1107,7 +1144,7 @@ def lot_id_candidates(
             "type": "lot_id",
             "lot_id": lot_id,
             "fab_lot_id": lot_id,
-            "source_root": item.get("source_root") or FAB_ROOT,
+            "source_root": item.get("source_root") or "",
             "product": item.get("product") or "",
             "process_id": item.get("process_id") or "",
             "root_lot_id": item.get("root_lot_id") or "",
@@ -1152,6 +1189,7 @@ def lot_progress_snapshot(
 
 def cache_status() -> dict:
     configured_source_root = lot_progress_cache_source_root()
+    source_root_candidates = lot_progress_source_root_candidates(PATHS.db_root, configured_source_root)
     try:
         state = load_lot_progress_cache(max_age_seconds=lot_progress_cache_refresh_seconds())
     except Exception as exc:
@@ -1161,6 +1199,10 @@ def cache_status() -> dict:
             "error": str(exc),
             "cache_file": str(cache_file()),
             "configured_source_root": configured_source_root,
+            "source_root": "",
+            "source_roots": [],
+            "effective_source_roots": [],
+            "source_root_candidates": source_root_candidates,
             "last_success_at": runtime.get("last_success_at", ""),
             "last_attempt_at": runtime.get("last_attempt_at", ""),
             "freshness_state": runtime.get("freshness_state", "error"),
@@ -1170,6 +1212,7 @@ def cache_status() -> dict:
             "skipped_by_lock": bool(runtime.get("skipped_by_lock")),
         }
     runtime = _state_with_runtime(state)
+    source_roots = list(state.get("source_roots") or [])
     return {
         "ok": True,
         "version": state.get("version"),
@@ -1185,7 +1228,9 @@ def cache_status() -> dict:
         "interval_seconds": lot_progress_cache_refresh_seconds(),
         "configured_source_root": configured_source_root,
         "source_root": state.get("source_root") or "",
-        "source_roots": list(state.get("source_roots") or []),
+        "source_roots": source_roots,
+        "effective_source_roots": list(state.get("effective_source_roots") or source_roots),
+        "source_root_candidates": list(state.get("source_root_candidates") or source_root_candidates),
         "last_success_at": runtime.get("last_success_at", ""),
         "last_attempt_at": runtime.get("last_attempt_at", ""),
         "freshness_state": runtime.get("freshness_state", "never"),
