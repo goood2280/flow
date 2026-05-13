@@ -2027,6 +2027,25 @@ function truncateText(value, limit) {
   return text.length > limit ? text.slice(0, limit) + "…" : text;
 }
 
+function OneLineText({ children, title }) {
+  const text = String(children || "");
+  return (
+    <div
+      className="korean-wrap"
+      title={title || text}
+      style={{
+        minWidth: 0,
+        maxWidth: "100%",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {text || "-"}
+    </div>
+  );
+}
+
 function PromptHistoryPanel({ entries = [], onSelect, onRerun, activePrompt, busy = false }) {
   const rows = entries.map((entry, idx) => ({
     ...entry,
@@ -2039,7 +2058,7 @@ function PromptHistoryPanel({ entries = [], onSelect, onRerun, activePrompt, bus
   return (
     <Panel
       title="프롬프트 기록"
-      subtitle="flow-data에 저장된 실행 프롬프트와 결과를 최신순으로 보여줍니다. 행을 클릭하면 입력창에 채워지고, 재실행 버튼으로 같은 prompt 를 다시 보낼 수 있습니다."
+      subtitle="최근 실행 기록입니다. 긴 프롬프트와 답변은 한 줄로 접어 표시합니다."
       right={<Pill tone={busy ? "warn" : "accent"}>{busy ? "실행 중" : `${entries.length} 건`}</Pill>}
     >
       <DataTable
@@ -2047,19 +2066,59 @@ function PromptHistoryPanel({ entries = [], onSelect, onRerun, activePrompt, bus
         empty="아직 실행한 프롬프트가 없습니다. 위쪽 입력창에서 prompt 를 보내 보세요."
         onRowClick={(row) => onSelect?.(row.prompt)}
         rowStyle={(row) => row.prompt === activePrompt ? { background: "var(--accent-glow)" } : undefined}
-        maxHeight={360}
+        maxHeight={280}
         columns={[
           { key: "no", label: "#", width: 44 },
-          { key: "timeShort", label: "time", width: 110 },
-          { key: "promptShort", label: "prompt" },
-          { key: "feature", label: "feature", width: 130, render: (r) => <Pill tone="accent">{r.feature || "-"}</Pill> },
-          { key: "action", label: "action", width: 180 },
-          { key: "status", label: "status", width: 120, render: (r) => <Pill tone={historyStatusTone(r.status)}>{r.status || "-"}</Pill> },
-          { key: "missingText", label: "missing", width: 140 },
-          { key: "answerShort", label: "answer / error" },
+          { key: "timeShort", label: "시간", width: 110 },
+          { key: "promptShort", label: "프롬프트", render: (r) => <OneLineText title={r.prompt}>{r.promptShort}</OneLineText> },
+          { key: "feature", label: "기능", width: 120, render: (r) => <Pill tone="accent">{r.feature || "-"}</Pill> },
+          { key: "action", label: "단위기능", width: 170, render: (r) => <OneLineText>{r.action}</OneLineText> },
+          { key: "status", label: "상태", width: 110, render: (r) => <Pill tone={historyStatusTone(r.status)}>{r.status || "-"}</Pill> },
+          { key: "missingText", label: "보강", width: 130, render: (r) => <OneLineText>{r.missingText}</OneLineText> },
+          { key: "answerShort", label: "답변", render: (r) => <OneLineText title={r.answer || r.error}>{r.answerShort}</OneLineText> },
           { key: "rerun", label: "", width: 88, render: (r) => <Button variant="subtle" onClick={(e) => { e?.stopPropagation?.(); onRerun?.(r.prompt); }}>재실행</Button> },
         ]}
       />
+    </Panel>
+  );
+}
+
+function PromptReviewPanel({ review }) {
+  const data = review?.review || {};
+  const questions = Array.isArray(data.ambiguous_questions) ? data.ambiguous_questions : [];
+  const tips = Array.isArray(data.tips) ? data.tips : [];
+  const missing = Array.isArray(data.missing) ? data.missing : [];
+  return (
+    <Panel
+      title="프롬프트 점검"
+      subtitle="LLM은 문장 개선과 모호점 질문만 제안합니다. 실행 판단은 dry-run/guardrail 결과를 따릅니다."
+      right={<Pill tone={review?.source === "llm" ? "ok" : "warn"}>{review?.source || "fallback"}</Pill>}
+    >
+      <div style={{ display: "grid", gap: 10 }}>
+        {review?.llm?.error && <Banner tone="warn">LLM fallback: {review.llm.error}</Banner>}
+        <Field label="개선 문장">
+          <div className="korean-wrap" style={{ border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg-primary)", padding: "8px 10px", lineHeight: 1.55 }}>
+            {data.improved_prompt || "-"}
+          </div>
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: uxColors.text, marginBottom: 6 }}>확인 질문</div>
+            {questions.length ? questions.map((q, idx) => (
+              <div key={idx} className="korean-wrap clamp-2" style={{ padding: "6px 0", borderBottom: "1px dashed var(--border)", lineHeight: 1.45 }}>{q}</div>
+            )) : <EmptyState title="질문 없음" hint="추가로 물어볼 모호점이 없습니다." />}
+          </div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: uxColors.text, marginBottom: 6 }}>점검 메모</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: missing.length ? 8 : 0 }}>
+              {missing.map((m) => <Pill key={m} tone="warn">{m}</Pill>)}
+            </div>
+            {tips.length ? tips.map((tip, idx) => (
+              <div key={idx} className="korean-wrap clamp-2" style={{ padding: "6px 0", borderBottom: "1px dashed var(--border)", lineHeight: 1.45 }}>{tip}</div>
+            )) : <EmptyState title="메모 없음" hint="fallback 점검 메모가 없습니다." />}
+          </div>
+        </div>
+      </div>
     </Panel>
   );
 }
@@ -2194,6 +2253,8 @@ function FlowiExecutionPanel({ user }) {
   const [promptHistory, setPromptHistory] = useState([]);
   const [dryRunRow, setDryRunRow] = useState(null);
   const [dryRunBusy, setDryRunBusy] = useState(false);
+  const [review, setReview] = useState(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
   const [manualSlots, setManualSlots] = useState({});
   const [busy, setBusy] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
@@ -2264,6 +2325,30 @@ function FlowiExecutionPanel({ user }) {
       .finally(() => setDryRunBusy(false));
   };
 
+  const runReview = (overridePrompt = "") => {
+    const body = String(overridePrompt || prompt).trim();
+    if (!body) return;
+    if (body !== prompt) setPrompt(body);
+    setReviewBusy(true);
+    setErr("");
+    postJson("/api/agent/prompt-review", {
+      prompt: body,
+      product: "",
+      max_rows: 12,
+      preview_row: dryRunRow || {},
+      missing: Array.isArray(dryRunRow?.missing) ? dryRunRow.missing : [],
+    })
+      .then((d) => {
+        setReview(d);
+        if (d?.preview_row) {
+          setDryRunRow(d.preview_row);
+          setManualSlots({});
+        }
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setReviewBusy(false));
+  };
+
   const run = (overridePrompt = "", options = {}) => {
     const body = String(overridePrompt || prompt).trim();
     if (!body) return;
@@ -2308,10 +2393,9 @@ function FlowiExecutionPanel({ user }) {
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <div className="flow-agent-loop-grid">
       <Panel
         title="프롬프트 입력"
-        subtitle="입력 prompt에서 오케스트레이터 판단, 기능별 단위기능 호출, 결과까지 한 번에 확인합니다."
+        subtitle="prompt -> dry-run -> 보강 질문/직접 입력 -> 실행 -> 결과 순서로 확인합니다."
         right={<Pill tone={statusTone}>{workflow.status || (result ? "done" : "ready")}</Pill>}
       >
         {err && <Banner tone="bad">{err}</Banner>}
@@ -2321,18 +2405,11 @@ function FlowiExecutionPanel({ user }) {
           </Field>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <Button onClick={() => runDry()} disabled={dryRunBusy || busy || !prompt.trim()}>{dryRunBusy ? "드라이런 중" : "드라이런"}</Button>
+            <Button onClick={() => runReview()} disabled={reviewBusy || busy || !prompt.trim()}>{reviewBusy ? "점검 중" : "프롬프트 점검"}</Button>
             <Button variant="primary" onClick={() => run()} disabled={busy || !prompt.trim()}>{busy ? "실행 중" : "실행"}</Button>
           </div>
         </div>
       </Panel>
-
-      <PromptHistoryPanel
-        entries={promptHistory}
-        activePrompt={prompt}
-        busy={busy || historyBusy}
-        onSelect={(text) => setPrompt(text)}
-        onRerun={(text) => run(text)}
-      />
 
       <FlowiAgentThinkingPanel
         row={dryRunRow}
@@ -2343,7 +2420,27 @@ function FlowiExecutionPanel({ user }) {
         onManualRun={(values) => run(prompt, { context: { missing_strategy: "manual_input", missing_slot_overrides: values, preview_row: dryRunRow } })}
         onRunRaw={() => run(prompt, { context: { missing_strategy: "run_without_guess", preview_row: dryRunRow } })}
       />
-      </div>
+
+      {review && <PromptReviewPanel review={review} />}
+
+      <Panel title="결과" subtitle="answer, table/chart, 다음 액션 요약">
+        <DataTable
+          rows={flowiOutputRows(result || {})}
+          empty="실행 후 결과가 표시됩니다."
+          columns={[
+            { key: "key", label: "field", width: 150 },
+            { key: "value", label: "value" },
+          ]}
+        />
+      </Panel>
+
+      <PromptHistoryPanel
+        entries={promptHistory}
+        activePrompt={prompt}
+        busy={busy || historyBusy}
+        onSelect={(text) => setPrompt(text)}
+        onRerun={(text) => run(text)}
+      />
 
       <details style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-secondary)", padding: 12 }}>
         <summary style={{ cursor: "pointer", fontWeight: 900, color: uxColors.text }}>실행 trace 펼치기</summary>
@@ -2413,16 +2510,6 @@ function FlowiExecutionPanel({ user }) {
         </div>
       </details>
 
-      <Panel title="결과" subtitle="answer, table/chart, 다음 액션 요약">
-        <DataTable
-          rows={flowiOutputRows(result || {})}
-          empty="실행 후 결과가 표시됩니다."
-          columns={[
-            { key: "key", label: "field", width: 150 },
-            { key: "value", label: "value" },
-          ]}
-        />
-      </Panel>
     </div>
   );
 }

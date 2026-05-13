@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app_v2.shared.contracts import FlowEntityKey, KnowledgeDoc
 from core import knowledge_vault as kv
+from core import llm_adapter
 from core import semiconductor_knowledge as semi
 from core.auth import current_user, is_page_admin, require_admin
 from core.paths import PATHS
@@ -33,6 +34,14 @@ class PromptPreviewReq(BaseModel):
     prompt: str = ""
     product: str = ""
     max_rows: int = 20
+
+
+class PromptReviewReq(BaseModel):
+    prompt: str = ""
+    product: str = ""
+    max_rows: int = 12
+    preview_row: dict[str, Any] = Field(default_factory=dict)
+    missing: list[str] = Field(default_factory=list)
 
 
 class PromoteReq(BaseModel):
@@ -179,6 +188,71 @@ def _summary_text(*values: Any, limit: int = 240) -> str:
         for v in values
     )
     return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
+def _prompt_review_missing(req: PromptReviewReq, row: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for value in [*(req.missing or []), *((row or {}).get("missing") or [])]:
+        text = str(value or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _prompt_review_question(field: str) -> str:
+    key = flowi_llm._flowi_missing_key(field) if hasattr(flowi_llm, "_flowi_missing_key") else str(field or "").lower()
+    labels = {
+        "product": "제품명을 명시하세요. 예: PRODA",
+        "root_lot_ids": "root lot 또는 fab lot을 명시하세요. 예: A1000, A1000A.3",
+        "fab_lot_ids": "fab lot을 명시하세요. 예: A1000A.3",
+        "wafer_ids": "wafer 번호를 명시하세요. 예: #6, WF6",
+        "step": "step 또는 function step을 명시하세요. 예: 24.0 SORT",
+        "module": "Inform 모듈을 명시하세요. 예: GATE, STI",
+        "note": "Inform 본문에 넣을 내용을 한 문장으로 적으세요.",
+        "recipient": "수신자, 모듈, 또는 메일 그룹을 명시하세요.",
+        "metric": "확인할 item/metric을 명시하세요. 예: CD, VIA2 Avg",
+        "knob_value": "찾을 KNOB 값을 명시하세요. 예: PPID_24_3",
+    }
+    return labels.get(key, f"{field} 값을 명시하세요.")
+
+
+def _fallback_prompt_review(prompt: str, row: dict[str, Any], missing: list[str], error: str = "") -> dict[str, Any]:
+    action = row.get("action") or row.get("unit_action") or row.get("intent") or "flowi action"
+    questions = [_prompt_review_question(field) for field in missing]
+    if not questions:
+        questions = ["조회 기준, 결과 범위, 정렬 기준이 중요하면 prompt에 직접 적으세요."]
+    improved = prompt
+    if missing:
+        improved = f"{prompt} (보강 필요: {', '.join(missing)})"
+    tips = [
+        f"dry-run action은 {action}입니다.",
+        "실행 가능 여부는 기존 deterministic preview와 guardrail이 판단합니다.",
+    ]
+    if error:
+        tips.append(f"LLM 점검 실패: {error[:180]}")
+    return {
+        "improved_prompt": improved,
+        "ambiguous_questions": questions[:5],
+        "tips": tips[:5],
+        "missing": missing,
+    }
+
+
+def _clean_prompt_review_obj(obj: dict[str, Any], prompt: str, row: dict[str, Any], missing: list[str]) -> dict[str, Any]:
+    fallback = _fallback_prompt_review(prompt, row, missing)
+    improved = str(obj.get("improved_prompt") or obj.get("revised_prompt") or fallback["improved_prompt"]).strip()
+    questions = obj.get("ambiguous_questions") or obj.get("questions") or fallback["ambiguous_questions"]
+    tips = obj.get("tips") or obj.get("notes") or fallback["tips"]
+    if not isinstance(questions, list):
+        questions = [questions] if questions else []
+    if not isinstance(tips, list):
+        tips = [tips] if tips else []
+    return {
+        "improved_prompt": improved[:1200] or fallback["improved_prompt"],
+        "ambiguous_questions": [str(x).strip()[:320] for x in questions if str(x).strip()][:5] or fallback["ambiguous_questions"],
+        "tips": [str(x).strip()[:320] for x in tips if str(x).strip()][:5] or fallback["tips"],
+        "missing": missing,
+    }
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -1079,6 +1153,80 @@ def prompt_preview(req: PromptPreviewReq, request: Request):
         if item.get("name") == selected.get("name") or item.get("intent") == selected.get("intent")
     ][:3]
     return out
+
+
+@router.post("/prompt-review")
+def prompt_review(req: PromptReviewReq, request: Request):
+    current_user(request)
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(400, "prompt is required")
+    row = req.preview_row if isinstance(req.preview_row, dict) else {}
+    if not row:
+        rows = flowi_llm._flowi_orchestrator_activation_previews(
+            [prompt],
+            product=(req.product or "").strip(),
+            max_rows=req.max_rows,
+        )
+        row = rows[0] if rows else {}
+    missing = _prompt_review_missing(req, row)
+    fallback = _fallback_prompt_review(prompt, row, missing)
+    llm_info = {"available": llm_adapter.is_available(), "used": False, "error": ""}
+    if not llm_adapter.is_available():
+        return {
+            "ok": True,
+            "source": "fallback",
+            "prompt": prompt,
+            "preview_row": row,
+            "review": fallback,
+            "llm": {**llm_info, "error": "llm unavailable"},
+            "deterministic_status": row.get("status") or "",
+        }
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "improved_prompt": {"type": "string"},
+            "ambiguous_questions": {"type": "array"},
+            "tips": {"type": "array"},
+        },
+        "required": ["improved_prompt", "ambiguous_questions", "tips"],
+    }
+    ask = (
+        "아래 Flow-i 프롬프트를 실행하지 말고 문장만 점검하세요.\n"
+        "역할: 반도체 업무 앱 사용자에게 더 명확한 한국어 프롬프트와 확인 질문을 제안합니다.\n"
+        "금지: 실행 가능/불가능 판정, 권한 판정, 데이터 변경 제안. 실행 판단은 deterministic preview가 합니다.\n"
+        "JSON keys: improved_prompt, ambiguous_questions, tips.\n\n"
+        f"prompt:\n{prompt[:2000]}\n\n"
+        f"deterministic_preview:\n{json.dumps(row, ensure_ascii=False, default=str)[:4000]}\n\n"
+        f"missing_slots:\n{json.dumps(missing, ensure_ascii=False)}"
+    )
+    out = llm_adapter.complete_json(
+        ask,
+        system="Flow-i 프롬프트 점검은 한국어 업무 문장 개선과 모호점 질문만 반환합니다. 실행 판단을 하지 마세요.",
+        schema=schema,
+        timeout=12,
+        max_retries=1,
+    )
+    if not out.get("ok"):
+        return {
+            "ok": True,
+            "source": "fallback",
+            "prompt": prompt,
+            "preview_row": row,
+            "review": _fallback_prompt_review(prompt, row, missing, error=str(out.get("error") or "")),
+            "llm": {**llm_info, "error": str(out.get("error") or "llm review failed")},
+            "deterministic_status": row.get("status") or "",
+        }
+    return {
+        "ok": True,
+        "source": "llm",
+        "prompt": prompt,
+        "preview_row": row,
+        "review": _clean_prompt_review_obj(out.get("obj") or {}, prompt, row, missing),
+        "llm": {"available": True, "used": True, "error": ""},
+        "deterministic_status": row.get("status") or "",
+    }
 
 
 @router.post("/schema-relations/preview")

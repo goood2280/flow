@@ -177,6 +177,31 @@ def test_prompt_history_reads_flow_data_activity(tmp_path, monkeypatch):
     assert out["rows"][0]["source_ai"] == "agent_page"
 
 
+def test_prompt_review_uses_missing_slot_fallback(monkeypatch):
+    monkeypatch.setattr(agent.llm_adapter, "is_available", lambda: False)
+
+    out = agent.prompt_review(
+        agent.PromptReviewReq(
+            prompt="인폼 남겨줘",
+            preview_row={
+                "prompt": "인폼 남겨줘",
+                "feature": "inform",
+                "action": "register_inform_log",
+                "status": "needs_input",
+                "missing": ["root_lot_ids", "module", "note"],
+            },
+        ),
+        req(username="alice"),
+    )
+
+    assert out["ok"] is True
+    assert out["source"] == "fallback"
+    assert out["llm"]["used"] is False
+    assert out["deterministic_status"] == "needs_input"
+    assert out["review"]["missing"] == ["root_lot_ids", "module", "note"]
+    assert any("Inform" in q for q in out["review"]["ambiguous_questions"])
+
+
 def test_admin_tools_require_admin_and_ingest_to_temp(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "AGENT_ADMIN_STATE_FILE", tmp_path / "agent_admin_tools.json")
     monkeypatch.setattr(agent, "AGENT_BACKUP_DIR", tmp_path / "agent_backups")

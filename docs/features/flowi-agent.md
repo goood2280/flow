@@ -5,6 +5,7 @@ Flow-i Agent는 사용자의 자연어 요청을 Flow 오케스트레이터가 �
 현재 미션은 **Agent 탭이 Inform Log / SplitTable / FileBrowser 의 driver로 동작하는 것**이다. Agent 페이지는 prompt → orchestrator → feature subagent → unit_action → API/handler → result 흐름이 한 화면에서 모두 보여야 한다. Diagnosis와는 시각적으로 분리한다.
 
 예시 prompt와 사용자가 실행한 prompt를 `POST /api/llm/flowi/orchestrator/preview` dry-run 결과로 비교하고, 선택한 prompt는 `POST /api/llm/flowi/agent/chat` 실행 결과를 같이 보여준다.
+`POST /api/agent/prompt-review`는 수동 프롬프트 점검용이다. LLM은 개선 문장과 모호점 질문만 제안하며, 실행 판단은 기존 deterministic preview와 guardrail 결과를 유지한다. LLM 실패 또는 미설정 시 missing slot 기반 fallback을 반환한다.
 
 - prompt별 오케스트레이터 활성화 표: prompt, feature subagent, unit action, API/data target, missing field
 - single prompt dry-run은 `context.ask_llm_to_guess_missing=true`일 때 공개 가능한 `guessed.values` / `guessed.rationale`만 보여준다.
@@ -43,6 +44,7 @@ Flow-i Agent는 사용자의 자연어 요청을 Flow 오케스트레이터가 �
 | Agent router | `backend/routers/agent.py` |
 | Knowledge router | `backend/routers/knowledge.py` |
 | Agent tab components | `frontend/src/components/agent/` |
+| Agent scenario smoke | `scripts/agent_scenario_check.py` |
 | Feature prompts | `data/flow-data/flowi_agent_features/` |
 | User notes | `data/flow-data/flowi_users/` |
 | Entry docs | `data/flow-data/flowi_agent_entrypoints.md` |
@@ -176,4 +178,5 @@ Agent 탭이 다음을 모두 만족하면 본 미션의 완료 조건이다.
 ```bash
 git diff --check
 python3 scripts/smoke_test.py
+python3 scripts/agent_scenario_check.py
 ```
