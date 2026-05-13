@@ -266,8 +266,25 @@ def test_agent_wiki_source_ingest_search_log_lint(tmp_path, monkeypatch):
     page = agent.agent_wiki_page(req(), doc_id=doc["doc_id"])
     assert page["page"]["frontmatter"]["source_ids"] == [source["source_id"]]
 
+    saved = agent.agent_wiki_page_save(
+        agent.AgentWikiPageSaveReq(
+            doc_id=doc["doc_id"],
+            kind="agent_wiki",
+            title="DIBL updated wiki",
+            summary="updated summary",
+            body=page["page"]["body"] + "\n## Operator Edit\n\nverified",
+            tags=["DIBL", "updated"],
+        ),
+        req(role="admin", username="root"),
+    )
+    assert saved["page"]["title"] == "DIBL updated wiki"
+    saved_page = agent.agent_wiki_page(req(), doc_id=doc["doc_id"])
+    assert saved_page["page"]["frontmatter"]["source_ids"] == [source["source_id"]]
+    assert saved_page["page"]["body"].count("# DIBL updated wiki") == 1
+    assert "updated" in saved_page["page"]["tags"]
+
     logs = agent.agent_wiki_log(req(), limit=20, action="")
-    assert {row["action"] for row in logs["logs"]} >= {"source_register", "ingest_commit"}
+    assert {row["action"] for row in logs["logs"]} >= {"source_register", "ingest_commit", "page_save"}
 
     with pytest.raises(HTTPException) as lint_denied:
         agent.agent_wiki_lint(req(role="user"))
@@ -276,6 +293,17 @@ def test_agent_wiki_source_ingest_search_log_lint(tmp_path, monkeypatch):
     lint = agent.agent_wiki_lint(req(role="admin", username="root"))
     assert lint["ok"] is True
     assert lint["counts"]["pages"] == 1
+
+    with pytest.raises(HTTPException) as delete_denied:
+        agent.agent_wiki_page_delete(req(role="user"), agent.AgentWikiPageDeleteReq(doc_id=doc["doc_id"]))
+    assert delete_denied.value.status_code == 403
+
+    deleted = agent.agent_wiki_page_delete(req(role="admin", username="root"), agent.AgentWikiPageDeleteReq(doc_id=doc["doc_id"]))
+    assert deleted["deleted"] is True
+    assert not (root / doc["path"]).exists()
+    assert agent.agent_wiki_search(req(), q="DIBL updated", limit=20)["results"] == []
+    delete_logs = agent.agent_wiki_log(req(), limit=20, action="page_delete")
+    assert delete_logs["logs"][0]["doc_id"] == doc["doc_id"]
 
 
 def test_schema_relation_preview_and_admin_save_do_not_touch_sources(tmp_path, monkeypatch):

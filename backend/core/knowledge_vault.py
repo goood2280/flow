@@ -1458,6 +1458,39 @@ def get_doc(doc_id: str) -> dict[str, Any] | None:
     return None
 
 
+def delete_doc(doc_id: str, actor: str = "system") -> dict[str, Any]:
+    """Delete a wiki markdown page and refresh derived wiki metadata."""
+    ensure_dirs()
+    target = safe_id(doc_id, fallback="")
+    if not target:
+        return {"ok": False, "deleted": False, "error": "doc_id required"}
+    for fp in WIKI_DIR.rglob("*.md"):
+        if fp.stem != target:
+            continue
+        doc = _doc_from_path(fp) or {"doc_id": target, "title": target, "path": str(fp.relative_to(KNOWLEDGE_ROOT))}
+        rel = str(fp.relative_to(KNOWLEDGE_ROOT))
+        fp.unlink()
+        docs = _refresh_wiki_index()
+        log = append_wiki_log({
+            "action": "page_delete",
+            "actor": actor or "system",
+            "doc_id": doc.get("doc_id") or target,
+            "title": doc.get("title") or target,
+            "message": f"Deleted wiki page {doc.get('doc_id') or target}",
+            "meta": {"path": rel},
+        })
+        return {
+            "ok": True,
+            "deleted": True,
+            "doc_id": doc.get("doc_id") or target,
+            "path": rel,
+            "index_count": len(docs),
+            "log": log,
+        }
+    _refresh_wiki_index()
+    return {"ok": False, "deleted": False, "doc_id": target, "error": "knowledge doc not found"}
+
+
 def _snippet(text: str, q: str, n: int = 180) -> str:
     clean = re.sub(r"\s+", " ", text or "").strip()
     if not clean:
@@ -1724,8 +1757,14 @@ def search_agent_wiki(q: str, limit: int = 30) -> list[dict[str, Any]]:
     q_l = str(q or "").strip().lower()
     if not q_l:
         return []
+    terms = [
+        t.lower()
+        for t in re.findall(r"[A-Za-z0-9_.가-힣]+", q_l)
+        if len(t.strip("._")) >= 2 and t not in {"the", "and", "with", "그려줘", "그려", "차트"}
+    ]
     results: list[dict[str, Any]] = []
     for row in list_docs(limit=1000):
+        doc = get_doc(str(row.get("doc_id") or "")) or {}
         hay = " ".join([
             str(row.get("doc_id") or ""),
             str(row.get("kind") or ""),
@@ -1733,11 +1772,18 @@ def search_agent_wiki(q: str, limit: int = 30) -> list[dict[str, Any]]:
             str(row.get("summary") or ""),
             " ".join(map(str, row.get("tags") or [])),
             " ".join(map(str, row.get("source_ids") or [])),
+            str(doc.get("body") or ""),
         ]).lower()
-        if q_l not in hay:
+        exact_score = hay.count(q_l)
+        token_hits = [term for term in terms if term and term in hay]
+        if not exact_score and not token_hits:
             continue
-        score = hay.count(q_l) + (3 if q_l in str(row.get("title") or "").lower() else 0)
-        doc = get_doc(str(row.get("doc_id") or ""))
+        title_l = str(row.get("title") or "").lower()
+        tag_l = " ".join(map(str, row.get("tags") or [])).lower()
+        score = exact_score * 4
+        score += sum(1 for term in token_hits)
+        score += sum(3 for term in token_hits if term in title_l)
+        score += sum(2 for term in token_hits if term in tag_l)
         text = " ".join([row.get("title") or "", row.get("summary") or "", (doc or {}).get("body") or ""])
         results.append({
             "result_type": "wiki",

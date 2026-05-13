@@ -50,10 +50,10 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - DB product / root parquet / base parquet 화면 preview는 최대 200행만 반환한다. UI는 pagination을 숨기고 첫 화면만 보여준다.
 - SQL 실행과 컬럼 선택도 표시 결과는 최대 200행이다. 사용자는 결과가 맞는지 빠르게 확인한 뒤 CSV 다운로드를 실행한다.
 - `/api/filebrowser/download-csv`는 preview row cap을 적용하지 않는다. 대신 기존 안전 한도인 `max_rows <= 500000`, `MAX_CSV_DOWNLOAD_BYTES=100MB`, wide source 컬럼 선택 요구를 따른다. FileBrowser UI는 저장된 `filebrowser_settings.json.csv_download_max_rows`를 이 `max_rows`로 보낸다.
-- `POST /api/filebrowser/sql/llm/draft`는 자연어와 현재 컬럼 목록, dtype, sample values를 받아 read-only filter expression 초안만 반환한다. 응답은 `resolved_columns`, `unknown_column_terms`, `resolved_values`, `value_terms`, `warnings`를 포함해 prompt의 컬럼/값 해석 상태를 보여준다. `SELECT/FROM/DDL/DML/세미콜론/없는 컬럼`은 거부한다.
+- `POST /api/filebrowser/sql/llm/draft`는 자연어와 현재 컬럼 목록, dtype, sample values 및 `scope/root/product/file`로 서버가 직접 만든 최대 200행 `sample_profile`을 받아 read-only filter expression 초안과 `selected_columns`를 반환한다. 응답은 `resolved_columns`, `unknown_column_terms`, `resolved_values`, `value_terms`, `warnings`를 포함해 prompt의 컬럼/값 해석 상태를 보여준다. `SELECT/FROM/DDL/DML/세미콜론/없는 컬럼`은 거부하고, 존재하지 않는 선택 컬럼은 warning과 함께 제거한다.
 - 날짜/시간형 컬럼(`tkout_time`, `update_time`, `measure_time` 등)의 자연어 조건은 월·일·시·분·초를 보존해 quoted ISO literal(`'2024-04-20'`, `'2024-04-20T14:05:00'`)로 만든다. LLM이 `tkout_time >= 2024`처럼 연도만 남기면 초안을 거부하고 deterministic fallback으로 다시 만든다.
 - `wafer_id`/`wf_id` 조건은 원본 저장 타입이 string이어도 숫자 의미로 실행한다. 예: `wafer_id = 3`, `wafer_id >= 3`, `wafer_id IN ('WF03', 10)`은 실행 전에 numeric cast filter로 정규화된다.
-- AI SQL 초안은 SQL 입력창에만 반영된다. 실제 조회와 다운로드는 사용자가 별도로 실행한다.
+- AI SQL 초안은 SQL 입력창과 컬럼 체크 상태에 반영되며 같은 값으로 즉시 preview 조회를 실행한다. 실행 후에도 SQL식과 선택 컬럼은 화면에 남아 사용자가 수정할 수 있다.
 - LLM 호출이 실패하거나 이상한 SQL을 반환하면 제한적 deterministic fallback을 사용하되, 응답의 `llm.used=false`, `fallback=true`, `warnings`로 상태를 노출한다.
 
 ## File Settings
@@ -113,7 +113,7 @@ Agent 탭(Flow-i)이 FileBrowser를 driver로 호출할 때 사용하는 unit ac
 | `filebrowser.lot_progress.latest` | `root_lot_id`, `wafer_id?` | `step_id`, `function_step`, `lot_id`, source path | user | `root_lot_id` |
 | `filebrowser.csv.rules.read` | `csv_name` | `csv_rules` 정의 (filebrowser_settings.json) | user | `csv_name` |
 | `filebrowser.csv.rules.draft` | `file`, `prompt`, `columns`, `sample_rows`, `current_rule` | 저장하지 않은 `csv_rules` 초안 + warnings | manager | `file`, `prompt` |
-| `filebrowser.sql.llm.draft` | `natural_language`, `columns`, `dtypes?`, `sample_rows?`, `current_sql?`, `scope?`, `root?`, `product?`, `file?` | 저장/실행하지 않은 SQL filter 초안 + 컬럼/값 후보 + warnings | user | `natural_language`, `columns` |
+| `filebrowser.sql.llm.draft` | `natural_language`, `columns`, `dtypes?`, `sample_rows?`, `preferred_selected_columns?`, `current_sql?`, `scope?`, `root?`, `product?`, `file?` | SQL filter 초안 + 선택 컬럼 + 서버 sample profile + 컬럼/값 후보 + warnings | user | `natural_language`, `columns` |
 | `filebrowser.cache.lot_progress.refresh` | `target=lot_progress`, `source_root?` | LOT 진행 최신 캐시 refresh 결과 + `s3_sync` | admin | `target` |
 | `filebrowser.cache.lot_progress.status` | `target=lot_progress` | 마지막 성공/시도 시각, freshness, lock state, 제품 수, row 수, `interval_minutes`/`next_refresh_at` | user | `target` |
 | `filebrowser.cache.llm.refresh` | `prompt`, `product?`, `source_root?`, `force?` | LLM target draft + LOT 진행 최신 캐시 refresh 결과 | admin | `prompt` |

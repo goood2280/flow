@@ -689,6 +689,88 @@ def test_flowi_chart_request_computes_product_level_cross_db_scatter(tmp_path, m
     assert out["slots"]["lots"] == []
 
 
+def test_flowi_inline_trend_uses_wiki_rule_scatter_lot_wf_avg(tmp_path, monkeypatch):
+    inline_fp = tmp_path / "inline.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "16.0 VIA2", "value": 10.0, "tkout_time": "2026-05-01T10:00:00"},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "16.0 VIA2", "value": 14.0, "tkout_time": "2026-05-01T10:01:00"},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "02", "item_id": "16.0 VIA2", "value": 20.0, "tkout_time": "2026-05-02T10:00:00"},
+    ]).write_parquet(inline_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [inline_fp])
+    monkeypatch.setattr(llm_router.kv, "search_agent_wiki", lambda _q, limit=30: [{
+        "id": "dashboard_chart_generation_rules",
+        "doc_id": "dashboard_chart_generation_rules",
+        "kind": "agent_wiki",
+        "title": "Dashboard Chart Generation Rules",
+        "summary": "",
+        "score": 9,
+        "tags": ["dashboard", "chart", "trend"],
+    }])
+
+    out = _handle_flowi_query(
+        "PRODX 16.0 VIA2 Inline trend 그려줘",
+        "",
+        12,
+        allowed_keys={"dashboard"},
+    )
+
+    assert out["handled"] is True
+    assert out["chart_type"] == "scatter"
+    assert out["chart_result"]["kind"] == "dashboard_scatter"
+    assert out["chart_result"]["x_col"] == "tkout_time"
+    assert out["chart_result"]["item_id"] == "16.0 VIA2"
+    assert out["chart_result"]["grain"] == "lot_wf"
+    assert out["chart_result"]["aggregation"] == "avg"
+    assert out["chart_result"]["sources"]["lot_wf"] == "root_lot_id + '_' + wafer_id"
+    assert out["chart_config"]["source_type"] == "INLINE"
+    assert out["chart_config"]["x_col"] == "tkout_time"
+    assert out["chart_config"]["item_id"] == "16.0 VIA2"
+    assert out["chart_config"]["grain"] == "lot_wf"
+    assert out["chart_config"]["aggregation"] == "avg"
+    assert "dashboard_chart_generation_rules" in [row["id"] for row in out["retrieved_knowledge"]]
+
+
+def test_flowi_inline_et_corr_scatter_prefers_dashboard_over_diagnosis(tmp_path, monkeypatch):
+    inline_fp = tmp_path / "inline.parquet"
+    et_fp = tmp_path / "et.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "16.0 VIA2", "value": 10.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "16.0 VIA2", "value": 14.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "02", "item_id": "16.0 VIA2", "value": 20.0},
+    ]).write_parquet(inline_fp)
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "VTH", "value": 100.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "01", "item_id": "VTH", "value": 120.0},
+        {"product": "PRODX", "root_lot_id": "A10001", "wafer_id": "02", "item_id": "VTH", "value": 200.0},
+    ]).write_parquet(et_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [inline_fp])
+    monkeypatch.setattr(llm_router, "_et_files", lambda _product: [et_fp])
+    monkeypatch.setattr(llm_router.kv, "search_agent_wiki", lambda _q, limit=30: [{
+        "id": "dashboard_chart_generation_rules",
+        "doc_id": "dashboard_chart_generation_rules",
+        "kind": "agent_wiki",
+        "title": "Dashboard Chart Generation Rules",
+        "summary": "",
+        "score": 9,
+        "tags": ["dashboard", "chart", "scatter"],
+    }])
+
+    out = _handle_flowi_query(
+        "PRODX Inline 16.0 VIA2와 ET VTH Corr scatter 그려줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "diagnosis", "ml"},
+    )
+
+    assert out["intent"] == "dashboard_scatter_plan"
+    assert out["chart"]["status"] == "computed"
+    assert out["chart_result"]["kind"] == "dashboard_scatter"
+    assert out["chart_result"]["aggregations"] == {"INLINE": "avg", "ET": "median"}
+    assert "dashboard_chart_generation_rules" in [row["id"] for row in out["retrieved_knowledge"]]
+
+
 def test_flowi_box_chart_returns_visible_chart_result(tmp_path, monkeypatch):
     inline_fp = tmp_path / "inline.parquet"
     pl.DataFrame([

@@ -4859,11 +4859,12 @@ def _validate_ai_sql_date_literals(sql: str, columns: list[str]) -> None:
 
 
 def _extract_llm_sql_text(raw_text: str, plan: dict) -> str:
-    if isinstance(plan, dict):
+    if isinstance(plan, dict) and plan:
         for key in ("sql", "filter", "where", "expression", "expr"):
             val = plan.get(key)
             if isinstance(val, str) and val.strip():
                 return val.strip()
+        return ""
     text = str(raw_text or "").strip()
     text = re.sub(r"^```(?:sql|json)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
     return text
@@ -5048,7 +5049,7 @@ _AI_SQL_COLUMN_ALIASES = {
     "lot_id": ("lot_id", "lot id", "랏"),
     "root_lot_id": ("root_lot_id", "root lot", "root_lot", "루트 랏", "루트랏"),
     "wafer_id": ("wafer_id", "wafer", "wf", "웨이퍼"),
-    "step_id": ("step_id", "step id", "스텝"),
+    "step_id": ("step_id", "step id", "step", "스텝", "공정"),
     "function_step": ("function_step", "function step", "func step"),
     "ppid": ("ppid",),
     "feature_name": ("feature_name", "feature name", "feature"),
@@ -5281,12 +5282,17 @@ def _fallback_window(prompt: str, column: str) -> str:
     spans = [span for alias in aliases for span in [_alias_span(prompt, alias)] if span is not None]
     if not spans:
         return prompt
-    start, end = min(spans, key=lambda item: item[0])
-    tail = prompt[end:end + 120]
-    cut = re.search(r"(?:이고|이면서|그리고|또|,|;|\n|\bAND\b|\bOR\b)", tail, flags=re.I)
-    if cut:
-        tail = tail[:cut.start()]
-    return prompt[start:end] + tail
+    candidates: list[tuple[int, int, str]] = []
+    for start, end in spans:
+        tail = prompt[end:end + 120]
+        cut = re.search(r"(?:이고|이면서|그리고|또|보고|보여|표시|조회|,|;|\n|\bAND\b|\bOR\b)", tail, flags=re.I)
+        if cut:
+            tail = tail[:cut.start()]
+        prefix = prompt[max(0, start - 80):start] if _looks_date_like_column(column) else ""
+        window = prefix + prompt[start:end] + tail
+        score = 1 if _fallback_values(window, [column]) or (_looks_date_like_column(column) and _extract_ai_sql_datetime_values(window)) else 0
+        candidates.append((-score, start, window))
+    return min(candidates, key=lambda item: (item[0], item[1]))[2]
 
 
 def _fallback_ai_sql(prompt: str, columns: list[str]) -> str:
@@ -5416,12 +5422,275 @@ def _plan_value_terms(plan: dict, prompt: str, columns: list[str]) -> tuple[list
     return resolved[:20], value_terms[:20]
 
 
+def _ai_sql_selected_values(raw) -> list[str]:
+    if isinstance(raw, str):
+        return _clean_string_list(raw)
+    if isinstance(raw, (list, tuple, set)):
+        return _clean_string_list(raw)
+    return []
+
+
+def _plan_selected_columns(plan: dict) -> list[str]:
+    if not isinstance(plan, dict):
+        return []
+    for key in (
+        "selected_columns", "select_columns", "display_columns", "show_columns",
+        "visible_columns", "columns_to_show", "select_cols",
+    ):
+        values = _ai_sql_selected_values(plan.get(key))
+        if values:
+            return values
+    return []
+
+
+def _exact_column_hits(text: str, columns: list[str]) -> list[str]:
+    hits: list[str] = []
+    lookup = _column_lookup(columns)
+    for col in columns:
+        canonical = lookup.get(str(col).casefold(), str(col))
+        pattern = r"(?<![A-Za-z0-9_])" + re.escape(str(col)) + r"(?![A-Za-z0-9_])"
+        if re.search(pattern, str(text or ""), flags=re.I) and canonical not in hits:
+            hits.append(canonical)
+    return hits
+
+
+def _selection_segment_looks_like_columns(segment: str, hits: list[str]) -> bool:
+    if not hits:
+        return False
+    text = str(segment or "")[-180:]
+    if len(hits) >= 2 and re.search(r"[,/&+]|\b(and|및|그리고)\b", text, flags=re.I):
+        return True
+    if len(hits) == 1:
+        col = hits[0]
+        match = list(re.finditer(r"(?<![A-Za-z0-9_])" + re.escape(col) + r"(?![A-Za-z0-9_])", text, flags=re.I))
+        if not match:
+            return False
+        tail = text[match[-1].end():].strip()
+        if not tail:
+            return True
+        if re.search(r"[=<>]|(?:가|이|은|는)\s*\S|(?:이후|이전|이상|이하|초과|미만|포함|같)", tail):
+            return False
+        if re.search(r"[A-Za-z0-9가-힣]", tail):
+            return False
+        return len(tail) <= 4
+    return False
+
+
+def _fallback_selected_columns_from_prompt(prompt: str, columns: list[str]) -> list[str]:
+    text = str(prompt or "")
+    if not text or not columns:
+        return []
+    cues = list(re.finditer(
+        r"(?:만(?:\s*(?:보|표시|출력|조회|select))?|(?:컬럼|열|columns?)\s*(?:만|보|표시|출력|조회)?)",
+        text,
+        flags=re.I,
+    ))
+    for cue in cues:
+        segment = text[max(0, cue.start() - 180):cue.start()]
+        hits = _exact_column_hits(segment, columns)
+        if _selection_segment_looks_like_columns(segment, hits):
+            return hits
+    return []
+
+
+def _filter_ai_sql_selected_columns(values, columns: list[str], warnings: list[str], context: str) -> list[str]:
+    lookup = _column_lookup(columns)
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in _ai_sql_selected_values(values):
+        text = str(value or "").strip()
+        if not text:
+            continue
+        hit = lookup.get(text.casefold())
+        if not hit:
+            _draft_warning(warnings, f"{context}: unknown column removed: {text}")
+            continue
+        key = hit.casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(hit)
+    return out
+
+
+def _normalize_ai_sql_selected_columns(plan: dict, columns: list[str], preferred, prompt: str,
+                                       warnings: list[str]) -> list[str]:
+    selected = _filter_ai_sql_selected_columns(_plan_selected_columns(plan), columns, warnings, "selected_columns")
+    if selected:
+        return selected
+    fallback = _fallback_selected_columns_from_prompt(prompt, columns)
+    if fallback:
+        return fallback
+    return _filter_ai_sql_selected_columns(preferred, columns, warnings, "preferred_selected_columns")
+
+
+def _looks_numeric_like_value(value: str) -> bool:
+    return bool(re.fullmatch(r"-?\d+(?:\.\d+)?", str(value or "").strip()))
+
+
+def _looks_datetime_like_value(value: str) -> bool:
+    text = str(value or "").strip()
+    return bool(
+        re.fullmatch(r"(?:19|20|21)\d{2}[-/.]\d{1,2}(?:[-/.]\d{1,2})?(?:[T\s]\d{1,2}:\d{1,2}(?::\d{1,2})?)?", text)
+        or re.fullmatch(r"(?:19|20|21)\d{6}", text)
+    )
+
+
+def _build_ai_sql_sample_profile(columns: list[str], dtypes: dict | None, sample_rows: list[dict] | None,
+                                 *, source: str = "request", source_sampled: bool = False,
+                                 warnings: list[str] | None = None) -> dict:
+    columns = _settings_context_columns(columns, sample_rows)
+    dtype_map = {str(k): str(v) for k, v in (dtypes or {}).items()} if isinstance(dtypes, dict) else {}
+    rows = [row for row in (sample_rows or [])[:200] if isinstance(row, dict)]
+    profiles: list[dict] = []
+    for col in columns[:200]:
+        examples: list[str] = []
+        null_count = 0
+        blank_count = 0
+        numeric_like_count = 0
+        datetime_like_count = 0
+        non_blank_count = 0
+        for row in rows:
+            raw = row.get(col)
+            if raw is None:
+                for key, value in row.items():
+                    if str(key).casefold() == str(col).casefold():
+                        raw = value
+                        break
+            if raw is None:
+                null_count += 1
+                continue
+            text = _cache_safe_text(raw, 120).strip()
+            if not text:
+                blank_count += 1
+                continue
+            non_blank_count += 1
+            if _looks_numeric_like_value(text):
+                numeric_like_count += 1
+            if _looks_datetime_like_value(text):
+                datetime_like_count += 1
+            if text not in examples:
+                examples.append(text)
+        profiles.append({
+            "name": col,
+            "dtype": dtype_map.get(col, ""),
+            "sample_values": examples[:5],
+            "null_count": null_count,
+            "blank_count": blank_count,
+            "non_blank_count": non_blank_count,
+            "numeric_like_count": numeric_like_count,
+            "datetime_like_count": datetime_like_count,
+        })
+    return {
+        "source": source,
+        "source_sampled": bool(source_sampled),
+        "max_rows": 200,
+        "rows_sampled": len(rows),
+        "columns_scanned": len(columns),
+        "columns_profiled": len(profiles),
+        "columns": profiles,
+        "warnings": list(warnings or []),
+    }
+
+
+def _collect_ai_sql_lazy_context(lf, *, source: str) -> tuple[list[str], dict, list[dict], dict]:
+    schema_obj = lf.collect_schema()
+    columns = list(schema_obj.names())
+    dtypes = {name: str(schema_obj[name]) for name in columns}
+    sample_cols = columns[:200]
+    sample_lf = lf.select(sample_cols) if sample_cols else lf
+    try:
+        from core.parquet_perf import collect_streaming
+        sample_df = collect_streaming(sample_lf.head(200))
+    except Exception:
+        sample_df = sample_lf.head(200).collect()
+    sample_rows = serialize_rows(sample_df.to_dicts())
+    profile = _build_ai_sql_sample_profile(
+        columns,
+        dtypes,
+        sample_rows,
+        source=source,
+        source_sampled=True,
+    )
+    return columns, dtypes, sample_rows, profile
+
+
+def _resolve_ai_sql_profile_file(scope: str, file: str) -> Path | None:
+    name = str(file or "").strip().replace("\\", "/")
+    if not name:
+        return None
+    rel = Path(name)
+    if rel.is_absolute() or any(part in {"", ".", ".."} for part in rel.parts):
+        return None
+    roots = []
+    if str(scope or "").casefold() == "rootpq":
+        roots = [_db_root()]
+    else:
+        roots = [_base_root(), _db_root()]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        cand = (root / rel).resolve()
+        try:
+            cand.relative_to(root.resolve())
+        except ValueError:
+            continue
+        if cand.is_file() and cand.suffix.lower() in DATA_EXTENSIONS:
+            return cand
+    return None
+
+
+def _ai_sql_context_from_source(*, scope: str, root: str, product: str, file: str,
+                                columns: list[str], dtypes: dict | None,
+                                sample_rows: list[dict] | None) -> tuple[list[str], dict, list[dict], dict, list[str]]:
+    warnings: list[str] = []
+    try:
+        if root and product:
+            lf = lazy_read_source(
+                root=root,
+                product=product,
+                recent_days=30,
+                max_files=LATEST_PREVIEW_MAX_FILES,
+                latest_only=True,
+            )
+            if lf is not None:
+                cols, dtype_map, rows, profile = _collect_ai_sql_lazy_context(
+                    lf,
+                    source=f"hive:{_cache_safe_text(root, 80)}/{_cache_safe_text(product, 80)}",
+                )
+                return cols, dtype_map, rows, profile, warnings
+        fp = _resolve_ai_sql_profile_file(scope, file)
+        if fp is not None:
+            lf = scan_one_file(fp)
+            if lf is not None:
+                cols, dtype_map, rows, profile = _collect_ai_sql_lazy_context(
+                    lf,
+                    source=f"file:{_cache_safe_text(file, 160)}",
+                )
+                return cols, dtype_map, rows, profile, warnings
+    except Exception as exc:
+        _draft_warning(warnings, f"sample profile source scan failed: {type(exc).__name__}: {exc}")
+    clean_columns = _settings_context_columns(columns, sample_rows)
+    clean_rows = _safe_sample_rows(sample_rows or [], max_rows=200, max_cols=200, max_value_len=120)
+    profile = _build_ai_sql_sample_profile(
+        clean_columns,
+        dtypes or {},
+        clean_rows,
+        source="request",
+        source_sampled=False,
+        warnings=warnings,
+    )
+    return clean_columns, dict(dtypes or {}), clean_rows, profile, warnings
+
+
 def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                               dtypes: dict | None = None,
                               sample_rows: list[dict] | None = None,
                               current_sql: str = "", scope: str = "",
                               root: str = "", product: str = "",
-                              file: str = "") -> dict:
+                              file: str = "",
+                              preferred_selected_columns: list[str] | None = None,
+                              sample_profile: dict | None = None,
+                              context_warnings: list[str] | None = None) -> dict:
     prompt = _cache_safe_text(natural_language, 2000)
     if not prompt:
         raise HTTPException(400, "natural_language is required")
@@ -5434,7 +5703,8 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         "file": _cache_safe_text(file, 240),
     }
     column_context = _ai_sql_context_columns(columns, dtypes, sample_rows)
-    warnings: list[str] = []
+    profile = sample_profile or _build_ai_sql_sample_profile(columns, dtypes, sample_rows, source="request")
+    warnings: list[str] = list(context_warnings or [])
     resolved_columns, unknown_column_terms = _resolve_ai_sql_prompt_columns(prompt, columns)
     if unknown_column_terms:
         warnings.append("Unknown column-like terms: " + ", ".join(unknown_column_terms[:8]))
@@ -5459,9 +5729,14 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "columns": columns[:200],
                 "schema": column_context,
                 "sample_rows": _safe_sample_rows(sample_rows or [], max_rows=5, max_cols=40, max_value_len=120),
+                "sample_profile": profile,
+                "preferred_selected_columns": _filter_ai_sql_selected_columns(
+                    preferred_selected_columns or [], columns, [], "preferred_selected_columns"
+                ),
                 "context": context,
                 "response_schema": {
                     "sql": "column = 'value' AND other_col > 0",
+                    "selected_columns": ["column", "other_col"],
                     "resolved_columns": ["column"],
                     "resolved_values": ["value"],
                     "notes": "optional short note",
@@ -5482,6 +5757,13 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         warnings.append(f"LLM failed: {llm_info['error']}")
     raw_sql = _extract_llm_sql_text(raw_text, plan)
     resolved_values, value_terms = _plan_value_terms(plan, prompt, columns)
+    selected_columns = _normalize_ai_sql_selected_columns(
+        plan,
+        columns,
+        preferred_selected_columns or [],
+        prompt,
+        warnings,
+    )
     try:
         sql, validate_warnings = _validate_ai_sql_filter(raw_sql, columns)
         warnings.extend(validate_warnings)
@@ -5495,6 +5777,8 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                     "saved": False,
                     "unit_action": "filebrowser.sql.llm.draft",
                     "sql": sql,
+                    "selected_columns": selected_columns,
+                    "sample_profile": profile,
                     "warnings": [*warnings, f"LLM draft was not usable: {exc}", "deterministic fallback used"],
                     "columns": columns,
                     "resolved_columns": resolved_columns,
@@ -5506,11 +5790,30 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 }
             except Exception as fallback_exc:
                 warnings.append(f"deterministic fallback failed: {fallback_exc}")
+        if not raw_sql.strip() and selected_columns:
+            return {
+                "ok": True,
+                "saved": False,
+                "unit_action": "filebrowser.sql.llm.draft",
+                "sql": "",
+                "selected_columns": selected_columns,
+                "sample_profile": profile,
+                "warnings": warnings,
+                "columns": columns,
+                "resolved_columns": resolved_columns,
+                "unknown_column_terms": unknown_column_terms,
+                "resolved_values": resolved_values,
+                "value_terms": value_terms,
+                "llm": llm_info,
+                "fallback": not llm_info.get("used"),
+            }
         return {
             "ok": False,
             "saved": False,
             "unit_action": "filebrowser.sql.llm.draft",
             "sql": "",
+            "selected_columns": selected_columns,
+            "sample_profile": profile,
             "warnings": [*warnings, str(exc)],
             "columns": columns,
             "resolved_columns": resolved_columns,
@@ -5524,6 +5827,8 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         "saved": False,
         "unit_action": "filebrowser.sql.llm.draft",
         "sql": sql,
+        "selected_columns": selected_columns,
+        "sample_profile": profile,
         "warnings": warnings,
         "columns": columns,
         "resolved_columns": resolved_columns,
@@ -6336,6 +6641,7 @@ class FileBrowserSqlLlmDraftReq(BaseModel):
     columns: list[str] = []
     dtypes: dict[str, str] = {}
     sample_rows: list[dict] = []
+    preferred_selected_columns: list[str] = []
     current_sql: str = ""
     scope: str = ""
     root: str = ""
@@ -6501,16 +6807,28 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
 @router.post("/sql/llm/draft")
 def filebrowser_sql_llm_draft(req: FileBrowserSqlLlmDraftReq, request: Request):
     _require_filebrowser_user(request)
-    return _draft_filebrowser_ai_sql(
-        natural_language=req.natural_language,
+    columns, dtypes, sample_rows, sample_profile, context_warnings = _ai_sql_context_from_source(
+        scope=req.scope,
+        root=req.root,
+        product=req.product,
+        file=req.file,
         columns=req.columns or [],
         dtypes=req.dtypes or {},
         sample_rows=req.sample_rows or [],
+    )
+    return _draft_filebrowser_ai_sql(
+        natural_language=req.natural_language,
+        columns=columns,
+        dtypes=dtypes,
+        sample_rows=sample_rows,
         current_sql=req.current_sql,
         scope=req.scope,
         root=req.root,
         product=req.product,
         file=req.file,
+        preferred_selected_columns=req.preferred_selected_columns or [],
+        sample_profile=sample_profile,
+        context_warnings=context_warnings,
     )
 
 

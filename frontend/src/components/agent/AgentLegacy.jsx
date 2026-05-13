@@ -506,6 +506,8 @@ function AgentWikiPanel({ canManage }) {
   const [logs, setLogs] = useState([]);
   const [selectedSource, setSelectedSource] = useState(null);
   const [selectedPage, setSelectedPage] = useState(null);
+  const [pageEdit, setPageEdit] = useState(false);
+  const [pageForm, setPageForm] = useState({ title: "", summary: "", tags: "", body: "" });
   const [sourceForm, setSourceForm] = useState({ source_type: "markdown", title: "", tags: "", content: "" });
   const [preview, setPreview] = useState(null);
   const [searchQ, setSearchQ] = useState("");
@@ -515,9 +517,22 @@ function AgentWikiPanel({ canManage }) {
   const [busy, setBusy] = useState(false);
   const inputStyle = { ...formControlStyle, width: "100%", boxSizing: "border-box", fontSize: 14 };
 
+  const pageToForm = (page = {}) => ({
+    title: page.title || "",
+    summary: page.summary || "",
+    tags: Array.isArray(page.tags) ? page.tags.join(", ") : "",
+    body: page.body || "",
+  });
+
+  const selectPage = (page) => {
+    setSelectedPage(page || null);
+    setPageEdit(false);
+    setPageForm(pageToForm(page || {}));
+  };
+
   const load = () => {
     setBusy(true);
-    Promise.all([
+    return Promise.all([
       sf("/api/agent/wiki/sources?limit=80"),
       sf("/api/agent/wiki/pages?limit=120"),
       sf("/api/agent/wiki/log?limit=80"),
@@ -594,7 +609,7 @@ function AgentWikiPanel({ canManage }) {
       content: sourceIds.length ? "" : sourceForm.content.trim(),
     })
       .then((d) => {
-        setSelectedPage(d.doc || null);
+        selectPage(d.doc || null);
         setMsg(`wiki page 저장됨: ${d.doc?.doc_id || "-"}`);
         load();
       })
@@ -607,7 +622,7 @@ function AgentWikiPanel({ canManage }) {
     if (!docId) return;
     setBusy(true);
     sf("/api/agent/wiki/page" + qs({ doc_id: docId }))
-      .then((d) => setSelectedPage(d.page || null))
+      .then((d) => selectPage(d.page || null))
       .catch((e) => setMsg("오류: " + (e.message || e)))
       .finally(() => setBusy(false));
   };
@@ -618,6 +633,57 @@ function AgentWikiPanel({ canManage }) {
     setBusy(true);
     sf("/api/agent/wiki/search" + qs({ q, limit: 50 }))
       .then((d) => setSearchRows(d.results || []))
+      .catch((e) => setMsg("오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const refreshSearchRows = () => {
+    const q = searchQ.trim();
+    if (!q) {
+      setSearchRows([]);
+      return Promise.resolve();
+    }
+    return sf("/api/agent/wiki/search" + qs({ q, limit: 50 }))
+      .then((d) => setSearchRows(d.results || []))
+      .catch(() => {});
+  };
+
+  const savePage = () => {
+    if (!canManage || !selectedPage?.doc_id) return;
+    const title = pageForm.title.trim();
+    if (!title) {
+      setMsg("page title이 필요합니다.");
+      return;
+    }
+    setBusy(true);
+    postJson("/api/agent/wiki/page/save", {
+      doc_id: selectedPage.doc_id,
+      kind: selectedPage.kind || "agent_wiki",
+      title,
+      summary: pageForm.summary.trim(),
+      tags: splitCommaTags(pageForm.tags),
+      body: pageForm.body,
+    })
+      .then((d) => {
+        selectPage(d.page || d.doc || null);
+        setMsg(`wiki page 수정됨: ${d.page?.doc_id || d.doc?.doc_id || selectedPage.doc_id}`);
+        return Promise.all([load(), refreshSearchRows()]);
+      })
+      .catch((e) => setMsg("오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const deletePage = () => {
+    if (!canManage || !selectedPage?.doc_id) return;
+    if (!window.confirm(`이 wiki page를 삭제할까요?\n${selectedPage.doc_id}`)) return;
+    const deletedId = selectedPage.doc_id;
+    setBusy(true);
+    postJson("/api/agent/wiki/page/delete", { doc_id: deletedId })
+      .then(() => {
+        selectPage(null);
+        setMsg(`wiki page 삭제됨: ${deletedId}`);
+        return Promise.all([load(), refreshSearchRows()]);
+      })
       .catch((e) => setMsg("오류: " + (e.message || e)))
       .finally(() => setBusy(false));
   };
@@ -738,13 +804,37 @@ function AgentWikiPanel({ canManage }) {
         <Panel title="Page Detail" subtitle={selectedPage?.doc_id || "선택된 page 없음"}>
           {selectedPage ? (
             <div style={{ display: "grid", gap: 10 }}>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                 <Pill tone="accent">{selectedPage.kind}</Pill>
                 <Pill tone="neutral">{selectedPage.path || "-"}</Pill>
+                <div style={{ flex: 1 }} />
+                {canManage && !pageEdit && <Button onClick={() => { setPageForm(pageToForm(selectedPage)); setPageEdit(true); }} disabled={busy}>편집</Button>}
+                {canManage && pageEdit && <Button variant="primary" onClick={savePage} disabled={busy || !pageForm.title.trim()}>저장</Button>}
+                {canManage && pageEdit && <Button onClick={() => { setPageForm(pageToForm(selectedPage)); setPageEdit(false); }} disabled={busy}>취소</Button>}
+                {canManage && <Button variant="danger" onClick={deletePage} disabled={busy}>삭제</Button>}
               </div>
-              <div style={{ fontSize: 18, fontWeight: 900 }}>{selectedPage.title}</div>
-              <div style={{ fontSize: 14, color: uxColors.textSub, lineHeight: 1.55 }}>{selectedPage.summary}</div>
-              <pre style={{ margin: 0, maxHeight: 420, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.55, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 5, padding: 10 }}>{selectedPage.body}</pre>
+              {pageEdit ? (
+                <div style={{ display: "grid", gap: 8 }}>
+                  <Field label="title">
+                    <input value={pageForm.title} onChange={(e) => setPageForm({ ...pageForm, title: e.target.value })} style={inputStyle} />
+                  </Field>
+                  <Field label="summary">
+                    <textarea value={pageForm.summary} onChange={(e) => setPageForm({ ...pageForm, summary: e.target.value })} rows={3} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5 }} />
+                  </Field>
+                  <Field label="tags">
+                    <input value={pageForm.tags} onChange={(e) => setPageForm({ ...pageForm, tags: e.target.value })} style={inputStyle} placeholder="dashboard, chart, flowi" />
+                  </Field>
+                  <Field label="body">
+                    <textarea value={pageForm.body} onChange={(e) => setPageForm({ ...pageForm, body: e.target.value })} rows={14} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }} />
+                  </Field>
+                </div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 18, fontWeight: 900 }}>{selectedPage.title}</div>
+                  <div style={{ fontSize: 14, color: uxColors.textSub, lineHeight: 1.55 }}>{selectedPage.summary}</div>
+                  <pre style={{ margin: 0, maxHeight: 420, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.55, background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 5, padding: 10 }}>{selectedPage.body}</pre>
+                </>
+              )}
             </div>
           ) : <EmptyState title="page detail 없음" hint="page 목록 또는 search 결과에서 하나를 선택하세요." />}
         </Panel>

@@ -678,6 +678,93 @@ def test_filebrowser_sql_llm_draft_sends_schema_samples_and_reports_values(monke
     assert out["resolved_values"] == ["ETCH"]
     assert calls[0]["schema"][0] == {"name": "step_id", "dtype": "String", "sample_values": ["ETCH"]}
     assert calls[0]["sample_rows"] == [{"step_id": "ETCH", "value": "1.2"}]
+    assert calls[0]["sample_profile"]["rows_sampled"] == 1
+
+
+def test_filebrowser_sql_llm_draft_sanitizes_selected_columns(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "text": json.dumps({
+                "sql": "wafer_id = 21",
+                "selected_columns": ["lot_id", "ghost_col", "WAFER_ID"],
+            }),
+        },
+    )
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="lot_id, wafer_id, ghost_col도 보여주고 wafer 21 필터",
+            columns=["lot_id", "wafer_id", "step_id"],
+            preferred_selected_columns=["step_id"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["sql"] == "wafer_id = 21"
+    assert out["selected_columns"] == ["lot_id", "wafer_id"]
+    assert "ghost_col" in "\n".join(out["warnings"])
+
+
+def test_filebrowser_sql_llm_draft_profiles_server_source(monkeypatch):
+    calls = []
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+
+    def fake_lazy_read_source(**kwargs):
+        assert kwargs["root"] == "ROOT"
+        assert kwargs["product"] == "PRODA"
+        return pl.DataFrame({
+            "lot_id": [f"A{i:04d}" for i in range(250)],
+            "wafer_id": list(range(250)),
+            "step_id": ["ETCH"] * 250,
+        }).lazy()
+
+    def fake_complete(ask, **_kwargs):
+        calls.append(json.loads(ask))
+        return {"ok": True, "text": json.dumps({"sql": "wafer_id = 21"})}
+
+    monkeypatch.setattr(filebrowser, "lazy_read_source", fake_lazy_read_source)
+    monkeypatch.setattr(llm_adapter, "complete", fake_complete)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="wafer 21만 보여줘",
+            root="ROOT",
+            product="PRODA",
+            scope="hive",
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["columns"] == ["lot_id", "wafer_id", "step_id"]
+    assert out["sample_profile"]["source_sampled"] is True
+    assert out["sample_profile"]["rows_sampled"] == 200
+    assert calls[0]["sample_profile"]["rows_sampled"] == 200
+    assert calls[0]["schema"][0]["sample_values"][:2] == ["A0000", "A0001"]
+
+
+def test_filebrowser_sql_llm_draft_selection_only_prompt(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="lot_id, wafer_id만 보고 싶어",
+            columns=["lot_id", "wafer_id", "step_id"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["sql"] == ""
+    assert out["selected_columns"] == ["lot_id", "wafer_id"]
 
 
 @pytest.mark.parametrize("bad_sql", [

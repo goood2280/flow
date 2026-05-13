@@ -1053,12 +1053,14 @@ export default function My_FileBrowser({user,onNavigate}){
   };
 
   // v8.8.16: "실행" 클릭 = 실제 행 조회 트리거. meta_only 없이 호출 → 서버에서 collect.
-  const applySql=()=>{
+  const applySql=(sqlOverride,selectedColsOverride)=>{
+    const activeSql=typeof sqlOverride==="string"?sqlOverride:sql;
+    const activeSelectedCols=Array.isArray(selectedColsOverride)?selectedColsOverride:selectedCols;
     if(mode==="base"&&isBaseEditing){
       setError("편집 모드에서는 SQL 실행이 비활성됩니다.");
       return;
     }
-    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql,null,{full:true,page:0});
+    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,activeSql,activeSelectedCols,{full:true,page:0});
     else if(mode==="base"&&selBaseFile){
       // Base JSON/md files have no SQL surface — silently ignore. Tabular
       // parquet/csv re-load with the SQL param applied server-side.
@@ -1066,11 +1068,11 @@ export default function My_FileBrowser({user,onNavigate}){
       setLoading(true);setError("");
       // full=true 와 동일 — SQL 이 비어도 sample 행을 보여줘야 하므로 meta_only 꺼둠.
       setPage(0);
-      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
-        select_cols:selectedCols.length?selectedCols.join(","):""});
-      sf(url).then(d=>{if(selectedCols.length)setSelectedCols(selectedColsFromResponse(d,selectedCols));setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
+      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
+        select_cols:activeSelectedCols.length?activeSelectedCols.join(","):""});
+      sf(url).then(d=>{if(activeSelectedCols.length)setSelectedCols(selectedColsFromResponse(d,activeSelectedCols));setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
-    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,null,{full:true,page:0});
+    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0});
   };
 
   const draftAiSql=async()=>{
@@ -1085,6 +1087,7 @@ export default function My_FileBrowser({user,onNavigate}){
         columns,
         dtypes:data?.dtypes||data?.schema||{},
         sample_rows:(data?.data||[]).slice(0,5),
+        preferred_selected_columns:selectedCols,
         current_sql:sql||"",
         scope:mode,
         root:selRoot||"",
@@ -1093,9 +1096,13 @@ export default function My_FileBrowser({user,onNavigate}){
       };
       const d=await sf(API+"/sql/llm/draft",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       setAiSqlResult(d);
-      if(d.ok&&d.sql){
-        setSql(d.sql);
-        toast.ok("AI SQL 초안을 입력창에 넣었습니다.");
+      if(d.ok&&(typeof d.sql==="string")){
+        const nextSql=d.sql||"";
+        const nextSelectedCols=Array.isArray(d.selected_columns)?d.selected_columns.map(c=>String(c||"")).filter(Boolean):[];
+        setSql(nextSql);
+        setSelectedCols(nextSelectedCols);
+        applySql(nextSql,nextSelectedCols);
+        toast.ok("AI SQL 초안으로 조회했습니다.");
       }else{
         toast.warn((d.warnings||[])[0]||"AI SQL 초안 생성 실패");
       }
@@ -1860,7 +1867,7 @@ export default function My_FileBrowser({user,onNavigate}){
               placeholder="예: PRODA 제품에서 wafer 21이고 step이 ETCH인 행"
               style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"8px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"inherit",lineHeight:1.45,outline:"none"}}/>
             <div style={{display:"flex",alignItems:"center",gap:8,justifyContent:"space-between",flexWrap:"wrap"}}>
-              <span style={{fontSize:12,color:"var(--text-secondary)"}}>결과는 SQL 입력창에만 들어갑니다. 실행은 직접 누르세요.</span>
+              <span style={{fontSize:12,color:"var(--text-secondary)"}}>작성하면 SQL과 선택 컬럼을 반영하고 바로 조회합니다.</span>
               <div style={{display:"flex",gap:8}}>
                 <button onClick={()=>setAiSqlOpen(false)} style={{padding:"7px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>닫기</button>
                 <button onClick={draftAiSql} disabled={aiSqlBusy} style={{padding:"7px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:700,cursor:aiSqlBusy?"wait":"pointer",opacity:aiSqlBusy?0.6:1}}>{aiSqlBusy?"작성 중":"작성"}</button>
@@ -1868,6 +1875,8 @@ export default function My_FileBrowser({user,onNavigate}){
             </div>
             {aiSqlResult&&<div style={{display:"grid",gap:5,padding:9,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",fontSize:12,fontFamily:"monospace",color:aiSqlResult.ok===false?FB_BAD.fg:"var(--text-secondary)",lineHeight:1.45}}>
               <span>llm={aiSqlResult.llm?.used?"used":(aiSqlResult.llm?.available?"available":"fallback")} · saved=false</span>
+              {aiSqlResult.selected_columns?.length?<span>selected: {aiSqlResult.selected_columns.join(", ")}</span>:null}
+              {aiSqlResult.sample_profile?<span>profile: rows {aiSqlResult.sample_profile.rows_sampled||0} · cols {aiSqlResult.sample_profile.columns_scanned||0} · {aiSqlResult.sample_profile.source||"request"}</span>:null}
               {aiSqlResult.resolved_columns?.length?<span>resolved: {aiSqlResult.resolved_columns.join(", ")}</span>:null}
               {aiSqlResult.unknown_column_terms?.length?<span style={{color:FB_BAD.fg}}>unknown: {aiSqlResult.unknown_column_terms.join(", ")}</span>:null}
               {aiSqlResult.resolved_values?.length?<span>values: {aiSqlResult.resolved_values.join(", ")}</span>:null}

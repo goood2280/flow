@@ -12,6 +12,7 @@ import polars as pl
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from app_v2.shared.contracts import FlowEntityKey, KnowledgeDoc
 from core import knowledge_vault as kv
 from core import semiconductor_knowledge as semi
 from core.auth import current_user, is_page_admin, require_admin
@@ -93,6 +94,20 @@ class AgentWikiIngestReq(BaseModel):
     body: str = ""
     content: str = ""
     tags: list[str] = Field(default_factory=list)
+
+
+class AgentWikiPageSaveReq(BaseModel):
+    doc_id: str = ""
+    kind: str = "agent_wiki"
+    title: str = ""
+    summary: str = ""
+    body: str = ""
+    tags: list[str] = Field(default_factory=list)
+    frontmatter: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentWikiPageDeleteReq(BaseModel):
+    doc_id: str = ""
 
 
 class SchemaRelationSource(BaseModel):
@@ -857,6 +872,56 @@ def _require_agent_wiki_admin(request: Request) -> dict[str, Any]:
     raise HTTPException(403, "admin or diagnosis/knowledge page admin only")
 
 
+_AGENT_WIKI_PAGE_KINDS = {"product", "lot", "wafer", "knob", "issue", "meeting", "report", "decision", "agent_wiki", "schema_doc", "ontology", "manual"}
+_WIKI_MANAGED_FRONTMATTER_KEYS = {
+    "doc_id",
+    "kind",
+    "title",
+    "summary",
+    "actor",
+    "created_at",
+    "updated_at",
+    "product",
+    "root_lot_id",
+    "wafer_id",
+    "tags",
+    "source_event_ids",
+}
+
+
+def _custom_wiki_frontmatter(*payloads: dict[str, Any] | None) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for key, value in payload.items():
+            if key in _WIKI_MANAGED_FRONTMATTER_KEYS:
+                continue
+            if value in ("", None, [], {}):
+                continue
+            out[key] = value
+    return out
+
+
+def _strip_generated_h1(body: str, title: str = "", previous_title: str = "") -> str:
+    text = str(body or "").lstrip()
+    if not text.startswith("# "):
+        return str(body or "").rstrip() + ("\n" if str(body or "").strip() else "")
+    lines = text.splitlines()
+    first_title = lines[0].lstrip("#").strip()
+    allowed = {
+        str(title or "").strip().lower(),
+        str(previous_title or "").strip().lower(),
+    }
+    allowed = {x for x in allowed if x}
+    if allowed and first_title.lower() not in allowed:
+        return str(body or "").rstrip() + "\n"
+    rest = lines[1:]
+    while rest and not rest[0].strip():
+        rest = rest[1:]
+    return "\n".join(rest).rstrip() + ("\n" if rest else "")
+
+
 def _require_agent_schema_admin(request: Request) -> dict[str, Any]:
     return _require_agent_wiki_admin(request)
 
@@ -1582,6 +1647,67 @@ def agent_wiki_page(request: Request, doc_id: str = Query(..., min_length=1)):
     if not doc:
         raise HTTPException(404, "Knowledge Vault page not found")
     return {"ok": True, "page": doc}
+
+
+@router.post("/wiki/page/save")
+def agent_wiki_page_save(req: AgentWikiPageSaveReq, request: Request):
+    me = _require_agent_wiki_admin(request)
+    doc_id = _safe_slug(req.doc_id, "wiki_page")
+    if not doc_id:
+        raise HTTPException(400, "doc_id required")
+    existing = kv.get_doc(doc_id) or {}
+    kind = str(req.kind or existing.get("kind") or "agent_wiki").strip()
+    if kind not in _AGENT_WIKI_PAGE_KINDS:
+        kind = str(existing.get("kind") or "agent_wiki")
+    title = str(req.title or existing.get("title") or doc_id).strip()
+    if not title:
+        raise HTTPException(400, "title required")
+    entity_raw = existing.get("entity") if isinstance(existing.get("entity"), dict) else {}
+    frontmatter = _custom_wiki_frontmatter(existing.get("frontmatter"), req.frontmatter)
+    doc = KnowledgeDoc(
+        doc_id=doc_id,
+        kind=kind,
+        title=title[:220],
+        summary=str(req.summary or "").strip()[:800],
+        body=_strip_generated_h1(req.body, title, str(existing.get("title") or "")),
+        actor=me.get("username") or "admin",
+        created_at=str(existing.get("created_at") or ""),
+        entity=FlowEntityKey(
+            product=str(entity_raw.get("product") or ""),
+            root_lot_id=str(entity_raw.get("root_lot_id") or ""),
+            wafer_id=str(entity_raw.get("wafer_id") or ""),
+        ),
+        tags=req.tags,
+        source_event_ids=existing.get("source_event_ids") if isinstance(existing.get("source_event_ids"), list) else [],
+        frontmatter=frontmatter,
+    )
+    saved = kv.upsert_doc(doc)
+    kv.append_wiki_log({
+        "action": "page_save",
+        "actor": me.get("username") or "admin",
+        "doc_id": saved.get("doc_id") or doc_id,
+        "title": saved.get("title") or title,
+        "message": f"Saved wiki page {saved.get('doc_id') or doc_id}",
+        "meta": {"path": saved.get("path") or "", "kind": saved.get("kind") or kind},
+    })
+    return {"ok": True, "page": saved, "doc": saved}
+
+
+@router.post("/wiki/page/delete")
+def agent_wiki_page_delete(
+    request: Request,
+    req: AgentWikiPageDeleteReq | None = None,
+    doc_id: str = Query("", max_length=200),
+):
+    me = _require_agent_wiki_admin(request)
+    query_doc_id = doc_id if isinstance(doc_id, str) else ""
+    target = query_doc_id or (req.doc_id if req else "")
+    if not str(target or "").strip():
+        raise HTTPException(400, "doc_id required")
+    result = kv.delete_doc(str(target), actor=me.get("username") or "admin")
+    if not result.get("deleted"):
+        raise HTTPException(404, result.get("error") or "Knowledge Vault page not found")
+    return {"ok": True, **result}
 
 
 @router.get("/wiki/search")

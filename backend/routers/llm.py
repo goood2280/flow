@@ -33,6 +33,7 @@ from core import llm_adapter
 from core import product_config
 from core import semiconductor_knowledge as semi_knowledge
 from core import dashboard_join as dashboard_charting
+from core import knowledge_vault as kv
 from routers.auth import read_users
 
 
@@ -3815,6 +3816,78 @@ def _dashboard_chart_data_for_stats(chart_result: dict[str, Any]) -> list[dict[s
     return []
 
 
+def _dashboard_agent_wiki_knowledge(
+    prompt: str,
+    *,
+    product: str = "",
+    chart_type: str = "",
+    metrics: list[dict[str, Any]] | None = None,
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    selected = [str(m.get("metric") or "").strip() for m in (metrics or []) if isinstance(m, dict) and m.get("metric")]
+    query = " ".join(
+        x for x in [
+            "dashboard chart generation rules trend scatter INLINE ET lot_wf tkout_time aggregation",
+            product,
+            chart_type,
+            " ".join(selected),
+            prompt,
+        ] if str(x or "").strip()
+    )
+    try:
+        rows = kv.search_agent_wiki(query, limit=max(limit, 12))
+    except Exception as exc:
+        logger.debug("dashboard agent wiki search failed: %s", exc)
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        doc_id = str(row.get("doc_id") or row.get("id") or "").strip()
+        if not doc_id or doc_id in seen:
+            continue
+        seen.add(doc_id)
+        out.append({
+            "id": doc_id,
+            "doc_id": doc_id,
+            "kind": row.get("kind") or "",
+            "title": row.get("title") or doc_id,
+            "summary": row.get("summary") or "",
+            "snippet": row.get("snippet") or "",
+            "score": row.get("score"),
+            "tags": row.get("tags") or [],
+            "source": "agent_wiki",
+        })
+        if len(out) >= max(1, min(limit, 20)):
+            break
+    return out
+
+
+def _merge_retrieved_knowledge(existing: Any, additions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(row: Any) -> None:
+        if isinstance(row, dict):
+            doc_id = str(row.get("id") or row.get("doc_id") or row.get("knowledge_id") or "").strip()
+            item = dict(row)
+            if doc_id:
+                item.setdefault("id", doc_id)
+                item.setdefault("doc_id", doc_id)
+        else:
+            doc_id = str(row or "").strip()
+            item = {"id": doc_id, "doc_id": doc_id}
+        if not doc_id or doc_id in seen:
+            return
+        seen.add(doc_id)
+        out.append(item)
+
+    for row in existing or []:
+        add(row)
+    for row in additions or []:
+        add(row)
+    return out[:30]
+
+
 def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = "", username: str = "flowi") -> dict[str, Any]:
     if not isinstance(tool, dict):
         return tool
@@ -3837,6 +3910,15 @@ def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = ""
     if chart_result.get("kind") == "dashboard_wafer_map":
         chart_type = "wafer_map"
     config = _flowi_dashboard_default_config(prompt, chart_type, metrics, product=product)
+    for extra_config in (tool.get("config"), tool.get("chart_config"), chart_result.get("config"), chart_result.get("config_overrides")):
+        if isinstance(extra_config, dict):
+            config.update({k: v for k, v in extra_config.items() if v is not None})
+    config["chart_type"] = chart_type
+    retrieved_knowledge = _dashboard_agent_wiki_knowledge(prompt, product=product, chart_type=chart_type, metrics=metrics)
+    if retrieved_knowledge:
+        merged = _merge_retrieved_knowledge(tool.get("retrieved_knowledge"), retrieved_knowledge)
+        tool["retrieved_knowledge"] = merged
+        config["retrieved_knowledge_ids"] = [row.get("id") for row in merged if isinstance(row, dict) and row.get("id")]
     data = _dashboard_chart_data_for_stats(chart_result)
     stats_cols = config.get("stats_columns")
     stats_table = None if stats_cols is None else dashboard_charting.stats_table_from_points(data, stats_cols if isinstance(stats_cols, list) else None)
@@ -3871,6 +3953,7 @@ def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = ""
             "chart_type": chart_type,
             "config": config,
             "chart_config": config,
+            "retrieved_knowledge": tool.get("retrieved_knowledge") or [],
             "fit_params": fit,
             "stats_table": stats_table,
             "chart_session_id": session_id,
@@ -5358,13 +5441,21 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
     lot_wf_col = _ci_col(cols, "lot_wf", "LOT_WF")
     item_col = _ci_col(cols, "item_id", "ITEM_ID", "rawitem_id", "RAWITEM_ID", "item", "ITEM")
     value_col = _ci_col(cols, "value", "VALUE", "_value", "val", "VAL")
-    time_col = _ci_col(cols, "time", "TIME", "tkout_time", "TKOUT_TIME", "tkin_time", "TKIN_TIME", "date", "DATE")
+    time_col = _ci_col(cols, "tkout_time", "TKOUT_TIME", "time", "TIME", "tkin_time", "TKIN_TIME", "date", "DATE")
     if not item_col or not value_col or not time_col:
         return {
             "handled": True,
             "intent": "dashboard_inline_trend",
             "answer": "INLINE 데이터에서 item_id/value/time 컬럼을 찾지 못했습니다.",
             "table": {"kind": "dashboard_inline_trend_error", "title": "Missing INLINE columns", "placement": "below", "columns": _table_columns(["message", "columns"]), "rows": [{"message": "missing item_id/value/time", "columns": ", ".join(cols[:80])}], "total": 1},
+            "feature": "dashboard",
+        }
+    if not lot_wf_col and not (root_col and wafer_col):
+        return {
+            "handled": True,
+            "intent": "dashboard_inline_trend",
+            "answer": "INLINE Trend scatter에는 lot_wf 또는 root_lot_id/wafer_id 컬럼이 필요합니다.",
+            "table": {"kind": "dashboard_inline_trend_error", "title": "Missing INLINE grain columns", "placement": "below", "columns": _table_columns(["message", "columns"]), "rows": [{"message": "missing lot_wf or root_lot_id/wafer_id", "columns": ", ".join(cols[:80])}], "total": 1},
             "feature": "dashboard",
         }
     metric, item_matches, item_candidates = _inline_metric_match_for_prompt(inline_lf, item_col, text)
@@ -5392,7 +5483,7 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
         inline_lf = inline_lf.filter(expr)
 
     exprs = [
-        pl.col(time_col).cast(_STR, strict=False).str.slice(0, 10).alias("bucket"),
+        pl.col(time_col).cast(_STR, strict=False).alias("tkout_time"),
         pl.col(value_col).cast(pl.Float64, strict=False).alias("metric_value"),
     ]
     if root_col:
@@ -5409,24 +5500,25 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
         exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
     else:
         exprs.append(pl.lit("").alias("lot_wf"))
+    lot_wf_rule = "derived_from_root_lot_id_wafer_id" if root_col and wafer_col else ("source_lot_wf" if lot_wf_col else "unavailable")
     try:
-        line_cfg = (_flowi_chart_defaults().get("line") or FLOWI_CHART_DEFAULTS["line"])
-        point_limit = max(20, min(1000, int(line_cfg.get("max_points_per_series") or 120)))
+        scatter_cfg = (_flowi_chart_defaults().get("scatter") or FLOWI_CHART_DEFAULTS["scatter"])
+        point_limit = max(20, min(5000, int(scatter_cfg.get("max_points") or FLOWI_CHART_POINT_LIMIT)))
     except Exception:
-        point_limit = 120
+        scatter_cfg = FLOWI_CHART_DEFAULTS["scatter"]
+        point_limit = FLOWI_CHART_POINT_LIMIT
     try:
         df = (
             inline_lf.select(exprs)
-            .drop_nulls(subset=["bucket", "metric_value"])
-            .group_by("bucket")
+            .drop_nulls(subset=["tkout_time", "metric_value", "lot_wf"])
+            .group_by(["lot_wf", "root_lot_id", "wafer_id"])
             .agg([
+                pl.col("tkout_time").max().alias("tkout_time"),
+                pl.col("metric_value").mean().alias("avg"),
                 pl.col("metric_value").median().alias("median"),
-                pl.col("metric_value").mean().alias("mean"),
                 pl.len().alias("n"),
-                pl.col("root_lot_id").n_unique().alias("lot_count"),
-                pl.col("lot_wf").n_unique().alias("wafer_groups"),
             ])
-            .sort("bucket")
+            .sort("tkout_time")
             .limit(point_limit)
             .collect()
         )
@@ -5436,43 +5528,75 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
     rows = df.to_dicts()
     points = []
     for idx, row in enumerate(rows):
-        y = _round4(row.get("median"))
+        y = _round4(row.get("avg"))
         if y is None:
             continue
         points.append({
             "x": idx,
-            "x_label": _text(row.get("bucket")),
+            "x_label": _text(row.get("tkout_time")),
+            "tkout_time": _text(row.get("tkout_time")),
             "y": y,
-            "median": y,
-            "mean": _round4(row.get("mean")),
+            "avg": y,
+            "median": _round4(row.get("median")),
             "n": int(row.get("n") or 0),
-            "lot_count": int(row.get("lot_count") or 0),
-            "wafer_groups": int(row.get("wafer_groups") or 0),
+            "lot_wf": row.get("lot_wf") or "",
+            "root_lot_id": row.get("root_lot_id") or "",
+            "wafer_id": row.get("wafer_id") or "",
+            "label": row.get("lot_wf") or "",
         })
     answer = (
-        f"{product_hint} {metric} INLINE 값을 날짜별 median으로 집계해 Trend 차트를 그렸습니다. "
+        f"{product_hint} {metric} INLINE Trend를 tkout_time x축 scatter로 그렸습니다. "
+        "INLINE은 lot_wf별 avg(value)로 집계했습니다. "
         f"표시 point={len(points)}, item match={', '.join(item_matches or [metric])}."
     )
     if not points:
         answer = f"{product_hint} {metric} 조건으로 Trend chart row를 찾지 못했습니다."
-    cols_out = ["bucket", "median", "mean", "n", "lot_count", "wafer_groups"]
+    cols_out = ["tkout_time", "lot_wf", "root_lot_id", "wafer_id", "avg", "median", "n"]
+    config_overrides = {
+        "chart_type": "scatter",
+        "source_type": "INLINE",
+        "x_col": "tkout_time",
+        "y_col": "value",
+        "item_id": (item_matches or [metric])[0],
+        "grain": "lot_wf",
+        "aggregation": "avg",
+        "group_by": "lot_wf",
+        "x_label": "tkout_time",
+        "y_label": f"{metric} avg",
+    }
     return {
         "handled": True,
         "intent": "dashboard_inline_trend_chart",
-        "action": "query_inline_trend_line_chart",
+        "action": "query_inline_trend_scatter_chart",
         "answer": answer,
         "feature": "dashboard",
-        "slots": {"product": product_hint, "metric": metric, "lots": lots},
+        "chart_type": "scatter",
+        "config": config_overrides,
+        "chart_config": config_overrides,
+        "slots": {"product": product_hint, "metric": metric, "lots": lots, "source_type": "INLINE", "grain": "lot_wf", "aggregation": "avg"},
         "chart_result": {
             "ok": True,
-            "kind": "dashboard_line",
+            "kind": "dashboard_scatter",
             "title": f"{product_hint} {metric} Trend",
-            "series": [{"name": metric, "points": points}],
+            "points": points,
             "total": len(points),
-            "x_label": "date",
-            "y_label": f"{metric} median",
+            "x_label": "tkout_time",
+            "y_label": f"{metric} avg",
             "metric": metric,
-            "sources": {"inline_file_count": len(inline_files), "inline_items": item_matches or [metric]},
+            "source_type": "INLINE",
+            "x_col": "tkout_time",
+            "item_id": (item_matches or [metric])[0],
+            "grain": "lot_wf",
+            "aggregation": "avg",
+            "aggregations": {"INLINE": "avg"},
+            "lot_wf_rule": lot_wf_rule,
+            "config_overrides": config_overrides,
+            "render_preset": {**scatter_cfg, "grain": "lot_wf"},
+            "sources": {
+                "inline_file_count": len(inline_files),
+                "inline_items": item_matches or [metric],
+                "lot_wf": "root_lot_id + '_' + wafer_id" if root_col and wafer_col else "lot_wf",
+            },
         },
         "table": {"kind": "dashboard_inline_trend", "title": f"{metric} Trend", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]], "total": len(rows)},
     }
@@ -14061,7 +14185,12 @@ def _handle_flowi_query(
         fab_progress_out = _handle_fab_progress_query(prompt, product, max_rows)
         if fab_progress_out.get("handled"):
             return fab_progress_out
-    if allowed_keys is None or "diagnosis" in allowed_keys:
+    defer_diagnosis_for_source_chart = (
+        (allowed_keys is None or "dashboard" in allowed_keys)
+        and _contains_chart_intent(prompt)
+        and bool(_source_terms(prompt))
+    )
+    if (allowed_keys is None or "diagnosis" in allowed_keys) and not defer_diagnosis_for_source_chart:
         diag_out = _handle_semiconductor_diagnosis_query(prompt, product, max_rows)
         if diag_out.get("handled"):
             return diag_out
@@ -14081,6 +14210,10 @@ def _handle_flowi_query(
         chart_out = _handle_chart_request(prompt, product, max_rows)
         if chart_out.get("handled"):
             return _augment_dashboard_tool(chart_out, prompt, product=product, username=username)
+    if (allowed_keys is None or "diagnosis" in allowed_keys) and defer_diagnosis_for_source_chart:
+        diag_out = _handle_semiconductor_diagnosis_query(prompt, product, max_rows)
+        if diag_out.get("handled"):
+            return diag_out
     if allowed_keys is None or "splittable" in allowed_keys:
         fastest_out = _handle_fastest_knob_query(prompt, product, max_rows)
         if fastest_out.get("handled"):
@@ -14448,6 +14581,13 @@ def _flowi_tool_retrieval_score(tool: dict[str, Any]) -> float | None:
                 continue
             scores.append(val)
             break
+    for row in tool.get("retrieved_knowledge") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            scores.append(float(row.get("score")))
+        except Exception:
+            continue
     return max(scores) if scores else None
 
 
@@ -14931,6 +15071,16 @@ def _flowi_public_trace(
     clarification = tool.get("clarification") if isinstance(tool.get("clarification"), dict) else {}
     if isinstance(clarification.get("choices"), list):
         choices = clarification.get("choices") or []
+    retrieved_knowledge = [
+        {
+            "id": row.get("id") or row.get("doc_id") or row.get("knowledge_id") or "",
+            "title": row.get("title") or "",
+            "kind": row.get("kind") or "",
+            "score": row.get("score"),
+        }
+        for row in (tool.get("retrieved_knowledge") or [])
+        if isinstance(row, dict) and (row.get("id") or row.get("doc_id") or row.get("knowledge_id"))
+    ][:12]
 
     intent = str(tool.get("intent") or "general")
     action = str(tool.get("action") or tool.get("feature") or "")
@@ -14951,6 +15101,8 @@ def _flowi_public_trace(
         output_bits.append("profile=" + _flowi_profile_label(source_profile))
     if choices:
         output_bits.append(f"choices={len(choices)}")
+    if retrieved_knowledge:
+        output_bits.append("knowledge=" + ", ".join(str(row.get("id") or "") for row in retrieved_knowledge[:3]))
     if not output_bits:
         output_bits.append("answer text")
 
@@ -15038,6 +15190,16 @@ def _flowi_public_trace(
             "ts": ts,
         },
     ]
+    if retrieved_knowledge:
+        steps.insert(3, {
+            "key": "knowledge",
+            "stage": "knowledge",
+            "title": "Agent Wiki 검색",
+            "label": "Agent Wiki 검색",
+            "status": "done",
+            "detail": ", ".join(str(row.get("id") or "") for row in retrieved_knowledge[:5]),
+            "ts": ts,
+        })
     api_calls = _flowi_trace_api_calls(
         result=result,
         tool=tool,
@@ -15054,6 +15216,7 @@ def _flowi_public_trace(
         "prompt_cache": _flowi_trace_prompt_cache(allowed_keys),
         "subagent_context": _flowi_trace_subagent_context(tool, api_calls),
         "clarification_loop": _flowi_trace_clarification_loop(tool, result),
+        "retrieved_knowledge": retrieved_knowledge,
         "steps": steps,
         "api_calls": api_calls,
         "call_graph": call_graph,
