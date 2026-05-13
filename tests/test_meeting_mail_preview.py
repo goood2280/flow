@@ -59,6 +59,23 @@ def _ask_fixture():
     }
 
 
+def _ask_fixture_named(mid: str, title: str, *, group_ids=None, decision="Proceed with MASK_A", action="Send inform mail"):
+    item = _ask_fixture()
+    item["id"] = mid
+    item["title"] = title
+    item["group_ids"] = list(group_ids or [])
+    item["sessions"] = [{
+        **item["sessions"][0],
+        "id": f"SS-{mid}",
+        "minutes": {
+            **item["sessions"][0]["minutes"],
+            "decisions": [{"id": f"d-{mid}", "text": decision, "due": "2026-05-13"}],
+            "action_items": [{"id": f"a-{mid}", "text": action, "owner": "worker", "due": "2026-05-14", "status": "pending"}],
+        },
+    }]
+    return item
+
+
 def test_meeting_mail_preview_content_flags(monkeypatch):
     monkeypatch.setattr(meetings, "_load_mail_cfg", lambda: {"from_addr": "flow@example.com"})
     meeting, session = _mail_fixture()
@@ -273,6 +290,137 @@ def test_meeting_ask_endpoint_returns_session_scope(monkeypatch):
         "has_minutes": True,
     }]
     assert "Mask change review" in out["answer"]
+
+
+def test_meeting_ask_auto_mode_clarifies_ambiguous_meeting(monkeypatch):
+    from core import llm_adapter
+
+    sync = _ask_fixture_named("MT-SYNC", "Device Change Sync")
+    review = _ask_fixture_named("MT-REVIEW", "Device Change Review")
+    hidden = _ask_fixture_named("MT-HIDDEN", "Device Change Secret", group_ids=["secret-group"])
+    monkeypatch.setattr(meetings, "_load", lambda: [sync, review, hidden])
+    monkeypatch.setattr(meetings, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(meetings, "_my_meeting_group_ids", lambda _username, _role: set())
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = meetings.ask_meeting(
+        meetings.MeetingAskReq(question="Device Change 회의 결정사항 정리해줘"),
+        object(),
+    )
+
+    assert out["ok"] is True
+    assert out["needs_clarification"] is True
+    assert out["reason"] == "meeting_ambiguous"
+    titles = [c["title"] for c in out["candidates"]]
+    assert set(titles) == {"Device Change Sync", "Device Change Review"}
+    assert "Device Change Secret" not in titles
+
+
+def test_meeting_ask_auto_mode_focuses_clear_meeting(monkeypatch):
+    from core import llm_adapter
+    from routers import calendar as calendar_router
+
+    sync = _ask_fixture_named("MT-SYNC", "Device Change Sync", action="Send mask owner due mail")
+    review = _ask_fixture_named("MT-REVIEW", "Device Change Review", action="Review unrelated PM window")
+    monkeypatch.setattr(meetings, "_load", lambda: [sync, review])
+    monkeypatch.setattr(meetings, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(meetings, "_my_meeting_group_ids", lambda _username, _role: set())
+    monkeypatch.setattr(calendar_router, "_load_events", lambda: [])
+    monkeypatch.setattr(calendar_router, "_my_group_ids", lambda _username, _role: set())
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = meetings.ask_meeting(
+        meetings.MeetingAskReq(question="Device Change Sync 회의 액션 담당자와 마감일 알려줘"),
+        object(),
+    )
+
+    assert out["ok"] is True
+    assert out["needs_clarification"] is False
+    assert out["scope"] == "meeting_auto"
+    assert out["meeting"]["title"] == "Device Change Sync"
+    assert "Send mask owner due mail" in out["answer"]
+    assert "Review unrelated PM window" not in out["answer"]
+
+
+def test_meeting_ask_auto_fallback_includes_visible_calendar_events(monkeypatch):
+    from core import llm_adapter
+    from routers import calendar as calendar_router
+
+    sync = _ask_fixture_named("MT-SYNC", "Device Change Sync")
+    hidden = _ask_fixture_named("MT-HIDDEN", "Hidden Device Meeting", group_ids=["secret-group"])
+    monkeypatch.setattr(meetings, "_load", lambda: [sync, hidden])
+    monkeypatch.setattr(meetings, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(meetings, "_my_meeting_group_ids", lambda _username, _role: set())
+    monkeypatch.setattr(calendar_router, "_my_group_ids", lambda _username, _role: set())
+    monkeypatch.setattr(calendar_router, "_load_events", lambda: [
+        {
+            "id": "cal-manual",
+            "date": "2026-05-14",
+            "title": "Litho recipe release",
+            "body": "Manual release event",
+            "category": "릴리즈",
+            "author": "viewer",
+            "status": "pending",
+            "source_type": "manual",
+            "meeting_ref": None,
+            "group_ids": [],
+        },
+        {
+            "id": "cal-sync",
+            "date": "2026-05-13",
+            "title": "1차 회의 결정사항: Proceed with MASK_A",
+            "body": "",
+            "category": "회의 결정사항",
+            "author": "owner",
+            "status": "pending",
+            "source_type": "meeting_decision",
+            "meeting_ref": {"meeting_id": "MT-SYNC", "session_id": "SS-MT-SYNC", "action_item_id": "d-MT-SYNC", "meeting_title": "Device Change Sync"},
+            "group_ids": [],
+        },
+        {
+            "id": "cal-hidden-meeting",
+            "date": "2026-05-15",
+            "title": "Secret hidden meeting decision",
+            "body": "",
+            "category": "회의 결정사항",
+            "author": "owner",
+            "status": "pending",
+            "source_type": "meeting_decision",
+            "meeting_ref": {"meeting_id": "MT-HIDDEN", "session_id": "SS-MT-HIDDEN", "action_item_id": "d-MT-HIDDEN", "meeting_title": "Hidden Device Meeting"},
+            "group_ids": [],
+        },
+        {
+            "id": "cal-hidden-group",
+            "date": "2026-05-16",
+            "title": "Secret group PM",
+            "body": "",
+            "category": "장비 PM",
+            "author": "owner",
+            "status": "pending",
+            "source_type": "manual",
+            "meeting_ref": None,
+            "group_ids": ["secret-group"],
+        },
+    ])
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(llm_adapter, "complete", lambda *_args, **_kwargs: {"ok": False, "error": "forced failure"})
+
+    out = meetings.ask_meeting(
+        meetings.MeetingAskReq(question="회의에 등록된 이벤트와 변경점 관리 일반 이벤트를 같이 요약해줘"),
+        object(),
+    )
+
+    assert out["ok"] is True
+    assert out["scope"] == "auto"
+    assert out["llm"]["used"] is False
+    assert "Litho recipe release" in out["answer"]
+    assert "Proceed with MASK_A" in out["answer"]
+    assert "Secret hidden meeting decision" not in out["answer"]
+    assert "Secret group PM" not in out["answer"]
+    assert {e["title"] for e in out["calendar_events"]} == {
+        "Litho recipe release",
+        "1차 회의 결정사항: Proceed with MASK_A",
+    }
 
 
 def test_meeting_stream_route_precedes_dynamic_mid():

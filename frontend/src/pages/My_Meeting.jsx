@@ -868,9 +868,10 @@ export default function My_Meeting({ user }) {
           </div>
         )}
         {viewMode === "list" && selected && (
-          <div style={{ padding: 20, maxWidth: 980, display: "grid", gap: 14 }}>
+          <div style={{ padding: 20, maxWidth: 980 }}>
+            <Card padding={0}>
             {/* Meta */}
-            <Card>
+            <section style={connectedPanelSection}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                 {/* v8.8.28: 카테고리 chip 제거 → 회의 고유 color dot 으로 대체. 변경점 달력에도 이 색상이 전파됨. */}
                 {selected.color && (
@@ -965,10 +966,10 @@ export default function My_Meeting({ user }) {
                   </div>
                 </div>
               )}
-            </Card>
+            </section>
 
             {/* Session tabs */}
-            <Card padding={12}>
+            <section style={selectedSession ? connectedPanelSection : connectedPanelSectionLast}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", marginRight: 6 }}>차수:</span>
                 {(selected.sessions || []).map(s => {
@@ -1007,12 +1008,12 @@ export default function My_Meeting({ user }) {
                   ) : <span style={val}>{SESS_STATUS_LABEL[selectedSession.status || "scheduled"]}</span>}
                 </div>
               )}
-            </Card>
+            </section>
 
             {selectedSession && (<>
               {/* Agendas */}
-              <Card>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 10, fontFamily: "monospace" }}>
+              <section style={connectedPanelSection}>
+                <div style={connectedSectionTitle}>
                   📋 {selectedSession.idx}차 아젠다 ({(selectedSession.agendas || []).length})
                 </div>
                 {(selectedSession.agendas || []).length === 0 && (
@@ -1021,7 +1022,7 @@ export default function My_Meeting({ user }) {
                   </div>
                 )}
                 {(selectedSession.agendas || []).map((a, i) => (
-                  <div key={a.id} style={{ marginBottom: 8, padding: 10, borderRadius: 6, background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+                  <div key={a.id} style={i === 0 ? connectedListRowFirst : connectedListRow}>
                     {editingAgendaId === a.id ? (
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         <input value={agendaEditDraft.title} onChange={e => setAgendaEditDraft({ ...agendaEditDraft, title: e.target.value })} placeholder="아젠다 제목" style={inp} />
@@ -1119,7 +1120,7 @@ export default function My_Meeting({ user }) {
                     )}
                   </div>
                 ))}
-                <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px dashed var(--border)" }}>
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                     <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", flex: 1 }}>+ 새 아젠다 추가 (담당자: {(agendaDraft.owner || me)})</div>
                     {/* v8.8.13: 같은 그룹 이슈 불러와서 자동 채움 */}
@@ -1176,33 +1177,32 @@ export default function My_Meeting({ user }) {
                     <button onClick={addAgenda} style={btnPrimary}>+ 추가</button>
                   </div>
                 </div>
-              </Card>
-
-              {/* v8.8.6/v8.8.15: 외부 저장 알림 배너 — 편집 중 다른 유저가 저장하면 표시. rev 표시 + "유지하며 rebase" 옵션. */}
-              {externalUpdate && editingMinutes && (
-                <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: "var(--warn-50)", border: "1px solid var(--warn-line)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 14, color: "var(--warn)", fontWeight: 700 }}>⚠ 동시편집 감지</span>
-                  <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>
-                    {externalUpdate.author} 님이 방금 저장함 ({(externalUpdate.at || "").slice(11, 16)})
-                    {externalUpdate.rev !== undefined && <> · <span style={{ fontFamily: "monospace", color: "var(--warn)", fontWeight: 700 }}>rev {externalUpdate.rev}</span></>}
-                    · 결정 {externalUpdate.decisions}개 · 액션 {externalUpdate.actions}개
-                  </span>
-                  <span style={{ flex: 1 }} />
-                  <button onClick={() => {
-                    // v8.8.15: 내 편집 유지한 채 base_rev 만 최신으로 rebase — 저장 시 정상 통과.
-                    setMinutesDraft(d => d ? { ...d, base_rev: Number(externalUpdate.rev || 0) } : d);
-                    setExternalUpdate(null);
-                  }} title="내 편집 유지 + 서버 rev 에만 맞춰 재동기화 (저장 시 상대 변경 덮어씀)"
-                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>내 편집 유지 · rebase</button>
-                  <button onClick={() => { setExternalUpdate(null); reload(); setEditingMinutes(false); setMinutesDraft(null); }}
-                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--warn)", background: "var(--warn)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>외부 내용 불러오기</button>
-                  <button onClick={() => setExternalUpdate(null)}
-                    style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>무시</button>
-                </div>
-              )}
+              </section>
 
               {/* Minutes */}
-              <Card>
+              <section style={connectedPanelSectionLast}>
+                {/* v8.8.6/v8.8.15: 외부 저장 알림 배너 — 편집 중 다른 유저가 저장하면 표시. rev 표시 + "유지하며 rebase" 옵션. */}
+                {externalUpdate && editingMinutes && (
+                  <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: "var(--warn-50)", border: "1px solid var(--warn-line)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 14, color: "var(--warn)", fontWeight: 700 }}>⚠ 동시편집 감지</span>
+                    <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>
+                      {externalUpdate.author} 님이 방금 저장함 ({(externalUpdate.at || "").slice(11, 16)})
+                      {externalUpdate.rev !== undefined && <> · <span style={{ fontFamily: "monospace", color: "var(--warn)", fontWeight: 700 }}>rev {externalUpdate.rev}</span></>}
+                      · 결정 {externalUpdate.decisions}개 · 액션 {externalUpdate.actions}개
+                    </span>
+                    <span style={{ flex: 1 }} />
+                    <button onClick={() => {
+                      // v8.8.15: 내 편집 유지한 채 base_rev 만 최신으로 rebase — 저장 시 정상 통과.
+                      setMinutesDraft(d => d ? { ...d, base_rev: Number(externalUpdate.rev || 0) } : d);
+                      setExternalUpdate(null);
+                    }} title="내 편집 유지 + 서버 rev 에만 맞춰 재동기화 (저장 시 상대 변경 덮어씀)"
+                      style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>내 편집 유지 · rebase</button>
+                    <button onClick={() => { setExternalUpdate(null); reload(); setEditingMinutes(false); setMinutesDraft(null); }}
+                      style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--warn)", background: "var(--warn)", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>외부 내용 불러오기</button>
+                    <button onClick={() => setExternalUpdate(null)}
+                      style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>무시</button>
+                  </div>
+                )}
                 <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
                   <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", fontFamily: "monospace", flex: 1 }}>📝 {selectedSession.idx}차 회의록</span>
                   {canEditMinutes(selected) && !editingMinutes && (
@@ -1469,8 +1469,9 @@ export default function My_Meeting({ user }) {
                     </div>
                   </div>
                 )}
-              </Card>
+              </section>
             </>)}
+            </Card>
           </div>
         )}
       </div>
@@ -1744,6 +1745,11 @@ function MeetingCategoryEditor({ categories, setCategories, isAdmin }) {
 const inp = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" };
 const lbl = { fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" };
 const val = { fontSize: 14, color: "var(--text-primary)" };
+const connectedPanelSection = { padding: 16, borderBottom: "1px solid var(--border)" };
+const connectedPanelSectionLast = { ...connectedPanelSection, borderBottom: "none" };
+const connectedSectionTitle = { fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 10, fontFamily: "monospace" };
+const connectedListRow = { padding: "10px 0", borderTop: "1px solid var(--border)" };
+const connectedListRowFirst = { ...connectedListRow, borderTop: "none", paddingTop: 0 };
 const btnPrimary = { padding: "6px 14px", borderRadius: 5, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" };
 const btnGhost = { padding: "5px 12px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", fontSize: 14, cursor: "pointer" };
 const btnDanger = { padding: "5px 10px", borderRadius: 5, border: "1px solid var(--danger)", background: "transparent", color: "var(--danger)", fontSize: 14, cursor: "pointer" };

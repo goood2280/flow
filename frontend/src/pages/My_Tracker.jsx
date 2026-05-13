@@ -6,6 +6,11 @@ import { Button, Card, Chip, EmptyState, Filter, Pill, TabStrip, TableWrap, Tbl 
 import { authSrc, sf as apiSf } from "../lib/api";
 const API = "/api/tracker";
 const TRACKER_PRIORITY_TONE = { critical: "danger", high: "brand", normal: "info", low: "neutral" };
+const connectedPanelSection = { padding: 16, borderBottom: "1px solid var(--border)" };
+const connectedPanelSectionLast = { ...connectedPanelSection, borderBottom: "none" };
+const connectedSectionTitle = { fontSize: 14, fontWeight: 600, marginBottom: 8, color: "var(--text-secondary)" };
+const connectedListRow = { padding: "12px 0", borderTop: "1px solid var(--border)" };
+const connectedListRowFirst = { ...connectedListRow, borderTop: "none", paddingTop: 0 };
 // v8.8.3: 인증 헤더 자동 주입을 위해 lib/api.sf 로 교체. legacy 시그니처 유지.
 const sf = (url, o) => apiSf(url, o);
 
@@ -1090,7 +1095,7 @@ function IssueMailControl({ issue, mailGroups, canEdit, onSave }) {
     save({ mail_group_ids: Array.from(cur) });
   };
   return (
-    <div style={{ marginBottom: 12, padding: "9px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-card)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
       <label title="메일 발송 여부는 lot/wafer 행이 아니라 이슈 단위로 적용됩니다." style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: canEdit ? "pointer" : "default", fontSize: 14, fontWeight: 700, color: enabled ? "var(--accent)" : "var(--text-secondary)" }}>
         <input type="checkbox" checked={enabled} disabled={!canEdit} onChange={e => save({ mail: e.target.checked })} />
         <span>이슈 메일 발송</span>
@@ -1451,8 +1456,8 @@ export default function My_Tracker({ user }) {
       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
         {creating && <IssueForm onSubmit={create} onClose={() => setCreating(false)} user={user} roleNames={roleNames} />}
         {viewTab === "gantt" ? <GanttChart issues={issues} onIssueClick={(id) => { loadDetail(id); setViewTab("list"); }} />
-          : selected ? (<div style={{ display: "grid", gap: 16 }}>
-            <Card>
+          : selected ? (<Card padding={0}>
+            <section style={connectedPanelSection}>
             {/* Header */}
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
               {editMode ? <input value={editTitle} onChange={e => setEditTitle(e.target.value)} style={{ fontSize: 18, fontWeight: 700, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--accent)", background: "var(--bg-primary)", color: "var(--text-primary)", outline: "none", flex: 1 }} />
@@ -1476,29 +1481,35 @@ export default function My_Tracker({ user }) {
               <span>{(selected.created || selected.timestamp || "")?.slice(0, 16)}</span>
               {selected.closed_at && <span>완료: {selected.closed_at?.slice(0, 16)}</span>}
             </div>
+            </section>
+            <section style={connectedPanelSection}>
+            <div style={connectedSectionTitle}>메일 알림</div>
             <IssueMailControl
               issue={selected}
               mailGroups={issueMailGroups}
               canEdit={canEdit}
               onSave={saveIssueMail}
             />
-            </Card>
+            </section>
 
             {/* Description */}
             {editMode ? (
-              <div style={{ marginBottom: 12 }}>
+              <section style={connectedPanelSection}>
                 <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>설명 (Ctrl+V 로 이미지 붙여넣기)</div>
                 <DescEditor value={editDesc} onChange={setEditDesc} placeholder="설명 수정..." />
-              </div>
-            ) : (selected.description_html || selected.description) && (<>
+              </section>
+            ) : (selected.description_html || selected.description) && (
+              <section style={connectedPanelSection}>
+              <div style={connectedSectionTitle}>설명</div>
               <style>{`.desc-view img{max-width:400px!important;border-radius:6px;display:block;margin:4px 0;}`}</style>
-              <div className="desc-view" style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 16, lineHeight: 1.7, background: "var(--bg-card)", padding: 12, borderRadius: 8, border: "1px solid var(--border)", wordBreak: "break-word" }}
-                dangerouslySetInnerHTML={{ __html: withTrackerImageAuth(selected.description_html || selected.description) }} /></>
+              <div className="desc-view" style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.7, wordBreak: "break-word" }}
+                dangerouslySetInnerHTML={{ __html: withTrackerImageAuth(selected.description_html || selected.description) }} />
+              </section>
 
             )}
 
             {/* Priority (edit) */}
-            {editMode && <div style={{ marginBottom: 12, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+            {editMode && <section style={{ ...connectedPanelSection, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
               <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>우선순위:
                 <select value={editPrio} onChange={e => setEditPrio(e.target.value)} style={{ marginLeft: 6, padding: "4px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 14 }}>
                   <option value="low">낮음</option><option value="normal">보통</option><option value="high">높음</option><option value="critical">긴급</option></select>
@@ -1510,23 +1521,23 @@ export default function My_Tracker({ user }) {
                   {cats.map(c => <option key={c.name || c} value={c.name || c}>{c.name || c}</option>)}
                 </select>
               </span>
-            </div>}
+            </section>}
 
             {/* v8.8.13: 하단 썸네일 블록 제거 — 설명(desc_html) 내부의 inline 이미지만 노출.
                  legacy images 배열은 더 이상 별도 표시하지 않음 (중복 방지). */}
 
             {/* Related Links */}
-            {selected.links?.length > 0 && <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: "var(--text-secondary)" }}>관련 링크</div>
+            {selected.links?.length > 0 && <section style={connectedPanelSection}>
+              <div style={connectedSectionTitle}>관련 링크</div>
               {selected.links.map((lnk, i) => (
                 <div key={i} style={{ marginBottom: 4 }}>
                   {lnk.startsWith("http") ? <a href={lnk} target="_blank" rel="noopener noreferrer" style={{ color: "var(--info)", fontSize: 14, textDecoration: "none", wordBreak: "break-all" }}>{lnk}</a>
                     : <span style={{ fontSize: 14, color: "var(--text-primary)" }}>{lnk}</span>}
                 </div>
               ))}
-            </div>}
-            {editMode && editLots.length > 0 && <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: "var(--text-secondary)" }}>LOT purpose/comment 수정</div>
+            </section>}
+            {editMode && editLots.length > 0 && <section style={connectedPanelSection}>
+              <div style={connectedSectionTitle}>LOT purpose/comment 수정</div>
               <TableWrap>
                 <Tbl>
                   <thead><tr>
@@ -1543,9 +1554,9 @@ export default function My_Tracker({ user }) {
                   ))}</tbody>
                 </Tbl>
               </TableWrap>
-            </div>}
+            </section>}
             {/* Lots table */}
-            {!editMode && selected.lots?.length > 0 && <div style={{ marginBottom: 16 }}>
+            {!editMode && selected.lots?.length > 0 && <section style={connectedPanelSection}>
               <LotTable lots={selected.lots} setLots={(fn) => {
                 // readonly 이긴 하지만 watch 저장 후 로컬 반영 위해 setLots 는 유용.
                 if (typeof fn === "function") {
@@ -1554,13 +1565,13 @@ export default function My_Tracker({ user }) {
                 }
               }} readOnly={true}
               issueId={selected.id} product={selected.product || ""} category={selected.category || ""} roleNames={roleNames} cats={cats} />
-            </div>}
+            </section>}
 
             {/* Comments */}
-            <div style={{ marginTop: 16 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>댓글 ({commentTotal(selected.comments || [])})</div>
+            <section style={connectedPanelSectionLast}>
+              <div style={connectedSectionTitle}>댓글 ({commentTotal(selected.comments || [])})</div>
               {selected.comments?.map((c, i) => (
-                <div key={i} style={{ padding: "10px 12px", marginBottom: 8, background: "var(--bg-card)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                <div key={i} style={i === 0 ? connectedListRowFirst : connectedListRow}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, alignItems: "center" }}>
                     <span style={{ fontSize: 14, fontWeight: 600 }}>{c.username}</span>
                     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -1577,7 +1588,7 @@ export default function My_Tracker({ user }) {
                   {(c.lot_id || c.wafer_id) && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>{c.lot_id} / {c.wafer_id}</div>}
                   {(c.replies || []).length > 0 && <div style={{ marginTop: 8, paddingLeft: 12, borderLeft: "2px solid var(--border)", display: "grid", gap: 6 }}>
                     {(c.replies || []).map((r, ri) => (
-                      <div key={ri} style={{ padding: "7px 8px", borderRadius: 6, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+                      <div key={ri} style={{ padding: ri === 0 ? "0 0 0 8px" : "7px 0 0 8px", borderTop: ri === 0 ? "none" : "1px solid var(--border)" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 3 }}>
                           <span style={{ fontSize: 14, fontWeight: 700 }}>{r.username || "-"}</span>
                           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -1603,8 +1614,8 @@ export default function My_Tracker({ user }) {
                   onKeyDown={e => e.key === "Enter" && addComment()} />
                 <button onClick={addComment} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>전송</button>
               </div>
-            </div>
-          </div>) : <EmptyState title="이슈를 선택하세요" hint="좌측 목록에서 이슈를 고르거나 새 이슈를 생성하세요." />}
+            </section>
+          </Card>) : <EmptyState title="이슈를 선택하세요" hint="좌측 목록에서 이슈를 고르거나 새 이슈를 생성하세요." />}
       </div>
     </div>);
 }

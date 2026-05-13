@@ -242,7 +242,14 @@ def test_filebrowser_lot_progress_cache_status_and_refresh_contract(monkeypatch,
     monkeypatch.setattr(
         lot_progress_cache,
         "refresh_lot_progress_cache",
-        lambda force=False, source_root="": {"generated_at": "2026-05-10T02:00:00", "count": 2, "files_scanned": 3, "rows_seen": 4, "errors": []},
+        lambda force=False, source_root="": {
+            "generated_at": "2026-05-10T02:00:00",
+            "count": 2,
+            "files_scanned": 3,
+            "rows_seen": 4,
+            "errors": [],
+            "items": [{"product": "PRODA"}, {"product": "PRODB"}],
+        },
     )
     monkeypatch.setattr(lot_progress_cache, "export_lot_progress_parquet", lambda state=None: {"ok": True, "rows": 2, "paths": [str(parquet_fp)]})
 
@@ -255,8 +262,21 @@ def test_filebrowser_lot_progress_cache_status_and_refresh_contract(monkeypatch,
     assert status["target"] == "lot_progress"
     assert status["row_count"] == 1
     assert status["products"] == ["PRODA"]
+    assert status["product_count"] == 1
+    assert status["product_binding"]["source_column"] == "product_dir.name"
+    assert status["latest_key_columns"] == ["product", "LOT_WF(root_lot_id + wafer_id)"]
+    assert status["latest_order_columns"] == ["update_time", "tkout_time", "tkin_time", "time"]
+    assert status["lot_id_source_column"] == "lot_id"
+    assert status["root_lot_id_source_column"] == "root_lot_id"
+    assert "wafer_id" in status["wafer_id_source_column"]
+    assert "step_matching.csv" in status["step_mapping_sources"]
     assert refreshed["unit_action"] == "filebrowser.cache.lot_progress.refresh"
     assert refreshed["row_count"] == 2
+    assert refreshed["products"] == ["PRODA", "PRODB"]
+    assert refreshed["product_count"] == 2
+    assert refreshed["product_binding"]["source_column"] == "product_dir.name"
+    assert refreshed["latest_key_columns"] == ["product", "LOT_WF(root_lot_id + wafer_id)"]
+    assert refreshed["latest_order_columns"] == ["update_time", "tkout_time", "tkin_time", "time"]
     assert refreshed["paths"] == [str(parquet_fp)]
     assert refreshed["s3_sync"]["status"] == "disabled_by_filebrowser_setting"
 

@@ -261,6 +261,13 @@ function inputStyle(extra = {}) {
   };
 }
 
+const informConnectedPanel = { display: "flex", flexDirection: "column", gap: 0 };
+const informConnectedSection = { padding: "14px 0", borderBottom: "1px solid var(--border)" };
+const informConnectedSectionFirst = { ...informConnectedSection, paddingTop: 0 };
+const informConnectedSectionLast = { ...informConnectedSection, borderBottom: "none", paddingBottom: 0 };
+const informConnectedSectionOnly = { padding: 0, borderBottom: "none" };
+const informConnectedSectionTitle = { fontSize: 14, fontWeight: 900, color: "var(--text-secondary)", marginBottom: 8 };
+
 function uniqueClean(values) {
   const seen = new Set();
   const out = [];
@@ -1013,10 +1020,15 @@ function ThreadNode({
   const sc = node.splittable_change;
 
   return (
-    <div style={{ marginLeft: indent }}>
+    <div style={{
+      marginLeft: indent,
+      borderLeft: depth > 0 ? "2px solid var(--border)" : "none",
+      paddingLeft: depth > 0 ? 10 : 0,
+    }}>
       <div style={{
-        background: depth === 0 ? "var(--bg-secondary)" : "var(--bg-card)",
-        border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginBottom: 6,
+        padding: depth === 0 ? "0 0 12px" : "10px 0",
+        borderTop: depth > 0 ? "1px solid var(--border)" : "none",
+        background: "transparent",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
           {node.module && (() => { const mc = moduleColor(node.module); return (
@@ -4272,12 +4284,16 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16 }}>
         {tab === "body" && (
-          <div style={{ display: "grid", gap: 12 }}>
-            <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
-              <div style={{ marginBottom: 8, color: "var(--text-secondary)", fontWeight: 800 }}>내용</div>
+          <div style={informConnectedPanel}>
+            <section style={root.embed_table ? informConnectedSectionFirst : informConnectedSectionOnly}>
+              <div style={informConnectedSectionTitle}>내용</div>
               <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{root.text || "(내용 없음)"}</div>
             </section>
-            {root.embed_table && <EmbedTableView embed={root.embed_table} product={root.product} canEdit={canEditDelete} onRemoveSet={removeAttachedSet} />}
+            {root.embed_table && (
+              <section style={informConnectedSectionLast}>
+                <EmbedTableView embed={root.embed_table} product={root.product} canEdit={canEditDelete} onRemoveSet={removeAttachedSet} />
+              </section>
+            )}
           </div>
         )}
         {tab === "mail" && <MailPreviewPanel root={root} onOpenMail={() => onOpenMail(root)} />}
@@ -4326,10 +4342,10 @@ function MailPreviewPanel({ root, onOpenMail }) {
     ...((draft.to || draft.recipients || []).map(v => `mail:${v}`)),
   ]);
   return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
+    <div style={informConnectedPanel}>
+      <section style={informConnectedSectionFirst}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-          <div style={{ fontWeight: 900 }}>수신자 미리보기</div>
+          <div style={{ ...informConnectedSectionTitle, marginBottom: 0 }}>수신자 미리보기</div>
           <span style={{ color: "var(--text-secondary)" }}>{(preview?.resolved_recipients || []).length}명</span>
           {savedTargets.length > 0 && <span style={{ color: "var(--text-secondary)" }}>저장 대상 {savedTargets.length}개</span>}
           <button type="button" onClick={onOpenMail} style={{ marginLeft: "auto", padding: "6px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>전송 창 열기</button>
@@ -4344,7 +4360,7 @@ function MailPreviewPanel({ root, onOpenMail }) {
           {(preview?.resolved_recipients || []).length > 12 ? ` +${preview.resolved_recipients.length - 12}` : ""}
         </div>
       </section>
-      <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)", display: "grid", gap: 8 }}>
+      <section style={{ ...informConnectedSection, display: "grid", gap: 8 }}>
         <label style={{ display: "grid", gap: 4 }}>
           <span style={{ fontWeight: 800 }}>제목</span>
           <input value={subject} onChange={e => setSubject(e.target.value)} placeholder={preview?.subject || "자동 제목"} style={inputStyle()} />
@@ -4355,9 +4371,9 @@ function MailPreviewPanel({ root, onOpenMail }) {
         </label>
       </section>
       {preview?.html_body && (
-        <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
+        <section style={informConnectedSection}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-            <b>👁️ 메일 미리보기</b>
+            <b style={{ ...informConnectedSectionTitle, marginBottom: 0 }}>메일 미리보기</b>
             <span style={{ color: "var(--text-secondary)" }}>수신 {(preview?.resolved_recipients || []).length}명</span>
             <span style={{ color: "var(--text-secondary)" }}>본문 {preview?.html_size_kb ?? 0} kB</span>
           </div>
@@ -4365,8 +4381,8 @@ function MailPreviewPanel({ root, onOpenMail }) {
             dangerouslySetInnerHTML={{ __html: preview.html_body }} />
         </section>
       )}
-      <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
-        <div style={{ fontWeight: 900, marginBottom: 8 }}>발송 이력</div>
+      <section style={informConnectedSectionLast}>
+        <div style={informConnectedSectionTitle}>발송 이력</div>
         {history.length === 0 && <div style={{ color: "var(--text-secondary)" }}>발송 이력이 없습니다.</div>}
         {history.slice().reverse().map((m, i) => (
           <div key={i} style={{ padding: "6px 0", borderBottom: "1px dashed var(--border)", color: "var(--text-secondary)" }}>
@@ -4387,15 +4403,18 @@ function InformHistoryPanel({ root, thread }) {
   (thread || []).filter(x => x.parent_id === root.id).forEach(x => rows.push({ at: x.created_at, actor: x.author, label: "댓글", note: informTitle(x) }));
   rows.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
   return (
-    <div style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
+    <div style={informConnectedPanel}>
+      <section style={informConnectedSectionOnly}>
+        <div style={informConnectedSectionTitle}>변경 이력</div>
       {rows.map((r, i) => (
-        <div key={i} style={{ display: "grid", gridTemplateColumns: "150px 120px 120px minmax(0,1fr)", gap: 8, padding: "7px 0", borderBottom: "1px dashed var(--border)", alignItems: "center" }}>
+        <div key={i} style={{ display: "grid", gridTemplateColumns: "150px 120px 120px minmax(0,1fr)", gap: 8, padding: "7px 0", borderBottom: i < rows.length - 1 ? "1px dashed var(--border)" : "none", alignItems: "center" }}>
           <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{(r.at || "").replace("T", " ").slice(0, 16)}</span>
           <span>{r.actor || "-"}</span>
           <span style={{ fontWeight: 800 }}>{r.label}</span>
           <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.note || "-"}</span>
         </div>
       ))}
+      </section>
     </div>
   );
 }
@@ -4407,13 +4426,15 @@ function InformAttachmentsPanel({ root }) {
     return <div style={{ padding: 32, textAlign: "center", color: "var(--text-secondary)" }}>첨부가 없습니다.</div>;
   }
   return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <section style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
-        <div style={{ fontWeight: 900, marginBottom: 8 }}>이미지 / 파일</div>
-        {images.length ? <ImageGallery images={images} /> : <div style={{ color: "var(--text-secondary)" }}>이미지 첨부 없음</div>}
-      </section>
+    <div style={informConnectedPanel}>
+      {images.length > 0 && (
+        <section style={hasEmbed ? informConnectedSectionFirst : informConnectedSectionOnly}>
+          <div style={informConnectedSectionTitle}>이미지 / 파일</div>
+          <ImageGallery images={images} />
+        </section>
+      )}
       {hasEmbed && (
-        <section>
+        <section style={images.length > 0 ? informConnectedSectionLast : informConnectedSectionOnly}>
           <EmbedTableView embed={root.embed_table} product={root.product} />
         </section>
       )}

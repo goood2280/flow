@@ -59,10 +59,7 @@ export default function My_Calendar({ user }) {
   const [cats, setCats] = useState([]);
   const [meetings, setMeetings] = useState([]);
   const [meetingFilter, setMeetingFilter] = useState("all"); // "all" | "none-manual" | meeting_id
-  const [askMeetings, setAskMeetings] = useState([]);
-  const [askMeetingId, setAskMeetingId] = useState("");
-  const [askSessionId, setAskSessionId] = useState("all");
-  const [askQuestion, setAskQuestion] = useState("회의록, 결정사항, 액션아이템, 아젠다를 확인해줘");
+  const [askQuestion, setAskQuestion] = useState("전체 회의와 변경점에서 마감 임박 액션 알려줘");
   const [askBusy, setAskBusy] = useState(false);
   const [askResult, setAskResult] = useState(null);
   const [askLlmAvailable, setAskLlmAvailable] = useState(false);
@@ -87,11 +84,6 @@ export default function My_Calendar({ user }) {
       .catch(() => setEvents([]))
       .finally(() => setLoading(false));
     sf(`${API}/meetings`).then(d => setMeetings(d.meetings || [])).catch(() => setMeetings([]));
-    sf("/api/meetings/list").then(d => {
-      const list = d.meetings || [];
-      setAskMeetings(list);
-      setAskMeetingId(cur => (cur && list.some(m => m.id === cur)) ? cur : (list[0]?.id || ""));
-    }).catch(() => { setAskMeetings([]); setAskMeetingId(""); });
   };
   const reloadCats = () => sf(`${API}/categories`).then(d => setCats(d.categories || [])).catch(() => setCats([]));
 
@@ -101,11 +93,8 @@ export default function My_Calendar({ user }) {
   useEffect(() => { sf("/api/llm/status").then(d => setAskLlmAvailable(!!d.available)).catch(() => setAskLlmAvailable(false)); }, []);
   useEffect(() => {
     if (meetingFilter === "all" || meetingFilter === "manual") return;
-    if (askMeetings.some(m => m.id === meetingFilter)) {
-      setAskMeetingId(meetingFilter);
-      setAskSessionId("all");
-    }
-  }, [meetingFilter, askMeetings]);
+    setAskResult(null);
+  }, [meetingFilter]);
 
   const filteredEvents = useMemo(() => {
     if (meetingFilter === "all") return events;
@@ -114,24 +103,15 @@ export default function My_Calendar({ user }) {
   }, [events, meetingFilter]);
 
   const grid = useMemo(() => buildMonthGrid(view), [view]);
-  const askMeeting = useMemo(() => askMeetings.find(m => m.id === askMeetingId) || null, [askMeetings, askMeetingId]);
-  useEffect(() => {
-    if (!askMeeting) return;
-    if (askSessionId === "all") return;
-    if (!(askMeeting.sessions || []).some(s => s.id === askSessionId)) setAskSessionId("all");
-  }, [askMeeting, askSessionId]);
-  useEffect(() => { setAskResult(null); }, [askMeetingId, askSessionId]);
 
-  const runMeetingAsk = () => {
+  const runMeetingAsk = (meetingId = "") => {
     const question = (askQuestion || "").trim();
-    if (!askMeetingId) { toast.warn("회의를 선택하세요"); return; }
     if (!question) { toast.warn("질문을 입력하세요"); return; }
     setAskBusy(true);
-    postJson("/api/meetings/ask", {
-      meeting_id: askMeetingId,
-      session_id: askSessionId,
-      question,
-    }).then(d => setAskResult(d))
+    const body = { question };
+    if (meetingId) body.meeting_id = meetingId;
+    postJson("/api/meetings/ask", body)
+      .then(d => setAskResult(d))
       .catch(e => {
         setAskResult(null);
         toast.error(e.message || "회의 확인 실패");
@@ -346,16 +326,19 @@ export default function My_Calendar({ user }) {
             </div>
           ) : (
             <div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4, marginBottom: 4 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 0, marginBottom: 0, borderLeft: "1px solid var(--border)", borderTop: "1px solid var(--border)" }}>
                 {WEEKDAYS.map((w, i) => (
                   <div key={w} style={{
                     padding: "6px 8px", fontSize: 14, fontWeight: 700, textAlign: "center",
                     color: i === 0 ? "var(--danger)" : i === 6 ? "var(--info)" : "var(--ink)",
                     fontFamily: "monospace",
+                    borderRight: "1px solid var(--border)",
+                    borderBottom: "1px solid var(--border)",
+                    background: "var(--bg-secondary)",
                   }}>{w}</div>
                 ))}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gridAutoRows: "minmax(96px,1fr)", gap: 4 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gridAutoRows: "minmax(96px,1fr)", gap: 0, borderLeft: "1px solid var(--border)" }}>
                 {grid.map((d, i) => {
                   const k = ymd(d);
                   const inMonth = d.getMonth() === view.getMonth();
@@ -364,9 +347,12 @@ export default function My_Calendar({ user }) {
                   return (
                     <div key={i} onClick={() => openNew(k)} style={{
                       background: isToday ? "var(--brand-50)" : (inMonth ? "var(--bg-secondary)" : "var(--bg-primary)"),
-                      border: isToday ? "2px solid var(--brand)" : "1px solid var(--border)",
-                      boxShadow: isToday ? "0 0 0 3px var(--brand-line)" : "none",
-                      borderRadius: 6, padding: 6, cursor: "pointer", overflow: "visible",
+                      borderRight: "1px solid var(--border)",
+                      borderBottom: "1px solid var(--border)",
+                      outline: isToday ? "2px solid var(--brand)" : "none",
+                      outlineOffset: "-2px",
+                      boxShadow: isToday ? "inset 0 0 0 3px var(--brand-line)" : "none",
+                      borderRadius: 0, padding: 6, cursor: "pointer", overflow: "visible",
                       display: "flex", flexDirection: "column", gap: 3,
                       opacity: inMonth ? 1 : 0.45,
                       position: "relative",
@@ -404,18 +390,13 @@ export default function My_Calendar({ user }) {
             </div>
           )}
           <MeetingAskPanel
-            meetings={askMeetings}
-            selectedMeeting={askMeeting}
-            meetingId={askMeetingId}
-            sessionId={askSessionId}
             question={askQuestion}
             busy={askBusy}
             result={askResult}
             llmAvailable={askLlmAvailable}
-            onMeetingChange={(id) => { setAskMeetingId(id); setAskSessionId("all"); }}
-            onSessionChange={setAskSessionId}
             onQuestionChange={setAskQuestion}
-            onAsk={runMeetingAsk}
+            onAsk={() => runMeetingAsk("")}
+            onChooseCandidate={(meetingId) => runMeetingAsk(meetingId)}
             onUsePrompt={setAskQuestion}
           />
         </div>
@@ -568,65 +549,47 @@ export default function My_Calendar({ user }) {
   );
 }
 
-function askSessionLabel(session) {
-  if (!session) return "";
-  const idx = session.idx || "";
-  const base = idx ? `${idx}차` : (session.id || "차수");
-  const sched = (session.scheduled_at || "").replace("T", " ").slice(0, 16);
-  return sched ? `${base} · ${sched}` : base;
-}
-
 function MeetingAskPanel({
-  meetings,
-  selectedMeeting,
-  meetingId,
-  sessionId,
   question,
   busy,
   result,
   llmAvailable,
-  onMeetingChange,
-  onSessionChange,
   onQuestionChange,
   onAsk,
+  onChooseCandidate,
   onUsePrompt,
 }) {
-  const sessions = selectedMeeting?.sessions || [];
-  const disabled = busy || !meetingId || !(question || "").trim();
+  const disabled = busy || !(question || "").trim();
+  const scopeLabel = result?.scope === "session" ? "차수 범위"
+    : result?.scope === "meeting" || result?.scope === "meeting_auto" ? "회의 범위"
+    : result?.scope === "clarification" ? "확인 필요"
+    : "자동 범위";
   return (
     <section style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-primary)" }}>{llmAvailable ? "회의별 LLM 확인" : "회의별 저장 데이터 확인"}</div>
+        <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-primary)" }}>{llmAvailable ? "회의·변경점 LLM 확인" : "회의·변경점 저장 데이터 확인"}</div>
         {!result && <Pill tone={llmAvailable ? "accent" : "neutral"}>{llmAvailable ? "LLM 설정됨" : "LLM 미설정"}</Pill>}
         {result?.llm && <Pill tone={result.llm.used ? "accent" : "neutral"}>{result.llm.used ? "LLM 답변" : "저장 데이터 답변"}</Pill>}
-        {result?.scope && <Pill tone="info">{result.scope === "session" ? "차수 범위" : "회의 전체"}</Pill>}
+        {result?.scope && <Pill tone={result.needs_clarification ? "warn" : "info"}>{scopeLabel}</Pill>}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, alignItems: "start" }}>
-        <select value={meetingId} onChange={e => onMeetingChange(e.target.value)} style={inp}>
-          {(!meetings || meetings.length === 0) && <option value="">회의 없음</option>}
-          {(meetings || []).map(m => <option key={m.id} value={m.id}>{m.title || m.id}</option>)}
-        </select>
-        <select value={sessionId} onChange={e => onSessionChange(e.target.value)} style={inp} disabled={!selectedMeeting}>
-          <option value="all">전체 차수</option>
-          {sessions.map(s => <option key={s.id} value={s.id}>{askSessionLabel(s)}</option>)}
-        </select>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 1fr) auto", gap: 8, alignItems: "start" }}>
         <textarea
           value={question}
           onChange={e => onQuestionChange(e.target.value)}
           onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") onAsk(); }}
           rows={2}
           spellCheck={false}
-          placeholder="회의 내용 질문"
+          placeholder="회의와 변경점 관리 내용 질문"
           style={{ ...inp, minHeight: 38, resize: "vertical", fontFamily: "inherit", lineHeight: 1.45 }}
         />
         <Button variant="primary" onClick={onAsk} disabled={disabled} style={{ minHeight: 38 }}>{busy ? "확인 중…" : "확인"}</Button>
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
         {[
-          ["회의록, 결정사항, 액션아이템, 아젠다를 확인해줘", "전체 확인"],
-          ["액션아이템 담당자와 마감일을 알려줘", "액션"],
-          ["결정사항만 정리해줘", "결정"],
-          ["어떤 아젠다가 있었는지 알려줘", "아젠다"],
+          ["전체 회의와 변경점에서 마감 임박 액션 알려줘", "마감 액션"],
+          ["Device Change 회의 결정사항 정리해줘", "회의 후보"],
+          ["회의에 등록된 이벤트와 변경점 관리 일반 이벤트를 같이 요약해줘", "이벤트 요약"],
+          ["회의록 없는 회의는 어떤 정보만 있나?", "회의록 없음"],
         ].map(([prompt, label]) => (
           <button key={label} onClick={() => onUsePrompt(prompt)} style={{
             padding: "3px 8px", borderRadius: 4, border: "1px solid var(--border)",
@@ -637,13 +600,32 @@ function MeetingAskPanel({
       {result && (
         <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-secondary)", overflow: "hidden" }}>
           <div style={{ padding: "7px 10px", borderBottom: "1px solid var(--border)", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>{result.meeting?.title || "회의 답변"}</span>
-            {(result.sources || []).map(src => (
-              <Pill key={src.session_id || src.label} tone="neutral">
-                {src.label} · 아젠다 {src.agendas} · 결정 {src.decisions} · 액션 {src.action_items}
+            <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>{result.meeting?.title || (result.needs_clarification ? "회의 선택 필요" : "회의·변경점 답변")}</span>
+            {!result.needs_clarification && (result.sources || []).slice(0, 8).map(src => (
+              <Pill key={(src.meeting_id || "") + (src.session_id || src.label)} tone="neutral">
+                {src.meeting_title ? `${src.meeting_title} · ` : ""}{src.label} · 아젠다 {src.agendas} · 결정 {src.decisions} · 액션 {src.action_items}
               </Pill>
             ))}
+            {!result.needs_clarification && (result.calendar_events || []).length > 0 && (
+              <Pill tone="info">변경점 {(result.calendar_events || []).length}건</Pill>
+            )}
           </div>
+          {result.needs_clarification && (
+            <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {(result.candidates || []).length === 0 && (
+                <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>선택 가능한 후보가 없습니다.</span>
+              )}
+              {(result.candidates || []).map(c => (
+                <button key={c.meeting_id || c.id} onClick={() => onChooseCandidate(c.meeting_id || c.id)} disabled={busy} style={{
+                  padding: "5px 10px", borderRadius: 5, border: "1px solid var(--accent)",
+                  background: "transparent", color: "var(--accent)", fontSize: 14, fontWeight: 700, cursor: "pointer",
+                }}>
+                  {c.title || c.meeting_id || c.id}
+                  {c.last_scheduled_at ? ` · ${String(c.last_scheduled_at).replace("T", " ").slice(0, 10)}` : ""}
+                </button>
+              ))}
+            </div>
+          )}
           <div style={{ padding: 12, whiteSpace: "pre-wrap", lineHeight: 1.6, color: "var(--text-primary)", fontSize: 14 }}>
             {result.answer || "확인된 답변이 없습니다."}
           </div>

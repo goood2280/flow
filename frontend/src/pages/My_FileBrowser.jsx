@@ -599,12 +599,6 @@ export default function My_FileBrowser({user,onNavigate}){
   const[fbCacheInterval,setFbCacheInterval]=useState("30");
   const[fbCacheSourceRoot,setFbCacheSourceRoot]=useState("");
   const[fbCacheSettingsBusy,setFbCacheSettingsBusy]=useState(false);
-  const[fbCacheLlmPrompt,setFbCacheLlmPrompt]=useState("lot_progress_latest_lot_by_root_wafer 캐시 만들어줘");
-  const[fbCacheLlmProduct,setFbCacheLlmProduct]=useState("");
-  const[fbCacheLlmBusy,setFbCacheLlmBusy]=useState(false);
-  const[fbCacheLlmResult,setFbCacheLlmResult]=useState(null);
-  const[fbCleanupCandidates,setFbCleanupCandidates]=useState([]);
-  const[fbCleanupBusy,setFbCleanupBusy]=useState(false);
   const[aiSqlOpen,setAiSqlOpen]=useState(false);
   const[aiSqlPrompt,setAiSqlPrompt]=useState("");
   const[aiSqlBusy,setAiSqlBusy]=useState(false);
@@ -755,15 +749,6 @@ export default function My_FileBrowser({user,onNavigate}){
       if(Object.prototype.hasOwnProperty.call(lotProgress||{},"auto_s3_upload_on_save"))setFbAutoS3Upload(!!lotProgress.auto_s3_upload_on_save);
     }catch(_){}
   };
-  const loadFilebrowserCleanupCandidates=async()=>{
-    if(!isAdmin)return;
-    try{
-      const d=await sf(API+"/cache/cleanup-candidates");
-      setFbCleanupCandidates(d.candidates||[]);
-    }catch(_){
-      setFbCleanupCandidates([]);
-    }
-  };
   const saveFilebrowserCacheSchedule=async()=>{
     setFbCacheSettingsBusy(true);setFbCacheMsg("");
     try{
@@ -788,47 +773,10 @@ export default function My_FileBrowser({user,onNavigate}){
       else if(d.running)setFbCacheMsg(`${target.toUpperCase()} 캐시 갱신 실행 중`);
       else setFbCacheMsg(`${target.toUpperCase()} 캐시 갱신 완료`);
       loadFilebrowserCacheStatus();
-      loadFilebrowserCleanupCandidates();
     }catch(e){
       setFbCacheMsg(e.message||"캐시 갱신 실패");
     }finally{
       setFbCacheBusy("");
-    }
-  };
-  const refreshFilebrowserCacheByLlm=async()=>{
-    const prompt=String(fbCacheLlmPrompt||"").trim();
-    if(!prompt){setFbCacheMsg("LLM 캐시 prompt를 입력하세요.");return;}
-    setFbCacheLlmBusy(true);setFbCacheMsg("");setFbCacheLlmResult(null);
-    try{
-      const d=await sf(API+"/cache/llm/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt,product:fbCacheLlmProduct,force:true})});
-      setFbCacheLlmResult(d);
-      const target=d?.target||d?.result?.target||"cache";
-      if(d?.queued)setFbCacheMsg(`${target} 캐시 갱신 예약됨`);
-      else if(d?.running)setFbCacheMsg(`${target} 캐시 갱신 실행 중`);
-      else setFbCacheMsg(`${target} 캐시 생성 요청 완료`);
-      loadFilebrowserCacheStatus();
-      loadFilebrowserCleanupCandidates();
-    }catch(e){
-      setFbCacheMsg(e.message||"LLM 캐시 생성 실패");
-      setFbCacheLlmResult({ok:false,error:e.message||"LLM 캐시 생성 실패"});
-    }finally{
-      setFbCacheLlmBusy(false);
-    }
-  };
-  const cleanupFilebrowserCache=async(paths)=>{
-    const selected=(paths||[]).filter(Boolean);
-    if(!selected.length)return;
-    if(!window.confirm(`${selected.length}개 cache 정리 후보를 삭제하시겠습니까?`))return;
-    setFbCleanupBusy(true);setFbCacheMsg("");
-    try{
-      const d=await sf(API+"/cache/cleanup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths:selected})});
-      setFbCleanupCandidates(d.candidates||[]);
-      setFbCacheMsg(`cache 정리 완료 · deleted ${(d.deleted||[]).length}`);
-      sf(API+"/base-files?_ts="+Date.now()).then(r=>setBaseFiles(r.files||[])).catch(()=>{});
-    }catch(e){
-      setFbCacheMsg(e.message||"cache 정리 실패");
-    }finally{
-      setFbCleanupBusy(false);
     }
   };
 
@@ -859,7 +807,6 @@ export default function My_FileBrowser({user,onNavigate}){
   useEffect(()=>{
     if(!(s3Open&&s3Tab==="cache"))return;
     loadFilebrowserCacheStatus();
-    loadFilebrowserCleanupCandidates();
     const t=setInterval(loadFilebrowserCacheStatus,15000);
     return()=>clearInterval(t);
   },[s3Open,s3Tab]);
@@ -1914,6 +1861,13 @@ export default function My_FileBrowser({user,onNavigate}){
                   const nextLabel=nextAt?String(nextAt).slice(0,16).replace("T"," "):"-";
                   const scheduleOn=isScheduled&&status?.schedule_enabled!==false;
                   const sourceRootOptions=Array.from(new Set((status?.source_root_candidates||[]).map(c=>String(c?.source_root||"").trim()).filter(Boolean)));
+                  const sourceCandidates=status?.source_root_candidates||[];
+                  const effectiveRootText=(status?.effective_source_roots||status?.source_roots||[]).join(",")||status?.source_root||"-";
+                  const latestKeyText=Array.isArray(status?.latest_key_columns)?status.latest_key_columns.join(" + "):(status?.latest_key_columns||"-");
+                  const latestOrderText=Array.isArray(status?.latest_order_columns)?status.latest_order_columns.join(" > "):(status?.latest_order_columns||"-");
+                  const stepMappingText=Array.isArray(status?.step_mapping_sources)?status.step_mapping_sources.join(", "):(status?.step_mapping_sources||"-");
+                  const productBinding=status?.product_binding||{};
+                  const manualPoints=status?.manual_change_points||{};
                   return(
                     <div key={target} style={{display:"grid",gap:8,padding:"10px 12px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
                       <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",flexWrap:"wrap"}}>
@@ -1962,10 +1916,9 @@ export default function My_FileBrowser({user,onNavigate}){
                       <div style={{display:"flex",gap:8,flexWrap:"wrap",fontFamily:"monospace",fontSize:13,color:"var(--text-secondary)"}}>
                         <span>target={target}</span>
                         <span>mode={isScheduled?"scheduled":"manual"}</span>
-                        <span>products={(status?.products||[]).length}</span>
-                        <span>configured={status?.configured_source_root||"auto"}</span>
-                        <span>source={(status?.effective_source_roots||status?.source_roots||[]).join(",")||status?.source_root||"-"}</span>
-                        {sourceRootOptions.length>0&&<span>auto={sourceRootOptions.join(",")}</span>}
+                        <span>products={status?.product_count??(status?.products||[]).length}</span>
+                        <span>configured_db_root={status?.configured_source_root||"auto"}</span>
+                        <span>effective_db_root={effectiveRootText}</span>
                         <span>rows={status?.row_count??status?.total_row_count??0}</span>
                         <span>scanned={status?.files_scanned??0}/{status?.rows_seen??0}</span>
                         <span>updated={status?.updated_at||status?.latest_updated_at||"-"}</span>
@@ -1975,60 +1928,30 @@ export default function My_FileBrowser({user,onNavigate}){
                         {status?.skipped_by_lock&&<span style={{color:FB_AMBER}}>lock skip</span>}
                         {isScheduled&&status?.schedule_enabled===false&&<span style={{color:FB_BAD.fg}}>scheduler off</span>}
                       </div>
-                      {status?.cache_path&&<div style={{fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",overflowWrap:"anywhere"}}>{status.cache_path}</div>}
+                      <div style={{display:"grid",gap:4,fontFamily:"monospace",fontSize:12,color:"var(--text-secondary)"}}>
+                        <span>settings.json.lot_progress_source_root = {status?.configured_source_root||"auto"}</span>
+                        <span>effective DB root = {effectiveRootText}</span>
+                        {status?.cache_path&&<span style={{overflowWrap:"anywhere"}}>cache path = {status.cache_path}</span>}
+                        {status?.json_cache_path&&<span style={{overflowWrap:"anywhere"}}>json cache path = {status.json_cache_path}</span>}
+                      </div>
+                      {sourceCandidates.length>0&&<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                        {sourceCandidates.map(c=><span key={`${c.source_root||c.path}-${c.origin||""}`} title={c.path} style={{display:"inline-flex",alignItems:"center",gap:5,padding:"3px 7px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:c.exists?"var(--text-secondary)":FB_BAD.fg,fontSize:12,fontFamily:"monospace"}}>
+                          {c.source_root||"-"} · {c.exists?"exists":"missing"}
+                        </span>)}
+                      </div>}
+                      <div style={{display:"grid",gap:4,fontSize:12,color:"var(--text-secondary)",lineHeight:1.45}}>
+                        <div><b style={{color:"var(--text-primary)"}}>product binding</b> {productBinding.rule||"-"} <span style={{fontFamily:"monospace"}}>{productBinding.example_path_shape||""}</span></div>
+                        <div><b style={{color:"var(--text-primary)"}}>latest key</b> <span style={{fontFamily:"monospace"}}>{latestKeyText}</span> · <b style={{color:"var(--text-primary)"}}>order</b> <span style={{fontFamily:"monospace"}}>{latestOrderText}</span></div>
+                        <div><b style={{color:"var(--text-primary)"}}>source columns</b> lot_id=<span style={{fontFamily:"monospace"}}>{status?.lot_id_source_column||"lot_id"}</span> · root_lot_id=<span style={{fontFamily:"monospace"}}>{status?.root_lot_id_source_column||"root_lot_id"}</span> · wafer_id=<span style={{fontFamily:"monospace"}}>{status?.wafer_id_source_column||"wafer_id"}</span></div>
+                        <div><b style={{color:"var(--text-primary)"}}>step mapping</b> <span style={{fontFamily:"monospace"}}>{stepMappingText}</span></div>
+                        <div><b style={{color:"var(--text-primary)"}}>change points</b> DB root=<span style={{fontFamily:"monospace"}}>{manualPoints.db_root||"settings.json.lot_progress_source_root"}</span> · product=<span style={{fontFamily:"monospace"}}>{manualPoints.product_binding||"-"}</span> · latest=<span style={{fontFamily:"monospace"}}>{manualPoints.latest_rule||"-"}</span> · step=<span style={{fontFamily:"monospace"}}>{manualPoints.step_mapping||"-"}</span></div>
+                      </div>
                       {status?.refresh_log_path&&<div style={{fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",overflowWrap:"anywhere"}}>log {status.refresh_log_path}</div>}
                       {status?.s3_sync&&<div style={{fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",overflowWrap:"anywhere"}}>s3 {status.s3_sync.status||status.s3_sync.reason||"-"}</div>}
                       {status?.error&&<div style={{fontSize:13,color:FB_BAD.fg}}>{status.error}</div>}
                     </div>
                   );
                 })}
-                <div style={{display:"grid",gap:8,padding:"10px 12px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8,justifyContent:"space-between",flexWrap:"wrap"}}>
-                    <div>
-                      <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>정리 후보 cache</div>
-                      <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:2}}>운영 cache는 canonical LOT 진행 parquet만 유지</div>
-                    </div>
-                    <div style={{display:"flex",gap:6}}>
-                      <button onClick={loadFilebrowserCleanupCandidates} disabled={!isAdmin||fbCleanupBusy} style={{padding:"5px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:13,fontWeight:700,cursor:!isAdmin?"not-allowed":"pointer",opacity:!isAdmin?0.5:1}}>목록 갱신</button>
-                      <button onClick={()=>cleanupFilebrowserCache(fbCleanupCandidates.map(c=>c.path))} disabled={!isAdmin||fbCleanupBusy||!fbCleanupCandidates.length} style={{padding:"5px 10px",borderRadius:5,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:FB_BAD.fg,fontSize:13,fontWeight:700,cursor:!isAdmin||!fbCleanupCandidates.length?"not-allowed":"pointer",opacity:!isAdmin||!fbCleanupCandidates.length?0.5:1}}>{fbCleanupBusy?"삭제 중":"전체 삭제"}</button>
-                    </div>
-                  </div>
-                  {fbCleanupCandidates.length===0?<div style={{fontSize:13,color:"var(--text-secondary)"}}>정리 후보가 없습니다.</div>:<div style={{display:"grid",gap:4,maxHeight:150,overflow:"auto"}}>
-                    {fbCleanupCandidates.slice(0,80).map(c=><div key={c.path} style={{display:"grid",gridTemplateColumns:"1fr 82px 54px",gap:8,alignItems:"center",fontSize:12,padding:"5px 7px",border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-primary)"}}>
-                      <span style={{fontFamily:"monospace",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={c.path}>{c.relpath||c.path}</span>
-                      <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{formatSize(c.size)}</span>
-                      <button onClick={()=>cleanupFilebrowserCache([c.path])} disabled={!isAdmin||fbCleanupBusy} style={{padding:"2px 6px",borderRadius:4,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:FB_BAD.fg,fontSize:12,cursor:!isAdmin?"not-allowed":"pointer"}}>삭제</button>
-                    </div>)}
-                  </div>}
-                </div>
-                <div style={{display:"grid",gap:8,padding:"10px 12px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
-                  <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",flexWrap:"wrap"}}>
-                    <div>
-                      <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>LLM 캐시 생성</div>
-                      <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:2}}>LLM은 LOT 진행 캐시 대상과 FAB root 힌트만 확인하고 서버 builder가 dataset을 생성</div>
-                    </div>
-                    <button onClick={refreshFilebrowserCacheByLlm} disabled={!isAdmin||fbCacheLlmBusy}
-                      title={!isAdmin?"admin only":"LLM prompt로 캐시 생성"}
-                      style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:800,cursor:!isAdmin?"not-allowed":fbCacheLlmBusy?"wait":"pointer",opacity:!isAdmin?0.5:1}}>
-                      {fbCacheLlmBusy?"요청 중":"실행"}
-                    </button>
-                  </div>
-                  <div style={{display:"grid",gridTemplateColumns:"minmax(220px,1fr) 160px",gap:8}}>
-                    <input value={fbCacheLlmPrompt} onChange={e=>setFbCacheLlmPrompt(e.target.value)}
-                      placeholder="예: lot_progress_latest_lot 캐시 만들어줘"
-                      disabled={!isAdmin||fbCacheLlmBusy}
-                      style={{minWidth:0,padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}/>
-                    <input value={fbCacheLlmProduct} onChange={e=>setFbCacheLlmProduct(e.target.value)}
-                      placeholder="product optional"
-                      disabled={!isAdmin||fbCacheLlmBusy}
-                      style={{minWidth:0,padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}/>
-                  </div>
-                  {fbCacheLlmResult&&<div style={{display:"grid",gap:4,fontSize:13,color:fbCacheLlmResult.ok===false?FB_BAD.fg:"var(--text-secondary)",fontFamily:"monospace"}}>
-                    <span>target={fbCacheLlmResult.target||fbCacheLlmResult.result?.target||"-"} · source={(fbCacheLlmResult.result?.source_roots||[]).join(",")||fbCacheLlmResult.result?.source_root||fbCacheLlmResult.plan?.source_root||"-"} · llm={fbCacheLlmResult.llm?.used?"used":(fbCacheLlmResult.llm?.available?"available":"fallback")}</span>
-                    <span>reason={(fbCacheLlmResult.plan?.reason||fbCacheLlmResult.error||"-")}</span>
-                    {fbCacheLlmResult.cache_path&&<span style={{overflowWrap:"anywhere"}}>{fbCacheLlmResult.cache_path}</span>}
-                  </div>}
-                </div>
                 <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
                   <button onClick={loadFilebrowserCacheStatus} style={{padding:"7px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:14,fontWeight:700,cursor:"pointer"}}>상태 새로고침</button>
                   {fbCacheMsg&&<span style={{fontSize:14,color:fbCacheMsg.includes("실패")||fbCacheMsg.includes("비활성")?FB_BAD.fg:"var(--text-secondary)"}}>{fbCacheMsg}</span>}

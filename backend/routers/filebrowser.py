@@ -3650,6 +3650,39 @@ def _lot_progress_source_root_setting() -> str:
         return _cache_safe_text(current.get("lot_progress_source_root", ""), 160)
 
 
+def _lot_progress_metadata() -> dict:
+    try:
+        from core import lot_progress_cache as _lot_progress_cache
+        return dict(_lot_progress_cache.metadata())
+    except Exception:
+        return {
+            "product_binding": {
+                "rule": "Product is bound from the product folder directly under the effective FAB DB root.",
+                "example_path_shape": "<db_root>/<effective_db_root>/<product>/.../*.parquet",
+                "source_column": "product_dir.name",
+                "code_location": "backend/core/lot_progress_cache.py product folder rule",
+            },
+            "latest_key_columns": ["product", "LOT_WF(root_lot_id + wafer_id)"],
+            "latest_order_columns": ["update_time", "tkout_time", "tkin_time", "time"],
+            "lot_id_source_column": "lot_id",
+            "root_lot_id_source_column": "root_lot_id",
+            "wafer_id_source_column": "wafer_id (normalized, e.g. W01/#01 -> 1)",
+            "step_mapping_sources": [
+                "Vehicle_matching.csv",
+                "vehicle_matching.csv",
+                "step_matching.csv",
+                "matching_step.csv",
+                "step_function.csv",
+            ],
+            "manual_change_points": {
+                "db_root": "settings.json.lot_progress_source_root",
+                "product_binding": "backend/core/lot_progress_cache.py product folder rule",
+                "latest_rule": "backend/core/lot_progress_cache.py _sort_time and latest key creation",
+                "step_mapping": "root-level matching CSV files",
+            },
+        }
+
+
 def _clamp_lot_progress_interval(value) -> int:
     try:
         from core import lot_progress_cache as _lot_progress_cache
@@ -3688,6 +3721,7 @@ def _lot_progress_cache_status() -> dict:
     json_fp = _lot_progress_cache.cache_file()
     parquet_fp = _lot_progress_cache.filebrowser_cache_parquet_file()
     core_status = _lot_progress_cache.cache_status()
+    cache_metadata = _lot_progress_metadata()
     configured_source_root = _lot_progress_source_root_setting() or str(core_status.get("configured_source_root") or "")
     state = load_json(json_fp, {}) if json_fp.is_file() else {}
     if not isinstance(state, dict):
@@ -3736,6 +3770,7 @@ def _lot_progress_cache_status() -> dict:
                 "fab_roots": list(state.get("fab_roots") or []),
                 "row_count": row_count,
                 "products": products,
+                "product_count": len(products),
                 "updated_at": updated_at or _cache_mtime_iso(parquet_fp),
                 "error": f"{type(e).__name__}: {e}",
                 "last_success_at": core_status.get("last_success_at") or "",
@@ -3748,6 +3783,7 @@ def _lot_progress_cache_status() -> dict:
                 "files_scanned": int(core_status.get("files_scanned") or 0),
                 "rows_seen": int(core_status.get("rows_seen") or 0),
                 "auto_s3_upload_on_save": _filebrowser_auto_s3_upload_enabled(),
+                **cache_metadata,
             }
     if not updated_at:
         updated_at = _cache_mtime_iso(parquet_fp) or _cache_mtime_iso(json_fp)
@@ -3787,6 +3823,7 @@ def _lot_progress_cache_status() -> dict:
         "row_count": row_count,
         "total_row_count": row_count,
         "products": products,
+        "product_count": len(products),
         "updated_at": updated_at,
         "latest_updated_at": updated_at,
         "last_success_at": core_status.get("last_success_at") or "",
@@ -3799,6 +3836,7 @@ def _lot_progress_cache_status() -> dict:
         "files_scanned": int(core_status.get("files_scanned") or 0),
         "rows_seen": int(core_status.get("rows_seen") or 0),
         "auto_s3_upload_on_save": _filebrowser_auto_s3_upload_enabled(),
+        **cache_metadata,
     }
 
 
@@ -3811,6 +3849,11 @@ def _refresh_filebrowser_cache_target(target: str, *, product: str = "", source_
     state = _lot_progress_cache.refresh_lot_progress_cache(force=bool(force), source_root=source_root)
     export = _lot_progress_cache.export_lot_progress_parquet(state)
     row_count = int((state or {}).get("count") or export.get("rows") or 0)
+    products = sorted({
+        _cache_safe_text(row.get("product"), 160)
+        for row in ((state or {}).get("items") or [])
+        if isinstance(row, dict) and _cache_safe_text(row.get("product"), 160)
+    })[:500]
     s3_sync = _filebrowser_s3_sync_for_saved_path(_lot_progress_cache.filebrowser_cache_parquet_file())
     return {
         "ok": True,
@@ -3821,7 +3864,10 @@ def _refresh_filebrowser_cache_target(target: str, *, product: str = "", source_
         "unit_action": "filebrowser.cache.lot_progress.refresh",
         "row_count": row_count,
         "total_row_count": row_count,
+        "products": products,
+        "product_count": len(products),
         "updated_at": (state or {}).get("generated_at") or "",
+        "latest_updated_at": (state or {}).get("generated_at") or "",
         "cache_path": str(_lot_progress_cache.filebrowser_cache_parquet_file()),
         "json_cache_path": str(_lot_progress_cache.cache_file()),
         "paths": export.get("paths") or [],
@@ -3842,6 +3888,7 @@ def _refresh_filebrowser_cache_target(target: str, *, product: str = "", source_
         "running": bool((state or {}).get("running")),
         "skipped_by_lock": bool((state or {}).get("skipped_by_lock")),
         "s3_sync": s3_sync,
+        **_lot_progress_metadata(),
     }
 
 

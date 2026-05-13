@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import datetime
 from pathlib import Path
+import re
 import sys
 import uuid
 from typing import Any, Dict, List, Optional
@@ -1144,7 +1145,7 @@ class MinutesSave(BaseModel):
 
 
 class MeetingAskReq(BaseModel):
-    meeting_id: str
+    meeting_id: Optional[str] = ""
     session_id: Optional[str] = ""
     question: str
 
@@ -1228,6 +1229,128 @@ def _my_meeting_group_ids(username: str, role: str) -> set:
         return set()
 
 
+_ASK_MEETING_STOPWORDS = {
+    "회의", "미팅", "meeting", "meetings", "전체", "모든", "all",
+    "결정", "결정사항", "결론", "액션", "액션아이템", "action", "actions",
+    "todo", "할일", "담당자", "담당", "마감", "마감일", "회의록", "아젠다",
+    "안건", "내용", "요약", "정리", "정리해줘", "알려줘", "확인", "확인해줘",
+    "변경점", "이벤트", "일정", "캘린더", "calendar", "등록된", "일반",
+    "없는", "어떤", "정보", "정보만", "있나", "있나요", "에서", "하고", "같이",
+}
+
+
+def _ask_words(value: str) -> list[str]:
+    return [w.lower() for w in re.findall(r"[0-9A-Za-z가-힣_.-]+", str(value or ""))]
+
+
+def _ask_compact(value: str) -> str:
+    return "".join(_ask_words(value))
+
+
+def _ask_meeting_title_tokens(title: str) -> list[str]:
+    out = []
+    for word in _ask_words(title):
+        if word in _ASK_MEETING_STOPWORDS:
+            continue
+        if len(word) < 2:
+            continue
+        out.append(word)
+    return out
+
+
+def _ask_specific_meeting_requested(question: str) -> bool:
+    text = str(question or "").lower()
+    if any(k in text for k in ("전체 회의", "모든 회의", "all meetings", "전체 미팅", "모든 미팅")):
+        return False
+    for match in re.finditer(r"([0-9A-Za-z가-힣_.\-\s]{2,80}?)(?:회의|미팅|meeting)", text):
+        words = [w for w in _ask_words(match.group(1)) if w not in _ASK_MEETING_STOPWORDS]
+        if words:
+            return True
+    return False
+
+
+def _ask_question_mentions_calendar(question: str) -> bool:
+    q = str(question or "").lower()
+    return any(k in q for k in (
+        "변경점", "이벤트", "일정", "캘린더", "calendar", "schedule", "등록된 이벤트", "일반 이벤트"
+    ))
+
+
+def _ask_meeting_candidate(m: dict, *, matched_terms: list[str] | None = None, score: int = 0) -> dict:
+    sessions = [s for s in (m.get("sessions") or []) if isinstance(s, dict)]
+    latest = max((s.get("scheduled_at") or "" for s in sessions), default="")
+    return {
+        "id": m.get("id") or "",
+        "meeting_id": m.get("id") or "",
+        "title": m.get("title") or "",
+        "owner": m.get("owner") or "",
+        "status": m.get("status") or "",
+        "sessions": len(sessions),
+        "last_scheduled_at": latest,
+        "matched_terms": matched_terms or [],
+        "score": score,
+    }
+
+
+def _ask_resolve_meeting_reference(question: str, meetings: list[dict]) -> tuple[dict | None, dict | None]:
+    """Resolve a natural-language meeting reference.
+
+    Returns (meeting, clarification). clarification is a response fragment when
+    the question appears to name a meeting but the name is missing or ambiguous.
+    """
+    q_compact = _ask_compact(question)
+    q_words = set(_ask_words(question))
+    specific_hint = _ask_specific_meeting_requested(question)
+    scored: list[tuple[int, bool, dict, list[str]]] = []
+    for m in meetings:
+        title = str(m.get("title") or "")
+        title_compact = _ask_compact(title)
+        title_tokens = _ask_meeting_title_tokens(title)
+        full = bool(title_compact and title_compact in q_compact)
+        matched = [t for t in title_tokens if t in q_words or t in q_compact]
+        score = 0
+        if full:
+            score = 1000 + len(title_compact)
+        elif len(matched) >= 2:
+            score = 100 + (len(matched) * 10) + sum(len(t) for t in matched)
+        elif len(matched) == 1 and specific_hint and len(matched[0]) >= 4:
+            score = 50 + len(matched[0])
+        if score:
+            scored.append((score, full, m, matched))
+
+    if not scored:
+        if specific_hint:
+            return None, {
+                "reason": "meeting_not_found",
+                "message": "질문이 특정 회의를 가리키는 것 같지만 일치하는 회의를 찾지 못했습니다.",
+                "candidates": [_ask_meeting_candidate(m) for m in meetings[:8]],
+            }
+        return None, None
+
+    scored.sort(key=lambda row: (row[0], len(str(row[2].get("title") or ""))), reverse=True)
+    exact = [row for row in scored if row[1]]
+    if len(exact) == 1:
+        return exact[0][2], None
+    if len(exact) > 1:
+        return None, {
+            "reason": "meeting_ambiguous",
+            "message": "질문과 일치하는 회의가 여러 개입니다. 확인할 회의를 선택하세요.",
+            "candidates": [_ask_meeting_candidate(m, matched_terms=matched, score=score) for score, _, m, matched in exact[:8]],
+        }
+
+    top_score = scored[0][0]
+    tied = [row for row in scored if row[0] == top_score]
+    if len(tied) == 1 and (len(scored) == 1 or top_score - scored[1][0] >= 40):
+        return scored[0][2], None
+    if len(tied) == 1 and top_score >= 120 and scored[1][0] < 80:
+        return scored[0][2], None
+    return None, {
+        "reason": "meeting_ambiguous",
+        "message": "질문과 관련된 회의 후보가 여러 개입니다. 확인할 회의를 선택하세요.",
+        "candidates": [_ask_meeting_candidate(m, matched_terms=matched, score=score) for score, _, m, matched in scored[:8]],
+    }
+
+
 def _ask_clip(value: Any, limit: int = 700) -> str:
     text = _plain_text_from_html(str(value or ""))
     if len(text) <= limit:
@@ -1271,6 +1394,27 @@ def _ask_action_text(item: dict) -> str:
     if status:
         bits.append(f"상태 {status}")
     return f"{text}{(' · ' + ' · '.join(bits)) if bits else ''}"
+
+
+def _ask_calendar_event_summary(event: dict) -> dict:
+    ref = event.get("meeting_ref") if isinstance(event.get("meeting_ref"), dict) else {}
+    return {
+        "id": event.get("id") or "",
+        "date": (event.get("date") or "")[:10],
+        "end_date": (event.get("end_date") or "")[:10],
+        "title": _ask_clip(event.get("title") or "", 240),
+        "body": _ask_clip(event.get("body") or "", 700),
+        "category": _ask_clip(event.get("category") or "", 80),
+        "author": _ask_clip(event.get("author") or "", 80),
+        "status": _ask_clip(event.get("status") or "", 40),
+        "source_type": event.get("source_type") or "manual",
+        "meeting_ref": {
+            "meeting_id": ref.get("meeting_id") or "",
+            "session_id": ref.get("session_id") or "",
+            "action_item_id": ref.get("action_item_id") or "",
+            "meeting_title": _ask_clip(ref.get("meeting_title") or "", 160),
+        } if ref else None,
+    }
 
 
 def _ask_agenda_text(item: dict) -> dict:
@@ -1335,6 +1479,19 @@ def _build_meeting_ask_summary(meeting: dict, sessions: list[dict]) -> dict:
     }
 
 
+def _build_workspace_ask_summary(meetings: list[dict], calendar_events: list[dict], *, focus_meeting_id: str = "") -> dict:
+    meeting_rows = []
+    for meeting in meetings:
+        sessions = [s for s in (meeting.get("sessions") or []) if isinstance(s, dict)]
+        meeting_rows.append(_build_meeting_ask_summary(meeting, sessions))
+    return {
+        "workspace": True,
+        "focus_meeting_id": focus_meeting_id or "",
+        "meetings": meeting_rows,
+        "calendar_events": [_ask_calendar_event_summary(e) for e in calendar_events],
+    }
+
+
 def _meeting_ask_context_text(summary: dict, limit: int = 12000) -> str:
     meeting = summary.get("meeting") or {}
     lines = [
@@ -1378,6 +1535,44 @@ def _meeting_ask_context_text(summary: dict, limit: int = 12000) -> str:
     return text[:limit].rstrip() + "\n...(context truncated)"
 
 
+def _workspace_ask_context_text(summary: dict, limit: int = 18000) -> str:
+    lines = [
+        "범위: 현재 사용자가 볼 수 있는 회의와 변경점 관리 이벤트만 포함합니다.",
+        f"회의 수: {len(summary.get('meetings') or [])}",
+        f"변경점 이벤트 수: {len(summary.get('calendar_events') or [])}",
+    ]
+    for idx, meeting_summary in enumerate(summary.get("meetings") or [], 1):
+        lines.append("")
+        lines.append(f"=== 회의 {idx} ===")
+        lines.append(_meeting_ask_context_text(meeting_summary, limit=6000))
+    events = summary.get("calendar_events") or []
+    if events:
+        lines.append("")
+        lines.append("=== 변경점 관리 이벤트 ===")
+        for idx, event in enumerate(events[:80], 1):
+            ref = event.get("meeting_ref") or {}
+            bits = [
+                event.get("date") or "-",
+                event.get("end_date") or "",
+                event.get("source_type") or "manual",
+                event.get("category") or "",
+                event.get("status") or "",
+            ]
+            meta = " · ".join([b for b in bits if b])
+            meeting_label = ref.get("meeting_title") or ref.get("meeting_id") or ""
+            if meeting_label:
+                meta += f" · 연결 회의 {meeting_label}"
+            lines.append(f"- #{idx} [{meta}] {event.get('title') or '(제목 없음)'}")
+            if event.get("body"):
+                lines.append(f"  내용: {event.get('body')}")
+        if len(events) > 80:
+            lines.append(f"- ...외 {len(events) - 80}건")
+    text = "\n".join(lines).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n...(context truncated)"
+
+
 def _meeting_ask_has_content(summary: dict) -> bool:
     for session in summary.get("sessions") or []:
         if session.get("agendas"):
@@ -1387,6 +1582,12 @@ def _meeting_ask_has_content(summary: dict) -> bool:
         if session.get("decisions") or session.get("action_items"):
             return True
     return False
+
+
+def _workspace_ask_has_content(summary: dict) -> bool:
+    if summary.get("calendar_events"):
+        return True
+    return any(_meeting_ask_has_content(m) for m in (summary.get("meetings") or []))
 
 
 def _fallback_meeting_answer(question: str, summary: dict) -> str:
@@ -1446,6 +1647,137 @@ def _fallback_meeting_answer(question: str, summary: dict) -> str:
     return "\n".join(lines).strip()
 
 
+def _ask_event_line(event: dict) -> str:
+    ref = event.get("meeting_ref") or {}
+    title = event.get("title") or "(제목 없음)"
+    date = event.get("date") or "-"
+    end = event.get("end_date") or ""
+    span = f"{date}~{end}" if end and end != date else date
+    src = event.get("source_type") or "manual"
+    cat = event.get("category") or ""
+    status = event.get("status") or ""
+    meeting = ref.get("meeting_title") or ref.get("meeting_id") or ""
+    bits = [span, src, cat, status]
+    if meeting:
+        bits.append(f"회의 {meeting}")
+    body = event.get("body") or ""
+    return f"[{' · '.join([b for b in bits if b])}] {title}{(' · ' + body) if body else ''}"
+
+
+def _fallback_workspace_answer(question: str, summary: dict) -> str:
+    q = (question or "").lower()
+    want_agenda = any(k in q for k in ("agenda", "아젠다", "안건"))
+    want_minutes = any(k in q for k in ("minutes", "회의록", "내용", "요약"))
+    want_decisions = any(k in q for k in ("decision", "결정", "결론"))
+    want_actions = any(k in q for k in ("action", "액션", "todo", "할일", "마감", "담당자"))
+    want_events = any(k in q for k in ("변경점", "이벤트", "일정", "캘린더", "calendar", "최근", "이번 달", "등록된"))
+    want_no_minutes = any(k in q for k in ("회의록 없는", "minutes 없는", "no minutes"))
+    if not any((want_agenda, want_minutes, want_decisions, want_actions, want_events, want_no_minutes)):
+        want_agenda = want_minutes = want_decisions = want_actions = want_events = True
+
+    lines = ["현재 볼 수 있는 회의와 변경점 관리에서 확인한 내용입니다."]
+    found = False
+    meeting_summaries = summary.get("meetings") or []
+
+    if want_no_minutes:
+        lines.append("")
+        lines.append("회의록이 없는 회의/차수:")
+        section_found = False
+        for meeting_summary in meeting_summaries:
+            meeting = meeting_summary.get("meeting") or {}
+            for session in meeting_summary.get("sessions") or []:
+                has_minutes = bool(session.get("minutes_body") or session.get("minutes_appendix"))
+                has_decisions = bool(session.get("decisions"))
+                has_actions = bool(session.get("action_items"))
+                if has_minutes or has_decisions or has_actions:
+                    continue
+                agendas = session.get("agendas") or []
+                lines.append(f"- {meeting.get('title') or meeting.get('id')} / {session.get('label')}: 아젠다 {len(agendas)}건만 확인됨")
+                for agenda in agendas[:5]:
+                    detail = agenda.get("description") or agenda.get("issue") or ""
+                    lines.append(f"  · {agenda.get('title') or '(제목 없음)'}{(' · ' + detail) if detail else ''}")
+                section_found = True
+                found = True
+        if not section_found:
+            lines.append("- 해당 조건의 회의를 찾지 못했습니다.")
+
+    if want_actions:
+        lines.append("")
+        lines.append("액션아이템:")
+        section_found = False
+        for meeting_summary in meeting_summaries:
+            meeting = meeting_summary.get("meeting") or {}
+            for session in meeting_summary.get("sessions") or []:
+                for text in session.get("action_items") or []:
+                    lines.append(f"- {meeting.get('title') or meeting.get('id')} / {session.get('label')}: {text}")
+                    section_found = True
+                    found = True
+        if not section_found:
+            lines.append("- 저장된 액션아이템을 찾지 못했습니다.")
+
+    if want_decisions:
+        lines.append("")
+        lines.append("결정사항:")
+        section_found = False
+        for meeting_summary in meeting_summaries:
+            meeting = meeting_summary.get("meeting") or {}
+            for session in meeting_summary.get("sessions") or []:
+                for text in session.get("decisions") or []:
+                    lines.append(f"- {meeting.get('title') or meeting.get('id')} / {session.get('label')}: {text}")
+                    section_found = True
+                    found = True
+        if not section_found:
+            lines.append("- 저장된 결정사항을 찾지 못했습니다.")
+
+    if want_agenda:
+        lines.append("")
+        lines.append("아젠다:")
+        section_found = False
+        for meeting_summary in meeting_summaries:
+            meeting = meeting_summary.get("meeting") or {}
+            for session in meeting_summary.get("sessions") or []:
+                for agenda in session.get("agendas") or []:
+                    detail = agenda.get("description") or agenda.get("issue") or ""
+                    owner = f" · 담당 {agenda['owner']}" if agenda.get("owner") else ""
+                    lines.append(f"- {meeting.get('title') or meeting.get('id')} / {session.get('label')}: {agenda.get('title') or '(제목 없음)'}{owner}{(' · ' + detail) if detail else ''}")
+                    section_found = True
+                    found = True
+        if not section_found:
+            lines.append("- 저장된 아젠다를 찾지 못했습니다.")
+
+    if want_minutes and not want_no_minutes:
+        lines.append("")
+        lines.append("회의록:")
+        section_found = False
+        for meeting_summary in meeting_summaries:
+            meeting = meeting_summary.get("meeting") or {}
+            for session in meeting_summary.get("sessions") or []:
+                if session.get("minutes_body"):
+                    lines.append(f"- {meeting.get('title') or meeting.get('id')} / {session.get('label')}: {session.get('minutes_body')}")
+                    section_found = True
+                    found = True
+        if not section_found:
+            lines.append("- 저장된 회의록 본문을 찾지 못했습니다.")
+
+    if want_events:
+        lines.append("")
+        lines.append("변경점 관리 이벤트:")
+        events = sorted(summary.get("calendar_events") or [], key=lambda e: (e.get("date") or "", e.get("title") or ""))
+        if events:
+            found = True
+            for event in events[:20]:
+                lines.append(f"- {_ask_event_line(event)}")
+            if len(events) > 20:
+                lines.append(f"- ...외 {len(events) - 20}건")
+        else:
+            lines.append("- 볼 수 있는 변경점 관리 이벤트를 찾지 못했습니다.")
+
+    if not found:
+        lines.append("")
+        lines.append("선택한 범위에서 저장된 회의/변경점 데이터를 찾지 못했습니다.")
+    return "\n".join(lines).strip()
+
+
 def _meeting_ask_safe_llm_error(error: Any) -> tuple[str, str]:
     text = str(error or "").strip()
     low = text.lower()
@@ -1460,29 +1792,37 @@ def _meeting_ask_safe_llm_error(error: Any) -> tuple[str, str]:
 
 def _meeting_ask_llm_answer(question: str, summary: dict) -> tuple[str, dict]:
     llm_info = {"available": False, "used": False}
-    fallback = _fallback_meeting_answer(question, summary)
+    is_workspace = bool(summary.get("workspace"))
+    fallback = _fallback_workspace_answer(question, summary) if is_workspace else _fallback_meeting_answer(question, summary)
     try:
         from core import llm_adapter
         llm_info["available"] = bool(llm_adapter.is_available())
-        if not _meeting_ask_has_content(summary):
+        has_content = _workspace_ask_has_content(summary) if is_workspace else _meeting_ask_has_content(summary)
+        if not has_content:
             llm_info["skipped"] = "no_meeting_content"
             return fallback, llm_info
         if not llm_info["available"]:
             return fallback, llm_info
-        context = _meeting_ask_context_text(summary)
+        context = _workspace_ask_context_text(summary) if is_workspace else _meeting_ask_context_text(summary)
         if not context:
             return fallback, llm_info
-        system = (
-            "당신은 Flow 회의록 질의 도우미다. 제공된 회의 데이터 안에서만 한국어로 답한다. "
-            "근거가 없으면 없다고 말하고 추측하지 않는다. 결정사항, 액션아이템, 아젠다를 구분해 간결하게 정리한다."
-        )
+        if is_workspace:
+            system = (
+                "당신은 Flow 회의/변경점 관리 질의 도우미다. 제공된 visible 회의와 변경점 이벤트 안에서만 한국어로 답한다. "
+                "근거가 없으면 없다고 말하고 추측하지 않는다. 숨김 데이터는 제공되지 않았으므로 언급하거나 추정하지 않는다."
+            )
+        else:
+            system = (
+                "당신은 Flow 회의록 질의 도우미다. 제공된 회의 데이터 안에서만 한국어로 답한다. "
+                "근거가 없으면 없다고 말하고 추측하지 않는다. 결정사항, 액션아이템, 아젠다를 구분해 간결하게 정리한다."
+            )
         prompt = _json.dumps({
             "question": question,
             "meeting_context": context,
             "answer_rules": [
-                "회의 데이터 밖의 사실은 만들지 않는다.",
+                "제공된 데이터 밖의 사실은 만들지 않는다.",
                 "질문이 특정 항목을 묻더라도 관련된 결정사항/액션아이템/아젠다가 있으면 함께 짚는다.",
-                "담당자, 마감일, 차수, 일정이 있으면 유지한다.",
+                "담당자, 마감일, 차수, 일정, 변경점 이벤트 날짜가 있으면 유지한다.",
             ],
         }, ensure_ascii=False)
         out = llm_adapter.complete(prompt, system=system, timeout=20)
@@ -1498,6 +1838,70 @@ def _meeting_ask_llm_answer(question: str, summary: dict) -> tuple[str, dict]:
         llm_info["error_code"] = code
         llm_info["error"] = safe_error
         return fallback, llm_info
+
+
+def _calendar_events_for_meeting_ask(username: str, role: str, visible_meeting_ids: set[str]) -> list[dict]:
+    try:
+        from routers import calendar as calendar_router
+        my_gids = calendar_router._my_group_ids(username, role)
+        rows = []
+        for event in calendar_router._load_events():
+            if not calendar_router._event_visible(event, username, role, my_gids):
+                continue
+            ref = event.get("meeting_ref") if isinstance(event.get("meeting_ref"), dict) else {}
+            ref_mid = ref.get("meeting_id") or ""
+            if ref_mid and ref_mid not in visible_meeting_ids:
+                continue
+            rows.append(event)
+        rows.sort(key=lambda e: (e.get("date") or "", e.get("created_at") or "", e.get("title") or ""))
+        return rows
+    except Exception:
+        return []
+
+
+def _filter_calendar_events_for_focus(events: list[dict], focus_meeting_id: str, include_manual: bool) -> list[dict]:
+    if not focus_meeting_id:
+        return events
+    out = []
+    for event in events:
+        ref = event.get("meeting_ref") if isinstance(event.get("meeting_ref"), dict) else {}
+        ref_mid = ref.get("meeting_id") or ""
+        if ref_mid == focus_meeting_id:
+            out.append(event)
+        elif include_manual and not ref_mid:
+            out.append(event)
+    return out
+
+
+def _meeting_ask_session_sources(summary: dict, *, include_meeting: bool = False) -> list[dict]:
+    rows = []
+    if summary.get("workspace"):
+        for meeting_summary in summary.get("meetings") or []:
+            meeting = meeting_summary.get("meeting") or {}
+            for session in meeting_summary.get("sessions") or []:
+                row = {
+                    "session_id": session.get("id") or "",
+                    "label": session.get("label") or "",
+                    "agendas": len(session.get("agendas") or []),
+                    "decisions": len(session.get("decisions") or []),
+                    "action_items": len(session.get("action_items") or []),
+                    "has_minutes": bool(session.get("minutes_body") or session.get("minutes_appendix")),
+                }
+                if include_meeting:
+                    row["meeting_id"] = meeting.get("id") or ""
+                    row["meeting_title"] = meeting.get("title") or ""
+                rows.append(row)
+        return rows
+    for session in summary.get("sessions") or []:
+        rows.append({
+            "session_id": session.get("id") or "",
+            "label": session.get("label") or "",
+            "agendas": len(session.get("agendas") or []),
+            "decisions": len(session.get("decisions") or []),
+            "action_items": len(session.get("action_items") or []),
+            "has_minutes": bool(session.get("minutes_body") or session.get("minutes_appendix")),
+        })
+    return rows
 
 
 @router.get("/list")
@@ -1533,11 +1937,58 @@ def ask_meeting(req: MeetingAskReq, request: Request):
     if len(question) > 1000:
         question = question[:1000].rstrip()
     meeting_id = (req.meeting_id or "").strip()
-    if not meeting_id:
-        raise HTTPException(400, "meeting_id required")
     role = me.get("role", "user")
     my_gids = _my_meeting_group_ids(me["username"], role)
     items = _load()
+    visible_items = [m for m in items if _meeting_visible(m, me["username"], role, my_gids)]
+
+    if not meeting_id:
+        focus_meeting, clarification = _ask_resolve_meeting_reference(question, visible_items)
+        if clarification:
+            try:
+                from core import llm_adapter
+                available = bool(llm_adapter.is_available())
+            except Exception:
+                available = False
+            return {
+                "ok": True,
+                "needs_clarification": True,
+                "answer": clarification.get("message") or "확인할 회의를 선택하세요.",
+                "message": clarification.get("message") or "확인할 회의를 선택하세요.",
+                "reason": clarification.get("reason") or "meeting_ambiguous",
+                "candidates": clarification.get("candidates") or [],
+                "llm": {"available": available, "used": False, "skipped": "needs_clarification"},
+                "sources": [],
+                "scope": "clarification",
+            }
+
+        selected_meetings = [focus_meeting] if focus_meeting else visible_items
+        visible_ids = {str(m.get("id") or "") for m in visible_items if m.get("id")}
+        calendar_events = _calendar_events_for_meeting_ask(me["username"], role, visible_ids)
+        if focus_meeting:
+            calendar_events = _filter_calendar_events_for_focus(
+                calendar_events,
+                str(focus_meeting.get("id") or ""),
+                include_manual=_ask_question_mentions_calendar(question),
+            )
+        summary = _build_workspace_ask_summary(
+            selected_meetings,
+            calendar_events,
+            focus_meeting_id=str((focus_meeting or {}).get("id") or ""),
+        )
+        answer, llm_info = _meeting_ask_llm_answer(question, summary)
+        return {
+            "ok": True,
+            "needs_clarification": False,
+            "answer": answer,
+            "llm": llm_info,
+            "meeting": (summary.get("meetings") or [{}])[0].get("meeting") if focus_meeting else {},
+            "meetings": [m.get("meeting") or {} for m in (summary.get("meetings") or [])],
+            "calendar_events": summary.get("calendar_events") or [],
+            "sources": _meeting_ask_session_sources(summary, include_meeting=True),
+            "scope": "meeting_auto" if focus_meeting else "auto",
+        }
+
     _, meeting = _find(items, meeting_id)
     if not meeting:
         raise HTTPException(404, "meeting not found")
@@ -1553,23 +2004,14 @@ def ask_meeting(req: MeetingAskReq, request: Request):
         sessions = [session]
     summary = _build_meeting_ask_summary(meeting, sessions)
     answer, llm_info = _meeting_ask_llm_answer(question, summary)
-    source_rows = []
-    for session in summary.get("sessions") or []:
-        source_rows.append({
-            "session_id": session.get("id") or "",
-            "label": session.get("label") or "",
-            "agendas": len(session.get("agendas") or []),
-            "decisions": len(session.get("decisions") or []),
-            "action_items": len(session.get("action_items") or []),
-            "has_minutes": bool(session.get("minutes_body") or session.get("minutes_appendix")),
-        })
     return {
         "ok": True,
+        "needs_clarification": False,
         "answer": answer,
         "llm": llm_info,
         "meeting": summary.get("meeting") or {},
         "sessions": summary.get("sessions") or [],
-        "sources": source_rows,
+        "sources": _meeting_ask_session_sources(summary),
         "scope": "session" if session_id and session_id not in {"all", "__all__"} else "meeting",
     }
 

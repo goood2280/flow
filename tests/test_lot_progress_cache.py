@@ -15,6 +15,20 @@ if str(ROOT / "backend") not in sys.path:
 from core import lot_progress_cache as cache  # noqa: E402
 
 
+def test_lot_progress_metadata_documents_filebrowser_cache_rules():
+    meta = cache.metadata()
+
+    assert meta["product_binding"]["source_column"] == "product_dir.name"
+    assert "product" in meta["latest_key_columns"]
+    assert "LOT_WF(root_lot_id + wafer_id)" in meta["latest_key_columns"]
+    assert meta["latest_order_columns"] == ["update_time", "tkout_time", "tkin_time", "time"]
+    assert meta["lot_id_source_column"] == "lot_id"
+    assert meta["root_lot_id_source_column"] == "root_lot_id"
+    assert "wafer_id" in meta["wafer_id_source_column"]
+    assert "step_matching.csv" in meta["step_mapping_sources"]
+    assert meta["manual_change_points"]["db_root"] == "settings.json.lot_progress_source_root"
+
+
 def test_tracker_lot_status_cache_keeps_requested_fields(monkeypatch, tmp_path):
     fp = tmp_path / "lot_status_cache.json"
     monkeypatch.setattr(cache, "lot_status_cache_file", lambda: fp)
@@ -184,6 +198,40 @@ def test_refresh_lot_progress_cache_uses_fab_product_folder_without_process_id(m
     assert df.to_dicts()[0]["product"] == "PRODA"
     assert status["row_count"] == 1
     assert status["freshness_state"] == "ok"
+
+
+def test_refresh_lot_progress_cache_prefers_source_update_time_for_latest(monkeypatch, tmp_path):
+    data_root = tmp_path / "flow-data"
+    db_root = tmp_path / "Fab"
+    fab_product = db_root / "1.RAWDATA_DB_FAB" / "PRODA"
+    fab_product.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "A1000"],
+        "lot_id": ["A1000A.OLD", "A1000A.NEW"],
+        "wafer_id": ["W01", "W01"],
+        "step_id": ["STEP_OLD", "STEP_NEW"],
+        "tkin_time": ["2026-05-08T08:00:00", "2026-05-08T08:00:00"],
+        "tkout_time": ["2026-05-08T12:00:00", "2026-05-08T11:00:00"],
+        "update_time": ["2026-05-08T09:00:00", "2026-05-08T13:00:00"],
+    }).write_parquet(fab_product / "part.parquet")
+
+    class DummyPaths:
+        def __init__(self):
+            self.cache_dir = data_root / "cache"
+            self.db_cache_dir = db_root / "cache"
+            self.data_root = data_root
+            self.db_root = db_root
+            self.base_root = db_root
+
+    monkeypatch.setattr(cache, "PATHS", DummyPaths())
+    monkeypatch.setattr(cache, "load_step_matching", lambda: ({}, {}))
+    monkeypatch.setattr(cache, "_CACHE_STATE", None)
+
+    state = cache.refresh_lot_progress_cache(force=True)
+
+    assert state["count"] == 1
+    assert state["items"][0]["lot_id"] == "A1000A.NEW"
+    assert state["items"][0]["update_time"] == "2026-05-08T13:00:00"
 
 
 def test_refresh_lot_progress_cache_reads_internal_rawdata_root_alias(monkeypatch, tmp_path):

@@ -27,6 +27,13 @@ CACHE_REFRESH_MINUTES_DEFAULT = 30
 CACHE_REFRESH_MINUTES_MIN = 1
 CACHE_REFRESH_MINUTES_MAX = 1440
 SOURCE_ROOT_SETTING_KEY = "lot_progress_source_root"
+STEP_MAPPING_FILENAMES = (
+    "Vehicle_matching.csv",
+    "vehicle_matching.csv",
+    "step_matching.csv",
+    "matching_step.csv",
+    "step_function.csv",
+)
 
 _CACHE_LOCK = threading.Lock()
 _CACHE_STATE: dict | None = None
@@ -55,6 +62,30 @@ def filebrowser_cache_parquet_file() -> Path:
     fp = PATHS.db_cache_dir / "lot_progress_latest_lot_by_root_wafer.parquet"
     fp.parent.mkdir(parents=True, exist_ok=True)
     return fp
+
+
+def metadata() -> dict:
+    """Static operational metadata for the FileBrowser LOT progress cache."""
+    return {
+        "product_binding": {
+            "rule": "Product is bound from the product folder directly under the effective FAB DB root.",
+            "example_path_shape": "<db_root>/<effective_db_root>/<product>/.../*.parquet",
+            "source_column": "product_dir.name",
+            "code_location": "backend/core/lot_progress_cache.py product folder rule",
+        },
+        "latest_key_columns": ["product", "LOT_WF(root_lot_id + wafer_id)"],
+        "latest_order_columns": ["update_time", "tkout_time", "tkin_time", "time"],
+        "lot_id_source_column": "lot_id",
+        "root_lot_id_source_column": "root_lot_id",
+        "wafer_id_source_column": "wafer_id (normalized, e.g. W01/#01 -> 1)",
+        "step_mapping_sources": list(STEP_MAPPING_FILENAMES),
+        "manual_change_points": {
+            "db_root": "settings.json.lot_progress_source_root",
+            "product_binding": "backend/core/lot_progress_cache.py product folder rule",
+            "latest_rule": "backend/core/lot_progress_cache.py _sort_time and latest key creation",
+            "step_mapping": "root-level matching CSV files",
+        },
+    }
 
 
 def lot_status_cache_file() -> Path:
@@ -495,16 +526,9 @@ def _step_matching_paths() -> list[Path]:
             continue
         if p not in roots:
             roots.append(p)
-    names = [
-        "Vehicle_matching.csv",
-        "vehicle_matching.csv",
-        "step_matching.csv",
-        "matching_step.csv",
-        "step_function.csv",
-    ]
     out: list[Path] = []
     for root in roots:
-        for name in names:
+        for name in STEP_MAPPING_FILENAMES:
             path = root / name
             if path not in out:
                 out.append(path)
@@ -547,7 +571,7 @@ def load_step_matching() -> tuple[dict[tuple[str, str], str], dict[str, str]]:
 
 _FAB_PROGRESS_COLUMNS = [
     "root_lot_id", "lot_id", "wafer_id", "process_id", "step_id",
-    "tkin_time", "tkout_time", "eqp_id", "chamber_id", "ppid",
+    "tkin_time", "tkout_time", "update_time", "time", "eqp_id", "chamber_id", "ppid",
 ]
 
 
@@ -902,8 +926,8 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> di
                                     "func_step": function_step,
                                     "tkin_time": _safe_text(raw.get("tkin_time")),
                                     "tkout_time": _safe_text(raw.get("tkout_time")),
-                                    "time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
-                                    "update_time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
+                                    "time": _safe_text(raw.get("time") or raw.get("tkout_time") or raw.get("tkin_time")),
+                                    "update_time": _safe_text(raw.get("update_time") or raw.get("tkout_time") or raw.get("tkin_time") or raw.get("time")),
                                     "eqp_id": _safe_text(raw.get("eqp_id")),
                                     "chamber_id": _safe_text(raw.get("chamber_id")),
                                     "ppid": _safe_text(raw.get("ppid")),
@@ -1210,6 +1234,7 @@ def cache_status() -> dict:
             "lock_state": runtime.get("lock_state") or {},
             "running": bool(runtime.get("running")),
             "skipped_by_lock": bool(runtime.get("skipped_by_lock")),
+            **metadata(),
         }
     runtime = _state_with_runtime(state)
     source_roots = list(state.get("source_roots") or [])
@@ -1238,6 +1263,7 @@ def cache_status() -> dict:
         "lock_state": runtime.get("lock_state") or {},
         "running": bool(runtime.get("running")),
         "skipped_by_lock": bool(runtime.get("skipped_by_lock")),
+        **metadata(),
     }
 
 
