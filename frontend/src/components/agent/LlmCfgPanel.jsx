@@ -13,6 +13,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     local:{enabled:false,api_url:"",model:"gpt-oss-120b",mode:"fast",admin_token:"",provider:"local",auth_mode:"none",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
     generic:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"generic",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20},
     playground:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"playground",auth_mode:"dep_ticket",system_name:"playground",user_id:"",user_type:"",format:"openai",timeout_s:20},
+    vertex_gemini:{enabled:false,api_url:"",model:"google/gemini-2.5-flash",mode:"fast",admin_token:"",provider:"vertex_gemini",auth_mode:"google_adc",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:30},
   };
   const PROVIDERS=Object.keys(FALLBACK_LLM_DEFAULTS);
   const[cfg,setCfg]=useState(FALLBACK_LLM_DEFAULTS.generic);
@@ -42,7 +43,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     out.mode=(out.mode||"fast").toString()||"fast";
     out.admin_token=(out.admin_token||"").toString();
     out.auth_mode=(out.auth_mode||base.auth_mode||"bearer").toString();
-    if(!["bearer","dep_ticket","none"].includes(out.auth_mode))out.auth_mode=base.auth_mode||"bearer";
+    if(!["bearer","dep_ticket","google_adc","none"].includes(out.auth_mode))out.auth_mode=base.auth_mode||"bearer";
     out.system_name=(out.system_name||(provider==="playground"?"playground":"")).toString();
     out.user_id=(out.user_id||"").toString();
     out.user_type=(out.user_type||"").toString();
@@ -130,6 +131,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
   const provider=cleanProvider(cfg.provider);
   const isPlayground=provider==="playground";
   const isLocal=provider==="local";
+  const isVertex=provider==="vertex_gemini";
   const showMode=provider==="generic";
   const authMode=cfg.auth_mode||providerDefaults(provider).auth_mode||"bearer";
   const previewHeaders={
@@ -137,6 +139,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     "Content-Type":"application/json",
     ...(authMode==="bearer"&&cfg.admin_token?{Authorization:"Bearer <admin_token>"}:{}),
     ...(authMode==="dep_ticket"&&cfg.admin_token?{"x-dep-ticket":"<credential_key>"}:{}),
+    ...(authMode==="google_adc"?{Authorization:"Bearer <Google ADC access token>"}:{}),
     ...(isPlayground?{
       "Send-System-Name":cfg.system_name||"playground",
       "User-Id":cfg.user_id||"(입력 필요)",
@@ -150,11 +153,15 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     messages:[{role:"system",content:"You are a helpful assistant."},{role:"user",content:"..."}],
     temperature:0.5,
     stream:false,
+  }:(cfg.format==="vertex_gemini"?{
+    contents:[{role:"user",parts:[{text:"..."}]}],
+    systemInstruction:{parts:[{text:"..."}]},
+    generationConfig:{},
   }:{
     ...(showMode&&cfg.mode?{mode:cfg.mode}:{}),
     ...(cfg.model?{model:cfg.model}:{}),
     [cfg.format==="raw"?"prompt":"messages"]:cfg.format==="raw"?"...":[{role:"system",content:"..."},{role:"user",content:"..."}],
-  };
+  });
   const preview={
     enabled:!!cfg.enabled,
     request:"POST "+(cfg.api_url||"(설정 필요)"),
@@ -182,17 +189,18 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
           <option value="local">사내 Local LLM</option>
           <option value="generic">Custom Generic</option>
           <option value="playground">사내 Playground API</option>
+          <option value="vertex_gemini">Vertex Gemini ADC</option>
         </select>
       </div>
       <div>
         <div style={L}>API URL</div>
-        <input value={cfg.api_url} onChange={e=>patch({api_url:e.target.value})} placeholder={isLocal?"http://llm.internal/v1":"https://llm.internal/v1/chat/completions"} style={I}/>
+        <input value={cfg.api_url} onChange={e=>patch({api_url:e.target.value})} placeholder={isVertex?"https://aiplatform.googleapis.com/v1beta1/projects/<project>/locations/us-central1/endpoints/openapi/chat/completions":(isLocal?"http://llm.internal/v1":"https://llm.internal/v1/chat/completions")} style={I}/>
       </div>
     </div>
     <div style={{display:"grid",gridTemplateColumns:isPlayground||!showMode?"2fr 1fr 1fr":"2fr 1fr 1fr 1fr",gap:10}}>
       <div>
         <div style={L}>Model</div>
-        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder={isLocal||provider==="openai_compatible"?"gpt-oss-120b":"internal-model"} style={I}/>
+        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder={isVertex?"google/gemini-2.5-flash":(isLocal||provider==="openai_compatible"?"gpt-oss-120b":"internal-model")} style={I}/>
       </div>
       {showMode&&<div>
         <div style={L}>Mode</div>
@@ -207,6 +215,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
         <select value={cfg.format||"openai"} onChange={e=>patch({format:e.target.value})} disabled={isPlayground} style={{...I,opacity:isPlayground?0.65:1}}>
           <option value="openai">openai</option>
           <option value="raw">raw</option>
+          <option value="vertex_gemini">vertex_gemini</option>
         </select>
       </div>
       <div>
@@ -214,7 +223,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
         <input type="number" min={3} max={120} value={cfg.timeout_s||20} onChange={e=>patch({timeout_s:Number(e.target.value)})} style={{...I,fontFamily:"monospace"}}/>
       </div>
     </div>
-    <div style={L}>{isPlayground?"Credential Key":"Admin LLM Token"} <span style={{fontWeight:400,color:"var(--text-secondary)"}}>({isPlayground?"x-dep-ticket 로 전송":(authMode==="none"?"인증 없음":"Authorization Bearer 로 전송")})</span></div>
+    <div style={L}>{isPlayground?"Credential Key":(isVertex?"Optional Token Override":"Admin LLM Token")} <span style={{fontWeight:400,color:"var(--text-secondary)"}}>({isPlayground?"x-dep-ticket 로 전송":(authMode==="google_adc"?"Google ADC access token을 요청 직전 사용":(authMode==="none"?"인증 없음":"Authorization Bearer 로 전송"))})</span></div>
     <div style={{display:"flex",gap:8}}>
       <input type={showToken?"text":"password"} value={cfg.admin_token} onChange={e=>patch({admin_token:e.target.value})} placeholder={isPlayground?"사내 credential key":"admin token"} autoComplete="off" style={{...I,fontFamily:"monospace",flex:1}}/>
       <button type="button" onClick={()=>setShowToken(!showToken)} style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>{showToken?"숨김":"보기"}</button>

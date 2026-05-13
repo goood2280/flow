@@ -13,13 +13,13 @@
     "model":     str,            # e.g. "gpt-oss-120b"
     "mode":      str,            # e.g. "fast"
     "admin_token": str,           # admin-managed credential shared by users
-    "provider":  "generic"|"openai"|"openai_compatible"|"local"|"playground",
-    "auth_mode": "bearer"|"dep_ticket"|"none",
+    "provider":  "generic"|"openai"|"openai_compatible"|"local"|"playground"|"vertex_gemini",
+    "auth_mode": "bearer"|"dep_ticket"|"google_adc"|"none",
     "system_name": str,           # playground header Send-System-Name
     "user_id":   str,             # playground header User-Id
     "user_type": str,             # playground header User-Type
     "headers":   {k: v, ...},    # 인증 헤더 등
-    "format":    "openai"|"raw", # 요청 body 스키마.  default "openai" (messages:[{role,content}])
+    "format":    "openai"|"raw"|"vertex_gemini", # 요청 body 스키마.  default "openai" (messages:[{role,content}])
     "extra_body":{k: v, ...},    # POST body 병합 (예: {"temperature":0.2})
     "timeout_s": int,            # 기본 20
   }
@@ -29,6 +29,7 @@
   get_config()   -> dict                          redacted 설정 (headers 값 masked)
   set_config(cfg: dict)                           admin 이 POST /api/admin/settings/save 로만 호출
   complete(prompt: str, *, system=None, timeout=None) -> {"ok":bool, "text":str, "error":str}
+  complete_json(prompt: str, *, system=None, schema=None, timeout=None) -> {"ok":bool, "obj":dict, ...}
                                                   실패 시 {"ok":False,"error":...}, text 는 빈 문자열.
 
 caller 규약:
@@ -40,6 +41,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import subprocess
+import time
 import uuid
 import urllib.error
 import urllib.request
@@ -88,13 +92,20 @@ def _raw_config() -> Dict[str, Any]:
     merged["mode"] = str(merged.get("mode") or "fast").strip() or "fast"
     merged["admin_token"] = str(merged.get("admin_token") or "").strip()
     provider = str(merged.get("provider") or "generic").strip().lower() or "generic"
-    if provider not in {"generic", "openai", "openai_compatible", "local", "playground"}:
+    if provider not in {"generic", "openai", "openai_compatible", "local", "playground", "vertex_gemini"}:
         provider = "generic"
     merged["provider"] = provider
     auth_mode = str(merged.get("auth_mode") or "").strip().lower()
     if not auth_mode:
-        auth_mode = "dep_ticket" if provider == "playground" else ("none" if provider == "local" else "bearer")
-    if auth_mode not in {"bearer", "dep_ticket", "none"}:
+        if provider == "playground":
+            auth_mode = "dep_ticket"
+        elif provider == "local":
+            auth_mode = "none"
+        elif provider == "vertex_gemini":
+            auth_mode = "google_adc"
+        else:
+            auth_mode = "bearer"
+    if auth_mode not in {"bearer", "dep_ticket", "google_adc", "none"}:
         auth_mode = "bearer"
     merged["auth_mode"] = auth_mode
     merged["system_name"] = str(merged.get("system_name") or "").strip()
@@ -102,6 +113,8 @@ def _raw_config() -> Dict[str, Any]:
         merged["system_name"] = "playground"
     if provider in {"local", "openai_compatible"} and not merged["model"]:
         merged["model"] = "gpt-oss-120b"
+    if provider == "vertex_gemini" and not merged["model"]:
+        merged["model"] = "google/gemini-2.5-flash"
     merged["user_id"] = str(merged.get("user_id") or "").strip()
     merged["user_type"] = str(merged.get("user_type") or "").strip()
     merged["format"] = (merged.get("format") or "openai").strip() or "openai"
@@ -196,6 +209,18 @@ def _extract_response_text(obj: Any) -> str:
                     parts.append(_content_text(content.get("text") or content.get("content")))
         if parts:
             return "".join(parts).strip()
+    candidates = obj.get("candidates") or []
+    if isinstance(candidates, list):
+        parts = []
+        for cand in candidates:
+            if not isinstance(cand, dict):
+                continue
+            content = cand.get("content") if isinstance(cand.get("content"), dict) else {}
+            for part in content.get("parts") or []:
+                if isinstance(part, dict):
+                    parts.append(_content_text(part.get("text")))
+        if parts:
+            return "".join(parts).strip()
     return ""
 
 
@@ -223,6 +248,33 @@ def _replace_header_tokens(value: Any, *, token: str, prompt_msg_id: str,
     for key, val in replacements.items():
         text = text.replace(key, val)
     return text
+
+
+def _google_adc_access_token(timeout_s: int = 8) -> str:
+    """Return a Google OAuth access token from ADC, without requiring google-auth at import time."""
+    try:
+        import google.auth  # type: ignore
+        from google.auth.transport.requests import Request  # type: ignore
+
+        creds, _project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        creds.refresh(Request())
+        return str(getattr(creds, "token", "") or "").strip()
+    except Exception as import_or_refresh_error:
+        logger.debug("google-auth ADC unavailable: %s", import_or_refresh_error)
+    try:
+        proc = subprocess.run(
+            ["gcloud", "auth", "application-default", "print-access-token"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(2, min(int(timeout_s or 8), 20)),
+        )
+        if proc.returncode == 0:
+            return str(proc.stdout or "").strip()
+        logger.debug("gcloud ADC token failed: %s", (proc.stderr or "")[:200])
+    except Exception as cli_error:
+        logger.debug("gcloud ADC unavailable: %s", cli_error)
+    return ""
 
 
 def _build_request_headers(cfg: Dict[str, Any], *,
@@ -257,6 +309,10 @@ def _build_request_headers(cfg: Dict[str, Any], *,
         _set_header(headers, "Authorization", f"Bearer {token}")
     elif auth_mode == "dep_ticket" and token:
         _set_header(headers, "x-dep-ticket", token)
+    elif auth_mode == "google_adc":
+        google_token = token or _google_adc_access_token()
+        if google_token:
+            _set_header(headers, "Authorization", f"Bearer {google_token}")
 
     if str(cfg.get("provider") or "").strip().lower() == "playground":
         _set_header(headers, "Send-System-Name", cfg.get("system_name") or "playground")
@@ -279,6 +335,12 @@ def _build_request_body(cfg: Dict[str, Any], prompt: str,
         body.setdefault("stream", False)
     elif provider == "generic" and mode and "mode" not in body:
         body["mode"] = mode
+    if fmt == "vertex_gemini":
+        body["contents"] = [{"role": "user", "parts": [{"text": prompt}]}]
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
+        body.setdefault("generationConfig", {})
+        return body
     if fmt == "openai":
         msgs = []
         if system:
@@ -294,6 +356,35 @@ def _build_request_body(cfg: Dict[str, Any], prompt: str,
         if model:
             body["model"] = model
     return body
+
+
+def _parse_json_object(text: str, *, required: Optional[list[str]] = None,
+                       keys: Optional[list[str]] = None) -> tuple[Optional[Dict[str, Any]], str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return None, "empty"
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.S).strip()
+    candidates = [raw]
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if match:
+        candidates.append(match.group(0))
+    last_error = "not json"
+    for candidate in candidates:
+        try:
+            obj = json.loads(candidate)
+        except Exception as exc:
+            last_error = f"json parse error: {exc}"
+            continue
+        if not isinstance(obj, dict):
+            last_error = "not object"
+            continue
+        missing = [k for k in (required or []) if k not in obj]
+        if missing:
+            return None, "missing " + ", ".join(missing)
+        if keys:
+            obj = {k: obj.get(k) for k in keys if k in obj}
+        return obj, ""
+    return None, last_error
 
 
 def complete(prompt: str, *, system: Optional[str] = None,
@@ -316,25 +407,80 @@ def complete(prompt: str, *, system: Optional[str] = None,
     body = _build_request_body(cfg, prompt, system)
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     hdrs = _build_request_headers(cfg, auth_token=auth_token)
+    if str(cfg.get("auth_mode") or "").strip().lower() == "google_adc" and "Authorization" not in hdrs:
+        return {"ok": False, "text": "", "error": "google adc token unavailable"}
     to = int(timeout or cfg.get("timeout_s") or 20)
-    try:
-        req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
-        with urllib.request.urlopen(req, timeout=to) as resp:
-            raw = resp.read(1024 * 1024).decode("utf-8", errors="replace")
+    last_error = ""
+    for attempt in range(2):
         try:
-            obj = json.loads(raw)
-        except Exception:
-            return {"ok": True, "text": raw, "raw": raw}
-        text = _extract_response_text(obj)
-        return {"ok": True, "text": text, "raw": obj}
-    except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read(512).decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        logger.warning("llm HTTPError %s: %s", e.code, detail[:200])
-        return {"ok": False, "text": "", "error": f"HTTP {e.code}: {detail[:200]}"}
-    except Exception as e:
-        logger.warning("llm error: %s", e)
-        return {"ok": False, "text": "", "error": f"{e}"}
+            req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+            with urllib.request.urlopen(req, timeout=to) as resp:
+                raw = resp.read(1024 * 1024).decode("utf-8", errors="replace")
+            try:
+                obj = json.loads(raw)
+            except Exception:
+                return {"ok": True, "text": raw, "raw": raw}
+            text = _extract_response_text(obj)
+            return {"ok": True, "text": text, "raw": obj}
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read(512).decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            last_error = f"HTTP {e.code}: {detail[:200]}"
+            logger.warning("llm HTTPError %s: %s", e.code, detail[:200])
+            if e.code == 429 and attempt == 0:
+                try:
+                    delay = max(0.2, min(2.5, float(e.headers.get("Retry-After") or 0.8)))
+                except Exception:
+                    delay = 0.8
+                time.sleep(delay)
+                continue
+            return {"ok": False, "text": "", "error": last_error, "status_code": e.code}
+        except Exception as e:
+            last_error = f"{e}"
+            logger.warning("llm error: %s", e)
+            return {"ok": False, "text": "", "error": last_error}
+    return {"ok": False, "text": "", "error": last_error or "llm request failed"}
+
+
+def complete_json(prompt: str, *, system: Optional[str] = None,
+                  schema: Optional[Dict[str, Any]] = None,
+                  timeout: Optional[int] = None,
+                  max_retries: int = 1) -> Dict[str, Any]:
+    """Complete a prompt and return a schema-checked JSON object or a safe failure."""
+    if not prompt or not isinstance(prompt, str):
+        return {"ok": False, "obj": {}, "text": "", "error": "empty prompt", "attempts": 0}
+    schema = schema if isinstance(schema, dict) else {}
+    keys = list((schema.get("properties") or {}).keys()) or list(schema.get("keys") or [])
+    required = list(schema.get("required") or [])
+    system_text = (system or "") + "\n\nReturn only one valid JSON object. No prose. No markdown fences."
+    last_error = ""
+    raw_text = ""
+    attempts = max(0, int(max_retries or 0)) + 1
+    for attempt in range(attempts):
+        ask = prompt
+        if attempt:
+            ask = (
+                "Repair the previous answer. It was invalid because: "
+                f"{last_error or 'schema mismatch'}. Return only valid JSON with keys {keys}.\n\n"
+                f"Original request:\n{prompt}\n\nPrevious answer:\n{raw_text[:2000]}"
+            )
+        out = complete(ask, system=system_text, timeout=timeout)
+        if not out.get("ok") or not out.get("text"):
+            last_error = str(out.get("error") or "empty")
+            return {"ok": False, "obj": {}, "text": "", "error": last_error, "attempts": attempt + 1}
+        raw_text = str(out.get("text") or "")
+        obj, parse_error = _parse_json_object(raw_text, required=required, keys=keys)
+        if obj is not None:
+            return {
+                "ok": True,
+                "obj": obj,
+                "text": raw_text,
+                "error": "",
+                "attempts": attempt + 1,
+                "repaired": attempt > 0,
+            }
+        last_error = parse_error
+    return {"ok": False, "obj": {}, "text": raw_text, "error": last_error or "json schema validation failed", "attempts": attempts}

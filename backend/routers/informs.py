@@ -32,6 +32,7 @@
   POST /api/informs/status?id=          — flow_status 변경
   POST /api/informs/splittable?id=      — SplitTable 변경요청 attach
 """
+import copy
 import datetime
 import html as _html
 import json as _json
@@ -2001,6 +2002,7 @@ class SplitTableSnapshotReq(BaseModel):
     custom_cols: List[str] = []
     is_fab_lot: Optional[bool] = None
     current_view: Optional[dict] = None
+    display_mode: str = "matrix"
 
 
 class ProductReq(BaseModel):
@@ -2518,25 +2520,125 @@ def _splittable_snapshot_cache_key(req: SplitTableSnapshotReq) -> str:
         "custom_cols": sorted(str(c) for c in (req.custom_cols or [])),
         "is_fab_lot": req.is_fab_lot,
         "current_view": req.current_view or None,
+        "display_mode": _splittable_snapshot_display_mode(req.display_mode),
     }
     return _json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def _splittable_snapshot_display_mode(value: Any) -> str:
+    mode = str(value or "matrix").strip().lower()
+    return "split_check" if mode == "split_check" else "matrix"
+
+
+def _snapshot_has_value(value: Any) -> bool:
+    text = "" if value is None else str(value).strip()
+    return bool(text and text not in {"None", "null"})
+
+
+def _snapshot_cell_split_value(cell: Any) -> str:
+    if not isinstance(cell, dict):
+        return ""
+    plan = cell.get("plan")
+    actual = cell.get("actual")
+    value = plan if _snapshot_has_value(plan) else actual
+    return str(value).strip() if _snapshot_has_value(value) else ""
+
+
+def _split_check_rows_from_st_view(st_view: dict[str, Any]) -> tuple[list[dict[str, Any]], list[list[str]]]:
+    headers = list(st_view.get("headers") or [])
+    out_rows: list[dict[str, Any]] = []
+    legacy_rows: list[list[str]] = []
+    for row in st_view.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        param = str(row.get("_param") or "").strip()
+        display = str(row.get("_display") or param).strip()
+        if not param and not display:
+            continue
+        cells = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
+        order: list[str] = []
+        seen: set[str] = set()
+        per_header: list[str] = []
+        for ci in range(len(headers)):
+            cell = cells.get(str(ci)) or cells.get(ci) or {}
+            value = _snapshot_cell_split_value(cell)
+            per_header.append(value)
+            if value and value not in seen:
+                seen.add(value)
+                order.append(value)
+        for split_idx, value in enumerate(order):
+            label = f"S{split_idx}"
+            check_cells: dict[str, dict[str, Any]] = {}
+            checks: list[str] = []
+            for ci, cell_value in enumerate(per_header):
+                mark = "✓" if cell_value == value else ""
+                checks.append(mark)
+                check_cells[str(ci)] = {
+                    "actual": mark,
+                    "plan": "",
+                    "split_check": True,
+                }
+            prefix_cells = [display or param, value, label]
+            out_rows.append({
+                "_param": param or display,
+                "_display": display or param,
+                "_split_value": value,
+                "_split_label": label,
+                "_prefix_cells": prefix_cells,
+                "_cells": check_cells,
+            })
+            legacy_rows.append([*prefix_cells, *checks])
+    return out_rows, legacy_rows
+
+
+def _convert_splittable_embed_to_split_check(embed: dict[str, Any]) -> dict[str, Any]:
+    """Convert an Inform SplitTable matrix snapshot into value/split check rows."""
+    if not isinstance(embed, dict):
+        return embed
+    out = copy.deepcopy(embed)
+    st_view = out.get("st_view") if isinstance(out.get("st_view"), dict) else {}
+    headers = list(st_view.get("headers") or [])
+    if not st_view or not headers:
+        return out
+    split_rows, legacy_rows = _split_check_rows_from_st_view(st_view)
+    prefix_columns = ["항목", "값", "Split"]
+    st_view["rows"] = split_rows
+    st_view["prefix_columns"] = prefix_columns
+    st_view["display_mode"] = "split_check"
+    row_labels = dict(st_view.get("row_labels") or {})
+    row_labels["parameter"] = prefix_columns[0]
+    st_view["row_labels"] = row_labels
+    out["st_view"] = st_view
+    out["columns"] = [*prefix_columns, *headers]
+    out["rows"] = legacy_rows
+    out["display_mode"] = "split_check"
+    scope = out.get("st_scope") if isinstance(out.get("st_scope"), dict) else {}
+    scope["display_mode"] = "split_check"
+    out["st_scope"] = scope
+    note = str(out.get("note") or "").strip()
+    out["note"] = (note + " · Split 체크 표시").strip(" ·")[:500]
+    return out
+
+
 def _build_splittable_snapshot_embed(req: SplitTableSnapshotReq) -> dict:
     if req.current_view:
-        return build_splittable_embed_from_view(
+        embed = build_splittable_embed_from_view(
             product=req.product,
             lot_id=req.lot_id,
             view=req.current_view,
             custom_cols=req.custom_cols,
             is_fab_lot=req.is_fab_lot,
         )
-    return build_splittable_embed(
-        product=req.product,
-        lot_id=req.lot_id,
-        custom_cols=req.custom_cols,
-        is_fab_lot=req.is_fab_lot,
-    )
+    else:
+        embed = build_splittable_embed(
+            product=req.product,
+            lot_id=req.lot_id,
+            custom_cols=req.custom_cols,
+            is_fab_lot=req.is_fab_lot,
+        )
+    if _splittable_snapshot_display_mode(req.display_mode) == "split_check":
+        return _convert_splittable_embed_to_split_check(embed)
+    return embed
 
 
 @router.post("/splittable-snapshot")
@@ -4175,7 +4277,7 @@ def _thread_html(items: list, root_id: str) -> str:
 
     def render(node: dict, depth: int):
         bg = "#fff" if depth == 0 else "#fafafa"
-        border = "#f97316" if depth == 0 else "#d1d5db"
+        border = "#9ca3af" if depth == 0 else "#d1d5db"
         left_pad = 14 + depth * 14
         ts = (node.get("created_at") or "")[:16].replace("T", " ")
         author = esc(node.get("author", "?"))
@@ -4187,20 +4289,20 @@ def _thread_html(items: list, root_id: str) -> str:
         sc_block = ""
         if sc and (sc.get("column") or sc.get("new_value")):
             sc_block = (
-                f"<div style='margin-top:6px;padding:6px 8px;background:#fff7ed;border-left:3px solid #f97316;font-family:monospace;font-size:{_MAIL_MIN_FONT};'>"
+                f"<div style='margin-top:6px;padding:6px 8px;background:#f9fafb;border-left:3px solid #9ca3af;font-family:monospace;font-size:{_MAIL_MIN_FONT};color:#374151;'>"
                 f"▸ <b>{esc(sc.get('column',''))}</b>: "
                 f"<span style='color:#6b7280;text-decoration:line-through'>{esc(sc.get('old_value','-'))}</span>"
-                f" → <span style='color:#16a34a;font-weight:700'>{esc(sc.get('new_value','-'))}</span>"
+                f" → <span style='color:#111827;font-weight:700'>{esc(sc.get('new_value','-'))}</span>"
                 "</div>"
             )
         parts.append(
             f"<div style='margin-left:{left_pad}px;margin-bottom:8px;padding:10px 12px;"
             f"background:{bg};border:1px solid {border};border-left:4px solid {border};"
-            f"border-radius:6px;font-family:-apple-system,Segoe UI,Arial,sans-serif;font-size:{_MAIL_MIN_FONT};color:#1f2937;'>"
+            f"border-radius:6px;font-family:{_MAIL_FONT_FAMILY};font-size:{_MAIL_MIN_FONT};color:#111827;'>"
             f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin-bottom:4px;'>"
-            f"<b style='color:#1f2937'>{author}</b> · {esc(ts)} · "
-            f"<span style='color:#f97316'>{module}</span>"
-            + (f" · <span style='padding:1px 6px;border-radius:10px;background:#e0f2fe;color:#0369a1;font-size:{_MAIL_MIN_FONT};'>{status}</span>" if status else "")
+            f"<b style='color:#111827'>{author}</b> · {esc(ts)} · "
+            f"<span style='color:#374151'>{module}</span>"
+            + (f" · <span style='padding:1px 6px;border-radius:10px;background:#f3f4f6;color:#374151;font-size:{_MAIL_MIN_FONT};'>{status}</span>" if status else "")
             + f"</div>"
             f"<div style='line-height:1.55'>{body_html}</div>"
             f"{sc_block}"
@@ -4231,7 +4333,13 @@ _ST_CELL_COLORS = [
     {"bg": "#F4CCCC", "fg": "#75194C"},
 ]
 _GO_FLOW_URL = "http://go/flow"
-_MAIL_MIN_FONT = "11px"
+_MAIL_FONT_FAMILY = '-apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif'
+_MAIL_MIN_FONT = "12px"
+_MAIL_BORDER = "#d1d5db"
+_MAIL_HEAD_BG = "#f3f4f6"
+_MAIL_TEXT = "#111827"
+_MAIL_SUBTLE = "#374151"
+_MAIL_MUTED = "#6b7280"
 
 
 def _mail_fit_col_styles(data_columns: int) -> tuple[str, str]:
@@ -4443,7 +4551,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             if not cols:
                 chunks.append(
                     f"<div style='margin:8px 0;padding:6px 8px;border:1px solid #d1d5db;border-radius:4px;'>"
-                    f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;'>📋 {name} <span style='color:#6b7280;font-weight:400;'>({source})</span></div>"
+                    f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#111827;'>{name} <span style='color:#6b7280;font-weight:400;'>({source})</span></div>"
                     f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;'>columns {int(item.get('columns_count') or 0)} · rows {int(item.get('wafer_count') or 0)}</div>"
                     "</div>"
                 )
@@ -4468,7 +4576,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             )
             chunks.append(
                 f"<div style='margin:10px 0;'>"
-                f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;margin-bottom:4px;'>📋 {name} <span style='color:#6b7280;font-weight:400;'>({source})</span></div>"
+                f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#111827;margin-bottom:4px;'>{name} <span style='color:#6b7280;font-weight:400;'>({source})</span></div>"
                 f"<table style='border-collapse:collapse;font-size:{_MAIL_MIN_FONT};width:100%;max-width:100%;table-layout:fixed;'>{colgroup}<thead>{head}</thead><tbody>{body}</tbody></table>"
                 "</div>"
             )
@@ -4517,10 +4625,14 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         except Exception:
             return ""
         out = []
+        seen_params: set[str] = set()
         for r in rows_st:
             param = str(r.get("_param") or "").strip()
             if not param:
                 continue
+            if param in seen_params:
+                continue
+            seen_params.add(param)
             km = knob_meta.get(param) or {}
             if km.get("groups"):
                 for gi, g in enumerate(km.get("groups") or []):
@@ -4574,7 +4686,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         if not out:
             return ""
         th = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
-              f"font-size:{_MAIL_MIN_FONT};color:#1f2937;text-align:left;font-family:monospace;"
+              f"font-size:{_MAIL_MIN_FONT};color:#111827;text-align:left;font-family:monospace;"
               "white-space:normal;word-break:break-word;overflow-wrap:anywhere;")
         body = []
         for row in out:
@@ -4583,14 +4695,14 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
                 "<tr>"
                 f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(row['parameter'])}</td>"
                 f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#6b7280;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(row['function_step'] or '—')}</td>"
-                f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#2563eb;font-weight:700;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(', '.join(row['step_ids']) if row['step_ids'] else '—')}"
-                + (f"<div style='margin-top:4px;font-size:{_MAIL_MIN_FONT};line-height:1.35;color:#dc2626;font-family:system-ui,sans-serif;font-weight:600;'>{esc(note)}</div>" if note else "")
+                f"<td style='border:1px solid #d1d5db;padding:4px 8px;font-size:{_MAIL_MIN_FONT};font-family:monospace;color:#374151;font-weight:700;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'>{esc(', '.join(row['step_ids']) if row['step_ids'] else '—')}"
+                + (f"<div style='margin-top:4px;font-size:{_MAIL_MIN_FONT};line-height:1.35;color:#6b7280;font-family:{_MAIL_FONT_FAMILY};font-weight:600;'>{esc(note)}</div>" if note else "")
                 + "</td>"
                 "</tr>"
             )
         return (
             "<div style='margin-top:8px;'>"
-            f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;margin-bottom:4px;'>🧭 Parameter별 적용 step 요약</div>"
+            f"<div style='font-size:{_MAIL_MIN_FONT};font-weight:700;color:#111827;margin-bottom:4px;'>Parameter별 적용 step 요약</div>"
             f"<table style='border-collapse:collapse;font-size:{_MAIL_MIN_FONT};max-width:100%;table-layout:fixed;'>"
             "<thead><tr>"
             f"<th style='{th}'>parameter</th><th style='{th}'>function_step</th><th style='{th}'>step_id</th>"
@@ -4604,7 +4716,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
               highlight_col_indices: Optional[set[int]] = None) -> str:
         first_col_style, data_col_style = _mail_fit_col_styles(max(0, len(head_cells) - 1))
         th_style = ("border:1px solid #d1d5db;padding:4px 8px;background:#f3f4f6;"
-                    f"font-size:{_MAIL_MIN_FONT};color:#1f2937;text-align:center;font-family:monospace;line-height:1.25;")
+                    f"font-size:{_MAIL_MIN_FONT};color:#111827;text-align:center;font-family:monospace;line-height:1.25;")
         table_style = _mail_table_style(max(0, len(head_cells) - 1))
         colgroup = _mail_colgroup_html(first_col_style, data_col_style, max(0, len(head_cells) - 1))
         highlight_col_indices = highlight_col_indices or set()
@@ -4613,13 +4725,13 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             for i, c in enumerate(head_cells)
         ) + "</tr>"
         hdr = (
-            f"<div style='margin:12px 0 4px 0;font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;'>"
+            f"<div style='margin:12px 0 4px 0;font-size:{_MAIL_MIN_FONT};font-weight:700;color:#111827;'>"
             f"Split table"
             + "</div>"
         )
         note_html = ""
-        trunc_html = (f"<div style='font-size:{_MAIL_MIN_FONT};color:#b91c1c;margin-top:4px;'>"
-                      f"⚠ {max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
+        trunc_html = (f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin-top:4px;'>"
+                      f"{max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
         return (
             f"{hdr}{note_html}"
             f"<div style='width:100%;max-width:100%;'>"
@@ -4629,6 +4741,102 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             f"<tbody>{body_rows_html}</tbody>"
             f"</table></div>{trunc_html}{_attached_sets_html()}{_lineage_summary_html()}"
         )
+
+    prefix_columns = [str(x) for x in (st.get("prefix_columns") or []) if str(x or "").strip()]
+    st_scope = embed.get("st_scope") if isinstance(embed.get("st_scope"), dict) else {}
+    split_check_mode = (
+        _splittable_snapshot_display_mode(
+            st.get("display_mode") or embed.get("display_mode") or st_scope.get("display_mode")
+        ) == "split_check"
+        and len(prefix_columns) >= 3
+    )
+    if split_check_mode and rows_st and headers:
+        truncated = len(rows_st) > max_rows
+        shown = rows_st[:max_rows]
+        dense = len(headers) >= 12
+        data_pad = "4px 5px" if dense else "4px 8px"
+        font_sz = _MAIL_MIN_FONT
+        line_h = "1.25"
+        total_data_cols = max(0, len(headers) + len(prefix_columns) - 1)
+        first_col_style, data_col_style = _mail_scroll_col_styles(total_data_cols)
+        colgroup = _mail_colgroup_html(first_col_style, data_col_style, total_data_cols)
+        th_style = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f3f4f6;"
+                    f"font-size:{font_sz};color:#111827;text-align:center;font-family:monospace;line-height:{line_h};")
+        th_prefix = th_style + "text-align:left;font-weight:700;color:#374151;"
+        th_root = ("border:1px solid #d1d5db;padding:5px 8px;background:#f3f4f6;"
+                   f"font-size:{_MAIL_MIN_FONT};color:#374151;text-align:center;font-family:monospace;font-weight:700;")
+        th_group = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f9fafb;"
+                    f"font-size:{font_sz};color:#374151;text-align:center;font-family:monospace;font-weight:700;")
+        td_prefix = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f9fafb;"
+                     f"font-size:{font_sz};font-weight:700;font-family:monospace;line-height:{line_h};"
+                     "white-space:normal;word-break:break-word;overflow-wrap:anywhere;")
+        td_check = (f"border:1px solid #d1d5db;padding:{data_pad};text-align:center;"
+                    f"font-size:{font_sz};font-family:monospace;line-height:{line_h};color:#111827;")
+        hdr = (
+            f"<div style='margin:12px 0 4px 0;font-size:{_MAIL_MIN_FONT};font-weight:700;color:#111827;'>"
+            f"Split table"
+            + "</div>"
+        )
+        trunc_html = (f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin-top:4px;'>"
+                      f"{max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
+        body_parts = []
+        for r in shown:
+            raw_prefix = r.get("_prefix_cells") if isinstance(r.get("_prefix_cells"), list) else []
+            prefix_vals = list(raw_prefix[:len(prefix_columns)])
+            while len(prefix_vals) < len(prefix_columns):
+                if len(prefix_vals) == 0:
+                    prefix_vals.append(str(r.get("_display") or r.get("_param") or ""))
+                elif len(prefix_vals) == 1:
+                    prefix_vals.append(str(r.get("_split_value") or ""))
+                elif len(prefix_vals) == 2:
+                    prefix_vals.append(str(r.get("_split_label") or ""))
+                else:
+                    prefix_vals.append("")
+            cells = r.get("_cells") or {}
+            row_cells = []
+            for i, value in enumerate(prefix_vals):
+                style = first_col_style if i == 0 else data_col_style
+                row_cells.append(f"<td style='{td_prefix}{style}'>{esc(str(value or ''))}</td>")
+            for i in range(len(headers)):
+                cell = cells.get(i) or cells.get(str(i)) or {}
+                mark = str((cell or {}).get("actual") or "")
+                row_cells.append(f"<td style='{td_check}{data_col_style}'>{esc(mark)}</td>")
+            body_parts.append("<tr>" + "".join(row_cells) + "</tr>")
+
+        thead_parts = [
+            "<tr>"
+            f"<th colspan='{len(prefix_columns)}' style='{th_prefix}'>{esc(root_row_label)}</th>"
+            f"<th colspan='{max(1, len(headers))}' style='{th_root}{_mail_data_col_style(data_col_style, len(headers))}'>{esc(root_lot_id or '—')}</th>"
+            "</tr>"
+        ]
+        if header_groups:
+            cells = [f"<th colspan='{len(prefix_columns)}' style='{th_prefix}'>{esc(lot_row_label)}</th>"]
+            for g in header_groups:
+                span = max(1, int(g.get("span") or 1))
+                cells.append(f"<th colspan='{span}' style='{th_group}{_mail_data_col_style(data_col_style, span)}'>{esc(str(g.get('label') or '—'))}</th>")
+            thead_parts.append("<tr>" + "".join(cells) + "</tr>")
+        else:
+            thead_parts.append(
+                "<tr>"
+                f"<th colspan='{len(prefix_columns)}' style='{th_prefix}'>{esc(lot_row_label)}</th>"
+                f"<th colspan='{max(1, len(headers))}' style='{th_group}{_mail_data_col_style(data_col_style, len(headers))}'>{esc(lot_id_label or '—')}</th>"
+                "</tr>"
+            )
+        head_cells = [*prefix_columns, *[str(h or "") for h in headers]]
+        thead_parts.append("<tr>" + "".join(
+            f"<th style='{th_style}{first_col_style if i == 0 else data_col_style}'>{esc(c)}</th>"
+            for i, c in enumerate(head_cells)
+        ) + "</tr>")
+        table_style = _mail_scroll_table_style(total_data_cols)
+        table_html = (
+            "<div style='overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%'>"
+            f"<table style='{table_style}'>"
+            f"{colgroup}"
+            f"<thead>{''.join(thead_parts)}</thead>"
+            f"<tbody>{''.join(body_parts)}</tbody>"
+            "</table></div>"
+        )
+        return f"{hdr}{table_html}{trunc_html}{_attached_sets_html()}{_lineage_summary_html()}"
 
     if rows_st and headers:
         truncated = len(rows_st) > max_rows
@@ -4647,20 +4855,20 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
         td_cell_base = (f"border:1px solid #d1d5db;padding:{data_pad};text-align:center;"
                         f"font-size:{font_sz};font-family:monospace;line-height:{line_h};")
         th_style = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f3f4f6;"
-                    f"font-size:{font_sz};color:#1f2937;text-align:center;font-family:monospace;line-height:{line_h};")
+                    f"font-size:{font_sz};color:#111827;text-align:center;font-family:monospace;line-height:{line_h};")
         th_label = th_style + first_col_style + "text-align:left;font-weight:700;color:#6b7280;"
         th_root = ("border:1px solid #d1d5db;padding:5px 8px;background:#f3f4f6;"
-                   f"font-size:{_MAIL_MIN_FONT};color:#ea580c;text-align:center;font-family:monospace;font-weight:700;")
+                   f"font-size:{_MAIL_MIN_FONT};color:#374151;text-align:center;font-family:monospace;font-weight:700;")
         th_group = (f"border:1px solid #d1d5db;padding:{data_pad};background:#f9fafb;"
-                    f"font-size:{font_sz};color:#b45309;text-align:center;font-family:monospace;font-weight:700;")
+                    f"font-size:{font_sz};color:#374151;text-align:center;font-family:monospace;font-weight:700;")
         hdr = (
-            f"<div style='margin:12px 0 4px 0;font-size:{_MAIL_MIN_FONT};font-weight:700;color:#ea580c;'>"
+            f"<div style='margin:12px 0 4px 0;font-size:{_MAIL_MIN_FONT};font-weight:700;color:#111827;'>"
             f"Split table"
             + "</div>"
         )
         note_html = ""
-        trunc_html = (f"<div style='font-size:{_MAIL_MIN_FONT};color:#b91c1c;margin-top:4px;'>"
-                      f"⚠ {max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
+        trunc_html = (f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin-top:4px;'>"
+                      f"{max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
         body_parts = []
         for r in shown:
             param_raw = str(r.get("_param", ""))
@@ -4687,13 +4895,13 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
                         f"<span style='font-size:{_MAIL_MIN_FONT};color:#ef4444'> (≠{esc(str(plan))})</span></span>"
                     )
                 elif plan_applied:
-                    cell_plan_style = "border-left:3px solid #16a34a;font-weight:700;"
+                    cell_plan_style = "border-left:3px solid #6b7280;font-weight:700;"
                     disp_html = (
-                        f"<span style='color:#15803d;font-weight:700'>✓ {esc(str(plan))}"
-                        f"<span style='font-size:{_MAIL_MIN_FONT};color:#15803d'> (plan 적용)</span></span>"
+                        f"<span style='color:#374151;font-weight:700'>✓ {esc(str(plan))}"
+                        f"<span style='font-size:{_MAIL_MIN_FONT};color:#374151'> (plan 적용)</span></span>"
                     )
                 elif plan_only:
-                    cell_plan_style = "border-left:3px solid #f97316;font-style:italic;font-weight:700;"
+                    cell_plan_style = "border-left:3px solid #9ca3af;font-style:italic;font-weight:700;"
                     disp_html = f"<span style='font-style:italic;font-weight:700'>📌 {esc(str(plan))}</span>"
                 else:
                     disp_html = esc(disp)
@@ -4797,7 +5005,7 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
             continue
         meta_rows.append(
             f"<tr><td style='padding:4px 10px;font-size:{_MAIL_MIN_FONT};color:#6b7280;background:#f3f4f6;width:90px;'>{esc(label)}</td>"
-            f"<td style='padding:4px 10px;font-size:{_MAIL_MIN_FONT};color:#1f2937;font-family:monospace;'>{esc(val)}</td></tr>"
+            f"<td style='padding:4px 10px;font-size:{_MAIL_MIN_FONT};color:#111827;font-family:monospace;'>{esc(val)}</td></tr>"
         )
     meta_tbl = "<table style='border-collapse:collapse;border:1px solid #d1d5db;margin:10px 0;width:100%;max-width:560px;'>" + "".join(meta_rows) + "</table>"
     prose_block = ""
@@ -4809,7 +5017,7 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         safe = _html.escape(prose_text).replace("\n", "<br/>")
         prose_block = (
             "<div style='margin:0 0 12px 0;padding:0;background:transparent;border:none;"
-            "font-size:12pt;line-height:1.45;color:#1f2937;'>"
+            "font-size:12px;line-height:1.45;color:#111827;'>"
             f"{safe}</div>"
         )
     # v8.8.1: 발송 요청자(hol) 자동 명시 제거.
@@ -4827,8 +5035,8 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
                 names.append(esc(em))
         if names:
             contacts_block = (
-                f"<div style='margin:10px 0;padding:10px 12px;background:#f0fdf4;border-left:4px solid #16a34a;"
-                f"border-radius:4px;font-size:14px;line-height:1.45;color:#14532d;font-weight:700;'>"
+                f"<div style='margin:10px 0;padding:10px 12px;background:#f9fafb;border-left:4px solid #9ca3af;"
+                f"border-radius:4px;font-size:{_MAIL_MIN_FONT};line-height:1.45;color:#374151;font-weight:700;'>"
                 f"제품 담당자 : " + ", ".join(names)
                 + "</div>"
             )
@@ -4840,7 +5048,7 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         if (thread_html or "").strip() else ""
     )
     return (
-        "<div style='font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1f2937;width:100%;max-width:none;margin:0;'>"
+        f"<div style='font-family:{_MAIL_FONT_FAMILY};font-size:{_MAIL_MIN_FONT};color:#111827;width:100%;max-width:none;margin:0;'>"
         f"{prose_block}"
         f"{contacts_block}"
         f"{meta_tbl}"
@@ -4849,7 +5057,7 @@ def _build_html_body(root: dict, thread_html: str, extra_prose: str,
         "<hr style='border:none;border-top:1px solid #e5e7eb;margin:18px 0 8px 0;'/>"
         f"<div style='font-size:{_MAIL_MIN_FONT};color:#6b7280;margin-bottom:4px;'>상세 확인 및 후속 조치는 "
         f"<a href='{esc(_GO_FLOW_URL)}' target='_blank' rel='noopener noreferrer' "
-        f"style='color:#ea580c;text-decoration:underline;font-weight:700;'>go/flow</a> 에서 진행해 주세요.</div>"
+        f"style='color:#374151;text-decoration:underline;font-weight:700;'>go/flow</a> 에서 진행해 주세요.</div>"
         "</div>"
     )
 

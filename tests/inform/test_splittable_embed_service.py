@@ -428,6 +428,96 @@ def test_inform_mail_splittable_snapshot_html_renders_plan_cells_like_split_tabl
     assert "Wafer별 적용 plan 요약" not in html
 
 
+def test_splittable_snapshot_split_check_mode_builds_value_check_rows():
+    embed = informs._build_splittable_snapshot_embed(informs.SplitTableSnapshotReq(
+        product="PRODA",
+        lot_id="A1000",
+        custom_cols=["KNOB_GATE", "KNOB_TEMP", "KNOB_EMPTY"],
+        display_mode="split_check",
+        current_view={
+            "headers": ["#1", "#2", "#3"],
+            "root_lot_id": "A1000",
+            "header_groups": [{"label": "A1000A.1", "span": 3}],
+            "rows": [
+                {
+                    "_param": "KNOB_GATE",
+                    "_cells": {
+                        "0": {"actual": "A"},
+                        "1": {"actual": "B"},
+                        "2": {"actual": "A"},
+                    },
+                },
+                {
+                    "_param": "KNOB_TEMP",
+                    "_cells": {
+                        "0": {"actual": "X", "plan": "P"},
+                        "1": {"actual": "X", "plan": "Q"},
+                        "2": {"actual": "X", "plan": "P"},
+                    },
+                },
+                {
+                    "_param": "KNOB_EMPTY",
+                    "_cells": {
+                        "0": {"actual": ""},
+                        "1": {"actual": None},
+                        "2": {"actual": "null"},
+                    },
+                },
+            ],
+        },
+    ))
+
+    assert embed["display_mode"] == "split_check"
+    assert embed["columns"] == ["항목", "값", "Split", "#1", "#2", "#3"]
+    assert embed["rows"] == [
+        ["KNOB_GATE", "A", "S0", "✓", "", "✓"],
+        ["KNOB_GATE", "B", "S1", "", "✓", ""],
+        ["KNOB_TEMP", "P", "S0", "✓", "", "✓"],
+        ["KNOB_TEMP", "Q", "S1", "", "✓", ""],
+    ]
+    assert embed["st_view"]["prefix_columns"] == ["항목", "값", "Split"]
+    assert [r["_split_label"] for r in embed["st_view"]["rows"] if r["_param"] == "KNOB_GATE"] == ["S0", "S1"]
+    assert [r["_split_label"] for r in embed["st_view"]["rows"] if r["_param"] == "KNOB_TEMP"] == ["S0", "S1"]
+    for row in embed["st_view"]["rows"]:
+        assert {c.get("actual", "") for c in row["_cells"].values()} <= {"", "✓"}
+
+
+def test_inform_mail_splittable_snapshot_html_renders_split_check_prefix_columns():
+    embed = informs._build_splittable_snapshot_embed(informs.SplitTableSnapshotReq(
+        product="PRODA",
+        lot_id="A1000",
+        custom_cols=["KNOB_GATE"],
+        display_mode="split_check",
+        current_view={
+            "headers": ["#1", "#2", "#3"],
+            "root_lot_id": "A1000",
+            "header_groups": [{"label": "A1000A.1", "span": 3}],
+            "rows": [{
+                "_param": "KNOB_GATE",
+                "_cells": {
+                    "0": {"actual": "A"},
+                    "1": {"actual": "B"},
+                    "2": {"actual": "A"},
+                },
+            }],
+        },
+    ))
+
+    html = informs._render_embed_table_html(embed)
+
+    pos_item = html.index("항목")
+    pos_value = html.index("값", pos_item)
+    pos_split = html.index("Split", pos_value)
+    pos_wafer = html.index("#1", pos_split)
+    assert pos_item < pos_value < pos_split < pos_wafer
+    assert "KNOB_GATE" in html
+    assert "S0" in html
+    assert "S1" in html
+    assert "✓" in html
+    assert "Split table" in html
+    assert "Parameter별 적용 step 요약" not in html
+
+
 def test_inform_mail_body_links_go_flow_in_new_tab():
     html = informs._build_html_body({
         "id": "inf_test",

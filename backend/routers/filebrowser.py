@@ -3960,12 +3960,23 @@ def _cache_llm_plan(prompt: str, *, product: str = "", source_root: str = "") ->
                 "source_root_hint": source_root,
                 "schema": {"target": "lot_progress", "product": "optional", "source_root": "optional", "reason": "short"},
             }, ensure_ascii=False)
-            out = llm_adapter.complete(ask, system=system, timeout=8)
-            llm_info["used"] = bool(out.get("ok") and out.get("text"))
+            out = llm_adapter.complete_json(
+                ask,
+                system=system,
+                timeout=8,
+                max_retries=1,
+                schema={
+                    "keys": ["target", "product", "source_root", "reason"],
+                    "required": ["target"],
+                    "properties": {"target": {"type": "string"}, "product": {}, "source_root": {}, "reason": {}},
+                },
+            )
+            llm_info["used"] = bool(out.get("ok") and isinstance(out.get("obj"), dict) and out.get("obj"))
             if out.get("error"):
                 llm_info["error"] = str(out.get("error") or "")
-            if out.get("text"):
-                plan = _cache_llm_json(str(out.get("text") or ""))
+            if out.get("repaired"):
+                llm_info["repaired_json"] = True
+            plan = out.get("obj") if isinstance(out.get("obj"), dict) else {}
     except Exception as e:
         llm_info["error"] = f"{type(e).__name__}: {e}"
     target = _normalize_cache_plan_target(str(plan.get("target") or ""))
@@ -5789,13 +5800,24 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                     "notes": "optional short note",
                 },
             }, ensure_ascii=False)
-            out = llm_adapter.complete(ask, system=system, timeout=20)
+            out = llm_adapter.complete_json(
+                ask,
+                system=system,
+                timeout=20,
+                max_retries=1,
+                schema={
+                    "keys": ["sql", "selected_columns", "resolved_columns", "resolved_values", "notes"],
+                    "required": [],
+                    "properties": {"sql": {}, "selected_columns": {}, "resolved_columns": {}, "resolved_values": {}, "notes": {}},
+                },
+            )
             raw_text = str(out.get("text") or "")
-            llm_info["used"] = bool(out.get("ok") and raw_text.strip())
+            llm_info["used"] = bool(out.get("ok") and isinstance(out.get("obj"), dict))
             if out.get("error"):
                 llm_info["error"] = str(out.get("error") or "")
-            if raw_text:
-                plan = _cache_llm_json(raw_text)
+            if out.get("repaired"):
+                llm_info["repaired_json"] = True
+            plan = out.get("obj") if isinstance(out.get("obj"), dict) else {}
         else:
             warnings.append("LLM is not configured.")
     except Exception as exc:
@@ -6815,12 +6837,23 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
                     "warnings": ["optional warning"],
                 },
             }, ensure_ascii=False)
-            out = llm_adapter.complete(ask, system=system, timeout=30)
-            llm_info["used"] = bool(out.get("ok") and out.get("text"))
+            out = llm_adapter.complete_json(
+                ask,
+                system=system,
+                timeout=30,
+                max_retries=1,
+                schema={
+                    "keys": ["csv_rules", "warnings"],
+                    "required": [],
+                    "properties": {"csv_rules": {}, "warnings": {}},
+                },
+            )
+            llm_info["used"] = bool(out.get("ok") and isinstance(out.get("obj"), dict))
             if out.get("error"):
                 llm_info["error"] = str(out.get("error") or "")
-            if out.get("text"):
-                plan = _cache_llm_json(str(out.get("text") or ""))
+            if out.get("repaired"):
+                llm_info["repaired_json"] = True
+            plan = out.get("obj") if isinstance(out.get("obj"), dict) else {}
     except Exception as exc:
         llm_info["error"] = f"{type(exc).__name__}: {exc}"
     if llm_info.get("available") and not llm_info.get("used") and llm_info.get("error"):

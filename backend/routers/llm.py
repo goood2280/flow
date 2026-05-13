@@ -385,6 +385,33 @@ FLOWI_FEATURE_ENTRYPOINTS = [
         "prompt": "개발 가이드에서 이 기능을 이해하려면 어떤 문서와 API를 먼저 보면 좋을지 알려줘.",
     },
 ]
+FLOWI_REGISTERED_UNIT_ACTIONS = {
+    "filebrowser.scopes",
+    "filebrowser.list",
+    "filebrowser.preview",
+    "filebrowser.lot_progress.latest",
+    "filebrowser.csv.rules.read",
+    "filebrowser.csv.rules.draft",
+    "filebrowser.sql.llm.draft",
+    "filebrowser.cache.lot_progress.refresh",
+    "filebrowser.cache.lot_progress.status",
+    "filebrowser.cache.llm.refresh",
+    "dashboard.chart.llm.draft",
+    "meeting.ask.llm",
+    "splittable.view",
+    "splittable.knob.summary",
+    "splittable.plan.compare",
+    "inform.draft.start",
+    "inform.draft.resolve",
+    "inform.thread.list",
+    "tracker.lot.purpose",
+    "diagnosis.rca.read",
+    "ettime.query",
+    "waferlayout.query",
+    "tablemap.query",
+    "flowi.feature.guidance",
+    "flowi.general",
+}
 FLOWI_FEATURE_ALIASES = {
     "filebrowser": ["files", "file browser", "파일", "파일브라우저", "파일 탐색", "csv", "parquet", "db 조회", "데이터 조회"],
     "dashboard": ["dashboard", "대시보드", "차트", "trend", "추세", "그래프", "시각화", "scatter", "corr", "correlation", "상관", "피팅", "fitting"],
@@ -1871,43 +1898,14 @@ def _flowi_complete_json(messages: list[dict[str, Any]], schema_dict: dict[str, 
     if not llm_adapter.is_available():
         return None
     keys = list((schema_dict or {}).get("properties", {}).keys()) or list((schema_dict or {}).get("keys", []))
-    required = list((schema_dict or {}).get("required", []))
     system = (
         _flowi_system_prompt(include_few_shots=True)
         + "\n\nReturn only a single JSON object matching the schema. No prose, no code fences."
     )
     prompt = json.dumps({"messages": messages, "schema": schema_dict}, ensure_ascii=False, default=str)
-    last_error = ""
-    for attempt in range(max(0, int(max_retries or 0)) + 1):
-        ask_prompt = prompt
-        if attempt and last_error:
-            ask_prompt = (
-                f"이전 응답이 schema에 안 맞다. {last_error}. "
-                f"정확히 다음 키만 있는 JSON 객체로 다시 응답해라: {keys}.\n"
-                + prompt
-            )
-        try:
-            out = llm_adapter.complete(ask_prompt, system=system, timeout=8)
-        except Exception as e:
-            last_error = str(e)
-            continue
-        if not out.get("ok") or not out.get("text"):
-            last_error = str(out.get("error") or "empty")
-            continue
-        raw = str(out.get("text") or "").strip()
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.S).strip()
-        try:
-            obj = json.loads(raw)
-        except Exception as e:
-            last_error = f"json parse error: {e}"
-            continue
-        if not isinstance(obj, dict):
-            last_error = "not object"
-            continue
-        missing = [k for k in required if k not in obj]
-        if missing:
-            last_error = "missing " + ", ".join(missing)
-            continue
+    out = llm_adapter.complete_json(prompt, system=system, schema=schema_dict, timeout=8, max_retries=max_retries)
+    if out.get("ok") and isinstance(out.get("obj"), dict):
+        obj = out.get("obj") or {}
         if keys:
             obj = {k: obj.get(k) for k in keys if k in obj}
         return obj
@@ -6242,7 +6240,7 @@ def _flowi_feature_for_function(function_name: str, selected: dict[str, Any] | N
     if isinstance(selected, dict) and selected.get("feature"):
         return str(selected.get("feature") or "")
     name = str(function_name or "")
-    if name in {"query_current_fab_lot_from_fab_db", "query_lot_current_step_from_progress_cache", "preview_filebrowser_data", "search_filebrowser_schema"}:
+    if name in {"query_current_fab_lot_from_fab_db", "query_lot_current_step_from_progress_cache", "preview_filebrowser_data", "search_filebrowser_schema", "filebrowser.sql.llm.draft"}:
         return "filebrowser"
     if name in {"query_splittable_view", "query_wafer_split_at_step", "query_lot_knobs_from_ml_table", "find_lots_by_knob_value", "preview_splittable_plan_update"}:
         return "splittable"
@@ -6252,6 +6250,8 @@ def _flowi_feature_for_function(function_name: str, selected: dict[str, Any] | N
         return "tracker"
     if name == "build_dashboard_metric_chart":
         return "dashboard"
+    if name == "query_meeting_calendar_records":
+        return "meeting"
     if name == "semiconductor_diagnosis":
         return "diagnosis"
     return ""
@@ -6259,6 +6259,8 @@ def _flowi_feature_for_function(function_name: str, selected: dict[str, Any] | N
 
 def _flowi_api_target_for_function(function_name: str, feature: str = "") -> dict[str, str]:
     name = str(function_name or "")
+    if name == "filebrowser.sql.llm.draft":
+        return {"api": "/api/filebrowser/sql/llm/draft", "handler": "routers.filebrowser.filebrowser_sql_llm_draft"}
     if name == "query_current_fab_lot_from_fab_db":
         return {"api": "data/Fab", "handler": "_handle_current_fab_lot_lookup"}
     if name == "query_lot_current_step_from_progress_cache":
@@ -6274,7 +6276,9 @@ def _flowi_api_target_for_function(function_name: str, feature: str = "") -> dic
     if name == "query_tracker_lot_purpose":
         return {"api": "/api/tracker/issues", "handler": "_handle_tracker_lot_purpose_lookup"}
     if name == "build_dashboard_metric_chart":
-        return {"api": "/api/dashboard/chart", "handler": "_handle_dashboard_chart_plan"}
+        return {"api": "dashboard chart draft/session", "handler": "_augment_dashboard_tool"}
+    if name == "query_meeting_calendar_records":
+        return {"api": "/api/meetings/ask", "handler": "_handle_meeting_recall"}
     return {"api": feature or "local handler", "handler": name}
 
 
@@ -6283,6 +6287,10 @@ def _flowi_driver_contract_action(action: str = "", intent: str = "", feature: s
     name = str(action or "")
     intent = str(intent or "")
     feature = str(feature or "")
+    if name in FLOWI_REGISTERED_UNIT_ACTIONS:
+        return name
+    if name == "filebrowser.sql.llm.draft" or intent == "filebrowser_sql_llm_draft":
+        return "filebrowser.sql.llm.draft"
     if name in {"query_current_fab_lot_from_fab_db", "query_lot_current_step_from_progress_cache"}:
         return "filebrowser.lot_progress.latest"
     if name == "preview_filebrowser_data":
@@ -6303,9 +6311,26 @@ def _flowi_driver_contract_action(action: str = "", intent: str = "", feature: s
         return "inform.draft.resolve"
     if name == "summarize_inform_modules":
         return "inform.thread.list"
+    if name == "query_tracker_lot_purpose":
+        return "tracker.lot.purpose"
+    if name == "build_dashboard_metric_chart":
+        return "dashboard.chart.llm.draft"
+    if name == "query_meeting_calendar_records" or intent == "meeting_recall_summary":
+        return "meeting.ask.llm"
+    if name == "run_semiconductor_diagnosis":
+        return "diagnosis.rca.read"
+    if feature == "ettime":
+        return "ettime.query"
+    if feature == "waferlayout":
+        return "waferlayout.query"
+    if feature == "tablemap":
+        return "tablemap.query"
     if feature in {"filebrowser", "splittable", "inform"} and intent:
-        return f"{feature}.{intent}".replace("_", ".")
-    return name or intent or "general"
+        candidate = f"{feature}.{intent}".replace("_", ".")
+        return candidate if candidate in FLOWI_REGISTERED_UNIT_ACTIONS else "flowi.feature.guidance"
+    if name == "route_flowi_feature" or intent.endswith("_guidance"):
+        return "flowi.feature.guidance"
+    return "flowi.general"
 
 
 def _flowi_orchestrator_activation_preview(prompt: str, product: str = "", max_rows: int = 12) -> dict[str, Any]:
@@ -7646,6 +7671,29 @@ def _handle_meeting_recall(
     answer = f"{scope} 기준 회의 기록 {len(rows)}건을 정리했습니다. 회의관리/변경점 관리의 저장된 기록만 사용했습니다."
     primary_meeting = matched_meetings[0] if matched_meetings else {}
     primary_session = matched_sessions[0] if matched_sessions else {}
+    sources = []
+    for meeting in matched_meetings[:8]:
+        for session in (meeting.get("sessions") or [])[:12]:
+            if session_idx:
+                try:
+                    if int(session.get("idx") or 0) != int(session_idx):
+                        continue
+                except Exception:
+                    continue
+            sources.append({
+                "meeting_id": meeting.get("id") or "",
+                "meeting_title": meeting.get("title") or "",
+                "session_id": session.get("id") or "",
+                "session_idx": session.get("idx") or "",
+                "scheduled_at": session.get("scheduled_at") or "",
+                "agenda_count": len(session.get("agendas") or []),
+                "decision_count": len((session.get("minutes") or {}).get("decisions") or []),
+                "action_count": len((session.get("minutes") or {}).get("action_items") or []),
+            })
+            if len(sources) >= 12:
+                break
+        if len(sources) >= 12:
+            break
     return {
         "handled": True,
         "intent": "meeting_recall_summary",
@@ -7661,6 +7709,7 @@ def _handle_meeting_recall(
             "total": len(rows),
         },
         "filters": {"terms": terms, "session_idx": session_idx or ""},
+        "sources": sources,
         "slots": {
             "meeting_id": primary_meeting.get("id") or context.get("meeting_id") or "",
             "meeting_title": primary_meeting.get("title") or context.get("meeting_title") or "",
@@ -13427,6 +13476,149 @@ def _handle_filebrowser_data_preview(prompt: str, product: str, max_rows: int) -
     }
 
 
+def _flowi_filebrowser_sql_prompt(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    if not any(term in low or term in text for term in ("sql", "where", "filter", "필터", "조건", "컬럼 선택", "선택 컬럼")):
+        return False
+    return bool(
+        "파일" in text
+        or "filebrowser" in low
+        or "db" in low
+        or _source_terms(text)
+        or _product_hint(text, "")
+    )
+
+
+def _handle_filebrowser_sql_llm_draft(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    if not _flowi_filebrowser_sql_prompt(prompt):
+        return {"handled": False}
+    source_terms = _source_terms(prompt)
+    source_type = next((s for s in ("FAB", "INLINE", "ET", "VM", "EDS", "ML_TABLE") if s in source_terms), "")
+    product_hint = _product_hint(prompt, product)
+    missing = []
+    if not source_type:
+        missing.append("source_type")
+    if source_type and source_type != "ML_TABLE" and not product_hint:
+        missing.append("product")
+    args = {"source_type": source_type, "product": product_hint}
+    if missing:
+        choices = _flowi_arguments_choices(missing, prompt, args)
+        return {
+            "handled": True,
+            "intent": "filebrowser_sql_llm_draft",
+            "action": "filebrowser.sql.llm.draft",
+            "feature": "filebrowser",
+            "answer": "FileBrowser SQL 초안에 필요한 source/product 조건을 보완해 주세요.",
+            "missing": missing,
+            "arguments": args,
+            "arguments_choices": choices,
+        }
+    files = _flowi_source_files(source_type, product_hint)
+    if not files:
+        return {
+            "handled": True,
+            "intent": "filebrowser_sql_llm_draft",
+            "action": "filebrowser.sql.llm.draft",
+            "feature": "filebrowser",
+            "answer": f"{source_type}/{product_hint or '-'} source 파일을 찾지 못했습니다.",
+            "warnings": ["source files not found"],
+            "arguments": args,
+        }
+    warnings: list[str] = []
+    try:
+        lf = _scan_parquet(files[:120])
+        cols = _schema_names(lf)
+        sample_df = lf.select([pl.col(c).cast(_STR, strict=False).alias(c) for c in cols[: min(40, len(cols))]]).limit(20).collect()
+        sample_rows = sample_df.to_dicts()
+        dtypes = {c: "string" for c in cols}
+    except Exception as exc:
+        return {
+            "handled": True,
+            "intent": "filebrowser_sql_llm_draft",
+            "action": "filebrowser.sql.llm.draft",
+            "feature": "filebrowser",
+            "answer": f"FileBrowser SQL 초안 context 생성에 실패했습니다: {exc}",
+            "warnings": [str(exc)],
+            "arguments": args,
+        }
+    try:
+        from routers import filebrowser as filebrowser_router
+        draft = filebrowser_router._draft_filebrowser_ai_sql(
+            natural_language=prompt,
+            columns=cols,
+            dtypes=dtypes,
+            sample_rows=sample_rows,
+            scope="",
+            root=source_type,
+            product=product_hint,
+            file="",
+            preferred_selected_columns=[],
+            context_warnings=[],
+        )
+    except Exception as exc:
+        draft = {
+            "ok": False,
+            "sql": "",
+            "selected_columns": [],
+            "warnings": [f"draft failed: {exc}"],
+            "llm": {"available": llm_adapter.is_available(), "used": False, "error": str(exc)},
+            "fallback": True,
+        }
+    sql = str(draft.get("sql") or "").strip()
+    selected_columns = [str(c) for c in (draft.get("selected_columns") or []) if str(c) in cols]
+    if not selected_columns:
+        selected_columns = cols[: min(12, len(cols))]
+    rows: list[dict[str, Any]] = []
+    preview_error = ""
+    try:
+        preview_lf = lf
+        if sql:
+            from routers import filebrowser as filebrowser_router
+            expr = filebrowser_router._lazy_filter_expr(sql, cols)
+            if expr is not None:
+                preview_lf = preview_lf.filter(expr)
+        rows = preview_lf.select([pl.col(c).cast(_STR, strict=False).alias(c) for c in selected_columns]).limit(max(1, min(80, max_rows * 6))).collect().to_dicts()
+    except Exception as exc:
+        preview_error = str(exc)
+        warnings.append(f"preview failed: {preview_error}")
+    draft_warnings = [str(w) for w in (draft.get("warnings") or []) if str(w).strip()]
+    warnings.extend(draft_warnings)
+    answer = (
+        f"{source_type}/{product_hint or '-'} 기준 FileBrowser SQL 초안을 만들고 preview {len(rows)}행을 확인했습니다."
+        if draft.get("ok", True)
+        else f"{source_type}/{product_hint or '-'} 기준 SQL 초안을 완성하지 못해 fallback 상태로 표시합니다."
+    )
+    return {
+        "handled": True,
+        "intent": "filebrowser_sql_llm_draft",
+        "action": "filebrowser.sql.llm.draft",
+        "feature": "filebrowser",
+        "answer": answer,
+        "arguments": args,
+        "sql_draft": {
+            "sql": sql,
+            "selected_columns": selected_columns,
+            "warnings": warnings,
+            "fallback": bool(draft.get("fallback")) or not bool(draft.get("llm", {}).get("used")),
+            "llm": draft.get("llm") or {},
+            "resolved_columns": draft.get("resolved_columns") or [],
+            "resolved_values": draft.get("resolved_values") or [],
+            "sample_profile": draft.get("sample_profile") or {},
+        },
+        "table": {
+            "kind": "filebrowser_sql_preview",
+            "title": "FileBrowser SQL preview",
+            "placement": "below",
+            "columns": _table_columns(selected_columns),
+            "rows": rows,
+            "total": len(rows),
+        },
+        "warnings": warnings,
+        "filters": {"source_type": source_type, "product": product_hint, "sql": sql, "selected_columns": selected_columns},
+    }
+
+
 def _handle_filebrowser_schema_search(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     preview = _structure_flowi_function_call(prompt, product=product, max_rows=max_rows)
     if ((preview.get("selected_function") or {}).get("name") != "search_filebrowser_schema"):
@@ -14224,6 +14416,9 @@ def _handle_flowi_query(
             if out.get("handled"):
                 return out
     if allowed_keys is None or "filebrowser" in allowed_keys:
+        sql_draft_out = _handle_filebrowser_sql_llm_draft(prompt, product, max_rows)
+        if sql_draft_out.get("handled"):
+            return sql_draft_out
         preview_out = _handle_filebrowser_data_preview(prompt, product, max_rows)
         if preview_out.get("handled"):
             return preview_out
@@ -14750,6 +14945,21 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
             purpose="product/root/wafer/step/prefix 조건으로 split table row를 조회",
             payload={k: args.get(k) or filters.get(k) or slots.get(k) for k in ("product", "root_lot_id", "fab_lot_id", "wafer_id", "step", "prefix") if (args.get(k) or filters.get(k) or slots.get(k))},
         )
+    elif action == "filebrowser.sql.llm.draft" or intent == "filebrowser_sql_llm_draft":
+        sql_draft = tool.get("sql_draft") if isinstance(tool.get("sql_draft"), dict) else {}
+        add(
+            name="FileBrowser AI SQL draft",
+            method="POST",
+            path="/api/filebrowser/sql/llm/draft",
+            callee="routers.filebrowser.filebrowser_sql_llm_draft",
+            purpose="자연어 조건을 read-only SQL filter와 선택 컬럼으로 정형화하고 preview를 검증",
+            payload={
+                "source_type": filters.get("source_type") or args.get("source_type"),
+                "product": filters.get("product") or args.get("product"),
+                "sql": sql_draft.get("sql") or filters.get("sql") or "",
+                "selected_columns": sql_draft.get("selected_columns") or filters.get("selected_columns") or [],
+            },
+        )
     elif action == "query_lot_current_step_from_progress_cache" or intent == "lot_current_step_lookup":
         add(
             name="Latest progress cache",
@@ -14793,6 +15003,24 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
             callee="_handle_flowi_register_inform_log",
             purpose="module/content/recipient/lot scope를 검증하고 저장 전 draft 또는 confirmation 생성",
             payload={k: args.get(k) for k in ("product", "root_lot_ids", "fab_lot_ids", "wafer_ids", "module", "split_set", "recipients") if args.get(k)},
+        )
+    elif action == "build_dashboard_metric_chart" or intent.startswith("dashboard_"):
+        add(
+            name="Dashboard chart draft",
+            method="internal",
+            path="dashboard chart draft/session",
+            callee="_augment_dashboard_tool",
+            purpose="차트 draft/config를 만들고 Home inline preview용 data/session을 구성",
+            payload={k: tool.get(k) for k in ("chart_type", "chart_session_id") if tool.get(k)} | {"config": tool.get("chart_config") or tool.get("config") or {}},
+        )
+    elif action == "query_meeting_calendar_records" or intent == "meeting_recall_summary":
+        add(
+            name="Meeting ask summary",
+            method="POST",
+            path="/api/meetings/ask",
+            callee="_handle_meeting_recall",
+            purpose="회의/차수/아젠다/회의록/결정사항/액션아이템 저장 기록을 read-only 요약",
+            payload={k: (slots.get(k) or filters.get(k)) for k in ("meeting_id", "meeting_title", "session_id", "session_idx") if (slots.get(k) or filters.get(k))},
         )
     elif action in {"query_current_fab_lot", "query_current_fab_lot_from_fab_db"} or intent == "current_fab_lot_lookup":
         add(
@@ -15049,6 +15277,104 @@ def _flowi_trace_clarification_loop(tool: dict[str, Any], result: dict[str, Any]
     }
 
 
+def _flowi_trace_interpretation(tool: dict[str, Any]) -> dict[str, Any]:
+    slots = tool.get("slots") if isinstance(tool.get("slots"), dict) else {}
+    filters = tool.get("filters") if isinstance(tool.get("filters"), dict) else {}
+    args = tool.get("arguments") if isinstance(tool.get("arguments"), dict) else {}
+
+    def first(*keys: str) -> Any:
+        for src in (args, slots, filters):
+            for key in keys:
+                value = src.get(key)
+                if value not in (None, "", [], {}):
+                    return value
+        return ""
+
+    source_candidates = []
+    raw_sources = first("source_types", "source_type")
+    if isinstance(raw_sources, list):
+        source_candidates = [str(x) for x in raw_sources if str(x or "").strip()]
+    elif raw_sources:
+        source_candidates = [str(raw_sources)]
+    missing = _flowi_trace_missing_slots(tool)
+    filled = {}
+    for key in ("product", "root_lot_ids", "fab_lot_ids", "lot_ids", "wafer_ids", "step", "metric", "module", "meeting_title", "session_idx"):
+        value = first(key)
+        if value not in (None, "", [], {}):
+            filled[key] = value
+    return {
+        "input_slots": {
+            "product": first("product"),
+            "lot": first("root_lot_ids", "root_lot_id", "fab_lot_ids", "fab_lot_id", "lot_ids", "lot_id"),
+            "wafer": first("wafer_ids", "wafer_id"),
+            "step": first("step", "step_ids", "step_id"),
+            "item": first("metric", "metrics", "metrics_or_items", "item", "items"),
+            "meeting": first("meeting_title", "meeting_id"),
+            "session": first("session_idx", "session_id"),
+            "source_candidates": source_candidates,
+        },
+        "missing_slots": missing,
+        "filled_slots": filled,
+    }
+
+
+def _flowi_trace_evidence(tool: dict[str, Any], api_calls: list[dict[str, Any]]) -> dict[str, Any]:
+    feature_calls = [call for call in api_calls if call.get("stage") == "feature_api"]
+    first_api = feature_calls[0] if feature_calls else {}
+    sql_draft = tool.get("sql_draft") if isinstance(tool.get("sql_draft"), dict) else {}
+    chart_cfg = tool.get("chart_config") if isinstance(tool.get("chart_config"), dict) else (tool.get("config") if isinstance(tool.get("config"), dict) else {})
+    table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
+    filters = tool.get("filters") if isinstance(tool.get("filters"), dict) else {}
+    sources = []
+    for row in tool.get("sources") or []:
+        if isinstance(row, dict):
+            sources.append({k: row.get(k) for k in ("meeting_id", "meeting_title", "session_id", "session_idx", "type", "title") if row.get(k) not in (None, "")})
+    return {
+        "used_feature_ai": tool.get("feature") or first_api.get("feature") or "flowi",
+        "endpoint": first_api.get("path") or first_api.get("callee") or "",
+        "payload_summary": _flowi_activation_payload_summary(tool),
+        "sql": sql_draft.get("sql") or filters.get("sql") or "",
+        "selected_columns": sql_draft.get("selected_columns") or [],
+        "chart_config": chart_cfg,
+        "meeting_sources": sources[:8],
+        "table_total": table.get("total", len(table.get("rows") or [])) if table else 0,
+        "api_calls": [
+            {
+                "stage": call.get("stage"),
+                "method": call.get("method"),
+                "path": call.get("path"),
+                "callee": call.get("callee"),
+                "status": call.get("status"),
+                "output": call.get("output"),
+            }
+            for call in api_calls
+        ],
+    }
+
+
+def _flowi_trace_validation(tool: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
+    chart = tool.get("chart_result") if isinstance(tool.get("chart_result"), dict) else (tool.get("chart") if isinstance(tool.get("chart"), dict) else {})
+    sql_draft = tool.get("sql_draft") if isinstance(tool.get("sql_draft"), dict) else {}
+    warnings = [str(w) for w in (tool.get("warnings") or []) if str(w).strip()]
+    warnings.extend(str(w) for w in (sql_draft.get("warnings") or []) if str(w).strip())
+    llm = result.get("llm") if isinstance(result.get("llm"), dict) else {}
+    source_count = 0
+    if isinstance(tool.get("sources"), list):
+        source_count = len(tool.get("sources") or [])
+    elif isinstance(tool.get("retrieved_knowledge"), list):
+        source_count = len(tool.get("retrieved_knowledge") or [])
+    return {
+        "rows": table.get("total", len(table.get("rows") or [])) if table else len(tool.get("rows") or []),
+        "chart_readiness": chart.get("status") or ("ready" if chart else ""),
+        "source_count": source_count,
+        "warnings": list(dict.fromkeys(warnings))[:12],
+        "fallback": bool(sql_draft.get("fallback") or tool.get("fallback") or (llm.get("error") and not llm.get("used"))),
+        "llm_used": bool(llm.get("used") or (sql_draft.get("llm") or {}).get("used")),
+        "llm_error": llm.get("error") or (sql_draft.get("llm") or {}).get("error") or "",
+    }
+
+
 def _flowi_public_trace(
     *,
     prompt: str,
@@ -15212,6 +15538,9 @@ def _flowi_public_trace(
         "visible": True,
         "note": "사고과정 원문이 아니라 사용자가 검증할 수 있는 실행 흐름 요약입니다.",
         "activation": call_graph.get("activation") or {},
+        "interpretation": _flowi_trace_interpretation(tool),
+        "evidence": _flowi_trace_evidence(tool, api_calls),
+        "validation": _flowi_trace_validation(tool, result),
         "persona_snapshot": _flowi_trace_persona_snapshot(),
         "prompt_cache": _flowi_trace_prompt_cache(allowed_keys),
         "subagent_context": _flowi_trace_subagent_context(tool, api_calls),
@@ -15305,6 +15634,9 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "session_id",
     "slots",
     "filters",
+    "sql_draft",
+    "warnings",
+    "sources",
     "highlight",
     "highlights",
     "side_effect",
@@ -15355,6 +15687,26 @@ def _flowi_home_response_for_role(result: dict[str, Any], me: dict[str, Any]) ->
         }
     if public_tool:
         out["tool"] = public_tool
+    trace = result.get("trace") if isinstance(result.get("trace"), dict) else {}
+    if trace:
+        out["trace"] = {
+            key: deepcopy(trace[key])
+            for key in (
+                "kind",
+                "visible",
+                "note",
+                "activation",
+                "interpretation",
+                "evidence",
+                "validation",
+                "subagent_context",
+                "clarification_loop",
+                "retrieved_knowledge",
+                "steps",
+                "api_calls",
+            )
+            if key in trace
+        }
     return out
 
 

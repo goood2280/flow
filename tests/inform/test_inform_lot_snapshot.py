@@ -100,6 +100,33 @@ def test_splittable_snapshot_reuses_short_cache(monkeypatch):
     assert len(calls) == 1
 
 
+def test_splittable_snapshot_cache_key_includes_display_mode(monkeypatch):
+    calls = []
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "user", "username": "tester"})
+    monkeypatch.setattr(informs, "build_splittable_embed", lambda **kwargs: calls.append(kwargs) or {
+        "source": "built",
+        "columns": ["parameter"],
+        "rows": [],
+        "st_view": {"headers": [], "rows": []},
+        "st_scope": {},
+    })
+    informs._SPLITTABLE_SNAPSHOT_CACHE.clear()
+    informs._SPLITTABLE_SNAPSHOT_INFLIGHT.clear()
+
+    matrix = informs.SplitTableSnapshotReq(product="ML_TABLE_PRODA", lot_id="A1000A.1", custom_cols=["KNOB_GATE"])
+    split_check = informs.SplitTableSnapshotReq(
+        product="ML_TABLE_PRODA",
+        lot_id="A1000A.1",
+        custom_cols=["KNOB_GATE"],
+        display_mode="split_check",
+    )
+
+    informs.splittable_snapshot(matrix, object())
+    informs.splittable_snapshot(split_check, object())
+
+    assert len(calls) == 2
+
+
 def test_inform_wafer_queries_normalize_saved_wafer_forms(monkeypatch):
     items = [
         {"id": "a", "wafer_id": "01", "lot_id": "A1000", "product": "PRODA", "created_at": "2026-04-27T10:00:00"},

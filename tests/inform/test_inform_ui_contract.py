@@ -63,7 +63,8 @@ def test_inform_wizard_five_step_backend_contract_order():
 def test_inform_wizard_mail_note_is_plain_top_block():
     src = MY_INFORM.read_text(encoding="utf-8")
 
-    assert 'fontSize: "12pt"' in src
+    assert 'fontSize: "12px"' in src
+    assert 'fontSize: "12pt"' not in src
     assert 'background: "#fffbeb"' not in src
     assert 'borderLeft: "4px solid #f59e0b"' not in src
 
@@ -80,9 +81,13 @@ def test_inform_splittable_embed_matches_split_table_header_and_plan_contract():
         "const hasRootRow = hasLotContext",
         "const hasLotRow = hasLotContext || headerGroups.length > 0",
         'String(r._display || r._param || "").replace(/^[A-Z]+_/, "")',
-        "const isPlanOnly = hasPlan && !hasActual",
-        "const isMismatch = hasPlan && hasActual && String(cell.plan) !== String(cell.actual)",
-        "const isAppliedPlan = hasPlan && hasActual && String(cell.plan) === String(cell.actual)",
+        "const splitCheckMode = String(st.display_mode || embed.display_mode || embed.st_scope?.display_mode || \"\") === \"split_check\"",
+        "const rawPrefixColumns = Array.isArray(st.prefix_columns)",
+        "display_mode: form.split_check_display ? \"split_check\" : \"matrix\"",
+        "Split 체크 표시",
+        "const isPlanOnly = !splitCheckMode && hasPlan && !hasActual",
+        "const isMismatch = !splitCheckMode && hasPlan && hasActual && String(cell.plan) !== String(cell.actual)",
+        "const isAppliedPlan = !splitCheckMode && hasPlan && hasActual && String(cell.plan) === String(cell.actual)",
         '" (plan 적용)"',
     ]:
         assert token in src
@@ -90,3 +95,15 @@ def test_inform_splittable_embed_matches_split_table_header_and_plan_contract():
     assert 'root_lot_id</span> {rootLotId || "-"}' not in src
     assert 'lot_id</span> {lotIdLabel || "-"}' not in src
     assert "Wafer별 적용 plan 요약" not in src
+
+
+def test_inform_detail_tabs_are_body_and_mail_history_with_comment_button():
+    src = MY_INFORM.read_text(encoding="utf-8")
+
+    assert '["body", "본문"]' in src
+    assert '["mail", "메일 이력"]' in src
+    assert '["comments", "댓글"]' not in src
+    assert '["history", "이력"]' not in src
+    assert '["attachments", "첨부"]' not in src
+    assert "InformCommentsPanel" in src
+    assert "댓글 {commentCount}" in src

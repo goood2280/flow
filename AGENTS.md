@@ -73,6 +73,9 @@
 ## Worktree Discipline
 
 - 작업 시작 전 `git status --short`로 dirty worktree를 확인한다.
+- Flow 작업은 로컬 `main`에서 시작하고, 작업이 끝나면 검증된 변경을 하나의 정리된 커밋으로 `main`에 남긴다.
+- 한 작업이 끝난 뒤 작업트리를 dirty 상태로 오래 유지하지 않는다. 필요한 수정, 테스트, 문서 반영, 커밋까지 묶어서 마무리한다.
+- 새 작업을 시작하기 전에 이전 작업의 변경이 `main`에 정리되어 있고 `git status --short`가 깨끗한지 확인한다.
 - 이미 있는 변경은 사용자 또는 다른 세션의 작업으로 간주한다.
 - 절대 `git reset --hard`, `git checkout --`, 대량 revert를 하지 않는다.
 - 다른 세션이 잡고 있는 파일이나 영역을 동시에 건드리지 않는다.

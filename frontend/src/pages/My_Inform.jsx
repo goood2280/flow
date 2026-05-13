@@ -210,6 +210,7 @@ function defaultInformForm() {
     deadline: "",
     attach_split: false, split: { column: "", old_value: "", new_value: "" },
     attach_embed: false, embed: emptyEmbedTable(),
+    split_check_display: false,
   };
 }
 
@@ -718,10 +719,17 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
   const st = embed.st_view;
   if (st && st.headers && st.rows) {
     const headers = st.headers || [];
+    const rawPrefixColumns = Array.isArray(st.prefix_columns) ? st.prefix_columns.map(v => String(v || "").trim()).filter(Boolean) : [];
+    const splitCheckMode = String(st.display_mode || embed.display_mode || embed.st_scope?.display_mode || "") === "split_check" && rawPrefixColumns.length >= 3;
     const firstColWidth = 288;
     const dataColWidth = 115;
+    const prefixColumns = splitCheckMode ? rawPrefixColumns : [];
+    const prefixColWidths = splitCheckMode ? [240, 140, 80].slice(0, prefixColumns.length) : [firstColWidth];
+    while (prefixColWidths.length < (splitCheckMode ? prefixColumns.length : 1)) prefixColWidths.push(100);
+    const prefixTotalWidth = prefixColWidths.reduce((sum, value) => sum + value, 0);
+    const stickyLeft = (idx) => prefixColWidths.slice(0, idx).reduce((sum, value) => sum + value, 0);
     const stScrollerStyle = { ...scrollerStyle, overflow: "auto", border: "1px solid #555", borderRadius: 0 };
-    const stTableWidth = firstColWidth + Math.max(headers.length, 1) * dataColWidth;
+    const stTableWidth = prefixTotalWidth + Math.max(headers.length, 1) * dataColWidth;
     const stTableStyle = {
       borderCollapse: "collapse",
       fontSize: 14,
@@ -740,20 +748,23 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
     const rootRowLabel = rowLabels.root_lot_id || "root_lot_id";
     const lotRowLabel = rowLabels.lot_id || "lot_id";
     const paramRowLabel = rowLabels.parameter || "항목";
+    const visiblePrefixColumns = splitCheckMode ? prefixColumns : [paramRowLabel];
     const hasRootRow = hasLotContext;
     const hasLotRow = hasLotContext || headerGroups.length > 0;
     const rootHeaderHeight = hasRootRow ? 32 : 0;
     const lotHeaderHeight = hasLotRow ? 24 : 0;
     const waferTop = rootHeaderHeight + lotHeaderHeight;
     const lotContextTitle = `root_lot_id: ${rootLotId || "-"}\nlot_id: ${lotIdLabel || "-"}`;
-    const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, lineHeight: 1.25, color: "var(--text-secondary)", fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word" };
+    const rootLeftStyle = { boxSizing: "border-box", height: rootHeaderHeight, padding: "4px 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, lineHeight: 1.25, color: "var(--text-secondary)", fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word", width: prefixTotalWidth, minWidth: prefixTotalWidth };
     const rootHeadStyle = { boxSizing: "border-box", height: rootHeaderHeight, textAlign: "center", padding: "0 8px", lineHeight: `${rootHeaderHeight - 1}px`, fontWeight: 700, fontSize: 14, color: "var(--accent)", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: 0, zIndex: 4, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
-    const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, color: "var(--text-secondary)", fontWeight: 800 };
+    const lotLeftStyle = { boxSizing: "border-box", height: lotHeaderHeight, padding: "0 8px", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, left: 0, zIndex: 5, textAlign: "left", fontFamily: "monospace", fontSize: 14, color: "var(--text-secondary)", fontWeight: 800, width: prefixTotalWidth, minWidth: prefixTotalWidth };
     const lotHeadStyle = { boxSizing: "border-box", height: lotHeaderHeight, textAlign: "center", padding: "0 6px", fontWeight: 800, fontSize: 14, color: "var(--text-primary)", background: "var(--bg-tertiary)", border: "1px solid #555", position: "sticky", top: rootHeaderHeight, zIndex: 4, fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
     const waferLeftStyle = { textAlign: "left", padding: "8px 10px", fontWeight: 700, fontSize: 14, color: "var(--accent)", border: "1px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, left: 0, zIndex: 5, width: firstColWidth, minWidth: firstColWidth };
     const waferHeadStyle = { textAlign: "center", padding: "6px 8px", fontWeight: 600, fontSize: 14, color: "var(--text-secondary)", border: "1px solid #555", borderBottom: "2px solid #555", background: "var(--bg-tertiary)", position: "sticky", top: waferTop, zIndex: 3, whiteSpace: "normal", wordBreak: "break-word", minWidth: 100 };
     const paramCellStyle = { padding: "6px 10px", fontWeight: 600, fontSize: 14, color: "var(--text-primary)", border: "1px solid #555", background: "var(--bg-secondary)", position: "sticky", left: 0, zIndex: 2, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35 };
     const stCellStyle = { background: "var(--bg-card)", color: "var(--text-primary)", padding: "4px 8px", border: "1px solid #555", textAlign: "center", fontSize: 14, whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.35, position: "relative" };
+    const prefixHeadStyle = (idx) => ({ ...waferLeftStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 6 - Math.min(idx, 3), color: "var(--text-secondary)" });
+    const prefixCellStyle = (idx) => ({ ...paramCellStyle, left: stickyLeft(idx), width: prefixColWidths[idx], minWidth: prefixColWidths[idx], zIndex: 4 - Math.min(idx, 2), fontWeight: idx === 0 ? 700 : 600 });
     // uniqueMap 계산: param 별 값 → 인덱스.
     const uniq = {};
     for (const r of st.rows) {
@@ -783,19 +794,19 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
         <div style={stScrollerStyle}>
           <table style={stTableStyle}>
             <colgroup>
-              <col style={{ width: firstColWidth }} />
+              {prefixColWidths.map((width, i) => <col key={`prefix-${i}`} style={{ width }} />)}
               {headers.map((_, i) => <col key={i} style={{ width: dataColWidth }} />)}
             </colgroup>
             <thead>
               {hasRootRow && (
                 <tr>
-                  <th style={rootLeftStyle} title={lotContextTitle}>{rootRowLabel}</th>
+                  <th colSpan={visiblePrefixColumns.length} style={rootLeftStyle} title={lotContextTitle}>{rootRowLabel}</th>
                   <th colSpan={headers.length || 1} style={rootHeadStyle}>{rootLotId || lotIdLabel}</th>
                 </tr>
               )}
               {hasLotRow && (
                 <tr>
-                  <th style={lotLeftStyle} title={lotContextTitle}>{lotRowLabel}</th>
+                  <th colSpan={visiblePrefixColumns.length} style={lotLeftStyle} title={lotContextTitle}>{lotRowLabel}</th>
                   {headerGroups.length > 0
                     ? headerGroups.map((g, i) => (
                       <th key={i} colSpan={g.span} style={lotHeadStyle} title={g.label}>{g.label}</th>
@@ -804,29 +815,47 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
                 </tr>
               )}
               <tr>
-                <th style={waferLeftStyle}>{paramRowLabel}</th>
+                {visiblePrefixColumns.map((label, i) => (
+                  <th key={`${label}-${i}`} style={prefixHeadStyle(i)}>{label}</th>
+                ))}
                 {headers.map((h, i) => (
                   <th key={i} style={waferHeadStyle}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {st.rows.map((r, ri) => (
+              {st.rows.map((r, ri) => {
+                const rawPrefixCells = Array.isArray(r._prefix_cells) ? r._prefix_cells : [];
+                const prefixValues = visiblePrefixColumns.map((_, idx) => {
+                  if (splitCheckMode) {
+                    if (rawPrefixCells[idx] != null) return String(rawPrefixCells[idx]);
+                    if (idx === 0) return String(r._display || r._param || "");
+                    if (idx === 1) return String(r._split_value || "");
+                    if (idx === 2) return String(r._split_label || "");
+                    return "";
+                  }
+                  return String(r._display || r._param || "").replace(/^[A-Z]+_/, "");
+                });
+                return (
                 <tr key={ri}>
-                  <td style={paramCellStyle}>{String(r._display || r._param || "").replace(/^[A-Z]+_/, "")}</td>
+                  {prefixValues.map((value, pi) => (
+                    <td key={`prefix-${pi}`} style={prefixCellStyle(pi)}>{value}</td>
+                  ))}
                   {headers.map((_, ci) => {
                     const cell = (r._cells && (r._cells[ci] || r._cells[String(ci)])) || {};
-                    const bg = stCellBg(hasStValue(cell.plan) ? cell.plan : cell.actual, uniq, r._param);
-                    const plan = stPlanStyle(cell);
+                    const bg = splitCheckMode ? {} : stCellBg(hasStValue(cell.plan) ? cell.plan : cell.actual, uniq, r._param);
+                    const plan = splitCheckMode ? {} : stPlanStyle(cell);
                     const hasPlan = hasStValue(cell.plan);
                     const hasActual = hasStValue(cell.actual);
-                    const isPlanOnly = hasPlan && !hasActual;
-                    const isMismatch = hasPlan && hasActual && String(cell.plan) !== String(cell.actual);
-                    const isAppliedPlan = hasPlan && hasActual && String(cell.plan) === String(cell.actual);
+                    const isPlanOnly = !splitCheckMode && hasPlan && !hasActual;
+                    const isMismatch = !splitCheckMode && hasPlan && hasActual && String(cell.plan) !== String(cell.actual);
+                    const isAppliedPlan = !splitCheckMode && hasPlan && hasActual && String(cell.plan) === String(cell.actual);
                     const display = hasActual ? String(cell.actual) : "";
                     return (
-                      <td key={ci} style={{ ...stCellStyle, ...bg, ...plan }}>
-                        {isMismatch
+                      <td key={ci} style={{ ...stCellStyle, ...bg, ...plan, ...(splitCheckMode && display ? { fontWeight: 900 } : {}) }}>
+                        {splitCheckMode
+                          ? display
+                          : isMismatch
                           ? <span style={{ color: "var(--danger)", fontWeight: 700 }}>{"✗ "}{display}<span style={{ fontSize: 14, color: "var(--danger)" }}>{" (≠" + cell.plan + ")"}</span></span>
                           : isAppliedPlan
                             ? <span style={{ color: OK.fg, fontWeight: 700 }}>{"✓ "}{String(cell.plan)}<span style={{ fontSize: 14, color: OK.fg }}>{" (plan 적용)"}</span></span>
@@ -837,7 +866,8 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
                     );
                   })}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -2037,7 +2067,7 @@ export default function My_Inform({ user }) {
     setActiveTab("inform");
     setInformView("detail");
     setSelectedRootId(informId);
-    setDetailTab("history");
+    setDetailTab("body");
     loadDetailForRoot({
       id: informId,
       fab_lot_id: row.fab_lot_id || row.fab_lot_id_at_save || row.lot_id || row.root_lot_id || "",
@@ -2355,6 +2385,7 @@ export default function My_Inform({ user }) {
         lot_id: targetLot,
         custom_cols: customCols,
         is_fab_lot: (form.fab_lot_ids || []).includes(targetLot) || isFabLotInput(targetLot, lotOptions),
+        display_mode: form.split_check_display ? "split_check" : "matrix",
       });
       const embed = d?.embed || emptyEmbedTable();
       return {
@@ -2556,6 +2587,7 @@ export default function My_Inform({ user }) {
         lot_id: lot,
         custom_cols: customCols,
         is_fab_lot: isFabLot,
+        display_mode: form.split_check_display ? "split_check" : "matrix",
       })
         .then(d => {
           const embed = d?.embed || emptyEmbedTable();
@@ -2569,7 +2601,7 @@ export default function My_Inform({ user }) {
     }, 400);
     return () => { clearTimeout(handle); setEmbedFetching(false); };
     // v8.8.16: snapshotTick 변경 시에도 재fetch — 사용자가 Search 버튼으로 명시적 갱신.
-  }, [form.product, form.lot_id, creating, embedCustomCols, snapshotTick, lotOptions, wizardAttachMode]);
+  }, [form.product, form.lot_id, form.split_check_display, creating, embedCustomCols, snapshotTick, lotOptions, wizardAttachMode]);
 
   // SplitTable 의 lot-candidates 로 제품 내 LOT_ID 후보만 fetch → 신규 인폼 선택 소스.
   useEffect(() => {
@@ -4206,6 +4238,7 @@ function InformFullDetail({ root, onBack, children }) {
 }
 
 function InformDetailPane({ root, thread, childrenByParent, constants, user, tab, setTab, onReply, onDelete, onToggleCheck, onEdit, onChangeStatus, onOpenMail }) {
+  const [commentsOpen, setCommentsOpen] = useState(false);
   if (!root) {
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 14 }}>
@@ -4215,11 +4248,9 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
   }
   const tabs = [
     ["body", "본문"],
-    ["mail", "메일"],
-    ["comments", "댓글"],
-    ["history", "이력"],
-    ["attachments", "첨부"],
+    ["mail", "메일 이력"],
   ];
+  const commentCount = commentTreeCount(root.id, childrenByParent);
   const lotText = informLotDisplay(root, { maxFabLots: 8 }) || "-";
   const status = normalizeFlowStatus(root.flow_status, root);
   const completed = status === "apply_confirmed";
@@ -4268,12 +4299,28 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
               style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
               ✉ 메일
             </button>
+            <button type="button" onClick={() => setCommentsOpen(v => !v)}
+              style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--border)", background: commentsOpen ? "var(--bg-primary)" : "transparent", color: "var(--text-primary)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
+              댓글 {commentCount}
+            </button>
           </div>
         </div>
         <div style={{ marginTop: 8, color: "var(--text-secondary)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           lot {lotText}
         </div>
       </div>
+      {commentsOpen && (
+        <InformCommentsPanel
+          root={root}
+          childrenByParent={childrenByParent}
+          constants={constants}
+          user={user}
+          onReply={onReply}
+          onDelete={onDelete}
+          onToggleCheck={onToggleCheck}
+          onEdit={onEdit}
+        />
+      )}
       <div style={{ display: "flex", gap: 4, padding: "8px 16px 0", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
         {tabs.map(([key, label]) => (
           <button key={key} type="button" onClick={() => setTab(key)}
@@ -4296,15 +4343,78 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
             )}
           </div>
         )}
-        {tab === "mail" && <MailPreviewPanel root={root} onOpenMail={() => onOpenMail(root)} />}
-        {tab === "comments" && (
-          <ThreadNode node={root} childrenByParent={childrenByParent}
-            onReply={onReply} onDelete={onDelete} onToggleCheck={onToggleCheck}
-            onEdit={onEdit} user={user} depth={0} constants={constants} />
-        )}
-        {tab === "history" && <InformHistoryPanel root={root} thread={thread} />}
-        {tab === "attachments" && <InformAttachmentsPanel root={root} />}
+        {tab === "mail" && <InformMailHistoryPanel root={root} onOpenMail={() => onOpenMail(root)} />}
       </div>
+    </div>
+  );
+}
+
+function commentTreeCount(rootId, childrenByParent) {
+  const walk = (id) => (childrenByParent[id] || []).reduce((sum, child) => sum + 1 + walk(child.id), 0);
+  return walk(rootId);
+}
+
+function InformCommentsPanel({ root, childrenByParent, constants, user, onReply, onDelete, onToggleCheck, onEdit }) {
+  const [text, setText] = useState("");
+  const comments = childrenByParent[root.id] || [];
+  const submit = () => {
+    const body = text.trim();
+    if (!body) return;
+    onReply(root.id, {
+      module: root.module || "",
+      reason: root.reason || "",
+      text: body,
+      images: [],
+    }).then(() => setText(""));
+  };
+  return (
+    <div style={{ padding: 16, borderBottom: "1px solid var(--border)", background: "var(--bg-primary)", display: "grid", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, alignItems: "start" }}>
+        <textarea value={text} onChange={e => setText(e.target.value)} rows={2}
+          placeholder="댓글 입력"
+          style={inputStyle({ resize: "vertical", fontFamily: "inherit" })} />
+        <button type="button" onClick={submit} disabled={!text.trim()}
+          style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "var(--accent)", color: WHITE, fontWeight: 900, cursor: text.trim() ? "pointer" : "not-allowed", opacity: text.trim() ? 1 : 0.55, fontSize: 14 }}>
+          등록
+        </button>
+      </div>
+      {comments.length === 0 && <div style={{ color: "var(--text-secondary)" }}>댓글이 없습니다.</div>}
+      {comments.length > 0 && (
+        <div style={{ display: "grid", gap: 8 }}>
+          {comments.map(k => (
+            <ThreadNode key={k.id} node={k} childrenByParent={childrenByParent}
+              onReply={onReply} onDelete={onDelete} onToggleCheck={onToggleCheck}
+              onEdit={onEdit}
+              user={user} depth={0} constants={constants} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InformMailHistoryPanel({ root, onOpenMail }) {
+  const history = root.mail_history || [];
+  return (
+    <div style={informConnectedPanel}>
+      <section style={informConnectedSectionOnly}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <div style={{ ...informConnectedSectionTitle, marginBottom: 0 }}>메일 이력</div>
+          <span style={{ color: "var(--text-secondary)" }}>{history.length}건</span>
+          <button type="button" onClick={onOpenMail} style={{ marginLeft: "auto", padding: "6px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
+            전송 창 열기
+          </button>
+        </div>
+        {history.length === 0 && <div style={{ color: "var(--text-secondary)" }}>발송 이력이 없습니다.</div>}
+        {history.slice().reverse().map((m, i) => (
+          <div key={i} style={{ display: "grid", gridTemplateColumns: "150px 120px minmax(0,1fr) 80px", gap: 8, padding: "7px 0", borderBottom: i < history.length - 1 ? "1px dashed var(--border)" : "none", alignItems: "center" }}>
+            <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{(m.at || m.sent_at || "").replace("T", " ").slice(0, 16)}</span>
+            <span>{m.actor || m.sender || "-"}</span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.subject || "-"}</span>
+            <span style={{ color: "var(--text-secondary)" }}>{(m.to || []).length || 0}명</span>
+          </div>
+        ))}
+      </section>
     </div>
   );
 }
@@ -4573,6 +4683,7 @@ function InformWizard({
       lot_id: lot,
       custom_cols: snapshotCols,
       is_fab_lot: (form.fab_lot_ids || []).includes(lot) || isFabLotInput(lot, lotOptions),
+      display_mode: form.split_check_display ? "split_check" : "matrix",
     })
       .then(d => {
         if (!alive) return;
@@ -4593,7 +4704,7 @@ function InformWizard({
         setForm(f => ({ ...f, attach_embed: true, embed: baseEmbed }));
       });
     return () => { alive = false; };
-  }, [attachMode, selectedSetIds, setRows, form.product, form.lot_id, lotOptions]);
+  }, [attachMode, selectedSetIds, setRows, form.product, form.lot_id, form.split_check_display, lotOptions]);
   const validate = () => {
     if (step === 0) {
       if (!(form.product || "").trim()) { setMsg("product 를 선택해 주세요"); return false; }
@@ -4838,6 +4949,10 @@ function InformWizard({
               ))}
               {embedFetching && <span style={{ alignSelf: "center", color: "var(--accent)" }}>SplitTable 스냅샷 로딩...</span>}
             </div>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, justifySelf: "start", padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)", color: "var(--text-primary)", fontWeight: 800, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!form.split_check_display} onChange={e => setForm(f => ({ ...f, split_check_display: e.target.checked }))} />
+              <span>Split 체크 표시</span>
+            </label>
             {attachMode === "sets" && (
               <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--bg-card)", display: "grid", gap: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -5049,7 +5164,7 @@ function InformWizard({
                     여러 LOT_ID 중 가장 위에 선택된 LOT_ID만 미리보기로 표시합니다.
                   </div>
                 )}
-                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.45, fontSize: "12pt", color: "#1f2937" }}>{mailPreviewText || "(note 없음)"}</div>
+                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.45, fontSize: "12px", color: "#1f2937" }}>{mailPreviewText || "(note 없음)"}</div>
                 {wizardProductContacts.length > 0 && (
                   <div style={{ padding: "10px 12px", background: "var(--ok-50)", borderLeft: "4px solid var(--ok)", borderRadius: 4, color: "var(--ok)", fontWeight: 800 }}>
                     제품 담당자 : {wizardProductContacts.map(c => c.name && c.email ? `${c.name} <${c.email}>` : (c.name || c.email)).filter(Boolean).join(", ")}

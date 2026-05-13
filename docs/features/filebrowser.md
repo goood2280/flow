@@ -55,6 +55,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - `wafer_id`/`wf_id` 조건은 원본 저장 타입이 string이어도 숫자 의미로 실행한다. 예: `wafer_id = 3`, `wafer_id >= 3`, `wafer_id IN ('WF03', 10)`은 실행 전에 numeric cast filter로 정규화된다.
 - AI SQL 초안은 SQL 입력창과 컬럼 체크 상태에 반영되며 같은 값으로 즉시 preview 조회를 실행한다. 실행 후에도 SQL식과 선택 컬럼은 화면에 남아 사용자가 수정할 수 있다.
 - LLM 호출이 실패하거나 이상한 SQL을 반환하면 제한적 deterministic fallback을 사용하되, 응답의 `llm.used=false`, `fallback=true`, `warnings`로 상태를 노출한다.
+- LLM JSON draft는 raw text를 그대로 믿지 않고 JSON object parse, required key validation, 1회 repair prompt를 거친다. parse 실패, schema mismatch, `HTTP 429`는 warnings/fallback으로 노출하고 Home Flow-i 응답을 중단하지 않는다.
 
 ## File Settings
 
@@ -121,6 +122,7 @@ Agent 탭(Flow-i)이 FileBrowser를 driver로 호출할 때 사용하는 unit ac
 자연어 예시 → action 매핑:
 - `A1000 #21 현재 step이 어디야` → `filebrowser.lot_progress.latest` (`lot_progress_latest_lot_by_root_wafer.parquet` 우선)
 - `이 csv 미리 보여줘` → `filebrowser.preview`
+- `PRODA FAB wafer 3 조건 SQL 초안 만들어줘` → `filebrowser.sql.llm.draft` (Home에서 SQL/filter, 선택 컬럼, preview table, warnings 표시)
 - `DB root에 뭐 있어` → `filebrowser.list` (`scope=db`, root path)
 - `ppid_knob.csv 규칙 뭐야` → `filebrowser.csv.rules.read`
 

@@ -1361,7 +1361,9 @@ def test_flowi_orchestrator_activation_preview_lists_features(monkeypatch):
     assert rows[1]["unit_action"] == "splittable.knob.summary"
     assert "ML_TABLE" in rows[1]["api"]
     assert rows[2]["feature"] == "tracker"
-    assert rows[2]["action"] == "query_tracker_lot_purpose"
+    assert rows[2]["action"] == "tracker.lot.purpose"
+    assert rows[2]["handler_action"] == "query_tracker_lot_purpose"
+    assert rows[2]["unit_action"] == "tracker.lot.purpose"
 
 
 def test_flowi_function_call_preview_keeps_wafer_slots_1_to_25(monkeypatch):
@@ -2608,7 +2610,7 @@ def test_flowi_chat_route_redacts_workflow_for_non_admin(monkeypatch):
     out = llm_router.flowi_chat(llm_router.FlowiChatReq(prompt="plan"), request=object())
 
     assert out["ok"] is True
-    assert "trace" not in out
+    assert out["trace"]["steps"] == [{"key": "route"}]
     assert "workflow_state" not in out
     assert "next_actions" not in out
     assert "llm" not in out

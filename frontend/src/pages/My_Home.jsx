@@ -255,7 +255,7 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
       {workflow.status&&<span style={{fontSize:14,color:workflow.status.startsWith("awaiting")?"#f97316":workflow.status==="blocked"?"#ef4444":"#22c55e",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{workflow.status}</span>}
       {result.llm&&<span style={{fontSize:14,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
     </div>}
-    {isAdmin&&<FlowiTrace trace={result.trace}/>}
+    <FlowiTrace trace={result.trace}/>
     <FlowiInlineContent tool={tool} table={table} chart={chart} chartResult={chartResult}/>
     {chartSessionId&&<div style={{marginTop:8,display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
       <button type="button" onClick={()=>onUseChartSession&&onUseChartSession(chartSessionId)}
@@ -345,14 +345,37 @@ function FlowiInlineContent({tool,table,chart,chartResult}){
   const lotList=Array.isArray(tool?.lot_list)?tool.lot_list:[];
   const rows=Array.isArray(tool?.rows)?tool.rows:[];
   const knobs=Array.isArray(tool?.knobs)?tool.knobs:[];
-  if((type==="chart"||chartResult)&&chartResult)return <FlowiScatterResult data={chartResult}/>;
-  if(type==="chart"&&chart)return <FlowiChartPlan chart={chart}/>;
-  if((type==="split_view"||tool?.split_view)&&tool?.split_view)return <FlowiSplitView view={tool.split_view}/>;
-  if((type==="lot_list"||lotList.length>0)&&lotList.length>0)return <FlowiLotList items={lotList}/>;
-  if(table)return <FlowiDataTable table={table}/>;
-  if(rows.length>0)return <FlowiDataTable table={{kind:"flowi_rows",title:"Flowi rows",columns:_legacyRowColumns(rows),rows,total:rows.length}}/>;
-  if(knobs.length>0)return <FlowiKnobCards knobs={knobs}/>;
+  const sqlDraft=tool?.sql_draft&&typeof tool.sql_draft==="object"?tool.sql_draft:null;
+  const blocks=[];
+  if(sqlDraft)blocks.push(<FlowiSqlDraft key="sql" draft={sqlDraft}/>);
+  if((type==="chart"||chartResult)&&chartResult)blocks.push(<FlowiScatterResult key="chart-result" data={chartResult}/>);
+  else if(type==="chart"&&chart)blocks.push(<FlowiChartPlan key="chart-plan" chart={chart}/>);
+  else if((type==="split_view"||tool?.split_view)&&tool?.split_view)blocks.push(<FlowiSplitView key="split" view={tool.split_view}/>);
+  else if((type==="lot_list"||lotList.length>0)&&lotList.length>0)blocks.push(<FlowiLotList key="lots" items={lotList}/>);
+  else if(table)blocks.push(<FlowiDataTable key="table" table={table}/>);
+  else if(rows.length>0)blocks.push(<FlowiDataTable key="rows" table={{kind:"flowi_rows",title:"Flowi rows",columns:_legacyRowColumns(rows),rows,total:rows.length}}/>);
+  else if(knobs.length>0)blocks.push(<FlowiKnobCards key="knobs" knobs={knobs}/>);
+  if(blocks.length)return <>{blocks}</>;
   return null;
+}
+
+function FlowiSqlDraft({draft}){
+  const cols=Array.isArray(draft?.selected_columns)?draft.selected_columns:[];
+  const warnings=Array.isArray(draft?.warnings)?draft.warnings:[];
+  const sql=String(draft?.sql||"");
+  return <div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#151515",padding:"9px 10px",fontFamily:"monospace"}}>
+    <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",marginBottom:7}}>
+      <span style={{fontSize:14,color:"#f97316",fontWeight:900}}>FileBrowser SQL draft</span>
+      <span style={{fontSize:14,color:draft?.fallback?"#f97316":"#22c55e"}}>{draft?.fallback?"fallback":"validated"}</span>
+    </div>
+    <div style={{fontSize:14,color:"#d4d4d4",lineHeight:1.55,whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{sql||"(필터 없음)"}</div>
+    {cols.length>0&&<div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap"}}>
+      {cols.slice(0,18).map(c=><span key={c} style={{fontSize:14,color:"#a3a3a3",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{c}</span>)}
+    </div>}
+    {warnings.length>0&&<div style={{marginTop:7,fontSize:14,color:"#fbbf24",lineHeight:1.45}}>
+      {warnings.slice(0,4).map((w,i)=><div key={i}>{w}</div>)}
+    </div>}
+  </div>;
 }
 
 function _legacyRowColumns(rows){
@@ -461,21 +484,63 @@ function FlowiLiveTrace({step=0}){
 
 function FlowiTrace({trace}){
   const steps=Array.isArray(trace?.steps)?trace.steps:[];
-  if(!steps.length)return null;
+  if(!steps.length&&!trace?.interpretation&&!trace?.evidence&&!trace?.validation)return null;
   const colorFor=(status)=>status==="done"?"#22c55e":status==="blocked"?"#ef4444":status==="error"?"#ef4444":status==="skipped"?"#737373":"#f97316";
+  const activation=trace?.activation||{};
+  const interpretation=trace?.interpretation||{};
+  const inputSlots=interpretation?.input_slots||{};
+  const evidence=trace?.evidence||{};
+  const validation=trace?.validation||{};
+  const missing=Array.isArray(interpretation?.missing_slots)?interpretation.missing_slots:[];
+  const warnings=Array.isArray(validation?.warnings)?validation.warnings:[];
+  const apiCalls=Array.isArray(evidence?.api_calls)?evidence.api_calls:[];
   return(<details style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"7px 9px"}}>
     <summary style={{cursor:"pointer",fontSize:14,color:"#a3a3a3",fontFamily:"monospace",fontWeight:800}}>
-      작업 흐름 보기 <span style={{fontWeight:400,color:"#737373"}}>사고과정 원문이 아닌 실행 로그</span>
+      해석 로그 / 근거 흐름 <span style={{fontWeight:400,color:"#737373"}}>사고과정 원문이 아닌 실행 로그</span>
     </summary>
-    <div style={{marginTop:7,display:"grid",gap:5,fontFamily:"monospace"}}>
+    <div style={{marginTop:8,display:"grid",gap:8,fontFamily:"monospace"}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:6}}>
+        <FlowiTraceKV label="기능 AI" value={evidence.used_feature_ai||activation.feature}/>
+        <FlowiTraceKV label="Unit action" value={activation.action}/>
+        <FlowiTraceKV label="Endpoint" value={evidence.endpoint||activation.api||activation.endpoint}/>
+        <FlowiTraceKV label="검증" value={[validation.rows!==undefined?`rows ${validation.rows}`:"",validation.chart_readiness?`chart ${validation.chart_readiness}`:"",validation.fallback?"fallback":""].filter(Boolean).join(" · ")}/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:6}}>
+        <FlowiTraceKV label="product" value={inputSlots.product}/>
+        <FlowiTraceKV label="lot" value={Array.isArray(inputSlots.lot)?inputSlots.lot.join(", "):inputSlots.lot}/>
+        <FlowiTraceKV label="wafer" value={Array.isArray(inputSlots.wafer)?inputSlots.wafer.join(", "):inputSlots.wafer}/>
+        <FlowiTraceKV label="step/item" value={[inputSlots.step,inputSlots.item].filter(Boolean).map(v=>Array.isArray(v)?v.join(", "):v).join(" / ")}/>
+        <FlowiTraceKV label="meeting" value={[inputSlots.meeting,inputSlots.session].filter(Boolean).join(" · ")}/>
+        <FlowiTraceKV label="source" value={Array.isArray(inputSlots.source_candidates)?inputSlots.source_candidates.join(", "):inputSlots.source_candidates}/>
+      </div>
+      {evidence.sql&&<FlowiTraceKV label="SQL/filter" value={evidence.sql} wide/>}
+      {Array.isArray(evidence.selected_columns)&&evidence.selected_columns.length>0&&<FlowiTraceKV label="선택 컬럼" value={evidence.selected_columns.slice(0,12).join(", ")} wide/>}
+      {missing.length>0&&<FlowiTraceKV label="빈칸 보완" value={missing.join(", ")} wide tone="#f97316"/>}
+      {warnings.length>0&&<FlowiTraceKV label="warnings" value={warnings.slice(0,4).join(" · ")} wide tone="#fbbf24"/>}
       {steps.map((s,i)=><div key={s.key||i} style={{display:"grid",gridTemplateColumns:"18px 118px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.4}}>
         <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:`1px solid ${colorFor(s.status)}99`,color:colorFor(s.status)}}>{s.status==="done"?"✓":s.status==="blocked"?"!":i+1}</span>
         <span style={{color:"#d4d4d4",fontWeight:800}}>{s.label||s.key}</span>
         <span style={{color:"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={s.detail||""}>{s.detail||""}</span>
       </div>)}
+      {apiCalls.length>0&&<div style={{display:"grid",gap:4}}>
+        {apiCalls.slice(0,4).map((c,i)=><div key={i} style={{display:"grid",gridTemplateColumns:"92px minmax(0,1fr) 72px",gap:7,fontSize:14,lineHeight:1.35}}>
+          <span style={{color:"#737373"}}>{c.method||c.stage}</span>
+          <span style={{color:"#a3a3a3",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={c.path||c.callee||""}>{c.path||c.callee||"-"}</span>
+          <span style={{color:colorFor(c.status)}}>{c.status||""}</span>
+        </div>)}
+      </div>}
       {trace.note&&<div style={{marginTop:4,fontSize:14,color:"#737373",lineHeight:1.45}}>{trace.note}</div>}
     </div>
   </details>);
+}
+
+function FlowiTraceKV({label,value,wide=false,tone="#d4d4d4"}){
+  const text=Array.isArray(value)?value.join(", "):String(value??"");
+  if(!text)return null;
+  return <div style={{gridColumn:wide?"1 / -1":undefined,border:"1px solid #262626",borderRadius:6,background:"#151515",padding:"6px 7px",minWidth:0}}>
+    <div style={{fontSize:14,color:"#737373",marginBottom:3}}>{label}</div>
+    <div style={{fontSize:14,color:tone,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={text}>{text}</div>
+  </div>;
 }
 
 const FLOWI_CHOICE_BTN={textAlign:"left",border:`1px solid ${HOME_UI.accent}`,borderRadius:7,background:HOME_UI.card,padding:"8px 12px",cursor:"pointer",color:HOME_UI.textSoft,fontSize:14,fontFamily:"'JetBrains Mono',monospace",lineHeight:1.35};

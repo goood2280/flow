@@ -719,6 +719,7 @@ export default function My_SplitTable({user}){
       custom_cols:rowParams,
       is_fab_lot:targetIsFab,
       current_view:currentView,
+      display_mode:"matrix",
     })}).then(d=>{
       const embed=d?.embed||{};
       const draft={

@@ -64,14 +64,19 @@ Flow-i Agent는 사용자의 자연어 요청을 Flow 오케스트레이터가 �
 
 ## LLM Target (사내 API)
 
-Agent가 사용하는 LLM은 **사내 API의 GPT OSS 120B**다. 외부 LLM은 사용하지 않는다.
+Agent가 사용하는 기본 LLM은 **사내 API의 GPT OSS 120B**다. 검증/개발 profile로 OpenAI 소형 모델과 Vertex Gemini ADC profile을 둘 수 있지만, 실제 라우팅·권한·확인은 deterministic handler가 결정한다.
 
-- 어댑터: `backend/core/llm_adapter.py` (`provider="openai_compatible"` 또는 `"generic"`).
-- 설정 위치: `data/flow-data/admin_settings.json` 의 `llm` 블록 — `enabled`, `api_url`, `model="gpt-oss-120b"`(또는 사내 표기), `auth_mode`, `headers`, `timeout_s`.
+- 어댑터: `backend/core/llm_adapter.py` (`provider="openai"`, `"openai_compatible"`, `"vertex_gemini"` 등).
+- 권장 profile:
+  - `local_test_openai`: OpenAI small/nano급 연결 확인용.
+  - `internal_gpt_oss_120b`: 사내 GPT OSS 120B openai-compatible.
+  - `vertex_gemini`: Google ADC/OAuth access token을 요청 직전 refresh해 Bearer로 전송 (`auth_mode="google_adc"`).
+- 설정 위치: `data/flow-data/admin_settings.json` 의 `llm` / `llm_profiles` 블록 — `enabled`, `api_url`, `model`, `provider`, `auth_mode`, `headers`, `format`, `timeout_s`.
 - 본 모델은 **오픈소스 파인튜닝 수준**이라 추론 안정성이 낮다. caller 규약(이미 어댑터 docstring에 적힘):
   - LLM 응답은 JSON draft / 문장 정리 등 **rephrasing 영역**에서만 사용. 실제 라우팅·권한·확인은 deterministic handler가 결정.
   - 프롬프트는 짧고 단순하게 작성. 긴 chain-of-thought 강요하지 않는다.
-  - 응답 실패/미설정 시 `{"ok": False}`로 처리하고 사용자에게 직접 입력 fallback을 제공.
+  - JSON draft는 schema validation을 거치고 parse 실패 시 1회 repair prompt 후 deterministic fallback을 사용한다.
+  - `HTTP 429` 또는 응답 실패/미설정 시 `{"ok": False}`로 처리하고 사용자에게 직접 입력 fallback 또는 local deterministic router 결과를 제공한다.
 - LLM 사용 가능 여부는 `llm_adapter.is_available()`로 확인하고, UI 카드(예: 자동 답변, 자동 요약)는 이 값이 `True`일 때만 표시한다.
 - 응답 본문에는 사내 endpoint URL이나 token이 노출되지 않게 한다 (admin only redacted view).
 
@@ -144,6 +149,9 @@ Agent는 `resolve_term_to_columns(term)`에서 `kv.list_docs(kind="schema_doc", 
 `POST /api/llm/flowi/agent/chat` 응답의 `trace`는 다음을 항상 포함한다.
 
 - `trace.activation` — 위 5단계 Activation Map dict (누락 없음)
+- `trace.interpretation` — product/lot/wafer/step/item/회의명/차수/source 후보와 missing/filled slot 공개 요약
+- `trace.evidence` — 사용한 기능 AI, endpoint, payload 요약, SQL/filter, chart config, meeting sources
+- `trace.validation` — rows, chart readiness, source count, warnings, fallback 여부
 - `trace.call_graph.nodes` / `trace.call_graph.edges` — 노드/엣지 (빈 배열 아님)
 - `trace.call_graph.activation` — `trace.activation`과 동일 내용 동봉 (frontend fallback용)
 - `trace.api_calls` — list (이미 채워짐)

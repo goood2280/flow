@@ -131,6 +131,22 @@ LLM_PROVIDER_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "system_name": "playground", "user_id": "", "user_type": "", "headers": {},
         "format": "openai", "extra_body": {}, "timeout_s": 20,
     },
+    "vertex_gemini": {
+        "enabled": False,
+        "api_url": "",
+        "model": "google/gemini-2.5-flash",
+        "mode": "fast",
+        "admin_token": "",
+        "provider": "vertex_gemini",
+        "auth_mode": "google_adc",
+        "system_name": "",
+        "user_id": "",
+        "user_type": "",
+        "headers": {},
+        "format": "openai",
+        "extra_body": {},
+        "timeout_s": 30,
+    },
 }
 LLM_ALLOWED_PROVIDERS = set(LLM_PROVIDER_DEFAULTS)
 
@@ -284,13 +300,22 @@ def _normalize_llm_profile(raw: Any = None, provider_hint: str = "") -> Dict[str
     if not out["format"]:
         out["format"] = "openai"
     if not out["auth_mode"]:
-        out["auth_mode"] = "dep_ticket" if provider == "playground" else ("none" if provider == "local" else "bearer")
-    if out["auth_mode"] not in {"bearer", "dep_ticket", "none"}:
+        if provider == "playground":
+            out["auth_mode"] = "dep_ticket"
+        elif provider == "local":
+            out["auth_mode"] = "none"
+        elif provider == "vertex_gemini":
+            out["auth_mode"] = "google_adc"
+        else:
+            out["auth_mode"] = "bearer"
+    if out["auth_mode"] not in {"bearer", "dep_ticket", "google_adc", "none"}:
         out["auth_mode"] = str(_llm_defaults(provider).get("auth_mode") or "bearer")
     if provider == "playground" and not out["system_name"]:
         out["system_name"] = "playground"
     if provider in {"local", "openai_compatible"} and not out["model"]:
         out["model"] = "gpt-oss-120b"
+    if provider == "vertex_gemini" and not out["model"]:
+        out["model"] = "google/gemini-2.5-flash"
     out["enabled"] = bool(out.get("enabled"))
     if not isinstance(out.get("headers"), dict):
         out["headers"] = {}
