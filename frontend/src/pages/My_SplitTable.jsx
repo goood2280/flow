@@ -124,12 +124,12 @@ export default function My_SplitTable({user}){
   // v8.7.8: fab_source 후보 = DB 상위폴더 (FAB/INLINE/ET/EDS) + Base 단일파일 + DB 제품 디렉토리 + TableMap.
   // v8.8.5: fab_source = DB 에서 고르는 값. ML_TABLE_*.parquet(모 테이블) 은 후보에서 제외.
   //   옵션 구성:
-  //     - (자동) 옵션: 빈값 — ML_TABLE_<PROD> 에서 PROD 파생 후 1.RAWDATA_DB/<PROD> 자동 매칭.
+  //     - (자동) 옵션: 빈값 — LOT 최신 캐시를 우선 쓰고, 없을 때만 DB FAB 경로로 fallback.
   //     - 제품폴더 옵션: `<1.RAWDATA_DB_xxx>/<PROD>` — `/fab-roots` 가 반환한 각 root 의 products 를 펼침.
   //     - TableMap 옵션: `tablemap:<id>` — 사용자 정의.
   //   v8.8.21: `root:<name>` 옵션 제거 — 제품 스코프를 넘어 섞인 데이터로 join 되는 footgun.
   useEffect(()=>{
-    const out=[{value:"",label:"(자동 매칭) ML_TABLE_PRODA → 1.RAWDATA_DB/PRODA",source_type:"auto"}];
+    const out=[{value:"",label:"(자동) LOT 최신 캐시 우선, 없으면 DB FAB 경로 fallback",source_type:"auto"}];
     const fabRootsReq=sf(API+"/fab-roots").then(d=>{
       const roots = d.roots || [];
       setFabRoots(roots);
@@ -1080,9 +1080,10 @@ export default function My_SplitTable({user}){
               const runtime=aliasMap[raw];
               return runtime?`${raw} → ${runtime}`:raw;
             };
-            const currentMeta=mlMatch.override||{};
-            const currentMode=mlMatch.manual_override?"manual":"auto";
-            const currentSource=mlMatch.effective_fab_source||"";
+            const currentCache=(data?.match_cache?.hit?data.match_cache:(mlMatch.match_cache?.hit?mlMatch.match_cache:null));
+            const currentMeta=currentCache||(mlMatch.override||{});
+            const currentMode=currentCache?"cache":(mlMatch.manual_override?"manual":"auto");
+            const currentSource=currentCache?(currentCache.fab_source||currentCache.source||"lot_progress_latest_cache"):(mlMatch.effective_fab_source||"");
             const previewApiMissing=preview.api_missing===true;
             const selectedRootCol=toPreviewCol(ov.root_col||rec.root_col||currentMeta.root_col||"");
             const selectedWfCol=toPreviewCol(ov.wf_col||rec.wf_col||currentMeta.wf_col||"");
@@ -1118,7 +1119,7 @@ export default function My_SplitTable({user}){
                 toast.warn("수동 연결은 DB 경로를 먼저 선택해야 합니다.");
                 return;
               }
-              if(draftOverrideMode==="auto"&&!autoFabSource){
+              if(draftOverrideMode==="auto"&&!autoFabSource&&!mlMatch.match_cache?.hit){
                 toast.warn("자동 매칭 후보가 없습니다. 수동 연결로 DB 경로를 선택하세요.");
                 return;
               }
@@ -1153,20 +1154,22 @@ export default function My_SplitTable({user}){
               }
             };
             const selectS={...S,width:"100%",fontSize:14,fontFamily:"monospace"};
-            const currentPreviewLots=(currentMeta.sample_fab_values||[]).filter(Boolean);
+            const currentPreviewLots=currentCache?[]:(currentMeta.sample_fab_values||[]).filter(Boolean);
             const draftPreviewLots=(preview.latest_fab_lot_ids||[]).filter(Boolean);
-            const statusTone=currentMeta.error?"rgba(239,68,68,0.95)":currentMode==="manual"?"rgba(245,158,11,0.95)":"rgba(34,197,94,0.95)";
-            const currentAliasPairs=Object.entries(currentMeta.column_aliases||{});
+            const draftAutoSourceLabel=mlMatch.match_cache?.hit?"LOT 최신 캐시":(autoFabSource||"(자동 후보 없음)");
+            const statusTone=currentMeta.error?"rgba(239,68,68,0.95)":currentMode==="cache"?"rgba(37,99,235,0.95)":currentMode==="manual"?"rgba(245,158,11,0.95)":"rgba(34,197,94,0.95)";
+            const currentAliasPairs=currentCache?[]:Object.entries(currentMeta.column_aliases||{});
             const draftAliasPairs=Object.entries(aliasMap||{});
             return(<div style={{display:"grid",gap:10,padding:"12px 14px",borderRadius:10,background:"var(--bg-secondary)",border:"1px solid var(--border)",marginBottom:10}}>
               <div style={{display:"grid",gridTemplateColumns:"repeat(2, minmax(0, 1fr))",gap:8}}>
                 <div style={{padding:"10px 12px",borderRadius:8,background:"var(--bg-card)",border:"1px solid var(--border)"}}>
                   <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginBottom:6}}>현재 적용</div>
                   <div style={{display:"grid",gap:4,fontSize:14,color:"var(--text-secondary)",lineHeight:1.55}}>
-                    <div>방식: <span style={{color:statusTone,fontWeight:700}}>{currentMode==="manual"?"수동 연결":"자동 매칭"}</span></div>
+                    <div>방식: <span style={{color:statusTone,fontWeight:700}}>{currentMode==="cache"?"LOT 최신 캐시":currentMode==="manual"?"수동 연결":"자동 매칭"}</span></div>
                     <div>경로: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{currentSource||"(없음)"}</span></div>
                     <div>fab_col / ts_col: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{currentMeta.fab_col||"fab_lot_id"} / {currentMeta.ts_col||"last"}</span></div>
                     <div>join_keys: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{(currentMeta.join_keys||[]).length?(currentMeta.join_keys||[]).join(", "):"미확정"}</span></div>
+                    {currentCache&&<div>cache: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{currentCache.source||"lot_progress_latest_cache"} · rows {currentCache.row_count||0} · {currentCache.built_at||"(mtime 없음)"}</span></div>}
                     {currentAliasPairs.length>0&&<div>raw → runtime: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{currentAliasPairs.map(([raw,runtime])=>`${raw}→${runtime}`).join(", ")}</span></div>}
                     <div style={{display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>fab_lot 예시:
                       {currentPreviewLots.length?currentPreviewLots.map(v=><span key={v} style={{padding:"1px 7px",borderRadius:999,background:"rgba(34,197,94,0.12)",color:"rgba(22,163,74,0.95)",fontSize:14,fontFamily:"monospace",fontWeight:700}}>{v}</span>)
@@ -1179,7 +1182,7 @@ export default function My_SplitTable({user}){
                   <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginBottom:6}}>자동 매칭 후보</div>
                   <div style={{display:"grid",gap:4,fontSize:14,color:"var(--text-secondary)",lineHeight:1.55}}>
                     <div>ML_TABLE 파생 제품: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{mlMatch.pro||deriveProductFolder(selProd)||"(없음)"}</span></div>
-                    <div>자동 경로: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{autoFabSource||"(자동 후보 없음)"}</span></div>
+                    <div>자동 경로: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{mlMatch.match_cache?.hit?"LOT 최신 캐시":(autoFabSource||"(자동 후보 없음)")}</span></div>
                     <div>탐색기 DB 후보: <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>{(mlMatch.matches||[]).length?(mlMatch.matches||[]).map(x=>x.path).join(", "):"(없음)"}</span></div>
                     <div style={{fontSize:14,color:"var(--text-secondary)"}}>수동 연결은 아래 목록에서 탐색기와 같은 DB 경로를 직접 고릅니다.</div>
                   </div>
@@ -1193,8 +1196,8 @@ export default function My_SplitTable({user}){
               </div>
               {draftOverrideMode==="auto"
                 ?<div style={{padding:"10px 12px",borderRadius:8,background:"rgba(34,197,94,0.08)",border:"1px solid rgba(34,197,94,0.24)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
-                  <div>저장 시 <span style={{fontFamily:"monospace",color:"rgba(22,163,74,0.95)",fontWeight:700}}>{autoFabSource||"(자동 후보 없음)"}</span> 를 사용합니다.</div>
-                  <div>자동 후보가 없으면 수동 연결로 전환해서 탐색기 DB 경로를 선택하면 됩니다.</div>
+                  <div>저장 시 <span style={{fontFamily:"monospace",color:"rgba(22,163,74,0.95)",fontWeight:700}}>{draftAutoSourceLabel}</span> 를 우선 사용합니다.</div>
+                  <div>{mlMatch.match_cache?.hit?"캐시가 비어 있거나 scope가 맞지 않을 때만 DB FAB 경로로 fallback합니다.":"자동 후보가 없으면 수동 연결로 전환해서 탐색기 DB 경로를 선택하면 됩니다."}</div>
                 </div>
                 :<div style={{display:"grid",gap:6}}>
                   <div style={{fontSize:14,fontWeight:700,color:"var(--accent)"}}>2. 수동 DB 경로 선택</div>
@@ -1207,7 +1210,7 @@ export default function My_SplitTable({user}){
 
               <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginTop:2}}>3. 연결 열 확인</div>
               {overridePreviewLoading?<div style={{fontSize:14,color:"var(--text-secondary)"}}>연결 미리보기 로딩 중...</div>
-              :!effectivePreviewSource?<div style={{padding:"8px 10px",borderRadius:6,background:"var(--bg-card)",border:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>먼저 자동 후보를 확인하거나 수동 DB 경로를 선택하세요.</div>
+              :!effectivePreviewSource?<div style={{padding:"8px 10px",borderRadius:6,background:"var(--bg-card)",border:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>{mlMatch.match_cache?.hit?"LOT 최신 캐시를 사용 중입니다. 수동 DB 경로 미리보기는 fallback이 필요할 때만 선택하세요.":"먼저 자동 후보를 확인하거나 수동 DB 경로를 선택하세요."}</div>
               :preview.error&&!previewApiMissing?<div style={{padding:"8px 10px",borderRadius:6,background:"rgba(239,68,68,0.12)",border:"1px solid rgba(239,68,68,0.35)",fontSize:14,color:"rgba(239,68,68,0.95)",lineHeight:1.5}}>{preview.error}</div>
               :<div style={{display:"grid",gap:8}}>
                 <div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.5}}>

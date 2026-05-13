@@ -36,20 +36,19 @@ flow/
 
 현재 우선 흐름은 Flow-i Agent 탭이 Inform Log, SplitTable, FileBrowser를 app-action driver로 호출하고, `prompt -> orchestrator -> feature unit_action -> API/handler -> result` trace를 한 화면에서 보여주는 것이다.
 
-## Harness Structure
+## Validation Structure
 
-`flow`의 하네스는 앱 안의 smoke/preflight/test와 선택적 sibling OmniHarness로 나뉜다.
+`flow`의 검증은 앱 안의 smoke/preflight/test 스크립트를 기준으로 한다.
 
-| 하네스 | 역할 |
+| 항목 | 역할 |
 |---|---|
 | `scripts/smoke_test.py` | 실행 중인 `localhost:8080` 앱에 로그인해 FileBrowser, SplitTable, Inform, Meeting, Tracker, Admin 기본 API를 확인 |
 | `scripts/tab_smoke.py` | admin/smoke user로 주요 탭 endpoint를 반복 확인 |
 | `scripts/smoke_lot_flow.py` | lot 중심 E2E 업무 시나리오 smoke |
-| `scripts/preflight_internal.py` | 사내 반입 전 포트, root, data_root 보존, backup/restore, OmniHarness 연결 기준 확인 |
+| `scripts/preflight_internal.py` | 사내 반입 전 포트, root, data_root 보존, backup/restore 기준 확인 |
 | `tests/` | backend/router/service 계약과 회귀 단위 테스트 |
-| `../OmniHarness` | 있을 때만 사용하는 선택적 하네스/점검 뷰어. 기준 포트는 8081이고 active project는 `flow` |
 
-앱은 8080을 사용하고, OmniHarness가 있으면 8081을 사용한다. 실행 중인 앱의 root 해석은 `/runtime-roots.json`에서 확인한다.
+앱은 8080을 사용한다. 실행 중인 앱의 root 해석은 `/runtime-roots.json`에서 확인한다.
 
 ## Quick Start
 

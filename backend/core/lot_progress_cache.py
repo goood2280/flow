@@ -21,11 +21,14 @@ from core.paths import PATHS
 
 logger = logging.getLogger("flow.lot_progress_cache")
 
-FAB_ROOT = "1.RAWDATA_DB_FAB"
+FAB_ROOT = "1.RAWDATA_DB"
+LEGACY_FAB_ROOT = "1.RAWDATA_DB_FAB"
+FAB_ROOT_ALIASES = (FAB_ROOT, LEGACY_FAB_ROOT)
 CACHE_VERSION = 1
 CACHE_REFRESH_MINUTES_DEFAULT = 30
 CACHE_REFRESH_MINUTES_MIN = 1
 CACHE_REFRESH_MINUTES_MAX = 1440
+SOURCE_ROOT_SETTING_KEY = "lot_progress_source_root"
 
 _CACHE_LOCK = threading.Lock()
 _CACHE_STATE: dict | None = None
@@ -249,6 +252,18 @@ def lot_progress_cache_refresh_minutes() -> int:
 
 def lot_progress_cache_refresh_seconds() -> int:
     return max(60, lot_progress_cache_refresh_minutes() * 60)
+
+
+def lot_progress_cache_source_root() -> str:
+    settings_path = PATHS.data_root / "settings.json"
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.is_file() else {}
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        return ""
+    raw = data.get(SOURCE_ROOT_SETTING_KEY, "")
+    return _clean_source_root_hint(raw)
 
 
 def _safe_text(value) -> str:
@@ -599,13 +614,155 @@ def _fab_product_dirs(fab_root: Path) -> Iterable[Path]:
         return []
 
 
-def refresh_lot_progress_cache(force: bool = False) -> dict:
+def _path_key(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except Exception:
+        return str(path)
+
+
+def _clean_source_root_hint(value: str = "") -> str:
+    text = _safe_text(value).strip().strip("/\\")
+    if not text:
+        return ""
+    if text.casefold() in {"auto", "default", "자동"}:
+        return ""
+    path = Path(text)
+    if path.is_absolute():
+        return str(path)
+    parts = [part for part in re.split(r"[\\/]+", text) if part and part not in {".", ".."}]
+    if not parts:
+        return ""
+    first = parts[0]
+    if first.upper().startswith("1.RAWDATA_DB"):
+        return first
+    return text
+
+
+def normalize_lot_progress_source_root(value: str = "") -> str:
+    return _clean_source_root_hint(value)
+
+
+def _resolve_fab_root(db_root: Path, root_name: str) -> Path | None:
+    name = _clean_source_root_hint(root_name)
+    if not name:
+        return None
+    path = Path(name)
+    if path.is_absolute():
+        return path if path.is_dir() else None
+    try:
+        from app_v2.shared.source_adapter import resolve_named_child
+        if "/" not in name and "\\" not in name:
+            resolved = resolve_named_child(db_root, name)
+            if resolved is not None and resolved.is_dir():
+                return resolved
+    except Exception:
+        pass
+    cand = db_root / name
+    return cand if cand.is_dir() else None
+
+
+def _source_root_name(path: Path, db_root: Path) -> str:
+    try:
+        rel = path.relative_to(db_root)
+        if rel.parts:
+            return "/".join(rel.parts)
+    except Exception:
+        pass
+    return path.name or str(path)
+
+
+def _has_product_parquet_dirs(root: Path) -> bool:
+    for product_dir in _fab_product_dirs(root):
+        try:
+            next(product_dir.rglob("*.parquet"))
+            return True
+        except StopIteration:
+            continue
+        except Exception:
+            continue
+    return False
+
+
+def _fab_source_roots(db_root: Path, source_root: str = "") -> list[dict]:
+    roots: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(path: Path | None) -> None:
+        if path is None or not path.is_dir():
+            return
+        key = _path_key(path)
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append({"path": path, "source_root": _source_root_name(path, db_root)})
+
+    hint = _clean_source_root_hint(source_root)
+    if hint:
+        _add(_resolve_fab_root(db_root, hint))
+        return roots
+    for name in FAB_ROOT_ALIASES:
+        _add(_resolve_fab_root(db_root, name))
+    if db_root.name.upper().startswith("1.RAWDATA_DB"):
+        _add(db_root)
+    if not roots and _has_product_parquet_dirs(db_root):
+        _add(db_root)
+    return roots
+
+
+def _fab_root_names_for_error(source_root: str = "") -> list[str]:
+    names: list[str] = []
+    hint = _clean_source_root_hint(source_root)
+    if hint:
+        names.append(hint)
+        return names
+    for name in FAB_ROOT_ALIASES:
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _source_ref_matches(left: str, right: str) -> bool:
+    a = _clean_source_root_hint(left)
+    b = _clean_source_root_hint(right)
+    if not a or not b:
+        return False
+    if a.casefold() == b.casefold():
+        return True
+    try:
+        return str(Path(a).resolve()).casefold() == str(Path(b).resolve()).casefold()
+    except Exception:
+        return False
+
+
+def _state_source_root_matches(state: dict | None, source_root: str = "") -> bool:
+    hint = _clean_source_root_hint(source_root)
+    if not hint:
+        if not isinstance(state, dict):
+            return True
+        return not _clean_source_root_hint(state.get("configured_source_root", ""))
+    if not isinstance(state, dict):
+        return False
+    candidates: list[str] = []
+    for key in ("source_root", "configured_source_root"):
+        value = state.get(key)
+        if value:
+            candidates.append(str(value))
+    for key in ("source_roots", "fab_roots"):
+        for value in state.get(key) or []:
+            if value:
+                candidates.append(str(value))
+    return any(_source_ref_matches(candidate, hint) for candidate in candidates)
+
+
+def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> dict:
     """Rebuild the LOT_WF current-position cache from FAB parquet."""
     global _CACHE_STATE, _CACHE_RUNNING, _CACHE_LAST_SKIPPED_BY_LOCK
+    source_root_hint = _clean_source_root_hint(source_root) or lot_progress_cache_source_root()
     with _CACHE_LOCK:
         cache_path = cache_file()
         max_age_seconds = lot_progress_cache_refresh_seconds()
-        if not force and _CACHE_STATE:
+        if not force and _CACHE_STATE and _state_source_root_matches(_CACHE_STATE, source_root_hint):
             generated_at = _safe_text(_CACHE_STATE.get("generated_at"))
             try:
                 age = (dt.datetime.now() - dt.datetime.fromisoformat(generated_at)).total_seconds()
@@ -648,79 +805,103 @@ def refresh_lot_progress_cache(force: bool = False) -> dict:
         _CACHE_RUNNING = True
         _CACHE_LAST_SKIPPED_BY_LOCK = False
         started_at = _now_iso()
-        _append_refresh_log({"status": "started", "started_at": started_at, "force": bool(force)})
+        _append_refresh_log({
+            "status": "started",
+            "started_at": started_at,
+            "force": bool(force),
+            "source_root_hint": source_root_hint,
+        })
         try:
             db_root = PATHS.db_root
-            fab_root = db_root / FAB_ROOT
+            fab_roots = _fab_source_roots(db_root, source_root_hint)
             step_by_product, step_by_id = load_step_matching()
             latest: dict[tuple[str, str], dict] = {}
             files_scanned = 0
             rows_seen = 0
             errors: list[str] = []
 
-            for product_dir in _fab_product_dirs(fab_root):
-                # Product comes from the FAB DB product folder, not from a parquet column.
-                product = product_dir.name
-                for parquet in product_dir.rglob("*.parquet"):
-                    files_scanned += 1
-                    try:
-                        rows = _read_parquet_rows(parquet)
-                        for raw in rows:
-                            rows_seen += 1
-                            root_lot_id = _safe_text(raw.get("root_lot_id"))
-                            lot_id = _safe_text(raw.get("lot_id"))
-                            wafer_id = _norm_wafer(raw.get("wafer_id"))
-                            step_id = _safe_text(raw.get("step_id"))
-                            if not (root_lot_id and wafer_id and step_id):
-                                continue
-                            process_id = _safe_text(raw.get("process_id"))
-                            product_key = _norm_key(product)
-                            step_key = _norm_key(step_id)
-                            function_step = (
-                                step_by_product.get((product_key, step_key))
-                                or step_by_product.get((_norm_key(process_id), step_key))
-                                or step_by_id.get(step_key)
-                                or ""
-                            )
-                            lot_wf = f"{root_lot_id}_{wafer_id}"
-                            item = {
-                                "product": product,
-                                "process_id": process_id,
-                                "root_lot_id": root_lot_id,
-                                "lot_id": lot_id,
-                                "wafer_id": wafer_id,
-                                "LOT_WF": lot_wf,
-                                "lot_wf": lot_wf,
-                                "step_id": step_id,
-                                "function_step": function_step,
-                                "func_step": function_step,
-                                "tkin_time": _safe_text(raw.get("tkin_time")),
-                                "tkout_time": _safe_text(raw.get("tkout_time")),
-                                "time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
-                                "update_time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
-                                "eqp_id": _safe_text(raw.get("eqp_id")),
-                                "chamber_id": _safe_text(raw.get("chamber_id")),
-                                "ppid": _safe_text(raw.get("ppid")),
-                                "source_root": FAB_ROOT,
-                            }
-                            key = (_norm_key(product), _norm_key(lot_wf))
-                            prev = latest.get(key)
-                            if prev is None or _sort_time(item) >= _sort_time(prev):
-                                latest[key] = item
-                    except Exception as exc:
-                        if len(errors) < 20:
-                            errors.append(f"{parquet}: {exc}")
+            if not fab_roots:
+                tried = ", ".join(_fab_root_names_for_error(source_root_hint))
+                errors.append(f"FAB rawdata root not found under {db_root}; tried {tried}")
+
+            for root_info in fab_roots:
+                fab_root = root_info["path"]
+                root_name = root_info["source_root"]
+                product_dirs = list(_fab_product_dirs(fab_root))
+                if not product_dirs and len(errors) < 20:
+                    errors.append(f"No product folders found under {fab_root}")
+                for product_dir in product_dirs:
+                    # Product comes from the FAB DB product folder, not from a parquet column.
+                    product = product_dir.name
+                    for parquet in product_dir.rglob("*.parquet"):
+                        files_scanned += 1
+                        try:
+                            rows = _read_parquet_rows(parquet)
+                            for raw in rows:
+                                rows_seen += 1
+                                root_lot_id = _safe_text(raw.get("root_lot_id"))
+                                lot_id = _safe_text(raw.get("lot_id"))
+                                wafer_id = _norm_wafer(raw.get("wafer_id"))
+                                step_id = _safe_text(raw.get("step_id"))
+                                if not (root_lot_id and wafer_id and step_id):
+                                    continue
+                                process_id = _safe_text(raw.get("process_id"))
+                                product_key = _norm_key(product)
+                                step_key = _norm_key(step_id)
+                                function_step = (
+                                    step_by_product.get((product_key, step_key))
+                                    or step_by_product.get((_norm_key(process_id), step_key))
+                                    or step_by_id.get(step_key)
+                                    or ""
+                                )
+                                lot_wf = f"{root_lot_id}_{wafer_id}"
+                                item = {
+                                    "product": product,
+                                    "process_id": process_id,
+                                    "root_lot_id": root_lot_id,
+                                    "lot_id": lot_id,
+                                    "wafer_id": wafer_id,
+                                    "LOT_WF": lot_wf,
+                                    "lot_wf": lot_wf,
+                                    "step_id": step_id,
+                                    "function_step": function_step,
+                                    "func_step": function_step,
+                                    "tkin_time": _safe_text(raw.get("tkin_time")),
+                                    "tkout_time": _safe_text(raw.get("tkout_time")),
+                                    "time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
+                                    "update_time": _safe_text(raw.get("tkout_time") or raw.get("tkin_time")),
+                                    "eqp_id": _safe_text(raw.get("eqp_id")),
+                                    "chamber_id": _safe_text(raw.get("chamber_id")),
+                                    "ppid": _safe_text(raw.get("ppid")),
+                                    "source_root": root_name,
+                                }
+                                key = (_norm_key(product), _norm_key(lot_wf))
+                                prev = latest.get(key)
+                                if prev is None or _sort_time(item) > _sort_time(prev):
+                                    latest[key] = item
+                        except Exception as exc:
+                            if len(errors) < 20:
+                                errors.append(f"{parquet}: {exc}")
+
+            if fab_roots and files_scanned == 0 and len(errors) < 20:
+                roots_text = ", ".join(str(root["path"]) for root in fab_roots)
+                errors.append(f"No FAB parquet files found under {roots_text}")
 
             items = sorted(
                 latest.values(),
                 key=lambda row: (_norm_key(row.get("product")), _norm_key(row.get("root_lot_id")), _wafer_sort_value(row.get("wafer_id"))),
             )
+            source_roots = [root["source_root"] for root in fab_roots]
+            fab_root_paths = [str(root["path"]) for root in fab_roots]
             state = {
                 "version": CACHE_VERSION,
                 "generated_at": _now_iso(),
                 "db_root": str(db_root),
-                "fab_root": str(fab_root),
-                "source_root": FAB_ROOT,
+                "fab_root": fab_root_paths[0] if fab_root_paths else str(db_root / FAB_ROOT),
+                "fab_roots": fab_root_paths,
+                "configured_source_root": source_root_hint,
+                "source_root": source_roots[0] if source_roots else FAB_ROOT,
+                "source_roots": source_roots,
                 "cache_file": str(cache_path),
                 "count": len(items),
                 "files_scanned": files_scanned,
@@ -745,6 +926,7 @@ def refresh_lot_progress_cache(force: bool = False) -> dict:
                 "rows_seen": rows_seen,
                 "row_count": len(items),
                 "errors": len(errors),
+                "source_roots": source_roots,
             })
             _CACHE_RUNNING = False
             _release_refresh_lock(lock_fh)
@@ -768,9 +950,10 @@ def load_lot_progress_cache(max_age_seconds: int | None = None) -> dict:
     global _CACHE_STATE
     if max_age_seconds is None:
         max_age_seconds = lot_progress_cache_refresh_seconds()
+    source_root_hint = lot_progress_cache_source_root()
     should_refresh = False
     with _CACHE_LOCK:
-        if _CACHE_STATE:
+        if _CACHE_STATE and _state_source_root_matches(_CACHE_STATE, source_root_hint):
             generated_at = _safe_text(_CACHE_STATE.get("generated_at"))
             try:
                 age = (dt.datetime.now() - dt.datetime.fromisoformat(generated_at)).total_seconds()
@@ -784,15 +967,15 @@ def load_lot_progress_cache(max_age_seconds: int | None = None) -> dict:
                 state = json.loads(path.read_text(encoding="utf-8"))
                 generated_at = _safe_text(state.get("generated_at"))
                 age = (dt.datetime.now() - dt.datetime.fromisoformat(generated_at)).total_seconds()
-                if age <= max_age_seconds:
+                if age <= max_age_seconds and _state_source_root_matches(state, source_root_hint):
                     _CACHE_STATE = state
                     return dict(state)
             except Exception:
                 pass
         should_refresh = True
     if should_refresh:
-        return refresh_lot_progress_cache(force=True)
-    return refresh_lot_progress_cache(force=True)
+        return refresh_lot_progress_cache(force=True, source_root=source_root_hint)
+    return refresh_lot_progress_cache(force=True, source_root=source_root_hint)
 
 
 def _matches(item: dict, *, product: str = "", lot_id: str = "", root_lot_id: str = "", wafer_id: str = "", lot_wf: str = "") -> bool:
@@ -968,6 +1151,7 @@ def lot_progress_snapshot(
 
 
 def cache_status() -> dict:
+    configured_source_root = lot_progress_cache_source_root()
     try:
         state = load_lot_progress_cache(max_age_seconds=lot_progress_cache_refresh_seconds())
     except Exception as exc:
@@ -976,6 +1160,7 @@ def cache_status() -> dict:
             "ok": False,
             "error": str(exc),
             "cache_file": str(cache_file()),
+            "configured_source_root": configured_source_root,
             "last_success_at": runtime.get("last_success_at", ""),
             "last_attempt_at": runtime.get("last_attempt_at", ""),
             "freshness_state": runtime.get("freshness_state", "error"),
@@ -998,6 +1183,9 @@ def cache_status() -> dict:
         "scheduler_started": _CACHE_STARTED,
         "interval_minutes": lot_progress_cache_refresh_minutes(),
         "interval_seconds": lot_progress_cache_refresh_seconds(),
+        "configured_source_root": configured_source_root,
+        "source_root": state.get("source_root") or "",
+        "source_roots": list(state.get("source_roots") or []),
         "last_success_at": runtime.get("last_success_at", ""),
         "last_attempt_at": runtime.get("last_attempt_at", ""),
         "freshness_state": runtime.get("freshness_state", "never"),

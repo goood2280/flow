@@ -3609,6 +3609,7 @@ class CacheMatchSettingsReq(BaseModel):
     target: str = "lot_progress"
     interval_minutes: int = 30
     auto_s3_upload_on_save: bool | None = None
+    source_root: str | None = None
 
 
 class CacheLlmRefreshReq(BaseModel):
@@ -3635,6 +3636,18 @@ def _cache_match_target(raw: str) -> str:
 
 def _cache_settings_file() -> Path:
     return PATHS.data_root / "settings.json"
+
+
+def _lot_progress_source_root_setting() -> str:
+    current = load_json(_cache_settings_file(), {})
+    if not isinstance(current, dict):
+        return ""
+    try:
+        from core import lot_progress_cache as _lot_progress_cache
+        key = getattr(_lot_progress_cache, "SOURCE_ROOT_SETTING_KEY", "lot_progress_source_root")
+        return _lot_progress_cache.normalize_lot_progress_source_root(current.get(key, ""))
+    except Exception:
+        return _cache_safe_text(current.get("lot_progress_source_root", ""), 160)
 
 
 def _clamp_lot_progress_interval(value) -> int:
@@ -3675,6 +3688,7 @@ def _lot_progress_cache_status() -> dict:
     json_fp = _lot_progress_cache.cache_file()
     parquet_fp = _lot_progress_cache.filebrowser_cache_parquet_file()
     core_status = _lot_progress_cache.cache_status()
+    configured_source_root = _lot_progress_source_root_setting() or str(core_status.get("configured_source_root") or "")
     state = load_json(json_fp, {}) if json_fp.is_file() else {}
     if not isinstance(state, dict):
         state = {}
@@ -3714,6 +3728,10 @@ def _lot_progress_cache_status() -> dict:
                 "cache_path": str(parquet_fp),
                 "json_cache_path": str(json_fp),
                 "cache_exists": parquet_fp.is_file(),
+                "configured_source_root": configured_source_root,
+                "source_root": state.get("source_root") or core_status.get("source_root") or "",
+                "source_roots": list(state.get("source_roots") or core_status.get("source_roots") or []),
+                "fab_roots": list(state.get("fab_roots") or []),
                 "row_count": row_count,
                 "products": products,
                 "updated_at": updated_at or _cache_mtime_iso(parquet_fp),
@@ -3758,6 +3776,10 @@ def _lot_progress_cache_status() -> dict:
         "cache_path": str(parquet_fp),
         "json_cache_path": str(json_fp),
         "cache_exists": parquet_fp.is_file(),
+        "configured_source_root": configured_source_root,
+        "source_root": state.get("source_root") or core_status.get("source_root") or "",
+        "source_roots": list(state.get("source_roots") or core_status.get("source_roots") or []),
+        "fab_roots": list(state.get("fab_roots") or []),
         "row_count": row_count,
         "total_row_count": row_count,
         "products": products,
@@ -3782,7 +3804,7 @@ def _refresh_filebrowser_cache_target(target: str, *, product: str = "", source_
     product = _cache_safe_text(product, 120)
     source_root = _cache_safe_text(source_root, 160)
     from core import lot_progress_cache as _lot_progress_cache
-    state = _lot_progress_cache.refresh_lot_progress_cache(force=bool(force))
+    state = _lot_progress_cache.refresh_lot_progress_cache(force=bool(force), source_root=source_root)
     export = _lot_progress_cache.export_lot_progress_parquet(state)
     row_count = int((state or {}).get("count") or export.get("rows") or 0)
     s3_sync = _filebrowser_s3_sync_for_saved_path(_lot_progress_cache.filebrowser_cache_parquet_file())
@@ -3799,6 +3821,10 @@ def _refresh_filebrowser_cache_target(target: str, *, product: str = "", source_
         "cache_path": str(_lot_progress_cache.filebrowser_cache_parquet_file()),
         "json_cache_path": str(_lot_progress_cache.cache_file()),
         "paths": export.get("paths") or [],
+        "configured_source_root": (state or {}).get("configured_source_root") or _lot_progress_source_root_setting(),
+        "source_root": (state or {}).get("source_root") or "",
+        "source_roots": list((state or {}).get("source_roots") or []),
+        "fab_roots": list((state or {}).get("fab_roots") or []),
         "files_scanned": int((state or {}).get("files_scanned") or 0),
         "rows_seen": int((state or {}).get("rows_seen") or 0),
         "errors": list((state or {}).get("errors") or [])[:20],
@@ -3840,7 +3866,15 @@ def _cache_prompt_target(prompt: str) -> str:
         "현재 step", "현재 스텝", "최신 lot", "최신 랏", "진행 캐시",
     )):
         return "lot_progress"
+    if "캐시" in text and any(token in low or token in text for token in ("rawdata", "fab", "lot", "랏", "제품")):
+        return "lot_progress"
     return ""
+
+
+def _cache_prompt_source_root(prompt: str) -> str:
+    text = str(prompt or "")
+    m = re.search(r"1\.RAWDATA_DB(?:_FAB)?", text, flags=re.I)
+    return m.group(0) if m else ""
 
 
 def _normalize_cache_plan_target(raw: str) -> str:
@@ -3863,7 +3897,9 @@ def _cache_llm_plan(prompt: str, *, product: str = "", source_root: str = "") ->
             system = _filebrowser_agent_prompt("cache_refresh.system", (
                 "You classify a Flow FileBrowser cache refresh request. "
                 "Return only JSON. The only allowed target value is: lot_progress. "
-                "lot_progress means lot_progress_latest_lot_by_root_wafer. Do not invent paths."
+                "lot_progress means lot_progress_latest_lot_by_root_wafer. "
+                "If no explicit FAB source root is requested, omit source_root so the saved FileBrowser cache setting is used. "
+                "Do not invent paths, DB names, or schedules."
             ))
             ask = json.dumps({
                 "user_prompt": prompt,
@@ -3883,10 +3919,11 @@ def _cache_llm_plan(prompt: str, *, product: str = "", source_root: str = "") ->
     fallback_target = _cache_prompt_target(prompt)
     if not target:
         target = fallback_target
+    source_root_hint = _cache_prompt_source_root(prompt)
     return {
         "target": target,
         "product": _cache_safe_text(plan.get("product") or product, 120),
-        "source_root": _cache_safe_text(plan.get("source_root") or source_root, 160),
+        "source_root": _cache_safe_text(plan.get("source_root") or source_root or source_root_hint, 160),
         "reason": _cache_safe_text(plan.get("reason") or ("deterministic fallback" if fallback_target else ""), 240),
         "llm": llm_info,
         "raw_plan": {k: plan.get(k) for k in ("target", "product", "source_root", "reason") if k in plan},
@@ -3910,6 +3947,15 @@ def cache_match_settings(req: CacheMatchSettingsReq, request: Request):
     if not isinstance(current, dict):
         current = {}
     current["lot_progress_refresh_minutes"] = minutes
+    if req.source_root is not None:
+        try:
+            from core import lot_progress_cache as _lot_progress_cache
+            source_root = _lot_progress_cache.normalize_lot_progress_source_root(req.source_root)
+            source_root_key = getattr(_lot_progress_cache, "SOURCE_ROOT_SETTING_KEY", "lot_progress_source_root")
+        except Exception:
+            source_root = _cache_safe_text(req.source_root, 160)
+            source_root_key = "lot_progress_source_root"
+        current[source_root_key] = source_root
     save_json(settings_path, current, indent=2)
     if req.auto_s3_upload_on_save is not None:
         fb_settings = _load_filebrowser_settings()
@@ -3919,7 +3965,7 @@ def cache_match_settings(req: CacheMatchSettingsReq, request: Request):
         "username": me.get("username") or "",
         "action": "filebrowser:cache-settings:save",
         "tab": "filebrowser",
-        "detail": f"lot_progress_refresh_minutes={minutes} auto_s3_upload_on_save={_filebrowser_auto_s3_upload_enabled()}",
+        "detail": f"lot_progress_refresh_minutes={minutes} lot_progress_source_root={current.get('lot_progress_source_root', '')} auto_s3_upload_on_save={_filebrowser_auto_s3_upload_enabled()}",
     })
     return cache_match_status(request=request, target="lot_progress")
 

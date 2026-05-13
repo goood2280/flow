@@ -597,6 +597,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const[fbCacheBusy,setFbCacheBusy]=useState("");
   const[fbCacheMsg,setFbCacheMsg]=useState("");
   const[fbCacheInterval,setFbCacheInterval]=useState("30");
+  const[fbCacheSourceRoot,setFbCacheSourceRoot]=useState("");
   const[fbCacheSettingsBusy,setFbCacheSettingsBusy]=useState(false);
   const[fbCacheLlmPrompt,setFbCacheLlmPrompt]=useState("lot_progress_latest_lot_by_root_wafer 캐시 만들어줘");
   const[fbCacheLlmProduct,setFbCacheLlmProduct]=useState("");
@@ -750,6 +751,7 @@ export default function My_FileBrowser({user,onNavigate}){
       const lotProgress=await sf(API+"/cache/match/status?target=lot_progress").catch(e=>({ok:false,target:"lot_progress",error:e.message}));
       setFbCacheStatus({lot_progress:lotProgress});
       if(lotProgress?.interval_minutes)setFbCacheInterval(String(lotProgress.interval_minutes));
+      if(Object.prototype.hasOwnProperty.call(lotProgress||{},"configured_source_root"))setFbCacheSourceRoot(String(lotProgress.configured_source_root||""));
       if(Object.prototype.hasOwnProperty.call(lotProgress||{},"auto_s3_upload_on_save"))setFbAutoS3Upload(!!lotProgress.auto_s3_upload_on_save);
     }catch(_){}
   };
@@ -765,11 +767,12 @@ export default function My_FileBrowser({user,onNavigate}){
   const saveFilebrowserCacheSchedule=async()=>{
     setFbCacheSettingsBusy(true);setFbCacheMsg("");
     try{
-      const d=await sf(API+"/cache/match/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:"lot_progress",interval_minutes:Number(fbCacheInterval||30),auto_s3_upload_on_save:!!fbAutoS3Upload})});
+      const d=await sf(API+"/cache/match/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:"lot_progress",interval_minutes:Number(fbCacheInterval||30),source_root:fbCacheSourceRoot,auto_s3_upload_on_save:!!fbAutoS3Upload})});
       if(d?.interval_minutes)setFbCacheInterval(String(d.interval_minutes));
+      if(Object.prototype.hasOwnProperty.call(d||{},"configured_source_root"))setFbCacheSourceRoot(String(d.configured_source_root||""));
       if(Object.prototype.hasOwnProperty.call(d||{},"auto_s3_upload_on_save"))setFbAutoS3Upload(!!d.auto_s3_upload_on_save);
       setFbCacheStatus(s=>({...s,lot_progress:d}));
-      setFbCacheMsg(`LOT 진행 최신 캐시 자동 갱신 주기 ${d?.interval_minutes||fbCacheInterval}분 저장됨`);
+      setFbCacheMsg(`LOT 진행 최신 캐시 설정 저장됨 · ${d?.interval_minutes||fbCacheInterval}분 · DB ${d?.configured_source_root||"auto"}`);
     }catch(e){
       setFbCacheMsg(e.message||"캐시 설정 저장 실패");
     }finally{
@@ -779,7 +782,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const refreshFilebrowserCache=async(target)=>{
     setFbCacheBusy(target);setFbCacheMsg("");
     try{
-      const d=await sf(API+"/cache/match/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target,force:true})});
+      const d=await sf(API+"/cache/match/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target,source_root:fbCacheSourceRoot,force:true})});
       if(d.disabled)setFbCacheMsg(`${target.toUpperCase()} 캐시가 비활성화되어 있습니다.`);
       else if(d.queued)setFbCacheMsg(`${target.toUpperCase()} 캐시 갱신 예약됨`);
       else if(d.running)setFbCacheMsg(`${target.toUpperCase()} 캐시 갱신 실행 중`);
@@ -1922,6 +1925,13 @@ export default function My_FileBrowser({user,onNavigate}){
                             disabled={!isAdmin||fbCacheSettingsBusy}
                             style={{width:82,padding:"5px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}/>
                           <span style={{fontSize:13,color:"var(--text-secondary)"}}>분</span>
+                          <label style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:13,color:"var(--text-secondary)",fontWeight:700}}>
+                            DB root
+                            <input value={fbCacheSourceRoot} onChange={e=>setFbCacheSourceRoot(e.target.value)}
+                              placeholder="auto"
+                              disabled={!isAdmin||fbCacheSettingsBusy}
+                              style={{width:190,minWidth:140,padding:"5px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}/>
+                          </label>
                           <label style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:13,color:"var(--text-secondary)",fontWeight:700,cursor:isAdmin?"pointer":"not-allowed"}}>
                             <input type="checkbox" checked={!!fbAutoS3Upload} disabled={!isAdmin||fbCacheSettingsBusy} onChange={e=>setFbAutoS3Upload(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/>
                             저장/캐시 갱신 후 S3 업로드
@@ -1939,6 +1949,8 @@ export default function My_FileBrowser({user,onNavigate}){
                         <span>target={target}</span>
                         <span>mode={isScheduled?"scheduled":"manual"}</span>
                         <span>products={(status?.products||[]).length}</span>
+                        <span>configured={status?.configured_source_root||"auto"}</span>
+                        <span>source={(status?.source_roots||[]).join(",")||status?.source_root||"-"}</span>
                         <span>rows={status?.row_count??status?.total_row_count??0}</span>
                         <span>scanned={status?.files_scanned??0}/{status?.rows_seen??0}</span>
                         <span>updated={status?.updated_at||status?.latest_updated_at||"-"}</span>
@@ -1978,7 +1990,7 @@ export default function My_FileBrowser({user,onNavigate}){
                   <div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"space-between",flexWrap:"wrap"}}>
                     <div>
                       <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>LLM 캐시 생성</div>
-                      <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:2}}>연결된 LLM이 LOT 진행 최신 캐시 요청인지 확인하고 서버 handler가 실행</div>
+                      <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:2}}>LLM은 LOT 진행 캐시 대상과 FAB root 힌트만 확인하고 서버 builder가 dataset을 생성</div>
                     </div>
                     <button onClick={refreshFilebrowserCacheByLlm} disabled={!isAdmin||fbCacheLlmBusy}
                       title={!isAdmin?"admin only":"LLM prompt로 캐시 생성"}
@@ -1997,7 +2009,7 @@ export default function My_FileBrowser({user,onNavigate}){
                       style={{minWidth:0,padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}/>
                   </div>
                   {fbCacheLlmResult&&<div style={{display:"grid",gap:4,fontSize:13,color:fbCacheLlmResult.ok===false?FB_BAD.fg:"var(--text-secondary)",fontFamily:"monospace"}}>
-                    <span>target={fbCacheLlmResult.target||fbCacheLlmResult.result?.target||"-"} · llm={fbCacheLlmResult.llm?.used?"used":(fbCacheLlmResult.llm?.available?"available":"fallback")}</span>
+                    <span>target={fbCacheLlmResult.target||fbCacheLlmResult.result?.target||"-"} · source={(fbCacheLlmResult.result?.source_roots||[]).join(",")||fbCacheLlmResult.result?.source_root||fbCacheLlmResult.plan?.source_root||"-"} · llm={fbCacheLlmResult.llm?.used?"used":(fbCacheLlmResult.llm?.available?"available":"fallback")}</span>
                     <span>reason={(fbCacheLlmResult.plan?.reason||fbCacheLlmResult.error||"-")}</span>
                     {fbCacheLlmResult.cache_path&&<span style={{overflowWrap:"anywhere"}}>{fbCacheLlmResult.cache_path}</span>}
                   </div>}

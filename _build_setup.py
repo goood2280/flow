@@ -5,8 +5,8 @@ Run from the flow/ directory:
 
     python _build_setup.py
 
-Output: overwrites setup.py at the repo root. Version is read from
-VERSION.json, so bump that first.
+Output: overwrites setup.py at the repo root. Release history is read from
+VERSION.json, while user-facing version output is mtime-based.
 
 The installer embeds source files only. It never bundles or overwrites
 runtime data under data/, FLOW_DATA_ROOT, FLOW_DB_ROOT, or
@@ -182,8 +182,8 @@ Usage (fresh machine):
     python setup.py extract        # just extract embedded sources
     python setup.py install-deps   # pip install backend deps only
     python setup.py build-frontend # npm install + npm run build only
-    python setup.py version        # print VERSION
-    python setup.py sync-version   # stamp VERSION onto VERSION.json
+    python setup.py version        # print mtime-based version label
+    python setup.py sync-version   # rewrite VERSION.json metadata
 
 Run the server afterwards:
 
@@ -210,6 +210,7 @@ re-running setup.py on an existing install preserves ALL user data.
 from __future__ import annotations
 
 import base64
+import datetime
 import gzip
 import json
 import os
@@ -233,6 +234,18 @@ except Exception:
 VERSION = "{version['version']}"
 CODENAME = "{version.get('codename', 'flow')}"
 VERSION_META = {json.dumps(installer_meta, ensure_ascii=False)}
+
+
+def _version_time_label() -> str:
+    times = []
+    for fp in (ROOT / 'VERSION.json', ROOT / 'setup.py'):
+        try:
+            times.append(fp.stat().st_mtime)
+        except OSError:
+            pass
+    if not times:
+        return "unknown"
+    return datetime.datetime.fromtimestamp(max(times)).isoformat(timespec="seconds")
 
 
 # 사용자 데이터 보존 whitelist (덮어쓰기 금지 파일명)
@@ -858,7 +871,7 @@ def extract() -> int:
     if os.environ.get("FLOW_SKIP_SNAPSHOT") == "1":
         print("[snapshot] skipped (FLOW_SKIP_SNAPSHOT=1)")
     else:
-        print(f"[extract] flow v{VERSION} starting - snapshot + extract + deps")
+        print(f"[extract] flow {_version_time_label()} starting - snapshot + extract + deps")
         try:
             snap = _snapshot_data()
         except Exception as e:
@@ -897,7 +910,7 @@ def extract() -> int:
         _seed_filebrowser_agent_prompts()
     except Exception as e:
         print(f"[seed] WARN FileBrowser agent prompts install failed: {e}")
-    print(f"\\n[extract] flow v{VERSION} - {len(FILES)} files processed -> {ROOT}")
+    print(f"\\n[extract] flow {_version_time_label()} - {len(FILES)} files processed -> {ROOT}")
     print(f"[extract] user data preservation: snapshot @ ~/.flow_backups/ + "
           f"5-layer _write guard + post-extract SHA-256 verify/restore.")
     print(f"[extract] manual restore: python setup.py restore [latest|<timestamp>]")
@@ -933,14 +946,14 @@ def build_frontend() -> int:
 
 
 def print_version() -> int:
-    print(f"flow (flow) v{VERSION} - codename {CODENAME}")
+    print(f"flow (flow) {_version_time_label()} - codename {CODENAME}")
     return 0
 
 
 def sync_version_json() -> int:
     vj = ROOT / 'VERSION.json'
     vj.write_text(json.dumps(VERSION_META, indent=2, ensure_ascii=False), encoding='utf-8')
-    print(f"VERSION.json -> {VERSION}")
+    print(f"VERSION.json mtime -> {_version_time_label()}")
     return 0
 
 

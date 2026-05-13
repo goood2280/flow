@@ -13,6 +13,8 @@ v8.7.3 hotfix:
     치명적 버그 수정. 유저/관리자 단위기능 전수 점검 통과.
 """
 import logging
+import datetime
+import json
 import os
 from pathlib import Path
 import sys
@@ -266,12 +268,32 @@ def api_not_found(path: str, request: Request):
 
 @app.get("/version.json")
 def serve_version():
-    # v8.7.6: Linux case-sensitive FS 대응 — VERSION.json(대문자) / version.json(소문자) 모두 시도.
+    # Linux case-sensitive FS 대응 — VERSION.json(대문자) / version.json(소문자) 모두 시도.
+    # Display version is mtime-based; keep semantic VERSION.json history under release_version.
     base = Path(__file__).parent.parent
     for name in ("VERSION.json", "version.json"):
         vp = base / name
         if vp.exists():
-            return _no_store_file_response(vp, media_type="application/json")
+            try:
+                modified_at = datetime.datetime.fromtimestamp(vp.stat().st_mtime).isoformat(timespec="seconds")
+            except OSError:
+                modified_at = ""
+            try:
+                meta = json.loads(vp.read_text(encoding="utf-8"))
+            except Exception:
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            release_version = str(meta.get("version") or "").strip()
+            if release_version:
+                meta.setdefault("release_version", release_version)
+            meta["version"] = modified_at or release_version or "unknown"
+            meta["version_source"] = "mtime"
+            if modified_at:
+                meta["modified_at"] = modified_at
+            response = JSONResponse(meta)
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            return response
     return {"version": "unknown"}
 
 

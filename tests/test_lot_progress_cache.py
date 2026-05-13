@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -183,3 +184,88 @@ def test_refresh_lot_progress_cache_uses_fab_product_folder_without_process_id(m
     assert df.to_dicts()[0]["product"] == "PRODA"
     assert status["row_count"] == 1
     assert status["freshness_state"] == "ok"
+
+
+def test_refresh_lot_progress_cache_reads_internal_rawdata_root_alias(monkeypatch, tmp_path):
+    data_root = tmp_path / "flow-data"
+    db_root = tmp_path / "Fab"
+    fab_product = db_root / "1.RAWDATA_DB" / "PRODX" / "date=20260513"
+    fab_product.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["B2000"],
+        "lot_id": ["B2000A.1"],
+        "wafer_id": ["#21"],
+        "step_id": ["STEP_090"],
+        "tkin_time": ["2026-05-13T08:00:00"],
+        "tkout_time": ["2026-05-13T09:00:00"],
+    }).write_parquet(fab_product / "part.parquet")
+
+    class DummyPaths:
+        def __init__(self):
+            self.cache_dir = data_root / "cache"
+            self.db_cache_dir = db_root / "cache"
+            self.data_root = data_root
+            self.db_root = db_root
+            self.base_root = db_root
+
+    monkeypatch.setattr(cache, "PATHS", DummyPaths())
+    monkeypatch.setattr(cache, "load_step_matching", lambda: ({}, {}))
+    monkeypatch.setattr(cache, "_CACHE_STATE", None)
+
+    state = cache.refresh_lot_progress_cache(force=True, source_root="1.RAWDATA_DB")
+    df = pl.read_parquet(cache.filebrowser_cache_parquet_file())
+
+    assert state["source_root"] == "1.RAWDATA_DB"
+    assert state["source_roots"] == ["1.RAWDATA_DB"]
+    assert state["count"] == 1
+    assert state["items"][0]["product"] == "PRODX"
+    assert state["items"][0]["source_root"] == "1.RAWDATA_DB"
+    assert state["items"][0]["wafer_id"] == "21"
+    assert df.to_dicts()[0]["lot_id"] == "B2000A.1"
+
+
+def test_refresh_lot_progress_cache_uses_configured_source_root(monkeypatch, tmp_path):
+    data_root = tmp_path / "flow-data"
+    db_root = tmp_path / "Fab"
+    raw_product = db_root / "1.RAWDATA_DB" / "PROD_RAW" / "date=20260513"
+    legacy_product = db_root / "1.RAWDATA_DB_FAB" / "PROD_LEGACY" / "date=20260513"
+    raw_product.mkdir(parents=True)
+    legacy_product.mkdir(parents=True)
+    data_root.mkdir(parents=True)
+    (data_root / "settings.json").write_text(json.dumps({"lot_progress_source_root": "1.RAWDATA_DB_FAB"}), encoding="utf-8")
+    pl.DataFrame({
+        "root_lot_id": ["RAW1000"],
+        "lot_id": ["RAW1000A.1"],
+        "wafer_id": ["1"],
+        "step_id": ["RAW_STEP"],
+        "tkin_time": ["2026-05-13T08:00:00"],
+        "tkout_time": ["2026-05-13T09:00:00"],
+    }).write_parquet(raw_product / "part.parquet")
+    pl.DataFrame({
+        "root_lot_id": ["LEG1000"],
+        "lot_id": ["LEG1000A.1"],
+        "wafer_id": ["2"],
+        "step_id": ["LEG_STEP"],
+        "tkin_time": ["2026-05-13T10:00:00"],
+        "tkout_time": ["2026-05-13T11:00:00"],
+    }).write_parquet(legacy_product / "part.parquet")
+
+    class DummyPaths:
+        def __init__(self):
+            self.cache_dir = data_root / "cache"
+            self.db_cache_dir = db_root / "cache"
+            self.data_root = data_root
+            self.db_root = db_root
+            self.base_root = db_root
+
+    monkeypatch.setattr(cache, "PATHS", DummyPaths())
+    monkeypatch.setattr(cache, "load_step_matching", lambda: ({}, {}))
+    monkeypatch.setattr(cache, "_CACHE_STATE", None)
+
+    state = cache.refresh_lot_progress_cache(force=True)
+
+    assert state["configured_source_root"] == "1.RAWDATA_DB_FAB"
+    assert state["source_roots"] == ["1.RAWDATA_DB_FAB"]
+    assert state["count"] == 1
+    assert state["items"][0]["product"] == "PROD_LEGACY"
+    assert state["items"][0]["lot_id"] == "LEG1000A.1"

@@ -152,16 +152,18 @@ def test_filebrowser_cache_settings_updates_lot_progress_interval(monkeypatch, t
     monkeypatch.setattr(lot_progress_cache, "cache_status", lambda: {"ok": True, "interval_minutes": 45, "scheduler_started": True})
 
     out = filebrowser.cache_match_settings(
-        filebrowser.CacheMatchSettingsReq(target="lot_progress", interval_minutes=45, auto_s3_upload_on_save=True),
+        filebrowser.CacheMatchSettingsReq(target="lot_progress", interval_minutes=45, source_root="1.RAWDATA_DB_FAB", auto_s3_upload_on_save=True),
         _Request("admin", "admin"),
     )
 
     saved = json.loads((tmp_path / "settings.json").read_text("utf-8"))
     fb_saved = json.loads((tmp_path / "filebrowser_settings.json").read_text("utf-8"))
     assert saved["lot_progress_refresh_minutes"] == 45
+    assert saved["lot_progress_source_root"] == "1.RAWDATA_DB_FAB"
     assert fb_saved["auto_s3_upload_on_save"] is True
     assert out["target"] == "lot_progress"
     assert out["interval_minutes"] == 45
+    assert out["configured_source_root"] == "1.RAWDATA_DB_FAB"
     assert out["auto_s3_upload_on_save"] is True
     assert out["schedule_enabled"] is True
 
@@ -232,7 +234,7 @@ def test_filebrowser_lot_progress_cache_status_and_refresh_contract(monkeypatch,
     monkeypatch.setattr(
         lot_progress_cache,
         "refresh_lot_progress_cache",
-        lambda force=False: {"generated_at": "2026-05-10T02:00:00", "count": 2, "files_scanned": 3, "rows_seen": 4, "errors": []},
+        lambda force=False, source_root="": {"generated_at": "2026-05-10T02:00:00", "count": 2, "files_scanned": 3, "rows_seen": 4, "errors": []},
     )
     monkeypatch.setattr(lot_progress_cache, "export_lot_progress_parquet", lambda state=None: {"ok": True, "rows": 2, "paths": [str(parquet_fp)]})
 
@@ -272,7 +274,7 @@ def test_filebrowser_cache_llm_refresh_uses_llm_target_allowlist(monkeypatch):
     monkeypatch.setattr(filebrowser, "_refresh_filebrowser_cache_target", fake_refresh)
 
     out = filebrowser.cache_llm_refresh(
-        filebrowser.CacheLlmRefreshReq(prompt="lot_progress_latest_lot 캐시 만들어줘", product="PRODA", force=True),
+        filebrowser.CacheLlmRefreshReq(prompt="1.RAWDATA_DB에서 lot_progress_latest_lot 캐시 만들어줘", product="PRODA", force=True),
         _Request("admin", "admin"),
     )
 
@@ -281,6 +283,7 @@ def test_filebrowser_cache_llm_refresh_uses_llm_target_allowlist(monkeypatch):
     assert out["llm"]["used"] is True
     assert calls[0][0] == "lot_progress"
     assert calls[0][1]["product"] == "PRODA"
+    assert calls[0][1]["source_root"] == "1.RAWDATA_DB"
     assert events[-1]["action"] == "filebrowser:cache-llm-refresh"
 
 
