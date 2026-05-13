@@ -12,8 +12,6 @@
 
 ## Now
 
-- [ ] (Codex) FileBrowser LOT cache root resolver and S3 item log persistence - remove fixed FAB root defaults, expose configured/effective roots, keep S3 last logs across item saves.
-
 ## Next
 
 - [ ] (Codex) P10 Flow-i backend 구조 분리 — `backend/routers/llm.py`에서 unit action handler 한 묶음을 feature별 module로 추출하고 trace 계약을 유지한다.
@@ -24,6 +22,7 @@
 
 ## Done
 
+- [x] (Codex) FileBrowser LOT cache root resolver and S3 item log persistence - removed fixed `FAB_ROOT` cache defaults, exposed configured/effective root candidates in FileBrowser cache status/UI, preserved S3 item last logs across same-target saves, removed the legacy root agent entrypoint, regenerated `setup.py`. `python -m pytest tests/test_lot_progress_cache.py tests/test_filebrowser_sql.py tests/test_s3_ingest_status.py -q`, `python -m py_compile backend/core/lot_progress_cache.py backend/routers/filebrowser.py backend/routers/s3_ingest.py`, `cd frontend && npm run build`, `git diff --check`, `python _build_setup.py`, `python setup.py version` passed.
 - [x] (Codex) FileBrowser LOT 진행 캐시 source DB 톱니바퀴 설정화 — `settings.json.lot_progress_source_root`를 저장하고 scheduler/수동 refresh가 설정 DB root를 사용하도록 수정. `python3 -m pytest tests/test_lot_progress_cache.py tests/test_filebrowser_sql.py -q`, `python3 -m pytest tests -q`, `python3 -m py_compile _build_setup.py setup.py backend/core/lot_progress_cache.py backend/routers/filebrowser.py`, `git diff --check`, `cd frontend && npm run build`, `python3 _build_setup.py`, `python3 setup.py version` 통과.
 - [x] (Codex) Version 표시 mtime 전환 및 SplitTable LOT 최신 캐시 표시 회귀 수정 — `/version.json`과 `setup.py version` 표시를 mtime 기준 시간 라벨로 분리하고, SplitTable 설정 패널의 자동/현재 적용 표시가 LOT 최신 캐시 hit를 우선 보여주도록 수정. `python3 -m py_compile setup.py backend/app.py backend/routers/splittable.py _build_setup.py`, `python3 setup.py version`, `python3 -m pytest tests/test_splittable_lot_candidates.py -q`, `git diff --check`, `cd frontend && npm run build` 통과.
 - [x] (Codex) Tracker empty state ReferenceError 수정 — `My_Tracker.jsx`의 `EmptyState` import 누락을 복구. `git diff --check`, `cd frontend && npm run build` 통과.
