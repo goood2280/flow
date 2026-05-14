@@ -8,6 +8,7 @@ Fab data analytics and plan-vs-actual tracking platform.
 - 기본 admin: `hol / hol12345!`
 - 버전/번들 메타: [VERSION.json](VERSION.json)
 - 공식 에이전트 진입점: [AGENTS.md](AGENTS.md), [TODO.md](TODO.md)
+- Flow 작업 컨텍스트: [docs/AGENT_FLOW_CONTEXT.md](docs/AGENT_FLOW_CONTEXT.md)
 
 ## Start Here
 

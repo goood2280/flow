@@ -40,6 +40,7 @@ Meeting은 회의, agenda, minutes, decision, action item을 남기고 Calendar�
 - meeting ask assistant는 `_meeting_visible` 권한을 재사용하고 회의 데이터를 쓰지 않는다. LLM 미설정/실패 시 저장 데이터 기반 fallback 답변을 반환한다.
 - Flow-i unit action은 `meeting.ask.llm`로 노출하며 Home에서는 회의/차수/아젠다/회의록/결정사항/액션아이템 요약과 sources를 인라인 표시한다.
 - calendar 항목은 자체 입력인지 외부 push인지 출처를 유지한다.
+- Calendar shared categories/settings 변경은 `calendar` page manager 이상만 수행한다. 개인 event 작성/수정/상태 변경은 기존 current user/visibility 규칙을 유지한다.
 - 원본 entity와 동기화되는 상태 변경은 충돌 가능성을 고려한다.
 
 ## Verify

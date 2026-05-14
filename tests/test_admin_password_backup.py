@@ -73,6 +73,7 @@ def test_admin_reset_password_emails_domain_address(monkeypatch):
 
     assert result["ok"] is True
     assert result["mail_sent"] is True
+    assert "new_password" not in result
     assert result["mail_to"] == ["alice@company.co.kr"]
     assert users[0]["password_hash"] == "hashed:RESET_TOKEN"
     assert writes
@@ -105,6 +106,7 @@ def test_admin_bulk_users_applies_selected_default_tabs(monkeypatch):
 
     assert result["ok"] is True
     assert [row["username"] for row in result["created"]] == ["alpha", "beta"]
+    assert "default_password" not in result
     assert users[0]["tabs"] == "splittable,calendar"
     assert users[1]["tabs"] == "dashboard,inform"
     assert users[1]["password_hash"] == "hashed:1111"

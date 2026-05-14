@@ -26,7 +26,7 @@ from core.utils import (
     load_json, save_json, serialize_rows, first_data_file,
 )
 from core.runtime_limits import dashboard_scheduler_enabled
-from core.auth import require_admin
+from core.auth import require_page_manager
 from app_v2.shared.source_adapter import resolve_column
 from core.dashboard_join import (
     apply_chart_defaults,
@@ -2546,11 +2546,11 @@ def get_chart_defaults(request: Request):
 
 
 @router.post("/chart-defaults")
-def post_chart_defaults(req: ChartDefaultReq, request: Request, _admin=Depends(require_admin)):
-    from core.auth import current_user
+def post_chart_defaults(req: ChartDefaultReq, request: Request, _perm=Depends(require_page_manager("dashboard"))):
+    from core.auth import current_user, is_page_manager
     me = current_user(request)
-    if me.get("role") != "admin":
-        raise HTTPException(403, "Admin only")
+    if not is_page_manager(me, "dashboard"):
+        raise HTTPException(403, "Admin or dashboard page manager only")
     updated = save_chart_default(req.chart_type, req.config)
     return {"ok": True, "chart_type": req.chart_type, "config": updated, "defaults": load_chart_defaults()}
 
@@ -2676,8 +2676,8 @@ def get_snapshots(request: Request):
 
 
 @router.post("/refresh")
-def refresh_charts(_admin=Depends(require_admin)):
-    """Admin: manually trigger re-computation."""
+def refresh_charts(_perm=Depends(require_page_manager("dashboard"))):
+    """Admin/dashboard manager: manually trigger re-computation."""
     _scheduler.refresh()
     return {"ok": True, "message": "Refresh started in background"}
 
@@ -2691,7 +2691,7 @@ def trend_alerts(request: Request, limit: int = Query(8)):
 
 
 @router.post("/charts/save")
-def save_chart(cfg: ChartConfig, _admin=Depends(require_admin)):
+def save_chart(cfg: ChartConfig, _perm=Depends(require_page_manager("dashboard"))):
     charts = _charts()
     if not cfg.id:
         cfg.id = _new_id()
@@ -2712,7 +2712,7 @@ def save_chart(cfg: ChartConfig, _admin=Depends(require_admin)):
 
 
 @router.post("/charts/delete")
-def delete_chart(chart_id: str = Query(...), _admin=Depends(require_admin)):
+def delete_chart(chart_id: str = Query(...), _perm=Depends(require_page_manager("dashboard"))):
     charts = [c for c in _charts() if c.get("id") != chart_id]
     save_json(CHARTS_FILE, charts, indent=2)
     with _scheduler._lock:
@@ -2722,7 +2722,7 @@ def delete_chart(chart_id: str = Query(...), _admin=Depends(require_admin)):
 
 
 @router.post("/charts/copy")
-def copy_chart(chart_id: str = Query(...), _admin=Depends(require_admin)):
+def copy_chart(chart_id: str = Query(...), _perm=Depends(require_page_manager("dashboard"))):
     import copy as cp
     charts = _charts()
     src = next((c for c in charts if c.get("id") == chart_id), None)

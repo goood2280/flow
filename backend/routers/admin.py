@@ -25,7 +25,7 @@ from core.notify import (
     dismiss_notification, dismiss_by_ids, mark_read_by_ids,
 )
 from routers.auth import read_users, write_users
-from core.auth import require_admin, current_user, verify_owner
+from core.auth import canonical_page_id, effective_permissions, get_page_admins, require_admin, current_user, verify_owner
 from core.audit import record as _audit
 from core import s3_sync as _s3
 from core import root_profile
@@ -52,7 +52,9 @@ def _is_admin(username: str) -> bool:
 
 def _scrub_user(u: dict) -> dict:
     """응답 직렬화 시 password_hash 제거."""
-    return {k: v for k, v in u.items() if k != "password_hash"}
+    out = {k: v for k, v in u.items() if k != "password_hash"}
+    out["effective_permissions"] = effective_permissions(u)
+    return out
 DL_LOG = PATHS.download_log
 ET_DL_LOG = PATHS.data_root / "logs" / "ettime_downloads.jsonl"
 ACTIVITY_LOG = PATHS.activity_log
@@ -471,12 +473,11 @@ def reset_password(req: ApproveReq, request: Request, _admin=Depends(require_adm
             u["password_hash"] = hash_password(new_pw)
             write_users(users)
             safe_username = html.escape(req.username)
-            safe_pw = html.escape(new_pw)
             content = (
                 "<div style='font-family:Arial,sans-serif;font-size:14px;line-height:1.6'>"
                 "<p>Your password has been reset by an administrator.</p>"
                 f"<p><b>Username</b>: {safe_username}<br/>"
-                f"<b>Temporary Password</b>: {safe_pw}</p>"
+                f"<b>Temporary Password</b>: {html.escape(new_pw)}</p>"
                 "<p>Please sign in and change your password immediately.</p>"
                 "<p style='color:#666;font-size:12px'>If you did not expect this, contact the administrator.</p>"
                 "</div>"
@@ -506,7 +507,6 @@ def reset_password(req: ApproveReq, request: Request, _admin=Depends(require_adm
                    detail=f"user={req.username};revoked={revoked};mail_to={','.join(mail_to)}", tab="admin")
             return {
                 "ok": True,
-                "new_password": new_pw,
                 "mail_sent": True,
                 "mail_to": mail_to,
                 "mail_skipped": mail_res.get("skipped") or [],
@@ -643,8 +643,8 @@ def bulk_create_users(req: BulkUsersReq, request: Request, _admin=Depends(requir
       created.append({"username": username, "name": name, "role": role, "tabs": tabs})
 
     write_users(users)
-    _audit(request, "admin:bulk-users", detail=f"created={len(created)} skipped={len(skipped)} pw={default_pw}", tab="admin")
-    return {"ok": True, "created": created, "skipped": skipped, "default_password": default_pw}
+    _audit(request, "admin:bulk-users", detail=f"created={len(created)} skipped={len(skipped)}", tab="admin")
+    return {"ok": True, "created": created, "skipped": skipped}
 
 
 # ── Permissions ──
@@ -1307,20 +1307,20 @@ def backup_schedule(req: BackupScheduleReq, request: Request, _admin=Depends(req
 @router.get("/page-admins")
 def page_admins_get(_admin=Depends(require_admin)):
     """현재 admin_settings 의 page_admins 맵 전체. Admin UI 에서 편집용."""
-    from core.auth import get_page_admins
     return {"page_admins": get_page_admins()}
 
 
 @router.post("/page-admins")
 def page_admins_set(req: PageAdminsReq, request: Request, _admin=Depends(require_admin)):
     """page_id → usernames 목록을 설정 (빈 리스트면 해당 페이지 위임 제거)."""
-    page_id = (req.page_id or "").strip()
+    page_id = canonical_page_id(req.page_id)
     if not page_id:
         raise HTTPException(400, "page_id required")
+    before = get_page_admins()
     valid_users = {u["username"] for u in read_users() if u.get("status") == "approved"}
     users = [u for u in (req.usernames or []) if u in valid_users]
     data = load_json(ADMIN_SETTINGS_FILE, {})
-    pa = dict(data.get("page_admins") or {})
+    pa = dict(before)
     if users:
         pa[page_id] = sorted(set(users))
     else:
@@ -1328,7 +1328,7 @@ def page_admins_set(req: PageAdminsReq, request: Request, _admin=Depends(require
     data["page_admins"] = pa
     save_json(ADMIN_SETTINGS_FILE, data)
     _audit(request, "admin:page-admins-set",
-           detail=f"page={page_id} users={','.join(users) or '(clear)'}", tab="admin")
+           detail=f"actor={current_user(request).get('username') or ''};page={page_id};before={before.get(page_id) or []};after={pa.get(page_id) or []}", tab="admin")
     return {"ok": True, "page_admins": pa}
 
 
@@ -1336,7 +1336,6 @@ def page_admins_set(req: PageAdminsReq, request: Request, _admin=Depends(require
 def my_page_admin(request: Request):
     """현재 유저가 위임받은 page 목록. global admin 은 전체 True + is_global_admin=true 반환."""
     u = current_user(request)
-    from core.auth import get_page_admins
     pa = get_page_admins()
     uname = u.get("username", "")
     pages = sorted([pid for pid, lst in pa.items() if uname in (lst or [])])

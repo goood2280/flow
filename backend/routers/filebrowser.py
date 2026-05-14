@@ -48,6 +48,7 @@ from core import duckdb_engine
 from core import matching_cache as _matching_cache
 from core import s3_sync as _s3
 from core.paths import PATHS
+from core.auth import current_user
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_named_child
 from core.utils import (
     cast_cats, read_source, lazy_read_source, read_one_file, scan_one_file, apply_sql_like, serialize_rows,
@@ -64,10 +65,17 @@ router = APIRouter(prefix="/api/filebrowser", tags=["filebrowser"])
 # (FLOW_*) and admin_settings.json data_roots land without reload.
 DL_LOG = PATHS.download_log
 MAX_CSV_DOWNLOAD_BYTES = 100_000_000
+DEFAULT_CSV_DOWNLOAD_MAX_BYTES = MAX_CSV_DOWNLOAD_BYTES
 DEFAULT_CSV_DOWNLOAD_MAX_ROWS = 100_000
 MAX_CSV_DOWNLOAD_MAX_ROWS = 500_000
 DEFAULT_FILEBROWSER_CSV_DOWNLOAD_ROWS = MAX_CSV_DOWNLOAD_MAX_ROWS
 MAX_CSV_DOWNLOAD_AUTO_COLUMNS = 200
+DEFAULT_SQL_QUERY_MAX_SOURCE_BYTES = 5 * 1024 * 1024 * 1024
+MAX_SQL_QUERY_MAX_SOURCE_BYTES = 500 * 1024 * 1024 * 1024
+DEFAULT_PREVIEW_MAX_COLUMNS = 100
+MAX_PREVIEW_MAX_COLUMNS = 200
+DEFAULT_SCHEMA_COLUMN_PAGE_SIZE = 200
+MAX_SCHEMA_COLUMN_PAGE_SIZE = 500
 BASE_FILE_EDIT_MAX_BYTES = 25_000_000
 BASE_FILE_EDIT_MAX_ROWS = 200_000
 BASE_EDIT_ALLOWED_EXTENSIONS = {".csv", ".parquet"}
@@ -101,6 +109,11 @@ MAX_CSV_FULL_READ_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_FILEBROWSER_SETTINGS = {
     "csv_full_read_max_bytes": DEFAULT_CSV_FULL_READ_MAX_BYTES,
     "csv_download_max_rows": DEFAULT_FILEBROWSER_CSV_DOWNLOAD_ROWS,
+    "csv_download_max_bytes": DEFAULT_CSV_DOWNLOAD_MAX_BYTES,
+    "sql_query_max_source_bytes": DEFAULT_SQL_QUERY_MAX_SOURCE_BYTES,
+    "preview_max_columns": DEFAULT_PREVIEW_MAX_COLUMNS,
+    "preview_max_rows": LATEST_PREVIEW_ROWS,
+    "schema_column_page_size": DEFAULT_SCHEMA_COLUMN_PAGE_SIZE,
     "csv_rules": {},
     "hidden_db_dirs": ["cache", "reformatter"],
     "versioned_single_file_dirs": ["reformatter"],
@@ -1428,6 +1441,31 @@ def _normalize_filebrowser_settings(raw) -> dict:
     except Exception:
         raise HTTPException(400, "csv_download_max_rows must be an integer")
     data["csv_download_max_rows"] = max(1, min(MAX_CSV_DOWNLOAD_MAX_ROWS, max_rows))
+    try:
+        dl_bytes = int(raw.get("csv_download_max_bytes", data["csv_download_max_bytes"]))
+    except Exception:
+        raise HTTPException(400, "csv_download_max_bytes must be an integer")
+    data["csv_download_max_bytes"] = max(1, min(MAX_CSV_DOWNLOAD_BYTES, dl_bytes))
+    try:
+        query_bytes = int(raw.get("sql_query_max_source_bytes", data["sql_query_max_source_bytes"]))
+    except Exception:
+        raise HTTPException(400, "sql_query_max_source_bytes must be an integer")
+    data["sql_query_max_source_bytes"] = max(0, min(MAX_SQL_QUERY_MAX_SOURCE_BYTES, query_bytes))
+    try:
+        preview_cols = int(raw.get("preview_max_columns", data["preview_max_columns"]))
+    except Exception:
+        raise HTTPException(400, "preview_max_columns must be an integer")
+    data["preview_max_columns"] = max(1, min(MAX_PREVIEW_MAX_COLUMNS, preview_cols))
+    try:
+        preview_rows = int(raw.get("preview_max_rows", data["preview_max_rows"]))
+    except Exception:
+        raise HTTPException(400, "preview_max_rows must be an integer")
+    data["preview_max_rows"] = max(1, min(LATEST_PREVIEW_ROWS, preview_rows))
+    try:
+        schema_page = int(raw.get("schema_column_page_size", data["schema_column_page_size"]))
+    except Exception:
+        raise HTTPException(400, "schema_column_page_size must be an integer")
+    data["schema_column_page_size"] = max(1, min(MAX_SCHEMA_COLUMN_PAGE_SIZE, schema_page))
     data["csv_rules"] = _normalize_csv_rules(raw.get("csv_rules") or {})
     data["auto_s3_upload_on_save"] = bool(raw.get("auto_s3_upload_on_save", data.get("auto_s3_upload_on_save", False)))
     hidden = _clean_string_list(raw.get("hidden_db_dirs"), lower=True)
@@ -2323,10 +2361,10 @@ def _settings_draft_fallback_rule(prompt: str, columns: list[str], current_rule:
 
 
 def _can_manage_filebrowser(me: dict) -> bool:
-    if (me.get("role") or "") == "admin":
-        return True
     try:
-        from core.auth import is_page_admin
+        from core.auth import is_page_admin, is_page_manager
+        if is_page_manager(me, "filebrowser"):
+            return True
         return is_page_admin(me.get("username") or "", "filebrowser")
     except Exception:
         return False
@@ -2341,13 +2379,12 @@ def _require_filebrowser_user(request: Request | None) -> dict:
 
 def _require_filebrowser_admin(request: Request | None) -> dict:
     me = _require_filebrowser_user(request)
-    if me and me.get("role") != "admin":
-        raise HTTPException(403, "admin only")
+    if me and not _can_manage_filebrowser(me):
+        raise HTTPException(403, "Admin or delegated filebrowser admin only")
     return me
 
 
 def _require_filebrowser_manager(request: Request) -> dict:
-    from core.auth import current_user
     me = current_user(request)
     if not _can_manage_filebrowser(me):
         raise HTTPException(403, "Admin or delegated filebrowser admin only")
@@ -4462,7 +4499,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                    rows: int = Query(200), cols: int = Query(10),
                    select_cols: str = Query(""),
                    engine: str = Query("auto"),
-                   meta_only: bool = Query(False),
+                   meta_only: bool = Query(True),
                    page: int = Query(0, ge=0),
                    page_size: int = Query(200, ge=1, le=1000),
                    request: Request = None):
@@ -4485,6 +4522,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     fp = None
     rel = Path(file)
     settings = _load_filebrowser_settings()
+    cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
     single_file_folders = _single_file_folder_names(settings)
     if rel.parts and str(rel.parts[0]).casefold() in single_file_folders:
         fp = _resolve_single_file_folder_data_path(file, (base_root, db_root), single_file_folders)
@@ -4640,7 +4678,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             if cached_schema:
                 all_cols_full = list(cached_schema.keys())
                 schema_full = {n: str(cached_schema[n]) for n in all_cols_full}
-                return {
+                return _finalize_preview_response({
                     "kind": "table", "file": file,
                     "all_columns": all_cols_full, "total_cols": len(all_cols_full),
                     "columns": all_cols_full[:cols], "dtypes": schema_full,
@@ -4653,7 +4691,8 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                     "source_size": fp.stat().st_size,
                     "source_modified": fp.stat().st_mtime,
                     "csv_rule_summary": None,
-                }
+                    "row_count_unknown": False,
+                }, settings)
         lf = scan_one_file(fp)
         if lf is None:
             raise HTTPException(400, f"Cannot read: {file}")
@@ -4669,7 +4708,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                     cached_meta = read_meta(fp)
                 except Exception:
                     cached_meta = None
-            return {
+            return _finalize_preview_response({
                 "kind": "table", "file": file,
                 "all_columns": all_cols_full, "total_cols": len(all_cols_full),
                 "columns": all_cols_full[:cols], "dtypes": schema_full,
@@ -4678,8 +4717,12 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 "meta_only": True,
                 "page": page, "page_size": page_size, "has_more": False,
                 "meta_cached": bool(cached_meta),
+                "row_count_unknown": not bool(cached_meta),
+                "source_path": str(fp),
+                "source_size": fp.stat().st_size,
+                "source_modified": fp.stat().st_mtime,
                 "csv_rule_summary": _csv_rule_summary(_csv_rule_for_file(file)) if ext == ".csv" else None,
-            }
+            }, settings)
         cached_meta = None
         if ext == ".parquet":
             try:
@@ -4714,13 +4757,14 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             resp["source_modified"] = fp.stat().st_mtime
             resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
             resp["csv_rule_summary"] = csv_rule_summary
-            return resp
+            return _finalize_preview_response(resp, settings)
         if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
             try:
                 resp = _run_view_duckdb(
                     [fp], sql, select_cols, rows,
                     page=page, page_size=page_size, preview_cols=cols,
                     cached_meta=cached_meta,
+                    settings=settings,
                 )
                 resp["kind"] = "table"
                 resp["file"] = file
@@ -4729,7 +4773,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 resp["source_modified"] = fp.stat().st_mtime
                 resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
                 resp["csv_rule_summary"] = csv_rule_summary
-                return _mark_preview_capped(resp)
+                return _finalize_preview_response(resp, settings)
             except Exception as e:
                 if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
                     raise HTTPException(400, f"DuckDB query failed: {e}")
@@ -4738,6 +4782,8 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             lf, sql, select_cols, rows,
             page=page, page_size=page_size, cached_meta=cached_meta,
             preview_cols=cols,
+            source_size=fp.stat().st_size,
+            settings=settings,
         )
         resp["all_columns"] = all_cols_full
         resp["total_cols"] = len(all_cols_full)
@@ -4749,7 +4795,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         resp["source_modified"] = fp.stat().st_mtime
         resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
         resp["csv_rule_summary"] = csv_rule_summary
-        return _mark_preview_capped(resp)
+        return _finalize_preview_response(resp, settings)
     except HTTPException:
         raise
     except Exception as e:
@@ -4899,6 +4945,7 @@ def _first_data_file(directory: Path, suffixes: tuple[str, ...]) -> Path | None:
 
 
 def _fast_product_meta_response(root: str, product: str, cols: int,
+                                settings: dict | None = None,
                                 page: int = 0, page_size: int = 200) -> dict | None:
     """Return schema-only metadata for huge DB products without scanning every partition."""
     prod_dir = _resolve_product_dir_fast(root, product)
@@ -4951,7 +4998,7 @@ def _fast_product_meta_response(root: str, product: str, cols: int,
         "product": product,
         "all_columns": all_cols_full,
         "total_cols": len(all_cols_full),
-        "columns": all_cols_full[:_preview_cols_limit(cols)],
+        "columns": all_cols_full[:_preview_cols_limit(cols or _settings_preview_max_columns(settings))],
         "dtypes": schema_full,
         "data": [],
         "showing": 0,
@@ -4966,6 +5013,7 @@ def _fast_product_meta_response(root: str, product: str, cols: int,
         "source_path": str(prod_dir),
         "source_size": source_size,
         "source_modified": source_modified,
+        "row_count_unknown": not bool(cached_meta),
     }
 
 
@@ -4998,6 +5046,7 @@ def _selected_columns(all_columns: list[str], select_cols: str, preview_cols: in
 
 
 def _lazy_filter_expr(sql: str, columns: list[str]):
+    _validate_where_expression(sql, columns)
     s = _normalize_wafer_sql_filter(sql, columns)
     if not s:
         return None
@@ -6111,6 +6160,7 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
 
     sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
     if sql and sql.strip():
+        _validate_where_expression(sql, all_columns)
         df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, all_columns))
         total = df.height
     latest_order_col = _latest_order_column(all_columns) if latest_first else ""
@@ -6143,9 +6193,19 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
                      page: int = 0, page_size: int | None = None,
                      preview_cols: int | None = None,
                      latest_first: bool = False, latest_preview: bool = False,
-                     cached_meta: dict | None = None):
+                     cached_meta: dict | None = None,
+                     settings: dict | None = None):
     """Apply the same preview contract through DuckDB for large read-only sources."""
     all_columns, schema = duckdb_engine.inspect_files(files)
+    _validate_where_expression(sql, all_columns)
+    _guard_source_operation(
+        all_columns=all_columns,
+        sql=sql,
+        select_cols=select_cols,
+        source_size=duckdb_engine.total_size(files),
+        settings=settings,
+        operation="preview",
+    )
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
     sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
@@ -6194,7 +6254,9 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
                    page: int = 0, page_size: int | None = None, cached_meta: dict | None = None,
                    preview_cols: int | None = None, latest_first: bool = False,
                    latest_preview: bool = False,
-                   allow_eager_sql_fallback: bool = False):
+                   allow_eager_sql_fallback: bool = False,
+                   source_size: int | None = None,
+                   settings: dict | None = None):
     """v8.4.3 OOM-aware: lazy 스캔 + projection pushdown + head + (필요 시) SQL.
 
     - 컬럼 선택 / head 은 lazy 에서 처리 → parquet reader 에서 필요한 컬럼·행만 읽음
@@ -6206,7 +6268,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
     schema = {n: str(schema_obj[n]) for n in all_columns}
-    preview_cols = _preview_cols_limit(preview_cols)
+    preview_cols = _preview_cols_limit(preview_cols or _settings_preview_max_columns(settings))
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
     latest_order_col = _latest_order_column(all_columns) if latest_first else ""
@@ -6229,6 +6291,16 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             "latest_order_col": latest_order_col or None,
             "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
         }
+
+    _validate_where_expression(sql, all_columns)
+    _guard_source_operation(
+        all_columns=all_columns,
+        sql=sql,
+        select_cols=select_cols,
+        source_size=source_size,
+        settings=settings,
+        operation="preview",
+    )
 
     # Keep SQL filtering on the full source schema.  Projection is applied only
     # after the filter, so users can filter by a column that is not selected for
@@ -6327,6 +6399,7 @@ def _run_view_lazy_full(lf, sql: str, select_cols: str, preview_cols: int | None
     lf, wafer_filtered = _filter_valid_wafers_lazy(lf, all_columns)
 
     if sql and sql.strip():
+        _validate_where_expression(sql, all_columns)
         lf = lf.filter(_lazy_filter_expr(sql, all_columns))
     if latest_order_col:
         lf = lf.sort(
@@ -6370,17 +6443,194 @@ def _csv_download_max_rows(raw: int | None = None) -> int:
         return DEFAULT_CSV_DOWNLOAD_MAX_ROWS
 
 
-def _download_lazy_csv(lf: pl.LazyFrame, sql: str, select_cols: str, max_rows: int) -> tuple[pl.DataFrame, bytes]:
+def _csv_download_max_bytes(raw: int | None = None, settings: dict | None = None) -> int:
+    settings = settings or _load_filebrowser_settings()
+    default = int(settings.get("csv_download_max_bytes") or DEFAULT_CSV_DOWNLOAD_MAX_BYTES)
+    try:
+        return max(1, min(MAX_CSV_DOWNLOAD_BYTES, int(raw or default)))
+    except Exception:
+        return default
+
+
+def _sql_query_max_source_bytes(settings: dict | None = None) -> int:
+    settings = settings or _load_filebrowser_settings()
+    try:
+        return max(0, min(MAX_SQL_QUERY_MAX_SOURCE_BYTES, int(settings.get("sql_query_max_source_bytes") or 0)))
+    except Exception:
+        return DEFAULT_SQL_QUERY_MAX_SOURCE_BYTES
+
+
+def _settings_preview_max_columns(settings: dict | None = None) -> int:
+    settings = settings or {}
+    try:
+        return max(1, min(MAX_PREVIEW_MAX_COLUMNS, int(settings.get("preview_max_columns") or DEFAULT_PREVIEW_MAX_COLUMNS)))
+    except Exception:
+        return DEFAULT_PREVIEW_MAX_COLUMNS
+
+
+def _settings_schema_column_page_size(settings: dict | None = None) -> int:
+    settings = settings or {}
+    try:
+        return max(1, min(MAX_SCHEMA_COLUMN_PAGE_SIZE, int(settings.get("schema_column_page_size") or DEFAULT_SCHEMA_COLUMN_PAGE_SIZE)))
+    except Exception:
+        return DEFAULT_SCHEMA_COLUMN_PAGE_SIZE
+
+
+def _fb_error(status_code: int, code: str, message: str, **extra):
+    detail = {"code": code, "message": message}
+    detail.update({k: v for k, v in extra.items() if v is not None})
+    raise HTTPException(status_code, detail)
+
+
+def _filter_present(sql: str) -> bool:
+    return bool(str(sql or "").strip())
+
+
+def _selected_requested_columns(select_cols: str, all_columns: list[str]) -> list[str]:
+    allowed = set(all_columns or [])
+    return [c.strip() for c in str(select_cols or "").split(",") if c.strip() in allowed]
+
+
+def _validate_where_expression(sql: str, columns: list[str] | tuple[str, ...] | None = None) -> str:
+    text = str(sql or "").strip()
+    if not text:
+        return ""
+    if _AI_SQL_FORBIDDEN_RE.search(text):
+        _fb_error(400, "invalid_filter", "SQL must be a single read-only WHERE expression.")
+    missing = _sql_missing_columns(text, list(columns or []))
+    if missing:
+        _fb_error(400, "unknown_column", "SQL referenced unknown column(s): " + ", ".join(missing[:8]), columns=missing[:8])
+    return text
+
+
+def _guard_source_operation(
+    *,
+    all_columns: list[str],
+    sql: str,
+    select_cols: str,
+    source_size: int | None,
+    settings: dict | None,
+    operation: str,
+) -> None:
+    settings = settings or {}
+    selected = _selected_requested_columns(select_cols, all_columns)
+    if operation in {"preview", "download"} and selected:
+        max_cols = _settings_preview_max_columns(settings)
+        if len(selected) > max_cols:
+            _fb_error(
+                400,
+                "too_many_columns_without_projection",
+                f"선택 컬럼 {len(selected)}개가 허용 한도 {max_cols}개를 넘습니다.",
+                selected_columns=len(selected),
+                max_columns=max_cols,
+            )
+    size = int(source_size or 0)
+    max_source = _sql_query_max_source_bytes(settings)
+    if size > 0 and max_source > 0 and size > max_source and not _filter_present(sql) and not selected:
+        _fb_error(
+            400,
+            "filter_required",
+            "Source is too large to read without a SQL filter or selected columns.",
+            source_size=size,
+            max_source_bytes=max_source,
+            operation=operation,
+        )
+    if operation == "download" and not selected and len(all_columns or []) > MAX_CSV_DOWNLOAD_AUTO_COLUMNS:
+        _fb_error(
+            400,
+            "too_many_columns_without_projection",
+            f"CSV 대상이 {len(all_columns)}열입니다. 컬럼 탭에서 필요한 열을 선택한 뒤 다운로드하세요.",
+            total_cols=len(all_columns),
+            max_auto_columns=MAX_CSV_DOWNLOAD_AUTO_COLUMNS,
+        )
+
+
+def _csv_bytes_checked(df: pl.DataFrame, max_bytes: int) -> bytes:
+    csv_bytes = df.write_csv().encode("utf-8")
+    if len(csv_bytes) > max_bytes:
+        _fb_error(
+            400,
+            "download_too_large",
+            f"CSV result is {len(csv_bytes):,} bytes, above the {max_bytes:,} byte limit. Select fewer columns or add a SQL filter.",
+            result_bytes=len(csv_bytes),
+            max_bytes=max_bytes,
+        )
+    return csv_bytes
+
+
+def _apply_schema_column_cap(resp: dict, settings: dict | None = None) -> dict:
+    if not isinstance(resp, dict):
+        return resp
+    all_columns = [str(c) for c in (resp.get("all_columns") or [])]
+    if not all_columns:
+        return resp
+    limit = _settings_schema_column_page_size(settings)
+    truncated = len(all_columns) > limit
+    returned = all_columns[:limit] if truncated else all_columns
+    resp["all_columns"] = returned
+    resp["all_columns_truncated"] = truncated
+    resp["schema_columns_returned"] = len(returned)
+    resp["schema_column_limit"] = limit
+    if truncated:
+        keep = set(returned)
+        keep.update(str(c) for c in (resp.get("columns") or []))
+        keep.update(str(c) for c in (resp.get("showing_cols") or []))
+        dtypes = resp.get("dtypes") or {}
+        if isinstance(dtypes, dict):
+            resp["dtypes"] = {c: dtypes[c] for c in keep if c in dtypes}
+    return resp
+
+
+def _finalize_preview_response(resp: dict, settings: dict | None = None) -> dict:
+    resp = _mark_preview_capped(resp)
+    if settings:
+        resp["download_max_bytes"] = _csv_download_max_bytes(None, settings)
+        resp["download_max_rows"] = int(settings.get("csv_download_max_rows") or MAX_CSV_DOWNLOAD_MAX_ROWS)
+        resp["preview_row_limit"] = int(settings.get("preview_max_rows") or LATEST_PREVIEW_ROWS)
+    resp.setdefault("meta_only", False)
+    resp.setdefault("meta_cached", False)
+    resp.setdefault("requires_filter", False)
+    resp.setdefault("query_block_reason", "")
+    if resp.get("meta_only"):
+        resp["row_count_unknown"] = not bool(resp.get("meta_cached")) and not bool(resp.get("total_rows"))
+    else:
+        resp.setdefault("row_count_unknown", False)
+    resp["preview_capped"] = bool(
+        (not resp.get("meta_only"))
+        and (not resp.get("single_file_full_read"))
+        and (
+            bool(resp.get("has_more"))
+            or bool(resp.get("truncated_cols"))
+            or int(resp.get("showing") or 0) >= int(resp.get("preview_row_limit") or LATEST_PREVIEW_ROWS)
+        )
+    )
+    return _apply_schema_column_cap(resp, settings)
+
+
+def _download_lazy_csv(
+    lf: pl.LazyFrame,
+    sql: str,
+    select_cols: str,
+    max_rows: int,
+    max_bytes: int | None = None,
+    *,
+    source_size: int | None = None,
+    settings: dict | None = None,
+) -> tuple[pl.DataFrame, bytes]:
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
+    _validate_where_expression(sql, all_columns)
+    _guard_source_operation(
+        all_columns=all_columns,
+        sql=sql,
+        select_cols=select_cols,
+        source_size=source_size,
+        settings=settings,
+        operation="download",
+    )
     lf, _wafer_filtered = _filter_valid_wafers_lazy(lf, all_columns)
     requested = [c.strip() for c in str(select_cols or "").split(",") if c.strip()]
     selected = [c for c in requested if c in set(all_columns)]
-    if not selected and len(all_columns) > MAX_CSV_DOWNLOAD_AUTO_COLUMNS:
-        raise HTTPException(
-            400,
-            f"CSV 대상이 {len(all_columns)}열입니다. 컬럼 탭에서 필요한 열을 선택한 뒤 다운로드하세요.",
-        )
     if sql and sql.strip():
         try:
             lf = lf.filter(_lazy_filter_expr(sql, all_columns))
@@ -6398,9 +6648,7 @@ def _download_lazy_csv(lf: pl.LazyFrame, sql: str, select_cols: str, max_rows: i
             400,
             f"CSV 다운로드는 최대 {max_rows:,}행까지 허용됩니다. SQL 필터를 추가하거나 max_rows를 조정하세요.",
         )
-    csv_bytes = df.write_csv().encode("utf-8")
-    if len(csv_bytes) > MAX_CSV_DOWNLOAD_BYTES:
-        raise HTTPException(400, "CSV too large (>100MB). 컬럼/SQL 필터를 줄여주세요.")
+    csv_bytes = _csv_bytes_checked(df, _csv_download_max_bytes(max_bytes, settings))
     return df, csv_bytes
 
 
@@ -6414,17 +6662,29 @@ def _is_dtype_mismatch_error(exc: Exception) -> bool:
     ))
 
 
-def _download_duckdb_csv(files: list[Path], sql: str, select_cols: str, max_rows: int) -> tuple[pl.DataFrame, bytes]:
+def _download_duckdb_csv(
+    files: list[Path],
+    sql: str,
+    select_cols: str,
+    max_rows: int,
+    max_bytes: int | None = None,
+    *,
+    settings: dict | None = None,
+) -> tuple[pl.DataFrame, bytes]:
     if not files:
         raise ValueError("no source files for DuckDB download")
     all_columns, _schema = duckdb_engine.inspect_files(files)
+    _validate_where_expression(sql, all_columns)
+    _guard_source_operation(
+        all_columns=all_columns,
+        sql=sql,
+        select_cols=select_cols,
+        source_size=duckdb_engine.total_size(files),
+        settings=settings,
+        operation="download",
+    )
     requested = [c.strip() for c in str(select_cols or "").split(",") if c.strip()]
     selected = [c for c in requested if c in set(all_columns)]
-    if not selected and len(all_columns) > MAX_CSV_DOWNLOAD_AUTO_COLUMNS:
-        raise HTTPException(
-            400,
-            f"CSV 대상이 {len(all_columns)}열입니다. 컬럼 탭에서 필요한 열을 선택한 뒤 다운로드하세요.",
-        )
     where = _combine_where(
         _normalize_wafer_sql_filter(sql, all_columns),
         _duckdb_valid_wafer_where(all_columns),
@@ -6440,9 +6700,7 @@ def _download_duckdb_csv(files: list[Path], sql: str, select_cols: str, max_rows
             400,
             f"CSV 다운로드는 최대 {max_rows:,}행까지 허용됩니다. SQL 필터를 추가하거나 max_rows를 조정하세요.",
         )
-    csv_bytes = df.write_csv().encode("utf-8")
-    if len(csv_bytes) > MAX_CSV_DOWNLOAD_BYTES:
-        raise HTTPException(400, "CSV too large (>100MB). 컬럼/SQL 필터를 줄여주세요.")
+    csv_bytes = _csv_bytes_checked(df, _csv_download_max_bytes(max_bytes, settings))
     return df, csv_bytes
 
 
@@ -6451,7 +6709,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
                  sql: str = Query(""), rows: int = Query(200),
                  cols: int = Query(20, ge=1, le=200),
                  select_cols: str = Query(""),
-                 meta_only: bool = Query(False),
+                 meta_only: bool = Query(True),
                  all_partitions: bool = Query(False),
                  engine: str = Query("auto"),
                  page: int = Query(0, ge=0),
@@ -6464,12 +6722,14 @@ def view_product(root: str = Query(...), product: str = Query(...),
     try:
         from core.utils import lazy_read_source
         from core.parquet_perf import has_date_filter
+        settings = _load_filebrowser_settings()
+        cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
         page, page_size, _offset = _preview_page_args(rows, page_size)
         rows = page_size
         if meta_only:
-            fast_meta = _fast_product_meta_response(root, product, cols, page=page, page_size=page_size)
+            fast_meta = _fast_product_meta_response(root, product, cols, settings=settings, page=page, page_size=page_size)
             if fast_meta is not None:
-                return fast_meta
+                return _finalize_preview_response(fast_meta, settings)
         # SQL 검색/컬럼 SELECT 는 사용자가 명시적으로 DB 를 조회하는 동작이다.
         # 제품 클릭 기본 화면은 전체 스캔 대신 최신 파티션/파일에서 200행만 보여준다.
         full_scan = (
@@ -6480,18 +6740,24 @@ def view_product(root: str = Query(...), product: str = Query(...),
         )
         recent = None if full_scan else 30
         latest_preview = not full_scan and not meta_only
+        source_files: list[Path] = []
+        source_size = 0
+        if full_scan:
+            source_files = source_data_files(root=root, product=product)
+            source_size = duckdb_engine.total_size(source_files)
         if latest_preview:
             rows = min(int(rows or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
             page_size = min(int(page_size or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
         if full_scan and not meta_only and duckdb_engine.is_available() and "INLINE" not in str(root or "").upper():
-            files = source_data_files(root=root, product=product)
+            files = source_files
             if duckdb_engine.should_use_duckdb(files, engine=engine, sql=sql, select_cols=select_cols):
                 try:
-                    return _mark_preview_capped(_run_view_duckdb(
+                    return _finalize_preview_response(_run_view_duckdb(
                         files, sql, select_cols, rows,
                         page=page, page_size=page_size, preview_cols=cols,
                         latest_first=False, latest_preview=False,
-                    ))
+                        settings=settings,
+                    ), settings)
                 except Exception as e:
                     if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
                         raise HTTPException(400, f"DuckDB query failed: {e}")
@@ -6502,23 +6768,25 @@ def view_product(root: str = Query(...), product: str = Query(...),
             latest_only=latest_preview,
         )
         if lf is not None:
-            return _mark_preview_capped(_run_view_lazy(lf, sql, select_cols, rows, meta_only=meta_only,
+            return _finalize_preview_response(_run_view_lazy(lf, sql, select_cols, rows, meta_only=meta_only,
                                                        page=page, page_size=page_size, preview_cols=cols,
-                                                       latest_first=latest_preview, latest_preview=latest_preview))
+                                                       latest_first=latest_preview, latest_preview=latest_preview,
+                                                       source_size=source_size, settings=settings), settings)
         # Fallback — legacy DF 경로
         df = read_source(root=root, product=product)
         if meta_only:
             cols_all = list(df.columns)
-            return {
+            return _finalize_preview_response({
                 "total_rows": 0, "total_cols": len(cols_all),
                 "columns": cols_all[:10], "all_columns": cols_all,
                 "dtypes": {n: str(d) for n, d in df.schema.items()},
                 "showing_cols": [], "selected_cols": None,
                 "data": [], "showing": 0, "meta_only": True,
                 "page": page, "page_size": page_size, "has_more": False,
-            }
-        return _mark_preview_capped(_run_view(df, sql, select_cols, rows, page=page, page_size=page_size,
-                                              preview_cols=cols, latest_first=latest_preview, latest_preview=latest_preview))
+                "row_count_unknown": True,
+            }, settings)
+        return _finalize_preview_response(_run_view(df, sql, select_cols, rows, page=page, page_size=page_size,
+                                              preview_cols=cols, latest_first=latest_preview, latest_preview=latest_preview), settings)
     except HTTPException:
         raise
     except Exception as e:
@@ -6533,6 +6801,143 @@ def root_parquets():
     하위호환용으로만 유지하며 빈 배열을 반환해 UI 에서 별도 섹션이 사라지도록 한다.
     (/api/filebrowser/base-files 가 db_root 의 단일 parquet 을 통합 노출한다.)"""
     return {"files": []}
+
+
+def _resolve_data_file_for_schema(file: str, settings: dict | None = None) -> Path | None:
+    name = str(file or "").strip()
+    if not name:
+        return None
+    rel = Path(name)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise HTTPException(400, "Invalid file path")
+    settings = settings or _load_filebrowser_settings()
+    single_file_folders = _single_file_folder_names(settings)
+    base_root = _base_root()
+    db_root = _db_root()
+    if rel.parts and str(rel.parts[0]).casefold() in single_file_folders:
+        return _resolve_single_file_folder_data_path(name, (base_root, db_root), single_file_folders)
+    if rel.parts and rel.parts[0] == "uploads" and len(rel.parts) == 2:
+        cand = (PATHS.upload_dir / rel.parts[1]).resolve()
+        try:
+            cand.relative_to(PATHS.upload_dir.resolve())
+        except ValueError:
+            raise HTTPException(400, "Invalid uploads path")
+        return cand if cand.is_file() else None
+    if rel.parts and rel.parts[0] == "reformatter" and len(rel.parts) == 2:
+        product_name = Path(rel.parts[1]).stem
+        rf_root = (PATHS.data_root / "reformatter").resolve()
+        for suffix in (Path(rel.parts[1]).suffix.lower(), ".csv", ".json"):
+            if not suffix:
+                continue
+            cand = (rf_root / f"{product_name}{suffix}").resolve()
+            try:
+                cand.relative_to(rf_root)
+            except ValueError:
+                continue
+            if cand.is_file():
+                return cand
+        return None
+    if rel.parts and rel.parts[0] == "product_config" and len(rel.parts) == 2:
+        pc_root = (PATHS.data_root / "product_config").resolve()
+        cand = (pc_root / rel.parts[1]).resolve()
+        try:
+            cand.relative_to(pc_root)
+        except ValueError:
+            raise HTTPException(400, "Invalid product config path")
+        return cand if cand.is_file() else None
+    for candidate_root in (base_root, db_root):
+        if not candidate_root.is_dir():
+            continue
+        cand = (candidate_root / rel).resolve()
+        try:
+            cand.relative_to(candidate_root.resolve())
+        except ValueError:
+            continue
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _schema_for_data_file(fp: Path) -> dict[str, str]:
+    if not fp or not fp.is_file():
+        return {}
+    if fp.suffix.lower() == ".parquet":
+        try:
+            from core.parquet_perf import read_meta
+            cached = read_meta(fp) or {}
+            schema = cached.get("schema") or {}
+            if schema:
+                return {str(k): str(v) for k, v in schema.items()}
+        except Exception:
+            pass
+    lf = scan_one_file(fp)
+    if lf is None:
+        return {}
+    schema_obj = lf.collect_schema()
+    return {n: str(schema_obj[n]) for n in schema_obj.names()}
+
+
+def _schema_for_product_source(root: str, product: str) -> tuple[dict[str, str], int]:
+    prod_dir = _resolve_product_dir_fast(root, product)
+    if prod_dir is None:
+        return {}, 0
+    fp = _first_data_file(prod_dir, (".parquet",)) or _first_data_file(prod_dir, (".csv",))
+    if fp is None:
+        return {}, 0
+    try:
+        size = fp.stat().st_size
+    except Exception:
+        size = 0
+    return _schema_for_data_file(fp), size
+
+
+@router.get("/columns/search")
+def search_columns(request: Request, root: str = Query(""), product: str = Query(""),
+                   file: str = Query(""), q: str = Query(""),
+                   limit: int = Query(200, ge=1, le=500),
+                   offset: int = Query(0, ge=0)):
+    _require_filebrowser_user(request)
+    settings = _load_filebrowser_settings()
+    schema: dict[str, str] = {}
+    source_size = 0
+    if file:
+        fp = _resolve_data_file_for_schema(file, settings)
+        if fp is None:
+            raise HTTPException(404, f"File not found: {file}")
+        schema = _schema_for_data_file(fp)
+        try:
+            source_size = fp.stat().st_size
+        except Exception:
+            source_size = 0
+    elif root and product:
+        schema, source_size = _schema_for_product_source(root, product)
+    else:
+        raise HTTPException(400, "Specify file or root+product")
+    columns = list(schema.keys())
+    needle = str(q or "").strip().casefold()
+    matches = [c for c in columns if not needle or needle in c.casefold()]
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = DEFAULT_SCHEMA_COLUMN_PAGE_SIZE
+    try:
+        offset = max(0, int(offset))
+    except Exception:
+        offset = 0
+    limit = min(limit, _settings_schema_column_page_size(settings))
+    page = matches[offset:offset + limit]
+    return {
+        "ok": True,
+        "columns": page,
+        "dtypes": {c: schema.get(c, "") for c in page},
+        "query": q,
+        "offset": offset,
+        "limit": limit,
+        "matched": len(matches),
+        "total_cols": len(columns),
+        "has_more": offset + len(page) < len(matches),
+        "source_size": source_size,
+    }
 
 
 @router.get("/parquet-meta")
@@ -6623,7 +7028,7 @@ def parquet_meta_invalidate(request: Request, root: str = Query(""), product: st
 def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       rows: int = Query(200), cols: int = Query(10),
                       select_cols: str = Query(""),
-                      meta_only: bool = Query(False),
+                      meta_only: bool = Query(True),
                       engine: str = Query("auto"),
                       page: int = Query(0, ge=0),
                       page_size: int = Query(200, ge=1, le=1000)):
@@ -6637,6 +7042,8 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
     if not fp.is_file():
         raise HTTPException(404)
     try:
+        settings = _load_filebrowser_settings()
+        cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
         page, page_size, _offset = _preview_page_args(rows, page_size)
         rows = page_size
         # v8.4.3 OOM-aware: lazy scan — full read 회피. 10GB+ parquet 도 안전.
@@ -6653,7 +7060,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                 cached_meta = read_meta(fp)
             except Exception:
                 cached_meta = None
-            return {
+            return _finalize_preview_response({
                 "all_columns": all_cols_full, "total_cols": len(all_cols_full),
                 "columns": all_cols_full[:cols], "dtypes": schema_full,
                 "data": [], "showing": 0, "showing_cols": [],
@@ -6661,7 +7068,11 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                 "meta_only": True,
                 "page": page, "page_size": page_size, "has_more": False,
                 "meta_cached": bool(cached_meta),
-            }
+                "row_count_unknown": not bool(cached_meta),
+                "source_path": str(fp),
+                "source_size": fp.stat().st_size,
+                "source_modified": fp.stat().st_mtime,
+            }, settings)
         try:
             from core.parquet_perf import read_meta
             cached_meta = read_meta(fp)
@@ -6669,11 +7080,12 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
             cached_meta = None
         if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
             try:
-                return _mark_preview_capped(_run_view_duckdb(
+                return _finalize_preview_response(_run_view_duckdb(
                     [fp], sql, select_cols, rows,
                     page=page, page_size=page_size, cached_meta=cached_meta,
                     preview_cols=cols,
-                ))
+                    settings=settings,
+                ), settings)
             except Exception as e:
                 if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
                     raise HTTPException(400, f"DuckDB query failed: {e}")
@@ -6682,11 +7094,13 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
             lf, sql, select_cols, rows,
             page=page, page_size=page_size, cached_meta=cached_meta,
             preview_cols=cols,
+            source_size=fp.stat().st_size,
+            settings=settings,
         )
         resp["all_columns"] = all_cols_full
         resp["total_cols"] = len(all_cols_full)
         resp["dtypes"] = schema_full
-        return _mark_preview_capped(resp)
+        return _finalize_preview_response(resp, settings)
     except HTTPException:
         raise
     except Exception as e:
@@ -6698,7 +7112,8 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                  file: str = Query(""), sql: str = Query(""),
                  select_cols: str = Query(""), username: str = Query(""),
                  apply_reformatter: bool = Query(True),
-                 max_rows: int = Query(DEFAULT_CSV_DOWNLOAD_MAX_ROWS, ge=1, le=MAX_CSV_DOWNLOAD_MAX_ROWS)):
+                 max_rows: int = Query(DEFAULT_CSV_DOWNLOAD_MAX_ROWS, ge=1, le=MAX_CSV_DOWNLOAD_MAX_ROWS),
+                 max_bytes: int = Query(0, ge=0, le=MAX_CSV_DOWNLOAD_BYTES)):
     """v7.2: If apply_reformatter=True and a per-product rules file exists,
     derived indices (VTH_IDX, CD_RANGE, poly2 window width, etc.) are appended
     to the download — matching what engineers actually need, not raw VALUE.
@@ -6707,7 +7122,9 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
     me = current_user(request)
     username = me.get("username") or "anonymous"
     try:
+        settings = _load_filebrowser_settings()
         max_rows = _csv_download_max_rows(max_rows)
+        max_bytes = _csv_download_max_bytes(max_bytes, settings)
         lazy_lf = None
         source_files: list[Path] = []
         if file:
@@ -6794,14 +7211,22 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
 
         if lazy_lf is not None:
             try:
-                df, csv_bytes = _download_lazy_csv(lazy_lf, sql, select_cols, max_rows)
+                df, csv_bytes = _download_lazy_csv(
+                    lazy_lf,
+                    sql,
+                    select_cols,
+                    max_rows,
+                    max_bytes,
+                    source_size=duckdb_engine.total_size(source_files),
+                    settings=settings,
+                )
             except HTTPException:
                 raise
             except Exception as e:
                 if not _is_dtype_mismatch_error(e) or not source_files or not duckdb_engine.is_available():
                     raise
                 logger.warning("polars download fallback to duckdb label=%s: %s", label, e)
-                df, csv_bytes = _download_duckdb_csv(source_files, sql, select_cols, max_rows)
+                df, csv_bytes = _download_duckdb_csv(source_files, sql, select_cols, max_rows, max_bytes, settings=settings)
             _log_dl(username, label, sql, df.height, df.width,
                     select_cols=select_cols, size_bytes=len(csv_bytes))
             return csv_response(csv_bytes, label)
@@ -6823,6 +7248,15 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 logger.warning(f"Reformatter skipped: {e}")
 
         df, _wafer_filtered = _filter_valid_wafers_df(df)
+        _validate_where_expression(sql, list(df.columns))
+        _guard_source_operation(
+            all_columns=list(df.columns),
+            sql=sql,
+            select_cols=select_cols,
+            source_size=0,
+            settings=settings,
+            operation="download",
+        )
         if sql.strip():
             df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, list(df.columns)))
         if select_cols.strip():
@@ -6834,15 +7268,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 400,
                 f"CSV 다운로드는 최대 {max_rows:,}행까지 허용됩니다. SQL 필터를 추가하거나 max_rows를 조정하세요.",
             )
-        if not select_cols.strip() and df.width > MAX_CSV_DOWNLOAD_AUTO_COLUMNS:
-            raise HTTPException(
-                400,
-                f"CSV 대상이 {df.width}열입니다. 컬럼 탭에서 필요한 열을 선택한 뒤 다운로드하세요.",
-            )
-
-        csv_bytes = df.write_csv().encode("utf-8")
-        if len(csv_bytes) > MAX_CSV_DOWNLOAD_BYTES:
-            raise HTTPException(400, "CSV too large (>100MB). 컬럼/SQL 필터를 줄여주세요.")
+        csv_bytes = _csv_bytes_checked(df, max_bytes)
         _log_dl(username, label, sql, df.height, df.width,
                 select_cols=select_cols, size_bytes=len(csv_bytes))
         return csv_response(csv_bytes, label)
@@ -6880,6 +7306,11 @@ class BaseFileSaveReq(BaseModel):
 class FileBrowserSettingsReq(BaseModel):
     csv_full_read_max_bytes: int = DEFAULT_CSV_FULL_READ_MAX_BYTES
     csv_download_max_rows: int = DEFAULT_FILEBROWSER_CSV_DOWNLOAD_ROWS
+    csv_download_max_bytes: int = DEFAULT_CSV_DOWNLOAD_MAX_BYTES
+    sql_query_max_source_bytes: int = DEFAULT_SQL_QUERY_MAX_SOURCE_BYTES
+    preview_max_columns: int = DEFAULT_PREVIEW_MAX_COLUMNS
+    preview_max_rows: int = LATEST_PREVIEW_ROWS
+    schema_column_page_size: int = DEFAULT_SCHEMA_COLUMN_PAGE_SIZE
     csv_rules: dict = {}
     hidden_db_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["hidden_db_dirs"]
     versioned_single_file_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["versioned_single_file_dirs"]
@@ -6958,6 +7389,10 @@ def filebrowser_settings(request: Request):
         "can_manage": _can_manage_filebrowser(me),
         "max_csv_full_read_max_bytes": MAX_CSV_FULL_READ_MAX_BYTES,
         "max_csv_download_max_rows": MAX_CSV_DOWNLOAD_MAX_ROWS,
+        "max_csv_download_max_bytes": MAX_CSV_DOWNLOAD_BYTES,
+        "max_sql_query_max_source_bytes": MAX_SQL_QUERY_MAX_SOURCE_BYTES,
+        "max_preview_max_columns": MAX_PREVIEW_MAX_COLUMNS,
+        "max_schema_column_page_size": MAX_SCHEMA_COLUMN_PAGE_SIZE,
     }
 
 
@@ -7111,7 +7546,7 @@ def save_filebrowser_settings(req: FileBrowserSettingsReq, request: Request):
         "username": me.get("username") or "",
         "action": "filebrowser:settings:save",
         "tab": "filebrowser",
-        "detail": f"csv_rules={len(settings.get('csv_rules') or {})} hidden_db_dirs={len(settings.get('hidden_db_dirs') or [])} versioned_dirs={len(settings.get('versioned_single_file_dirs') or [])} csv_full_read_max_bytes={settings.get('csv_full_read_max_bytes')} csv_download_max_rows={settings.get('csv_download_max_rows')}",
+        "detail": f"csv_rules={len(settings.get('csv_rules') or {})} hidden_db_dirs={len(settings.get('hidden_db_dirs') or [])} versioned_dirs={len(settings.get('versioned_single_file_dirs') or [])} csv_full_read_max_bytes={settings.get('csv_full_read_max_bytes')} csv_download_max_rows={settings.get('csv_download_max_rows')} csv_download_max_bytes={settings.get('csv_download_max_bytes')}",
     })
     return {**settings, "ok": True, "can_manage": True}
 
@@ -7158,10 +7593,7 @@ def validate_base_file_csv(req: BaseFileValidateReq, request: Request):
 
 
 def _save_base_file(req: BaseFileSaveReq, request: Request):
-    from core.auth import current_user, is_page_admin
-    me = current_user(request)
-    if (me.get("role") or "") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
-        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+    me = _require_filebrowser_manager(request)
 
     if (req.mode or "").strip().lower() != "replace":
         raise HTTPException(400, "Only mode='replace' is supported")
@@ -7300,10 +7732,7 @@ def save_base_file(req: BaseFileSaveReq, request: Request):
 
 @router.post("/base-file/text-save")
 def save_base_text_file(req: BaseTextFileSaveReq, request: Request):
-    from core.auth import current_user, is_page_admin
-    me = current_user(request)
-    if (me.get("role") or "") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
-        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+    me = _require_filebrowser_manager(request)
     target = _resolve_base_file_for_version(req.file)
     if not _base_file_versioned(req.file, target):
         raise HTTPException(400, "This file is not configured for EDM text editing")
@@ -7415,10 +7844,7 @@ def base_file_version_content(request: Request, file: str = Query(...), version:
 
 @router.post("/base-file/rollback")
 def rollback_base_file(req: BaseFileRollbackReq, request: Request):
-    from core.auth import current_user, is_page_admin
-    me = current_user(request)
-    if (me.get("role") or "") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
-        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+    me = _require_filebrowser_manager(request)
     target = _resolve_base_file_for_version(req.file)
     if not _base_file_versioned(req.file, target):
         raise HTTPException(400, "This file is not configured for EDM version rollback")
@@ -7463,10 +7889,7 @@ def rollback_base_file(req: BaseFileRollbackReq, request: Request):
 
 @router.post("/base-file/migrate-history")
 def migrate_base_file_history(req: BaseHistoryMigrateReq, request: Request):
-    from core.auth import current_user, is_page_admin
-    me = current_user(request)
-    if (me.get("role") or "") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
-        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+    me = _require_filebrowser_manager(request)
     target = _resolve_base_file_for_version(req.file)
     result = _migrate_legacy_history(
         target,
@@ -7614,10 +8037,7 @@ def schema_snapshots(
 @router.post("/base-file/delete")
 def delete_base_file(req: BaseDeleteReq, request: Request):
     """Delete only Files/upload single files. DB root is read-only for everyone."""
-    from core.auth import current_user, is_page_admin
-    me = current_user(request)
-    if (me.get("role") or "") != "admin" and not is_page_admin(me.get("username") or "", "filebrowser"):
-        raise HTTPException(403, "Admin or delegated filebrowser admin only")
+    me = _require_filebrowser_manager(request)
     name = (req.file or "").strip()
     if not name or "/" in name or "\\" in name or ".." in name or name.startswith("."):
         raise HTTPException(400, "Invalid filename")

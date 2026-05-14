@@ -592,9 +592,10 @@ export default function My_FileBrowser({user,onNavigate}){
     if(nextOpen&&!isAdmin)setS3Tab("folder");
     setS3Open(nextOpen);
   };
-  const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_download_max_rows:500000,csv_rules:{},hidden_db_dirs:["cache","reformatter"],versioned_single_file_dirs:["reformatter"],auto_s3_upload_on_save:false,can_manage:false});
+  const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_download_max_rows:500000,csv_download_max_bytes:100000000,sql_query_max_source_bytes:5368709120,preview_max_columns:100,preview_max_rows:200,schema_column_page_size:200,csv_rules:{},hidden_db_dirs:["cache","reformatter"],versioned_single_file_dirs:["reformatter"],auto_s3_upload_on_save:false,can_manage:false});
   const[fbAutoS3Upload,setFbAutoS3Upload]=useState(false);
   const[fbThresholdMb,setFbThresholdMb]=useState("10");
+  const[fbDownloadMb,setFbDownloadMb]=useState("100");
   const[fbDownloadRows,setFbDownloadRows]=useState("500000");
   const[fbHiddenDbDirsText,setFbHiddenDbDirsText]=useState("cache\nreformatter");
   const[fbVersionedDirsText,setFbVersionedDirsText]=useState("reformatter");
@@ -616,6 +617,8 @@ export default function My_FileBrowser({user,onNavigate}){
   const[aiSqlPrompt,setAiSqlPrompt]=useState("");
   const[aiSqlBusy,setAiSqlBusy]=useState(false);
   const[aiSqlResult,setAiSqlResult]=useState(null);
+  const[remoteCols,setRemoteCols]=useState([]);
+  const[remoteColsLoading,setRemoteColsLoading]=useState(false);
   const fbCacheTargets=[
     ["lot_progress","LOT 진행 최신 캐시","lot_progress_latest_lot_by_root_wafer",fbCacheStatus.lot_progress],
   ];
@@ -640,10 +643,11 @@ export default function My_FileBrowser({user,onNavigate}){
         localCsvFiles=files.filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
       }
       const d=await sf(API+"/settings");
-      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??10485760,csv_download_max_rows:d.csv_download_max_rows??500000,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||["cache","reformatter"],versioned_single_file_dirs:d.versioned_single_file_dirs||["reformatter"],auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows};
+      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??10485760,csv_download_max_rows:d.csv_download_max_rows??500000,csv_download_max_bytes:d.csv_download_max_bytes??100000000,sql_query_max_source_bytes:d.sql_query_max_source_bytes??5368709120,preview_max_columns:d.preview_max_columns??100,preview_max_rows:d.preview_max_rows??200,schema_column_page_size:d.schema_column_page_size??200,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||["cache","reformatter"],versioned_single_file_dirs:d.versioned_single_file_dirs||["reformatter"],auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
       setFbSettings(settings);
       setFbAutoS3Upload(!!settings.auto_s3_upload_on_save);
       setFbThresholdMb(String(((Number(settings.csv_full_read_max_bytes)||0)/1048576).toFixed(2)).replace(/\.00$/,""));
+      setFbDownloadMb(String(((Number(settings.csv_download_max_bytes)||100000000)/1048576).toFixed(2)).replace(/\.00$/,""));
       setFbDownloadRows(String(Number(settings.csv_download_max_rows)||500000));
       setFbHiddenDbDirsText((settings.hidden_db_dirs||[]).join("\n"));
       setFbVersionedDirsText((settings.versioned_single_file_dirs||[]).join("\n"));
@@ -674,11 +678,14 @@ export default function My_FileBrowser({user,onNavigate}){
       const versionedSingleFileDirs=String(fbVersionedDirsText||"").split(/[\n,]/).map(v=>v.trim()).filter(Boolean);
       const parsedRows=Number(fbDownloadRows);
       const downloadRows=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_rows||500000),Number.isFinite(parsedRows)?Math.round(parsedRows):500000));
-      const d=await sf(API+"/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({csv_full_read_max_bytes:thresholdBytes,csv_download_max_rows:downloadRows,csv_rules:nextRules,hidden_db_dirs:hiddenDbDirs,versioned_single_file_dirs:versionedSingleFileDirs,auto_s3_upload_on_save:!!fbAutoS3Upload})});
-      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??thresholdBytes,csv_download_max_rows:d.csv_download_max_rows??downloadRows,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||hiddenDbDirs,versioned_single_file_dirs:d.versioned_single_file_dirs||versionedSingleFileDirs,auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows};
+      const parsedBytes=Math.round(Number(fbDownloadMb||100)*1048576);
+      const downloadBytes=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_bytes||100000000),Number.isFinite(parsedBytes)?parsedBytes:100000000));
+      const d=await sf(API+"/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({csv_full_read_max_bytes:thresholdBytes,csv_download_max_rows:downloadRows,csv_download_max_bytes:downloadBytes,sql_query_max_source_bytes:fbSettings.sql_query_max_source_bytes,preview_max_columns:fbSettings.preview_max_columns,preview_max_rows:fbSettings.preview_max_rows,schema_column_page_size:fbSettings.schema_column_page_size,csv_rules:nextRules,hidden_db_dirs:hiddenDbDirs,versioned_single_file_dirs:versionedSingleFileDirs,auto_s3_upload_on_save:!!fbAutoS3Upload})});
+      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??thresholdBytes,csv_download_max_rows:d.csv_download_max_rows??downloadRows,csv_download_max_bytes:d.csv_download_max_bytes??downloadBytes,sql_query_max_source_bytes:d.sql_query_max_source_bytes??fbSettings.sql_query_max_source_bytes,preview_max_columns:d.preview_max_columns??fbSettings.preview_max_columns,preview_max_rows:d.preview_max_rows??fbSettings.preview_max_rows,schema_column_page_size:d.schema_column_page_size??fbSettings.schema_column_page_size,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||hiddenDbDirs,versioned_single_file_dirs:d.versioned_single_file_dirs||versionedSingleFileDirs,auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
       setFbSettings(settings);
       setFbAutoS3Upload(!!settings.auto_s3_upload_on_save);
       setFbThresholdMb(String(((Number(settings.csv_full_read_max_bytes)||0)/1048576).toFixed(2)).replace(/\.00$/,""));
+      setFbDownloadMb(String(((Number(settings.csv_download_max_bytes)||downloadBytes)/1048576).toFixed(2)).replace(/\.00$/,""));
       setFbDownloadRows(String(Number(settings.csv_download_max_rows)||downloadRows));
       setFbHiddenDbDirsText((settings.hidden_db_dirs||[]).join("\n"));
       setFbVersionedDirsText((settings.versioned_single_file_dirs||[]).join("\n"));
@@ -942,7 +949,7 @@ export default function My_FileBrowser({user,onNavigate}){
     return fallback;
   };
 
-  const loadBaseFileView=(file,{full=true,page:pageArg=0}={})=>{
+  const loadBaseFileView=(file,{full=false,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
     setPage(pageArg);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
@@ -980,7 +987,7 @@ export default function My_FileBrowser({user,onNavigate}){
         if(match){
           setSelectedCols([]);
           setSql("");
-          loadHiveView(selRoot,selProd,"",[],{full:true,page:0});
+          loadHiveView(selRoot,selProd,"",[],{full:false,page:0});
         }
       }
     }).catch(()=>setSideLoading(false));
@@ -991,8 +998,32 @@ export default function My_FileBrowser({user,onNavigate}){
     return base+"?"+q;
   };
 
-  // 첫 클릭부터 샘플 row를 로드한다. SQL/SELECT/페이지 이동도 같은 page slice 경로를 사용.
-  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0}={})=>{
+  useEffect(()=>{
+    const q=String(colSearch||"").trim();
+    if(!data?.all_columns_truncated||!q){
+      setRemoteCols([]);
+      setRemoteColsLoading(false);
+      return;
+    }
+    const params={q,limit:fbSettings.schema_column_page_size||200,_ts:Date.now()};
+    if(mode==="hive"&&selRoot&&selProd){params.root=selRoot;params.product=selProd;}
+    else if(mode==="base"&&selBaseFile){params.file=selBaseFile;}
+    else if(mode==="rootpq"&&selRootPq){params.file=selRootPq;}
+    else return;
+    let alive=true;
+    setRemoteColsLoading(true);
+    const t=setTimeout(()=>{
+      sf(buildUrl(API+"/columns/search",params)).then(d=>{
+        if(!alive)return;
+        setRemoteCols((d.columns||[]).map(c=>String(c||"")).filter(Boolean));
+        if(d.dtypes)setData(prev=>prev?{...prev,dtypes:{...(prev.dtypes||{}),...(d.dtypes||{})}}:prev);
+      }).catch(()=>{if(alive)setRemoteCols([]);}).finally(()=>{if(alive)setRemoteColsLoading(false);});
+    },220);
+    return()=>{alive=false;clearTimeout(t);};
+  },[colSearch,data?.all_columns_truncated,mode,selRoot,selProd,selBaseFile,selRootPq,fbSettings.schema_column_page_size]);
+
+  // 첫 클릭은 metadata-only로 열고, SQL/SELECT/페이지 이동에서만 capped row preview를 조회한다.
+  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=false,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     setPage(pageArg);
@@ -1002,7 +1033,7 @@ export default function My_FileBrowser({user,onNavigate}){
     sf(url).then(d=>{if(sc.length)setSelectedCols(selectedColsFromResponse(d,sc));setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
-  const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0}={})=>{
+  const loadRootPqView=(file,sqlQ,selColsOverride,{full=false,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     setPage(pageArg);
@@ -1287,7 +1318,8 @@ export default function My_FileBrowser({user,onNavigate}){
 
   const downloadCsv=()=>{
     const maxRows=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_rows||500000),Number(fbSettings.csv_download_max_rows||500000)||500000));
-    let url=API+"/download-csv?username="+(user?.username||"anon")+"&max_rows="+encodeURIComponent(String(maxRows))+"&sql="+encodeURIComponent(sql);
+    const maxBytes=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_bytes||100000000),Number(fbSettings.csv_download_max_bytes||100000000)||100000000));
+    let url=API+"/download-csv?username="+(user?.username||"anon")+"&max_rows="+encodeURIComponent(String(maxRows))+"&max_bytes="+encodeURIComponent(String(maxBytes))+"&sql="+encodeURIComponent(sql);
     if(selectedCols.length)url+="&select_cols="+encodeURIComponent(selectedCols.join(","));
     if(mode==="base")url+="&file="+encodeURIComponent(selBaseFile);
     else if(mode==="rootpq")url+="&file="+encodeURIComponent(selRootPq);
@@ -1312,6 +1344,7 @@ export default function My_FileBrowser({user,onNavigate}){
 
   const allCols=data?.all_columns||data?.columns||[];
   const filteredCols=colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols;
+  const displayCols=(data?.all_columns_truncated&&colSearch.trim())?remoteCols:filteredCols;
   const fbActiveRule=formToRule(fbRuleForm);
   const fbActiveRuleGroups=ruleSummaryGroups(fbActiveRule);
   const fbDraftRule=fbSettingsLlmDraft?.draft||fbSettingsLlmDraft?.csv_rules?.[fbSelectedFile]||null;
@@ -1459,7 +1492,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {products.length>0&&<div style={{flex:1,overflow:"auto",borderTop:"1px solid var(--border)",padding:"4px 8px"}}>
             <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>제품</div>
             {products.map(p=>(
-              <div key={p.name} onClick={()=>{setSelectedCols([]);setSql("");loadHiveView(selRoot,p.name,"",[],{full:true,page:0});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
+              <div key={p.name} onClick={()=>{setSelectedCols([]);setSql("");loadHiveView(selRoot,p.name,"",[],{full:false,page:0});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
                 background:selProd===p.name?"var(--bg-hover)":"transparent",color:selProd===p.name?"var(--accent)":"var(--text-primary)"}}>
                 {/* v8.8.2: 제품별 S3 신호등 — 본인 설정 없으면 상위 DB 에서 상속. */}
                 {lightDot(selRoot+"/"+p.name)}
@@ -1654,7 +1687,7 @@ export default function My_FileBrowser({user,onNavigate}){
               <span style={{fontSize:14,fontWeight:600,flex:"1 1 220px",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={selProd||selRootPq||selBaseFile}>{selProd||selRootPq||selBaseFile}</span>
                 <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6,flexShrink:0}}>
                   {data.meta_only
-                    ?<>스키마만 로드 · {data.total_cols}열 <span style={{color:"var(--accent)",fontWeight:600}}>| SQL 실행 또는 컬럼 SELECT 적용 시 데이터 조회</span></>
+                    ?<>스키마만 로드 · {data.total_cols}열{data.row_count_unknown?<> · 행수 미계산</>:data.total_rows?<> · {data.total_rows.toLocaleString()}행</>:null}{data.all_columns_truncated?<> · 컬럼 일부 표시</>:null} <span style={{color:"var(--accent)",fontWeight:600}}>| SQL 실행 또는 컬럼 SELECT 적용 시 데이터 조회</span></>
                     :<>{data.latest_preview?<><span style={{color:"var(--accent)",fontWeight:700}}>최신 {data.showing}행</span>{data.latest_order_col?<> · 기준 {data.latest_order_col}</>:null} | </>:<><span style={{color:"var(--accent)",fontWeight:700}}>표시 {data.showing}행</span>{data.preview_row_limit?<> · 최대 {data.preview_row_limit}행</>:null} | </>}{data.total_rows?.toLocaleString()}행 × {data.total_cols}열
                        {data.selected_cols&&<span style={{color:"var(--accent)"}}> | {selectedCols.length||String(data.selected_cols).split(",").filter(Boolean).length}열 선택됨</span>}
                        {data.truncated_cols&&<span style={{color:"var(--accent)"}}> | 기본 미리보기 {data.preview_cols}열</span>}</>}
@@ -1787,9 +1820,10 @@ export default function My_FileBrowser({user,onNavigate}){
                 </div>
               <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:8,padding:"4px 0",lineHeight:1.6}}>
                 클릭 → SQL 필터에 추가 | ☑ 체크 → 해당 열만 선택해서 보기
+                {data.all_columns_truncated&&<span style={{color:"var(--accent)"}}> | schema {data.schema_columns_returned}/{data.total_cols}열 표시{remoteColsLoading?" · 검색 중":""}</span>}
               </div>
               <div style={{maxHeight:"calc(100vh - 340px)",overflow:"auto"}}>
-                {filteredCols.map((c,i)=>{
+                {displayCols.map((c,i)=>{
                   const isSelected=selectedCols.includes(c);
                   return(
                   <div key={i} style={{display:"flex",alignItems:"center",padding:"5px 12px",borderBottom:"1px solid var(--border)",fontSize:14,gap:8}}>
@@ -1988,7 +2022,11 @@ export default function My_FileBrowser({user,onNavigate}){
                     <input type="number" min={0} step={0.5} value={fbThresholdMb} onChange={e=>setFbThresholdMb(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
                   </label>
                   <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                    CSV 다운로드 최대 행
+                    CSV 다운로드 최대 크기 (MB)
+                    <input type="number" min={1} max={Math.round((fbSettings.max_csv_download_max_bytes||100000000)/1048576)} step={1} value={fbDownloadMb} onChange={e=>setFbDownloadMb(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
+                  </label>
+                  <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
+                    CSV 다운로드 최대 행 (보조)
                     <input type="number" min={1} max={fbSettings.max_csv_download_max_rows||500000} step={1000} value={fbDownloadRows} onChange={e=>setFbDownloadRows(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
                   </label>
                   <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>

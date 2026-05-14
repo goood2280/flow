@@ -34,6 +34,7 @@ Diagnosis와 Knowledge는 반도체 이슈를 item semantics, causal graph, case
 - source, step, area, direction, confidence를 함께 보여준다.
 - 사내 지식 반영 후에는 검색/답변 근거가 바뀌었는지 확인한다.
 - 운영 action은 Tracker나 Inform으로 넘긴다.
+- Wiki/schema/ontology 같은 shared knowledge write는 `diagnosis` page manager 이상만 수행한다. Prompt preview, chat, search, feedback 조회 흐름은 일반 로그인 사용자에게 열려 있다.
 
 ## Verify
 

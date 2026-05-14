@@ -65,6 +65,13 @@ function stripMlPrefix(s) {
   return v.startsWith("ML_TABLE_") ? v.slice("ML_TABLE_".length) : v;
 }
 
+function formatBytes(n) {
+  const v = Number(n || 0);
+  if (!Number.isFinite(v) || v <= 0) return "0 KB";
+  if (v >= 1024 * 1024) return `${(v / (1024 * 1024)).toFixed(2)} MB`;
+  return `${Math.max(0.1, v / 1024).toFixed(1)} KB`;
+}
+
 function addLotToken(out, seen, value) {
   const s = String(value || "").trim();
   if (!s || s === "—" || s === "-" || s === "None" || s === "null") return;
@@ -1382,12 +1389,6 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
   const [newGroupEmails, setNewGroupEmails] = useState("");
   // v8.8.21: 실시간 메일 프리뷰 — body 바뀔 때마다 debounce 후 fetch.
   const [preview, setPreview] = useState(null);
-  const formatBytes = (n) => {
-    const v = Number(n || 0);
-    if (!Number.isFinite(v) || v <= 0) return "0 KB";
-    if (v >= 1024 * 1024) return `${(v / (1024 * 1024)).toFixed(2)} MB`;
-    return `${Math.max(0.1, v / 1024).toFixed(1)} KB`;
-  };
   useEffect(() => {
     if (!root?.id) return;
     const h = setTimeout(() => {

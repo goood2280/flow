@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from app_v2.shared.contracts import FlowEntityKey, KnowledgeDoc, KnowledgeEvent
 from core import knowledge_vault as kv
-from core.auth import current_user, is_page_admin
+from core.auth import current_user, is_page_manager
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"], dependencies=[Depends(current_user)])
 ALLOWED_DOC_KINDS = {"product", "lot", "wafer", "knob", "issue", "meeting", "report", "decision", "agent_wiki", "schema_doc", "ontology", "manual"}
@@ -27,12 +27,9 @@ def _dump_model(obj: Any) -> dict[str, Any]:
 
 def _require_knowledge_admin(request: Request) -> dict[str, Any]:
     me = current_user(request)
-    if me.get("role") == "admin":
+    if is_page_manager(me, "diagnosis") or is_page_manager(me, "agent") or is_page_manager(me, "knowledge"):
         return me
-    username = me.get("username") or ""
-    if is_page_admin(username, "diagnosis") or is_page_admin(username, "knowledge"):
-        return me
-    raise HTTPException(403, "admin or diagnosis page_admin only")
+    raise HTTPException(403, "admin or diagnosis/agent page manager only")
 
 
 class KnowledgeDocSaveReq(BaseModel):

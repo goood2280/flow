@@ -33,12 +33,12 @@ import datetime
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from core.paths import PATHS
 from core.utils import load_json, save_json
-from core.auth import current_user, require_admin
+from core.auth import current_user, require_page_manager
 from core.audit import record as _audit
 
 router = APIRouter(prefix="/api/calendar", tags=["calendar"])
@@ -681,8 +681,7 @@ def get_settings_compat():
 
 
 @router.post("/categories/save")
-def save_categories(req: CategoriesSave, request: Request):
-    require_admin(request)
+def save_categories(req: CategoriesSave, request: Request, _perm=Depends(require_page_manager("calendar"))):
     cats = []
     seen = set()
     for c in req.categories or []:
@@ -699,6 +698,6 @@ def save_categories(req: CategoriesSave, request: Request):
 
 
 @router.post("/settings/save")
-def save_settings_compat(req: CategoriesSave, request: Request):
+def save_settings_compat(req: CategoriesSave, request: Request, _perm=Depends(require_page_manager("calendar"))):
     """Compatibility alias for PageGear builds that request page settings."""
     return save_categories(req, request)

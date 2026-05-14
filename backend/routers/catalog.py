@@ -9,7 +9,7 @@ All read/write happens here so admin UI has one tab for "data artifacts".
 import json
 import logging
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
@@ -25,6 +25,7 @@ from core.domain import (
 )
 from core import s3_sync as _s3
 from core import product_config as _pc
+from core.auth import require_page_manager
 
 logger = logging.getLogger("flow.catalog")
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
@@ -99,7 +100,7 @@ class MatchSave(BaseModel):
 
 
 @router.post("/matching/save")
-def matching_save(req: MatchSave):
+def matching_save(req: MatchSave, _perm=Depends(require_page_manager("splittable"))):
     meta = MATCHING_TABLES.get(req.name)
     if not meta:
         raise HTTPException(404, "unknown matching table")
@@ -170,7 +171,7 @@ class ProductSave(BaseModel):
 
 
 @router.post("/product/save")
-def product_save(req: ProductSave):
+def product_save(req: ProductSave, _perm=Depends(require_page_manager("tablemap"))):
     errs = _pc.validate(req.config)
     _pc.save(PC_ROOT, req.product, req.config)
     sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, _pc.config_path(PC_ROOT, req.product))
@@ -191,7 +192,7 @@ class S3ConfigSave(BaseModel):
 
 
 @router.post("/s3/config/save")
-def s3_config_save(req: S3ConfigSave):
+def s3_config_save(req: S3ConfigSave, _perm=Depends(require_page_manager("filebrowser"))):
     _s3.save_config(PATHS.data_root, req.config)
     return {"ok": True}
 
@@ -208,7 +209,7 @@ def s3_artifacts():
 
 
 @router.post("/s3/sync")
-def s3_sync(filter_type: str = Query("")):
+def s3_sync(filter_type: str = Query(""), _perm=Depends(require_page_manager("filebrowser"))):
     results = _s3.sync_all(PATHS.data_root, PATHS.db_root, filter_type or None)
     return {"results": results, "count": len(results)}
 

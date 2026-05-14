@@ -32,7 +32,7 @@ import polars as pl
 from core.paths import PATHS
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_column
 from core.audit import record_user as _audit_user
-from core.auth import current_user, require_admin, is_page_admin, require_page_admin
+from core.auth import current_user, is_page_manager, require_page_manager
 from core.domain import classify_process_area
 from core import matching_cache as _matching_cache
 from core import s3_sync as _s3
@@ -2097,7 +2097,7 @@ def _migrate_legacy_root_prefix(cfg: dict) -> dict:
 
 
 @router.post("/source-config/save")
-def save_source_config(req: SourceConfigReq, _perm=Depends(require_page_admin("splittable"))):
+def save_source_config(req: SourceConfigReq, _perm=Depends(require_page_manager("splittable"))):
     cur = load_json(SOURCE_CFG, {"enabled": [], "lot_overrides": {}})
     cur["enabled"] = req.enabled
     if req.lot_overrides:
@@ -2679,11 +2679,10 @@ def vm_meta(product: str = Query("")):
 @router.post("/infer-step-mapping")
 def infer_step_mapping(request: Request, product: str = Query(...), kind: str = Query("inline")):
     """v8.8.33: FAB 공정이력을 활용해 INLINE / VM 의 step_id 자동 추론.
-    보안: admin 또는 page_admin('splittable') 만 실행 가능 (rulebook CSV 쓰기 보호)."""
-    from core.auth import current_user, is_page_admin
+    보안: admin 또는 page_manager('splittable') 만 실행 가능 (rulebook CSV 쓰기 보호)."""
     me = current_user(request)
-    if me.get("role") != "admin" and not is_page_admin(me.get("username") or "", "splittable"):
-        raise HTTPException(403, "admin or splittable page_admin only")
+    if not is_page_manager(me, "splittable"):
+        raise HTTPException(403, "admin or splittable page manager only")
     # 전략: INLINE 의 (lot_id, wafer_id, item_id, tkout_time/time) 에 대해 FAB 에서
     #   같은 (lot_id, wafer_id) 의 step_id 중 INLINE 측정 직전의 step_id 매칭.
     # 결과를 inline_matching.csv (or vm_matching.csv) 에 upsert. 수동 편집분은 보존.
@@ -2901,7 +2900,7 @@ class RulebookSchemaReq(BaseModel):
 def save_rulebook_schema(
     req: RulebookSchemaReq,
     request: Request,
-    _perm=Depends(require_page_admin("splittable")),
+    _perm=Depends(require_page_manager("splittable")),
 ):
     me = current_user(request)
     if req.kind not in _DEFAULT_RULEBOOK_SCHEMA:
@@ -2987,8 +2986,8 @@ class RulebookSaveReq(BaseModel):
 
 
 @router.post("/rulebook/save")
-def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_page_admin("splittable"))):
-    """Admin 또는 splittable page_admin 전용. product 스코프면 해당 제품 행만 교체."""
+def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_page_manager("splittable"))):
+    """Admin 또는 splittable page manager 전용. product 스코프면 해당 제품 행만 교체."""
     me = current_user(request)
 
     meta = _RULEBOOK_FILES.get(req.kind)
@@ -3084,7 +3083,7 @@ class PrefixSaveReq(BaseModel):
 
 
 @router.post("/prefixes/save")
-def save_prefixes(req: PrefixSaveReq, _perm=Depends(require_page_admin("splittable"))):
+def save_prefixes(req: PrefixSaveReq, _perm=Depends(require_page_manager("splittable"))):
     save_json(PREFIX_CFG, req.prefixes)
     return {"ok": True}
 
@@ -3106,7 +3105,7 @@ class PrecisionReq(BaseModel):
 
 
 @router.post("/precision/save")
-def save_precision(req: PrecisionReq, _perm=Depends(require_page_admin("splittable"))):
+def save_precision(req: PrecisionReq, _perm=Depends(require_page_manager("splittable"))):
     # Sanitize: ensure int 0..10 per prefix
     out = {}
     for k, v in (req.precision or {}).items():
@@ -3154,7 +3153,15 @@ def list_paste_sets(product: str = Query("")):
 
 
 @router.post("/paste-sets/save")
-def save_paste_set(req: PasteSetSaveReq):
+def save_paste_set(
+    req: PasteSetSaveReq,
+    request: Request = None,
+    _perm=Depends(require_page_manager("splittable")),
+):
+    actor = req.username or ""
+    if request is not None:
+        me = current_user(request)
+        actor = me.get("username") or actor
     import secrets as _secrets
     nm = (req.name or "").strip()
     if not nm:
@@ -3168,7 +3175,7 @@ def save_paste_set(req: PasteSetSaveReq):
     existing = next((s for s in items if s.get("name") == nm and s.get("product", "") == (req.product or "")), None)
     if existing:
         existing.update({
-            "columns": cols, "rows": req.rows or [], "username": req.username or existing.get("username", ""),
+            "columns": cols, "rows": req.rows or [], "username": actor or existing.get("username", ""),
             "updated": now,
         })
     else:
@@ -3176,7 +3183,7 @@ def save_paste_set(req: PasteSetSaveReq):
             "id": "ps_" + _secrets.token_hex(5),
             "name": nm, "product": req.product or "",
             "columns": cols, "rows": req.rows or [],
-            "username": req.username or "",
+            "username": actor,
             "created": now, "updated": now,
         })
     _save_paste_sets(items)
@@ -3192,7 +3199,11 @@ class PasteSetDeleteReq(BaseModel):
 
 
 @router.post("/paste-sets/delete")
-def delete_paste_set(req: PasteSetDeleteReq):
+def delete_paste_set(
+    req: PasteSetDeleteReq,
+    request: Request = None,
+    _perm=Depends(require_page_manager("splittable")),
+):
     items = _load_paste_sets()
     before = len(items)
     if req.id:
@@ -3209,7 +3220,11 @@ def delete_paste_set(req: PasteSetDeleteReq):
 
 
 @router.post("/paste-sets/to-custom")
-def paste_set_to_custom(req: PasteSetDeleteReq):
+def paste_set_to_custom(
+    req: PasteSetDeleteReq,
+    request: Request = None,
+    _perm=Depends(require_page_manager("splittable")),
+):
     """paste 세트의 columns 를 CUSTOM 커스텀 뷰로 승격.
     CUSTOM 탭에서 바로 선택 가능하게 `custom_<safe_name>.json` 생성."""
     items = _load_paste_sets()
@@ -3220,12 +3235,16 @@ def paste_set_to_custom(req: PasteSetDeleteReq):
         src = next((s for s in items if s.get("name") == req.name and s.get("product", "") == (req.product or "")), None)
     if not src:
         raise HTTPException(404, "paste set not found")
+    actor = req.username or src.get("username", "")
+    if request is not None:
+        me = current_user(request)
+        actor = me.get("username") or actor
     name = src.get("name") or "paste_custom"
     fp = PLAN_DIR / f"custom_{safe_id(name)}.json"
     now = datetime.datetime.now().isoformat(timespec="seconds")
     existing = load_json(fp, None) if fp.exists() else None
     save_json(fp, {
-        "name": name, "username": req.username or src.get("username", ""),
+        "name": name, "username": actor,
         "columns": list(src.get("columns") or []),
         "created": (existing or {}).get("created", now),
         "updated": now,
@@ -3258,7 +3277,15 @@ class CustomSaveReq(BaseModel):
 
 
 @router.post("/customs/save")
-def save_custom(req: CustomSaveReq):
+def save_custom(
+    req: CustomSaveReq,
+    request: Request = None,
+    _perm=Depends(require_page_manager("splittable")),
+):
+    actor = req.username
+    if request is not None:
+        me = current_user(request)
+        actor = me.get("username") or actor
     fp = PLAN_DIR / f"custom_{safe_id(req.name)}.json"
     now = datetime.datetime.now().isoformat()
     existing = load_json(fp, None) if fp.exists() else None
@@ -3278,7 +3305,7 @@ def save_custom(req: CustomSaveReq):
         new_v = 1
         created = now
     save_json(fp, {
-        "name": req.name, "username": req.username, "columns": req.columns,
+        "name": req.name, "username": actor, "columns": req.columns,
         "created": created, "updated": now, "version": new_v,
     })
     invalidate_splittable_sets_cache()
@@ -3291,22 +3318,14 @@ class CustomDeleteReq(BaseModel):
 
 
 @router.post("/customs/delete")
-def delete_custom(req: CustomDeleteReq):
+def delete_custom(
+    req: CustomDeleteReq,
+    request: Request = None,
+    _perm=Depends(require_page_manager("splittable")),
+):
     fp = PLAN_DIR / f"custom_{safe_id(req.name)}.json"
     if not fp.exists():
         raise HTTPException(404)
-    data = load_json(fp, {})
-    # Permission: creator or admin
-    try:
-        from routers.auth import read_users
-        is_admin = any(u["username"] == req.username and u.get("role") == "admin"
-                       for u in read_users())
-        if data.get("username") != req.username and not is_admin:
-            raise HTTPException(403, "Only creator or admin can delete")
-    except HTTPException:
-        raise
-    except Exception:
-        pass
     fp.unlink(missing_ok=True)
     invalidate_splittable_sets_cache()
     return {"ok": True}
@@ -5157,7 +5176,7 @@ def match_cache_status(request: Request, product: str = Query("")):
 
 
 @router.post("/match-cache/refresh")
-def refresh_match_cache_now(req: MatchCacheRefreshReq, request: Request, _a=Depends(require_admin)):
+def refresh_match_cache_now(req: MatchCacheRefreshReq, request: Request, _a=Depends(require_page_manager("splittable"))):
     return enqueue_match_cache_refresh(product=req.product or "", force=bool(req.force), reason="manual")
 
 
@@ -7010,7 +7029,13 @@ class PlanReq(BaseModel):
 
 
 @router.post("/plan")
-def save_plan(req: PlanReq):
+def save_plan(req: PlanReq, request: Request = None):
+    if request is not None:
+        try:
+            me = current_user(request)
+            req.username = me.get("username") or req.username or "unknown"
+        except Exception:
+            raise
     # Validate: only KNOB/MASK/FAB columns can have plans
     rejected = []
     for ck in list(req.plans.keys()):
@@ -7087,7 +7112,13 @@ class PlanDeleteReq(BaseModel):
 
 
 @router.post("/plan/delete")
-def delete_plan(req: PlanDeleteReq):
+def delete_plan(req: PlanDeleteReq, request: Request = None):
+    if request is not None:
+        try:
+            me = current_user(request)
+            req.username = me.get("username") or req.username or "unknown"
+        except Exception:
+            raise
     pf = _plan_history_path(req.product)
     if not any(p.exists() for p in _plan_alias_paths(req.product)):
         raise HTTPException(404)

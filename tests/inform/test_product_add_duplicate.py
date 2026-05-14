@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import polars as pl
 from fastapi import HTTPException
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,15 +44,24 @@ def test_product_add_collection_post_compat(tmp_path, monkeypatch):
     assert resp["products"] == ["PRODA"]
 
 
-def test_inform_product_candidates_come_from_fab_db_only(tmp_path, monkeypatch):
+def test_inform_config_product_candidates_include_latest_lot_cache(tmp_path, monkeypatch):
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text(json.dumps({"products": ["LEGACY_ONLY"]}), encoding="utf-8")
     fab_root = tmp_path / "Fab" / "1.RAWDATA_DB_FAB"
     (fab_root / "ML_TABLE_PRODA").mkdir(parents=True)
     (fab_root / "PRODB").mkdir(parents=True)
+    cache_root = tmp_path / "Fab" / "cache"
+    cache_root.mkdir(parents=True)
+    pl.DataFrame({
+        "product": ["PRODA", "PRODC", "ML_TABLE_PRODD"],
+        "root_lot_id": ["R1000", "R2000", "R3000"],
+        "wafer_id": ["1", "1", "1"],
+        "lot_id": ["F1000A.1", "F2000A.1", "F3000A.1"],
+    }).write_parquet(cache_root / "lot_progress_latest_lot_by_root_wafer.parquet")
 
     class DummyPaths:
         db_root = tmp_path / "Fab"
+        db_cache_dir = cache_root
 
     monkeypatch.setattr(informs, "CONFIG_FILE", cfg_file)
     monkeypatch.setattr(informs, "PATHS", DummyPaths())
@@ -70,6 +80,6 @@ def test_inform_product_candidates_come_from_fab_db_only(tmp_path, monkeypatch):
         {"__all__"},
     )
 
-    assert cfg["products"] == ["PRODA", "PRODB"]
+    assert cfg["products"] == ["PRODA", "PRODB", "PRODC", "PRODD"]
     assert [row["product"] for row in products] == ["PRODA", "PRODB"]
     assert {row["product"] for row in sidebar["products"]} == {"PRODA", "PRODB"}

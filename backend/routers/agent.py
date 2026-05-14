@@ -16,7 +16,7 @@ from app_v2.shared.contracts import FlowEntityKey, KnowledgeDoc
 from core import knowledge_vault as kv
 from core import llm_adapter
 from core import semiconductor_knowledge as semi
-from core.auth import current_user, is_page_admin, require_admin
+from core.auth import current_user, is_page_admin, is_page_manager, require_admin
 from core.paths import PATHS
 from core.utils import load_json, save_json
 from routers import llm as flowi_llm
@@ -938,12 +938,16 @@ def _require_agent_admin(request: Request) -> dict[str, Any]:
 
 def _require_agent_wiki_admin(request: Request) -> dict[str, Any]:
     me = current_user(request)
-    if me.get("role") == "admin":
-        return me
     username = me.get("username") or ""
-    if is_page_admin(username, "diagnosis") or is_page_admin(username, "knowledge"):
+    if (
+        is_page_manager(me, "diagnosis")
+        or is_page_manager(me, "agent")
+        or is_page_manager(me, "knowledge")
+        or is_page_admin(username, "diagnosis")
+        or is_page_admin(username, "knowledge")
+    ):
         return me
-    raise HTTPException(403, "admin or diagnosis/knowledge page admin only")
+    raise HTTPException(403, "admin or diagnosis/agent page manager only")
 
 
 _AGENT_WIKI_PAGE_KINDS = {"product", "lot", "wafer", "knob", "issue", "meeting", "report", "decision", "agent_wiki", "schema_doc", "ontology", "manual"}

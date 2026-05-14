@@ -62,4 +62,4 @@ def test_attached_sets_roundtrip_into_detail_and_mail_html(tmp_path, monkeypatch
     assert "KNOB_A" not in html
     assert "안녕하세요" not in html
     assert "background:#fffbeb" not in html
-    assert "font-size:12pt" in html
+    assert "font-size:12px" in html

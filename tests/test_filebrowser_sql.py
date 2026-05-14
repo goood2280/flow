@@ -1236,6 +1236,83 @@ def test_base_file_meta_only_uses_cached_parquet_metadata(monkeypatch, tmp_path)
     assert result["data"] == []
 
 
+def test_base_file_meta_only_truncates_very_wide_schema_and_column_search(monkeypatch, tmp_path):
+    fp = tmp_path / "ML_TABLE_WIDE.parquet"
+    pl.DataFrame({f"c{i:04d}": [i] for i in range(4999)} | {"needle_4999": [4999]}).write_parquet(fp)
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+
+    result = filebrowser.base_file_view(
+        file=fp.name,
+        rows=200,
+        cols=100,
+        meta_only=True,
+        page=0,
+        page_size=200,
+    )
+    found = filebrowser.search_columns(
+        _Request("viewer", "user"),
+        file=fp.name,
+        q="needle",
+        limit=10,
+    )
+
+    assert result["meta_only"] is True
+    assert result["data"] == []
+    assert result["total_cols"] == 5000
+    assert result["all_columns_truncated"] is True
+    assert len(result["all_columns"]) == filebrowser.DEFAULT_SCHEMA_COLUMN_PAGE_SIZE
+    assert result["row_count_unknown"] is True
+    assert found["columns"] == ["needle_4999"]
+    assert found["total_cols"] == 5000
+
+
+def test_large_source_download_requires_filter_or_projection():
+    lf = pl.DataFrame({"lot_id": ["A1000"], "value": [1]}).lazy()
+
+    with pytest.raises(HTTPException) as exc:
+        filebrowser._download_lazy_csv(
+            lf,
+            "",
+            "",
+            10,
+            source_size=101,
+            settings={"sql_query_max_source_bytes": 100, "csv_download_max_bytes": 1000000},
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "filter_required"
+
+
+def test_download_stops_by_byte_limit():
+    lf = pl.DataFrame({"payload": ["x" * 50 for _ in range(3)]}).lazy()
+
+    with pytest.raises(HTTPException) as exc:
+        filebrowser._download_lazy_csv(
+            lf,
+            "",
+            "payload",
+            10,
+            max_bytes=20,
+            settings={"csv_download_max_bytes": 20},
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "download_too_large"
+    assert exc.value.detail["max_bytes"] == 20
+
+
+def test_wide_download_requires_selected_columns():
+    lf = pl.DataFrame({f"c{i:03d}": [i] for i in range(filebrowser.MAX_CSV_DOWNLOAD_AUTO_COLUMNS + 1)}).lazy()
+
+    with pytest.raises(HTTPException) as exc:
+        filebrowser._download_lazy_csv(lf, "", "", 10)
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "too_many_columns_without_projection"
+
+
 def test_base_files_hides_legacy_cache_and_cleanup_api_deletes_candidates(monkeypatch, tmp_path):
     fp = tmp_path / "ML_TABLE_PRODA.parquet"
     pl.DataFrame({

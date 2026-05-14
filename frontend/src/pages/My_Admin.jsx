@@ -9,6 +9,12 @@ import { sf, dl, postJson, userLabel, userMatches } from "../lib/api";
 const ALL_TABS=["filebrowser","dashboard","splittable","diagnosis","ettime","waferlayout","tracker","inform","meeting","calendar","devguide"];
 const BULK_DEFAULT_TABS=["filebrowser","dashboard","splittable","diagnosis","ettime","waferlayout","inform","meeting","calendar"];
 const BULK_HEADER_KEYS=new Set(["name","username","email","role","tabs"]);
+const CANONICAL_PAGE_IDS=["filebrowser","dashboard","splittable","tracker","inform","meeting","calendar","tablemap","ettime","waferlayout","groups","messages","devguide","diagnosis"];
+const PAGE_ID_ALIASES={informs:"inform",meetings:"meeting",wafer_map:"waferlayout",dbmap:"tablemap"};
+function _canonicalPageId(v){
+  const key=String(v||"").trim().toLowerCase();
+  return PAGE_ID_ALIASES[key]||key;
+}
 // v8.7.5: u.tabs 는 string 이지만 legacy json 에서 array 로 저장된 기록이 있을 수 있어
 // "r.split is not a function" 방지를 위해 정규화 헬퍼를 둔다.
 function _tabsToArray(v){
@@ -73,6 +79,17 @@ function _parseBulkUsers(text,defaultTabs=[]){
 function _arr(v){return Array.isArray(v)?v:[];}
 function _obj(v){return v&&typeof v==="object"&&!Array.isArray(v)?v:{};}
 function _entries(v){return Object.entries(_obj(v));}
+function _effectivePermissionText(u){
+  const eff=_obj(u?.effective_permissions);
+  const role=eff.role||u?.role||"user";
+  const tabs=eff.tabs==="__all__"?"all":_arr(eff.tabs).join(",")||u?.tabs||"default";
+  const pages=_arr(eff.page_manager).join(",")||"-";
+  const groups=_obj(eff.groups);
+  const owner=_arr(groups.owner).length;
+  const member=_arr(groups.member).length;
+  const groupText=groups.all?"all":`owner ${owner} / member ${member}`;
+  return `role ${role} · tabs ${tabs} · page ${pages} · devguide ${eff.devguide?"Y":"N"} · groups ${groupText}`;
+}
 const OK = statusPalette.ok;
 const WARN = statusPalette.warn;
 const BAD = statusPalette.bad;
@@ -400,7 +417,7 @@ export default function My_Admin({user}){
               <Button variant="primary" onClick={submitBulkUsers} disabled={bulkUsersBusy||!bulkCreatableCount}>{bulkUsersBusy?"생성 중...":`일괄 생성 ${bulkCreatableCount}건`}</Button>
             </div>
             {bulkUsersResult&&<Banner tone={_arr(bulkUsersResult.skipped).length?"warn":"ok"} style={{marginBottom:10}}>
-              생성 {_arr(bulkUsersResult.created).length}건 / 건너뜀 {_arr(bulkUsersResult.skipped).length}건 / 기본 비밀번호 {bulkUsersResult.default_password||"1111"}
+              생성 {_arr(bulkUsersResult.created).length}건 / 건너뜀 {_arr(bulkUsersResult.skipped).length}건
             </Banner>}
             <div style={{display:"grid",gap:10}}>
               <label style={{display:"grid",gap:6}}>
@@ -499,6 +516,7 @@ export default function My_Admin({user}){
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
             <thead><tr>
               <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",position:"sticky",left:0,zIndex:1}}>사용자</th>
+              <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",minWidth:340}}>실제 적용 권한</th>
               {ALL_TABS.map(t=><th key={t} style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{t}</th>)}
               <th style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}></th>
             </tr></thead>
@@ -506,6 +524,7 @@ export default function My_Admin({user}){
               const ut=_tabsToArray(u.tabs);
               return(<tr key={i}>
                 <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontWeight:600,position:"sticky",left:0,background:"var(--bg-secondary)",zIndex:1}}>{u.username}</td>
+                <td title={_effectivePermissionText(u)} style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:13,maxWidth:520,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{_effectivePermissionText(u)}</td>
                 {ALL_TABS.map(t=><td key={t} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
                   <span style={{fontSize:14,color:ut.includes(t)?"var(--ok,#22c55e)":"var(--bad,#ef4444)",fontWeight:700}}>{ut.includes(t)?"O":"X"}</span>
                 </td>)}
@@ -782,9 +801,14 @@ export default function My_Admin({user}){
 // v9.0.3: 메시지 기능은 "문의함" 용어로 정리.
 const PAGE_IDS=[
   ["filebrowser","파일탐색기"],["dashboard","대시보드"],["splittable","스플릿 테이블"],
-  ["tracker","이슈 추적"],["informs","인폼 로그"],["meetings","회의관리"],["calendar","변경점 관리"],
-  ["spc","SPC"],["ettime","ET 레포트"],["wafer_map","웨이퍼 맵"],
-  ["messages","문의함"],["groups","그룹"],
+  ["tracker","이슈 추적"],["inform","인폼 로그"],["meeting","회의관리"],["calendar","변경점 관리"],
+  ["tablemap","테이블 맵"],["ettime","ET 레포트"],["waferlayout","웨이퍼 레이아웃"],
+  ["groups","그룹"],["messages","문의함"],["devguide","DevGuide"],["diagnosis","에이전트"],
+];
+const PAGE_PRESETS=[
+  {key:"read",label:"조회만",pages:[]},
+  {key:"ops",label:"운영관리",pages:["filebrowser","splittable","inform","tracker","calendar","meeting"]},
+  {key:"all",label:"전체관리",pages:CANONICAL_PAGE_IDS},
 ];
 
 function PageAdminsPanel({users}){
@@ -806,6 +830,7 @@ function PageAdminsPanel({users}){
   const approved=(Array.isArray(users)?users:[]).filter(u=>u&&u.status==="approved");
   const isFullAdmin=(u)=>u.role==="admin" || ["admin","hol"].includes((u.username||"").toLowerCase());
   const toggle=(pageId,username)=>{
+    pageId=_canonicalPageId(pageId);
     const cur=new Set(pa[pageId]||[]);
     if(cur.has(username))cur.delete(username);else cur.add(username);
     const next={...pa,[pageId]:Array.from(cur).sort()};
@@ -813,6 +838,23 @@ function PageAdminsPanel({users}){
     setBusy(true);setMsg("");
     sf("/api/admin/page-admins",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({page_id:pageId,usernames:next[pageId]||[]})})
       .then(()=>{setPa(next);setMsg("✔ "+pageId+" 저장");setBusy(false);setTimeout(()=>setMsg(""),2000);})
+      .catch(e=>{setMsg("오류: "+e.message);setBusy(false);});
+  };
+  const applyPreset=(username,preset)=>{
+    const pages=new Set((preset.pages||[]).map(_canonicalPageId));
+    const next={...pa};
+    for(const [pid] of PAGE_IDS){
+      const key=_canonicalPageId(pid);
+      const cur=new Set(next[key]||[]);
+      if(pages.has(key))cur.add(username);else cur.delete(username);
+      if(cur.size)next[key]=Array.from(cur).sort();else delete next[key];
+    }
+    setBusy(true);setMsg("");
+    Promise.all(PAGE_IDS.map(([pid])=>{
+      const key=_canonicalPageId(pid);
+      return sf("/api/admin/page-admins",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({page_id:key,usernames:next[key]||[]})});
+    }))
+      .then(()=>{setPa(next);setMsg("✔ "+username+" "+preset.label+" 적용");setBusy(false);setTimeout(()=>setMsg(""),2000);})
       .catch(e=>{setMsg("오류: "+e.message);setBusy(false);});
   };
   const toggleDevguide=(username)=>{
@@ -837,6 +879,7 @@ function PageAdminsPanel({users}){
     <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
       <thead><tr>
         <th style={{position:"sticky",left:0,background:"var(--bg-tertiary)",textAlign:"left",padding:"8px 12px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",zIndex:1,minWidth:140}}>유저</th>
+        <th style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>프리셋</th>
         {PAGE_IDS.map(([pid,label])=><th key={pid} title={pid} style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{label}</th>)}
       </tr></thead>
       <tbody>{approved.map(u=>{
@@ -845,11 +888,17 @@ function PageAdminsPanel({users}){
           <td style={{position:"sticky",left:0,background:"var(--bg-secondary)",padding:"6px 12px",borderBottom:"1px solid var(--border)",fontWeight:600,zIndex:1}}>
             {u.username}{full&&<span style={{marginLeft:6,fontSize:14,padding:"1px 6px",borderRadius:8,background:BAD.bg,color:BAD.fg,fontWeight:700}}>ADMIN</span>}
           </td>
+          <td style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>
+            {!full&&PAGE_PRESETS.map(p=>(
+              <Button key={p.key} variant="ghost" disabled={busy} onClick={()=>applyPreset(u.username,p)} style={{padding:"4px 8px",fontSize:12,marginRight:4}}>{p.label}</Button>
+            ))}
+          </td>
           {PAGE_IDS.map(([pid])=>{
-            const assigned=(pa[pid]||[]).includes(u.username);
+            const key=_canonicalPageId(pid);
+            const assigned=(pa[key]||[]).includes(u.username);
             const checked=full||assigned;
             return(<td key={pid} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
-              <input type="checkbox" checked={checked} disabled={busy||full} onChange={()=>toggle(pid,u.username)} title={full?"admin 자동 허용":""}/>
+              <input type="checkbox" checked={checked} disabled={busy||full} onChange={()=>toggle(key,u.username)} title={full?"admin 자동 허용":""}/>
             </td>);
           })}
         </tr>);

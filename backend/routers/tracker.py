@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from core.paths import PATHS
 from core.utils import load_json, save_json
-from core.auth import current_user, require_admin
+from core.auth import current_user, is_page_manager, require_page_manager
 from core.tracker_schema import migrate_tracker_issues_file, normalize_lot_row
 from app_v2.modules.tracker.repository import TrackerIssueRepository
 from app_v2.modules.tracker.service import TrackerService
@@ -531,11 +531,11 @@ def get_tracker_scheduler(request: Request):
     me = current_user(request)
     from core.tracker_scheduler import scheduler_status
     data = scheduler_status()
-    return {**data, "can_edit": me.get("role") == "admin"}
+    return {**data, "can_edit": is_page_manager(me, "tracker")}
 
 
 @router.post("/scheduler/save")
-def save_tracker_scheduler(req: TrackerSchedulerReq, request: Request, _a=Depends(require_admin)):
+def save_tracker_scheduler(req: TrackerSchedulerReq, request: Request, _a=Depends(require_page_manager("tracker"))):
     from core.tracker_scheduler import save_scheduler_config, scheduler_status
     save_scheduler_config(
         enabled=req.enabled,
@@ -546,7 +546,7 @@ def save_tracker_scheduler(req: TrackerSchedulerReq, request: Request, _a=Depend
 
 
 @router.post("/scheduler/run-now")
-def run_tracker_scheduler_now(request: Request, _a=Depends(require_admin)):
+def run_tracker_scheduler_now(request: Request, _a=Depends(require_page_manager("tracker"))):
     from core.tracker_scheduler import run_once, scheduler_status
     run_result = run_once(force=True)
     return {
@@ -562,14 +562,14 @@ def get_et_lot_cache_status(request: Request,
                             product: str = Query(""),
                             source_root: str = Query("")):
     me = current_user(request)
-    if me.get("role") != "admin":
-        raise HTTPException(403, "admin only")
+    if not is_page_manager(me, "tracker"):
+        raise HTTPException(403, "admin or tracker page manager only")
     from core.lot_step import et_lot_cache_status
     return et_lot_cache_status(product=product, source_root=source_root)
 
 
 @router.post("/et-lot-cache/refresh")
-def refresh_et_lot_cache_now(req: EtLotCacheRefreshReq, request: Request, _a=Depends(require_admin)):
+def refresh_et_lot_cache_now(req: EtLotCacheRefreshReq, request: Request, _a=Depends(require_page_manager("tracker"))):
     from core.runtime_limits import tracker_et_lot_cache_enabled
     from core.lot_step import refresh_et_lot_cache
     if not tracker_et_lot_cache_enabled():
@@ -653,7 +653,7 @@ def get_tracker_db_sources(request: Request):
         "mail_templates": templates,
         "default_mail_templates": DEFAULT_MAIL_TEMPLATES,
         "template_variables": TEMPLATE_VARIABLES,
-        "can_edit": me.get("role") == "admin",
+        "can_edit": is_page_manager(me, "tracker"),
     }
 
 
@@ -680,7 +680,7 @@ def tracker_bootstrap(request: Request):
 
 
 @router.post("/db-sources/save")
-def save_tracker_db_sources(req: TrackerDbSourcesReq, request: Request, _a=Depends(require_admin)):
+def save_tracker_db_sources(req: TrackerDbSourcesReq, request: Request, _a=Depends(require_page_manager("tracker"))):
     from core.lot_step import FAB_ROOT, ET_ROOT, list_db_source_roots, tracker_db_sources_config, tracker_role_names_config
     from core.tracker_templates import DEFAULT_MAIL_TEMPLATES, TEMPLATE_VARIABLES, tracker_mail_templates_config
     prev_roles = tracker_role_names_config()
@@ -911,12 +911,9 @@ def category_usage():
 
 
 @router.post("/categories/save")
-def save_categories(cats: list, request: Request):
+def save_categories(cats: list, request: Request, _perm=Depends(require_page_manager("tracker"))):
     """v8.1.5: accepts list of str OR list of {name, color}. Always stored as normalized {name, color}.
-    v8.8.33 보안: admin 전용."""
-    me = current_user(request)
-    if me.get("role") != "admin":
-        raise HTTPException(403, "admin only")
+    v8.8.33 보안: tracker page manager 이상."""
     normalized = _normalize_cats(cats)
     save_json(CATS_FILE, normalized)
     return {"ok": True, "categories": normalized}
@@ -1572,7 +1569,7 @@ def save_lot_watch(req: LotWatchReq, request: Request):
 
 
 @router.post("/lot-check")
-def check_lot_watches(request: Request, _a=Depends(require_admin)):
+def check_lot_watches(request: Request, _a=Depends(require_page_manager("tracker"))):
     """전체 active watch 를 1회 폴링 — 신규 진입/측정 감지 시 notify + mail.
     주기 스케줄러나 FE 주기 호출로 실행.
     """

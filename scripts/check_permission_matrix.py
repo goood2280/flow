@@ -110,12 +110,23 @@ def _gate_from_text(text: str, endpoint: str = "") -> str:
     if "require_page_admin" in text:
         m = re.search(r"require_page_admin\([\"']([^\"']+)[\"']\)", text)
         gates.append(f"require_page_admin:{m.group(1)}" if m else "require_page_admin")
+    if "require_page_manager" in text:
+        m = re.search(r"require_page_manager\([\"']([^\"']+)[\"']\)", text)
+        gates.append(f"require_page_manager:{m.group(1)}" if m else "require_page_manager")
+    if "is_page_manager" in text:
+        gates.append("is_page_manager")
     if "is_page_admin" in text:
         gates.append("is_page_admin")
     if "_require_tablemap_admin" in text:
         gates.append("require_page_admin:tablemap")
     if "_require_agent_admin" in text:
         gates.append("require_admin")
+    if "_require_agent_wiki_admin" in text or "_require_agent_schema_admin" in text:
+        gates.append("require_page_manager:diagnosis")
+    if "_require_knowledge_admin" in text:
+        gates.append("require_page_manager:diagnosis")
+    if "_require_filebrowser_manager" in text or "_require_filebrowser_admin" in text:
+        gates.append("require_page_manager:filebrowser")
     if "_require_dashboard_section" in text:
         gates.append("dashboard_section")
     if "_require_admin" in text:
@@ -213,15 +224,21 @@ def _risk(row: dict[str, str], callers: list[str]) -> str:
         endpoint.endswith("/chart-defaults")
         or "/admin-tools/" in endpoint
         or endpoint in {"/api/llm/flowi/admin/update", "/api/llm/flowi/feedback/promote", "/api/llm/flowi/persona"}
-    ) and "require_admin" not in gate:
+    ) and "require_admin" not in gate and not (endpoint.startswith("/api/dashboard/") and "require_page_manager" in gate):
         return "leak_be_open"
     if write and (
         endpoint.startswith("/api/dbmap/")
         or endpoint.startswith("/api/informs/modules/")
         or endpoint in {"/api/informs/config", "/api/informs/settings"}
         or endpoint.startswith("/api/splittable/rulebook")
-        or endpoint in {"/api/splittable/source-config/save", "/api/splittable/prefixes/save", "/api/splittable/precision/save"}
-    ) and not any(token in gate for token in ("require_admin", "require_page_admin", "is_page_admin")):
+        or endpoint.startswith("/api/splittable/paste-sets/")
+        or endpoint.startswith("/api/splittable/customs/")
+        or endpoint in {
+            "/api/splittable/source-config/save", "/api/splittable/prefixes/save", "/api/splittable/precision/save",
+            "/api/catalog/matching/save", "/api/catalog/product/save", "/api/catalog/s3/config/save", "/api/catalog/s3/sync",
+        }
+        or endpoint.startswith("/api/s3ingest/")
+    ) and not any(token in gate for token in ("require_admin", "require_page_admin", "require_page_manager", "is_page_admin", "is_page_manager")):
         return "leak_be_open"
     return "ok"
 
@@ -261,8 +278,9 @@ def render() -> str:
             "",
             "## Change Notes",
             "",
-            "- `/api/dashboard/chart-defaults`, dashboard refresh and saved-chart mutations are backend admin-gated.",
-            "- Informs module/config writes and SplitTable rule/config writes accept global admin or page-admin delegation.",
+            "- `/api/dashboard/chart-defaults`, dashboard refresh and saved-chart mutations accept global admin or `dashboard` page-manager delegation.",
+            "- Inform module/config/catalog/contact writes and SplitTable shared config/rule/set writes accept global admin or page-manager delegation.",
+            "- S3 ingest/AWS credential endpoints no longer trust body/query `username`; they require `filebrowser` page-manager delegation.",
             "- `/api/informs/{id}/send-mail` now requires the inform author or global admin.",
             "- Home Flowi blocks regular users from admin-function prompts with `blocked=true` and `reject_reason`.",
             "- Legacy `/api/admin/*` self-service notification/settings routes remain owner/self guarded to avoid breaking normal user flows; admin management routes remain `require_admin`.",
@@ -270,7 +288,7 @@ def render() -> str:
             "## 갱신 절차",
             "",
             "1. 새 backend endpoint를 추가하면 이 표에 `endpoint`, `method`, `backend gate`, FE caller를 추가한다.",
-            "2. admin 전용 write는 `require_admin`, 페이지 위임 write는 `require_page_admin(\"page_key\")` 또는 동일한 `is_page_admin` 검사를 붙인다.",
+            "2. admin 전용 write는 `require_admin`, 페이지 위임 write는 `require_page_manager(\"page_key\")` 또는 동일한 `is_page_manager` 검사를 붙인다.",
             "3. FE에서 admin/page-admin UI를 추가하면 `frontend/src/lib/permissions.js` 헬퍼를 우선 사용한다.",
             "4. CI 또는 로컬에서 `python3 scripts/check_permission_matrix.py`를 실행해 라우터와 표 누락을 확인한다.",
         ]

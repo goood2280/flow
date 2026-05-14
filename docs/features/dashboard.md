@@ -35,6 +35,7 @@ Dashboard는 저장된 chart와 snapshot을 통해 운영 상태를 빠르게 �
 - `+ 차트 추가`는 일반 chart type, Inform preset, AI draft 생성의 단일 진입점이다.
 - Flow-i/LLM은 chart draft 또는 chart session을 만들고, 실제 저장은 사용자의 `저장` 또는 명시적 확인 이후 `/api/dashboard/charts/save`로 수행한다.
 - Flow-i unit action은 `dashboard.chart.llm.draft`로 노출하며 Home에서는 chart draft/config와 inline preview를 먼저 보여준다.
+- Shared chart 설정(chart defaults, saved chart CRUD, manual snapshot refresh)은 `dashboard` page manager 이상만 쓴다. 개인 layout 저장은 기존처럼 current user 기준이다.
 
 ## Verify
 

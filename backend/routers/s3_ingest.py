@@ -15,10 +15,11 @@ from __future__ import annotations
 import os, re, time, uuid, shlex, shutil, datetime, threading, subprocess, configparser
 from pathlib import Path
 from typing import List, Dict, Any
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from core.paths import PATHS
 from core.utils import load_json, save_json, jsonl_append, jsonl_read, jsonl_trim
+from core.auth import require_page_manager
 
 router = APIRouter(prefix="/api/s3ingest", tags=["s3ingest"])
 
@@ -63,7 +64,10 @@ MAX_RUNTIME_SEC = 1800  # 30 min
 
 # ── Scheduler state ──
 _RUNNING: Dict[str, Dict[str, Any]] = {}     # id -> {"thread": T, "start": ts}
+_QUEUED: list[str] = []
 _RUNNING_LOCK = threading.Lock()
+_QUEUE_COND = threading.Condition(_RUNNING_LOCK)
+_QUEUE_WORKER_STARTED = False
 _SCHED_STARTED = False
 _SCHED_LOCK = threading.Lock()
 
@@ -150,21 +154,17 @@ def _fmt_ts(ts: float | None) -> str | None:
 
 
 def _is_admin(username: str) -> bool:
+    """Compatibility hook for older tests; route permissions use require_page_manager."""
     if not username:
         return False
     try:
         from routers.auth import read_users
-        for u in read_users():
-            if u.get("username") == username and u.get("role") == "admin":
+        for user in read_users():
+            if user.get("username") == username and user.get("role") == "admin":
                 return True
     except Exception:
         pass
     return False
-
-
-def _require_admin(username: str):
-    if not _is_admin(username):
-        raise HTTPException(403, "admin only")
 
 
 def _latest_local_item_info(target: str) -> Dict[str, Any]:
@@ -288,6 +288,8 @@ def _aggregate_child_statuses(by_target: Dict[str, Dict[str, Any]]) -> None:
         statuses = [str(c.get("last_status") or "never") for c in children]
         if any(c.get("is_running") for c in children):
             last_status = "running"
+        elif any(c.get("is_queued") for c in children):
+            last_status = "queued"
         elif any(s == "error" for s in statuses):
             last_status = "error"
         elif any(s == "never" for s in statuses):
@@ -334,6 +336,7 @@ def _aggregate_child_statuses(by_target: Dict[str, Dict[str, Any]]) -> None:
             "last_exit_code": None,
             "last_duration_sec": None,
             "is_running": any(c.get("is_running") for c in children),
+            "is_queued": any(c.get("is_queued") for c in children),
             "latest_item_at": _fmt_iso_epoch(max(latest_item_times)) if latest_item_times else None,
             "latest_item_relpath": f"{len(children)} child targets",
             "latest_item_age_hours": None,
@@ -347,6 +350,8 @@ def _aggregate_child_statuses(by_target: Dict[str, Dict[str, Any]]) -> None:
         }
         if aggregate["is_running"]:
             aggregate["freshness_state"] = "running"
+        elif aggregate["is_queued"]:
+            aggregate["freshness_state"] = "queued"
         elif child_stale:
             aggregate["freshness_state"] = "stale_item"
         elif aggregate["last_status"] == "ok":
@@ -530,14 +535,34 @@ def _run_item_blocking(item_id: str):
         _RUNNING.pop(item_id, None)
 
 
+def _queue_worker_loop():
+    while True:
+        with _QUEUE_COND:
+            while not _QUEUED:
+                _QUEUE_COND.wait()
+            item_id = _QUEUED.pop(0)
+            if item_id in _RUNNING:
+                continue
+            _RUNNING[item_id] = {"thread": threading.current_thread(), "start": time.time()}
+        _run_item_blocking(item_id)
+
+
+def _ensure_queue_worker():
+    global _QUEUE_WORKER_STARTED
+    with _QUEUE_COND:
+        if _QUEUE_WORKER_STARTED:
+            return
+        threading.Thread(target=_queue_worker_loop, daemon=True, name="s3ingest-queue").start()
+        _QUEUE_WORKER_STARTED = True
+
+
 def _schedule_run(item_id: str) -> bool:
-    with _RUNNING_LOCK:
-        if item_id in _RUNNING:
+    _ensure_queue_worker()
+    with _QUEUE_COND:
+        if item_id in _RUNNING or item_id in _QUEUED:
             return False
-        t = threading.Thread(target=_run_item_blocking, args=(item_id,),
-                             daemon=True, name=f"s3ingest-{item_id}")
-        _RUNNING[item_id] = {"thread": t, "start": time.time()}
-    t.start()
+        _QUEUED.append(item_id)
+        _QUEUE_COND.notify()
     return True
 
 
@@ -574,8 +599,7 @@ _start_scheduler()
 
 # ═════════════════════ API ═════════════════════
 @router.get("/items")
-def list_items(username: str = Query("")):
-    _require_admin(username)
+def list_items(username: str = Query(""), _perm=Depends(require_page_manager("filebrowser"))):
     cfg = _load_cfg()
     status = _load_status()
     out = []
@@ -586,6 +610,7 @@ def list_items(username: str = Query("")):
         due = _item_due_state(it, st, now)
         merged["status"] = st
         merged["is_running"] = it["id"] in _RUNNING
+        merged["is_queued"] = it["id"] in _QUEUED
         merged.update(due)
         # backward compat: ensure endpoint_url always present in response
         merged.setdefault("endpoint_url", "")
@@ -598,9 +623,8 @@ def list_items(username: str = Query("")):
 
 
 @router.get("/available")
-def list_available(username: str = Query("")):
+def list_available(username: str = Query(""), _perm=Depends(require_page_manager("filebrowser"))):
     """List DBs and root parquets that can be configured."""
-    _require_admin(username)
     dbs, files = [], []
     db_base = _db_root()
     if db_base.exists():
@@ -654,8 +678,7 @@ def _find_existing_item_id(items: list[dict], *, kind: str, target: str, directi
 
 
 @router.post("/save")
-def save_item(req: SaveReq):
-    _require_admin(req.username)
+def save_item(req: SaveReq, _perm=Depends(require_page_manager("filebrowser"))):
     if req.command not in ALLOWED_COMMANDS:
         raise HTTPException(400, f"invalid command: {req.command}")
     if req.kind not in {"db", "root_parquet"}:
@@ -710,8 +733,7 @@ class IdReq(BaseModel):
 
 
 @router.post("/delete")
-def delete_item(req: IdReq):
-    _require_admin(req.username)
+def delete_item(req: IdReq, _perm=Depends(require_page_manager("filebrowser"))):
     cfg = _load_cfg()
     before = len(cfg.get("items", []))
     cfg["items"] = [x for x in cfg.get("items", []) if x.get("id") != req.id]
@@ -725,20 +747,25 @@ def delete_item(req: IdReq):
 
 
 @router.post("/run")
-def run_manual(req: IdReq):
-    _require_admin(req.username)
+def run_manual(req: IdReq, _perm=Depends(require_page_manager("filebrowser"))):
     cfg = _load_cfg()
     if not any(x.get("id") == req.id for x in cfg.get("items", [])):
         raise HTTPException(404, "item not found")
     if req.id in _RUNNING:
         return {"ok": True, "already_running": True}
+    if req.id in _QUEUED:
+        return {"ok": True, "already_queued": True}
     started = _schedule_run(req.id)
-    return {"ok": True, "started": started}
+    return {"ok": True, "started": started, "queued": started}
 
 
 @router.get("/history")
-def get_history(username: str = Query(""), id: str = Query(""), limit: int = Query(50)):
-    _require_admin(username)
+def get_history(
+    username: str = Query(""),
+    id: str = Query(""),
+    limit: int = Query(50),
+    _perm=Depends(require_page_manager("filebrowser")),
+):
     entries = jsonl_read(HISTORY_FILE, limit=max(1, min(500, limit)))
     if id:
         entries = [e for e in entries if e.get("id") == id]
@@ -749,8 +776,7 @@ def get_history(username: str = Query(""), id: str = Query(""), limit: int = Que
 SCHEDULE_FILE = S3_DIR / "schedule.json"
 
 @router.get("/schedule")
-def get_schedule(username: str = Query("")):
-    _require_admin(username)
+def get_schedule(username: str = Query(""), _perm=Depends(require_page_manager("filebrowser"))):
     d = load_json(SCHEDULE_FILE, {"enabled": False, "interval_minutes": 60})
     return d
 
@@ -856,6 +882,7 @@ def s3_health():
         "aws_available": aws_ok,
         "items_configured": len(items),
         "running_now": len(_RUNNING),
+        "queued_now": len(_QUEUED),
         "recent_total": total,
         "recent_failures": fails,
         "last_synced_at": last_ts,
@@ -869,8 +896,7 @@ class ScheduleReq(BaseModel):
     username: str = ""
 
 @router.post("/schedule/save")
-def save_schedule(req: ScheduleReq):
-    _require_admin(req.username)
+def save_schedule(req: ScheduleReq, _perm=Depends(require_page_manager("filebrowser"))):
     save_json(SCHEDULE_FILE, {"enabled": req.enabled, "interval_minutes": max(5, min(1440, req.interval_minutes))})
     return {"ok": True}
 
@@ -880,11 +906,10 @@ class PushReq(BaseModel):
     username: str = ""
 
 @router.post("/push")
-def push_item(req: PushReq):
+def push_item(req: PushReq, _perm=Depends(require_page_manager("filebrowser"))):
     """v8.4.4 — 양방향 sync 의 local → S3 방향. 등록된 item 의 target s3 url 에
     local_path (db_root 기준) 를 업로드 (aws s3 cp/sync).
     """
-    _require_admin(req.username)
     cfg = _load_cfg()
     item = next((x for x in cfg.get("items", []) if x.get("id") == req.id), None)
     if not item: raise HTTPException(404, "item not found")
@@ -943,6 +968,7 @@ def status_by_target():
         st = _status_for_item(status, it)
         due = _item_due_state(it, st, now)
         is_running = it["id"] in _RUNNING or st.get("last_status") == "running"
+        is_queued = it["id"] in _QUEUED
         info = {
             "kind": it.get("kind", "db"),
             "direction": (it.get("direction") or "download").lower(),
@@ -954,6 +980,7 @@ def status_by_target():
             "last_exit_code": st.get("last_exit_code"),
             "last_duration_sec": st.get("last_duration_sec"),
             "is_running": bool(is_running),
+            "is_queued": bool(is_queued),
         }
         info.update(due)
         info.update(_latest_local_item_info(tgt))
@@ -964,7 +991,9 @@ def status_by_target():
         # Downloaded files can legitimately keep the source object's older
         # mtime.  A successful recent sync is fresh even when the newest local
         # file timestamp itself is older than six hours.
-        if stale_item and not sync_recent_6h and not info["is_running"] and info["last_status"] == "ok":
+        if info["is_queued"]:
+            info["freshness_state"] = "queued"
+        elif stale_item and not sync_recent_6h and not info["is_running"] and info["last_status"] == "ok":
             info["freshness_state"] = "stale_item"
         elif info["is_running"]:
             info["freshness_state"] = "running"
@@ -1029,9 +1058,8 @@ def _read_config() -> Dict[str, Dict[str, str]]:
 
 
 @router.get("/aws-config")
-def aws_config_get(username: str = Query("")):
+def aws_config_get(username: str = Query(""), _perm=Depends(require_page_manager("filebrowser"))):
     """Return profiles with masked secrets."""
-    _require_admin(username)
     creds = _read_credentials()
     conf = _read_config()
     # Merge profile names from both files
@@ -1073,9 +1101,8 @@ class AwsConfigReq(BaseModel):
 
 
 @router.post("/aws-config/save")
-def aws_config_save(req: AwsConfigReq):
+def aws_config_save(req: AwsConfigReq, _perm=Depends(require_page_manager("filebrowser"))):
     """Save one profile. Secret: empty string means 'keep current', mask-string also means keep."""
-    _require_admin(req.username)
     profile = (req.profile or "default").strip() or "default"
     if not AWS_PROFILE_RE.match(profile):
         raise HTTPException(400, f"invalid profile name: {profile!r}")
@@ -1189,8 +1216,7 @@ class AwsProfileReq(BaseModel):
 
 
 @router.post("/aws-config/delete")
-def aws_config_delete(req: AwsProfileReq):
-    _require_admin(req.username)
+def aws_config_delete(req: AwsProfileReq, _perm=Depends(require_page_manager("filebrowser"))):
     profile = (req.profile or "").strip()
     if not AWS_PROFILE_RE.match(profile):
         raise HTTPException(400, f"invalid profile name: {profile!r}")

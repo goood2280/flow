@@ -69,6 +69,14 @@ def test_inform_wizard_mail_note_is_plain_top_block():
     assert 'borderLeft: "4px solid #f59e0b"' not in src
 
 
+def test_mail_preview_byte_formatter_is_available_to_panel():
+    src = MY_INFORM.read_text(encoding="utf-8")
+
+    assert "function formatBytes(n)" in src
+    assert src.index("function formatBytes(n)") < src.index("function MailDialogPreviewPanel")
+    assert "const formatBytes = (n) =>" not in src
+
+
 def test_inform_splittable_embed_matches_split_table_header_and_plan_contract():
     src = MY_INFORM.read_text(encoding="utf-8")
 

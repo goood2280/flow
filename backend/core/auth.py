@@ -24,7 +24,7 @@ import secrets
 import threading
 import time
 import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import HTTPException, Request
 from core.paths import PATHS
@@ -196,9 +196,63 @@ def require_admin(request: Request) -> dict:
 # TableMap 그래프 수정 등) 을 특정 유저에게 페이지 단위로 위임할 수 있게 한다.
 #
 # 저장소: admin_settings.json 의 `page_admins: { "<page_id>": ["user1", "user2"] }`.
-# page_id 는 프론트 탭 이름과 맞춘다 (informs / splittable / tablemap / dashboard /
-# meetings / calendar / tracker / ml / messages / filebrowser / spc / ettime / admin).
+# page_id 는 프론트 탭 이름과 맞춘다. 과거 plural/legacy key 는 읽을 때 canonical key 로 흡수한다.
 # global admin 은 언제나 통과 — 이 맵에 추가로 넣을 필요 없음.
+CANONICAL_PAGE_IDS = (
+    "filebrowser",
+    "dashboard",
+    "splittable",
+    "tracker",
+    "inform",
+    "meeting",
+    "calendar",
+    "tablemap",
+    "ettime",
+    "waferlayout",
+    "groups",
+    "messages",
+    "devguide",
+    # Existing Agent tab key. Kept canonical for live deployments.
+    "diagnosis",
+    "knowledge",
+    "agent",
+)
+PAGE_ID_ALIASES = {
+    "informs": "inform",
+    "informlog": "inform",
+    "meetings": "meeting",
+    "wafer_map": "waferlayout",
+    "wafer-map": "waferlayout",
+    "wafer": "waferlayout",
+    "dbmap": "tablemap",
+    "table_map": "tablemap",
+    "table-map": "tablemap",
+    "spc": "dashboard",
+    "ml": "dashboard",
+}
+
+
+def canonical_page_id(page_id: str | None) -> str:
+    raw = str(page_id or "").strip().lower()
+    if not raw:
+        return ""
+    return PAGE_ID_ALIASES.get(raw, raw)
+
+
+def _clean_usernames(raw: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        username = str(item or "").strip()
+        if not username or username in seen:
+            continue
+        seen.add(username)
+        out.append(username)
+    return out
+
+
 def get_page_admins() -> dict:
     """admin_settings.json 에서 page_admins 맵 반환. 파일 없거나 파싱 오류면 {}."""
     try:
@@ -207,32 +261,131 @@ def get_page_admins() -> dict:
             data = json.loads(p.read_text("utf-8")) or {}
             pa = data.get("page_admins") or {}
             if isinstance(pa, dict):
-                return {k: list(v or []) for k, v in pa.items() if isinstance(v, list)}
+                merged: dict[str, list[str]] = {}
+                for raw_key, raw_users in pa.items():
+                    key = canonical_page_id(raw_key)
+                    if not key:
+                        continue
+                    cur = merged.setdefault(key, [])
+                    for username in _clean_usernames(raw_users):
+                        if username not in cur:
+                            cur.append(username)
+                return {k: sorted(v) for k, v in merged.items() if v}
     except Exception:
         pass
     return {}
 
 
+def is_page_manager(user: dict | str, page_id: str) -> bool:
+    """Return True when user can manage page_id. Global admin always passes."""
+    if not user or not page_id:
+        return False
+    if isinstance(user, dict):
+        username = str(user.get("username") or "").strip()
+        role = str(user.get("role") or "").strip()
+        if role == "admin":
+            return True
+    else:
+        username = str(user or "").strip()
+    pa = get_page_admins()
+    return username in (pa.get(canonical_page_id(page_id)) or [])
+
+
 def is_page_admin(username: str, page_id: str) -> bool:
-    """해당 유저가 해당 페이지의 위임 admin 인지 여부 (global admin 은 False — 별도 체크)."""
+    """Back-compat delegated-page check. Global admin cannot be inferred from username only."""
     if not username or not page_id:
         return False
     pa = get_page_admins()
-    return username in (pa.get(page_id) or [])
+    return username in (pa.get(canonical_page_id(page_id)) or [])
+
+
+def _user_tabs(user: dict) -> list[str] | str:
+    if user.get("role") == "admin":
+        return "__all__"
+    raw = user.get("tabs", "")
+    if isinstance(raw, list):
+        parts = raw
+    else:
+        parts = str(raw or "").split(",")
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        tab = canonical_page_id(part)
+        if tab and tab not in seen:
+            seen.add(tab)
+            out.append(tab)
+    return out
+
+
+def _devguide_allowed(username: str, role: str) -> bool:
+    if role == "admin":
+        return True
+    try:
+        p = PATHS.data_root / "admin_settings.json"
+        data = json.loads(p.read_text("utf-8")) if p.is_file() else {}
+        users = data.get("devguide_user") if isinstance(data, dict) else []
+        return username in _clean_usernames(users)
+    except Exception:
+        return False
+
+
+def _group_permissions(username: str, role: str) -> dict:
+    if role == "admin":
+        return {"all": True, "owner": [], "member": []}
+    try:
+        fp = PATHS.data_root / "groups" / "groups.json"
+        groups = json.loads(fp.read_text("utf-8")) if fp.is_file() else []
+    except Exception:
+        groups = []
+    owner: list[str] = []
+    member: list[str] = []
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            gid = str(group.get("id") or group.get("name") or "").strip()
+            if not gid:
+                continue
+            if str(group.get("owner") or "").strip() == username:
+                owner.append(gid)
+            if username in [str(x or "").strip() for x in (group.get("members") or [])]:
+                member.append(gid)
+    return {"all": False, "owner": owner, "member": member}
+
+
+def effective_permissions(user: dict) -> dict:
+    """Compact effective permission summary for Admin UI and tests."""
+    username = str((user or {}).get("username") or "").strip()
+    role = str((user or {}).get("role") or "user").strip() or "user"
+    pa = get_page_admins()
+    manager_pages = list(CANONICAL_PAGE_IDS) if role == "admin" else sorted(
+        page for page, users in pa.items() if username in (users or [])
+    )
+    return {
+        "username": username,
+        "role": role,
+        "tabs": _user_tabs(user or {}),
+        "page_manager": manager_pages,
+        "devguide": _devguide_allowed(username, role),
+        "groups": _group_permissions(username, role),
+    }
+
+
+def require_page_manager(page_id: str):
+    """FastAPI dependency factory. global admin 이거나 해당 page 의 manager 면 통과."""
+    canonical = canonical_page_id(page_id)
+
+    def _dep(request: Request) -> dict:
+        u = current_user(request)
+        if is_page_manager(u, canonical):
+            return u
+        raise HTTPException(403, f"Admin or page manager ({canonical}) only")
+    return _dep
 
 
 def require_page_admin(page_id: str):
-    """FastAPI dependency factory. global admin 이거나 해당 page_id 의 위임 admin 이면 통과.
-    사용:  _perm = Depends(require_page_admin("informs"))
-    """
-    def _dep(request: Request) -> dict:
-        u = current_user(request)
-        if u.get("role") == "admin":
-            return u
-        if is_page_admin(u.get("username", ""), page_id):
-            return u
-        raise HTTPException(403, f"Admin or delegated admin ({page_id}) only")
-    return _dep
+    """Back-compat alias for existing routers."""
+    return require_page_manager(page_id)
 
 
 def verify_owner(request: Request, target_username: str) -> dict:

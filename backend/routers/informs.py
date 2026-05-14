@@ -63,7 +63,7 @@ from pydantic import BaseModel
 from core.paths import PATHS
 from core.product_dedup import canonical_product, find_duplicate_product, normalize_products
 from core.utils import load_json, save_json
-from core.auth import current_user, require_admin, require_page_admin
+from core.auth import current_user, is_page_manager, require_admin, require_page_manager
 from core.audit import record as _audit
 from core.splittable_sets_cache import list_sets as list_cached_splittable_sets
 from app_v2.shared.source_adapter import resolve_column
@@ -102,6 +102,7 @@ FLOW_STATUSES_LEGACY = [
 ]
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8 MB/이미지
+LOT_PROGRESS_LATEST_CACHE_FILE = "lot_progress_latest_lot_by_root_wafer.parquet"
 _INFORMS_CACHE_SIG: tuple[float, int] | None = None
 _INFORMS_CACHE_ITEMS: list | None = None
 INFORM_DASHBOARD_CACHE_TTL = 60.0
@@ -175,18 +176,53 @@ def _fab_db_products() -> list[str]:
     return out
 
 
-def _merged_catalog_products(extra: list[str] | None = None) -> list[str]:
-    merged: list[str] = []
+def _lot_progress_cache_products() -> list[str]:
+    cache_root = getattr(PATHS, "db_cache_dir", None) or (PATHS.db_root / "cache")
+    fp = Path(cache_root) / LOT_PROGRESS_LATEST_CACHE_FILE
+    if not fp.is_file():
+        return []
+    try:
+        import polars as pl  # type: ignore
+
+        lf = pl.scan_parquet(str(fp))
+        if "product" not in lf.collect_schema().names():
+            return []
+        df = (
+            lf.select(pl.col("product").cast(pl.Utf8, strict=False).alias("product"))
+            .drop_nulls()
+            .unique()
+            .collect()
+        )
+    except Exception:
+        logger.warning("inform product cache scan failed path=%s", fp, exc_info=True)
+        return []
+    out: list[str] = []
     seen: set[str] = set()
-    for src in _fab_db_products():
-        name = _canonical_product(str(src or ""))
+    for raw in df.get_column("product").to_list():
+        name = _canonical_product(str(raw or ""))
         if not name:
             continue
         key = name.lower()
         if key in seen:
             continue
         seen.add(key)
-        merged.append(name)
+        out.append(name)
+    return sorted(out, key=lambda s: s.lower())
+
+
+def _merged_catalog_products(extra: list[str] | None = None) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for source_products in (_fab_db_products(), _lot_progress_cache_products()):
+        for src in source_products:
+            name = _canonical_product(str(src or ""))
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(name)
     return merged
 
 
@@ -2429,12 +2465,11 @@ def audit_log(
 def set_module_knob_map(
     req: ModuleKnobMapReq,
     request: Request,
-    _perm=Depends(require_page_admin("informs")),
+    _perm=Depends(require_page_manager("inform")),
 ):
     me = current_user(request)
-    from core.auth import is_page_admin
-    if me.get("role") != "admin" and not is_page_admin(me.get("username") or "", "informs"):
-        raise HTTPException(403, "admin or informs page_admin only")
+    if not is_page_manager(me, "inform"):
+        raise HTTPException(403, "admin or inform page manager only")
     mod = (req.module or "").strip()
     if not mod:
         raise HTTPException(400, "module required")
@@ -2470,8 +2505,8 @@ def get_settings_compat():
 
 
 @router.post("/config")
-def save_config_endpoint(req: ConfigReq, _admin=Depends(require_page_admin("informs"))):
-    """Admin 또는 informs page_admin 전용 — 모듈/사유 옵션 목록 편집."""
+def save_config_endpoint(req: ConfigReq, _admin=Depends(require_page_manager("inform"))):
+    """Admin 또는 inform page manager 전용 — 모듈/사유 옵션 목록 편집."""
     cfg = _load_config()
     if req.modules is not None:
         cfg["modules"] = [m.strip() for m in req.modules if m and m.strip()]
@@ -2508,7 +2543,7 @@ def save_config_endpoint(req: ConfigReq, _admin=Depends(require_page_admin("info
 
 
 @router.post("/settings")
-def save_settings_compat(req: ConfigReq, _admin=Depends(require_page_admin("informs"))):
+def save_settings_compat(req: ConfigReq, _admin=Depends(require_page_manager("inform"))):
     """Compatibility alias for older PageGear builds."""
     return save_config_endpoint(req, _admin)
 
@@ -2798,11 +2833,10 @@ def _normalize_products(products: list) -> list:
 @router.put("/product/add")
 @router.patch("/product/add")
 def add_product(req: ProductReq, request: Request):
-    # v8.8.33 보안: admin 또는 page_admin('informs') 만 카탈로그 변경.
-    from core.auth import is_page_admin
+    # v8.8.33 보안: admin 또는 page_manager('inform') 만 카탈로그 변경.
     me = current_user(request)
-    if me.get("role") != "admin" and not is_page_admin(me.get("username") or "", "informs"):
-        raise HTTPException(403, "admin or informs page_admin only")
+    if not is_page_manager(me, "inform"):
+        raise HTTPException(403, "admin or inform page manager only")
     p = _canonical_product(req.product or "")
     if not p:
         raise HTTPException(400, "product required")
@@ -2879,11 +2913,10 @@ def delete_product(req: ProductReq, request: Request):
     """v8.8.1: 카탈로그에서 제품 삭제. admin 또는 등록자(추적불가시 admin) 권한.
     실제 인폼 레코드(product 필드)는 건드리지 않음 — 드롭다운에서만 제외.
     v8.8.33: case-insensitive 매칭 + 중복 전부 제거 → 기존 PRODA/"PRODA " 같은 유령 제거.
-    v8.8.33 보안: admin 또는 page_admin('informs') 만 삭제 가능."""
-    from core.auth import is_page_admin
+    v8.8.33 보안: admin 또는 page_manager('inform') 만 삭제 가능."""
     me = current_user(request)
-    if me.get("role") != "admin" and not is_page_admin(me.get("username") or "", "informs"):
-        raise HTTPException(403, "admin or informs page_admin only")
+    if not is_page_manager(me, "inform"):
+        raise HTTPException(403, "admin or inform page manager only")
     p = (req.product or "").strip()
     if not p:
         raise HTTPException(400, "product required")
@@ -3792,7 +3825,7 @@ def set_deadline(req: DeadlineReq, request: Request, id: str = Query(...)):
 
 
 # ── v8.8.0: 제품별 담당자 (product contacts) ───────────────────────
-# 좌측 사이드바 + 메일 본문 자동 삽입용. 모든 로그인 유저가 CRUD 가능.
+# 좌측 사이드바 + 메일 본문 자동 삽입용. 변경은 inform page manager 이상만 가능.
 PRODUCT_CONTACTS_FILE = INFORMS_DIR / "product_contacts.json"
 
 
@@ -3854,7 +3887,11 @@ def list_product_contacts(product: str = Query("")):
 
 
 @router.post("/product-contacts")
-def add_product_contact(req: ProductContactReq, request: Request):
+def add_product_contact(
+    req: ProductContactReq,
+    request: Request,
+    _perm=Depends(require_page_manager("inform")),
+):
     me = current_user(request)
     prod = (req.product or "").strip()
     name = (req.name or "").strip()
@@ -3879,7 +3916,12 @@ def add_product_contact(req: ProductContactReq, request: Request):
 
 
 @router.post("/product-contacts/update")
-def update_product_contact(req: ProductContactReq, request: Request, id: str = Query(...)):
+def update_product_contact(
+    req: ProductContactReq,
+    request: Request,
+    id: str = Query(...),
+    _perm=Depends(require_page_manager("inform")),
+):
     me = current_user(request)
     prod = (req.product or "").strip()
     if not prod:
@@ -3901,7 +3943,12 @@ def update_product_contact(req: ProductContactReq, request: Request, id: str = Q
 
 
 @router.post("/product-contacts/delete")
-def delete_product_contact(request: Request, id: str = Query(...), product: str = Query(...)):
+def delete_product_contact(
+    request: Request,
+    id: str = Query(...),
+    product: str = Query(...),
+    _perm=Depends(require_page_manager("inform")),
+):
     _ = current_user(request)
     data = _load_product_contacts()
     arr = data.get("products", {}).get(product) or []
@@ -3973,7 +4020,11 @@ class ProductContactBulkReq(BaseModel):
 
 
 @router.post("/product-contacts/bulk-add")
-def bulk_add_product_contacts(req: ProductContactBulkReq, request: Request):
+def bulk_add_product_contacts(
+    req: ProductContactBulkReq,
+    request: Request,
+    _perm=Depends(require_page_manager("inform")),
+):
     """유저 / 그룹 혼합 일괄 추가.
 
     - usernames 에 적힌 각 유저를 contacts 로 등록.

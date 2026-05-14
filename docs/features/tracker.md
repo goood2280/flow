@@ -38,6 +38,7 @@ Tracker는 개발 이슈, lot watch, 분석 액션을 생성부터 종료까지 
 - Monitor row는 wafer별 저장 행으로 확장하지 않는다. watcher/status cache는 row metadata나 별도 status cache로만 갱신한다.
 - `/api/tracker/update`의 optional `lots`는 purpose/comment 편집을 허용하되 기존 watch/status 필드를 보존한다.
 - 변경 사항은 알림과 audit 후보가 된다.
+- Shared 설정(categories, scheduler, DB sources, ET lot cache refresh, lot watch polling)은 `tracker` page manager 이상만 쓴다. issue/comment 작성과 본인 업무 흐름은 current user 규칙을 유지한다.
 
 ## Verify
 
