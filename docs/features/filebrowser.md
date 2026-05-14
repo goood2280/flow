@@ -5,11 +5,11 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 ## Owns
 
 - DB root, root-level base/rulebook 파일 탐색
-- parquet/CSV schema, row preview, column 후보 확인. 기본 파일/DB 열기는 `meta_only=true` 계약으로 schema/mtime/size/cached row count만 반환하고 row data는 SQL 실행 또는 컬럼 선택 후 조회한다.
+- parquet/CSV schema, row preview, column 후보 확인. FileBrowser 화면에서 파일/DB를 처음 열면 `meta_only=false`로 100행 샘플을 바로 보여준다. API의 `meta_only=true` schema-only 계약은 호환용으로 유지한다.
 - read-only SQL/filter/download preview
-- ML_TABLE `root_lot_id` lookup cache/API. 대형 `ML_TABLE_*.parquet`는 전체 preview가 아니라 `root_lot_id` + 선택 컬럼 조회를 기본 단위로 다룬다.
-- 빠른 화면 표시: DB/Parquet preview와 SQL/컬럼 선택 결과는 브라우저에 최대 200행, 기본 컬럼 100개만 표시한다. 5000열 같은 wide schema는 `schema_column_page_size`만 응답에 싣고, 컬럼 검색은 `/api/filebrowser/columns/search`로 서버 schema에서 찾는다.
-- CSV 다운로드: 화면 200행 제한과 별개로 톱니바퀴의 `csv_download_max_bytes`를 주 제한으로 사용한다. `csv_download_max_rows`는 legacy 보조 제한으로 유지하며, 서버 허용 한도(최대 500,000행 / 100MB)를 넘지 않는다.
+- ML_TABLE `root_lot_id` lookup cache/API는 backend/Flow-i 호환 기능으로 유지한다. FileBrowser 화면의 기본 UX에서는 lookup 입력/실행 UI를 두지 않고 `ML_TABLE_*.parquet`도 100행 샘플 preview로 연다.
+- 빠른 화면 표시: DB/Parquet/cache preview와 SQL/컬럼 선택 결과는 브라우저에 최대 100행, 기본 컬럼 100개만 표시한다. 5000열 같은 wide schema는 `schema_column_page_size`만 응답에 싣고, 컬럼 검색은 `/api/filebrowser/columns/search`로 서버 schema에서 찾는다.
+- CSV 다운로드: 화면 100행 제한과 별개로 톱니바퀴의 `csv_download_max_bytes`를 주 제한으로 사용한다. `csv_download_max_rows`는 legacy 보조 제한으로 유지하며, 서버 허용 한도(최대 500,000행 / 100MB)를 넘지 않는다.
 - 연결된 LLM을 통한 자연어 SQL 초안 작성. LLM은 SQL 입력창만 채우며 자동 실행하지 않는다.
 - S3 동기화 상태와 로컬 cache 파일 접근성 확인
 - **LOT 진행 최신 캐시** (`data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`) — FileBrowser, SplitTable, Inform, Tracker, Flow-i current-step 질의가 공유하는 현재 lot/wafer 진행 기준.
@@ -19,7 +19,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - 분석 판단, chart 생성, plan/actual 비교
 - 원본 DB root 파일 생성/수정/삭제
 - 대용량 join 결과를 브라우저 state에 장기 보관하는 기능
-- CSV 다운로드를 200행 preview 제한에 묶는 동작
+- CSV 다운로드를 100행 preview 제한에 묶는 동작
 
 ## Code Entrypoints
 
@@ -37,10 +37,10 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - Raw DB root는 `FLOW_DB_ROOT` 또는 `data/Fab/`에서 온다.
 - Runtime state와 cache는 `FLOW_DATA_ROOT` 또는 `data/flow-data/`에서 온다.
 - ML_TABLE lookup cache는 `FLOW_DB_ROOT/cache/ml_table_lookup/<ML_TABLE_STEM>/root_lot_id=<id>/*.parquet`에 저장한다. meta는 원본 path/mtime/size, row count, total cols, root_lot_id count, schema, build time을 담고 원본 mtime/size가 바뀌면 stale로 본다.
-- `POST /api/filebrowser/ml-table/lookup`은 `file` 또는 `product`, `root_lot_id`, `select_cols`, 선택 `wafer_id`를 받는다. cache가 없으면 원본 parquet을 즉시 scan하지 않고 `lookup_cache_hit=false`, `cache_status=queued|missing|running`과 빈 row를 반환하며 background build queue에 등록한다. stale cache가 있으면 `source_stale=true`를 표시하고 기존 cache로 조회하면서 rebuild를 queue한다.
+- `POST /api/filebrowser/ml-table/lookup`은 `file` 또는 `product`, `root_lot_id`, `select_cols`, 선택 `wafer_id`를 받는다. cache가 없으면 원본 parquet을 즉시 scan하지 않고 `lookup_cache_hit=false`, `cache_status=queued|missing|running`과 빈 row를 반환하며 background build queue에 등록한다. stale cache가 있으면 `source_stale=true`를 표시하고 기존 cache로 조회하면서 rebuild를 queue한다. 이 endpoint는 호환 기능이며 FileBrowser 화면의 기본 preview 흐름에서는 호출하지 않는다.
 - `select_cols`가 비어 있으면 identity 컬럼(`root_lot_id`, `lot_id`/`fab_lot_id`, `wafer_id`, `step_id`, `function_step`, time 후보)만 반환한다. `*`/전체 컬럼 요청은 차단하고, 없는 컬럼은 `code=unknown_column` 400으로 반환한다. 결과 row는 최대 25행이다.
 - lot progress cache는 root lot id, wafer id별 최신 lot id를 parquet로 볼 수 있어야 한다.
-- cache 파일도 일반 파일처럼 목록 진입, schema 확인, preview가 가능해야 한다.
+- canonical cache 파일은 일반 파일처럼 목록 진입, schema 확인, 100행 샘플 preview가 가능해야 한다. cache 폴더의 CSV/Parquet을 직접 열어도 작다는 이유로 전체 읽기 경로를 타지 않는다.
 - FileBrowser 캐시 탭에서 `lot_progress_latest_lot_by_root_wafer.parquet`만 수동 재생성할 수 있다.
 - LOT 진행 최신 캐시는 앱 기동 시 `lot_progress` router가 scheduler를 시작하고, `settings.json.lot_progress_refresh_minutes` 주기에 맞춰 stale 여부를 확인한다. 수동 갱신도 같은 builder를 호출한다. FileBrowser 톱니바퀴의 캐시 탭에서 `settings.json.lot_progress_source_root`와 `settings.json.lot_progress_column_mapping`을 저장하면 scheduler와 수동 갱신이 해당 DB root와 컬럼 매핑을 사용한다. DB root 값이 비어 있으면 실제 존재하는 `1.RAWDATA_DB`, `FAB`, `1.RAWDATA_DB_FAB` 후보 순서로 자동 선택한다. builder는 `FLOW_DATA_ROOT/locks/lot_progress_cache.lock` 파일락으로 공유 data root 안에서 단일 실행만 허용하고, `FLOW_DATA_ROOT/logs/lot_progress_cache_refresh.jsonl`에 성공/실패/lock skip 이력을 남긴다.
 - builder는 선택된 FAB root의 `<product folder>/**/*.parquet`를 스캔한다. 여기서 `product` 값은 parquet/DB 컬럼이 아니라 FAB root 바로 아래의 제품 폴더명이다. 각 row에서 설정된 컬럼 매핑을 canonical 컬럼(`root_lot_id`, `lot_id`, `wafer_id`, `step_id`, `process_id`, `tkin_time`, `tkout_time`, `time`, `update_time`, `eqp_id`, `chamber_id`, `ppid`)으로 정규화한다. 기본 매핑은 모든 canonical 컬럼이 같은 이름의 원본 컬럼을 읽는 형태다. 이후 `(제품 폴더명, root_lot_id, wafer_id)`별로 `update_time`, `tkout_time`, `tkin_time`, `time` 기준 최신 row 하나를 고른다. `step_id`는 가능한 경우 step matching 파일로 `function_step`에 매핑하고, 최종 결과는 `product`, `root_lot_id`, `wafer_id`, `lot_id`, `step_id`, `function_step`, `tkout_time`, `update_time` 컬럼을 가진 `data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`로 저장한다. FileBrowser에 노출되는 캐시는 이 parquet 하나만 canonical이다.
@@ -52,9 +52,10 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 
 ## Preview, SQL, Download
 
-- DB product / root parquet / base parquet 화면 preview는 최대 200행만 반환한다. UI는 pagination을 숨기고 첫 화면만 보여준다.
-- SQL 실행과 컬럼 선택도 표시 결과는 최대 200행이다. 사용자는 결과가 맞는지 빠르게 확인한 뒤 CSV 다운로드를 실행한다.
-- `/api/filebrowser/base-file-view`, `/api/filebrowser/view`, `/api/filebrowser/root-parquet-view`의 기본 open은 `meta_only=true`다. 응답에는 `meta_only`, `meta_cached`, `row_count_unknown`, `source_size`, `preview_capped`, `truncated_cols`, `requires_filter`, `query_block_reason`을 포함한다.
+- DB product / root parquet / base parquet 화면 preview는 최대 100행만 반환한다. UI는 pagination을 숨기고 첫 화면만 보여준다.
+- 관리용 단일 CSV/JSON/YAML/MD는 기존처럼 전체 표시 경로를 유지한다. cache 파일, `ML_TABLE_*.parquet`, 일반 대형 parquet은 lazy/DuckDB 경로로 100행과 제한된 열만 반환한다.
+- SQL 실행과 컬럼 선택도 표시 결과는 최대 100행이다. 사용자는 조건 적용 결과가 맞는지 빠르게 확인한 뒤 CSV 다운로드를 실행한다.
+- `/api/filebrowser/base-file-view`, `/api/filebrowser/view`, `/api/filebrowser/root-parquet-view`는 `meta_only=true`를 계속 지원한다. FileBrowser 화면의 첫 open은 `meta_only=false`이며 100행 샘플을 바로 요청한다. 응답에는 `meta_only`, `meta_cached`, `row_count_unknown`, `source_size`, `preview_capped`, `truncated_cols`, `requires_filter`, `query_block_reason`을 포함한다.
 - `/api/filebrowser/download-csv`는 preview row cap을 적용하지 않는다. 대신 `max_bytes <= 100MB`, `max_rows <= 500000`, wide source 컬럼 선택 요구를 따른다. FileBrowser UI는 저장된 `filebrowser_settings.json.csv_download_max_bytes`를 `max_bytes`로 보내고 `csv_download_max_rows`는 보조 제한으로 보낸다.
 - `filebrowser_settings.json`은 `csv_download_max_bytes`, `sql_query_max_source_bytes`, `preview_max_columns`, `preview_max_rows`, `schema_column_page_size`를 가진다. 큰 source가 `sql_query_max_source_bytes`를 넘고 SQL filter나 selected columns가 없으면 `filter_required`로 차단한다.
 - SQL/filter는 read-only WHERE expression만 허용한다. `SELECT/FROM`, DDL/DML, semicolon, SQL comment는 `invalid_filter`로 거부한다.

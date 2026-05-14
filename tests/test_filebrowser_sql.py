@@ -1778,11 +1778,57 @@ def test_cache_folder_exposes_only_lot_progress_latest_cache(monkeypatch, tmp_pa
     assert parquet_preview["showing"] == 1
     assert parquet_preview.get("single_file_full_read") is not True
     assert parquet_preview["has_more"] is False
-    assert parquet_preview["preview_row_limit"] == 200
+    assert parquet_preview["preview_row_limit"] == 100
 
     versions = filebrowser.base_file_versions(_Request("admin", "admin"), file="cache/lot_progress_latest_lot_by_root_wafer.parquet")
     assert versions["versioned"] is False
     assert versions["versions"] == []
+
+
+def test_cache_csv_and_parquet_first_preview_are_100_row_samples(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    csv_fp = cache_dir / "small_cache.csv"
+    csv_fp.write_text("id,value\n" + "\n".join(f"{i},v{i}" for i in range(250)) + "\n", encoding="utf-8")
+    parquet_fp = cache_dir / "lot_progress_latest_lot_by_root_wafer.parquet"
+    pl.DataFrame({
+        "id": list(range(250)),
+        "value": [f"v{i}" for i in range(250)],
+    }).write_parquet(parquet_fp)
+
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    filebrowser._LIST_CACHE.clear()
+
+    csv_preview = filebrowser.base_file_view(
+        file="cache/small_cache.csv",
+        sql="",
+        rows=200,
+        cols=10,
+        select_cols="",
+        engine="auto",
+        meta_only=False,
+        page=0,
+        page_size=200,
+    )
+    parquet_preview = filebrowser.base_file_view(
+        file="cache/lot_progress_latest_lot_by_root_wafer.parquet",
+        sql="",
+        rows=200,
+        cols=10,
+        select_cols="",
+        engine="auto",
+        meta_only=False,
+        page=0,
+        page_size=200,
+    )
+
+    assert csv_preview.get("single_file_full_read") is not True
+    assert csv_preview["showing"] == 100
+    assert csv_preview["preview_row_limit"] == 100
+    assert parquet_preview.get("single_file_full_read") is not True
+    assert parquet_preview["showing"] == 100
+    assert parquet_preview["preview_row_limit"] == 100
 
 
 def test_admin_configured_folder_can_be_versioned_single_file(monkeypatch, tmp_path):
@@ -2016,7 +2062,7 @@ def test_base_file_versioned_rejects_single_csv_over_5mb(tmp_path):
     assert filebrowser._base_file_versioned(fp.name, fp) is False
 
 
-def test_base_file_view_parquet_defaults_to_200_row_preview(monkeypatch, tmp_path):
+def test_base_file_view_parquet_defaults_to_100_row_preview(monkeypatch, tmp_path):
     fp = tmp_path / "matching_step.parquet"
     pl.DataFrame({f"c{i:02d}": [i + row for row in range(250)] for i in range(12)}).write_parquet(fp)
 
@@ -2042,9 +2088,9 @@ def test_base_file_view_parquet_defaults_to_200_row_preview(monkeypatch, tmp_pat
     )
 
     assert result.get("single_file_full_read") is not True
-    assert result["showing"] == 200
+    assert result["showing"] == 100
     assert result["has_more"] is False
-    assert result["preview_row_limit"] == 200
+    assert result["preview_row_limit"] == 100
     assert len(result["showing_cols"]) == 10
     assert result["truncated_cols"] is True
 
@@ -2086,12 +2132,12 @@ def test_base_file_view_reads_small_csv_fully_and_threshold_falls_back(monkeypat
     )
 
     assert paged.get("single_file_full_read") is not True
-    assert paged["showing"] == 200
+    assert paged["showing"] == 100
     assert paged["has_more"] is False
-    assert paged["preview_row_limit"] == 200
+    assert paged["preview_row_limit"] == 100
 
 
-def test_base_file_view_ml_table_defaults_to_200_then_full_on_column_filter(monkeypatch, tmp_path):
+def test_base_file_view_ml_table_defaults_to_100_then_filtered_preview(monkeypatch, tmp_path):
     fp = tmp_path / "ML_TABLE_PRODA.parquet"
     pl.DataFrame({
         "lot_id": [f"L{i:03d}" for i in range(250)],
@@ -2118,7 +2164,7 @@ def test_base_file_view_ml_table_defaults_to_200_then_full_on_column_filter(monk
         page=0,
         page_size=200,
     )
-    assert preview["showing"] == 200
+    assert preview["showing"] == 100
     assert preview["has_more"] is False
     assert preview.get("single_file_full_read") is not True
 
@@ -2134,11 +2180,11 @@ def test_base_file_view_ml_table_defaults_to_200_then_full_on_column_filter(monk
         page_size=200,
     )
     assert selected.get("single_file_full_read") is not True
-    assert selected["showing"] == 200
+    assert selected["showing"] == 100
     assert selected["has_more"] is False
     assert selected["columns"] == ["value"]
-    assert selected["preview_row_limit"] == 200
-    assert selected["data"][-1] == {"value": 199}
+    assert selected["preview_row_limit"] == 100
+    assert selected["data"][-1] == {"value": 99}
 
 
 def test_filebrowser_settings_gate_allows_page_admin(monkeypatch, tmp_path):

@@ -88,7 +88,7 @@ EDM_VERSION_MAX_CSV_BYTES = 5_000_000
 SINGLE_FILE_FOLDER_TEXT_EXTENSIONS = {".json", ".yaml", ".yml", ".md", ".txt"}
 SCHEMA_PROFILE_DIR = PATHS.data_root / "schema_profiles"
 SCHEMA_PROFILE_CAP = 30
-LATEST_PREVIEW_ROWS = 200
+LATEST_PREVIEW_ROWS = 100
 LATEST_PREVIEW_MAX_FILES = 4
 LIST_CACHE_TTL_SEC = 5.0
 MAX_WAFER_ID = 25
@@ -4826,12 +4826,12 @@ def base_files(request: Request = None):
 
 @router.get("/base-file-view")
 def base_file_view(file: str = Query(...), sql: str = Query(""),
-                   rows: int = Query(200), cols: int = Query(10),
+                   rows: int = Query(LATEST_PREVIEW_ROWS), cols: int = Query(10),
                    select_cols: str = Query(""),
                    engine: str = Query("auto"),
                    meta_only: bool = Query(True),
                    page: int = Query(0, ge=0),
-                   page_size: int = Query(200, ge=1, le=1000),
+                   page_size: int = Query(LATEST_PREVIEW_ROWS, ge=1, le=1000),
                    request: Request = None):
     """v4.1: Preview a file under the Base root.
 
@@ -4840,7 +4840,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     `_uniques.json` can be inspected.
     """
     _require_filebrowser_user(request)
-    rows = rows if isinstance(rows, int) else 200
+    rows = rows if isinstance(rows, int) else LATEST_PREVIEW_ROWS
     cols = cols if isinstance(cols, int) else 10
     page, page_size, _offset = _preview_page_args(rows, page_size)
     rows = page_size
@@ -5071,7 +5071,11 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         # CSV under the configured byte threshold is safe to read fully for
         # editing only on the initial open. SQL/column selection uses the same
         # capped preview path as DB sources so the page stays responsive.
-        full_single_file = csv_full_read and not _has_view_filter(sql, select_cols)
+        full_single_file = (
+            csv_full_read
+            and not _is_cache_file_ref(file, fp)
+            and not _has_view_filter(sql, select_cols)
+        )
         if full_single_file:
             resp = _run_view_lazy_full(
                 lf, sql, select_cols,
@@ -5364,6 +5368,19 @@ def _is_ml_table_file(fp_or_name) -> bool:
 
 def _has_view_filter(sql: str, select_cols: str) -> bool:
     return bool(str(sql or "").strip() or str(select_cols or "").strip())
+
+
+def _is_cache_file_ref(file: str, fp: Path | None = None) -> bool:
+    try:
+        rel = Path(str(file or "").strip())
+        if rel.parts and str(rel.parts[0]).casefold() == _SINGLE_FILE_STEP_CACHE_DIR:
+            return True
+    except Exception:
+        pass
+    try:
+        return fp is not None and fp.parent.name.casefold() == _SINGLE_FILE_STEP_CACHE_DIR
+    except Exception:
+        return False
 
 
 def _selected_columns(all_columns: list[str], select_cols: str, preview_cols: int | None = None) -> tuple[list[str], bool]:
@@ -7036,14 +7053,14 @@ def _download_duckdb_csv(
 
 @router.get("/view")
 def view_product(root: str = Query(...), product: str = Query(...),
-                 sql: str = Query(""), rows: int = Query(200),
+                 sql: str = Query(""), rows: int = Query(LATEST_PREVIEW_ROWS),
                  cols: int = Query(20, ge=1, le=200),
                  select_cols: str = Query(""),
                  meta_only: bool = Query(True),
                  all_partitions: bool = Query(False),
                  engine: str = Query("auto"),
                  page: int = Query(0, ge=0),
-                 page_size: int = Query(200, ge=1, le=1000)):
+                 page_size: int = Query(LATEST_PREVIEW_ROWS, ge=1, le=1000)):
     # v8.4.3 OOM-aware: Hive-flat 도 lazy_read_source 로 scan. Polars 가 projection +
     # head 를 parquet reader 로 pushdown → 메모리 수 GB 제품도 안전.
     # v8.8.16: meta_only=True 는 스키마만 — 사이드바 제품 클릭 즉시 반응.
@@ -7061,7 +7078,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
             if fast_meta is not None:
                 return _finalize_preview_response(fast_meta, settings)
         # SQL 검색/컬럼 SELECT 는 사용자가 명시적으로 DB 를 조회하는 동작이다.
-        # 제품 클릭 기본 화면은 전체 스캔 대신 최신 파티션/파일에서 200행만 보여준다.
+        # 제품 클릭 기본 화면은 전체 스캔 대신 최신 파티션/파일에서 샘플만 보여준다.
         full_scan = (
             all_partitions
             or bool(sql and sql.strip())
@@ -7356,12 +7373,12 @@ def parquet_meta_invalidate(request: Request, root: str = Query(""), product: st
 
 @router.get("/root-parquet-view")
 def view_root_parquet(file: str = Query(...), sql: str = Query(""),
-                      rows: int = Query(200), cols: int = Query(10),
+                      rows: int = Query(LATEST_PREVIEW_ROWS), cols: int = Query(10),
                       select_cols: str = Query(""),
                       meta_only: bool = Query(True),
                       engine: str = Query("auto"),
                       page: int = Query(0, ge=0),
-                      page_size: int = Query(200, ge=1, le=1000)):
+                      page_size: int = Query(LATEST_PREVIEW_ROWS, ge=1, le=1000)):
     # v8.4.6: path traversal 방어 — db_root 밖 파일 접근 차단
     db_root = _db_root()
     fp = (db_root / file).resolve()

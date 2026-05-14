@@ -7,7 +7,7 @@ import { toast } from "../components/Toast";
 import { dl, sf } from "../lib/api";
 import { statusPalette, chartPalette } from "../components/UXKit";
 const API="/api/filebrowser";
-const PAGE_SIZE=200;
+const PAGE_SIZE=100;
 const FB_OK = statusPalette.ok;
 const FB_WARN = statusPalette.warn;
 const FB_BAD = statusPalette.bad;
@@ -624,7 +624,7 @@ export default function My_FileBrowser({user,onNavigate}){
     if(nextOpen&&!isAdmin)setS3Tab("folder");
     setS3Open(nextOpen);
   };
-  const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_download_max_rows:500000,csv_download_max_bytes:100000000,sql_query_max_source_bytes:5368709120,preview_max_columns:100,preview_max_rows:200,schema_column_page_size:200,csv_rules:{},hidden_db_dirs:["cache","reformatter"],versioned_single_file_dirs:["reformatter"],auto_s3_upload_on_save:false,can_manage:false});
+  const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_download_max_rows:500000,csv_download_max_bytes:100000000,sql_query_max_source_bytes:5368709120,preview_max_columns:100,preview_max_rows:100,schema_column_page_size:200,csv_rules:{},hidden_db_dirs:["cache","reformatter"],versioned_single_file_dirs:["reformatter"],auto_s3_upload_on_save:false,can_manage:false});
   const[fbAutoS3Upload,setFbAutoS3Upload]=useState(false);
   const[fbThresholdMb,setFbThresholdMb]=useState("10");
   const[fbDownloadMb,setFbDownloadMb]=useState("100");
@@ -652,10 +652,6 @@ export default function My_FileBrowser({user,onNavigate}){
   const[aiSqlResult,setAiSqlResult]=useState(null);
   const[remoteCols,setRemoteCols]=useState([]);
   const[remoteColsLoading,setRemoteColsLoading]=useState(false);
-  const[mlLookupRoot,setMlLookupRoot]=useState("");
-  const[mlLookupWafer,setMlLookupWafer]=useState("");
-  const[mlLookupBusy,setMlLookupBusy]=useState(false);
-  const[mlLookupResult,setMlLookupResult]=useState(null);
   const fbCacheTargets=[
     ["lot_progress","LOT 진행 최신 캐시","lot_progress_latest_lot_by_root_wafer",fbCacheStatus.lot_progress],
   ];
@@ -680,7 +676,7 @@ export default function My_FileBrowser({user,onNavigate}){
         localCsvFiles=files.filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
       }
       const d=await sf(API+"/settings");
-      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??10485760,csv_download_max_rows:d.csv_download_max_rows??500000,csv_download_max_bytes:d.csv_download_max_bytes??100000000,sql_query_max_source_bytes:d.sql_query_max_source_bytes??5368709120,preview_max_columns:d.preview_max_columns??100,preview_max_rows:d.preview_max_rows??200,schema_column_page_size:d.schema_column_page_size??200,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||["cache","reformatter"],versioned_single_file_dirs:d.versioned_single_file_dirs||["reformatter"],auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
+      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??10485760,csv_download_max_rows:d.csv_download_max_rows??500000,csv_download_max_bytes:d.csv_download_max_bytes??100000000,sql_query_max_source_bytes:d.sql_query_max_source_bytes??5368709120,preview_max_columns:d.preview_max_columns??100,preview_max_rows:d.preview_max_rows??100,schema_column_page_size:d.schema_column_page_size??200,csv_rules:d.csv_rules||{},hidden_db_dirs:d.hidden_db_dirs||["cache","reformatter"],versioned_single_file_dirs:d.versioned_single_file_dirs||["reformatter"],auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
       setFbSettings(settings);
       setFbAutoS3Upload(!!settings.auto_s3_upload_on_save);
       setFbThresholdMb(String(((Number(settings.csv_full_read_max_bytes)||0)/1048576).toFixed(2)).replace(/\.00$/,""));
@@ -970,7 +966,7 @@ export default function My_FileBrowser({user,onNavigate}){
   },[scope]);
 
   // v4.1: Base-file preview loader (parquet/csv/json/md).
-  // 단일 파일은 바로 내용을 보여준다. ML_TABLE_* 는 서버에서 기본 200행 preview만 유지한다.
+  // 단일 관리 파일은 전체, parquet/cache 파일은 서버에서 기본 100행 샘플로 보여준다.
   const syncBaseEditState=(d)=>{
     const cols=(d.showing_cols||d.columns||[]);
     const rows=(d.data||[]).map(r=>cols.map(c=>{
@@ -988,11 +984,10 @@ export default function My_FileBrowser({user,onNavigate}){
     return fallback;
   };
 
-  const loadBaseFileView=(file,{full=false,page:pageArg=0}={})=>{
+  const loadBaseFileView=(file,{full=true,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
     setPage(pageArg);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
-    setMlLookupResult(null);
     setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     const params={file,rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,meta_only:!full,_ts:Date.now()};
     const url=buildUrl(API+"/base-file-view",params);
@@ -1027,7 +1022,7 @@ export default function My_FileBrowser({user,onNavigate}){
         if(match){
           setSelectedCols([]);
           setSql("");
-          loadHiveView(selRoot,selProd,"",[],{full:false,page:0});
+          loadHiveView(selRoot,selProd,"",[],{full:true,page:0});
         }
       }
     }).catch(()=>setSideLoading(false));
@@ -1062,8 +1057,8 @@ export default function My_FileBrowser({user,onNavigate}){
     return()=>{alive=false;clearTimeout(t);};
   },[colSearch,data?.all_columns_truncated,mode,selRoot,selProd,selBaseFile,selRootPq,fbSettings.schema_column_page_size]);
 
-  // 첫 클릭은 metadata-only로 열고, SQL/SELECT/페이지 이동에서만 capped row preview를 조회한다.
-  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=false,page:pageArg=0}={})=>{
+  // 첫 클릭도 100행 샘플을 보여주고, SQL/SELECT는 같은 cap 안에서 조건 결과를 조회한다.
+  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     setPage(pageArg);
@@ -1073,7 +1068,7 @@ export default function My_FileBrowser({user,onNavigate}){
     sf(url).then(d=>{if(sc.length)setSelectedCols(selectedColsFromResponse(d,sc));setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
-  const loadRootPqView=(file,sqlQ,selColsOverride,{full=false,page:pageArg=0}={})=>{
+  const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     setPage(pageArg);
@@ -1104,52 +1099,6 @@ export default function My_FileBrowser({user,onNavigate}){
       sf(url).then(d=>{if(activeSelectedCols.length)setSelectedCols(selectedColsFromResponse(d,activeSelectedCols));setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
     else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0});
-  };
-
-  const isMlTableBaseFile=()=>mode==="base"&&/^ML_TABLE_.+\.parquet$/i.test(String(selBaseFile||""));
-  const runMlTableLookup=async()=>{
-    const root=String(mlLookupRoot||"").trim();
-    if(!root){toast.warn("root_lot_id를 입력하세요.");return;}
-    if(!selBaseFile){toast.warn("ML_TABLE 파일을 먼저 선택하세요.");return;}
-    setMlLookupBusy(true);setError("");
-    try{
-      const d=await sf(API+"/ml-table/lookup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
-        file:selBaseFile,
-        root_lot_id:root,
-        wafer_id:String(mlLookupWafer||"").trim(),
-        select_cols:selectedCols,
-      })});
-      setMlLookupResult(d);
-      if(d.lookup_cache_hit){
-        const cols=(d.columns||[]).map(c=>String(c||"")).filter(Boolean);
-        setData(prev=>({
-          ...(prev||{}),
-          kind:"table",
-          file:selBaseFile,
-          columns:cols,
-          showing_cols:cols,
-          selected_cols:cols.join(","),
-          data:d.data||[],
-          showing:d.showing||0,
-          total_rows:d.total_rows||0,
-          total_cols:cols.length,
-          meta_only:false,
-          has_more:false,
-          preview_row_limit:25,
-          lookup_cache_hit:true,
-          cache_status:d.cache_status||"",
-          source_stale:!!d.source_stale,
-          dtypes:{...(prev?.dtypes||{})},
-          all_columns:prev?.all_columns||cols,
-        }));
-      }else{
-        toast.info(d.cache_status==="running"?"조회 캐시 생성 중입니다.":"조회 캐시 준비 중입니다.");
-      }
-    }catch(e){
-      setError(e.message||String(e));
-    }finally{
-      setMlLookupBusy(false);
-    }
   };
 
   const draftAiSql=async()=>{
@@ -1446,6 +1395,11 @@ export default function My_FileBrowser({user,onNavigate}){
     {k:"file",l:"파일 설정"},
   ];
   const settingsTitle=s3Tab==="folder"?"FileBrowser 폴더 설정":(s3Tab==="file"?"FileBrowser 파일 설정":(s3Tab==="cache"?"FileBrowser 캐시 운영":"S3 동기화 설정 — aws s3 cp/sync"));
+  const activeQueryMode=!!(String(sql||"").trim() || selectedCols.length || data?.selected_cols);
+  const activePreviewLimit=Number(data?.preview_row_limit||fbSettings.preview_max_rows||PAGE_SIZE)||PAGE_SIZE;
+  const previewStatusLabel=data?.single_file_full_read
+    ?"전체 표시"
+    :(activeQueryMode?"검색 결과":`예시 ${activePreviewLimit}행`);
 
   const chipS={display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:4,fontSize:14,cursor:"pointer",marginRight:4,marginBottom:4,border:"1px solid var(--border)",transition:"all 0.15s"};
   const chipActive={...chipS,background:"var(--accent-glow)",borderColor:"var(--accent)",color:"var(--accent)",fontWeight:600};
@@ -1578,7 +1532,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {products.length>0&&<div style={{flex:1,overflow:"auto",borderTop:"1px solid var(--border)",padding:"4px 8px"}}>
             <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>제품</div>
             {products.map(p=>(
-              <div key={p.name} onClick={()=>{setSelectedCols([]);setSql("");loadHiveView(selRoot,p.name,"",[],{full:false,page:0});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
+              <div key={p.name} onClick={()=>{setSelectedCols([]);setSql("");loadHiveView(selRoot,p.name,"",[],{full:true,page:0});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
                 background:selProd===p.name?"var(--bg-hover)":"transparent",color:selProd===p.name?"var(--accent)":"var(--text-primary)"}}>
                 {/* v8.8.2: 제품별 S3 신호등 — 본인 설정 없으면 상위 DB 에서 상속. */}
                 {lightDot(selRoot+"/"+p.name)}
@@ -1621,7 +1575,7 @@ export default function My_FileBrowser({user,onNavigate}){
             style={{padding:"6px 14px",borderRadius:5,border:"none",background:mode==="base"&&isBaseEditing?"var(--border)": "var(--accent)",color:mode==="base"&&isBaseEditing?"var(--text-secondary)":"#fff",fontSize:14,fontWeight:600,cursor:mode==="base"&&isBaseEditing?"default":"pointer"}}>실행</button>
           <button onClick={()=>{setAiSqlOpen(true);setAiSqlResult(null);}} disabled={!data||mode==="base"&&isBaseEditing}
             style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:!data||mode==="base"&&isBaseEditing?"default":"pointer",opacity:!data||mode==="base"&&isBaseEditing?0.5:1}}>AI SQL</button>
-          {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={downloadCsv} title="표시는 200행, CSV는 서버 허용 한도까지 다운로드합니다." style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer"}}>CSV</button>}
+          {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={downloadCsv} title={`표시는 ${PAGE_SIZE}행, CSV는 서버 허용 한도까지 다운로드합니다.`} style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer"}}>CSV</button>}
           {data&&!(mode==="base"&&isBaseEditing)&&<span style={{fontSize:12,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>CSV 최대 50만행/100MB</span>}
         </div>
 
@@ -1773,8 +1727,8 @@ export default function My_FileBrowser({user,onNavigate}){
               <span style={{fontSize:14,fontWeight:600,flex:"1 1 220px",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={selProd||selRootPq||selBaseFile}>{selProd||selRootPq||selBaseFile}</span>
                 <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6,flexShrink:0}}>
                   {data.meta_only
-                    ?<>스키마만 로드 · {data.total_cols}열{data.row_count_unknown?<> · 행수 미계산</>:data.total_rows?<> · {data.total_rows.toLocaleString()}행</>:null}{data.all_columns_truncated?<> · 컬럼 일부 표시</>:null} <span style={{color:"var(--accent)",fontWeight:600}}>| SQL 실행 또는 컬럼 SELECT 적용 시 데이터 조회</span></>
-                    :<>{data.latest_preview?<><span style={{color:"var(--accent)",fontWeight:700}}>최신 {data.showing}행</span>{data.latest_order_col?<> · 기준 {data.latest_order_col}</>:null} | </>:<><span style={{color:"var(--accent)",fontWeight:700}}>표시 {data.showing}행</span>{data.preview_row_limit?<> · 최대 {data.preview_row_limit}행</>:null} | </>}{data.total_rows?.toLocaleString()}행 × {data.total_cols}열
+                    ?<>스키마만 · {data.total_cols}열{data.row_count_unknown?<> · 행수 미계산</>:data.total_rows?<> · {data.total_rows.toLocaleString()}행</>:null}{data.all_columns_truncated?<> · 컬럼 일부 표시</>:null}</>
+                    :<><span style={{color:"var(--accent)",fontWeight:700}}>{previewStatusLabel}</span> · 표시 {data.showing}행{!data.single_file_full_read&&data.preview_row_limit?<> / 최대 {data.preview_row_limit}행</>:null}{data.latest_order_col?<> · 기준 {data.latest_order_col}</>:null} | {data.total_rows?.toLocaleString()}행 × {data.total_cols}열
                        {data.selected_cols&&<span style={{color:"var(--accent)"}}> | {selectedCols.length||String(data.selected_cols).split(",").filter(Boolean).length}열 선택됨</span>}
                        {data.truncated_cols&&<span style={{color:"var(--accent)"}}> | 기본 미리보기 {data.preview_cols}열</span>}</>}
                   {data.source_modified&&<span title={data.source_path||""}> | 수정 {new Date(data.source_modified*1000).toLocaleString()}</span>}
@@ -1821,17 +1775,6 @@ export default function My_FileBrowser({user,onNavigate}){
                   </>}
                 </div>
               </div>
-              {isMlTableBaseFile()&&<div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",margin:"0 0 12px",padding:"8px 10px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)"}}>
-                <span style={{fontSize:13,fontWeight:700,color:"var(--text-primary)"}}>ML_TABLE lot lookup</span>
-                <input value={mlLookupRoot} onChange={e=>setMlLookupRoot(e.target.value)} placeholder="root_lot_id" style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontFamily:"monospace",fontSize:13,minWidth:140}}/>
-                <input value={mlLookupWafer} onChange={e=>setMlLookupWafer(e.target.value)} placeholder="wafer" style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontFamily:"monospace",fontSize:13,width:88}}/>
-                <button onClick={runMlTableLookup} disabled={mlLookupBusy} style={{padding:"6px 11px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:13,fontWeight:700,cursor:mlLookupBusy?"default":"pointer",opacity:mlLookupBusy?0.6:1}}>조회</button>
-                <span style={{fontSize:12,color:"var(--text-secondary)"}}>
-                  {selectedCols.length?`${selectedCols.length} selected cols`:"identity cols"}
-                  {mlLookupResult?` · ${mlLookupResult.cache_status||"-"}${mlLookupResult.lookup_cache_hit?` · ${mlLookupResult.showing||0}/${mlLookupResult.total_rows||0} rows`:""}`:""}
-                  {mlLookupResult?.source_stale?" · stale":""}
-                </span>
-              </div>}
               {/* Tabs: Data + Columns */}
               <div style={{display:"flex",gap:0,borderBottom:"1px solid var(--border)",marginBottom:12}}>
                 {baseEditingTabs.map(t=>(<div key={t} onClick={()=>setTab(t)} style={{padding:"8px 16px",fontSize:14,cursor:"pointer",fontWeight:tab===t?600:400,
