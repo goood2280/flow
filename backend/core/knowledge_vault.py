@@ -801,6 +801,106 @@ def merge_schema_column_catalog(
     }
 
 
+def _schema_catalog_terms(row: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for key in ("column", "canonical_alias", "fk"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            out.append(value)
+    for key in ("raw_names", "sample_values"):
+        values = row.get(key) if isinstance(row.get(key), list) else []
+        out.extend(str(v).strip() for v in values if str(v or "").strip())
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for value in out:
+        normalized = value.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        uniq.append(value)
+    return uniq[:24]
+
+
+def lookup_term(term: str, limit: int = 30) -> dict[str, Any]:
+    """Resolve a wiki/schema term to column catalog rows and schema docs."""
+    ensure_dirs()
+    query = str(term or "").strip()
+    if not query:
+        return {"term": "", "columns": [], "docs": [], "graph": {"nodes": [], "edges": []}}
+    query_l = query.lower()
+    limit = max(1, min(int(limit or 30), 100))
+    payload = _schema_registry_payload()
+    columns: list[dict[str, Any]] = []
+    seen_cols: set[tuple[str, str]] = set()
+    for row in payload.get("column_catalog") or []:
+        if not isinstance(row, dict):
+            continue
+        terms = [str(row.get("relation_id") or ""), *_schema_catalog_terms(row)]
+        hay = " ".join(terms).lower()
+        exact = any(query_l == str(t or "").strip().lower() for t in terms)
+        if not exact and query_l not in hay:
+            continue
+        key = _schema_catalog_key(row)
+        if not all(key) or key in seen_cols:
+            continue
+        seen_cols.add(key)
+        columns.append(dict(row))
+        if len(columns) >= limit:
+            break
+
+    docs_by_id: dict[str, dict[str, Any]] = {}
+    column_refs = {
+        f"{row.get('relation_id')}.{row.get('column')}".lower()
+        for row in columns
+        if row.get("relation_id") and row.get("column")
+    }
+    for row in columns:
+        doc_id = str(row.get("wiki_doc_id") or "").strip()
+        if doc_id:
+            doc = get_doc(doc_id)
+            if doc:
+                docs_by_id[str(doc.get("doc_id") or doc_id)] = doc
+    for row in list_docs(limit=1000):
+        doc_id = str(row.get("doc_id") or "").strip()
+        if not doc_id or doc_id in docs_by_id:
+            continue
+        refs = {str(x or "").strip().lower() for x in (row.get("column_refs") or [])}
+        relation = str(row.get("relation_id") or "").strip().lower()
+        hay = " ".join([
+            doc_id,
+            str(row.get("title") or ""),
+            str(row.get("summary") or ""),
+            relation,
+            " ".join(refs),
+            " ".join(map(str, row.get("tags") or [])),
+        ]).lower()
+        if query_l not in hay and not (column_refs and refs.intersection(column_refs)):
+            continue
+        doc = get_doc(doc_id) or row
+        docs_by_id[doc_id] = doc
+        if len(docs_by_id) >= limit:
+            break
+
+    graph = get_graph(rebuild_if_missing=True)
+    concept_ids = {"concept:" + _safe_concept_id(t) for row in columns for t in _schema_catalog_terms(row)}
+    doc_node_ids = {"doc:" + str(doc.get("doc_id") or "") for doc in docs_by_id.values()}
+    graph_nodes = [
+        node for node in graph.get("nodes", [])
+        if isinstance(node, dict) and node.get("id") in concept_ids.union(doc_node_ids)
+    ]
+    graph_edges = [
+        edge for edge in graph.get("edges", [])
+        if isinstance(edge, dict)
+        and (edge.get("source") in concept_ids.union(doc_node_ids) or edge.get("target") in concept_ids.union(doc_node_ids))
+    ]
+    return {
+        "term": query,
+        "columns": columns[:limit],
+        "docs": list(docs_by_id.values())[:limit],
+        "graph": {"nodes": graph_nodes[:limit * 2], "edges": graph_edges[:limit * 3]},
+    }
+
+
 def _schema_doc_default_id(relation_id: str, column_refs: list[str], title: str = "") -> str:
     column = ""
     if column_refs:
@@ -1920,6 +2020,60 @@ def rebuild_graph() -> dict[str, Any]:
                 continue
             relation = str(relations_map.get(ref_id) or "relates_to").strip() or "relates_to"
             _edge(edges, doc_id, "doc:" + ref_id, relation, "frontmatter:related_doc_ids")
+    docs_by_id = {str(row.get("doc_id") or ""): row for row in docs}
+    docs_by_column_ref: dict[str, list[str]] = {}
+    docs_by_relation: dict[str, list[str]] = {}
+    for row in docs:
+        row_doc_id = str(row.get("doc_id") or "").strip()
+        if not row_doc_id:
+            continue
+        relation_id = str(row.get("relation_id") or "").strip().lower()
+        if relation_id:
+            docs_by_relation.setdefault(relation_id, []).append(row_doc_id)
+        for ref in row.get("column_refs") or []:
+            ref_key = str(ref or "").strip().lower()
+            if ref_key:
+                docs_by_column_ref.setdefault(ref_key, []).append(row_doc_id)
+    schema_payload = _schema_registry_payload()
+    for catalog_row in schema_payload.get("column_catalog") or []:
+        if not isinstance(catalog_row, dict):
+            continue
+        relation_id = str(catalog_row.get("relation_id") or "").strip()
+        column = str(catalog_row.get("column") or "").strip()
+        if not column:
+            continue
+        ref_key = f"{relation_id}.{column}".lower() if relation_id else column.lower()
+        target_doc_ids: list[str] = []
+        wiki_doc_id = str(catalog_row.get("wiki_doc_id") or "").strip()
+        if wiki_doc_id and wiki_doc_id in docs_by_id:
+            target_doc_ids.append(wiki_doc_id)
+        target_doc_ids.extend(docs_by_column_ref.get(ref_key, []))
+        if not target_doc_ids and relation_id:
+            target_doc_ids.extend(docs_by_relation.get(relation_id.lower(), [])[:3])
+        if not target_doc_ids:
+            continue
+        terms = _schema_catalog_terms(catalog_row) or [column]
+        for term in terms:
+            concept_id = _safe_concept_id(term)
+            if not concept_id:
+                continue
+            concept_node_id = "concept:" + concept_id
+            _node(
+                nodes,
+                concept_node_id,
+                term,
+                "schema_column",
+                relation_id=relation_id,
+                column=column,
+            )
+            seen_docs: set[str] = set()
+            for target_doc_id in target_doc_ids:
+                if target_doc_id in seen_docs:
+                    continue
+                seen_docs.add(target_doc_id)
+                doc_node_id = "doc:" + target_doc_id
+                _edge(edges, doc_node_id, concept_node_id, "describes", "schema_relations:column_catalog")
+                _edge(edges, concept_node_id, doc_node_id, "described_by", "schema_relations:column_catalog")
     for row in events:
         event_id = "event:" + str(row.get("event_id") or "")
         _node(nodes, event_id, row.get("title") or row.get("event_id") or "", "event", source_type=row.get("source_type"), path=row.get("raw_path"))

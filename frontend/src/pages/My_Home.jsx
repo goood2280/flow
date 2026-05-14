@@ -361,6 +361,8 @@ function flowiDownloadTable(table){
 
 function FlowiInlineContent({tool,table,chart,chartResult}){
   const type=flowiResultType(tool,table,chartResult);
+  const explicitBlocks=Array.isArray(tool?.blocks)?tool.blocks:[];
+  if(explicitBlocks.length)return <>{explicitBlocks.map((block,i)=><FlowiResultBlock key={block?.id||`${block?.kind||"block"}-${i}`} block={block}/>)}</>;
   const lotList=Array.isArray(tool?.lot_list)?tool.lot_list:[];
   const rows=Array.isArray(tool?.rows)?tool.rows:[];
   const knobs=Array.isArray(tool?.knobs)?tool.knobs:[];
@@ -375,6 +377,28 @@ function FlowiInlineContent({tool,table,chart,chartResult}){
   else if(rows.length>0)blocks.push(<FlowiDataTable key="rows" table={{kind:"flowi_rows",title:"Flowi rows",columns:_legacyRowColumns(rows),rows,total:rows.length}}/>);
   else if(knobs.length>0)blocks.push(<FlowiKnobCards key="knobs" knobs={knobs}/>);
   if(blocks.length)return <>{blocks}</>;
+  return null;
+}
+
+function FlowiResultBlock({block}){
+  if(!block||typeof block!=="object")return null;
+  const kind=String(block.kind||"");
+  const payload=block.payload&&typeof block.payload==="object"?block.payload:{};
+  const title=block.title||payload.title||"Flowi block";
+  if(kind==="lot_table"){
+    return <FlowiDataTable table={{...payload,title,highlight:block.highlight||payload.highlight}}/>;
+  }
+  if(kind==="chart_scatter"||kind==="chart_trend"){
+    return <FlowiScatterResult data={{...payload,title}}/>;
+  }
+  if(kind==="sql_draft")return <FlowiSqlDraft draft={payload}/>;
+  if(kind==="evidence_note"){
+    return <div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#151515",padding:"9px 10px",fontSize:14,color:"#d4d4d4",lineHeight:1.5,whiteSpace:"pre-wrap"}}>{payload.text||block.text||""}</div>;
+  }
+  if(Array.isArray(payload.series)||Array.isArray(payload.points)||Array.isArray(payload.groups)||Array.isArray(payload.boxes)){
+    return <FlowiScatterResult data={{...payload,title}}/>;
+  }
+  if(Array.isArray(payload.rows))return <FlowiDataTable table={{...payload,title}}/>;
   return null;
 }
 
@@ -510,6 +534,7 @@ function FlowiTrace({trace}){
   const inputSlots=interpretation?.input_slots||{};
   const evidence=trace?.evidence||{};
   const validation=trace?.validation||{};
+  const subagentChildren=Array.isArray(trace?.subagent_context?.children)?trace.subagent_context.children:[];
   const missing=Array.isArray(interpretation?.missing_slots)?interpretation.missing_slots:[];
   const warnings=Array.isArray(validation?.warnings)?validation.warnings:[];
   const apiCalls=Array.isArray(evidence?.api_calls)?evidence.api_calls:[];
@@ -536,6 +561,15 @@ function FlowiTrace({trace}){
       {Array.isArray(evidence.selected_columns)&&evidence.selected_columns.length>0&&<FlowiTraceKV label="선택 컬럼" value={evidence.selected_columns.slice(0,12).join(", ")} wide/>}
       {missing.length>0&&<FlowiTraceKV label="빈칸 보완" value={missing.join(", ")} wide tone="#f97316"/>}
       {warnings.length>0&&<FlowiTraceKV label="warnings" value={warnings.slice(0,4).join(" · ")} wide tone="#fbbf24"/>}
+      {subagentChildren.length>0&&<div style={{display:"grid",gap:4,border:"1px solid #262626",borderRadius:6,background:"#151515",padding:"6px 7px"}}>
+        <div style={{fontSize:14,color:"#737373",marginBottom:2}}>subagent chain</div>
+        {subagentChildren.slice(0,8).map((c,i)=><div key={`${c.name||"child"}-${i}`} style={{display:"grid",gridTemplateColumns:"18px minmax(90px,150px) 72px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
+          <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:`1px solid ${colorFor(c.status)}99`,color:colorFor(c.status)}}>{c.status==="done"?"✓":c.status==="error"?"!":i+1}</span>
+          <span style={{color:"#d4d4d4",fontWeight:800,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={c.name||""}>{c.name||"-"}</span>
+          <span style={{color:"#a3a3a3"}}>{Number(c.took_ms||0)}ms</span>
+          <span style={{color:c.error?"#fca5a5":"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={c.error||c.action||c.intent||""}>{c.error||c.action||c.intent||""}</span>
+        </div>)}
+      </div>}
       {steps.map((s,i)=><div key={s.key||i} style={{display:"grid",gridTemplateColumns:"18px 118px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.4}}>
         <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:`1px solid ${colorFor(s.status)}99`,color:colorFor(s.status)}}>{s.status==="done"?"✓":s.status==="blocked"?"!":i+1}</span>
         <span style={{color:"#d4d4d4",fontWeight:800}}>{s.label||s.key}</span>
@@ -922,6 +956,7 @@ function FlowiLineResult({data}){
       {series.map((s,si)=><span key={s.name||si} style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px",display:"inline-flex",alignItems:"center",gap:5}}>
         <span style={{width:8,height:8,borderRadius:999,background:palette[si%palette.length],display:"inline-block"}}></span>{s.name||data.metric||"series"}
       </span>)}
+      {data.color_by&&<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>color {data.color_by}</span>}
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>INLINE median by date</span>
     </div>
   </div>);

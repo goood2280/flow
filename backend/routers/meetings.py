@@ -16,7 +16,7 @@
     sessions: [{
       id, idx, scheduled_at,
       status: "scheduled"|"in_progress"|"completed"|"cancelled",
-      agendas: [{ id, title, description, owner, link, created_at, updated_at }],
+      agendas: [{ id, title, description, owner, link, images, created_at, updated_at }],
       minutes: { body, decisions, action_items, author, updated_at } | null,
       created_at, updated_at,
     }],
@@ -47,6 +47,8 @@ Endpoints:
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import datetime
 from pathlib import Path
 import re
@@ -62,7 +64,7 @@ for _path in (_APP_ROOT, _BACKEND_ROOT):
     sys.path.insert(0, _raw)
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from core.paths import PATHS
@@ -817,6 +819,16 @@ def save_meeting_categories_compat(req: dict, request: Request):
 MEET_DIR = PATHS.data_root / "meetings"
 MEET_DIR.mkdir(parents=True, exist_ok=True)
 MEET_FILE = MEET_DIR / "meetings.json"
+AGENDA_IMAGE_DIR = MEET_DIR / "agenda_images"
+AGENDA_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+AGENDA_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+AGENDA_IMAGE_MAX_COUNT = 10
+AGENDA_IMAGE_MIME_EXT = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+}
 
 VALID_SESSION_STATUS = {"scheduled", "in_progress", "completed", "cancelled"}
 VALID_MEETING_STATUS = {"active", "archived", "cancelled"}
@@ -838,6 +850,98 @@ def _new_sid() -> str:
 
 def _new_aid() -> str:
     return f"ag_{uuid.uuid4().hex[:8]}"
+
+
+def _safe_agenda_image_name(name: str) -> str:
+    raw = Path(str(name or "")).name
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
+    return safe[:180]
+
+
+def _agenda_image_path(name: str) -> Path:
+    safe = _safe_agenda_image_name(name)
+    if not safe:
+        raise HTTPException(404, "image not found")
+    root = AGENDA_IMAGE_DIR.resolve()
+    path = (AGENDA_IMAGE_DIR / safe).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        raise HTTPException(400, "invalid image name")
+    return path
+
+
+def _agenda_image_url(name: str) -> str:
+    return f"/api/meetings/agenda/image?name={name}"
+
+
+def _extract_agenda_image_name(item: dict) -> str:
+    name = _safe_agenda_image_name(item.get("name") or item.get("filename") or "")
+    if name:
+        return name
+    url = str(item.get("url") or item.get("src") or "")
+    m = re.search(r"(?:\?|&)name=([^&]+)", url)
+    if not m:
+        return ""
+    try:
+        from urllib.parse import unquote
+        return _safe_agenda_image_name(unquote(m.group(1)))
+    except Exception:
+        return _safe_agenda_image_name(m.group(1))
+
+
+def _store_agenda_image(item: dict) -> dict | None:
+    data_url = str(item.get("data_url") or item.get("dataUrl") or item.get("src") or "")
+    m = re.match(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.+)$", data_url, re.I | re.S)
+    if not m:
+        return None
+    mime = m.group(1).lower()
+    ext = AGENDA_IMAGE_MIME_EXT.get(mime)
+    if not ext:
+        raise HTTPException(400, "unsupported agenda image type")
+    try:
+        raw = base64.b64decode(m.group(2), validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(400, "invalid agenda image data")
+    if len(raw) > AGENDA_IMAGE_MAX_BYTES:
+        raise HTTPException(400, "agenda image exceeds 5MB")
+    name = f"agenda_{datetime.datetime.now().strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:10]}.{ext}"
+    path = _agenda_image_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    original = str(item.get("original_name") or item.get("originalName") or item.get("name") or "").strip()
+    return {
+        "name": name,
+        "url": _agenda_image_url(name),
+        "mime": mime,
+        "size": len(raw),
+        "original_name": original[:180],
+    }
+
+
+def _normalize_agenda_images(raw_images: Any) -> list[dict]:
+    if not isinstance(raw_images, list):
+        return []
+    out: list[dict] = []
+    for raw in raw_images[:AGENDA_IMAGE_MAX_COUNT]:
+        item = {"data_url": raw} if isinstance(raw, str) else (raw if isinstance(raw, dict) else {})
+        if not item:
+            continue
+        stored = _store_agenda_image(item)
+        if stored:
+            out.append(stored)
+            continue
+        name = _extract_agenda_image_name(item)
+        if not name:
+            continue
+        out.append({
+            "name": name,
+            "url": _agenda_image_url(name),
+            "mime": str(item.get("mime") or item.get("type") or mimetypes.guess_type(name)[0] or "image/*")[:80],
+            "size": int(item.get("size") or 0),
+            "original_name": str(item.get("original_name") or item.get("originalName") or item.get("label") or "")[:180],
+        })
+    return out
 
 
 def _default_recurrence() -> dict:
@@ -1082,6 +1186,7 @@ class AgendaAdd(BaseModel):
     link: Optional[str] = ""
     owner: Optional[str] = None
     issue_ref: Optional[dict] = None
+    images: Optional[List[Any]] = None
 
 
 class AgendaUpdate(BaseModel):
@@ -1093,6 +1198,7 @@ class AgendaUpdate(BaseModel):
     link: Optional[str] = None
     owner: Optional[str] = None
     issue_ref: Optional[dict] = None
+    images: Optional[List[Any]] = None
 
 
 class ActionItem(BaseModel):
@@ -1426,12 +1532,14 @@ def _ask_agenda_text(item: dict) -> dict:
     issue_text = ""
     if issue_id or issue_title:
         issue_text = f"{issue_id}{(': ' + issue_title) if issue_title else ''}"
+    image_count = len(item.get("images") or [])
     return {
         "title": _ask_clip(item.get("title") or "", 220),
         "description": _ask_clip(item.get("description") or "", 500),
         "owner": _ask_clip(item.get("owner") or "", 80),
         "link": _ask_clip(item.get("link") or "", 240),
         "issue": issue_text,
+        "image_count": image_count,
     }
 
 
@@ -2323,6 +2431,16 @@ def delete_session(request: Request,
 
 
 # ── agendas (now per-session) ─────────────────────────────────────
+@router.get("/agenda/image")
+def get_agenda_image(request: Request, name: str = Query(...)):
+    current_user(request)
+    path = _agenda_image_path(name)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "image not found")
+    media_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type)
+
+
 @router.post("/agenda/add")
 def add_agenda(req: AgendaAdd, request: Request):
     me = current_user(request)
@@ -2348,6 +2466,7 @@ def add_agenda(req: AgendaAdd, request: Request):
         "link": (req.link or "").strip(),
         "owner": (req.owner or me["username"]).strip() or me["username"],
         "issue_ref": issue_ref,
+        "images": _normalize_agenda_images(req.images),
         "created_at": now,
         "updated_at": now,
     }
@@ -2397,6 +2516,11 @@ def update_agenda(req: AgendaUpdate, request: Request):
     if req.issue_ref is not None and ag.get("issue_ref") != next_issue_ref:
         ag["issue_ref"] = next_issue_ref
         changed.append("issue_ref")
+    if req.images is not None:
+        next_images = _normalize_agenda_images(req.images)
+        if ag.get("images") != next_images:
+            ag["images"] = next_images
+            changed.append("images")
     if not changed:
         return {"ok": True, "meeting": m, "session": s, "noop": True}
     updated_at = _now()

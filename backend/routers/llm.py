@@ -11,6 +11,7 @@ caller 주의: LLM 은 옵션. UI 는 status.available == false 면 관련 버�
 import json
 import logging
 import math
+import os
 import re
 import uuid
 import csv
@@ -3930,6 +3931,141 @@ def _merge_retrieved_knowledge(existing: Any, additions: list[dict[str, Any]]) -
     return out[:30]
 
 
+def _flowi_knowledge_terms(prompt: str, tool: dict[str, Any], limit: int = 5) -> list[str]:
+    terms: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        for part in re.findall(r"[A-Za-z][A-Za-z0-9_.-]*|[가-힣][가-힣0-9_]*", text):
+            key = part.strip("._-")
+            if len(key) < 2 and key.upper() not in {"B", "C", "D", "E"}:
+                continue
+            if _upper(key) in FLOWI_CHART_TERMS or _upper(key) in _STOP_TOKENS:
+                continue
+            terms.append(key)
+
+    add(prompt)
+    for src_key in ("slots", "filters", "arguments"):
+        src = tool.get(src_key) if isinstance(tool.get(src_key), dict) else {}
+        for value in src.values():
+            if isinstance(value, list):
+                for item in value[:8]:
+                    add(item)
+            else:
+                add(value)
+    for key in ("knob", "metric", "item_id", "source_type", "chart_type"):
+        add(tool.get(key))
+    out: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        normalized = term.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(term)
+        if len(out) >= max(1, min(limit, 10)):
+            break
+    return out
+
+
+def attach_term_knowledge(prompt: str, tool: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(tool, dict):
+        return tool
+    additions: list[dict[str, Any]] = []
+    for term in _flowi_knowledge_terms(prompt, tool, limit=5):
+        try:
+            found = kv.lookup_term(term, limit=6)
+        except Exception as exc:
+            logger.debug("flowi term knowledge lookup failed for %s: %s", term, exc)
+            continue
+        for row in (found.get("columns") or [])[:3]:
+            if not isinstance(row, dict):
+                continue
+            relation = str(row.get("relation_id") or "").strip()
+            column = str(row.get("column") or "").strip()
+            if not column:
+                continue
+            item_id = f"column:{relation}.{column}" if relation else f"column:{column}"
+            additions.append({
+                "id": item_id,
+                "doc_id": str(row.get("wiki_doc_id") or item_id),
+                "kind": "column_catalog",
+                "title": f"{relation}.{column}" if relation else column,
+                "summary": row.get("canonical_alias") or row.get("dtype") or "",
+                "term": term,
+                "relation_id": relation,
+                "column": column,
+                "source": "column_catalog",
+            })
+        for doc in (found.get("docs") or [])[:2]:
+            if not isinstance(doc, dict):
+                continue
+            doc_id = str(doc.get("doc_id") or "").strip()
+            if not doc_id:
+                continue
+            additions.append({
+                "id": doc_id,
+                "doc_id": doc_id,
+                "kind": doc.get("kind") or "wiki_doc",
+                "title": doc.get("title") or doc_id,
+                "summary": doc.get("summary") or "",
+                "term": term,
+                "source": "knowledge_term",
+            })
+    if additions:
+        tool["retrieved_knowledge"] = _merge_retrieved_knowledge(tool.get("retrieved_knowledge"), additions)
+    return tool
+
+
+def _invoke_subagent(
+    name: str,
+    handler: Any,
+    prompt: str,
+    product: str,
+    max_rows: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    started = datetime.now(timezone.utc)
+    try:
+        out = handler(prompt, product, max_rows)
+        if not isinstance(out, dict):
+            out = {"handled": False, "error": "handler returned non-dict"}
+        status = "done" if out.get("handled") and not out.get("blocked") else ("blocked" if out.get("blocked") else "skipped")
+    except Exception as exc:
+        logger.warning("flowi subagent %s failed: %s", name, exc)
+        out = {"handled": False, "error": str(exc)}
+        status = "error"
+    took_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+    child = {
+        "name": name,
+        "status": status,
+        "took_ms": max(0, took_ms),
+        "intent": out.get("intent") or "",
+        "action": out.get("action") or "",
+        "feature": out.get("feature") or "",
+        "evidence_count": (
+            len((out.get("table") or {}).get("rows") or [])
+            if isinstance(out.get("table"), dict)
+            else len(out.get("points") or out.get("rows") or [])
+        ),
+        "error": out.get("error") or "",
+    }
+    return out, child
+
+
+def _flowi_block_chart_config(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        payload = block.get("payload") if isinstance(block.get("payload"), dict) else {}
+        for key in ("chart_config", "config", "config_overrides"):
+            cfg = payload.get(key)
+            if isinstance(cfg, dict) and cfg:
+                return cfg
+    return {}
+
+
 def _dashboard_chart_label(chart_type: str) -> str:
     labels = {
         "scatter": "산점도",
@@ -5139,6 +5275,329 @@ def _try_metric_scatter(prompt: str, product: str, metrics: list[dict[str, Any]]
         "sources": source_meta,
         "aggregations": {"INLINE": inline_agg, "ET": et_agg},
         "render_preset": {**scatter_defaults, "grain": "shot" if include_shot else "wafer_agg"},
+    }
+
+
+def _flowi_composite_enabled() -> bool:
+    return str(os.getenv("FLOWI_COMPOSITE", "1")).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _home_composite_lot_analysis_intent(prompt: str) -> bool:
+    if not _flowi_composite_enabled():
+        return False
+    text = str(prompt or "")
+    low = text.lower()
+    up = _upper(text)
+    has_knob = "KNOB" in up or "노브" in text
+    has_step = "STEP" in up or "step_id" in low or "빠른" in text or "가장 앞" in text
+    has_corr = any(t in low or t in text for t in ("corr", "correlation", "상관"))
+    has_trend = any(t in low or t in text for t in ("trend", "추세", "시계열", "라인"))
+    has_split_scope = "LOT_WF" in up or "lot_wf" in low or "split table" in low or "splittable" in low or "스플릿" in text
+    return has_knob and has_step and has_split_scope and has_corr and has_trend
+
+
+def _flowi_composite_metric_pair(prompt: str) -> tuple[str, str]:
+    text = str(prompt or "")
+    patterns = [
+        r"([A-Za-z][A-Za-z0-9_.-]*)\s*(?:[·,/&+]|and|와|과|및)\s*([A-Za-z][A-Za-z0-9_.-]*)\s*(?:corr|correlation|상관)",
+        r"(?:corr|correlation|상관)\s*(?:분석)?\s*([A-Za-z][A-Za-z0-9_.-]*)\s*(?:[·,/&+]|and|와|과|및)\s*([A-Za-z][A-Za-z0-9_.-]*)",
+    ]
+    blocked = {"KNOB", "STEP", "STEP_ID", "LOT", "LOT_WF", "SPLIT", "TABLE", "TREND", "CORR", "COLOR"}
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.I)
+        if not m:
+            continue
+        a = _upper(m.group(1)).strip("._-")
+        b = _upper(m.group(2)).strip("._-")
+        if a and b and a not in blocked and b not in blocked:
+            return a, b
+    hits = [str(row.get("metric") or "").strip() for row in _metric_alias_hits(text) if row.get("metric")]
+    hits = [h for h in hits if _upper(h) not in blocked]
+    if len(hits) >= 2:
+        return hits[0], hits[1]
+    return "", ""
+
+
+def _flowi_composite_trend_metric(prompt: str, corr_pair: tuple[str, str]) -> str:
+    text = str(prompt or "")
+    for pat in (
+        r"([A-Za-z][A-Za-z0-9_.-]*)\s*(?:trend|추세|시계열|라인)",
+        r"(?:trend|추세|시계열|라인)\s*(?:는|은|로|:)?\s*([A-Za-z][A-Za-z0-9_.-]*)",
+    ):
+        m = re.search(pat, text, flags=re.I)
+        if not m:
+            continue
+        metric = _upper(m.group(1)).strip("._-")
+        if metric and metric not in {"KNOB", "COLOR", "STEP", "LOT_WF", "TREND"}:
+            return metric
+    for metric in _metric_alias_hits(text):
+        value = str(metric.get("metric") or "").strip()
+        if value and value not in corr_pair:
+            return value
+    return ""
+
+
+def _flowi_lot_keys_from_table(table: dict[str, Any]) -> dict[str, set[str]]:
+    keys = {"lot_wf": set(), "root_lot_id": set(), "wafer_id": set()}
+    rows = table.get("rows") if isinstance(table.get("rows"), list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in keys:
+            value = _text(row.get(key))
+            if value:
+                keys[key].add(_upper(value))
+        root = _text(row.get("root_lot_id"))
+        wafer = _text(row.get("wafer_id") or row.get("current_wafer_id"))
+        lot_wf = _flowi_lot_wf_id(root, wafer)
+        if lot_wf:
+            keys["lot_wf"].add(_upper(lot_wf))
+    return keys
+
+
+def _flowi_filter_chart_result_by_lots(chart_result: dict[str, Any], lot_keys: dict[str, set[str]]) -> dict[str, Any]:
+    if not any(lot_keys.values()):
+        return chart_result
+    out = deepcopy(chart_result)
+
+    def keep(point: dict[str, Any]) -> bool:
+        lot_wf = _upper(point.get("lot_wf") or point.get("label") or "")
+        root = _upper(point.get("root_lot_id") or "")
+        wafer = _upper(point.get("wafer_id") or "")
+        derived = _upper(_flowi_lot_wf_id(root, wafer))
+        return (
+            (lot_wf and lot_wf in lot_keys["lot_wf"])
+            or (derived and derived in lot_keys["lot_wf"])
+            or (root and root in lot_keys["root_lot_id"])
+        )
+
+    if isinstance(out.get("points"), list):
+        filtered = [p for p in out.get("points") or [] if isinstance(p, dict) and keep(p)]
+        if filtered:
+            out["points"] = filtered
+            out["total"] = len(filtered)
+    if isinstance(out.get("series"), list):
+        series = []
+        for item in out.get("series") or []:
+            if not isinstance(item, dict):
+                continue
+            points = [p for p in item.get("points") or [] if isinstance(p, dict) and keep(p)]
+            if points:
+                series.append({**item, "points": points})
+        if series:
+            out["series"] = series
+            out["total"] = sum(len(s.get("points") or []) for s in series)
+    return out
+
+
+def _flowi_knob_values_for_points(prompt: str, product: str, lots: list[str], metric: str) -> tuple[dict[str, str], str]:
+    try:
+        knob = _flowi_knob_lf(product, lots, prompt, [metric])
+    except Exception as exc:
+        logger.debug("flowi composite trend knob lookup failed: %s", exc)
+        return {}, ""
+    if not knob.get("ok"):
+        return {}, ""
+    try:
+        df = knob["lf"].limit(5000).collect()
+    except Exception as exc:
+        logger.debug("flowi composite trend knob collect failed: %s", exc)
+        return {}, str(knob.get("display_name") or "")
+    values: dict[str, str] = {}
+    for row in df.to_dicts():
+        value = _text(row.get("color_value"))
+        if not value:
+            continue
+        lot_wf = _upper(row.get("lot_wf") or "")
+        root = _upper(row.get("root_lot_id") or "")
+        wafer = _upper(row.get("wafer_id") or "")
+        derived = _upper(_flowi_lot_wf_id(root, wafer))
+        for key in (lot_wf, derived, root):
+            if key and key not in values:
+                values[key] = value
+    return values, str(knob.get("display_name") or knob.get("knob_col") or "")
+
+
+def _flowi_trend_payload_from_tool(
+    trend_tool: dict[str, Any],
+    *,
+    prompt: str,
+    product: str,
+    lots: list[str],
+    metric: str,
+    lot_keys: dict[str, set[str]],
+) -> dict[str, Any]:
+    chart_result = trend_tool.get("chart_result") if isinstance(trend_tool.get("chart_result"), dict) else {}
+    chart_result = _flowi_filter_chart_result_by_lots(chart_result, lot_keys)
+    if isinstance(chart_result.get("series"), list) and chart_result.get("series"):
+        return chart_result
+    points = [p for p in (chart_result.get("points") or []) if isinstance(p, dict)]
+    knob_values, color_by = _flowi_knob_values_for_points(prompt, product, lots, metric)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for point in points:
+        lot_wf = _upper(point.get("lot_wf") or point.get("label") or "")
+        root = _upper(point.get("root_lot_id") or "")
+        wafer = _upper(point.get("wafer_id") or "")
+        color_value = knob_values.get(lot_wf) or knob_values.get(_upper(_flowi_lot_wf_id(root, wafer))) or knob_values.get(root) or ""
+        if color_value:
+            point = {**point, "color_value": color_value}
+        grouped.setdefault(color_value or "trend", []).append(point)
+    series = [
+        {"name": name, "points": sorted(rows, key=lambda r: (str(r.get("tkout_time") or r.get("x_label") or ""), float(r.get("x") or 0)))}
+        for name, rows in sorted(grouped.items(), key=lambda kv: kv[0])
+    ]
+    return {
+        **chart_result,
+        "kind": "dashboard_trend",
+        "title": chart_result.get("title") or f"{metric} Trend",
+        "series": series,
+        "points": points,
+        "total": len(points),
+        "metric": chart_result.get("metric") or metric,
+        "color_by": color_by,
+    }
+
+
+def _flowi_composite_scatter_tool(prompt: str, product: str, max_rows: int, corr_pair: tuple[str, str], lot_keys: dict[str, set[str]]) -> dict[str, Any]:
+    x_metric, y_metric = corr_pair
+    if not x_metric or not y_metric:
+        return {"handled": False, "error": "corr metrics not resolved"}
+    lots = sorted({_text(x) for x in _lot_tokens(prompt) if _text(x)})
+    product_hint = _product_hint(prompt, product)
+    scatter_prompt = " ".join(x for x in [product_hint, "INLINE ET", x_metric, y_metric, "corr scatter"] if x)
+    metrics = [{"metric": x_metric}, {"metric": y_metric}]
+    actual = _try_metric_scatter(scatter_prompt, product_hint, metrics, lots, ["correlation", "scatter"])
+    if actual.get("ok"):
+        payload = _flowi_filter_chart_result_by_lots(actual, lot_keys)
+        return {
+            "handled": True,
+            "intent": "home_composite_corr_scatter",
+            "action": "compute_corr_scatter_block",
+            "feature": "dashboard",
+            "answer": f"{x_metric} vs {y_metric} corr scatter를 계산했습니다.",
+            "chart_result": payload,
+            "chart_config": payload.get("config_overrides") or payload.get("chart_config") or {},
+            "slots": {"product": product_hint, "metrics": [x_metric, y_metric], "lots": lots},
+        }
+    draft = _handle_chart_request(scatter_prompt, product_hint, max_rows)
+    if draft.get("handled"):
+        return draft
+    return {"handled": False, "error": actual.get("error") or "scatter block failed"}
+
+
+def _handle_home_composite_lot_analysis(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    if not _home_composite_lot_analysis_intent(prompt):
+        return {"handled": False}
+    product_hint = _product_hint(prompt, product)
+    corr_pair = _flowi_composite_metric_pair(prompt)
+    trend_metric = _flowi_composite_trend_metric(prompt, corr_pair)
+    children: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    blocks: list[dict[str, Any]] = []
+
+    fastest_tool, child = _invoke_subagent("fastest_knob", _handle_fastest_knob_query, prompt, product_hint, max_rows)
+    children.append(child)
+    table = deepcopy(fastest_tool.get("table")) if isinstance(fastest_tool.get("table"), dict) else {}
+    if table:
+        rows = [dict(row) for row in (table.get("rows") or []) if isinstance(row, dict)]
+        if rows:
+            rows[0]["__highlight"] = True
+            table["rows"] = rows
+        blocks.append({
+            "kind": "lot_table",
+            "title": table.get("title") or "Fastest LOT_WF",
+            "payload": table,
+            "highlight": {
+                "row_keys": [str(rows[0].get("lot_wf") or rows[0].get("root_lot_id") or "")] if rows else [],
+                "reason": "fastest step",
+            },
+        })
+    elif fastest_tool.get("error") or fastest_tool.get("answer"):
+        warnings.append(str(fastest_tool.get("error") or fastest_tool.get("answer")))
+    lot_keys = _flowi_lot_keys_from_table(table)
+
+    scatter_tool, child = _invoke_subagent(
+        "corr_scatter",
+        lambda p, prod, rows: _flowi_composite_scatter_tool(p, prod, rows, corr_pair, lot_keys),
+        prompt,
+        product_hint,
+        max_rows,
+    )
+    children.append(child)
+    scatter_payload = scatter_tool.get("chart_result") if isinstance(scatter_tool.get("chart_result"), dict) else {}
+    if scatter_payload:
+        blocks.append({
+            "kind": "chart_scatter",
+            "title": scatter_payload.get("title") or f"{corr_pair[0]} vs {corr_pair[1]}",
+            "payload": scatter_payload,
+        })
+    elif scatter_tool.get("error") or scatter_tool.get("answer"):
+        warnings.append(str(scatter_tool.get("error") or scatter_tool.get("answer")))
+
+    trend_prompt = " ".join(x for x in [product_hint, "INLINE", trend_metric, "trend"] if x)
+    trend_tool, child = _invoke_subagent("trend_by_knob", _handle_inline_trend_chart, trend_prompt, product_hint, max_rows)
+    children.append(child)
+    if trend_tool.get("handled") and trend_metric:
+        trend_payload = _flowi_trend_payload_from_tool(
+            trend_tool,
+            prompt=prompt,
+            product=product_hint,
+            lots=_lot_tokens(prompt),
+            metric=trend_metric,
+            lot_keys=lot_keys,
+        )
+        blocks.append({
+            "kind": "chart_trend",
+            "title": trend_payload.get("title") or f"{trend_metric} Trend",
+            "payload": trend_payload,
+        })
+    elif trend_tool.get("error") or trend_tool.get("answer"):
+        warnings.append(str(trend_tool.get("error") or trend_tool.get("answer")))
+
+    if not blocks:
+        return {
+            "handled": True,
+            "intent": "home_composite_lot_analysis",
+            "action": "collect_required_fields",
+            "answer": "복합 분석 요청은 인식했지만 표시할 표/차트 블록을 만들지 못했습니다. product, corr metric 2개, trend metric을 더 구체적으로 알려주세요.",
+            "feature": "dashboard",
+            "missing": [x for x, ok in (("product", bool(product_hint)), ("corr_metrics", all(corr_pair)), ("trend_metric", bool(trend_metric))) if not ok],
+            "warnings": warnings,
+            "_subagent_children": children,
+        }
+
+    primary_table = next((b.get("payload") for b in blocks if b.get("kind") == "lot_table" and isinstance(b.get("payload"), dict)), None)
+    primary_chart = next((b.get("payload") for b in blocks if str(b.get("kind") or "").startswith("chart_") and isinstance(b.get("payload"), dict)), None)
+    answer_bits = [f"{len(blocks)}개 블록으로 복합 분석을 구성했습니다."]
+    if primary_table:
+        answer_bits.append(f"표 {len(primary_table.get('rows') or [])}행")
+    if primary_chart:
+        answer_bits.append(f"차트 point {primary_chart.get('total', len(primary_chart.get('points') or []))}")
+    if warnings:
+        answer_bits.append("일부 블록은 부분 실패로 trace에 남겼습니다.")
+    return {
+        "handled": True,
+        "intent": "home_composite_lot_analysis",
+        "action": "compose_lot_table_corr_trend_blocks",
+        "answer": " ".join(answer_bits),
+        "feature": "dashboard",
+        "blocks": blocks,
+        "table": primary_table,
+        "chart_result": primary_chart,
+        "chart_config": _flowi_block_chart_config(blocks),
+        "slots": {
+            "product": product_hint,
+            "corr_metrics": [m for m in corr_pair if m],
+            "trend_metric": trend_metric,
+            "lots": _lot_tokens(prompt),
+        },
+        "filters": {
+            "lot_wf": sorted(lot_keys.get("lot_wf") or []),
+            "root_lot_id": sorted(lot_keys.get("root_lot_id") or []),
+            "source": "home_composite",
+        },
+        "warnings": warnings,
+        "_subagent_children": children,
     }
 
 
@@ -7266,9 +7725,10 @@ def _handle_tracker_lot_purpose_lookup(prompt: str, product: str, max_rows: int)
             "",
             "요약",
             f"- 이슈추적에서 lot 목적 {len(rows)}건을 찾았습니다.",
-            "",
-            "관련 이슈",
         ]
+        if len(rows) > 1:
+            answer_lines.append("- 여러 목적 후보가 있어 확인이 필요합니다.")
+        answer_lines.extend(["", "관련 이슈"])
         for row in rows[:6]:
             lot_label = row.get("fab_lot_id") or row.get("lot_id") or row.get("root_lot_id") or "-"
             answer_lines.append(
@@ -9906,16 +10366,22 @@ def _flowi_inform_summary_intent(prompt: str) -> bool:
     low = text.lower()
     if not any(term in low or term in text for term in ("inform", "인폼", "공지", "공유")):
         return False
+    has_write_term = (
+        (_detect_app_write_feature(text) and _flowi_app_write_mode(text))
+        or any(term in low or term in text for term in _FLOWI_APP_WRITE_TERMS + _FLOWI_APP_CREATE_TERMS)
+    )
+    has_explicit_read_term = any(term in low or term in text for term in (
+        "현황", "상태", "요약", "누락", "미등록", "미완료", "조회", "검색",
+        "목록", "리스트", "로그", "status", "summary", "missing", "list", "show",
+    ))
+    has_request_verb = any(term in low or term in text for term in ("해줘", "해주세요", "할게", "진행"))
+    if (has_write_term or has_request_verb) and not has_explicit_read_term:
+        return False
     has_read_term = any(term in low or term in text for term in (
         "현황", "상태", "요약", "누락", "미등록", "미완료", "전체", "모듈", "관리",
         "보여", "조회", "검색", "확인", "목록", "리스트", "로그", "status", "summary", "missing", "module", "list", "show",
     ))
     if not has_read_term:
-        return False
-    if (
-        (_detect_app_write_feature(text) and _flowi_app_write_mode(text))
-        or any(term in low or term in text for term in _FLOWI_APP_WRITE_TERMS + _FLOWI_APP_CREATE_TERMS)
-    ) and not any(term in low or term in text for term in ("상태", "요약", "현황", "조회", "검색", "확인", "status", "summary", "show")):
         return False
     return True
 
@@ -14875,6 +15341,11 @@ def _handle_flowi_query(
         diag_out = _handle_semiconductor_diagnosis_query(prompt, product, max_rows)
         if diag_out.get("handled"):
             return diag_out
+    composite_allowed = allowed_keys is None or {"dashboard", "splittable"}.issubset(set(allowed_keys))
+    if composite_allowed:
+        composite_out = _handle_home_composite_lot_analysis(prompt, product, max_rows)
+        if composite_out.get("handled"):
+            return _augment_dashboard_tool(composite_out, prompt, product=product, username=username)
     if allowed_keys is None or "dashboard" in allowed_keys:
         box_chart_out = _handle_inline_box_chart(prompt, product, max_rows)
         if box_chart_out.get("handled"):
@@ -15007,6 +15478,7 @@ def _flowi_agent_actions(tool: dict[str, Any]) -> list[dict[str, Any]]:
 def _flowi_output_summary(tool: dict[str, Any]) -> dict[str, Any]:
     table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
     chart = tool.get("chart_result") if isinstance(tool.get("chart_result"), dict) else (tool.get("chart") if isinstance(tool.get("chart"), dict) else {})
+    blocks = tool.get("blocks") if isinstance(tool.get("blocks"), list) else []
     aux_tables = []
     for key, value in tool.items():
         if key == "table" or not key.endswith("_table") or not isinstance(value, dict):
@@ -15028,6 +15500,14 @@ def _flowi_output_summary(tool: dict[str, Any]) -> dict[str, Any]:
             "title": chart.get("title") or "",
         } if chart else {},
         "aux_tables": aux_tables[:4],
+        "blocks": [
+            {
+                "kind": block.get("kind") or "",
+                "title": block.get("title") or "",
+            }
+            for block in blocks[:8]
+            if isinstance(block, dict)
+        ],
         "has_rows": bool(tool.get("rows")),
         "has_knobs": bool(tool.get("knobs")),
     }
@@ -15113,6 +15593,32 @@ def _flowi_next_actions(tool: dict[str, Any]) -> list[dict[str, Any]]:
             "description": f"{(tool.get('table') or {}).get('kind') or 'result'} 결과를 홈 화면에서 확인합니다.",
             "requires_user": False,
         })
+    blocks = tool.get("blocks") if isinstance(tool.get("blocks"), list) else []
+    if blocks:
+        block_kinds = [str(b.get("kind") or "") for b in blocks if isinstance(b, dict)]
+        if any(kind == "lot_table" for kind in block_kinds):
+            actions.append({
+                "type": "inspect_table",
+                "id": "inspect_composite_table",
+                "title": "복합 표 확인",
+                "description": "복합 분석의 lot/wafer 표 블록을 확인합니다.",
+                "requires_user": False,
+            })
+        if any(kind.startswith("chart_") for kind in block_kinds):
+            actions.append({
+                "type": "render_chart",
+                "id": "render_composite_charts",
+                "title": "복합 차트 확인",
+                "description": "복합 분석의 산점도/추세 블록을 렌더링합니다.",
+                "requires_user": False,
+            })
+            actions.append({
+                "type": "save_as_dashboard_chart",
+                "id": "save_dashboard_chart",
+                "title": "Dashboard 차트 저장",
+                "description": "표시된 차트 설정을 Dashboard 저장 flow로 이어갑니다.",
+                "requires_user": True,
+            })
     if isinstance(tool.get("samples_table"), dict) and (tool.get("samples_table") or {}).get("rows"):
         actions.append({
             "type": "inspect_aux_table",
@@ -15195,6 +15701,7 @@ def _finalize_flowi_tool(
         return tool
     _flowi_set_inline_type(tool)
     _limit_flowi_choices(tool, 3)
+    attach_term_knowledge(prompt, tool)
     tool["workflow_state"] = _flowi_workflow_state(tool, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
     tool["next_actions"] = _flowi_next_actions(tool)
     return tool
@@ -15751,6 +16258,24 @@ def _flowi_trace_subagent_context(tool: dict[str, Any], api_calls: list[dict[str
         "source_profile": tool.get("source_profile") if isinstance(tool.get("source_profile"), dict) else {},
         "deterministic_handler": True,
     }
+    children = tool.get("_subagent_children") if isinstance(tool.get("_subagent_children"), list) else []
+    if not children and isinstance(tool.get("subagent_children"), list):
+        children = tool.get("subagent_children") or []
+    if children:
+        context["children"] = [
+            {
+                "name": child.get("name") or "",
+                "status": child.get("status") or "",
+                "took_ms": child.get("took_ms") or 0,
+                "intent": child.get("intent") or "",
+                "action": child.get("action") or "",
+                "feature": child.get("feature") or "",
+                "evidence_count": child.get("evidence_count") or 0,
+                "error": child.get("error") or "",
+            }
+            for child in children[:12]
+            if isinstance(child, dict)
+        ]
     if isinstance(tool.get("slots"), dict):
         context["slots"] = {k: v for k, v in tool.get("slots", {}).items() if v not in (None, "", [], {})}
     if isinstance(tool.get("filters"), dict):
@@ -15831,6 +16356,8 @@ def _flowi_trace_evidence(tool: dict[str, Any], api_calls: list[dict[str, Any]])
     first_api = feature_calls[0] if feature_calls else {}
     sql_draft = tool.get("sql_draft") if isinstance(tool.get("sql_draft"), dict) else {}
     chart_cfg = tool.get("chart_config") if isinstance(tool.get("chart_config"), dict) else (tool.get("config") if isinstance(tool.get("config"), dict) else {})
+    if not chart_cfg and isinstance(tool.get("blocks"), list):
+        chart_cfg = _flowi_block_chart_config(tool.get("blocks") or [])
     table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
     filters = tool.get("filters") if isinstance(tool.get("filters"), dict) else {}
     sources = []
@@ -15863,6 +16390,18 @@ def _flowi_trace_evidence(tool: dict[str, Any], api_calls: list[dict[str, Any]])
 def _flowi_trace_validation(tool: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
     chart = tool.get("chart_result") if isinstance(tool.get("chart_result"), dict) else (tool.get("chart") if isinstance(tool.get("chart"), dict) else {})
+    blocks = tool.get("blocks") if isinstance(tool.get("blocks"), list) else []
+    if blocks and not chart:
+        for block in blocks:
+            payload = block.get("payload") if isinstance(block, dict) and isinstance(block.get("payload"), dict) else {}
+            if str(block.get("kind") or "").startswith("chart_") and payload:
+                chart = payload
+                break
+    block_rows = 0
+    for block in blocks:
+        payload = block.get("payload") if isinstance(block, dict) and isinstance(block.get("payload"), dict) else {}
+        if block.get("kind") == "lot_table":
+            block_rows += int(payload.get("total") or len(payload.get("rows") or []) or 0)
     sql_draft = tool.get("sql_draft") if isinstance(tool.get("sql_draft"), dict) else {}
     warnings = [str(w) for w in (tool.get("warnings") or []) if str(w).strip()]
     warnings.extend(str(w) for w in (sql_draft.get("warnings") or []) if str(w).strip())
@@ -15873,7 +16412,7 @@ def _flowi_trace_validation(tool: dict[str, Any], result: dict[str, Any]) -> dic
     elif isinstance(tool.get("retrieved_knowledge"), list):
         source_count = len(tool.get("retrieved_knowledge") or [])
     return {
-        "rows": table.get("total", len(table.get("rows") or [])) if table else len(tool.get("rows") or []),
+        "rows": block_rows or (table.get("total", len(table.get("rows") or [])) if table else len(tool.get("rows") or [])),
         "chart_readiness": chart.get("status") or ("ready" if chart else ""),
         "source_count": source_count,
         "warnings": list(dict.fromkeys(warnings))[:12],
@@ -16118,6 +16657,7 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "chart_type",
     "chart_session_id",
     "chart_config",
+    "blocks",
     "config",
     "data",
     "fit",
@@ -16450,6 +16990,33 @@ def _run_flowi_chat(
                 client_run_id=client_run_id,
                 username=username,
                 tool=mail_tool,
+                agent_context=agent_context,
+            )
+        return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
+
+    inform_summary_tool = _handle_flowi_inform_summary(prompt, me, max_rows=max_rows, allowed_keys=allowed_keys) if "inform" in allowed_keys else {"handled": False}
+    if inform_summary_tool.get("handled"):
+        answer = inform_summary_tool.get("answer") or "인폼로그 현황을 정리했습니다."
+        _append_user_event(username, "inform_summary", _event_fields(
+            {"prompt": prompt, "intent": inform_summary_tool.get("intent") or "", "answer": answer},
+            source=source,
+            client_run_id=client_run_id,
+        ))
+        result = {
+            "ok": True,
+            "active": True,
+            "user": username,
+            "answer": answer,
+            "tool": inform_summary_tool,
+            "llm": {"available": llm_adapter.is_available(), "used": False, "blocked": bool(inform_summary_tool.get("blocked"))},
+            "allowed_features": sorted(allowed_keys),
+        }
+        if source:
+            result["agent_api"] = _agent_api_meta(
+                source=source,
+                client_run_id=client_run_id,
+                username=username,
+                tool=inform_summary_tool,
                 agent_context=agent_context,
             )
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)

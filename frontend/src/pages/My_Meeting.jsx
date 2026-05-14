@@ -11,6 +11,7 @@ import PageGear from "../components/PageGear";
 import Modal from "../components/Modal";
 import { toast } from "../components/Toast";
 import { Card, Pill, TableWrap, Tbl } from "../components/UXKit";
+import FlowiPromptBox from "../components/FlowiPromptBox";
 import { authSrc, sf, postJson, userLabel } from "../lib/api";
 
 const API = "/api/meetings";
@@ -59,6 +60,104 @@ function trackerImageSrc(img) {
   if (name.startsWith("/api/tracker/image")) return authSrc(name);
   return authSrc(`/api/tracker/image?name=${encodeURIComponent(name)}`);
 }
+
+const AGENDA_IMAGE_LIMIT = 10;
+const AGENDA_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+function agendaImageName(img) {
+  if (typeof img === "string") return img;
+  return String(img?.name || img?.filename || img?.original_name || img?.url || img?.src || "").trim();
+}
+
+function agendaImageSrc(img) {
+  const dataUrl = typeof img === "object" ? String(img?.data_url || img?.dataUrl || "").trim() : "";
+  if (/^data:image\//i.test(dataUrl)) return dataUrl;
+  const raw = agendaImageName(img);
+  if (!raw) return "";
+  if (/^(data:image\/|https?:\/\/)/i.test(raw)) return raw;
+  if (raw.startsWith("/api/meetings/agenda/image")) return authSrc(raw);
+  return authSrc(`/api/meetings/agenda/image?name=${encodeURIComponent(raw)}`);
+}
+
+function agendaImageLabel(img, idx) {
+  if (img && typeof img === "object") {
+    return img.original_name || img.label || img.name || `agenda-image-${idx + 1}`;
+  }
+  return `agenda-image-${idx + 1}`;
+}
+
+function readAgendaImageFiles(files, onDone) {
+  const selected = Array.from(files || []).filter(f => f && String(f.type || "").startsWith("image/"));
+  if (!selected.length) return;
+  const accepted = selected.slice(0, AGENDA_IMAGE_LIMIT);
+  Promise.all(accepted.map(file => new Promise((resolve, reject) => {
+    if (file.size > AGENDA_IMAGE_MAX_BYTES) {
+      reject(new Error(`${file.name || "image"}: 5MB 초과`));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => resolve({
+      data_url: String(reader.result || ""),
+      original_name: file.name || "",
+      mime: file.type || "",
+      size: file.size || 0,
+      local_id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    });
+    reader.onerror = () => reject(new Error(`${file.name || "image"} 읽기 실패`));
+    reader.readAsDataURL(file);
+  }))).then(onDone).catch(e => toast.error(e.message || "이미지 첨부 실패"));
+}
+
+function AgendaImagesEditor({ images, onChange, editable = true }) {
+  const list = Array.isArray(images) ? images : [];
+  if (!editable && list.length === 0) return null;
+  const append = (next) => onChange([...list, ...next].slice(0, AGENDA_IMAGE_LIMIT));
+  const remove = (idx) => onChange(list.filter((_, i) => i !== idx));
+  const onPaste = (event) => {
+    const files = Array.from(event.clipboardData?.files || []).filter(f => String(f.type || "").startsWith("image/"));
+    if (!files.length) return;
+    event.preventDefault();
+    readAgendaImageFiles(files, append);
+  };
+  return (
+    <div onPaste={editable ? onPaste : undefined} tabIndex={editable ? 0 : undefined}
+      style={{ marginTop: 6, padding: editable ? 8 : 0, borderRadius: 6, border: editable ? "1px dashed var(--border)" : "none", background: editable ? "var(--bg-primary)" : "transparent" }}>
+      {editable && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: list.length ? 8 : 0, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)" }}>첨부 이미지 ({list.length})</span>
+          <label style={{ padding: "3px 10px", borderRadius: 4, border: "1px solid var(--accent)", color: "var(--accent)", background: "transparent", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
+            이미지 추가
+            <input type="file" accept="image/*" multiple style={{ display: "none" }}
+              onChange={e => { readAgendaImageFiles(e.target.files, append); e.target.value = ""; }} />
+          </label>
+        </div>
+      )}
+      {list.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(104px, 1fr))", gap: 6 }}>
+          {list.map((img, idx) => {
+            const src = agendaImageSrc(img);
+            if (!src) return null;
+            return (
+              <div key={(img?.local_id || img?.name || src) + idx} style={{ position: "relative", aspectRatio: "4 / 3", borderRadius: 5, overflow: "hidden", border: "1px solid var(--border)", background: "var(--bg-card)" }}>
+                <a href={src} target="_blank" rel="noopener noreferrer" title={agendaImageLabel(img, idx)}
+                  style={{ display: "block", width: "100%", height: "100%" }}>
+                  <img src={src} alt={agendaImageLabel(img, idx)} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
+                </a>
+                {editable && (
+                  <button type="button" onClick={() => remove(idx)}
+                    style={{ position: "absolute", top: 4, right: 4, width: 22, height: 22, borderRadius: 999, border: "1px solid var(--danger-line)", background: "var(--danger-50)", color: "var(--danger)", fontSize: 14, fontWeight: 900, cursor: "pointer", lineHeight: 1 }}>
+                    x
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function issueSnapshot(iss, fallbackId = "") {
   const lots = Array.isArray(iss?.lots) ? iss.lots : [];
   const links = Array.isArray(iss?.links) ? iss.links : [];
@@ -289,7 +388,7 @@ export default function My_Meeting({ user }) {
   });
   const [editingMeta, setEditingMeta] = useState(false);
   const [metaDraft, setMetaDraft] = useState(null);
-  const [agendaDraft, setAgendaDraft] = useState({ title: "", description: "", link: "", owner: "", issue_ref: null });
+  const [agendaDraft, setAgendaDraft] = useState({ title: "", description: "", link: "", owner: "", issue_ref: null, images: [] });
   const [editingAgendaId, setEditingAgendaId] = useState(null);
   const [agendaEditDraft, setAgendaEditDraft] = useState(null);
   const [issueDetails, setIssueDetails] = useState({});
@@ -563,6 +662,7 @@ export default function My_Meeting({ user }) {
         link: firstLink || "",
         owner: iss.username || "",
         issue_ref: snapshot,
+        images: [],
       });
       setIssueDetails(prev => ({ ...prev, [String(iss.id || issueId)]: iss }));
       setIssuePickerOpen(false);
@@ -580,16 +680,17 @@ export default function My_Meeting({ user }) {
       description: agendaDraft.description,
       link: agendaDraft.link,
       issue_ref: agendaDraft.issue_ref || null,
+      images: agendaDraft.images || [],
       // v8.8.16: 빈 채로 저장하면 BE(meetings.add_agenda) 가 세션 유저명으로 자동 채움.
       owner: (agendaDraft.owner || "").trim(),
     }).then(() => {
-      setAgendaDraft({ title: "", description: "", link: "", owner: "", issue_ref: null });
+      setAgendaDraft({ title: "", description: "", link: "", owner: "", issue_ref: null, images: [] });
       reload();
     }).catch(e => toast.error(e.message || "추가 실패"));
   };
   const startEditAgenda = (a) => {
     setEditingAgendaId(a.id);
-    setAgendaEditDraft({ title: a.title || "", description: a.description || "", link: a.link || "", owner: a.owner || "", issue_ref: a.issue_ref || null });
+    setAgendaEditDraft({ title: a.title || "", description: a.description || "", link: a.link || "", owner: a.owner || "", issue_ref: a.issue_ref || null, images: Array.isArray(a.images) ? a.images : [] });
   };
   const submitEditAgenda = () => {
     if (!selected || !selectedSession || !editingAgendaId || !agendaEditDraft) return;
@@ -600,6 +701,7 @@ export default function My_Meeting({ user }) {
       link: agendaEditDraft.link,
       owner: agendaEditDraft.owner,
       issue_ref: agendaEditDraft.issue_ref || null,
+      images: agendaEditDraft.images || [],
     }).then(() => { setEditingAgendaId(null); setAgendaEditDraft(null); reload(); })
       .catch(e => toast.error(e.message || "수정 실패"));
   };
@@ -859,6 +961,13 @@ export default function My_Meeting({ user }) {
 
       {/* Right: detail */}
       <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "12px 20px 0", maxWidth: 980 }}>
+          <FlowiPromptBox
+            defaultScope={{ kind: "meeting", meeting_id: selectedId || "", session_id: selectedSid || "" }}
+            placeholder="Flow-i 회의 질문"
+            maxRows={8}
+          />
+        </div>
         {viewMode === "gantt" && (
           <ActionItemsGantt meetings={filtered} onPickMeeting={(id) => { setSelectedId(id); setViewMode("list"); }} />
         )}
@@ -1029,6 +1138,10 @@ export default function My_Meeting({ user }) {
                         <textarea value={agendaEditDraft.description} onChange={e => setAgendaEditDraft({ ...agendaEditDraft, description: e.target.value })} rows={2} placeholder="설명 (선택)" style={{ ...inp, resize: "vertical", fontFamily: "inherit" }} />
                         <input value={agendaEditDraft.link} onChange={e => setAgendaEditDraft({ ...agendaEditDraft, link: e.target.value })} placeholder="https://링크 (선택)" style={inp} />
                         <input value={agendaEditDraft.owner} onChange={e => setAgendaEditDraft({ ...agendaEditDraft, owner: e.target.value })} placeholder="담당자 (username)" style={inp} />
+                        <AgendaImagesEditor
+                          images={agendaEditDraft.images || []}
+                          onChange={(images) => setAgendaEditDraft({ ...agendaEditDraft, images })}
+                        />
                         <div style={{ display: "flex", gap: 6 }}>
                           <button onClick={submitEditAgenda} style={btnPrimary}>저장</button>
                           <button onClick={() => { setEditingAgendaId(null); setAgendaEditDraft(null); }} style={btnGhost}>취소</button>
@@ -1051,6 +1164,9 @@ export default function My_Meeting({ user }) {
                           </div>
                         )}
                         {a.description && <div style={{ fontSize: 14, color: "var(--text-primary)", marginBottom: 4, whiteSpace: "pre-wrap", paddingLeft: 34 }}>{a.description}</div>}
+                        <div style={{ paddingLeft: 34 }}>
+                          <AgendaImagesEditor images={a.images || []} editable={false} />
+                        </div>
                         {a.issue_ref?.issue_id && (() => {
                           const issue = mergeIssueForDisplay(a.issue_ref, issueDetails[String(a.issue_ref.issue_id)]);
                           const issueLinks = Array.isArray(issue?.links) ? issue.links : [];
@@ -1134,6 +1250,10 @@ export default function My_Meeting({ user }) {
                     <input value={agendaDraft.owner} onChange={e => setAgendaDraft({ ...agendaDraft, owner: e.target.value })} placeholder="담당자" style={inp} />
                   </div>
                   <textarea value={agendaDraft.description} onChange={e => setAgendaDraft({ ...agendaDraft, description: e.target.value })} rows={2} placeholder="설명 (선택)" style={{ ...inp, marginTop: 6, resize: "vertical", fontFamily: "inherit" }} />
+                  <AgendaImagesEditor
+                    images={agendaDraft.images || []}
+                    onChange={(images) => setAgendaDraft({ ...agendaDraft, images })}
+                  />
                   {agendaDraft.issue_ref?.issue_id && (() => {
                     const issue = mergeIssueForDisplay(agendaDraft.issue_ref, issueDetails[String(agendaDraft.issue_ref.issue_id)]);
                     const issueImages = trackerImages(issue);

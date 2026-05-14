@@ -12,8 +12,6 @@
 
 ## Now
 
-- [ ] (Codex) Flow-i change-agent realistic smoke data and plain-text recall output.
-
 ## Next
 
 - [ ] (Codex) P10 Flow-i backend 구조 분리 — `backend/routers/llm.py`에서 unit action handler 한 묶음을 feature별 module로 추출하고 trace 계약을 유지한다.
@@ -24,6 +22,7 @@
 
 ## Done
 
+- [x] (Codex) Flow-i change-agent realistic smoke data and plain-text recall output — `[실전테스트]` tracker/meeting/inform/calendar data를 live API로 추가하고, meeting/calendar/inform recall answer를 markdown 강조 없는 plain-text 섹션 구조로 정리. `python3 -m py_compile backend/routers/llm.py backend/routers/meetings.py`, `python3 -m pytest tests/test_meeting_mail_preview.py::test_meeting_ask_llm_answer_strips_markdown_decoration tests/test_flowi_router.py::test_flowi_meeting_recall_answer_is_plain_text_and_includes_issue_context tests/test_flowi_router.py::test_flowi_inform_module_summary_accepts_module_without_lot -q`, local `FLOW_BASE=http://127.0.0.1:8096 python3 /tmp/flow_realistic_change_verify.py`, target `git diff --check` 통과.
 - [x] (Codex) FileBrowser 샘플 Preview 정책 정리 — 첫 파일 열기에서 100행 샘플을 바로 보여주고 cache/ML_TABLE parquet은 lazy preview로 제한, ML_TABLE lookup UI 제거, feature docs/setup bundle 반영. `python3 -m pytest tests/test_filebrowser_sql.py -q`, `cd frontend && npm run build`, `python3 _build_setup.py`, `python3 setup.py version`, `python3 -m py_compile backend/routers/filebrowser.py _build_setup.py setup.py`, `git diff --check` 통과.
 - [x] (Codex) FileBrowser LOT 캐시 컬럼 매핑과 CSV 검증/정렬 규칙 강화 — `settings.json.lot_progress_column_mapping` 저장/상태 노출, LOT builder custom column mapping, FileBrowser 캐시 UI 매핑 입력, CSV 검증로직/정렬로직 UI/API 분리, LLM draft fallback 보강, feature docs/setup bundle 반영. `python3 -m pytest tests/test_lot_progress_cache.py tests/test_filebrowser_sql.py -q`, `python3 -m py_compile backend/core/lot_progress_cache.py backend/routers/filebrowser.py _build_setup.py setup.py`, `cd frontend && npm run build`, `python3 setup.py version`, `git diff --check` 통과.
 - [x] (Codex) ML_TABLE `root_lot_id` lookup cache/API 적용 — `backend/core/ml_table_lookup.py` service, `/api/filebrowser/ml-table/lookup` readiness/query endpoint, FileBrowser root-lot lookup bar, SplitTable/Flow-i cache-first read path, feature docs/tests/setup bundle 반영. `python3 -m pytest tests/test_filebrowser_sql.py tests/test_splittable_lot_candidates.py -q`, `python3 -m pytest tests/test_flowi_router.py -q`, `python3 -m py_compile backend/core/ml_table_lookup.py backend/routers/filebrowser.py backend/routers/splittable.py backend/routers/llm.py`, `cd frontend && npm run build`, `python3 _build_setup.py`, `python3 setup.py version`, `git diff --check` 통과.

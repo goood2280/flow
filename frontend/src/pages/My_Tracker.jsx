@@ -3,6 +3,7 @@ import Loading from "../components/Loading";
 import PageGear from "../components/PageGear";
 import { toast } from "../components/Toast";
 import { Button, Card, Chip, EmptyState, Filter, Pill, TabStrip, TableWrap, Tbl } from "../components/UXKit";
+import FlowiPromptBox from "../components/FlowiPromptBox";
 import { authSrc, sf as apiSf } from "../lib/api";
 const API = "/api/tracker";
 const TRACKER_PRIORITY_TONE = { critical: "danger", high: "brand", normal: "info", low: "neutral" };
@@ -1454,6 +1455,13 @@ export default function My_Tracker({ user }) {
 
       {/* Main */}
       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
+        <div style={{ marginBottom: 12 }}>
+          <FlowiPromptBox
+            defaultScope={{ kind: "tracker", issue_id: selected?.id || "", status: filter || "all" }}
+            placeholder="Flow-i 이슈 질문"
+            maxRows={8}
+          />
+        </div>
         {creating && <IssueForm onSubmit={create} onClose={() => setCreating(false)} user={user} roleNames={roleNames} />}
         {viewTab === "gantt" ? <GanttChart issues={issues} onIssueClick={(id) => { loadDetail(id); setViewTab("list"); }} />
           : selected ? (<Card padding={0}>

@@ -173,6 +173,29 @@ def test_meeting_issue_ref_hydrates_monitor_lot_summary(monkeypatch):
     assert lot["func_step"] == "GATE"
 
 
+def test_agenda_images_store_data_urls(tmp_path, monkeypatch):
+    monkeypatch.setattr(meetings, "AGENDA_IMAGE_DIR", tmp_path)
+    data_url = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+
+    images = meetings._normalize_agenda_images([{
+        "data_url": data_url,
+        "original_name": "agenda.png",
+        "mime": "image/png",
+    }])
+
+    assert len(images) == 1
+    assert images[0]["name"].endswith(".png")
+    assert images[0]["url"].startswith("/api/meetings/agenda/image?name=")
+    assert (tmp_path / images[0]["name"]).exists()
+
+    kept = meetings._normalize_agenda_images([images[0]])
+    assert kept[0]["name"] == images[0]["name"]
+    assert kept[0]["url"] == images[0]["url"]
+
+
 def test_meeting_ask_fallback_reads_agenda_decision_action(monkeypatch):
     from core import llm_adapter
 

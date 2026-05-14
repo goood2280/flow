@@ -2347,6 +2347,79 @@ def test_flowi_splittable_fab_lot_basis_uses_lot_progress_cache(monkeypatch, tmp
     assert row["ts_col"] == "tkout_time"
 
 
+def test_flowi_home_composite_returns_multi_blocks_and_trace_children(monkeypatch):
+    prompt = "split table에서 A KNOB=24인 LOT_WF 중 step_id 빠른 거 보여주고 B·C corr 분석하고 D trend를 A KNOB 색으로 보여줘"
+
+    def fake_fastest(_prompt, _product, _max_rows):
+        return {
+            "handled": True,
+            "intent": "knob_fastest_lot",
+            "action": "query_knob_fastest_fab_step",
+            "feature": "splittable",
+            "answer": "fastest",
+            "table": {
+                "kind": "knob_fastest_lot",
+                "title": "A fastest FAB step",
+                "columns": llm_router._table_columns(["root_lot_id", "wafer_id", "lot_wf", "current_step_id"]),
+                "rows": [{"root_lot_id": "A1001", "wafer_id": "01", "lot_wf": "A1001_1", "current_step_id": "AA100000"}],
+                "total": 1,
+            },
+        }
+
+    def fake_scatter(_prompt, _product, _max_rows, _corr_pair, _lot_keys):
+        return {
+            "handled": True,
+            "intent": "home_composite_corr_scatter",
+            "action": "compute_corr_scatter_block",
+            "feature": "dashboard",
+            "chart_result": {
+                "ok": True,
+                "kind": "dashboard_scatter",
+                "title": "B vs C",
+                "points": [{"x": 1.0, "y": 2.0, "lot_wf": "A1001_1", "root_lot_id": "A1001", "wafer_id": "1"}],
+                "total": 1,
+                "corr": 1.0,
+            },
+        }
+
+    def fake_trend(_prompt, _product, _max_rows):
+        return {
+            "handled": True,
+            "intent": "dashboard_inline_trend_chart",
+            "action": "query_inline_trend_scatter_chart",
+            "feature": "dashboard",
+            "chart_result": {
+                "ok": True,
+                "kind": "dashboard_scatter",
+                "title": "D Trend",
+                "points": [{"x": 0, "x_label": "2026-05-14", "y": 3.0, "lot_wf": "A1001_1", "root_lot_id": "A1001", "wafer_id": "1"}],
+                "total": 1,
+                "metric": "D",
+            },
+        }
+
+    monkeypatch.setattr(llm_router, "_handle_fastest_knob_query", fake_fastest)
+    monkeypatch.setattr(llm_router, "_flowi_composite_scatter_tool", fake_scatter)
+    monkeypatch.setattr(llm_router, "_handle_inline_trend_chart", fake_trend)
+    monkeypatch.setattr(llm_router, "_flowi_knob_values_for_points", lambda *_args, **_kwargs: ({"A1001_1": "24"}, "A"))
+
+    out = _handle_flowi_query(prompt, "PRODX", 12, allowed_keys={"dashboard", "splittable"})
+
+    assert out["handled"] is True
+    assert out["intent"] == "home_composite_lot_analysis"
+    assert [block["kind"] for block in out["blocks"]] == ["lot_table", "chart_scatter", "chart_trend"]
+    assert out["blocks"][0]["payload"]["rows"][0]["__highlight"] is True
+    assert out["blocks"][2]["payload"]["color_by"] == "A"
+    assert out["blocks"][2]["payload"]["series"][0]["name"] == "24"
+
+    trace = llm_router._flowi_public_trace(
+        prompt=prompt,
+        allowed_keys={"dashboard", "splittable"},
+        result={"tool": out, "llm": {"available": False, "used": False}},
+    )
+    assert len(trace["subagent_context"]["children"]) == 3
+
+
 def test_flowi_fab_corun_lots_by_function_step(tmp_path, monkeypatch):
     fab_dir = tmp_path / "1.RAWDATA_DB_FAB" / "PRODX" / "date=20260429"
     fab_dir.mkdir(parents=True)
