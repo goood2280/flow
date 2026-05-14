@@ -54,3 +54,17 @@ def test_chart_defaults_get_post_substitution_and_admin_guard(tmp_path, monkeypa
     with pytest.raises(HTTPException) as exc:
         dashboard.post_chart_defaults(dashboard.ChartDefaultReq(chart_type="trend", config={"x": "time"}), _Request())
     assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        ("PRODA 파이차트", "pie"),
+        ("PRODA pie chart", "pie"),
+        ("PRODA 도넛차트", "donut"),
+        ("PRODA 테이블", "table"),
+        ("PRODA 막대차트", "bar"),
+    ],
+)
+def test_infer_chart_type_general_dashboard_keywords(prompt, expected):
+    assert dashboard_join.infer_chart_type(prompt) == expected

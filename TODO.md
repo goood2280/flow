@@ -12,6 +12,8 @@
 
 ## Now
 
+- [ ] (Codex) Flow-i change-agent realistic smoke data and plain-text recall output.
+
 ## Next
 
 - [ ] (Codex) P10 Flow-i backend 구조 분리 — `backend/routers/llm.py`에서 unit action handler 한 묶음을 feature별 module로 추출하고 trace 계약을 유지한다.

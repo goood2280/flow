@@ -244,6 +244,30 @@ def test_meeting_ask_sanitizes_llm_auth_error(monkeypatch):
     assert "invalid authentication" not in llm["error"].lower()
 
 
+def test_meeting_ask_llm_answer_strips_markdown_decoration(monkeypatch):
+    from core import llm_adapter
+
+    meeting = _ask_fixture()
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "text": "### 요약\n**결정사항**\n- Proceed with MASK_A",
+        },
+    )
+
+    summary = meetings._build_meeting_ask_summary(meeting, meeting["sessions"])
+    answer, llm = meetings._meeting_ask_llm_answer("결정사항 알려줘", summary)
+
+    assert llm["used"] is True
+    assert "###" not in answer
+    assert "**" not in answer
+    assert "요약" in answer
+    assert "결정사항" in answer
+
+
 def test_meeting_ask_endpoint_enforces_visibility(monkeypatch):
     hidden = {
         **_ask_fixture(),

@@ -82,20 +82,6 @@ const INFORM_GROUPBY_OPTIONS = [
   ["pending_table", "오래된 미해결"],
   ["rate_kind", "비율 항목"],
 ];
-const INFORM_CHART_PRESETS = [
-  { id: "module-count", label: "모듈별 인폼 카운트", description: "모듈별 루트 인폼 수를 비교합니다.", cfg: { source: "inform", source_type: "inform", title: "모듈별 인폼 카운트", chart_type: "bar", metric: "count", groupby: "module", period: "all", group: "인폼", width: 2, height: 1, x_label: "module", y_label: "count" } },
-  { id: "daily-trend", label: "일별 인폼 추이", description: "일 단위 인폼 발생 추이를 모듈 시리즈로 봅니다.", cfg: { source: "inform", source_type: "inform", title: "일별 인폼 추이", chart_type: "line", metric: "count", groupby: "date_day", series_groupby: "module", period: "all", group: "인폼", width: 2, height: 1, x_label: "date", y_label: "count" } },
-  { id: "product-donut", label: "제품별 인폼 분포", description: "제품별 인폼 비중을 도넛으로 표시합니다.", cfg: { source: "inform", source_type: "inform", title: "제품별 인폼 분포", chart_type: "donut", metric: "count", groupby: "product", period: "all", group: "인폼", width: 1, height: 1 } },
-  { id: "status-daily", label: "상태별 일별 분포", description: "일별 인폼 수를 상태 시리즈로 나눠 봅니다.", cfg: { source: "inform", source_type: "inform", title: "상태별 일별 분포", chart_type: "bar", metric: "count", groupby: "date_day", series_groupby: "status", period: "all", group: "인폼", width: 2, height: 1, x_label: "date", y_label: "count" } },
-  { id: "lot-module-heatmap", label: "랏×모듈 매트릭스 미니", description: "상위 20개 Lot의 모듈별 인폼 카운트를 봅니다.", cfg: { source: "inform", source_type: "inform", title: "랏×모듈 매트릭스 미니", chart_type: "heatmap", metric: "count", groupby: "root_lot", x_groupby: "module", y_groupby: "root_lot", top_n: 20, period: "all", group: "인폼", width: 2, height: 2, x_label: "module", y_label: "root_lot" } },
-  { id: "reply-buckets", label: "응답 시간 분포", description: "첫 답글까지 걸린 시간을 버킷으로 집계합니다.", cfg: { source: "inform", source_type: "inform", title: "응답 시간 분포", chart_type: "binning", metric: "first_reply_h", groupby: "first_reply_bucket", period: "all", group: "인폼", width: 2, height: 1, x_label: "reply bucket", y_label: "count" } },
-  { id: "resolution-trend", label: "처리율 추이", description: "일별 completed 비율을 추적으로 표시합니다.", cfg: { source: "inform", source_type: "inform", title: "처리율 추이", chart_type: "line", metric: "resolution_rate", groupby: "date_day", period: "all", group: "인폼", width: 2, height: 1, x_label: "date", y_label: "%" } },
-  { id: "author-top", label: "작성자별 인폼 top10", description: "작성자별 인폼 수 상위 10명을 파레토로 봅니다.", cfg: { source: "inform", source_type: "inform", title: "작성자별 인폼 top10", chart_type: "pareto", metric: "count", groupby: "author", top_n: 10, period: "all", group: "인폼", width: 2, height: 1 } },
-  { id: "activity-heatmap", label: "활동 heatmap", description: "요일과 시간대별 인폼 발생 패턴을 봅니다.", cfg: { source: "inform", source_type: "inform", title: "활동 heatmap", chart_type: "heatmap", metric: "count", groupby: "hour_of_day", x_groupby: "hour_of_day", y_groupby: "day_of_week", period: "all", group: "인폼", width: 2, height: 2, x_label: "hour", y_label: "day" } },
-  { id: "module-product-heatmap", label: "모듈×제품 카운트", description: "모듈과 제품 조합별 인폼 수를 봅니다.", cfg: { source: "inform", source_type: "inform", title: "모듈×제품 카운트", chart_type: "heatmap", metric: "count", groupby: "module", x_groupby: "module", y_groupby: "product", period: "all", group: "인폼", width: 2, height: 2, x_label: "module", y_label: "product" } },
-  { id: "attach-mail-rate", label: "첨부/메일 발송률", description: "첨부가 있는 인폼과 메일 발송 인폼 비율을 봅니다.", cfg: { source: "inform", source_type: "inform", title: "첨부/메일 발송률", chart_type: "donut", metric: "attach_mail_rate", groupby: "rate_kind", period: "all", group: "인폼", width: 1, height: 1 } },
-  { id: "old-pending", label: "오래된 미해결 인폼", description: "경과시간이 긴 미완료 인폼을 표로 확인합니다.", cfg: { source: "inform", source_type: "inform", title: "오래된 미해결 인폼", chart_type: "table", metric: "pending_age", groupby: "pending_table", top_n: 20, period: "all", group: "인폼", width: 2, height: 2 } },
-];
 const GENERAL_DASHBOARD_CHART_TYPES = [
   "scatter", "line", "bar", "area", "combo", "pie", "donut", "binning",
   "pareto", "box", "treemap", "heatmap", "wafer_map", "table", "cross_table",
@@ -140,11 +126,11 @@ const DASHBOARD_LAYOUT_META = { row: 440, gap: 14 };
 function chartTypeLabel(type) {
   return ({
     scatter: "산점도",
-    line: "선형 추이",
-    bar: "막대 비교",
-    area: "면적 추이",
+    line: "라인 차트",
+    bar: "막대 차트",
+    area: "면적 차트",
     combo: "복합 차트",
-    pie: "구성 비율",
+    pie: "파이차트",
     donut: "도넛 차트",
     binning: "분포 히스토그램",
     pareto: "파레토",
@@ -2049,29 +2035,88 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
   </div>);
 }
 
-function InformPresetThumb({ chartType }) {
+function ChartTypeThumb({ chartType }) {
+  const type = String(chartType || "bar");
   const bars = [22, 38, 28, 50, 34];
-  if (chartType === "donut") {
+  if (type === "pie") {
+    return <div style={{ height: 64, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ width: 48, height: 48, borderRadius: "50%", background: `conic-gradient(${BLUE.fg} 0 38%, ${GREEN.fg} 38% 64%, ${WARN.fg} 64% 83%, ${PURPLE.fg} 83% 100%)`, boxShadow: "inset 0 0 0 1px rgba(15,23,42,0.10)" }} />
+    </div>;
+  }
+  if (type === "donut") {
     return <div style={{ height: 64, display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div style={{ width: 46, height: 46, borderRadius: "50%", background: `conic-gradient(${BLUE.fg} 0 42%, ${GREEN.fg} 42% 72%, ${WARN.fg} 72% 100%)`, display: "grid", placeItems: "center" }}>
         <div style={{ width: 24, height: 24, borderRadius: "50%", background: "var(--bg-card)" }} />
       </div>
     </div>;
   }
-  if (chartType === "heatmap") {
+  if (type === "heatmap") {
     return <div style={{ height: 64, display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 3 }}>
       {Array.from({ length: 24 }).map((_, i) => <span key={i} style={{ borderRadius: 3, background: SERIES[(i + Math.floor(i / 6)) % SERIES.length], opacity: 0.18 + ((i * 7) % 9) / 12 }} />)}
     </div>;
   }
-  if (chartType === "table") {
-    return <div style={{ height: 64, display: "grid", gridTemplateRows: "repeat(5,1fr)", gap: 4 }}>
-      {Array.from({ length: 5 }).map((_, i) => <span key={i} style={{ borderRadius: 4, background: i === 0 ? "rgba(20,184,166,0.18)" : "rgba(148,163,184,0.16)", border: "1px solid rgba(148,163,184,0.20)" }} />)}
+  if (type === "table" || type === "cross_table") {
+    const rows = type === "cross_table" ? 4 : 5;
+    const cols = type === "cross_table" ? 5 : 1;
+    return <div style={{ height: 64, display: "grid", gridTemplateRows: `repeat(${rows},1fr)`, gridTemplateColumns: `repeat(${cols},1fr)`, gap: 3 }}>
+      {Array.from({ length: rows * cols }).map((_, i) => {
+        const header = type === "cross_table" ? (i < cols || i % cols === 0) : i === 0;
+        return <span key={i} style={{ borderRadius: 3, background: header ? "rgba(20,184,166,0.18)" : "rgba(148,163,184,0.15)", border: "1px solid rgba(148,163,184,0.22)" }} />;
+      })}
     </div>;
   }
-  if (chartType === "line") {
+  if (type === "line") {
     return <svg viewBox="0 0 120 64" width="100%" height={64}>
+      <line x1="8" y1="56" x2="114" y2="56" stroke="rgba(148,163,184,0.35)" strokeWidth="1" />
       <polyline points="6,48 30,38 54,42 78,22 112,28" fill="none" stroke={BLUE.fg} strokeWidth="3" />
       {[6,30,54,78,112].map((x, i) => <circle key={x} cx={x} cy={[48,38,42,22,28][i]} r="3" fill={GREEN.fg} />)}
+    </svg>;
+  }
+  if (type === "area") {
+    return <svg viewBox="0 0 120 64" width="100%" height={64}>
+      <path d="M8 52 L30 44 L52 28 L74 34 L112 16 L112 58 L8 58 Z" fill={`${BLUE.fg}33`} />
+      <polyline points="8,52 30,44 52,28 74,34 112,16" fill="none" stroke={BLUE.fg} strokeWidth="3" />
+    </svg>;
+  }
+  if (type === "combo") {
+    return <svg viewBox="0 0 120 64" width="100%" height={64}>
+      {[20, 38, 28, 46].map((h, i) => <rect key={i} x={14 + i * 24} y={58 - h} width="13" height={h} rx="3" fill={SERIES[i % SERIES.length]} opacity=".72" />)}
+      <polyline points="14,44 38,34 62,40 86,22 108,30" fill="none" stroke={WARN.fg} strokeWidth="3" />
+    </svg>;
+  }
+  if (type === "scatter") {
+    const pts = [[18,44],[28,33],[44,39],[56,24],[72,31],[88,18],[102,27]];
+    return <svg viewBox="0 0 120 64" width="100%" height={64}>
+      <line x1="10" y1="55" x2="112" y2="55" stroke="rgba(148,163,184,0.35)" strokeWidth="1" />
+      <line x1="10" y1="10" x2="10" y2="55" stroke="rgba(148,163,184,0.35)" strokeWidth="1" />
+      {pts.map(([x, y], i) => <circle key={i} cx={x} cy={y} r="4" fill={SERIES[i % SERIES.length]} opacity=".78" />)}
+    </svg>;
+  }
+  if (type === "box") {
+    return <svg viewBox="0 0 120 64" width="100%" height={64}>
+      {[22, 58, 92].map((x, i) => <g key={x}>
+        <line x1={x} y1={14 + i * 3} x2={x} y2={52 - i * 4} stroke={SERIES[i]} strokeWidth="2" />
+        <rect x={x - 10} y={24 + i * 2} width="20" height="18" rx="3" fill={`${SERIES[i]}33`} stroke={SERIES[i]} strokeWidth="2" />
+        <line x1={x - 10} y1={33 + i * 2} x2={x + 10} y2={33 + i * 2} stroke={SERIES[i]} strokeWidth="2" />
+      </g>)}
+    </svg>;
+  }
+  if (type === "wafer_map") {
+    return <div style={{ height: 64, display: "grid", placeItems: "center" }}>
+      <div style={{ width: 54, height: 54, borderRadius: "50%", border: "2px solid rgba(148,163,184,0.38)", display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 2, padding: 8, boxSizing: "border-box" }}>
+        {Array.from({ length: 25 }).map((_, i) => <span key={i} style={{ borderRadius: 2, background: SERIES[i % SERIES.length], opacity: [0, 4, 20, 24].includes(i) ? 0 : 0.24 + ((i * 5) % 8) / 12 }} />)}
+      </div>
+    </div>;
+  }
+  if (type === "treemap") {
+    return <div style={{ height: 64, display: "grid", gridTemplateColumns: "1.4fr 1fr 0.8fr", gridTemplateRows: "1fr 1fr", gap: 4 }}>
+      {[0, 1, 2, 3, 4, 5].map((_, i) => <span key={i} style={{ borderRadius: 4, background: SERIES[i % SERIES.length], opacity: 0.26 + i * 0.08, gridRow: i === 0 ? "span 2" : undefined }} />)}
+    </div>;
+  }
+  if (type === "pareto") {
+    return <svg viewBox="0 0 120 64" width="100%" height={64}>
+      {[48, 36, 25, 18, 12].map((h, i) => <rect key={i} x={12 + i * 20} y={58 - h} width="12" height={h} rx="3" fill={SERIES[i % SERIES.length]} opacity=".78" />)}
+      <polyline points="18,45 38,30 58,22 78,17 98,14" fill="none" stroke={WARN.fg} strokeWidth="3" />
     </svg>;
   }
   return <div style={{ height: 64, display: "flex", alignItems: "end", gap: 6 }}>
@@ -2090,46 +2135,129 @@ function dashboardChartTypeFromFlowi(rawType) {
   return GENERAL_DASHBOARD_CHART_TYPES.includes(raw) ? raw : "scatter";
 }
 
-function isSaveableDashboardChartConfig(cfg) {
-  if (!cfg || typeof cfg !== "object") return false;
-  if (String(cfg.source || "").toLowerCase() === "inform") return true;
-  const hasSource = !!(cfg.source_type && (cfg.file || (cfg.root && cfg.product)));
-  if (!hasSource) return false;
-  const type = String(cfg.chart_type || "scatter");
-  if (["table", "cross_table"].includes(type)) return true;
-  if (["pie", "donut", "treemap", "pareto", "binning"].includes(type)) return !!(cfg.x_col || cfg.agg_col || cfg.groupby);
-  return !!(cfg.x_col && (cfg.y_expr || cfg.agg_col || type === "wafer_map"));
+function chartTypeHintFromText(text) {
+  const raw = String(text || "");
+  const low = raw.toLowerCase();
+  const hasWord = (word) => new RegExp(`(^|[^a-z0-9_])${word}([^a-z0-9_]|$)`).test(low);
+  if (hasWord("donut") || raw.includes("도넛")) return "donut";
+  if (hasWord("pie") || raw.includes("파이") || raw.includes("원형")) return "pie";
+  if (hasWord("cross table") || hasWord("crosstable") || raw.includes("교차")) return "cross_table";
+  if (hasWord("table") || raw.includes("테이블")) return "table";
+  if (hasWord("heatmap") || raw.includes("히트맵")) return "heatmap";
+  if (hasWord("wafer map") || hasWord("wf map") || raw.includes("웨이퍼맵")) return "wafer_map";
+  if (hasWord("treemap") || raw.includes("트리맵")) return "treemap";
+  if (hasWord("pareto") || raw.includes("파레토")) return "pareto";
+  if (hasWord("histogram") || hasWord("binning") || raw.includes("히스토그램")) return "binning";
+  if (hasWord("boxplot") || hasWord("box plot") || hasWord("box") || raw.includes("박스")) return "box";
+  if (hasWord("area") || raw.includes("면적")) return "area";
+  if (hasWord("bar") || raw.includes("막대")) return "bar";
+  if (hasWord("line") || hasWord("trend") || raw.includes("라인") || raw.includes("추세") || raw.includes("시계열")) return "line";
+  if (hasWord("scatter") || raw.includes("산점도") || raw.includes("상관")) return "scatter";
+  return "";
+}
+
+function firstPlainObject(...values) {
+  return values.find((value) => value && typeof value === "object" && !Array.isArray(value)) || {};
+}
+
+function firstArray(...values) {
+  return values.find((value) => Array.isArray(value)) || [];
+}
+
+function looksLikeChartConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return ["chart_type", "source_type", "source", "title", "x_col", "y_expr", "metric", "groupby", "product", "file", "root"].some((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function chartConfigFromCandidate(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  if (value.chart_config && typeof value.chart_config === "object") return value.chart_config;
+  if (value.dashboard_chart_config && typeof value.dashboard_chart_config === "object") return value.dashboard_chart_config;
+  if (value.config && typeof value.config === "object") return value.config;
+  return looksLikeChartConfig(value) ? value : {};
+}
+
+function productHintFromPrompt(text) {
+  const match = String(text || "").match(/\b(?:ML_TABLE_)?(?:PRODUCT_[A-Z0-9]+|PROD[A-Z0-9]*)\b/i);
+  return match ? match[0].toUpperCase() : "";
+}
+
+function sourceHintFromPrompt(text) {
+  const raw = String(text || "");
+  const up = raw.toUpperCase();
+  if (up.includes("INLINE") || raw.includes("인라인")) return "INLINE";
+  if (/\bET\b/.test(up)) return "ET";
+  if (/\bFAB\b/.test(up) || raw.includes("공정")) return "FAB";
+  if (/\bVM\b/.test(up)) return "VM";
+  if (/\bEDS\b/.test(up)) return "EDS";
+  if (up.includes("ML_TABLE") || up.includes("KNOB") || raw.includes("노브")) return "ML_TABLE";
+  return "";
+}
+
+function metricHintFromSlots(slots, rawConfig, chartResult) {
+  const metrics = slots.metrics || rawConfig.metrics || chartResult.metrics || [];
+  if (Array.isArray(metrics) && metrics.length) return String(metrics[0] || "");
+  return String(slots.metric || rawConfig.metric || rawConfig.item_id || chartResult.metric || rawConfig.y_expr || rawConfig.y_col || "");
 }
 
 function flowiChartDraftFromResponse(response, prompt) {
-  const tool = (response?.tool && typeof response.tool === "object") ? response.tool : (response || {});
-  const chartResult = (tool.chart_result && typeof tool.chart_result === "object") ? tool.chart_result : {};
-  const chart = (tool.chart && typeof tool.chart === "object") ? tool.chart : {};
-  const rawConfig = (
-    (tool.chart_config && typeof tool.chart_config === "object" && tool.chart_config)
-    || (tool.dashboard_chart_config && typeof tool.dashboard_chart_config === "object" && tool.dashboard_chart_config)
-    || (tool.config && typeof tool.config === "object" && tool.config)
-    || {}
-  );
-  const isDashboardTool = tool.feature === "dashboard" || chartResult.kind || chart.kind || tool.chart_session_id || tool.chart_config || tool.dashboard_chart_config;
+  const agentTool = firstPlainObject(response?.agent_api?.tool);
+  const responseTool = firstPlainObject(response?.tool);
+  const topChartResult = firstPlainObject(response?.chart_result);
+  const traceConfig = firstPlainObject(response?.trace?.chart_config);
+  const candidates = [
+    responseTool,
+    agentTool,
+    firstPlainObject(responseTool.chart_result, agentTool.chart_result, topChartResult),
+    firstPlainObject(response?.chart_config, responseTool.chart_config, agentTool.chart_config),
+    firstPlainObject(response?.config, responseTool.config, agentTool.config),
+    traceConfig,
+  ].filter((value) => value && Object.keys(value).length);
+  const tool = firstPlainObject(responseTool, agentTool, response);
+  const chartResult = firstPlainObject(responseTool.chart_result, agentTool.chart_result, topChartResult);
+  const chart = firstPlainObject(responseTool.chart, agentTool.chart, response?.chart);
+  const rawConfig = candidates.map(chartConfigFromCandidate).find((cfg) => Object.keys(cfg).length) || {};
+  const promptType = chartTypeHintFromText(prompt);
+  const isDashboardTool = candidates.some((candidate) => (
+    candidate.feature === "dashboard"
+    || candidate.kind
+    || candidate.chart_session_id
+    || candidate.chart_config
+    || candidate.dashboard_chart_config
+    || looksLikeChartConfig(candidate)
+  )) || tool.feature === "dashboard" || response?.feature === "dashboard" || !!promptType;
   if (!isDashboardTool) return null;
-  const chartType = dashboardChartTypeFromFlowi(rawConfig.chart_type || tool.chart_type || chartResult.chart_type || chartResult.kind || chart.kind);
-  const slots = (tool.slots && typeof tool.slots === "object") ? tool.slots : {};
-  const title = rawConfig.title || chartResult.title || chart.title || `${chartTypeLabel(chartType)} draft`;
+  const chartType = dashboardChartTypeFromFlowi(rawConfig.chart_type || tool.chart_type || chartResult.chart_type || chartResult.kind || promptType || chart.kind);
+  const slots = firstPlainObject(tool.slots, agentTool.slots, response?.slots);
+  const productHint = rawConfig.product || slots.product || chartResult.product || productHintFromPrompt(prompt);
+  const sourceTypes = firstArray(slots.source_types, rawConfig.source_types, chartResult.source_types);
+  const sourceHint = rawConfig.source_type || rawConfig.source || slots.source_type || sourceTypes[0] || sourceHintFromPrompt(prompt);
+  const metricHint = metricHintFromSlots(slots, rawConfig, chartResult);
+  const title = rawConfig.title || chartResult.title || chart.title || tool.title || [productHint, metricHint || sourceHint, chartTypeLabel(chartType)].filter(Boolean).join(" ") || `${chartTypeLabel(chartType)} draft`;
+  const clarification = firstPlainObject(tool.clarification, agentTool.clarification, response?.clarification);
+  const missing = firstArray(tool.missing, agentTool.missing, response?.missing, tool.validation?.missing, response?.validation?.missing);
+  const choices = firstArray(tool.choices, agentTool.choices, response?.choices, clarification.choices);
   const draft = {
     ...rawConfig,
     id: "",
     title,
     chart_type: chartType,
     group: rawConfig.group || "AI",
-    product: rawConfig.product || slots.product || rawConfig.product_hint || "",
+    product: productHint || rawConfig.product_hint || "",
+    source_type: rawConfig.source_type || (/^[A-Z_]+$/.test(String(sourceHint || "")) ? sourceHint : ""),
     width: rawConfig.width || (["heatmap", "wafer_map", "cross_table", "table"].includes(chartType) ? 2 : 2),
     height: rawConfig.height || (["heatmap", "wafer_map", "cross_table", "table"].includes(chartType) ? 2 : 1),
     x_label: rawConfig.x_label || chartResult.x_label || "",
     y_label: rawConfig.y_label || chartResult.y_label || "",
     chart_session_id: tool.chart_session_id || chartResult.chart_session_id || "",
     flowi_prompt: prompt || "",
+    pending_prompt: tool.pending_prompt || agentTool.pending_prompt || response?.pending_prompt || (missing.length ? prompt || "" : ""),
   };
+  if (metricHint && !draft.metric) draft.metric = metricHint;
+  if (metricHint && !draft.item_id) draft.item_id = metricHint;
+  if (missing.length) draft.missing = missing;
+  if (clarification.question || tool.question || response?.question) draft.question = clarification.question || tool.question || response?.question;
+  if (choices.length) draft.choices = choices;
   if (!draft.x_col && typeof rawConfig.x === "string" && rawConfig.x && !rawConfig.x.startsWith("$")) draft.x_col = rawConfig.x;
   if (!draft.y_expr && typeof rawConfig.y === "string" && rawConfig.y && !rawConfig.y.startsWith("$")) draft.y_expr = rawConfig.y;
   if (!draft.color_col && rawConfig.color_by && !["none", "lot_id"].includes(String(rawConfig.color_by))) draft.color_col = String(rawConfig.color_by);
@@ -2137,7 +2265,7 @@ function flowiChartDraftFromResponse(response, prompt) {
   return draft;
 }
 
-function ChartAddLibrary({ open, onClose, onSelectType, onAddInform, onAiDraft }) {
+function ChartAddLibrary({ open, onClose, onSelectType, onAiDraft }) {
   const [prompt, setPrompt] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
@@ -2184,7 +2312,7 @@ function ChartAddLibrary({ open, onClose, onSelectType, onAddInform, onAiDraft }
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 900, color: "var(--text-primary)" }}>차트 추가</div>
-            <div style={{ marginTop: 3, fontSize: 14, color: "var(--text-secondary)" }}>일반 차트 · 인폼 preset · AI draft</div>
+            <div style={{ marginTop: 3, fontSize: 14, color: "var(--text-secondary)" }}>일반 차트 · AI draft</div>
           </div>
           <button onClick={onClose} style={{ border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-secondary)", borderRadius: 6, padding: "6px 10px", cursor: "pointer" }}>닫기</button>
         </div>
@@ -2205,21 +2333,10 @@ function ChartAddLibrary({ open, onClose, onSelectType, onAddInform, onAiDraft }
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 18 }}>
           {GENERAL_DASHBOARD_CHART_TYPES.map((type) => (
             <button key={type} onClick={() => onSelectType(type)} style={{ textAlign: "left", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)", color: "var(--text-primary)", padding: 10, cursor: "pointer", minHeight: 118 }}>
-              <InformPresetThumb chartType={type} />
+              <ChartTypeThumb chartType={type} />
               <div style={{ marginTop: 7, fontSize: 14, fontWeight: 900 }}>{chartTypeLabel(type)}</div>
               <div style={{ marginTop: 2, fontSize: 13, color: "var(--text-secondary)", fontFamily: "monospace" }}>{type}</div>
             </button>
-          ))}
-        </div>
-        <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)", marginBottom: 8 }}>인폼 preset</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 12 }}>
-          {INFORM_CHART_PRESETS.map((preset) => (
-            <div key={preset.id} style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-card)", padding: 12, minWidth: 0, display: "flex", flexDirection: "column", gap: 9 }}>
-              <InformPresetThumb chartType={preset.cfg.chart_type} />
-              <div style={{ fontSize: 14, fontWeight: 900, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={preset.label}>{preset.label}</div>
-              <div style={{ minHeight: 36, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.4 }}>{preset.description}</div>
-              <button onClick={() => onAddInform(preset)} style={{ marginTop: "auto", border: "none", borderRadius: 6, padding: "7px 10px", cursor: "pointer", background: "var(--accent)", color: WHITE, fontWeight: 800 }}>추가</button>
-            </div>
           ))}
         </div>
       </div>
@@ -2259,18 +2376,6 @@ export default function My_Dashboard({ user }) {
   }, []);
   useEffect(() => { load(); const ms = Math.max(1, refreshMin) * 60 * 1000; const iv = setInterval(load, ms); return () => clearInterval(iv); }, [refreshMin]);
   const saveChart = (form) => sf(API + "/charts/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) }).then(() => { setEditing(null); load(); }).catch(e => toast.error(e.message));
-  const addInformPreset = (preset) => {
-    const cfg = {
-      ...DEFAULT_CHART_FORM,
-      ...(preset?.cfg || {}),
-      id: "",
-      source: "inform",
-      source_type: "inform",
-      no_schedule: false,
-    };
-    setChartLibraryOpen(false);
-    saveChart(cfg);
-  };
   const openChartTypeDraft = (chartType) => {
     const type = String(chartType || "scatter");
     setChartLibraryOpen(false);
@@ -2283,12 +2388,7 @@ export default function My_Dashboard({ user }) {
     });
   };
   const openAiChartDraft = (draft) => {
-    const cfg = { ...draft };
-    if (isSaveableDashboardChartConfig(cfg) && confirm("생성된 차트 설정을 바로 저장할까요?")) {
-      saveChart(cfg);
-      return;
-    }
-    setEditing(cfg);
+    setEditing({ ...draft });
   };
   const deleteChart = (id) => { if (!confirm("삭제하시겠습니까?")) return; sf(API + "/charts/delete?chart_id=" + id, { method: "POST" }).then(load); };
   const doRefresh = () => { setRefreshing(true); sf(API + "/refresh", { method: "POST" }).then(() => setTimeout(() => { load(); setRefreshing(false); }, 3000)).catch(() => setRefreshing(false)); };
@@ -2498,7 +2598,7 @@ export default function My_Dashboard({ user }) {
       </div>}
     />
     {editing !== null && <ChartEditor cfg={editing} onSave={saveChart} onClose={() => setEditing(null)} isAdmin={isAdmin} />}
-    <ChartAddLibrary open={chartLibraryOpen} onClose={() => setChartLibraryOpen(false)} onSelectType={openChartTypeDraft} onAddInform={addInformPreset} onAiDraft={openAiChartDraft} />
+    <ChartAddLibrary open={chartLibraryOpen} onClose={() => setChartLibraryOpen(false)} onSelectType={openChartTypeDraft} onAiDraft={openAiChartDraft} />
     <div style={{ paddingRight: 2 }}>
 
     {dashboardView === "charts" && visibleCharts.length === 0 && !editing && <div style={{ textAlign: "center", padding: 60, color: "var(--text-secondary)" }}>차트 없음.{canEdit ? " + 차트 추가 를 클릭하세요." : ""}</div>}

@@ -273,6 +273,11 @@ FLOWI_FUNCTION_FEW_SHOTS = [
         "arguments": {"session_id": "<active>", "action": "jump", "target_module": "BEOL"},
     },
 ]
+FLOWI_PLAIN_TEXT_OUTPUT_RULE = (
+    "출력은 마크다운 강조 없이 plain text로 작성합니다. "
+    "금지: **굵게**, ### 제목, 장식적 bullet 남발. "
+    "섹션명은 요약, 결정사항, 액션아이템, 변경점 일정, 관련 이슈, 근거처럼 일반 텍스트 한 줄로 씁니다."
+)
 FLOWI_DEFAULT_SYSTEM_PROMPT = (
     "Flowi는 사내 Flow 앱을 이해하고 사용자 권한 안에서 작업하는 반도체 공정 데이터 운영 에이전트입니다. 답변은 짧고 실행 가능하게 작성합니다. "
     "사용자 Markdown 정보가 있으면 담당 제품, 관심 공정, 선호 출력 방식을 반영합니다. "
@@ -286,7 +291,8 @@ FLOWI_DEFAULT_SYSTEM_PROMPT = (
     "SplitTable을 보여줄 때는 홈에서 따로 재구성하지 않고 SplitTable 화면 API의 headers, header_groups, rows, cell key, actual/plan/mismatch 결과를 기준으로 표시합니다. "
     "SplitTable/Inform 같은 앱 데이터 쓰기는 draft와 확인 선택지를 먼저 만들고, 확인 후에만 저장합니다. "
     "일반 사용자의 원 data DB 또는 Files 수정/삭제/저장/업로드는 차단합니다. "
-    "admin 파일 변경은 서버의 FLOWI_FILE_OP 단위기능 결과가 제공된 경우에만 그 결과를 설명합니다."
+    "admin 파일 변경은 서버의 FLOWI_FILE_OP 단위기능 결과가 제공된 경우에만 그 결과를 설명합니다. "
+    + FLOWI_PLAIN_TEXT_OUTPUT_RULE
 )
 FLOWI_DEFAULT_MUST_NOT = (
     "- DB root/raw data 원본을 직접 수정, 삭제, 덮어쓰기, 이동하지 않는다.\n"
@@ -573,6 +579,8 @@ FLOWI_CHART_TERMS = {
     "차트", "그래프", "scatter", "산점도", "corr", "correlation", "상관", "피팅", "fitting",
     "fit", "1차식", "선형", "linear", "컬러링", "color", "coloring", "filter", "필터", "제외",
     "그려", "그려줘", "plot", "bar", "막대", "trend", "추세", "시계열", "라인", "line",
+    "pie", "파이", "원형", "donut", "도넛", "table", "테이블", "cross table", "교차",
+    "area", "heatmap", "히트맵", "treemap", "트리맵", "pareto", "파레토", "histogram", "binning",
 }
 FLOWI_JOIN_CHOICES = [
     {
@@ -622,7 +630,8 @@ FLOWI_CHART_METRIC_STOP = {
     "SCATTER", "CHART", "DASHBOARD", "FITTING", "FIT", "LINE", "LINEAR", "COLOR",
     "COLORING", "FILTER", "LEFT", "JOIN", "INNER", "AVG", "AVERAGE", "MEDIAN",
     "EXCLUDE", "EXCEPT", "REMOVE", "WITHOUT", "BY", "BASIS", "TREND", "PLOT", "BAR", "GRAPH",
-    "BOX", "BOXPLOT", "WAFER", "MAP", "CLASSIFICATION", "R2",
+    "BOX", "BOXPLOT", "WAFER", "MAP", "CLASSIFICATION", "R2", "PIE", "DONUT", "TABLE",
+    "CROSS", "PIVOT", "AREA", "HEATMAP", "TREEMAP", "PARETO", "HISTOGRAM", "BINNING",
 }
 FLOWI_CHART_POINT_LIMIT = 500
 FLOWI_CHART_DEFAULTS = {
@@ -883,6 +892,8 @@ def _flowi_promoted_knowledge_section(limit: int = 12) -> str:
 
 def _flowi_system_prompt(include_few_shots: bool = True) -> str:
     prompt = _flowi_persona_config()["active_system_prompt"]
+    if FLOWI_PLAIN_TEXT_OUTPUT_RULE not in prompt:
+        prompt += "\n\n" + FLOWI_PLAIN_TEXT_OUTPUT_RULE
     if include_few_shots:
         prompt += "\n\n" + _flowi_few_shot_section()
     promoted = _flowi_promoted_knowledge_section()
@@ -3680,13 +3691,18 @@ def _contains_chart_intent(prompt: str) -> bool:
         "차트", "그래프", "산점도", "상관", "피팅", "1차식", "선형", "컬러링",
         "필터", "제외", "그려", "그려줘", "막대", "추세", "시계열", "라인",
         "박스", "분포", "웨이퍼맵", "분류", "통계표", "분리", "별",
+        "파이", "원형", "도넛", "테이블", "교차", "히트맵", "트리맵",
+        "파레토", "히스토그램", "면적",
     }
     if any(term in text for term in korean_terms):
         return True
     latin_terms = {
         "scatter", "corr", "correlation", "fitting", "fit", "linear", "color",
         "coloring", "filter", "plot", "bar", "trend", "line", "chart", "graph",
-        "boxplot", "box", "wafer map", "classification", "stacked",
+        "boxplot", "box", "wafer map", "classification", "stacked", "pie",
+        "donut", "doughnut", "table", "cross table", "crosstable", "pivot",
+        "area", "heatmap", "heat map", "treemap", "tree map", "pareto",
+        "histogram", "binning",
     }
     return any(re.search(rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])", low) for term in latin_terms)
 
@@ -3737,7 +3753,20 @@ def _chart_operations(prompt: str) -> list[str]:
     ops = []
     if any(t in low or t in text for t in ("corr", "correlation", "상관")):
         ops.append("correlation")
-    if any(t in low or t in text for t in ("scatter", "산점도", "차트", "그래프")):
+    explicit_visual = {
+        "pie": ("pie", "파이", "원형"),
+        "donut": ("donut", "doughnut", "도넛"),
+        "bar": ("bar", "막대"),
+        "line": ("line", "trend", "라인", "추세", "시계열"),
+        "area": ("area", "면적"),
+        "table": ("table", "테이블"),
+        "cross_table": ("cross table", "crosstable", "pivot", "교차", "피벗"),
+        "heatmap": ("heatmap", "heat map", "히트맵"),
+    }
+    for op, terms in explicit_visual.items():
+        if any(t in low or t in text for t in terms):
+            ops.append(op)
+    if any(t in low or t in text for t in ("scatter", "산점도")) or (not ops and any(t in low or t in text for t in ("차트", "그래프"))):
         ops.append("scatter")
     if any(t in low or t in text for t in ("1차식", "linear", "fit", "fitting", "피팅", "선형")):
         ops.append("linear_fit")
@@ -3901,6 +3930,43 @@ def _merge_retrieved_knowledge(existing: Any, additions: list[dict[str, Any]]) -
     return out[:30]
 
 
+def _dashboard_chart_label(chart_type: str) -> str:
+    labels = {
+        "scatter": "산점도",
+        "line": "라인 차트",
+        "trend": "라인 차트",
+        "bar": "막대 차트",
+        "stacked_bar": "막대 차트",
+        "area": "면적 차트",
+        "combo": "복합 차트",
+        "pie": "파이차트",
+        "donut": "도넛 차트",
+        "binning": "히스토그램",
+        "pareto": "파레토",
+        "box": "박스플롯",
+        "boxplot": "박스플롯",
+        "treemap": "트리맵",
+        "heatmap": "히트맵",
+        "correlation_matrix": "상관 히트맵",
+        "wafer_map": "웨이퍼 맵",
+        "classification": "분류 차트",
+        "table": "테이블",
+        "cross_table": "교차 테이블",
+    }
+    return labels.get(str(chart_type or "").strip(), "차트")
+
+
+def _dashboard_chart_title(product: str, chart_type: str, metrics: list[dict[str, Any]] | None = None, config: dict[str, Any] | None = None) -> str:
+    cfg = config if isinstance(config, dict) else {}
+    metric_names = [str(m.get("metric") or "").strip() for m in (metrics or []) if isinstance(m, dict) and m.get("metric")]
+    metric = str(cfg.get("metric") or cfg.get("item_id") or cfg.get("y_expr") or cfg.get("x_col") or (metric_names[0] if metric_names else "")).strip()
+    source = str(cfg.get("source_type") or cfg.get("source") or "").strip()
+    group = str(cfg.get("group_by") or cfg.get("groupby") or cfg.get("x_groupby") or cfg.get("color_col") or "").strip()
+    subject = metric or source or group
+    pieces = [str(product or "").strip(), subject, _dashboard_chart_label(chart_type)]
+    return " ".join(piece for piece in pieces if piece).strip() or _dashboard_chart_label(chart_type)
+
+
 def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = "", username: str = "flowi") -> dict[str, Any]:
     if not isinstance(tool, dict):
         return tool
@@ -3915,18 +3981,49 @@ def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = ""
         metrics = [{"metric": tool["slots"].get("metric")}]
     if not metrics:
         metrics = _metric_alias_hits(prompt)
-    chart_type = str(tool.get("chart_type") or chart.get("kind") or _flowi_chart_type_from_prompt(prompt, metrics) or "scatter")
+    inferred_chart_type = _flowi_chart_type_from_prompt(prompt, metrics) or "scatter"
+    chart_kind = str(chart_result.get("chart_type") or chart_result.get("kind") or chart.get("kind") or "")
+    chart_kind_norm = chart_kind.replace("dashboard_", "")
+    chart_type = str(tool.get("chart_type") or "")
+    if not chart_type:
+        if inferred_chart_type and (not chart_kind_norm or (chart_kind_norm == "scatter" and inferred_chart_type != "scatter")):
+            chart_type = inferred_chart_type
+        else:
+            chart_type = chart_kind or inferred_chart_type or "scatter"
+    chart_type = chart_type.replace("dashboard_", "")
     if chart_type in {"box", "dashboard_box"}:
         chart_type = "boxplot"
     if chart_type in {"line", "dashboard_line"}:
         chart_type = "trend"
+    if chart_type in {"group_bar", "dashboard_group_bar", "stacked_bar"}:
+        chart_type = "bar"
     if chart_result.get("kind") == "dashboard_wafer_map":
         chart_type = "wafer_map"
     config = _flowi_dashboard_default_config(prompt, chart_type, metrics, product=product)
-    for extra_config in (tool.get("config"), tool.get("chart_config"), chart_result.get("config"), chart_result.get("config_overrides")):
+    for extra_config in (tool.get("config"), tool.get("chart_config"), chart_result.get("chart_config"), chart_result.get("config"), chart_result.get("config_overrides")):
         if isinstance(extra_config, dict):
             config.update({k: v for k, v in extra_config.items() if v is not None})
+    slots = tool.get("slots") if isinstance(tool.get("slots"), dict) else {}
+    product_hint = str(config.get("product") or slots.get("product") or product or "").strip()
+    metric_hint = next((str(m.get("metric") or "").strip() for m in metrics if isinstance(m, dict) and m.get("metric")), "")
+    if product_hint:
+        config.setdefault("product", product_hint)
+    if metric_hint:
+        config.setdefault("metric", metric_hint)
+        config.setdefault("item_id", metric_hint)
     config["chart_type"] = chart_type
+    config.setdefault("title", _dashboard_chart_title(product_hint, chart_type, metrics, config))
+    missing = []
+    for raw_missing in (tool.get("missing"), (tool.get("validation") or {}).get("missing") if isinstance(tool.get("validation"), dict) else None):
+        if isinstance(raw_missing, list):
+            missing.extend(str(x) for x in raw_missing if str(x or "").strip())
+    missing = list(dict.fromkeys(missing))
+    if missing:
+        tool["intent"] = "dashboard_chart_draft_needs_context"
+        tool["action"] = "collect_required_fields"
+        tool["missing"] = missing
+        tool.setdefault("question", f"{_dashboard_chart_label(chart_type)} 생성을 계속하려면 {', '.join(missing)} 값을 보완해 주세요.")
+        tool.setdefault("pending_prompt", prompt)
     retrieved_knowledge = _dashboard_agent_wiki_knowledge(prompt, product=product, chart_type=chart_type, metrics=metrics)
     if retrieved_knowledge:
         merged = _merge_retrieved_knowledge(tool.get("retrieved_knowledge"), retrieved_knowledge)
@@ -3964,6 +4061,7 @@ def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = ""
     if isinstance(chart_result, dict):
         chart_result.update({
             "chart_type": chart_type,
+            "title": chart_result.get("title") or config.get("title") or _dashboard_chart_title(product_hint, chart_type, metrics, config),
             "config": config,
             "chart_config": config,
             "retrieved_knowledge": tool.get("retrieved_knowledge") or [],
@@ -5846,18 +5944,29 @@ def _handle_chart_request(prompt: str, product: str, max_rows: int) -> dict:
     sources = _source_terms(prompt)
     metrics = _metric_alias_hits(prompt)
     operations = _chart_operations(prompt)
+    chart_type = _flowi_chart_type_from_prompt(prompt, metrics)
     lots = _lot_tokens(prompt)
     product_hint = _product_hint(prompt, product)
     join_key = _chart_default_join_key(sources)
     requires = []
-    if len(sources) < 2 and "correlation" in operations:
+    general_draft_types = {"pie", "donut", "bar", "area", "heatmap", "table", "cross_table", "treemap", "pareto", "binning"}
+    if chart_type in general_draft_types:
+        if not product_hint:
+            requires.append("product")
+        if not sources:
+            requires.append("source_type")
+        if chart_type not in {"table", "cross_table"} and not metrics:
+            requires.append("metric")
+        if chart_type in {"cross_table", "heatmap"} and len(metrics) < 2:
+            requires.append("x/y metric")
+    elif len(sources) < 2 and "correlation" in operations:
         requires.append("x/y source")
-    if len(metrics) < 2 and ("correlation" in operations or "scatter" in operations):
+    if chart_type not in general_draft_types and len(metrics) < 2 and ("correlation" in operations or "scatter" in operations):
         requires.append("x/y metric")
-    if not product_hint:
+    if chart_type not in general_draft_types and not product_hint:
         requires.append("product")
     rows = [
-        {"field": "unit_action", "value": "dashboard.metric_scatter"},
+        {"field": "unit_action", "value": "dashboard.chart_draft" if chart_type in general_draft_types else "dashboard.metric_scatter"},
         {"field": "sources", "value": ", ".join(sorted(sources)) or "-"},
         {"field": "metrics", "value": ", ".join(m["metric"] for m in metrics) or "-"},
         {"field": "operations", "value": ", ".join(operations)},
@@ -5891,8 +6000,20 @@ def _handle_chart_request(prompt: str, product: str, max_rows: int) -> dict:
         for item in choices[1:]:
             item["recommended"] = False
 
+    config = _flowi_dashboard_default_config(prompt, chart_type, metrics, product=product_hint)
+    if product_hint:
+        config["product"] = product_hint
+    if len(sources) == 1:
+        config["source_type"] = next(iter(sources))
+    metric_names = [m.get("metric") for m in metrics if m.get("metric")]
+    if metric_names:
+        config.setdefault("metric", metric_names[0])
+        config.setdefault("item_id", metric_names[0])
+    config["chart_type"] = chart_type
+    config.setdefault("title", _dashboard_chart_title(product_hint, chart_type, metrics, config))
+
     chart = {
-        "kind": "scatter",
+        "kind": chart_type,
         "status": "planned",
         "sources": sorted(sources),
         "metrics": metrics,
@@ -5904,6 +6025,70 @@ def _handle_chart_request(prompt: str, product: str, max_rows: int) -> dict:
         "requires": requires,
     }
     chart_result = None
+    if chart_type in general_draft_types:
+        choices_for_missing = []
+        if "source_type" in requires:
+            for src in ("INLINE", "ET", "FAB"):
+                choices_for_missing.append({
+                    "id": f"source_{src.lower()}",
+                    "label": src,
+                    "title": f"{src} 기준",
+                    "description": f"{src} 데이터 소스로 초안을 계속 편집합니다.",
+                    "prompt": f"{prompt.strip()} {src}",
+                })
+        if "metric" in requires:
+            choices_for_missing.append({
+                "id": "open_schema_search",
+                "label": "schema",
+                "title": "schema 후보 먼저 찾기",
+                "recommended": not choices_for_missing,
+                "description": "실제 DB schema catalog에서 컬럼 후보를 확인합니다.",
+                "prompt": f"{prompt.strip()} / schema 후보 먼저 확인",
+            })
+        return {
+            "handled": True,
+            "intent": "dashboard_chart_draft_needs_context",
+            "action": "collect_required_fields",
+            "answer": f"{_dashboard_chart_title(product_hint, chart_type, metrics, config)} 초안을 만들었습니다. 부족한 값은 편집 모달에서 보완할 수 있습니다.",
+            "feature": "dashboard",
+            "slots": {
+                "product": product_hint,
+                "lots": lots,
+                "sources": sorted(sources),
+                "metrics": metric_names,
+                "operations": operations,
+            },
+            "chart_type": chart_type,
+            "config": config,
+            "chart_config": config,
+            "chart": chart,
+            "chart_result": {
+                "ok": False,
+                "kind": f"dashboard_{chart_type}",
+                "title": config.get("title") or _dashboard_chart_title(product_hint, chart_type, metrics, config),
+                "chart_type": chart_type,
+                "chart_config": config,
+                "requires": requires,
+                "points": [],
+                "total": 0,
+            },
+            "missing": requires,
+            "question": f"{_dashboard_chart_label(chart_type)} 생성을 계속하려면 {', '.join(requires) if requires else '세부 설정'} 값을 확인해 주세요.",
+            "choices": choices_for_missing[:4],
+            "pending_prompt": prompt,
+            "clarification": {
+                "question": f"{_dashboard_chart_label(chart_type)} 생성을 계속하려면 {', '.join(requires) if requires else '세부 설정'} 값을 확인해 주세요.",
+                "choices": choices_for_missing[:4],
+            },
+            "table": {
+                "kind": "flowi_chart_plan",
+                "title": "Flowi chart draft",
+                "placement": "below",
+                "columns": [{"key": "field", "label": "FIELD"}, {"key": "value", "label": "VALUE"}],
+                "rows": rows[:max(1, max_rows)],
+                "total": len(rows),
+            },
+        }
     if not requires:
         actual = _try_metric_scatter(prompt, product_hint, metrics, lots, operations)
         if actual.get("ok"):
@@ -5934,6 +6119,7 @@ def _handle_chart_request(prompt: str, product: str, max_rows: int) -> dict:
         "intent": "dashboard_scatter_plan",
         "action": "build_metric_scatter",
         "answer": answer,
+        "feature": "dashboard",
         "slots": {
             "product": product_hint,
             "lots": lots,
@@ -5941,6 +6127,9 @@ def _handle_chart_request(prompt: str, product: str, max_rows: int) -> dict:
             "metrics": [m["metric"] for m in metrics],
             "operations": operations,
         },
+        "chart_type": chart_type,
+        "config": config,
+        "chart_config": config,
         "chart": chart,
         "chart_result": chart_result,
         "clarification": {
@@ -7070,10 +7259,33 @@ def _handle_tracker_lot_purpose_lookup(prompt: str, product: str, max_rows: int)
     cols_out = ["issue_id", "title", "status", "category", "root_lot_id", "lot_id", "fab_lot_id", "wafer_id", "purpose", "progress_note"]
     if not rows:
         answer = f"{target or '해당 lot'}은 이슈추적에서 목적이 보이지 않습니다."
-    elif len(rows) == 1:
-        answer = f"{target or rows[0].get('lot_id') or rows[0].get('root_lot_id')}은 이슈추적 기준 `{rows[0].get('purpose')}` 목적입니다."
     else:
-        answer = f"{target or '해당 lot'}은 이슈추적에 목적이 {len(rows)}개 있어 확인이 필요합니다."
+        title_line = f"{target or rows[0].get('lot_id') or rows[0].get('root_lot_id')} 이슈추적 목적"
+        answer_lines = [
+            title_line,
+            "",
+            "요약",
+            f"- 이슈추적에서 lot 목적 {len(rows)}건을 찾았습니다.",
+            "",
+            "관련 이슈",
+        ]
+        for row in rows[:6]:
+            lot_label = row.get("fab_lot_id") or row.get("lot_id") or row.get("root_lot_id") or "-"
+            answer_lines.append(
+                "- "
+                + " / ".join([
+                    str(row.get("issue_id") or "-"),
+                    str(row.get("title") or "-"),
+                    str(lot_label),
+                    f"WF {row.get('wafer_id') or '-'}",
+                    str(row.get("purpose") or "-"),
+                    f"상태 {row.get('status') or '-'}",
+                ])
+            )
+        if len(rows) > 6:
+            answer_lines.append(f"- 외 {len(rows) - 6}건은 표에서 확인하세요.")
+        answer_lines.extend(["", "근거", f"- tracker.issues / lot filter {target or root or '-'}"])
+        answer = "\n".join(answer_lines)
     return _flowi_set_inline_type({
         "handled": True,
         "intent": "tracker_lot_purpose_lookup",
@@ -7533,6 +7745,103 @@ def _is_meeting_recall_prompt(prompt: str, agent_context: dict[str, Any] | None 
     return False
 
 
+def _meeting_issue_line(issue: Any) -> str:
+    if not isinstance(issue, dict):
+        return ""
+    issue_id = str(issue.get("issue_id") or issue.get("id") or "").strip()
+    title = str(issue.get("title") or "").strip()
+    lots = []
+    for lot in issue.get("lots") or []:
+        if not isinstance(lot, dict):
+            continue
+        lot_label = str(lot.get("fab_lot_id") or lot.get("lot_id") or lot.get("root_lot_id") or "").strip()
+        wafer = str(lot.get("wafer_id") or "").strip()
+        purpose = str(lot.get("purpose") or lot.get("comment") or "").strip()
+        parts = [lot_label]
+        if wafer:
+            parts.append(f"WF {wafer}")
+        if purpose:
+            parts.append(purpose)
+        label = " / ".join([p for p in parts if p])
+        if label:
+            lots.append(label)
+    pieces = [issue_id, title, "; ".join(lots[:4])]
+    return " / ".join([p for p in pieces if p])
+
+
+def _meeting_search_blob(meeting: dict[str, Any]) -> str:
+    pieces = [
+        meeting.get("title") or "",
+        meeting.get("category") or "",
+        meeting.get("owner") or "",
+        meeting.get("status") or "",
+    ]
+    for session in meeting.get("sessions") or []:
+        if not isinstance(session, dict):
+            continue
+        pieces.extend([session.get("status") or "", session.get("scheduled_at") or ""])
+        for ag in session.get("agendas") or []:
+            if not isinstance(ag, dict):
+                continue
+            pieces.extend([ag.get("title") or "", ag.get("description") or "", ag.get("owner") or ""])
+            pieces.append(_meeting_issue_line(ag.get("issue_ref")))
+        minutes = session.get("minutes") or {}
+        if isinstance(minutes, dict):
+            pieces.append(minutes.get("body") or "")
+            for dec in minutes.get("decisions") or []:
+                if isinstance(dec, dict):
+                    pieces.extend([dec.get("text") or "", dec.get("due") or ""])
+                else:
+                    pieces.append(str(dec or ""))
+            for action in minutes.get("action_items") or []:
+                if isinstance(action, dict):
+                    pieces.extend([
+                        action.get("text") or "",
+                        action.get("owner") or "",
+                        action.get("due") or "",
+                        action.get("status") or "",
+                    ])
+    return _upper(" ".join(str(p or "") for p in pieces))
+
+
+def _meeting_recall_line(row: dict[str, Any]) -> str:
+    date = str(row.get("date") or "-")
+    meeting = str(row.get("meeting_title") or "-")
+    idx = str(row.get("session_idx") or "").strip()
+    session = f"{idx}차" if idx else "-"
+    text = str(row.get("text") or "-")
+    owner = str(row.get("owner") or "-")
+    status = str(row.get("status") or "-")
+    return f"{date} / {meeting} / {session} / {text} / 담당 {owner} / 상태 {status}"
+
+
+def _meeting_recall_answer(scope: str, rows: list[dict[str, Any]]) -> str:
+    sections = [
+        ("결정사항", [r for r in rows if r.get("type") == "decision"]),
+        ("액션아이템", [r for r in rows if r.get("type") == "action"]),
+        ("변경점 일정", [r for r in rows if r.get("type") not in {"agenda", "minutes", "decision", "action", "issue", "session"}]),
+        ("관련 이슈", [r for r in rows if r.get("type") == "issue"]),
+        ("회의록", [r for r in rows if r.get("type") == "minutes"]),
+        ("아젠다", [r for r in rows if r.get("type") in {"agenda", "session"}]),
+    ]
+    lines = [
+        f"{scope} 회의/변경점 기록",
+        "",
+        "요약",
+        f"- 회의관리/변경점 관리 저장 기록 {len(rows)}건을 찾았습니다.",
+    ]
+    for title, items in sections:
+        if not items:
+            continue
+        lines.extend(["", title])
+        for row in items[:8]:
+            lines.append(f"- {_meeting_recall_line(row)}")
+        if len(items) > 8:
+            lines.append(f"- 외 {len(items) - 8}건은 표에서 확인하세요.")
+    lines.extend(["", "근거", "- 회의관리 sessions, agendas, minutes와 변경점 캘린더 events만 사용했습니다."])
+    return "\n".join(lines).strip()
+
+
 def _handle_meeting_recall(
     prompt: str,
     max_rows: int,
@@ -7553,16 +7862,13 @@ def _handle_meeting_recall(
         meetings = [m for m in meetings if str(m.get("id") or "") == str(context.get("meeting_id"))] or meetings
     if terms:
         def score(meeting: dict[str, Any]) -> int:
-            hay = _upper(" ".join([
-                meeting.get("title") or "",
-                meeting.get("category") or "",
-                meeting.get("owner") or "",
-            ]))
+            hay = _meeting_search_blob(meeting)
             return sum(1 for term in terms if _upper(term) in hay)
         scored = [(score(m), m) for m in meetings]
         meetings = [m for s, m in scored if s > 0] or meetings
     want_actions = "액션" in prompt or "했던 일" in prompt or "할 일" in prompt
     want_agenda = "아젠다" in prompt
+    want_issues = any(term in prompt.lower() or term in prompt for term in ("이슈", "issue", "tracker", "이슈추적", "목적"))
     want_schedule = any(term in prompt for term in ("시간", "일시", "언제", "몇시")) or ("날짜" in prompt and "날짜별" not in prompt)
     want_minutes = "회의록" in prompt or "정리" in prompt
     rows: list[dict[str, Any]] = []
@@ -7601,15 +7907,32 @@ def _handle_meeting_recall(
                 })
             if want_agenda:
                 for ag in session.get("agendas") or []:
+                    issue_line = _meeting_issue_line(ag.get("issue_ref"))
                     rows.append({
                         "date": session_date,
                         "time": session_time,
                         "meeting_title": title,
                         "session_idx": idx,
                         "type": "agenda",
-                        "text": " - ".join(x for x in [ag.get("title") or "", ag.get("description") or ""] if x),
+                        "text": " - ".join(x for x in [ag.get("title") or "", ag.get("description") or "", issue_line] if x),
                         "owner": ag.get("owner") or "",
                         "status": session.get("status") or "",
+                    })
+            if want_issues:
+                for ag in session.get("agendas") or []:
+                    issue_line = _meeting_issue_line(ag.get("issue_ref"))
+                    if not issue_line:
+                        continue
+                    issue = ag.get("issue_ref") if isinstance(ag.get("issue_ref"), dict) else {}
+                    rows.append({
+                        "date": session_date,
+                        "time": session_time,
+                        "meeting_title": title,
+                        "session_idx": idx,
+                        "type": "issue",
+                        "text": issue_line,
+                        "owner": issue.get("username") or ag.get("owner") or "",
+                        "status": issue.get("status") or session.get("status") or "",
                     })
             if want_minutes and _text(minutes.get("body")):
                 rows.append({
@@ -7653,11 +7976,27 @@ def _handle_meeting_recall(
                     })
     if "변경점" in prompt or "캘린더" in prompt:
         meeting_ids = {m.get("id") for m in meetings}
+        meeting_labels = {str(m.get("title") or "") for m in meetings}
+        term_needles = [_upper(t) for t in terms if t]
         for ev in _load_flowi_calendar_events():
             if not isinstance(ev, dict):
                 continue
             ref = ev.get("meeting_ref") or {}
-            if ref.get("meeting_id") not in meeting_ids:
+            event_blob = _upper(" ".join([
+                ev.get("title") or "",
+                ev.get("body") or "",
+                ev.get("category") or "",
+                ref.get("meeting_id") or "",
+                ref.get("meeting_title") or "",
+            ]))
+            linked = bool(ref.get("meeting_id") and ref.get("meeting_id") in meeting_ids)
+            manual_match = not ref.get("meeting_id") and (
+                any(mid and _upper(mid) in event_blob for mid in meeting_ids)
+                or any(label and _upper(label) in event_blob for label in meeting_labels)
+                or any(term and term in event_blob for term in term_needles)
+                or not term_needles
+            )
+            if not (linked or manual_match):
                 continue
             rows.append({
                 "date": ev.get("date") or "",
@@ -7665,7 +8004,7 @@ def _handle_meeting_recall(
                 "meeting_title": ref.get("meeting_title") or "",
                 "session_idx": "",
                 "type": ev.get("source_type") or "calendar",
-                "text": ev.get("title") or "",
+                "text": " - ".join(x for x in [ev.get("title") or "", ev.get("body") or ""] if x),
                 "owner": ev.get("author") or "",
                 "status": ev.get("status") or "",
             })
@@ -7683,7 +8022,7 @@ def _handle_meeting_recall(
     if session_idx:
         scope += f" · {session_idx}차"
     title = "Meeting minutes" if want_minutes else ("Meeting session details" if (want_schedule or want_agenda) else "Meeting decisions/actions by date")
-    answer = f"{scope} 기준 회의 기록 {len(rows)}건을 정리했습니다. 회의관리/변경점 관리의 저장된 기록만 사용했습니다."
+    answer = _meeting_recall_answer(scope, rows)
     primary_meeting = matched_meetings[0] if matched_meetings else {}
     primary_session = matched_sessions[0] if matched_sessions else {}
     sources = []
@@ -9567,17 +9906,18 @@ def _flowi_inform_summary_intent(prompt: str) -> bool:
     low = text.lower()
     if not any(term in low or term in text for term in ("inform", "인폼", "공지", "공유")):
         return False
-    if (
-        (_detect_app_write_feature(text) and _flowi_app_write_mode(text))
-        or any(term in low or term in text for term in _FLOWI_APP_WRITE_TERMS + _FLOWI_APP_CREATE_TERMS)
-        or "해줘" in text
-        or "해주세요" in text
-    ):
-        return False
-    return any(term in low or term in text for term in (
+    has_read_term = any(term in low or term in text for term in (
         "현황", "상태", "요약", "누락", "미등록", "미완료", "전체", "모듈", "관리",
         "보여", "조회", "검색", "확인", "목록", "리스트", "로그", "status", "summary", "missing", "module", "list", "show",
     ))
+    if not has_read_term:
+        return False
+    if (
+        (_detect_app_write_feature(text) and _flowi_app_write_mode(text))
+        or any(term in low or term in text for term in _FLOWI_APP_WRITE_TERMS + _FLOWI_APP_CREATE_TERMS)
+    ) and not any(term in low or term in text for term in ("상태", "요약", "현황", "조회", "검색", "확인", "status", "summary", "show")):
+        return False
+    return True
 
 
 def _handle_flowi_inform_summary(prompt: str, me: dict[str, Any], max_rows: int, allowed_keys: set[str] | None = None) -> dict[str, Any]:
@@ -9585,7 +9925,84 @@ def _handle_flowi_inform_summary(prompt: str, me: dict[str, Any], max_rows: int,
         return {"handled": False}
     if allowed_keys is not None and "inform" not in allowed_keys:
         return _flowi_permission_block("inform", me)
+    from routers import informs as informs_router
+    username = me.get("username") or "user"
+    role = me.get("role") or "user"
+    my_mods = informs_router._effective_modules(username, role)
     lots = _lot_tokens(prompt)
+    module = _flowi_module_token(prompt)
+    if not lots and module:
+        product_hint = _product_hint(prompt)
+        items = informs_router._load_upgraded()
+        hits = [
+            x for x in items
+            if not x.get("parent_id")
+            and str(x.get("module") or "").strip().lower() == str(module).strip().lower()
+            and (not product_hint or str(x.get("product") or "").strip().upper() == str(product_hint).strip().upper())
+        ]
+        hits = [x for x in hits if informs_router._visible_to(x, username, role, my_mods)]
+        hits.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        limit = max(1, min(80, int(max_rows or 12) * 4))
+        rows = []
+        status_counts = Counter()
+        for item in hits[:limit]:
+            status = informs_router._canonical_flow_status(item.get("flow_status"), item)
+            status_counts[status] += 1
+            rows.append({
+                "created_at": item.get("created_at") or "",
+                "id": item.get("id") or "",
+                "product": item.get("product") or "",
+                "root_lot_id": item.get("root_lot_id") or "",
+                "lot_id": item.get("lot_id") or "",
+                "fab_lot_id_at_save": item.get("fab_lot_id_at_save") or "",
+                "module": item.get("module") or "",
+                "flow_status": status,
+                "reason": item.get("reason") or "",
+                "text": _text(item.get("text"))[:240],
+            })
+        title = f"{module} 모듈 인폼로그 최근 상태"
+        answer_lines = [
+            title,
+            "",
+            "요약",
+            f"- 조건에 맞는 인폼 {len(hits)}건을 찾았습니다.",
+            f"- apply_confirmed {status_counts.get('apply_confirmed', 0)}건 / mail_completed {status_counts.get('mail_completed', 0)}건 / registered {status_counts.get('registered', 0)}건",
+        ]
+        if rows:
+            answer_lines.extend(["", "인폼 상태"])
+            for row in rows[:8]:
+                answer_lines.append(
+                    "- "
+                    + " / ".join([
+                        str(row.get("created_at") or "-")[:16],
+                        str(row.get("product") or "-"),
+                        str(row.get("fab_lot_id_at_save") or row.get("lot_id") or row.get("root_lot_id") or "-"),
+                        str(row.get("flow_status") or "-"),
+                        str(row.get("reason") or "-"),
+                    ])
+                )
+            if len(rows) > 8:
+                answer_lines.append(f"- 외 {len(rows) - 8}건은 표에서 확인하세요.")
+        answer_lines.extend(["", "근거", "- /api/informs/recent와 같은 Inform 저장소의 visible root inform만 사용했습니다."])
+        cols_out = ["created_at", "id", "product", "root_lot_id", "lot_id", "fab_lot_id_at_save", "module", "flow_status", "reason", "text"]
+        return {
+            "handled": True,
+            "intent": "inform_module_recent_summary",
+            "action": "summarize_inform_modules",
+            "answer": "\n".join(answer_lines),
+            "feature": "inform",
+            "slots": {"module": module, "product": product_hint},
+            "summary": {"module": module, "total": len(hits), "status_counts": dict(status_counts)},
+            "feature_entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] == "inform"],
+            "table": {
+                "kind": "inform_module_recent_summary",
+                "title": f"Inform recent summary: {module}",
+                "placement": "below",
+                "columns": _table_columns(cols_out),
+                "rows": rows,
+                "total": len(hits),
+            },
+        }
     if not lots:
         return {
             "handled": True,
@@ -9607,10 +10024,6 @@ def _handle_flowi_inform_summary(prompt: str, me: dict[str, Any], max_rows: int,
             },
             "feature_entrypoints": [item for item in FLOWI_FEATURE_ENTRYPOINTS if item["key"] == "inform"],
         }
-    from routers import informs as informs_router
-    username = me.get("username") or "user"
-    role = me.get("role") or "user"
-    my_mods = informs_router._effective_modules(username, role)
     query = lots[0]
     root = informs_router._root_lot_from_values(query)
     root_prefix = root if len(root) <= 5 else ""
@@ -14541,6 +14954,16 @@ def _json_excerpt(value: Any, limit: int = 4000) -> str:
         return str(value or "")[:limit]
 
 
+def _flowi_plain_answer_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r"(?m)^\s*[-*]{3,}\s*$", "", text)
+    return text.strip()
+
+
 def _flowi_agent_actions(tool: dict[str, Any]) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     entries = tool.get("feature_entrypoints") or []
@@ -16393,7 +16816,8 @@ def _run_flowi_chat(
                 "사용자 질문과 Flow 서버가 선택한 로컬 단위기능 결과를 바탕으로 한국어로 간결하게 답하세요. "
                 "숫자, 식별자, feature/action은 제공된 JSON에서만 사용하고 추측하지 마세요. "
                 "로컬 결과 JSON의 intent/action/missing/table/clarification/chart를 우선합니다. "
-                "clarification.choices가 있으면 1/2/3 선택을 권하고 recommended 선택지를 먼저 설명하세요.\n\n"
+                "clarification.choices가 있으면 1/2/3 선택을 권하고 recommended 선택지를 먼저 설명하세요. "
+                f"{FLOWI_PLAIN_TEXT_OUTPUT_RULE}\n\n"
                 f"{source_line}"
                 f"{context_line}"
                 f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
@@ -16407,7 +16831,8 @@ def _run_flowi_chat(
                 "사용자 정보와 단위기능 진입점 설명을 바탕으로 가장 좋은 화면/다음 행동을 먼저 추천하세요. "
                 "Roo Code/OpenCode 계열 오픈소스 모델처럼 추론 성능이 제한적일 수 있으므로, "
                 "복잡한 계획보다 필요한 조건과 다음 화면을 짧게 답하세요. "
-                "지원 범위가 불확실하면 필요한 lot/step/item 조건을 3개 이하 선택지로 물어보세요.\n\n"
+                "지원 범위가 불확실하면 필요한 lot/step/item 조건을 3개 이하 선택지로 물어보세요. "
+                f"{FLOWI_PLAIN_TEXT_OUTPUT_RULE}\n\n"
                 f"{source_line}"
                 f"{context_line}"
                 f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
@@ -16421,7 +16846,7 @@ def _run_flowi_chat(
         )
         llm_info.update({"used": bool(out.get("ok") and out.get("text"))})
         if out.get("ok") and out.get("text"):
-            answer = out.get("text") or answer
+            answer = _flowi_plain_answer_text(out.get("text")) or answer
         elif out.get("error"):
             llm_info["error"] = out.get("error")
 

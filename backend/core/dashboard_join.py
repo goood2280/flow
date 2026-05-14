@@ -21,8 +21,21 @@ CHART_SESSION_TTL_SECONDS = 3600
 DASHBOARD_SOURCE_GROUPS = ["FAB", "ET", "INLINE", "VM", "EDS", "KNOB", "MASK", "SPC"]
 DASHBOARD_CHART_TYPES = [
     "scatter",
+    "line",
+    "bar",
+    "area",
+    "combo",
+    "pie",
+    "donut",
+    "binning",
+    "pareto",
+    "box",
     "boxplot",
+    "treemap",
+    "heatmap",
     "trend",
+    "table",
+    "cross_table",
     "correlation_matrix",
     "wafer_map",
     "classification",
@@ -31,8 +44,21 @@ DASHBOARD_CHART_TYPES = [
 
 DEFAULT_CHART_DEFAULTS: dict[str, dict[str, Any]] = {
     "scatter": {"x": "$item1", "y": "$item2", "color": "lot_id", "agg": "raw"},
+    "line": {"x": "tkout_time", "y": "$item1", "group": "lot_id", "agg": "median"},
+    "bar": {"x": "step_id", "y": "count", "group": "$item1", "agg": "count"},
+    "area": {"x": "tkout_time", "y": "$item1", "group": "lot_id", "agg": "median"},
+    "combo": {"x": "step_id", "y": "$item1", "group": "product", "agg": "median"},
+    "pie": {"x": "$item1", "y": "count", "agg": "count"},
+    "donut": {"x": "$item1", "y": "count", "agg": "count"},
+    "binning": {"x": "$item1", "bins": 10},
+    "pareto": {"x": "$item1", "y": "count", "agg": "count"},
+    "box": {"x": "step_id", "y": "$item1", "color": "product"},
     "boxplot": {"x": "step_id", "y": "$item1", "color": "product"},
+    "treemap": {"x": "$item1", "y": "count", "agg": "count"},
+    "heatmap": {"x": "$item1", "y": "$item2", "agg": "count"},
     "trend": {"x": "tkout_time", "y": "$item1", "group": "lot_id", "agg": "median"},
+    "table": {"columns": "$selected"},
+    "cross_table": {"x": "$item1", "y": "$item2", "agg": "count"},
     "correlation_matrix": {"items": "$selected", "method": "pearson"},
     "wafer_map": {"value": "$item1", "agg": "median"},
     "classification": {"x": "step_id", "y": "$item1", "group": "product"},
@@ -221,11 +247,34 @@ def infer_chart_type(prompt: str = "", selected_items: list[str] | None = None) 
     text = str(prompt or "")
     low = text.lower()
     selected_count = len([x for x in (selected_items or []) if x])
+    def has_latin(*terms: str) -> bool:
+        return any(re.search(rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])", low) for term in terms)
+
     if any(t in low or t in text for t in ("wafer map", "wf map", "웨이퍼맵", "2d")):
         return "wafer_map"
+    if has_latin("donut", "doughnut") or "도넛" in text:
+        return "donut"
+    if has_latin("pie") or any(t in text for t in ("파이", "원형")):
+        return "pie"
+    if has_latin("cross table", "crosstable", "pivot", "pivot table") or any(t in text for t in ("교차", "피벗")):
+        return "cross_table"
+    if has_latin("heatmap", "heat map") or "히트맵" in text:
+        return "heatmap"
+    if has_latin("treemap", "tree map") or "트리맵" in text:
+        return "treemap"
+    if has_latin("pareto") or "파레토" in text:
+        return "pareto"
+    if has_latin("histogram", "binning") or "히스토그램" in text:
+        return "binning"
+    if has_latin("bar", "bar chart", "column chart") or "막대" in text:
+        return "bar"
+    if has_latin("area", "area chart") or "면적" in text:
+        return "area"
+    if has_latin("table") or "테이블" in text:
+        return "table"
     if any(t in low or t in text for t in ("boxplot", "box plot", "박스", "분포")):
         return "boxplot"
-    if any(t in low or t in text for t in ("trend", "추세", "시계열")):
+    if has_latin("line", "line chart") or any(t in low or t in text for t in ("trend", "추세", "시계열", "라인")):
         return "trend"
     if any(t in low or t in text for t in ("classification", "분류", "step별")):
         return "classification"

@@ -1790,6 +1790,22 @@ def _meeting_ask_safe_llm_error(error: Any) -> tuple[str, str]:
     return "error", "LLM 호출에 실패해 저장 데이터 답변을 사용했습니다."
 
 
+MEETING_ASK_PLAIN_OUTPUT_RULE = (
+    "마크다운 강조 없이 plain text로 답변한다. **굵게**와 ### 제목은 쓰지 않는다. "
+    "요약, 결정사항, 액션아이템, 변경점 일정, 관련 이슈, 근거 같은 일반 텍스트 섹션명을 사용한다."
+)
+
+
+def _meeting_plain_answer_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = _re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
+    text = text.replace("**", "").replace("__", "")
+    text = _re.sub(r"(?m)^\s*[-*]{3,}\s*$", "", text)
+    return text.strip()
+
+
 def _meeting_ask_llm_answer(question: str, summary: dict) -> tuple[str, dict]:
     llm_info = {"available": False, "used": False}
     is_workspace = bool(summary.get("workspace"))
@@ -1809,12 +1825,14 @@ def _meeting_ask_llm_answer(question: str, summary: dict) -> tuple[str, dict]:
         if is_workspace:
             system = (
                 "당신은 Flow 회의/변경점 관리 질의 도우미다. 제공된 visible 회의와 변경점 이벤트 안에서만 한국어로 답한다. "
-                "근거가 없으면 없다고 말하고 추측하지 않는다. 숨김 데이터는 제공되지 않았으므로 언급하거나 추정하지 않는다."
+                "근거가 없으면 없다고 말하고 추측하지 않는다. 숨김 데이터는 제공되지 않았으므로 언급하거나 추정하지 않는다. "
+                + MEETING_ASK_PLAIN_OUTPUT_RULE
             )
         else:
             system = (
                 "당신은 Flow 회의록 질의 도우미다. 제공된 회의 데이터 안에서만 한국어로 답한다. "
-                "근거가 없으면 없다고 말하고 추측하지 않는다. 결정사항, 액션아이템, 아젠다를 구분해 간결하게 정리한다."
+                "근거가 없으면 없다고 말하고 추측하지 않는다. 결정사항, 액션아이템, 아젠다를 구분해 간결하게 정리한다. "
+                + MEETING_ASK_PLAIN_OUTPUT_RULE
             )
         prompt = _json.dumps({
             "question": question,
@@ -1823,12 +1841,15 @@ def _meeting_ask_llm_answer(question: str, summary: dict) -> tuple[str, dict]:
                 "제공된 데이터 밖의 사실은 만들지 않는다.",
                 "질문이 특정 항목을 묻더라도 관련된 결정사항/액션아이템/아젠다가 있으면 함께 짚는다.",
                 "담당자, 마감일, 차수, 일정, 변경점 이벤트 날짜가 있으면 유지한다.",
+                MEETING_ASK_PLAIN_OUTPUT_RULE,
             ],
         }, ensure_ascii=False)
         out = llm_adapter.complete(prompt, system=system, timeout=20)
         if out.get("ok") and (out.get("text") or "").strip():
-            llm_info["used"] = True
-            return (out.get("text") or "").strip(), llm_info
+            plain = _meeting_plain_answer_text(out.get("text"))
+            if plain:
+                llm_info["used"] = True
+                return plain, llm_info
         code, safe_error = _meeting_ask_safe_llm_error(out.get("error") or "empty llm response")
         llm_info["error_code"] = code
         llm_info["error"] = safe_error

@@ -83,6 +83,27 @@ def test_flowi_chart_request_returns_clarifying_unit_plan(monkeypatch):
     assert out["table"]["kind"] == "flowi_chart_plan"
 
 
+def test_flowi_product_only_pie_chart_returns_editable_dashboard_draft(monkeypatch):
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router.kv, "search_agent_wiki", lambda _q, limit=30: [])
+
+    out = _handle_flowi_query(
+        "PRODA 파이차트",
+        "",
+        12,
+        allowed_keys={"dashboard"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "dashboard_chart_draft_needs_context"
+    assert out["feature"] == "dashboard"
+    assert out["chart_type"] == "pie"
+    assert out["chart_config"]["chart_type"] == "pie"
+    assert out["chart_config"]["product"] == "PRODA"
+    assert "파이차트" in out["chart_config"]["title"]
+    assert {"source_type", "metric"}.issubset(set(out["missing"]))
+
+
 def test_flowi_chart_request_uses_admin_defaults(monkeypatch):
     monkeypatch.setattr(
         llm_router,
@@ -2786,6 +2807,115 @@ def test_flowi_agent_api_returns_confirmation_workflow_for_app_writes(monkeypatc
     assert any(a["type"] == "respond_with_prompt" and a["recommended"] for a in out["agent_api"]["next_actions"])
     assert out["tool"]["slots"]["lots"] == ["A0003"]
     assert out["tool"]["slots"]["wafers"] == ["3"]
+
+
+def test_flowi_meeting_recall_answer_is_plain_text_and_includes_issue_context(monkeypatch):
+    meeting = {
+        "id": "MT-REALISTIC-GAA",
+        "title": "[실전테스트] GAA Gate Vt shift change control",
+        "owner": "owner",
+        "status": "active",
+        "sessions": [{
+            "id": "SS-GAA-1",
+            "idx": 1,
+            "scheduled_at": "2026-05-14T09:00:00",
+            "status": "completed",
+            "agendas": [{
+                "title": "Gate stack split decision",
+                "description": "PRODA A1000 Vt shift containment",
+                "owner": "gate_owner",
+                "issue_ref": {
+                    "issue_id": "ISS-REAL-GAA",
+                    "title": "[실전테스트] GAA Gate Vt shift",
+                    "status": "in_progress",
+                    "username": "qa_owner",
+                    "lots": [{"product": "PRODA", "root_lot_id": "A1000", "fab_lot_id": "A1000A.1", "wafer_id": "06", "purpose": "Vt shift split hold"}],
+                },
+            }],
+            "minutes": {
+                "body": "Gate oxide pre-clean split은 hold하고 inline Vt monitor를 추가한다.",
+                "author": "owner",
+                "decisions": [{"text": "Gate Vt shift 조건은 PRODA A1000에서만 제한 적용", "due": "2026-05-15"}],
+                "action_items": [{"text": "GATE 모듈이 split hold inform 발행", "owner": "gate_owner", "due": "2026-05-15", "status": "pending"}],
+            },
+        }],
+    }
+    monkeypatch.setattr(llm_router, "_load_flowi_meetings", lambda: [meeting])
+    monkeypatch.setattr(llm_router, "_meeting_visible_to_flowi", lambda _meeting, _me: True)
+    monkeypatch.setattr(llm_router, "_load_flowi_calendar_events", lambda: [{
+        "date": "2026-05-15",
+        "title": "[실전테스트] Gate split release gate",
+        "body": "Risk: Vt shift 재발 시 rollback",
+        "status": "pending",
+        "source_type": "manual",
+        "author": "owner",
+        "meeting_ref": {"meeting_id": "MT-REALISTIC-GAA", "meeting_title": "[실전테스트] GAA Gate Vt shift change control"},
+    }])
+
+    out = llm_router._handle_meeting_recall(
+        "PRODA A1000 관련 이슈추적 목적과 회의 액션, 변경점 일정 보여줘",
+        max_rows=12,
+        me={"username": "viewer", "role": "admin"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "meeting_recall_summary"
+    assert "**" not in out["answer"]
+    assert "###" not in out["answer"]
+    assert "요약" in out["answer"]
+    assert "액션아이템" in out["answer"]
+    assert "관련 이슈" in out["answer"]
+    assert "변경점 일정" in out["answer"]
+    assert "ISS-REAL-GAA" in out["answer"]
+    assert "[실전테스트]" in out["answer"]
+
+
+def test_flowi_inform_module_summary_accepts_module_without_lot(monkeypatch):
+    from routers import informs as informs_router
+
+    monkeypatch.setattr(informs_router, "_effective_modules", lambda _username, _role: {"GATE"})
+    monkeypatch.setattr(informs_router, "_visible_to", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(informs_router, "_canonical_flow_status", lambda status, _entry=None: status or "registered")
+    monkeypatch.setattr(informs_router, "_load_upgraded", lambda: [
+        {
+            "id": "INF-REAL-GATE-1",
+            "created_at": "2026-05-14T10:00:00",
+            "product": "PRODA",
+            "root_lot_id": "A1000",
+            "lot_id": "A1000A.1",
+            "fab_lot_id_at_save": "A1000A.1",
+            "module": "GATE",
+            "flow_status": "mail_completed",
+            "reason": "[실전테스트] Gate hold inform",
+            "text": "Gate split hold notice",
+        },
+        {
+            "id": "INF-REAL-BEOL-1",
+            "created_at": "2026-05-14T11:00:00",
+            "product": "PRODA",
+            "root_lot_id": "A1000",
+            "lot_id": "A1000A.2",
+            "module": "BEOL",
+            "flow_status": "registered",
+            "reason": "Other module",
+            "text": "Other",
+        },
+    ])
+
+    out = llm_router._handle_flowi_inform_summary(
+        "GATE 모듈 인폼로그 최근 변경 적용 상태 요약해줘",
+        {"username": "viewer", "role": "admin"},
+        max_rows=12,
+        allowed_keys={"inform"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "inform_module_recent_summary"
+    assert "**" not in out["answer"]
+    assert "요약" in out["answer"]
+    assert "인폼 상태" in out["answer"]
+    assert "INF-REAL-GATE-1" in [row["id"] for row in out["table"]["rows"]]
+    assert all(row["module"] == "GATE" for row in out["table"]["rows"])
 
 
 def test_flowi_semiconductor_diagnosis_includes_file_source_profile(monkeypatch):
