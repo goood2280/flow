@@ -619,6 +619,10 @@ export default function My_FileBrowser({user,onNavigate}){
   const[aiSqlResult,setAiSqlResult]=useState(null);
   const[remoteCols,setRemoteCols]=useState([]);
   const[remoteColsLoading,setRemoteColsLoading]=useState(false);
+  const[mlLookupRoot,setMlLookupRoot]=useState("");
+  const[mlLookupWafer,setMlLookupWafer]=useState("");
+  const[mlLookupBusy,setMlLookupBusy]=useState(false);
+  const[mlLookupResult,setMlLookupResult]=useState(null);
   const fbCacheTargets=[
     ["lot_progress","LOT 진행 최신 캐시","lot_progress_latest_lot_by_root_wafer",fbCacheStatus.lot_progress],
   ];
@@ -953,6 +957,7 @@ export default function My_FileBrowser({user,onNavigate}){
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
     setPage(pageArg);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
+    setMlLookupResult(null);
     setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     const params={file,rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,meta_only:!full,_ts:Date.now()};
     const url=buildUrl(API+"/base-file-view",params);
@@ -1064,6 +1069,52 @@ export default function My_FileBrowser({user,onNavigate}){
       sf(url).then(d=>{if(activeSelectedCols.length)setSelectedCols(selectedColsFromResponse(d,activeSelectedCols));setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
     else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0});
+  };
+
+  const isMlTableBaseFile=()=>mode==="base"&&/^ML_TABLE_.+\.parquet$/i.test(String(selBaseFile||""));
+  const runMlTableLookup=async()=>{
+    const root=String(mlLookupRoot||"").trim();
+    if(!root){toast.warn("root_lot_id를 입력하세요.");return;}
+    if(!selBaseFile){toast.warn("ML_TABLE 파일을 먼저 선택하세요.");return;}
+    setMlLookupBusy(true);setError("");
+    try{
+      const d=await sf(API+"/ml-table/lookup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+        file:selBaseFile,
+        root_lot_id:root,
+        wafer_id:String(mlLookupWafer||"").trim(),
+        select_cols:selectedCols,
+      })});
+      setMlLookupResult(d);
+      if(d.lookup_cache_hit){
+        const cols=(d.columns||[]).map(c=>String(c||"")).filter(Boolean);
+        setData(prev=>({
+          ...(prev||{}),
+          kind:"table",
+          file:selBaseFile,
+          columns:cols,
+          showing_cols:cols,
+          selected_cols:cols.join(","),
+          data:d.data||[],
+          showing:d.showing||0,
+          total_rows:d.total_rows||0,
+          total_cols:cols.length,
+          meta_only:false,
+          has_more:false,
+          preview_row_limit:25,
+          lookup_cache_hit:true,
+          cache_status:d.cache_status||"",
+          source_stale:!!d.source_stale,
+          dtypes:{...(prev?.dtypes||{})},
+          all_columns:prev?.all_columns||cols,
+        }));
+      }else{
+        toast.info(d.cache_status==="running"?"조회 캐시 생성 중입니다.":"조회 캐시 준비 중입니다.");
+      }
+    }catch(e){
+      setError(e.message||String(e));
+    }finally{
+      setMlLookupBusy(false);
+    }
   };
 
   const draftAiSql=async()=>{
@@ -1735,6 +1786,17 @@ export default function My_FileBrowser({user,onNavigate}){
                   </>}
                 </div>
               </div>
+              {isMlTableBaseFile()&&<div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",margin:"0 0 12px",padding:"8px 10px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)"}}>
+                <span style={{fontSize:13,fontWeight:700,color:"var(--text-primary)"}}>ML_TABLE lot lookup</span>
+                <input value={mlLookupRoot} onChange={e=>setMlLookupRoot(e.target.value)} placeholder="root_lot_id" style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontFamily:"monospace",fontSize:13,minWidth:140}}/>
+                <input value={mlLookupWafer} onChange={e=>setMlLookupWafer(e.target.value)} placeholder="wafer" style={{padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontFamily:"monospace",fontSize:13,width:88}}/>
+                <button onClick={runMlTableLookup} disabled={mlLookupBusy} style={{padding:"6px 11px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:13,fontWeight:700,cursor:mlLookupBusy?"default":"pointer",opacity:mlLookupBusy?0.6:1}}>조회</button>
+                <span style={{fontSize:12,color:"var(--text-secondary)"}}>
+                  {selectedCols.length?`${selectedCols.length} selected cols`:"identity cols"}
+                  {mlLookupResult?` · ${mlLookupResult.cache_status||"-"}${mlLookupResult.lookup_cache_hit?` · ${mlLookupResult.showing||0}/${mlLookupResult.total_rows||0} rows`:""}`:""}
+                  {mlLookupResult?.source_stale?" · stale":""}
+                </span>
+              </div>}
               {/* Tabs: Data + Columns */}
               <div style={{display:"flex",gap:0,borderBottom:"1px solid var(--border)",marginBottom:12}}>
                 {baseEditingTabs.map(t=>(<div key={t} onClick={()=>setTab(t)} style={{padding:"8px 16px",fontSize:14,cursor:"pointer",fontWeight:tab===t?600:400,

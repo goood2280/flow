@@ -46,6 +46,7 @@ from pydantic import BaseModel
 import polars as pl
 from core import duckdb_engine
 from core import matching_cache as _matching_cache
+from core import ml_table_lookup as _ml_table_lookup
 from core import s3_sync as _s3
 from core.paths import PATHS
 from core.auth import current_user
@@ -3849,6 +3850,14 @@ class CacheCleanupReq(BaseModel):
     paths: list[str] = []
 
 
+class MlTableLookupReq(BaseModel):
+    file: str = ""
+    product: str = ""
+    root_lot_id: str = ""
+    select_cols: list[str] | str = []
+    wafer_id: str = ""
+
+
 def _cache_match_target(raw: str) -> str:
     target = str(raw or "").strip().lower()
     if target in {
@@ -4354,6 +4363,70 @@ def cache_llm_refresh(req: CacheLlmRefreshReq, request: Request):
         "llm": plan.get("llm") or {},
         "result": result,
     }
+
+
+def _resolve_ml_table_lookup_file(product: str = "", file: str = "") -> Path:
+    fp = _ml_table_lookup.resolve_ml_table_file(product=product, file=file)
+    if fp is None:
+        target = file or product
+        raise HTTPException(404, f"ML_TABLE parquet not found: {target}")
+    return fp
+
+
+@router.get("/ml-table/lookup-status")
+def ml_table_lookup_status(
+    request: Request,
+    product: str = Query(""),
+    file: str = Query(""),
+):
+    _require_filebrowser_user(request)
+    fp = _resolve_ml_table_lookup_file(product=product, file=file)
+    return _ml_table_lookup.cache_status(fp)
+
+
+@router.post("/ml-table/lookup")
+def ml_table_root_lot_lookup(req: MlTableLookupReq, request: Request):
+    """Cache-first ML_TABLE root_lot_id lookup.
+
+    Cold cache calls return readiness/build-queue state instead of scanning the
+    wide source parquet. When cache exists, only the requested root partition and
+    selected columns are read.
+    """
+    _require_filebrowser_user(request)
+    fp = _resolve_ml_table_lookup_file(product=req.product, file=req.file)
+    try:
+        return _ml_table_lookup.query_root_lot(
+            fp,
+            req.root_lot_id,
+            selected_cols=req.select_cols,
+            wafer_id=req.wafer_id,
+            enqueue_missing=True,
+        )
+    except _ml_table_lookup.MlTableLookupError as exc:
+        raise HTTPException(400, exc.to_detail())
+
+
+@router.get("/ml-table/lookup")
+def ml_table_root_lot_lookup_get(
+    request: Request,
+    product: str = Query(""),
+    file: str = Query(""),
+    root_lot_id: str = Query(""),
+    select_cols: str = Query(""),
+    wafer_id: str = Query(""),
+):
+    _require_filebrowser_user(request)
+    fp = _resolve_ml_table_lookup_file(product=product, file=file)
+    try:
+        return _ml_table_lookup.query_root_lot(
+            fp,
+            root_lot_id,
+            selected_cols=select_cols,
+            wafer_id=wafer_id,
+            enqueue_missing=True,
+        )
+    except _ml_table_lookup.MlTableLookupError as exc:
+        raise HTTPException(400, exc.to_detail())
 
 
 @router.get("/base-files")

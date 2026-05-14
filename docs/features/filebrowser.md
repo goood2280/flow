@@ -7,6 +7,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - DB root, root-level base/rulebook 파일 탐색
 - parquet/CSV schema, row preview, column 후보 확인. 기본 파일/DB 열기는 `meta_only=true` 계약으로 schema/mtime/size/cached row count만 반환하고 row data는 SQL 실행 또는 컬럼 선택 후 조회한다.
 - read-only SQL/filter/download preview
+- ML_TABLE `root_lot_id` lookup cache/API. 대형 `ML_TABLE_*.parquet`는 전체 preview가 아니라 `root_lot_id` + 선택 컬럼 조회를 기본 단위로 다룬다.
 - 빠른 화면 표시: DB/Parquet preview와 SQL/컬럼 선택 결과는 브라우저에 최대 200행, 기본 컬럼 100개만 표시한다. 5000열 같은 wide schema는 `schema_column_page_size`만 응답에 싣고, 컬럼 검색은 `/api/filebrowser/columns/search`로 서버 schema에서 찾는다.
 - CSV 다운로드: 화면 200행 제한과 별개로 톱니바퀴의 `csv_download_max_bytes`를 주 제한으로 사용한다. `csv_download_max_rows`는 legacy 보조 제한으로 유지하며, 서버 허용 한도(최대 500,000행 / 100MB)를 넘지 않는다.
 - 연결된 LLM을 통한 자연어 SQL 초안 작성. LLM은 SQL 입력창만 채우며 자동 실행하지 않는다.
@@ -26,6 +27,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 |---|---|
 | Frontend page | `frontend/src/pages/My_FileBrowser.jsx` |
 | Backend router | `backend/routers/filebrowser.py` |
+| ML_TABLE lookup cache | `backend/core/ml_table_lookup.py` |
 | Lot progress cache builder | `backend/core/lot_progress_cache.py` |
 | API helper | `frontend/src/lib/api.js` |
 | Flow-i guide | `data/flow-data/flowi_agent_features/filebrowser.md` |
@@ -34,6 +36,9 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 
 - Raw DB root는 `FLOW_DB_ROOT` 또는 `data/Fab/`에서 온다.
 - Runtime state와 cache는 `FLOW_DATA_ROOT` 또는 `data/flow-data/`에서 온다.
+- ML_TABLE lookup cache는 `FLOW_DB_ROOT/cache/ml_table_lookup/<ML_TABLE_STEM>/root_lot_id=<id>/*.parquet`에 저장한다. meta는 원본 path/mtime/size, row count, total cols, root_lot_id count, schema, build time을 담고 원본 mtime/size가 바뀌면 stale로 본다.
+- `POST /api/filebrowser/ml-table/lookup`은 `file` 또는 `product`, `root_lot_id`, `select_cols`, 선택 `wafer_id`를 받는다. cache가 없으면 원본 parquet을 즉시 scan하지 않고 `lookup_cache_hit=false`, `cache_status=queued|missing|running`과 빈 row를 반환하며 background build queue에 등록한다. stale cache가 있으면 `source_stale=true`를 표시하고 기존 cache로 조회하면서 rebuild를 queue한다.
+- `select_cols`가 비어 있으면 identity 컬럼(`root_lot_id`, `lot_id`/`fab_lot_id`, `wafer_id`, `step_id`, `function_step`, time 후보)만 반환한다. `*`/전체 컬럼 요청은 차단하고, 없는 컬럼은 `code=unknown_column` 400으로 반환한다. 결과 row는 최대 25행이다.
 - lot progress cache는 root lot id, wafer id별 최신 lot id를 parquet로 볼 수 있어야 한다.
 - cache 파일도 일반 파일처럼 목록 진입, schema 확인, preview가 가능해야 한다.
 - FileBrowser 캐시 탭에서 `lot_progress_latest_lot_by_root_wafer.parquet`만 수동 재생성할 수 있다.
@@ -114,6 +119,7 @@ Agent 탭(Flow-i)이 FileBrowser를 driver로 호출할 때 사용하는 unit ac
 | `filebrowser.scopes` | - | scope list (DB / Files; cache files are exposed under Files/cache) | user | - |
 | `filebrowser.list` | `scope`, `path?` | 디렉터리 + 파일 목록 | user | `scope` |
 | `filebrowser.preview` | `scope`, `path`, `rows?`, `cols?` | schema + sample preview | user | `scope`, `path` |
+| `filebrowser.ml_table.lookup` | `file?`, `product?`, `root_lot_id`, `select_cols?`, `wafer_id?` | 최대 25행의 선택 컬럼 + `lookup_cache_hit`, `cache_status`, `source_stale` | user | `root_lot_id` |
 | `filebrowser.lot_progress.latest` | `root_lot_id`, `wafer_id?` | `step_id`, `function_step`, `lot_id`, source path | user | `root_lot_id` |
 | `filebrowser.csv.rules.read` | `csv_name` | `csv_rules` 정의 (filebrowser_settings.json) | user | `csv_name` |
 | `filebrowser.csv.rules.draft` | `file`, `prompt`, `columns`, `sample_rows`, `current_rule` | 저장하지 않은 `csv_rules` 초안 + warnings | manager | `file`, `prompt` |
@@ -125,6 +131,7 @@ Agent 탭(Flow-i)이 FileBrowser를 driver로 호출할 때 사용하는 unit ac
 자연어 예시 → action 매핑:
 - `A1000 #21 현재 step이 어디야` → `filebrowser.lot_progress.latest` (`lot_progress_latest_lot_by_root_wafer.parquet` 우선)
 - `이 csv 미리 보여줘` → `filebrowser.preview`
+- `PRODA A1000 KNOB_ALPHA 보여줘` → `filebrowser.ml_table.lookup` (`ML_TABLE_PRODA.parquet` lookup cache 우선)
 - `PRODA FAB wafer 3 조건 SQL 초안 만들어줘` → `filebrowser.sql.llm.draft` (Home에서 SQL/filter, 선택 컬럼, preview table, warnings 표시)
 - `DB root에 뭐 있어` → `filebrowser.list` (`scope=db`, root path)
 - `ppid_knob.csv 규칙 뭐야` → `filebrowser.csv.rules.read`

@@ -35,6 +35,7 @@ from core.audit import record_user as _audit_user
 from core.auth import current_user, is_page_manager, require_page_manager
 from core.domain import classify_process_area
 from core import matching_cache as _matching_cache
+from core import ml_table_lookup as _ml_table_lookup
 from core import s3_sync as _s3
 from core.utils import (
     _STR, is_cat, find_lot_wafer_cols, load_json, save_json, safe_id,
@@ -610,6 +611,22 @@ def _scan_product_base(product: str):
     if fp.suffix.lower() == ".csv":
         return _cast_cats_lazy(pl.scan_csv(str(fp), infer_schema_length=5000))
     return _cast_cats_lazy(_scan_parquet_compat(str(fp)))
+
+
+def _scan_product_base_lookup_cache(product: str, root_lot_id: str = "", wafer_ids: str = ""):
+    """Use the ML_TABLE root lookup cache when a lot-scoped view is available."""
+    if not str(root_lot_id or "").strip():
+        return None
+    try:
+        fp = _product_path(product)
+        if fp.suffix.lower() != ".parquet":
+            return None
+        lf, status = _ml_table_lookup.scan_root_lot_cache(fp, root_lot_id, wafer_ids=wafer_ids)
+        if lf is not None:
+            return _cast_cats_lazy(lf)
+    except Exception as exc:
+        logger.debug("ML_TABLE lookup cache unavailable product=%s root=%s: %s", product, root_lot_id, exc)
+    return None
 
 
 def _strip_non_authoritative_fab_fields(lf, product: str):
@@ -6137,7 +6154,9 @@ def _scan_product(product: str, root_lot_id: str = "", fab_lot_id: str = "",
       - override_cols 가 join_keys 만 남으면 경고 후 raw lf 반환.
     """
     product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
-    lf = _scan_product_base(product)
+    lf = _scan_product_base_lookup_cache(product, root_lot_id=root_lot_id, wafer_ids=wafer_ids)
+    if lf is None:
+        lf = _scan_product_base(product)
 
     # v8.8.3: 오버라이드 로직 근본 재정리.
     #   1) 매뉴얼 config(lot_overrides[product].fab_source) 가 있으면 그 값을 사용.

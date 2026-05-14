@@ -20,6 +20,7 @@ from core import utils  # noqa: E402
 from core import duckdb_engine  # noqa: E402
 from core import llm_adapter  # noqa: E402
 from core import auth as auth_core  # noqa: E402
+from core import ml_table_lookup  # noqa: E402
 from routers import filebrowser  # noqa: E402
 
 
@@ -187,6 +188,121 @@ def test_filebrowser_cache_refresh_only_supports_lot_progress(monkeypatch):
 
     assert exc.value.status_code == 400
     assert "Only lot_progress" in str(exc.value.detail)
+
+
+def test_ml_table_lookup_missing_returns_readiness_without_source_scan(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(ml_table_lookup, "PATHS", dummy_paths)
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    fp.write_bytes(b"not-a-real-parquet")
+    enqueued = []
+
+    def fake_enqueue(path):
+        enqueued.append(path)
+        return {"ok": True, "status": "queued", "queued": [str(path)], "current": ""}
+
+    def fail_scan(*_args, **_kwargs):
+        raise AssertionError("cold lookup must not scan source parquet")
+
+    monkeypatch.setattr(ml_table_lookup, "enqueue_build", fake_enqueue)
+    monkeypatch.setattr(ml_table_lookup.pl, "scan_parquet", fail_scan)
+
+    out = filebrowser.ml_table_root_lot_lookup(
+        filebrowser.MlTableLookupReq(file=fp.name, root_lot_id="R1000"),
+        _Request("viewer", "user"),
+    )
+
+    assert out["lookup_cache_hit"] is False
+    assert out["cache_status"] == "queued"
+    assert out["data"] == []
+    assert enqueued == [fp.resolve()]
+
+
+def test_ml_table_lookup_cache_returns_selected_columns_and_caps_rows(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(ml_table_lookup, "PATHS", dummy_paths)
+    fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame({
+        "product": ["PRODX"] * 30,
+        "root_lot_id": ["R1000"] * 30,
+        "lot_id": ["R1000A.1"] * 30,
+        "wafer_id": [str(i + 1) for i in range(30)],
+        "step_id": ["S1"] * 30,
+        "function_step": ["SORT"] * 30,
+        "tkout_time": ["2026-05-01T00:00:00"] * 30,
+        "KNOB_A": [f"V{i}" for i in range(30)],
+        "KNOB_B": [f"B{i}" for i in range(30)],
+    }).write_parquet(fp)
+
+    built = ml_table_lookup.build_lookup_cache(fp, force=True)
+    out = ml_table_lookup.query_root_lot(fp, "R1000", selected_cols=["wafer_id", "KNOB_A"])
+
+    assert built["ok"] is True
+    assert out["lookup_cache_hit"] is True
+    assert out["cache_status"] == "fresh"
+    assert out["columns"] == ["wafer_id", "KNOB_A"]
+    assert out["showing"] == 25
+    assert out["total_rows"] == 30
+    assert out["limited"] is True
+    assert set(out["data"][0]) == {"wafer_id", "KNOB_A"}
+
+
+def test_ml_table_lookup_defaults_to_identity_columns(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(ml_table_lookup, "PATHS", dummy_paths)
+    fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["R1000"],
+        "lot_id": ["R1000A.1"],
+        "wafer_id": ["1"],
+        "step_id": ["S1"],
+        "function_step": ["SORT"],
+        "tkout_time": ["2026-05-01T00:00:00"],
+        "KNOB_A": ["ON"],
+    }).write_parquet(fp)
+    ml_table_lookup.build_lookup_cache(fp, force=True)
+
+    out = ml_table_lookup.query_root_lot(fp, "R1000")
+
+    assert out["columns"] == ["root_lot_id", "lot_id", "wafer_id", "step_id", "function_step", "tkout_time"]
+    assert "KNOB_A" not in out["data"][0]
+
+
+def test_ml_table_lookup_rejects_unknown_and_full_width_columns(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(ml_table_lookup, "PATHS", dummy_paths)
+    fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame({"root_lot_id": ["R1000"], "wafer_id": ["1"], "KNOB_A": ["ON"]}).write_parquet(fp)
+    ml_table_lookup.build_lookup_cache(fp, force=True)
+
+    with pytest.raises(ml_table_lookup.MlTableLookupError) as unknown:
+        ml_table_lookup.query_root_lot(fp, "R1000", selected_cols=["NOPE"])
+    with pytest.raises(ml_table_lookup.MlTableLookupError) as full:
+        ml_table_lookup.query_root_lot(fp, "R1000", selected_cols=["*"])
+
+    assert unknown.value.code == "unknown_column"
+    assert full.value.code == "full_width_blocked"
+
+
+def test_ml_table_lookup_uses_stale_cache_while_rebuild_is_queued(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(ml_table_lookup, "PATHS", dummy_paths)
+    fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame({"root_lot_id": ["R1000"], "wafer_id": ["1"], "KNOB_A": ["ON"]}).write_parquet(fp)
+    ml_table_lookup.build_lookup_cache(fp, force=True)
+    pl.DataFrame({"root_lot_id": ["R1000", "R2000"], "wafer_id": ["1", "1"], "KNOB_A": ["NEW", "OFF"]}).write_parquet(fp)
+    enqueued = []
+    monkeypatch.setattr(ml_table_lookup, "enqueue_build", lambda path: enqueued.append(path) or {"ok": True, "status": "queued"})
+
+    out = ml_table_lookup.query_root_lot(fp, "R1000", selected_cols=["wafer_id", "KNOB_A"])
+
+    assert out["lookup_cache_hit"] is True
+    assert out["cache_status"] == "stale"
+    assert out["source_stale"] is True
+    assert out["data"] == [{"wafer_id": "1", "KNOB_A": "ON"}]
+    assert enqueued == [fp.resolve()]
 
 
 def test_db_cache_builds_et_step_seq_point_summary(monkeypatch, tmp_path):

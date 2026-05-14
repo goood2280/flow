@@ -94,7 +94,8 @@ Agent가 사용하는 기본 LLM은 **사내 API의 GPT OSS 120B**다. 검증/�
 
 - `PRODA A1001A.1 KNOB Split Table 보여줘`는 SplitTable view API를 호출하고 `KNOB` prefix row만 보여준다.
 - `A1000 #21 현재 step이 어디야`는 FileBrowser latest progress cache에서 `step_id`와 `function_step`을 찾는다.
-- `PRODA 24.0 SORT KNOB PPID_24_1인 WF 중에 가장 빠른게 뭐야`는 ML_TABLE에서 matching `lot_wf`를 찾고 latest progress cache의 step 순서로 정렬한다.
+- `PRODA A1000 KNOB_ALPHA 보여줘`처럼 root lot이 명시된 ML_TABLE feature/knob 조회는 `/api/filebrowser/ml-table/lookup`과 `core.ml_table_lookup.query_root_lot` cache를 우선 사용한다.
+- `PRODA 24.0 SORT KNOB PPID_24_1인 WF 중에 가장 빠른게 뭐야`는 ML_TABLE에서 matching `lot_wf`를 찾고 latest progress cache의 step 순서로 정렬한다. 이처럼 root lot 없는 value 역검색은 전체 후보 탐색이 필요하므로 별도 검색 경로를 쓴다.
 - `PRODA A1000 test2 커스텀 세트로 인폼남겨줘`는 Inform Log draft로 보내며 module, note, 수신처가 없으면 확인 질문을 먼저 만든다.
 - `A1001A.3 이거 무슨랏이야`는 Tracker issue lot 목적(`purpose`)을 조회한다.
 

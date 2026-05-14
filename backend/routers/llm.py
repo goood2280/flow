@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 import polars as pl
 
 from core import duckdb_engine
+from core import ml_table_lookup
 from core.paths import PATHS
 from core.utils import _STR, load_json, save_json
 from core.auth import current_user, require_admin, is_page_admin
@@ -393,6 +394,7 @@ FLOWI_REGISTERED_UNIT_ACTIONS = {
     "filebrowser.csv.rules.read",
     "filebrowser.csv.rules.draft",
     "filebrowser.sql.llm.draft",
+    "filebrowser.ml_table.lookup",
     "filebrowser.cache.lot_progress.refresh",
     "filebrowser.cache.lot_progress.status",
     "filebrowser.cache.llm.refresh",
@@ -456,6 +458,7 @@ FLOWI_UNIT_ACTIONS = {
             "filebrowser.scopes",
             "filebrowser.list",
             "filebrowser.preview",
+            "filebrowser.ml_table.lookup",
             "filebrowser.lot_progress.latest",
             "filebrowser.csv.rules.read",
             "filebrowser.cache.lot_progress.refresh",
@@ -6280,7 +6283,7 @@ def _flowi_api_target_for_function(function_name: str, feature: str = "") -> dic
     if name in {"query_splittable_view", "query_wafer_split_at_step"}:
         return {"api": "/api/splittable/view", "handler": "routers.splittable.view_split"}
     if name == "query_lot_knobs_from_ml_table":
-        return {"api": "data/Fab/ML_TABLE_<product>.parquet", "handler": "_handle_knob_query"}
+        return {"api": "/api/filebrowser/ml-table/lookup (ML_TABLE lookup cache)", "handler": "_handle_knob_query"}
     if name == "find_lots_by_knob_value":
         return {"api": "ML_TABLE + latest progress cache", "handler": "_handle_find_lots_by_knob_value"}
     if name == "register_inform_log":
@@ -11996,14 +11999,17 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
             "answer": "ML_TABLE parquet을 찾지 못했습니다. DB root의 `ML_TABLE_*.parquet` 파일을 확인해주세요.",
             "knobs": [],
         }
-    lf = _scan_parquet(files)
-    cols = _schema_names(lf)
+    group = _flowi_group_token(prompt) or "KNOB"
+    lf, cols, lookup_status = _ml_lookup_lazy_for_lots(files, lot_scope_matches, group)
+    lookup_cache_used = lf is not None
+    if lf is None:
+        lf = _scan_parquet(files)
+        cols = _schema_names(lf)
     product_col = _ci_col(cols, "product", "PRODUCT")
     root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
     lot_col = _ci_col(cols, "lot_id", "LOT_ID")
     fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
     wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID")
-    group = _flowi_group_token(prompt) or "KNOB"
     prefixes = (f"{group}_",) if group in {"KNOB", "MASK", "INLINE", "VM"} else ("KNOB_",)
     knob_cols = [c for c in cols if _upper(c).startswith(prefixes)]
     if not knob_cols:
@@ -12232,7 +12238,16 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
         "highlight": highlight,
         "table": primary_table,
         "wafer_table": table if primary_table is custom_set_table else None,
-        "filters": {"lot": lot_matches, "lot_scope": lot_scope_matches, "product": sorted(aliases), "step": step, "group": group, "source": "ML_TABLE"},
+        "filters": {
+            "lot": lot_matches,
+            "lot_scope": lot_scope_matches,
+            "product": sorted(aliases),
+            "step": step,
+            "group": group,
+            "source": "ml_table_lookup_cache" if lookup_cache_used else "ML_TABLE",
+            "lookup_cache_hit": lookup_cache_used,
+            "cache_status": (lookup_status or {}).get("status") or "",
+        },
     }, "table", prompt=prompt, highlight=highlight)
 
 
@@ -13266,6 +13281,55 @@ def _flowi_plan_value(raw: Any) -> str:
         raw = raw.get("value")
     val = "" if raw is None else str(raw)
     return "" if val in {"None", "null"} else val
+
+
+def _ml_lookup_lazy_for_lots(files: list[Path], lot_terms: list[str], group: str) -> tuple[pl.LazyFrame | None, list[str], dict[str, Any]]:
+    if not files or not lot_terms:
+        return None, [], {}
+    fp = Path(files[0])
+    try:
+        status = ml_table_lookup.cache_status(fp)
+    except Exception:
+        return None, [], {}
+    if not status.get("has_cache"):
+        return None, [], status
+    meta = status.get("meta") or {}
+    schema = meta.get("schema") or {}
+    cols = list(schema.keys())
+    if not cols:
+        return None, [], status
+    group_u = str(group or "KNOB").upper()
+    prefixes = (f"{group_u}_",) if group_u in {"KNOB", "MASK", "INLINE", "VM"} else ("KNOB_",)
+    value_cols = [c for c in cols if _upper(c).startswith(prefixes)]
+    keep = ml_table_lookup.identity_columns(cols) + [c for c in value_cols if c not in ml_table_lookup.identity_columns(cols)]
+    if not keep:
+        return None, [], status
+    rows: list[dict[str, Any]] = []
+    seen_roots: set[str] = set()
+    for raw in lot_terms[:8]:
+        root = str(raw or "").strip().upper()
+        if "." in root:
+            root = root.split(".", 1)[0]
+        if not root or root in seen_roots:
+            continue
+        seen_roots.add(root)
+        try:
+            out = ml_table_lookup.query_root_lot(
+                fp,
+                root,
+                selected_cols=keep,
+                enqueue_missing=False,
+            )
+        except Exception:
+            continue
+        if out.get("lookup_cache_hit"):
+            rows.extend(out.get("data") or [])
+    if not rows:
+        return None, cols, status
+    try:
+        return pl.DataFrame(rows).lazy(), keep, status
+    except Exception:
+        return None, cols, status
 
 
 def _handle_splittable_plan_mismatch_query(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
@@ -14980,6 +15044,15 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
             callee="core.lot_progress_cache.lot_progress_snapshot",
             purpose="root_lot_id와 wafer_id로 최신 step_id/function_step 조회",
             payload={k: (args.get(k) or slots.get(k)) for k in ("product", "root_lot_ids", "wafer_ids", "lot_wf_ids") if (args.get(k) or slots.get(k))},
+        )
+    elif action == "query_lot_knobs_from_ml_table" or intent == "lot_knobs":
+        add(
+            name="ML_TABLE root lot lookup",
+            method="POST",
+            path="/api/filebrowser/ml-table/lookup",
+            callee="core.ml_table_lookup.query_root_lot",
+            purpose="root_lot_id 기준 lookup cache에서 선택 컬럼만 조회",
+            payload={k: args.get(k) or filters.get(k) or slots.get(k) for k in ("product", "root_lot_ids", "wafer_ids", "step", "group", "cache_status") if (args.get(k) or filters.get(k) or slots.get(k))},
         )
     elif action == "find_lots_by_knob_value" or intent == "knob_value_lot_search":
         add(
