@@ -27,6 +27,9 @@ def test_lot_progress_metadata_documents_filebrowser_cache_rules():
     assert "wafer_id" in meta["wafer_id_source_column"]
     assert "step_matching.csv" in meta["step_mapping_sources"]
     assert meta["manual_change_points"]["db_root"] == "settings.json.lot_progress_source_root"
+    assert meta["manual_change_points"]["column_mapping"] == "settings.json.lot_progress_column_mapping"
+    assert meta["column_mapping"]["root_lot_id"] == "root_lot_id"
+    assert meta["column_mapping"]["ppid"] == "ppid"
 
 
 def test_tracker_lot_status_cache_keeps_requested_fields(monkeypatch, tmp_path):
@@ -232,6 +235,72 @@ def test_refresh_lot_progress_cache_prefers_source_update_time_for_latest(monkey
     assert state["count"] == 1
     assert state["items"][0]["lot_id"] == "A1000A.NEW"
     assert state["items"][0]["update_time"] == "2026-05-08T13:00:00"
+
+
+def test_refresh_lot_progress_cache_uses_custom_column_mapping(monkeypatch, tmp_path):
+    data_root = tmp_path / "flow-data"
+    db_root = tmp_path / "Fab"
+    fab_product = db_root / "1.RAWDATA_DB_FAB" / "PRODA"
+    fab_product.mkdir(parents=True)
+    data_root.mkdir(parents=True)
+    mapping = {
+        "root_lot_id": "ROOT_LOT",
+        "lot_id": "FAB_LOT",
+        "wafer_id": "WF",
+        "step_id": "STEP",
+        "process_id": "PROC",
+        "tkin_time": "IN_TIME",
+        "tkout_time": "OUT_TIME",
+        "time": "EVENT_TIME",
+        "update_time": "UPDATED",
+        "eqp_id": "EQP",
+        "chamber_id": "CHAMBER",
+        "ppid": "PPID_COL",
+    }
+    (data_root / "settings.json").write_text(json.dumps({"lot_progress_column_mapping": mapping}), encoding="utf-8")
+    pl.DataFrame({
+        "ROOT_LOT": ["A1000", "A1000"],
+        "FAB_LOT": ["A1000A.1", "A1000A.2"],
+        "WF": ["W01", "W01"],
+        "STEP": ["STEP_010", "STEP_020"],
+        "PROC": ["PRODA", "PRODA"],
+        "IN_TIME": ["2026-05-08T08:00:00", "2026-05-08T09:00:00"],
+        "OUT_TIME": ["2026-05-08T08:30:00", "2026-05-08T09:30:00"],
+        "UPDATED": ["2026-05-08T08:40:00", "2026-05-08T09:40:00"],
+        "EQP": ["E1", "E2"],
+        "CHAMBER": ["C1", "C2"],
+        "PPID_COL": ["P1", "P2"],
+    }).write_parquet(fab_product / "part.parquet")
+
+    class DummyPaths:
+        def __init__(self):
+            self.cache_dir = data_root / "cache"
+            self.db_cache_dir = db_root / "cache"
+            self.data_root = data_root
+            self.db_root = db_root
+            self.base_root = db_root
+
+    monkeypatch.setattr(cache, "PATHS", DummyPaths())
+    monkeypatch.setattr(cache, "load_step_matching", lambda: ({}, {}))
+    monkeypatch.setattr(cache, "_CACHE_STATE", None)
+
+    state = cache.refresh_lot_progress_cache(force=True)
+    df = pl.read_parquet(cache.filebrowser_cache_parquet_file())
+    status = cache.cache_status()
+
+    assert state["column_mapping"] == mapping
+    assert state["count"] == 1
+    assert state["items"][0]["root_lot_id"] == "A1000"
+    assert state["items"][0]["lot_id"] == "A1000A.2"
+    assert state["items"][0]["wafer_id"] == "1"
+    assert state["items"][0]["step_id"] == "STEP_020"
+    assert state["items"][0]["eqp_id"] == "E2"
+    assert df.columns == [
+        "product", "root_lot_id", "wafer_id", "lot_id",
+        "step_id", "function_step", "tkout_time", "update_time",
+    ]
+    assert df.to_dicts()[0]["lot_id"] == "A1000A.2"
+    assert status["column_mapping"] == mapping
 
 
 def test_refresh_lot_progress_cache_reads_internal_rawdata_root_alias(monkeypatch, tmp_path):

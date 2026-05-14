@@ -1554,6 +1554,32 @@ def _csv_rule_summary(rule: dict) -> dict | None:
     }
 
 
+_CSV_VALIDATION_RULE_KEYS = (
+    "required_columns", "not_empty", "unique_keys", "enums",
+    "numeric", "date", "regex", "conditions", "ordered_by",
+)
+_CSV_SORT_RULE_KEYS = ("sort",)
+
+
+def _csv_rule_sections(rule: dict) -> dict:
+    if not isinstance(rule, dict):
+        rule = {}
+    validation_logic = {
+        key: copy.deepcopy(rule[key])
+        for key in _CSV_VALIDATION_RULE_KEYS
+        if rule.get(key)
+    }
+    sort_logic = {
+        key: copy.deepcopy(rule[key])
+        for key in _CSV_SORT_RULE_KEYS
+        if rule.get(key)
+    }
+    return {
+        "validation_logic": validation_logic,
+        "sort_logic": sort_logic,
+    }
+
+
 _CSV_RULE_ALLOWED_KEYS = {
     "required_columns", "not_empty", "unique_keys", "enums", "numeric",
     "date", "regex", "conditions", "ordered_by", "sort",
@@ -1967,6 +1993,98 @@ def _has_numeric_intent(prompt: str) -> bool:
     ))
 
 
+def _has_date_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return bool(re.search(r"\b(date|datetime|timestamp|time)\b", low)) or any(term in text for term in (
+        "날짜", "일자", "일시", "시간 형식", "시간값", "시간 값",
+    ))
+
+
+def _prompt_term_positions(text: str, terms: tuple[str, ...]) -> list[int]:
+    low = str(text or "").casefold()
+    positions: list[int] = []
+    for term in terms:
+        needle = str(term or "").casefold()
+        if not needle:
+            continue
+        start = 0
+        while True:
+            idx = low.find(needle, start)
+            if idx < 0:
+                break
+            positions.append(idx)
+            start = idx + max(1, len(needle))
+    return positions
+
+
+def _column_positions(text: str, column: str) -> list[int]:
+    low = str(text or "").casefold()
+    variants = [str(column or "").casefold()]
+    spaced = str(column or "").replace("_", " ").casefold()
+    if spaced not in variants:
+        variants.append(spaced)
+    out: list[int] = []
+    for variant in variants:
+        if not variant:
+            continue
+        start = 0
+        while True:
+            idx = low.find(variant, start)
+            if idx < 0:
+                break
+            out.append(idx)
+            start = idx + max(1, len(variant))
+    return out
+
+
+def _prompt_columns_near_terms(prompt: str, resolved: list[str], terms: tuple[str, ...], *, window: int = 32) -> list[str]:
+    term_positions = _prompt_term_positions(prompt, terms)
+    if not term_positions:
+        return []
+    out: list[str] = []
+    for col in resolved:
+        col_positions = _column_positions(prompt, col)
+        if any(abs(cpos - tpos) <= window for cpos in col_positions for tpos in term_positions):
+            out.append(col)
+    return out
+
+
+def _numeric_targets_from_prompt(prompt: str, resolved: list[str]) -> list[str]:
+    if not resolved or not _has_numeric_intent(prompt):
+        return []
+    numeric_name_re = re.compile(r"(rank|order|sort|seq|count|cnt|qty|num|number|idx|index|priority|score|value|rate|ratio|pct|percent|min|max|limit)", re.I)
+    numeric_named = [col for col in resolved if numeric_name_re.search(col)]
+    near = _prompt_columns_near_terms(
+        prompt,
+        resolved,
+        ("numeric", "number", "integer", "float", "min", "max", "숫자", "정수", "이상", "이하", "초과", "미만"),
+        window=32,
+    )
+    if numeric_named:
+        return [col for col in near if col in numeric_named] or numeric_named
+    if len(resolved) == 1:
+        return resolved
+    return near[:1]
+
+
+def _date_targets_from_prompt(prompt: str, resolved: list[str]) -> list[str]:
+    if not resolved or not _has_date_intent(prompt):
+        return []
+    date_named = [col for col in resolved if _looks_date_like_column(col)]
+    near = _prompt_columns_near_terms(
+        prompt,
+        resolved,
+        ("date", "datetime", "timestamp", "time", "날짜", "일자", "일시", "시간"),
+        window=32,
+    )
+    if date_named:
+        return [col for col in near if col in date_named] or date_named
+    if len(resolved) == 1:
+        return resolved
+    return near
+
+
 def _numeric_rule_from_prompt(prompt: str, target: str) -> dict:
     text = str(prompt or "")
     low = text.lower()
@@ -2024,6 +2142,15 @@ def _condition_rules_from_prompt(prompt: str, resolved: list[str]) -> list[dict]
     text = str(prompt or "")
     if len(resolved) < 2:
         return []
+    lookup = _column_lookup(resolved)
+    for match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|==|!=|>|<)\s*([A-Za-z_][A-Za-z0-9_]*)\b", text):
+        left_key = match.group(1).casefold()
+        right_key = match.group(3).casefold()
+        left = lookup.get(left_key)
+        right = lookup.get(right_key)
+        if left and right:
+            op = match.group(2)
+            return [{"expr": f"{left} {op} {right}", "message": f"{left} must be {op} {right}"}]
     if any(term in text for term in ("빠르면 안", "보다 빠르", "이전이면 안", "작으면 안")):
         left = resolved[0]
         right = resolved[1]
@@ -2031,25 +2158,41 @@ def _condition_rules_from_prompt(prompt: str, resolved: list[str]) -> list[dict]
     return []
 
 
-def _sort_rule_from_prompt(prompt: str, columns: list[str], resolved: list[str]) -> dict:
+def _order_intents_from_prompt(prompt: str) -> tuple[bool, bool]:
     text = str(prompt or "")
     low = text.lower()
-    has_sort = bool(re.search(r"\b(sort|ordered|order by)\b", low))
-    has_sort = has_sort or any(term in text for term in (
-        "정렬", "순서대로", "오름차순", "내림차순", "정렬되어", "정렬됐", "정렬되었",
+    has_order = bool(re.search(r"\b(sort|ordered|order by)\b", low))
+    has_order = has_order or any(term in text for term in (
+        "정렬", "순서", "오름차순", "내림차순", "앞에 숫자", "앞 숫자", "선행 숫자", "숫자에 따라서", "숫자 기준",
     ))
-    has_sort = has_sort or (
-        any(term in text for term in ("앞에 숫자", "앞 숫자", "선행 숫자", "숫자에 따라서", "숫자 기준"))
-        and any(term in text for term in ("해줘", "정렬", "오름차순", "내림차순", "기준", "따라서"))
-    )
-    if not has_sort:
+    if not has_order:
+        return False, False
+    validate_order = any(term in low or term in text for term in (
+        "validate", "check order", "order check",
+        "검증", "검사", "확인", "현재 순서", "현재 행 순서", "순서가 맞", "정렬되어 있는지", "정렬 검증",
+    ))
+    save_sort = any(term in low or term in text for term in (
+        "save", "on save", "when saving",
+        "저장", "저장할 때", "저장 시", "저장 정렬", "정렬해줘", "정렬해서 저장", "순서대로 저장",
+    ))
+    if not validate_order and not save_sort:
+        save_sort = True
+    return validate_order, save_sort
+
+
+def _sort_rule_from_prompt(prompt: str, columns: list[str], resolved: list[str]) -> dict:
+    validate_order, save_sort = _order_intents_from_prompt(prompt)
+    if not (validate_order or save_sort):
         return {}
     specs = _fallback_sort_specs(prompt, resolved or columns, expert=False)
     if not specs:
         return {}
-    if any(term in low or term in text for term in ("검증", "validate", "현재 행 순서", "정렬되어")) and not any(term in text for term in ("저장", "save")):
-        return {"ordered_by": {"keys": specs}}
-    return {"sort": specs}
+    out: dict = {}
+    if validate_order:
+        out["ordered_by"] = {"keys": specs}
+    if save_sort:
+        out["sort"] = specs
+    return out
 
 
 def _settings_prompt_explicit_rule(prompt: str, columns: list[str], current_rule: dict,
@@ -2079,11 +2222,16 @@ def _settings_prompt_explicit_rule(prompt: str, columns: list[str], current_rule
     numeric_cols: set[str] = set()
     if resolved and _has_numeric_intent(prompt):
         explicit_seen = True
-        target = resolved[0]
-        numeric = _numeric_rule_from_prompt(prompt, target)
-        if numeric:
-            rule.setdefault("numeric", {}).update(numeric)
-            numeric_cols.add(target)
+        for target in _numeric_targets_from_prompt(prompt, resolved) or [resolved[0]]:
+            numeric = _numeric_rule_from_prompt(prompt, target)
+            if numeric:
+                rule.setdefault("numeric", {}).update(numeric)
+                numeric_cols.add(target)
+
+    date_cols = _date_targets_from_prompt(prompt, resolved)
+    if date_cols:
+        explicit_seen = True
+        rule["date"] = date_cols
 
     sort_rule = _sort_rule_from_prompt(prompt, columns, resolved)
     regex_rules = {} if sort_rule and not _has_regex_format_intent(prompt) else _regex_rule_from_prompt(prompt, resolved)
@@ -2200,9 +2348,21 @@ def _looks_date_like_column(column: str) -> bool:
     return bool(re.search(r"(date|time|_dt$|^dt_|created|updated|start|end)", str(column or ""), flags=re.I))
 
 
+def _order_prompt_segment(prompt: str) -> str:
+    text = str(prompt or "")
+    markers = (
+        "sort", "ordered", "order by",
+        "정렬", "순서", "오름차순", "내림차순", "현재 순서", "현재 행 순서",
+    )
+    parts = [part for part in re.split(r"[.;\n]", text) if part.strip()]
+    selected = [part for part in parts if any(marker in part.lower() or marker in part for marker in markers)]
+    return " ".join(selected) if selected else text
+
+
 def _fallback_sort_specs(prompt: str, columns: list[str], *, expert: bool = False) -> list[dict]:
     lookup = _column_lookup(columns)
-    low = str(prompt or "").casefold()
+    order_text = _order_prompt_segment(prompt)
+    low = order_text.casefold()
     direction = _fallback_sort_direction(prompt)
     mentioned = [
         col for col in columns
@@ -2347,13 +2507,16 @@ def _settings_draft_fallback_rule(prompt: str, columns: list[str], current_rule:
         conditions = _fallback_condition_rules(columns)
         if conditions and not rule.get("conditions"):
             rule["conditions"] = conditions
-    if (expert or any(token in low or token in str(prompt or "") for token in (
+    validate_order, save_sort = _order_intents_from_prompt(prompt)
+    if (expert or validate_order or save_sort or any(token in low or token in str(prompt or "") for token in (
         "sort", "order", "정렬", "순서", "오름차순", "내림차순", "앞에 숫자", "앞 숫자", "선행 숫자",
     ))) and not rule.get("sort") and not rule.get("ordered_by"):
         specs = _fallback_sort_specs(prompt, columns, expert=expert)
         if specs:
-            rule["ordered_by"] = {"keys": specs}
-            rule["sort"] = specs
+            if expert or validate_order:
+                rule["ordered_by"] = {"keys": specs}
+            if expert or save_sort or not validate_order:
+                rule["sort"] = specs
     if not rule:
         _draft_warning(warnings, "LLM unavailable or empty; no deterministic draft could be inferred.")
     else:
@@ -2725,14 +2888,23 @@ def _validate_and_sort_csv_rows(file: str, header: list[str], data_rows: list[li
             "columns": len(header),
             "rule_applied": False,
             "rule_summary": None,
+            "rule_sections": _csv_rule_sections({}),
+            "sorted": False,
+            "sort_preview_applied": False,
+            "save_sort_applies_on_success": False,
         }
     validation = _validate_csv_rule(header, data_rows, rule)
     validation["rule_applied"] = True
     validation["rule_summary"] = _csv_rule_summary(rule)
+    validation["rule_sections"] = _csv_rule_sections(rule)
+    validation["save_sort_applies_on_success"] = bool(rule.get("sort"))
     if not validation.get("ok"):
+        validation["sorted"] = False
+        validation["sort_preview_applied"] = False
         return data_rows, validation
     sorted_rows = _apply_csv_sort_rule(header, data_rows, rule)
     validation["sorted"] = bool(rule.get("sort"))
+    validation["sort_preview_applied"] = bool(rule.get("sort"))
     return sorted_rows, validation
 
 
@@ -3837,6 +4009,7 @@ class CacheMatchSettingsReq(BaseModel):
     interval_minutes: int = 30
     auto_s3_upload_on_save: bool | None = None
     source_root: str | None = None
+    column_mapping: dict | None = None
 
 
 class CacheLlmRefreshReq(BaseModel):
@@ -3885,14 +4058,68 @@ def _lot_progress_source_root_setting() -> str:
         return _cache_safe_text(current.get("lot_progress_source_root", ""), 160)
 
 
+def _lot_progress_column_mapping_setting() -> dict:
+    current = load_json(_cache_settings_file(), {})
+    if not isinstance(current, dict):
+        current = {}
+    try:
+        from core import lot_progress_cache as _lot_progress_cache
+        key = getattr(_lot_progress_cache, "COLUMN_MAPPING_SETTING_KEY", "lot_progress_column_mapping")
+        return _lot_progress_cache.normalize_lot_progress_column_mapping(current.get(key))
+    except Exception:
+        defaults = {
+            "root_lot_id": "root_lot_id",
+            "lot_id": "lot_id",
+            "wafer_id": "wafer_id",
+            "step_id": "step_id",
+            "process_id": "process_id",
+            "tkin_time": "tkin_time",
+            "tkout_time": "tkout_time",
+            "time": "time",
+            "update_time": "update_time",
+            "eqp_id": "eqp_id",
+            "chamber_id": "chamber_id",
+            "ppid": "ppid",
+        }
+        raw = current.get("lot_progress_column_mapping")
+        if not isinstance(raw, dict):
+            raw = {}
+        return {key: _cache_safe_text(raw.get(key) or value, 120) for key, value in defaults.items()}
+
+
 def _lot_progress_metadata() -> dict:
     try:
         from core import lot_progress_cache as _lot_progress_cache
-        return dict(_lot_progress_cache.metadata())
+        meta = dict(_lot_progress_cache.metadata())
+        column_mapping = _lot_progress_column_mapping_setting()
+        meta["column_mapping"] = column_mapping
+        meta["lot_id_source_column"] = column_mapping.get("lot_id", "lot_id")
+        meta["root_lot_id_source_column"] = column_mapping.get("root_lot_id", "root_lot_id")
+        meta["wafer_id_source_column"] = f"{column_mapping.get('wafer_id', 'wafer_id')} (normalized, e.g. W01/#01 -> 1)"
+        meta.setdefault("column_mapping_setting", "settings.json.lot_progress_column_mapping")
+        meta.setdefault("column_mapping_defaults", column_mapping)
+        manual_points = dict(meta.get("manual_change_points") or {})
+        manual_points.setdefault("column_mapping", "settings.json.lot_progress_column_mapping")
+        meta["manual_change_points"] = manual_points
+        return meta
     except Exception:
+        default_column_mapping = {
+            "root_lot_id": "root_lot_id",
+            "lot_id": "lot_id",
+            "wafer_id": "wafer_id",
+            "step_id": "step_id",
+            "process_id": "process_id",
+            "tkin_time": "tkin_time",
+            "tkout_time": "tkout_time",
+            "time": "time",
+            "update_time": "update_time",
+            "eqp_id": "eqp_id",
+            "chamber_id": "chamber_id",
+            "ppid": "ppid",
+        }
         return {
             "product_binding": {
-                "rule": "Product is bound from the product folder directly under the effective FAB DB root.",
+                "rule": "product는 FAB DB root 바로 아래 제품 폴더명으로 고정합니다.",
                 "example_path_shape": "<db_root>/<effective_db_root>/<product>/.../*.parquet",
                 "source_column": "product_dir.name",
                 "code_location": "backend/core/lot_progress_cache.py product folder rule",
@@ -3902,6 +4129,9 @@ def _lot_progress_metadata() -> dict:
             "lot_id_source_column": "lot_id",
             "root_lot_id_source_column": "root_lot_id",
             "wafer_id_source_column": "wafer_id (normalized, e.g. W01/#01 -> 1)",
+            "column_mapping_setting": "settings.json.lot_progress_column_mapping",
+            "column_mapping": default_column_mapping,
+            "column_mapping_defaults": default_column_mapping,
             "step_mapping_sources": [
                 "Vehicle_matching.csv",
                 "vehicle_matching.csv",
@@ -3911,6 +4141,7 @@ def _lot_progress_metadata() -> dict:
             ],
             "manual_change_points": {
                 "db_root": "settings.json.lot_progress_source_root",
+                "column_mapping": "settings.json.lot_progress_column_mapping",
                 "product_binding": "backend/core/lot_progress_cache.py product folder rule",
                 "latest_rule": "backend/core/lot_progress_cache.py _sort_time and latest key creation",
                 "step_mapping": "root-level matching CSV files",
@@ -4255,6 +4486,32 @@ def cache_match_settings(req: CacheMatchSettingsReq, request: Request):
             source_root = _cache_safe_text(req.source_root, 160)
             source_root_key = "lot_progress_source_root"
         current[source_root_key] = source_root
+    if req.column_mapping is not None:
+        try:
+            from core import lot_progress_cache as _lot_progress_cache
+            mapping_key = getattr(_lot_progress_cache, "COLUMN_MAPPING_SETTING_KEY", "lot_progress_column_mapping")
+            column_mapping = _lot_progress_cache.normalize_lot_progress_column_mapping(req.column_mapping)
+        except Exception:
+            mapping_key = "lot_progress_column_mapping"
+            defaults = {
+                "root_lot_id": "root_lot_id",
+                "lot_id": "lot_id",
+                "wafer_id": "wafer_id",
+                "step_id": "step_id",
+                "process_id": "process_id",
+                "tkin_time": "tkin_time",
+                "tkout_time": "tkout_time",
+                "time": "time",
+                "update_time": "update_time",
+                "eqp_id": "eqp_id",
+                "chamber_id": "chamber_id",
+                "ppid": "ppid",
+            }
+            column_mapping = {
+                key: _cache_safe_text((req.column_mapping or {}).get(key) or value, 120)
+                for key, value in defaults.items()
+            }
+        current[mapping_key] = column_mapping
     save_json(settings_path, current, indent=2)
     if req.auto_s3_upload_on_save is not None:
         fb_settings = _load_filebrowser_settings()
@@ -4264,7 +4521,7 @@ def cache_match_settings(req: CacheMatchSettingsReq, request: Request):
         "username": me.get("username") or "",
         "action": "filebrowser:cache-settings:save",
         "tab": "filebrowser",
-        "detail": f"lot_progress_refresh_minutes={minutes} lot_progress_source_root={current.get('lot_progress_source_root', '')} auto_s3_upload_on_save={_filebrowser_auto_s3_upload_enabled()}",
+        "detail": f"lot_progress_refresh_minutes={minutes} lot_progress_source_root={current.get('lot_progress_source_root', '')} lot_progress_column_mapping={len(current.get('lot_progress_column_mapping') or {})} auto_s3_upload_on_save={_filebrowser_auto_s3_upload_enabled()}",
     })
     return cache_match_status(request=request, target="lot_progress")
 
@@ -7488,10 +7745,15 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
         if llm_info["available"]:
             system = _filebrowser_agent_prompt("settings_draft.system", (
                 "You are an expert Flow FileBrowser CSV rule designer. Return only JSON. "
+                "검증로직(validation_logic)은 실패 시 저장을 막는 규칙이며 required_columns, not_empty, "
+                "unique_keys, enums, numeric, date, regex, conditions, ordered_by만 사용할 수 있다. "
+                "정렬로직(sort_logic)은 검증 통과 후 저장 시 물리 CSV row 순서를 바꾸는 규칙이며 sort만 사용할 수 있다. "
                 "Use only supplied columns and only csv_rules keys: required_columns, not_empty, "
                 "unique_keys, enums, numeric, date, regex, conditions, ordered_by, sort. "
                 "Draft the most detailed safe rule set the prompt supports. "
-                "ordered_by validates existing row order; sort physically reorders rows on save. "
+                "ordered_by validates existing row order and blocks save when the current order is wrong; sort physically reorders rows on save only after validation passes. "
+                "If the user says 현재 순서 검증 or 순서가 맞는지 검사, use ordered_by. "
+                "If the user says 저장할 때 정렬 or 저장 순서대로 정렬, use sort. "
                 "Order spec type must be one of string, numeric, date, leading_number, rule_order. "
                 "conditions must be simple Polars SQL boolean expressions over supplied columns. "
                 "Do not write files, source code, paths, shell commands, or unsupported keys."
@@ -7573,6 +7835,7 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
         "file": file_key,
         "unit_action": "filebrowser.settings.llm.draft",
         "draft": draft,
+        "draft_sections": _csv_rule_sections(draft),
         "csv_rules": {file_key: draft} if draft else {},
         "warnings": warnings,
         "columns": columns,
@@ -7661,6 +7924,8 @@ def validate_base_file_csv(req: BaseFileValidateReq, request: Request):
         "columns_list": header,
         "preview_rows": [dict(zip(header, row)) for row in sorted_rows[:20]],
         "sorted_csv_text": _rows_to_csv_text(header, sorted_rows, used_delim, include_header=req.include_header) if result.get("ok") else "",
+        "save_policy": "validation_blocks_save; sort_applies_only_after_validation_passes",
+        "save_policy_label": "검증 통과 시 저장 정렬 적용",
     })
     return result
 

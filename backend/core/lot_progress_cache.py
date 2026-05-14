@@ -27,6 +27,12 @@ CACHE_REFRESH_MINUTES_DEFAULT = 30
 CACHE_REFRESH_MINUTES_MIN = 1
 CACHE_REFRESH_MINUTES_MAX = 1440
 SOURCE_ROOT_SETTING_KEY = "lot_progress_source_root"
+COLUMN_MAPPING_SETTING_KEY = "lot_progress_column_mapping"
+LOT_PROGRESS_CANONICAL_COLUMNS = (
+    "root_lot_id", "lot_id", "wafer_id", "step_id", "process_id",
+    "tkin_time", "tkout_time", "time", "update_time", "eqp_id", "chamber_id", "ppid",
+)
+DEFAULT_LOT_PROGRESS_COLUMN_MAPPING = {col: col for col in LOT_PROGRESS_CANONICAL_COLUMNS}
 STEP_MAPPING_FILENAMES = (
     "Vehicle_matching.csv",
     "vehicle_matching.csv",
@@ -66,21 +72,26 @@ def filebrowser_cache_parquet_file() -> Path:
 
 def metadata() -> dict:
     """Static operational metadata for the FileBrowser LOT progress cache."""
+    column_mapping = lot_progress_column_mapping()
     return {
         "product_binding": {
-            "rule": "Product is bound from the product folder directly under the effective FAB DB root.",
+            "rule": "product는 FAB DB root 바로 아래 제품 폴더명으로 고정합니다.",
             "example_path_shape": "<db_root>/<effective_db_root>/<product>/.../*.parquet",
             "source_column": "product_dir.name",
             "code_location": "backend/core/lot_progress_cache.py product folder rule",
         },
         "latest_key_columns": ["product", "LOT_WF(root_lot_id + wafer_id)"],
         "latest_order_columns": ["update_time", "tkout_time", "tkin_time", "time"],
-        "lot_id_source_column": "lot_id",
-        "root_lot_id_source_column": "root_lot_id",
-        "wafer_id_source_column": "wafer_id (normalized, e.g. W01/#01 -> 1)",
+        "lot_id_source_column": column_mapping.get("lot_id", "lot_id"),
+        "root_lot_id_source_column": column_mapping.get("root_lot_id", "root_lot_id"),
+        "wafer_id_source_column": f"{column_mapping.get('wafer_id', 'wafer_id')} (normalized, e.g. W01/#01 -> 1)",
+        "column_mapping_setting": f"settings.json.{COLUMN_MAPPING_SETTING_KEY}",
+        "column_mapping": column_mapping,
+        "column_mapping_defaults": dict(DEFAULT_LOT_PROGRESS_COLUMN_MAPPING),
         "step_mapping_sources": list(STEP_MAPPING_FILENAMES),
         "manual_change_points": {
             "db_root": "settings.json.lot_progress_source_root",
+            "column_mapping": f"settings.json.{COLUMN_MAPPING_SETTING_KEY}",
             "product_binding": "backend/core/lot_progress_cache.py product folder rule",
             "latest_rule": "backend/core/lot_progress_cache.py _sort_time and latest key creation",
             "step_mapping": "root-level matching CSV files",
@@ -293,6 +304,37 @@ def lot_progress_cache_source_root() -> str:
         return ""
     raw = data.get(SOURCE_ROOT_SETTING_KEY, "")
     return _clean_source_root_hint(raw)
+
+
+def _clean_column_mapping_name(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"[\x00\r\n\t]+", " ", text)
+    return text[:120].strip()
+
+
+def normalize_lot_progress_column_mapping(value=None) -> dict[str, str]:
+    mapping = dict(DEFAULT_LOT_PROGRESS_COLUMN_MAPPING)
+    if not isinstance(value, dict):
+        return mapping
+    for canonical in LOT_PROGRESS_CANONICAL_COLUMNS:
+        raw = value.get(canonical)
+        clean = _clean_column_mapping_name(raw)
+        if clean:
+            mapping[canonical] = clean
+    return mapping
+
+
+def lot_progress_column_mapping() -> dict[str, str]:
+    settings_path = PATHS.data_root / "settings.json"
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.is_file() else {}
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        return dict(DEFAULT_LOT_PROGRESS_COLUMN_MAPPING)
+    return normalize_lot_progress_column_mapping(data.get(COLUMN_MAPPING_SETTING_KEY))
 
 
 def _safe_text(value) -> str:
@@ -569,44 +611,62 @@ def load_step_matching() -> tuple[dict[tuple[str, str], str], dict[str, str]]:
     return by_product, by_step
 
 
-_FAB_PROGRESS_COLUMNS = [
-    "root_lot_id", "lot_id", "wafer_id", "process_id", "step_id",
-    "tkin_time", "tkout_time", "update_time", "time", "eqp_id", "chamber_id", "ppid",
-]
+_FAB_PROGRESS_COLUMNS = list(LOT_PROGRESS_CANONICAL_COLUMNS)
 
 
-def _available_fab_progress_columns(path: Path) -> list[str]:
+def _mapped_fab_progress_columns(column_mapping: dict | None = None) -> list[str]:
+    mapping = normalize_lot_progress_column_mapping(column_mapping)
+    out: list[str] = []
+    seen: set[str] = set()
+    for canonical in _FAB_PROGRESS_COLUMNS:
+        source = _clean_column_mapping_name(mapping.get(canonical) or canonical)
+        if source and source not in seen:
+            seen.add(source)
+            out.append(source)
+    return out
+
+
+def _available_fab_progress_columns(path: Path, column_mapping: dict | None = None) -> list[str]:
+    mapped_columns = _mapped_fab_progress_columns(column_mapping)
     try:
         import polars as pl  # type: ignore
         schema = pl.read_parquet_schema(str(path))
         names = set(schema.keys() if hasattr(schema, "keys") else schema)
-        return [col for col in _FAB_PROGRESS_COLUMNS if col in names]
+        return [col for col in mapped_columns if col in names]
     except Exception:
         pass
     try:
         import pyarrow.parquet as pq  # type: ignore
         names = set(pq.ParquetFile(str(path)).schema.names)
-        return [col for col in _FAB_PROGRESS_COLUMNS if col in names]
+        return [col for col in mapped_columns if col in names]
     except Exception:
-        return list(_FAB_PROGRESS_COLUMNS)
+        return mapped_columns
 
 
-def _fill_missing_progress_columns(row: dict) -> dict:
-    out = dict(row or {})
-    for col in _FAB_PROGRESS_COLUMNS:
-        out.setdefault(col, None)
+def _fill_missing_progress_columns(row: dict, column_mapping: dict | None = None) -> dict:
+    mapping = normalize_lot_progress_column_mapping(column_mapping)
+    raw = dict(row or {})
+    lower_lookup = {str(key).casefold(): value for key, value in raw.items()}
+    out: dict = {}
+    for canonical in _FAB_PROGRESS_COLUMNS:
+        source = mapping.get(canonical) or canonical
+        if source in raw:
+            out[canonical] = raw.get(source)
+        else:
+            out[canonical] = lower_lookup.get(str(source).casefold())
     return out
 
 
-def _read_parquet_rows(path: Path) -> Iterable[dict]:
-    columns = _available_fab_progress_columns(path)
+def _read_parquet_rows(path: Path, column_mapping: dict | None = None) -> Iterable[dict]:
+    mapping = normalize_lot_progress_column_mapping(column_mapping)
+    columns = _available_fab_progress_columns(path, mapping)
     if not columns:
         return
     try:
         import polars as pl  # type: ignore
         df = pl.read_parquet(str(path), columns=columns)
         for row in df.iter_rows(named=True):
-            yield _fill_missing_progress_columns(row)
+            yield _fill_missing_progress_columns(row, mapping)
         return
     except Exception:
         pass
@@ -614,7 +674,7 @@ def _read_parquet_rows(path: Path) -> Iterable[dict]:
         import pandas as pd  # type: ignore
         df = pd.read_parquet(str(path), columns=columns)
         for row in df.to_dict(orient="records"):
-            yield _fill_missing_progress_columns(row)
+            yield _fill_missing_progress_columns(row, mapping)
         return
     except Exception:
         pass
@@ -622,7 +682,7 @@ def _read_parquet_rows(path: Path) -> Iterable[dict]:
         import pyarrow.parquet as pq  # type: ignore
         table = pq.read_table(str(path), columns=columns)
         for row in table.to_pylist():
-            yield _fill_missing_progress_columns(row)
+            yield _fill_missing_progress_columns(row, mapping)
     except Exception as exc:
         logger.warning("FAB parquet read failed: %s (%s)", path, exc)
 
@@ -813,14 +873,30 @@ def _state_source_root_matches(state: dict | None, source_root: str = "") -> boo
     return any(_source_ref_matches(candidate, hint) for candidate in candidates)
 
 
+def _state_column_mapping_matches(state: dict | None, column_mapping: dict | None = None) -> bool:
+    expected = normalize_lot_progress_column_mapping(column_mapping)
+    if not isinstance(state, dict):
+        return False
+    stored = state.get("column_mapping")
+    if not isinstance(stored, dict):
+        return expected == dict(DEFAULT_LOT_PROGRESS_COLUMN_MAPPING)
+    return normalize_lot_progress_column_mapping(stored) == expected
+
+
 def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> dict:
     """Rebuild the LOT_WF current-position cache from FAB parquet."""
     global _CACHE_STATE, _CACHE_RUNNING, _CACHE_LAST_SKIPPED_BY_LOCK
     source_root_hint = _clean_source_root_hint(source_root) or lot_progress_cache_source_root()
+    column_mapping = lot_progress_column_mapping()
     with _CACHE_LOCK:
         cache_path = cache_file()
         max_age_seconds = lot_progress_cache_refresh_seconds()
-        if not force and _CACHE_STATE and _state_source_root_matches(_CACHE_STATE, source_root_hint):
+        if (
+            not force
+            and _CACHE_STATE
+            and _state_source_root_matches(_CACHE_STATE, source_root_hint)
+            and _state_column_mapping_matches(_CACHE_STATE, column_mapping)
+        ):
             generated_at = _safe_text(_CACHE_STATE.get("generated_at"))
             try:
                 age = (dt.datetime.now() - dt.datetime.fromisoformat(generated_at)).total_seconds()
@@ -894,7 +970,7 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> di
                     for parquet in product_dir.rglob("*.parquet"):
                         files_scanned += 1
                         try:
-                            rows = _read_parquet_rows(parquet)
+                            rows = _read_parquet_rows(parquet, column_mapping)
                             for raw in rows:
                                 rows_seen += 1
                                 root_lot_id = _safe_text(raw.get("root_lot_id"))
@@ -963,6 +1039,7 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> di
                 "source_roots": source_roots,
                 "effective_source_roots": source_roots,
                 "source_root_candidates": source_root_candidates,
+                "column_mapping": column_mapping,
                 "cache_file": str(cache_path),
                 "count": len(items),
                 "files_scanned": files_scanned,
@@ -1012,9 +1089,14 @@ def load_lot_progress_cache(max_age_seconds: int | None = None) -> dict:
     if max_age_seconds is None:
         max_age_seconds = lot_progress_cache_refresh_seconds()
     source_root_hint = lot_progress_cache_source_root()
+    column_mapping = lot_progress_column_mapping()
     should_refresh = False
     with _CACHE_LOCK:
-        if _CACHE_STATE and _state_source_root_matches(_CACHE_STATE, source_root_hint):
+        if (
+            _CACHE_STATE
+            and _state_source_root_matches(_CACHE_STATE, source_root_hint)
+            and _state_column_mapping_matches(_CACHE_STATE, column_mapping)
+        ):
             generated_at = _safe_text(_CACHE_STATE.get("generated_at"))
             try:
                 age = (dt.datetime.now() - dt.datetime.fromisoformat(generated_at)).total_seconds()
@@ -1028,7 +1110,11 @@ def load_lot_progress_cache(max_age_seconds: int | None = None) -> dict:
                 state = json.loads(path.read_text(encoding="utf-8"))
                 generated_at = _safe_text(state.get("generated_at"))
                 age = (dt.datetime.now() - dt.datetime.fromisoformat(generated_at)).total_seconds()
-                if age <= max_age_seconds and _state_source_root_matches(state, source_root_hint):
+                if (
+                    age <= max_age_seconds
+                    and _state_source_root_matches(state, source_root_hint)
+                    and _state_column_mapping_matches(state, column_mapping)
+                ):
                     _CACHE_STATE = state
                     return dict(state)
             except Exception:

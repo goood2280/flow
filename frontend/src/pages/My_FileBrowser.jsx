@@ -166,6 +166,16 @@ const formatOrderedByLines=(value)=>{
   if(Array.isArray(value))return formatSortLines(value);
   return formatSortLines(value?.keys||[]);
 };
+const LOT_PROGRESS_COLUMNS=["root_lot_id","lot_id","wafer_id","step_id","process_id","tkin_time","tkout_time","time","update_time","eqp_id","chamber_id","ppid"];
+const defaultLotProgressColumnMapping=()=>LOT_PROGRESS_COLUMNS.reduce((acc,col)=>({...acc,[col]:col}),{});
+const normalizeLotProgressColumnMapping=(value={})=>{
+  const base=defaultLotProgressColumnMapping();
+  LOT_PROGRESS_COLUMNS.forEach(col=>{
+    const text=String(value?.[col]??"").trim();
+    if(text)base[col]=text;
+  });
+  return base;
+};
 const emptyRuleForm=()=>({required_columns:"",not_empty:"",unique_keys:"",enums:"",numeric:"",date:"",regex:"",conditions:"",ordered_by:"",sort:""});
 const ruleToForm=(rule={})=>({
   required_columns:joinRuleList(rule.required_columns),
@@ -246,16 +256,38 @@ const ruleSummaryGroups=(rule={})=>{
   const list=(key,label,values)=>{if(values?.length)groups.push({key,label,items:values.map(v=>String(v))});};
   list("required_columns","필수 컬럼",rule.required_columns||[]);
   list("not_empty","빈 값 금지",rule.not_empty||[]);
-  if(rule.unique_keys?.length)groups.push({key:"unique_keys",label:"Unique key",items:rule.unique_keys.map(cols=>(cols||[]).join(" + "))});
-  if(rule.enums&&Object.keys(rule.enums).length)groups.push({key:"enums",label:"Enum",items:Object.entries(rule.enums).map(([col,vals])=>`${col}: ${(vals||[]).join("|")}`)});
-  if(rule.numeric&&Object.keys(rule.numeric).length)groups.push({key:"numeric",label:"Numeric",items:Object.entries(rule.numeric).map(([col,spec])=>`${col}${spec?.min!==undefined?" min="+spec.min:""}${spec?.max!==undefined?" max="+spec.max:""}${spec?.integer?" integer":""}`)});
-  list("date","Date",rule.date||[]);
-  if(rule.regex&&Object.keys(rule.regex).length)groups.push({key:"regex",label:"Regex",items:Object.entries(rule.regex).map(([col,pattern])=>`${col}: ${pattern}`)});
-  if(rule.conditions?.length)groups.push({key:"conditions",label:"Condition",items:rule.conditions.map(x=>`${x.expr||""}${x.message?" => "+x.message:""}`)});
-  if(rule.ordered_by?.keys?.length)groups.push({key:"ordered_by",label:"Ordered by",items:rule.ordered_by.keys.map(x=>[x.column,x.direction||"asc",x.type||"string",x.nulls||"last"].join(" "))});
-  if(rule.sort?.length)groups.push({key:"sort",label:"Save sort",items:rule.sort.map(x=>[x.column,x.direction||"asc",x.type||"string",x.nulls||"last"].join(" "))});
+  if(rule.unique_keys?.length)groups.push({key:"unique_keys",label:"중복 금지",items:rule.unique_keys.map(cols=>(cols||[]).join(" + "))});
+  if(rule.enums&&Object.keys(rule.enums).length)groups.push({key:"enums",label:"허용값",items:Object.entries(rule.enums).map(([col,vals])=>`${col}: ${(vals||[]).join("|")}`)});
+  if(rule.numeric&&Object.keys(rule.numeric).length)groups.push({key:"numeric",label:"숫자",items:Object.entries(rule.numeric).map(([col,spec])=>`${col}${spec?.min!==undefined?" min="+spec.min:""}${spec?.max!==undefined?" max="+spec.max:""}${spec?.integer?" integer":""}`)});
+  list("date","날짜/시간",rule.date||[]);
+  if(rule.regex&&Object.keys(rule.regex).length)groups.push({key:"regex",label:"정규식",items:Object.entries(rule.regex).map(([col,pattern])=>`${col}: ${pattern}`)});
+  if(rule.conditions?.length)groups.push({key:"conditions",label:"조건",items:rule.conditions.map(x=>`${x.expr||""}${x.message?" => "+x.message:""}`)});
+  if(rule.ordered_by?.keys?.length)groups.push({key:"ordered_by",label:"현재 순서 검증",items:rule.ordered_by.keys.map(x=>[x.column,x.direction||"asc",x.type||"string",x.nulls||"last"].join(" "))});
+  if(rule.sort?.length)groups.push({key:"sort",label:"저장 정렬",items:rule.sort.map(x=>[x.column,x.direction||"asc",x.type||"string",x.nulls||"last"].join(" "))});
   return groups;
 };
+const VALIDATION_RULE_KEYS=new Set(["required_columns","not_empty","unique_keys","enums","numeric","date","regex","conditions","ordered_by"]);
+const ruleSummarySections=(rule={})=>{
+  const groups=ruleSummaryGroups(rule);
+  return [
+    {key:"validation",label:"검증로직",groups:groups.filter(g=>VALIDATION_RULE_KEYS.has(g.key))},
+    {key:"sort",label:"정렬로직",groups:groups.filter(g=>g.key==="sort")},
+  ];
+};
+const validationRuleFields=[
+  ["required_columns","필수 컬럼","id, name"],
+  ["not_empty","빈 값 금지","id, name"],
+  ["unique_keys","중복 금지 키","product, lot_id, wafer_id"],
+  ["enums","허용값","status=OK|NG|HOLD"],
+  ["numeric","숫자","rank min=1 max=999 integer=true"],
+  ["date","날짜/시간 컬럼","created_at, updated_at"],
+  ["regex","정규식","code=[A-Z]{2}\\d{2}"],
+  ["conditions","AND 통과 조건","end_time >= start_time => 종료가 시작보다 빠를 수 없습니다"],
+  ["ordered_by","현재 순서 검증","product asc string last\nfeature_name asc leading_number last\nrule_order asc rule_order last"],
+];
+const sortRuleFields=[
+  ["sort","저장 정렬","product asc string last\nfeature_name asc leading_number last\nrule_order asc rule_order last"],
+];
 const normalizePageableSource = (file) => (file||"");
 function formatSize(b){if(!b)return"-";if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB";}
 function revStyle(rev){
@@ -604,7 +636,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const[fbSelectedFile,setFbSelectedFile]=useState("");
   const[fbRuleForm,setFbRuleForm]=useState(emptyRuleForm());
   const[fbValidation,setFbValidation]=useState(null);
-  const[fbSettingsLlmPrompt,setFbSettingsLlmPrompt]=useState("현재 CSV 컬럼 기준으로 필수 컬럼, 빈 값 금지, unique key, 정렬 규칙 초안 만들어줘");
+  const[fbSettingsLlmPrompt,setFbSettingsLlmPrompt]=useState("현재 CSV 컬럼 기준으로 필수 컬럼, 빈 값 금지, unique key 검증로직과 저장 시 정렬로직 초안 만들어줘");
   const[fbSettingsLlmBusy,setFbSettingsLlmBusy]=useState(false);
   const[fbSettingsLlmDraft,setFbSettingsLlmDraft]=useState(null);
   const[fbCacheStatus,setFbCacheStatus]=useState({lot_progress:null});
@@ -612,6 +644,7 @@ export default function My_FileBrowser({user,onNavigate}){
   const[fbCacheMsg,setFbCacheMsg]=useState("");
   const[fbCacheInterval,setFbCacheInterval]=useState("30");
   const[fbCacheSourceRoot,setFbCacheSourceRoot]=useState("");
+  const[fbCacheColumnMapping,setFbCacheColumnMapping]=useState(defaultLotProgressColumnMapping());
   const[fbCacheSettingsBusy,setFbCacheSettingsBusy]=useState(false);
   const[aiSqlOpen,setAiSqlOpen]=useState(false);
   const[aiSqlPrompt,setAiSqlPrompt]=useState("");
@@ -711,7 +744,7 @@ export default function My_FileBrowser({user,onNavigate}){
     try{
       const d=await sf(API+"/base-file/validate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:fbSelectedFile,csv_text:csvText,delimiter:sameOpen?saveDelimiter:"auto",include_header:sameOpen?includeHeader:true})});
       setFbValidation(d);
-      setFbSettingsMsg(d.ok?`검증 통과 · rows ${d.rows||0}${d.sorted?" · 정렬 적용":""}`:`검증 실패 · ${d.error_count||0}건`);
+      setFbSettingsMsg(d.ok?`검증 통과 · rows ${d.rows||0}${d.sorted?" · 검증 통과 시 저장 정렬 적용":""}`:`검증 실패 · ${d.error_count||0}건`);
     }catch(e){
       setFbValidation({ok:false,errors:[{message:e.message||"검증 실패"}]});
       setFbSettingsMsg(e.message||"검증 실패");
@@ -770,18 +803,20 @@ export default function My_FileBrowser({user,onNavigate}){
       setFbCacheStatus({lot_progress:lotProgress});
       if(lotProgress?.interval_minutes)setFbCacheInterval(String(lotProgress.interval_minutes));
       if(Object.prototype.hasOwnProperty.call(lotProgress||{},"configured_source_root"))setFbCacheSourceRoot(String(lotProgress.configured_source_root||""));
+      setFbCacheColumnMapping(normalizeLotProgressColumnMapping(lotProgress?.column_mapping||lotProgress?.column_mapping_defaults));
       if(Object.prototype.hasOwnProperty.call(lotProgress||{},"auto_s3_upload_on_save"))setFbAutoS3Upload(!!lotProgress.auto_s3_upload_on_save);
     }catch(_){}
   };
   const saveFilebrowserCacheSchedule=async()=>{
     setFbCacheSettingsBusy(true);setFbCacheMsg("");
     try{
-      const d=await sf(API+"/cache/match/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:"lot_progress",interval_minutes:Number(fbCacheInterval||30),source_root:fbCacheSourceRoot,auto_s3_upload_on_save:!!fbAutoS3Upload})});
+      const d=await sf(API+"/cache/match/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({target:"lot_progress",interval_minutes:Number(fbCacheInterval||30),source_root:fbCacheSourceRoot,auto_s3_upload_on_save:!!fbAutoS3Upload,column_mapping:fbCacheColumnMapping})});
       if(d?.interval_minutes)setFbCacheInterval(String(d.interval_minutes));
       if(Object.prototype.hasOwnProperty.call(d||{},"configured_source_root"))setFbCacheSourceRoot(String(d.configured_source_root||""));
+      setFbCacheColumnMapping(normalizeLotProgressColumnMapping(d?.column_mapping||fbCacheColumnMapping));
       if(Object.prototype.hasOwnProperty.call(d||{},"auto_s3_upload_on_save"))setFbAutoS3Upload(!!d.auto_s3_upload_on_save);
       setFbCacheStatus(s=>({...s,lot_progress:d}));
-      setFbCacheMsg(`LOT 진행 최신 캐시 설정 저장됨 · ${d?.interval_minutes||fbCacheInterval}분 · DB ${d?.configured_source_root||"auto"}`);
+      setFbCacheMsg(`LOT 진행 최신 캐시 설정 저장됨 · ${d?.interval_minutes||fbCacheInterval}분 · DB ${d?.configured_source_root||"auto"} · 컬럼 매핑 저장`);
     }catch(e){
       setFbCacheMsg(e.message||"캐시 설정 저장 실패");
     }finally{
@@ -1397,9 +1432,9 @@ export default function My_FileBrowser({user,onNavigate}){
   const filteredCols=colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols;
   const displayCols=(data?.all_columns_truncated&&colSearch.trim())?remoteCols:filteredCols;
   const fbActiveRule=formToRule(fbRuleForm);
-  const fbActiveRuleGroups=ruleSummaryGroups(fbActiveRule);
+  const fbActiveRuleSections=ruleSummarySections(fbActiveRule);
   const fbDraftRule=fbSettingsLlmDraft?.draft||fbSettingsLlmDraft?.csv_rules?.[fbSelectedFile]||null;
-  const fbDraftRuleGroups=fbDraftRule?ruleSummaryGroups(fbDraftRule):[];
+  const fbDraftRuleSections=fbDraftRule?ruleSummarySections(fbDraftRule):[];
   const canEnterBaseEdit = canEditCurrentBase && baseFileComplete;
   const isBaseEditingMode = mode==="base"&&isBaseEditing;
   const baseEditingTabs = isBaseEditingMode ? ["data"] : ["data","columns"];
@@ -2020,6 +2055,24 @@ export default function My_FileBrowser({user,onNavigate}){
                       ):(
                         <div style={{fontSize:13,color:"var(--text-secondary)",fontWeight:700}}>수동 전용</div>
                       )}
+                      {isScheduled&&<div style={{display:"grid",gap:7,padding:"8px 10px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-primary)"}}>
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+                          <span style={{fontSize:13,fontWeight:900,color:"var(--text-primary)"}}>LOT 컬럼 매칭</span>
+                          <button onClick={()=>setFbCacheColumnMapping(defaultLotProgressColumnMapping())} disabled={!isAdmin||fbCacheSettingsBusy}
+                            style={{padding:"4px 8px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,fontWeight:700,cursor:!isAdmin?"not-allowed":"pointer",opacity:!isAdmin||fbCacheSettingsBusy?0.55:1}}>
+                            기본값
+                          </button>
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:7}}>
+                          {LOT_PROGRESS_COLUMNS.map(col=><label key={col} style={{display:"grid",gap:3,minWidth:0,fontSize:12,fontWeight:800,color:"var(--text-secondary)"}}>
+                            <span style={{fontFamily:"monospace"}}>{col}</span>
+                            <input value={fbCacheColumnMapping[col]||col}
+                              onChange={e=>setFbCacheColumnMapping(prev=>({...normalizeLotProgressColumnMapping(prev),[col]:e.target.value}))}
+                              disabled={!isAdmin||fbCacheSettingsBusy}
+                              style={{minWidth:0,padding:"5px 7px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:12,fontFamily:"monospace"}}/>
+                          </label>)}
+                        </div>
+                      </div>}
                       <div style={{display:"flex",gap:8,flexWrap:"wrap",fontFamily:"monospace",fontSize:13,color:"var(--text-secondary)"}}>
                         <span>target={target}</span>
                         <span>mode={isScheduled?"scheduled":"manual"}</span>
@@ -2037,6 +2090,7 @@ export default function My_FileBrowser({user,onNavigate}){
                       </div>
                       <div style={{display:"grid",gap:4,fontFamily:"monospace",fontSize:12,color:"var(--text-secondary)"}}>
                         <span>settings.json.lot_progress_source_root = {status?.configured_source_root||"auto"}</span>
+                        <span>settings.json.lot_progress_column_mapping = {Object.keys(status?.column_mapping||fbCacheColumnMapping||{}).length} columns</span>
                         <span>effective DB root = {effectiveRootText}</span>
                         {status?.cache_path&&<span style={{overflowWrap:"anywhere"}}>cache path = {status.cache_path}</span>}
                         {status?.json_cache_path&&<span style={{overflowWrap:"anywhere"}}>json cache path = {status.json_cache_path}</span>}
@@ -2116,14 +2170,17 @@ export default function My_FileBrowser({user,onNavigate}){
                       {fbDraftRule&&<div style={{display:"grid",gap:6,marginTop:4,padding:8,border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-primary)",fontFamily:"inherit"}}>
                         <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}>
                           <span style={{fontWeight:800,color:"var(--text-primary)"}}>초안 미리보기</span>
-                          <span style={{color:"var(--text-secondary)"}}>{fbDraftRuleGroups.length} groups</span>
+                          <span style={{color:"var(--text-secondary)"}}>{fbDraftRuleSections.reduce((sum,s)=>sum+s.groups.length,0)} groups</span>
                         </div>
-                        {fbDraftRuleGroups.length?<div style={{display:"grid",gap:5}}>
-                          {fbDraftRuleGroups.map(group=><div key={group.key} style={{display:"grid",gap:3}}>
-                            <span style={{fontWeight:800,color:"var(--accent)",textTransform:"uppercase"}}>{group.label}</span>
-                            {group.items.slice(0,8).map((item,i)=><span key={i} style={{color:"var(--text-primary)",overflowWrap:"anywhere"}}>{item}</span>)}
-                            {group.items.length>8&&<span style={{color:"var(--text-secondary)"}}>+{group.items.length-8}</span>}
-                          </div>)}
+                        {fbDraftRuleSections.some(section=>section.groups.length)?<div style={{display:"grid",gap:7}}>
+                          {fbDraftRuleSections.map(section=>section.groups.length?<div key={section.key} style={{display:"grid",gap:5}}>
+                            <span style={{fontWeight:900,color:"var(--text-primary)"}}>{section.label}</span>
+                            {section.groups.map(group=><div key={group.key} style={{display:"grid",gap:3,paddingLeft:8,borderLeft:"2px solid var(--border)"}}>
+                              <span style={{fontWeight:800,color:"var(--accent)",textTransform:"uppercase"}}>{group.label}</span>
+                              {group.items.slice(0,8).map((item,i)=><span key={i} style={{color:"var(--text-primary)",overflowWrap:"anywhere"}}>{item}</span>)}
+                              {group.items.length>8&&<span style={{color:"var(--text-secondary)"}}>+{group.items.length-8}</span>}
+                            </div>)}
+                          </div>:null)}
                         </div>:<span>적용할 규칙이 없습니다.</span>}
                         <details>
                           <summary style={{cursor:"pointer",fontWeight:800,color:"var(--text-secondary)"}}>JSON</summary>
@@ -2137,32 +2194,37 @@ export default function My_FileBrowser({user,onNavigate}){
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,alignItems:"start"}}>
                   <div style={{gridColumn:"1 / -1",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)",overflow:"hidden"}}>
                     <div style={{padding:"8px 10px",borderBottom:"1px solid var(--border)",fontWeight:800,color:"var(--text-primary)"}}>적용 규칙</div>
-                    {fbActiveRuleGroups.length?<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:8,padding:10}}>
-                      {fbActiveRuleGroups.map(group=><div key={group.key} style={{display:"grid",gap:5,minWidth:0}}>
-                        <div style={{fontSize:12,fontWeight:800,color:"var(--text-secondary)",textTransform:"uppercase"}}>{group.label}</div>
-                        <div style={{display:"flex",gap:5,flexWrap:"wrap",minWidth:0}}>
-                          {group.items.slice(0,12).map((item,i)=><span key={i} title={item} style={{maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,fontFamily:"monospace"}}>{item}</span>)}
-                          {group.items.length>12&&<span style={{padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:12}}>+{group.items.length-12}</span>}
+                    {fbActiveRuleSections.some(section=>section.groups.length)?<div style={{display:"grid",gap:10,padding:10}}>
+                      {fbActiveRuleSections.map(section=>section.groups.length?<div key={section.key} style={{display:"grid",gap:7}}>
+                        <div style={{fontSize:13,fontWeight:900,color:"var(--text-primary)"}}>{section.label}</div>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:8}}>
+                          {section.groups.map(group=><div key={group.key} style={{display:"grid",gap:5,minWidth:0}}>
+                            <div style={{fontSize:12,fontWeight:800,color:"var(--text-secondary)",textTransform:"uppercase"}}>{group.label}</div>
+                            <div style={{display:"flex",gap:5,flexWrap:"wrap",minWidth:0}}>
+                              {group.items.slice(0,12).map((item,i)=><span key={i} title={item} style={{maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,fontFamily:"monospace"}}>{item}</span>)}
+                              {group.items.length>12&&<span style={{padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:12}}>+{group.items.length-12}</span>}
+                            </div>
+                          </div>)}
                         </div>
-                      </div>)}
+                      </div>:null)}
                     </div>:<div style={{padding:"9px 10px",fontSize:12,color:"var(--text-secondary)"}}>현재 form에 적용된 CSV 규칙이 없습니다.</div>}
                   </div>
                   {[
-                    ["required_columns","필수 컬럼","id, name"],
-                    ["not_empty","빈 값 금지","id, name"],
-                    ["unique_keys","중복 금지 키","product, lot_id, wafer_id"],
-                    ["enums","허용값","status=OK|NG|HOLD"],
-                    ["numeric","숫자","rank min=1 max=999 integer=true"],
-                    ["date","날짜/시간 컬럼","created_at, updated_at"],
-                    ["regex","정규식","code=[A-Z]{2}\\d{2}"],
-                    ["conditions","AND 통과 조건","end_time >= start_time => 종료가 시작보다 빠를 수 없습니다"],
-                    ["ordered_by","정렬 검증","product asc string last\nfeature_name asc leading_number last\nrule_order asc rule_order last"],
-                    ["sort","저장 정렬","product asc string last\nfeature_name asc leading_number last\nrule_order asc rule_order last"],
-                  ].map(([key,label,ph])=><label key={key} style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                    {label}
-                    <textarea value={fbRuleForm[key]||""} onChange={e=>setFbRuleForm(f=>({...f,[key]:e.target.value}))} placeholder={ph} rows={key==="conditions"||key==="ordered_by"||key==="sort"?3:2} spellCheck={false}
-                      style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
-                  </label>)}
+                    {key:"validation",label:"검증로직",caption:"실패하면 저장이 차단됩니다.",fields:validationRuleFields},
+                    {key:"sort",label:"정렬로직",caption:"검증 통과 시 저장 정렬 적용",fields:sortRuleFields},
+                  ].map(section=><div key={section.key} style={{gridColumn:"1 / -1",display:"grid",gap:8,padding:10,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
+                    <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
+                      <span style={{fontSize:14,fontWeight:900,color:"var(--text-primary)"}}>{section.label}</span>
+                      <span style={{fontSize:12,color:"var(--text-secondary)"}}>{section.caption}</span>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10}}>
+                      {section.fields.map(([key,label,ph])=><label key={key} style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
+                        {label}
+                        <textarea value={fbRuleForm[key]||""} onChange={e=>setFbRuleForm(f=>({...f,[key]:e.target.value}))} placeholder={ph} rows={key==="conditions"||key==="ordered_by"||key==="sort"?3:2} spellCheck={false}
+                          style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
+                      </label>)}
+                    </div>
+                  </div>)}
                   {fbValidation&&<div style={{gridColumn:"1 / -1",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)",overflow:"hidden"}}>
                     <div style={{padding:"8px 10px",borderBottom:"1px solid var(--border)",fontWeight:800,color:fbValidation.ok?"#16a34a":FB_BAD.fg}}>{fbValidation.ok?"검증 통과":"검증 오류"} · {fbValidation.error_count||0}건</div>
                     {fbValidation.errors?.length?<div style={{maxHeight:170,overflow:"auto"}}>
@@ -2171,7 +2233,7 @@ export default function My_FileBrowser({user,onNavigate}){
                         <span style={{fontFamily:"monospace",color:"var(--accent)"}}>{err.column||err.rule}</span>
                         <span>{err.message}</span>
                       </div>)}
-                    </div>:<div style={{padding:"8px 10px",fontSize:12,color:"var(--text-secondary)"}}>저장 시 같은 규칙과 정렬이 적용됩니다.</div>}
+                    </div>:<div style={{padding:"8px 10px",fontSize:12,color:"var(--text-secondary)"}}>검증 통과 시 저장 정렬 적용</div>}
                   </div>}
                 </div>
               </div>}

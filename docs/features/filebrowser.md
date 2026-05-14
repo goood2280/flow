@@ -42,8 +42,8 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - lot progress cache는 root lot id, wafer id별 최신 lot id를 parquet로 볼 수 있어야 한다.
 - cache 파일도 일반 파일처럼 목록 진입, schema 확인, preview가 가능해야 한다.
 - FileBrowser 캐시 탭에서 `lot_progress_latest_lot_by_root_wafer.parquet`만 수동 재생성할 수 있다.
-- LOT 진행 최신 캐시는 앱 기동 시 `lot_progress` router가 scheduler를 시작하고, `settings.json.lot_progress_refresh_minutes` 주기에 맞춰 stale 여부를 확인한다. 수동 갱신도 같은 builder를 호출한다. FileBrowser 톱니바퀴의 캐시 탭에서 `settings.json.lot_progress_source_root`를 저장하면 scheduler와 수동 갱신이 해당 DB root만 스캔한다. 값이 비어 있으면 실제 존재하는 `1.RAWDATA_DB`, `FAB`, `1.RAWDATA_DB_FAB` 후보 순서로 자동 선택한다. builder는 `FLOW_DATA_ROOT/locks/lot_progress_cache.lock` 파일락으로 공유 data root 안에서 단일 실행만 허용하고, `FLOW_DATA_ROOT/logs/lot_progress_cache_refresh.jsonl`에 성공/실패/lock skip 이력을 남긴다.
-- builder는 선택된 FAB root의 `<product folder>/**/*.parquet`를 스캔한다. 여기서 `product` 값은 parquet/DB 컬럼이 아니라 FAB root 바로 아래의 제품 폴더명이다. 각 row에서 `root_lot_id`, `lot_id`, `wafer_id`, `step_id`, `tkin_time`, `tkout_time`을 읽고, 없는 보조 컬럼(`process_id`, `eqp_id`, `chamber_id`, `ppid`)은 빈 값으로 둔다. 이후 `(제품 폴더명, root_lot_id, wafer_id)`별로 `tkout_time` 또는 `tkin_time`이 가장 최신인 row 하나를 고른다. `step_id`는 가능한 경우 step matching 파일로 `function_step`에 매핑하고, 최종 결과는 `product`, `root_lot_id`, `wafer_id`, `lot_id`, `step_id`, `function_step`, `tkout_time`, `update_time` 컬럼을 가진 `data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`로 저장한다. FileBrowser에 노출되는 캐시는 이 parquet 하나만 canonical이다.
+- LOT 진행 최신 캐시는 앱 기동 시 `lot_progress` router가 scheduler를 시작하고, `settings.json.lot_progress_refresh_minutes` 주기에 맞춰 stale 여부를 확인한다. 수동 갱신도 같은 builder를 호출한다. FileBrowser 톱니바퀴의 캐시 탭에서 `settings.json.lot_progress_source_root`와 `settings.json.lot_progress_column_mapping`을 저장하면 scheduler와 수동 갱신이 해당 DB root와 컬럼 매핑을 사용한다. DB root 값이 비어 있으면 실제 존재하는 `1.RAWDATA_DB`, `FAB`, `1.RAWDATA_DB_FAB` 후보 순서로 자동 선택한다. builder는 `FLOW_DATA_ROOT/locks/lot_progress_cache.lock` 파일락으로 공유 data root 안에서 단일 실행만 허용하고, `FLOW_DATA_ROOT/logs/lot_progress_cache_refresh.jsonl`에 성공/실패/lock skip 이력을 남긴다.
+- builder는 선택된 FAB root의 `<product folder>/**/*.parquet`를 스캔한다. 여기서 `product` 값은 parquet/DB 컬럼이 아니라 FAB root 바로 아래의 제품 폴더명이다. 각 row에서 설정된 컬럼 매핑을 canonical 컬럼(`root_lot_id`, `lot_id`, `wafer_id`, `step_id`, `process_id`, `tkin_time`, `tkout_time`, `time`, `update_time`, `eqp_id`, `chamber_id`, `ppid`)으로 정규화한다. 기본 매핑은 모든 canonical 컬럼이 같은 이름의 원본 컬럼을 읽는 형태다. 이후 `(제품 폴더명, root_lot_id, wafer_id)`별로 `update_time`, `tkout_time`, `tkin_time`, `time` 기준 최신 row 하나를 고른다. `step_id`는 가능한 경우 step matching 파일로 `function_step`에 매핑하고, 최종 결과는 `product`, `root_lot_id`, `wafer_id`, `lot_id`, `step_id`, `function_step`, `tkout_time`, `update_time` 컬럼을 가진 `data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`로 저장한다. FileBrowser에 노출되는 캐시는 이 parquet 하나만 canonical이다.
 - SplitTable 매칭 캐시, Tracker Analysis ET 후보 캐시, ET/INLINE/VM 요약 캐시는 FileBrowser 운영 캐시에서 제외한다. legacy/non-canonical cache parquet/csv/json은 목록에서 숨기고, FileBrowser page manager가 `/api/filebrowser/cache/cleanup-candidates`와 `/api/filebrowser/cache/cleanup`으로 명시 삭제한다.
 - `filebrowser_settings.json.auto_s3_upload_on_save=true`이면 base file save/text save/rollback과 LOT 진행 캐시 parquet 갱신 후 S3 artifact sync를 호출한다. 꺼져 있으면 저장은 그대로 수행하고 응답 `s3_sync.status`는 `disabled_by_filebrowser_setting`이다.
 - Flow-i의 현재 step 질문은 FAB 원본 재스캔보다 `lot_progress_latest_lot_by_root_wafer.parquet`를 우선 사용해 `step_id`와 `function_step`을 답한다.
@@ -72,9 +72,11 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - `POST /api/filebrowser/settings/llm/draft`는 저장하지 않는 `csv_rules` 초안만 만든다. 허용 key는 아래 rule schema로 제한되고, 없는 컬럼이나 unsupported key는 warning과 함께 제거된다.
 - 규칙 초안은 연결된 전역 LLM(`core.llm_adapter`)을 우선 사용한다. LLM이 비어 있거나 실패해도 "전문가처럼", "가능한 규칙" 같은 prompt는 컬럼/샘플 기반 deterministic 초안을 생성한다.
 - UI는 생성된 초안을 요약과 JSON으로 먼저 보여주며, `초안 적용`을 눌러 form에 반영한 뒤 `저장`을 눌러야 실제 `filebrowser_settings.json`에 저장된다.
+- 검증로직은 저장 차단 여부를 결정한다. 허용 key는 `required_columns`, `not_empty`, `unique_keys`, `enums`, `numeric`, `date`, `regex`, `conditions`, `ordered_by`다.
 - `conditions`: 한 줄 또는 항목마다 Polars SQL expression을 쓴다. 모든 조건이 각 row에서 참이어야 통과한다.
 - `ordered_by`: 현재 CSV row 순서를 검증한다. 순서가 깨져 있으면 저장을 막는다.
-- `sort`: 저장 시 같은 기준으로 실제 CSV row를 재정렬한다.
+- 정렬로직은 검증 통과 후에만 저장할 실제 CSV row 순서를 바꾼다. 허용 key는 `sort` 하나다.
+- `/base-file/validate`는 검증 결과와 정렬 preview를 반환하되, 실제 저장은 `_save_base_file`에서 검증 성공 후 `sort`를 적용한다. 검증 실패 시 원본 파일은 바뀌지 않는다.
 
 `ppid_knob.csv` 예시는 product 오름차순, 같은 product 안에서 `feature_name` 앞 숫자 오름차순, 같은 feature 안에서 `R1`, `R2`, `R3`, ..., `RO` 순서를 적용한다.
 

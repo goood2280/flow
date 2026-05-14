@@ -158,8 +158,29 @@ def test_filebrowser_cache_settings_updates_lot_progress_interval(monkeypatch, t
         "effective_source_roots": ["1.RAWDATA_DB_FAB"],
     })
 
+    column_mapping = {
+        "root_lot_id": "ROOT_LOT",
+        "lot_id": "FAB_LOT",
+        "wafer_id": "WF",
+        "step_id": "STEP",
+        "process_id": "PROC",
+        "tkin_time": "IN_TIME",
+        "tkout_time": "OUT_TIME",
+        "time": "EVENT_TIME",
+        "update_time": "UPDATED",
+        "eqp_id": "EQP",
+        "chamber_id": "CHAMBER",
+        "ppid": "PPID_COL",
+    }
+
     out = filebrowser.cache_match_settings(
-        filebrowser.CacheMatchSettingsReq(target="lot_progress", interval_minutes=45, source_root="1.RAWDATA_DB_FAB", auto_s3_upload_on_save=True),
+        filebrowser.CacheMatchSettingsReq(
+            target="lot_progress",
+            interval_minutes=45,
+            source_root="1.RAWDATA_DB_FAB",
+            auto_s3_upload_on_save=True,
+            column_mapping=column_mapping,
+        ),
         _Request("admin", "admin"),
     )
 
@@ -167,10 +188,13 @@ def test_filebrowser_cache_settings_updates_lot_progress_interval(monkeypatch, t
     fb_saved = json.loads((tmp_path / "filebrowser_settings.json").read_text("utf-8"))
     assert saved["lot_progress_refresh_minutes"] == 45
     assert saved["lot_progress_source_root"] == "1.RAWDATA_DB_FAB"
+    assert saved["lot_progress_column_mapping"] == column_mapping
     assert fb_saved["auto_s3_upload_on_save"] is True
     assert out["target"] == "lot_progress"
     assert out["interval_minutes"] == 45
     assert out["configured_source_root"] == "1.RAWDATA_DB_FAB"
+    assert out["column_mapping"] == column_mapping
+    assert out["manual_change_points"]["column_mapping"] == "settings.json.lot_progress_column_mapping"
     assert out["effective_source_roots"] == ["1.RAWDATA_DB_FAB"]
     assert out["source_root_candidates"][0]["source_root"] == "1.RAWDATA_DB_FAB"
     assert out["auto_s3_upload_on_save"] is True
@@ -686,6 +710,7 @@ def test_filebrowser_settings_llm_draft_explicit_enum_prompt_overrides_llm_noise
         ("feature_name은 앞에 24 SORT처럼 숫자와 공정명이 있어야해", {"regex": {"feature_name": r"\d+(?:\.\d+)?\s+.+"}}),
         ("category는 PPID_05_1 같은 PPID_숫자_숫자 형식이어야해", {"regex": {"category": r"^PPID_\d+_\d+$"}}),
         ("function_step은 대문자와 underscore 형식이어야해", {"regex": {"function_step": r"^[A-Z_]+$"}}),
+        ("start_time과 end_time은 날짜 형식이어야해", {"date": ["start_time", "end_time"]}),
         ("end_time은 start_time보다 빠르면 안돼", {"conditions": [{"expr": "end_time >= start_time", "message": "end_time must be >= start_time"}]}),
         (
             "product 오름차순, feature_name 앞 숫자 오름차순, rule_order 순서대로 저장 정렬해줘",
@@ -745,6 +770,45 @@ def test_filebrowser_settings_llm_draft_explicit_single_intents_stay_minimal(mon
 
     assert out["llm"]["used"] is True
     assert out["draft"] == expected
+
+
+def test_filebrowser_settings_llm_draft_combines_validation_and_save_sort(monkeypatch):
+    from core import llm_adapter
+
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_settings_llm_draft(
+        filebrowser.FileBrowserSettingsLlmDraftReq(
+            file="ppid_knob.csv",
+            prompt=(
+                "product feature_name rule_order는 필수 컬럼이고 빈 값 있으면 저장 막기. "
+                "start_time과 end_time은 날짜 형식이어야 하고 end_time >= start_time 조건으로 이상 있으면 저장 막기. "
+                "현재 순서가 product, feature_name, rule_order 기준으로 맞는지 검사하고 저장할 때도 같은 순서로 정렬해줘"
+            ),
+            columns=[
+                "product", "feature_name", "function_step", "rule_order", "operator", "category",
+                "start_time", "end_time",
+            ],
+            sample_rows=[{"product": "PRODA", "feature_name": "24 SORT", "rule_order": "R1"}],
+            current_rule={},
+        ),
+        _Request("admin", "admin"),
+    )
+
+    sort_specs = [
+        {"column": "product", "direction": "asc", "type": "string", "nulls": "last"},
+        {"column": "feature_name", "direction": "asc", "type": "leading_number", "nulls": "last"},
+        {"column": "rule_order", "direction": "asc", "type": "rule_order", "nulls": "last"},
+    ]
+    draft = out["draft"]
+    assert draft["required_columns"][:3] == ["product", "feature_name", "rule_order"]
+    assert draft["date"] == ["start_time", "end_time"]
+    assert draft["conditions"] == [{"expr": "end_time >= start_time", "message": "end_time must be >= start_time"}]
+    assert draft["ordered_by"] == {"keys": sort_specs}
+    assert draft["sort"] == sort_specs
+    assert out["draft_sections"]["validation_logic"]["ordered_by"] == {"keys": sort_specs}
+    assert out["draft_sections"]["sort_logic"]["sort"] == sort_specs
 
 
 def test_filebrowser_sql_llm_draft_writes_filter_only(monkeypatch):
