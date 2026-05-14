@@ -16,6 +16,8 @@ import FlowiPromptBox from "../components/FlowiPromptBox";
 
 const API = "/api/calendar";
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
+const MAX_VISIBLE_DAY_EVENTS = 3;
+const FALLBACK_EVENT_COLOR = "var(--muted)";
 
 function pad(n) { return n < 10 ? "0" + n : "" + n; }
 function ymd(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
@@ -142,6 +144,7 @@ export default function My_Calendar({ user }) {
   }, [filteredEvents]);
 
   const catColor = (name) => (cats.find(c => c.name === name)?.color) || "var(--muted)";
+  const safeEventColor = (color) => (String(color || "").trim() || FALLBACK_EVENT_COLOR);
   const today = ymd(new Date());
 
   const openNew = (date) => {
@@ -225,7 +228,7 @@ export default function My_Calendar({ user }) {
     const srcType = e.source_type || "manual";
     // v8.7.9: meeting events use the meeting's unique palette color; manual events fall back to category color.
     const meetingColor = (e.meeting_ref && e.meeting_ref.color) || "";
-    const color = meetingColor || catColor(e.category);
+    const color = safeEventColor(meetingColor || catColor(e.category));
     const isAction = srcType === "meeting_action";
     const isDecision = srcType === "meeting_decision";
     // v8.7.9: actions = pin on due date (single-day), decisions = filled single-day.
@@ -244,8 +247,9 @@ export default function My_Calendar({ user }) {
     const border = `1px solid ${color}`;
     const borderLeft = isAction ? `4px solid ${color}` : `3px solid ${color}`;
     return (
-      <div key={e.id + "_" + occ.dayIdx} onClick={ev => { ev.stopPropagation(); openEdit(e); }} style={{
-        fontSize: 14, padding: "2px 5px", borderRadius: radius,
+      <div key={`${e.id || e.title || "event"}_${occ.dayIdx}`} onClick={ev => { ev.stopPropagation(); openEdit(e); }} style={{
+        minWidth: 0, maxWidth: "100%",
+        fontSize: 12, lineHeight: 1.25, padding: "2px 5px", borderRadius: radius,
         background: fill,
         border: isMid || isEnd || isStart ? border : "none",
         borderLeft: (occ.kind === "single" || isStart) ? borderLeft : (isMid ? "none" : border),
@@ -334,7 +338,7 @@ export default function My_Calendar({ user }) {
             </div>
           ) : (
             <div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 0, marginBottom: 0, borderLeft: "1px solid var(--border)", borderTop: "1px solid var(--border)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,minmax(0,1fr))", gap: 0, marginBottom: 0, borderLeft: "1px solid var(--border)", borderTop: "1px solid var(--border)" }}>
                 {WEEKDAYS.map((w, i) => (
                   <div key={w} style={{
                     padding: "6px 8px", fontSize: 14, fontWeight: 700, textAlign: "center",
@@ -346,12 +350,14 @@ export default function My_Calendar({ user }) {
                   }}>{w}</div>
                 ))}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gridAutoRows: "minmax(96px,1fr)", gap: 0, borderLeft: "1px solid var(--border)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,minmax(0,1fr))", gridAutoRows: 112, gap: 0, borderLeft: "1px solid var(--border)", minWidth: 0 }}>
                 {grid.map((d, i) => {
                   const k = ymd(d);
                   const inMonth = d.getMonth() === view.getMonth();
                   const isToday = k === today;
                   const occs = byDate[k] || [];
+                  const visibleOccs = occs.slice(0, MAX_VISIBLE_DAY_EVENTS);
+                  const hiddenCount = Math.max(0, occs.length - visibleOccs.length);
                   return (
                     <div key={i} onClick={() => openNew(k)} style={{
                       background: isToday ? "var(--brand-50)" : (inMonth ? "var(--bg-secondary)" : "var(--bg-primary)"),
@@ -360,10 +366,11 @@ export default function My_Calendar({ user }) {
                       outline: isToday ? "2px solid var(--brand)" : "none",
                       outlineOffset: "-2px",
                       boxShadow: isToday ? "inset 0 0 0 3px var(--brand-line)" : "none",
-                      borderRadius: 0, padding: 6, cursor: "pointer", overflow: "visible",
+                      borderRadius: 0, padding: 6, cursor: "pointer", overflow: "hidden",
                       display: "flex", flexDirection: "column", gap: 3,
                       opacity: inMonth ? 1 : 0.45,
                       position: "relative",
+                      minWidth: 0,
                     }}>
                       <div style={{
                         display: "flex", alignItems: "center", gap: 6,
@@ -372,21 +379,33 @@ export default function My_Calendar({ user }) {
                         fontFamily: "monospace",
                         textShadow: "none",
                         whiteSpace: "nowrap",
+                        flexShrink: 0,
+                        minWidth: 0,
                       }}>
-                        <span>{d.getDate()}</span>
+                        <span style={{ flexShrink: 0 }}>{d.getDate()}</span>
                         {isToday && (
                           <span title="오늘" style={{
                             background: "var(--brand)", color: "#fff",
                             padding: "1px 6px", borderRadius: 999,
-                            fontSize: 14, fontWeight: 700, letterSpacing: 0.3,
+                            fontSize: 11, fontWeight: 700, letterSpacing: 0,
                             lineHeight: 1.4, fontFamily: "monospace",
                             boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+                            overflow: "hidden", textOverflow: "ellipsis",
                           }}>TODAY</span>
                         )}
                       </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
-                        {occs.slice(0, 4).map(renderOccurrence)}
-                        {occs.length > 4 && <div style={{ fontSize: 14, color: "var(--text-secondary)", padding: "0 4px" }}>+{occs.length - 4}건</div>}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden", minHeight: 0, minWidth: 0, flex: 1 }}>
+                        {visibleOccs.map(renderOccurrence)}
+                        {hiddenCount > 0 && (
+                          <div title={`${hiddenCount}건 더 있음`} style={{
+                            minWidth: 0, maxWidth: "100%",
+                            fontSize: 12, lineHeight: 1.25, color: "var(--text-secondary)",
+                            padding: "1px 5px", borderRadius: 3,
+                            background: "var(--bg-card)", border: "1px dashed var(--border)",
+                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                            flexShrink: 0,
+                          }}>+{hiddenCount}건</div>
+                        )}
                       </div>
                     </div>
                   );

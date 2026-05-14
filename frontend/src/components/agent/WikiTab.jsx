@@ -71,19 +71,106 @@ function pageSourceText(page = {}) {
   return listText(page.source_ids || fm.source_ids || page.source_event_ids || [], 2) || "-";
 }
 
-function WikiGraph({ graph, query, selected, highlightId, onSelect }) {
+function wikiDocIdFromNode(node = {}) {
+  const id = String(node?.id || "");
+  if (!id) return "";
+  if (id.startsWith("doc:")) return id.slice(4);
+  if (node?.kind === "wiki_doc") return id;
+  return "";
+}
+
+function cssVar(name, fallback) {
+  const root = getComputedStyle(document.documentElement);
+  const value = root.getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function isLightColor(value = "") {
+  const match = value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+  if (!match) return !String(value).includes("1a1a1a");
+  const [, r, g, b] = match.map(Number);
+  return (r * 299 + g * 587 + b * 114) / 1000 > 150;
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + w - radius, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+  ctx.lineTo(x + w, y + h - radius);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+  ctx.lineTo(x + radius, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
+}
+
+function WikiGraph({ graph, query, selected, focusId, highlightId, onSelect, onFocusChange }) {
   const wrapRef = useRef(null);
   const width = useElementWidth(wrapRef);
   const [hover, setHover] = useState(null);
+  const [theme, setTheme] = useState({
+    light: true,
+    text: "#111827",
+    muted: "#475569",
+    labelBg: "rgba(255,255,255,.9)",
+    labelLine: "rgba(15,23,42,.18)",
+    link: "rgba(71,85,105,.62)",
+    linkFocus: "rgba(15,23,42,.88)",
+    linkDim: "rgba(148,163,184,.22)",
+  });
   const q = String(query || "").trim().toLowerCase();
-  const graphData = useMemo(() => ({
-    nodes: graph.nodes.map((n) => ({ ...n })),
-    links: graph.links.map((l) => ({ ...l })),
-  }), [graph]);
+  useEffect(() => {
+    const readTheme = () => {
+      const bg = cssVar("--bg-primary", "#fff");
+      const light = isLightColor(bg);
+      setTheme({
+        light,
+        text: cssVar("--text-primary", light ? "#111827" : "#f8fafc"),
+        muted: cssVar("--text-secondary", light ? "#475569" : "#cbd5e1"),
+        labelBg: light ? "rgba(255,255,255,.92)" : "rgba(15,23,42,.88)",
+        labelLine: light ? "rgba(15,23,42,.18)" : "rgba(226,232,240,.22)",
+        link: light ? "rgba(71,85,105,.66)" : "rgba(203,213,225,.58)",
+        linkFocus: light ? "rgba(15,23,42,.92)" : "rgba(248,250,252,.9)",
+        linkDim: light ? "rgba(148,163,184,.24)" : "rgba(100,116,139,.28)",
+      });
+    };
+    readTheme();
+    const observer = new MutationObserver(readTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "class"] });
+    return () => observer.disconnect();
+  }, []);
+  const focus = useMemo(() => {
+    const active = String(focusId || "");
+    const ids = new Set();
+    const linkIds = new Set();
+    if (!active) return { ids, linkIds, links: [] };
+    ids.add(active);
+    const links = [];
+    for (const link of graph.links) {
+      const src = nodeId(link.source);
+      const tgt = nodeId(link.target);
+      if (src === active || tgt === active) {
+        ids.add(src);
+        ids.add(tgt);
+        linkIds.add(link.id);
+        links.push(link);
+      }
+    }
+    return { ids, linkIds, links };
+  }, [focusId, graph.links]);
+  const graphData = useMemo(() => {
+    const focused = focus.ids.size > 0;
+    const nodes = (focused ? graph.nodes.filter((n) => focus.ids.has(n.id)) : graph.nodes).map((n) => ({ ...n }));
+    const links = (focused ? focus.links : graph.links).map((l) => ({ ...l }));
+    return { nodes, links };
+  }, [focus, graph]);
   const linked = useMemo(() => {
     const ids = new Set();
     const linkIds = new Set();
-    const active = hover?.id || selected?.id || "";
+    const active = hover?.id || focusId || "";
     if (!active) return { ids, linkIds };
     ids.add(active);
     for (const link of graph.links) {
@@ -96,13 +183,20 @@ function WikiGraph({ graph, query, selected, highlightId, onSelect }) {
       }
     }
     return { ids, linkIds };
-  }, [graph.links, hover, selected]);
+  }, [focusId, graph.links, hover]);
   const matching = useMemo(() => {
     if (!q) return new Set();
     return new Set(graph.nodes.filter((n) => `${n.label} ${n.id} ${n.kind}`.toLowerCase().includes(q)).map((n) => n.id));
   }, [graph.nodes, q]);
+  const focusLabel = focusId ? (graph.nodes.find((n) => n.id === focusId)?.label || focusId) : "";
   return (
-    <div ref={wrapRef} style={{ width: "100%", height: 560, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)", overflow: "hidden" }}>
+    <div ref={wrapRef} style={{ position: "relative", width: "100%", height: 560, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-primary)", overflow: "hidden" }}>
+      {focusId && (
+        <div style={{ position: "absolute", top: 10, right: 10, zIndex: 3, display: "flex", gap: 8, alignItems: "center", maxWidth: "calc(100% - 20px)" }}>
+          <Pill tone="accent">연결만 · {focus.ids.size} nodes</Pill>
+          <Button onClick={() => onFocusChange?.("")}>전체 보기</Button>
+        </div>
+      )}
       {graph.nodes.length ? (
         <ForceGraph2D
           graphData={graphData}
@@ -112,34 +206,100 @@ function WikiGraph({ graph, query, selected, highlightId, onSelect }) {
           cooldownTicks={80}
           nodeLabel={(n) => `${n.label || n.id} (${n.kind || "node"})`}
           onNodeHover={setHover}
-          onNodeClick={(node) => onSelect?.(node)}
-          linkColor={(link) => linked.linkIds.size && !linked.linkIds.has(link.id) ? "rgba(148,163,184,.18)" : "rgba(148,163,184,.55)"}
-          linkWidth={(link) => linked.linkIds.has(link.id) ? 2.8 : 1}
+          onBackgroundClick={() => onFocusChange?.("")}
+          onNodeClick={(node) => {
+            onSelect?.(node);
+            onFocusChange?.(node.id);
+          }}
+          linkColor={(link) => linked.linkIds.size && !linked.linkIds.has(link.id) ? theme.linkDim : linked.linkIds.has(link.id) || focusId ? theme.linkFocus : theme.link}
+          linkWidth={(link) => linked.linkIds.has(link.id) || focusId ? 2.6 : 1.35}
+          linkDirectionalArrowLength={(link) => linked.linkIds.has(link.id) || focusId ? 5 : 3}
+          linkDirectionalArrowRelPos={1}
+          linkDirectionalParticles={(link) => linked.linkIds.has(link.id) || focusId ? 2 : 0}
+          linkDirectionalParticleWidth={2.4}
+          linkCanvasObjectMode={() => "after"}
+          linkCanvasObject={(link, ctx, scale) => {
+            if (!focusId && scale < 1.25) return;
+            const src = link.source;
+            const tgt = link.target;
+            if (!src || !tgt || typeof src !== "object" || typeof tgt !== "object") return;
+            const label = String(link.label || "").slice(0, 24);
+            if (!label) return;
+            const x = (src.x + tgt.x) / 2;
+            const y = (src.y + tgt.y) / 2;
+            const fontSize = Math.max(8, 11 / scale);
+            ctx.font = `700 ${fontSize}px sans-serif`;
+            const padX = 4 / scale;
+            const padY = 2 / scale;
+            const metrics = ctx.measureText(label);
+            const w = metrics.width + padX * 2;
+            const h = fontSize + padY * 2;
+            ctx.fillStyle = theme.labelBg;
+            roundRect(ctx, x - w / 2, y - h / 2, w, h, 4 / scale);
+            ctx.fill();
+            ctx.strokeStyle = theme.labelLine;
+            ctx.stroke();
+            ctx.fillStyle = theme.muted;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(label, x, y + 0.5 / scale);
+          }}
           nodeCanvasObject={(node, ctx, scale) => {
             const isConnected = !linked.ids.size || linked.ids.has(node.id);
             const isMatch = matching.has(node.id);
             const isSelected = selected?.id === node.id;
-            const isNew = highlightId && highlightId === node.id;
+            const isNew = highlightId && (highlightId === node.id || `doc:${highlightId}` === node.id);
+            const isFocus = focusId === node.id;
             const radius = isSelected || isNew ? 7 : isMatch ? 6 : 4.5;
             const color = isNew ? "#f97316" : isSelected ? "#22c55e" : isMatch ? "#3b82f6" : node.kind === "wiki_doc" ? "#8b5cf6" : "#94a3b8";
-            ctx.globalAlpha = isConnected ? 1 : 0.18;
+            ctx.globalAlpha = isConnected ? 1 : 0.16;
             ctx.beginPath();
             ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
+            ctx.shadowColor = theme.light ? "rgba(15,23,42,.24)" : "rgba(255,255,255,.2)";
+            ctx.shadowBlur = isSelected || isFocus || isNew ? 10 : 4;
             ctx.fillStyle = color;
             ctx.fill();
+            ctx.shadowBlur = 0;
+            if (isSelected || isFocus || isNew) {
+              ctx.lineWidth = 2 / scale;
+              ctx.strokeStyle = theme.text;
+              ctx.stroke();
+            }
             const label = node.label || node.id;
-            const fontSize = Math.max(8, 13 / scale);
-            ctx.font = `${fontSize}px sans-serif`;
-            ctx.fillStyle = "#e5e7eb";
-            ctx.textAlign = "center";
-            ctx.textBaseline = "top";
-            if (isSelected || isMatch || isNew || scale > 1.2) ctx.fillText(label.slice(0, 28), node.x, node.y + radius + 3);
+            const showLabel = focusId || isSelected || isMatch || isNew || scale > 0.7;
+            if (showLabel) {
+              const display = label.length > 30 ? label.slice(0, 29) + "…" : label;
+              const fontSize = Math.max(9, 12.5 / scale);
+              ctx.font = `800 ${fontSize}px sans-serif`;
+              const metrics = ctx.measureText(display);
+              const padX = 5 / scale;
+              const padY = 3 / scale;
+              const labelW = metrics.width + padX * 2;
+              const labelH = fontSize + padY * 2;
+              const labelX = node.x - labelW / 2;
+              const labelY = node.y + radius + 4 / scale;
+              ctx.fillStyle = theme.labelBg;
+              roundRect(ctx, labelX, labelY, labelW, labelH, 5 / scale);
+              ctx.fill();
+              ctx.strokeStyle = theme.labelLine;
+              ctx.lineWidth = 1 / scale;
+              ctx.stroke();
+              ctx.fillStyle = isConnected ? theme.text : theme.muted;
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillText(display, node.x, labelY + labelH / 2 + 0.5 / scale);
+            }
             ctx.globalAlpha = 1;
           }}
         />
       ) : (
         <div style={{ padding: 24 }}>
           <EmptyState title="graph node 없음" hint="Wiki 문서를 추가하거나 graph rebuild 후 다시 확인하세요." />
+        </div>
+      )}
+      {focusLabel && (
+        <div className="korean-wrap" style={{ position: "absolute", left: 12, bottom: 10, right: 12, zIndex: 2, pointerEvents: "none", color: "var(--text-secondary)", fontSize: 12, fontWeight: 700 }}>
+          {focusLabel}
         </div>
       )}
     </div>
@@ -151,6 +311,7 @@ export default function WikiTab({ user, canManage }) {
   const [graph, setGraph] = useState({ nodes: [], links: [] });
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(null);
+  const [graphFocusId, setGraphFocusId] = useState("");
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [highlightId, setHighlightId] = useState("");
@@ -171,8 +332,10 @@ export default function WikiTab({ user, canManage }) {
     sf("/api/knowledge/wiki/graph")
       .then((d) => {
         const next = normalizeGraph(d);
+        const fallbackSelected = next.nodes.find((n) => n.kind === "wiki_doc") || next.nodes[0] || null;
         setGraph(next);
-        setSelected((cur) => cur && next.nodes.find((n) => n.id === cur.id) ? cur : next.nodes[0] || null);
+        setSelected((cur) => cur && next.nodes.find((n) => n.id === cur.id) ? cur : fallbackSelected);
+        setGraphFocusId((cur) => cur && next.nodes.find((n) => n.id === cur) ? cur : "");
         setMsg("");
       })
       .catch((e) => setMsg("graph 오류: " + (e.message || e)))
@@ -201,13 +364,14 @@ export default function WikiTab({ user, canManage }) {
   useEffect(() => { loadWiki(); }, []);
 
   useEffect(() => {
-    if (!selected?.id) {
+    const detailDocId = wikiDocIdFromNode(selected);
+    if (!detailDocId) {
       setSelectedDetail(null);
       return undefined;
     }
     let alive = true;
     setDetailBusy(true);
-    sf("/api/agent/wiki/page" + qs({ doc_id: selected.id }))
+    sf("/api/agent/wiki/page" + qs({ doc_id: detailDocId }))
       .then((d) => {
         if (alive) setSelectedDetail(d.page || null);
       })
@@ -218,7 +382,7 @@ export default function WikiTab({ user, canManage }) {
         if (alive) setDetailBusy(false);
       });
     return () => { alive = false; };
-  }, [selected?.id]);
+  }, [selected]);
 
   const openPage = (row) => {
     const docId = row?.doc_id || row?.id;
@@ -227,8 +391,10 @@ export default function WikiTab({ user, canManage }) {
     sf("/api/agent/wiki/page" + qs({ doc_id: docId }))
       .then((d) => {
         const page = d.page || null;
+        const graphNode = graph.nodes.find((n) => n.id === docId || n.id === `doc:${docId}`);
         setSelectedPage(page);
-        setSelected(graph.nodes.find((n) => n.id === docId) || { id: docId, label: page?.title || docId, kind: page?.kind || "wiki_doc" });
+        setSelected(graphNode || { id: docId, label: page?.title || docId, kind: page?.kind || "wiki_doc" });
+        setGraphFocusId(graphNode?.id || docId);
       })
       .catch((e) => setMsg("상세 오류: " + (e.message || e)))
       .finally(() => setBusy(false));
@@ -327,6 +493,12 @@ export default function WikiTab({ user, canManage }) {
     return graph.nodes.filter((n) => `${n.label} ${n.id} ${n.kind}`.toLowerCase().includes(q)).slice(0, 30);
   }, [graph.nodes, query]);
 
+  const selectGraphNode = (node) => {
+    if (!node?.id) return;
+    setSelected(node);
+    setGraphFocusId(node.id);
+  };
+
   const upsert = () => {
     if (!canManage || !form.body.trim()) return;
     setBusy(true);
@@ -365,7 +537,15 @@ export default function WikiTab({ user, canManage }) {
                 <Field label="search">
                   <input value={query} onChange={(e) => setQuery(e.target.value)} style={{ ...formControlStyle, width: "100%", boxSizing: "border-box" }} placeholder="doc, product, lot, relation" />
                 </Field>
-                <WikiGraph graph={graph} query={query} selected={selected} highlightId={highlightId} onSelect={setSelected} />
+                <WikiGraph
+                  graph={graph}
+                  query={query}
+                  selected={selected}
+                  focusId={graphFocusId}
+                  highlightId={highlightId}
+                  onSelect={setSelected}
+                  onFocusChange={setGraphFocusId}
+                />
               </div>
               <div style={{ display: "grid", gap: 12 }}>
                 <Panel title="선택 지식 상세" subtitle={selected?.id || "선택된 node 없음"} right={detailBusy ? <Pill tone="warn">loading</Pill> : null}>
@@ -395,7 +575,7 @@ export default function WikiTab({ user, canManage }) {
                   <DataTable
                     rows={matchingRows}
                     empty="검색 결과가 없습니다."
-                    onRowClick={setSelected}
+                    onRowClick={selectGraphNode}
                     maxHeight={260}
                     columns={[
                       { key: "kind", label: "kind", width: 90, render: (r) => <Pill tone="neutral">{r.kind}</Pill> },
