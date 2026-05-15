@@ -57,6 +57,19 @@ function shortFlowiVerifyError(value){
   const text=String(value||"").replace(/Bearer\s+[A-Za-z0-9._~+/=-]{12,}/gi,"Bearer <redacted>").replace(/ya29\.[A-Za-z0-9._~+/=-]+/g,"ya29.<redacted>").replace(/sk-[A-Za-z0-9._~+/=-]{12,}/g,"sk-<redacted>").replace(/\s+/g," ").trim();
   return text.length>120?`${text.slice(0,117)}...`:text;
 }
+function flowiOutputSummaryForContext(result){
+  const tool=result?.tool||{};
+  const table=tool?.table&&typeof tool.table==="object"?tool.table:{};
+  const split=tool?.split_view&&typeof tool.split_view==="object"?tool.split_view:{};
+  const chart=tool?.chart_result&&typeof tool.chart_result==="object"?tool.chart_result:(tool?.chart&&typeof tool.chart==="object"?tool.chart:{});
+  const blocks=Array.isArray(tool?.blocks)?tool.blocks:[];
+  return {
+    table:table?.kind?{kind:table.kind||"",title:table.title||"",total:table.total??(Array.isArray(table.rows)?table.rows.length:0)}:{},
+    split_view:split?.kind?{kind:split.kind||"",title:split.title||"",total:split.total??(Array.isArray(split.rows)?split.rows.length:0),row_label:split.row_label||""}:{},
+    chart:chart?.kind||chart?.status?{kind:chart.kind||chart.status||"",title:chart.title||"",status:chart.status||""}:{},
+    blocks:blocks.slice(0,6).map(b=>({kind:b?.kind||"",title:b?.title||""})).filter(b=>b.kind||b.title),
+  };
+}
 function FlowiConsole({onNavigate,user,onActiveChange}){
   const isAdmin=user?.role==="admin";
   const[active,setActive]=useState(false);
@@ -122,28 +135,35 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
     return true;
   };
   const close=()=>{setActive(false);setErr("");onActiveChange&&onActiveChange(false);};
-  const contextMessages=messages.slice(-8).map(m=>({
-    role:m.role,
-    prompt:m.prompt||"",
-    text:String(m.answer||m.text||"").slice(0,900),
-    intent:m.intent||"",
-    feature:m.result?.tool?.feature||"",
-    action:m.result?.tool?.action||"",
-    blocked:!!m.result?.tool?.blocked,
-    created_record:m.result?.tool?.created_record||null,
-    missing:m.result?.tool?.missing||[],
-    arguments_choices:m.result?.tool?.arguments_choices||{},
-    missing_freetext:m.result?.tool?.missing_freetext||m.result?.missing_freetext||[],
-    arguments_partial:m.result?.tool?.arguments_partial||m.result?.tool?.arguments||{},
-    last_partial_prompt:m.result?.tool?.last_partial_prompt||m.result?.last_partial_prompt||"",
-    walkthrough:m.result?.tool?.walkthrough||{},
-    slots:m.result?.tool?.slots||{},
-    filters:m.result?.tool?.filters||{},
-    chart_session_id:m.result?.tool?.chart_session_id||m.result?.tool?.chart_result?.chart_session_id||"",
-    workflow_state:m.result?.workflow_state||m.result?.tool?.workflow_state||{},
-    output_summary:m.result?.workflow_state?.outputs||m.result?.tool?.workflow_state?.outputs||{},
-    pending_prompt:m.result?.tool?.pending_prompt||"",
-  }));
+  const contextMessages=messages.slice(-8).map(m=>{
+    const outputSummary=flowiOutputSummaryForContext(m.result);
+    return {
+      role:m.role,
+      prompt:m.prompt||"",
+      text:String(m.answer||m.text||"").slice(0,900),
+      answer_excerpt:String(m.answer||m.result?.answer||m.text||"").slice(0,600),
+      intent:m.intent||m.result?.tool?.intent||"",
+      feature:m.result?.tool?.feature||"",
+      action:m.result?.tool?.action||"",
+      blocked:!!m.result?.tool?.blocked,
+      created_record:m.result?.tool?.created_record||null,
+      missing:m.result?.tool?.missing||[],
+      arguments_choices:m.result?.tool?.arguments_choices||{},
+      missing_freetext:m.result?.tool?.missing_freetext||m.result?.missing_freetext||[],
+      arguments_partial:m.result?.tool?.arguments_partial||m.result?.tool?.arguments||{},
+      last_partial_prompt:m.result?.tool?.last_partial_prompt||m.result?.last_partial_prompt||"",
+      walkthrough:m.result?.tool?.walkthrough||{},
+      slots:m.result?.tool?.slots||{},
+      filters:m.result?.tool?.filters||{},
+      table_kind:outputSummary.table?.kind||"",
+      split_view_kind:outputSummary.split_view?.kind||"",
+      split_view_summary:outputSummary.split_view||{},
+      chart_session_id:m.result?.tool?.chart_session_id||m.result?.tool?.chart_result?.chart_session_id||"",
+      workflow_state:m.result?.workflow_state||m.result?.tool?.workflow_state||{},
+      output_summary:outputSummary,
+      pending_prompt:m.result?.tool?.pending_prompt||"",
+    };
+  });
   const contextText=contextMessages.map(m=>`${m.role}: ${m.prompt||m.text||""} ${m.intent?`(${m.intent})`:""}`).join("\n");
   const contextRemaining=Math.max(0,CTX_LIMIT-String(contextText||"").length-String(prompt||"").length);
   const contextUsed=CTX_LIMIT-contextRemaining;
@@ -272,17 +292,34 @@ function flowiInterpretationLines(trace,tool){
   return lines.slice(0,4);
 }
 
+function flowiMethodLine(trace,tool){
+  const activation=trace?.activation||{};
+  const evidence=trace?.evidence||{};
+  const feature=tool?.feature||evidence.used_feature_ai||activation.feature||"Flow-i";
+  const action=tool?.action||activation.action||"";
+  const table=tool?.table&&typeof tool.table==="object"?tool.table:null;
+  const split=tool?.split_view&&typeof tool.split_view==="object"?tool.split_view:null;
+  if(tool?.blocked)return "권한과 정책을 먼저 확인해 허용되지 않은 작업은 실행하지 않았습니다.";
+  if(split)return "SplitTable 화면 API를 read-only로 호출해 같은 셀 기준의 인라인 결과로 표시합니다.";
+  if(table)return `${feature} 기능을 read-only로 호출하고 ${table.total??(Array.isArray(table.rows)?table.rows.length:0)}건의 결과 표를 구성합니다.`;
+  if(action)return `${feature} 기능의 ${action} 결과를 홈 화면에서 바로 확인합니다.`;
+  return "";
+}
+
 function FlowiInterpretationSummary({trace,tool}){
-  const lines=flowiInterpretationLines(trace,tool);
-  if(!lines.length)return null;
-  return <div style={{margin:"0 0 10px",border:"1px solid #2a2a2a",borderRadius:8,background:"#141414",padding:"9px 10px",fontFamily:"'JetBrains Mono',monospace"}}>
-    <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:6}}>
-      <span style={{width:6,height:6,borderRadius:999,background:HOME_UI.accent,display:"inline-block"}}/>
-      <span style={{fontSize:14,color:"#f5f5f5",fontWeight:900}}>해석</span>
-    </div>
-    <div style={{display:"grid",gap:5}}>
+  const lines=flowiInterpretationLines(trace,tool).slice(0,2);
+  const method=flowiMethodLine(trace,tool);
+  if(!lines.length&&!method)return null;
+  return <div style={{margin:"0 0 10px",padding:"0 0 10px",borderBottom:"1px solid #262626",fontFamily:"'JetBrains Mono',monospace"}}>
+    {lines.length>0&&<div style={{display:"grid",gap:4,marginBottom:method?8:0}}>
+      <div style={{fontSize:14,color:"#f5f5f5",fontWeight:900}}>해석</div>
       {lines.map((line,i)=><div key={i} style={{fontSize:14,lineHeight:1.55,color:i===0?"#e5e5e5":"#a3a3a3",whiteSpace:"normal",overflowWrap:"anywhere"}}>{line}</div>)}
+    </div>}
+    {method&&<div style={{display:"grid",gap:4}}>
+      <div style={{fontSize:14,color:"#f5f5f5",fontWeight:900}}>진행 방식</div>
+      <div style={{fontSize:14,lineHeight:1.55,color:"#a3a3a3",whiteSpace:"normal",overflowWrap:"anywhere"}}>{method}</div>
     </div>
+    }
   </div>;
 }
 
@@ -300,7 +337,6 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
   const partialPrompt=tool.last_partial_prompt||result.last_partial_prompt||prompt;
   const walkthrough=tool.walkthrough||{};
   const workflow=tool.workflow_state||result.workflow_state||{};
-  const nextActions=(Array.isArray(tool.next_actions)?tool.next_actions:(Array.isArray(result.next_actions)?result.next_actions:[])).filter(a=>a&&a.type!=="respond_with_prompt").slice(0,6);
   const chart=tool?.chart&&typeof tool.chart==="object"?tool.chart:null;
   const chartResult=tool?.chart_result&&typeof tool.chart_result==="object"?tool.chart_result:null;
   const chartSessionId=tool?.chart_session_id||chartResult?.chart_session_id||"";
@@ -333,10 +369,8 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
       <span style={{fontSize:14,color:"#737373",fontFamily:"monospace"}}>{String(chartSessionId).slice(0,12)}</span>
     </div>}
     {walkthrough&&walkthrough.session_id&&<FlowiWalkthrough data={walkthrough}/>}
-    {isAdmin&&nextActions.length>0&&<FlowiNextActions actions={nextActions} onNavigate={onNavigate} onChoice={onChoice}/>}
     {isAdmin&&result.proposal&&result.confirm&&<FlowiEdmProposal result={result}/>}
-    <FlowiTraceStrip trace={result.trace}/>
-    <FlowiTrace trace={result.trace}/>
+    {isAdmin&&<FlowiTrace trace={result.trace}/>}
     <FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>
   </div>);
 }
@@ -554,7 +588,7 @@ const FR_TD={padding:"5px 6px",borderBottom:"1px solid #262626",color:"#d4d4d4",
 const FLOWI_LIVE_STEPS=[
   ["요청 접수","질문과 최근 대화 context를 서버로 보냅니다."],
   ["LLM 상태","현재 연결 모델과 사용 가능 여부를 확인합니다."],
-  ["공개 해석","의도, 필요한 값, 호출할 단위기능을 정리합니다."],
+  ["요청 해석","의도, 필요한 값, 호출할 단위기능을 정리합니다."],
   ["Wiki/업무 근거","Agent Wiki, 인폼, 회의, DB schema 근거를 대조합니다."],
   ["단위기능 실행","SplitTable, Dashboard, FileBrowser, Inform, Meeting handler를 호출합니다."],
   ["결과 구성","표, 차트, 선택지, 피드백 요청을 한 응답으로 묶습니다."],
@@ -599,7 +633,7 @@ function FlowiTraceStrip({trace}){
   const primaryText=[primary.label||primary.title||primary.key,primary.detail].filter(Boolean).join(" · ");
   return <div style={{margin:"10px 0 0",border:"1px solid #262626",borderRadius:8,background:"#101010",padding:"7px 9px",fontFamily:"monospace"}}>
     <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
-      <span style={{fontSize:14,color:"#737373",fontWeight:900}}>실행 요약</span>
+      <span style={{fontSize:14,color:"#737373",fontWeight:900}}>실행 로그</span>
       {primaryText&&<span style={{fontSize:14,color:"#a3a3a3",minWidth:0,flex:"1 1 260px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={primaryText}>{primaryText}</span>}
     </div>
     {chips.length>0&&<div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:7}}>
@@ -628,7 +662,7 @@ function FlowiTrace({trace}){
   const apiCalls=Array.isArray(trace?.api_calls)?trace.api_calls:(Array.isArray(evidence?.api_calls)?evidence.api_calls:[]);
   return(<details style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"7px 9px"}}>
     <summary style={{cursor:"pointer",fontSize:14,color:"#a3a3a3",fontFamily:"monospace",fontWeight:800}}>
-      공개 추론 로그 / 근거 흐름 <span style={{fontWeight:400,color:"#737373"}}>사고과정 원문이 아닌 실행 로그</span>
+      실행 로그 <span style={{fontWeight:400,color:"#737373"}}>사용한 근거와 호출한 기능</span>
     </summary>
     <div style={{marginTop:8,display:"grid",gap:8,fontFamily:"monospace"}}>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:6}}>
@@ -872,7 +906,7 @@ function flowiFieldQuestion(field){
 
 function FlowiNextActions({actions,onNavigate,onChoice}){
   return(<div style={{marginTop:10,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"8px 9px"}}>
-    <div style={{fontSize:14,fontWeight:900,color:"#a3a3a3",fontFamily:"'JetBrains Mono',monospace",marginBottom:6}}>next actions</div>
+    <div style={{fontSize:14,fontWeight:900,color:"#a3a3a3",fontFamily:"'JetBrains Mono',monospace",marginBottom:6}}>후속 작업</div>
     <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
       {actions.map((a,i)=>{
         const clickable=(a.type==="open_tab"&&a.tab&&typeof onNavigate==="function")||(a.prompt&&typeof onChoice==="function");

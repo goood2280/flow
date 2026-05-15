@@ -425,6 +425,135 @@ def test_flowi_splittable_context_keeps_ambiguous_followup_on_split_table(monkey
     assert out["filters"]["source"] == "splittable.view"
 
 
+def test_flowi_splittable_shape_followup_reuses_previous_knob_context(monkeypatch):
+    from routers import splittable as splittable_router
+
+    def fake_view_split(**kwargs):
+        assert kwargs["product"] == "ML_TABLE_PRODA"
+        assert kwargs["root_lot_id"] == "A1001"
+        assert kwargs["prefix"] == "KNOB"
+        return {
+            "product": kwargs["product"],
+            "root_lot_id": kwargs["root_lot_id"],
+            "headers": ["#1", "#2"],
+            "rows": [{
+                "_param": "KNOB_SORT",
+                "_display": "24.0 SORT / KNOB_SORT",
+                "_cells": {
+                    "0": {"actual": "A", "plan": "", "key": "A1001|1|KNOB_SORT", "can_plan": True},
+                    "1": {"actual": "B", "plan": "", "key": "A1001|2|KNOB_SORT", "can_plan": True},
+                },
+            }],
+        }
+
+    monkeypatch.setattr(splittable_router, "view_split", fake_view_split)
+    ctx = {"messages": [{
+        "role": "assistant",
+        "feature": "splittable",
+        "action": "query_lot_knobs_from_ml_table",
+        "intent": "lot_knobs",
+        "filters": {
+            "product": ["PRODA", "ML_TABLE_PRODA"],
+            "root_lot_ids": ["A1001"],
+            "step": "24.0 SORT",
+            "group": "KNOB",
+            "source": "ML_TABLE",
+        },
+        "table_kind": "splittable_preview",
+        "answer_excerpt": "A1001 24.0 SORT KNOB 요약입니다.",
+    }]}
+
+    out = _handle_flowi_query(
+        "스플릿테이블 형태로 보여줘",
+        "",
+        12,
+        allowed_keys={"splittable"},
+        agent_context=ctx,
+    )
+
+    assert out["handled"] is True
+    assert out["context_followup"] is True
+    assert out["type"] == "split_view"
+    assert out["action"] == "query_wafer_split_at_step"
+    assert out["filters"]["product"] == "ML_TABLE_PRODA"
+    assert out["filters"]["step"] == "24.0 SORT"
+    assert out["filters"]["prefix"] == "KNOB"
+    assert out["split_view"]["rows"][0]["parameter"] == "KNOB_SORT"
+
+
+def test_flowi_splittable_shape_followup_can_switch_from_filebrowser_context(monkeypatch):
+    from routers import splittable as splittable_router
+
+    def fake_view_split(**kwargs):
+        assert kwargs["product"] == "ML_TABLE_PRODA"
+        assert kwargs["root_lot_id"] == "A1001"
+        return {
+            "product": kwargs["product"],
+            "root_lot_id": kwargs["root_lot_id"],
+            "headers": ["#3"],
+            "rows": [{
+                "_param": "KNOB_ALPHA",
+                "_display": "KNOB_ALPHA",
+                "_cells": {"0": {"actual": "ON", "plan": "", "key": "A1001|3|KNOB_ALPHA", "can_plan": True}},
+            }],
+        }
+
+    monkeypatch.setattr(splittable_router, "view_split", fake_view_split)
+    ctx = {"messages": [{
+        "role": "assistant",
+        "feature": "filebrowser",
+        "action": "preview_filebrowser_data",
+        "intent": "filebrowser_data_preview",
+        "filters": {
+            "source_type": "ML_TABLE",
+            "product": "PRODA",
+            "root_lot_ids": ["A1001"],
+            "group": "KNOB",
+        },
+        "table_kind": "filebrowser_data_preview",
+    }]}
+
+    out = _handle_flowi_query(
+        "pivot 형태로 바꿔줘",
+        "",
+        12,
+        allowed_keys={"splittable", "filebrowser"},
+        agent_context=ctx,
+    )
+
+    assert out["handled"] is True
+    assert out["type"] == "split_view"
+    assert out["filters"]["source"] == "splittable.view"
+    assert out["filters"]["root_lot_ids"] == ["A1001"]
+
+
+def test_flowi_splittable_shape_followup_does_not_bypass_allowed_features(monkeypatch):
+    from routers import splittable as splittable_router
+
+    def fail_view_split(**_kwargs):
+        raise AssertionError("splittable view should not be called without splittable permission")
+
+    monkeypatch.setattr(splittable_router, "view_split", fail_view_split)
+    ctx = {"messages": [{
+        "role": "assistant",
+        "feature": "splittable",
+        "action": "query_lot_knobs_from_ml_table",
+        "filters": {"product": "PRODA", "root_lot_ids": ["A1001"], "source": "ML_TABLE"},
+        "table_kind": "splittable_preview",
+    }]}
+
+    out = _handle_flowi_query(
+        "pivot 형태로 다시 보여줘",
+        "",
+        12,
+        allowed_keys={"filebrowser"},
+        agent_context=ctx,
+    )
+
+    assert out.get("feature") != "splittable"
+    assert out.get("action") != "query_splittable_view"
+
+
 def test_flowi_splittable_source_followup_replays_pending_split_query(monkeypatch):
     from routers import splittable as splittable_router
 
@@ -2139,7 +2268,7 @@ def test_flowi_inform_walkthrough_accepts_fab_lot_id_without_root_choice(tmp_pat
     monkeypatch.setattr(llm_router, "_resolve_products_for_lots", lambda *_args, **_kwargs: [{"product": "PRODA"}])
 
     out = llm_router._handle_flowi_inform_walkthrough_chat(
-        "A1003B.2 인폼남기고싶어",
+        "A1003B.2 인폼 전체 남기고싶어",
         "",
         12,
         me={"username": "hol", "role": "user"},
@@ -2161,6 +2290,26 @@ def test_flowi_inform_walkthrough_accepts_fab_lot_id_without_root_choice(tmp_pat
     assert updated["entries"][0]["fab_lot_id"] == "A1003B.2"
     assert updated["entries"][0]["lot_id"] == "A1003B.2"
     assert updated["entries"][0]["split_set"] == "test1"
+
+
+def test_flowi_inform_lot_only_opens_draft_form_not_walkthrough(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm_router, "FLOWI_INFORM_SESSION_DIR", tmp_path / "flowi_inform_sessions")
+    monkeypatch.setattr(llm_router, "_flowi_inform_modules", lambda: ["GATE", "STI"])
+    monkeypatch.setattr(llm_router, "_resolve_products_for_lots", lambda *_args, **_kwargs: [{"product": "PRODA"}])
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+
+    out = _run_flowi_chat(prompt="A1001 인폼 남기고싶어", product="", max_rows=12, me={"username": "hol", "role": "user"})
+    tool = out["tool"]
+
+    assert tool["intent"] == "inform_log_draft"
+    assert tool["action"] == "register_inform_log"
+    assert tool["feature"] == "inform"
+    assert tool["missing"] == ["module"]
+    assert tool["arguments"]["root_lot_ids"] == ["A1001"]
+    assert tool["arguments"]["product"] == "PRODA"
+    assert tool["arguments_choices"]["fields"][0]["field"] == "module"
+    assert "session_id" not in tool
 
 
 def test_flowi_gpt_oss_120b_style_inform_lot_only_asks_slots_to_result(tmp_path, monkeypatch):

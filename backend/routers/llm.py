@@ -1943,6 +1943,9 @@ def _flowi_current_step_prompt(prompt: str) -> bool:
     low = text.lower()
     if not _lot_tokens(text):
         return False
+    classified = _classified_lot_tokens(text)
+    if _flowi_knob_value_token(text) and not (classified.get("root_lot_ids") or classified.get("fab_lot_ids")):
+        return False
     if any(t in low for t in ("lot_id", "lot id", "fab_lot", "fab lot", "fab-lot", "fablot")):
         return False
     has_current = any(t in low or t in text for t in ("현재", "지금", "current", "now", "어디"))
@@ -2028,9 +2031,9 @@ def _flowi_infer_function_call(prompt: str, slots: dict[str, Any]) -> dict[str, 
             "side_effect": "confirm_before_write",
             "invalid_wafers": invalid_wafers,
         }
-    wants_inform_walkthrough = (
-        any(t in text or t in up for t in ("인폼전체", "전체 작성", "전부 작성", "다 작성", "통째로", "모든 모듈"))
-        or (("인폼" in text or "inform" in text.lower()) and any(t in text for t in ("남기고싶", "남기고 싶", "작성하고싶", "작성하고 싶")))
+    wants_inform_walkthrough = any(
+        t in text or t in up
+        for t in ("인폼전체", "인폼 전체", "전체 작성", "전부 작성", "다 작성", "통째로", "모든 모듈")
     )
     if wants_inform_walkthrough:
         return {
@@ -7072,6 +7075,20 @@ def _ml_files(product: str) -> list[Path]:
         seen.add(key)
         dedup.append(fp)
     return _filter_files_by_product(dedup, product)
+
+
+def _flowi_single_ml_product_hint(files: list[Path]) -> str:
+    products: set[str] = set()
+    for fp in files or []:
+        try:
+            stem = Path(fp).stem
+        except Exception:
+            continue
+        if stem.upper().startswith("ML_TABLE_"):
+            name = stem[len("ML_TABLE_"):].strip()
+            if name:
+                products.add(_upper(name))
+    return next(iter(products)) if len(products) == 1 else ""
 
 
 def _unique_strings(lf: pl.LazyFrame, col: str, limit: int = 200) -> list[str]:
@@ -14139,6 +14156,15 @@ def _handle_fab_progress_query(prompt: str, product: str, max_rows: int) -> dict
 
 
 def _flowi_splittable_prefixes_from_args(args: dict[str, Any], prompt: str) -> list[str]:
+    prefix_raw = args.get("prefix")
+    if prefix_raw:
+        prefixes: list[str] = []
+        for item in re.split(r"[,/ ]+", str(prefix_raw or "").upper()):
+            item = item.strip()
+            if item in {"KNOB", "MASK", "FAB", "INLINE", "VM"} and item not in prefixes:
+                prefixes.append(item)
+        if prefixes:
+            return prefixes[:5]
     group = str(args.get("group") or _flowi_group_token(prompt) or "").strip().upper()
     if group in {"KNOB", "MASK", "FAB", "INLINE", "VM"}:
         return [group]
@@ -14416,12 +14442,18 @@ def _handle_wafer_split_at_step(prompt: str, product: str, max_rows: int) -> dic
     }, "split_view", prompt=prompt)
 
 
-def _handle_find_lots_by_knob_value(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+def _handle_find_lots_by_knob_value(prompt: str, product: str, max_rows: int, *, infer_unique_product: bool = False) -> dict[str, Any]:
     preview = _structure_flowi_function_call(prompt, product=product, max_rows=max_rows)
     if ((preview.get("selected_function") or {}).get("name") != "find_lots_by_knob_value"):
         return {"handled": False}
     args = ((preview.get("function_call") or {}).get("function") or {}).get("arguments") or {}
     missing = (preview.get("validation") or {}).get("missing") or []
+    if "product" in missing and infer_unique_product:
+        inferred_product = _flowi_single_ml_product_hint(_ml_files(product or ""))
+        if inferred_product:
+            args = dict(args)
+            args["product"] = inferred_product
+            missing = [m for m in missing if m != "product"]
     if missing:
         answer = "KNOB value 역검색에 필요한 값을 보완해 주세요."
         if "product" in missing:
@@ -15718,10 +15750,283 @@ def _flowi_context_product_hint(agent_context: dict[str, Any] | None) -> str:
             if isinstance(value, dict):
                 containers.append(value)
         for container in containers:
-            product = str(container.get("product") or "").strip()
-            if product:
-                return product
+            products = _flowi_context_values(container.get("product"))
+            for product in products:
+                if _upper(product).startswith("ML_TABLE_"):
+                    return _upper(product)
+            if products:
+                return _upper(products[0])
     return ""
+
+
+def _flowi_context_values(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        raw = re.split(r"[,/]+", text) if ("," in text or "/" in text) else [text]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        key = _upper(text)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(text)
+    return out
+
+
+def _flowi_merge_context_dicts(*items: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
+            if value in (None, "", [], {}):
+                continue
+            out.setdefault(str(key), value)
+    return out
+
+
+def _flowi_recent_tool_anchor(agent_context: dict[str, Any] | None) -> dict[str, Any]:
+    for msg in reversed(_flowi_context_messages(agent_context)[-10:]):
+        workflow = msg.get("workflow_state") if isinstance(msg.get("workflow_state"), dict) else {}
+        outputs = msg.get("output_summary") if isinstance(msg.get("output_summary"), dict) else {}
+        workflow_outputs = workflow.get("outputs") if isinstance(workflow.get("outputs"), dict) else {}
+        table_summary = outputs.get("table") if isinstance(outputs.get("table"), dict) else {}
+        if not table_summary:
+            table_summary = workflow_outputs.get("table") if isinstance(workflow_outputs.get("table"), dict) else {}
+        filters = _flowi_merge_context_dicts(
+            workflow.get("filters") if isinstance(workflow.get("filters"), dict) else {},
+            msg.get("filters") if isinstance(msg.get("filters"), dict) else {},
+        )
+        slots = _flowi_merge_context_dicts(
+            workflow.get("slots") if isinstance(workflow.get("slots"), dict) else {},
+            msg.get("slots") if isinstance(msg.get("slots"), dict) else {},
+            msg.get("arguments_partial") if isinstance(msg.get("arguments_partial"), dict) else {},
+            msg.get("arguments") if isinstance(msg.get("arguments"), dict) else {},
+        )
+        anchor = {
+            "feature": str(msg.get("feature") or workflow.get("feature") or "").strip(),
+            "action": str(msg.get("action") or workflow.get("action") or "").strip(),
+            "intent": str(msg.get("intent") or workflow.get("intent") or "").strip(),
+            "filters": filters,
+            "slots": slots,
+            "table_kind": str(msg.get("table_kind") or table_summary.get("kind") or "").strip(),
+            "split_view_kind": str(msg.get("split_view_kind") or "").strip(),
+            "answer": str(msg.get("answer_excerpt") or msg.get("text") or msg.get("answer") or "").strip(),
+            "prompt": str(msg.get("prompt") or "").strip(),
+        }
+        if any(anchor.get(k) for k in ("feature", "action", "intent", "table_kind", "split_view_kind", "answer")) or filters or slots:
+            return anchor
+    return {}
+
+
+def _flowi_anchor_supports_splittable(anchor: dict[str, Any]) -> bool:
+    if not anchor:
+        return False
+    feature = str(anchor.get("feature") or "")
+    action = str(anchor.get("action") or "")
+    intent = str(anchor.get("intent") or "")
+    filters = anchor.get("filters") if isinstance(anchor.get("filters"), dict) else {}
+    slots = anchor.get("slots") if isinstance(anchor.get("slots"), dict) else {}
+    text = _upper(" ".join([
+        feature,
+        action,
+        intent,
+        str(anchor.get("table_kind") or ""),
+        str(anchor.get("split_view_kind") or ""),
+        str(filters.get("source") or ""),
+        str(filters.get("source_type") or ""),
+        " ".join(_flowi_context_values(filters.get("product"))),
+        " ".join(_flowi_context_values(slots.get("product"))),
+    ]))
+    if feature == "splittable":
+        return True
+    if action in {"query_wafer_split_at_step", "query_splittable_view", "query_lot_knobs_from_ml_table", "find_lots_by_knob_value"}:
+        return True
+    return "SPLITTABLE" in text or "SPLITTABLE_VIEW" in text or "ML_TABLE" in text
+
+
+def _flowi_splittable_followup_requested(prompt: str, anchor: dict[str, Any]) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    explicit = any(term in low or term in text for term in (
+        "스플릿테이블",
+        "스플릿 테이블",
+        "split table",
+        "splittable",
+        "pivot",
+        "피벗",
+        "wafer table",
+        "웨이퍼 테이블",
+        "wafer별 표",
+        "웨이퍼별 표",
+    ))
+    if explicit:
+        return True
+    if not _flowi_anchor_supports_splittable(anchor):
+        return False
+    same_context = any(term in text for term in ("아까", "이전", "직전", "같은 조건")) or "same condition" in low
+    rerun = any(term in text for term in ("다시", "보여", "조회", "확인", "형태", "표로", "테이블로"))
+    return same_context and rerun
+
+
+def _flowi_anchor_product(anchor: dict[str, Any], prompt: str, product: str = "") -> str:
+    prompt_product = _product_hint(prompt, product)
+    if prompt_product:
+        return prompt_product
+    filters = anchor.get("filters") if isinstance(anchor.get("filters"), dict) else {}
+    slots = anchor.get("slots") if isinstance(anchor.get("slots"), dict) else {}
+    candidates: list[str] = []
+    for value in (filters.get("product"), slots.get("product"), slots.get("products")):
+        candidates.extend(_flowi_context_values(value))
+    for value in candidates:
+        if _upper(value).startswith("ML_TABLE_"):
+            return _upper(value)
+    return _upper(candidates[0]) if candidates else ""
+
+
+def _flowi_add_anchor_lot_values(roots: list[str], fabs: list[str], values: Any) -> None:
+    seen_roots = {_upper(v) for v in roots}
+    seen_fabs = {_upper(v) for v in fabs}
+
+    def add_root(value: Any) -> None:
+        root = _upper(value)
+        if root and root not in seen_roots:
+            seen_roots.add(root)
+            roots.append(root)
+
+    def add_fab(value: Any) -> None:
+        fab = _upper(value)
+        if fab and fab not in seen_fabs:
+            seen_fabs.add(fab)
+            fabs.append(fab)
+        root = _flowi_root_from_fab_lot(fab)
+        if root:
+            add_root(root)
+
+    for value in _flowi_context_values(values):
+        classified = _classified_lot_tokens(value)
+        for root in classified.get("root_lot_ids") or []:
+            add_root(root)
+        for fab in classified.get("fab_lot_ids") or []:
+            add_fab(fab)
+        if classified.get("root_lot_ids") or classified.get("fab_lot_ids"):
+            continue
+        key = _upper(value)
+        if _is_fab_lot_token(key) or "." in key:
+            add_fab(key)
+        elif _is_root_lot_token(key) or re.fullmatch(r"[A-Z]\d{4,}(?:[A-Z])?", key):
+            add_root(key)
+
+
+def _flowi_anchor_splittable_args(anchor: dict[str, Any], prompt: str, product: str = "") -> dict[str, Any]:
+    filters = anchor.get("filters") if isinstance(anchor.get("filters"), dict) else {}
+    slots = anchor.get("slots") if isinstance(anchor.get("slots"), dict) else {}
+    current = _classified_lot_tokens(prompt)
+    roots = list(current.get("root_lot_ids") or [])
+    fabs = list(current.get("fab_lot_ids") or [])
+    if not roots and not fabs:
+        for key in ("root_lot_ids", "root_lot_id", "roots"):
+            _flowi_add_anchor_lot_values(roots, fabs, filters.get(key) or slots.get(key))
+        for key in ("fab_lot_ids", "fab_lot_id", "lot_ids", "lots", "lot", "lot_scope"):
+            _flowi_add_anchor_lot_values(roots, fabs, filters.get(key) or slots.get(key))
+    wafer_ids = _wafer_tokens(prompt)
+    if not wafer_ids:
+        for key in ("wafer_ids", "wafers", "wafer_id"):
+            wafer_ids.extend(_flowi_context_values(filters.get(key) or slots.get(key)))
+        wafer_ids = [_normalize_wafer_id(v) or str(v).strip() for v in wafer_ids]
+        wafer_ids = [v for v in dict.fromkeys(wafer_ids) if v]
+    step = _flowi_func_step_token(prompt) or str(filters.get("step") or slots.get("step") or slots.get("function_step") or "").strip()
+    group = _flowi_group_token(prompt) or str(filters.get("group") or slots.get("group") or "").strip().upper()
+    prefix = str(filters.get("prefix") or "").strip().upper()
+    args = {
+        "product": _flowi_anchor_product(anchor, prompt, product),
+        "root_lot_ids": roots,
+        "fab_lot_ids": fabs,
+        "wafer_ids": wafer_ids,
+        "read_only": True,
+    }
+    if step:
+        args["step"] = step
+    if group:
+        args["group"] = group
+    if prefix:
+        args["prefix"] = prefix
+    return args
+
+
+def _flowi_splittable_anchor_prompt(args: dict[str, Any], prompt: str) -> str:
+    parts: list[str] = []
+    product = str(args.get("product") or "").strip()
+    if product:
+        parts.append(product)
+    parts.extend(str(x) for x in (args.get("fab_lot_ids") or args.get("root_lot_ids") or []) if str(x).strip())
+    wafers = [str(x).strip() for x in (args.get("wafer_ids") or []) if str(x).strip()]
+    if wafers:
+        parts.append(",".join(f"#{w}" for w in wafers))
+    if args.get("step"):
+        parts.append(str(args.get("step")))
+    if args.get("group") or args.get("prefix"):
+        parts.append(str(args.get("group") or args.get("prefix")))
+    parts.append("스플릿테이블 형태로 보여줘")
+    suffix = str(prompt or "").strip()
+    if suffix and suffix not in " ".join(parts):
+        parts.append(f"({suffix})")
+    return " ".join(parts).strip()
+
+
+def _handle_flowi_splittable_context_followup(
+    prompt: str,
+    product: str,
+    max_rows: int,
+    allowed_keys: set[str] | None,
+    agent_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if allowed_keys is not None and "splittable" not in allowed_keys:
+        return {"handled": False}
+    anchor = _flowi_recent_tool_anchor(agent_context)
+    if not (_flowi_anchor_supports_splittable(anchor) and _flowi_splittable_followup_requested(prompt, anchor)):
+        return {"handled": False}
+    args = _flowi_anchor_splittable_args(anchor, prompt, product)
+    if not (args.get("root_lot_ids") or args.get("fab_lot_ids")):
+        return {"handled": False}
+    synthetic_prompt = _flowi_splittable_anchor_prompt(args, prompt)
+    product_hint = str(args.get("product") or "").strip()
+    if not product_hint:
+        lots_for_product = _flowi_lot_scope_terms(args.get("root_lot_ids") or [], args.get("fab_lot_ids") or [])
+        resolved_product, candidate_tool = _product_or_candidate_tool(
+            synthetic_prompt,
+            "",
+            lots_for_product,
+            kinds=("ML_TABLE", "FAB"),
+            intent="splittable_context_followup",
+            ask_if_any=True,
+        )
+        if candidate_tool:
+            candidate_tool.setdefault("feature", "splittable")
+            candidate_tool.setdefault("action", "clarify_product")
+            candidate_tool.setdefault("arguments", args)
+            candidate_tool.setdefault("slots", {k: v for k, v in args.items() if v not in (None, "", [], {})})
+            return candidate_tool
+        product_hint = resolved_product
+        args["product"] = resolved_product
+    if not product_hint:
+        return {"handled": False}
+    tool = _flowi_query_splittable_view_tool(args, product_hint, synthetic_prompt, max_rows=max_rows)
+    if not tool.get("handled"):
+        return {"handled": False}
+    tool["context_followup"] = True
+    tool["slots"] = {k: v for k, v in args.items() if v not in (None, "", [], {})}
+    tool["answer"] = "이전 조건을 이어받아 SplitTable 형태로 다시 표시했습니다. " + str(tool.get("answer") or "")
+    return tool
 
 
 def _flowi_context_prefers_splittable(agent_context: dict[str, Any] | None) -> bool:
@@ -15807,6 +16112,9 @@ def _handle_flowi_query_core(
 ) -> dict:
     context_product = _flowi_context_product_hint(agent_context)
     product = _product_hint(prompt, product) or context_product
+    context_view_out = _handle_flowi_splittable_context_followup(prompt, product, max_rows, allowed_keys, agent_context)
+    if context_view_out.get("handled"):
+        return context_view_out
     if _flowi_context_prefers_splittable(agent_context) and _flowi_should_continue_splittable_context(prompt):
         prompt = f"{prompt} Split"
     if any(term in str(prompt or "").lower() or term in str(prompt or "") for term in ("테이블맵", "테이블 맵", "tablemap", "table map")):
@@ -15826,7 +16134,12 @@ def _handle_flowi_query_core(
         current_step_out = _handle_current_step_from_progress_cache(prompt, product, max_rows)
         if current_step_out.get("handled"):
             return current_step_out
-        knob_value_out = _handle_find_lots_by_knob_value(prompt, product, max_rows)
+        knob_value_out = _handle_find_lots_by_knob_value(
+            prompt,
+            product,
+            max_rows,
+            infer_unique_product=bool(allowed_keys is not None and set(allowed_keys) == {"splittable"}),
+        )
         if knob_value_out.get("handled"):
             return knob_value_out
         metric_step_out = _handle_metric_at_step(prompt, product, max_rows)
@@ -16001,6 +16314,7 @@ def _flowi_llm_polish_prompt(prompt: str, tool: dict[str, Any]) -> str:
         "아래 Flow 서버의 deterministic 해석/실행 결과를 사용자에게 짧은 한국어 문장으로만 정리하세요.\n"
         "라우팅, 권한, product, lot, wafer, step, plan 값은 새로 추론하지 마세요.\n"
         "입력 JSON에 있는 slots, feature, source, result_summary만 사용하세요.\n"
+        "이전 context JSON은 보강 요청 해석에만 사용하고, tool/cache 결과에 없는 값은 만들지 마세요.\n"
         "출력은 2-5줄 plain text입니다. markdown, 표, JSON, 내부 intent/action/schema id는 쓰지 마세요.\n\n"
         f"사용자 질문: {str(prompt or '').strip()[:1000]}\n"
         f"입력 JSON: {json.dumps(payload, ensure_ascii=False, default=str)[:5000]}"
@@ -18093,7 +18407,8 @@ def _run_flowi_chat(
             if source_line or context_line:
                 polish_prompt += "\n\n" + source_line + context_line
             polish_system = (
-                "Flow-i 응답 문장 정리기입니다. 서버 결과를 다시 판단하지 말고 plain text만 출력합니다."
+                "Flow-i 응답 문장 정리기입니다. 서버 결과를 다시 판단하지 말고 plain text만 출력합니다. "
+                "이전 context는 후속 보강 해석용이며 tool/cache 결과에 없는 값을 만들지 않습니다."
             )
         else:
             polish_prompt = (
