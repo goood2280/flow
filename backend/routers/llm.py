@@ -8327,6 +8327,7 @@ def _handle_meeting_recall(
         scored = [(score(m), m) for m in meetings]
         meetings = [m for s, m in scored if s > 0] or meetings
     want_actions = "액션" in prompt or "했던 일" in prompt or "할 일" in prompt
+    want_decisions = "결정" in prompt or "decision" in prompt.lower()
     want_agenda = "아젠다" in prompt
     want_issues = any(term in prompt.lower() or term in prompt for term in ("이슈", "issue", "tracker", "이슈추적", "목적"))
     want_schedule = any(term in prompt for term in ("시간", "일시", "언제", "몇시")) or ("날짜" in prompt and "날짜별" not in prompt)
@@ -8405,7 +8406,7 @@ def _handle_meeting_recall(
                     "owner": minutes.get("author") or "",
                     "status": session.get("status") or "",
                 })
-            if not want_actions:
+            if not want_actions or want_decisions or "전체" in prompt or "정리" in prompt:
                 for dec in minutes.get("decisions") or []:
                     obj = {"text": dec} if isinstance(dec, str) else (dec if isinstance(dec, dict) else {})
                     if not _text(obj.get("text")):

@@ -2642,6 +2642,144 @@ def test_flowi_chat_trace_includes_wiki_schema_lookup(monkeypatch):
     assert any(row["id"] == "schema_sti_step" for row in trace["evidence"]["knowledge_sources"])
 
 
+def test_flowi_home_user_trace_keeps_wiki_inform_evidence(monkeypatch):
+    from routers import informs as informs_router
+
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_profile_context", lambda _username: "")
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(informs_router, "_effective_modules", lambda _username, _role: {"GATE"})
+    monkeypatch.setattr(informs_router, "_visible_to", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(informs_router, "_canonical_flow_status", lambda status, _entry=None: status or "registered")
+    monkeypatch.setattr(informs_router, "_load_upgraded", lambda: [
+        {
+            "id": "INF-FLOWI-WIKI-GATE-1",
+            "created_at": "2026-05-15T09:00:00",
+            "product": "PRODA",
+            "root_lot_id": "A1000",
+            "lot_id": "A1000A.1",
+            "fab_lot_id_at_save": "A1000A.1",
+            "module": "GATE",
+            "flow_status": "mail_completed",
+            "reason": "[실전테스트] Gate split hold inform",
+            "text": "Gate Vt split hold와 inline monitor 추가",
+        },
+    ])
+
+    def fake_lookup_term(term, limit=6):
+        if str(term).upper() != "GATE":
+            return {"term": term, "columns": [], "docs": [], "graph": {"nodes": [], "edges": []}}
+        return {
+            "term": term,
+            "columns": [{
+                "relation_id": "INFORM_LOG",
+                "column": "module",
+                "canonical_alias": "공정 모듈",
+                "wiki_doc_id": "wiki_gate_inform_policy",
+            }],
+            "docs": [{
+                "doc_id": "wiki_gate_inform_policy",
+                "kind": "wiki_doc",
+                "title": "[실전테스트] GATE inform policy",
+                "summary": "GATE hold inform는 module=GATE 기준으로 최근 상태를 우선 확인한다.",
+            }],
+            "graph": {"nodes": [], "edges": []},
+        }
+
+    monkeypatch.setattr(llm_router.kv, "lookup_term", fake_lookup_term)
+
+    out = _run_flowi_chat(
+        prompt="GATE 모듈 인폼로그 최근 변경 적용 상태 요약해줘",
+        product="",
+        max_rows=12,
+        me={"username": "viewer", "role": "admin"},
+    )
+
+    assert out["ok"] is True
+    assert out["tool"]["intent"] == "inform_module_recent_summary"
+    assert out["tool"]["table"]["rows"][0]["id"] == "INF-FLOWI-WIKI-GATE-1"
+    assert out["llm"].get("used") is False
+    trace = out["trace"]
+    assert trace["visible"] is True
+    assert any(row["id"] == "wiki_gate_inform_policy" for row in trace["retrieved_knowledge"])
+    assert any(step["key"] == "knowledge" and "GATE" in step["detail"] for step in trace["steps"])
+    assert trace["validation"]["rows"] == 1
+    assert any(call["feature"] == "inform" and call["action"] == "summarize_inform_modules" for call in trace["api_calls"])
+
+    user_out = llm_router._flowi_home_response_for_role(out, {"username": "viewer", "role": "user"})
+    assert user_out["trace"]["visible"] is True
+    assert any(step["key"] == "knowledge" for step in user_out["trace"]["steps"])
+    assert any(row["id"] == "wiki_gate_inform_policy" for row in user_out["trace"]["retrieved_knowledge"])
+    assert "persona_snapshot" not in user_out["trace"]
+    assert user_out["tool"]["table"]["rows"][0]["id"] == "INF-FLOWI-WIKI-GATE-1"
+
+
+def test_flowi_chat_uses_wiki_and_meeting_records_as_public_evidence(monkeypatch):
+    meeting = {
+        "id": "MT-FLOWI-WIKI-GATE",
+        "title": "[실전테스트] GATE Wiki evidence meeting",
+        "owner": "owner",
+        "status": "active",
+        "sessions": [{
+            "id": "SS-FLOWI-WIKI-GATE-1",
+            "idx": 1,
+            "scheduled_at": "2026-05-15T10:00:00",
+            "status": "completed",
+            "agendas": [{"title": "Gate split hold", "description": "PRODA A1000 GATE split hold 판단"}],
+            "minutes": {
+                "body": "GATE split hold는 wiki_gate_meeting_policy 기준으로 적용한다.",
+                "decisions": [{"text": "PRODA A1000 GATE split hold 유지", "due": "2026-05-16"}],
+                "action_items": [{"text": "인폼로그에 Gate hold 근거 첨부", "owner": "gate_owner", "status": "pending"}],
+            },
+        }],
+    }
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_profile_context", lambda _username: "")
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(llm_router, "_load_flowi_meetings", lambda: [meeting])
+    monkeypatch.setattr(llm_router, "_meeting_visible_to_flowi", lambda _meeting, _me: True)
+    monkeypatch.setattr(llm_router, "_load_flowi_calendar_events", lambda: [])
+
+    def fake_lookup_term(term, limit=6):
+        if str(term).upper() != "GATE":
+            return {"term": term, "columns": [], "docs": [], "graph": {"nodes": [], "edges": []}}
+        return {
+            "term": term,
+            "columns": [{
+                "relation_id": "MEETING_MINUTES",
+                "column": "decisions",
+                "canonical_alias": "회의 결정사항",
+                "wiki_doc_id": "wiki_gate_meeting_policy",
+            }],
+            "docs": [{
+                "doc_id": "wiki_gate_meeting_policy",
+                "kind": "wiki_doc",
+                "title": "[실전테스트] GATE meeting policy",
+                "summary": "회의 결정사항은 decisions와 action_items를 함께 근거로 보여준다.",
+            }],
+            "graph": {"nodes": [], "edges": []},
+        }
+
+    monkeypatch.setattr(llm_router.kv, "lookup_term", fake_lookup_term)
+
+    out = _run_flowi_chat(
+        prompt="[실전테스트] GATE 회의 결정사항과 액션 보여줘",
+        product="",
+        max_rows=12,
+        me={"username": "viewer", "role": "admin"},
+    )
+
+    assert out["ok"] is True
+    assert out["tool"]["intent"] == "meeting_recall_summary"
+    assert "PRODA A1000 GATE split hold 유지" in out["answer"]
+    assert any(row.get("meeting_id") == "MT-FLOWI-WIKI-GATE" for row in out["tool"]["sources"])
+    trace = out["trace"]
+    assert any(row["id"] == "wiki_gate_meeting_policy" for row in trace["retrieved_knowledge"])
+    assert any(step["key"] == "knowledge" and "GATE" in step["detail"] for step in trace["steps"])
+    assert any(call["callee"] == "_handle_meeting_recall" for call in trace["api_calls"])
+    assert trace["validation"]["rows"] >= 1
+
+
 def test_flowi_admin_file_delete_requires_structured_confirmation(tmp_path, monkeypatch):
     (tmp_path / "sample.csv").write_text("a,b\n1,2\n", encoding="utf-8")
     monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)

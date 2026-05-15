@@ -209,7 +209,7 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
             <div style={{fontSize:14,color:HOME_UI.textDim,fontFamily:"monospace",marginBottom:4}}>flow-i{isAdmin&&m.intent?` · ${m.intent}`:""}</div>
             <FlowiResult busy={false} error="" result={m.result} prompt={m.prompt} onNavigate={onNavigate} onChoice={ask} embedded isAdmin={isAdmin} activeChartSessionId={activeChartSessionId} onUseChartSession={setActiveChartSessionId}/>
           </div>)}
-        {busy&&isAdmin&&<FlowiLiveTrace step={liveStep}/>}
+        {busy&&<FlowiLiveTrace step={liveStep}/>}
       </div>
       <form onSubmit={e=>{e.preventDefault();ask();}} style={{margin:0,padding:"10px 10px 10px 0"}}>
       <div style={{display:"flex",alignItems:"stretch",gap:8,minWidth:0}}>
@@ -268,6 +268,7 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
       <div style={{minWidth:0,fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{summary}</div>
       {actions.length>0&&<div style={{display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",flexWrap:"wrap"}}>{actions.map(a=><button key={a.key} type="button" onClick={a.onClick} title={a.title} style={FLOWI_ACTION_BTN}>{a.label}</button>)}</div>}
     </div>
+    <FlowiTraceStrip trace={result.trace}/>
     <FlowiMarkdown text={result.answer||emptyHint}/>
     {isAdmin&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
       {tool.intent&&<span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
@@ -497,13 +498,17 @@ function FlowiSplitView({view}){
 const FR_TD={padding:"5px 6px",borderBottom:"1px solid #262626",color:"#d4d4d4",whiteSpace:"nowrap"};
 
 const FLOWI_LIVE_STEPS=[
-  ["요청 접수","prompt와 대화 context를 서버로 보냅니다."],
-  ["권한 확인","현재 계정이 사용할 수 있는 단위기능을 확인합니다."],
-  ["의도 선택","가장 가까운 workflow와 tool을 고릅니다."],
-  ["DB/cache 조회","필요한 FAB/ET/INLINE/cache 데이터를 찾습니다."],
-  ["LLM 정리","로컬 결과를 근거로 답변 문장을 다듬습니다."],
-  ["화면 구성","표, 차트, 선택지, 답변을 같은 카드에 묶습니다."],
+  ["요청 접수","질문과 최근 대화 context를 서버로 보냅니다."],
+  ["LLM 상태","현재 연결 모델과 사용 가능 여부를 확인합니다."],
+  ["공개 해석","의도, 필요한 값, 호출할 단위기능을 정리합니다."],
+  ["Wiki/업무 근거","Agent Wiki, 인폼, 회의, DB schema 근거를 대조합니다."],
+  ["단위기능 실행","SplitTable, Dashboard, FileBrowser, Inform, Meeting handler를 호출합니다."],
+  ["결과 구성","표, 차트, 선택지, 피드백 요청을 한 응답으로 묶습니다."],
 ];
+
+function flowiTraceStatusColor(status){
+  return status==="done"?"#22c55e":status==="blocked"?"#ef4444":status==="error"?"#ef4444":status==="skipped"?"#737373":"#f97316";
+}
 
 function FlowiLiveTrace({step=0}){
   return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"9px 10px",fontFamily:"monospace"}}>
@@ -525,10 +530,54 @@ function FlowiLiveTrace({step=0}){
   </div>);
 }
 
+function FlowiTraceStrip({trace}){
+  const steps=Array.isArray(trace?.steps)?trace.steps.filter(Boolean):[];
+  const visibleSteps=steps.filter(s=>s.visible!==false).slice(0,7);
+  const activation=trace?.activation||{};
+  const evidence=trace?.evidence||{};
+  const validation=trace?.validation||{};
+  const interpretation=trace?.interpretation||{};
+  const missing=Array.isArray(interpretation?.missing_slots)?interpretation.missing_slots:[];
+  const knowledge=Array.isArray(trace?.retrieved_knowledge)?trace.retrieved_knowledge:[];
+  const apiCalls=Array.isArray(trace?.api_calls)?trace.api_calls:(Array.isArray(evidence?.api_calls)?evidence.api_calls:[]);
+  const llmStep=steps.find(s=>s.key==="llm");
+  if(!visibleSteps.length&&!activation.feature&&!evidence.used_feature_ai&&!knowledge.length&&!missing.length)return null;
+  const chips=[
+    evidence.used_feature_ai||activation.feature?[`기능 ${evidence.used_feature_ai||activation.feature}`,"#d4d4d4"]:null,
+    activation.action?[`action ${activation.action}`,"#a3a3a3"]:null,
+    validation.rows!==undefined?[`rows ${validation.rows}`,"#22c55e"]:null,
+    knowledge.length?[`Wiki ${knowledge.length}건`,"#f97316"]:null,
+    llmStep?[`LLM ${llmStep.status||"pending"}`,flowiTraceStatusColor(llmStep.status)]:null,
+  ].filter(Boolean);
+  return <div style={{margin:"0 0 8px",border:"1px solid #2a2a2a",borderRadius:8,background:"#101010",padding:"8px 9px",fontFamily:"monospace"}}>
+    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:7,flexWrap:"wrap"}}>
+      <div style={{fontSize:14,color:"#e5e5e5",fontWeight:900}}>공개 실행 흐름</div>
+      <div style={{fontSize:14,color:"#737373"}}>사고과정 원문 없이 단계, 근거, 결과 상태만 표시</div>
+    </div>
+    <div style={{display:"grid",gap:5}}>
+      {visibleSteps.map((s,i)=>{
+        const color=flowiTraceStatusColor(s.status);
+        const marker=s.status==="done"?"✓":(s.status==="blocked"||s.status==="error")?"!":i+1;
+        return <div key={s.key||i} style={{display:"grid",gridTemplateColumns:"18px minmax(86px,118px) minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
+          <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:`1px solid ${color}99`,color}}>{marker}</span>
+          <span style={{color:"#d4d4d4",fontWeight:800,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={s.label||s.title||s.key}>{s.label||s.title||s.key}</span>
+          <span style={{color:"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={s.detail||""}>{s.detail||""}</span>
+        </div>;
+      })}
+    </div>
+    {chips.length>0&&<div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:7}}>
+      {chips.slice(0,5).map(([label,color])=><span key={label} style={{fontSize:14,color,border:"1px solid #2a2a2a",borderRadius:999,padding:"2px 7px",background:"#151515",whiteSpace:"nowrap"}}>{label}</span>)}
+      {apiCalls.length>0&&<span style={{fontSize:14,color:"#737373",border:"1px solid #2a2a2a",borderRadius:999,padding:"2px 7px",background:"#151515",whiteSpace:"nowrap"}}>API {apiCalls.length}회</span>}
+    </div>}
+    {missing.length>0&&<div style={{marginTop:7,fontSize:14,color:"#f97316",lineHeight:1.4}}>
+      필요한 값: {missing.join(", ")}. 아래 선택지나 직접 입력으로 이어서 진행합니다.
+    </div>}
+  </div>;
+}
+
 function FlowiTrace({trace}){
   const steps=Array.isArray(trace?.steps)?trace.steps:[];
   if(!steps.length&&!trace?.interpretation&&!trace?.evidence&&!trace?.validation)return null;
-  const colorFor=(status)=>status==="done"?"#22c55e":status==="blocked"?"#ef4444":status==="error"?"#ef4444":status==="skipped"?"#737373":"#f97316";
   const activation=trace?.activation||{};
   const interpretation=trace?.interpretation||{};
   const inputSlots=interpretation?.input_slots||{};
@@ -566,22 +615,22 @@ function FlowiTrace({trace}){
       {subagentChildren.length>0&&<div style={{display:"grid",gap:4,border:"1px solid #262626",borderRadius:6,background:"#151515",padding:"6px 7px"}}>
         <div style={{fontSize:14,color:"#737373",marginBottom:2}}>subagent chain</div>
         {subagentChildren.slice(0,8).map((c,i)=><div key={`${c.name||"child"}-${i}`} style={{display:"grid",gridTemplateColumns:"18px minmax(90px,150px) 72px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
-          <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:`1px solid ${colorFor(c.status)}99`,color:colorFor(c.status)}}>{c.status==="done"?"✓":c.status==="error"?"!":i+1}</span>
+          <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:`1px solid ${flowiTraceStatusColor(c.status)}99`,color:flowiTraceStatusColor(c.status)}}>{c.status==="done"?"✓":c.status==="error"?"!":i+1}</span>
           <span style={{color:"#d4d4d4",fontWeight:800,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={c.name||""}>{c.name||"-"}</span>
           <span style={{color:"#a3a3a3"}}>{Number(c.took_ms||0)}ms</span>
           <span style={{color:c.error?"#fca5a5":"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={c.error||c.action||c.intent||""}>{c.error||c.action||c.intent||""}</span>
         </div>)}
       </div>}
       {steps.map((s,i)=><div key={s.key||i} style={{display:"grid",gridTemplateColumns:"18px 118px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.4}}>
-        <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:`1px solid ${colorFor(s.status)}99`,color:colorFor(s.status)}}>{s.status==="done"?"✓":s.status==="blocked"?"!":i+1}</span>
-        <span style={{color:"#d4d4d4",fontWeight:800}}>{s.label||s.key}</span>
+        <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:`1px solid ${flowiTraceStatusColor(s.status)}99`,color:flowiTraceStatusColor(s.status)}}>{s.status==="done"?"✓":s.status==="blocked"?"!":i+1}</span>
+        <span style={{color:"#d4d4d4",fontWeight:800}}>{s.label||s.title||s.key}</span>
         <span style={{color:"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={s.detail||""}>{s.detail||""}</span>
       </div>)}
       {apiCalls.length>0&&<div style={{display:"grid",gap:4}}>
         {apiCalls.slice(0,4).map((c,i)=><div key={i} style={{display:"grid",gridTemplateColumns:"92px minmax(0,1fr) 72px",gap:7,fontSize:14,lineHeight:1.35}}>
           <span style={{color:"#737373"}}>{c.method||c.stage}</span>
           <span style={{color:"#a3a3a3",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={c.path||c.callee||""}>{c.path||c.callee||"-"}</span>
-          <span style={{color:colorFor(c.status)}}>{c.status||""}</span>
+          <span style={{color:flowiTraceStatusColor(c.status)}}>{c.status||""}</span>
         </div>)}
       </div>}
       {trace.note&&<div style={{marginTop:4,fontSize:14,color:"#737373",lineHeight:1.45}}>{trace.note}</div>}
@@ -1085,6 +1134,7 @@ function FlowiFeedback({result,tool,prompt,isAdmin=false}){
   const feedbackTags=isAdmin?FLOWI_FEEDBACK_TAGS:FLOWI_FEEDBACK_TAGS.filter(([key])=>FLOWI_USER_FEEDBACK_KEYS.has(key));
   return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"7px 8px"}}>
     <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+      <span style={{fontSize:14,color:"#737373",fontFamily:"monospace",fontWeight:800,whiteSpace:"nowrap"}}>응답 피드백</span>
       <button type="button" onClick={()=>{setTags(["correct"]);send("up");}} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="up"?"#22c55e22":"transparent",color:rating==="up"?"#22c55e":"#a3a3a3",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>정확함</button>
       <button type="button" onClick={()=>{setOpen(true);setRating("down");if(!tags.length)setTags(["output_issue"]);}} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:rating==="down"?"#ef444422":"transparent",color:rating==="down"?"#fca5a5":"#a3a3a3",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>개선 필요</button>
       <button type="button" onClick={()=>setOpen(!open)} style={{padding:"3px 8px",borderRadius:5,border:"1px solid #333",background:"transparent",color:"#737373",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>{open?"접기":"상세"}</button>
