@@ -3708,6 +3708,27 @@ def _contains_chart_intent(prompt: str) -> bool:
     return any(re.search(rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])", low) for term in latin_terms)
 
 
+def _flowi_knob_table_lookup_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    up = _upper(text)
+    if "KNOB" not in up and "노브" not in text:
+        return False
+    if not _lot_tokens(text):
+        return False
+    explicit_table = any(t in up or t in text for t in ("TABLE", "테이블", "표"))
+    show_terms = ("보여", "조회", "확인", "show", "list")
+    has_show = any(t in low or t in text for t in show_terms)
+    chart_terms = (
+        "차트", "그래프", "산점도", "상관", "피팅", "그려", "막대", "추세",
+        "시계열", "라인", "박스", "분포", "웨이퍼맵", "파이", "도넛",
+        "scatter", "corr", "chart", "graph", "plot", "trend", "box", "pie",
+        "donut", "heatmap", "treemap", "pareto", "histogram",
+    )
+    wants_chart = any(t in low or t in text for t in chart_terms)
+    return explicit_table or (has_show and not wants_chart)
+
+
 def _source_terms(prompt: str) -> set[str]:
     up = _upper(prompt)
     out = set()
@@ -12865,12 +12886,77 @@ def _handle_et_query(prompt: str, product: str, max_rows: int) -> dict:
     }
 
 
+def _flowi_knob_term_resolution(
+    *,
+    prompt: str,
+    lot_matches: list[str],
+    lot_scope_matches: list[str],
+    step: str,
+    group: str,
+    selected_knobs: list[str],
+    table_requested: bool,
+    row_count: int,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+
+    def add(token: str, meaning: str, wiki_refs: list[str], query_filter: str, status: str = "resolved") -> None:
+        if not str(token or "").strip():
+            return
+        out.append({
+            "token": str(token).strip(),
+            "meaning": meaning,
+            "wiki_refs": list(dict.fromkeys(str(ref) for ref in wiki_refs if str(ref or "").strip()))[:8],
+            "query_filter": query_filter,
+            "status": status,
+        })
+
+    if lot_matches or lot_scope_matches:
+        display_lots = list(dict.fromkeys([*lot_matches, *lot_scope_matches]))
+        add(
+            ", ".join(display_lots[:6]),
+            "root_lot_id / lot_id / fab_lot_id lot scope",
+            ["schema:root_lot_id", "schema:lot_id", "schema:fab_lot_id"],
+            "root_lot_id, lot_id, fab_lot_id contains " + ", ".join(display_lots[:6]),
+        )
+    if step:
+        step_parts = " and ".join(part for part in re.split(r"\s+", step) if part) or step
+        add(
+            step,
+            "step_id / function_step 조건",
+            ["schema:step_id", "schema:function_step", "schema:func_step"],
+            f"step_id/function_step contains {step_parts}",
+        )
+    if group:
+        cols = [col for col in selected_knobs[:6]]
+        suffix = f"; selected {', '.join(cols)}" if cols else ""
+        add(
+            group,
+            f"{group}_* 컬럼군",
+            [f"schema:{group}_*"],
+            f"columns startswith {group}_{suffix}",
+        )
+    if table_requested:
+        table_token = "TABLE"
+        if "테이블" in prompt:
+            table_token = "테이블"
+        elif "표" in prompt:
+            table_token = "표"
+        add(
+            table_token,
+            "표 출력 요청",
+            ["ui:table"],
+            f"inline table rows={row_count}",
+        )
+    return out
+
+
 def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
     up = _upper(prompt)
     if "KNOB" not in up and "노브" not in prompt:
         return {"handled": False}
     lot_matches = _lot_tokens(prompt)
     lot_scope_matches = _flowi_lot_scope_terms(lot_matches)
+    classified = _classified_lot_tokens(prompt)
     files = _ml_files(product)
     if not files:
         return {
@@ -12961,7 +13047,8 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
 
     table = None
     highlight = _flowi_wants_highlight(prompt)
-    detail_requested = highlight or bool(q_tokens) or any(w in prompt for w in ("다", "전체", "테이블", "표", "보여"))
+    table_lookup_requested = _flowi_knob_table_lookup_intent(prompt)
+    detail_requested = highlight or table_lookup_requested or bool(q_tokens) or any(w in prompt for w in ("다", "전체", "테이블", "표", "보여"))
     if detail_requested and selected_knobs:
         table_knobs = selected_knobs[:8]
         table_cols = [c for c in (product_col, root_col, lot_col, fab_col, wafer_col) if c] + table_knobs
@@ -13094,7 +13181,14 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
             for v in item.get("values", [])[:3]
         )
         lines.append(f"- {item.get('display_name')}: {val_txt}")
-    answer = f"{lot_label} KNOB 요약입니다. {df.height} wafer row 기준, {len(summaries)}개 KNOB 중 {len(preview)}개를 표시합니다.\n" + "\n".join(lines)
+    if table_lookup_requested:
+        conditions = [lot_label]
+        if step:
+            conditions.append(step)
+        conditions.append(group)
+        answer = f"{' / '.join([c for c in conditions if c])} 조건으로 ML_TABLE을 조회했습니다. 결과 {df.height}건입니다."
+    else:
+        answer = f"{lot_label} KNOB 요약입니다. {df.height} wafer row 기준, {len(summaries)}개 KNOB 중 {len(preview)}개를 표시합니다.\n" + "\n".join(lines)
     prefer_custom_set = bool(custom_set_table) and not highlight and any(t in prompt for t in ("구성", "커스텀", "세트", "custom", "set", "어떻게"))
     if prefer_custom_set:
         set_lines = [
@@ -13121,6 +13215,8 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
         "filters": {
             "lot": lot_matches,
             "lot_scope": lot_scope_matches,
+            "root_lot_ids": classified.get("root_lot_ids") or [],
+            "fab_lot_ids": classified.get("fab_lot_ids") or [],
             "product": sorted(aliases),
             "step": step,
             "group": group,
@@ -13128,6 +13224,16 @@ def _handle_knob_query(prompt: str, product: str, max_rows: int) -> dict:
             "lookup_cache_hit": lookup_cache_used,
             "cache_status": (lookup_status or {}).get("status") or "",
         },
+        "term_resolution": _flowi_knob_term_resolution(
+            prompt=prompt,
+            lot_matches=lot_matches,
+            lot_scope_matches=lot_scope_matches,
+            step=step,
+            group=group,
+            selected_knobs=selected_knobs,
+            table_requested=table_lookup_requested,
+            row_count=int(df.height),
+        ),
     }, "table", prompt=prompt, highlight=highlight)
 
 
@@ -15333,6 +15439,10 @@ def _handle_flowi_query(
         fab_progress_out = _handle_fab_progress_query(prompt, product, max_rows)
         if fab_progress_out.get("handled"):
             return fab_progress_out
+    if (allowed_keys is None or "splittable" in allowed_keys) and _flowi_knob_table_lookup_intent(prompt):
+        knob_table_out = _handle_knob_query(prompt, product, max_rows)
+        if knob_table_out.get("handled"):
+            return knob_table_out
     defer_diagnosis_for_source_chart = (
         (allowed_keys is None or "dashboard" in allowed_keys)
         and _contains_chart_intent(prompt)
@@ -15860,6 +15970,42 @@ def _flowi_trace_missing_slots(tool: dict[str, Any]) -> list[str]:
     for item in tool.get("arguments_choices") or []:
         if isinstance(item, dict):
             add(item.get("field") or item.get("key"))
+    return out[:12]
+
+
+def _flowi_trace_term_resolution(tool: dict[str, Any], knowledge_terms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    raw_items = tool.get("term_resolution") if isinstance(tool.get("term_resolution"), list) else []
+    refs_by_term: dict[str, list[str]] = {}
+    for row in knowledge_terms:
+        if not isinstance(row, dict):
+            continue
+        term = str(row.get("term") or "").strip().upper()
+        ref = str(row.get("id") or row.get("title") or "").strip()
+        if term and ref:
+            refs_by_term.setdefault(term, []).append(ref)
+        column = str(row.get("column") or "").strip().upper()
+        if column and ref:
+            refs_by_term.setdefault(column, []).append(ref)
+    out: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        token = str(item.get("token") or item.get("term") or "").strip()
+        if not token:
+            continue
+        refs = [str(ref) for ref in (item.get("wiki_refs") or []) if str(ref or "").strip()]
+        token_u = token.upper()
+        refs.extend(refs_by_term.get(token_u, []))
+        for key, values in refs_by_term.items():
+            if key and (key in token_u or token_u in key):
+                refs.extend(values)
+        out.append({
+            "token": token[:120],
+            "meaning": str(item.get("meaning") or "")[:240],
+            "wiki_refs": list(dict.fromkeys(refs))[:8],
+            "query_filter": str(item.get("query_filter") or "")[:500],
+            "status": str(item.get("status") or "resolved")[:40],
+        })
     return out[:12]
 
 
@@ -16406,6 +16552,7 @@ def _flowi_trace_interpretation(tool: dict[str, Any]) -> dict[str, Any]:
         "missing_slots": missing,
         "filled_slots": filled,
         "knowledge_terms": knowledge_terms[:8],
+        "term_resolution": _flowi_trace_term_resolution(tool, knowledge_terms),
     }
 
 
@@ -16442,6 +16589,7 @@ def _flowi_trace_evidence(tool: dict[str, Any], api_calls: list[dict[str, Any]])
         "used_feature_ai": tool.get("feature") or first_api.get("feature") or "flowi",
         "endpoint": first_api.get("path") or first_api.get("callee") or "",
         "payload_summary": _flowi_activation_payload_summary(tool),
+        "filters": filters,
         "sql": sql_draft.get("sql") or filters.get("sql") or "",
         "selected_columns": sql_draft.get("selected_columns") or [],
         "chart_config": chart_cfg,

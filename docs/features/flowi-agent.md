@@ -153,6 +153,7 @@ Agent는 `resolve_term_to_columns(term)`에서 `kv.list_docs(kind="schema_doc", 
 
 - `trace.activation` — 위 5단계 Activation Map dict (누락 없음)
 - `trace.interpretation` — product/lot/wafer/step/item/회의명/차수/source 후보, Wiki/schema로 해석한 knowledge_terms, missing/filled slot 공개 요약
+- `trace.interpretation.term_resolution` — 사용자 단어별 공개 해석 로그. 각 항목은 `token`, `meaning`, `wiki_refs`, `query_filter`, `status`를 담으며 hidden chain-of-thought가 아니라 검증 가능한 schema/Wiki/filter 근거만 표시한다.
 - `trace.evidence` — 사용한 기능 AI, endpoint, payload 요약, SQL/filter, chart config, meeting sources
 - `trace.evidence.knowledge_sources` / `trace.retrieved_knowledge` — prompt 용어를 Agent Wiki `schema_doc`와 `column_catalog`에 대조한 공개 근거
 - `trace.validation` — rows, chart readiness, source count, warnings, fallback 여부

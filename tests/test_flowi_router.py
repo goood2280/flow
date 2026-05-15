@@ -946,6 +946,71 @@ def test_flowi_knob_configuration_prefers_custom_set_table(tmp_path, monkeypatch
     assert "custom set" in out["answer"]
 
 
+def test_flowi_knob_table_prompt_prefers_mltable_and_traces_term_resolution(tmp_path, monkeypatch):
+    ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "01", "func_step": "24.0 SORT", "KNOB_24.0 SORT": "PPID_A"},
+        {"product": "PRODX", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "02", "func_step": "24.0 SORT", "KNOB_24.0 SORT": "PPID_B"},
+        {"product": "PRODX", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "03", "func_step": "25.0 ET", "KNOB_24.0 SORT": "PPID_C"},
+    ]).write_parquet(ml_fp)
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+
+    def fake_lookup_term(term, limit=6):
+        term_u = str(term).upper()
+        if term_u == "SORT":
+            return {
+                "term": term,
+                "columns": [{
+                    "relation_id": "ML_TABLE_PRODX",
+                    "column": "function_step",
+                    "canonical_alias": "function step",
+                    "wiki_doc_id": "schema_sort_step",
+                }],
+                "docs": [{"doc_id": "schema_sort_step", "kind": "schema_doc", "title": "SORT step schema", "summary": ""}],
+                "graph": {"nodes": [], "edges": []},
+            }
+        if term_u == "KNOB":
+            return {
+                "term": term,
+                "columns": [{
+                    "relation_id": "ML_TABLE_PRODX",
+                    "column": "KNOB_24.0 SORT",
+                    "canonical_alias": "KNOB column group",
+                    "wiki_doc_id": "schema_knob_cols",
+                }],
+                "docs": [{"doc_id": "schema_knob_cols", "kind": "schema_doc", "title": "KNOB schema", "summary": ""}],
+                "graph": {"nodes": [], "edges": []},
+            }
+        return {"term": term, "columns": [], "docs": [], "graph": {"nodes": [], "edges": []}}
+
+    monkeypatch.setattr(llm_router.kv, "lookup_term", fake_lookup_term)
+    prompt = "A1001 24.0 SORT KNOB TABLE 보여줘"
+
+    out = _handle_flowi_query(prompt, "", 12, allowed_keys={"dashboard", "splittable"})
+
+    assert out["handled"] is True
+    assert out["feature"] == "splittable"
+    assert out["action"] == "query_lot_knobs_from_ml_table"
+    assert out["table"]["kind"] == "splittable_preview"
+    assert out["table"]["total"] == 2
+    assert out["filters"]["root_lot_ids"] == ["A1001"]
+    assert "ML_TABLE" in out["answer"]
+    assert "결과 2건" in out["answer"]
+
+    traced = llm_router._attach_flowi_trace(
+        {"ok": True, "active": True, "answer": out["answer"], "tool": out, "llm": {"available": False, "used": False}},
+        prompt=prompt,
+        allowed_keys={"dashboard", "splittable"},
+    )
+    term_rows = traced["trace"]["interpretation"]["term_resolution"]
+    assert any(row["token"].startswith("A1001") and "root_lot_id" in row["query_filter"] for row in term_rows)
+    assert any(row["token"] == "24.0 SORT" and "step_id/function_step" in row["query_filter"] for row in term_rows)
+    assert any(row["token"] == "KNOB" and "KNOB_" in row["query_filter"] for row in term_rows)
+    assert any(row["token"] == "TABLE" and "inline table" in row["query_filter"] for row in term_rows)
+    assert any("schema_sort_step" in row.get("wiki_refs", []) for row in term_rows if row["token"] == "24.0 SORT")
+    assert any("schema:KNOB_*" in row.get("wiki_refs", []) for row in term_rows if row["token"] == "KNOB")
+
+
 def test_flowi_splittable_plan_mismatch_returns_split_view(tmp_path, monkeypatch):
     ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
     pl.DataFrame([

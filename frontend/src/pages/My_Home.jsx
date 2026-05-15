@@ -587,10 +587,11 @@ function FlowiTrace({trace}){
   const missing=Array.isArray(interpretation?.missing_slots)?interpretation.missing_slots:[];
   const warnings=Array.isArray(validation?.warnings)?validation.warnings:[];
   const knowledge=Array.isArray(trace?.retrieved_knowledge)?trace.retrieved_knowledge:[];
+  const termResolution=Array.isArray(interpretation?.term_resolution)?interpretation.term_resolution:[];
   const apiCalls=Array.isArray(trace?.api_calls)?trace.api_calls:(Array.isArray(evidence?.api_calls)?evidence.api_calls:[]);
   return(<details style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"7px 9px"}}>
     <summary style={{cursor:"pointer",fontSize:14,color:"#a3a3a3",fontFamily:"monospace",fontWeight:800}}>
-      해석 로그 / 근거 흐름 <span style={{fontWeight:400,color:"#737373"}}>사고과정 원문이 아닌 실행 로그</span>
+      공개 추론 로그 / 근거 흐름 <span style={{fontWeight:400,color:"#737373"}}>사고과정 원문이 아닌 실행 로그</span>
     </summary>
     <div style={{marginTop:8,display:"grid",gap:8,fontFamily:"monospace"}}>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:6}}>
@@ -611,7 +612,10 @@ function FlowiTrace({trace}){
       {Array.isArray(evidence.selected_columns)&&evidence.selected_columns.length>0&&<FlowiTraceKV label="선택 컬럼" value={evidence.selected_columns.slice(0,12).join(", ")} wide/>}
       {missing.length>0&&<FlowiTraceKV label="빈칸 보완" value={missing.join(", ")} wide tone="#f97316"/>}
       {warnings.length>0&&<FlowiTraceKV label="warnings" value={warnings.slice(0,4).join(" · ")} wide tone="#fbbf24"/>}
+      <FlowiTermResolution rows={termResolution}/>
       {knowledge.length>0&&<FlowiKnowledgeTrace rows={knowledge}/>}
+      <FlowiFilterTrace rows={termResolution} filters={evidence.filters}/>
+      <FlowiValidationTrace validation={validation}/>
       {subagentChildren.length>0&&<div style={{display:"grid",gap:4,border:"1px solid #262626",borderRadius:6,background:"#151515",padding:"6px 7px"}}>
         <div style={{fontSize:14,color:"#737373",marginBottom:2}}>subagent chain</div>
         {subagentChildren.slice(0,8).map((c,i)=><div key={`${c.name||"child"}-${i}`} style={{display:"grid",gridTemplateColumns:"18px minmax(90px,150px) 72px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
@@ -638,12 +642,28 @@ function FlowiTrace({trace}){
   </details>);
 }
 
+function FlowiTermResolution({rows}){
+  const items=Array.isArray(rows)?rows.filter(Boolean).slice(0,8):[];
+  if(!items.length)return null;
+  return <div style={{display:"grid",gap:5,border:"1px solid #262626",borderRadius:6,background:"#151515",padding:"7px 8px"}}>
+    <div style={{fontSize:14,color:"#737373"}}>단어 해석</div>
+    {items.map((row,i)=>{
+      const refs=Array.isArray(row.wiki_refs)?row.wiki_refs.filter(Boolean).slice(0,3).join(", "):"";
+      const meta=[row.meaning,row.status].filter(Boolean).join(" · ");
+      return <div key={`${row.token||"term"}-${i}`} style={{display:"grid",gridTemplateColumns:"minmax(76px,140px) minmax(0,1fr)",gap:8,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
+        <span style={{color:"#e5e5e5",fontWeight:900,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={row.token||""}>{row.token||"-"}</span>
+        <span style={{color:"#a3a3a3",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={[meta,refs].filter(Boolean).join(" / ")}>{meta}{refs?` / ${refs}`:""}</span>
+      </div>;
+    })}
+  </div>;
+}
+
 function FlowiKnowledgeTrace({rows}){
   const items=Array.isArray(rows)?rows.filter(Boolean).slice(0,8):[];
   if(!items.length)return null;
   return <div style={{display:"grid",gap:5,border:"1px solid #262626",borderRadius:6,background:"#151515",padding:"7px 8px"}}>
     <div style={{display:"flex",gap:7,alignItems:"baseline",justifyContent:"space-between"}}>
-      <div style={{fontSize:14,color:"#737373"}}>지식 Wiki 근거</div>
+      <div style={{fontSize:14,color:"#737373"}}>참고한 Wiki / Schema</div>
       <div style={{fontSize:14,color:"#737373"}}>{items.length} hits</div>
     </div>
     {items.map((row,i)=>{
@@ -655,6 +675,39 @@ function FlowiKnowledgeTrace({rows}){
         <span style={{color:"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",textAlign:"right"}} title={meta||id}>{meta||id}</span>
       </div>;
     })}
+  </div>;
+}
+
+function FlowiFilterTrace({rows,filters}){
+  const lines=[];
+  for(const row of Array.isArray(rows)?rows:[]){
+    if(row?.query_filter)lines.push(`${row.token||"term"}: ${row.query_filter}`);
+  }
+  const filterKeys=filters&&typeof filters==="object"?Object.entries(filters).filter(([,v])=>v!==undefined&&v!==null&&v!==""&&!(Array.isArray(v)&&!v.length)).slice(0,8):[];
+  if(!lines.length&&!filterKeys.length)return null;
+  return <div style={{display:"grid",gap:5,border:"1px solid #262626",borderRadius:6,background:"#151515",padding:"7px 8px"}}>
+    <div style={{fontSize:14,color:"#737373"}}>실행 필터</div>
+    {lines.slice(0,8).map((line,i)=><div key={`filter-${i}`} style={{fontSize:14,color:"#d4d4d4",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={line}>{line}</div>)}
+    {filterKeys.length>0&&<div style={{fontSize:14,color:"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={JSON.stringify(Object.fromEntries(filterKeys))}>
+      filters {JSON.stringify(Object.fromEntries(filterKeys))}
+    </div>}
+  </div>;
+}
+
+function FlowiValidationTrace({validation}){
+  if(!validation||typeof validation!=="object")return null;
+  const warnings=Array.isArray(validation.warnings)?validation.warnings:[];
+  const lines=[
+    validation.rows!==undefined?`결과 ${validation.rows}건`:"",
+    validation.chart_readiness?`chart ${validation.chart_readiness}`:"",
+    validation.source_count!==undefined?`근거 ${validation.source_count}건`:"",
+    validation.fallback?"fallback 사용":"",
+  ].filter(Boolean);
+  if(!lines.length&&!warnings.length)return null;
+  return <div style={{display:"grid",gap:5,border:"1px solid #262626",borderRadius:6,background:"#151515",padding:"7px 8px"}}>
+    <div style={{fontSize:14,color:"#737373"}}>결과 검증</div>
+    <div style={{fontSize:14,color:"#d4d4d4"}}>{lines.join(" · ")}</div>
+    {warnings.slice(0,4).map((w,i)=><div key={`warn-${i}`} style={{fontSize:14,color:"#fbbf24",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={w}>{w}</div>)}
   </div>;
 }
 
