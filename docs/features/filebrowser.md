@@ -258,6 +258,7 @@ Agent 탭(Flow-i)이 FileBrowser를 driver로 호출할 때 사용하는 unit ac
 | `filebrowser.csv.rules.read` | `csv_name` | `csv_rules` 정의 (filebrowser_settings.json) | user | `csv_name` |
 | `filebrowser.csv.rules.draft` | `file`, `prompt`, `columns`, `sample_rows`, `current_rule` | 저장하지 않은 `csv_rules` 초안 + warnings | manager | `file`, `prompt` |
 | `filebrowser.sql.llm.draft` | `natural_language`, `columns`, `dtypes?`, `sample_rows?`, `preferred_selected_columns?`, `current_sql?`, `scope?`, `root?`, `product?`, `file?` | SQL filter 초안 + 선택 컬럼 + 서버 sample profile + 컬럼/값 후보 + warnings | user | `natural_language`, `columns` |
+| `filebrowser.multisource.preview` | `prompt`, `product?`, `max_rows?` | `schema_doc`/`column_catalog` 용어 해석, 실제 source 존재 확인, confirmed relation 기반 join preview + `source_ids`, `relation_ids`, `join_keys`, `filters`, `selected_columns`, `sample_rows`, `warnings` | user | confirmed relation 또는 실제 source/column |
 | `filebrowser.cache.lot_progress.refresh` | `target=lot_progress`, `source_root?` | LOT 진행 최신 캐시 refresh 결과 + `s3_sync` | manager | `target` |
 | `filebrowser.cache.lot_progress.status` | `target=lot_progress` | 마지막 성공/시도 시각, freshness, lock state, 제품 수, row 수, `interval_minutes`/`next_refresh_at` | user | `target` |
 | `filebrowser.cache.llm.refresh` | `prompt`, `product?`, `source_root?`, `force?` | LLM target draft + LOT 진행 최신 캐시 refresh 결과 | manager | `prompt` |

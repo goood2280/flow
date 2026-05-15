@@ -145,7 +145,7 @@ Agent 탭은 다음 7개 카드를 한 페이지에서 위에서 아래로 순�
 
 구조 메타는 `data/flow-data/schema_relations.json`의 `column_catalog`에 둔다. 각 항목은 `relation_id`, 정규화된 `column`, `raw_names`, `dtype`, `canonical_alias`, `unit`, `fk`, `sample_values`, `wiki_doc_id`를 가지며, `wiki_doc_id`와 schema_doc의 `column_refs`로 양쪽을 연결한다.
 
-Agent는 `resolve_term_to_columns(term)`에서 `kv.list_docs(kind="schema_doc", q=term)`를 먼저 사용해 wiki hit를 찾고, frontmatter의 `relation_id`/`column_refs`를 `column_catalog`와 매칭해 후보를 만든다. wiki hit가 없을 때만 기존 `_RELATION_ALIASES` fallback을 사용한다. 이 단계는 slot extract/arguments 정형화에서 쓸 lookup이며, cross-DB join과 차트 렌더링 통합은 후속 범위다.
+Agent는 `resolve_term_to_columns(term)`에서 `kv.list_docs(kind="schema_doc", q=term)`를 먼저 사용해 wiki hit를 찾고, frontmatter의 `relation_id`/`column_refs`를 `column_catalog`와 매칭해 후보를 만든다. wiki hit가 없을 때만 기존 `_RELATION_ALIASES` fallback을 사용한다. Home Flow-i의 multi-source 실행은 `backend/core/flowi_multisource.py`에서 이 lookup 근거와 `schema_relations.json`의 `status=confirmed` relation만 사용해 source/filter/selected column/join key/chart draft를 만든다. confirmed relation이 없거나 source/column이 실제 resolver에서 확인되지 않으면 join을 실행하지 않고 trace에 missing evidence를 남긴다.
 
 ## Backend Trace Contract
 
@@ -155,6 +155,7 @@ Agent는 `resolve_term_to_columns(term)`에서 `kv.list_docs(kind="schema_doc", 
 - `trace.interpretation` — product/lot/wafer/step/item/회의명/차수/source 후보, Wiki/schema로 해석한 knowledge_terms, missing/filled slot 공개 요약
 - `trace.interpretation.term_resolution` — 사용자 단어별 공개 해석 로그. 각 항목은 `token`, `meaning`, `wiki_refs`, `query_filter`, `status`를 담으며 hidden chain-of-thought가 아니라 검증 가능한 schema/Wiki/filter 근거만 표시한다.
 - `trace.evidence` — 사용한 기능 AI, endpoint, payload 요약, SQL/filter, chart config, meeting sources
+- `trace.evidence.source_ids` / `trace.evidence.relation_ids` / `trace.evidence.join_keys` / `trace.evidence.join_plan` — multi-source filter/join/chart 요청에서 실제 사용한 source와 confirmed relation 근거
 - `trace.evidence.knowledge_sources` / `trace.retrieved_knowledge` — prompt 용어를 Agent Wiki `schema_doc`와 `column_catalog`에 대조한 공개 근거
 - `trace.validation` — rows, chart readiness, source count, warnings, fallback 여부
 - `trace.call_graph.nodes` / `trace.call_graph.edges` — 노드/엣지 (빈 배열 아님)

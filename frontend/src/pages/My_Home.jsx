@@ -681,6 +681,9 @@ function FlowiTrace({trace}){
       </div>
       {evidence.sql&&<FlowiTraceKV label="SQL/filter" value={evidence.sql} wide/>}
       {Array.isArray(evidence.selected_columns)&&evidence.selected_columns.length>0&&<FlowiTraceKV label="선택 컬럼" value={evidence.selected_columns.slice(0,12).join(", ")} wide/>}
+      {Array.isArray(evidence.source_ids)&&evidence.source_ids.length>0&&<FlowiTraceKV label="source ids" value={evidence.source_ids.slice(0,6).join(", ")} wide/>}
+      {Array.isArray(evidence.relation_ids)&&evidence.relation_ids.length>0&&<FlowiTraceKV label="confirmed relations" value={evidence.relation_ids.slice(0,6).join(", ")} wide/>}
+      {Array.isArray(evidence.join_keys)&&evidence.join_keys.length>0&&<FlowiTraceKV label="join keys" value={evidence.join_keys.slice(0,8).join(", ")} wide/>}
       {missing.length>0&&<FlowiTraceKV label="빈칸 보완" value={missing.join(", ")} wide tone="#f97316"/>}
       {warnings.length>0&&<FlowiTraceKV label="warnings" value={warnings.slice(0,4).join(" · ")} wide tone="#fbbf24"/>}
       <FlowiTermResolution rows={termResolution}/>

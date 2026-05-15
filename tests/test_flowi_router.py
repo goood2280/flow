@@ -104,6 +104,52 @@ def test_flowi_product_only_pie_chart_returns_editable_dashboard_draft(monkeypat
     assert {"source_type", "metric"}.issubset(set(out["missing"]))
 
 
+def test_flowi_multisource_trace_includes_join_evidence(monkeypatch):
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"filebrowser", "dashboard"})
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(llm_router.kv, "lookup_term", lambda *_args, **_kwargs: {"columns": [], "docs": [], "graph": {"nodes": [], "edges": []}})
+
+    def fake_execute(prompt, product="", max_rows=12):
+        return {
+            "handled": True,
+            "ok": True,
+            "source_ids": ["db_1.RAWDATA_DB_ET_PRODA", "file_base_root_ML_TABLE_PRODA.parquet"],
+            "relation_ids": ["rel_root", "rel_wafer"],
+            "join_keys": ["root_lot_id", "wafer_id"],
+            "filters": {"product": product, "root_lot_ids": ["A1000"], "wafer_ids": ["1"]},
+            "selected_columns": ["ET PRODA.LKG", "ML_TABLE_PRODA.KNOB_A"],
+            "row_count": 1,
+            "sample_rows": [{"ET PRODA.LKG": 0.5, "ML_TABLE_PRODA.KNOB_A": "K1"}],
+            "warnings": [],
+            "retrieved_knowledge": [{"id": "column:ET_PRODA.LKG", "kind": "column_catalog", "title": "ET_PRODA.LKG", "term": "LKG"}],
+            "join_plan": {"sources": [{"source_id": "db_1.RAWDATA_DB_ET_PRODA"}], "steps": [{"join_keys": ["root_lot_id", "wafer_id"]}]},
+            "chart_config": {
+                "chart_type": "scatter",
+                "x": "ET PRODA.LKG",
+                "y": "ML_TABLE_PRODA.KNOB_A",
+                "source_evidence": {"relation_ids": ["rel_root", "rel_wafer"]},
+            },
+            "chart_result": {"ok": True, "kind": "dashboard_scatter", "chart_type": "scatter", "points": [{"x": 0.5, "y": "K1"}]},
+        }
+
+    monkeypatch.setattr(llm_router.flowi_multisource, "execute_multisource_request", fake_execute)
+
+    out = _run_flowi_chat(
+        prompt="ET PRODA와 ML_TABLE_PRODA 조인해서 scatter 차트 그려줘",
+        product="PRODA",
+        max_rows=5,
+        me={"username": "root", "role": "admin"},
+    )
+
+    evidence = out["trace"]["evidence"]
+    assert evidence["source_ids"] == ["db_1.RAWDATA_DB_ET_PRODA", "file_base_root_ML_TABLE_PRODA.parquet"]
+    assert evidence["relation_ids"] == ["rel_root", "rel_wafer"]
+    assert evidence["join_keys"] == ["root_lot_id", "wafer_id"]
+    assert evidence["join_plan"]["steps"][0]["join_keys"] == ["root_lot_id", "wafer_id"]
+    assert out["tool"]["chart_config"]["source_evidence"]["relation_ids"] == ["rel_root", "rel_wafer"]
+
+
 def test_flowi_chart_request_uses_admin_defaults(monkeypatch):
     monkeypatch.setattr(
         llm_router,

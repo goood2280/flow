@@ -36,6 +36,7 @@ from core import product_config
 from core import semiconductor_knowledge as semi_knowledge
 from core import dashboard_join as dashboard_charting
 from core import knowledge_vault as kv
+from core import flowi_multisource
 from routers.auth import read_users
 
 
@@ -4274,6 +4275,23 @@ def _flowi_apply_wiki_prompt_interpretation(tool: dict[str, Any], interpretation
     return tool
 
 
+def _flowi_wiki_interpretation_prefers_splittable(prompt: str, interpretation: dict[str, Any], allowed_keys: set[str] | None = None) -> bool:
+    if allowed_keys is not None and "splittable" not in allowed_keys:
+        return False
+    if not _lot_tokens(prompt):
+        return False
+    for item in interpretation.get("retrieved_knowledge") or []:
+        if not isinstance(item, dict):
+            continue
+        relation = _upper(item.get("relation_id") or item.get("title") or "")
+        column = _upper(item.get("column") or item.get("title") or "")
+        if relation.startswith("ML_TABLE") and column.startswith(("KNOB_", "MASK_", "FAB_", "INLINE_", "VM_")):
+            return True
+        if column.startswith(("KNOB_", "MASK_")):
+            return True
+    return False
+
+
 def _invoke_subagent(
     name: str,
     handler: Any,
@@ -4561,6 +4579,129 @@ def _handle_dashboard_generic_chart(prompt: str, product: str, max_rows: int) ->
             "total": len(data),
         },
     }
+
+
+def _flowi_multisource_explicit_prompt(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    explicit_terms = (
+        "schema relation",
+        "confirmed relation",
+        "multi-source",
+        "multi source",
+        "join",
+        "조인",
+        "합쳐",
+        "연결성",
+        "확인된 relation",
+        "confirmed",
+        "여러 db",
+        "여러 source",
+        "여러 소스",
+        "db/file",
+        "db 파일",
+        "단일파일",
+        "단일 파일",
+    )
+    return any(term in low or term in text for term in explicit_terms)
+
+
+def _handle_flowi_multisource_query(
+    prompt: str,
+    product: str,
+    max_rows: int,
+    *,
+    allowed_keys: set[str] | None = None,
+    username: str = "flowi",
+) -> dict[str, Any]:
+    if not _flowi_multisource_explicit_prompt(prompt):
+        return {"handled": False}
+    allowed = set(allowed_keys or set())
+    if allowed_keys is not None and not ({"filebrowser", "dashboard"} & allowed):
+        return {"handled": False}
+    try:
+        out = flowi_multisource.execute_multisource_request(prompt, product=product, max_rows=max_rows)
+    except Exception as exc:
+        logger.warning("flowi multisource execution failed: %s", exc)
+        return {"handled": False}
+    if not out.get("handled"):
+        return {"handled": False}
+    has_chart = isinstance(out.get("chart_config"), dict) or isinstance(out.get("chart_result"), dict)
+    if has_chart and allowed_keys is not None and "dashboard" not in allowed:
+        return {"handled": False}
+    feature = "dashboard" if has_chart else "filebrowser"
+    action = "dashboard.chart.llm.draft" if has_chart else "filebrowser.multisource.preview"
+    row_count = int(out.get("row_count") or 0)
+    source_ids = [str(x) for x in (out.get("source_ids") or []) if str(x or "").strip()]
+    relation_ids = [str(x) for x in (out.get("relation_ids") or []) if str(x or "").strip()]
+    join_keys = [str(x) for x in (out.get("join_keys") or []) if str(x or "").strip()]
+    sample_rows = out.get("sample_rows") if isinstance(out.get("sample_rows"), list) else []
+    selected_columns = [str(x) for x in (out.get("selected_columns") or []) if str(x or "").strip()]
+    columns = [{"key": col, "label": col} for col in selected_columns[:48]]
+    if out.get("blocked"):
+        answer = (
+            "확인된 schema relation 근거가 부족해 multi-source 실행을 차단했습니다.\n"
+            f"- source: {', '.join(source_ids) or '-'}\n"
+            f"- relation: {', '.join(relation_ids) or 'confirmed relation 없음'}"
+        )
+    else:
+        answer = (
+            "confirmed schema relation 기준으로 실제 source를 읽어 결과를 만들었습니다.\n"
+            f"- source: {len(source_ids)}개\n"
+            f"- relation: {len(relation_ids)}개\n"
+            f"- join key: {', '.join(join_keys) or '-'}\n"
+            f"- 결과: {row_count}행"
+        )
+    tool: dict[str, Any] = {
+        "handled": True,
+        "intent": "dashboard_multisource_chart" if has_chart else "filebrowser_multisource_join",
+        "action": action,
+        "feature": feature,
+        "answer": answer,
+        "type": "chart" if has_chart else "table",
+        "inline_summary": ("Multi-source chart draft" if has_chart else "Multi-source preview") + f" {row_count} rows",
+        "filters": out.get("filters") if isinstance(out.get("filters"), dict) else {},
+        "source_ids": source_ids,
+        "relation_ids": relation_ids,
+        "join_keys": join_keys,
+        "join_plan": out.get("join_plan") if isinstance(out.get("join_plan"), dict) else {},
+        "selected_columns": selected_columns,
+        "sample_rows": sample_rows,
+        "row_count": row_count,
+        "warnings": out.get("warnings") if isinstance(out.get("warnings"), list) else [],
+        "retrieved_knowledge": out.get("retrieved_knowledge") if isinstance(out.get("retrieved_knowledge"), list) else [],
+        "sources": [
+            {"type": "schema_source", "source_id": sid, "title": sid}
+            for sid in source_ids
+        ],
+        "table": {
+            "kind": "flowi_multisource_join",
+            "title": "Multi-source confirmed relation result",
+            "columns": columns,
+            "rows": sample_rows,
+            "total": row_count,
+        },
+        "validation": {
+            "rows": row_count,
+            "source_count": len(source_ids),
+            "warnings": out.get("warnings") if isinstance(out.get("warnings"), list) else [],
+            "missing": ["confirmed relation"] if out.get("blocked") else [],
+        },
+    }
+    if out.get("blocked"):
+        tool["blocked"] = True
+        tool["reject_reason"] = out.get("reason") or "missing_evidence"
+    if has_chart:
+        chart_config = out.get("chart_config") if isinstance(out.get("chart_config"), dict) else {}
+        chart_result = out.get("chart_result") if isinstance(out.get("chart_result"), dict) else {}
+        tool.update({
+            "chart_type": chart_config.get("chart_type") or chart_result.get("chart_type") or "scatter",
+            "chart_config": chart_config,
+            "config": chart_config,
+            "chart_result": chart_result,
+        })
+        tool = _augment_dashboard_tool(tool, prompt, product=product, username=username)
+    return tool
 
 
 def _chart_default_join_key(sources: set[str]) -> str:
@@ -16087,7 +16228,12 @@ def _handle_flowi_query(
         username=username,
         agent_context=agent_context,
     )
-    if interpretation.get("pre_route") and (not tool.get("handled") or str(tool.get("action") or "") in generic_actions):
+    wiki_splittable = (
+        interpretation.get("pre_route")
+        and str(tool.get("feature") or "") != "splittable"
+        and _flowi_wiki_interpretation_prefers_splittable(prompt, interpretation, allowed_keys)
+    )
+    if interpretation.get("pre_route") and (wiki_splittable or not tool.get("handled") or str(tool.get("action") or "") in generic_actions):
         route_prompt = str(interpretation.get("augmented_prompt") or prompt)
         routed_tool = _handle_flowi_query_core(
             route_prompt,
@@ -16127,6 +16273,14 @@ def _handle_flowi_query_core(
         tracker_purpose_out = _handle_tracker_lot_purpose_lookup(prompt, product, max_rows)
         if tracker_purpose_out.get("handled"):
             return tracker_purpose_out
+    if (
+        (allowed_keys is None or "splittable" in allowed_keys)
+        and _flowi_knob_table_lookup_intent(prompt)
+        and not _flowi_explicit_splittable_view_prompt(prompt)
+    ):
+        knob_table_out = _handle_knob_query(prompt, product, max_rows)
+        if knob_table_out.get("handled"):
+            return knob_table_out
     if allowed_keys is None or {"filebrowser", "dashboard", "splittable", "ettime", "waferlayout"} & set(allowed_keys):
         fab_lot_out = _handle_current_fab_lot_lookup(prompt, product, max_rows)
         if fab_lot_out.get("handled"):
@@ -16188,6 +16342,16 @@ def _handle_flowi_query_core(
         diag_out = _handle_semiconductor_diagnosis_query(prompt, product, max_rows)
         if diag_out.get("handled"):
             return diag_out
+    if allowed_keys is None or {"filebrowser", "dashboard"} & set(allowed_keys):
+        multisource_out = _handle_flowi_multisource_query(
+            prompt,
+            product,
+            max_rows,
+            allowed_keys=allowed_keys,
+            username=username,
+        )
+        if multisource_out.get("handled"):
+            return multisource_out
     composite_allowed = allowed_keys is None or {"dashboard", "splittable"}.issubset(set(allowed_keys))
     if composite_allowed:
         composite_out = _handle_home_composite_lot_analysis(prompt, product, max_rows)
@@ -16904,6 +17068,21 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
                 "selected_columns": sql_draft.get("selected_columns") or filters.get("selected_columns") or [],
             },
         )
+    elif action in {"filebrowser.multisource.preview", "dashboard.chart.llm.draft"} or intent in {"filebrowser_multisource_join", "dashboard_multisource_chart"}:
+        add(
+            name="Confirmed schema multi-source query",
+            method="internal",
+            path="data/flow-data/schema_relations.json + DB/base files",
+            callee="core.flowi_multisource.execute_multisource_request",
+            purpose="schema_doc/column_catalog로 용어를 해석하고 confirmed schema relation으로만 filter/join/chart draft 실행",
+            payload={
+                "source_ids": tool.get("source_ids") or [],
+                "relation_ids": tool.get("relation_ids") or [],
+                "join_keys": tool.get("join_keys") or [],
+                "filters": filters,
+                "selected_columns": tool.get("selected_columns") or [],
+            },
+        )
     elif action == "query_lot_current_step_from_progress_cache" or intent == "lot_current_step_lookup":
         add(
             name="Latest progress cache",
@@ -17305,6 +17484,8 @@ def _flowi_trace_interpretation(tool: dict[str, Any]) -> dict[str, Any]:
         source_candidates = [str(x) for x in raw_sources if str(x or "").strip()]
     elif raw_sources:
         source_candidates = [str(raw_sources)]
+    if not source_candidates and isinstance(tool.get("source_ids"), list):
+        source_candidates = [str(x) for x in tool.get("source_ids") or [] if str(x or "").strip()]
     missing = _flowi_trace_missing_slots(tool)
     filled = {}
     for key in ("product", "root_lot_ids", "fab_lot_ids", "lot_ids", "wafer_ids", "step", "metric", "module", "meeting_title", "session_idx"):
@@ -17382,7 +17563,11 @@ def _flowi_trace_evidence(tool: dict[str, Any], api_calls: list[dict[str, Any]])
         "payload_summary": _flowi_activation_payload_summary(tool),
         "filters": filters,
         "sql": sql_draft.get("sql") or filters.get("sql") or "",
-        "selected_columns": sql_draft.get("selected_columns") or [],
+        "selected_columns": tool.get("selected_columns") or sql_draft.get("selected_columns") or [],
+        "source_ids": tool.get("source_ids") if isinstance(tool.get("source_ids"), list) else [],
+        "relation_ids": tool.get("relation_ids") if isinstance(tool.get("relation_ids"), list) else [],
+        "join_keys": tool.get("join_keys") if isinstance(tool.get("join_keys"), list) else [],
+        "join_plan": tool.get("join_plan") if isinstance(tool.get("join_plan"), dict) else {},
         "chart_config": chart_cfg,
         "meeting_sources": sources[:8],
         "knowledge_sources": knowledge_sources[:12],
@@ -17421,12 +17606,14 @@ def _flowi_trace_validation(tool: dict[str, Any], result: dict[str, Any]) -> dic
     warnings.extend(str(w) for w in (sql_draft.get("warnings") or []) if str(w).strip())
     llm = result.get("llm") if isinstance(result.get("llm"), dict) else {}
     source_count = 0
-    if isinstance(tool.get("sources"), list):
+    if isinstance(tool.get("source_ids"), list):
+        source_count = len(tool.get("source_ids") or [])
+    elif isinstance(tool.get("sources"), list):
         source_count = len(tool.get("sources") or [])
     elif isinstance(tool.get("retrieved_knowledge"), list):
         source_count = len(tool.get("retrieved_knowledge") or [])
     return {
-        "rows": block_rows or (table.get("total", len(table.get("rows") or [])) if table else len(tool.get("rows") or [])),
+        "rows": int(tool.get("row_count") or 0) or block_rows or (table.get("total", len(table.get("rows") or [])) if table else len(tool.get("rows") or [])),
         "chart_readiness": chart.get("status") or ("ready" if chart else ""),
         "source_count": source_count,
         "warnings": list(dict.fromkeys(warnings))[:12],
@@ -17707,6 +17894,13 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "slots",
     "filters",
     "sql_draft",
+    "source_ids",
+    "relation_ids",
+    "join_keys",
+    "join_plan",
+    "selected_columns",
+    "sample_rows",
+    "row_count",
     "warnings",
     "sources",
     "highlight",
@@ -18504,7 +18698,7 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
         return True
     if intent.startswith("inform_"):
         return True
-    if intent in {"lot_knobs", "splittable_view", "splittable_plan_mismatch", "wafer_split_at_step", "knob_value_lot_search", "metric_at_step_lookup", "fab_progress_lookup", "lot_current_step_lookup", "tracker_lot_purpose_lookup", "filebrowser_data_preview", "filebrowser_schema_search"}:
+    if intent in {"lot_knobs", "splittable_view", "splittable_plan_mismatch", "wafer_split_at_step", "knob_value_lot_search", "metric_at_step_lookup", "fab_progress_lookup", "lot_current_step_lookup", "tracker_lot_purpose_lookup", "filebrowser_data_preview", "filebrowser_schema_search", "filebrowser_multisource_join", "dashboard_multisource_chart"}:
         return True
     if isinstance(tool.get("chart_result"), dict):
         return True

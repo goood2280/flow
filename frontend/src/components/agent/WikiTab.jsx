@@ -320,6 +320,7 @@ export default function WikiTab({ user, canManage }) {
   const [sources, setSources] = useState([]);
   const [pages, setPages] = useState([]);
   const [selectedPage, setSelectedPage] = useState(null);
+  const [schemaGraph, setSchemaGraph] = useState({ relations: [], column_catalog: [] });
   const [preview, setPreview] = useState(null);
   const [lint, setLint] = useState(null);
   const [wikiSearch, setWikiSearch] = useState("");
@@ -349,11 +350,13 @@ export default function WikiTab({ user, canManage }) {
     return Promise.all([
       sf("/api/agent/wiki/sources?limit=60"),
       sf("/api/agent/wiki/pages" + qs({ q: wikiSearch.trim(), limit: 160 })),
+      sf("/api/agent/schema-relations/graph").catch(() => ({ relations: [], column_catalog: [] })),
     ])
-      .then(([s, p]) => {
+      .then(([s, p, schema]) => {
         setSources(s.sources || []);
         const nextPages = p.pages || [];
         setPages(nextPages);
+        setSchemaGraph({ relations: schema.relations || [], column_catalog: schema.column_catalog || [] });
         setSelectedPage((cur) => cur && nextPages.find((row) => row.doc_id === cur.doc_id) ? cur : nextPages[0] || null);
         setMsg("");
       })
@@ -634,8 +637,24 @@ export default function WikiTab({ user, canManage }) {
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                     <Pill tone="info">sources {sources.length}</Pill>
                     <Pill tone="accent">pages {pages.length}</Pill>
+                    <Pill tone="info">relations {schemaGraph.relations.length}</Pill>
+                    <Pill tone="neutral">columns {schemaGraph.column_catalog.length}</Pill>
                     {lint?.counts && Object.entries(lint.counts).slice(0, 4).map(([k, v]) => <Pill key={k} tone={v ? "warn" : "neutral"}>{k}: {v}</Pill>)}
                   </div>
+                </div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: "var(--accent)" }}>DB/File 연결성</div>
+                  <DataTable
+                    rows={(schemaGraph.relations || []).slice(0, 8)}
+                    empty="확인 저장된 relation이 없습니다."
+                    maxHeight={220}
+                    columns={[
+                      { key: "left_label", label: "left", render: (r) => <KoreanClamp lines={1}>{r.left_label}</KoreanClamp> },
+                      { key: "right_label", label: "right", render: (r) => <KoreanClamp lines={1}>{r.right_label}</KoreanClamp> },
+                      { key: "canonical_key", label: "key", width: 110, render: (r) => <Pill tone="accent">{r.canonical_key || "-"}</Pill> },
+                      { key: "relation_id", label: "id", width: 120, render: (r) => <KoreanClamp lines={1}>{r.relation_id}</KoreanClamp> },
+                    ]}
+                  />
                 </div>
               </div>
             </div>
