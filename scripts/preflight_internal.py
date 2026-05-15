@@ -144,6 +144,16 @@ def run(write_probe: bool = False, backup_now: bool = False) -> list[dict]:
         except Exception as exc:
             checks.append(_fail("data_root_writable", str(exc)))
 
+        try:
+            from core import filebrowser_cache as _fbcache_check
+            cache_root = _fbcache_check.cache_dir()
+            cache_probe = cache_root / ".preflight_write_probe"
+            cache_probe.write_text("ok", encoding="utf-8")
+            cache_probe.unlink(missing_ok=True)
+            checks.append(_ok("filebrowser_cache_writable", str(cache_root)))
+        except Exception as exc:
+            checks.append(_fail("filebrowser_cache_writable", str(exc)))
+
     try:
         backups = backup.list_backups()
         checks.append(_ok("backup_list", f"{len(backups)} backup(s) visible"))

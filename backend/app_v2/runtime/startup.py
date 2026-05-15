@@ -16,6 +16,7 @@ def start_background_services(logger) -> None:
 
     light_starters = (
         ("filebrowser cache cleanup", "routers.filebrowser", "cleanup_legacy_cache_roots"),
+        ("filebrowser preview prewarmer", "core.filebrowser_cache_prewarm", "start_prewarmer"),
         ("backup scheduler", "core.backup", "start_scheduler"),
         ("valve watch scheduler", "core.valve_watch", "start_scheduler"),
         ("product dedup scheduler", "scheduler", "start_scheduler"),

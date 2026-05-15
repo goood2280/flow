@@ -45,6 +45,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 import polars as pl
 from core import duckdb_engine
+from core import filebrowser_cache as _fbcache
 from core import matching_cache as _matching_cache
 from core import ml_table_lookup as _ml_table_lookup
 from core import s3_sync as _s3
@@ -119,6 +120,7 @@ DEFAULT_FILEBROWSER_SETTINGS = {
     "hidden_db_dirs": ["cache", "reformatter"],
     "versioned_single_file_dirs": ["reformatter"],
     "auto_s3_upload_on_save": False,
+    "preview_cache_enabled": True,
 }
 
 _DATE_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})[-_]?(\d{2})[-_]?(\d{2})(?!\d)")
@@ -1469,6 +1471,7 @@ def _normalize_filebrowser_settings(raw) -> dict:
     data["schema_column_page_size"] = max(1, min(MAX_SCHEMA_COLUMN_PAGE_SIZE, schema_page))
     data["csv_rules"] = _normalize_csv_rules(raw.get("csv_rules") or {})
     data["auto_s3_upload_on_save"] = bool(raw.get("auto_s3_upload_on_save", data.get("auto_s3_upload_on_save", False)))
+    data["preview_cache_enabled"] = bool(raw.get("preview_cache_enabled", data.get("preview_cache_enabled", True)))
     hidden = _clean_string_list(raw.get("hidden_db_dirs"), lower=True)
     data["hidden_db_dirs"] = hidden if hidden else list(DEFAULT_FILEBROWSER_SETTINGS["hidden_db_dirs"])
     raw_versioned = raw.get("versioned_single_file_dirs", data["versioned_single_file_dirs"])
@@ -4956,81 +4959,122 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
         raise HTTPException(404, f"File not found in Base or DB root: {file}")
 
     ext = fp.suffix.lower()
+
+    def _serve_static(static_kind: str, build):
+        if _fbcache.is_enabled(settings):
+            source_stat = _fbcache.stat_for_file(fp)
+            if source_stat is not None:
+                return _fbcache.get_or_compute(
+                    endpoint="base-file-view", source=source_stat,
+                    key_payload={"static_kind": static_kind},
+                    compute=build,
+                )
+        return build()
+
     if ext == ".json":
-        try:
-            text = fp.read_text(encoding="utf-8")
-        except Exception as e:
-            raise HTTPException(400, f"Cannot read JSON: {e}")
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            parsed = None
-        return {
-            "kind": "json",
-            "file": file,
-            "size": fp.stat().st_size,
-            "preview": text,
-            "truncated": False,
-            "parsed_top_keys": list(parsed.keys()) if isinstance(parsed, dict) else None,
-        }
+        def _build_json() -> dict:
+            try:
+                text = fp.read_text(encoding="utf-8")
+            except Exception as e:
+                raise HTTPException(400, f"Cannot read JSON: {e}")
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            return {
+                "kind": "json",
+                "file": file,
+                "size": fp.stat().st_size,
+                "preview": text,
+                "truncated": False,
+                "parsed_top_keys": list(parsed.keys()) if isinstance(parsed, dict) else None,
+            }
+        return _serve_static("json", _build_json)
     if ext == ".md":
-        try:
-            text = fp.read_text(encoding="utf-8")
-        except Exception as e:
-            raise HTTPException(400, f"Cannot read md: {e}")
-        return {"kind": "md", "file": file, "size": fp.stat().st_size, "text": text,
-                "truncated": False}
+        def _build_md() -> dict:
+            try:
+                text = fp.read_text(encoding="utf-8")
+            except Exception as e:
+                raise HTTPException(400, f"Cannot read md: {e}")
+            return {"kind": "md", "file": file, "size": fp.stat().st_size, "text": text,
+                    "truncated": False}
+        return _serve_static("md", _build_md)
     if ext in PRODUCT_CONFIG_EXTENSIONS:
-        try:
-            text = fp.read_text(encoding="utf-8")
-        except Exception as e:
-            raise HTTPException(400, f"Cannot read yaml: {e}")
-        parsed_keys = None
-        try:
-            from core import product_config as _pc
-            parsed = _pc.parse_text(text)
-            parsed_keys = list(parsed.keys()) if isinstance(parsed, dict) else None
-        except Exception:
+        def _build_yaml() -> dict:
+            try:
+                text = fp.read_text(encoding="utf-8")
+            except Exception as e:
+                raise HTTPException(400, f"Cannot read yaml: {e}")
             parsed_keys = None
-        return {"kind": "yaml", "file": file, "size": fp.stat().st_size, "text": text,
-                "truncated": False, "parsed_top_keys": parsed_keys}
+            try:
+                from core import product_config as _pc
+                parsed = _pc.parse_text(text)
+                parsed_keys = list(parsed.keys()) if isinstance(parsed, dict) else None
+            except Exception:
+                parsed_keys = None
+            return {"kind": "yaml", "file": file, "size": fp.stat().st_size, "text": text,
+                    "truncated": False, "parsed_top_keys": parsed_keys}
+        return _serve_static("yaml", _build_yaml)
     if ext not in DATA_EXTENSIONS:
         raise HTTPException(400, f"Unsupported ext for preview: {ext}")
     # v8.4.3 OOM-aware — lazy scan 동일.
     try:
-        if meta_only and ext == ".parquet":
-            try:
-                from core.parquet_perf import read_meta
-                cached_meta = read_meta(fp)
-            except Exception:
-                cached_meta = None
-            cached_schema = (cached_meta or {}).get("schema") or {}
-            if cached_schema:
-                all_cols_full = list(cached_schema.keys())
-                schema_full = {n: str(cached_schema[n]) for n in all_cols_full}
+        def _compute() -> dict:
+            if meta_only and ext == ".parquet":
+                try:
+                    from core.parquet_perf import read_meta
+                    cached_meta_fast = read_meta(fp)
+                except Exception:
+                    cached_meta_fast = None
+                cached_schema = (cached_meta_fast or {}).get("schema") or {}
+                if cached_schema:
+                    all_cols_fast = list(cached_schema.keys())
+                    schema_fast = {n: str(cached_schema[n]) for n in all_cols_fast}
+                    return _finalize_preview_response({
+                        "kind": "table", "file": file,
+                        "all_columns": all_cols_fast, "total_cols": len(all_cols_fast),
+                        "columns": all_cols_fast[:cols], "dtypes": schema_fast,
+                        "data": [], "showing": 0, "showing_cols": [],
+                        "total_rows": int((cached_meta_fast or {}).get("row_count") or 0),
+                        "meta_only": True,
+                        "page": page, "page_size": page_size, "has_more": False,
+                        "meta_cached": True,
+                        "source_path": str(fp),
+                        "source_size": fp.stat().st_size,
+                        "source_modified": fp.stat().st_mtime,
+                        "csv_rule_summary": None,
+                        "row_count_unknown": False,
+                    }, settings)
+            lf = scan_one_file(fp)
+            if lf is None:
+                raise HTTPException(400, f"Cannot read: {file}")
+            full_schema_obj = lf.collect_schema()
+            all_cols_full = list(full_schema_obj.names())
+            schema_full = {n: str(full_schema_obj[n]) for n in all_cols_full}
+            # v8.8.16: meta_only 빠른 경로 — 스키마만 돌려주고 collect 없음.
+            if meta_only:
+                cached_meta_only = None
+                if ext == ".parquet":
+                    try:
+                        from core.parquet_perf import read_meta
+                        cached_meta_only = read_meta(fp)
+                    except Exception:
+                        cached_meta_only = None
                 return _finalize_preview_response({
                     "kind": "table", "file": file,
                     "all_columns": all_cols_full, "total_cols": len(all_cols_full),
                     "columns": all_cols_full[:cols], "dtypes": schema_full,
                     "data": [], "showing": 0, "showing_cols": [],
-                    "total_rows": int((cached_meta or {}).get("row_count") or 0),
+                    "total_rows": int((cached_meta_only or {}).get("row_count") or 0),
                     "meta_only": True,
                     "page": page, "page_size": page_size, "has_more": False,
-                    "meta_cached": True,
+                    "meta_cached": bool(cached_meta_only),
+                    "row_count_unknown": not bool(cached_meta_only),
                     "source_path": str(fp),
                     "source_size": fp.stat().st_size,
                     "source_modified": fp.stat().st_mtime,
-                    "csv_rule_summary": None,
-                    "row_count_unknown": False,
+                    "csv_rule_summary": _csv_rule_summary(_csv_rule_for_file(file)) if ext == ".csv" else None,
                 }, settings)
-        lf = scan_one_file(fp)
-        if lf is None:
-            raise HTTPException(400, f"Cannot read: {file}")
-        full_schema_obj = lf.collect_schema()
-        all_cols_full = list(full_schema_obj.names())
-        schema_full = {n: str(full_schema_obj[n]) for n in all_cols_full}
-        # v8.8.16: meta_only 빠른 경로 — 스키마만 돌려주고 collect 없음.
-        if meta_only:
             cached_meta = None
             if ext == ".parquet":
                 try:
@@ -5038,48 +5082,64 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                     cached_meta = read_meta(fp)
                 except Exception:
                     cached_meta = None
-            return _finalize_preview_response({
-                "kind": "table", "file": file,
-                "all_columns": all_cols_full, "total_cols": len(all_cols_full),
-                "columns": all_cols_full[:cols], "dtypes": schema_full,
-                "data": [], "showing": 0, "showing_cols": [],
-                "total_rows": int((cached_meta or {}).get("row_count") or 0),
-                "meta_only": True,
-                "page": page, "page_size": page_size, "has_more": False,
-                "meta_cached": bool(cached_meta),
-                "row_count_unknown": not bool(cached_meta),
-                "source_path": str(fp),
-                "source_size": fp.stat().st_size,
-                "source_modified": fp.stat().st_mtime,
-                "csv_rule_summary": _csv_rule_summary(_csv_rule_for_file(file)) if ext == ".csv" else None,
-            }, settings)
-        cached_meta = None
-        if ext == ".parquet":
-            try:
-                from core.parquet_perf import read_meta
-                cached_meta = read_meta(fp)
-            except Exception:
-                cached_meta = None
-        ml_table = _is_ml_table_file(fp)
-        csv_rule_summary = _csv_rule_summary(_csv_rule_for_file(file, settings)) if ext == ".csv" else None
-        csv_full_read = False
-        if ext == ".csv":
-            try:
-                csv_full_read = fp.stat().st_size <= int(settings.get("csv_full_read_max_bytes") or 0)
-            except Exception:
-                csv_full_read = False
-        # CSV under the configured byte threshold is safe to read fully for
-        # editing only on the initial open. SQL/column selection uses the same
-        # capped preview path as DB sources so the page stays responsive.
-        full_single_file = (
-            csv_full_read
-            and not _is_cache_file_ref(file, fp)
-            and not _has_view_filter(sql, select_cols)
-        )
-        if full_single_file:
-            resp = _run_view_lazy_full(
-                lf, sql, select_cols,
-                preview_cols=cols if ml_table else None,
+            ml_table = _is_ml_table_file(fp)
+            csv_rule_summary = _csv_rule_summary(_csv_rule_for_file(file, settings)) if ext == ".csv" else None
+            csv_full_read = False
+            if ext == ".csv":
+                try:
+                    csv_full_read = fp.stat().st_size <= int(settings.get("csv_full_read_max_bytes") or 0)
+                except Exception:
+                    csv_full_read = False
+            # CSV under the configured byte threshold is safe to read fully for
+            # editing only on the initial open. SQL/column selection uses the same
+            # capped preview path as DB sources so the page stays responsive.
+            full_single_file = (
+                csv_full_read
+                and not _is_cache_file_ref(file, fp)
+                and not _has_view_filter(sql, select_cols)
+            )
+            if full_single_file:
+                resp = _run_view_lazy_full(
+                    lf, sql, select_cols,
+                    preview_cols=cols if ml_table else None,
+                )
+                resp["all_columns"] = all_cols_full
+                resp["total_cols"] = len(all_cols_full)
+                resp["dtypes"] = schema_full
+                resp["kind"] = "table"
+                resp["file"] = file
+                resp["source_path"] = str(fp)
+                resp["source_size"] = fp.stat().st_size
+                resp["source_modified"] = fp.stat().st_mtime
+                resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
+                resp["csv_rule_summary"] = csv_rule_summary
+                return _finalize_preview_response(resp, settings)
+            if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
+                try:
+                    resp = _run_view_duckdb(
+                        [fp], sql, select_cols, rows,
+                        page=page, page_size=page_size, preview_cols=cols,
+                        cached_meta=cached_meta,
+                        settings=settings,
+                    )
+                    resp["kind"] = "table"
+                    resp["file"] = file
+                    resp["source_path"] = str(fp)
+                    resp["source_size"] = fp.stat().st_size
+                    resp["source_modified"] = fp.stat().st_mtime
+                    resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
+                    resp["csv_rule_summary"] = csv_rule_summary
+                    return _finalize_preview_response(resp, settings)
+                except Exception as e:
+                    if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
+                        raise HTTPException(400, f"DuckDB query failed: {e}")
+                    logger.warning("duckdb base-file-view fallback file=%s: %s", file, e)
+            resp = _run_view_lazy(
+                lf, sql, select_cols, rows,
+                page=page, page_size=page_size, cached_meta=cached_meta,
+                preview_cols=cols,
+                source_size=fp.stat().st_size,
+                settings=settings,
             )
             resp["all_columns"] = all_cols_full
             resp["total_cols"] = len(all_cols_full)
@@ -5092,44 +5152,26 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
             resp["csv_rule_summary"] = csv_rule_summary
             return _finalize_preview_response(resp, settings)
-        if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
-            try:
-                resp = _run_view_duckdb(
-                    [fp], sql, select_cols, rows,
-                    page=page, page_size=page_size, preview_cols=cols,
-                    cached_meta=cached_meta,
-                    settings=settings,
+
+        if _fbcache.is_enabled(settings):
+            source_stat = _fbcache.stat_for_file(fp)
+            if source_stat is not None:
+                sql_str = sql if isinstance(sql, str) else ""
+                sc_str = select_cols if isinstance(select_cols, str) else ""
+                key_payload = {
+                    "sql_norm": sql_str.strip(),
+                    "select_cols_norm": ",".join(sorted(c.strip() for c in sc_str.split(",") if c.strip())),
+                    "meta_only": bool(meta_only),
+                    "page": int(page),
+                    "page_size": int(page_size),
+                    "preview_cols": int(cols),
+                    "settings_sig": _fbcache.settings_signature(settings),
+                }
+                return _fbcache.get_or_compute(
+                    endpoint="base-file-view", source=source_stat,
+                    key_payload=key_payload, compute=_compute,
                 )
-                resp["kind"] = "table"
-                resp["file"] = file
-                resp["source_path"] = str(fp)
-                resp["source_size"] = fp.stat().st_size
-                resp["source_modified"] = fp.stat().st_mtime
-                resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
-                resp["csv_rule_summary"] = csv_rule_summary
-                return _finalize_preview_response(resp, settings)
-            except Exception as e:
-                if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
-                    raise HTTPException(400, f"DuckDB query failed: {e}")
-                logger.warning("duckdb base-file-view fallback file=%s: %s", file, e)
-        resp = _run_view_lazy(
-            lf, sql, select_cols, rows,
-            page=page, page_size=page_size, cached_meta=cached_meta,
-            preview_cols=cols,
-            source_size=fp.stat().st_size,
-            settings=settings,
-        )
-        resp["all_columns"] = all_cols_full
-        resp["total_cols"] = len(all_cols_full)
-        resp["dtypes"] = schema_full
-        resp["kind"] = "table"
-        resp["file"] = file
-        resp["source_path"] = str(fp)
-        resp["source_size"] = fp.stat().st_size
-        resp["source_modified"] = fp.stat().st_mtime
-        resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
-        resp["csv_rule_summary"] = csv_rule_summary
-        return _finalize_preview_response(resp, settings)
+        return _compute()
     except HTTPException:
         raise
     except Exception as e:
@@ -7073,67 +7115,91 @@ def view_product(root: str = Query(...), product: str = Query(...),
         cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
         page, page_size, _offset = _preview_page_args(rows, page_size)
         rows = page_size
-        if meta_only:
-            fast_meta = _fast_product_meta_response(root, product, cols, settings=settings, page=page, page_size=page_size)
-            if fast_meta is not None:
-                return _finalize_preview_response(fast_meta, settings)
-        # SQL 검색/컬럼 SELECT 는 사용자가 명시적으로 DB 를 조회하는 동작이다.
-        # 제품 클릭 기본 화면은 전체 스캔 대신 최신 파티션/파일에서 샘플만 보여준다.
-        full_scan = (
-            all_partitions
-            or bool(sql and sql.strip())
-            or bool(select_cols and select_cols.strip())
-            or has_date_filter(sql)
-        )
-        recent = None if full_scan else 30
-        latest_preview = not full_scan and not meta_only
-        source_files: list[Path] = []
-        source_size = 0
-        if full_scan:
-            source_files = source_data_files(root=root, product=product)
-            source_size = duckdb_engine.total_size(source_files)
-        if latest_preview:
-            rows = min(int(rows or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
-            page_size = min(int(page_size or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
-        if full_scan and not meta_only and duckdb_engine.is_available() and "INLINE" not in str(root or "").upper():
-            files = source_files
-            if duckdb_engine.should_use_duckdb(files, engine=engine, sql=sql, select_cols=select_cols):
-                try:
-                    return _finalize_preview_response(_run_view_duckdb(
-                        files, sql, select_cols, rows,
-                        page=page, page_size=page_size, preview_cols=cols,
-                        latest_first=False, latest_preview=False,
-                        settings=settings,
-                    ), settings)
-                except Exception as e:
-                    if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
-                        raise HTTPException(400, f"DuckDB query failed: {e}")
-                    logger.warning("duckdb product view fallback root=%s product=%s: %s", root, product, e)
-        lf = lazy_read_source(
-            root=root, product=product,
-            recent_days=recent, max_files=None if full_scan else LATEST_PREVIEW_MAX_FILES,
-            latest_only=latest_preview,
-        )
-        if lf is not None:
-            return _finalize_preview_response(_run_view_lazy(lf, sql, select_cols, rows, meta_only=meta_only,
-                                                       page=page, page_size=page_size, preview_cols=cols,
-                                                       latest_first=latest_preview, latest_preview=latest_preview,
-                                                       source_size=source_size, settings=settings), settings)
-        # Fallback — legacy DF 경로
-        df = read_source(root=root, product=product)
-        if meta_only:
-            cols_all = list(df.columns)
-            return _finalize_preview_response({
-                "total_rows": 0, "total_cols": len(cols_all),
-                "columns": cols_all[:10], "all_columns": cols_all,
-                "dtypes": {n: str(d) for n, d in df.schema.items()},
-                "showing_cols": [], "selected_cols": None,
-                "data": [], "showing": 0, "meta_only": True,
-                "page": page, "page_size": page_size, "has_more": False,
-                "row_count_unknown": True,
-            }, settings)
-        return _finalize_preview_response(_run_view(df, sql, select_cols, rows, page=page, page_size=page_size,
-                                              preview_cols=cols, latest_first=latest_preview, latest_preview=latest_preview), settings)
+
+        def _compute() -> dict:
+            local_rows = rows
+            local_page_size = page_size
+            if meta_only:
+                fast_meta = _fast_product_meta_response(root, product, cols, settings=settings, page=page, page_size=local_page_size)
+                if fast_meta is not None:
+                    return _finalize_preview_response(fast_meta, settings)
+            full_scan = (
+                all_partitions
+                or bool(sql and sql.strip())
+                or bool(select_cols and select_cols.strip())
+                or has_date_filter(sql)
+            )
+            recent = None if full_scan else 30
+            latest_preview = not full_scan and not meta_only
+            source_files: list[Path] = []
+            source_size = 0
+            if full_scan:
+                source_files = source_data_files(root=root, product=product)
+                source_size = duckdb_engine.total_size(source_files)
+            if latest_preview:
+                local_rows = min(int(local_rows or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
+                local_page_size = min(int(local_page_size or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
+            if full_scan and not meta_only and duckdb_engine.is_available() and "INLINE" not in str(root or "").upper():
+                files = source_files
+                if duckdb_engine.should_use_duckdb(files, engine=engine, sql=sql, select_cols=select_cols):
+                    try:
+                        return _finalize_preview_response(_run_view_duckdb(
+                            files, sql, select_cols, local_rows,
+                            page=page, page_size=local_page_size, preview_cols=cols,
+                            latest_first=False, latest_preview=False,
+                            settings=settings,
+                        ), settings)
+                    except Exception as e:
+                        if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
+                            raise HTTPException(400, f"DuckDB query failed: {e}")
+                        logger.warning("duckdb product view fallback root=%s product=%s: %s", root, product, e)
+            lf = lazy_read_source(
+                root=root, product=product,
+                recent_days=recent, max_files=None if full_scan else LATEST_PREVIEW_MAX_FILES,
+                latest_only=latest_preview,
+            )
+            if lf is not None:
+                return _finalize_preview_response(_run_view_lazy(lf, sql, select_cols, local_rows, meta_only=meta_only,
+                                                           page=page, page_size=local_page_size, preview_cols=cols,
+                                                           latest_first=latest_preview, latest_preview=latest_preview,
+                                                           source_size=source_size, settings=settings), settings)
+            # Fallback — legacy DF 경로
+            df = read_source(root=root, product=product)
+            if meta_only:
+                cols_all = list(df.columns)
+                return _finalize_preview_response({
+                    "total_rows": 0, "total_cols": len(cols_all),
+                    "columns": cols_all[:10], "all_columns": cols_all,
+                    "dtypes": {n: str(d) for n, d in df.schema.items()},
+                    "showing_cols": [], "selected_cols": None,
+                    "data": [], "showing": 0, "meta_only": True,
+                    "page": page, "page_size": local_page_size, "has_more": False,
+                    "row_count_unknown": True,
+                }, settings)
+            return _finalize_preview_response(_run_view(df, sql, select_cols, local_rows, page=page, page_size=local_page_size,
+                                                  preview_cols=cols, latest_first=latest_preview, latest_preview=latest_preview), settings)
+
+        if _fbcache.is_enabled(settings):
+            prod_dir = _resolve_product_dir_fast(root, product)
+            source_stat = _fbcache.stat_for_db_product(prod_dir) if prod_dir is not None else None
+            if source_stat is not None:
+                sql_str = sql if isinstance(sql, str) else ""
+                sc_str = select_cols if isinstance(select_cols, str) else ""
+                key_payload = {
+                    "sql_norm": sql_str.strip(),
+                    "select_cols_norm": ",".join(sorted(c.strip() for c in sc_str.split(",") if c.strip())),
+                    "meta_only": bool(meta_only),
+                    "page": int(page),
+                    "page_size": int(page_size),
+                    "preview_cols": int(cols),
+                    "all_partitions": bool(all_partitions),
+                    "settings_sig": _fbcache.settings_signature(settings),
+                }
+                return _fbcache.get_or_compute(
+                    endpoint="view", source=source_stat,
+                    key_payload=key_payload, compute=_compute,
+                )
+        return _compute()
     except HTTPException:
         raise
     except Exception as e:
@@ -7393,61 +7459,83 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
         cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
         page, page_size, _offset = _preview_page_args(rows, page_size)
         rows = page_size
-        # v8.4.3 OOM-aware: lazy scan — full read 회피. 10GB+ parquet 도 안전.
-        lf = scan_one_file(fp)
-        if lf is None:
-            raise HTTPException(400, f"Cannot read: {file}")
-        full_schema_obj = lf.collect_schema()
-        all_cols_full = list(full_schema_obj.names())
-        schema_full = {n: str(full_schema_obj[n]) for n in all_cols_full}
-        # v8.8.16: meta_only 빠른 경로.
-        if meta_only:
+
+        def _compute() -> dict:
+            # v8.4.3 OOM-aware: lazy scan — full read 회피. 10GB+ parquet 도 안전.
+            lf = scan_one_file(fp)
+            if lf is None:
+                raise HTTPException(400, f"Cannot read: {file}")
+            full_schema_obj = lf.collect_schema()
+            all_cols_full = list(full_schema_obj.names())
+            schema_full = {n: str(full_schema_obj[n]) for n in all_cols_full}
+            # v8.8.16: meta_only 빠른 경로.
+            if meta_only:
+                try:
+                    from core.parquet_perf import read_meta
+                    cached_meta_local = read_meta(fp)
+                except Exception:
+                    cached_meta_local = None
+                return _finalize_preview_response({
+                    "all_columns": all_cols_full, "total_cols": len(all_cols_full),
+                    "columns": all_cols_full[:cols], "dtypes": schema_full,
+                    "data": [], "showing": 0, "showing_cols": [],
+                    "total_rows": int((cached_meta_local or {}).get("row_count") or 0),
+                    "meta_only": True,
+                    "page": page, "page_size": page_size, "has_more": False,
+                    "meta_cached": bool(cached_meta_local),
+                    "row_count_unknown": not bool(cached_meta_local),
+                    "source_path": str(fp),
+                    "source_size": fp.stat().st_size,
+                    "source_modified": fp.stat().st_mtime,
+                }, settings)
             try:
                 from core.parquet_perf import read_meta
                 cached_meta = read_meta(fp)
             except Exception:
                 cached_meta = None
-            return _finalize_preview_response({
-                "all_columns": all_cols_full, "total_cols": len(all_cols_full),
-                "columns": all_cols_full[:cols], "dtypes": schema_full,
-                "data": [], "showing": 0, "showing_cols": [],
-                "total_rows": int((cached_meta or {}).get("row_count") or 0),
-                "meta_only": True,
-                "page": page, "page_size": page_size, "has_more": False,
-                "meta_cached": bool(cached_meta),
-                "row_count_unknown": not bool(cached_meta),
-                "source_path": str(fp),
-                "source_size": fp.stat().st_size,
-                "source_modified": fp.stat().st_mtime,
-            }, settings)
-        try:
-            from core.parquet_perf import read_meta
-            cached_meta = read_meta(fp)
-        except Exception:
-            cached_meta = None
-        if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
-            try:
-                return _finalize_preview_response(_run_view_duckdb(
-                    [fp], sql, select_cols, rows,
-                    page=page, page_size=page_size, cached_meta=cached_meta,
-                    preview_cols=cols,
-                    settings=settings,
-                ), settings)
-            except Exception as e:
-                if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
-                    raise HTTPException(400, f"DuckDB query failed: {e}")
-                logger.warning("duckdb root-parquet-view fallback file=%s: %s", file, e)
-        resp = _run_view_lazy(
-            lf, sql, select_cols, rows,
-            page=page, page_size=page_size, cached_meta=cached_meta,
-            preview_cols=cols,
-            source_size=fp.stat().st_size,
-            settings=settings,
-        )
-        resp["all_columns"] = all_cols_full
-        resp["total_cols"] = len(all_cols_full)
-        resp["dtypes"] = schema_full
-        return _finalize_preview_response(resp, settings)
+            if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
+                try:
+                    return _finalize_preview_response(_run_view_duckdb(
+                        [fp], sql, select_cols, rows,
+                        page=page, page_size=page_size, cached_meta=cached_meta,
+                        preview_cols=cols,
+                        settings=settings,
+                    ), settings)
+                except Exception as e:
+                    if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
+                        raise HTTPException(400, f"DuckDB query failed: {e}")
+                    logger.warning("duckdb root-parquet-view fallback file=%s: %s", file, e)
+            resp = _run_view_lazy(
+                lf, sql, select_cols, rows,
+                page=page, page_size=page_size, cached_meta=cached_meta,
+                preview_cols=cols,
+                source_size=fp.stat().st_size,
+                settings=settings,
+            )
+            resp["all_columns"] = all_cols_full
+            resp["total_cols"] = len(all_cols_full)
+            resp["dtypes"] = schema_full
+            return _finalize_preview_response(resp, settings)
+
+        if _fbcache.is_enabled(settings):
+            source_stat = _fbcache.stat_for_file(fp)
+            if source_stat is not None:
+                sql_str = sql if isinstance(sql, str) else ""
+                sc_str = select_cols if isinstance(select_cols, str) else ""
+                key_payload = {
+                    "sql_norm": sql_str.strip(),
+                    "select_cols_norm": ",".join(sorted(c.strip() for c in sc_str.split(",") if c.strip())),
+                    "meta_only": bool(meta_only),
+                    "page": int(page),
+                    "page_size": int(page_size),
+                    "preview_cols": int(cols),
+                    "settings_sig": _fbcache.settings_signature(settings),
+                }
+                return _fbcache.get_or_compute(
+                    endpoint="root-parquet-view", source=source_stat,
+                    key_payload=key_payload, compute=_compute,
+                )
+        return _compute()
     except HTTPException:
         raise
     except Exception as e:
