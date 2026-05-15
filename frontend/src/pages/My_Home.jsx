@@ -537,7 +537,8 @@ function FlowiTrace({trace}){
   const subagentChildren=Array.isArray(trace?.subagent_context?.children)?trace.subagent_context.children:[];
   const missing=Array.isArray(interpretation?.missing_slots)?interpretation.missing_slots:[];
   const warnings=Array.isArray(validation?.warnings)?validation.warnings:[];
-  const apiCalls=Array.isArray(evidence?.api_calls)?evidence.api_calls:[];
+  const knowledge=Array.isArray(trace?.retrieved_knowledge)?trace.retrieved_knowledge:[];
+  const apiCalls=Array.isArray(trace?.api_calls)?trace.api_calls:(Array.isArray(evidence?.api_calls)?evidence.api_calls:[]);
   return(<details style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"7px 9px"}}>
     <summary style={{cursor:"pointer",fontSize:14,color:"#a3a3a3",fontFamily:"monospace",fontWeight:800}}>
       해석 로그 / 근거 흐름 <span style={{fontWeight:400,color:"#737373"}}>사고과정 원문이 아닌 실행 로그</span>
@@ -561,6 +562,7 @@ function FlowiTrace({trace}){
       {Array.isArray(evidence.selected_columns)&&evidence.selected_columns.length>0&&<FlowiTraceKV label="선택 컬럼" value={evidence.selected_columns.slice(0,12).join(", ")} wide/>}
       {missing.length>0&&<FlowiTraceKV label="빈칸 보완" value={missing.join(", ")} wide tone="#f97316"/>}
       {warnings.length>0&&<FlowiTraceKV label="warnings" value={warnings.slice(0,4).join(" · ")} wide tone="#fbbf24"/>}
+      {knowledge.length>0&&<FlowiKnowledgeTrace rows={knowledge}/>}
       {subagentChildren.length>0&&<div style={{display:"grid",gap:4,border:"1px solid #262626",borderRadius:6,background:"#151515",padding:"6px 7px"}}>
         <div style={{fontSize:14,color:"#737373",marginBottom:2}}>subagent chain</div>
         {subagentChildren.slice(0,8).map((c,i)=><div key={`${c.name||"child"}-${i}`} style={{display:"grid",gridTemplateColumns:"18px minmax(90px,150px) 72px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
@@ -585,6 +587,26 @@ function FlowiTrace({trace}){
       {trace.note&&<div style={{marginTop:4,fontSize:14,color:"#737373",lineHeight:1.45}}>{trace.note}</div>}
     </div>
   </details>);
+}
+
+function FlowiKnowledgeTrace({rows}){
+  const items=Array.isArray(rows)?rows.filter(Boolean).slice(0,8):[];
+  if(!items.length)return null;
+  return <div style={{display:"grid",gap:5,border:"1px solid #262626",borderRadius:6,background:"#151515",padding:"7px 8px"}}>
+    <div style={{display:"flex",gap:7,alignItems:"baseline",justifyContent:"space-between"}}>
+      <div style={{fontSize:14,color:"#737373"}}>지식 Wiki 근거</div>
+      <div style={{fontSize:14,color:"#737373"}}>{items.length} hits</div>
+    </div>
+    {items.map((row,i)=>{
+      const id=String(row.id||row.doc_id||"");
+      const title=String(row.title||id||"knowledge");
+      const meta=[row.kind,row.term?`term ${row.term}`:"",row.relation_id&&row.column?`${row.relation_id}.${row.column}`:"",row.source].filter(Boolean).join(" · ");
+      return <div key={`${id}-${i}`} style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(90px,160px)",gap:8,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
+        <span style={{color:"#d4d4d4",fontWeight:800,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={title}>{title}</span>
+        <span style={{color:"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",textAlign:"right"}} title={meta||id}>{meta||id}</span>
+      </div>;
+    })}
+  </div>;
 }
 
 function FlowiTraceKV({label,value,wide=false,tone="#d4d4d4"}){

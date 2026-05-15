@@ -152,8 +152,9 @@ Agent는 `resolve_term_to_columns(term)`에서 `kv.list_docs(kind="schema_doc", 
 `POST /api/llm/flowi/agent/chat` 응답의 `trace`는 다음을 항상 포함한다.
 
 - `trace.activation` — 위 5단계 Activation Map dict (누락 없음)
-- `trace.interpretation` — product/lot/wafer/step/item/회의명/차수/source 후보와 missing/filled slot 공개 요약
+- `trace.interpretation` — product/lot/wafer/step/item/회의명/차수/source 후보, Wiki/schema로 해석한 knowledge_terms, missing/filled slot 공개 요약
 - `trace.evidence` — 사용한 기능 AI, endpoint, payload 요약, SQL/filter, chart config, meeting sources
+- `trace.evidence.knowledge_sources` / `trace.retrieved_knowledge` — prompt 용어를 Agent Wiki `schema_doc`와 `column_catalog`에 대조한 공개 근거
 - `trace.validation` — rows, chart readiness, source count, warnings, fallback 여부
 - `trace.call_graph.nodes` / `trace.call_graph.edges` — 노드/엣지 (빈 배열 아님)
 - `trace.call_graph.activation` — `trace.activation`과 동일 내용 동봉 (frontend fallback용)

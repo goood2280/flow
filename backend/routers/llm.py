@@ -16097,6 +16097,32 @@ def _flowi_trace_api_calls(
             "status": status,
         },
     ]
+    retrieved_knowledge = tool.get("retrieved_knowledge") if isinstance(tool.get("retrieved_knowledge"), list) else []
+    if retrieved_knowledge:
+        terms = []
+        ids = []
+        for row in retrieved_knowledge[:12]:
+            if not isinstance(row, dict):
+                continue
+            term = str(row.get("term") or "").strip()
+            doc_id = str(row.get("id") or row.get("doc_id") or row.get("knowledge_id") or "").strip()
+            if term and term not in terms:
+                terms.append(term)
+            if doc_id and doc_id not in ids:
+                ids.append(doc_id)
+        calls.append({
+            "stage": "knowledge",
+            "feature": "knowledge",
+            "action": "lookup_term",
+            "name": "Agent Wiki / schema lookup",
+            "method": "internal",
+            "path": "data/flow-data/knowledge + schema_relations.json",
+            "callee": "core.knowledge_vault.lookup_term",
+            "purpose": "질문 용어를 Agent Wiki schema_doc, column_catalog, promoted knowledge와 대조",
+            "payload": {"terms": terms[:8]},
+            "output": ", ".join(ids[:5]) or f"{len(retrieved_knowledge)} knowledge hits",
+            "status": "done",
+        })
     calls.extend(_flowi_trace_feature_api_calls(tool))
     calls.append({
         "stage": "response",
@@ -16137,6 +16163,7 @@ def _flowi_trace_call_graph(
     status = _flowi_trace_status(tool)
     endpoint = next((c for c in api_calls if c.get("stage") == "ingress"), {})
     orchestrator = next((c for c in api_calls if c.get("stage") == "orchestrator"), {})
+    knowledge_calls = [c for c in api_calls if c.get("stage") == "knowledge"]
     feature_calls = [c for c in api_calls if c.get("stage") == "feature_api"]
     prompt_text = str(prompt or "").strip()
     activated_feature = str(tool.get("feature") or (feature_calls[0].get("feature") if feature_calls else "") or "general")
@@ -16165,6 +16192,17 @@ def _flowi_trace_call_graph(
     add_edge("orchestrator", "guardrail", "validate")
 
     previous = "guardrail"
+    if knowledge_calls:
+        knowledge = knowledge_calls[0]
+        add_node(
+            "knowledge",
+            "knowledge",
+            "Agent Wiki / Schema",
+            knowledge.get("output") or knowledge.get("purpose") or "knowledge lookup",
+            knowledge.get("status") or "done",
+        )
+        add_edge(previous, "knowledge", "lookup")
+        previous = "knowledge"
     if feature_calls:
         feature_name = str(tool.get("feature") or feature_calls[0].get("feature") or "feature")
         add_node("feature", "feature_subagent", f"{feature_name} subagent", str(tool.get("action") or tool.get("intent") or ""), status)
@@ -16335,6 +16373,24 @@ def _flowi_trace_interpretation(tool: dict[str, Any]) -> dict[str, Any]:
         value = first(key)
         if value not in (None, "", [], {}):
             filled[key] = value
+    knowledge_terms = []
+    seen_terms = set()
+    for row in tool.get("retrieved_knowledge") or []:
+        if not isinstance(row, dict):
+            continue
+        term = str(row.get("term") or "").strip()
+        doc_id = str(row.get("id") or row.get("doc_id") or row.get("knowledge_id") or "").strip()
+        if not term or (term, doc_id) in seen_terms:
+            continue
+        seen_terms.add((term, doc_id))
+        knowledge_terms.append({
+            "term": term,
+            "id": doc_id,
+            "title": row.get("title") or doc_id,
+            "kind": row.get("kind") or "",
+            "relation_id": row.get("relation_id") or "",
+            "column": row.get("column") or "",
+        })
     return {
         "input_slots": {
             "product": first("product"),
@@ -16348,6 +16404,7 @@ def _flowi_trace_interpretation(tool: dict[str, Any]) -> dict[str, Any]:
         },
         "missing_slots": missing,
         "filled_slots": filled,
+        "knowledge_terms": knowledge_terms[:8],
     }
 
 
@@ -16364,6 +16421,22 @@ def _flowi_trace_evidence(tool: dict[str, Any], api_calls: list[dict[str, Any]])
     for row in tool.get("sources") or []:
         if isinstance(row, dict):
             sources.append({k: row.get(k) for k in ("meeting_id", "meeting_title", "session_id", "session_idx", "type", "title") if row.get(k) not in (None, "")})
+    knowledge_sources = []
+    for row in tool.get("retrieved_knowledge") or []:
+        if not isinstance(row, dict):
+            continue
+        doc_id = str(row.get("id") or row.get("doc_id") or row.get("knowledge_id") or "").strip()
+        if not doc_id:
+            continue
+        knowledge_sources.append({
+            "id": doc_id,
+            "title": row.get("title") or doc_id,
+            "kind": row.get("kind") or "",
+            "term": row.get("term") or "",
+            "source": row.get("source") or "",
+            "relation_id": row.get("relation_id") or "",
+            "column": row.get("column") or "",
+        })
     return {
         "used_feature_ai": tool.get("feature") or first_api.get("feature") or "flowi",
         "endpoint": first_api.get("path") or first_api.get("callee") or "",
@@ -16372,6 +16445,7 @@ def _flowi_trace_evidence(tool: dict[str, Any], api_calls: list[dict[str, Any]])
         "selected_columns": sql_draft.get("selected_columns") or [],
         "chart_config": chart_cfg,
         "meeting_sources": sources[:8],
+        "knowledge_sources": knowledge_sources[:12],
         "table_total": table.get("total", len(table.get("rows") or [])) if table else 0,
         "api_calls": [
             {
@@ -16449,6 +16523,11 @@ def _flowi_public_trace(
             "id": row.get("id") or row.get("doc_id") or row.get("knowledge_id") or "",
             "title": row.get("title") or "",
             "kind": row.get("kind") or "",
+            "summary": row.get("summary") or "",
+            "term": row.get("term") or "",
+            "source": row.get("source") or "",
+            "relation_id": row.get("relation_id") or "",
+            "column": row.get("column") or "",
             "score": row.get("score"),
         }
         for row in (tool.get("retrieved_knowledge") or [])
@@ -16570,7 +16649,10 @@ def _flowi_public_trace(
             "title": "Agent Wiki 검색",
             "label": "Agent Wiki 검색",
             "status": "done",
-            "detail": ", ".join(str(row.get("id") or "") for row in retrieved_knowledge[:5]),
+            "detail": ", ".join(
+                f"{row.get('id')}{'(' + row.get('term') + ')' if row.get('term') else ''}"
+                for row in retrieved_knowledge[:5]
+            ),
             "ts": ts,
         })
     api_calls = _flowi_trace_api_calls(

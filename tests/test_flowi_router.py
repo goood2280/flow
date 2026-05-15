@@ -2592,6 +2592,56 @@ def test_flowi_chat_returns_public_execution_trace(monkeypatch):
     assert any(node["type"] == "feature_subagent" and "splittable" in node["title"] for node in graph["nodes"])
 
 
+def test_flowi_chat_trace_includes_wiki_schema_lookup(monkeypatch):
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_profile_context", lambda _username: "")
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+
+    def fake_lookup_term(term, limit=6):
+        if str(term).upper() != "STI":
+            return {"term": term, "columns": [], "docs": [], "graph": {"nodes": [], "edges": []}}
+        return {
+            "term": term,
+            "columns": [{
+                "relation_id": "FAB_PROGRESS",
+                "column": "step_id",
+                "canonical_alias": "function step",
+                "wiki_doc_id": "schema_sti_step",
+            }],
+            "docs": [{
+                "doc_id": "schema_sti_step",
+                "kind": "schema_doc",
+                "title": "STI step schema",
+                "summary": "STI step lookup rule",
+            }],
+            "graph": {"nodes": [], "edges": []},
+        }
+
+    monkeypatch.setattr(llm_router.kv, "lookup_term", fake_lookup_term)
+
+    out = _run_flowi_chat(
+        prompt="A10001 1.0 STI 스플릿테이블에서 plan actual 보여줘",
+        product="",
+        max_rows=12,
+        me={"username": "trace_user", "role": "admin"},
+    )
+
+    trace = out["trace"]
+    knowledge = trace["retrieved_knowledge"]
+    assert any(row["id"] == "column:FAB_PROGRESS.step_id" and row["term"] == "STI" for row in knowledge)
+    assert any(row["id"] == "schema_sti_step" and row["kind"] == "schema_doc" for row in knowledge)
+    assert any(step["key"] == "knowledge" and "STI" in step["detail"] for step in trace["steps"])
+    assert any(row["term"] == "STI" and row["column"] == "step_id" for row in trace["interpretation"]["knowledge_terms"])
+    assert any(
+        call["stage"] == "knowledge"
+        and call["callee"] == "core.knowledge_vault.lookup_term"
+        and "STI" in (call.get("payload") or {}).get("terms", [])
+        for call in trace["api_calls"]
+    )
+    assert any(node["type"] == "knowledge" and "schema_sti_step" in node["detail"] for node in trace["call_graph"]["nodes"])
+    assert any(row["id"] == "schema_sti_step" for row in trace["evidence"]["knowledge_sources"])
+
+
 def test_flowi_admin_file_delete_requires_structured_confirmation(tmp_path, monkeypatch):
     (tmp_path / "sample.csv").write_text("a,b\n1,2\n", encoding="utf-8")
     monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
