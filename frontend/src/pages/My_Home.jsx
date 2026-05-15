@@ -197,7 +197,7 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
       </div>
     </form>
     {active&&<div style={{marginTop:10,border:`1px solid ${HOME_UI.borderSoft}`,borderRadius:10,background:"#101010",overflow:"hidden",animation:"flowiPanelWake .32s ease-out",transformOrigin:"top"}}>
-      <div ref={scrollRef} style={{height:messages.length?520:300,maxHeight:"60vh",overflowY:"auto",padding:"12px 14px",borderBottom:"1px solid #262626",scrollBehavior:"smooth"}}>
+      <div ref={scrollRef} style={{height:messages.length?"clamp(520px, 72vh, 860px)":340,maxHeight:"calc(100vh - 230px)",overflow:"auto",padding:"14px 16px",borderBottom:"1px solid #262626",scrollBehavior:"smooth"}}>
         {messages.length===0&&!busy&&<div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",color:"#d4d4d4",fontSize:14,fontWeight:800,textAlign:"center"}}>
           오늘 어떤 도움을 드릴까요?
         </div>}
@@ -240,6 +240,52 @@ function FlowiConsole({onNavigate,user,onActiveChange}){
 
 const FLOWI_ACTION_BTN={fontSize:14,color:HOME_UI.accent,fontFamily:"monospace",border:"1px solid #7c2d12",borderRadius:6,padding:"4px 8px",background:"#1f130b",cursor:"pointer",fontWeight:800,whiteSpace:"nowrap"};
 
+function flowiShortText(value,max=140){
+  const text=String(value??"").replace(/\s+/g," ").trim();
+  return text.length>max?`${text.slice(0,max-1)}...`:text;
+}
+
+function flowiInterpretationLines(trace,tool){
+  const interpretation=trace?.interpretation||{};
+  const slots=interpretation.input_slots||tool?.slots||{};
+  const missing=Array.isArray(interpretation.missing_slots)?interpretation.missing_slots:(Array.isArray(tool?.missing)?tool.missing:[]);
+  const terms=Array.isArray(interpretation.term_resolution)?interpretation.term_resolution:[];
+  const knowledge=Array.isArray(trace?.retrieved_knowledge)?trace.retrieved_knowledge:[];
+  const slotLabels=[
+    ["product","제품"],["lot","Lot"],["wafer","Wafer"],["step","Step"],["item","항목"],["source_candidates","소스"],
+  ];
+  const slotParts=slotLabels.map(([key,label])=>{
+    const raw=slots[key];
+    const text=Array.isArray(raw)?raw.filter(Boolean).join(", "):String(raw??"").trim();
+    return text?`${label} ${flowiShortText(text,70)}`:"";
+  }).filter(Boolean);
+  const termParts=terms.map(row=>{
+    const token=flowiShortText(row?.token||row?.term||"",48);
+    const meaning=flowiShortText(row?.meaning||row?.query_filter||row?.status||"",90);
+    return token&&meaning?`${token} -> ${meaning}`:"";
+  }).filter(Boolean);
+  const lines=[];
+  if(slotParts.length)lines.push(`질문에서 ${slotParts.slice(0,6).join(", ")}를 확인했습니다.`);
+  if(termParts.length)lines.push(`${termParts.slice(0,5).join(" · ")}로 해석했습니다.`);
+  if(missing.length)lines.push(`추가 확인이 필요합니다: ${missing.slice(0,5).join(", ")}.`);
+  if(knowledge.length)lines.push(`Wiki/schema 근거 ${knowledge.length}건을 참고했습니다.`);
+  return lines.slice(0,4);
+}
+
+function FlowiInterpretationSummary({trace,tool}){
+  const lines=flowiInterpretationLines(trace,tool);
+  if(!lines.length)return null;
+  return <div style={{margin:"0 0 10px",border:"1px solid #2a2a2a",borderRadius:8,background:"#141414",padding:"9px 10px",fontFamily:"'JetBrains Mono',monospace"}}>
+    <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:6}}>
+      <span style={{width:6,height:6,borderRadius:999,background:HOME_UI.accent,display:"inline-block"}}/>
+      <span style={{fontSize:14,color:"#f5f5f5",fontWeight:900}}>해석</span>
+    </div>
+    <div style={{display:"grid",gap:5}}>
+      {lines.map((line,i)=><div key={i} style={{fontSize:14,lineHeight:1.55,color:i===0?"#e5e5e5":"#a3a3a3",whiteSpace:"normal",overflowWrap:"anywhere"}}>{line}</div>)}
+    </div>
+  </div>;
+}
+
 function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=false,isAdmin=false,activeChartSessionId="",onUseChartSession=null}){
   if(busy)return <div style={{marginTop:embedded?0:10,fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>local tools + llm 처리 중...</div>;
   if(error)return <div style={{marginTop:10,padding:"9px 10px",borderRadius:6,background:"#7f1d1d33",color:"#fca5a5",fontSize:14,border:"1px solid #7f1d1d"}}>{error}</div>;
@@ -263,19 +309,21 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
   const emptyHint=!result.answer&&(tool.missing||hasArgumentChoices||hasMissingFreetext)
     ?"필요한 조건이 조금 더 있어요. 아래 선택지나 직접 입력으로 이어서 알려주세요."
     :"표시할 결과가 비어 있습니다. 조건을 조금 더 좁혀서 다시 물어봐 주세요.";
-  return(<div style={{width:"100%",boxSizing:"border-box",marginTop:embedded?0:12,border:embedded?"1px solid #2a2a2a":"1px solid #333",borderRadius:10,padding:12,background:"#111",overflow:"hidden"}}>
+  return(<div style={{width:"100%",boxSizing:"border-box",marginTop:embedded?0:12,border:embedded?"1px solid #2a2a2a":"1px solid #333",borderRadius:10,padding:12,background:"#111",overflow:"visible"}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:8}}>
       <div style={{minWidth:0,fontSize:14,color:"#e5e5e5",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{summary}</div>
       {actions.length>0&&<div style={{display:"flex",gap:6,alignItems:"center",justifyContent:"flex-end",flexWrap:"wrap"}}>{actions.map(a=><button key={a.key} type="button" onClick={a.onClick} title={a.title} style={FLOWI_ACTION_BTN}>{a.label}</button>)}</div>}
     </div>
-    <FlowiTraceStrip trace={result.trace}/>
+    <FlowiInterpretationSummary trace={result.trace} tool={tool}/>
     <FlowiMarkdown text={result.answer||emptyHint}/>
     {isAdmin&&<div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
       {tool.intent&&<span style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{tool.intent}</span>}
       {workflow.status&&<span style={{fontSize:14,color:workflow.status.startsWith("awaiting")?"#f97316":workflow.status==="blocked"?"#ef4444":"#22c55e",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{workflow.status}</span>}
       {result.llm&&<span style={{fontSize:14,color:result.llm.used?"#22c55e":"#737373",fontFamily:"monospace",border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>{result.llm.used?"llm used":"local result"}</span>}
     </div>}
-    <FlowiTrace trace={result.trace}/>
+    {choices.length>0&&!hasArgumentChoices&&!hasMissingFreetext&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice} onNavigate={onNavigate}/>}
+    {hasArgumentChoices&&<FlowiArgumentChoices data={argumentChoices} basePrompt={partialPrompt} onChoice={onChoice}/>}
+    {hasMissingFreetext&&<FlowiMissingFreetext fields={missingFreetext} basePrompt={partialPrompt} onChoice={onChoice}/>}
     <FlowiInlineContent tool={tool} table={table} chart={chart} chartResult={chartResult}/>
     {chartSessionId&&<div style={{marginTop:8,display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
       <button type="button" onClick={()=>onUseChartSession&&onUseChartSession(chartSessionId)}
@@ -287,15 +335,21 @@ function FlowiResult({busy,error,result,prompt,onNavigate,onChoice,embedded=fals
     {walkthrough&&walkthrough.session_id&&<FlowiWalkthrough data={walkthrough}/>}
     {isAdmin&&nextActions.length>0&&<FlowiNextActions actions={nextActions} onNavigate={onNavigate} onChoice={onChoice}/>}
     {isAdmin&&result.proposal&&result.confirm&&<FlowiEdmProposal result={result}/>}
+    <FlowiTraceStrip trace={result.trace}/>
+    <FlowiTrace trace={result.trace}/>
     <FlowiFeedback result={result} tool={tool} prompt={prompt} isAdmin={isAdmin}/>
-    {choices.length>0&&!hasArgumentChoices&&!hasMissingFreetext&&<FlowiChoices question={tool.clarification?.question} choices={choices} onChoice={onChoice} onNavigate={onNavigate}/>}
-    {hasArgumentChoices&&<FlowiArgumentChoices data={argumentChoices} basePrompt={partialPrompt} onChoice={onChoice}/>}
-    {hasMissingFreetext&&<FlowiMissingFreetext fields={missingFreetext} basePrompt={partialPrompt} onChoice={onChoice}/>}
   </div>);
 }
 
 function FlowiMarkdown({text}){
-  return <div style={{whiteSpace:"pre-wrap",fontSize:14,lineHeight:1.65,color:"#d4d4d4",overflowWrap:"anywhere"}}>{text}</div>;
+  const lines=String(text||"").split("\n");
+  return <div style={{whiteSpace:"pre-wrap",fontSize:14,lineHeight:1.75,color:"#d4d4d4",overflowWrap:"anywhere"}}>
+    {lines.map((line,i)=>{
+      const m=line.match(/^([^:：]{1,24})[:：]\s*(.*)$/);
+      if(m&&m[2])return <div key={i} style={{marginTop:i?4:0}}><span style={{color:"#f5f5f5",fontWeight:900}}>{m[1]}: </span><span>{m[2]}</span></div>;
+      return <div key={i} style={{marginTop:i&&line.trim()?4:0}}>{line}</div>;
+    })}
+  </div>;
 }
 
 function flowiTableColumns(table){
@@ -511,28 +565,20 @@ function flowiTraceStatusColor(status){
 }
 
 function FlowiLiveTrace({step=0}){
-  return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"9px 10px",fontFamily:"monospace"}}>
-    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
+  const active=FLOWI_LIVE_STEPS[Math.max(0,Math.min(step,FLOWI_LIVE_STEPS.length-1))]||FLOWI_LIVE_STEPS[0];
+  return(<div style={{marginTop:8,border:"1px solid #2a2a2a",borderRadius:8,background:"#111",padding:"8px 10px",fontFamily:"monospace"}}>
+    <div style={{display:"flex",alignItems:"center",gap:8}}>
       <span style={{width:7,height:7,borderRadius:999,background:"#f97316",display:"inline-block",animation:"flowiConnBlink .75s ease-in-out infinite"}}/>
-      <span style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>작업 흐름</span>
-      <span style={{fontSize:14,color:"#737373"}}>공개 가능한 실행 단계 요약</span>
-    </div>
-    <div style={{display:"grid",gap:5}}>
-      {FLOWI_LIVE_STEPS.map(([label,detail],i)=>{
-        const done=i<step,active=i===step;
-        return <div key={label} style={{display:"grid",gridTemplateColumns:"18px 96px minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
-          <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:"1px solid "+(done?"#22c55e":active?"#f97316":"#333"),color:done?"#22c55e":active?"#f97316":"#737373"}}>{done?"✓":i+1}</span>
-          <span style={{color:active?"#f97316":done?"#d4d4d4":"#737373",fontWeight:active?900:700}}>{label}</span>
-          <span style={{color:active?"#d4d4d4":"#737373",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{detail}</span>
-        </div>;
-      })}
+      <span style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>처리 중</span>
+      <span style={{fontSize:14,color:"#f97316",fontWeight:800}}>{active[0]}</span>
+      <span style={{fontSize:14,color:"#737373",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{active[1]}</span>
     </div>
   </div>);
 }
 
 function FlowiTraceStrip({trace}){
   const steps=Array.isArray(trace?.steps)?trace.steps.filter(Boolean):[];
-  const visibleSteps=steps.filter(s=>s.visible!==false).slice(0,7);
+  const visibleSteps=steps.filter(s=>s.visible!==false);
   const activation=trace?.activation||{};
   const evidence=trace?.evidence||{};
   const validation=trace?.validation||{};
@@ -549,21 +595,12 @@ function FlowiTraceStrip({trace}){
     knowledge.length?[`Wiki ${knowledge.length}건`,"#f97316"]:null,
     llmStep?[`LLM ${llmStep.status||"pending"}`,flowiTraceStatusColor(llmStep.status)]:null,
   ].filter(Boolean);
-  return <div style={{margin:"0 0 8px",border:"1px solid #2a2a2a",borderRadius:8,background:"#101010",padding:"8px 9px",fontFamily:"monospace"}}>
-    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:7,flexWrap:"wrap"}}>
-      <div style={{fontSize:14,color:"#e5e5e5",fontWeight:900}}>공개 실행 흐름</div>
-      <div style={{fontSize:14,color:"#737373"}}>사고과정 원문 없이 단계, 근거, 결과 상태만 표시</div>
-    </div>
-    <div style={{display:"grid",gap:5}}>
-      {visibleSteps.map((s,i)=>{
-        const color=flowiTraceStatusColor(s.status);
-        const marker=s.status==="done"?"✓":(s.status==="blocked"||s.status==="error")?"!":i+1;
-        return <div key={s.key||i} style={{display:"grid",gridTemplateColumns:"18px minmax(86px,118px) minmax(0,1fr)",gap:7,alignItems:"baseline",fontSize:14,lineHeight:1.35}}>
-          <span style={{width:14,height:14,borderRadius:999,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:14,border:`1px solid ${color}99`,color}}>{marker}</span>
-          <span style={{color:"#d4d4d4",fontWeight:800,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={s.label||s.title||s.key}>{s.label||s.title||s.key}</span>
-          <span style={{color:"#8f8f8f",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={s.detail||""}>{s.detail||""}</span>
-        </div>;
-      })}
+  const primary=visibleSteps.find(s=>s.key==="knowledge")||visibleSteps.find(s=>s.key==="tool")||visibleSteps[visibleSteps.length-1]||{};
+  const primaryText=[primary.label||primary.title||primary.key,primary.detail].filter(Boolean).join(" · ");
+  return <div style={{margin:"10px 0 0",border:"1px solid #262626",borderRadius:8,background:"#101010",padding:"7px 9px",fontFamily:"monospace"}}>
+    <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
+      <span style={{fontSize:14,color:"#737373",fontWeight:900}}>실행 요약</span>
+      {primaryText&&<span style={{fontSize:14,color:"#a3a3a3",minWidth:0,flex:"1 1 260px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={primaryText}>{primaryText}</span>}
     </div>
     {chips.length>0&&<div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:7}}>
       {chips.slice(0,5).map(([label,color])=><span key={label} style={{fontSize:14,color,border:"1px solid #2a2a2a",borderRadius:999,padding:"2px 7px",background:"#151515",whiteSpace:"nowrap"}}>{label}</span>)}
@@ -908,7 +945,7 @@ function FlowiScatterResult({data}){
   if(data.kind==="dashboard_wafer_map"&&Array.isArray(data.points))return <FlowiWaferMapResult data={data}/>;
   const pts=Array.isArray(data.points)?data.points.filter(p=>Number.isFinite(Number(p.x))&&Number.isFinite(Number(p.y))):[];
   if(!pts.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:14,color:"#a3a3a3"}}>차트로 표시할 numeric point가 없습니다.</div>;
-  const W=520,H=300,pad={l:54,r:18,t:22,b:44};
+  const W=980,H=480,pad={l:70,r:28,t:28,b:58};
   const xs=pts.map(p=>Number(p.x)),ys=pts.map(p=>Number(p.y));
   const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
   const rx=maxX-minX||1,ry=maxY-minY||1;
@@ -919,29 +956,30 @@ function FlowiScatterResult({data}){
   const palette=["#3b82f6","#f97316","#22c55e","#eab308","#a855f7","#06b6d4","#ef4444","#84cc16","#ec4899","#14b8a6"];
   const colorValues=(Array.isArray(data.color_values)&&data.color_values.length?data.color_values.map(v=>String(v.value??"")).filter(Boolean):[...new Set(pts.map(p=>String(p.color_value??"")).filter(Boolean))]).slice(0,10);
   const colorMap=new Map(colorValues.map((v,i)=>[v,palette[i%palette.length]]));
-  const colorFor=(p)=>colorMap.get(String(p.color_value??""))||"#3b82f6";
-  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"10px 12px"}}>
-    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8}}>
-      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi scatter"}</div>
-      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>n={data.total||pts.length} · corr={data.corr??"-"}{fit?` · R²=${fit.r2}`:""}{data.color_by?` · color=${data.color_by}`:""}</div>
+  const missingColor=data.color_missing==="gray"?"#9ca3af":"#3b82f6";
+  const colorFor=(p)=>String(p.color_value??"")?colorMap.get(String(p.color_value??""))||"#3b82f6":missingColor;
+  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"12px 14px",minWidth:0}}>
+    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5",minWidth:0,flex:"1 1 320px",overflowWrap:"anywhere"}}>{data.title||"Flowi scatter"}</div>
+      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",minWidth:0,flex:"1 1 260px",textAlign:"right",overflowWrap:"anywhere"}}>n={data.total||pts.length} · corr={data.corr??"-"}{fit?` · R²=${fit.r2}`:""}{data.color_by?` · color=${data.color_by}`:""}</div>
     </div>
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block"}}>
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block",minHeight:360}}>
       {[0,0.5,1].map((f)=><g key={`y${f}`}>
         <line x1={pad.l} x2={W-pad.r} y1={pad.t+(H-pad.t-pad.b)*(1-f)} y2={pad.t+(H-pad.t-pad.b)*(1-f)} stroke="#333" strokeDasharray="3,4"/>
-        <text x={pad.l-8} y={pad.t+(H-pad.t-pad.b)*(1-f)+3} textAnchor="end" fontSize="9" fill="#a3a3a3">{(minY+ry*f).toFixed(2)}</text>
+        <text x={pad.l-10} y={pad.t+(H-pad.t-pad.b)*(1-f)+4} textAnchor="end" fontSize="11" fill="#a3a3a3">{(minY+ry*f).toFixed(2)}</text>
       </g>)}
       {[0,0.5,1].map((f)=><g key={`x${f}`}>
         <line y1={pad.t} y2={H-pad.b} x1={pad.l+(W-pad.l-pad.r)*f} x2={pad.l+(W-pad.l-pad.r)*f} stroke="#262626" strokeDasharray="2,5"/>
-        <text x={pad.l+(W-pad.l-pad.r)*f} y={H-20} textAnchor="middle" fontSize="9" fill="#a3a3a3">{(minX+rx*f).toFixed(2)}</text>
+        <text x={pad.l+(W-pad.l-pad.r)*f} y={H-28} textAnchor="middle" fontSize="11" fill="#a3a3a3">{(minX+rx*f).toFixed(2)}</text>
       </g>)}
       <line x1={pad.l} x2={W-pad.r} y1={H-pad.b} y2={H-pad.b} stroke="#525252"/>
       <line x1={pad.l} x2={pad.l} y1={pad.t} y2={H-pad.b} stroke="#525252"/>
       {fit&&<line x1={sx(x0)} y1={sy(y0)} x2={sx(x1)} y2={sy(y1)} stroke="#ef4444" strokeWidth="2" strokeDasharray="7,4"/>}
-      {pts.slice(0,500).map((p,i)=><circle key={i} cx={sx(p.x)} cy={sy(p.y)} r="3.2" fill={colorFor(p)} opacity="0.78">
+      {pts.slice(0,900).map((p,i)=><circle key={i} cx={sx(p.x)} cy={sy(p.y)} r="3.8" fill={colorFor(p)} opacity="0.78">
         <title>{`${p.label||p.join_key||""}\nX=${p.x}\nY=${p.y}${p.color_value?`\n${data.color_by||"color"}=${p.color_value}`:""}\nINLINE n=${p.inline_n||0}, ET n=${p.et_n||0}`}</title>
       </circle>)}
-      <text x={(pad.l+W-pad.r)/2} y={H-5} textAnchor="middle" fontSize="10" fill="#f97316">{data.x_label||"x"}</text>
-      <text x="12" y={(pad.t+H-pad.b)/2} transform={`rotate(-90,12,${(pad.t+H-pad.b)/2})`} textAnchor="middle" fontSize="10" fill="#f97316">{data.y_label||"y"}</text>
+      <text x={(pad.l+W-pad.r)/2} y={H-8} textAnchor="middle" fontSize="12" fill="#f97316">{data.x_label||"x"}</text>
+      <text x="16" y={(pad.t+H-pad.b)/2} transform={`rotate(-90,16,${(pad.t+H-pad.b)/2})`} textAnchor="middle" fontSize="12" fill="#f97316">{data.y_label||"y"}</text>
     </svg>
     <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>join {Array.isArray(data.join_cols)?data.join_cols.join("+"):"lot_wf"} · {data.join_how||"left"}</span>
@@ -958,21 +996,21 @@ function FlowiScatterResult({data}){
 function FlowiBoxResult({data}){
   const boxes=(Array.isArray(data.boxes)?data.boxes:[]).filter(b=>["min","q1","median","q3","max"].every(k=>Number.isFinite(Number(b[k])))).slice(0,18);
   if(!boxes.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:14,color:"#a3a3a3"}}>차트로 표시할 box 값이 없습니다.</div>;
-  const W=620,H=300,pad={l:54,r:20,t:22,b:66};
+  const W=900,H=420,pad={l:66,r:28,t:28,b:78};
   const vals=boxes.flatMap(b=>[Number(b.min),Number(b.max),Number(b.q1),Number(b.q3),Number(b.median)]);
   const minY=Math.min(...vals),maxY=Math.max(...vals),ry=maxY-minY||1;
   const sy=(v)=>pad.t+(H-pad.t-pad.b)-(Number(v)-minY)/ry*(H-pad.t-pad.b);
   const step=(W-pad.l-pad.r)/boxes.length;
   const boxW=Math.max(12,Math.min(34,step*.48));
-  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"10px 12px"}}>
-    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8}}>
-      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi box plot"}</div>
-      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>groups={data.total||boxes.length} · {data.metric||""}</div>
+  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"12px 14px"}}>
+    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5",minWidth:0,flex:"1 1 320px",overflowWrap:"anywhere"}}>{data.title||"Flowi box plot"}</div>
+      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",minWidth:0,flex:"1 1 220px",textAlign:"right",overflowWrap:"anywhere"}}>groups={data.total||boxes.length} · {data.metric||""}</div>
     </div>
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block"}}>
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block",minHeight:340}}>
       {[0,0.5,1].map(f=><g key={f}>
         <line x1={pad.l} x2={W-pad.r} y1={pad.t+(H-pad.t-pad.b)*(1-f)} y2={pad.t+(H-pad.t-pad.b)*(1-f)} stroke="#333" strokeDasharray="3,4"/>
-        <text x={pad.l-8} y={pad.t+(H-pad.t-pad.b)*(1-f)+3} textAnchor="end" fontSize="9" fill="#a3a3a3">{(minY+ry*f).toFixed(2)}</text>
+        <text x={pad.l-10} y={pad.t+(H-pad.t-pad.b)*(1-f)+4} textAnchor="end" fontSize="11" fill="#a3a3a3">{(minY+ry*f).toFixed(2)}</text>
       </g>)}
       <line x1={pad.l} x2={W-pad.r} y1={H-pad.b} y2={H-pad.b} stroke="#525252"/>
       <line x1={pad.l} x2={pad.l} y1={pad.t} y2={H-pad.b} stroke="#525252"/>
@@ -985,11 +1023,11 @@ function FlowiBoxResult({data}){
           <line x1={cx-boxW*.35} x2={cx+boxW*.35} y1={yMin} y2={yMin} stroke="#f97316" strokeWidth="1.4"/>
           <rect x={cx-boxW/2} y={Math.min(yQ1,yQ3)} width={boxW} height={Math.max(2,Math.abs(yQ3-yQ1))} rx="3" fill="#f9731633" stroke="#f97316" strokeWidth="1.4"/>
           <line x1={cx-boxW/2} x2={cx+boxW/2} y1={yMed} y2={yMed} stroke="#e5e5e5" strokeWidth="1.6"/>
-          <text x={cx} y={H-36} textAnchor="end" transform={`rotate(-38 ${cx} ${H-36})`} fontSize="9" fill="#a3a3a3">{String(b.label||"-").slice(0,14)}</text>
+          <text x={cx} y={H-42} textAnchor="end" transform={`rotate(-38 ${cx} ${H-42})`} fontSize="10" fill="#a3a3a3">{String(b.label||"-").slice(0,14)}</text>
           <title>{`${b.label||""}\nmin=${b.min}\nq1=${b.q1}\nmedian=${b.median}\nq3=${b.q3}\nmax=${b.max}\nmean=${b.mean??"-"}\nn=${b.n??"-"}`}</title>
         </g>;
       })}
-      <text x="12" y={(pad.t+H-pad.b)/2} transform={`rotate(-90,12,${(pad.t+H-pad.b)/2})`} textAnchor="middle" fontSize="10" fill="#f97316">{data.y_label||"value"}</text>
+      <text x="16" y={(pad.t+H-pad.b)/2} transform={`rotate(-90,16,${(pad.t+H-pad.b)/2})`} textAnchor="middle" fontSize="12" fill="#f97316">{data.y_label||"value"}</text>
     </svg>
     <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>
       <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>median / IQR</span>
@@ -1034,7 +1072,7 @@ function FlowiWaferMapResult({data}){
 function FlowiLineResult({data}){
   const series=(Array.isArray(data.series)?data.series:[]).map(s=>({...s,points:(Array.isArray(s.points)?s.points:[]).filter(p=>Number.isFinite(Number(p.y)))})).filter(s=>s.points.length);
   if(!series.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:14,color:"#a3a3a3"}}>차트로 표시할 trend point가 없습니다.</div>;
-  const W=620,H=300,pad={l:54,r:18,t:22,b:48};
+  const W=980,H=460,pad={l:70,r:28,t:28,b:62};
   const all=series.flatMap(s=>s.points.map((p,i)=>({...p,_i:i})));
   const ys=all.map(p=>Number(p.y));
   const minY=Math.min(...ys),maxY=Math.max(...ys),ry=maxY-minY||1;
@@ -1048,33 +1086,33 @@ function FlowiLineResult({data}){
     const p=pts[Math.max(0,Math.min(pts.length-1,idx))]||{};
     return p.x_label||p.bucket||String(p.x??idx);
   };
-  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"10px 12px"}}>
-    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8}}>
-      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi trend"}</div>
-      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>points={data.total||series[0].points.length} · {data.metric||""}</div>
+  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"12px 14px"}}>
+    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5",minWidth:0,flex:"1 1 320px",overflowWrap:"anywhere"}}>{data.title||"Flowi trend"}</div>
+      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",minWidth:0,flex:"1 1 220px",textAlign:"right",overflowWrap:"anywhere"}}>points={data.total||series[0].points.length} · {data.metric||""}</div>
     </div>
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block"}}>
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block",minHeight:350}}>
       {[0,0.5,1].map((f)=><g key={`y${f}`}>
         <line x1={pad.l} x2={W-pad.r} y1={pad.t+(H-pad.t-pad.b)*(1-f)} y2={pad.t+(H-pad.t-pad.b)*(1-f)} stroke="#333" strokeDasharray="3,4"/>
-        <text x={pad.l-8} y={pad.t+(H-pad.t-pad.b)*(1-f)+3} textAnchor="end" fontSize="9" fill="#a3a3a3">{(minY+ry*f).toFixed(2)}</text>
+        <text x={pad.l-10} y={pad.t+(H-pad.t-pad.b)*(1-f)+4} textAnchor="end" fontSize="11" fill="#a3a3a3">{(minY+ry*f).toFixed(2)}</text>
       </g>)}
       {[0,0.5,1].map((f)=>{
         const idx=Math.round((maxN-1)*f);
         return <g key={`x${f}`}>
           <line y1={pad.t} y2={H-pad.b} x1={sx(idx)} x2={sx(idx)} stroke="#262626" strokeDasharray="2,5"/>
-          <text x={sx(idx)} y={H-20} textAnchor="middle" fontSize="9" fill="#a3a3a3">{labelAt(idx)}</text>
+          <text x={sx(idx)} y={H-28} textAnchor="middle" fontSize="11" fill="#a3a3a3">{labelAt(idx)}</text>
         </g>;
       })}
       <line x1={pad.l} x2={W-pad.r} y1={H-pad.b} y2={H-pad.b} stroke="#525252"/>
       <line x1={pad.l} x2={pad.l} y1={pad.t} y2={H-pad.b} stroke="#525252"/>
       {series.map((s,si)=><g key={s.name||si}>
         <path d={pathFor(s.points)} fill="none" stroke={palette[si%palette.length]} strokeWidth="2.2"/>
-        {s.points.map((p,i)=><circle key={i} cx={sx(i)} cy={sy(p.y)} r="3" fill={palette[si%palette.length]} opacity=".9">
+        {s.points.map((p,i)=><circle key={i} cx={sx(i)} cy={sy(p.y)} r="3.7" fill={palette[si%palette.length]} opacity=".9">
           <title>{`${p.x_label||p.bucket||p.x}\n${s.name||data.metric||"value"}=${p.y}\nmean=${p.mean??"-"}\nn=${p.n??"-"}\nwafer_groups=${p.wafer_groups??"-"}`}</title>
         </circle>)}
       </g>)}
-      <text x={(pad.l+W-pad.r)/2} y={H-5} textAnchor="middle" fontSize="10" fill="#f97316">{data.x_label||"x"}</text>
-      <text x="12" y={(pad.t+H-pad.b)/2} transform={`rotate(-90,12,${(pad.t+H-pad.b)/2})`} textAnchor="middle" fontSize="10" fill="#f97316">{data.y_label||"y"}</text>
+      <text x={(pad.l+W-pad.r)/2} y={H-8} textAnchor="middle" fontSize="12" fill="#f97316">{data.x_label||"x"}</text>
+      <text x="16" y={(pad.t+H-pad.b)/2} transform={`rotate(-90,16,${(pad.t+H-pad.b)/2})`} textAnchor="middle" fontSize="12" fill="#f97316">{data.y_label||"y"}</text>
     </svg>
     <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>
       {series.map((s,si)=><span key={s.name||si} style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px",display:"inline-flex",alignItems:"center",gap:5}}>
@@ -1089,15 +1127,15 @@ function FlowiLineResult({data}){
 function FlowiGroupBarResult({data}){
   const groups=(Array.isArray(data.groups)?data.groups:[]).map(g=>({...g,value:Number(g.value??g.median??g.mean)})).filter(g=>Number.isFinite(g.value)).slice(0,24);
   if(!groups.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:14,color:"#a3a3a3"}}>차트로 표시할 group 값이 없습니다.</div>;
-  const W=620,H=Math.max(260,groups.length*24+58),pad={l:148,r:64,t:18,b:30};
+  const W=920,H=Math.max(340,groups.length*28+76),pad={l:174,r:78,t:24,b:38};
   const minV=Math.min(0,...groups.map(g=>g.value)),maxV=Math.max(...groups.map(g=>g.value));
   const rv=maxV-minV||1;
   const sx=(v)=>pad.l+(Number(v)-minV)/rv*(W-pad.l-pad.r);
   const rowH=(H-pad.t-pad.b)/groups.length;
-  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"10px 12px"}}>
-    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8}}>
-      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5"}}>{data.title||"Flowi group chart"}</div>
-      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>groups={data.total||groups.length} · {data.metric||""}</div>
+  return(<div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"12px 14px"}}>
+    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+      <div style={{fontSize:14,fontWeight:900,color:"#e5e5e5",minWidth:0,flex:"1 1 320px",overflowWrap:"anywhere"}}>{data.title||"Flowi group chart"}</div>
+      <div style={{fontSize:14,color:"#a3a3a3",fontFamily:"monospace",minWidth:0,flex:"1 1 220px",textAlign:"right",overflowWrap:"anywhere"}}>groups={data.total||groups.length} · {data.metric||""}</div>
     </div>
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{display:"block"}}>
       {[0,0.5,1].map(f=><g key={f}>
@@ -1277,7 +1315,7 @@ export default function My_Home({onNavigate,user}){
     return (!c.adminOnly||isAdmin||delegated)&&(hasTab(c.key)||delegated);
   });
 
-  return(<div style={{minHeight:"calc(100vh - 52px)",padding:"32px 32px 96px",background:"var(--bg-primary,#1a1a1a)",color:"var(--text-primary,#e5e5e5)",fontFamily:"'Pretendard',sans-serif",maxWidth:flowiActive?1360:1040,margin:"0 auto",transition:"max-width .24s ease"}}>
+  return(<div style={{minHeight:"calc(100vh - 52px)",width:"100%",boxSizing:"border-box",padding:flowiActive?"20px 12px 96px":"32px 32px 96px",background:"var(--bg-primary,#1a1a1a)",color:"var(--text-primary,#e5e5e5)",fontFamily:"'Pretendard',sans-serif",maxWidth:flowiActive?"min(1760px, calc(100vw - 24px))":1040,margin:"0 auto",transition:"max-width .24s ease,padding .24s ease"}}>
     {/* v8.3.3: Home brand logo — shared BrandLogo.jsx, size="home" retains .home-brand-logo marker. */}
     <BrandLogo size="home"/>
     {/* Terminal header */}
@@ -1286,9 +1324,9 @@ export default function My_Home({onNavigate,user}){
         <div style={{display:"flex",gap:6}}><div style={{width:10,height:10,borderRadius:"50%",background:"#ef4444"}}/><div style={{width:10,height:10,borderRadius:"50%",background:"#fbbf24"}}/><div style={{width:10,height:10,borderRadius:"50%",background:"#22c55e"}}/></div>
         <span style={{fontSize:14,color:"#525252",fontFamily:"monospace",marginLeft:6}}>flow-i console</span>
       </div>
-      <div style={{display:"flex",gap:20,padding:"20px 24px",alignItems:"flex-start"}}>
-        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,flexShrink:0}}><Holli size={72}/><span style={{fontSize:14,color:"#f97316",fontFamily:"monospace",letterSpacing:"0.12em",fontWeight:700}}>flow-i</span></div>
-        <div style={{flex:1,paddingTop:4}}>
+      <div style={{display:"flex",gap:flowiActive?16:20,padding:flowiActive?"16px 18px":"20px 24px",alignItems:"flex-start"}}>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,flexShrink:0}}><Holli size={flowiActive?60:72}/><span style={{fontSize:14,color:"#f97316",fontFamily:"monospace",letterSpacing:"0.12em",fontWeight:700}}>flow-i</span></div>
+        <div style={{flex:"1 1 auto",minWidth:0,paddingTop:4}}>
           <div style={{marginTop:6,fontFamily:"'JetBrains Mono',monospace",fontSize:14}}><span style={{color:"#f97316"}}>{">"}</span><span style={{color:"#737373"}}> </span><WelcomeType name={user?.username||"user"}/></div>
           <FlowiConsole onNavigate={nav} user={user} onActiveChange={setFlowiActive}/>
         </div>

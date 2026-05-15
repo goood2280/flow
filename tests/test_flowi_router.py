@@ -752,6 +752,66 @@ def test_flowi_inline_trend_uses_wiki_rule_scatter_lot_wf_avg(tmp_path, monkeypa
     assert "dashboard_chart_generation_rules" in [row["id"] for row in out["retrieved_knowledge"]]
 
 
+def test_flowi_inline_trend_asks_grain_then_draws_shot_with_knob_gray(tmp_path, monkeypatch):
+    inline_fp = tmp_path / "inline.parquet"
+    ml_fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "AA100570", "wafer_id": "01", "item_id": "16.0 VIA2", "subitem_id": "SHOT01", "value": 10.0, "tkout_time": "2026-05-01T10:00:00"},
+        {"product": "PRODA", "root_lot_id": "AA100570", "wafer_id": "01", "item_id": "16.0 VIA2", "subitem_id": "SHOT02", "value": 12.0, "tkout_time": "2026-05-01T10:00:00"},
+        {"product": "PRODA", "root_lot_id": "AA100570", "wafer_id": "02", "item_id": "16.0 VIA2", "subitem_id": "SHOT01", "value": 20.0, "tkout_time": "2026-05-01T10:05:00"},
+    ]).write_parquet(inline_fp)
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "AA100570", "wafer_id": "01", "KNOB_24.0 SORT": "PPID_A"},
+    ]).write_parquet(ml_fp)
+    monkeypatch.setattr(llm_router, "_inline_files", lambda _product: [inline_fp])
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+
+    prompt = "PRODA AA100570 16.0 VIA2 Trend 그려줘. color는 24.0 SORT KNOB으로 해주고 해당 KNOB이 없는거는 회색으로 해줘"
+    first = _run_flowi_chat(
+        prompt=prompt,
+        product="",
+        max_rows=12,
+        me={"username": "hol", "role": "admin"},
+    )
+
+    assert first["tool"]["intent"] == "dashboard_inline_trend_needs_grain"
+    assert first["tool"]["missing"] == ["chart_grain"]
+    assert first["needs_input"] is True
+    assert first["trace"]["interpretation"]["filled_slots"]["metric"] == "16.0 VIA2"
+    assert first["tool"]["clarification"]["choices"][1]["value"] == "shot"
+
+    ctx = {"messages": [
+        {"role": "user", "prompt": prompt},
+        {
+            "role": "assistant",
+            "intent": first["tool"]["intent"],
+            "feature": first["tool"]["feature"],
+            "action": first["tool"]["action"],
+            "missing": first["tool"]["missing"],
+            "pending_prompt": first["tool"]["pending_prompt"],
+            "workflow_state": first["workflow_state"],
+        },
+    ]}
+    second = _run_flowi_chat(
+        prompt="shot으로 그려줘",
+        product="",
+        max_rows=12,
+        me={"username": "hol", "role": "admin"},
+        agent_context=ctx,
+    )
+
+    chart = second["tool"]["chart_result"]
+    assert second["tool"]["intent"] == "dashboard_inline_trend_chart"
+    assert chart["grain"] == "shot"
+    assert chart["x_col"] == "tkout_time"
+    assert chart["color_by"] == "24.0 SORT"
+    assert chart["color_missing"] == "gray"
+    assert any(point["shot_id"] == "SHOT01" for point in chart["points"])
+    assert any(point["color_value"] == "" for point in chart["points"])
+
+
 def test_flowi_inline_et_corr_scatter_prefers_dashboard_over_diagnosis(tmp_path, monkeypatch):
     inline_fp = tmp_path / "inline.parquet"
     et_fp = tmp_path / "et.parquet"
@@ -1011,6 +1071,51 @@ def test_flowi_knob_table_prompt_prefers_mltable_and_traces_term_resolution(tmp_
     assert any("schema:KNOB_*" in row.get("wiki_refs", []) for row in term_rows if row["token"] == "KNOB")
 
 
+def test_flowi_wiki_pre_route_slang_routes_to_knob_query(tmp_path, monkeypatch):
+    ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
+    pl.DataFrame([
+        {"product": "PRODX", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "01", "KNOB_23.0 RELIABILITY": "REL_A"},
+        {"product": "PRODX", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "02", "KNOB_23.0 RELIABILITY": "REL_B"},
+    ]).write_parquet(ml_fp)
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+
+    def fake_lookup_term(term, limit=6):
+        if str(term).strip() != "릴":
+            return {"term": term, "columns": [], "docs": [], "graph": {"nodes": [], "edges": []}}
+        return {
+            "term": term,
+            "columns": [{
+                "relation_id": "ML_TABLE_PRODX",
+                "column": "KNOB_23.0 RELIABILITY",
+                "canonical_alias": "릴 reliability split",
+                "wiki_doc_id": "wiki_reliability_slang",
+            }],
+            "docs": [{
+                "doc_id": "wiki_reliability_slang",
+                "kind": "schema_doc",
+                "title": "릴 은어",
+                "summary": "릴은 KNOB_23.0 RELIABILITY를 뜻한다.",
+                "relation_id": "ML_TABLE_PRODX",
+                "column_refs": ["ML_TABLE_PRODX.KNOB_23.0 RELIABILITY"],
+            }],
+            "graph": {"nodes": [], "edges": []},
+        }
+
+    monkeypatch.setattr(llm_router.kv, "lookup_term", fake_lookup_term)
+
+    out = _handle_flowi_query("A1001 릴 보여줘", "", 12, allowed_keys={"splittable"})
+
+    assert out["handled"] is True
+    assert out["feature"] == "splittable"
+    assert out["action"] == "query_lot_knobs_from_ml_table"
+    assert out["filters"]["root_lot_ids"] == ["A1001"]
+    assert out["table"]["kind"] == "splittable_preview"
+    assert out["table"]["rows"][0]["23.0 RELIABILITY"] == "REL_A"
+    assert out["wiki_interpretation"]["pre_route"] is True
+    assert any(row["id"] == "wiki_reliability_slang" for row in out["retrieved_knowledge"])
+    assert any(row["token"] == "릴" and row["status"] == "wiki_pre_route" for row in out["term_resolution"])
+
+
 def test_flowi_splittable_plan_mismatch_returns_split_view(tmp_path, monkeypatch):
     ml_fp = tmp_path / "ML_TABLE_PRODX.parquet"
     pl.DataFrame([
@@ -1174,6 +1279,74 @@ def test_flowi_knob_value_fastest_wf_uses_lot_wf_progress_cache(tmp_path, monkey
     assert out["table"]["rows"][0]["current_func_step"] == "METAL"
     assert out["table"]["rows"][0]["progress_source"] == "filebrowser_latest"
     assert "가장 앞선 후보" in out["answer"]
+
+
+def test_flowi_knob_value_fastest_asks_product_then_uses_progress_cache(tmp_path, monkeypatch):
+    from core import lot_progress_cache as progress_cache
+
+    ml_fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1000", "wafer_id": "21", "func_step": "24.0 SORT", "KNOB_SORT": "PPID_24_1"},
+        {"product": "PRODA", "root_lot_id": "A1001", "wafer_id": "5", "func_step": "24.0 SORT", "KNOB_SORT": "PPID_24_1"},
+    ]).write_parquet(ml_fp)
+    latest = tmp_path / "cache" / "lot_progress_latest_lot_by_root_wafer.parquet"
+    latest.parent.mkdir()
+    pl.DataFrame({
+        "product": ["ML_TABLE_PRODA", "ML_TABLE_PRODA"],
+        "root_lot_id": ["A1000", "A1001"],
+        "wafer_id": ["21", "5"],
+        "lot_id": ["A1000A.3", "A1001A.9"],
+        "step_id": ["AA100100", "AA100500"],
+        "function_step": ["STI", "METAL"],
+        "tkout_time": ["2026-05-08T10:00:00", "2026-05-08T11:00:00"],
+    }).write_parquet(latest)
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+    monkeypatch.setattr(llm_router, "_db_root_candidates", lambda _kind: [])
+    monkeypatch.setattr(progress_cache, "filebrowser_cache_parquet_file", lambda: latest)
+    monkeypatch.setattr(progress_cache, "load_lot_progress_cache", lambda max_age_seconds=None: {"items": []})
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+
+    prompt = "24.0 SORT KNOB이 PPID_24_1인 LOT_WF 중에서 뭐가 가장 빨리 있어?"
+    first = _run_flowi_chat(
+        prompt=prompt,
+        product="",
+        max_rows=12,
+        me={"username": "hol", "role": "admin"},
+    )
+
+    assert first["tool"]["action"] == "find_lots_by_knob_value"
+    assert first["tool"]["missing"] == ["product"]
+    assert first["needs_input"] is True
+    assert "product" in first["answer"]
+
+    ctx = {"messages": [
+        {"role": "user", "prompt": prompt},
+        {
+            "role": "assistant",
+            "intent": first["tool"]["intent"],
+            "feature": first["tool"]["feature"],
+            "action": first["tool"]["action"],
+            "missing": first["tool"]["missing"],
+            "pending_prompt": first["tool"]["pending_prompt"],
+            "workflow_state": first["workflow_state"],
+        },
+    ]}
+    second = _run_flowi_chat(
+        prompt="PRODA",
+        product="",
+        max_rows=12,
+        me={"username": "hol", "role": "admin"},
+        agent_context=ctx,
+    )
+
+    assert second["tool"]["intent"] == "knob_value_lot_search"
+    assert second["tool"]["table"]["rows"][0]["lot_wf"] == "A1001_5"
+    assert second["tool"]["table"]["rows"][0]["current_step"] == "AA100500"
+    assert second["tool"]["table"]["rows"][0]["current_func_step"] == "METAL"
+    assert "function_step=METAL" in second["answer"]
+    term_rows = second["trace"]["interpretation"]["term_resolution"]
+    assert any(row["token"] == "가장 빠른" and "function_step" in row["query_filter"] for row in term_rows)
 
 
 def test_flowi_fab_eqp_lookup_maps_function_step(tmp_path, monkeypatch):
@@ -2067,6 +2240,42 @@ def test_flowi_gpt_oss_120b_style_inform_lot_only_asks_slots_to_result(tmp_path,
     assert saved[0]["lot_id"] == "A1003B.2"
     assert saved[0]["root_lot_id"] == "A1003"
     assert saved[0]["text"] == "모듈 전달 테스트"
+
+
+def test_flowi_gpt_oss_120b_polish_malformed_falls_back(monkeypatch):
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router, "_profile_context", lambda _username: "")
+    monkeypatch.setattr(llm_router, "_feature_context", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_router.llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {"ok": True, "text": "intent=custom_read\naction=query_custom\nschema_id=internal\n이 값으로 실행했습니다."},
+    )
+    monkeypatch.setattr(
+        llm_router,
+        "_handle_flowi_query",
+        lambda *_args, **_kwargs: {
+            "handled": True,
+            "intent": "custom_read",
+            "action": "query_custom",
+            "answer": "서버 deterministic 답변입니다.",
+            "feature": "filebrowser",
+            "table": {"kind": "custom_preview", "rows": [], "total": 0},
+        },
+    )
+
+    out = _run_flowi_chat(
+        prompt="사내 모델 fallback 확인",
+        product="",
+        max_rows=12,
+        me={"username": "hol", "role": "admin"},
+    )
+
+    assert out["answer"] == "서버 deterministic 답변입니다."
+    assert out["llm"]["used"] is False
+    assert out["llm"]["error"] == "polish_format_violation"
+    assert out["llm"]["fallback"] == "deterministic_answer"
 
 
 def test_flowi_fab_step_eta_estimates_from_historical_lots(tmp_path, monkeypatch):

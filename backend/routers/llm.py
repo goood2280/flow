@@ -435,7 +435,7 @@ FLOWI_FEATURE_ALIASES = {
     "tablemap": ["table map", "tablemap", "테이블맵", "관계", "relation", "join", "column map", "컬럼"],
     "devguide": ["devguide", "개발", "api", "문서", "가이드", "architecture"],
 }
-FLOWI_CORE_AGENT_FEATURES = ("filebrowser", "splittable", "inform")
+FLOWI_CORE_AGENT_FEATURES = ("filebrowser", "splittable", "inform", "dashboard")
 FLOWI_CORE_FEATURE_TERMS = {
     "filebrowser": (
         "파일탐색기", "파일 탐색기", "filebrowser", "file browser", "files", "parquet", "csv",
@@ -1519,6 +1519,8 @@ def _flowi_knob_value_token(prompt: str) -> str:
     for pat in (
         r"(?<![A-Za-z0-9_])(PPID_\d+_\d+)(?![A-Za-z0-9_])",
         r"(?:knob_value|KNOB_VALUE|값|value)\s*[:=]\s*([A-Za-z0-9_.-]+)",
+        r"(?:KNOB|knob|노브|값|value)\s*(?:이|가|은|는)?\s*([A-Za-z0-9_.-]+)\s*인\s*(?:LOT_WF|lot_wf|WF|WAFER|웨이퍼|LOT|자재)",
+        r"\b([A-Za-z0-9_.-]+)\s*인\s*(?:LOT_WF|lot_wf|WF|WAFER|웨이퍼|LOT|자재)",
         r"\b([A-Za-z0-9_.-]+)\s*인\s*자재",
     ):
         m = re.search(pat, text, flags=re.I)
@@ -2237,7 +2239,7 @@ def _flowi_function_schema(name: str) -> dict[str, Any]:
         },
         "find_lots_by_knob_value": {
             "description": "특정 step에서 특정 KNOB value를 받은 lot/wafer를 찾아 FAB 진행 위치와 join한다.",
-            "required": ["step", "knob_value"],
+            "required": ["product", "step", "knob_value"],
         },
         "query_metric_at_step": {
             "description": "lot/wafer/function step 조건에서 ET/INLINE 측정 metric을 집계한다.",
@@ -2392,7 +2394,7 @@ def _structure_flowi_function_call(prompt: str, product: str = "", max_rows: int
         arguments["agg"] = agg
     if knob_value:
         arguments["knob_value"] = knob_value
-        arguments["sort"] = "earliest_progress" if any(t in text for t in ("가장 빠", "제일 빠", "빠른")) else "latest_progress"
+        arguments["sort"] = "earliest_progress" if any(t in text for t in ("가장 빠", "가장 빨", "제일 빠", "제일 빨", "빠른", "빨리")) else "latest_progress"
     if module:
         arguments["module"] = module
     if split_set:
@@ -3483,8 +3485,15 @@ def _product_aliases(product: str) -> set[str]:
 def _product_hint(prompt: str, explicit: str = "") -> str:
     if explicit:
         return explicit
+    field_match = re.search(r"(?:product|제품)\s*[:=]\s*([A-Za-z0-9_][A-Za-z0-9_.-]*)", str(prompt or ""), flags=re.I)
+    if field_match:
+        candidate = _upper(field_match.group(1))
+        if candidate and candidate not in {"PRODUCT", "PRODUCTS", "PROD"}:
+            return candidate
     toks = _tokens(prompt)
     for tok in toks:
+        if tok in {"PRODUCT", "PRODUCTS", "PROD"}:
+            continue
         if tok.startswith(("ML_TABLE_", "PRODUCT_", "PROD")):
             return tok
     configured = _configured_product_names()
@@ -4040,6 +4049,228 @@ def attach_term_knowledge(prompt: str, tool: dict[str, Any]) -> dict[str, Any]:
     return tool
 
 
+def _flowi_wiki_candidate_terms(prompt: str, limit: int = 12) -> list[str]:
+    text = str(prompt or "")
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: Any) -> None:
+        term = re.sub(r"\s+", " ", str(raw or "").strip(" .,;:()[]{}\"'"))
+        if not term:
+            return
+        key = term.casefold()
+        if key in seen:
+            return
+        term_u = _upper(term)
+        if term_u in _STOP_TOKENS or term_u in _FLOWI_NON_LOT_TOKENS:
+            return
+        if re.fullmatch(r"\d+(?:\.\d+)?", term):
+            return
+        if _is_root_lot_token(term_u) or _is_fab_lot_token(term_u) or _is_product_token(term_u):
+            return
+        if len(term) < 2 and not re.fullmatch(r"[가-힣]", term):
+            return
+        seen.add(key)
+        terms.append(term)
+
+    for tok in _tokens(text):
+        add(tok)
+    for word in re.findall(r"[가-힣][가-힣0-9_]*", text):
+        add(word)
+    step = _flowi_func_step_token(text)
+    if step:
+        add(step)
+
+    parts = [
+        m.group(0)
+        for m in re.finditer(r"[A-Za-z][A-Za-z0-9_.-]*|[가-힣][가-힣0-9_]*", text)
+        if _upper(m.group(0)) not in _STOP_TOKENS
+    ]
+    for size in (3, 2):
+        for idx in range(0, max(0, len(parts) - size + 1)):
+            phrase = " ".join(parts[idx:idx + size])
+            if len(phrase) <= 80:
+                add(phrase)
+
+    return terms[:max(1, min(limit, 24))]
+
+
+def _flowi_wiki_relation_product(relation_id: str) -> str:
+    relation = str(relation_id or "").strip()
+    if _upper(relation).startswith("ML_TABLE_"):
+        return relation[len("ML_TABLE_"):]
+    return ""
+
+
+def _flowi_wiki_column_hints(row: dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+
+    def add(raw: Any) -> None:
+        value = str(raw or "").strip()
+        if value and value not in hints:
+            hints.append(value[:120])
+
+    relation = str(row.get("relation_id") or "").strip()
+    column = str(row.get("column") or "").strip()
+    alias = str(row.get("canonical_alias") or "").strip()
+    relation_u = _upper(relation)
+    column_u = _upper(column)
+    product = _flowi_wiki_relation_product(relation)
+    if product:
+        add(product)
+        add("ML_TABLE")
+    for group in ("KNOB", "MASK", "INLINE", "VM", "FAB", "ET", "EDS", "QTIME"):
+        if column_u.startswith(f"{group}_") or relation_u == group or relation_u.startswith(f"{group}_"):
+            add(group)
+    add(column)
+    if alias and _upper(alias) != column_u:
+        add(alias)
+    for key in ("raw_names", "sample_values"):
+        values = row.get(key) if isinstance(row.get(key), list) else []
+        for value in values[:3]:
+            add(value)
+    return hints[:10]
+
+
+def _flowi_wiki_prompt_interpretation(prompt: str) -> dict[str, Any]:
+    """Resolve company slang/domain terms before deterministic routing."""
+    prompt_text = str(prompt or "")
+    if not prompt_text.strip():
+        return {"pre_route": False}
+    additions: list[dict[str, Any]] = []
+    term_rows: list[dict[str, Any]] = []
+    hint_tokens: list[str] = []
+    lookup_terms: list[str] = []
+
+    def add_hint(raw: Any) -> None:
+        value = str(raw or "").strip()
+        if not value:
+            return
+        if value not in hint_tokens:
+            hint_tokens.append(value[:120])
+
+    for term in _flowi_wiki_candidate_terms(prompt_text, limit=12):
+        try:
+            found = kv.lookup_term(term, limit=6)
+        except Exception as exc:
+            logger.debug("flowi pre-route wiki lookup failed for %s: %s", term, exc)
+            continue
+        columns = [row for row in (found.get("columns") or []) if isinstance(row, dict)]
+        docs = [row for row in (found.get("docs") or []) if isinstance(row, dict)]
+        if not columns and not docs:
+            continue
+        lookup_terms.append(term)
+        for row in columns[:4]:
+            relation = str(row.get("relation_id") or "").strip()
+            column = str(row.get("column") or "").strip()
+            if not column:
+                continue
+            item_id = f"column:{relation}.{column}" if relation else f"column:{column}"
+            doc_id = str(row.get("wiki_doc_id") or item_id)
+            title = f"{relation}.{column}" if relation else column
+            additions.append({
+                "id": item_id,
+                "doc_id": doc_id,
+                "kind": "column_catalog",
+                "title": title,
+                "summary": row.get("canonical_alias") or row.get("dtype") or "",
+                "term": term,
+                "relation_id": relation,
+                "column": column,
+                "source": "column_catalog_pre_route",
+            })
+            for hint in _flowi_wiki_column_hints(row):
+                add_hint(hint)
+            refs = [item_id]
+            if doc_id and doc_id != item_id:
+                refs.append(doc_id)
+            term_rows.append({
+                "token": term,
+                "meaning": row.get("canonical_alias") or title,
+                "wiki_refs": refs,
+                "query_filter": title,
+                "status": "wiki_pre_route",
+            })
+        for doc in docs[:3]:
+            doc_id = str(doc.get("doc_id") or "").strip()
+            if not doc_id:
+                continue
+            additions.append({
+                "id": doc_id,
+                "doc_id": doc_id,
+                "kind": doc.get("kind") or "wiki_doc",
+                "title": doc.get("title") or doc_id,
+                "summary": doc.get("summary") or "",
+                "term": term,
+                "source": "agent_wiki_pre_route",
+                "relation_id": doc.get("relation_id") or "",
+            })
+            relation = str(doc.get("relation_id") or "").strip()
+            if relation:
+                add_hint(_flowi_wiki_relation_product(relation))
+                add_hint(relation)
+            for ref in (doc.get("column_refs") or [])[:6]:
+                ref_text = str(ref or "").strip()
+                if not ref_text:
+                    continue
+                add_hint(ref_text.split(".", 1)[1] if "." in ref_text else ref_text)
+            tags = doc.get("tags") if isinstance(doc.get("tags"), list) else []
+            for tag in tags[:6]:
+                tag_u = _upper(tag)
+                if tag_u in {"KNOB", "MASK", "FAB", "INLINE", "VM", "ET", "EDS", "ML_TABLE"}:
+                    add_hint(tag_u)
+            term_rows.append({
+                "token": term,
+                "meaning": doc.get("summary") or doc.get("title") or doc_id,
+                "wiki_refs": [doc_id],
+                "query_filter": str(doc.get("relation_id") or ", ".join(doc.get("column_refs") or []))[:300],
+                "status": "wiki_pre_route",
+            })
+
+    hints = [h for h in hint_tokens if h]
+    augmented = prompt_text
+    if hints:
+        augmented = prompt_text + "\n" + " ".join(hints[:24])
+    return {
+        "pre_route": bool(additions or term_rows or hints),
+        "terms": lookup_terms[:12],
+        "prompt_hints": hints[:24],
+        "retrieved_knowledge": _merge_retrieved_knowledge([], additions),
+        "term_resolution": term_rows[:16],
+        "augmented_prompt": augmented,
+    }
+
+
+def _flowi_apply_wiki_prompt_interpretation(tool: dict[str, Any], interpretation: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(tool, dict) or not isinstance(interpretation, dict) or not interpretation.get("pre_route"):
+        return tool
+    additions = interpretation.get("retrieved_knowledge") if isinstance(interpretation.get("retrieved_knowledge"), list) else []
+    if additions:
+        tool["retrieved_knowledge"] = _merge_retrieved_knowledge(tool.get("retrieved_knowledge"), additions)
+    existing_terms = tool.get("term_resolution") if isinstance(tool.get("term_resolution"), list) else []
+    merged_terms: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in [*(interpretation.get("term_resolution") or []), *existing_terms]:
+        if not isinstance(item, dict):
+            continue
+        token = str(item.get("token") or item.get("term") or "").strip()
+        query_filter = str(item.get("query_filter") or "").strip()
+        key = (token.casefold(), query_filter.casefold())
+        if not token or key in seen:
+            continue
+        seen.add(key)
+        merged_terms.append(item)
+    if merged_terms:
+        tool["term_resolution"] = merged_terms[:20]
+    tool["wiki_interpretation"] = {
+        "pre_route": True,
+        "terms": interpretation.get("terms") or [],
+        "prompt_hints": interpretation.get("prompt_hints") or [],
+        "source": "agent_wiki_schema",
+    }
+    return tool
+
+
 def _invoke_subagent(
     name: str,
     handler: Any,
@@ -4176,7 +4407,8 @@ def _augment_dashboard_tool(tool: dict[str, Any], prompt: str, product: str = ""
             missing.extend(str(x) for x in raw_missing if str(x or "").strip())
     missing = list(dict.fromkeys(missing))
     if missing:
-        tool["intent"] = "dashboard_chart_draft_needs_context"
+        if not (tool.get("intent") and str(tool.get("action") or "") == "collect_required_fields"):
+            tool["intent"] = "dashboard_chart_draft_needs_context"
         tool["action"] = "collect_required_fields"
         tool["missing"] = missing
         tool.setdefault("question", f"{_dashboard_chart_label(chart_type)} 생성을 계속하려면 {', '.join(missing)} 값을 보완해 주세요.")
@@ -4422,6 +4654,15 @@ def _explicit_shot_grain(prompt: str) -> bool:
     low = text.lower()
     return any(term in low or term in text for term in (
         "shot", "die", "map", "좌표", "샷", "다이", "맵", "raw point", "raw-point",
+    ))
+
+
+def _explicit_lot_wf_grain(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return any(term in low or term in text for term in (
+        "lot_wf", "lot wf", "wafer avg", "wf avg", "wafer 평균", "wf 평균",
+        "lot_wf avg", "lot-wf", "웨이퍼 평균", "와퍼 평균",
     ))
 
 
@@ -5683,6 +5924,25 @@ def _is_trend_chart_request(prompt: str) -> bool:
     return any(re.search(rf"(?<![a-z0-9_]){term}(?![a-z0-9_])", low) for term in ("trend", "line"))
 
 
+def _flowi_chart_lot_tokens(prompt: str) -> list[str]:
+    lots = list(_lot_tokens(prompt))
+    seen = {_upper(v) for v in lots}
+    if not _product_hint(prompt):
+        return lots
+    text = str(prompt or "")
+    step = _flowi_func_step_token(text)
+    step_pos = _upper(text).find(_upper(step)) if step else -1
+    for m in re.finditer(r"(?<![A-Za-z0-9_.-])([A-Z]{2,5}\d{4,})(?![A-Za-z0-9_.-])", text, flags=re.I):
+        tok = _upper(m.group(1))
+        if tok in seen or _is_product_token(tok):
+            continue
+        if step_pos >= 0 and m.start() > step_pos:
+            continue
+        seen.add(tok)
+        lots.append(tok)
+    return lots
+
+
 def _is_box_chart_request(prompt: str) -> bool:
     text = str(prompt or "")
     low = text.lower()
@@ -6033,6 +6293,9 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
     item_col = _ci_col(cols, "item_id", "ITEM_ID", "rawitem_id", "RAWITEM_ID", "item", "ITEM")
     value_col = _ci_col(cols, "value", "VALUE", "_value", "val", "VAL")
     time_col = _ci_col(cols, "tkout_time", "TKOUT_TIME", "time", "TIME", "tkin_time", "TKIN_TIME", "date", "DATE")
+    shot_id_col = _ci_col(cols, "subitem_id", "SUBITEM_ID", "shot_id", "SHOT_ID")
+    shot_x_col = _ci_col(cols, "shot_x", "SHOT_X", "die_x", "DIE_X")
+    shot_y_col = _ci_col(cols, "shot_y", "SHOT_Y", "die_y", "DIE_Y")
     if not item_col or not value_col or not time_col:
         return {
             "handled": True,
@@ -6060,8 +6323,60 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
             "feature": "dashboard",
             "table": {"kind": "inline_item_candidates", "title": "INLINE item candidates", "placement": "below", "columns": _table_columns(["item_id"]), "rows": [{"item_id": x} for x in item_candidates], "total": len(item_candidates)},
         }
+    has_shot_grain = bool(shot_id_col or (shot_x_col and shot_y_col))
+    include_shot = _explicit_shot_grain(text)
+    explicit_lot_wf = _explicit_lot_wf_grain(text)
+    if has_shot_grain and not include_shot and not explicit_lot_wf:
+        return {
+            "handled": True,
+            "intent": "dashboard_inline_trend_needs_grain",
+            "action": "collect_required_fields",
+            "answer": (
+                f"{product_hint} {metric}은 INLINE item으로 해석했고 Trend x축은 tkout_time 기준입니다. "
+                "INLINE grain을 선택해야 합니다."
+            ),
+            "missing": ["chart_grain"],
+            "feature": "dashboard",
+            "pending_prompt": text,
+            "last_partial_prompt": text,
+            "slots": {
+                "product": product_hint,
+                "metric": metric,
+                "source_type": "INLINE",
+                "x_col": "tkout_time",
+                "color_by": "KNOB" if ("KNOB" in _upper(text) or "노브" in text) else "",
+            },
+            "clarification": {
+                "question": "INLINE Trend를 어떤 grain으로 그릴까요?",
+                "choices": [
+                    {
+                        "id": "lot_wf",
+                        "label": "1",
+                        "title": "lot_wf avg",
+                        "value": "lot_wf",
+                        "recommended": True,
+                        "description": "root_lot_id+wafer_id별 value 평균을 tkout_time x축에 표시합니다.",
+                        "prompt": f"{text} grain: lot_wf",
+                    },
+                    {
+                        "id": "shot",
+                        "label": "2",
+                        "title": "shot 전체",
+                        "value": "shot",
+                        "recommended": False,
+                        "description": "subitem_id/shot 좌표 단위 point를 모두 tkout_time x축에 표시합니다.",
+                        "prompt": f"{text} grain: shot",
+                    },
+                ],
+            },
+            "term_resolution": [
+                {"token": metric, "meaning": "INLINE item", "wiki_refs": ["schema:INLINE.item_id"], "query_filter": f"item_id={metric}", "status": "resolved"},
+                {"token": "Trend", "meaning": "tkout_time x축 scatter", "wiki_refs": ["schema:INLINE.tkout_time"], "query_filter": "x=tkout_time", "status": "resolved"},
+                {"token": "grain", "meaning": "lot_wf avg 또는 shot 전체 중 선택 필요", "wiki_refs": ["schema:INLINE.grain"], "query_filter": "await chart_grain", "status": "needs_input"},
+            ],
+        }
     aliases = _product_aliases(product_hint)
-    lots = _lot_tokens(text)
+    lots = _flowi_chart_lot_tokens(text)
     filters = []
     if aliases and product_col:
         filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
@@ -6091,6 +6406,17 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
         exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
     else:
         exprs.append(pl.lit("").alias("lot_wf"))
+    grain_cols = ["tkout_time", "lot_wf", "root_lot_id", "wafer_id"]
+    if include_shot:
+        if shot_id_col:
+            exprs.append(pl.col(shot_id_col).cast(_STR, strict=False).alias("shot_id"))
+            grain_cols.append("shot_id")
+        elif shot_x_col and shot_y_col:
+            exprs.extend([
+                pl.col(shot_x_col).cast(_STR, strict=False).alias("shot_x"),
+                pl.col(shot_y_col).cast(_STR, strict=False).alias("shot_y"),
+            ])
+            grain_cols.extend(["shot_x", "shot_y"])
     lot_wf_rule = "derived_from_root_lot_id_wafer_id" if root_col and wafer_col else ("source_lot_wf" if lot_wf_col else "unavailable")
     try:
         scatter_cfg = (_flowi_chart_defaults().get("scatter") or FLOWI_CHART_DEFAULTS["scatter"])
@@ -6099,29 +6425,39 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
         scatter_cfg = FLOWI_CHART_DEFAULTS["scatter"]
         point_limit = FLOWI_CHART_POINT_LIMIT
     try:
-        df = (
+        grouped = (
             inline_lf.select(exprs)
             .drop_nulls(subset=["tkout_time", "metric_value", "lot_wf"])
-            .group_by(["lot_wf", "root_lot_id", "wafer_id"])
+            .group_by(grain_cols)
             .agg([
-                pl.col("tkout_time").max().alias("tkout_time"),
                 pl.col("metric_value").mean().alias("avg"),
                 pl.col("metric_value").median().alias("median"),
                 pl.len().alias("n"),
             ])
-            .sort("tkout_time")
-            .limit(point_limit)
-            .collect()
         )
+        knob = None
+        knob_join_cols: list[str] = []
+        if "KNOB" in _upper(text) or "노브" in text:
+            knob = _flowi_knob_lf(product_hint, lots, text, [metric])
+            if knob.get("ok"):
+                knob_join_cols = _flowi_knob_join_cols(grouped.collect_schema().names(), knob.get("group_cols") or [])
+                if knob_join_cols:
+                    grouped = grouped.join(knob["lf"], on=knob_join_cols, how="left")
+        df = grouped.sort("tkout_time").limit(point_limit).collect()
     except Exception as e:
         logger.warning("flowi inline trend failed: %s", e)
         return {"handled": True, "intent": "dashboard_inline_trend", "answer": f"INLINE trend query 실패: {e}", "feature": "dashboard"}
     rows = df.to_dicts()
     points = []
+    color_counts: dict[str, int] = {}
+    knob_color_ready = bool(knob and knob.get("ok") and knob_join_cols)
     for idx, row in enumerate(rows):
         y = _round4(row.get("avg"))
         if y is None:
             continue
+        color_value = _text(row.get("color_value"))
+        if color_value:
+            color_counts[color_value] = color_counts.get(color_value, 0) + 1
         points.append({
             "x": idx,
             "x_label": _text(row.get("tkout_time")),
@@ -6133,27 +6469,35 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
             "lot_wf": row.get("lot_wf") or "",
             "root_lot_id": row.get("root_lot_id") or "",
             "wafer_id": row.get("wafer_id") or "",
-            "label": row.get("lot_wf") or "",
+            "shot_id": row.get("shot_id") or "",
+            "shot_x": row.get("shot_x") or "",
+            "shot_y": row.get("shot_y") or "",
+            "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
+            "color_value": color_value,
+            "label": row.get("shot_id") or row.get("lot_wf") or "",
         })
     answer = (
         f"{product_hint} {metric} INLINE Trend를 tkout_time x축 scatter로 그렸습니다. "
-        "INLINE은 lot_wf별 avg(value)로 집계했습니다. "
-        f"표시 point={len(points)}, item match={', '.join(item_matches or [metric])}."
+        + ("INLINE은 shot 단위 value를 시간별로 표시했습니다. " if include_shot else "INLINE은 lot_wf별 avg(value)를 시간별로 집계했습니다. ")
+        + f"표시 point={len(points)}, item match={', '.join(item_matches or [metric])}."
     )
+    if knob_color_ready:
+        answer += " KNOB가 없는 point는 회색으로 표시합니다."
     if not points:
         answer = f"{product_hint} {metric} 조건으로 Trend chart row를 찾지 못했습니다."
-    cols_out = ["tkout_time", "lot_wf", "root_lot_id", "wafer_id", "avg", "median", "n"]
+    cols_out = ["tkout_time", "lot_wf", "root_lot_id", "wafer_id", "shot_id", "shot_x", "shot_y", "avg", "median", "n", "color_value"]
     config_overrides = {
         "chart_type": "scatter",
         "source_type": "INLINE",
         "x_col": "tkout_time",
         "y_col": "value",
         "item_id": (item_matches or [metric])[0],
-        "grain": "lot_wf",
+        "grain": "shot" if include_shot else "lot_wf",
         "aggregation": "avg",
-        "group_by": "lot_wf",
+        "group_by": "shot" if include_shot else "lot_wf",
         "x_label": "tkout_time",
         "y_label": f"{metric} avg",
+        "color_missing": "gray" if knob_color_ready else "",
     }
     return {
         "handled": True,
@@ -6164,7 +6508,7 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
         "chart_type": "scatter",
         "config": config_overrides,
         "chart_config": config_overrides,
-        "slots": {"product": product_hint, "metric": metric, "lots": lots, "source_type": "INLINE", "grain": "lot_wf", "aggregation": "avg"},
+        "slots": {"product": product_hint, "metric": metric, "lots": lots, "source_type": "INLINE", "grain": "shot" if include_shot else "lot_wf", "aggregation": "avg"},
         "chart_result": {
             "ok": True,
             "kind": "dashboard_scatter",
@@ -6177,16 +6521,21 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
             "source_type": "INLINE",
             "x_col": "tkout_time",
             "item_id": (item_matches or [metric])[0],
-            "grain": "lot_wf",
+            "grain": "shot" if include_shot else "lot_wf",
             "aggregation": "avg",
             "aggregations": {"INLINE": "avg"},
             "lot_wf_rule": lot_wf_rule,
+            "join_cols": knob_join_cols if knob_color_ready else [],
+            "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
+            "color_missing": "gray" if knob_color_ready else "",
+            "color_values": [{"value": k, "count": v} for k, v in sorted(color_counts.items(), key=lambda kv: (-kv[1], kv[0]))],
             "config_overrides": config_overrides,
-            "render_preset": {**scatter_cfg, "grain": "lot_wf"},
+            "render_preset": {**scatter_cfg, "grain": "shot" if include_shot else "lot_wf"},
             "sources": {
                 "inline_file_count": len(inline_files),
                 "inline_items": item_matches or [metric],
                 "lot_wf": "root_lot_id + '_' + wafer_id" if root_col and wafer_col else "lot_wf",
+                "knob_column": knob.get("knob_col") if knob_color_ready else "",
             },
         },
         "table": {"kind": "dashboard_inline_trend", "title": f"{metric} Trend", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]], "total": len(rows)},
@@ -10101,6 +10450,12 @@ def _flowi_format_core_missing_followup(prompt: str, pending: dict[str, Any]) ->
         return f"lot: {text}"
     if first == "source_type":
         return f"source_type: {text}"
+    if first == "chart_grain":
+        if _explicit_shot_grain(text):
+            return "grain: shot"
+        if _explicit_lot_wf_grain(text) or any(t in text for t in ("wafer", "웨이퍼", "와퍼", "평균", "avg")):
+            return "grain: lot_wf"
+        return f"grain: {text}"
     return text
 
 
@@ -10121,13 +10476,15 @@ def _flowi_resolve_pending_core_prompt(
     combined = (str(pending.get("pending_prompt") or "").strip() + "\n" + followup).strip()
     if not combined:
         return prompt
+    if "chart_grain" in {_flowi_missing_key(x) for x in (pending.get("missing") or [])}:
+        return combined
     preview = _structure_flowi_function_call(combined, product="", max_rows=12)
     selected = preview.get("selected_function") if isinstance(preview.get("selected_function"), dict) else {}
     if str(selected.get("feature") or "") != feature:
         return prompt
     pending_action = str(pending.get("action") or "").strip()
     selected_action = str(selected.get("name") or "").strip()
-    loose_actions = {"route_flowi_feature", "open_filebrowser", "open_splittable", "open_inform"}
+    loose_actions = {"route_flowi_feature", "open_filebrowser", "open_splittable", "open_inform", "collect_required_fields"}
     if pending_action and selected_action and pending_action != selected_action and pending_action not in loose_actions:
         return prompt
     return combined
@@ -10803,7 +11160,19 @@ def _latest_fab_steps_for_roots(product: str, roots: list[str], limit: int = 200
 def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict:
     if not _fastest_knob_intent(prompt):
         return {"handled": False}
-    files = _ml_files(product)
+    product_hint = _flowi_splittable_product_id(_product_hint(prompt, product))
+    if not product_hint:
+        return _flowi_set_inline_type({
+            "handled": True,
+            "intent": "knob_fastest_lot_needs_product",
+            "action": "collect_required_fields",
+            "answer": "KNOB 조건으로 가장 앞선 LOT_WF를 찾으려면 product가 필요합니다. 제품명을 알려주면 SplitTable/ML_TABLE에서 KNOB 값을 찾고 latest progress cache로 현재 step_id/function_step을 붙입니다.",
+            "feature": "splittable",
+            "missing": ["product"],
+            "pending_prompt": prompt,
+            "slots": {"source": "ML_TABLE+latest_progress_cache"},
+        }, "message", prompt=prompt)
+    files = _ml_files(product_hint)
     if not files:
         return {
             "handled": True,
@@ -10833,7 +11202,7 @@ def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict
         return {"handled": True, "intent": "knob_fastest_lot", "answer": "ML_TABLE에서 KNOB_* 컬럼을 찾지 못했습니다.", "knobs": []}
 
     lots = _lot_tokens(prompt)
-    aliases = _product_aliases(product)
+    aliases = _product_aliases(product_hint)
     filters = []
     if aliases and product_col:
         filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
@@ -10926,7 +11295,7 @@ def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict
         lot_wf = _text(row.get(lot_wf_col)) if lot_wf_col else _text(row.get("lot_wf") or _flowi_lot_wf_id(root, wafer))
         key = lot_wf or f"{root}_{wafer}"
         rec = grouped.setdefault(key, {
-            "product": _text(row.get(product_col)) or _core_product_name(product),
+            "product": _text(row.get(product_col)) or _core_product_name(product_hint),
             "root_lot_id": root,
             "wafer_id": wafer,
             "lot_wf": lot_wf,
@@ -10946,7 +11315,7 @@ def _handle_fastest_knob_query(prompt: str, product: str, max_rows: int) -> dict
         if not rec.get("fab_lot_id") and _text(row.get(fab_col)):
             rec["fab_lot_id"] = _text(row.get(fab_col))
     progress_rows = list(grouped.values())
-    progress_product = product or (next(iter(grouped.values())).get("product") or "")
+    progress_product = product_hint or (next(iter(grouped.values())).get("product") or "")
     progress_by_lot_wf = _flowi_progress_for_lot_rows(progress_product, progress_rows, limit=300)
     rows = []
     for lot_wf, rec in grouped.items():
@@ -14052,8 +14421,15 @@ def _handle_find_lots_by_knob_value(prompt: str, product: str, max_rows: int) ->
     if ((preview.get("selected_function") or {}).get("name") != "find_lots_by_knob_value"):
         return {"handled": False}
     args = ((preview.get("function_call") or {}).get("function") or {}).get("arguments") or {}
-    if (preview.get("validation") or {}).get("missing"):
-        return _flowi_preview_tool(preview, answer="KNOB value 역검색에 필요한 값을 보완해 주세요.")
+    missing = (preview.get("validation") or {}).get("missing") or []
+    if missing:
+        answer = "KNOB value 역검색에 필요한 값을 보완해 주세요."
+        if "product" in missing:
+            answer = (
+                "어느 product 기준인지 필요합니다. 제품명을 알려주면 SplitTable/ML_TABLE에서 해당 KNOB value의 LOT_WF를 찾고, "
+                "latest progress cache에서 각 LOT_WF의 현재 step_id/function_step을 붙여 가장 앞선 후보를 계산합니다."
+            )
+        return _flowi_preview_tool(preview, answer=answer)
     product_hint = str(args.get("product") or product or "")
     knob_value = str(args.get("knob_value") or "")
     files = _ml_files(product_hint)
@@ -14127,7 +14503,7 @@ def _handle_find_lots_by_knob_value(prompt: str, product: str, max_rows: int) ->
     limit = max(1, min(100, int(args.get("limit") or max_rows or 10)))
     cols_out = ["product", "root_lot_id", "wafer_id", "lot_wf", "lot_id", "fab_lot_id", "step", "knob", "knob_value", "current_step", "current_func_step", "current_lot_id", "current_fab_lot_id", "tkout_time", "progress_source"]
     answer = f"{args.get('step')}에서 {knob_value} 값을 받은 lot/wafer {len(rows)}건을 FAB 진행 위치와 연결했습니다." if rows else f"{knob_value} 조건의 lot을 찾지 못했습니다."
-    if rows and any(t in str(prompt or "") for t in ("가장 빠", "제일 빠", "앞선")):
+    if rows and any(t in str(prompt or "") for t in ("가장 빠", "가장 빨", "제일 빠", "제일 빨", "빠른", "빨리", "앞선")):
         top = rows[0]
         answer = (
             f"{args.get('step')}에서 {knob_value} 값을 받은 WF 중 가장 앞선 후보는 "
@@ -14158,6 +14534,13 @@ def _handle_find_lots_by_knob_value(prompt: str, product: str, max_rows: int) ->
         "lot_list": lot_list,
         "table": {"kind": "knob_value_lot_search", "title": "Lots by KNOB value", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:limit]], "total": len(rows)},
         "filters": {"product": product_hint, "step": args.get("step"), "knob_value": knob_value, "sort": args.get("sort") or "earliest_progress"},
+        "slots": {"product": product_hint, "step": args.get("step") or "", "knob_value": knob_value, "source": "ML_TABLE+latest_progress_cache"},
+        "term_resolution": [
+            {"token": product_hint, "meaning": "SplitTable/ML_TABLE product", "wiki_refs": ["schema:product"], "query_filter": f"product={product_hint}", "status": "resolved"},
+            {"token": args.get("step") or "", "meaning": "KNOB step/function_step 조건", "wiki_refs": ["schema:step_id", "schema:function_step", "schema:func_step"], "query_filter": f"step/function_step contains {args.get('step') or ''}", "status": "resolved"},
+            {"token": knob_value, "meaning": "검색할 KNOB value", "wiki_refs": ["schema:KNOB_*"], "query_filter": f"any KNOB_/MASK_ column == {knob_value}", "status": "resolved"},
+            {"token": "가장 빠른", "meaning": "latest progress cache의 step_id 순서가 가장 앞선 LOT_WF", "wiki_refs": ["schema:lot_wf", "schema:step_id", "schema:function_step"], "query_filter": "sort by current step_id rank desc; include function_step label", "status": "resolved"},
+        ],
     }, "lot_list", prompt=prompt)
 
 
@@ -15382,6 +15765,46 @@ def _handle_flowi_query(
     username: str = "flowi",
     agent_context: dict[str, Any] | None = None,
 ) -> dict:
+    interpretation = _flowi_wiki_prompt_interpretation(prompt)
+    generic_actions = {
+        "route_flowi_feature",
+        "open_dashboard",
+        "open_filebrowser",
+        "open_splittable",
+        "open_inform",
+        "open_meeting",
+    }
+    tool = _handle_flowi_query_core(
+        prompt,
+        product,
+        max_rows=max_rows,
+        allowed_keys=allowed_keys,
+        username=username,
+        agent_context=agent_context,
+    )
+    if interpretation.get("pre_route") and (not tool.get("handled") or str(tool.get("action") or "") in generic_actions):
+        route_prompt = str(interpretation.get("augmented_prompt") or prompt)
+        routed_tool = _handle_flowi_query_core(
+            route_prompt,
+            product,
+            max_rows=max_rows,
+            allowed_keys=allowed_keys,
+            username=username,
+            agent_context=agent_context,
+        )
+        if routed_tool.get("handled") and (not tool.get("handled") or str(tool.get("action") or "") in generic_actions or str(routed_tool.get("action") or "") not in generic_actions):
+            tool = routed_tool
+    return _flowi_apply_wiki_prompt_interpretation(tool, interpretation)
+
+
+def _handle_flowi_query_core(
+    prompt: str,
+    product: str = "",
+    max_rows: int = 12,
+    allowed_keys: set[str] | None = None,
+    username: str = "flowi",
+    agent_context: dict[str, Any] | None = None,
+) -> dict:
     context_product = _flowi_context_product_hint(agent_context)
     product = _product_hint(prompt, product) or context_product
     if _flowi_context_prefers_splittable(agent_context) and _flowi_should_continue_splittable_context(prompt):
@@ -15544,6 +15967,60 @@ def _flowi_plain_answer_text(value: Any) -> str:
     text = text.replace("**", "").replace("__", "")
     text = re.sub(r"(?m)^\s*[-*]{3,}\s*$", "", text)
     return text.strip()
+
+
+def _flowi_llm_polish_payload(tool: dict[str, Any]) -> dict[str, Any]:
+    slots: dict[str, Any] = {}
+    for src_key in ("arguments", "slots", "filters"):
+        src = tool.get(src_key) if isinstance(tool.get(src_key), dict) else {}
+        for key, value in src.items():
+            if value not in (None, "", [], {}) and key not in slots:
+                slots[key] = value
+    table = tool.get("table") if isinstance(tool.get("table"), dict) else {}
+    chart = tool.get("chart_result") if isinstance(tool.get("chart_result"), dict) else (tool.get("chart") if isinstance(tool.get("chart"), dict) else {})
+    result_summary = {
+        "answer": _flowi_plain_answer_text(tool.get("answer") or "")[:1200],
+        "table_kind": table.get("kind") or "",
+        "table_rows": table.get("total", len(table.get("rows") or [])) if table else 0,
+        "chart_kind": chart.get("kind") or chart.get("status") or "",
+        "missing": tool.get("missing") or [],
+        "waiting_for": _flowi_waiting_for(tool),
+    }
+    source = (tool.get("filters") or {}).get("source") if isinstance(tool.get("filters"), dict) else ""
+    return {
+        "slots": {k: slots[k] for k in list(slots)[:16]},
+        "feature": tool.get("feature") or "",
+        "source": source or tool.get("intent") or "",
+        "result_summary": result_summary,
+    }
+
+
+def _flowi_llm_polish_prompt(prompt: str, tool: dict[str, Any]) -> str:
+    payload = _flowi_llm_polish_payload(tool)
+    return (
+        "아래 Flow 서버의 deterministic 해석/실행 결과를 사용자에게 짧은 한국어 문장으로만 정리하세요.\n"
+        "라우팅, 권한, product, lot, wafer, step, plan 값은 새로 추론하지 마세요.\n"
+        "입력 JSON에 있는 slots, feature, source, result_summary만 사용하세요.\n"
+        "출력은 2-5줄 plain text입니다. markdown, 표, JSON, 내부 intent/action/schema id는 쓰지 마세요.\n\n"
+        f"사용자 질문: {str(prompt or '').strip()[:1000]}\n"
+        f"입력 JSON: {json.dumps(payload, ensure_ascii=False, default=str)[:5000]}"
+    )
+
+
+def _flowi_validate_llm_polish_text(raw: Any) -> str:
+    text = _flowi_plain_answer_text(raw)
+    if not text:
+        return ""
+    if len(text) > 800:
+        return ""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) > 6:
+        return ""
+    if re.search(r"```|^\s*[-*]\s|\{|\}|\[|\]", text, flags=re.M):
+        return ""
+    if re.search(r"\b(intent|action|schema_id|function_call|tool_call|trace|chain[-_ ]?of[-_ ]?thought)\b", text, flags=re.I):
+        return ""
+    return text
 
 
 def _flowi_agent_actions(tool: dict[str, Any]) -> list[dict[str, Any]]:
@@ -16792,18 +17269,20 @@ def _flowi_public_trace(
         },
     ]
     if retrieved_knowledge:
-        steps.insert(3, {
+        wiki_context = tool.get("wiki_interpretation") if isinstance(tool.get("wiki_interpretation"), dict) else {}
+        knowledge_step = {
             "key": "knowledge",
             "stage": "knowledge",
-            "title": "Agent Wiki 검색",
-            "label": "Agent Wiki 검색",
+            "title": "Agent Wiki 사전 해석" if wiki_context.get("pre_route") else "Agent Wiki 검색",
+            "label": "Agent Wiki 사전 해석" if wiki_context.get("pre_route") else "Agent Wiki 검색",
             "status": "done",
             "detail": ", ".join(
                 f"{row.get('id')}{'(' + row.get('term') + ')' if row.get('term') else ''}"
                 for row in retrieved_knowledge[:5]
             ),
             "ts": ts,
-        })
+        }
+        steps.insert(2 if wiki_context.get("pre_route") else 3, knowledge_step)
     api_calls = _flowi_trace_api_calls(
         result=result,
         tool=tool,
@@ -17610,18 +18089,11 @@ def _run_flowi_chat(
         source_line = f"외부 AI source: {source}\nclient_run_id: {client_run_id}\n" if source else ""
         context_line = f"외부 AI 입력 context JSON: {agent_ctx}\n\n" if agent_ctx else ""
         if tool.get("handled"):
-            polish_prompt = (
-                "사용자 질문과 Flow 서버가 선택한 로컬 단위기능 결과를 바탕으로 한국어로 간결하게 답하세요. "
-                "숫자, 식별자, feature/action은 제공된 JSON에서만 사용하고 추측하지 마세요. "
-                "로컬 결과 JSON의 intent/action/missing/table/clarification/chart를 우선합니다. "
-                "clarification.choices가 있으면 1/2/3 선택을 권하고 recommended 선택지를 먼저 설명하세요. "
-                f"{FLOWI_PLAIN_TEXT_OUTPUT_RULE}\n\n"
-                f"{source_line}"
-                f"{context_line}"
-                f"사용자 정보 Markdown:\n{user_ctx or '(없음)'}\n\n"
-                f"단위기능 진입점:\n{feature_ctx}\n\n"
-                f"질문: {prompt}\n"
-                f"로컬 결과 JSON: {json.dumps(tool, ensure_ascii=False)[:12000]}"
+            polish_prompt = _flowi_llm_polish_prompt(prompt, tool)
+            if source_line or context_line:
+                polish_prompt += "\n\n" + source_line + context_line
+            polish_system = (
+                "Flow-i 응답 문장 정리기입니다. 서버 결과를 다시 판단하지 말고 plain text만 출력합니다."
             )
         else:
             polish_prompt = (
@@ -17637,14 +18109,27 @@ def _run_flowi_chat(
                 f"단위기능 진입점:\n{feature_ctx}\n\n"
                 f"사용자: {prompt}"
             )
+            polish_system = _flowi_system_prompt()
         out = llm_adapter.complete(
             polish_prompt,
-            system=_flowi_system_prompt(),
+            system=polish_system,
             timeout=12,
         )
-        llm_info.update({"used": bool(out.get("ok") and out.get("text"))})
         if out.get("ok") and out.get("text"):
-            answer = _flowi_plain_answer_text(out.get("text")) or answer
+            polished = (
+                _flowi_validate_llm_polish_text(out.get("text"))
+                if tool.get("handled")
+                else _flowi_plain_answer_text(out.get("text"))
+            )
+            if polished:
+                answer = polished
+                llm_info["used"] = True
+            else:
+                llm_info.update({
+                    "used": False,
+                    "error": "polish_format_violation",
+                    "fallback": "deterministic_answer",
+                })
         elif out.get("error"):
             llm_info["error"] = out.get("error")
 
