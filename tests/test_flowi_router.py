@@ -150,6 +150,38 @@ def test_flowi_multisource_trace_includes_join_evidence(monkeypatch):
     assert out["tool"]["chart_config"]["source_evidence"]["relation_ids"] == ["rel_root", "rel_wafer"]
 
 
+def test_flowi_impact_context_trace_includes_wiki_and_event_evidence(monkeypatch):
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"tracker", "splittable", "meeting"})
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(llm_router.kv, "lookup_term", lambda *_args, **_kwargs: {"columns": [], "docs": [], "graph": {"nodes": [], "edges": []}})
+
+    fake_ctx = {
+        "query": {"product": "PRODA", "root_lot_id": "A1000", "step_id": "24.0 SORT", "item_id": "KNOB_A", "knob": "KNOB_A"},
+        "anchor_items": [],
+        "lot_anomalies": [],
+        "split_impacts": [{"event_id": "evt_split_1", "event_type": "split_impact", "status": "candidate"}],
+        "mts_changes": [],
+        "conflicts": [{"impact_key": "PRODA|A1000|24.0 SORT|KNOB_A|", "conflicting_evidence": True}],
+        "wiki_refs": [{"doc_id": "split_rule_proda_sort_knob_a", "title": "PRODA SORT KNOB_A rule", "schema_type": "split_impact_rule"}],
+        "event_refs": [{"event_id": "evt_split_1", "event_type": "split_impact", "status": "candidate", "source_type": "issue", "source_id": "ISS-1"}],
+        "confidence": "verified_wiki",
+    }
+    monkeypatch.setattr(llm_router.knowledge_impact, "impact_context", lambda **_kwargs: fake_ctx)
+
+    out = _run_flowi_chat(
+        prompt="PRODA A1000 24.0 SORT KNOB_A split 영향 평가 근거 알려줘",
+        product="",
+        max_rows=5,
+        me={"username": "root", "role": "admin"},
+    )
+
+    assert out["tool"]["intent"] == "knowledge_impact_context"
+    assert "근거:" in out["answer"]
+    assert out["trace"]["evidence"]["impact_context"]["confidence"] == "verified_wiki"
+    assert out["trace"]["evidence"]["impact_context"]["event_refs"][0]["event_id"] == "evt_split_1"
+
+
 def test_flowi_chart_request_uses_admin_defaults(monkeypatch):
     monkeypatch.setattr(
         llm_router,

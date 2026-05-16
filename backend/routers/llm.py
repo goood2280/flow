@@ -35,6 +35,7 @@ from core import llm_adapter
 from core import product_config
 from core import semiconductor_knowledge as semi_knowledge
 from core import dashboard_join as dashboard_charting
+from core import knowledge_impact
 from core import knowledge_vault as kv
 from core import flowi_multisource
 from routers.auth import read_users
@@ -16248,6 +16249,145 @@ def _handle_flowi_query(
     return _flowi_apply_wiki_prompt_interpretation(tool, interpretation)
 
 
+def _flowi_impact_context_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    explicit_knowledge = any(t in low or t in text for t in ("지식", "근거", "확인된", "이력", "기록", "wiki", "위키", "impact context"))
+    domain = any(t in low or t in text for t in ("mts", "recipe", "레시피", "anchor", "앵커", "split 영향", "스플릿 영향", "영향 평가", "변경점", "변경 이력"))
+    lot_knowledge = any(t in low or t in text for t in ("lot 이상", "랏 이상", "lot anomaly", "이상 lot"))
+    return bool(domain or (explicit_knowledge and lot_knowledge))
+
+
+def _flowi_impact_item_token(prompt: str) -> str:
+    text = str(prompt or "")
+    m = re.search(r"\b((?:INLINE|ET|VM|MASK|KNOB|FAB)_[A-Za-z0-9_.\-]+)", text, re.I)
+    if m:
+        return m.group(1)
+    metric = _flowi_metric_token(prompt)
+    return metric if metric and metric.upper() not in {"SORT", "SPLIT", "KNOB", "MTS"} else ""
+
+
+def _flowi_impact_knob_token(prompt: str, item_id: str = "") -> str:
+    text = str(prompt or "")
+    m = re.search(r"\b(KNOB_[A-Za-z0-9_.\-]+|MASK_[A-Za-z0-9_.\-]+)", text, re.I)
+    if m:
+        return m.group(1)
+    if str(item_id or "").upper().startswith(("KNOB_", "MASK_")):
+        return item_id
+    m = re.search(r"\b(?:knob|노브)\s*[:=]?\s*([A-Za-z0-9_.\-]+)", text, re.I)
+    return m.group(1) if m else ""
+
+
+def _flowi_impact_context_args(prompt: str, product: str = "") -> dict[str, Any]:
+    classified = _classified_lot_tokens(prompt)
+    root_lot_id = next(iter(classified.get("root_lot_ids") or []), "")
+    item_id = _flowi_impact_item_token(prompt)
+    knob = _flowi_impact_knob_token(prompt, item_id)
+    return {
+        "product": _product_hint(prompt, product),
+        "root_lot_id": root_lot_id,
+        "step_id": _flowi_func_step_token(prompt),
+        "item_id": item_id,
+        "knob": knob,
+    }
+
+
+def _flowi_impact_evidence_label(ctx: dict[str, Any]) -> str:
+    wiki_ids = [str(row.get("doc_id") or row.get("id") or "") for row in ctx.get("wiki_refs") or [] if isinstance(row, dict)]
+    event_ids = [str(row.get("event_id") or "") for row in ctx.get("event_refs") or [] if isinstance(row, dict)]
+    parts = []
+    if wiki_ids:
+        parts.append("wiki " + ", ".join(wiki_ids[:4]))
+    if event_ids:
+        parts.append("event " + ", ".join(event_ids[:5]))
+    return " / ".join(parts) if parts else "없음"
+
+
+def _flowi_impact_context_answer(ctx: dict[str, Any]) -> str:
+    wiki_refs = ctx.get("wiki_refs") or []
+    event_refs = ctx.get("event_refs") or []
+    conflicts = ctx.get("conflicts") or []
+    anchor_items = ctx.get("anchor_items") or []
+    lot_anomalies = ctx.get("lot_anomalies") or []
+    split_impacts = ctx.get("split_impacts") or []
+    mts_changes = ctx.get("mts_changes") or []
+    if wiki_refs:
+        first = wiki_refs[0]
+        status = f"확인된 운영 지식 {len(wiki_refs)}건"
+        lead = f"{status}: {first.get('title') or first.get('doc_id')}"
+    elif event_refs:
+        lead = f"확인된 지식 없음 / 후보 이벤트만 있음: {len(event_refs)}건"
+    else:
+        lead = "확인된 지식 없음"
+    lines = [lead]
+    if conflicts:
+        lines.append(f"영향 평가가 갈림: conflict {len(conflicts)}건")
+    if lot_anomalies:
+        lines.append(f"lot 이상 후보: {len(lot_anomalies)}건")
+    if split_impacts:
+        lines.append(f"split 영향 후보: {len(split_impacts)}건")
+    if mts_changes:
+        lines.append(f"MTS 변경 후보: {len(mts_changes)}건")
+    if anchor_items:
+        current = next((row for row in anchor_items if isinstance(row, dict) and not row.get("valid_to")), anchor_items[0])
+        if isinstance(current, dict):
+            lines.append(f"Anchor item: {current.get('step_id') or '-'} / {current.get('item_id') or current.get('title') or '-'}")
+    lines.append("근거: " + _flowi_impact_evidence_label(ctx))
+    return "\n".join(lines)
+
+
+def _handle_knowledge_impact_context(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    if not _flowi_impact_context_intent(prompt):
+        return {"handled": False}
+    args = _flowi_impact_context_args(prompt, product)
+    ctx = knowledge_impact.impact_context(**args, limit=max(20, min(200, max_rows * 20)))
+    retrieved = [
+        {
+            "id": row.get("doc_id") or row.get("id") or "",
+            "doc_id": row.get("doc_id") or row.get("id") or "",
+            "kind": "agent_wiki",
+            "schema_type": row.get("schema_type") or "",
+            "title": row.get("title") or row.get("doc_id") or "",
+            "summary": row.get("summary") or "",
+            "source": "impact_context",
+            "score": 1.0,
+        }
+        for row in ctx.get("wiki_refs") or []
+        if isinstance(row, dict) and (row.get("doc_id") or row.get("id"))
+    ]
+    rows = []
+    for ref in (ctx.get("event_refs") or [])[: max(1, min(80, max_rows * 6))]:
+        if not isinstance(ref, dict):
+            continue
+        rows.append({
+            "type": ref.get("event_type") or "",
+            "status": ref.get("status") or "",
+            "id": ref.get("event_id") or "",
+            "source": f"{ref.get('source_type') or ''}:{ref.get('source_id') or ''}".strip(":"),
+            "changed_at": ref.get("changed_at") or "",
+            "summary": ref.get("summary") or "",
+        })
+    return {
+        "handled": True,
+        "intent": "knowledge_impact_context",
+        "action": "knowledge.impact_context.lookup",
+        "feature": "knowledge",
+        "answer": _flowi_impact_context_answer(ctx),
+        "impact_context": ctx,
+        "event_refs": ctx.get("event_refs") or [],
+        "retrieved_knowledge": retrieved,
+        "filters": args,
+        "table": {
+            "kind": "knowledge_impact_events",
+            "title": "Knowledge impact event evidence",
+            "placement": "below",
+            "columns": _table_columns(["type", "status", "id", "source", "changed_at", "summary"]),
+            "rows": rows,
+            "total": len(ctx.get("event_refs") or []),
+        } if rows else {},
+    }
+
+
 def _handle_flowi_query_core(
     prompt: str,
     product: str = "",
@@ -16258,6 +16398,9 @@ def _handle_flowi_query_core(
 ) -> dict:
     context_product = _flowi_context_product_hint(agent_context)
     product = _product_hint(prompt, product) or context_product
+    impact_context_out = _handle_knowledge_impact_context(prompt, product, max_rows)
+    if impact_context_out.get("handled"):
+        return impact_context_out
     context_view_out = _handle_flowi_splittable_context_followup(prompt, product, max_rows, allowed_keys, agent_context)
     if context_view_out.get("handled"):
         return context_view_out
@@ -17053,6 +17196,15 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
             purpose="product/root/wafer/step/prefix 조건으로 split table row를 조회",
             payload={k: args.get(k) or filters.get(k) or slots.get(k) for k in ("product", "root_lot_id", "fab_lot_id", "wafer_id", "step", "prefix") if (args.get(k) or filters.get(k) or slots.get(k))},
         )
+    elif action == "knowledge.impact_context.lookup" or intent == "knowledge_impact_context":
+        add(
+            name="Impact context lookup",
+            method="GET",
+            path="/api/knowledge/impact-context",
+            callee="core.knowledge_impact.impact_context",
+            purpose="검증된 Agent Wiki 문서와 raw KnowledgeEvent 후보를 함께 조회",
+            payload={k: filters.get(k) for k in ("product", "root_lot_id", "step_id", "item_id", "knob") if filters.get(k)},
+        )
     elif action == "filebrowser.sql.llm.draft" or intent == "filebrowser_sql_llm_draft":
         sql_draft = tool.get("sql_draft") if isinstance(tool.get("sql_draft"), dict) else {}
         add(
@@ -17568,6 +17720,7 @@ def _flowi_trace_evidence(tool: dict[str, Any], api_calls: list[dict[str, Any]])
         "relation_ids": tool.get("relation_ids") if isinstance(tool.get("relation_ids"), list) else [],
         "join_keys": tool.get("join_keys") if isinstance(tool.get("join_keys"), list) else [],
         "join_plan": tool.get("join_plan") if isinstance(tool.get("join_plan"), dict) else {},
+        "impact_context": tool.get("impact_context") if isinstance(tool.get("impact_context"), dict) else {},
         "chart_config": chart_cfg,
         "meeting_sources": sources[:8],
         "knowledge_sources": knowledge_sources[:12],
@@ -17903,6 +18056,8 @@ _FLOWI_HOME_USER_TOOL_KEYS = {
     "row_count",
     "warnings",
     "sources",
+    "impact_context",
+    "event_refs",
     "highlight",
     "highlights",
     "side_effect",
@@ -18693,6 +18848,8 @@ def _flowi_should_skip_llm_polish(tool: dict[str, Any]) -> bool:
     if intent.startswith("dashboard_") or intent == "tablemap_guidance":
         return True
     if intent == "meeting_recall_summary":
+        return True
+    if intent == "knowledge_impact_context":
         return True
     if intent == "inform_lot_module_summary":
         return True

@@ -1221,6 +1221,7 @@ def _event_markdown(row: dict[str, Any]) -> str:
     ent = row.get("entity") or {}
     meta = {
         "event_id": row.get("event_id"),
+        "event_type": row.get("event_type") or "generic",
         "source_type": row.get("source_type"),
         "source_id": row.get("source_id"),
         "actor": row.get("actor"),
@@ -1370,6 +1371,7 @@ def append_event(event: KnowledgeEvent | dict[str, Any]) -> dict[str, Any]:
 def list_events(
     limit: int = 100,
     q: str = "",
+    event_type: str = "",
     source_type: str = "",
     product: str = "",
     root_lot_id: str = "",
@@ -1389,6 +1391,8 @@ def list_events(
         except Exception:
             continue
         ent = row.get("entity") or {}
+        if event_type and row.get("event_type") != event_type:
+            continue
         if source_type and row.get("source_type") != source_type:
             continue
         if product and str(ent.get("product") or "") != product:
@@ -1508,6 +1512,9 @@ def _refresh_wiki_index() -> list[dict[str, Any]]:
             relations = fm.get("relations")
             if isinstance(relations, dict) and relations:
                 brief["relations"] = {str(k): str(v) for k, v in relations.items() if k}
+            schema_type = fm.get("schema_type")
+            if schema_type:
+                brief["schema_type"] = str(schema_type)
             relation_id = fm.get("relation_id")
             if relation_id:
                 brief["relation_id"] = str(relation_id)
@@ -1535,6 +1542,7 @@ def list_docs(kind: str = "", q: str = "", limit: int = 200) -> list[dict[str, A
                 str(row.get("summary") or ""),
                 " ".join(map(str, row.get("tags") or [])),
                 " ".join(map(str, row.get("source_ids") or [])),
+                str(row.get("schema_type") or ""),
                 str(row.get("relation_id") or ""),
                 " ".join(map(str, row.get("column_refs") or [])),
             ]).lower()
@@ -1635,6 +1643,7 @@ def search(q: str, scope: str = "all", limit: int = 30) -> list[dict[str, Any]]:
             text = " ".join([
                 str(row.get("title") or ""),
                 str(row.get("summary") or ""),
+                str(row.get("event_type") or ""),
                 json.dumps(row.get("payload") or {}, ensure_ascii=False, default=str),
             ])
             hay = text.lower()
@@ -1872,6 +1881,7 @@ def search_agent_wiki(q: str, limit: int = 30) -> list[dict[str, Any]]:
             str(row.get("summary") or ""),
             " ".join(map(str, row.get("tags") or [])),
             " ".join(map(str, row.get("source_ids") or [])),
+            str(row.get("schema_type") or ""),
             str(doc.get("body") or ""),
         ]).lower()
         exact_score = hay.count(q_l)
@@ -1890,6 +1900,7 @@ def search_agent_wiki(q: str, limit: int = 30) -> list[dict[str, Any]]:
             "id": row.get("doc_id") or "",
             "doc_id": row.get("doc_id") or "",
             "kind": row.get("kind") or "",
+            "schema_type": row.get("schema_type") or "",
             "title": row.get("title") or row.get("doc_id") or "",
             "summary": row.get("summary") or "",
             "snippet": _snippet(text, q_l),

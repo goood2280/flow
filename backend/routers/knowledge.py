@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app_v2.shared.contracts import FlowEntityKey, KnowledgeDoc, KnowledgeEvent
+from core import knowledge_impact
 from core import knowledge_vault as kv
 from core.auth import current_user, is_page_manager
 
@@ -60,12 +61,13 @@ def bootstrap(request: Request):
 def events(
     limit: int = Query(100, ge=1, le=1000),
     q: str = "",
+    event_type: str = "",
     source_type: str = "",
     product: str = "",
     root_lot_id: str = "",
     wafer_id: str = "",
 ):
-    return {"events": kv.list_events(limit=limit, q=q, source_type=source_type, product=product, root_lot_id=root_lot_id, wafer_id=wafer_id)}
+    return {"events": kv.list_events(limit=limit, q=q, event_type=event_type, source_type=source_type, product=product, root_lot_id=root_lot_id, wafer_id=wafer_id)}
 
 
 @router.post("/events", dependencies=[Depends(_require_knowledge_admin)])
@@ -137,6 +139,25 @@ def search(q: str = Query(..., min_length=1), scope: str = "all", limit: int = Q
     if scope not in {"all", "wiki", "event"}:
         scope = "all"
     return {"query": q, "scope": scope, "results": kv.search(q=q, scope=scope, limit=limit)}
+
+
+@router.get("/impact-context")
+def impact_context(
+    product: str = "",
+    root_lot_id: str = "",
+    step_id: str = "",
+    item_id: str = "",
+    knob: str = "",
+    limit: int = Query(200, ge=1, le=1000),
+):
+    return knowledge_impact.impact_context(
+        product=product,
+        root_lot_id=root_lot_id,
+        step_id=step_id,
+        item_id=item_id,
+        knob=knob,
+        limit=limit,
+    )
 
 
 @router.get("/term/{term}")

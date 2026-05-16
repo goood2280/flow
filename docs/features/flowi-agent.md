@@ -157,6 +157,7 @@ Agent는 `resolve_term_to_columns(term)`에서 `kv.list_docs(kind="schema_doc", 
 - `trace.evidence` — 사용한 기능 AI, endpoint, payload 요약, SQL/filter, chart config, meeting sources
 - `trace.evidence.source_ids` / `trace.evidence.relation_ids` / `trace.evidence.join_keys` / `trace.evidence.join_plan` — multi-source filter/join/chart 요청에서 실제 사용한 source와 confirmed relation 근거
 - `trace.evidence.knowledge_sources` / `trace.retrieved_knowledge` — prompt 용어를 Agent Wiki `schema_doc`와 `column_catalog`에 대조한 공개 근거
+- `trace.evidence.impact_context` — lot 이상 / split 영향 / MTS 변경 / Anchor item 질문에서 `GET /api/knowledge/impact-context`가 사용한 Wiki/event 근거
 - `trace.validation` — rows, chart readiness, source count, warnings, fallback 여부
 - `trace.call_graph.nodes` / `trace.call_graph.edges` — 노드/엣지 (빈 배열 아님)
 - `trace.call_graph.activation` — `trace.activation`과 동일 내용 동봉 (frontend fallback용)

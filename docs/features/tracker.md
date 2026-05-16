@@ -11,6 +11,7 @@ Tracker는 개발 이슈, lot watch, 분석 액션을 생성부터 종료까지 
 - calendar/meeting action으로 push되는 업무 상태
 - 새 이슈 lot 입력 표의 product, lot_id(fab_lot_id), wafer_id, purpose, comment 관리
 - Monitor lot summary: 입력된 `lot_id` 1행을 유지하고 현재 Qty, wafer 압축 라벨, step/status metadata를 붙인다.
+- 명시된 lot 이상 / split 영향 키워드를 append-only KnowledgeEvent 후보로 남긴다.
 
 ## Does Not Own
 
@@ -38,6 +39,7 @@ Tracker는 개발 이슈, lot watch, 분석 액션을 생성부터 종료까지 
 - Monitor row는 wafer별 저장 행으로 확장하지 않는다. watcher/status cache는 row metadata나 별도 status cache로만 갱신한다.
 - `/api/tracker/update`의 optional `lots`는 purpose/comment 편집을 허용하되 기존 watch/status 필드를 보존한다.
 - 변경 사항은 알림과 audit 후보가 된다.
+- KnowledgeEvent append는 best-effort다. append 실패가 issue/comment/lot 저장을 막지 않는다.
 - Shared 설정(categories, scheduler, DB sources, ET lot cache refresh, lot watch polling)은 `tracker` page manager 이상만 쓴다. issue/comment 작성과 본인 업무 흐름은 current user 규칙을 유지한다.
 
 ## Verify

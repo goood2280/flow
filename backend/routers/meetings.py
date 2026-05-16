@@ -482,6 +482,48 @@ def _hydrate_tracker_issue_ref(issue_ref: Optional[dict]) -> Optional[dict]:
     return snap
 
 
+def _meeting_knowledge_contexts(meeting: dict, session: dict) -> list[dict[str, Any]]:
+    contexts: list[dict[str, Any]] = []
+    for agenda in session.get("agendas") or []:
+        if not isinstance(agenda, dict):
+            continue
+        issue = agenda.get("issue_ref") if isinstance(agenda.get("issue_ref"), dict) else {}
+        for lot in issue.get("lots") or []:
+            if not isinstance(lot, dict):
+                continue
+            root = str(lot.get("root_lot_id") or "").strip()
+            lot_id = str(lot.get("lot_id") or lot.get("fab_lot_id") or "").strip()
+            if not root and lot_id:
+                root = lot_id.split(".", 1)[0][:5] if "." in lot_id else lot_id[:5]
+            contexts.append({
+                "product": lot.get("product") or lot.get("monitor_prod") or meeting.get("product") or "",
+                "root_lot_id": root,
+                "wafer_id": lot.get("wafer_id") or "",
+                "step_id": lot.get("current_step") or lot.get("step_id") or lot.get("function_step") or "",
+                "source_refs": [{"type": "meeting", "id": meeting.get("id") or "", "label": meeting.get("title") or ""}],
+            })
+    return contexts or [{"source_refs": [{"type": "meeting", "id": meeting.get("id") or "", "label": meeting.get("title") or ""}]}]
+
+
+def _append_meeting_knowledge_events(meeting: dict, session: dict, *, actor: str, text: str, source_id: str) -> None:
+    try:
+        from core import knowledge_impact
+        body = " ".join([str(meeting.get("title") or ""), str(text or "")]).strip()
+        for context in _meeting_knowledge_contexts(meeting, session):
+            knowledge_impact.append_candidates_from_text(
+                body,
+                source_type="meeting",
+                source_id=source_id,
+                actor=actor,
+                context=context,
+                allowed_event_types={"mts_change", "split_impact", "anchor_item_change"},
+                status="needs_review",
+                title_prefix="Meeting",
+            )
+    except Exception:
+        return
+
+
 def _agenda_issue_mail_html(a: dict) -> str:
     """Brief issue block for meeting mail.
 
@@ -2478,6 +2520,13 @@ def add_agenda(req: AgendaAdd, request: Request):
     _audit(request, "meetings:agenda_add",
            detail=f"meeting={m['id']} session={s['id']} agenda={ag['id']} title={title[:60]}",
            tab="meetings")
+    _append_meeting_knowledge_events(
+        m,
+        s,
+        actor=me["username"],
+        text=" ".join(str(x or "") for x in (ag.get("title"), ag.get("description"), ag.get("link"))),
+        source_id=f"{m['id']}:{s['id']}:{ag['id']}:agenda",
+    )
     return {"ok": True, "meeting": m, "session": s, "agenda": ag}
 
 
@@ -2534,6 +2583,13 @@ def update_agenda(req: AgendaUpdate, request: Request):
     _audit(request, "meetings:agenda_update",
            detail=f"meeting={m['id']} session={s['id']} agenda={ag['id']} fields={','.join(changed)}",
            tab="meetings")
+    _append_meeting_knowledge_events(
+        m,
+        s,
+        actor=me["username"],
+        text=" ".join(str(ag.get(k) or "") for k in ("title", "description", "link")),
+        source_id=f"{m['id']}:{s['id']}:{ag['id']}:agenda",
+    )
     return {"ok": True, "meeting": m, "session": s, "agenda": ag}
 
 
@@ -2714,6 +2770,17 @@ def save_minutes(req: MinutesSave, request: Request):
     _audit(request, "meetings:minutes",
            detail=f"meeting={m['id']} session={s['id']} decisions={len(decisions)} actions={len(merged)}",
            tab="meetings")
+    _append_meeting_knowledge_events(
+        m,
+        s,
+        actor=me["username"],
+        text=" ".join([
+            s["minutes"].get("body") or "",
+            " ".join(str(d.get("text") if isinstance(d, dict) else d) for d in decisions),
+            " ".join(str(a.get("text") or "") for a in merged),
+        ]),
+        source_id=f"{m['id']}:{s['id']}:minutes",
+    )
 
     # v8.8.6: 동시편집 broadcast — 다른 subscribers 에게 변경 알림.
     # v8.8.15: payload 에 rev 포함 → FE 가 자기 local rev 과 비교해 dirty 없으면 auto-refresh, 있으면 banner.
@@ -2811,6 +2878,13 @@ def append_minutes(req: MinutesAppendReq, request: Request):
     _audit(request, "meetings:minutes_append",
            detail=f"meeting={m['id']} session={s['id']} by={me['username']}",
            tab="meetings")
+    _append_meeting_knowledge_events(
+        m,
+        s,
+        actor=me["username"],
+        text=text,
+        source_id=f"{m['id']}:{s['id']}:{entry['id']}:minutes_append",
+    )
     _mtg_publish(m["id"], {
         "type": "minutes_appended",
         "meeting_id": m["id"], "session_id": s["id"],

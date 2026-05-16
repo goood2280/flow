@@ -12,6 +12,7 @@
 
 ## Now
 
+- 다음 작업 시작 전 이 섹션으로 한 항목만 올린다.
 
 ## Next
 
@@ -23,6 +24,7 @@
 
 ## Done
 
+- [x] (Codex) Lot/Split Impact Knowledge Spine 1차 — `lot_anomaly`/`split_impact`/`mts_change`/`anchor_item_change` KnowledgeEvent 계약, append-only domain event helper, `/api/knowledge/impact-context`, Tracker/Meeting/SplitTable best-effort append hook, Home Flow-i `trace.evidence.impact_context` 근거 응답을 연결. Anchor item은 `product + step_id + item_id` 버전 이력으로 정리하고, Wiki `schema_type` 기반 검증 지식과 raw event 후보를 분리해 답변한다. `python3 -m py_compile ...`, `python3 -m pytest tests/test_knowledge_impact.py -q`, Flow-i targeted pytest, `python3 -m pytest tests/test_flowi_router.py tests/test_knowledge_impact.py tests/test_meeting_mail_preview.py tests/test_splittable_lot_candidates.py -q` 155/155 통과, `cd frontend && npm run build`, `python3 _build_setup.py`, `python3 setup.py version`, 대상 경로 `git diff --check`, live `scripts/smoke_test.py` 29/29 PASS, live `scripts/agent_scenario_check.py` 63/63 PASS.
 - [x] (Codex) Home Flow-i confirmed schema relation 기반 multi-source filter/join/chart 실행 보강 — `core.flowi_multisource`로 `schema_doc`/`column_catalog` 용어 해석, 실제 source 확인, confirmed `schema_relations` 기반 join/filter/sample/chart draft를 처리하고 Home trace와 Dashboard chart config에 `source_ids`/`relation_ids`/`join_keys`/`join_plan` 근거를 노출. Agent Wiki 고급 보기에는 DB/File 연결성 요약을 추가. `python3 -m pytest tests/test_flowi_router.py tests/agent/test_agent_endpoints.py tests/test_flowi_multisource.py -q` 130/130 통과, `cd frontend && npm run build`, `python3 scripts/smoke_test.py` 29/29 PASS, `python3 scripts/agent_scenario_check.py` 63/63 PASS, `python3 _build_setup.py`, `python3 setup.py version`, py_compile 통과.
 - [x] (Codex) Home Flow-i 후속 맥락 라우팅과 응답 UX 정리 — 이전 lot/product/step/KNOB/FileBrowser ML_TABLE 맥락을 이어받아 SplitTable/view 보강 요청을 처리하고, `A1001 인폼 남기고싶어` 같은 단순 인폼 생성 요청은 전체 워크스루가 아니라 필수 입력 폼 초안으로 라우팅. Home 응답 기본 화면은 `해석`/`진행 방식`과 결과 중심으로 정리하고 next actions/추론 로그 기본 노출을 제거. `python3 -m pytest tests/test_flowi_router.py -q` 115/115 통과, `cd frontend && npm run build`, `python3 _build_setup.py`, `python3 setup.py version`, 대상 경로 `git diff --check` 통과.
 - [x] (Codex) Home Flow-i 결과 패널/차트 가독성 개선 — Flow-i 활성화 시 홈 콘솔 폭·높이와 차트 렌더 영역을 키우고, 답변 카드가 자연어 해석 요약을 답변 위에 먼저 보여주도록 정리. 실행 단계 요약은 짧은 chip형 요약과 접힌 상세 로그로 낮추고, scatter/trend/box/group 차트 SVG 렌더 영역과 점/축 label 크기를 확대해 전체 화면에서 잘 보이도록 조정. `cd frontend && npm run build`, 대상 경로 `git diff --check` 통과.

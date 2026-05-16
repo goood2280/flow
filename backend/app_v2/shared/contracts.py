@@ -106,6 +106,13 @@ class AgentExecutionTrace(BaseModel):
 
 class KnowledgeEvent(BaseModel):
     event_id: str = ""
+    event_type: Literal[
+        "generic",
+        "lot_anomaly",
+        "split_impact",
+        "mts_change",
+        "anchor_item_change",
+    ] = "generic"
     source_type: Literal[
         "edm_version",
         "split_note",

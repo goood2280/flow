@@ -7,6 +7,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - root lot/fab lot/wafer 축 matrix
 - KNOB/MASK/CUSTOM set plan과 actual 비교
 - final value, drift, diff, notes, related issue
+- split 영향 후보 이벤트: notes와 plan history 변경을 append-only KnowledgeEvent로 남긴다.
 - XLSX export와 Inform Log용 SplitTable snapshot 생성
 - `data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`의 root/wafer별 최신 `lot_id`를 사용한 fab lot label 표시
 
@@ -40,6 +41,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - cache/parquet 변경은 runtime 산출물과 코드 변경을 분리해서 설명한다.
 - Shared 설정(source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh)은 `splittable` page manager 이상만 쓴다.
 - Plan/note 작성자는 request body의 `username`이 아니라 세션 사용자로 기록한다. 내부 테스트/Flow-i 직접 호출만 fallback 값을 허용한다.
+- 같은 plan cell에서 값이 바뀌는 경우 KnowledgeEvent payload에 `conflicting_evidence=true`를 남겨 Home Flow-i가 “영향 평가가 갈림”으로 답할 수 있게 한다.
 
 ## Verify
 

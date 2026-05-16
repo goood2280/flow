@@ -315,6 +315,7 @@ Generated from `backend/routers/*.py` and `frontend/src` API call sites.
 | `/api/informs/{inform_id}/send-mail` | `POST` | `current_user` | - | - | `ok` |
 | `/api/items/resolve` | `POST` | `current_user` | - | - | `ok` |
 | `/api/items/search` | `GET` | `current_user` | - | - | `ok` |
+| `/api/knowledge/impact-context` | `GET` | `current_user` | - | - | `ok` |
 | `/api/knowledge/rag-view` | `GET` | `current_user` | - | - | `ok` |
 | `/api/knowledge/rca` | `GET` | `current_user` | - | - | `ok` |
 | `/api/knowledge/rca/rag-view` | `GET` | `current_user` | - | - | `ok` |

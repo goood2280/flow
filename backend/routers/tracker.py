@@ -276,6 +276,50 @@ def _persist_tracker_lot_status_rows(rows: list[dict], source: str = "tracker") 
         return
 
 
+def _tracker_knowledge_root(row: dict) -> str:
+    root = str((row or {}).get("root_lot_id") or "").strip()
+    if root:
+        return root
+    lot = str((row or {}).get("lot_id") or (row or {}).get("fab_lot_id") or "").strip()
+    if "." in lot:
+        return lot.split(".", 1)[0][:5]
+    return lot[:5] if len(lot) >= 5 else lot
+
+
+def _append_tracker_knowledge_events(issue: dict, *, actor: str, text: str, source_id: str, lots: list[dict] | None = None) -> None:
+    """Best-effort append of explicit lot anomaly / split impact facts."""
+    try:
+        from core import knowledge_impact
+        rows = [row for row in (lots if lots is not None else issue.get("lots") or []) if isinstance(row, dict)]
+        if not rows:
+            rows = [{}]
+        body = " ".join([
+            str(issue.get("title") or ""),
+            re.sub(r"<[^>]+>", " ", str(issue.get("description") or "")),
+            str(text or ""),
+        ]).strip()
+        for row in rows:
+            context = {
+                "product": row.get("product") or row.get("monitor_prod") or issue.get("product") or "",
+                "root_lot_id": _tracker_knowledge_root(row),
+                "wafer_id": row.get("wafer_id") or "",
+                "step_id": row.get("current_step") or row.get("step_id") or row.get("function_step") or "",
+                "source_refs": [{"type": "issue", "id": issue.get("id") or source_id, "label": issue.get("title") or ""}],
+            }
+            knowledge_impact.append_candidates_from_text(
+                body,
+                source_type="issue",
+                source_id=source_id or issue.get("id") or "",
+                actor=actor,
+                context=context,
+                allowed_event_types={"lot_anomaly", "split_impact"},
+                status="candidate",
+                title_prefix="Tracker",
+            )
+    except Exception:
+        return
+
+
 def _status_rows_from_lots(rows: list[dict]) -> list[dict]:
     out: list[dict] = []
     for row in rows or []:
@@ -1019,6 +1063,13 @@ def create_issue(req: IssueCreate, request: Request):
     )
     if not result.ok:
         raise HTTPException(400, result.error)
+    _append_tracker_knowledge_events(
+        result.data.get("issue") or {"id": iid, "title": req.title, "description": desc, "lots": lots},
+        actor=req.username,
+        text=req.description,
+        source_id=iid,
+        lots=lots,
+    )
     return {"ok": True, "id": iid}
 
 
@@ -1069,6 +1120,13 @@ def update_issue(req: IssueUpdate, request: Request):
     if not result.ok:
         raise HTTPException(404, result.error)
     iss = result.data["issue"]
+    _append_tracker_knowledge_events(
+        iss,
+        actor=req.username,
+        text=" ".join(str(x or "") for x in (req.title, req.description, req.status, req.category)),
+        source_id=req.issue_id,
+        lots=next_lots,
+    )
     # v8.8.33: 이슈 작성자에게 상태 변경 알림.
     if status_changed:
         try:
@@ -1142,6 +1200,13 @@ def add_comment(req: CommentReq, request: Request):
                 )
     except Exception:
         pass
+    _append_tracker_knowledge_events(
+        iss,
+        actor=req.username,
+        text=req.text,
+        source_id=f"{req.issue_id}:comment",
+        lots=[{"lot_id": req.lot_id, "wafer_id": req.wafer_id}] if (req.lot_id or req.wafer_id) else None,
+    )
     return {"ok": True}
 
 
@@ -1270,6 +1335,18 @@ def bulk_lots(req: LotBulkReq, request: Request):
     )
     if not result.ok:
         raise HTTPException(404, result.error)
+    _append_tracker_knowledge_events(
+        result.data.get("issue") or iss or {"id": req.issue_id},
+        actor=req.username,
+        text=" ".join(
+            str(row.get(k) or "")
+            for row in (rows or [])
+            if isinstance(row, dict)
+            for k in ("purpose", "comment", "note", "status", "step_id", "current_step")
+        ),
+        source_id=f"{req.issue_id}:lots",
+        lots=rows,
+    )
     return {"ok": True, "added": result.data["added"]}
 
 

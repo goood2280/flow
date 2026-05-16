@@ -27,7 +27,7 @@ for _path in (_APP_ROOT, _BACKEND_ROOT):
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from typing import List
+from typing import Any, List
 import polars as pl
 from core.paths import PATHS
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_column
@@ -838,6 +838,72 @@ def _note_scope_parts(entry: dict) -> tuple[str, str, str]:
     return "", "", ""
 
 
+def _append_splittable_note_knowledge(entry: dict, *, actor: str, text: str) -> None:
+    try:
+        from core import knowledge_impact
+        product, root_lot_id, wafer_id = _note_scope_parts(entry)
+        param = ""
+        key = str(entry.get("key") or "")
+        parts = key.split("__")
+        if entry.get("scope") in {"param", "param_global"}:
+            param = parts[-1] if parts else ""
+        knowledge_impact.append_candidates_from_text(
+            text,
+            source_type="split_note",
+            source_id=entry.get("id") or "",
+            actor=actor,
+            context={
+                "product": product,
+                "root_lot_id": root_lot_id,
+                "wafer_id": wafer_id,
+                "item_id": param,
+                "knob_name": param if str(param).upper().startswith(("KNOB_", "MASK_")) else "",
+                "source_refs": [{"type": "split_note", "id": entry.get("id") or "", "label": param or root_lot_id}],
+            },
+            allowed_event_types={"split_impact"},
+            status="candidate",
+            title_prefix="SplitTable",
+        )
+    except Exception:
+        return
+
+
+def _append_splittable_plan_knowledge(*, product: str, cell_key: str, old: Any, new: Any, actor: str, changed_at: str, conflicting: bool = False) -> None:
+    try:
+        from core import knowledge_impact
+        parts = str(cell_key or "").split("|")
+        root = parts[0] if len(parts) > 0 else ""
+        wafer = parts[1] if len(parts) > 1 else ""
+        col = parts[2] if len(parts) > 2 else ""
+        if not col:
+            return
+        knowledge_impact.safe_append_domain_event(
+            event_type="split_impact",
+            source_type="split_note",
+            source_id=f"{product}:{cell_key}",
+            title="SplitTable plan impact candidate",
+            summary=f"SplitTable plan changed {product} {cell_key}: {old} -> {new}",
+            actor=actor,
+            payload={
+                "product": product,
+                "root_lot_id": root,
+                "wafer_id": wafer,
+                "item_id": col,
+                "knob_name": col if str(col).upper().startswith(("KNOB_", "MASK_")) else "",
+                "split_value": "" if new is None else str(new),
+                "previous_split_value": "" if old is None else str(old),
+                "effect_direction": "unknown",
+                "effect_confidence": "candidate",
+                "status": "candidate",
+                "changed_at": changed_at,
+                "conflicting_evidence": bool(conflicting),
+                "source_refs": [{"type": "split_plan", "id": cell_key, "label": f"{old} -> {new}"}],
+            },
+        )
+    except Exception:
+        return
+
+
 def _notify_tracker_owner_for_note(entry: dict, actor: str) -> None:
     try:
         from core.notify import emit_event
@@ -969,6 +1035,7 @@ def save_note(req: NoteSaveReq, request: Request):
     entries = _load_notes()
     entries.append(entry)
     _save_notes(entries)
+    _append_splittable_note_knowledge(entry, actor=username, text=text)
     _notify_tracker_owner_for_note(entry, username)
     return {"ok": True, "entry": entry}
 
@@ -995,6 +1062,7 @@ def add_note_comment(req: NoteCommentReq, request: Request):
     }
     target.setdefault("comments", []).append(comment)
     _save_notes(entries)
+    _append_splittable_note_knowledge(target, actor=username, text=text)
     return {"ok": True, "comment": comment}
 
 
@@ -7089,6 +7157,16 @@ def save_plan(req: PlanReq, request: Request = None):
     data["history"] = data["history"][-1000:]
     save_json(pf, data)
     _invalidate_plan_risk_cache(req.product)
+    for ck, old, val in changed_entries:
+        _append_splittable_plan_knowledge(
+            product=req.product,
+            cell_key=ck,
+            old=old,
+            new=val,
+            actor=req.username,
+            changed_at=now,
+            conflicting=bool(old not in (None, "") and old != val),
+        )
     # v8.8.33: notify 이벤트 — 본인이 아닌 원 소유자에게만.
     try:
         from core.notify import emit_event
@@ -7155,6 +7233,16 @@ def delete_plan(req: PlanDeleteReq, request: Request = None):
             deleted.append((ck, old))
     save_json(pf, data)
     _invalidate_plan_risk_cache(req.product)
+    for ck, old in deleted:
+        _append_splittable_plan_knowledge(
+            product=req.product,
+            cell_key=ck,
+            old=old,
+            new=None,
+            actor=req.username,
+            changed_at=now,
+            conflicting=bool(old not in (None, "")),
+        )
     # SplitTable plan deletes stay in SplitTable history/notifications only.
     _audit_user(req.username, "splittable:plan_delete",
                 detail=f"product={req.product} deleted={len(deleted)}",
