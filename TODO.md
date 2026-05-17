@@ -15,6 +15,7 @@
 
 ## Next
 
+- [ ] (Codex) Knowledge Wiki / Meeting list latency follow-up — `scripts/latency_budget_probe.py` 기준 `/api/knowledge/wiki?limit=10` 약 300ms, `/api/meetings/list` 간헐 120ms를 100ms light endpoint 예산 안으로 줄이거나 heavy/readiness 분류를 조정한다.
 - [ ] (Codex) P10 Flow-i backend 구조 분리 — `backend/routers/llm.py`에서 unit action handler 한 묶음을 feature별 module로 추출하고 trace 계약을 유지한다.
 - [ ] (Codex) P11 Admin / Dashboard 페이지 분해 — panel 하나씩 분리하고 기존 API 호출/권한을 유지한다.
 - [ ] (Claude) P12 Agent 미션 정착 후 Diagnosis/Knowledge 본연 흐름 재정리 (`docs/features/diagnosis-knowledge.md` 우선순위 메모 해제).
@@ -23,6 +24,7 @@
 
 ## Done
 
+- [x] (Codex) Flow UX/성능/안정성 정리 1차 — LOT progress cache hot read path에 product/lot/root/wafer/lot_wf 인메모리 인덱스를 추가하고, Tracker latest step과 Inform product 후보가 runtime cache helper를 우선 읽도록 정리. 현재 앱 구성·가능 작업·성능/안정성·운영 체크리스트는 `docs/APP_MAINTENANCE_REPORT.md`에 정리하고 README에 현재 버전 확인 방식과 latency probe를 반영. `python3 -m pytest tests -q` 518/518 PASS, 영향 범위 200/200 PASS, `cd frontend && npm run build`, `git diff --check`, `python3 _build_setup.py`, `python3 setup.py version`, live `scripts/smoke_test.py` 29/29 PASS. `scripts/latency_budget_probe.py`는 LOT/cache 관련 endpoint 대부분 100ms 이내이나 Knowledge Wiki 약 300ms와 Meeting list 간헐 120ms를 follow-up으로 남김.
 - [x] (Codex) Knowledge Wiki 그래프 라벨 표시 축소 — 노드 클릭 후 포커스 모드에서는 클릭한 노드 하나만 제목을 표시하고, 전체 graph에서는 검색/선택/강조/hover 또는 높은 확대·소규모 graph 조건에서만 라벨을 보이게 조정. 대상 `git diff --check`, `cd frontend && npm run build`, `python3 _build_setup.py`, `python3 setup.py version`, `python3 -m py_compile setup.py` 통과.
 - [x] (Codex) Flow 설정/비밀번호 변경 후 홈 이동 회귀와 Knowledge Wiki/Flow-i 인식 smoke 점검 — 비밀번호 변경의 현재 비밀번호 오입력은 세션 만료가 아닌 400 form error로 처리하고, 상단 탭 이동은 URL pushState를 남겨 reload/recovery 후 홈으로 돌아가지 않도록 보정. Knowledge impact context는 MTS/anchor 변경 전후 값과 current/history를 답변·표에 노출하고, 같은 product/step의 anchor version history를 current item 질문에도 포함한다. Active LLM은 동작하지 않는 Vertex/ADC runtime profile에서 저장된 OpenAI profile로 전환해 `확인완료` 실응답을 확인. `python3 -m pytest tests -q` 514/514 PASS, 영향 범위 pytest 136/136 PASS, `npm run build`, live `scripts/smoke_test.py` 29/29 PASS, live `scripts/agent_scenario_check.py` 63/63 PASS, `[실전테스트]` Knowledge Wiki/Event live Flow-i chat에서 `2.0 -> 3.5`와 anchor history 확인, `python3 _build_setup.py`, `python3 setup.py version`, 대상 경로 `git diff --check` 통과. 전체 `git diff --check`는 runtime `data/flow-data/flowi_users/hol.md` trailing whitespace로 실패.
 - [x] (Codex) Home Flow-i chart follow-up polish — Home inline Plotly chart surface를 흰 배경으로 맞추고, 직전 chart session 후속 요청에서 fit-only, KNOB 컬러링+1차 fitting line/R², KNOB 값 제외가 같은 product/metric/lot scope를 재사용하도록 보강. Generic chart session rows에도 1차 fit/R² fallback을 추가. `python3 -m py_compile backend/routers/llm.py`, targeted pytest 2/2, `python3 -m pytest tests/test_flowi_router.py -q` 124/124 통과(추가 generic test 전), `npm run build`, `python3 _build_setup.py`, `python3 setup.py version`, 대상 경로 `git diff --check` 통과. 전체 `git diff --check`는 기존 runtime `data/flow-data/flowi_users/hol.md` trailing whitespace로 실패.

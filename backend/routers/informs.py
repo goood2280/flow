@@ -102,7 +102,6 @@ FLOW_STATUSES_LEGACY = [
 ]
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8 MB/이미지
-LOT_PROGRESS_LATEST_CACHE_FILE = "lot_progress_latest_lot_by_root_wafer.parquet"
 _INFORMS_CACHE_SIG: tuple[float, int] | None = None
 _INFORMS_CACHE_ITEMS: list | None = None
 INFORM_DASHBOARD_CACHE_TTL = 60.0
@@ -177,28 +176,14 @@ def _fab_db_products() -> list[str]:
 
 
 def _lot_progress_cache_products() -> list[str]:
-    cache_root = getattr(PATHS, "db_cache_dir", None) or (PATHS.db_root / "cache")
-    fp = Path(cache_root) / LOT_PROGRESS_LATEST_CACHE_FILE
-    if not fp.is_file():
-        return []
     try:
-        import polars as pl  # type: ignore
-
-        lf = pl.scan_parquet(str(fp))
-        if "product" not in lf.collect_schema().names():
-            return []
-        df = (
-            lf.select(pl.col("product").cast(pl.Utf8, strict=False).alias("product"))
-            .drop_nulls()
-            .unique()
-            .collect()
-        )
+        from core.lot_progress_cache import list_products
     except Exception:
-        logger.warning("inform product cache scan failed path=%s", fp, exc_info=True)
+        logger.warning("inform product cache lookup failed", exc_info=True)
         return []
     out: list[str] = []
     seen: set[str] = set()
-    for raw in df.get_column("product").to_list():
+    for raw in list_products():
         name = _canonical_product(str(raw or ""))
         if not name:
             continue

@@ -102,6 +102,113 @@ def test_lot_progress_candidates_expose_full_lot_id(monkeypatch):
     assert rows[0]["root_lot_id"] == "A1000"
 
 
+def test_lot_progress_lookup_uses_index_for_specific_lot(monkeypatch):
+    items = [
+        {
+            "product": "PRODA",
+            "root_lot_id": f"A{i:04d}",
+            "lot_id": f"A{i:04d}A.1",
+            "wafer_id": "1",
+            "lot_wf": f"A{i:04d}_1",
+            "step_id": "STEP_010",
+            "tkout_time": f"2026-05-08T10:{i % 60:02d}:00",
+        }
+        for i in range(1000)
+    ]
+    state = {"generated_at": "2026-05-08T10:00:00", "count": len(items), "items": items}
+    monkeypatch.setattr(cache, "load_lot_progress_cache", lambda max_age_seconds=None: state)
+    original_matches = cache._matches
+    calls = {"count": 0}
+
+    def counted_matches(*args, **kwargs):
+        calls["count"] += 1
+        return original_matches(*args, **kwargs)
+
+    monkeypatch.setattr(cache, "_matches", counted_matches)
+
+    rows = cache.lookup_lot_progress(root_lot_id="A0999", wafer_id="1")
+
+    assert rows[0]["lot_id"] == "A0999A.1"
+    assert calls["count"] == 1
+
+
+def test_lot_progress_list_products_reads_existing_cache_without_refresh(monkeypatch, tmp_path):
+    data_root = tmp_path / "flow-data"
+    db_root = tmp_path / "Fab"
+
+    class DummyPaths:
+        def __init__(self):
+            self.cache_dir = data_root / "cache"
+            self.db_cache_dir = db_root / "cache"
+            self.data_root = data_root
+            self.db_root = db_root
+            self.base_root = db_root
+
+    monkeypatch.setattr(cache, "PATHS", DummyPaths())
+    monkeypatch.setattr(cache, "_CACHE_STATE", None)
+    state = {
+        "generated_at": "2026-05-08T10:00:00",
+        "count": 2,
+        "source_root": "",
+        "source_roots": [],
+        "column_mapping": cache.DEFAULT_LOT_PROGRESS_COLUMN_MAPPING,
+        "items": [
+            {"product": "PRODA", "root_lot_id": "A1000", "lot_id": "A1000A.1", "wafer_id": "1"},
+            {"product": "PRODB", "root_lot_id": "B1000", "lot_id": "B1000A.1", "wafer_id": "1"},
+        ],
+    }
+    cache.cache_file().parent.mkdir(parents=True, exist_ok=True)
+    cache.cache_file().write_text(json.dumps(state), encoding="utf-8")
+
+    def fail_refresh(*args, **kwargs):
+        raise AssertionError("list_products should not refresh source parquet")
+
+    monkeypatch.setattr(cache, "refresh_lot_progress_cache", fail_refresh)
+
+    assert cache.list_products() == ["PRODA", "PRODB"]
+
+
+def test_latest_fab_step_uses_lot_progress_memory_cache(monkeypatch):
+    from core import lot_step
+
+    monkeypatch.setattr(cache, "load_lot_progress_cache", lambda max_age_seconds=None: {
+        "generated_at": "2026-05-08T10:00:00",
+        "items": [
+            {
+                "product": "PRODA",
+                "root_lot_id": "A1000",
+                "lot_id": "A1000A.1",
+                "wafer_id": "1",
+                "lot_wf": "A1000_1",
+                "step_id": "STEP_010",
+                "function_step": "STI",
+                "tkout_time": "2026-05-08T10:00:00",
+            }
+        ],
+    })
+    monkeypatch.setattr(cache, "read_lot_progress_cache", lambda max_age_seconds=None, allow_stale=True: {
+        "generated_at": "2026-05-08T10:00:00",
+        "items": [
+            {
+                "product": "PRODA",
+                "root_lot_id": "A1000",
+                "lot_id": "A1000A.1",
+                "wafer_id": "1",
+                "lot_wf": "A1000_1",
+                "step_id": "STEP_010",
+                "function_step": "STI",
+                "tkout_time": "2026-05-08T10:00:00",
+            }
+        ],
+    })
+
+    row = lot_step._latest_fab_step_from_lot_progress_cache(product="PRODA", root_lot_id="A1000", wafer_id="1")
+
+    assert row["step_id"] == "STEP_010"
+    assert row["function_step"] == "STI"
+    assert row["source"] == "lot_progress_latest_cache"
+
+
 def test_export_lot_progress_parquet_writes_readable_latest_lot_file(monkeypatch, tmp_path):
     data_root = tmp_path / "flow-data"
     db_root = tmp_path / "Fab"

@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import polars as pl
 from fastapi import HTTPException
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +14,7 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from backend.routers import informs  # noqa: E402
+from core import lot_progress_cache  # noqa: E402
 
 
 def test_product_add_duplicate_returns_409(tmp_path, monkeypatch):
@@ -50,21 +50,30 @@ def test_inform_config_product_candidates_include_latest_lot_cache(tmp_path, mon
     fab_root = tmp_path / "Fab" / "1.RAWDATA_DB_FAB"
     (fab_root / "ML_TABLE_PRODA").mkdir(parents=True)
     (fab_root / "PRODB").mkdir(parents=True)
-    cache_root = tmp_path / "Fab" / "cache"
-    cache_root.mkdir(parents=True)
-    pl.DataFrame({
-        "product": ["PRODA", "PRODC", "ML_TABLE_PRODD"],
-        "root_lot_id": ["R1000", "R2000", "R3000"],
-        "wafer_id": ["1", "1", "1"],
-        "lot_id": ["F1000A.1", "F2000A.1", "F3000A.1"],
-    }).write_parquet(cache_root / "lot_progress_latest_lot_by_root_wafer.parquet")
+    data_root = tmp_path / "flow-data"
 
     class DummyPaths:
-        db_root = tmp_path / "Fab"
-        db_cache_dir = cache_root
+        def __init__(self):
+            self.db_root = tmp_path / "Fab"
+            self.base_root = tmp_path / "Fab"
+            self.data_root = data_root
+            self.cache_dir = data_root / "cache"
+            self.db_cache_dir = tmp_path / "Fab" / "cache"
 
     monkeypatch.setattr(informs, "CONFIG_FILE", cfg_file)
-    monkeypatch.setattr(informs, "PATHS", DummyPaths())
+    paths = DummyPaths()
+    monkeypatch.setattr(informs, "PATHS", paths)
+    monkeypatch.setattr(lot_progress_cache, "PATHS", paths)
+    monkeypatch.setattr(lot_progress_cache, "_CACHE_STATE", None)
+    lot_progress_cache.cache_file().write_text(json.dumps({
+        "generated_at": "2026-05-17T10:00:00",
+        "count": 3,
+        "items": [
+            {"product": "PRODA", "root_lot_id": "R1000", "wafer_id": "1", "lot_id": "F1000A.1"},
+            {"product": "PRODC", "root_lot_id": "R2000", "wafer_id": "1", "lot_id": "F2000A.1"},
+            {"product": "ML_TABLE_PRODD", "root_lot_id": "R3000", "wafer_id": "1", "lot_id": "F3000A.1"},
+        ],
+    }), encoding="utf-8")
     monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "tester"})
     monkeypatch.setattr(informs, "_effective_modules", lambda _username, _role: {"__all__"})
     monkeypatch.setattr(informs, "_load_upgraded", lambda: [

@@ -19,6 +19,7 @@ Fab data analytics and plan-vs-actual tracking platform.
 | 코드 구조 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 수정 기준과 검증 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | GitHub `main` 푸시 절차 | [docs/GITHUB_MAIN_PUSH.md](docs/GITHUB_MAIN_PUSH.md) |
+| 앱 운영/성능 리포트 | [docs/APP_MAINTENANCE_REPORT.md](docs/APP_MAINTENANCE_REPORT.md) |
 | 사내 반입/업데이트 | [docs/SOFT_LANDING_INTERNAL.md](docs/SOFT_LANDING_INTERNAL.md) |
 
 ## Current Shape
@@ -37,6 +38,24 @@ flow/
 
 현재 우선 흐름은 Flow-i Agent 탭이 Inform Log, SplitTable, FileBrowser를 app-action driver로 호출하고, `prompt -> orchestrator -> feature unit_action -> API/handler -> result` trace를 한 화면에서 보여주는 것이다.
 
+현재 운영 상태:
+
+- Flow-i는 Home/Agent에서 자연어 요청을 기능별 unit action으로 라우팅하고, Wiki/Schema/실행 근거 trace를 같이 남긴다.
+- FileBrowser는 대형 파일을 sample-first로 열고, AI SQL draft는 `필터 + 정렬 + 필요 시 선택 컬럼` 계약을 사용한다.
+- LOT progress cache는 hot read path에서 product, lot, root lot, wafer, lot_wf 인메모리 인덱스를 사용한다.
+- Inform product 후보와 Tracker/Flow-i 최신 step 조회는 cache parquet 직접 scan보다 memory/JSON cache helper를 우선 사용한다.
+- 세부 운영 상태, 가능한 작업, 100ms light endpoint 기준은 [docs/APP_MAINTENANCE_REPORT.md](docs/APP_MAINTENANCE_REPORT.md)에 둔다.
+
+## Current Version
+
+현재 표시 버전은 `VERSION.json`의 release metadata와 파일 mtime 기반 bundle label을 함께 본다. 최신 checkout에서 아래 명령으로 확인한다.
+
+```bash
+python3 setup.py version
+```
+
+실행 중인 앱에서는 `/version.json`을 확인한다. `setup.py`는 source/doc 변경 후 반드시 `_build_setup.py`로 재생성한다.
+
 ## Validation Structure
 
 `flow`의 검증은 앱 안의 smoke/preflight/test 스크립트를 기준으로 한다.
@@ -47,6 +66,7 @@ flow/
 | `scripts/tab_smoke.py` | admin/smoke user로 주요 탭 endpoint를 반복 확인 |
 | `scripts/smoke_lot_flow.py` | lot 중심 E2E 업무 시나리오 smoke |
 | `scripts/preflight_internal.py` | 사내 반입 전 포트, root, data_root 보존, backup/restore 기준 확인 |
+| `scripts/latency_budget_probe.py` | warm server 기준 light API가 100ms 예산을 넘는지 확인 |
 | `tests/` | backend/router/service 계약과 회귀 단위 테스트 |
 
 앱은 8080을 사용한다. 실행 중인 앱의 root 해석은 `/runtime-roots.json`에서 확인한다.
@@ -98,6 +118,12 @@ python3 -m pytest tests
 
 ```bash
 python3 scripts/preflight_internal.py --write-probe
+```
+
+warm server light API latency:
+
+```bash
+FLOW_BASE=http://127.0.0.1:8080 python3 scripts/latency_budget_probe.py
 ```
 
 `setup.py` 또는 번들 산출물을 갱신했을 때:

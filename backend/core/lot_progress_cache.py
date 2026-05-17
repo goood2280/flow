@@ -43,6 +43,8 @@ STEP_MAPPING_FILENAMES = (
 
 _CACHE_LOCK = threading.Lock()
 _CACHE_STATE: dict | None = None
+_CACHE_INDEX: dict | None = None
+_CACHE_INDEX_KEY: tuple[int, str, int] | None = None
 _CACHE_STARTED = False
 _CACHE_STOP = threading.Event()
 _CACHE_THREAD: threading.Thread | None = None
@@ -369,6 +371,87 @@ def _norm_wafer(value) -> str:
 
 def _sort_time(row: dict) -> str:
     return _safe_text(row.get("update_time") or row.get("tkout_time") or row.get("tkin_time") or row.get("time"))
+
+
+def _cache_index_key(state: dict) -> tuple[int, str, int]:
+    items = state.get("items") or []
+    return (id(items), _safe_text(state.get("generated_at")), int(state.get("count") or len(items) or 0))
+
+
+def _add_index_value(target: dict[str, list[dict]], key: str, item: dict) -> None:
+    if key:
+        target.setdefault(key, []).append(item)
+
+
+def _build_cache_index(state: dict | None) -> dict:
+    items = [item for item in (state or {}).get("items") or [] if isinstance(item, dict)]
+    rows = sorted(items, key=_sort_time, reverse=True)
+    index = {
+        "all": rows,
+        "by_product": {},
+        "by_lot_id": {},
+        "by_root_lot_id": {},
+        "by_wafer_id": {},
+        "by_lot_wf": {},
+        "products": [],
+    }
+    products: dict[str, str] = {}
+    for item in rows:
+        product = _norm_key(item.get("product"))
+        process_id = _norm_key(item.get("process_id"))
+        lot_id = _norm_key(item.get("lot_id"))
+        root_lot_id = _norm_key(item.get("root_lot_id"))
+        wafer_id = _norm_wafer(item.get("wafer_id"))
+        lot_wf = _norm_key(item.get("lot_wf"))
+        for key in {product, process_id}:
+            _add_index_value(index["by_product"], key, item)
+        for key in {lot_id, root_lot_id}:
+            _add_index_value(index["by_lot_id"], key, item)
+        _add_index_value(index["by_root_lot_id"], root_lot_id, item)
+        _add_index_value(index["by_wafer_id"], wafer_id, item)
+        _add_index_value(index["by_lot_wf"], lot_wf, item)
+        if product and product not in products:
+            products[product] = _safe_text(item.get("product"))
+    index["products"] = sorted((v for v in products.values() if v), key=lambda value: value.lower())
+    return index
+
+
+def _set_cache_state(state: dict) -> None:
+    global _CACHE_STATE, _CACHE_INDEX, _CACHE_INDEX_KEY
+    _CACHE_STATE = state
+    _CACHE_INDEX = _build_cache_index(state)
+    _CACHE_INDEX_KEY = _cache_index_key(state)
+
+
+def _cache_index_for(state: dict) -> dict:
+    global _CACHE_INDEX, _CACHE_INDEX_KEY
+    key = _cache_index_key(state)
+    if _CACHE_INDEX is not None and _CACHE_INDEX_KEY == key:
+        return _CACHE_INDEX
+    index = _build_cache_index(state)
+    if _CACHE_STATE is not None and _cache_index_key(_CACHE_STATE) == key:
+        _CACHE_INDEX = index
+        _CACHE_INDEX_KEY = key
+    return index
+
+
+def _cache_state_fresh(state: dict, max_age_seconds: int) -> bool:
+    generated_at = _safe_text((state or {}).get("generated_at"))
+    try:
+        age = (dt.datetime.now() - dt.datetime.fromisoformat(generated_at)).total_seconds()
+    except Exception:
+        return False
+    return age <= max_age_seconds
+
+
+def _empty_cache_state() -> dict:
+    return {
+        "version": CACHE_VERSION,
+        "generated_at": "",
+        "count": 0,
+        "items": [],
+        "cache_file": str(cache_file()),
+    }
 
 
 def _lot_status_time(row: dict) -> str:
@@ -920,7 +1003,7 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> di
                     loaded = json.loads(cache_path.read_text(encoding="utf-8"))
                     if isinstance(loaded, dict):
                         state = loaded
-                        _CACHE_STATE = loaded
+                        _set_cache_state(loaded)
                 except Exception:
                     state = None
             if state is None:
@@ -1055,7 +1138,7 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> di
                 export_lot_progress_parquet(state)
             except Exception as exc:
                 logger.warning("LOT_WF parquet export failed: %s", exc)
-            _CACHE_STATE = state
+            _set_cache_state(state)
             _append_refresh_log({
                 "status": "success",
                 "started_at": started_at,
@@ -1115,7 +1198,7 @@ def load_lot_progress_cache(max_age_seconds: int | None = None) -> dict:
                     and _state_source_root_matches(state, source_root_hint)
                     and _state_column_mapping_matches(state, column_mapping)
                 ):
-                    _CACHE_STATE = state
+                    _set_cache_state(state)
                     return dict(state)
             except Exception:
                 pass
@@ -1123,6 +1206,42 @@ def load_lot_progress_cache(max_age_seconds: int | None = None) -> dict:
     if should_refresh:
         return refresh_lot_progress_cache(force=True, source_root=source_root_hint)
     return refresh_lot_progress_cache(force=True, source_root=source_root_hint)
+
+
+def read_lot_progress_cache(max_age_seconds: int | None = None, *, allow_stale: bool = True) -> dict:
+    """Read the existing cache without triggering a source scan.
+
+    Hot UI paths use this when a stale or missing cache should return a fast
+    readiness/empty result instead of doing a multi-second FAB parquet refresh
+    inside the request.
+    """
+    if max_age_seconds is None:
+        max_age_seconds = lot_progress_cache_refresh_seconds()
+    source_root_hint = lot_progress_cache_source_root()
+    column_mapping = lot_progress_column_mapping()
+    with _CACHE_LOCK:
+        if (
+            _CACHE_STATE
+            and _state_source_root_matches(_CACHE_STATE, source_root_hint)
+            and _state_column_mapping_matches(_CACHE_STATE, column_mapping)
+            and (allow_stale or _cache_state_fresh(_CACHE_STATE, max_age_seconds))
+        ):
+            return dict(_CACHE_STATE)
+        path = cache_file()
+        if path.is_file():
+            try:
+                state = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                state = None
+            if (
+                isinstance(state, dict)
+                and _state_source_root_matches(state, source_root_hint)
+                and _state_column_mapping_matches(state, column_mapping)
+                and (allow_stale or _cache_state_fresh(state, max_age_seconds))
+            ):
+                _set_cache_state(state)
+                return dict(state)
+    return _empty_cache_state()
 
 
 def _matches(item: dict, *, product: str = "", lot_id: str = "", root_lot_id: str = "", wafer_id: str = "", lot_wf: str = "") -> bool:
@@ -1150,20 +1269,70 @@ def lookup_lot_progress(
     lot_wf: str = "",
     limit: int = 50,
     max_age_seconds: int | None = None,
+    refresh_if_missing: bool = True,
 ) -> list[dict]:
-    state = load_lot_progress_cache(max_age_seconds=max_age_seconds)
-    rows = [
-        dict(item)
-        for item in state.get("items") or []
-        if isinstance(item, dict)
-        and _matches(item, product=product, lot_id=lot_id, root_lot_id=root_lot_id, wafer_id=wafer_id, lot_wf=lot_wf)
-    ]
-    rows.sort(key=_sort_time, reverse=True)
+    state = (
+        load_lot_progress_cache(max_age_seconds=max_age_seconds)
+        if refresh_if_missing
+        else read_lot_progress_cache(max_age_seconds=max_age_seconds, allow_stale=True)
+    )
+    return _lookup_lot_progress_in_state(
+        state,
+        product=product,
+        lot_id=lot_id,
+        root_lot_id=root_lot_id,
+        wafer_id=wafer_id,
+        lot_wf=lot_wf,
+        limit=limit,
+    )
+
+
+def _lookup_lot_progress_in_state(
+    state: dict,
+    *,
+    product: str = "",
+    lot_id: str = "",
+    root_lot_id: str = "",
+    wafer_id: str = "",
+    lot_wf: str = "",
+    limit: int = 50,
+) -> list[dict]:
     try:
         cap = max(1, min(int(limit), 500))
     except Exception:
         cap = 50
+    index = _cache_index_for(state)
+    prod = _norm_key(product)
+    lot = _norm_key(lot_id)
+    root = _norm_key(root_lot_id)
+    wafer = _norm_wafer(wafer_id)
+    lot_wf_key = _norm_key(lot_wf)
+    if lot_wf_key:
+        candidates = index["by_lot_wf"].get(lot_wf_key, [])
+    elif root:
+        candidates = index["by_root_lot_id"].get(root, [])
+    elif lot:
+        candidates = index["by_lot_id"].get(lot, [])
+    elif prod:
+        candidates = index["by_product"].get(prod, [])
+    elif wafer:
+        candidates = index["by_wafer_id"].get(wafer, [])
+    else:
+        candidates = index["all"]
+    rows: list[dict] = []
+    for item in candidates:
+        if not _matches(item, product=product, lot_id=lot_id, root_lot_id=root_lot_id, wafer_id=wafer_id, lot_wf=lot_wf):
+            continue
+        rows.append(dict(item))
+        if len(rows) >= cap:
+            break
     return rows[:cap]
+
+
+def list_products(max_age_seconds: int | None = None) -> list[str]:
+    """Return products from the hot LOT progress cache without parquet scans."""
+    state = read_lot_progress_cache(max_age_seconds=max_age_seconds, allow_stale=True)
+    return list(_cache_index_for(state).get("products") or [])
 
 
 def lot_progress_summary(
@@ -1228,15 +1397,12 @@ def lot_id_candidates(
     max_age_seconds: int | None = None,
 ) -> list[dict]:
     state = load_lot_progress_cache(max_age_seconds=max_age_seconds)
+    index = _cache_index_for(state)
     prod = _norm_key(product)
     pref = _norm_key(prefix)
     out: list[dict] = []
     seen: set[str] = set()
-    rows = sorted(
-        [item for item in state.get("items") or [] if isinstance(item, dict)],
-        key=_sort_time,
-        reverse=True,
-    )
+    rows = index["by_product"].get(prod, []) if prod else index["all"]
     for item in rows:
         if prod and _norm_key(item.get("product")) != prod and _norm_key(item.get("process_id")) != prod:
             continue
@@ -1276,15 +1442,21 @@ def lot_progress_snapshot(
     wafer_id: str = "",
     lot_wf: str = "",
     max_age_seconds: int | None = None,
+    refresh_if_missing: bool = True,
 ) -> dict:
-    rows = lookup_lot_progress(
+    state = (
+        load_lot_progress_cache(max_age_seconds=max_age_seconds)
+        if refresh_if_missing
+        else read_lot_progress_cache(max_age_seconds=max_age_seconds, allow_stale=True)
+    )
+    rows = _lookup_lot_progress_in_state(
+        state,
         product=product,
         root_lot_id=root_lot_id,
         lot_id=lot_id,
         wafer_id=wafer_id,
         lot_wf=lot_wf,
         limit=1,
-        max_age_seconds=max_age_seconds,
     )
     if not rows:
         return {"fab": {}, "et": [], "cache": {"hit": False}}
@@ -1294,7 +1466,7 @@ def lot_progress_snapshot(
         "time": row.get("update_time") or row.get("time") or row.get("tkout_time") or row.get("tkin_time") or "",
         "cache_source": "lot_progress_cache",
     }
-    return {"fab": fab, "et": [], "cache": {"hit": True, "generated_at": load_lot_progress_cache(max_age_seconds=max_age_seconds).get("generated_at")}}
+    return {"fab": fab, "et": [], "cache": {"hit": True, "generated_at": state.get("generated_at")}}
 
 
 def cache_status() -> dict:

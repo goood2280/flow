@@ -30,6 +30,7 @@ logger = logging.getLogger("flow.lot_step")
 
 FAB_ROOT = "1.RAWDATA_DB_FAB"
 ET_ROOT = "1.RAWDATA_DB_ET"
+LOT_PROGRESS_LATEST_CACHE_FILE = "lot_progress_latest_lot_by_root_wafer.parquet"
 LOT_STEP_MAX_WAFER_ID = 25
 DEFAULT_MONITOR_CATEGORY = "Monitor"
 DEFAULT_ANALYSIS_CATEGORY = "Analysis"
@@ -38,7 +39,6 @@ ET_LOT_CACHE_VERSION = 1
 ET_LOT_CACHE_DEFAULT_MINUTES = 30
 ET_LOT_CACHE_MIN_MINUTES = 30
 ET_LOT_CACHE_MAX_MINUTES = 60
-LOT_PROGRESS_LATEST_CACHE_FILE = "lot_progress_latest_lot_by_root_wafer.parquet"
 _ET_LOT_CACHE_THREAD: threading.Thread | None = None
 _ET_LOT_CACHE_STARTED = False
 _ET_LOT_CACHE_STOP = threading.Event()
@@ -52,10 +52,6 @@ def _get_db_root() -> Path:
         return resolve_existing_root("db", PATHS.db_root)
     except Exception:
         return PATHS.db_root
-
-
-def _lot_progress_latest_cache_path() -> Path:
-    return _get_db_root() / "cache" / LOT_PROGRESS_LATEST_CACHE_FILE
 
 
 def _latest_cache_product_values(product: str = "") -> set[str]:
@@ -76,9 +72,38 @@ def _latest_cache_product_values(product: str = "") -> set[str]:
     return values
 
 
-def _latest_fab_step_from_lot_progress_cache(product: str = "", root_lot_id: str = "",
-                                             lot_id: str = "", wafer_id: str = "") -> dict:
-    fp = _lot_progress_latest_cache_path()
+def _lot_progress_cache_root_matches(cache_module) -> bool:
+    try:
+        return Path(cache_module.PATHS.db_root).resolve() == _get_db_root().resolve()
+    except Exception:
+        return False
+
+
+def _format_lot_progress_cache_row(row: dict, product: str = "") -> dict:
+    step_id = str(row.get("step_id") or "").strip()
+    if not step_id:
+        return {}
+    meta = lookup_step_meta(product=product or row.get("product") or "", step_id=step_id)
+    function_step = str(row.get("function_step") or meta.get("function_step") or meta.get("func_step") or "").strip()
+    return {
+        "step_id": step_id,
+        "time": row.get("tkout_time") or row.get("update_time") or row.get("time") or row.get("tkin_time"),
+        "product": row.get("product"),
+        "lot_id": row.get("lot_id"),
+        "fab_lot_id": row.get("lot_id"),
+        "root_lot_id": row.get("root_lot_id"),
+        "wafer_id": row.get("wafer_id"),
+        "tkout_time": row.get("tkout_time"),
+        "update_time": row.get("update_time"),
+        **meta,
+        **({"function_step": function_step, "func_step": function_step} if function_step else {}),
+        "source": "lot_progress_latest_cache",
+    }
+
+
+def _latest_fab_step_from_lot_progress_parquet(product: str = "", root_lot_id: str = "",
+                                               lot_id: str = "", wafer_id: str = "") -> dict:
+    fp = _get_db_root() / "cache" / LOT_PROGRESS_LATEST_CACHE_FILE
     if not fp.is_file():
         return {}
     try:
@@ -122,40 +147,57 @@ def _latest_fab_step_from_lot_progress_cache(product: str = "", root_lot_id: str
             expr = expr & item
         lf = lf.filter(expr)
     select_cols = [
-        c for c in ("product", "root_lot_id", "wafer_id", "lot_id", "step_id", "function_step", "tkout_time", "update_time")
+        c for c in (
+            "product", "root_lot_id", "wafer_id", "lot_id", "step_id", "function_step",
+            "tkout_time", "update_time", "time", "tkin_time",
+        )
         if c in schema
     ]
     if not select_cols:
         return {}
     q = lf.select(select_cols).filter(pl.col("step_id").is_not_null() & (pl.col("step_id").cast(pl.Utf8, strict=False) != ""))
-    if "tkout_time" in select_cols:
-        q = q.sort("tkout_time", descending=True, nulls_last=True)
+    for time_col in ("update_time", "tkout_time", "time", "tkin_time"):
+        if time_col in select_cols:
+            q = q.sort(time_col, descending=True, nulls_last=True)
+            break
     try:
         df = q.head(1).collect()
     except Exception:
         return {}
     if df.is_empty():
         return {}
-    row = df.to_dicts()[0]
-    step_id = str(row.get("step_id") or "").strip()
-    if not step_id:
-        return {}
-    meta = lookup_step_meta(product=product or row.get("product") or "", step_id=step_id)
-    function_step = str(row.get("function_step") or meta.get("function_step") or meta.get("func_step") or "").strip()
-    return {
-        "step_id": step_id,
-        "time": row.get("tkout_time"),
-        "product": row.get("product"),
-        "lot_id": row.get("lot_id"),
-        "fab_lot_id": row.get("lot_id"),
-        "root_lot_id": row.get("root_lot_id"),
-        "wafer_id": row.get("wafer_id"),
-        "tkout_time": row.get("tkout_time"),
-        "update_time": row.get("update_time"),
-        **meta,
-        **({"function_step": function_step, "func_step": function_step} if function_step else {}),
-        "source": "lot_progress_latest_cache",
-    }
+    return _format_lot_progress_cache_row(df.to_dicts()[0], product=product)
+
+
+def _latest_fab_step_from_lot_progress_cache(product: str = "", root_lot_id: str = "",
+                                             lot_id: str = "", wafer_id: str = "") -> dict:
+    try:
+        from core import lot_progress_cache
+    except Exception:
+        lot_progress_cache = None
+
+    if lot_progress_cache is not None and _lot_progress_cache_root_matches(lot_progress_cache):
+        product_candidates = sorted(_latest_cache_product_values(product)) if product else [""]
+        for product_candidate in product_candidates:
+            try:
+                snapshot = lot_progress_cache.lot_progress_snapshot(
+                    product=product_candidate,
+                    root_lot_id=root_lot_id,
+                    lot_id=lot_id,
+                    wafer_id=wafer_id,
+                    refresh_if_missing=False,
+                )
+            except Exception:
+                snapshot = {}
+            candidate = snapshot.get("fab") if isinstance(snapshot, dict) else {}
+            if isinstance(candidate, dict) and candidate.get("step_id"):
+                return _format_lot_progress_cache_row(candidate, product=product)
+    return _latest_fab_step_from_lot_progress_parquet(
+        product=product,
+        root_lot_id=root_lot_id,
+        lot_id=lot_id,
+        wafer_id=wafer_id,
+    )
 
 
 def _settings_file() -> Path:

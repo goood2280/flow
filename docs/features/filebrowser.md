@@ -167,14 +167,14 @@ step matching CSV 후보 (repo 루트): `Vehicle_matching.csv`, `vehicle_matchin
 
 | 순위 | 변경 | 위치 | 기대 효과 |
 |---|---|---|---|
-| 1 | `refresh_lot_progress_cache` 마지막에 `_CACHE_INDEX` 빌드: `by_product_lot_wf`, `by_lot_id`, `by_root_lot_id`, `by_product` dict. `lookup_lot_progress` / `lot_progress_summary` / `lot_id_candidates` 가 이 인덱스를 사용 | `backend/core/lot_progress_cache.py` (`refresh_lot_progress_cache` 종반 + `lookup_lot_progress` 라인 1144–1166) | N×items 선형 스캔 → N개 dict lookup. 한 페이지 hydrate 합계 latency 가 자릿수 단위로 떨어짐 |
-| 2 | parquet 직접 스캔 두 곳을 인메모리 helper 호출로 교체 — `_latest_fab_step_from_lot_progress_cache` 는 `lot_progress_snapshot(...)` 으로, `_lot_progress_cache_products` 는 `lot_progress_cache` 의 새 `list_products()` helper 로 | `backend/core/lot_step.py:79`, `backend/routers/informs.py:179`, `backend/core/lot_progress_cache.py` (helper 추가) | 매 호출 수십~수백 ms parquet IO → 수 µs 메모리 lookup |
-| 3 | 앱 기동 시 scheduler 시작과 동시에 1회 warm-up (`load_lot_progress_cache()` 1회 invoke) — 첫 요청이 cold path 를 타지 않도록 | `backend/routers/lot_progress.py` 의 startup 훅 또는 `start_lot_progress_cache_scheduler` 직후 | 서버 재시작 직후 첫 요청 latency 안정화 |
-| 4 | JSON disk fallback 직렬화 포맷을 binary (pickle/parquet) 로 교체. JSON loads 수십 ms → 한자리 ms | `cache_file()` 쓰기/읽기 (라인 59–60, `refresh_lot_progress_cache` 라인 1051–1053, `load_lot_progress_cache` 라인 1107–1121) | 메모리 cold 시점의 disk fall-through 비용 단축 |
+| 1 | 적용됨: `_CACHE_INDEX` 빌드: `by_product`, `by_lot_id`, `by_root_lot_id`, `by_wafer_id`, `by_lot_wf` dict. `lookup_lot_progress` / `lot_progress_summary` / `lot_id_candidates` 가 이 인덱스를 사용 | `backend/core/lot_progress_cache.py` | N×items 선형 스캔 → N개 dict lookup. 한 페이지 hydrate 합계 latency 가 자릿수 단위로 떨어짐 |
+| 2 | 적용됨: parquet 직접 스캔 두 곳을 인메모리 helper 호출로 교체 — `_latest_fab_step_from_lot_progress_cache` 는 `lot_progress_snapshot(..., refresh_if_missing=False)` 으로, `_lot_progress_cache_products` 는 `list_products()` helper 로 읽음 | `backend/core/lot_step.py`, `backend/routers/informs.py`, `backend/core/lot_progress_cache.py` | 매 호출 수십~수백 ms parquet IO → memory/JSON cache lookup |
+| 3 | 부분 적용: `backend/routers/lot_progress.py` import 시 `start_lot_progress_cache_scheduler()` 가 daemon thread를 시작하고 첫 loop에서 `load_lot_progress_cache()`를 호출한다. 운영 visibility는 `/api/lot-progress/status`와 latency probe로 확인 | `backend/routers/lot_progress.py`, `backend/core/lot_progress_cache.py`, `scripts/latency_budget_probe.py` | 서버 재시작 직후 첫 요청 latency 안정화와 회귀 감지 |
+| 4 | JSON disk fallback 직렬화 포맷을 binary (pickle/parquet) 로 교체. JSON loads 수십 ms → 한자리 ms | `cache_file()`, `refresh_lot_progress_cache`, `load_lot_progress_cache`, `read_lot_progress_cache` | 메모리 cold 시점의 disk fall-through 비용 단축 |
 | 5 | hit/miss/latency_ms/items_scanned 를 `lot_progress_cache_refresh.jsonl` 와는 별도 read 메트릭 로그로 남기기. SLA 추적과 회귀 감지 가능 | `lookup_lot_progress`, `lot_progress_summary` 진입/종료 | 100ms SLA 의 실측·회귀 알림 |
 | 6 | Tracker dashboard / 인폼 product 옵션처럼 사용자별로 자주 같은 결과를 받는 endpoint 는 짧은 ETag/Cache-Control 부여 | 각 router 응답 헤더 | 같은 요청 반복은 0 ms |
 
-체크리스트 1+2+3 만 적용해도 캐시가 hot 인 상태에서 컨슈머 호출당 1 ms 이하가 현실적이다. 100ms SLA 위반이 보고되면 5번 메트릭을 먼저 켜고 1·2·3 순서로 적용해 회귀를 막는다.
+체크리스트 1+2가 적용되어 hot cache 상태의 특정 lot/root/wafer 조회는 선형 scan 대신 index lookup을 탄다. 100ms SLA 위반이 보고되면 `scripts/latency_budget_probe.py`로 light endpoint를 먼저 확인하고, 남은 4·5·6 순서로 회귀 지점을 좁힌다.
 - SplitTable 매칭 캐시, Tracker Analysis ET 후보 캐시, ET/INLINE/VM 요약 캐시는 FileBrowser 운영 캐시에서 제외한다. legacy/non-canonical cache parquet/csv/json은 목록에서 숨기고, FileBrowser page manager가 `/api/filebrowser/cache/cleanup-candidates`와 `/api/filebrowser/cache/cleanup`으로 명시 삭제한다.
 - `filebrowser_settings.json.auto_s3_upload_on_save=true`이면 base file save/text save/rollback과 LOT 진행 캐시 parquet 갱신 후 S3 artifact sync를 호출한다. 꺼져 있으면 저장은 그대로 수행하고 응답 `s3_sync.status`는 `disabled_by_filebrowser_setting`이다.
 - Flow-i의 현재 step 질문은 FAB 원본 재스캔보다 `lot_progress_latest_lot_by_root_wafer.parquet`를 우선 사용해 `step_id`와 `function_step`을 답한다.
