@@ -268,9 +268,8 @@ function WikiGraph({ graph, query, selected, focusId, highlightId, onSelect, onF
             const label = node.label || node.id;
             const isHover = hover?.id === node.id;
             const isFocusedView = Boolean(focusId);
-            const showFocusLabel = isFocusedView && isFocus;
-            const showZoomLabel = !focusId && scale > 1.8 && graphData.nodes.length <= 35;
-            const showLabel = showFocusLabel || (!isFocusedView && (isSelected || isMatch || isNew || isHover || showZoomLabel));
+            const showFocusLabel = isFocusedView && focus.ids.has(node.id);
+            const showLabel = showFocusLabel || (!isFocusedView && (isSelected || isMatch || isNew || isHover));
             if (showLabel) {
               const display = label.length > 30 ? label.slice(0, 29) + "…" : label;
               const fontSize = Math.max(6.5, Math.min(12, 10.5 / scale));
