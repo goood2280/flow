@@ -4,6 +4,7 @@ import { postJson, sf } from "../lib/api";
 import { isAdmin as isAdminUser, isPageAdmin } from "../lib/permissions";
 import { toast } from "../components/Toast";
 import { PageHeader, statusPalette } from "../components/UXKit";
+import { FlowPlotlyChart } from "../components/PlotlyChart";
 const B="#ea580c",M="#f97316",L="#fb923c",D="#9a3412",BK="#171717",W="#fff7ed",PK="#fda4af",G="#fbbf24";
 const HOME_UI={
   accent:statusPalette.warn.fg,
@@ -980,6 +981,16 @@ function FlowiScatterResult({data}){
   if(Array.isArray(data.groups)&&data.groups.length)return <FlowiGroupBarResult data={data}/>;
   if(Array.isArray(data.boxes)&&data.boxes.length)return <FlowiBoxResult data={data}/>;
   if(data.kind==="dashboard_wafer_map"&&Array.isArray(data.points))return <FlowiWaferMapResult data={data}/>;
+  const rawPts=Array.isArray(data.points)?data.points:[];
+  if(rawPts.length)return <div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"8px 10px",minWidth:0}}>
+    <FlowPlotlyChart chart={data} cfg={data.chart_config||data.config||data.config_overrides||data} height={430} dark />
+    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>
+      <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>join {Array.isArray(data.join_cols)?data.join_cols.join("+"):"lot_wf"} · {data.join_how||"left"}</span>
+      {data.aggregations?.INLINE&&<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>INLINE {data.aggregations.INLINE}</span>}
+      {data.aggregations?.ET&&<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>ET {data.aggregations.ET}</span>}
+      {data.color_by&&<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>color {data.color_by}</span>}
+    </div>
+  </div>;
   const pts=Array.isArray(data.points)?data.points.filter(p=>Number.isFinite(Number(p.x))&&Number.isFinite(Number(p.y))):[];
   if(!pts.length)return <div style={{marginTop:10,padding:"9px 10px",border:"1px solid #333",borderRadius:8,background:"#141414",fontSize:14,color:"#a3a3a3"}}>차트로 표시할 numeric point가 없습니다.</div>;
   const W=980,H=480,pad={l:70,r:28,t:28,b:58};

@@ -628,6 +628,10 @@ FLOWI_DOMAIN_DICTIONARY = {
     "OVERLAY": ["OVERLAY", "OVL"],
     "THICKNESS": ["THICKNESS", "THK", "TICK"],
 }
+FLOWI_ET_TREND_DEFAULT_METRICS = {
+    "DIBL", "LKG", "LEAK", "LEAKAGE", "IOFF", "VTH", "VT", "ION", "IDSAT",
+    "SS", "RSD", "IGATE", "RINGOSC", "RCH", "RS", "RC",
+}
 FLOWI_CHART_METRIC_STOP = {
     "INLINE", "IN-LINE", "ET", "FAB", "VM", "EDS", "ML", "ML_TABLE", "KNOB", "MASK", "CORR", "CORRELATION",
     "SCATTER", "CHART", "DASHBOARD", "FITTING", "FIT", "LINE", "LINEAR", "COLOR",
@@ -4544,6 +4548,54 @@ def _handle_dashboard_chart_refine(prompt: str, me: dict[str, Any], agent_contex
     }
 
 
+def _handle_dashboard_chart_context_followup(
+    prompt: str,
+    product: str,
+    max_rows: int,
+    agent_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not _chart_context_color_intent(prompt):
+        return {"handled": False}
+    sid = _active_chart_session_id(agent_context)
+    if not sid:
+        return {"handled": False}
+    try:
+        session = dashboard_charting.load_chart_session(sid)
+    except FileNotFoundError:
+        return {"handled": False}
+    cfg = session.get("config") if isinstance(session.get("config"), dict) else {}
+    source_type = _upper(cfg.get("source_type") or cfg.get("source") or "")
+    metric = str(cfg.get("metric") or cfg.get("item_id") or "").strip()
+    if source_type not in {"ET", "INLINE"} or not metric:
+        return {"handled": False}
+    if str(cfg.get("x_col") or "").lower() != "tkout_time" and str(cfg.get("x") or "").lower() != "tkout_time":
+        return {"handled": False}
+    product_hint = str(cfg.get("product") or product or "").strip()
+    lots = [str(x).strip() for x in (cfg.get("lots") or []) if str(x).strip()] if isinstance(cfg.get("lots"), list) else []
+    step_id = str(cfg.get("step_id") or "").strip()
+    color_hint = str(cfg.get("color_by") or "").strip()
+    parts = [product_hint, *lots, step_id, source_type, metric, "Trend", prompt]
+    if color_hint and "KNOB" not in _upper(prompt) and "노브" not in str(prompt):
+        parts.append(f"{color_hint} KNOB")
+    if source_type == "INLINE" and cfg.get("grain"):
+        parts.append(f"grain: {cfg.get('grain')}")
+    routed_prompt = " ".join(str(p).strip() for p in parts if str(p or "").strip())
+    if source_type == "ET":
+        out = _handle_et_trend_chart(routed_prompt, product_hint, max_rows)
+    else:
+        out = _handle_inline_trend_chart(routed_prompt, product_hint, max_rows)
+    if not out.get("handled"):
+        return {"handled": False}
+    out["context_chart_session_id"] = sid
+    out.setdefault("slots", {})
+    if isinstance(out["slots"], dict):
+        out["slots"]["chart_session_id"] = sid
+        out["slots"]["source_type"] = source_type
+    if out.get("answer"):
+        out["answer"] = f"직전 chart session({sid[:8]}) 조건을 이어받았습니다. " + str(out.get("answer"))
+    return out
+
+
 def _handle_dashboard_generic_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
     if not _contains_chart_intent(prompt):
         return {"handled": False}
@@ -4666,6 +4718,8 @@ def _handle_flowi_multisource_query(
         "relation_ids": relation_ids,
         "join_keys": join_keys,
         "join_plan": out.get("join_plan") if isinstance(out.get("join_plan"), dict) else {},
+        "query_plan": out.get("query_plan") if isinstance(out.get("query_plan"), dict) else {},
+        "sql_plan": str(out.get("sql_plan") or ""),
         "selected_columns": selected_columns,
         "sample_rows": sample_rows,
         "row_count": row_count,
@@ -5026,6 +5080,24 @@ def _knob_filter_values(prompt: str, values: list[str]) -> list[str]:
         if hit and raw not in out:
             out.append(raw)
     return out[:12]
+
+
+def _knob_exclusion_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return any(term in low or term in text for term in ("filter", "exclude", "except", "without", "제외", "빼", "빼고", "빼줘", "제거"))
+
+
+def _chart_context_color_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    up = _upper(text)
+    return (
+        "KNOB" in up
+        or "노브" in text
+        or any(term in low or term in text for term in ("color", "colour", "coloring", "색", "색칠", "컬러", "컬러링"))
+        or _knob_exclusion_intent(text)
+    )
 
 
 def _flowi_knob_lf(product: str, lots: list[str], prompt: str, xy_metrics: list[str]) -> dict[str, Any]:
@@ -6032,6 +6104,11 @@ def _inline_metric_match_for_prompt(lf: pl.LazyFrame, item_col: str, prompt: str
         if key and key not in blocked and key not in seen:
             seen.add(key)
             terms.append(key)
+        for alias in hit.get("aliases") or []:
+            alias_key = _upper(alias)
+            if alias_key and alias_key not in blocked and alias_key not in seen:
+                seen.add(alias_key)
+                terms.append(alias_key)
     for tok in _query_tokens(prompt):
         key = _upper(tok)
         if key and key not in blocked and key not in seen:
@@ -6079,13 +6156,385 @@ def _flowi_chart_lot_tokens(prompt: str) -> list[str]:
     step_pos = _upper(text).find(_upper(step)) if step else -1
     for m in re.finditer(r"(?<![A-Za-z0-9_.-])([A-Z]{2,5}\d{4,})(?![A-Za-z0-9_.-])", text, flags=re.I):
         tok = _upper(m.group(1))
-        if tok in seen or _is_product_token(tok):
+        if tok in seen or _is_product_token(tok) or _is_step_id_token(tok):
             continue
         if step_pos >= 0 and m.start() > step_pos:
             continue
         seen.add(tok)
         lots.append(tok)
     return lots
+
+
+def _et_trend_should_handle(prompt: str) -> bool:
+    text = str(prompt or "")
+    if not (_contains_chart_intent(text) and _is_trend_chart_request(text)):
+        return False
+    sources = _source_terms(text)
+    if "INLINE" in sources and "ET" not in sources:
+        return False
+    if "ET" in sources:
+        return True
+    if _flowi_func_step_token(text):
+        return False
+    step_ids = [s for s in _step_tokens(text) if _is_step_id_token(s)]
+    if step_ids:
+        return True
+    metric_terms: set[str] = set()
+    for hit in _metric_alias_hits(text):
+        metric_terms.add(_upper(hit.get("metric")))
+        for alias in hit.get("aliases") or []:
+            metric_terms.add(_upper(alias))
+    return bool(metric_terms & FLOWI_ET_TREND_DEFAULT_METRICS)
+
+
+def _flowi_explicit_chart_draw_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    return any(term in low or term in text for term in (
+        "chart", "graph", "plot", "scatter", "line",
+        "차트", "그래프", "그려", "그려줘", "산점도", "라인",
+    ))
+
+
+def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    text = str(prompt or "")
+    if not _et_trend_should_handle(text):
+        return {"handled": False}
+    product_hint = _product_hint(text, product)
+    files = _et_files(product_hint)
+    if not files:
+        label = f"{product_hint} " if product_hint else ""
+        return {"handled": True, "intent": "dashboard_et_trend", "answer": f"{label}ET parquet을 찾지 못했습니다.", "feature": "dashboard"}
+    et_lf = _scan_parquet(files)
+    cols = _schema_names(et_lf)
+    product_col = _ci_col(cols, "product", "PRODUCT")
+    root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+    lot_col = _ci_col(cols, "lot_id", "LOT_ID")
+    fab_col = _ci_col(cols, "fab_lot_id", "FAB_LOT_ID")
+    wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+    lot_wf_col = _ci_col(cols, "lot_wf", "LOT_WF")
+    step_col = _ci_col(cols, "step_id", "STEP_ID", "operation", "OPERATION")
+    item_col = _ci_col(cols, "item_id", "ITEM_ID", "rawitem_id", "RAWITEM_ID", "item", "ITEM")
+    value_col = _ci_col(cols, "value", "VALUE", "_value", "val", "VAL")
+    time_col = _ci_col(cols, "tkout_time", "TKOUT_TIME", "time", "TIME", "timestamp", "TIMESTAMP", "measure_time", "MEASURE_TIME")
+    if not (item_col and value_col and time_col):
+        return {
+            "handled": True,
+            "intent": "dashboard_et_trend",
+            "answer": "ET Trend에는 item_id/value/tkout_time 컬럼이 필요합니다.",
+            "feature": "dashboard",
+            "table": {
+                "kind": "dashboard_et_trend_error",
+                "title": "Missing ET columns",
+                "placement": "below",
+                "columns": _table_columns(["message", "columns"]),
+                "rows": [{"message": "missing item_id/value/tkout_time", "columns": ", ".join(cols[:80])}],
+                "total": 1,
+            },
+        }
+    if not lot_wf_col and not (root_col and wafer_col):
+        return {
+            "handled": True,
+            "intent": "dashboard_et_trend",
+            "answer": "ET Trend scatter에는 lot_wf 또는 root_lot_id/wafer_id 컬럼이 필요합니다.",
+            "feature": "dashboard",
+            "table": {
+                "kind": "dashboard_et_trend_error",
+                "title": "Missing ET grain columns",
+                "placement": "below",
+                "columns": _table_columns(["message", "columns"]),
+                "rows": [{"message": "missing lot_wf or root_lot_id/wafer_id", "columns": ", ".join(cols[:80])}],
+                "total": 1,
+            },
+        }
+    metric, item_matches, item_candidates = _inline_metric_match_for_prompt(et_lf, item_col, text)
+    if not metric:
+        return {
+            "handled": True,
+            "intent": "dashboard_et_trend_needs_context",
+            "action": "collect_required_fields",
+            "answer": "Trend로 그릴 ET item을 찾지 못했습니다. item명을 더 정확히 알려주세요.",
+            "missing": ["item_id"],
+            "feature": "dashboard",
+            "table": {"kind": "et_item_candidates", "title": "ET item candidates", "placement": "below", "columns": _table_columns(["item_id"]), "rows": [{"item_id": x} for x in item_candidates], "total": len(item_candidates)},
+        }
+
+    step_ids = [s for s in _step_tokens(text) if _is_step_id_token(s)]
+    lots = _flowi_chart_lot_tokens(text)
+    aliases = _product_aliases(product_hint)
+    filters = []
+    if aliases and product_col:
+        filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+    if step_ids:
+        if not step_col:
+            return {
+                "handled": True,
+                "intent": "dashboard_et_trend_needs_context",
+                "action": "collect_required_fields",
+                "answer": "ET Trend에서 step_id 조건을 적용하려면 step_id 컬럼이 필요합니다.",
+                "missing": ["step_id_column"],
+                "feature": "dashboard",
+                "table": {"kind": "dashboard_et_trend_error", "title": "Missing ET step column", "placement": "below", "columns": _table_columns(["message", "columns"]), "rows": [{"message": "missing step_id", "columns": ", ".join(cols[:80])}], "total": 1},
+            }
+        filters.append(pl.col(step_col).cast(_STR, strict=False).str.to_uppercase().is_in([_upper(s) for s in step_ids]))
+    if lots:
+        lot_expr = _or_contains([c for c in (root_col, lot_col, fab_col, lot_wf_col) if c], lots)
+        if lot_expr is not None:
+            filters.append(lot_expr)
+    filters.append(pl.col(item_col).cast(_STR, strict=False).is_in(item_matches or [metric]))
+    scoped_lf = et_lf
+    for expr in filters:
+        scoped_lf = scoped_lf.filter(expr)
+
+    if not product_hint and product_col:
+        try:
+            product_rows = (
+                scoped_lf.group_by(product_col)
+                .agg([
+                    pl.len().alias("rows"),
+                    pl.col(root_col).n_unique().alias("root_lot_count") if root_col else pl.lit(0).alias("root_lot_count"),
+                    pl.col(wafer_col).n_unique().alias("wafer_count") if wafer_col else pl.lit(0).alias("wafer_count"),
+                ])
+                .sort("rows", descending=True)
+                .limit(12)
+                .collect()
+                .to_dicts()
+            )
+        except Exception:
+            product_rows = []
+        products = [_text(r.get(product_col)) for r in product_rows if _text(r.get(product_col))]
+        unique_products = list(dict.fromkeys(products))
+        if len(unique_products) > 1:
+            return {
+                "handled": True,
+                "intent": "dashboard_et_trend_needs_context",
+                "action": "collect_required_fields",
+                "answer": f"{metric} ET Trend 후보 product가 {len(unique_products)}개입니다. product를 하나 지정해 주세요.",
+                "missing": ["product"],
+                "feature": "dashboard",
+                "pending_prompt": text,
+                "table": {
+                    "kind": "et_product_candidates",
+                    "title": "ET Trend product candidates",
+                    "placement": "below",
+                    "columns": _table_columns(["product", "rows", "root_lot_count", "wafer_count"]),
+                    "rows": [{"product": r.get(product_col) or "", "rows": r.get("rows") or 0, "root_lot_count": r.get("root_lot_count") or 0, "wafer_count": r.get("wafer_count") or 0} for r in product_rows],
+                    "total": len(product_rows),
+                },
+            }
+        if len(unique_products) == 1:
+            product_hint = unique_products[0]
+
+    exprs = [
+        pl.col(time_col).cast(_STR, strict=False).alias("tkout_time"),
+        pl.col(value_col).cast(pl.Float64, strict=False).alias("metric_value"),
+        pl.col(item_col).cast(_STR, strict=False).alias("item_id"),
+    ]
+    if product_col:
+        exprs.append(pl.col(product_col).cast(_STR, strict=False).alias("product"))
+    else:
+        exprs.append(pl.lit(product_hint).alias("product"))
+    if root_col:
+        exprs.append(_root_key_expr(root_col).alias("root_lot_id"))
+    else:
+        exprs.append(pl.lit("").alias("root_lot_id"))
+    if lot_col:
+        exprs.append(pl.col(lot_col).cast(_STR, strict=False).alias("lot_id"))
+    else:
+        exprs.append(pl.lit("").alias("lot_id"))
+    if wafer_col:
+        exprs.append(_wafer_key_expr(wafer_col).alias("wafer_id"))
+    else:
+        exprs.append(pl.lit("").alias("wafer_id"))
+    if root_col and wafer_col:
+        exprs.append(_lot_wf_expr(root_col, wafer_col).alias("lot_wf"))
+    elif lot_wf_col:
+        exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("lot_wf"))
+    else:
+        exprs.append(pl.lit("").alias("lot_wf"))
+    if step_col:
+        exprs.append(pl.col(step_col).cast(_STR, strict=False).alias("step_id"))
+    else:
+        exprs.append(pl.lit("").alias("step_id"))
+
+    try:
+        scatter_cfg = (_flowi_chart_defaults().get("scatter") or FLOWI_CHART_DEFAULTS["scatter"])
+        point_limit = max(20, min(5000, int(scatter_cfg.get("max_points") or FLOWI_CHART_POINT_LIMIT)))
+    except Exception:
+        scatter_cfg = FLOWI_CHART_DEFAULTS["scatter"]
+        point_limit = FLOWI_CHART_POINT_LIMIT
+    group_cols = ["product", "tkout_time", "lot_wf", "root_lot_id", "lot_id", "wafer_id", "step_id"]
+    try:
+        grouped = (
+            scoped_lf.select(exprs)
+            .drop_nulls(subset=["tkout_time", "metric_value", "lot_wf"])
+            .group_by(group_cols)
+            .agg([
+                pl.col("metric_value").median().alias("median"),
+                pl.col("metric_value").mean().alias("mean"),
+                pl.len().alias("n"),
+            ])
+        )
+        knob = None
+        knob_join_cols: list[str] = []
+        needs_knob = _chart_context_color_intent(text)
+        if needs_knob and product_hint:
+            knob = _flowi_knob_lf(product_hint, lots, text, [metric])
+            if knob.get("ok"):
+                if _knob_exclusion_intent(text) and not (knob.get("excluded_values") or []) and (knob.get("values") or []):
+                    choices = []
+                    for idx, value in enumerate((knob.get("values") or [])[:6], start=1):
+                        choices.append({
+                            "id": f"exclude_{idx}",
+                            "label": str(idx),
+                            "title": str(value),
+                            "value": str(value),
+                            "description": f"{knob.get('display_name') or 'KNOB'}={value} point를 제외합니다.",
+                            "prompt": f"{text} {value} 제외",
+                        })
+                    return {
+                        "handled": True,
+                        "intent": "dashboard_et_trend_color_needs_value",
+                        "action": "collect_required_fields",
+                        "answer": "제외할 KNOB 값을 하나 지정해 주세요.",
+                        "missing": ["knob_value"],
+                        "feature": "dashboard",
+                        "pending_prompt": text,
+                        "clarification": {"question": "어떤 KNOB 값을 제외할까요?", "choices": choices},
+                    }
+                knob_join_cols = _flowi_knob_join_cols(grouped.collect_schema().names(), knob.get("group_cols") or [])
+                if knob_join_cols:
+                    grouped = grouped.join(knob["lf"], on=knob_join_cols, how="left")
+                    excluded = knob.get("excluded_values") or []
+                    if excluded:
+                        grouped = grouped.filter(
+                            pl.col("color_value").is_null()
+                            | (~pl.col("color_value").cast(_STR, strict=False).is_in(excluded))
+                        )
+        df = grouped.sort("tkout_time").limit(point_limit).collect()
+    except Exception as e:
+        logger.warning("flowi ET trend failed: %s", e)
+        return {"handled": True, "intent": "dashboard_et_trend", "answer": f"ET trend query 실패: {e}", "feature": "dashboard"}
+
+    rows = df.to_dicts()
+    points = []
+    color_counts: dict[str, int] = {}
+    missing_color_count = 0
+    knob_color_ready = bool(knob and knob.get("ok") and knob_join_cols)
+    for idx, row in enumerate(rows):
+        y = _round4(row.get("median"))
+        if y is None:
+            continue
+        color_value = _text(row.get("color_value"))
+        if knob_color_ready:
+            if color_value:
+                color_counts[color_value] = color_counts.get(color_value, 0) + 1
+            else:
+                missing_color_count += 1
+        lot_wf = row.get("lot_wf") or _flowi_lot_wf_id(row.get("root_lot_id"), row.get("wafer_id"))
+        points.append({
+            "x": idx,
+            "x_label": _text(row.get("tkout_time")),
+            "tkout_time": _text(row.get("tkout_time")),
+            "y": y,
+            "median": y,
+            "mean": _round4(row.get("mean")),
+            "n": int(row.get("n") or 0),
+            "product": row.get("product") or product_hint,
+            "lot_wf": lot_wf,
+            "root_lot_id": row.get("root_lot_id") or "",
+            "lot_id": row.get("lot_id") or "",
+            "wafer_id": row.get("wafer_id") or "",
+            "step_id": row.get("step_id") or "",
+            "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
+            "color_value": color_value,
+            "label": lot_wf or row.get("lot_id") or "",
+        })
+    color_values = [{"value": k, "count": v} for k, v in sorted(color_counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    if knob_color_ready and missing_color_count:
+        color_values.append({"value": "missing", "count": missing_color_count, "color": "gray"})
+    y_label = f"ET {metric} median"
+    step_label = f" step_id={', '.join(step_ids)}" if step_ids else ""
+    answer = (
+        f"{product_hint or 'ET'} {metric} ET Trend를 tkout_time x축 scatter로 그렸습니다. "
+        f"ET는 lot_wf별 median(value) 기준입니다. 표시 point={len(points)}, item match={', '.join(item_matches or [metric])}{step_label}."
+    )
+    if knob_color_ready:
+        answer += f" {knob.get('display_name') or 'KNOB'} 기준으로 색상을 입혔고 KNOB가 없는 point는 회색으로 표시합니다."
+    if not points:
+        answer = f"{product_hint or 'ET'} {metric} 조건으로 Trend chart row를 찾지 못했습니다."
+    cols_out = ["tkout_time", "product", "step_id", "lot_wf", "root_lot_id", "lot_id", "wafer_id", "median", "mean", "n", "color_value"]
+    config_overrides = {
+        "chart_type": "scatter",
+        "source_type": "ET",
+        "product": product_hint,
+        "x_col": "tkout_time",
+        "y_col": "value",
+        "y_expr": "median(value)",
+        "item_id": (item_matches or [metric])[0],
+        "metric": metric,
+        "step_id": step_ids[0] if step_ids else "",
+        "lots": lots,
+        "grain": "lot_wf",
+        "aggregation": "median",
+        "group_by": "lot_wf",
+        "x_label": "tkout_time",
+        "y_label": y_label,
+        "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
+        "color_missing": "gray" if knob_color_ready else "",
+        "render_preset": {**scatter_cfg, "engine": "plotly", "grain": "lot_wf", "x_axis": "time"},
+    }
+    chart_result = {
+        "ok": True,
+        "kind": "dashboard_scatter",
+        "chart_type": "scatter",
+        "title": f"{product_hint} ET {metric} Trend".strip(),
+        "points": points,
+        "total": len(points),
+        "x_label": "tkout_time",
+        "y_label": y_label,
+        "metric": metric,
+        "source_type": "ET",
+        "x_col": "tkout_time",
+        "y_col": "value",
+        "item_id": (item_matches or [metric])[0],
+        "step_id": step_ids[0] if step_ids else "",
+        "grain": "lot_wf",
+        "aggregation": "median",
+        "aggregations": {"ET": "median"},
+        "lot_wf_rule": "root_lot_id + '_' + wafer_id" if root_col and wafer_col else "lot_wf",
+        "join_cols": knob_join_cols if knob_color_ready else [],
+        "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
+        "color_missing": "gray" if knob_color_ready else "",
+        "missing_color_count": missing_color_count,
+        "color_values": color_values,
+        "filters": {"step_ids": step_ids, "lots": lots, "excluded_values": knob.get("excluded_values") or [] if knob else []},
+        "config_overrides": config_overrides,
+        "render_preset": config_overrides["render_preset"],
+        "sources": {
+            "et_file_count": len(files),
+            "et_items": item_matches or [metric],
+            "lot_wf": config_overrides["group_by"],
+            "knob_column": knob.get("knob_col") if knob_color_ready else "",
+        },
+    }
+    return {
+        "handled": True,
+        "intent": "dashboard_et_trend_chart",
+        "action": "query_et_trend_scatter_chart",
+        "answer": answer,
+        "feature": "dashboard",
+        "chart_type": "scatter",
+        "config": config_overrides,
+        "chart_config": config_overrides,
+        "slots": {"product": product_hint, "metric": metric, "lots": lots, "source_type": "ET", "grain": "lot_wf", "aggregation": "median", "step_id": step_ids[0] if step_ids else ""},
+        "chart_result": chart_result,
+        "table": {"kind": "dashboard_et_trend", "title": f"{metric} ET Trend", "placement": "below", "columns": _table_columns(cols_out), "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[:max(1, min(120, max_rows * 8))]], "total": len(rows)},
+        "term_resolution": [
+            {"token": metric, "meaning": "ET item", "wiki_refs": ["schema:ET.item_id"], "query_filter": f"item_id={metric}", "status": "resolved"},
+            {"token": "Trend", "meaning": "tkout_time x축 scatter", "wiki_refs": ["schema:ET.tkout_time"], "query_filter": "x=tkout_time; y=median(value)", "status": "resolved"},
+        ],
+    }
 
 
 def _is_box_chart_request(prompt: str) -> bool:
@@ -6637,12 +7086,16 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
         "x_col": "tkout_time",
         "y_col": "value",
         "item_id": (item_matches or [metric])[0],
+        "metric": metric,
+        "lots": lots,
         "grain": "shot" if include_shot else "lot_wf",
         "aggregation": "avg",
         "group_by": "shot" if include_shot else "lot_wf",
         "x_label": "tkout_time",
         "y_label": f"{metric} avg",
         "color_missing": "gray" if knob_color_ready else "",
+        "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
+        "render_preset": {**scatter_cfg, "engine": "plotly", "grain": "shot" if include_shot else "lot_wf", "x_axis": "time"},
     }
     return {
         "handled": True,
@@ -6675,7 +7128,7 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
             "color_missing": "gray" if knob_color_ready else "",
             "color_values": [{"value": k, "count": v} for k, v in sorted(color_counts.items(), key=lambda kv: (-kv[1], kv[0]))],
             "config_overrides": config_overrides,
-            "render_preset": {**scatter_cfg, "grain": "shot" if include_shot else "lot_wf"},
+            "render_preset": config_overrides["render_preset"],
             "sources": {
                 "inline_file_count": len(inline_files),
                 "inline_items": item_matches or [metric],
@@ -13160,6 +13613,8 @@ def _handle_knob_clean_interference(prompt: str, product: str, max_rows: int) ->
 def _is_lot_anomaly_prompt(prompt: str) -> bool:
     text = str(prompt or "")
     low = text.lower()
+    if any(t in low or t in text for t in ("그려", "차트", "그래프", "plot", "chart", "graph", "scatter")):
+        return False
     return bool(_lot_tokens(prompt)) and any(t in low or t in text for t in ("특이사항", "outlier", "아웃라이어", "trend", "상하향", "상향", "하향", "이상"))
 
 
@@ -16398,6 +16853,10 @@ def _handle_flowi_query_core(
 ) -> dict:
     context_product = _flowi_context_product_hint(agent_context)
     product = _product_hint(prompt, product) or context_product
+    if allowed_keys is None or "dashboard" in allowed_keys:
+        chart_context_out = _handle_dashboard_chart_context_followup(prompt, product, max_rows, agent_context)
+        if chart_context_out.get("handled"):
+            return _augment_dashboard_tool(chart_context_out, prompt, product=product, username=username)
     impact_context_out = _handle_knowledge_impact_context(prompt, product, max_rows)
     if impact_context_out.get("handled"):
         return impact_context_out
@@ -16479,7 +16938,7 @@ def _handle_flowi_query_core(
     defer_diagnosis_for_source_chart = (
         (allowed_keys is None or "dashboard" in allowed_keys)
         and _contains_chart_intent(prompt)
-        and bool(_source_terms(prompt))
+        and (bool(_source_terms(prompt)) or (_et_trend_should_handle(prompt) and _flowi_explicit_chart_draw_intent(prompt)))
     )
     if (allowed_keys is None or "diagnosis" in allowed_keys) and not defer_diagnosis_for_source_chart:
         diag_out = _handle_semiconductor_diagnosis_query(prompt, product, max_rows)
@@ -16504,6 +16963,9 @@ def _handle_flowi_query_core(
         box_chart_out = _handle_inline_box_chart(prompt, product, max_rows)
         if box_chart_out.get("handled"):
             return _augment_dashboard_tool(box_chart_out, prompt, product=product, username=username)
+        et_trend_chart_out = _handle_et_trend_chart(prompt, product, max_rows)
+        if et_trend_chart_out.get("handled"):
+            return _augment_dashboard_tool(et_trend_chart_out, prompt, product=product, username=username)
         trend_chart_out = _handle_inline_trend_chart(prompt, product, max_rows)
         if trend_chart_out.get("handled"):
             return _augment_dashboard_tool(trend_chart_out, prompt, product=product, username=username)
@@ -17233,6 +17695,7 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
                 "join_keys": tool.get("join_keys") or [],
                 "filters": filters,
                 "selected_columns": tool.get("selected_columns") or [],
+                "sql_plan": tool.get("sql_plan") or "",
             },
         )
     elif action == "query_lot_current_step_from_progress_cache" or intent == "lot_current_step_lookup":
@@ -17720,6 +18183,8 @@ def _flowi_trace_evidence(tool: dict[str, Any], api_calls: list[dict[str, Any]])
         "relation_ids": tool.get("relation_ids") if isinstance(tool.get("relation_ids"), list) else [],
         "join_keys": tool.get("join_keys") if isinstance(tool.get("join_keys"), list) else [],
         "join_plan": tool.get("join_plan") if isinstance(tool.get("join_plan"), dict) else {},
+        "query_plan": tool.get("query_plan") if isinstance(tool.get("query_plan"), dict) else {},
+        "sql_plan": tool.get("sql_plan") or chart_cfg.get("sql_plan") or ((chart_cfg.get("source_evidence") or {}).get("sql_plan") if isinstance(chart_cfg.get("source_evidence"), dict) else ""),
         "impact_context": tool.get("impact_context") if isinstance(tool.get("impact_context"), dict) else {},
         "chart_config": chart_cfg,
         "meeting_sources": sources[:8],

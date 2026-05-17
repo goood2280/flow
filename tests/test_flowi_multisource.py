@@ -145,4 +145,8 @@ def test_flowi_multisource_chart_preserves_source_evidence(tmp_path, monkeypatch
     evidence = out["chart_config"]["source_evidence"]
     assert evidence["source_ids"]
     assert evidence["relation_ids"] == ["rel_root", "rel_wafer"]
+    assert "INNER JOIN" in evidence["sql_plan"]
+    assert "root_lot_id" in evidence["sql_plan"].lower()
+    assert "wafer_id" in evidence["sql_plan"].lower()
+    assert out["sql_plan"] == evidence["sql_plan"]
     assert out["chart_result"]["points"]

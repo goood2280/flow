@@ -718,6 +718,78 @@ def _join_frames(
     return joined, warnings
 
 
+def _sql_ident(value: Any) -> str:
+    text = str(value or "").replace('"', '""')
+    return f'"{text}"'
+
+
+def _sql_literal(value: Any) -> str:
+    return "'" + str(value or "").replace("'", "''") + "'"
+
+
+def _sql_plan(selected: list[SourceProfile], plan: list[dict[str, Any]], filters: dict[str, Any]) -> dict[str, Any]:
+    aliases = {source.source_id: f"s{idx + 1}" for idx, source in enumerate(selected)}
+    by_id = {source.source_id: source for source in selected}
+    select_exprs: list[str] = []
+    for source in selected:
+        alias = aliases.get(source.source_id) or "s"
+        label = _safe_output_prefix(source.label)
+        for col in source.selected_columns[:12]:
+            select_exprs.append(f"{alias}.{_sql_ident(col)} AS {_sql_ident(f'{label}.{col}')}")
+    if not select_exprs:
+        select_exprs = ["*"]
+    lines = [
+        "-- SQL-like plan generated from confirmed schema_relations; execution uses Polars LazyFrame.",
+        "SELECT",
+        "  " + ",\n  ".join(select_exprs[:40]),
+    ]
+    if selected:
+        base = selected[0]
+        lines.append(f"FROM {_sql_ident(base.label)} AS {aliases[base.source_id]}")
+    for step in plan:
+        sid = str(step.get("source_id") or "")
+        right = by_id.get(sid)
+        if not right:
+            continue
+        right_alias = aliases.get(sid) or "s"
+        on_parts: list[str] = []
+        for key in step.get("join_keys") or []:
+            right_col = right.join_columns.get(str(key))
+            left_source = next(
+                (
+                    by_id.get(left_sid)
+                    for left_sid in (step.get("connected_to") or [])
+                    if by_id.get(left_sid) and by_id.get(left_sid).join_columns.get(str(key))
+                ),
+                None,
+            )
+            left_col = left_source.join_columns.get(str(key)) if left_source else ""
+            if left_source and left_col and right_col:
+                on_parts.append(f"{aliases[left_source.source_id]}.{_sql_ident(left_col)} = {right_alias}.{_sql_ident(right_col)}")
+        if not on_parts:
+            keys = ", ".join(str(key) for key in (step.get("join_keys") or [])) or "confirmed keys"
+            on_parts.append(f"USING ({keys})")
+        lines.append(f"INNER JOIN {_sql_ident(right.label)} AS {right_alias}")
+        lines.append("  ON " + " AND ".join(on_parts))
+    where_parts: list[str] = []
+    if filters.get("product"):
+        where_parts.append(f"product = {_sql_literal(filters.get('product'))}")
+    if filters.get("root_lot_ids"):
+        vals = ", ".join(_sql_literal(v) for v in (filters.get("root_lot_ids") or []))
+        where_parts.append(f"root_lot_id IN ({vals})")
+    if filters.get("wafer_ids"):
+        vals = ", ".join(_sql_literal(v) for v in (filters.get("wafer_ids") or []))
+        where_parts.append(f"wafer_id IN ({vals})")
+    if where_parts:
+        lines.append("WHERE " + " AND ".join(where_parts))
+    lines.append(f"LIMIT {MAX_COLLECT_ROWS}")
+    return {
+        "engine": "polars_lazyframe",
+        "sql": "\n".join(lines),
+        "note": "SQL-like 설명용 계획입니다. LLM이 임의 SQL을 실행하지 않고 confirmed relation으로만 join합니다.",
+    }
+
+
 def _rows_from_df(df: pl.DataFrame, max_rows: int) -> list[dict[str, Any]]:
     rows = df.head(max(1, min(int(max_rows or 12), 100))).to_dicts()
     out: list[dict[str, Any]] = []
@@ -949,12 +1021,15 @@ def execute_multisource_request(prompt: str, product: str = "", max_rows: int = 
     selected_columns = [col for col in joined.columns if not str(col).startswith("__join_")]
     relation_ids = [str(r.get("relation_id") or "") for r in confirmed_relations if r.get("relation_id")]
     join_keys = sorted({_relation_key(r) for r in confirmed_relations if _relation_key(r)})
+    query_plan = _sql_plan(selected, plan, filters)
     evidence = {
         "source_ids": sorted(selected_ids),
         "relation_ids": relation_ids,
         "join_keys": join_keys,
         "filters": filters,
         "selected_columns": selected_columns,
+        "query_plan": query_plan,
+        "sql_plan": query_plan["sql"],
     }
     out: dict[str, Any] = {
         "handled": True,
@@ -970,6 +1045,8 @@ def execute_multisource_request(prompt: str, product: str = "", max_rows: int = 
         "sample_rows": sample_rows,
         "warnings": list(dict.fromkeys(warnings))[:20],
         "retrieved_knowledge": knowledge,
+        "query_plan": query_plan,
+        "sql_plan": query_plan["sql"],
         "join_plan": {
             "sources": [
                 {

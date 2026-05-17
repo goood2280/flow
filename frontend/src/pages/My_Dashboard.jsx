@@ -3,6 +3,7 @@ import Loading from "../components/Loading";
 import Modal from "../components/Modal";
 import PageGear from "../components/PageGear";
 import { PageHeader, TabStrip, Pill, Button, statusPalette, uxColors, chartPalette } from "../components/UXKit";
+import { FlowPlotlyChart } from "../components/PlotlyChart";
 import { sf as apiSf } from "../lib/api";
 import { toast } from "../components/Toast";
 // Inject chart hover styles once
@@ -823,6 +824,20 @@ function ChartCanvas({ cfg, points, computedAt, canvasHeight }) {
     </div>
   </div>;
 
+  if (["scatter", "trend", "line"].includes(type)) {
+    return (<div style={panelStyle({ padding: "12px 14px" })}>
+      {Header}
+      <FlowPlotlyChart
+        chart={{ ...cfg, points, chart_type: type }}
+        cfg={cfg}
+        height={plotBoxHeight}
+        dark={false}
+        selectionKey={cfg.selection_key || ""}
+        onPointClick={(point) => { if (point?.mark) toggleMark(point.mark); }}
+      />
+    </div>);
+  }
+
   /* ── Table (simple row viewer) ── */
   if (type === "table") {
     const cols = cfg.table_columns || (points[0] ? Object.keys(points[0]) : []);
@@ -1624,6 +1639,75 @@ function ColInput({ label, value, onChange, columns, placeholder, guide }) {
   </div>);
 }
 
+function evidenceObject(...values) {
+  for (const value of values) {
+    if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length) return value;
+  }
+  return {};
+}
+
+function evidenceList(...values) {
+  for (const value of values) {
+    if (Array.isArray(value) && value.length) return value.map(v => String(v || "")).filter(Boolean);
+  }
+  return [];
+}
+
+function chartEvidenceFromForm(form) {
+  const sourceEvidence = evidenceObject(form.source_evidence, form.chart_config?.source_evidence, form.config?.source_evidence);
+  const queryPlan = evidenceObject(form.query_plan, sourceEvidence.query_plan);
+  const joinPlan = evidenceObject(form.join_plan, sourceEvidence.join_plan, queryPlan.join_plan);
+  const sqlPlan = String(form.sql_plan || sourceEvidence.sql_plan || queryPlan.sql || "").trim();
+  const sourceIds = evidenceList(sourceEvidence.source_ids, form.source_ids);
+  const relationIds = evidenceList(sourceEvidence.relation_ids, form.relation_ids);
+  const joinKeys = evidenceList(sourceEvidence.join_keys, form.join_keys);
+  const selectedColumns = evidenceList(sourceEvidence.selected_columns, form.selected_columns, form.columns);
+  const filters = evidenceObject(sourceEvidence.filters, form.filters);
+  const visible = Boolean(sqlPlan || sourceIds.length || relationIds.length || joinKeys.length || Object.keys(joinPlan).length);
+  return { visible, sourceIds, relationIds, joinKeys, selectedColumns, filters, joinPlan, sqlPlan, prompt: form.flowi_prompt || "" };
+}
+
+function EvidenceChip({ label, value }) {
+  if (!value) return null;
+  return <span style={{ border: "1px solid var(--border)", borderRadius: 999, padding: "2px 8px", fontSize: 13, color: "var(--text-secondary)", background: "var(--bg-card)", fontFamily: "monospace", overflowWrap: "anywhere" }}>{label}: {value}</span>;
+}
+
+function ChartLineagePanel({ evidence }) {
+  if (!evidence?.visible) return null;
+  const filters = Object.entries(evidence.filters || {}).filter(([, v]) => v !== undefined && v !== "" && !(Array.isArray(v) && v.length === 0));
+  const steps = Array.isArray(evidence.joinPlan?.steps) ? evidence.joinPlan.steps : [];
+  return (
+    <div style={{ marginBottom: 10, padding: 10, background: "var(--bg-primary)", borderRadius: 6, border: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 14, fontWeight: 800, color: "var(--accent)", fontFamily: "monospace" }}>AI source / join evidence</span>
+        {steps.length > 0 && <span style={{ fontSize: 13, color: "var(--text-secondary)", fontFamily: "monospace" }}>{steps.length} join step</span>}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        <EvidenceChip label="source" value={evidence.sourceIds.slice(0, 4).join(", ")} />
+        <EvidenceChip label="relation" value={evidence.relationIds.slice(0, 6).join(", ")} />
+        <EvidenceChip label="join keys" value={evidence.joinKeys.slice(0, 8).join(", ")} />
+        <EvidenceChip label="columns" value={evidence.selectedColumns.slice(0, 8).join(", ")} />
+      </div>
+      {filters.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+          {filters.slice(0, 8).map(([k, v]) => <EvidenceChip key={k} label={k} value={Array.isArray(v) ? v.join(", ") : String(v)} />)}
+        </div>
+      )}
+      {steps.length > 0 && (
+        <div style={{ marginBottom: 8, fontSize: 13, color: "var(--text-secondary)", fontFamily: "monospace", lineHeight: 1.55 }}>
+          {steps.map((step, idx) => (
+            <div key={`${step.source_id || idx}-${idx}`}>#{idx + 1} {step.source_id || "-"} on {(step.join_keys || []).join("+") || "-"} via {(step.relation_ids || []).join(", ") || "-"}</div>
+          ))}
+        </div>
+      )}
+      {evidence.sqlPlan && (
+        <pre style={{ margin: 0, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-primary)", fontSize: 13, lineHeight: 1.45 }}>{evidence.sqlPlan}</pre>
+      )}
+      {evidence.prompt && <div style={{ marginTop: 8, fontSize: 13, color: "var(--text-secondary)", overflowWrap: "anywhere" }}>prompt: {evidence.prompt}</div>}
+    </div>
+  );
+}
+
 /* ═══ Chart Editor ═══ */
 function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
   const [form, setForm] = useState({ ...DEFAULT_CHART_FORM, ...(cfg || {}) });
@@ -1703,6 +1787,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
     onSave(payload);
   };
   const S = { width: "100%", padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, outline: "none" };
+  const lineage = chartEvidenceFromForm(form);
   // v8.4.5: match by actual source metadata (icons removed, base_file supported)
   const curLabel = (sources.find(s => (s.source_type || "") === (form.source_type || "")
     && (s.file || "") === (form.file || "")
@@ -1838,6 +1923,7 @@ function ChartEditor({ cfg, onSave, onClose, isAdmin }) {
         </div>);
       })}
     </div>
+    <ChartLineagePanel evidence={lineage} />
     {/* v8.8.0/v8.8.2: X/Y 등 컬럼 선택 UI — 소스 미선택 시에도 항상 노출. 컬럼 로딩/에러 상태 가시화. */}
     {columnsLoading && (
       <div style={{ padding: "6px 10px", marginBottom: 8, borderRadius: 6, background: BLUE.soft, border: `1px dashed ${BLUE.border}`, color: INDIGO.fg, fontSize: 14 }}>
@@ -2235,6 +2321,19 @@ function flowiChartDraftFromResponse(response, prompt) {
   const metricHint = metricHintFromSlots(slots, rawConfig, chartResult);
   const title = rawConfig.title || chartResult.title || chart.title || tool.title || [productHint, metricHint || sourceHint, chartTypeLabel(chartType)].filter(Boolean).join(" ") || `${chartTypeLabel(chartType)} draft`;
   const clarification = firstPlainObject(tool.clarification, agentTool.clarification, response?.clarification);
+  const traceEvidence = firstPlainObject(response?.trace?.evidence);
+  const rawEvidence = firstPlainObject(rawConfig.source_evidence, chartResult.source_evidence, tool.source_evidence, traceEvidence);
+  const sourceEvidence = (
+    rawEvidence.source_ids
+    || rawEvidence.relation_ids
+    || rawEvidence.join_keys
+    || rawEvidence.selected_columns
+    || rawEvidence.join_plan
+    || rawEvidence.query_plan
+    || rawEvidence.sql_plan
+  ) ? rawEvidence : {};
+  const queryPlan = firstPlainObject(rawConfig.query_plan, sourceEvidence.query_plan, tool.query_plan, traceEvidence.query_plan);
+  const joinPlan = firstPlainObject(rawConfig.join_plan, sourceEvidence.join_plan, tool.join_plan, traceEvidence.join_plan);
   const missing = firstArray(tool.missing, agentTool.missing, response?.missing, tool.validation?.missing, response?.validation?.missing);
   const choices = firstArray(tool.choices, agentTool.choices, response?.choices, clarification.choices);
   const draft = {
@@ -2258,6 +2357,19 @@ function flowiChartDraftFromResponse(response, prompt) {
   if (missing.length) draft.missing = missing;
   if (clarification.question || tool.question || response?.question) draft.question = clarification.question || tool.question || response?.question;
   if (choices.length) draft.choices = choices;
+  if (Object.keys(sourceEvidence).length) draft.source_evidence = sourceEvidence;
+  if (Object.keys(queryPlan).length) draft.query_plan = queryPlan;
+  if (Object.keys(joinPlan).length) draft.join_plan = joinPlan;
+  const sqlPlan = rawConfig.sql_plan || sourceEvidence.sql_plan || queryPlan.sql || tool.sql_plan || traceEvidence.sql_plan || "";
+  if (sqlPlan) draft.sql_plan = sqlPlan;
+  const sourceIds = firstArray(sourceEvidence.source_ids, tool.source_ids, traceEvidence.source_ids);
+  const relationIds = firstArray(sourceEvidence.relation_ids, tool.relation_ids, traceEvidence.relation_ids);
+  const joinKeys = firstArray(sourceEvidence.join_keys, tool.join_keys, traceEvidence.join_keys);
+  const selectedColumns = firstArray(sourceEvidence.selected_columns, tool.selected_columns, traceEvidence.selected_columns);
+  if (sourceIds.length) draft.source_ids = sourceIds;
+  if (relationIds.length) draft.relation_ids = relationIds;
+  if (joinKeys.length) draft.join_keys = joinKeys;
+  if (selectedColumns.length) draft.selected_columns = selectedColumns;
   if (!draft.x_col && typeof rawConfig.x === "string" && rawConfig.x && !rawConfig.x.startsWith("$")) draft.x_col = rawConfig.x;
   if (!draft.y_expr && typeof rawConfig.y === "string" && rawConfig.y && !rawConfig.y.startsWith("$")) draft.y_expr = rawConfig.y;
   if (!draft.color_col && rawConfig.color_by && !["none", "lot_id"].includes(String(rawConfig.color_by))) draft.color_col = String(rawConfig.color_by);

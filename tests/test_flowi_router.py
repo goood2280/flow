@@ -124,11 +124,12 @@ def test_flowi_multisource_trace_includes_join_evidence(monkeypatch):
             "warnings": [],
             "retrieved_knowledge": [{"id": "column:ET_PRODA.LKG", "kind": "column_catalog", "title": "ET_PRODA.LKG", "term": "LKG"}],
             "join_plan": {"sources": [{"source_id": "db_1.RAWDATA_DB_ET_PRODA"}], "steps": [{"join_keys": ["root_lot_id", "wafer_id"]}]},
+            "sql_plan": "SELECT * FROM ET INNER JOIN ML ON ET.root_lot_id = ML.root_lot_id",
             "chart_config": {
                 "chart_type": "scatter",
                 "x": "ET PRODA.LKG",
                 "y": "ML_TABLE_PRODA.KNOB_A",
-                "source_evidence": {"relation_ids": ["rel_root", "rel_wafer"]},
+                "source_evidence": {"relation_ids": ["rel_root", "rel_wafer"], "sql_plan": "SELECT * FROM ET INNER JOIN ML ON ET.root_lot_id = ML.root_lot_id"},
             },
             "chart_result": {"ok": True, "kind": "dashboard_scatter", "chart_type": "scatter", "points": [{"x": 0.5, "y": "K1"}]},
         }
@@ -147,6 +148,7 @@ def test_flowi_multisource_trace_includes_join_evidence(monkeypatch):
     assert evidence["relation_ids"] == ["rel_root", "rel_wafer"]
     assert evidence["join_keys"] == ["root_lot_id", "wafer_id"]
     assert evidence["join_plan"]["steps"][0]["join_keys"] == ["root_lot_id", "wafer_id"]
+    assert "INNER JOIN" in evidence["sql_plan"]
     assert out["tool"]["chart_config"]["source_evidence"]["relation_ids"] == ["rel_root", "rel_wafer"]
 
 
@@ -959,6 +961,135 @@ def test_flowi_inline_trend_uses_wiki_rule_scatter_lot_wf_avg(tmp_path, monkeypa
     assert "dashboard_chart_generation_rules" in [row["id"] for row in out["retrieved_knowledge"]]
 
 
+def test_flowi_et_step_ioff_trend_uses_tkout_time_scatter(tmp_path, monkeypatch):
+    et_fp = tmp_path / "et.parquet"
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "01", "step_id": "EA100030", "tkout_time": "2026-05-01T10:00:00", "item_id": "IOFF", "value": 1.0},
+        {"product": "PRODA", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "01", "step_id": "EA100030", "tkout_time": "2026-05-01T10:00:00", "item_id": "IOFF", "value": 3.0},
+        {"product": "PRODA", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "02", "step_id": "EA100030", "tkout_time": "2026-05-02T10:00:00", "item_id": "IOFF", "value": 5.0},
+    ]).write_parquet(et_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router, "_et_files", lambda _product: [et_fp])
+
+    out = _handle_flowi_query(
+        "EA100030 IOFF Trend 그려줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "ml"},
+    )
+
+    assert out["handled"] is True
+    assert out["chart_type"] == "scatter"
+    assert out["intent"] == "dashboard_et_trend_chart"
+    assert out["chart_result"]["source_type"] == "ET"
+    assert out["chart_result"]["x_col"] == "tkout_time"
+    assert out["chart_result"]["y_label"] == "ET IOFF median"
+    assert out["chart_result"]["chart_type"] == "scatter"
+    assert out["chart_result"]["aggregation"] == "median"
+    assert out["chart_result"]["step_id"] == "EA100030"
+    assert out["chart_result"]["total"] == 2
+    assert {p["y"] for p in out["chart_result"]["points"]} == {2.0, 5.0}
+
+
+def test_flowi_et_trend_prefers_dashboard_when_diagnosis_is_allowed(tmp_path, monkeypatch):
+    et_fp = tmp_path / "et.parquet"
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "01", "step_id": "EA100030", "tkout_time": "2026-05-01T10:00:00", "item_id": "IOFF", "value": 1.0},
+        {"product": "PRODA", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "02", "step_id": "EA100030", "tkout_time": "2026-05-02T10:00:00", "item_id": "IOFF", "value": 2.0},
+    ]).write_parquet(et_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router, "_et_files", lambda _product: [et_fp])
+
+    out = _handle_flowi_query(
+        "EA100030 IOFF Trend 그려줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "diagnosis", "ml"},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "dashboard_et_trend_chart"
+    assert out["chart_result"]["source_type"] == "ET"
+
+
+def test_flowi_product_level_et_ioff_trend_matches_leakage_alias(tmp_path, monkeypatch):
+    et_fp = tmp_path / "et.parquet"
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "01", "step_id": "EA100030", "tkout_time": "2026-05-01T10:00:00", "item_id": "LEAKAGE", "value": 1.2},
+        {"product": "PRODA", "root_lot_id": "A1002", "lot_id": "A1002A.1", "wafer_id": "02", "step_id": "EA100040", "tkout_time": "2026-05-02T10:00:00", "item_id": "LEAKAGE", "value": 1.8},
+    ]).write_parquet(et_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router, "_et_files", lambda _product: [et_fp])
+
+    out = _handle_flowi_query(
+        "PRODA IOFF Trend 그려줘",
+        "",
+        12,
+        allowed_keys={"dashboard"},
+    )
+
+    assert out["handled"] is True
+    assert out["chart_result"]["source_type"] == "ET"
+    assert out["chart_result"]["item_id"] == "LEAKAGE"
+    assert out["chart_result"]["x_col"] == "tkout_time"
+    assert out["chart_result"]["total"] == 2
+
+
+def test_flowi_et_trend_followup_reuses_chart_session_for_knob_color_and_exclude(tmp_path, monkeypatch):
+    et_fp = tmp_path / "et.parquet"
+    ml_fp = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "01", "step_id": "EA100030", "tkout_time": "2026-05-01T10:00:00", "item_id": "IOFF", "value": 1.0},
+        {"product": "PRODA", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "02", "step_id": "EA100030", "tkout_time": "2026-05-02T10:00:00", "item_id": "IOFF", "value": 2.0},
+        {"product": "PRODA", "root_lot_id": "A1001", "lot_id": "A1001A.1", "wafer_id": "03", "step_id": "EA100030", "tkout_time": "2026-05-03T10:00:00", "item_id": "IOFF", "value": 3.0},
+    ]).write_parquet(et_fp)
+    pl.DataFrame([
+        {"product": "PRODA", "root_lot_id": "A1001", "wafer_id": "01", "KNOB_24.0 SORT": "A"},
+        {"product": "PRODA", "root_lot_id": "A1001", "wafer_id": "02", "KNOB_24.0 SORT": "B"},
+    ]).write_parquet(ml_fp)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router, "_et_files", lambda _product: [et_fp])
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product: [ml_fp])
+
+    first = _handle_flowi_query(
+        "PRODA A1001 EA100030 IOFF Trend 그려줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "ml"},
+        username="hol",
+    )
+    ctx = {"chart_session_id": first["chart_session_id"], "messages": [{"chart_session_id": first["chart_session_id"]}]}
+    colored = _handle_flowi_query(
+        "24.0 SORT KNOB으로 컬러링해줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "ml"},
+        username="hol",
+        agent_context=ctx,
+    )
+
+    assert colored["handled"] is True
+    assert colored["chart_result"]["color_by"] == "24.0 SORT"
+    assert colored["chart_result"]["join_cols"] == ["root_lot_id", "wafer_id"]
+    assert {"value": "missing", "count": 1, "color": "gray"} in colored["chart_result"]["color_values"]
+    assert any(point["color_value"] == "" for point in colored["chart_result"]["points"])
+
+    ctx2 = {"chart_session_id": colored["chart_session_id"], "messages": [{"chart_session_id": colored["chart_session_id"]}]}
+    excluded = _handle_flowi_query(
+        "B 제외하고 보여줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "ml"},
+        username="hol",
+        agent_context=ctx2,
+    )
+
+    assert excluded["handled"] is True
+    assert excluded["chart_result"]["filters"]["excluded_values"] == ["B"]
+    assert excluded["chart_result"]["total"] == 2
+    assert {point["color_value"] for point in excluded["chart_result"]["points"]} == {"", "A"}
+
+
 def test_flowi_inline_trend_asks_grain_then_draws_shot_with_knob_gray(tmp_path, monkeypatch):
     inline_fp = tmp_path / "inline.parquet"
     ml_fp = tmp_path / "ML_TABLE_PRODA.parquet"
@@ -1677,6 +1808,7 @@ def test_flowi_current_fab_lot_agent_trace_activates_filebrowser_api(tmp_path, m
     monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(llm_router, "_profile_context", lambda _username: "")
     monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(llm_router.kv, "lookup_term", lambda *_args, **_kwargs: {"columns": [], "docs": [], "graph": {"nodes": [], "edges": []}})
 
     out = _run_flowi_chat(
         prompt="PRODA A1000 #6 현재 fab lot id가 뭐야?",
@@ -3061,6 +3193,7 @@ def test_flowi_chat_returns_public_execution_trace(monkeypatch):
     monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(llm_router, "_profile_context", lambda _username: "")
     monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(llm_router.kv, "lookup_term", lambda *_args, **_kwargs: {"columns": [], "docs": [], "graph": {"nodes": [], "edges": []}})
 
     out = _run_flowi_chat(
         prompt="A10001 1.0 STI 스플릿테이블에서 plan actual 보여줘",
