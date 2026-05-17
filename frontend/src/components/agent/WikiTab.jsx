@@ -266,10 +266,14 @@ function WikiGraph({ graph, query, selected, focusId, highlightId, onSelect, onF
               ctx.stroke();
             }
             const label = node.label || node.id;
-            const showLabel = focusId || isSelected || isMatch || isNew || scale > 0.7;
+            const isHover = hover?.id === node.id;
+            const isFocusedView = Boolean(focusId);
+            const showFocusLabel = isFocusedView && isFocus;
+            const showZoomLabel = !focusId && scale > 1.8 && graphData.nodes.length <= 35;
+            const showLabel = showFocusLabel || (!isFocusedView && (isSelected || isMatch || isNew || isHover || showZoomLabel));
             if (showLabel) {
               const display = label.length > 30 ? label.slice(0, 29) + "…" : label;
-              const fontSize = Math.max(9, 12.5 / scale);
+              const fontSize = Math.max(6.5, Math.min(12, 10.5 / scale));
               ctx.font = `800 ${fontSize}px sans-serif`;
               const metrics = ctx.measureText(display);
               const padX = 5 / scale;
