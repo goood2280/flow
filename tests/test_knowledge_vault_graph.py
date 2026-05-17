@@ -56,3 +56,56 @@ def test_graph_links_docs_to_terms(tmp_path, monkeypatch):
 
     assert ("doc:" + doc_id, "concept:root_lot_id", "describes") in edges
     assert ("concept:root_lot_id", "doc:" + doc_id, "described_by") in edges
+
+
+def test_default_agent_wiki_seed_installs_only_missing_docs(tmp_path, monkeypatch):
+    _isolate_knowledge(tmp_path, monkeypatch)
+    seed_dir = tmp_path / "seed"
+    seed_page = seed_dir / "agent_wiki" / "seed_doc.md"
+    seed_page.parent.mkdir(parents=True)
+    seed_page.write_text(
+        """---
+doc_id: default_seed_test_doc
+kind: agent_wiki
+title: Default Seed Test Doc
+summary: 기본 seed 테스트 문서
+actor: system_seed
+tags: ["seed", "test"]
+schema_type: default_agent_wiki_seed_v1
+---
+
+## Notes
+
+처음 설치되는 기본 지식입니다.
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(kv, "DEFAULT_AGENT_WIKI_SEED_DIR", seed_dir)
+
+    first = kv.ensure_default_agent_wiki_seed(actor="test")
+    assert first["installed"] == 1
+    doc = kv.get_doc("default_seed_test_doc")
+    assert doc and doc["title"] == "Default Seed Test Doc"
+
+    runtime_path = kv.WIKI_DIR / "agent_wiki" / "default_seed_test_doc.md"
+    text = runtime_path.read_text(encoding="utf-8")
+    runtime_path.write_text(text.replace("처음 설치되는 기본 지식입니다.", "사용자가 수정한 운영 지식입니다."), encoding="utf-8")
+
+    second = kv.ensure_default_agent_wiki_seed(actor="test")
+    assert second["installed"] == 0
+    assert second["preserved"] == 1
+    assert "사용자가 수정한 운영 지식입니다." in runtime_path.read_text(encoding="utf-8")
+
+
+def test_actual_default_agent_wiki_seed_contains_gaa_docs(tmp_path, monkeypatch):
+    _isolate_knowledge(tmp_path, monkeypatch)
+
+    out = kv.ensure_default_agent_wiki_seed(actor="test")
+    doc_ids = {row["doc_id"] for row in out["docs"]}
+
+    assert "default_agent_wiki_seed_framework" in doc_ids
+    assert "gaa_device_evolution_and_purpose" in doc_ids
+    assert "semiconductor_eight_major_processes_for_gaa" in doc_ids
+    assert "gaa_nanosheet_process_flow_and_failure_modes" in doc_ids
+    assert "gaa_device_geometry_and_multi_vt_design" in doc_ids
+    assert "gaa_beol_bspdn_power_delivery_basics" in doc_ids

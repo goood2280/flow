@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import BrandLogo from "../components/BrandLogo";
-import { postJson, sf } from "../lib/api";
+import { dl, postJson, sf } from "../lib/api";
 import { isAdmin as isAdminUser, isPageAdmin } from "../lib/permissions";
 import { toast } from "../components/Toast";
 import { PageHeader, statusPalette } from "../components/UXKit";
@@ -408,6 +408,7 @@ function flowiResultSummary(tool,result){
   if(tool?.inline_summary)return tool.inline_summary;
   const table=tool?.table;
   const chart=tool?.chart_result||tool?.chart;
+  if(tool?.raw_data_download)return `Chart raw data ${tool.raw_data_download.row_count??""} rows`;
   if(tool?.split_view)return `${tool.split_view.title||"SplitTable"} ${tool.split_view.total??(tool.split_view.rows||[]).length}개 셀`;
   if(Array.isArray(tool?.lot_list)&&tool.lot_list.length)return `Lot list ${tool.lot_list.length}건`;
   if(table&&Array.isArray(table.rows)){
@@ -423,13 +424,25 @@ function flowiResultActions(tool,table,chartResult,onNavigate){
   const canNav=typeof onNavigate==="function";
   const feature=tool?.feature||"";
   const kind=String(table?.kind||tool?.split_view?.kind||"").toLowerCase();
+  const rawDownload=tool?.raw_data_download&&typeof tool.raw_data_download==="object"?tool.raw_data_download:null;
+  const chartSessionId=tool?.chart_session_id||chartResult?.chart_session_id||rawDownload?.chart_session_id||"";
   const addNav=(key,label,title)=>{if(canNav&&!items.some(x=>x.key===`nav-${key}`))items.push({key:`nav-${key}`,label,title,onClick:()=>onNavigate(key)});};
   if(feature==="splittable"||kind.includes("split")||kind.includes("knob"))addNav("splittable","전체화면 SplitTable","SplitTable 화면에서 전체 결과 보기");
+  if(rawDownload?.url)items.push({key:"chart-raw-csv",label:"Raw CSV",title:`Chart raw data CSV 다운로드 · ${rawDownload.row_count??"-"}행`,onClick:()=>flowiDownloadChartRaw(rawDownload)});
+  else if(chartSessionId)items.push({key:"chart-raw-csv",label:"Raw CSV",title:"직전 chart session raw data를 CSV로 내려받기",onClick:()=>flowiDownloadChartRaw({chart_session_id:chartSessionId})});
   if(feature==="dashboard"||chartResult||tool?.chart)addNav("dashboard","차트 페이지","Dashboard 화면에서 차트 보기");
   if(table&&Array.isArray(table.rows)&&table.rows.length)items.push({key:"export-table",label:"엑셀 내보내기",title:"현재 인라인 표를 CSV로 내려받기",onClick:()=>flowiDownloadTable(table)});
   const entries=Array.isArray(tool?.feature_entrypoints)?tool.feature_entrypoints:[];
   entries.slice(0,2).forEach(ep=>{if(ep?.key&&ep.key!==feature)addNav(ep.key,`${ep.title||ep.key} 열기`,ep.description||"관련 화면 열기");});
   return items.slice(0,4);
+}
+
+function flowiDownloadChartRaw(rawDownload){
+  const sid=String(rawDownload?.chart_session_id||"").trim();
+  const url=rawDownload?.url||`/api/llm/flowi/chart-session/raw-data.csv?chart_session_id=${encodeURIComponent(sid)}`;
+  const filename=rawDownload?.filename||`flowi_chart_raw_${sid.slice(0,8)||"data"}.csv`;
+  if(!sid&&!rawDownload?.url)return;
+  dl(url,filename).catch(e=>toast.error(e?.message||"chart raw CSV 다운로드 실패"));
 }
 
 function flowiDownloadTable(table){
@@ -982,13 +995,13 @@ function FlowiScatterResult({data}){
   if(Array.isArray(data.boxes)&&data.boxes.length)return <FlowiBoxResult data={data}/>;
   if(data.kind==="dashboard_wafer_map"&&Array.isArray(data.points))return <FlowiWaferMapResult data={data}/>;
   const rawPts=Array.isArray(data.points)?data.points:[];
-  if(rawPts.length)return <div style={{marginTop:10,border:"1px solid #333",borderRadius:8,background:"#101418",padding:"8px 10px",minWidth:0}}>
-    <FlowPlotlyChart chart={data} cfg={data.chart_config||data.config||data.config_overrides||data} height={430} dark />
-    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#a3a3a3",fontFamily:"monospace"}}>
-      <span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>join {Array.isArray(data.join_cols)?data.join_cols.join("+"):"lot_wf"} · {data.join_how||"left"}</span>
-      {data.aggregations?.INLINE&&<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>INLINE {data.aggregations.INLINE}</span>}
-      {data.aggregations?.ET&&<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>ET {data.aggregations.ET}</span>}
-      {data.color_by&&<span style={{border:"1px solid #333",borderRadius:999,padding:"2px 7px"}}>color {data.color_by}</span>}
+  if(rawPts.length)return <div style={{marginTop:10,border:"1px solid #d1d5db",borderRadius:8,background:"#ffffff",padding:"8px 10px",minWidth:0}}>
+    <FlowPlotlyChart chart={data} cfg={data.chart_config||data.config||data.config_overrides||data} height={430} dark={false} />
+    <div style={{marginTop:7,display:"flex",gap:5,flexWrap:"wrap",fontSize:14,color:"#475569",fontFamily:"monospace"}}>
+      <span style={{border:"1px solid #cbd5e1",borderRadius:999,padding:"2px 7px"}}>join {Array.isArray(data.join_cols)?data.join_cols.join("+"):"lot_wf"} · {data.join_how||"left"}</span>
+      {data.aggregations?.INLINE&&<span style={{border:"1px solid #cbd5e1",borderRadius:999,padding:"2px 7px"}}>INLINE {data.aggregations.INLINE}</span>}
+      {data.aggregations?.ET&&<span style={{border:"1px solid #cbd5e1",borderRadius:999,padding:"2px 7px"}}>ET {data.aggregations.ET}</span>}
+      {data.color_by&&<span style={{border:"1px solid #cbd5e1",borderRadius:999,padding:"2px 7px"}}>color {data.color_by}</span>}
     </div>
   </div>;
   const pts=Array.isArray(data.points)?data.points.filter(p=>Number.isFinite(Number(p.x))&&Number.isFinite(Number(p.y))):[];

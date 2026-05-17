@@ -29,7 +29,7 @@ import polars as pl
 from core import duckdb_engine
 from core import ml_table_lookup
 from core.paths import PATHS
-from core.utils import _STR, load_json, save_json
+from core.utils import _STR, csv_response, load_json, save_json
 from core.auth import current_user, require_admin, is_page_admin
 from core import llm_adapter
 from core import product_config
@@ -3898,6 +3898,33 @@ def _dashboard_chart_data_for_stats(chart_result: dict[str, Any]) -> list[dict[s
     return []
 
 
+def _chart_fit_intent(prompt: str) -> bool:
+    return dashboard_charting.parse_fit(prompt) == "linear"
+
+
+def _chart_fit_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    xs: list[float] = []
+    ys: list[float] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            x = float(row.get("x"))
+            y_raw = row.get("y")
+            if y_raw is None:
+                y_raw = row.get("median")
+            if y_raw is None:
+                y_raw = row.get("avg")
+            if y_raw is None:
+                y_raw = row.get("value")
+            y = float(y_raw)
+        except Exception:
+            continue
+        xs.append(x)
+        ys.append(y)
+    return _fit_with_equation(_linear_fit(xs, ys))
+
+
 def _dashboard_agent_wiki_knowledge(
     prompt: str,
     *,
@@ -4503,6 +4530,201 @@ def _active_chart_session_id(agent_context: dict[str, Any] | None) -> str:
     return ""
 
 
+def _flowi_chart_raw_data_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    wants_download = any(t in low or t in text for t in ("download", "export", "csv", "다운", "내려받", "내보내"))
+    wants_data = any(t in low or t in text for t in ("raw data", "raw", "data", "데이터", "원본", "로우데이터", "표"))
+    explicit_raw = any(t in low or t in text for t in ("raw data", "raw", "원본 데이터", "로우데이터"))
+    asks_for_data = any(t in low or t in text for t in ("show", "give", "줘", "달라", "보여", "확인"))
+    return bool((wants_download and wants_data) or (explicit_raw and asks_for_data))
+
+
+def _flowi_chart_session_allowed(session: dict[str, Any], username: str, role: str = "user") -> bool:
+    owner = str(session.get("username") or "").strip()
+    user = str(username or "").strip()
+    if role == "admin":
+        return True
+    return not owner or owner in {"flowi", "user", user}
+
+
+def _flowi_chart_session_rows(session: dict[str, Any]) -> list[dict[str, Any]]:
+    data = session.get("data") if isinstance(session, dict) else []
+    rows: list[dict[str, Any]] = []
+    if isinstance(data, list):
+        rows = [row for row in data if isinstance(row, dict)]
+    elif isinstance(data, dict):
+        for key in ("points", "rows", "groups", "boxes", "stats_table", "data"):
+            value = data.get(key)
+            if isinstance(value, list):
+                rows = [row for row in value if isinstance(row, dict)]
+                if rows:
+                    break
+    return rows
+
+
+def _flowi_chart_raw_columns(rows: list[dict[str, Any]]) -> list[str]:
+    cols: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row.keys():
+            text = str(key or "").strip()
+            if not text or text.startswith("__") or text in seen:
+                continue
+            seen.add(text)
+            cols.append(text)
+    return cols
+
+
+def _flowi_csv_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float, bool)):
+        return str(value)
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        return str(value)
+
+
+def _flowi_chart_raw_filename(session: dict[str, Any], session_id: str) -> str:
+    cfg = session.get("config") if isinstance(session.get("config"), dict) else {}
+    title = str(cfg.get("title") or session.get("chart_type") or "chart_raw").strip()
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", title).strip("._") or "chart_raw"
+    return f"flowi_{safe}_{str(session_id or '')[:8]}.csv"
+
+
+def _flowi_chart_raw_download_payload(
+    chart_session_id: str,
+    *,
+    username: str = "",
+    role: str = "user",
+) -> tuple[dict[str, Any], bytes]:
+    sid = str(chart_session_id or "").strip()
+    if not sid:
+        raise HTTPException(400, {"code": "missing_chart_session_id", "message": "chart_session_id is required"})
+    try:
+        session = dashboard_charting.load_chart_session(sid)
+    except FileNotFoundError:
+        raise HTTPException(404, {"code": "chart_session_not_found", "message": "Chart session not found"})
+    if not _flowi_chart_session_allowed(session, username, role):
+        raise HTTPException(403, {"code": "chart_session_forbidden", "message": "Chart session belongs to another user"})
+    rows = _flowi_chart_session_rows(session)
+    columns = _flowi_chart_raw_columns(rows)
+    if not rows or not columns:
+        raise HTTPException(404, {"code": "chart_raw_data_empty", "message": "Chart session has no raw data rows"})
+    from routers import filebrowser as filebrowser_router
+
+    settings = filebrowser_router._load_filebrowser_settings()
+    max_rows = filebrowser_router._csv_download_max_rows(settings.get("csv_download_max_rows"))
+    max_bytes = filebrowser_router._csv_download_max_bytes(None, settings)
+    filebrowser_router._guard_source_operation(
+        all_columns=columns,
+        sql="",
+        select_cols="",
+        source_size=0,
+        settings=settings,
+        operation="download",
+    )
+    if len(rows) > max_rows:
+        raise HTTPException(
+            400,
+            {
+                "code": "download_too_large",
+                "message": f"Chart raw data is {len(rows):,} rows, above the {max_rows:,} row limit.",
+                "result_rows": len(rows),
+                "max_rows": max_rows,
+            },
+        )
+    normalized = [{col: _flowi_csv_cell(row.get(col)) for col in columns} for row in rows]
+    df = pl.DataFrame(normalized)
+    csv_bytes = filebrowser_router._csv_bytes_checked(df, max_bytes)
+    meta = {
+        "chart_session_id": sid,
+        "filename": _flowi_chart_raw_filename(session, sid),
+        "row_count": len(rows),
+        "column_count": len(columns),
+        "columns": columns,
+        "max_rows": max_rows,
+        "max_bytes": max_bytes,
+        "chart_type": session.get("chart_type") or (session.get("config") or {}).get("chart_type") or "",
+    }
+    return meta, csv_bytes
+
+
+def _handle_dashboard_chart_raw_data_followup(
+    prompt: str,
+    agent_context: dict[str, Any] | None,
+    max_rows: int,
+    *,
+    username: str = "flowi",
+    role: str = "user",
+) -> dict[str, Any]:
+    if not _flowi_chart_raw_data_intent(prompt):
+        return {"handled": False}
+    sid = _active_chart_session_id(agent_context)
+    if not sid:
+        return {
+            "handled": True,
+            "intent": "dashboard_chart_raw_data",
+            "action": "collect_required_fields",
+            "feature": "dashboard",
+            "missing": ["chart_session_id"],
+            "answer": "직전 chart session을 찾지 못했습니다. 먼저 Home에서 차트를 만든 뒤 raw data를 요청해 주세요.",
+        }
+    try:
+        meta, _csv_bytes = _flowi_chart_raw_download_payload(sid, username=username, role=role)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        return {
+            "handled": True,
+            "intent": "dashboard_chart_raw_data",
+            "action": "export_chart_raw_data",
+            "feature": "dashboard",
+            "blocked": True,
+            "answer": detail.get("message") or "chart raw data CSV 다운로드 제한을 통과하지 못했습니다.",
+            "validation": {
+                "status": "blocked",
+                "reason": detail.get("code") or exc.status_code,
+                **{k: v for k, v in detail.items() if k not in {"message"}},
+            },
+        }
+    session = dashboard_charting.load_chart_session(sid)
+    rows = _flowi_chart_session_rows(session)
+    columns = meta.get("columns") or _flowi_chart_raw_columns(rows)
+    preview_limit = max(1, min(int(max_rows or 12), 24))
+    return {
+        "handled": True,
+        "intent": "dashboard_chart_raw_data",
+        "action": "export_chart_raw_data",
+        "feature": "dashboard",
+        "answer": (
+            f"직전 chart session({sid[:8]})의 raw data를 CSV로 내려받을 수 있습니다. "
+            f"FileBrowser 제한 기준: {meta['row_count']:,}/{meta['max_rows']:,}행, "
+            f"최대 {meta['max_bytes']:,} bytes."
+        ),
+        "chart_session_id": sid,
+        "raw_data_download": {
+            "url": f"/api/llm/flowi/chart-session/raw-data.csv?chart_session_id={sid}",
+            **{k: v for k, v in meta.items() if k != "columns"},
+        },
+        "table": {
+            "kind": "dashboard_chart_raw_data_preview",
+            "title": "Chart raw data preview",
+            "placement": "below",
+            "columns": _table_columns(columns),
+            "rows": [{col: row.get(col, "") for col in columns} for row in rows[:preview_limit]],
+            "total": len(rows),
+        },
+        "validation": {
+            "rows": len(rows),
+            "columns": len(columns),
+            "download_max_rows": meta["max_rows"],
+            "download_max_bytes": meta["max_bytes"],
+        },
+    }
+
+
 def _chart_refine_action(prompt: str) -> tuple[str, Any] | None:
     text = str(prompt or "")
     low = text.lower()
@@ -4548,13 +4770,57 @@ def _handle_dashboard_chart_refine(prompt: str, me: dict[str, Any], agent_contex
     }
 
 
+def _handle_dashboard_chart_session_fit(session: dict[str, Any], sid: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    rows = _flowi_chart_session_rows(session)
+    fit = _chart_fit_from_rows(rows)
+    if not fit:
+        return {
+            "handled": True,
+            "intent": "dashboard_chart_fit",
+            "feature": "dashboard",
+            "answer": "직전 chart session에서 1차식 fitting에 필요한 numeric x/y point를 찾지 못했습니다.",
+            "missing": ["numeric_x_y"],
+        }
+    refined = dashboard_charting.refine_chart_session(sid, "fit", "linear", username="flowi")
+    refined_cfg = refined.get("config") if isinstance(refined.get("config"), dict) else cfg
+    chart_type = str(refined.get("chart_type") or refined_cfg.get("chart_type") or session.get("chart_type") or "scatter").replace("dashboard_", "")
+    chart_result = {
+        "ok": True,
+        "kind": f"dashboard_{chart_type}",
+        "chart_type": chart_type,
+        "title": refined_cfg.get("title") or cfg.get("title") or "Flow-i chart",
+        "points": rows,
+        "total": len(rows),
+        "config": refined_cfg,
+        "chart_config": refined_cfg,
+        "fit": fit,
+        "fit_params": fit,
+        "chart_session_id": sid,
+    }
+    return {
+        "handled": True,
+        "intent": "dashboard_chart_fit",
+        "action": "refine_chart_session",
+        "feature": "dashboard",
+        "answer": f"직전 chart session({sid[:8]})에 1차식 fitting line과 R²={fit.get('r2')}를 추가했습니다.",
+        "chart_type": chart_type,
+        "config": refined_cfg,
+        "chart_config": refined_cfg,
+        "chart_result": chart_result,
+        "fit": fit,
+        "chart_session_id": sid,
+    }
+
+
 def _handle_dashboard_chart_context_followup(
     prompt: str,
     product: str,
     max_rows: int,
     agent_context: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    if not _chart_context_color_intent(prompt):
+    color_requested = _chart_context_color_intent(prompt)
+    fit_requested = _chart_fit_intent(prompt)
+    if not (color_requested or fit_requested):
         return {"handled": False}
     sid = _active_chart_session_id(agent_context)
     if not sid:
@@ -4567,8 +4833,12 @@ def _handle_dashboard_chart_context_followup(
     source_type = _upper(cfg.get("source_type") or cfg.get("source") or "")
     metric = str(cfg.get("metric") or cfg.get("item_id") or "").strip()
     if source_type not in {"ET", "INLINE"} or not metric:
+        if fit_requested and not color_requested:
+            return _handle_dashboard_chart_session_fit(session, sid, cfg)
         return {"handled": False}
     if str(cfg.get("x_col") or "").lower() != "tkout_time" and str(cfg.get("x") or "").lower() != "tkout_time":
+        if fit_requested and not color_requested:
+            return _handle_dashboard_chart_session_fit(session, sid, cfg)
         return {"handled": False}
     product_hint = str(cfg.get("product") or product or "").strip()
     lots = [str(x).strip() for x in (cfg.get("lots") or []) if str(x).strip()] if isinstance(cfg.get("lots"), list) else []
@@ -4577,6 +4847,8 @@ def _handle_dashboard_chart_context_followup(
     parts = [product_hint, *lots, step_id, source_type, metric, "Trend", prompt]
     if color_hint and "KNOB" not in _upper(prompt) and "노브" not in str(prompt):
         parts.append(f"{color_hint} KNOB")
+    if fit_requested or str(cfg.get("fit") or "").lower() == "linear":
+        parts.append("1차식 fitting line R2")
     if source_type == "INLINE" and cfg.get("grain"):
         parts.append(f"grain: {cfg.get('grain')}")
     routed_prompt = " ".join(str(p).strip() for p in parts if str(p or "").strip())
@@ -6450,6 +6722,8 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
             "color_value": color_value,
             "label": lot_wf or row.get("lot_id") or "",
         })
+    fit_requested = _chart_fit_intent(text)
+    fit = _chart_fit_from_rows(points) if fit_requested else {}
     color_values = [{"value": k, "count": v} for k, v in sorted(color_counts.items(), key=lambda kv: (-kv[1], kv[0]))]
     if knob_color_ready and missing_color_count:
         color_values.append({"value": "missing", "count": missing_color_count, "color": "gray"})
@@ -6461,6 +6735,8 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
     )
     if knob_color_ready:
         answer += f" {knob.get('display_name') or 'KNOB'} 기준으로 색상을 입혔고 KNOB가 없는 point는 회색으로 표시합니다."
+    if fit:
+        answer += f" 1차식 fitting line과 R²={fit.get('r2')}를 포함했습니다."
     if not points:
         answer = f"{product_hint or 'ET'} {metric} 조건으로 Trend chart row를 찾지 못했습니다."
     cols_out = ["tkout_time", "product", "step_id", "lot_wf", "root_lot_id", "lot_id", "wafer_id", "median", "mean", "n", "color_value"]
@@ -6482,6 +6758,7 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
         "y_label": y_label,
         "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
         "color_missing": "gray" if knob_color_ready else "",
+        "fit": "linear" if fit_requested else "none",
         "render_preset": {**scatter_cfg, "engine": "plotly", "grain": "lot_wf", "x_axis": "time"},
     }
     chart_result = {
@@ -6509,6 +6786,7 @@ def _handle_et_trend_chart(prompt: str, product: str, max_rows: int) -> dict[str
         "missing_color_count": missing_color_count,
         "color_values": color_values,
         "filters": {"step_ids": step_ids, "lots": lots, "excluded_values": knob.get("excluded_values") or [] if knob else []},
+        "fit": fit,
         "config_overrides": config_overrides,
         "render_preset": config_overrides["render_preset"],
         "sources": {
@@ -7070,6 +7348,8 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
             "color_value": color_value,
             "label": row.get("shot_id") or row.get("lot_wf") or "",
         })
+    fit_requested = _chart_fit_intent(text)
+    fit = _chart_fit_from_rows(points) if fit_requested else {}
     answer = (
         f"{product_hint} {metric} INLINE Trend를 tkout_time x축 scatter로 그렸습니다. "
         + ("INLINE은 shot 단위 value를 시간별로 표시했습니다. " if include_shot else "INLINE은 lot_wf별 avg(value)를 시간별로 집계했습니다. ")
@@ -7077,6 +7357,8 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
     )
     if knob_color_ready:
         answer += " KNOB가 없는 point는 회색으로 표시합니다."
+    if fit:
+        answer += f" 1차식 fitting line과 R²={fit.get('r2')}를 포함했습니다."
     if not points:
         answer = f"{product_hint} {metric} 조건으로 Trend chart row를 찾지 못했습니다."
     cols_out = ["tkout_time", "lot_wf", "root_lot_id", "wafer_id", "shot_id", "shot_x", "shot_y", "avg", "median", "n", "color_value"]
@@ -7095,6 +7377,7 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
         "y_label": f"{metric} avg",
         "color_missing": "gray" if knob_color_ready else "",
         "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
+        "fit": "linear" if fit_requested else "none",
         "render_preset": {**scatter_cfg, "engine": "plotly", "grain": "shot" if include_shot else "lot_wf", "x_axis": "time"},
     }
     return {
@@ -7127,6 +7410,7 @@ def _handle_inline_trend_chart(prompt: str, product: str, max_rows: int) -> dict
             "color_by": (knob.get("display_name") if knob_color_ready else "") or "",
             "color_missing": "gray" if knob_color_ready else "",
             "color_values": [{"value": k, "count": v} for k, v in sorted(color_counts.items(), key=lambda kv: (-kv[1], kv[0]))],
+            "fit": fit,
             "config_overrides": config_overrides,
             "render_preset": config_overrides["render_preset"],
             "sources": {
@@ -16665,6 +16949,7 @@ def _handle_flowi_query(
     max_rows: int = 12,
     allowed_keys: set[str] | None = None,
     username: str = "flowi",
+    role: str = "user",
     agent_context: dict[str, Any] | None = None,
 ) -> dict:
     interpretation = _flowi_wiki_prompt_interpretation(prompt)
@@ -16682,6 +16967,7 @@ def _handle_flowi_query(
         max_rows=max_rows,
         allowed_keys=allowed_keys,
         username=username,
+        role=role,
         agent_context=agent_context,
     )
     wiki_splittable = (
@@ -16697,6 +16983,7 @@ def _handle_flowi_query(
             max_rows=max_rows,
             allowed_keys=allowed_keys,
             username=username,
+            role=role,
             agent_context=agent_context,
         )
         if routed_tool.get("handled") and (not tool.get("handled") or str(tool.get("action") or "") in generic_actions or str(routed_tool.get("action") or "") not in generic_actions):
@@ -16758,6 +17045,56 @@ def _flowi_impact_evidence_label(ctx: dict[str, Any]) -> str:
     return " / ".join(parts) if parts else "없음"
 
 
+def _flowi_impact_ref_value(ref: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = ref.get(key)
+        if value not in (None, "", [], {}):
+            return str(value)
+    return ""
+
+
+def _flowi_impact_ref_label(ref: dict[str, Any]) -> str:
+    step = _flowi_impact_ref_value(ref, ("step_id",))
+    item = _flowi_impact_ref_value(ref, ("item_id", "knob_name"))
+    return " / ".join([x for x in (step, item) if x]) or str(ref.get("title") or ref.get("event_id") or "event")
+
+
+def _flowi_impact_change_phrase(ref: dict[str, Any]) -> str:
+    if not isinstance(ref, dict):
+        return ""
+    before = _flowi_impact_ref_value(ref, ("previous_value", "old_value", "from_value", "previous_threshold", "old_threshold", "from_threshold"))
+    after = _flowi_impact_ref_value(ref, ("new_value", "current_value", "to_value", "new_threshold", "current_threshold", "to_threshold"))
+    label = _flowi_impact_ref_label(ref)
+    if before or after:
+        return f"{label} 기준 변경: {before or '-'} -> {after or '-'}"
+    current = _flowi_impact_ref_value(ref, ("split_value", "baseline_value", "baseline", "criteria", "criterion"))
+    if current:
+        return f"{label} 기준: {current}"
+    return ""
+
+
+def _flowi_anchor_history_phrase(anchor_items: list[Any]) -> str:
+    rows = [row for row in anchor_items if isinstance(row, dict)]
+    if not rows:
+        return ""
+    rows.sort(key=lambda row: str(row.get("valid_from") or row.get("changed_at") or ""))
+    parts = []
+    for row in rows[-4:]:
+        if row.get("status") == "verified_wiki" and not row.get("valid_from"):
+            continue
+        item = str(row.get("item_id") or row.get("title") or "").strip()
+        if not item:
+            continue
+        start = str(row.get("valid_from") or "").strip()[:10]
+        end = str(row.get("valid_to") or "").strip()[:10] or "현재"
+        repl = str(row.get("replaced_by") or "").strip()
+        label = f"{item}({start or '-'}~{end})"
+        if repl:
+            label += f" -> {repl}"
+        parts.append(label)
+    return " / ".join(parts)
+
+
 def _flowi_impact_context_answer(ctx: dict[str, Any]) -> str:
     wiki_refs = ctx.get("wiki_refs") or []
     event_refs = ctx.get("event_refs") or []
@@ -16780,13 +17117,20 @@ def _flowi_impact_context_answer(ctx: dict[str, Any]) -> str:
     if lot_anomalies:
         lines.append(f"lot 이상 후보: {len(lot_anomalies)}건")
     if split_impacts:
-        lines.append(f"split 영향 후보: {len(split_impacts)}건")
+        phrase = next((_flowi_impact_change_phrase(row) for row in split_impacts if _flowi_impact_change_phrase(row)), "")
+        lines.append(f"split 영향 후보: {len(split_impacts)}건" + (f" ({phrase})" if phrase else ""))
     if mts_changes:
-        lines.append(f"MTS 변경 후보: {len(mts_changes)}건")
+        phrase = next((_flowi_impact_change_phrase(row) for row in mts_changes if _flowi_impact_change_phrase(row)), "")
+        lines.append(f"MTS 변경 후보: {len(mts_changes)}건" + (f" ({phrase})" if phrase else ""))
     if anchor_items:
-        current = next((row for row in anchor_items if isinstance(row, dict) and not row.get("valid_to")), anchor_items[0])
+        current = next((row for row in anchor_items if isinstance(row, dict) and not row.get("valid_to") and row.get("valid_from")), None)
+        if current is None:
+            current = next((row for row in anchor_items if isinstance(row, dict) and not row.get("valid_to")), anchor_items[0])
         if isinstance(current, dict):
-            lines.append(f"Anchor item: {current.get('step_id') or '-'} / {current.get('item_id') or current.get('title') or '-'}")
+            lines.append(f"Anchor item 현재: {current.get('step_id') or '-'} / {current.get('item_id') or current.get('title') or '-'}")
+        history = _flowi_anchor_history_phrase(anchor_items)
+        if history:
+            lines.append(f"Anchor item 이력: {history}")
     lines.append("근거: " + _flowi_impact_evidence_label(ctx))
     return "\n".join(lines)
 
@@ -16814,12 +17158,21 @@ def _handle_knowledge_impact_context(prompt: str, product: str, max_rows: int) -
     for ref in (ctx.get("event_refs") or [])[: max(1, min(80, max_rows * 6))]:
         if not isinstance(ref, dict):
             continue
+        before = _flowi_impact_ref_value(ref, ("previous_value", "old_value", "from_value", "previous_threshold", "old_threshold", "from_threshold"))
+        after = _flowi_impact_ref_value(ref, ("new_value", "current_value", "to_value", "new_threshold", "current_threshold", "to_threshold"))
         rows.append({
             "type": ref.get("event_type") or "",
             "status": ref.get("status") or "",
             "id": ref.get("event_id") or "",
             "source": f"{ref.get('source_type') or ''}:{ref.get('source_id') or ''}".strip(":"),
             "changed_at": ref.get("changed_at") or "",
+            "product": ref.get("product") or "",
+            "root_lot_id": ref.get("root_lot_id") or "",
+            "step_id": ref.get("step_id") or "",
+            "item_id": ref.get("item_id") or ref.get("knob_name") or "",
+            "split_value": ref.get("split_value") or ref.get("baseline_value") or ref.get("baseline") or "",
+            "before": before,
+            "after": after,
             "summary": ref.get("summary") or "",
         })
     return {
@@ -16836,7 +17189,7 @@ def _handle_knowledge_impact_context(prompt: str, product: str, max_rows: int) -
             "kind": "knowledge_impact_events",
             "title": "Knowledge impact event evidence",
             "placement": "below",
-            "columns": _table_columns(["type", "status", "id", "source", "changed_at", "summary"]),
+            "columns": _table_columns(["type", "status", "id", "source", "changed_at", "product", "root_lot_id", "step_id", "item_id", "split_value", "before", "after", "summary"]),
             "rows": rows,
             "total": len(ctx.get("event_refs") or []),
         } if rows else {},
@@ -16849,11 +17202,21 @@ def _handle_flowi_query_core(
     max_rows: int = 12,
     allowed_keys: set[str] | None = None,
     username: str = "flowi",
+    role: str = "user",
     agent_context: dict[str, Any] | None = None,
 ) -> dict:
     context_product = _flowi_context_product_hint(agent_context)
     product = _product_hint(prompt, product) or context_product
     if allowed_keys is None or "dashboard" in allowed_keys:
+        raw_data_out = _handle_dashboard_chart_raw_data_followup(
+            prompt,
+            agent_context,
+            max_rows,
+            username=username,
+            role=role,
+        )
+        if raw_data_out.get("handled"):
+            return raw_data_out
         chart_context_out = _handle_dashboard_chart_context_followup(prompt, product, max_rows, agent_context)
         if chart_context_out.get("handled"):
             return _augment_dashboard_tool(chart_context_out, prompt, product=product, username=username)
@@ -19194,7 +19557,15 @@ def _run_flowi_chat(
     elif meeting_tool.get("handled"):
         tool = meeting_tool
     else:
-        tool = _handle_flowi_query(prompt, product, max_rows=max_rows, allowed_keys=allowed_keys, username=username, agent_context=agent_context)
+        tool = _handle_flowi_query(
+            prompt,
+            product,
+            max_rows=max_rows,
+            allowed_keys=allowed_keys,
+            username=username,
+            role=str(me.get("role") or "user"),
+            agent_context=agent_context,
+        )
     entries = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
     if entries:
         tool["feature_entrypoints"] = entries
@@ -19502,6 +19873,19 @@ def flowi_verify(req: FlowiVerifyReq, request: Request):
     if out.get("ok") and "확인완료" in text:
         return {"ok": True, "message": "확인완료"}
     return {"ok": False, "message": "LLM 연결 확인 실패", "error": out.get("error") or text or "unknown"}
+
+
+@router.get("/flowi/chart-session/raw-data.csv")
+def flowi_chart_session_raw_data(request: Request, chart_session_id: str = Query(...)):
+    me = current_user(request)
+    if "dashboard" not in _allowed_flowi_feature_keys(me):
+        raise HTTPException(403, "Dashboard access denied")
+    meta, csv_bytes = _flowi_chart_raw_download_payload(
+        chart_session_id,
+        username=me.get("username") or "",
+        role=str(me.get("role") or "user"),
+    )
+    return csv_response(csv_bytes, meta.get("filename") or "flowi_chart_raw.csv")
 
 
 @router.post("/flowi/function-call/preview")

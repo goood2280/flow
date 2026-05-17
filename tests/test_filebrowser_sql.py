@@ -1132,6 +1132,34 @@ def test_filebrowser_sql_llm_draft_fallback_handles_ioff_value_desc_sort(monkeyp
     assert out["selected_columns"] == []
 
 
+def test_filebrowser_sql_llm_draft_hash_number_means_wafer_not_lot_text(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "text": json.dumps({"sql": "lot_id LIKE '%A1000 #3 IOFF%'"}),
+        },
+    )
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="A1000 #3 IOFF만 보고싶어",
+            columns=["root_lot_id", "lot_id", "wafer_id", "item_id", "value"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["fallback"] is True
+    assert out["sql"] == "wafer_id = 3 AND root_lot_id = 'A1000' AND item_id = 'IOFF'"
+    assert out["selected_columns"] == []
+    assert "wafer_id" in out["sql"]
+    assert "#3" not in out["sql"]
+
+
 def test_filebrowser_sql_llm_draft_fallback_handles_ioff_value_threshold(monkeypatch):
     monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
     monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
@@ -1152,6 +1180,45 @@ def test_filebrowser_sql_llm_draft_fallback_handles_ioff_value_threshold(monkeyp
         select_cols="",
         rows=20,
     )
+
+
+def test_filebrowser_sql_llm_draft_fallback_handles_avg_aggregate(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="IOFF value 평균 보여줘",
+            columns=["item_id", "value", "wafer_id"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["sql"] == "item_id = 'IOFF'"
+    assert out["aggregate"] == {"function": "avg", "column": "value", "group_by": [], "alias": "avg_value"}
+    assert out["selected_columns"] == []
+
+
+def test_filebrowser_dataframe_view_aggregate_is_read_only_preview():
+    df = pl.DataFrame({
+        "item_id": ["IOFF", "IOFF", "VOFF"],
+        "wafer_id": [3, 4, 3],
+        "value": [0.1, 0.3, 9.0],
+    })
+
+    result = filebrowser._run_view(
+        df,
+        sql="item_id = 'IOFF'",
+        select_cols="",
+        rows=20,
+        aggregate_spec={"function": "avg", "column": "value"},
+    )
+
+    assert result["aggregate"] == {"function": "avg", "column": "value", "group_by": [], "alias": "avg_value"}
+    assert result["columns"] == ["avg_value"]
+    assert result["data"] == [{"avg_value": 0.2}]
+    assert df.columns == ["item_id", "wafer_id", "value"]
 
 
 def test_filebrowser_sql_feedback_persists_and_next_draft_uses_context(monkeypatch, tmp_path):

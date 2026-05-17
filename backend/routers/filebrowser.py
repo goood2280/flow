@@ -4836,6 +4836,9 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                    sort_column: str = Query(""),
                    sort_direction: str = Query("asc"),
                    sort_nulls: str = Query("last"),
+                   agg_func: str = Query(""),
+                   agg_column: str = Query(""),
+                   agg_group_by: str = Query(""),
                    engine: str = Query("auto"),
                    meta_only: bool = Query(True),
                    page: int = Query(0, ge=0),
@@ -4861,6 +4864,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     rel = Path(file)
     settings = _load_filebrowser_settings()
     sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
+    aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
     cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
     single_file_folders = _single_file_folder_names(settings)
     if rel.parts and str(rel.parts[0]).casefold() in single_file_folders:
@@ -5102,13 +5106,14 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
             full_single_file = (
                 csv_full_read
                 and not _is_cache_file_ref(file, fp)
-                and not _has_view_filter(sql, select_cols)
+                and not _has_view_transform(sql, select_cols, aggregate_spec)
             )
             if full_single_file:
                 resp = _run_view_lazy_full(
                     lf, sql, select_cols,
                     preview_cols=cols if ml_table else None,
                     sort_spec=sort_spec,
+                    aggregate_spec=aggregate_spec,
                 )
                 resp["all_columns"] = all_cols_full
                 resp["total_cols"] = len(all_cols_full)
@@ -5121,7 +5126,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 resp["csv_full_read_max_bytes"] = settings.get("csv_full_read_max_bytes")
                 resp["csv_rule_summary"] = csv_rule_summary
                 return _finalize_preview_response(resp, settings)
-            if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
+            if not aggregate_spec and duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
                 try:
                     resp = _run_view_duckdb(
                         [fp], sql, select_cols, rows,
@@ -5149,6 +5154,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 source_size=fp.stat().st_size,
                 settings=settings,
                 sort_spec=sort_spec,
+                aggregate_spec=aggregate_spec,
             )
             resp["all_columns"] = all_cols_full
             resp["total_cols"] = len(all_cols_full)
@@ -5173,6 +5179,9 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                     "sort_column": _cache_safe_text(sort_column, 120).casefold(),
                     "sort_direction": _cache_safe_text(sort_direction, 20).casefold(),
                     "sort_nulls": _cache_safe_text(sort_nulls, 20).casefold(),
+                    "agg_func": _cache_safe_text(agg_func, 40).casefold(),
+                    "agg_column": _cache_safe_text(agg_column, 120).casefold(),
+                    "agg_group_by": ",".join(sorted(c.casefold() for c in _clean_string_list(agg_group_by))),
                     "meta_only": bool(meta_only),
                     "page": int(page),
                     "page_size": int(page_size),
@@ -5422,6 +5431,10 @@ def _is_ml_table_file(fp_or_name) -> bool:
 
 def _has_view_filter(sql: str, select_cols: str) -> bool:
     return bool(str(sql or "").strip() or str(select_cols or "").strip())
+
+
+def _has_view_transform(sql: str, select_cols: str, aggregate_spec: dict | None = None) -> bool:
+    return bool(_has_view_filter(sql, select_cols) or aggregate_spec)
 
 
 def _is_cache_file_ref(file: str, fp: Path | None = None) -> bool:
@@ -5767,6 +5780,15 @@ _AI_SQL_COLUMN_ALIASES = {
     "measure_time": ("measure_time", "measure time", "측정 시간"),
 }
 
+_AI_SQL_AGG_FUNCTION_ALIASES = {
+    "avg": ("avg", "average", "mean", "평균"),
+    "sum": ("sum", "total", "합계", "합"),
+    "min": ("min", "minimum", "최소", "최솟값"),
+    "max": ("max", "maximum", "최대", "최댓값"),
+    "median": ("median", "med", "중앙값", "중위값"),
+    "count": ("count", "cnt", "개수", "건수", "카운트"),
+}
+
 
 def _all_ai_sql_alias_tokens() -> set[str]:
     out: set[str] = set()
@@ -5974,6 +5996,57 @@ def _fallback_column_hits(prompt: str, columns: list[str]) -> list[str]:
     return hits
 
 
+def _prompt_hash_wafer_numbers(prompt: str) -> list[int]:
+    numbers: list[int] = []
+    for match in re.finditer(r"(?<![A-Za-z0-9_])#\s*(\d{1,2})(?!\d)", str(prompt or "")):
+        value = _wafer_literal_number(match.group(1))
+        if value is not None and value not in numbers:
+            numbers.append(value)
+    return numbers
+
+
+def _hash_wafer_clause(prompt: str, columns: list[str]) -> str:
+    wafer_col = _wafer_column(columns)
+    numbers = _prompt_hash_wafer_numbers(prompt)
+    if not wafer_col or not numbers:
+        return ""
+    if len(numbers) == 1:
+        return f"{wafer_col} = {numbers[0]}"
+    return f"{wafer_col} IN ({', '.join(str(n) for n in numbers[:25])})"
+
+
+def _llm_misread_hash_wafer(prompt: str, sql: str, columns: list[str]) -> bool:
+    numbers = _prompt_hash_wafer_numbers(prompt)
+    wafer_col = _wafer_column(columns)
+    if not numbers or not wafer_col:
+        return False
+    mask = _mask_sql_literals(sql)
+    if re.search(r"(?<![A-Za-z0-9_])" + re.escape(wafer_col) + r"(?![A-Za-z0-9_])", mask, flags=re.I):
+        return False
+    return True
+
+
+def _fallback_lot_clause(prompt: str, columns: list[str]) -> str:
+    lookup = _column_lookup(columns)
+    root_col = lookup.get("root_lot_id")
+    lot_col = lookup.get("lot_id")
+    if not root_col and not lot_col:
+        return ""
+    for token in re.findall(r"(?<![A-Za-z0-9_])([A-Za-z]?\d{3,}[A-Za-z0-9_.-]*)(?![A-Za-z0-9_])", str(prompt or "")):
+        value = _cache_safe_text(token, 80)
+        if not value:
+            continue
+        if re.fullmatch(r"(?:19|20|21)\d{2}", value):
+            continue
+        if root_col and "." not in value:
+            return f"{root_col} = {_sql_literal_for_filter(value, columns)}"
+        if lot_col:
+            safe = value.replace("'", "''")
+            op_value = f"{safe}%" if "." not in value else safe
+            return f"{lot_col} LIKE '{op_value}'" if "." not in value else f"{lot_col} = '{op_value}'"
+    return ""
+
+
 def _fallback_window(prompt: str, column: str) -> str:
     aliases = _AI_SQL_COLUMN_ALIASES.get(str(column).casefold(), (str(column),))
     spans = [span for alias in aliases for span in [_alias_span(prompt, alias)] if span is not None]
@@ -6000,10 +6073,16 @@ def _fallback_ai_sql(prompt: str, columns: list[str]) -> str:
     item_clause = _fallback_item_id_clause(prompt, columns)
     if item_clause:
         hits = [col for col in hits if col.casefold() != "item_id"]
-    if not hits:
-        return item_clause
     low = prompt.casefold()
     clauses: list[str] = []
+    hash_wafer = _hash_wafer_clause(prompt, columns)
+    if hash_wafer:
+        clauses.append(hash_wafer)
+        hits = [col for col in hits if col.casefold() not in {"wafer_id", "wf_id"}]
+    if not any(col.casefold() in {"lot_id", "root_lot_id"} for col in hits):
+        lot_clause = _fallback_lot_clause(prompt, columns)
+        if lot_clause:
+            clauses.append(lot_clause)
     if item_clause:
         clauses.append(item_clause)
     for col in hits:
@@ -6111,6 +6190,16 @@ def _fallback_item_id_clause(prompt: str, columns: list[str]) -> str:
         if _looks_numeric_like_value(value) or _looks_datetime_like_value(value):
             continue
         return f"{item_col} = {_sql_literal_for_filter(value, columns)}"
+    for value in _fallback_values(text, columns):
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{1,}", value):
+            continue
+        if re.search(r"\d", value):
+            continue
+        if value.casefold() in blocked:
+            continue
+        if value.casefold() in {str(alias).casefold() for aliases in _AI_SQL_AGG_FUNCTION_ALIASES.values() for alias in aliases}:
+            continue
+        return f"{item_col} = {_sql_literal_for_filter(value, columns)}"
     return ""
 
 
@@ -6180,6 +6269,228 @@ def _normalize_ai_sql_sort(value, columns: list[str], warnings: list[str] | None
             nulls = "last"
         return {"column": hit, "direction": direction, "nulls": nulls}
     return {}
+
+
+def _ai_sql_aggregate_raw_values(raw) -> list:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return list(raw)
+    if isinstance(raw, tuple):
+        return list(raw)
+    return [raw]
+
+
+def _plan_ai_sql_aggregate(plan: dict):
+    if not isinstance(plan, dict):
+        return None
+    for key in ("aggregate", "aggregation", "agg", "summary"):
+        value = plan.get(key)
+        if value:
+            return value
+    return None
+
+
+def _agg_function_from_text(value: str) -> str:
+    text = str(value or "").casefold().strip()
+    if not text:
+        return ""
+    for fn, aliases in _AI_SQL_AGG_FUNCTION_ALIASES.items():
+        if text == fn or text in {str(alias).casefold() for alias in aliases}:
+            return fn
+    return ""
+
+
+def _aggregate_alias(function: str, column: str = "") -> str:
+    fn = _agg_function_from_text(function) or str(function or "").casefold()
+    col = re.sub(r"[^A-Za-z0-9_]+", "_", str(column or "").strip()).strip("_")
+    if fn == "count" and not col:
+        return "count_rows"
+    return f"{fn}_{col or 'rows'}"
+
+
+def _clean_group_by_columns(values, columns: list[str], warnings: list[str] | None = None,
+                            context: str = "aggregate.group_by") -> list[str]:
+    warnings = warnings if warnings is not None else []
+    lookup = _column_lookup(columns)
+    if isinstance(values, str):
+        raw_values = _clean_string_list(values)
+    elif isinstance(values, (list, tuple, set)):
+        raw_values = [str(v) for v in values if str(v or "").strip()]
+    else:
+        raw_values = []
+    out: list[str] = []
+    for value in raw_values:
+        hit = lookup.get(str(value).casefold())
+        if not hit:
+            _draft_warning(warnings, f"{context}: unknown column removed: {value}")
+            continue
+        if hit not in out:
+            out.append(hit)
+    return out[:8]
+
+
+def _normalize_ai_sql_aggregate(value, columns: list[str], warnings: list[str] | None = None,
+                                context: str = "aggregate") -> dict:
+    warnings = warnings if warnings is not None else []
+    lookup = _column_lookup(columns)
+    for raw in _ai_sql_aggregate_raw_values(value):
+        function = ""
+        column = ""
+        group_by = []
+        alias = ""
+        if isinstance(raw, str):
+            parts = re.split(r"[\s,()]+", raw.strip())
+            if parts:
+                function = _agg_function_from_text(parts[0])
+            if len(parts) >= 2:
+                column = parts[1]
+            by_match = re.search(r"\bby\s+(.+)$", raw, flags=re.I)
+            if by_match:
+                group_by = _clean_group_by_columns(by_match.group(1), columns, warnings, f"{context}.group_by")
+        elif isinstance(raw, dict):
+            function = _agg_function_from_text(
+                raw.get("function") or raw.get("func") or raw.get("op") or raw.get("type") or raw.get("agg") or ""
+            )
+            column = str(raw.get("column") or raw.get("col") or raw.get("field") or raw.get("value_column") or "")
+            group_by = _clean_group_by_columns(
+                raw.get("group_by") or raw.get("groupby") or raw.get("by") or [],
+                columns,
+                warnings,
+                f"{context}.group_by",
+            )
+            alias = _cache_safe_text(raw.get("alias") or raw.get("name") or "", 80)
+        if not function:
+            continue
+        hit = ""
+        if column:
+            hit = lookup.get(column.casefold()) or ""
+            if not hit:
+                _draft_warning(warnings, f"{context}: unknown aggregate column removed: {column}")
+                continue
+        if function != "count" and not hit:
+            _draft_warning(warnings, f"{context}: aggregate column is required for {function}")
+            continue
+        if not alias:
+            alias = _aggregate_alias(function, hit)
+        alias = re.sub(r"[^A-Za-z0-9_]+", "_", alias).strip("_") or _aggregate_alias(function, hit)
+        return {"function": function, "column": hit, "group_by": group_by, "alias": alias}
+    return {}
+
+
+def _fallback_ai_sql_aggregate(prompt: str, columns: list[str]) -> dict:
+    text = str(prompt or "")
+    low = text.casefold()
+    function = ""
+    for fn, aliases in _AI_SQL_AGG_FUNCTION_ALIASES.items():
+        if any(str(alias).casefold() in low for alias in aliases):
+            function = fn
+            break
+    if not function:
+        return {}
+    hits = _fallback_column_hits(text, columns)
+    lookup = _column_lookup(columns)
+    column = ""
+    if function != "count":
+        for hit in reversed(hits):
+            if hit.casefold() not in {"product", "lot_id", "root_lot_id", "wafer_id", "wf_id", "item_id", "step_id"}:
+                column = hit
+                break
+        if not column:
+            for preferred in ("value", "rank", "knob_value"):
+                if preferred in lookup:
+                    column = lookup[preferred]
+                    break
+    group_by: list[str] = []
+    if re.search(r"(?:별|별로|\bby\b|\bgroup\s+by\b)", low):
+        group_by = [
+            hit for hit in hits
+            if hit != column and hit.casefold() not in {"lot_id", "root_lot_id", "item_id"}
+        ][:4]
+    if function != "count" and not column:
+        return {}
+    return {"function": function, "column": column, "group_by": group_by, "alias": _aggregate_alias(function, column)}
+
+
+def _view_aggregate_query(agg_func: str = "", agg_column: str = "", agg_group_by: str = "") -> dict:
+    if not isinstance(agg_func, str):
+        agg_func = ""
+    if not isinstance(agg_column, str):
+        agg_column = ""
+    if not isinstance(agg_group_by, str):
+        agg_group_by = ""
+    if not str(agg_func or "").strip():
+        return {}
+    return {
+        "function": str(agg_func or "").strip(),
+        "column": str(agg_column or "").strip(),
+        "group_by": _clean_string_list(agg_group_by),
+    }
+
+
+def _aggregate_guard_select_cols(aggregate_spec: dict | None) -> str:
+    if not aggregate_spec:
+        return ""
+    cols = []
+    for col in (aggregate_spec.get("group_by") or []):
+        if col and col not in cols:
+            cols.append(col)
+    col = aggregate_spec.get("column") or ""
+    if col and col not in cols:
+        cols.append(col)
+    return ",".join(cols)
+
+
+def _aggregate_expr(spec: dict):
+    function = spec.get("function") or ""
+    column = spec.get("column") or ""
+    alias = spec.get("alias") or _aggregate_alias(function, column)
+    if function == "count":
+        expr = pl.col(column).count() if column else pl.len()
+    elif function == "avg":
+        expr = pl.col(column).cast(pl.Float64, strict=False).mean()
+    elif function == "sum":
+        expr = pl.col(column).cast(pl.Float64, strict=False).sum()
+    elif function == "median":
+        expr = pl.col(column).cast(pl.Float64, strict=False).median()
+    elif function == "min":
+        expr = pl.col(column).min()
+    elif function == "max":
+        expr = pl.col(column).max()
+    else:
+        raise ValueError(f"unsupported aggregate function: {function}")
+    return expr.alias(alias)
+
+
+def _apply_aggregate_lazy(lf: pl.LazyFrame, spec: dict) -> pl.LazyFrame:
+    group_by = [str(c) for c in (spec.get("group_by") or []) if str(c or "").strip()]
+    expr = _aggregate_expr(spec)
+    if group_by:
+        return lf.group_by(group_by).agg(expr)
+    return lf.select(expr)
+
+
+def _apply_aggregate_df(df: pl.DataFrame, spec: dict) -> pl.DataFrame:
+    group_by = [str(c) for c in (spec.get("group_by") or []) if str(c or "").strip()]
+    expr = _aggregate_expr(spec)
+    if group_by:
+        return df.group_by(group_by).agg(expr)
+    return df.select(expr)
+
+
+def _aggregate_sort_alias(sort_spec: dict, aggregate_spec: dict | None, output_columns: list[str]) -> dict:
+    if not sort_spec:
+        return {}
+    spec = dict(sort_spec)
+    column = str(spec.get("column") or "")
+    if column in output_columns:
+        return spec
+    if aggregate_spec and column and column.casefold() == str(aggregate_spec.get("column") or "").casefold():
+        spec["column"] = aggregate_spec.get("alias") or _aggregate_alias(
+            aggregate_spec.get("function") or "",
+            aggregate_spec.get("column") or "",
+        )
+    return spec
 
 
 def _view_sort_query(sort_column: str = "", sort_direction: str = "", sort_nulls: str = "") -> dict:
@@ -6311,6 +6622,7 @@ def _ai_sql_feedback_entry(record: dict) -> dict:
         "natural_language": _cache_safe_text(record.get("natural_language"), 200),
         "sql": _cache_safe_text(record.get("sql"), 500),
         "sort": record.get("sort") if isinstance(record.get("sort"), dict) else {},
+        "aggregate": record.get("aggregate") if isinstance(record.get("aggregate"), dict) else {},
         "selected_columns": [str(c) for c in (record.get("selected_columns") or []) if str(c or "").strip()][:20],
         "reason": _cache_safe_text(record.get("reason"), 240),
         "timestamp": _cache_safe_text(record.get("timestamp"), 60),
@@ -6396,6 +6708,7 @@ def _maybe_ai_sql_alternatives(username: str, payload: dict, context: dict) -> l
             "label": "현재 초안",
             "sql": payload.get("sql") or "",
             "sort": payload.get("sort") or {},
+            "aggregate": payload.get("aggregate") or {},
             "selected_columns": payload.get("selected_columns") or [],
         },
         {
@@ -6403,6 +6716,7 @@ def _maybe_ai_sql_alternatives(username: str, payload: dict, context: dict) -> l
             "label": "최근 좋아요 사례",
             "sql": positive.get("sql") or "",
             "sort": positive.get("sort") or {},
+            "aggregate": positive.get("aggregate") or {},
             "selected_columns": positive.get("selected_columns") or [],
         },
     ]
@@ -6738,6 +7052,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
     def _finish(payload: dict) -> dict:
         payload.setdefault("draft_id", draft_id)
         payload.setdefault("sort", {})
+        payload.setdefault("aggregate", {})
         payload["feedback_context_used"] = bool(feedback_context.get("used"))
         payload["feedback_context"] = _ai_sql_feedback_summary(feedback_context)
         payload["alternatives"] = _maybe_ai_sql_alternatives(username, payload, feedback_context)
@@ -6777,6 +7092,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "response_schema": {
                     "sql": "column = 'value' AND other_col > 0",
                     "sort": {"column": "value", "direction": "desc", "nulls": "last"},
+                    "aggregate": {"function": "avg", "column": "value", "group_by": ["item_id"]},
                     "selected_columns": ["column", "other_col"],
                     "resolved_columns": ["column"],
                     "resolved_values": ["value"],
@@ -6789,9 +7105,9 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 timeout=20,
                 max_retries=1,
                 schema={
-                    "keys": ["sql", "sort", "selected_columns", "resolved_columns", "resolved_values", "notes"],
+                    "keys": ["sql", "sort", "aggregate", "selected_columns", "resolved_columns", "resolved_values", "notes"],
                     "required": [],
-                    "properties": {"sql": {}, "sort": {}, "selected_columns": {}, "resolved_columns": {}, "resolved_values": {}, "notes": {}},
+                    "properties": {"sql": {}, "sort": {}, "aggregate": {}, "selected_columns": {}, "resolved_columns": {}, "resolved_values": {}, "notes": {}},
                 },
             )
             raw_text = str(out.get("text") or "")
@@ -6819,7 +7135,12 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
     sort_spec = _normalize_ai_sql_sort(_plan_ai_sql_sort(plan), columns, warnings, "sort")
     if not sort_spec:
         sort_spec = _fallback_ai_sql_sort(prompt, columns)
+    aggregate_spec = _normalize_ai_sql_aggregate(_plan_ai_sql_aggregate(plan), columns, warnings, "aggregate")
+    if not aggregate_spec:
+        aggregate_spec = _fallback_ai_sql_aggregate(prompt, columns)
     try:
+        if _llm_misread_hash_wafer(prompt, raw_sql, columns):
+            raise ValueError("Prompt #N token must be interpreted as wafer_id, not lot_id text")
         sql, validate_warnings = _validate_ai_sql_filter(raw_sql, columns)
         warnings.extend(validate_warnings)
     except Exception as exc:
@@ -6830,6 +7151,8 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
             _draft_warning(warnings, "recent liked feedback used as deterministic fallback hint")
         if not sort_spec and isinstance(feedback_hint.get("sort"), dict):
             sort_spec = _normalize_ai_sql_sort(feedback_hint.get("sort"), columns, warnings, "feedback_sort")
+        if not aggregate_spec and isinstance(feedback_hint.get("aggregate"), dict):
+            aggregate_spec = _normalize_ai_sql_aggregate(feedback_hint.get("aggregate"), columns, warnings, "feedback_aggregate")
         if fallback:
             try:
                 sql, validate_warnings = _validate_ai_sql_filter(fallback, columns)
@@ -6839,6 +7162,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                     "unit_action": "filebrowser.sql.llm.draft",
                     "sql": sql,
                     "sort": sort_spec,
+                    "aggregate": aggregate_spec,
                     "selected_columns": selected_columns,
                     "sample_profile": profile,
                     "warnings": [*warnings, f"LLM draft was not usable: {exc}", "deterministic fallback used"],
@@ -6852,13 +7176,14 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 })
             except Exception as fallback_exc:
                 warnings.append(f"deterministic fallback failed: {fallback_exc}")
-        if not raw_sql.strip() and (selected_columns or sort_spec):
+        if not raw_sql.strip() and (selected_columns or sort_spec or aggregate_spec):
             return _finish({
                 "ok": True,
                 "saved": False,
                 "unit_action": "filebrowser.sql.llm.draft",
                 "sql": "",
                 "sort": sort_spec,
+                "aggregate": aggregate_spec,
                 "selected_columns": selected_columns,
                 "sample_profile": profile,
                 "warnings": warnings,
@@ -6876,6 +7201,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
             "unit_action": "filebrowser.sql.llm.draft",
             "sql": "",
             "sort": sort_spec,
+            "aggregate": aggregate_spec,
             "selected_columns": selected_columns,
             "sample_profile": profile,
             "warnings": [*warnings, str(exc)],
@@ -6892,6 +7218,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         "unit_action": "filebrowser.sql.llm.draft",
         "sql": sql,
         "sort": sort_spec,
+        "aggregate": aggregate_spec,
         "selected_columns": selected_columns,
         "sample_profile": profile,
         "warnings": warnings,
@@ -6908,7 +7235,8 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
 def _run_view(df, sql: str, select_cols: str, rows: int,
               page: int = 0, page_size: int | None = None, preview_cols: int | None = None,
               latest_first: bool = False, latest_preview: bool = False,
-              sort_spec: dict | None = None):
+              sort_spec: dict | None = None,
+              aggregate_spec: dict | None = None):
     """Apply select + sql + head; return standard response dict. Legacy DataFrame path."""
     all_columns = list(df.columns)
     schema = {n: str(d) for n, d in df.schema.items()}
@@ -6917,12 +7245,26 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
 
-    sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
+    warnings: list[str] = []
+    active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec or {}, all_columns, warnings, "aggregate")
+    if warnings:
+        _fb_error(400, "invalid_aggregate", warnings[0])
+    sort_columns = all_columns + ([active_aggregate.get("alias")] if active_aggregate else [])
+    sel, truncated_cols = _selected_columns(all_columns, "" if active_aggregate else select_cols, preview_cols)
     if sql and sql.strip():
         _validate_where_expression(sql, all_columns)
         df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, all_columns))
         total = df.height
-    active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns, latest_first=latest_first)
+    if active_aggregate:
+        df = _apply_aggregate_df(df, active_aggregate)
+        total = df.height
+        sel = list(df.columns)
+        truncated_cols = False
+    active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, sort_columns, latest_first=latest_first and not active_aggregate)
+    if active_aggregate:
+        active_sort = _aggregate_sort_alias(active_sort, active_aggregate, list(df.columns))
+        if active_sort and active_sort.get("column") not in df.columns:
+            _fb_error(400, "unknown_sort_column", f"sort: unknown sort column removed: {active_sort.get('column')}")
     if active_sort and active_sort.get("column") in df.columns:
         df = df.sort(
             _sort_expr(active_sort, latest_order_col),
@@ -6936,7 +7278,7 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
         "total_rows": total, "total_cols": len(all_columns),
         "columns": list(show.columns), "all_columns": all_columns,
         "dtypes": schema, "showing_cols": list(show.columns),
-        "selected_cols": select_cols.strip() or None,
+        "selected_cols": None if active_aggregate else select_cols.strip() or None,
         "data": serialize_rows(show.to_dicts()), "showing": len(show),
         "page": page, "page_size": page_size,
         "has_more": offset + len(show) < total,
@@ -6944,6 +7286,7 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
         "truncated_cols": truncated_cols,
         "latest_order_col": latest_order_col or None,
         "sort": _sort_response_payload(active_sort, latest_order_col),
+        "aggregate": active_aggregate,
         "latest_preview": bool(latest_preview),
         "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
     }
@@ -7002,6 +7345,7 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
         "truncated_cols": truncated_cols,
         "latest_order_col": latest_order_col or None,
         "sort": _sort_response_payload(active_sort, latest_order_col),
+        "aggregate": {},
         "latest_preview": bool(latest_preview),
         "engine": "duckdb",
         "source_file_count": len(files),
@@ -7019,7 +7363,8 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
                    allow_eager_sql_fallback: bool = False,
                    source_size: int | None = None,
                    settings: dict | None = None,
-                   sort_spec: dict | None = None):
+                   sort_spec: dict | None = None,
+                   aggregate_spec: dict | None = None):
     """v8.4.3 OOM-aware: lazy 스캔 + projection pushdown + head + (필요 시) SQL.
 
     - 컬럼 선택 / head 은 lazy 에서 처리 → parquet reader 에서 필요한 컬럼·행만 읽음
@@ -7034,7 +7379,16 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
     preview_cols = _preview_cols_limit(preview_cols or _settings_preview_max_columns(settings))
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
-    active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns, latest_first=latest_first)
+    warnings: list[str] = []
+    active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec or {}, all_columns, warnings, "aggregate")
+    if warnings:
+        _fb_error(400, "invalid_aggregate", warnings[0])
+    sort_columns = all_columns + ([active_aggregate.get("alias")] if active_aggregate else [])
+    active_sort, latest_order_col = _resolve_view_sort_spec(
+        sort_spec,
+        sort_columns,
+        latest_first=latest_first and not active_aggregate,
+    )
     lf, wafer_filtered = _filter_valid_wafers_lazy(lf, all_columns)
 
     if meta_only:
@@ -7053,14 +7407,16 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             "truncated_cols": len(all_columns) > preview_cols,
             "latest_order_col": latest_order_col or None,
             "sort": _sort_response_payload(active_sort, latest_order_col),
+            "aggregate": {},
             "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
         }
 
     _validate_where_expression(sql, all_columns)
+    guard_select_cols = _aggregate_guard_select_cols(active_aggregate) if active_aggregate else select_cols
     _guard_source_operation(
         all_columns=all_columns,
         sql=sql,
-        select_cols=select_cols,
+        select_cols=guard_select_cols,
         source_size=source_size,
         settings=settings,
         operation="preview",
@@ -7069,7 +7425,49 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
     # Keep SQL filtering on the full source schema.  Projection is applied only
     # after the filter, so users can filter by a column that is not selected for
     # display/download.
-    sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
+    sel, truncated_cols = _selected_columns(all_columns, "" if active_aggregate else select_cols, preview_cols)
+
+    if active_aggregate:
+        work_lf = lf
+        if sql and sql.strip():
+            work_lf = work_lf.filter(_lazy_filter_expr(sql, all_columns))
+        work_lf = _apply_aggregate_lazy(work_lf, active_aggregate)
+        output_columns = list(active_aggregate.get("group_by") or []) + [active_aggregate.get("alias")]
+        active_sort = _aggregate_sort_alias(active_sort, active_aggregate, output_columns)
+        if active_sort and active_sort.get("column") not in output_columns:
+            _fb_error(400, "unknown_sort_column", f"sort: unknown sort column removed: {active_sort.get('column')}")
+        if active_sort:
+            work_lf = work_lf.sort(
+                _sort_expr(active_sort, None),
+                descending=_sort_descending(active_sort),
+                nulls_last=_sort_nulls_last(active_sort),
+            )
+        try:
+            from core.parquet_perf import collect_streaming
+            show_plus = collect_streaming(work_lf.slice(offset, page_size + 1))
+        except Exception:
+            show_plus = work_lf.slice(offset, page_size + 1).collect()
+        has_more = show_plus.height > page_size
+        show = show_plus.head(page_size) if has_more else show_plus
+        total = offset + show.height + (1 if has_more else 0)
+        return {
+            "total_rows": total, "total_cols": len(all_columns),
+            "columns": list(show.columns), "all_columns": all_columns,
+            "dtypes": {**schema, **{c: str(show.schema[c]) for c in show.columns if c in show.schema}},
+            "showing_cols": list(show.columns),
+            "selected_cols": None,
+            "data": serialize_rows(show.to_dicts()), "showing": len(show),
+            "page": page, "page_size": page_size, "has_more": has_more,
+            "meta_cached": bool(cached_meta),
+            "total_rows_exact": False,
+            "preview_cols": len(show.columns),
+            "truncated_cols": False,
+            "latest_order_col": None,
+            "sort": _sort_response_payload(active_sort, None),
+            "aggregate": active_aggregate,
+            "latest_preview": bool(latest_preview),
+            "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
+        }
 
     if sql and sql.strip():
         # Keep SQL lazy. Exact counts and eager fallback are intentionally
@@ -7149,6 +7547,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
         "truncated_cols": truncated_cols,
         "latest_order_col": latest_order_col or None,
         "sort": _sort_response_payload(active_sort, latest_order_col),
+        "aggregate": active_aggregate,
         "latest_preview": bool(latest_preview),
         "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
     }
@@ -7156,24 +7555,42 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
 
 def _run_view_lazy_full(lf, sql: str, select_cols: str, preview_cols: int | None = None,
                         latest_first: bool = False,
-                        sort_spec: dict | None = None):
+                        sort_spec: dict | None = None,
+                        aggregate_spec: dict | None = None):
     """Collect a single lightweight file fully after optional SQL/projection."""
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
     schema = {n: str(schema_obj[n]) for n in all_columns}
-    active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns, latest_first=latest_first)
+    warnings: list[str] = []
+    active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec or {}, all_columns, warnings, "aggregate")
+    if warnings:
+        _fb_error(400, "invalid_aggregate", warnings[0])
+    sort_columns = all_columns + ([active_aggregate.get("alias")] if active_aggregate else [])
+    active_sort, latest_order_col = _resolve_view_sort_spec(
+        sort_spec,
+        sort_columns,
+        latest_first=latest_first and not active_aggregate,
+    )
     lf, wafer_filtered = _filter_valid_wafers_lazy(lf, all_columns)
 
     if sql and sql.strip():
         _validate_where_expression(sql, all_columns)
         lf = lf.filter(_lazy_filter_expr(sql, all_columns))
+    if active_aggregate:
+        lf = _apply_aggregate_lazy(lf, active_aggregate)
+        output_columns = list(active_aggregate.get("group_by") or []) + [active_aggregate.get("alias")]
+        active_sort = _aggregate_sort_alias(active_sort, active_aggregate, output_columns)
+        if active_sort and active_sort.get("column") not in output_columns:
+            _fb_error(400, "unknown_sort_column", f"sort: unknown sort column removed: {active_sort.get('column')}")
     if active_sort:
         lf = lf.sort(
-            _sort_expr(active_sort, latest_order_col),
+            _sort_expr(active_sort, None if active_aggregate else latest_order_col),
             descending=_sort_descending(active_sort),
             nulls_last=_sort_nulls_last(active_sort),
         )
-    if preview_cols is None:
+    if active_aggregate:
+        sel, truncated_cols = [], False
+    elif preview_cols is None:
         sel, truncated_cols = _selected_columns(all_columns, select_cols, len(all_columns) or 1)
     else:
         sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
@@ -7195,8 +7612,9 @@ def _run_view_lazy_full(lf, sql: str, select_cols: str, preview_cols: int | None
         "total_rows_exact": True,
         "preview_cols": len(show.columns),
         "truncated_cols": truncated_cols,
-        "latest_order_col": latest_order_col or None,
-        "sort": _sort_response_payload(active_sort, latest_order_col),
+        "latest_order_col": None if active_aggregate else latest_order_col or None,
+        "sort": _sort_response_payload(active_sort, None if active_aggregate else latest_order_col),
+        "aggregate": active_aggregate,
         "latest_preview": False,
         "single_file_full_read": True,
         "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
@@ -7383,14 +7801,20 @@ def _download_lazy_csv(
     *,
     source_size: int | None = None,
     settings: dict | None = None,
+    aggregate_spec: dict | None = None,
 ) -> tuple[pl.DataFrame, bytes]:
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
     _validate_where_expression(sql, all_columns)
+    warnings: list[str] = []
+    active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec or {}, all_columns, warnings, "aggregate")
+    if warnings:
+        _fb_error(400, "invalid_aggregate", warnings[0])
+    guard_select_cols = _aggregate_guard_select_cols(active_aggregate) if active_aggregate else select_cols
     _guard_source_operation(
         all_columns=all_columns,
         sql=sql,
-        select_cols=select_cols,
+        select_cols=guard_select_cols,
         source_size=source_size,
         settings=settings,
         operation="download",
@@ -7403,6 +7827,9 @@ def _download_lazy_csv(
             lf = lf.filter(_lazy_filter_expr(sql, all_columns))
         except Exception as e:
             raise HTTPException(400, f"CSV download SQL error: {e}")
+    if active_aggregate:
+        lf = _apply_aggregate_lazy(lf, active_aggregate)
+        selected = []
     if selected:
         lf = lf.select(selected)
     try:
@@ -7479,6 +7906,9 @@ def view_product(root: str = Query(...), product: str = Query(...),
                  sort_column: str = Query(""),
                  sort_direction: str = Query("asc"),
                  sort_nulls: str = Query("last"),
+                 agg_func: str = Query(""),
+                 agg_column: str = Query(""),
+                 agg_group_by: str = Query(""),
                  meta_only: bool = Query(True),
                  all_partitions: bool = Query(False),
                  engine: str = Query("auto"),
@@ -7494,6 +7924,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
         from core.parquet_perf import has_date_filter
         settings = _load_filebrowser_settings()
         sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
+        aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
         cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
         page, page_size, _offset = _preview_page_args(rows, page_size)
         rows = page_size
@@ -7509,6 +7940,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 all_partitions
                 or bool(sql and sql.strip())
                 or bool(select_cols and select_cols.strip())
+                or bool(aggregate_spec)
                 or has_date_filter(sql)
             )
             recent = None if full_scan else 30
@@ -7521,7 +7953,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
             if latest_preview:
                 local_rows = min(int(local_rows or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
                 local_page_size = min(int(local_page_size or LATEST_PREVIEW_ROWS), LATEST_PREVIEW_ROWS)
-            if full_scan and not meta_only and duckdb_engine.is_available() and "INLINE" not in str(root or "").upper():
+            if full_scan and not meta_only and not aggregate_spec and duckdb_engine.is_available() and "INLINE" not in str(root or "").upper():
                 files = source_files
                 if duckdb_engine.should_use_duckdb(files, engine=engine, sql=sql, select_cols=select_cols):
                     try:
@@ -7546,7 +7978,8 @@ def view_product(root: str = Query(...), product: str = Query(...),
                                                            page=page, page_size=local_page_size, preview_cols=cols,
                                                            latest_first=latest_preview, latest_preview=latest_preview,
                                                            source_size=source_size, settings=settings,
-                                                           sort_spec=sort_spec), settings)
+                                                           sort_spec=sort_spec,
+                                                           aggregate_spec=aggregate_spec), settings)
             # Fallback — legacy DF 경로
             df = read_source(root=root, product=product)
             if meta_only:
@@ -7562,7 +7995,8 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 }, settings)
             return _finalize_preview_response(_run_view(df, sql, select_cols, local_rows, page=page, page_size=local_page_size,
                                                   preview_cols=cols, latest_first=latest_preview, latest_preview=latest_preview,
-                                                  sort_spec=sort_spec), settings)
+                                                  sort_spec=sort_spec,
+                                                  aggregate_spec=aggregate_spec), settings)
 
         if _fbcache.is_enabled(settings):
             prod_dir = _resolve_product_dir_fast(root, product)
@@ -7576,6 +8010,9 @@ def view_product(root: str = Query(...), product: str = Query(...),
                     "sort_column": _cache_safe_text(sort_column, 120).casefold(),
                     "sort_direction": _cache_safe_text(sort_direction, 20).casefold(),
                     "sort_nulls": _cache_safe_text(sort_nulls, 20).casefold(),
+                    "agg_func": _cache_safe_text(agg_func, 40).casefold(),
+                    "agg_column": _cache_safe_text(agg_column, 120).casefold(),
+                    "agg_group_by": ",".join(sorted(c.casefold() for c in _clean_string_list(agg_group_by))),
                     "meta_only": bool(meta_only),
                     "page": int(page),
                     "page_size": int(page_size),
@@ -7832,6 +8269,9 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       sort_column: str = Query(""),
                       sort_direction: str = Query("asc"),
                       sort_nulls: str = Query("last"),
+                      agg_func: str = Query(""),
+                      agg_column: str = Query(""),
+                      agg_group_by: str = Query(""),
                       meta_only: bool = Query(True),
                       engine: str = Query("auto"),
                       page: int = Query(0, ge=0),
@@ -7848,6 +8288,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
     try:
         settings = _load_filebrowser_settings()
         sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
+        aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
         cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
         page, page_size, _offset = _preview_page_args(rows, page_size)
         rows = page_size
@@ -7885,7 +8326,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                 cached_meta = read_meta(fp)
             except Exception:
                 cached_meta = None
-            if duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
+            if not aggregate_spec and duckdb_engine.should_use_duckdb([fp], engine=engine, sql=sql, select_cols=select_cols):
                 try:
                     return _finalize_preview_response(_run_view_duckdb(
                         [fp], sql, select_cols, rows,
@@ -7905,6 +8346,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                 source_size=fp.stat().st_size,
                 settings=settings,
                 sort_spec=sort_spec,
+                aggregate_spec=aggregate_spec,
             )
             resp["all_columns"] = all_cols_full
             resp["total_cols"] = len(all_cols_full)
@@ -7922,6 +8364,9 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                     "sort_column": _cache_safe_text(sort_column, 120).casefold(),
                     "sort_direction": _cache_safe_text(sort_direction, 20).casefold(),
                     "sort_nulls": _cache_safe_text(sort_nulls, 20).casefold(),
+                    "agg_func": _cache_safe_text(agg_func, 40).casefold(),
+                    "agg_column": _cache_safe_text(agg_column, 120).casefold(),
+                    "agg_group_by": ",".join(sorted(c.casefold() for c in _clean_string_list(agg_group_by))),
                     "meta_only": bool(meta_only),
                     "page": int(page),
                     "page_size": int(page_size),
@@ -7943,6 +8388,9 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
 def download_csv(request: Request, root: str = Query(""), product: str = Query(""),
                  file: str = Query(""), sql: str = Query(""),
                  select_cols: str = Query(""), username: str = Query(""),
+                 agg_func: str = Query(""),
+                 agg_column: str = Query(""),
+                 agg_group_by: str = Query(""),
                  apply_reformatter: bool = Query(True),
                  max_rows: int = Query(DEFAULT_CSV_DOWNLOAD_MAX_ROWS, ge=1, le=MAX_CSV_DOWNLOAD_MAX_ROWS),
                  max_bytes: int = Query(0, ge=0, le=MAX_CSV_DOWNLOAD_BYTES)):
@@ -7955,6 +8403,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
     username = me.get("username") or "anonymous"
     try:
         settings = _load_filebrowser_settings()
+        aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
         max_rows = _csv_download_max_rows(max_rows)
         max_bytes = _csv_download_max_bytes(max_bytes, settings)
         lazy_lf = None
@@ -8051,11 +8500,12 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                     max_bytes,
                     source_size=duckdb_engine.total_size(source_files),
                     settings=settings,
+                    aggregate_spec=aggregate_spec,
                 )
             except HTTPException:
                 raise
             except Exception as e:
-                if not _is_dtype_mismatch_error(e) or not source_files or not duckdb_engine.is_available():
+                if aggregate_spec or not _is_dtype_mismatch_error(e) or not source_files or not duckdb_engine.is_available():
                     raise
                 logger.warning("polars download fallback to duckdb label=%s: %s", label, e)
                 df, csv_bytes = _download_duckdb_csv(source_files, sql, select_cols, max_rows, max_bytes, settings=settings)
@@ -8081,16 +8531,28 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
 
         df, _wafer_filtered = _filter_valid_wafers_df(df)
         _validate_where_expression(sql, list(df.columns))
+        guard_select_cols = select_cols
+        if aggregate_spec:
+            guard_select_cols = _aggregate_guard_select_cols(
+                _normalize_ai_sql_aggregate(aggregate_spec, list(df.columns), [], "aggregate")
+            )
         _guard_source_operation(
             all_columns=list(df.columns),
             sql=sql,
-            select_cols=select_cols,
+            select_cols=guard_select_cols,
             source_size=0,
             settings=settings,
             operation="download",
         )
         if sql.strip():
             df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, list(df.columns)))
+        if aggregate_spec:
+            warnings: list[str] = []
+            active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec, list(df.columns), warnings, "aggregate")
+            if warnings:
+                _fb_error(400, "invalid_aggregate", warnings[0])
+            df = _apply_aggregate_df(df, active_aggregate)
+            select_cols = ""
         if select_cols.strip():
             sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(df.columns)]
             if sel:
@@ -8177,6 +8639,7 @@ class FileBrowserSqlFeedbackReq(BaseModel):
     natural_language: str = ""
     sql: str = ""
     sort: dict = {}
+    aggregate: dict = {}
     selected_columns: list[str] = []
     columns: list[str] = []
     scope: str = ""
@@ -8398,6 +8861,12 @@ def filebrowser_sql_feedback(req: FileBrowserSqlFeedbackReq, request: Request):
     columns = _settings_context_columns(req.columns or [])
     warnings: list[str] = []
     sort_spec = _normalize_ai_sql_sort(req.sort or {}, columns, warnings, "feedback_sort") if columns else (req.sort or {})
+    aggregate_spec = _normalize_ai_sql_aggregate(
+        req.aggregate or {},
+        columns,
+        warnings,
+        "feedback_aggregate",
+    ) if columns else (req.aggregate or {})
     selected_columns = _filter_ai_sql_selected_columns(
         req.selected_columns or [],
         columns,
@@ -8414,6 +8883,7 @@ def filebrowser_sql_feedback(req: FileBrowserSqlFeedbackReq, request: Request):
         "natural_language": _cache_safe_text(req.natural_language, 2000),
         "sql": _cache_safe_text(req.sql, 2000),
         "sort": sort_spec if isinstance(sort_spec, dict) else {},
+        "aggregate": aggregate_spec if isinstance(aggregate_spec, dict) else {},
         "selected_columns": selected_columns[:100],
         "columns": columns[:300],
         "column_signature": _ai_sql_column_signature(columns),

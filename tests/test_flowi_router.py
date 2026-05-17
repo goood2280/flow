@@ -184,6 +184,71 @@ def test_flowi_impact_context_trace_includes_wiki_and_event_evidence(monkeypatch
     assert out["trace"]["evidence"]["impact_context"]["event_refs"][0]["event_id"] == "evt_split_1"
 
 
+def test_flowi_impact_context_surfaces_anchor_mts_value_history(monkeypatch):
+    monkeypatch.setattr(llm_router, "_allowed_flowi_feature_keys", lambda _me: {"calendar", "dashboard", "diagnosis", "filebrowser", "inform", "meeting", "splittable", "tracker"})
+    monkeypatch.setattr(llm_router, "_append_user_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_router.llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(llm_router.kv, "lookup_term", lambda *_args, **_kwargs: {"columns": [], "docs": [], "graph": {"nodes": [], "edges": []}})
+
+    fake_ctx = {
+        "query": {"product": "PRODA", "root_lot_id": "", "step_id": "24.0 SORT", "item_id": "INLINE_AAA", "knob": ""},
+        "anchor_items": [
+            {"product": "PRODA", "step_id": "24.0 SORT", "item_id": "INLINE_OLD", "valid_from": "2026-01-01T00:00:00", "valid_to": "2026-02-01T00:00:00", "replaced_by": "INLINE_AAA"},
+            {"product": "PRODA", "step_id": "24.0 SORT", "item_id": "INLINE_AAA", "valid_from": "2026-02-01T00:00:00", "valid_to": ""},
+        ],
+        "lot_anomalies": [],
+        "split_impacts": [],
+        "mts_changes": [{
+            "event_id": "evt_mts_1",
+            "event_type": "mts_change",
+            "status": "confirmed",
+            "source_type": "meeting",
+            "source_id": "MT-1",
+            "changed_at": "2026-02-01T00:00:00",
+            "product": "PRODA",
+            "step_id": "24.0 SORT",
+            "item_id": "INLINE_AAA",
+            "previous_threshold": "2.0",
+            "new_threshold": "3.5",
+            "summary": "INLINE_AAA 기준을 2.0에서 3.5로 변경",
+        }],
+        "conflicts": [],
+        "wiki_refs": [{"doc_id": "anchor_inline_aaa", "title": "PRODA INLINE_AAA anchor registry", "schema_type": "anchor_item_registry"}],
+        "event_refs": [{
+            "event_id": "evt_mts_1",
+            "event_type": "mts_change",
+            "status": "confirmed",
+            "source_type": "meeting",
+            "source_id": "MT-1",
+            "changed_at": "2026-02-01T00:00:00",
+            "product": "PRODA",
+            "step_id": "24.0 SORT",
+            "item_id": "INLINE_AAA",
+            "previous_threshold": "2.0",
+            "new_threshold": "3.5",
+            "summary": "INLINE_AAA 기준을 2.0에서 3.5로 변경",
+        }],
+        "confidence": "verified_wiki",
+    }
+    monkeypatch.setattr(llm_router.knowledge_impact, "impact_context", lambda **_kwargs: fake_ctx)
+
+    out = _run_flowi_chat(
+        prompt="PRODA 24.0 SORT INLINE_AAA MTS 기준 변경점 이력 보여줘",
+        product="",
+        max_rows=5,
+        me={"username": "root", "role": "admin"},
+    )
+
+    assert out["tool"]["intent"] == "knowledge_impact_context"
+    assert "MTS 변경 후보: 1건 (24.0 SORT / INLINE_AAA 기준 변경: 2.0 -> 3.5)" in out["answer"]
+    assert "Anchor item 현재: 24.0 SORT / INLINE_AAA" in out["answer"]
+    assert "INLINE_OLD(2026-01-01~2026-02-01) -> INLINE_AAA" in out["answer"]
+    row = out["tool"]["table"]["rows"][0]
+    assert row["before"] == "2.0"
+    assert row["after"] == "3.5"
+    assert row["item_id"] == "INLINE_AAA"
+
+
 def test_flowi_chart_request_uses_admin_defaults(monkeypatch):
     monkeypatch.setattr(
         llm_router,
@@ -257,6 +322,131 @@ def test_flowi_chart_refine_uses_chart_session_context(tmp_path, monkeypatch):
     assert out["handled"] is True
     assert out["config"]["font_size"] == 16
     assert out["chart_session_id"] == sid
+
+
+def test_flowi_chart_fit_followup_uses_generic_chart_session_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm_router.dashboard_charting, "CHART_SESSION_DIR", tmp_path / "sessions")
+    sid = llm_router.dashboard_charting.save_chart_session({
+        "username": "hol",
+        "chart_type": "scatter",
+        "config": {"chart_type": "scatter", "title": "Generic scatter"},
+        "base_data_query": {},
+        "data": [{"x": 1, "y": 2}, {"x": 2, "y": 4}, {"x": 3, "y": 6}],
+    })
+
+    out = _handle_flowi_query(
+        "1차식 fitting line과 R2 넣어줘",
+        "",
+        12,
+        allowed_keys={"dashboard"},
+        username="hol",
+        agent_context={"chart_session_id": sid},
+    )
+
+    assert out["handled"] is True
+    assert out["intent"] == "dashboard_chart_fit"
+    assert out["chart_result"]["fit"]["r2"] == 1.0
+    assert out["chart_result"]["chart_session_id"] == sid
+
+
+def test_flowi_chart_raw_data_followup_uses_context_session_and_filebrowser_limits(tmp_path, monkeypatch):
+    from routers import filebrowser
+
+    monkeypatch.setattr(llm_router.dashboard_charting, "CHART_SESSION_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(filebrowser, "_load_filebrowser_settings", lambda: {
+        "csv_download_max_rows": 2,
+        "csv_download_max_bytes": 2000,
+        "sql_query_max_source_bytes": 0,
+        "preview_max_columns": 200,
+    })
+    sid = llm_router.dashboard_charting.save_chart_session({
+        "username": "hol",
+        "chart_type": "scatter",
+        "config": {"title": "IOFF Trend"},
+        "base_data_query": {},
+        "data": [
+            {"tkout_time": "2026-05-01T10:00:00", "lot_wf": "A1001_01", "y": 1.2},
+            {"tkout_time": "2026-05-02T10:00:00", "lot_wf": "A1001_02", "y": 1.4},
+        ],
+    })
+
+    out = _handle_flowi_query(
+        "raw data csv로 다운받게 해줘",
+        "",
+        12,
+        allowed_keys={"dashboard"},
+        username="hol",
+        agent_context={"chart_session_id": sid, "messages": [{"chart_session_id": sid}]},
+    )
+    meta, csv_bytes = llm_router._flowi_chart_raw_download_payload(sid, username="hol")
+
+    assert llm_router._flowi_chart_raw_data_intent("raw data 보여줘") is True
+    assert out["handled"] is True
+    assert out["action"] == "export_chart_raw_data"
+    assert out["raw_data_download"]["row_count"] == 2
+    assert out["raw_data_download"]["max_rows"] == 2
+    assert out["table"]["total"] == 2
+    assert meta["filename"].startswith("flowi_IOFF_Trend_")
+    assert b"tkout_time" in csv_bytes
+    assert b"A1001_02" in csv_bytes
+
+
+def test_flowi_chart_raw_data_followup_blocks_over_filebrowser_row_limit(tmp_path, monkeypatch):
+    from routers import filebrowser
+
+    monkeypatch.setattr(llm_router.dashboard_charting, "CHART_SESSION_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(filebrowser, "_load_filebrowser_settings", lambda: {
+        "csv_download_max_rows": 1,
+        "csv_download_max_bytes": 2000,
+        "sql_query_max_source_bytes": 0,
+        "preview_max_columns": 200,
+    })
+    sid = llm_router.dashboard_charting.save_chart_session({
+        "username": "hol",
+        "chart_type": "scatter",
+        "config": {"title": "Too many rows"},
+        "base_data_query": {},
+        "data": [{"x": 1, "y": 2}, {"x": 2, "y": 3}],
+    })
+
+    out = _handle_flowi_query(
+        "원본 데이터 csv 다운로드",
+        "",
+        12,
+        allowed_keys={"dashboard"},
+        username="hol",
+        agent_context={"chart_session_id": sid},
+    )
+
+    assert out["handled"] is True
+    assert out["blocked"] is True
+    assert out["validation"]["reason"] == "download_too_large"
+    assert out["validation"]["max_rows"] == 1
+
+
+def test_flowi_chart_raw_data_endpoint_returns_csv(tmp_path, monkeypatch):
+    from routers import filebrowser
+
+    monkeypatch.setattr(llm_router.dashboard_charting, "CHART_SESSION_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(llm_router, "current_user", lambda _request: {"username": "hol", "role": "admin"})
+    monkeypatch.setattr(filebrowser, "_load_filebrowser_settings", lambda: {
+        "csv_download_max_rows": 100,
+        "csv_download_max_bytes": 2000,
+        "sql_query_max_source_bytes": 0,
+        "preview_max_columns": 200,
+    })
+    sid = llm_router.dashboard_charting.save_chart_session({
+        "username": "hol",
+        "chart_type": "scatter",
+        "config": {"title": "Endpoint CSV"},
+        "base_data_query": {},
+        "data": [{"x": 1, "y": 2}],
+    })
+
+    resp = llm_router.flowi_chart_session_raw_data(request=object(), chart_session_id=sid)
+
+    assert resp.media_type == "text/csv; charset=utf-8"
+    assert "flowi_Endpoint_CSV_" in resp.headers["content-disposition"]
 
 
 def test_flowi_wafer_match_expr_handles_prefixed_and_int_values():
@@ -1059,8 +1249,16 @@ def test_flowi_et_trend_followup_reuses_chart_session_for_knob_color_and_exclude
         username="hol",
     )
     ctx = {"chart_session_id": first["chart_session_id"], "messages": [{"chart_session_id": first["chart_session_id"]}]}
+    fit_only = _handle_flowi_query(
+        "1차식 fitting line과 R2 넣어줘",
+        "",
+        12,
+        allowed_keys={"dashboard", "ml"},
+        username="hol",
+        agent_context=ctx,
+    )
     colored = _handle_flowi_query(
-        "24.0 SORT KNOB으로 컬러링해줘",
+        "24.0 SORT KNOB으로 컬러링하고 1차식 fitting line과 R2 넣어줘",
         "",
         12,
         allowed_keys={"dashboard", "ml"},
@@ -1068,8 +1266,12 @@ def test_flowi_et_trend_followup_reuses_chart_session_for_knob_color_and_exclude
         agent_context=ctx,
     )
 
+    assert fit_only["handled"] is True
+    assert fit_only["chart_result"]["fit"]["r2"] == 1.0
+    assert fit_only["fit"]["equation"].startswith("y = ")
     assert colored["handled"] is True
     assert colored["chart_result"]["color_by"] == "24.0 SORT"
+    assert colored["chart_result"]["fit"]["r2"] == 1.0
     assert colored["chart_result"]["join_cols"] == ["root_lot_id", "wafer_id"]
     assert {"value": "missing", "count": 1, "color": "gray"} in colored["chart_result"]["color_values"]
     assert any(point["color_value"] == "" for point in colored["chart_result"]["points"])

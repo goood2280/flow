@@ -269,7 +269,7 @@ def change_password(req: ChangePwReq, request: Request):
             continue
         ok, _ = auth_core.verify_password(req.old_password, u.get("password_hash", ""))
         if not ok:
-            raise HTTPException(401, "Current password incorrect")
+            raise HTTPException(400, "Current password incorrect")
         u["password_hash"] = auth_core.hash_password(req.new_password)
         write_users(users)
         # 비번 변경 시 기존 세션 유지 (본인 편의), but 새 비번 기준이므로 revoke 는 skip.

@@ -328,6 +328,10 @@ export function useFlowShell() {
     (tabKey) => {
       if (!canAccess(tabKey) && tabKey !== "admin") return;
       startTransition(() => setTab(tabKey));
+      const nextUrl = `/${tabKey}`;
+      if (window.location.pathname + window.location.search !== nextUrl) {
+        window.history.pushState({ tab: tabKey }, "", nextUrl);
+      }
       if (user) logActivity(user.username, "nav:" + tabKey);
     },
     [canAccess, user],

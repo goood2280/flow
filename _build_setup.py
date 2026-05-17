@@ -864,6 +864,92 @@ def _seed_filebrowser_agent_prompts() -> None:
     print(f"[seed] FileBrowser agent prompts installed: {dst}")
 
 
+def _seed_default_agent_wiki_docs() -> None:
+    """Install bundled Agent Wiki defaults only when each runtime doc is absent."""
+    src_dir = ROOT / 'backend' / 'core' / 'default_agent_wiki_seed'
+    if not src_dir.is_dir():
+        return
+    flow_root = Path(os.environ.get('FLOW_DATA_ROOT') or (ROOT / 'data' / 'flow-data')).resolve()
+    wiki_dir = flow_root / 'knowledge' / 'wiki'
+    installed = 0
+    preserved = 0
+    skipped = 0
+    installed_docs = []
+
+    def safe_name(value: object, fallback: str = 'item') -> str:
+        text = ''.join(ch if (ch.isalnum() or ch in '._-') else '_' for ch in str(value or '').strip()).strip('._-')
+        return text[:160] or fallback
+
+    def frontmatter(text: str) -> tuple[dict, str]:
+        if not text.startswith('---\\n'):
+            return {}, text
+        end = text.find('\\n---', 4)
+        if end < 0:
+            return {}, text
+        meta = {}
+        for line in text[4:end].strip().splitlines():
+            if ':' not in line:
+                continue
+            key, raw = line.split(':', 1)
+            value = raw.strip()
+            if value.startswith('[') or value.startswith('{'):
+                try:
+                    meta[key.strip()] = json.loads(value)
+                    continue
+                except Exception:
+                    pass
+            meta[key.strip()] = value
+        return meta, text[end + 5:].lstrip('\\n')
+
+    for src in sorted(src_dir.rglob('*.md')):
+        if src.name.startswith('_'):
+            skipped += 1
+            continue
+        try:
+            text = src.read_text(encoding='utf-8')
+        except Exception:
+            skipped += 1
+            continue
+        meta, _body = frontmatter(text)
+        doc_id = safe_name(meta.get('doc_id') or '', fallback='')
+        if not doc_id:
+            skipped += 1
+            continue
+        kind = safe_name(meta.get('kind') or 'agent_wiki', fallback='agent_wiki')
+        exists = any(fp.stem == doc_id for fp in wiki_dir.rglob('*.md')) if wiki_dir.is_dir() else False
+        if exists:
+            preserved += 1
+            continue
+        dst = wiki_dir / kind / f'{doc_id}.md'
+        if dst.exists():
+            preserved += 1
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(text.rstrip() + '\\n', encoding='utf-8')
+        installed += 1
+        installed_docs.append({'doc_id': doc_id, 'path': str(dst.relative_to(flow_root / 'knowledge'))})
+
+    if installed:
+        log_file = flow_root / 'knowledge' / 'index' / 'wiki_log.jsonl'
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            'created_at': _dt.now().astimezone().isoformat(timespec='seconds'),
+            'action': 'default_seed_install',
+            'actor': 'setup.py',
+            'doc_id': '',
+            'source_ids': [],
+            'title': 'Default Agent Wiki seed',
+            'message': f'Installed {installed} default Agent Wiki seed docs',
+            'meta': {'installed': installed_docs, 'preserved_count': preserved, 'skipped': skipped},
+            'log_id': f"log_{_dt.now().strftime('%Y%m%d%H%M%S')}_default_seed",
+        }
+        with log_file.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(row, ensure_ascii=False, default=str) + '\\n')
+        print(f"[seed] default Agent Wiki docs installed: {installed}")
+    else:
+        print(f"[seed] default Agent Wiki docs preserved: {preserved}, skipped: {skipped}")
+
+
 def extract() -> int:
     # 추출 직전 data_root 스냅샷 (~/.flow_backups/v<ver>-<stamp>/).
     # 스냅샷 실패/없음이면 snap=None 으로 계속 진행 — 신규 설치는 보호할 게 없음.
@@ -910,6 +996,10 @@ def extract() -> int:
         _seed_filebrowser_agent_prompts()
     except Exception as e:
         print(f"[seed] WARN FileBrowser agent prompts install failed: {e}")
+    try:
+        _seed_default_agent_wiki_docs()
+    except Exception as e:
+        print(f"[seed] WARN default Agent Wiki seed install failed: {e}")
     print(f"\\n[extract] flow {_version_time_label()} - {len(FILES)} files processed -> {ROOT}")
     print(f"[extract] user data preservation: snapshot @ ~/.flow_backups/ + "
           f"5-layer _write guard + post-extract SHA-256 verify/restore.")

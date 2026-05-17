@@ -14,6 +14,11 @@ function numberOrValue(value) {
   return Number.isFinite(n) && text(value).trim() !== "" ? n : value;
 }
 
+function numberOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && text(value).trim() !== "" ? n : null;
+}
+
 function pointX(point) {
   return point?.x_label || point?.tkout_time || point?.time || point?.x;
 }
@@ -55,7 +60,10 @@ export function FlowPlotlyChart({
   const chartType = String(cfg.chart_type || chart?.chart_type || chart?.kind || "scatter").replace("dashboard_", "");
   const title = cfg.title || chart?.title || "";
   const markerSize = Number(cfg.point_size || chart?.render_preset?.point_size || 7);
-  const bg = dark ? "#111111" : "rgba(255,255,255,0)";
+  const fit = chart?.fit || chart?.fit_params || cfg.fit_params || null;
+  const fitOk = fit && Number.isFinite(Number(fit.slope)) && Number.isFinite(Number(fit.intercept));
+  const fitLabel = fitOk && Number.isFinite(Number(fit.r2)) ? `R²=${Number(fit.r2).toFixed(4)}` : "";
+  const bg = dark ? "#111111" : "#ffffff";
   const fg = dark ? "#e5e7eb" : "#111827";
   const grid = dark ? "rgba(148,163,184,0.22)" : "rgba(15,23,42,0.12)";
 
@@ -89,11 +97,32 @@ export function FlowPlotlyChart({
         line: { color: missing ? MISSING_COLOR : SERIES[idx % SERIES.length], width: 1.6 },
       };
     });
+    if (fitOk) {
+      const fitRows = points.map((point, idx) => {
+        const x = numberOrNull(point?.x);
+        const y = numberOrNull(pointY(point));
+        return { x: x == null ? idx : x, displayX: numberOrValue(pointX(point)), y };
+      }).filter((row) => row.y != null);
+      if (fitRows.length >= 2) {
+        fitRows.sort((a, b) => a.x - b.x);
+        const first = fitRows[0];
+        const last = fitRows[fitRows.length - 1];
+        plotTraces.push({
+          type: "scatter",
+          mode: "lines",
+          name: fitLabel ? `1차 fit (${fitLabel})` : "1차 fit",
+          x: [first.displayX, last.displayX],
+          y: [Number(fit.slope) * first.x + Number(fit.intercept), Number(fit.slope) * last.x + Number(fit.intercept)],
+          hoverinfo: "skip",
+          line: { color: "#ef4444", width: 2.4, dash: "dash" },
+        });
+      }
+    }
     return {
       traces: plotTraces,
       legendCounts: entries.map(([name, rows]) => ({ name, count: rows.length })),
     };
-  }, [points, colorBy, chartType, xLabel, yLabel, markerSize, dark]);
+  }, [points, colorBy, chartType, xLabel, yLabel, markerSize, dark, fitOk, fit, fitLabel]);
 
   if (!points.length) {
     return <div style={{ minHeight: Math.max(180, height), display: "flex", alignItems: "center", justifyContent: "center", color: dark ? "#9ca3af" : "#64748b", fontSize: 14 }}>차트로 표시할 point가 없습니다.</div>;
@@ -133,6 +162,19 @@ export function FlowPlotlyChart({
             font: { size: 11, color: fg },
           },
           showlegend: colorBy ? true : legendCounts.length > 1,
+          annotations: fitLabel ? [{
+            xref: "paper",
+            yref: "paper",
+            x: 1,
+            y: 1.08,
+            xanchor: "right",
+            showarrow: false,
+            text: fit?.equation ? `${fit.equation}<br>${fitLabel}` : fitLabel,
+            font: { size: 12, color: "#ef4444" },
+            bgcolor: dark ? "rgba(17,17,17,0.78)" : "rgba(255,255,255,0.9)",
+            bordercolor: "rgba(239,68,68,0.35)",
+            borderwidth: 1,
+          }] : [],
         }}
         config={{
           responsive: true,

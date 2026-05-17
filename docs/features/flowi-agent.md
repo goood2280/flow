@@ -22,6 +22,8 @@ Flow-i Agent는 사용자의 자연어 요청을 Flow 오케스트레이터가 �
 
 `trace.call_graph`와 `trace.api_calls`는 사용자가 검증할 수 있는 실행 이벤트만 담는다. 내부 chain-of-thought나 모델 추론 원문은 노출하지 않는다.
 
+Home에서 chart를 만든 뒤 `raw data csv`, `원본 데이터 다운로드`처럼 이어서 요청하면 직전 `chart_session_id`를 사용해 `GET /api/llm/flowi/chart-session/raw-data.csv` 다운로드를 안내한다. `24.0 SORT KNOB으로 컬러링`, `B 제외`, `1차식 fitting line과 R2 넣어줘` 같은 후속 요청도 같은 chart session의 product/metric/lot scope를 이어받는다. CSV는 FileBrowser의 `csv_download_max_rows` / `csv_download_max_bytes` / wide-column guard를 그대로 통과해야 한다.
+
 ## Owns
 
 - feature intent routing
@@ -98,6 +100,7 @@ Agent가 사용하는 기본 LLM은 **사내 API의 GPT OSS 120B**다. 검증/�
 - `PRODA 24.0 SORT KNOB PPID_24_1인 WF 중에 가장 빠른게 뭐야`는 ML_TABLE에서 matching `lot_wf`를 찾고 latest progress cache의 step 순서로 정렬한다. 이처럼 root lot 없는 value 역검색은 전체 후보 탐색이 필요하므로 별도 검색 경로를 쓴다.
 - `PRODA A1000 test2 커스텀 세트로 인폼남겨줘`는 Inform Log draft로 보내며 module, note, 수신처가 없으면 확인 질문을 먼저 만든다.
 - `A1001A.3 이거 무슨랏이야`는 Tracker issue lot 목적(`purpose`)을 조회한다.
+- `raw data csv로 다운받게 해줘`는 직전 chart session을 이어받아 chart에 실제 사용된 point/group row를 CSV로 내려받게 한다. session이 없거나 FileBrowser 제한을 넘으면 차단 사유를 답변과 trace validation에 남긴다.
 
 ## Agent Wiki
 
@@ -110,6 +113,13 @@ Agent Wiki 운영은 다음 단계의 지식 운영 계층이다. 현재 Agent �
 - Chronological 운영 기록은 `data/flow-data/knowledge/index/wiki_log.jsonl`에 append-only로 남긴다.
 - Lint는 broken `[[wiki_link]]`, missing source, orphan page, stale summary, contradiction 후보를 점검한다.
 - Source 등록, ingest commit, lint는 admin 또는 `diagnosis`/`knowledge` page admin만 수행한다. 읽기와 preview는 로그인 사용자가 수행할 수 있다.
+
+### Default Agent Wiki Seed
+
+- 기본지식 원본은 `backend/core/default_agent_wiki_seed/`에 둔다.
+- 서버 기동과 `setup.py extract`는 runtime `flow-data`에 같은 `doc_id`가 없을 때만 seed 문서를 생성한다.
+- 생성된 runtime 문서는 Agent 지식 Wiki에서 수정 가능하며, 이후 seed/install 경로가 덮어쓰지 않는다.
+- 새 기본지식은 새 markdown 파일과 고유한 `doc_id`로 추가한다. 기존 사용자에게 업데이트를 강제해야 하는 내용은 같은 `doc_id` 수정이 아니라 새 문서로 추가한다.
 
 ## Agent Tab UX (single-page flow)
 

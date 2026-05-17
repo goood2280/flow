@@ -4,6 +4,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
@@ -47,3 +50,20 @@ def test_auth_me_returns_current_user_for_valid_token(monkeypatch):
     assert out["authenticated"] is True
     assert out["username"] == "alice"
     assert out["tabs"] == "dashboard,inform"
+
+
+def test_change_password_wrong_current_password_is_local_form_error(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "alice", "role": "user"})
+    monkeypatch.setattr(
+        auth_router,
+        "read_users",
+        lambda: [{"username": "alice", "password_hash": auth_core.hash_password("right")}],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        auth_router.change_password(
+            auth_router.ChangePwReq(old_password="wrong", new_password="next"),
+            _request("tok"),
+        )
+
+    assert exc.value.status_code == 400

@@ -36,6 +36,7 @@ WIKI_LOG_JSONL = INDEX_DIR / "wiki_log.jsonl"
 GRAPH_FILE = GRAPH_DIR / "graph.json"
 AI_ONTOLOGY_FILE = ONTOLOGY_DIR / "ai_ontology.json"
 SCHEMA_RELATION_FILE = PATHS.data_root / "schema_relations.json"
+DEFAULT_AGENT_WIKI_SEED_DIR = Path(__file__).resolve().parent / "default_agent_wiki_seed"
 
 _ALLOWED_ONTOLOGY_KINDS = {
     "identity", "process", "module", "material", "metric", "split",
@@ -1492,6 +1493,126 @@ def _doc_from_path(fp: Path) -> dict[str, Any] | None:
         "source_event_ids": meta.get("source_event_ids") if isinstance(meta.get("source_event_ids"), list) else [],
         "frontmatter": meta,
         "path": rel,
+    }
+
+
+def _seed_doc_from_path(fp: Path) -> dict[str, Any] | None:
+    try:
+        text = fp.read_text("utf-8")
+    except Exception:
+        return None
+    meta, body = _read_frontmatter(text)
+    doc_id = safe_id(meta.get("doc_id") or "", fallback="")
+    if not doc_id:
+        return None
+    kind = safe_id(meta.get("kind") or "agent_wiki", fallback="agent_wiki")
+    if kind not in {
+        "product",
+        "lot",
+        "wafer",
+        "knob",
+        "issue",
+        "meeting",
+        "report",
+        "decision",
+        "agent_wiki",
+        "schema_doc",
+        "ontology",
+        "manual",
+    }:
+        kind = "agent_wiki"
+    entity = FlowEntityKey(
+        product=str(meta.get("product") or ""),
+        root_lot_id=str(meta.get("root_lot_id") or ""),
+        wafer_id=str(meta.get("wafer_id") or ""),
+    )
+    frontmatter = {
+        k: v
+        for k, v in meta.items()
+        if k
+        not in {
+            "doc_id",
+            "kind",
+            "title",
+            "summary",
+            "actor",
+            "created_at",
+            "updated_at",
+            "product",
+            "root_lot_id",
+            "wafer_id",
+            "tags",
+            "source_event_ids",
+        }
+    }
+    return {
+        "doc": KnowledgeDoc(
+            doc_id=doc_id,
+            kind=kind,
+            title=str(meta.get("title") or doc_id).strip()[:220],
+            summary=str(meta.get("summary") or "").strip()[:500],
+            body=body.strip(),
+            actor=str(meta.get("actor") or "system_seed"),
+            created_at=str(meta.get("created_at") or ""),
+            updated_at=str(meta.get("updated_at") or ""),
+            entity=entity,
+            tags=_clean_tags(meta.get("tags") or []),
+            source_event_ids=[str(x) for x in meta.get("source_event_ids") or []] if isinstance(meta.get("source_event_ids"), list) else [],
+            frontmatter=frontmatter,
+        ),
+        "source_path": str(fp),
+    }
+
+
+def ensure_default_agent_wiki_seed(actor: str = "system") -> dict[str, Any]:
+    """Install bundled Agent Wiki defaults into runtime knowledge only if absent."""
+    ensure_dirs()
+    seed_dir = DEFAULT_AGENT_WIKI_SEED_DIR
+    if not seed_dir.is_dir():
+        return {"ok": True, "seed_dir": str(seed_dir), "installed": 0, "preserved": 0, "skipped": 0, "docs": []}
+    installed: list[dict[str, Any]] = []
+    preserved: list[dict[str, Any]] = []
+    skipped = 0
+    for fp in sorted(seed_dir.rglob("*.md")):
+        if fp.name.startswith("_"):
+            skipped += 1
+            continue
+        payload = _seed_doc_from_path(fp)
+        if not payload:
+            skipped += 1
+            continue
+        doc: KnowledgeDoc = payload["doc"]
+        existing = get_doc(doc.doc_id)
+        if existing:
+            preserved.append({"doc_id": doc.doc_id, "path": existing.get("path") or ""})
+            continue
+        saved = upsert_doc(doc)
+        installed.append({"doc_id": saved.get("doc_id") or doc.doc_id, "path": saved.get("path") or ""})
+    if installed:
+        graph = rebuild_graph()
+        append_wiki_log({
+            "action": "default_seed_install",
+            "actor": actor or "system",
+            "doc_id": "",
+            "source_ids": [],
+            "title": "Default Agent Wiki seed",
+            "message": f"Installed {len(installed)} default Agent Wiki seed docs",
+            "meta": {
+                "installed": installed,
+                "preserved_count": len(preserved),
+                "skipped": skipped,
+                "graph_counts": graph.get("counts") or {},
+            },
+        })
+    else:
+        _refresh_wiki_index()
+    return {
+        "ok": True,
+        "seed_dir": str(seed_dir),
+        "installed": len(installed),
+        "preserved": len(preserved),
+        "skipped": skipped,
+        "docs": installed,
     }
 
 

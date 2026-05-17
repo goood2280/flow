@@ -42,7 +42,9 @@ CASES = [
     {"kind": "fab", "prompt": "step에 ETCH가 포함된 것", "sql": [r"step_id", r"LIKE", r"%ETCH%"], "selected": []},
     {"kind": "fab", "prompt": "root_lot_id가 A1000이고 step_id는 ETCH인 행", "sql": [r"root_lot_id\s*=\s*'A1000'", r"step_id\s*=\s*'ETCH'"], "selected": []},
     {"kind": "fab", "prompt": "ghost_col도 보여주고 wafer 21 필터", "sql": [r"wafer_id|CAST\(wafer_id AS BIGINT\)", r"21"], "selected": [], "warning": "ghost_col"},
+    {"kind": "et", "prompt": "A1000 #3 IOFF만 보고싶어", "sql": [r"lot_id", r"A1000", r"wafer_id|CAST\(wafer_id AS BIGINT\)", r"3", r"item_id\s*=\s*'IOFF'"], "selected": []},
     {"kind": "et", "prompt": "IOFF value 큰순서", "sql": [r"item_id\s*=\s*'IOFF'"], "selected": [], "sort": {"column": "value", "direction": "desc", "nulls": "last"}},
+    {"kind": "et", "prompt": "IOFF value 평균", "sql": [r"item_id\s*=\s*'IOFF'"], "selected": [], "aggregate": {"function": "avg", "column": "value", "group_by": [], "alias": "avg_value"}},
     {"kind": "et", "prompt": "IOFF value가 0.15보다 큰거", "sql": [r"item_id\s*=\s*'IOFF'", r"value\s*>\s*0\.15"], "selected": []},
 ]
 
@@ -82,12 +84,19 @@ def matches_sql(sql: str, patterns: list[str]) -> bool:
     return all(re.search(pattern, sql, flags=re.I) for pattern in patterns)
 
 
-def view_ok(kind: str, sql: str, selected: list[str], sort: dict | None = None) -> bool:
-    if not sql and not selected:
+def view_ok(kind: str, sql: str, selected: list[str], sort: dict | None = None, aggregate: dict | None = None) -> bool:
+    if not sql and not selected and not aggregate:
         return True
     df = pl.DataFrame(SAMPLE_ROWS[kind])
     try:
-        filebrowser._run_view(df, sql=sql, select_cols=",".join(selected), rows=20, sort_spec=sort or {})
+        filebrowser._run_view(
+            df,
+            sql=sql,
+            select_cols=",".join(selected),
+            rows=20,
+            sort_spec=sort or {},
+            aggregate_spec=aggregate or {},
+        )
         return True
     except Exception:
         return False
@@ -121,6 +130,7 @@ def main() -> int:
         )
         selected = result.get("selected_columns") or []
         sort = result.get("sort") or {}
+        aggregate = result.get("aggregate") or {}
         warnings = result.get("warnings") or []
         status = classify(result)
         sql_match = matches_sql(result.get("sql") or "", case.get("sql") or [])
@@ -128,11 +138,14 @@ def main() -> int:
         sort_match = True
         if case.get("sort"):
             sort_match = sort == case.get("sort")
+        aggregate_match = True
+        if case.get("aggregate"):
+            aggregate_match = aggregate == case.get("aggregate")
         warning_match = True
         if case.get("warning"):
             warning_match = case["warning"].casefold() in " ".join(str(w) for w in warnings).casefold()
-        executed = view_ok(kind, result.get("sql") or "", selected, sort)
-        if status == "valid" and not (sql_match and selected_match and sort_match and warning_match and executed):
+        executed = view_ok(kind, result.get("sql") or "", selected, sort, aggregate)
+        if status == "valid" and not (sql_match and selected_match and sort_match and aggregate_match and warning_match and executed):
             status = "mismatch"
         counts[status] = counts.get(status, 0) + 1
         row = {
@@ -145,9 +158,11 @@ def main() -> int:
             "sql": result.get("sql") or "",
             "selected_columns": selected,
             "sort": sort,
+            "aggregate": aggregate,
             "sql_match": sql_match,
             "selected_match": selected_match,
             "sort_match": sort_match,
+            "aggregate_match": aggregate_match,
             "warning_match": warning_match,
             "view_ok": executed,
             "warnings": warnings[:2],

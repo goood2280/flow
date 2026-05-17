@@ -336,9 +336,22 @@ def _matches_event(row: dict[str, Any], *, product: str = "", root_lot_id: str =
     return True
 
 
+def _matches_anchor_scope_history(row: dict[str, Any], *, product: str = "", step_id: str = "", item_id: str = "", knob: str = "") -> bool:
+    if str(row.get("event_type") or "") != "anchor_item_change":
+        return False
+    target_item = item_id or knob
+    if not target_item:
+        return False
+    if product and not _same(_event_value(row, "product"), product):
+        return False
+    if step_id and not _same(_event_value(row, "step_id"), step_id):
+        return False
+    return True
+
+
 def _event_ref(row: dict[str, Any]) -> dict[str, Any]:
     payload = _payload(row)
-    return {
+    ref = {
         "event_id": row.get("event_id") or "",
         "event_type": row.get("event_type") or "generic",
         "title": row.get("title") or "",
@@ -349,6 +362,37 @@ def _event_ref(row: dict[str, Any]) -> dict[str, Any]:
         "changed_at": payload.get("changed_at") or row.get("created_at") or "",
         "summary": row.get("summary") or "",
     }
+    detail_keys = (
+        "product",
+        "root_lot_id",
+        "wafer_id",
+        "step_id",
+        "item_id",
+        "knob_name",
+        "split_value",
+        "previous_value",
+        "old_value",
+        "from_value",
+        "new_value",
+        "current_value",
+        "to_value",
+        "previous_threshold",
+        "old_threshold",
+        "from_threshold",
+        "new_threshold",
+        "current_threshold",
+        "to_threshold",
+        "baseline",
+        "baseline_value",
+        "criteria",
+        "criterion",
+        "reason",
+    )
+    for key in detail_keys:
+        value = payload.get(key)
+        if value not in (None, "", [], {}):
+            ref[key] = value
+    return ref
 
 
 def _doc_matches(doc: dict[str, Any], *, product: str = "", root_lot_id: str = "", step_id: str = "", item_id: str = "", knob: str = "") -> bool:
@@ -495,7 +539,10 @@ def impact_context(
     knob = _clean(knob, 120)
     events = [
         row for row in kv.list_events(limit=1000)
-        if _matches_event(row, product=product, root_lot_id=root_lot_id, step_id=step_id, item_id=item_id, knob=knob)
+        if (
+            _matches_event(row, product=product, root_lot_id=root_lot_id, step_id=step_id, item_id=item_id, knob=knob)
+            or _matches_anchor_scope_history(row, product=product, step_id=step_id, item_id=item_id, knob=knob)
+        )
     ][: max(1, min(int(limit or 200), 1000))]
     wiki_refs = _wiki_refs(product=product, root_lot_id=root_lot_id, step_id=step_id, item_id=item_id, knob=knob)
     by_type = {kind: [] for kind in IMPACT_EVENT_TYPES}

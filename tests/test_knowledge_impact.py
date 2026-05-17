@@ -84,6 +84,36 @@ def test_anchor_item_registry_closes_previous_open_version():
     assert new["valid_to"] == ""
 
 
+def test_impact_context_keeps_anchor_history_for_current_item_query(tmp_path, monkeypatch):
+    _isolate_knowledge(tmp_path, monkeypatch)
+    knowledge_impact.append_domain_event(
+        event_type="anchor_item_change",
+        source_type="manual",
+        source_id="anchor-old",
+        title="Old anchor",
+        summary="INLINE_OLD was the previous anchor.",
+        actor="tester",
+        payload={"product": "PRODA", "step_id": "24.0 SORT", "item_id": "INLINE_OLD", "changed_at": "2026-01-01T00:00:00", "status": "confirmed"},
+    )
+    knowledge_impact.append_domain_event(
+        event_type="anchor_item_change",
+        source_type="manual",
+        source_id="anchor-new",
+        title="New anchor",
+        summary="INLINE_NEW became the current anchor.",
+        actor="tester",
+        payload={"product": "PRODA", "step_id": "24.0 SORT", "item_id": "INLINE_NEW", "previous_item_id": "INLINE_OLD", "changed_at": "2026-02-01T00:00:00", "status": "confirmed"},
+    )
+
+    ctx = knowledge_impact.impact_context(product="PRODA", step_id="24.0 SORT", item_id="INLINE_NEW")
+
+    old = next(row for row in ctx["anchor_items"] if row["item_id"] == "INLINE_OLD")
+    new = next(row for row in ctx["anchor_items"] if row["item_id"] == "INLINE_NEW")
+    assert old["valid_to"] == "2026-02-01T00:00:00"
+    assert old["replaced_by"] == "INLINE_NEW"
+    assert new["valid_to"] == ""
+
+
 def test_impact_context_combines_verified_wiki_and_conflicting_events(tmp_path, monkeypatch):
     _isolate_knowledge(tmp_path, monkeypatch)
     kv.upsert_doc(KnowledgeDoc(
@@ -107,6 +137,8 @@ def test_impact_context_combines_verified_wiki_and_conflicting_events(tmp_path, 
                 "root_lot_id": "A1000",
                 "step_id": "24.0 SORT",
                 "knob_name": "KNOB_A",
+                "previous_threshold": "1.0",
+                "new_threshold": "1.5",
                 "effect_direction": direction,
                 "status": "candidate",
             },
@@ -117,4 +149,6 @@ def test_impact_context_combines_verified_wiki_and_conflicting_events(tmp_path, 
     assert ctx["confidence"] == "verified_wiki"
     assert ctx["wiki_refs"][0]["doc_id"] == "split_rule_proda_sort_knob_a"
     assert len(ctx["split_impacts"]) == 2
+    assert ctx["split_impacts"][0]["previous_threshold"] == "1.0"
+    assert ctx["split_impacts"][0]["new_threshold"] == "1.5"
     assert ctx["conflicts"][0]["conflicting_evidence"] is True

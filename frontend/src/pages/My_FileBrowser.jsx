@@ -361,7 +361,7 @@ function LazyAwsPanel({ user, compact = false }) {
 export default function My_FileBrowser({user,onNavigate}){
   const[roots,setRoots]=useState([]);const[rootPqs,setRootPqs]=useState([]);const[selRoot,setSelRoot]=useState("");
   const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState("");const[sideLoading,setSideLoading]=useState(true);
-  const[data,setData]=useState(null);const[sql,setSql]=useState("");const[sortSpec,setSortSpec]=useState(null);const[loading,setLoading]=useState(false);
+  const[data,setData]=useState(null);const[sql,setSql]=useState("");const[sortSpec,setSortSpec]=useState(null);const[aggregateSpec,setAggregateSpec]=useState(null);const[loading,setLoading]=useState(false);
   const[tab,setTab]=useState("data");const[colSearch,setColSearch]=useState("");const[showGuide,setShowGuide]=useState(false);const[mode,setMode]=useState("hive");
   const[selRootPq,setSelRootPq]=useState("");
   // v4.1: scope switcher — "DB" (hive-flat) or "Base" (single-file rulebook/wide parquet).
@@ -998,15 +998,35 @@ export default function My_FileBrowser({user,onNavigate}){
     const s=cleanSortSpec(spec);
     return s?{sort_column:s.column,sort_direction:s.direction,sort_nulls:s.nulls}:{};
   };
+  const cleanAggregateSpec=(agg)=>{
+    if(!agg||typeof agg!=="object")return null;
+    const fn=String(agg.function||agg.func||agg.type||"").trim().toLowerCase();
+    if(!["avg","sum","min","max","median","count"].includes(fn))return null;
+    const column=String(agg.column||"").trim();
+    const groupBy=Array.isArray(agg.group_by)?agg.group_by.map(c=>String(c||"").trim()).filter(Boolean):[];
+    if(fn!=="count"&&!column)return null;
+    const alias=String(agg.alias||`${fn}_${column||"rows"}`).trim();
+    return{function:fn,column,group_by:groupBy,alias};
+  };
+  const aggregateParams=(spec)=>{
+    const a=cleanAggregateSpec(spec);
+    return a?{agg_func:a.function,agg_column:a.column,agg_group_by:a.group_by.join(",")}:{};
+  };
   const sortLabel=(spec)=>{
     const s=cleanSortSpec(spec);
     if(!s)return"";
     return `${s.column} ${s.direction}${s.nulls==="first"?" nulls first":""}`;
   };
+  const aggregateLabel=(spec)=>{
+    const a=cleanAggregateSpec(spec);
+    if(!a)return"";
+    const body=a.function==="count"&&!a.column?"rows":a.column;
+    return `${a.function}(${body})${a.group_by.length?` by ${a.group_by.join(", ")}`:""}`;
+  };
 
   const loadBaseFileView=(file,{full=true,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
-    setSortSpec(null);
+    setSortSpec(null);setAggregateSpec(null);
     setPage(pageArg);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
     setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
@@ -1041,9 +1061,9 @@ export default function My_FileBrowser({user,onNavigate}){
       if(selProd){
         const match=(d.products||[]).find(p=>p.name===selProd);
         if(match){
-          setSelectedCols([]);setSortSpec(null);
+          setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);
           setSql("");
-          loadHiveView(selRoot,selProd,"",[],{full:true,page:0,sortOverride:null});
+          loadHiveView(selRoot,selProd,"",[],{full:true,page:0,sortOverride:null,aggregateOverride:null});
         }
       }
     }).catch(()=>setSideLoading(false));
@@ -1079,38 +1099,41 @@ export default function My_FileBrowser({user,onNavigate}){
   },[colSearch,data?.all_columns_truncated,mode,selRoot,selProd,selBaseFile,selRootPq,fbSettings.schema_column_page_size]);
 
   // 첫 클릭도 100행 샘플을 보여주고, SQL/SELECT는 같은 cap 안에서 조건 결과를 조회한다.
-  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined}={})=>{
+  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined}={})=>{
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     setPage(pageArg);
     const sc=selColsOverride||selectedCols;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
-    const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:20,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort)};
+    const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
+    const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:20,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort),...aggregateParams(activeAggregate)};
     const url=buildUrl(API+"/view",params);
     sf(url).then(d=>{if(sc.length)setSelectedCols(selectedColsFromResponse(d,sc));setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
-  const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined}={})=>{
+  const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined}={})=>{
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     setPage(pageArg);
     const sc=selColsOverride||selectedCols;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
-    const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort)};
+    const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
+    const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort),...aggregateParams(activeAggregate)};
     const url=buildUrl(API+"/root-parquet-view",params);
     sf(url).then(d=>{if(sc.length)setSelectedCols(selectedColsFromResponse(d,sc));setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
   // v8.8.16: "실행" 클릭 = 실제 행 조회 트리거. meta_only 없이 호출 → 서버에서 collect.
-  const applySql=(sqlOverride,selectedColsOverride,sortOverride=undefined)=>{
+  const applySql=(sqlOverride,selectedColsOverride,sortOverride=undefined,aggregateOverride=undefined)=>{
     const activeSql=typeof sqlOverride==="string"?sqlOverride:sql;
     const activeSelectedCols=Array.isArray(selectedColsOverride)?selectedColsOverride:selectedCols;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
+    const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
     if(mode==="base"&&isBaseEditing){
       setError("편집 모드에서는 SQL 실행이 비활성됩니다.");
       return;
     }
-    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort});
+    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort,aggregateOverride:activeAggregate});
     else if(mode==="base"&&selBaseFile){
       // Base JSON/md files have no SQL surface — silently ignore. Tabular
       // parquet/csv re-load with the SQL param applied server-side.
@@ -1119,10 +1142,10 @@ export default function My_FileBrowser({user,onNavigate}){
       // full=true 와 동일 — SQL 이 비어도 sample 행을 보여줘야 하므로 meta_only 꺼둠.
       setPage(0);
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
-        select_cols:activeSelectedCols.length?activeSelectedCols.join(","):"",...sortParams(activeSort)});
+        select_cols:activeSelectedCols.length?activeSelectedCols.join(","):"",...sortParams(activeSort),...aggregateParams(activeAggregate)});
       sf(url).then(d=>{if(activeSelectedCols.length)setSelectedCols(selectedColsFromResponse(d,activeSelectedCols));setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
-    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort});
+    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort,aggregateOverride:activeAggregate});
   };
 
   const draftAiSql=async()=>{
@@ -1144,7 +1167,6 @@ export default function My_FileBrowser({user,onNavigate}){
         root:selRoot||"",
         product:selProd||"",
         file:selBaseFile||selRootPq||"",
-        choice:payloadOverride.choice||"",
       };
       const d=await sf(API+"/sql/llm/draft",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       setAiSqlResult(d);
@@ -1152,10 +1174,12 @@ export default function My_FileBrowser({user,onNavigate}){
         const nextSql=d.sql||"";
         const nextSelectedCols=Array.isArray(d.selected_columns)?d.selected_columns.map(c=>String(c||"")).filter(Boolean):[];
         const nextSort=cleanSortSpec(d.sort);
+        const nextAggregate=cleanAggregateSpec(d.aggregate);
         setSql(nextSql);
         setSelectedCols(nextSelectedCols);
         setSortSpec(nextSort);
-        applySql(nextSql,nextSelectedCols,nextSort);
+        setAggregateSpec(nextAggregate);
+        applySql(nextSql,nextSelectedCols,nextSort,nextAggregate);
         toast.ok("AI SQL 초안으로 조회했습니다.");
       }else{
         toast.warn((d.warnings||[])[0]||"AI SQL 초안 생성 실패");
@@ -1182,12 +1206,14 @@ export default function My_FileBrowser({user,onNavigate}){
         natural_language:aiSqlPrompt,
         sql:payloadOverride.sql!==undefined?payloadOverride.sql:(aiSqlResult.sql||sql||""),
         sort:payloadOverride.sort!==undefined?(cleanSortSpec(payloadOverride.sort)||{}):(cleanSortSpec(aiSqlResult.sort)||sortSpec||{}),
+        aggregate:payloadOverride.aggregate!==undefined?(cleanAggregateSpec(payloadOverride.aggregate)||{}):(cleanAggregateSpec(aiSqlResult.aggregate)||aggregateSpec||{}),
         selected_columns:Array.isArray(payloadOverride.selected_columns)?payloadOverride.selected_columns:(Array.isArray(aiSqlResult.selected_columns)?aiSqlResult.selected_columns:selectedCols),
         columns,
         scope:mode,
         root:selRoot||"",
         product:selProd||"",
         file:selBaseFile||selRootPq||"",
+        choice:payloadOverride.choice||"",
       };
       const d=await sf(API+"/sql/feedback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       setAiSqlResult(prev=>prev?{...prev,feedback_saved:ratingKey,feedback_id:d.feedback_id}:prev);
@@ -1394,7 +1420,7 @@ export default function My_FileBrowser({user,onNavigate}){
       setLoading(true);setError("");setTab("data");
       setPage(0);
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
-        select_cols:cols.length?cols.join(","):"",...sortParams(sortSpec)});
+        select_cols:cols.length?cols.join(","):"",...sortParams(sortSpec),...aggregateParams(aggregateSpec)});
       sf(url).then(d=>{setSelectedCols(cols.length?selectedColsFromResponse(d,cols):[]);setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
     else if(selRoot&&selProd){loadHiveView(selRoot,selProd,sql,cols,{full:true,page:0});}
@@ -1415,6 +1441,12 @@ export default function My_FileBrowser({user,onNavigate}){
     const maxBytes=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_bytes||100000000),Number(fbSettings.csv_download_max_bytes||100000000)||100000000));
     let url=API+"/download-csv?username="+(user?.username||"anon")+"&max_rows="+encodeURIComponent(String(maxRows))+"&max_bytes="+encodeURIComponent(String(maxBytes))+"&sql="+encodeURIComponent(sql);
     if(selectedCols.length)url+="&select_cols="+encodeURIComponent(selectedCols.join(","));
+    const agg=cleanAggregateSpec(aggregateSpec);
+    if(agg){
+      url+="&agg_func="+encodeURIComponent(agg.function);
+      url+="&agg_column="+encodeURIComponent(agg.column);
+      url+="&agg_group_by="+encodeURIComponent(agg.group_by.join(","));
+    }
     if(mode==="base")url+="&file="+encodeURIComponent(selBaseFile);
     else if(mode==="rootpq")url+="&file="+encodeURIComponent(selRootPq);
     else url+="&root="+encodeURIComponent(selRoot)+"&product="+encodeURIComponent(selProd);
@@ -1431,7 +1463,7 @@ export default function My_FileBrowser({user,onNavigate}){
     else if(mode==="base"&&selBaseFile&&!baseRaw){
       setLoading(true);setError("");setTab("data");setPage(p);
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:p,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
-        select_cols:selectedCols.length?selectedCols.join(","):"",...sortParams(sortSpec)});
+        select_cols:selectedCols.length?selectedCols.join(","):"",...sortParams(sortSpec),...aggregateParams(aggregateSpec)});
       sf(url).then(d=>{setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     } else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,selectedCols,{full:true,page:p});
   };
@@ -1454,7 +1486,7 @@ export default function My_FileBrowser({user,onNavigate}){
     {k:"file",l:"파일 설정"},
   ];
   const settingsTitle=s3Tab==="folder"?"FileBrowser 폴더 설정":(s3Tab==="file"?"FileBrowser 파일 설정":(s3Tab==="cache"?"FileBrowser 캐시 운영":"S3 동기화 설정 — aws s3 cp/sync"));
-  const activeQueryMode=!!(String(sql||"").trim() || selectedCols.length || data?.selected_cols);
+  const activeQueryMode=!!(String(sql||"").trim() || selectedCols.length || aggregateSpec || data?.selected_cols);
   const activePreviewLimit=Number(data?.preview_row_limit||fbSettings.preview_max_rows||PAGE_SIZE)||PAGE_SIZE;
   const previewStatusLabel=data?.single_file_full_read
     ?"전체 표시"
@@ -1497,7 +1529,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {scopes.map(s=>{
             const active=scope===s.key;const disabled=s.exists===false;
             return(<span key={s.key} className={"filebrowser-scope-option filebrowser-scope-"+s.key} data-scope={s.key} data-active={active?"1":"0"}
-              onClick={()=>{if(disabled)return;setScope(s.key);setBaseDir("");setData(null);setBaseRaw(null);setSelBaseMeta(null);setError("");setSelProd("");setSelRootPq("");setSelBaseFile("");setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setSelectedCols([]);setSortSpec(null);}}
+              onClick={()=>{if(disabled)return;setScope(s.key);setBaseDir("");setData(null);setBaseRaw(null);setSelBaseMeta(null);setError("");setSelProd("");setSelRootPq("");setSelBaseFile("");setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);}}
               title={s.description+(disabled?"\n(경로 없음 — admin_settings 확인)":"")}
               style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"center",padding:"6px 8px",borderRadius:5,fontSize:14,cursor:disabled?"not-allowed":"pointer",fontWeight:active?700:500,
                 background:active?"var(--accent-glow)":"var(--bg-hover)",color:disabled?"var(--text-secondary)":(active?"var(--accent)":"var(--text-primary)"),
@@ -1540,7 +1572,7 @@ export default function My_FileBrowser({user,onNavigate}){
                     setBaseRaw(null);
                     return;
                   }
-                  setSelectedCols([]);setSortSpec(null);setSelBaseMeta(f);loadBaseFileView(fileKey);setIsBaseEditing(false);setError("");setData(null);setBaseRaw(null);setEditCols([]);setEditRows([]);setEditOriginRows([]);
+                  setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);setSelBaseMeta(f);loadBaseFileView(fileKey);setIsBaseEditing(false);setError("");setData(null);setBaseRaw(null);setEditCols([]);setEditRows([]);setEditOriginRows([]);
                 }}
                 title={(f.description||titlePath.join(" "))+ (f.role?`\n${f.role}`:"")}
                 style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
@@ -1575,7 +1607,7 @@ export default function My_FileBrowser({user,onNavigate}){
             {roots.map(r=>{
               // v8.4.3: icon + level badge 제거 — 깔끔한 이름만.
               return (
-              <div key={r.name} onClick={()=>{setSelRoot(r.name);setSelectedCols([]);}} title={r.description||""} style={{...sidebarRowBase,alignItems:"flex-start",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:14,
+              <div key={r.name} onClick={()=>{setSelRoot(r.name);setSelectedCols([]);setAggregateSpec(null);}} title={r.description||""} style={{...sidebarRowBase,alignItems:"flex-start",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:14,
                 background:selRoot===r.name?"var(--bg-hover)":"transparent",fontWeight:selRoot===r.name?600:400,color:selRoot===r.name?"var(--accent)":"var(--text-primary)"}}>
                 {lightDot(r.name)}
                 <span style={sidebarStack}>
@@ -1591,7 +1623,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {products.length>0&&<div style={{flex:1,overflow:"auto",borderTop:"1px solid var(--border)",padding:"4px 8px"}}>
             <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>제품</div>
             {products.map(p=>(
-              <div key={p.name} onClick={()=>{setSelectedCols([]);setSortSpec(null);setSql("");loadHiveView(selRoot,p.name,"",[],{full:true,page:0,sortOverride:null});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
+              <div key={p.name} onClick={()=>{setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);setSql("");loadHiveView(selRoot,p.name,"",[],{full:true,page:0,sortOverride:null,aggregateOverride:null});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
                 background:selProd===p.name?"var(--bg-hover)":"transparent",color:selProd===p.name?"var(--accent)":"var(--text-primary)"}}>
                 {/* v8.8.2: 제품별 S3 신호등 — 본인 설정 없으면 상위 DB 에서 상속. */}
                 {lightDot(selRoot+"/"+p.name)}
@@ -1607,7 +1639,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {rootPqs.length>0&&<div style={{borderTop:"1px solid var(--border)",padding:"4px 8px",maxHeight:200,overflow:"auto"}}>
             <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>루트 Parquet</div>
             {rootPqs.map(f=>(
-              <div key={f.name} onClick={()=>{setSelectedCols([]);setSortSpec(null);loadRootPqView(f.name,"",[],{sortOverride:null});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
+              <div key={f.name} onClick={()=>{setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);loadRootPqView(f.name,"",[],{sortOverride:null,aggregateOverride:null});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
                 background:selRootPq===f.name?"var(--bg-hover)":"transparent",color:selRootPq===f.name?"var(--accent)":"var(--text-primary)"}}>
                 {lightDot(f.name)}
                 <span style={sidebarStack}>
@@ -1641,6 +1673,11 @@ export default function My_FileBrowser({user,onNavigate}){
           <span style={{fontSize:13,color:"var(--text-secondary)",fontWeight:700,flexShrink:0}}>SORT:</span>
           <span style={{fontSize:13,color:"var(--text-primary)",fontFamily:"monospace",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>{sortLabel(sortSpec)}</span>
           <button onClick={()=>{setSortSpec(null);applySql(sql,selectedCols,null);}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>해제</button>
+        </div>}
+        {aggregateSpec&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          <span style={{fontSize:13,color:"var(--text-secondary)",fontWeight:700,flexShrink:0}}>AGG:</span>
+          <span style={{fontSize:13,color:"var(--text-primary)",fontFamily:"monospace",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>{aggregateLabel(aggregateSpec)}</span>
+          <button onClick={()=>{setAggregateSpec(null);applySql(sql,selectedCols,sortSpec,null);}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>해제</button>
         </div>}
 
         {/* Selected columns chips */}
@@ -1973,6 +2010,7 @@ export default function My_FileBrowser({user,onNavigate}){
               <span>llm={aiSqlResult.llm?.used?"used":(aiSqlResult.llm?.available?"available":"fallback")} · saved=false · draft={aiSqlResult.draft_id||"-"}</span>
               {aiSqlResult.feedback_context_used?<span>feedback: like {aiSqlResult.feedback_context?.positive||0} · dislike {aiSqlResult.feedback_context?.negative||0}</span>:null}
               {cleanSortSpec(aiSqlResult.sort)?<span>sort: {sortLabel(aiSqlResult.sort)}</span>:null}
+              {cleanAggregateSpec(aiSqlResult.aggregate)?<span>aggregate: {aggregateLabel(aiSqlResult.aggregate)}</span>:null}
               {aiSqlResult.selected_columns?.length?<span>selected: {aiSqlResult.selected_columns.join(", ")}</span>:null}
               {aiSqlResult.sample_profile?<span>profile: rows {aiSqlResult.sample_profile.rows_sampled||0} · cols {aiSqlResult.sample_profile.columns_scanned||0} · {aiSqlResult.sample_profile.source||"request"}</span>:null}
               {aiSqlResult.resolved_columns?.length?<span>resolved: {aiSqlResult.resolved_columns.join(", ")}</span>:null}
@@ -1982,8 +2020,8 @@ export default function My_FileBrowser({user,onNavigate}){
               {aiSqlResult.sql&&<span style={{color:"var(--accent)"}}>{aiSqlResult.sql}</span>}
               {(aiSqlResult.warnings||[]).slice(0,4).map((w,i)=><span key={i}>warn: {w}</span>)}
               {Array.isArray(aiSqlResult.alternatives)&&aiSqlResult.alternatives.length>0&&<div style={{display:"grid",gap:4,marginTop:4}}>
-                {aiSqlResult.alternatives.map(alt=><button key={alt.key} onClick={()=>{const nextSort=cleanSortSpec(alt.sort);const altCols=Array.isArray(alt.selected_columns)?alt.selected_columns:[];setSql(alt.sql||"");setSelectedCols(altCols);setSortSpec(nextSort);applySql(alt.sql||"",altCols,nextSort);submitAiSqlFeedback("up","alternative "+alt.key,{sql:alt.sql||"",sort:nextSort||{},selected_columns:altCols,choice:alt.key});}} style={{textAlign:"left",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
-                  {alt.key}안 {alt.label}: {(alt.sql||"(no filter)")}{cleanSortSpec(alt.sort)?` · ${sortLabel(alt.sort)}`:""}
+                {aiSqlResult.alternatives.map(alt=><button key={alt.key} onClick={()=>{const nextSort=cleanSortSpec(alt.sort);const nextAggregate=cleanAggregateSpec(alt.aggregate);const altCols=Array.isArray(alt.selected_columns)?alt.selected_columns:[];setSql(alt.sql||"");setSelectedCols(altCols);setSortSpec(nextSort);setAggregateSpec(nextAggregate);applySql(alt.sql||"",altCols,nextSort,nextAggregate);submitAiSqlFeedback("up","alternative "+alt.key,{sql:alt.sql||"",sort:nextSort||{},aggregate:nextAggregate||{},selected_columns:altCols,choice:alt.key});}} style={{textAlign:"left",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+                  {alt.key}안 {alt.label}: {(alt.sql||"(no filter)")}{cleanSortSpec(alt.sort)?` · ${sortLabel(alt.sort)}`:""}{cleanAggregateSpec(alt.aggregate)?` · ${aggregateLabel(alt.aggregate)}`:""}
                 </button>)}
               </div>}
               <div style={{display:"flex",alignItems:"center",gap:6,marginTop:5,fontFamily:"inherit",flexWrap:"wrap"}}>
