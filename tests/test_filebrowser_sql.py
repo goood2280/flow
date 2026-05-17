@@ -898,7 +898,7 @@ def test_filebrowser_sql_llm_draft_sanitizes_selected_columns(monkeypatch):
 
     out = filebrowser.filebrowser_sql_llm_draft(
         filebrowser.FileBrowserSqlLlmDraftReq(
-            natural_language="lot_id, wafer_id, ghost_col도 보여주고 wafer 21 필터",
+            natural_language="lot_id, wafer_id, ghost_col만 보여주고 wafer 21 필터",
             columns=["lot_id", "wafer_id", "step_id"],
             preferred_selected_columns=["step_id"],
         ),
@@ -965,6 +965,30 @@ def test_filebrowser_sql_llm_draft_selection_only_prompt(monkeypatch):
     assert out["ok"] is True
     assert out["sql"] == ""
     assert out["selected_columns"] == ["lot_id", "wafer_id"]
+
+
+def test_filebrowser_sql_llm_draft_does_not_select_columns_without_explicit_request(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "text": json.dumps({"sql": "wafer_id = 21", "selected_columns": ["lot_id"]}),
+        },
+    )
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="wafer 21 필터",
+            columns=["lot_id", "wafer_id", "step_id"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["selected_columns"] == []
 
 
 @pytest.mark.parametrize("bad_sql", [
@@ -1088,6 +1112,91 @@ def test_filebrowser_sql_llm_draft_fallback_handles_root_lot_wafer_step(monkeypa
     assert out["ok"] is True
     assert out["fallback"] is True
     assert out["sql"] == "root_lot_id = 'A1000' AND wafer_id = 21 AND step_id = 'AA100240'"
+
+
+def test_filebrowser_sql_llm_draft_fallback_handles_ioff_value_desc_sort(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="IOFF value 큰순서",
+            columns=["item_id", "value", "wafer_id"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["sql"] == "item_id = 'IOFF'"
+    assert out["sort"] == {"column": "value", "direction": "desc", "nulls": "last"}
+    assert out["selected_columns"] == []
+
+
+def test_filebrowser_sql_llm_draft_fallback_handles_ioff_value_threshold(monkeypatch):
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="IOFF value가 0.15보다 큰거",
+            columns=["item_id", "value", "wafer_id"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["sql"] == "item_id = 'IOFF' AND value > 0.15"
+    filebrowser._run_view(
+        pl.DataFrame({"item_id": ["IOFF", "IOFF", "VOFF"], "value": [0.1, 0.2, 0.3]}),
+        sql=out["sql"],
+        select_cols="",
+        rows=20,
+    )
+
+
+def test_filebrowser_sql_feedback_persists_and_next_draft_uses_context(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    saved = filebrowser.filebrowser_sql_feedback(
+        filebrowser.FileBrowserSqlFeedbackReq(
+            draft_id="draft-1",
+            rating="up",
+            natural_language="IOFF value 큰순서",
+            sql="item_id = 'IOFF'",
+            sort={"column": "value", "direction": "desc", "nulls": "last"},
+            columns=["item_id", "value", "wafer_id"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert saved["ok"] is True
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="IOFF value 큰순서",
+            columns=["item_id", "value", "wafer_id"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["feedback_context_used"] is True
+    assert out["feedback_context"]["positive"] == 1
+    assert out["sort"] == {"column": "value", "direction": "desc", "nulls": "last"}
+
+
+def test_filebrowser_run_view_applies_explicit_sort():
+    result = filebrowser._run_view(
+        pl.DataFrame({"item_id": ["IOFF", "IOFF"], "value": [0.1, 0.2]}),
+        sql="item_id = 'IOFF'",
+        select_cols="",
+        rows=20,
+        sort_spec={"column": "value", "direction": "desc", "nulls": "last"},
+    )
+
+    assert [row["value"] for row in result["data"]] == [0.2, 0.1]
+    assert result["sort"] == {"column": "value", "direction": "desc", "nulls": "last"}
 
 
 def test_filebrowser_cache_refresh_requires_admin(monkeypatch):

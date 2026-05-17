@@ -361,7 +361,7 @@ function LazyAwsPanel({ user, compact = false }) {
 export default function My_FileBrowser({user,onNavigate}){
   const[roots,setRoots]=useState([]);const[rootPqs,setRootPqs]=useState([]);const[selRoot,setSelRoot]=useState("");
   const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState("");const[sideLoading,setSideLoading]=useState(true);
-  const[data,setData]=useState(null);const[sql,setSql]=useState("");const[loading,setLoading]=useState(false);
+  const[data,setData]=useState(null);const[sql,setSql]=useState("");const[sortSpec,setSortSpec]=useState(null);const[loading,setLoading]=useState(false);
   const[tab,setTab]=useState("data");const[colSearch,setColSearch]=useState("");const[showGuide,setShowGuide]=useState(false);const[mode,setMode]=useState("hive");
   const[selRootPq,setSelRootPq]=useState("");
   // v4.1: scope switcher — "DB" (hive-flat) or "Base" (single-file rulebook/wide parquet).
@@ -650,6 +650,9 @@ export default function My_FileBrowser({user,onNavigate}){
   const[aiSqlPrompt,setAiSqlPrompt]=useState("");
   const[aiSqlBusy,setAiSqlBusy]=useState(false);
   const[aiSqlResult,setAiSqlResult]=useState(null);
+  const[aiSqlFeedbackBusy,setAiSqlFeedbackBusy]=useState("");
+  const[aiSqlFeedbackReasonOpen,setAiSqlFeedbackReasonOpen]=useState(false);
+  const[aiSqlFeedbackReason,setAiSqlFeedbackReason]=useState("");
   const[remoteCols,setRemoteCols]=useState([]);
   const[remoteColsLoading,setRemoteColsLoading]=useState(false);
   const fbCacheTargets=[
@@ -983,9 +986,27 @@ export default function My_FileBrowser({user,onNavigate}){
     if(typeof d?.selected_cols==="string"&&d.selected_cols.trim())return d.selected_cols.split(",").map(c=>c.trim()).filter(Boolean);
     return fallback;
   };
+  const cleanSortSpec=(sort)=>{
+    if(!sort||typeof sort!=="object")return null;
+    const column=String(sort.column||"").trim();
+    if(!column)return null;
+    const direction=String(sort.direction||"asc").toLowerCase()==="desc"?"desc":"asc";
+    const nulls=String(sort.nulls||"last").toLowerCase()==="first"?"first":"last";
+    return{column,direction,nulls};
+  };
+  const sortParams=(spec)=>{
+    const s=cleanSortSpec(spec);
+    return s?{sort_column:s.column,sort_direction:s.direction,sort_nulls:s.nulls}:{};
+  };
+  const sortLabel=(spec)=>{
+    const s=cleanSortSpec(spec);
+    if(!s)return"";
+    return `${s.column} ${s.direction}${s.nulls==="first"?" nulls first":""}`;
+  };
 
   const loadBaseFileView=(file,{full=true,page:pageArg=0}={})=>{
     setLoading(true);setTab("data");setMode("base");setSelBaseFile(file);
+    setSortSpec(null);
     setPage(pageArg);
     setSelProd("");setSelRootPq("");setError("");setBaseRaw(null);
     setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
@@ -1020,9 +1041,9 @@ export default function My_FileBrowser({user,onNavigate}){
       if(selProd){
         const match=(d.products||[]).find(p=>p.name===selProd);
         if(match){
-          setSelectedCols([]);
+          setSelectedCols([]);setSortSpec(null);
           setSql("");
-          loadHiveView(selRoot,selProd,"",[],{full:true,page:0});
+          loadHiveView(selRoot,selProd,"",[],{full:true,page:0,sortOverride:null});
         }
       }
     }).catch(()=>setSideLoading(false));
@@ -1058,35 +1079,38 @@ export default function My_FileBrowser({user,onNavigate}){
   },[colSearch,data?.all_columns_truncated,mode,selRoot,selProd,selBaseFile,selRootPq,fbSettings.schema_column_page_size]);
 
   // 첫 클릭도 100행 샘플을 보여주고, SQL/SELECT는 같은 cap 안에서 조건 결과를 조회한다.
-  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0}={})=>{
+  const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined}={})=>{
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     setPage(pageArg);
     const sc=selColsOverride||selectedCols;
-    const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:20,select_cols:sc.length?sc.join(","):"",meta_only:!full};
+    const activeSort=sortOverride===undefined?sortSpec:sortOverride;
+    const params={root,product:prod,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:20,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort)};
     const url=buildUrl(API+"/view",params);
     sf(url).then(d=>{if(sc.length)setSelectedCols(selectedColsFromResponse(d,sc));setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
-  const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0}={})=>{
+  const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined}={})=>{
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);
     setPage(pageArg);
     const sc=selColsOverride||selectedCols;
-    const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):"",meta_only:!full};
+    const activeSort=sortOverride===undefined?sortSpec:sortOverride;
+    const params={file,sql:sqlQ||"",rows:PAGE_SIZE,page:pageArg,page_size:PAGE_SIZE,cols:10,select_cols:sc.length?sc.join(","):"",meta_only:!full,...sortParams(activeSort)};
     const url=buildUrl(API+"/root-parquet-view",params);
     sf(url).then(d=>{if(sc.length)setSelectedCols(selectedColsFromResponse(d,sc));setData(d);setLoading(false);}).catch(e=>{setError(e.message);setLoading(false);});
   };
 
   // v8.8.16: "실행" 클릭 = 실제 행 조회 트리거. meta_only 없이 호출 → 서버에서 collect.
-  const applySql=(sqlOverride,selectedColsOverride)=>{
+  const applySql=(sqlOverride,selectedColsOverride,sortOverride=undefined)=>{
     const activeSql=typeof sqlOverride==="string"?sqlOverride:sql;
     const activeSelectedCols=Array.isArray(selectedColsOverride)?selectedColsOverride:selectedCols;
+    const activeSort=sortOverride===undefined?sortSpec:sortOverride;
     if(mode==="base"&&isBaseEditing){
       setError("편집 모드에서는 SQL 실행이 비활성됩니다.");
       return;
     }
-    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,activeSql,activeSelectedCols,{full:true,page:0});
+    if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort});
     else if(mode==="base"&&selBaseFile){
       // Base JSON/md files have no SQL surface — silently ignore. Tabular
       // parquet/csv re-load with the SQL param applied server-side.
@@ -1095,10 +1119,10 @@ export default function My_FileBrowser({user,onNavigate}){
       // full=true 와 동일 — SQL 이 비어도 sample 행을 보여줘야 하므로 meta_only 꺼둠.
       setPage(0);
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
-        select_cols:activeSelectedCols.length?activeSelectedCols.join(","):""});
+        select_cols:activeSelectedCols.length?activeSelectedCols.join(","):"",...sortParams(activeSort)});
       sf(url).then(d=>{if(activeSelectedCols.length)setSelectedCols(selectedColsFromResponse(d,activeSelectedCols));setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
-    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0});
+    else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort});
   };
 
   const draftAiSql=async()=>{
@@ -1107,6 +1131,7 @@ export default function My_FileBrowser({user,onNavigate}){
     const columns=(data?.all_columns||data?.columns||[]).map(c=>String(c||"")).filter(Boolean);
     if(!columns.length){toast.warn("먼저 DB나 파일을 열어 컬럼을 로드하세요.");return;}
     setAiSqlBusy(true);setAiSqlResult(null);
+    setAiSqlFeedbackReasonOpen(false);setAiSqlFeedbackReason("");setAiSqlFeedbackBusy("");
     try{
       const body={
         natural_language:prompt,
@@ -1119,15 +1144,18 @@ export default function My_FileBrowser({user,onNavigate}){
         root:selRoot||"",
         product:selProd||"",
         file:selBaseFile||selRootPq||"",
+        choice:payloadOverride.choice||"",
       };
       const d=await sf(API+"/sql/llm/draft",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       setAiSqlResult(d);
       if(d.ok&&(typeof d.sql==="string")){
         const nextSql=d.sql||"";
         const nextSelectedCols=Array.isArray(d.selected_columns)?d.selected_columns.map(c=>String(c||"")).filter(Boolean):[];
+        const nextSort=cleanSortSpec(d.sort);
         setSql(nextSql);
         setSelectedCols(nextSelectedCols);
-        applySql(nextSql,nextSelectedCols);
+        setSortSpec(nextSort);
+        applySql(nextSql,nextSelectedCols,nextSort);
         toast.ok("AI SQL 초안으로 조회했습니다.");
       }else{
         toast.warn((d.warnings||[])[0]||"AI SQL 초안 생성 실패");
@@ -1138,6 +1166,37 @@ export default function My_FileBrowser({user,onNavigate}){
       toast.error(msg);
     }finally{
       setAiSqlBusy(false);
+    }
+  };
+
+  const submitAiSqlFeedback=async(rating,reasonOverride,payloadOverride={})=>{
+    if(!aiSqlResult?.draft_id){toast.warn("저장할 AI SQL 초안이 없습니다.");return;}
+    const ratingKey=String(rating||"").toLowerCase()==="down"?"down":"up";
+    setAiSqlFeedbackBusy(ratingKey);
+    try{
+      const columns=(data?.all_columns||data?.columns||[]).map(c=>String(c||"")).filter(Boolean);
+      const body={
+        draft_id:aiSqlResult.draft_id,
+        rating:ratingKey,
+        reason:reasonOverride!==undefined?reasonOverride:aiSqlFeedbackReason,
+        natural_language:aiSqlPrompt,
+        sql:payloadOverride.sql!==undefined?payloadOverride.sql:(aiSqlResult.sql||sql||""),
+        sort:payloadOverride.sort!==undefined?(cleanSortSpec(payloadOverride.sort)||{}):(cleanSortSpec(aiSqlResult.sort)||sortSpec||{}),
+        selected_columns:Array.isArray(payloadOverride.selected_columns)?payloadOverride.selected_columns:(Array.isArray(aiSqlResult.selected_columns)?aiSqlResult.selected_columns:selectedCols),
+        columns,
+        scope:mode,
+        root:selRoot||"",
+        product:selProd||"",
+        file:selBaseFile||selRootPq||"",
+      };
+      const d=await sf(API+"/sql/feedback",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      setAiSqlResult(prev=>prev?{...prev,feedback_saved:ratingKey,feedback_id:d.feedback_id}:prev);
+      toast.ok(ratingKey==="up"?"좋아요를 저장했습니다.":"싫어요를 저장했습니다.");
+      if(ratingKey==="down")setAiSqlFeedbackReasonOpen(false);
+    }catch(e){
+      toast.error(e.message||"피드백 저장 실패");
+    }finally{
+      setAiSqlFeedbackBusy("");
     }
   };
 
@@ -1335,7 +1394,7 @@ export default function My_FileBrowser({user,onNavigate}){
       setLoading(true);setError("");setTab("data");
       setPage(0);
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
-        select_cols:cols.length?cols.join(","):""});
+        select_cols:cols.length?cols.join(","):"",...sortParams(sortSpec)});
       sf(url).then(d=>{setSelectedCols(cols.length?selectedColsFromResponse(d,cols):[]);setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
     else if(selRoot&&selProd){loadHiveView(selRoot,selProd,sql,cols,{full:true,page:0});}
@@ -1372,7 +1431,7 @@ export default function My_FileBrowser({user,onNavigate}){
     else if(mode==="base"&&selBaseFile&&!baseRaw){
       setLoading(true);setError("");setTab("data");setPage(p);
       const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:p,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
-        select_cols:selectedCols.length?selectedCols.join(","):""});
+        select_cols:selectedCols.length?selectedCols.join(","):"",...sortParams(sortSpec)});
       sf(url).then(d=>{setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     } else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,selectedCols,{full:true,page:p});
   };
@@ -1438,7 +1497,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {scopes.map(s=>{
             const active=scope===s.key;const disabled=s.exists===false;
             return(<span key={s.key} className={"filebrowser-scope-option filebrowser-scope-"+s.key} data-scope={s.key} data-active={active?"1":"0"}
-              onClick={()=>{if(disabled)return;setScope(s.key);setBaseDir("");setData(null);setBaseRaw(null);setSelBaseMeta(null);setError("");setSelProd("");setSelRootPq("");setSelBaseFile("");setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setSelectedCols([]);}}
+              onClick={()=>{if(disabled)return;setScope(s.key);setBaseDir("");setData(null);setBaseRaw(null);setSelBaseMeta(null);setError("");setSelProd("");setSelRootPq("");setSelBaseFile("");setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setSelectedCols([]);setSortSpec(null);}}
               title={s.description+(disabled?"\n(경로 없음 — admin_settings 확인)":"")}
               style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"center",padding:"6px 8px",borderRadius:5,fontSize:14,cursor:disabled?"not-allowed":"pointer",fontWeight:active?700:500,
                 background:active?"var(--accent-glow)":"var(--bg-hover)",color:disabled?"var(--text-secondary)":(active?"var(--accent)":"var(--text-primary)"),
@@ -1481,7 +1540,7 @@ export default function My_FileBrowser({user,onNavigate}){
                     setBaseRaw(null);
                     return;
                   }
-                  setSelectedCols([]);setSelBaseMeta(f);loadBaseFileView(fileKey);setIsBaseEditing(false);setError("");setData(null);setBaseRaw(null);setEditCols([]);setEditRows([]);setEditOriginRows([]);
+                  setSelectedCols([]);setSortSpec(null);setSelBaseMeta(f);loadBaseFileView(fileKey);setIsBaseEditing(false);setError("");setData(null);setBaseRaw(null);setEditCols([]);setEditRows([]);setEditOriginRows([]);
                 }}
                 title={(f.description||titlePath.join(" "))+ (f.role?`\n${f.role}`:"")}
                 style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
@@ -1532,7 +1591,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {products.length>0&&<div style={{flex:1,overflow:"auto",borderTop:"1px solid var(--border)",padding:"4px 8px"}}>
             <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>제품</div>
             {products.map(p=>(
-              <div key={p.name} onClick={()=>{setSelectedCols([]);setSql("");loadHiveView(selRoot,p.name,"",[],{full:true,page:0});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
+              <div key={p.name} onClick={()=>{setSelectedCols([]);setSortSpec(null);setSql("");loadHiveView(selRoot,p.name,"",[],{full:true,page:0,sortOverride:null});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
                 background:selProd===p.name?"var(--bg-hover)":"transparent",color:selProd===p.name?"var(--accent)":"var(--text-primary)"}}>
                 {/* v8.8.2: 제품별 S3 신호등 — 본인 설정 없으면 상위 DB 에서 상속. */}
                 {lightDot(selRoot+"/"+p.name)}
@@ -1548,7 +1607,7 @@ export default function My_FileBrowser({user,onNavigate}){
           {rootPqs.length>0&&<div style={{borderTop:"1px solid var(--border)",padding:"4px 8px",maxHeight:200,overflow:"auto"}}>
             <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>루트 Parquet</div>
             {rootPqs.map(f=>(
-              <div key={f.name} onClick={()=>{setSelectedCols([]);loadRootPqView(f.name,"");}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
+              <div key={f.name} onClick={()=>{setSelectedCols([]);setSortSpec(null);loadRootPqView(f.name,"",[],{sortOverride:null});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
                 background:selRootPq===f.name?"var(--bg-hover)":"transparent",color:selRootPq===f.name?"var(--accent)":"var(--text-primary)"}}>
                 {lightDot(f.name)}
                 <span style={sidebarStack}>
@@ -1578,6 +1637,11 @@ export default function My_FileBrowser({user,onNavigate}){
           {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={downloadCsv} title={`표시는 ${PAGE_SIZE}행, CSV는 서버 허용 한도까지 다운로드합니다.`} style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer"}}>CSV</button>}
           {data&&!(mode==="base"&&isBaseEditing)&&<span style={{fontSize:12,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>CSV 최대 50만행/100MB</span>}
         </div>
+        {sortSpec&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          <span style={{fontSize:13,color:"var(--text-secondary)",fontWeight:700,flexShrink:0}}>SORT:</span>
+          <span style={{fontSize:13,color:"var(--text-primary)",fontFamily:"monospace",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>{sortLabel(sortSpec)}</span>
+          <button onClick={()=>{setSortSpec(null);applySql(sql,selectedCols,null);}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>해제</button>
+        </div>}
 
         {/* Selected columns chips */}
         {!isBaseEditing&&selectedCols.length>0&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
@@ -1906,7 +1970,9 @@ export default function My_FileBrowser({user,onNavigate}){
               </div>
             </div>
             {aiSqlResult&&<div style={{display:"grid",gap:5,padding:9,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",fontSize:12,fontFamily:"monospace",color:aiSqlResult.ok===false?FB_BAD.fg:"var(--text-secondary)",lineHeight:1.45}}>
-              <span>llm={aiSqlResult.llm?.used?"used":(aiSqlResult.llm?.available?"available":"fallback")} · saved=false</span>
+              <span>llm={aiSqlResult.llm?.used?"used":(aiSqlResult.llm?.available?"available":"fallback")} · saved=false · draft={aiSqlResult.draft_id||"-"}</span>
+              {aiSqlResult.feedback_context_used?<span>feedback: like {aiSqlResult.feedback_context?.positive||0} · dislike {aiSqlResult.feedback_context?.negative||0}</span>:null}
+              {cleanSortSpec(aiSqlResult.sort)?<span>sort: {sortLabel(aiSqlResult.sort)}</span>:null}
               {aiSqlResult.selected_columns?.length?<span>selected: {aiSqlResult.selected_columns.join(", ")}</span>:null}
               {aiSqlResult.sample_profile?<span>profile: rows {aiSqlResult.sample_profile.rows_sampled||0} · cols {aiSqlResult.sample_profile.columns_scanned||0} · {aiSqlResult.sample_profile.source||"request"}</span>:null}
               {aiSqlResult.resolved_columns?.length?<span>resolved: {aiSqlResult.resolved_columns.join(", ")}</span>:null}
@@ -1915,6 +1981,24 @@ export default function My_FileBrowser({user,onNavigate}){
               {aiSqlResult.value_terms?.length?<span>value terms: {aiSqlResult.value_terms.join(", ")}</span>:null}
               {aiSqlResult.sql&&<span style={{color:"var(--accent)"}}>{aiSqlResult.sql}</span>}
               {(aiSqlResult.warnings||[]).slice(0,4).map((w,i)=><span key={i}>warn: {w}</span>)}
+              {Array.isArray(aiSqlResult.alternatives)&&aiSqlResult.alternatives.length>0&&<div style={{display:"grid",gap:4,marginTop:4}}>
+                {aiSqlResult.alternatives.map(alt=><button key={alt.key} onClick={()=>{const nextSort=cleanSortSpec(alt.sort);const altCols=Array.isArray(alt.selected_columns)?alt.selected_columns:[];setSql(alt.sql||"");setSelectedCols(altCols);setSortSpec(nextSort);applySql(alt.sql||"",altCols,nextSort);submitAiSqlFeedback("up","alternative "+alt.key,{sql:alt.sql||"",sort:nextSort||{},selected_columns:altCols,choice:alt.key});}} style={{textAlign:"left",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+                  {alt.key}안 {alt.label}: {(alt.sql||"(no filter)")}{cleanSortSpec(alt.sort)?` · ${sortLabel(alt.sort)}`:""}
+                </button>)}
+              </div>}
+              <div style={{display:"flex",alignItems:"center",gap:6,marginTop:5,fontFamily:"inherit",flexWrap:"wrap"}}>
+                <button onClick={()=>submitAiSqlFeedback("up","")} disabled={!!aiSqlFeedbackBusy} style={{padding:"4px 8px",borderRadius:4,border:"1px solid var(--border)",background:aiSqlResult.feedback_saved==="up"?"var(--accent-glow)":"transparent",color:"var(--accent)",fontSize:12,fontWeight:700,cursor:aiSqlFeedbackBusy?"wait":"pointer"}}>좋아요</button>
+                <button onClick={()=>setAiSqlFeedbackReasonOpen(v=>!v)} disabled={!!aiSqlFeedbackBusy} style={{padding:"4px 8px",borderRadius:4,border:"1px solid var(--border)",background:aiSqlResult.feedback_saved==="down"?"rgba(239,68,68,.08)":"transparent",color:FB_BAD.fg,fontSize:12,fontWeight:700,cursor:aiSqlFeedbackBusy?"wait":"pointer"}}>싫어요</button>
+                {aiSqlResult.feedback_saved?<span style={{color:"var(--text-secondary)"}}>feedback saved</span>:null}
+              </div>
+              {aiSqlFeedbackReasonOpen&&<div style={{display:"grid",gap:5,marginTop:4,fontFamily:"inherit"}}>
+                <textarea value={aiSqlFeedbackReason} onChange={e=>setAiSqlFeedbackReason(e.target.value)} rows={2} placeholder="사유는 선택입니다"
+                  style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"6px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:12,fontFamily:"inherit",outline:"none"}}/>
+                <div style={{display:"flex",gap:6,justifyContent:"flex-end"}}>
+                  <button onClick={()=>setAiSqlFeedbackReasonOpen(false)} style={{padding:"4px 8px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>취소</button>
+                  <button onClick={()=>submitAiSqlFeedback("down",aiSqlFeedbackReason)} disabled={!!aiSqlFeedbackBusy} style={{padding:"4px 8px",borderRadius:4,border:"none",background:FB_BAD.fg,color:"#fff",fontSize:12,fontWeight:700,cursor:aiSqlFeedbackBusy?"wait":"pointer"}}>싫어요 저장</button>
+                </div>
+              </div>}
             </div>}
           </div>
         </Modal>

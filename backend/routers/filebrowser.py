@@ -33,6 +33,7 @@ import sys
 import shutil
 import math
 import functools
+import uuid
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _APP_ROOT = _BACKEND_ROOT.parent
@@ -105,6 +106,7 @@ _SORT_STR = getattr(pl, "Utf8", None) or getattr(pl, "String", pl.Object)
 _LIST_CACHE: dict[tuple, tuple[float, object]] = {}
 FILEBROWSER_SETTINGS_FILE = "filebrowser_settings.json"
 FILEBROWSER_AGENT_PROMPTS_FILE = "filebrowser_agent_prompts.json"
+FILEBROWSER_AI_SQL_FEEDBACK_FILE = "filebrowser_ai_sql_feedback.jsonl"
 FILEBROWSER_AGENT_PROMPTS_DEFAULT_FILE = _BACKEND_ROOT / "core" / "filebrowser_agent_prompts.default.json"
 DEFAULT_CSV_FULL_READ_MAX_BYTES = 10 * 1024 * 1024
 MAX_CSV_FULL_READ_MAX_BYTES = 100 * 1024 * 1024
@@ -4831,6 +4833,9 @@ def base_files(request: Request = None):
 def base_file_view(file: str = Query(...), sql: str = Query(""),
                    rows: int = Query(LATEST_PREVIEW_ROWS), cols: int = Query(10),
                    select_cols: str = Query(""),
+                   sort_column: str = Query(""),
+                   sort_direction: str = Query("asc"),
+                   sort_nulls: str = Query("last"),
                    engine: str = Query("auto"),
                    meta_only: bool = Query(True),
                    page: int = Query(0, ge=0),
@@ -4855,6 +4860,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     fp = None
     rel = Path(file)
     settings = _load_filebrowser_settings()
+    sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
     cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
     single_file_folders = _single_file_folder_names(settings)
     if rel.parts and str(rel.parts[0]).casefold() in single_file_folders:
@@ -5102,6 +5108,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 resp = _run_view_lazy_full(
                     lf, sql, select_cols,
                     preview_cols=cols if ml_table else None,
+                    sort_spec=sort_spec,
                 )
                 resp["all_columns"] = all_cols_full
                 resp["total_cols"] = len(all_cols_full)
@@ -5121,6 +5128,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                         page=page, page_size=page_size, preview_cols=cols,
                         cached_meta=cached_meta,
                         settings=settings,
+                        sort_spec=sort_spec,
                     )
                     resp["kind"] = "table"
                     resp["file"] = file
@@ -5140,6 +5148,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 preview_cols=cols,
                 source_size=fp.stat().st_size,
                 settings=settings,
+                sort_spec=sort_spec,
             )
             resp["all_columns"] = all_cols_full
             resp["total_cols"] = len(all_cols_full)
@@ -5161,6 +5170,9 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                 key_payload = {
                     "sql_norm": sql_str.strip(),
                     "select_cols_norm": ",".join(sorted(c.strip() for c in sc_str.split(",") if c.strip())),
+                    "sort_column": _cache_safe_text(sort_column, 120).casefold(),
+                    "sort_direction": _cache_safe_text(sort_direction, 20).casefold(),
+                    "sort_nulls": _cache_safe_text(sort_nulls, 20).casefold(),
                     "meta_only": bool(meta_only),
                     "page": int(page),
                     "page_size": int(page_size),
@@ -5985,10 +5997,15 @@ def _fallback_ai_sql(prompt: str, columns: list[str]) -> str:
     if not prompt or not columns:
         return ""
     hits = _fallback_column_hits(prompt, columns)
+    item_clause = _fallback_item_id_clause(prompt, columns)
+    if item_clause:
+        hits = [col for col in hits if col.casefold() != "item_id"]
     if not hits:
-        return ""
+        return item_clause
     low = prompt.casefold()
     clauses: list[str] = []
+    if item_clause:
+        clauses.append(item_clause)
     for col in hits:
         window = _fallback_window(prompt, col)
         wlow = window.casefold()
@@ -6069,6 +6086,326 @@ def _fallback_ai_sql(prompt: str, columns: list[str]) -> str:
         return ""
     joiner = " OR " if " 또는 " in low and len(unique) <= 2 else " AND "
     return joiner.join(unique)
+
+
+def _fallback_item_id_clause(prompt: str, columns: list[str]) -> str:
+    lookup = _column_lookup(columns)
+    item_col = lookup.get("item_id")
+    if not item_col:
+        return ""
+    text = str(prompt or "")
+    patterns = (
+        r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_.-]{1,})\s+(?:value|값)(?![A-Za-z0-9_])",
+        r"(?:item[_\s-]*id|아이템)\s*(?:가|이|은|는|=|:)?\s*([A-Za-z][A-Za-z0-9_.-]{1,})",
+    )
+    blocked = {c.casefold() for c in columns}
+    blocked.update(_AI_SQL_IGNORE_TOKENS)
+    blocked.update(_all_ai_sql_alias_tokens())
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if not match:
+            continue
+        value = _cache_safe_text(match.group(1), 120)
+        if not value or value.casefold() in blocked:
+            continue
+        if _looks_numeric_like_value(value) or _looks_datetime_like_value(value):
+            continue
+        return f"{item_col} = {_sql_literal_for_filter(value, columns)}"
+    return ""
+
+
+def _ai_sql_sort_raw_values(raw) -> list:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return list(raw)
+    if isinstance(raw, tuple):
+        return list(raw)
+    return [raw]
+
+
+def _plan_ai_sql_sort(plan: dict):
+    if not isinstance(plan, dict):
+        return None
+    for key in ("sort", "order_by", "ordering", "sort_by"):
+        value = plan.get(key)
+        if value:
+            return value
+    return None
+
+
+def _normalize_ai_sql_sort(value, columns: list[str], warnings: list[str] | None = None,
+                           context: str = "sort") -> dict:
+    warnings = warnings if warnings is not None else []
+    lookup = _column_lookup(columns)
+    for raw in _ai_sql_sort_raw_values(value):
+        column = ""
+        direction = ""
+        nulls = ""
+        if isinstance(raw, str):
+            parts = re.split(r"[\s,]+", raw.strip())
+            if parts:
+                column = parts[0]
+            if len(parts) >= 2:
+                direction = parts[1]
+            if len(parts) >= 3:
+                nulls = parts[2]
+        elif isinstance(raw, dict):
+            column = str(
+                raw.get("column") or raw.get("col") or raw.get("name")
+                or raw.get("field") or raw.get("order_by") or ""
+            )
+            direction = str(raw.get("direction") or raw.get("dir") or raw.get("order") or "")
+            nulls = str(raw.get("nulls") or raw.get("null_order") or "")
+        if not column:
+            continue
+        hit = lookup.get(column.casefold())
+        if not hit:
+            _draft_warning(warnings, f"{context}: unknown sort column removed: {column}")
+            continue
+        dir_l = direction.casefold().strip()
+        if dir_l in {"desc", "descending", "내림차순", "큰순서", "큰", "높은순", "최신순"}:
+            direction = "desc"
+        elif dir_l in {"asc", "ascending", "오름차순", "작은순서", "작은", "낮은순", "오래된순"}:
+            direction = "asc"
+        elif dir_l:
+            _draft_warning(warnings, f"{context}: unsupported sort direction ignored: {direction}")
+            direction = "asc"
+        else:
+            direction = "asc"
+        null_l = nulls.casefold().replace("_", " ").strip()
+        if null_l in {"first", "nulls first", "앞", "처음"}:
+            nulls = "first"
+        else:
+            nulls = "last"
+        return {"column": hit, "direction": direction, "nulls": nulls}
+    return {}
+
+
+def _view_sort_query(sort_column: str = "", sort_direction: str = "", sort_nulls: str = "") -> dict:
+    if not isinstance(sort_column, str):
+        sort_column = ""
+    if not isinstance(sort_direction, str):
+        sort_direction = "asc"
+    if not isinstance(sort_nulls, str):
+        sort_nulls = "last"
+    if not str(sort_column or "").strip():
+        return {}
+    return {
+        "column": str(sort_column or "").strip(),
+        "direction": str(sort_direction or "asc").strip() or "asc",
+        "nulls": str(sort_nulls or "last").strip() or "last",
+    }
+
+
+def _resolve_view_sort_spec(sort_spec: dict | None, all_columns: list[str], *,
+                            latest_first: bool = False) -> tuple[dict, str | None]:
+    warnings: list[str] = []
+    spec = _normalize_ai_sql_sort(sort_spec or {}, all_columns, warnings, "sort")
+    if warnings:
+        _fb_error(400, "unknown_sort_column", warnings[0])
+    if spec:
+        return spec, None
+    latest_order_col = _latest_order_column(all_columns) if latest_first else ""
+    if latest_order_col:
+        return {"column": latest_order_col, "direction": "desc", "nulls": "last"}, latest_order_col
+    return {}, None
+
+
+def _sort_descending(spec: dict) -> bool:
+    return str((spec or {}).get("direction") or "").casefold() == "desc"
+
+
+def _sort_nulls_last(spec: dict) -> bool:
+    return str((spec or {}).get("nulls") or "last").casefold() != "first"
+
+
+def _sort_response_payload(spec: dict, latest_order_col: str | None) -> dict:
+    if not spec or latest_order_col:
+        return {}
+    return {
+        "column": spec.get("column") or "",
+        "direction": spec.get("direction") or "asc",
+        "nulls": spec.get("nulls") or "last",
+    }
+
+
+def _sort_expr(spec: dict, latest_order_col: str | None):
+    expr = pl.col(spec["column"])
+    return expr.cast(_SORT_STR, strict=False) if latest_order_col else expr
+
+
+def _fallback_ai_sql_sort(prompt: str, columns: list[str]) -> dict:
+    text = str(prompt or "")
+    low = text.casefold()
+    if not any(token in low or token in text for token in (
+        "큰순서", "큰 순서", "높은순", "높은 순", "내림차순", "desc", "descending",
+        "작은순서", "작은 순서", "낮은순", "낮은 순", "오름차순", "asc", "ascending",
+        "최신순", "오래된순", "정렬", "sort", "order",
+    )):
+        return {}
+    hits = _fallback_column_hits(text, columns)
+    lookup = _column_lookup(columns)
+    if not hits:
+        for preferred in ("value", "rank", "tkout_time", "update_time", "measure_time"):
+            if preferred in lookup and re.search(r"(?<![A-Za-z0-9_])" + re.escape(preferred) + r"(?![A-Za-z0-9_])", text, flags=re.I):
+                hits.append(lookup[preferred])
+                break
+    if not hits:
+        return {}
+    direction = "asc"
+    if any(token in low or token in text for token in (
+        "큰순서", "큰 순서", "높은순", "높은 순", "내림차순", "desc", "descending", "최신순",
+    )):
+        direction = "desc"
+    return {"column": hits[-1], "direction": direction, "nulls": "last"}
+
+
+def _filebrowser_ai_sql_feedback_path() -> Path:
+    return PATHS.data_root / FILEBROWSER_AI_SQL_FEEDBACK_FILE
+
+
+def _new_ai_sql_draft_id() -> str:
+    stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+    return f"fb_sql_{stamp}_{uuid.uuid4().hex[:8]}"
+
+
+def _normalize_ai_sql_rating(value: str) -> str:
+    text = str(value or "").strip().casefold()
+    if text in {"up", "like", "liked", "good", "positive", "thumbs_up", "좋아요"}:
+        return "up"
+    if text in {"down", "dislike", "disliked", "bad", "negative", "thumbs_down", "싫어요"}:
+        return "down"
+    raise HTTPException(400, "rating must be up/down")
+
+
+def _ai_sql_column_signature(columns: list[str] | tuple[str, ...] | None) -> list[str]:
+    out: list[str] = []
+    for col in columns or []:
+        text = str(col or "").strip().casefold()
+        if text and text not in out:
+            out.append(text)
+    return sorted(out)
+
+
+def _ai_sql_prompt_tokens(text: str) -> set[str]:
+    tokens = set(re.findall(r"[A-Za-z0-9_가-힣]{2,}", str(text or "").casefold()))
+    tokens.difference_update({
+        "and", "or", "the", "for", "show", "filter", "where", "value",
+        "행", "조회", "보여줘", "필터", "정렬", "큰순서", "작은순서",
+    })
+    return tokens
+
+
+def _ai_sql_similarity(left, right) -> float:
+    a = set(left or [])
+    b = set(right or [])
+    if not a or not b:
+        return 0.0
+    return len(a & b) / max(1, len(a | b))
+
+
+def _ai_sql_feedback_entry(record: dict) -> dict:
+    return {
+        "draft_id": _cache_safe_text(record.get("draft_id"), 80),
+        "natural_language": _cache_safe_text(record.get("natural_language"), 200),
+        "sql": _cache_safe_text(record.get("sql"), 500),
+        "sort": record.get("sort") if isinstance(record.get("sort"), dict) else {},
+        "selected_columns": [str(c) for c in (record.get("selected_columns") or []) if str(c or "").strip()][:20],
+        "reason": _cache_safe_text(record.get("reason"), 240),
+        "timestamp": _cache_safe_text(record.get("timestamp"), 60),
+    }
+
+
+def _ai_sql_feedback_context(username: str, prompt: str, columns: list[str], limit: int = 3) -> dict:
+    username = _cache_safe_text(username, 80)
+    if not username:
+        return {"used": False, "positive": [], "negative": [], "counts": {"positive": 0, "negative": 0}, "conflicting": False}
+    target_cols = set(_ai_sql_column_signature(columns))
+    target_tokens = _ai_sql_prompt_tokens(prompt)
+    positive: list[dict] = []
+    negative: list[dict] = []
+    for record in reversed(jsonl_read(_filebrowser_ai_sql_feedback_path(), limit=500)):
+        if not isinstance(record, dict) or record.get("event") not in {None, "", "feedback"}:
+            continue
+        if _cache_safe_text(record.get("username"), 80) != username:
+            continue
+        record_cols = set(record.get("column_signature") or _ai_sql_column_signature(record.get("columns") or []))
+        if target_cols and record_cols and _ai_sql_similarity(target_cols, record_cols) < 0.5:
+            continue
+        record_tokens = _ai_sql_prompt_tokens(record.get("natural_language") or "")
+        prompt_score = _ai_sql_similarity(target_tokens, record_tokens)
+        if target_tokens and record_tokens and prompt_score < 0.15:
+            continue
+        rating = str(record.get("rating") or "").casefold()
+        entry = _ai_sql_feedback_entry(record)
+        if rating == "up" and len(positive) < limit:
+            positive.append(entry)
+        elif rating == "down" and len(negative) < limit:
+            negative.append(entry)
+        if len(positive) >= limit and len(negative) >= limit:
+            break
+    return {
+        "used": bool(positive or negative),
+        "positive": positive,
+        "negative": negative,
+        "counts": {"positive": len(positive), "negative": len(negative)},
+        "conflicting": bool(positive and negative),
+    }
+
+
+def _ai_sql_feedback_summary(context: dict) -> dict:
+    counts = context.get("counts") if isinstance(context, dict) else {}
+    return {
+        "positive": int((counts or {}).get("positive") or 0),
+        "negative": int((counts or {}).get("negative") or 0),
+        "conflicting": bool((context or {}).get("conflicting")),
+    }
+
+
+def _ai_sql_feedback_hint(context: dict) -> dict:
+    positives = context.get("positive") if isinstance(context, dict) else []
+    return positives[0] if positives else {}
+
+
+def _ai_sql_alternative_offer_allowed(username: str) -> bool:
+    today = datetime.date.today().isoformat()
+    for record in reversed(jsonl_read(_filebrowser_ai_sql_feedback_path(), limit=200)):
+        if not isinstance(record, dict) or record.get("event") != "alternatives_offered":
+            continue
+        if _cache_safe_text(record.get("username"), 80) == username and str(record.get("date") or "") == today:
+            return False
+    return True
+
+
+def _maybe_ai_sql_alternatives(username: str, payload: dict, context: dict) -> list[dict]:
+    if not context.get("conflicting") or not _ai_sql_alternative_offer_allowed(username):
+        return []
+    positive = _ai_sql_feedback_hint(context)
+    if not positive:
+        return []
+    jsonl_append(_filebrowser_ai_sql_feedback_path(), {
+        "event": "alternatives_offered",
+        "username": username,
+        "date": datetime.date.today().isoformat(),
+        "draft_id": payload.get("draft_id") or "",
+    })
+    return [
+        {
+            "key": "A",
+            "label": "현재 초안",
+            "sql": payload.get("sql") or "",
+            "sort": payload.get("sort") or {},
+            "selected_columns": payload.get("selected_columns") or [],
+        },
+        {
+            "key": "B",
+            "label": "최근 좋아요 사례",
+            "sql": positive.get("sql") or "",
+            "sort": positive.get("sort") or {},
+            "selected_columns": positive.get("selected_columns") or [],
+        },
+    ]
 
 
 def _ai_sql_context_columns(columns: list[str], dtypes: dict | None, sample_rows: list[dict] | None) -> list[dict]:
@@ -6199,13 +6536,13 @@ def _filter_ai_sql_selected_columns(values, columns: list[str], warnings: list[s
 
 def _normalize_ai_sql_selected_columns(plan: dict, columns: list[str], preferred, prompt: str,
                                        warnings: list[str]) -> list[str]:
+    explicit_fallback = _fallback_selected_columns_from_prompt(prompt, columns)
+    if not explicit_fallback:
+        return []
     selected = _filter_ai_sql_selected_columns(_plan_selected_columns(plan), columns, warnings, "selected_columns")
     if selected:
         return selected
-    fallback = _fallback_selected_columns_from_prompt(prompt, columns)
-    if fallback:
-        return fallback
-    return _filter_ai_sql_selected_columns(preferred, columns, warnings, "preferred_selected_columns")
+    return explicit_fallback
 
 
 def _looks_numeric_like_value(value: str) -> bool:
@@ -6375,7 +6712,8 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                               file: str = "",
                               preferred_selected_columns: list[str] | None = None,
                               sample_profile: dict | None = None,
-                              context_warnings: list[str] | None = None) -> dict:
+                              context_warnings: list[str] | None = None,
+                              username: str = "") -> dict:
     prompt = _cache_safe_text(natural_language, 2000)
     if not prompt:
         raise HTTPException(400, "natural_language is required")
@@ -6393,6 +6731,18 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
     resolved_columns, unknown_column_terms = _resolve_ai_sql_prompt_columns(prompt, columns)
     if unknown_column_terms:
         warnings.append("Unknown column-like terms: " + ", ".join(unknown_column_terms[:8]))
+    draft_id = _new_ai_sql_draft_id()
+    username = _cache_safe_text(username, 80)
+    feedback_context = _ai_sql_feedback_context(username, prompt, columns)
+
+    def _finish(payload: dict) -> dict:
+        payload.setdefault("draft_id", draft_id)
+        payload.setdefault("sort", {})
+        payload["feedback_context_used"] = bool(feedback_context.get("used"))
+        payload["feedback_context"] = _ai_sql_feedback_summary(feedback_context)
+        payload["alternatives"] = _maybe_ai_sql_alternatives(username, payload, feedback_context)
+        return payload
+
     llm_info = {"available": False, "used": False, "error": ""}
     raw_text = ""
     plan: dict = {}
@@ -6415,12 +6765,18 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "schema": column_context,
                 "sample_rows": _safe_sample_rows(sample_rows or [], max_rows=5, max_cols=40, max_value_len=120),
                 "sample_profile": profile,
+                "feedback_context": {
+                    "liked_examples": feedback_context.get("positive") or [],
+                    "avoid_examples": feedback_context.get("negative") or [],
+                    "counts": feedback_context.get("counts") or {},
+                },
                 "preferred_selected_columns": _filter_ai_sql_selected_columns(
                     preferred_selected_columns or [], columns, [], "preferred_selected_columns"
                 ),
                 "context": context,
                 "response_schema": {
                     "sql": "column = 'value' AND other_col > 0",
+                    "sort": {"column": "value", "direction": "desc", "nulls": "last"},
                     "selected_columns": ["column", "other_col"],
                     "resolved_columns": ["column"],
                     "resolved_values": ["value"],
@@ -6433,9 +6789,9 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 timeout=20,
                 max_retries=1,
                 schema={
-                    "keys": ["sql", "selected_columns", "resolved_columns", "resolved_values", "notes"],
+                    "keys": ["sql", "sort", "selected_columns", "resolved_columns", "resolved_values", "notes"],
                     "required": [],
-                    "properties": {"sql": {}, "selected_columns": {}, "resolved_columns": {}, "resolved_values": {}, "notes": {}},
+                    "properties": {"sql": {}, "sort": {}, "selected_columns": {}, "resolved_columns": {}, "resolved_values": {}, "notes": {}},
                 },
             )
             raw_text = str(out.get("text") or "")
@@ -6460,19 +6816,29 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         prompt,
         warnings,
     )
+    sort_spec = _normalize_ai_sql_sort(_plan_ai_sql_sort(plan), columns, warnings, "sort")
+    if not sort_spec:
+        sort_spec = _fallback_ai_sql_sort(prompt, columns)
     try:
         sql, validate_warnings = _validate_ai_sql_filter(raw_sql, columns)
         warnings.extend(validate_warnings)
     except Exception as exc:
         fallback = _fallback_ai_sql(prompt, columns)
+        feedback_hint = _ai_sql_feedback_hint(feedback_context)
+        if not fallback and feedback_hint.get("sql"):
+            fallback = str(feedback_hint.get("sql") or "")
+            _draft_warning(warnings, "recent liked feedback used as deterministic fallback hint")
+        if not sort_spec and isinstance(feedback_hint.get("sort"), dict):
+            sort_spec = _normalize_ai_sql_sort(feedback_hint.get("sort"), columns, warnings, "feedback_sort")
         if fallback:
             try:
                 sql, validate_warnings = _validate_ai_sql_filter(fallback, columns)
-                return {
+                return _finish({
                     "ok": True,
                     "saved": False,
                     "unit_action": "filebrowser.sql.llm.draft",
                     "sql": sql,
+                    "sort": sort_spec,
                     "selected_columns": selected_columns,
                     "sample_profile": profile,
                     "warnings": [*warnings, f"LLM draft was not usable: {exc}", "deterministic fallback used"],
@@ -6483,15 +6849,16 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                     "value_terms": value_terms,
                     "llm": llm_info,
                     "fallback": True,
-                }
+                })
             except Exception as fallback_exc:
                 warnings.append(f"deterministic fallback failed: {fallback_exc}")
-        if not raw_sql.strip() and selected_columns:
-            return {
+        if not raw_sql.strip() and (selected_columns or sort_spec):
+            return _finish({
                 "ok": True,
                 "saved": False,
                 "unit_action": "filebrowser.sql.llm.draft",
                 "sql": "",
+                "sort": sort_spec,
                 "selected_columns": selected_columns,
                 "sample_profile": profile,
                 "warnings": warnings,
@@ -6502,12 +6869,13 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "value_terms": value_terms,
                 "llm": llm_info,
                 "fallback": not llm_info.get("used"),
-            }
-        return {
+            })
+        return _finish({
             "ok": False,
             "saved": False,
             "unit_action": "filebrowser.sql.llm.draft",
             "sql": "",
+            "sort": sort_spec,
             "selected_columns": selected_columns,
             "sample_profile": profile,
             "warnings": [*warnings, str(exc)],
@@ -6517,12 +6885,13 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
             "resolved_values": resolved_values,
             "value_terms": value_terms,
             "llm": llm_info,
-        }
-    return {
+        })
+    return _finish({
         "ok": True,
         "saved": False,
         "unit_action": "filebrowser.sql.llm.draft",
         "sql": sql,
+        "sort": sort_spec,
         "selected_columns": selected_columns,
         "sample_profile": profile,
         "warnings": warnings,
@@ -6533,12 +6902,13 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         "value_terms": value_terms,
         "llm": llm_info,
         "fallback": False,
-    }
+    })
 
 
 def _run_view(df, sql: str, select_cols: str, rows: int,
               page: int = 0, page_size: int | None = None, preview_cols: int | None = None,
-              latest_first: bool = False, latest_preview: bool = False):
+              latest_first: bool = False, latest_preview: bool = False,
+              sort_spec: dict | None = None):
     """Apply select + sql + head; return standard response dict. Legacy DataFrame path."""
     all_columns = list(df.columns)
     schema = {n: str(d) for n, d in df.schema.items()}
@@ -6552,12 +6922,12 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
         _validate_where_expression(sql, all_columns)
         df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, all_columns))
         total = df.height
-    latest_order_col = _latest_order_column(all_columns) if latest_first else ""
-    if latest_order_col and latest_order_col in df.columns:
+    active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns, latest_first=latest_first)
+    if active_sort and active_sort.get("column") in df.columns:
         df = df.sort(
-            pl.col(latest_order_col).cast(_SORT_STR, strict=False),
-            descending=True,
-            nulls_last=True,
+            _sort_expr(active_sort, latest_order_col),
+            descending=_sort_descending(active_sort),
+            nulls_last=_sort_nulls_last(active_sort),
         )
     if sel:
         df = df.select(sel)
@@ -6573,6 +6943,7 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
         "preview_cols": len(show.columns),
         "truncated_cols": truncated_cols,
         "latest_order_col": latest_order_col or None,
+        "sort": _sort_response_payload(active_sort, latest_order_col),
         "latest_preview": bool(latest_preview),
         "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
     }
@@ -6583,7 +6954,8 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
                      preview_cols: int | None = None,
                      latest_first: bool = False, latest_preview: bool = False,
                      cached_meta: dict | None = None,
-                     settings: dict | None = None):
+                     settings: dict | None = None,
+                     sort_spec: dict | None = None):
     """Apply the same preview contract through DuckDB for large read-only sources."""
     all_columns, schema = duckdb_engine.inspect_files(files)
     _validate_where_expression(sql, all_columns)
@@ -6598,7 +6970,7 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
     sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
-    latest_order_col = _latest_order_column(all_columns) if latest_first else ""
+    active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns, latest_first=latest_first)
     wafer_where = _duckdb_valid_wafer_where(all_columns)
     user_where = _normalize_wafer_sql_filter(sql, all_columns)
     show_plus, _all_cols, _schema = duckdb_engine.query_files(
@@ -6607,8 +6979,8 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
         select_cols=sel,
         limit=page_size + 1,
         offset=offset,
-        order_by=latest_order_col,
-        descending=bool(latest_order_col),
+        order_by=active_sort.get("column") or "",
+        descending=_sort_descending(active_sort),
     )
     has_more = show_plus.height > page_size
     show = show_plus.head(page_size) if has_more else show_plus
@@ -6629,6 +7001,7 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
         "preview_cols": len(show.columns),
         "truncated_cols": truncated_cols,
         "latest_order_col": latest_order_col or None,
+        "sort": _sort_response_payload(active_sort, latest_order_col),
         "latest_preview": bool(latest_preview),
         "engine": "duckdb",
         "source_file_count": len(files),
@@ -6645,7 +7018,8 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
                    latest_preview: bool = False,
                    allow_eager_sql_fallback: bool = False,
                    source_size: int | None = None,
-                   settings: dict | None = None):
+                   settings: dict | None = None,
+                   sort_spec: dict | None = None):
     """v8.4.3 OOM-aware: lazy 스캔 + projection pushdown + head + (필요 시) SQL.
 
     - 컬럼 선택 / head 은 lazy 에서 처리 → parquet reader 에서 필요한 컬럼·행만 읽음
@@ -6660,7 +7034,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
     preview_cols = _preview_cols_limit(preview_cols or _settings_preview_max_columns(settings))
     page_size = int(page_size or rows or 200)
     page, page_size, offset = _page_args(page, page_size)
-    latest_order_col = _latest_order_column(all_columns) if latest_first else ""
+    active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns, latest_first=latest_first)
     lf, wafer_filtered = _filter_valid_wafers_lazy(lf, all_columns)
 
     if meta_only:
@@ -6678,6 +7052,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             "preview_cols": min(len(all_columns), preview_cols),
             "truncated_cols": len(all_columns) > preview_cols,
             "latest_order_col": latest_order_col or None,
+            "sort": _sort_response_payload(active_sort, latest_order_col),
             "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
         }
 
@@ -6702,11 +7077,11 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
         try:
             from core.parquet_perf import collect_streaming
             filtered = lf.filter(_lazy_filter_expr(sql, all_columns))
-            if latest_order_col:
+            if active_sort:
                 filtered = filtered.sort(
-                    pl.col(latest_order_col).cast(_SORT_STR, strict=False),
-                    descending=True,
-                    nulls_last=True,
+                    _sort_expr(active_sort, latest_order_col),
+                    descending=_sort_descending(active_sort),
+                    nulls_last=_sort_nulls_last(active_sort),
                 )
             show_lf = filtered.select(sel) if sel else filtered
             show_plus = collect_streaming(show_lf.slice(offset, page_size + 1))
@@ -6724,11 +7099,11 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
                 df = lf.collect()
             df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, all_columns))
             total = df.height
-            if latest_order_col and latest_order_col in df.columns:
+            if active_sort and active_sort.get("column") in df.columns:
                 df = df.sort(
-                    pl.col(latest_order_col).cast(_SORT_STR, strict=False),
-                    descending=True,
-                    nulls_last=True,
+                    _sort_expr(active_sort, latest_order_col),
+                    descending=_sort_descending(active_sort),
+                    nulls_last=_sort_nulls_last(active_sort),
                 )
             if sel:
                 df = df.select(sel)
@@ -6737,11 +7112,11 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             total_exact = True
     else:
         # Page path: parquet scan + lazy slice → only fetches the rows we need.
-        if latest_order_col:
+        if active_sort:
             lf = lf.sort(
-                pl.col(latest_order_col).cast(_SORT_STR, strict=False),
-                descending=True,
-                nulls_last=True,
+                _sort_expr(active_sort, latest_order_col),
+                descending=_sort_descending(active_sort),
+                nulls_last=_sort_nulls_last(active_sort),
             )
         if sel:
             lf = lf.select(sel)
@@ -6773,28 +7148,30 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
         "preview_cols": len(show.columns),
         "truncated_cols": truncated_cols,
         "latest_order_col": latest_order_col or None,
+        "sort": _sort_response_payload(active_sort, latest_order_col),
         "latest_preview": bool(latest_preview),
         "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
     }
 
 
 def _run_view_lazy_full(lf, sql: str, select_cols: str, preview_cols: int | None = None,
-                        latest_first: bool = False):
+                        latest_first: bool = False,
+                        sort_spec: dict | None = None):
     """Collect a single lightweight file fully after optional SQL/projection."""
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
     schema = {n: str(schema_obj[n]) for n in all_columns}
-    latest_order_col = _latest_order_column(all_columns) if latest_first else ""
+    active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns, latest_first=latest_first)
     lf, wafer_filtered = _filter_valid_wafers_lazy(lf, all_columns)
 
     if sql and sql.strip():
         _validate_where_expression(sql, all_columns)
         lf = lf.filter(_lazy_filter_expr(sql, all_columns))
-    if latest_order_col:
+    if active_sort:
         lf = lf.sort(
-            pl.col(latest_order_col).cast(_SORT_STR, strict=False),
-            descending=True,
-            nulls_last=True,
+            _sort_expr(active_sort, latest_order_col),
+            descending=_sort_descending(active_sort),
+            nulls_last=_sort_nulls_last(active_sort),
         )
     if preview_cols is None:
         sel, truncated_cols = _selected_columns(all_columns, select_cols, len(all_columns) or 1)
@@ -6819,6 +7196,7 @@ def _run_view_lazy_full(lf, sql: str, select_cols: str, preview_cols: int | None
         "preview_cols": len(show.columns),
         "truncated_cols": truncated_cols,
         "latest_order_col": latest_order_col or None,
+        "sort": _sort_response_payload(active_sort, latest_order_col),
         "latest_preview": False,
         "single_file_full_read": True,
         "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
@@ -7098,6 +7476,9 @@ def view_product(root: str = Query(...), product: str = Query(...),
                  sql: str = Query(""), rows: int = Query(LATEST_PREVIEW_ROWS),
                  cols: int = Query(20, ge=1, le=200),
                  select_cols: str = Query(""),
+                 sort_column: str = Query(""),
+                 sort_direction: str = Query("asc"),
+                 sort_nulls: str = Query("last"),
                  meta_only: bool = Query(True),
                  all_partitions: bool = Query(False),
                  engine: str = Query("auto"),
@@ -7112,6 +7493,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
         from core.utils import lazy_read_source
         from core.parquet_perf import has_date_filter
         settings = _load_filebrowser_settings()
+        sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
         cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
         page, page_size, _offset = _preview_page_args(rows, page_size)
         rows = page_size
@@ -7148,6 +7530,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
                             page=page, page_size=local_page_size, preview_cols=cols,
                             latest_first=False, latest_preview=False,
                             settings=settings,
+                            sort_spec=sort_spec,
                         ), settings)
                     except Exception as e:
                         if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
@@ -7162,7 +7545,8 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 return _finalize_preview_response(_run_view_lazy(lf, sql, select_cols, local_rows, meta_only=meta_only,
                                                            page=page, page_size=local_page_size, preview_cols=cols,
                                                            latest_first=latest_preview, latest_preview=latest_preview,
-                                                           source_size=source_size, settings=settings), settings)
+                                                           source_size=source_size, settings=settings,
+                                                           sort_spec=sort_spec), settings)
             # Fallback — legacy DF 경로
             df = read_source(root=root, product=product)
             if meta_only:
@@ -7177,7 +7561,8 @@ def view_product(root: str = Query(...), product: str = Query(...),
                     "row_count_unknown": True,
                 }, settings)
             return _finalize_preview_response(_run_view(df, sql, select_cols, local_rows, page=page, page_size=local_page_size,
-                                                  preview_cols=cols, latest_first=latest_preview, latest_preview=latest_preview), settings)
+                                                  preview_cols=cols, latest_first=latest_preview, latest_preview=latest_preview,
+                                                  sort_spec=sort_spec), settings)
 
         if _fbcache.is_enabled(settings):
             prod_dir = _resolve_product_dir_fast(root, product)
@@ -7188,6 +7573,9 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 key_payload = {
                     "sql_norm": sql_str.strip(),
                     "select_cols_norm": ",".join(sorted(c.strip() for c in sc_str.split(",") if c.strip())),
+                    "sort_column": _cache_safe_text(sort_column, 120).casefold(),
+                    "sort_direction": _cache_safe_text(sort_direction, 20).casefold(),
+                    "sort_nulls": _cache_safe_text(sort_nulls, 20).casefold(),
                     "meta_only": bool(meta_only),
                     "page": int(page),
                     "page_size": int(page_size),
@@ -7441,6 +7829,9 @@ def parquet_meta_invalidate(request: Request, root: str = Query(""), product: st
 def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       rows: int = Query(LATEST_PREVIEW_ROWS), cols: int = Query(10),
                       select_cols: str = Query(""),
+                      sort_column: str = Query(""),
+                      sort_direction: str = Query("asc"),
+                      sort_nulls: str = Query("last"),
                       meta_only: bool = Query(True),
                       engine: str = Query("auto"),
                       page: int = Query(0, ge=0),
@@ -7456,6 +7847,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
         raise HTTPException(404)
     try:
         settings = _load_filebrowser_settings()
+        sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
         cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
         page, page_size, _offset = _preview_page_args(rows, page_size)
         rows = page_size
@@ -7500,6 +7892,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                         page=page, page_size=page_size, cached_meta=cached_meta,
                         preview_cols=cols,
                         settings=settings,
+                        sort_spec=sort_spec,
                     ), settings)
                 except Exception as e:
                     if str(engine or "").lower() in {"duckdb", "on", "true", "1"}:
@@ -7511,6 +7904,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                 preview_cols=cols,
                 source_size=fp.stat().st_size,
                 settings=settings,
+                sort_spec=sort_spec,
             )
             resp["all_columns"] = all_cols_full
             resp["total_cols"] = len(all_cols_full)
@@ -7525,6 +7919,9 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                 key_payload = {
                     "sql_norm": sql_str.strip(),
                     "select_cols_norm": ",".join(sorted(c.strip() for c in sc_str.split(",") if c.strip())),
+                    "sort_column": _cache_safe_text(sort_column, 120).casefold(),
+                    "sort_direction": _cache_safe_text(sort_direction, 20).casefold(),
+                    "sort_nulls": _cache_safe_text(sort_nulls, 20).casefold(),
                     "meta_only": bool(meta_only),
                     "page": int(page),
                     "page_size": int(page_size),
@@ -7773,6 +8170,22 @@ class FileBrowserSqlLlmDraftReq(BaseModel):
     file: str = ""
 
 
+class FileBrowserSqlFeedbackReq(BaseModel):
+    draft_id: str = ""
+    rating: str = ""
+    reason: str = ""
+    natural_language: str = ""
+    sql: str = ""
+    sort: dict = {}
+    selected_columns: list[str] = []
+    columns: list[str] = []
+    scope: str = ""
+    root: str = ""
+    product: str = ""
+    file: str = ""
+    choice: str = ""
+
+
 class BaseFileValidateReq(BaseModel):
     file: str
     csv_text: str = ""
@@ -7951,7 +8364,7 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
 
 @router.post("/sql/llm/draft")
 def filebrowser_sql_llm_draft(req: FileBrowserSqlLlmDraftReq, request: Request):
-    _require_filebrowser_user(request)
+    me = _require_filebrowser_user(request)
     columns, dtypes, sample_rows, sample_profile, context_warnings = _ai_sql_context_from_source(
         scope=req.scope,
         root=req.root,
@@ -7974,7 +8387,51 @@ def filebrowser_sql_llm_draft(req: FileBrowserSqlLlmDraftReq, request: Request):
         preferred_selected_columns=req.preferred_selected_columns or [],
         sample_profile=sample_profile,
         context_warnings=context_warnings,
+        username=me.get("username") or "",
     )
+
+
+@router.post("/sql/feedback")
+def filebrowser_sql_feedback(req: FileBrowserSqlFeedbackReq, request: Request):
+    me = _require_filebrowser_user(request)
+    rating = _normalize_ai_sql_rating(req.rating)
+    columns = _settings_context_columns(req.columns or [])
+    warnings: list[str] = []
+    sort_spec = _normalize_ai_sql_sort(req.sort or {}, columns, warnings, "feedback_sort") if columns else (req.sort or {})
+    selected_columns = _filter_ai_sql_selected_columns(
+        req.selected_columns or [],
+        columns,
+        warnings,
+        "feedback_selected_columns",
+    ) if columns else [str(c) for c in (req.selected_columns or []) if str(c or "").strip()]
+    entry = {
+        "event": "feedback",
+        "feedback_id": f"fb_sql_fb_{uuid.uuid4().hex[:10]}",
+        "draft_id": _cache_safe_text(req.draft_id, 100),
+        "username": _cache_safe_text((me or {}).get("username") or "", 80),
+        "rating": rating,
+        "reason": _cache_safe_text(req.reason, 500),
+        "natural_language": _cache_safe_text(req.natural_language, 2000),
+        "sql": _cache_safe_text(req.sql, 2000),
+        "sort": sort_spec if isinstance(sort_spec, dict) else {},
+        "selected_columns": selected_columns[:100],
+        "columns": columns[:300],
+        "column_signature": _ai_sql_column_signature(columns),
+        "scope": _cache_safe_text(req.scope, 80),
+        "root": _cache_safe_text(req.root, 160),
+        "product": _cache_safe_text(req.product, 160),
+        "file": _cache_safe_text(req.file, 240),
+        "choice": _cache_safe_text(req.choice, 20),
+        "warnings": warnings[:10],
+    }
+    jsonl_append(_filebrowser_ai_sql_feedback_path(), entry)
+    return {
+        "ok": True,
+        "saved": True,
+        "feedback_id": entry["feedback_id"],
+        "path": str(_filebrowser_ai_sql_feedback_path()),
+        "warnings": warnings,
+    }
 
 
 @router.post("/settings")

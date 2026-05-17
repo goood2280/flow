@@ -10,7 +10,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 - ML_TABLE `root_lot_id` lookup cache/API는 backend/Flow-i 호환 기능으로 유지한다. FileBrowser 화면의 기본 UX에서는 lookup 입력/실행 UI를 두지 않고 `ML_TABLE_*.parquet`도 100행 샘플 preview로 연다.
 - 빠른 화면 표시: DB/Parquet/cache preview와 SQL/컬럼 선택 결과는 브라우저에 최대 100행, 기본 컬럼 100개만 표시한다. 5000열 같은 wide schema는 `schema_column_page_size`만 응답에 싣고, 컬럼 검색은 `/api/filebrowser/columns/search`로 서버 schema에서 찾는다.
 - CSV 다운로드: 화면 100행 제한과 별개로 톱니바퀴의 `csv_download_max_bytes`를 주 제한으로 사용한다. `csv_download_max_rows`는 legacy 보조 제한으로 유지하며, 서버 허용 한도(최대 500,000행 / 100MB)를 넘지 않는다.
-- 연결된 LLM을 통한 자연어 SQL 초안 작성. LLM은 SQL 입력창만 채우며 자동 실행하지 않는다.
+- 연결된 LLM을 통한 자연어 SQL 초안 작성. AI SQL은 read-only SQL filter, 별도 sort, 명시 요청된 선택 컬럼을 초안으로 만들고 화면에서 즉시 preview 조회까지 실행한다.
 - S3 동기화 상태와 로컬 cache 파일 접근성 확인
 - **LOT 진행 최신 캐시** (`data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`) — FileBrowser, SplitTable, Inform, Tracker, Flow-i current-step 질의가 공유하는 현재 lot/wafer 진행 기준.
 
@@ -190,7 +190,12 @@ step matching CSV 후보 (repo 루트): `Vehicle_matching.csv`, `vehicle_matchin
 - `/api/filebrowser/download-csv`는 preview row cap을 적용하지 않는다. 대신 `max_bytes <= 100MB`, `max_rows <= 500000`, wide source 컬럼 선택 요구를 따른다. FileBrowser UI는 저장된 `filebrowser_settings.json.csv_download_max_bytes`를 `max_bytes`로 보내고 `csv_download_max_rows`는 보조 제한으로 보낸다.
 - `filebrowser_settings.json`은 `csv_download_max_bytes`, `sql_query_max_source_bytes`, `preview_max_columns`, `preview_max_rows`, `schema_column_page_size`를 가진다. 큰 source가 `sql_query_max_source_bytes`를 넘고 SQL filter나 selected columns가 없으면 `filter_required`로 차단한다.
 - SQL/filter는 read-only WHERE expression만 허용한다. `SELECT/FROM`, DDL/DML, semicolon, SQL comment는 `invalid_filter`로 거부한다.
-- `POST /api/filebrowser/sql/llm/draft`는 자연어와 현재 컬럼 목록, dtype, sample values 및 `scope/root/product/file`로 서버가 직접 만든 최대 200행 `sample_profile`을 받아 read-only filter expression 초안과 `selected_columns`를 반환한다. 응답은 `resolved_columns`, `unknown_column_terms`, `resolved_values`, `value_terms`, `warnings`를 포함해 prompt의 컬럼/값 해석 상태를 보여준다. `SELECT/FROM/DDL/DML/세미콜론/없는 컬럼`은 거부하고, 존재하지 않는 선택 컬럼은 warning과 함께 제거한다.
+- `POST /api/filebrowser/sql/llm/draft`는 자연어와 현재 컬럼 목록, dtype, sample values 및 `scope/root/product/file`로 서버가 직접 만든 최대 200행 `sample_profile`을 받아 read-only filter expression 초안, 별도 `sort`, 명시적으로 “이 열만/컬럼만” 요청된 `selected_columns`, 피드백 저장용 `draft_id`를 반환한다. 응답은 `resolved_columns`, `unknown_column_terms`, `resolved_values`, `value_terms`, `warnings`, `feedback_context_used`, `feedback_context`를 포함해 prompt의 컬럼/값 해석과 최근 피드백 반영 여부를 보여준다. `SELECT/FROM/DDL/DML/ORDER BY/세미콜론/없는 컬럼`은 거부하고, 존재하지 않는 선택/정렬 컬럼은 warning과 함께 제거한다.
+- 정렬 의도는 SQL 문자열에 `ORDER BY`를 넣지 않고 `sort: {column, direction, nulls}`로 반환하고 실행한다. 예: `IOFF value 큰순서`는 `item_id = 'IOFF'` filter와 `value desc nulls last` sort로 나뉜다.
+- AI SQL 결과 박스에는 항상 optional `좋아요`/`싫어요` 피드백 버튼을 노출한다. 누르지 않아도 preview, 수정, 재실행 흐름은 막히지 않는다. `싫어요`는 선택 사유 입력을 열 수 있지만 사유는 필수가 아니다.
+- `POST /api/filebrowser/sql/feedback`은 `draft_id`, `rating`, 선택 `reason`, `natural_language`, `sql`, `sort`, `selected_columns`, `columns`, `scope/root/product/file`을 받아 `FLOW_DATA_ROOT/filebrowser_ai_sql_feedback.jsonl`에 append-only로 저장한다.
+- 다음 AI SQL 초안은 같은 사용자, 비슷한 컬럼셋, 비슷한 표현의 최근 `좋아요` 사례 최대 3개와 `싫어요` 사례 최대 3개를 draft context에 넣는다. 반영은 LLM prompt context와 deterministic fallback 힌트에만 사용하며 원본 DB/파일/설정은 자동 수정하지 않는다.
+- 2가지 선택안 UI는 기본으로 표시하지 않는다. 같은 표현에 상반된 피드백이 누적된 낮은 빈도 상황에서만 `A안/B안`을 보여주고, 같은 사용자에게 하루 1회 이하로 제한한다. 선택하지 않아도 계속 사용할 수 있으며, 선택하면 선택 결과만 피드백으로 저장한다.
 - 날짜/시간형 컬럼(`tkout_time`, `update_time`, `measure_time` 등)의 자연어 조건은 월·일·시·분·초를 보존해 quoted ISO literal(`'2024-04-20'`, `'2024-04-20T14:05:00'`)로 만든다. LLM이 `tkout_time >= 2024`처럼 연도만 남기면 초안을 거부하고 deterministic fallback으로 다시 만든다.
 - `wafer_id`/`wf_id` 조건은 원본 저장 타입이 string이어도 숫자 의미로 실행한다. 예: `wafer_id = 3`, `wafer_id >= 3`, `wafer_id IN ('WF03', 10)`은 실행 전에 numeric cast filter로 정규화된다.
 - AI SQL 초안은 SQL 입력창과 컬럼 체크 상태에 반영되며 같은 값으로 즉시 preview 조회를 실행한다. 실행 후에도 SQL식과 선택 컬럼은 화면에 남아 사용자가 수정할 수 있다.
@@ -257,7 +262,8 @@ Agent 탭(Flow-i)이 FileBrowser를 driver로 호출할 때 사용하는 unit ac
 | `filebrowser.lot_progress.latest` | `root_lot_id`, `wafer_id?` | `step_id`, `function_step`, `lot_id`, source path | user | `root_lot_id` |
 | `filebrowser.csv.rules.read` | `csv_name` | `csv_rules` 정의 (filebrowser_settings.json) | user | `csv_name` |
 | `filebrowser.csv.rules.draft` | `file`, `prompt`, `columns`, `sample_rows`, `current_rule` | 저장하지 않은 `csv_rules` 초안 + warnings | manager | `file`, `prompt` |
-| `filebrowser.sql.llm.draft` | `natural_language`, `columns`, `dtypes?`, `sample_rows?`, `preferred_selected_columns?`, `current_sql?`, `scope?`, `root?`, `product?`, `file?` | SQL filter 초안 + 선택 컬럼 + 서버 sample profile + 컬럼/값 후보 + warnings | user | `natural_language`, `columns` |
+| `filebrowser.sql.llm.draft` | `natural_language`, `columns`, `dtypes?`, `sample_rows?`, `preferred_selected_columns?`, `current_sql?`, `scope?`, `root?`, `product?`, `file?` | SQL filter 초안 + sort + 명시 선택 컬럼 + draft_id + 서버 sample profile + 피드백 반영 카운트 + 컬럼/값 후보 + warnings | user | `natural_language`, `columns` |
+| `filebrowser.sql.feedback` | `draft_id`, `rating`, `reason?`, `natural_language?`, `sql?`, `sort?`, `selected_columns?`, `columns?`, `scope/root/product/file?` | append-only 피드백 저장 결과 | user | `draft_id`, `rating` |
 | `filebrowser.multisource.preview` | `prompt`, `product?`, `max_rows?` | `schema_doc`/`column_catalog` 용어 해석, 실제 source 존재 확인, confirmed relation 기반 join preview + `source_ids`, `relation_ids`, `join_keys`, `filters`, `selected_columns`, `sample_rows`, `warnings` | user | confirmed relation 또는 실제 source/column |
 | `filebrowser.cache.lot_progress.refresh` | `target=lot_progress`, `source_root?` | LOT 진행 최신 캐시 refresh 결과 + `s3_sync` | manager | `target` |
 | `filebrowser.cache.lot_progress.status` | `target=lot_progress` | 마지막 성공/시도 시각, freshness, lock state, 제품 수, row 수, `interval_minutes`/`next_refresh_at` | user | `target` |
