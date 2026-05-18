@@ -5332,6 +5332,239 @@ def _select_knob_column(lf: pl.LazyFrame, knob_cols: list[str], prompt: str, lot
     return _pick_knob_by_values(lf, knob_cols), knob_cols[:80]
 
 
+def _knob_ratio_chart_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    up = _upper(text)
+    if "KNOB" not in up and "노브" not in text:
+        return False
+    ratio_terms = (
+        "비율", "분포", "점유", "퍼센트", "%", "ratio", "percent", "percentage",
+        "proportion", "share", "distribution", "count", "별 비중", "별로",
+    )
+    visual_terms = (
+        "차트", "그래프", "그려", "파이", "원형", "막대", "pie", "bar", "chart", "plot", "graph",
+    )
+    return any(t in low or t in text for t in ratio_terms) and any(t in low or t in text for t in visual_terms)
+
+
+def _knob_ratio_chart_type(prompt: str) -> str:
+    text = str(prompt or "")
+    low = text.lower()
+    if any(t in low or t in text for t in ("bar", "막대")):
+        return "bar"
+    if any(t in low or t in text for t in ("pie", "파이", "원형")):
+        return "pie"
+    return "pie"
+
+
+def _knob_ratio_meaningful_terms(prompt: str, knob_cols: list[str]) -> list[str]:
+    terms = _flowi_knob_query_terms(prompt, [], [])
+    cols_u = [_upper(col) for col in knob_cols]
+    out: list[str] = []
+    for term in terms:
+        term_u = _upper(term)
+        if term_u and any(term_u in col_u for col_u in cols_u):
+            out.append(term_u)
+    return out
+
+
+def _handle_knob_ratio_chart(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    if not _knob_ratio_chart_intent(prompt):
+        return {"handled": False}
+    product_hint = _product_hint(prompt, product)
+    if not product_hint:
+        return _flowi_set_inline_type({
+            "handled": True,
+            "intent": "dashboard_knob_ratio_needs_product",
+            "action": "collect_required_fields",
+            "answer": "KNOB 비율 차트는 product 기준 ML_TABLE 전체 wafer에서 계산합니다. 제품명을 알려주세요.",
+            "feature": "dashboard",
+            "missing": ["product"],
+            "pending_prompt": prompt,
+            "slots": {"source": "ML_TABLE", "chart_type": _knob_ratio_chart_type(prompt)},
+        }, "message", prompt=prompt)
+
+    files = _ml_files(product_hint)
+    if not files:
+        return {
+            "handled": True,
+            "intent": "dashboard_knob_ratio_chart",
+            "action": "query_knob_ratio_chart",
+            "answer": f"{product_hint} ML_TABLE parquet을 찾지 못했습니다.",
+            "feature": "dashboard",
+            "filters": {"product": product_hint, "source": "ML_TABLE"},
+        }
+    lf = _scan_parquet(files)
+    cols = _schema_names(lf)
+    product_col = _ci_col(cols, "product", "PRODUCT")
+    root_col = _ci_col(cols, "root_lot_id", "ROOT_LOT_ID")
+    wafer_col = _ci_col(cols, "wafer_id", "WAFER_ID", "wf_id", "WF_ID")
+    lot_wf_col = _ci_col(cols, "lot_wf", "LOT_WF")
+    knob_cols = [c for c in cols if _upper(c).startswith("KNOB_")]
+    if not knob_cols:
+        return {
+            "handled": True,
+            "intent": "dashboard_knob_ratio_chart",
+            "action": "query_knob_ratio_chart",
+            "answer": "ML_TABLE에서 KNOB_* 컬럼을 찾지 못했습니다.",
+            "feature": "dashboard",
+            "filters": {"product": product_hint, "source": "ML_TABLE"},
+        }
+
+    aliases = _product_aliases(product_hint)
+    if aliases and product_col:
+        lf = lf.filter(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+    meaningful_terms = _knob_ratio_meaningful_terms(prompt, knob_cols)
+    if len(knob_cols) > 1 and not meaningful_terms and not _flowi_func_step_token(prompt):
+        choices = [
+            {
+                "id": f"knob_{i}",
+                "label": str(i + 1),
+                "title": col.replace("KNOB_", "", 1),
+                "recommended": i == 0,
+                "description": f"{col} 값별 wafer 비율을 계산합니다.",
+                "prompt": f"{prompt.strip()} {col}",
+            }
+            for i, col in enumerate(knob_cols[:4])
+        ]
+        return {
+            "handled": True,
+            "intent": "dashboard_knob_ratio_needs_knob",
+            "action": "collect_required_fields",
+            "answer": "제품 전체 기준으로 볼 KNOB 컬럼을 하나 선택해야 합니다.",
+            "feature": "dashboard",
+            "missing": ["knob_column"],
+            "clarification": {"question": "어느 KNOB 컬럼 비율을 볼까요?", "choices": choices},
+            "table": {
+                "kind": "knob_column_candidates",
+                "title": f"{product_hint} KNOB column candidates",
+                "placement": "below",
+                "columns": _table_columns(["knob_column"]),
+                "rows": [{"knob_column": c} for c in knob_cols[: max(1, min(40, max_rows * 4))]],
+                "total": len(knob_cols),
+            },
+            "filters": {"product": product_hint, "source": "ML_TABLE", "candidate_count": len(knob_cols)},
+        }
+
+    knob_col, knob_candidates = _select_knob_column(lf, knob_cols, prompt, [], [])
+    if not knob_col:
+        return {"handled": True, "intent": "dashboard_knob_ratio_chart", "action": "query_knob_ratio_chart", "answer": "요청과 맞는 KNOB 컬럼을 정하지 못했습니다.", "feature": "dashboard"}
+
+    exprs = [pl.col(knob_col).cast(_STR, strict=False).alias("knob_value")]
+    if root_col and wafer_col:
+        exprs.append(_lot_wf_expr(root_col, wafer_col).alias("_wafer_key"))
+    elif lot_wf_col:
+        exprs.append(pl.col(lot_wf_col).cast(_STR, strict=False).alias("_wafer_key"))
+    try:
+        scoped = (
+            lf.select(exprs)
+            .filter(
+                pl.col("knob_value").is_not_null()
+                & (pl.col("knob_value").str.strip_chars() != "")
+                & (~pl.col("knob_value").str.to_lowercase().is_in(["none", "null", "nan"]))
+            )
+        )
+        if "_wafer_key" in scoped.collect_schema().names():
+            scoped = (
+                scoped
+                .filter(pl.col("_wafer_key").is_not_null() & (pl.col("_wafer_key").str.strip_chars() != ""))
+                .group_by("_wafer_key")
+                .agg(pl.col("knob_value").first().alias("knob_value"))
+            )
+        df = (
+            scoped
+            .group_by("knob_value")
+            .agg(pl.len().alias("count"))
+            .sort(["count", "knob_value"], descending=[True, False])
+            .collect()
+        )
+    except Exception as e:
+        logger.warning("flowi knob ratio chart failed: %s", e)
+        return {"handled": True, "intent": "dashboard_knob_ratio_chart", "action": "query_knob_ratio_chart", "answer": f"KNOB 비율 차트 집계 실패: {e}", "feature": "dashboard"}
+
+    rows = df.to_dicts()
+    total = sum(int(r.get("count") or 0) for r in rows)
+    for row in rows:
+        count = int(row.get("count") or 0)
+        row["count"] = count
+        row["percent"] = round(count * 100.0 / total, 2) if total else 0.0
+        row["knob_column"] = knob_col
+    chart_type = _knob_ratio_chart_type(prompt)
+    display_name = knob_col.replace("KNOB_", "", 1)
+    groups = [
+        {
+            "label": _text(row.get("knob_value")) or "(empty)",
+            "value": row.get("count") or 0,
+            "count": row.get("count") or 0,
+            "percent": row.get("percent") or 0,
+        }
+        for row in rows
+    ]
+    chart_config = {
+        "chart_type": chart_type,
+        "title": f"{product_hint} {display_name} KNOB 비율",
+        "product": product_hint,
+        "source_type": "ML_TABLE",
+        "x_col": "knob_value",
+        "y_expr": "count",
+        "value_col": "count",
+        "label_col": "knob_value",
+        "percent_col": "percent",
+    }
+    answer = f"{product_hint} ML_TABLE 전체 wafer 기준으로 {display_name} 값별 비율을 계산했습니다. 총 {total}개 wafer 기준입니다."
+    if rows:
+        top = rows[0]
+        answer += f" 가장 큰 값은 {top.get('knob_value') or '(empty)'} {top.get('count')}건({top.get('percent')}%)입니다."
+    cols_out = ["knob_column", "knob_value", "count", "percent"]
+    return {
+        "handled": True,
+        "intent": "dashboard_knob_ratio_chart",
+        "action": "query_knob_ratio_chart",
+        "answer": answer,
+        "feature": "dashboard",
+        "slots": {"product": product_hint, "knob_column": knob_col, "chart_type": chart_type},
+        "source_ids": [f"ML_TABLE_{product_hint}"],
+        "chart_result": {
+            "ok": True,
+            "kind": "knob_ratio_chart",
+            "chart_type": chart_type,
+            "title": chart_config["title"],
+            "groups": groups,
+            "total": total,
+            "x_label": f"{display_name} value",
+            "y_label": "wafer count",
+            "knob_column": knob_col,
+            "source": "ML_TABLE",
+            "sources": {"ml_table_file_count": len(files), "knob_column": knob_col, "scope": "product_all_wafers"},
+            "chart_config": chart_config,
+        },
+        "chart_config": chart_config,
+        "table": {
+            "kind": "knob_ratio_summary",
+            "title": f"{product_hint} {display_name} ratio",
+            "placement": "below",
+            "columns": _table_columns(cols_out),
+            "rows": [{k: r.get(k, "") for k in cols_out} for r in rows[: max(1, min(120, max_rows * 8))]],
+            "total": len(rows),
+            "source": "ML_TABLE",
+        },
+        "filters": {
+            "product": product_hint,
+            "source": "ML_TABLE",
+            "scope": "product_all_wafers",
+            "knob_column": knob_col,
+            "knob_candidates": knob_candidates[:12],
+            "wafer_total": total,
+        },
+        "term_resolution": [
+            {"token": product_hint, "meaning": "product 기준", "wiki_refs": [f"schema:ML_TABLE_{product_hint}"], "query_filter": f"product in {sorted(aliases) if aliases else [product_hint]}", "status": "resolved"},
+            {"token": display_name, "meaning": "KNOB_* 컬럼", "wiki_refs": ["schema:KNOB_*"], "query_filter": f"column == {knob_col}", "status": "resolved"},
+            {"token": chart_type, "meaning": "Home inline Plotly chart", "wiki_refs": ["ui:chart_result"], "query_filter": f"chart_type={chart_type}", "status": "resolved"},
+        ],
+    }
+
+
 def _knob_filter_values(prompt: str, values: list[str]) -> list[str]:
     text = str(prompt or "")
     low = text.lower()
@@ -12420,6 +12653,285 @@ def _ppid_tokens(prompt: str) -> list[str]:
     return out[:6]
 
 
+def _flowi_schema_catalog_payload() -> dict[str, Any]:
+    try:
+        data = load_json(PATHS.data_root / "schema_relations.json", {"relations": [], "column_catalog": []})
+    except Exception:
+        data = {"relations": [], "column_catalog": []}
+    if not isinstance(data, dict):
+        return {"relations": [], "column_catalog": []}
+    if not isinstance(data.get("column_catalog"), list):
+        data["column_catalog"] = []
+    return data
+
+
+def _flowi_registered_file_candidates(*, purposes: tuple[str, ...] = (), name_hints: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    payload = _flowi_schema_catalog_payload()
+    purpose_set = {_upper(p) for p in purposes if p}
+    hint_set = {_upper(h).replace(".CSV", "").replace(".PARQUET", "") for h in name_hints if h}
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(path: Path, *, source_id: str = "", purpose: str = "", relation_id: str = "") -> None:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        key = str(resolved)
+        if key in seen or not resolved.is_file() or resolved.suffix.lower() not in {".csv", ".parquet"}:
+            return
+        seen.add(key)
+        candidates.append({
+            "path": resolved,
+            "source_id": source_id or relation_id or resolved.name,
+            "purpose": purpose,
+            "relation_id": relation_id,
+        })
+
+    roots = [PATHS.base_root, PATHS.db_root, PATHS.data_root]
+    for row in payload.get("column_catalog") or []:
+        if not isinstance(row, dict):
+            continue
+        relation_id = str(row.get("relation_id") or "").strip()
+        source_id = str(row.get("source_id") or "").strip()
+        purpose = str(row.get("purpose") or row.get("source_purpose") or "").strip()
+        file_name = str(row.get("file_name") or row.get("source_file") or "").strip()
+        hay = _upper(" ".join([relation_id, source_id, purpose, file_name]))
+        purpose_hit = not purpose_set or _upper(purpose) in purpose_set
+        hint_hit = not hint_set or any(hint and hint in hay for hint in hint_set)
+        if not (purpose_hit and hint_hit):
+            continue
+        raw_path = str(row.get("source_path") or row.get("path") or "").strip()
+        if raw_path:
+            add(Path(raw_path), source_id=source_id, purpose=purpose, relation_id=relation_id)
+        if file_name:
+            rel = Path(file_name.replace("\\", "/")).name
+            for root in roots:
+                add(root / rel, source_id=source_id, purpose=purpose, relation_id=relation_id)
+    for hint in name_hints:
+        rel = Path(str(hint or "").replace("\\", "/")).name
+        if not rel:
+            continue
+        for root in (PATHS.base_root, PATHS.db_root):
+            add(root / rel, source_id=rel, purpose=purposes[0] if purposes else "", relation_id=Path(rel).stem)
+    return candidates
+
+
+def _flowi_scan_registered_table(*, purposes: tuple[str, ...], name_hints: tuple[str, ...]) -> dict[str, Any]:
+    errors: list[str] = []
+    for candidate in _flowi_registered_file_candidates(purposes=purposes, name_hints=name_hints):
+        path = candidate.get("path")
+        if not isinstance(path, Path):
+            continue
+        try:
+            if path.suffix.lower() == ".csv":
+                lf = pl.scan_csv(str(path), infer_schema_length=5000, try_parse_dates=False)
+            elif path.suffix.lower() == ".parquet":
+                lf = pl.scan_parquet(str(path))
+            else:
+                continue
+            return {**candidate, "lf": lf, "columns": _schema_names(lf)}
+        except Exception as e:
+            errors.append(f"{path.name}: {e}")
+    return {"lf": None, "columns": [], "errors": errors}
+
+
+def _knob_rulebook_lookup_intent(prompt: str) -> bool:
+    text = str(prompt or "")
+    low = text.lower()
+    up = _upper(text)
+    if "KNOB" not in up and "노브" not in text:
+        return False
+    if not any(t in low or t in text for t in ("rule", "rulebook", "룰", "규칙", "매칭", "matching")):
+        return False
+    return bool(_ppid_tokens(text) or _step_id_terms_from_prompt(text) or _flowi_func_step_token(text))
+
+
+def _flowi_step_matching_maps(product: str = "") -> dict[str, Any]:
+    src = _flowi_scan_registered_table(purposes=("matching", "lookup_table"), name_hints=("step_matching.csv", "matching_step.csv"))
+    lf = src.get("lf")
+    if lf is None:
+        return {"rows": [], "by_step": {}, "by_function": {}, "source": src}
+    cols = src.get("columns") or []
+    product_col = _ci_col(cols, "product", "PRODUCT")
+    step_col = _ci_col(cols, "step_id", "STEP_ID")
+    func_col = _ci_col(cols, "function_step", "func_step", "FUNCTION_STEP", "FUNC_STEP")
+    if not step_col or not func_col:
+        return {"rows": [], "by_step": {}, "by_function": {}, "source": src}
+    aliases = _product_aliases(product)
+    if aliases and product_col:
+        lf = lf.filter(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+    exprs = [
+        pl.col(product_col).cast(_STR, strict=False).alias("product") if product_col else pl.lit(product).alias("product"),
+        pl.col(step_col).cast(_STR, strict=False).alias("step_id"),
+        pl.col(func_col).cast(_STR, strict=False).alias("function_step"),
+    ]
+    try:
+        rows = lf.select(exprs).drop_nulls(subset=["step_id", "function_step"]).collect().to_dicts()
+    except Exception:
+        rows = []
+    by_step: dict[str, dict[str, Any]] = {}
+    by_function: dict[tuple[str, str], list[str]] = {}
+    for row in rows:
+        step = _upper(row.get("step_id"))
+        func = _upper(row.get("function_step"))
+        prod = _upper(row.get("product"))
+        if step:
+            by_step[step] = row
+        if func:
+            by_function.setdefault((prod, func), []).append(_text(row.get("step_id")))
+            by_function.setdefault(("", func), []).append(_text(row.get("step_id")))
+    return {"rows": rows, "by_step": by_step, "by_function": by_function, "source": src}
+
+
+def _handle_knob_rulebook_lookup(prompt: str, product: str, max_rows: int) -> dict[str, Any]:
+    if not _knob_rulebook_lookup_intent(prompt):
+        return {"handled": False}
+    product_hint = _product_hint(prompt, product)
+    ppids = _ppid_tokens(prompt)
+    step_terms = _step_id_terms_from_prompt(prompt, product=product_hint)
+    if not step_terms and _flowi_func_step_token(prompt):
+        step_terms = [_flowi_func_step_token(prompt)]
+    step_maps = _flowi_step_matching_maps(product_hint)
+    expanded_functions: list[str] = []
+    expanded_step_ids: list[str] = []
+    for term in step_terms:
+        step_hit = step_maps.get("by_step", {}).get(_upper(term))
+        if step_hit:
+            func = _text(step_hit.get("function_step"))
+            if func and func not in expanded_functions:
+                expanded_functions.append(func)
+            sid = _text(step_hit.get("step_id"))
+            if sid and sid not in expanded_step_ids:
+                expanded_step_ids.append(sid)
+    rule_src = _flowi_scan_registered_table(purposes=("rulebook", "lookup_table"), name_hints=("ppid_knob.csv", "knob_ppid.csv"))
+    lf = rule_src.get("lf")
+    if lf is None:
+        return {
+            "handled": True,
+            "intent": "knob_rulebook_lookup",
+            "action": "query_knob_rulebook_rows",
+            "answer": "KNOB rulebook CSV를 찾지 못했습니다. Agent Wiki에서 rulebook 단일 파일을 등록하거나 data root의 ppid_knob.csv를 확인해주세요.",
+            "feature": "knowledge",
+            "filters": {"product": product_hint, "step_terms": step_terms, "ppid": ppids, "errors": rule_src.get("errors") or []},
+        }
+    cols = rule_src.get("columns") or []
+    product_col = _ci_col(cols, "product", "PRODUCT")
+    feature_col = _ci_col(cols, "feature_name", "FEATURE_NAME", "feature", "FEATURE", "knob", "KNOB", "step", "STEP")
+    func_col = _ci_col(cols, "function_step", "func_step", "FUNCTION_STEP", "FUNC_STEP")
+    rule_col = _ci_col(cols, "rule_order", "RULE_ORDER", "order", "ORDER", "priority", "PRIORITY")
+    op_col = _ci_col(cols, "operator", "OPERATOR", "op", "OP")
+    category_col = _ci_col(cols, "category", "CATEGORY", "ppid", "PPID", "rule_category", "RULE_CATEGORY")
+    ppid_col = _ci_col(cols, "ppid", "PPID") or category_col
+    if not (feature_col or func_col or ppid_col):
+        return {
+            "handled": True,
+            "intent": "knob_rulebook_lookup",
+            "action": "query_knob_rulebook_rows",
+            "answer": "KNOB rulebook에서 feature/function_step/ppid 역할 컬럼을 찾지 못했습니다.",
+            "feature": "knowledge",
+            "table": {"kind": "knob_rulebook_lookup", "title": "KNOB rulebook columns", "placement": "below", "columns": _table_columns(["columns"]), "rows": [{"columns": ", ".join(cols[:80])}], "total": 1},
+        }
+    aliases = _product_aliases(product_hint)
+    filters = []
+    if aliases and product_col:
+        filters.append(pl.col(product_col).cast(_STR, strict=False).str.to_uppercase().is_in(sorted(aliases)))
+    if ppids and ppid_col:
+        filters.append(pl.col(ppid_col).cast(_STR, strict=False).str.to_uppercase().is_in([_upper(v) for v in ppids]))
+    step_search_terms = list(dict.fromkeys([*step_terms, *expanded_functions, *expanded_step_ids]))
+    if step_search_terms:
+        expr = None
+        search_cols = [c for c in (feature_col, func_col) if c]
+        for col in search_cols:
+            for term in step_search_terms:
+                term_u = _upper(term)
+                if not term_u:
+                    continue
+                piece = pl.col(col).cast(_STR, strict=False).str.to_uppercase().str.contains(term_u, literal=True)
+                expr = piece if expr is None else (expr | piece)
+        if expr is not None:
+            filters.append(expr)
+    if not filters and not (ppids or step_terms):
+        return {
+            "handled": True,
+            "intent": "knob_rulebook_lookup",
+            "action": "collect_required_fields",
+            "answer": "KNOB rulebook 조회에는 step/function_step 또는 PPID가 필요합니다. 예: `24.0 SORT KNOB 룰 매칭`, `PPID_05_1 어떤 knob rule이야?`",
+            "feature": "knowledge",
+            "missing": ["step_or_ppid"],
+        }
+    for expr in filters:
+        lf = lf.filter(expr)
+    exprs = [
+        pl.col(product_col).cast(_STR, strict=False).alias("product") if product_col else pl.lit(product_hint).alias("product"),
+        pl.col(feature_col).cast(_STR, strict=False).alias("feature_name") if feature_col else pl.lit("").alias("feature_name"),
+        pl.col(func_col).cast(_STR, strict=False).alias("function_step") if func_col else pl.lit("").alias("function_step"),
+        pl.col(rule_col).cast(_STR, strict=False).alias("rule_order") if rule_col else pl.lit("").alias("rule_order"),
+        pl.col(op_col).cast(_STR, strict=False).alias("operator") if op_col else pl.lit("").alias("operator"),
+        pl.col(category_col).cast(_STR, strict=False).alias("category") if category_col else pl.lit("").alias("category"),
+        pl.col(ppid_col).cast(_STR, strict=False).alias("ppid") if ppid_col else pl.lit("").alias("ppid"),
+    ]
+    try:
+        rows = lf.select(exprs).limit(max(1, min(500, max_rows * 40))).collect().to_dicts()
+    except Exception as e:
+        logger.warning("flowi knob rulebook lookup failed: %s", e)
+        return {"handled": True, "intent": "knob_rulebook_lookup", "action": "query_knob_rulebook_rows", "answer": f"KNOB rulebook 조회 실패: {e}", "feature": "knowledge"}
+    func_map = step_maps.get("by_function") or {}
+    for row in rows:
+        func = _upper(row.get("function_step"))
+        prod = _upper(row.get("product"))
+        step_ids = list(dict.fromkeys([*(func_map.get((prod, func), []) or []), *(func_map.get(("", func), []) or [])]))
+        row["step_ids"] = ", ".join(step_ids[:12])
+        row["step_id_expansion_source"] = _text((step_maps.get("source") or {}).get("source_id") or Path(str((step_maps.get("source") or {}).get("path") or "step_matching.csv")).name)
+    cols_out = ["product", "feature_name", "function_step", "step_ids", "rule_order", "operator", "category", "ppid"]
+    if rows:
+        first = rows[0]
+        answer = (
+            f"KNOB rulebook에서 {len(rows)}개 행을 찾았습니다. "
+            f"대표: {first.get('feature_name') or '-'} / {first.get('function_step') or '-'} / {first.get('ppid') or first.get('category') or '-'}."
+        )
+    else:
+        answer = "조건에 맞는 KNOB rulebook 행을 찾지 못했습니다."
+    rule_source_id = _text(rule_src.get("source_id") or Path(str(rule_src.get("path") or "ppid_knob.csv")).name)
+    step_source_id = _text((step_maps.get("source") or {}).get("source_id") or Path(str((step_maps.get("source") or {}).get("path") or "step_matching.csv")).name)
+    return {
+        "handled": True,
+        "intent": "knob_rulebook_lookup",
+        "action": "query_knob_rulebook_rows",
+        "answer": answer,
+        "feature": "knowledge",
+        "source_ids": [sid for sid in (rule_source_id, step_source_id) if sid],
+        "table": {
+            "kind": "knob_rulebook_lookup",
+            "title": "Matched KNOB rulebook rows",
+            "placement": "below",
+            "columns": _table_columns(cols_out),
+            "rows": [{k: r.get(k, "") for k in cols_out} for r in rows],
+            "total": len(rows),
+            "source": "ppid_knob.csv",
+        },
+        "filters": {
+            "product": product_hint,
+            "step_terms": step_terms,
+            "expanded_functions": expanded_functions,
+            "expanded_step_ids": expanded_step_ids,
+            "ppid": ppids,
+            "rulebook_file": _path_tail(rule_src.get("path")) if isinstance(rule_src.get("path"), Path) else "",
+            "step_matching_file": _path_tail((step_maps.get("source") or {}).get("path")) if isinstance((step_maps.get("source") or {}).get("path"), Path) else "",
+            "row_count": len(rows),
+            "search_conditions": {
+                "product": product_hint or "(all)",
+                "step_or_function_step_contains": step_search_terms,
+                "ppid": ppids,
+            },
+        },
+        "term_resolution": [
+            {"token": "KNOB rulebook", "meaning": "ppid_knob.csv 등록 source 또는 fallback 파일", "wiki_refs": [rule_source_id], "query_filter": f"source={rule_source_id}", "status": "resolved"},
+            {"token": "function_step", "meaning": "step_matching.csv로 step_id 후보 확장", "wiki_refs": [step_source_id], "query_filter": f"expanded={expanded_functions or expanded_step_ids}", "status": "resolved"},
+        ],
+    }
+
+
 def _files_matching_prompt_terms(files: list[Path], prompt: str, lots: list[str], product: str = "") -> list[Path]:
     terms = _flowi_report_terms(prompt, lots, product)
     if not terms:
@@ -17287,7 +17799,7 @@ def _handle_flowi_query_core(
         process_out = _handle_product_process_id_lookup(prompt, product, max_rows)
         if process_out.get("handled"):
             return process_out
-        for handler in (_handle_inline_item_lookup, _handle_ppid_knob_lookup, _handle_index_form_lookup):
+        for handler in (_handle_inline_item_lookup, _handle_knob_rulebook_lookup, _handle_ppid_knob_lookup, _handle_index_form_lookup):
             meta_out = handler(prompt, product, max_rows)
             if meta_out.get("handled"):
                 return meta_out
@@ -17323,6 +17835,9 @@ def _handle_flowi_query_core(
         if composite_out.get("handled"):
             return _augment_dashboard_tool(composite_out, prompt, product=product, username=username)
     if allowed_keys is None or "dashboard" in allowed_keys:
+        knob_ratio_chart_out = _handle_knob_ratio_chart(prompt, product, max_rows)
+        if knob_ratio_chart_out.get("handled"):
+            return _augment_dashboard_tool(knob_ratio_chart_out, prompt, product=product, username=username)
         box_chart_out = _handle_inline_box_chart(prompt, product, max_rows)
         if box_chart_out.get("handled"):
             return _augment_dashboard_tool(box_chart_out, prompt, product=product, username=username)
@@ -18095,6 +18610,21 @@ def _flowi_trace_feature_api_calls(tool: dict[str, Any]) -> list[dict[str, Any]]
             callee="_flowi_progress_for_lot_rows",
             purpose="검색된 lot_wf 후보를 최신 FAB 진행 step과 연결",
             payload={"join_key": "lot_wf"},
+        )
+    elif action == "query_knob_rulebook_rows" or intent == "knob_rulebook_lookup":
+        add(
+            name="KNOB rulebook lookup",
+            method="internal",
+            path="registered rulebook source or data/Fab/ppid_knob.csv + step_matching.csv",
+            callee="_handle_knob_rulebook_lookup",
+            purpose="승인 등록된 rulebook/matching catalog 또는 fallback CSV에서 KNOB rule 행과 step_id 확장 근거 조회",
+            payload={
+                "source_ids": tool.get("source_ids") or [],
+                "product": filters.get("product") or "",
+                "step_terms": filters.get("step_terms") or [],
+                "ppid": filters.get("ppid") or [],
+                "row_count": filters.get("row_count") or 0,
+            },
         )
     elif action == "query_tracker_lot_purpose" or intent == "tracker_lot_purpose_lookup":
         add(

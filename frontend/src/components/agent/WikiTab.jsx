@@ -342,6 +342,15 @@ export default function WikiTab({ user, canManage }) {
   const [lint, setLint] = useState(null);
   const [wikiSearch, setWikiSearch] = useState("");
   const [wikiForm, setWikiForm] = useState({ title: "", tags: "", content: "" });
+  const [singleFileForm, setSingleFileForm] = useState({
+    root: "base_root",
+    file: "ppid_knob.csv",
+    purpose: "rulebook",
+    key_columns: "product, feature_name, function_step, category",
+    output_columns: "operator, rule_order",
+    title: "",
+  });
+  const [singleFilePreview, setSingleFilePreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
 
@@ -504,6 +513,51 @@ export default function WikiTab({ user, canManage }) {
         setMsg("lint 완료");
       })
       .catch((e) => setMsg("lint 오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const singleFilePayload = () => ({
+    source: {
+      source_type: "file",
+      root: singleFileForm.root,
+      file: singleFileForm.file.trim(),
+      label: singleFileForm.title.trim() || singleFileForm.file.trim().replace(/\.[^.]+$/, ""),
+    },
+    sample_rows: 20,
+  });
+
+  const previewSingleFile = () => {
+    if (!singleFileForm.file.trim()) {
+      setMsg("등록할 파일명을 입력하세요.");
+      return;
+    }
+    setBusy(true);
+    postJson("/api/agent/schema_doc/single-file/preview", singleFilePayload())
+      .then((d) => {
+        setSingleFilePreview(d.source || null);
+        setMsg(`단일 파일 미리보기: ${d.source?.source_id || "-"}`);
+      })
+      .catch((e) => setMsg("단일 파일 미리보기 오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
+  const registerSingleFile = () => {
+    if (!canManage || !singleFileForm.file.trim()) return;
+    const splitCols = (value) => String(value || "").split(",").map((x) => x.trim()).filter(Boolean);
+    setBusy(true);
+    postJson("/api/agent/schema_doc/single-file/register", {
+      ...singleFilePayload(),
+      purpose: singleFileForm.purpose,
+      key_columns: splitCols(singleFileForm.key_columns),
+      output_columns: splitCols(singleFileForm.output_columns),
+      title: singleFileForm.title.trim(),
+    })
+      .then((d) => {
+        setSingleFilePreview(d.source || null);
+        setMsg(`실행 지식 등록됨: ${d.doc?.doc_id || d.source?.source_id || "-"}`);
+        return Promise.all([loadWiki(), load()]);
+      })
+      .catch((e) => setMsg("실행 지식 등록 오류: " + (e.message || e)))
       .finally(() => setBusy(false));
   };
 
@@ -758,6 +812,68 @@ export default function WikiTab({ user, canManage }) {
                     ]}
                   />
                 </div>
+              </div>
+            </div>
+          </Panel>
+
+          <Panel
+            title="단일 파일 실행 지식"
+            subtitle="관리자가 파일과 컬럼 역할을 확인한 뒤 schema catalog와 Wiki에 등록합니다."
+            right={<div style={{ display: "flex", gap: 6, alignItems: "center" }}><Pill tone={canManage ? "accent" : "neutral"}>{canManage ? "approve" : "read only"}</Pill></div>}
+          >
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.95fr) minmax(300px,0.55fr)", gap: 12, alignItems: "start" }}>
+              <div style={{ display: "grid", gap: 8 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "130px minmax(0,1fr) 150px", gap: 8 }}>
+                  <Field label="Root">
+                    <select value={singleFileForm.root} onChange={(e) => setSingleFileForm({ ...singleFileForm, root: e.target.value })} style={{ ...formControlStyle, width: "100%" }}>
+                      <option value="base_root">base_root</option>
+                      <option value="db_root">db_root</option>
+                    </select>
+                  </Field>
+                  <Field label="파일명">
+                    <input value={singleFileForm.file} onChange={(e) => setSingleFileForm({ ...singleFileForm, file: e.target.value })} style={{ ...formControlStyle, width: "100%", boxSizing: "border-box" }} placeholder="ppid_knob.csv" />
+                  </Field>
+                  <Field label="용도">
+                    <select value={singleFileForm.purpose} onChange={(e) => setSingleFileForm({ ...singleFileForm, purpose: e.target.value })} style={{ ...formControlStyle, width: "100%" }}>
+                      <option value="rulebook">rulebook</option>
+                      <option value="matching">matching</option>
+                      <option value="schema_doc">schema_doc</option>
+                      <option value="lookup_table">lookup_table</option>
+                    </select>
+                  </Field>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8 }}>
+                  <Field label="Key 컬럼">
+                    <input value={singleFileForm.key_columns} onChange={(e) => setSingleFileForm({ ...singleFileForm, key_columns: e.target.value })} style={{ ...formControlStyle, width: "100%", boxSizing: "border-box" }} placeholder="product, step_id" />
+                  </Field>
+                  <Field label="Output 컬럼">
+                    <input value={singleFileForm.output_columns} onChange={(e) => setSingleFileForm({ ...singleFileForm, output_columns: e.target.value })} style={{ ...formControlStyle, width: "100%", boxSizing: "border-box" }} placeholder="function_step, ppid" />
+                  </Field>
+                </div>
+                <Field label="Wiki 제목">
+                  <input value={singleFileForm.title} onChange={(e) => setSingleFileForm({ ...singleFileForm, title: e.target.value })} style={{ ...formControlStyle, width: "100%", boxSizing: "border-box" }} placeholder="SORT KNOB rulebook" />
+                </Field>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Button onClick={previewSingleFile} disabled={busy || !singleFileForm.file.trim()}>미리보기</Button>
+                  {canManage && <Button variant="primary" onClick={registerSingleFile} disabled={busy || !singleFileForm.file.trim()}>승인 등록</Button>}
+                </div>
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <Pill tone="info">{singleFilePreview?.source_id || "source 미확인"}</Pill>
+                  <Pill tone="neutral">{singleFilePreview?.row_count ?? "-"} rows</Pill>
+                  <Pill tone="neutral">{(singleFilePreview?.columns || []).length} columns</Pill>
+                </div>
+                <DataTable
+                  rows={(singleFilePreview?.columns || []).slice(0, 24).map((col) => ({ column: col, samples: listText(singleFilePreview?.sample_values?.[col] || [], 4), dtype: singleFilePreview?.dtypes?.[col] || "" }))}
+                  empty="미리보기할 파일을 선택하세요."
+                  maxHeight={260}
+                  columns={[
+                    { key: "column", label: "column", render: (r) => <KoreanClamp lines={1}>{r.column}</KoreanClamp> },
+                    { key: "dtype", label: "dtype", width: 86 },
+                    { key: "samples", label: "samples", render: (r) => <KoreanClamp lines={1}>{r.samples}</KoreanClamp> },
+                  ]}
+                />
               </div>
             </div>
           </Panel>

@@ -97,33 +97,26 @@ schema_type: default_agent_wiki_seed_v1
     assert "사용자가 수정한 운영 지식입니다." in runtime_path.read_text(encoding="utf-8")
 
 
-def test_actual_default_agent_wiki_seed_contains_gaa_docs(tmp_path, monkeypatch):
+def test_actual_default_agent_wiki_seed_ships_no_background_docs(tmp_path, monkeypatch):
     _isolate_knowledge(tmp_path, monkeypatch)
 
     out = kv.ensure_default_agent_wiki_seed(actor="test")
-    doc_ids = {row["doc_id"] for row in out["docs"]}
 
-    assert "default_agent_wiki_seed_framework" in doc_ids
-    assert "gaa_device_evolution_and_purpose" in doc_ids
-    assert "semiconductor_eight_major_processes_for_gaa" in doc_ids
-    assert "gaa_nanosheet_process_flow_and_failure_modes" in doc_ids
-    assert "gaa_device_geometry_and_multi_vt_design" in doc_ids
-    assert "gaa_beol_bspdn_power_delivery_basics" in doc_ids
+    assert out["installed"] == 0
+    assert out["docs"] == []
+    assert kv.list_docs(limit=1000) == []
 
 
-def test_default_agent_wiki_seed_docs_are_grouped_in_graph(tmp_path, monkeypatch):
+def test_default_agent_wiki_seed_graph_hub_is_absent_when_no_seed_docs(tmp_path, monkeypatch):
     _isolate_knowledge(tmp_path, monkeypatch)
 
     kv.ensure_default_agent_wiki_seed(actor="test")
     graph = kv.rebuild_graph()
     nodes = {row["id"]: row for row in graph["nodes"]}
-    edges = {(row["source"], row["target"], row["relation"]) for row in graph["edges"]}
 
     assert graph["schema_version"] == kv.GRAPH_SCHEMA_VERSION
-    assert nodes["concept:default_agent_wiki_seed"]["kind"] == "default_seed"
-    assert nodes["doc:default_agent_wiki_seed_framework"]["is_default_seed"] is True
-    assert nodes["doc:default_agent_wiki_seed_framework"]["schema_type"] == kv.DEFAULT_AGENT_WIKI_SEED_SCHEMA
-    assert ("concept:default_agent_wiki_seed", "doc:default_agent_wiki_seed_framework", "contains") in edges
+    assert "concept:default_agent_wiki_seed" not in nodes
+    assert all(not str(node_id).startswith("doc:gaa_") for node_id in nodes)
 
 
 def test_get_graph_rebuilds_stale_cached_wiki_docs(tmp_path, monkeypatch):

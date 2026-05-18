@@ -335,7 +335,7 @@ def _normalize_schema_catalog_stub(stub: Any, *, relation_id: str = "", known: d
     if not dtype:
         dtype = _infer_schema_dtype(" ".join(raw_names + _schema_value_list(stub.get("sample_values") or [])))
     canonical_alias = _schema_column_name(stub.get("canonical_alias") or column) or column
-    return {
+    row = {
         "relation_id": rel,
         "column": column,
         "raw_names": raw_names,
@@ -346,6 +346,29 @@ def _normalize_schema_catalog_stub(stub: Any, *, relation_id: str = "", known: d
         "sample_values": _schema_value_list(stub.get("sample_values") or stub.get("samples") or [], limit=20),
         "wiki_doc_id": str(stub.get("wiki_doc_id") or "").strip(),
     }
+    passthrough_keys = (
+        "source_id",
+        "source_type",
+        "file_name",
+        "source_file",
+        "source_path",
+        "purpose",
+        "source_purpose",
+        "role",
+        "column_role",
+        "source_checksum",
+        "source_row_count",
+        "registered_at",
+        "registered_by",
+        "approved_by",
+        "description",
+    )
+    for key in passthrough_keys:
+        value = stub.get(key)
+        if value in (None, "", [], {}):
+            continue
+        row[key] = value
+    return row
 
 
 def _heuristic_schema_doc_payload(body: str, *, hint_relation_id: str = "", hint_columns: list[str] | None = None, known_relations: list[Any] | None = None) -> dict[str, Any]:
@@ -824,13 +847,92 @@ def _schema_catalog_terms(row: dict[str, Any]) -> list[str]:
     return uniq[:24]
 
 
+_TERM_ALIAS_GROUPS = (
+    (
+        "root_lot_id", "root lot id", "rootlotid", "root lot", "rootlot",
+        "RootLotID", "ROOT_LOT_ID", "루트랏아이디", "루트랏 id", "루트랏",
+        "루트 lot id", "루트롯아이디", "루트롯",
+    ),
+    (
+        "wafer_id", "wafer id", "waferid", "wafer", "WAFER_ID", "WaferID",
+        "웨이퍼아이디", "웨이퍼 id", "웨이퍼번호", "웨이퍼",
+    ),
+    (
+        "lot_wf", "lot wf", "lot wafer", "lotwafer", "LOT_WF",
+        "랏웨이퍼", "lot wafer key",
+    ),
+    (
+        "step_id", "step id", "stepid", "STEP_ID", "StepID",
+        "스텝아이디", "스텝 id", "공정스텝", "스텝",
+    ),
+    (
+        "function_step", "function step", "functionstep", "func_step", "funcstep",
+        "기능스텝", "펑션스텝", "업무스텝",
+    ),
+    ("knob", "KNOB", "노브", "split knob", "스플릿노브"),
+    ("issue", "이슈", "문제", "불량이슈"),
+    ("meeting", "회의", "미팅", "회의내용", "회의록"),
+)
+
+_KOREAN_PARTICLES = ("으로", "로", "은", "는", "이", "가", "을", "를", "의", "와", "과", "도", "만")
+
+
+def _basic_search_forms(value: Any) -> set[str]:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return set()
+    spaced = re.sub(r"[\s_\-./]+", " ", raw).strip()
+    compact = re.sub(r"[^a-z0-9가-힣]+", "", raw)
+    forms = {raw, spaced, compact}
+    if compact:
+        for particle in _KOREAN_PARTICLES:
+            if compact.endswith(particle) and len(compact) > len(particle) + 1:
+                forms.add(compact[: -len(particle)])
+    return {x for x in forms if x}
+
+
+def _search_forms(value: Any) -> set[str]:
+    forms = _basic_search_forms(value)
+    expanded = set(forms)
+    for group in _TERM_ALIAS_GROUPS:
+        alias_forms: set[str] = set()
+        for alias in group:
+            alias_forms.update(_basic_search_forms(alias))
+        if forms.intersection(alias_forms) or any(
+            len(form) >= 4 and any(form in alias or alias in form for alias in alias_forms)
+            for form in forms
+        ):
+            expanded.update(alias_forms)
+    return expanded
+
+
+def _matches_search_query(query: str, haystack: str, extra_terms: list[str] | tuple[str, ...] = ()) -> bool:
+    q = str(query or "").strip()
+    if not q:
+        return True
+    hay = str(haystack or "")
+    q_l = q.lower()
+    hay_l = hay.lower()
+    if q_l and q_l in hay_l:
+        return True
+    q_forms = _search_forms(q)
+    hay_compact = re.sub(r"[^a-z0-9가-힣]+", "", hay_l)
+    if any(len(form) >= 4 and form in hay_compact for form in q_forms):
+        return True
+    hay_forms: set[str] = set()
+    for term in extra_terms:
+        hay_forms.update(_search_forms(term))
+    if q_forms.intersection(hay_forms):
+        return True
+    return False
+
+
 def lookup_term(term: str, limit: int = 30) -> dict[str, Any]:
     """Resolve a wiki/schema term to column catalog rows and schema docs."""
     ensure_dirs()
     query = str(term or "").strip()
     if not query:
         return {"term": "", "columns": [], "docs": [], "graph": {"nodes": [], "edges": []}}
-    query_l = query.lower()
     limit = max(1, min(int(limit or 30), 100))
     payload = _schema_registry_payload()
     columns: list[dict[str, Any]] = []
@@ -840,8 +942,8 @@ def lookup_term(term: str, limit: int = 30) -> dict[str, Any]:
             continue
         terms = [str(row.get("relation_id") or ""), *_schema_catalog_terms(row)]
         hay = " ".join(terms).lower()
-        exact = any(query_l == str(t or "").strip().lower() for t in terms)
-        if not exact and query_l not in hay:
+        exact = any(_search_forms(query).intersection(_search_forms(t)) for t in terms)
+        if not exact and not _matches_search_query(query, hay, terms):
             continue
         key = _schema_catalog_key(row)
         if not all(key) or key in seen_cols:
@@ -867,19 +969,23 @@ def lookup_term(term: str, limit: int = 30) -> dict[str, Any]:
         doc_id = str(row.get("doc_id") or "").strip()
         if not doc_id or doc_id in docs_by_id:
             continue
+        doc = get_doc(doc_id) or row
+        fm = doc.get("frontmatter") if isinstance(doc.get("frontmatter"), dict) else {}
         refs = {str(x or "").strip().lower() for x in (row.get("column_refs") or [])}
-        relation = str(row.get("relation_id") or "").strip().lower()
+        if isinstance(fm.get("column_refs"), list):
+            refs.update(str(x or "").strip().lower() for x in (fm.get("column_refs") or []))
+        relation = str(row.get("relation_id") or fm.get("relation_id") or "").strip().lower()
         hay = " ".join([
             doc_id,
-            str(row.get("title") or ""),
-            str(row.get("summary") or ""),
+            str(doc.get("title") or row.get("title") or ""),
+            str(doc.get("summary") or row.get("summary") or ""),
+            str(doc.get("body") or ""),
             relation,
             " ".join(refs),
-            " ".join(map(str, row.get("tags") or [])),
+            " ".join(map(str, doc.get("tags") or row.get("tags") or [])),
         ]).lower()
-        if query_l not in hay and not (column_refs and refs.intersection(column_refs)):
+        if not _matches_search_query(query, hay, tuple(refs)) and not (column_refs and refs.intersection(column_refs)):
             continue
-        doc = get_doc(doc_id) or row
         docs_by_id[doc_id] = doc
         if len(docs_by_id) >= limit:
             break
@@ -1653,12 +1759,12 @@ def _refresh_wiki_index() -> list[dict[str, Any]]:
 
 def list_docs(kind: str = "", q: str = "", limit: int = 200) -> list[dict[str, Any]]:
     docs = _refresh_wiki_index()
-    q_l = q.strip().lower()
+    query = str(q or "").strip()
     out = []
     for row in sorted(docs, key=lambda x: str(x.get("updated_at") or ""), reverse=True):
         if kind and row.get("kind") != kind:
             continue
-        if q_l:
+        if query:
             hay = " ".join([
                 str(row.get("doc_id") or ""),
                 str(row.get("title") or ""),
@@ -1669,7 +1775,7 @@ def list_docs(kind: str = "", q: str = "", limit: int = 200) -> list[dict[str, A
                 str(row.get("relation_id") or ""),
                 " ".join(map(str, row.get("column_refs") or [])),
             ]).lower()
-            if q_l not in hay:
+            if not _matches_search_query(query, hay, tuple(str(x) for x in (row.get("column_refs") or []))):
                 continue
         out.append(row)
         if len(out) >= max(1, min(limit, 1000)):
@@ -2008,12 +2114,13 @@ def search_agent_wiki(q: str, limit: int = 30) -> list[dict[str, Any]]:
             str(doc.get("body") or ""),
         ]).lower()
         exact_score = hay.count(q_l)
-        token_hits = [term for term in terms if term and term in hay]
-        if not exact_score and not token_hits:
+        normalized_hit = _matches_search_query(q_l, hay)
+        token_hits = [term for term in terms if term and _matches_search_query(term, hay)]
+        if not exact_score and not normalized_hit and not token_hits:
             continue
         title_l = str(row.get("title") or "").lower()
         tag_l = " ".join(map(str, row.get("tags") or [])).lower()
-        score = exact_score * 4
+        score = (exact_score or (1 if normalized_hit else 0)) * 4
         score += sum(1 for term in token_hits)
         score += sum(3 for term in token_hits if term in title_l)
         score += sum(2 for term in token_hits if term in tag_l)

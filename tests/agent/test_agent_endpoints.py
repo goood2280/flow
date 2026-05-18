@@ -419,3 +419,50 @@ def test_schema_relation_scan_discovers_db_and_single_files(tmp_path, monkeypatc
     assert out["discovered_count"] >= 2
     assert any({c["left_source_type"], c["right_source_type"]} == {"db", "file"} for c in out["candidates"])
     assert not relation_file.exists()
+
+
+def test_schema_single_file_registers_vehicle_matching_catalog(tmp_path, monkeypatch):
+    _install_agent_wiki_tmp(monkeypatch, tmp_path)
+    db_root = tmp_path / "db"
+    db_root.mkdir(parents=True)
+    vehicle_file = db_root / "Vehicle_matching.csv"
+    vehicle_file.write_text(
+        "step_id,function_id,vehicle_name\n"
+        "AA100200,FN_SORT,Sort vehicle\n",
+        encoding="utf-8",
+    )
+    flow_data = tmp_path / "flow-data"
+    relation_file = tmp_path / "schema_relations.json"
+    monkeypatch.setattr(agent, "PATHS", SimpleNamespace(data_root=flow_data, db_root=db_root, base_root=db_root))
+    monkeypatch.setattr(agent, "SCHEMA_RELATION_FILE", relation_file)
+    monkeypatch.setattr(agent.kv, "SCHEMA_RELATION_FILE", relation_file)
+
+    preview = agent.schema_doc_single_file_preview(
+        agent.SchemaSingleFilePreviewReq(
+            source=agent.SchemaRelationSource(source_type="file", root="db_root", file="Vehicle_matching.csv", label="Vehicle_matching"),
+            sample_rows=5,
+        ),
+        req(role="user"),
+    )
+
+    assert preview["ok"] is True
+    assert preview["preview_only"] is True
+    assert preview["source"]["row_count"] == 1
+    assert "function_id" in preview["source"]["columns"]
+
+    registered = agent.schema_doc_single_file_register(
+        agent.SchemaSingleFileRegisterReq(
+            source=agent.SchemaRelationSource(source_type="file", root="db_root", file="Vehicle_matching.csv", label="Vehicle_matching"),
+            purpose="matching",
+            key_columns=["step_id"],
+            output_columns=["function_id"],
+            title="Vehicle matching",
+        ),
+        req(role="admin", username="engineer"),
+    )
+
+    assert registered["ok"] is True
+    assert registered["raw_sources_mutated"] is False
+    lookup = agent.kv.lookup_term("function_id")
+    assert any(row.get("relation_id") == "Vehicle_matching" and row.get("column") == "function_id" for row in lookup["columns"])
+    assert relation_file.exists()

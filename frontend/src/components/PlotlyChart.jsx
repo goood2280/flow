@@ -54,6 +54,7 @@ export function FlowPlotlyChart({
   selectionKey = "",
 }) {
   const points = Array.isArray(chart?.points) ? chart.points : [];
+  const groups = Array.isArray(chart?.groups) ? chart.groups : Array.isArray(chart?.slices) ? chart.slices : [];
   const xLabel = cfg.x_label || chart?.x_label || cfg.x_col || chart?.x_col || "X";
   const yLabel = cfg.y_label || chart?.y_label || cfg.y_expr || chart?.y_col || "Y";
   const colorBy = cfg.color_by || chart?.color_by || "";
@@ -67,7 +68,39 @@ export function FlowPlotlyChart({
   const fg = dark ? "#e5e7eb" : "#111827";
   const grid = dark ? "rgba(148,163,184,0.22)" : "rgba(15,23,42,0.12)";
 
-  const { traces, legendCounts } = useMemo(() => {
+  const { traces, legendCounts, categorical } = useMemo(() => {
+    if ((chartType === "pie" || chartType === "donut") && groups.length) {
+      return {
+        categorical: true,
+        legendCounts: groups.map((row) => ({ name: text(row?.label || row?.group || row?.value), count: Number(row?.count ?? row?.value ?? 0) })),
+        traces: [{
+          type: "pie",
+          hole: chartType === "donut" ? 0.46 : 0,
+          labels: groups.map((row) => text(row?.label || row?.group || "(empty)")),
+          values: groups.map((row) => Number(row?.count ?? row?.value ?? 0)),
+          textinfo: "label+percent",
+          hovertemplate: "%{label}<br>count=%{value}<br>%{percent}<extra></extra>",
+          marker: { colors: groups.map((_, idx) => SERIES[idx % SERIES.length]) },
+          sort: false,
+        }],
+      };
+    }
+    if (chartType === "bar" && groups.length && !points.length) {
+      return {
+        categorical: true,
+        legendCounts: groups.map((row) => ({ name: text(row?.label || row?.group || row?.value), count: Number(row?.count ?? row?.value ?? 0) })),
+        traces: [{
+          type: "bar",
+          name: yLabel || "count",
+          x: groups.map((row) => text(row?.label || row?.group || "(empty)")),
+          y: groups.map((row) => Number(row?.count ?? row?.value ?? 0)),
+          text: groups.map((row) => row?.percent != null ? `${row.percent}%` : ""),
+          textposition: "auto",
+          hovertemplate: `${xLabel}: %{x}<br>${yLabel}: %{y}<extra></extra>`,
+          marker: { color: groups.map((_, idx) => SERIES[idx % SERIES.length]), opacity: 0.86 },
+        }],
+      };
+    }
     const buckets = new Map();
     for (const point of points) {
       const raw = colorBy ? colorValue(point) : "";
@@ -121,10 +154,11 @@ export function FlowPlotlyChart({
     return {
       traces: plotTraces,
       legendCounts: entries.map(([name, rows]) => ({ name, count: rows.length })),
+      categorical: false,
     };
-  }, [points, colorBy, chartType, xLabel, yLabel, markerSize, dark, fitOk, fit, fitLabel]);
+  }, [points, groups, colorBy, chartType, xLabel, yLabel, markerSize, dark, fitOk, fit, fitLabel]);
 
-  if (!points.length) {
+  if (!points.length && !groups.length) {
     return <div style={{ minHeight: Math.max(180, height), display: "flex", alignItems: "center", justifyContent: "center", color: dark ? "#9ca3af" : "#64748b", fontSize: 14 }}>차트로 표시할 point가 없습니다.</div>;
   }
 
@@ -141,14 +175,14 @@ export function FlowPlotlyChart({
           margin: { l: 64, r: 22, t: title ? 48 : 20, b: 56 },
           hovermode: "closest",
           dragmode: "pan",
-          xaxis: {
+          xaxis: categorical && (chartType === "pie" || chartType === "donut") ? undefined : {
             title: { text: xLabel, font: { size: 13, color: fg } },
             gridcolor: grid,
             zerolinecolor: grid,
             color: fg,
             automargin: true,
           },
-          yaxis: {
+          yaxis: categorical && (chartType === "pie" || chartType === "donut") ? undefined : {
             title: { text: yLabel, font: { size: 13, color: fg } },
             gridcolor: grid,
             zerolinecolor: grid,

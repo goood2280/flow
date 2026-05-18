@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -163,6 +164,21 @@ class SchemaDocAiUpsertReq(SchemaDocAiDraftReq):
 class SchemaDocScanSourcesReq(BaseModel):
     max_sources: int = 24
     sample_rows: int = 20
+
+
+class SchemaSingleFilePreviewReq(BaseModel):
+    source: SchemaRelationSource = Field(default_factory=SchemaRelationSource)
+    sample_rows: int = 20
+
+
+class SchemaSingleFileRegisterReq(SchemaSingleFilePreviewReq):
+    purpose: str = "lookup_table"
+    key_columns: list[str] = Field(default_factory=list)
+    output_columns: list[str] = Field(default_factory=list)
+    column_roles: dict[str, str] = Field(default_factory=dict)
+    doc_id: str = ""
+    title: str = ""
+    summary: str = ""
 
 
 def _now_iso() -> str:
@@ -334,6 +350,21 @@ def _relation_scan_file(fp: Path) -> pl.LazyFrame:
     raise HTTPException(400, f"Unsupported schema source: {fp.suffix}")
 
 
+def _file_sha256(fp: Path) -> str:
+    h = hashlib.sha256()
+    with fp.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _lazy_row_count(lf: pl.LazyFrame) -> int | None:
+    try:
+        return int(lf.select(pl.len().alias("row_count")).collect().item())
+    except Exception:
+        return None
+
+
 def _relation_dtype_family(dtype: Any) -> str:
     text = str(dtype or "").lower()
     if any(x in text for x in ("int", "float", "decimal", "number")):
@@ -379,7 +410,7 @@ def _relation_canonical_col(name: str) -> str:
         if norm in aliases:
             return canonical
     if norm.endswith("id") and len(norm) > 3:
-        return norm
+        return _schema_column_name(name) or norm
     return ""
 
 
@@ -666,6 +697,12 @@ def _relation_read_source(src: SchemaRelationSource, *, sample_rows: int = 20) -
                 "scanned_dtype": scanned_dtype,
             })
     source_id = _relation_source_id(src, target)
+    row_count = _lazy_row_count(lf)
+    checksum = ""
+    try:
+        checksum = _file_sha256(first) if first.is_file() else ""
+    except Exception:
+        checksum = ""
     return {
         "source_id": source_id,
         "source_type": str(src.source_type or "file").strip().lower(),
@@ -675,6 +712,8 @@ def _relation_read_source(src: SchemaRelationSource, *, sample_rows: int = 20) -
         "file": src.file,
         "resolved_path": str(target),
         "files_scanned": len(files),
+        "row_count": row_count,
+        "checksum": checksum,
         "columns": columns,
         "dtypes": dtypes,
         "key_columns": key_columns,
@@ -1377,6 +1416,163 @@ def schema_doc_scan_sources(req: SchemaDocScanSourcesReq, request: Request):
         "sources": profiles,
         "errors": errors,
         "catalog": catalog,
+        "raw_sources_mutated": False,
+    }
+
+
+_SINGLE_FILE_PURPOSES = {"rulebook", "matching", "schema_doc", "lookup_table"}
+
+
+def _single_file_source(src: SchemaRelationSource) -> SchemaRelationSource:
+    source = src if isinstance(src, SchemaRelationSource) else SchemaRelationSource()
+    source_type = str(source.source_type or "file").strip().lower()
+    if source_type != "file":
+        raise HTTPException(400, "single-file registration only accepts source_type=file")
+    if not str(source.file or "").strip():
+        raise HTTPException(400, "file is required")
+    return SchemaRelationSource(
+        source_type="file",
+        root=source.root or "base_root",
+        file=source.file,
+        label=source.label or Path(str(source.file)).stem,
+    )
+
+
+def _registered_file_columns(req: SchemaSingleFileRegisterReq, profile: dict[str, Any]) -> list[str]:
+    columns = [str(c or "").strip() for c in profile.get("columns") or [] if str(c or "").strip()]
+    by_norm = {_relation_norm_col(c): c for c in columns}
+    selected: list[str] = []
+    for raw in [*(req.key_columns or []), *(req.output_columns or [])]:
+        norm = _relation_norm_col(raw)
+        col = by_norm.get(norm) or str(raw or "").strip()
+        if col and col in columns and col not in selected:
+            selected.append(col)
+    if selected:
+        return selected[:160]
+    return columns[:80]
+
+
+def _single_file_wiki_body(profile: dict[str, Any], purpose: str, key_columns: list[str], output_columns: list[str]) -> str:
+    lines = [
+        "## Source",
+        f"- source_id: {profile.get('source_id') or ''}",
+        f"- file: {profile.get('file') or Path(str(profile.get('resolved_path') or '')).name}",
+        f"- purpose: {purpose}",
+        f"- row_count: {profile.get('row_count') if profile.get('row_count') is not None else '-'}",
+        f"- checksum: {profile.get('checksum') or '-'}",
+        "",
+        "## Approved Roles",
+        "- key_columns: " + (", ".join(key_columns) if key_columns else "-"),
+        "- output_columns: " + (", ".join(output_columns) if output_columns else "-"),
+        "",
+        "## Home Routing Contract",
+        "- Home Flow-i may use this registered source for deterministic lookup only.",
+        "- Raw file data is not modified by registration.",
+        "- If runtime wiki/schema already has a matching doc_id, normal wiki save semantics preserve editability.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+@router.post("/schema_doc/single-file/preview")
+def schema_doc_single_file_preview(req: SchemaSingleFilePreviewReq, request: Request):
+    current_user(request)
+    source = _single_file_source(req.source)
+    profile = _relation_read_source(source, sample_rows=req.sample_rows)
+    return {
+        "ok": True,
+        "preview_only": True,
+        "source": profile,
+        "raw_sources_mutated": False,
+    }
+
+
+@router.post("/schema_doc/single-file/register")
+def schema_doc_single_file_register(req: SchemaSingleFileRegisterReq, request: Request):
+    me = _require_agent_wiki_admin(request)
+    purpose = str(req.purpose or "lookup_table").strip().lower()
+    if purpose not in _SINGLE_FILE_PURPOSES:
+        raise HTTPException(400, f"purpose must be one of {', '.join(sorted(_SINGLE_FILE_PURPOSES))}")
+    source = _single_file_source(req.source)
+    profile = _relation_read_source(source, sample_rows=req.sample_rows)
+    relation_id = _profile_relation_id(profile) or _safe_slug(Path(str(profile.get("file") or "")).stem, "single_file")
+    selected_columns = _registered_file_columns(req, profile)
+    key_columns = [c for c in selected_columns if _relation_norm_col(c) in {_relation_norm_col(x) for x in req.key_columns}]
+    output_columns = [c for c in selected_columns if _relation_norm_col(c) in {_relation_norm_col(x) for x in req.output_columns}]
+    if not key_columns and req.key_columns:
+        raise HTTPException(400, "approved key_columns were not found in source")
+    if not output_columns and req.output_columns:
+        raise HTTPException(400, "approved output_columns were not found in source")
+    dtypes = profile.get("dtypes") if isinstance(profile.get("dtypes"), dict) else {}
+    samples = profile.get("sample_values") if isinstance(profile.get("sample_values"), dict) else {}
+    role_by_norm = {_relation_norm_col(k): str(v or "").strip().lower() for k, v in (req.column_roles or {}).items()}
+    key_norms = {_relation_norm_col(c) for c in key_columns}
+    output_norms = {_relation_norm_col(c) for c in output_columns}
+    source_id = str(profile.get("source_id") or "").strip()
+    file_name = str(profile.get("file") or source.file or "").strip()
+    now = _now_iso()
+    stubs: list[dict[str, Any]] = []
+    for col in selected_columns:
+        norm = _relation_norm_col(col)
+        role = role_by_norm.get(norm) or ("key" if norm in key_norms else "output" if norm in output_norms else "reference")
+        canonical = _relation_canonical_col(col) or _schema_column_name(col)
+        stubs.append({
+            "relation_id": relation_id,
+            "column": canonical,
+            "raw_names": [col],
+            "dtype": _relation_dtype_family(dtypes.get(col)),
+            "canonical_alias": canonical,
+            "unit": None,
+            "fk": None,
+            "sample_values": samples.get(col) or [],
+            "source_id": source_id,
+            "source_type": "file",
+            "file_name": file_name,
+            "source_file": file_name,
+            "source_path": profile.get("resolved_path") or "",
+            "purpose": purpose,
+            "role": role,
+            "column_role": role,
+            "source_checksum": profile.get("checksum") or "",
+            "source_row_count": profile.get("row_count"),
+            "registered_at": now,
+            "registered_by": me.get("username") or "admin",
+            "approved_by": me.get("username") or "admin",
+        })
+    refs = [f"{relation_id}.{stub['column']}" for stub in stubs]
+    title = req.title.strip() if req.title else f"{Path(file_name).name or relation_id} execution source"
+    summary = req.summary.strip() if req.summary else f"{purpose} 단일 파일 {Path(file_name).name or relation_id}의 승인된 key/output column catalog"
+    doc_id = req.doc_id.strip() if req.doc_id else f"single_file_{_safe_slug(relation_id)}_{purpose}"
+    wiki_doc = {
+        "doc_id": doc_id,
+        "title": title,
+        "summary": summary,
+        "body": _single_file_wiki_body(profile, purpose, key_columns, output_columns),
+        "tags": ["single_file", purpose, "execution_source", relation_id],
+        "frontmatter": {
+            "relation_id": relation_id,
+            "column_refs": refs,
+            "source_id": source_id,
+            "source_ids": [source_id] if source_id else [],
+            "source_file": file_name,
+            "purpose": purpose,
+            "row_count": profile.get("row_count"),
+            "checksum": profile.get("checksum") or "",
+            "key_columns": key_columns,
+            "output_columns": output_columns,
+        },
+    }
+    committed = kv.commit_schema_doc_draft(
+        wiki_doc=wiki_doc,
+        column_catalog_stubs=stubs,
+        actor=me.get("username") or "admin",
+    )
+    return {
+        "ok": True,
+        "source": profile,
+        "doc": committed.get("doc") or committed.get("wiki_doc"),
+        "catalog": committed.get("catalog") or {},
+        "graph_counts": committed.get("graph_counts") or {},
+        "registered_columns": selected_columns,
         "raw_sources_mutated": False,
     }
 

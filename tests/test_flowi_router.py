@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
+from app_v2.shared.contracts import KnowledgeDoc  # noqa: E402
 from routers import llm as llm_router  # noqa: E402
 from routers.llm import (  # noqa: E402
     _feedback_summary_from_records,
@@ -27,6 +28,53 @@ from routers.llm import (  # noqa: E402
 @pytest.fixture(autouse=True)
 def _isolate_dashboard_chart_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr(llm_router.dashboard_charting, "CHART_SESSION_DIR", tmp_path / "dashboard_chart_sessions")
+
+
+def _isolate_flowi_knowledge(tmp_path, monkeypatch):
+    root = tmp_path / "knowledge"
+    kv = llm_router.kv
+    monkeypatch.setattr(kv, "KNOWLEDGE_ROOT", root)
+    monkeypatch.setattr(kv, "RAW_DIR", root / "raw")
+    monkeypatch.setattr(kv, "EVENT_DIR", root / "raw" / "events")
+    monkeypatch.setattr(kv, "SOURCE_DIR", root / "raw" / "sources")
+    monkeypatch.setattr(kv, "WIKI_DIR", root / "wiki")
+    monkeypatch.setattr(kv, "GRAPH_DIR", root / "graph")
+    monkeypatch.setattr(kv, "INDEX_DIR", root / "index")
+    monkeypatch.setattr(kv, "ONTOLOGY_DIR", root / "ontology")
+    monkeypatch.setattr(kv, "EVENTS_JSONL", root / "raw" / "events" / "events.jsonl")
+    monkeypatch.setattr(kv, "SOURCES_JSONL", root / "raw" / "sources" / "sources.jsonl")
+    monkeypatch.setattr(kv, "WIKI_INDEX_FILE", root / "index" / "wiki_index.json")
+    monkeypatch.setattr(kv, "WIKI_LOG_JSONL", root / "index" / "wiki_log.jsonl")
+    monkeypatch.setattr(kv, "GRAPH_FILE", root / "graph" / "graph.json")
+    monkeypatch.setattr(kv, "AI_ONTOLOGY_FILE", root / "ontology" / "ai_ontology.json")
+    monkeypatch.setattr(kv, "SCHEMA_RELATION_FILE", tmp_path / "schema_relations.json")
+    return kv
+
+
+def test_flowi_wiki_pre_route_uses_new_issue_and_meeting_wiki_tokens(tmp_path, monkeypatch):
+    kv = _isolate_flowi_knowledge(tmp_path, monkeypatch)
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="issue_knob_beta_rule",
+        kind="issue",
+        title="Issue note",
+        summary="New issue knowledge",
+        body="MILKY_KNOB_BETA는 SORT hold 이슈에서 임시로 쓰는 knob 판정값입니다.",
+        tags=["issue", "KNOB"],
+    ))
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="meeting_vehicle_review",
+        kind="meeting",
+        title="Vehicle review meeting",
+        summary="Meeting notes",
+        body="회의내용: VEHICLE_FN_SORT는 Vehicle_matching.csv의 function_id 검증 항목입니다.",
+        tags=["meeting", "Vehicle_matching"],
+    ))
+
+    issue = llm_router._flowi_wiki_prompt_interpretation("MILKY_KNOB_BETA 이슈내용 근거 보여줘")
+    meeting = llm_router._flowi_wiki_prompt_interpretation("VEHICLE_FN_SORT 회의내용 근거 보여줘")
+
+    assert any(row["doc_id"] == "issue_knob_beta_rule" for row in issue["retrieved_knowledge"])
+    assert any(row["doc_id"] == "meeting_vehicle_review" for row in meeting["retrieved_knowledge"])
 
 
 def test_flowi_feature_router_matches_korean_splittable_alias():
@@ -102,6 +150,93 @@ def test_flowi_product_only_pie_chart_returns_editable_dashboard_draft(monkeypat
     assert out["chart_config"]["product"] == "PRODA"
     assert "파이차트" in out["chart_config"]["title"]
     assert {"source_type", "metric"}.issubset(set(out["missing"]))
+
+
+def test_flowi_knob_ratio_pie_chart_uses_product_ml_table(tmp_path, monkeypatch):
+    ml_file = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "PRODUCT": ["PRODA", "PRODA", "PRODA", "PRODA", "PRODA", "PRODB"],
+        "ROOT_LOT_ID": ["A1000", "A1000", "A1000", "A1001", "A1001", "B1000"],
+        "WAFER_ID": [1, 2, 3, 1, 2, 1],
+        "KNOB_24.0 SORT": ["R1", "R1", "R2", "R2", "R2", "OTHER"],
+    }).write_parquet(ml_file)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router.kv, "search_agent_wiki", lambda _q, limit=30: [])
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product="": [ml_file])
+
+    out = _handle_flowi_query("PRODA 24.0 SORT KNOB별 비율 파이차트", "", 12, allowed_keys={"dashboard"})
+
+    assert out["handled"] is True
+    assert out["intent"] == "dashboard_knob_ratio_chart"
+    assert out["chart_result"]["chart_type"] == "pie"
+    assert out["chart_result"]["knob_column"] == "KNOB_24.0 SORT"
+    assert out["chart_result"]["total"] == 5
+    counts = {row["label"]: row["count"] for row in out["chart_result"]["groups"]}
+    assert counts == {"R2": 3, "R1": 2}
+    assert out["table"]["rows"][0]["percent"] == 60.0
+    assert out["filters"]["source"] == "ML_TABLE"
+
+
+def test_flowi_knob_ratio_bar_chart_uses_same_route(tmp_path, monkeypatch):
+    ml_file = tmp_path / "ML_TABLE_PRODA.parquet"
+    pl.DataFrame({
+        "PRODUCT": ["PRODA", "PRODA", "PRODA"],
+        "ROOT_LOT_ID": ["A1000", "A1000", "A1001"],
+        "WAFER_ID": [1, 2, 1],
+        "KNOB_5.0 PC": ["PPID_05_0", "PPID_05_1", "PPID_05_1"],
+    }).write_parquet(ml_file)
+    monkeypatch.setattr(llm_router, "_admin_settings", lambda: {})
+    monkeypatch.setattr(llm_router.kv, "search_agent_wiki", lambda _q, limit=30: [])
+    monkeypatch.setattr(llm_router, "_ml_files", lambda _product="": [ml_file])
+
+    out = _handle_flowi_query("PRODA 5.0 PC knob 비율 막대차트", "", 12, allowed_keys={"dashboard"})
+
+    assert out["handled"] is True
+    assert out["chart_result"]["chart_type"] == "bar"
+    assert out["chart_result"]["total"] == 3
+    assert out["chart_result"]["groups"][0]["label"] == "PPID_05_1"
+
+
+def test_flowi_knob_rulebook_lookup_uses_rulebook_and_step_matching(tmp_path, monkeypatch):
+    rulebook = tmp_path / "ppid_knob.csv"
+    step_matching = tmp_path / "step_matching.csv"
+    rulebook.write_text(
+        "product,feature_name,function_step,rule_order,operator,category\n"
+        "PRODA,24.0 SORT,FINAL_INSPECTION,RO,eq,PPID_24_0\n"
+        "PRODA,5.0 PC,PC_ETCH,RO,eq,PPID_05_1\n",
+        encoding="utf-8",
+    )
+    step_matching.write_text(
+        "product,step_id,function_step\n"
+        "PRODA,AA100200,FINAL_INSPECTION\n"
+        "PRODA,AA100250,PC_ETCH\n",
+        encoding="utf-8",
+    )
+
+    def fake_registered_files(*, purposes=(), name_hints=()):
+        joined = " ".join(name_hints)
+        if "ppid_knob.csv" in joined:
+            return [{"path": rulebook, "source_id": "src_ppid_knob", "purpose": "rulebook", "relation_id": "ppid_knob"}]
+        if "step_matching.csv" in joined:
+            return [{"path": step_matching, "source_id": "src_step_matching", "purpose": "matching", "relation_id": "step_matching"}]
+        return []
+
+    monkeypatch.setattr(llm_router, "_flowi_registered_file_candidates", fake_registered_files)
+
+    out = _handle_flowi_query("24.0 SORT KNOB 룰 매칭 어떻게 돼?", "", 12)
+
+    assert out["handled"] is True
+    assert out["intent"] == "knob_rulebook_lookup"
+    assert out["table"]["total"] == 1
+    assert out["table"]["rows"][0]["function_step"] == "FINAL_INSPECTION"
+    assert out["table"]["rows"][0]["step_ids"] == "AA100200"
+    assert out["filters"]["rulebook_file"].endswith("ppid_knob.csv")
+    assert out["source_ids"] == ["src_ppid_knob", "src_step_matching"]
+
+    ppid_out = _handle_flowi_query("PPID_05_1 어떤 knob rule이야?", "", 12)
+
+    assert ppid_out["table"]["rows"][0]["feature_name"] == "5.0 PC"
+    assert ppid_out["table"]["rows"][0]["step_ids"] == "AA100250"
 
 
 def test_flowi_multisource_trace_includes_join_evidence(monkeypatch):

@@ -116,12 +116,13 @@ Agent Wiki 운영은 다음 단계의 지식 운영 계층이다. 현재 Agent �
 
 ### Default Agent Wiki Seed
 
-- 기본지식 원본은 `backend/core/default_agent_wiki_seed/`에 둔다.
+- Home Flow-i는 반도체 배경지식 seed를 자동 설치하지 않는다.
+- 운영 용어와 컬럼 의미의 source of truth는 runtime Agent Wiki와 `schema_relations.json`의 `column_catalog`다.
+- `backend/core/default_agent_wiki_seed/`는 seed 설치 장치와 template만 보존한다. 새 seed가 필요하면 배경 설명이 아니라 실행에 필요한 최소 scaffold만 새 `doc_id`로 추가한다.
 - 서버 기동과 `setup.py extract`는 runtime `flow-data`에 같은 `doc_id`가 없을 때만 seed 문서를 생성한다.
 - 생성된 runtime 문서는 Agent 지식 Wiki에서 수정 가능하며, 이후 seed/install 경로가 덮어쓰지 않는다.
-- Wiki Graph는 `schema_type=default_agent_wiki_seed_v1` 문서를 `기본 Agent Wiki Seed` hub에 연결해 기본 seed 문서를 한 번에 확인하게 한다.
 - Agent 지식 Wiki의 기존 문서 수정은 `/api/agent/wiki/page/save`로 runtime `flow-data` markdown을 갱신하고 graph를 다시 만든다.
-- 새 기본지식은 새 markdown 파일과 고유한 `doc_id`로 추가한다. 기존 사용자에게 업데이트를 강제해야 하는 내용은 같은 `doc_id` 수정이 아니라 새 문서로 추가한다.
+- 새 지식은 가능한 한 runtime Wiki/schema_doc/단일 파일 실행 지식 등록으로 추가한다.
 
 ## Agent Tab UX (single-page flow)
 

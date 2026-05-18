@@ -990,6 +990,10 @@ function FlowiChartPlan({chart}){
 }
 
 function FlowiScatterResult({data}){
+  const plotlyType=String(data?.chart_type||data?.chart_config?.chart_type||data?.config?.chart_type||data?.kind||"").replace("dashboard_","");
+  if(["pie","donut","bar"].includes(plotlyType)&&Array.isArray(data.groups)&&data.groups.length)return <div style={{marginTop:10,border:"1px solid #d1d5db",borderRadius:8,background:"#ffffff",padding:"8px 10px",minWidth:0}}>
+    <FlowPlotlyChart chart={data} cfg={data.chart_config||data.config||data.config_overrides||data} height={430} dark={false} />
+  </div>;
   if(Array.isArray(data.series)&&data.series.length)return <FlowiLineResult data={data}/>;
   if(Array.isArray(data.groups)&&data.groups.length)return <FlowiGroupBarResult data={data}/>;
   if(Array.isArray(data.boxes)&&data.boxes.length)return <FlowiBoxResult data={data}/>;
