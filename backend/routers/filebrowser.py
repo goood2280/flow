@@ -5401,8 +5401,7 @@ def _selected_columns(all_columns: list[str], select_cols: str, preview_cols: in
 
 
 def _lazy_filter_expr(sql: str, columns: list[str]):
-    _validate_where_expression(sql, columns)
-    s = _normalize_wafer_sql_filter(sql, columns)
+    s = _normalize_view_sql_filter(sql, columns)
     if not s:
         return None
     try:
@@ -5527,12 +5526,7 @@ def _validate_ai_sql_filter(raw_sql: str, columns: list[str]) -> tuple[str, list
     sql = re.sub(r"^where\s+", "", sql, flags=re.I).strip()
     if not sql:
         raise ValueError("LLM did not return a SQL filter expression")
-    if _AI_SQL_FORBIDDEN_RE.search(sql):
-        raise ValueError("AI SQL must be a read-only filter expression, not a full SQL statement")
-    sql = _canonicalize_sql_columns(sql, columns)
-    missing = _sql_missing_columns(sql, columns)
-    if missing:
-        raise ValueError("AI SQL referenced unknown column(s): " + ", ".join(missing[:8]))
+    sql = _normalize_where_expression(sql, columns)
     _validate_ai_sql_date_literals(sql, columns)
     duckdb_engine.normalize_filter_expr(sql)
     _lazy_filter_expr(sql, columns or ["value"])
@@ -5698,8 +5692,8 @@ def _normalize_wafer_sql_filter(sql: str, columns: list[str] | tuple[str, ...] |
 _AI_SQL_COLUMN_ALIASES = {
     "product": ("product", "제품"),
     "lot_id": ("lot_id", "lot id", "랏"),
-    "root_lot_id": ("root_lot_id", "root lot", "root_lot", "루트 랏", "루트랏"),
-    "wafer_id": ("wafer_id", "wafer", "wf", "웨이퍼"),
+    "root_lot_id": ("root_lot_id", "root lot id", "root lot", "root_lot", "루트 랏", "루트랏"),
+    "wafer_id": ("wafer_id", "wafer id", "wafer", "wf", "웨이퍼"),
     "step_id": ("step_id", "step id", "step", "스텝", "공정"),
     "function_step": ("function_step", "function step", "func step"),
     "ppid": ("ppid",),
@@ -5720,6 +5714,135 @@ _AI_SQL_COLUMN_ALIASES = {
     "update_time": ("update_time", "update time"),
     "measure_time": ("measure_time", "measure time", "측정 시간"),
 }
+
+
+def _sql_column_alias_pairs(columns: list[str] | tuple[str, ...] | None) -> list[tuple[str, str]]:
+    lookup = _column_lookup(list(columns or []))
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for col in columns or []:
+        canonical = lookup.get(str(col).casefold(), str(col))
+        aliases = {str(col), str(col).replace("_", " "), canonical, canonical.replace("_", " ")}
+        aliases.update(_AI_SQL_COLUMN_ALIASES.get(canonical.casefold(), ()))
+        for alias in aliases:
+            text = str(alias or "").strip()
+            key = (text.casefold(), canonical)
+            if not text or text.casefold() == canonical.casefold() or key in seen:
+                continue
+            seen.add(key)
+            pairs.append((text, canonical))
+    return sorted(pairs, key=lambda item: len(item[0]), reverse=True)
+
+
+def _sql_alias_pattern(alias: str) -> str:
+    text = str(alias or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_ ]+", text):
+        body = r"\s+".join(re.escape(part) for part in text.split())
+        return r"(?<![A-Za-z0-9_])" + body + r"(?![A-Za-z0-9_])"
+    return re.escape(text)
+
+
+def _canonicalize_sql_column_aliases(expr: str, columns: list[str] | tuple[str, ...] | None) -> str:
+    text = str(expr or "")
+    pairs = _sql_column_alias_pairs(columns)
+    if not text or not pairs:
+        return _canonicalize_sql_columns(text, list(columns or []))
+    parts = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", text)
+    for idx in range(0, len(parts), 2):
+        segment = parts[idx]
+        for alias, canonical in pairs:
+            segment = re.sub(_sql_alias_pattern(alias), canonical, segment, flags=re.I)
+        parts[idx] = segment
+    return _canonicalize_sql_columns("".join(parts), list(columns or []))
+
+
+def _should_quote_sql_rhs(raw: str, columns: list[str], lhs_col: str = "") -> bool:
+    text = str(raw or "").strip()
+    if not text or len(text) >= 2 and text[0] in {"'", '"'} and text[-1] == text[0]:
+        return False
+    lower = text.casefold()
+    if lower in {"null", "true", "false"}:
+        return False
+    lookup = _column_lookup(columns)
+    if lookup.get(lower):
+        return False
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+        return False
+    wafer_col = _wafer_column(columns)
+    if wafer_col and lhs_col.casefold() == wafer_col.casefold() and _wafer_literal_number(text) is not None:
+        return False
+    return bool(re.fullmatch(r"[#A-Za-z0-9_.%+-]+", text))
+
+
+def _quote_bare_sql_values(expr: str, columns: list[str]) -> str:
+    text = str(expr or "")
+    if not text or not columns:
+        return text
+    col_pat = "|".join(re.escape(str(c)) for c in sorted(columns, key=lambda item: len(str(item)), reverse=True))
+    if not col_pat:
+        return text
+    parts = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", text)
+    compare_re = re.compile(
+        rf"(?<![A-Za-z0-9_])(?P<col>{col_pat})(?![A-Za-z0-9_])"
+        rf"\s*(?P<op>NOT\s+LIKE|LIKE|ILIKE|>=|<=|<>|!=|==|=|>|<)\s*"
+        rf"(?P<rhs>[#A-Za-z0-9_.%+-]+)",
+        re.I,
+    )
+    in_re = re.compile(
+        rf"(?<![A-Za-z0-9_])(?P<col>{col_pat})(?![A-Za-z0-9_])"
+        rf"\s+(?P<neg>NOT\s+)?IN\s*\((?P<body>[^)]*)\)",
+        re.I,
+    )
+
+    def quote_compare(match: re.Match) -> str:
+        rhs = match.group("rhs")
+        if not _should_quote_sql_rhs(rhs, columns, match.group("col")):
+            return match.group(0)
+        return f"{match.group('col')} {match.group('op')} {_sql_literal_for_filter(rhs, columns)}"
+
+    def quote_in(match: re.Match) -> str:
+        body = match.group("body")
+        values = _split_sql_list_values(body)
+        if not values:
+            return match.group(0)
+        changed = False
+        rendered: list[str] = []
+        for value in values:
+            if _should_quote_sql_rhs(value, columns, match.group("col")):
+                rendered.append(_sql_literal_for_filter(value, columns))
+                changed = True
+            else:
+                rendered.append(str(value).strip())
+        if not changed:
+            return match.group(0)
+        op = " NOT IN " if match.group("neg") else " IN "
+        return f"{match.group('col')}{op}({', '.join(rendered)})"
+
+    for idx in range(0, len(parts), 2):
+        segment = in_re.sub(quote_in, parts[idx])
+        parts[idx] = compare_re.sub(quote_compare, segment)
+    return "".join(parts)
+
+
+def _normalize_where_expression(sql: str, columns: list[str] | tuple[str, ...] | None = None) -> str:
+    text = str(sql or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^where\s+", "", text, flags=re.I).strip()
+    if _AI_SQL_FORBIDDEN_RE.search(text):
+        raise ValueError("SQL must be a single read-only WHERE expression.")
+    all_columns = list(columns or [])
+    text = _canonicalize_sql_column_aliases(text, all_columns)
+    text = _quote_bare_sql_values(text, all_columns)
+    missing = _sql_missing_columns(text, all_columns)
+    if missing:
+        raise ValueError("SQL referenced unknown column(s): " + ", ".join(missing[:8]))
+    return text.strip()
+
+
+def _normalize_view_sql_filter(sql: str, columns: list[str] | tuple[str, ...] | None = None) -> str:
+    text = _normalize_where_expression(sql, columns)
+    return _normalize_wafer_sql_filter(text, columns)
 
 _AI_SQL_AGG_FUNCTION_ALIASES = {
     "avg": ("avg", "average", "mean", "평균"),
@@ -7192,9 +7315,9 @@ def _run_view(df, sql: str, select_cols: str, rows: int,
         _fb_error(400, "invalid_aggregate", warnings[0])
     sort_columns = all_columns + ([active_aggregate.get("alias")] if active_aggregate else [])
     sel, truncated_cols = _selected_columns(all_columns, "" if active_aggregate else select_cols, preview_cols)
+    normalized_sql = _validate_where_expression(sql, all_columns)
     if sql and sql.strip():
-        _validate_where_expression(sql, all_columns)
-        df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, all_columns))
+        df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, all_columns))
         total = df.height
     if active_aggregate:
         df = _apply_aggregate_df(df, active_aggregate)
@@ -7242,10 +7365,10 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
                      sort_spec: dict | None = None):
     """Apply the same preview contract through DuckDB for large read-only sources."""
     all_columns, schema = duckdb_engine.inspect_files(files)
-    _validate_where_expression(sql, all_columns)
+    normalized_sql = _validate_where_expression(sql, all_columns)
     _guard_source_operation(
         all_columns=all_columns,
-        sql=sql,
+        sql=normalized_sql,
         select_cols=select_cols,
         source_size=duckdb_engine.total_size(files),
         settings=settings,
@@ -7256,7 +7379,7 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
     sel, truncated_cols = _selected_columns(all_columns, select_cols, preview_cols)
     active_sort, latest_order_col = _resolve_view_sort_spec(sort_spec, all_columns, latest_first=latest_first)
     wafer_where = _duckdb_valid_wafer_where(all_columns)
-    user_where = _normalize_wafer_sql_filter(sql, all_columns)
+    user_where = _normalize_view_sql_filter(normalized_sql, all_columns)
     show_plus, _all_cols, _schema = duckdb_engine.query_files(
         files,
         where=_combine_where(user_where, wafer_where),
@@ -7352,11 +7475,11 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
             "wafer_filter": {"max": MAX_WAFER_ID} if wafer_filtered else None,
         }
 
-    _validate_where_expression(sql, all_columns)
+    normalized_sql = _validate_where_expression(sql, all_columns)
     guard_select_cols = _aggregate_guard_select_cols(active_aggregate) if active_aggregate else select_cols
     _guard_source_operation(
         all_columns=all_columns,
-        sql=sql,
+        sql=normalized_sql,
         select_cols=guard_select_cols,
         source_size=source_size,
         settings=settings,
@@ -7371,7 +7494,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
     if active_aggregate:
         work_lf = lf
         if sql and sql.strip():
-            work_lf = work_lf.filter(_lazy_filter_expr(sql, all_columns))
+            work_lf = work_lf.filter(_lazy_filter_expr(normalized_sql, all_columns))
         work_lf = _apply_aggregate_lazy(work_lf, active_aggregate)
         output_columns = list(active_aggregate.get("group_by") or []) + [active_aggregate.get("alias")]
         active_sort = _aggregate_sort_alias(active_sort, active_aggregate, output_columns)
@@ -7415,7 +7538,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
         # avoided on production-size parquet because they double-scan or OOM.
         try:
             from core.parquet_perf import collect_streaming
-            filtered = lf.filter(_lazy_filter_expr(sql, all_columns))
+            filtered = lf.filter(_lazy_filter_expr(normalized_sql, all_columns))
             if active_sort:
                 filtered = filtered.sort(
                     _sort_expr(active_sort, latest_order_col),
@@ -7436,7 +7559,7 @@ def _run_view_lazy(lf, sql: str, select_cols: str, rows: int, meta_only: bool = 
                 df = collect_streaming(lf)
             except Exception:
                 df = lf.collect()
-            df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, all_columns))
+            df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, all_columns))
             total = df.height
             if active_sort and active_sort.get("column") in df.columns:
                 df = df.sort(
@@ -7514,9 +7637,9 @@ def _run_view_lazy_full(lf, sql: str, select_cols: str, preview_cols: int | None
     )
     lf, wafer_filtered = _filter_valid_wafers_lazy(lf, all_columns)
 
+    normalized_sql = _validate_where_expression(sql, all_columns)
     if sql and sql.strip():
-        _validate_where_expression(sql, all_columns)
-        lf = lf.filter(_lazy_filter_expr(sql, all_columns))
+        lf = lf.filter(_lazy_filter_expr(normalized_sql, all_columns))
     if active_aggregate:
         lf = _apply_aggregate_lazy(lf, active_aggregate)
         output_columns = list(active_aggregate.get("group_by") or []) + [active_aggregate.get("alias")]
@@ -7618,15 +7741,12 @@ def _selected_requested_columns(select_cols: str, all_columns: list[str]) -> lis
 
 
 def _validate_where_expression(sql: str, columns: list[str] | tuple[str, ...] | None = None) -> str:
-    text = str(sql or "").strip()
-    if not text:
-        return ""
-    if _AI_SQL_FORBIDDEN_RE.search(text):
-        _fb_error(400, "invalid_filter", "SQL must be a single read-only WHERE expression.")
-    missing = _sql_missing_columns(text, list(columns or []))
-    if missing:
-        _fb_error(400, "unknown_column", "SQL referenced unknown column(s): " + ", ".join(missing[:8]), columns=missing[:8])
-    return text
+    try:
+        return _normalize_where_expression(sql, columns)
+    except ValueError as exc:
+        message = str(exc)
+        code = "unknown_column" if "unknown column" in message.casefold() else "invalid_filter"
+        _fb_error(400, code, message)
 
 
 def _guard_source_operation(
@@ -7746,7 +7866,7 @@ def _download_lazy_csv(
 ) -> tuple[pl.DataFrame, bytes]:
     schema_obj = lf.collect_schema()
     all_columns = list(schema_obj.names())
-    _validate_where_expression(sql, all_columns)
+    normalized_sql = _validate_where_expression(sql, all_columns)
     warnings: list[str] = []
     active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec or {}, all_columns, warnings, "aggregate")
     if warnings:
@@ -7754,7 +7874,7 @@ def _download_lazy_csv(
     guard_select_cols = _aggregate_guard_select_cols(active_aggregate) if active_aggregate else select_cols
     _guard_source_operation(
         all_columns=all_columns,
-        sql=sql,
+        sql=normalized_sql,
         select_cols=guard_select_cols,
         source_size=source_size,
         settings=settings,
@@ -7765,7 +7885,7 @@ def _download_lazy_csv(
     selected = [c for c in requested if c in set(all_columns)]
     if sql and sql.strip():
         try:
-            lf = lf.filter(_lazy_filter_expr(sql, all_columns))
+            lf = lf.filter(_lazy_filter_expr(normalized_sql, all_columns))
         except Exception as e:
             raise HTTPException(400, f"CSV download SQL error: {e}")
     if active_aggregate:
@@ -7809,10 +7929,10 @@ def _download_duckdb_csv(
     if not files:
         raise ValueError("no source files for DuckDB download")
     all_columns, _schema = duckdb_engine.inspect_files(files)
-    _validate_where_expression(sql, all_columns)
+    normalized_sql = _validate_where_expression(sql, all_columns)
     _guard_source_operation(
         all_columns=all_columns,
-        sql=sql,
+        sql=normalized_sql,
         select_cols=select_cols,
         source_size=duckdb_engine.total_size(files),
         settings=settings,
@@ -7821,7 +7941,7 @@ def _download_duckdb_csv(
     requested = [c.strip() for c in str(select_cols or "").split(",") if c.strip()]
     selected = [c for c in requested if c in set(all_columns)]
     where = _combine_where(
-        _normalize_wafer_sql_filter(sql, all_columns),
+        _normalize_view_sql_filter(normalized_sql, all_columns),
         _duckdb_valid_wafer_where(all_columns),
     )
     df, _columns, _schema = duckdb_engine.query_files(
@@ -8471,7 +8591,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                 logger.warning(f"Reformatter skipped: {e}")
 
         df, _wafer_filtered = _filter_valid_wafers_df(df)
-        _validate_where_expression(sql, list(df.columns))
+        normalized_sql = _validate_where_expression(sql, list(df.columns))
         guard_select_cols = select_cols
         if aggregate_spec:
             guard_select_cols = _aggregate_guard_select_cols(
@@ -8479,14 +8599,14 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             )
         _guard_source_operation(
             all_columns=list(df.columns),
-            sql=sql,
+            sql=normalized_sql,
             select_cols=guard_select_cols,
             source_size=0,
             settings=settings,
             operation="download",
         )
         if sql.strip():
-            df = apply_sql_like(df, _normalize_wafer_sql_filter(sql, list(df.columns)))
+            df = apply_sql_like(df, _normalize_view_sql_filter(normalized_sql, list(df.columns)))
         if aggregate_spec:
             warnings: list[str] = []
             active_aggregate = _normalize_ai_sql_aggregate(aggregate_spec, list(df.columns), warnings, "aggregate")

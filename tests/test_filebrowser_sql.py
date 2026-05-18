@@ -1436,6 +1436,80 @@ def test_filebrowser_dataframe_view_filters_string_wafer_id_with_numeric_sql():
     assert result["data"] == [{"wafer_id": "3", "value": 3}]
 
 
+def test_filebrowser_manual_sql_accepts_root_lot_id_alias_and_bare_value():
+    df = pl.DataFrame({
+        "root_lot_id": ["A1000", "B1000"],
+        "wafer_id": ["1", "2"],
+        "value": [10, 20],
+    })
+
+    result = filebrowser._run_view(df, sql="root lot id = A1000", select_cols="root_lot_id,value", rows=20)
+
+    assert filebrowser._validate_where_expression(
+        "root lot id = A1000",
+        ["root_lot_id", "wafer_id", "value"],
+    ) == "root_lot_id = 'A1000'"
+    assert result["data"] == [{"root_lot_id": "A1000", "value": 10}]
+
+
+def test_filebrowser_lazy_view_accepts_root_lot_id_alias_and_bare_value():
+    lf = pl.DataFrame({
+        "root_lot_id": ["A1000", "B1000"],
+        "wafer_id": ["1", "2"],
+        "value": [10, 20],
+    }).lazy()
+
+    result = filebrowser._run_view_lazy(
+        lf,
+        sql="root lot id = A1000",
+        select_cols="root_lot_id,value",
+        rows=20,
+        page=0,
+        page_size=20,
+        preview_cols=5,
+    )
+
+    assert result["data"] == [{"root_lot_id": "A1000", "value": 10}]
+
+
+def test_filebrowser_lazy_csv_download_accepts_root_lot_id_alias_and_bare_value():
+    lf = pl.DataFrame({
+        "root_lot_id": ["A1000", "B1000"],
+        "wafer_id": ["1", "2"],
+        "value": [10, 20],
+    }).lazy()
+
+    df, csv_bytes = filebrowser._download_lazy_csv(
+        lf,
+        "root lot id = A1000",
+        "root_lot_id,value",
+        20,
+    )
+
+    assert df.to_dicts() == [{"root_lot_id": "A1000", "value": 10}]
+    assert b"A1000" in csv_bytes
+
+
+def test_filebrowser_duckdb_view_accepts_root_lot_id_alias_and_bare_value(tmp_path):
+    if not duckdb_engine.is_available():
+        pytest.skip("duckdb is not installed")
+    fp = tmp_path / "source.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "B1000"],
+        "wafer_id": ["1", "2"],
+        "value": [10, 20],
+    }).write_parquet(fp)
+
+    result = filebrowser._run_view_duckdb(
+        [fp],
+        "root lot id = A1000",
+        "root_lot_id,value",
+        20,
+    )
+
+    assert result["data"] == [{"root_lot_id": "A1000", "value": 10}]
+
+
 def test_filebrowser_wafer_sql_normalizer_handles_in_and_prefixed_literals():
     df = pl.DataFrame({
         "root_lot_id": ["LOT"] * 4,
