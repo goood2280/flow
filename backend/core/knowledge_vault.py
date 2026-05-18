@@ -927,6 +927,27 @@ def _matches_search_query(query: str, haystack: str, extra_terms: list[str] | tu
     return False
 
 
+def _term_match_score(query: str, row: dict[str, Any]) -> int:
+    q_forms = _search_forms(query)
+
+    def hit(value: Any) -> bool:
+        return bool(q_forms.intersection(_search_forms(value)))
+
+    if hit(row.get("column")) or hit(row.get("canonical_alias")):
+        return 100
+    for raw in row.get("raw_names") if isinstance(row.get("raw_names"), list) else []:
+        if hit(raw):
+            return 85
+    if hit(row.get("relation_id")):
+        return 55
+    if hit(row.get("fk")):
+        return 35
+    for sample in row.get("sample_values") if isinstance(row.get("sample_values"), list) else []:
+        if hit(sample):
+            return 25
+    return 10
+
+
 def lookup_term(term: str, limit: int = 30) -> dict[str, Any]:
     """Resolve a wiki/schema term to column catalog rows and schema docs."""
     ensure_dirs()
@@ -935,7 +956,7 @@ def lookup_term(term: str, limit: int = 30) -> dict[str, Any]:
         return {"term": "", "columns": [], "docs": [], "graph": {"nodes": [], "edges": []}}
     limit = max(1, min(int(limit or 30), 100))
     payload = _schema_registry_payload()
-    columns: list[dict[str, Any]] = []
+    column_matches: list[tuple[int, dict[str, Any]]] = []
     seen_cols: set[tuple[str, str]] = set()
     for row in payload.get("column_catalog") or []:
         if not isinstance(row, dict):
@@ -949,9 +970,15 @@ def lookup_term(term: str, limit: int = 30) -> dict[str, Any]:
         if not all(key) or key in seen_cols:
             continue
         seen_cols.add(key)
-        columns.append(dict(row))
-        if len(columns) >= limit:
-            break
+        column_matches.append((_term_match_score(query, row), dict(row)))
+    column_matches.sort(
+        key=lambda item: (
+            -item[0],
+            str(item[1].get("relation_id") or ""),
+            str(item[1].get("column") or ""),
+        )
+    )
+    columns = [row for _score, row in column_matches[:limit]]
 
     docs_by_id: dict[str, dict[str, Any]] = {}
     column_refs = {

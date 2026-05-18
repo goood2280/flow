@@ -82,6 +82,7 @@ def test_term_lookup_resolves_root_lot_id_english_and_korean_aliases(tmp_path, m
     for term in ("root lot id", "RootLotID", "루트랏아이디", "루트랏 id", "루트랏아이디가"):
         out = knowledge_router.term_lookup(term, limit=30)
         assert any(row["column"] == "root_lot_id" for row in out["columns"]), term
+        assert out["columns"][0]["column"] == "root_lot_id", term
         assert any(row["doc_id"] == doc_id for row in out["docs"]), term
 
 
