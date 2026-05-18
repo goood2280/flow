@@ -167,12 +167,13 @@ def term_lookup(term: str, limit: int = Query(30, ge=1, le=100)):
 
 @router.get("/graph")
 def graph():
-    return kv.get_graph()
+    return kv.get_graph(rebuild_if_missing=True, rebuild_if_stale=True)
 
 
 @router.get("/wiki/graph")
 def wiki_graph():
-    return kv.get_graph()
+    kv.ensure_default_agent_wiki_seed(actor="knowledge_graph", refresh_index_when_preserved=False)
+    return kv.get_graph(rebuild_if_missing=True, rebuild_if_stale=True)
 
 
 @router.post("/graph/rebuild", dependencies=[Depends(_require_knowledge_admin)])

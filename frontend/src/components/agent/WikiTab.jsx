@@ -4,9 +4,20 @@ import Modal from "../Modal";
 import { postJson, qs, sf } from "../../lib/api";
 import { Banner, Button, DataTable, EmptyState, Field, Panel, Pill, TabStrip, formControlStyle } from "../UXKit";
 
+const DEFAULT_SEED_SCHEMA = "default_agent_wiki_seed_v1";
+
 function nodeId(value) {
   if (value && typeof value === "object") return String(value.id || "");
   return String(value || "");
+}
+
+function isDefaultSeedNode(node = {}) {
+  return Boolean(node.is_default_seed || node.schema_type === DEFAULT_SEED_SCHEMA || node.kind === "default_seed");
+}
+
+function splitTags(value) {
+  if (Array.isArray(value)) return value.map(String).map((x) => x.trim()).filter(Boolean);
+  return String(value || "").split(",").map((x) => x.trim()).filter(Boolean);
 }
 
 function normalizeGraph(data) {
@@ -250,8 +261,9 @@ function WikiGraph({ graph, query, selected, focusId, highlightId, onSelect, onF
             const isSelected = selected?.id === node.id;
             const isNew = highlightId && (highlightId === node.id || `doc:${highlightId}` === node.id);
             const isFocus = focusId === node.id;
-            const radius = isSelected || isNew ? 7 : isMatch ? 6 : 4.5;
-            const color = isNew ? "#f97316" : isSelected ? "#22c55e" : isMatch ? "#3b82f6" : node.kind === "wiki_doc" ? "#8b5cf6" : "#94a3b8";
+            const isSeed = isDefaultSeedNode(node);
+            const radius = isSelected || isNew ? 7 : isMatch || isSeed ? 6 : 4.5;
+            const color = isNew ? "#f97316" : isSelected ? "#22c55e" : isSeed ? "#f97316" : isMatch ? "#3b82f6" : node.kind === "wiki_doc" ? "#8b5cf6" : "#94a3b8";
             ctx.globalAlpha = isConnected ? 1 : 0.16;
             ctx.beginPath();
             ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
@@ -269,7 +281,7 @@ function WikiGraph({ graph, query, selected, focusId, highlightId, onSelect, onF
             const isHover = hover?.id === node.id;
             const isFocusedView = Boolean(focusId);
             const showFocusLabel = isFocusedView && focus.ids.has(node.id);
-            const showLabel = showFocusLabel || (!isFocusedView && (isSelected || isMatch || isNew || isHover));
+            const showLabel = showFocusLabel || (!isFocusedView && (isSeed || isSelected || isMatch || isNew || isHover));
             if (showLabel) {
               const display = label.length > 30 ? label.slice(0, 29) + "…" : label;
               const fontSize = Math.max(6.5, Math.min(12, 10.5 / scale));
@@ -320,6 +332,8 @@ export default function WikiTab({ user, canManage }) {
   const [highlightId, setHighlightId] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState({ doc_id: "", tags: "", body: "" });
+  const [editOpen, setEditOpen] = useState(false);
+  const [editForm, setEditForm] = useState({ doc_id: "", kind: "agent_wiki", title: "", summary: "", body: "", tags: "", frontmatter: {} });
   const [sources, setSources] = useState([]);
   const [pages, setPages] = useState([]);
   const [selectedPage, setSelectedPage] = useState(null);
@@ -493,16 +507,83 @@ export default function WikiTab({ user, canManage }) {
       .finally(() => setBusy(false));
   };
 
+  const beginEdit = (page) => {
+    const fm = page.frontmatter && typeof page.frontmatter === "object" ? page.frontmatter : {};
+    setEditForm({
+      doc_id: page.doc_id,
+      kind: page.kind || "agent_wiki",
+      title: page.title || page.doc_id,
+      summary: page.summary || "",
+      body: page.body || "",
+      tags: (page.tags || []).join(", "),
+      frontmatter: fm,
+    });
+    setEditOpen(true);
+  };
+
+  const openEdit = (page) => {
+    if (!canManage || !page?.doc_id) return;
+    if (typeof page.body !== "string") {
+      setBusy(true);
+      sf("/api/agent/wiki/page" + qs({ doc_id: page.doc_id }))
+        .then((d) => beginEdit(d.page || page))
+        .catch((e) => setMsg("상세 오류: " + (e.message || e)))
+        .finally(() => setBusy(false));
+      return;
+    }
+    beginEdit(page);
+  };
+
+  const saveEdit = () => {
+    if (!canManage || !editForm.doc_id || !editForm.title.trim()) return;
+    setBusy(true);
+    postJson("/api/agent/wiki/page/save", {
+      doc_id: editForm.doc_id,
+      kind: editForm.kind,
+      title: editForm.title.trim(),
+      summary: editForm.summary.trim(),
+      body: editForm.body,
+      tags: splitTags(editForm.tags),
+      frontmatter: editForm.frontmatter || {},
+    })
+      .then((d) => {
+        const page = d.page || d.doc || null;
+        setSelectedDetail(page);
+        setSelectedPage(page);
+        setHighlightId(page?.doc_id || "");
+        setEditOpen(false);
+        setMsg(`wiki 수정됨: ${page?.doc_id || editForm.doc_id}`);
+        return Promise.all([loadWiki(), load()]);
+      })
+      .catch((e) => setMsg("수정 오류: " + (e.message || e)))
+      .finally(() => setBusy(false));
+  };
+
   const matchingRows = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return [];
     return graph.nodes.filter((n) => `${n.label} ${n.id} ${n.kind}`.toLowerCase().includes(q)).slice(0, 30);
   }, [graph.nodes, query]);
 
+  const defaultSeedRows = useMemo(() => {
+    return graph.nodes
+      .filter((n) => n.kind === "wiki_doc" && isDefaultSeedNode(n))
+      .sort((a, b) => String(a.label || a.id).localeCompare(String(b.label || b.id)));
+  }, [graph.nodes]);
+
+  const defaultSeedHub = useMemo(() => {
+    return graph.nodes.find((n) => n.id === "concept:default_agent_wiki_seed" || n.kind === "default_seed") || null;
+  }, [graph.nodes]);
+
   const selectGraphNode = (node) => {
     if (!node?.id) return;
     setSelected(node);
     setGraphFocusId(node.id);
+  };
+
+  const focusDefaultSeed = () => {
+    const node = defaultSeedHub || defaultSeedRows[0];
+    if (node) selectGraphNode(node);
   };
 
   const upsert = () => {
@@ -536,7 +617,7 @@ export default function WikiTab({ user, canManage }) {
           <Panel
             title="Wiki Graph"
             subtitle="문서, source event, product/lot/wafer/entity 관계를 graph로 확인합니다."
-            right={<div style={{ display: "flex", gap: 8, alignItems: "center" }}><Pill tone="accent">{graph.nodes.length} nodes</Pill><Pill tone="info">{graph.links.length} links</Pill><Button onClick={load} disabled={busy}>{busy ? "로딩 중" : "새로고침"}</Button>{canManage && <Button variant="primary" onClick={() => setModalOpen(true)}>+</Button>}</div>}
+            right={<div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}><Pill tone="accent">{graph.nodes.length} nodes</Pill><Pill tone="info">{graph.links.length} links</Pill>{defaultSeedRows.length > 0 && <Pill tone="warn">seed {defaultSeedRows.length}</Pill>}{defaultSeedRows.length > 0 && <Button onClick={focusDefaultSeed}>Seed 보기</Button>}<Button onClick={load} disabled={busy}>{busy ? "로딩 중" : "새로고침"}</Button>{canManage && <Button variant="primary" onClick={() => setModalOpen(true)}>+</Button>}</div>}
           >
             <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(280px,0.36fr)", gap: 12, alignItems: "start" }}>
               <div style={{ display: "grid", gap: 10 }}>
@@ -554,7 +635,11 @@ export default function WikiTab({ user, canManage }) {
                 />
               </div>
               <div style={{ display: "grid", gap: 12 }}>
-                <Panel title="선택 지식 상세" subtitle={selected?.id || "선택된 node 없음"} right={detailBusy ? <Pill tone="warn">loading</Pill> : null}>
+                <Panel
+                  title="선택 지식 상세"
+                  subtitle={selected?.id || "선택된 node 없음"}
+                  right={<div style={{ display: "flex", gap: 8, alignItems: "center" }}>{detailBusy && <Pill tone="warn">loading</Pill>}{canManage && selectedDetail?.doc_id && <Button onClick={() => openEdit(selectedDetail)} disabled={busy}>수정</Button>}</div>}
+                >
                   {selected ? (
                     selectedDetail ? (
                       <div style={{ display: "grid", gap: 10 }}>
@@ -577,6 +662,20 @@ export default function WikiTab({ user, canManage }) {
                     )
                   ) : <EmptyState title="node detail 없음" hint="graph node를 클릭하세요." />}
                 </Panel>
+                {defaultSeedRows.length > 0 && (
+                  <Panel title="기본 Seed" subtitle={`${defaultSeedRows.length} pages`}>
+                    <DataTable
+                      rows={defaultSeedRows}
+                      empty="기본 seed 문서가 없습니다."
+                      onRowClick={selectGraphNode}
+                      maxHeight={240}
+                      columns={[
+                        { key: "label", label: "title", render: (r) => <KoreanClamp lines={1}>{r.label}</KoreanClamp> },
+                        { key: "kind", label: "node", width: 86, render: () => <Pill tone="warn">seed</Pill> },
+                      ]}
+                    />
+                  </Panel>
+                )}
                 <Panel title="Search Matches" subtitle={query ? `${matchingRows.length} matches` : "검색어를 입력하세요"}>
                   <DataTable
                     rows={matchingRows}
@@ -688,7 +787,7 @@ export default function WikiTab({ user, canManage }) {
             <Panel
               title="선택 지식 상세"
               subtitle={selectedPage?.doc_id || "표에서 지식을 선택하세요."}
-              right={canManage && selectedPage?.doc_id ? <Button variant="danger" onClick={deletePage} disabled={busy}>삭제</Button> : null}
+              right={canManage && selectedPage?.doc_id ? <div style={{ display: "flex", gap: 8 }}><Button onClick={() => openEdit(selectedPage)} disabled={busy}>수정</Button><Button variant="danger" onClick={deletePage} disabled={busy}>삭제</Button></div> : null}
             >
               {selectedPage ? (
                 <div style={{ display: "grid", gap: 10 }}>
@@ -705,6 +804,34 @@ export default function WikiTab({ user, canManage }) {
           </div>
         </div>
       )}
+      <Modal open={editOpen} onClose={() => setEditOpen(false)} title="Wiki 수정" width={860}>
+        <div style={{ display: "grid", gap: 10 }}>
+          {!canManage && <Banner tone="warn">관리 권한이 필요합니다.</Banner>}
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.55fr) minmax(0,1fr)", gap: 8 }}>
+            <Field label="doc_id">
+              <input value={editForm.doc_id} readOnly style={{ ...formControlStyle, width: "100%", opacity: 0.78 }} />
+            </Field>
+            <Field label="title">
+              <input value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} style={{ ...formControlStyle, width: "100%" }} />
+            </Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,0.55fr)", gap: 8 }}>
+            <Field label="summary">
+              <input value={editForm.summary} onChange={(e) => setEditForm({ ...editForm, summary: e.target.value })} style={{ ...formControlStyle, width: "100%" }} />
+            </Field>
+            <Field label="tags">
+              <input value={editForm.tags} onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })} style={{ ...formControlStyle, width: "100%" }} />
+            </Field>
+          </div>
+          <Field label="body">
+            <textarea value={editForm.body} onChange={(e) => setEditForm({ ...editForm, body: e.target.value })} rows={16} className="korean-wrap" style={{ ...formControlStyle, width: "100%", resize: "vertical", boxSizing: "border-box", lineHeight: 1.6 }} />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <Button onClick={() => setEditOpen(false)}>취소</Button>
+            <Button variant="primary" onClick={saveEdit} disabled={!canManage || busy || !editForm.title.trim()}>{busy ? "저장 중" : "저장"}</Button>
+          </div>
+        </div>
+      </Modal>
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Wiki paste" width={720}>
         <div style={{ display: "grid", gap: 10 }}>
           {!canManage && <Banner tone="warn">관리 권한이 필요합니다.</Banner>}

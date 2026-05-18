@@ -39,7 +39,7 @@ const AGENT_TRACE_CONTRACT_MARKERS = [
 export default function My_Diagnosis({ user }) {
   const [tab, setTab] = useState("loop");
   const isAdminUser = user?.role === "admin";
-  const canManageWiki = canManagePage(user, "diagnosis") || canManagePage(user, "knowledge");
+  const canManageWiki = canManagePage(user, "diagnosis") || canManagePage(user, "agent") || canManagePage(user, "knowledge");
   const tabHint = AGENT_TAB_HINT[tab];
   const activeTab = (
     <>

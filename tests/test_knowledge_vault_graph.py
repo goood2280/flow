@@ -109,3 +109,43 @@ def test_actual_default_agent_wiki_seed_contains_gaa_docs(tmp_path, monkeypatch)
     assert "gaa_nanosheet_process_flow_and_failure_modes" in doc_ids
     assert "gaa_device_geometry_and_multi_vt_design" in doc_ids
     assert "gaa_beol_bspdn_power_delivery_basics" in doc_ids
+
+
+def test_default_agent_wiki_seed_docs_are_grouped_in_graph(tmp_path, monkeypatch):
+    _isolate_knowledge(tmp_path, monkeypatch)
+
+    kv.ensure_default_agent_wiki_seed(actor="test")
+    graph = kv.rebuild_graph()
+    nodes = {row["id"]: row for row in graph["nodes"]}
+    edges = {(row["source"], row["target"], row["relation"]) for row in graph["edges"]}
+
+    assert graph["schema_version"] == kv.GRAPH_SCHEMA_VERSION
+    assert nodes["concept:default_agent_wiki_seed"]["kind"] == "default_seed"
+    assert nodes["doc:default_agent_wiki_seed_framework"]["is_default_seed"] is True
+    assert nodes["doc:default_agent_wiki_seed_framework"]["schema_type"] == kv.DEFAULT_AGENT_WIKI_SEED_SCHEMA
+    assert ("concept:default_agent_wiki_seed", "doc:default_agent_wiki_seed_framework", "contains") in edges
+
+
+def test_get_graph_rebuilds_stale_cached_wiki_docs(tmp_path, monkeypatch):
+    _isolate_knowledge(tmp_path, monkeypatch)
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="first_doc",
+        kind="agent_wiki",
+        title="First Doc",
+        summary="first",
+        body="first body",
+    ))
+    first = kv.rebuild_graph()
+    assert first["counts"]["docs"] == 1
+
+    kv.upsert_doc(KnowledgeDoc(
+        doc_id="second_doc",
+        kind="agent_wiki",
+        title="Second Doc",
+        summary="second",
+        body="second body",
+    ))
+    refreshed = kv.get_graph(rebuild_if_missing=True, rebuild_if_stale=True)
+
+    assert refreshed["counts"]["docs"] == 2
+    assert any(row["id"] == "doc:second_doc" for row in refreshed["nodes"])

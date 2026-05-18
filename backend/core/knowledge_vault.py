@@ -37,6 +37,8 @@ GRAPH_FILE = GRAPH_DIR / "graph.json"
 AI_ONTOLOGY_FILE = ONTOLOGY_DIR / "ai_ontology.json"
 SCHEMA_RELATION_FILE = PATHS.data_root / "schema_relations.json"
 DEFAULT_AGENT_WIKI_SEED_DIR = Path(__file__).resolve().parent / "default_agent_wiki_seed"
+DEFAULT_AGENT_WIKI_SEED_SCHEMA = "default_agent_wiki_seed_v1"
+GRAPH_SCHEMA_VERSION = 2
 
 _ALLOWED_ONTOLOGY_KINDS = {
     "identity", "process", "module", "material", "metric", "split",
@@ -1564,7 +1566,7 @@ def _seed_doc_from_path(fp: Path) -> dict[str, Any] | None:
     }
 
 
-def ensure_default_agent_wiki_seed(actor: str = "system") -> dict[str, Any]:
+def ensure_default_agent_wiki_seed(actor: str = "system", refresh_index_when_preserved: bool = True) -> dict[str, Any]:
     """Install bundled Agent Wiki defaults into runtime knowledge only if absent."""
     ensure_dirs()
     seed_dir = DEFAULT_AGENT_WIKI_SEED_DIR
@@ -1604,7 +1606,7 @@ def ensure_default_agent_wiki_seed(actor: str = "system") -> dict[str, Any]:
                 "graph_counts": graph.get("counts") or {},
             },
         })
-    else:
+    elif refresh_index_when_preserved:
         _refresh_wiki_index()
     return {
         "ok": True,
@@ -2139,9 +2141,32 @@ def rebuild_graph() -> dict[str, Any]:
     docs = list_docs(limit=1000)
     events = list_events(limit=1000)
     doc_ids_present = {str(row.get("doc_id") or "") for row in docs}
+    seed_hub_id = "concept:default_agent_wiki_seed"
     for row in docs:
         doc_id = "doc:" + str(row.get("doc_id") or "")
-        _node(nodes, doc_id, row.get("title") or row.get("doc_id") or "", "wiki_doc", doc_kind=row.get("kind"), path=row.get("path"))
+        schema_type = str(row.get("schema_type") or "").strip()
+        is_default_seed = schema_type == DEFAULT_AGENT_WIKI_SEED_SCHEMA
+        _node(
+            nodes,
+            doc_id,
+            row.get("title") or row.get("doc_id") or "",
+            "wiki_doc",
+            doc_kind=row.get("kind"),
+            path=row.get("path"),
+            summary=row.get("summary") or "",
+            tags=row.get("tags") or [],
+            schema_type=schema_type,
+            is_default_seed=is_default_seed,
+        )
+        if is_default_seed:
+            _node(
+                nodes,
+                seed_hub_id,
+                "기본 Agent Wiki Seed",
+                "default_seed",
+                schema_type=DEFAULT_AGENT_WIKI_SEED_SCHEMA,
+            )
+            _edge(edges, seed_hub_id, doc_id, "contains", "frontmatter:schema_type")
         ent = row.get("entity") or {}
         _attach_entity(nodes, edges, doc_id, ent, "documents")
         related = row.get("related_doc_ids") if isinstance(row.get("related_doc_ids"), list) else []
@@ -2213,6 +2238,7 @@ def rebuild_graph() -> dict[str, Any]:
         _attach_entity(nodes, edges, event_id, ent, "records")
 
     graph = {
+        "schema_version": GRAPH_SCHEMA_VERSION,
         "updated_at": now_iso(),
         "nodes": list(nodes.values()),
         "edges": list(edges.values()),
@@ -2221,6 +2247,49 @@ def rebuild_graph() -> dict[str, Any]:
     }
     _atomic_json(GRAPH_FILE, graph)
     return graph
+
+
+def _path_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime if path.exists() else 0.0
+    except OSError:
+        return 0.0
+
+
+def _dir_latest_mtime(root: Path, pattern: str) -> float:
+    if not root.exists():
+        return 0.0
+    latest = 0.0
+    for fp in root.rglob(pattern):
+        latest = max(latest, _path_mtime(fp))
+    return latest
+
+
+def _count_wiki_docs() -> int:
+    if not WIKI_DIR.exists():
+        return 0
+    try:
+        return sum(1 for _ in WIKI_DIR.rglob("*.md"))
+    except OSError:
+        return 0
+
+
+def _graph_cache_stale(graph: dict[str, Any]) -> bool:
+    if int(graph.get("schema_version") or 0) != GRAPH_SCHEMA_VERSION:
+        return True
+    counts = graph.get("counts") if isinstance(graph.get("counts"), dict) else {}
+    if int(counts.get("docs") or 0) != _count_wiki_docs():
+        return True
+    graph_mtime = _path_mtime(GRAPH_FILE)
+    if not graph_mtime:
+        return True
+    latest_input_mtime = max(
+        _dir_latest_mtime(WIKI_DIR, "*.md"),
+        _path_mtime(EVENTS_JSONL),
+        _path_mtime(SCHEMA_RELATION_FILE),
+        _path_mtime(AI_ONTOLOGY_FILE),
+    )
+    return bool(latest_input_mtime and latest_input_mtime > graph_mtime)
 
 
 def _attach_entity(nodes: dict[str, dict[str, Any]], edges: dict[str, dict[str, Any]], source_id: str, ent: dict[str, Any], relation: str) -> None:
@@ -2245,11 +2314,14 @@ def _attach_entity(nodes: dict[str, dict[str, Any]], edges: dict[str, dict[str, 
         _edge(edges, source_id, wafer_id, relation)
 
 
-def get_graph(rebuild_if_missing: bool = True) -> dict[str, Any]:
+def get_graph(rebuild_if_missing: bool = True, rebuild_if_stale: bool = False) -> dict[str, Any]:
     ensure_dirs()
     if GRAPH_FILE.is_file():
         try:
-            return json.loads(GRAPH_FILE.read_text("utf-8")) or {}
+            graph = json.loads(GRAPH_FILE.read_text("utf-8")) or {}
+            if rebuild_if_stale and _graph_cache_stale(graph):
+                return rebuild_graph()
+            return graph
         except Exception:
             pass
     if rebuild_if_missing:

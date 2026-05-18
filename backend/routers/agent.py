@@ -1842,7 +1842,8 @@ def agent_wiki_page_save(req: AgentWikiPageSaveReq, request: Request):
         "message": f"Saved wiki page {saved.get('doc_id') or doc_id}",
         "meta": {"path": saved.get("path") or "", "kind": saved.get("kind") or kind},
     })
-    return {"ok": True, "page": saved, "doc": saved}
+    graph = kv.rebuild_graph()
+    return {"ok": True, "page": saved, "doc": saved, "graph_counts": graph.get("counts") or {}}
 
 
 @router.post("/wiki/page/delete")
@@ -1859,7 +1860,8 @@ def agent_wiki_page_delete(
     result = kv.delete_doc(str(target), actor=me.get("username") or "admin")
     if not result.get("deleted"):
         raise HTTPException(404, result.get("error") or "Knowledge Vault page not found")
-    return {"ok": True, **result}
+    graph = kv.rebuild_graph()
+    return {"ok": True, **result, "graph_counts": graph.get("counts") or {}}
 
 
 @router.get("/wiki/search")

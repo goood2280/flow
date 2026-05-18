@@ -41,6 +41,7 @@ def _install_agent_wiki_tmp(monkeypatch, tmp_path):
     wiki = root / "wiki"
     graph = root / "graph"
     index = root / "index"
+    ontology = root / "ontology"
     monkeypatch.setattr(agent.kv, "KNOWLEDGE_ROOT", root)
     monkeypatch.setattr(agent.kv, "RAW_DIR", raw)
     monkeypatch.setattr(agent.kv, "EVENT_DIR", event)
@@ -48,11 +49,14 @@ def _install_agent_wiki_tmp(monkeypatch, tmp_path):
     monkeypatch.setattr(agent.kv, "WIKI_DIR", wiki)
     monkeypatch.setattr(agent.kv, "GRAPH_DIR", graph)
     monkeypatch.setattr(agent.kv, "INDEX_DIR", index)
+    monkeypatch.setattr(agent.kv, "ONTOLOGY_DIR", ontology)
     monkeypatch.setattr(agent.kv, "EVENTS_JSONL", event / "events.jsonl")
     monkeypatch.setattr(agent.kv, "SOURCES_JSONL", source / "sources.jsonl")
     monkeypatch.setattr(agent.kv, "WIKI_INDEX_FILE", index / "wiki_index.json")
     monkeypatch.setattr(agent.kv, "WIKI_LOG_JSONL", index / "wiki_log.jsonl")
     monkeypatch.setattr(agent.kv, "GRAPH_FILE", graph / "graph.json")
+    monkeypatch.setattr(agent.kv, "AI_ONTOLOGY_FILE", ontology / "ai_ontology.json")
+    monkeypatch.setattr(agent.kv, "SCHEMA_RELATION_FILE", tmp_path / "schema_relations.json")
     return root
 
 
@@ -303,6 +307,7 @@ def test_agent_wiki_source_ingest_search_log_lint(tmp_path, monkeypatch):
         req(role="admin", username="root"),
     )
     assert saved["page"]["title"] == "DIBL updated wiki"
+    assert saved["graph_counts"]["docs"] == 1
     saved_page = agent.agent_wiki_page(req(), doc_id=doc["doc_id"])
     assert saved_page["page"]["frontmatter"]["source_ids"] == [source["source_id"]]
     assert saved_page["page"]["body"].count("# DIBL updated wiki") == 1
