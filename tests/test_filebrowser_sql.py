@@ -1122,6 +1122,101 @@ def test_filebrowser_sql_llm_draft_fallback_handles_root_lot_wafer_step(monkeypa
     assert out["sql"] == "root_lot_id = 'A1000' AND wafer_id = 21 AND step_id = 'AA100240'"
 
 
+def test_filebrowser_sql_llm_draft_reverses_function_step_from_step_matching(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    (tmp_path / "step_matching.csv").write_text(
+        "product,step_id,function_step\n"
+        "PRODA,AA100240,PC_LITHO\n"
+        "PRODB,BB100240,PC_LITHO\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="PC_LITHO step 행만 보여줘",
+            product="PRODA",
+            columns=["product", "step_id", "value"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["fallback"] is True
+    assert out["sql"] == "step_id = 'AA100240'"
+    assert out["step_mapping"]["used"] is True
+    assert out["step_mapping"]["matches"] == [{
+        "product": "PRODA",
+        "step_id": "AA100240",
+        "function_step": "PC_LITHO",
+        "source": "step_matching.csv",
+    }]
+
+
+def test_filebrowser_sql_llm_draft_appends_step_mapping_to_llm_filter(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    (tmp_path / "step_matching.csv").write_text(
+        "product,step_id,function_step\nPRODA,AA100240,PC_LITHO\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {"ok": True, "text": json.dumps({"sql": "root_lot_id = 'A1000'"})},
+    )
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="A1000 PC_LITHO step 행만 보여줘",
+            product="PRODA",
+            columns=["root_lot_id", "step_id", "value"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["fallback"] is False
+    assert out["llm"]["used"] is True
+    assert out["sql"] == "root_lot_id = 'A1000' AND step_id = 'AA100240'"
+    assert "step matching file used" in "\n".join(out["warnings"])
+
+
+def test_filebrowser_sql_llm_draft_replaces_function_step_value_misread(monkeypatch, tmp_path):
+    dummy_paths = _DummyPaths(tmp_path)
+    monkeypatch.setattr(filebrowser, "PATHS", dummy_paths)
+    (tmp_path / "step_matching.csv").write_text(
+        "product,step_id,function_step\nPRODA,AA100240,PC_LITHO\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llm_adapter,
+        "complete",
+        lambda *_args, **_kwargs: {"ok": True, "text": json.dumps({"sql": "step_id = 'PC_LITHO'"})},
+    )
+
+    out = filebrowser.filebrowser_sql_llm_draft(
+        filebrowser.FileBrowserSqlLlmDraftReq(
+            natural_language="PC_LITHO step 행만 보여줘",
+            product="PRODA",
+            columns=["step_id", "value"],
+        ),
+        _Request("viewer", "user"),
+    )
+
+    assert out["ok"] is True
+    assert out["fallback"] is True
+    assert out["llm"]["used"] is True
+    assert out["sql"] == "step_id = 'AA100240'"
+    assert "mapped step_id" in "\n".join(out["warnings"])
+
+
 def test_filebrowser_sql_llm_draft_fallback_handles_ioff_value_desc_sort(monkeypatch):
     monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "viewer", "role": "user"})
     monkeypatch.setattr(llm_adapter, "is_available", lambda: False)

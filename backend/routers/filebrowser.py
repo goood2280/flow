@@ -6112,6 +6112,270 @@ def _fallback_lot_clause(prompt: str, columns: list[str]) -> str:
     return ""
 
 
+_AI_SQL_STEP_MAPPING_FILENAMES = (
+    "Vehicle_matching.csv",
+    "vehicle_matching.csv",
+    "step_matching.csv",
+    "matching_step.csv",
+    "step_function.csv",
+)
+_AI_SQL_STEP_FUNCTION_COLUMNS = (
+    "function_step",
+    "func_step",
+    "func step",
+    "canonical_step",
+    "step_function",
+    "step_desc",
+    "step description",
+    "step_description",
+)
+_AI_SQL_GENERIC_STEP_TERMS = {
+    "sort", "order", "filter", "select", "value", "avg", "sum", "count",
+}
+
+
+def _ai_sql_step_mapping_filenames() -> tuple[str, ...]:
+    try:
+        from core import lot_progress_cache as _lot_progress_cache
+        names = tuple(str(v) for v in getattr(_lot_progress_cache, "STEP_MAPPING_FILENAMES", ()) if str(v or "").strip())
+        return names or _AI_SQL_STEP_MAPPING_FILENAMES
+    except Exception:
+        return _AI_SQL_STEP_MAPPING_FILENAMES
+
+
+def _ai_sql_step_function_columns() -> tuple[str, ...]:
+    try:
+        from core import lot_progress_cache as _lot_progress_cache
+        names = tuple(str(v) for v in getattr(_lot_progress_cache, "FUNCTION_STEP_SOURCE_COLUMNS", ()) if str(v or "").strip())
+        return names or _AI_SQL_STEP_FUNCTION_COLUMNS
+    except Exception:
+        return _AI_SQL_STEP_FUNCTION_COLUMNS
+
+
+def _ai_sql_path_key(path: Path) -> str:
+    try:
+        return str(Path(path).resolve()).casefold()
+    except Exception:
+        return str(path).casefold()
+
+
+def _ai_sql_step_mapping_paths() -> list[Path]:
+    roots: list[Path] = []
+    for raw in (PATHS.db_root, PATHS.base_root, PATHS.data_root / "Fab"):
+        try:
+            root = Path(raw)
+        except Exception:
+            continue
+        if not any(_ai_sql_path_key(root) == _ai_sql_path_key(existing) for existing in roots):
+            roots.append(root)
+    out: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        for name in _ai_sql_step_mapping_filenames():
+            path = root / name
+            key = _ai_sql_path_key(path)
+            if key not in seen:
+                seen.add(key)
+                out.append(path)
+    return out
+
+
+def _ai_sql_csv_row_ci(row: dict, *names: str):
+    lookup = {str(k or "").strip().casefold(): v for k, v in (row or {}).items()}
+    for name in names:
+        key = str(name or "").strip().casefold()
+        if key in lookup and _cache_safe_text(lookup.get(key), 240):
+            return lookup.get(key)
+    return ""
+
+
+def _ai_sql_product_key(value) -> str:
+    return _cache_safe_text(value, 120).casefold()
+
+
+def _ai_sql_step_term(value) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _cache_safe_text(value, 240).casefold())
+
+
+def _ai_sql_step_mapping_rows() -> list[dict]:
+    rows: list[dict] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for path in _ai_sql_step_mapping_paths():
+        if not path.is_file():
+            continue
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    product = _cache_safe_text(_ai_sql_csv_row_ci(row, "product", "process_id", "prod"), 120)
+                    step_id = _cache_safe_text(_ai_sql_csv_row_ci(row, "step_id", "raw_step_id", "step"), 160)
+                    function_step = _cache_safe_text(_ai_sql_csv_row_ci(row, *_ai_sql_step_function_columns()), 160)
+                    if not step_id or not function_step:
+                        continue
+                    key = (product.casefold(), step_id.casefold(), function_step.casefold(), _ai_sql_path_key(path))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append({
+                        "product": product,
+                        "step_id": step_id,
+                        "function_step": function_step,
+                        "source": path.name,
+                    })
+        except Exception as exc:
+            logger.warning("AI SQL step matching load failed: %s (%s)", path, exc)
+    return rows
+
+
+def _ai_sql_prompt_products(prompt: str, rows: list[dict], product: str = "") -> set[str]:
+    products = {_ai_sql_product_key(product)} if _ai_sql_product_key(product) else set()
+    prompt_norm = _ai_sql_step_term(prompt)
+    for row in rows:
+        prod = _cache_safe_text(row.get("product"), 120)
+        prod_key = _ai_sql_product_key(prod)
+        if prod_key and _ai_sql_step_term(prod) in prompt_norm:
+            products.add(prod_key)
+    return products
+
+
+def _ai_sql_function_step_matches_prompt(prompt: str, function_step: str) -> bool:
+    value_norm = _ai_sql_step_term(function_step)
+    if len(value_norm) < 3:
+        return False
+    prompt_norm = _ai_sql_step_term(prompt)
+    if value_norm not in prompt_norm:
+        return False
+    if value_norm in _AI_SQL_GENERIC_STEP_TERMS:
+        return bool(re.search(r"\bstep\b|function[_\s-]*step|스텝|공정|단계", str(prompt or ""), flags=re.I))
+    return True
+
+
+def _ai_sql_step_mapping_matches(prompt: str, columns: list[str], product: str = "", limit: int = 50) -> list[dict]:
+    lookup = _column_lookup(columns)
+    if not lookup.get("step_id") and not lookup.get("function_step"):
+        return []
+    rows = _ai_sql_step_mapping_rows()
+    if not rows:
+        return []
+    products = _ai_sql_prompt_products(prompt, rows, product)
+    matches: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for row in rows:
+        prod_key = _ai_sql_product_key(row.get("product"))
+        if products and prod_key and prod_key not in products:
+            continue
+        if not _ai_sql_function_step_matches_prompt(prompt, str(row.get("function_step") or "")):
+            continue
+        key = (
+            _ai_sql_product_key(row.get("product")),
+            _cache_safe_text(row.get("step_id"), 160).casefold(),
+            _cache_safe_text(row.get("function_step"), 160).casefold(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append({
+            "product": _cache_safe_text(row.get("product"), 120),
+            "step_id": _cache_safe_text(row.get("step_id"), 160),
+            "function_step": _cache_safe_text(row.get("function_step"), 160),
+            "source": _cache_safe_text(row.get("source"), 120),
+        })
+        if len(matches) >= limit:
+            break
+    return matches
+
+
+def _ai_sql_values_clause(column: str, values: list[str], columns: list[str]) -> str:
+    clean: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _cache_safe_text(value, 160)
+        key = text.casefold()
+        if text and key not in seen:
+            seen.add(key)
+            clean.append(text)
+    if not column or not clean:
+        return ""
+    if len(clean) == 1:
+        return f"{column} = {_sql_literal_for_filter(clean[0], columns)}"
+    return f"{column} IN ({', '.join(_sql_literal_for_filter(value, columns) for value in clean[:50])})"
+
+
+def _ai_sql_step_mapping_context(prompt: str, columns: list[str], product: str = "") -> dict:
+    lookup = _column_lookup(columns)
+    step_col = lookup.get("step_id")
+    function_col = lookup.get("function_step")
+    matches = _ai_sql_step_mapping_matches(prompt, columns, product)
+    if not matches:
+        return {"used": False, "matches": [], "target_sql": "", "target_column": ""}
+    target_col = step_col or function_col or ""
+    values = [m.get("step_id") for m in matches] if step_col else [m.get("function_step") for m in matches]
+    target_sql = _ai_sql_values_clause(target_col, [str(v or "") for v in values], columns)
+    source_files: list[str] = []
+    for match in matches:
+        source = _cache_safe_text(match.get("source"), 120)
+        if source and source not in source_files:
+            source_files.append(source)
+    return {
+        "used": bool(target_sql),
+        "target_column": target_col,
+        "target_sql": target_sql,
+        "matches": matches,
+        "source_files": source_files,
+        "step_ids": [m.get("step_id") for m in matches if m.get("step_id")],
+        "function_steps": [m.get("function_step") for m in matches if m.get("function_step")],
+    }
+
+
+def _ai_sql_step_mapping_clause(prompt: str, columns: list[str], product: str = "", context: dict | None = None) -> str:
+    ctx = context if isinstance(context, dict) else _ai_sql_step_mapping_context(prompt, columns, product)
+    return _cache_safe_text(ctx.get("target_sql"), 1000) if ctx.get("used") else ""
+
+
+def _public_ai_sql_step_mapping_context(context: dict | None) -> dict:
+    if not isinstance(context, dict) or not context.get("used"):
+        return {"used": False, "matches": []}
+    return {
+        "used": True,
+        "target_column": context.get("target_column") or "",
+        "target_sql": context.get("target_sql") or "",
+        "matches": list(context.get("matches") or [])[:20],
+        "source_files": list(context.get("source_files") or [])[:10],
+    }
+
+
+def _ai_sql_filter_has_step_mapping(sql: str, context: dict) -> bool:
+    if not isinstance(context, dict) or not context.get("used"):
+        return True
+    target_col = _cache_safe_text(context.get("target_column"), 120)
+    if not target_col:
+        return True
+    mask = _mask_sql_literals(sql)
+    if not re.search(r"(?<![A-Za-z0-9_])" + re.escape(target_col) + r"(?![A-Za-z0-9_])", mask, flags=re.I):
+        return False
+    haystack = str(sql or "").casefold()
+    values = context.get("step_ids") if target_col.casefold() == "step_id" else context.get("function_steps")
+    values = values or []
+    return any(_cache_safe_text(value, 160).casefold() in haystack for value in values)
+
+
+def _merge_ai_sql_step_mapping_filter(raw_sql: str, context: dict, warnings: list[str]) -> str:
+    clause = _cache_safe_text((context or {}).get("target_sql"), 1000)
+    sql = str(raw_sql or "").strip()
+    if not sql or not clause:
+        return sql
+    if _ai_sql_filter_has_step_mapping(sql, context):
+        return sql
+    mask = _mask_sql_literals(sql)
+    target_col = _cache_safe_text((context or {}).get("target_column"), 120)
+    blocking_cols = [target_col, "step_id", "function_step"]
+    if any(col and re.search(r"(?<![A-Za-z0-9_])" + re.escape(col) + r"(?![A-Za-z0-9_])", mask, flags=re.I)
+           for col in blocking_cols):
+        raise ValueError("AI SQL step mapping did not resolve function_step to the mapped step_id.")
+    _draft_warning(warnings, "step matching file used to add mapped step_id filter")
+    return f"{sql} AND {clause}"
+
+
 def _fallback_window(prompt: str, column: str) -> str:
     aliases = _AI_SQL_COLUMN_ALIASES.get(str(column).casefold(), (str(column),))
     spans = [span for alias in aliases for span in [_alias_span(prompt, alias)] if span is not None]
@@ -6130,7 +6394,7 @@ def _fallback_window(prompt: str, column: str) -> str:
     return min(candidates, key=lambda item: (item[0], item[1]))[2]
 
 
-def _fallback_ai_sql(prompt: str, columns: list[str]) -> str:
+def _fallback_ai_sql(prompt: str, columns: list[str], product: str = "", step_mapping_context: dict | None = None) -> str:
     prompt = str(prompt or "").strip()
     if not prompt or not columns:
         return ""
@@ -6148,6 +6412,10 @@ def _fallback_ai_sql(prompt: str, columns: list[str]) -> str:
         lot_clause = _fallback_lot_clause(prompt, columns)
         if lot_clause:
             clauses.append(lot_clause)
+    step_clause = _ai_sql_step_mapping_clause(prompt, columns, product, step_mapping_context)
+    if step_clause:
+        clauses.append(step_clause)
+        hits = [col for col in hits if col.casefold() not in {"step_id", "function_step"}]
     if item_clause:
         clauses.append(item_clause)
     for col in hits:
@@ -7110,6 +7378,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
     resolved_columns, unknown_column_terms = _resolve_ai_sql_prompt_columns(prompt, columns)
     if unknown_column_terms:
         warnings.append("Unknown column-like terms: " + ", ".join(unknown_column_terms[:8]))
+    step_mapping_context = _ai_sql_step_mapping_context(prompt, columns, context.get("product") or "")
     draft_id = _new_ai_sql_draft_id()
     username = _cache_safe_text(username, 80)
     feedback_context = _ai_sql_feedback_context(username, prompt, columns)
@@ -7120,6 +7389,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         payload.setdefault("aggregate", {})
         payload["feedback_context_used"] = bool(feedback_context.get("used"))
         payload["feedback_context"] = _ai_sql_feedback_summary(feedback_context)
+        payload["step_mapping"] = _public_ai_sql_step_mapping_context(step_mapping_context)
         payload["alternatives"] = _maybe_ai_sql_alternatives(username, payload, feedback_context)
         return payload
 
@@ -7135,6 +7405,8 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "The output must be a single read-only WHERE/filter expression in the sql field. "
                 "Use only provided columns. Do not return SELECT, FROM, JOIN, ORDER BY, LIMIT, "
                 "DDL, DML, comments, semicolons, markdown, or explanation. "
+                "If step_mapping_context.used is true, use its target_sql for the step condition; "
+                "do not filter a function_step name directly when target_column is step_id. "
                 "Prefer SQL syntax: =, !=, >, >=, <, <=, LIKE, NOT LIKE, IN (...), "
                 "IS NULL, IS NOT NULL, AND, OR."
             ))
@@ -7145,6 +7417,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "schema": column_context,
                 "sample_rows": _safe_sample_rows(sample_rows or [], max_rows=5, max_cols=40, max_value_len=120),
                 "sample_profile": profile,
+                "step_mapping_context": _public_ai_sql_step_mapping_context(step_mapping_context),
                 "feedback_context": {
                     "liked_examples": feedback_context.get("positive") or [],
                     "avoid_examples": feedback_context.get("negative") or [],
@@ -7190,6 +7463,10 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
         warnings.append(f"LLM failed: {llm_info['error']}")
     raw_sql = _extract_llm_sql_text(raw_text, plan)
     resolved_values, value_terms = _plan_value_terms(plan, prompt, columns)
+    for value in [*(step_mapping_context.get("function_steps") or []), *(step_mapping_context.get("step_ids") or [])]:
+        text = _cache_safe_text(value, 160)
+        if text and text not in resolved_values:
+            resolved_values.append(text)
     selected_columns = _normalize_ai_sql_selected_columns(
         plan,
         columns,
@@ -7204,12 +7481,18 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
     if not aggregate_spec:
         aggregate_spec = _fallback_ai_sql_aggregate(prompt, columns)
     try:
+        raw_sql = _merge_ai_sql_step_mapping_filter(raw_sql, step_mapping_context, warnings)
         if _llm_misread_hash_wafer(prompt, raw_sql, columns):
             raise ValueError("Prompt #N token must be interpreted as wafer_id, not lot_id text")
         sql, validate_warnings = _validate_ai_sql_filter(raw_sql, columns)
         warnings.extend(validate_warnings)
     except Exception as exc:
-        fallback = _fallback_ai_sql(prompt, columns)
+        fallback = _fallback_ai_sql(
+            prompt,
+            columns,
+            product=context.get("product") or "",
+            step_mapping_context=step_mapping_context,
+        )
         feedback_hint = _ai_sql_feedback_hint(feedback_context)
         if not fallback and feedback_hint.get("sql"):
             fallback = str(feedback_hint.get("sql") or "")
