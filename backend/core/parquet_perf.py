@@ -19,6 +19,52 @@ from typing import Iterable
 import polars as pl
 
 
+def _is_categorical_dtype(dtype) -> bool:
+    text = str(dtype)
+    return dtype == pl.Categorical or "ategorical" in text or "Enum" in text
+
+
+def _categorical_string_schema(source) -> dict | None:
+    if isinstance(source, (str, Path)):
+        return None
+    try:
+        paths = list(source)
+    except TypeError:
+        return None
+    if len(paths) < 2:
+        return None
+    try:
+        schema_obj = pl.scan_parquet(str(paths[0])).collect_schema()
+    except Exception:
+        return None
+    if not any(_is_categorical_dtype(schema_obj[name]) for name in schema_obj.names()):
+        return None
+    return {
+        name: (pl.String if _is_categorical_dtype(schema_obj[name]) else schema_obj[name])
+        for name in schema_obj.names()
+    }
+
+
+def scan_parquet_relaxed(source, **kwargs):
+    """Scan parquet with the cross-partition casts Flow previews can tolerate."""
+    try:
+        scan_cast_options = getattr(pl, "ScanCastOptions", None)
+        if scan_cast_options is not None and "cast_options" not in kwargs:
+            kwargs["cast_options"] = scan_cast_options(categorical_to_string="allow")
+    except Exception:
+        pass
+    if "schema" not in kwargs:
+        schema = _categorical_string_schema(source)
+        if schema:
+            kwargs["schema"] = schema
+    try:
+        return pl.scan_parquet(source, **kwargs)
+    except TypeError:
+        # Older Polars builds do not accept cast_options.
+        kwargs.pop("cast_options", None)
+        return pl.scan_parquet(source, **kwargs)
+
+
 # ─────────────────────────────────────────────────────────────
 # 1. streaming collect
 # ─────────────────────────────────────────────────────────────
@@ -195,7 +241,7 @@ def get_or_compute_meta(fp: Path) -> dict:
     if cached is not None:
         return cached
     try:
-        lf = pl.scan_parquet(str(fp))
+        lf = scan_parquet_relaxed(str(fp))
         schema_obj = lf.collect_schema()
         schema = {n: str(schema_obj[n]) for n in schema_obj.names()}
         # row_count: streaming 으로 lean 하게
@@ -253,10 +299,10 @@ def scan_parquet_perf(files: list[Path], *, hive: bool = True,
     if not selected:
         return None
     try:
-        return pl.scan_parquet([str(f) for f in selected], hive_partitioning=hive)
+        return scan_parquet_relaxed([str(f) for f in selected], hive_partitioning=hive)
     except Exception:
         # hive=True 가 동작 안 하면 off 로 재시도
         try:
-            return pl.scan_parquet([str(f) for f in selected], hive_partitioning=False)
+            return scan_parquet_relaxed([str(f) for f in selected], hive_partitioning=False)
         except Exception:
             return None

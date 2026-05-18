@@ -380,7 +380,8 @@ def scan_one_file(fp: Path):
     try:
         if fp.suffix == ".csv":
             return filter_valid_wafer_ids_lazy(pl.scan_csv(str(fp), infer_schema_length=5000, try_parse_dates=False))
-        return filter_valid_wafer_ids_lazy(pl.scan_parquet(str(fp)))
+        from core.parquet_perf import scan_parquet_relaxed
+        return filter_valid_wafer_ids_lazy(scan_parquet_relaxed(str(fp)))
     except Exception:
         return None
 

@@ -1356,6 +1356,39 @@ def test_lazy_view_supports_polars_column_method_expr():
     assert result["total_rows_exact"] is False
 
 
+@pytest.mark.parametrize("categorical_first", [False, True])
+def test_lazy_product_view_allows_categorical_string_partition_mismatch(monkeypatch, tmp_path, categorical_first):
+    monkeypatch.setattr(utils, "PATHS", _DummyPaths(tmp_path))
+    product_dir = tmp_path / "ROOT" / "PRODA"
+    product_dir.mkdir(parents=True)
+
+    parts = [
+        ("A1000", "Y", categorical_first),
+        ("A1001", "N", not categorical_first),
+    ]
+    for idx, (lot_id, is_met, as_categorical) in enumerate(parts):
+        df = pl.DataFrame({"lot_id": [lot_id], "is_met": [is_met], "value": [idx + 1]})
+        if as_categorical:
+            df = df.with_columns(pl.col("is_met").cast(pl.Categorical))
+        df.write_parquet(product_dir / f"part_{idx}.parquet")
+
+    lf = utils.lazy_read_source(root="ROOT", product="PRODA", recent_days=None, max_files=None)
+    assert lf is not None
+
+    result = filebrowser._run_view_lazy(
+        lf,
+        sql="is_met = 'Y'",
+        select_cols="lot_id,is_met",
+        rows=20,
+        page=0,
+        page_size=20,
+        preview_cols=5,
+    )
+
+    assert result["dtypes"]["is_met"] == "String"
+    assert result["data"] == [{"lot_id": "A1000", "is_met": "Y"}]
+
+
 def test_filebrowser_dataframe_view_normalizes_wafer_ids():
     df = pl.DataFrame({
         "root_lot_id": ["LOT"] * 4,

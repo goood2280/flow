@@ -3042,7 +3042,8 @@ def _scan_one_file_raw(fp: Path):
         if ext == ".csv":
             return pl.scan_csv(str(fp), infer_schema_length=5000, try_parse_dates=False)
         if ext == ".parquet":
-            return pl.scan_parquet(str(fp))
+            from core.parquet_perf import scan_parquet_relaxed
+            return scan_parquet_relaxed(str(fp))
     except Exception:
         return None
     return None
