@@ -30,6 +30,7 @@ def test_lot_progress_metadata_documents_filebrowser_cache_rules():
     assert meta["manual_change_points"]["column_mapping"] == "settings.json.lot_progress_column_mapping"
     assert meta["column_mapping"]["root_lot_id"] == "root_lot_id"
     assert meta["column_mapping"]["ppid"] == "ppid"
+    assert "step_desc" in meta["function_step_source_columns"]
 
 
 def test_tracker_lot_status_cache_keeps_requested_fields(monkeypatch, tmp_path):
@@ -342,6 +343,42 @@ def test_refresh_lot_progress_cache_prefers_source_update_time_for_latest(monkey
     assert state["count"] == 1
     assert state["items"][0]["lot_id"] == "A1000A.NEW"
     assert state["items"][0]["update_time"] == "2026-05-08T13:00:00"
+
+
+def test_refresh_lot_progress_cache_uses_step_desc_as_function_step_fallback(monkeypatch, tmp_path):
+    data_root = tmp_path / "flow-data"
+    db_root = tmp_path / "Fab"
+    fab_product = db_root / "1.RAWDATA_DB_FAB" / "PRODA"
+    fab_product.mkdir(parents=True)
+    pl.DataFrame({
+        "root_lot_id": ["A1000", "A1000"],
+        "lot_id": ["A1000A.1", "A1000A.2"],
+        "wafer_id": ["W01", "W01"],
+        "step_id": ["STEP_010", "STEP_020"],
+        "step_desc": ["OLD_DESC", "SORT_DESC"],
+        "tkout_time": ["2026-05-08T08:30:00", "2026-05-08T09:30:00"],
+    }).write_parquet(fab_product / "part.parquet")
+
+    class DummyPaths:
+        def __init__(self):
+            self.cache_dir = data_root / "cache"
+            self.db_cache_dir = db_root / "cache"
+            self.data_root = data_root
+            self.db_root = db_root
+            self.base_root = db_root
+
+    monkeypatch.setattr(cache, "PATHS", DummyPaths())
+    monkeypatch.setattr(cache, "load_step_matching", lambda: ({}, {}))
+    monkeypatch.setattr(cache, "_CACHE_STATE", None)
+
+    state = cache.refresh_lot_progress_cache(force=True)
+    df = pl.read_parquet(cache.filebrowser_cache_parquet_file())
+
+    assert state["count"] == 1
+    assert state["items"][0]["lot_id"] == "A1000A.2"
+    assert state["items"][0]["function_step"] == "SORT_DESC"
+    assert state["items"][0]["func_step"] == "SORT_DESC"
+    assert df.to_dicts()[0]["function_step"] == "SORT_DESC"
 
 
 def test_refresh_lot_progress_cache_uses_custom_column_mapping(monkeypatch, tmp_path):

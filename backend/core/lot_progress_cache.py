@@ -33,6 +33,16 @@ LOT_PROGRESS_CANONICAL_COLUMNS = (
     "tkin_time", "tkout_time", "time", "update_time", "eqp_id", "chamber_id", "ppid",
 )
 DEFAULT_LOT_PROGRESS_COLUMN_MAPPING = {col: col for col in LOT_PROGRESS_CANONICAL_COLUMNS}
+FUNCTION_STEP_SOURCE_COLUMNS = (
+    "function_step",
+    "func_step",
+    "func step",
+    "canonical_step",
+    "step_function",
+    "step_desc",
+    "step description",
+    "step_description",
+)
 STEP_MAPPING_FILENAMES = (
     "Vehicle_matching.csv",
     "vehicle_matching.csv",
@@ -91,6 +101,10 @@ def metadata() -> dict:
         "column_mapping": column_mapping,
         "column_mapping_defaults": dict(DEFAULT_LOT_PROGRESS_COLUMN_MAPPING),
         "step_mapping_sources": list(STEP_MAPPING_FILENAMES),
+        "function_step_source_columns": [
+            "step matching CSV",
+            *FUNCTION_STEP_SOURCE_COLUMNS,
+        ],
         "manual_change_points": {
             "db_root": "settings.json.lot_progress_source_root",
             "column_mapping": f"settings.json.{COLUMN_MAPPING_SETTING_KEY}",
@@ -665,7 +679,9 @@ def _row_ci(row: dict, *names: str):
     for name in names:
         key = str(name or "").strip().lower()
         if key in lookup:
-            return lookup.get(key)
+            value = lookup.get(key)
+            if _safe_text(value):
+                return value
     return ""
 
 
@@ -681,9 +697,7 @@ def load_step_matching() -> tuple[dict[tuple[str, str], str], dict[str, str]]:
                 for row in reader:
                     product = _norm_key(_row_ci(row, "product", "process_id", "prod"))
                     step_id = _norm_key(_row_ci(row, "step_id", "raw_step_id", "step"))
-                    function_step = _safe_text(
-                        _row_ci(row, "func_step", "function_step", "func step", "canonical_step", "step_function")
-                    )
+                    function_step = _safe_text(_row_ci(row, *FUNCTION_STEP_SOURCE_COLUMNS))
                     if not step_id or not function_step:
                         continue
                     if product:
@@ -706,6 +720,24 @@ def _mapped_fab_progress_columns(column_mapping: dict | None = None) -> list[str
         if source and source not in seen:
             seen.add(source)
             out.append(source)
+    for source in FUNCTION_STEP_SOURCE_COLUMNS:
+        if source and source not in seen:
+            seen.add(source)
+            out.append(source)
+    return out
+
+
+def _resolve_available_fab_progress_columns(names: Iterable[str], requested: Iterable[str]) -> list[str]:
+    exact = {str(name): str(name) for name in names}
+    folded = {str(name).casefold(): str(name) for name in names}
+    out: list[str] = []
+    seen: set[str] = set()
+    for column in requested:
+        text = str(column or "")
+        actual = exact.get(text) or folded.get(text.casefold())
+        if actual and actual not in seen:
+            seen.add(actual)
+            out.append(actual)
     return out
 
 
@@ -714,14 +746,14 @@ def _available_fab_progress_columns(path: Path, column_mapping: dict | None = No
     try:
         import polars as pl  # type: ignore
         schema = pl.read_parquet_schema(str(path))
-        names = set(schema.keys() if hasattr(schema, "keys") else schema)
-        return [col for col in mapped_columns if col in names]
+        names = schema.keys() if hasattr(schema, "keys") else schema
+        return _resolve_available_fab_progress_columns(names, mapped_columns)
     except Exception:
         pass
     try:
         import pyarrow.parquet as pq  # type: ignore
-        names = set(pq.ParquetFile(str(path)).schema.names)
-        return [col for col in mapped_columns if col in names]
+        names = pq.ParquetFile(str(path)).schema.names
+        return _resolve_available_fab_progress_columns(names, mapped_columns)
     except Exception:
         return mapped_columns
 
@@ -737,6 +769,13 @@ def _fill_missing_progress_columns(row: dict, column_mapping: dict | None = None
             out[canonical] = raw.get(source)
         else:
             out[canonical] = lower_lookup.get(str(source).casefold())
+    for source in FUNCTION_STEP_SOURCE_COLUMNS:
+        if source in raw:
+            out[source] = raw.get(source)
+        else:
+            value = lower_lookup.get(str(source).casefold())
+            if value is not None:
+                out[source] = value
     return out
 
 
@@ -1069,6 +1108,7 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "") -> di
                                     step_by_product.get((product_key, step_key))
                                     or step_by_product.get((_norm_key(process_id), step_key))
                                     or step_by_id.get(step_key)
+                                    or _safe_text(_row_ci(raw, *FUNCTION_STEP_SOURCE_COLUMNS))
                                     or ""
                                 )
                                 lot_wf = f"{root_lot_id}_{wafer_id}"

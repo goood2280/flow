@@ -59,7 +59,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
   - 그래도 없고 `db_root` 자체에 product 폴더가 있으면 `db_root` 를 직접 source_root 로 쓴다.
 - `product` 는 **parquet 컬럼이 아니라** source_root 바로 아래 **폴더 이름** 이다 (`backend/core/lot_progress_cache.py:968-969`). 같은 product 의 parquet 들이 그 폴더 하위 트리에 흩어져 있어도 모두 같은 product 로 묶인다.
 
-#### 읽는 컬럼 (canonical 12개)
+#### 읽는 컬럼 (canonical 12개 + function_step 보조 후보)
 
 코드 고정 canonical 이름과 실제 parquet 컬럼명을 매핑한다. 매핑은 UI "LOT 컬럼 매칭" 폼 또는 `settings.json.lot_progress_column_mapping` 에서 바꾼다. 정의는 `LOT_PROGRESS_CANONICAL_COLUMNS` (라인 31–34), 적용은 `_read_parquet_rows` (라인 660 부근).
 
@@ -77,6 +77,8 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 | `eqp_id` | `eqp_id` | 보조 |
 | `chamber_id` | `chamber_id` | 보조 |
 | `ppid` | `ppid` | 보조 |
+
+`function_step` 은 출력 canonical 컬럼이지만 원본 필수 컬럼은 아니다. 기본은 step matching CSV 로 `step_id` 를 매핑하고, 매핑이 없을 때 원본 parquet 의 `function_step` / `func_step` / `step_desc` 값을 fallback 으로 읽는다.
 
 행 인정 조건: `root_lot_id`, `wafer_id`, `step_id` 가 모두 비어있지 않아야 한다 (`backend/core/lot_progress_cache.py:980-981`). 하나라도 비면 그 행은 skip.
 
@@ -102,7 +104,7 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 | `wafer_id` | canonical (정규화) |
 | `lot_id` | canonical |
 | `step_id` | canonical |
-| `function_step` | `step_id` 를 step matching CSV 로 매핑한 값 |
+| `function_step` | `step_id` 를 step matching CSV 로 매핑한 값, 없으면 원본 `function_step` / `func_step` / `step_desc` |
 | `tkout_time` | canonical |
 | `update_time` | **캐시 빌드 시각** (`state.generated_at`, 라인 519). 원본 행의 `update_time` 이 아님 — 주의. |
 
