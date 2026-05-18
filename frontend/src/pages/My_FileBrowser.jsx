@@ -1141,7 +1141,7 @@ export default function My_FileBrowser({user,onNavigate}){
       setLoading(true);setError("");
       // full=true 와 동일 — SQL 이 비어도 sample 행을 보여줘야 하므로 meta_only 꺼둠.
       setPage(0);
-      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
+      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),
         select_cols:activeSelectedCols.length?activeSelectedCols.join(","):"",...sortParams(activeSort),...aggregateParams(activeAggregate)});
       sf(url).then(d=>{if(activeSelectedCols.length)setSelectedCols(selectedColsFromResponse(d,activeSelectedCols));setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
@@ -1419,7 +1419,7 @@ export default function My_FileBrowser({user,onNavigate}){
       if(baseRaw)return; // json/md 는 컬럼 선택 불가 — baseRaw 상태로 판단
       setLoading(true);setError("");setTab("data");
       setPage(0);
-      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
+      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),
         select_cols:cols.length?cols.join(","):"",...sortParams(sortSpec),...aggregateParams(aggregateSpec)});
       sf(url).then(d=>{setSelectedCols(cols.length?selectedColsFromResponse(d,cols):[]);setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     }
@@ -1462,7 +1462,7 @@ export default function My_FileBrowser({user,onNavigate}){
     if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,sql,selectedCols,{full:true,page:p});
     else if(mode==="base"&&selBaseFile&&!baseRaw){
       setLoading(true);setError("");setTab("data");setPage(p);
-      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:p,page_size:PAGE_SIZE,cols:10,_ts:Date.now(),
+      const url=buildUrl(API+"/base-file-view",{file:selBaseFile,sql:sql||"",rows:PAGE_SIZE,page:p,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),
         select_cols:selectedCols.length?selectedCols.join(","):"",...sortParams(sortSpec),...aggregateParams(aggregateSpec)});
       sf(url).then(d=>{setData(d);if(!d.kind)syncBaseEditState(d);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
     } else if(selRoot&&selProd)loadHiveView(selRoot,selProd,sql,selectedCols,{full:true,page:p});
