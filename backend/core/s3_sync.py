@@ -14,6 +14,7 @@ Config lives at `data/flow-data/s3_sync.json`:
   }
 
 Status (append-only log) at `data/flow-data/s3_sync_status.jsonl`.
+AWS credentials/config are read from `data/flow-data/s3_ingest/aws/`.
 """
 from __future__ import annotations
 import hashlib
@@ -22,6 +23,8 @@ import logging
 import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+
+from core import aws_credentials as _aws_credentials
 
 logger = logging.getLogger("flow.s3_sync")
 
@@ -285,8 +288,16 @@ def sync_one(data_root: Path, artifact: Dict[str, Any], cfg: Dict[str, Any]) -> 
         entry["status"] = "queued"; entry["note"] = "boto3 not installed — logged only"
         _append_status(data_root, entry); return entry
     try:
-        session = _boto3.Session(profile_name=cfg["profile"]) if cfg.get("profile") else _boto3.Session()
-        s3 = session.client("s3", region_name=cfg.get("region"))
+        session_kwargs, profile_conf = _aws_credentials.boto3_session_kwargs(data_root, cfg.get("profile"))
+        region = cfg.get("region") or profile_conf.get("region")
+        endpoint_url = cfg.get("endpoint_url") or profile_conf.get("endpoint_url")
+        session = _boto3.Session(**session_kwargs)
+        client_kwargs: Dict[str, Any] = {}
+        if region:
+            client_kwargs["region_name"] = region
+        if endpoint_url:
+            client_kwargs["endpoint_url"] = endpoint_url
+        s3 = session.client("s3", **client_kwargs)
         s3.upload_file(str(fp), cfg["bucket"], key)
         entry["status"] = "uploaded"
     except Exception as e:

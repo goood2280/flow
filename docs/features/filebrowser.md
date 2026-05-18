@@ -122,6 +122,7 @@ step matching CSV 후보 (repo 루트): `Vehicle_matching.csv`, `vehicle_matchin
 | 잠금 파일 | `<flow-data>/locks/lot_progress_cache.lock` (`refresh_lock_file()`, 라인 108–111) — 공유 data root 단일 실행 보장 |
 | 갱신 로그 | `<flow-data>/logs/lot_progress_cache_refresh.jsonl` (`refresh_log_file()`, 라인 114–117) |
 | S3 업로드 | `filebrowser_settings.json.auto_s3_upload_on_save=true` 일 때 갱신 후 `s3_sync.sync_saved_path` 호출. 버킷/리전/프리픽스 등은 `<flow-data>/s3_sync.json` (`backend/core/s3_sync.py`) |
+| AWS key/config | FileBrowser AWS 설정 탭의 access key/secret/config는 `<flow-data>/s3_ingest/aws/credentials`와 `<flow-data>/s3_ingest/aws/config`에 저장하고, `aws` CLI 실행과 boto3 업로드가 이 파일을 읽는다. |
 
 #### 엔지니어 수정 포인트 (한 표)
 
@@ -132,6 +133,7 @@ step matching CSV 후보 (repo 루트): `Vehicle_matching.csv`, `vehicle_matchin
 | parquet 의 실 컬럼명 → canonical 매핑 | UI "LOT 컬럼 매칭" 12개 입력 = `settings.json.lot_progress_column_mapping` | canonical 컬럼 자체 추가/삭제: `LOT_PROGRESS_CANONICAL_COLUMNS` (라인 31–34) |
 | 자동 갱신 주기 | UI "자동 주기 분" = `settings.json.lot_progress_refresh_minutes` | 범위 한계: `CACHE_REFRESH_MINUTES_MIN/MAX` (라인 27–28) |
 | S3 자동 업로드 토글 | UI "저장/캐시 갱신 후 S3 업로드" = `filebrowser_settings.json.auto_s3_upload_on_save` | S3 설정 자체: `<flow-data>/s3_sync.json` |
+| AWS key/config 저장소 | UI "AWS 설정" 탭 | `<flow-data>/s3_ingest/aws/credentials`, `<flow-data>/s3_ingest/aws/config` |
 | "최신" 정렬 우선순위 (시간 컬럼 순서) | — | `_sort_time` (라인 370–371) |
 | 그룹 키 (product 묶음 등) | — | latest key 조립 (라인 991, 1012) |
 | 행 인정 필수 필드 | — | (라인 980–981) |

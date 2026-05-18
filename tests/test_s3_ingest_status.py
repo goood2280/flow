@@ -248,3 +248,96 @@ def test_running_status_keeps_previous_last_log(tmp_path, monkeypatch):
     assert saved["db1"]["last_end"] == "2026-05-08T10:00:00"
     assert saved["db1"]["last_output_tail"] == "previous sync complete"
     assert saved["db1"]["directions"]["download"]["last_status"] == "running"
+
+
+def test_aws_config_save_uses_flow_data_paths(tmp_path, monkeypatch):
+    aws_home = tmp_path / "flow-data" / "s3_ingest" / "aws"
+    credentials = aws_home / "credentials"
+    config = aws_home / "config"
+    monkeypatch.setattr(s3_ingest, "AWS_HOME", aws_home)
+    monkeypatch.setattr(s3_ingest, "AWS_CREDENTIALS", credentials)
+    monkeypatch.setattr(s3_ingest, "AWS_CONFIG", config)
+    monkeypatch.setattr(s3_ingest.shutil, "which", lambda _name: "/usr/bin/aws")
+
+    out = s3_ingest.aws_config_save(
+        s3_ingest.AwsConfigReq(
+            username="admin",
+            profile="default",
+            aws_access_key_id="AKIA1234567890AB",
+            aws_secret_access_key="abcDEF1234567890abcDEF1234567890abcDEF12",
+            region="ap-northeast-2",
+            output="json",
+            endpoint_url="https://s3.internal.example:9000",
+        ),
+        _perm=None,
+    )
+    got = s3_ingest.aws_config_get(username="admin", _perm=None)
+    env = s3_ingest._aws_cli_env()
+
+    assert out == {"ok": True, "profile": "default"}
+    assert credentials.exists()
+    assert config.exists()
+    assert str(tmp_path / "flow-data") in got["credentials_path"]
+    assert got["credentials_path"] == str(credentials)
+    assert got["config_path"] == str(config)
+    assert got["profiles"][0]["aws_access_key_id"] == "AKIA1234567890AB"
+    assert got["profiles"][0]["has_secret"] is True
+    assert got["profiles"][0]["endpoint_url"] == "https://s3.internal.example:9000"
+    assert env["AWS_SHARED_CREDENTIALS_FILE"] == str(credentials)
+    assert env["AWS_CONFIG_FILE"] == str(config)
+
+
+def test_s3_sync_boto3_reads_flow_data_aws_profile(tmp_path, monkeypatch):
+    from core import s3_sync
+
+    data_root = tmp_path / "flow-data"
+    aws_home = data_root / "s3_ingest" / "aws"
+    aws_home.mkdir(parents=True)
+    (aws_home / "credentials").write_text(
+        "[flow]\n"
+        "aws_access_key_id = AKIA1234567890AB\n"
+        "aws_secret_access_key = abcDEF1234567890abcDEF1234567890abcDEF12\n",
+        encoding="utf-8",
+    )
+    (aws_home / "config").write_text(
+        "[profile flow]\n"
+        "region = ap-northeast-2\n"
+        "endpoint_url = https://s3.internal.example:9000\n",
+        encoding="utf-8",
+    )
+    artifact_file = data_root / "reformatter" / "PRODA.json"
+    artifact_file.parent.mkdir(parents=True)
+    artifact_file.write_text("{}", encoding="utf-8")
+    calls = {}
+
+    class FakeClient:
+        def upload_file(self, file_path, bucket, key):
+            calls["upload"] = (file_path, bucket, key)
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            calls["session_kwargs"] = kwargs
+
+        def client(self, service, **kwargs):
+            calls["client"] = (service, kwargs)
+            return FakeClient()
+
+    class FakeBoto3:
+        Session = FakeSession
+
+    monkeypatch.setattr(s3_sync, "_HAS_BOTO", True)
+    monkeypatch.setattr(s3_sync, "_boto3", FakeBoto3)
+
+    out = s3_sync.sync_one(
+        data_root,
+        {"path": str(artifact_file), "key": "reformatter/PRODA.json", "type": "reformatter"},
+        {"enabled": True, "bucket": "bucket", "prefix": "flow/", "profile": "flow"},
+    )
+
+    assert out["status"] == "uploaded"
+    assert calls["session_kwargs"]["aws_access_key_id"] == "AKIA1234567890AB"
+    assert calls["session_kwargs"]["aws_secret_access_key"] == "abcDEF1234567890abcDEF1234567890abcDEF12"
+    assert calls["client"] == (
+        "s3",
+        {"region_name": "ap-northeast-2", "endpoint_url": "https://s3.internal.example:9000"},
+    )

@@ -4,7 +4,7 @@ Scheduled (interval_min) + manual refresh. Whitelist-based arg validation.
 
 v8.1.0 adds:
   - endpoint_url as a dedicated per-item field (auto-prepended as --endpoint-url)
-  - GET/POST /aws-config to manage ~/.aws/credentials + ~/.aws/config (admin only)
+  - GET/POST /aws-config to manage AWS credentials/config under flow-data (admin only)
 
 Storage:
   data_root/s3_ingest/config.json       — item configs
@@ -18,6 +18,7 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from core.paths import PATHS
+from core import aws_credentials as _aws_credentials
 from core.utils import load_json, save_json, jsonl_append, jsonl_read, jsonl_trim
 from core.auth import require_page_manager
 
@@ -34,8 +35,8 @@ HISTORY_FILE = S3_DIR / "history.jsonl"
 def _db_root() -> Path:
     return PATHS.db_root
 
-# ── AWS config paths (per the user running the backend) ──
-AWS_HOME = Path(os.path.expanduser("~/.aws"))
+# ── AWS config paths (runtime data, not the backend user's home directory) ──
+AWS_HOME = _aws_credentials.aws_home(PATHS.data_root)
 AWS_CREDENTIALS = AWS_HOME / "credentials"
 AWS_CONFIG = AWS_HOME / "config"
 
@@ -87,6 +88,14 @@ def _load_status() -> Dict[str, Any]:
 
 def _save_status(st):
     save_json(STATUS_FILE, st, indent=2)
+
+
+def _aws_cli_env() -> Dict[str, str]:
+    env = os.environ.copy()
+    env["AWS_SHARED_CREDENTIALS_FILE"] = str(AWS_CREDENTIALS)
+    env["AWS_CONFIG_FILE"] = str(AWS_CONFIG)
+    env.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+    return env
 
 
 def _normalize_direction(value: str | None) -> str:
@@ -447,7 +456,7 @@ def _build_cmd(item: Dict[str, Any]):
 
     # endpoint_url — dedicated field, auto-prepended as --endpoint-url
     endpoint_url = (item.get("endpoint_url") or "").strip()
-    # v8.1.4: fallback to ~/.aws/config default profile endpoint_url when item has none
+    # v8.1.4: fallback to runtime AWS config default profile endpoint_url when item has none
     if not endpoint_url:
         try:
             _cfg = _read_config()
@@ -504,7 +513,7 @@ def _run_item_blocking(item_id: str):
     t0 = time.time()
     status = "error"; exit_code = -1; tail = ""
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=MAX_RUNTIME_SEC)
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=MAX_RUNTIME_SEC, env=_aws_cli_env())
         out = (proc.stdout or "") + (proc.stderr or "")
         tail = out[-2000:] if out else ""
         exit_code = proc.returncode
@@ -938,7 +947,7 @@ def push_item(req: PushReq, _perm=Depends(require_page_manager("filebrowser"))):
              "status": "starting", "cmd": " ".join(args)}
     jsonl_append(HISTORY_FILE, entry)
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=300)
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=300, env=_aws_cli_env())
         ok = proc.returncode == 0
         done = {"id": req.id, "direction": "push", "ts": datetime.datetime.now().isoformat(),
                 "status": "ok" if ok else "error",
@@ -1028,7 +1037,7 @@ def _mask_secret(v: str) -> str:
 
 
 def _read_credentials() -> Dict[str, Dict[str, str]]:
-    """Return {profile: {field: value}} from ~/.aws/credentials (empty dict if none)."""
+    """Return {profile: {field: value}} from flow-data AWS credentials."""
     p = configparser.ConfigParser()
     if AWS_CREDENTIALS.exists():
         try:
@@ -1039,7 +1048,7 @@ def _read_credentials() -> Dict[str, Dict[str, str]]:
 
 
 def _read_config() -> Dict[str, Dict[str, str]]:
-    """Return {section: {field: value}} from ~/.aws/config.
+    """Return {section: {field: value}} from flow-data AWS config.
 
     Note: aws config uses 'profile NAME' section headers except for [default].
     We return with normalized key = profile name (stripped 'profile ' prefix).
@@ -1122,7 +1131,7 @@ def aws_config_save(req: AwsConfigReq, _perm=Depends(require_page_manager("fileb
     endpoint_url = (req.endpoint_url or "").strip()
     _validate_endpoint_url(endpoint_url)
 
-    # Ensure ~/.aws exists with mode 700
+    # Ensure flow-data AWS credential directory exists with mode 700
     try:
         AWS_HOME.mkdir(parents=True, exist_ok=True)
         try:

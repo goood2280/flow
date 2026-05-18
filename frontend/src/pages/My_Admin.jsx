@@ -2295,7 +2295,7 @@ function AWSPanel({user}){
           </select>
         </div>
         <div style={{gridColumn:"1 / 3"}}>
-          <div style={labelS}>Endpoint URL (선택, ~/.aws/config 에 저장됨)</div>
+          <div style={labelS}>Endpoint URL (선택, flow-data AWS config에 저장됨)</div>
           <input value={form.endpoint_url} onChange={e=>setForm(f=>({...f,endpoint_url:e.target.value}))} placeholder="https://s3.internal.company:9000" style={{...S,width:"100%"}}/>
         </div>
       </div>}
