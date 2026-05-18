@@ -98,7 +98,7 @@ def test_common_loading_component_shows_progress_cues():
     ui = (ROOT / "frontend" / "src" / "components" / "Loading.jsx").read_text(encoding="utf-8")
     assert "flowLoadingSweep" in ui
     assert "aria-live=\"polite\"" in ui
-    assert "캐시 확인" in ui
+    assert "데이터 확인" in ui
     assert "데이터 준비 중" in ui
 
 

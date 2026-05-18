@@ -150,7 +150,7 @@ step matching CSV 후보 (repo 루트): `Vehicle_matching.csv`, `vehicle_matchin
 | Tracker `lot_step` 폴백 | `backend/core/lot_step.py:_latest_fab_step_from_lot_progress_cache` (라인 79) → `tracker.py:1545` | **`<db_root>/cache/lot_progress_latest_lot_by_root_wafer.parquet` 매 호출 polars scan** |
 | 인폼 product 옵션 | `backend/routers/informs.py:_lot_progress_cache_products` (라인 179) | **동일 parquet 매 호출 polars scan** |
 | 스플릿테이블 매칭 캐시 빌드 후 트리거 | `backend/routers/splittable.py:5051` | `refresh_lot_progress_cache(force=...)` (write) |
-| 캐시 상태 / 수동 갱신 endpoint | `backend/routers/filebrowser.py` cache_match_* | `cache_status` / `refresh_lot_progress_cache` |
+| 캐시 상태 / 수동 갱신 endpoint | `backend/routers/filebrowser.py` cache_match_* | 상태 확인은 read-only JSON/memory cache만 읽고, 수동 갱신만 `refresh_lot_progress_cache`를 호출 |
 
 **두 갈래 read 경로의 latency 양상**
 
@@ -162,6 +162,7 @@ step matching CSV 후보 (repo 루트): `Vehicle_matching.csv`, `vehicle_matchin
 1. 인메모리 dict 가 cold (서버 부팅 직후 첫 요청, 또는 30분 stale). disk JSON `lot_wf_current.json` 한 번 read+`json.loads` (수십 ms). 그래도 stale 면 풀 빌드(FAB parquet 전체 스캔, 수 초~수 분).
 2. parquet 직접 스캔 경로를 쓰는 컨슈머(인폼 product 옵션 / Tracker `lot_step` 폴백)가 페이지 진입마다 polars open + schema 추출.
 3. `lookup_lot_progress` 의 선형 필터를 한 화면에서 N 번 호출 (Tracker hydrate, 인폼 dashboard).
+4. 운영 상태 확인 endpoint가 stale 상태를 이유로 source refresh나 cache parquet scan을 수행하면 polling만으로 heavy 작업이 누적된다. 현재 `/api/filebrowser/cache/match/status`는 이를 피하기 위해 JSON/memory cache만 읽는다.
 
 **개선 체크리스트 (우선순위 순)**
 

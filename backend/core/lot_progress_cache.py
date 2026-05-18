@@ -1473,7 +1473,7 @@ def cache_status() -> dict:
     configured_source_root = lot_progress_cache_source_root()
     source_root_candidates = lot_progress_source_root_candidates(PATHS.db_root, configured_source_root)
     try:
-        state = load_lot_progress_cache(max_age_seconds=lot_progress_cache_refresh_seconds())
+        state = read_lot_progress_cache(max_age_seconds=lot_progress_cache_refresh_seconds(), allow_stale=True)
     except Exception as exc:
         runtime = _state_with_runtime({}, error=True)
         return {
@@ -1496,12 +1496,15 @@ def cache_status() -> dict:
         }
     runtime = _state_with_runtime(state)
     source_roots = list(state.get("source_roots") or [])
+    products = list(_cache_index_for(state).get("products") or [])[:500]
     return {
         "ok": True,
         "version": state.get("version"),
         "generated_at": state.get("generated_at"),
         "count": state.get("count", len(state.get("items") or [])),
         "row_count": runtime.get("row_count", state.get("count", len(state.get("items") or []))),
+        "products": products,
+        "product_count": len(products),
         "files_scanned": state.get("files_scanned", 0),
         "rows_seen": state.get("rows_seen", 0),
         "errors": state.get("errors") or [],
@@ -1513,6 +1516,7 @@ def cache_status() -> dict:
         "source_root": state.get("source_root") or "",
         "source_roots": source_roots,
         "effective_source_roots": list(state.get("effective_source_roots") or source_roots),
+        "fab_roots": list(state.get("fab_roots") or []),
         "source_root_candidates": list(state.get("source_root_candidates") or source_root_candidates),
         "last_success_at": runtime.get("last_success_at", ""),
         "last_attempt_at": runtime.get("last_attempt_at", ""),

@@ -366,7 +366,11 @@ def test_filebrowser_lot_progress_cache_status_and_refresh_contract(monkeypatch,
     monkeypatch.setattr(auth_core, "current_user", lambda _request: {"username": "admin", "role": "admin"})
     json_fp = tmp_path / "lot_wf_current.json"
     parquet_fp = tmp_path / "lot_progress_latest_lot_by_root_wafer.parquet"
-    json_fp.write_text(json.dumps({"generated_at": "2026-05-10T01:00:00", "count": 1}), encoding="utf-8")
+    json_fp.write_text(json.dumps({
+        "generated_at": "2026-05-10T01:00:00",
+        "count": 1,
+        "items": [{"product": "PRODA", "root_lot_id": "A1000", "wafer_id": "1", "lot_id": "A1000A.1"}],
+    }), encoding="utf-8")
     pl.DataFrame({
         "product": ["PRODA"],
         "root_lot_id": ["A1000"],
@@ -379,10 +383,11 @@ def test_filebrowser_lot_progress_cache_status_and_refresh_contract(monkeypatch,
     }).write_parquet(parquet_fp)
     monkeypatch.setattr(lot_progress_cache, "cache_file", lambda: json_fp)
     monkeypatch.setattr(lot_progress_cache, "filebrowser_cache_parquet_file", lambda: parquet_fp)
+    refresh_calls = []
     monkeypatch.setattr(
         lot_progress_cache,
         "refresh_lot_progress_cache",
-        lambda force=False, source_root="": {
+        lambda force=False, source_root="": refresh_calls.append((force, source_root)) or {
             "generated_at": "2026-05-10T02:00:00",
             "count": 2,
             "files_scanned": 3,
@@ -392,8 +397,10 @@ def test_filebrowser_lot_progress_cache_status_and_refresh_contract(monkeypatch,
         },
     )
     monkeypatch.setattr(lot_progress_cache, "export_lot_progress_parquet", lambda state=None: {"ok": True, "rows": 2, "paths": [str(parquet_fp)]})
+    monkeypatch.setattr(filebrowser.pl, "scan_parquet", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("status must not scan parquet")))
 
     status = filebrowser.cache_match_status(_Request("admin", "admin"), target="lot_progress")
+    assert refresh_calls == []
     refreshed = filebrowser.cache_match_refresh(
         filebrowser.CacheMatchRefreshReq(target="lot_progress", force=True),
         _Request("admin", "admin"),
@@ -411,6 +418,7 @@ def test_filebrowser_lot_progress_cache_status_and_refresh_contract(monkeypatch,
     assert "wafer_id" in status["wafer_id_source_column"]
     assert "step_matching.csv" in status["step_mapping_sources"]
     assert refreshed["unit_action"] == "filebrowser.cache.lot_progress.refresh"
+    assert refresh_calls == [(True, "")]
     assert refreshed["row_count"] == 2
     assert refreshed["products"] == ["PRODA", "PRODB"]
     assert refreshed["product_count"] == 2

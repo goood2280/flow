@@ -4194,68 +4194,9 @@ def _lot_progress_cache_status() -> dict:
     core_status = _lot_progress_cache.cache_status()
     cache_metadata = _lot_progress_metadata()
     configured_source_root = _lot_progress_source_root_setting() or str(core_status.get("configured_source_root") or "")
-    state = load_json(json_fp, {}) if json_fp.is_file() else {}
-    if not isinstance(state, dict):
-        state = {}
-    row_count = int(state.get("count") or 0)
-    products: list[str] = []
-    updated_at = str(state.get("generated_at") or "")
-    if parquet_fp.is_file():
-        try:
-            lf = pl.scan_parquet(str(parquet_fp))
-            names = lf.collect_schema().names()
-            row_count = int(lf.select(pl.len().alias("row_count")).collect().item(0, 0) or row_count)
-            if "product" in names:
-                prod_df = (
-                    lf.select(pl.col("product").cast(_SORT_STR, strict=False).alias("product"))
-                    .filter(pl.col("product").is_not_null() & (pl.col("product") != ""))
-                    .unique()
-                    .sort("product")
-                    .head(500)
-                    .collect()
-                )
-                products = [str(v) for v in prod_df["product"].to_list() if str(v or "").strip()]
-            if "update_time" in names:
-                value = lf.select(pl.col("update_time").cast(_SORT_STR, strict=False).max().alias("updated_at")).collect().item(0, 0)
-                if value:
-                    updated_at = str(value)
-        except Exception as e:
-            return {
-                "ok": False,
-                "target": "lot_progress",
-                "mode": "scheduled",
-                "unit_action": "filebrowser.cache.lot_progress.status",
-                "enabled": True,
-                "manual_enabled": True,
-                "schedule_enabled": True,
-                "scheduler_enabled": bool(core_status.get("scheduler_started")),
-                "interval_minutes": int(core_status.get("interval_minutes") or _lot_progress_cache.lot_progress_cache_refresh_minutes()),
-                "cache_path": str(parquet_fp),
-                "json_cache_path": str(json_fp),
-                "cache_exists": parquet_fp.is_file(),
-                "configured_source_root": configured_source_root,
-                "source_root": state.get("source_root") or core_status.get("source_root") or "",
-                "source_roots": list(state.get("source_roots") or core_status.get("source_roots") or []),
-                "effective_source_roots": list(state.get("effective_source_roots") or state.get("source_roots") or core_status.get("effective_source_roots") or core_status.get("source_roots") or []),
-                "source_root_candidates": list(core_status.get("source_root_candidates") or []),
-                "fab_roots": list(state.get("fab_roots") or []),
-                "row_count": row_count,
-                "products": products,
-                "product_count": len(products),
-                "updated_at": updated_at or _cache_mtime_iso(parquet_fp),
-                "error": f"{type(e).__name__}: {e}",
-                "last_success_at": core_status.get("last_success_at") or "",
-                "last_attempt_at": core_status.get("last_attempt_at") or "",
-                "freshness_state": core_status.get("freshness_state") or "error",
-                "refresh_log_path": core_status.get("refresh_log_path") or "",
-                "lock_state": core_status.get("lock_state") or {},
-                "running": bool(core_status.get("running")),
-                "skipped_by_lock": bool(core_status.get("skipped_by_lock")),
-                "files_scanned": int(core_status.get("files_scanned") or 0),
-                "rows_seen": int(core_status.get("rows_seen") or 0),
-                "auto_s3_upload_on_save": _filebrowser_auto_s3_upload_enabled(),
-                **cache_metadata,
-            }
+    row_count = int(core_status.get("row_count") or core_status.get("count") or 0)
+    products = [str(v) for v in (core_status.get("products") or []) if str(v or "").strip()][:500]
+    updated_at = str(core_status.get("generated_at") or core_status.get("updated_at") or "")
     if not updated_at:
         updated_at = _cache_mtime_iso(parquet_fp) or _cache_mtime_iso(json_fp)
     interval_minutes = int(core_status.get("interval_minutes") or _lot_progress_cache.lot_progress_cache_refresh_minutes())
@@ -4286,11 +4227,11 @@ def _lot_progress_cache_status() -> dict:
         "json_cache_path": str(json_fp),
         "cache_exists": parquet_fp.is_file(),
         "configured_source_root": configured_source_root,
-        "source_root": state.get("source_root") or core_status.get("source_root") or "",
-        "source_roots": list(state.get("source_roots") or core_status.get("source_roots") or []),
-        "effective_source_roots": list(state.get("effective_source_roots") or state.get("source_roots") or core_status.get("effective_source_roots") or core_status.get("source_roots") or []),
+        "source_root": core_status.get("source_root") or "",
+        "source_roots": list(core_status.get("source_roots") or []),
+        "effective_source_roots": list(core_status.get("effective_source_roots") or core_status.get("source_roots") or []),
         "source_root_candidates": list(core_status.get("source_root_candidates") or []),
-        "fab_roots": list(state.get("fab_roots") or []),
+        "fab_roots": list(core_status.get("fab_roots") or []),
         "row_count": row_count,
         "total_row_count": row_count,
         "products": products,

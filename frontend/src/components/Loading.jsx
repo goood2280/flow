@@ -7,7 +7,7 @@ const spinnerCSS = `
 @keyframes flowLoadingRise { 0%{opacity:0;transform:translateY(4px)} 100%{opacity:1;transform:translateY(0)} }
 `;
 
-const DEFAULT_STEPS = ["캐시 확인", "컬럼 준비", "화면 갱신"];
+const DEFAULT_STEPS = ["데이터 확인", "컬럼 준비", "화면 갱신"];
 
 function labelText(text) {
   const raw = String(text || "").trim();
