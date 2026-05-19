@@ -21,38 +21,9 @@ from core.flowi_units.base import (
     UnitAI,
 )
 from core.flowi_units.filebrowser import FileBrowserUnitAI
+from core.flowi_units.meeting import MeetingUnitAI
 
 _BACKEND_CORE_DIR = Path(__file__).resolve().parent.parent
-
-
-class MeetingUnitAI(BaseUnitAI):
-    KEY = "meeting"
-    TITLE = "회의 관리 AI"
-    DATA_SOURCES = (
-        DataSourceRef(
-            kind="runtime_data",
-            path="data/flow-data/meetings/",
-            description="회의 세션 메타 + 회의록 본문 (minutes). title/date/owner/attendees와 본문 markdown.",
-            columns=(
-                ColumnDoc(name="meeting_id", meaning="회의 식별자."),
-                ColumnDoc(name="title", meaning="회의 제목."),
-                ColumnDoc(name="session", meaning="회의 차수 (1차, 2차 ...)."),
-                ColumnDoc(name="attendees", meaning="참석자 username 목록."),
-                ColumnDoc(name="minutes", meaning="회의록 본문 markdown."),
-            ),
-        ),
-        DataSourceRef(
-            kind="runtime_data",
-            path="data/flow-data/knowledge/",
-            description="회의 답변 보강에 사용하는 wiki/schema_doc/agent_wiki knowledge 인덱스.",
-        ),
-    )
-    HANDLER_ENTRY = CodeRef(
-        module="backend.routers.meetings",
-        function="_meeting_ask_llm_answer",
-        lineno=1959,
-        description="회의 prompt → LLM 답변 + knowledge attach",
-    )
 
 
 class InformUnitAI(BaseUnitAI):
