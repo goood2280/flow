@@ -29,7 +29,7 @@ def test_inform_wizard_five_step_backend_contract_order():
         "lot_id: targetLot",
         "custom_cols: customCols",
         'const shouldAttachKnobSnapshot = wizardAttachMode === "knob" && embedCustomCols.length > 0;',
-        'const shouldAttachSetSnapshot = wizardAttachMode === "sets" && form.attach_embed && hasEmbedSnapshot(form.embed);',
+        'const shouldAttachSetSnapshot = wizardAttachMode === "sets" && form.attach_embed && attachedSetsForSubmit().length > 0;',
         'if (wizardAttachMode === "knob")',
         'if (wizardAttachMode !== "sets") return [];',
         "if (!shouldAttachKnobSnapshot && !shouldAttachSetSnapshot) return null;",

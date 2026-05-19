@@ -9,8 +9,8 @@ const WHITE = "var(--bg-secondary)";
 export default function LlmCfgPanel({ readOnly = false } = {}){
   const FALLBACK_LLM_DEFAULTS={
     openai:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"openai",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20},
-    openai_compatible:{enabled:false,api_url:"",model:"gpt-oss-120b",mode:"fast",admin_token:"",provider:"openai_compatible",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
-    local:{enabled:false,api_url:"",model:"gpt-oss-120b",mode:"fast",admin_token:"",provider:"local",auth_mode:"none",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
+    openai_compatible:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"openai_compatible",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
+    local:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"local",auth_mode:"none",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
     generic:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"generic",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20},
     playground:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"playground",auth_mode:"dep_ticket",system_name:"playground",user_id:"",user_type:"",format:"openai",timeout_s:20},
     vertex_gemini:{enabled:false,api_url:"",model:"google/gemini-2.5-flash",mode:"fast",admin_token:"",provider:"vertex_gemini",auth_mode:"google_adc",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:30},
@@ -200,7 +200,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     <div style={{display:"grid",gridTemplateColumns:isPlayground||!showMode?"2fr 1fr 1fr":"2fr 1fr 1fr 1fr",gap:10}}>
       <div>
         <div style={L}>Model</div>
-        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder={isVertex?"google/gemini-2.5-flash":(isLocal||provider==="openai_compatible"?"gpt-oss-120b":"internal-model")} style={I}/>
+        <input value={cfg.model} onChange={e=>patch({model:e.target.value})} placeholder={isVertex?"google/gemini-2.5-flash":"model name"} style={I}/>
       </div>
       {showMode&&<div>
         <div style={L}>Mode</div>

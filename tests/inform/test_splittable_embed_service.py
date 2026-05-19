@@ -102,7 +102,7 @@ def test_splittable_embed_from_current_view_preserves_plan_cells():
     assert embed["st_scope"]["lot_id"] == "A1000"
 
 
-def test_splittable_embed_custom_snapshot_appends_saved_plan_columns():
+def test_splittable_embed_custom_snapshot_keeps_selected_columns_only(monkeypatch):
     calls = []
 
     def fake_view_loader(**kwargs):
@@ -125,21 +125,22 @@ def test_splittable_embed_custom_snapshot_appends_saved_plan_columns():
             "rows": rows,
         }
 
+    monkeypatch.setattr(embed_service, "_load_view", fake_view_loader)
+    monkeypatch.setattr(embed_service, "_plans_for_root", lambda _product, _root: {
+        "A1000|1|KNOB_GATE": "R2",
+        "A1000|1|KNOB_PLAN_LATE": "R_PLAN",
+    })
+
     embed = build_splittable_embed(
         "PRODA",
         "A1000",
         custom_cols=["KNOB_GATE"],
-        view_loader=fake_view_loader,
-        plan_column_loader=lambda _product, _root: ["KNOB_PLAN_LATE"],
     )
 
-    assert [c["custom_cols"] for c in calls] == [
-        "KNOB_GATE",
-        "KNOB_GATE,KNOB_PLAN_LATE",
-    ]
-    assert [r["_param"] for r in embed["st_view"]["rows"]] == ["KNOB_GATE", "KNOB_PLAN_LATE"]
-    assert embed["rows"][-1] == ["KNOB_PLAN_LATE", "R_PLAN"]
-    assert embed["st_scope"]["inline_cols"] == ["KNOB_GATE", "KNOB_PLAN_LATE"]
+    assert [c["custom_cols"] for c in calls] == ["KNOB_GATE"]
+    assert [r["_param"] for r in embed["st_view"]["rows"]] == ["KNOB_GATE"]
+    assert embed["rows"] == [["KNOB_GATE", "R1 → R2"]]
+    assert embed["st_scope"]["inline_cols"] == ["KNOB_GATE"]
 
 
 def test_splittable_embed_fab_lot_knob_snapshot_keeps_selected_fab_scope():
@@ -186,19 +187,18 @@ def test_splittable_embed_fab_lot_knob_snapshot_keeps_selected_fab_scope():
         custom_cols=["KNOB_GATE"],
         is_fab_lot=True,
         view_loader=fake_view_loader,
-        plan_column_loader=lambda _product, _root: ["KNOB_PLAN_LATE"],
     )
 
-    assert [c["fab_lot_id"] for c in calls] == ["A1000A.1", "A1000A.1"]
-    assert [c["root_lot_id"] for c in calls] == ["", ""]
-    assert embed["source"] == "SplitTable/PRODA @ A1000A.1 · CUSTOM(2)"
+    assert [c["fab_lot_id"] for c in calls] == ["A1000A.1"]
+    assert [c["root_lot_id"] for c in calls] == [""]
+    assert [c["custom_cols"] for c in calls] == ["KNOB_GATE"]
+    assert embed["source"] == "SplitTable/PRODA @ A1000A.1 · CUSTOM(1)"
     assert embed["st_view"]["headers"] == ["#8"]
     assert embed["st_view"]["header_groups"] == [{"label": "A1000A.1", "span": 1}]
-    assert [r["_param"] for r in embed["st_view"]["rows"]] == ["KNOB_GATE", "KNOB_PLAN_LATE"]
+    assert [r["_param"] for r in embed["st_view"]["rows"]] == ["KNOB_GATE"]
     assert embed["st_view"]["rows"][0]["_cells"]["0"]["actual"] == "R8"
     assert embed["st_view"]["rows"][0]["_cells"]["0"]["plan"] is None
-    assert embed["st_view"]["rows"][1]["_cells"]["0"]["plan"] is None
-    assert embed["st_scope"]["inline_cols"] == ["KNOB_GATE", "KNOB_PLAN_LATE"]
+    assert embed["st_scope"]["inline_cols"] == ["KNOB_GATE"]
 
 
 def test_splittable_embed_from_current_view_uses_first_fab_lot_when_lot_blank():

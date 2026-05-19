@@ -124,7 +124,7 @@ class BaseUnitAI:
     KEY: str = ""
     TITLE: str = ""
     PROMPT_TEMPLATE_PATH: Optional[Path] = None
-    LLM_PROFILE: str = "internal_gpt_oss_120b"
+    LLM_PROFILE: str = ""
     DATA_SOURCES: tuple[DataSourceRef, ...] = ()
     SEMANTIC_BINDINGS: SemanticBindings = SemanticBindings()
     HANDLER_ENTRY: CodeRef = CodeRef(module="", function="")

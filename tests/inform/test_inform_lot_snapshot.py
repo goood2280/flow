@@ -269,7 +269,9 @@ def test_inform_wizard_split_attachment_state_is_current_selection_only():
     assert 'wizardAttachMode === "sets" && Array.isArray(form.embed?.attached_sets)' in src
     assert 'if (wizardAttachMode === "knob")' in src
     assert 'if (wizardAttachMode !== "sets") return [];' in src
-    assert 'const shouldAttachSetSnapshot = wizardAttachMode === "sets" && form.attach_embed && hasEmbedSnapshot(form.embed);' in src
+    assert 'const shouldAttachSetSnapshot = wizardAttachMode === "sets" && form.attach_embed && attachedSetsForSubmit().length > 0;' in src
+    assert 'return { ...(form.embed || emptyEmbedTable()), attached_sets: attached };' not in src
+    assert 'if (isReInform && form.attach_embed && hasEmbedSnapshot(form.embed)) return;' not in src
     assert 'setEmbedCustomCols([]);' in src
     assert 'setEmbedCustomSearch("");' in src
     assert 'setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));' in src

@@ -66,17 +66,16 @@ Home에서 chart를 만든 뒤 `raw data csv`, `원본 데이터 다운로드`�
 - 기능별 subagent는 앱 내부 deterministic 단위기능이다.
 - 장기 실행, 병렬 step, replay/checkpoint가 필요해지면 그때 Skill Runner 내부에만 durable orchestration을 붙인다.
 
-## LLM Target (사내 API)
+## LLM Usage
 
-Agent가 사용하는 기본 LLM은 **사내 API의 GPT OSS 120B**다. 검증/개발 profile로 OpenAI 소형 모델과 Vertex Gemini ADC profile을 둘 수 있지만, 실제 라우팅·권한·확인은 deterministic handler가 결정한다.
+Agent는 LLM이 설정된 경우에만 JSON draft, 짧은 문장 정리, 요약 보조에 사용한다. 실제 라우팅·권한·확인은 deterministic handler가 결정한다.
 
 - 어댑터: `backend/core/llm_adapter.py` (`provider="openai"`, `"openai_compatible"`, `"vertex_gemini"` 등).
-- 권장 profile:
+- profile 예시:
   - `local_test_openai`: OpenAI small/nano급 연결 확인용.
-  - `internal_gpt_oss_120b`: 사내 GPT OSS 120B openai-compatible.
   - `vertex_gemini`: Google ADC/OAuth access token을 요청 직전 refresh해 Bearer로 전송 (`auth_mode="google_adc"`).
 - 설정 위치: `data/flow-data/admin_settings.json` 의 `llm` / `llm_profiles` 블록 — `enabled`, `api_url`, `model`, `provider`, `auth_mode`, `headers`, `format`, `timeout_s`.
-- 본 모델은 **오픈소스 파인튜닝 수준**이라 추론 안정성이 낮다. caller 규약(이미 어댑터 docstring에 적힘):
+- caller 규약(이미 어댑터 docstring에 적힘):
   - LLM 응답은 JSON draft / 문장 정리 등 **rephrasing 영역**에서만 사용. 실제 라우팅·권한·확인은 deterministic handler가 결정.
   - 프롬프트는 짧고 단순하게 작성. 긴 chain-of-thought 강요하지 않는다.
   - JSON draft는 schema validation을 거치고 parse 실패 시 1회 repair prompt 후 deterministic fallback을 사용한다.

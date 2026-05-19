@@ -1,7 +1,7 @@
 // UnitAIDetail — Agent V2 우측 디테일.
 // 한 unit AI의 자원 전체를 단일 페이지에 세로 스크롤로 표시.
 // (a) 헤더/요약 (b) 데이터 & 컬럼 의미 (c) 시멘틱 바인딩 (d) prompt template
-// (e) LLM profile (f) feature md (g) handler entry — 다중 탭 없음.
+// (e) feature md (f) handler entry — 다중 탭 없음.
 import { useEffect, useState } from "react";
 import { sf, putJson } from "../../lib/api";
 import { Banner, Button, EmptyState } from "../UXKit";
@@ -36,7 +36,6 @@ export default function UnitAIDetail({ unitKey, user, canManageWiki }) {
       <DataSourcesSection sources={data.data_sources || []} />
       <SemanticSection bindings={data.semantic_bindings || {}} />
       <PromptTemplateSection tpl={data.prompt_template} unitKey={data.key} canManage={canManageWiki} onSaved={reload} />
-      <LlmProfileSection profile={data.llm_profile} />
       <FeatureMdSection md={data.feature_md} unitKey={data.key} canManage={canManageWiki} onSaved={reload} />
       <HandlerEntrySection entry={data.handler_entry} />
     </div>
@@ -50,10 +49,6 @@ function Header({ data }) {
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <h2 style={{ fontSize: 20, margin: 0 }}>🤖 {data.title}</h2>
         <code style={{ fontSize: 12, padding: "2px 6px", background: "var(--bg-secondary)", color: "var(--text-secondary)", borderRadius: 4 }}>{data.key}</code>
-        <span style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-          LLM profile: <strong style={{ color: "var(--text-primary)" }}>{data.llm_profile || "—"}</strong>
-        </span>
       </div>
     </header>
   );
@@ -231,16 +226,6 @@ const preStyle = {
   fontSize: 12, fontFamily: "monospace", background: "var(--bg-primary)",
   borderTop: "1px solid var(--border)", maxHeight: 320, overflow: "auto",
 };
-
-// ── LLM profile ────────────────────────────────────────
-function LlmProfileSection({ profile }) {
-  return (
-    <Section title="LLM profile" hint="data/flow-data/admin_settings.json의 llm_profiles 키">
-      <code style={{ fontSize: 13, padding: "4px 8px", background: "var(--bg-secondary)", borderRadius: 4 }}>{profile || "—"}</code>
-      <span style={{ marginLeft: 10, fontSize: 11, color: "var(--text-secondary)" }}>(profile 전환 UI는 M4)</span>
-    </Section>
-  );
-}
 
 // ── Feature md ─────────────────────────────────────────
 function FeatureMdSection({ md, unitKey, canManage, onSaved }) {

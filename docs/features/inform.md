@@ -42,6 +42,7 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - 다중 fab lot 등록은 frontend 개별 POST 병렬 호출이 아니라 `/api/informs/bulk-create`로 보내며, 응답 `informs` 순서는 요청 순서와 같아야 한다.
 - Config/modules, product catalog, product contacts 변경은 `inform` page manager 이상만 수행한다.
 - SplitTable snapshot endpoint는 같은 product/lot/custom_cols 요청이 겹치면 짧은 in-memory cache로 중복 계산을 피하되, 저장되는 embed payload shape는 유지한다.
+- SplitTable snapshot은 사용자가 선택한 KNOB/CUSTOM/세트 컬럼만 포함한다. 저장된 plan 값은 선택된 컬럼 row 안에 overlay할 수 있지만, 선택하지 않은 plan-only 컬럼 row를 자동으로 추가하지 않는다.
 - 수신자 후보는 `data/flow-data/users.csv`, 그룹 후보는 `data/flow-data/groups/groups.json`을 기준으로 한다.
 - `admin_settings.json` 읽기 실패 시 user-modules 조회/저장은 빈 설정으로 진행하지 않고 HTTP detail과 warning log를 남긴다.
 - 메일에는 제목, 대상, 본문, Flow link만 남긴다.

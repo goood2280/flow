@@ -7,7 +7,6 @@ from fastapi import HTTPException
 
 
 ViewLoader = Callable[..., dict[str, Any]]
-PlanColumnLoader = Callable[[str, str], list[str]]
 
 
 def strip_ml_prefix(value: str) -> str:
@@ -153,49 +152,6 @@ def _clean_custom_cols(values: Iterable[str] | str | None) -> list[str]:
     return out
 
 
-def _merge_cols(*groups: Iterable[str]) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for group in groups:
-        for value in group or []:
-            text = str(value or "").strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            out.append(text)
-    return out
-
-
-def _plan_columns_for_root(ml_product: str, root_lot_id: str, limit: int = 80) -> list[str]:
-    root = _normalize_root(root_lot_id)
-    if not root:
-        return []
-    try:
-        from routers.splittable import _load_plan_data
-
-        plans = _load_plan_data(ml_product).get("plans", {})
-    except Exception:
-        return []
-    if not isinstance(plans, dict):
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for cell_key, info in plans.items():
-        parts = str(cell_key or "").split("|", 2)
-        if len(parts) != 3 or _normalize_root(parts[0]) != root:
-            continue
-        value = info.get("value") if isinstance(info, dict) else None
-        if not _has_st_value(value):
-            continue
-        col = parts[2].strip()
-        if col and col not in seen:
-            seen.add(col)
-            out.append(col)
-            if len(out) >= limit:
-                break
-    return out
-
-
 def _plans_for_root(ml_product: str, root_lot_id: str) -> dict[str, Any]:
     root = _normalize_root(root_lot_id)
     if not root:
@@ -230,7 +186,13 @@ def _wafer_key_from_header(value: Any) -> str:
     return text
 
 
-def _apply_saved_plans(ml_product: str, lot: str, view: dict[str, Any]) -> dict[str, Any]:
+def _apply_saved_plans(
+    ml_product: str,
+    lot: str,
+    view: dict[str, Any],
+    *,
+    append_missing_plan_rows: bool = True,
+) -> dict[str, Any]:
     """Ensure Inform snapshots carry the saved SplitTable plan layer."""
 
     if not isinstance(view, dict):
@@ -281,7 +243,8 @@ def _apply_saved_plans(ml_product: str, lot: str, view: dict[str, Any]) -> dict[
                 cell["key"] = cell_key
             actual = cell.get("actual")
             cell["mismatch"] = bool(_has_st_value(actual) and str(actual) != str(plan))
-    _append_missing_plan_rows(view, plans)
+    if append_missing_plan_rows:
+        _append_missing_plan_rows(view, plans)
     return view
 
 
@@ -453,7 +416,6 @@ def build_splittable_embed(
     custom_cols: Iterable[str] | str | None = None,
     is_fab_lot: bool | None = None,
     view_loader: ViewLoader | None = None,
-    plan_column_loader: PlanColumnLoader | None = None,
 ) -> dict[str, Any]:
     """Build the exact Inform embed payload from the SplitTable view pipeline."""
 
@@ -482,21 +444,16 @@ def build_splittable_embed(
             custom_cols=",".join(cols),
         )
         if view_loader is None:
-            view = _apply_saved_plans(ml_product, lot, view)
+            view = _apply_saved_plans(
+                ml_product,
+                lot,
+                view,
+                append_missing_plan_rows=not bool(cols),
+            )
         return view
 
     view = load_for(custom)
-    effective_custom = list(custom)
-    extra_plan_cols: list[str] = []
-    if custom and (view_loader is None or plan_column_loader is not None):
-        root_key = str(view.get("root_lot_id") or _root_fallback(lot)).strip()
-        extra_plan_cols = (plan_column_loader or _plan_columns_for_root)(ml_product, root_key)
-        merged = _merge_cols(custom, extra_plan_cols)
-        if len(merged) > len(effective_custom):
-            view = load_for(merged)
-            effective_custom = merged
-
-    return _embed_from_view(ml_product, lot, effective_custom, fab_input, view)
+    return _embed_from_view(ml_product, lot, custom, fab_input, view)
 
 
 def build_splittable_embed_from_view(
@@ -540,7 +497,12 @@ def build_splittable_embed_from_view(
         inferred = _normalize_root(snapshot_view.get("root_lot_id") or _first_lot_from_view(snapshot_view) or lot)
         snapshot_view["root_lot_id"] = inferred
     snapshot_view["root_lot_id"] = _normalize_root(snapshot_view.get("root_lot_id"))
-    snapshot_view = _apply_saved_plans(ml_product, lot, snapshot_view)
+    snapshot_view = _apply_saved_plans(
+        ml_product,
+        lot,
+        snapshot_view,
+        append_missing_plan_rows=not bool(custom),
+    )
     return _embed_from_view(
         ml_product,
         lot,

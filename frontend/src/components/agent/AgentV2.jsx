@@ -87,7 +87,6 @@ function Sidebar({ catalog, loading, selected, onSelect }) {
               active={selected === item.key}
               icon="🤖"
               label={item.title || item.key}
-              meta={item.llm_profile}
               hint={`데이터 ${item.data_source_count}개 · 컬럼 ${item.column_doc_count}개`}
               onClick={() => onSelect(item.key)}
             />

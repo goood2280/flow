@@ -2422,7 +2422,6 @@ export default function My_Inform({ user }) {
     const fabTargets = uniqueClean(form.fab_lot_ids || []);
     const lot = (form.lot_id || "").trim() || (fabTargets[0] || "");
     const submitTargets = isReInform ? [lot] : (fabTargets.length ? fabTargets : [lot]);
-    const multiSubmit = !isReInform && submitTargets.length > 1;
     const mailMetaForSubmit = isReInform ? { to: [], recipients: [], to_users: [], groups: [], extra_emails: [] } : resolveWizardMailMetaForSubmit();
     if (!form.product.trim()) { setMsg("product 를 선택해 주세요."); return Promise.reject(new Error("product required")); }
     if (!lot) { setMsg("lot 을 선택해 주세요."); return Promise.reject(new Error("lot required")); }
@@ -2452,18 +2451,21 @@ export default function My_Inform({ user }) {
       ]).filter(c => c && c !== "parameter" && !String(c).startsWith("#"));
     };
     const shouldAttachKnobSnapshot = wizardAttachMode === "knob" && embedCustomCols.length > 0;
-    const shouldAttachSetSnapshot = wizardAttachMode === "sets" && form.attach_embed && hasEmbedSnapshot(form.embed);
+    const shouldAttachSetSnapshot = wizardAttachMode === "sets" && form.attach_embed && attachedSetsForSubmit().length > 0;
     const buildEmbedForLot = async (targetLot) => {
       if (!shouldAttachKnobSnapshot && !shouldAttachSetSnapshot) return null;
       const attached = attachedSetsForSubmit();
-      const currentScope = form.embed?.st_scope?.snapshot_source === "current_splittable";
-      const currentScopeLot = String(form.embed?.st_scope?.lot_id || form.lot_id || "").trim();
-      if (!multiSubmit && currentScope && (!currentScopeLot || String(targetLot || "").trim() === currentScopeLot)) {
-        return { ...(form.embed || emptyEmbedTable()), attached_sets: attached };
-      }
       const customCols = customColsForEmbed();
       if (!customCols.length) {
-        return { ...(form.embed || emptyEmbedTable()), attached_sets: attached };
+        return wizardAttachMode === "sets"
+          ? {
+              source: `SplitTable selected sets/${stripMlPrefix(form.product || "")}`,
+              columns: [],
+              rows: [],
+              note: `${attached.length} selected set(s) attached`,
+              attached_sets: attached,
+            }
+          : null;
       }
       const mlProd = form.product.trim().startsWith("ML_TABLE_") ? form.product.trim() : `ML_TABLE_${form.product.trim()}`;
       const d = await postJson("/api/informs/splittable-snapshot", {
@@ -4812,7 +4814,6 @@ function InformWizard({
   useEffect(() => {
     if (attachMode !== "sets") return;
     if (!selectedSetRows.length) {
-      if (isReInform && form.attach_embed && hasEmbedSnapshot(form.embed)) return;
       setForm(f => f.attach_embed ? { ...f, attach_embed: false, embed: emptyEmbedTable() } : f);
       return;
     }
