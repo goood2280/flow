@@ -20087,15 +20087,30 @@ def _run_flowi_chat(
     elif meeting_tool.get("handled"):
         tool = meeting_tool
     else:
-        tool = _handle_flowi_query(
+        # M2 strangler-fig: try registered Unit AIs first. Only listed
+        # features dispatch here; unmigrated units (registered in M1 with
+        # handle() returning None) fall through to the legacy path below.
+        from core.flowi_units import try_dispatch as _try_unit_ai_dispatch
+        unit_tool = _try_unit_ai_dispatch(
             prompt,
-            product,
+            product=product,
             max_rows=max_rows,
             allowed_keys=allowed_keys,
-            username=username,
-            role=str(me.get("role") or "user"),
             agent_context=agent_context,
+            only=("filebrowser",),
         )
+        if unit_tool is not None:
+            tool = unit_tool
+        else:
+            tool = _handle_flowi_query(
+                prompt,
+                product,
+                max_rows=max_rows,
+                allowed_keys=allowed_keys,
+                username=username,
+                role=str(me.get("role") or "user"),
+                agent_context=agent_context,
+            )
     entries = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
     if entries:
         tool["feature_entrypoints"] = entries

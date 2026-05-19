@@ -16,6 +16,7 @@ from core.flowi_units.base import (
     SemanticBindings,
     UnitAI,
 )
+from core.flowi_units.dispatcher import try_dispatch
 from core.flowi_units.registry import UNIT_AIS, all_unit_ais, get_unit_ai
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "UnitAI",
     "all_unit_ais",
     "get_unit_ai",
+    "try_dispatch",
 ]

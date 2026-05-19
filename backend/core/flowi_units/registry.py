@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.flowi_units import schema_columns as col
 from core.flowi_units.base import (
     BaseUnitAI,
     CodeRef,
@@ -19,108 +20,9 @@ from core.flowi_units.base import (
     SemanticBindings,
     UnitAI,
 )
+from core.flowi_units.filebrowser import FileBrowserUnitAI
 
 _BACKEND_CORE_DIR = Path(__file__).resolve().parent.parent
-
-
-# Reusable column docs — Agent tab renders these per data source. wiki_doc_id
-# points to data/flow-data/knowledge/wiki/schema_doc/<doc_id>.md when set.
-_PRODUCT_COL = ColumnDoc(
-    name="product",
-    meaning="제품명. ML_TABLE 파일명, FAB product directory에서 확인되는 이름과 정규화 일치.",
-    sample_values=("PRODA", "PRODB"),
-)
-_ROOT_LOT_COL = ColumnDoc(
-    name="root_lot_id",
-    meaning="LOT 머리 5글자 (영문 1 + 숫자 4). dot lot의 왼쪽 head. 예: A1001A.3 → A1001.",
-    sample_values=("A1000", "A1001"),
-    wiki_doc_id="ml_table_proda.root_lot_id",
-)
-_LOT_COL = ColumnDoc(
-    name="lot_id",
-    meaning="LOT 식별자. 영문/숫자 5~6자 이상과 '.' suffix 조합. 예: A1001A.1, A1000.XX.",
-    sample_values=("A1000A.3", "A1001A.1"),
-)
-_FAB_LOT_COL = ColumnDoc(
-    name="fab_lot_id",
-    meaning="현재 fab에서 가공중인 lot id. lot_progress cache의 최신 행에서 조회.",
-)
-_WAFER_COL = ColumnDoc(
-    name="wafer_id",
-    meaning="물리 wafer 번호. '#21', 'WF21', '21번 wafer'는 모두 '21'로 정규화.",
-    sample_values=("1", "21"),
-    wiki_doc_id="ml_table_proda.wafer_id",
-)
-_STEP_COL = ColumnDoc(
-    name="step_id",
-    meaning="공정 step 식별자. 예: AA200000, CA100000. function_step과 step_matching.csv로 연결.",
-    sample_values=("AA200000", "CA100000"),
-    wiki_doc_id="ml_table_proda.step_id",
-)
-_FUNCTION_STEP_COL = ColumnDoc(
-    name="function_step",
-    meaning="step의 자연어 설명. 예: channel release etch, inner spacer recess.",
-)
-_LOT_WF_COL = ColumnDoc(
-    name="lot_wf",
-    meaning="root_lot_id + '_' + wafer_id. 예: A1000 #21 → A1000_21. multi-source join의 공통 key.",
-    wiki_doc_id="ml_table_proda.lot_wf",
-)
-
-
-class FileBrowserUnitAI(BaseUnitAI):
-    KEY = "filebrowser"
-    TITLE = "파일 탐색기 AI (SQL / 스키마 / 캐시)"
-    PROMPT_TEMPLATE_PATH = _BACKEND_CORE_DIR / "filebrowser_agent_prompts.default.json"
-    DATA_SOURCES = (
-        DataSourceRef(
-            kind="parquet",
-            path="data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet",
-            description="LOT 진행 최신 캐시. 각 root_lot + wafer의 가장 최근 step과 fab_lot_id를 한 행으로 모은 파일.",
-            columns=(_PRODUCT_COL, _ROOT_LOT_COL, _LOT_COL, _FAB_LOT_COL, _WAFER_COL, _STEP_COL, _FUNCTION_STEP_COL),
-        ),
-        DataSourceRef(
-            kind="fab_db",
-            path="data/Fab/1.RAWDATA_DB_FAB/<product>/",
-            description="FAB raw DB root. 제품별 디렉토리에 step별 parquet 파티션이 존재. read-only preview만 허용.",
-            columns=(_PRODUCT_COL, _ROOT_LOT_COL, _LOT_COL, _WAFER_COL, _STEP_COL),
-        ),
-        DataSourceRef(
-            kind="ml_table",
-            path="data/Fab/ML_TABLE_*.parquet",
-            description="제품별 ML_TABLE — root_lot/wafer 기준의 KNOB/feature 값 모음. lot_wf join의 right side.",
-            columns=(_ROOT_LOT_COL, _LOT_COL, _WAFER_COL, _LOT_WF_COL),
-        ),
-        DataSourceRef(
-            kind="runtime_data",
-            path="data/flow-data/cache/filebrowser/",
-            description="FileBrowser preview/query 결과 캐시 (hash 기반). UI 응답 가속용.",
-        ),
-    )
-    SEMANTIC_BINDINGS = SemanticBindings(
-        column_catalog_keys=(
-            "product",
-            "root_lot_id",
-            "lot_id",
-            "fab_lot_id",
-            "wafer_id",
-            "step_id",
-            "function_step",
-            "lot_wf",
-        ),
-        wiki_doc_ids=(
-            "ml_table_proda.root_lot_id",
-            "ml_table_proda.wafer_id",
-            "ml_table_proda.step_id",
-            "ml_table_proda.lot_wf",
-        ),
-    )
-    HANDLER_ENTRY = CodeRef(
-        module="backend.routers.filebrowser",
-        function="_draft_filebrowser_ai_sql",
-        lineno=7354,
-        description="자연어 → WHERE/filter SQL draft (sql_draft prompt 사용)",
-    )
 
 
 class MeetingUnitAI(BaseUnitAI):
@@ -239,7 +141,7 @@ class SplitTableUnitAI(BaseUnitAI):
             kind="ml_table",
             path="data/Fab/ML_TABLE_<product>.parquet",
             description="제품별 ML_TABLE — SplitTable view의 base. KNOB_*, MGMT_*, TAG_* 컬럼을 보유.",
-            columns=(_PRODUCT_COL, _ROOT_LOT_COL, _LOT_COL, _WAFER_COL, _LOT_WF_COL),
+            columns=(col.PRODUCT, col.ROOT_LOT, col.LOT, col.WAFER, col.LOT_WF),
         ),
         DataSourceRef(
             kind="runtime_data",
