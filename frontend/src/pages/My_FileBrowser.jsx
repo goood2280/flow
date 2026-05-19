@@ -440,7 +440,7 @@ export default function My_FileBrowser({user,onNavigate}){
     const st=info?.last_status||"never";
     const syncFresh=st==="ok"&&isFinite(ageH)&&ageH<=6;
     const latestItemStale=freshnessState==="stale_item"||(latestItemStaleRaw&&!syncFresh&&freshnessState!=="ok");
-    if(!info)return{color:FB_BAD.fg,tip:"S3 동기화 미설정 — File Browser 우하단 ⚙️(admin) 에서 설정하세요",directionLabel:"미설정",directionArrow:"·",freshLabel:"-",latestItemStale:false};
+    if(!info)return{color:FB_BAD.fg,tip:"S3 동기화 미설정 — FileBrowser 우하단 ⚙️에서 상태와 실행 권한을 확인하세요",directionLabel:"미설정",directionArrow:"·",freshLabel:"-",latestItemStale:false};
     if(info.is_running)return{color:FB_INFO.fg,tip:(inh?`상위 경로 '${fromLabel}' 에서 상속\n`:"")+`S3 ${directionLabel} 실행 중…\n이전 실행: ${lastStr}\n최신 항목: ${latestItemStr}`,directionLabel,directionArrow,freshLabel:latestItemStr,latestItemStale:false};
     let color,line;
     if(st==="error"){color=FB_BAD.fg;line="실패 (exit="+(info.last_exit_code??"?")+")";}
@@ -475,6 +475,14 @@ export default function My_FileBrowser({user,onNavigate}){
     || (Array.isArray(pageAdmins)&&pageAdmins.includes("filebrowser"))
     || (!!pageAdmins?.filebrowser===true)
     || (typeof pageAdmins==="string"&&pageAdmins.split(",").map(s=>s.trim()).includes("filebrowser"));
+  const canRunS3Ingest=isFileBrowserAdmin;
+  const canManageS3Ingest=isAdmin;
+  const s3AllowedTabs=[
+    ...(canRunS3Ingest?["items","history"]:[]),
+    ...(canManageS3Ingest?["add","aws"]:[]),
+    "cache","folder","file",
+  ];
+  const s3AllowedTabKey=s3AllowedTabs.join("|");
   const loadBaseVersions=useCallback((file=selBaseFile)=>{
     if(!file){
       setBaseVersions([]);setBaseVersioned(false);setBaseVersionMsg("");
@@ -621,7 +629,7 @@ export default function My_FileBrowser({user,onNavigate}){
   };
   const toggleS3Settings=()=>{
     const nextOpen=!s3Open;
-    if(nextOpen&&!isAdmin)setS3Tab("folder");
+    if(nextOpen&&!s3AllowedTabs.includes(s3Tab))setS3Tab(s3AllowedTabs[0]||"folder");
     setS3Open(nextOpen);
   };
   const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_download_max_rows:500000,csv_download_max_bytes:100000000,sql_query_max_source_bytes:5368709120,preview_max_columns:100,preview_max_rows:100,schema_column_page_size:200,csv_rules:{},hidden_db_dirs:["cache","reformatter"],versioned_single_file_dirs:["reformatter"],auto_s3_upload_on_save:false,can_manage:false});
@@ -840,22 +848,22 @@ export default function My_FileBrowser({user,onNavigate}){
 
   // Poll s3 items/history while modal open
   useEffect(()=>{
-    if(!s3Open||!isAdmin)return;
+    if(!s3Open||!canRunS3Ingest)return;
     const un=encodeURIComponent(user?.username||"");
     const loadItems=()=>sf("/api/s3ingest/items?username="+un).then(d=>{setS3Items(d.items||[]);setS3AwsOk(d.aws_available!==false);}).catch(()=>{});
     const loadAvail=()=>sf("/api/s3ingest/available?username="+un).then(d=>setS3Avail(d||{dbs:[],root_parquets:[]})).catch(()=>{});
     const loadHist=()=>sf("/api/s3ingest/history?username="+un+"&limit=100").then(d=>setS3Hist(d.entries||[])).catch(()=>{});
     const loadProfiles=()=>sf("/api/s3ingest/aws-config?username="+un).then(d=>setS3Profiles((d&&d.profiles)||[])).catch(()=>setS3Profiles([]));
     loadItems();
-    if(s3Tab==="add"){loadAvail();loadProfiles();}
+    if(canManageS3Ingest&&s3Tab==="add"){loadAvail();loadProfiles();}
     if(s3Tab==="history")loadHist();
     const t=setInterval(()=>{loadItems();if(s3Tab==="history")loadHist();},5000);
     return()=>clearInterval(t);
-  },[s3Open,s3Tab,s3Tick,isAdmin,user?.username]);
+  },[s3Open,s3Tab,s3Tick,canRunS3Ingest,canManageS3Ingest,user?.username]);
 
   useEffect(()=>{
-    if(s3Open&&!isAdmin&&!["folder","file","cache"].includes(s3Tab))setS3Tab("folder");
-  },[s3Open,isAdmin,s3Tab]);
+    if(s3Open&&!s3AllowedTabs.includes(s3Tab))setS3Tab(s3AllowedTabs[0]||"folder");
+  },[s3Open,s3Tab,s3AllowedTabKey]);
 
   useEffect(()=>{
     if(!s3Open||!isFileBrowserAdmin)return;
@@ -873,6 +881,7 @@ export default function My_FileBrowser({user,onNavigate}){
   useEffect(()=>{if(!s3Open)return;const t=setInterval(()=>setS3Now(Date.now()),1000);return()=>clearInterval(t);},[s3Open]);
 
   const s3Save=async(form)=>{
+    if(!canManageS3Ingest){toast.warn("S3 동기화 설정 변경은 Admin 전용입니다.");return;}
     if(!form.target||!form.s3_url){toast.warn("target 과 s3_url 은 필수입니다");return;}
     const body={...form,username:user?.username||""};
     try{
@@ -881,6 +890,7 @@ export default function My_FileBrowser({user,onNavigate}){
     }catch(e){toast.error(e.message||"저장 실패");}
   };
   const s3Delete=async(id)=>{
+    if(!canManageS3Ingest){toast.warn("S3 동기화 항목 삭제는 Admin 전용입니다.");return;}
     if(!window.confirm("이 S3 동기화 항목을 삭제하시겠습니까?\n("+id+")"))return;
     try{
       await sf("/api/s3ingest/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",id})});
@@ -888,6 +898,7 @@ export default function My_FileBrowser({user,onNavigate}){
     }catch(e){toast.error(e.message||"삭제 실패");}
   };
   const s3Run=async(id)=>{
+    if(!canRunS3Ingest){toast.warn("FileBrowser manager 권한이 필요합니다.");return;}
     try{
       await sf("/api/s3ingest/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",id})});
       setS3Tick(x=>x+1);
@@ -1480,12 +1491,15 @@ export default function My_FileBrowser({user,onNavigate}){
   const baseEditingTabs = isBaseEditingMode ? ["data"] : ["data","columns"];
   const showBasePager = false;
   const settingsTabs=[
-    ...(isAdmin?[{k:"items",l:"항목 ("+s3Items.length+")"},{k:"add",l:"+ 추가"},{k:"history",l:"이력"},{k:"aws",l:"AWS 설정"}]:[]),
+    ...(canRunS3Ingest?[{k:"items",l:"항목 ("+s3Items.length+")"}]:[]),
+    ...(canManageS3Ingest?[{k:"add",l:"+ 추가"}]:[]),
+    ...(canRunS3Ingest?[{k:"history",l:"이력"}]:[]),
+    ...(canManageS3Ingest?[{k:"aws",l:"AWS 설정"}]:[]),
     {k:"cache",l:"캐시"},
     {k:"folder",l:"폴더 설정"},
     {k:"file",l:"파일 설정"},
   ];
-  const settingsTitle=s3Tab==="folder"?"FileBrowser 폴더 설정":(s3Tab==="file"?"FileBrowser 파일 설정":(s3Tab==="cache"?"FileBrowser 캐시 운영":"S3 동기화 설정 — aws s3 cp/sync"));
+  const settingsTitle=s3Tab==="folder"?"FileBrowser 폴더 설정":(s3Tab==="file"?"FileBrowser 파일 설정":(s3Tab==="cache"?"FileBrowser 캐시 운영":(s3Tab==="items"||s3Tab==="history"?"S3 동기화 실행/이력":"S3 동기화 설정 — aws s3 cp/sync")));
   const activeQueryMode=!!(String(sql||"").trim() || selectedCols.length || aggregateSpec || data?.selected_cols);
   const activePreviewLimit=Number(data?.preview_row_limit||fbSettings.preview_max_rows||PAGE_SIZE)||PAGE_SIZE;
   const previewStatusLabel=data?.single_file_full_read
@@ -2041,9 +2055,9 @@ export default function My_FileBrowser({user,onNavigate}){
           </div>
         </Modal>
       )}
-      {/* v8.7.5: Admin S3 ingest gear — PageGear 스타일 통일 · 좌하단 */}
+      {/* v8.7.5: FileBrowser gear — PageGear 스타일 통일 · 좌하단 */}
       {isFileBrowserAdmin&&<>
-        <PageGearButton onClick={toggleS3Settings} title={isAdmin?"폴더 설정 / 파일 설정 / S3 동기화 / AWS 설정":"폴더 설정 / 파일 설정"} zIndex={97} />
+        <PageGearButton onClick={toggleS3Settings} title={isAdmin?"폴더 설정 / 파일 설정 / S3 동기화 / AWS 설정":"S3 실행 / 이력 / 폴더 설정 / 파일 설정"} zIndex={97} />
         {s3Open&&<>
           <Modal open onClose={closeS3Settings} width={1040} zIndex={98}>
           <div style={{display:"flex",flexDirection:"column",maxHeight:"86vh"}}>
@@ -2055,7 +2069,7 @@ export default function My_FileBrowser({user,onNavigate}){
             {/* Tabs */}
             <div style={{display:"flex",gap:4,padding:"8px 12px",borderBottom:"1px solid var(--border)",background:"var(--bg-primary)"}}>
               {settingsTabs.map(t=>(
-                <span key={t.k} onClick={()=>{setS3Tab(t.k);if(t.k==="add")setS3Form({id:"",kind:"db",target:"",s3_url:"",command:"sync",direction:"download",extra_args:"",endpoint_url:"",profile:"",interval_min:0,enabled:true});}} style={{padding:"5px 12px",borderRadius:5,fontSize:14,cursor:"pointer",fontWeight:s3Tab===t.k?700:500,background:s3Tab===t.k?"var(--accent-glow)":"transparent",color:s3Tab===t.k?"var(--accent)":"var(--text-secondary)"}}>{t.l}</span>
+                <span key={t.k} onClick={()=>{setS3Tab(t.k);if(t.k==="add"&&canManageS3Ingest)setS3Form({id:"",kind:"db",target:"",s3_url:"",command:"sync",direction:"download",extra_args:"",endpoint_url:"",profile:"",interval_min:0,enabled:true});}} style={{padding:"5px 12px",borderRadius:5,fontSize:14,cursor:"pointer",fontWeight:s3Tab===t.k?700:500,background:s3Tab===t.k?"var(--accent-glow)":"transparent",color:s3Tab===t.k?"var(--accent)":"var(--text-secondary)"}}>{t.l}</span>
               ))}
             </div>
             <div style={{flex:1,overflow:"auto",padding:"12px 16px"}}>
@@ -2304,7 +2318,7 @@ export default function My_FileBrowser({user,onNavigate}){
               </div>}
               {/* ITEMS tab */}
               {s3Tab==="items"&&<>
-                {s3Items.length===0?<div style={{padding:30,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>설정된 S3 동기화 항목이 없습니다. <b>+ 추가</b> 를 클릭해 생성하세요.</div>
+                {s3Items.length===0?<div style={{padding:30,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>{canManageS3Ingest?<>설정된 S3 동기화 항목이 없습니다. <b>+ 추가</b> 를 클릭해 생성하세요.</>:"설정된 S3 동기화 항목이 없습니다. 항목 생성과 AWS 설정은 Admin이 관리합니다."}</div>
                 :<table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
                   <thead><tr style={{background:"var(--bg-secondary)"}}>
                     {["","타겟","종류","방향","S3 URL","명령","주기","다음","마지막","동작"].map(h=>(
@@ -2331,8 +2345,8 @@ export default function My_FileBrowser({user,onNavigate}){
                         </td>
                         <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>
                           <button disabled={isRunning} onClick={()=>s3Run(it.id)} style={{padding:"3px 8px",borderRadius:3,border:"none",background:isRunning?FB_DISABLED:"var(--accent)",color:"#fff",fontSize:14,cursor:isRunning?"default":"pointer",marginRight:3}}>▶ 실행</button>
-                          <button onClick={()=>{setS3Form({...it});setS3Tab("add");}} style={{padding:"3px 8px",borderRadius:3,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer",marginRight:3}}>수정</button>
-                          <button onClick={()=>s3Delete(it.id)} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:FB_BAD.fg,fontSize:14,cursor:"pointer"}}>✕</button>
+                          {canManageS3Ingest&&<button onClick={()=>{setS3Form({...it});setS3Tab("add");}} style={{padding:"3px 8px",borderRadius:3,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer",marginRight:3}}>수정</button>}
+                          {canManageS3Ingest&&<button onClick={()=>s3Delete(it.id)} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:FB_BAD.fg,fontSize:14,cursor:"pointer"}}>✕</button>}
                         </td>
                       </tr>);
                     })}

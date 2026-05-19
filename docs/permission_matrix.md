@@ -423,18 +423,18 @@ Generated from `backend/routers/*.py` and `frontend/src` API call sites.
 | `/api/reformatter/table/save` | `POST` | `session_middleware` | - | - | `ok` |
 | `/api/reformatter/validate` | `POST` | `session_middleware` | - | - | `ok` |
 | `/api/s3ingest/available` | `GET` | `require_page_manager:filebrowser` | frontend/src/pages/My_FileBrowser.jsx:801 | admin/page helper or inline role guard where rendered | `ok` |
-| `/api/s3ingest/aws-config` | `GET` | `require_page_manager:filebrowser` | frontend/src/components/AwsPanel.jsx:21, frontend/src/components/AwsPanel.jsx:44, frontend/src/components/AwsPanel.jsx:61, frontend/src/pages/My_Admin.jsx:2197, frontend/src/pages/My_Admin.jsx:2219, frontend/src/pages/My_Admin.jsx:2236, +1 more | admin/page helper or inline role guard where rendered | `ok` |
-| `/api/s3ingest/aws-config/delete` | `POST` | `require_page_manager:filebrowser` | frontend/src/components/AwsPanel.jsx:61, frontend/src/pages/My_Admin.jsx:2236 | admin/page helper or inline role guard where rendered | `ok` |
-| `/api/s3ingest/aws-config/save` | `POST` | `require_page_manager:filebrowser` | frontend/src/components/AwsPanel.jsx:44, frontend/src/pages/My_Admin.jsx:2219 | admin/page helper or inline role guard where rendered | `ok` |
-| `/api/s3ingest/delete` | `POST` | `require_page_manager:filebrowser` | frontend/src/pages/My_FileBrowser.jsx:841 | admin/page helper or inline role guard where rendered | `ok` |
+| `/api/s3ingest/aws-config` | `GET` | `require_admin` | frontend/src/components/AwsPanel.jsx:21, frontend/src/components/AwsPanel.jsx:44, frontend/src/components/AwsPanel.jsx:61, frontend/src/pages/My_Admin.jsx:2197, frontend/src/pages/My_Admin.jsx:2219, frontend/src/pages/My_Admin.jsx:2236, +1 more | admin/page helper or inline role guard where rendered | `ok` |
+| `/api/s3ingest/aws-config/delete` | `POST` | `require_admin` | frontend/src/components/AwsPanel.jsx:61, frontend/src/pages/My_Admin.jsx:2236 | admin/page helper or inline role guard where rendered | `ok` |
+| `/api/s3ingest/aws-config/save` | `POST` | `require_admin` | frontend/src/components/AwsPanel.jsx:44, frontend/src/pages/My_Admin.jsx:2219 | admin/page helper or inline role guard where rendered | `ok` |
+| `/api/s3ingest/delete` | `POST` | `require_admin` | frontend/src/pages/My_FileBrowser.jsx:841 | admin/page helper or inline role guard where rendered | `ok` |
 | `/api/s3ingest/health` | `GET` | `session_middleware` | frontend/src/components/S3StatusLight.jsx:22 | admin/page helper or inline role guard where rendered | `ok` |
 | `/api/s3ingest/history` | `GET` | `require_page_manager:filebrowser` | frontend/src/pages/My_FileBrowser.jsx:802 | admin/page helper or inline role guard where rendered | `ok` |
 | `/api/s3ingest/items` | `GET` | `require_page_manager:filebrowser` | frontend/src/pages/My_FileBrowser.jsx:800 | admin/page helper or inline role guard where rendered | `ok` |
 | `/api/s3ingest/push` | `POST` | `require_page_manager:filebrowser` | - | - | `ok` |
 | `/api/s3ingest/run` | `POST` | `require_page_manager:filebrowser` | frontend/src/pages/My_FileBrowser.jsx:847 | admin/page helper or inline role guard where rendered | `ok` |
-| `/api/s3ingest/save` | `POST` | `require_page_manager:filebrowser` | frontend/src/pages/My_FileBrowser.jsx:834 | admin/page helper or inline role guard where rendered | `ok` |
+| `/api/s3ingest/save` | `POST` | `require_admin` | frontend/src/pages/My_FileBrowser.jsx:834 | admin/page helper or inline role guard where rendered | `ok` |
 | `/api/s3ingest/schedule` | `GET` | `require_page_manager:filebrowser` | - | - | `ok` |
-| `/api/s3ingest/schedule/save` | `POST` | `require_page_manager:filebrowser` | - | - | `ok` |
+| `/api/s3ingest/schedule/save` | `POST` | `require_admin` | - | - | `ok` |
 | `/api/s3ingest/status-by-target` | `GET` | `session_middleware` | frontend/src/pages/My_FileBrowser.jsx:372 | admin/page helper or inline role guard where rendered | `ok` |
 | `/api/semiconductor/dataset/profile` | `POST` | `current_user` | - | - | `ok` |
 | `/api/semiconductor/dataset/sample` | `POST` | `current_user` | - | - | `ok` |
@@ -555,7 +555,7 @@ Generated from `backend/routers/*.py` and `frontend/src` API call sites.
 
 - `/api/dashboard/chart-defaults`, dashboard refresh and saved-chart mutations accept global admin or `dashboard` page-manager delegation.
 - Inform module/config/catalog/contact writes and SplitTable shared config/rule/set writes accept global admin or page-manager delegation.
-- S3 ingest/AWS credential endpoints no longer trust body/query `username`; they require `filebrowser` page-manager delegation.
+- S3 ingest read/run endpoints require `filebrowser` page-manager delegation; item/schedule mutation and AWS credential/config endpoints require global admin.
 - `/api/informs/{id}/send-mail` now requires the inform author or global admin.
 - Home Flowi blocks regular users from admin-function prompts with `blocked=true` and `reject_reason`.
 - Legacy `/api/admin/*` self-service notification/settings routes remain owner/self guarded to avoid breaking normal user flows; admin management routes remain `require_admin`.

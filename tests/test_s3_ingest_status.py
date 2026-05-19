@@ -7,13 +7,120 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
+from core import auth as auth_core  # noqa: E402
 from routers import s3_ingest  # noqa: E402
+
+
+class _State:
+    def __init__(self, user: dict):
+        self.user = user
+
+
+class _Request:
+    headers = {}
+
+    def __init__(self, username: str = "alice", role: str = "user"):
+        self.state = _State({"username": username, "role": role})
+
+
+def _route_dependency(path: str, method: str):
+    method = method.upper()
+    for route in s3_ingest.router.routes:
+        if getattr(route, "path", None) != path:
+            continue
+        if method not in (getattr(route, "methods", set()) or set()):
+            continue
+        deps = getattr(getattr(route, "dependant", None), "dependencies", []) or []
+        assert deps, f"{method} {path} has no dependency gate"
+        return deps[0].call
+    raise AssertionError(f"route not found: {method} {path}")
+
+
+def _assert_allowed(dep, request: _Request) -> None:
+    dep(request)
+
+
+def _assert_denied(dep, request: _Request) -> None:
+    with pytest.raises(HTTPException) as exc:
+        dep(request)
+    assert exc.value.status_code == 403
+
+
+def test_s3_read_run_routes_allow_filebrowser_manager(monkeypatch):
+    monkeypatch.setattr(auth_core, "get_page_admins", lambda: {"filebrowser": ["fb_manager"]})
+    manager = _Request("fb_manager", "user")
+    plain = _Request("plain", "user")
+
+    for method, path in [
+        ("GET", "/api/s3ingest/items"),
+        ("GET", "/api/s3ingest/history"),
+        ("POST", "/api/s3ingest/run"),
+    ]:
+        _assert_allowed(_route_dependency(path, method), manager)
+
+    _assert_denied(_route_dependency("/api/s3ingest/run", "POST"), plain)
+
+
+def test_s3_config_mutation_routes_are_admin_only(monkeypatch):
+    monkeypatch.setattr(auth_core, "get_page_admins", lambda: {"filebrowser": ["fb_manager"]})
+    manager = _Request("fb_manager", "user")
+    admin = _Request("root", "admin")
+
+    for method, path in [
+        ("POST", "/api/s3ingest/save"),
+        ("POST", "/api/s3ingest/delete"),
+        ("POST", "/api/s3ingest/schedule/save"),
+        ("GET", "/api/s3ingest/aws-config"),
+        ("POST", "/api/s3ingest/aws-config/save"),
+        ("POST", "/api/s3ingest/aws-config/delete"),
+    ]:
+        dep = _route_dependency(path, method)
+        _assert_denied(dep, manager)
+        _assert_allowed(dep, admin)
+
+
+def test_filebrowser_manager_can_list_history_and_run_existing_s3_item(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.json"
+    status = tmp_path / "status.json"
+    history = tmp_path / "history.jsonl"
+    cfg.write_text(json.dumps({
+        "items": [{
+            "id": "db1",
+            "kind": "db",
+            "target": "DB1",
+            "s3_url": "s3://bucket/DB1",
+            "command": "sync",
+            "direction": "download",
+            "interval_min": 60,
+            "enabled": True,
+        }]
+    }), encoding="utf-8")
+    status.write_text(json.dumps({"db1": {"last_status": "ok", "last_end": "2026-05-08T10:00:00"}}), encoding="utf-8")
+    history.write_text(json.dumps({"id": "db1", "status": "ok", "cmd": "aws s3 sync"}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(s3_ingest, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(s3_ingest, "STATUS_FILE", status)
+    monkeypatch.setattr(s3_ingest, "HISTORY_FILE", history)
+    monkeypatch.setattr(s3_ingest, "_RUNNING", {})
+    monkeypatch.setattr(s3_ingest, "_QUEUED", [])
+    monkeypatch.setattr(s3_ingest, "_schedule_run", lambda item_id: item_id == "db1")
+
+    perm = {"username": "fb_manager", "role": "user"}
+    items = s3_ingest.list_items(username="fb_manager", _perm=perm)
+    history_out = s3_ingest.get_history(username="fb_manager", id="db1", limit=50, _perm=perm)
+    run = s3_ingest.run_manual(s3_ingest.IdReq(username="fb_manager", id="db1"), _perm=perm)
+
+    assert items["items"][0]["id"] == "db1"
+    assert history_out["entries"][0]["id"] == "db1"
+    assert run == {"ok": True, "started": True, "queued": True}
 
 
 def test_item_due_state_uses_last_end_and_interval():

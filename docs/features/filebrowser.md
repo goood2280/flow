@@ -32,6 +32,12 @@ FileBrowser는 DB root와 runtime cache 파일을 탐색하고, parquet/CSV sche
 | API helper | `frontend/src/lib/api.js` |
 | Flow-i guide | `data/flow-data/flowi_agent_features/filebrowser.md` |
 
+## S3 Sync Permissions
+
+- 일반 사용자는 파일/제품 목록의 S3 신호등과 freshness 상태만 본다.
+- FileBrowser page manager는 `GET /api/s3ingest/items`, `GET /api/s3ingest/history`, `POST /api/s3ingest/run`으로 이미 등록된 S3 동기화 항목을 조회하고 수동 실행할 수 있다.
+- S3 항목 생성/수정/삭제, 스케줄 저장, AWS credential/profile 조회·저장·삭제는 global Admin 전용이다. 위임받은 FileBrowser manager에게는 `항목`/`이력` 탭만 보이고 `+ 추가`, `수정`, `삭제`, `AWS 설정`은 표시하지 않는다.
+
 ## Data And Cache
 
 - Raw DB root는 `FLOW_DB_ROOT` 또는 `data/Fab/`에서 온다.
