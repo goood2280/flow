@@ -44,6 +44,7 @@ ADMIN_ONLY_WRITE_ENDPOINTS = [
     ("POST", "/api/splittable/source-config/save", "page_manager:splittable"),
     ("POST", "/api/splittable/rulebook/save", "page_manager:splittable"),
     ("POST", "/api/splittable/rulebook/schema/save", "page_manager:splittable"),
+    ("POST", "/api/splittable/custom-tags/delete", "page_manager:splittable"),
     ("POST", "/api/splittable/custom-tags/columns/delete", "page_manager:splittable"),
     ("POST", "/api/splittable/prefixes/save", "page_manager:splittable"),
     ("POST", "/api/splittable/precision/save", "page_manager:splittable"),

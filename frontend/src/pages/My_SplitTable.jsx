@@ -228,18 +228,12 @@ export default function My_SplitTable({user}){
   const[featMask,setFeatMask]=useState("");
   const[selFeatCols,setSelFeatCols]=useState([]);const[mlPlan,setMlPlan]=useState(null);
   const[customTags,setCustomTags]=useState([]);
-  const[managementRows,setManagementRows]=useState([]);const[managementRowName,setManagementRowName]=useState("");
 
   const reloadCustoms=()=>sf(API+"/customs").then(d=>setCustoms(d.customs||[]));
   const reloadCustomTags=()=>{if(!selProd){setCustomTags([]);return Promise.resolve();}
     return sf(API+"/custom-tags?product="+encodeURIComponent(selProd))
       .then(d=>setCustomTags(d.columns||[]))
       .catch(()=>setCustomTags([]));
-  };
-  const reloadManagementRows=()=>{if(!selProd){setManagementRows([]);return Promise.resolve();}
-    return sf(API+"/management-rows?product="+encodeURIComponent(selProd))
-      .then(d=>setManagementRows(d.columns||[]))
-      .catch(()=>setManagementRows([]));
   };
   // v4.1: Features loader — wide ET⋈INLINE sample (default 200 rows, 40 cols).
   const loadFeatures=()=>{setFeaturesLoading(true);
@@ -359,9 +353,8 @@ export default function My_SplitTable({user}){
   //   CUSTOM pool 의 `_CUSTOM_HIDDEN` 기본 숨김 목록에서 예외 처리 → 검색/필터 드롭다운에 노출.
   const[overrideCols,setOverrideCols]=useState([]);
   useEffect(()=>{
-    if(!selProd){setProductSchema([]);setOverrideCols([]);setCustomTags([]);setManagementRows([]);return;}
+    if(!selProd){setProductSchema([]);setOverrideCols([]);setCustomTags([]);return;}
     reloadCustomTags();
-    reloadManagementRows();
     sf(API+"/schema?product="+encodeURIComponent(selProd))
       .then(d=>{
         setProductSchema((d.columns||[]).map(c=>c.name||c));
@@ -679,7 +672,7 @@ export default function My_SplitTable({user}){
       jobs.push(sf(API+"/management-rows/values",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,values:managementToSave,username:user?.username||"",root_lot_id:lotId})}));
     }
     Promise.all(jobs)
-      .then(()=>{primePlanValueCache(plansToSave);setShowConfirm(false);setEditing(false);setPendingPlans({});setPendingTags({});setPendingManagement({});reloadCustomTags();reloadManagementRows();loadView();})
+      .then(()=>{primePlanValueCache(plansToSave);setShowConfirm(false);setEditing(false);setPendingPlans({});setPendingTags({});setPendingManagement({});reloadCustomTags();loadView();})
       .catch(e=>toast.error(e.message));};
   const deletePlan=(ck)=>{if(!confirm("Delete?"))return;sf(API+"/plan/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,cell_keys:[ck],username:user?.username||""})}).then(loadView);};
   const currentRowsForInformSnapshot=()=>{
@@ -797,11 +790,12 @@ export default function My_SplitTable({user}){
 
   // v8.6.1: 낙관적 잠금 — 동일 name 의 기존 custom version 을 expected_version 으로 첨부.
   // 충돌(다른 사용자 저장) 시 conflict 응답 → confirm 으로 덮어쓸지 reload 할지 선택.
-  const saveCustom=(force)=>{if(!customName.trim()||!customCols.length)return;
+  const cleanCustomColumns=(cols=[])=>cols.filter(col=>!String(col||"").toUpperCase().startsWith("MGMT_"));
+  const saveCustom=(force)=>{const colsToSave=cleanCustomColumns(customCols);if(!customName.trim()||!colsToSave.length)return;
     const existing=customs.find(c=>c.name===customName);
     const ev=force?null:(existing?(existing.version||1):0);
     sf(API+"/customs/save",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({name:customName,username:user?.username||"",columns:customCols,expected_version:ev})})
+      body:JSON.stringify({name:customName,username:user?.username||"",columns:colsToSave,expected_version:ev})})
       .then(d=>{
         if(d&&d.conflict){
           if(confirm("⚠ '"+customName+"' 가 다른 사용자에 의해 변경되었습니다.\n\nOK = 그래도 덮어쓰기\nCancel = 최신 데이터 불러오기")){
@@ -809,11 +803,11 @@ export default function My_SplitTable({user}){
           } else {
             reloadCustoms();
             const cur=d.current||{};
-            if(cur.columns)setCustomCols(cur.columns);
+            if(cur.columns)setCustomCols(cleanCustomColumns(cur.columns));
           }
           return;
         }
-        reloadCustoms();setSelCustom(customName);setIsCustomMode(true);
+        reloadCustoms();setSelCustom(customName);setCustomCols(colsToSave);setIsCustomMode(true);
       }).catch(e=>toast.error("저장 실패: "+(e.message||e)));};
   const deleteCustom=(name)=>{if(!confirm("Delete '"+name+"'?"))return;
     sf(API+"/customs/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,username:user?.username||""})})
@@ -821,13 +815,8 @@ export default function My_SplitTable({user}){
   const selectCustomSet=(c)=>{
     // v8.8.33: 저장 set 에서 기본 식별자(root_lot_id/wafer_id/lot_id/fab_lot_id/product) 자동 제거 — 자동 첨부되는 컬럼.
     const _drop=new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
-    const cleaned=(c.columns||[]).filter(col=>!_drop.has(String(col).toLowerCase()));
+    const cleaned=cleanCustomColumns((c.columns||[]).filter(col=>!_drop.has(String(col).toLowerCase())));
     setSelCustom(c.name);setCustomCols(cleaned);setCustomName(c.name);
-  };
-  const addManagementToCustom=(column)=>{
-    if(!column)return;
-    setCustomCols(prev=>prev.includes(column)?prev:[...prev,column]);
-    setIsCustomMode(true);
   };
   const currentResultParams=()=>Array.from(new Set((data?.rows||[]).map(r=>String(r?._param||"").trim()).filter(Boolean)));
   const includeTagInCurrentResult=(column)=>{
@@ -860,7 +849,7 @@ export default function My_SplitTable({user}){
   const deleteCustomTagColumn=(column)=>{
     if(!canManage||!column)return;
     if(!confirm(`TAG 열 '${column}' 을 삭제할까요? 저장된 값도 함께 삭제됩니다.`))return;
-    sf(API+"/custom-tags/columns/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,column,username:user?.username||""})})
+    sf(API+"/custom-tags/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,column,username:user?.username||""})})
       .then(d=>{
         setCustomTags(d.columns||[]);
         setProductSchema(prev=>prev.filter(c=>c!==column));
@@ -871,23 +860,6 @@ export default function My_SplitTable({user}){
       })
       .catch(e=>toast.error("꼬리표 열 삭제 실패: "+(e.message||e)));
   };
-  const createManagementRow=()=>{
-    const name=(managementRowName||"").trim();
-    if(!selProd||!name)return;
-    sf(API+"/management-rows/columns/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,name,username:user?.username||""})})
-      .then(d=>{
-        const col=d.column;
-        setManagementRows(d.columns||[]);
-        if(col){
-          addManagementToCustom(col);
-          setProductSchema(prev=>prev.includes(col)?prev:[...prev,col]);
-        }
-        setManagementRowName("");
-        toast.ok("관리 행 추가됨");
-      })
-      .catch(e=>toast.error("관리 행 추가 실패: "+(e.message||e)));
-  };
-
   const togglePrefix=(p)=>{if(isCustomMode){setIsCustomMode(false);setSelCustom("");setSelPrefixes([p]);return;}
     setSelPrefixes(prev=>prev.includes(p)?prev.filter(x=>x!==p).length?prev.filter(x=>x!==p):[p]:[...prev,p]);};
   const addPrefix=()=>{if(!newPrefix.trim())return;const np=newPrefix.trim().toUpperCase();
@@ -956,16 +928,15 @@ export default function My_SplitTable({user}){
   //   집중하도록 근본적으로 차단. 기존에 customCols 에 섞여있던 것도 로드 타임에 자동 제거.
   const _CUSTOM_HIDDEN_BASE = new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
   const customPool=(()=>{const seen=new Set();const out=[];
-    for(const c of [...productSchema,...allCols,...customCols,...overrideCols,...customTags.map(t=>t.column),...managementRows.map(t=>t.column)]){
+    for(const c of [...productSchema,...allCols,...customCols,...overrideCols,...customTags.map(t=>t.column)]){
       const lc = String(c).toLowerCase();
+      if(String(c||"").toUpperCase().startsWith("MGMT_")) continue;
       if(_CUSTOM_HIDDEN_BASE.has(lc)) continue;
       if(!seen.has(c)){seen.add(c);out.push(c);}
     }return out;})();
   const customLabelFor=(column)=>{
     const hit=(customTags||[]).find(t=>t.column===column);
     if(hit)return `${hit.label||column} (${column})`;
-    const mgmt=(managementRows||[]).find(t=>t.column===column);
-    if(mgmt)return mgmt.label||String(column||"").replace(/^MGMT_/,"");
     return column;
   };
   const filteredCustomCols=colSearch
@@ -1048,23 +1019,6 @@ export default function My_SplitTable({user}){
             </span>)}
           </div>
         </div>}
-        <div style={{marginTop:6,padding:"6px",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)"}}>
-          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontWeight:600}}>관리 행</div>
-          <div style={{display:"flex",gap:4}}>
-            <input value={managementRowName} onChange={e=>setManagementRowName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&createManagementRow()}
-              placeholder="예: Purpose" style={{...S,flex:1,fontSize:14}}/>
-            <button onClick={createManagementRow} disabled={!managementRowName.trim()}
-              style={{padding:"3px 8px",borderRadius:4,border:"1px solid rgba(16,185,129,0.8)",background:"rgba(16,185,129,0.10)",color:"rgba(5,150,105,0.95)",fontSize:14,fontWeight:700,cursor:managementRowName.trim()?"pointer":"not-allowed",opacity:managementRowName.trim()?1:0.55}}>
-              추가
-            </button>
-          </div>
-          {managementRows.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:5}}>
-            {managementRows.map(t=><span key={t.column} onClick={()=>addManagementToCustom(t.column)} title={t.column}
-              style={{padding:"1px 6px",borderRadius:3,border:"1px solid rgba(16,185,129,0.45)",background:customCols.includes(t.column)?"rgba(16,185,129,0.12)":"transparent",color:customCols.includes(t.column)?"rgba(5,150,105,0.95)":"var(--text-secondary)",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>
-              {customCols.includes(t.column)?"✓ ":"+"}{t.label||String(t.column||"").replace(/^MGMT_/,"")}
-            </span>)}
-          </div>}
-        </div>
         <div style={{marginTop:6,fontSize:14,color:"var(--text-secondary)"}}>생성 / 편집</div>
         <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색" style={{...S,width:"100%",fontSize:14,marginBottom:4,marginTop:4}}/>
         {/* v8.8.16: 전체 체크/제거 + 개수 표시 */}
@@ -1080,7 +1034,7 @@ export default function My_SplitTable({user}){
           <span style={{marginLeft:"auto",color:"var(--text-secondary)",fontSize:14}}>{customCols.length}/{customPool.length} 선택</span>
         </div>
         <div style={{maxHeight:120,overflow:"auto"}}>
-          {filteredCustomCols.map(c=><div key={c} onClick={()=>{if(!customCols.includes(c))setCustomCols([...customCols,c]);else setCustomCols(customCols.filter(x=>x!==c));}} style={{fontSize:14,padding:"2px 6px",cursor:"pointer",color:customCols.includes(c)?"var(--accent)":"var(--text-secondary)",fontFamily:String(c).startsWith("TAG_")||String(c).startsWith("MGMT_")?"monospace":"inherit"}}>{customCols.includes(c)?"✓ ":""}{customLabelFor(c)}</div>)}
+          {filteredCustomCols.map(c=><div key={c} onClick={()=>{if(!customCols.includes(c))setCustomCols([...customCols,c]);else setCustomCols(customCols.filter(x=>x!==c));}} style={{fontSize:14,padding:"2px 6px",cursor:"pointer",color:customCols.includes(c)?"var(--accent)":"var(--text-secondary)",fontFamily:String(c).startsWith("TAG_")?"monospace":"inherit"}}>{customCols.includes(c)?"✓ ":""}{customLabelFor(c)}</div>)}
           {filteredCustomCols.length===0&&<div style={{fontSize:14,color:"var(--text-secondary)",padding:6,fontStyle:"italic"}}>
             {productSchema.length===0?"제품 스키마 로딩 중...":"검색 결과 없음"}
           </div>}
@@ -1668,7 +1622,7 @@ export default function My_SplitTable({user}){
           ? data.rows.filter(r=>{const vs=Object.values(r._cells||{}).map(c=>c?.actual).filter(v=>v!=null&&v!==""&&v!=="None"&&v!=="null");return new Set(vs).size>=2;})
           : data.rows;
         const isTagRow=(row)=>String(row?._param||"").toUpperCase().startsWith("TAG_")||Object.values(row?._cells||{}).some(c=>c?.is_custom_tag===true);
-        const displayRows=[...viewRows.filter(r=>!isTagRow(r)),...viewRows.filter(r=>isTagRow(r))];
+        const displayRows=viewRows;
         const normalizedSelection=selectedCellRange
           ? normalizeCellRange(selectedCellRange.startRow,selectedCellRange.startCol,selectedCellRange.endRow,selectedCellRange.endCol)
           : null;

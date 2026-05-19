@@ -8,7 +8,6 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - KNOB/MASK/CUSTOM set plan과 actual 비교
 - final value, drift, diff, notes, related issue
 - runtime-only `TAG_*` 꼬리표 열: 원본 파일을 수정하지 않고 SplitTable matrix와 CUSTOM 세트에 표시하는 사용자 overlay
-- runtime-only `MGMT_*` 관리 행: product 공용 행 정의와 lot/wafer별 값을 원본 파일 밖에 저장하고, CUSTOM 세트에서 선택된 경우에만 matrix/export에 표시하는 사용자 overlay
 - split 영향 후보 이벤트: notes와 plan history 변경을 append-only KnowledgeEvent로 남긴다.
 - XLSX export와 Inform Log용 SplitTable snapshot 생성
 - `data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`의 root/wafer별 최신 `lot_id`를 사용한 fab lot label 표시
@@ -42,10 +41,10 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - History 탭은 plan history의 전체/최종 log만 표시한다. Lot Operational History 패널과 `/operational-history` 호출은 UI에서 사용하지 않는다.
 - cache/parquet 변경은 runtime 산출물과 코드 변경을 분리해서 설명한다.
 - `TAG_*` 꼬리표 값은 `data/flow-data/splittable/custom_tags.json`에만 저장하고, 원본 `ML_TABLE_*.parquet` / CSV / FAB source에는 쓰지 않는다.
-- `TAG_*` 꼬리표 열 생성은 조회 결과 표 맨 아래의 `+ TAG` 행에서 수행한다. CUSTOM 패널은 `MGMT_*` 관리 행 생성과 custom set 구성만 담당한다.
+- `TAG_*` 꼬리표 열 생성은 조회 결과 표 맨 아래의 `+ TAG` 행에서 수행한다. CUSTOM 패널은 custom set 구성만 담당하며 관리 행 생성/선택 UI를 노출하지 않는다.
+- `TAG_*` 꼬리표 행은 맨 아래에 고정하지 않고 이름 앞 숫자의 natural sort 위치에 표시한다.
 - `TAG_*` 꼬리표 열 삭제는 admin 또는 `splittable` page manager만 가능하다. 삭제 시 product별 TAG 정의와 `custom_tags.json`에 저장된 해당 열의 모든 값을 함께 제거한다.
-- `MGMT_*` 관리 행 정의/값은 `data/flow-data/splittable/management_rows.json`에만 저장한다. 행 정의는 product별 공용이고, 값은 `product + root_lot_id + wafer_id + MGMT_*` 기준 overlay다.
-- `MGMT_*`는 일반 `KNOB`/기본 조회에 자동으로 붙이지 않는다. CUSTOM 세트 또는 ad-hoc CUSTOM 선택에 포함된 경우에만 SplitTable view, CSV, XLSX export에 표시한다.
+- 기존 `MGMT_*` 관리 행 저장값은 `data/flow-data/splittable/management_rows.json`에 남아도 원본 파일을 수정하지 않는다. 신규 UI에서는 CUSTOM 선택 풀과 저장 set에서 `MGMT_*`를 제외한다.
 - KNOB 적용공정정보는 `ppid_knob.csv`를 제품 공용 룰로 읽고, product별 `function_step -> step_id` 확장은 `Vehicle_matching.csv`를 우선 사용한다. 기존 배포처럼 `Vehicle_matching.csv`가 없으면 `step_matching.csv`를 fallback으로 사용한다.
 - `Vehicle_matching.csv`는 `product`, `function_step`, `step_id` 컬럼을 기본 계약으로 하며, 현재 선택 product alias에 맞는 row만 step 후보로 노출한다.
 - Shared 설정(source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh)은 `splittable` page manager 이상만 쓴다.

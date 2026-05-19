@@ -713,7 +713,7 @@ def _tag_column_id(name: str) -> str:
     raw = str(name or "").strip()
     if raw.upper().startswith(f"{CUSTOM_TAG_PREFIX}_"):
         raw = raw[len(CUSTOM_TAG_PREFIX) + 1:].strip()
-    token = safe_id(raw, max_len=72).strip().replace(" ", "_")
+    token = "".join(c for c in raw if c.isalnum() or c in "_-. ")[:72].strip().replace(" ", "_")
     token = "_".join(part for part in token.split("_") if part)
     if not token:
         raise HTTPException(400, "tag name required")
@@ -3758,6 +3758,7 @@ def save_custom_tag_column(req: CustomTagColumnReq, request: Request = None):
     return {"ok": True, "column": entry["column"], "label": entry["label"], "columns": _custom_tag_columns_for_product(product)}
 
 
+@router.post("/custom-tags/delete")
 @router.post("/custom-tags/columns/delete")
 def delete_custom_tag_column(
     req: CustomTagColumnDeleteReq,

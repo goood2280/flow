@@ -344,6 +344,45 @@ def test_custom_tag_column_delete_removes_definition_values_and_preserves_source
     assert column not in pl.read_parquet(tmp_path / "ML_TABLE_PRODA.parquet").columns
 
 
+def test_custom_tag_rows_keep_numeric_sort_position(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["LOT926CC"],
+        "wafer_id": ["1"],
+        "KNOB_1.0 AA": ["A"],
+        "KNOB_2.0 BB": ["B"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
+    (tmp_path / "issues.json").write_text("[]", encoding="utf-8")
+
+    created = splittable.save_custom_tag_column(
+        splittable.CustomTagColumnReq(product="ML_TABLE_PRODA", name="1.5 review", username="owner")
+    )
+    column = created["column"]
+    result = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="LOT926CC",
+        wafer_ids="",
+        prefix="",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols=f"KNOB_1.0 AA,{column},KNOB_2.0 BB",
+    )
+
+    assert column == "TAG_1.5_review"
+    assert [row["_param"] for row in result["rows"]] == ["KNOB_1.0 AA", column, "KNOB_2.0 BB"]
+
+
 def test_custom_tag_delete_requires_splittable_manager(monkeypatch):
     monkeypatch.setattr(auth_core, "get_page_admins", lambda: {})
 
@@ -355,6 +394,13 @@ def test_custom_tag_delete_requires_splittable_manager(monkeypatch):
     monkeypatch.setattr(auth_core, "get_page_admins", lambda: {"splittable": ["alice"]})
     assert auth_core.require_page_manager("splittable")(_Request("alice", "user"))["username"] == "alice"
     assert auth_core.require_page_manager("splittable")(_Request("root", "admin"))["username"] == "root"
+
+
+def test_custom_tag_delete_routes_are_registered():
+    paths = {getattr(route, "path", "") for route in splittable.router.routes}
+
+    assert "/api/splittable/custom-tags/delete" in paths
+    assert "/api/splittable/custom-tags/columns/delete" in paths
 
 
 def test_management_rows_overlay_view_custom_set_and_exports(tmp_path, monkeypatch):
