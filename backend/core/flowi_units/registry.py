@@ -20,35 +20,13 @@ from core.flowi_units.base import (
     SemanticBindings,
     UnitAI,
 )
+from core.flowi_units.dashboard import DashboardUnitAI
 from core.flowi_units.filebrowser import FileBrowserUnitAI
 from core.flowi_units.inform import InformUnitAI
 from core.flowi_units.meeting import MeetingUnitAI
 from core.flowi_units.tracker import TrackerUnitAI
 
 _BACKEND_CORE_DIR = Path(__file__).resolve().parent.parent
-
-
-class DashboardUnitAI(BaseUnitAI):
-    KEY = "dashboard"
-    TITLE = "Dashboard AI"
-    DATA_SOURCES = (
-        DataSourceRef(
-            kind="runtime_data",
-            path="data/flow-data/dashboards/",
-            description="대시보드 카드 정의와 chart session.",
-            columns=(
-                ColumnDoc(name="card_id", meaning="대시보드 카드 식별자."),
-                ColumnDoc(name="chart_session_id", meaning="차트 한 번의 컨텍스트. 후속 요청에서 재사용."),
-                ColumnDoc(name="metric", meaning="차트 metric 컬럼."),
-                ColumnDoc(name="group_by", meaning="그룹 분할 컬럼 (예: lot_wf, KNOB 값)."),
-            ),
-        ),
-    )
-    HANDLER_ENTRY = CodeRef(
-        module="backend.routers.llm",
-        function="(M2 위임 예정)",
-        description="Dashboard 카드 / chart session",
-    )
 
 
 class SplitTableUnitAI(BaseUnitAI):

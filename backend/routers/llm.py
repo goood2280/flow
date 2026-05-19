@@ -20089,6 +20089,8 @@ def _run_flowi_chat(
         unit_only.append("meeting")
     if "tracker" in allowed_keys:
         unit_only.append("tracker")
+    if "dashboard" in allowed_keys:
+        unit_only.append("dashboard")
     unit_only.append("filebrowser")
     unit_tool = _try_unit_ai_dispatch(
         prompt,
