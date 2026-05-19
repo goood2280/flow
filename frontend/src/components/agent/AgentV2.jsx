@@ -120,10 +120,11 @@ function SidebarHeader({ title, meta }) {
     <div className="flow-sidebar-header" style={{
       padding: "12px 16px", borderBottom: "1px solid var(--border)",
       fontSize: 14, fontWeight: 700, color: "var(--text-secondary)",
-      display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+      display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "flex-start", gap: 2,
+      textAlign: "left",
     }}>
-      <span>{title}</span>
-      {meta && <span style={{ fontSize: 12, fontWeight: 500 }}>{meta}</span>}
+      <span className="flow-sidebar-header-title">{title}</span>
+      {meta && <span className="flow-sidebar-header-meta" style={{ fontSize: 12, fontWeight: 500 }}>{meta}</span>}
     </div>
   );
 }
@@ -134,6 +135,7 @@ function SidebarSection({ label, children }) {
       <div style={{
         fontSize: 12, fontWeight: 700, color: "var(--text-secondary)",
         padding: "10px 12px 6px", textTransform: "uppercase", letterSpacing: 0.4,
+        textAlign: "left",
       }}>{label}</div>
       <div style={{ paddingBottom: 6 }}>{children}</div>
     </div>
@@ -147,6 +149,7 @@ function SidebarItem({ active, icon, label, meta, hint, onClick }) {
       onClick={onClick}
       style={{
         width: "100%", textAlign: "left", padding: "8px 12px", display: "flex", flexDirection: "column", gap: 2,
+        alignItems: "stretch", justifyContent: "flex-start",
         background: active ? "var(--accent-glow)" : "transparent",
         color: active ? "var(--accent)" : "var(--text-primary)",
         borderLeft: active ? "3px solid var(--accent)" : "3px solid transparent",
@@ -154,12 +157,12 @@ function SidebarItem({ active, icon, label, meta, hint, onClick }) {
         cursor: "pointer", fontSize: 13,
       }}
     >
-      <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: active ? 700 : 500 }}>
+      <span style={{ width: "100%", display: "flex", alignItems: "center", gap: 6, fontWeight: active ? 700 : 500 }}>
         <span aria-hidden>{icon}</span>
         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
         {meta && <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{meta}</span>}
       </span>
-      {hint && <span style={{ fontSize: 11, color: "var(--text-secondary)", paddingLeft: 22 }}>{hint}</span>}
+      {hint && <span style={{ width: "100%", fontSize: 11, color: "var(--text-secondary)", paddingLeft: 22, textAlign: "left" }}>{hint}</span>}
     </button>
   );
 }
