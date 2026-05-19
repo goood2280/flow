@@ -12,10 +12,12 @@
 
 ## Now
 
+- [ ] (Claude) Flow-i Home Agent 4계층 재설계 M2 — M1 골격 위에 PR #2 filebrowser unit AI delegation 진행. `backend/routers/llm.py:19492` `_run_flowi_chat` 최상단에 `dispatcher_try(filebrowser)` 추가, 성공 시 `_attach_flowi_trace`로 마무리하고 return. 실패 시 기존 if/elif fallback. Plan: `C:\\Users\\goood\\.claude\\plans\\federated-launching-rivest.md`.
+
 ## Next
 
 - [ ] (Codex) Knowledge Wiki / Meeting list latency follow-up — `scripts/latency_budget_probe.py` 기준 `/api/knowledge/wiki?limit=10` 약 300ms, `/api/meetings/list` 간헐 120ms를 100ms light endpoint 예산 안으로 줄이거나 heavy/readiness 분류를 조정한다.
-- [ ] (Codex) P10 Flow-i backend 구조 분리 — `backend/routers/llm.py`에서 unit action handler 한 묶음을 feature별 module로 추출하고 trace 계약을 유지한다.
+- [ ] (Claude) Flow-i Home Agent M3 ~ M6 — Agent 탭 단순 UX 재설계(좌측 리스트 + 우측 디테일), Thought Flow 가시화·인라인 교정·시멘틱 컬럼 문서 기반 term resolution, 워크플로우 템플릿, `_run_flowi_chat` dead path 정리. (P10 Codex 항목을 본 작업으로 흡수)
 - [ ] (Codex) P11 Admin / Dashboard 페이지 분해 — panel 하나씩 분리하고 기존 API 호출/권한을 유지한다.
 - [ ] (Claude) P12 Agent 미션 정착 후 Diagnosis/Knowledge 본연 흐름 재정리 (`docs/features/diagnosis-knowledge.md` 우선순위 메모 해제).
 - [ ] Keep feature docs current when page/API ownership changes.
@@ -23,6 +25,7 @@
 
 ## Done
 
+- [x] (Claude) Flow-i Home Agent 4계층 재설계 M1 — Unit AI 골격 (PR #1). 신규 `backend/core/flowi_units/{__init__,base,registry}.py` 추가, declarative metadata만(UnitAI Protocol, BaseUnitAI, DataSourceRef, ColumnDoc, SemanticBindings, CodeRef). 11개 unit AI 등록 + 6개에 41개 컬럼 문서화 채움(나머지는 M2 각 PR에서). `_run_flowi_chat` 미수정 — 모든 `handle()`이 None 반환해 기존 if/elif가 그대로 fallback. 검증: 신규 모듈 import OK, `python scripts/smoke_test.py` 29/29 PASS, `python -m pytest tests/test_flowi_router.py tests/test_flowi_multisource.py tests/test_feature_contracts.py tests/test_filebrowser_sql.py -x` 158/159 (1건 실패는 dirty `data/Fab/cache/lot_progress_latest_lot_by_root_wafer.parquet`에 의존하는 사전 존재 flake — M1 무관, TODO.md Done에도 동일 사례 명시), `python _build_setup.py` 2.59MB 재생성, `python setup.py version` OK, py_compile 통과.
 - [x] (Codex) SplitTable 관리 행 overlay — `MGMT_*` runtime-only 행 정의/값 저장을 `data/flow-data/splittable/management_rows.json`로 분리하고 CUSTOM 선택 흐름, view/schema, CSV/XLSX export, matrix 편집 저장에 연결. 원본 `ML_TABLE_*.parquet` 미변경과 기본 KNOB 조회 미표시 회귀를 추가. `python3 -m pytest tests/test_splittable_lot_candidates.py -q` 22/22 PASS, `cd frontend && npm run build`, `python3 -m py_compile backend/routers/splittable.py`, `python3 _build_setup.py`, `python3 setup.py version`, `git diff --check` 통과.
 - [x] (Codex) FileBrowser S3 run delegation — FileBrowser page manager는 기존 S3 동기화 항목 조회/이력/실행만 가능하고, S3 항목·스케줄·AWS credential 설정 변경은 Admin 전용으로 고정. UI는 delegated user에게 `항목`/`이력` 실행 흐름만 노출하고 `+ 추가`/수정/삭제/AWS 설정을 숨김. `python3 -m pytest tests/test_s3_ingest_status.py -q` 12/12 PASS, `python3 -m pytest tests/test_permission_matrix.py -q` 6/6 PASS, `python3 -m pytest tests/test_filebrowser_sql.py -q` 121/121 PASS, `cd frontend && npm run build`, `python3 _build_setup.py`, `python3 setup.py version`, py_compile, `git diff --check` 통과.
 - [x] (Codex) SplitTable runtime 꼬리표 열 — 원본 파일을 훼손하지 않는 `TAG_*` 사용자 열을 `data/flow-data/splittable/custom_tags.json` overlay로 저장하고, SplitTable 표/CUSTOM 세트/CSV/XLSX/schema에 표시·편집되도록 연결. `python3 -m pytest tests/test_splittable_lot_candidates.py -q` 21/21 PASS, `python3 -m pytest tests/test_feature_contracts.py -q` 12/12 PASS, `cd frontend && npm run build`, `python3 -m py_compile setup.py backend/routers/splittable.py`, `python3 _build_setup.py`, `python3 setup.py version`, `git diff --check` 통과. Live smoke는 샌드박스 localhost 접근 제한(`Operation not permitted`)으로 실행하지 못함.
