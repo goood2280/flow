@@ -476,9 +476,9 @@ function moduleColor(name) {
 function StatusBadge({ status, compact = false }) {
   const normalized = normalizeFlowStatus(status);
   const m = STATUS_META[normalized] || { label: status || "-", tone: "neutral", color: "var(--text-secondary)", dot: "·" };
-  const label = compact && normalized === "apply_confirmed" ? "적용확인" : m.label;
+  const label = m.label;
   return (
-    <Pill tone={m.tone} title={m.label} style={{ minWidth: 0, maxWidth: compact ? 86 : "100%", lineHeight: 1.2 }}>
+    <Pill tone={m.tone} title={m.label} style={{ minWidth: 0, width: compact ? "100%" : undefined, maxWidth: compact ? 114 : "100%", boxSizing: "border-box", lineHeight: 1.2 }}>
       <span style={{ flex: "0 0 auto" }}>{m.dot}</span>
       <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
     </Pill>
@@ -4116,8 +4116,8 @@ function InformVirtualList({ roots, selectedId, onOpen }) {
             <col style={{ width: 90 }} />
             <col style={{ width: 100 }} />
             <col />
-            <col style={{ width: 96 }} />
-            <col style={{ width: 84 }} />
+            <col style={{ width: 124 }} />
+            <col style={{ width: 78 }} />
             <col style={{ width: 110 }} />
             <col style={{ width: 100 }} />
             <col style={{ width: 90 }} />
@@ -4129,7 +4129,7 @@ function InformVirtualList({ roots, selectedId, onOpen }) {
               <th style={headStyle}>root_lot</th>
               <th style={headStyle}>제품</th>
               <th style={headStyle}>제목</th>
-              <th style={headStyle}>상태</th>
+              <th style={{ ...headStyle, padding: "6px 4px" }}>상태</th>
               <th style={headStyle}>작성자</th>
               <th style={headStyle}>시간</th>
               <th style={headStyle}>카운트</th>
@@ -4203,7 +4203,7 @@ function InformListRow({ root, selected, onOpen }) {
           {informTitle(root)}
         </span>
       </td>
-      <td style={{ ...cellStyle, minWidth: 0, overflow: "hidden" }}>
+      <td style={{ ...cellStyle, minWidth: 0, overflow: "hidden", padding: "6px 4px" }}>
         <StatusBadge status={status} compact />
       </td>
       <td title={root.author || ""} style={{ ...cellStyle, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{root.author || "-"}</td>
