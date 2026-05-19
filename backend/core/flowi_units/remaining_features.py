@@ -98,8 +98,32 @@ class TableMapUnitAI(BaseUnitAI):
         module="backend.routers.llm",
         function="_unit_feature_guidance",
         lineno=2586,
-        description="TableMap 진입/가이드 — UI-driven (legacy _handle_flowi_query_core 경로)",
+        description="TableMap 진입/가이드 — prompt에 'tablemap/테이블맵' 포함 시 라우팅",
     )
+
+    def handle(
+        self,
+        prompt: str,
+        slots: dict[str, Any],
+        ctx: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        from routers.llm import _unit_feature_guidance
+
+        text = str(prompt or "")
+        low = text.lower()
+        if not any(t in low or t in text for t in ("테이블맵", "테이블 맵", "tablemap", "table map")):
+            return None
+
+        product = str(slots.get("product") or "")
+        try:
+            max_rows = int(slots.get("max_rows") or 12)
+        except (TypeError, ValueError):
+            max_rows = 12
+        allowed_keys = ctx.get("allowed_keys")
+        scoped = {"tablemap"} if (allowed_keys is None or "tablemap" in allowed_keys) else set()
+
+        result = _unit_feature_guidance(prompt, product, max_rows=max_rows, allowed_keys=scoped)
+        return result if result.get("handled") else None
 
 
 class EttimeUnitAI(BaseUnitAI):
@@ -172,6 +196,23 @@ class DiagnosisUnitAI(BaseUnitAI):
         function="_handle_knowledge_impact_context",
         description="RAG 지식 / RCA — lot 이상, split 영향, MTS 변경, anchor item 질문 라우팅",
     )
+
+    def handle(
+        self,
+        prompt: str,
+        slots: dict[str, Any],
+        ctx: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        from routers.llm import _handle_knowledge_impact_context
+
+        product = str(slots.get("product") or "")
+        try:
+            max_rows = int(slots.get("max_rows") or 12)
+        except (TypeError, ValueError):
+            max_rows = 12
+
+        result = _handle_knowledge_impact_context(prompt, product, max_rows)
+        return result if result.get("handled") else None
 
 
 class CalendarUnitAI(BaseUnitAI):

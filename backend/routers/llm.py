@@ -17717,6 +17717,14 @@ def _handle_flowi_query_core(
     role: str = "user",
     agent_context: dict[str, Any] | None = None,
 ) -> dict:
+    # NOTE (M6 dead-path note): As of M2 PRs #2~#7 + M6 the Unit AI dispatcher
+    # (try_dispatch) in _run_flowi_chat catches filebrowser / meeting / inform /
+    # tracker / dashboard / splittable / waferlayout / tablemap / diagnosis
+    # prompts BEFORE this function is called. The corresponding if/elif blocks
+    # below are kept intact (dead path) as a temporary safety net during the
+    # migration. A future PR will remove the migrated branches once each unit
+    # AI's handle() has been verified against production traces. ettime and
+    # calendar still rely on this function (no LLM-specific handler for them).
     context_product = _flowi_context_product_hint(agent_context)
     product = _product_hint(prompt, product) or context_product
     if allowed_keys is None or "dashboard" in allowed_keys:
@@ -20095,6 +20103,10 @@ def _run_flowi_chat(
         unit_only.append("splittable")
     if "waferlayout" in allowed_keys:
         unit_only.append("waferlayout")
+    if "tablemap" in allowed_keys:
+        unit_only.append("tablemap")
+    if "diagnosis" in allowed_keys:
+        unit_only.append("diagnosis")
     unit_only.append("filebrowser")
     unit_tool = _try_unit_ai_dispatch(
         prompt,
