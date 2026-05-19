@@ -12,7 +12,6 @@
 
 ## Now
 
-
 ## Next
 
 - [ ] (Codex) Knowledge Wiki / Meeting list latency follow-up — `scripts/latency_budget_probe.py` 기준 `/api/knowledge/wiki?limit=10` 약 300ms, `/api/meetings/list` 간헐 120ms를 100ms light endpoint 예산 안으로 줄이거나 heavy/readiness 분류를 조정한다.
@@ -24,6 +23,7 @@
 
 ## Done
 
+- [x] (Codex) SplitTable 관리 행 overlay — `MGMT_*` runtime-only 행 정의/값 저장을 `data/flow-data/splittable/management_rows.json`로 분리하고 CUSTOM 선택 흐름, view/schema, CSV/XLSX export, matrix 편집 저장에 연결. 원본 `ML_TABLE_*.parquet` 미변경과 기본 KNOB 조회 미표시 회귀를 추가. `python3 -m pytest tests/test_splittable_lot_candidates.py -q` 22/22 PASS, `cd frontend && npm run build`, `python3 -m py_compile backend/routers/splittable.py`, `python3 _build_setup.py`, `python3 setup.py version`, `git diff --check` 통과.
 - [x] (Codex) FileBrowser S3 run delegation — FileBrowser page manager는 기존 S3 동기화 항목 조회/이력/실행만 가능하고, S3 항목·스케줄·AWS credential 설정 변경은 Admin 전용으로 고정. UI는 delegated user에게 `항목`/`이력` 실행 흐름만 노출하고 `+ 추가`/수정/삭제/AWS 설정을 숨김. `python3 -m pytest tests/test_s3_ingest_status.py -q` 12/12 PASS, `python3 -m pytest tests/test_permission_matrix.py -q` 6/6 PASS, `python3 -m pytest tests/test_filebrowser_sql.py -q` 121/121 PASS, `cd frontend && npm run build`, `python3 _build_setup.py`, `python3 setup.py version`, py_compile, `git diff --check` 통과.
 - [x] (Codex) SplitTable runtime 꼬리표 열 — 원본 파일을 훼손하지 않는 `TAG_*` 사용자 열을 `data/flow-data/splittable/custom_tags.json` overlay로 저장하고, SplitTable 표/CUSTOM 세트/CSV/XLSX/schema에 표시·편집되도록 연결. `python3 -m pytest tests/test_splittable_lot_candidates.py -q` 21/21 PASS, `python3 -m pytest tests/test_feature_contracts.py -q` 12/12 PASS, `cd frontend && npm run build`, `python3 -m py_compile setup.py backend/routers/splittable.py`, `python3 _build_setup.py`, `python3 setup.py version`, `git diff --check` 통과. Live smoke는 샌드박스 localhost 접근 제한(`Operation not permitted`)으로 실행하지 못함.
 - [x] (Codex) Forgot password 메일 400 회귀 수정 — 공통 `core.mail.send_mail`이 첨부 없는 발송에 `flow-mail-placeholder.txt` dummy 첨부를 자동 추가하도록 하고, `/api/auth/forgot-password`는 메일 실패 시 임시 비밀번호 해시를 롤백하며 성공 후에만 기존 세션을 revoke하도록 보정. `python3 -m pytest tests/test_admin_password_backup.py tests/test_auth_session_probe.py -q` 9/9 PASS, `python3 -m py_compile backend/core/mail.py backend/routers/auth.py setup.py`, `git diff --check`, `python3 _build_setup.py`, `python3 setup.py version` 통과. 전체 `python3 -m pytest tests -q`는 540/541 PASS 후 기존 FileBrowser LOT progress cache suite-order 오염으로 1건 실패했으며, 해당 테스트 단독 재실행은 PASS.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import sys
 from pathlib import Path
@@ -13,6 +15,16 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from routers import informs, splittable  # noqa: E402
+
+
+def _read_streaming_response(response) -> bytes:
+    async def read_body():
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    return asyncio.run(read_body())
 
 
 def test_root_lot_candidates_prefer_renderable_mltable_roots(tmp_path, monkeypatch):
@@ -267,6 +279,117 @@ def test_custom_tag_columns_overlay_view_and_custom_set(tmp_path, monkeypatch):
     assert result["rows"][0]["_cells"]["0"]["can_plan"] is False
     assert result["rows"][0]["_cells"]["0"]["is_custom_tag"] is True
     assert column not in pl.read_parquet(tmp_path / "ML_TABLE_PRODA.parquet").columns
+
+
+def test_management_rows_overlay_view_custom_set_and_exports(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["LOT927AA", "LOT927AA"],
+        "wafer_id": ["1", "2"],
+        "KNOB_ALPHA": ["A", "B"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
+    (tmp_path / "issues.json").write_text("[]", encoding="utf-8")
+
+    created = splittable.save_management_row_column(
+        splittable.ManagementRowColumnReq(product="ML_TABLE_PRODA", name="Purpose", username="owner")
+    )
+    column = created["column"]
+    assert column == "MGMT_Purpose"
+
+    splittable.save_management_row_values(
+        splittable.ManagementRowValuesReq(
+            product="ML_TABLE_PRODA",
+            root_lot_id="LOT927AA",
+            values={
+                f"LOT927AA|1|{column}": "Reliability",
+                f"LOT927AA|2|{column}": "Monitor",
+            },
+            username="owner",
+        )
+    )
+    splittable.save_custom(
+        splittable.CustomSaveReq(name="mgmt_check", username="owner", columns=[column], expected_version=0)
+    )
+
+    schema = splittable.get_schema(product="ML_TABLE_PRODA")
+    default_result = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="LOT927AA",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+    result = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="LOT927AA",
+        wafer_ids="",
+        prefix="",
+        custom_name="mgmt_check",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert any(c["name"] == column and c["dtype"] == "management_row" for c in schema["columns"])
+    assert all(r["_param"] != column for r in default_result["rows"])
+    assert result["all_columns"].count(column) == 1
+    assert result["rows"][0]["_param"] == column
+    assert result["rows"][0]["_display"] == "Purpose"
+    assert result["rows"][0]["_cells"]["0"]["actual"] == "Reliability"
+    assert result["rows"][0]["_cells"]["1"]["actual"] == "Monitor"
+    assert result["rows"][0]["_cells"]["0"]["can_plan"] is False
+    assert result["rows"][0]["_cells"]["0"]["is_management_row"] is True
+    assert result["rows"][0]["_cells"]["0"]["can_management_edit"] is True
+
+    overlay = json.loads((plan_dir / "management_rows.json").read_text(encoding="utf-8"))
+    assert overlay["values"][f"ML_TABLE_PRODA|LOT927AA|1|{column}"]["value"] == "Reliability"
+    assert column not in pl.read_parquet(tmp_path / "ML_TABLE_PRODA.parquet").columns
+
+    csv_body = _read_streaming_response(splittable.download_csv(
+        product="ML_TABLE_PRODA",
+        root_lot_id="LOT927AA",
+        wafer_ids="",
+        prefix="",
+        custom_name="mgmt_check",
+        transposed="true",
+        username="owner",
+        custom_cols="",
+    )).decode("utf-8-sig")
+    assert "Purpose" in csv_body
+    assert "Reliability" in csv_body
+    assert "Monitor" in csv_body
+    assert "MGMT_Purpose" not in csv_body
+
+    from openpyxl import load_workbook
+
+    xlsx_body = _read_streaming_response(splittable.download_xlsx(
+        product="ML_TABLE_PRODA",
+        root_lot_id="LOT927AA",
+        wafer_ids="",
+        prefix="",
+        custom_name="mgmt_check",
+        username="owner",
+        custom_cols="",
+    ))
+    workbook = load_workbook(io.BytesIO(xlsx_body), data_only=True)
+    rows = list(workbook.active.iter_rows(values_only=True))
+    purpose_row = next(row for row in rows if row and row[0] == "Purpose")
+    assert "Reliability" in purpose_row
+    assert "Monitor" in purpose_row
 
 
 def test_lot_ids_do_not_suggest_fab_roots_that_cannot_render():

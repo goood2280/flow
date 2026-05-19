@@ -183,6 +183,7 @@ PREFIX_CFG = PLAN_DIR / "prefix_config.json"
 DEFAULT_PREFIXES = ["KNOB", "MASK", "INLINE", "VM", "FAB"]
 PLAN_ALLOWED_PREFIXES = ["KNOB", "MASK", "FAB"]  # Only these can have plan values
 CUSTOM_TAG_PREFIX = "TAG"
+MANAGEMENT_ROW_PREFIX = "MGMT"
 # v8.8.6: paste 세트 공유 저장소 — LocalStorage 대신 BE 에 올려 팀 공용 풀 + CUSTOM 탭 연동.
 PASTE_SETS_FILE = PLAN_DIR / "paste_sets.json"
 # v8.4.9: 엑셀 메모/태그 저장소 — wafer 단위(tag) + parameter 단위(memo) 공용.
@@ -787,6 +788,126 @@ def _custom_tag_values_for_root(product: str, root_lot_id: str) -> dict[str, str
 
 def _custom_tag_column_values(product: str, column: str, limit: int = 200) -> list[str]:
     data = _load_custom_tags_data()
+    out: list[str] = []
+    seen: set[str] = set()
+    suffix = f"|{column}"
+    prefix = f"{product}|"
+    for key, raw in (data.get("values") or {}).items():
+        if not str(key).startswith(prefix) or not str(key).endswith(suffix):
+            continue
+        value = raw.get("value") if isinstance(raw, dict) else raw
+        if value is None:
+            continue
+        s = str(value).strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
+
+# ── Management rows: runtime-only SplitTable row overlay ──────────────
+def _management_rows_path() -> Path:
+    return PLAN_DIR / "management_rows.json"
+
+
+def _load_management_rows_data() -> dict:
+    data = load_json(_management_rows_path(), {"columns": [], "values": {}})
+    if not isinstance(data, dict):
+        data = {"columns": [], "values": {}}
+    cols = data.get("columns") if isinstance(data.get("columns"), list) else []
+    values = data.get("values") if isinstance(data.get("values"), dict) else {}
+    return {"columns": cols, "values": values}
+
+
+def _save_management_rows_data(data: dict) -> None:
+    save_json(_management_rows_path(), {
+        "columns": list(data.get("columns") or []),
+        "values": dict(data.get("values") or {}),
+    }, indent=2)
+
+
+def _management_row_id(name: str) -> str:
+    raw = str(name or "").strip()
+    if raw.upper().startswith(f"{MANAGEMENT_ROW_PREFIX}_"):
+        raw = raw[len(MANAGEMENT_ROW_PREFIX) + 1:].strip()
+    token = safe_id(raw, max_len=72).strip().replace(" ", "_")
+    token = "_".join(part for part in token.split("_") if part)
+    if not token:
+        raise HTTPException(400, "management row name required")
+    return f"{MANAGEMENT_ROW_PREFIX}_{token}"
+
+
+def _management_row_value_key(product: str, root_lot_id: str, wafer_id: str, column: str) -> str:
+    return "|".join([str(product or ""), str(root_lot_id or ""), str(wafer_id or ""), str(column or "")])
+
+
+def _ensure_management_row_column(data: dict, *, product: str, column: str, label: str, actor: str, now: str) -> dict:
+    cols = data.setdefault("columns", [])
+    product_key = str(product or "").strip()
+    column_key = str(column or "").strip()
+    existing = next((c for c in cols if c.get("product") == product_key and c.get("column") == column_key), None)
+    if existing:
+        existing["label"] = str(label or existing.get("label") or column_key).strip() or column_key
+        existing["username"] = actor or existing.get("username", "")
+        existing["updated"] = now
+        return existing
+    entry = {
+        "product": product_key,
+        "column": column_key,
+        "label": str(label or column_key).strip() or column_key,
+        "username": actor,
+        "created": now,
+        "updated": now,
+    }
+    cols.append(entry)
+    return entry
+
+
+def _management_row_columns_for_product(product: str) -> list[dict]:
+    product_key = str(product or "").strip()
+    data = _load_management_rows_data()
+    out = []
+    seen = set()
+    for raw in data.get("columns") or []:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("product") != product_key:
+            continue
+        column = str(raw.get("column") or "").strip()
+        if not column or column in seen:
+            continue
+        seen.add(column)
+        label = str(raw.get("label") or column).strip() or column
+        out.append({**raw, "column": column, "label": label})
+    return out
+
+
+def _management_row_label_map(product: str) -> dict[str, str]:
+    return {c["column"]: c.get("label") or c["column"] for c in _management_row_columns_for_product(product)}
+
+
+def _management_row_values_for_root(product: str, root_lot_id: str) -> dict[str, str]:
+    data = _load_management_rows_data()
+    prefix = f"{product}|{root_lot_id}|"
+    out: dict[str, str] = {}
+    for key, raw in (data.get("values") or {}).items():
+        if not str(key).startswith(prefix):
+            continue
+        parts = str(key).split("|", 3)
+        if len(parts) != 4:
+            continue
+        value = raw.get("value") if isinstance(raw, dict) else raw
+        if value is None:
+            continue
+        out["|".join(parts[1:])] = str(value)
+    return out
+
+
+def _management_row_column_values(product: str, column: str, limit: int = 200) -> list[str]:
+    data = _load_management_rows_data()
     out: list[str] = []
     seen: set[str] = set()
     suffix = f"|{column}"
@@ -2041,6 +2162,11 @@ def get_schema(product: str = Query(...), root_lot_id: str = Query(""),
         column = tag_col.get("column")
         if column and column not in existing_cols:
             cols.append({"name": column, "dtype": "custom_tag", "label": tag_col.get("label") or column})
+            existing_cols.add(column)
+    for mgmt_col in _management_row_columns_for_product(product):
+        column = mgmt_col.get("column")
+        if column and column not in existing_cols:
+            cols.append({"name": column, "dtype": "management_row", "label": mgmt_col.get("label") or column})
             existing_cols.add(column)
     # 오버라이드에서 실제로 join 된 컬럼 목록 (FE 가 검색 pool 에서 '숨김 해제' 할 기준).
     override_cols_present: list = []
@@ -3562,6 +3688,19 @@ class CustomTagValuesReq(BaseModel):
     root_lot_id: str = ""
 
 
+class ManagementRowColumnReq(BaseModel):
+    product: str
+    name: str
+    username: str = ""
+
+
+class ManagementRowValuesReq(BaseModel):
+    product: str
+    values: dict
+    username: str = ""
+    root_lot_id: str = ""
+
+
 @router.get("/custom-tags")
 def list_custom_tags(product: str = Query("")):
     columns = _custom_tag_columns_for_product(product) if product else []
@@ -3636,6 +3775,83 @@ def save_custom_tag_values(req: CustomTagValuesReq, request: Request = None):
             values.pop(store_key, None)
             deleted += 1
     _save_custom_tags_data(data)
+    return {"ok": True, "saved": saved, "deleted": deleted, "rejected": rejected}
+
+
+@router.get("/management-rows")
+def list_management_rows(product: str = Query("")):
+    columns = _management_row_columns_for_product(product) if product else []
+    return {"columns": columns, "count": len(columns)}
+
+
+@router.post("/management-rows/columns/save")
+def save_management_row_column(req: ManagementRowColumnReq, request: Request = None):
+    actor = req.username or ""
+    if request is not None:
+        me = current_user(request)
+        actor = me.get("username") or actor
+    product = str(req.product or "").strip()
+    if not product:
+        raise HTTPException(400, "product required")
+    column = _management_row_id(req.name)
+    label = str(req.name or "").strip()
+    if label.upper().startswith(f"{MANAGEMENT_ROW_PREFIX}_"):
+        label = label[len(MANAGEMENT_ROW_PREFIX) + 1:].strip()
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    data = _load_management_rows_data()
+    entry = _ensure_management_row_column(
+        data,
+        product=product,
+        column=column,
+        label=label or column,
+        actor=actor,
+        now=now,
+    )
+    _save_management_rows_data(data)
+    return {"ok": True, "column": entry["column"], "label": entry["label"], "columns": _management_row_columns_for_product(product)}
+
+
+@router.post("/management-rows/values")
+def save_management_row_values(req: ManagementRowValuesReq, request: Request = None):
+    actor = req.username or ""
+    if request is not None:
+        me = current_user(request)
+        actor = me.get("username") or actor
+    product = str(req.product or "").strip()
+    if not product:
+        raise HTTPException(400, "product required")
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    data = _load_management_rows_data()
+    values = data.setdefault("values", {})
+    saved = 0
+    deleted = 0
+    rejected: list[str] = []
+    for cell_key, raw_value in (req.values or {}).items():
+        parts = str(cell_key or "").split("|", 2)
+        if len(parts) != 3:
+            rejected.append(str(cell_key))
+            continue
+        root_lot_id, wafer_id, column = [p.strip() for p in parts]
+        if not root_lot_id or not wafer_id or not column.upper().startswith(f"{MANAGEMENT_ROW_PREFIX}_"):
+            rejected.append(str(cell_key))
+            continue
+        _ensure_management_row_column(
+            data,
+            product=product,
+            column=column,
+            label=column[len(MANAGEMENT_ROW_PREFIX) + 1:] or column,
+            actor=actor,
+            now=now,
+        )
+        store_key = _management_row_value_key(product, root_lot_id, wafer_id, column)
+        value = "" if raw_value is None else str(raw_value).strip()
+        if value:
+            values[store_key] = {"value": value, "username": actor, "updated": now}
+            saved += 1
+        elif store_key in values:
+            values.pop(store_key, None)
+            deleted += 1
+    _save_management_rows_data(data)
     return {"ok": True, "saved": saved, "deleted": deleted, "rejected": rejected}
 
 
@@ -6879,6 +7095,16 @@ def get_column_values(product: str = Query(...), col: str = Query(...), limit: i
                 break
     except Exception:
         pass
+    try:
+        for v in _management_row_column_values(product, col, limit=limit):
+            if v in seen:
+                continue
+            seen.add(v)
+            out.append(v)
+            if len(out) >= limit:
+                break
+    except Exception:
+        pass
     # Union with plan values stored under this column
     try:
         plans = _load_plan_data(product).get("plans", {})
@@ -7051,6 +7277,11 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             for tag_col in tag_labels:
                 if tag_col not in all_data:
                     all_data.append(tag_col)
+            management_labels = _management_row_label_map(product)
+            if custom_name or custom_cols:
+                for mgmt_col in management_labels:
+                    if mgmt_col not in all_data:
+                        all_data.append(mgmt_col)
             sel = _select_columns(all_data, custom_name, prefix,
                                   max_fallback=50, custom_cols=custom_cols)
             if not custom_name and not custom_cols:
@@ -7060,6 +7291,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                             sel.append(virt)
             rename = _build_col_rename_map(sel, product)
             rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
+            rename.update({col: label for col, label in management_labels.items()})
             sel = sorted(sel, key=lambda c: _natural_param_key(rename.get(c, c)))
             keep_cols = []
             for c in (lot_col, wf_col):
@@ -7222,11 +7454,14 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         plans = _load_plan_data(product).get("plans", {})
         tag_labels = _custom_tag_label_map(product)
         tag_values = _custom_tag_values_for_root(product, root_lot_id)
+        management_labels = _management_row_label_map(product)
+        management_values = _management_row_values_for_root(product, root_lot_id)
 
         rows = []
         df_cols_set = set(df.columns)
         for col_name in selected:
             is_tag_col = col_name in tag_labels
+            is_management_row = col_name in management_labels
             row_vals = [None] * len(wf_sorted)
             plan_vals = [None] * len(wf_sorted)
             # v8.8.16: CUSTOM 에 저장된 컬럼이 현재 df 에 없더라도 빈 행으로 표시.
@@ -7234,6 +7469,9 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             if is_tag_col:
                 for ci, wf_key in enumerate(wf_sorted):
                     row_vals[ci] = tag_values.get(f"{root_lot_id}|{wf_key}|{col_name}")
+            elif is_management_row:
+                for ci, wf_key in enumerate(wf_sorted):
+                    row_vals[ci] = management_values.get(f"{root_lot_id}|{wf_key}|{col_name}")
             elif col_name in df_cols_set:
                 try:
                     col_data = df[col_name].to_list()
@@ -7259,7 +7497,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             # Build _cells dict keyed by column index
             # Check if this column allows plan editing
             col_upper = col_name.upper()
-            can_plan = (not is_tag_col) and any(col_upper.startswith(p + "_") for p in PLAN_ALLOWED_PREFIXES)
+            can_plan = (not is_tag_col and not is_management_row) and any(col_upper.startswith(p + "_") for p in PLAN_ALLOWED_PREFIXES)
             _cells = {}
             for ci, wf_key in enumerate(wf_sorted):
                 actual = row_vals[ci]
@@ -7273,7 +7511,9 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                     mismatch = True
                 _cells[str(ci)] = {"actual": actual_str, "plan": plan, "key": ck,
                                    "can_plan": can_plan, "mismatch": mismatch,
-                                   "is_custom_tag": is_tag_col, "can_tag": is_tag_col}
+                                   "is_custom_tag": is_tag_col, "can_tag": is_tag_col,
+                                   "is_management_row": is_management_row,
+                                   "can_management_edit": is_management_row}
             # v8.8.14: _display — rule_order + func_step 을 포함한 렌더용 이름.
             #   없으면 원본과 동일. FE 는 _display 를 사용하고 prefix strip 후 표시.
             rows.append({"_param": col_name, "_display": col_rename.get(col_name, col_name), "_cells": _cells})
@@ -7583,6 +7823,11 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
     for tag_col in tag_labels:
         if tag_col not in all_data_cols:
             all_data_cols.append(tag_col)
+    management_labels = _management_row_label_map(product)
+    if custom_name or custom_cols:
+        for mgmt_col in management_labels:
+            if mgmt_col not in all_data_cols:
+                all_data_cols.append(mgmt_col)
     selected = _select_columns(all_data_cols, custom_name, prefix,
                                max_fallback=200, custom_cols=custom_cols)
     if not custom_name and not custom_cols:
@@ -7598,6 +7843,7 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
     # v8.8.14: display rename (rule_order + func_step) + natural sort on display name.
     col_rename = _build_col_rename_map(selected, product)
     col_rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
+    col_rename.update({col: label for col, label in management_labels.items()})
     selected = sorted(selected, key=lambda c: _natural_param_key(col_rename.get(c, c)))
 
     if transposed.lower() == "true" and wf_col and wf_col in df.columns:
@@ -7638,6 +7884,7 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
 
         plans = _load_plan_data(product).get("plans", {})
         tag_values = _custom_tag_values_for_root(product, root_lot_id)
+        management_values = _management_row_values_for_root(product, root_lot_id)
 
         output = io.StringIO()
         writer = csv_mod.writer(output)
@@ -7654,6 +7901,9 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
             if col_name in tag_labels:
                 for idx, wk in enumerate(wf_sorted):
                     row_data[idx] = tag_values.get(f"{root_lot_id}|{wk}|{col_name}", "")
+            elif col_name in management_labels:
+                for idx, wk in enumerate(wf_sorted):
+                    row_data[idx] = management_values.get(f"{root_lot_id}|{wk}|{col_name}", "")
             elif col_name in df.columns:
                 vals = df[col_name].to_list()
                 for i, v in enumerate(vals):
@@ -7705,12 +7955,18 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     for tag_col in tag_labels:
         if tag_col not in all_data_cols:
             all_data_cols.append(tag_col)
+    management_labels = _management_row_label_map(product)
+    if custom_name or custom_cols:
+        for mgmt_col in management_labels:
+            if mgmt_col not in all_data_cols:
+                all_data_cols.append(mgmt_col)
     selected = _select_columns(all_data_cols, custom_name, prefix,
                                max_fallback=200, custom_cols=custom_cols)
     # v8.4.4: natural sort — prefix 뒤 숫자 (정수+소수) 기준. 숫자 없으면 알파벳 순.
     # v8.8.14: display rename (rule_order + func_step) 적용 + 그 이름 기준 정렬.
     col_rename = _build_col_rename_map(selected, product)
     col_rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
+    col_rename.update({col: label for col, label in management_labels.items()})
     selected = sorted(selected, key=lambda c: _natural_param_key(col_rename.get(c, c)))
 
     wf_raw_int = df[wf_col].cast(pl.Int64, strict=False).to_list() if wf_col else []
@@ -7733,6 +7989,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
 
     plans = _load_plan_data(product).get("plans", {})
     tag_values = _custom_tag_values_for_root(product, root_lot_id)
+    management_values = _management_row_values_for_root(product, root_lot_id)
 
     if openpyxl_error is not None:
         try:
@@ -7788,6 +8045,11 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                     tv = tag_values.get(f"{root_lot_id}|{wk}|{col_name}")
                     if tv:
                         actual_by_idx[idx] = str(tv)
+            elif col_name in management_labels:
+                for idx, wk in enumerate(wf_sorted):
+                    mv = management_values.get(f"{root_lot_id}|{wk}|{col_name}")
+                    if mv:
+                        actual_by_idx[idx] = str(mv)
             else:
                 for i, v in enumerate(vals):
                     wk = wf_vals[i] if i < len(wf_vals) else None
@@ -7801,7 +8063,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                         actual_by_idx[idx] = sv
                     if pv:
                         plan_by_idx[idx] = str(pv)
-            if col_name not in df.columns and col_name not in tag_labels:
+            if col_name not in df.columns and col_name not in tag_labels and col_name not in management_labels:
                 for idx, wk in enumerate(wf_sorted):
                     ck = f"{root_lot_id}|{wk}|{col_name}"
                     pv = plans.get(ck, {}).get("value")
@@ -7915,6 +8177,11 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                 tv = tag_values.get(f"{root_lot_id}|{wk}|{col_name}")
                 if tv:
                     actual_by_idx[idx] = str(tv)
+        elif col_name in management_labels:
+            for idx, wk in enumerate(wf_sorted):
+                mv = management_values.get(f"{root_lot_id}|{wk}|{col_name}")
+                if mv:
+                    actual_by_idx[idx] = str(mv)
         else:
             for i, v in enumerate(vals):
                 wk = wf_vals[i] if i < len(wf_vals) else None
@@ -7925,7 +8192,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                 pv = plans.get(ck, {}).get("value")
                 if sv: actual_by_idx[idx] = sv
                 if pv: plan_by_idx[idx] = str(pv)
-        if col_name not in df.columns and col_name not in tag_labels:
+        if col_name not in df.columns and col_name not in tag_labels and col_name not in management_labels:
             for idx, wk in enumerate(wf_sorted):
                 ck = f"{root_lot_id}|{wk}|{col_name}"
                 pv = plans.get(ck, {}).get("value")
