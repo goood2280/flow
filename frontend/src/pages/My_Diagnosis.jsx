@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { canManagePage } from "../lib/permissions";
 import { Banner, PageHeader, PageShell, TabStrip } from "../components/UXKit";
+import AgentV2 from "../components/agent/AgentV2";
 import LoopTab from "../components/agent/LoopTab";
 import WikiTab from "../components/agent/WikiTab";
 import SchemaTab from "../components/agent/SchemaTab";
 import LlmTab from "../components/agent/LlmTab";
 
 const AGENT_TABS = [
+  { k: "units", l: "단위 AI" },
   { k: "loop", l: "실행 흐름" },
   { k: "wiki", l: "지식 위키" },
   { k: "schema", l: "스키마 관계" },
@@ -14,6 +16,7 @@ const AGENT_TABS = [
 ];
 
 const AGENT_TAB_HINT = {
+  units: "11개 단위 기능 AI (파일탐색기, 회의관리, Inform Log 등)가 각각 어떤 단일파일/DB와 컬럼을 읽고 어떤 prompt/LLM profile을 쓰는지 한 화면에서 확인합니다. 좌측에서 항목을 선택하세요.",
   loop: "프롬프트를 보내면 오케스트레이터 라우팅과 단위기능 호출이 한 화면에서 보입니다. 이전에 실행한 프롬프트는 아래 ‘프롬프트 기록’ 카드에서 다시 확인하거나 재실행할 수 있습니다.",
   wiki: "Agent가 참고하는 raw source, maintained wiki page, ingest 로그, lint 결과를 한 곳에서 운영합니다.",
   schema: "DB product와 단일파일 사이의 join key 후보를 preview로 보고, admin이 확인 저장한 relation만 운영 graph로 남깁니다.",
@@ -37,12 +40,13 @@ const AGENT_TRACE_CONTRACT_MARKERS = [
 ];
 
 export default function My_Diagnosis({ user }) {
-  const [tab, setTab] = useState("loop");
+  const [tab, setTab] = useState("units");
   const isAdminUser = user?.role === "admin";
   const canManageWiki = canManagePage(user, "diagnosis") || canManagePage(user, "agent") || canManagePage(user, "knowledge");
   const tabHint = AGENT_TAB_HINT[tab];
   const activeTab = (
     <>
+      {tab === "units" && <AgentV2 user={user} canManageWiki={canManageWiki} />}
       {tab === "loop" && <LoopTab user={user} />}
       {tab === "wiki" && <WikiTab user={user} canManage={canManageWiki} />}
       {tab === "schema" && <SchemaTab canManage={canManageWiki} />}

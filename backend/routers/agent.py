@@ -18,6 +18,7 @@ from core import knowledge_vault as kv
 from core import llm_adapter
 from core import semiconductor_knowledge as semi
 from core.auth import current_user, is_page_admin, is_page_manager, require_admin
+from core.flowi_units import UNIT_AIS, get_unit_ai
 from core.paths import PATHS
 from core.utils import load_json, save_json
 from routers import llm as flowi_llm
@@ -2365,3 +2366,124 @@ def knowledge_list(request: Request):
             "file_name": structured.get("file_name") or "",
         })
     return {"ok": True, "rows": rows[:200]}
+
+
+# ─── Unit AI catalog / inspect (M3) ───────────────────────────────────
+# Read-only views of the 11 Feature-level Unit AIs registered in
+# core.flowi_units. The Agent tab renders these in a left list + right
+# detail layout. Editing endpoints arrive in M4.
+
+def _column_doc_dict(c) -> dict[str, Any]:
+    return {
+        "name": c.name,
+        "meaning": c.meaning,
+        "unit": c.unit,
+        "sample_values": list(c.sample_values),
+        "wiki_doc_id": c.wiki_doc_id,
+    }
+
+
+def _data_source_dict(ds) -> dict[str, Any]:
+    return {
+        "kind": ds.kind,
+        "path": ds.path,
+        "description": ds.description,
+        "columns": [_column_doc_dict(c) for c in ds.columns],
+    }
+
+
+def _semantic_bindings_dict(sb) -> dict[str, Any]:
+    return {
+        "relation_ids": list(sb.relation_ids),
+        "column_catalog_keys": list(sb.column_catalog_keys),
+        "graph_node_ids": list(sb.graph_node_ids),
+        "wiki_doc_ids": list(sb.wiki_doc_ids),
+    }
+
+
+def _handler_entry_dict(h) -> dict[str, Any]:
+    return {
+        "module": h.module,
+        "function": h.function,
+        "lineno": h.lineno,
+        "description": h.description,
+        "file_path": h.file_path,
+    }
+
+
+def _unit_ai_summary(unit) -> dict[str, Any]:
+    return {
+        "key": unit.key(),
+        "title": unit.title(),
+        "llm_profile": unit.llm_profile(),
+        "data_source_count": len(unit.data_sources()),
+        "column_doc_count": sum(len(ds.columns) for ds in unit.data_sources()),
+        "feature_md_exists": unit.feature_md_path().exists(),
+        "prompt_template_present": bool(unit.prompt_template_path() and unit.prompt_template_path().exists()),
+        "handler_entry": _handler_entry_dict(unit.handler_entry()),
+    }
+
+
+@router.get("/unit-ai/catalog")
+def unit_ai_catalog(request: Request) -> dict[str, Any]:
+    """Return summary metadata for all 11 unit AIs (read-only)."""
+    current_user(request)
+    items = [_unit_ai_summary(UNIT_AIS[k]) for k in UNIT_AIS.keys()]
+    return {"ok": True, "items": items, "total": len(items)}
+
+
+@router.get("/unit-ai/{key}/inspect")
+def unit_ai_inspect(key: str, request: Request) -> dict[str, Any]:
+    """Return full self-description of one unit AI plus the actual contents
+    of its feature md and prompt template files."""
+    current_user(request)
+    unit = get_unit_ai(key)
+    if unit is None:
+        raise HTTPException(404, f"unknown unit AI key: {key}")
+
+    feature_md_path = unit.feature_md_path()
+    feature_md_text = ""
+    feature_md_error = ""
+    try:
+        if feature_md_path.exists():
+            feature_md_text = feature_md_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        feature_md_error = str(exc)
+
+    prompt_template_path = unit.prompt_template_path()
+    prompt_template_text = ""
+    prompt_template_parsed: Any = None
+    prompt_template_error = ""
+    if prompt_template_path is not None:
+        try:
+            if prompt_template_path.exists():
+                prompt_template_text = prompt_template_path.read_text(encoding="utf-8")
+                try:
+                    prompt_template_parsed = json.loads(prompt_template_text)
+                except json.JSONDecodeError:
+                    prompt_template_parsed = None
+        except OSError as exc:
+            prompt_template_error = str(exc)
+
+    return {
+        "ok": True,
+        "key": unit.key(),
+        "title": unit.title(),
+        "llm_profile": unit.llm_profile(),
+        "feature_md": {
+            "path": str(feature_md_path),
+            "exists": feature_md_path.exists(),
+            "text": feature_md_text,
+            "error": feature_md_error,
+        },
+        "prompt_template": {
+            "path": str(prompt_template_path) if prompt_template_path else "",
+            "exists": bool(prompt_template_path and prompt_template_path.exists()),
+            "text": prompt_template_text,
+            "parsed": prompt_template_parsed,
+            "error": prompt_template_error,
+        },
+        "data_sources": [_data_source_dict(ds) for ds in unit.data_sources()],
+        "semantic_bindings": _semantic_bindings_dict(unit.semantic_bindings()),
+        "handler_entry": _handler_entry_dict(unit.handler_entry()),
+    }
