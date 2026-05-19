@@ -1352,8 +1352,10 @@ def resolve_term(request: Request, q: str = Query(..., min_length=1, max_length=
     return {"ok": True, "query": q, "candidates": resolve_term_to_columns(q, limit=limit)}
 
 
-@router.post("/schema_doc/ai-draft")
+@router.post("/schema_doc/ai-draft", deprecated=True)
 def schema_doc_ai_draft(req: SchemaDocAiDraftReq, request: Request):
+    # M7: deprecated — ColumnDoc(`backend/core/flowi_units/`)와 중복. 새 정보는
+    # ColumnDoc 또는 GET /api/agent/unit-ai/{key}/inspect로 확인/편집한다.
     _require_agent_wiki_admin(request)
     if not (req.body or "").strip():
         raise HTTPException(400, "body is required")
@@ -1368,8 +1370,11 @@ def schema_doc_ai_draft(req: SchemaDocAiDraftReq, request: Request):
     )
 
 
-@router.post("/schema_doc/ai-upsert")
+@router.post("/schema_doc/ai-upsert", deprecated=True)
 def schema_doc_ai_upsert(req: SchemaDocAiUpsertReq, request: Request):
+    # M7: deprecated — schema_doc wiki(4개) 정리 후 ColumnDoc로 이관. 새 컬럼
+    # 의미는 `backend/core/flowi_units/schema_columns.py`에 추가하거나 unit AI의
+    # registry.py DataSourceRef.columns에 정의한다.
     me = _require_agent_wiki_admin(request)
     if req.wiki_doc:
         return kv.commit_schema_doc_draft(
@@ -2542,6 +2547,101 @@ def unit_ai_save_prompt_template(key: str, req: UnitAIPromptTemplateReq, request
     except OSError as exc:
         raise HTTPException(500, f"failed to write prompt template: {exc}")
     return {"ok": True, "key": key, "path": str(path), "bytes": len(text.encode("utf-8")), "by": me.get("username") or ""}
+
+
+@router.get("/column-catalog")
+def column_catalog(request: Request) -> dict[str, Any]:
+    """11개 unit AI의 모든 ColumnDoc을 dedupe해서 하나의 카탈로그로 반환.
+
+    M7: schema_doc kind wiki(4개)와 중복되는 정보를 ColumnDoc 기반으로
+    통합한 single source of truth. AgentV2 시멘틱 레이어의 '컬럼 카탈로그'
+    sub-view가 사용한다. 같은 컬럼 이름이 여러 unit AI에 나타나면 사용처
+    목록을 합쳐 한 행으로 보여준다.
+    """
+    current_user(request)
+    rows: dict[str, dict[str, Any]] = {}
+    for unit in UNIT_AIS.values():
+        unit_key = unit.key()
+        for ds in unit.data_sources():
+            for col in ds.columns:
+                name = str(col.name or "").strip()
+                if not name:
+                    continue
+                bucket = rows.setdefault(name, {
+                    "name": name,
+                    "meaning": col.meaning or "",
+                    "unit": col.unit or "",
+                    "sample_values": list(col.sample_values or []),
+                    "wiki_doc_id": col.wiki_doc_id or "",
+                    "used_by": [],
+                    "sources": [],
+                })
+                # Keep longest meaning when multiple units describe same column
+                if len(col.meaning or "") > len(bucket["meaning"] or ""):
+                    bucket["meaning"] = col.meaning
+                if col.wiki_doc_id and not bucket["wiki_doc_id"]:
+                    bucket["wiki_doc_id"] = col.wiki_doc_id
+                if unit_key not in bucket["used_by"]:
+                    bucket["used_by"].append(unit_key)
+                if ds.path and ds.path not in bucket["sources"]:
+                    bucket["sources"].append(ds.path)
+                # Merge sample values uniquely
+                for sv in (col.sample_values or []):
+                    if sv and sv not in bucket["sample_values"]:
+                        bucket["sample_values"].append(sv)
+    items = sorted(rows.values(), key=lambda r: r["name"].lower())
+    return {"ok": True, "items": items, "total": len(items)}
+
+
+@router.get("/source-inventory")
+def source_inventory(request: Request) -> dict[str, Any]:
+    """schema_relations.json의 모든 source(DB/파일)와 source별 join 정보 dump.
+
+    M7: SemanticLayerTab의 'DB / 파일 인벤토리' sub-view가 사용. 사용자가
+    'DB가 어떤거고 어떻게 연결하고'를 한눈에 보기 위함. relation 행 중심의
+    SchemaRelationsPanel과 보완 관계.
+    """
+    current_user(request)
+    raw = load_json(SCHEMA_RELATION_FILE) or {}
+    if not isinstance(raw, dict):
+        return {"ok": True, "sources": [], "total": 0}
+    relations = raw.get("relations") if isinstance(raw.get("relations"), list) else []
+
+    sources: dict[str, dict[str, Any]] = {}
+
+    def _key(source_id: str, source_type: str, label: str) -> str:
+        return source_id or f"{source_type}:{label}"
+
+    for r in relations:
+        if not isinstance(r, dict):
+            continue
+        for side in ("left", "right"):
+            sid = str(r.get(f"{side}_source_id") or "").strip()
+            stype = str(r.get(f"{side}_source_type") or "").strip()
+            label = str(r.get(f"{side}_label") or "").strip()
+            if not (sid or label):
+                continue
+            key = _key(sid, stype, label)
+            bucket = sources.setdefault(key, {
+                "source_id": sid,
+                "source_type": stype,
+                "label": label,
+                "relation_count": 0,
+                "join_keys": [],
+                "connects_to": [],
+            })
+            bucket["relation_count"] += 1
+            ck = str(r.get("canonical_key") or "").strip()
+            if ck and ck not in bucket["join_keys"]:
+                bucket["join_keys"].append(ck)
+            other_side = "right" if side == "left" else "left"
+            other_label = str(r.get(f"{other_side}_label") or "").strip()
+            if other_label and other_label != label:
+                if other_label not in bucket["connects_to"]:
+                    bucket["connects_to"].append(other_label)
+
+    items = sorted(sources.values(), key=lambda s: (s["source_type"], s["label"]))
+    return {"ok": True, "sources": items, "total": len(items), "relations_total": len(relations)}
 
 
 @router.get("/llm-profiles")

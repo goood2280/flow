@@ -379,11 +379,97 @@ def _prompt_terms(prompt: str, limit: int = 16) -> list[str]:
     return terms[:limit]
 
 
+def _column_doc_hits_for_prompt(prompt: str) -> list[dict[str, Any]]:
+    """Search 11 unit AI ColumnDoc(s) for terms in the prompt.
+
+    Returns knowledge entries shaped like the schema_doc/wiki lookups so
+    downstream code can treat them uniformly. M7: This replaces the
+    schema_doc kind 4 redundant markdown files for the common columns.
+    """
+    try:
+        from core.flowi_units import all_unit_ais
+    except Exception:
+        return []
+
+    terms = _prompt_terms(prompt)
+    if not terms:
+        return []
+    norm_terms = {t.casefold(): t for t in terms if t}
+
+    hits: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for unit in all_unit_ais():
+        unit_key = unit.key()
+        for ds in unit.data_sources():
+            for col in ds.columns:
+                col_name = str(col.name or "")
+                if not col_name:
+                    continue
+                col_key = col_name.casefold()
+                samples = [str(s) for s in (col.sample_values or [])]
+                meaning = str(col.meaning or "")
+
+                # Match only on (a) exact column name match (case-insensitive),
+                # (b) exact sample-value match, or (c) tokenized exact word
+                # match against meaning. Substring-in-meaning is too loose —
+                # avoids false positives like "A1000" hitting "CA100000".
+                samples_norm = {s.casefold() for s in samples if s}
+                meaning_tokens = set(re.findall(r"[A-Za-z0-9_가-힣]+", meaning or ""))
+                meaning_norm = {t.casefold() for t in meaning_tokens}
+
+                matched_term = None
+                for term_key, term_disp in norm_terms.items():
+                    if term_key == col_key:
+                        matched_term = term_disp
+                        break
+                    if term_key in samples_norm:
+                        matched_term = term_disp
+                        break
+                    if term_key in meaning_norm and len(term_key) >= 3:
+                        matched_term = term_disp
+                        break
+                if not matched_term:
+                    continue
+
+                # Dedup across (unit, column)
+                dedup_key = f"{unit_key}:{col_name}".casefold()
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+
+                hits.append({
+                    "id": f"column_doc:{unit_key}.{col_name}",
+                    "doc_id": col.wiki_doc_id or f"column_doc:{unit_key}.{col_name}",
+                    "kind": "column_doc",
+                    "title": f"{unit_key}.{col_name}",
+                    "summary": meaning[:240],
+                    "term": matched_term,
+                    "source": "column_doc",
+                    "unit_ai": unit_key,
+                    "column": col_name,
+                    "sample_values": samples[:6],
+                })
+    return hits[:24]
+
+
 def _lookup_prompt_knowledge(prompt: str) -> tuple[list[dict[str, Any]], set[str], set[str]]:
     knowledge: list[dict[str, Any]] = []
     relation_hits: set[str] = set()
     column_hits: set[str] = set()
     seen_ids: set[str] = set()
+
+    # M7: Unit AI ColumnDoc preflight — ColumnDoc.meaning이 schema_doc wiki와
+    # 중복이므로 1차 hit로 ColumnDoc을 우선 사용. kv.lookup_term은 그 뒤에
+    # 돌려서 agent_wiki / impact 등 다른 kind 문서로 보강한다.
+    for item in _column_doc_hits_for_prompt(prompt):
+        col = str(item.get("column") or "")
+        if col:
+            column_hits.add(_norm(col))
+        item_id = item.get("id") or f"column_doc:{col}"
+        if item_id and item_id not in seen_ids:
+            seen_ids.add(item_id)
+            knowledge.append(item)
+
     for term in _prompt_terms(prompt):
         try:
             found = kv.lookup_term(term, limit=8)
