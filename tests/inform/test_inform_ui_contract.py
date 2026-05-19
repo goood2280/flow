@@ -115,7 +115,7 @@ def test_inform_detail_tabs_are_body_and_mail_history_with_comment_button():
     assert '["comments", "댓글"]' not in src
     assert '["history", "이력"]' not in src
     assert '["attachments", "첨부"]' not in src
-    assert "ReInformComposer" in src
+    assert "openReInformWizard" in src
     assert "재인폼 {commentCount}" in src
 
 
@@ -123,13 +123,25 @@ def test_inform_detail_edit_creates_reinform_instead_of_body_edit():
     src = MY_INFORM.read_text(encoding="utf-8")
 
     assert "원문을 덮어쓰지 않고 재인폼을 작성합니다" in src
+    assert "ReInformComposer" not in src
+    assert "const openReInformWizard = (root) =>" in src
+    assert 'setWizardMode("reinform")' in src
+    assert "setReInformParent(root)" in src
+    assert "setWizardStep(2)" in src
+    assert 'mode={wizardMode}' in src
+    assert 'parentInform={reInformParent}' in src
+    assert "재인폼 작성" in src
     assert "인폼 본문 수정" not in src
     assert 'onEdit(root.id, { text: next })' not in src
-    assert "withRePrefix(text)" in src
-    assert "onReply(parent.id" in src
+    assert "withRePrefix(form.text)" in src
+    assert "parent_id: isReInform ? reInformParent.id : null" in src
+    assert "return postJson(API, payload)" in src
     assert "childrenByParent[root.id] || []" in src
     assert "↳ [RE]" in src
-    assert "user={user} depth={1} constants={constants}" in src
+    assert "onReInform={openReInformWizard}" in src
+    assert "onClick={() => onReInform?.(root)}" in src
+    assert "onClick={() => onReInform?.(node)}" in src
+    assert "onEdit={onEdit} onReInform={onReInform}" in src
     assert "reInformTextForDisplay(node)" in src
 
 

@@ -12,8 +12,6 @@
 
 ## Now
 
-- [ ] (Codex) Inform Log 수정 버튼 재인폼 팝업 전환 — 상세/스레드의 `수정` 진입을 inline composer 대신 `InformWizard` 재인폼 모드로 연결하고, `parent_id` 새 snapshot 생성 계약을 검증한다.
-
 ## Next
 
 - [ ] (Codex) Knowledge Wiki / Meeting list latency follow-up — `scripts/latency_budget_probe.py` 기준 `/api/knowledge/wiki?limit=10` 약 300ms, `/api/meetings/list` 간헐 120ms를 100ms light endpoint 예산 안으로 줄이거나 heavy/readiness 분류를 조정한다.
@@ -25,6 +23,7 @@
 
 ## Done
 
+- [x] (Codex) Inform Log 수정 버튼 재인폼 팝업 전환 — 상세/스레드의 `수정` 진입을 inline composer 대신 `InformWizard` 재인폼 모드로 연결하고, 원본 lot/product/module/text 및 기존 SplitTable 첨부 상태를 초기값으로 둔 `parent_id` 재인폼 단건 생성을 검증했다. 검증: `python3 -m pytest tests/inform -q` 73/73 PASS, `cd frontend && npm run build` PASS, `python3 _build_setup.py`, `python3 setup.py version`, 변경 대상 `git diff --check` PASS. 전체 `git diff --check`는 기존 runtime `data/flow-data/flowi_users/hol.md` trailing whitespace로 실패.
 - [x] (Claude) Flow-i Home Agent 4계층 재설계 M7 — 지식 Wiki 정리 + 시멘틱 레이어 wire-up (PR #12). `backend/core/flowi_multisource.py:_lookup_prompt_knowledge`에 ColumnDoc preflight 추가 (`_column_doc_hits_for_prompt` — column name 정확 매치 / sample 정확 매치 / meaning 토큰 매치, len≥3 가드로 substring false-positive 방지). 신규 backend endpoints: `GET /api/agent/column-catalog` (11개 unit AI의 ColumnDoc dedupe 통합), `GET /api/agent/source-inventory` (schema_relations.json의 DB/file source 인벤토리 + join 회수/canonical key/연결된 다른 소스). `POST /api/agent/schema_doc/ai-draft|ai-upsert`에 `deprecated=True` 플래그 + 코드 주석으로 ColumnDoc 이관 안내 (schema_doc 4개 md 파일은 runtime data 보존 원칙으로 삭제 안 함). 신규 `frontend/src/components/agent/SemanticLayerTab.jsx`: 4 sub-view 단일 페이지 — **DB / 파일 인벤토리** (default, source-inventory 표) / **스키마 관계** (`SchemaRelationsPanel` 재사용) / **운영 Wiki** (`AgentWikiPanel` 재사용) / **컬럼 카탈로그** (column-catalog 표 + 검색). `AgentV2.jsx`의 `__semantic` placeholder 교체. 검증: `python -m pytest tests/test_flowi_router.py tests/test_flowi_multisource.py tests/test_knowledge_impact.py -x` 138/138 PASS, `cd frontend && npm run build` ✓ 34.01s, py_compile, setup.py 2.65MB 재생성.
 - [x] (Codex) Inform Log 재인폼/메일 제목 템플릿/첨부 stale 상태 정리 — 상세 `수정`은 원문 edit 대신 `parent_id` 재인폼 작성으로 전환하고, 재인폼 tree를 본문 아래에 항상 표시한다. PageGear 사유별 메일 제목 템플릿 저장 UI를 연결하고, 신규 작성/메일 미리보기/발송 기본 제목에 `{product}/{lot}/{module}/{reason}` 템플릿을 적용했다. SplitTable 첨부 submit은 현재 attach mode 기준으로만 세트/KNOB 컬럼을 재계산한다. 검증: inform pytest 29/29 PASS, frontend build PASS, `python3 _build_setup.py`, `python3 setup.py version`, 변경 대상 `git diff --check` PASS. 전체 `git diff --check`는 기존 runtime `data/flow-data/flowi_users/hol.md` trailing whitespace로 실패.
 - [x] (Claude) Flow-i Home Agent 4계층 재설계 M6 — Dead path 정리 (1단계). diagnosis와 tablemap unit AI에 handle() 위임 추가 — diagnosis는 `_handle_knowledge_impact_context`, tablemap은 `_unit_feature_guidance` (prompt에 'tablemap/테이블맵' 포함 시). dispatcher `only=`에 diagnosis/tablemap 추가. `_handle_flowi_query_core` 함수 초입에 dead-path 주석 추가 — 현재 dispatcher가 filebrowser/meeting/inform/tracker/dashboard/splittable/waferlayout/tablemap/diagnosis(9개) 모두 흡수, 남은 ettime/calendar는 LLM-specific handler 없음. 안전을 위해 legacy if/elif 블록 그대로 보존 (실제 행 삭제는 production trace 검증 후 후속 PR). 검증: `python -m pytest tests/test_flowi_router.py tests/test_knowledge_impact.py -x` 134/134 PASS, py_compile, setup.py 2.64MB 재생성.
