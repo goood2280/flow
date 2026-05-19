@@ -21,40 +21,10 @@ from core.flowi_units.base import (
     UnitAI,
 )
 from core.flowi_units.filebrowser import FileBrowserUnitAI
+from core.flowi_units.inform import InformUnitAI
 from core.flowi_units.meeting import MeetingUnitAI
 
 _BACKEND_CORE_DIR = Path(__file__).resolve().parent.parent
-
-
-class InformUnitAI(BaseUnitAI):
-    KEY = "inform"
-    TITLE = "Inform Log AI"
-    DATA_SOURCES = (
-        DataSourceRef(
-            kind="runtime_data",
-            path="data/flow-data/flowi_inform_sessions/",
-            description="Inform draft 세션 (TTL 3600s). 사용자가 인폼 작성 중인 임시 상태.",
-            columns=(
-                ColumnDoc(name="session_id", meaning="draft session 식별자."),
-                ColumnDoc(name="product", meaning="제품명.", sample_values=("PRODA", "PRODB")),
-                ColumnDoc(name="lot_id", meaning="대상 LOT.", sample_values=("A1000A.3",)),
-                ColumnDoc(name="module", meaning="인폼 대상 모듈명.", sample_values=("GATE", "STI")),
-                ColumnDoc(name="note", meaning="인폼 본문."),
-                ColumnDoc(name="recipients", meaning="인폼 수신자 목록."),
-            ),
-        ),
-        DataSourceRef(
-            kind="runtime_data",
-            path="data/flow-data/informs/",
-            description="확정된 인폼 로그. 모듈/제품/LOT 기준 조회 가능.",
-        ),
-    )
-    HANDLER_ENTRY = CodeRef(
-        module="backend.routers.llm",
-        function="_flowi_save_inform_draft",
-        lineno=16718,
-        description="Inform draft 생성 / 저장",
-    )
 
 
 class TrackerUnitAI(BaseUnitAI):

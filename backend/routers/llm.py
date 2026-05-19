@@ -20076,46 +20076,39 @@ def _run_flowi_chat(
         return _attach_flowi_trace(result, prompt=prompt, allowed_keys=allowed_keys, agent_context=agent_context)
 
     max_rows = max(4, min(24, int(max_rows or 12)))
-    inform_tool = _handle_flowi_inform_summary(prompt, me, max_rows=max_rows, allowed_keys=allowed_keys) if "inform" in allowed_keys else {"handled": False}
-    if inform_tool.get("handled"):
-        tool = inform_tool
+    # M2 strangler-fig: try registered Unit AIs first. Caller is
+    # responsible for permission gating via `only=` (e.g. calendar→meeting).
+    # Unmigrated units (handle() returns None) fall through to the legacy
+    # _handle_flowi_query path below.
+    from core.flowi_units import try_dispatch as _try_unit_ai_dispatch
+    meeting_allowed = ("meeting" in allowed_keys or "calendar" in allowed_keys)
+    unit_only: list[str] = []
+    if "inform" in allowed_keys:
+        unit_only.append("inform")
+    if meeting_allowed:
+        unit_only.append("meeting")
+    unit_only.append("filebrowser")
+    unit_tool = _try_unit_ai_dispatch(
+        prompt,
+        product=product,
+        max_rows=max_rows,
+        allowed_keys=allowed_keys,
+        agent_context=agent_context,
+        me=me,
+        only=tuple(unit_only),
+    )
+    if unit_tool is not None:
+        tool = unit_tool
     else:
-        tool = {}
-    if tool.get("handled"):
-        pass
-    else:
-        # M2 strangler-fig: try registered Unit AIs first. Only listed
-        # features dispatch here; unmigrated units (registered with
-        # handle() returning None) fall through to the legacy path below.
-        # PR #3 adds meeting; meeting/calendar permission gating happens
-        # via the allowed_keys argument.
-        from core.flowi_units import try_dispatch as _try_unit_ai_dispatch
-        meeting_allowed = ("meeting" in allowed_keys or "calendar" in allowed_keys)
-        unit_only = []
-        if meeting_allowed:
-            unit_only.append("meeting")
-        unit_only.append("filebrowser")
-        unit_tool = _try_unit_ai_dispatch(
+        tool = _handle_flowi_query(
             prompt,
-            product=product,
+            product,
             max_rows=max_rows,
             allowed_keys=allowed_keys,
+            username=username,
+            role=str(me.get("role") or "user"),
             agent_context=agent_context,
-            me=me,
-            only=tuple(unit_only),
         )
-        if unit_tool is not None:
-            tool = unit_tool
-        else:
-            tool = _handle_flowi_query(
-                prompt,
-                product,
-                max_rows=max_rows,
-                allowed_keys=allowed_keys,
-                username=username,
-                role=str(me.get("role") or "user"),
-                agent_context=agent_context,
-            )
     entries = _matched_feature_entrypoints(prompt, allowed_keys=allowed_keys)
     if entries:
         tool["feature_entrypoints"] = entries
