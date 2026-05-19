@@ -182,6 +182,7 @@ _PLAN_RISK_CACHE_MAX = 64
 PREFIX_CFG = PLAN_DIR / "prefix_config.json"
 DEFAULT_PREFIXES = ["KNOB", "MASK", "INLINE", "VM", "FAB"]
 PLAN_ALLOWED_PREFIXES = ["KNOB", "MASK", "FAB"]  # Only these can have plan values
+CUSTOM_TAG_PREFIX = "TAG"
 # v8.8.6: paste 세트 공유 저장소 — LocalStorage 대신 BE 에 올려 팀 공용 풀 + CUSTOM 탭 연동.
 PASTE_SETS_FILE = PLAN_DIR / "paste_sets.json"
 # v8.4.9: 엑셀 메모/태그 저장소 — wafer 단위(tag) + parameter 단위(memo) 공용.
@@ -194,7 +195,13 @@ INFORMS_FILE = PATHS.data_root / "informs" / "informs.json"
 
 
 def _load_prefixes():
-    return load_json(PREFIX_CFG, DEFAULT_PREFIXES)
+    prefixes = load_json(PREFIX_CFG, DEFAULT_PREFIXES)
+    if not isinstance(prefixes, list):
+        prefixes = list(DEFAULT_PREFIXES)
+    out = [str(p).strip().upper() for p in prefixes if str(p).strip()]
+    if CUSTOM_TAG_PREFIX not in out:
+        out.append(CUSTOM_TAG_PREFIX)
+    return out
 
 
 def _cast_cats_lazy(lf):
@@ -678,6 +685,126 @@ def _select_columns(all_data_cols, custom_name: str, prefix: str, max_fallback: 
         if sel:
             return sel
     return all_data_cols[:max_fallback]
+
+
+# ── Custom tag columns: runtime-only SplitTable overlay ───────────────
+def _custom_tags_path() -> Path:
+    return PLAN_DIR / "custom_tags.json"
+
+
+def _load_custom_tags_data() -> dict:
+    data = load_json(_custom_tags_path(), {"columns": [], "values": {}})
+    if not isinstance(data, dict):
+        data = {"columns": [], "values": {}}
+    cols = data.get("columns") if isinstance(data.get("columns"), list) else []
+    values = data.get("values") if isinstance(data.get("values"), dict) else {}
+    return {"columns": cols, "values": values}
+
+
+def _save_custom_tags_data(data: dict) -> None:
+    save_json(_custom_tags_path(), {
+        "columns": list(data.get("columns") or []),
+        "values": dict(data.get("values") or {}),
+    }, indent=2)
+
+
+def _tag_column_id(name: str) -> str:
+    raw = str(name or "").strip()
+    if raw.upper().startswith(f"{CUSTOM_TAG_PREFIX}_"):
+        raw = raw[len(CUSTOM_TAG_PREFIX) + 1:].strip()
+    token = safe_id(raw, max_len=72).strip().replace(" ", "_")
+    token = "_".join(part for part in token.split("_") if part)
+    if not token:
+        raise HTTPException(400, "tag name required")
+    return f"{CUSTOM_TAG_PREFIX}_{token}"
+
+
+def _tag_value_key(product: str, root_lot_id: str, wafer_id: str, column: str) -> str:
+    return "|".join([str(product or ""), str(root_lot_id or ""), str(wafer_id or ""), str(column or "")])
+
+
+def _ensure_custom_tag_column(data: dict, *, product: str, column: str, label: str, actor: str, now: str) -> dict:
+    cols = data.setdefault("columns", [])
+    product_key = str(product or "").strip()
+    column_key = str(column or "").strip()
+    existing = next((c for c in cols if c.get("product") == product_key and c.get("column") == column_key), None)
+    if existing:
+        existing["label"] = str(label or existing.get("label") or column_key).strip() or column_key
+        existing["username"] = actor or existing.get("username", "")
+        existing["updated"] = now
+        return existing
+    entry = {
+        "product": product_key,
+        "column": column_key,
+        "label": str(label or column_key).strip() or column_key,
+        "username": actor,
+        "created": now,
+        "updated": now,
+    }
+    cols.append(entry)
+    return entry
+
+
+def _custom_tag_columns_for_product(product: str) -> list[dict]:
+    product_key = str(product or "").strip()
+    data = _load_custom_tags_data()
+    out = []
+    seen = set()
+    for raw in data.get("columns") or []:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("product") != product_key:
+            continue
+        column = str(raw.get("column") or "").strip()
+        if not column or column in seen:
+            continue
+        seen.add(column)
+        label = str(raw.get("label") or column).strip() or column
+        out.append({**raw, "column": column, "label": label})
+    return out
+
+
+def _custom_tag_label_map(product: str) -> dict[str, str]:
+    return {c["column"]: c.get("label") or c["column"] for c in _custom_tag_columns_for_product(product)}
+
+
+def _custom_tag_values_for_root(product: str, root_lot_id: str) -> dict[str, str]:
+    data = _load_custom_tags_data()
+    prefix = f"{product}|{root_lot_id}|"
+    out: dict[str, str] = {}
+    for key, raw in (data.get("values") or {}).items():
+        if not str(key).startswith(prefix):
+            continue
+        parts = str(key).split("|", 3)
+        if len(parts) != 4:
+            continue
+        value = raw.get("value") if isinstance(raw, dict) else raw
+        if value is None:
+            continue
+        out["|".join(parts[1:])] = str(value)
+    return out
+
+
+def _custom_tag_column_values(product: str, column: str, limit: int = 200) -> list[str]:
+    data = _load_custom_tags_data()
+    out: list[str] = []
+    seen: set[str] = set()
+    suffix = f"|{column}"
+    prefix = f"{product}|"
+    for key, raw in (data.get("values") or {}).items():
+        if not str(key).startswith(prefix) or not str(key).endswith(suffix):
+            continue
+        value = raw.get("value") if isinstance(raw, dict) else raw
+        if value is None:
+            continue
+        s = str(value).strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
 
 
 # ── Notes (v8.4.9-b): 검색된 wafer 태그 + 파라미터 메모 ───────────────
@@ -1909,6 +2036,12 @@ def get_schema(product: str = Query(...), root_lot_id: str = Query(""),
         else:
             lf = _scan_parquet_compat(str(fp))
         cols = [{"name": n, "dtype": str(d)} for n, d in lf.schema.items()]
+    existing_cols = {str(c.get("name") or "") for c in cols}
+    for tag_col in _custom_tag_columns_for_product(product):
+        column = tag_col.get("column")
+        if column and column not in existing_cols:
+            cols.append({"name": column, "dtype": "custom_tag", "label": tag_col.get("label") or column})
+            existing_cols.add(column)
     # 오버라이드에서 실제로 join 된 컬럼 목록 (FE 가 검색 pool 에서 '숨김 해제' 할 기준).
     override_cols_present: list = []
     try:
@@ -3414,6 +3547,96 @@ def delete_custom(
     fp.unlink(missing_ok=True)
     invalidate_splittable_sets_cache()
     return {"ok": True}
+
+
+class CustomTagColumnReq(BaseModel):
+    product: str
+    name: str
+    username: str = ""
+
+
+class CustomTagValuesReq(BaseModel):
+    product: str
+    values: dict
+    username: str = ""
+    root_lot_id: str = ""
+
+
+@router.get("/custom-tags")
+def list_custom_tags(product: str = Query("")):
+    columns = _custom_tag_columns_for_product(product) if product else []
+    return {"columns": columns, "count": len(columns)}
+
+
+@router.post("/custom-tags/columns/save")
+def save_custom_tag_column(req: CustomTagColumnReq, request: Request = None):
+    actor = req.username or ""
+    if request is not None:
+        me = current_user(request)
+        actor = me.get("username") or actor
+    product = str(req.product or "").strip()
+    if not product:
+        raise HTTPException(400, "product required")
+    column = _tag_column_id(req.name)
+    label = str(req.name or "").strip()
+    if label.upper().startswith(f"{CUSTOM_TAG_PREFIX}_"):
+        label = label[len(CUSTOM_TAG_PREFIX) + 1:].strip()
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    data = _load_custom_tags_data()
+    entry = _ensure_custom_tag_column(
+        data,
+        product=product,
+        column=column,
+        label=label or column,
+        actor=actor,
+        now=now,
+    )
+    _save_custom_tags_data(data)
+    return {"ok": True, "column": entry["column"], "label": entry["label"], "columns": _custom_tag_columns_for_product(product)}
+
+
+@router.post("/custom-tags/values")
+def save_custom_tag_values(req: CustomTagValuesReq, request: Request = None):
+    actor = req.username or ""
+    if request is not None:
+        me = current_user(request)
+        actor = me.get("username") or actor
+    product = str(req.product or "").strip()
+    if not product:
+        raise HTTPException(400, "product required")
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    data = _load_custom_tags_data()
+    values = data.setdefault("values", {})
+    saved = 0
+    deleted = 0
+    rejected: list[str] = []
+    for cell_key, raw_value in (req.values or {}).items():
+        parts = str(cell_key or "").split("|", 2)
+        if len(parts) != 3:
+            rejected.append(str(cell_key))
+            continue
+        root_lot_id, wafer_id, column = [p.strip() for p in parts]
+        if not root_lot_id or not wafer_id or not column.upper().startswith(f"{CUSTOM_TAG_PREFIX}_"):
+            rejected.append(str(cell_key))
+            continue
+        _ensure_custom_tag_column(
+            data,
+            product=product,
+            column=column,
+            label=column[len(CUSTOM_TAG_PREFIX) + 1:] or column,
+            actor=actor,
+            now=now,
+        )
+        store_key = _tag_value_key(product, root_lot_id, wafer_id, column)
+        value = "" if raw_value is None else str(raw_value).strip()
+        if value:
+            values[store_key] = {"value": value, "username": actor, "updated": now}
+            saved += 1
+        elif store_key in values:
+            values.pop(store_key, None)
+            deleted += 1
+    _save_custom_tags_data(data)
+    return {"ok": True, "saved": saved, "deleted": deleted, "rejected": rejected}
 
 
 def _resolve_fab_source_target(fab_source: str):
@@ -6646,6 +6869,16 @@ def get_column_values(product: str = Query(...), col: str = Query(...), limit: i
                 seen.add(s); out.append(s)
     except Exception:
         pass
+    try:
+        for v in _custom_tag_column_values(product, col, limit=limit):
+            if v in seen:
+                continue
+            seen.add(v)
+            out.append(v)
+            if len(out) >= limit:
+                break
+    except Exception:
+        pass
     # Union with plan values stored under this column
     try:
         plans = _load_plan_data(product).get("plans", {})
@@ -6814,6 +7047,10 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
         def _prepare_view_frame(view_lf):
             view_schema = view_lf.collect_schema().names()
             all_data = [c for c in view_schema if c != lot_col and c != wf_col]
+            tag_labels = _custom_tag_label_map(product)
+            for tag_col in tag_labels:
+                if tag_col not in all_data:
+                    all_data.append(tag_col)
             sel = _select_columns(all_data, custom_name, prefix,
                                   max_fallback=50, custom_cols=custom_cols)
             if not custom_name and not custom_cols:
@@ -6822,6 +7059,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                         if virt not in sel:
                             sel.append(virt)
             rename = _build_col_rename_map(sel, product)
+            rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
             sel = sorted(sel, key=lambda c: _natural_param_key(rename.get(c, c)))
             keep_cols = []
             for c in (lot_col, wf_col):
@@ -6982,15 +7220,21 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
 
         # Load plans
         plans = _load_plan_data(product).get("plans", {})
+        tag_labels = _custom_tag_label_map(product)
+        tag_values = _custom_tag_values_for_root(product, root_lot_id)
 
         rows = []
         df_cols_set = set(df.columns)
         for col_name in selected:
+            is_tag_col = col_name in tag_labels
             row_vals = [None] * len(wf_sorted)
             plan_vals = [None] * len(wf_sorted)
             # v8.8.16: CUSTOM 에 저장된 컬럼이 현재 df 에 없더라도 빈 행으로 표시.
             #   (e.g. plan 전용 가상 컬럼, 다른 제품에서 저장된 컬럼 등). plan 값은 여전히 lookup.
-            if col_name in df_cols_set:
+            if is_tag_col:
+                for ci, wf_key in enumerate(wf_sorted):
+                    row_vals[ci] = tag_values.get(f"{root_lot_id}|{wf_key}|{col_name}")
+            elif col_name in df_cols_set:
                 try:
                     col_data = df[col_name].to_list()
                     for i, val in enumerate(col_data):
@@ -7015,7 +7259,7 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
             # Build _cells dict keyed by column index
             # Check if this column allows plan editing
             col_upper = col_name.upper()
-            can_plan = any(col_upper.startswith(p + "_") for p in PLAN_ALLOWED_PREFIXES)
+            can_plan = (not is_tag_col) and any(col_upper.startswith(p + "_") for p in PLAN_ALLOWED_PREFIXES)
             _cells = {}
             for ci, wf_key in enumerate(wf_sorted):
                 actual = row_vals[ci]
@@ -7028,7 +7272,8 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                 if plan and actual_str and str(plan) != actual_str:
                     mismatch = True
                 _cells[str(ci)] = {"actual": actual_str, "plan": plan, "key": ck,
-                                   "can_plan": can_plan, "mismatch": mismatch}
+                                   "can_plan": can_plan, "mismatch": mismatch,
+                                   "is_custom_tag": is_tag_col, "can_tag": is_tag_col}
             # v8.8.14: _display — rule_order + func_step 을 포함한 렌더용 이름.
             #   없으면 원본과 동일. FE 는 _display 를 사용하고 prefix strip 후 표시.
             rows.append({"_param": col_name, "_display": col_rename.get(col_name, col_name), "_cells": _cells})
@@ -7334,6 +7579,10 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
     df = lf.collect()
 
     all_data_cols = [c for c in df.columns if c != lot_col and c != wf_col]
+    tag_labels = _custom_tag_label_map(product)
+    for tag_col in tag_labels:
+        if tag_col not in all_data_cols:
+            all_data_cols.append(tag_col)
     selected = _select_columns(all_data_cols, custom_name, prefix,
                                max_fallback=200, custom_cols=custom_cols)
     if not custom_name and not custom_cols:
@@ -7348,6 +7597,7 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
                     selected.append(virt)
     # v8.8.14: display rename (rule_order + func_step) + natural sort on display name.
     col_rename = _build_col_rename_map(selected, product)
+    col_rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
     selected = sorted(selected, key=lambda c: _natural_param_key(col_rename.get(c, c)))
 
     if transposed.lower() == "true" and wf_col and wf_col in df.columns:
@@ -7387,6 +7637,7 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
         wf_idx = {v: i for i, v in enumerate(wf_sorted)}
 
         plans = _load_plan_data(product).get("plans", {})
+        tag_values = _custom_tag_values_for_root(product, root_lot_id)
 
         output = io.StringIO()
         writer = csv_mod.writer(output)
@@ -7400,7 +7651,10 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
         writer.writerow(["Parameter"] + headers)
         for col_name in selected:
             row_data = [""] * len(wf_sorted)
-            if col_name in df.columns:
+            if col_name in tag_labels:
+                for idx, wk in enumerate(wf_sorted):
+                    row_data[idx] = tag_values.get(f"{root_lot_id}|{wk}|{col_name}", "")
+            elif col_name in df.columns:
                 vals = df[col_name].to_list()
                 for i, v in enumerate(vals):
                     wk = wf_vals[i] if i < len(wf_vals) else None
@@ -7447,11 +7701,16 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     df = lf.collect()
 
     all_data_cols = [c for c in df.columns if c != lot_col and c != wf_col]
+    tag_labels = _custom_tag_label_map(product)
+    for tag_col in tag_labels:
+        if tag_col not in all_data_cols:
+            all_data_cols.append(tag_col)
     selected = _select_columns(all_data_cols, custom_name, prefix,
                                max_fallback=200, custom_cols=custom_cols)
     # v8.4.4: natural sort — prefix 뒤 숫자 (정수+소수) 기준. 숫자 없으면 알파벳 순.
     # v8.8.14: display rename (rule_order + func_step) 적용 + 그 이름 기준 정렬.
     col_rename = _build_col_rename_map(selected, product)
+    col_rename.update({col: f"{CUSTOM_TAG_PREFIX}_{label}" for col, label in tag_labels.items()})
     selected = sorted(selected, key=lambda c: _natural_param_key(col_rename.get(c, c)))
 
     wf_raw_int = df[wf_col].cast(pl.Int64, strict=False).to_list() if wf_col else []
@@ -7473,6 +7732,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
     wf_idx = {v: i for i, v in enumerate(wf_sorted)}
 
     plans = _load_plan_data(product).get("plans", {})
+    tag_values = _custom_tag_values_for_root(product, root_lot_id)
 
     if openpyxl_error is not None:
         try:
@@ -7523,19 +7783,25 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
             vals = df[col_name].to_list() if col_name in df.columns else []
             actual_by_idx = {}
             plan_by_idx = {}
-            for i, v in enumerate(vals):
-                wk = wf_vals[i] if i < len(wf_vals) else None
-                idx = wf_idx.get(wk)
-                if idx is None:
-                    continue
-                sv = str(v) if v is not None and str(v) not in ("None", "null") else ""
-                ck = f"{root_lot_id}|{wk}|{col_name}"
-                pv = plans.get(ck, {}).get("value")
-                if sv:
-                    actual_by_idx[idx] = sv
-                if pv:
-                    plan_by_idx[idx] = str(pv)
-            if col_name not in df.columns:
+            if col_name in tag_labels:
+                for idx, wk in enumerate(wf_sorted):
+                    tv = tag_values.get(f"{root_lot_id}|{wk}|{col_name}")
+                    if tv:
+                        actual_by_idx[idx] = str(tv)
+            else:
+                for i, v in enumerate(vals):
+                    wk = wf_vals[i] if i < len(wf_vals) else None
+                    idx = wf_idx.get(wk)
+                    if idx is None:
+                        continue
+                    sv = str(v) if v is not None and str(v) not in ("None", "null") else ""
+                    ck = f"{root_lot_id}|{wk}|{col_name}"
+                    pv = plans.get(ck, {}).get("value")
+                    if sv:
+                        actual_by_idx[idx] = sv
+                    if pv:
+                        plan_by_idx[idx] = str(pv)
+            if col_name not in df.columns and col_name not in tag_labels:
                 for idx, wk in enumerate(wf_sorted):
                     ck = f"{root_lot_id}|{wk}|{col_name}"
                     pv = plans.get(ck, {}).get("value")
@@ -7644,16 +7910,22 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         row_values_ordered = []  # preserve column order for uniq index
         actual_by_idx = {}
         plan_by_idx = {}
-        for i, v in enumerate(vals):
-            wk = wf_vals[i] if i < len(wf_vals) else None
-            idx = wf_idx.get(wk)
-            if idx is None: continue
-            sv = str(v) if v is not None and str(v) not in ("None","null") else ""
-            ck = f"{root_lot_id}|{wk}|{col_name}"
-            pv = plans.get(ck, {}).get("value")
-            if sv: actual_by_idx[idx] = sv
-            if pv: plan_by_idx[idx] = str(pv)
-        if col_name not in df.columns:
+        if col_name in tag_labels:
+            for idx, wk in enumerate(wf_sorted):
+                tv = tag_values.get(f"{root_lot_id}|{wk}|{col_name}")
+                if tv:
+                    actual_by_idx[idx] = str(tv)
+        else:
+            for i, v in enumerate(vals):
+                wk = wf_vals[i] if i < len(wf_vals) else None
+                idx = wf_idx.get(wk)
+                if idx is None: continue
+                sv = str(v) if v is not None and str(v) not in ("None","null") else ""
+                ck = f"{root_lot_id}|{wk}|{col_name}"
+                pv = plans.get(ck, {}).get("value")
+                if sv: actual_by_idx[idx] = sv
+                if pv: plan_by_idx[idx] = str(pv)
+        if col_name not in df.columns and col_name not in tag_labels:
             for idx, wk in enumerate(wf_sorted):
                 ck = f"{root_lot_id}|{wk}|{col_name}"
                 pv = plans.get(ck, {}).get("value")

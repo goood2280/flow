@@ -208,6 +208,67 @@ def test_view_normalizes_wafer_ids_above_25(tmp_path, monkeypatch):
     assert all("1000" not in cell["key"] for cell in row["_cells"].values())
 
 
+def test_custom_tag_columns_overlay_view_and_custom_set(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["LOT926AA", "LOT926AA"],
+        "wafer_id": ["1", "2"],
+        "KNOB_ALPHA": ["A", "B"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
+    (tmp_path / "issues.json").write_text("[]", encoding="utf-8")
+
+    created = splittable.save_custom_tag_column(
+        splittable.CustomTagColumnReq(product="ML_TABLE_PRODA", name="review_flag", username="owner")
+    )
+    column = created["column"]
+    splittable.save_custom_tag_values(
+        splittable.CustomTagValuesReq(
+            product="ML_TABLE_PRODA",
+            root_lot_id="LOT926AA",
+            values={
+                f"LOT926AA|1|{column}": "hold",
+                f"LOT926AA|2|{column}": "pass",
+            },
+            username="owner",
+        )
+    )
+    splittable.save_custom(
+        splittable.CustomSaveReq(name="tag_check", username="owner", columns=[column], expected_version=0)
+    )
+
+    schema = splittable.get_schema(product="ML_TABLE_PRODA")
+    result = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="LOT926AA",
+        wafer_ids="",
+        prefix="",
+        custom_name="tag_check",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert any(c["name"] == column and c["dtype"] == "custom_tag" for c in schema["columns"])
+    assert result["all_columns"].count(column) == 1
+    assert result["rows"][0]["_param"] == column
+    assert result["rows"][0]["_display"] == "TAG_review_flag"
+    assert result["rows"][0]["_cells"]["0"]["actual"] == "hold"
+    assert result["rows"][0]["_cells"]["1"]["actual"] == "pass"
+    assert result["rows"][0]["_cells"]["0"]["can_plan"] is False
+    assert result["rows"][0]["_cells"]["0"]["is_custom_tag"] is True
+    assert column not in pl.read_parquet(tmp_path / "ML_TABLE_PRODA.parquet").columns
+
+
 def test_lot_ids_do_not_suggest_fab_roots_that_cannot_render():
     result = splittable.get_lot_ids(product="ML_TABLE_PRODA", limit=20)
 

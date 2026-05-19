@@ -84,7 +84,7 @@ export default function My_SplitTable({user}){
   const[showParamMeta,setShowParamMeta]=useState(false);
   const[showLineageSummary,setShowLineageSummary]=useState(false);
   const[data,setData]=useState(null);const[loading,setLoading]=useState(false);const[informSnapshotBusy,setInformSnapshotBusy]=useState(false);
-  const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});
+  const[editing,setEditing]=useState(false);const[pendingPlans,setPendingPlans]=useState({});const[pendingTags,setPendingTags]=useState({});
   const[showConfirm,setShowConfirm]=useState(false);
   // dbl-click inline edit: {cellKey, value, suggestions, param}
   const[activeCell,setActiveCell]=useState(null);
@@ -227,8 +227,14 @@ export default function My_SplitTable({user}){
   const[featKnob,setFeatKnob]=useState("");const[featKnobVal,setFeatKnobVal]=useState("");
   const[featMask,setFeatMask]=useState("");
   const[selFeatCols,setSelFeatCols]=useState([]);const[mlPlan,setMlPlan]=useState(null);
+  const[customTags,setCustomTags]=useState([]);const[customTagName,setCustomTagName]=useState("");
 
   const reloadCustoms=()=>sf(API+"/customs").then(d=>setCustoms(d.customs||[]));
+  const reloadCustomTags=()=>{if(!selProd){setCustomTags([]);return Promise.resolve();}
+    return sf(API+"/custom-tags?product="+encodeURIComponent(selProd))
+      .then(d=>setCustomTags(d.columns||[]))
+      .catch(()=>setCustomTags([]));
+  };
   // v4.1: Features loader — wide ET⋈INLINE sample (default 200 rows, 40 cols).
   const loadFeatures=()=>{setFeaturesLoading(true);
     sf(API+"/features?rows=200&cols=40").then(d=>{setFeatures(d);setFeaturesLoading(false);})
@@ -347,7 +353,8 @@ export default function My_SplitTable({user}){
   //   CUSTOM pool 의 `_CUSTOM_HIDDEN` 기본 숨김 목록에서 예외 처리 → 검색/필터 드롭다운에 노출.
   const[overrideCols,setOverrideCols]=useState([]);
   useEffect(()=>{
-    if(!selProd){setProductSchema([]);setOverrideCols([]);return;}
+    if(!selProd){setProductSchema([]);setOverrideCols([]);setCustomTags([]);return;}
+    reloadCustomTags();
     sf(API+"/schema?product="+encodeURIComponent(selProd))
       .then(d=>{
         setProductSchema((d.columns||[]).map(c=>c.name||c));
@@ -540,7 +547,7 @@ export default function My_SplitTable({user}){
       if(Array.isArray(d.available_fab_lots)&&d.available_fab_lots.length>0){
         setFabSuggestions(d.available_fab_lots);
       }
-      setLoading(false);setPendingPlans({});clearCellSelection();reloadNotes();
+      setLoading(false);setPendingPlans({});setPendingTags({});clearCellSelection();reloadNotes();
     }).catch(e=>{toast.error(e.message);setLoading(false);});};
   // v8.4.9-b: Notes reload — 로트가 정해지면 해당 로트 범위로 가져옴.
   const reloadNotes=()=>{const prod=selProd, lot=lotId;if(!prod||!lot){setNotes([]);return;}
@@ -614,11 +621,13 @@ export default function My_SplitTable({user}){
   const columnFromCellKey=(key)=>String(key||"").split("|").slice(2).join("|");
   const hasValue=(v)=>v!=null&&v!==""&&v!=="None"&&v!=="null";
   const pendingValueFor=(cell)=>cell?.key&&Object.prototype.hasOwnProperty.call(pendingPlans,cell.key)?pendingPlans[cell.key]:undefined;
+  const pendingTagValueFor=(cell)=>cell?.key&&Object.prototype.hasOwnProperty.call(pendingTags,cell.key)?pendingTags[cell.key]:undefined;
   const suggestionValuesFor=(param,base=[])=>{
     const out=[];const seen=new Set();
     const add=(v)=>{if(!hasValue(v))return;const s=String(v);if(seen.has(s))return;seen.add(s);out.push(s);};
     (base||[]).forEach(add);
     Object.entries(pendingPlans).forEach(([key,val])=>{if(columnFromCellKey(key)===param)add(val);});
+    Object.entries(pendingTags).forEach(([key,val])=>{if(columnFromCellKey(key)===param)add(val);});
     return out;
   };
   const primePlanValueCache=(plans)=>{
@@ -640,15 +649,25 @@ export default function My_SplitTable({user}){
     endRow:Math.max(r1,r2),
     endCol:Math.max(c1,c2),
   });
-  const savePlans=()=>{if(!Object.keys(pendingPlans).length)return;
+  const pendingEditCount=Object.keys(pendingPlans).length+Object.keys(pendingTags).length;
+  const savePlans=()=>{if(!pendingEditCount)return;
     const plansToSave={...pendingPlans};
-    sf(API+"/plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,plans:plansToSave,username:user?.username||"",root_lot_id:lotId})})
-      .then(()=>{primePlanValueCache(plansToSave);setShowConfirm(false);setEditing(false);loadView();}).catch(e=>toast.error(e.message));};
+    const tagsToSave={...pendingTags};
+    const jobs=[];
+    if(Object.keys(plansToSave).length){
+      jobs.push(sf(API+"/plan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,plans:plansToSave,username:user?.username||"",root_lot_id:lotId})}));
+    }
+    if(Object.keys(tagsToSave).length){
+      jobs.push(sf(API+"/custom-tags/values",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,values:tagsToSave,username:user?.username||"",root_lot_id:lotId})}));
+    }
+    Promise.all(jobs)
+      .then(()=>{primePlanValueCache(plansToSave);setShowConfirm(false);setEditing(false);setPendingPlans({});setPendingTags({});reloadCustomTags();loadView();})
+      .catch(e=>toast.error(e.message));};
   const deletePlan=(ck)=>{if(!confirm("Delete?"))return;sf(API+"/plan/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,cell_keys:[ck],username:user?.username||""})}).then(loadView);};
   const currentRowsForInformSnapshot=()=>{
     const rows=Array.isArray(data?.rows)?data.rows:[];
     const rowHasPlan=(row)=>{const cells=row?._cells||{};return Object.values(cells).some(cell=>hasValue(cell?.plan));};
-    const rowHasPendingPlan=(row)=>{const cells=row?._cells||{};return Object.entries(cells).some(([k,c])=>hasValue(pendingPlans[k])||hasValue(pendingValueFor(c)));};
+    const rowHasPendingPlan=(row)=>{const cells=row?._cells||{};return Object.values(cells).some(c=>hasValue(pendingValueFor(c))||hasValue(pendingTagValueFor(c)));};
     if(viewMode!=="diff")return rows;
     return rows.filter(r=>{
       const vs=Object.values(r._cells||{}).map(c=>c?.actual).filter(v=>v!=null&&v!==""&&v!=="None"&&v!=="null");
@@ -659,7 +678,9 @@ export default function My_SplitTable({user}){
     const nextCells={};
     Object.entries(row._cells||{}).forEach(([ci,cell])=>{
       const pendingPlan=pendingValueFor(cell);
-      nextCells[String(ci)]=pendingPlan!==undefined?{...cell,plan:pendingPlan}:{...cell};
+      const pendingTag=pendingTagValueFor(cell);
+      nextCells[String(ci)]=pendingTag!==undefined?{...cell,actual:pendingTag}
+        :(pendingPlan!==undefined?{...cell,plan:pendingPlan}:{...cell});
     });
     return {
       _param: row._param,
@@ -782,6 +803,27 @@ export default function My_SplitTable({user}){
     const cleaned=(c.columns||[]).filter(col=>!_drop.has(String(col).toLowerCase()));
     setSelCustom(c.name);setCustomCols(cleaned);setCustomName(c.name);
   };
+  const addTagToCustom=(column)=>{
+    if(!column)return;
+    setCustomCols(prev=>prev.includes(column)?prev:[...prev,column]);
+    setIsCustomMode(true);
+  };
+  const createCustomTag=()=>{
+    const name=(customTagName||"").trim();
+    if(!selProd||!name)return;
+    sf(API+"/custom-tags/columns/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,name,username:user?.username||""})})
+      .then(d=>{
+        const col=d.column;
+        setCustomTags(d.columns||[]);
+        if(col){
+          addTagToCustom(col);
+          setProductSchema(prev=>prev.includes(col)?prev:[...prev,col]);
+        }
+        setCustomTagName("");
+        toast.ok("꼬리표 열 추가됨");
+      })
+      .catch(e=>toast.error("꼬리표 열 추가 실패: "+(e.message||e)));
+  };
 
   const togglePrefix=(p)=>{if(isCustomMode){setIsCustomMode(false);setSelCustom("");setSelPrefixes([p]);return;}
     setSelPrefixes(prev=>prev.includes(p)?prev.filter(x=>x!==p).length?prev.filter(x=>x!==p):[p]:[...prev,p]);};
@@ -851,11 +893,15 @@ export default function My_SplitTable({user}){
   //   집중하도록 근본적으로 차단. 기존에 customCols 에 섞여있던 것도 로드 타임에 자동 제거.
   const _CUSTOM_HIDDEN_BASE = new Set(["product","root_lot_id","wafer_id","lot_id","fab_lot_id"]);
   const customPool=(()=>{const seen=new Set();const out=[];
-    for(const c of [...productSchema,...allCols,...customCols,...overrideCols]){
+    for(const c of [...productSchema,...allCols,...customCols,...overrideCols,...customTags.map(t=>t.column)]){
       const lc = String(c).toLowerCase();
       if(_CUSTOM_HIDDEN_BASE.has(lc)) continue;
       if(!seen.has(c)){seen.add(c);out.push(c);}
     }return out;})();
+  const tagLabelFor=(column)=>{
+    const hit=(customTags||[]).find(t=>t.column===column);
+    return hit?`${hit.label||column} (${column})`:column;
+  };
   const filteredCustomCols=colSearch
     ?customPool.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase()))
     :customPool;
@@ -932,10 +978,27 @@ export default function My_SplitTable({user}){
           <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
             {customCols.map(c=><span key={c} title={c}
               style={{display:"inline-flex",alignItems:"center",gap:2,padding:"1px 5px",borderRadius:3,fontSize:14,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>
-              {c}<span onClick={()=>setCustomCols(customCols.filter(x=>x!==c))} style={{cursor:"pointer",fontSize:14,lineHeight:1,marginLeft:2,color:"rgba(239,68,68,0.95)"}} title="제거">×</span>
+              {tagLabelFor(c)}<span onClick={()=>setCustomCols(customCols.filter(x=>x!==c))} style={{cursor:"pointer",fontSize:14,lineHeight:1,marginLeft:2,color:"rgba(239,68,68,0.95)"}} title="제거">×</span>
             </span>)}
           </div>
         </div>}
+        <div style={{marginTop:6,padding:"6px",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)"}}>
+          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontWeight:600}}>꼬리표 열</div>
+          <div style={{display:"flex",gap:4}}>
+            <input value={customTagName} onChange={e=>setCustomTagName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&createCustomTag()}
+              placeholder="예: review_flag" style={{...S,flex:1,fontSize:14}}/>
+            <button onClick={createCustomTag} disabled={!customTagName.trim()}
+              style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:customTagName.trim()?"pointer":"not-allowed",opacity:customTagName.trim()?1:0.55}}>
+              추가
+            </button>
+          </div>
+          {customTags.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:5}}>
+            {customTags.map(t=><span key={t.column} onClick={()=>addTagToCustom(t.column)} title={t.column}
+              style={{padding:"1px 6px",borderRadius:3,border:"1px solid rgba(59,130,246,0.45)",background:customCols.includes(t.column)?"rgba(59,130,246,0.14)":"transparent",color:customCols.includes(t.column)?"rgba(37,99,235,0.95)":"var(--text-secondary)",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>
+              {customCols.includes(t.column)?"✓ ":"+"}{t.label||t.column}
+            </span>)}
+          </div>}
+        </div>
         <div style={{marginTop:6,fontSize:14,color:"var(--text-secondary)"}}>생성 / 편집</div>
         <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색" style={{...S,width:"100%",fontSize:14,marginBottom:4,marginTop:4}}/>
         {/* v8.8.16: 전체 체크/제거 + 개수 표시 */}
@@ -951,7 +1014,7 @@ export default function My_SplitTable({user}){
           <span style={{marginLeft:"auto",color:"var(--text-secondary)",fontSize:14}}>{customCols.length}/{customPool.length} 선택</span>
         </div>
         <div style={{maxHeight:120,overflow:"auto"}}>
-          {filteredCustomCols.map(c=><div key={c} onClick={()=>{if(!customCols.includes(c))setCustomCols([...customCols,c]);else setCustomCols(customCols.filter(x=>x!==c));}} style={{fontSize:14,padding:"2px 6px",cursor:"pointer",color:customCols.includes(c)?"var(--accent)":"var(--text-secondary)"}}>{customCols.includes(c)?"✓ ":""}{c}</div>)}
+          {filteredCustomCols.map(c=><div key={c} onClick={()=>{if(!customCols.includes(c))setCustomCols([...customCols,c]);else setCustomCols(customCols.filter(x=>x!==c));}} style={{fontSize:14,padding:"2px 6px",cursor:"pointer",color:customCols.includes(c)?"var(--accent)":"var(--text-secondary)",fontFamily:String(c).startsWith("TAG_")?"monospace":"inherit"}}>{customCols.includes(c)?"✓ ":""}{tagLabelFor(c)}</div>)}
           {filteredCustomCols.length===0&&<div style={{fontSize:14,color:"var(--text-secondary)",padding:6,fontStyle:"italic"}}>
             {productSchema.length===0?"제품 스키마 로딩 중...":"검색 결과 없음"}
           </div>}
@@ -1514,8 +1577,8 @@ export default function My_SplitTable({user}){
           </label>
           <span style={{width:1,height:16,background:"var(--border)"}}/>
           {editing?<>
-            <button onClick={()=>{if(Object.keys(pendingPlans).length>0)setShowConfirm(true);else{setEditing(false);clearCellSelection();}}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"rgba(34,197,94,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({Object.keys(pendingPlans).length})</button>
-            <button onClick={()=>{setEditing(false);setPendingPlans({});setActiveCell(null);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>Cancel</button>
+            <button onClick={()=>{if(pendingEditCount>0)setShowConfirm(true);else{setEditing(false);clearCellSelection();}}} style={{padding:"4px 12px",borderRadius:4,border:"none",background:"rgba(34,197,94,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:600,cursor:"pointer"}}>Save ({pendingEditCount})</button>
+            <button onClick={()=>{setEditing(false);setPendingPlans({});setPendingTags({});setActiveCell(null);clearCellSelection();}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer"}}>Cancel</button>
           </>:<>
             {/* v8.4.9: window.open → dl() — 새 탭은 토큰 헤더가 안 붙어 401. blob 다운로드로 전환. */}
             <button onClick={()=>{const url=API+"/download-csv?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+(isCustomMode&&selCustom?"&custom_name="+encodeURIComponent(selCustom):"")+"&transposed=true&username="+encodeURIComponent(user?.username||"");dl(url, `splittable_${selProd}_${lotId||"all"}.csv`).catch(e=>toast.error("CSV 다운로드 실패: "+e.message));}} style={{padding:"4px 12px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ CSV</button>
@@ -1595,27 +1658,31 @@ export default function My_SplitTable({user}){
           const maxCol=(data?.headers||[]).length||0;
           e.preventDefault();
           let changed=0;
-          setPendingPlans(p=>{
-            const next={...p};
-            matrix.forEach((rowVals,offR)=>{
-              const rowIndex=activeSelectionStart.rowIndex+offR;
-              if(rowIndex>=maxRow)return;
-              const rowData=displayRows[rowIndex];
-              if(!rowData||!rowData._cells)return;
-              const cells=rowData._cells||{};
-              rowVals.forEach((rawValue,offC)=>{
-                const colIndex=activeSelectionStart.colIndex+offC;
-                if(colIndex>=maxCol)return;
-                const cell=cells[String(colIndex)];
-                if(!cell||cell.can_plan===false||!cell.key)return;
-                const nextVal=String(rawValue||"").trim();
-                if(!nextVal)return;
-                next[cell.key]=nextVal;
-                changed++;
-              });
+          const nextPlans={};
+          const nextTags={};
+          matrix.forEach((rowVals,offR)=>{
+            const rowIndex=activeSelectionStart.rowIndex+offR;
+            if(rowIndex>=maxRow)return;
+            const rowData=displayRows[rowIndex];
+            if(!rowData||!rowData._cells)return;
+            const cells=rowData._cells||{};
+            rowVals.forEach((rawValue,offC)=>{
+              const colIndex=activeSelectionStart.colIndex+offC;
+              if(colIndex>=maxCol)return;
+              const cell=cells[String(colIndex)];
+              if(!cell||!cell.key)return;
+              const canTag=cell.is_custom_tag===true;
+              const canPlan=cell.can_plan!==false;
+              if(!canTag&&!canPlan)return;
+              const nextVal=String(rawValue||"").trim();
+              if(!nextVal)return;
+              if(canTag)nextTags[cell.key]=nextVal;
+              else nextPlans[cell.key]=nextVal;
+              changed++;
             });
-            return changed>0?next:p;
           });
+          if(Object.keys(nextPlans).length)setPendingPlans(p=>({...p,...nextPlans}));
+          if(Object.keys(nextTags).length)setPendingTags(p=>({...p,...nextTags}));
         };
         const lineageSummary = buildLineageSummary(displayRows);
         const headerGroupLabels = [...new Set((data.header_groups||[]).map(g=>String(g?.label||"").trim()).filter(Boolean))];
@@ -1763,12 +1830,15 @@ export default function My_SplitTable({user}){
                   {cellNoteCount>0&&<span onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={`${cellNoteCount}개 메모`} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:14,padding:"0 5px",borderRadius:7,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontWeight:700,lineHeight:"14px"}}>💬 {cellNoteCount}</span>}
                 </td>);
                 const pendingPlan=pendingValueFor(cell);
-                const effectiveCell=pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell;
+                const pendingTag=pendingTagValueFor(cell);
+                const isCustomTag=cell.is_custom_tag===true;
+                const effectiveCell=pendingTag!==undefined?{...cell,actual:pendingTag}
+                  :(pendingPlan!==undefined?{...cell,plan:pendingPlan}:cell);
                 const paintVal=hasValue(effectiveCell.plan)?effectiveCell.plan:effectiveCell.actual;
                 const bgStyle=getCellBg(paintVal,uniqMap,row._param);const planStyle=getCellPlanStyle(effectiveCell);
                 const canPlan=cell.can_plan!==false; // default true for backward compat
-                const baseStyle={background:"var(--bg-card)",color:"var(--text-primary)"};
-                const canEdit=canPlan;
+                const baseStyle={background:isCustomTag?"rgba(59,130,246,0.06)":"var(--bg-card)",color:"var(--text-primary)"};
+                const canEdit=isCustomTag||canPlan;
                 const style={...baseStyle,...bgStyle,...planStyle,padding:"4px 8px",borderBottom:GRID_LINE,borderRight:GRID_LINE,textAlign:"center",fontSize:14,cursor:canEdit?"pointer":"default",whiteSpace:"normal",wordBreak:"break-word",lineHeight:1.35,position:"relative",outline:isCellSelected(ri,ci)?"2px solid rgba(59,130,246,0.9)":"none",outlineOffset:-1,boxShadow:isCellSelected(ri,ci)?"inset 0 0 0 1px rgba(147,197,253,0.35)":"none"};
                 const hasPlan=hasValue(effectiveCell.plan)&&!hasValue(effectiveCell.actual);
                 const isMismatch=(hasValue(effectiveCell.plan)&&hasValue(effectiveCell.actual)&&String(effectiveCell.plan)!==String(effectiveCell.actual))||false;
@@ -1778,8 +1848,10 @@ export default function My_SplitTable({user}){
                   setSelectedCellRange(normalizeCellRange(ri,ci,ri,ci));
                   setSelectionAnchor({rowIndex:ri,colIndex:ci});
                   if(!editing)setEditing(true);
-                  const editValue=pendingPlan!==undefined?pendingPlan:(cell.plan ?? cell.actual ?? "");
-                  setActiveCell({key:cell.key,param:row._param,value:editValue});
+                  const editValue=isCustomTag
+                    ?(pendingTag!==undefined?pendingTag:(cell.actual ?? ""))
+                    :(pendingPlan!==undefined?pendingPlan:(cell.plan ?? cell.actual ?? ""));
+                  setActiveCell({key:cell.key,param:row._param,value:editValue,kind:isCustomTag?"tag":"plan"});
                   // suggestion 캐시 확인 후 없으면 fetch
                   if(!colValCache[row._param]){
                     sf(API+"/column-values?product="+encodeURIComponent(selProd)+"&col="+encodeURIComponent(row._param)+"&limit=200")
@@ -1793,10 +1865,14 @@ export default function My_SplitTable({user}){
                   onClick={(e)=>{if(editing&&canEdit)handleCellSelection(e,ri,ci,canEdit);}}
                   onDoubleClick={()=>{if(canEdit)openEdit();}}
                   onContextMenu={e=>{if(cell.plan){e.preventDefault();deletePlan(cell.key);}}}
-                  title={canPlan
+                  title={isCustomTag
+                    ? "꼬리표 값 입력 가능. 원본 파일은 수정하지 않고 flow-data에 저장됩니다."
+                    : canPlan
                     ? (cell.actual ? "actual 값이 있어도 plan 입력/수정 가능. plan 과 actual 이 다르면 ✗ 로 표시됩니다." : "plan 입력 가능")
                     : "이 항목은 plan 입력 대상이 아닙니다"}>
-                  {pendingPlan!==undefined?<span style={{color:"#ea580c",fontWeight:700,fontStyle:"italic"}}>{"📌 "}{pendingPlan}</span>
+                  {isCustomTag&&pendingTag!==undefined?<span style={{color:"rgba(37,99,235,0.95)",fontWeight:700}}>{pendingTag}</span>
+                  :isCustomTag?<span style={{color:display?"var(--text-primary)":"var(--text-secondary)",fontWeight:display?700:400}}>{display}</span>
+                  :pendingPlan!==undefined?<span style={{color:"#ea580c",fontWeight:700,fontStyle:"italic"}}>{"📌 "}{pendingPlan}</span>
                   :isMismatch?<span style={{color:"#dc2626",fontWeight:700}}>{"✗ "}{formatCell(effectiveCell.actual,row._param)}<span style={{fontSize:14,color:"rgba(239,68,68,0.95)"}}>{" (≠"+effectiveCell.plan+")"}</span></span>
                   :hasPlan?<span style={{fontStyle:"italic",fontWeight:700}}>{"📌 "}{effectiveCell.plan}</span>
                   :display}
@@ -2006,13 +2082,21 @@ export default function My_SplitTable({user}){
       suggestions={activeCell?suggestionValuesFor(activeCell.param,colValCache[activeCell.param]||[]):[]}
       suggestionsLoading={!!activeCell&&colValCache[activeCell.param]===undefined}
       onValueChange={(value)=>setActiveCell(c=>({...c,value}))}
-      onCommit={(value)=>{if(value)setPendingPlans(p=>({...p,[activeCell.key]:value}));setActiveCell(null);}}
+      onCommit={(value)=>{
+        if(activeCell?.kind==="tag"){
+          setPendingTags(p=>({...p,[activeCell.key]:value}));
+        }else if(value){
+          setPendingPlans(p=>({...p,[activeCell.key]:value}));
+        }
+        setActiveCell(null);
+      }}
       onClose={()=>setActiveCell(null)}
     />
     {showConfirm&&<Modal open onClose={()=>setShowConfirm(false)} width={400} zIndex={9999}>
         <div style={{fontSize:16,fontWeight:700,marginBottom:12}}>Confirm Changes</div>
-        <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:16}}>{Object.keys(pendingPlans).length} cells will be updated</div>
+        <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:16}}>{pendingEditCount} cells will be updated</div>
         {Object.entries(pendingPlans).map(([k,v])=>(<div key={k} style={{fontSize:14,padding:"4px 0",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between"}}><span style={{fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis"}}>{k.split("|").pop()}</span><span style={{color:"rgba(249,115,22,0.95)",fontWeight:600}}>{v}</span></div>))}
+        {Object.entries(pendingTags).map(([k,v])=>(<div key={k} style={{fontSize:14,padding:"4px 0",borderBottom:"1px solid var(--border)",display:"flex",justifyContent:"space-between"}}><span style={{fontFamily:"monospace",color:"var(--text-secondary)",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis"}}>{k.split("|").pop()}</span><span style={{color:"rgba(37,99,235,0.95)",fontWeight:600}}>{v||"(clear)"}</span></div>))}
         <div style={{display:"flex",gap:8,marginTop:16}}>
           <button onClick={savePlans} style={{flex:1,padding:10,borderRadius:6,border:"none",background:"rgba(34,197,94,0.95)",color:"var(--bg-secondary)",fontWeight:600,cursor:"pointer"}}>Confirm</button>
           <button onClick={()=>setShowConfirm(false)} style={{padding:"10px 20px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>Cancel</button>
