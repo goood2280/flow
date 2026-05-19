@@ -17,6 +17,7 @@ from app_v2.shared.contracts import FlowEntityKey, KnowledgeDoc
 from core import knowledge_vault as kv
 from core import llm_adapter
 from core import semiconductor_knowledge as semi
+from core import flowi_workflow_templates as wf_templates
 from core.auth import current_user, is_page_admin, is_page_manager, require_admin
 from core.flowi_units import UNIT_AIS, get_unit_ai
 from core.paths import PATHS
@@ -2561,3 +2562,78 @@ def list_llm_profiles(request: Request) -> dict[str, Any]:
     except OSError:
         pass
     return {"ok": True, "active": active, "profiles": profiles}
+
+
+# ─── Workflow templates (M5) ─────────────────────────────────────────
+
+
+class WorkflowSaveReq(BaseModel):
+    key: str
+    title: str = ""
+    trigger: dict[str, Any] = Field(default_factory=dict)
+    steps: list[dict[str, Any]] = Field(default_factory=list)
+    shared: bool = False
+
+
+class WorkflowTestReq(BaseModel):
+    prompt: str = ""
+    intent: str = ""
+
+
+@router.get("/workflows")
+def workflows_list(request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    username = str(me.get("username") or "")
+    items = wf_templates.list_templates(username, include_shared=True)
+    return {"ok": True, "items": items, "total": len(items)}
+
+
+@router.post("/workflows")
+def workflows_save(req: WorkflowSaveReq, request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    username = str(me.get("username") or "")
+    is_admin = (str(me.get("role") or "").lower() == "admin"
+                or is_page_admin(username, "agent")
+                or is_page_admin(username, "diagnosis"))
+    try:
+        row = wf_templates.save_template(
+            req.model_dump(),
+            by=username,
+            is_admin=is_admin,
+        )
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "template": row}
+
+
+@router.put("/workflows/{key}")
+def workflows_update(key: str, req: WorkflowSaveReq, request: Request) -> dict[str, Any]:
+    if req.key != key:
+        raise HTTPException(400, "url key and payload key must match")
+    return workflows_save(req, request)
+
+
+@router.delete("/workflows/{key}")
+def workflows_delete(key: str, request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    username = str(me.get("username") or "")
+    is_admin = (str(me.get("role") or "").lower() == "admin"
+                or is_page_admin(username, "agent")
+                or is_page_admin(username, "diagnosis"))
+    try:
+        removed = wf_templates.delete_template(key, by=username, is_admin=is_admin)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    if not removed:
+        raise HTTPException(404, f"workflow template not found: {key}")
+    return {"ok": True}
+
+
+@router.post("/workflows/test")
+def workflows_test(req: WorkflowTestReq, request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    username = str(me.get("username") or "")
+    matched = wf_templates.match_prompt(req.prompt, intent=req.intent, username=username)
+    return {"ok": True, "matched": matched}

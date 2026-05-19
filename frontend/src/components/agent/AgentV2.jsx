@@ -6,6 +6,7 @@ import { sf } from "../../lib/api";
 import { Banner, EmptyState } from "../UXKit";
 import ExecutionFlowTab from "./ExecutionFlowTab";
 import UnitAIDetail from "./UnitAIDetail";
+import WorkflowsTab from "./WorkflowsTab";
 
 const COMMON_ITEMS = [
   { key: "__semantic", label: "시멘틱 레이어", icon: "🧠", hint: "schema_relations · wiki · 컬럼 의미" },
@@ -56,7 +57,8 @@ export default function AgentV2({ user, canManageWiki }) {
         <div style={{ flex: 1, overflow: "auto" }}>
           {isUnitAI && <UnitAIDetail unitKey={selected} user={user} canManageWiki={canManageWiki} />}
           {commonItem && commonItem.key === "__execution" && <ExecutionFlowTab user={user} />}
-          {commonItem && commonItem.key !== "__execution" && <CommonPlaceholder item={commonItem} />}
+          {commonItem && commonItem.key === "__workflows" && <WorkflowsTab user={user} />}
+          {commonItem && !["__execution", "__workflows"].includes(commonItem.key) && <CommonPlaceholder item={commonItem} />}
           {!isUnitAI && !commonItem && (
             <div style={{ padding: 24 }}>
               <EmptyState title="좌측에서 항목을 선택하세요" hint="11개 단위 기능 AI 또는 공통 자원 3가지" />
