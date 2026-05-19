@@ -15,7 +15,8 @@
       "title":             <subject>,
       ... admin.extra_data 병합 ...
     }
-    files = 0..N 개의 바이너리 파트 (각 파트 name="files").
+    files = 1..N 개의 바이너리 파트 (각 파트 name="files"). 첨부가 없으면
+      사내 API 호환을 위해 작은 placeholder 파일을 자동 첨부한다.
 
   주의: v8.8.21~v8.8.23 에서는 form field 이름이 "data" 였고 그 값 안에
   다시 {"mailSendString": "<json>"} 를 JSON 으로 감싸서 보냈다. 이는 잘못된
@@ -60,6 +61,11 @@ ATTACH_MAX  = 10 * 1024 * 1024         # 10 MB total
 MAX_RECIPIENTS = 199                   # 사내 API 제약
 
 File = Tuple[str, bytes, Optional[str]]   # (filename, content, mime)
+PLACEHOLDER_ATTACHMENT: File = (
+    "flow-mail-placeholder.txt",
+    b"Flow mail placeholder attachment for APIs that require a file part.\n",
+    "text/plain",
+)
 
 
 def _admin_settings_path() -> Path:
@@ -251,6 +257,8 @@ def send_mail(
                 return {"ok": False, "status": 0, "to": emails, "skipped": skipped,
                         "reason": f"첨부 총 용량이 {ATTACH_MAX // (1024*1024)}MB 초과."}
             attach_list.append(f)
+    else:
+        attach_list.append(PLACEHOLDER_ATTACHMENT)
 
     receiver_list = [{"email": em, "recipientType": "TO", "seq": i + 1}
                      for i, em in enumerate(emails)]

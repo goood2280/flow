@@ -225,10 +225,10 @@ def forgot_password(req: ForgotPasswordReq):
     if not emails:
         raise HTTPException(400, "No registered email for this account")
 
+    old_hash = u.get("password_hash", "")
     temp_pw = "TMP-" + secrets.token_urlsafe(6).replace("-", "").replace("_", "")[:10]
     u["password_hash"] = auth_core.hash_password(temp_pw)
     write_users(users)
-    revoked = auth_core.revoke_user_tokens(username)
 
     title = "[flow] Temporary Password"
     content = (
@@ -250,10 +250,15 @@ def forgot_password(req: ForgotPasswordReq):
     )
     if not res.get("ok"):
         # 메일 발송 실패 시 temp 비번만 바뀌어 계정 잠김이 되지 않도록 롤백.
-        # 롤백은 기존 해시를 모르면 불가하므로 현재는 명확히 에러를 내고 admin 추적이 가능하게 남긴다.
+        for row in users:
+            if (row.get("username") or "").strip() == username:
+                row["password_hash"] = old_hash
+                break
+        write_users(users)
         _audit_user(username, "auth:forgot-password-mail-failed", detail=f"reason={res.get('reason','')}", tab="auth")
         raise HTTPException(503, res.get("reason") or "Temporary password email failed")
 
+    revoked = auth_core.revoke_user_tokens(username)
     _audit_user(username, "auth:forgot-password-issued", detail=f"revoked={revoked};to={','.join(emails)}", tab="auth")
     return generic
 
