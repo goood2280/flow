@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { sf } from "../../lib/api";
 import { Banner, EmptyState } from "../UXKit";
+import ExecutionFlowTab from "./ExecutionFlowTab";
 import UnitAIDetail from "./UnitAIDetail";
 
 const COMMON_ITEMS = [
@@ -54,7 +55,8 @@ export default function AgentV2({ user, canManageWiki }) {
         {loadErr && <Banner tone="warn" style={{ borderRadius: 0 }}>unit AI catalog: {loadErr}</Banner>}
         <div style={{ flex: 1, overflow: "auto" }}>
           {isUnitAI && <UnitAIDetail unitKey={selected} user={user} canManageWiki={canManageWiki} />}
-          {commonItem && <CommonPlaceholder item={commonItem} />}
+          {commonItem && commonItem.key === "__execution" && <ExecutionFlowTab user={user} />}
+          {commonItem && commonItem.key !== "__execution" && <CommonPlaceholder item={commonItem} />}
           {!isUnitAI && !commonItem && (
             <div style={{ padding: 24 }}>
               <EmptyState title="좌측에서 항목을 선택하세요" hint="11개 단위 기능 AI 또는 공통 자원 3가지" />

@@ -124,6 +124,14 @@ export function postJson(url, body) {
   });
 }
 
+export function putJson(url, body) {
+  return sf(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+}
+
 // Stream a URL to a file download. Returns promise resolving once triggered.
 export function dl(url, filename) {
   const _isApi = typeof url === "string" && url.startsWith("/api/");

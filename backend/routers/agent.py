@@ -2487,3 +2487,77 @@ def unit_ai_inspect(key: str, request: Request) -> dict[str, Any]:
         "semantic_bindings": _semantic_bindings_dict(unit.semantic_bindings()),
         "handler_entry": _handler_entry_dict(unit.handler_entry()),
     }
+
+
+# ─── Unit AI inline editing (M4, admin only) ─────────────────────────
+
+class UnitAIFeatureMdReq(BaseModel):
+    text: str
+
+
+class UnitAIPromptTemplateReq(BaseModel):
+    text: str
+
+
+@router.put("/unit-ai/{key}/feature-md")
+def unit_ai_save_feature_md(key: str, req: UnitAIFeatureMdReq, request: Request) -> dict[str, Any]:
+    """Overwrite a unit AI's feature md file. Admin only."""
+    me = _require_agent_wiki_admin(request)
+    unit = get_unit_ai(key)
+    if unit is None:
+        raise HTTPException(404, f"unknown unit AI key: {key}")
+    path = unit.feature_md_path()
+    text = req.text if isinstance(req.text, str) else ""
+    if not text.endswith("\n"):
+        text += "\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(500, f"failed to write feature md: {exc}")
+    return {"ok": True, "key": key, "path": str(path), "bytes": len(text.encode("utf-8")), "by": me.get("username") or ""}
+
+
+@router.put("/unit-ai/{key}/prompt-template")
+def unit_ai_save_prompt_template(key: str, req: UnitAIPromptTemplateReq, request: Request) -> dict[str, Any]:
+    """Overwrite a unit AI's prompt template JSON file. Admin only. The
+    submitted text must parse as JSON to be accepted; the previous file
+    content is preserved if parsing fails."""
+    me = _require_agent_wiki_admin(request)
+    unit = get_unit_ai(key)
+    if unit is None:
+        raise HTTPException(404, f"unknown unit AI key: {key}")
+    path = unit.prompt_template_path()
+    if path is None:
+        raise HTTPException(400, f"unit AI {key} has no prompt template path")
+    text = req.text if isinstance(req.text, str) else ""
+    try:
+        json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"prompt template must be valid JSON: {exc}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(500, f"failed to write prompt template: {exc}")
+    return {"ok": True, "key": key, "path": str(path), "bytes": len(text.encode("utf-8")), "by": me.get("username") or ""}
+
+
+@router.get("/llm-profiles")
+def list_llm_profiles(request: Request) -> dict[str, Any]:
+    """Return llm_profiles keys from admin_settings.json. Read-only for any
+    logged-in user; the actual edit happens in the LLM tab elsewhere."""
+    current_user(request)
+    settings_path = PATHS.data_root / "admin_settings.json"
+    profiles: list[str] = []
+    active: str = ""
+    try:
+        if settings_path.exists():
+            raw = load_json(settings_path) or {}
+            llm = raw.get("llm") if isinstance(raw.get("llm"), dict) else {}
+            active = str(llm.get("profile") or "")
+            block = raw.get("llm_profiles") if isinstance(raw.get("llm_profiles"), dict) else {}
+            profiles = sorted([k for k in block.keys() if isinstance(k, str)])
+    except OSError:
+        pass
+    return {"ok": True, "active": active, "profiles": profiles}

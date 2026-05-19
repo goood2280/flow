@@ -3,14 +3,15 @@
 // (a) 헤더/요약 (b) 데이터 & 컬럼 의미 (c) 시멘틱 바인딩 (d) prompt template
 // (e) LLM profile (f) feature md (g) handler entry — 다중 탭 없음.
 import { useEffect, useState } from "react";
-import { sf } from "../../lib/api";
-import { Banner, EmptyState } from "../UXKit";
+import { sf, putJson } from "../../lib/api";
+import { Banner, Button, EmptyState } from "../UXKit";
 import Loading from "../Loading";
 
 export default function UnitAIDetail({ unitKey, user, canManageWiki }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     if (!unitKey) return;
@@ -21,20 +22,22 @@ export default function UnitAIDetail({ unitKey, user, canManageWiki }) {
       .catch((e) => !cancelled && setErr(e?.message || "unit AI inspect 로딩 실패"))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [unitKey]);
+  }, [unitKey, reloadTick]);
 
   if (loading) return <div style={{ padding: 40, display: "flex", justifyContent: "center" }}><Loading text="unit AI 자원 로딩..." size="md" /></div>;
   if (err) return <div style={{ padding: 24 }}><Banner tone="warn">{err}</Banner></div>;
   if (!data || !data.ok) return <div style={{ padding: 24 }}><EmptyState title="unit AI를 선택하세요" /></div>;
+
+  const reload = () => setReloadTick((v) => v + 1);
 
   return (
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 18 }}>
       <Header data={data} />
       <DataSourcesSection sources={data.data_sources || []} />
       <SemanticSection bindings={data.semantic_bindings || {}} />
-      <PromptTemplateSection tpl={data.prompt_template} />
+      <PromptTemplateSection tpl={data.prompt_template} unitKey={data.key} canManage={canManageWiki} onSaved={reload} />
       <LlmProfileSection profile={data.llm_profile} />
-      <FeatureMdSection md={data.feature_md} />
+      <FeatureMdSection md={data.feature_md} unitKey={data.key} canManage={canManageWiki} onSaved={reload} />
       <HandlerEntrySection entry={data.handler_entry} />
     </div>
   );
@@ -163,7 +166,12 @@ function SemanticSection({ bindings }) {
 }
 
 // ── Prompt template ────────────────────────────────────
-function PromptTemplateSection({ tpl }) {
+function PromptTemplateSection({ tpl, unitKey, canManage, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
   if (!tpl || !tpl.path) {
     return (
       <Section title="Prompt template" hint="이 AI 전용 prompt 파일 (없으면 handler 내부 string 사용)">
@@ -171,11 +179,38 @@ function PromptTemplateSection({ tpl }) {
       </Section>
     );
   }
+
+  async function save() {
+    setBusy(true); setErr("");
+    try {
+      await putJson(`/api/agent/unit-ai/${encodeURIComponent(unitKey)}/prompt-template`, { text: draft });
+      setEditing(false);
+      if (onSaved) onSaved();
+    } catch (e) { setErr(e?.message || "저장 실패"); }
+    finally { setBusy(false); }
+  }
+
+  const right = (
+    <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      {!tpl.exists && <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>(파일 없음)</span>}
+      {canManage && !editing && tpl.exists && <Button onClick={() => { setDraft(tpl.text || ""); setEditing(true); setErr(""); }}>편집</Button>}
+      {editing && <><Button onClick={save} disabled={busy}>{busy ? "저장 중..." : "저장"}</Button><Button onClick={() => setEditing(false)}>취소</Button></>}
+    </span>
+  );
+
   const parsed = tpl.parsed;
   return (
-    <Section title="Prompt template" hint={tpl.path} right={!tpl.exists && <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>(파일 없음)</span>}>
+    <Section title="Prompt template" hint={tpl.path} right={right}>
       {tpl.error && <Banner tone="warn">{tpl.error}</Banner>}
-      {parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (
+      {err && <Banner tone="warn">{err}</Banner>}
+      {editing ? (
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={16}
+          style={{ width: "100%", padding: 10, fontSize: 12, fontFamily: "monospace", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-primary)", color: "var(--text-primary)", whiteSpace: "pre" }}
+        />
+      ) : parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {Object.keys(parsed).map((k) => (
             <details key={k} style={{ border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-secondary)" }}>
@@ -208,12 +243,46 @@ function LlmProfileSection({ profile }) {
 }
 
 // ── Feature md ─────────────────────────────────────────
-function FeatureMdSection({ md }) {
+function FeatureMdSection({ md, unitKey, canManage, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
   if (!md || !md.path) return null;
+
+  async function save() {
+    setBusy(true); setErr("");
+    try {
+      await putJson(`/api/agent/unit-ai/${encodeURIComponent(unitKey)}/feature-md`, { text: draft });
+      setEditing(false);
+      if (onSaved) onSaved();
+    } catch (e) { setErr(e?.message || "저장 실패"); }
+    finally { setBusy(false); }
+  }
+
+  const right = (
+    <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      {!md.exists && <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>(파일 없음)</span>}
+      {canManage && !editing && <Button onClick={() => { setDraft(md.text || ""); setEditing(true); setErr(""); }}>편집</Button>}
+      {editing && <><Button onClick={save} disabled={busy}>{busy ? "저장 중..." : "저장"}</Button><Button onClick={() => setEditing(false)}>취소</Button></>}
+    </span>
+  );
+
   return (
-    <Section title="Feature 규칙 md" hint={md.path} right={!md.exists && <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>(파일 없음)</span>}>
+    <Section title="Feature 규칙 md" hint={md.path} right={right}>
       {md.error && <Banner tone="warn">{md.error}</Banner>}
-      <pre style={{ ...preStyle, maxHeight: 360 }}>{md.text || "(empty)"}</pre>
+      {err && <Banner tone="warn">{err}</Banner>}
+      {editing ? (
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={16}
+          style={{ width: "100%", padding: 10, fontSize: 13, fontFamily: "monospace", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-primary)", color: "var(--text-primary)", whiteSpace: "pre-wrap" }}
+        />
+      ) : (
+        <pre style={{ ...preStyle, maxHeight: 360 }}>{md.text || "(empty)"}</pre>
+      )}
     </Section>
   );
 }
