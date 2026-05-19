@@ -227,7 +227,7 @@ export default function My_SplitTable({user}){
   const[featKnob,setFeatKnob]=useState("");const[featKnobVal,setFeatKnobVal]=useState("");
   const[featMask,setFeatMask]=useState("");
   const[selFeatCols,setSelFeatCols]=useState([]);const[mlPlan,setMlPlan]=useState(null);
-  const[customTags,setCustomTags]=useState([]);const[customTagName,setCustomTagName]=useState("");
+  const[customTags,setCustomTags]=useState([]);
   const[managementRows,setManagementRows]=useState([]);const[managementRowName,setManagementRowName]=useState("");
 
   const reloadCustoms=()=>sf(API+"/customs").then(d=>setCustoms(d.customs||[]));
@@ -454,12 +454,13 @@ export default function My_SplitTable({user}){
   const[rbMatchKind,setRbMatchKind]=useState(null); // "knob_ppid" | "inline_matching" | "vm_matching" | null
   const[rbMatchParam,setRbMatchParam]=useState("");
   // v8.8.15: Rulebook 행 CRUD modal — admin 이 knob_ppid/step_matching/inline_matching/vm_matching 의
-  //   제품별 행을 직접 추가/수정/삭제. BE 는 /rulebook (GET) + /rulebook/save (POST product-scoped).
+  //   행을 직접 추가/수정/삭제. KNOB 룰은 공용, matching 파일은 product-scoped 로 저장한다.
   const[rbRowKind,setRbRowKind]=useState(null);
   const[rbRowCols,setRbRowCols]=useState([]);
   const[rbRowReq,setRbRowReq]=useState([]);
   const[rbRowRows,setRbRowRows]=useState([]);
   const[rbRowSaving,setRbRowSaving]=useState(false);
+  const isCommonRulebook=(kind)=>kind==="knob_ppid";
   const openRowEditor=(kind)=>{
     if(!selProd){toast.warn("먼저 제품을 선택하세요.");return;}
     setRbRowKind(kind);setRbRowRows([]);setRbRowCols([]);setRbRowReq([]);
@@ -467,15 +468,15 @@ export default function My_SplitTable({user}){
       .then(d=>{
         setRbRowCols(d.columns||[]);
         // required 는 FE 스키마 (product는 자동 스코프)
-        const reqMap={knob_ppid:["product","feature_name","function_step","operator","category"],step_matching:["product","step_id","function_step"],inline_matching:["step_id","item_id"],vm_matching:["feature_name","step_id"]};
+        const reqMap={knob_ppid:["feature_name","function_step","operator","category"],step_matching:["product","step_id","function_step"],inline_matching:["step_id","item_id"],vm_matching:["feature_name","step_id"]};
         setRbRowReq(reqMap[kind]||[]);
-        // 현재 제품 행만 골라 편집 대상으로. 공용(product 빈값) 행은 read-only 프리뷰 뒤에.
-        const prodRows=(d.rows||[]).filter(r=>(r.product||"")===selProd).map(r=>({...r}));
+        // KNOB 룰은 제품 공용, 적용 공정 매칭은 제품 행만 편집한다.
+        const prodRows=(isCommonRulebook(kind)?(d.rows||[]):(d.rows||[]).filter(r=>(r.product||"")===selProd)).map(r=>({...r}));
         setRbRowRows(prodRows);
       })
       .catch(e=>{toast.error("Rulebook 로드 실패: "+e.message);setRbRowKind(null);});
   };
-  const rbAddRow=()=>{const blank={};(rbRowCols||[]).forEach(c=>{blank[c]=c==="product"?(selProd||""):"";});setRbRowRows(rs=>[...rs,blank]);};
+  const rbAddRow=()=>{const blank={};(rbRowCols||[]).forEach(c=>{blank[c]=(c==="product"&&!isCommonRulebook(rbRowKind))?(selProd||""):"";});setRbRowRows(rs=>[...rs,blank]);};
   const rbUpdateCell=(i,col,v)=>{setRbRowRows(rs=>rs.map((r,idx)=>idx===i?{...r,[col]:v}:r));};
   const rbDelRow=(i)=>{setRbRowRows(rs=>rs.filter((_,idx)=>idx!==i));};
   const rbSaveRows=()=>{if(!rbRowKind||!selProd)return;
@@ -484,7 +485,7 @@ export default function My_SplitTable({user}){
     if(bad>=0){toast.warn(`행 ${bad+1}: 필수 컬럼 누락 (${rbRowReq.join(", ")})`);return;}
     setRbRowSaving(true);
     sf(API+"/rulebook/save",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({kind:rbRowKind,rows:rbRowRows,product:selProd,username:user?.username||""})})
+      body:JSON.stringify({kind:rbRowKind,rows:rbRowRows,product:isCommonRulebook(rbRowKind)?"":selProd,username:user?.username||""})})
       .then(()=>{setRbRowKind(null);setRbRowRows([]);
         // 관련 메타 재로드
         if(rbRowKind==="knob_ppid"||rbRowKind==="step_matching"){sf(API+"/knob-meta?product="+encodeURIComponent(selProd)).then(d=>setKnobMeta(d.features||{})).catch(()=>{});}
@@ -540,12 +541,16 @@ export default function My_SplitTable({user}){
   // diff 모드는 클라이언트에서 즉시 필터 → 항상 "all" 로 fetch
   // v9.0.3: 한 root_lot_id 아래 여러 fab_lot_id 가 정상이다.
   // FAB 공정 진행 중 fab_lot_id 가 바뀔 수 있으므로 앞 5자 일치 검증으로 검색을 막지 않는다.
-  const loadView=()=>{if(!selProd||(!lotId.trim()&&!fabLotId.trim()))return;setLoading(true);
-    let url=API+"/view?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(prefixParam)+"&view_mode=all&history_mode=all";
+  const loadView=(opts={})=>{if(!selProd||(!lotId.trim()&&!fabLotId.trim()))return;setLoading(true);
+    const effectiveCustomMode=opts.customMode ?? isCustomMode;
+    const effectiveCustomCols=opts.customCols ?? customCols;
+    const effectiveCustomName=opts.customName ?? selCustom;
+    const effectivePrefixParam=effectiveCustomMode?"":selPrefixes.join(",");
+    let url=API+"/view?product="+encodeURIComponent(selProd)+"&root_lot_id="+encodeURIComponent(lotId)+"&wafer_ids="+encodeURIComponent(waferIds)+"&prefix="+encodeURIComponent(effectivePrefixParam)+"&view_mode=all&history_mode=all";
     if(fabLotId.trim())url+="&fab_lot_id="+encodeURIComponent(fabLotId.trim());
     // v8.8.33: Save 없이 체크만 한 ad-hoc customCols 우선 — set name 은 보조.
-    if(isCustomMode&&customCols.length>0)url+="&custom_cols="+encodeURIComponent(customCols.join(","));
-    else if(isCustomMode&&selCustom)url+="&custom_name="+encodeURIComponent(selCustom);
+    if(effectiveCustomMode&&effectiveCustomCols.length>0)url+="&custom_cols="+encodeURIComponent(effectiveCustomCols.join(","));
+    else if(effectiveCustomMode&&effectiveCustomName)url+="&custom_name="+encodeURIComponent(effectiveCustomName);
     sf(url).then(d=>{
       setData(d);
       if(d.precision)setPrecision(d.precision);
@@ -819,31 +824,52 @@ export default function My_SplitTable({user}){
     const cleaned=(c.columns||[]).filter(col=>!_drop.has(String(col).toLowerCase()));
     setSelCustom(c.name);setCustomCols(cleaned);setCustomName(c.name);
   };
-  const addTagToCustom=(column)=>{
-    if(!column)return;
-    setCustomCols(prev=>prev.includes(column)?prev:[...prev,column]);
-    setIsCustomMode(true);
-  };
   const addManagementToCustom=(column)=>{
     if(!column)return;
     setCustomCols(prev=>prev.includes(column)?prev:[...prev,column]);
     setIsCustomMode(true);
   };
-  const createCustomTag=()=>{
-    const name=(customTagName||"").trim();
+  const currentResultParams=()=>Array.from(new Set((data?.rows||[]).map(r=>String(r?._param||"").trim()).filter(Boolean)));
+  const includeTagInCurrentResult=(column)=>{
+    const nextCols=Array.from(new Set([...currentResultParams(),column].filter(Boolean)));
+    setIsCustomMode(true);
+    setSelCustom("");
+    setCustomCols(nextCols);
+    loadView({customMode:true,customCols:nextCols,customName:""});
+  };
+  const createCustomTag=(nameOverride="")=>{
+    const name=(nameOverride||"").trim();
     if(!selProd||!name)return;
     sf(API+"/custom-tags/columns/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,name,username:user?.username||""})})
       .then(d=>{
         const col=d.column;
         setCustomTags(d.columns||[]);
         if(col){
-          addTagToCustom(col);
+          includeTagInCurrentResult(col);
           setProductSchema(prev=>prev.includes(col)?prev:[...prev,col]);
         }
-        setCustomTagName("");
         toast.ok("꼬리표 열 추가됨");
       })
       .catch(e=>toast.error("꼬리표 열 추가 실패: "+(e.message||e)));
+  };
+  const promptCreateCustomTag=()=>{
+    const name=window.prompt("TAG 이름");
+    if(!name||!String(name).trim())return;
+    createCustomTag(name);
+  };
+  const deleteCustomTagColumn=(column)=>{
+    if(!canManage||!column)return;
+    if(!confirm(`TAG 열 '${column}' 을 삭제할까요? 저장된 값도 함께 삭제됩니다.`))return;
+    sf(API+"/custom-tags/columns/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,column,username:user?.username||""})})
+      .then(d=>{
+        setCustomTags(d.columns||[]);
+        setProductSchema(prev=>prev.filter(c=>c!==column));
+        setCustomCols(prev=>prev.filter(c=>c!==column));
+        setPendingTags(prev=>Object.fromEntries(Object.entries(prev||{}).filter(([k])=>!String(k).endsWith("|"+column))));
+        setData(cur=>cur?{...cur,all_columns:(cur.all_columns||[]).filter(c=>c!==column),rows:(cur.rows||[]).filter(r=>r?._param!==column)}:cur);
+        toast.ok("꼬리표 열 삭제됨");
+      })
+      .catch(e=>toast.error("꼬리표 열 삭제 실패: "+(e.message||e)));
   };
   const createManagementRow=()=>{
     const name=(managementRowName||"").trim();
@@ -1023,23 +1049,6 @@ export default function My_SplitTable({user}){
           </div>
         </div>}
         <div style={{marginTop:6,padding:"6px",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)"}}>
-          <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontWeight:600}}>꼬리표 열</div>
-          <div style={{display:"flex",gap:4}}>
-            <input value={customTagName} onChange={e=>setCustomTagName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&createCustomTag()}
-              placeholder="예: review_flag" style={{...S,flex:1,fontSize:14}}/>
-            <button onClick={createCustomTag} disabled={!customTagName.trim()}
-              style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:customTagName.trim()?"pointer":"not-allowed",opacity:customTagName.trim()?1:0.55}}>
-              추가
-            </button>
-          </div>
-          {customTags.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:5}}>
-            {customTags.map(t=><span key={t.column} onClick={()=>addTagToCustom(t.column)} title={t.column}
-              style={{padding:"1px 6px",borderRadius:3,border:"1px solid rgba(59,130,246,0.45)",background:customCols.includes(t.column)?"rgba(59,130,246,0.14)":"transparent",color:customCols.includes(t.column)?"rgba(37,99,235,0.95)":"var(--text-secondary)",fontSize:14,fontFamily:"monospace",cursor:"pointer"}}>
-              {customCols.includes(t.column)?"✓ ":"+"}{t.label||t.column}
-            </span>)}
-          </div>}
-        </div>
-        <div style={{marginTop:6,padding:"6px",borderRadius:4,background:"var(--bg-card)",border:"1px solid var(--border)"}}>
           <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:4,fontWeight:600}}>관리 행</div>
           <div style={{display:"flex",gap:4}}>
             <input value={managementRowName} onChange={e=>setManagementRowName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&createManagementRow()}
@@ -1087,7 +1096,7 @@ export default function My_SplitTable({user}){
       </div>}
       {/* Settings gear */}
       {canManage&&<div>
-        <PageGearButton onClick={toggleSettings} title="Admin settings" zIndex={97} />
+        <PageGearButton onClick={toggleSettings} title="Admin settings" position="bottom-right" zIndex={97} />
         {showSettings&&<Modal open onClose={closeSettings} width={920} zIndex={98}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
             <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>Split Table 설정</span>
@@ -1401,14 +1410,14 @@ export default function My_SplitTable({user}){
           })()}
 
           {/* v8.8.9: Column/step rulebook — prefix 별 섹션 분리.
-                KNOB: ppid_knob.csv (feature→func_step + condition operator) + step_matching.csv (func_step→step_id 확장)
+                KNOB: ppid_knob.csv 공용 룰 + Vehicle_matching.csv 제품별 func_step→step_id 확장
                 INLINE: inline_matching.csv (item_id/step_id/desc) — INLINE_<item_id> 가 해당 step 에서 측정
                 VM: vm_matching.csv (feature_name/step_desc/step_id) — VM_<feature_name> 이 해당 step 에서 예측
              */}
           {selProd && (() => {
             const rulebookSpecs={
-              knob_ppid:{file:"ppid_knob.csv",color:"rgba(251,191,36,0.95)",roles:[["feature","feature_col"],["func_step","func_step_col"],["rule_order","rule_order_col"],["operator","operator_col"],["cell_value","category_col"],["product","product_col"]]},
-              step_matching:{file:"step_matching.csv",color:"rgba(96,165,250,0.95)",roles:[["step_id","step_id_col"],["func_step","func_step_col"],["module","module_col"],["product","product_col"]]},
+              knob_ppid:{file:"ppid_knob.csv",color:"rgba(251,191,36,0.95)",roles:[["feature","feature_col"],["func_step","func_step_col"],["rule_order","rule_order_col"],["operator","operator_col"],["cell_value","category_col"]]},
+              step_matching:{file:"Vehicle_matching.csv",color:"rgba(96,165,250,0.95)",roles:[["product","product_col"],["step_id","step_id_col"],["func_step","func_step_col"],["module","module_col"]]},
               inline_matching:{file:"inline_matching.csv",color:"rgba(16,185,129,0.95)",roles:[["item_id","item_id_col"],["step_id","step_id_col"],["item_desc","item_desc_col"],["product","product_col"]]},
               vm_matching:{file:"vm_matching.csv",color:"rgba(196,181,253,0.95)",roles:[["feature","feature_col"],["step_desc","step_desc_col"],["step_id","step_id_col"],["product","product_col"]]},
             };
@@ -1478,7 +1487,7 @@ export default function My_SplitTable({user}){
                 <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",marginBottom:8}}>📘 컬럼/공정 연결 규칙 — {selProd}</div>
                 <div style={{marginBottom:8,padding:"8px 10px",borderRadius:6,background:"var(--bg-secondary)",border:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
                   <div>기본값은 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>같은 이름의 Base 파일</span>과 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>기본 열 이름</span>을 자동으로 사용합니다.</div>
-                  <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>KNOB_*</span> 는 조건 항목을 <span style={{fontFamily:"monospace"}}>ppid_knob.csv</span> 와 <span style={{fontFamily:"monospace"}}>step_matching.csv</span> 로 function_step / step_id 에 연결합니다.</div>
+                  <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>KNOB_*</span> 는 <span style={{fontFamily:"monospace"}}>ppid_knob.csv</span> 공용 룰과 <span style={{fontFamily:"monospace"}}>Vehicle_matching.csv</span> 제품별 매칭으로 function_step / step_id 에 연결합니다.</div>
                   <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>INLINE_*</span>, <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>VM_*</span> 은 측정/예측 항목을 각 matching 파일로 step_id 에 연결합니다.</div>
                   <div>열 이름이 다르거나 다른 Base 데이터와 연결해야 하면 각 섹션의 <b>편집</b> / <b>🔧 컬럼</b>에서 역할과 실제 CSV 헤더를 바꾸면 됩니다.</div>
                 </div>
@@ -1486,7 +1495,7 @@ export default function My_SplitTable({user}){
                 {/* ── KNOB 섹션 ───────────────────────────── */}
                 <div style={{marginBottom:10,padding:"6px 8px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid rgba(251,191,36,0.3)"}}>
                   <SectionHeader title="🔧 KNOB_*" count={knobEntries.length}
-                    files={["ppid_knob.csv", "step_matching.csv"]}
+                    files={["ppid_knob.csv", "Vehicle_matching.csv"]}
                     editKinds={["knob_ppid","step_matching"]} />
                   <RulebookSourceSummary kinds={["knob_ppid","step_matching"]}/>
                   {knobEntries.length===0 && (
@@ -1655,9 +1664,11 @@ export default function My_SplitTable({user}){
       :data?.msg&&!data?.rows?.length?<div style={{padding:60,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>{data.msg}</div>
       :tab==="view"&&data?.rows?.length?(()=>{
         // 클라이언트 diff 필터: viewMode==='diff' 이면 non-null unique 값 >= 2 인 행만
-        const displayRows = viewMode==="diff"
+        const viewRows = viewMode==="diff"
           ? data.rows.filter(r=>{const vs=Object.values(r._cells||{}).map(c=>c?.actual).filter(v=>v!=null&&v!==""&&v!=="None"&&v!=="null");return new Set(vs).size>=2;})
           : data.rows;
+        const isTagRow=(row)=>String(row?._param||"").toUpperCase().startsWith("TAG_")||Object.values(row?._cells||{}).some(c=>c?.is_custom_tag===true);
+        const displayRows=[...viewRows.filter(r=>!isTagRow(r)),...viewRows.filter(r=>isTagRow(r))];
         const normalizedSelection=selectedCellRange
           ? normalizeCellRange(selectedCellRange.startRow,selectedCellRange.startCol,selectedCellRange.endRow,selectedCellRange.endCol)
           : null;
@@ -1806,6 +1817,7 @@ export default function My_SplitTable({user}){
             const allVals=[];Object.values(cells).forEach(c=>{[c?.actual,c?.plan,pendingValueFor(c),pendingManagementValueFor(c)].forEach(v=>{if(hasValue(v))allVals.push(String(v));});});
             const uniqVals=[...new Set(allVals)];const uniqMap={};uniqVals.forEach((v,i)=>{uniqMap[v]=i;});
             const rowParam=String(row?._param || "").trim();
+            const rowIsTag=isTagRow(row);
             const rowKnob=knobLookup(rowParam);
             const rowInline=inlineLookup(rowParam);
             const rowVm=vmLookup(rowParam);
@@ -1826,6 +1838,8 @@ export default function My_SplitTable({user}){
                     title={rowMatchKind ? `이 항목의 ${matchTitle} 보기` : ""}
                     style={rowMatchKind ? {cursor:"pointer",color:GRID_TEXT} : undefined}>{(row._display||rowParam||"").replace(/^[A-Z]+_/,"")}</span>
                   {pLotN>0&&<span style={{padding:"0 5px",borderRadius:8,background:"rgba(139,92,246,0.95)",color:"var(--bg-secondary)",fontSize:14,fontWeight:700}}>💬 {pLotN}</span>}
+                  {rowIsTag&&canManage&&<button onClick={(e)=>{e.stopPropagation();deleteCustomTagColumn(rowParam);}} title="TAG 열 삭제"
+                    style={{marginLeft:"auto",padding:"0 6px",height:20,borderRadius:3,border:"1px solid rgba(239,68,68,0.65)",background:"transparent",color:"rgba(239,68,68,0.95)",fontSize:14,fontWeight:800,cursor:"pointer",lineHeight:"18px"}}>×</button>}
                 </div>
                 {/* v8.4.9: + 결합이면 줄바꿈. step_id 는 파란 pill 로 대비 강화.
                     KNOB/INLINE/VM는 '항목명 클릭' 방식으로 전환되어 인라인 정보 노출을 억제한다. */}
@@ -1837,7 +1851,7 @@ export default function My_SplitTable({user}){
                           {(Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:[]).map((sid, si) => (
                             <span key={si} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.18)",border:"1px solid rgba(96,165,250,0.5)",color:"rgba(147,197,253,0.95)",fontWeight:800,fontSize:14,letterSpacing:0.3}}>{sid}({g.func_step || "-"})</span>
                           ))}
-                          {!(Array.isArray(g.step_ids)&&g.step_ids.length) && <span title="step_matching.csv 에 연결된 step_id가 없습니다." style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>step_matching 없음 ({g.func_step || "-"})</span>}
+                          {!(Array.isArray(g.step_ids)&&g.step_ids.length) && <span title="Vehicle_matching.csv 또는 fallback step_matching.csv 에 연결된 step_id가 없습니다." style={{padding:"0 6px",borderRadius:3,background:"rgba(148,148,148,0.18)",border:"1px dashed rgba(148,148,148,0.5)",color:"var(--text-secondary)",fontWeight:600,fontSize:14,letterSpacing:0.3}}>적용공정 없음 ({g.func_step || "-"})</span>}
                         </div>
                       </div>
                     ))}
@@ -1949,7 +1963,20 @@ export default function My_SplitTable({user}){
                   {/* v8.4.9-c: per-cell 메모 배지. 메모가 있으면 항상 표시, 없으면 hover 시에만 + 아이콘 노출. */}
                   <span className="stm-note-btn" onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={cellNoteCount>0?`${cellNoteCount}개 메모`:"메모 추가"} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:14,padding:"0 5px",borderRadius:7,background:cellNoteCount>0?"rgba(139,92,246,0.95)":"rgba(139,92,246,0.25)",color:cellNoteCount>0?"var(--bg-secondary)":"rgba(139,92,246,0.95)",fontWeight:700,lineHeight:"14px",opacity:cellNoteCount>0?1:0,transition:"opacity 0.15s"}}>💬{cellNoteCount>0?" "+cellNoteCount:"+"}</span>
                 </td>);})}
-            </tr>);})}</tbody>
+            </tr>);})}
+            <tr>
+              <td onClick={promptCreateCustomTag} title="TAG 열 추가"
+                style={{padding:"7px 10px",fontWeight:800,fontSize:14,color:"rgba(37,99,235,0.95)",borderBottom:GRID_LINE,borderRight:GRID_LINE,background:"rgba(59,130,246,0.08)",position:"sticky",left:0,zIndex:2,whiteSpace:"nowrap",cursor:"pointer",fontFamily:"monospace"}}>
+                + TAG
+              </td>
+              {data.headers?.map((h,ci)=>(
+                <td key={`tag-add-${ci}`} onClick={promptCreateCustomTag} title={`${h} TAG 열 추가`}
+                  style={{padding:"7px 8px",borderBottom:GRID_LINE,borderRight:GRID_LINE,textAlign:"center",fontSize:14,color:"rgba(37,99,235,0.95)",background:"rgba(59,130,246,0.04)",cursor:"pointer",fontWeight:800}}>
+                  +
+                </td>
+              ))}
+            </tr>
+          </tbody>
         </table>
         {showLineageSummary && lineageSummary.length>0&&<div style={{margin:"12px 10px 18px",border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-card)",overflow:"hidden"}}>
           <div style={{padding:"10px 12px",fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",borderTop:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>항목 → function_step → step_id 요약</div>
@@ -2385,7 +2412,9 @@ export default function My_SplitTable({user}){
         <div style={{display:"flex",flexDirection:"column",maxHeight:"82vh"}}>
           <div style={{display:"flex",alignItems:"center",marginBottom:10,gap:8}}>
             <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace",color:"var(--accent)"}}>📘 Rulebook 편집 — {rbRowKind}</div>
-            <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>product = {selProd}</span>
+            {isCommonRulebook(rbRowKind)
+              ? <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--bg-card)",color:"var(--text-secondary)",fontFamily:"monospace"}}>공용 KNOB 룰</span>
+              : <span style={{fontSize:14,padding:"2px 8px",borderRadius:10,background:"var(--accent-glow)",color:"var(--accent)",fontFamily:"monospace"}}>product = {selProd}</span>}
             <span style={{fontSize:14,color:"var(--text-secondary)"}}>행 {rbRowRows.length}개</span>
             <span style={{flex:1}}/>
             <button onClick={rbAddRow} disabled={rbRowSaving}
@@ -2393,7 +2422,9 @@ export default function My_SplitTable({user}){
             <span onClick={()=>!rbRowSaving&&setRbRowKind(null)} style={{cursor:rbRowSaving?"wait":"pointer",fontSize:16,marginLeft:4}}>✕</span>
           </div>
           <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:8,lineHeight:1.5}}>
-            이 제품({selProd})의 행만 이 modal 에서 편집합니다. 저장 시 기존 해당 제품 행은 전체 교체되고, 다른 제품/공용 행은 보존됩니다.
+            {isCommonRulebook(rbRowKind)
+              ? "KNOB 룰은 제품 공용으로 편집합니다. product 열이 있어도 매칭 필터에는 쓰지 않습니다."
+              : `이 제품(${selProd})의 행만 이 modal 에서 편집합니다. 저장 시 기존 해당 제품 행은 전체 교체되고, 다른 제품/공용 행은 보존됩니다.`}
             필수 컬럼: <span style={{fontFamily:"monospace",color:"rgba(245,158,11,0.95)"}}>{(rbRowReq||[]).join(", ")}</span>
           </div>
           <div style={{flex:1,overflow:"auto",border:"1px solid var(--border)",borderRadius:4}}>
@@ -2408,7 +2439,7 @@ export default function My_SplitTable({user}){
                     <th style={{padding:"6px 8px",textAlign:"left",borderBottom:"1px solid var(--border)",width:40,color:"var(--text-secondary)"}}>#</th>
                     {(rbRowCols||[]).map(c=>(
                       <th key={c} style={{padding:"6px 8px",textAlign:"left",borderBottom:"1px solid var(--border)",color:(rbRowReq||[]).includes(c)?"rgba(245,158,11,0.95)":"var(--text-secondary)",fontWeight:(rbRowReq||[]).includes(c)?700:500}}>
-                        {c}{(rbRowReq||[]).includes(c)&&" *"}{c==="product"&&" 🔒"}
+                        {c}{(rbRowReq||[]).includes(c)&&" *"}{c==="product"&&!isCommonRulebook(rbRowKind)&&" 🔒"}
                       </th>
                     ))}
                     <th style={{padding:"6px 8px",borderBottom:"1px solid var(--border)",width:50}}></th>
@@ -2420,10 +2451,10 @@ export default function My_SplitTable({user}){
                       <td style={{padding:"4px 8px",color:"var(--text-secondary)"}}>{i+1}</td>
                       {(rbRowCols||[]).map(c=>(
                         <td key={c} style={{padding:"2px 4px"}}>
-                          <input value={r[c]||""} disabled={c==="product"}
+                          <input value={r[c]||""} disabled={c==="product"&&!isCommonRulebook(rbRowKind)}
                             onChange={e=>rbUpdateCell(i,c,e.target.value)}
                             placeholder={(rbRowReq||[]).includes(c)?"필수":""}
-                            style={{width:"100%",padding:"4px 6px",borderRadius:3,border:`1px solid ${(rbRowReq||[]).includes(c)&&!r[c]?"rgba(239,68,68,0.95)":"var(--border)"}`,background:c==="product"?"var(--bg-card)":"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>
+                            style={{width:"100%",padding:"4px 6px",borderRadius:3,border:`1px solid ${(rbRowReq||[]).includes(c)&&!r[c]?"rgba(239,68,68,0.95)":"var(--border)"}`,background:c==="product"&&!isCommonRulebook(rbRowKind)?"var(--bg-card)":"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}/>
                         </td>
                       ))}
                       <td style={{padding:"2px 4px",textAlign:"center"}}>
@@ -2480,7 +2511,7 @@ export default function My_SplitTable({user}){
                         <span style={{flexBasis:"100%",height:0}}/>
                         <span style={{color:"var(--text-secondary)",fontSize:14}}>step_id</span>
                         {(Array.isArray(g.step_ids) ? g.step_ids : []).map((sid) => <span key={sid} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.15)",color:"rgba(96,165,250,0.95)",border:"1px solid rgba(96,165,250,0.45)",fontWeight:700,fontSize:14,fontFamily:"monospace"}}>{sid} ({g.func_step || "-"})</span>)}
-                        {!(Array.isArray(g.step_ids) && g.step_ids.length) && <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>step_matching 없음</span>}
+                        {!(Array.isArray(g.step_ids) && g.step_ids.length) && <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>적용공정 없음</span>}
                       </div>
                     </div>
                   ))}

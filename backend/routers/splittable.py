@@ -318,7 +318,7 @@ def _natural_param_key(name: str):
 
 # v8.8.14/v9.0.7: ML_TABLE 컬럼 display rename.
 #   KNOB 는 원래 feature 명(예: KNOB_1.0 STI)을 유지한다. 적용 공정 정보는
-#   ppid_knob.csv + step_matching.csv detail panel 에서만 보여준다.
+#   ppid_knob.csv + Vehicle_matching.csv detail panel 에서만 보여준다.
 #   규칙:
 #     KNOB_<feature>   → 표시명 유지
 #     INLINE_<item_id> + inline_meta 매칭 시 → INLINE_{step_id}_<item_id>     (step_id 가 숫자일 때 자연 정렬 유리)
@@ -2460,12 +2460,13 @@ def get_prefixes():
 
 # ── KNOB metadata (v8.4.7) ───────────────────────────────────────────
 # Reverse-lookup helper used by SplitTable UI:
-#   ppid_knob.csv:      product, feature_name, function_step, rule_order, operator, category
+#   ppid_knob.csv:      feature_name, function_step, rule_order, operator, category
 #                        category = SplitTable cell value such as PPID_01_2
-#   step_matching.csv:  product, step_id, function_step
-# For each KNOB feature_name (product-scoped), we group the ppid_knob rules in
-# rule_order, expand each function_step back to its matching step_ids, and
-# produce both a structured `groups` payload and a ready-to-render `label`:
+#   Vehicle_matching.csv: product, step_id, function_step (preferred)
+#   step_matching.csv:    product, step_id, function_step (legacy fallback)
+# For each KNOB feature_name, we group the product-common ppid_knob rules in
+# rule_order, expand each function_step through the current product's matching
+# step_ids, and produce both a structured `groups` payload and a label:
 #   GATE_PATTERN (AA200030/AA200040/AA200050) + PC_ETCH (AA200100/AA200110)
 def _load_csv_rows(fp: Path) -> list[dict]:
     if not fp.is_file():
@@ -2552,8 +2553,18 @@ def _dedup_list(values: list[str]) -> list[str]:
     return out
 
 
+def _knob_step_matching_path(base: Path | None = None) -> Path:
+    root = base or _base_root()
+    vehicle = root / "Vehicle_matching.csv"
+    return vehicle if vehicle.is_file() else root / "step_matching.csv"
+
+
+def _load_knob_step_matching_rows(base: Path | None = None) -> list[dict]:
+    return _load_csv_rows(_knob_step_matching_path(base))
+
+
 def _stage_steps_by_major(product: str) -> dict[int, list[dict]]:
-    matching = _load_csv_rows(_base_root() / "step_matching.csv")
+    matching = _load_knob_step_matching_rows()
     sm = _sch("step_matching")
     prod_aliases = _product_aliases(product)
     exact_product = _canonical_product_name(product).upper()
@@ -2770,7 +2781,7 @@ def _inferred_stage_meta(product: str, prefix: str) -> dict[str, dict]:
 
 def _build_knob_meta(product: str = "") -> dict:
     base = _base_root()
-    matching = _load_csv_rows(base / "step_matching.csv")
+    matching = _load_knob_step_matching_rows(base)
     ppid_knob_fp = base / "ppid_knob.csv"
     knob_rules = _load_csv_rows(ppid_knob_fp if ppid_knob_fp.is_file() else base / "knob_ppid.csv")
     # v8.8.10: 역할→컬럼명 매핑 soft-landing. 사내 CSV 의 컬럼 이름이 달라도 schema 만 바꾸면 됨.
@@ -2805,10 +2816,8 @@ def _build_knob_meta(product: str = "") -> dict:
     # feature_name → groups (sorted by rule_order)
     feats: dict[str, list[dict]] = {}
     for r in knob_rules:
-        p_col = km.get("product_col", "product")
-        row_prod = str(r.get(p_col) or "").strip()
-        if prod_aliases and row_prod and row_prod.upper() not in prod_aliases:
-            continue
+        # ppid_knob.csv is product-common.  If a legacy product column exists,
+        # keep reading the row but leave product scoping to the matching file.
         fname = (r.get(km.get("feature_col", "feature_name")) or "").strip()
         fstep = (r.get(km.get("func_step_col", "function_step")) or "").strip()
         if not fname or not fstep:
@@ -3264,7 +3273,7 @@ def save_rulebook_schema(
     return {"ok": True, "kind": req.kind, "mapping": new_map}
 
 
-# v8.8.7: Rulebook (knob_ppid.csv + step_matching.csv) admin 인라인 편집 CRUD.
+# v8.8.7: Rulebook (knob_ppid.csv + Vehicle_matching.csv/step_matching.csv) admin 인라인 편집 CRUD.
 #   admin 만 수정 가능. 저장 시 row 정규화 + 빈 행 제거 + 원자적 교체.
 #   스키마는 _build_knob_meta 가 읽는 컬럼과 동일해야 함.
 _RULEBOOK_FILES = {
@@ -3272,10 +3281,11 @@ _RULEBOOK_FILES = {
         "filename": "ppid_knob.csv",
         "legacy_filename": "knob_ppid.csv",
         "cols": ["product", "feature_name", "function_step", "rule_order", "operator", "category"],
-        "required": ["product", "feature_name", "function_step", "operator", "category"],
+        "required": ["feature_name", "function_step", "operator", "category"],
     },
     "step_matching": {
-        "filename": "step_matching.csv",
+        "filename": "Vehicle_matching.csv",
+        "legacy_filename": "step_matching.csv",
         "cols": ["product", "step_id", "function_step", "module"],
         "required": ["product", "step_id", "function_step"],
     },
@@ -3309,12 +3319,15 @@ def _rulebook_path(kind: str) -> Path:
 
 @router.get("/rulebook")
 def get_rulebook(kind: str = Query("knob_ppid"), product: str = Query("")):
-    """v8.8.7: rulebook CSV 를 JSON 으로 반환. product 주어지면 그 제품 행만 + 공용 (product 빈값)."""
+    """v8.8.7: rulebook CSV 를 JSON 으로 반환.
+
+    KNOB rule rows are product-common. Matching rows remain product-scoped.
+    """
     meta = _RULEBOOK_FILES.get(kind)
     if not meta:
         raise HTTPException(400, f"unknown rulebook: {kind}")
     rows = _load_csv_rows(_rulebook_path(kind))
-    if product:
+    if product and kind != "knob_ppid":
         rows = [r for r in rows if not r.get("product") or r.get("product") == product]
     return {
         "kind": kind, "file": meta["filename"],
@@ -3350,13 +3363,17 @@ def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_
     except ValueError as e:
         raise HTTPException(400, f"validation failed: {e}")
 
+    product_scope = str(req.product or "").strip()
+    if req.kind == "knob_ppid":
+        product_scope = ""
+
     # merge with existing if product-scoped.
-    if req.product:
+    if product_scope:
         existing = _load_csv_rows(fp)
-        kept = [r for r in existing if r.get("product") != req.product]
+        kept = [r for r in existing if r.get("product") != product_scope]
         # product 컬럼 없는 공용 행은 유지, 요청 product 의 행만 교체.
         for c in cleaned:
-            c["product"] = req.product
+            c["product"] = product_scope
         final = kept + cleaned
     else:
         final = cleaned
@@ -3385,12 +3402,12 @@ def save_rulebook(req: RulebookSaveReq, request: Request, _perm=Depends(require_
         logger.warning("rulebook save cache refresh failed: %s", cache_result)
     _audit_user(req.username or (me.get("username") if isinstance(me, dict) else ""),
                 "splittable:rulebook_save",
-                detail=f"kind={req.kind} product={req.product} rows={len(final)}")
+                detail=f"kind={req.kind} product={product_scope} rows={len(final)}")
     sync_result = _s3.sync_saved_path(PATHS.data_root, PATHS.db_root, fp)
     return {
         "ok": True,
         "kind": req.kind,
-        "product": req.product,
+        "product": product_scope,
         "saved_rows": len(final),
         "deduped_rows": dedupe_rows + dedupe_rows_after,
         "cache_rows": cache_result.get("rows"),
@@ -3681,6 +3698,13 @@ class CustomTagColumnReq(BaseModel):
     username: str = ""
 
 
+class CustomTagColumnDeleteReq(BaseModel):
+    product: str
+    column: str = ""
+    name: str = ""
+    username: str = ""
+
+
 class CustomTagValuesReq(BaseModel):
     product: str
     values: dict
@@ -3732,6 +3756,60 @@ def save_custom_tag_column(req: CustomTagColumnReq, request: Request = None):
     )
     _save_custom_tags_data(data)
     return {"ok": True, "column": entry["column"], "label": entry["label"], "columns": _custom_tag_columns_for_product(product)}
+
+
+@router.post("/custom-tags/columns/delete")
+def delete_custom_tag_column(
+    req: CustomTagColumnDeleteReq,
+    request: Request = None,
+    _perm=Depends(require_page_manager("splittable")),
+):
+    product = str(req.product or "").strip()
+    if not product:
+        raise HTTPException(400, "product required")
+    raw_column = str(req.column or req.name or "").strip()
+    if not raw_column:
+        raise HTTPException(400, "tag column required")
+    column = _tag_column_id(raw_column)
+    data = _load_custom_tags_data()
+
+    columns = data.get("columns") if isinstance(data.get("columns"), list) else []
+    kept_columns = []
+    deleted_columns = 0
+    for entry in columns:
+        if (
+            isinstance(entry, dict)
+            and str(entry.get("product") or "").strip() == product
+            and str(entry.get("column") or "").strip() == column
+        ):
+            deleted_columns += 1
+            continue
+        kept_columns.append(entry)
+
+    values = data.get("values") if isinstance(data.get("values"), dict) else {}
+    kept_values = {}
+    deleted_values = 0
+    for key, value in values.items():
+        parts = str(key).split("|", 3)
+        if len(parts) == 4 and parts[0] == product and parts[3] == column:
+            deleted_values += 1
+            continue
+        kept_values[key] = value
+
+    data["columns"] = kept_columns
+    data["values"] = kept_values
+    _save_custom_tags_data(data)
+    actor = req.username or ""
+    if not actor and isinstance(_perm, dict):
+        actor = _perm.get("username") or ""
+    _audit_user(actor, "splittable:custom_tag_delete", detail=f"product={product} column={column}")
+    return {
+        "ok": True,
+        "column": column,
+        "deleted_columns": deleted_columns,
+        "deleted_values": deleted_values,
+        "columns": _custom_tag_columns_for_product(product),
+    }
 
 
 @router.post("/custom-tags/values")

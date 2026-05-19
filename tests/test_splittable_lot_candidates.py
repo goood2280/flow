@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 import polars as pl
+import pytest
+from fastapi import HTTPException
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -14,6 +16,7 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
+from core import auth as auth_core  # noqa: E402
 from routers import informs, splittable  # noqa: E402
 
 
@@ -25,6 +28,18 @@ def _read_streaming_response(response) -> bytes:
         return b"".join(chunks)
 
     return asyncio.run(read_body())
+
+
+class _State:
+    def __init__(self, user: dict):
+        self.user = user
+
+
+class _Request:
+    headers = {}
+
+    def __init__(self, username: str = "alice", role: str = "user"):
+        self.state = _State({"username": username, "role": role})
 
 
 def test_root_lot_candidates_prefer_renderable_mltable_roots(tmp_path, monkeypatch):
@@ -281,6 +296,67 @@ def test_custom_tag_columns_overlay_view_and_custom_set(tmp_path, monkeypatch):
     assert column not in pl.read_parquet(tmp_path / "ML_TABLE_PRODA.parquet").columns
 
 
+def test_custom_tag_column_delete_removes_definition_values_and_preserves_source(tmp_path, monkeypatch):
+    pl.DataFrame({
+        "root_lot_id": ["LOT926BB", "LOT926BB"],
+        "wafer_id": ["1", "2"],
+        "KNOB_ALPHA": ["A", "B"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
+    monkeypatch.setattr(splittable, "_audit_user", lambda *_args, **_kwargs: None)
+    (tmp_path / "issues.json").write_text("[]", encoding="utf-8")
+
+    created = splittable.save_custom_tag_column(
+        splittable.CustomTagColumnReq(product="ML_TABLE_PRODA", name="review_flag", username="owner")
+    )
+    column = created["column"]
+    splittable.save_custom_tag_values(
+        splittable.CustomTagValuesReq(
+            product="ML_TABLE_PRODA",
+            root_lot_id="LOT926BB",
+            values={
+                f"LOT926BB|1|{column}": "hold",
+                f"LOT926BB|2|{column}": "pass",
+            },
+            username="owner",
+        )
+    )
+
+    deleted = splittable.delete_custom_tag_column(
+        splittable.CustomTagColumnDeleteReq(product="ML_TABLE_PRODA", column=column, username="root"),
+        _perm={"username": "root", "role": "admin"},
+    )
+
+    overlay = json.loads((plan_dir / "custom_tags.json").read_text(encoding="utf-8"))
+    assert deleted["deleted_columns"] == 1
+    assert deleted["deleted_values"] == 2
+    assert all(c.get("column") != column for c in overlay["columns"])
+    assert all(not key.endswith("|" + column) for key in overlay["values"])
+    assert column not in pl.read_parquet(tmp_path / "ML_TABLE_PRODA.parquet").columns
+
+
+def test_custom_tag_delete_requires_splittable_manager(monkeypatch):
+    monkeypatch.setattr(auth_core, "get_page_admins", lambda: {})
+
+    with pytest.raises(HTTPException) as exc:
+        auth_core.require_page_manager("splittable")(_Request("alice", "user"))
+
+    assert exc.value.status_code == 403
+
+    monkeypatch.setattr(auth_core, "get_page_admins", lambda: {"splittable": ["alice"]})
+    assert auth_core.require_page_manager("splittable")(_Request("alice", "user"))["username"] == "alice"
+    assert auth_core.require_page_manager("splittable")(_Request("root", "admin"))["username"] == "root"
+
+
 def test_management_rows_overlay_view_custom_set_and_exports(tmp_path, monkeypatch):
     pl.DataFrame({
         "root_lot_id": ["LOT927AA", "LOT927AA"],
@@ -399,6 +475,74 @@ def test_lot_ids_do_not_suggest_fab_roots_that_cannot_render():
     assert result["fab_source"] == "lot_progress_latest_cache"
     assert "A1000" in result["lot_ids"]
     assert "A0001" not in result["lot_ids"]
+
+
+def _setup_knob_meta_fixture(tmp_path, monkeypatch):
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "RULEBOOK_SCHEMA_FILE", plan_dir / "rulebook_schema.json")
+    splittable._CSV_ROWS_CACHE.clear()
+    splittable._SCHEMA_COLUMNS_CACHE.clear()
+
+
+def test_knob_meta_accepts_ppid_knob_without_product_column_and_scopes_vehicle_steps(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,function_step,rule_order,operator,category\n"
+        "5.0 PC,PC,R1,=,PPID_A\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,function_step,module\n"
+        "PRODA,STEP_PRODA,PC,PC\n"
+        "PRODB,STEP_PRODB,PC,PC\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+
+    assert meta["5.0 PC"]["groups"][0]["step_ids"] == ["STEP_PRODA"]
+    assert "STEP_PRODB" not in meta["5.0 PC"]["groups"][0]["step_ids"]
+
+
+def test_knob_meta_treats_legacy_ppid_product_column_as_common_rule(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "ppid_knob.csv").write_text(
+        "product,feature_name,function_step,rule_order,operator,category\n"
+        "PRODB,7.0 PC,PC,R1,=,PPID_B\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,function_step,module\n"
+        "PRODA,STEP_PRODA,PC,PC\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+
+    assert "7.0 PC" in meta
+    assert meta["7.0 PC"]["groups"][0]["step_ids"] == ["STEP_PRODA"]
+
+
+def test_knob_meta_falls_back_to_step_matching_when_vehicle_matching_is_missing(tmp_path, monkeypatch):
+    _setup_knob_meta_fixture(tmp_path, monkeypatch)
+    (tmp_path / "ppid_knob.csv").write_text(
+        "feature_name,function_step,rule_order,operator,category\n"
+        "9.0 PC,PC,R1,=,PPID_C\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "step_matching.csv").write_text(
+        "product,step_id,function_step,module\n"
+        "PRODA,STEP_FALLBACK,PC,PC\n"
+        "PRODB,STEP_OTHER,PC,PC\n",
+        encoding="utf-8",
+    )
+
+    meta = splittable._build_knob_meta("ML_TABLE_PRODA")
+
+    assert meta["9.0 PC"]["groups"][0]["step_ids"] == ["STEP_FALLBACK"]
 
 
 def test_view_accepts_fab_lot_pasted_into_root_field():

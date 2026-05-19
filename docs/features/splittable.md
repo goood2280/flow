@@ -42,8 +42,12 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - History 탭은 plan history의 전체/최종 log만 표시한다. Lot Operational History 패널과 `/operational-history` 호출은 UI에서 사용하지 않는다.
 - cache/parquet 변경은 runtime 산출물과 코드 변경을 분리해서 설명한다.
 - `TAG_*` 꼬리표 값은 `data/flow-data/splittable/custom_tags.json`에만 저장하고, 원본 `ML_TABLE_*.parquet` / CSV / FAB source에는 쓰지 않는다.
+- `TAG_*` 꼬리표 열 생성은 조회 결과 표 맨 아래의 `+ TAG` 행에서 수행한다. CUSTOM 패널은 `MGMT_*` 관리 행 생성과 custom set 구성만 담당한다.
+- `TAG_*` 꼬리표 열 삭제는 admin 또는 `splittable` page manager만 가능하다. 삭제 시 product별 TAG 정의와 `custom_tags.json`에 저장된 해당 열의 모든 값을 함께 제거한다.
 - `MGMT_*` 관리 행 정의/값은 `data/flow-data/splittable/management_rows.json`에만 저장한다. 행 정의는 product별 공용이고, 값은 `product + root_lot_id + wafer_id + MGMT_*` 기준 overlay다.
 - `MGMT_*`는 일반 `KNOB`/기본 조회에 자동으로 붙이지 않는다. CUSTOM 세트 또는 ad-hoc CUSTOM 선택에 포함된 경우에만 SplitTable view, CSV, XLSX export에 표시한다.
+- KNOB 적용공정정보는 `ppid_knob.csv`를 제품 공용 룰로 읽고, product별 `function_step -> step_id` 확장은 `Vehicle_matching.csv`를 우선 사용한다. 기존 배포처럼 `Vehicle_matching.csv`가 없으면 `step_matching.csv`를 fallback으로 사용한다.
+- `Vehicle_matching.csv`는 `product`, `function_step`, `step_id` 컬럼을 기본 계약으로 하며, 현재 선택 product alias에 맞는 row만 step 후보로 노출한다.
 - Shared 설정(source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh)은 `splittable` page manager 이상만 쓴다.
 - Plan/note 작성자는 request body의 `username`이 아니라 세션 사용자로 기록한다. 내부 테스트/Flow-i 직접 호출만 fallback 값을 허용한다.
 - 같은 plan cell에서 값이 바뀌는 경우 KnowledgeEvent payload에 `conflicting_evidence=true`를 남겨 Home Flow-i가 “영향 평가가 갈림”으로 답할 수 있게 한다.
