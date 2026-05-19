@@ -230,6 +230,44 @@ function informTitle(node) {
   return [module, "인폼"].filter(Boolean).join(" · ") || "(내용 없음)";
 }
 
+function withRePrefix(text) {
+  const body = String(text || "").trim();
+  if (!body) return "";
+  return body.startsWith("[RE]") ? body : `[RE] ${body}`;
+}
+
+function reInformTextForDisplay(node) {
+  const body = String(node?.text || "").trim();
+  if (!body) return "";
+  if (!node?.parent_id || body.startsWith("[RE]")) return body;
+  return `[RE] ${body}`;
+}
+
+function renderMailSubjectTemplate(template, values = {}) {
+  const raw = String(template || "").trim();
+  if (!raw) return "";
+  const vars = {
+    product: stripMlPrefix(values.product || ""),
+    lot: values.lot || "",
+    module: values.module || "",
+    reason: values.reason || "",
+  };
+  return raw.replace(/\{(product|lot|module|reason)\}/g, (_m, key) => vars[key] || "").trim();
+}
+
+function defaultInformMailSubject(form, lotLabel, reasonTemplates = {}) {
+  const reason = String(form?.reason || "PEMS").trim() || "PEMS";
+  const template = reasonTemplates?.[reason]?.subject || "";
+  const rendered = renderMailSubjectTemplate(template, {
+    product: form?.product || "",
+    lot: lotLabel || "",
+    module: form?.module || "",
+    reason,
+  });
+  if (rendered) return rendered;
+  return `[plan 적용 통보] ${stripMlPrefix(form?.product || "")} ${lotLabel || ""} - ${form?.module || ""}`.trim();
+}
+
 function relativeTime(iso) {
   if (!iso) return "-";
   const t = new Date(iso);
@@ -1016,6 +1054,45 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet }) {
   );
 }
 
+function ReInformComposer({ parent, onReply, onDone, label = "재인폼 작성" }) {
+  const [text, setText] = useState("");
+  const submit = () => {
+    const body = withRePrefix(text);
+    if (!body) return;
+    Promise.resolve(onReply(parent.id, {
+      module: parent.module || "",
+      reason: parent.reason || "PEMS",
+      text: body,
+      images: [],
+    })).then(() => {
+      setText("");
+      if (onDone) onDone();
+    });
+  };
+  return (
+    <div style={{ marginTop: 8, padding: 10, border: "1px dashed var(--accent)", borderRadius: 8, background: "var(--bg-primary)", display: "grid", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text-secondary)", fontSize: 14, fontWeight: 800 }}>
+        <span>↳</span>
+        <span>{label}</span>
+        {parent.module && <ModulePill module={parent.module} />}
+      </div>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={3}
+        placeholder="[RE] 내용"
+        style={inputStyle({ resize: "vertical", fontFamily: "inherit" })} />
+      <div style={{ display: "flex", gap: 6 }}>
+        <button type="button" onClick={submit} disabled={!text.trim()}
+          style={{ padding: "6px 14px", borderRadius: 8, border: "none", background: "var(--accent)", color: WHITE, fontWeight: 900, cursor: text.trim() ? "pointer" : "not-allowed", opacity: text.trim() ? 1 : 0.55, fontSize: 14 }}>
+          등록
+        </button>
+        <button type="button" onClick={onDone}
+          style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontSize: 14 }}>
+          취소
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* 재귀 스레드 노드 */
 function ThreadNode({
   node, childrenByParent, onReply, onDelete, onToggleCheck, onEdit, user,
@@ -1028,11 +1105,8 @@ function ThreadNode({
   const [splitForm, setSplitForm] = useState({ column: "", old_value: "", new_value: "" });
   const [replyImages, setReplyImages] = useState([]);
   const [uploading, setUploading] = useState(false);
-  // 작성자 또는 admin 은 text + module 수정 가능 (embed 스냅샷은 원본 유지).
-  const [editOpen, setEditOpen] = useState(false);
-  const [editText, setEditText] = useState(node.text || "");
-  const [editModule, setEditModule] = useState(node.module || "");
-  const canEdit = !!onEdit && (user?.role === "admin" || user?.username === node.author);
+  const [reInformOpen, setReInformOpen] = useState(false);
+  const canEdit = !!onReply && (user?.role === "admin" || user?.username === node.author);
 
   const handleFile = async (fl) => {
     if (!fl || fl.length === 0) return;
@@ -1054,6 +1128,7 @@ function ThreadNode({
   const canDelete = user && (user.role === "admin" || user.username === node.author);
   const kids = childrenByParent[node.id] || [];
   const indent = Math.min(depth, 5) * 28;
+  const displayText = reInformTextForDisplay(node);
 
   const sc = node.splittable_change;
 
@@ -1075,6 +1150,9 @@ function ThreadNode({
           <CheckPill node={node} />
           <AutoGenPill node={node} />
           <span style={{ fontSize: 14, fontWeight: 600 }}>{node.author}</span>
+          {node.parent_id && (
+            <span style={{ fontSize: 14, color: "var(--accent)", fontWeight: 900 }}>↳ [RE]</span>
+          )}
           <span title={node.created_at || ""} style={{
             fontSize: 14, padding: "2px 8px", borderRadius: 999,
             background: "var(--bg-primary)", color: "var(--text-primary)",
@@ -1095,13 +1173,12 @@ function ThreadNode({
               border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 700 }}>
             {replyOpen ? "닫기" : "답글"}
           </button>
-          {/* 수정 — 작성자/admin. text/module 만 바뀌고 embed 는 원본 유지. */}
           {canEdit && (
-            <button onClick={() => { setEditText(node.text || ""); setEditModule(node.module || ""); setEditOpen(!editOpen); }}
-              title="본문 수정"
+            <button onClick={() => setReInformOpen(v => !v)}
+              title="재인폼 작성"
               style={{ fontSize: 14, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
                 border: `1px solid ${INFO.fg}`, background: "transparent", color: INFO.fg, fontWeight: 700 }}>
-              {editOpen ? "닫기" : "✎ 수정"}
+              {reInformOpen ? "닫기" : "✎ 수정"}
             </button>
           )}
           {canDelete && kids.length === 0 && (
@@ -1113,38 +1190,8 @@ function ThreadNode({
           )}
         </div>
 
-        {editOpen ? (
-          <div style={{ marginTop: 4 }}>
-            {/* v8.8.13: module 도 수정 허용 — 처음 등록 시 실수로 안 넣었어도 나중에 교정 가능. */}
-            <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
-              <select value={editModule} onChange={e => setEditModule(e.target.value)}
-                style={{ padding: "4px 6px", borderRadius: 4, border: `1px solid ${INFO.fg}`, background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }}>
-                <option value="">(모듈 없음)</option>
-                {constants.modules.map(m => <option key={m} value={m}>{m}</option>)}
-              </select>
-            </div>
-            <textarea value={editText} onChange={e => setEditText(e.target.value)} rows={4}
-              style={{ width: "100%", padding: 8, borderRadius: 4, border: `1px solid ${INFO.fg}`, background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, resize: "vertical", fontFamily: "inherit" }} />
-            <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 4 }}>
-              ※ 본문·모듈 수정 가능. SplitTable 스냅샷은 작성 시점 값으로 유지됩니다.
-            </div>
-            <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-              <button onClick={() => {
-                const patch = {};
-                const t0 = (node.text || "").trim(), t1 = (editText || "").trim();
-                if (t1 !== t0) patch.text = editText;
-                if ((editModule || "") !== (node.module || "")) patch.module = editModule || "";
-                if (Object.keys(patch).length === 0) { setEditOpen(false); return; }
-                onEdit(node.id, patch).then(() => setEditOpen(false));
-              }}
-                style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: INFO.fg, color: WHITE, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>저장</button>
-              <button onClick={() => { setEditOpen(false); setEditText(node.text || ""); setEditModule(node.module || ""); }}
-                style={{ padding: "5px 10px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer" }}>취소</button>
-            </div>
-          </div>
-        ) : (
-          <div style={{ fontSize: 14, color: "var(--text-primary)", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{node.text}</div>
-        )}
+        <div style={{ fontSize: 14, color: "var(--text-primary)", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{displayText}</div>
+        {reInformOpen && <ReInformComposer parent={node} onReply={onReply} onDone={() => setReInformOpen(false)} />}
         <ImageGallery images={node.images} />
         <EmbedTableView embed={node.embed_table} product={node.product} />
 
@@ -1216,7 +1263,7 @@ function ThreadNode({
                 if (!reply.text.trim() && replyImages.length === 0) return;
                 // v8.8.12: 답글 text 앞에 [RE] prefix 자동 (이미 있으면 중복 안 붙임).
                 const replyText = (reply.text || "").trim();
-                const txt = replyText.startsWith("[RE]") ? replyText : (replyText ? `[RE] ${replyText}` : replyText);
+                const txt = withRePrefix(replyText);
                 const body = { ...reply, text: txt, images: replyImages };
                 if (attachSplit && (splitForm.column || splitForm.new_value)) {
                   body.splittable_change = { ...splitForm, applied: false };
@@ -2081,6 +2128,14 @@ export default function My_Inform({ user }) {
   };
 
   const openCreateWizard = () => {
+    setForm(defaultInformForm());
+    setCreateImages([]);
+    setWizardStep(0);
+    setWizardAttachMode("sets");
+    setWizardSelectedSetIds([]);
+    setEmbedCustomCols([]);
+    setEmbedCustomSearch("");
+    setSnapshotTick(0);
     setWizardMailDraft({ subject: "", body: "", generatedFor: "" });
     setWizardMailMetaSynced({ recipients: [], knobMap: {} });
     setWizardLotSearch("");
@@ -2351,7 +2406,7 @@ export default function My_Inform({ user }) {
       setMsg("note 를 입력해 주세요."); return Promise.reject(new Error("text required"));
     }
     const attachedSetsForSubmit = () => (
-      Array.isArray(form.embed?.attached_sets)
+      wizardAttachMode === "sets" && Array.isArray(form.embed?.attached_sets)
         ? form.embed.attached_sets.map(s => ({
             id: s.id, source: s.source, name: s.name,
             columns_count: s.columns_count, wafer_count: s.wafer_count,
@@ -2362,15 +2417,19 @@ export default function My_Inform({ user }) {
     );
     const customColsForEmbed = () => {
       const attached = attachedSetsForSubmit();
+      if (wizardAttachMode === "knob") {
+        return uniqueClean(Array.isArray(embedCustomCols) ? embedCustomCols : [])
+          .filter(c => c && c !== "parameter" && !String(c).startsWith("#"));
+      }
+      if (wizardAttachMode !== "sets") return [];
       return uniqueClean([
-        ...((form.embed?.st_scope?.inline_cols || []).map(c => String(c || "").trim())),
-        ...(Array.isArray(embedCustomCols) ? embedCustomCols : []),
         ...attached.flatMap(s => s.columns || []),
       ]).filter(c => c && c !== "parameter" && !String(c).startsWith("#"));
     };
     const shouldAttachKnobSnapshot = wizardAttachMode === "knob" && embedCustomCols.length > 0;
+    const shouldAttachSetSnapshot = wizardAttachMode === "sets" && form.attach_embed && hasEmbedSnapshot(form.embed);
     const buildEmbedForLot = async (targetLot) => {
-      if (!shouldAttachKnobSnapshot && (!form.attach_embed || !hasEmbedSnapshot(form.embed))) return null;
+      if (!shouldAttachKnobSnapshot && !shouldAttachSetSnapshot) return null;
       const attached = attachedSetsForSubmit();
       const currentScope = form.embed?.st_scope?.snapshot_source === "current_splittable";
       const currentScopeLot = String(form.embed?.st_scope?.lot_id || form.lot_id || "").trim();
@@ -2406,7 +2465,7 @@ export default function My_Inform({ user }) {
       if (form.attach_split && (form.split.column || form.split.new_value)) {
         body.splittable_change = { ...form.split, applied: false };
       }
-      if ((form.attach_embed && hasEmbedSnapshot(form.embed)) || shouldAttachKnobSnapshot) {
+      if (shouldAttachSetSnapshot || shouldAttachKnobSnapshot) {
         body.embed_table = await buildEmbedForLot(targetLot);
         body.attached_sets = attachedSetsForSubmit();
       }
@@ -2434,6 +2493,8 @@ export default function My_Inform({ user }) {
       setWizardStep(0);
       setWizardAttachMode("sets");
       setWizardSelectedSetIds([]);
+      setEmbedCustomCols([]);
+      setEmbedCustomSearch("");
       setWizardMailDraft({ subject: "", body: "", generatedFor: "" });
       setWizardMailMetaSynced({ recipients: [], knobMap: {} });
       setWizardLotSearch("");
@@ -2686,10 +2747,10 @@ export default function My_Inform({ user }) {
     const key = [form.product, selectedLots.join(","), lotLabel, mod, form.text].join("|");
     setWizardMailDraft(d => {
       if (d.generatedFor === key && d.subject) return { ...d, body: form.text || "", generatedFor: key };
-      const subject = `[plan 적용 통보] ${stripMlPrefix(form.product || "")} ${lotLabel} - ${mod}`.trim();
+      const subject = defaultInformMailSubject(form, lotLabel, constants.reason_templates || {});
       return { subject, body: form.text || "", generatedFor: key };
     });
-  }, [creating, wizardStep, form.product, form.lot_id, form.fab_lot_ids, form.module, form.text]);
+  }, [creating, wizardStep, form.product, form.lot_id, form.fab_lot_ids, form.module, form.reason, form.text, constants.reason_templates]);
 
   // v8.8.0: SplitTable 에서 현재 product 의 plan 스냅샷을 본문에 임베드.
   // 빈 history 인 경우 명시적으로 알림 + paste 폴백 제안.
@@ -3124,6 +3185,14 @@ export default function My_Inform({ user }) {
       })
       .catch(e => toast.error("모듈 순서 저장 실패: " + (e.message || e)));
   };
+  const saveReasonTemplates = (draft) => {
+    postJson(API + "/config", { reason_templates: draft || {} })
+      .then(d => {
+        setConstants(c => ({ ...c, reason_templates: d.config?.reason_templates || {} }));
+        toast.ok("메일 제목 템플릿 저장됨");
+      })
+      .catch(e => toast.error("메일 템플릿 저장 실패: " + (e.message || e)));
+  };
   const moveMod = (i, delta) => {
     if (!Array.isArray(modDraft)) return;
     const j = i + delta; if (j < 0 || j >= modDraft.length) return;
@@ -3196,6 +3265,13 @@ export default function My_Inform({ user }) {
             </div>
           )}
         </div>
+        {isAdmin && (
+          <ReasonTemplatesPanel
+            reasons={constants.reasons || []}
+            templates={constants.reason_templates || {}}
+            onSave={saveReasonTemplates}
+          />
+        )}
         {isAdmin && <UserModulePermsPanel allModules={constants.modules || []} />}
       </PageGear>
 
@@ -3336,6 +3412,7 @@ export default function My_Inform({ user }) {
           setMailDraft={setWizardMailDraft}
           mailMeta={wizardMailMeta}
           setMailMeta={setWizardMailMetaSynced}
+          reasonTemplates={constants.reason_templates || {}}
           user={user}
           msg={msg}
           setMsg={setMsg}
@@ -3343,6 +3420,9 @@ export default function My_Inform({ user }) {
           onClose={() => {
             setCreating(false);
             setWizardLotSearch("");
+            setWizardSelectedSetIds([]);
+            setEmbedCustomCols([]);
+            setEmbedCustomSearch("");
             setMsg("");
             setWizardMailMetaSynced({ recipients: [], knobMap: {} });
           }}
@@ -4248,7 +4328,7 @@ function InformFullDetail({ root, onBack, children }) {
 }
 
 function InformDetailPane({ root, thread, childrenByParent, constants, user, tab, setTab, onReply, onDelete, onToggleCheck, onEdit, onChangeStatus, onOpenMail }) {
-  const [commentsOpen, setCommentsOpen] = useState(false);
+  const [reInformOpen, setReInformOpen] = useState(false);
   if (!root) {
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 14 }}>
@@ -4265,6 +4345,7 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
   const status = normalizeFlowStatus(root.flow_status, root);
   const completed = status === "apply_confirmed";
   const canEditDelete = user?.role === "admin" || userMatches(user?.username, root.author);
+  const childReInforms = childrenByParent[root.id] || [];
   const removeAttachedSet = (setId) => {
     const embed = root.embed_table || {};
     const attached = (embed.attached_sets || []).filter(s => (s.id || s.name) !== setId);
@@ -4291,10 +4372,11 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
             <button type="button" disabled={!canEditDelete} onClick={() => {
-              const next = window.prompt("인폼 본문 수정", root.text || "");
-              if (next !== null) onEdit(root.id, { text: next });
+              setTab("body");
+              setReInformOpen(v => !v);
             }}
-              style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: canEditDelete ? "var(--text-primary)" : "var(--text-muted)", fontWeight: 800, cursor: canEditDelete ? "pointer" : "not-allowed", fontSize: 14 }}>
+              title="원문을 덮어쓰지 않고 재인폼을 작성합니다"
+              style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--border)", background: reInformOpen ? "var(--bg-primary)" : "transparent", color: canEditDelete ? "var(--text-primary)" : "var(--text-muted)", fontWeight: 800, cursor: canEditDelete ? "pointer" : "not-allowed", fontSize: 14 }}>
               수정
             </button>
             <button type="button" disabled={!canEditDelete} onClick={() => onDelete(root.id)}
@@ -4309,9 +4391,9 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
               style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
               ✉ 메일
             </button>
-            <button type="button" onClick={() => setCommentsOpen(v => !v)}
-              style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--border)", background: commentsOpen ? "var(--bg-primary)" : "transparent", color: "var(--text-primary)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
-              댓글 {commentCount}
+            <button type="button" onClick={() => { setTab("body"); setReInformOpen(v => !v); }}
+              style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--border)", background: reInformOpen ? "var(--bg-primary)" : "transparent", color: "var(--text-primary)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
+              재인폼 {commentCount}
             </button>
           </div>
         </div>
@@ -4319,18 +4401,6 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
           lot {lotText}
         </div>
       </div>
-      {commentsOpen && (
-        <InformCommentsPanel
-          root={root}
-          childrenByParent={childrenByParent}
-          constants={constants}
-          user={user}
-          onReply={onReply}
-          onDelete={onDelete}
-          onToggleCheck={onToggleCheck}
-          onEdit={onEdit}
-        />
-      )}
       <div style={{ display: "flex", gap: 4, padding: "8px 16px 0", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
         {tabs.map(([key, label]) => (
           <button key={key} type="button" onClick={() => setTab(key)}
@@ -4342,15 +4412,34 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16 }}>
         {tab === "body" && (
           <div style={informConnectedPanel}>
-            <section style={root.embed_table ? informConnectedSectionFirst : informConnectedSectionOnly}>
+            <section style={informConnectedSectionFirst}>
               <div style={informConnectedSectionTitle}>내용</div>
               <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{root.text || "(내용 없음)"}</div>
             </section>
             {root.embed_table && (
-              <section style={informConnectedSectionLast}>
+              <section style={informConnectedSection}>
                 <EmbedTableView embed={root.embed_table} product={root.product} canEdit={canEditDelete} onRemoveSet={removeAttachedSet} />
               </section>
             )}
+            <section style={informConnectedSectionLast}>
+              <div style={informConnectedSectionTitle}>재인폼</div>
+              {reInformOpen && (
+                <ReInformComposer parent={root} onReply={onReply} onDone={() => setReInformOpen(false)} />
+              )}
+              {childReInforms.length === 0 && (
+                <div style={{ color: "var(--text-secondary)" }}>재인폼이 없습니다.</div>
+              )}
+              {childReInforms.length > 0 && (
+                <div style={{ display: "grid", gap: 8 }}>
+                  {childReInforms.map(k => (
+                    <ThreadNode key={k.id} node={k} childrenByParent={childrenByParent}
+                      onReply={onReply} onDelete={onDelete} onToggleCheck={onToggleCheck}
+                      onEdit={onEdit}
+                      user={user} depth={1} constants={constants} />
+                  ))}
+                </div>
+              )}
+            </section>
           </div>
         )}
         {tab === "mail" && <InformMailHistoryPanel root={root} onOpenMail={() => onOpenMail(root)} />}
@@ -4368,7 +4457,7 @@ function InformCommentsPanel({ root, childrenByParent, constants, user, onReply,
   const [text, setText] = useState("");
   const comments = childrenByParent[root.id] || [];
   const submit = () => {
-    const body = text.trim();
+    const body = withRePrefix(text);
     if (!body) return;
     onReply(root.id, {
       module: root.module || "",
@@ -4602,7 +4691,7 @@ function InformWizard({
   form, setForm, constants, products, productContacts, lotOptions, fabSearch, setFabSearch, step, setStep,
   attachMode, setAttachMode, selectedSetIds, setSelectedSetIds, embedFetching, embedSchemaCols,
   embedCustomCols, setEmbedCustomCols, embedCustomSearch, setEmbedCustomSearch,
-  setSnapshotTick, mailDraft, setMailDraft, mailMeta, setMailMeta, user, msg, setMsg, onSubmit, onClose,
+  setSnapshotTick, mailDraft, setMailDraft, mailMeta, setMailMeta, reasonTemplates, user, msg, setMsg, onSubmit, onClose,
 }) {
   const productOptions = Array.from(new Set((products || []).map(p => stripMlPrefix(String(p || "").trim())).filter(Boolean))).sort();
   const steps = ["lot 선택", "모듈 + 내용", "SplitTable 첨부", "메일 미리보기", "검토 + 등록"];
@@ -4734,6 +4823,7 @@ function InformWizard({
   };
   const prev = () => { setMsg(""); setStep(Math.max(0, step - 1)); };
   const toggleCol = (col) => {
+    setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
     setEmbedCustomCols(embedCustomCols.includes(col)
       ? embedCustomCols.filter(x => x !== col)
       : [...embedCustomCols, col]);
@@ -4748,9 +4838,18 @@ function InformWizard({
   const visibleFabOptions = fabLotOptions
     .filter(o => !lotIdFilterText || String(o.value || "").toLowerCase().includes(lotIdFilterText));
   const selectedFabs = new Set(form.fab_lot_ids || []);
+  const clearSplitAttachmentState = ({ clearSets = false, clearCols = false } = {}) => {
+    if (clearSets) setSelectedSetIds([]);
+    if (clearCols) {
+      setEmbedCustomCols([]);
+      setEmbedCustomSearch("");
+    }
+    setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
+  };
   const toggleFab = (fab) => {
     const value = String(fab || "").trim();
     if (!value) return;
+    clearSplitAttachmentState({ clearSets: true, clearCols: true });
     setForm(f => {
       const cur = new Set(f.fab_lot_ids || []);
       if (cur.has(value)) cur.delete(value);
@@ -4759,10 +4858,13 @@ function InformWizard({
       return { ...f, lot_id: nextFabs[0] || "", fab_lot_ids: nextFabs };
     });
   };
-  const removeSelectedFab = (fab) => setForm(f => {
-    const nextFabs = (f.fab_lot_ids || []).filter(v => v !== fab);
-    return { ...f, lot_id: nextFabs[0] || "", fab_lot_ids: nextFabs };
-  });
+  const removeSelectedFab = (fab) => {
+    clearSplitAttachmentState({ clearSets: true, clearCols: true });
+    setForm(f => {
+      const nextFabs = (f.fab_lot_ids || []).filter(v => v !== fab);
+      return { ...f, lot_id: nextFabs[0] || "", fab_lot_ids: nextFabs, attach_embed: false, embed: emptyEmbedTable() };
+    });
+  };
   const attachableCols = (embedSchemaCols || []).filter(c => {
     const s = String(c || "").toUpperCase();
     return s.startsWith("KNOB") || s.includes("KNOB") || s.startsWith("CUSTOM") || s.includes("CUSTOM");
@@ -4785,6 +4887,9 @@ function InformWizard({
       .then(rows => {
         const found = rows.find(s => s.source === "custom" && s.name === name) || rows.find(s => s.name === name);
         if (found?.id) setSelectedSetIds(cur => uniqueClean([...(cur || []), found.id]));
+        setEmbedCustomCols([]);
+        setEmbedCustomSearch("");
+        setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
         setAttachMode("sets");
         setNewSetName("");
         setNewSetCols([]);
@@ -4828,7 +4933,7 @@ function InformWizard({
   const mailPreviewLot = selectedFabList[0] || form.lot_id || "";
   const multiLotPreview = selectedFabList.length > 1;
   const mailLotLabel = mailPreviewLot;
-  const mailSubject = mailDraft.subject || `[plan 적용 통보] ${stripMlPrefix(form.product || "")} ${mailLotLabel} - ${form.module || ""}`;
+  const mailSubject = mailDraft.subject || defaultInformMailSubject(form, mailLotLabel, reasonTemplates || {});
   const contactProductKeys = [
     String(form.product || "").trim(),
     stripMlPrefix(form.product || ""),
@@ -4883,7 +4988,14 @@ function InformWizard({
           <div style={{ display: "grid", gap: 12 }}>
             <label style={{ display: "grid", gap: 5 }}>
               <span style={{ fontWeight: 800 }}>product</span>
-              <select value={form.product} onChange={e => { setSelectedSetIds([]); setFabSearch(""); setForm(f => ({ ...f, product: e.target.value, lot_id: "", fab_lot_ids: [], attach_embed: false, embed: emptyEmbedTable() })); }} style={inputStyle()}>
+              <select value={form.product} onChange={e => {
+                setSelectedSetIds([]);
+                setEmbedCustomCols([]);
+                setEmbedCustomSearch("");
+                setAttachMode("sets");
+                setFabSearch("");
+                setForm(f => ({ ...f, product: e.target.value, lot_id: "", fab_lot_ids: [], attach_embed: false, embed: emptyEmbedTable() }));
+              }} style={inputStyle()}>
                 <option value="">-- product 선택 --</option>
                 {productOptions.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
@@ -4892,7 +5004,10 @@ function InformWizard({
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontWeight: 900 }}>LOT_ID 선택</span>
                   <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{selectedFabs.size} 선택</span>
-                  <button type="button" onClick={() => setForm(f => ({ ...f, lot_id: "", fab_lot_ids: [] }))}
+                  <button type="button" onClick={() => {
+                    clearSplitAttachmentState({ clearSets: true, clearCols: true });
+                    setForm(f => ({ ...f, lot_id: "", fab_lot_ids: [], attach_embed: false, embed: emptyEmbedTable() }));
+                  }}
                     style={{ marginLeft: "auto", padding: "4px 8px", borderRadius: 7, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800 }}>
                     선택 해제
                   </button>
@@ -4948,10 +5063,14 @@ function InformWizard({
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {[["knob", "KNOB / CUSTOM 컬럼 직접 첨부"], ["sets", "기존 커스텀 세트"], ["new", "새 커스텀 세트 만들기"]].map(([key, label]) => (
                 <button key={key} type="button" onClick={() => {
+                  if (key !== attachMode) {
+                    setSelectedSetIds([]);
+                    setPreviewSet(null);
+                    setEmbedCustomCols([]);
+                    setEmbedCustomSearch("");
+                    setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
+                  }
                   setAttachMode(key);
-                  if (key !== "sets") setSelectedSetIds([]);
-                  if (key !== "sets") setPreviewSet(null);
-                  if (key !== "sets") setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
                 }}
                   style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid " + (attachMode === key ? "var(--accent)" : "var(--border)"), background: attachMode === key ? "var(--accent)" : "var(--bg-primary)", color: attachMode === key ? "#fff" : "var(--text-secondary)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
                   {label}
@@ -4970,11 +5089,17 @@ function InformWizard({
                   <span style={{ color: "var(--text-secondary)" }}>{setsLoading ? "loading..." : `${setRows.length}개`}</span>
                   <input value={setSearch} onChange={e => setSetSearch(e.target.value)} placeholder="세트 이름 검색"
                     style={inputStyle({ marginLeft: "auto", width: 220, fontSize: 13, padding: "6px 8px" })} />
-                  <button type="button" onClick={() => setSelectedSetIds((setRows || []).map(s => s.id))}
+                  <button type="button" onClick={() => {
+                    setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
+                    setSelectedSetIds((setRows || []).map(s => s.id));
+                  }}
                     style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800 }}>
                     전체 선택
                   </button>
-                  <button type="button" onClick={() => setSelectedSetIds([])}
+                  <button type="button" onClick={() => {
+                    setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
+                    setSelectedSetIds([]);
+                  }}
                     style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800 }}>
                     선택 해제
                   </button>
@@ -4986,7 +5111,10 @@ function InformWizard({
                       const on = (selectedSetIds || []).includes(s.id);
                       return (
                         <label key={s.id} style={{ display: "grid", gridTemplateColumns: "24px minmax(0,1fr) 90px 90px 140px 76px", gap: 8, alignItems: "center", minHeight: 38, padding: "6px 9px", borderBottom: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", cursor: "pointer" }}>
-                          <input type="checkbox" checked={on} onChange={() => setSelectedSetIds(cur => cur.includes(s.id) ? cur.filter(x => x !== s.id) : [...cur, s.id])} />
+                          <input type="checkbox" checked={on} onChange={() => {
+                            setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
+                            setSelectedSetIds(cur => cur.includes(s.id) ? cur.filter(x => x !== s.id) : [...cur, s.id]);
+                          }} />
                           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 900 }}>{s.name || "set"}</span>
                           <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{s.columns_count || 0} cols</span>
                           <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{s.wafer_count || 0} rows</span>
@@ -5023,11 +5151,17 @@ function InformWizard({
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <b>KNOB / CUSTOM 컬럼 직접 첨부</b>
                   <span style={{ color: "var(--text-secondary)" }}>선택 {embedCustomCols.length}개</span>
-                  <button type="button" onClick={() => setEmbedCustomCols(filteredCols)}
+                  <button type="button" onClick={() => {
+                    setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
+                    setEmbedCustomCols(filteredCols);
+                  }}
                     style={{ marginLeft: "auto", padding: "5px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800 }}>
                     전체 선택
                   </button>
-                  <button type="button" onClick={() => setEmbedCustomCols([])}
+                  <button type="button" onClick={() => {
+                    setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));
+                    setEmbedCustomCols([]);
+                  }}
                     style={{ padding: "5px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-secondary)", cursor: "pointer", fontWeight: 800 }}>
                     선택 해제
                   </button>

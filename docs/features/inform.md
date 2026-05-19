@@ -46,6 +46,8 @@ Inform Log는 제품/lot/wafer 이슈를 모듈 담당자에게 전달하고, �
 - `admin_settings.json` 읽기 실패 시 user-modules 조회/저장은 빈 설정으로 진행하지 않고 HTTP detail과 warning log를 남긴다.
 - 메일에는 제목, 대상, 본문, Flow link만 남긴다.
 - 첨부와 메일 실패는 UI에서 복구 가능한 상태로 보여준다.
+- 상세 화면의 `수정`은 원문을 덮어쓰지 않고 기존 인폼의 `parent_id` 아래에 `[RE]` 재인폼을 작성한다. 원문 edit endpoint는 첨부 제거 같은 내부 유지보수 흐름에만 사용한다.
+- 메일 제목 기본값은 사유별 `reason_templates.<reason>.subject`가 있으면 신규 작성 미리보기, 메일 미리보기, 발송 기본 제목에 동일하게 적용한다. 지원 변수는 `{product}`, `{lot}`, `{module}`, `{reason}`이며, 템플릿이 비어 있으면 기존 `[plan 적용 통보] ...` 제목을 사용한다.
 
 ## Verify
 

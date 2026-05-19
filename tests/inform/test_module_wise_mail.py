@@ -300,6 +300,83 @@ def test_mail_preview_uses_same_auto_module_recipients(tmp_path, monkeypatch):
     assert preview["subject"] == "[plan 적용 통보] PRODA R1000 - GATE"
 
 
+def test_reason_subject_template_applies_to_mail_preview_and_send(tmp_path, monkeypatch):
+    config_file = tmp_path / "config.json"
+    admin_settings = tmp_path / "admin_settings.json"
+    informs_file = tmp_path / "informs.json"
+    _write_json(config_file, {
+        "modules": ["GATE"],
+        "reasons": ["PEMS"],
+        "reason_templates": {
+            "PEMS": {"subject": "[{reason}] {product}/{lot}/{module}", "body": ""}
+        },
+    })
+    _write_json(admin_settings, {
+        "mail": {
+            "enabled": True,
+            "api_url": "dry-run",
+            "from_addr": "flow@example.test",
+        },
+    })
+    monkeypatch.setattr(informs, "CONFIG_FILE", config_file)
+    monkeypatch.setattr(informs, "ADMIN_SETTINGS_FILE", admin_settings)
+    monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
+    monkeypatch.setattr(informs, "_INFORMS_CACHE_SIG", None)
+    monkeypatch.setattr(informs, "_INFORMS_CACHE_ITEMS", None)
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "admin", "username": "lotmgr"})
+    monkeypatch.setattr(informs, "_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(informs, "_audit_record", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(informs, "_build_inform_snapshot_xlsx", lambda _target: None)
+    informs._save([{
+        "id": "inf_gate",
+        "product": "PRODA",
+        "root_lot_id": "R1000",
+        "lot_id": "R1000",
+        "module": "GATE",
+        "reason": "PEMS",
+        "author": "writer",
+        "created_at": "2026-04-30T10:20:00",
+        "mail_history": [],
+    }])
+
+    preview = informs.mail_preview("inf_gate", _request())
+    sent = informs.send_mail("inf_gate", informs.SendMailReq(to=["owner@example.test"]), _request())
+
+    assert preview["subject"] == "[PEMS] PRODA/R1000/GATE"
+    assert sent["subject"] == "[PEMS] PRODA/R1000/GATE"
+
+
+def test_blank_reason_subject_template_keeps_legacy_subject(tmp_path, monkeypatch):
+    config_file = tmp_path / "config.json"
+    informs_file = tmp_path / "informs.json"
+    _write_json(config_file, {
+        "modules": ["GATE"],
+        "reasons": ["PEMS"],
+        "reason_templates": {"PEMS": {"subject": "   ", "body": ""}},
+    })
+    monkeypatch.setattr(informs, "CONFIG_FILE", config_file)
+    monkeypatch.setattr(informs, "INFORMS_FILE", informs_file)
+    monkeypatch.setattr(informs, "_INFORMS_CACHE_SIG", None)
+    monkeypatch.setattr(informs, "_INFORMS_CACHE_ITEMS", None)
+    monkeypatch.setattr(informs, "current_user", lambda _request: {"role": "user", "username": "sender"})
+    monkeypatch.setattr(informs, "_load_product_contacts", lambda: {"products": {}})
+    monkeypatch.setattr(informs, "_build_inform_snapshot_xlsx", lambda _target: None)
+    informs._save([{
+        "id": "inf_gate",
+        "product": "PRODA",
+        "root_lot_id": "R1000",
+        "lot_id": "R1000",
+        "module": "GATE",
+        "reason": "PEMS",
+        "author": "writer",
+        "created_at": "2026-04-30T10:20:00",
+    }])
+
+    preview = informs.mail_preview("inf_gate", _request())
+
+    assert preview["subject"] == "[plan 적용 통보] PRODA R1000 - GATE"
+
+
 def test_module_knob_highlight_does_not_render_yellow_cells(tmp_path, monkeypatch):
     knob_map = tmp_path / "inform_module_knob_map.json"
     _write_json(knob_map, {"GATE": ["GATE_DOSE"]})

@@ -4538,20 +4538,54 @@ def _inform_lot_ids(root: dict) -> list[str]:
     return out
 
 
-def _default_mail_subject(root: dict) -> str:
+def _mail_subject_parts(root: dict) -> tuple[str, str, str, str]:
     product = str(root.get("product") or "").strip()
     module = str(root.get("module") or "").strip()
+    reason = str(root.get("reason") or "").strip()
     root_lots = [x.strip() for x in str(root.get("root_lot_id") or "").split(",") if x.strip()]
     if not root_lots:
         root_lots = [x.strip() for x in str(root.get("lot_id") or "").split(",") if x.strip()]
     lots = list(dict.fromkeys(root_lots)) or _inform_lot_ids(root)
     if len(lots) <= 1:
         lot = lots[0] if lots else str(root.get("root_lot_id") or root.get("lot_id") or "").strip()
-        core = " ".join([x for x in [product, lot] if x])
+        lot_label = lot
     else:
-        core = f"{product} ({len(lots)}lots)" if product else f"({len(lots)}lots)"
+        lot_label = f"{len(lots)}lots"
+    return product, lot_label, module, reason
+
+
+def _fallback_mail_subject(root: dict) -> str:
+    product, lot_label, module, _reason = _mail_subject_parts(root)
+    if lot_label.endswith("lots") and lot_label[:-4].isdigit():
+        core = f"{product} ({lot_label})" if product else f"({lot_label})"
+    else:
+        core = " ".join([x for x in [product, lot_label] if x])
     suffix = f" - {module}" if module else ""
     return f"[plan 적용 통보] {core}{suffix}".strip()
+
+
+def _render_mail_subject_template(template: str, root: dict) -> str:
+    raw = str(template or "").strip()
+    if not raw:
+        return ""
+    product, lot_label, module, reason = _mail_subject_parts(root)
+    values = {
+        "product": product,
+        "lot": lot_label,
+        "module": module,
+        "reason": reason,
+    }
+    return re.sub(r"\{(product|lot|module|reason)\}", lambda m: values.get(m.group(1), ""), raw).strip()
+
+
+def _default_mail_subject(root: dict) -> str:
+    fallback = _fallback_mail_subject(root)
+    reason = str(root.get("reason") or "").strip()
+    templates = (_load_config().get("reason_templates") or {}) if reason else {}
+    template = templates.get(reason) if isinstance(templates, dict) else None
+    subject_template = template.get("subject") if isinstance(template, dict) else ""
+    rendered = _render_mail_subject_template(subject_template, root)
+    return rendered or fallback
 
 
 def _default_mail_prose(root: dict, sender_username: str = "") -> str:

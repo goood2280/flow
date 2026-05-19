@@ -261,3 +261,16 @@ def test_create_inform_snapshots_current_fab_lot_root_and_wafers(tmp_path, monke
     lot = matrix["products"][0]["lots"][0]
     assert lot["fab_lot_id"] == "F9700A.1"
     assert set(lot["modules"]) >= {"GATE", "STI"}
+
+
+def test_inform_wizard_split_attachment_state_is_current_selection_only():
+    src = (ROOT / "frontend" / "src" / "pages" / "My_Inform.jsx").read_text(encoding="utf-8")
+
+    assert 'wizardAttachMode === "sets" && Array.isArray(form.embed?.attached_sets)' in src
+    assert 'if (wizardAttachMode === "knob")' in src
+    assert 'if (wizardAttachMode !== "sets") return [];' in src
+    assert 'const shouldAttachSetSnapshot = wizardAttachMode === "sets" && form.attach_embed && hasEmbedSnapshot(form.embed);' in src
+    assert 'setEmbedCustomCols([]);' in src
+    assert 'setEmbedCustomSearch("");' in src
+    assert 'setForm(f => ({ ...f, attach_embed: false, embed: emptyEmbedTable() }));' in src
+    assert 'setAttachMode("sets");' in src

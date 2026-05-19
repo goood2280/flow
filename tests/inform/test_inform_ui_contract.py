@@ -29,8 +29,10 @@ def test_inform_wizard_five_step_backend_contract_order():
         "lot_id: targetLot",
         "custom_cols: customCols",
         'const shouldAttachKnobSnapshot = wizardAttachMode === "knob" && embedCustomCols.length > 0;',
-        "...(Array.isArray(embedCustomCols) ? embedCustomCols : []),",
-        "if (!shouldAttachKnobSnapshot && (!form.attach_embed || !hasEmbedSnapshot(form.embed))) return null;",
+        'const shouldAttachSetSnapshot = wizardAttachMode === "sets" && form.attach_embed && hasEmbedSnapshot(form.embed);',
+        'if (wizardAttachMode === "knob")',
+        'if (wizardAttachMode !== "sets") return [];',
+        "if (!shouldAttachKnobSnapshot && !shouldAttachSetSnapshot) return null;",
         "LOT_ID 검색 (입력 즉시 필터)",
         "체크된 LOT_ID",
         'const lotIdFilterText = String(fabSearch || "").trim().toLowerCase();',
@@ -113,5 +115,32 @@ def test_inform_detail_tabs_are_body_and_mail_history_with_comment_button():
     assert '["comments", "댓글"]' not in src
     assert '["history", "이력"]' not in src
     assert '["attachments", "첨부"]' not in src
-    assert "InformCommentsPanel" in src
-    assert "댓글 {commentCount}" in src
+    assert "ReInformComposer" in src
+    assert "재인폼 {commentCount}" in src
+
+
+def test_inform_detail_edit_creates_reinform_instead_of_body_edit():
+    src = MY_INFORM.read_text(encoding="utf-8")
+
+    assert "원문을 덮어쓰지 않고 재인폼을 작성합니다" in src
+    assert "인폼 본문 수정" not in src
+    assert 'onEdit(root.id, { text: next })' not in src
+    assert "withRePrefix(text)" in src
+    assert "onReply(parent.id" in src
+    assert "childrenByParent[root.id] || []" in src
+    assert "↳ [RE]" in src
+    assert "user={user} depth={1} constants={constants}" in src
+    assert "reInformTextForDisplay(node)" in src
+
+
+def test_inform_pagegear_reason_subject_templates_are_saved_and_used():
+    src = MY_INFORM.read_text(encoding="utf-8")
+
+    assert "ReasonTemplatesPanel" in src
+    assert 'postJson(API + "/config", { reason_templates: draft || {} })' in src
+    assert "defaultInformMailSubject(form, lotLabel, constants.reason_templates || {})" in src
+    assert "defaultInformMailSubject(form, mailLotLabel, reasonTemplates || {})" in src
+    assert "{product}" in src
+    assert "{lot}" in src
+    assert "{module}" in src
+    assert "{reason}" in src
