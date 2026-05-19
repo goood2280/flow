@@ -20091,6 +20091,10 @@ def _run_flowi_chat(
         unit_only.append("tracker")
     if "dashboard" in allowed_keys:
         unit_only.append("dashboard")
+    if "splittable" in allowed_keys:
+        unit_only.append("splittable")
+    if "waferlayout" in allowed_keys:
+        unit_only.append("waferlayout")
     unit_only.append("filebrowser")
     unit_tool = _try_unit_ai_dispatch(
         prompt,
