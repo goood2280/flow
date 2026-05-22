@@ -2,7 +2,7 @@
 
 v7.0: emit_event(event_type, actor, target_user, payload) 단일 진입점 +
       admin_settings.notify_rules[username] 로 유저별 on/off.
-      기본 활성 이벤트: my_plan_changed / my_meeting_minutes_added /
+      기본 활성 이벤트: my_plan_changed / my_plan_actual_mismatch / my_meeting_minutes_added /
                        my_tracker_comment / my_tracker_status_changed /
                        tracker_step_reached / my_inform_comment.
 """
@@ -18,6 +18,7 @@ NOTIFY_DIR.mkdir(parents=True, exist_ok=True)
 # admin_settings.notify_rules.{username}.disabled = [] 로 유저별 off 가능.
 _DEFAULT_RULES = {
     "my_plan_changed": True,
+    "my_plan_actual_mismatch": True,
     "my_meeting_minutes_added": True,
     "my_meeting_action_changed": True,
     "my_tracker_comment": True,
@@ -29,6 +30,7 @@ _DEFAULT_RULES = {
 
 _EVENT_META = {
     "my_plan_changed": ("plan 변경", "info"),
+    "my_plan_actual_mismatch": ("plan/actual 불일치", "warn"),
     "my_meeting_minutes_added": ("회의록 갱신", "info"),
     "my_meeting_action_changed": ("회의 액션 갱신", "info"),
     "my_tracker_comment": ("이슈 댓글", "info"),

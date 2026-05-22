@@ -50,6 +50,7 @@ SplitTable은 `product + lot + wafer` 기준으로 plan, actual, diff, notes, ru
 - Shared 설정(source config, rulebook/schema, prefixes, precision, paste sets, custom sets, match cache refresh)은 `splittable` page manager 이상만 쓴다.
 - Plan/note 작성자는 request body의 `username`이 아니라 세션 사용자로 기록한다. 내부 테스트/Flow-i 직접 호출만 fallback 값을 허용한다.
 - 같은 plan cell에서 값이 바뀌는 경우 KnowledgeEvent payload에 `conflicting_evidence=true`를 남겨 Home Flow-i가 “영향 평가가 갈림”으로 답할 수 있게 한다.
+- plan이 actual DB 값과 달라지는 경우 plan 작성자에게 `my_plan_actual_mismatch` 알림을 1회 발행한다. 저장 시 기존 actual과 이미 다르면 즉시 발행하고, 이후 DB 갱신으로 `/view`에서 새 mismatch가 관측돼도 같은 cell/plan/actual 조합은 재발행하지 않는다.
 
 ## Verify
 

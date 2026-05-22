@@ -14,7 +14,7 @@ v4.1 (2026-04-19, adapter-engineer slice):
       `<db_root>/_uniques.json` unchanged, for frontend feature-select
     autocomplete catalog.
 """
-import json, datetime, io, csv as csv_mod, logging, time, threading, os, gc
+import json, datetime, io, csv as csv_mod, hashlib, logging, time, threading, os, gc
 from pathlib import Path
 import sys
 
@@ -1150,6 +1150,121 @@ def _append_splittable_plan_knowledge(*, product: str, cell_key: str, old: Any, 
         )
     except Exception:
         return
+
+
+def _split_plan_cell_key(cell_key: str) -> tuple[str, str, str]:
+    parts = str(cell_key or "").split("|", 2)
+    root = parts[0] if len(parts) > 0 else ""
+    wafer = parts[1] if len(parts) > 1 else ""
+    column = parts[2] if len(parts) > 2 else ""
+    return root, wafer, column
+
+
+def _plan_actual_mismatch(plan: Any, actual: Any) -> bool:
+    plan_text = _clean_str(plan)
+    actual_text = _clean_str(actual)
+    return bool(plan_text and actual_text and plan_text != actual_text)
+
+
+def _plan_mismatch_alert_key(cell_key: str, plan: Any, actual: Any) -> str:
+    raw = json.dumps(
+        {"cell": str(cell_key or ""), "plan": _clean_str(plan), "actual": _clean_str(actual)},
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _actual_value_for_plan_cell(product: str, cell_key: str) -> str:
+    root, wafer, column = _split_plan_cell_key(cell_key)
+    if not root or not wafer or not column:
+        return ""
+    try:
+        lf = _scan_product(product, root_lot_id=root, wafer_ids=wafer)
+        lot_col, wf_col = _detect_lot_wafer(lf, product)
+        lf = _filter_lot_wafer(lf, lot_col, wf_col, root, wafer)
+        names = lf.collect_schema().names()
+        actual_col = column if column in names else (_ci_resolve_in(column, names) or "")
+        if not actual_col:
+            return ""
+        df = (
+            lf.select(pl.col(actual_col).cast(_STR, strict=False).alias("actual"))
+            .drop_nulls()
+            .head(1)
+            .collect()
+        )
+        if df.height == 0:
+            return ""
+        return _clean_str(df.item(0, 0))
+    except Exception:
+        return ""
+
+
+def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], actor: str = "flow") -> int:
+    if not mismatches:
+        return 0
+    try:
+        from core.notify import emit_event
+        data = _load_plan_data(product)
+        plans = data.get("plans") if isinstance(data.get("plans"), dict) else {}
+        alerts = data.get("mismatch_alerts") if isinstance(data.get("mismatch_alerts"), dict) else {}
+        sent = 0
+        for mm in mismatches[:100]:
+            cell_key = str(mm.get("key") or mm.get("cell") or "")
+            if not cell_key:
+                continue
+            plan = mm.get("plan")
+            actual = mm.get("actual")
+            if not _plan_actual_mismatch(plan, actual):
+                continue
+            plan_info = plans.get(cell_key) if isinstance(plans.get(cell_key), dict) else {}
+            target = str(mm.get("plan_user") or plan_info.get("user") or "").strip()
+            if not target:
+                continue
+            alert_key = _plan_mismatch_alert_key(cell_key, plan, actual)
+            if alert_key in alerts:
+                continue
+            root, wafer, column = _split_plan_cell_key(cell_key)
+            payload = {
+                "product": product,
+                "cell": cell_key,
+                "root_lot_id": root,
+                "wafer_id": wafer,
+                "column": column,
+                "plan": _clean_str(plan),
+                "actual": _clean_str(actual),
+                "plan_updated": plan_info.get("updated") or mm.get("plan_updated") or "",
+            }
+            ok = emit_event(
+                "my_plan_actual_mismatch",
+                actor=actor or "flow",
+                target_user=target,
+                title="[plan/actual 불일치]",
+                body=(
+                    f"{product}/{root}"
+                    + (f" W{wafer}" if wafer else "")
+                    + f" {column}: plan={payload['plan']}, actual={payload['actual']}"
+                ),
+                payload=payload,
+            )
+            if not ok:
+                continue
+            alerts[alert_key] = {
+                "time": datetime.datetime.now().isoformat(),
+                "target_user": target,
+                **payload,
+            }
+            sent += 1
+        if sent:
+            if len(alerts) > 2000:
+                for old_key in list(alerts.keys())[: len(alerts) - 2000]:
+                    alerts.pop(old_key, None)
+            data["mismatch_alerts"] = alerts
+            save_json(_plan_history_path(product), data)
+        return sent
+    except Exception:
+        return 0
 
 
 def _notify_tracker_owner_for_note(entry: dict, actor: str) -> None:
@@ -6406,7 +6521,7 @@ def _plan_alias_paths(product: str) -> list[Path]:
 
 
 def _load_plan_data(product: str) -> dict:
-    merged = {"plans": {}, "history": []}
+    merged = {"plans": {}, "history": [], "mismatch_alerts": {}}
     seen_history: set[str] = set()
     for fp in _plan_alias_paths(product):
         data = load_json(fp, {}) if fp.exists() else {}
@@ -6415,6 +6530,9 @@ def _load_plan_data(product: str) -> dict:
         plans = data.get("plans")
         if isinstance(plans, dict):
             merged["plans"].update(plans)
+        mismatch_alerts = data.get("mismatch_alerts")
+        if isinstance(mismatch_alerts, dict):
+            merged["mismatch_alerts"].update(mismatch_alerts)
         hist = data.get("history")
         if isinstance(hist, list):
             for row in hist:
@@ -7612,19 +7730,9 @@ def view_split(product: str = Query(...), root_lot_id: str = Query(""),
                         "param": r["_param"], "key": cell["key"],
                         "plan": cell["plan"], "actual": cell["actual"],
                         "plan_user": plan_info.get("user", ""),
+                        "plan_updated": plan_info.get("updated", ""),
                     })
-        # Send notifications for mismatches (fire-and-forget)
-        if mismatches:
-            try:
-                from core.notify import send_notify
-                notified_users = set()
-                for mm in mismatches[:20]:  # limit to avoid spam
-                    pu = mm.get("plan_user")
-                    if pu and pu not in notified_users:
-                        send_notify(pu, f"Plan mismatch in {product}: {mm['param']} — plan={mm['plan']}, actual={mm['actual']}")
-                        notified_users.add(pu)
-            except Exception:
-                pass
+        _notify_plan_actual_mismatches_once(product, mismatches, actor="flow")
 
         # v8.8.5: view 응답에 오버라이드 resolve 결과 동봉 — FE 상단 배지에 "어디서 읽어왔는지" 바로 표시.
         override_meta = _resolve_override_meta_light(product)
@@ -7731,6 +7839,23 @@ def save_plan(req: PlanReq, request: Request = None):
             changed_at=now,
             conflicting=bool(old not in (None, "") and old != val),
         )
+    save_mismatches = []
+    for ck, _old, val in changed_entries:
+        actual = _actual_value_for_plan_cell(req.product, ck)
+        if not _plan_actual_mismatch(val, actual):
+            continue
+        root, wafer, column = _split_plan_cell_key(ck)
+        save_mismatches.append({
+            "key": ck,
+            "plan": val,
+            "actual": actual,
+            "plan_user": req.username,
+            "plan_updated": now,
+            "root_lot_id": root,
+            "wafer_id": wafer,
+            "column": column,
+        })
+    _notify_plan_actual_mismatches_once(req.product, save_mismatches, actor="flow")
     # v8.8.33: notify 이벤트 — 본인이 아닌 원 소유자에게만.
     try:
         from core.notify import emit_event

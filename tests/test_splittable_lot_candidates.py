@@ -143,6 +143,114 @@ def test_save_plan_uses_canonical_flow_data_plan_file(tmp_path, monkeypatch):
     assert saved["plans"]["A1000|1|KNOB_GATE"]["value"] == "R2"
 
 
+def test_save_plan_notifies_owner_once_when_existing_actual_mismatches(tmp_path, monkeypatch):
+    import core.notify as flow_notify
+
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R1"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "_audit_user", lambda *_args, **_kwargs: None)
+    splittable._LOT_LOOKUP_CACHE.clear()
+
+    events = []
+    monkeypatch.setattr(flow_notify, "emit_event", lambda *args, **kwargs: events.append((args, kwargs)) or True)
+
+    result = splittable.save_plan(splittable.PlanReq(
+        product="ML_TABLE_PRODA",
+        root_lot_id="A1000",
+        username="plan_owner",
+        plans={"A1000|1|KNOB_GATE": "R2"},
+    ))
+    assert result == {"ok": True, "saved": 1, "rejected": []}
+    assert len(events) == 1
+    assert events[0][0][0] == "my_plan_actual_mismatch"
+    assert events[0][1]["target_user"] == "plan_owner"
+    assert events[0][1]["actor"] == "flow"
+    assert events[0][1]["payload"]["actual"] == "R1"
+    assert events[0][1]["payload"]["plan"] == "R2"
+
+    splittable.save_plan(splittable.PlanReq(
+        product="ML_TABLE_PRODA",
+        root_lot_id="A1000",
+        username="plan_owner",
+        plans={"A1000|1|KNOB_GATE": "R2"},
+    ))
+    assert len(events) == 1
+
+
+def test_view_plan_actual_mismatch_notification_is_deduped(tmp_path, monkeypatch):
+    import core.notify as flow_notify
+
+    pl.DataFrame({
+        "root_lot_id": ["A1000"],
+        "wafer_id": ["1"],
+        "KNOB_GATE": ["R1"],
+    }).write_parquet(tmp_path / "ML_TABLE_PRODA.parquet")
+    plan_dir = tmp_path / "flow-data" / "splittable"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "ML_TABLE_PRODA.json").write_text(json.dumps({
+        "plans": {
+            "A1000|1|KNOB_GATE": {
+                "value": "R2",
+                "user": "plan_owner",
+                "updated": "2026-05-22T10:00:00",
+            },
+        },
+        "history": [],
+    }), encoding="utf-8")
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_db_base", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "PLAN_DIR", plan_dir)
+    monkeypatch.setattr(splittable, "PREFIX_CFG", plan_dir / "prefix_config.json")
+    monkeypatch.setattr(splittable, "SOURCE_CFG", plan_dir / "source_config.json")
+    monkeypatch.setattr(splittable, "PRECISION_CFG", plan_dir / "precision_config.json")
+    monkeypatch.setattr(splittable, "TRACKER_ISSUES_FILE", tmp_path / "issues.json")
+    (tmp_path / "issues.json").write_text("[]", encoding="utf-8")
+    splittable._LOT_LOOKUP_CACHE.clear()
+
+    events = []
+    monkeypatch.setattr(flow_notify, "emit_event", lambda *args, **kwargs: events.append((args, kwargs)) or True)
+
+    first = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="A1000",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+    second = splittable.view_split(
+        product="ML_TABLE_PRODA",
+        root_lot_id="A1000",
+        wafer_ids="",
+        prefix="KNOB",
+        custom_name="",
+        view_mode="all",
+        history_mode="all",
+        fab_lot_id="",
+        custom_cols="",
+    )
+
+    assert first["mismatch_count"] == 1
+    assert second["mismatch_count"] == 1
+    assert len(events) == 1
+    assert events[0][0][0] == "my_plan_actual_mismatch"
+    assert events[0][1]["target_user"] == "plan_owner"
+    saved = json.loads((plan_dir / "ML_TABLE_PRODA.json").read_text(encoding="utf-8"))
+    assert len(saved["mismatch_alerts"]) == 1
+
+
 def test_view_includes_related_tracker_issues_for_root_lot(tmp_path, monkeypatch):
     pl.DataFrame({
         "root_lot_id": ["LOT900AA", "LOT900AA"],
