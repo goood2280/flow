@@ -1,11 +1,14 @@
 # Flow Agent Runtime
 
-Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent runtime surface에서 추상 목표를 실행 가능한 상태 흐름으로 분해한다. 현재 visible Agent 표면은 두 가지다.
+Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent surface에서 질문 처리 설계, 시멘틱/위키 운영, 누적 지식 현황, runtime trace를 다룬다. 현재 visible Agent 표면은 다섯 가지다.
 
-- `런타임 설계`: semantic layer, unit-agent orchestration, SSE status stream, final conclusion
+- `질문 설계`: 사용자 질문을 semantic resolve, workflow match, dry-run step으로 분해하고 개인 workflow 초안으로 저장
+- `기능 AI/시멘틱`: 단위 기능 AI, semantic alias/intent, workflow template, Agent Wiki, proposal queue 운영
+- `누적 지식`: Wiki page/source, semantic proposal/change, prompt trace, knowledge event, knowledge inventory 조회
+- `런타임 추적`: semantic layer, unit-agent orchestration, SSE status stream, final conclusion
 - `LLM 연결`: 기존 LLM runtime 연결 상태와 admin 설정
 
-기존 Wiki/schema/unit-AI 운영 endpoint는 호환을 위해 보존하지만, Agent 탭의 기본 작업면에서는 노출하지 않는다.
+권한 모델은 초안+승인 방식이다. 일반 유저는 개인 workflow template을 저장하고, shared workflow/semantic alias/intent/maintained wiki 반영은 admin 또는 diagnosis/agent/knowledge page manager만 수행한다.
 
 ## Owns
 
@@ -16,6 +19,7 @@ Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent runtime sur
 - LangGraph `astream` 기반 orchestration hook
 - LangSmith tracing metadata와 traceable node hook
 - LLM 연결 상태 표시와 선택적 최종 문장 정리
+- Agent Wiki source/page, semantic proposal/change, prompt trace, knowledge event의 read-only overview
 
 ## Does Not Own
 
@@ -35,6 +39,9 @@ Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent runtime sur
 | FastAPI routes | `backend/routers/agent.py` (`/api/agent/runtime/*`) |
 | EventSource auth fallback | `backend/app_v2/runtime/security.py` |
 | Agent page | `frontend/src/pages/My_Diagnosis.jsx` |
+| Question design UI | `frontend/src/components/agent/QuestionDesignTab.jsx` |
+| Unit AI / semantic UI | `frontend/src/components/agent/AgentV2.jsx`, `SemanticLayerTab.jsx`, `WorkflowsTab.jsx` |
+| Knowledge overview UI | `frontend/src/components/agent/KnowledgeOverviewTab.jsx` |
 | Runtime UI | `frontend/src/components/agent/AgentRuntime.jsx` |
 | LLM config UI | `frontend/src/components/agent/LlmTab.jsx`, `LlmCfgPanel.jsx` |
 
@@ -64,6 +71,18 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 - Server-Sent Events endpoint.
 - Browser `EventSource` uses `?t=<session_token>` because custom headers are unavailable.
 - Event names: `status`, `final`, `done`.
+
+`GET /api/agent/knowledge/overview?q=&kind=&limit=`
+
+- Returns `counts`, `recent_items`, `pending_semantic_proposals`, `recent_wiki_pages`, `recent_wiki_sources`, `recent_prompt_history`, `recent_knowledge_events`, and `recent_semantic_changes`.
+- Reads existing stores only: Knowledge Vault, semantic proposal queue, semantic changes, `flowi_activity.jsonl`, and knowledge inventory.
+- `kind` can focus broad sections such as `semantic_proposal`, `wiki_page`, `wiki_source`, `prompt_history`, `knowledge_event`, or a knowledge inventory kind.
+
+`POST /api/agent/workflows/test` and `POST /api/agent/workflows/execute`
+
+- Used by `질문 설계` to show matched workflow and dry-run step results for the current prompt.
+- `POST /api/agent/workflows` saves the template shape `{key,title,trigger,steps,shared}`.
+- `shared=true` and shared-template updates require admin or diagnosis/agent/knowledge page-manager rights. Personal templates can only be updated by their owner or a manager.
 
 ## Runtime Flow
 
@@ -119,11 +138,12 @@ Flow는 사내 GPT OSS 120B를 기본 LLM 백본으로 쓴다. dev/외부 환경
 - Semantic coverage below threshold is shown as a warning, not hidden.
 - Missing product/lot/column evidence is returned in `final.missing` / `final.warnings`.
 - Existing FileBrowser AI SQL endpoints stay owned by FileBrowser.
+- General users create personal drafts/proposals/sources; maintained shared knowledge is applied through existing approval or wiki commit APIs.
 
 ## Verify
 
 ```bash
-python3 -m pytest tests/test_agent_runtime.py tests/test_feature_contracts.py -q
-python3 -m py_compile backend/app_v2/modules/agent_runtime/*.py backend/routers/agent.py backend/app_v2/runtime/security.py
+python3 -m pytest tests/agent/test_agent_endpoints.py tests/test_agent_runtime.py tests/test_feature_contracts.py -q
+python3 -m py_compile backend/routers/agent.py backend/core/flowi_workflow_templates.py backend/app_v2/modules/agent_runtime/*.py
 cd frontend && npm run build
 ```

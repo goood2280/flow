@@ -105,6 +105,12 @@ def save_template(row: dict[str, Any], *, by: str = "", is_admin: bool = False) 
         raise PermissionError("shared=true requires admin")
 
     existing = get_template(key) or {}
+    existing_owner = str(existing.get("owner") or "")
+    if existing and not is_admin:
+        if bool(existing.get("shared")):
+            raise PermissionError("shared templates require admin to update")
+        if existing_owner and existing_owner != str(by or ""):
+            raise PermissionError("only owner or admin can update")
     out = {
         "key": _slug(key),
         "title": title,
@@ -114,7 +120,7 @@ def save_template(row: dict[str, Any], *, by: str = "", is_admin: bool = False) 
             "slots_required": list(trigger.get("slots_required") or []),
         },
         "steps": [_clean_step(s) for s in steps if isinstance(s, dict)],
-        "owner": str(existing.get("owner") or by or ""),
+        "owner": str(existing_owner or by or ""),
         "shared": shared,
         "created_at": existing.get("created_at") or _now(),
         "updated_at": _now(),

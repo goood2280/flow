@@ -1213,18 +1213,23 @@ def _require_agent_admin(request: Request) -> dict[str, Any]:
     return require_admin(request)
 
 
-def _require_agent_wiki_admin(request: Request) -> dict[str, Any]:
-    me = current_user(request)
+def _can_manage_agent_knowledge(me: dict[str, Any]) -> bool:
     username = me.get("username") or ""
-    if (
+    return (
         is_page_manager(me, "diagnosis")
         or is_page_manager(me, "agent")
         or is_page_manager(me, "knowledge")
         or is_page_admin(username, "diagnosis")
+        or is_page_admin(username, "agent")
         or is_page_admin(username, "knowledge")
-    ):
+    )
+
+
+def _require_agent_wiki_admin(request: Request) -> dict[str, Any]:
+    me = current_user(request)
+    if _can_manage_agent_knowledge(me):
         return me
-    raise HTTPException(403, "admin or diagnosis/agent page manager only")
+    raise HTTPException(403, "admin or diagnosis/agent/knowledge page manager only")
 
 
 _AGENT_WIKI_PAGE_KINDS = {"product", "lot", "wafer", "knob", "issue", "meeting", "report", "decision", "agent_wiki", "schema_doc", "ontology", "manual"}
@@ -2162,6 +2167,210 @@ def prompt_history(
     return {"ok": True, "limit": limit, "user": target_user, "rows": history}
 
 
+_OVERVIEW_KIND_ALIASES = {
+    "semantic": {"semantic_proposal", "semantic_change"},
+    "semantic_proposal": {"semantic_proposal"},
+    "proposal": {"semantic_proposal"},
+    "semantic_change": {"semantic_change"},
+    "wiki": {"wiki_page", "wiki_source"},
+    "wiki_page": {"wiki_page"},
+    "agent_wiki": {"wiki_page"},
+    "schema_doc": {"wiki_page"},
+    "wiki_source": {"wiki_source"},
+    "source": {"wiki_source"},
+    "prompt": {"prompt_history"},
+    "prompt_history": {"prompt_history"},
+    "trace": {"prompt_history"},
+    "knowledge_event": {"knowledge_event"},
+    "event": {"knowledge_event"},
+}
+
+
+def _overview_query_hit(row: dict[str, Any], q: str) -> bool:
+    needle = str(q or "").strip().lower()
+    if not needle:
+        return True
+    return needle in json.dumps(row, ensure_ascii=False, default=str).lower()
+
+
+def _overview_kind_allowed(filter_kind: str, overview_kind: str, row_kind: str = "") -> bool:
+    kind = str(filter_kind or "").strip()
+    if not kind or kind == "all":
+        return True
+    allowed = _OVERVIEW_KIND_ALIASES.get(kind, {kind})
+    return overview_kind in allowed or row_kind == kind
+
+
+def _overview_timestamp(row: dict[str, Any]) -> str:
+    for key in ("timestamp", "updated_at", "created_at", "ts", "changed_at"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    return str(payload.get("changed_at") or "").strip()
+
+
+def _overview_item(
+    *,
+    overview_kind: str,
+    row: dict[str, Any],
+    title: str = "",
+    summary: str = "",
+    source: str = "",
+    status: str = "",
+    row_kind: str = "",
+) -> dict[str, Any]:
+    raw_kind = row_kind or str(row.get("kind") or row.get("event_type") or row.get("source_type") or "")
+    return {
+        "id": str(row.get("id") or row.get("doc_id") or row.get("source_id") or row.get("event_id") or row.get("key") or ""),
+        "kind": overview_kind,
+        "row_kind": raw_kind,
+        "title": str(title or row.get("title") or row.get("term") or row.get("prompt") or row.get("action") or raw_kind or overview_kind),
+        "summary": _summary_text(summary or row.get("summary") or row.get("content_preview") or row.get("answer_excerpt") or row.get("rationale") or "", limit=280),
+        "timestamp": _overview_timestamp(row),
+        "source": str(source or row.get("source") or row.get("source_type") or row.get("event") or ""),
+        "status": str(status or row.get("status") or row.get("result_type") or ""),
+        "tags": [str(x) for x in _listify(row.get("tags")) if str(x).strip()][:12],
+        "raw": row,
+    }
+
+
+def _filter_overview_rows(rows: list[dict[str, Any]], q: str, kind: str, overview_kind: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        row_kind = str(row.get("kind") or row.get("event_type") or row.get("source_type") or "")
+        if not _overview_kind_allowed(kind, overview_kind, row_kind):
+            continue
+        if not _overview_query_hit(row, q):
+            continue
+        out.append(row)
+    return out
+
+
+@router.get("/knowledge/overview")
+def agent_knowledge_overview(
+    request: Request,
+    q: str = Query("", max_length=200),
+    kind: str = Query("", max_length=80),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    current_user(request)
+    q_text = str(q or "").strip()
+    kind_filter = str(kind or "").strip()
+    read_limit = max(limit * 4, 100)
+
+    inventory_kind = "" if kind_filter in _OVERVIEW_KIND_ALIASES else kind_filter
+    inventory = knowledge_inventory(request, q=q_text, tag="", kind=inventory_kind)
+    inventory_items = [
+        item for item in (inventory.get("items") or [])
+        if isinstance(item, dict) and _overview_kind_allowed(kind_filter, "knowledge_inventory", str(item.get("kind") or ""))
+    ]
+
+    proposals = _filter_overview_rows(_learn_list_proposals(status="", limit=500), q_text, kind_filter, "semantic_proposal")
+    pending_proposals = [row for row in proposals if str(row.get("status") or "") == "pending"]
+    semantic_changes = _filter_overview_rows(_lex_list_changes(limit=read_limit), q_text, kind_filter, "semantic_change")
+    wiki_pages = _filter_overview_rows(kv.list_agent_wiki_pages(q=q_text, limit=read_limit), q_text, kind_filter, "wiki_page")
+    wiki_sources = _filter_overview_rows(kv.list_agent_wiki_sources(q=q_text, source_type="", limit=read_limit), q_text, kind_filter, "wiki_source")
+    knowledge_events = _filter_overview_rows(kv.list_events(limit=read_limit, q=q_text), q_text, kind_filter, "knowledge_event")
+    prompt_rows = prompt_history(request, limit=min(100, read_limit), user="").get("rows") or []
+    recent_prompt_history = _filter_overview_rows(
+        [row for row in prompt_rows if isinstance(row, dict)],
+        q_text,
+        kind_filter,
+        "prompt_history",
+    )
+
+    recent_items: list[dict[str, Any]] = []
+    recent_items.extend(
+        _overview_item(
+            overview_kind="knowledge_inventory",
+            row=item,
+            title=str(item.get("title") or ""),
+            summary=str(item.get("summary") or ""),
+            source=str(item.get("source") or ""),
+            status="promoted" if item.get("promoted") else "",
+            row_kind=str(item.get("kind") or ""),
+        )
+        for item in inventory_items[:limit]
+    )
+    recent_items.extend(
+        _overview_item(
+            overview_kind="semantic_proposal",
+            row=row,
+            title=str(row.get("term") or ""),
+            summary=str(row.get("rationale") or ""),
+            source=str((row.get("origin") or {}).get("kind") if isinstance(row.get("origin"), dict) else ""),
+            row_kind=str(row.get("category") or ""),
+        )
+        for row in proposals[:limit]
+    )
+    recent_items.extend(
+        _overview_item(overview_kind="wiki_page", row=row, row_kind=str(row.get("kind") or ""))
+        for row in wiki_pages[:limit]
+    )
+    recent_items.extend(
+        _overview_item(overview_kind="wiki_source", row=row, row_kind=str(row.get("source_type") or ""))
+        for row in wiki_sources[:limit]
+    )
+    recent_items.extend(
+        _overview_item(
+            overview_kind="prompt_history",
+            row=row,
+            title=str(row.get("prompt") or ""),
+            summary=str(row.get("answer_excerpt") or ""),
+            source=str(row.get("action") or row.get("feature") or ""),
+            status=str(row.get("status") or ""),
+            row_kind=str(row.get("feature") or row.get("intent") or ""),
+        )
+        for row in recent_prompt_history[:limit]
+    )
+    recent_items.extend(
+        _overview_item(overview_kind="knowledge_event", row=row, row_kind=str(row.get("event_type") or ""))
+        for row in knowledge_events[:limit]
+    )
+    recent_items.extend(
+        _overview_item(
+            overview_kind="semantic_change",
+            row=row,
+            title=f"{row.get('scope') or ''}:{row.get('key') or ''}".strip(":"),
+            summary=_summary_text(row.get("before"), row.get("after")),
+            source=str(row.get("by") or ""),
+            row_kind=str(row.get("scope") or ""),
+        )
+        for row in semantic_changes[:limit]
+    )
+    recent_items.sort(key=lambda row: str(row.get("timestamp") or ""), reverse=True)
+
+    inventory_counts = inventory.get("counts") if isinstance(inventory.get("counts"), dict) else {}
+    counts = {
+        "knowledge_inventory": len(inventory_items),
+        "semantic_proposals": len(proposals),
+        "pending_semantic_proposals": len(pending_proposals),
+        "semantic_changes": len(semantic_changes),
+        "wiki_pages": len(wiki_pages),
+        "wiki_sources": len(wiki_sources),
+        "prompt_history": len(recent_prompt_history),
+        "knowledge_events": len(knowledge_events),
+        "recent_items": len(recent_items[:limit]),
+        "inventory_by_kind": inventory_counts,
+    }
+
+    return {
+        "ok": True,
+        "query": q_text,
+        "kind": kind_filter,
+        "limit": limit,
+        "counts": counts,
+        "recent_items": recent_items[:limit],
+        "pending_semantic_proposals": pending_proposals[:limit],
+        "recent_wiki_pages": wiki_pages[:limit],
+        "recent_wiki_sources": wiki_sources[:limit],
+        "recent_prompt_history": recent_prompt_history[:limit],
+        "recent_knowledge_events": knowledge_events[:limit],
+        "recent_semantic_changes": semantic_changes[:limit],
+    }
+
+
 @router.get("/wiki/sources")
 def agent_wiki_sources(
     request: Request,
@@ -2936,9 +3145,7 @@ def workflows_list(request: Request) -> dict[str, Any]:
 def workflows_save(req: WorkflowSaveReq, request: Request) -> dict[str, Any]:
     me = current_user(request)
     username = str(me.get("username") or "")
-    is_admin = (str(me.get("role") or "").lower() == "admin"
-                or is_page_admin(username, "agent")
-                or is_page_admin(username, "diagnosis"))
+    is_admin = _can_manage_agent_knowledge(me)
     try:
         row = wf_templates.save_template(
             req.model_dump(),
@@ -2963,9 +3170,7 @@ def workflows_update(key: str, req: WorkflowSaveReq, request: Request) -> dict[s
 def workflows_delete(key: str, request: Request) -> dict[str, Any]:
     me = current_user(request)
     username = str(me.get("username") or "")
-    is_admin = (str(me.get("role") or "").lower() == "admin"
-                or is_page_admin(username, "agent")
-                or is_page_admin(username, "diagnosis"))
+    is_admin = _can_manage_agent_knowledge(me)
     try:
         removed = wf_templates.delete_template(key, by=username, is_admin=is_admin)
     except PermissionError as exc:

@@ -16,6 +16,7 @@ if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
 from routers import agent  # noqa: E402
+from app_v2.modules.semantic_learning import inbox as semantic_inbox  # noqa: E402
 
 
 class DummyState:
@@ -179,6 +180,124 @@ def test_prompt_history_reads_flow_data_activity(tmp_path, monkeypatch):
     assert out["rows"][0]["prompt"].startswith("A1001")
     assert out["rows"][0]["feature"] == "splittable"
     assert out["rows"][0]["source_ai"] == "agent_page"
+
+
+def test_agent_knowledge_overview_combines_runtime_sources(tmp_path, monkeypatch):
+    root = _install_agent_wiki_tmp(monkeypatch, tmp_path)
+    monkeypatch.setattr(semantic_inbox, "INBOX_DIR", tmp_path / "semantic" / "proposals")
+    activity = tmp_path / "flowi_activity.jsonl"
+    activity.write_text(
+        json.dumps({
+            "timestamp": "2026-05-01T00:03:00+00:00",
+            "username": "alice",
+            "event": "chat",
+            "fields": {
+                "prompt": "DIBL split 영향 정리해줘",
+                "feature": "knowledge",
+                "intent": "knowledge_impact_context",
+                "selected_function": "knowledge.impact_context.lookup",
+                "result_status": "success",
+                "answer": "DIBL split impact",
+            },
+        }, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(agent.flowi_llm, "FLOWI_ACTIVITY_FILE", activity)
+    monkeypatch.setattr(agent.semi, "rag_knowledge_view", lambda *_args, **_kwargs: {
+        "knowledge_cards": [],
+        "causal_edges": [],
+        "runtime_knowledge": [],
+    })
+    monkeypatch.setattr(agent.semi, "all_historical_cases", lambda: [])
+    monkeypatch.setattr(agent.flowi_llm, "_flowi_promoted_knowledge_items", lambda limit=200: [])
+
+    agent.kv.upsert_doc(agent.KnowledgeDoc(
+        doc_id="dibl_runtime_note",
+        kind="agent_wiki",
+        title="DIBL runtime note",
+        summary="DIBL split impact maintained page",
+        body="DIBL split impact maintained page",
+        actor="root",
+        tags=["DIBL"],
+    ))
+    agent.kv.register_agent_wiki_source({
+        "source_type": "markdown",
+        "title": "DIBL source memo",
+        "content": "DIBL source memo from meeting",
+        "tags": ["DIBL"],
+        "actor": "root",
+    })
+    agent.kv.append_event({
+        "event_type": "split_impact",
+        "source_type": "meeting",
+        "source_id": "meeting-1",
+        "title": "DIBL split impact",
+        "summary": "DIBL impact discussed in meeting",
+        "actor": "alice",
+        "entity": {"product": "PRODA"},
+        "tags": ["DIBL"],
+    })
+    semantic_inbox.enqueue_proposal({
+        "term": "DIBL drift",
+        "category": "new_canonical",
+        "confidence": 0.8,
+        "rationale": "DIBL drift was mentioned repeatedly",
+        "origin": {"kind": "meeting", "ref": "meeting-1"},
+    })
+
+    out = agent.agent_knowledge_overview(req(username="alice"), q="DIBL", kind="", limit=20)
+
+    assert out["ok"] is True
+    assert out["counts"]["pending_semantic_proposals"] == 1
+    assert out["pending_semantic_proposals"][0]["term"] == "DIBL drift"
+    assert out["recent_wiki_pages"][0]["doc_id"] == "dibl_runtime_note"
+    assert out["recent_wiki_sources"][0]["title"] == "DIBL source memo"
+    assert out["recent_knowledge_events"][0]["event_type"] == "split_impact"
+    assert out["recent_prompt_history"][0]["prompt"].startswith("DIBL split")
+    assert {row["kind"] for row in out["recent_items"]} >= {
+        "semantic_proposal",
+        "wiki_page",
+        "wiki_source",
+        "knowledge_event",
+        "prompt_history",
+    }
+    assert root.exists()
+
+
+def test_workflow_shared_templates_require_admin(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent.wf_templates, "_DIR", tmp_path / "workflows")
+    payload = {
+        "key": "personal_dibl_review",
+        "title": "DIBL 개인 질문 설계",
+        "trigger": {"prompt_contains": ["DIBL"], "intent_in": ["knowledge_impact_context"], "slots_required": ["product"]},
+        "steps": [{"unit_ai": "tracker", "action": "lookup", "bind_slots": ["product"]}],
+        "shared": False,
+    }
+
+    saved = agent.workflows_save(agent.WorkflowSaveReq(**payload), req(username="alice"))
+    assert saved["template"]["owner"] == "alice"
+    assert saved["template"]["shared"] is False
+
+    with pytest.raises(HTTPException) as update_denied:
+        agent.workflows_save(
+            agent.WorkflowSaveReq(**{**payload, "title": "Bob overwrite"}),
+            req(username="bob"),
+        )
+    assert update_denied.value.status_code == 403
+
+    with pytest.raises(HTTPException) as denied:
+        agent.workflows_save(
+            agent.WorkflowSaveReq(**{**payload, "key": "shared_dibl_review", "shared": True}),
+            req(username="alice"),
+        )
+    assert denied.value.status_code == 403
+
+    admin_saved = agent.workflows_save(
+        agent.WorkflowSaveReq(**{**payload, "key": "shared_dibl_review", "shared": True}),
+        req(role="admin", username="root"),
+    )
+    assert admin_saved["template"]["owner"] == "root"
+    assert admin_saved["template"]["shared"] is True
 
 
 def test_prompt_review_uses_missing_slot_fallback(monkeypatch):
