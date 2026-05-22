@@ -170,6 +170,31 @@ def has_admin_token() -> bool:
     return bool(_raw_config().get("admin_token"))
 
 
+def list_profiles() -> list[str]:
+    """Provider keys with a saved profile in admin_settings.json.
+
+    Returns distinct provider names from `llm_profiles` (if present) and the
+    active `llm.provider` (if set). Used by the LLM config UI to render which
+    profiles already have a saved entry. Never returns secret values — only
+    the key names.
+    """
+    try:
+        adm = load_json(ADMIN_SETTINGS_FILE, {}) or {}
+    except Exception:
+        adm = {}
+    seen: list[str] = []
+    profiles = adm.get("llm_profiles") if isinstance(adm.get("llm_profiles"), dict) else {}
+    for key in profiles.keys():
+        name = str(key or "").strip().lower()
+        if name and name not in seen:
+            seen.append(name)
+    legacy = adm.get("llm") if isinstance(adm.get("llm"), dict) else {}
+    active = str(legacy.get("provider") or "").strip().lower()
+    if active and active not in seen:
+        seen.append(active)
+    return seen
+
+
 def _openai_chat_url(url: str, fmt: str) -> str:
     """Accept either a full OpenAI-compatible endpoint or a `/v1` base URL."""
     url = str(url or "").strip()

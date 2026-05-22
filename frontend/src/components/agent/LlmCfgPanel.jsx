@@ -19,6 +19,8 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
   const[cfg,setCfg]=useState(FALLBACK_LLM_DEFAULTS.generic);
   const[profiles,setProfiles]=useState({});
   const[profileDefaults,setProfileDefaults]=useState({});
+  const[presets,setPresets]=useState([]);
+  const[presetKey,setPresetKey]=useState("");
   const[msg,setMsg]=useState("");
   const[busy,setBusy]=useState(false);
   const[testBusy,setTestBusy]=useState(false);
@@ -78,6 +80,29 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     }).catch(e=>setMsg("로드 오류: "+e.message));
   };
   useEffect(()=>{reload();},[readOnly]);
+  useEffect(()=>{
+    if(readOnly)return;
+    sf("/api/admin/llm/presets").then(d=>{
+      const list=Array.isArray(d?.presets)?d.presets:[];
+      setPresets(list);
+      const def=list.find(p=>p?.is_default)?.key||list[0]?.key||"";
+      setPresetKey(def);
+    }).catch(()=>{});
+  },[readOnly]);
+  const applyPreset=(key)=>{
+    if(readOnly)return;
+    const p=presets.find(x=>x?.key===key);
+    if(!p)return;
+    setPresetKey(key);
+    patch({
+      provider:p.provider||"generic",
+      model:p.model||"",
+      format:p.format||"openai",
+      auth_mode:p.auth_mode||"bearer",
+      timeout_s:Number(p.timeout_s)||20,
+    });
+    setMsg(`프리셋 적용: ${p.label||key} — api_url 과 token 은 직접 입력하세요.`);
+  };
   const patch=(next)=>setCfg(c=>{
     if(readOnly)return c;
     const updated=normalizeWithDefaults({...c,...next},c.provider,profileDefaults);
@@ -180,6 +205,21 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
       <input type="checkbox" checked={!!cfg.enabled} onChange={e=>patch({enabled:e.target.checked})}/>
       LLM 기능 활성화
     </label>
+    {presets.length>0&&(<div style={{display:"grid",gridTemplateColumns:"1fr 2fr",gap:10,marginBottom:4}}>
+      <div>
+        <div style={L}>프리셋</div>
+        <select value={presetKey} onChange={e=>applyPreset(e.target.value)} style={I} title="프리셋을 고르면 provider/model/format/auth_mode/timeout 이 채워집니다. api_url 과 admin_token 은 직접 입력하세요.">
+          {presets.map(p=>(<option key={p.key} value={p.key}>{p.label||p.key}</option>))}
+        </select>
+      </div>
+      <div>
+        <div style={L}>설명</div>
+        <div style={{...I,background:"transparent",border:"1px dashed var(--border)",color:"var(--text-secondary)",lineHeight:1.4,whiteSpace:"normal"}}>
+          {presets.find(p=>p.key===presetKey)?.description||"프리셋을 선택하면 권장 설정이 자동 채워집니다."}
+          {(presets.find(p=>p.key===presetKey)?.api_url_hint)&&<div style={{fontSize:12,marginTop:4,fontFamily:"monospace",opacity:0.8}}>예: {presets.find(p=>p.key===presetKey)?.api_url_hint}</div>}
+        </div>
+      </div>
+    </div>)}
     <div style={{display:"grid",gridTemplateColumns:"1fr 2fr",gap:10}}>
       <div>
         <div style={L}>API Profile</div>

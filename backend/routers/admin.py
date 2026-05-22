@@ -152,6 +152,48 @@ LLM_PROVIDER_DEFAULTS: Dict[str, Dict[str, Any]] = {
 }
 LLM_ALLOWED_PROVIDERS = set(LLM_PROVIDER_DEFAULTS)
 
+# Named LLM presets — surfaced via GET /api/admin/llm/presets so the UI can
+# offer a one-click base configuration. These contain NO secrets (no api_url,
+# no admin_token). Admin still fills in the endpoint and credential.
+LLM_NAMED_PRESETS: List[Dict[str, Any]] = [
+    {
+        "key": "gpt_oss_120b_internal",
+        "label": "GPT OSS 120B (사내)",
+        "description": "사내 운영 GPT OSS 120B endpoint. Flow 기본 LLM 백본.",
+        "provider": "openai_compatible",
+        "model": "gpt-oss-120b",
+        "auth_mode": "bearer",
+        "format": "openai",
+        "timeout_s": 60,
+        "api_url_hint": "https://llm.internal/v1/chat/completions",
+        "is_default": True,
+    },
+    {
+        "key": "dev_gemini_flash",
+        "label": "Dev: Gemini Flash",
+        "description": "로컬/외부 개발 fallback. Google ADC 인증.",
+        "provider": "vertex_gemini",
+        "model": "google/gemini-2.5-flash",
+        "auth_mode": "google_adc",
+        "format": "openai",
+        "timeout_s": 30,
+        "api_url_hint": "https://aiplatform.googleapis.com/v1beta1/projects/<project>/locations/us-central1/endpoints/openapi/chat/completions",
+        "is_default": False,
+    },
+    {
+        "key": "dev_openai_mini",
+        "label": "Dev: OpenAI 5.4-mini",
+        "description": "로컬/외부 개발 fallback. OpenAI 호환 mini 모델.",
+        "provider": "openai",
+        "model": "gpt-5.4-mini",
+        "auth_mode": "bearer",
+        "format": "openai",
+        "timeout_s": 20,
+        "api_url_hint": "https://api.openai.com/v1/chat/completions",
+        "is_default": False,
+    },
+]
+
 # Map UI-facing long keys to admin_settings.json short keys used by core/roots.py
 _DR_KEY_MAP = {
     "db_root":        "db",
@@ -1243,6 +1285,19 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
            detail=f"refresh={data.get('dashboard_refresh_minutes')} data_roots={'yes' if dr_in else 'no'} backup={'yes' if bk_in else 'no'} mail={'yes' if mail_in else 'no'} llm={'yes' if llm_in else 'no'} flowi_defaults={'yes' if flowi_defaults_in is not None else 'no'} flowi_persona={'yes' if flowi_persona_in is not None else 'no'} devguide={'yes' if devguide_in is not None else 'no'}",
            tab="admin")
     return {"ok": True, "settings": data, "data_roots": (_resolver_snapshot() if dr_in is not None else None)}
+
+
+# ── LLM presets (P1) ──────────────────────────────────────────────
+# Admin-only safe metadata for one-click LLM profile selection. Returns the
+# `gpt_oss_120b_internal` (Flow 기본) plus dev fallback presets. Secret fields
+# (api_url, admin_token) are NEVER returned — admin fills them in the panel.
+@router.get("/llm/presets")
+def admin_llm_presets(_admin=Depends(require_admin)):
+    return {
+        "presets": LLM_NAMED_PRESETS,
+        "default_key": next((p["key"] for p in LLM_NAMED_PRESETS if p.get("is_default")), ""),
+        "saved_profiles": _llm_profiles_from_admin(_load_admin_settings()),
+    }
 
 
 # ── Backup (v8.7.0) ────────────────────────────────────────────────

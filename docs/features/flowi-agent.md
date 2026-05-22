@@ -96,6 +96,22 @@ export LANGSMITH_API_KEY=...
 
 The UI shows whether LangGraph, LangSmith, SSE, and LLM are ready without exposing secrets.
 
+## LLM Profile (P1)
+
+Flow는 사내 GPT OSS 120B를 기본 LLM 백본으로 쓴다. dev/외부 환경은 Gemini Flash 또는 OpenAI mini로 fallback한다.
+
+| Preset key | 용도 | provider | model | auth_mode | timeout_s |
+|---|---|---|---|---|---|
+| `gpt_oss_120b_internal` | 사내 운영 | `openai_compatible` | `gpt-oss-120b` | `bearer` | 60 |
+| `dev_gemini_flash` | dev fallback | `vertex_gemini` | `google/gemini-2.5-flash` | `google_adc` | 30 |
+| `dev_openai_mini` | dev fallback | `openai` | `gpt-5.4-mini` | `bearer` | 20 |
+
+각 preset은 `GET /api/admin/llm/presets`로 메타데이터만 노출하고 (api_url/admin_token은 NEVER 포함), admin이 LLM 패널에서 preset을 고르면 provider/model/format/auth_mode/timeout이 자동 채워진다. 실제 endpoint URL과 token은 admin이 직접 입력해서 `POST /api/admin/settings/save`로 저장한다 — `admin_settings.json.llm` (active) + `admin_settings.json.llm_profiles[<provider>]` (per-provider 저장본) 양쪽에 반영된다.
+
+저장된 프로필 키 목록은 `llm_adapter.list_profiles()` 또는 admin 패널의 `llm_profiles` dict로 확인한다. token rotation은 같은 preset을 다시 골라 admin_token만 갱신 → 저장.
+
+401 fallback: bearer 토큰이 만료된 vertex Gemini OpenAI-호환 endpoint는 `_raw_config()`가 자동으로 `auth_mode="google_adc"`로 강제하고 admin_token을 무시한다 (`llm_adapter._is_vertex_openai_compatible_config`).
+
 ## Guardrails
 
 - Runtime layer is read-only by default.

@@ -255,6 +255,35 @@ def test_parse_json_object_repairs_fenced_and_prose_json():
     assert obj["target"] == "lot_progress"
 
 
+def test_list_profiles_empty_admin_settings(monkeypatch):
+    monkeypatch.setattr(llm_adapter, "load_json", lambda *_args, **_kwargs: {})
+    assert llm_adapter.list_profiles() == []
+
+
+def test_list_profiles_active_only(monkeypatch):
+    monkeypatch.setattr(
+        llm_adapter,
+        "load_json",
+        lambda *_args, **_kwargs: {"llm": {"provider": "openai_compatible", "enabled": True}},
+    )
+    assert llm_adapter.list_profiles() == ["openai_compatible"]
+
+
+def test_list_profiles_merges_profiles_and_active(monkeypatch):
+    monkeypatch.setattr(
+        llm_adapter,
+        "load_json",
+        lambda *_args, **_kwargs: {
+            "llm_profiles": {"openai_compatible": {"provider": "openai_compatible"}, "vertex_gemini": {"provider": "vertex_gemini"}},
+            "llm": {"provider": "openai_compatible"},
+        },
+    )
+    result = llm_adapter.list_profiles()
+    assert sorted(result) == ["openai_compatible", "vertex_gemini"]
+    # active provider does not duplicate when already in llm_profiles
+    assert result.count("openai_compatible") == 1
+
+
 def test_complete_json_retries_malformed_json(monkeypatch):
     calls = []
 
