@@ -124,6 +124,13 @@ class UnitAgentPlan(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict)
     outputs: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
+    unit_ai: str = ""
+    action: str = ""
+    policy: str = "read_only"
+    approval_required: bool = False
+    endpoint: str = ""
+    missing_slots: list[str] = Field(default_factory=list)
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class UnitAgentResult(BaseModel):
@@ -132,6 +139,12 @@ class UnitAgentResult(BaseModel):
     summary: str = ""
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)
+    handled: bool = False
+    guardrail: dict[str, Any] = Field(default_factory=dict)
+    tool: dict[str, Any] = Field(default_factory=dict)
+    table: dict[str, Any] = Field(default_factory=dict)
+    chart_result: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class AgentRuntimeRequest(SemanticResolveRequest):

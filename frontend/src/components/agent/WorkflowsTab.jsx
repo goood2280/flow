@@ -126,7 +126,7 @@ export default function WorkflowsTab({ user }) {
       <header>
         <h2 style={{ fontSize: 18, margin: "0 0 4px" }}>📐 워크플로우 템플릿</h2>
         <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>
-          반복되는 prompt 패턴을 declarative 템플릿으로 등록 — trigger(prompt_contains / intent_in)이 매치되면 미리 정한 unit AI step 시퀀스를 안내합니다. (실제 dispatcher 통합은 후속 PR)
+          반복 prompt 패턴을 declarative 템플릿으로 등록하고, runtime plan과 같은 unit_ai/action/policy 계약으로 dry-run/실행 결과를 확인합니다.
         </p>
       </header>
 
@@ -167,6 +167,13 @@ export default function WorkflowsTab({ user }) {
                 </span>
               )}
             </div>
+            {execution.guardrail && (
+              <div style={{ marginBottom: 8, display: "flex", gap: 8, flexWrap: "wrap", color: "var(--text-secondary)" }}>
+                <span>runtime guardrail: <code>{execution.guardrail.status || "—"}</code></span>
+                <span>approval {execution.guardrail.approval_required || 0}</span>
+                <span>blocked {execution.guardrail.blocked || 0}</span>
+              </div>
+            )}
             <div style={{ overflow: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                 <thead>
@@ -174,6 +181,7 @@ export default function WorkflowsTab({ user }) {
                     <th style={execTh()}>#</th>
                     <th style={execTh()}>unit_ai</th>
                     <th style={execTh()}>action</th>
+                    <th style={execTh()}>policy</th>
                     <th style={execTh()}>bound slots</th>
                     <th style={execTh()}>missing</th>
                     <th style={execTh()}>status</th>
@@ -186,6 +194,7 @@ export default function WorkflowsTab({ user }) {
                       <td style={execTd("40px")}>{s.index}</td>
                       <td style={execTd("140px", true)}><code>{s.unit_ai || "—"}</code></td>
                       <td style={execTd("180px", true)}><code>{s.action || "—"}</code></td>
+                      <td style={execTd("150px", true)}><code>{s.policy || "—"}</code></td>
                       <td style={execTd("240px")}>{Object.keys(s.bound_slots || {}).length ? JSON.stringify(s.bound_slots) : "—"}</td>
                       <td style={execTd("140px")}>{(s.missing_slots || []).join(", ") || "—"}</td>
                       <td style={execTd("120px")}>

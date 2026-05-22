@@ -31,6 +31,7 @@ except Exception:  # pragma: no cover — store is best-effort.
 
 
 SCHEMA_RELATION_FILE = PATHS.data_root / "schema_relations.json"
+_CATALOG_CACHE: dict[str, Any] = {"path": "", "mtime": None, "rows": None}
 
 
 _ALIAS_GROUPS: dict[str, list[str]] = {
@@ -122,6 +123,13 @@ def _schema_payload() -> dict[str, Any]:
 
 
 def _catalog_rows() -> list[dict[str, Any]]:
+    try:
+        mtime = SCHEMA_RELATION_FILE.stat().st_mtime if SCHEMA_RELATION_FILE.exists() else None
+    except OSError:
+        mtime = None
+    cache_path = str(SCHEMA_RELATION_FILE)
+    if _CATALOG_CACHE.get("path") == cache_path and _CATALOG_CACHE.get("mtime") == mtime and isinstance(_CATALOG_CACHE.get("rows"), list):
+        return [dict(row) for row in (_CATALOG_CACHE.get("rows") or [])]
     rows: list[dict[str, Any]] = []
     for item in _schema_payload().get("column_catalog") or []:
         if not isinstance(item, dict):
@@ -161,6 +169,7 @@ def _catalog_rows() -> list[dict[str, Any]]:
                     "used_by": [unit_key],
                     "wiki_doc_id": str(col.wiki_doc_id or ""),
                 })
+    _CATALOG_CACHE.update({"path": cache_path, "mtime": mtime, "rows": [dict(row) for row in rows]})
     return rows
 
 

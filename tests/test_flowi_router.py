@@ -3558,6 +3558,10 @@ def test_flowi_chat_returns_public_execution_trace(monkeypatch):
     assert out["trace"]["persona_snapshot"]["role"] == "semiconductor_process_data_analyst"
     assert "feature_docs" in out["trace"]["prompt_cache"]
     assert out["trace"]["subagent_context"]["unit_action"] == "splittable.view"
+    assert out["trace"]["semantic"]["intent"]
+    assert isinstance(out["trace"]["plan"], list)
+    assert "status" in out["trace"]["guardrail"]
+    assert isinstance(out["trace"]["unit_ai_selection"], list)
     assert out["trace"]["clarification_loop"]["status"] in {"needs_input", "done", "awaiting_confirmation"}
     assert any(node["type"] == "fastapi" for node in graph["nodes"])
     assert any(node["type"] == "feature_subagent" and "splittable" in node["title"] for node in graph["nodes"])

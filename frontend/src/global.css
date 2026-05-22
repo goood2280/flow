@@ -788,14 +788,95 @@ table.tbl tbody tr:hover {
 }
 
 .agent-runtime-split,
-.agent-runtime-columns {
+.agent-runtime-columns,
+.agent-runtime-grid {
   display: grid;
   grid-template-columns: minmax(220px, 0.7fr) minmax(320px, 1.3fr);
   gap: 10px;
 }
 
+.agent-runtime-grid {
+  grid-template-columns: minmax(280px, 0.8fr) minmax(360px, 1.2fr);
+  align-items: start;
+}
+
 .agent-runtime-columns {
   grid-template-columns: repeat(3, minmax(160px, 1fr));
+}
+
+.agent-runtime-goal {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: keep-all;
+}
+
+.agent-runtime-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-runtime-steps li {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+
+.agent-runtime-step-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--info);
+}
+
+.agent-runtime-step-dot[data-status="completed"] {
+  background: var(--ok);
+}
+
+.agent-runtime-step-dot[data-status="failed"] {
+  background: var(--bad);
+}
+
+.agent-runtime-step-dot[data-status="skipped"] {
+  background: var(--warn);
+}
+
+.agent-runtime-step-head,
+.agent-runtime-guardrail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-runtime-step-head {
+  font-weight: 700;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.agent-runtime-step-msg {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.agent-runtime-guardrail {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .agent-runtime-json {
@@ -834,7 +915,8 @@ table.tbl tbody tr:hover {
 @media (max-width: 920px) {
   .agent-runtime-control,
   .agent-runtime-split,
-  .agent-runtime-columns {
+  .agent-runtime-columns,
+  .agent-runtime-grid {
     grid-template-columns: 1fr;
   }
 }

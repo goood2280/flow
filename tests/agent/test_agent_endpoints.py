@@ -300,6 +300,31 @@ def test_workflow_shared_templates_require_admin(tmp_path, monkeypatch):
     assert admin_saved["template"]["shared"] is True
 
 
+def test_workflow_test_returns_runtime_plan_contract(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent.wf_templates, "_DIR", tmp_path / "workflows")
+    agent.workflows_save(
+        agent.WorkflowSaveReq(
+            key="knob_read",
+            title="KNOB read",
+            trigger={"prompt_contains": ["KNOB"], "intent_in": ["knob_analysis"]},
+            steps=[{"unit_ai": "splittable", "action": "knob_impact", "bind_slots": ["product", "root_lot_ids"]}],
+            shared=False,
+        ),
+        req(username="alice"),
+    )
+
+    out = agent.workflows_test(
+        agent.WorkflowTestReq(prompt="PRODA A1000 #21 KNOB 확인", intent="knob_analysis"),
+        req(username="alice"),
+    )
+
+    assert out["ok"] is True
+    assert out["matched"]["key"] == "knob_read"
+    assert out["runtime_plan"][0]["unit_ai"] == "splittable"
+    assert out["runtime_plan"][0]["policy"] == "read_only"
+    assert out["guardrail"]["status"] == "allowed"
+
+
 def test_prompt_review_uses_missing_slot_fallback(monkeypatch):
     monkeypatch.setattr(agent.llm_adapter, "is_available", lambda: False)
 

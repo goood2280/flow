@@ -28,6 +28,8 @@ export default function AgentRuntime() {
   const [semantic, setSemantic] = useState(null);
   const [events, setEvents] = useState([]);
   const [final, setFinal] = useState(null);
+  const [plan, setPlan] = useState([]);
+  const [results, setResults] = useState([]);
   const [busy, setBusy] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [err, setErr] = useState("");
@@ -66,10 +68,14 @@ export default function AgentRuntime() {
     setErr("");
     setEvents([]);
     setFinal(null);
+    setPlan([]);
+    setResults([]);
     postJson("/api/agent/runtime/run", { goal: trimmed, max_terms: 32, use_llm: useLlm })
       .then((d) => {
         const run = d?.run || {};
         setSemantic(run.semantic || null);
+        setPlan(run.plan || []);
+        setResults(run.results || []);
         setEvents(run.events || []);
         setFinal(run.conclusion || null);
       })
@@ -84,6 +90,8 @@ export default function AgentRuntime() {
     setErr("");
     setEvents([]);
     setFinal(null);
+    setPlan([]);
+    setResults([]);
     setStreaming(true);
     const params = new URLSearchParams({
       goal: trimmed,
@@ -99,6 +107,9 @@ export default function AgentRuntime() {
       try {
         const row = JSON.parse(ev.data || "{}");
         setEvents((prev) => [...prev, row]);
+        if (row.stage === "semantic_layer" && row.data?.semantic) setSemantic(row.data.semantic);
+        if (row.stage === "task_planner") setPlan(row.data?.plan || []);
+        if (row.stage === "unit_agents") setResults(row.data?.results || []);
         if (row.event === "final") setFinal(row.data?.conclusion || null);
         if (row.event === "done") {
           finished = true;
@@ -129,6 +140,9 @@ export default function AgentRuntime() {
   const graph = blueprint?.graph || {};
   const smith = blueprint?.langsmith || {};
   const llm = blueprint?.llm || {};
+  const actions = blueprint?.actions || [];
+  const actionPlan = (plan || []).filter((row) => row.unit_ai && row.action && !(row.unit_ai === "agent_runtime" && ["resolve_semantic", "plan", "review_guardrail", "conclude"].includes(row.action)));
+  const guardrail = final?.guardrail || latestGuardrail(events) || {};
 
   return (
     <div className="agent-runtime-shell">
@@ -199,39 +213,67 @@ export default function AgentRuntime() {
         {semantic && <pre className="agent-runtime-json">{shortJson({ slots: semantic.slots, polars_profile: semantic.polars_profile })}</pre>}
       </section>
 
-      <section className="agent-runtime-section">
-        <SectionTitle title="실시간 상태 업데이트" meta={streaming ? "streaming" : `${events.length} events`} />
-        <DataTable
-          rows={events}
-          columns={[
-            { key: "ts", label: "time", width: 190, render: (r) => String(r.ts || "").replace("T", " ").slice(0, 19) },
-            { key: "stage", label: "stage", width: 160 },
-            { key: "status", label: "status", width: 110 },
-            { key: "message", label: "message" },
-          ]}
-          empty="아직 실행 이벤트가 없습니다."
-          maxHeight={280}
-        />
-      </section>
-
-      <section className="agent-runtime-section">
-        <SectionTitle title="최종 결론" meta={final?.intent || "실행 후 표시"} />
-        {final ? (
-          <div className="agent-runtime-final">
-            <p>{final.answer}</p>
-            <div className="agent-runtime-columns">
-              <ListBlock title="missing" items={final.missing || []} empty="없음" />
-              <ListBlock title="warnings" items={final.warnings || []} empty="없음" />
-              <ListBlock title="next actions" items={final.next_actions || []} empty="없음" />
+      <section className="agent-runtime-section agent-runtime-grid">
+        <div>
+          <SectionTitle title="Goal / 최종 결과" meta={final?.intent || "실행 후 표시"} />
+          <div className="agent-runtime-goal">{goal}</div>
+          {final ? (
+            <div className="agent-runtime-final">
+              <p>{final.answer}</p>
+              <div className="agent-runtime-columns">
+                <ListBlock title="missing" items={final.missing || []} empty="없음" />
+                <ListBlock title="warnings" items={final.warnings || []} empty="없음" />
+                <ListBlock title="next actions" items={final.next_actions || []} empty="없음" />
+              </div>
             </div>
+          ) : (
+            <div className="agent-runtime-empty">SSE 실행 또는 1회 실행 후 결론이 표시됩니다.</div>
+          )}
+        </div>
+        <div>
+          <SectionTitle title="AgentSteps trace" meta={streaming ? "streaming" : `${events.length} events`} />
+          <StepRail events={events} />
+          <div className="agent-runtime-guardrail">
+            <span>guardrail</span>
+            <Pill tone={guardrail.status === "allowed" ? "ok" : guardrail.status === "blocked" ? "bad" : "warn"}>{guardrail.status || "pending"}</Pill>
+            <span>read-only {guardrail.read_only_actions || 0}</span>
+            <span>approval {guardrail.approval_required || 0}</span>
+            <span>blocked {guardrail.blocked || 0}</span>
           </div>
-        ) : (
-          <div className="agent-runtime-empty">SSE 실행 또는 1회 실행 후 결론이 표시됩니다.</div>
-        )}
+        </div>
       </section>
 
       <section className="agent-runtime-section">
-        <SectionTitle title="보일러플레이트 구조" meta={`${unitAgents.length} unit agents`} />
+        <SectionTitle title="실행 계획 / 결과" meta={`${actionPlan.length} actions · ${results.length} results`} />
+        <div className="agent-runtime-split">
+          <DataTable
+            rows={actionPlan}
+            columns={[
+              { key: "unit_ai", label: "unit", width: 120 },
+              { key: "action", label: "action", width: 160 },
+              { key: "policy", label: "policy", width: 150 },
+              { key: "missing_slots", label: "missing", render: (r) => (r.missing_slots || []).join(", ") || "-" },
+            ]}
+            empty="실행 계획이 없습니다."
+            maxHeight={240}
+          />
+          <DataTable
+            rows={results}
+            columns={[
+              { key: "agent_id", label: "agent", width: 180 },
+              { key: "status", label: "status", width: 100 },
+              { key: "handled", label: "handled", width: 90, render: (r) => r.handled ? "yes" : "no" },
+              { key: "summary", label: "summary" },
+              { key: "guardrail", label: "guardrail", width: 140, render: (r) => r.guardrail?.status || "-" },
+            ]}
+            empty="아직 unit action 결과가 없습니다."
+            maxHeight={240}
+          />
+        </div>
+      </section>
+
+      <section className="agent-runtime-section">
+        <SectionTitle title="보일러플레이트 구조" meta={`${unitAgents.length} unit agents · ${actions.length} actions`} />
         <DataTable
           rows={unitAgents}
           columns={[
@@ -254,6 +296,35 @@ function Status({ label, ok, warn, text }) {
       <span>{label}</span>
       <Pill tone={ok ? "ok" : warn ? "warn" : "neutral"}>{text}</Pill>
     </span>
+  );
+}
+
+function latestGuardrail(events) {
+  for (let i = (events || []).length - 1; i >= 0; i -= 1) {
+    const g = events[i]?.data?.guardrail;
+    if (g && typeof g === "object") return g;
+  }
+  return null;
+}
+
+function StepRail({ events }) {
+  const rows = (events || []).filter((event) => event.stage && !["start", "done"].includes(event.stage));
+  if (!rows.length) return <div className="agent-runtime-empty">아직 실행 단계가 없습니다.</div>;
+  return (
+    <ol className="agent-runtime-steps">
+      {rows.slice(-12).map((event, idx) => (
+        <li key={event.event_id || idx}>
+          <span className="agent-runtime-step-dot" data-status={event.status || "running"} />
+          <div>
+            <div className="agent-runtime-step-head">
+              <span>{event.stage}</span>
+              <Pill tone={event.status === "completed" ? "ok" : event.status === "failed" ? "bad" : event.status === "skipped" ? "warn" : "info"}>{event.status}</Pill>
+            </div>
+            <div className="agent-runtime-step-msg">{event.message}</div>
+          </div>
+        </li>
+      ))}
+    </ol>
   );
 }
 

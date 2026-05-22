@@ -8,6 +8,13 @@ from typing import Any, TypedDict
 
 from core import llm_adapter
 
+from .actions import (
+    build_action_blueprint,
+    build_action_plans,
+    compact_plan_rows,
+    execute_action_plan,
+    guardrail_summary_from_plans,
+)
 from .schemas import (
     AgentRuntimeEvent,
     AgentRuntimeRequest,
@@ -125,6 +132,81 @@ def _append_event(state: RuntimeState, stage: str, status: str, message: str, da
     return events
 
 
+def _append_to_events(events: list[dict[str, Any]], state: RuntimeState, stage: str, status: str, message: str, data: dict[str, Any] | None = None, event: str = "status") -> None:
+    events.append(_event(str(state.get("run_id") or ""), stage, status, message, data, event))
+
+
+def _base_plan_rows(semantic: dict[str, Any]) -> list[UnitAgentPlan]:
+    intent = str(semantic.get("intent") or "general_orchestration")
+    return [
+        UnitAgentPlan(
+            agent_id="semantic_interpreter",
+            title="Semantic Interpreter",
+            status="completed",
+            inputs={"goal": semantic.get("goal") or ""},
+            outputs=["semantic frame", "slot map", "column candidates"],
+            unit_ai="agent_runtime",
+            action="resolve_semantic",
+            policy="read_only",
+            endpoint="backend/app_v2/modules/agent_runtime/semantic.py",
+        ),
+        UnitAgentPlan(
+            agent_id="task_planner",
+            title="Task Planner",
+            status="completed",
+            inputs={"intent": intent, "slots": semantic.get("slots") or {}},
+            outputs=["unit action plan", "policy", "guardrail"],
+            depends_on=["semantic_interpreter"],
+            unit_ai="agent_runtime",
+            action="plan",
+            policy="read_only",
+            endpoint="backend/app_v2/modules/agent_runtime/actions.py",
+        ),
+    ]
+
+
+def _final_plan_rows() -> list[UnitAgentPlan]:
+    return [
+        UnitAgentPlan(
+            agent_id="critic",
+            title="Critic Agent",
+            inputs={},
+            outputs=["risk review", "missing slots", "approval needs"],
+            unit_ai="agent_runtime",
+            action="review_guardrail",
+            policy="read_only",
+        ),
+        UnitAgentPlan(
+            agent_id="conclusion",
+            title="Conclusion Agent",
+            inputs={},
+            outputs=["final answer", "next actions"],
+            depends_on=["critic"],
+            unit_ai="agent_runtime",
+            action="conclude",
+            policy="read_only",
+        ),
+    ]
+
+
+def _with_unit_selection(semantic: dict[str, Any], plans: list[UnitAgentPlan]) -> dict[str, Any]:
+    out = dict(semantic or {})
+    thought = dict(out.get("thought") or {})
+    selections = []
+    for plan in plans:
+        if plan.unit_ai in {"", "agent_runtime"} and plan.action in {"resolve_semantic", "plan", "review_guardrail", "conclude"}:
+            continue
+        selections.append({
+            "key": plan.unit_ai,
+            "title": plan.title,
+            "status": "approval_required" if plan.approval_required else ("blocked" if plan.policy == "blocked" else "planned"),
+            "reason": f"{plan.action} · {plan.policy}",
+        })
+    thought["unit_ai_selection"] = selections
+    out["thought"] = thought
+    return out
+
+
 def langsmith_status() -> dict[str, Any]:
     tracing_raw = os.environ.get("LANGSMITH_TRACING") or os.environ.get("LANGCHAIN_TRACING_V2") or ""
     project = os.environ.get("LANGSMITH_PROJECT") or os.environ.get("LANGCHAIN_PROJECT") or "flow-agent-runtime"
@@ -148,24 +230,17 @@ def langgraph_status() -> dict[str, Any]:
 
 def _select_plan(state: RuntimeState) -> list[UnitAgentPlan]:
     semantic = state.get("semantic") or {}
-    intent = str(semantic.get("intent") or "")
-    selected = ["semantic_interpreter", "task_planner", "data_contract", "executor", "critic", "conclusion"]
-    if intent in {"semantic_inspection", "traceable_orchestration"}:
-        selected = ["semantic_interpreter", "task_planner", "critic", "conclusion"]
-    plans: list[UnitAgentPlan] = []
+    action_plans, _meta = build_action_plans(
+        goal=str(state.get("goal") or semantic.get("goal") or ""),
+        semantic=semantic,
+        username=str(state.get("username") or ""),
+    )
+    plans = _base_plan_rows(semantic) + action_plans + _final_plan_rows()
     previous = ""
-    for spec in UNIT_AGENT_SPECS:
-        if spec.agent_id not in selected:
-            continue
-        depends = [previous] if previous else []
-        plans.append(UnitAgentPlan(
-            agent_id=spec.agent_id,
-            title=spec.title,
-            inputs={"intent": intent, "slots": semantic.get("slots") or {}},
-            outputs=spec.outputs,
-            depends_on=depends,
-        ))
-        previous = spec.agent_id
+    for plan in plans:
+        if not plan.depends_on and previous:
+            plan.depends_on = [previous]
+        previous = plan.agent_id
     return plans
 
 
@@ -183,6 +258,7 @@ async def semantic_node(state: RuntimeState) -> RuntimeState:
             "tokens": frame.tokens,
             "candidate_count": len(frame.candidates),
             "warnings": frame.warnings,
+            "semantic": frame.model_dump(mode="json"),
         },
     )
     return {"semantic": frame.model_dump(), "events": events, "status": "running"}
@@ -191,43 +267,80 @@ async def semantic_node(state: RuntimeState) -> RuntimeState:
 @_traceable(name="flow.agent.task_planner", run_type="chain")
 async def planning_node(state: RuntimeState) -> RuntimeState:
     plan = _select_plan(state)
+    semantic = _with_unit_selection(state.get("semantic") or {}, plan)
+    action_rows = compact_plan_rows(plan)
+    guardrail = guardrail_summary_from_plans(plan)
     events = _append_event(
         state,
         "task_planner",
         "completed",
-        f"{len(plan)} unit agents planned",
-        {"agents": [p.agent_id for p in plan]},
+        f"{len(action_rows)} unit actions planned",
+        {
+            "agents": [p.agent_id for p in plan],
+            "plan": [p.model_dump(mode="json") for p in plan],
+            "actions": action_rows,
+            "guardrail": guardrail,
+        },
     )
-    return {"plan": [p.model_dump() for p in plan], "events": events, "status": "running"}
+    return {"semantic": semantic, "plan": [p.model_dump() for p in plan], "events": events, "status": "running"}
 
 
 @_traceable(name="flow.agent.unit_execution", run_type="chain")
 async def execution_node(state: RuntimeState) -> RuntimeState:
     await asyncio.sleep(0)
     semantic = state.get("semantic") or {}
-    slots = semantic.get("slots") if isinstance(semantic.get("slots"), dict) else {}
     results: list[UnitAgentResult] = []
-    for plan in state.get("plan") or []:
-        agent_id = str(plan.get("agent_id") or "")
-        if agent_id in {"semantic_interpreter", "task_planner", "conclusion"}:
+    events = list(state.get("events") or [])
+    for raw_plan in state.get("plan") or []:
+        plan = UnitAgentPlan(**raw_plan) if isinstance(raw_plan, dict) else raw_plan
+        if not isinstance(plan, UnitAgentPlan):
             continue
-        summary = {
-            "data_contract": "checked semantic candidates and slot readiness",
-            "executor": "prepared read-only Flow action package",
-            "critic": "reviewed ambiguity and missing inputs",
-        }.get(agent_id, "completed")
-        artifacts = [{
-            "type": "semantic_slots",
-            "slots": {k: v for k, v in slots.items() if v},
-            "candidate_count": len(semantic.get("candidates") or []),
-        }]
-        results.append(UnitAgentResult(agent_id=agent_id, summary=summary, artifacts=artifacts))
-    events = _append_event(
+        if not plan.unit_ai or plan.unit_ai == "agent_runtime":
+            continue
+        _append_to_events(
+            events,
+            state,
+            "unit_agent_start",
+            "running",
+            f"{plan.unit_ai}.{plan.action} policy={plan.policy}",
+            {"plan": plan.model_dump(mode="json")},
+        )
+        result = await asyncio.to_thread(
+            execute_action_plan,
+            plan,
+            goal=str(state.get("goal") or ""),
+            semantic=semantic,
+            username=str(state.get("username") or ""),
+            context=state.get("context") if isinstance(state.get("context"), dict) else {},
+        )
+        results.append(result)
+        if result.guardrail.get("status") == "approval_required":
+            _append_to_events(
+                events,
+                state,
+                "approval_required",
+                "completed",
+                f"{plan.unit_ai}.{plan.action} requires approval",
+                {"plan": plan.model_dump(mode="json"), "result": result.model_dump(mode="json")},
+            )
+        _append_to_events(
+            events,
+            state,
+            "unit_agent_done",
+            result.status,
+            result.summary or f"{plan.unit_ai}.{plan.action} completed",
+            {"plan": plan.model_dump(mode="json"), "result": result.model_dump(mode="json")},
+        )
+    _append_to_events(
+        events,
         state,
         "unit_agents",
         "completed",
-        f"{len(results)} unit-agent results prepared",
-        {"results": [r.model_dump() for r in results]},
+        f"{len(results)} unit-agent result(s) prepared",
+        {
+            "results": [r.model_dump(mode="json") for r in results],
+            "guardrail": guardrail_summary_from_plans(state.get("plan") or []),
+        },
     )
     return {"results": [r.model_dump() for r in results], "events": events, "status": "running"}
 
@@ -236,25 +349,50 @@ def _deterministic_conclusion(state: RuntimeState) -> dict[str, Any]:
     semantic = state.get("semantic") or {}
     slots = semantic.get("slots") if isinstance(semantic.get("slots"), dict) else {}
     warnings = list(semantic.get("warnings") or [])
-    missing = []
+    results = state.get("results") if isinstance(state.get("results"), list) else []
+    plan = state.get("plan") if isinstance(state.get("plan"), list) else []
+    guardrail = guardrail_summary_from_plans(plan)
+    missing = list(guardrail.get("missing_slots") or [])
     if not any(slots.get(key) for key in ("products", "root_lot_ids", "fab_lot_ids")):
-        missing.append("product_or_lot")
+        if "product_or_lot" not in missing:
+            missing.append("product_or_lot")
     if semantic.get("intent") in {"filebrowser_ai_sql", "knob_analysis", "chart_analysis"} and not semantic.get("candidates"):
         missing.append("column_or_metric")
+    handled = [row for row in results if isinstance(row, dict) and row.get("handled")]
+    approvals = [row for row in results if isinstance(row, dict) and (row.get("guardrail") or {}).get("status") == "approval_required"]
+    blocked = [row for row in results if isinstance(row, dict) and (row.get("guardrail") or {}).get("status") == "blocked"]
     next_actions = [
-        "semantic layer 후보를 확인하고 부족한 alias/column doc을 추가",
-        "실행이 필요한 기능은 read-only API package부터 연결",
-        "LANGSMITH_TRACING=true와 LANGSMITH_PROJECT를 설정해 run trace를 누적",
+        "missing slot이 있으면 product/lot/wafer/step을 보완한 뒤 다시 실행",
+        "approval_required 작업은 해당 기능 화면의 확인 절차로 넘겨 실행",
+        "semantic coverage가 낮으면 Agent 탭에서 alias/column doc을 보강",
     ]
     if missing:
         warnings.append("missing: " + ", ".join(missing))
+    if approvals:
+        warnings.append("approval_required: " + str(len(approvals)))
+    if blocked:
+        warnings.append("blocked_by_policy: " + str(len(blocked)))
+    if blocked:
+        answer = "요청에 raw DB/file 직접 수정 성격이 있어 실행을 차단했습니다. Flow deterministic API의 승인 절차로만 처리할 수 있습니다."
+    elif approvals:
+        answer = "저장성 작업은 자동 실행하지 않았습니다. 승인 제안을 만들었고, 기능 화면의 확인 절차에서 이어갈 수 있습니다."
+    elif handled:
+        answer = f"read-only 단위 기능 {len(handled)}개를 실행했습니다. semantic/plan/guardrail trace에서 근거와 handler 결과를 확인하세요."
+    elif missing:
+        answer = "실행 전 필요한 입력값이 부족합니다. missing slot을 보완하면 같은 plan으로 다시 실행할 수 있습니다."
+    else:
+        answer = "semantic 해석과 unit action plan을 만들었지만 처리 가능한 read-only handler는 아직 연결되지 않았습니다."
     return {
-        "answer": "Agent runtime blueprint completed. The goal was normalized, unit agents were planned, and a traceable execution package was prepared.",
+        "answer": answer,
         "intent": semantic.get("intent") or "general_orchestration",
         "missing": missing,
         "warnings": warnings,
         "next_actions": next_actions,
         "semantic_coverage": semantic.get("coverage") or 0,
+        "guardrail": guardrail,
+        "handled_count": len(handled),
+        "approval_required_count": len(approvals),
+        "blocked_count": len(blocked),
     }
 
 
@@ -313,6 +451,7 @@ def _build_graph():
 
 
 def build_runtime_blueprint() -> dict[str, Any]:
+    action_blueprint = build_action_blueprint()
     return {
         "ok": True,
         "runtime": "agent_runtime",
@@ -327,6 +466,9 @@ def build_runtime_blueprint() -> dict[str, Any]:
         },
         "langsmith": langsmith_status(),
         "unit_agents": [spec.model_dump() for spec in UNIT_AGENT_SPECS],
+        "actions": action_blueprint["actions"],
+        "policies": action_blueprint["policies"],
+        "workflow_enabled": action_blueprint["workflow_enabled"],
         "endpoints": {
             "semantic": "POST /api/agent/runtime/semantic/resolve",
             "run": "POST /api/agent/runtime/run",
@@ -425,11 +567,23 @@ async def run_agent_runtime_once(req: AgentRuntimeRequest, username: str) -> Age
         if event.event == "final":
             final_data = event.data.get("conclusion") if isinstance(event.data, dict) else {}
             break
+    semantic_data: dict[str, Any] = {}
+    plan_rows: list[dict[str, Any]] = []
     for event in events:
+        if event.stage == "semantic_layer" and isinstance(event.data, dict) and isinstance(event.data.get("semantic"), dict):
+            semantic_data = event.data.get("semantic") or semantic_data
+        if event.stage == "task_planner" and isinstance(event.data, dict):
+            plan_rows = event.data.get("plan") if isinstance(event.data.get("plan"), list) else plan_rows
         if event.stage == "unit_agents" and isinstance(event.data, dict):
             result_rows = event.data.get("results") if isinstance(event.data.get("results"), list) else result_rows
     semantic = resolve_semantic_frame(req.goal, max_terms=req.max_terms)
-    plans = _select_plan({"semantic": semantic.model_dump(), "goal": req.goal})
+    plans = [UnitAgentPlan(**row) for row in plan_rows] if plan_rows else _select_plan({"semantic": semantic.model_dump(), "goal": req.goal, "username": username})
+    if semantic_data:
+        try:
+            semantic = type(semantic)(**semantic_data)
+        except Exception:
+            semantic = resolve_semantic_frame(req.goal, max_terms=req.max_terms)
+    semantic = type(semantic)(**_with_unit_selection(semantic.model_dump(), plans))
     return AgentRuntimeResult(
         run_id=run_id,
         status="completed" if latest and latest.status == "completed" else "running",
@@ -437,7 +591,7 @@ async def run_agent_runtime_once(req: AgentRuntimeRequest, username: str) -> Age
         semantic=semantic,
         plan=plans,
         results=[UnitAgentResult(**row) for row in result_rows],
-        conclusion=final_data or _deterministic_conclusion({"semantic": semantic.model_dump(), "goal": req.goal}),
+        conclusion=final_data or _deterministic_conclusion({"semantic": semantic.model_dump(), "goal": req.goal, "plan": [p.model_dump() for p in plans], "results": result_rows}),
         events=events,
         langsmith=langsmith_status(),
         langgraph=langgraph_status(),

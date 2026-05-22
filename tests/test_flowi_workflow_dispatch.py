@@ -41,6 +41,7 @@ def test_execute_steps_dry_run_shows_bound_slots_and_missing(wf_dir):
     # Step 0: product bound, lot missing
     assert steps[0]["bound_slots"]["product"] == "PRODA"
     assert "lot" in steps[0]["missing_slots"]
+    assert steps[0]["policy"] == "read_only"
     assert steps[0]["status"] == "dry_run"
     # Step 1: module is a fixed slot, both bound + missing tracked
     assert steps[1]["bound_slots"]["module"] == "GATE"
@@ -64,6 +65,7 @@ def test_execute_steps_blocks_write_actions_with_confirm_required(wf_dir):
     assert result["steps"][0]["status"] in {"ok", "no_handler", "error"}
     # Second step is a write action — never auto-executed.
     assert result["steps"][1]["status"] == "confirm_required"
+    assert result["steps"][1]["policy"] == "write_requires_approval"
 
 
 def test_execute_steps_skips_empty_unit_or_action(wf_dir):

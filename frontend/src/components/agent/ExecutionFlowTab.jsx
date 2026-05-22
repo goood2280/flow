@@ -17,18 +17,21 @@ export default function ExecutionFlowTab({ user }) {
   const [err, setErr] = useState("");
   const [result, setResult] = useState(null);
   const [thought, setThought] = useState(null);
+  const [runtime, setRuntime] = useState(null);
 
   async function runPrompt() {
     if (!prompt.trim()) { setErr("prompt를 입력해주세요"); return; }
-    setBusy(true); setErr(""); setResult(null); setThought(null);
+    setBusy(true); setErr(""); setResult(null); setThought(null); setRuntime(null);
     try {
-      const [chatResp, semResp] = await Promise.all([
+      const [chatResp, semResp, runtimeResp] = await Promise.all([
         postJson("/api/llm/flowi/chat", { prompt, product, source: "agent_v2_execution_flow" }),
         postJson("/api/agent/runtime/semantic/resolve", { goal: prompt, max_terms: 32 }).catch(() => null),
+        postJson("/api/agent/runtime/run", { goal: prompt, max_terms: 32, use_llm: false }).catch(() => null),
       ]);
       setResult(chatResp);
       const frame = semResp && semResp.semantic ? semResp.semantic : null;
       setThought(frame && frame.thought ? frame.thought : null);
+      setRuntime(runtimeResp && runtimeResp.run ? runtimeResp.run : null);
     } catch (e) {
       setErr(e?.message || "실행 실패");
     } finally {
@@ -74,6 +77,7 @@ export default function ExecutionFlowTab({ user }) {
       {busy && <Loading text="단위 AI 실행 중..." size="md" />}
 
       {result && <AnswerCard result={result} />}
+      {(runtime || (trace && trace.semantic)) && <RuntimeTraceCard runtime={runtime} trace={trace} />}
       {thought && <ActivationTableCard rows={thought.activation_table || []} />}
       {thought && <IntentDecisionCard decision={thought.intent_decision || {}} />}
       {thought && <SlotExtractionCard slots={thought.slot_extraction || {}} />}
@@ -83,6 +87,49 @@ export default function ExecutionFlowTab({ user }) {
       {trace && Array.isArray(trace.steps) && trace.steps.length > 0 && <StepsCard steps={trace.steps} />}
       {trace && trace.call_graph && <CallGraphCard graph={trace.call_graph} />}
     </div>
+  );
+}
+
+function RuntimeTraceCard({ runtime, trace }) {
+  const semantic = runtime?.semantic || trace?.semantic || {};
+  const plan = runtime?.plan || trace?.plan || [];
+  const guardrail = runtime?.conclusion?.guardrail || trace?.guardrail || {};
+  const rows = (plan || []).filter((row) => row.unit_ai && row.action && !(row.unit_ai === "agent_runtime" && ["resolve_semantic", "plan", "review_guardrail", "conclude"].includes(row.action)));
+  return (
+    <Section title="Agent Runtime 계약" hint="Home Flow-i trace와 Agent Runtime semantic/plan/guardrail을 같은 구조로 비교">
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, .7fr) minmax(320px, 1.3fr)", gap: 10 }}>
+        <div style={{ padding: 10, background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 6, fontSize: 12 }}>
+          <div><span style={{ color: "var(--text-secondary)" }}>intent </span><code>{semantic.intent || "—"}</code></div>
+          <div><span style={{ color: "var(--text-secondary)" }}>coverage </span><code>{Math.round(Number(semantic.coverage || 0) * 100)}%</code></div>
+          <div><span style={{ color: "var(--text-secondary)" }}>guardrail </span><code>{guardrail.status || "—"}</code></div>
+          <div><span style={{ color: "var(--text-secondary)" }}>missing </span><code>{(guardrail.missing_slots || []).join(", ") || "—"}</code></div>
+        </div>
+        <div style={{ overflow: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: "var(--bg-hover)", color: "var(--text-secondary)" }}>
+                <th style={th()}>unit</th>
+                <th style={th()}>action</th>
+                <th style={th()}>policy</th>
+                <th style={th()}>missing</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length ? rows.map((row, i) => (
+                <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={td("130px", true)}><code>{row.unit_ai || "—"}</code></td>
+                  <td style={td("170px", true)}>{row.action || "—"}</td>
+                  <td style={td("150px", true)}>{row.policy || "—"}</td>
+                  <td style={td()}>{(row.missing_slots || []).join(", ") || "—"}</td>
+                </tr>
+              )) : (
+                <tr><td style={td()} colSpan={4}>runtime plan이 없습니다.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </Section>
   );
 }
 

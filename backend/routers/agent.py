@@ -17,12 +17,14 @@ from pydantic import BaseModel, Field
 from app_v2.modules.agent_runtime import (
     AgentRuntimeRequest,
     SemanticResolveRequest,
+    build_action_plans,
     build_runtime_blueprint,
     encode_sse_event,
     resolve_semantic_frame,
     run_agent_runtime_once,
     stream_agent_runtime,
 )
+from app_v2.modules.agent_runtime.actions import compact_plan_rows, guardrail_summary_from_plans
 from app_v2.modules.agent_runtime.semantic import _ALIAS_GROUPS as _SEMANTIC_ALIAS_SEED
 from app_v2.modules.agent_runtime.semantic import _INTENT_HINTS as _SEMANTIC_INTENT_SEED
 from app_v2.modules.semantic_lexicon import (
@@ -3184,8 +3186,17 @@ def workflows_delete(key: str, request: Request) -> dict[str, Any]:
 def workflows_test(req: WorkflowTestReq, request: Request) -> dict[str, Any]:
     me = current_user(request)
     username = str(me.get("username") or "")
-    matched = wf_templates.match_prompt(req.prompt, intent=req.intent, username=username)
-    return {"ok": True, "matched": matched}
+    frame = resolve_semantic_frame(req.prompt or "", max_terms=32)
+    intent = req.intent or frame.intent
+    matched = wf_templates.match_prompt(req.prompt, intent=intent, username=username)
+    plans, meta = build_action_plans(goal=req.prompt or "", semantic=frame.model_dump(), username=username)
+    return {
+        "ok": True,
+        "matched": matched,
+        "semantic": frame.model_dump(mode="json"),
+        "runtime_plan": compact_plan_rows(plans),
+        "guardrail": meta.get("guardrail") or guardrail_summary_from_plans(plans),
+    }
 
 
 @router.post("/workflows/execute")
@@ -3213,4 +3224,13 @@ def workflows_execute(req: WorkflowExecuteReq, request: Request) -> dict[str, An
     else:
         raise HTTPException(400, "key or prompt is required")
     execution = wf_templates.execute_steps(template, slots=dict(req.slots or {}), dry_run=bool(req.dry_run))
-    return {"ok": True, "matched": template, "execution": execution}
+    frame = resolve_semantic_frame(req.prompt or template.get("title") or "", max_terms=32)
+    plans, meta = build_action_plans(goal=req.prompt or template.get("title") or "", semantic=frame.model_dump(), username=username)
+    return {
+        "ok": True,
+        "matched": template,
+        "execution": execution,
+        "semantic": frame.model_dump(mode="json"),
+        "runtime_plan": compact_plan_rows(plans),
+        "guardrail": meta.get("guardrail") or guardrail_summary_from_plans(plans),
+    }

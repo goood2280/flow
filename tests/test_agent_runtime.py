@@ -9,7 +9,9 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 
-from app_v2.modules.agent_runtime import build_runtime_blueprint, resolve_semantic_frame  # noqa: E402
+from app_v2.modules.agent_runtime import build_action_plans, build_runtime_blueprint, resolve_semantic_frame  # noqa: E402
+from app_v2.modules.agent_runtime.graph import encode_sse_event  # noqa: E402
+from app_v2.modules.agent_runtime.schemas import AgentRuntimeEvent  # noqa: E402
 from app_v2.runtime.security import QUERY_TOKEN_PREFIXES  # noqa: E402
 
 
@@ -34,10 +36,35 @@ def test_agent_runtime_blueprint_exposes_langgraph_langsmith_sse_contract():
     assert blueprint["endpoints"]["stream"].startswith("GET /api/agent/runtime/stream")
     assert any(agent["agent_id"] == "semantic_interpreter" for agent in blueprint["unit_agents"])
     assert "project" in blueprint["langsmith"]
+    assert any(action["key"] == "splittable.knob_impact" for action in blueprint["actions"])
+    assert "write_requires_approval" in blueprint["policies"]
+    assert blueprint["workflow_enabled"] is True
 
 
 def test_agent_runtime_sse_allows_query_token_auth_for_eventsource():
     assert "/api/agent/runtime/stream" in QUERY_TOKEN_PREFIXES
+
+
+def test_agent_runtime_action_planner_marks_read_only_and_blocked_policies():
+    frame = resolve_semantic_frame("PRODA A1000 #21 현재 step과 KNOB 영향을 확인해줘")
+    plans, meta = build_action_plans(goal=frame.goal, semantic=frame.model_dump(), username="hol")
+
+    action_keys = {f"{plan.unit_ai}.{plan.action}" for plan in plans}
+    assert {"filebrowser.current_step", "splittable.knob_impact"} <= action_keys
+    assert all(plan.policy == "read_only" for plan in plans)
+    assert meta["guardrail"]["status"] == "allowed"
+
+    blocked = resolve_semantic_frame("raw DB 원본 parquet 수정해줘")
+    blocked_plans, blocked_meta = build_action_plans(goal=blocked.goal, semantic=blocked.model_dump(), username="hol")
+    assert blocked_plans[0].policy == "blocked"
+    assert blocked_meta["guardrail"]["status"] == "blocked"
+
+
+def test_agent_runtime_sse_encode_keeps_status_final_done_contract():
+    for name in ("status", "final", "done"):
+        encoded = encode_sse_event(AgentRuntimeEvent(event=name, stage="semantic_layer", status="completed"))
+        assert encoded.startswith(f"event: {name}\n")
+        assert "data: " in encoded
 
 
 def test_semantic_frame_includes_thought_trace_with_activation_intent_slots():

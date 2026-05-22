@@ -38,6 +38,12 @@ from core import dashboard_join as dashboard_charting
 from core import knowledge_impact
 from core import knowledge_vault as kv
 from core import flowi_multisource
+from app_v2.modules.agent_runtime.actions import (
+    build_action_plans as _agent_runtime_build_action_plans,
+    compact_plan_rows as _agent_runtime_compact_plan_rows,
+    guardrail_summary_from_plans as _agent_runtime_guardrail_summary_from_plans,
+)
+from app_v2.modules.agent_runtime.semantic import resolve_semantic_frame as _agent_runtime_resolve_semantic_frame
 from routers.auth import read_users
 
 
@@ -19142,6 +19148,62 @@ def _flowi_trace_validation(tool: dict[str, Any], result: dict[str, Any]) -> dic
     }
 
 
+def _flowi_agent_runtime_contract_trace(prompt: str, tool: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        frame = _agent_runtime_resolve_semantic_frame(prompt, max_terms=32)
+        plans, meta = _agent_runtime_build_action_plans(
+            goal=prompt,
+            semantic=frame.model_dump(),
+            username=str(result.get("user") or ""),
+        )
+        plan_rows = _agent_runtime_compact_plan_rows(plans)
+        guardrail = meta.get("guardrail") or _agent_runtime_guardrail_summary_from_plans(plans)
+        selected_feature = str(tool.get("feature") or "")
+        selected_action = str(tool.get("action") or tool.get("intent") or "")
+        selections = []
+        for row in plan_rows:
+            unit_ai = str(row.get("unit_ai") or "")
+            status = "planned"
+            if row.get("policy") == "blocked" or tool.get("blocked"):
+                status = "blocked"
+            elif row.get("approval_required") or tool.get("requires_confirmation"):
+                status = "approval_required"
+            elif selected_feature and unit_ai == selected_feature:
+                status = "delegated"
+            selections.append({
+                "key": unit_ai,
+                "title": f"{unit_ai}.{row.get('action') or ''}",
+                "status": status,
+                "reason": str(row.get("policy") or "read_only"),
+            })
+        return {
+            "semantic": {
+                "intent": frame.intent,
+                "coverage": frame.coverage,
+                "slots": frame.slots,
+                "warnings": frame.warnings,
+                "candidate_count": len(frame.candidates),
+            },
+            "plan": plan_rows,
+            "unit_ai_selection": selections,
+            "guardrail": {
+                **guardrail,
+                "tool_blocked": bool(tool.get("blocked")),
+                "tool_requires_confirmation": bool(tool.get("requires_confirmation")),
+                "selected_feature": selected_feature,
+                "selected_action": selected_action,
+            },
+        }
+    except Exception as exc:
+        logger.debug("flowi agent runtime contract trace failed: %s", exc)
+        return {
+            "semantic": {},
+            "plan": [],
+            "unit_ai_selection": [],
+            "guardrail": {"status": "unavailable", "error": str(exc)[:160]},
+        }
+
+
 def _flowi_public_trace(
     *,
     prompt: str,
@@ -19310,11 +19372,16 @@ def _flowi_public_trace(
         allowed_keys=allowed_keys,
     )
     call_graph = _flowi_trace_call_graph(api_calls=api_calls, tool=tool, result=result, prompt=prompt)
+    runtime_contract = _flowi_agent_runtime_contract_trace(prompt, tool, result)
     return {
         "kind": "public_execution_trace",
         "visible": True,
         "note": "사고과정 원문이 아니라 사용자가 검증할 수 있는 실행 흐름 요약입니다.",
         "activation": call_graph.get("activation") or {},
+        "semantic": runtime_contract.get("semantic") or {},
+        "plan": runtime_contract.get("plan") or [],
+        "unit_ai_selection": runtime_contract.get("unit_ai_selection") or [],
+        "guardrail": runtime_contract.get("guardrail") or {},
         "interpretation": _flowi_trace_interpretation(tool),
         "evidence": _flowi_trace_evidence(tool, api_calls),
         "validation": _flowi_trace_validation(tool, result),
@@ -19483,6 +19550,10 @@ def _flowi_home_response_for_role(result: dict[str, Any], me: dict[str, Any]) ->
                 "visible",
                 "note",
                 "activation",
+                "semantic",
+                "plan",
+                "unit_ai_selection",
+                "guardrail",
                 "interpretation",
                 "evidence",
                 "validation",

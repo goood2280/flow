@@ -34,6 +34,7 @@ Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent surface에�
 | Layer | Path |
 |---|---|
 | Runtime schemas | `backend/app_v2/modules/agent_runtime/schemas.py` |
+| Runtime action registry | `backend/app_v2/modules/agent_runtime/actions.py` |
 | Semantic layer | `backend/app_v2/modules/agent_runtime/semantic.py` |
 | LangGraph/LangSmith graph | `backend/app_v2/modules/agent_runtime/graph.py` |
 | FastAPI routes | `backend/routers/agent.py` (`/api/agent/runtime/*`) |
@@ -49,7 +50,7 @@ Agent 탭은 FileBrowser AI SQL을 건드리지 않고, 별도 Agent surface에�
 
 `GET /api/agent/runtime/blueprint`
 
-- Returns unit-agent specs, LangGraph availability, LangSmith tracing readiness, LLM redacted status, and endpoint names.
+- Returns unit-agent specs, registered unit actions, action policies, workflow integration status, LangGraph availability, LangSmith tracing readiness, LLM redacted status, and endpoint names.
 
 `POST /api/agent/runtime/semantic/resolve`
 
@@ -64,7 +65,9 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 
 `POST /api/agent/runtime/run`
 
-- Runs the same graph once and returns collected events plus the final conclusion as JSON.
+- Runs the same graph once and returns collected events plus `semantic`, `plan`, `results`, and final conclusion as JSON.
+- `plan[]` includes `unit_ai`, `action`, `policy`, `approval_required`, `endpoint`, `missing_slots`, and `evidence_refs`.
+- `results[]` includes `handled`, `guardrail`, `tool`, `table`, `chart_result`, and `warnings`.
 
 `GET /api/agent/runtime/stream?goal=...&use_llm=false&max_terms=32`
 
@@ -81,6 +84,7 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
 `POST /api/agent/workflows/test` and `POST /api/agent/workflows/execute`
 
 - Used by `질문 설계` to show matched workflow and dry-run step results for the current prompt.
+- Returns the same runtime `semantic`, `runtime_plan`, and `guardrail` shape used by `/api/agent/runtime/run`.
 - `POST /api/agent/workflows` saves the template shape `{key,title,trigger,steps,shared}`.
 - `shared=true` and shared-template updates require admin or diagnosis/agent/knowledge page-manager rights. Personal templates can only be updated by their owner or a manager.
 
@@ -92,10 +96,12 @@ Response includes `semantic.intent`, `semantic.slots`, `semantic.candidates`, `s
    - Scores column candidates from `schema_relations.json` column catalog and existing Unit AI `ColumnDoc`.
    - Uses Polars to sort/dedupe/profile candidate evidence.
 2. `task_planner`
-   - Builds the unit-agent sequence from the semantic intent.
+   - Builds the unit action plan from semantic intent plus any matching workflow template.
+   - Applies `read_only`, `write_requires_approval`, or `blocked` policy from the action registry.
 3. `unit_agents`
-   - Produces read-only execution artifacts and readiness checks.
-   - This is the boilerplate hook where real feature API calls can be attached.
+   - Executes `read_only` plans through existing `core.flowi_units.dispatcher.try_dispatch`.
+   - Returns `approval_required` proposals for write-like app actions without running them.
+   - Blocks raw DB/file direct write plans.
 4. `conclusion`
    - Produces missing-slot warnings, next actions, and final answer.
    - LLM is optional and only polishes the final wording when enabled and configured.

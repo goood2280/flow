@@ -23,9 +23,9 @@ as one JSON per template. Stored shape:
         "created_at": "...", "updated_at": "..."
     }
 
-The dispatcher integration is intentionally light in this PR: `match_prompt`
-returns the best-matching template (or None). Wire-up into the
-_run_flowi_chat dispatcher arrives in a follow-up PR.
+`match_prompt`, Agent Runtime planning, and workflow dry-run share the same
+unit_ai/action/policy shape so the Agent tab can compare template matches with
+real runtime guardrails.
 """
 from __future__ import annotations
 
@@ -199,6 +199,15 @@ def _is_write_action(action: str) -> bool:
     return any(hint in action_l for hint in _WRITE_ACTION_HINTS)
 
 
+def _agent_action_policy(unit_ai: str, action: str) -> str:
+    try:
+        from app_v2.modules.agent_runtime.actions import action_policy_for
+
+        return action_policy_for(unit_ai, action)
+    except Exception:
+        return "write_requires_approval" if _is_write_action(action) else "read_only"
+
+
 def _bind_step_slots(step: dict[str, Any], slots: dict[str, Any]) -> dict[str, Any]:
     """Resolve `bind_slots` references against the runtime `slots` dict.
 
@@ -243,10 +252,13 @@ def execute_steps(
         action = str(raw_step.get("action") or "").strip()
         bound = _bind_step_slots(raw_step, slots)
         missing = [k for k, v in bound.items() if v in (None, "", [], {})]
+        policy = _agent_action_policy(unit_ai, action)
         row: dict[str, Any] = {
             "index": index,
             "unit_ai": unit_ai,
             "action": action,
+            "policy": policy,
+            "approval_required": policy == "write_requires_approval",
             "bound_slots": bound,
             "missing_slots": missing,
             "status": "pending",
@@ -258,11 +270,17 @@ def execute_steps(
             row["error"] = "unit_ai or action missing"
             out_steps.append(row)
             continue
+        if policy == "blocked":
+            row["status"] = "blocked"
+            row["error"] = "blocked by raw DB/file write policy"
+            confirm_required = True
+            out_steps.append(row)
+            continue
         if dry_run:
             row["status"] = "dry_run"
             out_steps.append(row)
             continue
-        if _is_write_action(action):
+        if policy == "write_requires_approval":
             row["status"] = "confirm_required"
             confirm_required = True
             out_steps.append(row)
