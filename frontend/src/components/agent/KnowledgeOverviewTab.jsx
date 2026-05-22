@@ -32,7 +32,7 @@ export default function KnowledgeOverviewTab() {
   function reload() {
     setLoading(true);
     setErr("");
-    sf("/api/agent/knowledge/overview" + qs({ q, kind, limit: 60 }))
+    loadOverview(q, kind, 60)
       .then(setData)
       .catch((e) => setErr(e?.message || "누적 지식 현황 로딩 실패"))
       .finally(() => setLoading(false));
@@ -63,6 +63,11 @@ export default function KnowledgeOverviewTab() {
 
       {!loading && data && (
         <>
+          {data.fallback && (
+            <Banner tone="warn">
+              통합 overview API를 찾지 못해 기존 Agent endpoint 조합으로 표시 중입니다. 서버 재시작 후 통합 카운트가 표시됩니다.
+            </Banner>
+          )}
           <section style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(140px, 1fr))", gap: 8 }}>
             <Counter label="제안 대기" value={counts.pending_semantic_proposals} tone="warn" />
             <Counter label="Wiki page" value={counts.wiki_pages} tone="accent" />
@@ -88,6 +93,78 @@ export default function KnowledgeOverviewTab() {
       )}
     </div>
   );
+}
+
+async function loadOverview(q, kind, limit) {
+  try {
+    return await sf("/api/agent/knowledge/overview" + qs({ q, kind, limit }));
+  } catch (e) {
+    if (e?.status !== 404 && !String(e?.message || "").toLowerCase().includes("not found")) {
+      throw e;
+    }
+    return loadFallbackOverview(q, kind, limit);
+  }
+}
+
+async function safeGet(url, fallback) {
+  try {
+    return await sf(url);
+  } catch (_) {
+    return fallback;
+  }
+}
+
+async function loadFallbackOverview(q, kind, limit) {
+  const [inventory, proposals, pages, sources, prompts, changes] = await Promise.all([
+    safeGet("/api/agent/knowledge-inventory" + qs({ q, kind: legacyInventoryKind(kind) }), { items: [], counts: {} }),
+    safeGet("/api/agent/semantic/proposals" + qs({ status: "pending", limit }), { proposals: [] }),
+    safeGet("/api/agent/wiki/pages" + qs({ q, limit }), { pages: [] }),
+    safeGet("/api/agent/wiki/sources" + qs({ q, limit }), { sources: [] }),
+    safeGet("/api/agent/prompt-history" + qs({ limit }), { rows: [] }),
+    safeGet("/api/agent/semantic/changes" + qs({ limit }), { changes: [] }),
+  ]);
+  const query = String(q || "").trim().toLowerCase();
+  const kindFilter = String(kind || "").trim();
+  const inventoryItems = (inventory.items || []).filter((row) => legacyAllowed(kindFilter, "knowledge_inventory", row.kind) && queryHit(row, query));
+  const pending = (proposals.proposals || []).filter((row) => legacyAllowed(kindFilter, "semantic_proposal", row.category) && queryHit(row, query));
+  const wikiPages = (pages.pages || []).filter((row) => legacyAllowed(kindFilter, "wiki_page", row.kind) && queryHit(row, query));
+  const wikiSources = (sources.sources || []).filter((row) => legacyAllowed(kindFilter, "wiki_source", row.source_type) && queryHit(row, query));
+  const promptRows = (prompts.rows || []).filter((row) => legacyAllowed(kindFilter, "prompt_history", row.feature || row.intent) && queryHit(row, query));
+  const semanticChanges = (changes.changes || []).filter((row) => legacyAllowed(kindFilter, "semantic_change", row.scope) && queryHit(row, query));
+  const recentItems = [
+    ...inventoryItems.map((row) => overviewItem("knowledge_inventory", row, row.kind)),
+    ...pending.map((row) => overviewItem("semantic_proposal", row, row.category)),
+    ...wikiPages.map((row) => overviewItem("wiki_page", row, row.kind)),
+    ...wikiSources.map((row) => overviewItem("wiki_source", row, row.source_type)),
+    ...promptRows.map((row) => overviewItem("prompt_history", row, row.feature || row.intent)),
+    ...semanticChanges.map((row) => overviewItem("semantic_change", row, row.scope)),
+  ].sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || ""))).slice(0, limit);
+  return {
+    ok: true,
+    fallback: true,
+    query: q,
+    kind,
+    limit,
+    counts: {
+      knowledge_inventory: inventoryItems.length,
+      semantic_proposals: pending.length,
+      pending_semantic_proposals: pending.length,
+      semantic_changes: semanticChanges.length,
+      wiki_pages: wikiPages.length,
+      wiki_sources: wikiSources.length,
+      prompt_history: promptRows.length,
+      knowledge_events: 0,
+      recent_items: recentItems.length,
+      inventory_by_kind: inventory.counts || {},
+    },
+    recent_items: recentItems,
+    pending_semantic_proposals: pending.slice(0, limit),
+    recent_wiki_pages: wikiPages.slice(0, limit),
+    recent_wiki_sources: wikiSources.slice(0, limit),
+    recent_prompt_history: promptRows.slice(0, limit),
+    recent_knowledge_events: [],
+    recent_semantic_changes: semanticChanges.slice(0, limit),
+  };
 }
 
 function Counter({ label, value, tone }) {
@@ -217,6 +294,54 @@ function kindTone(kind) {
     case "knowledge_event": return "ok";
     default: return "neutral";
   }
+}
+
+function legacyInventoryKind(kind) {
+  const value = String(kind || "");
+  return ["semantic_proposal", "semantic_change", "wiki_page", "wiki_source", "prompt_history", "knowledge_event"].includes(value) ? "" : value;
+}
+
+function legacyAllowed(filterKind, overviewKind, rowKind) {
+  const value = String(filterKind || "");
+  if (!value || value === "all") return true;
+  const groups = {
+    semantic: ["semantic_proposal", "semantic_change"],
+    proposal: ["semantic_proposal"],
+    wiki: ["wiki_page", "wiki_source"],
+    source: ["wiki_source"],
+    prompt: ["prompt_history"],
+    trace: ["prompt_history"],
+    event: ["knowledge_event"],
+  };
+  const allowed = groups[value] || [value];
+  return allowed.includes(overviewKind) || String(rowKind || "") === value;
+}
+
+function queryHit(row, query) {
+  if (!query) return true;
+  try {
+    return JSON.stringify(row || {}).toLowerCase().includes(query);
+  } catch (_) {
+    return false;
+  }
+}
+
+function overviewItem(kind, row, rowKind) {
+  const timestamp = row.timestamp || row.updated_at || row.created_at || row.ts || "";
+  const title = row.title || row.term || row.prompt || row.action || rowKind || kind;
+  const summary = row.summary || row.content_preview || row.answer_excerpt || row.rationale || "";
+  return {
+    id: row.id || row.doc_id || row.source_id || row.event_id || row.key || "",
+    kind,
+    row_kind: rowKind || "",
+    title,
+    summary,
+    timestamp,
+    source: row.source || row.source_type || row.event || "",
+    status: row.status || row.result_type || "",
+    tags: row.tags || [],
+    raw: row,
+  };
 }
 
 const surfaceStyle = {
