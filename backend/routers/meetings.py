@@ -2830,6 +2830,21 @@ def save_minutes(req: MinutesSave, request: Request):
                detail=f"meeting={m['id']} session={s['id']} ok={mail_result.get('ok')} n={len(to_addrs)}",
                tab="meetings")
 
+    # P4-wire-up: best-effort term proposals into the semantic learning queue.
+    try:
+        from app_v2.modules.semantic_learning import submit_meeting
+        learning_payload = {
+            "id": str(m.get("id") or ""),
+            "title": m.get("title") or "",
+            "agendas": s.get("agendas") or [],
+            "minutes": (s.get("minutes") or {}).get("body") or "",
+            "decisions": decisions,
+            "action_items": merged,
+        }
+        submit_meeting(learning_payload)
+    except Exception:
+        pass
+
     return {"ok": True, "meeting": m, "session": s, "mail": mail_result, "calendar_sync": sync_result, "rev": new_rev}
 
 

@@ -36,6 +36,11 @@ from app_v2.modules.semantic_lexicon import (
     upsert_alias_group as _lex_upsert_alias_group,
     upsert_intent_hint as _lex_upsert_intent_hint,
 )
+from app_v2.modules.semantic_learning import (
+    list_proposals as _learn_list_proposals,
+    submit_activity_log_batch as _learn_submit_activity_log_batch,
+    update_proposal_status as _learn_update_proposal_status,
+)
 from app_v2.shared.contracts import FlowEntityKey, KnowledgeDoc
 from core import knowledge_vault as kv
 from core import llm_adapter
@@ -314,6 +319,70 @@ def agent_semantic_intent_hints_delete(req: LexiconDeleteReq, request: Request) 
 def agent_semantic_changes(request: Request, limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
     current_user(request)
     return {"ok": True, "changes": _lex_list_changes(limit=limit)}
+
+
+# ── Semantic learning proposals queue (P4-wire-up) ───────────────────
+class ProposalDecideReq(BaseModel):
+    id: str = ""
+    status: str = ""
+    canonical: str = ""  # optional override — admin can re-route a "new_canonical" proposal
+
+
+@router.get("/semantic/proposals")
+def agent_semantic_proposals(request: Request, status: str = Query(default=""),
+                             limit: int = Query(default=200, ge=1, le=500)) -> dict[str, Any]:
+    """List pending/approved/rejected proposals from the semantic learning queue."""
+    current_user(request)
+    status_filter = status.strip() or None
+    rows = _learn_list_proposals(status=status_filter, limit=limit)
+    return {"ok": True, "proposals": rows, "count": len(rows)}
+
+
+@router.post("/semantic/proposals/decide")
+def agent_semantic_proposals_decide(req: ProposalDecideReq, request: Request) -> dict[str, Any]:
+    """Approve or reject a proposal. Approval applies it to the runtime lexicon."""
+    me = _require_agent_wiki_admin(request)
+    proposal_id = str(req.id or "").strip()
+    if not proposal_id:
+        raise HTTPException(400, "id is required")
+    status = (req.status or "").strip().lower()
+    if status not in {"approved", "rejected"}:
+        raise HTTPException(400, "status must be 'approved' or 'rejected'")
+    by = str(me.get("username") or "")
+    updated = _learn_update_proposal_status(proposal_id, status=status, by=by)
+    if not updated:
+        raise HTTPException(404, "proposal not found")
+    applied: dict[str, Any] = {"upserted": False, "canonical": ""}
+    if status == "approved":
+        term = str(updated.get("term") or "").strip()
+        category = str(updated.get("category") or "")
+        override_canonical = str(req.canonical or "").strip()
+        canonical = override_canonical or str(updated.get("canonical_match") or "").strip()
+        if category == "mapping" and canonical and term:
+            current = _lex_load_alias_groups().get(canonical) or list(_SEMANTIC_ALIAS_SEED.get(canonical) or [])
+            if term not in current:
+                current = list(current) + [term]
+            _lex_upsert_alias_group(canonical, current, by=by, seed=dict(_SEMANTIC_ALIAS_SEED))
+            applied = {"upserted": True, "canonical": canonical}
+        elif category == "new_canonical" and term:
+            target = override_canonical or term.lower()
+            current = _lex_load_alias_groups().get(target) or []
+            if term not in current:
+                current = list(current) + [term]
+            _lex_upsert_alias_group(target, current, by=by, seed=dict(_SEMANTIC_ALIAS_SEED))
+            applied = {"upserted": True, "canonical": target}
+    return {"ok": True, "proposal": updated, "applied": applied}
+
+
+@router.post("/semantic/proposals/run-batch")
+def agent_semantic_proposals_run_batch(request: Request) -> dict[str, Any]:
+    """Admin-triggered batch — scan flowi_activity.jsonl for low-coverage tokens."""
+    me = _require_agent_wiki_admin(request)
+    activity_path = flowi_llm.FLOWI_ACTIVITY_FILE if hasattr(flowi_llm, "FLOWI_ACTIVITY_FILE") else (
+        PATHS.data_root / "flowi_activity.jsonl"
+    )
+    enqueued = _learn_submit_activity_log_batch(activity_path)
+    return {"ok": True, "enqueued": int(enqueued), "by": str(me.get("username") or "")}
 
 
 @router.post("/runtime/run")
@@ -2847,6 +2916,14 @@ class WorkflowTestReq(BaseModel):
     intent: str = ""
 
 
+class WorkflowExecuteReq(BaseModel):
+    key: str = ""
+    prompt: str = ""
+    intent: str = ""
+    slots: dict[str, Any] = Field(default_factory=dict)
+    dry_run: bool = True
+
+
 @router.get("/workflows")
 def workflows_list(request: Request) -> dict[str, Any]:
     me = current_user(request)
@@ -2904,3 +2981,31 @@ def workflows_test(req: WorkflowTestReq, request: Request) -> dict[str, Any]:
     username = str(me.get("username") or "")
     matched = wf_templates.match_prompt(req.prompt, intent=req.intent, username=username)
     return {"ok": True, "matched": matched}
+
+
+@router.post("/workflows/execute")
+def workflows_execute(req: WorkflowExecuteReq, request: Request) -> dict[str, Any]:
+    """Run a workflow template's steps (dry-run by default).
+
+    The runner is conservative: write actions (`create`, `save`, `delete`,
+    `send_mail`, ...) always return `confirm_required: True` so the UI can
+    ask the user to perform them explicitly. Read-only actions are
+    dispatched through `core.flowi_units.dispatcher.try_dispatch` against
+    the named unit AI.
+    """
+    me = current_user(request)
+    username = str(me.get("username") or "")
+    key = str(req.key or "").strip()
+    template: dict[str, Any] | None
+    if key:
+        template = wf_templates.get_template(key)
+        if not template:
+            raise HTTPException(404, f"workflow not found: {key}")
+    elif req.prompt:
+        template = wf_templates.match_prompt(req.prompt, intent=req.intent, username=username)
+        if not template:
+            return {"ok": True, "matched": None, "execution": None}
+    else:
+        raise HTTPException(400, "key or prompt is required")
+    execution = wf_templates.execute_steps(template, slots=dict(req.slots or {}), dry_run=bool(req.dry_run))
+    return {"ok": True, "matched": template, "execution": execution}

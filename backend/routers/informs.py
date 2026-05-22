@@ -3460,6 +3460,13 @@ def bulk_create_informs(req: InformBulkCreateReq, request: Request):
     _save(items)
     for entry, audit in zip(created, audits):
         _audit_record(request, audit["type"], entry, audit["payload"], audit["summary"], at=audit["at"])
+    # P4-wire-up: best-effort term proposals into the semantic learning queue.
+    try:
+        from app_v2.modules.semantic_learning import submit_inform
+        for entry in created:
+            submit_inform(entry)
+    except Exception:
+        pass
     return {"ok": True, "informs": created}
 
 

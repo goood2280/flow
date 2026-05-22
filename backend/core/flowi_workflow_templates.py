@@ -177,3 +177,126 @@ def match_prompt(prompt: str, *, intent: str = "", username: str = "") -> dict[s
             continue
         return row
     return None
+
+
+# ── Workflow execution (P5) ─────────────────────────────────────────────
+# Read-only step actions can be auto-executed via the dispatcher. Anything
+# else returns `confirm_required: True` so the UI can ask the user to run
+# the write step explicitly.
+_WRITE_ACTION_HINTS = (
+    "create", "save", "delete", "remove", "update", "send_mail", "register", "approve",
+)
+
+
+def _is_write_action(action: str) -> bool:
+    action_l = str(action or "").lower()
+    return any(hint in action_l for hint in _WRITE_ACTION_HINTS)
+
+
+def _bind_step_slots(step: dict[str, Any], slots: dict[str, Any]) -> dict[str, Any]:
+    """Resolve `bind_slots` references against the runtime `slots` dict.
+
+    Returns a new dict merging `fixed_slots` with values pulled from `slots`
+    for each `bind_slots` key. Missing slot references become None so callers
+    can report `missing_slots` cleanly.
+    """
+    bound: dict[str, Any] = {}
+    bound.update({k: v for k, v in (step.get("fixed_slots") or {}).items() if k})
+    for slot_key in step.get("bind_slots") or []:
+        if not slot_key:
+            continue
+        value = slots.get(slot_key) if isinstance(slots, dict) else None
+        bound[slot_key] = value
+    return bound
+
+
+def execute_steps(
+    template: dict[str, Any],
+    *,
+    slots: dict[str, Any] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Sequentially walk a template's steps.
+
+    For each step:
+    - Bind fixed_slots ∪ bind_slots from `slots`.
+    - Mark missing slots so the UI can highlight what to fill in.
+    - If `dry_run` OR the action is a write action, do NOT call the
+      dispatcher — return `confirm_required: True` for write steps.
+    - Otherwise call the Flow-i dispatcher with the bound slots.
+
+    Returns a structured result with one row per step plus a summary.
+    """
+    slots = slots if isinstance(slots, dict) else {}
+    out_steps: list[dict[str, Any]] = []
+    confirm_required = False
+    for index, raw_step in enumerate(template.get("steps") or []):
+        if not isinstance(raw_step, dict):
+            continue
+        unit_ai = str(raw_step.get("unit_ai") or "").strip()
+        action = str(raw_step.get("action") or "").strip()
+        bound = _bind_step_slots(raw_step, slots)
+        missing = [k for k, v in bound.items() if v in (None, "", [], {})]
+        row: dict[str, Any] = {
+            "index": index,
+            "unit_ai": unit_ai,
+            "action": action,
+            "bound_slots": bound,
+            "missing_slots": missing,
+            "status": "pending",
+            "result": None,
+            "error": "",
+        }
+        if not unit_ai or not action:
+            row["status"] = "skipped"
+            row["error"] = "unit_ai or action missing"
+            out_steps.append(row)
+            continue
+        if dry_run:
+            row["status"] = "dry_run"
+            out_steps.append(row)
+            continue
+        if _is_write_action(action):
+            row["status"] = "confirm_required"
+            confirm_required = True
+            out_steps.append(row)
+            continue
+        if missing:
+            row["status"] = "missing_slots"
+            out_steps.append(row)
+            continue
+        try:
+            from core.flowi_units.dispatcher import try_dispatch  # type: ignore
+            product = ""
+            if isinstance(bound.get("product"), str):
+                product = bound["product"]
+            elif isinstance(bound.get("products"), list) and bound["products"]:
+                product = str(bound["products"][0])
+            synthetic_prompt = " ".join([
+                str(template.get("title") or ""),
+                action,
+                *[str(v) for v in bound.values() if isinstance(v, (str, int)) and str(v)],
+            ]).strip()
+            dispatcher_result = try_dispatch(
+                synthetic_prompt,
+                product=product,
+                max_rows=12,
+                agent_context={"workflow": str(template.get("key") or ""), "action": action, "slots": bound},
+                only=(unit_ai,),
+            )
+            if dispatcher_result is None:
+                row["status"] = "no_handler"
+            else:
+                row["status"] = "ok"
+                row["result"] = {"keys": sorted(list((dispatcher_result or {}).keys()))[:24]}
+        except Exception as exc:
+            row["status"] = "error"
+            row["error"] = str(exc)[:200]
+        out_steps.append(row)
+    return {
+        "workflow": str(template.get("key") or ""),
+        "title": template.get("title") or "",
+        "steps": out_steps,
+        "confirm_required": confirm_required,
+        "dry_run": bool(dry_run),
+    }

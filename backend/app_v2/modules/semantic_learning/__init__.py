@@ -21,6 +21,12 @@ from .extractor import (
     extract_from_tracker_comment,
     extract_terms,
 )
+from .hooks import (
+    submit_activity_log_batch,
+    submit_inform,
+    submit_meeting,
+    submit_tracker_comment,
+)
 from .inbox import (
     enqueue_proposal,
     list_proposals,
@@ -37,5 +43,9 @@ __all__ = [
     "extract_from_tracker_comment",
     "extract_terms",
     "list_proposals",
+    "submit_activity_log_batch",
+    "submit_inform",
+    "submit_meeting",
+    "submit_tracker_comment",
     "update_proposal_status",
 ]

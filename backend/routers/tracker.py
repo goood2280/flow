@@ -1207,6 +1207,17 @@ def add_comment(req: CommentReq, request: Request):
         source_id=f"{req.issue_id}:comment",
         lots=[{"lot_id": req.lot_id, "wafer_id": req.wafer_id}] if (req.lot_id or req.wafer_id) else None,
     )
+    # P4-wire-up: best-effort term proposals into the semantic learning queue.
+    try:
+        from app_v2.modules.semantic_learning import submit_tracker_comment
+        submit_tracker_comment({
+            "id": f"{req.issue_id}:comment",
+            "issue_id": req.issue_id,
+            "title": iss.get("title") or "",
+            "body": req.text or "",
+        })
+    except Exception:
+        pass
     return {"ok": True}
 
 

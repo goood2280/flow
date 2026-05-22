@@ -26,7 +26,9 @@ export default function WorkflowsTab({ user }) {
   const [testPrompt, setTestPrompt] = useState("PRODA A1000 GATE 모듈 인폼 작성해줘");
   const [testIntent, setTestIntent] = useState("inform");
   const [testResult, setTestResult] = useState(null);
+  const [execution, setExecution] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [testSlotsRaw, setTestSlotsRaw] = useState('{"product":"PRODA","lot":"A1000"}');
 
   function reload() {
     setLoading(true);
@@ -91,11 +93,27 @@ export default function WorkflowsTab({ user }) {
   }
 
   async function runTest() {
-    setTestResult(null);
+    setTestResult(null); setExecution(null);
     try {
       const d = await postJson("/api/agent/workflows/test", { prompt: testPrompt, intent: testIntent });
       setTestResult(d);
     } catch (e) { setErr(e?.message || "test 실행 실패"); }
+  }
+
+  async function runExecute(dryRun) {
+    setExecution(null); setErr("");
+    let slots = {};
+    try { slots = JSON.parse(testSlotsRaw || "{}"); }
+    catch (e) { setErr("slots는 JSON 객체여야 합니다"); return; }
+    try {
+      const d = await postJson("/api/agent/workflows/execute", {
+        prompt: testPrompt,
+        intent: testIntent,
+        slots,
+        dry_run: !!dryRun,
+      });
+      setExecution(d);
+    } catch (e) { setErr(e?.message || "execute 실행 실패"); }
   }
 
   function startCreate() {
@@ -115,11 +133,16 @@ export default function WorkflowsTab({ user }) {
       {err && <Banner tone="warn">{err}</Banner>}
 
       <section style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 6, padding: 12 }}>
-        <h3 style={subHead}>매치 테스트</h3>
+        <h3 style={subHead}>매치 테스트 + dry-run 실행</h3>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Field label="Prompt"><input value={testPrompt} onChange={(e) => setTestPrompt(e.target.value)} style={inputStyle({ minWidth: 280 })} /></Field>
           <Field label="intent (선택)"><input value={testIntent} onChange={(e) => setTestIntent(e.target.value)} style={inputStyle({ minWidth: 120 })} /></Field>
-          <div style={{ alignSelf: "flex-end" }}><Button onClick={runTest}>매치 확인</Button></div>
+          <Field label="slots (JSON)"><input value={testSlotsRaw} onChange={(e) => setTestSlotsRaw(e.target.value)} style={inputStyle({ minWidth: 260, fontFamily: "monospace" })} /></Field>
+          <div style={{ alignSelf: "flex-end", display: "flex", gap: 8 }}>
+            <Button onClick={runTest}>매치 확인</Button>
+            <Button onClick={() => runExecute(true)}>dry-run</Button>
+            <Button onClick={() => runExecute(false)}>실제 실행</Button>
+          </div>
         </div>
         {testResult && (
           <div style={{ marginTop: 10, fontSize: 12 }}>
@@ -132,6 +155,48 @@ export default function WorkflowsTab({ user }) {
             ) : (
               <Banner tone="info">매치되는 템플릿이 없습니다.</Banner>
             )}
+          </div>
+        )}
+        {execution && execution.execution && (
+          <div style={{ marginTop: 10, fontSize: 12 }}>
+            <div style={{ marginBottom: 6, fontWeight: 700 }}>
+              실행 결과 — {execution.execution.dry_run ? "dry-run" : "실제 실행"}
+              {execution.execution.confirm_required && (
+                <span style={{ marginLeft: 8, fontSize: 10, padding: "1px 6px", borderRadius: 3, background: "#f9731622", color: "#c2410c", fontWeight: 700 }}>
+                  WRITE STEP 사용자 확인 필요
+                </span>
+              )}
+            </div>
+            <div style={{ overflow: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                <thead>
+                  <tr style={{ background: "var(--bg-hover)", color: "var(--text-secondary)" }}>
+                    <th style={execTh()}>#</th>
+                    <th style={execTh()}>unit_ai</th>
+                    <th style={execTh()}>action</th>
+                    <th style={execTh()}>bound slots</th>
+                    <th style={execTh()}>missing</th>
+                    <th style={execTh()}>status</th>
+                    <th style={execTh()}>result / error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(execution.execution.steps || []).map((s) => (
+                    <tr key={s.index} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={execTd("40px")}>{s.index}</td>
+                      <td style={execTd("140px", true)}><code>{s.unit_ai || "—"}</code></td>
+                      <td style={execTd("180px", true)}><code>{s.action || "—"}</code></td>
+                      <td style={execTd("240px")}>{Object.keys(s.bound_slots || {}).length ? JSON.stringify(s.bound_slots) : "—"}</td>
+                      <td style={execTd("140px")}>{(s.missing_slots || []).join(", ") || "—"}</td>
+                      <td style={execTd("120px")}>
+                        <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: stepColor(s.status) + "22", color: stepColor(s.status), fontWeight: 700 }}>{s.status}</span>
+                      </td>
+                      <td style={execTd("240px")}>{s.error ? <code style={{ color: "#c2410c" }}>{s.error}</code> : (s.result ? JSON.stringify(s.result) : "—")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </section>
@@ -185,6 +250,22 @@ function splitCsv(s) {
 }
 
 const subHead = { fontSize: 13, fontWeight: 700, margin: "0 0 6px", color: "var(--accent)" };
+
+const execTh = () => ({ textAlign: "left", padding: "4px 8px", fontWeight: 700, fontSize: 11 });
+const execTd = (width = "auto", mono = false) => ({ padding: "4px 8px", verticalAlign: "top", width, fontFamily: mono ? "monospace" : "inherit" });
+
+function stepColor(status) {
+  switch (String(status || "")) {
+    case "ok": return "#10b981";
+    case "dry_run": return "#60a5fa";
+    case "confirm_required": return "#f97316";
+    case "missing_slots": return "#f97316";
+    case "no_handler": return "#9ca3af";
+    case "error": return "#ef4444";
+    case "skipped": return "#9ca3af";
+    default: return "#9ca3af";
+  }
+}
 const inputStyle = (extra = {}) => ({ padding: "4px 8px", fontSize: 13, borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", width: "100%", boxSizing: "border-box", ...extra });
 const preStyle = { margin: "6px 0 0", padding: 8, fontSize: 11, fontFamily: "monospace", background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 4, overflow: "auto", maxHeight: 200 };
 function listItemStyle(active) {

@@ -13,6 +13,7 @@ const SUB_TABS = [
   { k: "wiki", l: "운영 Wiki" },
   { k: "columns", l: "컬럼 카탈로그" },
   { k: "lexicon", l: "어휘 사전" },
+  { k: "queue", l: "제안 큐" },
 ];
 
 export default function SemanticLayerTab({ user, canManageWiki }) {
@@ -34,9 +35,123 @@ export default function SemanticLayerTab({ user, canManageWiki }) {
         {tab === "wiki" && <AgentWikiPanel canManage={!!canManageWiki} />}
         {tab === "columns" && <ColumnCatalogView />}
         {tab === "lexicon" && <LexiconView canManage={!!canManageWiki} />}
+        {tab === "queue" && <ProposalQueueView canManage={!!canManageWiki} />}
       </div>
     </div>
   );
+}
+
+// ── 제안 큐 (P4-wire-up) ─────────────────────────────
+function ProposalQueueView({ canManage }) {
+  const [status, setStatus] = useState("pending");
+  const [proposals, setProposals] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const [batchBusy, setBatchBusy] = useState(false);
+
+  const reload = () => {
+    setBusy(true); setErr("");
+    sf(`/api/agent/semantic/proposals?status=${encodeURIComponent(status)}&limit=200`)
+      .then((d) => setProposals(Array.isArray(d?.proposals) ? d.proposals : []))
+      .catch((e) => setErr(e?.message || "제안 큐 로딩 실패"))
+      .finally(() => setBusy(false));
+  };
+
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [status]);
+
+  const decide = (id, decision) => {
+    if (!canManage) return;
+    setBusy(true); setMsg("");
+    postJson("/api/agent/semantic/proposals/decide", { id, status: decision })
+      .then((d) => {
+        setMsg(decision === "approved" && d?.applied?.upserted
+          ? `승인됨 → '${d.applied.canonical}'에 반영`
+          : (decision === "approved" ? "승인됨 (lexicon 미반영)" : "거절됨"));
+        reload();
+      })
+      .catch((e) => setErr(e?.message || "결정 실패"))
+      .finally(() => setBusy(false));
+  };
+
+  const runBatch = () => {
+    if (!canManage) return;
+    setBatchBusy(true); setMsg("");
+    postJson("/api/agent/semantic/proposals/run-batch", {})
+      .then((d) => { setMsg(`activity log batch: ${d?.enqueued || 0}건 추가`); reload(); })
+      .catch((e) => setErr(e?.message || "batch 실패"))
+      .finally(() => setBatchBusy(false));
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <TabStrip
+          items={[{ k: "pending", l: "대기" }, { k: "approved", l: "승인" }, { k: "rejected", l: "거절" }]}
+          active={status}
+          onChange={setStatus}
+        />
+        {canManage && <Button onClick={runBatch} disabled={batchBusy}>{batchBusy ? "batch 실행 중..." : "activity log batch"}</Button>}
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>총 {proposals.length}건</span>
+      </div>
+      <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>
+        회의/인폼/트래커 코멘트 저장 시 자동으로 추출된 후보 어휘입니다. 승인하면 어휘 사전에 즉시 반영됩니다 — mapping은 기존 canonical에 alias로, new_canonical은 새 키로 추가됩니다.
+      </p>
+      {err && <Banner tone="warn">{err}</Banner>}
+      {msg && <Banner tone="info">{msg}</Banner>}
+      {busy ? <Loading text="로딩..." size="md" /> : (
+        proposals.length === 0 ? <EmptyState title="비어있음" hint="이 상태의 제안이 없습니다." /> : (
+          <div style={{ overflow: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "var(--bg-hover)", color: "var(--text-secondary)" }}>
+                  <th style={lexTh()}>term</th>
+                  <th style={lexTh()}>category</th>
+                  <th style={lexTh()}>canonical match</th>
+                  <th style={lexTh()}>confidence</th>
+                  <th style={lexTh()}>rationale</th>
+                  <th style={lexTh()}>origin</th>
+                  <th style={lexTh()}>created</th>
+                  {canManage && status === "pending" && <th style={lexTh()}>actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {proposals.map((p) => (
+                  <tr key={p.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={lexTd("180px", true)}><code>{p.term || "—"}</code></td>
+                    <td style={lexTd("130px")}>
+                      <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, background: catColor(p.category) + "22", color: catColor(p.category), fontWeight: 700 }}>{p.category || "—"}</span>
+                    </td>
+                    <td style={lexTd("140px", true)}>{p.canonical_match || "—"}</td>
+                    <td style={lexTd("80px", true)}>{Number(p.confidence || 0).toFixed(2)}</td>
+                    <td style={lexTd("280px")}>{p.rationale || "—"}</td>
+                    <td style={lexTd("160px")}>{(p.origin && (p.origin.kind + (p.origin.ref ? ` · ${String(p.origin.ref).slice(0, 24)}` : ""))) || "—"}</td>
+                    <td style={lexTd("160px", true)}>{p.created_at || "—"}</td>
+                    {canManage && status === "pending" && (
+                      <td style={lexTd("180px")}>
+                        <Button onClick={() => decide(p.id, "approved")} style={{ fontSize: 11, padding: "2px 8px" }}>승인</Button>
+                        <Button onClick={() => decide(p.id, "rejected")} style={{ fontSize: 11, padding: "2px 8px", marginLeft: 4 }}>거절</Button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+function catColor(category) {
+  switch (String(category || "")) {
+    case "mapping": return "#10b981";
+    case "new_canonical": return "#60a5fa";
+    case "conflict": return "#f97316";
+    case "reject": return "#9ca3af";
+    default: return "#9ca3af";
+  }
 }
 
 // ── 어휘 사전 (P3-wire-up) ───────────────────────────

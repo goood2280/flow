@@ -156,6 +156,37 @@ def test_enqueue_proposal_idempotent_for_pending_duplicates(inbox_dir):
     assert len(files) == 1
 
 
+def test_submit_meeting_hook_enqueues_unrejected_terms(tmp_path, monkeypatch):
+    from app_v2.modules.semantic_learning import hooks as learn_hooks
+
+    base = tmp_path / "proposals"
+    base.mkdir()
+    monkeypatch.setattr(inbox, "INBOX_DIR", base)
+
+    # Provide a small alias_groups + column catalog to drive classification.
+    monkeypatch.setattr(learn_hooks, "_safe_alias_groups", lambda: {"wafer_id": ["wafer", "웨이퍼"]})
+    monkeypatch.setattr(learn_hooks, "_safe_column_catalog_keys", lambda: {"wafer_id"})
+
+    meeting = {
+        "id": "mtg-2026-05-22",
+        "title": "GATE 산화막 정기 리뷰",
+        "agendas": [{"title": "MTS_X 적용"}],
+        "minutes": "리세션 점검 후 anchor_item_change 결정",
+        "decisions": [{"text": "WAFER_DEPOSITION 진행"}],
+        "action_items": [],
+    }
+    count = learn_hooks.submit_meeting(meeting)
+    assert count >= 2
+    pending = inbox.list_proposals(status="pending")
+    terms = {p["term"] for p in pending}
+    assert "산화막" in terms or "MTS_X" in terms
+    # Idempotent re-run produces no new pending entries for the same origin/term.
+    count2 = learn_hooks.submit_meeting(meeting)
+    pending_after = inbox.list_proposals(status="pending")
+    assert len(pending_after) == len(pending)
+    assert count2 == count  # all returned via the dedupe fast path
+
+
 def test_list_and_update_proposal_status_round_trip(inbox_dir):
     record = inbox.enqueue_proposal({
         "term": "MTS_X",
